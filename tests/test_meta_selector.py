@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -242,31 +241,6 @@ def test_score_trailing_returns_supports_all_metrics() -> None:
     assert score_trailing_returns(window, "median") != 0.0
 
 
-def test_score_trailing_returns_weighted_percentiles_shift_toward_weighted_samples() -> None:
-    window = [-0.40, 0.02, 0.03, 0.04]
-    weights = [0.05, 0.15, 0.30, 0.50]
-    p10_unweighted = score_trailing_returns(window, "p10")
-    p10_weighted = score_trailing_returns(window, "p10", sample_weights=weights)
-    med_unweighted = score_trailing_returns(window, "median")
-    med_weighted = score_trailing_returns(window, "median", sample_weights=weights)
-
-    assert p10_weighted > p10_unweighted
-    assert med_weighted > med_unweighted
-
-
-@pytest.mark.parametrize("metric", ["sharpe", "sortino", "calmar", "omega", "gain_pain"])
-def test_score_trailing_returns_ratio_metrics_remain_finite_without_observed_risk(metric: str) -> None:
-    conservative = [0.001, 0.001, 0.001]
-    stronger = [0.01, 0.01, 0.01]
-
-    conservative_score = score_trailing_returns(conservative, metric)
-    stronger_score = score_trailing_returns(stronger, metric)
-
-    assert np.isfinite(conservative_score)
-    assert np.isfinite(stronger_score)
-    assert stronger_score > conservative_score > 0.0
-
-
 def test_select_daily_winners_recency_halflife_changes_winner() -> None:
     idx = pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"], utc=True)
     returns_by_strategy = {
@@ -294,38 +268,6 @@ def test_select_daily_winners_recency_halflife_changes_winner() -> None:
 
     assert winners_unweighted.iloc[2] == "B"
     assert winners_weighted.iloc[2] == "A"
-
-
-def test_select_daily_winners_recency_halflife_changes_winner_for_p10() -> None:
-    idx = pd.to_datetime(
-        ["2026-01-01", "2026-01-02", "2026-01-03", "2026-01-04", "2026-01-05", "2026-01-06"],
-        utc=True,
-    )
-    returns_by_strategy = {
-        "A": pd.Series([-0.20, 0.01, 0.02, 0.03, 0.04, 0.00], index=idx),
-        "B": pd.Series([0.00, 0.00, 0.00, 0.00, 0.01, 0.00], index=idx),
-    }
-
-    winners_unweighted = select_daily_winners(
-        returns_by_strategy,
-        lookback_days=5,
-        metric="p10",
-        fallback_strategy="A",
-        tie_break_order=["A", "B"],
-        require_full_window=True,
-    )
-    winners_weighted = select_daily_winners(
-        returns_by_strategy,
-        lookback_days=5,
-        metric="p10",
-        fallback_strategy="A",
-        tie_break_order=["A", "B"],
-        require_full_window=True,
-        recency_halflife_days=0.5,
-    )
-
-    assert winners_unweighted.iloc[5] == "B"
-    assert winners_weighted.iloc[5] == "A"
 
 
 def test_select_daily_winners_recency_halflife_must_be_positive_when_provided() -> None:

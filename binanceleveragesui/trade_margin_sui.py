@@ -24,6 +24,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.binan import binance_wrapper
+from src.binance_hourly_csv_utils import append_hourly_binance_bars
 from src.binan.binance_margin import (
     cancel_all_margin_orders,
     get_margin_asset_balance,
@@ -104,29 +105,17 @@ def _refresh_price_csv(data_symbol: str, data_root: Path):
     except ImportError:
         return
     csv_path = data_root / f"{data_symbol.upper()}.csv"
-    if not csv_path.exists():
-        return
-    existing = pd.read_csv(csv_path)
-    existing["timestamp"] = pd.to_datetime(existing["timestamp"], utc=True)
-    last_ts = existing["timestamp"].max()
-    # Use SYMBOL (Binance trading pair) for API, data_symbol for file
     try:
-        new = fetch_binance_hourly_bars(SYMBOL, start=last_ts, end=datetime.now(timezone.utc))
+        result = append_hourly_binance_bars(
+            csv_path,
+            fetch_symbol=SYMBOL,
+            csv_symbol=data_symbol,
+            fetcher=fetch_binance_hourly_bars,
+        )
     except Exception:
         return
-    if new is None or len(new) == 0:
-        return
-    new = new.reset_index()
-    new["symbol"] = data_symbol.upper()
-    new["timestamp"] = pd.to_datetime(new["timestamp"], utc=True)
-    new = new[new["timestamp"] > last_ts]
-    if len(new) == 0:
-        return
-    combined = pd.concat([existing, new], ignore_index=True)
-    combined = combined.drop_duplicates(subset="timestamp", keep="last")
-    combined = combined.sort_values("timestamp").reset_index(drop=True)
-    combined.to_csv(csv_path, index=False)
-    print(f"[{TAG}] data: +{len(new)} rows")
+    if result.get("status") in {"updated", "synced"}:
+        print(f"[{TAG}] data: +{result.get('rows_added', 0)} rows")
 
 
 def _load_live_frame(

@@ -15,6 +15,7 @@ import torch
 from src.price_guard import enforce_gap
 from src.process_utils import enforce_min_spread
 from src.binan import binance_wrapper
+from src.binance_hourly_csv_utils import append_hourly_binance_bars
 
 from binanceneural.binance_watchers import WatcherPlan, spawn_watcher, cancel_entry_watchers
 from binanceneural.execution import compute_order_quantities, get_free_balances, resolve_symbol_rules
@@ -49,30 +50,21 @@ def _refresh_price_csv() -> None:
     except ImportError:
         return
     csv_path = DATA_ROOT / f"{DATA_SYMBOL}.csv"
-    if not csv_path.exists():
-        return
-    existing = pd.read_csv(csv_path)
-    existing["timestamp"] = pd.to_datetime(existing["timestamp"], utc=True)
-    last_ts = existing["timestamp"].max()
     try:
-        end_ts = datetime.now(timezone.utc)
-        new = fetch_binance_hourly_bars(DATA_SYMBOL, start=last_ts, end=end_ts)
+        result = append_hourly_binance_bars(
+            csv_path,
+            fetch_symbol=DATA_SYMBOL,
+            csv_symbol=DATA_SYMBOL,
+            fetcher=fetch_binance_hourly_bars,
+        )
     except Exception as e:
         print(f"[data-refresh] error: {e}")
         return
-    if new is None or len(new) == 0:
-        return
-    new = new.reset_index()
-    new["symbol"] = DATA_SYMBOL
-    new["timestamp"] = pd.to_datetime(new["timestamp"], utc=True)
-    new = new[new["timestamp"] > last_ts]
-    if len(new) == 0:
-        return
-    combined = pd.concat([existing, new], ignore_index=True)
-    combined = combined.drop_duplicates(subset="timestamp", keep="last")
-    combined = combined.sort_values("timestamp").reset_index(drop=True)
-    combined.to_csv(csv_path, index=False)
-    print(f"[data-refresh] {DATA_SYMBOL}: +{len(new)} rows, last={combined['timestamp'].max()}")
+    if result.get("status") in {"updated", "synced"}:
+        print(
+            f"[data-refresh] {DATA_SYMBOL}: +{result.get('rows_added', 0)} rows, "
+            f"last={result.get('end')}"
+        )
 
 
 def _refresh_forecast_cache() -> None:

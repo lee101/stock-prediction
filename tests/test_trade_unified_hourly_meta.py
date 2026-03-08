@@ -181,85 +181,43 @@ def test_simulate_symbol_daily_returns_uses_market_order_entry_flag(monkeypatch:
     assert len(out) == 1
 
 
-def test_simulate_symbol_daily_returns_propagates_live_sizing_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, float] = {}
+def test_run_cycle_logs_meta_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[tuple[str, dict]] = []
 
-    class _DummySim:
-        def __init__(self) -> None:
-            self.equity_curve = meta_mod.pd.Series(
-                [100.0, 101.0],
-                index=meta_mod.pd.to_datetime(["2026-03-03T15:00:00Z", "2026-03-03T16:00:00Z"], utc=True),
-            )
-
-    def _fake_run_portfolio_simulation(bars, actions, config, horizon=1):
-        captured["trade_amount_scale"] = float(config.trade_amount_scale)
-        captured["entry_intensity_power"] = float(config.entry_intensity_power)
-        captured["entry_min_intensity_fraction"] = float(config.entry_min_intensity_fraction)
-        captured["long_intensity_multiplier"] = float(config.long_intensity_multiplier)
-        captured["short_intensity_multiplier"] = float(config.short_intensity_multiplier)
-        captured["min_buy_amount"] = float(config.min_buy_amount)
-        return _DummySim()
-
-    monkeypatch.setattr(meta_mod, "run_portfolio_simulation", _fake_run_portfolio_simulation)
-
-    bars = meta_mod.pd.DataFrame(
-        [
-            {
-                "timestamp": meta_mod.pd.Timestamp("2026-03-03T15:00:00Z"),
-                "symbol": "MTCH",
-                "open": 30.0,
-                "high": 31.0,
-                "low": 29.0,
-                "close": 30.5,
-            }
-        ]
+    monkeypatch.setattr(live, "is_market_open_now", lambda: True)
+    monkeypatch.setattr(live, "save_state", lambda state: None)
+    monkeypatch.setattr(live, "log_event", lambda event_type, **fields: events.append((event_type, fields)))
+    monkeypatch.setattr(
+        meta_mod,
+        "collect_daily_returns",
+        lambda **kwargs: {"s1": {"NVDA": meta_mod.pd.Series([0.01], index=meta_mod.pd.to_datetime(["2026-03-03"], utc=True))}},
     )
-    actions = meta_mod.pd.DataFrame(
-        [
-            {
-                "timestamp": meta_mod.pd.Timestamp("2026-03-03T15:00:00Z"),
-                "symbol": "MTCH",
-                "buy_price": 30.2,
-                "sell_price": 29.8,
-                "buy_amount": 0.0,
-                "sell_amount": 100.0,
-            }
-        ]
+    monkeypatch.setattr(meta_mod, "select_meta_winners", lambda **kwargs: {"NVDA": "s1"})
+    monkeypatch.setattr(
+        meta_mod,
+        "build_meta_signals",
+        lambda **kwargs: {"NVDA": {"buy_price": 100.0, "sell_price": 101.0, "edge": 0.02}},
     )
+
     args = SimpleNamespace(
-        meta_sim_initial_cash=10_000.0,
-        min_edge=0.001,
+        ignore_market_hours=False,
         max_hold_hours=6,
-        no_close_at_eod=False,
-        decision_lag_bars=0,
-        market_order_entry=False,
-        bar_margin=0.0005,
-        trade_amount_scale=150.0,
-        entry_intensity_power=0.7,
-        entry_min_intensity_fraction=0.05,
-        long_intensity_multiplier=1.1,
-        short_intensity_multiplier=1.6,
-        min_buy_amount=7.5,
-        entry_order_ttl_hours=0,
-        leverage=2.0,
-        force_close_slippage=0.003,
-        no_int_qty=False,
-        fee_rate=0.001,
-        margin_rate=0.0625,
+        meta_reselect_frequency="daily",
+        dry_run=True,
     )
+    selection_cache = meta_mod.MetaSelectionCache()
 
-    meta_mod.simulate_symbol_daily_returns(
-        symbol="MTCH",
-        bars=bars,
-        actions=actions,
+    meta_mod.run_cycle(
+        strategies=[SimpleNamespace(name="s1")],
+        symbols=["NVDA"],
         args=args,
+        device=None,
+        api=None,
+        state={"positions": {}},
+        selection_cache=selection_cache,
     )
 
-    assert captured == {
-        "trade_amount_scale": 150.0,
-        "entry_intensity_power": 0.7,
-        "entry_min_intensity_fraction": 0.05,
-        "long_intensity_multiplier": 1.1,
-        "short_intensity_multiplier": 1.6,
-        "min_buy_amount": 7.5,
-    }
+    event_types = [event_type for event_type, _ in events]
+    assert "meta_cycle_start" in event_types
+    assert "meta_winner_cache_refreshed" in event_types
+    assert "meta_cycle_complete" in event_types

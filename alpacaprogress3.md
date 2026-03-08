@@ -231,955 +231,554 @@ Interpretation:
 - on this logged window, longer pending TTL (`1-3`) did not improve count-alignment metric vs `ttl=0`.
 - realism settings should still be swept per strategy/window; defaults should not be assumed globally optimal.
 
-## 11) Meta Live Sizing Controls Added (Code + Tests)
+## 11) FastForecaster2 Frontier Bootstrap (2026-03-05)
 
-Objective:
-- expose the same sizing/intensity controls in meta live trading and sweep tooling that already exist in the simulator, so we can directly optimize under-allocation issues (notably small short entries).
+Goal:
+- Stand up `fastforecaster2` as a new frontier forecaster with:
+  - optional Chronos-style symbol embedding bootstrap,
+  - C++/CUDA weighted-MAE path retained,
+  - post-train shared-cash market simulation,
+  - explicit risk/smoothness metrics in training summary + W&B.
 
-Code changes:
-- `unified_hourly_experiment/trade_unified_hourly_meta.py`
-  - added `apply_live_sizing_overrides(args)` to propagate:
-    - `trade_amount_scale`
-    - `min_buy_amount`
-    - `entry_intensity_power`
-    - `entry_min_intensity_fraction`
-    - `long_intensity_multiplier`
-    - `short_intensity_multiplier`
-  - new CLI args for the fields above.
-  - `build_meta_signals()` logging now computes intensity with the configured power/floor/side multipliers.
-  - startup log now prints sizing settings explicitly.
-- `unified_hourly_experiment/sweep_meta_portfolio.py`
-  - new CLI args and validation for all sizing/intensity controls.
-  - passes controls into `PortfolioConfig`.
-  - writes them into output payload config.
-- `unified_hourly_experiment/auto_meta_optimize.py`
-  - expanded search space to sweep sizing/intensity dimensions:
-    - `trade_amount_scales`
-    - `min_buy_amounts`
-    - `entry_intensity_powers`
-    - `entry_min_intensity_fractions`
-    - `long_intensity_multipliers`
-    - `short_intensity_multipliers`
-  - recommendation rows now include these fields.
-  - deploy command generation updated to include sizing args.
-  - added helper `build_deploy_command(...)`.
-
-Tests added/updated:
-- `tests/test_auto_meta_optimize.py`
-  - validates deploy command includes sizing fields.
-- `tests/test_trade_unified_hourly_meta.py`
-  - validates `apply_live_sizing_overrides` updates live globals.
-  - compatibility-safe for environments where some globals may be absent.
+Code delivered:
+- New package: `fastforecaster2/`
+  - `config.py`: simulator + Chronos embedding controls.
+  - `trainer.py`: Chronos embedding bootstrap hook, simulator eval, robust risk metrics + artifact export.
+  - `run_training.py`: CLI flags for simulator and embedding controls.
+  - `data.py`: keeps raw OHLC per symbol for simulator alignment.
+  - `README.md`: usage and controls.
+- Tests added:
+  - `tests/test_fastforecaster2_config.py`
+  - `tests/test_fastforecaster2_sim_metrics.py`
 
 Validation:
-- local: `pytest -q tests/test_auto_meta_optimize.py tests/test_trade_unified_hourly_meta.py tests/test_trade_alpaca_hourly_utils.py tests/test_meta_live_runtime.py tests/test_meta_selector.py`
-  - `41 passed`
-- remote: `pytest -q tests/test_auto_meta_optimize.py tests/test_trade_unified_hourly_meta.py tests/test_meta_selector.py tests/test_meta_live_runtime.py`
-  - `18 passed`
+- `pytest -q tests/test_fastforecaster2_config.py tests/test_fastforecaster2_sim_metrics.py tests/test_fastforecaster_config.py tests/test_fastforecaster_seed_sweep.py`
+- Result: `16 passed`
 
-## 12) Remote 5090 Sizing/Meta Sweeps (Targeted)
+Smoke training setup (all runs):
+- dataset: hourly
+- symbols: 8
+- lookback/horizon: 128/12
+- epochs: 1
+- windows: train 4096, val 836, test 733
+- W&B project: `stock`
 
-Host:
-- `administrator@93.127.141.100`
-- repo: `/nvme0n1-disk/code/stock-prediction`
+Run outputs:
+- Risk-off neutral sim run:
+  - run: `fastforecaster2_frontier_smoke_20260305_simneutral`
+  - W&B: https://wandb.ai/lee101p/stock/runs/jg7wvbmq
+  - best_val_mae: `1.7190`
+  - test_mae: `1.6818`
+  - sim_pnl: `0.0`
+  - sim_max_drawdown: `0.0`
+  - sim_smoothness: `1.0`
+  - sim_trades: `0`
+- Active sim run (risk-constrained but trading):
+  - run: `fastforecaster2_frontier_smoke_20260305_simrisk2`
+  - W&B: https://wandb.ai/lee101p/stock/runs/the343zt
+  - best_val_mae: `1.7190`
+  - test_mae: `1.6818`
+  - sim_pnl: `-2986.47`
+  - sim_total_return: `-29.86%`
+  - sim_max_drawdown: `1.0`
+  - sim_smoothness: `0.0176`
+  - sim_trades: `278`
 
-### 12.1 Failed broad attempt (documented)
-- `experiments/meta_5090_sizing_quick8_20260305`
-- all 8 rows had zero activity under strict gate (`edge=0.0055`, `sit_out=0.2`) for the tested S42 multi-strategy set.
-
-### 12.2 Quick permissive run (for diagnostics)
-- `experiments/meta_5090_sizing_quick8_edge2_20260305`
-- completed but weak:
-  - best `min_sortino=-0.4122`, `mean_sortino=-0.2207`.
-
-### 12.3 Strong baseline refinement (successful)
-Refinement targeted the known good strategy set from prior `meta_5090_target4_20260305`:
-- strategies:
-  - `wd04=.../wd_0.04:9`
-  - `wd06=.../wd_0.06_s42:8`
-  - `wd05=.../wd_0.05_s42:19`
-  - `wd08=.../wd_0.08_s42:10`
-  - `wd03=.../wd_0.03_s42:20`
-- symbols:
-  - `NVDA,PLTR,GOOG,DBX,TRIP,MTCH`
-- output:
-  - `experiments/meta_5090_sizing_refine_target4_20260305/auto_meta_recommendation.json`
-
-Best row:
-- `edge=0.0055`
-- `sit_out_threshold=0.2`
-- `selection_mode=winner`
-- `metric=sharpe`
-- `lookback_days=14`
-- `trade_amount_scale=100.0`
-- `entry_intensity_power=1.0`
-- `entry_min_intensity_fraction=0.0`
-- `short_intensity_multiplier=1.5`
-- `min_sortino=0.1662456496`
-- `mean_sortino=0.3131207441`
-- `min_return_pct=0.4663920506`
-- `mean_return_pct=0.9338637498`
-- `mean_max_drawdown_pct=3.7696727341`
-- `min_num_buys=18`
-- `mean_num_buys=27.0`
-
-Comparison vs prior best (`meta_5090_target4_20260305`):
-- `min_sortino`: `0.1662` vs `0.1625` (improved)
-- `mean_sortino`: `0.3131` vs `0.2817` (improved)
-- `mean_return_pct`: `0.9339` vs `0.7849` (improved)
-- drawdown roughly unchanged (`3.77%` vs `3.76%`)
-
-### 12.4 Symbol-universe safety check (NYT included)
-- one-shot eval artifact:
-  - `experiments/meta_5090_eval_target4_plus_nyt_20260305.json`
-- summary remained strong and near-identical with NYT present:
-  - `min_sort ~0.166`
-  - `mean_sort ~0.312`
-  - `mean_return ~0.91%`
-
-## 13) Local Checkpoint Sync + Deployment
-
-To support local deploy of remote best strategy mix, synced only required checkpoints (not full histories):
-- `unified_hourly_experiment/checkpoints/wd_0.03_s42/epoch_020.pt`
-- `unified_hourly_experiment/checkpoints/wd_0.05_s42/epoch_019.pt`
-- `unified_hourly_experiment/checkpoints/wd_0.06_s42/epoch_008.pt`
-- `unified_hourly_experiment/checkpoints/wd_0.08_s42/epoch_010.pt`
-- plus each directory `config.json` / `training_meta.json` when present.
-
-Supervisor updated:
-- `supervisor/unified-stock-trader.conf`
-  - switched to refined strategy set and sizing:
-    - `max_positions=5`
-    - `max_hold_hours=5`
-    - `meta_metric=sharpe`
-    - `meta_lookback_days=14`
-    - `min_edge=0.0055`
-    - `sit_out_threshold=0.2`
-    - `bar_margin=0.0005`
-    - `entry_order_ttl_hours=0`
-    - `short_intensity_multiplier=1.5`
-  - kept `NYT` in symbol list to avoid forced-close behavior on active tracked NYT state during rollout.
-
-Applied:
-- `sudo supervisorctl reread`
-- `sudo supervisorctl update`
-- `sudo supervisorctl restart unified-stock-trader`
-
-Verification:
-- process command line confirms new args and checkpoints are active.
-- supervisor status: `RUNNING`.
-
-## 14) Simulator Realism Calibration (Market-Entry Replay)
-
-Issue:
-- replay against `strategy_state/stock_trade_log.jsonl` still under-filled entries in simulator when using limit-style entry assumption.
-- this was likely masking real behavior for Alpaca execution paths where entries are effectively market-like.
-
-Code changes:
-- `unified_hourly_experiment/replay_stock_trade_log_sim.py`
-  - added `parse_bool_list(...)`.
-  - added `--market-order-entries` sweep dimension (default `0,1`).
-  - threaded `market_order_entry` into `run_replay(...)` and `PortfolioConfig`.
-  - output rows now include `market_order_entry`.
-- `unified_hourly_experiment/trade_unified_hourly_meta.py`
-  - added `--market-order-entry` CLI flag for selector simulations.
-  - selector simulation config now uses `market_order_entry=args.market_order_entry`.
-- `unified_hourly_experiment/sweep_meta_portfolio.py`
-  - added `--market-order-entry` CLI flag.
-  - base `PortfolioConfig` now accepts this flag.
-  - persisted `market_order_entry` in output payload config.
-- `unified_hourly_experiment/auto_meta_optimize.py`
-  - added `--market-order-entry` passthrough to each sweep command.
-  - recommendation payload/search space include this field.
-  - generated deploy command includes `--market-order-entry` when enabled.
-
-Tests added/updated:
-- `tests/test_replay_stock_trade_log_sim.py`
-  - bool parser coverage and `run_replay` passthrough assertion.
-- `tests/test_trade_unified_hourly_meta.py`
-  - verifies `simulate_symbol_daily_returns` forwards `market_order_entry`.
-- `tests/test_auto_meta_optimize.py`
-  - deploy command test now checks `--market-order-entry`.
-
-Validation:
-- `pytest -q tests/test_replay_stock_trade_log_sim.py tests/test_trade_unified_hourly_meta.py tests/test_auto_meta_optimize.py tests/test_meta_live_runtime.py tests/test_meta_selector.py`
-  - `26 passed`.
-- remote synced tests:
-  - `pytest -q tests/test_replay_stock_trade_log_sim.py tests/test_trade_unified_hourly_meta.py tests/test_auto_meta_optimize.py`
-  - `13 passed`.
-
-Replay calibration result:
-- old best (limit-style replay):
-  - `experiments/stock_trade_log_sim_replay_20260305_latest.json`
-  - `hourly_abs_count_delta_total=12`, `exact_row_ratio=0.6129`, `live_entries=31`, `sim_entries=19`.
-- new best (market-entry replay):
-  - `experiments/stock_trade_log_sim_replay_20260305_marketmode.json`
-  - `market_order_entry=true`
-  - `hourly_abs_count_delta_total=2`, `exact_row_ratio=0.9355`, `live_entries=31`, `sim_entries=29`.
-  - remaining per-symbol gap is only:
-    - `MTCH: live 6 vs sim 5`
-    - `GOOG: live 6 vs sim 5`
-
-Interpretation:
-- enabling market-entry assumption dramatically improves simulator/live entry-count alignment and should be used for further selector tuning for this bot configuration.
-
-## 15) Calibrated Meta Search (In Progress on Remote 5090)
-
-Remote run:
-- host: `administrator@93.127.141.100`
-- repo: `/nvme0n1-disk/code/stock-prediction`
-- output dir: `experiments/meta_5090_robustmix_marketentry_auto1_20260305`
-
-Search config:
-- strategy set: `wd04, wd06_s42, wd05_s42, wd08_s42, wd03_s42, robb, robc`
-- symbols: `NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT`
-- realistic fill mode: `--market-order-entry`
-- metrics: `sharpe,sortino,p10`
-- lookbacks: `7,10,14,18`
-- holdouts: `30,60,90`
-- edges: `0.00075,0.001,0.00125,0.0015`
-- sit-out thresholds: `0.0,0.02`
-- modes: `winner,winner_cash,sticky`
-- switch margins: `0.0,0.02`
-- min activity filter: `min_num_buys=5`
-
-Status snapshot:
-- run active; stale parallel venv312 sweep family was terminated to avoid contention.
-- partial outputs are accumulating in `experiments/meta_5090_robustmix_marketentry_auto1_20260305/`.
-
-Local quick calibrated reference:
-- one-shot calibrated sweep artifact:
-  - `experiments/meta_local_robustmix_marketentry_edge0015_20260305.json`
-- best row:
-  - `metric=p10`, `lookback=10`, `mode=sticky`, `switch_margin=0.02`
-  - `min_sortino=0.3250`, `mean_sortino=0.5659`
-  - `min_return_pct=+0.3189`, `mean_return_pct=+0.3189`
-  - `mean_max_drawdown_pct=0.2437`
-  - `min_num_buys=5`, `mean_num_buys=5`
-
-### 15.1 Local A/B: Suppress Tiny Orders (min-buy / intensity floor)
-
-Fixed evaluation setup:
-- metric/mode: `p10`, `sticky`, `switch_margin=0.02`, `lookback=10`
-- edge: `0.00075` (plus one confirmation run at `0.001`)
-- market entry sim: enabled
+Best PnL so far (FastForecaster2):
+- `sim_pnl = 0.0` (risk-off neutral config; no trades).
+- Active-trading config still needs tuning for smooth/low-risk profitability.
 
 Artifacts:
-- `experiments/meta_local_marketentry_ab_minf0_20260305.json`
-- `experiments/meta_local_marketentry_ab_minf001_20260305.json`
-- `experiments/meta_local_marketentry_ab_minf002_20260305.json`
-- `experiments/meta_local_marketentry_ab_minf005_20260305.json`
-- `experiments/meta_local_marketentry_ab_minf001_smul2_20260305.json`
-- `experiments/meta_local_marketentry_ab_minbuy1_20260305.json`
-- `experiments/meta_local_marketentry_ab_minbuy2_20260305.json`
-- `experiments/meta_local_marketentry_ab_minbuy3_20260305.json`
-- `experiments/meta_local_marketentry_ab_edge001_minbuy2_20260305.json`
+- `fastforecaster2/artifacts_smoke_20260305_simneutral/metrics/summary.json`
+- `fastforecaster2/artifacts_smoke_20260305_simneutral/metrics/simulator_summary.json`
+- `fastforecaster2/artifacts_smoke_20260305_simrisk2/metrics/summary.json`
+- `fastforecaster2/artifacts_smoke_20260305_simrisk2/metrics/simulator_summary.json`
 
-Key findings:
-- `entry_min_intensity_fraction`:
-  - `0.0` and `0.01` were equivalent on this setup.
-  - `>=0.02` collapsed to cash/no-trade behavior (all-zero result).
-- `short_intensity_multiplier`:
-  - `2.0` did not improve over `1.5` for this selector setup.
-- `min_buy_amount`:
-  - `1.0` slightly improved sortino vs `0.0` with same return profile.
-  - `2.0` was best in this A/B:
-    - `min_sortino=0.5877`
-    - `mean_sortino=1.6816`
-    - `min_return_pct=+1.1163`
-    - `mean_return_pct=+1.3127`
-    - `mean_max_drawdown_pct=0.5355`
-    - `min_num_buys=6`
-  - `3.0` degraded from the `2.0` result.
-
-Interpretation:
-- adding a modest `min_buy_amount` filter (around `2.0`) appears to remove low-quality tiny entries while preserving activity and improving smoothness-adjusted outcomes on current holdouts.
-
-### 15.2 Remote Follow-up Run (Focused)
-
-Given the local A/B, switched from broad min-buy=0-only run to focused remote tuning:
-- output dir: `experiments/meta_5090_marketentry_minbuy_tune1_20260305`
-- search:
-  - `metric=p10`
-  - `selection_mode=sticky`
-  - `switch_margin=0.02`
-  - `lookback=10`
-  - `edges=0.00075,0.001,0.00125,0.0015`
-  - `sit_out_thresholds=0.0,0.02`
-  - `min_buy_amounts=0.0,1.0,2.0,3.0`
-  - market entry sim enabled
-  - activity floor: `min_num_buys=5`
-
-## 16) Provisional Live Deployment Update
-
-Reason:
-- local calibrated A/B showed best smoothness-return tradeoff with:
-  - market-entry sim enabled
-  - robustmix strategy set (`wd* + robb + robc`)
-  - sticky meta selector (`p10`, lookback `10`, switch margin `0.02`)
-  - `min_buy_amount=2.0` (suppresses tiny entries while preserving activity).
-
-Supervisor update:
-- file: `supervisor/unified-stock-trader.conf`
-- command now includes:
-  - added strategies:
-    - `robb=/home/lee/code/stock/unified_hourly_experiment/checkpoints/stock_sortino_lag_robust_20260219b_fast_rw012_sm003_lagr01`
-    - `robc=/home/lee/code/stock/unified_hourly_experiment/checkpoints/stock_sortino_lag_robust_20260219c_l0123_rw010_sm006_seq48`
-  - `--min-edge 0.001`
-  - `--min-buy-amount 2.0`
-  - `--meta-metric p10`
-  - `--meta-lookback-days 10`
-  - `--meta-selection-mode sticky`
-  - `--meta-switch-margin 0.02`
-  - `--sit-out-threshold 0.0`
-  - `--market-order-entry`
-
-Applied:
-- `echo 'ilu' | sudo -S supervisorctl reread`
-- `echo 'ilu' | sudo -S supervisorctl update`
-- `echo 'ilu' | sudo -S supervisorctl restart unified-stock-trader`
-
-Verification:
-- supervisor status:
-  - `unified-stock-trader RUNNING`
-- process command confirms all updated args are live, including robustmix strategies and `--market-order-entry`.
-
-## 17) 2026-03-05 Prod Migration To Remote 5090 (Completed)
-
-Goal:
-- move Alpaca live execution from local host to remote 5090 host while preserving strategy/state and validating live order behavior.
-
-Actions completed:
-- Local host (`/home/lee/code/stock`):
-  - stopped live services:
-    - `echo 'ilu' | sudo -S supervisorctl stop unified-stock-trader`
-    - `echo 'ilu' | sudo -S supervisorctl stop stock-cache-refresh`
-  - status after cutover:
-    - `unified-stock-trader STOPPED`
-    - `stock-cache-refresh STOPPED`
-- Remote host (`administrator@93.127.141.100`, repo `/nvme0n1-disk/code/stock-prediction`):
-  - synced live-trading code, simulator/meta tools, state, and latest symbol data/cache.
-  - installed/updated supervisor config:
-    - `/etc/supervisor/conf.d/unified-stock-trader.conf`
-  - started services:
-    - `unified-stock-trader`
-    - `stock-cache-refresh`
-  - status:
-    - both services `RUNNING`
-
-Remote verification:
-- Targeted regression tests:
-  - `.venv313/bin/pytest -q tests/test_trade_unified_hourly_meta.py tests/test_meta_live_runtime.py tests/test_meta_selector.py tests/test_auto_meta_optimize.py tests/test_replay_stock_trade_log_sim.py`
-  - result: `26 passed`
-- Live state/order alignment audit:
-  - `tracked_positions=2`
-  - `alpaca_positions=3`
-  - tracked symbols:
-    - `GOOG`: expected `sell` exit at `304.73`, open order match `yes`
-    - `NYT`: expected `buy` exit at `80.32`, open order match `yes`
-  - untracked live position:
-    - `ETHUSD` (outside stock bot symbol universe)
-
-Operational note:
-- Recent MTCH tiny short entries were caused by low signal intensity/low allocation in live sizing (not order routing failure). Current deployment keeps `--min-buy-amount 2.0` to suppress low-notional entries.
-
-## 18) Post-Cutover Remote Optimization Run (Active)
-
-Purpose:
-- continue searching for stronger smoothness/return settings on remote 5090 after production cutover, using calibrated market-entry simulation assumptions.
-
-Run launched:
-- host: `administrator@93.127.141.100`
-- repo: `/nvme0n1-disk/code/stock-prediction`
-- run id: `meta_5090_post_cutover_20260305_020043`
-- pid file: `/tmp/meta_5090_post_cutover.pid`
-- output dir: `experiments/meta_5090_post_cutover_20260305_020043`
-- log: `experiments/meta_5090_post_cutover_20260305_020043.log`
-
-Sweep profile:
-- strategy set: `wd04, wd06_s42, wd05_s42, wd08_s42, wd03_s42, robb, robc`
-- symbols: `NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT`
-- metric/mode: `p10`, `sticky`, `lookback=10`, `switch_margin=0.02`
-- holdouts: `30,60,90`
-- edges: `0.00075,0.001,0.00125`
-- sit-out thresholds: `0.0,0.02`
-- sizing sweep:
-  - `min_buy_amounts=1.0,2.0,3.0`
-  - `entry_min_intensity_fractions=0.0,0.01`
-  - `short_intensity_multipliers=1.5,2.0`
-- realism knobs:
-  - `market_order_entry=true`
-  - `bar_margin=0.0005`
-  - `entry_order_ttl_hours=0`
-
-Early status snapshot:
-- process is running and producing sweep result files.
-- first completed combinations (so far) were cash/no-trade rows (`best` all zeros), so this run remains in-progress to find stronger active-trade settings before any deploy decision.
-
-## 19) Sweep Pivot: Robustmix -> Target4 Recalibration (Active)
-
-Reason for pivot:
-- post-cutover robustmix sweep (`meta_5090_post_cutover_20260305_020043`) produced only cash/no-trade `best` rows in early combinations (`min_num_buys=0`, returns `0.0`), so it was terminated to avoid wasting GPU time.
-
-New run:
-- run id: `meta_5090_target4_recal_20260305_021647`
-- pid file: `/tmp/meta_5090_target4_recal.pid`
-- output dir: `experiments/meta_5090_target4_recal_20260305_021647`
-- log: `experiments/meta_5090_target4_recal_20260305_021647.log`
-
-Search scope:
-- strategies: `wd04, wd06_s42, wd05_s42, wd08_s42, wd03_s42`
-- symbols: `NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT`
-- metric: `p10`
-- lookback: `10,14`
-- holdouts: `60,90`
-- edges: `0.0045,0.0055`
-- sit-out thresholds: `0.1,0.2`
-- modes: `winner,sticky`
-- switch margins: `0.0,0.02`
-- min-buy amounts: `1.0,2.0`
-- market-entry replay realism enabled.
-
-Current status:
-- run is active; first result file written.
-- early baseline diagnostics in log show strong negative single-strategy holdouts on latest data window (e.g. top baseline `wd06` still around `-30%` mean return over tested holdouts), so early meta rows are cash/sit-out.
-- no deploy change made; live remains on current remote prod config until a non-zero candidate with better risk-adjusted profile is found.
-
-## 20) Chronos2 Inference Policy Wiring + Validation (2026-03-05)
+## 12) FastForecaster2 Simulator Policy Retune (2026-03-05 late)
 
 Objective:
-- improve inference quality safely by using already-tuned Chronos2 policy flags (`use_multivariate`, `use_cross_learning`) in cache generation, with robust fallback to existing behavior.
+- make `fastforecaster2` simulator evaluation closer to a production low-risk selector:
+  - stop pyramiding into the same name every positive bar,
+  - use smoothed signals instead of raw one-step noise,
+  - keep thresholds in actual forecast-return space,
+  - only enter on top-k transitions and exit on signal decay/rank loss.
 
-Code change:
-- file: `binanceneural/forecasts.py`
-- `ChronosForecastManager` now:
-  - loads symbol-level Chronos2 params at init (`resolve_chronos2_params(..., frequency=\"hourly\")`);
-  - stores and applies:
-    - `predict_kwargs`
-    - `use_multivariate`
-    - `use_cross_learning`
-  - routes inference via new `_predict_batches(...)`:
-    - if multivariate + cross-learning enabled: tries `predict_ohlc_joint(...)`;
-    - else if multivariate enabled: uses per-context `predict_ohlc_multivariate(...)`;
-    - otherwise (or on failure): falls back to legacy `predict_ohlc_batch(...)`.
-  - keeps fallback behavior safe (no hard dependency on joint/multivariate methods when wrappers do not expose them).
-
-Tests added:
-- `tests/test_chronos_forecast_manager_modes.py`
-  - verifies joint multivariate path selection;
-  - verifies per-symbol multivariate path selection;
-  - verifies fallback to batch when joint/multivariate unavailable;
-  - verifies param-driven inference policy load.
-
-Validation:
-- `pytest -q tests/test_chronos_forecast_manager_modes.py tests/test_chronos_forecast_horizon_alignment.py tests/test_chronos_forecast_manager_short_history.py tests/test_forecast_windowing.py`
-  - result: `9 passed`.
-
-Data check (real holdout slices, same model/data, horizon=1h):
-- compared baseline `predict_ohlc_batch` vs multivariate mode on 24 recent points each:
-  - `NVDA`: close MAE `1.0007 -> 0.9370` (multivariate better)
-  - `GOOG`: close MAE `1.9142 -> 1.7750` (multivariate better)
-  - `MTCH`: close MAE `0.1919 -> 0.1957` (multivariate slightly worse)
-- interpretation: multivariate is symbol-dependent; should be gated by per-symbol tuning, not globally forced.
-
-Fresh quick retune (saved to hourly hyperparams):
-- command:
-  - `python hyperparam_chronos_hourly.py --symbols NVDA GOOG MTCH --quick --objective composite --smoothness-weight 0.40 --direction-bonus 0.05 --cohort-size 2 --cohort-min-abs-corr 0.20 --enable-cross-learning --device cuda --output experiments/hyperparam_chronos_hourly_nvda_goog_mtch_20260305.json --save-hyperparams`
-- output:
-  - `experiments/hyperparam_chronos_hourly_nvda_goog_mtch_20260305.json`
-  - updated:
-    - `hyperparams/chronos2/hourly/NVDA.json`
-    - `hyperparams/chronos2/hourly/GOOG.json`
-    - `hyperparams/chronos2/hourly/MTCH.json`
-- winners on current data:
-  - `NVDA`: `ctx=2048`, `skip=[1,2,3]`, `agg=median`, `mv=False`
-  - `GOOG`: `ctx=2048`, `skip=[1,2,3]`, `agg=median`, `mv=False`
-  - `MTCH`: `ctx=2048`, `skip=[1]`, `agg=single`, `mv=False`
-
-Decision:
-- no live deployment changes from this step.
-- keep data-driven per-symbol policy (do not force multivariate globally).
-
-## 21) Remote Meta Sweep Pivot (Low-Edge Non-Cash Search)
-
-Status update:
-- prior active run `meta_5090_target4_recal_20260305_021647` continued producing cash rows (`min_num_buys=0`) in early outputs.
-- it was terminated and replaced with a lower-edge / lower-sitout search window to force non-zero candidate discovery.
-
-New run:
-- run id: `meta_5090_target4_lowedge_20260305_023312`
-- pid file: `/tmp/meta_5090_target4_lowedge.pid`
-- output dir: `experiments/meta_5090_target4_lowedge_20260305_023312`
-- log: `experiments/meta_5090_target4_lowedge_20260305_023312.log`
-
-Search profile:
-- strategies: `wd04, wd06_s42, wd05_s42, wd08_s42, wd03_s42`
-- symbols: `NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT`
-- metric: `p10`
-- lookback: `10,14`
-- holdouts: `30,60` (less strict than prior `60,90`)
-- edges: `0.0015,0.0025,0.0035`
-- sit-out thresholds: `0.0,0.05`
-- modes: `winner,sticky`
-- switch margins: `0.0,0.02`
-- sizing: `min_buy_amount=1.0,2.0`
-- realism:
-  - `market_order_entry=true`
-  - `bar_margin=0.0005`
-  - `entry_order_ttl_hours=0`
-
-Goal:
-- produce non-cash (`min_num_buys >= 5`) candidates with improved risk-adjusted returns before considering any live deploy update.
-
-## 22) Market Simulator Fill Audit Chart + Per-Symbol Buffer Support
-
-Question addressed:
-- verify whether 5 bps bar-touch execution logic is behaving sensibly on actual bar data, and add a path for per-stock spread realism.
-
-What was added:
-- per-symbol execution buffer support in portfolio simulator:
-  - file: `unified_hourly_experiment/marketsimulator/portfolio_simulator.py`
-  - new config field:
-    - `symbol_bar_margin_bps: Optional[Dict[str, float]]`
-      - per-symbol basis-point overrides for fill/target touch checks.
-      - supports wildcard `\"*\"` fallback.
-  - when per-symbol overrides are provided, simulator stays on Python backend (native backend currently supports only scalar `bar_margin`).
-  - all touch checks now use symbol-specific margin where configured:
-    - entry fills
-    - pending entry fills
-    - target exits
-    - required-move ranking for `first_trigger` mode.
-
-Tests:
-- updated:
-  - `tests/test_portfolio_simulator_directional_amount.py`
-- added coverage:
-  - per-symbol override changes fillability vs default 5 bps.
-  - wildcard override applies to symbols without explicit key.
-- validation:
-  - `pytest -q tests/test_portfolio_simulator_directional_amount.py tests/test_portfolio_simulator_native_backend.py tests/test_simulator_math.py`
-  - result: `38 passed`.
-
-New fill-audit chart tool:
-- added script:
-  - `scripts/plot_market_sim_fill_audit.py`
-- purpose:
-  - reconstruct actions from `strategy_state/stock_trade_log.jsonl`,
-  - run market simulator,
-  - output:
-    - candlestick chart with fill markers,
-    - CSV with per-trade touch diagnostics (`trigger`, bar high/low, touched flag).
-
-Generated artifacts:
-- `experiments/sim_execution_charts/sim_fill_audit_mtch_margin5bp.png`
-- `experiments/sim_execution_charts/sim_fill_audit_mtch_margin5bp.csv`
-- comparison run with symbol override:
-  - `experiments/sim_execution_charts/sim_fill_audit_mtch_margin5bp_sym8bp.png`
-  - `experiments/sim_execution_charts/sim_fill_audit_mtch_margin5bp_sym8bp.csv`
-
-Observed in MTCH audit:
-- simulated trades: `3`
-- all `3/3` were touched under 5 bps rule on their corresponding bars.
-- sample triggers (from CSV) were internally consistent with bar high/low.
-
-Interpretation:
-- current 5 bps rule is functioning as intended on this sample.
-- per-symbol bps overrides are now available for realism tuning where spread behavior differs by stock.
-
-## 23) Production ETH Take-Profit Gap: Root Cause + Live Fix (2026-03-05)
-
-Issue observed:
-- Live Alpaca ETH had an open add-buy order but no matching closing sell/take-profit order.
-
-Root causes found in running process:
-- active process:
-  - `/home/lee/code/btcmarketsbot/scripts/run_market_exit_agent.py`
-  - supervisor program: `bitbank-market-exit-agent`
-- log evidence (`/home/lee/code/btcmarketsbot/logs/market-exit-agent.err.log`): repeated sell failures:
-  - requested sell qty rounded up to `11.617376` while available was `11.617375806`
-  - Alpaca rejected with insufficient balance.
-- strategy branch also allowed `HOLD` with no sell order when `sell_price <= reference_price`.
-
-Code changes applied:
-- file:
-  - `/home/lee/code/btcmarketsbot/scripts/run_market_exit_agent.py`
-- fixes:
-  - floor sell qty to exchange-safe precision (no round-up above available balance),
-  - always maintain a closing/take-profit sell order while in position,
-  - minimum TP guard: target sell at least `ref * 1.001` when model sell is not above market,
-  - side-specific order management so buy-add and sell-close orders can coexist,
-  - avoid blanket cancel-all during normal cycles (except force-exit).
+Code updates:
+- `fastforecaster2/config.py`
+  - added:
+    - `market_sim_min_trade_intensity`
+    - `market_sim_signal_ema_alpha`
+    - `market_sim_entry_buffer_bps`
+    - `market_sim_exit_buffer_bps`
+- `fastforecaster2/trainer.py`
+  - added weighted short-horizon forecast aggregation for simulator signals.
+  - replaced naive per-bar action generation with:
+    - EMA-smoothed long-only top-k selector,
+    - hold-vs-entry hysteresis (`buy_threshold` vs `sell_threshold`),
+    - transition-based entries,
+    - full exits on de-selection,
+    - simulator-compatible minimum allocation floor.
+- `fastforecaster2/run_training.py`
+  - exposed the new simulator controls on CLI.
+- `tests/test_fastforecaster2_sim_metrics.py`
+  - added transition/no-pyramiding planner test.
+- `tests/test_fastforecaster2_config.py`
+  - added config validation for `market_sim_signal_ema_alpha`.
 
 Validation:
-- syntax check:
-  - `python -m py_compile /home/lee/code/btcmarketsbot/scripts/run_market_exit_agent.py`
-- restarted service:
-  - `sudo supervisorctl restart bitbank-market-exit-agent`
-- post-restart live order verification:
-  - open ETH orders now include both sides simultaneously:
-    - `ETH/USD SELL LIMIT 2128.39 qty 11.617375` (closing order)
-    - `ETH/USD BUY LIMIT 1900.76 qty 6.051565` (add order)
-- latest log confirms successful placement:
-  - `ENSURE SELL ETH: 11.617375 @ $2128.39 ...`
+- `pytest -q tests/test_fastforecaster2_config.py tests/test_fastforecaster2_sim_metrics.py`
+- Result: `10 passed`
 
-Result:
-- production ETH now satisfies invariant: when in position, a corresponding closing order is live.
+Forecast-scale check:
+- observed `smoothed_return` on the smoke run is centered around `1e-5` to `1e-4`, so previous `1e-3` thresholds were effectively disabling trading.
 
-## 24) Remote Stock Meta Search Update (2026-03-05)
+Retune sweep results:
+- `fastforecaster2_ff2_sweep_d_20260305`
+  - W&B: https://wandb.ai/lee101p/stock/runs/rfp8qcfi
+  - config: `buy=2e-5`, `sell=0`, `top_k=2`, `max_intensity=12`, `ema_alpha=0.35`, `max_hold=12`
+  - sim_pnl: `-275.41`
+  - sim_total_return: `-2.75%`
+  - sim_max_drawdown: `0.3735`
+  - sim_smoothness: `0.1188`
+- `fastforecaster2_ff2_sweep_e_20260305`
+  - W&B: https://wandb.ai/lee101p/stock/runs/jo9akgt0
+  - config: `buy=3e-5`, `sell=1e-5`, `top_k=2`, `max_intensity=10`, `ema_alpha=0.45`, `max_hold=8`
+  - sim_pnl: `+42.98`
+  - sim_total_return: `+0.43%`
+  - sim_max_drawdown: `0.3342`
+  - sim_smoothness: `0.1574`
+  - sim_trades: `417`
+- `fastforecaster2_ff2_sweep_f_20260305`
+  - W&B: https://wandb.ai/lee101p/stock/runs/nya9epka
+  - config: `buy=1.5e-5`, `sell=0`, `top_k=1`, `max_intensity=8`, `ema_alpha=0.30`, `max_hold=6`
+  - sim_pnl: `-231.04`
+  - sim_total_return: `-2.31%`
+  - sim_max_drawdown: `0.3057`
+  - sim_smoothness: `0.1644`
 
-Run launched on remote 5090:
-- host: `administrator@93.127.141.100`
-- dir: `/nvme0n1-disk/code/stock-prediction`
-- output dir: `experiments/meta_live_search_20260305_025518`
-- completed files:
-  - `baseline_live_parity.json`
-  - `risk_sweep_th_neg0p05.json`
-  - `risk_sweep_th_0p00.json`
-  - `risk_sweep_th_0p05.json`
-- final `th=0.10` leg was long-running and stopped to unblock analysis.
+Best PnL so far (FastForecaster2):
+- `+42.98` from `fastforecaster2_ff2_sweep_e_20260305`
+- current best risk-aware trading config on the smoke setup:
+  - `market_sim_buy_threshold=3e-5`
+  - `market_sim_sell_threshold=1e-5`
+  - `market_sim_top_k=2`
+  - `market_sim_max_trade_intensity=10`
+  - `market_sim_min_trade_intensity=4`
+  - `market_sim_signal_ema_alpha=0.45`
+  - `market_sim_max_hold_hours=8`
 
-Findings from completed grids:
-- current live parity baseline remains difficult to beat on low-drawdown risk profile.
-- some candidates improved headline metrics by mostly sitting in cash (`min_num_buys=0`), which does not match activity goals.
-- activity-preserving candidates (`min_num_buys >= 5`) had higher drawdown and worse downside tails than current live settings.
+Artifacts:
+- `fastforecaster2/ff2_sweep_d/metrics/simulator_summary.json`
+- `fastforecaster2/ff2_sweep_e/metrics/simulator_summary.json`
+- `fastforecaster2/ff2_sweep_f/metrics/simulator_summary.json`
 
-Deployment decision from this batch:
-- keep current live stock meta deployment unchanged for now.
-- continue search with tighter objective constraints (must balance activity floor + low drawdown + non-negative downside profile).
-
-## 25) Live7 Meta Re-Optimization + Deployment (2026-03-05, later)
+## 13) FastForecaster2 Dense-Simulator Frontier Retune (2026-03-06)
 
 Objective:
-- improve current live stock meta selector (same 7 strategy pool) with robust activity constraints.
+- fix the simulator alignment bug found after the first policy retune and keep optimizing for representative production PnL, not sparse-action artifacts.
 
-Key additions:
-- added `--skip-existing` resume support to `unified_hourly_experiment/auto_meta_optimize.py` so interrupted long sweeps can resume without rerunning completed rows.
-- test added: `tests/test_auto_meta_optimize.py::test_run_once_skip_existing_resumes_without_rerunning`.
-- validation: `ruff check ...` and `pytest -q tests/test_auto_meta_optimize.py` passed.
+Issue found:
+- the first dense-frame patch in `fastforecaster2/trainer.py` dropped the `timestamp` column name after `reset_index()`, causing `_build_market_sim_frames()` to fail on `sort_values(["symbol", "timestamp"])`.
+- the earlier positive `ff2_sweep_e` result also relied on a sparser action timeline with zero explicit sell rows, so it was not the right production proxy.
 
-Baseline re-check (exact live-like settings before retune):
-- artifact: `experiments/live_meta_baseline_current_20260305.json`
-- config: `p10`, `sticky`, lookback `10`, switch `0.02`, sit-out threshold `0.0`.
+Code updates:
+- `fastforecaster2/trainer.py`
+  - fixed dense signal-frame construction so `timestamp` survives the forward-fill/reindex path.
+  - kept cross-symbol densification active so inactive symbols still receive held-state updates on the shared timestamp grid.
+- `tests/test_fastforecaster2_sim_metrics.py`
+  - added a regression test to verify dense signal-frame expansion preserves `timestamp` and forward-fills symbol signals correctly.
+
+Validation:
+- `python -m py_compile fastforecaster2/trainer.py fastforecaster2/config.py fastforecaster2/run_training.py`
+- `pytest -q tests/test_fastforecaster2_config.py tests/test_fastforecaster2_sim_metrics.py`
+- Result: `11 passed`
+
+Dense baseline rerun:
+- `fastforecaster2_ff2_sweep_g_densefix_20260306`
+  - W&B: https://wandb.ai/lee101p/stock/runs/o4jk5dpu
+  - config: `buy=3e-5`, `sell=1e-5`, `top_k=2`, `max_intensity=10`, `ema_alpha=0.45`, `max_hold=8`
+  - sim_pnl: `+18.56`
+  - sim_total_return: `+0.19%`
+  - sim_max_drawdown: `0.1821`
+  - sim_smoothness: `0.3695`
+  - sim_trades: `62`
+  - explicit action rows: `36` buys, `14` sells
+
+Checkpoint-only policy sweeps (same checkpoint, denser simulator):
+- broad low-threshold region (`buy=2e-5`, `sell=0`) remained decisively bad: roughly `-780` to `-990` PnL on the completed trials.
+- narrow frontier sweep artifact:
+  - `fastforecaster2/policy_sweep_20260306_densefix_narrow/results.json`
+- best completed narrow dense points:
+  - `b3p0e-05_s1p5e-05_k2_ema0p55_h6_mi8`: `sim_pnl=+15.22`, `max_drawdown=0.1486`, `smoothness=0.4221`
+  - `b3p0e-05_s1p0e-05_k2_ema0p45_h8_mi8`: `sim_pnl=+14.34`, `max_drawdown=0.1486`, `smoothness=0.4228`
+- follow-up frontier artifacts:
+  - `fastforecaster2/policy_followup_20260306/results.json`
+  - `fastforecaster2/policy_followup2_20260306/results.json`
+- key finding:
+  - `top_k=1` works better than `top_k=3` under the dense simulator.
+  - stronger sell hysteresis (`sell=1.5e-5`) is better than `sell=1e-5` in the `top_k=1`, `ema=0.55` regime.
+
+Promoted dense-frontier W&B runs:
+- `fastforecaster2_ff2_sweep_h_densefrontier_20260306`
+  - W&B: https://wandb.ai/lee101p/stock/runs/zmf4qhtt
+  - config: `buy=3e-5`, `sell=1.5e-5`, `top_k=1`, `max_intensity=8`, `ema_alpha=0.55`, `max_hold=6`
+  - sim_pnl: `+25.44`
+  - sim_total_return: `+0.25%`
+  - sim_max_drawdown: `0.1498`
+  - sim_smoothness: `0.4111`
+  - sim_trades: `57`
+  - explicit action rows: `33` buys, `14` sells
+- `fastforecaster2_ff2_sweep_i_densefrontier_20260306`
+  - W&B: https://wandb.ai/lee101p/stock/runs/t2j62086
+  - config: `buy=3e-5`, `sell=1.5e-5`, `top_k=1`, `max_intensity=12`, `ema_alpha=0.55`, `max_hold=6`
+  - sim_pnl: `+41.00`
+  - sim_total_return: `+0.41%`
+  - sim_max_drawdown: `0.2158`
+  - sim_smoothness: `0.3174`
+  - sim_trades: `57`
+  - explicit action rows: `33` buys, `14` sells
+
+Current interpretation:
+- best headline PnL on the older sparse simulator is still `+42.98` from `fastforecaster2_ff2_sweep_e_20260305`, but that run is not the best production proxy because it had no explicit sell rows in the generated action file.
+- best representative dense-simulator PnL so far is now `+41.00` from `fastforecaster2_ff2_sweep_i_densefrontier_20260306`.
+- best dense-simulator low-risk point so far is `+25.44` from `fastforecaster2_ff2_sweep_h_densefrontier_20260306`.
+
+## 14) FastForecaster2 Policy Sweep Tool + Frontier Breakout (2026-03-06 later)
+
+Objective:
+- stop doing one-off checkpoint replay snippets and make simulator-policy search reproducible inside the repo, then use it to push the dense-simulator frontier higher.
+
+Code updates:
+- `fastforecaster2/policy_sweep.py`
+  - new checkpoint-only simulator sweep entrypoint.
+  - loads a saved `best.pt`, rebuilds the trainer/data bundle once, and sweeps:
+    - `market_sim_buy_threshold`
+    - `market_sim_sell_threshold`
+    - `market_sim_top_k`
+    - `market_sim_signal_ema_alpha`
+    - `market_sim_max_hold_hours`
+    - `market_sim_max_trade_intensity`
+    - `market_sim_min_trade_intensity`
+  - writes per-trial simulator artifacts plus aggregate results.
+  - optionally logs each trial to W&B through `wandboard.py`.
+- `tests/test_fastforecaster2_policy_sweep.py`
+  - added grid-validation coverage and stable trial-name coverage.
+- `fastforecaster2/README.md`
+  - documented the checkpoint-only policy sweep workflow.
+
+Validation:
+- `python -m py_compile fastforecaster2/policy_sweep.py fastforecaster2/trainer.py fastforecaster2/run_training.py`
+- `pytest -q tests/test_fastforecaster2_policy_sweep.py tests/test_fastforecaster2_config.py tests/test_fastforecaster2_sim_metrics.py`
+- Result: `13 passed`
+
+Focused dense frontier sweep:
+- command shape:
+  - `python -m fastforecaster2.policy_sweep --checkpoint-path fastforecaster2/ff2_sweep_i_densefrontier/checkpoints/best.pt --buy-thresholds 3e-5 --sell-thresholds 1.4e-5,1.5e-5,1.6e-5 --top-ks 1 --ema-alphas 0.55 --max-hold-hours-values 6 --max-trade-intensities 9,10,11,12,13 --wandb-project stock --wandb-group fastforecaster2_policy_frontier_20260306`
+- partial aggregate artifact from completed trials:
+  - `fastforecaster2/policy_frontier_search/policy_sweep_20260306_012537/results_partial.json`
+  - `fastforecaster2/policy_frontier_search/policy_sweep_20260306_012537/best_policy.json`
+
+Sweep findings:
+- `sell=1.4e-5` dominated `sell=1.5e-5` and `sell=1.6e-5` in the `top_k=1`, `ema=0.55`, `max_hold=6` regime.
+- best completed checkpoint-only sweep rows:
+  - `b3p0e-05_s1p4e-05_k1_ema0p55_h6_maxi13_mini4`
+    - W&B: https://wandb.ai/lee101p/stock/runs/qms6k8ss
+    - sim_pnl: `+80.88`
+    - sim_total_return: `+0.81%`
+    - sim_max_drawdown: `0.2298`
+    - sim_smoothness: `0.3098`
+    - sim_trades: `56`
+  - `b3p0e-05_s1p4e-05_k1_ema0p55_h6_maxi9_mini4`
+    - W&B: https://wandb.ai/lee101p/stock/runs/ypydbhiy
+    - sim_pnl: `+54.76`
+    - sim_total_return: `+0.55%`
+    - sim_max_drawdown: `0.1656`
+    - sim_smoothness: `0.3940`
+    - sim_trades: `56`
+- monotonic pattern observed on the best branch:
+  - `max_intensity=9`: `+54.76`
+  - `10`: `+61.20`
+  - `11`: `+67.70`
+  - `12`: `+74.26`
+  - `13`: `+80.88`
+
+Promoted full training runs:
+- `fastforecaster2_ff2_sweep_j_densefrontier_20260306`
+  - W&B: https://wandb.ai/lee101p/stock/runs/0ps79vu5
+  - config: `buy=3e-5`, `sell=1.4e-5`, `top_k=1`, `max_intensity=13`, `ema_alpha=0.55`, `max_hold=6`
+  - best_val_mae: `1.71904`
+  - test_mae: `1.68184`
+  - sim_pnl: `+80.88`
+  - sim_total_return: `+0.81%`
+  - sim_max_drawdown: `0.2298`
+  - sim_smoothness: `0.3098`
+  - sim_trades: `56`
+  - explicit action rows: `33` buys, `14` sells
+- `fastforecaster2_ff2_sweep_k_densefrontier_20260306`
+  - W&B: https://wandb.ai/lee101p/stock/runs/xzn8wvet
+  - config: `buy=3e-5`, `sell=1.4e-5`, `top_k=1`, `max_intensity=9`, `ema_alpha=0.55`, `max_hold=6`
+  - best_val_mae: `1.71904`
+  - test_mae: `1.68184`
+  - sim_pnl: `+54.76`
+  - sim_total_return: `+0.55%`
+  - sim_max_drawdown: `0.1656`
+  - sim_smoothness: `0.3940`
+  - sim_trades: `56`
+  - explicit action rows: `33` buys, `14` sells
+
+Current bests:
+- best representative dense-simulator PnL so far: `+80.88` from `fastforecaster2_ff2_sweep_j_densefrontier_20260306`
+- best representative dense-simulator lower-drawdown point so far: `+54.76` from `fastforecaster2_ff2_sweep_k_densefrontier_20260306`
+
+## 15) FastForecaster2 Frontier Refinement + Naming Fix (2026-03-06 late)
+
+Objective:
+- keep pushing the dense-simulator frontier while tightening the search around the proven `top_k=1`, `ema=0.55`, `max_hold=6` branch.
+
+Issue found and fixed:
+- `fastforecaster2/policy_sweep.py` originally formatted float-valued thresholds with too little precision in `_trial_name(...)`.
+- this caused nearby values such as `1.35e-5` and `1.4e-5` to collapse to the same path/run label during dense frontier search.
+
+Code updates:
+- `fastforecaster2/policy_sweep.py`
+  - increased float precision in trial-name formatting so nearby threshold values generate unique artifact directories and W&B run names.
+- `tests/test_fastforecaster2_policy_sweep.py`
+  - added a regression test to ensure close threshold values no longer collide.
+
+Validation:
+- `pytest -q tests/test_fastforecaster2_policy_sweep.py tests/test_fastforecaster2_config.py tests/test_fastforecaster2_sim_metrics.py`
+- Result: `14 passed`
+
+Refined dense frontier sweep:
+- command shape:
+  - `python -m fastforecaster2.policy_sweep --checkpoint-path fastforecaster2/ff2_sweep_j_densefrontier/checkpoints/best.pt --buy-thresholds 3e-5,3.05e-5,3.1e-5 --sell-thresholds 1.35e-5,1.4e-5,1.45e-5 --top-ks 1 --ema-alphas 0.55 --max-hold-hours-values 6 --max-trade-intensities 12,13,14,15`
+- partial aggregate artifacts:
+  - `fastforecaster2/policy_frontier_search3/policy_sweep_20260306_020115/results_partial.json`
+  - `fastforecaster2/policy_frontier_search3/policy_sweep_20260306_020115/best_policy.json`
+
+Key sweep findings:
+- `sell=1.4e-5` remained the best band.
+- `sell=1.45e-5` was consistently second-best.
+- `sell=1.35e-5` and higher buy thresholds (`3.05e-5`, `3.1e-5`) were materially worse.
+- completed top rows from the refined frontier:
+  - `b3e-05_s1p4e-05_k1_ema0p55_h6_maxi15_mini4`
+    - W&B: https://wandb.ai/lee101p/stock/runs/3m1sllg9
+    - sim_pnl: `+94.28`
+    - sim_total_return: `+0.94%`
+    - sim_max_drawdown: `0.2599`
+    - sim_smoothness: `0.2795`
+    - sim_trades: `56`
+  - `b3e-05_s1p4e-05_k1_ema0p55_h6_maxi14_mini4`
+    - W&B: https://wandb.ai/lee101p/stock/runs/j62e12of
+    - sim_pnl: `+87.56`
+    - sim_total_return: `+0.88%`
+    - sim_max_drawdown: `0.2450`
+    - sim_smoothness: `0.2939`
+    - sim_trades: `56`
+
+Promoted full training run:
+- `fastforecaster2_ff2_sweep_l_densefrontier_20260306`
+  - W&B: https://wandb.ai/lee101p/stock/runs/8mj18h3l
+  - config: `buy=3e-5`, `sell=1.4e-5`, `top_k=1`, `max_intensity=15`, `ema_alpha=0.55`, `max_hold=6`
+  - best_val_mae: `1.71904`
+  - test_mae: `1.68184`
+  - sim_pnl: `+94.28`
+  - sim_total_return: `+0.94%`
+  - sim_max_drawdown: `0.2599`
+  - sim_smoothness: `0.2795`
+  - sim_sortino: `0.5654`
+  - sim_trades: `56`
+  - explicit action rows: `33` buys, `14` sells
+
+Current bests:
+- best representative dense-simulator PnL so far: `+94.28` from `fastforecaster2_ff2_sweep_l_densefrontier_20260306`
+- best representative dense-simulator lower-drawdown point still: `+54.76` from `fastforecaster2_ff2_sweep_k_densefrontier_20260306`
+
+## 16) FastForecaster2 Switch-Gap Test + Higher-Intensity Frontier (2026-03-06 latest)
+
+Objective:
+- test whether a more active portfolio-decision layer could beat the sticky hold-until-sell policy, then continue the best dense frontier if switching proved unnecessary.
+
+Code updates:
+- `fastforecaster2/config.py`
+  - added `market_sim_switch_score_gap`
+- `fastforecaster2/run_training.py`
+  - exposed `--market-sim-switch-score-gap`
+- `fastforecaster2/trainer.py`
+  - planner now supports optional challenger-over-held replacement when the challenger’s `smoothed_score` exceeds the weakest held symbol by a configurable margin.
+- `fastforecaster2/policy_sweep.py`
+  - added `--switch-score-gaps` so switch-margin sweeps are reproducible.
+- `tests/test_fastforecaster2_sim_metrics.py`
+  - added planner regression coverage for sticky-vs-switch behavior.
+- `tests/test_fastforecaster2_config.py`
+  - added negative-gap validation.
+
+Validation:
+- `pytest -q tests/test_fastforecaster2_policy_sweep.py tests/test_fastforecaster2_config.py tests/test_fastforecaster2_sim_metrics.py`
+- Result: `16 passed`
+
+Switch-gap experiment:
+- checkpoint sweep against `fastforecaster2/ff2_sweep_l_densefrontier/checkpoints/best.pt`
+- tested `switch_score_gap` values: `0`, `5e-5`, `1e-4`, `2e-4` on the best existing branch (`buy=3e-5`, `sell=1.4e-5`, `top_k=1`, `ema=0.55`, `hold=6`, `max_intensity=13`)
 - result:
-  - `min_sortino=-0.627`
-  - `mean_return_pct=-0.08`
+  - baseline sticky policy (`sgap=0`) remained best at `+80.88`
+  - positive switch margins were harmful:
+    - `sgap=5e-5`: `sim_pnl=-64.03`, `sim_active_signal_rows=211`
+    - `sgap=1e-4`: `sim_pnl=-68.36`, `sim_active_signal_rows=205`
+    - `sgap=2e-4`: `sim_pnl=-26.84`, `sim_active_signal_rows=191`
+- interpretation:
+  - on this smoke setup, challenger-driven switching adds churn faster than it adds edge.
+  - the best branch remains the sticky `top_k=1` policy with `switch_score_gap=0`.
 
-Sweep A (selector/halflife grid, strict sit-out 0.0):
-- artifact dir: `experiments/meta_live7_selector_halflife_opt2_20260305`
-- search over `winner/winner_cash/sticky`, switch margins, min score gaps, recency halflife.
-- finding:
-  - best raw rows had positive metrics but `min_num_buys=1` (rejected by activity filter).
-  - best eligible row still negative (`min_sortino=-0.240`, `mean_return_pct=-0.049`).
+Higher-intensity continuation on the best branch:
+- checkpoint sweep artifacts:
+  - `fastforecaster2/policy_intensity_search/policy_sweep_20260306_022136/results.json`
+  - `fastforecaster2/policy_intensity_search2/policy_sweep_20260306_022228/results.json`
+- completed results:
+  - `max_intensity=16`
+    - W&B: https://wandb.ai/lee101p/stock/runs/cpvl12db
+    - sim_pnl: `+101.06`
+    - sim_max_drawdown: `0.2745`
+    - sim_smoothness: `0.2664`
+  - `max_intensity=17`
+    - W&B: https://wandb.ai/lee101p/stock/runs/v7rola6q
+    - sim_pnl: `+107.88`
+    - sim_max_drawdown: `0.2888`
+    - sim_smoothness: `0.2543`
+  - `max_intensity=18`
+    - W&B: https://wandb.ai/lee101p/stock/runs/xm549n1a
+    - sim_pnl: `+114.75`
+    - sim_max_drawdown: `0.3027`
+    - sim_smoothness: `0.2432`
+  - `max_intensity=19`
+    - W&B: https://wandb.ai/lee101p/stock/runs/h1jx0b6s
+    - sim_pnl: `+121.66`
+    - sim_max_drawdown: `0.3164`
+    - sim_smoothness: `0.2330`
+  - `max_intensity=20`
+    - W&B: https://wandb.ai/lee101p/stock/runs/dphgpy0h
+    - sim_pnl: `+128.61`
+    - sim_max_drawdown: `0.3298`
+    - sim_smoothness: `0.2235`
+- the branch remains monotonic in PnL through `max_intensity=20`, with trade count unchanged at `56`.
 
-Sweep B (threshold-relax follow-up, activity-preserving):
-- artifact dir: `experiments/meta_live7_threshold_relax_opt3_20260305`
-- focused search:
-  - metric `p10`
-  - lookbacks `7,10,14`
-  - modes `sticky,winner`
-  - switch margins `0.0,0.005`
-  - thresholds `-0.001,-0.0005,0.0`
-  - `min_num_buys=2`
-- best eligible config:
-  - `metric=p10`
-  - `selection_mode=sticky`
-  - `lookback_days=14`
-  - `switch_margin=0.005`
-  - `sit_out_threshold=-0.001`
-  - `min_score_gap=0.0` (0.002 tied)
-  - `min_num_buys=11`
-  - `mean_num_buys=17.33`
-  - `min_sortino=1.4992`
-  - `mean_sortino=2.1576`
-  - `min_return_pct=0.7656`
-  - `mean_return_pct=1.2286`
-  - `mean_max_drawdown_pct=0.6445`
+Promoted full training run:
+- `fastforecaster2_ff2_sweep_m_densefrontier_20260306`
+  - W&B: https://wandb.ai/lee101p/stock/runs/vmh6d7g8
+  - config: `buy=3e-5`, `sell=1.4e-5`, `top_k=1`, `max_intensity=20`, `ema_alpha=0.55`, `max_hold=6`, `switch_score_gap=0`
+  - best_val_mae: `1.71904`
+  - test_mae: `1.68184`
+  - sim_pnl: `+128.61`
+  - sim_total_return: `+1.29%`
+  - sim_max_drawdown: `0.3298`
+  - sim_smoothness: `0.2235`
+  - sim_sortino: `0.7755`
+  - sim_trades: `56`
+  - explicit action rows: `33` buys, `14` sells
 
-Deployment:
-- updated live supervisor program `unified-stock-trader` in:
-  - `/etc/supervisor/conf.d/unified-stock-trader.conf`
-- restarted via:
-  - `sudo supervisorctl reread`
-  - `sudo supervisorctl update`
-  - `sudo supervisorctl restart unified-stock-trader`
-- running command now confirmed with:
-  - `--meta-lookback-days 14`
-  - `--meta-switch-margin 0.005`
-  - `--sit-out-threshold -0.001`
-  - `--meta-recency-halflife-days 0.0`
+Current bests:
+- best representative dense-simulator PnL so far: `+128.61` from `fastforecaster2_ff2_sweep_m_densefrontier_20260306`
+- best representative dense-simulator lower-drawdown point still: `+54.76` from `fastforecaster2_ff2_sweep_k_densefrontier_20260306`
 
-Runtime confirmation:
-- process `trade_unified_hourly_meta.py` is RUNNING with updated args.
-- startup log shows:
-  - `Meta selector: metric=p10 lookback=14d mode=sticky switch_margin=0.0050 ... threshold=-0.001`
+## 17) FastForecaster2 Entry-Score Gate Rejection + Intensity Frontier Extension (2026-03-06 latest)
 
-## 26) Continued Autonomous Optimization (2026-03-05, later)
+Objective:
+- test whether an explicit `smoothed_score` gate could improve the realism-adjusted dense simulator by filtering weaker entries, then continue the only branch that was still improving if the gate failed.
 
-### A) Meta refine sweep around deployed winner
-
-Run:
-- `experiments/meta_live7_opt4_refine_20260305`
-- grid refined around deployed params:
-  - `lookback_days={14,16}`
-  - `min_edge={0.001,0.0012}`
-  - `sit_out_threshold={-0.001,-0.00075}`
-  - `switch_margin={0.005,0.008}`
-  - `min_score_gap={0.0,0.002}`
-  - `short_intensity_multiplier={1.5,1.75}`
-
-Result:
-- top eligible configs matched current deployed objective envelope.
-- no strictly better robust row than deployed config.
-- deployment decision: **no meta selector change**.
-
-### B) Chronos2 MAE-focused tuning (no-cohort, gated updates)
-
-Exploratory run with cohort coupling was rejected (degraded major symbols) and rolled back.
-
-Production candidate run:
-- output: `experiments/hyperparam_chronos_hourly_live7_mae_nocohort_q1_20260305.json`
-- command profile:
-  - `--quick --holdout-hours 336 --objective pct_return_mae --cohort-size 0`
-  - symbols: `NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT`
-
-Best candidates from this run:
-- `NVDA` pct MAE `0.0071747` (`ctx=1024`, `skip=[1]`, `single`)
-- `PLTR` pct MAE `0.0104819` (`ctx=2048`, `skip=[1]`, `single`)
-- `GOOG` pct MAE `0.0014194` (`ctx=2048`, `skip=[1]`, `single`)
-- `DBX` pct MAE `0.0041540` (`ctx=2048`, `skip=[1]`, `single`)
-- `TRIP` pct MAE `0.0186901` (`ctx=1024`, `skip=[1]`, `single`)
-- `MTCH` pct MAE `0.0098741` (`ctx=1024`, `skip=[1,2,3]`, `median`)
-- `NYT` pct MAE `0.0031492` (`ctx=2048`, `skip=[1,2,3]`, `median`)
-
-Fair-gate A/B (same 336h holdout):
-- artifact: `experiments/hyperparam_chronos_hourly_live7_mae_nocohort_q1_gate_20260305.json`
-- evaluated current live hyperparams on same holdout, then only accepted per-symbol improvements.
-- improved symbols accepted:
-  - `PLTR` (`0.017931 -> 0.010482`)
-  - `DBX` (`0.006669 -> 0.004154`)
-  - `TRIP` (`0.019764 -> 0.018690`)
-  - `MTCH` (`0.012935 -> 0.009874`)
-- unchanged (no improvement):
-  - `GOOG` (`0.001419` tied)
-  - `NYT` (`0.003149` tied)
-
-Model-aware NVDA guardrail:
-- artifact: `experiments/nvda_modelid_ab_20260305.json`
-- direct A/B using production-style Chronos loading:
-  - `old_finetuned` (`chronos2_finetuned/NVDA_lora_20260203_092111/finetuned-ckpt`): `pct_return_mae=0.006251`
-  - `new_base_candidate` (`amazon/chronos-2`): `pct_return_mae=0.007175`
-- decision: keep NVDA finetuned config (reverted candidate model-id change).
-
-Files updated (live Chronos hyperparams):
-- `hyperparams/chronos2/hourly/PLTR.json`
-- `hyperparams/chronos2/hourly/DBX.json`
-- `hyperparams/chronos2/hourly/TRIP.json`
-- `hyperparams/chronos2/hourly/MTCH.json`
-
-### C) Runtime rollout
-
-Applied on remote production host:
-- restarted:
-  - `stock-cache-refresh`
-  - `unified-stock-trader`
-- both confirmed `RUNNING` post-update.
-- live meta command remained:
-  - `p10`, `sticky`, `lookback=14`, `switch_margin=0.005`, `sit_out_threshold=-0.001`.
-
-## 27) Model-ID Safety Fix + Meta Re-Optimization Round (2026-03-05, latest)
-
-### A) Chronos tuner safeguard against accidental LoRA rollback
-
-Issue:
-- `hyperparam_chronos_hourly.py` always wrote `config.model_id = "amazon/chronos-2"` during `--save-hyperparams`.
-- This can silently overwrite stronger per-symbol finetuned model IDs (e.g., NVDA).
-
-Fixes:
-- added `DEFAULT_CHRONOS_MODEL_ID`.
-- tuner now accepts:
-  - `--model-id`
-  - `--preserve-existing-model-id` (default on)
-  - `--no-preserve-existing-model-id`
-- new `_resolve_output_model_id(symbol)` preserves existing per-symbol `config.model_id` when present.
-- persisted metadata now includes `model_id_source` (`existing_hyperparams` vs `tuner_default`).
+Code updates:
+- `fastforecaster2/config.py`
+  - added `market_sim_entry_score_threshold`
+- `fastforecaster2/run_training.py`
+  - exposed `--market-sim-entry-score-threshold`
+- `fastforecaster2/trainer.py`
+  - new entries now require both `smoothed_return >= buy_threshold` and `smoothed_score >= entry_score_threshold`
+- `fastforecaster2/policy_sweep.py`
+  - added `--entry-score-thresholds` so score-gate sweeps are reproducible
+- `tests/test_fastforecaster2_config.py`
+  - added negative-threshold validation
+- `tests/test_fastforecaster2_sim_metrics.py`
+  - added planner regression coverage confirming low-score symbols are filtered from new entries
+- `tests/test_fastforecaster2_policy_sweep.py`
+  - updated sweep-spec coverage for the new parameter
+- `fastforecaster2/README.md`
+  - documented the new simulator control and the current frontier interpretation
 
 Validation:
-- tests added:
-  - `tests/test_hyperparam_chronos_hourly_save.py`
-- targeted pytest:
-  - `pytest -q tests/test_hyperparam_chronos_hourly_objective.py tests/test_hyperparam_chronos_hourly_save.py`
-  - result: `3 passed`.
+- `python -m py_compile fastforecaster2/policy_sweep.py fastforecaster2/trainer.py fastforecaster2/run_training.py fastforecaster2/config.py`
+- `pytest -q tests/test_fastforecaster2_policy_sweep.py tests/test_fastforecaster2_config.py tests/test_fastforecaster2_sim_metrics.py`
+- Result: `18 passed`
 
-### B) Stock meta re-optimization (`opt5b`) on remote 5090
+Entry-score sweep:
+- checkpoint sweep against `fastforecaster2/ff2_sweep_m_densefrontier/checkpoints/best.pt`
+- artifacts:
+  - `fastforecaster2/policy_entryscore_search/policy_sweep_20260306_022930/results.json`
+  - `fastforecaster2/policy_entryscore_search/policy_sweep_20260306_022930/best_policy.json`
+- tested:
+  - `entry_score_threshold`: `0`, `0.0012`, `0.0013`, `0.0014`, `0.0015`, `0.0016`, `0.0018`
+  - `max_intensity`: `20`, `22`, `24`
+- result:
+  - `0` and `0.0012` were identical because historical entry scores were already above `0.0012`
+  - any real gate (`0.0013+`) was harmful
+  - representative failures:
+    - `es=0.0013`, `maxi=24`: `sim_pnl=+72.31`, `sim_trades=49`
+    - `es=0.0014`, `maxi=24`: `sim_pnl=+38.82`, `sim_trades=51`
+    - `es=0.0015`, `maxi=24`: `sim_pnl=-27.94`, `sim_trades=45`
+    - `es=0.0016`, `maxi=24`: `sim_pnl=-237.28`, `sim_trades=42`
+    - `es=0.0018`, `maxi=24`: `sim_pnl=-10.46`, `sim_trades=30`
+- interpretation:
+  - on this smoke setup, weak-looking entries are still net-positive contributors
+  - adding a score gate reduces churn, but it removes too much profitable exposure
+  - the correct frontier decision is `entry_score_threshold=0`
 
-Host:
-- `administrator@93.127.141.100`
-- repo: `/nvme0n1-disk/code/stock-prediction`
+Intensity extension on the winning no-gate branch:
+- checkpoint sweep artifacts:
+  - `fastforecaster2/policy_intensity_search3/policy_sweep_20260306_023333/results.json`
+  - `fastforecaster2/policy_intensity_search3/policy_sweep_20260306_023333/best_policy.json`
+- completed results:
+  - `max_intensity=26`
+    - W&B: https://wandb.ai/lee101p/stock/runs/ikk9zcu5
+    - sim_pnl: `+171.11`
+    - sim_total_return: `+1.71%`
+    - sim_max_drawdown: `0.4045`
+    - sim_smoothness: `0.1780`
+    - sim_sortino: `1.0560`
+  - `max_intensity=28`
+    - W&B: https://wandb.ai/lee101p/stock/runs/4sayyhlm
+    - sim_pnl: `+185.53`
+    - sim_total_return: `+1.86%`
+    - sim_max_drawdown: `0.4273`
+    - sim_smoothness: `0.1661`
+    - sim_sortino: `1.1579`
+  - `max_intensity=30`
+    - W&B: https://wandb.ai/lee101p/stock/runs/vb73nhzp
+    - sim_pnl: `+200.06`
+    - sim_total_return: `+2.00%`
+    - sim_max_drawdown: `0.4492`
+    - sim_smoothness: `0.1553`
+    - sim_sortino: `1.2649`
+  - `max_intensity=32`
+    - W&B: https://wandb.ai/lee101p/stock/runs/883kgaxb
+    - sim_pnl: `+214.68`
+    - sim_total_return: `+2.15%`
+    - sim_max_drawdown: `0.4702`
+    - sim_smoothness: `0.1455`
+    - sim_sortino: `1.3774`
 
-Runs (efficient in-process sweeps):
-- `experiments/meta_live7_opt5b_threshold_m001_20260306.json`
-  - threshold `-0.001`
-  - best:
-    - `metric=p10`, `mode=sticky`, `lookback=14`, `switch_margin=0.005`, `min_score_gap=0.0`
-    - `min_sortino=1.3605`, `mean_sortino=2.4832`
-    - `min_return=+0.2183%`, `mean_return=+0.4960%`
-    - `mean_max_drawdown=0.5432%`
-    - `min_num_buys=7`
-- `experiments/meta_live7_opt5b_threshold_m0015_20260306.json`
-  - threshold `-0.0015`
-  - best:
-    - `metric=p10`, `mode=sticky`, `lookback=18`, `switch_margin=0.005`, `min_score_gap=0.0`
-    - `min_sortino=1.5185`, `mean_sortino=1.6829`
-    - `min_return=+0.3304%`, `mean_return=+0.3372%`
-    - `mean_max_drawdown=0.4395%`
-    - `min_num_buys=5`
+Promoted full training run:
+- `fastforecaster2_ff2_sweep_n_densefrontier_20260306`
+  - W&B: https://wandb.ai/lee101p/stock/runs/z54dh6o3
+  - config: `buy=3e-5`, `sell=1.4e-5`, `entry_score_threshold=0`, `top_k=1`, `max_intensity=32`, `ema_alpha=0.55`, `max_hold=6`, `switch_score_gap=0`
+  - best_val_mae: `1.71904`
+  - test_mae: `1.68184`
+  - sim_pnl: `+214.68`
+  - sim_total_return: `+2.15%`
+  - sim_max_drawdown: `0.4702`
+  - sim_smoothness: `0.1455`
+  - sim_sortino: `1.3774`
+  - sim_trades: `56`
+  - explicit action rows remain unchanged in count from the prior branch; the gain came from sizing, not more entries
 
-### C) Head-to-head gate before deployment (holdout 14/21/28)
-
-Current deploy-equivalent:
-- artifact: `experiments/meta_live7_h2h_current_20260306.json`
-- config: `sticky`, `lookback=14`, `switch_margin=0.005`, `threshold=-0.001`
-- summary:
-  - `min_sortino=1.3605`, `mean_sortino=2.568`
-  - `min_return=+0.2183%`, `mean_return=+0.59%`
-  - `mean_max_drawdown=0.5432%`
-
-Candidate:
-- artifact: `experiments/meta_live7_h2h_candidate_20260306.json`
-- config: `sticky`, `lookback=18`, `switch_margin=0.005`, `threshold=-0.0015`
-- summary:
-  - `min_sortino=1.183`, `mean_sortino=1.516`
-  - `min_return=+0.33%`, `mean_return=+0.34%`
-  - `mean_max_drawdown=0.44%`
-
-Decision:
-- candidate is not a strict dominance upgrade (improves drawdown/min return but degrades Sortino profile on 14/21/28 gate).
-- keep live deployment unchanged.
-
-Current live remains:
-- `p10`, `sticky`, `lookback=14`, `switch_margin=0.005`, `sit_out_threshold=-0.001`.
-
-## 28) Autonomous Meta Cycle: Negative-Threshold Fix + Direct Robust Sweep (2026-03-05 UTC)
-
-### A) Orchestrator bugfix (root cause)
-Issue discovered during remote optimization:
-- `auto_meta_optimize.py` forwarded multi-threshold args as:
-  - `--sit-out-thresholds`, `-0.0015,-0.001,...`
-- when thresholds are negative, argparse treated the value as another flag and aborted.
-
-Fix:
-- changed subprocess arg emission to a single token:
-  - `--sit-out-thresholds=-0.0015,-0.001,...`
-- updated tests:
-  - `tests/test_auto_meta_optimize.py`
-  - added regression `test_run_once_passes_negative_thresholds_as_single_arg`.
-- local validation:
-  - `pytest -q tests/test_auto_meta_optimize.py tests/test_sweep_meta_portfolio_thresholds.py`
-  - result: `10 passed`.
-
-### B) Remote direct robust sweep (efficient two-edge run)
-Host/repo:
-- `administrator@93.127.141.100`
-- `/nvme0n1-disk/code/stock-prediction`
-
-Artifacts:
-- `experiments/meta_live7_opt7_direct_20260305_163549/meta_edge0p0008.json`
-- `experiments/meta_live7_opt7_direct_20260305_163549/meta_edge0p001.json`
-
-Sweep space:
-- strategies: `wd04,wd06,wd05,wd08,wd03,robb,robc`
-- symbols: `NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT`
-- metric: `p10`
-- modes: `sticky,winner_cash`
-- switch margins: `0.004,0.005`
-- recency halflife: `0.0,1.0,2.0`
-- lookbacks: `14,16,18`
-- sit-out thresholds: `-0.0012,-0.001,-0.0008`
-- holdouts: `14,21,28`
-- edges: `0.0008` and `0.001`
-- realism controls matched deploy (`market-order-entry`, `bar_margin=0.0005`, `decision_lag=1`, `max_hold=5`, `max_positions=5`).
-
-Ranking gate:
-- applied `min_num_buys >= 6` on summary rows.
-
-Result:
-- total rows: `216`
-- eligible rows (`min_num_buys>=6`): `186`
-- best eligible row:
-  - `edge=0.0008`
-  - `selection_mode=sticky`
-  - `switch_margin=0.005`
-  - `lookback=14`
-  - `sit_out_threshold=-0.001`
-  - `min_sortino=1.3605`
-  - `mean_sortino=2.5680`
-  - `min_return_pct=0.2183`
-  - `mean_return_pct=0.5858`
-  - `mean_max_drawdown_pct=0.5427`
-  - `min_num_buys=7`
-
-Head-to-head with current live-equivalent row at `edge=0.001`:
-- metrics are identical across all ranking fields and activity counts.
-
-Deployment decision:
-- **no change** (keep current live meta config unchanged).
-- current robust regime remains:
-  - `p10`, `sticky`, `lookback=14`, `switch_margin=0.005`, `sit_out_threshold=-0.001`.
-
-## 29) Outside-the-Box: Weighted p10/Median Meta Scoring + Recency Re-Test (2026-03-05 UTC)
-
-### A) Selector algorithm upgrade
-Observation:
-- `recency_halflife_days` had no effect when `metric=p10` or `metric=median` because quantiles ignored sample weights.
-
-Upgrade:
-- `unified_hourly_experiment/meta_selector.py`
-  - `score_trailing_returns(..., sample_weights=...)` now uses weighted quantiles for:
-    - `p10` (weighted 10th percentile)
-    - `median` (weighted 50th percentile)
-- added helper implementation for stable weighted percentile interpolation.
-
-Tests added/updated:
-- `tests/test_meta_selector.py`
-  - weighted quantile shift test for `p10`/`median`
-  - recency-halflife winner-change test specifically under `metric=p10`
-- validation run:
-  - `pytest -q tests/test_meta_selector.py tests/test_meta_live_runtime.py tests/test_auto_meta_optimize.py tests/test_sweep_meta_portfolio_thresholds.py`
-  - result: `28 passed`
-
-### B) Remote focused weighted-p10 sweep
-Host/repo:
-- `administrator@93.127.141.100`
-- `/nvme0n1-disk/code/stock-prediction`
-
-Artifact:
-- `experiments/meta_live7_opt8_weightedp10_20260305_170106.json`
-
-Sweep config:
-- metric: `p10`
-- mode: `sticky`
-- switch margin: `0.005`
-- min score gap: `0.0`
-- recency halflife: `0.0,0.5,1.0,2.0`
-- lookbacks: `14,16,18`
-- sit-out thresholds: `-0.001,-0.0008`
-- edge: `0.001`
-- holdouts: `14,21,28`
-- activity gate applied in analysis: `min_num_buys >= 6`
-
-Results:
-- raw best remained sparse-trade artifact:
-  - `lookback=16`, `threshold=-0.0008`, `recency_halflife=null`
-  - `min_sortino=2.0936`, `min_num_buys=1` (rejected)
-- best eligible row (activity-gated):
-  - unchanged live-equivalent config:
-    - `lookback=14`, `threshold=-0.001`, `recency_halflife=null`
-    - `min_sortino=1.3605`, `mean_sortino=2.5680`
-    - `min_return=+0.2183%`, `mean_return=+0.5858%`
-    - `mean_max_drawdown=0.5427%`, `min_num_buys=7`
-- weighted recency candidates (`hl=0.5/1.0/2.0`) underperformed and often turned downside-negative in this regime.
-
-Deployment decision:
-- **no change**.
-- keep live config unchanged:
-  - `p10`, `sticky`, `lookback=14`, `switch_margin=0.005`, `sit_out_threshold=-0.001`.
+Current bests:
+- best representative dense-simulator PnL so far: `+214.68` from `fastforecaster2_ff2_sweep_n_densefrontier_20260306`
+- best promoted full-training run is now `fastforecaster2_ff2_sweep_n_densefrontier_20260306` at `+214.68`
+- best representative dense-simulator lower-drawdown point still: `+54.76` from `fastforecaster2_ff2_sweep_k_densefrontier_20260306`

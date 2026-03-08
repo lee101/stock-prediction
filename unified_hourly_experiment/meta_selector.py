@@ -19,9 +19,6 @@ SUPPORTED_META_METRICS = (
     "median",
 )
 
-_RATIO_DENOM_FLOOR = 1e-6
-_RATIO_SCORE_CLIP = 50.0
-
 
 def daily_returns_from_equity(equity_curve: pd.Series) -> pd.Series:
     """Convert an intraday equity curve into close-to-close daily returns."""
@@ -83,11 +80,7 @@ def score_trailing_returns(
             score = _weighted_percentile(arr, weights, 10.0)
         elif name == "median":
             score = _weighted_percentile(arr, weights, 50.0)
-    if name in {"return", "p10", "median"}:
-        return float(np.nan_to_num(score, nan=0.0, posinf=0.0, neginf=0.0))
-    if not np.isfinite(score):
-        return float(np.sign(score) * _RATIO_SCORE_CLIP) if score != 0 else 0.0
-    return float(np.clip(score, -_RATIO_SCORE_CLIP, _RATIO_SCORE_CLIP))
+    return score
 
 
 def select_daily_winners(
@@ -399,15 +392,10 @@ def _max_drawdown_from_returns(returns: np.ndarray) -> float:
 
 
 def _safe_ratio(numerator: float, denominator: float) -> float:
-    num = float(numerator)
-    den = abs(float(denominator))
-    if not np.isfinite(num):
-        return float(np.sign(num) * _RATIO_SCORE_CLIP) if num != 0 else 0.0
-    if not np.isfinite(den):
-        den = _RATIO_DENOM_FLOOR
-    den = max(den, _RATIO_DENOM_FLOOR)
-    raw = num / den
-    if not np.isfinite(raw):
-        return float(np.sign(raw) * _RATIO_SCORE_CLIP) if raw != 0 else 0.0
-    compressed = float(np.sign(raw) * np.log1p(abs(raw)))
-    return float(np.clip(compressed, -_RATIO_SCORE_CLIP, _RATIO_SCORE_CLIP))
+    if denominator <= 1e-12:
+        if numerator > 0:
+            return float("inf")
+        if numerator < 0:
+            return float("-inf")
+        return 0.0
+    return float(numerator / denominator)

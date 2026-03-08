@@ -23,6 +23,7 @@ from binanceneural.config import DatasetConfig
 from binanceneural.data import BinanceHourlyDataModule
 from binanceneural.inference import generate_actions_from_frame, generate_latest_action
 from src.hourly_trader_utils import entry_intensity_fraction
+from src.trade_directions import DEFAULT_ALPACA_LIVE8_STOCKS
 from unified_hourly_experiment.marketsimulator import PortfolioConfig, run_portfolio_simulation
 from unified_hourly_experiment.meta_live_runtime import choose_latest_winner, compute_symbol_edge
 from unified_hourly_experiment.meta_selector import daily_returns_from_equity
@@ -210,12 +211,6 @@ def simulate_symbol_daily_returns(
         decision_lag_bars=int(args.decision_lag_bars),
         market_order_entry=bool(args.market_order_entry),
         bar_margin=float(args.bar_margin),
-        trade_amount_scale=float(getattr(args, "trade_amount_scale", 100.0)),
-        entry_intensity_power=float(getattr(args, "entry_intensity_power", 1.0)),
-        entry_min_intensity_fraction=float(getattr(args, "entry_min_intensity_fraction", 0.0)),
-        long_intensity_multiplier=float(getattr(args, "long_intensity_multiplier", 1.0)),
-        short_intensity_multiplier=float(getattr(args, "short_intensity_multiplier", 1.0)),
-        min_buy_amount=float(getattr(args, "min_buy_amount", 0.0)),
         entry_order_ttl_hours=int(args.entry_order_ttl_hours),
         max_leverage=float(args.leverage),
         force_close_slippage=float(args.force_close_slippage),
@@ -262,6 +257,13 @@ def collect_daily_returns(
                 logger.warning("{} {}: empty daily return history", strategy.name, symbol)
                 continue
             daily_returns[strategy.name][symbol] = returns
+            live.log_event(
+                "meta_daily_returns_computed",
+                strategy=strategy.name,
+                symbol=symbol,
+                observations=int(len(returns)),
+                latest_return=float(returns.iloc[-1]) if len(returns) else 0.0,
+            )
 
     return daily_returns
 
@@ -282,6 +284,7 @@ def select_meta_winners(
         if not available:
             logger.info("{}: no usable strategies this cycle", symbol)
             winners[symbol] = None
+            live.log_event("meta_winner_selected", symbol=symbol, winner=None, reason="no_usable_strategies")
             continue
 
         returns_for_symbol = {name: daily_returns[name][symbol] for name in available}
@@ -310,6 +313,13 @@ def select_meta_winners(
             ),
         )
         winners[symbol] = winner
+        live.log_event(
+            "meta_winner_selected",
+            symbol=symbol,
+            winner=winner,
+            available_strategies=available,
+            fallback_strategy=fallback,
+        )
 
     return winners
 
@@ -330,11 +340,13 @@ def build_meta_signals(
         winner = winners_by_symbol.get(symbol)
         if winner is None:
             logger.info("{}: winner=CASH (sit-out)", symbol)
+            live.log_event("meta_signal_skipped", symbol=symbol, reason="winner_cash")
             continue
 
         strategy = strategies_by_name.get(winner)
         if strategy is None:
             logger.warning("{}: winner {} not found in loaded strategies", symbol, winner)
+            live.log_event("meta_signal_skipped", symbol=symbol, reason="winner_not_loaded", winner=winner)
             continue
 
         action = load_symbol_latest_action(
@@ -346,6 +358,7 @@ def build_meta_signals(
             history_days=int(args.meta_history_days),
         )
         if action is None:
+            live.log_event("meta_signal_skipped", symbol=symbol, reason="latest_action_missing", winner=winner)
             continue
 
         edge = compute_symbol_edge(
@@ -356,6 +369,14 @@ def build_meta_signals(
         )
         if edge < float(args.min_edge):
             logger.info("{}: winner={} edge={:.4f} below {:.4f}", symbol, winner, edge, args.min_edge)
+            live.log_event(
+                "meta_signal_skipped",
+                symbol=symbol,
+                winner=winner,
+                reason="edge_below_threshold",
+                edge=float(edge),
+                min_edge=float(args.min_edge),
+            )
             continue
 
         action["edge"] = float(edge)
@@ -385,6 +406,17 @@ def build_meta_signals(
             float(action.get("hold_hours", args.max_hold_hours)),
             intensity,
         )
+        live.log_event(
+            "meta_signal_ready",
+            symbol=symbol,
+            winner=winner,
+            side=side,
+            edge=float(edge),
+            buy_price=float(action.get("buy_price", 0.0)),
+            sell_price=float(action.get("sell_price", 0.0)),
+            hold_hours=float(action.get("hold_hours", args.max_hold_hours)),
+            intensity=float(intensity),
+        )
 
     return signals
 
@@ -401,6 +433,14 @@ def run_cycle(
 ) -> None:
     active_set = set(symbols)
     market_open = live.is_market_open_now() or args.ignore_market_hours
+    live.log_event(
+        "meta_cycle_start",
+        symbols=sorted(str(symbol) for symbol in symbols),
+        market_open=bool(market_open),
+        dry_run=bool(args.dry_run),
+        reselect_frequency=args.meta_reselect_frequency,
+        selection_cache_day=str(selection_cache.selection_day) if selection_cache.selection_day is not None else None,
+    )
 
     if api is not None:
         num_pos = live.manage_positions(
@@ -435,9 +475,19 @@ def run_cycle(
         )
         selection_cache.selection_day = today_utc
         selection_cache.winners = winners
+        live.log_event(
+            "meta_winner_cache_refreshed",
+            selection_day=str(today_utc),
+            winners=winners,
+        )
     else:
         winners = dict(selection_cache.winners or {})
         logger.info("Using cached meta winners from {}", selection_cache.selection_day)
+        live.log_event(
+            "meta_winner_cache_used",
+            selection_day=str(selection_cache.selection_day),
+            winners=winners,
+        )
 
     signals = build_meta_signals(
         strategies=strategies,
@@ -449,12 +499,23 @@ def run_cycle(
 
     if market_open and not args.dry_run and signals:
         live.execute_trades(api, signals, state, max_positions=int(args.max_positions))
+        execution_mode = "live_execute"
     elif not market_open and signals:
         logger.info("Market closed - {} signals ready, will trade when open", len(signals))
+        execution_mode = "market_closed"
     elif not signals:
         logger.info("No meta signals above threshold")
+        execution_mode = "no_signals"
+    else:
+        execution_mode = "dry_run"
 
     live.save_state(state)
+    live.log_event(
+        "meta_cycle_complete",
+        execution_mode=execution_mode,
+        winners=winners,
+        signal_symbols=sorted(str(symbol) for symbol in signals.keys()),
+    )
 
 
 def main() -> None:
@@ -465,7 +526,7 @@ def main() -> None:
         required=True,
         help="Meta strategy spec NAME=PATH or NAME=PATH:EPOCH (repeatable).",
     )
-    parser.add_argument("--stock-symbols", default="NVDA,PLTR,GOOG,DBX,TRIP,MTCH")
+    parser.add_argument("--stock-symbols", default=",".join(DEFAULT_ALPACA_LIVE8_STOCKS))
     parser.add_argument("--stock-data-root", type=Path, default=Path("trainingdatahourly/stocks"))
     parser.add_argument("--stock-cache-root", type=Path, default=Path("unified_hourly_experiment/forecast_cache"))
     parser.add_argument("--dry-run", action="store_true")
@@ -606,6 +667,16 @@ def main() -> None:
     )
     logger.info("Selector sim market-order-entry: {}", bool(args.market_order_entry))
     logger.info("Mode: {}", "DRY-RUN" if args.dry_run else ("LIVE" if not paper else "PAPER"))
+    live.log_event(
+        "meta_trader_started",
+        strategies=names,
+        symbols=stocks,
+        paper=bool(paper),
+        dry_run=bool(args.dry_run),
+        loop=bool(args.loop),
+        meta_metric=args.meta_metric,
+        meta_lookback_days=int(args.meta_lookback_days),
+    )
 
     if api is not None:
         account = live.get_account_info(api)

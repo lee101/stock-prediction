@@ -52,6 +52,11 @@ def watcher_config_path(symbol: str, side: str, mode: str, *, suffix: Optional[s
     return WATCHERS_DIR / f"{base_name}.json"
 
 
+def watcher_log_paths(config_path: Path) -> tuple[Path, Path]:
+    stem = config_path.with_suffix("")
+    return stem.with_suffix(".stdout.log"), stem.with_suffix(".stderr.log")
+
+
 def _load_metadata(path: Path) -> Optional[dict]:
     if not path.exists():
         return None
@@ -124,20 +129,16 @@ def _float_eq(a: float, b: float, tol: float = 1e-8) -> bool:
     return abs(float(a) - float(b)) <= tol
 
 
-def _float_rel_eq(a: float, b: float, rel_tol: float, abs_tol: float = 1e-8) -> bool:
-    af = float(a)
-    bf = float(b)
-    scale = max(abs(af), abs(bf), 1.0)
-    tol = max(abs_tol, rel_tol * scale)
-    return abs(af - bf) <= tol
-
-
-def _float_qty_eq(a: float, b: float, rel_tol: float, abs_tol: float = 1e-8) -> bool:
-    af = float(a)
-    bf = float(b)
-    scale = max(abs(af), abs(bf), abs_tol)
-    tol = max(abs_tol, rel_tol * scale)
-    return abs(af - bf) <= tol
+def _price_within_tolerance(existing_price: object, new_price: float, tolerance: float) -> bool:
+    try:
+        existing = float(existing_price)
+        proposed = float(new_price)
+    except (TypeError, ValueError):
+        return False
+    if tolerance <= 0:
+        return _float_eq(existing, proposed)
+    baseline = max(abs(existing), abs(proposed), 1e-12)
+    return abs(existing - proposed) / baseline <= float(tolerance)
 
 
 def _matches_plan(metadata: dict, plan: WatcherPlan) -> bool:
@@ -151,7 +152,7 @@ def _matches_plan(metadata: dict, plan: WatcherPlan) -> bool:
         return False
     if metadata.get("mode") != plan.mode:
         return False
-    if bool(metadata.get("margin", False)) != bool(plan.margin):
+    if not _price_within_tolerance(metadata.get("limit_price", -1.0), plan.limit_price, plan.price_tolerance):
         return False
     metadata_side_effect = str(metadata.get("side_effect_type", "NO_SIDE_EFFECT") or "NO_SIDE_EFFECT")
     if metadata_side_effect != str(plan.side_effect_type or "NO_SIDE_EFFECT"):
@@ -185,23 +186,16 @@ def spawn_watcher(plan: WatcherPlan) -> Optional[Path]:
     active_paths: list[Path] = []
     for path in WATCHERS_DIR.glob(pattern):
         metadata = _load_metadata(path)
-        if not metadata or not metadata.get("active"):
-            continue
-        if _matches_plan(metadata, plan):
-            logger.debug("Watcher already active for {} {} {} via {}", plan.symbol, plan.side, plan.mode, path.name)
+        if metadata and _matches_plan(metadata, plan):
+            logger.debug("Watcher already active for %s %s %s", plan.symbol, plan.side, plan.mode)
             return path
-        active_paths.append(path)
 
-    for path in active_paths:
+    for path in WATCHERS_DIR.glob(pattern):
         if path == config_path:
             continue
         stop_existing_watcher(path, reason="superseded")
 
     existing = _load_metadata(config_path)
-    if existing and _matches_plan(existing, plan):
-        logger.debug("Watcher already active for {} {} {}", plan.symbol, plan.side, plan.mode)
-        return config_path
-
     if existing:
         stop_existing_watcher(config_path, reason="refresh")
 
@@ -209,6 +203,7 @@ def spawn_watcher(plan: WatcherPlan) -> Optional[Path]:
     expiry_minutes = max(1, int(plan.expiry_minutes))
     expiry_at = started_at + timedelta(minutes=expiry_minutes)
     binance_symbol = binance_remap_symbols(plan.symbol)
+    stdout_log_path, stderr_log_path = watcher_log_paths(config_path)
 
     metadata = {
         "config_version": 1,
@@ -229,6 +224,8 @@ def spawn_watcher(plan: WatcherPlan) -> Optional[Path]:
         "dry_run": bool(plan.dry_run),
         "margin": bool(plan.margin),
         "side_effect_type": plan.side_effect_type,
+        "stdout_log_path": str(stdout_log_path),
+        "stderr_log_path": str(stderr_log_path),
     }
     _persist_metadata(config_path, metadata)
 
@@ -262,13 +259,15 @@ def spawn_watcher(plan: WatcherPlan) -> Optional[Path]:
 
     logger.info("Launching Binance watcher: {}", " ".join(command))
     try:
-        process = subprocess.Popen(
-            command,
-            env=os.environ.copy(),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        stdout_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with stdout_log_path.open("ab") as stdout_handle, stderr_log_path.open("ab") as stderr_handle:
+            process = subprocess.Popen(
+                command,
+                env=os.environ.copy(),
+                stdout=stdout_handle,
+                stderr=stderr_handle,
+                start_new_session=True,
+            )
     except Exception as exc:
         metadata["state"] = "launch_failed"
         metadata["active"] = False
@@ -297,4 +296,11 @@ def cancel_entry_watchers(*, exclude_symbol: Optional[str] = None) -> None:
         stop_existing_watcher(path, reason="symbol_switched")
 
 
-__all__ = ["WatcherPlan", "spawn_watcher", "stop_existing_watcher", "watcher_config_path", "cancel_entry_watchers"]
+__all__ = [
+    "WatcherPlan",
+    "spawn_watcher",
+    "stop_existing_watcher",
+    "watcher_config_path",
+    "watcher_log_paths",
+    "cancel_entry_watchers",
+]
