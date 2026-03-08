@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from src.chronos2_params import resolve_chronos2_params
+from src.data_loading_utils import read_csv_tail
 
 try:  # pragma: no cover - optional heavy dependency
     from src.models.chronos2_wrapper import Chronos2OHLCWrapper, Chronos2PredictionBatch
@@ -72,17 +73,28 @@ def _write_cache(cache_root: Path, horizon: int, symbol: str, frame: pd.DataFram
     frame.sort_values("timestamp").reset_index(drop=True).to_parquet(path, index=False)
 
 
-def _load_history(data_root: Path, symbol: str) -> pd.DataFrame:
+def _load_history(data_root: Path, symbol: str, *, max_history_hours: int | None = None) -> pd.DataFrame:
     path = Path(data_root) / f"{symbol.upper()}.csv"
     if not path.exists():
         raise FileNotFoundError(f"Missing hourly dataset {path}")
-    frame = pd.read_csv(path)
+    if max_history_hours is not None and int(max_history_hours) > 0:
+        max_rows = int(max_history_hours)
+        frame = read_csv_tail(
+            path,
+            max_rows=max_rows,
+            chunksize=200_000,
+            low_memory=False,
+        )
+    else:
+        frame = pd.read_csv(path, low_memory=False)
     frame.columns = [col.lower() for col in frame.columns]
     frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce")
     frame = frame.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
     if "symbol" not in frame.columns:
         frame["symbol"] = symbol.upper()
     frame["symbol"] = frame["symbol"].astype(str).str.upper()
+    if max_history_hours is not None and int(max_history_hours) > 0 and len(frame) > int(max_history_hours):
+        frame = frame.iloc[-int(max_history_hours) :].reset_index(drop=True)
     return frame[["timestamp", "symbol", "open", "high", "low", "close", "volume"]]
 
 
@@ -275,6 +287,7 @@ def build_joint_forecast_cache(
     horizons: Sequence[int],
     context_hours: int,
     batch_size: int = 128,
+    max_history_hours: int | None = None,
     use_cross_learning: bool = True,
     use_time_covariates: bool = False,
     force_rebuild: bool = False,
@@ -285,7 +298,10 @@ def build_joint_forecast_cache(
     if not horizons:
         raise ValueError("At least one horizon is required.")
 
-    histories = {symbol: _load_history(Path(data_root), symbol) for symbol in cleaned_symbols}
+    histories = {
+        symbol: _load_history(Path(data_root), symbol, max_history_hours=max_history_hours)
+        for symbol in cleaned_symbols
+    }
     wrapper = _build_wrapper(
         anchor_symbol=cleaned_symbols[0],
         context_hours=int(context_hours),

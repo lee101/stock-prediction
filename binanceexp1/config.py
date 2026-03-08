@@ -14,6 +14,7 @@ class DatasetConfig:
     sequence_length: int = 96
     val_fraction: float = 0.15
     min_history_hours: int = 24 * 30
+    max_history_hours: Optional[int] = None
     max_feature_lookback_hours: int = 24 * 100
     feature_columns: Optional[Sequence[str]] = None
     refresh_hours: int = 0

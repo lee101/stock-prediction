@@ -84,6 +84,7 @@ def _load_symbol_data(
     forecast_horizons: Sequence[int],
     cache_only: bool,
     validation_days: Optional[float] = None,
+    max_history_hours: Optional[int] = None,
 ) -> BinanceExp1DataModule:
     config = DatasetConfig(
         symbol=symbol,
@@ -93,6 +94,7 @@ def _load_symbol_data(
         forecast_horizons=tuple(int(h) for h in forecast_horizons),
         cache_only=cache_only,
         validation_days=validation_days if validation_days is not None else DatasetConfig().validation_days,
+        max_history_hours=max_history_hours,
     )
     return BinanceExp1DataModule(config)
 
@@ -120,6 +122,12 @@ def main() -> None:
         type=float,
         default=None,
         help="Override validation window length in days (e.g., 10 for a 10-day sim).",
+    )
+    parser.add_argument(
+        "--max-history-hours",
+        type=int,
+        default=None,
+        help="Optional cap on recent history used for data loading and Chronos cache generation.",
     )
     parser.add_argument("--default-intensity", type=float, default=1.0)
     parser.add_argument("--default-offset", type=float, default=0.0)
@@ -246,6 +254,7 @@ def main() -> None:
             sequence_length=args.sequence_length,
             forecast_horizons=forecast_horizons,
             cache_only=args.cache_only,
+            max_history_hours=args.max_history_hours,
         )
         if args.validation_days is not None:
             data_cfg_kwargs["validation_days"] = float(args.validation_days)

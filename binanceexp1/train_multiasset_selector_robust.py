@@ -236,6 +236,12 @@ def _resolve_preload(
     return symbol_paths[0] if symbol_paths else None
 
 
+def _optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    return int(value)
+
+
 def train_one_run(
     *,
     symbol: str,
@@ -275,6 +281,7 @@ def train_one_run(
             forecast_horizons=tuple(args.forecast_horizons),
             sequence_length=int(config.get("sequence_length", args.sequence_length)),
             validation_days=float(config.get("validation_days", args.validation_days)),
+            max_history_hours=_optional_int(config.get("max_history_hours", args.max_history_hours)),
             cache_only=bool(args.cache_only),
         )
     )
@@ -392,6 +399,8 @@ def build_search_command(
         "--output-dir",
         str(output_dir),
     ]
+    if args.max_history_hours is not None:
+        cmd.extend(["--max-history-hours", str(int(args.max_history_hours))])
     if args.cache_only:
         cmd.append("--cache-only")
     if args.realistic_selection:
@@ -426,6 +435,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--forecast-cache-root", type=Path, default=Path(DatasetConfig().forecast_cache_root))
     parser.add_argument("--forecast-horizons", default="1,24")
     parser.add_argument("--validation-days", type=float, default=30.0)
+    parser.add_argument("--max-history-hours", type=int, default=None)
     parser.add_argument("--sequence-length", type=int, default=96)
     parser.add_argument("--epochs", type=int, default=12)
     parser.add_argument("--batch-size", type=int, default=16)

@@ -122,6 +122,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-root", default=str(DatasetConfig().data_root))
     parser.add_argument("--forecast-cache-root", default=str(DatasetConfig().forecast_cache_root))
     parser.add_argument("--validation-days", type=float, default=float(DatasetConfig().validation_days))
+    parser.add_argument("--max-history-hours", type=int, default=None)
     parser.add_argument("--cache-only", action="store_true")
     parser.add_argument("--device", default=None)
     parser.add_argument("--window-hours", default="336")
@@ -185,6 +186,7 @@ def main() -> None:
                 forecast_horizons=forecast_horizons,
                 cache_only=bool(args.cache_only),
                 validation_days=float(args.validation_days),
+                max_history_hours=int(args.max_history_hours) if args.max_history_hours is not None else None,
             )
         )
         frame = data.val_dataset.frame.copy()
