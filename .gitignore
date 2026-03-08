@@ -642,3 +642,46 @@ experiments/shortable_full_auto/run_*
 .venv313torch/
 .uvcache/
 hftraining/models/
+
+# Deployment artifacts (checkpoints + configs for live bots)
+deployments/
+
+# Experiment result directories and files
+experiments/*/
+experiments/**/*.json
+experiments/**/*.md
+experiments/**/*.txt
+
+# Binance leverage sweep/search result JSONs
+binanceleveragesui/meta_*.json
+binanceleveragesui/doge_*.json
+binanceleveragesui/btc_*.json
+binanceleveragesui/mw_results_*.json
+binanceleveragesui/r5_*.json
+binanceleveragesui/*_epoch_*.json
+
+# Strategy config outputs
+preaugstrategies/best/
+
+# Progress/tracking docs
+currentlyrunning.md
+Binanceprogress3.md
+*progress*.md
+!alpacaprogress.md
+!binanceprogress2.md
+
+# Separate projects
+TimingBot/
+
+# Fastalgorithms artifacts
+fastalgorithms/*/artifacts/
+
+# Preaug sweep reports
+preaug_sweeps/
+
+# Misc stray files
+/1
+*.bak
+
+# Native sim build artifacts
+unified_hourly_experiment/marketsimulator/native/
