@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -156,6 +157,11 @@ def build_env_overrides(config: ChronosFeatureConfig) -> dict[str, str]:
     return env
 
 
+def _sanitize_run_prefix(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value).strip())
+    return cleaned.strip("._") or "chronos_feature_sweep"
+
+
 def build_train_command(
     *,
     args: argparse.Namespace,
@@ -164,6 +170,7 @@ def build_train_command(
     forecast_cache_root: Path,
     cache_only: bool,
 ) -> list[str]:
+    run_prefix = _sanitize_run_prefix(f"{args.run_prefix}_{feature_experiment_name}")
     cmd = [
         sys.executable,
         "-m",
@@ -229,8 +236,8 @@ def build_train_command(
         cmd.extend(["--batch-size", str(int(args.batch_size))])
     if args.learning_rate is not None:
         cmd.extend(["--learning-rate", str(float(args.learning_rate))])
-    if args.run_prefix:
-        cmd.extend(["--run-prefix", str(args.run_prefix)])
+    if run_prefix:
+        cmd.extend(["--run-prefix", run_prefix])
     return cmd
 
 
