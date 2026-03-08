@@ -105,3 +105,83 @@ def test_chronos_sol_data_module_windows_forecasts_when_max_history_days_set(
     assert calls["end"] == expected_end
     assert calls["start"] == expected_start
     assert pd.to_datetime(module.full_frame["timestamp"], utc=True).min() > expected_start
+
+
+def test_chronos_sol_data_module_propagates_directional_constraints(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import binancechronossolexperiment.data as data_mod
+    from binancechronossolexperiment.data import ChronosSolDataModule, SplitConfig
+
+    symbol = "TEST"
+    timestamps = pd.date_range("2026-01-01", periods=120, freq="h", tz="UTC")
+    _write_hourly_history_csv(tmp_path / f"{symbol}.csv", symbol, timestamps)
+
+    def _fake_build_feature_frame(frame: pd.DataFrame, *, horizons, max_lookback: int) -> pd.DataFrame:
+        work = frame.copy()
+        work["reference_close"] = work["close"]
+        return work
+
+    def _fake_build_forecast_bundle(
+        *,
+        symbol: str,
+        data_root: Path,
+        cache_root: Path,
+        horizons,
+        context_hours: int,
+        quantile_levels,
+        batch_size: int,
+        model_id: str,
+        device_map: str = "cuda",
+        preaugmentation_dirs=None,
+        cache_only: bool = False,
+        start: pd.Timestamp | None = None,
+        end: pd.Timestamp | None = None,
+        wrapper_factory=None,
+    ) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "timestamp": timestamps,
+                "symbol": symbol,
+                "predicted_close_p50_h1": 100.0,
+                "predicted_high_p50_h1": 101.0,
+                "predicted_low_p50_h1": 99.0,
+            }
+        )
+
+    monkeypatch.setattr(data_mod, "build_feature_frame", _fake_build_feature_frame)
+    monkeypatch.setattr(data_mod, "build_forecast_bundle", _fake_build_forecast_bundle)
+
+    module = ChronosSolDataModule(
+        symbol=symbol,
+        data_root=tmp_path,
+        forecast_cache_root=tmp_path / "cache",
+        forecast_horizons=(1,),
+        context_hours=16,
+        quantile_levels=(0.1, 0.5, 0.9),
+        batch_size=8,
+        model_id="dummy",
+        sequence_length=4,
+        split_config=SplitConfig(val_days=1, test_days=1),
+        min_history_hours=5,
+        feature_columns=(
+            "close",
+            "predicted_close_p50_h1",
+            "predicted_high_p50_h1",
+            "predicted_low_p50_h1",
+        ),
+        cache_only=True,
+        can_long=0.0,
+        can_short=1.0,
+    )
+
+    assert module.train_dataset._can_long == 0.0
+    assert module.train_dataset._can_short == 1.0
+    assert module.val_dataset._can_long == 0.0
+    assert module.val_dataset._can_short == 1.0
+    assert module.test_dataset._can_long == 0.0
+    assert module.test_dataset._can_short == 1.0
+    sample = module.train_dataset[0]
+    assert float(sample["can_long"].item()) == 0.0
+    assert float(sample["can_short"].item()) == 1.0

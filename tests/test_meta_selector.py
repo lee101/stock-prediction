@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -251,6 +252,19 @@ def test_score_trailing_returns_weighted_percentiles_shift_toward_weighted_sampl
 
     assert p10_weighted > p10_unweighted
     assert med_weighted > med_unweighted
+
+
+@pytest.mark.parametrize("metric", ["sharpe", "sortino", "calmar", "omega", "gain_pain"])
+def test_score_trailing_returns_ratio_metrics_remain_finite_without_observed_risk(metric: str) -> None:
+    conservative = [0.001, 0.001, 0.001]
+    stronger = [0.01, 0.01, 0.01]
+
+    conservative_score = score_trailing_returns(conservative, metric)
+    stronger_score = score_trailing_returns(stronger, metric)
+
+    assert np.isfinite(conservative_score)
+    assert np.isfinite(stronger_score)
+    assert stronger_score > conservative_score > 0.0
 
 
 def test_select_daily_winners_recency_halflife_changes_winner() -> None:

@@ -11,7 +11,13 @@ from newnanoalpacahourlyexp.trade_alpaca_hourly import (
     _parse_horizon_map,
     _parse_symbols,
 )
-from src.hourly_trader_utils import TradingPlan, build_order_intents, ensure_valid_levels
+from src.hourly_trader_utils import (
+    TradingPlan,
+    build_order_intents,
+    directional_entry_amount,
+    entry_intensity_fraction,
+    ensure_valid_levels,
+)
 
 
 def test_parse_symbols_default():
@@ -48,6 +54,78 @@ def test_ensure_valid_levels_rejects_nonpositive():
 def test_ensure_valid_levels_enforces_gap():
     buy, sell = ensure_valid_levels(100.0, 99.0, min_gap_pct=0.01)
     assert sell > buy
+
+
+def test_directional_entry_amount_uses_sell_amount_for_short():
+    action = {
+        "buy_amount": 0.01,
+        "sell_amount": 42.0,
+        "trade_amount": 42.0,
+    }
+    assert directional_entry_amount(action, is_short=True) == pytest.approx(42.0)
+
+
+def test_directional_entry_amount_uses_buy_amount_for_long():
+    action = {
+        "buy_amount": 37.5,
+        "sell_amount": 2.0,
+        "trade_amount": 37.5,
+    }
+    assert directional_entry_amount(action, is_short=False) == pytest.approx(37.5)
+
+
+def test_directional_entry_amount_respects_explicit_zero_sell_amount_for_short():
+    action = {
+        "buy_amount": 25.0,
+        "sell_amount": 0.0,
+        "trade_amount": 25.0,
+    }
+    assert directional_entry_amount(action, is_short=True) == pytest.approx(0.0)
+
+
+def test_directional_entry_amount_respects_explicit_zero_buy_amount_for_long():
+    action = {
+        "buy_amount": 0.0,
+        "sell_amount": 25.0,
+        "trade_amount": 25.0,
+    }
+    assert directional_entry_amount(action, is_short=False) == pytest.approx(0.0)
+
+
+def test_entry_intensity_fraction_namedtuple_source():
+    class Row:
+        buy_amount = 0.1
+        sell_amount = 25.0
+        trade_amount = 25.0
+
+    amount, intensity = entry_intensity_fraction(Row(), is_short=True, trade_amount_scale=100.0)
+    assert amount == pytest.approx(25.0)
+    assert intensity == pytest.approx(0.25)
+
+
+def test_entry_intensity_fraction_power_boosts_small_signal():
+    action = {"buy_amount": 25.0, "sell_amount": 0.0, "trade_amount": 25.0}
+    amount, intensity = entry_intensity_fraction(
+        action,
+        is_short=False,
+        trade_amount_scale=100.0,
+        intensity_power=0.5,
+    )
+    assert amount == pytest.approx(25.0)
+    assert intensity == pytest.approx(0.5)
+
+
+def test_entry_intensity_fraction_applies_floor_and_multiplier():
+    action = {"buy_amount": 2.0, "sell_amount": 0.0, "trade_amount": 2.0}
+    amount, intensity = entry_intensity_fraction(
+        action,
+        is_short=False,
+        trade_amount_scale=100.0,
+        min_intensity_fraction=0.10,
+        side_multiplier=2.0,
+    )
+    assert amount == pytest.approx(2.0)
+    assert intensity == pytest.approx(0.10)
 
 
 def test_allocation_usd_prefers_fixed():
