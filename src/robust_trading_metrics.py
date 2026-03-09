@@ -51,6 +51,11 @@ def compute_pnl_smoothness(returns: Iterable[float] | np.ndarray) -> float:
     return float(np.std(np.diff(rets)))
 
 
+def compute_pnl_smoothness_score(pnl_smoothness: float) -> float:
+    smoothness = max(float(pnl_smoothness), 0.0)
+    return float(1.0 / (1.0 + 250.0 * smoothness))
+
+
 def compute_pnl_smoothness_from_equity(equity_curve: Iterable[float] | np.ndarray) -> float:
     return compute_pnl_smoothness(compute_return_series(equity_curve))
 
@@ -86,7 +91,8 @@ def compute_market_sim_goodness_score(
     max_drawdown: float,
     pnl_smoothness: float,
     ulcer_index: float = 0.0,
-    trade_rate: float = 0.0,
+    trade_rate: float | None = None,
+    trade_count: float | int | None = None,
     period_count: int | float | None = None,
     min_period_count: int = 24,
 ) -> float:
@@ -95,7 +101,18 @@ def compute_market_sim_goodness_score(
     if period_count is not None and min_period_count > 0:
         coverage = min(max(float(period_count), 1.0) / float(min_period_count), 1.0)
 
-    smoothness_score = 1.0 / (1.0 + 250.0 * max(float(pnl_smoothness), 0.0))
+    if trade_rate is None:
+        if trade_count is None:
+            trade_rate = 0.0
+        else:
+            effective_period_count = period_count if period_count is not None else min_period_count
+            trade_rate = compute_trade_rate(
+                trade_count,
+                effective_period_count,
+                min_period_count=min_period_count,
+            )
+
+    smoothness_score = compute_pnl_smoothness_score(pnl_smoothness)
     raw_score = (
         100.0 * float(total_return)
         + 0.8 * float(sortino)
