@@ -232,6 +232,8 @@ class AlpacaMultiSymbolDataModule:
             symbol_config = DatasetConfig(
                 symbol=symbol,
                 data_root=config.data_root,
+                crypto_data_root=config.crypto_data_root,
+                stock_data_root=config.stock_data_root,
                 forecast_cache_root=config.forecast_cache_root,
                 forecast_horizons=config.forecast_horizons,
                 sequence_length=config.sequence_length,

@@ -11,6 +11,8 @@ from src.symbol_utils import is_crypto_symbol
 class DatasetConfig:
     symbol: str = "BTCUSD"
     data_root: Optional[Path] = None
+    crypto_data_root: Optional[Path] = None
+    stock_data_root: Optional[Path] = None
     forecast_cache_root: Path = Path("binanceneural") / "forecast_cache"
     forecast_horizons: Tuple[int, ...] = (1, 4, 12, 24)
     sequence_length: int = 96
@@ -37,10 +39,21 @@ class DatasetConfig:
     long_only_symbols: Tuple[str, ...] = ()
     short_only_symbols: Tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        if self.data_root is not None:
+            self.data_root = Path(self.data_root)
+        if self.crypto_data_root is not None:
+            self.crypto_data_root = Path(self.crypto_data_root)
+        if self.stock_data_root is not None:
+            self.stock_data_root = Path(self.stock_data_root)
+        self.forecast_cache_root = Path(self.forecast_cache_root)
+
     def resolved_data_root(self) -> Path:
         if self.data_root is not None:
             return Path(self.data_root)
-        return Path("trainingdatahourly/crypto") if is_crypto_symbol(self.symbol) else Path("trainingdatahourly/stocks")
+        if is_crypto_symbol(self.symbol):
+            return self.crypto_data_root or Path("trainingdatahourly/crypto")
+        return self.stock_data_root or Path("trainingdatahourly/stocks")
 
 
 @dataclass
