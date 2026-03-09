@@ -15,6 +15,7 @@ from loguru import logger
 
 from binanceneural.inference import generate_actions_from_frame
 from newnanoalpacahourlyexp.marketsimulator.selector import SelectionConfig, run_best_trade_simulation_merged
+from src.action_frame_cache import load_or_generate_action_frame
 from src.fees import get_fee_for_symbol
 from src.robust_trading_metrics import summarize_scenario_results
 
@@ -121,8 +122,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--forecast-horizons", default="1,24")
     parser.add_argument("--data-root", default=str(DatasetConfig().data_root))
     parser.add_argument("--forecast-cache-root", default=str(DatasetConfig().forecast_cache_root))
+    parser.add_argument("--action-cache-root", default="experiments/binance_action_cache")
     parser.add_argument("--validation-days", type=float, default=float(DatasetConfig().validation_days))
     parser.add_argument("--max-history-hours", type=int, default=None)
+    parser.add_argument("--use-forecast-interactions", action="store_true")
     parser.add_argument("--cache-only", action="store_true")
     parser.add_argument("--device", default=None)
     parser.add_argument("--window-hours", default="336")
@@ -139,6 +142,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--decision-lag-bars", type=int, default=2)
     parser.add_argument("--fill-buffer-bps", type=float, default=20.0)
     parser.add_argument("--max-volume-fraction", type=float, default=0.1)
+    parser.add_argument("--limit-fill-model", default="binary", choices=["binary", "penetration"])
+    parser.add_argument("--touch-fill-fraction", type=float, default=0.0)
     parser.add_argument("--max-concurrent-positions", type=int, default=1)
     parser.add_argument("--sortino-clip", type=float, default=10.0)
     parser.add_argument("--min-trade-count-mean", type=float, default=6.0)
@@ -163,6 +168,7 @@ def main() -> None:
     if not forecast_horizons:
         raise ValueError("At least one forecast horizon is required.")
     device = resolve_device(args.device)
+    action_cache_root = Path(args.action_cache_root)
 
     output_dir = Path(args.output_dir) if args.output_dir else Path("experiments") / datetime.now(UTC).strftime(
         "binance_checkpoint_search_%Y%m%d_%H%M%S"
@@ -184,6 +190,7 @@ def main() -> None:
                 forecast_cache_root=Path(args.forecast_cache_root),
                 sequence_length=int(args.sequence_length),
                 forecast_horizons=forecast_horizons,
+                use_forecast_interactions=bool(args.use_forecast_interactions),
                 cache_only=bool(args.cache_only),
                 validation_days=float(args.validation_days),
                 max_history_hours=int(args.max_history_hours) if args.max_history_hours is not None else None,
@@ -195,16 +202,37 @@ def main() -> None:
         periods_by_symbol[symbol] = 24.0 * 365.0
         manifest["candidates"][symbol] = []
         for candidate in candidates_by_symbol[symbol]:
-            model = load_model(Path(candidate.checkpoint), len(data.feature_columns), int(args.sequence_length))
-            actions = generate_actions_from_frame(
-                model=model,
+            checkpoint_path = Path(candidate.checkpoint)
+
+            def _generate_actions() -> pd.DataFrame:
+                model = load_model(checkpoint_path, len(data.feature_columns), int(args.sequence_length))
+                return generate_actions_from_frame(
+                    model=model,
+                    frame=frame,
+                    feature_columns=data.feature_columns,
+                    normalizer=data.normalizer,
+                    sequence_length=int(args.sequence_length),
+                    horizon=int(args.horizon),
+                    device=device,
+                    require_gpu=device.type == "cuda",
+                )
+
+            actions, cache_hit = load_or_generate_action_frame(
+                cache_root=action_cache_root,
+                symbol=symbol,
+                checkpoint_path=checkpoint_path,
                 frame=frame,
                 feature_columns=data.feature_columns,
                 normalizer=data.normalizer,
                 sequence_length=int(args.sequence_length),
                 horizon=int(args.horizon),
-                device=device,
-                require_gpu=device.type == "cuda",
+                generator=_generate_actions,
+            )
+            logger.info(
+                "Action cache {} for {} {}",
+                "hit" if cache_hit else "miss",
+                symbol,
+                candidate.label,
             )
             intensity = float(intensity_map.get(symbol, args.default_intensity))
             offset = float(offset_map.get(symbol, args.default_offset))
@@ -253,6 +281,8 @@ def main() -> None:
                     select_fillable_only=not bool(args.realistic_selection),
                     fee_by_symbol=fee_by_symbol,
                     periods_per_year_by_symbol=periods_by_symbol,
+                    limit_fill_model=str(args.limit_fill_model),
+                    touch_fill_fraction=float(args.touch_fill_fraction),
                     max_concurrent_positions=int(args.max_concurrent_positions),
                     work_steal_enabled=bool(args.work_steal),
                     work_steal_min_profit_pct=float(args.work_steal_min_profit_pct),
