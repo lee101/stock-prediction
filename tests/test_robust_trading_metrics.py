@@ -6,7 +6,9 @@ from src.robust_trading_metrics import (
     compute_max_drawdown,
     compute_pnl_smoothness,
     compute_pnl_smoothness_from_equity,
+    compute_pnl_smoothness_score,
     compute_return_series,
+    compute_market_sim_goodness_score,
     summarize_lag_results,
     summarize_scenario_results,
 )
@@ -25,6 +27,29 @@ def test_compute_max_drawdown_basic() -> None:
 def test_compute_pnl_smoothness_zero_for_constant_returns() -> None:
     assert compute_pnl_smoothness([0.01, 0.01, 0.01, 0.01]) == pytest.approx(0.0)
     assert compute_pnl_smoothness_from_equity([100.0, 101.0, 102.01, 103.0301]) == pytest.approx(0.0, abs=1e-9)
+    assert compute_pnl_smoothness_score(0.0) == pytest.approx(1.0)
+    assert compute_pnl_smoothness_score(0.01) < 1.0
+
+
+def test_compute_market_sim_goodness_score_accepts_trade_count() -> None:
+    trade_count_score = compute_market_sim_goodness_score(
+        total_return=0.05,
+        sortino=1.2,
+        max_drawdown=0.03,
+        pnl_smoothness=0.002,
+        trade_count=12,
+        period_count=48,
+    )
+    trade_rate_score = compute_market_sim_goodness_score(
+        total_return=0.05,
+        sortino=1.2,
+        max_drawdown=0.03,
+        pnl_smoothness=0.002,
+        trade_rate=12.0 / 48.0,
+        period_count=48,
+    )
+
+    assert trade_count_score == pytest.approx(trade_rate_score)
 
 
 def test_summarize_lag_results_outputs_expected_fields() -> None:
