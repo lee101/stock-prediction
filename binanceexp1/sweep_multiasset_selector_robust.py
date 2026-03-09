@@ -15,6 +15,7 @@ from loguru import logger
 from binanceneural.inference import generate_actions_from_frame
 from binanceneural.model import align_state_dict_input_dim, build_policy, policy_config_from_payload
 from newnanoalpacahourlyexp.marketsimulator.selector import SelectionConfig, run_best_trade_simulation_merged
+from src.action_frame_cache import load_or_generate_action_frame
 from src.fees import get_fee_for_symbol
 from src.robust_trading_metrics import summarize_scenario_results
 from src.torch_load_utils import torch_load_compat
@@ -35,6 +36,8 @@ class SweepConfig:
     decision_lag_bars: int
     fill_buffer_bps: float
     max_volume_fraction: Optional[float]
+    limit_fill_model: str
+    touch_fill_fraction: float
     max_concurrent_positions: int
 
 
@@ -84,6 +87,16 @@ def parse_optional_int_list(value: str) -> list[int | None]:
             values.append(int(token))
     if not values:
         raise ValueError(f"Expected at least one integer/None token, got {value!r}")
+    return values
+
+
+def parse_fill_model_list(value: str) -> list[str]:
+    values = [token.strip().lower() for token in parse_csv_list(value)]
+    if not values:
+        raise ValueError(f"Expected at least one fill model, got {value!r}")
+    invalid = sorted({token for token in values if token not in {"binary", "penetration"}})
+    if invalid:
+        raise ValueError(f"Unsupported fill model(s): {invalid}. Expected 'binary' or 'penetration'.")
     return values
 
 
@@ -207,13 +220,40 @@ def compute_selection_score(
     return score
 
 
+def build_scenario_row(
+    *,
+    config_name: str,
+    period: str,
+    start_state: str,
+    metrics: dict[str, Any],
+    result: Any,
+) -> dict[str, Any]:
+    return {
+        "config_name": str(config_name),
+        "period": str(period),
+        "start_state": str(start_state),
+        "return_pct": float(metrics.get("total_return", 0.0) * 100.0),
+        "annualized_return_pct": float(metrics.get("annualized_return", 0.0) * 100.0),
+        "sortino": float(metrics.get("sortino", 0.0)),
+        "calmar": float(metrics.get("calmar", 0.0)),
+        "max_drawdown_pct": float(abs(metrics.get("max_drawdown", 0.0)) * 100.0),
+        "pnl_smoothness": float(metrics.get("pnl_smoothness", 0.0)),
+        "trade_count": int(round(float(metrics.get("trade_count", len(getattr(result, "trades", [])))))),
+        "work_steal_count": int(round(float(metrics.get("work_steal_count", 0.0)))),
+        "open_symbol": str(getattr(result, "open_symbol", "") or ""),
+        "final_cash": float(getattr(result, "final_cash", 0.0)),
+        "final_inventory": float(getattr(result, "final_inventory", 0.0)),
+    }
+
+
 def build_config_label(cfg: SweepConfig) -> str:
     hold_label = "none" if cfg.max_hold_hours is None else str(int(cfg.max_hold_hours))
     volume_label = "none" if cfg.max_volume_fraction is None else f"{cfg.max_volume_fraction:.3f}".rstrip("0").rstrip(".")
+    touch_label = f"{cfg.touch_fill_fraction:.2f}".rstrip("0").rstrip(".")
     return (
         f"i{cfg.default_intensity:.2f}_o{cfg.default_offset:.4f}_edge{cfg.min_edge:.4f}_rw{cfg.risk_weight:.2f}_"
         f"{cfg.edge_mode}_hold{hold_label}_lag{cfg.decision_lag_bars}_buf{cfg.fill_buffer_bps:.1f}_"
-        f"vol{volume_label}_slots{cfg.max_concurrent_positions}"
+        f"vol{volume_label}_fill{cfg.limit_fill_model}_touch{touch_label}_slots{cfg.max_concurrent_positions}"
     )
 
 
@@ -261,6 +301,8 @@ def build_best_command(
         str(args.data_root),
         "--forecast-cache-root",
         str(args.forecast_cache_root),
+        "--action-cache-root",
+        str(args.action_cache_root),
         "--validation-days",
         str(float(args.validation_days)),
         "--default-intensity",
@@ -277,6 +319,10 @@ def build_best_command(
         str(int(best_cfg.decision_lag_bars)),
         "--fill-buffer-bps",
         str(float(best_cfg.fill_buffer_bps)),
+        "--limit-fill-model",
+        str(best_cfg.limit_fill_model),
+        "--touch-fill-fraction",
+        str(float(best_cfg.touch_fill_fraction)),
         "--max-concurrent-positions",
         str(int(best_cfg.max_concurrent_positions)),
         "--output-dir",
@@ -315,6 +361,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--forecast-horizons", default="1,24")
     parser.add_argument("--data-root", default=str(DatasetConfig().data_root))
     parser.add_argument("--forecast-cache-root", default=str(DatasetConfig().forecast_cache_root))
+    parser.add_argument("--action-cache-root", default="experiments/binance_action_cache")
     parser.add_argument("--cache-only", action="store_true")
     parser.add_argument("--validation-days", type=float, default=float(DatasetConfig().validation_days))
     parser.add_argument("--device", default=None)
@@ -332,6 +379,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--decision-lag-list", default="0,1,2")
     parser.add_argument("--fill-buffer-bps-list", default="0,5,10,15")
     parser.add_argument("--max-volume-fraction-list", default="0.05,0.10,0.20")
+    parser.add_argument("--limit-fill-model-list", default="binary")
+    parser.add_argument("--touch-fill-fraction-list", default="0.0")
     parser.add_argument("--max-concurrent-positions-list", default="1,2")
     parser.add_argument("--sortino-clip", type=float, default=10.0)
     parser.add_argument("--min-trade-count-mean", type=float, default=6.0)
@@ -359,6 +408,7 @@ def main() -> None:
     forecast_horizons = tuple(int(token) for token in parse_csv_list(args.forecast_horizons))
     if not forecast_horizons:
         raise ValueError("At least one forecast horizon is required.")
+    action_cache_root = Path(args.action_cache_root)
 
     base_actions_by_symbol: dict[str, pd.DataFrame] = {}
     bars_by_symbol: dict[str, pd.DataFrame] = {}
@@ -382,17 +432,32 @@ def main() -> None:
         checkpoint_path = Path(checkpoint_map[symbol]).expanduser()
         if not checkpoint_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-        model = load_model(checkpoint_path, len(data.feature_columns), int(args.sequence_length))
-        actions = generate_actions_from_frame(
-            model=model,
+
+        def _generate_actions() -> pd.DataFrame:
+            model = load_model(checkpoint_path, len(data.feature_columns), int(args.sequence_length))
+            return generate_actions_from_frame(
+                model=model,
+                frame=frame,
+                feature_columns=data.feature_columns,
+                normalizer=data.normalizer,
+                sequence_length=int(args.sequence_length),
+                horizon=int(args.horizon),
+                device=device,
+                require_gpu=device.type == "cuda",
+            )
+
+        actions, cache_hit = load_or_generate_action_frame(
+            cache_root=action_cache_root,
+            symbol=symbol,
+            checkpoint_path=checkpoint_path,
             frame=frame,
             feature_columns=data.feature_columns,
             normalizer=data.normalizer,
             sequence_length=int(args.sequence_length),
             horizon=int(args.horizon),
-            device=device,
-            require_gpu=device.type == "cuda",
+            generator=_generate_actions,
         )
+        logger.info("Action cache {} for {}", "hit" if cache_hit else "miss", symbol)
         bars_by_symbol[symbol] = frame
         base_actions_by_symbol[symbol] = actions
         fee_by_symbol[symbol] = float(get_fee_for_symbol(symbol))
@@ -408,6 +473,8 @@ def main() -> None:
     decision_lags = parse_int_list(args.decision_lag_list)
     fill_buffer_bps_values = parse_float_list(args.fill_buffer_bps_list)
     max_volume_fraction_values = parse_optional_float_list(args.max_volume_fraction_list)
+    limit_fill_models = parse_fill_model_list(args.limit_fill_model_list)
+    touch_fill_fraction_values = parse_float_list(args.touch_fill_fraction_list)
     max_concurrent_positions_values = parse_int_list(args.max_concurrent_positions_list)
 
     configs = [
@@ -422,6 +489,8 @@ def main() -> None:
             decision_lags,
             fill_buffer_bps_values,
             max_volume_fraction_values,
+            limit_fill_models,
+            touch_fill_fraction_values,
             max_concurrent_positions_values,
         )
     ]
@@ -485,6 +554,8 @@ def main() -> None:
                     select_fillable_only=not bool(args.realistic_selection),
                     fee_by_symbol=fee_by_symbol,
                     periods_per_year_by_symbol=periods_by_symbol,
+                    limit_fill_model=str(cfg.limit_fill_model),
+                    touch_fill_fraction=float(cfg.touch_fill_fraction),
                     max_concurrent_positions=int(cfg.max_concurrent_positions),
                     work_steal_enabled=bool(args.work_steal),
                     work_steal_min_profit_pct=float(args.work_steal_min_profit_pct),
@@ -495,21 +566,13 @@ def main() -> None:
                 )
                 result = run_best_trade_simulation_merged(window_df, sim_cfg, horizon=int(args.horizon))
                 metrics = result.metrics
-                scenario_row = {
-                    "config_name": build_config_label(cfg),
-                    "period": window_label,
-                    "start_state": start_state,
-                    "return_pct": float(metrics.get("total_return", 0.0) * 100.0),
-                    "sortino": float(metrics.get("sortino", 0.0)),
-                    "calmar": float(metrics.get("calmar", 0.0)),
-                    "max_drawdown_pct": float(abs(metrics.get("max_drawdown", 0.0)) * 100.0),
-                    "pnl_smoothness": float(metrics.get("pnl_smoothness", 0.0)),
-                    "trade_count": int(round(float(metrics.get("trade_count", len(result.trades))))),
-                    "work_steal_count": int(round(float(metrics.get("work_steal_count", 0.0)))),
-                    "open_symbol": result.open_symbol or "",
-                    "final_cash": float(result.final_cash),
-                    "final_inventory": float(result.final_inventory),
-                }
+                scenario_row = build_scenario_row(
+                    config_name=build_config_label(cfg),
+                    period=window_label,
+                    start_state=start_state,
+                    metrics=metrics,
+                    result=result,
+                )
                 config_scenarios.append(scenario_row)
                 scenario_rows.append({**asdict(cfg), **scenario_row})
 

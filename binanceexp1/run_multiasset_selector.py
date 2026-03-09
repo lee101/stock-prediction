@@ -24,6 +24,7 @@ from binanceneural.marketsimulator import (
     run_shared_cash_simulation,
 )
 from binanceneural.model import align_state_dict_input_dim, build_policy, policy_config_from_payload
+from src.action_frame_cache import load_or_generate_action_frame
 
 from .config import DatasetConfig
 from .data import BinanceExp1DataModule
@@ -82,6 +83,7 @@ def _load_symbol_data(
     forecast_cache_root: Path,
     sequence_length: int,
     forecast_horizons: Sequence[int],
+    use_forecast_interactions: bool,
     cache_only: bool,
     validation_days: Optional[float] = None,
     max_history_hours: Optional[int] = None,
@@ -92,6 +94,7 @@ def _load_symbol_data(
         forecast_cache_root=forecast_cache_root,
         sequence_length=sequence_length,
         forecast_horizons=tuple(int(h) for h in forecast_horizons),
+        use_forecast_interactions=bool(use_forecast_interactions),
         cache_only=cache_only,
         validation_days=validation_days if validation_days is not None else DatasetConfig().validation_days,
         max_history_hours=max_history_hours,
@@ -114,8 +117,10 @@ def main() -> None:
     parser.add_argument("--horizon", type=int, default=1)
     parser.add_argument("--sequence-length", type=int, default=96)
     parser.add_argument("--forecast-horizons", default="1,24")
+    parser.add_argument("--use-forecast-interactions", action="store_true")
     parser.add_argument("--data-root", default=str(DatasetConfig().data_root))
     parser.add_argument("--forecast-cache-root", default=str(DatasetConfig().forecast_cache_root))
+    parser.add_argument("--action-cache-root", default="experiments/binance_action_cache")
     parser.add_argument("--cache-only", action="store_true")
     parser.add_argument(
         "--validation-days",
@@ -205,6 +210,18 @@ def main() -> None:
         help="Cap fills to a fraction of each bar's reported volume (base units).",
     )
     parser.add_argument(
+        "--limit-fill-model",
+        default="binary",
+        choices=["binary", "penetration"],
+        help="Limit-order fill model. 'penetration' scales fills by how far the bar traded through the limit.",
+    )
+    parser.add_argument(
+        "--touch-fill-fraction",
+        type=float,
+        default=0.0,
+        help="Minimum fill fraction when the bar only touches the limit exactly. Used with penetration fills.",
+    )
+    parser.add_argument(
         "--max-concurrent-positions",
         type=int,
         default=1,
@@ -243,6 +260,7 @@ def main() -> None:
     forecast_horizons = [int(x) for x in args.forecast_horizons.split(",") if x]
     data_root = Path(args.data_root)
     forecast_cache_root = Path(args.forecast_cache_root)
+    action_cache_root = Path(args.action_cache_root)
 
     bars_frames: List[pd.DataFrame] = []
     actions_frames: List[pd.DataFrame] = []
@@ -253,6 +271,7 @@ def main() -> None:
             forecast_cache_root=forecast_cache_root,
             sequence_length=args.sequence_length,
             forecast_horizons=forecast_horizons,
+            use_forecast_interactions=args.use_forecast_interactions,
             cache_only=args.cache_only,
             max_history_hours=args.max_history_hours,
         )
@@ -269,16 +288,30 @@ def main() -> None:
         checkpoint_path = Path(checkpoint_map[symbol]).expanduser()
         if not checkpoint_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-        model = _load_model(checkpoint_path, len(data.feature_columns), args.sequence_length)
 
-        actions = generate_actions_from_frame(
-            model=model,
+        def _generate_actions() -> pd.DataFrame:
+            model = _load_model(checkpoint_path, len(data.feature_columns), args.sequence_length)
+            return generate_actions_from_frame(
+                model=model,
+                frame=frame,
+                feature_columns=data.feature_columns,
+                normalizer=data.normalizer,
+                sequence_length=args.sequence_length,
+                horizon=args.horizon,
+            )
+
+        actions, cache_hit = load_or_generate_action_frame(
+            cache_root=action_cache_root,
+            symbol=symbol,
+            checkpoint_path=checkpoint_path,
             frame=frame,
             feature_columns=data.feature_columns,
             normalizer=data.normalizer,
-            sequence_length=args.sequence_length,
-            horizon=args.horizon,
+            sequence_length=int(args.sequence_length),
+            horizon=int(args.horizon),
+            generator=_generate_actions,
         )
+        print(f"action_cache_{symbol.lower()}: {'hit' if cache_hit else 'miss'}")
 
         intensity = float(intensity_map.get(symbol, args.default_intensity))
         offset = float(offset_map.get(symbol, args.default_offset))
@@ -321,6 +354,8 @@ def main() -> None:
             bar_margin=bar_margin,
             decision_lag_bars=int(args.decision_lag_bars),
             max_volume_fraction=args.max_volume_fraction,
+            limit_fill_model=str(args.limit_fill_model),
+            touch_fill_fraction=float(args.touch_fill_fraction),
             max_concurrent_positions=int(args.max_concurrent_positions),
             select_fillable_only=not bool(args.realistic_selection),
             work_steal_enabled=args.work_steal,
