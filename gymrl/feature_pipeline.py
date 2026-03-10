@@ -74,6 +74,8 @@ class FeatureBuilder:
         ] = None
         self._backend_name: Optional[str] = None
         self._backend_errors: List[str] = []
+        self._data_dir: Optional[Path] = None
+        self._chronos2_bundles: Dict[str, pd.DataFrame] = {}
 
     # Public API -------------------------------------------------------------------
     def build_from_directory(
@@ -86,6 +88,8 @@ class FeatureBuilder:
         data_dir = Path(data_dir)
         if not data_dir.exists():
             raise FileNotFoundError(f"Data directory {data_dir} does not exist")
+        self._data_dir = data_dir.resolve()
+        self._chronos2_bundles.clear()
 
         csv_files = list(sorted(data_dir.glob("*.csv")))
         if not csv_files:
@@ -176,6 +180,8 @@ class FeatureBuilder:
         highs = df.get("high", pd.Series(index=df.index, dtype=float)).to_numpy(dtype=np.float64)
         lows = df.get("low", pd.Series(index=df.index, dtype=float)).to_numpy(dtype=np.float64)
         volumes = df.get("volume", pd.Series(index=df.index, dtype=float)).to_numpy(dtype=np.float64)
+        chronos2_bundle = self._load_chronos2_bundle(symbol) if self._backend_name == "chronos2" else None
+        chronos2_horizons = self._parse_chronos2_horizons()
 
         records: List[Dict[str, float]] = []
         realized_returns: List[float] = []
@@ -199,13 +205,28 @@ class FeatureBuilder:
             future_price = close[idx + horizon]
             realized_return = future_price / current_price - 1.0
 
-            samples = self._generate_samples(
-                context_prices,
-                symbol=symbol,
-                full_history=df,
-                current_index=idx,
-                price_column=price_column,
-            )
+            extra_features: Dict[str, float] = {}
+            if chronos2_bundle is not None:
+                timestamp = df.index[idx]
+                if timestamp not in chronos2_bundle.index:
+                    continue
+                row = chronos2_bundle.loc[timestamp]
+                if isinstance(row, pd.DataFrame):
+                    row = row.iloc[-1]
+                samples = self._chronos2_samples_from_row(row, current_price=current_price, horizons=chronos2_horizons)
+                extra_features = self._chronos2_snapshot_features(
+                    row,
+                    current_price=current_price,
+                    horizons=chronos2_horizons,
+                )
+            else:
+                samples = self._generate_samples(
+                    context_prices,
+                    symbol=symbol,
+                    full_history=df,
+                    current_index=idx,
+                    price_column=price_column,
+                )
             forecast_stats = self._compute_forecast_statistics(
                 samples=samples,
                 current_price=current_price,
@@ -219,7 +240,7 @@ class FeatureBuilder:
                 current_index=idx,
             )
 
-            record = {**forecast_stats["features"], **realized_stats}
+            record = {**forecast_stats["features"], **extra_features, **realized_stats}
             records.append(record)
 
             timestamps.append(df.index[idx])
@@ -312,6 +333,11 @@ class FeatureBuilder:
         backend_name = self.config.forecast_backend.lower()
         tried_backends: List[str] = []
 
+        if backend_name == "chronos2":
+            self._backend_call = self._make_bootstrap_backend()
+            self._backend_name = "chronos2"
+            return
+
         if backend_name in ("toto", "auto"):
             backend = self._make_toto_backend()
             if backend:
@@ -354,6 +380,98 @@ class FeatureBuilder:
                 message,
                 ", ".join(tried_backends),
             )
+
+    def _parse_backend_bool(self, key: str, default: bool = False) -> bool:
+        value = self.backend_kwargs.get(key, default)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on"}:
+                return True
+            if normalized in {"0", "false", "no", "off", ""}:
+                return False
+        return bool(value)
+
+    def _parse_chronos2_horizons(self) -> list[int]:
+        raw = self.backend_kwargs.get("chronos2_horizons")
+        if raw is None:
+            return [int(self.config.prediction_length)]
+        if isinstance(raw, str):
+            tokens = [part.strip() for part in raw.split(",")]
+        elif isinstance(raw, Sequence):
+            tokens = [str(part).strip() for part in raw]
+        else:
+            tokens = [str(raw).strip()]
+        horizons = [int(token) for token in tokens if token]
+        if not horizons:
+            horizons = [int(self.config.prediction_length)]
+        return sorted(set(horizons))
+
+    def _load_chronos2_bundle(self, symbol: str) -> pd.DataFrame:
+        cached = self._chronos2_bundles.get(symbol)
+        if cached is not None:
+            return cached
+        if self._data_dir is None:
+            raise RuntimeError("Chronos2 forecasts requested before data directory was initialised.")
+
+        from binanceneural.forecasts import build_forecast_bundle
+
+        cache_root_raw = self.backend_kwargs.get("chronos2_cache_root")
+        cache_root = Path(cache_root_raw) if cache_root_raw else Path("binanceneural") / "forecast_cache"
+        bundle = build_forecast_bundle(
+            symbol=symbol,
+            data_root=self._data_dir,
+            cache_root=cache_root,
+            horizons=self._parse_chronos2_horizons(),
+            context_hours=int(self.backend_kwargs.get("chronos2_context_hours", self.config.context_window)),
+            quantile_levels=(0.1, 0.5, 0.9),
+            batch_size=max(1, int(self.config.num_samples)),
+            cache_only=self._parse_backend_bool("chronos2_cache_only", default=False),
+            force_multivariate=self._parse_backend_bool("chronos2_force_multivariate", default=False),
+            force_cross_learning=self._parse_backend_bool("chronos2_force_cross_learning", default=False),
+        )
+        bundle = bundle.copy()
+        bundle["timestamp"] = pd.to_datetime(bundle["timestamp"], utc=True, errors="coerce")
+        bundle = bundle.dropna(subset=["timestamp"]).drop_duplicates(subset=["timestamp"], keep="last")
+        indexed = bundle.set_index("timestamp").sort_index()
+        self._chronos2_bundles[symbol] = indexed
+        return indexed
+
+    def _chronos2_samples_from_row(
+        self,
+        row: pd.Series,
+        *,
+        current_price: float,
+        horizons: Sequence[int],
+    ) -> np.ndarray:
+        target_horizon = int(self.config.prediction_length)
+        if target_horizon not in horizons:
+            target_horizon = int(horizons[0])
+        p50 = float(row.get(f"predicted_close_p50_h{target_horizon}", current_price))
+        p10 = float(row.get(f"predicted_close_p10_h{target_horizon}", p50))
+        p90 = float(row.get(f"predicted_close_p90_h{target_horizon}", p50))
+        return np.asarray([[p10], [p50], [p90]], dtype=np.float32)
+
+    def _chronos2_snapshot_features(
+        self,
+        row: pd.Series,
+        *,
+        current_price: float,
+        horizons: Sequence[int],
+    ) -> Dict[str, float]:
+        features: Dict[str, float] = {}
+        denom = max(abs(current_price), 1e-8)
+        for horizon in horizons:
+            p50_key = f"predicted_close_p50_h{horizon}"
+            if p50_key not in row or pd.isna(row[p50_key]):
+                continue
+            p50 = float(row[p50_key])
+            p10 = float(row.get(f"predicted_close_p10_h{horizon}", p50))
+            p90 = float(row.get(f"predicted_close_p90_h{horizon}", p50))
+            features[f"chronos2_return_h{horizon}"] = float(p50 / denom - 1.0)
+            features[f"chronos2_spread_h{horizon}"] = float((p90 - p10) / denom)
+        return features
 
     def _make_toto_backend(self) -> Optional[Callable[[np.ndarray, int, int], np.ndarray]]:
         try:
