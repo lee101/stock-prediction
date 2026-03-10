@@ -16,6 +16,9 @@ class ForecastConfig:
     quantile_levels: tuple[float, ...] = (0.1, 0.5, 0.9)
     batch_size: int = 128
     cache_dir: Path = Path("binanceneural") / "forecast_cache"
+    use_time_covariates: bool | None = None
+    force_multivariate: bool | None = None
+    force_cross_learning: bool | None = None
 
 
 @dataclass
