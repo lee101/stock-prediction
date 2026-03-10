@@ -67,8 +67,24 @@ def _coerce_symbols(value: Any, fallback_symbol: str) -> list[str]:
     return [fallback_symbol]
 
 
+def _artifact_root_for_checkpoint(checkpoint: Path) -> Path:
+    checkpoint = checkpoint.expanduser().resolve()
+    if checkpoint.is_dir():
+        artifact_root = checkpoint
+    else:
+        artifact_root = checkpoint.parent
+
+    for candidate in (artifact_root, artifact_root.parent):
+        if candidate != candidate.parent and (candidate / "training_metadata.json").exists():
+            return candidate
+
+    if artifact_root.name == "topk":
+        return artifact_root.parent
+    return artifact_root
+
+
 def _load_training_metadata(checkpoint: Path) -> dict[str, Any]:
-    metadata_path = checkpoint.parent / "training_metadata.json"
+    metadata_path = _artifact_root_for_checkpoint(checkpoint) / "training_metadata.json"
     if not metadata_path.exists():
         raise FileNotFoundError(f"Missing training metadata next to checkpoint: {metadata_path}")
     with metadata_path.open("r", encoding="utf-8") as fh:
@@ -192,17 +208,20 @@ def _evaluate_window(
     model: PPO,
     env: PortfolioEnv,
     periods_per_year: float,
-) -> dict[str, float | int]:
+) -> tuple[dict[str, float | int], pd.DataFrame]:
     obs, _ = env.reset(options={"start_index": env.start_index})
 
     net_returns: list[float] = []
     turnovers: list[float] = []
     drawdowns: list[float] = []
     trading_costs: list[float] = []
+    trajectory_rows: list[dict[str, object]] = []
     trade_steps = 0
     buy_steps = 0
     sell_steps = 0
     prev_crypto_weight = 0.0
+    prev_equity = 1.0
+    timestamps = getattr(env, "timestamps", None)
 
     while True:
         action, _ = model.predict(obs, deterministic=True)
@@ -227,6 +246,27 @@ def _evaluate_window(
             else:
                 sell_steps += 1
         prev_crypto_weight = crypto_weight
+        equity = float(info.get("portfolio_value", prev_equity * (1.0 + net)))
+        gross_exposure_close = float(info.get("gross_exposure_close", abs(crypto_weight)))
+        timestamp_index = int(getattr(env, "start_index", 0)) + len(trajectory_rows)
+        timestamp = None
+        if timestamps is not None and 0 <= timestamp_index < len(timestamps):
+            raw_timestamp = timestamps[timestamp_index]
+            timestamp = raw_timestamp.isoformat() if hasattr(raw_timestamp, "isoformat") else str(raw_timestamp)
+        trajectory_rows.append(
+            {
+                "timestamp": timestamp,
+                "equity": equity,
+                "net_return": net,
+                "turnover": turnover,
+                "drawdown": drawdown,
+                "trading_cost": trading_cost,
+                "weight_crypto": crypto_weight,
+                "gross_exposure_close": gross_exposure_close,
+                "in_position": gross_exposure_close > 1e-8,
+            }
+        )
+        prev_equity = equity
 
         if terminated or truncated:
             break
@@ -250,7 +290,7 @@ def _evaluate_window(
     mean_turnover = float(np.mean(turnovers)) if turnovers else 0.0
     mean_trading_cost = float(np.mean(trading_costs)) if trading_costs else 0.0
 
-    return {
+    metrics = {
         "total_return": total_return,
         "sortino": sortino,
         "mean_hourly_return": mean_return,
@@ -261,6 +301,7 @@ def _evaluate_window(
         "fills_buy": int(buy_steps),
         "fills_sell": int(sell_steps),
     }
+    return metrics, pd.DataFrame(trajectory_rows)
 
 
 def main() -> None:
@@ -319,8 +360,9 @@ def main() -> None:
                 start_index=start_index,
                 episode_length=episode_steps,
             )
-            metrics = _evaluate_window(model=model, env=env, periods_per_year=float(args.periods_per_year))
+            metrics, trajectory = _evaluate_window(model=model, env=env, periods_per_year=float(args.periods_per_year))
             (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+            trajectory.to_csv(run_dir / "trajectory.csv", index=False)
 
             rows.append(
                 {
