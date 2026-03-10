@@ -3,7 +3,8 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Sequence
 
-_CHRONOS_HORIZON_RE = re.compile(r"_h(\d+)$")
+_FORECAST_HORIZON_RE = re.compile(r"_h(\d+)(?=_h|$)")
+_FEATURE_PREFIXES = ("chronos_", "forecast_", "predicted_")
 
 
 def _coerce_horizons(values: Sequence[int] | Iterable[int] | None) -> tuple[int, ...]:
@@ -24,23 +25,21 @@ def _coerce_horizons(values: Sequence[int] | Iterable[int] | None) -> tuple[int,
 
 
 def infer_feature_horizons(feature_columns: Iterable[str] | None) -> tuple[int, ...]:
-    """Infer required forecast horizons from Chronos feature column names."""
+    """Infer required forecast horizons from forecast-derived feature column names."""
     if feature_columns is None:
         return ()
     discovered: list[int] = []
     seen: set[int] = set()
     for column in feature_columns:
         token = str(column or "")
-        if not token.startswith("chronos_"):
+        if not token.startswith(_FEATURE_PREFIXES):
             continue
-        match = _CHRONOS_HORIZON_RE.search(token)
-        if match is None:
-            continue
-        horizon = int(match.group(1))
-        if horizon <= 0 or horizon in seen:
-            continue
-        seen.add(horizon)
-        discovered.append(horizon)
+        for raw_horizon in _FORECAST_HORIZON_RE.findall(token):
+            horizon = int(raw_horizon)
+            if horizon <= 0 or horizon in seen:
+                continue
+            seen.add(horizon)
+            discovered.append(horizon)
     return tuple(sorted(discovered))
 
 

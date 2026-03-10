@@ -8,6 +8,7 @@ from unified_hourly_experiment.auto_meta_optimize import (
     build_deploy_command,
     eligible_summary,
     parse_float_list,
+    parse_int_list,
     rank_key,
     run_once,
 )
@@ -15,6 +16,10 @@ from unified_hourly_experiment.auto_meta_optimize import (
 
 def test_parse_float_list() -> None:
     assert parse_float_list("0.1, 0.2,0.3") == [0.1, 0.2, 0.3]
+
+
+def test_parse_int_list() -> None:
+    assert parse_int_list("0, 1,2") == [0, 1, 2]
 
 
 def test_rank_key_prefers_higher_sortino_then_return() -> None:
@@ -63,6 +68,7 @@ def test_build_deploy_command_includes_sizing_fields() -> None:
         strategy_specs=["s1=/tmp/a:1", "s2=/tmp/b:2"],
         symbols="NVDA,MTCH",
         decision_lag_bars=2,
+        entry_selection_mode="first_trigger",
         max_hold_hours=6,
         max_positions=7,
         bar_margin=0.0013,
@@ -78,6 +84,7 @@ def test_build_deploy_command_includes_sizing_fields() -> None:
     assert "--meta-recency-halflife-days 2.0" in cmd
     assert "--trade-amount-scale 100.0" in cmd
     assert "--decision-lag-bars 2" in cmd
+    assert "--entry-selection-mode first_trigger" in cmd
     assert "--market-order-entry" in cmd
 
 
@@ -91,6 +98,7 @@ def _fake_sweep_payload(recency_halflife_days: float) -> dict:
             "metric": "sharpe",
             "lookback_days": 10,
             "selection_mode": "winner",
+            "entry_selection_mode": "edge_rank",
             "switch_margin": 0.0,
             "min_score_gap": 0.0,
             "recency_halflife_days": recency_halflife_days,
@@ -132,9 +140,12 @@ def _build_args(tmp_path: Path, *, skip_existing: bool) -> argparse.Namespace:
         long_intensity_multipliers="1.0",
         short_intensity_multipliers="1.0",
         decision_lag_bars=1,
+        entry_selection_mode="edge_rank",
         market_order_entry=False,
         bar_margin=0.0013,
+        execution_bar_margins="0.0005,0.0013",
         entry_order_ttl_hours=0,
+        execution_entry_order_ttls="0,1",
         leverage=2.0,
         fee_rate=0.001,
         margin_rate=0.0625,
@@ -164,5 +175,14 @@ def test_run_once_skip_existing_resumes_without_rerunning(monkeypatch, tmp_path:
     rec = run_once(_build_args(tmp_path, skip_existing=True))
 
     assert len(calls) == 1
+    assert "--execution-bar-margins" in calls[0]
+    assert calls[0][calls[0].index("--execution-bar-margins") + 1] == "0.0005,0.0013"
+    assert "--execution-entry-order-ttls" in calls[0]
+    assert calls[0][calls[0].index("--execution-entry-order-ttls") + 1] == "0,1"
+    assert "--entry-selection-mode" in calls[0]
+    assert calls[0][calls[0].index("--entry-selection-mode") + 1] == "edge_rank"
     assert rec["best"]["recency_halflife_days"] == 1.0
+    assert rec["search_space"]["execution_bar_margins"] == [0.0005, 0.0013]
+    assert rec["search_space"]["execution_entry_order_ttl_hours"] == [0, 1]
+    assert rec["search_space"]["entry_selection_mode"] == "edge_rank"
     assert (tmp_path / "auto_meta_recommendation.json").exists()

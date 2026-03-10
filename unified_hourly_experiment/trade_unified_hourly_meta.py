@@ -209,6 +209,7 @@ def simulate_symbol_daily_returns(
         close_at_eod=not bool(args.no_close_at_eod),
         symbols=[symbol],
         decision_lag_bars=int(args.decision_lag_bars),
+        entry_selection_mode=str(args.entry_selection_mode),
         market_order_entry=bool(args.market_order_entry),
         bar_margin=float(args.bar_margin),
         entry_order_ttl_hours=int(args.entry_order_ttl_hours),
@@ -554,7 +555,7 @@ def main() -> None:
     parser.add_argument(
         "--meta-metric",
         default="sharpe",
-        choices=["return", "sortino", "sharpe", "calmar", "omega", "gain_pain", "p10", "median"],
+        choices=["return", "sortino", "sharpe", "calmar", "omega", "gain_pain", "p10", "median", "goodness"],
     )
     parser.add_argument("--meta-lookback-days", type=int, default=7)
     parser.add_argument("--meta-history-days", type=int, default=120)
@@ -574,6 +575,12 @@ def main() -> None:
     parser.add_argument("--meta-reselect-frequency", choices=["daily", "hourly"], default="daily")
     parser.add_argument("--meta-sim-initial-cash", type=float, default=10_000.0)
     parser.add_argument("--decision-lag-bars", type=int, default=1)
+    parser.add_argument(
+        "--entry-selection-mode",
+        default="edge_rank",
+        choices=["edge_rank", "first_trigger"],
+        help="How selector simulations prioritize competing fillable entries for limit-style fills.",
+    )
     parser.add_argument(
         "--market-order-entry",
         action="store_true",
@@ -651,7 +658,7 @@ def main() -> None:
     logger.info("Strategies: {}", ", ".join(names))
     logger.info("Symbols: {}", ", ".join(stocks))
     logger.info(
-        "Meta selector: metric={} lookback={}d mode={} switch_margin={:.4f} min_gap={:.4f} recency_halflife={} sitout={} threshold={} reselect={}",
+        "Meta selector: metric={} lookback={}d mode={} switch_margin={:.4f} min_gap={:.4f} recency_halflife={} sitout={} threshold={} reselect={} entry_selection_mode={}",
         args.meta_metric,
         args.meta_lookback_days,
         args.meta_selection_mode,
@@ -661,6 +668,7 @@ def main() -> None:
         bool(args.sit_out_if_negative),
         float(args.sit_out_threshold),
         args.meta_reselect_frequency,
+        args.entry_selection_mode,
     )
     logger.info("Max positions: {}, Hold limit: {}h", args.max_positions, args.max_hold_hours)
     logger.info(
@@ -683,6 +691,7 @@ def main() -> None:
         loop=bool(args.loop),
         meta_metric=args.meta_metric,
         meta_lookback_days=int(args.meta_lookback_days),
+        entry_selection_mode=str(args.entry_selection_mode),
     )
 
     if api is not None:

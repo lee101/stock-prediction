@@ -21,6 +21,7 @@ from src.hourly_trader_utils import (
     build_plan_from_action,
     ensure_valid_levels,
 )
+from src.hourly_order_reconcile import orders_to_cancel_for_live_symbol
 from src.hourly_data_refresh import HourlyDataRefresher
 from src.hourly_data_utils import HourlyDataValidator
 from src.symbol_utils import is_crypto_symbol
@@ -194,6 +195,81 @@ def _find_position(positions, symbol: str):
     return None
 
 
+def _normalize_live_symbol(symbol: object) -> str:
+    return str(symbol or "").replace("/", "").replace("-", "").upper()
+
+
+def _order_identity(order: object) -> str:
+    order_id = str(getattr(order, "id", "") or "")
+    if order_id:
+        return order_id
+    return f"anon:{id(order)}"
+
+
+def _reconcile_live_symbol_orders(
+    symbol: str,
+    *,
+    position_qty: float,
+    intents: Sequence[OrderIntent],
+    open_orders: Sequence[object],
+    dry_run: bool,
+) -> list[object]:
+    normalized_symbol = _normalize_live_symbol(symbol)
+    symbol_orders = [
+        order
+        for order in open_orders
+        if _normalize_live_symbol(getattr(order, "symbol", "")) == normalized_symbol
+    ]
+    if not symbol_orders:
+        return []
+
+    orders_with_reasons = orders_to_cancel_for_live_symbol(
+        symbol_orders,
+        position_qty=float(position_qty),
+        intents=intents,
+    )
+    if not orders_with_reasons:
+        return symbol_orders
+
+    if dry_run:
+        for order, reason in orders_with_reasons:
+            logger.info(
+                "Dry-run: would cancel stale %s order for %s id=%s side=%s qty=%s @ %s",
+                reason,
+                normalized_symbol,
+                getattr(order, "id", ""),
+                getattr(order, "side", ""),
+                getattr(order, "qty", ""),
+                getattr(order, "limit_price", ""),
+            )
+        return symbol_orders
+
+    cancelled_ids: set[str] = set()
+    for order, reason in orders_with_reasons:
+        logger.info(
+            "Cancelling stale %s order for %s id=%s side=%s qty=%s @ %s",
+            reason,
+            normalized_symbol,
+            getattr(order, "id", ""),
+            getattr(order, "side", ""),
+            getattr(order, "qty", ""),
+            getattr(order, "limit_price", ""),
+        )
+        try:
+            alpaca_wrapper.cancel_order(order)
+        except Exception as exc:
+            logger.warning(
+                "Failed to cancel stale order for %s id=%s: %s",
+                normalized_symbol,
+                getattr(order, "id", ""),
+                exc,
+            )
+            continue
+        cancelled_ids.add(_order_identity(order))
+
+    return [order for order in symbol_orders if _order_identity(order) not in cancelled_ids]
+
+
 
 
 def _run_cycle(
@@ -351,6 +427,20 @@ def _run_cycle(
         if exit_only:
             logger.info("Exit-only mode for %s: %d intent(s)", symbol, len(intents))
 
+        if not dry_run:
+            try:
+                current_open_orders = list(alpaca_wrapper.get_orders())
+            except Exception as exc:
+                logger.warning("Failed to fetch open orders for %s before reconcile: %s", symbol, exc)
+                current_open_orders = []
+            _reconcile_live_symbol_orders(
+                symbol,
+                position_qty=position_qty,
+                intents=intents,
+                open_orders=current_open_orders,
+                dry_run=dry_run,
+            )
+
         logger.info(
             "%s action buy=%.4f sell=%.4f buy_amt=%.2f sell_amt=%.2f pos_qty=%.6f can_long=%s can_short=%s intents=%s",
             symbol,
@@ -488,6 +578,23 @@ def main() -> None:
     crypto_root = Path(args.crypto_data_root) if args.crypto_data_root else None
     stock_root = Path(args.stock_data_root) if args.stock_data_root else None
     forecast_cache_root = Path(args.forecast_cache_root)
+
+    # Cancel stale orders from previous runs on startup
+    if not args.dry_run:
+        try:
+            stale_orders = alpaca_wrapper.get_orders()
+            cancelled = 0
+            for order in stale_orders:
+                order_symbol = str(getattr(order, "symbol", "")).replace("/", "").upper()
+                if order_symbol in {s.replace("/", "").upper() for s in symbols}:
+                    logger.info("Cancelling stale order on startup: %s %s qty=%s @ %s",
+                                order_symbol, order.side, order.qty, order.limit_price)
+                    alpaca_wrapper.cancel_order(order)
+                    cancelled += 1
+            if cancelled:
+                logger.info("Cancelled %d stale order(s) from previous run", cancelled)
+        except Exception as exc:
+            logger.warning("Failed to clean up stale orders on startup: %s", exc)
 
     while True:
         _run_cycle(

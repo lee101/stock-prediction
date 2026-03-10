@@ -125,20 +125,25 @@ def build_order_intents(
     exit_only: bool,
     allow_position_adds: bool = True,
     always_full_exit: bool = False,
+    dust_notional_usd: float = 1.0,
 ) -> list[OrderIntent]:
     intents: list[OrderIntent] = []
 
+    # Treat dust positions as flat (e.g. 0.000000244 ETH ~ $0.0005).
+    position_notional = abs(float(position_qty)) * max(float(buy_price), float(sell_price))
+    effective_qty = float(position_qty) if position_notional >= dust_notional_usd else 0.0
+
     if exit_only:
-        if position_qty > 0:
+        if effective_qty > 0:
             intents.append(
                 OrderIntent(
                     side="sell",
-                    qty=float(position_qty),
+                    qty=float(abs(position_qty)),
                     limit_price=float(sell_price),
                     kind="exit",
                 )
             )
-        elif position_qty < 0:
+        elif effective_qty < 0:
             intents.append(
                 OrderIntent(
                     side="buy",
@@ -150,8 +155,8 @@ def build_order_intents(
         return intents
 
     # Exits are always permitted (for safety), regardless of can_long/can_short.
-    if position_qty > 0:
-        sell_qty_exit = float(position_qty) if always_full_exit else float(position_qty) * (float(plan.sell_amount) / 100.0)
+    if effective_qty > 0:
+        sell_qty_exit = float(abs(position_qty)) if always_full_exit else float(abs(position_qty)) * (float(plan.sell_amount) / 100.0)
         if sell_qty_exit > 0:
             intents.append(
                 OrderIntent(
@@ -161,7 +166,7 @@ def build_order_intents(
                     kind="exit",
                 )
             )
-    elif position_qty < 0:
+    elif effective_qty < 0:
         buy_qty_cover = (
             float(abs(position_qty))
             if always_full_exit
@@ -184,10 +189,9 @@ def build_order_intents(
     buy_qty_entry = (buy_notional / float(buy_price)) if buy_notional > 0 else 0.0
     sell_qty_entry = (sell_notional / float(sell_price)) if sell_notional > 0 else 0.0
 
-    if position_qty > 0:
+    if effective_qty > 0:
         if not allow_position_adds:
             return intents
-        # While long, only allow long adds (no short entries).
         if not can_long:
             buy_qty_entry = 0.0
         sell_qty_entry = 0.0
@@ -202,10 +206,9 @@ def build_order_intents(
             )
         return intents
 
-    if position_qty < 0:
+    if effective_qty < 0:
         if not allow_position_adds:
             return intents
-        # While short, only allow short adds (no long entries).
         buy_qty_entry = 0.0
         if not (allow_short and can_short):
             sell_qty_entry = 0.0
@@ -220,7 +223,7 @@ def build_order_intents(
             )
         return intents
 
-    # Flat: allow at most one entry direction.
+    # Flat: generate entry for the stronger side.
     if not can_long:
         buy_qty_entry = 0.0
     if not (allow_short and can_short):

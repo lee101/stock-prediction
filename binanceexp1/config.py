@@ -17,6 +17,7 @@ class DatasetConfig:
     max_history_hours: Optional[int] = None
     max_feature_lookback_hours: int = 24 * 100
     feature_columns: Optional[Sequence[str]] = None
+    use_forecast_interactions: bool = False
     refresh_hours: int = 0
     validation_days: int = 70
     cache_only: bool = False

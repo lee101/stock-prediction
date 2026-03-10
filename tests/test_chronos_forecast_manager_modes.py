@@ -48,6 +48,7 @@ def _batch_from_context(context: pd.DataFrame, prediction_length: int, base: flo
 class _ModeWrapper:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.batch_kwargs: list[dict[str, object]] = []
 
     def predict_ohlc_batch(
         self,
@@ -58,9 +59,17 @@ class _ModeWrapper:
         context_length: int | None = None,
         batch_size: int | None = None,
         predict_kwargs: dict | None = None,
-        **_: object,
+        **kwargs: object,
     ) -> list[_DummyBatch]:
-        del symbols, context_length, batch_size, predict_kwargs
+        self.batch_kwargs.append(
+            {
+                "symbols": symbols,
+                "context_length": context_length,
+                "batch_size": batch_size,
+                "predict_kwargs": predict_kwargs,
+                **kwargs,
+            }
+        )
         self.calls.append("batch")
         return [_batch_from_context(ctx, prediction_length, base=101.0) for ctx in contexts]
 
@@ -129,6 +138,7 @@ def _build_cfg(tmp_path: Path, symbol: str = "TEST") -> ForecastConfig:
         quantile_levels=(0.1, 0.5, 0.9),
         batch_size=8,
         cache_dir=tmp_path / "cache",
+        use_time_covariates=False,
     )
 
 
@@ -195,3 +205,54 @@ def test_manager_loads_inference_policy_from_chronos_params(tmp_path: Path, monk
     assert manager._use_multivariate is True
     assert manager._use_cross_learning is True
     assert manager._predict_kwargs.get("predict_batches_jointly") is True
+
+
+def test_manager_routes_time_covariates_through_batch_path(tmp_path: Path) -> None:
+    history = _make_history("NVDA", rows=96)
+    wrapper = _ModeWrapper()
+    cfg = ForecastConfig(
+        symbol="NVDA",
+        data_root=tmp_path,
+        context_hours=24,
+        prediction_horizon_hours=2,
+        quantile_levels=(0.1, 0.5, 0.9),
+        batch_size=8,
+        cache_dir=tmp_path / "cache",
+        use_time_covariates=True,
+    )
+    manager = ChronosForecastManager(cfg, wrapper_factory=lambda: wrapper)
+    manager._use_multivariate = True
+    manager._use_cross_learning = True
+    manager._predict_kwargs = {"predict_batches_jointly": True}
+
+    out = manager._generate_forecast_chunk(history, [48, 49])
+
+    assert out is not None
+    assert not out.empty
+    assert wrapper.calls.count("batch") == 1
+    assert "joint" not in wrapper.calls
+    batch_kwargs = wrapper.batch_kwargs[0]
+    assert batch_kwargs["predict_kwargs"] == {"predict_batches_jointly": True}
+    assert batch_kwargs["known_future_covariates"] == [
+        "hour_sin",
+        "hour_cos",
+        "dow_sin",
+        "dow_cos",
+        "is_market_open",
+        "session_progress",
+    ]
+    future_covariates = batch_kwargs["future_covariates"]
+    assert isinstance(future_covariates, list)
+    assert len(future_covariates) == 2
+    first_future = future_covariates[0]
+    assert isinstance(first_future, pd.DataFrame)
+    assert list(first_future.columns) == [
+        "timestamp",
+        "hour_sin",
+        "hour_cos",
+        "dow_sin",
+        "dow_cos",
+        "is_market_open",
+        "session_progress",
+    ]
+    assert len(first_future) == 2

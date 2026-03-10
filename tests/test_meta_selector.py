@@ -239,6 +239,14 @@ def test_score_trailing_returns_supports_all_metrics() -> None:
     assert score_trailing_returns(window, "gain_pain") != 0.0
     assert score_trailing_returns(window, "p10") != 0.0
     assert score_trailing_returns(window, "median") != 0.0
+    assert score_trailing_returns(window, "goodness") != 0.0
+
+
+def test_goodness_metric_prefers_smoother_positive_series() -> None:
+    smoother = [0.01, 0.012, 0.011, 0.013, 0.012]
+    jagged = [0.03, -0.01, 0.04, -0.015, 0.02]
+
+    assert score_trailing_returns(smoother, "goodness") > score_trailing_returns(jagged, "goodness")
 
 
 def test_select_daily_winners_recency_halflife_changes_winner() -> None:

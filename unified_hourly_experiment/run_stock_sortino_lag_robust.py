@@ -27,6 +27,7 @@ from src.robust_trading_metrics import (
 )
 from src.trade_directions import DEFAULT_ALPACA_LIVE8_STOCKS
 from src.torch_load_utils import torch_load_compat
+from src.portfolio_cli import add_close_at_eod_args, resolve_close_at_eod
 from unified_hourly_experiment.marketsimulator import PortfolioConfig, run_portfolio_simulation
 
 DEFAULT_STOCKS = ",".join(DEFAULT_ALPACA_LIVE8_STOCKS)
@@ -294,6 +295,7 @@ def evaluate_lag_sweep(
     sim_backend: str,
     entry_order_ttl_hours: int,
     horizon: int,
+    close_at_eod: bool,
 ) -> tuple[list[dict[str, Any]], dict[str, float]]:
     lag_results: list[dict[str, Any]] = []
     for lag in lags:
@@ -303,7 +305,7 @@ def evaluate_lag_sweep(
             min_edge=min_edge,
             max_hold_hours=max_hold_hours,
             enforce_market_hours=True,
-            close_at_eod=True,
+            close_at_eod=bool(close_at_eod),
             symbols=symbols,
             trade_amount_scale=trade_amount_scale,
             decision_lag_bars=lag,
@@ -453,6 +455,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--market-order-entry", action="store_true")
     parser.add_argument("--reuse-checkpoints", action="store_true")
 
+    add_close_at_eod_args(parser, default=False)
+
     parser.add_argument("--initial-cash", type=float, default=10_000.0)
     parser.add_argument("--max-positions", type=int, default=10)
     parser.add_argument("--min-edge", type=float, default=0.001)
@@ -554,6 +558,7 @@ def main() -> None:
                     cfg.get("eval_entry_order_ttl_hours", args.entry_order_ttl_hours)
                 ),
                 horizon=args.horizon,
+                close_at_eod=resolve_close_at_eod(args, default=False),
             )
             avg_buys = float(lag_summary.get("num_buys_mean", 0.0))
             trade_shortfall = max(0.0, float(args.min_buys_mean) - avg_buys)

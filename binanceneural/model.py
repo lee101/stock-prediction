@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import math
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from typing import Dict, Mapping, Tuple
 
@@ -9,6 +11,39 @@ from torch import nn
 import torch.nn.functional as F
 
 from .config import PolicyConfig
+
+logger = logging.getLogger(__name__)
+
+
+def _is_attention_backend_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    indicators = (
+        "no available kernel",
+        "not implemented",
+        "not available",
+        "flash attention",
+        "scaled_dot_product_attention",
+        "sdpa",
+    )
+    return any(indicator in message for indicator in indicators)
+
+
+@contextmanager
+def _mha_fastpath_context(enabled: bool):
+    mha_backend = getattr(torch.backends, "mha", None)
+    setter = getattr(mha_backend, "set_fastpath_enabled", None) if mha_backend is not None else None
+    getter = getattr(mha_backend, "get_fastpath_enabled", None) if mha_backend is not None else None
+    if not callable(setter):
+        yield
+        return
+
+    previous = getter() if callable(getter) else None
+    setter(bool(enabled))
+    try:
+        yield
+    finally:
+        if previous is not None:
+            setter(bool(previous))
 
 
 def _scaled_dot_product_attention_reference(
@@ -206,13 +241,43 @@ class BinanceHourlyPolicy(BinancePolicyBase):
                 activation="gelu",
             )
             self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=config.num_layers)
+        self._attention_backend_fallback = False
         self.norm = nn.LayerNorm(config.hidden_dim)
         self.head = nn.Linear(config.hidden_dim, config.num_outputs)
+
+    def _encode_once(self, hidden: torch.Tensor) -> torch.Tensor:
+        return self.encoder(hidden)
+
+    def _encode_math_fallback(self, hidden: torch.Tensor) -> torch.Tensor:
+        with ExitStack() as stack:
+            stack.enter_context(_mha_fastpath_context(enabled=False))
+            sdpa_kernel = getattr(torch.nn.attention, "sdpa_kernel", None)
+            sdp_backend = getattr(torch.nn.attention, "SDPBackend", None)
+            if callable(sdpa_kernel) and sdp_backend is not None and hasattr(sdp_backend, "MATH"):
+                stack.enter_context(sdpa_kernel(sdp_backend.MATH))
+            return self.encoder(hidden)
+
+    def _encode_with_backend_fallback(self, hidden: torch.Tensor) -> torch.Tensor:
+        if self._attention_backend_fallback:
+            return self._encode_math_fallback(hidden)
+
+        try:
+            return self._encode_once(hidden)
+        except (RuntimeError, NotImplementedError) as exc:
+            if not _is_attention_backend_error(exc):
+                raise
+            self._attention_backend_fallback = True
+            logger.warning(
+                "Classic transformer attention backend unavailable; disabling fastpath and "
+                "falling back to math SDPA for stability: %s",
+                exc,
+            )
+            return self._encode_math_fallback(hidden)
 
     def forward(self, features: torch.Tensor) -> Dict[str, torch.Tensor]:
         h = self.embed(features)
         h = self.pos_encoding(h)
-        h = self.encoder(h)
+        h = self._encode_with_backend_fallback(h)
         h = self.norm(h)
         logits = self.head(h)
         out = {

@@ -16,8 +16,15 @@ from src.date_utils import is_nyse_open_on_date
 from src.fees import get_fee_for_symbol
 from src.hourly_trader_utils import entry_intensity_fraction
 from src.metrics_utils import annualized_sortino
+from src.robust_trading_metrics import (
+    compute_market_sim_goodness_score,
+    compute_pnl_smoothness_from_equity,
+    compute_trade_rate,
+    compute_ulcer_index,
+)
 from src.symbol_utils import is_crypto_symbol
 from src.trade_directions import DEFAULT_LONG_ONLY_STOCKS, DEFAULT_SHORT_ONLY_STOCKS
+from src.tradinglib.metrics import annualized_return_from_returns
 
 from .unified_selector import (
     _is_market_open,
@@ -113,6 +120,11 @@ def _build_portfolio_result(
     total_return = (final_equity / initial_cash - 1) if initial_cash > 0 else 0.0
     returns = equity_curve.pct_change().dropna()
     avg_ppy = np.mean([_infer_periods_per_year(s) for s in symbols]) if symbols else 1764.0
+    annualized_return = (
+        annualized_return_from_returns(returns.values, periods_per_year=avg_ppy)
+        if len(returns) > 1
+        else 0.0
+    )
     sortino = annualized_sortino(returns.values, periods_per_year=avg_ppy) if len(returns) > 1 else 0.0
 
     n_buys = sum(1 for t in trades if t.side in ("buy", "short_sell"))
@@ -126,12 +138,31 @@ def _build_portfolio_result(
         running_max = equity_curve.cummax()
         drawdowns = (running_max - equity_curve) / running_max
         max_drawdown = float(drawdowns.max())
+    pnl_smoothness = compute_pnl_smoothness_from_equity(equity_curve.values)
+    pnl_smoothness_score = 1.0 / (1.0 + 250.0 * max(pnl_smoothness, 0.0))
+    ulcer_index = compute_ulcer_index(equity_curve.values)
+    trade_rate = compute_trade_rate(n_buys, len(equity_curve))
+    goodness_score = compute_market_sim_goodness_score(
+        total_return=total_return,
+        sortino=sortino,
+        max_drawdown=max_drawdown,
+        pnl_smoothness=pnl_smoothness,
+        ulcer_index=ulcer_index,
+        trade_rate=trade_rate,
+        period_count=len(equity_curve),
+    )
 
     metrics = {
         "total_return": total_return,
+        "annualized_return": annualized_return,
         "sortino": sortino,
         "final_equity": final_equity,
         "max_drawdown": max_drawdown,
+        "pnl_smoothness": pnl_smoothness,
+        "pnl_smoothness_score": pnl_smoothness_score,
+        "ulcer_index": ulcer_index,
+        "trade_rate": trade_rate,
+        "goodness_score": goodness_score,
         "num_buys": n_buys,
         "num_sells": n_sells,
         "target_exits": wins,
@@ -440,6 +471,10 @@ def run_portfolio_simulation(
     def _equity():
         return cash + _mtm()
 
+    def _bar_margin_for_symbol(sym: str) -> float:
+        del sym
+        return float(cfg.bar_margin)
+
     def _required_move_to_fill(row, *, entry_price: float, is_long: bool) -> float:
         open_px = _as_valid_positive(getattr(row, "open", None))
         if open_px is None:
@@ -682,6 +717,7 @@ def run_portfolio_simulation(
                 fillable = True
                 actual_entry_price = row.open if hasattr(row, "open") else row.close
             else:
+                bar_margin = _bar_margin_for_symbol(sym)
                 if is_long:
                     fillable = row.low <= entry_price * (1 - bar_margin) if hasattr(row, "low") else True
                 else:

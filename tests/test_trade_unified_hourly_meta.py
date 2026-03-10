@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -116,7 +117,7 @@ def test_build_meta_signals_passes_side_specific_intensity_settings(
 
 
 def test_simulate_symbol_daily_returns_uses_market_order_entry_flag(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, bool] = {}
+    captured: dict[str, bool | str] = {}
 
     class _DummySim:
         def __init__(self) -> None:
@@ -127,6 +128,7 @@ def test_simulate_symbol_daily_returns_uses_market_order_entry_flag(monkeypatch:
 
     def _fake_run_portfolio_simulation(bars, actions, config, horizon=1):
         captured["market_order_entry"] = bool(config.market_order_entry)
+        captured["entry_selection_mode"] = str(config.entry_selection_mode)
         return _DummySim()
 
     monkeypatch.setattr(meta_mod, "run_portfolio_simulation", _fake_run_portfolio_simulation)
@@ -161,6 +163,7 @@ def test_simulate_symbol_daily_returns_uses_market_order_entry_flag(monkeypatch:
         max_hold_hours=6,
         no_close_at_eod=False,
         decision_lag_bars=0,
+        entry_selection_mode="first_trigger",
         market_order_entry=True,
         bar_margin=0.0005,
         entry_order_ttl_hours=0,
@@ -178,7 +181,53 @@ def test_simulate_symbol_daily_returns_uses_market_order_entry_flag(monkeypatch:
         args=args,
     )
     assert captured["market_order_entry"] is True
+    assert captured["entry_selection_mode"] == "first_trigger"
     assert len(out) == 1
+
+
+def test_main_accepts_goodness_meta_metric(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    captured: dict[str, str] = {}
+
+    monkeypatch.setattr(
+        meta_mod,
+        "parse_strategy_spec",
+        lambda spec: (spec.split("=", 1)[0], tmp_path, 1),
+    )
+    monkeypatch.setattr(
+        meta_mod,
+        "load_strategy_model",
+        lambda name, path, epoch, device: SimpleNamespace(name=name),
+    )
+    monkeypatch.setattr(meta_mod, "apply_live_sizing_overrides", lambda args: None)
+    monkeypatch.setattr(meta_mod.torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(live, "load_state", lambda: {"positions": {}})
+    monkeypatch.setattr(live, "log_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        meta_mod,
+        "run_cycle",
+        lambda **kwargs: captured.setdefault("meta_metric", str(kwargs["args"].meta_metric)),
+    )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "trade_unified_hourly_meta.py",
+            "--strategy",
+            "s1=/tmp/a:1",
+            "--strategy",
+            "s2=/tmp/b:2",
+            "--stock-symbols",
+            "NVDA",
+            "--dry-run",
+            "--meta-metric",
+            "goodness",
+        ],
+    )
+
+    meta_mod.main()
+
+    assert captured["meta_metric"] == "goodness"
 
 
 def test_run_cycle_logs_meta_events(monkeypatch: pytest.MonkeyPatch) -> None:
