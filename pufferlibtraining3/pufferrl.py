@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import inspect
 import json
 import logging
+import math
+import os
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -56,6 +59,31 @@ class VecConfig:
     seed: int = 1337
 
 
+POLICY_PRESETS: dict[str, dict[str, Any]] = {
+    "default": {},
+    "small": {
+        "hidden_size": 512,
+        "actor_layers": (512, 512, 512),
+        "critic_layers": (512, 512, 512),
+    },
+    "base": {
+        "hidden_size": 1024,
+        "actor_layers": (1024, 1024, 1024, 1024),
+        "critic_layers": (1024, 1024, 1024, 1024),
+    },
+    "large": {
+        "hidden_size": 1536,
+        "actor_layers": (2048, 2048, 2048, 1536),
+        "critic_layers": (2048, 2048, 2048, 1536),
+    },
+    "100m": {
+        "hidden_size": 2048,
+        "actor_layers": (4096, 4096, 4096, 2048),
+        "critic_layers": (4096, 4096, 4096, 2048),
+    },
+}
+
+
 class MetricsCollector(gym.Wrapper):
     """Wrap an environment to accumulate step-level cost metrics."""
 
@@ -84,23 +112,96 @@ class MetricsCollector(gym.Wrapper):
         return data
 
 
+def _resolve_pufferlib_repo_root() -> Path:
+    override_root = os.environ.get("PUFFERLIB_REPO_ROOT")
+    if override_root:
+        return Path(override_root).expanduser().resolve()
+
+    repo_root = Path(__file__).resolve().parents[1]
+    for candidate_name in ("PufferLib4", "PufferLib"):
+        candidate = repo_root / candidate_name
+        if candidate.exists():
+            return candidate.resolve()
+
+    return (repo_root / "PufferLib").resolve()
+
+
 def _import_pufferlib_module(name: str):
     import importlib
     import sys
 
+    repo_root = _resolve_pufferlib_repo_root()
+    repo_path = str(repo_root)
+
+    candidate_roots = [repo_root] if os.environ.get("PUFFERLIB_REPO_ROOT") else [None, repo_root]
+    candidate_modules = [name]
+    if name == "pufferlib.pufferl":
+        override_module = os.environ.get("PUFFERLIB_PUFFERL_MODULE")
+        candidate_modules = []
+        if override_module:
+            candidate_modules.append(override_module)
+        candidate_modules.extend([name, "pufferlib.python_pufferl"])
+        candidate_modules = list(dict.fromkeys(candidate_modules))
+
+    module_errors: list[tuple[str, BaseException]] = []
+    for root in candidate_roots:
+        if root is not None and repo_path not in sys.path:
+            sys.path.insert(0, repo_path)
+        if root is not None:
+            existing_pkg = sys.modules.get("pufferlib")
+            if existing_pkg is not None:
+                existing_file = getattr(existing_pkg, "__file__", None)
+                existing_path = Path(existing_file).resolve() if existing_file else None
+                from_repo = existing_path is not None and (
+                    existing_path == repo_root or repo_root in existing_path.parents
+                )
+                if not from_repo:
+                    for module_name in [key for key in sys.modules if key == "pufferlib" or key.startswith("pufferlib.")]:
+                        sys.modules.pop(module_name, None)
+        for candidate in candidate_modules:
+            try:
+                module = importlib.import_module(candidate)
+            except ModuleNotFoundError as error:  # pragma: no cover - depends on local install
+                module_errors.append((candidate, error))
+                continue
+            if name == "pufferlib.pufferl":
+                trainer = getattr(module, "PuffeRL", None)
+                if trainer is None:
+                    module_errors.append((candidate, AttributeError("Missing PuffeRL class")))
+                    continue
+                try:
+                    params = inspect.signature(trainer.__init__).parameters
+                except (TypeError, ValueError):  # pragma: no cover - defensive reflection path
+                    params = {}
+                if params and ("vecenv" not in params or "policy" not in params):
+                    module_errors.append(
+                        (
+                            candidate,
+                            RuntimeError(
+                                "PuffeRL entrypoint does not expose the legacy vecenv/policy constructor"
+                            ),
+                        )
+                    )
+                    continue
+            return module
+
+    details = "; ".join(f"{candidate}: {error}" for candidate, error in module_errors) or "no candidates attempted"
+    raise ModuleNotFoundError(
+        f"Unable to import '{name}'. Checked candidates {candidate_modules} using repo root {repo_root}. Details: {details}"
+    )
+
+
+def _import_repo_module(name: str):
+    import importlib
+
     try:
         return importlib.import_module(name)
-    except ModuleNotFoundError as first_error:  # pragma: no cover - depends on local install
-        repo_root = Path(__file__).resolve().parents[1] / "PufferLib"
-        repo_path = str(repo_root)
-        if repo_path not in sys.path:
-            sys.path.insert(0, repo_path)
-        try:
-            return importlib.import_module(name)
-        except ModuleNotFoundError as second_error:
-            raise ModuleNotFoundError(
-                f"Unable to import '{name}'. Ensure PufferLib is installed or available at {repo_root}."
-            ) from second_error
+    except ModuleNotFoundError:
+        repo_root = Path(__file__).resolve().parents[1]
+        src_path = str(repo_root / "src")
+        if src_path not in sys.path:
+            sys.path.insert(0, src_path)
+        return importlib.import_module(name)
 
 
 def _str_to_bool(value: str) -> bool:
@@ -126,35 +227,77 @@ def _resolve_device(device: str) -> torch.device:
     return requested
 
 
+def _parse_int_sequence(value: str) -> tuple[int, ...]:
+    items = [item.strip() for item in value.split(",")]
+    parsed = tuple(int(item) for item in items if item)
+    if not parsed:
+        raise argparse.ArgumentTypeError("Expected a comma-separated list of positive integers")
+    if any(item <= 0 for item in parsed):
+        raise argparse.ArgumentTypeError("Layer widths must be positive integers")
+    return parsed
+
+
+def _build_policy_config(args: argparse.Namespace) -> PolicyConfig:
+    preset_data = POLICY_PRESETS[args.model_preset]
+    cfg = PolicyConfig(**preset_data)
+    if args.policy_hidden_size is not None:
+        cfg.hidden_size = int(args.policy_hidden_size)
+    if args.actor_layers is not None:
+        cfg.actor_layers = tuple(args.actor_layers)
+    if args.critic_layers is not None:
+        cfg.critic_layers = tuple(args.critic_layers)
+    if args.policy_activation is not None:
+        cfg.activation = str(args.policy_activation)
+    if args.policy_dropout_p is not None:
+        cfg.dropout_p = float(args.policy_dropout_p)
+    if args.policy_layer_norm is not None:
+        cfg.layer_norm = bool(args.policy_layer_norm)
+    return cfg
+
+
+def _load_pufferlib_base_config(pufferl, preferred_env: str) -> tuple[dict[str, Any], str]:
+    try:
+        return pufferl.load_config(preferred_env), preferred_env
+    except Exception as error:
+        if preferred_env == "default":
+            raise
+        logging.warning(
+            "Falling back to default PufferLib config after failing to load '%s': %s",
+            preferred_env,
+            error,
+        )
+        return pufferl.load_config("default"), "default"
+
+
 def _build_env_creator(cfg: MarketEnvConfig, collectors: List[MetricsCollector], *, backend: str = "python"):
     tracked = ("trading_cost", "financing_cost", "deleverage_notional", "deleverage_cost")
     emulation = _import_pufferlib_module("pufferlib.emulation")
 
-    def _gym_env() -> gym.Env:
-        env_cfg = replace(cfg)
-        env_backend = backend.lower()
-        env: gym.Env
-        if env_backend == "fast":
-            try:
-                from fastmarketsim import FastMarketEnv
-
-                env = FastMarketEnv(cfg=env_cfg)
-            except Exception as err:  # pragma: no cover - defensive path
-                logging.warning(
-                    "Falling back to python MarketEnv backend after fast backend failure: %s",
-                    err,
-                )
-                env = MarketEnv(cfg=env_cfg)
-        else:
-            env = MarketEnv(cfg=env_cfg)
-        wrapper = MetricsCollector(env, tracked)
-        collectors.append(wrapper)
-        return wrapper
-
     def _puffer_env(*, buf=None, seed: Optional[int] = None, **kwargs) -> gym.Env:
-        # PufferLib vector backends pass shared-memory buffers and seeds; the simulator handles
-        # reproducibility internally so we ignore the seed parameter for now.
-        del seed
+        del kwargs
+        env_seed = cfg.seed if seed is None else int(seed)
+
+        def _gym_env() -> gym.Env:
+            env_cfg = replace(cfg, seed=env_seed)
+            env_backend = backend.lower()
+            env: gym.Env
+            if env_backend == "fast":
+                try:
+                    FastMarketEnv = _import_repo_module("fastmarketsim").FastMarketEnv
+
+                    env = FastMarketEnv(cfg=env_cfg)
+                except Exception as err:  # pragma: no cover - defensive path
+                    logging.warning(
+                        "Falling back to python MarketEnv backend after fast backend failure: %s",
+                        err,
+                    )
+                    env = MarketEnv(cfg=env_cfg)
+            else:
+                env = MarketEnv(cfg=env_cfg)
+            wrapper = MetricsCollector(env, tracked)
+            collectors.append(wrapper)
+            return wrapper
+
         return emulation.GymnasiumPufferEnv(env_creator=_gym_env, buf=buf)
 
     return _puffer_env
@@ -179,6 +322,10 @@ def _build_vecenv(vec_cfg: VecConfig, env_creator, device: torch.device):
 
 
 def _update_train_config(train_cfg: MutableMapping[str, Any], ppo_cfg: PPOConfig, *, device: torch.device, seed: int) -> None:
+    num_minibatches = max(
+        1,
+        int(math.ceil(float(ppo_cfg.batch_size) / float(max(1, ppo_cfg.minibatch_size)))) * int(ppo_cfg.update_epochs),
+    )
     train_cfg.update(
         total_timesteps=ppo_cfg.total_timesteps,
         learning_rate=ppo_cfg.learning_rate,
@@ -199,6 +346,8 @@ def _update_train_config(train_cfg: MutableMapping[str, Any], ppo_cfg: PPOConfig
         torch_deterministic=ppo_cfg.torch_deterministic,
         precision=ppo_cfg.precision,
         cpu_offload=ppo_cfg.cpu_offload,
+        clip_rewards=False,
+        num_minibatches=num_minibatches,
         device=_device_string(device),
         seed=seed,
     )
@@ -249,6 +398,11 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--maxdiff-deadband", type=float, default=0.05, help="Minimum |direction| required before placing MaxDiff bracket orders")
     parser.add_argument("--normalize-returns", type=_str_to_bool, default=True, help="Normalize returns in observations")
     parser.add_argument("--inv-penalty", type=float, default=0.0, help="Inventory L2 penalty coefficient")
+    parser.add_argument("--start-date", type=str, default=None, help="Optional inclusive start date filter")
+    parser.add_argument("--end-date", type=str, default=None, help="Optional inclusive end date filter")
+    parser.add_argument("--start-index", type=int, default=None, help="Optional fixed episode start index after context")
+    parser.add_argument("--episode-length", type=int, default=None, help="Optional fixed episode length in steps")
+    parser.add_argument("--random-reset", type=_str_to_bool, default=False, help="Randomize episode starts on reset")
     parser.add_argument("--seed", type=int, default=1337, help="PRNG seed")
     parser.add_argument("--device", type=str, default="cuda", help="Training device (e.g. 'cuda', 'cuda:1', 'cpu')")
     parser.add_argument("--backend", type=str, default="Serial", choices=["Serial", "Multiprocessing"], help="Vector environment backend")
@@ -279,6 +433,14 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("--torch-deterministic", type=_str_to_bool, default=False, help="Enable deterministic CuDNN kernels")
     parser.add_argument("--precision", type=str, default="float32", choices=["float32", "bfloat16"], help="AMP precision")
     parser.add_argument("--cpu-offload", type=_str_to_bool, default=False, help="Enable CPU offload for experience buffers")
+    parser.add_argument("--puffer-config", type=str, default="trade_sim", help="Preferred PufferLib config name to load before overrides")
+    parser.add_argument("--model-preset", type=str, default="default", choices=sorted(POLICY_PRESETS), help="High-level policy size preset")
+    parser.add_argument("--policy-hidden-size", type=int, default=None, help="Override policy encoder width")
+    parser.add_argument("--actor-layers", type=_parse_int_sequence, default=None, help="Comma-separated actor tower widths")
+    parser.add_argument("--critic-layers", type=_parse_int_sequence, default=None, help="Comma-separated critic tower widths")
+    parser.add_argument("--policy-activation", type=str, default=None, choices=["relu", "gelu", "swish", "elu"], help="Policy activation function")
+    parser.add_argument("--policy-dropout-p", type=float, default=None, help="Policy dropout probability")
+    parser.add_argument("--policy-layer-norm", type=_str_to_bool, default=None, help="Enable layer norm in the policy")
     parser.add_argument("--log-json", type=str, default=None, help="Optional path to dump final summary JSON")
     parser.add_argument("--log-level", type=str, default="INFO", help="Python logging level")
     return parser.parse_args(argv)
@@ -305,6 +467,11 @@ def build_configs(args: argparse.Namespace) -> tuple[MarketEnvConfig, PPOConfig,
         is_crypto=args.is_crypto,
         seed=args.seed,
         device=device.type,
+        start_date=args.start_date,
+        end_date=args.end_date,
+        start_index=args.start_index,
+        episode_length=args.episode_length,
+        random_reset=args.random_reset,
         maxdiff_limit_scale=args.maxdiff_limit_scale,
         maxdiff_deadband=args.maxdiff_deadband,
     )
@@ -350,15 +517,18 @@ def train(args: argparse.Namespace) -> Dict[str, Any]:
     original_argv = sys.argv[:]
     try:
         sys.argv = [original_argv[0]]
-        base_cfg = pufferl.load_config("default")
+        base_cfg, loaded_puffer_config = _load_pufferlib_base_config(pufferl, args.puffer_config)
     finally:
         sys.argv = original_argv
+    logging.info("Using PufferLib module %s with config '%s'", getattr(pufferl, "__name__", type(pufferl).__name__), loaded_puffer_config)
     train_cfg = dict(base_cfg["train"])
     _update_train_config(train_cfg, ppo_cfg, device=device, seed=args.seed)
     train_cfg["env"] = "pufferlibtraining3.market_env"
 
-    model_cfg = PolicyConfig()
+    model_cfg = _build_policy_config(args)
     policy = MarketPolicy(vecenv.driver_env, model_cfg).to(device)
+    policy_params = sum(parameter.numel() for parameter in policy.parameters() if parameter.requires_grad)
+    logging.info("policy_params=%d preset=%s hidden=%d", policy_params, args.model_preset, model_cfg.hidden_size)
 
     trainer = pufferl.PuffeRL(train_cfg, vecenv, policy)
 
@@ -394,6 +564,9 @@ def train(args: argparse.Namespace) -> Dict[str, Any]:
         "final_logs": final_logs,
         "train_config": train_cfg,
         "env_config": dataclasses.asdict(env_cfg),
+        "policy_config": dataclasses.asdict(model_cfg),
+        "policy_params": policy_params,
+        "puffer_config": loaded_puffer_config,
     }
 
     log_path = args.log_json

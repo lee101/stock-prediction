@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 import csv
+import sys
 import time
 from datetime import datetime, timezone
 from dataclasses import dataclass
@@ -25,7 +26,13 @@ from gymnasium import ObservationWrapper, spaces
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 
-from fastmarketsim import FastMarketEnv
+try:
+    from fastmarketsim import FastMarketEnv
+except ModuleNotFoundError:  # pragma: no cover - local src-layout fallback
+    src_path = Path(__file__).resolve().parents[1] / "src"
+    if str(src_path) not in sys.path:
+        sys.path.insert(0, str(src_path))
+    from fastmarketsim import FastMarketEnv
 from pufferlibtraining3.envs.market_env import MarketEnv, MarketEnvConfig
 
 

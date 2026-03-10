@@ -147,3 +147,47 @@ def test_simulate_daily_policy_level_bins_require_fill():
 
     assert res_no_fill.total_return == pytest.approx(0.0, abs=1e-12)
     assert res_no_fill.num_trades == 0
+
+
+def test_simulate_daily_policy_short_borrow_fee_hits_flat_short() -> None:
+    symbols = ["AAA"]
+    T = 3
+    S = 1
+    F = 16
+    P = 5
+
+    features = np.zeros((T, S, F), dtype=np.float32)
+    prices = np.zeros((T, S, P), dtype=np.float32)
+    prices[:, 0, 3] = np.array([100.0, 100.0, 100.0], dtype=np.float32)
+    prices[:, 0, 0] = prices[:, 0, 3]
+    prices[:, 0, 1] = prices[:, 0, 3]
+    prices[:, 0, 2] = prices[:, 0, 3]
+    tradable = np.ones((T, S), dtype=np.uint8)
+    data = MktdData(version=2, symbols=symbols, features=features, prices=prices, tradable=tradable)
+
+    apr = 0.10
+    periods_per_year = 252.0
+    expected_fee_per_step = 10_000.0 * apr / periods_per_year
+    expected_total_return = -(2.0 * expected_fee_per_step) / 10_000.0
+
+    res_short = simulate_daily_policy(
+        data,
+        lambda obs: 2,
+        max_steps=2,
+        fee_rate=0.0,
+        max_leverage=1.0,
+        periods_per_year=periods_per_year,
+        short_borrow_apr=apr,
+    )
+    res_long = simulate_daily_policy(
+        data,
+        lambda obs: 1,
+        max_steps=2,
+        fee_rate=0.0,
+        max_leverage=1.0,
+        periods_per_year=periods_per_year,
+        short_borrow_apr=apr,
+    )
+
+    assert res_long.total_return == pytest.approx(0.0, abs=1e-12)
+    assert res_short.total_return == pytest.approx(expected_total_return, rel=1e-6, abs=1e-9)

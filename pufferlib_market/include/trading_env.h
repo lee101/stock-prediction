@@ -85,6 +85,7 @@ typedef struct {
     int            max_steps;       /* episode length in hours */
     float          fee_rate;        /* transaction cost (e.g. 0.001) */
     float          max_leverage;    /* 1.0 = no leverage */
+    float          short_borrow_apr;/* annual borrow rate applied to open short notional */
     float          periods_per_year;/* annualisation factor for metrics (e.g. 8760 for hourly, 365 for daily) */
 
     /* --- action-space config ---

@@ -18,6 +18,7 @@ backtestdata
 data
 results
 env.py
+!src/fastmarketsim/env.py
 env_real.py
 logs
 lightning_logs
@@ -685,3 +686,4 @@ preaug_sweeps/
 
 # Native sim build artifacts
 unified_hourly_experiment/marketsimulator/native/
+PufferLib4/

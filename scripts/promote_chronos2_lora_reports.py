@@ -50,7 +50,11 @@ def _load_report(path: Path) -> Optional[LoRAReport]:
         return None
     if not isinstance(payload, dict):
         return None
+    trainer_cfg = payload.get("config") if isinstance(payload.get("config"), dict) else {}
     symbol = payload.get("symbol")
+    if not isinstance(symbol, str) or not symbol.strip():
+        nested_symbol = trainer_cfg.get("symbol") if isinstance(trainer_cfg, dict) else None
+        symbol = nested_symbol if isinstance(nested_symbol, str) else None
     if not isinstance(symbol, str) or not symbol.strip():
         return None
     output_dir_raw = payload.get("output_dir")
@@ -58,22 +62,34 @@ def _load_report(path: Path) -> Optional[LoRAReport]:
         return None
     output_dir = Path(output_dir_raw)
     finetuned_ckpt = output_dir / "finetuned-ckpt"
-    val = payload.get("val_metrics") if isinstance(payload.get("val_metrics"), dict) else {}
-    test = payload.get("test_metrics") if isinstance(payload.get("test_metrics"), dict) else {}
-    trainer_cfg = payload.get("config") if isinstance(payload.get("config"), dict) else {}
+    val = payload.get("val_metrics") if isinstance(payload.get("val_metrics"), dict) else None
+    test = payload.get("test_metrics") if isinstance(payload.get("test_metrics"), dict) else None
+    if val is None:
+        val = payload.get("val") if isinstance(payload.get("val"), dict) else {}
+    if test is None:
+        test = payload.get("test") if isinstance(payload.get("test"), dict) else {}
+    preaug_strategy = payload.get("preaug_strategy")
+    if preaug_strategy is None and isinstance(trainer_cfg, dict):
+        preaug_strategy = trainer_cfg.get("preaug")
+    val_mae_percent = _parse_float(val.get("mae_percent")) if isinstance(val, dict) else None
+    if val_mae_percent is None and isinstance(val, dict):
+        val_mae_percent = _parse_float(val.get("mae_percent_mean"))
+    test_mae_percent = _parse_float(test.get("mae_percent")) if isinstance(test, dict) else None
+    if test_mae_percent is None and isinstance(test, dict):
+        test_mae_percent = _parse_float(test.get("mae_percent_mean"))
     return LoRAReport(
         symbol=symbol.strip().upper(),
         report_path=path,
         output_dir=output_dir,
         finetuned_ckpt=finetuned_ckpt,
         val_mae=_parse_float(val.get("mae") if isinstance(val, dict) else None),
-        val_mae_percent=_parse_float(val.get("mae_percent") if isinstance(val, dict) else None),
+        val_mae_percent=val_mae_percent,
         val_pct_return_mae=_parse_float(val.get("pct_return_mae") if isinstance(val, dict) else None),
         test_mae=_parse_float(test.get("mae") if isinstance(test, dict) else None),
-        test_mae_percent=_parse_float(test.get("mae_percent") if isinstance(test, dict) else None),
+        test_mae_percent=test_mae_percent,
         test_pct_return_mae=_parse_float(test.get("pct_return_mae") if isinstance(test, dict) else None),
         trainer_config={str(k): v for k, v in trainer_cfg.items()} if isinstance(trainer_cfg, dict) else {},
-        preaug_strategy=str(payload.get("preaug_strategy")) if payload.get("preaug_strategy") is not None else None,
+        preaug_strategy=str(preaug_strategy) if preaug_strategy is not None else None,
         preaug_source=str(payload.get("preaug_source")) if payload.get("preaug_source") is not None else None,
     )
 
@@ -253,4 +269,3 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

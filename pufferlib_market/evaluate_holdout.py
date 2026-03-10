@@ -20,6 +20,7 @@ import torch.nn as nn
 from torch.distributions import Categorical
 
 from pufferlib_market.hourly_replay import MktdData, read_mktd, simulate_daily_policy
+from pufferlib_market.metrics import annualize_total_return
 
 
 def _mask_all_shorts(logits: torch.Tensor, *, num_symbols: int, per_symbol_actions: int = 1) -> torch.Tensor:
@@ -233,6 +234,7 @@ def _slice_window(data: MktdData, *, start: int, steps: int) -> MktdData:
 class WindowMetric:
     start_idx: int
     total_return: float
+    annualized_return: float
     sortino: float
     max_drawdown: float
     num_trades: int
@@ -257,6 +259,7 @@ def main() -> None:
     parser.add_argument("--fee-rate", type=float, default=0.001)
     parser.add_argument("--max-leverage", type=float, default=1.0)
     parser.add_argument("--periods-per-year", type=float, default=8760.0)
+    parser.add_argument("--short-borrow-apr", type=float, default=0.0)
     parser.add_argument("--disable-shorts", action="store_true")
     parser.add_argument("--shortable-symbols", type=str, default=None)
     parser.add_argument("--decision-lag", type=int, default=0)
@@ -369,14 +372,21 @@ def main() -> None:
             fee_rate=float(args.fee_rate),
             max_leverage=float(args.max_leverage),
             periods_per_year=float(args.periods_per_year),
+            short_borrow_apr=float(args.short_borrow_apr),
             action_allocation_bins=int(alloc_bins),
             action_level_bins=int(level_bins),
             action_max_offset_bps=float(max_offset_bps),
+        )
+        annualized_return = annualize_total_return(
+            float(result.total_return),
+            periods=float(steps),
+            periods_per_year=float(args.periods_per_year),
         )
         metrics.append(
             WindowMetric(
                 start_idx=int(start_idx),
                 total_return=float(result.total_return),
+                annualized_return=float(annualized_return),
                 sortino=float(result.sortino),
                 max_drawdown=float(result.max_drawdown),
                 num_trades=int(result.num_trades),
@@ -385,6 +395,7 @@ def main() -> None:
         )
 
     returns = [m.total_return for m in metrics]
+    annualized_returns = [m.annualized_return for m in metrics]
     sortinos = [m.sortino for m in metrics]
     maxdds = [m.max_drawdown for m in metrics]
 
@@ -401,6 +412,7 @@ def main() -> None:
         "decision_lag": int(decision_lag),
         "fee_rate": float(args.fee_rate),
         "max_leverage": float(args.max_leverage),
+        "short_borrow_apr": float(args.short_borrow_apr),
         "action_allocation_bins": int(alloc_bins),
         "action_level_bins": int(level_bins),
         "action_max_offset_bps": float(max_offset_bps),
@@ -409,6 +421,9 @@ def main() -> None:
             "median_total_return": float(_percentile(returns, 50)),
             "p10_total_return": float(_percentile(returns, 10)),
             "p90_total_return": float(_percentile(returns, 90)),
+            "median_annualized_return": float(_percentile(annualized_returns, 50)),
+            "p10_annualized_return": float(_percentile(annualized_returns, 10)),
+            "p90_annualized_return": float(_percentile(annualized_returns, 90)),
             "median_sortino": float(_percentile(sortinos, 50)),
             "p10_sortino": float(_percentile(sortinos, 10)),
             "p90_sortino": float(_percentile(sortinos, 90)),

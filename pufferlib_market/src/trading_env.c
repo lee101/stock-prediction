@@ -179,6 +179,23 @@ static float compute_equity(const TradingEnv* env, int t) {
     return equity;
 }
 
+static float short_borrow_fee(const TradingEnv* env, int t) {
+    const AgentState* ag = &env->agent;
+    const MarketData* md = env->data;
+    const int S = md->num_symbols;
+    if (ag->position_sym < S || env->short_borrow_apr <= 0.0f) {
+        return 0.0f;
+    }
+    int sym = ag->position_sym % S;
+    float cur_price = get_price(md, t, sym, P_CLOSE);
+    if (cur_price <= 0.0f || ag->position_qty <= 0.0f) {
+        return 0.0f;
+    }
+    float ppy = env->periods_per_year;
+    if (ppy <= 0.0f) ppy = 8760.0f;
+    return ag->position_qty * cur_price * env->short_borrow_apr / ppy;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Trade execution                                                    */
 /* ------------------------------------------------------------------ */
@@ -278,12 +295,6 @@ static void open_long(TradingEnv* env, int t, int sym, float allocation_pct, flo
     if (qty <= 0.0f) return;
     float cost = qty * denom;
     if (cost <= 0.0f) return;
-
-    if (cost > ag->cash) {
-        cost = ag->cash;
-        qty = cost / denom;
-        if (qty <= 0.0f) return;
-    }
 
     ag->cash -= cost;
     ag->position_sym = sym;
@@ -472,6 +483,11 @@ void c_step(TradingEnv* env) {
 
     /* compute equity after market move */
     float equity_after = compute_equity(env, t_new);
+    float borrow_fee = short_borrow_fee(env, t_new);
+    if (borrow_fee > 0.0f) {
+        ag->cash -= borrow_fee;
+        equity_after -= borrow_fee;
+    }
 
     /* reward = percentage return (clipped) */
     float ret = 0.0f;

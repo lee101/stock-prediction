@@ -7,6 +7,7 @@ import pytest
 
 from binanceleveragesui.validate_sim_vs_live import (
     effective_position_side_from_qty,
+    load_5m_bars,
     match_trades,
     reconstruct_initial_state,
     resolve_initial_replay_state,
@@ -88,6 +89,81 @@ def test_match_trades_treats_force_buy_as_buy():
     assert len(matches) == 1
     assert matches[0]["matched"] is True
     assert len(unmatched) == 0
+
+
+def test_load_5m_bars_uses_trade_margin_meta_loader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(["2026-01-01 00:00:00+00:00"]),
+            "open": [100.0],
+            "high": [101.0],
+            "low": [99.0],
+            "close": [100.5],
+            "volume": [1_000.0],
+        }
+    )
+    calls: list[tuple[str, pd.Timestamp, pd.Timestamp, object, object]] = []
+
+    def fake_load(symbol, start_ts, end_ts, *, args=None):
+        calls.append(
+            (
+                symbol,
+                pd.Timestamp(start_ts),
+                pd.Timestamp(end_ts),
+                getattr(args, "data_root", None),
+                getattr(args, "profit_gate_5m_root", None),
+            )
+        )
+        return expected
+
+    monkeypatch.setattr("binanceleveragesui.validate_sim_vs_live._load_profit_gate_5m_bars", fake_load)
+
+    loaded = load_5m_bars(
+        "DOGEUSDT",
+        pd.Timestamp("2026-01-01 00:00:00+00:00"),
+        pd.Timestamp("2026-01-01 00:00:00+00:00"),
+        data_root="/tmp/hourly",
+        bars_5m_root="/tmp/5m",
+    )
+
+    assert calls == [
+        (
+            "DOGEUSDT",
+            pd.Timestamp("2026-01-01 00:00:00+00:00"),
+            pd.Timestamp("2026-01-01 00:00:00+00:00"),
+            "/tmp/hourly",
+            "/tmp/5m",
+        )
+    ]
+    assert loaded.equals(expected)
+
+
+def test_match_trades_marks_prod_rows_unmatched_when_sim_is_empty():
+    prod_fills = pd.DataFrame(
+        [
+            {
+                "timestamp": pd.Timestamp("2026-01-01 01:00:00+00:00"),
+                "side": "buy",
+                "avg_price": 100.0,
+                "total_qty": 10.0,
+            }
+        ]
+    )
+
+    matches, unmatched = match_trades(prod_fills, [])
+
+    assert matches == [
+        {
+            "prod_ts": pd.Timestamp("2026-01-01 01:00:00+00:00"),
+            "side": "buy",
+            "prod_price": 100.0,
+            "prod_qty": 10.0,
+            "matched": False,
+        }
+    ]
+    assert unmatched.empty
 
 
 def test_effective_position_side_from_qty_ignores_sub_threshold_notional():

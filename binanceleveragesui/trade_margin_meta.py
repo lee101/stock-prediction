@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Meta-switcher margin bot: switches between DOGE and AAVE using trailing meta scores."""
+"""Meta-switcher margin bot: switches between two configured symbols using trailing meta scores."""
 from __future__ import annotations
 
 import argparse, json, os, random, sys, time
@@ -68,7 +68,7 @@ DETERMINISTIC_SEED = 42
 SIGNAL_BOOTSTRAP_EXTRA_HOURS = 2
 
 # Model configs
-MODELS = {
+DEFAULT_MODELS = {
     "doge": {
         "symbol": "DOGEUSDT",
         "data_symbol": "DOGEUSD",
@@ -82,6 +82,11 @@ MODELS = {
         "maker_fee": 0.001,
     },
 }
+MODEL_SLOT_DEFAULTS = (
+    ("model_a", "doge", DEFAULT_MODELS["doge"]),
+    ("model_b", "aave", DEFAULT_MODELS["aave"]),
+)
+MODELS = {name: dict(cfg) for name, cfg in DEFAULT_MODELS.items()}
 
 SUPPORTED_SELECTION_METRICS = (
     "return",
@@ -94,6 +99,81 @@ SUPPORTED_SELECTION_METRICS = (
     "median",
 )
 SUPPORTED_SELECTION_MODES = ("winner", "winner_cash")
+SUPPORTED_PROFIT_GATE_MODES = ("hypothetical", "live_like")
+PROFIT_GATE_BAR_INTERVAL = pd.Timedelta(minutes=5)
+
+
+def _normalize_model_name(value: str, *, fallback: str) -> str:
+    name = str(value or fallback).strip().lower().replace("-", "_").replace(" ", "_")
+    while "__" in name:
+        name = name.replace("__", "_")
+    name = name.strip("_")
+    if not name:
+        raise ValueError("Model name must not be empty.")
+    return name
+
+
+def build_model_specs_from_args(args) -> list[dict]:
+    specs: list[dict] = []
+    seen_names: set[str] = set()
+    seen_symbols: set[str] = set()
+    for slot, fallback_name, defaults in MODEL_SLOT_DEFAULTS:
+        name = _normalize_model_name(getattr(args, f"{slot}_name", fallback_name), fallback=fallback_name)
+        symbol = str(getattr(args, f"{slot}_symbol", defaults["symbol"]) or "").strip().upper()
+        data_symbol = str(getattr(args, f"{slot}_data_symbol", defaults["data_symbol"]) or "").strip().upper()
+        base_asset = str(getattr(args, f"{slot}_base_asset", defaults["base_asset"]) or "").strip().upper()
+        maker_fee = float(getattr(args, f"{slot}_maker_fee", defaults["maker_fee"]))
+        checkpoint_raw = getattr(args, f"{slot}_checkpoint", None)
+        checkpoint = None if checkpoint_raw in (None, "") else Path(checkpoint_raw)
+        if not symbol:
+            raise ValueError(f"{slot} symbol must not be empty.")
+        if not data_symbol:
+            raise ValueError(f"{slot} data symbol must not be empty.")
+        if not base_asset:
+            raise ValueError(f"{slot} base asset must not be empty.")
+        if name in seen_names:
+            raise ValueError(f"Model names must be unique, got duplicate '{name}'.")
+        if symbol in seen_symbols:
+            raise ValueError(f"Model symbols must be unique, got duplicate '{symbol}'.")
+        seen_names.add(name)
+        seen_symbols.add(symbol)
+        spec = {
+            "slot": slot,
+            "name": name,
+            "symbol": symbol,
+            "data_symbol": data_symbol,
+            "base_asset": base_asset,
+            "maker_fee": maker_fee,
+            "checkpoint": checkpoint,
+        }
+        specs.append(spec)
+    return specs
+
+
+def build_model_configs_from_args(args) -> dict[str, dict]:
+    return {
+        spec["name"]: {
+            "symbol": spec["symbol"],
+            "data_symbol": spec["data_symbol"],
+            "base_asset": spec["base_asset"],
+            "maker_fee": float(spec["maker_fee"]),
+        }
+        for spec in build_model_specs_from_args(args)
+    }
+
+
+def apply_model_specs(model_specs: list[dict]) -> dict[str, dict]:
+    global MODELS
+    MODELS = {
+        spec["name"]: {
+            "symbol": spec["symbol"],
+            "data_symbol": spec["data_symbol"],
+            "base_asset": spec["base_asset"],
+            "maker_fee": float(spec["maker_fee"]),
+        }
+        for spec in model_specs
+    }
+    return MODELS
 
 
 def _log_event(event_type: str, **data):
@@ -208,6 +288,365 @@ class SignalHistory:
         neg = rets[rets < 0]
         dd = np.std(neg) if len(neg) > 1 else 1e-10
         return float(np.mean(rets)) / (dd + 1e-10)
+
+
+def _normalize_profit_gate_mode(value: str) -> str:
+    mode = str(value or "hypothetical").strip().lower()
+    if mode not in SUPPORTED_PROFIT_GATE_MODES:
+        raise ValueError(
+            f"Unsupported profit gate mode '{value}'. Expected one of {SUPPORTED_PROFIT_GATE_MODES}."
+        )
+    return mode
+
+
+def _normalize_utc_timestamp(value) -> Optional[pd.Timestamp]:
+    if value is None:
+        return None
+    try:
+        ts = pd.Timestamp(value)
+    except Exception:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    else:
+        ts = ts.tz_convert("UTC")
+    return ts
+
+
+def _signal_history_to_hourly_signals(history: SignalHistory, *, symbol: str = "") -> dict[pd.Timestamp, dict]:
+    signals: dict[pd.Timestamp, dict] = {}
+    size = min(
+        len(history.timestamps),
+        len(history.buy_prices),
+        len(history.sell_prices),
+        len(history.buy_amounts),
+        len(history.sell_amounts),
+        len(history.closes),
+    )
+    for idx in range(size):
+        signal_hour = _normalize_hour_like(history.timestamps[idx])
+        if signal_hour is None:
+            continue
+        signals[signal_hour] = {
+            "symbol": symbol,
+            "buy_price": float(history.buy_prices[idx]),
+            "sell_price": float(history.sell_prices[idx]),
+            "buy_amount": float(history.buy_amounts[idx]),
+            "sell_amount": float(history.sell_amounts[idx]),
+            "close": float(history.closes[idx]),
+            "signal_hour": signal_hour,
+        }
+    return signals
+
+
+def _resolve_profit_gate_5m_root(args=None) -> Path:
+    candidates: list[Path] = []
+    preferred_roots: list[Path] = []
+    explicit_root = getattr(args, "profit_gate_5m_root", None) if args is not None else None
+    if explicit_root:
+        root = Path(explicit_root).expanduser()
+        preferred_roots.append(root)
+        candidates.append(root)
+    env_root = os.environ.get("BINANCE_5M_DATA_ROOT") or os.environ.get("TRAININGDATA5MIN_ROOT")
+    if env_root:
+        root = Path(env_root).expanduser()
+        preferred_roots.append(root)
+        candidates.append(root)
+    data_root = getattr(args, "data_root", None) if args is not None else None
+    if data_root:
+        try:
+            resolved_data_root = Path(data_root).expanduser().resolve()
+        except Exception:
+            resolved_data_root = Path(data_root).expanduser()
+        root = resolved_data_root.parent / "trainingdata5min"
+        preferred_roots.append(root)
+        candidates.append(root)
+    candidates.append(REPO_ROOT / "trainingdata5min")
+    candidates.append(Path.cwd() / "trainingdata5min")
+
+    deduped: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        deduped.append(candidate)
+
+    for candidate in deduped:
+        if candidate in preferred_roots:
+            return candidate
+    for candidate in deduped:
+        if candidate.exists():
+            return candidate
+    return deduped[0] if deduped else (REPO_ROOT / "trainingdata5min")
+
+
+def _normalize_profit_gate_5m_frame(frame: pd.DataFrame, *, symbol: str) -> pd.DataFrame:
+    if frame is None or frame.empty or "timestamp" not in frame.columns:
+        return pd.DataFrame()
+    normalized = frame.copy()
+    normalized["timestamp"] = pd.to_datetime(normalized["timestamp"], utc=True, errors="coerce")
+    normalized = normalized.dropna(subset=["timestamp"])
+    if normalized.empty:
+        return pd.DataFrame()
+    normalized = normalized.sort_values("timestamp")
+    normalized = normalized.drop_duplicates(subset=["timestamp"], keep="last").reset_index(drop=True)
+    if "symbol" not in normalized.columns:
+        normalized["symbol"] = str(symbol).upper()
+    return normalized
+
+
+def _expected_profit_gate_5m_bars(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> int:
+    if start_ts > end_ts:
+        return 0
+    return int((end_ts - start_ts) / PROFIT_GATE_BAR_INTERVAL) + 1
+
+
+def _has_complete_profit_gate_5m_window(frame: pd.DataFrame, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> bool:
+    if frame is None or frame.empty:
+        return False
+    window = frame[(frame["timestamp"] >= start_ts) & (frame["timestamp"] <= end_ts)]
+    if window.empty:
+        return False
+    expected_bars = _expected_profit_gate_5m_bars(start_ts, end_ts)
+    if len(window) < expected_bars:
+        return False
+    first_ts = window["timestamp"].iloc[0]
+    last_ts = window["timestamp"].iloc[-1]
+    return first_ts <= start_ts and last_ts >= end_ts
+
+
+def _fetch_profit_gate_5m_bars(symbol: str, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> pd.DataFrame:
+    resolved_start = _normalize_utc_timestamp(start_ts)
+    resolved_end = _normalize_utc_timestamp(end_ts)
+    if resolved_start is None or resolved_end is None or resolved_start > resolved_end:
+        return pd.DataFrame()
+
+    request_start = resolved_start.floor("5min")
+    request_end = resolved_end.floor("5min")
+    interval_ms = int(PROFIT_GATE_BAR_INTERVAL.total_seconds() * 1000)
+    request_end_open_ms = int(request_end.timestamp() * 1000)
+    request_end_ms = int((request_end + PROFIT_GATE_BAR_INTERVAL).timestamp() * 1000) - 1
+    cursor_ms = int(request_start.timestamp() * 1000)
+    frames: list[pd.DataFrame] = []
+    client = binance_wrapper._resolve_client()
+
+    while cursor_ms <= request_end_ms:
+        raw = client.get_klines(
+            symbol=str(symbol).upper(),
+            interval="5m",
+            startTime=cursor_ms,
+            endTime=request_end_ms,
+            limit=1000,
+        )
+        if not raw:
+            break
+
+        rows = []
+        last_open_ms = None
+        for kline in raw:
+            open_ms = int(kline[0])
+            if open_ms > request_end_open_ms:
+                continue
+            last_open_ms = open_ms
+            volume = float(kline[5])
+            quote_volume = float(kline[7])
+            close_price = float(kline[4])
+            rows.append(
+                {
+                    "timestamp": pd.Timestamp(open_ms, unit="ms", tz="UTC"),
+                    "open": float(kline[1]),
+                    "high": float(kline[2]),
+                    "low": float(kline[3]),
+                    "close": close_price,
+                    "volume": volume,
+                    "trade_count": int(kline[8]),
+                    "vwap": (quote_volume / volume) if volume > 0.0 else close_price,
+                    "symbol": str(symbol).upper(),
+                }
+            )
+        if rows:
+            frames.append(pd.DataFrame(rows))
+        if last_open_ms is None:
+            break
+        next_cursor_ms = last_open_ms + interval_ms
+        if next_cursor_ms <= cursor_ms:
+            break
+        cursor_ms = next_cursor_ms
+        if len(raw) < 1000 and last_open_ms >= request_end_open_ms:
+            break
+
+    if not frames:
+        return pd.DataFrame()
+    return _normalize_profit_gate_5m_frame(pd.concat(frames, ignore_index=True), symbol=symbol)
+
+
+def _append_profit_gate_5m_bars(path: Path, frame: pd.DataFrame, *, symbol: str) -> pd.DataFrame:
+    new_rows = _normalize_profit_gate_5m_frame(frame, symbol=symbol)
+    if path.exists():
+        try:
+            existing = _normalize_profit_gate_5m_frame(pd.read_csv(path), symbol=symbol)
+        except Exception:
+            existing = pd.DataFrame()
+        combined = pd.concat([existing, new_rows], ignore_index=True)
+    else:
+        combined = new_rows
+    combined = _normalize_profit_gate_5m_frame(combined, symbol=symbol)
+    if combined.empty:
+        return combined
+    path.parent.mkdir(parents=True, exist_ok=True)
+    combined.to_csv(path, index=False)
+    return combined
+
+
+def _load_profit_gate_5m_bars(symbol: str, start_ts: pd.Timestamp, end_ts: pd.Timestamp, *, args=None) -> pd.DataFrame:
+    root = _resolve_profit_gate_5m_root(args)
+    path = root / f"{str(symbol).upper()}.csv"
+    try:
+        frame = _normalize_profit_gate_5m_frame(pd.read_csv(path), symbol=symbol) if path.exists() else pd.DataFrame()
+    except Exception:
+        frame = pd.DataFrame()
+
+    if not _has_complete_profit_gate_5m_window(frame, start_ts, end_ts):
+        print(f"[{TAG}] profit gate 5m refresh needed for {symbol} ({start_ts} -> {end_ts}) at {path}")
+        try:
+            refreshed = _fetch_profit_gate_5m_bars(symbol, start_ts, end_ts)
+        except Exception as exc:
+            print(f"[{TAG}] profit gate 5m refresh failed for {symbol}: {exc}")
+            refreshed = pd.DataFrame()
+        if not refreshed.empty:
+            frame = _append_profit_gate_5m_bars(path, refreshed, symbol=symbol)
+            print(f"[{TAG}] profit gate 5m refresh wrote {len(refreshed)} bars for {symbol} to {path}")
+
+    if frame.empty:
+        return pd.DataFrame()
+    mask = (frame["timestamp"] >= start_ts) & (frame["timestamp"] <= end_ts)
+    return frame.loc[mask].sort_values("timestamp").reset_index(drop=True)
+
+
+def _make_profit_gate_sim_args(args, *, start_ts: pd.Timestamp, initial_cash: float, rules, fee: float):
+    raw_long_max_leverage = getattr(args, "max_long_leverage", None)
+    long_max_leverage = float(args.max_leverage if raw_long_max_leverage is None else raw_long_max_leverage)
+    raw_short_max_leverage = getattr(args, "max_short_leverage", None)
+    short_max_leverage = float(long_max_leverage if raw_short_max_leverage is None else raw_short_max_leverage)
+    return argparse.Namespace(
+        fee=float(fee),
+        fill_buffer_pct=float(getattr(args, "fill_buffer_pct", 0.0005)),
+        initial_cash=float(initial_cash),
+        start=start_ts.isoformat(),
+        realistic=True,
+        expiry_minutes=int(getattr(args, "expiry_minutes", 90)),
+        max_fill_fraction=float(getattr(args, "max_fill_fraction", 0.01)),
+        min_notional=float(
+            getattr(rules, "min_notional", getattr(args, "min_notional", 5.0))
+            or getattr(args, "min_notional", 5.0)
+        ),
+        tick_size=float(
+            getattr(rules, "tick_size", getattr(args, "tick_size", 0.00001))
+            or getattr(args, "tick_size", 0.00001)
+        ),
+        step_size=float(
+            getattr(rules, "step_size", getattr(args, "step_size", 1.0))
+            or getattr(args, "step_size", 1.0)
+        ),
+        max_hold_hours=float(getattr(args, "max_hold_hours", 0.0) or 0.0),
+        max_leverage=float(getattr(args, "max_leverage", 1.0)),
+        long_max_leverage=long_max_leverage,
+        short_max_leverage=short_max_leverage,
+        margin_hourly_rate=float(getattr(args, "margin_hourly_rate", 0.0)),
+        verbose=False,
+        live_like=True,
+        use_order_expiry=bool(getattr(args, "use_order_expiry", False)),
+        reprice_threshold=float(getattr(args, "reprice_threshold", ORDER_REPRICE_THRESHOLD)),
+        max_position_notional=getattr(args, "max_position_notional", None),
+        allow_short=bool(getattr(args, "allow_short", False)),
+    )
+
+
+def compute_live_like_profit_gate_returns(
+    histories: dict,
+    *,
+    asof_ts,
+    lookback_hours: int,
+    args,
+    rules_by_model: dict[str, object],
+    initial_cash: float,
+    bars_by_model: Optional[dict[str, pd.DataFrame]] = None,
+    simulate_with_trace=None,
+) -> dict[str, float]:
+    if lookback_hours <= 0:
+        return {}
+
+    resolved_asof = _normalize_utc_timestamp(asof_ts)
+    if resolved_asof is None:
+        return {str(name): 0.0 for name in histories}
+
+    end_ts = resolved_asof.floor("5min")
+    if end_ts == resolved_asof:
+        end_ts -= pd.Timedelta(minutes=5)
+    start_ts = end_ts - pd.Timedelta(hours=float(lookback_hours))
+    bars_start_ts = start_ts - pd.Timedelta(hours=1)
+    starting_cash = max(0.0, float(initial_cash or 0.0))
+    if start_ts >= end_ts or starting_cash <= 0.0:
+        return {str(name): 0.0 for name in histories}
+
+    if simulate_with_trace is None:
+        from binanceleveragesui.validate_sim_vs_live import simulate_5m_with_trace as _simulate_with_trace
+
+        simulate_with_trace = _simulate_with_trace
+
+    returns: dict[str, float] = {}
+    for name, history in histories.items():
+        model_cfg = MODELS.get(name, {})
+        symbol = str(model_cfg.get("symbol", "") or "")
+        if not symbol:
+            returns[str(name)] = 0.0
+            continue
+
+        signals = _signal_history_to_hourly_signals(history, symbol=symbol)
+        if not signals:
+            returns[str(name)] = 0.0
+            continue
+
+        rules = rules_by_model.get(name)
+        if rules is None:
+            rules = resolve_symbol_rules(symbol)
+
+        if bars_by_model and name in bars_by_model:
+            bars = bars_by_model[name]
+            if not bars.empty:
+                bars = bars.copy()
+                bars["timestamp"] = pd.to_datetime(bars["timestamp"], utc=True, errors="coerce")
+                bars = bars.dropna(subset=["timestamp"])
+                bars = bars[(bars["timestamp"] >= bars_start_ts) & (bars["timestamp"] <= end_ts)].reset_index(drop=True)
+        else:
+            bars = _load_profit_gate_5m_bars(symbol, bars_start_ts, end_ts, args=args)
+
+        if bars is None or bars.empty:
+            returns[str(name)] = 0.0
+            continue
+
+        sim_args = _make_profit_gate_sim_args(
+            args,
+            start_ts=start_ts,
+            initial_cash=starting_cash,
+            rules=rules,
+            fee=float(model_cfg.get("maker_fee", getattr(args, "fee", 0.001))),
+        )
+        try:
+            _trades, final_eq, _cash, _inv, _trace = simulate_with_trace(
+                sim_args,
+                signals,
+                bars,
+                initial_inv=0.0,
+                initial_entry_ts=None,
+            )
+            returns[str(name)] = float(final_eq / starting_cash - 1.0) if np.isfinite(final_eq) else 0.0
+        except Exception as exc:
+            print(f"[{TAG}] live-like profit gate simulation failed for {name}: {exc}")
+            returns[str(name)] = 0.0
+
+    return returns
 
 
 def _refresh_price_csv(symbol, data_symbol, data_root):
@@ -374,6 +813,19 @@ def _load_live_frame(
         cache_only=cache_only,
     )
     return dm.full_frame
+
+
+def _get_total_margin_equity() -> float:
+    try:
+        margin_acct = get_margin_account()
+        total_net_btc = float(margin_acct.get("totalNetAssetOfBtc", 0))
+        btc_price = float(binance_wrapper.get_symbol_price("BTCUSDT"))
+        equity = total_net_btc * btc_price
+        if np.isfinite(equity) and equity > 0.0:
+            return float(equity)
+    except Exception:
+        pass
+    return 0.0
 
 
 def _get_margin_equity_for(symbol, base_asset):
@@ -636,10 +1088,23 @@ def _restore_signals_from_snapshot(payload: dict) -> dict[str, dict]:
     return restored
 
 
-def _runtime_signature(args, *, forecast_horizons: tuple[int, ...]) -> dict:
+def _runtime_signature(args, *, forecast_horizons: tuple[int, ...], model_specs: list[dict]) -> dict:
     return {
-        "doge_checkpoint": str(Path(args.doge_checkpoint).resolve()),
-        "aave_checkpoint": str(Path(args.aave_checkpoint).resolve()),
+        "models": [
+            {
+                "name": str(spec["name"]),
+                "symbol": str(spec["symbol"]),
+                "data_symbol": str(spec["data_symbol"]),
+                "base_asset": str(spec["base_asset"]),
+                "maker_fee": float(spec["maker_fee"]),
+                "checkpoint": (
+                    None
+                    if spec.get("checkpoint") is None
+                    else str(Path(spec["checkpoint"]).resolve())
+                ),
+            }
+            for spec in model_specs
+        ],
         "data_root": str(Path(args.data_root).resolve()),
         "forecast_cache": str(Path(args.forecast_cache).resolve()),
         "forecast_model_id": str(getattr(args, "forecast_model_id", "amazon/chronos-t5-small")),
@@ -650,6 +1115,7 @@ def _runtime_signature(args, *, forecast_horizons: tuple[int, ...]) -> dict:
         "cash_threshold": float(args.cash_threshold),
         "switch_margin": float(args.switch_margin),
         "min_score_gap": float(args.min_score_gap),
+        "profit_gate_mode": str(getattr(args, "profit_gate_mode", "hypothetical")),
         "profit_gate_lookback_hours": int(getattr(args, "profit_gate_lookback_hours", 0)),
         "profit_gate_min_return": float(getattr(args, "profit_gate_min_return", 0.0)),
         "horizon": int(args.horizon),
@@ -1742,6 +2208,8 @@ def select_model(
     max_short_leverage: Optional[float] = None,
     profit_gate_lookback_hours: int = 0,
     profit_gate_min_return: float = 0.0,
+    profit_gate_mode: str = "hypothetical",
+    profit_gate_returns: Optional[dict[str, float]] = None,
 ) -> str:
     if metric not in SUPPORTED_SELECTION_METRICS:
         raise ValueError(f"Unsupported selection metric '{metric}'. Expected one of {SUPPORTED_SELECTION_METRICS}.")
@@ -1751,6 +2219,7 @@ def select_model(
         raise ValueError(f"min_score_gap must be >= 0, got {min_score_gap}")
     if profit_gate_lookback_hours < 0:
         raise ValueError(f"profit_gate_lookback_hours must be >= 0, got {profit_gate_lookback_hours}")
+    profit_gate_mode = _normalize_profit_gate_mode(profit_gate_mode)
 
     scores = {}
     for name, hist in histories.items():
@@ -1772,14 +2241,19 @@ def select_model(
         )
         scores[name] = s
 
-    profit_returns = _recent_profit_gate_returns(
-        histories,
-        lookback_hours=int(profit_gate_lookback_hours),
-        max_leverage=max_leverage,
-        allow_short=allow_short,
-        max_long_leverage=max_long_leverage,
-        max_short_leverage=max_short_leverage,
-    )
+    if profit_gate_lookback_hours > 0 and profit_gate_returns is not None:
+        profit_returns = {str(name): float(value) for name, value in profit_gate_returns.items()}
+    elif profit_gate_lookback_hours > 0 and profit_gate_mode == "live_like":
+        raise ValueError("profit_gate_returns must be provided when profit_gate_mode='live_like'")
+    else:
+        profit_returns = _recent_profit_gate_returns(
+            histories,
+            lookback_hours=int(profit_gate_lookback_hours),
+            max_leverage=max_leverage,
+            allow_short=allow_short,
+            max_long_leverage=max_long_leverage,
+            max_short_leverage=max_short_leverage,
+        )
     blocked_by_profit_gate = {
         name: recent_return
         for name, recent_return in profit_returns.items()
@@ -1808,6 +2282,7 @@ def select_model(
             threshold=cash_threshold,
             switch_margin=switch_margin,
             min_score_gap=min_score_gap,
+            profit_gate_mode=profit_gate_mode,
             profit_gate_lookback_hours=int(profit_gate_lookback_hours),
             profit_gate_min_return=float(profit_gate_min_return),
             profit_returns=profit_returns,
@@ -1860,6 +2335,7 @@ def select_model(
                 threshold=cash_threshold,
                 switch_margin=switch_margin,
                 min_score_gap=min_score_gap,
+                profit_gate_mode=profit_gate_mode,
                 profit_gate_lookback_hours=int(profit_gate_lookback_hours),
                 profit_gate_min_return=float(profit_gate_min_return),
                 profit_returns=profit_returns,
@@ -1888,6 +2364,7 @@ def select_model(
             threshold=cash_threshold,
             switch_margin=switch_margin,
             min_score_gap=min_score_gap,
+            profit_gate_mode=profit_gate_mode,
             profit_gate_lookback_hours=int(profit_gate_lookback_hours),
             profit_gate_min_return=float(profit_gate_min_return),
             profit_returns=profit_returns,
@@ -1915,6 +2392,7 @@ def select_model(
         threshold=cash_threshold,
         switch_margin=switch_margin,
         min_score_gap=min_score_gap,
+        profit_gate_mode=profit_gate_mode,
         profit_gate_lookback_hours=int(profit_gate_lookback_hours),
         profit_gate_min_return=float(profit_gate_min_return),
         profit_returns=profit_returns,
@@ -1928,8 +2406,18 @@ def select_model(
 
 def main():
     parser = argparse.ArgumentParser(description="Meta-switcher margin bot")
-    parser.add_argument("--doge-checkpoint", required=True)
-    parser.add_argument("--aave-checkpoint", required=True)
+    parser.add_argument("--model-a-name", default=MODEL_SLOT_DEFAULTS[0][1])
+    parser.add_argument("--model-a-symbol", default=MODEL_SLOT_DEFAULTS[0][2]["symbol"])
+    parser.add_argument("--model-a-data-symbol", default=MODEL_SLOT_DEFAULTS[0][2]["data_symbol"])
+    parser.add_argument("--model-a-base-asset", default=MODEL_SLOT_DEFAULTS[0][2]["base_asset"])
+    parser.add_argument("--model-a-maker-fee", type=float, default=MODEL_SLOT_DEFAULTS[0][2]["maker_fee"])
+    parser.add_argument("--model-a-checkpoint", "--doge-checkpoint", dest="model_a_checkpoint", required=True)
+    parser.add_argument("--model-b-name", default=MODEL_SLOT_DEFAULTS[1][1])
+    parser.add_argument("--model-b-symbol", default=MODEL_SLOT_DEFAULTS[1][2]["symbol"])
+    parser.add_argument("--model-b-data-symbol", default=MODEL_SLOT_DEFAULTS[1][2]["data_symbol"])
+    parser.add_argument("--model-b-base-asset", default=MODEL_SLOT_DEFAULTS[1][2]["base_asset"])
+    parser.add_argument("--model-b-maker-fee", type=float, default=MODEL_SLOT_DEFAULTS[1][2]["maker_fee"])
+    parser.add_argument("--model-b-checkpoint", "--aave-checkpoint", dest="model_b_checkpoint", required=True)
     parser.add_argument("--max-leverage", type=float, default=2.0)
     parser.add_argument("--allow-short", action="store_true")
     parser.add_argument("--max-long-leverage", type=float, default=None)
@@ -1964,6 +2452,12 @@ def main():
         type=float,
         default=0.0,
         help="confidence gate: in winner_cash mode, stay in cash if (best - second_best) < min-score-gap",
+    )
+    parser.add_argument(
+        "--profit-gate-mode",
+        default="hypothetical",
+        choices=SUPPORTED_PROFIT_GATE_MODES,
+        help="profit gate source: hypothetical score replay or live-like 5m execution replay",
     )
     parser.add_argument(
         "--profit-gate-lookback-hours",
@@ -2014,6 +2508,9 @@ def main():
     elif args.max_position_notional is None and not args.dry_run:
         print(f"[{TAG}] probe cap disabled: max_position_notional=None")
 
+    model_specs = build_model_specs_from_args(args)
+    apply_model_specs(model_specs)
+
     data_root = Path(args.data_root)
     forecast_cache = Path(args.forecast_cache)
     requested_forecast_horizons = tuple(int(h) for h in args.forecast_horizons.split(",") if str(h).strip())
@@ -2026,14 +2523,25 @@ def main():
     )
     if not args.allow_short:
         short_max_leverage = 0.0
-    # Load both models
-    print(f"[{TAG}] loading DOGE model from {args.doge_checkpoint}")
-    doge_model, doge_norm, doge_feat, doge_cfg = load_policy_checkpoint(args.doge_checkpoint)
-    print(f"[{TAG}] loading AAVE model from {args.aave_checkpoint}")
-    aave_model, aave_norm, aave_feat, aave_cfg = load_policy_checkpoint(args.aave_checkpoint)
+
+    models_loaded = {}
+    combined_feature_columns: list[str] = []
+    for spec in model_specs:
+        checkpoint = spec.get("checkpoint")
+        if checkpoint is None:
+            raise ValueError(f"Missing checkpoint for {spec['name']}")
+        print(f"[{TAG}] loading {str(spec['name']).upper()} model from {checkpoint}")
+        model, norm, feat, _cfg = load_policy_checkpoint(
+            str(checkpoint),
+            data_root=Path(args.data_root),
+            forecast_cache_root=Path(args.forecast_cache),
+        )
+        models_loaded[str(spec["name"])] = (model, norm, feat)
+        combined_feature_columns.extend(list(feat))
+
     forecast_horizons = resolve_required_forecast_horizons(
         requested_forecast_horizons,
-        feature_columns=list(doge_feat) + list(aave_feat),
+        feature_columns=combined_feature_columns,
         fallback_horizons=(int(args.horizon),),
     )
     if forecast_horizons != requested_forecast_horizons:
@@ -2041,19 +2549,11 @@ def main():
             f"[{TAG}] expanded forecast horizons from {requested_forecast_horizons} "
             f"to {forecast_horizons} based on checkpoint features"
         )
-    runtime_signature = _runtime_signature(args, forecast_horizons=forecast_horizons)
+    runtime_signature = _runtime_signature(args, forecast_horizons=forecast_horizons, model_specs=model_specs)
     runtime_snapshot = _load_runtime_snapshot()
 
-    models_loaded = {
-        "doge": (doge_model, doge_norm, doge_feat),
-        "aave": (aave_model, aave_norm, aave_feat),
-    }
-
     # Resolve rules for both symbols
-    rules = {
-        "doge": resolve_symbol_rules("DOGEUSDT"),
-        "aave": resolve_symbol_rules("AAVEUSDT"),
-    }
+    rules = {str(spec["name"]): resolve_symbol_rules(str(spec["symbol"])) for spec in model_specs}
 
     # Signal histories for both models
     histories = {name: SignalHistory() for name in MODELS}
@@ -2209,10 +2709,11 @@ def main():
     persist_runtime()
 
     print(
-        f"[{TAG}] meta-switcher ready, lookback={args.lookback}, leverage={args.max_leverage}x, "
+        f"[{TAG}] meta-switcher ready, models={','.join(MODELS)}, lookback={args.lookback}, leverage={args.max_leverage}x, "
         f"mode={args.selection_mode}, metric={args.selection_metric}, "
         f"cash_threshold={args.cash_threshold}, switch_margin={args.switch_margin}, "
-        f"min_score_gap={args.min_score_gap}, profit_gate={args.profit_gate_lookback_hours}h>{args.profit_gate_min_return:.4f}, "
+        f"min_score_gap={args.min_score_gap}, "
+        f"profit_gate={args.profit_gate_mode}:{args.profit_gate_lookback_hours}h>{args.profit_gate_min_return:.4f}, "
         f"forecast_model_id={args.forecast_model_id}, "
         f"max_position_notional={args.max_position_notional}, "
         f"allow_short={bool(args.allow_short)}, max_long_leverage={args.max_long_leverage}, "
@@ -2358,6 +2859,16 @@ def main():
                     state.position_side = ""
                     state.open_ts = None
                     state.open_price = 0.0
+                    profit_gate_returns = None
+                    if int(args.profit_gate_lookback_hours) > 0 and str(args.profit_gate_mode) == "live_like":
+                        profit_gate_returns = compute_live_like_profit_gate_returns(
+                            histories,
+                            asof_ts=datetime.now(timezone.utc),
+                            lookback_hours=int(args.profit_gate_lookback_hours),
+                            args=args,
+                            rules_by_model=rules,
+                            initial_cash=max(float(equity), 0.0),
+                        )
                     # Select new model for next trade
                     new_model = select_model(
                         histories,
@@ -2369,8 +2880,10 @@ def main():
                         current_model=active,
                         switch_margin=args.switch_margin,
                         min_score_gap=args.min_score_gap,
+                        profit_gate_mode=args.profit_gate_mode,
                         profit_gate_lookback_hours=args.profit_gate_lookback_hours,
                         profit_gate_min_return=args.profit_gate_min_return,
+                        profit_gate_returns=profit_gate_returns,
                         allow_short=bool(args.allow_short),
                         max_long_leverage=args.max_long_leverage,
                         max_short_leverage=args.max_short_leverage,
@@ -2934,6 +3447,16 @@ def main():
                     print(f"[{TAG}] {active} flat, no entry signal")
         else:
             # No active model yet, select one
+            profit_gate_returns = None
+            if int(args.profit_gate_lookback_hours) > 0 and str(args.profit_gate_mode) == "live_like":
+                profit_gate_returns = compute_live_like_profit_gate_returns(
+                    histories,
+                    asof_ts=datetime.now(timezone.utc),
+                    lookback_hours=int(args.profit_gate_lookback_hours),
+                    args=args,
+                    rules_by_model=rules,
+                    initial_cash=max(_get_total_margin_equity(), 0.0),
+                )
             active = select_model(
                 histories,
                 args.lookback,
@@ -2944,8 +3467,10 @@ def main():
                 current_model="",
                 switch_margin=args.switch_margin,
                 min_score_gap=args.min_score_gap,
+                profit_gate_mode=args.profit_gate_mode,
                 profit_gate_lookback_hours=args.profit_gate_lookback_hours,
                 profit_gate_min_return=args.profit_gate_min_return,
+                profit_gate_returns=profit_gate_returns,
                 allow_short=bool(args.allow_short),
                 max_long_leverage=args.max_long_leverage,
                 max_short_leverage=args.max_short_leverage,

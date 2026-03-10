@@ -19,6 +19,7 @@ class TradingEnvConfig:
         max_steps: int = 720,       # 30 days
         fee_rate: float = 0.001,
         max_leverage: float = 1.0,
+        short_borrow_apr: float = 0.0,
         periods_per_year: float = 8760.0,
         num_symbols: int = 14,      # read from binary header, but needed for space defs
         reward_scale: float = 10.0,
@@ -39,6 +40,7 @@ class TradingEnvConfig:
         self.max_steps = max_steps
         self.fee_rate = fee_rate
         self.max_leverage = max_leverage
+        self.short_borrow_apr = float(short_borrow_apr)
         self.periods_per_year = float(periods_per_year)
         self.num_symbols = num_symbols
         self.reward_scale = reward_scale
@@ -97,6 +99,7 @@ class TradingEnv(GymnasiumPufferEnv):
             max_steps=config.max_steps,
             fee_rate=config.fee_rate,
             max_leverage=config.max_leverage,
+            short_borrow_apr=config.short_borrow_apr,
             periods_per_year=config.periods_per_year,
             reward_scale=config.reward_scale,
             reward_clip=config.reward_clip,

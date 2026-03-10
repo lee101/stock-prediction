@@ -23,6 +23,8 @@ import torch
 import torch.nn as nn
 from torch.distributions import Categorical
 
+from pufferlib_market.metrics import annualize_total_return
+
 
 class TradingPolicy(nn.Module):
     """Must match the architecture in train.py exactly."""
@@ -105,6 +107,7 @@ def evaluate_random(args, policy, binding, obs_buf, act_buf, rew_buf, term_buf,
         max_steps=args.max_steps,
         fee_rate=args.fee_rate,
         max_leverage=args.max_leverage,
+        short_borrow_apr=args.short_borrow_apr,
         periods_per_year=args.periods_per_year,
         action_allocation_bins=args.action_allocation_bins,
         action_level_bins=args.action_level_bins,
@@ -194,6 +197,7 @@ def evaluate_sequential(args, policy, binding, obs_size, num_actions, device):
         max_steps=max_steps,
         fee_rate=args.fee_rate,
         max_leverage=args.max_leverage,
+        short_borrow_apr=args.short_borrow_apr,
         periods_per_year=args.periods_per_year,
         action_allocation_bins=args.action_allocation_bins,
         action_level_bins=args.action_level_bins,
@@ -236,6 +240,7 @@ def main():
     parser.add_argument("--max-steps", type=int, default=720, help="Episode length (hours)")
     parser.add_argument("--fee-rate", type=float, default=0.001)
     parser.add_argument("--max-leverage", type=float, default=1.0)
+    parser.add_argument("--short-borrow-apr", type=float, default=0.0)
     parser.add_argument("--periods-per-year", type=float, default=8760.0,
                         help="Annualisation factor for Sortino (8760=hourly, 365=daily, 252=trading days)")
     parser.add_argument("--action-allocation-bins", type=int, default=1)
@@ -351,7 +356,11 @@ def main():
     periods_per_year = args.periods_per_year if args.periods_per_year > 0 else 8760.0
     years = total_steps / periods_per_year
     if years > 0 and cum_mult > 0:
-        annualized = cum_mult ** (1 / years) - 1
+        annualized = annualize_total_return(
+            float(cum_mult - 1.0),
+            periods=float(total_steps),
+            periods_per_year=float(periods_per_year),
+        )
         print(f"Estimated annualized return: {annualized*100:+.1f}% ({years:.1f} years of data)")
 
     # Distribution of returns

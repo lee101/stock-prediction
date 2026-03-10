@@ -26,6 +26,7 @@ import torch.nn as nn
 from torch.distributions import Categorical
 
 from pufferlib_market.hourly_replay import MktdData, read_mktd, simulate_daily_policy
+from pufferlib_market.metrics import annualize_total_return
 
 
 def _mask_all_shorts(logits: torch.Tensor, *, num_symbols: int) -> torch.Tensor:
@@ -201,6 +202,7 @@ def main() -> None:
     parser.add_argument("--fee-rate", type=float, default=0.001)
     parser.add_argument("--max-leverage", type=float, default=1.0)
     parser.add_argument("--periods-per-year", type=float, default=8760.0)
+    parser.add_argument("--short-borrow-apr", type=float, default=0.0)
     parser.add_argument("--arch", choices=["auto", "mlp", "resmlp"], default="auto")
     parser.add_argument("--hidden-size", type=int, default=None)
     parser.add_argument("--disable-shorts", action="store_true")
@@ -292,6 +294,12 @@ def main() -> None:
         fee_rate=float(args.fee_rate),
         max_leverage=float(args.max_leverage),
         periods_per_year=float(args.periods_per_year),
+        short_borrow_apr=float(args.short_borrow_apr),
+    )
+    annualized_return = annualize_total_return(
+        float(result.total_return),
+        periods=float(args.eval_hours),
+        periods_per_year=float(args.periods_per_year),
     )
 
     out = {
@@ -302,10 +310,12 @@ def main() -> None:
         "decision_lag": int(decision_lag),
         "fee_rate": float(args.fee_rate),
         "max_leverage": float(args.max_leverage),
+        "short_borrow_apr": float(args.short_borrow_apr),
         "periods_per_year": float(args.periods_per_year),
         "arch": str(arch),
         "hidden_size": int(hidden),
         "total_return": float(result.total_return),
+        "annualized_return": float(annualized_return),
         "sortino": float(result.sortino),
         "max_drawdown": float(result.max_drawdown),
         "num_trades": int(result.num_trades),
