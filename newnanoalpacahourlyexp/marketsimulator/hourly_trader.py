@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
 from src.allocation_utils import allocation_usd_for_symbol
 from src.fees import get_fee_for_symbol
-from src.hourly_trader_utils import build_order_intents, build_plan_from_action, ensure_valid_levels
+from src.hourly_trader_utils import (
+    build_order_intents,
+    build_plan_from_action,
+    ensure_valid_levels,
+    infer_working_order_kind,
+)
 from src.metrics_utils import annualized_sortino, compute_step_returns
 from src.symbol_utils import is_crypto_symbol
 from src.trade_directions import resolve_trade_directions
@@ -21,6 +27,8 @@ from .simulator import _infer_periods_per_year, _market_open_mask, _to_new_york
 @dataclass
 class HourlyTraderSimulationConfig:
     initial_cash: float = 10_000.0
+    initial_positions: Optional[Dict[str, float]] = None
+    initial_open_orders: Optional[Sequence["OpenOrder"]] = None
     allocation_usd: Optional[float] = None  # per symbol
     allocation_pct: Optional[float] = 0.05
     allocation_mode: str = "per_symbol"  # "per_symbol" | "portfolio"
@@ -216,11 +224,98 @@ class HourlyTraderMarketSimulator:
 
         exit_only_set = {s.upper() for s in (cfg.exit_only_symbols or ())}
 
+        def _normalize_symbol(value: object) -> str:
+            return str(value or "").replace("/", "").replace("-", "").upper()
+
+        def _optional_ts(value: object) -> Optional[pd.Timestamp]:
+            ts = pd.to_datetime(value, utc=True, errors="coerce")
+            if pd.isna(ts):
+                return None
+            return pd.Timestamp(ts)
+
         cash = float(cfg.initial_cash)
-        reserved_cash = 0.0
         positions: Dict[str, float] = {sym: 0.0 for sym in symbols}
-        last_close: Dict[str, float] = {}
+        for raw_symbol, raw_qty in (cfg.initial_positions or {}).items():
+            symbol = _normalize_symbol(raw_symbol)
+            if symbol not in positions:
+                continue
+            positions[symbol] = float(raw_qty)
+
         open_orders: Dict[Tuple[str, str], OpenOrder] = {}
+        for seed_order in (cfg.initial_open_orders or ()):
+            symbol = _normalize_symbol(getattr(seed_order, "symbol", ""))
+            side = str(getattr(seed_order, "side", "") or "").strip().lower()
+            qty = float(getattr(seed_order, "qty", 0.0) or 0.0)
+            price = float(getattr(seed_order, "limit_price", 0.0) or 0.0)
+            if symbol not in positions or side not in {"buy", "sell"} or qty <= 0.0 or price <= 0.0:
+                continue
+
+            placed_at = _optional_ts(getattr(seed_order, "placed_at", None))
+            if placed_at is None:
+                continue
+
+            kind = str(getattr(seed_order, "kind", "") or "").strip().lower()
+            if kind not in {"entry", "exit"}:
+                kind = infer_working_order_kind(side=side, position_qty=float(positions.get(symbol, 0.0)))
+
+            fee_rate = float(meta[symbol]["maker_fee"])
+            reserved_cash_value = float(getattr(seed_order, "reserved_cash", 0.0) or 0.0)
+            if reserved_cash_value < 0.0 or not math.isfinite(reserved_cash_value):
+                reserved_cash_value = 0.0
+
+            normalized = OpenOrder(
+                symbol=symbol,
+                side=side,
+                qty=qty,
+                limit_price=price,
+                kind=kind,
+                placed_at=placed_at,
+                reserved_cash=reserved_cash_value,
+                cancel_requested_at=_optional_ts(getattr(seed_order, "cancel_requested_at", None)),
+                cancel_effective_at=_optional_ts(getattr(seed_order, "cancel_effective_at", None)),
+            )
+            key = (symbol, side)
+            existing = open_orders.get(key)
+            if existing is None:
+                open_orders[key] = normalized
+                continue
+
+            merged_qty = float(existing.qty) + float(normalized.qty)
+            if merged_qty <= 0.0:
+                continue
+            merged_price = (
+                float(existing.limit_price) * float(existing.qty) + float(normalized.limit_price) * float(normalized.qty)
+            ) / merged_qty
+            merged_kind = existing.kind if existing.kind == normalized.kind else infer_working_order_kind(
+                side=side,
+                position_qty=float(positions.get(symbol, 0.0)),
+            )
+            cancel_requested_at = existing.cancel_requested_at
+            new_cancel_requested_at = normalized.cancel_requested_at
+            if cancel_requested_at is None or (
+                new_cancel_requested_at is not None and pd.Timestamp(new_cancel_requested_at) < pd.Timestamp(cancel_requested_at)
+            ):
+                cancel_requested_at = new_cancel_requested_at
+            cancel_effective_at = existing.cancel_effective_at
+            new_cancel_effective_at = normalized.cancel_effective_at
+            if cancel_effective_at is None or (
+                new_cancel_effective_at is not None and pd.Timestamp(new_cancel_effective_at) < pd.Timestamp(cancel_effective_at)
+            ):
+                cancel_effective_at = new_cancel_effective_at
+            open_orders[key] = OpenOrder(
+                symbol=symbol,
+                side=side,
+                qty=merged_qty,
+                limit_price=float(merged_price),
+                kind=merged_kind,
+                placed_at=min(pd.Timestamp(existing.placed_at), pd.Timestamp(normalized.placed_at)),
+                reserved_cash=float(existing.reserved_cash) + float(normalized.reserved_cash),
+                cancel_requested_at=cancel_requested_at,
+                cancel_effective_at=cancel_effective_at,
+            )
+
+        reserved_cash = float(sum(float(order.reserved_cash) for order in open_orders.values()))
+        last_close: Dict[str, float] = {}
         fills: List[FillRecord] = []
         equity_values: List[float] = []
         per_hour_rows: List[Dict[str, float | str]] = []

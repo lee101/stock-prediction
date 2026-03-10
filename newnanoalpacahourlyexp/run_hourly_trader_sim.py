@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Optional, Sequence, Tuple
 
@@ -18,7 +19,8 @@ from src.torch_load_utils import torch_load_compat
 from .config import DatasetConfig, ExperimentConfig
 from .data import AlpacaHourlyDataModule
 from .inference import generate_actions_multi_context
-from .marketsimulator.hourly_trader import HourlyTraderMarketSimulator, HourlyTraderSimulationConfig
+from .marketsimulator.hourly_trader import HourlyTraderMarketSimulator, HourlyTraderSimulationConfig, OpenOrder
+from src.hourly_trader_utils import infer_working_order_kind
 
 
 def _parse_symbols(raw: Optional[str]) -> list[str]:
@@ -98,6 +100,97 @@ def _resolve_data_root(symbol: str, crypto_root: Optional[Path], stock_root: Opt
     return crypto_root if is_crypto_symbol(symbol) else stock_root
 
 
+def _normalize_symbol(value: object) -> str:
+    return str(value or "").replace("/", "").replace("-", "").upper()
+
+
+def _coerce_float(value: object, *, default: float = 0.0) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if not math.isfinite(result):
+        return float(default)
+    return float(result)
+
+
+def _coerce_ts(value: object) -> pd.Timestamp:
+    ts = pd.to_datetime(value, utc=True, errors="coerce")
+    if pd.isna(ts):
+        raise ValueError(f"Invalid timestamp value: {value!r}")
+    return pd.Timestamp(ts)
+
+
+def _load_initial_state(path: Path) -> tuple[float, dict[str, float], list[OpenOrder]]:
+    payload = json.loads(path.read_text())
+    if not isinstance(payload, Mapping):
+        raise ValueError(f"Initial state file must contain a JSON object: {path}")
+
+    initial_cash = _coerce_float(
+        payload.get("initial_cash", payload.get("cash", payload.get("starting_cash", 0.0))),
+        default=0.0,
+    )
+
+    raw_positions = payload.get("positions", {})
+    positions: dict[str, float] = {}
+    if isinstance(raw_positions, Mapping):
+        for raw_symbol, raw_qty in raw_positions.items():
+            symbol = _normalize_symbol(raw_symbol)
+            if not symbol:
+                continue
+            positions[symbol] = _coerce_float(raw_qty, default=0.0)
+    elif isinstance(raw_positions, list):
+        for row in raw_positions:
+            if not isinstance(row, Mapping):
+                continue
+            symbol = _normalize_symbol(row.get("symbol", row.get("asset", "")))
+            if not symbol:
+                continue
+            qty = _coerce_float(row.get("quantity", row.get("qty", row.get("position", 0.0))), default=0.0)
+            positions[symbol] = qty
+    else:
+        raise ValueError(f"positions must be an object or list in {path}")
+
+    open_orders: list[OpenOrder] = []
+    raw_orders = payload.get("open_orders", payload.get("orders", []))
+    if raw_orders is None:
+        raw_orders = []
+    if not isinstance(raw_orders, list):
+        raise ValueError(f"open_orders must be a list in {path}")
+    for row in raw_orders:
+        if not isinstance(row, Mapping):
+            continue
+        symbol = _normalize_symbol(row.get("symbol", row.get("asset", "")))
+        side = str(row.get("side", "") or "").strip().lower()
+        qty = _coerce_float(row.get("quantity", row.get("qty", row.get("orig_qty", 0.0))), default=0.0)
+        price = _coerce_float(row.get("limit_price", row.get("price", 0.0)), default=0.0)
+        if not symbol or side not in {"buy", "sell"} or qty <= 0.0 or price <= 0.0:
+            continue
+        kind = str(row.get("kind", "") or "").strip().lower()
+        if kind not in {"entry", "exit"}:
+            kind = infer_working_order_kind(side=side, position_qty=float(positions.get(symbol, 0.0)))
+        placed_at = _coerce_ts(row.get("placed_at", row.get("created_at", row.get("timestamp", row.get("submitted_at")))))
+        cancel_requested_raw = row.get("cancel_requested_at")
+        cancel_effective_raw = row.get("cancel_effective_at")
+        cancel_requested_at = _coerce_ts(cancel_requested_raw) if cancel_requested_raw else None
+        cancel_effective_at = _coerce_ts(cancel_effective_raw) if cancel_effective_raw else None
+        open_orders.append(
+            OpenOrder(
+                symbol=symbol,
+                side=side,
+                qty=qty,
+                limit_price=price,
+                kind=kind,
+                placed_at=placed_at,
+                reserved_cash=_coerce_float(row.get("reserved_cash", 0.0), default=0.0),
+                cancel_requested_at=cancel_requested_at,
+                cancel_effective_at=cancel_effective_at,
+            )
+        )
+
+    return initial_cash, positions, open_orders
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Backtest the live hourly trader loop with shared-cash execution.")
     parser.add_argument("--symbols", default=None)
@@ -132,8 +225,8 @@ def main() -> None:
     parser.add_argument(
         "--fill-buffer-bps",
         type=float,
-        default=0.0,
-        help="Require bar to trade through limit by this many bps before fill (realism control).",
+        default=5.0,
+        help="Require bar to trade through limit by this many bps before fill (realism control, default: 5).",
     )
     parser.add_argument(
         "--allow-position-adds",
@@ -175,6 +268,11 @@ def main() -> None:
     parser.set_defaults(partial_fill_on_touch=True)
     parser.add_argument("--eval-days", type=float, default=None)
     parser.add_argument("--eval-hours", type=float, default=None)
+    parser.add_argument(
+        "--initial-state",
+        default=None,
+        help="Optional JSON file containing seeded initial cash, positions, and open orders for replay parity.",
+    )
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--device", default=None, help="Override device (cuda/cuda:0).")
     args = parser.parse_args()
@@ -305,9 +403,17 @@ def main() -> None:
     bars_all = pd.concat(all_bars, ignore_index=True)
     actions_all = pd.concat(all_actions, ignore_index=True)
 
+    initial_cash = float(args.initial_cash)
+    initial_positions: Optional[dict[str, float]] = None
+    initial_open_orders: Optional[list[OpenOrder]] = None
+    if args.initial_state:
+        initial_cash, initial_positions, initial_open_orders = _load_initial_state(Path(args.initial_state))
+
     sim = HourlyTraderMarketSimulator(
         HourlyTraderSimulationConfig(
-            initial_cash=float(args.initial_cash),
+            initial_cash=float(initial_cash),
+            initial_positions=initial_positions,
+            initial_open_orders=initial_open_orders,
             allocation_usd=float(args.allocation_usd) if args.allocation_usd is not None else None,
             allocation_pct=float(args.allocation_pct) if args.allocation_pct is not None else None,
             allocation_mode=str(args.allocation_mode),

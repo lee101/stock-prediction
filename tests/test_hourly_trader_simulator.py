@@ -5,6 +5,7 @@ import pandas as pd
 from newnanoalpacahourlyexp.marketsimulator.hourly_trader import (
     HourlyTraderMarketSimulator,
     HourlyTraderSimulationConfig,
+    OpenOrder,
 )
 
 
@@ -331,3 +332,47 @@ def test_hourly_trader_simulator_max_leverage_reserves_buying_power_for_multiple
     assert result.final_positions == {"NVDA": 10.0, "PLTR": 10.0}
     assert result.final_cash == -1000.0
     assert result.per_hour.iloc[-1]["gross_exposure"] == 2000.0
+
+
+def test_hourly_trader_simulator_supports_seeded_positions_and_open_orders() -> None:
+    ts0 = pd.Timestamp("2026-01-05T15:00:00Z")
+
+    bars = pd.DataFrame(
+        [
+            {"timestamp": ts0, "symbol": "ETHUSD", "open": 105.0, "high": 111.0, "low": 104.0, "close": 110.0},
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {"timestamp": ts0, "symbol": "ETHUSD", "buy_price": 100.0, "sell_price": 111.0, "buy_amount": 0.0, "sell_amount": 0.0},
+        ]
+    )
+
+    sim = HourlyTraderMarketSimulator(
+        HourlyTraderSimulationConfig(
+            initial_cash=500.0,
+            initial_positions={"ETH/USD": 2.0},
+            initial_open_orders=[
+                OpenOrder(
+                    symbol="ETH/USD",
+                    side="sell",
+                    qty=2.0,
+                    limit_price=110.0,
+                    kind="exit",
+                    placed_at=ts0 - pd.Timedelta(hours=2),
+                )
+            ],
+            allocation_pct=None,
+            decision_lag_bars=1,
+            fee_by_symbol={"ETHUSD": 0.0},
+            enforce_market_hours=False,
+        )
+    )
+    result = sim.run(bars, actions)
+
+    assert len(result.fills) == 1
+    assert result.fills[0].side == "sell"
+    assert result.fills[0].quantity == 2.0
+    assert result.fills[0].price == 110.0
+    assert result.final_positions == {}
+    assert result.final_cash == 720.0

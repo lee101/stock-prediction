@@ -10,6 +10,7 @@ from typing import Dict, Iterable, Optional
 import pandas as pd
 import torch
 
+from src.forecast_horizon_utils import resolve_required_forecast_horizons
 from src.price_guard import enforce_gap
 from src.process_utils import enforce_min_spread
 from src.metrics_utils import compute_step_returns, annualized_sortino
@@ -88,8 +89,27 @@ def _infer_input_dim(state_dict: object, fallback: int) -> int:
 
 
 def _resolve_dataset_config(
-    base_cfg: DatasetConfig, *, input_dim: int, horizon: int
+    base_cfg: DatasetConfig,
+    *,
+    input_dim: int,
+    horizon: int,
+    saved_feature_columns: Iterable[str] | None = None,
 ) -> DatasetConfig:
+    if saved_feature_columns is not None:
+        normalized = tuple(str(column) for column in saved_feature_columns if str(column))
+        if len(normalized) == input_dim:
+            resolved_horizons = resolve_required_forecast_horizons(
+                (horizon,),
+                feature_columns=normalized,
+                fallback_horizons=(horizon,),
+            )
+            if resolved_horizons:
+                return replace(
+                    base_cfg,
+                    forecast_horizons=resolved_horizons,
+                    feature_columns=normalized,
+                    use_forecast_interactions=any(column.startswith("forecast_") for column in normalized),
+                )
     candidates = []
     if (horizon,) not in candidates:
         candidates.append((horizon,))
@@ -266,7 +286,12 @@ def _run_cycle(
             )
             fallback_dim = len(build_default_feature_columns(base_cfg))
             input_dim = _infer_input_dim(state_dict, fallback=fallback_dim)
-            data_cfg = _resolve_dataset_config(base_cfg, input_dim=input_dim, horizon=horizon)
+            data_cfg = _resolve_dataset_config(
+                base_cfg,
+                input_dim=input_dim,
+                horizon=horizon,
+                saved_feature_columns=payload.get("feature_columns"),
+            )
             data = BinanceExp1DataModule(data_cfg)
             model = _load_model_from_payload(payload, input_dim, TrainingConfig(sequence_length=sequence_length))
             action = generate_latest_action(

@@ -24,6 +24,7 @@ def test_load_feature_configs_reads_json(tmp_path: Path) -> None:
                     "forecast_horizons": [1, 6, 24],
                     "context_hours": 1024,
                     "batch_size": 64,
+                    "use_forecast_interactions": True,
                     "force_cross_learning": True,
                     "grouped_joint_cache": True,
                     "use_time_covariates": True,
@@ -36,6 +37,7 @@ def test_load_feature_configs_reads_json(tmp_path: Path) -> None:
 
     assert len(configs) == 1
     assert configs[0].forecast_horizons == (1, 6, 24)
+    assert configs[0].use_forecast_interactions is True
     assert configs[0].grouped_joint_cache is True
     assert configs[0].use_time_covariates is True
 
@@ -102,6 +104,7 @@ def test_build_train_command_uses_feature_cache_root() -> None:
             name="joint",
             forecast_horizons=(1, 6, 24),
             context_hours=1024,
+            use_forecast_interactions=True,
             grouped_joint_cache=True,
         ),
         feature_experiment_name="exp/joint",
@@ -113,6 +116,7 @@ def test_build_train_command_uses_feature_cache_root() -> None:
     assert "--forecast-cache-root experiments/exp/cache/joint" in joined
     assert "--forecast-horizons 1,6,24" in joined
     assert "--max-history-hours 2880" in joined
+    assert "--use-forecast-interactions" in joined
     assert "--run-prefix chronos_feature_sweep_exp_joint" in joined
     assert "--cache-only" in joined
     assert "--realistic-selection" in joined

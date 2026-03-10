@@ -282,6 +282,9 @@ def train_one_run(
             sequence_length=int(config.get("sequence_length", args.sequence_length)),
             validation_days=float(config.get("validation_days", args.validation_days)),
             max_history_hours=_optional_int(config.get("max_history_hours", args.max_history_hours)),
+            use_forecast_interactions=bool(
+                config.get("use_forecast_interactions", args.use_forecast_interactions)
+            ),
             cache_only=bool(args.cache_only),
         )
     )
@@ -390,6 +393,10 @@ def build_search_command(
         str(float(args.search_fill_buffer_bps)),
         "--max-volume-fraction",
         str(float(args.max_volume_fraction)),
+        "--limit-fill-model",
+        str(args.search_limit_fill_model),
+        "--touch-fill-fraction",
+        str(float(args.search_touch_fill_fraction)),
         "--max-concurrent-positions",
         str(int(args.max_concurrent_positions)),
         "--sortino-clip",
@@ -401,6 +408,8 @@ def build_search_command(
     ]
     if args.max_history_hours is not None:
         cmd.extend(["--max-history-hours", str(int(args.max_history_hours))])
+    if getattr(args, "use_forecast_interactions", False):
+        cmd.append("--use-forecast-interactions")
     if args.cache_only:
         cmd.append("--cache-only")
     if args.realistic_selection:
@@ -437,6 +446,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--validation-days", type=float, default=30.0)
     parser.add_argument("--max-history-hours", type=int, default=None)
     parser.add_argument("--sequence-length", type=int, default=96)
+    parser.add_argument("--use-forecast-interactions", action="store_true")
     parser.add_argument("--epochs", type=int, default=12)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
@@ -498,6 +508,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--search-decision-lag-bars", type=int, default=2)
     parser.add_argument("--search-fill-buffer-bps", type=float, default=20.0)
     parser.add_argument("--max-volume-fraction", type=float, default=0.1)
+    parser.add_argument("--search-limit-fill-model", default="binary", choices=["binary", "penetration"])
+    parser.add_argument("--search-touch-fill-fraction", type=float, default=0.0)
     parser.add_argument("--max-concurrent-positions", type=int, default=1)
     parser.add_argument("--sortino-clip", type=float, default=10.0)
     parser.add_argument("--min-trade-count-mean", type=float, default=6.0)

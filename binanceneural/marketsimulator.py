@@ -17,6 +17,9 @@ class SimulationConfig:
     enable_probe_mode: bool = False
     probe_notional: float = 1.0
     max_hold_hours: Optional[int] = None
+    fill_buffer_bps: float = 0.0  # require price to penetrate limit by N bps to fill
+    decision_lag_bars: int = 0  # shift actions forward by N bars (0 = same-bar, 1 = realistic)
+    one_side_per_bar: bool = False  # only allow buy OR sell per bar, not both
 
 
 @dataclass
@@ -54,7 +57,7 @@ class BinanceMarketSimulator:
         self.config = config or SimulationConfig()
 
     def run(self, bars: pd.DataFrame, actions: pd.DataFrame) -> SimulationResult:
-        prepared = _prepare_frame(bars, actions)
+        prepared = _prepare_frame(bars, actions, decision_lag_bars=self.config.decision_lag_bars)
         per_symbol: Dict[str, SymbolResult] = {}
         for symbol, frame in prepared.groupby("symbol"):
             symbol_result = _simulate_symbol(frame, symbol, self.config)
@@ -72,7 +75,7 @@ def run_shared_cash_simulation(
 ) -> SimulationResult:
     """Simulate trades across symbols with a single shared cash balance."""
     sim_config = config or SimulationConfig()
-    prepared = _prepare_frame(bars, actions)
+    prepared = _prepare_frame(bars, actions, decision_lag_bars=sim_config.decision_lag_bars)
 
     cash = float(sim_config.initial_cash)
     inventory: Dict[str, float] = {}
@@ -105,7 +108,8 @@ def run_shared_cash_simulation(
             scale = amount_scale.get(symbol, 100.0)
             sell_intensity = float(np.clip(float(sell_amount) / scale, 0.0, 1.0))
             high = float(getattr(row, "high"))
-            sell_fill = sell_price > 0 and high >= sell_price and sell_intensity > 0
+            buffer = sim_config.fill_buffer_bps / 10_000.0
+            sell_fill = sell_price > 0 and high >= sell_price * (1 + buffer) and sell_intensity > 0
             if not sell_fill:
                 continue
             executed_sell = sell_intensity * inv
@@ -152,7 +156,8 @@ def run_shared_cash_simulation(
             scale = amount_scale.get(symbol, 100.0)
             buy_intensity = float(np.clip(float(buy_amount) / scale, 0.0, 1.0))
             low = float(getattr(row, "low"))
-            buy_fill = buy_price > 0 and low <= buy_price and buy_intensity > 0
+            buffer = sim_config.fill_buffer_bps / 10_000.0
+            buy_fill = buy_price > 0 and low <= buy_price * (1 - buffer) and buy_intensity > 0
             if not buy_fill or cash <= 0:
                 continue
 
@@ -257,7 +262,7 @@ def run_shared_cash_simulation(
     return SimulationResult(combined_equity=equity_curve, per_symbol=per_symbol, metrics=metrics)
 
 
-def _prepare_frame(bars: pd.DataFrame, actions: pd.DataFrame) -> pd.DataFrame:
+def _prepare_frame(bars: pd.DataFrame, actions: pd.DataFrame, *, decision_lag_bars: int = 0) -> pd.DataFrame:
     bars = bars.copy()
     actions = actions.copy()
     if "timestamp" not in bars.columns or "timestamp" not in actions.columns:
@@ -283,6 +288,24 @@ def _prepare_frame(bars: pd.DataFrame, actions: pd.DataFrame) -> pd.DataFrame:
     missing = required_cols - set(bars.columns)
     if missing:
         raise ValueError(f"Bars missing required columns: {sorted(missing)}")
+
+    # Apply decision lag: shift actions forward by N bars so action from bar T
+    # is tested against bar T+N (realistic: you see bar T close, place order for T+1).
+    if decision_lag_bars > 0:
+        shifted_parts = []
+        for sym in actions["symbol"].unique():
+            sym_acts = actions[actions["symbol"] == sym].sort_values("timestamp").copy()
+            sym_bars = bars[bars["symbol"] == sym].sort_values("timestamp")
+            bar_ts = sym_bars["timestamp"].tolist()
+            usable = min(len(sym_acts), len(bar_ts))
+            if usable > decision_lag_bars:
+                sym_acts = sym_acts.iloc[: usable - decision_lag_bars].copy()
+                sym_acts["timestamp"] = bar_ts[decision_lag_bars:usable]
+                shifted_parts.append(sym_acts)
+        if shifted_parts:
+            actions = pd.concat(shifted_parts, ignore_index=True)
+        else:
+            raise ValueError("Decision lag too large; no actions remain after shifting.")
 
     merged = bars.merge(actions, on=["timestamp", "symbol"], how="inner")
     if merged.empty:
@@ -336,8 +359,15 @@ def _simulate_symbol(frame: pd.DataFrame, symbol: str, config: SimulationConfig)
         high = float(getattr(row, "high"))
         close = float(getattr(row, "close"))
 
-        buy_fill = buy_price > 0 and low <= buy_price and buy_intensity > 0
-        sell_fill = sell_price > 0 and high >= sell_price and sell_intensity > 0
+        buffer = config.fill_buffer_bps / 10_000.0  # convert bps to fraction
+        buy_fill = buy_price > 0 and low <= buy_price * (1 - buffer) and buy_intensity > 0
+        sell_fill = sell_price > 0 and high >= sell_price * (1 + buffer) and sell_intensity > 0
+        if config.one_side_per_bar and buy_fill and sell_fill:
+            # Only allow the side with stronger intensity
+            if buy_intensity >= sell_intensity:
+                sell_fill = False
+            else:
+                buy_fill = False
 
         executed_buy = 0.0
         executed_sell = 0.0
