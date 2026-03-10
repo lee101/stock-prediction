@@ -419,6 +419,8 @@ Best result: **min_edge=0.01 gives 35.60% return, Sortino 2.87**
 - Train Sortino: 2674, Val Sortino: 1122
 - Best checkpoint: epoch_028
 
+---
+
 **Backtest Results**
 | min_edge | Return | Sortino | Trades |
 |----------|--------|---------|--------|
@@ -1639,3 +1641,92 @@ Final end-state verification:
   - min_return=`+1.2485%`
   - mean_return=`+1.5732%`
   - mean_max_drawdown=`0.2962%`
+
+---
+
+## 2026-03-08: PufferLib4 Branch Isolation + Resume Sweep
+
+### Branch-4 Compatibility
+- Added an isolated `PufferLib4/` worktree on the upstream `4.0` branch so branch migration work can happen without mutating the existing repo checkout.
+- `pufferlibtraining3/pufferrl.py` now supports `PUFFERLIB_REPO_ROOT` and clears stale cached `pufferlib*` modules before importing from that override path.
+- The trainer now falls back from `pufferlib.pufferl` to `pufferlib.python_pufferl` when the branch-4 API surface is the legacy-compatible path.
+- `PufferLib4/setup.py` needed one local build fix so `NO_OCEAN=1` does not fail with `c_extension_paths` undefined.
+
+### Resume Training Support
+- `pufferlib_market/train.py` now supports `--resume-from` for stock PPO continuation runs.
+- Resume restores model weights, optimizer state, `global_step`, `best_return`, and update numbering so follow-on sweeps stay on one continuous training timeline.
+- Resume validation rejects incompatible action grids and malformed checkpoint payloads instead of silently continuing with mismatched state.
+
+### Push-PnL Sweep
+- Experiment root: `experiments/pufferlib4_push_pnl_20260308`
+- Reproduce:
+
+```bash
+source /home/lee/code/stock/.venv/bin/activate
+python experiments/pufferlib4_push_pnl_20260308/run_resume_sweep.py
+```
+
+### Baseline vs Resumed Candidates
+
+| Checkpoint | Full p10 | Full median | Recent p10 | Recent median |
+|-----------|---------:|------------:|-----------:|--------------:|
+| `experiments/pufferlib_stocks7_50M/best.pt` | `1.0385` | `1.5317` | `0.9492` | `1.6275` |
+| `resume_lr1e4_same_reward_10m` | `1.2420` | `1.5962` | `1.0194` | `1.7319` |
+| `resume_lr5e5_same_reward_10m` | `1.2282` | `1.6004` | `1.0101` | `1.7308` |
+| `resume_lr1e4_dp125_tp0005_10m` | `1.2584` | `1.5727` | `1.0105` | `1.8250` |
+
+### Promoted Self-Contained Winner
+- Winner: `resume_lr1e4_dp125_tp0005_10m`
+- Checkpoint: `experiments/pufferlib4_push_pnl_20260308/resume_lr1e4_dp125_tp0005_10m/best.pt`
+- Manifest: `experiments/pufferlib4_push_pnl_20260308/promotion_manifest.json`
+- Per-run manifest: `experiments/pufferlib4_push_pnl_20260308/resume_lr1e4_dp125_tp0005_10m/promotion_manifest.json`
+- Promotion reason: best full/recent holdout score tuple, led by the strongest full-window downside robustness (`p10_total_return`) while still improving the recent holdout versus baseline
+
+### Validation
+- `tests/test_pufferlibtraining3.py` covers branch-4 repo override, module cache invalidation, and `python_pufferl` fallback behavior.
+- `tests/test_pufferlib_market_train_resume.py` covers resume state restore and mismatch rejection.
+- `tests/test_pufferlib4_resume_sweep.py` covers promotion-manifest emission for promoted and non-promoted outcomes.
+
+---
+
+## 2026-03-08: Stock-Hours Annualization + Short Carry Follow-Up
+
+### Simulator / Reporting Fixes
+- `pufferlib_market` now prints annualized total return in training and holdout outputs.
+- Stock annualization is now treated as `252 * 6.5 = 1638` market hours/year for comparability.
+- Added `short_borrow_apr` support to the pure-python replay path and the C env.
+- Fixed a leverage bug in the C env where long entries were being capped back to cash even when `max_leverage > 1`.
+
+### Focused Sweep
+- Experiment root: `experiments/pufferlib4_push_pnl_20260308_shortcarry`
+- Goal: compare the current long-only winner against a short-enabled continuation run under stock-hours annualization and `short_borrow_apr=0.0625`
+- Baseline checkpoint:
+  - `experiments/pufferlib4_push_pnl_20260308/resume_lr1e4_dp125_tp0005_10m/best.pt`
+- Completed challenger:
+  - `short1x_lr1e4_same_reward_10m`
+- Skipped after decisive win:
+  - `short2x_lr1e4_same_reward_10m`
+  - `short2x_lr1e4_dp125_tp0005_10m`
+
+### Promotion
+- Winner: `short1x_lr1e4_same_reward_10m`
+- Checkpoint: `experiments/pufferlib4_push_pnl_20260308_shortcarry/short1x_lr1e4_same_reward_10m/best.pt`
+- Manifest: `experiments/pufferlib4_push_pnl_20260308_shortcarry/promotion_manifest.json`
+- Promotion reason: first short-enabled candidate decisively beat the current long-only winner, so the remaining grid was skipped to save runtime
+
+### Baseline vs Winner
+
+| Checkpoint | Full p10 | Full median | Recent p10 | Recent median |
+|-----------|---------:|------------:|-----------:|--------------:|
+| `resume_lr1e4_dp125_tp0005_10m` | `1.2584` | `1.5727` | `1.0105` | `1.8250` |
+| `short1x_lr1e4_same_reward_10m` | `1.6704` | `2.2361` | `1.2835` | `2.5250` |
+
+### Annualized Comparison (`1638` stock market hours/year)
+
+| Checkpoint | Full p10 ann | Full median ann | Recent p10 ann | Recent median ann |
+|-----------|-------------:|----------------:|---------------:|------------------:|
+| `resume_lr1e4_dp125_tp0005_10m` | `5.3814` | `7.5828` | `3.8981` | `9.6183` |
+| `short1x_lr1e4_same_reward_10m` | `8.3427` | `13.4642` | `5.5454` | `16.5709` |
+
+### Tracking
+- Canonical best-checkpoint summary now lives in `pufferlibbest.md`

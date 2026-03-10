@@ -63,6 +63,9 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     val = kwargs ? PyDict_GetItemString(kwargs, "max_leverage") : NULL;
     env->max_leverage = val ? (float)PyFloat_AsDouble(val) : 1.0f;
 
+    val = kwargs ? PyDict_GetItemString(kwargs, "short_borrow_apr") : NULL;
+    env->short_borrow_apr = val ? (float)PyFloat_AsDouble(val) : 0.0f;
+
     val = kwargs ? PyDict_GetItemString(kwargs, "periods_per_year") : NULL;
     env->periods_per_year = val ? (float)PyFloat_AsDouble(val) : 8760.0f;
 

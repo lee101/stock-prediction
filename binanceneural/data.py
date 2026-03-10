@@ -203,9 +203,10 @@ class BinanceHourlyDataModule:
         frame = pd.read_csv(path)
         frame.columns = [col.lower() for col in frame.columns]
         frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
-        if "symbol" not in frame.columns:
-            frame["symbol"] = self.config.symbol.upper()
-        frame["symbol"] = frame["symbol"].astype(str).str.upper()
+        # Price CSVs are already selected by requested symbol, so prefer that symbol
+        # over any stale alias tag embedded in the file body (e.g. BTCUSD file rows
+        # tagged as BTCUSDT), otherwise forecast-cache joins can collapse to zero rows.
+        frame["symbol"] = self.config.symbol.upper()
         cols = ["timestamp", "symbol", "open", "high", "low", "close", "volume"]
         return frame[cols].sort_values("timestamp").reset_index(drop=True)
 

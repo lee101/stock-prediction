@@ -6,7 +6,7 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
 from loguru import logger
@@ -74,14 +74,50 @@ def _json_default(value: Any) -> Any:
     raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
 
 
+def _resolve_model_runtime(
+    *,
+    params: Dict[str, object],
+    model_id_override: Optional[str],
+    device_map_override: Optional[str],
+    context_hours: int,
+    batch_size: int,
+    quantiles: Sequence[float],
+) -> Tuple[str, str, Optional[Callable[[], object]]]:
+    model_id = str(model_id_override or params.get("model_id") or "amazon/chronos-2")
+    device_map = str(device_map_override or params.get("device_map") or "cuda")
+    if not model_id_override:
+        return model_id, device_map, None
+
+    wrapper: Optional[object] = None
+
+    def _factory() -> object:
+        nonlocal wrapper
+        if wrapper is None:
+            wrapper = Chronos2OHLCWrapper.from_pretrained(
+                model_id=model_id,
+                device_map=device_map,
+                default_context_length=int(context_hours),
+                default_batch_size=int(batch_size),
+                quantile_levels=tuple(float(level) for level in quantiles),
+            )
+        return wrapper
+
+    return model_id, device_map, _factory
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Build hourly Chronos2 forecast caches (h1/h4/h24) using per-symbol hyperparams/chronos2/hourly.",
+        description=(
+            "Build hourly Chronos2 forecast caches (h1/h4/h24) using per-symbol "
+            "hyperparams/chronos2/hourly, or an explicit checkpoint override."
+        ),
     )
     parser.add_argument("--symbols", default=DEFAULT_SYMBOLS, help="Comma-separated symbols to process.")
     parser.add_argument("--data-root", type=Path, default=Path("trainingdatahourlybinance"))
     parser.add_argument("--forecast-cache-root", type=Path, default=Path("binancecrosslearning/forecast_cache_fdusd_pslora"))
     parser.add_argument("--horizons", default="1,4,24", help="Comma-separated forecast horizons (hours).")
+    parser.add_argument("--model-id", default=None, help="Optional explicit model/checkpoint path to use for all symbols.")
+    parser.add_argument("--device-map", default=None, help="Optional device map override (default: resolved config or cuda).")
     parser.add_argument("--quantiles", default=None, help="Override quantiles (comma-separated).")
     parser.add_argument("--context-hours", type=int, default=None, help="Override context length in hours.")
     parser.add_argument("--batch-size", type=int, default=None, help="Override batch size.")
@@ -123,9 +159,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         data_root = csv_path.parent
 
         params = resolve_chronos2_params(symbol, frequency="hourly")
-        model_id = str(params.get("model_id") or "amazon/chronos-2")
-        device_map = str(params.get("device_map") or "cuda")
-
         ctx_hours = int(args.context_hours) if args.context_hours is not None else int(params.get("context_length") or 512)
         batch_size = int(args.batch_size) if args.batch_size is not None else int(params.get("batch_size") or 128)
 
@@ -134,26 +167,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         else:
             quantiles = tuple(float(x) for x in (params.get("quantile_levels") or (0.1, 0.5, 0.9)))
         predict_kwargs = dict(params.get("predict_kwargs") or {})
+        model_id, device_map, wrapper_factory = _resolve_model_runtime(
+            params=params,
+            model_id_override=args.model_id,
+            device_map_override=args.device_map,
+            context_hours=ctx_hours,
+            batch_size=batch_size,
+            quantiles=quantiles,
+        )
 
         logger.info(
-            "Loading Chronos2 model for {}: model_id={} ctx={} batch={} horizons={}",
+            "Loading Chronos2 model for {}: model_id={} device_map={} ctx={} batch={} horizons={}",
             symbol,
             model_id,
+            device_map,
             ctx_hours,
             batch_size,
             horizons,
         )
-
-        wrapper = Chronos2OHLCWrapper.from_pretrained(
-            model_id=model_id,
-            device_map=device_map,
-            default_context_length=ctx_hours,
-            default_batch_size=batch_size,
-            quantile_levels=quantiles,
-        )
-
-        def _factory():
-            return wrapper
 
         for horizon in horizons:
             horizon_dir = cache_root / f"h{int(horizon)}"
@@ -166,7 +197,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 batch_size=batch_size,
                 cache_dir=horizon_dir,
             )
-            manager = ChronosForecastManager(cfg, wrapper_factory=_factory)
+            manager = ChronosForecastManager(cfg, wrapper_factory=wrapper_factory)
             manager._predict_kwargs = predict_kwargs
             logger.info("Generating forecasts for {} horizon={}h", symbol, horizon)
             manager.ensure_latest(start=start_ts, end=end_ts, cache_only=False, force_rebuild=args.force_rebuild)

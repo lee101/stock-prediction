@@ -11,6 +11,7 @@ Designed to stay under 8GB GPU memory:
 import argparse
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -25,9 +26,97 @@ import pufferlib.vector
 
 # Local
 from pufferlib_market.environment import TradingEnvConfig, TradingEnv
+from pufferlib_market.metrics import annualize_total_return
 
 
 # ─── Policy Network ───────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ResumeState:
+    update: int = 0
+    global_step: int = 0
+    best_return: float = -float("inf")
+
+
+def _checkpoint_payload(
+    policy: nn.Module,
+    optimizer: optim.Optimizer,
+    *,
+    update: int,
+    global_step: int,
+    best_return: float,
+    disable_shorts: bool,
+    action_meta: dict[str, int | float],
+) -> dict[str, object]:
+    return {
+        "model": policy.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "update": int(update),
+        "global_step": int(global_step),
+        "best_return": float(best_return),
+        "disable_shorts": bool(disable_shorts),
+        **action_meta,
+    }
+
+
+def _optimizer_state_to_device(optimizer: optim.Optimizer, device: torch.device) -> None:
+    for state in optimizer.state.values():
+        for key, value in state.items():
+            if torch.is_tensor(value):
+                state[key] = value.to(device=device)
+
+
+def _validate_resume_payload(
+    payload: dict[str, object],
+    *,
+    disable_shorts: bool,
+    action_meta: dict[str, int | float],
+) -> None:
+    del disable_shorts
+
+    for key, expected in action_meta.items():
+        if key not in payload:
+            continue
+        actual = payload[key]
+        if isinstance(expected, float):
+            if not np.isclose(float(actual), float(expected)):
+                raise ValueError(
+                    f"Resume checkpoint {key}={actual} does not match current run {key}={expected}"
+                )
+            continue
+        if int(actual) != int(expected):
+            raise ValueError(f"Resume checkpoint {key}={actual} does not match current run {key}={expected}")
+
+
+def _load_resume_checkpoint(
+    checkpoint_path: str | Path,
+    *,
+    policy: nn.Module,
+    optimizer: optim.Optimizer,
+    device: torch.device,
+    disable_shorts: bool,
+    action_meta: dict[str, int | float],
+) -> ResumeState:
+    path = Path(checkpoint_path)
+    payload = torch.load(str(path), map_location=device, weights_only=False)
+    if not isinstance(payload, dict) or "model" not in payload:
+        raise ValueError(f"Unsupported resume checkpoint format at {path} (expected dict with 'model')")
+
+    _validate_resume_payload(payload, disable_shorts=disable_shorts, action_meta=action_meta)
+
+    policy.load_state_dict(payload["model"])
+    optimizer_state = payload.get("optimizer")
+    if optimizer_state is not None:
+        optimizer.load_state_dict(optimizer_state)
+        _optimizer_state_to_device(optimizer, device)
+
+    return ResumeState(
+        update=max(int(payload.get("update", 0)), 0),
+        global_step=max(int(payload.get("global_step", 0)), 0),
+        best_return=float(payload.get("best_return", -float("inf"))),
+    )
+
 
 def _mask_short_logits(logits: torch.Tensor, num_actions: int) -> torch.Tensor:
     """Mask short-action branch in discrete action logits."""
@@ -219,6 +308,7 @@ def train(args):
         max_steps=args.max_steps,
         fee_rate=args.fee_rate,
         max_leverage=args.max_leverage,
+        short_borrow_apr=args.short_borrow_apr,
         periods_per_year=args.periods_per_year,
         num_symbols=num_symbols,
         reward_scale=args.reward_scale,
@@ -261,6 +351,7 @@ def train(args):
         max_steps=config.max_steps,
         fee_rate=config.fee_rate,
         max_leverage=config.max_leverage,
+        short_borrow_apr=config.short_borrow_apr,
         periods_per_year=config.periods_per_year,
         reward_scale=config.reward_scale,
         reward_clip=config.reward_clip,
@@ -285,6 +376,29 @@ def train(args):
     optimizer = optim.Adam(policy.parameters(), lr=args.lr, eps=1e-5)
     total_params = sum(p.numel() for p in policy.parameters())
     print(f"  Policy: {total_params:,} params ({total_params * 4 / 1e6:.1f} MB)")
+    action_meta = {
+        "action_allocation_bins": int(config.action_allocation_bins),
+        "action_level_bins": int(config.action_level_bins),
+        "action_max_offset_bps": float(config.action_max_offset_bps),
+    }
+    resume_state = ResumeState()
+    if args.resume_from:
+        resume_state = _load_resume_checkpoint(
+            args.resume_from,
+            policy=policy,
+            optimizer=optimizer,
+            device=device,
+            disable_shorts=bool(args.disable_shorts),
+            action_meta=action_meta,
+        )
+        print(
+            "  Resumed from {} (update={} global_step={} best_return={:+.4f})".format(
+                args.resume_from,
+                resume_state.update,
+                resume_state.global_step,
+                resume_state.best_return,
+            )
+        )
 
     # ── Estimate GPU memory ──
     rollout_mem = num_envs * args.rollout_len * (obs_size * 4 + 4 * 4) / 1e6
@@ -301,25 +415,22 @@ def train(args):
     buf_value = torch.zeros((T, N), dtype=torch.float32)
 
     # ── Training loop ──
-    global_step = 0
+    global_step = resume_state.global_step
     num_updates = args.total_timesteps // (T * N)
     start_time = time.time()
-    best_return = -float("inf")
-    action_meta = {
-        "action_allocation_bins": int(config.action_allocation_bins),
-        "action_level_bins": int(config.action_level_bins),
-        "action_max_offset_bps": float(config.action_max_offset_bps),
-    }
+    best_return = resume_state.best_return
+    start_update = resume_state.update
 
-    print(f"\nTraining: {num_updates} updates, {args.total_timesteps:,} total steps")
+    print(f"\nTraining: {num_updates} updates, {args.total_timesteps:,} additional steps")
     print(f"  rollout_len={T}, num_envs={N}, batch_size={T * N}")
     print(f"  PPO epochs={args.ppo_epochs}, minibatch_size={args.minibatch_size}")
     print()
 
-    for update in range(1, num_updates + 1):
+    for update in range(start_update + 1, start_update + num_updates + 1):
+        local_update = update - start_update
         # ── Learning rate annealing ──
         if args.anneal_lr:
-            frac = 1.0 - (update - 1) / num_updates
+            frac = 1.0 - (local_update - 1) / max(num_updates, 1)
             lr_now = frac * args.lr
             for pg in optimizer.param_groups:
                 pg["lr"] = lr_now
@@ -439,6 +550,11 @@ def train(args):
 
         if log_info and "total_return" in log_info:
             ep_return = log_info["total_return"]
+            ep_annualized = annualize_total_return(
+                float(ep_return),
+                periods=float(args.max_steps),
+                periods_per_year=float(args.periods_per_year),
+            )
             ep_sortino = log_info.get("sortino", 0)
             ep_trades = log_info.get("num_trades", 0)
             ep_wr = log_info.get("win_rate", 0)
@@ -448,27 +564,30 @@ def train(args):
                 best_return = ep_return
                 ckpt_path = Path(args.checkpoint_dir) / "best.pt"
                 ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-                torch.save({
-                    "model": policy.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "update": update,
-                    "global_step": global_step,
-                    "best_return": best_return,
-                    "disable_shorts": bool(args.disable_shorts),
-                    **action_meta,
-                }, ckpt_path)
+                torch.save(
+                    _checkpoint_payload(
+                        policy,
+                        optimizer,
+                        update=update,
+                        global_step=global_step,
+                        best_return=best_return,
+                        disable_shorts=bool(args.disable_shorts),
+                        action_meta=action_meta,
+                    ),
+                    ckpt_path,
+                )
 
             print(
-                f"[{update:4d}/{num_updates}] "
+                f"[{local_update:4d}/{num_updates}] "
                 f"step={global_step:8,d}  sps={sps:.0f}  "
-                f"ret={ep_return:+.4f}  sortino={ep_sortino:.2f}  "
+                f"ret={ep_return:+.4f}  ann_ret={ep_annualized:+.2%}  sortino={ep_sortino:.2f}  "
                 f"trades={ep_trades:.0f}  wr={ep_wr:.2f}  "
                 f"pg={avg_pg:.4f}  vl={avg_vl:.4f}  ent={avg_ent:.3f}  "
                 f"n={n:.0f}"
             )
         else:
             print(
-                f"[{update:4d}/{num_updates}] "
+                f"[{local_update:4d}/{num_updates}] "
                 f"step={global_step:8,d}  sps={sps:.0f}  "
                 f"pg={avg_pg:.4f}  vl={avg_vl:.4f}  ent={avg_ent:.3f}"
             )
@@ -477,28 +596,34 @@ def train(args):
         if update % args.save_every == 0:
             ckpt_path = Path(args.checkpoint_dir) / f"update_{update:06d}.pt"
             ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-            torch.save({
-                "model": policy.state_dict(),
-                "optimizer": optimizer.state_dict(),
-                "update": update,
-                "global_step": global_step,
-                "best_return": best_return,
-                "disable_shorts": bool(args.disable_shorts),
-                **action_meta,
-            }, ckpt_path)
+            torch.save(
+                _checkpoint_payload(
+                    policy,
+                    optimizer,
+                    update=update,
+                    global_step=global_step,
+                    best_return=best_return,
+                    disable_shorts=bool(args.disable_shorts),
+                    action_meta=action_meta,
+                ),
+                ckpt_path,
+            )
 
     # ── Final save ──
     ckpt_path = Path(args.checkpoint_dir) / "final.pt"
     ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save({
-        "model": policy.state_dict(),
-        "optimizer": optimizer.state_dict(),
-        "update": num_updates,
-        "global_step": global_step,
-        "best_return": best_return,
-        "disable_shorts": bool(args.disable_shorts),
-        **action_meta,
-    }, ckpt_path)
+    torch.save(
+        _checkpoint_payload(
+            policy,
+            optimizer,
+            update=start_update + num_updates,
+            global_step=global_step,
+            best_return=best_return,
+            disable_shorts=bool(args.disable_shorts),
+            action_meta=action_meta,
+        ),
+        ckpt_path,
+    )
 
     binding.vec_close(vec_handle)
     print(f"\nTraining complete. Best return: {best_return:.4f}")
@@ -562,6 +687,7 @@ def main():
     )
     parser.add_argument("--num-envs", type=int, default=64)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--short-borrow-apr", type=float, default=0.0, help="Annual borrow rate applied to open shorts")
 
     # Policy
     parser.add_argument("--hidden-size", type=int, default=256)
@@ -582,6 +708,7 @@ def main():
     parser.add_argument("--ent-coef", type=float, default=0.01)
     parser.add_argument("--max-grad-norm", type=float, default=0.5)
     parser.add_argument("--anneal-lr", action="store_true", help="Linear LR annealing")
+    parser.add_argument("--resume-from", type=str, default=None, help="Checkpoint to resume from")
 
     # Output
     parser.add_argument("--checkpoint-dir", default="pufferlib_market/checkpoints")

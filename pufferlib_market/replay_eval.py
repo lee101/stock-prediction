@@ -27,18 +27,7 @@ from pufferlib_market.hourly_replay import (
     simulate_hourly_policy,
     simulate_daily_policy,
 )
-
-
-def _annualize(total_return: float, periods: float, periods_per_year: float) -> float:
-    if periods <= 0:
-        return 0.0
-    mult = 1.0 + float(total_return)
-    if mult <= 0:
-        return -1.0
-    years = float(periods) / float(periods_per_year)
-    if years <= 0:
-        return 0.0
-    return float(mult ** (1.0 / years) - 1.0)
+from pufferlib_market.metrics import annualize_total_return
 
 
 def _order_day_stats(orders_by_day: dict[str, int], num_days: int) -> dict[str, object]:
@@ -67,6 +56,7 @@ def main() -> None:
     p.add_argument("--max-steps", type=int, required=True, help="Episode steps (days), e.g. 50")
     p.add_argument("--fee-rate", type=float, default=0.001)
     p.add_argument("--max-leverage", type=float, default=1.0)
+    p.add_argument("--short-borrow-apr", type=float, default=0.0)
     p.add_argument("--daily-periods-per-year", type=float, default=365.0)
     p.add_argument("--hourly-periods-per-year", type=float, default=8760.0)
     p.add_argument("--arch", choices=["mlp", "resmlp"], default="mlp")
@@ -110,6 +100,7 @@ def main() -> None:
         max_steps=args.max_steps,
         fee_rate=args.fee_rate,
         max_leverage=args.max_leverage,
+        short_borrow_apr=args.short_borrow_apr,
         periods_per_year=args.daily_periods_per_year,
     )
 
@@ -129,12 +120,21 @@ def main() -> None:
         max_steps=args.max_steps,
         fee_rate=args.fee_rate,
         max_leverage=args.max_leverage,
+        short_borrow_apr=args.short_borrow_apr,
         periods_per_year=args.hourly_periods_per_year,
     )
 
     # Annualize using calendar days (max_steps) for comparability.
-    daily_ann = _annualize(daily.total_return, periods=args.max_steps, periods_per_year=args.daily_periods_per_year)
-    hourly_ann = _annualize(hourly.total_return, periods=args.max_steps, periods_per_year=args.daily_periods_per_year)
+    daily_ann = annualize_total_return(
+        daily.total_return,
+        periods=args.max_steps,
+        periods_per_year=args.daily_periods_per_year,
+    )
+    hourly_ann = annualize_total_return(
+        hourly.total_return,
+        periods=args.max_steps,
+        periods_per_year=args.daily_periods_per_year,
+    )
 
     hourly_policy = None
     if args.run_hourly_policy:
@@ -147,6 +147,7 @@ def main() -> None:
             max_steps_days=args.max_steps,
             fee_rate=args.fee_rate,
             max_leverage=args.max_leverage,
+            short_borrow_apr=args.short_borrow_apr,
             periods_per_year=args.hourly_periods_per_year,
         )
 
@@ -177,7 +178,11 @@ def main() -> None:
         },
     }
     if hourly_policy is not None:
-        hourly_policy_ann = _annualize(hourly_policy.total_return, periods=args.max_steps, periods_per_year=args.daily_periods_per_year)
+        hourly_policy_ann = annualize_total_return(
+            hourly_policy.total_return,
+            periods=args.max_steps,
+            periods_per_year=args.daily_periods_per_year,
+        )
         report["hourly_policy"] = {
             "total_return": hourly_policy.total_return,
             "annualized_return": hourly_policy_ann,

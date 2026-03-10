@@ -61,6 +61,9 @@ class MarketEnvConfig:
     device: str = "cuda"
     start_date: Optional[str] = None
     end_date: Optional[str] = None
+    start_index: Optional[int] = None
+    episode_length: Optional[int] = None
+    random_reset: bool = False
 
     # Synthetic fallback
     synth_T: int = 200_000
@@ -143,8 +146,13 @@ class MarketEnv(gym.Env):
     ) -> Tuple[Any, Dict[str, Any]]:
         if seed is not None:
             self._g.manual_seed(int(seed))
-        self._reset_state()
-        return self._get_observation(), {}
+        self._reset_state(options=options)
+        info = {
+            "start_index": int(self.start_index),
+            "episode_end": int(self.episode_end),
+            "timestamp": self._timestamp(),
+        }
+        return self._get_observation(), info
 
     def step(self, action: Any) -> Tuple[Any, float, bool, bool, Dict[str, Any]]:
         action_tensor = self._prepare_action(action)
@@ -302,12 +310,69 @@ class MarketEnv(gym.Env):
         else:
             raise ValueError("action_space must be 'continuous' or 'discrete'")
 
-    def _reset_state(self) -> None:
+    def _max_start_index(self, min_episode_steps: int) -> int:
+        horizon_guard = max(1, self.cfg.horizon)
+        return self.T - horizon_guard - int(min_episode_steps)
+
+    def _resolve_start_index(self, options: Optional[Dict[str, Any]]) -> int:
+        explicit_start = None
+        if options is not None and "start_index" in options:
+            explicit_start = int(options["start_index"])
+        elif self.cfg.start_index is not None:
+            explicit_start = int(self.cfg.start_index)
+
+        if explicit_start is not None:
+            return explicit_start
+
+        if not self.cfg.random_reset:
+            return self.cfg.context_len
+
+        min_steps = int(self.cfg.episode_length) if self.cfg.episode_length is not None else 1
+        max_start = self._max_start_index(min_steps)
+        if max_start < self.cfg.context_len:
+            raise ValueError(
+                "Insufficient history to sample randomized episodes with the requested episode_length."
+            )
+        if max_start == self.cfg.context_len:
+            return self.cfg.context_len
+        return int(
+            torch.randint(
+                self.cfg.context_len,
+                max_start + 1,
+                size=(1,),
+                generator=self._g,
+            ).item()
+        )
+
+    def _episode_end_for_start(self, start_index: int) -> int:
+        max_end = self.T - max(1, self.cfg.horizon)
+        if self.cfg.episode_length is None:
+            return max_end
+
+        episode_length = int(self.cfg.episode_length)
+        if episode_length < 1:
+            raise ValueError("episode_length must be at least 1 when provided")
+        episode_end = start_index + episode_length
+        if episode_end > max_end:
+            raise ValueError(
+                "episode_length exceeds available history for the selected start_index "
+                f"(start_index={start_index}, max_episode_end={max_end})"
+            )
+        return episode_end
+
+    def _reset_state(self, *, options: Optional[Dict[str, Any]] = None) -> None:
         self.equity = torch.tensor(1.0, dtype=torch.float32, device=self.device)
         self.position = torch.tensor(0.0, dtype=torch.float32, device=self.device)
-        self.cursor = self.cfg.context_len
-        horizon_guard = max(1, self.cfg.horizon)
-        self.episode_end = self.T - horizon_guard
+        start_index = self._resolve_start_index(options)
+        max_start = self._max_start_index(1)
+        if start_index < self.cfg.context_len or start_index > max_start:
+            raise ValueError(
+                "start_index must leave enough room for context and at least one step "
+                f"(received {start_index}, valid range {self.cfg.context_len}..{max_start})"
+            )
+        self.start_index = int(start_index)
+        self.cursor = int(start_index)
+        self.episode_end = self._episode_end_for_start(self.cursor)
         self.last_reward = torch.tensor(0.0, dtype=torch.float32, device=self.device)
         self.last_trade_cost = torch.tensor(0.0, dtype=torch.float32, device=self.device)
         self.last_financing_cost = torch.tensor(0.0, dtype=torch.float32, device=self.device)

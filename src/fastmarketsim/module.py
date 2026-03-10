@@ -44,6 +44,19 @@ def _extra_cuda_cflags() -> list[str]:
     return ["-O3", "--use_fast_math"]
 
 
+def _has_usable_cuda_toolkit() -> bool:
+    if not (bool(torch.version.cuda) and CUDA_HOME is not None and torch.cuda.is_available()):
+        return False
+
+    cuda_root = Path(CUDA_HOME)
+    lib_candidates = [
+        cuda_root / "lib64" / "libcudart.so",
+        cuda_root / "lib64" / "libcudart_static.a",
+        cuda_root / "lib" / "x64" / "cudart.lib",
+    ]
+    return any(candidate.exists() for candidate in lib_candidates)
+
+
 def load_extension(*, verbose: bool = False) -> Any:
     """Compile (if necessary) and load the C++ market simulator bindings."""
 
@@ -65,10 +78,15 @@ def load_extension(*, verbose: bool = False) -> Any:
         build_dir = cpp_root / "build_py"
         build_dir.mkdir(parents=True, exist_ok=True)
 
-        has_cuda = bool(torch.version.cuda) and CUDA_HOME is not None and torch.cuda.is_available()
+        has_cuda = _has_usable_cuda_toolkit()
         if bool(torch.version.cuda) and torch.cuda.is_available() and CUDA_HOME is None:
             logging.warning(
                 "fastmarketsim: CUDA toolkit not detected (set CUDA_HOME) – building CPU-only extension."
+            )
+        elif bool(torch.version.cuda) and torch.cuda.is_available() and not has_cuda:
+            logging.warning(
+                "fastmarketsim: CUDA runtime detected but libcudart is unavailable under %s; building CPU-only extension.",
+                CUDA_HOME,
             )
 
         _EXTENSION = load_extension_module(
