@@ -5,10 +5,13 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
+from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
 
 from src.chronos2_params import resolve_chronos2_params
+from src.date_utils import is_nyse_open_on_date
 
 try:  # pragma: no cover - optional heavy dependency
     from src.models.chronos2_wrapper import Chronos2OHLCWrapper, Chronos2PredictionBatch
@@ -22,6 +25,15 @@ else:  # pragma: no cover
 from .config import ForecastConfig
 
 logger = logging.getLogger(__name__)
+NEW_YORK = ZoneInfo("America/New_York")
+_TIME_COVARIATE_COLUMNS = (
+    "hour_sin",
+    "hour_cos",
+    "dow_sin",
+    "dow_cos",
+    "is_market_open",
+    "session_progress",
+)
 
 
 class ForecastCache:
@@ -68,6 +80,10 @@ class ChronosForecastManager:
         self._predict_kwargs: Dict[str, object] = {}
         self._use_multivariate: bool = False
         self._use_cross_learning: bool = False
+        self._use_time_covariates: bool = self._resolve_use_time_covariates()
+        self._known_future_covariates: tuple[str, ...] = (
+            _TIME_COVARIATE_COLUMNS if self._use_time_covariates else ()
+        )
         self._resolved_params: Dict[str, object] = {}
         self._warned_missing = False
         self._load_inference_params()
@@ -228,12 +244,19 @@ class ChronosForecastManager:
             issued_at = context["timestamp"].max()
             if pd.isna(target_ts) or pd.isna(issued_at):
                 continue
+            model_context = context
+            future_covariates = None
+            if self._use_time_covariates:
+                model_context = self._augment_context_with_time_covariates(context)
+                future_covariates = self._build_future_covariates(issued_at)
             records.append(
                 {
                     "context": context,
+                    "model_context": model_context,
                     "target_ts": target_ts,
                     "issued_at": issued_at,
                     "batch_symbol": self._build_batch_symbol(target_ts, ordinal),
+                    "future_covariates": future_covariates,
                 }
             )
         if not records:
@@ -244,10 +267,16 @@ class ChronosForecastManager:
             rows = [self._heuristic_forecast(rec["context"], rec["target_ts"]) for rec in records]
             return pd.DataFrame(rows)
 
-        contexts = [rec["context"] for rec in records]
+        contexts = [rec["model_context"] for rec in records]
         symbols = [rec["batch_symbol"] for rec in records]
+        future_covariates = [rec["future_covariates"] for rec in records]
         try:
-            batches = self._predict_batches(wrapper, contexts, symbols)
+            batches = self._predict_batches(
+                wrapper,
+                contexts,
+                symbols,
+                future_covariates=future_covariates,
+            )
         except Exception as exc:
             logger.warning("Chronos forecast failed for %s: %s", self.config.symbol, exc)
             rows = [self._heuristic_forecast(rec["context"], rec["target_ts"]) for rec in records]
@@ -340,18 +369,98 @@ class ChronosForecastManager:
             self._predict_kwargs = {**resolved_predict_kwargs, **self._predict_kwargs}
         self._use_multivariate = bool(params.get("use_multivariate", False))
         self._use_cross_learning = bool(params.get("use_cross_learning", False))
+        self._apply_runtime_overrides()
+
+    def _resolve_use_time_covariates(self) -> bool:
+        if self.config.use_time_covariates is None:
+            return False
+        return bool(self.config.use_time_covariates)
+
+    @staticmethod
+    def _build_time_covariate_frame(timestamps: Sequence[pd.Timestamp]) -> pd.DataFrame:
+        ts_index = pd.DatetimeIndex(pd.to_datetime(list(timestamps), utc=True), name="timestamp")
+        local = ts_index.tz_convert(NEW_YORK)
+        hour_float = local.hour.to_numpy(dtype=float) + (local.minute.to_numpy(dtype=float) / 60.0)
+        dow = local.dayofweek.to_numpy(dtype=float)
+        hour_angle = 2.0 * np.pi * (hour_float / 24.0)
+        dow_angle = 2.0 * np.pi * (dow / 7.0)
+
+        is_open = []
+        progress = []
+        open_hour = 9.5
+        close_hour = 16.0
+        session_length = close_hour - open_hour
+        for ts_local, hour in zip(local, hour_float):
+            open_today = is_nyse_open_on_date(pd.Timestamp(ts_local.date()))
+            open_now = bool(open_today and open_hour <= hour <= close_hour)
+            is_open.append(1.0 if open_now else 0.0)
+            if open_now:
+                progress.append(float((hour - open_hour) / max(session_length, 1e-8)))
+            else:
+                progress.append(0.0)
+
+        return pd.DataFrame(
+            {
+                "timestamp": ts_index,
+                "hour_sin": np.sin(hour_angle),
+                "hour_cos": np.cos(hour_angle),
+                "dow_sin": np.sin(dow_angle),
+                "dow_cos": np.cos(dow_angle),
+                "is_market_open": np.asarray(is_open, dtype=float),
+                "session_progress": np.asarray(progress, dtype=float),
+            }
+        )
+
+    def _augment_context_with_time_covariates(self, context: pd.DataFrame) -> pd.DataFrame:
+        augmented = context.copy()
+        covariates = self._build_time_covariate_frame(context["timestamp"].tolist())
+        return augmented.merge(covariates, on="timestamp", how="left")
+
+    def _build_future_covariates(self, issued_at: pd.Timestamp) -> pd.DataFrame:
+        horizon = max(1, int(self.config.prediction_horizon_hours))
+        future_timestamps = [
+            pd.to_datetime(issued_at, utc=True) + pd.Timedelta(hours=step)
+            for step in range(1, horizon + 1)
+        ]
+        return self._build_time_covariate_frame(future_timestamps)
+
+    def _apply_runtime_overrides(self) -> None:
+        if self.config.force_multivariate is not None:
+            self._use_multivariate = bool(self.config.force_multivariate)
+        if self.config.force_cross_learning is not None:
+            self._use_cross_learning = bool(self.config.force_cross_learning)
+            if self._use_cross_learning:
+                self._use_multivariate = True
+                self._predict_kwargs["predict_batches_jointly"] = True
+            else:
+                self._predict_kwargs.pop("predict_batches_jointly", None)
+        elif self._use_cross_learning:
+            self._predict_kwargs.setdefault("predict_batches_jointly", True)
 
     def _predict_batches(
         self,
         wrapper: object,
         contexts: Sequence[pd.DataFrame],
         symbols: Sequence[str],
+        future_covariates: Sequence[Optional[pd.DataFrame]] | None = None,
     ) -> List[object]:
         """Run forecast inference with configured policy, falling back safely."""
         prediction_length = int(self.config.prediction_horizon_hours)
         context_length = int(self.config.context_hours)
         batch_size = int(self.config.batch_size)
         quantile_levels = list(self.config.quantile_levels)
+
+        if self._use_time_covariates:
+            return wrapper.predict_ohlc_batch(  # type: ignore[attr-defined]
+                contexts,
+                symbols=list(symbols),
+                prediction_length=prediction_length,
+                context_length=context_length,
+                batch_size=batch_size,
+                predict_kwargs=self._predict_kwargs,
+                future_covariates=list(future_covariates or []),
+                known_future_covariates=list(self._known_future_covariates),
+            )
 
         if self._use_multivariate:
             if self._use_cross_learning and len(contexts) > 1 and hasattr(wrapper, "predict_ohlc_joint"):
@@ -426,6 +535,7 @@ class ChronosForecastManager:
             self._predict_kwargs = {**resolved_predict_kwargs, **self._predict_kwargs}
         self._use_multivariate = bool(params.get("use_multivariate", self._use_multivariate))
         self._use_cross_learning = bool(params.get("use_cross_learning", self._use_cross_learning))
+        self._apply_runtime_overrides()
 
         self._wrapper = Chronos2OHLCWrapper.from_pretrained(  # type: ignore[assignment]
             model_id=params.get("model_id", "amazon/chronos-2"),
@@ -498,6 +608,8 @@ def build_forecast_bundle(
     cache_only: bool = False,
     start: Optional[pd.Timestamp | str] = None,
     end: Optional[pd.Timestamp | str] = None,
+    force_multivariate: bool | None = None,
+    force_cross_learning: bool | None = None,
 ) -> pd.DataFrame:
     """Build merged Chronos forecast frame with horizon-specific suffixes."""
 
@@ -512,6 +624,8 @@ def build_forecast_bundle(
             quantile_levels=tuple(quantile_levels),
             batch_size=batch_size,
             cache_dir=horizon_dir,
+            force_multivariate=force_multivariate,
+            force_cross_learning=force_cross_learning,
         )
         manager = ChronosForecastManager(cfg)
         forecast = manager.ensure_latest(start=start, end=end, cache_only=cache_only)
