@@ -98,6 +98,7 @@ def test_build_search_command_passes_max_history_hours(tmp_path: Path) -> None:
         forecast_cache_root=Path("experiments/cache"),
         validation_days=30.0,
         max_history_hours=24 * 120,
+        use_forecast_interactions=True,
         search_window_hours="336",
         initial_cash=10_000.0,
         seed_position_fraction=1.0,
@@ -110,6 +111,8 @@ def test_build_search_command_passes_max_history_hours(tmp_path: Path) -> None:
         search_decision_lag_bars=2,
         search_fill_buffer_bps=20.0,
         max_volume_fraction=0.1,
+        search_limit_fill_model="penetration",
+        search_touch_fill_fraction=0.05,
         max_concurrent_positions=1,
         sortino_clip=10.0,
         min_trade_count_mean=6.0,
@@ -132,3 +135,6 @@ def test_build_search_command_passes_max_history_hours(tmp_path: Path) -> None:
 
     joined = " ".join(cmd)
     assert "--max-history-hours 2880" in joined
+    assert "--use-forecast-interactions" in joined
+    assert "--limit-fill-model penetration" in joined
+    assert "--touch-fill-fraction 0.05" in joined

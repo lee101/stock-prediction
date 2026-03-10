@@ -10,6 +10,7 @@ from src.torch_load_utils import torch_load_compat
 from .config import DatasetConfig, TrainingConfig
 from .data import BinanceHourlyDataModule
 from .inference import generate_actions_from_frame
+from differentiable_loss_utils import DEFAULT_MAKER_FEE_RATE
 from .marketsimulator import BinanceMarketSimulator, SimulationConfig, save_trade_plot
 from .model import BinancePolicyBase, align_state_dict_input_dim, build_policy, policy_config_from_payload
 
@@ -39,6 +40,10 @@ def main() -> None:
     parser.add_argument("--probe-after-loss", action="store_true", help="Enable probe trades after a losing sell")
     parser.add_argument("--probe-notional", type=float, default=1.0, help="Notional size for probe trades")
     parser.add_argument("--max-hold-hours", type=int, default=None, help="Force close positions after N hours")
+    parser.add_argument("--fill-buffer-bps", type=float, default=0.0, help="Require price to penetrate limit by N bps")
+    parser.add_argument("--decision-lag-bars", type=int, default=0, help="Shift actions forward N bars (1=realistic)")
+    parser.add_argument("--one-side-per-bar", action="store_true", help="Only allow buy OR sell per bar")
+    parser.add_argument("--fee-rate", type=float, default=None, help="Override maker fee rate (e.g. 0.0015 for 15bps)")
     parser.add_argument(
         "--plot-dir",
         default="binanceneural/plots",
@@ -71,12 +76,17 @@ def main() -> None:
     if "symbol" not in actions.columns:
         actions["symbol"] = args.symbol
 
+    fee_rate = args.fee_rate if args.fee_rate is not None else DEFAULT_MAKER_FEE_RATE
     sim = BinanceMarketSimulator(
         SimulationConfig(
+            maker_fee=fee_rate,
             initial_cash=args.initial_cash,
             enable_probe_mode=args.probe_after_loss,
             probe_notional=args.probe_notional,
             max_hold_hours=args.max_hold_hours,
+            fill_buffer_bps=args.fill_buffer_bps,
+            decision_lag_bars=args.decision_lag_bars,
+            one_side_per_bar=args.one_side_per_bar,
         )
     )
     result = sim.run(val_frame, actions)

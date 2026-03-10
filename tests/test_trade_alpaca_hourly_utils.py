@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -10,8 +11,10 @@ from newnanoalpacahourlyexp.trade_alpaca_hourly import (
     _parse_checkpoint_map,
     _parse_horizon_map,
     _parse_symbols,
+    _reconcile_live_symbol_orders,
 )
 from src.hourly_trader_utils import (
+    OrderIntent,
     TradingPlan,
     build_order_intents,
     directional_entry_amount,
@@ -252,6 +255,31 @@ def test_build_order_intents_long_position_default_live_mode_full_exit_no_add():
     assert [(i.kind, i.side, round(i.qty, 6)) for i in intents] == [("exit", "sell", 5.5)]
 
 
+def test_build_order_intents_long_position_no_add_blocks_same_side_rebuy_under_target():
+    plan = TradingPlan(
+        symbol="ETHUSD",
+        buy_price=100.0,
+        sell_price=105.0,
+        buy_amount=80.0,
+        sell_amount=10.0,
+        timestamp=datetime.now(timezone.utc),
+    )
+    intents = build_order_intents(
+        plan,
+        position_qty=2.0,
+        allocation_usd=1_000.0,
+        buy_price=100.0,
+        sell_price=105.0,
+        can_long=True,
+        can_short=False,
+        allow_short=False,
+        exit_only=False,
+        allow_position_adds=False,
+        always_full_exit=True,
+    )
+    assert [(i.kind, i.side, round(i.qty, 6)) for i in intents] == [("exit", "sell", 2.0)]
+
+
 def test_build_order_intents_short_position_default_live_mode_full_exit_no_add():
     plan = TradingPlan(
         symbol="EBAY",
@@ -363,3 +391,97 @@ def test_build_order_intents_exit_only_flattens_long_and_short():
         exit_only=True,
     )
     assert [(i.kind, i.side, round(i.qty, 6)) for i in intents_short] == [("exit", "buy", 8.0)]
+
+
+def _mock_live_order(
+    *,
+    order_id: str,
+    symbol: str,
+    side: str,
+    qty: float,
+    limit_price: float,
+    created_at: str,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=order_id,
+        symbol=symbol,
+        side=side,
+        qty=qty,
+        limit_price=limit_price,
+        created_at=created_at,
+    )
+
+
+def test_reconcile_live_symbol_orders_cancels_stale_opposite_side_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    stale_entry = _mock_live_order(
+        order_id="buy-1",
+        symbol="ETH/USD",
+        side="buy",
+        qty=1.0,
+        limit_price=1900.0,
+        created_at="2026-03-10T00:00:00Z",
+    )
+    matching_exit = _mock_live_order(
+        order_id="sell-1",
+        symbol="ETH/USD",
+        side="sell",
+        qty=2.0,
+        limit_price=2000.0,
+        created_at="2026-03-10T00:05:00Z",
+    )
+    cancelled: list[str] = []
+
+    monkeypatch.setattr(
+        "newnanoalpacahourlyexp.trade_alpaca_hourly.alpaca_wrapper.cancel_order",
+        lambda order: cancelled.append(str(order.id)),
+    )
+
+    remaining = _reconcile_live_symbol_orders(
+        "ETHUSD",
+        position_qty=2.0,
+        intents=[OrderIntent(side="sell", qty=2.0, limit_price=2000.0, kind="exit")],
+        open_orders=[stale_entry, matching_exit],
+        dry_run=False,
+    )
+
+    assert cancelled == ["buy-1"]
+    assert [str(order.id) for order in remaining] == ["sell-1"]
+
+
+def test_reconcile_live_symbol_orders_keeps_matching_entry_and_exit_pair(monkeypatch: pytest.MonkeyPatch) -> None:
+    matching_entry = _mock_live_order(
+        order_id="buy-1",
+        symbol="ETHUSD",
+        side="buy",
+        qty=3.0,
+        limit_price=1900.0,
+        created_at="2026-03-10T00:00:00Z",
+    )
+    matching_exit = _mock_live_order(
+        order_id="sell-1",
+        symbol="ETHUSD",
+        side="sell",
+        qty=2.0,
+        limit_price=2000.0,
+        created_at="2026-03-10T00:05:00Z",
+    )
+    cancelled: list[str] = []
+
+    monkeypatch.setattr(
+        "newnanoalpacahourlyexp.trade_alpaca_hourly.alpaca_wrapper.cancel_order",
+        lambda order: cancelled.append(str(order.id)),
+    )
+
+    remaining = _reconcile_live_symbol_orders(
+        "ETHUSD",
+        position_qty=2.0,
+        intents=[
+            OrderIntent(side="sell", qty=2.0, limit_price=2000.0, kind="exit"),
+            OrderIntent(side="buy", qty=3.0, limit_price=1900.0, kind="entry"),
+        ],
+        open_orders=[matching_entry, matching_exit],
+        dry_run=False,
+    )
+
+    assert cancelled == []
+    assert [str(order.id) for order in remaining] == ["buy-1", "sell-1"]

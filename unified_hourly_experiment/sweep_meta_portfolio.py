@@ -50,6 +50,13 @@ class StrategyModel:
     horizons: list[int]
 
 
+@dataclass(frozen=True)
+class ExecutionScenario:
+    label: str
+    bar_margin: float
+    entry_order_ttl_hours: int
+
+
 def parse_csv_list(value: str) -> list[str]:
     return [x.strip() for x in value.split(",") if x.strip()]
 
@@ -60,6 +67,52 @@ def parse_int_list(value: str) -> list[int]:
 
 def parse_float_list(value: str) -> list[float]:
     return [float(x.strip()) for x in parse_csv_list(value)]
+
+
+def _float_token(value: float) -> str:
+    return str(float(value)).replace(".", "p")
+
+
+def resolve_execution_scenarios(
+    *,
+    base_cfg: PortfolioConfig,
+    bar_margins: Sequence[float] | None = None,
+    entry_order_ttls: Sequence[int] | None = None,
+) -> list[ExecutionScenario]:
+    margin_values = list(bar_margins) if bar_margins else [float(base_cfg.bar_margin)]
+    ttl_values = list(entry_order_ttls) if entry_order_ttls else [int(base_cfg.entry_order_ttl_hours)]
+
+    unique_margins: list[float] = []
+    seen_margins: set[float] = set()
+    for raw in margin_values:
+        value = float(raw)
+        if value < 0:
+            raise ValueError(f"execution bar margins must all be >= 0, got {margin_values}")
+        if value not in seen_margins:
+            seen_margins.add(value)
+            unique_margins.append(value)
+
+    unique_ttls: list[int] = []
+    seen_ttls: set[int] = set()
+    for raw in ttl_values:
+        value = int(raw)
+        if value < 0:
+            raise ValueError(f"execution entry order TTLs must all be >= 0, got {ttl_values}")
+        if value not in seen_ttls:
+            seen_ttls.add(value)
+            unique_ttls.append(value)
+
+    scenarios: list[ExecutionScenario] = []
+    for bar_margin in unique_margins:
+        for ttl_hours in unique_ttls:
+            scenarios.append(
+                ExecutionScenario(
+                    label=f"bm{_float_token(bar_margin)}_ttl{ttl_hours}",
+                    bar_margin=float(bar_margin),
+                    entry_order_ttl_hours=int(ttl_hours),
+                )
+            )
+    return scenarios
 
 
 def parse_sit_out_threshold_values(
@@ -302,6 +355,90 @@ def filter_to_common_keys(df: pd.DataFrame, keys: pd.DataFrame) -> pd.DataFrame:
     return merged.sort_values(["timestamp", "symbol"]).reset_index(drop=True)
 
 
+def _with_execution_scenario(
+    base_cfg: PortfolioConfig,
+    scenario: ExecutionScenario,
+) -> PortfolioConfig:
+    return PortfolioConfig(
+        **{
+            **base_cfg.__dict__,
+            "bar_margin": float(scenario.bar_margin),
+            "entry_order_ttl_hours": int(scenario.entry_order_ttl_hours),
+        }
+    )
+
+
+def evaluate_execution_scenarios(
+    *,
+    bars_eval: pd.DataFrame,
+    actions_eval: pd.DataFrame,
+    base_cfg: PortfolioConfig,
+    execution_scenarios: Sequence[ExecutionScenario],
+) -> dict[str, object]:
+    scenario_rows: list[dict[str, float | int | str]] = []
+    for scenario in execution_scenarios:
+        sim = run_portfolio_simulation(
+            bars_eval,
+            actions_eval,
+            _with_execution_scenario(base_cfg, scenario),
+            horizon=1,
+        )
+        m = sim.metrics
+        scenario_rows.append(
+            {
+                "label": scenario.label,
+                "bar_margin": float(scenario.bar_margin),
+                "entry_order_ttl_hours": int(scenario.entry_order_ttl_hours),
+                "return_pct": float(m["total_return"] * 100.0),
+                "annualized_return_pct": float(m.get("annualized_return", 0.0) * 100.0),
+                "sortino": float(m["sortino"]),
+                "max_drawdown_pct": float(m.get("max_drawdown", 0.0) * 100.0),
+                "pnl_smoothness": float(m.get("pnl_smoothness", 0.0)),
+                "ulcer_index": float(m.get("ulcer_index", 0.0)),
+                "trade_rate": float(m.get("trade_rate", 0.0)),
+                "goodness_score": float(m.get("goodness_score", 0.0)),
+                "num_buys": int(m.get("num_buys", 0)),
+                "num_sells": int(m.get("num_sells", 0)),
+            }
+        )
+
+    returns = [float(row["return_pct"]) for row in scenario_rows]
+    annualized_returns = [float(row["annualized_return_pct"]) for row in scenario_rows]
+    sortinos = [float(row["sortino"]) for row in scenario_rows]
+    drawdowns = [float(row["max_drawdown_pct"]) for row in scenario_rows]
+    smoothness = [float(row["pnl_smoothness"]) for row in scenario_rows]
+    ulcer_index = [float(row["ulcer_index"]) for row in scenario_rows]
+    trade_rate = [float(row["trade_rate"]) for row in scenario_rows]
+    goodness = [float(row["goodness_score"]) for row in scenario_rows]
+    buys = [int(row["num_buys"]) for row in scenario_rows]
+    sells = [int(row["num_sells"]) for row in scenario_rows]
+
+    return {
+        "return_pct": float(np.min(returns)),
+        "annualized_return_pct": float(np.min(annualized_returns)),
+        "sortino": float(np.min(sortinos)),
+        "max_drawdown_pct": float(np.max(drawdowns)),
+        "pnl_smoothness": float(np.max(smoothness)),
+        "ulcer_index": float(np.max(ulcer_index)),
+        "trade_rate": float(np.min(trade_rate)),
+        "goodness_score": float(np.min(goodness)),
+        "num_buys": int(np.min(buys)),
+        "num_sells": int(np.min(sells)),
+        "execution_scenario_count": int(len(scenario_rows)),
+        "execution_scenarios": scenario_rows,
+        "scenario_mean_return_pct": float(np.mean(returns)),
+        "scenario_mean_annualized_return_pct": float(np.mean(annualized_returns)),
+        "scenario_mean_sortino": float(np.mean(sortinos)),
+        "scenario_mean_max_drawdown_pct": float(np.mean(drawdowns)),
+        "scenario_mean_pnl_smoothness": float(np.mean(smoothness)),
+        "scenario_mean_ulcer_index": float(np.mean(ulcer_index)),
+        "scenario_mean_trade_rate": float(np.mean(trade_rate)),
+        "scenario_mean_goodness_score": float(np.mean(goodness)),
+        "scenario_mean_num_buys": float(np.mean(buys)),
+        "scenario_mean_num_sells": float(np.mean(sells)),
+    }
+
+
 def build_meta_results(
     *,
     bars: pd.DataFrame,
@@ -319,6 +456,7 @@ def build_meta_results(
     switch_margin: float,
     min_score_gap: float,
     recency_halflife_days: float | None,
+    execution_scenarios: Sequence[ExecutionScenario],
 ) -> tuple[list[dict], dict]:
     winners_by_symbol: dict[str, pd.Series] = {}
     template_actions = next(iter(actions_by_strategy.values()))
@@ -368,24 +506,52 @@ def build_meta_results(
             actions_eval = meta_actions
             period = "all"
 
-        sim = run_portfolio_simulation(bars_eval, actions_eval, base_cfg, horizon=1)
-        m = sim.metrics
         period_rows.append(
             {
                 "period": period,
                 "holdout_days": int(days),
-                "return_pct": float(m["total_return"] * 100.0),
-                "sortino": float(m["sortino"]),
-                "max_drawdown_pct": float(m.get("max_drawdown", 0.0) * 100.0),
-                "num_buys": int(m.get("num_buys", 0)),
-                "num_sells": int(m.get("num_sells", 0)),
+                **evaluate_execution_scenarios(
+                    bars_eval=bars_eval,
+                    actions_eval=actions_eval,
+                    base_cfg=base_cfg,
+                    execution_scenarios=execution_scenarios,
+                ),
             }
         )
 
     sortinos = [r["sortino"] for r in period_rows]
     returns = [r["return_pct"] for r in period_rows]
+    annualized_returns = [float(r.get("annualized_return_pct", 0.0)) for r in period_rows]
     drawdowns = [r["max_drawdown_pct"] for r in period_rows]
+    smoothness = [float(r.get("pnl_smoothness", 0.0)) for r in period_rows]
+    ulcer_index = [float(r.get("ulcer_index", 0.0)) for r in period_rows]
+    trade_rate = [float(r.get("trade_rate", 0.0)) for r in period_rows]
+    goodness = [float(r.get("goodness_score", 0.0)) for r in period_rows]
     buys = [int(r.get("num_buys", 0)) for r in period_rows]
+    scenario_mean_returns = [float(r.get("scenario_mean_return_pct", r["return_pct"])) for r in period_rows]
+    scenario_mean_annualized_returns = [
+        float(r.get("scenario_mean_annualized_return_pct", r.get("annualized_return_pct", 0.0)))
+        for r in period_rows
+    ]
+    scenario_mean_sortinos = [float(r.get("scenario_mean_sortino", r["sortino"])) for r in period_rows]
+    scenario_mean_drawdowns = [
+        float(r.get("scenario_mean_max_drawdown_pct", r["max_drawdown_pct"]))
+        for r in period_rows
+    ]
+    scenario_mean_smoothness = [
+        float(r.get("scenario_mean_pnl_smoothness", r["pnl_smoothness"]))
+        for r in period_rows
+    ]
+    scenario_mean_ulcer_index = [
+        float(r.get("scenario_mean_ulcer_index", r["ulcer_index"]))
+        for r in period_rows
+    ]
+    scenario_mean_trade_rate = [float(r.get("scenario_mean_trade_rate", r["trade_rate"])) for r in period_rows]
+    scenario_mean_goodness = [
+        float(r.get("scenario_mean_goodness_score", r["goodness_score"]))
+        for r in period_rows
+    ]
+    scenario_mean_buys = [float(r.get("scenario_mean_num_buys", r["num_buys"])) for r in period_rows]
     summary = {
         "lookback_days": int(lookback_days),
         "metric": metric,
@@ -397,20 +563,37 @@ def build_meta_results(
         "mean_sortino": float(np.mean(sortinos)),
         "min_return_pct": float(np.min(returns)),
         "mean_return_pct": float(np.mean(returns)),
+        "min_annualized_return_pct": float(np.min(annualized_returns)),
+        "mean_annualized_return_pct": float(np.mean(annualized_returns)),
         "mean_max_drawdown_pct": float(np.mean(drawdowns)),
+        "mean_pnl_smoothness": float(np.mean(smoothness)),
+        "mean_ulcer_index": float(np.mean(ulcer_index)),
+        "mean_trade_rate": float(np.mean(trade_rate)),
+        "min_goodness_score": float(np.min(goodness)),
+        "mean_goodness_score": float(np.mean(goodness)),
         "min_num_buys": int(np.min(buys)),
         "mean_num_buys": float(np.mean(buys)),
+        "execution_scenario_count": int(period_rows[0].get("execution_scenario_count", 1)) if period_rows else 0,
+        "mean_scenario_mean_return_pct": float(np.mean(scenario_mean_returns)),
+        "mean_scenario_mean_annualized_return_pct": float(np.mean(scenario_mean_annualized_returns)),
+        "mean_scenario_mean_sortino": float(np.mean(scenario_mean_sortinos)),
+        "mean_scenario_mean_max_drawdown_pct": float(np.mean(scenario_mean_drawdowns)),
+        "mean_scenario_mean_pnl_smoothness": float(np.mean(scenario_mean_smoothness)),
+        "mean_scenario_mean_ulcer_index": float(np.mean(scenario_mean_ulcer_index)),
+        "mean_scenario_mean_trade_rate": float(np.mean(scenario_mean_trade_rate)),
+        "mean_scenario_mean_goodness_score": float(np.mean(scenario_mean_goodness)),
+        "mean_scenario_mean_num_buys": float(np.mean(scenario_mean_buys)),
     }
     return period_rows, summary
 
 
 def rank_key(summary: dict) -> tuple[float, float, float, float, float]:
     return (
+        float(summary.get("min_goodness_score", summary["min_sortino"])),
+        float(summary.get("mean_goodness_score", summary["mean_sortino"])),
         float(summary["min_sortino"]),
         float(summary["mean_sortino"]),
         float(summary["min_return_pct"]),
-        float(summary["mean_return_pct"]),
-        -float(summary["mean_max_drawdown_pct"]),
     )
 
 
@@ -420,6 +603,7 @@ def evaluate_strategy_baselines(
     actions_by_strategy: dict[str, pd.DataFrame],
     holdout_days: Sequence[int],
     base_cfg: PortfolioConfig,
+    execution_scenarios: Sequence[ExecutionScenario],
 ) -> tuple[list[dict], list[dict]]:
     rows: list[dict] = []
     summaries: list[dict] = []
@@ -435,21 +619,50 @@ def evaluate_strategy_baselines(
                 bars_eval = bars
                 actions_eval = actions
                 period = "all"
-            sim = run_portfolio_simulation(bars_eval, actions_eval, base_cfg, horizon=1)
-            m = sim.metrics
             row = {
                 "strategy": strategy_name,
                 "period": period,
                 "holdout_days": int(days),
-                "return_pct": float(m["total_return"] * 100.0),
-                "sortino": float(m["sortino"]),
-                "max_drawdown_pct": float(m.get("max_drawdown", 0.0) * 100.0),
+                **evaluate_execution_scenarios(
+                    bars_eval=bars_eval,
+                    actions_eval=actions_eval,
+                    base_cfg=base_cfg,
+                    execution_scenarios=execution_scenarios,
+                ),
             }
             strategy_rows.append(row)
             rows.append(row)
         sortinos = [r["sortino"] for r in strategy_rows]
         returns = [r["return_pct"] for r in strategy_rows]
+        annualized_returns = [float(r.get("annualized_return_pct", 0.0)) for r in strategy_rows]
         drawdowns = [r["max_drawdown_pct"] for r in strategy_rows]
+        smoothness = [float(r.get("pnl_smoothness", 0.0)) for r in strategy_rows]
+        ulcer_index = [float(r.get("ulcer_index", 0.0)) for r in strategy_rows]
+        trade_rate = [float(r.get("trade_rate", 0.0)) for r in strategy_rows]
+        goodness = [float(r.get("goodness_score", 0.0)) for r in strategy_rows]
+        scenario_mean_returns = [float(r.get("scenario_mean_return_pct", r["return_pct"])) for r in strategy_rows]
+        scenario_mean_annualized_returns = [
+            float(r.get("scenario_mean_annualized_return_pct", r.get("annualized_return_pct", 0.0)))
+            for r in strategy_rows
+        ]
+        scenario_mean_sortinos = [float(r.get("scenario_mean_sortino", r["sortino"])) for r in strategy_rows]
+        scenario_mean_drawdowns = [
+            float(r.get("scenario_mean_max_drawdown_pct", r["max_drawdown_pct"]))
+            for r in strategy_rows
+        ]
+        scenario_mean_smoothness = [
+            float(r.get("scenario_mean_pnl_smoothness", r["pnl_smoothness"]))
+            for r in strategy_rows
+        ]
+        scenario_mean_ulcer_index = [
+            float(r.get("scenario_mean_ulcer_index", r["ulcer_index"]))
+            for r in strategy_rows
+        ]
+        scenario_mean_trade_rate = [float(r.get("scenario_mean_trade_rate", r["trade_rate"])) for r in strategy_rows]
+        scenario_mean_goodness = [
+            float(r.get("scenario_mean_goodness_score", r["goodness_score"]))
+            for r in strategy_rows
+        ]
         summaries.append(
             {
                 "strategy": strategy_name,
@@ -457,7 +670,23 @@ def evaluate_strategy_baselines(
                 "mean_sortino": float(np.mean(sortinos)),
                 "min_return_pct": float(np.min(returns)),
                 "mean_return_pct": float(np.mean(returns)),
+                "min_annualized_return_pct": float(np.min(annualized_returns)),
+                "mean_annualized_return_pct": float(np.mean(annualized_returns)),
                 "mean_max_drawdown_pct": float(np.mean(drawdowns)),
+                "mean_pnl_smoothness": float(np.mean(smoothness)),
+                "mean_ulcer_index": float(np.mean(ulcer_index)),
+                "mean_trade_rate": float(np.mean(trade_rate)),
+                "min_goodness_score": float(np.min(goodness)),
+                "mean_goodness_score": float(np.mean(goodness)),
+                "execution_scenario_count": int(strategy_rows[0].get("execution_scenario_count", 1)) if strategy_rows else 0,
+                "mean_scenario_mean_return_pct": float(np.mean(scenario_mean_returns)),
+                "mean_scenario_mean_annualized_return_pct": float(np.mean(scenario_mean_annualized_returns)),
+                "mean_scenario_mean_sortino": float(np.mean(scenario_mean_sortinos)),
+                "mean_scenario_mean_max_drawdown_pct": float(np.mean(scenario_mean_drawdowns)),
+                "mean_scenario_mean_pnl_smoothness": float(np.mean(scenario_mean_smoothness)),
+                "mean_scenario_mean_ulcer_index": float(np.mean(scenario_mean_ulcer_index)),
+                "mean_scenario_mean_trade_rate": float(np.mean(scenario_mean_trade_rate)),
+                "mean_scenario_mean_goodness_score": float(np.mean(scenario_mean_goodness)),
             }
         )
     summaries.sort(key=rank_key, reverse=True)
@@ -498,16 +727,36 @@ def main() -> None:
     parser.add_argument("--min-buy-amount", type=float, default=0.0)
     parser.add_argument("--decision-lag-bars", type=int, default=1)
     parser.add_argument(
+        "--entry-selection-mode",
+        type=str,
+        default="edge_rank",
+        choices=["edge_rank", "first_trigger"],
+        help="How the simulator prioritizes competing fillable entries.",
+    )
+    parser.add_argument(
         "--market-order-entry",
         action="store_true",
         help="Use market-order entry fill assumption in simulations.",
     )
     parser.add_argument("--bar-margin", type=float, default=0.0005)
     parser.add_argument(
+        "--execution-bar-margins",
+        default="",
+        help="Optional comma-separated bar margins used for robustness validation; blank uses --bar-margin only.",
+    )
+    parser.add_argument(
         "--entry-order-ttl-hours",
         type=int,
         default=0,
         help="How many hourly bars to keep non-filled entry orders pending in simulator (0 disables).",
+    )
+    parser.add_argument(
+        "--execution-entry-order-ttls",
+        default="",
+        help=(
+            "Optional comma-separated entry-order TTL values used for robustness validation; "
+            "blank uses --entry-order-ttl-hours only."
+        ),
     )
     parser.add_argument("--leverage", type=float, default=2.0)
     parser.add_argument("--force-close-slippage", type=float, default=0.003)
@@ -565,7 +814,9 @@ def main() -> None:
     )
 
     invalid_metrics = [
-        m for m in metrics if m not in ("return", "sortino", "sharpe", "calmar", "omega", "gain_pain", "p10", "median")
+        m
+        for m in metrics
+        if m not in ("return", "sortino", "sharpe", "calmar", "omega", "gain_pain", "p10", "median", "goodness")
     ]
     if invalid_metrics:
         raise ValueError(f"Invalid metrics: {invalid_metrics}")
@@ -580,6 +831,22 @@ def main() -> None:
         raise ValueError(f"lookback-days must all be > 0, got {lookbacks}")
     if any(x < 0 for x in recency_halflifes):
         raise ValueError(f"recency-halflife-days must all be >= 0, got {recency_halflifes}")
+    execution_bar_margins = (
+        parse_float_list(args.execution_bar_margins)
+        if str(args.execution_bar_margins).strip()
+        else [float(args.bar_margin)]
+    )
+    execution_entry_order_ttls = (
+        parse_int_list(args.execution_entry_order_ttls)
+        if str(args.execution_entry_order_ttls).strip()
+        else [int(args.entry_order_ttl_hours)]
+    )
+    if any(x < 0 for x in execution_bar_margins):
+        raise ValueError(f"execution-bar-margins must all be >= 0, got {execution_bar_margins}")
+    if any(x < 0 for x in execution_entry_order_ttls):
+        raise ValueError(
+            f"execution-entry-order-ttls must all be >= 0, got {execution_entry_order_ttls}"
+        )
     if args.trade_amount_scale <= 0:
         raise ValueError("--trade-amount-scale must be > 0")
     if args.entry_intensity_power < 0:
@@ -686,6 +953,7 @@ def main() -> None:
         short_intensity_multiplier=args.short_intensity_multiplier,
         min_buy_amount=args.min_buy_amount,
         decision_lag_bars=args.decision_lag_bars,
+        entry_selection_mode=str(args.entry_selection_mode),
         market_order_entry=bool(args.market_order_entry),
         bar_margin=args.bar_margin,
         entry_order_ttl_hours=int(args.entry_order_ttl_hours),
@@ -695,6 +963,11 @@ def main() -> None:
         fee_by_symbol=dict.fromkeys(symbols, args.fee_rate),
         margin_annual_rate=args.margin_rate,
         sim_backend=args.sim_backend,
+    )
+    execution_scenarios = resolve_execution_scenarios(
+        base_cfg=base_cfg,
+        bar_margins=execution_bar_margins,
+        entry_order_ttls=execution_entry_order_ttls,
     )
 
     daily_returns: dict[str, dict[str, pd.Series]] = {name: {} for name in strategy_names}
@@ -712,16 +985,19 @@ def main() -> None:
         actions_by_strategy=actions_by_strategy,
         holdout_days=holdouts,
         base_cfg=base_cfg,
+        execution_scenarios=execution_scenarios,
     )
     logger.info("Top single-strategy baselines on current holdouts:")
     for item in baseline_summaries[:5]:
         logger.info(
-            "  {} -> min_sort={:.3f} mean_sort={:.3f} min_ret={:+.2f}% mean_ret={:+.2f}% mean_dd={:.2f}%",
+            "  {} -> min_sort={:.3f} mean_sort={:.3f} min_ret={:+.2f}% mean_ret={:+.2f}% min_ann={:+.2f}% mean_ann={:+.2f}% mean_dd={:.2f}%",
             item["strategy"],
             item["min_sortino"],
             item["mean_sortino"],
             item["min_return_pct"],
             item["mean_return_pct"],
+            item.get("min_annualized_return_pct", 0.0),
+            item.get("mean_annualized_return_pct", 0.0),
             item["mean_max_drawdown_pct"],
         )
 
@@ -752,6 +1028,7 @@ def main() -> None:
                                     switch_margin=float(switch_margin),
                                     min_score_gap=float(min_score_gap),
                                     recency_halflife_days=recency_for_score,
+                                    execution_scenarios=execution_scenarios,
                                 )
                                 for row in period_rows:
                                     all_rows.append(
@@ -775,7 +1052,7 @@ def main() -> None:
                                 summary_row = {"metric": metric, "sit_out_threshold": sit_out_threshold, **summary}
                                 summaries.append(summary_row)
                                 logger.info(
-                                    "meta {} mode={} sm={:.4f} mg={:.4f} hl={} th={} lb{} -> min_sort={:.3f} mean_sort={:.3f} min_ret={:+.2f}% mean_ret={:+.2f}% mean_dd={:.2f}%",
+                                    "meta {} mode={} sm={:.4f} mg={:.4f} hl={} th={} lb{} -> min_sort={:.3f} mean_sort={:.3f} min_ret={:+.2f}% mean_ret={:+.2f}% min_ann={:+.2f}% mean_ann={:+.2f}% mean_dd={:.2f}%",
                                     metric,
                                     mode,
                                     switch_margin,
@@ -787,18 +1064,22 @@ def main() -> None:
                                     summary["mean_sortino"],
                                     summary["min_return_pct"],
                                     summary["mean_return_pct"],
+                                    summary.get("min_annualized_return_pct", 0.0),
+                                    summary.get("mean_annualized_return_pct", 0.0),
                                     summary["mean_max_drawdown_pct"],
                                 )
 
     best = max(summaries, key=rank_key)
     logger.info(
-        "BEST meta config: metric={} lookback={}d min_sort={:.3f} mean_sort={:.3f} min_ret={:+.2f}% mean_ret={:+.2f}% mean_dd={:.2f}%",
+        "BEST meta config: metric={} lookback={}d min_sort={:.3f} mean_sort={:.3f} min_ret={:+.2f}% mean_ret={:+.2f}% min_ann={:+.2f}% mean_ann={:+.2f}% mean_dd={:.2f}%",
         best["metric"],
         best["lookback_days"],
         best["min_sortino"],
         best["mean_sortino"],
         best["min_return_pct"],
         best["mean_return_pct"],
+        best.get("min_annualized_return_pct", 0.0),
+        best.get("mean_annualized_return_pct", 0.0),
         best["mean_max_drawdown_pct"],
     )
 
@@ -852,6 +1133,7 @@ def main() -> None:
                 "short_intensity_multiplier": args.short_intensity_multiplier,
                 "min_buy_amount": args.min_buy_amount,
                 "decision_lag_bars": args.decision_lag_bars,
+                "entry_selection_mode": str(args.entry_selection_mode),
                 "market_order_entry": bool(args.market_order_entry),
                 "bar_margin": args.bar_margin,
                 "entry_order_ttl_hours": int(args.entry_order_ttl_hours),
@@ -859,6 +1141,12 @@ def main() -> None:
                 "fee_rate": args.fee_rate,
                 "close_at_eod": not args.no_close_at_eod,
                 "sim_backend": args.sim_backend,
+            },
+            "execution_validation": {
+                "bar_margins": [float(s.bar_margin) for s in execution_scenarios],
+                "entry_order_ttl_hours": [int(s.entry_order_ttl_hours) for s in execution_scenarios],
+                "scenario_labels": [s.label for s in execution_scenarios],
+                "scenario_count": len(execution_scenarios),
             },
         },
         "best": best,

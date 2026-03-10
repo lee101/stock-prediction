@@ -7,6 +7,11 @@ from collections.abc import Mapping, Sequence
 import numpy as np
 import pandas as pd
 
+from src.robust_trading_metrics import (
+    compute_market_sim_goodness_score,
+    compute_pnl_smoothness_from_equity,
+    compute_ulcer_index,
+)
 
 SUPPORTED_META_METRICS = (
     "return",
@@ -17,6 +22,7 @@ SUPPORTED_META_METRICS = (
     "gain_pain",
     "p10",
     "median",
+    "goodness",
 )
 
 
@@ -80,6 +86,22 @@ def score_trailing_returns(
             score = _weighted_percentile(arr, weights, 10.0)
         elif name == "median":
             score = _weighted_percentile(arr, weights, 50.0)
+        elif name == "goodness":
+            equity = _equity_from_returns(arr)
+            downside = arr[arr < 0.0]
+            downside_weights = _subset_weights(arr, weights, arr < 0.0)
+            downside_std = _weighted_std(downside, downside_weights) if downside.size else 0.0
+            sortino = _safe_ratio(mean_ret, downside_std)
+            score = compute_market_sim_goodness_score(
+                total_return=cum_ret,
+                sortino=sortino,
+                max_drawdown=_max_drawdown_from_returns(arr),
+                pnl_smoothness=compute_pnl_smoothness_from_equity(equity),
+                ulcer_index=compute_ulcer_index(equity),
+                trade_rate=0.0,
+                period_count=max(arr.size, 1),
+                min_period_count=max(1, min(arr.size, 24)),
+            )
     return score
 
 
@@ -389,6 +411,13 @@ def _max_drawdown_from_returns(returns: np.ndarray) -> float:
     running_max = np.maximum.accumulate(equity)
     drawdowns = (running_max - equity) / np.maximum(running_max, 1e-9)
     return float(np.max(drawdowns))
+
+
+def _equity_from_returns(returns: np.ndarray) -> np.ndarray:
+    if returns.size == 0:
+        return np.asarray([1.0], dtype=np.float64)
+    growth = np.maximum(1.0 + returns, 1e-9)
+    return np.concatenate(([1.0], np.cumprod(growth)))
 
 
 def _safe_ratio(numerator: float, denominator: float) -> float:

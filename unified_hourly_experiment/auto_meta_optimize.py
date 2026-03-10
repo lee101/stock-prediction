@@ -38,13 +38,17 @@ def parse_float_list(value: str) -> list[float]:
     return [float(x.strip()) for x in parse_csv_list(value)]
 
 
+def parse_int_list(value: str) -> list[int]:
+    return [int(x.strip()) for x in parse_csv_list(value)]
+
+
 def rank_key(summary: dict) -> tuple[float, float, float, float, float]:
     return (
+        float(summary.get("min_goodness_score", summary["min_sortino"])),
+        float(summary.get("mean_goodness_score", summary["mean_sortino"])),
         float(summary["min_sortino"]),
         float(summary["mean_sortino"]),
         float(summary["min_return_pct"]),
-        float(summary["mean_return_pct"]),
-        -float(summary["mean_max_drawdown_pct"]),
     )
 
 
@@ -67,6 +71,7 @@ def build_deploy_command(
     strategy_specs: list[str],
     symbols: str,
     decision_lag_bars: int,
+    entry_selection_mode: str,
     max_hold_hours: int,
     max_positions: int,
     bar_margin: float,
@@ -101,6 +106,7 @@ def build_deploy_command(
         + " --meta-history-days 120 --sit-out-if-negative"
         + f" --sit-out-threshold {best['sit_out_threshold']}"
         + f" --decision-lag-bars {int(decision_lag_bars)}"
+        + f" --entry-selection-mode {entry_selection_mode}"
         + f" --bar-margin {bar_margin}"
         + f" --entry-order-ttl-hours {int(entry_order_ttl_hours)}"
         + f" --fee-rate {fee_rate}"
@@ -229,10 +235,16 @@ def run_once(args: argparse.Namespace) -> dict:
             str(run.short_intensity_multiplier),
             "--decision-lag-bars",
             str(args.decision_lag_bars),
+            "--entry-selection-mode",
+            str(args.entry_selection_mode),
             "--bar-margin",
             str(args.bar_margin),
+            "--execution-bar-margins",
+            args.execution_bar_margins,
             "--entry-order-ttl-hours",
             str(int(args.entry_order_ttl_hours)),
+            "--execution-entry-order-ttls",
+            args.execution_entry_order_ttls,
             "--leverage",
             str(args.leverage),
             "--fee-rate",
@@ -285,6 +297,7 @@ def run_once(args: argparse.Namespace) -> dict:
                     "long_intensity_multiplier": run.long_intensity_multiplier,
                     "short_intensity_multiplier": run.short_intensity_multiplier,
                     "market_order_entry": bool(args.market_order_entry),
+                    "entry_selection_mode": str(args.entry_selection_mode),
                     "output": str(run.output_path),
                     **summary,
                 }
@@ -321,7 +334,14 @@ def run_once(args: argparse.Namespace) -> dict:
             "short_intensity_multipliers": short_intensity_multipliers,
             "min_num_buys": int(args.min_num_buys),
             "entry_order_ttl_hours": int(args.entry_order_ttl_hours),
+            "execution_bar_margins": parse_float_list(args.execution_bar_margins)
+            if str(args.execution_bar_margins).strip()
+            else [float(args.bar_margin)],
+            "execution_entry_order_ttl_hours": parse_int_list(args.execution_entry_order_ttls)
+            if str(args.execution_entry_order_ttls).strip()
+            else [int(args.entry_order_ttl_hours)],
             "market_order_entry": bool(args.market_order_entry),
+            "entry_selection_mode": str(args.entry_selection_mode),
             "decision_lag_bars": int(args.decision_lag_bars),
         },
         "skipped_for_activity": int(skipped_for_activity),
@@ -331,6 +351,7 @@ def run_once(args: argparse.Namespace) -> dict:
             strategy_specs=list(args.strategy),
             symbols=args.symbols,
             decision_lag_bars=int(args.decision_lag_bars),
+            entry_selection_mode=str(args.entry_selection_mode),
             max_hold_hours=int(args.max_hold_hours),
             max_positions=int(args.max_positions),
             bar_margin=float(args.bar_margin),
@@ -378,16 +399,32 @@ def main() -> None:
     parser.add_argument("--short-intensity-multipliers", default="1.0")
     parser.add_argument("--decision-lag-bars", type=int, default=1)
     parser.add_argument(
+        "--entry-selection-mode",
+        default="edge_rank",
+        choices=["edge_rank", "first_trigger"],
+        help="How the simulator prioritizes competing fillable entries in sweeps and generated deploy commands.",
+    )
+    parser.add_argument(
         "--market-order-entry",
         action="store_true",
         help="Use market-order entry fill assumption in sweep simulations and generated deploy command.",
     )
     parser.add_argument("--bar-margin", type=float, default=0.0013)
     parser.add_argument(
+        "--execution-bar-margins",
+        default="",
+        help="Optional comma-separated bar margins used for robustness validation in each sweep run.",
+    )
+    parser.add_argument(
         "--entry-order-ttl-hours",
         type=int,
         default=0,
         help="How many hourly bars non-filled entry orders remain pending in simulator sweeps (0 disables).",
+    )
+    parser.add_argument(
+        "--execution-entry-order-ttls",
+        default="",
+        help="Optional comma-separated entry-order TTL values used for robustness validation in each sweep run.",
     )
     parser.add_argument("--leverage", type=float, default=2.0)
     parser.add_argument("--fee-rate", type=float, default=0.001)
@@ -417,6 +454,20 @@ def main() -> None:
         raise ValueError("--switch-margins values must all be >= 0")
     if any(x < 0 for x in parse_float_list(args.min_score_gaps)):
         raise ValueError("--min-score-gaps values must all be >= 0")
+    execution_bar_margins = (
+        parse_float_list(args.execution_bar_margins)
+        if str(args.execution_bar_margins).strip()
+        else [float(args.bar_margin)]
+    )
+    execution_entry_order_ttls = (
+        parse_int_list(args.execution_entry_order_ttls)
+        if str(args.execution_entry_order_ttls).strip()
+        else [int(args.entry_order_ttl_hours)]
+    )
+    if any(x < 0 for x in execution_bar_margins):
+        raise ValueError("--execution-bar-margins values must all be >= 0")
+    if any(x < 0 for x in execution_entry_order_ttls):
+        raise ValueError("--execution-entry-order-ttls values must all be >= 0")
     if any(x <= 0 for x in parse_float_list(args.trade_amount_scales)):
         raise ValueError("--trade-amount-scales values must all be > 0")
     if any(x < 0 for x in parse_float_list(args.min_buy_amounts)):

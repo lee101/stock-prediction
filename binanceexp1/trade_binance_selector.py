@@ -439,7 +439,12 @@ def _generate_action_for_symbol(
         )
         fallback_dim = len(build_default_feature_columns(base_cfg))
         input_dim = _infer_input_dim(state_dict, fallback=fallback_dim)
-        data_cfg = _resolve_dataset_config(base_cfg, input_dim=input_dim, horizon=horizon)
+        data_cfg = _resolve_dataset_config(
+            base_cfg,
+            input_dim=input_dim,
+            horizon=horizon,
+            saved_feature_columns=payload.get("feature_columns"),
+        )
         data = BinanceExp1DataModule(data_cfg)
         model = _load_model_from_payload(payload, input_dim, TrainingConfig(sequence_length=sequence_length))
         action = generate_latest_action(

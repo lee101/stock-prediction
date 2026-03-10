@@ -17,7 +17,7 @@ import torch
 
 from src.fixtures import all_crypto_symbols
 
-DEFAULT_MAKER_FEE_RATE = 0.0008  # 8 bps maker fee
+DEFAULT_MAKER_FEE_RATE = 0.001  # 10 bps maker fee (Alpaca crypto current rate)
 HOURLY_PERIODS_PER_YEAR = 24 * 365  # 8760 hours
 DAILY_PERIODS_PER_YEAR_CRYPTO = 365  # Crypto trades 24/7
 DAILY_PERIODS_PER_YEAR_STOCK = 252   # ~252 trading days/year for stocks

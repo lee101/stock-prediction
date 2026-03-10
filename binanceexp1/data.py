@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass
+from itertools import combinations
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -330,6 +331,7 @@ class MultiSymbolDataModule:
                 max_history_hours=config.max_history_hours,
                 max_feature_lookback_hours=config.max_feature_lookback_hours,
                 feature_columns=config.feature_columns,
+                use_forecast_interactions=config.use_forecast_interactions,
                 refresh_hours=config.refresh_hours,
                 validation_days=config.validation_days,
                 cache_only=config.cache_only,
@@ -409,6 +411,8 @@ def build_default_feature_columns(config: DatasetConfig) -> List[str]:
         )
     if len(config.forecast_horizons) >= 2:
         columns.append("forecast_agreement")
+    if bool(getattr(config, "use_forecast_interactions", False)):
+        columns.extend(_build_forecast_interaction_columns(config.forecast_horizons))
     return columns
 
 
@@ -544,10 +548,124 @@ def build_feature_frame(frame: pd.DataFrame, config: DatasetConfig) -> pd.DataFr
         signs = pd.concat([d.apply(np.sign) for d in _close_deltas], axis=1)
         frame["forecast_agreement"] = signs.mean(axis=1).abs()
 
+    if bool(getattr(config, "use_forecast_interactions", False)):
+        _add_forecast_interaction_features(frame, config.forecast_horizons)
+
     # Replace infinities so downstream normalization does not create NaNs.
     frame.replace([np.inf, -np.inf], np.nan, inplace=True)
 
     return frame
+
+
+def _forecast_horizons_sorted(horizons: Sequence[int]) -> tuple[int, ...]:
+    return tuple(sorted({int(horizon) for horizon in horizons if int(horizon) > 0}))
+
+
+def _build_forecast_interaction_columns(horizons: Sequence[int]) -> list[str]:
+    sorted_horizons = _forecast_horizons_sorted(horizons)
+    columns: list[str] = []
+    for horizon in sorted_horizons:
+        columns.append(f"forecast_range_pct_h{int(horizon)}")
+    if len(sorted_horizons) >= 2:
+        for left, right in combinations(sorted_horizons, 2):
+            columns.extend(
+                [
+                    f"forecast_delta_spread_h{int(left)}_h{int(right)}",
+                    f"forecast_confidence_spread_h{int(left)}_h{int(right)}",
+                    f"forecast_range_spread_h{int(left)}_h{int(right)}",
+                ]
+            )
+        columns.extend(
+            [
+                "forecast_delta_mean",
+                "forecast_delta_abs_mean",
+                "forecast_confidence_mean",
+                "forecast_range_mean",
+                "forecast_weighted_delta",
+                "forecast_weighted_agreement",
+                "forecast_curve_slope",
+            ]
+        )
+        if len(sorted_horizons) >= 3:
+            columns.append("forecast_curve_residual")
+    return columns
+
+
+def _series_or_zero(frame: pd.DataFrame, column: str) -> pd.Series:
+    if column in frame.columns:
+        return frame[column].astype(float)
+    return pd.Series(0.0, index=frame.index, dtype=np.float32)
+
+
+def _add_forecast_interaction_features(frame: pd.DataFrame, horizons: Sequence[int]) -> None:
+    sorted_horizons = _forecast_horizons_sorted(horizons)
+    if not sorted_horizons:
+        return
+
+    reference_close = frame["reference_close"].replace(0.0, np.nan).astype(float)
+    delta_by_horizon: dict[int, pd.Series] = {}
+    confidence_by_horizon: dict[int, pd.Series] = {}
+    range_by_horizon: dict[int, pd.Series] = {}
+
+    for horizon in sorted_horizons:
+        suffix = f"_h{int(horizon)}"
+        delta_by_horizon[horizon] = _series_or_zero(frame, f"chronos_close_delta{suffix}")
+        confidence_by_horizon[horizon] = _series_or_zero(frame, f"forecast_confidence{suffix}")
+        high = _series_or_zero(frame, f"predicted_high_p50{suffix}")
+        low = _series_or_zero(frame, f"predicted_low_p50{suffix}")
+        range_pct = (high - low).abs() / reference_close
+        range_pct = range_pct.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        frame[f"forecast_range_pct{suffix}"] = range_pct
+        range_by_horizon[horizon] = frame[f"forecast_range_pct{suffix}"].astype(float)
+
+    if len(sorted_horizons) < 2:
+        return
+
+    for left, right in combinations(sorted_horizons, 2):
+        frame[f"forecast_delta_spread_h{int(left)}_h{int(right)}"] = delta_by_horizon[right] - delta_by_horizon[left]
+        frame[f"forecast_confidence_spread_h{int(left)}_h{int(right)}"] = (
+            confidence_by_horizon[right] - confidence_by_horizon[left]
+        )
+        frame[f"forecast_range_spread_h{int(left)}_h{int(right)}"] = range_by_horizon[right] - range_by_horizon[left]
+
+    delta_frame = pd.concat([delta_by_horizon[h] for h in sorted_horizons], axis=1)
+    confidence_frame = pd.concat([confidence_by_horizon[h] for h in sorted_horizons], axis=1)
+    range_frame = pd.concat([range_by_horizon[h] for h in sorted_horizons], axis=1)
+    delta_frame.columns = list(sorted_horizons)
+    confidence_frame.columns = list(sorted_horizons)
+    range_frame.columns = list(sorted_horizons)
+
+    frame["forecast_delta_mean"] = delta_frame.mean(axis=1)
+    frame["forecast_delta_abs_mean"] = delta_frame.abs().mean(axis=1)
+    frame["forecast_confidence_mean"] = confidence_frame.mean(axis=1)
+    frame["forecast_range_mean"] = range_frame.mean(axis=1)
+
+    weight_sum = confidence_frame.sum(axis=1).replace(0.0, np.nan)
+    frame["forecast_weighted_delta"] = (
+        delta_frame.mul(confidence_frame).sum(axis=1) / weight_sum
+    ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    frame["forecast_weighted_agreement"] = (
+        delta_frame.apply(np.sign).mul(confidence_frame).sum(axis=1) / weight_sum
+    ).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    x = np.log1p(np.asarray(sorted_horizons, dtype=np.float32))
+    x_centered = x - float(x.mean())
+    slope_denom = float(np.square(x_centered).sum())
+    if slope_denom <= 0.0:
+        frame["forecast_curve_slope"] = 0.0
+        if len(sorted_horizons) >= 3:
+            frame["forecast_curve_residual"] = 0.0
+        return
+
+    frame["forecast_curve_slope"] = delta_frame.mul(x_centered, axis=1).sum(axis=1) / slope_denom
+
+    if len(sorted_horizons) >= 3:
+        intercept = delta_frame.mean(axis=1)
+        fitted = pd.concat(
+            [intercept + (frame["forecast_curve_slope"] * float(centered)) for centered in x_centered],
+            axis=1,
+        )
+        frame["forecast_curve_residual"] = (delta_frame - fitted).pow(2).mean(axis=1)
 
 
 def _zscore(series: pd.Series, window: int) -> pd.Series:

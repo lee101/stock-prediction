@@ -25,6 +25,7 @@ class ChronosFeatureConfig:
     forecast_horizons: tuple[int, ...]
     context_hours: int
     batch_size: int = 128
+    use_forecast_interactions: bool = False
     force_multivariate: bool | None = None
     force_cross_learning: bool | None = None
     force_multiscale: bool | None = None
@@ -125,6 +126,7 @@ def load_feature_configs(path: Path | None) -> list[ChronosFeatureConfig]:
             forecast_horizons=tuple(int(value) for value in horizons),
             context_hours=int(row.get("context_hours", 24 * 14)),
             batch_size=int(row.get("batch_size", 128)),
+            use_forecast_interactions=bool(row.get("use_forecast_interactions", False)),
             force_multivariate=row.get("force_multivariate"),
             force_cross_learning=row.get("force_cross_learning"),
             force_multiscale=row.get("force_multiscale"),
@@ -204,6 +206,8 @@ def build_train_command(
     ]
     if args.max_history_hours is not None:
         cmd.extend(["--max-history-hours", str(int(args.max_history_hours))])
+    if config.use_forecast_interactions:
+        cmd.append("--use-forecast-interactions")
     if args.training_configs_json is not None:
         cmd.extend(["--configs-json", str(args.training_configs_json)])
     if args.preload_checkpoints:
@@ -405,6 +409,7 @@ def main() -> None:
             "forecast_horizons": ",".join(str(value) for value in config.forecast_horizons),
             "context_hours": int(config.context_hours),
             "batch_size": int(config.batch_size),
+            "use_forecast_interactions": bool(config.use_forecast_interactions),
             "force_multivariate": config.force_multivariate,
             "force_cross_learning": config.force_cross_learning,
             "force_multiscale": config.force_multiscale,

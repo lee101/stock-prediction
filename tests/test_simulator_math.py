@@ -211,6 +211,64 @@ class TestPortfolioSimulatorFillBuffer:
         assert fills_with_buf <= fills_no_buf, \
             f"Larger bar_margin should filter more: no_buf={fills_no_buf}, with_buf={fills_with_buf}"
 
+    def test_bar_margin_requires_trade_through_limit_boundary(self):
+        """5 bps buffer should reject a touch above threshold and fill once price trades through it."""
+        ts0 = pd.Timestamp("2026-01-01T00:00:00Z")
+        ts1 = ts0 + pd.Timedelta(hours=1)
+        bars = pd.DataFrame(
+            [
+                {"timestamp": ts0, "symbol": "NVDA", "open": 100.0, "high": 100.2, "low": 99.951, "close": 100.0},
+                {"timestamp": ts1, "symbol": "NVDA", "open": 100.0, "high": 100.2, "low": 99.949, "close": 100.0},
+            ]
+        )
+        actions = pd.DataFrame(
+            [
+                {
+                    "timestamp": ts0,
+                    "symbol": "NVDA",
+                    "buy_price": 100.0,
+                    "sell_price": 101.0,
+                    "buy_amount": 100.0,
+                    "sell_amount": 0.0,
+                    "trade_amount": 100.0,
+                    "predicted_high_p50_h1": 101.0,
+                    "predicted_low_p50_h1": 99.0,
+                    "predicted_close_p50_h1": 100.5,
+                },
+                {
+                    "timestamp": ts1,
+                    "symbol": "NVDA",
+                    "buy_price": 100.0,
+                    "sell_price": 101.0,
+                    "buy_amount": 100.0,
+                    "sell_amount": 0.0,
+                    "trade_amount": 100.0,
+                    "predicted_high_p50_h1": 101.0,
+                    "predicted_low_p50_h1": 99.0,
+                    "predicted_close_p50_h1": 100.5,
+                },
+            ]
+        )
+        cfg = PortfolioConfig(
+            initial_cash=10_000.0,
+            max_positions=1,
+            max_hold_hours=100,
+            enforce_market_hours=False,
+            close_at_eod=False,
+            decision_lag_bars=0,
+            bar_margin=0.0005,
+            fee_by_symbol={"NVDA": 0.0},
+            max_leverage=1.0,
+            int_qty=True,
+            symbols=["NVDA"],
+        )
+
+        result = run_portfolio_simulation(bars, actions, cfg, horizon=1)
+        buys = [trade for trade in result.trades if trade.side == "buy"]
+
+        assert len(buys) == 1
+        assert buys[0].timestamp == ts1
+
 
 class TestPortfolioSimulatorDrawdown:
     def test_drawdown_calculation(self):
