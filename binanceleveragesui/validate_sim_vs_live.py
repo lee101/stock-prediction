@@ -10,6 +10,7 @@ Architecture matching the live bot:
 import os
 os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
 
+import inspect
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -29,6 +30,7 @@ from binancechronossolexperiment.inference import load_policy_checkpoint
 from binanceneural.inference import generate_latest_action
 from binanceleveragesui.trade_margin_meta import (
     _has_effective_position as live_has_effective_position,
+    _load_profit_gate_5m_bars,
     _signal_from_action,
 )
 from src.binan.binance_margin import get_margin_trades, get_all_margin_orders
@@ -41,6 +43,22 @@ def set_seeds(seed=42):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
+
+def load_policy_checkpoint_compat(
+    checkpoint_path: str,
+    *,
+    device: str,
+    data_root: str | Path,
+    forecast_cache_root: str | Path,
+):
+    kwargs = {"device": device}
+    params = inspect.signature(load_policy_checkpoint).parameters
+    if "data_root" in params:
+        kwargs["data_root"] = Path(data_root)
+    if "forecast_cache_root" in params:
+        kwargs["forecast_cache_root"] = Path(forecast_cache_root)
+    return load_policy_checkpoint(checkpoint_path, **kwargs)
 
 
 def pull_prod_fills(symbol: str, start_ms: int, end_ms: int):
@@ -97,14 +115,22 @@ def pull_prod_fills(symbol: str, start_ms: int, end_ms: int):
     return agg, tdf, odf
 
 
-def load_5m_bars(symbol: str, start_ts, end_ts):
-    path = REPO / "trainingdata5min" / f"{symbol}.csv"
-    if not path.exists():
-        raise FileNotFoundError(f"No 5m data: {path}")
-    df = pd.read_csv(path)
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-    mask = (df["timestamp"] >= start_ts) & (df["timestamp"] <= end_ts)
-    return df[mask].sort_values("timestamp").reset_index(drop=True)
+def load_5m_bars(
+    symbol: str,
+    start_ts,
+    end_ts,
+    *,
+    data_root: str | Path | None = None,
+    bars_5m_root: str | Path | None = None,
+):
+    loader_args = argparse.Namespace(
+        data_root=data_root,
+        profit_gate_5m_root=bars_5m_root,
+    )
+    df = _load_profit_gate_5m_bars(symbol, start_ts, end_ts, args=loader_args)
+    if df.empty:
+        raise FileNotFoundError(f"No 5m data for {symbol} between {start_ts} and {end_ts}")
+    return df
 
 
 def reconstruct_initial_state(symbol: str, start_ms: int, lookback_hours: int = 24):
@@ -1193,8 +1219,19 @@ def simulate_5m_with_trace(
 
 
 def match_trades(prod_fills, sim_trades):
-    if prod_fills.empty or not sim_trades:
-        return [], pd.DataFrame()
+    if prod_fills.empty:
+        return [], pd.DataFrame(sim_trades) if sim_trades else pd.DataFrame()
+    if not sim_trades:
+        return [
+            {
+                "prod_ts": prod["timestamp"],
+                "side": prod["side"],
+                "prod_price": prod["avg_price"],
+                "prod_qty": prod["total_qty"],
+                "matched": False,
+            }
+            for _, prod in prod_fills.iterrows()
+        ], pd.DataFrame()
 
     def _normalize_side(side: str) -> str:
         s = str(side).lower()
@@ -1351,12 +1388,18 @@ def main():
     p.add_argument("--debug", action="store_true")
     p.add_argument("--sequence-length", type=int, default=72)
     p.add_argument("--horizon", type=int, default=1)
+    p.add_argument("--data-root", default=str(REPO / "trainingdatahourlybinance"))
+    p.add_argument("--forecast-cache", default=str(REPO / "binanceneural/forecast_cache"))
+    p.add_argument("--bars-5m-root", default=None)
     p.add_argument("--realistic", action="store_true", help="Enable realistic fill model (order expiry, volume filter, price validation)")
     p.add_argument("--expiry-minutes", type=int, default=90, help="Order expiry in minutes (realistic mode)")
     p.add_argument("--max-fill-fraction", type=float, default=0.01, help="Max fraction of bar volume fillable (realistic mode)")
     p.add_argument("--min-notional", type=float, default=5.0, help="Min order notional in USDT (realistic mode)")
     p.add_argument("--tick-size", type=float, default=0.00001, help="Price tick size (realistic mode)")
     p.add_argument("--step-size", type=float, default=1.0, help="Qty step size (realistic mode)")
+    p.add_argument("--allow-short", action="store_true", help="Enable short-side replay to mirror live margin trading.")
+    p.add_argument("--max-long-leverage", type=float, default=None, help="Override long leverage cap for replay.")
+    p.add_argument("--max-short-leverage", type=float, default=None, help="Override short leverage cap for replay.")
     p.add_argument(
         "--max-position-notional",
         type=float,
@@ -1400,7 +1443,12 @@ def main():
     set_seeds(42)
 
     print(f"Loading checkpoint: {args.checkpoint}")
-    model, normalizer, feature_columns, meta = load_policy_checkpoint(args.checkpoint, device="cuda")
+    model, normalizer, feature_columns, meta = load_policy_checkpoint_compat(
+        args.checkpoint,
+        device="cuda",
+        data_root=args.data_root,
+        forecast_cache_root=args.forecast_cache,
+    )
     seq_len = meta.get("sequence_length", args.sequence_length)
     forecast_horizons = resolve_required_forecast_horizons(
         (int(args.horizon),),
@@ -1416,8 +1464,8 @@ def main():
     print(f"Loading hourly data for {args.data_symbol}...")
     dm = ChronosSolDataModule(
         symbol=args.data_symbol,
-        data_root=REPO / "trainingdatahourlybinance",
-        forecast_cache_root=REPO / "binanceneural/forecast_cache",
+        data_root=Path(args.data_root),
+        forecast_cache_root=Path(args.forecast_cache),
         forecast_horizons=forecast_horizons, context_hours=512,
         quantile_levels=(0.1, 0.5, 0.9),
         batch_size=32, model_id="amazon/chronos-t5-small",
@@ -1434,7 +1482,13 @@ def main():
     end_ms = int(end_ts.timestamp() * 1000)
 
     print(f"\nLoading 5m bars for {args.symbol}...")
-    bars_5m = load_5m_bars(args.symbol, start_ts - pd.Timedelta(hours=1), end_ts)
+    bars_5m = load_5m_bars(
+        args.symbol,
+        start_ts - pd.Timedelta(hours=1),
+        end_ts,
+        data_root=args.data_root,
+        bars_5m_root=args.bars_5m_root,
+    )
     print(f"5m bars: {len(bars_5m)} ({bars_5m['timestamp'].min()} to {bars_5m['timestamp'].max()})")
 
     if args.initial_inv is not None:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Backtest the live DOGE/AAVE meta margin bot over arbitrary time windows."""
+"""Backtest the live two-model meta margin bot over arbitrary time windows."""
 from __future__ import annotations
 
 import argparse
@@ -37,10 +37,7 @@ FORECAST_CACHE = REPO / "binanceneural/forecast_cache"
 DEFAULT_DOGE_CKPT = REPO / "binanceleveragesui/checkpoints/r5_DOGE_rw05_drop15/binanceneural_20260303_001154/epoch_008.pt"
 DEFAULT_AAVE_CKPT = REPO / "binanceleveragesui/checkpoints/r5_AAVE_rw05_strides_long/binanceneural_20260303_023521/epoch_002.pt"
 DEFAULT_MARGIN_HOURLY_RATE = 0.0000025457
-MODEL_CONFIGS = {
-    "doge": {"symbol": "DOGEUSDT", "data_symbol": "DOGEUSD", "checkpoint": DEFAULT_DOGE_CKPT},
-    "aave": {"symbol": "AAVEUSDT", "data_symbol": "AAVEUSD", "checkpoint": DEFAULT_AAVE_CKPT},
-}
+FIVE_MIN_PERIODS_PER_YEAR = 12 * 24 * 365
 
 
 def _resolve_initial_model_name(args) -> str:
@@ -63,11 +60,11 @@ def _latest_5m_timestamp(symbol: str) -> pd.Timestamp:
     return ts.max()
 
 
-def resolve_window(args) -> tuple[pd.Timestamp, pd.Timestamp]:
+def resolve_window(args, model_configs: dict[str, dict]) -> tuple[pd.Timestamp, pd.Timestamp]:
     if args.end:
         end_ts = _to_utc_timestamp(args.end)
     else:
-        end_ts = min(_latest_5m_timestamp(cfg["symbol"]) for cfg in MODEL_CONFIGS.values())
+        end_ts = min(_latest_5m_timestamp(cfg["symbol"]) for cfg in model_configs.values())
 
     if args.start:
         start_ts = _to_utc_timestamp(args.start)
@@ -77,6 +74,16 @@ def resolve_window(args) -> tuple[pd.Timestamp, pd.Timestamp]:
     if start_ts >= end_ts:
         raise ValueError(f"start must be before end: start={start_ts} end={end_ts}")
     return start_ts, end_ts
+
+
+def _history_warmup_start(args, start_ts: pd.Timestamp) -> pd.Timestamp:
+    warmup_hours = max(
+        int(args.lookback),
+        int(getattr(args, "profit_gate_lookback_hours", 0)),
+        int(args.max_hold_hours),
+        24,
+    ) + 6
+    return start_ts - pd.Timedelta(hours=warmup_hours)
 
 
 def _resolve_checkpoint_forecast_horizons(feature_columns, horizon: int) -> tuple[int, ...]:
@@ -96,7 +103,12 @@ def _load_frame(
     data_root: Path,
     forecast_cache_root: Path,
 ):
-    model, normalizer, feature_columns, meta = load_policy_checkpoint(str(checkpoint_path), device="cuda")
+    model, normalizer, feature_columns, meta = load_policy_checkpoint(
+        str(checkpoint_path),
+        device="cuda",
+        data_root=Path(data_root),
+        forecast_cache_root=Path(forecast_cache_root),
+    )
     seq_len = int(meta.get("sequence_length", sequence_length))
     forecast_horizons = _resolve_checkpoint_forecast_horizons(feature_columns, horizon)
     dm = ChronosSolDataModule(
@@ -228,15 +240,32 @@ def compute_equity_stats(trace: pd.DataFrame, initial_cash: float) -> dict:
             "return_pct": 0.0,
             "max_drawdown_pct": 0.0,
             "bars": 0,
+            "sharpe_ratio": None,
+            "sortino_ratio": None,
         }
     eq = trace["equity"].to_numpy(dtype=np.float64)
     peak = np.maximum.accumulate(eq)
     dd = (eq - peak) / (peak + 1e-12)
+    returns = np.diff(eq) / np.clip(eq[:-1], 1e-12, None)
+    sharpe_ratio = None
+    sortino_ratio = None
+    if returns.size > 0:
+        mean_return = float(np.mean(returns))
+        std_return = float(np.std(returns))
+        if np.isfinite(std_return) and std_return > 1e-12:
+            sharpe_ratio = mean_return / std_return * float(np.sqrt(FIVE_MIN_PERIODS_PER_YEAR))
+        downside = returns[returns < 0.0]
+        if downside.size > 0:
+            downside_std = float(np.std(downside))
+            if np.isfinite(downside_std) and downside_std > 1e-12:
+                sortino_ratio = mean_return / downside_std * float(np.sqrt(FIVE_MIN_PERIODS_PER_YEAR))
     return {
         "final_equity": float(eq[-1]),
         "return_pct": float(eq[-1] / initial_cash - 1.0) * 100.0,
         "max_drawdown_pct": float(dd.min()) * 100.0,
         "bars": int(len(trace)),
+        "sharpe_ratio": None if sharpe_ratio is None else float(sharpe_ratio),
+        "sortino_ratio": None if sortino_ratio is None else float(sortino_ratio),
     }
 
 
@@ -368,6 +397,21 @@ def run_meta_backtest(
                 )
                 for name in signal_maps
             }
+            profit_gate_returns = None
+            if (
+                int(getattr(args, "profit_gate_lookback_hours", 0)) > 0
+                and str(getattr(args, "profit_gate_mode", "hypothetical")) == "live_like"
+            ):
+                profit_gate_returns = live_meta.compute_live_like_profit_gate_returns(
+                    histories,
+                    asof_ts=current_ts,
+                    lookback_hours=int(getattr(args, "profit_gate_lookback_hours", 0)),
+                    args=args,
+                    rules_by_model=rules_by_model,
+                    initial_cash=float(current_equity),
+                    bars_by_model=bars_by_model,
+                    simulate_with_trace=simulate_5m_with_trace,
+                )
             chosen = live_meta.select_model(
                 histories,
                 int(args.lookback),
@@ -378,8 +422,10 @@ def run_meta_backtest(
                 current_model="",
                 switch_margin=float(args.switch_margin),
                 min_score_gap=float(args.min_score_gap),
+                profit_gate_mode=str(getattr(args, "profit_gate_mode", "hypothetical")),
                 profit_gate_lookback_hours=int(getattr(args, "profit_gate_lookback_hours", 0)),
                 profit_gate_min_return=float(getattr(args, "profit_gate_min_return", 0.0)),
+                profit_gate_returns=profit_gate_returns,
                 allow_short=bool(args.allow_short),
                 max_long_leverage=getattr(args, "long_max_leverage", None),
                 max_short_leverage=getattr(args, "short_max_leverage", None),
@@ -391,6 +437,7 @@ def run_meta_backtest(
                         "selected": chosen or "cash",
                         "selection_cutoff": selection_cutoff.isoformat(),
                         "scores": score_snapshot,
+                        "profit_returns": profit_gate_returns or {},
                     }
                 )
             active_model = chosen
@@ -466,7 +513,12 @@ def run_meta_backtest(
 
         current_ts = end_ts + pd.Timedelta(minutes=5)
 
-    trace_df = pd.DataFrame(equity_records).drop_duplicates(subset=["timestamp"], keep="last").sort_values("timestamp").reset_index(drop=True)
+    trace_df = (
+        pd.DataFrame(equity_records, columns=["timestamp", "equity", "model"])
+        .drop_duplicates(subset=["timestamp"], keep="last")
+        .sort_values("timestamp")
+        .reset_index(drop=True)
+    )
     stats = compute_equity_stats(trace_df, float(args.initial_cash))
     stats.update(
         {
@@ -480,17 +532,26 @@ def run_meta_backtest(
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Backtest the live DOGE/AAVE meta margin bot over arbitrary windows")
+    parser = argparse.ArgumentParser(description="Backtest the live two-model meta margin bot over arbitrary windows")
     parser.add_argument("--start", default=None, help="UTC ISO start timestamp. Overrides --days.")
     parser.add_argument("--end", default=None, help="UTC ISO end timestamp. Defaults to latest common 5m bar.")
     parser.add_argument("--days", type=float, default=7.0, help="Trailing window size in days when --start is omitted.")
-    parser.add_argument("--doge-checkpoint", default=str(DEFAULT_DOGE_CKPT))
-    parser.add_argument("--aave-checkpoint", default=str(DEFAULT_AAVE_CKPT))
+    parser.add_argument("--model-a-name", default=live_meta.MODEL_SLOT_DEFAULTS[0][1])
+    parser.add_argument("--model-a-symbol", default=live_meta.MODEL_SLOT_DEFAULTS[0][2]["symbol"])
+    parser.add_argument("--model-a-data-symbol", default=live_meta.MODEL_SLOT_DEFAULTS[0][2]["data_symbol"])
+    parser.add_argument("--model-a-base-asset", default=live_meta.MODEL_SLOT_DEFAULTS[0][2]["base_asset"])
+    parser.add_argument("--model-a-maker-fee", type=float, default=live_meta.MODEL_SLOT_DEFAULTS[0][2]["maker_fee"])
+    parser.add_argument("--model-a-checkpoint", "--doge-checkpoint", dest="model_a_checkpoint", default=str(DEFAULT_DOGE_CKPT))
+    parser.add_argument("--model-b-name", default=live_meta.MODEL_SLOT_DEFAULTS[1][1])
+    parser.add_argument("--model-b-symbol", default=live_meta.MODEL_SLOT_DEFAULTS[1][2]["symbol"])
+    parser.add_argument("--model-b-data-symbol", default=live_meta.MODEL_SLOT_DEFAULTS[1][2]["data_symbol"])
+    parser.add_argument("--model-b-base-asset", default=live_meta.MODEL_SLOT_DEFAULTS[1][2]["base_asset"])
+    parser.add_argument("--model-b-maker-fee", type=float, default=live_meta.MODEL_SLOT_DEFAULTS[1][2]["maker_fee"])
+    parser.add_argument("--model-b-checkpoint", "--aave-checkpoint", dest="model_b_checkpoint", default=str(DEFAULT_AAVE_CKPT))
     parser.add_argument("--initial-cash", type=float, default=10_000.0)
     parser.add_argument(
         "--initial-model",
         default="",
-        choices=["", *sorted(MODEL_CONFIGS)],
         help="Optional model active at window start. Combine with --initial-inv to seed a carried position.",
     )
     parser.add_argument(
@@ -510,6 +571,7 @@ def parse_args():
     parser.add_argument("--cash-threshold", type=float, default=0.0)
     parser.add_argument("--switch-margin", type=float, default=0.005)
     parser.add_argument("--min-score-gap", type=float, default=0.0)
+    parser.add_argument("--profit-gate-mode", default="hypothetical", choices=live_meta.SUPPORTED_PROFIT_GATE_MODES)
     parser.add_argument("--profit-gate-lookback-hours", type=int, default=0)
     parser.add_argument("--profit-gate-min-return", type=float, default=0.0)
     parser.add_argument("--sequence-length", type=int, default=72)
@@ -536,18 +598,23 @@ def parse_args():
 
 def main():
     args = parse_args()
-    start_ts, end_ts = resolve_window(args)
+    model_specs = live_meta.build_model_specs_from_args(args)
+    model_configs = {
+        spec["name"]: {
+            "symbol": spec["symbol"],
+            "data_symbol": spec["data_symbol"],
+            "base_asset": spec["base_asset"],
+            "maker_fee": float(spec["maker_fee"]),
+            "checkpoint": Path(spec["checkpoint"]) if spec.get("checkpoint") is not None else None,
+        }
+        for spec in model_specs
+    }
+    live_meta.apply_model_specs(model_specs)
+    start_ts, end_ts = resolve_window(args, model_configs)
     torch.use_deterministic_algorithms(True)
     set_seeds(42)
 
-    signal_start_ts = start_ts - pd.Timedelta(
-        hours=max(
-            int(args.lookback),
-            int(getattr(args, "profit_gate_lookback_hours", 0)),
-            int(args.max_hold_hours),
-            24,
-        ) + 6
-    )
+    signal_start_ts = _history_warmup_start(args, start_ts)
     signal_args = argparse.Namespace(
         start=signal_start_ts.isoformat(),
         horizon=int(args.horizon),
@@ -563,8 +630,10 @@ def main():
     data_root = Path(args.data_root)
     forecast_cache_root = Path(args.forecast_cache)
 
-    for name, cfg in MODEL_CONFIGS.items():
-        checkpoint_path = Path(getattr(args, f"{name}_checkpoint"))
+    for name, cfg in model_configs.items():
+        checkpoint_path = cfg["checkpoint"]
+        if checkpoint_path is None:
+            raise ValueError(f"Missing checkpoint for model '{name}'.")
         rules_by_model[name] = resolve_symbol_rules(cfg["symbol"])
         model, normalizer, feature_columns, meta, frame, forecast_horizons = _load_frame(
             cfg["data_symbol"],
@@ -577,7 +646,7 @@ def main():
         forecast_horizons_by_model[name] = [int(h) for h in forecast_horizons]
         signal_args.symbol = cfg["symbol"]
         signal_maps[name] = generate_hourly_signals(signal_args, frame, model, normalizer, feature_columns, meta)
-        bars_by_model[name] = load_5m_bars(cfg["symbol"], start_ts - pd.Timedelta(hours=1), end_ts)
+        bars_by_model[name] = load_5m_bars(cfg["symbol"], signal_start_ts - pd.Timedelta(hours=1), end_ts)
         summary, _trace = run_single_symbol_backtest(
             args,
             start_ts,
@@ -601,8 +670,21 @@ def main():
     report = {
         "window": {"start": start_ts.isoformat(), "end": end_ts.isoformat()},
         "config": {
-            "doge_checkpoint": str(Path(args.doge_checkpoint).resolve()),
-            "aave_checkpoint": str(Path(args.aave_checkpoint).resolve()),
+            "models": [
+                {
+                    "name": str(spec["name"]),
+                    "symbol": str(spec["symbol"]),
+                    "data_symbol": str(spec["data_symbol"]),
+                    "base_asset": str(spec["base_asset"]),
+                    "maker_fee": float(spec["maker_fee"]),
+                    "checkpoint": (
+                        None
+                        if spec.get("checkpoint") is None
+                        else str(Path(spec["checkpoint"]).resolve())
+                    ),
+                }
+                for spec in model_specs
+            ],
             "initial_cash": float(args.initial_cash),
             "initial_model": str(args.initial_model or ""),
             "initial_inv": float(args.initial_inv),
@@ -617,6 +699,7 @@ def main():
             "cash_threshold": float(args.cash_threshold),
             "switch_margin": float(args.switch_margin),
             "min_score_gap": float(args.min_score_gap),
+            "profit_gate_mode": str(getattr(args, "profit_gate_mode", "hypothetical")),
             "profit_gate_lookback_hours": int(getattr(args, "profit_gate_lookback_hours", 0)),
             "profit_gate_min_return": float(getattr(args, "profit_gate_min_return", 0.0)),
             "intensity_scale": float(args.intensity_scale),

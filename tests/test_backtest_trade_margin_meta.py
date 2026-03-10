@@ -3,16 +3,19 @@ from __future__ import annotations
 import os
 from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from binanceleveragesui.backtest_trade_margin_meta import (
+    _history_warmup_start,
     _resolve_initial_model_name,
     _resolve_checkpoint_forecast_horizons,
     _inventory_blocks_meta_rotation,
     _make_sim_args,
     build_signal_histories_through,
     compute_equity_stats,
+    resolve_window,
     run_meta_backtest,
     resolve_model_initial_state,
     summarize_trades,
@@ -37,6 +40,44 @@ def test_resolve_initial_model_name_normalizes_empty_and_case() -> None:
 
     assert _resolve_initial_model_name(args) == "aave"
     assert _resolve_initial_model_name(SimpleNamespace(initial_model=None)) == ""
+
+
+def test_resolve_window_uses_custom_model_symbols(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+    latest = {
+        "BTCUSDT": pd.Timestamp("2026-03-02 00:00:00+00:00"),
+        "SUIUSDT": pd.Timestamp("2026-03-01 12:00:00+00:00"),
+    }
+
+    monkeypatch.setattr(
+        "binanceleveragesui.backtest_trade_margin_meta._latest_5m_timestamp",
+        lambda symbol: seen.append(symbol) or latest[symbol],
+    )
+
+    start_ts, end_ts = resolve_window(
+        SimpleNamespace(start=None, end=None, days=1.0),
+        {
+            "btc": {"symbol": "BTCUSDT"},
+            "sui": {"symbol": "SUIUSDT"},
+        },
+    )
+
+    assert seen == ["BTCUSDT", "SUIUSDT"]
+    assert end_ts == pd.Timestamp("2026-03-01 12:00:00+00:00")
+    assert start_ts == pd.Timestamp("2026-02-28 12:00:00+00:00")
+
+
+def test_history_warmup_start_covers_gate_and_hold_hours() -> None:
+    args = SimpleNamespace(
+        lookback=6,
+        profit_gate_lookback_hours=24,
+        max_hold_hours=8.0,
+    )
+    start_ts = pd.Timestamp("2026-03-01 12:00:00+00:00")
+
+    warmup_start = _history_warmup_start(args, start_ts)
+
+    assert warmup_start == pd.Timestamp("2026-02-28 06:00:00+00:00")
 
 
 def test_make_sim_args_falls_back_to_max_leverage_when_directional_caps_unset() -> None:
@@ -114,18 +155,45 @@ def test_compute_equity_stats_reports_return_and_drawdown() -> None:
                     "2026-03-01 00:00:00+00:00",
                     "2026-03-01 00:05:00+00:00",
                     "2026-03-01 00:10:00+00:00",
+                    "2026-03-01 00:15:00+00:00",
+                    "2026-03-01 00:20:00+00:00",
                 ]
             ),
-            "equity": [10_000.0, 10_500.0, 10_250.0],
+            "equity": [10_000.0, 10_500.0, 10_250.0, 10_400.0, 10_300.0],
         }
     )
 
     stats = compute_equity_stats(trace, 10_000.0)
 
-    assert stats["final_equity"] == 10_250.0
-    assert stats["return_pct"] == pytest.approx(2.5)
+    assert stats["final_equity"] == 10_300.0
+    assert stats["return_pct"] == pytest.approx(3.0)
     assert stats["max_drawdown_pct"] == pytest.approx((10_250.0 - 10_500.0) / 10_500.0 * 100.0)
-    assert stats["bars"] == 3
+    assert stats["bars"] == 5
+    returns = np.diff(trace["equity"].to_numpy(dtype=np.float64)) / trace["equity"].to_numpy(dtype=np.float64)[:-1]
+    expected_sharpe = returns.mean() / returns.std() * np.sqrt(12 * 24 * 365)
+    expected_sortino = returns.mean() / returns[returns < 0].std() * np.sqrt(12 * 24 * 365)
+    assert stats["sharpe_ratio"] == pytest.approx(expected_sharpe)
+    assert stats["sortino_ratio"] == pytest.approx(expected_sortino)
+
+
+def test_compute_equity_stats_omits_ratios_without_volatility_or_downside() -> None:
+    trace = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(
+                [
+                    "2026-03-01 00:00:00+00:00",
+                    "2026-03-01 00:05:00+00:00",
+                    "2026-03-01 00:10:00+00:00",
+                ]
+            ),
+            "equity": [10_000.0, 10_000.0, 10_000.0],
+        }
+    )
+
+    stats = compute_equity_stats(trace, 10_000.0)
+
+    assert stats["sharpe_ratio"] is None
+    assert stats["sortino_ratio"] is None
 
 
 def test_summarize_trades_respects_starting_short_inventory() -> None:
@@ -341,6 +409,200 @@ def test_run_meta_backtest_bootstraps_flat_active_model(monkeypatch: pytest.Monk
     assert result["summary"]["switch_count"] == 0
     assert result["summary"]["segments"][0]["model"] == "aave"
     assert result["summary"]["segments"][0]["initial_inventory"] == pytest.approx(0.0)
+
+
+def test_run_meta_backtest_live_like_profit_gate_uses_simulated_returns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start_ts = pd.Timestamp("2026-03-01 01:00:00+00:00")
+    end_ts = pd.Timestamp("2026-03-01 01:10:00+00:00")
+    bars = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(
+                [
+                    "2026-03-01 00:55:00+00:00",
+                    "2026-03-01 01:00:00+00:00",
+                    "2026-03-01 01:05:00+00:00",
+                    "2026-03-01 01:10:00+00:00",
+                ]
+            ),
+            "open": [100.0, 100.0, 100.0, 100.0],
+            "high": [100.0, 100.0, 100.0, 100.0],
+            "low": [100.0, 100.0, 100.0, 100.0],
+            "close": [100.0, 100.0, 100.0, 100.0],
+            "volume": [10.0, 10.0, 10.0, 10.0],
+        }
+    )
+    signal_hour = pd.Timestamp("2026-03-01 00:00:00+00:00")
+    signal = {
+        signal_hour: {
+            "buy_price": 99.0,
+            "sell_price": 101.0,
+            "buy_amount": 0.0,
+            "sell_amount": 0.0,
+            "close": 100.0,
+            "signal_hour": signal_hour,
+        }
+    }
+    alt_signal = {
+        signal_hour: {
+            "buy_price": 98.0,
+            "sell_price": 102.0,
+            "buy_amount": 0.0,
+            "sell_amount": 0.0,
+            "close": 100.0,
+            "signal_hour": signal_hour,
+        }
+    }
+    args = SimpleNamespace(
+        initial_cash=10_000.0,
+        initial_model="",
+        initial_inv=0.0,
+        initial_entry_ts=None,
+        fee=0.001,
+        fill_buffer_pct=0.0,
+        min_notional=5.0,
+        tick_size=0.01,
+        step_size=1.0,
+        max_hold_hours=6.0,
+        max_leverage=2.3,
+        long_max_leverage=2.3,
+        short_max_leverage=0.16,
+        margin_hourly_rate=0.0,
+        verbose=False,
+        use_order_expiry=False,
+        reprice_threshold=0.003,
+        max_position_notional=None,
+        allow_short=True,
+        expiry_minutes=90,
+        max_fill_fraction=0.01,
+        lookback=1,
+        selection_mode="winner_cash",
+        selection_metric="omega",
+        cash_threshold=0.0,
+        switch_margin=0.0,
+        min_score_gap=0.0,
+        profit_gate_mode="live_like",
+        profit_gate_lookback_hours=24,
+        profit_gate_min_return=0.0,
+    )
+
+    monkeypatch.setattr(
+        "binanceleveragesui.backtest_trade_margin_meta.live_meta._run_hypothetical_score",
+        lambda history, *args, **kwargs: 0.50 if history.buy_prices[0] == 99.0 else 0.20,
+    )
+    monkeypatch.setattr(
+        "binanceleveragesui.backtest_trade_margin_meta.live_meta.compute_live_like_profit_gate_returns",
+        lambda *args, **kwargs: {"doge": -0.01, "aave": 0.02},
+    )
+
+    def fake_simulate(*_args, **_kwargs):
+        trace = pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(
+                    [
+                        "2026-03-01 01:00:00+00:00",
+                        "2026-03-01 01:05:00+00:00",
+                    ]
+                ),
+                "equity": [10_000.0, 10_000.0],
+            }
+        )
+        return [], 10_000.0, 10_000.0, 0.0, trace
+
+    monkeypatch.setattr("binanceleveragesui.backtest_trade_margin_meta.simulate_5m_with_trace", fake_simulate)
+
+    result = run_meta_backtest(
+        args,
+        start_ts,
+        end_ts,
+        signal_maps={"doge": signal, "aave": alt_signal},
+        bars_by_model={"doge": bars, "aave": bars},
+        rules_by_model={
+            "doge": SimpleNamespace(min_notional=5.0, tick_size=0.01, step_size=1.0),
+            "aave": SimpleNamespace(min_notional=5.0, tick_size=0.01, step_size=1.0),
+        },
+    )
+
+    assert result["summary"]["segments"][0]["model"] == "aave"
+    assert result["summary"]["switches"][0]["profit_returns"] == {"doge": -0.01, "aave": 0.02}
+
+
+def test_run_meta_backtest_handles_empty_common_trace() -> None:
+    start_ts = pd.Timestamp("2026-03-01 00:00:00+00:00")
+    end_ts = pd.Timestamp("2026-03-01 00:10:00+00:00")
+    empty_bars = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime([], utc=True),
+            "open": pd.Series(dtype=float),
+            "high": pd.Series(dtype=float),
+            "low": pd.Series(dtype=float),
+            "close": pd.Series(dtype=float),
+            "volume": pd.Series(dtype=float),
+        }
+    )
+    signal_hour = pd.Timestamp("2026-02-28 23:00:00+00:00")
+    signal = {
+        signal_hour: {
+            "buy_price": 99.0,
+            "sell_price": 101.0,
+            "buy_amount": 0.0,
+            "sell_amount": 0.0,
+            "close": 100.0,
+            "signal_hour": signal_hour,
+        }
+    }
+    args = SimpleNamespace(
+        initial_cash=10_000.0,
+        initial_model="",
+        initial_inv=0.0,
+        initial_entry_ts=None,
+        fee=0.001,
+        fill_buffer_pct=0.0,
+        min_notional=5.0,
+        tick_size=0.01,
+        step_size=1.0,
+        max_hold_hours=6.0,
+        max_leverage=2.3,
+        long_max_leverage=2.3,
+        short_max_leverage=0.16,
+        margin_hourly_rate=0.0,
+        verbose=False,
+        use_order_expiry=False,
+        reprice_threshold=0.003,
+        max_position_notional=None,
+        allow_short=True,
+        expiry_minutes=90,
+        max_fill_fraction=0.01,
+        lookback=1,
+        selection_mode="winner_cash",
+        selection_metric="omega",
+        cash_threshold=0.0,
+        switch_margin=0.0,
+        min_score_gap=0.0,
+        profit_gate_mode="live_like",
+        profit_gate_lookback_hours=24,
+        profit_gate_min_return=0.0,
+    )
+
+    result = run_meta_backtest(
+        args,
+        start_ts,
+        end_ts,
+        signal_maps={"doge": signal, "aave": signal},
+        bars_by_model={"doge": empty_bars, "aave": empty_bars},
+        rules_by_model={
+            "doge": SimpleNamespace(min_notional=5.0, tick_size=0.01, step_size=1.0),
+            "aave": SimpleNamespace(min_notional=5.0, tick_size=0.01, step_size=1.0),
+        },
+    )
+
+    assert list(result["trace"].columns) == ["timestamp", "equity", "model"]
+    assert result["trace"].empty
+    assert result["summary"]["final_equity"] == pytest.approx(10_000.0)
+    assert result["summary"]["return_pct"] == pytest.approx(0.0)
+    assert result["summary"]["trade_count"] == 0
+    assert result["summary"]["switch_count"] == 0
 
 
 def test_run_meta_backtest_ignores_sub_threshold_inventory_for_rotation(

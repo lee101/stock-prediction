@@ -61,3 +61,28 @@ def test_equity_leverage_and_financing_fees():
     assert info["deleverage_notional"] > 0.0
     assert info["equity"] < 1.0
     assert np.isfinite(reward)
+
+
+def test_reset_respects_fixed_start_and_episode_length():
+    prices = _make_prices(T=80)
+    env = FastMarketEnv(
+        prices=prices,
+        cfg={
+            "context_len": 16,
+            "horizon": 1,
+            "start_index": 20,
+            "episode_length": 2,
+        },
+        device="cpu",
+    )
+
+    obs, info = env.reset()
+
+    assert obs.shape == (16, prices.shape[-1] + 3)
+    assert info["start_index"] == 20
+    assert info["episode_end"] == 22
+
+    _, _, terminated, _, _ = env.step(0.0)
+    assert terminated is False
+    _, _, terminated, _, _ = env.step(0.0)
+    assert terminated is True

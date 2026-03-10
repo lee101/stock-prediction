@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from binanceleveragesui.sweep_live_meta_frontier import (
+    _build_backtest_cmd,
+    _build_seeded_scenarios,
     _candidate_rank,
     _config_name,
     _dedupe_by_signature,
@@ -17,6 +21,78 @@ from binanceleveragesui.sweep_live_meta_frontier import (
 def test_parse_lists_drop_duplicates_and_blanks() -> None:
     assert _parse_int_list("1,2,2, 3 ,,") == [1, 2, 3]
     assert _parse_float_list("0.1,0.2,0.1,,0.3") == [0.1, 0.2, 0.3]
+
+
+def test_build_seeded_scenarios_supports_custom_pair() -> None:
+    scenarios = _build_seeded_scenarios(
+        [
+            {"name": "btc"},
+            {"name": "sui"},
+        ],
+        [0.001, 30.0],
+    )
+
+    assert scenarios == (
+        ("flat_1d", {"days": 1, "initial_model": "", "initial_inv": 0.0}),
+        ("flat_7d", {"days": 7, "initial_model": "", "initial_inv": 0.0}),
+        ("btc_long_7d", {"days": 7, "initial_model": "btc", "initial_inv": 0.001}),
+        ("btc_short_7d", {"days": 7, "initial_model": "btc", "initial_inv": -0.001}),
+        ("sui_long_7d", {"days": 7, "initial_model": "sui", "initial_inv": 30.0}),
+        ("sui_short_7d", {"days": 7, "initial_model": "sui", "initial_inv": -30.0}),
+    )
+
+
+def test_build_seeded_scenarios_skips_zero_inventory() -> None:
+    scenarios = _build_seeded_scenarios([{"name": "btc"}, {"name": "eth"}], [0.0, -0.0])
+    assert scenarios == (
+        ("flat_1d", {"days": 1, "initial_model": "", "initial_inv": 0.0}),
+        ("flat_7d", {"days": 7, "initial_model": "", "initial_inv": 0.0}),
+    )
+
+
+def test_build_backtest_cmd_uses_generic_model_flags() -> None:
+    cmd = _build_backtest_cmd(
+        model_specs=[
+            {
+                "name": "btc",
+                "symbol": "BTCUSDT",
+                "data_symbol": "BTCUSD",
+                "base_asset": "BTC",
+                "maker_fee": 0.001,
+                "checkpoint": Path("/tmp/btc.pt"),
+            },
+            {
+                "name": "sui",
+                "symbol": "SUIUSDT",
+                "data_symbol": "SUIUSDT",
+                "base_asset": "SUI",
+                "maker_fee": 0.0015,
+                "checkpoint": Path("/tmp/sui.pt"),
+            },
+        ],
+        output_path=Path("/tmp/out.json"),
+        data_root=Path("/tmp/data"),
+        forecast_cache=Path("/tmp/cache"),
+        selection_mode="winner_cash",
+        selection_metric="omega",
+        lookback=3,
+        short_max_leverage=0.08,
+        switch_margin=0.005,
+        min_score_gap=0.002,
+        profit_gate_mode="live_like",
+        days=7,
+        initial_model="btc",
+        initial_inv=-0.125,
+        initial_entry_ts="2026-03-08T00:00:00+00:00",
+    )
+
+    assert "--model-a-name" in cmd and "btc" in cmd
+    assert "--model-b-name" in cmd and "sui" in cmd
+    assert "--model-a-checkpoint" in cmd and "/tmp/btc.pt" in cmd
+    assert "--model-b-checkpoint" in cmd and "/tmp/sui.pt" in cmd
+    assert "--doge-checkpoint" not in cmd
+    assert "--aave-checkpoint" not in cmd
+    assert "--initial-model" in cmd and "--initial-inv" in cmd and "--initial-entry-ts" in cmd
 
 
 def test_config_name_stable_and_compact() -> None:
@@ -120,6 +196,24 @@ def test_candidate_rank_prefers_positive_recent_and_drawdown_gate() -> None:
     assert _candidate_rank(better) > _candidate_rank(worse)
 
 
+def test_candidate_rank_sortino_objective_prefers_stronger_realized_sortino() -> None:
+    higher_sortino = {
+        "windows": {
+            "1d": {"return_pct": 0.05, "sortino_ratio": 0.2},
+            "7d": {"return_pct": 0.08, "sortino_ratio": 0.9},
+            "30d": {"return_pct": 2.0, "max_drawdown_pct": -10.0, "sortino_ratio": 0.5},
+        }
+    }
+    higher_return = {
+        "windows": {
+            "1d": {"return_pct": 0.06, "sortino_ratio": 0.2},
+            "7d": {"return_pct": 0.12, "sortino_ratio": 0.3},
+            "30d": {"return_pct": 2.5, "max_drawdown_pct": -10.0, "sortino_ratio": 0.4},
+        }
+    }
+    assert _candidate_rank(higher_sortino, objective="sortino") > _candidate_rank(higher_return, objective="sortino")
+
+
 def test_validated_rank_penalizes_seeded_drift() -> None:
     stable = {
         "windows": {
@@ -144,6 +238,32 @@ def test_validated_rank_penalizes_seeded_drift() -> None:
         },
     }
     assert _validated_rank(stable) > _validated_rank(unstable)
+
+
+def test_validated_rank_sortino_objective_prefers_stronger_realized_sortino() -> None:
+    better_sortino = {
+        "windows": {
+            "1d": {"return_pct": 0.05},
+            "7d": {"return_pct": 0.09, "max_drawdown_pct": -1.0, "sortino_ratio": 0.8},
+            "30d": {"return_pct": 10.0, "max_drawdown_pct": -10.0, "sortino_ratio": 0.4},
+        },
+        "seeded": {
+            "doge_long_7d": {"return_pct": 0.001},
+            "doge_short_7d": {"return_pct": -0.001},
+        },
+    }
+    weaker_sortino = {
+        "windows": {
+            "1d": {"return_pct": 0.07},
+            "7d": {"return_pct": 0.11, "max_drawdown_pct": -1.0, "sortino_ratio": 0.2},
+            "30d": {"return_pct": 11.0, "max_drawdown_pct": -10.0, "sortino_ratio": 0.1},
+        },
+        "seeded": {
+            "doge_long_7d": {"return_pct": 0.001},
+            "doge_short_7d": {"return_pct": -0.001},
+        },
+    }
+    assert _validated_rank(better_sortino, objective="sortino") > _validated_rank(weaker_sortino, objective="sortino")
 
 
 def test_select_refine_seed_rows_keeps_long_window_challenger() -> None:
@@ -270,6 +390,34 @@ def test_summarize_windows_accepts_precomputed_summaries() -> None:
             "switch_count": 2,
             "final_equity": 10020.0,
         },
+    }
+
+
+def test_summarize_windows_preserves_ratio_metrics_when_present() -> None:
+    reports = {
+        "7d": {
+            "meta": {
+                "return_pct": 0.2,
+                "max_drawdown_pct": -1.0,
+                "trade_count": 5,
+                "switch_count": 2,
+                "final_equity": 10020.0,
+                "sortino_ratio": 0.7,
+                "sharpe_ratio": 0.6,
+            }
+        },
+    }
+
+    assert _summarize_windows(reports) == {
+        "7d": {
+            "return_pct": 0.2,
+            "max_drawdown_pct": -1.0,
+            "trade_count": 5,
+            "switch_count": 2,
+            "final_equity": 10020.0,
+            "sortino_ratio": 0.7,
+            "sharpe_ratio": 0.6,
+        }
     }
 
 

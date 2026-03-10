@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from binanceleveragesui import trade_margin_meta as meta
@@ -12,6 +13,224 @@ from binanceleveragesui import trade_margin_meta as meta
 def _disable_meta_runtime_logging(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MARGIN_META_DISABLE_LOG", "1")
     monkeypatch.setattr(meta, "_log_event", lambda *args, **kwargs: None)
+
+
+def _make_profit_gate_bars(symbol: str, timestamps: list[str], *, close: float = 1.0) -> pd.DataFrame:
+    size = len(timestamps)
+    return pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(timestamps, utc=True),
+            "open": [close] * size,
+            "high": [close] * size,
+            "low": [close] * size,
+            "close": [close] * size,
+            "volume": [1_000.0] * size,
+            "trade_count": [10] * size,
+            "vwap": [close] * size,
+            "symbol": [symbol] * size,
+        }
+    )
+
+
+def test_build_model_specs_from_args_supports_custom_pair() -> None:
+    args = SimpleNamespace(
+        model_a_name="btc",
+        model_a_symbol="BTCUSDT",
+        model_a_data_symbol="BTCUSD",
+        model_a_base_asset="BTC",
+        model_a_maker_fee=0.0004,
+        model_a_checkpoint="/tmp/btc.pt",
+        model_b_name="sui",
+        model_b_symbol="SUIUSDT",
+        model_b_data_symbol="SUIUSDT",
+        model_b_base_asset="SUI",
+        model_b_maker_fee=0.0007,
+        model_b_checkpoint="/tmp/sui.pt",
+    )
+
+    specs = meta.build_model_specs_from_args(args)
+    configs = meta.build_model_configs_from_args(args)
+
+    assert [spec["name"] for spec in specs] == ["btc", "sui"]
+    assert [spec["symbol"] for spec in specs] == ["BTCUSDT", "SUIUSDT"]
+    assert [str(spec["checkpoint"]) for spec in specs] == ["/tmp/btc.pt", "/tmp/sui.pt"]
+    assert configs["btc"]["data_symbol"] == "BTCUSD"
+    assert configs["sui"]["maker_fee"] == pytest.approx(0.0007)
+
+
+def test_build_model_specs_from_args_rejects_duplicate_names() -> None:
+    args = SimpleNamespace(
+        model_a_name="btc",
+        model_a_symbol="BTCUSDT",
+        model_a_data_symbol="BTCUSD",
+        model_a_base_asset="BTC",
+        model_a_maker_fee=0.001,
+        model_a_checkpoint="/tmp/btc.pt",
+        model_b_name="btc",
+        model_b_symbol="ETHUSDT",
+        model_b_data_symbol="ETHUSD",
+        model_b_base_asset="ETH",
+        model_b_maker_fee=0.001,
+        model_b_checkpoint="/tmp/eth.pt",
+    )
+
+    with pytest.raises(ValueError, match="Model names must be unique"):
+        meta.build_model_specs_from_args(args)
+
+
+def test_load_profit_gate_5m_bars_uses_data_root_parent_and_refreshes_stale_file(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "trainingdatahourlybinance"
+    bars_root = tmp_path / "trainingdata5min"
+    path = bars_root / "DOGEUSDT.csv"
+    data_root.mkdir(parents=True)
+    bars_root.mkdir(parents=True)
+
+    stale = _make_profit_gate_bars(
+        "DOGEUSDT",
+        [
+            "2026-03-09T00:00:00+00:00",
+            "2026-03-09T00:05:00+00:00",
+        ],
+    )
+    stale.to_csv(path, index=False)
+
+    refreshed = _make_profit_gate_bars(
+        "DOGEUSDT",
+        [
+            "2026-03-09T00:10:00+00:00",
+            "2026-03-09T00:15:00+00:00",
+            "2026-03-09T00:20:00+00:00",
+        ],
+    )
+    calls: list[tuple[str, pd.Timestamp, pd.Timestamp]] = []
+
+    monkeypatch.setattr(meta, "REPO_ROOT", tmp_path / "bundle_app")
+    monkeypatch.setattr(
+        meta,
+        "_fetch_profit_gate_5m_bars",
+        lambda symbol, start_ts, end_ts: calls.append((symbol, start_ts, end_ts)) or refreshed,
+    )
+
+    loaded = meta._load_profit_gate_5m_bars(
+        "DOGEUSDT",
+        pd.Timestamp("2026-03-09T00:00:00+00:00"),
+        pd.Timestamp("2026-03-09T00:20:00+00:00"),
+        args=SimpleNamespace(data_root=data_root),
+    )
+
+    assert calls == [
+        (
+            "DOGEUSDT",
+            pd.Timestamp("2026-03-09T00:00:00+00:00"),
+            pd.Timestamp("2026-03-09T00:20:00+00:00"),
+        )
+    ]
+    assert list(loaded["timestamp"].astype(str)) == [
+        "2026-03-09 00:00:00+00:00",
+        "2026-03-09 00:05:00+00:00",
+        "2026-03-09 00:10:00+00:00",
+        "2026-03-09 00:15:00+00:00",
+        "2026-03-09 00:20:00+00:00",
+    ]
+    persisted = pd.read_csv(path)
+    assert len(persisted) == 5
+
+
+def test_compute_live_like_profit_gate_returns_refreshes_missing_bars(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "trainingdatahourlybinance"
+    data_root.mkdir(parents=True)
+
+    history = meta.SignalHistory()
+    history.add(
+        "2026-03-09T00:00:00+00:00",
+        buy_p=0.10,
+        sell_p=0.11,
+        buy_a=100.0,
+        sell_a=0.0,
+        close=0.10,
+        equity=10_000.0,
+    )
+
+    refreshed = _make_profit_gate_bars(
+        "DOGEUSDT",
+        list(pd.date_range("2026-03-08T23:00:00+00:00", periods=25, freq="5min").astype(str)),
+        close=0.10,
+    )
+    fetch_calls: list[tuple[str, pd.Timestamp, pd.Timestamp]] = []
+    sim_calls: list[dict] = []
+
+    monkeypatch.setattr(meta, "REPO_ROOT", tmp_path / "bundle_app")
+    monkeypatch.setattr(
+        meta,
+        "MODELS",
+        {
+            "doge": {
+                "symbol": "DOGEUSDT",
+                "data_symbol": "DOGEUSD",
+                "base_asset": "DOGE",
+                "maker_fee": 0.0,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        meta,
+        "_fetch_profit_gate_5m_bars",
+        lambda symbol, start_ts, end_ts: fetch_calls.append((symbol, start_ts, end_ts)) or refreshed,
+    )
+    monkeypatch.setattr(
+        meta,
+        "resolve_symbol_rules",
+        lambda symbol: SimpleNamespace(min_notional=5.0, tick_size=0.00001, step_size=1.0),
+    )
+
+    def fake_sim(args, signals, bars, initial_inv=0.0, initial_entry_ts=None):
+        sim_calls.append(
+            {
+                "signals": len(signals),
+                "bars": len(bars),
+                "start": args.start,
+            }
+        )
+        return [], 10_050.0, 10_050.0, 0.0, pd.DataFrame()
+
+    returns = meta.compute_live_like_profit_gate_returns(
+        {"doge": history},
+        asof_ts="2026-03-09T01:05:00+00:00",
+        lookback_hours=1,
+        args=SimpleNamespace(
+            data_root=data_root,
+            fee=0.0,
+            max_leverage=1.0,
+            allow_short=False,
+            max_hold_hours=6.0,
+            expiry_minutes=90,
+            max_fill_fraction=0.01,
+            min_notional=5.0,
+            tick_size=0.00001,
+            step_size=1.0,
+            reprice_threshold=0.003,
+            max_position_notional=None,
+        ),
+        rules_by_model={},
+        initial_cash=10_000.0,
+        simulate_with_trace=fake_sim,
+    )
+
+    assert fetch_calls == [
+        (
+            "DOGEUSDT",
+            pd.Timestamp("2026-03-08T23:00:00+00:00"),
+            pd.Timestamp("2026-03-09T01:00:00+00:00"),
+        )
+    ]
+    assert sim_calls == [{"signals": 1, "bars": 25, "start": "2026-03-09T00:00:00+00:00"}]
+    assert returns == {"doge": pytest.approx(0.005)}
 
 
 def test_select_model_winner_uses_highest_score(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -207,6 +426,55 @@ def test_select_model_profit_gate_can_force_cash(monkeypatch: pytest.MonkeyPatch
         profit_gate_min_return=0.0,
     )
     assert selected == ""
+
+
+def test_select_model_live_like_profit_gate_uses_explicit_returns(monkeypatch: pytest.MonkeyPatch) -> None:
+    histories = {
+        "doge": SimpleNamespace(tag="doge"),
+        "aave": SimpleNamespace(tag="aave"),
+    }
+    score_by_name = {"doge": 0.40, "aave": 0.20}
+
+    def fake_score(history, lookback, maker_fee, max_leverage, metric, **kwargs):
+        return score_by_name[history.tag]
+
+    monkeypatch.setattr(meta, "_run_hypothetical_score", fake_score)
+
+    selected = meta.select_model(
+        histories,
+        lookback=12,
+        max_leverage=2.0,
+        metric="sortino",
+        selection_mode="winner_cash",
+        cash_threshold=0.0,
+        profit_gate_mode="live_like",
+        profit_gate_lookback_hours=24,
+        profit_gate_min_return=0.0,
+        profit_gate_returns={"doge": -0.01, "aave": 0.02},
+    )
+    assert selected == "aave"
+
+
+def test_select_model_live_like_profit_gate_requires_explicit_returns(monkeypatch: pytest.MonkeyPatch) -> None:
+    histories = {
+        "doge": SimpleNamespace(tag="doge"),
+        "aave": SimpleNamespace(tag="aave"),
+    }
+
+    monkeypatch.setattr(meta, "_run_hypothetical_score", lambda *args, **kwargs: 0.1)
+
+    with pytest.raises(ValueError, match="profit_gate_returns must be provided"):
+        meta.select_model(
+            histories,
+            lookback=12,
+            max_leverage=2.0,
+            metric="sortino",
+            selection_mode="winner_cash",
+            cash_threshold=0.0,
+            profit_gate_mode="live_like",
+            profit_gate_lookback_hours=24,
+            profit_gate_min_return=0.0,
+        )
 
 
 def test_select_model_min_gap_hysteresis_keeps_current_model(monkeypatch: pytest.MonkeyPatch) -> None:

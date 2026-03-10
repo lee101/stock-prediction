@@ -170,6 +170,42 @@ def _compute_equity(cash: float, pos: Optional[Position], price: float) -> float
     return float(cash + pos.qty * price)
 
 
+def _short_borrow_fee(
+    *,
+    pos: Optional[Position],
+    price: float,
+    short_borrow_apr: float,
+    periods_per_year: float,
+) -> float:
+    if pos is None or not pos.is_short:
+        return 0.0
+    if short_borrow_apr <= 0.0:
+        return 0.0
+    periods_per_year = float(periods_per_year) if periods_per_year > 0 else 8760.0
+    if periods_per_year <= 0.0:
+        return 0.0
+    return float(max(0.0, pos.qty * price) * float(short_borrow_apr) / periods_per_year)
+
+
+def _apply_short_borrow_cost(
+    *,
+    cash: float,
+    pos: Optional[Position],
+    price: float,
+    short_borrow_apr: float,
+    periods_per_year: float,
+) -> tuple[float, float]:
+    fee = _short_borrow_fee(
+        pos=pos,
+        price=price,
+        short_borrow_apr=short_borrow_apr,
+        periods_per_year=periods_per_year,
+    )
+    if fee <= 0.0:
+        return float(cash), 0.0
+    return float(cash - fee), float(fee)
+
+
 def _close_position(cash: float, pos: Position, price: float, fee_rate: float) -> tuple[float, bool]:
     if pos.is_short:
         cost = pos.qty * price * (1.0 + fee_rate)
@@ -348,6 +384,7 @@ def simulate_daily_policy(
     fee_rate: float = 0.001,
     max_leverage: float = 1.0,
     periods_per_year: float = 365.0,
+    short_borrow_apr: float = 0.0,
     initial_cash: float = INITIAL_CASH,
     action_allocation_bins: int = 1,
     action_level_bins: int = 1,
@@ -489,6 +526,13 @@ def simulate_daily_policy(
             equity_after = float(cash)
         else:
             price_new = float(data.prices[t_new, pos.sym, P_CLOSE])
+            cash, borrow_fee = _apply_short_borrow_cost(
+                cash=cash,
+                pos=pos,
+                price=price_new,
+                short_borrow_apr=short_borrow_apr,
+                periods_per_year=periods_per_year,
+            )
             equity_after = _compute_equity(cash, pos, price_new)
 
         ret = 0.0
@@ -647,6 +691,7 @@ def replay_hourly_frozen_daily_actions(
     fee_rate: float = 0.001,
     max_leverage: float = 1.0,
     periods_per_year: float = 8760.0,
+    short_borrow_apr: float = 0.0,
     initial_cash: float = INITIAL_CASH,
 ) -> HourlyReplayResult:
     """Replay a daily action sequence on hourly prices.
@@ -713,6 +758,16 @@ def replay_hourly_frozen_daily_actions(
     for hi, ts in enumerate(market.index):
         day = ts.floor("D")
         day_idx = int((day - start_day).days)
+
+        if hi > 0 and pos is not None:
+            px_carry = float(market.close[symbols[pos.sym]][hi])
+            cash, _ = _apply_short_borrow_cost(
+                cash=cash,
+                pos=pos,
+                price=px_carry,
+                short_borrow_apr=short_borrow_apr,
+                periods_per_year=periods_per_year,
+            )
 
         # Execute scheduled daily action at the trade hour for that calendar day.
         if ts in trade_ts_set and 0 <= day_idx < max_steps:
@@ -885,6 +940,7 @@ def simulate_hourly_policy(
     fee_rate: float = 0.001,
     max_leverage: float = 1.0,
     periods_per_year: float = 8760.0,
+    short_borrow_apr: float = 0.0,
     initial_cash: float = INITIAL_CASH,
 ) -> HourlyReplayResult:
     """Execute the policy at hourly frequency using daily features + hourly mark-to-market.
@@ -969,6 +1025,16 @@ def simulate_hourly_policy(
             if dd > max_dd:
                 max_dd = dd
             continue
+
+        if hi > 0 and pos is not None:
+            px_carry = float(market.close[symbols[pos.sym]][hi])
+            cash, _ = _apply_short_borrow_cost(
+                cash=cash,
+                pos=pos,
+                price=px_carry,
+                short_borrow_apr=short_borrow_apr,
+                periods_per_year=periods_per_year,
+            )
 
         # Increment hold_days once per day boundary while holding.
         if prev_day_idx is None:
