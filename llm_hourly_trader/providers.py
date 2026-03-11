@@ -24,7 +24,8 @@ from llm_hourly_trader.gemini_wrapper import TradePlan
 # Gemini
 # ---------------------------------------------------------------------------
 
-def call_gemini(prompt: str, model: str = "gemini-2.5-flash", max_retries: int = 5) -> TradePlan:
+def call_gemini(prompt: str, model: str = "gemini-2.5-flash", max_retries: int = 5,
+                thinking_level: str | None = None) -> TradePlan:
     cached = get_cached(model, prompt)
     if cached is not None:
         return TradePlan(**cached)
@@ -45,11 +46,22 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash", max_retries: int =
     )
 
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-    config = types.GenerateContentConfig(
-        response_mime_type="application/json",
-        response_schema=SCHEMA,
-        temperature=0.3,
-    )
+
+    # Build config with optional thinking
+    config_kwargs = {
+        "response_mime_type": "application/json",
+        "response_schema": SCHEMA,
+    }
+    if thinking_level:
+        try:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(
+                thinking_level=thinking_level,
+            )
+        except Exception:
+            pass  # older SDK versions may not support thinking
+    else:
+        config_kwargs["temperature"] = 0.3
+    config = types.GenerateContentConfig(**config_kwargs)
 
     for attempt in range(max_retries):
         try:
@@ -402,7 +414,8 @@ MODEL_PROVIDERS = {
 }
 
 
-def call_llm(prompt: str, model: str, provider: Optional[str] = None) -> TradePlan:
+def call_llm(prompt: str, model: str, provider: Optional[str] = None,
+             thinking_level: Optional[str] = None) -> TradePlan:
     """Call any LLM provider with auto-detection."""
     if provider is None:
         provider = MODEL_PROVIDERS.get(model)
@@ -416,4 +429,6 @@ def call_llm(prompt: str, model: str, provider: Optional[str] = None) -> TradePl
             else:
                 provider = "openai"
     fn = PROVIDER_FNS[provider]
+    if provider == "gemini" and thinking_level:
+        return fn(prompt, model=model, thinking_level=thinking_level)
     return fn(prompt, model=model)
