@@ -281,7 +281,8 @@ def _ensure_codex_schema() -> str:
     return _CODEX_SCHEMA_PATH
 
 
-def call_codex(prompt: str, model: str = "gpt-5.4", max_retries: int = 3) -> TradePlan:
+def call_codex(prompt: str, model: str = "gpt-5.4", max_retries: int = 2,
+               reasoning_effort: str = "low") -> TradePlan:
     """Call GPT-5.x via codex CLI (routes through ChatGPT Pro plan)."""
     cached = get_cached(model, prompt)
     if cached is not None:
@@ -294,7 +295,7 @@ def call_codex(prompt: str, model: str = "gpt-5.4", max_retries: int = 3) -> Tra
             with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tmp:
                 tmp_path = tmp.name
 
-            # codex exec with structured output schema
+            # codex exec with structured output schema + reasoning effort control
             result = subprocess.run(
                 [
                     "codex", "exec",
@@ -303,6 +304,7 @@ def call_codex(prompt: str, model: str = "gpt-5.4", max_retries: int = 3) -> Tra
                     "--output-schema", schema_path,
                     "-o", tmp_path,
                     "--dangerously-bypass-approvals-and-sandbox",
+                    "-c", f"model_reasoning_effort={reasoning_effort}",
                     prompt,
                 ],
                 capture_output=True,
@@ -339,7 +341,8 @@ def call_codex(prompt: str, model: str = "gpt-5.4", max_retries: int = 3) -> Tra
             except OSError:
                 pass
             if attempt < max_retries - 1:
-                time.sleep(3 * (attempt + 1))
+                wait = 5 * (attempt + 1)
+                time.sleep(wait)
                 continue
             print(f"  codex error after {max_retries} attempts: {e}")
     return TradePlan("hold", 0, 0, 0, "codex API exhausted")

@@ -687,10 +687,10 @@ preaug_sweeps/
 # Native sim build artifacts
 unified_hourly_experiment/marketsimulator/native/
 PufferLib4/
-rl-trading
 
 # Additional generated experiment artifacts
 FastForecaster/seed_sweeps/
 FastForecaster/sweeps/
 fastforecaster2/
 llm_hourly_trader/api_cache/
+rl-trading
