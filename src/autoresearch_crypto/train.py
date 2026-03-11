@@ -58,7 +58,7 @@ def parse_args(argv=None):
     p.add_argument("--lr-schedule", type=str, default="cosine", choices=["none", "cosine", "linear"])
     p.add_argument("--warmup-steps", type=int, default=100)
     p.add_argument("--grad-clip", type=float, default=1.0)
-    p.add_argument("--loss-type", type=str, default="sortino")
+    p.add_argument("--loss-type", type=str, default="multiwindow_dd")
     p.add_argument("--return-weight", type=float, default=0.15)
     p.add_argument("--dd-penalty", type=float, default=1.0)
     p.add_argument("--smoothness-penalty", type=float, default=0.0)
