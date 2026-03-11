@@ -231,9 +231,13 @@ def run_hybrid_backtest(
     parallel: int = 1,
     rate_limit: float = 2.0,
     checkpoint_path: str | None = None,
+    thinking_level: str | None = None,
 ) -> dict:
     """Run the RL+LLM hybrid backtest."""
-    cache_model = f"binance-hybrid-v1-{model}"
+    tag = f"binance-hybrid-v1-{model}"
+    if thinking_level:
+        tag += f"-think{thinking_level.lower()}"
+    cache_model = tag
 
     # Find checkpoint
     if checkpoint_path:
@@ -244,7 +248,7 @@ def run_hybrid_backtest(
     print(f"\n{'='*70}")
     print(f"RL + LLM Hybrid Trading Agent (Binance)")
     print(f"RL checkpoint: {ckpt_path}")
-    print(f"LLM: {model}")
+    print(f"LLM: {model}" + (f" (thinking={thinking_level})" if thinking_level else ""))
     print(f"Symbols: {symbols}")
     print(f"Days: {days} | Parallel: {parallel}")
     print(f"{'='*70}\n")
@@ -421,7 +425,10 @@ def run_hybrid_backtest(
         cached = get_cached(cache_model, prompt)
         if cached is not None:
             return sym, bar, TradePlan(**cached), rl_signal, idx
-        plan = call_llm(prompt, model=model)
+        kwargs = {"model": model}
+        if thinking_level:
+            kwargs["thinking_level"] = thinking_level
+        plan = call_llm(prompt, **kwargs)
         set_cached(cache_model, prompt, plan.__dict__)
         return sym, bar, plan, rl_signal, idx
 
@@ -772,6 +779,8 @@ def main():
     parser.add_argument("--parallel", type=int, default=5)
     parser.add_argument("--rate-limit", type=float, default=0.0)
     parser.add_argument("--checkpoint", type=str, default=None)
+    parser.add_argument("--thinking-level", type=str, default=None,
+                        help="Thinking level for Gemini models (e.g., HIGH, MINIMAL)")
     parser.add_argument("--rl-only", action="store_true", help="Run RL-only backtest for comparison")
     parser.add_argument("--compare", action="store_true", help="Run both RL-only and hybrid, compare")
     args = parser.parse_args()
@@ -784,7 +793,8 @@ def main():
         print("="*70)
         rl_result = run_rl_only_backtest(args.symbols, args.days, args.checkpoint)
         hybrid_result = run_hybrid_backtest(
-            args.symbols, args.days, args.model, args.parallel, args.rate_limit, args.checkpoint
+            args.symbols, args.days, args.model, args.parallel, args.rate_limit, args.checkpoint,
+            args.thinking_level,
         )
         print("\n" + "="*70)
         print("COMPARISON SUMMARY")
@@ -796,7 +806,8 @@ def main():
         print("="*70)
     else:
         run_hybrid_backtest(
-            args.symbols, args.days, args.model, args.parallel, args.rate_limit, args.checkpoint
+            args.symbols, args.days, args.model, args.parallel, args.rate_limit, args.checkpoint,
+            args.thinking_level,
         )
 
 
