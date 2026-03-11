@@ -309,9 +309,12 @@ def export_binary(
 
         try:
             fc_h1 = _read_forecast(sym, cache_root, 1)
+        except FileNotFoundError:
+            fc_h1 = pd.DataFrame()
+        try:
             fc_h24 = _read_forecast(sym, cache_root, 24)
         except FileNotFoundError:
-            continue
+            fc_h24 = pd.DataFrame()
 
         aligned = frame.reindex(index, method="ffill").bfill()
         aligned["volume"] = aligned["volume"].where(observed_mask.astype(bool), 0.0)
