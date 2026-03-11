@@ -77,38 +77,38 @@ class AssetEncoder(nn.Module):
 
 
 class MultiAssetPolicy(nn.Module):
-    """Policy network for multi-asset allocation.
+    """Policy network for multi-asset allocation with optional cash slot.
 
     Takes features for all assets and outputs allocation weights.
-    Uses cross-asset attention to model relationships between stocks.
+    Uses cross-asset attention to model relationships between assets.
+    When include_cash=True, adds a learned cash logit so the model can hold cash.
     """
 
-    def __init__(self, config: MultiAssetConfig):
+    def __init__(self, config: MultiAssetConfig, include_cash: bool = False):
         super().__init__()
         self.config = config
+        self.include_cash = include_cash
 
-        # Per-asset encoder (shared weights)
         self.asset_encoder = AssetEncoder(config)
-
-        # Portfolio state embedding (current holdings)
         self.portfolio_embed = nn.Linear(config.num_assets, config.hidden_dim)
 
-        # Cross-asset attention layers
         self.cross_attn_layers = nn.ModuleList([
             CrossAssetAttention(config.hidden_dim, config.num_heads, config.dropout)
             for _ in range(config.num_layers // 2)
         ])
 
-        # Output heads
         self.allocation_head = nn.Sequential(
             nn.Linear(config.hidden_dim, config.hidden_dim),
             nn.GELU(),
             nn.Linear(config.hidden_dim, 1),
         )
 
-        # Value head for advantage estimation
+        if include_cash:
+            self.cash_logit = nn.Parameter(torch.zeros(1))
+
+        num_flat = config.hidden_dim * config.num_assets
         self.value_head = nn.Sequential(
-            nn.Linear(config.hidden_dim * config.num_assets, config.hidden_dim),
+            nn.Linear(num_flat, config.hidden_dim),
             nn.GELU(),
             nn.Linear(config.hidden_dim, 1),
         )
@@ -121,32 +121,29 @@ class MultiAssetPolicy(nn.Module):
         batch_size = asset_features.size(0)
         num_assets = asset_features.size(1)
 
-        # Encode each asset independently
         asset_encodings = []
         for i in range(num_assets):
-            enc = self.asset_encoder(asset_features[:, i])  # (batch, hidden_dim)
+            enc = self.asset_encoder(asset_features[:, i])
             asset_encodings.append(enc)
 
-        # Stack: (batch, num_assets, hidden_dim)
         x = torch.stack(asset_encodings, dim=1)
 
-        # Add portfolio state embedding if provided
         if portfolio_state is not None:
-            port_emb = self.portfolio_embed(portfolio_state).unsqueeze(1)  # (batch, 1, hidden_dim)
+            port_emb = self.portfolio_embed(portfolio_state).unsqueeze(1)
             x = x + port_emb.expand(-1, num_assets, -1)
 
-        # Cross-asset attention
         for layer in self.cross_attn_layers:
             x = layer(x)
 
-        # Allocation weights (unnormalized logits)
         allocation_logits = self.allocation_head(x).squeeze(-1)  # (batch, num_assets)
 
-        # Softmax for allocation weights (sum to 1)
+        if self.include_cash:
+            cash = self.cash_logit.expand(batch_size, 1)
+            allocation_logits = torch.cat([allocation_logits, cash], dim=-1)
+
         allocation_weights = F.softmax(allocation_logits, dim=-1)
 
-        # Value estimate
-        value = self.value_head(x.flatten(1))  # (batch, 1)
+        value = self.value_head(x.flatten(1))
 
         return allocation_weights, value
 
