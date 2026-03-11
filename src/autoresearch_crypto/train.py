@@ -77,7 +77,7 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
-def build_cosine_lr_lambda(warmup_steps: int, total_steps: int, min_ratio: float = 0.01):
+def build_cosine_lr_lambda(warmup_steps: int, total_steps: int, min_ratio: float = 0.05):
     def lr_lambda(step):
         if step < warmup_steps:
             return max(float(step + 1) / float(max(warmup_steps, 1)), min_ratio)
