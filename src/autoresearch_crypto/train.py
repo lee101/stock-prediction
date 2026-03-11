@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description="Crypto RL autoresearch training")
     p.add_argument("--symbols", type=str, default=None)
-    p.add_argument("--sequence-length", type=int, default=72)
+    p.add_argument("--sequence-length", type=int, default=48)
     p.add_argument("--batch-size", type=int, default=16)
     p.add_argument("--hidden-dim", type=int, default=384)
     p.add_argument("--num-layers", type=int, default=6)
