@@ -52,7 +52,7 @@ def parse_args(argv=None):
     p.add_argument("--hidden-dim", type=int, default=384)
     p.add_argument("--num-layers", type=int, default=6)
     p.add_argument("--num-heads", type=int, default=8)
-    p.add_argument("--model-arch", type=str, default="classic")
+    p.add_argument("--model-arch", type=str, default="nano")
     p.add_argument("--lr", type=float, default=1e-5)
     p.add_argument("--weight-decay", type=float, default=0.04)
     p.add_argument("--lr-schedule", type=str, default="cosine", choices=["none", "cosine", "linear"])
