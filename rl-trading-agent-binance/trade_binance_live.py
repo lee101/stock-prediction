@@ -2,9 +2,9 @@
 Production Binance Trading - RL+LLM Hybrid System.
 
 Manages:
-- FDUSD pairs for BTC/ETH (zero fees)
-- USDT pairs for altcoins (DOGE, SUI, SOL, AAVE)
-- Automatic stablecoin swaps between FDUSD ↔ USDT
+- Spot execution on FDUSD pairs for BTC/ETH and USDT pairs for altcoins
+- Cross-margin execution on USDT pairs with Binance borrow/auto-repay side effects
+- Automatic stablecoin swaps between FDUSD ↔ USDT for spot mode
 - Hourly trading cycle with RL or LLM signals
 
 Modes:
@@ -38,6 +38,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from loguru import logger
 
 from src.binan import binance_wrapper
+from src.binan.binance_margin import (
+    cancel_margin_order,
+    create_margin_order,
+    get_margin_account,
+    get_margin_asset_balance,
+    get_margin_borrowed_balance,
+    get_margin_free_balance,
+    get_margin_trades,
+    get_max_borrowable,
+    get_open_margin_orders,
+    margin_repay_all,
+)
 from src.binan.binance_conversion import (
     build_stable_quote_conversion_plan,
     execute_stable_quote_conversion,
@@ -90,6 +102,7 @@ TRADING_SYMBOLS = {
 
 # Minimum trade sizes
 MIN_TRADE_USD = 12.0  # Binance min notional is typically $10
+SUPPORTED_EXECUTION_MODES = {"auto", "spot", "margin"}
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +114,8 @@ class PortfolioState:
     """Track current portfolio state."""
     fdusd_balance: float = 0.0
     usdt_balance: float = 0.0
+    borrowed_quotes: dict = field(default_factory=dict)  # {quote_asset: borrowed_qty}
+    borrowable_quotes: dict = field(default_factory=dict)  # {quote_asset: extra borrow headroom}
     positions: dict = field(default_factory=dict)  # {base_asset: qty}
     total_value_usd: float = 0.0
 
@@ -110,9 +125,71 @@ class PortfolioState:
         return self.usdt_balance
 
 
-def get_portfolio_state() -> PortfolioState:
-    """Fetch current portfolio from Binance."""
+def _execution_pair(sym_cfg: BinanceSymbolConfig, execution_mode: str) -> str:
+    if execution_mode == "margin" and sym_cfg.quote_asset == "FDUSD":
+        return f"{sym_cfg.base_asset}USDT"
+    return sym_cfg.binance_pair
+
+
+def _execution_quote_asset(sym_cfg: BinanceSymbolConfig, execution_mode: str) -> str:
+    if execution_mode == "margin":
+        return "USDT"
+    return sym_cfg.quote_asset
+
+
+def _execution_fee_bps(sym_cfg: BinanceSymbolConfig, execution_mode: str) -> int:
+    fee = 0.001 if execution_mode == "margin" else sym_cfg.maker_fee
+    return int(round(fee * 10000))
+
+
+def _resolve_execution_mode(execution_mode: str, leverage: float) -> str:
+    normalized = str(execution_mode or "auto").strip().lower()
+    if normalized not in SUPPORTED_EXECUTION_MODES:
+        raise ValueError(
+            f"Unsupported execution mode {execution_mode!r}; "
+            f"expected one of {sorted(SUPPORTED_EXECUTION_MODES)}."
+        )
+    if normalized == "auto":
+        return "margin" if float(leverage) > 1.0 + 1e-9 else "spot"
+    return normalized
+
+
+def _effective_leverage(execution_mode: str, leverage: float) -> float:
+    requested = max(0.0, float(leverage))
+    if execution_mode == "spot":
+        return _resolve_spot_leverage(requested)
+    return requested
+
+
+def _get_market_price(sym_cfg: BinanceSymbolConfig, execution_mode: str) -> float:
+    return float(binance_wrapper.get_symbol_price(_execution_pair(sym_cfg, execution_mode)))
+
+
+def get_portfolio_state(execution_mode: str = "spot") -> PortfolioState:
+    """Fetch current portfolio from Binance spot or margin."""
     state = PortfolioState()
+    if execution_mode == "margin":
+        state.usdt_balance = get_margin_free_balance("USDT")
+        state.borrowed_quotes["USDT"] = get_margin_borrowed_balance("USDT")
+        state.borrowable_quotes["USDT"] = get_max_borrowable("USDT")
+
+        margin_account = get_margin_account()
+        try:
+            total_net_btc = float(margin_account.get("totalNetAssetOfBtc", 0.0))
+            btc_price = float(binance_wrapper.get_symbol_price("BTCUSDT"))
+            state.total_value_usd = total_net_btc * btc_price
+        except Exception:
+            state.total_value_usd = 0.0
+
+        for cfg in TRADING_SYMBOLS.values():
+            asset_entry = get_margin_asset_balance(cfg.base_asset)
+            if not asset_entry:
+                continue
+            qty = float(asset_entry.get("free", 0.0))
+            if qty > 0:
+                state.positions[cfg.base_asset] = qty
+        return state
+
     state.fdusd_balance = binance_wrapper.get_asset_free_balance("FDUSD") or 0.0
     state.usdt_balance = binance_wrapper.get_asset_free_balance("USDT") or 0.0
 
@@ -121,19 +198,25 @@ def get_portfolio_state() -> PortfolioState:
         if bal > 0:
             state.positions[cfg.base_asset] = bal
 
-    # Total value
     account = binance_wrapper.get_account_value_usdt(include_locked=False)
     state.total_value_usd = account.get("total_usdt", 0.0) if isinstance(account, dict) else 0.0
 
     return state
 
 
-def get_position_entry(sym_cfg: 'BinanceSymbolConfig') -> tuple[float, Optional[datetime]]:
-    """Get entry price and time for current position from recent trades."""
-    trades = binance_wrapper.get_my_trades(sym_cfg.binance_pair, limit=20)
+def get_position_entry(
+    sym_cfg: "BinanceSymbolConfig",
+    *,
+    execution_mode: str = "spot",
+) -> tuple[float, Optional[datetime]]:
+    """Get an approximate entry price/time for the active position from recent fills."""
+    market_symbol = _execution_pair(sym_cfg, execution_mode)
+    if execution_mode == "margin":
+        trades = get_margin_trades(market_symbol, limit=20)
+    else:
+        trades = binance_wrapper.get_my_trades(market_symbol, limit=20)
     if not trades:
         return 0.0, None
-    # Walk backwards to find last buy that opened the position
     for t in reversed(trades):
         if t.get("isBuyer"):
             price = float(t.get("price", 0))
@@ -231,6 +314,91 @@ def _reserve_quote_balance(state: PortfolioState, quote_asset: str, amount: floa
         state.usdt_balance = max(0.0, state.usdt_balance - amount)
 
 
+def _quote_buying_power(
+    state: PortfolioState,
+    quote_asset: str,
+    *,
+    execution_mode: str,
+    effective_leverage: float,
+) -> float:
+    available = state.available_quote(quote_asset)
+    if execution_mode != "margin" or effective_leverage <= 1.0 + 1e-9:
+        return available
+    return available + max(0.0, state.borrowable_quotes.get(quote_asset, 0.0))
+
+
+def _reserve_buying_power(
+    state: PortfolioState,
+    quote_asset: str,
+    amount: float,
+    *,
+    execution_mode: str,
+) -> None:
+    if amount <= 0:
+        return
+    free_quote = state.available_quote(quote_asset)
+    from_free = min(free_quote, amount)
+    if from_free > 0:
+        _reserve_quote_balance(state, quote_asset, from_free)
+    if execution_mode != "margin":
+        return
+    borrowed_remaining = max(0.0, amount - from_free)
+    if borrowed_remaining <= 0:
+        return
+    current_headroom = max(0.0, state.borrowable_quotes.get(quote_asset, 0.0))
+    state.borrowable_quotes[quote_asset] = max(0.0, current_headroom - borrowed_remaining)
+
+
+def _cancel_stale_open_orders(execution_mode: str, dry_run: bool) -> None:
+    try:
+        if execution_mode == "margin":
+            open_orders = get_open_margin_orders()
+        else:
+            open_orders = binance_wrapper.get_open_orders()
+        if not open_orders:
+            return
+        logger.info(f"  {len(open_orders)} open {execution_mode} orders found")
+        now_ms = int(time.time() * 1000)
+        for order in open_orders:
+            placed_ms = order.get("time", order.get("updateTime", now_ms))
+            age_hours = (now_ms - placed_ms) / 3600000
+            if age_hours <= 2:
+                continue
+            if not dry_run:
+                if execution_mode == "margin":
+                    cancel_margin_order(order["symbol"], order_id=order["orderId"])
+                else:
+                    binance_wrapper.cancel_order(order["symbol"], order["orderId"])
+            logger.info(f"  Cancelled stale order {order['orderId']} ({age_hours:.1f}h old)")
+    except Exception as e:
+        logger.warning(f"  Failed to check open orders: {e}")
+
+
+def _repay_margin_debt_if_flat(state: PortfolioState, dry_run: bool, execution_mode: str) -> None:
+    if execution_mode != "margin":
+        return
+    for cfg in TRADING_SYMBOLS.values():
+        asset_entry = get_margin_asset_balance(cfg.base_asset)
+        if not asset_entry:
+            continue
+        try:
+            net_asset = float(asset_entry.get("netAsset", 0.0))
+        except (TypeError, ValueError):
+            net_asset = 0.0
+        if net_asset > 0.00000001:
+            return
+    borrowed_usdt = max(0.0, state.borrowed_quotes.get("USDT", 0.0))
+    if borrowed_usdt <= 0.01:
+        return
+    logger.info(f"  Flat margin account with borrowed USDT={borrowed_usdt:.4f}; repaying")
+    if dry_run:
+        return
+    try:
+        margin_repay_all("USDT")
+    except Exception as exc:
+        logger.warning(f"  Margin repay failed: {exc}")
+
+
 def _resolve_spot_leverage(leverage: float) -> float:
     """Clamp the spot execution path to sizes supportable without borrowing."""
     requested = max(0.0, float(leverage))
@@ -252,10 +420,15 @@ def place_limit_buy(
     sym_cfg: BinanceSymbolConfig,
     price: float,
     amount_usd: float,
+    execution_mode: str = "spot",
     dry_run: bool = True,
 ) -> Optional[dict]:
     """Place a limit buy order."""
-    rules = resolve_symbol_rules(sym_cfg.binance_pair)
+    if execution_mode == "margin":
+        return place_margin_limit_buy(sym_cfg, price, amount_usd, dry_run)
+
+    market_symbol = _execution_pair(sym_cfg, execution_mode)
+    rules = resolve_symbol_rules(market_symbol)
     qty = amount_usd / price
     qty = quantize_qty(qty, step_size=rules.step_size or 0.00001)
     price = quantize_price(price, tick_size=rules.tick_size or 0.01, side="BUY")
@@ -266,17 +439,17 @@ def place_limit_buy(
         return None
 
     if rules.min_qty and qty < rules.min_qty:
-        logger.warning(f"Qty {qty} below min {rules.min_qty} for {sym_cfg.binance_pair}")
+        logger.warning(f"Qty {qty} below min {rules.min_qty} for {market_symbol}")
         return None
 
-    logger.info(f"BUY {sym_cfg.binance_pair}: qty={qty}, price={price}, notional={notional:.2f}")
+    logger.info(f"BUY {market_symbol}: qty={qty}, price={price}, notional={notional:.2f}")
 
     if dry_run:
         logger.info(f"  [DRY RUN] Would place limit buy")
-        return {"symbol": sym_cfg.binance_pair, "side": "BUY", "qty": qty, "price": price, "dry_run": True}
+        return {"symbol": market_symbol, "side": "BUY", "qty": qty, "price": price, "dry_run": True}
 
     try:
-        order = binance_wrapper.create_order(sym_cfg.binance_pair, "BUY", qty, price)
+        order = binance_wrapper.create_order(market_symbol, "BUY", qty, price)
         logger.info(f"  Order placed: {order.get('orderId')}")
         return order
     except Exception as e:
@@ -288,10 +461,15 @@ def place_limit_sell(
     sym_cfg: BinanceSymbolConfig,
     price: float,
     qty: float,
+    execution_mode: str = "spot",
     dry_run: bool = True,
 ) -> Optional[dict]:
     """Place a limit sell (take-profit) order."""
-    rules = resolve_symbol_rules(sym_cfg.binance_pair)
+    if execution_mode == "margin":
+        return place_margin_limit_sell(sym_cfg, price, qty, dry_run)
+
+    market_symbol = _execution_pair(sym_cfg, execution_mode)
+    rules = resolve_symbol_rules(market_symbol)
     qty = quantize_qty(qty, step_size=rules.step_size or 0.00001)
     price = quantize_price(price, tick_size=rules.tick_size or 0.01, side="SELL")
 
@@ -300,18 +478,103 @@ def place_limit_sell(
         logger.warning(f"Sell too small: {notional:.2f} < {MIN_TRADE_USD}")
         return None
 
-    logger.info(f"SELL {sym_cfg.binance_pair}: qty={qty}, price={price}, notional={notional:.2f}")
+    logger.info(f"SELL {market_symbol}: qty={qty}, price={price}, notional={notional:.2f}")
 
     if dry_run:
         logger.info(f"  [DRY RUN] Would place limit sell")
-        return {"symbol": sym_cfg.binance_pair, "side": "SELL", "qty": qty, "price": price, "dry_run": True}
+        return {"symbol": market_symbol, "side": "SELL", "qty": qty, "price": price, "dry_run": True}
 
     try:
-        order = binance_wrapper.create_order(sym_cfg.binance_pair, "SELL", qty, price)
+        order = binance_wrapper.create_order(market_symbol, "SELL", qty, price)
         logger.info(f"  Order placed: {order.get('orderId')}")
         return order
     except Exception as e:
         logger.error(f"  Order failed: {e}")
+        return None
+
+
+def place_margin_limit_buy(
+    sym_cfg: BinanceSymbolConfig,
+    price: float,
+    amount_usd: float,
+    dry_run: bool = True,
+) -> Optional[dict]:
+    """Place a cross-margin limit buy that can borrow quote when needed."""
+    market_symbol = _execution_pair(sym_cfg, "margin")
+    rules = resolve_symbol_rules(market_symbol)
+    qty = amount_usd / price
+    qty = quantize_qty(qty, step_size=rules.step_size or 0.00001)
+    price = quantize_price(price, tick_size=rules.tick_size or 0.01, side="BUY")
+
+    notional = qty * price
+    if notional < MIN_TRADE_USD:
+        logger.warning(f"Margin order too small: {notional:.2f} < {MIN_TRADE_USD}")
+        return None
+    if rules.min_qty and qty < rules.min_qty:
+        logger.warning(f"Qty {qty} below min {rules.min_qty} for {market_symbol}")
+        return None
+
+    logger.info(f"MARGIN BUY {market_symbol}: qty={qty}, price={price}, notional={notional:.2f}")
+    if dry_run:
+        logger.info("  [DRY RUN] Would place margin limit buy")
+        return {"symbol": market_symbol, "side": "BUY", "qty": qty, "price": price, "dry_run": True}
+
+    try:
+        order = create_margin_order(
+            market_symbol,
+            "BUY",
+            "LIMIT",
+            qty,
+            price=price,
+            side_effect_type="MARGIN_BUY",
+            time_in_force="GTC",
+        )
+        logger.info(f"  Margin order placed: {order.get('orderId')}")
+        return order
+    except Exception as e:
+        logger.error(f"  Margin order failed: {e}")
+        return None
+
+
+def place_margin_limit_sell(
+    sym_cfg: BinanceSymbolConfig,
+    price: float,
+    qty: float,
+    dry_run: bool = True,
+) -> Optional[dict]:
+    """Place a cross-margin limit sell and auto-repay borrowed quote on fill."""
+    market_symbol = _execution_pair(sym_cfg, "margin")
+    rules = resolve_symbol_rules(market_symbol)
+    qty = quantize_qty(qty, step_size=rules.step_size or 0.00001)
+    price = quantize_price(price, tick_size=rules.tick_size or 0.01, side="SELL")
+
+    notional = qty * price
+    if notional < MIN_TRADE_USD:
+        logger.warning(f"Margin sell too small: {notional:.2f} < {MIN_TRADE_USD}")
+        return None
+    if rules.min_qty and qty < rules.min_qty:
+        logger.warning(f"Qty {qty} below min {rules.min_qty} for {market_symbol}")
+        return None
+
+    logger.info(f"MARGIN SELL {market_symbol}: qty={qty}, price={price}, notional={notional:.2f}")
+    if dry_run:
+        logger.info("  [DRY RUN] Would place margin limit sell")
+        return {"symbol": market_symbol, "side": "SELL", "qty": qty, "price": price, "dry_run": True}
+
+    try:
+        order = create_margin_order(
+            market_symbol,
+            "SELL",
+            "LIMIT",
+            qty,
+            price=price,
+            side_effect_type="AUTO_REPAY",
+            time_in_force="GTC",
+        )
+        logger.info(f"  Margin order placed: {order.get('orderId')}")
+        return order
+    except Exception as e:
+        logger.error(f"  Margin order failed: {e}")
         return None
 
 
@@ -327,13 +590,15 @@ def get_hybrid_signal(
     position_qty: float = 0.0,
     position_entry_price: float = 0.0,
     position_open_time: Optional[datetime] = None,
+    execution_mode: str = "spot",
 ) -> TradePlan:
     """Get RL+LLM hybrid trading signal for a symbol."""
     import torch
     import torch.nn as nn
 
     # Get current market data
-    price = binance_wrapper.get_symbol_price(sym_cfg.binance_pair)
+    market_symbol = _execution_pair(sym_cfg, execution_mode)
+    price = binance_wrapper.get_symbol_price(market_symbol)
     if not price:
         return TradePlan("hold", 0, 0, 0, "no price data")
 
@@ -343,11 +608,11 @@ def get_hybrid_signal(
     from src.binan import binance_wrapper as bw
     try:
         # Try primary pair, fall back to USDT if FDUSD not available
-        pair = sym_cfg.binance_pair
+        pair = market_symbol
         try:
             klines = bw.get_client().get_klines(symbol=pair, interval="1h", limit=72)
         except Exception:
-            if sym_cfg.quote_asset == "FDUSD":
+            if execution_mode == "spot" and sym_cfg.quote_asset == "FDUSD":
                 pair = sym_cfg.base_asset + "USDT"
                 logger.info(f"  Falling back to {pair} (FDUSD not available)")
                 klines = bw.get_client().get_klines(symbol=pair, interval="1h", limit=72)
@@ -364,7 +629,7 @@ def get_hybrid_signal(
                 "volume": float(k[5]),
             })
     except Exception as e:
-        logger.error(f"Failed to get klines for {sym_cfg.binance_pair}: {e}")
+        logger.error(f"Failed to get klines for {market_symbol}: {e}")
         return TradePlan("hold", 0, 0, 0, f"klines error: {e}")
 
     if len(history_rows) < 12:
@@ -387,7 +652,7 @@ def get_hybrid_signal(
             "held_hours": held_hours,
         }
 
-    fee_bps = 0 if sym_cfg.quote_asset == "FDUSD" else 10
+    fee_bps = _execution_fee_bps(sym_cfg, execution_mode)
     prompt = build_live_prompt(
         sym_cfg.symbol, history_rows, current_price, fc_1h, fc_24h,
         position_info=pos_info, fee_bps=fee_bps,
@@ -409,40 +674,33 @@ def run_trading_cycle(
     dry_run: bool = True,
     rl_checkpoint: Optional[str] = None,
     leverage: float = 1.0,
+    execution_mode: str = "auto",
 ):
     """Run one trading cycle across all symbols."""
-    effective_leverage = _resolve_spot_leverage(leverage)
+    resolved_execution_mode = _resolve_execution_mode(execution_mode, leverage)
+    effective_leverage = _effective_leverage(resolved_execution_mode, leverage)
     logger.info(f"\n{'='*60}")
     logger.info(f"Trading Cycle: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
     logger.info(
         f"Model: {model} (thinking={thinking_level}) | "
-        f"Requested leverage: {leverage:.2f}x | Effective spot leverage: {effective_leverage:.2f}x"
+        f"Execution: {resolved_execution_mode} | "
+        f"Requested leverage: {leverage:.2f}x | Effective leverage: {effective_leverage:.2f}x"
     )
     logger.info(f"Mode: {'DRY RUN' if dry_run else 'LIVE'}")
     logger.info(f"{'='*60}")
 
     # 1. Get portfolio state
-    state = get_portfolio_state()
-    logger.info(f"Portfolio: FDUSD={state.fdusd_balance:.2f}, USDT={state.usdt_balance:.2f}, "
-                f"total={state.total_value_usd:.2f}")
+    state = get_portfolio_state(resolved_execution_mode)
+    logger.info(
+        f"Portfolio: FDUSD={state.fdusd_balance:.2f}, USDT={state.usdt_balance:.2f}, "
+        f"borrowable_usdt={state.borrowable_quotes.get('USDT', 0.0):.2f}, total={state.total_value_usd:.2f}"
+    )
     for asset, qty in state.positions.items():
         logger.info(f"  Position: {asset} = {qty}")
+    _repay_margin_debt_if_flat(state, dry_run, resolved_execution_mode)
 
     # 2. Cancel stale open orders
-    try:
-        open_orders = binance_wrapper.get_open_orders()
-        if open_orders:
-            logger.info(f"  {len(open_orders)} open orders found")
-            # Cancel orders older than 2 hours
-            now_ms = int(time.time() * 1000)
-            for order in open_orders:
-                age_hours = (now_ms - order.get("time", now_ms)) / 3600000
-                if age_hours > 2:
-                    if not dry_run:
-                        binance_wrapper.cancel_order(order["symbol"], order["orderId"])
-                    logger.info(f"  Cancelled stale order {order['orderId']} ({age_hours:.1f}h old)")
-    except Exception as e:
-        logger.warning(f"  Failed to check open orders: {e}")
+    _cancel_stale_open_orders(resolved_execution_mode, dry_run)
 
     # 3. Get signals for each symbol
     orders_placed = []
@@ -452,13 +710,15 @@ def run_trading_cycle(
             logger.warning(f"Unknown symbol: {sym_name}")
             continue
 
-        logger.info(f"\n--- {sym_cfg.symbol} ({sym_cfg.binance_pair}) ---")
+        market_symbol = _execution_pair(sym_cfg, resolved_execution_mode)
+        trade_quote = _execution_quote_asset(sym_cfg, resolved_execution_mode)
+        logger.info(f"\n--- {sym_cfg.symbol} ({market_symbol}) ---")
 
         # Get current price
         try:
-            current_price = float(binance_wrapper.get_symbol_price(sym_cfg.binance_pair))
+            current_price = _get_market_price(sym_cfg, resolved_execution_mode)
         except Exception:
-            logger.error(f"  Cannot get price for {sym_cfg.binance_pair}")
+            logger.error(f"  Cannot get price for {market_symbol}")
             continue
 
         # Check existing position (ignore dust < $5)
@@ -475,7 +735,7 @@ def run_trading_cycle(
         entry_price, open_time = 0.0, None
         if position_qty > 0:
             try:
-                entry_price, open_time = get_position_entry(sym_cfg)
+                entry_price, open_time = get_position_entry(sym_cfg, execution_mode=resolved_execution_mode)
             except Exception:
                 pass
 
@@ -486,6 +746,7 @@ def run_trading_cycle(
                 position_qty=position_qty,
                 position_entry_price=entry_price,
                 position_open_time=open_time,
+                execution_mode=resolved_execution_mode,
             )
         except Exception as e:
             logger.error(f"  Signal generation failed: {e}")
@@ -498,25 +759,31 @@ def run_trading_cycle(
         # 4. Always place take-profit for existing positions
         if position_value >= MIN_TRADE_USD and position_qty > 0:
             sell_price = plan.sell_price if plan.sell_price > current_price else current_price * 1.01
-            order = place_limit_sell(sym_cfg, sell_price, position_qty, dry_run)
+            order = place_limit_sell(sym_cfg, sell_price, position_qty, execution_mode=resolved_execution_mode, dry_run=dry_run)
             if order:
                 orders_placed.append(order)
                 logger.info(f"  Take-profit sell @ ${sell_price:.2f}")
 
         # 5. Execute based on signal
         if plan.direction == "long" and plan.confidence >= 0.4:
-            if position_pct >= sym_cfg.max_position_pct:
+            target_position_pct = sym_cfg.max_position_pct * effective_leverage
+            if position_pct >= target_position_pct:
                 logger.info(f"  Skip buy: already at max position ({position_pct:.1%})")
                 continue
 
             # Calculate order size: max_position_pct of portfolio * leverage minus current
             trade_size = state.total_value_usd * sym_cfg.max_position_pct * effective_leverage - position_value
-            available = state.available_quote(sym_cfg.quote_asset)
-            if available < trade_size:
+            available = _quote_buying_power(
+                state,
+                trade_quote,
+                execution_mode=resolved_execution_mode,
+                effective_leverage=effective_leverage,
+            )
+            if resolved_execution_mode == "spot" and available < trade_size:
                 total_stables = state.fdusd_balance + state.usdt_balance
                 trade_size = min(trade_size, total_stables * sym_cfg.max_position_pct * effective_leverage)
             else:
-                trade_size = min(trade_size, available * 0.95 * effective_leverage)
+                trade_size = min(trade_size, available * 0.95)
             trade_size = max(trade_size, 0)
 
             if trade_size < MIN_TRADE_USD:
@@ -524,25 +791,37 @@ def run_trading_cycle(
                 continue
 
             # Ensure we have the right stablecoin (converts if needed)
-            if not ensure_quote_balance(sym_cfg.quote_asset, trade_size, state, dry_run):
-                logger.warning(f"  Skip buy: insufficient {sym_cfg.quote_asset}")
-                continue
-
-            # Cap trade_size at actual available quote after conversion
-            available_after = state.available_quote(sym_cfg.quote_asset)
+            if resolved_execution_mode == "spot":
+                if not ensure_quote_balance(trade_quote, trade_size, state, dry_run):
+                    logger.warning(f"  Skip buy: insufficient {trade_quote}")
+                    continue
+                available_after = _quote_buying_power(
+                    state,
+                    trade_quote,
+                    execution_mode=resolved_execution_mode,
+                    effective_leverage=effective_leverage,
+                )
+            else:
+                available_after = _quote_buying_power(
+                    state,
+                    trade_quote,
+                    execution_mode=resolved_execution_mode,
+                    effective_leverage=effective_leverage,
+                )
             trade_size = min(trade_size, available_after * 0.95)
             if trade_size < MIN_TRADE_USD:
                 logger.info(f"  Skip buy: post-conversion too small ({trade_size:.2f})")
                 continue
 
             buy_price = plan.buy_price if plan.buy_price > 0 else current_price * 0.998
-            order = place_limit_buy(sym_cfg, buy_price, trade_size, dry_run)
+            order = place_limit_buy(sym_cfg, buy_price, trade_size, execution_mode=resolved_execution_mode, dry_run=dry_run)
             if order:
                 orders_placed.append(order)
-                _reserve_quote_balance(
+                _reserve_buying_power(
                     state,
-                    sym_cfg.quote_asset,
+                    trade_quote,
                     _estimate_order_notional(order, fallback=trade_size),
+                    execution_mode=resolved_execution_mode,
                 )
 
         elif plan.direction == "hold" and position_qty == 0:
@@ -583,7 +862,10 @@ def _allocation_plan_has_error(plan: AllocationPlan) -> bool:
     ))
 
 
-def _get_current_positions_valued(state: PortfolioState) -> dict[str, tuple[float, float]]:
+def _get_current_positions_valued(
+    state: PortfolioState,
+    execution_mode: str,
+) -> dict[str, tuple[float, float]]:
     """Get {symbol: (qty, value_usd)} for all tradeable symbols with positions."""
     result = {}
     for sym, cfg in TRADING_SYMBOLS.items():
@@ -591,7 +873,7 @@ def _get_current_positions_valued(state: PortfolioState) -> dict[str, tuple[floa
         if qty <= 0:
             continue
         try:
-            price = float(binance_wrapper.get_symbol_price(cfg.binance_pair))
+            price = _get_market_price(cfg, execution_mode)
             result[sym] = (qty, qty * price)
         except Exception:
             pass
@@ -603,21 +885,34 @@ def run_hybrid_trading_cycle(
     gemini_model: str = "gemini-2.5-flash",
     forecast_cache_root: str = "binanceneural/forecast_cache",
     dry_run: bool = True,
+    leverage: float = 1.0,
+    execution_mode: str = "auto",
 ):
     """Hybrid RL+Chronos2+Gemini portfolio allocation cycle."""
     global _prev_plan, _prev_outcome, _prev_portfolio_value
 
+    resolved_execution_mode = _resolve_execution_mode(execution_mode, leverage)
+    effective_leverage = _effective_leverage(resolved_execution_mode, leverage)
+
     logger.info(f"\n{'='*60}")
     logger.info(f"Hybrid Cycle: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    logger.info(f"Mode: {'DRY RUN' if dry_run else 'LIVE'} | Gemini: {gemini_model}")
+    logger.info(
+        f"Mode: {'DRY RUN' if dry_run else 'LIVE'} | Gemini: {gemini_model} | "
+        f"Execution: {resolved_execution_mode} | Requested leverage: {leverage:.2f}x | "
+        f"Effective leverage: {effective_leverage:.2f}x"
+    )
     logger.info(f"{'='*60}")
 
     # 1. Portfolio state
-    state = get_portfolio_state()
+    state = get_portfolio_state(resolved_execution_mode)
     cash_usd = state.fdusd_balance + state.usdt_balance
-    logger.info(f"Portfolio: ${state.total_value_usd:.2f} | Cash: ${cash_usd:.2f}")
+    logger.info(
+        f"Portfolio: ${state.total_value_usd:.2f} | Cash: ${cash_usd:.2f} | "
+        f"borrowable_usdt={state.borrowable_quotes.get('USDT', 0.0):.2f}"
+    )
     for asset, qty in state.positions.items():
         logger.info(f"  {asset}: {qty}")
+    _repay_margin_debt_if_flat(state, dry_run, resolved_execution_mode)
 
     # Compute prev plan outcome
     if _prev_plan and _prev_portfolio_value > 0:
@@ -627,18 +922,7 @@ def run_hybrid_trading_cycle(
         logger.info(f"  Prev plan outcome: PnL=${pnl_usd:+.2f} ({pnl_pct:+.2%})")
 
     # 2. Cancel stale orders
-    try:
-        open_orders = binance_wrapper.get_open_orders()
-        if open_orders:
-            now_ms = int(time.time() * 1000)
-            for order in open_orders:
-                age_hours = (now_ms - order.get("time", now_ms)) / 3600000
-                if age_hours > 2:
-                    if not dry_run:
-                        binance_wrapper.cancel_order(order["symbol"], order["orderId"])
-                    logger.info(f"  Cancelled stale order {order['orderId']} ({age_hours:.1f}h old)")
-    except Exception as e:
-        logger.warning(f"  Failed to check open orders: {e}")
+    _cancel_stale_open_orders(resolved_execution_mode, dry_run)
 
     # 3. Gather market context for all 4 symbols
     cache_root = Path(forecast_cache_root)
@@ -653,7 +937,7 @@ def run_hybrid_trading_cycle(
         return []
 
     # 4. Get RL signal
-    positions_valued = _get_current_positions_valued(state)
+    positions_valued = _get_current_positions_valued(state, resolved_execution_mode)
     largest_pos = max(positions_valued.items(), key=lambda x: x[1][1]) if positions_valued else None
     cur_sym = largest_pos[0] if largest_pos else None
 
@@ -704,7 +988,7 @@ def run_hybrid_trading_cycle(
     orders_placed = []
     target_values = {}
     for sym, pct in plan.allocations.items():
-        target_values[sym] = state.total_value_usd * pct / 100.0
+        target_values[sym] = state.total_value_usd * pct / 100.0 * effective_leverage
 
     logger.info(f"Target allocation: {plan.allocations} | cash={plan.cash_pct:.0f}%")
 
@@ -716,14 +1000,14 @@ def run_hybrid_trading_cycle(
             if not cfg:
                 continue
             try:
-                price = float(binance_wrapper.get_symbol_price(cfg.binance_pair))
+                price = _get_market_price(cfg, resolved_execution_mode)
                 sell_value = cur_value - target_val
                 sell_qty = sell_value / price
                 sell_qty = min(sell_qty, qty)
                 exit_price = plan.exit_prices.get(sym, price * 1.001)
                 if exit_price <= 0:
                     exit_price = price * 1.001
-                order = place_limit_sell(cfg, exit_price, sell_qty, dry_run)
+                order = place_limit_sell(cfg, exit_price, sell_qty, execution_mode=resolved_execution_mode, dry_run=dry_run)
                 if order:
                     orders_placed.append(order)
                     logger.info(f"  SELL {sym}: {sell_qty:.6f} @ ${exit_price:.2f} (reduce to {target_val:.0f})")
@@ -744,16 +1028,25 @@ def run_hybrid_trading_cycle(
             continue
 
         try:
-            price = float(binance_wrapper.get_symbol_price(cfg.binance_pair))
-            # Cap at available cash
-            available = state.available_quote(cfg.quote_asset)
+            price = _get_market_price(cfg, resolved_execution_mode)
+            trade_quote = _execution_quote_asset(cfg, resolved_execution_mode)
+            available = _quote_buying_power(
+                state,
+                trade_quote,
+                execution_mode=resolved_execution_mode,
+                effective_leverage=effective_leverage,
+            )
             buy_needed = min(buy_needed, available * 0.95)
-            if buy_needed < MIN_TRADE_USD:
-                # Try stablecoin conversion
-                if not ensure_quote_balance(cfg.quote_asset, buy_needed, state, dry_run):
-                    logger.info(f"  Skip buy {sym}: insufficient {cfg.quote_asset}")
+            if buy_needed < MIN_TRADE_USD and resolved_execution_mode == "spot":
+                if not ensure_quote_balance(trade_quote, buy_needed, state, dry_run):
+                    logger.info(f"  Skip buy {sym}: insufficient {trade_quote}")
                     continue
-                available = state.available_quote(cfg.quote_asset)
+                available = _quote_buying_power(
+                    state,
+                    trade_quote,
+                    execution_mode=resolved_execution_mode,
+                    effective_leverage=effective_leverage,
+                )
                 buy_needed = min(buy_needed, available * 0.95)
 
             if buy_needed < MIN_TRADE_USD:
@@ -762,13 +1055,14 @@ def run_hybrid_trading_cycle(
             entry_price = plan.entry_prices.get(sym, price * 0.999)
             if entry_price <= 0:
                 entry_price = price * 0.999
-            order = place_limit_buy(cfg, entry_price, buy_needed, dry_run)
+            order = place_limit_buy(cfg, entry_price, buy_needed, execution_mode=resolved_execution_mode, dry_run=dry_run)
             if order:
                 orders_placed.append(order)
-                _reserve_quote_balance(
+                _reserve_buying_power(
                     state,
-                    cfg.quote_asset,
+                    trade_quote,
                     _estimate_order_notional(order, fallback=buy_needed),
+                    execution_mode=resolved_execution_mode,
                 )
                 logger.info(f"  BUY {sym}: ${buy_needed:.2f} @ ${entry_price:.2f}")
         except Exception as e:
@@ -809,7 +1103,9 @@ def main():
                         default="binanceneural/forecast_cache",
                         help="Forecast cache root for RL features")
     parser.add_argument("--leverage", type=float, default=1.0,
-                        help="Requested position multiplier; spot execution clamps anything above 1x")
+                        help="Requested position multiplier. Auto mode switches to margin above 1x.")
+    parser.add_argument("--execution-mode", type=str, default="auto", choices=sorted(SUPPORTED_EXECUTION_MODES),
+                        help="Execution account to use: auto, spot, or margin.")
     args = parser.parse_args()
 
     dry_run = not args.live
@@ -838,6 +1134,8 @@ def main():
                     gemini_model=args.model,
                     forecast_cache_root=args.forecast_cache,
                     dry_run=dry_run,
+                    leverage=args.leverage,
+                    execution_mode=args.execution_mode,
                 )
             else:
                 run_trading_cycle(
@@ -846,6 +1144,7 @@ def main():
                     thinking_level="HIGH",
                     dry_run=dry_run,
                     leverage=args.leverage,
+                    execution_mode=args.execution_mode,
                 )
         except Exception as e:
             logger.error(f"Trading cycle error: {e}")
