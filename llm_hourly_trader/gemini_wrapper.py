@@ -106,6 +106,7 @@ def build_prompt(
     asset_class: str = "crypto",
     maker_fee: float = 0.0008,
     variant: str = "default",
+    **kwargs,
 ) -> str:
     """Build the prompt showing hourly history + Chronos forecasts."""
     last_close = history_rows[-1]["close"] if history_rows else 0
@@ -119,6 +120,23 @@ def build_prompt(
         )
     elif variant == "aggressive":
         return _prompt_aggressive(
+            symbol, history_rows, forecast_1h, forecast_24h,
+            current_position, cash, equity, dir_str, fee_bps, last_close, asset_class,
+        )
+    elif variant == "position_context":
+        return _prompt_position_context(
+            symbol, history_rows, forecast_1h, forecast_24h,
+            current_position, cash, equity, dir_str, fee_bps, last_close, asset_class,
+            **kwargs,
+        )
+    elif variant == "fractional":
+        return _prompt_fractional(
+            symbol, history_rows, forecast_1h, forecast_24h,
+            current_position, cash, equity, dir_str, fee_bps, last_close, asset_class,
+            **kwargs,
+        )
+    elif variant == "anonymized":
+        return _prompt_anonymized(
             symbol, history_rows, forecast_1h, forecast_24h,
             current_position, cash, equity, dir_str, fee_bps, last_close, asset_class,
         )
@@ -209,6 +227,131 @@ Current price: ${last_close:,.2f}
 - Use high confidence (0.7-1.0) when trend and forecast align
 - Fees: {fee_bps:.0f}bp per side
 - Be decisive - missed opportunities cost money too"""
+
+
+def _prompt_position_context(
+    symbol, history_rows, forecast_1h, forecast_24h,
+    current_position, cash, equity, dir_str, fee_bps, last_close, asset_class,
+    **kwargs,
+) -> str:
+    asset_label = "cryptocurrency" if asset_class == "crypto" else "stock"
+    pos_info = kwargs.get("position_info", {})
+    pos_section = ""
+    if pos_info and pos_info.get("qty", 0) > 0:
+        entry = pos_info.get("entry_price", 0)
+        held = pos_info.get("held_hours", 0)
+        pnl_pct = (last_close - entry) / entry * 100 if entry > 0 else 0
+        pnl_usd = pos_info.get("qty", 0) * (last_close - entry)
+        pos_section = f"""
+## CURRENT POSITION:
+- Holding {pos_info['qty']:.6f} {symbol} @ ${entry:.2f} entry
+- Held for {held:.0f} hours (max hold: 6h, auto-close at limit)
+- Unrealized P&L: ${pnl_usd:+.2f} ({pnl_pct:+.2f}%)
+- Current value: ${pos_info['qty'] * last_close:.2f}
+
+EXIT DECISION: Consider whether to hold, tighten take-profit, or exit now.
+If the position is profitable and momentum is fading, take profits.
+If approaching max hold time (6h), set a realistic exit price.
+"""
+    else:
+        pos_section = "\n## CURRENT POSITION: Flat (no position)\n"
+
+    return f"""You are solving an optimization problem: maximize risk-adjusted returns trading {symbol} ({asset_label}).
+
+CONSTRAINTS:
+- LONG ONLY (spot market)
+- 1-hour decision intervals, max 6-hour hold time
+- Transaction cost: {fee_bps:.0f}bp per side
+- Objective: maximize Sortino ratio
+{pos_section}
+Cash: ${cash:,.2f} | Portfolio equity: ${equity:,.2f}
+
+## Recent hourly OHLCV (last 24 bars):
+{_format_history_table(history_rows)}
+
+## Chronos2 ML Forecasts:
+{_format_forecasts(forecast_1h, forecast_24h)}
+
+Current price: ${last_close:,.2f}
+
+Decide: {dir_str}.
+If holding a position: set sell_price for take-profit. If no position: set buy_price for entry.
+Only enter when expected_return > fees. Respond with JSON: {{"direction": "long" or "hold", "buy_price": <entry or 0>, "sell_price": <take-profit or 0>, "confidence": <0-1>, "reasoning": "<brief>"}}"""
+
+
+def _prompt_fractional(
+    symbol, history_rows, forecast_1h, forecast_24h,
+    current_position, cash, equity, dir_str, fee_bps, last_close, asset_class,
+    **kwargs,
+) -> str:
+    asset_label = "cryptocurrency" if asset_class == "crypto" else "stock"
+    pos_info = kwargs.get("position_info", {})
+    pos_section = ""
+    if pos_info and pos_info.get("qty", 0) > 0:
+        entry = pos_info.get("entry_price", 0)
+        held = pos_info.get("held_hours", 0)
+        pnl_pct = (last_close - entry) / entry * 100 if entry > 0 else 0
+        pos_section = f"""
+## CURRENT POSITION:
+- Holding {pos_info['qty']:.6f} {symbol} @ ${entry:.2f} (P&L: {pnl_pct:+.2f}%, held {held:.0f}h)
+"""
+    else:
+        pos_section = "\n## CURRENT POSITION: Flat\n"
+
+    return f"""You are optimizing risk-adjusted returns trading {symbol} ({asset_label}).
+
+CONSTRAINTS:
+- LONG ONLY, 1-hour intervals, max 6h hold, {fee_bps:.0f}bp fees per side
+- You can PARTIALLY exit positions (fractional sizing)
+{pos_section}
+Cash: ${cash:,.2f} | Equity: ${equity:,.2f}
+
+## Recent OHLCV (last 24 bars):
+{_format_history_table(history_rows)}
+
+## Chronos2 ML Forecasts:
+{_format_forecasts(forecast_1h, forecast_24h)}
+
+Price: ${last_close:,.2f}
+
+FRACTIONAL SIZING: You can scale in/out gradually.
+- exit_pct: fraction of current position to sell (0.0 = hold all, 1.0 = sell all, 0.5 = sell half)
+- For entries: confidence scales position size (0.3 = small, 1.0 = full allocation)
+
+Respond with JSON: {{"direction": "long" or "hold", "buy_price": <entry or 0>, "sell_price": <exit price or 0>, "exit_pct": <0.0-1.0>, "confidence": <0-1>, "reasoning": "<brief>"}}"""
+
+
+def _prompt_anonymized(
+    symbol, history_rows, forecast_1h, forecast_24h,
+    current_position, cash, equity, dir_str, fee_bps, last_close, asset_class,
+) -> str:
+    return f"""You are solving an optimization problem: maximize risk-adjusted returns on a spot trading account.
+
+CONSTRAINTS:
+- LONG ONLY (spot market, no shorting)
+- 1-hour decision intervals, max 6-hour hold time
+- Transaction cost: {fee_bps:.0f}bp per side
+- Objective: maximize Sortino ratio
+
+ASSET: Asset_X
+Current position: {current_position}
+Cash: ${cash:,.2f} | Portfolio equity: ${equity:,.2f}
+
+## Recent hourly OHLCV (last 24 bars):
+{_format_history_table(history_rows)}
+
+## ML Forecasts:
+{_format_forecasts(forecast_1h, forecast_24h)}
+
+Current price: ${last_close:,.2f}
+
+Decide: LONG or HOLD.
+Focus purely on price action, momentum, and forecast signals.
+Do NOT consider what asset this might be - analyze only the numbers.
+If entering, set buy_price slightly below current. Set sell_price as take-profit.
+Only trade when expected_return > fees.
+
+Respond with JSON: {{"direction": "long" or "hold", "buy_price": <entry or 0>, "sell_price": <take-profit or 0>, "confidence": <0-1>, "reasoning": "<brief>"}}"""
 
 
 # ---------------------------------------------------------------------------
