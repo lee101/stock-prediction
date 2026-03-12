@@ -39,10 +39,63 @@ from unified_orchestrator.conditional_orders import (
 from llm_hourly_trader.providers import call_llm
 from llm_hourly_trader.gemini_wrapper import TradePlan
 
+from unified_orchestrator.rl_gemini_bridge import RLGeminiBridge
+
 
 # ---------------------------------------------------------------------------
 # Crypto signal generation
 # ---------------------------------------------------------------------------
+
+# RL+Gemini hybrid bridges (lazy-loaded, separate for stocks vs crypto)
+_rl_bridge: RLGeminiBridge | None = None
+_rl_bridge_stock: RLGeminiBridge | None = None
+
+# Validated checkpoints (confirmed on held-out data):
+#   stocks: +50% median / 30-day window, Sortino=25 (featlag1, fee=5bps, long-only)
+#   crypto: crypto11_ppo_v1 is unprofitable on val; use Gemini-only until better model
+STOCK_CHECKPOINT_CANDIDATES = [
+    REPO / "pufferlib_market/checkpoints/stocks13_featlag1_fee5bps_longonly_run4/best.pt",
+    REPO / "pufferlib_market/checkpoints/stocks13_issuedat_featlag1_fee5bps_longonly_run5/best.pt",
+]
+CRYPTO_CHECKPOINT_CANDIDATES = [
+    REPO / "pufferlib_market/checkpoints/crypto12_ppo_v8_h1024_300M_annealLR/best.pt",
+    REPO / "pufferlib_market/checkpoints/crypto11_ppo_v1_h1024_300M_annealLR/best.pt",
+]
+
+
+def get_rl_bridge(checkpoint_path: str = "", hidden_size: int = 1024) -> RLGeminiBridge | None:
+    """Get or create the crypto RL+Gemini bridge (lazy singleton)."""
+    global _rl_bridge
+    if _rl_bridge is not None:
+        return _rl_bridge
+    if not checkpoint_path:
+        for c in CRYPTO_CHECKPOINT_CANDIDATES:
+            if c.exists():
+                checkpoint_path = str(c)
+                break
+    if not checkpoint_path:
+        return None
+    _rl_bridge = RLGeminiBridge(checkpoint_path=checkpoint_path, hidden_size=hidden_size)
+    logger.info(f"  Crypto RL bridge loaded: {checkpoint_path}")
+    return _rl_bridge
+
+
+def get_rl_bridge_stock(checkpoint_path: str = "", hidden_size: int = 1024) -> RLGeminiBridge | None:
+    """Get or create the stock RL+Gemini bridge (lazy singleton)."""
+    global _rl_bridge_stock
+    if _rl_bridge_stock is not None:
+        return _rl_bridge_stock
+    if not checkpoint_path:
+        for c in STOCK_CHECKPOINT_CANDIDATES:
+            if c.exists():
+                checkpoint_path = str(c)
+                break
+    if not checkpoint_path:
+        logger.warning("  No stock RL checkpoint found — falling back to Gemini-only signals")
+        return None
+    _rl_bridge_stock = RLGeminiBridge(checkpoint_path=checkpoint_path, hidden_size=hidden_size)
+    logger.info(f"  Stock RL bridge loaded: {checkpoint_path}")
+    return _rl_bridge_stock
 
 CRYPTO_SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD"]
 CRYPTO_PAIRS = {"BTCUSD": "BTCUSDT", "ETHUSD": "ETHUSDT", "SOLUSD": "SOLUSDT",
@@ -108,24 +161,65 @@ def get_crypto_signals(
 # Crypto execution
 # ---------------------------------------------------------------------------
 
+def validate_plan_safety(plan: TradePlan, current_price: float,
+                         fee_bps: float = 20.0) -> tuple[bool, str]:
+    """Validate a trade plan is safe to execute in production.
+
+    Checks:
+    1. sell_price > buy_price + fees (must be profitable if both fill)
+    2. Prices within reasonable range of current (not >5% away)
+    3. Confidence > 0 for non-hold plans
+    """
+    if plan.direction == "hold":
+        return True, "hold"
+
+    if plan.buy_price <= 0 and plan.sell_price <= 0:
+        return False, "no prices set"
+
+    # For longs: sell must be above buy + fees
+    if plan.direction == "long" and plan.buy_price > 0 and plan.sell_price > 0:
+        fee_cost = plan.buy_price * fee_bps / 10000 * 2  # round-trip
+        if plan.sell_price <= plan.buy_price + fee_cost:
+            return False, (f"sell ${plan.sell_price:.2f} <= buy ${plan.buy_price:.2f} "
+                          f"+ fees ${fee_cost:.2f}")
+
+    # Prices should be within 5% of current
+    if plan.buy_price > 0:
+        pct_diff = abs(plan.buy_price - current_price) / current_price
+        if pct_diff > 0.05:
+            return False, f"buy_price ${plan.buy_price:.2f} is {pct_diff:.1%} from current ${current_price:.2f}"
+
+    if plan.sell_price > 0:
+        pct_diff = abs(plan.sell_price - current_price) / current_price
+        if pct_diff > 0.05:
+            return False, f"sell_price ${plan.sell_price:.2f} is {pct_diff:.1%} from current ${current_price:.2f}"
+
+    return True, "ok"
+
+
 def execute_crypto_signals(
     signals: dict[str, TradePlan],
     snapshot: UnifiedPortfolioSnapshot,
     dry_run: bool = True,
 ) -> list[dict]:
     """Execute crypto trading signals on Binance."""
-    from rl_trading_agent_binance_prompt import build_live_prompt  # noqa: unused but validates import
 
     orders = []
     for sym, plan in signals.items():
         if plan.direction != "long" or plan.confidence < 0.4:
             continue
 
+        # Safety validation
         pair = CRYPTO_PAIRS.get(sym, sym.replace("USD", "USDT"))
         base_asset = sym.replace("USD", "")
+        pos = snapshot.binance_positions.get(base_asset)
+        current_price = pos.current_price if pos else plan.buy_price
+        safe, reason = validate_plan_safety(plan, current_price)
+        if not safe:
+            logger.warning(f"  {sym}: SAFETY BLOCKED - {reason}")
+            continue
 
         # Check existing position
-        pos = snapshot.binance_positions.get(base_asset)
         pos_value = pos.market_value if pos else 0.0
         total_crypto = max(snapshot.total_crypto_value, 1.0)
         max_position = total_crypto * 0.25
@@ -247,15 +341,36 @@ def get_stock_signals(
 
             current_price = history[-1]["close"]
 
+            # RL signal context (if stock bridge loaded)
+            rl_hint = ""
+            rl_bridge = get_rl_bridge_stock()
+            if rl_bridge is not None:
+                try:
+                    rl_plans = rl_bridge.generate_plans([sym], {sym: history})
+                    if sym in rl_plans:
+                        rp = rl_plans[sym]
+                        rl_hint = (f"\nRL MODEL SIGNAL: direction={rp.direction} "
+                                   f"confidence={rp.confidence:.2f} "
+                                   f"(from stocks13_featlag1 validated model)")
+                except Exception as e:
+                    logger.debug(f"  {sym}: RL signal error (non-fatal): {e}")
+
             prompt = build_unified_prompt(
                 symbol=sym,
                 history_rows=history,
                 current_price=current_price,
                 snapshot=snapshot,
                 asset_class="stock",
-            )
+            ) + rl_hint
 
             plan = call_llm(prompt, model=model, thinking_level=thinking_level)
+
+            # Safety gate before accepting the plan
+            ok, reason = validate_plan_safety(plan, current_price, fee_bps=10.0)
+            if not ok:
+                logger.warning(f"  {sym}: plan REJECTED by safety check — {reason}")
+                continue
+
             signals[sym] = plan
             logger.info(f"  {sym}: {plan.direction} conf={plan.confidence:.2f} "
                         f"buy=${plan.buy_price:.2f} sell=${plan.sell_price:.2f} | {plan.reasoning[:60]}")
@@ -266,15 +381,44 @@ def get_stock_signals(
     return signals
 
 
+_STOCK_FEE_BPS = 5.0  # 5 bps round-trip; safety margin for limit price checks
+
+
+def _validate_trade_plan(plan: TradePlan, symbol: str) -> tuple[bool, str]:
+    """Safety gate: ensure the plan is safe to execute live.
+
+    Rules (must ALL pass):
+      1. direction must be long, short, or hold
+      2. buy_price must be positive when direction == long
+      3. sell_price > buy_price * (1 + 2*fee) — ensures the round-trip is profitable
+      4. confidence >= 0.4
+      5. sell_price > 0 when direction == long
+    """
+    fee_factor = 1 + 2 * _STOCK_FEE_BPS / 10_000
+    if plan.direction not in ("long", "short", "hold"):
+        return False, f"unknown direction: {plan.direction!r}"
+    if plan.direction == "long":
+        if plan.buy_price <= 0:
+            return False, "buy_price must be > 0 for long"
+        if plan.sell_price <= 0:
+            return False, "sell_price must be > 0 for long"
+        if plan.sell_price <= plan.buy_price * fee_factor:
+            return False, (f"sell_price ${plan.sell_price:.2f} <= buy_price ${plan.buy_price:.2f} "
+                           f"* fee_factor {fee_factor:.5f} — not profitable after fees")
+    if plan.confidence < 0.4:
+        return False, f"confidence {plan.confidence:.2f} < threshold 0.40"
+    return True, "ok"
+
+
 def execute_stock_signals(
     signals: dict[str, TradePlan],
     snapshot: UnifiedPortfolioSnapshot,
     dry_run: bool = True,
 ) -> list[dict]:
-    """Execute stock trading signals on Alpaca."""
+    """Execute stock trading signals on Alpaca with safety validation."""
     from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
     from alpaca.trading.client import TradingClient
-    from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
+    from alpaca.trading.requests import LimitOrderRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
 
     orders = []
@@ -282,6 +426,12 @@ def execute_stock_signals(
 
     for sym, plan in signals.items():
         try:
+            # Safety validation — applied to ALL orders
+            ok, reason = _validate_trade_plan(plan, sym)
+            if not ok:
+                logger.warning(f"  {sym}: REJECTED — {reason}")
+                continue
+
             # Take-profit on existing position (set sell limit regardless of direction)
             pos = snapshot.alpaca_positions.get(sym)
             if pos and pos.qty > 0 and plan.sell_price > 0 and plan.sell_price > pos.current_price:
