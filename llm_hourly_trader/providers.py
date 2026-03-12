@@ -24,7 +24,8 @@ from llm_hourly_trader.gemini_wrapper import TradePlan
 # Gemini
 # ---------------------------------------------------------------------------
 
-def call_gemini(prompt: str, model: str = "gemini-2.5-flash", max_retries: int = 5) -> TradePlan:
+def call_gemini(prompt: str, model: str = "gemini-2.5-flash", max_retries: int = 5,
+                thinking_level: str | None = None) -> TradePlan:
     cached = get_cached(model, prompt)
     if cached is not None:
         return TradePlan(**cached)
@@ -45,11 +46,22 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash", max_retries: int =
     )
 
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-    config = types.GenerateContentConfig(
-        response_mime_type="application/json",
-        response_schema=SCHEMA,
-        temperature=0.3,
-    )
+
+    # Build config with optional thinking
+    config_kwargs = {
+        "response_mime_type": "application/json",
+        "response_schema": SCHEMA,
+    }
+    if thinking_level:
+        try:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(
+                thinking_level=thinking_level,
+            )
+        except Exception:
+            pass  # older SDK versions may not support thinking
+    else:
+        config_kwargs["temperature"] = 0.3
+    config = types.GenerateContentConfig(**config_kwargs)
 
     for attempt in range(max_retries):
         try:
@@ -281,6 +293,59 @@ def _ensure_codex_schema() -> str:
     return _CODEX_SCHEMA_PATH
 
 
+def call_openai_responses(prompt: str, model: str = "gpt-5.4", max_retries: int = 5,
+                          reasoning_effort: str = "low") -> TradePlan:
+    """Call GPT-5.x via OpenAI Responses API with structured outputs."""
+    cached = get_cached(model, prompt)
+    if cached is not None:
+        return TradePlan(**cached)
+
+    from openai import OpenAI
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+
+    json_schema = {
+        "type": "json_schema",
+        "name": "trade_plan",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "required": ["direction", "buy_price", "sell_price", "confidence", "reasoning"],
+            "additionalProperties": False,
+            "properties": {
+                "direction": {"type": "string", "description": "long, short, or hold"},
+                "buy_price": {"type": "number", "description": "Limit entry price, 0 if no entry"},
+                "sell_price": {"type": "number", "description": "Take-profit price, 0 if no exit"},
+                "confidence": {"type": "number", "description": "0.0 to 1.0"},
+                "reasoning": {"type": "string", "description": "Brief explanation"},
+            },
+        },
+    }
+
+    for attempt in range(max_retries):
+        try:
+            resp = client.responses.create(
+                model=model,
+                input=[{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+                text={"format": json_schema},
+                reasoning={"effort": reasoning_effort, "summary": "auto"},
+                store=False,
+            )
+            text = resp.output_text
+            data = json.loads(text)
+            plan = TradePlan(
+                direction=str(data.get("direction", "hold")).lower().strip(),
+                buy_price=float(data.get("buy_price", 0) or 0),
+                sell_price=float(data.get("sell_price", 0) or 0),
+                confidence=float(data.get("confidence", 0) or 0),
+                reasoning=str(data.get("reasoning", "")),
+            )
+            set_cached(model, prompt, plan.__dict__)
+            return plan
+        except Exception as e:
+            _handle_retry(e, attempt, max_retries)
+    return TradePlan("hold", 0, 0, 0, "API exhausted")
+
+
 def call_codex(prompt: str, model: str = "gpt-5.4", max_retries: int = 2,
                reasoning_effort: str = "low") -> TradePlan:
     """Call GPT-5.x via codex CLI (routes through ChatGPT Pro plan)."""
@@ -372,6 +437,7 @@ def _handle_retry(e: Exception, attempt: int, max_retries: int) -> None:
 PROVIDER_FNS = {
     "gemini": call_gemini,
     "openai": call_openai,
+    "openai_responses": call_openai_responses,
     "anthropic": call_anthropic,
     "deepseek": call_deepseek,
     "codex": call_codex,
@@ -391,8 +457,8 @@ MODEL_PROVIDERS = {
     "o3": "openai",
     "o3-mini": "openai",
     "o4-mini": "openai",
-    # OpenAI via codex CLI (ChatGPT Pro plan)
-    "gpt-5.4": "codex",
+    # OpenAI via Responses API
+    "gpt-5.4": "openai_responses",
     # Anthropic
     "claude-sonnet-4-6": "anthropic",
     "claude-haiku-4-5-20251001": "anthropic",
@@ -402,7 +468,9 @@ MODEL_PROVIDERS = {
 }
 
 
-def call_llm(prompt: str, model: str, provider: Optional[str] = None) -> TradePlan:
+def call_llm(prompt: str, model: str, provider: Optional[str] = None,
+             thinking_level: Optional[str] = None,
+             reasoning_effort: Optional[str] = None) -> TradePlan:
     """Call any LLM provider with auto-detection."""
     if provider is None:
         provider = MODEL_PROVIDERS.get(model)
@@ -416,4 +484,8 @@ def call_llm(prompt: str, model: str, provider: Optional[str] = None) -> TradePl
             else:
                 provider = "openai"
     fn = PROVIDER_FNS[provider]
+    if provider == "gemini" and thinking_level:
+        return fn(prompt, model=model, thinking_level=thinking_level)
+    if provider == "openai_responses":
+        return fn(prompt, model=model, reasoning_effort=reasoning_effort or "low")
     return fn(prompt, model=model)
