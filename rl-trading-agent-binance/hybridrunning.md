@@ -111,10 +111,18 @@ In cross-margin mode, quote is USDT for all supported pairs. The bot uses Binanc
 - Extra buying power is capped by `get_max_borrowable("USDT")`
 - Before sizing orders, the runtime consolidates tracked spot balances into cross margin and converts transferable spot/margin `FDUSD` into spot `USDT`, then moves that `USDT` into margin
 - Existing same-side open orders are reused or replaced instead of blindly stacking duplicate hourly limit orders
+- Every cycle appends a structured JSONL trace under `strategy_state/hybrid_trade_cycles/` with balances, positions, open orders, per-symbol actions, and order ids
+- Recent live traces can be checked against Binance orders/trades and 5m price touches with:
+```bash
+python rl-trading-agent-binance/validate_hybrid_cycle_snapshots.py \
+  --start "2026-03-13 00:00:00+00:00" \
+  --live-only
+```
 
 ## Files
 - `run_hybrid.py` - Backtest engine with RL+LLM simulation
 - `trade_binance_live.py` - Production trader with order execution
+- `validate_hybrid_cycle_snapshots.py` - Replay/validation tool for hybrid cycle traces vs Binance orders/trades
 - `rl_trading_agent_binance_prompt.py` - Prompt builder for live trading
 - `../llm_hourly_trader/providers.py` - Multi-provider LLM wrapper (Gemini, OpenAI, Anthropic, DeepSeek)
 - `../rl-trainingbinance/train.sh` - RL training script
