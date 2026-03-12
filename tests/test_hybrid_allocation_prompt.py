@@ -188,3 +188,62 @@ def test_resolve_spot_leverage_clamps_anything_above_one() -> None:
     assert trade_binance_live._resolve_spot_leverage(0.5) == pytest.approx(0.5)
     assert trade_binance_live._resolve_spot_leverage(1.0) == pytest.approx(1.0)
     assert trade_binance_live._resolve_spot_leverage(5.0) == pytest.approx(1.0)
+
+
+def test_resolve_execution_mode_auto_uses_margin_only_for_real_leverage() -> None:
+    assert trade_binance_live._resolve_execution_mode("auto", 1.0) == "spot"
+    assert trade_binance_live._resolve_execution_mode("auto", 1.01) == "margin"
+    assert trade_binance_live._resolve_execution_mode("margin", 1.0) == "margin"
+
+
+def test_execution_pair_uses_usdt_pairs_for_margin_on_fdusd_symbols() -> None:
+    btc = trade_binance_live.TRADING_SYMBOLS["BTCUSD"]
+    sol = trade_binance_live.TRADING_SYMBOLS["SOLUSD"]
+
+    assert trade_binance_live._execution_pair(btc, "spot") == "BTCFDUSD"
+    assert trade_binance_live._execution_pair(btc, "margin") == "BTCUSDT"
+    assert trade_binance_live._execution_pair(sol, "margin") == "SOLUSDT"
+
+
+def test_quote_buying_power_only_counts_borrow_headroom_in_margin_mode() -> None:
+    state = trade_binance_live.PortfolioState(
+        fdusd_balance=50.0,
+        usdt_balance=25.0,
+        borrowable_quotes={"USDT": 125.0},
+    )
+
+    assert trade_binance_live._quote_buying_power(
+        state,
+        "USDT",
+        execution_mode="spot",
+        effective_leverage=5.0,
+    ) == pytest.approx(25.0)
+    assert trade_binance_live._quote_buying_power(
+        state,
+        "USDT",
+        execution_mode="margin",
+        effective_leverage=1.0,
+    ) == pytest.approx(25.0)
+    assert trade_binance_live._quote_buying_power(
+        state,
+        "USDT",
+        execution_mode="margin",
+        effective_leverage=5.0,
+    ) == pytest.approx(150.0)
+
+
+def test_reserve_buying_power_uses_free_quote_before_borrow_headroom() -> None:
+    state = trade_binance_live.PortfolioState(
+        usdt_balance=40.0,
+        borrowable_quotes={"USDT": 120.0},
+    )
+
+    trade_binance_live._reserve_buying_power(
+        state,
+        "USDT",
+        100.0,
+        execution_mode="margin",
+    )
+
+    assert state.usdt_balance == pytest.approx(0.0)
+    assert state.borrowable_quotes["USDT"] == pytest.approx(60.0)
