@@ -5,11 +5,15 @@ Manages:
 - FDUSD pairs for BTC/ETH (zero fees)
 - USDT pairs for altcoins (DOGE, SUI, SOL, AAVE)
 - Automatic stablecoin swaps between FDUSD ↔ USDT
-- Hourly trading cycle with RL+LLM hybrid signals
+- Hourly trading cycle with RL or LLM signals
+
+Modes:
+  --rl-checkpoint PATH   Use RL policy as primary signal (portfolio rotator)
+  (default)              Use LLM signals per symbol
 
 Usage:
-  python -m rl-trading-agent-binance.trade_binance_live --dry-run
-  python -m rl-trading-agent-binance.trade_binance_live --live
+  python rl-trading-agent-binance/trade_binance_live.py --dry-run
+  python rl-trading-agent-binance/trade_binance_live.py --live --rl-checkpoint rl-trainingbinance/checkpoints/autoresearch_ema.pt
 """
 
 from __future__ import annotations
@@ -46,6 +50,8 @@ from binanceneural.execution import (
 )
 from llm_hourly_trader.providers import call_llm
 from llm_hourly_trader.gemini_wrapper import TradePlan
+
+from rl_signal import RLSignalGenerator, PortfolioSnapshot, SYMBOLS as RL_SYMBOLS
 
 
 # ---------------------------------------------------------------------------
@@ -436,6 +442,171 @@ def run_trading_cycle(
     return orders_placed
 
 
+# ---------------------------------------------------------------------------
+# RL-Only Trading Cycle
+# ---------------------------------------------------------------------------
+
+# Map RL symbol names to Binance pairs for kline fetching
+RL_BINANCE_PAIRS = {
+    "BTCUSD": "BTCFDUSD",
+    "ETHUSD": "ETHFDUSD",
+    "DOGEUSD": "DOGEUSDT",
+    "AAVEUSD": "AAVEUSDT",
+}
+
+# Persistent state for RL hold tracking
+_rl_hold_start: Optional[datetime] = None
+_rl_current_symbol: Optional[str] = None
+
+
+def _detect_current_rl_position(state: PortfolioState) -> tuple[Optional[str], float, float]:
+    """Find largest RL-managed position. Returns (symbol, qty, value)."""
+    best_sym, best_qty, best_val = None, 0.0, 0.0
+    for rl_sym in RL_SYMBOLS:
+        cfg = TRADING_SYMBOLS.get(rl_sym)
+        if not cfg:
+            continue
+        qty = state.positions.get(cfg.base_asset, 0.0)
+        if qty <= 0:
+            continue
+        try:
+            price = float(binance_wrapper.get_symbol_price(cfg.binance_pair))
+        except Exception:
+            continue
+        val = qty * price
+        if val > best_val:
+            best_sym, best_qty, best_val = rl_sym, qty, val
+    return best_sym, best_qty, best_val
+
+
+def run_rl_trading_cycle(
+    rl_gen: RLSignalGenerator,
+    alloc_pct: float = 0.90,
+    dry_run: bool = True,
+):
+    """Run one RL trading cycle. The RL policy picks ONE asset to be in (or flat)."""
+    global _rl_hold_start, _rl_current_symbol
+
+    logger.info(f"\n{'='*60}")
+    logger.info(f"RL Trading Cycle: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    logger.info(f"Mode: {'DRY RUN' if dry_run else 'LIVE'}")
+    logger.info(f"{'='*60}")
+
+    state = get_portfolio_state()
+    logger.info(f"Portfolio: FDUSD={state.fdusd_balance:.2f}, USDT={state.usdt_balance:.2f}, "
+                f"total={state.total_value_usd:.2f}")
+    for asset, qty in state.positions.items():
+        logger.info(f"  Position: {asset} = {qty}")
+
+    # Cancel stale orders
+    try:
+        open_orders = binance_wrapper.get_open_orders()
+        if open_orders:
+            now_ms = int(time.time() * 1000)
+            for order in open_orders:
+                age_hours = (now_ms - order.get("time", now_ms)) / 3600000
+                if age_hours > 2:
+                    if not dry_run:
+                        binance_wrapper.cancel_order(order["symbol"], order["orderId"])
+                    logger.info(f"  Cancelled stale order {order['orderId']} ({age_hours:.1f}h old)")
+    except Exception as e:
+        logger.warning(f"  Failed to check open orders: {e}")
+
+    # Detect current position
+    cur_sym, cur_qty, cur_val = _detect_current_rl_position(state)
+    hold_hours = 0
+    if cur_sym and _rl_current_symbol == cur_sym and _rl_hold_start:
+        hold_hours = int((datetime.now(timezone.utc) - _rl_hold_start).total_seconds() / 3600)
+
+    # Build portfolio snapshot for RL obs
+    cash_usd = state.fdusd_balance + state.usdt_balance
+    portfolio = PortfolioSnapshot(
+        cash_usd=cash_usd,
+        total_value_usd=state.total_value_usd,
+        position_symbol=cur_sym,
+        position_value_usd=cur_val,
+        unrealized_pnl_usd=0.0,  # would need entry price tracking for exact pnl
+        hold_hours=hold_hours,
+        is_short=False,
+    )
+
+    # Get RL signal
+    try:
+        signal = rl_gen.get_signal(portfolio=portfolio, binance_pairs=RL_BINANCE_PAIRS)
+    except Exception as e:
+        logger.error(f"RL signal error: {e}")
+        return []
+
+    target_sym = signal.target_symbol
+    orders_placed = []
+
+    logger.info(f"  Current: {cur_sym or 'FLAT'} (${cur_val:.2f})")
+    logger.info(f"  RL says: {signal.action_name} -> target={target_sym or 'FLAT'}")
+
+    # If target changed, execute the rotation
+    if target_sym != cur_sym:
+        # Step 1: Sell current position
+        if cur_sym and cur_qty > 0:
+            cfg = TRADING_SYMBOLS[cur_sym]
+            try:
+                price = float(binance_wrapper.get_symbol_price(cfg.binance_pair))
+                sell_price = price * 0.999  # slightly below market for quick fill
+                order = place_limit_sell(cfg, sell_price, cur_qty, dry_run)
+                if order:
+                    orders_placed.append(order)
+                    logger.info(f"  SELL {cur_sym}: qty={cur_qty} @ ${sell_price:.2f}")
+            except Exception as e:
+                logger.error(f"  Failed to sell {cur_sym}: {e}")
+
+        # Step 2: Buy new target
+        if target_sym:
+            cfg = TRADING_SYMBOLS.get(target_sym)
+            if cfg:
+                try:
+                    price = float(binance_wrapper.get_symbol_price(cfg.binance_pair))
+                    trade_size = state.total_value_usd * alloc_pct
+                    # Use available cash (after sell, estimate conservatively)
+                    available = cash_usd + (cur_val * 0.95 if cur_sym else 0)
+                    trade_size = min(trade_size, available * 0.95)
+
+                    if trade_size >= MIN_TRADE_USD:
+                        if not ensure_quote_balance(cfg.quote_asset, trade_size, state, dry_run):
+                            logger.warning(f"  Skip buy: insufficient {cfg.quote_asset}")
+                        else:
+                            buy_price = price * 1.001  # slightly above market for quick fill
+                            order = place_limit_buy(cfg, buy_price, trade_size, dry_run)
+                            if order:
+                                orders_placed.append(order)
+                                logger.info(f"  BUY {target_sym}: ${trade_size:.2f} @ ${buy_price:.2f}")
+                    else:
+                        logger.info(f"  Skip buy: trade too small ({trade_size:.2f})")
+                except Exception as e:
+                    logger.error(f"  Failed to buy {target_sym}: {e}")
+
+        # Update hold tracking
+        _rl_current_symbol = target_sym
+        _rl_hold_start = datetime.now(timezone.utc) if target_sym else None
+    else:
+        logger.info(f"  No rotation needed, holding {cur_sym or 'FLAT'}")
+        # Place take-profit for existing position
+        if cur_sym and cur_qty > 0:
+            cfg = TRADING_SYMBOLS[cur_sym]
+            try:
+                price = float(binance_wrapper.get_symbol_price(cfg.binance_pair))
+                tp_price = price * 1.015  # 1.5% take-profit
+                order = place_limit_sell(cfg, tp_price, cur_qty, dry_run)
+                if order:
+                    orders_placed.append(order)
+                    logger.info(f"  Take-profit {cur_sym} @ ${tp_price:.2f}")
+            except Exception as e:
+                logger.error(f"  Failed to place TP for {cur_sym}: {e}")
+
+    logger.info(f"\n{'='*60}")
+    logger.info(f"RL cycle complete: {len(orders_placed)} orders placed")
+    logger.info(f"{'='*60}\n")
+    return orders_placed
+
+
 def main():
     parser = argparse.ArgumentParser(description="RL+LLM Hybrid Binance Trader")
     parser.add_argument("--symbols", nargs="+",
@@ -451,25 +622,50 @@ def main():
                         help="Run one cycle and exit")
     parser.add_argument("--interval", type=int, default=3600,
                         help="Seconds between trading cycles (default: 3600)")
-    parser.add_argument("--checkpoint", type=str, default=None)
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="(deprecated) Use --rl-checkpoint instead")
+    parser.add_argument("--rl-checkpoint", type=str, default=None,
+                        help="Path to RL policy checkpoint. Enables RL-only mode.")
+    parser.add_argument("--rl-alloc-pct", type=float, default=0.90,
+                        help="Fraction of portfolio to allocate to RL position")
+    parser.add_argument("--forecast-cache", type=str,
+                        default="binanceneural/forecast_cache",
+                        help="Forecast cache root for RL features")
     args = parser.parse_args()
 
     dry_run = not args.live
+    rl_checkpoint = args.rl_checkpoint or args.checkpoint
 
     if args.live:
         logger.warning("LIVE TRADING MODE - Real orders will be placed!")
         logger.warning("Press Ctrl+C to stop")
         time.sleep(3)
 
+    # Initialize RL generator if checkpoint provided
+    rl_gen = None
+    if rl_checkpoint:
+        rl_gen = RLSignalGenerator(
+            checkpoint_path=rl_checkpoint,
+            forecast_cache_root=args.forecast_cache,
+        )
+        logger.info(f"RL mode: checkpoint={rl_checkpoint}, alloc={args.rl_alloc_pct:.0%}")
+        logger.info(f"RL symbols: {', '.join(RL_SYMBOLS)}")
+
     while True:
         try:
-            run_trading_cycle(
-                symbols=args.symbols,
-                model=args.model,
-                thinking_level=args.thinking_level,
-                dry_run=dry_run,
-                rl_checkpoint=args.checkpoint,
-            )
+            if rl_gen:
+                run_rl_trading_cycle(
+                    rl_gen=rl_gen,
+                    alloc_pct=args.rl_alloc_pct,
+                    dry_run=dry_run,
+                )
+            else:
+                run_trading_cycle(
+                    symbols=args.symbols,
+                    model=args.model,
+                    thinking_level=args.thinking_level,
+                    dry_run=dry_run,
+                )
         except Exception as e:
             logger.error(f"Trading cycle error: {e}")
 
