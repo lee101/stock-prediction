@@ -128,6 +128,21 @@ def get_portfolio_state() -> PortfolioState:
     return state
 
 
+def get_position_entry(sym_cfg: 'BinanceSymbolConfig') -> tuple[float, Optional[datetime]]:
+    """Get entry price and time for current position from recent trades."""
+    trades = binance_wrapper.get_my_trades(sym_cfg.binance_pair, limit=20)
+    if not trades:
+        return 0.0, None
+    # Walk backwards to find last buy that opened the position
+    for t in reversed(trades):
+        if t.get("isBuyer"):
+            price = float(t.get("price", 0))
+            ts = t.get("time", 0)
+            open_time = datetime.fromtimestamp(ts / 1000, tz=timezone.utc) if ts else None
+            return price, open_time
+    return 0.0, None
+
+
 # ---------------------------------------------------------------------------
 # Stablecoin Management
 # ---------------------------------------------------------------------------
@@ -216,6 +231,19 @@ def _reserve_quote_balance(state: PortfolioState, quote_asset: str, amount: floa
         state.usdt_balance = max(0.0, state.usdt_balance - amount)
 
 
+def _resolve_spot_leverage(leverage: float) -> float:
+    """Clamp the spot execution path to sizes supportable without borrowing."""
+    requested = max(0.0, float(leverage))
+    effective = min(requested, 1.0)
+    if requested > 1.0 + 1e-9:
+        logger.warning(
+            f"Spot execution does not support borrowed leverage; "
+            f"clamping requested leverage {requested:.2f}x to {effective:.2f}x. "
+            "Use a margin execution path for real leverage."
+        )
+    return effective
+
+
 # ---------------------------------------------------------------------------
 # Order Execution
 # ---------------------------------------------------------------------------
@@ -296,6 +324,9 @@ def get_hybrid_signal(
     model: str = "gemini-3.1-flash-lite-preview",
     thinking_level: str = "HIGH",
     rl_checkpoint: Optional[str] = None,
+    position_qty: float = 0.0,
+    position_entry_price: float = 0.0,
+    position_open_time: Optional[datetime] = None,
 ) -> TradePlan:
     """Get RL+LLM hybrid trading signal for a symbol."""
     import torch
@@ -344,7 +375,23 @@ def get_hybrid_signal(
     fc_1h = load_latest_forecast(sym_cfg.symbol, 1)
     fc_24h = load_latest_forecast(sym_cfg.symbol, 24)
 
-    prompt = build_live_prompt(sym_cfg.symbol, history_rows, current_price, fc_1h, fc_24h)
+    # Build position context
+    pos_info = None
+    if position_qty > 0 and position_entry_price > 0:
+        held_hours = 0.0
+        if position_open_time:
+            held_hours = (datetime.now(timezone.utc) - position_open_time).total_seconds() / 3600.0
+        pos_info = {
+            "qty": position_qty,
+            "entry_price": position_entry_price,
+            "held_hours": held_hours,
+        }
+
+    fee_bps = 0 if sym_cfg.quote_asset == "FDUSD" else 10
+    prompt = build_live_prompt(
+        sym_cfg.symbol, history_rows, current_price, fc_1h, fc_24h,
+        position_info=pos_info, fee_bps=fee_bps,
+    )
 
     plan = call_llm(prompt, model=model, thinking_level=thinking_level)
     return plan
@@ -361,11 +408,16 @@ def run_trading_cycle(
     max_position_pct: float = 0.20,
     dry_run: bool = True,
     rl_checkpoint: Optional[str] = None,
+    leverage: float = 1.0,
 ):
     """Run one trading cycle across all symbols."""
+    effective_leverage = _resolve_spot_leverage(leverage)
     logger.info(f"\n{'='*60}")
     logger.info(f"Trading Cycle: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    logger.info(f"Model: {model} (thinking={thinking_level})")
+    logger.info(
+        f"Model: {model} (thinking={thinking_level}) | "
+        f"Requested leverage: {leverage:.2f}x | Effective spot leverage: {effective_leverage:.2f}x"
+    )
     logger.info(f"Mode: {'DRY RUN' if dry_run else 'LIVE'}")
     logger.info(f"{'='*60}")
 
@@ -409,16 +461,32 @@ def run_trading_cycle(
             logger.error(f"  Cannot get price for {sym_cfg.binance_pair}")
             continue
 
-        # Check existing position
+        # Check existing position (ignore dust < $5)
         position_qty = state.positions.get(sym_cfg.base_asset, 0.0)
         position_value = position_qty * current_price
+        if position_value < 5.0:
+            position_qty = 0.0
+            position_value = 0.0
         position_pct = position_value / max(state.total_value_usd, 1.0)
 
         logger.info(f"  Price: ${current_price:.2f}, Position: {position_qty} ({position_pct:.1%} of portfolio)")
 
+        # Get position entry info for context
+        entry_price, open_time = 0.0, None
+        if position_qty > 0:
+            try:
+                entry_price, open_time = get_position_entry(sym_cfg)
+            except Exception:
+                pass
+
         # Get hybrid signal
         try:
-            plan = get_hybrid_signal(sym_cfg, model, thinking_level, rl_checkpoint)
+            plan = get_hybrid_signal(
+                sym_cfg, model, thinking_level, rl_checkpoint,
+                position_qty=position_qty,
+                position_entry_price=entry_price,
+                position_open_time=open_time,
+            )
         except Exception as e:
             logger.error(f"  Signal generation failed: {e}")
             continue
@@ -441,15 +509,14 @@ def run_trading_cycle(
                 logger.info(f"  Skip buy: already at max position ({position_pct:.1%})")
                 continue
 
-            # Calculate order size: max_position_pct of portfolio minus current
-            trade_size = state.total_value_usd * sym_cfg.max_position_pct - position_value
+            # Calculate order size: max_position_pct of portfolio * leverage minus current
+            trade_size = state.total_value_usd * sym_cfg.max_position_pct * effective_leverage - position_value
             available = state.available_quote(sym_cfg.quote_asset)
             if available < trade_size:
                 total_stables = state.fdusd_balance + state.usdt_balance
-                # Cap at per-symbol allocation to leave room for other symbols
-                trade_size = min(trade_size, total_stables * sym_cfg.max_position_pct)
+                trade_size = min(trade_size, total_stables * sym_cfg.max_position_pct * effective_leverage)
             else:
-                trade_size = min(trade_size, available * 0.95)
+                trade_size = min(trade_size, available * 0.95 * effective_leverage)
             trade_size = max(trade_size, 0)
 
             if trade_size < MIN_TRADE_USD:
@@ -741,6 +808,8 @@ def main():
     parser.add_argument("--forecast-cache", type=str,
                         default="binanceneural/forecast_cache",
                         help="Forecast cache root for RL features")
+    parser.add_argument("--leverage", type=float, default=1.0,
+                        help="Requested position multiplier; spot execution clamps anything above 1x")
     args = parser.parse_args()
 
     dry_run = not args.live
@@ -776,6 +845,7 @@ def main():
                     model=args.model,
                     thinking_level="HIGH",
                     dry_run=dry_run,
+                    leverage=args.leverage,
                 )
         except Exception as e:
             logger.error(f"Trading cycle error: {e}")
