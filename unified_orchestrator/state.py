@@ -161,8 +161,10 @@ def build_alpaca_snapshot(snapshot: UnifiedPortfolioSnapshot) -> None:
         from alpaca.trading.enums import QueryOrderStatus
         orders = client.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN))
         for order in orders:
+            # Normalize crypto symbols: Alpaca returns "ETH/USD", we use "ETHUSD"
+            sym = str(order.symbol).replace("/", "")
             snapshot.alpaca_pending_orders.append(PendingOrder(
-                symbol=order.symbol,
+                symbol=sym,
                 side=order.side.value.lower(),
                 qty=float(order.qty),
                 limit_price=float(order.limit_price) if order.limit_price else 0.0,
