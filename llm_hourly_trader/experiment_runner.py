@@ -1,6 +1,9 @@
 """
 Run independent A/B experiments for prompt variants.
 
+Leverage values above 1x in this runner model hypothetical borrowed notional.
+They are not parity with the live spot executor.
+
 Experiments:
   1. position_context - tell LLM about existing positions, P&L, hold time
   2. fractional - allow partial position exits (exit_pct field)
@@ -133,6 +136,7 @@ def run_sequential_backtest(
     max_hold_hours: int = 6,
     max_position_pct: float = 0.25,
     rate_limit: float = 4.2,
+    leverage: float = 1.0,
 ) -> dict:
     """Run a sequential backtest where each bar sees current position state."""
     all_bars = {}
@@ -198,9 +202,10 @@ def run_sequential_backtest(
                     continue
                 close_price = float(bars_at.iloc[0]["close"])
                 fee_rate = sym_configs[sym].maker_fee
-                proceeds = pos["qty"] * close_price * (1 - fee_rate)
+                sell_fee = pos["qty"] * close_price * fee_rate
                 realized = (close_price - pos["cost_basis"]) * pos["qty"]
-                cash += proceeds
+                margin_back = pos["qty"] * pos["cost_basis"] * (1 + fee_rate) / leverage
+                cash += margin_back + realized - sell_fee
                 trades.append({"ts": str(ts), "sym": sym, "side": "close",
                                "price": close_price, "qty": pos["qty"],
                                "pnl": realized, "reason": "max_hold"})
@@ -270,9 +275,10 @@ def run_sequential_backtest(
                     exit_pct = max(0.0, min(1.0, exit_pct))
                 sell_qty = pos["qty"] * exit_pct
                 if sell_qty > 0:
-                    proceeds = sell_qty * plan.sell_price * (1 - fee_rate)
+                    sell_fee = sell_qty * plan.sell_price * fee_rate
                     realized = (plan.sell_price - pos["cost_basis"]) * sell_qty
-                    cash += proceeds
+                    margin_back = sell_qty * pos["cost_basis"] * (1 + fee_rate) / leverage
+                    cash += margin_back + realized - sell_fee
                     trades.append({"ts": str(ts), "sym": sym, "side": "sell",
                                    "price": plan.sell_price, "qty": sell_qty,
                                    "pnl": realized, "reason": f"tp_{exit_pct:.0%}"})
@@ -287,13 +293,14 @@ def run_sequential_backtest(
                 if plan.confidence <= 0:
                     continue
                 if low <= plan.buy_price:
-                    max_notional = cash * max_position_pct
+                    max_notional = cash * max_position_pct * leverage
                     qty = max_notional / (plan.buy_price * (1 + fee_rate))
                     qty *= plan.confidence
                     if qty <= 0:
                         continue
-                    cost = qty * plan.buy_price * (1 + fee_rate)
-                    cash -= cost
+                    notional = qty * plan.buy_price * (1 + fee_rate)
+                    margin_req = notional / leverage
+                    cash -= margin_req
                     positions[sym] = {
                         "qty": qty, "cost_basis": plan.buy_price, "open_time": ts,
                     }
@@ -301,19 +308,19 @@ def run_sequential_backtest(
                                    "price": plan.buy_price, "qty": qty,
                                    "pnl": 0, "reason": "entry"})
 
-        # Equity snapshot
-        inv_value = 0.0
+        # Equity snapshot: cash + margin_locked + unrealized_pnl per position
+        pos_value = 0.0
         for sym, pos in positions.items():
+            margin_locked = pos["qty"] * pos["cost_basis"] * (1 + sym_configs[sym].maker_fee) / leverage
+            mark = pos["cost_basis"]
             bars_at = sym_windows.get(sym, pd.DataFrame())
             if not bars_at.empty:
                 bars_now = bars_at[bars_at["timestamp"] == ts]
                 if not bars_now.empty:
-                    inv_value += pos["qty"] * float(bars_now.iloc[0]["close"])
-                else:
-                    inv_value += pos["qty"] * pos["cost_basis"]
-            else:
-                inv_value += pos["qty"] * pos["cost_basis"]
-        equity_history.append(cash + inv_value)
+                    mark = float(bars_now.iloc[0]["close"])
+            unrealized = (mark - pos["cost_basis"]) * pos["qty"]
+            pos_value += margin_locked + unrealized
+        equity_history.append(cash + pos_value)
 
         if ts_idx % max(1, len(all_ts) // 10) == 0:
             eq = equity_history[-1]
@@ -328,6 +335,7 @@ def run_sequential_backtest(
     return {
         "variant": variant,
         "model": model,
+        "leverage": leverage,
         "symbols": usable,
         "days": days,
         "api_calls": api_calls,
@@ -349,6 +357,7 @@ def main():
                         default=["default", "position_context", "fractional", "anonymized"])
     parser.add_argument("--initial-cash", type=float, default=2000.0)
     parser.add_argument("--rate-limit", type=float, default=4.2)
+    parser.add_argument("--leverage", type=float, nargs="+", default=[1.0])
     args = parser.parse_args()
 
     print(f"\n{'='*70}")
@@ -357,43 +366,49 @@ def main():
     print(f"Symbols: {args.symbols}")
     print(f"Days: {args.days}")
     print(f"Variants: {args.variants}")
+    print(f"Leverage: {args.leverage}")
+    if any(float(lev) > 1.0 for lev in args.leverage):
+        print("NOTE: leverage >1x here is hypothetical backtest leverage, not spot live-parity.")
     print(f"{'='*70}\n")
 
     results = {}
     for variant in args.variants:
-        print(f"\n{'='*50}")
-        print(f"Running variant: {variant}")
-        print(f"{'='*50}")
-        result = run_sequential_backtest(
-            symbols=args.symbols,
-            days=args.days,
-            variant=variant,
-            model=args.model,
-            initial_cash=args.initial_cash,
-            rate_limit=args.rate_limit,
-        )
-        results[variant] = result
+        for lev in args.leverage:
+            label = f"{variant}_{lev:.0f}x"
+            print(f"\n{'='*50}")
+            print(f"Running: {label}")
+            print(f"{'='*50}")
+            result = run_sequential_backtest(
+                symbols=args.symbols,
+                days=args.days,
+                variant=variant,
+                model=args.model,
+                initial_cash=args.initial_cash,
+                rate_limit=args.rate_limit,
+                leverage=lev,
+            )
+            results[label] = result
 
     # Comparison table
     print(f"\n{'='*70}")
     print(f"EXPERIMENT RESULTS COMPARISON")
     print(f"{'='*70}")
-    print(f"{'Variant':<20} {'Return%':>8} {'Sortino':>8} {'MaxDD%':>8} {'Trades':>7} {'PnL':>10}")
-    print("-" * 70)
+    print(f"{'Config':<25} {'Return%':>8} {'Sortino':>8} {'MaxDD%':>8} {'Trades':>7} {'PnL':>10}")
+    print("-" * 75)
     for v, r in results.items():
         if "error" in r:
-            print(f"{v:<20} {'ERROR':>8}")
+            print(f"{v:<25} {'ERROR':>8}")
             continue
-        print(f"{v:<20} {r['return_pct']:>+8.3f} {r['sortino']:>8.2f} "
+        print(f"{v:<25} {r['return_pct']:>+8.3f} {r['sortino']:>8.2f} "
               f"{r['max_dd_pct']:>8.3f} {r['total_trades']:>7} ${r['realized_pnl']:>+9.2f}")
-    print(f"{'='*70}\n")
+    print(f"{'='*75}\n")
 
     # Save
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     out = RESULTS_DIR / f"experiment_{args.model.replace('/', '_')}_{args.days}d.json"
     save_data = {}
     for v, r in results.items():
-        save_r = {k: v for k, v in r.items() if k != "trades"}
+        save_r = {k: val for k, val in r.items() if k != "trades"}
         save_data[v] = save_r
     with open(out, "w") as f:
         json.dump(save_data, f, indent=2, default=str)
