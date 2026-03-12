@@ -171,6 +171,27 @@ class PortfolioState:
 def _isoformat_utc(value: object) -> Optional[str]:
     if value is None:
         return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        numeric = float(value)
+        if not np.isfinite(numeric):
+            return None
+        ivalue = int(numeric)
+        abs_value = abs(ivalue)
+        if abs_value >= 10**17:
+            ts = pd.Timestamp(ivalue, unit="ns", tz="UTC")
+        elif abs_value >= 10**14:
+            ts = pd.Timestamp(ivalue, unit="us", tz="UTC")
+        elif abs_value >= 10**11:
+            ts = pd.Timestamp(ivalue, unit="ms", tz="UTC")
+        elif abs_value >= 10**9:
+            ts = pd.Timestamp(ivalue, unit="s", tz="UTC")
+        else:
+            ts = pd.Timestamp(ivalue)
+            if ts.tzinfo is None:
+                ts = ts.tz_localize("UTC")
+            else:
+                ts = ts.tz_convert("UTC")
+        return ts.isoformat()
     try:
         ts = pd.Timestamp(value)
     except Exception:

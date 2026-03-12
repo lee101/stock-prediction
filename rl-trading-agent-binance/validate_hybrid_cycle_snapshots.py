@@ -212,6 +212,7 @@ def main() -> None:
     parser.add_argument("--log-dir", default=str(DEFAULT_TRACE_DIR), help="Hybrid cycle JSONL directory")
     parser.add_argument("--live-only", action="store_true", help="Only validate live snapshots")
     parser.add_argument("--symbols", nargs="*", default=None, help="Optional symbol override, e.g. BTCUSDT ETHUSDT SOLUSDT")
+    parser.add_argument("--order-lookback-hours", type=float, default=48.0, help="Extra lookback window for matching already-working orders created before the first validated cycle.")
     parser.add_argument("--output-json", default=None, help="Optional path to write the full validation report")
     args = parser.parse_args()
 
@@ -230,7 +231,8 @@ def main() -> None:
     if not symbols:
         raise SystemExit("No symbols resolved from snapshots; pass --symbols explicitly.")
 
-    actual_orders = pull_margin_orders(symbols, start_ts, end_ts)
+    order_query_start = start_ts - pd.Timedelta(hours=max(0.0, float(args.order_lookback_hours)))
+    actual_orders = pull_margin_orders(symbols, order_query_start, end_ts)
     actual_trades = pull_margin_trades(symbols, start_ts, end_ts)
     match_payload = match_expected_orders(expected_orders, actual_orders)
     cycle_windows = build_cycle_windows(snapshots)
