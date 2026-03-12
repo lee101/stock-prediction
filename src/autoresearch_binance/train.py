@@ -61,6 +61,7 @@ class TradingPolicy(nn.Module):
         self.obs_size = obs_size
         self.num_actions = num_actions
         self.obs_norm = RunningObsNorm(obs_size)
+        self.obs_noise_scale = 0.0
         self.encoder = nn.Sequential(
             nn.Linear(obs_size, hidden), nn.ReLU(),
             nn.Linear(hidden, hidden), nn.ReLU(),
@@ -77,6 +78,8 @@ class TradingPolicy(nn.Module):
 
     def forward(self, x):
         x = self.obs_norm(x)
+        if self.training and self.obs_noise_scale > 0:
+            x = x + torch.randn_like(x) * self.obs_noise_scale
         h = self.encoder(x)
         return self.actor(h), self.critic(h).squeeze(-1)
 
@@ -121,6 +124,7 @@ def parse_args(argv=None):
     p.add_argument("--max-leverage", type=float, default=1.0)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--save-interval", type=int, default=20)
+    p.add_argument("--obs-noise", type=float, default=0.05)
     return p.parse_args(argv)
 
 
@@ -132,6 +136,21 @@ def _save_ckpt(policy, args, num_updates, total_timesteps, best_return, path):
         "global_step": total_timesteps,
         "best_return": best_return,
     }, str(path))
+
+
+def _create_env(binding, obs_buf, act_buf, rew_buf, term_buf, trunc_buf, N, seed, max_steps, args):
+    handle = binding.vec_init(
+        obs_buf, act_buf, rew_buf, term_buf, trunc_buf,
+        N, seed,
+        max_steps=max_steps,
+        fee_rate=args.fee_rate,
+        max_leverage=args.max_leverage,
+        reward_scale=args.reward_scale,
+        reward_clip=args.reward_clip,
+        cash_penalty=args.cash_penalty,
+    )
+    binding.vec_reset(handle, seed)
+    return handle
 
 
 def train(args=None):
@@ -167,23 +186,25 @@ def train(args=None):
     term_buf = np.zeros((N,), dtype=np.uint8)
     trunc_buf = np.zeros((N,), dtype=np.uint8)
 
-    vec_handle = binding.vec_init(
-        obs_buf, act_buf, rew_buf, term_buf, trunc_buf,
-        N, args.seed,
-        max_steps=args.max_steps,
-        fee_rate=args.fee_rate,
-        max_leverage=args.max_leverage,
-        reward_scale=args.reward_scale,
-        reward_clip=args.reward_clip,
-        cash_penalty=args.cash_penalty,
-    )
-    binding.vec_reset(vec_handle, args.seed)
+    # Curriculum: start with short episodes, progressively increase
+    # Phase 0: 7d (168 steps) - fast episode turnover, diverse experience
+    # Phase 1: 14d (336 steps) - medium horizon
+    # Phase 2: 30d (720 steps) - full horizon matching eval
+    curriculum_phases = [(0.0, 0.15, 168), (0.15, 0.40, 336), (0.40, 1.0, 720)]
+    current_phase_idx = 0
+    current_max_steps = curriculum_phases[0][2]
+
+    vec_handle = _create_env(binding, obs_buf, act_buf, rew_buf, term_buf, trunc_buf,
+                             N, args.seed, current_max_steps, args)
 
     policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
     optimizer = optim.AdamW(policy.parameters(), lr=args.lr, eps=1e-5, weight_decay=args.weight_decay)
 
+    ema_decay = 0.995
+    ema_state = {k: v.clone() for k, v in policy.state_dict().items()}
+
     params = sum(p.numel() for p in policy.parameters())
-    logger.info(f"policy: {params/1e6:.2f}M params, obs={obs_size}, act={num_actions}, envs={N}, T={T}")
+    logger.info(f"policy: {params/1e6:.2f}M params, obs={obs_size}, act={num_actions}, envs={N}, T={T}, ema={ema_decay}, curriculum=3phase, obs_noise={args.obs_noise}, ppg_aux=every5")
 
     batch_size = N * T
     best_return = -float("inf")
@@ -211,19 +232,33 @@ def train(args=None):
 
         progress = min(elapsed / train_deadline, 1.0)
 
+        # Curriculum: check for phase transition
+        while current_phase_idx < len(curriculum_phases) - 1 and progress >= curriculum_phases[current_phase_idx][1]:
+            current_phase_idx += 1
+            new_max_steps = curriculum_phases[current_phase_idx][2]
+            if new_max_steps != current_max_steps:
+                binding.vec_close(vec_handle)
+                current_max_steps = new_max_steps
+                vec_handle = _create_env(binding, obs_buf, act_buf, rew_buf, term_buf, trunc_buf,
+                                         N, args.seed + num_updates, current_max_steps, args)
+                logger.info(f"curriculum: phase {current_phase_idx}, max_steps={current_max_steps}")
+
+        # Observation noise: anneal from obs_noise -> 0 over training (regularization)
+        noise_scale = args.obs_noise * (1.0 - progress)
+        policy.obs_noise_scale = noise_scale
+
         if num_updates < args.warmup_updates:
             warmup_frac = (num_updates + 1) / args.warmup_updates
             for pg in optimizer.param_groups:
                 pg["lr"] = args.lr * warmup_frac
         elif args.anneal_lr:
-            # Cosine annealing with min_lr = 5% of peak
             min_lr_frac = 0.05
             cosine_frac = min_lr_frac + (1.0 - min_lr_frac) * 0.5 * (1.0 + math.cos(math.pi * progress))
             for pg in optimizer.param_groups:
                 pg["lr"] = args.lr * cosine_frac
 
         current_clip_eps = args.clip_eps + (args.clip_eps_end - args.clip_eps) * progress
-        current_ent_coef = args.ent_coef + (args.ent_coef_end - args.ent_coef) * progress
+        current_ent_coef = args.ent_coef_end + (args.ent_coef - args.ent_coef_end) * 0.5 * (1.0 + math.cos(math.pi * progress))
 
         policy.eval()
         for step in range(T):
@@ -308,6 +343,24 @@ def train(args=None):
                 optimizer.step()
 
         num_updates += 1
+
+        # PPG-style auxiliary value phase: extra value-only epoch every 5 updates
+        # Improves critic accuracy -> better advantage estimates for policy gradient
+        if num_updates % 5 == 0:
+            aux_indices = torch.randperm(batch_size, device=device)
+            for start in range(0, batch_size, args.minibatch_size):
+                end = start + args.minibatch_size
+                mb_idx = aux_indices[start:end]
+                new_value = policy.get_value(b_obs[mb_idx])
+                aux_v_loss = 0.5 * ((new_value - b_returns[mb_idx]) ** 2).mean()
+                optimizer.zero_grad(set_to_none=True)
+                aux_v_loss.backward()
+                nn.utils.clip_grad_norm_(policy.parameters(), args.max_grad_norm)
+                optimizer.step()
+
+        with torch.no_grad():
+            for k, v in policy.state_dict().items():
+                ema_state[k].mul_(ema_decay).add_(v, alpha=1 - ema_decay)
         mean_reward = buf_reward.mean().item()
 
         if torch.cuda.is_available():
@@ -324,7 +377,7 @@ def train(args=None):
 
         if num_updates % 10 == 0:
             lr_now = optimizer.param_groups[0]["lr"]
-            logger.info(f"upd={num_updates} steps={total_timesteps} rew={mean_reward:.4f} best={best_return:.4f} lr={lr_now:.2e}")
+            logger.info(f"upd={num_updates} steps={total_timesteps} rew={mean_reward:.4f} best={best_return:.4f} lr={lr_now:.2e} phase={current_phase_idx} noise={noise_scale:.3f}")
 
     binding.vec_close(vec_handle)
     training_seconds = time.time() - t0
@@ -332,7 +385,16 @@ def train(args=None):
     final_path = config.checkpoint_dir / "autoresearch_final.pt"
     _save_ckpt(policy, args, num_updates, total_timesteps, best_return, final_path)
 
-    eval_checkpoints = [final_path]
+    ema_path = config.checkpoint_dir / "autoresearch_ema.pt"
+    torch.save({
+        "model": ema_state,
+        "hidden_size": args.hidden_size,
+        "update": num_updates,
+        "global_step": total_timesteps,
+        "best_return": best_return,
+    }, str(ema_path))
+
+    eval_checkpoints = [ema_path, final_path]
     if checkpoint_path.exists() and checkpoint_path != final_path:
         eval_checkpoints.append(checkpoint_path)
     for cp in reversed(saved_checkpoints):
