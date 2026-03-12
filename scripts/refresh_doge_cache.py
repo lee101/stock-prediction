@@ -26,7 +26,7 @@ DATA_ROOT = PROJECT_ROOT / "trainingdatahourlybinance"
 CACHE_ROOT = PROJECT_ROOT / "binanceneural" / "forecast_cache"
 DEFAULT_PAIRS = ("DOGEUSDT:DOGEUSD", "AAVEUSDT:AAVEUSD")
 LOOKBACK_HOURS = 96
-HORIZONS = (1,)
+DEFAULT_HORIZONS = (1,)
 CONTEXT_HOURS = 512
 QUANTILES = (0.1, 0.5, 0.9)
 BATCH_SIZE = 32
@@ -96,7 +96,8 @@ def refresh_price_csv(binance_symbol: str, data_symbol: str) -> None:
     print(f"[price] {data_symbol}: +{len(new)} rows, last={combined['timestamp'].max()}")
 
 
-def refresh_forecast_cache(data_symbol: str, *, lookback_hours: int) -> None:
+def refresh_forecast_cache(data_symbol: str, *, lookback_hours: int,
+                           horizons: tuple[int, ...] = DEFAULT_HORIZONS) -> None:
     from binanceneural.forecasts import build_forecast_bundle
 
     latest_price_ts = _latest_price_timestamp(data_symbol)
@@ -104,9 +105,10 @@ def refresh_forecast_cache(data_symbol: str, *, lookback_hours: int) -> None:
         print(f"[forecast] {data_symbol}: no price timestamp available")
         return
     target_end = latest_price_ts.floor("h")
-    prev_target = _LAST_FORECAST_TARGET_TS.get(data_symbol.upper())
+    cache_key = f"{data_symbol.upper()}:{horizons}"
+    prev_target = _LAST_FORECAST_TARGET_TS.get(cache_key)
     if prev_target is not None and target_end <= prev_target:
-        print(f"[forecast] {data_symbol}: up-to-date at {target_end}, skipping")
+        print(f"[forecast] {data_symbol} h{horizons}: up-to-date at {target_end}, skipping")
         return
 
     start_ts = target_end - pd.Timedelta(hours=float(max(1, int(lookback_hours))))
@@ -114,7 +116,7 @@ def refresh_forecast_cache(data_symbol: str, *, lookback_hours: int) -> None:
         symbol=data_symbol.upper(),
         data_root=DATA_ROOT,
         cache_root=CACHE_ROOT,
-        horizons=HORIZONS,
+        horizons=horizons,
         context_hours=CONTEXT_HOURS,
         quantile_levels=QUANTILES,
         batch_size=BATCH_SIZE,
@@ -122,14 +124,15 @@ def refresh_forecast_cache(data_symbol: str, *, lookback_hours: int) -> None:
         start=start_ts,
         end=target_end,
     )
-    _LAST_FORECAST_TARGET_TS[data_symbol.upper()] = target_end
+    _LAST_FORECAST_TARGET_TS[cache_key] = target_end
     print(
-        f"[forecast] {data_symbol}: {len(result)} rows, "
+        f"[forecast] {data_symbol} h{horizons}: {len(result)} rows, "
         f"last={result['timestamp'].max()} target_end={target_end}"
     )
 
 
-def run_once(pairs: list[tuple[str, str]], *, lookback_hours: int) -> None:
+def run_once(pairs: list[tuple[str, str]], *, lookback_hours: int,
+             horizons: tuple[int, ...] = DEFAULT_HORIZONS) -> None:
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
     print(f"\n=== Margin cache refresh @ {ts} ===")
     for binance_symbol, data_symbol in pairs:
@@ -139,7 +142,8 @@ def run_once(pairs: list[tuple[str, str]], *, lookback_hours: int) -> None:
             print(f"[price] {data_symbol}: ERROR {e}")
     for _, data_symbol in pairs:
         try:
-            refresh_forecast_cache(data_symbol, lookback_hours=lookback_hours)
+            refresh_forecast_cache(data_symbol, lookback_hours=lookback_hours,
+                                   horizons=horizons)
         except Exception as e:
             print(f"[forecast] {data_symbol}: ERROR {e}")
 
@@ -154,16 +158,20 @@ def main() -> int:
     )
     parser.add_argument("--sleep-seconds", type=int, default=SLEEP_SECONDS)
     parser.add_argument("--lookback-hours", type=int, default=LOOKBACK_HOURS)
+    parser.add_argument("--horizons", type=str, default="1",
+                        help="Comma-separated forecast horizons (e.g. '1' or '1,24')")
     args = parser.parse_args()
 
     pairs = _parse_pairs(args.pairs)
+    horizons = tuple(int(h) for h in args.horizons.split(",") if h.strip())
     print(
         "Starting margin cache refresh loop "
-        f"(sleep={args.sleep_seconds}s, lookback={args.lookback_hours}h, pairs={pairs})"
+        f"(sleep={args.sleep_seconds}s, lookback={args.lookback_hours}h, "
+        f"horizons={horizons}, pairs={pairs})"
     )
     while True:
         try:
-            run_once(pairs, lookback_hours=args.lookback_hours)
+            run_once(pairs, lookback_hours=args.lookback_hours, horizons=horizons)
         except Exception as e:
             print(f"[cycle error] {e}")
         print(f"Sleeping {args.sleep_seconds}s...")
