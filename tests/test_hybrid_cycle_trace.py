@@ -126,6 +126,25 @@ def test_match_expected_orders_matches_by_order_id_and_flags_unexpected() -> Non
     assert payload["unexpected_orders"][0]["order_id"] == 303
 
 
+def test_normalize_exchange_order_interprets_binance_millisecond_timestamps() -> None:
+    normalized = trace.normalize_exchange_order(
+        {
+            "orderId": 101,
+            "symbol": "BTCUSDT",
+            "side": "SELL",
+            "status": "NEW",
+            "price": "71016.02",
+            "origQty": "0.01473",
+            "executedQty": "0",
+            "time": 1741822201387,
+            "updateTime": 1741822223014,
+        }
+    )
+
+    assert normalized["time"] == "2025-03-12T23:30:01.387000+00:00"
+    assert normalized["update_time"] == "2025-03-12T23:30:23.014000+00:00"
+
+
 def test_order_price_touch_summary_and_touch_rollup() -> None:
     bars = pd.DataFrame(
         {

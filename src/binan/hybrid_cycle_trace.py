@@ -61,6 +61,25 @@ def append_cycle_snapshot(
 def _normalize_ts(value: Any) -> pd.Timestamp | None:
     if value is None:
         return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if not math.isfinite(float(value)):
+            return None
+        numeric = int(value)
+        abs_numeric = abs(numeric)
+        if abs_numeric >= 10**17:
+            ts = pd.Timestamp(numeric, unit="ns", tz="UTC")
+        elif abs_numeric >= 10**14:
+            ts = pd.Timestamp(numeric, unit="us", tz="UTC")
+        elif abs_numeric >= 10**11:
+            ts = pd.Timestamp(numeric, unit="ms", tz="UTC")
+        elif abs_numeric >= 10**9:
+            ts = pd.Timestamp(numeric, unit="s", tz="UTC")
+        else:
+            ts = pd.Timestamp(numeric)
+            if ts.tzinfo is None:
+                return ts.tz_localize("UTC")
+            return ts.tz_convert("UTC")
+        return ts
     try:
         ts = pd.Timestamp(value)
     except Exception:
