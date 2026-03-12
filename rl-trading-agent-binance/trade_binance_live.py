@@ -4,6 +4,7 @@ Production Binance Trading - RL+LLM Hybrid System.
 Manages:
 - Spot execution on FDUSD pairs for BTC/ETH and USDT pairs for altcoins
 - Cross-margin execution on USDT pairs with Binance borrow/auto-repay side effects
+- Automatic consolidation of tracked spot assets into cross margin when margin mode is active
 - Automatic stablecoin swaps between FDUSD ↔ USDT for spot mode
 - Hourly trading cycle with RL or LLM signals
 
@@ -49,6 +50,8 @@ from src.binan.binance_margin import (
     get_max_borrowable,
     get_open_margin_orders,
     margin_repay_all,
+    transfer_margin_to_spot,
+    transfer_spot_to_margin,
 )
 from src.binan.binance_conversion import (
     build_stable_quote_conversion_plan,
@@ -103,6 +106,38 @@ TRADING_SYMBOLS = {
 # Minimum trade sizes
 MIN_TRADE_USD = 12.0  # Binance min notional is typically $10
 SUPPORTED_EXECUTION_MODES = {"auto", "spot", "margin"}
+ACCOUNT_TRANSFER_RESERVES = {
+    "USDT": 1e-6,
+    "FDUSD": 1e-6,
+    "BTC": 1e-8,
+    "ETH": 1e-8,
+    "SOL": 1e-8,
+    "DOGE": 1e-5,
+    "SUI": 1e-5,
+    "AAVE": 1e-8,
+}
+
+
+@dataclass(frozen=True)
+class AccountTransfer:
+    asset: str
+    amount: float
+
+
+@dataclass(frozen=True)
+class MarginCapitalSyncPlan:
+    spot_to_margin: tuple[AccountTransfer, ...] = ()
+    margin_to_spot: tuple[AccountTransfer, ...] = ()
+    spot_fdusd_to_usdt: float = 0.0
+    transfer_all_spot_usdt_to_margin: bool = False
+
+    def has_actions(self) -> bool:
+        return bool(
+            self.spot_to_margin
+            or self.margin_to_spot
+            or self.spot_fdusd_to_usdt > 0.0
+            or self.transfer_all_spot_usdt_to_margin
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +158,102 @@ class PortfolioState:
         if quote_asset == "FDUSD":
             return self.fdusd_balance
         return self.usdt_balance
+
+
+def _tracked_base_assets() -> tuple[str, ...]:
+    return tuple(sorted({cfg.base_asset for cfg in TRADING_SYMBOLS.values()}))
+
+
+def _transfer_reserve(asset: str) -> float:
+    return ACCOUNT_TRANSFER_RESERVES.get(asset.upper(), 1e-8)
+
+
+def _transferable_balance(asset: str, free_balance: float) -> float:
+    return max(0.0, float(free_balance) - _transfer_reserve(asset))
+
+
+def _build_margin_capital_sync_plan(
+    spot_free: dict[str, float],
+    margin_free: dict[str, float],
+) -> MarginCapitalSyncPlan:
+    spot_to_margin: list[AccountTransfer] = []
+    for asset in _tracked_base_assets():
+        amount = _transferable_balance(asset, spot_free.get(asset, 0.0))
+        if amount > 0.0:
+            spot_to_margin.append(AccountTransfer(asset=asset, amount=amount))
+
+    spot_fdusd = _transferable_balance("FDUSD", spot_free.get("FDUSD", 0.0))
+    margin_fdusd = _transferable_balance("FDUSD", margin_free.get("FDUSD", 0.0))
+    margin_to_spot: list[AccountTransfer] = []
+    spot_fdusd_to_usdt = 0.0
+    if spot_fdusd + margin_fdusd >= MIN_TRADE_USD:
+        if margin_fdusd > 0.0:
+            margin_to_spot.append(AccountTransfer(asset="FDUSD", amount=margin_fdusd))
+        spot_fdusd_to_usdt = spot_fdusd + margin_fdusd
+
+    transferable_spot_usdt = _transferable_balance("USDT", spot_free.get("USDT", 0.0))
+    transfer_all_spot_usdt_to_margin = transferable_spot_usdt > 0.0 or spot_fdusd_to_usdt >= MIN_TRADE_USD
+    return MarginCapitalSyncPlan(
+        spot_to_margin=tuple(spot_to_margin),
+        margin_to_spot=tuple(margin_to_spot),
+        spot_fdusd_to_usdt=spot_fdusd_to_usdt,
+        transfer_all_spot_usdt_to_margin=transfer_all_spot_usdt_to_margin,
+    )
+
+
+def _sync_margin_capital(dry_run: bool) -> MarginCapitalSyncPlan:
+    tracked_assets = ("USDT", "FDUSD", *_tracked_base_assets())
+    spot_free = {
+        asset: float(binance_wrapper.get_asset_free_balance(asset) or 0.0)
+        for asset in tracked_assets
+    }
+    margin_free = {
+        asset: float(get_margin_free_balance(asset) or 0.0)
+        for asset in tracked_assets
+    }
+    plan = _build_margin_capital_sync_plan(spot_free, margin_free)
+    if not plan.has_actions():
+        return plan
+
+    logger.info("Preparing capital for cross-margin execution")
+    for transfer in plan.spot_to_margin:
+        logger.info(f"  Spot -> margin: {transfer.amount:.8f} {transfer.asset}")
+        if dry_run:
+            continue
+        transfer_spot_to_margin(transfer.asset, transfer.amount)
+
+    for transfer in plan.margin_to_spot:
+        logger.info(f"  Margin -> spot: {transfer.amount:.8f} {transfer.asset}")
+        if dry_run:
+            continue
+        transfer_margin_to_spot(transfer.asset, transfer.amount)
+
+    if plan.spot_fdusd_to_usdt >= MIN_TRADE_USD:
+        logger.info(f"  Spot conversion: {plan.spot_fdusd_to_usdt:.2f} FDUSD -> USDT")
+        if not dry_run:
+            conversion = build_stable_quote_conversion_plan(
+                from_asset="FDUSD",
+                to_asset="USDT",
+                amount=plan.spot_fdusd_to_usdt,
+                available_pairs=["FDUSDUSDT"],
+            )
+            if conversion is None:
+                raise RuntimeError("Could not build FDUSD -> USDT conversion plan for margin capital sync.")
+            execute_stable_quote_conversion(conversion, dry_run=False)
+
+    if plan.transfer_all_spot_usdt_to_margin:
+        if dry_run:
+            logger.info("  Spot -> margin: all transferable USDT after conversion")
+        else:
+            transferable_usdt = _transferable_balance(
+                "USDT",
+                float(binance_wrapper.get_asset_free_balance("USDT") or 0.0),
+            )
+            if transferable_usdt > 0.0:
+                logger.info(f"  Spot -> margin: {transferable_usdt:.8f} USDT")
+                transfer_spot_to_margin("USDT", transferable_usdt)
+
+    return plan
 
 
 def _execution_pair(sym_cfg: BinanceSymbolConfig, execution_mode: str) -> str:
@@ -349,29 +480,109 @@ def _reserve_buying_power(
     state.borrowable_quotes[quote_asset] = max(0.0, current_headroom - borrowed_remaining)
 
 
-def _cancel_stale_open_orders(execution_mode: str, dry_run: bool) -> None:
+def _load_open_orders(execution_mode: str) -> list[dict]:
+    if execution_mode == "margin":
+        return get_open_margin_orders()
+    return binance_wrapper.get_open_orders()
+
+
+def _cancel_open_order(execution_mode: str, symbol: str, order_id: int) -> None:
+    if execution_mode == "margin":
+        cancel_margin_order(symbol, order_id=order_id)
+    else:
+        binance_wrapper.cancel_order(symbol, order_id)
+
+
+def _order_remaining_qty(order: dict) -> float:
     try:
-        if execution_mode == "margin":
-            open_orders = get_open_margin_orders()
-        else:
-            open_orders = binance_wrapper.get_open_orders()
+        orig_qty = float(order.get("origQty", order.get("qty", order.get("quantity", 0.0))))
+        executed_qty = float(order.get("executedQty", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, orig_qty - executed_qty)
+
+
+def _order_remaining_notional(order: dict) -> float:
+    try:
+        price = float(order.get("price", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+    return _order_remaining_qty(order) * price
+
+
+def _matching_open_orders(open_orders: list[dict], symbol: str, side: str) -> list[dict]:
+    side_upper = side.upper()
+    return [
+        order for order in open_orders
+        if str(order.get("symbol", "")).upper() == symbol.upper()
+        and str(order.get("side", "")).upper() == side_upper
+    ]
+
+
+def _dedupe_side_orders(
+    open_orders: list[dict],
+    *,
+    symbol: str,
+    side: str,
+    execution_mode: str,
+    dry_run: bool,
+    desired_qty: float | None = None,
+    desired_notional: float | None = None,
+) -> tuple[list[dict], bool]:
+    matches = _matching_open_orders(open_orders, symbol, side)
+    if not matches:
+        return open_orders, False
+
+    if desired_qty is not None:
+        remaining_qty = sum(_order_remaining_qty(order) for order in matches)
+        if remaining_qty >= max(0.0, desired_qty) * 0.98:
+            logger.info(f"  Existing {side.upper()} order already covers desired qty on {symbol}")
+            return open_orders, True
+    if desired_notional is not None:
+        remaining_notional = sum(_order_remaining_notional(order) for order in matches)
+        if remaining_notional >= max(0.0, desired_notional) * 0.98:
+            logger.info(f"  Existing {side.upper()} order already covers desired notional on {symbol}")
+            return open_orders, True
+
+    logger.info(f"  Replacing {len(matches)} existing {side.upper()} order(s) on {symbol}")
+    for order in matches:
+        order_id = order.get("orderId")
+        if order_id is None:
+            logger.warning(f"  Cannot cancel open order without orderId on {symbol}: {order}")
+            return open_orders, True
+        if dry_run:
+            logger.info(f"    [DRY RUN] Would cancel order {order_id}")
+            continue
+        try:
+            _cancel_open_order(execution_mode, symbol, int(order_id))
+        except Exception as exc:
+            logger.warning(f"  Failed to cancel open {side.upper()} order {order_id} on {symbol}: {exc}")
+            return open_orders, True
+    remaining = [order for order in open_orders if order not in matches]
+    return remaining, False
+
+
+def _cancel_stale_open_orders(execution_mode: str, dry_run: bool) -> list[dict]:
+    try:
+        open_orders = _load_open_orders(execution_mode)
         if not open_orders:
-            return
+            return []
         logger.info(f"  {len(open_orders)} open {execution_mode} orders found")
         now_ms = int(time.time() * 1000)
+        remaining: list[dict] = []
         for order in open_orders:
             placed_ms = order.get("time", order.get("updateTime", now_ms))
             age_hours = (now_ms - placed_ms) / 3600000
             if age_hours <= 2:
+                remaining.append(order)
                 continue
             if not dry_run:
-                if execution_mode == "margin":
-                    cancel_margin_order(order["symbol"], order_id=order["orderId"])
-                else:
-                    binance_wrapper.cancel_order(order["symbol"], order["orderId"])
+                _cancel_open_order(execution_mode, order["symbol"], order["orderId"])
             logger.info(f"  Cancelled stale order {order['orderId']} ({age_hours:.1f}h old)")
+        return remaining
     except Exception as e:
         logger.warning(f"  Failed to check open orders: {e}")
+        return []
 
 
 def _repay_margin_debt_if_flat(state: PortfolioState, dry_run: bool, execution_mode: str) -> None:
@@ -689,7 +900,9 @@ def run_trading_cycle(
     logger.info(f"Mode: {'DRY RUN' if dry_run else 'LIVE'}")
     logger.info(f"{'='*60}")
 
-    # 1. Get portfolio state
+    # 1. Prepare margin capital, then get portfolio state
+    if resolved_execution_mode == "margin":
+        _sync_margin_capital(dry_run)
     state = get_portfolio_state(resolved_execution_mode)
     logger.info(
         f"Portfolio: FDUSD={state.fdusd_balance:.2f}, USDT={state.usdt_balance:.2f}, "
@@ -700,7 +913,7 @@ def run_trading_cycle(
     _repay_margin_debt_if_flat(state, dry_run, resolved_execution_mode)
 
     # 2. Cancel stale open orders
-    _cancel_stale_open_orders(resolved_execution_mode, dry_run)
+    open_orders = _cancel_stale_open_orders(resolved_execution_mode, dry_run)
 
     # 3. Get signals for each symbol
     orders_placed = []
@@ -759,10 +972,25 @@ def run_trading_cycle(
         # 4. Always place take-profit for existing positions
         if position_value >= MIN_TRADE_USD and position_qty > 0:
             sell_price = plan.sell_price if plan.sell_price > current_price else current_price * 1.01
-            order = place_limit_sell(sym_cfg, sell_price, position_qty, execution_mode=resolved_execution_mode, dry_run=dry_run)
-            if order:
-                orders_placed.append(order)
-                logger.info(f"  Take-profit sell @ ${sell_price:.2f}")
+            open_orders, skip_sell = _dedupe_side_orders(
+                open_orders,
+                symbol=market_symbol,
+                side="SELL",
+                execution_mode=resolved_execution_mode,
+                dry_run=dry_run,
+                desired_qty=position_qty,
+            )
+            if skip_sell:
+                logger.info(f"  Existing take-profit sell already working for {market_symbol}")
+                sell_price = 0.0
+            if sell_price <= 0.0:
+                pass
+            else:
+                order = place_limit_sell(sym_cfg, sell_price, position_qty, execution_mode=resolved_execution_mode, dry_run=dry_run)
+                if order:
+                    orders_placed.append(order)
+                    open_orders.append(order)
+                    logger.info(f"  Take-profit sell @ ${sell_price:.2f}")
 
         # 5. Execute based on signal
         if plan.direction == "long" and plan.confidence >= 0.4:
@@ -814,9 +1042,21 @@ def run_trading_cycle(
                 continue
 
             buy_price = plan.buy_price if plan.buy_price > 0 else current_price * 0.998
+            open_orders, skip_buy = _dedupe_side_orders(
+                open_orders,
+                symbol=market_symbol,
+                side="BUY",
+                execution_mode=resolved_execution_mode,
+                dry_run=dry_run,
+                desired_notional=trade_size,
+            )
+            if skip_buy:
+                logger.info(f"  Existing buy order already working for {market_symbol}")
+                continue
             order = place_limit_buy(sym_cfg, buy_price, trade_size, execution_mode=resolved_execution_mode, dry_run=dry_run)
             if order:
                 orders_placed.append(order)
+                open_orders.append(order)
                 _reserve_buying_power(
                     state,
                     trade_quote,
@@ -903,7 +1143,9 @@ def run_hybrid_trading_cycle(
     )
     logger.info(f"{'='*60}")
 
-    # 1. Portfolio state
+    # 1. Prepare margin capital, then load portfolio state
+    if resolved_execution_mode == "margin":
+        _sync_margin_capital(dry_run)
     state = get_portfolio_state(resolved_execution_mode)
     cash_usd = state.fdusd_balance + state.usdt_balance
     logger.info(
@@ -922,7 +1164,7 @@ def run_hybrid_trading_cycle(
         logger.info(f"  Prev plan outcome: PnL=${pnl_usd:+.2f} ({pnl_pct:+.2%})")
 
     # 2. Cancel stale orders
-    _cancel_stale_open_orders(resolved_execution_mode, dry_run)
+    open_orders = _cancel_stale_open_orders(resolved_execution_mode, dry_run)
 
     # 3. Gather market context for all 4 symbols
     cache_root = Path(forecast_cache_root)
@@ -1007,9 +1249,22 @@ def run_hybrid_trading_cycle(
                 exit_price = plan.exit_prices.get(sym, price * 1.001)
                 if exit_price <= 0:
                     exit_price = price * 1.001
+                market_symbol = _execution_pair(cfg, resolved_execution_mode)
+                open_orders, skip_sell = _dedupe_side_orders(
+                    open_orders,
+                    symbol=market_symbol,
+                    side="SELL",
+                    execution_mode=resolved_execution_mode,
+                    dry_run=dry_run,
+                    desired_qty=sell_qty,
+                )
+                if skip_sell:
+                    logger.info(f"  Existing sell order already working for {market_symbol}")
+                    continue
                 order = place_limit_sell(cfg, exit_price, sell_qty, execution_mode=resolved_execution_mode, dry_run=dry_run)
                 if order:
                     orders_placed.append(order)
+                    open_orders.append(order)
                     logger.info(f"  SELL {sym}: {sell_qty:.6f} @ ${exit_price:.2f} (reduce to {target_val:.0f})")
             except Exception as e:
                 logger.error(f"  Failed to sell {sym}: {e}")
@@ -1055,9 +1310,22 @@ def run_hybrid_trading_cycle(
             entry_price = plan.entry_prices.get(sym, price * 0.999)
             if entry_price <= 0:
                 entry_price = price * 0.999
+            market_symbol = _execution_pair(cfg, resolved_execution_mode)
+            open_orders, skip_buy = _dedupe_side_orders(
+                open_orders,
+                symbol=market_symbol,
+                side="BUY",
+                execution_mode=resolved_execution_mode,
+                dry_run=dry_run,
+                desired_notional=buy_needed,
+            )
+            if skip_buy:
+                logger.info(f"  Existing buy order already working for {market_symbol}")
+                continue
             order = place_limit_buy(cfg, entry_price, buy_needed, execution_mode=resolved_execution_mode, dry_run=dry_run)
             if order:
                 orders_placed.append(order)
+                open_orders.append(order)
                 _reserve_buying_power(
                     state,
                     trade_quote,
