@@ -244,6 +244,27 @@ def execute_crypto_signals(
     orders = []
     alpaca = TradingClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, paper=False)
 
+    # Normalize Alpaca's "ETH/USD" symbol format back to "ETHUSD" for lookup
+    def _norm(s: str) -> str:
+        return s.replace("/", "")
+
+    # Cancel stale pending buy orders for crypto symbols (GTC orders from last cycle
+    # have stale prices — replace with fresh signals each hour)
+    crypto_sym_set = {sym for sym in signals}
+    from alpaca.trading.requests import GetOrdersRequest
+    from alpaca.trading.enums import QueryOrderStatus
+    open_orders = alpaca.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN))
+    canceled_for: set[str] = set()
+    for order in open_orders:
+        sym_norm = _norm(str(order.symbol))
+        if sym_norm in crypto_sym_set and order.side.value.lower() == "buy":
+            try:
+                alpaca.cancel_order_by_id(str(order.id))
+                canceled_for.add(sym_norm)
+                logger.info(f"  {sym_norm}: canceled stale buy order {order.id} @ {order.limit_price}")
+            except Exception as e:
+                logger.warning(f"  {sym_norm}: failed to cancel stale order: {e}")
+
     for sym, plan in signals.items():
         try:
             if plan.direction != "long" or plan.confidence < 0.4:
