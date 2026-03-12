@@ -57,6 +57,7 @@ from src.binan.binance_conversion import (
     build_stable_quote_conversion_plan,
     execute_stable_quote_conversion,
 )
+from src.binan.hybrid_cycle_trace import append_cycle_snapshot
 from binanceneural.execution import (
     resolve_symbol_rules,
     quantize_qty,
@@ -140,6 +141,13 @@ class MarginCapitalSyncPlan:
         )
 
 
+@dataclass(frozen=True)
+class OpenOrderCleanupResult:
+    before: tuple[dict, ...] = ()
+    active: tuple[dict, ...] = ()
+    cancelled: tuple[dict, ...] = ()
+
+
 # ---------------------------------------------------------------------------
 # Portfolio State
 # ---------------------------------------------------------------------------
@@ -158,6 +166,138 @@ class PortfolioState:
         if quote_asset == "FDUSD":
             return self.fdusd_balance
         return self.usdt_balance
+
+
+def _isoformat_utc(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    try:
+        ts = pd.Timestamp(value)
+    except Exception:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    else:
+        ts = ts.tz_convert("UTC")
+    return ts.isoformat()
+
+
+def _safe_float(value: object) -> Optional[float]:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(numeric):
+        return None
+    return numeric
+
+
+def _safe_int(value: object) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _serialize_account_transfer(transfer: AccountTransfer) -> dict[str, object]:
+    return {
+        "asset": transfer.asset,
+        "amount": float(transfer.amount),
+    }
+
+
+def _serialize_margin_capital_sync_plan(plan: MarginCapitalSyncPlan) -> dict[str, object]:
+    return {
+        "spot_to_margin": [_serialize_account_transfer(transfer) for transfer in plan.spot_to_margin],
+        "margin_to_spot": [_serialize_account_transfer(transfer) for transfer in plan.margin_to_spot],
+        "spot_fdusd_to_usdt": float(plan.spot_fdusd_to_usdt),
+        "transfer_all_spot_usdt_to_margin": bool(plan.transfer_all_spot_usdt_to_margin),
+    }
+
+
+def _serialize_portfolio_state(state: PortfolioState) -> dict[str, object]:
+    return {
+        "fdusd_balance": float(state.fdusd_balance),
+        "usdt_balance": float(state.usdt_balance),
+        "borrowed_quotes": {str(asset): float(amount) for asset, amount in state.borrowed_quotes.items()},
+        "borrowable_quotes": {str(asset): float(amount) for asset, amount in state.borrowable_quotes.items()},
+        "positions": {str(asset): float(qty) for asset, qty in state.positions.items()},
+        "total_value_usd": float(state.total_value_usd),
+    }
+
+
+def _serialize_order(order: Optional[dict]) -> Optional[dict[str, object]]:
+    if not order:
+        return None
+    return {
+        "order_id": _safe_int(order.get("order_id", order.get("orderId"))),
+        "symbol": str(order.get("symbol", "") or "").upper(),
+        "side": str(order.get("side", "") or "").upper(),
+        "type": str(order.get("type", "") or "").upper(),
+        "status": str(order.get("status", "") or "").upper(),
+        "price": _safe_float(order.get("price")),
+        "orig_qty": _safe_float(order.get("orig_qty", order.get("origQty", order.get("qty", order.get("quantity"))))),
+        "executed_qty": _safe_float(order.get("executed_qty", order.get("executedQty"))),
+        "quote_qty": _safe_float(order.get("quote_qty", order.get("cummulativeQuoteQty"))),
+        "time": _isoformat_utc(order.get("time")),
+        "update_time": _isoformat_utc(order.get("updateTime")),
+        "dry_run": bool(order.get("dry_run", order.get("dryRun", False))),
+    }
+
+
+def _serialize_orders(orders: list[dict] | tuple[dict, ...]) -> list[dict[str, object]]:
+    serialized: list[dict[str, object]] = []
+    for order in orders:
+        item = _serialize_order(order)
+        if item is not None:
+            serialized.append(item)
+    return serialized
+
+
+def _serialize_trade_plan(plan: TradePlan) -> dict[str, object]:
+    return {
+        "direction": str(plan.direction),
+        "buy_price": float(plan.buy_price),
+        "sell_price": float(plan.sell_price),
+        "confidence": float(plan.confidence),
+        "reasoning": str(plan.reasoning),
+    }
+
+
+def _serialize_allocation_plan(plan: AllocationPlan) -> dict[str, object]:
+    return {
+        "allocations": {str(symbol): float(pct) for symbol, pct in plan.allocations.items()},
+        "cash_pct": float(plan.cash_pct),
+        "entry_prices": {str(symbol): float(price) for symbol, price in plan.entry_prices.items()},
+        "exit_prices": {str(symbol): float(price) for symbol, price in plan.exit_prices.items()},
+        "reasoning": str(plan.reasoning),
+    }
+
+
+def _serialize_plan_outcome(outcome: Optional[PlanOutcome]) -> Optional[dict[str, object]]:
+    if outcome is None:
+        return None
+    return {
+        "pnl_usd": float(outcome.pnl_usd),
+        "pnl_pct": float(outcome.pnl_pct),
+        "plan": _serialize_allocation_plan(outcome.plan),
+    }
+
+
+def _serialize_rl_signal(signal: object) -> dict[str, object]:
+    return {
+        "action": int(getattr(signal, "action", 0)),
+        "action_name": str(getattr(signal, "action_name", "") or ""),
+        "target_symbol": str(getattr(signal, "target_symbol", "") or ""),
+        "direction": str(getattr(signal, "direction", "") or ""),
+        "confidence": _safe_float(getattr(signal, "confidence", None)),
+        "value": _safe_float(getattr(signal, "value", None)),
+        "logits": [
+            float(item)
+            for item in list(getattr(signal, "logits", []) or [])
+            if _safe_float(item) is not None
+        ],
+    }
 
 
 def _tracked_base_assets() -> tuple[str, ...]:
@@ -562,14 +702,15 @@ def _dedupe_side_orders(
     return remaining, False
 
 
-def _cancel_stale_open_orders(execution_mode: str, dry_run: bool) -> list[dict]:
+def _cleanup_open_orders(execution_mode: str, dry_run: bool) -> OpenOrderCleanupResult:
     try:
         open_orders = _load_open_orders(execution_mode)
         if not open_orders:
-            return []
+            return OpenOrderCleanupResult()
         logger.info(f"  {len(open_orders)} open {execution_mode} orders found")
         now_ms = int(time.time() * 1000)
         remaining: list[dict] = []
+        cancelled: list[dict] = []
         for order in open_orders:
             placed_ms = order.get("time", order.get("updateTime", now_ms))
             age_hours = (now_ms - placed_ms) / 3600000
@@ -578,11 +719,20 @@ def _cancel_stale_open_orders(execution_mode: str, dry_run: bool) -> list[dict]:
                 continue
             if not dry_run:
                 _cancel_open_order(execution_mode, order["symbol"], order["orderId"])
+            cancelled.append(order)
             logger.info(f"  Cancelled stale order {order['orderId']} ({age_hours:.1f}h old)")
-        return remaining
+        return OpenOrderCleanupResult(
+            before=tuple(open_orders),
+            active=tuple(remaining),
+            cancelled=tuple(cancelled),
+        )
     except Exception as e:
         logger.warning(f"  Failed to check open orders: {e}")
-        return []
+        return OpenOrderCleanupResult()
+
+
+def _cancel_stale_open_orders(execution_mode: str, dry_run: bool) -> list[dict]:
+    return list(_cleanup_open_orders(execution_mode, dry_run).active)
 
 
 def _repay_margin_debt_if_flat(state: PortfolioState, dry_run: bool, execution_mode: str) -> None:
@@ -890,188 +1040,323 @@ def run_trading_cycle(
     """Run one trading cycle across all symbols."""
     resolved_execution_mode = _resolve_execution_mode(execution_mode, leverage)
     effective_leverage = _effective_leverage(resolved_execution_mode, leverage)
-    logger.info(f"\n{'='*60}")
-    logger.info(f"Trading Cycle: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    logger.info(
-        f"Model: {model} (thinking={thinking_level}) | "
-        f"Execution: {resolved_execution_mode} | "
-        f"Requested leverage: {leverage:.2f}x | Effective leverage: {effective_leverage:.2f}x"
-    )
-    logger.info(f"Mode: {'DRY RUN' if dry_run else 'LIVE'}")
-    logger.info(f"{'='*60}")
+    cycle_started_at = datetime.now(timezone.utc)
+    cycle_snapshot: dict[str, object] = {
+        "cycle_id": f"{cycle_started_at.isoformat()}|per_symbol|{resolved_execution_mode}|{'live' if not dry_run else 'dry_run'}",
+        "cycle_kind": "per_symbol",
+        "cycle_started_at": cycle_started_at.isoformat(),
+        "mode": "live" if not dry_run else "dry_run",
+        "model": model,
+        "thinking_level": thinking_level,
+        "execution_mode": resolved_execution_mode,
+        "requested_leverage": float(leverage),
+        "effective_leverage": float(effective_leverage),
+        "symbols": list(symbols),
+        "sync_plan": _serialize_margin_capital_sync_plan(MarginCapitalSyncPlan()),
+        "portfolio": None,
+        "orders": {
+            "open_before_cleanup": [],
+            "open_after_cleanup": [],
+            "cancelled_stale": [],
+            "placed": [],
+        },
+        "symbols_detail": [],
+        "status": "running",
+        "error": None,
+    }
+    orders_placed: list[dict] = []
 
-    # 1. Prepare margin capital, then get portfolio state
-    if resolved_execution_mode == "margin":
-        _sync_margin_capital(dry_run)
-    state = get_portfolio_state(resolved_execution_mode)
-    logger.info(
-        f"Portfolio: FDUSD={state.fdusd_balance:.2f}, USDT={state.usdt_balance:.2f}, "
-        f"borrowable_usdt={state.borrowable_quotes.get('USDT', 0.0):.2f}, total={state.total_value_usd:.2f}"
-    )
-    for asset, qty in state.positions.items():
-        logger.info(f"  Position: {asset} = {qty}")
-    _repay_margin_debt_if_flat(state, dry_run, resolved_execution_mode)
+    try:
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Trading Cycle: {cycle_started_at.strftime('%Y-%m-%d %H:%M UTC')}")
+        logger.info(
+            f"Model: {model} (thinking={thinking_level}) | "
+            f"Execution: {resolved_execution_mode} | "
+            f"Requested leverage: {leverage:.2f}x | Effective leverage: {effective_leverage:.2f}x"
+        )
+        logger.info(f"Mode: {'DRY RUN' if dry_run else 'LIVE'}")
+        logger.info(f"{'='*60}")
 
-    # 2. Cancel stale open orders
-    open_orders = _cancel_stale_open_orders(resolved_execution_mode, dry_run)
+        sync_plan = MarginCapitalSyncPlan()
+        if resolved_execution_mode == "margin":
+            sync_plan = _sync_margin_capital(dry_run)
+        cycle_snapshot["sync_plan"] = _serialize_margin_capital_sync_plan(sync_plan)
 
-    # 3. Get signals for each symbol
-    orders_placed = []
-    for i, sym_name in enumerate(symbols):
-        sym_cfg = TRADING_SYMBOLS.get(sym_name)
-        if not sym_cfg:
-            logger.warning(f"Unknown symbol: {sym_name}")
-            continue
+        state = get_portfolio_state(resolved_execution_mode)
+        cycle_snapshot["portfolio"] = _serialize_portfolio_state(state)
+        logger.info(
+            f"Portfolio: FDUSD={state.fdusd_balance:.2f}, USDT={state.usdt_balance:.2f}, "
+            f"borrowable_usdt={state.borrowable_quotes.get('USDT', 0.0):.2f}, total={state.total_value_usd:.2f}"
+        )
+        for asset, qty in state.positions.items():
+            logger.info(f"  Position: {asset} = {qty}")
+        _repay_margin_debt_if_flat(state, dry_run, resolved_execution_mode)
 
-        market_symbol = _execution_pair(sym_cfg, resolved_execution_mode)
-        trade_quote = _execution_quote_asset(sym_cfg, resolved_execution_mode)
-        logger.info(f"\n--- {sym_cfg.symbol} ({market_symbol}) ---")
+        cleanup = _cleanup_open_orders(resolved_execution_mode, dry_run)
+        open_orders = list(cleanup.active)
+        cycle_snapshot["orders"] = {
+            "open_before_cleanup": _serialize_orders(cleanup.before),
+            "open_after_cleanup": _serialize_orders(cleanup.active),
+            "cancelled_stale": _serialize_orders(cleanup.cancelled),
+            "placed": [],
+        }
 
-        # Get current price
-        try:
-            current_price = _get_market_price(sym_cfg, resolved_execution_mode)
-        except Exception:
-            logger.error(f"  Cannot get price for {market_symbol}")
-            continue
+        for sym_name in symbols:
+            sym_cfg = TRADING_SYMBOLS.get(sym_name)
+            if not sym_cfg:
+                logger.warning(f"Unknown symbol: {sym_name}")
+                continue
 
-        # Check existing position (ignore dust < $5)
-        position_qty = state.positions.get(sym_cfg.base_asset, 0.0)
-        position_value = position_qty * current_price
-        if position_value < 5.0:
-            position_qty = 0.0
-            position_value = 0.0
-        position_pct = position_value / max(state.total_value_usd, 1.0)
+            market_symbol = _execution_pair(sym_cfg, resolved_execution_mode)
+            trade_quote = _execution_quote_asset(sym_cfg, resolved_execution_mode)
+            symbol_detail: dict[str, object] = {
+                "symbol": sym_cfg.symbol,
+                "market_symbol": market_symbol,
+                "quote_asset": trade_quote,
+                "actions": [],
+            }
+            cast_details = cycle_snapshot["symbols_detail"]
+            assert isinstance(cast_details, list)
+            cast_details.append(symbol_detail)
 
-        logger.info(f"  Price: ${current_price:.2f}, Position: {position_qty} ({position_pct:.1%} of portfolio)")
+            logger.info(f"\n--- {sym_cfg.symbol} ({market_symbol}) ---")
 
-        # Get position entry info for context
-        entry_price, open_time = 0.0, None
-        if position_qty > 0:
             try:
-                entry_price, open_time = get_position_entry(sym_cfg, execution_mode=resolved_execution_mode)
-            except Exception:
-                pass
+                current_price = _get_market_price(sym_cfg, resolved_execution_mode)
+            except Exception as exc:
+                logger.error(f"  Cannot get price for {market_symbol}")
+                symbol_detail["status"] = "price_error"
+                symbol_detail["error"] = str(exc)
+                continue
 
-        # Get hybrid signal
-        try:
-            plan = get_hybrid_signal(
-                sym_cfg, model, thinking_level, rl_checkpoint,
-                position_qty=position_qty,
-                position_entry_price=entry_price,
-                position_open_time=open_time,
-                execution_mode=resolved_execution_mode,
-            )
-        except Exception as e:
-            logger.error(f"  Signal generation failed: {e}")
-            continue
+            position_qty = state.positions.get(sym_cfg.base_asset, 0.0)
+            position_value = position_qty * current_price
+            if position_value < 5.0:
+                position_qty = 0.0
+                position_value = 0.0
+            position_pct = position_value / max(state.total_value_usd, 1.0)
+            symbol_detail["price"] = float(current_price)
+            symbol_detail["position_qty"] = float(position_qty)
+            symbol_detail["position_value"] = float(position_value)
+            symbol_detail["position_pct"] = float(position_pct)
 
-        logger.info(f"  Signal: {plan.direction} (conf={plan.confidence:.2f})")
-        logger.info(f"  Buy: ${plan.buy_price:.2f}, Sell: ${plan.sell_price:.2f}")
-        logger.info(f"  Reasoning: {plan.reasoning[:100]}")
+            logger.info(f"  Price: ${current_price:.2f}, Position: {position_qty} ({position_pct:.1%} of portfolio)")
 
-        # 4. Always place take-profit for existing positions
-        if position_value >= MIN_TRADE_USD and position_qty > 0:
-            sell_price = plan.sell_price if plan.sell_price > current_price else current_price * 1.01
-            open_orders, skip_sell = _dedupe_side_orders(
-                open_orders,
-                symbol=market_symbol,
-                side="SELL",
-                execution_mode=resolved_execution_mode,
-                dry_run=dry_run,
-                desired_qty=position_qty,
-            )
-            if skip_sell:
-                logger.info(f"  Existing take-profit sell already working for {market_symbol}")
-                sell_price = 0.0
-            if sell_price <= 0.0:
-                pass
-            else:
-                order = place_limit_sell(sym_cfg, sell_price, position_qty, execution_mode=resolved_execution_mode, dry_run=dry_run)
+            entry_price, open_time = 0.0, None
+            if position_qty > 0:
+                try:
+                    entry_price, open_time = get_position_entry(sym_cfg, execution_mode=resolved_execution_mode)
+                except Exception:
+                    pass
+            symbol_detail["entry_price"] = float(entry_price)
+            symbol_detail["position_open_time"] = _isoformat_utc(open_time)
+
+            try:
+                plan = get_hybrid_signal(
+                    sym_cfg, model, thinking_level, rl_checkpoint,
+                    position_qty=position_qty,
+                    position_entry_price=entry_price,
+                    position_open_time=open_time,
+                    execution_mode=resolved_execution_mode,
+                )
+            except Exception as exc:
+                logger.error(f"  Signal generation failed: {exc}")
+                symbol_detail["status"] = "signal_error"
+                symbol_detail["error"] = str(exc)
+                continue
+
+            symbol_detail["signal"] = _serialize_trade_plan(plan)
+            logger.info(f"  Signal: {plan.direction} (conf={plan.confidence:.2f})")
+            logger.info(f"  Buy: ${plan.buy_price:.2f}, Sell: ${plan.sell_price:.2f}")
+            logger.info(f"  Reasoning: {plan.reasoning[:100]}")
+
+            actions = symbol_detail["actions"]
+            assert isinstance(actions, list)
+
+            if position_value >= MIN_TRADE_USD and position_qty > 0:
+                sell_price = plan.sell_price if plan.sell_price > current_price else current_price * 1.01
+                existing_sell_orders = _serialize_orders(_matching_open_orders(open_orders, market_symbol, "SELL"))
+                open_orders, skip_sell = _dedupe_side_orders(
+                    open_orders,
+                    symbol=market_symbol,
+                    side="SELL",
+                    execution_mode=resolved_execution_mode,
+                    dry_run=dry_run,
+                    desired_qty=position_qty,
+                )
+                sell_action: dict[str, object] = {
+                    "kind": "sell_take_profit",
+                    "side": "SELL",
+                    "status": "skipped",
+                    "desired_price": float(sell_price),
+                    "desired_qty": float(position_qty),
+                    "matched_open_orders": existing_sell_orders,
+                    "placed_order": None,
+                }
+                if skip_sell:
+                    logger.info(f"  Existing take-profit sell already working for {market_symbol}")
+                    sell_action["status"] = "already_working"
+                    sell_action["reason"] = "existing_order_covers_qty"
+                    sell_price = 0.0
+                elif sell_price <= 0.0:
+                    sell_action["reason"] = "no_valid_sell_price"
+                else:
+                    order = place_limit_sell(
+                        sym_cfg,
+                        sell_price,
+                        position_qty,
+                        execution_mode=resolved_execution_mode,
+                        dry_run=dry_run,
+                    )
+                    if order:
+                        orders_placed.append(order)
+                        open_orders.append(order)
+                        serialized_order = _serialize_order(order)
+                        sell_action["status"] = "placed"
+                        sell_action["placed_order"] = serialized_order
+                        cast_orders = cycle_snapshot["orders"]
+                        assert isinstance(cast_orders, dict)
+                        cast_placed = cast_orders["placed"]
+                        assert isinstance(cast_placed, list)
+                        cast_placed.append(serialized_order)
+                        logger.info(f"  Take-profit sell @ ${sell_price:.2f}")
+                    else:
+                        sell_action["status"] = "failed"
+                        sell_action["reason"] = "order_not_placed"
+                actions.append(sell_action)
+
+            buy_action: dict[str, object] = {
+                "kind": "buy_entry",
+                "side": "BUY",
+                "status": "skipped",
+                "reason": "non_long_signal",
+                "desired_price": None,
+                "desired_notional": None,
+                "matched_open_orders": [],
+                "placed_order": None,
+            }
+            actions.append(buy_action)
+
+            if plan.direction == "long" and plan.confidence >= 0.4:
+                target_position_pct = sym_cfg.max_position_pct * effective_leverage
+                buy_action["target_position_pct"] = float(target_position_pct)
+                if position_pct >= target_position_pct:
+                    logger.info(f"  Skip buy: already at max position ({position_pct:.1%})")
+                    buy_action["reason"] = "already_at_max_position"
+                    continue
+
+                trade_size = state.total_value_usd * sym_cfg.max_position_pct * effective_leverage - position_value
+                available = _quote_buying_power(
+                    state,
+                    trade_quote,
+                    execution_mode=resolved_execution_mode,
+                    effective_leverage=effective_leverage,
+                )
+                buy_action["initial_available_quote"] = float(available)
+                if resolved_execution_mode == "spot" and available < trade_size:
+                    total_stables = state.fdusd_balance + state.usdt_balance
+                    trade_size = min(trade_size, total_stables * sym_cfg.max_position_pct * effective_leverage)
+                else:
+                    trade_size = min(trade_size, available * 0.95)
+                trade_size = max(trade_size, 0.0)
+                buy_action["requested_notional"] = float(trade_size)
+
+                if trade_size < MIN_TRADE_USD:
+                    logger.info(f"  Skip buy: trade too small ({trade_size:.2f})")
+                    buy_action["reason"] = "trade_too_small"
+                    continue
+
+                if resolved_execution_mode == "spot":
+                    if not ensure_quote_balance(trade_quote, trade_size, state, dry_run):
+                        logger.warning(f"  Skip buy: insufficient {trade_quote}")
+                        buy_action["reason"] = "insufficient_quote"
+                        continue
+                    available_after = _quote_buying_power(
+                        state,
+                        trade_quote,
+                        execution_mode=resolved_execution_mode,
+                        effective_leverage=effective_leverage,
+                    )
+                else:
+                    available_after = _quote_buying_power(
+                        state,
+                        trade_quote,
+                        execution_mode=resolved_execution_mode,
+                        effective_leverage=effective_leverage,
+                    )
+                trade_size = min(trade_size, available_after * 0.95)
+                buy_action["post_conversion_available_quote"] = float(available_after)
+                buy_action["desired_notional"] = float(trade_size)
+                if trade_size < MIN_TRADE_USD:
+                    logger.info(f"  Skip buy: post-conversion too small ({trade_size:.2f})")
+                    buy_action["reason"] = "post_conversion_too_small"
+                    continue
+
+                buy_price = plan.buy_price if plan.buy_price > 0 else current_price * 0.998
+                buy_action["desired_price"] = float(buy_price)
+                existing_buy_orders = _serialize_orders(_matching_open_orders(open_orders, market_symbol, "BUY"))
+                open_orders, skip_buy = _dedupe_side_orders(
+                    open_orders,
+                    symbol=market_symbol,
+                    side="BUY",
+                    execution_mode=resolved_execution_mode,
+                    dry_run=dry_run,
+                    desired_notional=trade_size,
+                )
+                buy_action["matched_open_orders"] = existing_buy_orders
+                if skip_buy:
+                    logger.info(f"  Existing buy order already working for {market_symbol}")
+                    buy_action["status"] = "already_working"
+                    buy_action["reason"] = "existing_order_covers_notional"
+                    continue
+                order = place_limit_buy(
+                    sym_cfg,
+                    buy_price,
+                    trade_size,
+                    execution_mode=resolved_execution_mode,
+                    dry_run=dry_run,
+                )
                 if order:
                     orders_placed.append(order)
                     open_orders.append(order)
-                    logger.info(f"  Take-profit sell @ ${sell_price:.2f}")
+                    _reserve_buying_power(
+                        state,
+                        trade_quote,
+                        _estimate_order_notional(order, fallback=trade_size),
+                        execution_mode=resolved_execution_mode,
+                    )
+                    serialized_order = _serialize_order(order)
+                    buy_action["status"] = "placed"
+                    buy_action["reason"] = "order_placed"
+                    buy_action["placed_order"] = serialized_order
+                    cast_orders = cycle_snapshot["orders"]
+                    assert isinstance(cast_orders, dict)
+                    cast_placed = cast_orders["placed"]
+                    assert isinstance(cast_placed, list)
+                    cast_placed.append(serialized_order)
+                else:
+                    buy_action["status"] = "failed"
+                    buy_action["reason"] = "order_not_placed"
+            elif plan.direction == "hold" and position_qty == 0:
+                logger.info("  Holding (no position, no action)")
+                buy_action["reason"] = "hold_without_position"
+            elif plan.direction == "long":
+                buy_action["reason"] = "confidence_below_threshold"
 
-        # 5. Execute based on signal
-        if plan.direction == "long" and plan.confidence >= 0.4:
-            target_position_pct = sym_cfg.max_position_pct * effective_leverage
-            if position_pct >= target_position_pct:
-                logger.info(f"  Skip buy: already at max position ({position_pct:.1%})")
-                continue
+            symbol_detail["status"] = "completed"
 
-            # Calculate order size: max_position_pct of portfolio * leverage minus current
-            trade_size = state.total_value_usd * sym_cfg.max_position_pct * effective_leverage - position_value
-            available = _quote_buying_power(
-                state,
-                trade_quote,
-                execution_mode=resolved_execution_mode,
-                effective_leverage=effective_leverage,
-            )
-            if resolved_execution_mode == "spot" and available < trade_size:
-                total_stables = state.fdusd_balance + state.usdt_balance
-                trade_size = min(trade_size, total_stables * sym_cfg.max_position_pct * effective_leverage)
-            else:
-                trade_size = min(trade_size, available * 0.95)
-            trade_size = max(trade_size, 0)
-
-            if trade_size < MIN_TRADE_USD:
-                logger.info(f"  Skip buy: trade too small ({trade_size:.2f})")
-                continue
-
-            # Ensure we have the right stablecoin (converts if needed)
-            if resolved_execution_mode == "spot":
-                if not ensure_quote_balance(trade_quote, trade_size, state, dry_run):
-                    logger.warning(f"  Skip buy: insufficient {trade_quote}")
-                    continue
-                available_after = _quote_buying_power(
-                    state,
-                    trade_quote,
-                    execution_mode=resolved_execution_mode,
-                    effective_leverage=effective_leverage,
-                )
-            else:
-                available_after = _quote_buying_power(
-                    state,
-                    trade_quote,
-                    execution_mode=resolved_execution_mode,
-                    effective_leverage=effective_leverage,
-                )
-            trade_size = min(trade_size, available_after * 0.95)
-            if trade_size < MIN_TRADE_USD:
-                logger.info(f"  Skip buy: post-conversion too small ({trade_size:.2f})")
-                continue
-
-            buy_price = plan.buy_price if plan.buy_price > 0 else current_price * 0.998
-            open_orders, skip_buy = _dedupe_side_orders(
-                open_orders,
-                symbol=market_symbol,
-                side="BUY",
-                execution_mode=resolved_execution_mode,
-                dry_run=dry_run,
-                desired_notional=trade_size,
-            )
-            if skip_buy:
-                logger.info(f"  Existing buy order already working for {market_symbol}")
-                continue
-            order = place_limit_buy(sym_cfg, buy_price, trade_size, execution_mode=resolved_execution_mode, dry_run=dry_run)
-            if order:
-                orders_placed.append(order)
-                open_orders.append(order)
-                _reserve_buying_power(
-                    state,
-                    trade_quote,
-                    _estimate_order_notional(order, fallback=trade_size),
-                    execution_mode=resolved_execution_mode,
-                )
-
-        elif plan.direction == "hold" and position_qty == 0:
-            logger.info(f"  Holding (no position, no action)")
-
-    logger.info(f"\n{'='*60}")
-    logger.info(f"Cycle complete: {len(orders_placed)} orders placed")
-    logger.info(f"{'='*60}\n")
-
-    return orders_placed
+        cycle_snapshot["status"] = "completed"
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Cycle complete: {len(orders_placed)} orders placed")
+        logger.info(f"{'='*60}\n")
+        return orders_placed
+    except Exception as exc:
+        cycle_snapshot["status"] = "failed"
+        cycle_snapshot["error"] = str(exc)
+        raise
+    finally:
+        cycle_snapshot["cycle_finished_at"] = datetime.now(timezone.utc).isoformat()
+        append_cycle_snapshot(cycle_snapshot)
 
 
 # ---------------------------------------------------------------------------
@@ -1133,123 +1418,206 @@ def run_hybrid_trading_cycle(
 
     resolved_execution_mode = _resolve_execution_mode(execution_mode, leverage)
     effective_leverage = _effective_leverage(resolved_execution_mode, leverage)
+    cycle_started_at = datetime.now(timezone.utc)
+    cycle_snapshot: dict[str, object] = {
+        "cycle_id": f"{cycle_started_at.isoformat()}|allocation|{resolved_execution_mode}|{'live' if not dry_run else 'dry_run'}",
+        "cycle_kind": "allocation",
+        "cycle_started_at": cycle_started_at.isoformat(),
+        "mode": "live" if not dry_run else "dry_run",
+        "gemini_model": gemini_model,
+        "execution_mode": resolved_execution_mode,
+        "requested_leverage": float(leverage),
+        "effective_leverage": float(effective_leverage),
+        "forecast_cache_root": str(forecast_cache_root),
+        "sync_plan": _serialize_margin_capital_sync_plan(MarginCapitalSyncPlan()),
+        "portfolio": None,
+        "previous_outcome": _serialize_plan_outcome(_prev_outcome),
+        "rl_signal": None,
+        "allocation_plan": None,
+        "orders": {
+            "open_before_cleanup": [],
+            "open_after_cleanup": [],
+            "cancelled_stale": [],
+            "placed": [],
+        },
+        "symbols_detail": [],
+        "status": "running",
+        "error": None,
+    }
+    orders_placed: list[dict] = []
 
-    logger.info(f"\n{'='*60}")
-    logger.info(f"Hybrid Cycle: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    logger.info(
-        f"Mode: {'DRY RUN' if dry_run else 'LIVE'} | Gemini: {gemini_model} | "
-        f"Execution: {resolved_execution_mode} | Requested leverage: {leverage:.2f}x | "
-        f"Effective leverage: {effective_leverage:.2f}x"
-    )
-    logger.info(f"{'='*60}")
-
-    # 1. Prepare margin capital, then load portfolio state
-    if resolved_execution_mode == "margin":
-        _sync_margin_capital(dry_run)
-    state = get_portfolio_state(resolved_execution_mode)
-    cash_usd = state.fdusd_balance + state.usdt_balance
-    logger.info(
-        f"Portfolio: ${state.total_value_usd:.2f} | Cash: ${cash_usd:.2f} | "
-        f"borrowable_usdt={state.borrowable_quotes.get('USDT', 0.0):.2f}"
-    )
-    for asset, qty in state.positions.items():
-        logger.info(f"  {asset}: {qty}")
-    _repay_margin_debt_if_flat(state, dry_run, resolved_execution_mode)
-
-    # Compute prev plan outcome
-    if _prev_plan and _prev_portfolio_value > 0:
-        pnl_usd = state.total_value_usd - _prev_portfolio_value
-        pnl_pct = pnl_usd / _prev_portfolio_value
-        _prev_outcome = PlanOutcome(plan=_prev_plan, pnl_usd=pnl_usd, pnl_pct=pnl_pct)
-        logger.info(f"  Prev plan outcome: PnL=${pnl_usd:+.2f} ({pnl_pct:+.2%})")
-
-    # 2. Cancel stale orders
-    open_orders = _cancel_stale_open_orders(resolved_execution_mode, dry_run)
-
-    # 3. Gather market context for all 4 symbols
-    cache_root = Path(forecast_cache_root)
     try:
-        contexts = gather_symbol_contexts(cache_root)
-    except Exception as e:
-        logger.error(f"Failed to gather market context: {e}")
-        return []
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Hybrid Cycle: {cycle_started_at.strftime('%Y-%m-%d %H:%M UTC')}")
+        logger.info(
+            f"Mode: {'DRY RUN' if dry_run else 'LIVE'} | Gemini: {gemini_model} | "
+            f"Execution: {resolved_execution_mode} | Requested leverage: {leverage:.2f}x | "
+            f"Effective leverage: {effective_leverage:.2f}x"
+        )
+        logger.info(f"{'='*60}")
 
-    if not contexts:
-        logger.error("No symbol contexts available")
-        return []
+        sync_plan = MarginCapitalSyncPlan()
+        if resolved_execution_mode == "margin":
+            sync_plan = _sync_margin_capital(dry_run)
+        cycle_snapshot["sync_plan"] = _serialize_margin_capital_sync_plan(sync_plan)
 
-    # 4. Get RL signal
-    positions_valued = _get_current_positions_valued(state, resolved_execution_mode)
-    largest_pos = max(positions_valued.items(), key=lambda x: x[1][1]) if positions_valued else None
-    cur_sym = largest_pos[0] if largest_pos else None
+        state = get_portfolio_state(resolved_execution_mode)
+        cash_usd = state.fdusd_balance + state.usdt_balance
+        cycle_snapshot["portfolio"] = _serialize_portfolio_state(state)
+        logger.info(
+            f"Portfolio: ${state.total_value_usd:.2f} | Cash: ${cash_usd:.2f} | "
+            f"borrowable_usdt={state.borrowable_quotes.get('USDT', 0.0):.2f}"
+        )
+        for asset, qty in state.positions.items():
+            logger.info(f"  {asset}: {qty}")
+        _repay_margin_debt_if_flat(state, dry_run, resolved_execution_mode)
 
-    portfolio_snap = PortfolioSnapshot(
-        cash_usd=cash_usd,
-        total_value_usd=state.total_value_usd,
-        position_symbol=cur_sym,
-        position_value_usd=largest_pos[1][1] if largest_pos else 0.0,
-        hold_hours=0,
-        is_short=False,
-    )
+        if _prev_plan and _prev_portfolio_value > 0:
+            pnl_usd = state.total_value_usd - _prev_portfolio_value
+            pnl_pct = pnl_usd / _prev_portfolio_value
+            _prev_outcome = PlanOutcome(plan=_prev_plan, pnl_usd=pnl_usd, pnl_pct=pnl_pct)
+            logger.info(f"  Prev plan outcome: PnL=${pnl_usd:+.2f} ({pnl_pct:+.2%})")
+        cycle_snapshot["previous_outcome"] = _serialize_plan_outcome(_prev_outcome)
 
-    # Build klines map from contexts (avoid re-fetching)
-    klines_map = {ctx.symbol: ctx.klines for ctx in contexts}
-    try:
-        rl_signal = rl_gen.get_signal(portfolio=portfolio_snap, klines_map=klines_map)
-    except Exception as e:
-        logger.error(f"RL signal error: {e}")
-        return []
+        cleanup = _cleanup_open_orders(resolved_execution_mode, dry_run)
+        open_orders = list(cleanup.active)
+        cycle_snapshot["orders"] = {
+            "open_before_cleanup": _serialize_orders(cleanup.before),
+            "open_after_cleanup": _serialize_orders(cleanup.active),
+            "cancelled_stale": _serialize_orders(cleanup.cancelled),
+            "placed": [],
+        }
 
-    # 5. Build prompt and call Gemini
-    prompt = build_allocation_prompt(
-        contexts=contexts,
-        rl_signal=rl_signal,
-        portfolio_value=state.total_value_usd,
-        cash_usd=cash_usd,
-        positions=state.positions,
-        prev_plan=_prev_plan,
-        prev_outcome=_prev_outcome,
-    )
+        cache_root = Path(forecast_cache_root)
+        try:
+            contexts = gather_symbol_contexts(cache_root)
+        except Exception as exc:
+            logger.error(f"Failed to gather market context: {exc}")
+            cycle_snapshot["status"] = "context_error"
+            cycle_snapshot["error"] = str(exc)
+            return []
 
-    logger.info(f"Prompt built ({len(prompt)} chars), calling Gemini...")
-    try:
-        plan = call_gemini_allocation(prompt, model=gemini_model)
-    except Exception as e:
-        logger.error(f"Gemini call failed: {e}")
-        return []
+        if not contexts:
+            logger.error("No symbol contexts available")
+            cycle_snapshot["status"] = "no_contexts"
+            return []
 
-    if _allocation_plan_has_error(plan):
-        logger.warning(f"Skipping execution due to invalid allocation plan: {plan.reasoning}")
-        return []
+        positions_valued = _get_current_positions_valued(state, resolved_execution_mode)
+        largest_pos = max(positions_valued.items(), key=lambda x: x[1][1]) if positions_valued else None
+        cur_sym = largest_pos[0] if largest_pos else None
 
-    if not plan.allocations and not plan.reasoning:
-        logger.warning("Empty allocation plan, skipping execution")
-        return []
+        portfolio_snap = PortfolioSnapshot(
+            cash_usd=cash_usd,
+            total_value_usd=state.total_value_usd,
+            position_symbol=cur_sym,
+            position_value_usd=largest_pos[1][1] if largest_pos else 0.0,
+            hold_hours=0,
+            is_short=False,
+        )
 
-    # 6. Execute allocation
-    orders_placed = []
-    target_values = {}
-    for sym, pct in plan.allocations.items():
-        target_values[sym] = state.total_value_usd * pct / 100.0 * effective_leverage
+        klines_map = {ctx.symbol: ctx.klines for ctx in contexts}
+        try:
+            rl_signal = rl_gen.get_signal(portfolio=portfolio_snap, klines_map=klines_map)
+        except Exception as exc:
+            logger.error(f"RL signal error: {exc}")
+            cycle_snapshot["status"] = "rl_signal_error"
+            cycle_snapshot["error"] = str(exc)
+            return []
+        cycle_snapshot["rl_signal"] = _serialize_rl_signal(rl_signal)
 
-    logger.info(f"Target allocation: {plan.allocations} | cash={plan.cash_pct:.0f}%")
+        prompt = build_allocation_prompt(
+            contexts=contexts,
+            rl_signal=rl_signal,
+            portfolio_value=state.total_value_usd,
+            cash_usd=cash_usd,
+            positions=state.positions,
+            prev_plan=_prev_plan,
+            prev_outcome=_prev_outcome,
+        )
+        cycle_snapshot["prompt_chars"] = len(prompt)
 
-    # Sell positions that need reducing
-    for sym, (qty, cur_value) in positions_valued.items():
-        target_val = target_values.get(sym, 0.0)
-        if cur_value > target_val + MIN_TRADE_USD:
+        logger.info(f"Prompt built ({len(prompt)} chars), calling Gemini...")
+        try:
+            plan = call_gemini_allocation(prompt, model=gemini_model)
+        except Exception as exc:
+            logger.error(f"Gemini call failed: {exc}")
+            cycle_snapshot["status"] = "gemini_error"
+            cycle_snapshot["error"] = str(exc)
+            return []
+
+        cycle_snapshot["allocation_plan"] = _serialize_allocation_plan(plan)
+        if _allocation_plan_has_error(plan):
+            logger.warning(f"Skipping execution due to invalid allocation plan: {plan.reasoning}")
+            cycle_snapshot["status"] = "invalid_allocation_plan"
+            return []
+
+        if not plan.allocations and not plan.reasoning:
+            logger.warning("Empty allocation plan, skipping execution")
+            cycle_snapshot["status"] = "empty_allocation_plan"
+            return []
+
+        target_values = {
+            sym: state.total_value_usd * pct / 100.0 * effective_leverage
+            for sym, pct in plan.allocations.items()
+        }
+        logger.info(f"Target allocation: {plan.allocations} | cash={plan.cash_pct:.0f}%")
+
+        symbol_details: dict[str, dict[str, object]] = {}
+        for sym in sorted({ctx.symbol for ctx in contexts} | set(target_values) | set(positions_valued)):
+            cfg = TRADING_SYMBOLS.get(sym)
+            if cfg is None:
+                continue
+            market_symbol = _execution_pair(cfg, resolved_execution_mode)
+            trade_quote = _execution_quote_asset(cfg, resolved_execution_mode)
+            current_qty, current_value = positions_valued.get(sym, (0.0, 0.0))
+            detail = {
+                "symbol": sym,
+                "market_symbol": market_symbol,
+                "quote_asset": trade_quote,
+                "current_qty": float(current_qty),
+                "current_value": float(current_value),
+                "target_value": float(target_values.get(sym, 0.0)),
+                "allocation_pct": float(plan.allocations.get(sym, 0.0)),
+                "entry_price": _safe_float(plan.entry_prices.get(sym)),
+                "exit_price": _safe_float(plan.exit_prices.get(sym)),
+                "actions": [],
+            }
+            symbol_details[sym] = detail
+            cast_details = cycle_snapshot["symbols_detail"]
+            assert isinstance(cast_details, list)
+            cast_details.append(detail)
+
+        for sym, (qty, cur_value) in positions_valued.items():
+            target_val = target_values.get(sym, 0.0)
+            if cur_value <= target_val + MIN_TRADE_USD:
+                continue
             cfg = TRADING_SYMBOLS.get(sym)
             if not cfg:
                 continue
+            detail = symbol_details.setdefault(
+                sym,
+                {"symbol": sym, "market_symbol": _execution_pair(cfg, resolved_execution_mode), "quote_asset": _execution_quote_asset(cfg, resolved_execution_mode), "actions": []},
+            )
+            actions = detail["actions"]
+            assert isinstance(actions, list)
             try:
                 price = _get_market_price(cfg, resolved_execution_mode)
                 sell_value = cur_value - target_val
-                sell_qty = sell_value / price
-                sell_qty = min(sell_qty, qty)
+                sell_qty = min(sell_value / price, qty)
                 exit_price = plan.exit_prices.get(sym, price * 1.001)
                 if exit_price <= 0:
                     exit_price = price * 1.001
                 market_symbol = _execution_pair(cfg, resolved_execution_mode)
+                sell_action: dict[str, object] = {
+                    "kind": "rebalance_sell",
+                    "side": "SELL",
+                    "status": "skipped",
+                    "desired_qty": float(sell_qty),
+                    "desired_notional": float(sell_value),
+                    "desired_price": float(exit_price),
+                    "matched_open_orders": _serialize_orders(_matching_open_orders(open_orders, market_symbol, "SELL")),
+                    "placed_order": None,
+                }
                 open_orders, skip_sell = _dedupe_side_orders(
                     open_orders,
                     symbol=market_symbol,
@@ -1260,42 +1628,72 @@ def run_hybrid_trading_cycle(
                 )
                 if skip_sell:
                     logger.info(f"  Existing sell order already working for {market_symbol}")
-                    continue
-                order = place_limit_sell(cfg, exit_price, sell_qty, execution_mode=resolved_execution_mode, dry_run=dry_run)
-                if order:
-                    orders_placed.append(order)
-                    open_orders.append(order)
-                    logger.info(f"  SELL {sym}: {sell_qty:.6f} @ ${exit_price:.2f} (reduce to {target_val:.0f})")
-            except Exception as e:
-                logger.error(f"  Failed to sell {sym}: {e}")
+                    sell_action["status"] = "already_working"
+                    sell_action["reason"] = "existing_order_covers_qty"
+                else:
+                    order = place_limit_sell(
+                        cfg,
+                        exit_price,
+                        sell_qty,
+                        execution_mode=resolved_execution_mode,
+                        dry_run=dry_run,
+                    )
+                    if order:
+                        orders_placed.append(order)
+                        open_orders.append(order)
+                        serialized_order = _serialize_order(order)
+                        sell_action["status"] = "placed"
+                        sell_action["placed_order"] = serialized_order
+                        cast_orders = cycle_snapshot["orders"]
+                        assert isinstance(cast_orders, dict)
+                        cast_placed = cast_orders["placed"]
+                        assert isinstance(cast_placed, list)
+                        cast_placed.append(serialized_order)
+                        logger.info(f"  SELL {sym}: {sell_qty:.6f} @ ${exit_price:.2f} (reduce to {target_val:.0f})")
+                    else:
+                        sell_action["status"] = "failed"
+                        sell_action["reason"] = "order_not_placed"
+                actions.append(sell_action)
+            except Exception as exc:
+                logger.error(f"  Failed to sell {sym}: {exc}")
+                actions.append(
+                    {
+                        "kind": "rebalance_sell",
+                        "side": "SELL",
+                        "status": "failed",
+                        "reason": str(exc),
+                    }
+                )
 
-    # Buy positions that need increasing
-    for sym, target_val in target_values.items():
-        if target_val < MIN_TRADE_USD:
-            continue
-        cur_value = positions_valued.get(sym, (0, 0))[1]
-        buy_needed = target_val - cur_value
-        if buy_needed < MIN_TRADE_USD:
-            continue
+        for sym, target_val in target_values.items():
+            cfg = TRADING_SYMBOLS.get(sym)
+            if not cfg:
+                continue
+            detail = symbol_details[sym]
+            actions = detail["actions"]
+            assert isinstance(actions, list)
+            cur_value = positions_valued.get(sym, (0.0, 0.0))[1]
+            buy_needed = target_val - cur_value
+            buy_action: dict[str, object] = {
+                "kind": "rebalance_buy",
+                "side": "BUY",
+                "status": "skipped",
+                "desired_notional": float(max(buy_needed, 0.0)),
+                "desired_price": None,
+                "matched_open_orders": [],
+                "placed_order": None,
+            }
+            actions.append(buy_action)
+            if target_val < MIN_TRADE_USD:
+                buy_action["reason"] = "target_below_min_trade"
+                continue
+            if buy_needed < MIN_TRADE_USD:
+                buy_action["reason"] = "rebalance_gap_below_min_trade"
+                continue
 
-        cfg = TRADING_SYMBOLS.get(sym)
-        if not cfg:
-            continue
-
-        try:
-            price = _get_market_price(cfg, resolved_execution_mode)
-            trade_quote = _execution_quote_asset(cfg, resolved_execution_mode)
-            available = _quote_buying_power(
-                state,
-                trade_quote,
-                execution_mode=resolved_execution_mode,
-                effective_leverage=effective_leverage,
-            )
-            buy_needed = min(buy_needed, available * 0.95)
-            if buy_needed < MIN_TRADE_USD and resolved_execution_mode == "spot":
-                if not ensure_quote_balance(trade_quote, buy_needed, state, dry_run):
-                    logger.info(f"  Skip buy {sym}: insufficient {trade_quote}")
-                    continue
+            try:
+                price = _get_market_price(cfg, resolved_execution_mode)
+                trade_quote = _execution_quote_asset(cfg, resolved_execution_mode)
                 available = _quote_buying_power(
                     state,
                     trade_quote,
@@ -1303,47 +1701,92 @@ def run_hybrid_trading_cycle(
                     effective_leverage=effective_leverage,
                 )
                 buy_needed = min(buy_needed, available * 0.95)
+                buy_action["initial_available_quote"] = float(available)
+                if buy_needed < MIN_TRADE_USD and resolved_execution_mode == "spot":
+                    if not ensure_quote_balance(trade_quote, buy_needed, state, dry_run):
+                        logger.info(f"  Skip buy {sym}: insufficient {trade_quote}")
+                        buy_action["reason"] = "insufficient_quote"
+                        continue
+                    available = _quote_buying_power(
+                        state,
+                        trade_quote,
+                        execution_mode=resolved_execution_mode,
+                        effective_leverage=effective_leverage,
+                    )
+                    buy_needed = min(buy_needed, available * 0.95)
+                if buy_needed < MIN_TRADE_USD:
+                    buy_action["reason"] = "trade_too_small_after_cap"
+                    continue
 
-            if buy_needed < MIN_TRADE_USD:
-                continue
-
-            entry_price = plan.entry_prices.get(sym, price * 0.999)
-            if entry_price <= 0:
-                entry_price = price * 0.999
-            market_symbol = _execution_pair(cfg, resolved_execution_mode)
-            open_orders, skip_buy = _dedupe_side_orders(
-                open_orders,
-                symbol=market_symbol,
-                side="BUY",
-                execution_mode=resolved_execution_mode,
-                dry_run=dry_run,
-                desired_notional=buy_needed,
-            )
-            if skip_buy:
-                logger.info(f"  Existing buy order already working for {market_symbol}")
-                continue
-            order = place_limit_buy(cfg, entry_price, buy_needed, execution_mode=resolved_execution_mode, dry_run=dry_run)
-            if order:
-                orders_placed.append(order)
-                open_orders.append(order)
-                _reserve_buying_power(
-                    state,
-                    trade_quote,
-                    _estimate_order_notional(order, fallback=buy_needed),
+                entry_price = plan.entry_prices.get(sym, price * 0.999)
+                if entry_price <= 0:
+                    entry_price = price * 0.999
+                market_symbol = _execution_pair(cfg, resolved_execution_mode)
+                buy_action["desired_price"] = float(entry_price)
+                buy_action["desired_notional"] = float(buy_needed)
+                buy_action["matched_open_orders"] = _serialize_orders(_matching_open_orders(open_orders, market_symbol, "BUY"))
+                open_orders, skip_buy = _dedupe_side_orders(
+                    open_orders,
+                    symbol=market_symbol,
+                    side="BUY",
                     execution_mode=resolved_execution_mode,
+                    dry_run=dry_run,
+                    desired_notional=buy_needed,
                 )
-                logger.info(f"  BUY {sym}: ${buy_needed:.2f} @ ${entry_price:.2f}")
-        except Exception as e:
-            logger.error(f"  Failed to buy {sym}: {e}")
+                if skip_buy:
+                    logger.info(f"  Existing buy order already working for {market_symbol}")
+                    buy_action["status"] = "already_working"
+                    buy_action["reason"] = "existing_order_covers_notional"
+                    continue
+                order = place_limit_buy(
+                    cfg,
+                    entry_price,
+                    buy_needed,
+                    execution_mode=resolved_execution_mode,
+                    dry_run=dry_run,
+                )
+                if order:
+                    orders_placed.append(order)
+                    open_orders.append(order)
+                    _reserve_buying_power(
+                        state,
+                        trade_quote,
+                        _estimate_order_notional(order, fallback=buy_needed),
+                        execution_mode=resolved_execution_mode,
+                    )
+                    serialized_order = _serialize_order(order)
+                    buy_action["status"] = "placed"
+                    buy_action["reason"] = "order_placed"
+                    buy_action["placed_order"] = serialized_order
+                    cast_orders = cycle_snapshot["orders"]
+                    assert isinstance(cast_orders, dict)
+                    cast_placed = cast_orders["placed"]
+                    assert isinstance(cast_placed, list)
+                    cast_placed.append(serialized_order)
+                    logger.info(f"  BUY {sym}: ${buy_needed:.2f} @ ${entry_price:.2f}")
+                else:
+                    buy_action["status"] = "failed"
+                    buy_action["reason"] = "order_not_placed"
+            except Exception as exc:
+                logger.error(f"  Failed to buy {sym}: {exc}")
+                buy_action["status"] = "failed"
+                buy_action["reason"] = str(exc)
 
-    # Save plan for next cycle context
-    _prev_plan = plan
-    _prev_portfolio_value = state.total_value_usd
+        _prev_plan = plan
+        _prev_portfolio_value = state.total_value_usd
 
-    logger.info(f"\n{'='*60}")
-    logger.info(f"Hybrid cycle complete: {len(orders_placed)} orders")
-    logger.info(f"{'='*60}\n")
-    return orders_placed
+        cycle_snapshot["status"] = "completed"
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Hybrid cycle complete: {len(orders_placed)} orders")
+        logger.info(f"{'='*60}\n")
+        return orders_placed
+    except Exception as exc:
+        cycle_snapshot["status"] = "failed"
+        cycle_snapshot["error"] = str(exc)
+        raise
+    finally:
+        cycle_snapshot["cycle_finished_at"] = datetime.now(timezone.utc).isoformat()
+        append_cycle_snapshot(cycle_snapshot)
 
 
 def main():
