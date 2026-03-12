@@ -108,7 +108,7 @@ class PlannerConfig:
     symbol_embedding_dim: int = 16
     batch_size: int = 256
     learning_rate: float = 3e-4
-    weight_decay: float = 1e-4
+    weight_decay: float = 5e-3
     eval_batch_size: int = 512
     ema_decay: float = 0.995
     ambiguity_quantile: float = 0.25
@@ -877,7 +877,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--dropout", type=float, default=0.10)
     parser.add_argument("--symbol-embedding-dim", type=int, default=16)
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--weight-decay", type=float, default=5e-3)
     parser.add_argument("--seed", type=int, default=20260310)
     parser.add_argument("--dynamic-score-floor", action="store_true")
     parser.add_argument("--soft-rank-sizing", action="store_true")
