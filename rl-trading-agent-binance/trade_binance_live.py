@@ -52,6 +52,14 @@ from llm_hourly_trader.providers import call_llm
 from llm_hourly_trader.gemini_wrapper import TradePlan
 
 from rl_signal import RLSignalGenerator, PortfolioSnapshot, SYMBOLS as RL_SYMBOLS
+from hybrid_prompt import (
+    gather_symbol_contexts,
+    build_allocation_prompt,
+    call_gemini_allocation,
+    AllocationPlan,
+    PlanOutcome,
+    SYMBOL_BINANCE_MAP,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +161,12 @@ def ensure_quote_balance(
 
     if dry_run:
         logger.info(f"  [DRY RUN] Would convert {shortfall:.2f} {source} → {needed_quote}")
+        if source == "FDUSD":
+            state.fdusd_balance = max(0.0, state.fdusd_balance - shortfall)
+            state.usdt_balance += shortfall
+        else:
+            state.usdt_balance = max(0.0, state.usdt_balance - shortfall)
+            state.fdusd_balance += shortfall
         return True
 
     try:
@@ -175,6 +189,31 @@ def ensure_quote_balance(
     except Exception as e:
         logger.error(f"  Conversion failed: {e}")
         return False
+
+
+def _estimate_order_notional(order: Optional[dict], fallback: float) -> float:
+    """Estimate quote notional reserved by a limit order."""
+    if not order:
+        return max(0.0, fallback)
+    qty = order.get("qty", order.get("origQty", order.get("executedQty", order.get("quantity"))))
+    price = order.get("price")
+    try:
+        notional = float(qty) * float(price)
+    except (TypeError, ValueError):
+        notional = 0.0
+    if notional > 0:
+        return notional
+    return max(0.0, fallback)
+
+
+def _reserve_quote_balance(state: PortfolioState, quote_asset: str, amount: float) -> None:
+    """Reserve quote balance after placing a buy so later orders do not reuse it."""
+    if amount <= 0:
+        return
+    if quote_asset == "FDUSD":
+        state.fdusd_balance = max(0.0, state.fdusd_balance - amount)
+    else:
+        state.usdt_balance = max(0.0, state.usdt_balance - amount)
 
 
 # ---------------------------------------------------------------------------
@@ -300,11 +339,13 @@ def get_hybrid_signal(
     if len(history_rows) < 12:
         return TradePlan("hold", 0, 0, 0, "insufficient history")
 
-    # Build prompt (simplified version for production)
-    from rl_trading_agent_binance_prompt import build_live_prompt
-    prompt = build_live_prompt(sym_cfg.symbol, history_rows, current_price)
+    # Load Chronos2 forecasts
+    from rl_trading_agent_binance_prompt import build_live_prompt, load_latest_forecast
+    fc_1h = load_latest_forecast(sym_cfg.symbol, 1)
+    fc_24h = load_latest_forecast(sym_cfg.symbol, 24)
 
-    # Call LLM
+    prompt = build_live_prompt(sym_cfg.symbol, history_rows, current_price, fc_1h, fc_24h)
+
     plan = call_llm(prompt, model=model, thinking_level=thinking_level)
     return plan
 
@@ -353,7 +394,7 @@ def run_trading_cycle(
 
     # 3. Get signals for each symbol
     orders_placed = []
-    for sym_name in symbols:
+    for i, sym_name in enumerate(symbols):
         sym_cfg = TRADING_SYMBOLS.get(sym_name)
         if not sym_cfg:
             logger.warning(f"Unknown symbol: {sym_name}")
@@ -400,13 +441,13 @@ def run_trading_cycle(
                 logger.info(f"  Skip buy: already at max position ({position_pct:.1%})")
                 continue
 
-            # Calculate order size using available quote for this specific stablecoin
+            # Calculate order size: max_position_pct of portfolio minus current
             trade_size = state.total_value_usd * sym_cfg.max_position_pct - position_value
             available = state.available_quote(sym_cfg.quote_asset)
-            # If needed stablecoin is short, check if conversion would help
             if available < trade_size:
                 total_stables = state.fdusd_balance + state.usdt_balance
-                trade_size = min(trade_size, total_stables * 0.80)
+                # Cap at per-symbol allocation to leave room for other symbols
+                trade_size = min(trade_size, total_stables * sym_cfg.max_position_pct)
             else:
                 trade_size = min(trade_size, available * 0.95)
             trade_size = max(trade_size, 0)
@@ -431,6 +472,11 @@ def run_trading_cycle(
             order = place_limit_buy(sym_cfg, buy_price, trade_size, dry_run)
             if order:
                 orders_placed.append(order)
+                _reserve_quote_balance(
+                    state,
+                    sym_cfg.quote_asset,
+                    _estimate_order_notional(order, fallback=trade_size),
+                )
 
         elif plan.direction == "hold" and position_qty == 0:
             logger.info(f"  Holding (no position, no action)")
@@ -443,10 +489,9 @@ def run_trading_cycle(
 
 
 # ---------------------------------------------------------------------------
-# RL-Only Trading Cycle
+# Hybrid RL+LLM Trading Cycle
 # ---------------------------------------------------------------------------
 
-# Map RL symbol names to Binance pairs for kline fetching
 RL_BINANCE_PAIRS = {
     "BTCUSD": "BTCFDUSD",
     "ETHUSD": "ETHFDUSD",
@@ -454,51 +499,67 @@ RL_BINANCE_PAIRS = {
     "AAVEUSD": "AAVEUSDT",
 }
 
-# Persistent state for RL hold tracking
-_rl_hold_start: Optional[datetime] = None
-_rl_current_symbol: Optional[str] = None
+_prev_plan: Optional[AllocationPlan] = None
+_prev_outcome: Optional[PlanOutcome] = None
+_prev_portfolio_value: float = 0.0
 
 
-def _detect_current_rl_position(state: PortfolioState) -> tuple[Optional[str], float, float]:
-    """Find largest RL-managed position. Returns (symbol, qty, value)."""
-    best_sym, best_qty, best_val = None, 0.0, 0.0
-    for rl_sym in RL_SYMBOLS:
-        cfg = TRADING_SYMBOLS.get(rl_sym)
-        if not cfg:
-            continue
+def _allocation_plan_has_error(plan: AllocationPlan) -> bool:
+    reasoning = (plan.reasoning or "").strip().lower()
+    if not reasoning:
+        return False
+    return reasoning.startswith((
+        "failed to parse response",
+        "no json found in response",
+        "api error:",
+        "all retries exhausted",
+    ))
+
+
+def _get_current_positions_valued(state: PortfolioState) -> dict[str, tuple[float, float]]:
+    """Get {symbol: (qty, value_usd)} for all tradeable symbols with positions."""
+    result = {}
+    for sym, cfg in TRADING_SYMBOLS.items():
         qty = state.positions.get(cfg.base_asset, 0.0)
         if qty <= 0:
             continue
         try:
             price = float(binance_wrapper.get_symbol_price(cfg.binance_pair))
+            result[sym] = (qty, qty * price)
         except Exception:
-            continue
-        val = qty * price
-        if val > best_val:
-            best_sym, best_qty, best_val = rl_sym, qty, val
-    return best_sym, best_qty, best_val
+            pass
+    return result
 
 
-def run_rl_trading_cycle(
+def run_hybrid_trading_cycle(
     rl_gen: RLSignalGenerator,
-    alloc_pct: float = 0.90,
+    gemini_model: str = "gemini-2.5-flash",
+    forecast_cache_root: str = "binanceneural/forecast_cache",
     dry_run: bool = True,
 ):
-    """Run one RL trading cycle. The RL policy picks ONE asset to be in (or flat)."""
-    global _rl_hold_start, _rl_current_symbol
+    """Hybrid RL+Chronos2+Gemini portfolio allocation cycle."""
+    global _prev_plan, _prev_outcome, _prev_portfolio_value
 
     logger.info(f"\n{'='*60}")
-    logger.info(f"RL Trading Cycle: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
-    logger.info(f"Mode: {'DRY RUN' if dry_run else 'LIVE'}")
+    logger.info(f"Hybrid Cycle: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+    logger.info(f"Mode: {'DRY RUN' if dry_run else 'LIVE'} | Gemini: {gemini_model}")
     logger.info(f"{'='*60}")
 
+    # 1. Portfolio state
     state = get_portfolio_state()
-    logger.info(f"Portfolio: FDUSD={state.fdusd_balance:.2f}, USDT={state.usdt_balance:.2f}, "
-                f"total={state.total_value_usd:.2f}")
+    cash_usd = state.fdusd_balance + state.usdt_balance
+    logger.info(f"Portfolio: ${state.total_value_usd:.2f} | Cash: ${cash_usd:.2f}")
     for asset, qty in state.positions.items():
-        logger.info(f"  Position: {asset} = {qty}")
+        logger.info(f"  {asset}: {qty}")
 
-    # Cancel stale orders
+    # Compute prev plan outcome
+    if _prev_plan and _prev_portfolio_value > 0:
+        pnl_usd = state.total_value_usd - _prev_portfolio_value
+        pnl_pct = pnl_usd / _prev_portfolio_value
+        _prev_outcome = PlanOutcome(plan=_prev_plan, pnl_usd=pnl_usd, pnl_pct=pnl_pct)
+        logger.info(f"  Prev plan outcome: PnL=${pnl_usd:+.2f} ({pnl_pct:+.2%})")
+
+    # 2. Cancel stale orders
     try:
         open_orders = binance_wrapper.get_open_orders()
         if open_orders:
@@ -512,97 +573,146 @@ def run_rl_trading_cycle(
     except Exception as e:
         logger.warning(f"  Failed to check open orders: {e}")
 
-    # Detect current position
-    cur_sym, cur_qty, cur_val = _detect_current_rl_position(state)
-    hold_hours = 0
-    if cur_sym and _rl_current_symbol == cur_sym and _rl_hold_start:
-        hold_hours = int((datetime.now(timezone.utc) - _rl_hold_start).total_seconds() / 3600)
+    # 3. Gather market context for all 4 symbols
+    cache_root = Path(forecast_cache_root)
+    try:
+        contexts = gather_symbol_contexts(cache_root)
+    except Exception as e:
+        logger.error(f"Failed to gather market context: {e}")
+        return []
 
-    # Build portfolio snapshot for RL obs
-    cash_usd = state.fdusd_balance + state.usdt_balance
-    portfolio = PortfolioSnapshot(
+    if not contexts:
+        logger.error("No symbol contexts available")
+        return []
+
+    # 4. Get RL signal
+    positions_valued = _get_current_positions_valued(state)
+    largest_pos = max(positions_valued.items(), key=lambda x: x[1][1]) if positions_valued else None
+    cur_sym = largest_pos[0] if largest_pos else None
+
+    portfolio_snap = PortfolioSnapshot(
         cash_usd=cash_usd,
         total_value_usd=state.total_value_usd,
         position_symbol=cur_sym,
-        position_value_usd=cur_val,
-        unrealized_pnl_usd=0.0,  # would need entry price tracking for exact pnl
-        hold_hours=hold_hours,
+        position_value_usd=largest_pos[1][1] if largest_pos else 0.0,
+        hold_hours=0,
         is_short=False,
     )
 
-    # Get RL signal
+    # Build klines map from contexts (avoid re-fetching)
+    klines_map = {ctx.symbol: ctx.klines for ctx in contexts}
     try:
-        signal = rl_gen.get_signal(portfolio=portfolio, binance_pairs=RL_BINANCE_PAIRS)
+        rl_signal = rl_gen.get_signal(portfolio=portfolio_snap, klines_map=klines_map)
     except Exception as e:
         logger.error(f"RL signal error: {e}")
         return []
 
-    target_sym = signal.target_symbol
+    # 5. Build prompt and call Gemini
+    prompt = build_allocation_prompt(
+        contexts=contexts,
+        rl_signal=rl_signal,
+        portfolio_value=state.total_value_usd,
+        cash_usd=cash_usd,
+        positions=state.positions,
+        prev_plan=_prev_plan,
+        prev_outcome=_prev_outcome,
+    )
+
+    logger.info(f"Prompt built ({len(prompt)} chars), calling Gemini...")
+    try:
+        plan = call_gemini_allocation(prompt, model=gemini_model)
+    except Exception as e:
+        logger.error(f"Gemini call failed: {e}")
+        return []
+
+    if _allocation_plan_has_error(plan):
+        logger.warning(f"Skipping execution due to invalid allocation plan: {plan.reasoning}")
+        return []
+
+    if not plan.allocations and not plan.reasoning:
+        logger.warning("Empty allocation plan, skipping execution")
+        return []
+
+    # 6. Execute allocation
     orders_placed = []
+    target_values = {}
+    for sym, pct in plan.allocations.items():
+        target_values[sym] = state.total_value_usd * pct / 100.0
 
-    logger.info(f"  Current: {cur_sym or 'FLAT'} (${cur_val:.2f})")
-    logger.info(f"  RL says: {signal.action_name} -> target={target_sym or 'FLAT'}")
+    logger.info(f"Target allocation: {plan.allocations} | cash={plan.cash_pct:.0f}%")
 
-    # If target changed, execute the rotation
-    if target_sym != cur_sym:
-        # Step 1: Sell current position
-        if cur_sym and cur_qty > 0:
-            cfg = TRADING_SYMBOLS[cur_sym]
+    # Sell positions that need reducing
+    for sym, (qty, cur_value) in positions_valued.items():
+        target_val = target_values.get(sym, 0.0)
+        if cur_value > target_val + MIN_TRADE_USD:
+            cfg = TRADING_SYMBOLS.get(sym)
+            if not cfg:
+                continue
             try:
                 price = float(binance_wrapper.get_symbol_price(cfg.binance_pair))
-                sell_price = price * 0.999  # slightly below market for quick fill
-                order = place_limit_sell(cfg, sell_price, cur_qty, dry_run)
+                sell_value = cur_value - target_val
+                sell_qty = sell_value / price
+                sell_qty = min(sell_qty, qty)
+                exit_price = plan.exit_prices.get(sym, price * 1.001)
+                if exit_price <= 0:
+                    exit_price = price * 1.001
+                order = place_limit_sell(cfg, exit_price, sell_qty, dry_run)
                 if order:
                     orders_placed.append(order)
-                    logger.info(f"  SELL {cur_sym}: qty={cur_qty} @ ${sell_price:.2f}")
+                    logger.info(f"  SELL {sym}: {sell_qty:.6f} @ ${exit_price:.2f} (reduce to {target_val:.0f})")
             except Exception as e:
-                logger.error(f"  Failed to sell {cur_sym}: {e}")
+                logger.error(f"  Failed to sell {sym}: {e}")
 
-        # Step 2: Buy new target
-        if target_sym:
-            cfg = TRADING_SYMBOLS.get(target_sym)
-            if cfg:
-                try:
-                    price = float(binance_wrapper.get_symbol_price(cfg.binance_pair))
-                    trade_size = state.total_value_usd * alloc_pct
-                    # Use available cash (after sell, estimate conservatively)
-                    available = cash_usd + (cur_val * 0.95 if cur_sym else 0)
-                    trade_size = min(trade_size, available * 0.95)
+    # Buy positions that need increasing
+    for sym, target_val in target_values.items():
+        if target_val < MIN_TRADE_USD:
+            continue
+        cur_value = positions_valued.get(sym, (0, 0))[1]
+        buy_needed = target_val - cur_value
+        if buy_needed < MIN_TRADE_USD:
+            continue
 
-                    if trade_size >= MIN_TRADE_USD:
-                        if not ensure_quote_balance(cfg.quote_asset, trade_size, state, dry_run):
-                            logger.warning(f"  Skip buy: insufficient {cfg.quote_asset}")
-                        else:
-                            buy_price = price * 1.001  # slightly above market for quick fill
-                            order = place_limit_buy(cfg, buy_price, trade_size, dry_run)
-                            if order:
-                                orders_placed.append(order)
-                                logger.info(f"  BUY {target_sym}: ${trade_size:.2f} @ ${buy_price:.2f}")
-                    else:
-                        logger.info(f"  Skip buy: trade too small ({trade_size:.2f})")
-                except Exception as e:
-                    logger.error(f"  Failed to buy {target_sym}: {e}")
+        cfg = TRADING_SYMBOLS.get(sym)
+        if not cfg:
+            continue
 
-        # Update hold tracking
-        _rl_current_symbol = target_sym
-        _rl_hold_start = datetime.now(timezone.utc) if target_sym else None
-    else:
-        logger.info(f"  No rotation needed, holding {cur_sym or 'FLAT'}")
-        # Place take-profit for existing position
-        if cur_sym and cur_qty > 0:
-            cfg = TRADING_SYMBOLS[cur_sym]
-            try:
-                price = float(binance_wrapper.get_symbol_price(cfg.binance_pair))
-                tp_price = price * 1.015  # 1.5% take-profit
-                order = place_limit_sell(cfg, tp_price, cur_qty, dry_run)
-                if order:
-                    orders_placed.append(order)
-                    logger.info(f"  Take-profit {cur_sym} @ ${tp_price:.2f}")
-            except Exception as e:
-                logger.error(f"  Failed to place TP for {cur_sym}: {e}")
+        try:
+            price = float(binance_wrapper.get_symbol_price(cfg.binance_pair))
+            # Cap at available cash
+            available = state.available_quote(cfg.quote_asset)
+            buy_needed = min(buy_needed, available * 0.95)
+            if buy_needed < MIN_TRADE_USD:
+                # Try stablecoin conversion
+                if not ensure_quote_balance(cfg.quote_asset, buy_needed, state, dry_run):
+                    logger.info(f"  Skip buy {sym}: insufficient {cfg.quote_asset}")
+                    continue
+                available = state.available_quote(cfg.quote_asset)
+                buy_needed = min(buy_needed, available * 0.95)
+
+            if buy_needed < MIN_TRADE_USD:
+                continue
+
+            entry_price = plan.entry_prices.get(sym, price * 0.999)
+            if entry_price <= 0:
+                entry_price = price * 0.999
+            order = place_limit_buy(cfg, entry_price, buy_needed, dry_run)
+            if order:
+                orders_placed.append(order)
+                _reserve_quote_balance(
+                    state,
+                    cfg.quote_asset,
+                    _estimate_order_notional(order, fallback=buy_needed),
+                )
+                logger.info(f"  BUY {sym}: ${buy_needed:.2f} @ ${entry_price:.2f}")
+        except Exception as e:
+            logger.error(f"  Failed to buy {sym}: {e}")
+
+    # Save plan for next cycle context
+    _prev_plan = plan
+    _prev_portfolio_value = state.total_value_usd
 
     logger.info(f"\n{'='*60}")
-    logger.info(f"RL cycle complete: {len(orders_placed)} orders placed")
+    logger.info(f"Hybrid cycle complete: {len(orders_placed)} orders")
     logger.info(f"{'='*60}\n")
     return orders_placed
 
@@ -612,8 +722,8 @@ def main():
     parser.add_argument("--symbols", nargs="+",
                         default=["BTCUSD", "ETHUSD", "SOLUSD"],
                         help="Symbols to trade")
-    parser.add_argument("--model", type=str, default="gemini-3.1-flash-lite-preview")
-    parser.add_argument("--thinking-level", type=str, default="HIGH")
+    parser.add_argument("--model", type=str, default="gemini-3.1-flash-lite-preview",
+                        help="Gemini model for hybrid mode or LLM-only mode")
     parser.add_argument("--dry-run", action="store_true", default=True,
                         help="Dry run mode (no real orders)")
     parser.add_argument("--live", action="store_true",
@@ -625,9 +735,9 @@ def main():
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="(deprecated) Use --rl-checkpoint instead")
     parser.add_argument("--rl-checkpoint", type=str, default=None,
-                        help="Path to RL policy checkpoint. Enables RL-only mode.")
+                        help="Path to RL policy checkpoint. Enables hybrid RL+Gemini allocation mode.")
     parser.add_argument("--rl-alloc-pct", type=float, default=0.90,
-                        help="Fraction of portfolio to allocate to RL position")
+                        help="Deprecated legacy RL-only allocation cap; ignored in hybrid mode")
     parser.add_argument("--forecast-cache", type=str,
                         default="binanceneural/forecast_cache",
                         help="Forecast cache root for RL features")
@@ -648,22 +758,23 @@ def main():
             checkpoint_path=rl_checkpoint,
             forecast_cache_root=args.forecast_cache,
         )
-        logger.info(f"RL mode: checkpoint={rl_checkpoint}, alloc={args.rl_alloc_pct:.0%}")
+        logger.info(f"Hybrid mode: RL={rl_checkpoint} + Gemini={args.model}")
         logger.info(f"RL symbols: {', '.join(RL_SYMBOLS)}")
 
     while True:
         try:
             if rl_gen:
-                run_rl_trading_cycle(
+                run_hybrid_trading_cycle(
                     rl_gen=rl_gen,
-                    alloc_pct=args.rl_alloc_pct,
+                    gemini_model=args.model,
+                    forecast_cache_root=args.forecast_cache,
                     dry_run=dry_run,
                 )
             else:
                 run_trading_cycle(
                     symbols=args.symbols,
                     model=args.model,
-                    thinking_level=args.thinking_level,
+                    thinking_level="HIGH",
                     dry_run=dry_run,
                 )
         except Exception as e:

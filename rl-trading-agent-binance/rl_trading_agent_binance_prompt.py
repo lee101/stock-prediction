@@ -1,12 +1,18 @@
-"""Prompt builder for live Binance RL+LLM hybrid trader."""
+"""Prompt builder for live Binance per-symbol trader with Chronos2 forecasts."""
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Optional
+
 import numpy as np
+import pandas as pd
+
+
+FORECAST_CACHE = Path(__file__).resolve().parent.parent / "binanceneural" / "forecast_cache"
 
 
 def _compute_trend_context(history_rows: list[dict]) -> dict:
-    """Compute trend indicators from price history."""
     closes = [float(r["close"]) for r in history_rows]
     highs = [float(r["high"]) for r in history_rows]
     lows = [float(r["low"]) for r in history_rows]
@@ -36,18 +42,52 @@ def _compute_trend_context(history_rows: list[dict]) -> dict:
     return ctx
 
 
+def load_latest_forecast(symbol: str, horizon: int, cache_root: Optional[Path] = None) -> Optional[dict]:
+    root = cache_root or FORECAST_CACHE
+    path = root / f"h{horizon}" / f"{symbol}.parquet"
+    if not path.exists():
+        return None
+    try:
+        df = pd.read_parquet(path)
+        if df.empty:
+            return None
+        row = df.iloc[-1]
+        result = {}
+        for col in df.columns:
+            try:
+                val = float(row[col])
+                result[col] = val
+            except (ValueError, TypeError):
+                pass
+        return result
+    except Exception:
+        return None
+
+
+def _fmt_forecast(fc: Optional[dict], current_price: float) -> str:
+    if not fc:
+        return "  No forecast available"
+    lines = []
+    for key in ["predicted_close_p50", "predicted_high_p50", "predicted_low_p50"]:
+        if key in fc:
+            val = fc[key]
+            delta_pct = (val - current_price) / current_price * 100
+            label = key.replace("predicted_", "").replace("_p50", "")
+            lines.append(f"  {label}: ${val:.2f} ({delta_pct:+.2f}%)")
+    if "predicted_close_p90" in fc and "predicted_close_p10" in fc:
+        spread = fc["predicted_close_p90"] - fc["predicted_close_p10"]
+        spread_pct = spread / current_price * 100
+        lines.append(f"  90% CI spread: ${spread:.2f} ({spread_pct:.2f}%)")
+    return "\n".join(lines) if lines else "  No forecast available"
+
+
 def build_live_prompt(
     symbol: str,
     history_rows: list[dict],
     current_price: float,
+    fc_1h: Optional[dict] = None,
+    fc_24h: Optional[dict] = None,
 ) -> str:
-    """Build trading prompt from live Binance kline data.
-
-    Args:
-        symbol: Internal symbol name (e.g. "BTCUSD")
-        history_rows: List of dicts with timestamp, open, high, low, close, volume
-        current_price: Current live price
-    """
     recent = history_rows[-12:]
     price_lines = []
     for row in recent:
@@ -60,8 +100,7 @@ def build_live_prompt(
     trend_parts = []
     for key in ["ret_24h", "ret_48h", "ret_72h"]:
         if key in trend:
-            label = key.replace("ret_", "")
-            trend_parts.append(f"{label}: {trend[key]:+.2f}%")
+            trend_parts.append(f"{key.replace('ret_', '')}: {trend[key]:+.2f}%")
     if "atr_pct" in trend:
         trend_parts.append(f"ATR: {trend['atr_pct']:.2f}%")
     if "up_hours_12" in trend:
@@ -72,7 +111,6 @@ def build_live_prompt(
     if "low_24h" in trend:
         sr_line = f"  24h range: ${trend['low_24h']:.2f} - ${trend['high_24h']:.2f} ({trend['range_pct']:.2f}% wide)"
 
-    # Volume context
     volumes = [float(r.get("volume", 0)) for r in history_rows if r.get("volume")]
     vol_context = ""
     if len(volumes) >= 24:
@@ -81,32 +119,46 @@ def build_live_prompt(
         vol_ratio = recent_vol / avg_vol_24 if avg_vol_24 > 0 else 1.0
         vol_context = f"\nVOLUME: Current={recent_vol:.0f}, 24h avg={avg_vol_24:.0f}, ratio={vol_ratio:.2f}x"
 
-    return f"""You are an expert crypto trader analyzing live market data for a spot trading decision.
+    fc_section = ""
+    if fc_1h or fc_24h:
+        fc_section = f"""
+CHRONOS2 ML FORECASTS:
+1-hour forecast:
+{_fmt_forecast(fc_1h, current_price)}
+24-hour forecast:
+{_fmt_forecast(fc_24h, current_price)}
+"""
 
-SYMBOL: {symbol} (long only, spot market)
+    return f"""You are solving an optimization problem: maximize risk-adjusted returns on a crypto spot account.
+
+CONSTRAINTS:
+- LONG ONLY (spot market, no shorting)
+- 1-hour decision intervals, max 6-hour hold time
+- Transaction cost: 0.1% maker fee per trade
+- Objective: maximize Sortino ratio (penalize downside deviation, reward upside)
+
+SYMBOL: {symbol}
 CURRENT PRICE: ${current_price:.2f}
 {sr_line}
 
 TREND CONTEXT: {trend_line}
 {vol_context}
-
+{fc_section}
 LAST 12 HOURS:
 {chr(10).join(price_lines)}
 
-IMPORTANT: We can ONLY go long (spot market, no shorting). You should be actively looking for long entry opportunities.
+OPTIMIZATION TASK:
+Find the optimal balance between:
+1. ENTRY FREQUENCY: Too few trades = missed alpha. Too many = fee drag kills returns.
+2. POSITION SIZING: Set entries that maximize fill probability while minimizing adverse selection.
+3. DIRECTIONAL ACCURACY: A 55% hit rate with 2:1 R:R is highly profitable.
+4. RISK ASYMMETRY: The Sortino ratio only penalizes downside. Take asymmetric bets where upside >> downside.
 
-TASK: You are a profitable swing trader. Enter long when ANY of these conditions are met:
-1. Price is near recent support (24h low) with room to bounce
-2. Momentum is turning up after a dip (buy the dip)
-3. Price consolidating near highs (breakout setup)
-4. Strong volume surge with upward price movement
+Think about the probability distribution of the next 1-6 hours:
+- What is the expected move? (forecast + trend + momentum)
+- What is the variance? (ATR, recent range)
+- Is the risk/reward skewed favorably?
 
-SIZING & TARGETS:
-- Set buy_price slightly below current price (0.1-0.3% below for normal vol, 0.3-0.5% below for high vol)
-- Set sell_price at a realistic target (0.5-2% above entry, wider in high vol)
-- Aim for 2:1+ reward:risk ratio
-- Confidence: 0.6-0.9 for strong setups, 0.3-0.5 for marginal setups
+Only enter when expected_return > fees + slippage. Set buy_price and sell_price to capture the most likely profitable range.
 
-You should be entering trades roughly 25-40% of the time. Hold only when price action clearly indicates continued downside.
-
-Respond with JSON: {{"direction": "long" or "hold", "buy_price": <limit entry near support>, "sell_price": <take profit target>, "confidence": <0-1>, "reasoning": "<brief>"}}"""
+Respond with JSON: {{"direction": "long" or "hold", "buy_price": <entry>, "sell_price": <take profit>, "confidence": <0-1>, "reasoning": "<brief>"}}"""
