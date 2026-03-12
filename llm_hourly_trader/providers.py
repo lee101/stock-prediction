@@ -24,7 +24,7 @@ from llm_hourly_trader.gemini_wrapper import TradePlan
 # Gemini
 # ---------------------------------------------------------------------------
 
-def call_gemini(prompt: str, model: str = "gemini-2.5-flash", max_retries: int = 5,
+def call_gemini(prompt: str, model: str = "gemini-2.5-flash", max_retries: int = 3,
                 thinking_level: str | None = None) -> TradePlan:
     cached = get_cached(model, prompt)
     if cached is not None:
@@ -421,9 +421,9 @@ def _handle_retry(e: Exception, attempt: int, max_retries: int) -> None:
     err_str = str(e)
     if "429" in err_str or "rate" in err_str.lower():
         delay_match = re.search(r"retry.?(?:in|after).?(\d+\.?\d*)", err_str, re.IGNORECASE)
-        wait = float(delay_match.group(1)) + 1 if delay_match else 15 * (attempt + 1)
+        wait = float(delay_match.group(1)) + 1 if delay_match else 30 * (attempt + 1)
         if attempt < max_retries - 1:
-            time.sleep(min(wait, 120))
+            time.sleep(min(wait, 90))
             return
     elif attempt < max_retries - 1:
         time.sleep(2 * (attempt + 1))
