@@ -232,6 +232,32 @@ def test_quote_buying_power_only_counts_borrow_headroom_in_margin_mode() -> None
     ) == pytest.approx(150.0)
 
 
+def test_get_portfolio_state_margin_uses_net_asset_for_locked_inventory(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(trade_binance_live, "get_margin_free_balance", lambda asset: 1595.35 if asset == "USDT" else 0.0)
+    monkeypatch.setattr(trade_binance_live, "get_margin_borrowed_balance", lambda asset: 0.0)
+    monkeypatch.setattr(trade_binance_live, "get_max_borrowable", lambda asset: 10547.83 if asset == "USDT" else 0.0)
+    monkeypatch.setattr(trade_binance_live, "get_margin_account", lambda: {"totalNetAssetOfBtc": "0.0374722"})
+    monkeypatch.setattr(
+        trade_binance_live.binance_wrapper,
+        "get_symbol_price",
+        lambda symbol: 70434.01 if symbol == "BTCUSDT" else 1.0,
+    )
+
+    balances = {
+        "BTC": {"free": "0.00000671", "locked": "0.01473", "netAsset": "0.01473671"},
+        "ETH": {"free": "0.00001189", "locked": "0", "netAsset": "0.00000842"},
+    }
+    monkeypatch.setattr(trade_binance_live, "get_margin_asset_balance", lambda asset: balances.get(asset, None))
+
+    state = trade_binance_live.get_portfolio_state(execution_mode="margin")
+
+    assert state.usdt_balance == pytest.approx(1595.35)
+    assert state.borrowable_quotes["USDT"] == pytest.approx(10547.83)
+    assert state.positions["BTC"] == pytest.approx(0.01473671)
+    assert state.positions["ETH"] == pytest.approx(0.00000842)
+    assert state.total_value_usd == pytest.approx(0.0374722 * 70434.01)
+
+
 def test_reserve_buying_power_uses_free_quote_before_borrow_headroom() -> None:
     state = trade_binance_live.PortfolioState(
         usdt_balance=40.0,
