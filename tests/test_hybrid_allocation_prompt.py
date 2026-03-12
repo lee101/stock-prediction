@@ -247,3 +247,98 @@ def test_reserve_buying_power_uses_free_quote_before_borrow_headroom() -> None:
 
     assert state.usdt_balance == pytest.approx(0.0)
     assert state.borrowable_quotes["USDT"] == pytest.approx(60.0)
+
+
+def test_build_margin_capital_sync_plan_moves_base_assets_and_converts_fdusd_to_usdt() -> None:
+    plan = trade_binance_live._build_margin_capital_sync_plan(
+        spot_free={
+            "USDT": 50.0,
+            "FDUSD": 75.0,
+            "BTC": 0.25,
+            "ETH": 0.0,
+            "SOL": 0.0,
+            "DOGE": 0.0,
+            "SUI": 0.0,
+            "AAVE": 0.0,
+        },
+        margin_free={
+            "USDT": 10.0,
+            "FDUSD": 25.0,
+            "BTC": 0.0,
+            "ETH": 0.0,
+            "SOL": 0.0,
+            "DOGE": 0.0,
+            "SUI": 0.0,
+            "AAVE": 0.0,
+        },
+    )
+
+    assert len(plan.spot_to_margin) == 1
+    assert plan.spot_to_margin[0].asset == "BTC"
+    assert plan.spot_to_margin[0].amount == pytest.approx(0.24999999)
+    assert len(plan.margin_to_spot) == 1
+    assert plan.margin_to_spot[0].asset == "FDUSD"
+    assert plan.margin_to_spot[0].amount == pytest.approx(24.999999)
+    assert plan.spot_fdusd_to_usdt == pytest.approx(99.999998)
+    assert plan.transfer_all_spot_usdt_to_margin is True
+
+
+def test_build_margin_capital_sync_plan_skips_small_fdusd_conversion() -> None:
+    plan = trade_binance_live._build_margin_capital_sync_plan(
+        spot_free={"USDT": 0.0, "FDUSD": 4.0},
+        margin_free={"USDT": 0.0, "FDUSD": 3.0},
+    )
+
+    assert plan.margin_to_spot == ()
+    assert plan.spot_fdusd_to_usdt == pytest.approx(0.0)
+    assert plan.transfer_all_spot_usdt_to_margin is False
+
+
+def test_dedupe_side_orders_skips_when_existing_sell_covers_desired_qty() -> None:
+    open_orders = [
+        {
+            "symbol": "BTCUSDT",
+            "side": "SELL",
+            "origQty": "0.50",
+            "executedQty": "0.00",
+            "price": "71000.00",
+            "orderId": 123,
+        }
+    ]
+
+    remaining, skip = trade_binance_live._dedupe_side_orders(
+        open_orders,
+        symbol="BTCUSDT",
+        side="SELL",
+        execution_mode="margin",
+        dry_run=True,
+        desired_qty=0.49,
+    )
+
+    assert skip is True
+    assert remaining == open_orders
+
+
+def test_dedupe_side_orders_replaces_underfilled_buy_order() -> None:
+    open_orders = [
+        {
+            "symbol": "ETHUSDT",
+            "side": "BUY",
+            "origQty": "0.10",
+            "executedQty": "0.00",
+            "price": "2000.00",
+            "orderId": 456,
+        }
+    ]
+
+    remaining, skip = trade_binance_live._dedupe_side_orders(
+        open_orders,
+        symbol="ETHUSDT",
+        side="BUY",
+        execution_mode="margin",
+        dry_run=True,
+        desired_notional=500.0,
+    )
+
+    assert skip is False
+    assert remaining == []

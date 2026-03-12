@@ -109,6 +109,8 @@ In cross-margin mode, quote is USDT for all supported pairs. The bot uses Binanc
 - Long entry: `MARGIN_BUY`
 - Long exit: `AUTO_REPAY`
 - Extra buying power is capped by `get_max_borrowable("USDT")`
+- Before sizing orders, the runtime consolidates tracked spot balances into cross margin and converts transferable spot/margin `FDUSD` into spot `USDT`, then moves that `USDT` into margin
+- Existing same-side open orders are reused or replaced instead of blindly stacking duplicate hourly limit orders
 
 ## Files
 - `run_hybrid.py` - Backtest engine with RL+LLM simulation
