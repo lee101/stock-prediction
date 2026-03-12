@@ -1,6 +1,6 @@
 """Unified Stock+Crypto Trading Orchestrator.
 
-24/7 hourly loop that coordinates Alpaca (stocks) and Binance (crypto).
+24/7 hourly loop that coordinates Alpaca (stocks and crypto).
 Runs the right system at the right time with cross-asset awareness.
 
 Usage:
@@ -111,48 +111,81 @@ def get_crypto_signals(
     thinking_level: str = "HIGH",
     dry_run: bool = True,
 ) -> dict[str, TradePlan]:
-    """Generate LLM trading signals for crypto symbols."""
+    """Generate LLM trading signals for crypto symbols using Alpaca historical data."""
     import pandas as pd
-    from src.binan import binance_wrapper as bw
+    from alpaca.data.historical import CryptoHistoricalDataClient
+    from alpaca.data.requests import CryptoBarsRequest
+    from alpaca.data.timeframe import TimeFrame
+    from datetime import timedelta
+    from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 
     signals = {}
-    client = bw.get_client()
+    data_client = CryptoHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
+    now = datetime.now(timezone.utc)
+
+    # Alpaca crypto historical API uses "BTC/USD" format
+    def _alpaca_crypto_sym(s: str) -> str:
+        if "/" not in s and s.endswith("USD"):
+            return s[:-3] + "/USD"
+        return s
 
     for sym in symbols:
-        pair = CRYPTO_PAIRS.get(sym, sym.replace("USD", "USDT"))
+        alpaca_sym = _alpaca_crypto_sym(sym)
         try:
-            klines = client.get_klines(symbol=pair, interval="1h", limit=72)
+            req = CryptoBarsRequest(
+                symbol_or_symbols=alpaca_sym,
+                timeframe=TimeFrame.Hour,
+                start=now - timedelta(hours=78),
+                end=now,
+                limit=72,
+            )
+            bars = data_client.get_crypto_bars(req)
+            df = bars.df
+            if df is None or len(df) < 12:
+                logger.warning(f"  {sym}: insufficient bars ({0 if df is None else len(df)})")
+                continue
+
+            # Flatten multi-index if present
+            if isinstance(df.index, pd.MultiIndex):
+                df = df.xs(alpaca_sym, level="symbol")
+            df = df.reset_index()
+            if "timestamp" not in df.columns and "index" in df.columns:
+                df.rename(columns={"index": "timestamp"}, inplace=True)
+
+            history = []
+            for _, row in df.iterrows():
+                history.append({
+                    "timestamp": str(row.get("timestamp", ""))[:16],
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                    "volume": float(row.get("volume", 0)),
+                })
+
+            if len(history) < 12:
+                continue
+
+            current_price = history[-1]["close"]
+
+            prompt = build_unified_prompt(
+                symbol=sym,  # Use original symbol (ETHUSD) for the prompt
+                history_rows=history,
+                current_price=current_price,
+                snapshot=snapshot,
+                asset_class="crypto",
+            )
+
+            try:
+                plan = call_llm(prompt, model=model, thinking_level=thinking_level)
+                signals[sym] = plan
+                logger.info(f"  {sym}: {plan.direction} (conf={plan.confidence:.2f}, "
+                            f"buy=${plan.buy_price:.2f}, sell=${plan.sell_price:.2f})")
+            except Exception as e:
+                logger.error(f"  {sym}: LLM error: {e}")
+
         except Exception as e:
-            logger.error(f"  {sym}: klines error: {e}")
-            continue
-
-        history = [{
-            "timestamp": pd.Timestamp(k[0], unit="ms", tz="UTC").isoformat(),
-            "open": float(k[1]), "high": float(k[2]),
-            "low": float(k[3]), "close": float(k[4]),
-            "volume": float(k[5]),
-        } for k in klines]
-
-        if len(history) < 12:
-            continue
-
-        current_price = history[-1]["close"]
-
-        prompt = build_unified_prompt(
-            symbol=sym,
-            history_rows=history,
-            current_price=current_price,
-            snapshot=snapshot,
-            asset_class="crypto",
-        )
-
-        try:
-            plan = call_llm(prompt, model=model, thinking_level=thinking_level)
-            signals[sym] = plan
-            logger.info(f"  {sym}: {plan.direction} (conf={plan.confidence:.2f}, "
-                        f"buy=${plan.buy_price:.2f}, sell=${plan.sell_price:.2f})")
-        except Exception as e:
-            logger.error(f"  {sym}: LLM error: {e}")
+            logger.error(f"  {sym}: bars error: {e}")
 
     return signals
 
@@ -202,80 +235,91 @@ def execute_crypto_signals(
     snapshot: UnifiedPortfolioSnapshot,
     dry_run: bool = True,
 ) -> list[dict]:
-    """Execute crypto trading signals on Binance."""
+    """Execute crypto trading signals on Alpaca."""
+    from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
+    from alpaca.trading.client import TradingClient
+    from alpaca.trading.requests import LimitOrderRequest
+    from alpaca.trading.enums import OrderSide, TimeInForce
 
     orders = []
+    alpaca = TradingClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, paper=False)
+
     for sym, plan in signals.items():
-        if plan.direction != "long" or plan.confidence < 0.4:
-            continue
+        try:
+            if plan.direction != "long" or plan.confidence < 0.4:
+                continue
 
-        # Safety validation
-        pair = CRYPTO_PAIRS.get(sym, sym.replace("USD", "USDT"))
-        base_asset = sym.replace("USD", "")
-        pos = snapshot.binance_positions.get(base_asset)
-        current_price = pos.current_price if pos else plan.buy_price
-        safe, reason = validate_plan_safety(plan, current_price)
-        if not safe:
-            logger.warning(f"  {sym}: SAFETY BLOCKED - {reason}")
-            continue
+            # Safety validation
+            pos = snapshot.alpaca_positions.get(sym)
+            current_price = pos.current_price if pos else plan.buy_price
+            safe, reason = validate_plan_safety(plan, current_price, fee_bps=16.0)
+            if not safe:
+                logger.warning(f"  {sym}: SAFETY BLOCKED - {reason}")
+                continue
 
-        # Check existing position
-        pos_value = pos.market_value if pos else 0.0
-        total_crypto = max(snapshot.total_crypto_value, 1.0)
-        max_position = total_crypto * 0.25
+            # Check existing position
+            pos_value = pos.market_value if pos else 0.0
+            # Use alpaca_cash (not buying_power) — crypto is not margined
+            # Cap per-symbol crypto at 10% of account cash
+            max_position = snapshot.alpaca_cash * 0.10
 
-        if pos_value > 0 and pos_value >= max_position:
-            logger.info(f"  {sym}: already at max position (${pos_value:.0f})")
-            # Place take-profit if we have position
-            if pos and plan.sell_price > pos.current_price:
-                step = TradingStep(
-                    step_id=f"tp_{sym}_{int(time.time())}",
-                    broker="binance",
-                    action="sell",
+            if pos_value > 0 and pos_value >= max_position:
+                logger.info(f"  {sym}: already at max position (${pos_value:.0f})")
+                # Place take-profit sell if we have a position
+                if pos and plan.sell_price > 0 and plan.sell_price > pos.current_price:
+                    logger.info(f"  {sym}: updating TP sell @ ${plan.sell_price:.2f}")
+                    if not dry_run:
+                        req = LimitOrderRequest(
+                            symbol=sym,
+                            qty=round(pos.qty, 8),
+                            side=OrderSide.SELL,
+                            type="limit",
+                            time_in_force=TimeInForce.GTC,
+                            limit_price=round(plan.sell_price, 2),
+                        )
+                        result = alpaca.submit_order(req)
+                        orders.append({"symbol": sym, "action": "sell_tp", "price": plan.sell_price,
+                                       "qty": pos.qty, "order_id": str(result.id)})
+                    else:
+                        logger.info(f"    [DRY RUN] Would TP sell {pos.qty:.6f} @ ${plan.sell_price:.2f}")
+                        orders.append({"symbol": sym, "action": "sell_tp", "price": plan.sell_price,
+                                       "qty": pos.qty, "dry_run": True})
+                continue
+
+            # Calculate order size (cash only, no margin for crypto)
+            available = snapshot.alpaca_cash
+            trade_size = min(max_position - pos_value, available * 0.45)
+
+            if trade_size < 12:  # Min notional ~$10
+                logger.info(f"  {sym}: trade too small (${trade_size:.2f})")
+                continue
+
+            buy_price = plan.buy_price if plan.buy_price > 0 else 0.0
+            if buy_price <= 0:
+                continue
+
+            qty = trade_size / buy_price
+
+            logger.info(f"  {sym}: BUY {qty:.6f} @ ${buy_price:.2f} (${trade_size:.0f})")
+            if not dry_run:
+                req = LimitOrderRequest(
                     symbol=sym,
-                    binance_pair=pair,
-                    limit_price=plan.sell_price,
-                    qty=pos.qty,
+                    qty=round(qty, 8),
+                    side=OrderSide.BUY,
+                    type="limit",
+                    time_in_force=TimeInForce.GTC,
+                    limit_price=round(buy_price, 2),
                 )
-                if dry_run:
-                    logger.info(f"    [DRY RUN] Would place TP sell @ ${plan.sell_price:.2f}")
-                else:
-                    from unified_orchestrator.conditional_orders import execute_step_binance
-                    execute_step_binance(step, dry_run=False)
-                orders.append({"symbol": sym, "action": "sell_tp", "price": plan.sell_price})
-            continue
+                result = alpaca.submit_order(req)
+                orders.append({"symbol": sym, "action": "buy", "price": buy_price,
+                                "qty": qty, "order_id": str(result.id)})
+            else:
+                logger.info(f"    [DRY RUN]")
+                orders.append({"symbol": sym, "action": "buy", "price": buy_price,
+                                "qty": qty, "dry_run": True})
 
-        # Calculate order size
-        available = snapshot.binance_usdt + snapshot.binance_fdusd
-        trade_size = min(max_position - pos_value, available * 0.45)
-
-        if trade_size < 12:  # Min notional
-            logger.info(f"  {sym}: trade too small (${trade_size:.2f})")
-            continue
-
-        buy_price = plan.buy_price if plan.buy_price > 0 else 0.0
-        if buy_price <= 0:
-            continue
-
-        qty = trade_size / buy_price
-
-        logger.info(f"  {sym}: BUY {qty:.6f} @ ${buy_price:.2f} (${trade_size:.0f})")
-        if dry_run:
-            logger.info(f"    [DRY RUN]")
-        else:
-            step = TradingStep(
-                step_id=f"buy_{sym}_{int(time.time())}",
-                broker="binance",
-                action="buy",
-                symbol=sym,
-                binance_pair=pair,
-                limit_price=buy_price,
-                qty=qty,
-            )
-            from unified_orchestrator.conditional_orders import execute_step_binance
-            execute_step_binance(step, dry_run=False)
-
-        orders.append({"symbol": sym, "action": "buy", "price": buy_price, "qty": qty})
+        except Exception as e:
+            logger.error(f"  {sym}: execution error: {e}")
 
     return orders
 
@@ -296,6 +340,7 @@ def get_stock_signals(
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import StockBarsRequest
     from alpaca.data.timeframe import TimeFrame
+    from alpaca.data.enums import DataFeed
     from datetime import timedelta
     from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 
@@ -311,6 +356,7 @@ def get_stock_signals(
                 start=now - timedelta(hours=78),
                 end=now,
                 limit=72,
+                feed=DataFeed.IEX,
             )
             bars = data_client.get_stock_bars(req)
             df = bars.df
@@ -521,11 +567,12 @@ def run_cycle(
     logger.info(f"Regime: {snapshot.regime}")
     logger.info(f"Stocks: ${snapshot.total_stock_value:,.0f} | Crypto: ${snapshot.total_crypto_value:,.0f}")
     if snapshot.alpaca_positions:
+        crypto_syms = set(CRYPTO_SYMBOLS)
         for sym, pos in snapshot.alpaca_positions.items():
-            logger.info(f"  Stock: {sym} {pos.qty} @ ${pos.avg_price:.2f} (${pos.market_value:.0f})")
-    if snapshot.binance_positions:
-        for asset, pos in snapshot.binance_positions.items():
-            logger.info(f"  Crypto: {asset} {pos.qty:.6f} (${pos.market_value:.0f})")
+            if sym in crypto_syms:
+                logger.info(f"  Crypto: {sym} {pos.qty:.6f} @ ${pos.current_price:.2f} (${pos.market_value:.0f})")
+            else:
+                logger.info(f"  Stock: {sym} {pos.qty} @ ${pos.avg_price:.2f} (${pos.market_value:.0f})")
     logger.info(f"{'=' * 70}")
 
     results = {"regime": snapshot.regime, "orders": []}
