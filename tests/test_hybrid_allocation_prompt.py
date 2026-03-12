@@ -182,3 +182,9 @@ def test_reserve_quote_balance_only_reduces_requested_asset() -> None:
     trade_binance_live._reserve_quote_balance(state, "USDT", 30.0)
     assert state.fdusd_balance == pytest.approx(40.0)
     assert state.usdt_balance == pytest.approx(0.0)
+
+
+def test_resolve_spot_leverage_clamps_anything_above_one() -> None:
+    assert trade_binance_live._resolve_spot_leverage(0.5) == pytest.approx(0.5)
+    assert trade_binance_live._resolve_spot_leverage(1.0) == pytest.approx(1.0)
+    assert trade_binance_live._resolve_spot_leverage(5.0) == pytest.approx(1.0)

@@ -87,6 +87,9 @@ def build_live_prompt(
     current_price: float,
     fc_1h: Optional[dict] = None,
     fc_24h: Optional[dict] = None,
+    position_info: Optional[dict] = None,
+    fee_bps: int = 10,
+    leverage: float = 1.0,
 ) -> str:
     recent = history_rows[-12:]
     price_lines = []
@@ -129,18 +132,34 @@ CHRONOS2 ML FORECASTS:
 {_fmt_forecast(fc_24h, current_price)}
 """
 
+    pos_section = "\nPOSITION: Flat (no position)\n"
+    if position_info and position_info.get("qty", 0) > 0:
+        entry = position_info.get("entry_price", 0)
+        held = position_info.get("held_hours", 0)
+        pnl_pct = (current_price - entry) / entry * 100 if entry > 0 else 0
+        pnl_usd = position_info["qty"] * (current_price - entry)
+        pos_section = f"""
+CURRENT POSITION:
+  Holding {position_info['qty']:.6f} {symbol} @ ${entry:.2f} entry
+  Held {held:.0f}h (auto-close at 6h), P&L: ${pnl_usd:+.2f} ({pnl_pct:+.2f}%)
+  EXIT DECISION: If profitable and momentum fading, take profits. If losing, set tight stop.
+"""
+
+    fee_str = f"{fee_bps}bps per side" if fee_bps > 0 else "0bps (zero-fee FDUSD pair)"
+    lev_str = f"{leverage:.0f}x" if leverage > 1 else "1x (no leverage)"
     return f"""You are solving an optimization problem: maximize risk-adjusted returns on a crypto spot account.
 
 CONSTRAINTS:
 - LONG ONLY (spot market, no shorting)
+- Leverage: {lev_str}
 - 1-hour decision intervals, max 6-hour hold time
-- Transaction cost: 0.1% maker fee per trade
+- Transaction cost: {fee_str}
 - Objective: maximize Sortino ratio (penalize downside deviation, reward upside)
 
 SYMBOL: {symbol}
 CURRENT PRICE: ${current_price:.2f}
 {sr_line}
-
+{pos_section}
 TREND CONTEXT: {trend_line}
 {vol_context}
 {fc_section}
