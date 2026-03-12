@@ -316,7 +316,7 @@ def get_portfolio_state(execution_mode: str = "spot") -> PortfolioState:
             asset_entry = get_margin_asset_balance(cfg.base_asset)
             if not asset_entry:
                 continue
-            qty = float(asset_entry.get("free", 0.0))
+            qty = float(asset_entry.get("netAsset", 0.0))
             if qty > 0:
                 state.positions[cfg.base_asset] = qty
         return state
