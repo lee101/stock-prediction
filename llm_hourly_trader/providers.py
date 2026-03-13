@@ -20,6 +20,31 @@ warnings.filterwarnings("ignore", message=".*is not a valid ThinkingLevel.*")
 from llm_hourly_trader.cache import get_cached, set_cached
 from llm_hourly_trader.gemini_wrapper import TradePlan
 
+
+def _parse_trade_plan(data: dict) -> TradePlan:
+    """Parse a dict into a TradePlan, handling allocation_pct gracefully."""
+    return TradePlan(
+        direction=str(data.get("direction", "hold")).lower().strip(),
+        buy_price=float(data.get("buy_price", 0) or 0),
+        sell_price=float(data.get("sell_price", 0) or 0),
+        confidence=float(data.get("confidence", 0) or 0),
+        reasoning=str(data.get("reasoning", "")),
+        allocation_pct=float(data.get("allocation_pct", 0) or 0),
+    )
+
+
+# Standard JSON schema properties for all providers
+_TRADE_PROPERTIES = {
+    "direction": {"type": "string", "description": "long, short, or hold"},
+    "buy_price": {"type": "number", "description": "Limit entry price, 0 if no entry"},
+    "sell_price": {"type": "number", "description": "Take-profit price, 0 if no exit"},
+    "confidence": {"type": "number", "description": "0.0 to 1.0"},
+    "reasoning": {"type": "string", "description": "Brief explanation"},
+    "allocation_pct": {"type": "number", "description": "Percent of available capital to allocate (0-100)"},
+}
+_TRADE_REQUIRED = ["direction", "buy_price", "sell_price", "confidence", "reasoning", "allocation_pct"]
+
+
 # ---------------------------------------------------------------------------
 # Gemini
 # ---------------------------------------------------------------------------
@@ -42,6 +67,10 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash", max_retries: int =
             "sell_price": genai.types.Schema(type=genai.types.Type.STRING),
             "confidence": genai.types.Schema(type=genai.types.Type.STRING),
             "reasoning": genai.types.Schema(type=genai.types.Type.STRING),
+            "allocation_pct": genai.types.Schema(
+                type=genai.types.Type.STRING,
+                description="Percent of available capital to allocate (0-100)",
+            ),
         },
     )
 
@@ -71,13 +100,7 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash", max_retries: int =
                 config=config,
             )
             data = json.loads(response.text)
-            plan = TradePlan(
-                direction=data.get("direction", "hold").lower().strip(),
-                buy_price=float(data.get("buy_price", 0) or 0),
-                sell_price=float(data.get("sell_price", 0) or 0),
-                confidence=float(data.get("confidence", 0) or 0),
-                reasoning=data.get("reasoning", ""),
-            )
+            plan = _parse_trade_plan(data)
             set_cached(model, prompt, plan.__dict__)
             return plan
         except Exception as e:
@@ -113,15 +136,9 @@ def call_openai(prompt: str, model: str = "gpt-4.1-mini", max_retries: int = 5) 
         "strict": True,
         "schema": {
             "type": "object",
-            "required": ["direction", "buy_price", "sell_price", "confidence", "reasoning"],
+            "required": _TRADE_REQUIRED,
             "additionalProperties": False,
-            "properties": {
-                "direction": {"type": "string", "description": "long, short, or hold"},
-                "buy_price": {"type": "number", "description": "Limit entry price, 0 if no entry"},
-                "sell_price": {"type": "number", "description": "Take-profit price, 0 if no exit"},
-                "confidence": {"type": "number", "description": "0.0 to 1.0"},
-                "reasoning": {"type": "string", "description": "Brief explanation"},
-            },
+            "properties": _TRADE_PROPERTIES,
         },
     }
 
@@ -144,13 +161,7 @@ def call_openai(prompt: str, model: str = "gpt-4.1-mini", max_retries: int = 5) 
 
             resp = client.chat.completions.create(**kwargs)
             data = json.loads(resp.choices[0].message.content)
-            plan = TradePlan(
-                direction=str(data.get("direction", "hold")).lower().strip(),
-                buy_price=float(data.get("buy_price", 0) or 0),
-                sell_price=float(data.get("sell_price", 0) or 0),
-                confidence=float(data.get("confidence", 0) or 0),
-                reasoning=str(data.get("reasoning", "")),
-            )
+            plan = _parse_trade_plan(data)
             set_cached(model, prompt, plan.__dict__)
             return plan
         except Exception as e:
@@ -162,8 +173,17 @@ def call_openai(prompt: str, model: str = "gpt-4.1-mini", max_retries: int = 5) 
 # Anthropic (Claude Sonnet 4.6, etc.)
 # ---------------------------------------------------------------------------
 
-def call_anthropic(prompt: str, model: str = "claude-sonnet-4-6", max_retries: int = 5) -> TradePlan:
-    cached = get_cached(model, prompt)
+def call_anthropic(prompt: str, model: str = "claude-sonnet-4-6", max_retries: int = 5,
+                   thinking: bool = False, effort: str | None = None) -> TradePlan:
+    """Call Anthropic Claude API.
+
+    Args:
+        thinking: Enable extended thinking (adaptive mode).
+        effort: Output effort level — "low" for cheap backtesting, "max" for production.
+                Maps to output_config.effort on the API.
+    """
+    cache_key_suffix = f"_think={thinking}_effort={effort}" if (thinking or effort) else ""
+    cached = get_cached(model + cache_key_suffix, prompt)
     if cached is not None:
         return TradePlan(**cached)
 
@@ -176,38 +196,36 @@ def call_anthropic(prompt: str, model: str = "claude-sonnet-4-6", max_retries: i
         "description": "Submit your trading decision",
         "input_schema": {
             "type": "object",
-            "required": ["direction", "buy_price", "sell_price", "confidence", "reasoning"],
-            "properties": {
-                "direction": {"type": "string", "description": "long, short, or hold"},
-                "buy_price": {"type": "number", "description": "Limit entry price, 0 if no entry"},
-                "sell_price": {"type": "number", "description": "Take-profit price, 0 if no exit"},
-                "confidence": {"type": "number", "description": "0.0 to 1.0"},
-                "reasoning": {"type": "string", "description": "Brief explanation"},
-            },
+            "required": _TRADE_REQUIRED,
+            "properties": _TRADE_PROPERTIES,
         },
     }
 
     for attempt in range(max_retries):
         try:
-            resp = client.messages.create(
-                model=model,
-                max_tokens=1024,
-                tools=[tool_schema],
-                tool_choice={"type": "tool", "name": "submit_trade_plan"},
-                messages=[{"role": "user", "content": prompt}],
-            )
+            kwargs = {
+                "model": model,
+                "max_tokens": 16000 if thinking else 1024,
+                "tools": [tool_schema],
+                "tool_choice": {"type": "tool", "name": "submit_trade_plan"},
+                "messages": [{"role": "user", "content": prompt}],
+            }
+
+            # Extended thinking (adaptive = thinks when needed)
+            if thinking:
+                kwargs["thinking"] = {"type": "adaptive"}
+
+            # Effort level (low = cheap backtesting, max = production quality)
+            if effort:
+                kwargs["output_config"] = {"effort": effort}
+
+            resp = client.messages.create(**kwargs)
             # Extract tool use block
             for block in resp.content:
                 if block.type == "tool_use" and block.name == "submit_trade_plan":
                     data = block.input
-                    plan = TradePlan(
-                        direction=str(data.get("direction", "hold")).lower().strip(),
-                        buy_price=float(data.get("buy_price", 0) or 0),
-                        sell_price=float(data.get("sell_price", 0) or 0),
-                        confidence=float(data.get("confidence", 0) or 0),
-                        reasoning=str(data.get("reasoning", "")),
-                    )
-                    set_cached(model, prompt, plan.__dict__)
+                    plan = _parse_trade_plan(data)
+                    set_cached(model + cache_key_suffix, prompt, plan.__dict__)
                     return plan
             return TradePlan("hold", 0, 0, 0, "No tool use in response")
         except Exception as e:
@@ -238,7 +256,7 @@ def call_deepseek(prompt: str, model: str = "deepseek-chat", max_retries: int = 
             kwargs = {
                 "model": model,
                 "messages": [
-                    {"role": "system", "content": "You are a trading assistant. Always respond with valid JSON containing: direction (long/short/hold), buy_price (number), sell_price (number), confidence (0-1), reasoning (string)."},
+                    {"role": "system", "content": "You are a trading assistant. Always respond with valid JSON containing: direction (long/short/hold), buy_price (number), sell_price (number), confidence (0-1), reasoning (string), allocation_pct (0-100)."},
                     {"role": "user", "content": prompt},
                 ],
                 "response_format": {"type": "json_object"},
@@ -252,13 +270,7 @@ def call_deepseek(prompt: str, model: str = "deepseek-chat", max_retries: int = 
             resp = client.chat.completions.create(**kwargs)
             text = resp.choices[0].message.content
             data = json.loads(text)
-            plan = TradePlan(
-                direction=str(data.get("direction", "hold")).lower().strip(),
-                buy_price=float(data.get("buy_price", 0) or 0),
-                sell_price=float(data.get("sell_price", 0) or 0),
-                confidence=float(data.get("confidence", 0) or 0),
-                reasoning=str(data.get("reasoning", "")),
-            )
+            plan = _parse_trade_plan(data)
             set_cached(model, prompt, plan.__dict__)
             return plan
         except Exception as e:
@@ -278,19 +290,54 @@ def _ensure_codex_schema() -> str:
     if not os.path.exists(_CODEX_SCHEMA_PATH):
         schema = {
             "type": "object",
-            "required": ["direction", "buy_price", "sell_price", "confidence", "reasoning"],
+            "required": _TRADE_REQUIRED,
             "additionalProperties": False,
-            "properties": {
-                "direction": {"type": "string", "description": "long, short, or hold"},
-                "buy_price": {"type": "number", "description": "Limit entry price, 0 if no entry"},
-                "sell_price": {"type": "number", "description": "Take-profit price, 0 if no exit"},
-                "confidence": {"type": "number", "description": "0.0 to 1.0"},
-                "reasoning": {"type": "string", "description": "Brief explanation"},
-            },
+            "properties": _TRADE_PROPERTIES,
         }
         with open(_CODEX_SCHEMA_PATH, "w") as f:
             json.dump(schema, f)
     return _CODEX_SCHEMA_PATH
+
+
+def call_openai_responses(prompt: str, model: str = "gpt-5.4", max_retries: int = 5,
+                          reasoning_effort: str = "low") -> TradePlan:
+    """Call GPT-5.x via OpenAI Responses API with structured outputs."""
+    cached = get_cached(model, prompt)
+    if cached is not None:
+        return TradePlan(**cached)
+
+    from openai import OpenAI
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+
+    json_schema = {
+        "type": "json_schema",
+        "name": "trade_plan",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "required": _TRADE_REQUIRED,
+            "additionalProperties": False,
+            "properties": _TRADE_PROPERTIES,
+        },
+    }
+
+    for attempt in range(max_retries):
+        try:
+            resp = client.responses.create(
+                model=model,
+                input=[{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+                text={"format": json_schema},
+                reasoning={"effort": reasoning_effort, "summary": "auto"},
+                store=False,
+            )
+            text = resp.output_text
+            data = json.loads(text)
+            plan = _parse_trade_plan(data)
+            set_cached(model, prompt, plan.__dict__)
+            return plan
+        except Exception as e:
+            _handle_retry(e, attempt, max_retries)
+    return TradePlan("hold", 0, 0, 0, "API exhausted")
 
 
 def call_codex(prompt: str, model: str = "gpt-5.4", max_retries: int = 2,
@@ -338,13 +385,7 @@ def call_codex(prompt: str, model: str = "gpt-5.4", max_retries: int = 2,
                 text = re.sub(r"\n?```$", "", text)
 
             data = json.loads(text)
-            plan = TradePlan(
-                direction=str(data.get("direction", "hold")).lower().strip(),
-                buy_price=float(data.get("buy_price", 0) or 0),
-                sell_price=float(data.get("sell_price", 0) or 0),
-                confidence=float(data.get("confidence", 0) or 0),
-                reasoning=str(data.get("reasoning", "")),
-            )
+            plan = _parse_trade_plan(data)
             set_cached(model, prompt, plan.__dict__)
             return plan
         except Exception as e:
@@ -384,6 +425,7 @@ def _handle_retry(e: Exception, attempt: int, max_retries: int) -> None:
 PROVIDER_FNS = {
     "gemini": call_gemini,
     "openai": call_openai,
+    "openai_responses": call_openai_responses,
     "anthropic": call_anthropic,
     "deepseek": call_deepseek,
     "codex": call_codex,
@@ -403,9 +445,10 @@ MODEL_PROVIDERS = {
     "o3": "openai",
     "o3-mini": "openai",
     "o4-mini": "openai",
-    # OpenAI via codex CLI (ChatGPT Pro plan)
-    "gpt-5.4": "codex",
+    # OpenAI via Responses API
+    "gpt-5.4": "openai_responses",
     # Anthropic
+    "claude-opus-4-6": "anthropic",
     "claude-sonnet-4-6": "anthropic",
     "claude-haiku-4-5-20251001": "anthropic",
     # DeepSeek
@@ -415,8 +458,14 @@ MODEL_PROVIDERS = {
 
 
 def call_llm(prompt: str, model: str, provider: Optional[str] = None,
-             thinking_level: Optional[str] = None) -> TradePlan:
-    """Call any LLM provider with auto-detection."""
+             thinking_level: Optional[str] = None,
+             reasoning_effort: Optional[str] = None) -> TradePlan:
+    """Call any LLM provider with auto-detection.
+
+    For Anthropic models:
+      - thinking_level maps to thinking=True (adaptive extended thinking)
+      - reasoning_effort maps to effort level ("low" for backtesting, "max" for production)
+    """
     if provider is None:
         provider = MODEL_PROVIDERS.get(model)
         if provider is None:
@@ -431,4 +480,10 @@ def call_llm(prompt: str, model: str, provider: Optional[str] = None,
     fn = PROVIDER_FNS[provider]
     if provider == "gemini" and thinking_level:
         return fn(prompt, model=model, thinking_level=thinking_level)
+    if provider == "openai_responses":
+        return fn(prompt, model=model, reasoning_effort=reasoning_effort or "low")
+    if provider == "anthropic":
+        thinking = bool(thinking_level)  # any thinking_level enables adaptive thinking
+        effort = reasoning_effort  # "low" for backtesting, "max" for production
+        return fn(prompt, model=model, thinking=thinking, effort=effort)
     return fn(prompt, model=model)

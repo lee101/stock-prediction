@@ -29,7 +29,7 @@ from src.symbol_utils import is_crypto_symbol
 
 # Default symbol sets
 STOCK_SYMBOLS = ["NVDA", "PLTR", "GOOG", "DBX", "TRIP", "MTCH"]
-CRYPTO_SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD"]
+CRYPTO_SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "LTCUSD", "AVAXUSD"]
 
 
 def load_bars_and_actions(
