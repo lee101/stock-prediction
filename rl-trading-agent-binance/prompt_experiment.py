@@ -167,11 +167,55 @@ PROMPTS = {
     "optimization": PROMPT_C_OPTIMIZATION,
 }
 
+SHORT_POLICY_ALLOW = "allow"
+SHORT_POLICY_FILTER = "filter"
+SHORT_POLICIES = {SHORT_POLICY_ALLOW, SHORT_POLICY_FILTER}
+
 
 def build_prompt(variant, symbol, history_rows, fc_1h, fc_24h, rl_signal, prev_rl_signal, prev_outcome):
     current_price = float(history_rows[-1]["close"])
     context = _market_context_block(symbol, history_rows, current_price, fc_1h, fc_24h, rl_signal, prev_rl_signal, prev_outcome)
     return PROMPTS[variant].format(context=context)
+
+
+def _symbol_config_for_short_policy(symbol: str, short_policy: str) -> SymbolConfig:
+    if short_policy not in SHORT_POLICIES:
+        raise ValueError(f"Unsupported short policy {short_policy!r}; expected one of {sorted(SHORT_POLICIES)}.")
+    base = SYMBOL_UNIVERSE.get(symbol)
+    asset_class = base.asset_class if base else "crypto"
+    maker_fee = base.maker_fee if base else 0.0008
+    if short_policy == SHORT_POLICY_ALLOW and asset_class == "crypto":
+        directions = ["long", "short"]
+    else:
+        directions = list(base.allowed_directions) if base else ["long"]
+        directions = [direction for direction in directions if direction != "short"]
+        if not directions:
+            directions = ["long"]
+    return SymbolConfig(symbol, asset_class, directions, maker_fee)
+
+
+def _normalize_plan_for_short_policy(
+    plan: TradePlan,
+    *,
+    last_close: float,
+    short_policy: str,
+) -> tuple[TradePlan, bool]:
+    if short_policy not in SHORT_POLICIES:
+        raise ValueError(f"Unsupported short policy {short_policy!r}; expected one of {sorted(SHORT_POLICIES)}.")
+    if plan.direction not in ("long", "short", "hold"):
+        return TradePlan("hold", 0, 0, 0, "invalid direction"), False
+    if short_policy == SHORT_POLICY_FILTER and plan.direction == "short":
+        return TradePlan("hold", 0, 0, 0, "short filtered"), True
+    if plan.direction != "short":
+        return plan, False
+
+    buy_price = plan.buy_price
+    sell_price = plan.sell_price
+    if buy_price > 0 and buy_price < last_close:
+        buy_price = last_close * 1.001
+    if sell_price > 0 and sell_price > last_close:
+        sell_price = last_close * 0.999
+    return TradePlan("short", buy_price, sell_price, plan.confidence, plan.reasoning), False
 
 
 def run_experiment(
@@ -183,6 +227,7 @@ def run_experiment(
     checkpoint_path: str,
     leverage: float = 5.0,
     thinking_level: str | None = None,
+    short_policy: str = SHORT_POLICY_ALLOW,
 ):
     cache_tag = f"prompt-exp-{variant}-{model}"
     ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
@@ -229,7 +274,7 @@ def run_experiment(
     end_ts = min(fc_ends)
     start_ts = end_ts - timedelta(days=days)
 
-    sym_configs = {s: SYMBOL_UNIVERSE.get(s, SymbolConfig(s, "crypto")) for s in symbols}
+    sym_configs = {s: _symbol_config_for_short_policy(s, short_policy) for s in symbols}
 
     def get_features_at(ts):
         features = np.zeros((len(BINANCE6_SYMBOLS), 16), dtype=np.float32)
@@ -323,21 +368,19 @@ def run_experiment(
                 rate = done / elapsed if elapsed > 0 else 0
                 print(f"    [{variant}] {done}/{total} ({rate:.1f}/s)")
 
-    # Allow all directions (long, short, hold)
     action_rows, bar_rows = [], []
-    stats = {"long": 0, "short": 0, "hold": 0}
+    stats = {"long": 0, "short": 0, "hold": 0, "short_filtered": 0}
 
     for sym, bar, plan, rl_sig in results:
         ts = bar["timestamp"] if isinstance(bar["timestamp"], pd.Timestamp) else pd.Timestamp(bar["timestamp"])
-        if plan.direction not in ("long", "short", "hold"):
-            plan = TradePlan("hold", 0, 0, 0, "invalid direction")
-
         last_close = float(bar["close"])
-        if plan.direction == "short":
-            if plan.buy_price > 0 and plan.buy_price < last_close:
-                plan.buy_price = last_close * 1.001
-            if plan.sell_price > 0 and plan.sell_price > last_close:
-                plan.sell_price = last_close * 0.999
+        plan, short_filtered = _normalize_plan_for_short_policy(
+            plan,
+            last_close=last_close,
+            short_policy=short_policy,
+        )
+        if short_filtered:
+            stats["short_filtered"] += 1
 
         stats[plan.direction] = stats.get(plan.direction, 0) + 1
         action_rows.append({
@@ -372,6 +415,7 @@ def run_experiment(
 
     return {
         "variant": variant, "model": model, "leverage": leverage,
+        "short_policy": short_policy,
         "days": days, "symbols": symbols,
         **m, "entries": buys, "realized_pnl": pnl, "fees": fees,
         "signal_counts": stats,
@@ -388,11 +432,12 @@ def main():
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--leverage", type=float, default=5.0)
     parser.add_argument("--variants", nargs="+", default=list(PROMPTS.keys()))
+    parser.add_argument("--short-policy", choices=sorted(SHORT_POLICIES), default=SHORT_POLICY_ALLOW)
     args = parser.parse_args()
 
     print(f"\n{'='*70}")
     print(f"PROMPT EXPERIMENT: {args.variants}")
-    print(f"Model: {args.model}, Leverage: {args.leverage}x, Days: {args.days}")
+    print(f"Model: {args.model}, Leverage: {args.leverage}x, Days: {args.days}, Short policy: {args.short_policy}")
     print(f"{'='*70}\n")
 
     all_results = {}
@@ -400,7 +445,7 @@ def main():
         print(f"\n--- Running variant: {v} ---")
         r = run_experiment(
             v, args.symbols, args.days, args.model, args.parallel,
-            args.checkpoint, args.leverage, args.thinking_level,
+            args.checkpoint, args.leverage, args.thinking_level, args.short_policy,
         )
         all_results[v] = r
 
