@@ -157,8 +157,20 @@ def build_unified_prompt(
         trend_parts.append(f"48h: {ret_48h:+.2f}%")
     if len(highs) >= 24:
         atr = np.mean([highs[-i] - lows[-i] for i in range(1, 25)])
-        trend_parts.append(f"ATR: {atr / current_price * 100:.2f}%")
+        atr_pct = atr / current_price * 100
+        trend_parts.append(f"ATR: {atr_pct:.2f}%")
     trend_line = " | ".join(trend_parts) if trend_parts else "N/A"
+
+    # Trend regime: is price above or below SMA48?
+    trend_regime = ""
+    if len(closes) >= 48:
+        sma48 = np.mean(closes[-48:])
+        if current_price > sma48 * 1.01:
+            trend_regime = "UPTREND (price above SMA48)"
+        elif current_price < sma48 * 0.99:
+            trend_regime = "DOWNTREND (price below SMA48) — CAUTION: only enter with strong edge"
+        else:
+            trend_regime = "SIDEWAYS (price near SMA48)"
 
     # Support/resistance
     sr_line = ""
@@ -167,14 +179,22 @@ def build_unified_prompt(
         high_24 = max(highs[-24:])
         sr_line = f"  24h range: ${low_24:.2f} - ${high_24:.2f} ({(high_24 - low_24) / current_price * 100:.2f}% wide)"
 
-    # Forecast section
+    # Forecast section with confidence intervals
     fc_text = ""
     if forecast_1h:
-        delta = (forecast_1h.get("predicted_close_p50", current_price) - current_price) / current_price * 100
-        fc_text += f"\n  1h forecast: close={forecast_1h['predicted_close_p50']:.2f} ({delta:+.2f}%)"
+        p50 = forecast_1h.get("predicted_close_p50", current_price)
+        delta = (p50 - current_price) / current_price * 100
+        p10 = forecast_1h.get("predicted_close_p10", p50)
+        p90 = forecast_1h.get("predicted_close_p90", p50)
+        spread = (p90 - p10) / current_price * 100
+        fc_text += f"\n  1h forecast: ${p50:.2f} ({delta:+.2f}%), 80% CI: ${p10:.2f}-${p90:.2f} (±{spread/2:.2f}%)"
     if forecast_24h:
-        delta = (forecast_24h.get("predicted_close_p50", current_price) - current_price) / current_price * 100
-        fc_text += f"\n  24h forecast: close={forecast_24h['predicted_close_p50']:.2f} ({delta:+.2f}%)"
+        p50 = forecast_24h.get("predicted_close_p50", current_price)
+        delta = (p50 - current_price) / current_price * 100
+        p10 = forecast_24h.get("predicted_close_p10", p50)
+        p90 = forecast_24h.get("predicted_close_p90", p50)
+        spread = (p90 - p10) / current_price * 100
+        fc_text += f"\n  24h forecast: ${p50:.2f} ({delta:+.2f}%), 80% CI: ${p10:.2f}-${p90:.2f} (±{spread/2:.2f}%)"
 
     # Cross-asset context
     portfolio_ctx = build_portfolio_context(snapshot, best_stock_edges, best_crypto_edges)
@@ -226,6 +246,7 @@ FEES: {fee_str}{position_ctx}
 {time_ctx}
 
 TREND CONTEXT: {trend_line}
+{f"TREND REGIME: {trend_regime}" if trend_regime else ""}
 
 CHRONOS2 FORECASTS:{fc_text if fc_text else " None available"}
 
@@ -235,9 +256,12 @@ LAST 12 HOURS:
 
 TASK: You are a profitable swing trader. All orders must be LIMIT orders (never market).
 - Set buy_price slightly below current (0.1-0.3% below for normal vol)
-- Set sell_price at realistic target (0.5-2% above entry for new entries, or above current for exits)
+- Set sell_price at realistic target (1.5-2.5% above entry for new entries, or above current for exits)
+- In DOWNTREND: prefer to HOLD or set very tight targets. Only enter with strong edge (>1.5% expected move).
+- In UPTREND: wider targets (2-3%) capture more upside.
 - Confidence: 0.6-0.9 for strong setups, 0.3-0.5 for marginal
+- allocation_pct: How much of available capital to put on this trade (0-100%). Use 20-40% for normal conviction, 50-80% for high conviction, 0% for hold. In downtrends, prefer 10-25%.
 - Enter trades 25-40% of the time. Hold when no clear edge.
 - IMPORTANT: If you already hold a position, ALWAYS set sell_price to your take-profit exit target, even if direction is "hold". Every position must have an exit price.
 
-Respond with JSON: {{"direction": {direction_json_hint}, "buy_price": <limit entry or 0 if hold>, "sell_price": <ALWAYS set take-profit exit for held positions>, "confidence": <0-1>, "reasoning": "<brief>"}}"""
+Respond with JSON: {{"direction": {direction_json_hint}, "buy_price": <limit entry or 0 if hold>, "sell_price": <ALWAYS set take-profit exit for held positions>, "confidence": <0-1>, "allocation_pct": <0-100>, "reasoning": "<brief>"}}"""

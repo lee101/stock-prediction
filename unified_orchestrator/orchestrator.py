@@ -32,6 +32,12 @@ from unified_orchestrator.state import (
 )
 from unified_orchestrator.prompt_builder import build_unified_prompt
 from unified_orchestrator.alpaca_watcher import AlpacaCryptoWatcher, OrderPair
+from unified_orchestrator.position_tracker import (
+    load_entry_times,
+    save_entry_times,
+    update_entry_times,
+    get_force_exit_symbols,
+)
 from unified_orchestrator.backout import select_backout_candidates, execute_backout
 from unified_orchestrator.conditional_orders import (
     execute_plan,
@@ -72,6 +78,10 @@ CRYPTO_CHECKPOINT_CANDIDATES = [
     REPO / "pufferlib_market/checkpoints/autoresearch/reg_combo_2/best.pt",
 ]
 CRYPTO_SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "LTCUSD", "AVAXUSD"]
+
+# Max hours to hold a crypto position before forcing exit at near-market price.
+# Confirmed optimal by hold-sweep: Sortino=20.69 at 6h vs 11.66 at 4h, 6.16 at 12h.
+MAX_HOLD_HOURS = 6
 _CHECKPOINT_DATA_HINTS = {
     "stocks13_featlag1_fee5bps_longonly_run4": REPO / "pufferlib_market/data/stocks13_hourly_forecast_mktd_v2_start20250915_featlag1.bin",
     "stocks13_issuedat_featlag1_fee5bps_longonly_run5": REPO / "pufferlib_market/data/stocks13_hourly_forecast_mktd_v2_start20250915_issuedat_featlag1.bin",
@@ -387,29 +397,35 @@ def _format_rl_hint(signal: RLSignal | None, source: str) -> str:
 
 
 def _fetch_crypto_history_frames(data_client, symbols: list[str], now, *, lookback_hours: int = 78):
+    """Fetch hourly bars for each crypto symbol individually.
+
+    Alpaca's batch CryptoBarsRequest is unreliable (only returns one symbol's
+    data when multiple are requested).  Individual requests are slower but
+    consistent.
+    """
     from datetime import timedelta
 
     from alpaca.data.requests import CryptoBarsRequest
     from alpaca.data.timeframe import TimeFrame
 
-    request_symbols = {
-        sym: sym[:-3] + "/USD" if "/" not in sym and sym.endswith("USD") else sym
-        for sym in symbols
-    }
-    req = CryptoBarsRequest(
-        symbol_or_symbols=list(request_symbols.values()),
-        timeframe=TimeFrame.Hour,
-        start=now - timedelta(hours=lookback_hours),
-        end=now,
-        limit=72,
-    )
-    bars = data_client.get_crypto_bars(req)
-    raw_df = getattr(bars, "df", None)
     frames = {}
-    for sym, request_sym in request_symbols.items():
-        frame = _select_symbol_frame(raw_df, request_sym)
-        if frame is not None:
-            frames[sym] = frame
+    for sym in symbols:
+        request_sym = sym[:-3] + "/USD" if "/" not in sym and sym.endswith("USD") else sym
+        try:
+            req = CryptoBarsRequest(
+                symbol_or_symbols=request_sym,
+                timeframe=TimeFrame.Hour,
+                start=now - timedelta(hours=lookback_hours),
+                end=now,
+                limit=72,
+            )
+            bars = data_client.get_crypto_bars(req)
+            raw_df = getattr(bars, "df", None)
+            frame = _select_symbol_frame(raw_df, request_sym)
+            if frame is not None:
+                frames[sym] = frame
+        except Exception as e:
+            logger.debug(f"  {sym}: bars fetch error: {e}")
     return frames
 
 
@@ -420,21 +436,26 @@ def _fetch_stock_history_frames(data_client, symbols: list[str], now, *, lookbac
     from alpaca.data.requests import StockBarsRequest
     from alpaca.data.timeframe import TimeFrame
 
-    req = StockBarsRequest(
-        symbol_or_symbols=symbols,
-        timeframe=TimeFrame.Hour,
-        start=now - timedelta(hours=lookback_hours),
-        end=now,
-        limit=72,
-        feed=DataFeed.IEX,
-    )
-    bars = data_client.get_stock_bars(req)
-    raw_df = getattr(bars, "df", None)
+    # Fetch per-symbol individually — batch requests return unreliable multi-index
+    # structures (only one symbol's data often appears).
     frames = {}
     for sym in symbols:
-        frame = _select_symbol_frame(raw_df, sym)
-        if frame is not None:
-            frames[sym] = frame
+        try:
+            req = StockBarsRequest(
+                symbol_or_symbols=sym,
+                timeframe=TimeFrame.Hour,
+                start=now - timedelta(hours=lookback_hours),
+                end=now,
+                limit=72,
+                feed=DataFeed.IEX,
+            )
+            bars = data_client.get_stock_bars(req)
+            raw_df = getattr(bars, "df", None)
+            frame = _select_symbol_frame(raw_df, sym)
+            if frame is not None:
+                frames[sym] = frame
+        except Exception as e:
+            logger.debug(f"  {sym}: stock bars fetch error: {e}")
     return frames
 
 
@@ -517,9 +538,10 @@ def get_crypto_signals(
         try:
             plan = call_llm(prompt, model=model, thinking_level=thinking_level)
             signals[sym] = plan
+            alloc_str = f", alloc={plan.allocation_pct:.0f}%" if plan.allocation_pct > 0 else ""
             logger.info(
                 f"  {sym}: {plan.direction} (conf={plan.confidence:.2f}, "
-                f"buy=${plan.buy_price:.2f}, sell=${plan.sell_price:.2f})"
+                f"buy=${plan.buy_price:.2f}, sell=${plan.sell_price:.2f}{alloc_str})"
             )
         except Exception as e:
             logger.error(f"  {sym}: LLM error: {e}")
@@ -618,6 +640,58 @@ def _place_crypto_tp_sell(alpaca, sym: str, pos, sell_price: float,
                        "qty": sell_qty, "dry_run": True})
 
 
+def _place_crypto_force_exit_sell(alpaca, sym: str, pos, dry_run: bool,
+                                   orders: list[dict]) -> None:
+    """Force-exit a position that has exceeded MAX_HOLD_HOURS.
+
+    Places an aggressive limit sell 0.1% below current price so it fills
+    quickly — mirrors the backtest simulator's 'exit at close' after max_hold.
+    Cancels any open orders for this symbol first.
+    """
+    import math
+    from alpaca.trading.requests import LimitOrderRequest, GetOrdersRequest
+    from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
+
+    sell_qty = math.floor(pos.qty * 1e8 - 1) / 1e8
+    if sell_qty <= 0:
+        return
+
+    # Cancel all open orders for this symbol (buy AND sell)
+    try:
+        open_orders = alpaca.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN))
+        for order in open_orders:
+            sym_norm = str(order.symbol).replace("/", "")
+            if sym_norm == sym:
+                if not dry_run:
+                    alpaca.cancel_order_by_id(str(order.id))
+                logger.info(f"  {sym}: [FORCE EXIT] canceled order {order.id}")
+    except Exception as e:
+        logger.debug(f"  {sym}: error canceling orders for force exit: {e}")
+
+    # Sell at 0.1% below current — fills quickly on liquid crypto
+    exit_price = round(pos.current_price * 0.999, 2)
+    logger.info(f"  {sym}: FORCE EXIT {sell_qty:.8f} @ ${exit_price:.2f} "
+                f"(held > {MAX_HOLD_HOURS}h, current ${pos.current_price:.2f})")
+    if not dry_run:
+        try:
+            req = LimitOrderRequest(
+                symbol=sym,
+                qty=round(sell_qty, 8),
+                side=OrderSide.SELL,
+                type="limit",
+                time_in_force=TimeInForce.GTC,
+                limit_price=exit_price,
+            )
+            result = alpaca.submit_order(req)
+            orders.append({"symbol": sym, "action": "force_exit", "price": exit_price,
+                           "qty": sell_qty, "order_id": str(result.id)})
+        except Exception as e:
+            logger.error(f"  {sym}: force exit order error: {e}")
+    else:
+        orders.append({"symbol": sym, "action": "force_exit", "price": exit_price,
+                       "qty": sell_qty, "dry_run": True})
+
+
 def execute_crypto_signals(
     signals: dict[str, TradePlan],
     snapshot: UnifiedPortfolioSnapshot,
@@ -696,21 +770,43 @@ def execute_crypto_signals(
     # reserved by canceled orders or positions that already filled out.
     _refresh_alpaca_state()
 
-    # Place take-profit sells on ALL existing crypto positions that have a sell_price
+    # ── Position entry-time tracking ────────────────────────────────────────
+    # Detect new fills since the last cycle, enforce MAX_HOLD_HOURS force exit.
+    # This mirrors the backtest simulator's max_hold_hours close-at-market.
+    # Use CRYPTO_SYMBOLS (not just signals keys) so tracking works even when
+    # signals is empty due to a transient API failure.
+    all_crypto_syms = set(CRYPTO_SYMBOLS)
+    crypto_pos = {
+        sym: pos
+        for sym, pos in snapshot.alpaca_positions.items()
+        if sym in all_crypto_syms
+    }
+    entry_times = load_entry_times()
+    entry_times = update_entry_times(entry_times, crypto_pos)
+    force_exit_syms = set(get_force_exit_symbols(entry_times, MAX_HOLD_HOURS))
+    save_entry_times(entry_times)
+
+    # Force-exit positions that exceeded the max hold window
+    for sym in force_exit_syms:
+        pos = snapshot.alpaca_positions.get(sym)
+        if pos and pos.qty > 0:
+            _place_crypto_force_exit_sell(alpaca, sym, pos, dry_run, orders)
+
+    # Place take-profit sells on all other existing crypto positions
     for sym, plan in signals.items():
+        if sym in force_exit_syms:
+            continue  # already force-exiting
         pos = snapshot.alpaca_positions.get(sym)
         if pos and pos.qty > 0 and plan.sell_price > 0 and plan.sell_price > pos.current_price:
             _place_crypto_tp_sell(alpaca, sym, pos, plan.sell_price, dry_run, orders)
 
-    # Count viable long signals to size positions proportionally
-    # Allocate cash / num_signals per symbol (capped at 40%), so all 3 long = ~33% each
+    # Sizing: use LLM's allocation_pct when available, else fall back to equal split
     num_long_signals = sum(
         1 for plan in signals.values()
         if plan.direction == "long" and plan.confidence >= 0.4
     )
-    per_symbol_pct = min(0.40, 1.0 / max(num_long_signals, 1))
-    logger.info(f"  Sizing: {num_long_signals} long signals → {per_symbol_pct*100:.0f}% per symbol "
-                f"(${snapshot.alpaca_cash * per_symbol_pct:.0f} max each)")
+    fallback_pct = min(0.40, 1.0 / max(num_long_signals, 1))
+    logger.info(f"  Sizing: {num_long_signals} long signals, fallback {fallback_pct*100:.0f}% per symbol")
 
     # Track cash reserved by orders placed in this cycle to avoid oversizing
     cash_reserved_this_cycle = 0.0
@@ -718,6 +814,11 @@ def execute_crypto_signals(
     for sym, plan in signals.items():
         try:
             if plan.direction != "long" or plan.confidence < 0.4:
+                continue
+
+            # Don't buy into a position we're actively force-exiting
+            if sym in force_exit_syms:
+                logger.info(f"  {sym}: skipping buy — force exit in progress")
                 continue
 
             # Safety validation
@@ -730,9 +831,11 @@ def execute_crypto_signals(
 
             # Check existing position
             pos_value = pos.market_value if pos else 0.0
-            # Use alpaca_cash (not buying_power) — crypto is not margined
-            # Allocate cash proportionally across all long signals (max 40% per symbol)
-            max_position = snapshot.alpaca_cash * per_symbol_pct
+            # Use LLM allocation_pct if provided (1-100%), else fallback to equal split
+            alloc = plan.allocation_pct / 100.0 if plan.allocation_pct > 0 else fallback_pct
+            alloc = min(alloc, 0.50)  # hard cap at 50% per symbol
+            max_position = snapshot.alpaca_cash * alloc
+            logger.info(f"  {sym}: alloc={alloc*100:.0f}% → max ${max_position:.0f}")
 
             if pos_value > 0 and pos_value >= max_position:
                 logger.info(f"  {sym}: already at max position (${pos_value:.0f})")
@@ -862,9 +965,10 @@ def get_stock_signals(
                 continue
 
             signals[sym] = plan
+            alloc_str = f" alloc={plan.allocation_pct:.0f}%" if plan.allocation_pct > 0 else ""
             logger.info(
                 f"  {sym}: {plan.direction} conf={plan.confidence:.2f} "
-                f"buy=${plan.buy_price:.2f} sell=${plan.sell_price:.2f} | {plan.reasoning[:60]}"
+                f"buy=${plan.buy_price:.2f} sell=${plan.sell_price:.2f}{alloc_str} | {plan.reasoning[:60]}"
             )
         except Exception as e:
             logger.error(f"  {sym}: error: {e}")
@@ -928,6 +1032,17 @@ def execute_stock_signals(
             if pos and pos.qty > 0 and plan.sell_price > 0 and plan.sell_price > pos.current_price:
                 logger.info(f"  {sym}: updating take-profit sell @ ${plan.sell_price:.2f} ({pos.qty:.2f} shares)")
                 if not dry_run:
+                    # Cancel any existing sell orders for this symbol before placing new TP
+                    from alpaca.trading.requests import GetOrdersRequest
+                    from alpaca.trading.enums import QueryOrderStatus
+                    try:
+                        open_orders = alpaca.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN))
+                        for order in open_orders:
+                            if str(order.symbol) == sym and order.side.value.lower() == "sell":
+                                alpaca.cancel_order_by_id(str(order.id))
+                                logger.info(f"  {sym}: canceled old sell order {order.id}")
+                    except Exception as e:
+                        logger.debug(f"  {sym}: error canceling old sell: {e}")
                     req = LimitOrderRequest(
                         symbol=sym,
                         qty=pos.qty,
@@ -952,10 +1067,14 @@ def execute_stock_signals(
             if pos and pos.qty > 0:
                 continue
 
+            # Use LLM allocation_pct if provided, else 20% of portfolio
             total_stock = max(snapshot.total_stock_value, 1.0)
-            max_position = total_stock * 0.20  # 20% per stock, 5 max
+            alloc = plan.allocation_pct / 100.0 if plan.allocation_pct > 0 else 0.20
+            alloc = min(alloc, 0.40)  # hard cap at 40% per stock
+            max_position = total_stock * alloc
             available = snapshot.alpaca_buying_power * 0.45
             trade_usd = min(max_position, available)
+            logger.info(f"  {sym}: alloc={alloc*100:.0f}% → max ${max_position:.0f}")
 
             if trade_usd < 50:
                 logger.info(f"  {sym}: insufficient buying power (${trade_usd:.0f})")
