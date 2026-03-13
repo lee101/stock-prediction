@@ -6,11 +6,34 @@ including market transition guidance and rebalancing opportunities.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import numpy as np
 
 from unified_orchestrator.state import UnifiedPortfolioSnapshot, Position
+
+
+def _build_time_context(snapshot: UnifiedPortfolioSnapshot) -> str:
+    """Build time-awareness section: ET time, day name, market proximity."""
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+    day_name = now_et.strftime("%A")
+    time_str = now_et.strftime("%H:%M ET")
+
+    lines = [f"TIME: {day_name} {time_str}"]
+    if snapshot.regime == "CRYPTO_ONLY":
+        if snapshot.minutes_to_open and snapshot.minutes_to_open < 180:
+            lines.append(f"Stock market opens in {snapshot.minutes_to_open} min.")
+        else:
+            lines.append("Stock market closed.")
+    elif snapshot.regime == "PRE_MARKET":
+        lines.append(f"Stock market opens in {snapshot.minutes_to_open or '?'} min.")
+    elif snapshot.regime == "STOCK_HOURS":
+        lines.append(f"Stock market open, closes in {snapshot.minutes_to_close or '?'} min.")
+    elif snapshot.regime == "POST_MARKET":
+        lines.append("Stock market just closed.")
+    return "\n".join(lines)
 
 
 def _format_positions_summary(positions: dict[str, Position], label: str) -> str:
@@ -93,6 +116,7 @@ def build_unified_prompt(
     forecast_24h: Optional[dict] = None,
     best_stock_edges: Optional[dict[str, float]] = None,
     best_crypto_edges: Optional[dict[str, float]] = None,
+    held_position: Optional[Position] = None,
 ) -> str:
     """Build complete trading prompt with cross-asset awareness.
 
@@ -108,6 +132,7 @@ def build_unified_prompt(
         best_crypto_edges: Best edge per crypto symbol
     """
     asset_label = "cryptocurrency" if asset_class == "crypto" else "stock"
+    instrument_style = "long only, spot" if asset_class == "crypto" else "margin-enabled equity"
     fee_str = "0 bps (FDUSD)" if "BTC" in symbol or "ETH" in symbol else "10 bps"
 
     # Recent price history
@@ -154,11 +179,16 @@ def build_unified_prompt(
     # Cross-asset context
     portfolio_ctx = build_portfolio_context(snapshot, best_stock_edges, best_crypto_edges)
 
+    # Time awareness
+    time_ctx = _build_time_context(snapshot)
+
     # Determine direction guidance based on regime
     if asset_class == "crypto":
         direction_guidance = "LONG or HOLD (spot market, no shorting)"
+        direction_json_hint = '"long" or "hold"'
     else:
         direction_guidance = "LONG, SHORT, or HOLD"
+        direction_json_hint = '"long", "short", or "hold"'
 
     # Transition-specific instructions
     transition_instructions = ""
@@ -176,14 +206,24 @@ Use direction="hold" with sell_price set to take-profit if you want to exit at a
 TRANSITION CONTEXT: Market closes soon. Stock positions will be managed separately.
 Consider whether crypto positions should be adjusted for overnight holding."""
 
+    # Position context
+    position_ctx = ""
+    if held_position and held_position.qty > 0:
+        pnl_pct = (current_price - held_position.avg_price) / held_position.avg_price * 100
+        position_ctx = (f"\nCURRENT POSITION: LONG {held_position.qty:.6f} @ avg ${held_position.avg_price:.2f} "
+                        f"(${held_position.market_value:.0f}, {pnl_pct:+.2f}%)"
+                        f"\n  ** You MUST set sell_price as your exit target for this position. **")
+
     return f"""You are an expert {asset_label} trader in a unified multi-asset portfolio system.
 
-SYMBOL: {symbol} (long only, spot)
+SYMBOL: {symbol} ({instrument_style})
 CURRENT PRICE: ${current_price:.2f}
 {sr_line}
-FEES: {fee_str}
+FEES: {fee_str}{position_ctx}
 
 {portfolio_ctx}
+
+{time_ctx}
 
 TREND CONTEXT: {trend_line}
 
@@ -195,8 +235,9 @@ LAST 12 HOURS:
 
 TASK: You are a profitable swing trader. All orders must be LIMIT orders (never market).
 - Set buy_price slightly below current (0.1-0.3% below for normal vol)
-- Set sell_price at realistic target (0.5-2% above entry)
+- Set sell_price at realistic target (0.5-2% above entry for new entries, or above current for exits)
 - Confidence: 0.6-0.9 for strong setups, 0.3-0.5 for marginal
 - Enter trades 25-40% of the time. Hold when no clear edge.
+- IMPORTANT: If you already hold a position, ALWAYS set sell_price to your take-profit exit target, even if direction is "hold". Every position must have an exit price.
 
-Respond with JSON: {{"direction": "{direction_guidance.split(' or ')[0].lower()}" or "hold", "buy_price": <limit entry>, "sell_price": <take profit>, "confidence": <0-1>, "reasoning": "<brief>"}}"""
+Respond with JSON: {{"direction": {direction_json_hint}, "buy_price": <limit entry or 0 if hold>, "sell_price": <ALWAYS set take-profit exit for held positions>, "confidence": <0-1>, "reasoning": "<brief>"}}"""
