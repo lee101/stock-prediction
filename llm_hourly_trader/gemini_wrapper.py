@@ -25,6 +25,7 @@ class TradePlan:
     sell_price: float  # limit exit / take-profit price (0 = no exit)
     confidence: float  # 0-1 how confident
     reasoning: str  # brief explanation
+    allocation_pct: float = 0.0  # 0-100, how much of available capital to allocate
 
 
 STRUCTURED_SCHEMA = genai.types.Schema(
