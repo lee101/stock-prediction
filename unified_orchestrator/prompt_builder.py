@@ -63,19 +63,17 @@ def build_portfolio_context(
     """
     lines = ["## Portfolio Overview"]
 
-    # Alpaca
-    lines.append(f"STOCKS (Alpaca, 2x margin): Cash ${snapshot.alpaca_cash:,.0f} | "
+    # Alpaca — stocks + crypto, margin account
+    equity = snapshot.total_stock_value
+    long_val = sum(p.market_value for p in snapshot.alpaca_positions.values())
+    leverage = long_val / equity if equity > 0 else 0
+    lines.append(f"ALPACA: Equity ${equity:,.0f} | Cash ${snapshot.alpaca_cash:,.0f} | "
                  f"Buying power ${snapshot.alpaca_buying_power:,.0f}")
+    lines.append(f"LEVERAGE: {leverage:.2f}x current | 4x max intraday | 2x max overnight")
+    lines.append(f"MARGIN COST: 6.25% annual on leveraged portion "
+                 f"(~${max(0, long_val - equity) * 0.0625 / 365:.2f}/day currently)")
     if snapshot.alpaca_positions:
         lines.append(_format_positions_summary(snapshot.alpaca_positions, "Positions"))
-
-    # Binance
-    quote_str = f"FDUSD ${snapshot.binance_fdusd:,.0f}" if snapshot.binance_fdusd > 1 else ""
-    if snapshot.binance_usdt > 1:
-        quote_str += f"{' | ' if quote_str else ''}USDT ${snapshot.binance_usdt:,.0f}"
-    lines.append(f"CRYPTO (Binance, 1x spot): {quote_str or 'no cash'}")
-    if snapshot.binance_positions:
-        lines.append(_format_positions_summary(snapshot.binance_positions, "Positions"))
 
     # Market transition context
     if snapshot.regime == "PRE_MARKET" and snapshot.minutes_to_open is not None:
@@ -132,7 +130,7 @@ def build_unified_prompt(
         best_crypto_edges: Best edge per crypto symbol
     """
     asset_label = "cryptocurrency" if asset_class == "crypto" else "stock"
-    instrument_style = "long only, spot" if asset_class == "crypto" else "margin-enabled equity"
+    instrument_style = "long only, spot" if asset_class == "crypto" else "margin equity (up to 4x intraday, 2x overnight, 6.25% margin interest)"
     fee_str = "0 bps (FDUSD)" if "BTC" in symbol or "ETH" in symbol else "10 bps"
 
     # Recent price history
@@ -263,5 +261,6 @@ TASK: You are a profitable swing trader. All orders must be LIMIT orders (never 
 - allocation_pct: How much of available capital to put on this trade (0-100%). Use 20-40% for normal conviction, 50-80% for high conviction, 0% for hold. In downtrends, prefer 10-25%.
 - Enter trades 25-40% of the time. Hold when no clear edge.
 - IMPORTANT: If you already hold a position, ALWAYS set sell_price to your take-profit exit target, even if direction is "hold". Every position must have an exit price.
+- LEVERAGE: For stocks, we can use up to 4x intraday leverage (auto-deleverages to 2x before market close). Margin costs 6.25% annual on the leveraged portion. Factor this cost into expected returns — a 0.5% expected gain on a 4x leveraged position costs ~1.7bps/day in margin, so only leverage up on high-conviction setups with expected returns exceeding margin cost.
 
 Respond with JSON: {{"direction": {direction_json_hint}, "buy_price": <limit entry or 0 if hold>, "sell_price": <ALWAYS set take-profit exit for held positions>, "confidence": <0-1>, "allocation_pct": <0-100>, "reasoning": "<brief>"}}"""

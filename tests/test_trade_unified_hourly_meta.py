@@ -90,6 +90,7 @@ def test_build_meta_signals_passes_side_specific_intensity_settings(
         stock_cache_root=None,
         meta_history_days=120,
         fee_rate=0.001,
+        market_order_entry=False,
         min_edge=0.001,
         trade_amount_scale=100.0,
         entry_intensity_power=0.8,
@@ -185,6 +186,59 @@ def test_simulate_symbol_daily_returns_uses_market_order_entry_flag(monkeypatch:
     assert len(out) == 1
 
 
+def test_build_meta_signals_uses_market_reference_price_for_edge(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[tuple[str, dict]] = []
+
+    monkeypatch.setattr(
+        meta_mod,
+        "load_symbol_latest_action",
+        lambda **_: {
+            "buy_price": 100.0,
+            "sell_price": 101.0,
+            "buy_amount": 100.0,
+            "sell_amount": 0.0,
+            "predicted_high": 101.0,
+            "predicted_low": 99.0,
+            "hold_hours": 5.0,
+        },
+    )
+    monkeypatch.setattr(
+        live,
+        "resolve_live_entry_reference_price",
+        lambda *args, **kwargs: (105.0, "quote_ask"),
+    )
+    monkeypatch.setattr(live, "log_event", lambda event_type, **fields: events.append((event_type, fields)))
+
+    args = SimpleNamespace(
+        stock_data_root=None,
+        stock_cache_root=None,
+        meta_history_days=120,
+        fee_rate=0.001,
+        market_order_entry=True,
+        min_edge=0.001,
+        trade_amount_scale=100.0,
+        entry_intensity_power=1.0,
+        entry_min_intensity_fraction=0.0,
+        long_intensity_multiplier=1.0,
+        short_intensity_multiplier=1.0,
+        max_hold_hours=6,
+    )
+
+    signals = meta_mod.build_meta_signals(
+        strategies=[SimpleNamespace(name="s1")],
+        symbols=["NVDA"],
+        winners_by_symbol={"NVDA": "s1"},
+        args=args,
+        device=None,
+    )
+
+    assert signals == {}
+    assert any(
+        event_type == "meta_signal_skipped" and fields.get("market_entry_reference_price") == 105.0
+        for event_type, fields in events
+    )
+
+
 def test_main_accepts_goodness_meta_metric(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     captured: dict[str, str] = {}
 
@@ -274,20 +328,23 @@ def test_run_cycle_logs_meta_events(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_run_cycle_passes_live_entry_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
     execute_calls: list[dict] = []
+    poll_reasons: list[str] = []
 
     monkeypatch.setattr(live, "is_market_open_now", lambda: True)
     monkeypatch.setattr(live, "save_state", lambda state: None)
     monkeypatch.setattr(live, "log_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(live, "poll_broker_events", lambda api, state, reason, **kwargs: poll_reasons.append(reason))
     monkeypatch.setattr(live, "manage_positions", lambda *args, **kwargs: 0)
     monkeypatch.setattr(
         live,
         "execute_trades",
-        lambda api, signals, state, max_positions, market_order_entry=False, entry_order_ttl_hours=0.0: execute_calls.append(
+        lambda api, signals, state, max_positions, market_order_entry=False, entry_order_ttl_hours=0.0, fee_rate=0.0: execute_calls.append(
             {
                 "signals": signals,
                 "max_positions": max_positions,
                 "market_order_entry": market_order_entry,
                 "entry_order_ttl_hours": entry_order_ttl_hours,
+                "fee_rate": fee_rate,
             }
         ),
     )
@@ -311,6 +368,7 @@ def test_run_cycle_passes_live_entry_ttl(monkeypatch: pytest.MonkeyPatch) -> Non
         max_positions=5,
         market_order_entry=True,
         entry_order_ttl_hours=6.0,
+        fee_rate=0.001,
     )
 
     meta_mod.run_cycle(
@@ -329,5 +387,7 @@ def test_run_cycle_passes_live_entry_ttl(monkeypatch: pytest.MonkeyPatch) -> Non
             "max_positions": 5,
             "market_order_entry": True,
             "entry_order_ttl_hours": 6.0,
+            "fee_rate": 0.001,
         }
     ]
+    assert poll_reasons == ["pre_cycle", "post_cycle"]

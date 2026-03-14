@@ -34,6 +34,8 @@ class TradingEnvConfig:
         smooth_downside_temperature: float = 0.02,
         trade_penalty: float = 0.0,
         smoothness_penalty: float = 0.0,
+        fill_slippage_bps: float = 0.0,
+        max_hold_hours: int = 0,
         long_only: bool = False,
     ):
         self.data_path = str(Path(data_path).resolve())
@@ -55,6 +57,8 @@ class TradingEnvConfig:
         self.smooth_downside_temperature = smooth_downside_temperature
         self.trade_penalty = trade_penalty
         self.smoothness_penalty = smoothness_penalty
+        self.fill_slippage_bps = fill_slippage_bps
+        self.max_hold_hours = max(0, int(max_hold_hours))
         self.long_only = long_only
 
 
@@ -113,6 +117,7 @@ class TradingEnv(GymnasiumPufferEnv):
             smooth_downside_temperature=config.smooth_downside_temperature,
             trade_penalty=config.trade_penalty,
             smoothness_penalty=config.smoothness_penalty,
+            max_hold_hours=config.max_hold_hours,
         )
 
     @staticmethod
