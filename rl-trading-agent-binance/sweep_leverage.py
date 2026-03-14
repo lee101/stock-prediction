@@ -1,9 +1,4 @@
-"""Sweep hypothetical margin leverage on cached LLM signals.
-
-This models borrowed quote plus hourly interest for research purposes.
-It is not live-parity with ``trade_binance_live.py`` while that runtime
-still executes spot orders only.
-"""
+"""Sweep leverage 1x-5x on cached LLM signals. No API calls needed."""
 from __future__ import annotations
 import argparse, sys, json, time
 from pathlib import Path
@@ -199,7 +194,6 @@ def main():
     print(f"Symbols: {args.symbols}, Days: {args.days}")
     print(f"Variant: {args.variant}, Model: {args.model}")
     print(f"Margin rate: {args.margin_rate*100:.1f}% annual")
-    print("NOTE: leverage >1x here is hypothetical margin research, not spot live-parity.")
     print(f"{'='*70}\n")
 
     # Load cached signals

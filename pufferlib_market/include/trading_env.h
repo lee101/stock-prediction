@@ -87,6 +87,7 @@ typedef struct {
     float          max_leverage;    /* 1.0 = no leverage */
     float          short_borrow_apr;/* annual borrow rate applied to open short notional */
     float          periods_per_year;/* annualisation factor for metrics (e.g. 8760 for hourly, 365 for daily) */
+    int            max_hold_hours;  /* force close position after this many hours (0=disabled) */
 
     /* --- action-space config ---
        Action layout:
@@ -109,6 +110,7 @@ typedef struct {
     float          smooth_downside_temperature; /* temperature for smooth downside penalty */
     float          trade_penalty;   /* per-trade penalty (counting opens/closes) (default 0) */
     float          smoothness_penalty;/* penalty for return volatility (ret - prev_ret)^2 (default 0) */
+    float          fill_slippage_bps; /* adverse fill slippage in basis points (default 0, realistic: 5-12) */
 
     /* --- shared data (NOT owned, do not free) --- */
     MarketData*    data;

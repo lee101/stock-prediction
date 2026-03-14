@@ -395,9 +395,11 @@ def get_current_positions(api) -> Dict[str, dict]:
     positions = {}
     try:
         for pos in api.get_all_positions():
+            avg_entry_price = _positive_float(getattr(pos, "avg_entry_price", None))
             positions[pos.symbol] = {
                 "qty": float(pos.qty),
                 "price": float(pos.current_price),
+                "avg_entry_price": float(avg_entry_price) if avg_entry_price is not None else None,
             }
         log_event(
             "positions_snapshot",
@@ -478,6 +480,70 @@ def _order_limit_price(order: object) -> Optional[float]:
     except (TypeError, ValueError):
         return None
     return price if price > 0.0 else None
+
+
+def _positive_float(value: object) -> Optional[float]:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed <= 0.0:
+        return None
+    return parsed
+
+
+def _position_avg_entry_price(position: object) -> Optional[float]:
+    if isinstance(position, dict):
+        return _positive_float(position.get("avg_entry_price"))
+    return _positive_float(getattr(position, "avg_entry_price", None))
+
+
+def _min_exit_price_for_position(*, qty: float, entry_price: float, fee_rate: float) -> float:
+    if qty < 0:
+        return float(entry_price) * max(0.0, 1.0 - max(float(fee_rate), 0.0))
+    return float(entry_price) * (1.0 + max(float(fee_rate), 0.0))
+
+
+def resolve_live_entry_reference_price(
+    symbol: str,
+    *,
+    default_price: float,
+    is_short: bool,
+    use_market_orders: bool,
+) -> tuple[float, str]:
+    reference_price = _positive_float(default_price)
+    if reference_price is None:
+        reference_price = 0.0
+    if not use_market_orders:
+        return float(reference_price), "signal_price"
+
+    try:
+        import alpaca_wrapper
+
+        quote = alpaca_wrapper.latest_data(symbol)
+        ask_price = _positive_float(getattr(quote, "ask_price", None))
+        bid_price = _positive_float(getattr(quote, "bid_price", None))
+        if is_short:
+            if bid_price is not None:
+                return float(bid_price), "quote_bid"
+            if ask_price is not None:
+                return float(ask_price), "quote_ask_fallback"
+        else:
+            if ask_price is not None:
+                return float(ask_price), "quote_ask"
+            if bid_price is not None:
+                return float(bid_price), "quote_bid_fallback"
+    except Exception as exc:
+        log_event(
+            "market_entry_reference_failed",
+            symbol=symbol,
+            is_short=bool(is_short),
+            error=str(exc),
+        )
+
+    return float(reference_price), "signal_price"
 
 
 def _cancel_specific_orders(
@@ -944,6 +1010,44 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
             removed.append(symbol)
             continue
 
+        broker_avg_entry_price = _position_avg_entry_price(pos_data)
+        if broker_avg_entry_price is not None:
+            tracked_entry_price = _positive_float(info.get("entry_price"))
+            if tracked_entry_price is None or abs(tracked_entry_price - broker_avg_entry_price) >= 0.01:
+                info["entry_price"] = float(broker_avg_entry_price)
+                log_event(
+                    "manage_position_action",
+                    symbol=symbol,
+                    action="entry_price_reconciled",
+                    old_entry_price=float(tracked_entry_price) if tracked_entry_price is not None else None,
+                    broker_avg_entry_price=float(broker_avg_entry_price),
+                )
+
+            tracked_exit_price = _positive_float(info.get("exit_price"))
+            fee_rate = float(info.get("fee_rate", 0.0) or 0.0)
+            min_exit_price = _min_exit_price_for_position(
+                qty=float(qty),
+                entry_price=float(broker_avg_entry_price),
+                fee_rate=fee_rate,
+            )
+            should_raise_exit = tracked_exit_price is None
+            if tracked_exit_price is not None and qty > 0:
+                should_raise_exit = tracked_exit_price < min_exit_price
+            elif tracked_exit_price is not None and qty < 0:
+                should_raise_exit = tracked_exit_price > min_exit_price
+            if should_raise_exit:
+                old_exit_price = float(tracked_exit_price) if tracked_exit_price is not None else None
+                info["exit_price"] = float(min_exit_price)
+                log_event(
+                    "manage_position_action",
+                    symbol=symbol,
+                    action="exit_price_reconciled_to_entry_basis",
+                    old_exit_price=old_exit_price,
+                    new_exit_price=float(min_exit_price),
+                    broker_avg_entry_price=float(broker_avg_entry_price),
+                    fee_rate=float(fee_rate),
+                )
+
         if is_short_only_symbol(symbol) and qty > 0:
             logger.info("{}: SHORT_ONLY stock held long, force closing {} shares", symbol, qty)
             log_event("manage_position_action", symbol=symbol, action="force_close", reason="short_only_long_position", qty=float(qty))
@@ -1142,6 +1246,7 @@ def execute_trades(
     *,
     market_order_entry: bool = False,
     entry_order_ttl_hours: float = 0.0,
+    fee_rate: float = 0.0,
 ):
     from alpaca.trading.requests import LimitOrderRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
@@ -1238,6 +1343,11 @@ def execute_trades(
             exit_price = sell_price
             entry_side = OrderSide.BUY
 
+        market_entry_reference_price = _positive_float(action.get("market_entry_reference_price"))
+        if use_market_orders and market_entry_reference_price is not None:
+            entry_price = float(market_entry_reference_price)
+        entry_reference_source = str(action.get("market_entry_reference_source", "signal_price"))
+
         if entry_price <= 0:
             log_event("entry_skipped", symbol=symbol, reason="invalid_entry_price", entry_price=entry_price)
             continue
@@ -1285,6 +1395,8 @@ def execute_trades(
                 "target_qty": int(target_qty),
                 "side_str": "short" if is_short else "long",
                 "order_type": "market" if use_market_orders else "limit",
+                "entry_reference_source": entry_reference_source,
+                "fee_rate": float(fee_rate),
             }
         )
         planning_buying_power = max(0.0, planning_buying_power - float(target_value))
@@ -1345,6 +1457,7 @@ def execute_trades(
                 "exit_order_id": None,
                 "hold_hours": candidate["hold_hours"],
                 "max_hold_until": (tracked_at + timedelta(hours=float(candidate["hold_hours"]))).isoformat(),
+                "fee_rate": float(candidate.get("fee_rate", 0.0)),
             }
             log_event("position_tracking_created", symbol=symbol, tracked_position=tracked[symbol])
             log_event("entry_skipped", symbol=symbol, reason="existing_open_entry_order", existing_order=_serialize_order(matching_order))
@@ -1382,6 +1495,7 @@ def execute_trades(
                 position_alloc=float(candidate["position_alloc"]),
                 target_value=float(candidate["target_value"]),
                 order_type=candidate["order_type"],
+                entry_reference_source=candidate.get("entry_reference_source"),
             )
             result = api.submit_order(order)
             logger.info(
@@ -1421,6 +1535,7 @@ def execute_trades(
                 "exit_order_id": None,
                 "hold_hours": candidate["hold_hours"],
                 "max_hold_until": (now + timedelta(hours=float(candidate["hold_hours"]))).isoformat(),
+                "fee_rate": float(candidate.get("fee_rate", 0.0)),
             }
             log_event("position_tracking_created", symbol=symbol, tracked_position=tracked[symbol])
 
@@ -1481,28 +1596,47 @@ def run_cycle(
             pred_low = action.get("predicted_low", 0)
             buy_price = action.get("buy_price", 0)
             sell_price = action.get("sell_price", 0)
+            use_market_orders = bool(getattr(args, "market_order_entry", False)) and bool(market_open)
+            is_short_symbol = is_short_only_symbol(symbol)
+            default_entry_price = sell_price if is_short_symbol else buy_price
+            entry_reference_price, entry_reference_source = resolve_live_entry_reference_price(
+                symbol,
+                default_price=float(default_entry_price or 0.0),
+                is_short=is_short_symbol,
+                use_market_orders=use_market_orders,
+            )
+            action["market_entry_reference_price"] = float(entry_reference_price)
+            action["market_entry_reference_source"] = str(entry_reference_source)
 
-            if is_short_only_symbol(symbol):
-                edge = (sell_price - pred_low) / sell_price - args.fee_rate if sell_price > 0 else 0
+            if is_short_symbol:
+                edge = (
+                    (entry_reference_price - pred_low) / entry_reference_price - args.fee_rate
+                    if entry_reference_price > 0
+                    else 0
+                )
             else:
-                edge = (pred_high - buy_price) / buy_price - args.fee_rate if buy_price > 0 else 0
+                edge = (
+                    (pred_high - entry_reference_price) / entry_reference_price - args.fee_rate
+                    if entry_reference_price > 0
+                    else 0
+                )
 
             if edge >= args.min_edge:
                 action["edge"] = edge
                 signals[symbol] = action
-                side = "short" if is_short_only_symbol(symbol) else "long"
+                side = "short" if is_short_symbol else "long"
                 signal_amount, intensity = entry_intensity_fraction(
                     action,
-                    is_short=is_short_only_symbol(symbol),
+                    is_short=is_short_symbol,
                     trade_amount_scale=TRADE_AMOUNT_SCALE,
                     intensity_power=ENTRY_INTENSITY_POWER,
                     min_intensity_fraction=ENTRY_MIN_INTENSITY_FRACTION,
                     side_multiplier=(
-                        SHORT_INTENSITY_MULTIPLIER if is_short_only_symbol(symbol) else LONG_INTENSITY_MULTIPLIER
+                        SHORT_INTENSITY_MULTIPLIER if is_short_symbol else LONG_INTENSITY_MULTIPLIER
                     ),
                 )
-                logger.info("{}: {} buy={:.2f} sell={:.2f} edge={:.4f} hold={:.1f}h amt={:.3f} int={:.3f}",
-                           symbol, side, buy_price, sell_price, edge,
+                logger.info("{}: {} buy={:.2f} sell={:.2f} ref={:.2f} edge={:.4f} hold={:.1f}h amt={:.3f} int={:.3f}",
+                           symbol, side, buy_price, sell_price, entry_reference_price, edge,
                            action.get("hold_hours", 0), signal_amount, intensity)
                 log_event(
                     "signal_accepted",
@@ -1510,6 +1644,8 @@ def run_cycle(
                     side=side,
                     buy_price=float(buy_price),
                     sell_price=float(sell_price),
+                    market_entry_reference_price=float(entry_reference_price),
+                    market_entry_reference_source=str(entry_reference_source),
                     edge=float(edge),
                     hold_hours=float(action.get("hold_hours", 0)),
                     signal_amount=float(signal_amount),
@@ -1525,6 +1661,8 @@ def run_cycle(
                     min_edge=float(args.min_edge),
                     buy_price=float(buy_price),
                     sell_price=float(sell_price),
+                    market_entry_reference_price=float(entry_reference_price),
+                    market_entry_reference_source=str(entry_reference_source),
                 )
         else:
             log_event("signal_rejected", symbol=symbol, reason="no_action")
@@ -1538,6 +1676,7 @@ def run_cycle(
             max_positions=max_positions,
             market_order_entry=bool(getattr(args, "market_order_entry", False)),
             entry_order_ttl_hours=float(getattr(args, "entry_order_ttl_hours", 0.0) or 0.0),
+            fee_rate=float(getattr(args, "fee_rate", 0.0) or 0.0),
         )
         execution_mode = "live_execute"
     elif not market_open and signals:

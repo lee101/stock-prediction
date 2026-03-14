@@ -47,18 +47,18 @@ logger = logging.getLogger(__name__)
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description="Crypto RL autoresearch training")
     p.add_argument("--symbols", type=str, default=None)
-    p.add_argument("--sequence-length", type=int, default=72)
+    p.add_argument("--sequence-length", type=int, default=48)
     p.add_argument("--batch-size", type=int, default=16)
     p.add_argument("--hidden-dim", type=int, default=384)
     p.add_argument("--num-layers", type=int, default=6)
     p.add_argument("--num-heads", type=int, default=8)
-    p.add_argument("--model-arch", type=str, default="classic")
+    p.add_argument("--model-arch", type=str, default="nano")
     p.add_argument("--lr", type=float, default=1e-5)
     p.add_argument("--weight-decay", type=float, default=0.04)
     p.add_argument("--lr-schedule", type=str, default="cosine", choices=["none", "cosine", "linear"])
-    p.add_argument("--warmup-steps", type=int, default=100)
+    p.add_argument("--warmup-steps", type=int, default=300)
     p.add_argument("--grad-clip", type=float, default=1.0)
-    p.add_argument("--loss-type", type=str, default="sortino")
+    p.add_argument("--loss-type", type=str, default="multiwindow_dd")
     p.add_argument("--return-weight", type=float, default=0.15)
     p.add_argument("--dd-penalty", type=float, default=1.0)
     p.add_argument("--smoothness-penalty", type=float, default=0.0)
@@ -77,7 +77,7 @@ def parse_args(argv=None):
     return p.parse_args(argv)
 
 
-def build_cosine_lr_lambda(warmup_steps: int, total_steps: int, min_ratio: float = 0.01):
+def build_cosine_lr_lambda(warmup_steps: int, total_steps: int, min_ratio: float = 0.05):
     def lr_lambda(step):
         if step < warmup_steps:
             return max(float(step + 1) / float(max(warmup_steps, 1)), min_ratio)

@@ -1,12 +1,12 @@
 # Binance RL+LLM Hybrid Trading System
 
 ## Overview
-Combines a PufferLib PPO-trained RL agent with LLM reasoning (Gemini 3.1 Flash Lite + thinking HIGH) for Binance crypto trading. Trades BTC, ETH, SOL, DOGE, SUI, AAVE on spot by default, or on cross margin when leverage above `1x` is requested.
+Combines a PufferLib PPO-trained RL agent with LLM reasoning (Gemini 3.1 Flash Lite + thinking HIGH) for spot crypto trading on Binance. Trades BTC, ETH, SOL, DOGE, SUI, AAVE.
 
 ## Architecture
 1. **RL Model** (PufferLib PPO, h1024, 100M steps) generates base trading signals from MKTD features
 2. **LLM Layer** (Gemini 3.1 Flash Lite, thinking=HIGH) reviews RL signals with market context and refines entry/exit
-3. **Execution** routes spot orders to FDUSD pairs (BTC/ETH) or USDT pairs (altcoins), and routes leveraged execution to cross-margin USDT pairs with borrow/auto-repay side effects
+3. **Execution** routes orders to FDUSD pairs (BTC/ETH, zero fees) or USDT pairs (altcoins)
 
 ## Model
 - **Best model**: `binance6_ppo_v1_h1024_100M` (38MB)
@@ -45,8 +45,6 @@ Combines a PufferLib PPO-trained RL agent with LLM reasoning (Gemini 3.1 Flash L
 | AAVEUSD | AAVEUSDT | USDT | 0.10% | 15% |
 
 FDUSD pairs are Binance.com only (not Binance.US). System auto-falls back to USDT.
-
-For cross-margin execution, BTC/ETH are also routed to `BTCUSDT` / `ETHUSDT` so borrowed quote and auto-repay use the standard USDT margin market.
 
 ## Running
 
@@ -88,41 +86,16 @@ python rl-trading-agent-binance/trade_binance_live.py \
   --interval 3600
 ```
 
-### Production Margin
-```bash
-python rl-trading-agent-binance/trade_binance_live.py \
-  --live \
-  --execution-mode margin \
-  --leverage 5 \
-  --rl-checkpoint rl-trainingbinance/checkpoints/autoresearch_ema.pt \
-  --interval 3600
-```
-
 ## Stablecoin Management
-In spot mode, the system automatically converts between FDUSD and USDT:
+The system automatically converts between FDUSD and USDT:
 - BTC/ETH trades need FDUSD (zero fees on Binance.com)
 - Altcoin trades need USDT
 - Before placing an order, `ensure_quote_balance()` checks if conversion is needed
 - Uses `binance_conversion.py` for FDUSD<->USDT swaps
 
-In cross-margin mode, quote is USDT for all supported pairs. The bot uses Binance margin side effects instead of manual pre-borrows:
-- Long entry: `MARGIN_BUY`
-- Long exit: `AUTO_REPAY`
-- Extra buying power is capped by `get_max_borrowable("USDT")`
-- Before sizing orders, the runtime consolidates tracked spot balances into cross margin and converts transferable spot/margin `FDUSD` into spot `USDT`, then moves that `USDT` into margin
-- Existing same-side open orders are reused or replaced instead of blindly stacking duplicate hourly limit orders
-- Every cycle appends a structured JSONL trace under `strategy_state/hybrid_trade_cycles/` with balances, positions, open orders, per-symbol actions, and order ids
-- Recent live traces can be checked against Binance orders/trades and 5m price touches with:
-```bash
-python rl-trading-agent-binance/validate_hybrid_cycle_snapshots.py \
-  --start "2026-03-13 00:00:00+00:00" \
-  --live-only
-```
-
 ## Files
 - `run_hybrid.py` - Backtest engine with RL+LLM simulation
 - `trade_binance_live.py` - Production trader with order execution
-- `validate_hybrid_cycle_snapshots.py` - Replay/validation tool for hybrid cycle traces vs Binance orders/trades
 - `rl_trading_agent_binance_prompt.py` - Prompt builder for live trading
 - `../llm_hourly_trader/providers.py` - Multi-provider LLM wrapper (Gemini, OpenAI, Anthropic, DeepSeek)
 - `../rl-trainingbinance/train.sh` - RL training script
