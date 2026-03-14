@@ -112,19 +112,27 @@ static void fill_observations(TradingEnv* env) {
     if (t < 0) t = 0;
     if (t >= md->num_timesteps) t = md->num_timesteps - 1;
 
-    /* per-symbol features */
+    /* Observation lag: agent sees features from t-1 to prevent look-ahead bias.
+       The agent decides based on the PREVIOUS bar's information, then trades
+       execute at bar t. This matches real trading where you can only see
+       completed bars before making decisions. */
+    int t_obs = t - 1;
+    if (t_obs < 0) t_obs = 0;
+
+    /* per-symbol features (lagged by 1 bar) */
     memcpy(env->observations,
-           &md->features[t * S * FEATURES_PER_SYM],
+           &md->features[t_obs * S * FEATURES_PER_SYM],
            S * FEATURES_PER_SYM * sizeof(float));
 
-    /* portfolio state */
+    /* portfolio state uses LAGGED prices (t-1) for position valuation shown
+       to the agent, matching what a real trader would see before bar t closes */
     int base = S * FEATURES_PER_SYM;
     float pos_val = 0.0f;
     float unreal_pnl = 0.0f;
 
     if (ag->position_sym >= 0) {
         int sym = ag->position_sym % S;
-        float cur_price = get_price(md, t, sym, P_CLOSE);
+        float cur_price = get_price(md, t_obs, sym, P_CLOSE);
         int is_short = (ag->position_sym >= S);
         if (is_short) {
             /* Short position is a liability: equity = cash - qty*price.
@@ -179,21 +187,32 @@ static float compute_equity(const TradingEnv* env, int t) {
     return equity;
 }
 
-static float short_borrow_fee(const TradingEnv* env, int t) {
+static float borrow_fee(const TradingEnv* env, int t) {
     const AgentState* ag = &env->agent;
     const MarketData* md = env->data;
     const int S = md->num_symbols;
-    if (ag->position_sym < S || env->short_borrow_apr <= 0.0f) {
-        return 0.0f;
-    }
-    int sym = ag->position_sym % S;
-    float cur_price = get_price(md, t, sym, P_CLOSE);
-    if (cur_price <= 0.0f || ag->position_qty <= 0.0f) {
+    if (env->short_borrow_apr <= 0.0f || ag->position_qty <= 0.0f) {
         return 0.0f;
     }
     float ppy = env->periods_per_year;
     if (ppy <= 0.0f) ppy = 8760.0f;
-    return ag->position_qty * cur_price * env->short_borrow_apr / ppy;
+
+    int sym = ag->position_sym % S;
+    float cur_price = get_price(md, t, sym, P_CLOSE);
+    if (cur_price <= 0.0f) return 0.0f;
+
+    if (ag->position_sym >= S) {
+        /* Short position: charge on full notional */
+        return ag->position_qty * cur_price * env->short_borrow_apr / ppy;
+    } else if (env->max_leverage > 1.0f) {
+        /* Leveraged long: charge on borrowed portion only.
+           borrowed = position_value - cash_at_entry ≈ position_value * (1 - 1/leverage) */
+        float pos_val = ag->position_qty * cur_price;
+        float borrowed = pos_val * (1.0f - 1.0f / env->max_leverage);
+        if (borrowed <= 0.0f) return 0.0f;
+        return borrowed * env->short_borrow_apr / ppy;
+    }
+    return 0.0f;
 }
 
 /* ------------------------------------------------------------------ */
@@ -208,7 +227,8 @@ static void close_position(TradingEnv* env, int t) {
     if (ag->position_sym < 0) return;
 
     int sym = ag->position_sym % S;
-    float cur_price = get_price(md, t, sym, P_CLOSE);
+    /* Use OPEN price for closing — order placed at start of bar */
+    float cur_price = get_price(md, t, sym, P_OPEN);
     int is_short = (ag->position_sym >= S);
 
     if (is_short) {
@@ -235,7 +255,7 @@ static void close_position(TradingEnv* env, int t) {
     ag->hold_hours = 0;
 }
 
-static int resolve_limit_fill_price(const MarketData* md, int t, int sym, float target_price, float* fill_price) {
+static int resolve_limit_fill_price(const TradingEnv* env, const MarketData* md, int t, int sym, float target_price, int is_buy, float* fill_price) {
     float low = get_price(md, t, sym, P_LOW);
     float high = get_price(md, t, sym, P_HIGH);
     if (low > high) {
@@ -246,7 +266,15 @@ static int resolve_limit_fill_price(const MarketData* md, int t, int sym, float 
     if (target_price < low || target_price > high) {
         return 0;
     }
-    *fill_price = target_price;
+    /* Apply adverse slippage: buys fill higher, sells fill lower */
+    float slippage = env->fill_slippage_bps / 10000.0f;
+    if (is_buy) {
+        *fill_price = target_price * (1.0f + slippage);
+        if (*fill_price > high) return 0;  /* slipped out of range */
+    } else {
+        *fill_price = target_price * (1.0f - slippage);
+        if (*fill_price < low) return 0;   /* slipped out of range */
+    }
     return 1;
 }
 
@@ -274,13 +302,14 @@ static float action_level_offset_bps(const TradingEnv* env, int level_idx) {
 static void open_long(TradingEnv* env, int t, int sym, float allocation_pct, float level_offset_bps) {
     AgentState* ag = &env->agent;
     const MarketData* md = env->data;
-    float ref_price = get_price(md, t, sym, P_CLOSE);
+    /* Use OPEN price as reference since order is placed at bar start */
+    float ref_price = get_price(md, t, sym, P_OPEN);
 
     if (ref_price <= 0.0f || ag->cash <= 0.0f) return;
 
     float target_price = ref_price * (1.0f + level_offset_bps / 10000.0f);
     float fill_price = 0.0f;
-    if (target_price <= 0.0f || !resolve_limit_fill_price(md, t, sym, target_price, &fill_price)) {
+    if (target_price <= 0.0f || !resolve_limit_fill_price(env, md, t, sym, target_price, /*is_buy=*/1, &fill_price)) {
         return;
     }
 
@@ -307,13 +336,14 @@ static void open_short(TradingEnv* env, int t, int sym, float allocation_pct, fl
     AgentState* ag = &env->agent;
     const MarketData* md = env->data;
     const int S = md->num_symbols;
-    float ref_price = get_price(md, t, sym, P_CLOSE);
+    /* Use OPEN price as reference since order is placed at bar start */
+    float ref_price = get_price(md, t, sym, P_OPEN);
 
     if (ref_price <= 0.0f || ag->cash <= 0.0f) return;
 
     float target_price = ref_price * (1.0f + level_offset_bps / 10000.0f);
     float fill_price = 0.0f;
-    if (target_price <= 0.0f || !resolve_limit_fill_price(md, t, sym, target_price, &fill_price)) {
+    if (target_price <= 0.0f || !resolve_limit_fill_price(env, md, t, sym, target_price, /*is_buy=*/0, &fill_price)) {
         return;
     }
 
@@ -343,10 +373,10 @@ static void reset_agent_state(TradingEnv* env) {
     AgentState* ag = &env->agent;
     const MarketData* md = env->data;
 
-    /* random starting offset (leave room for max_steps) */
-    int max_offset = md->num_timesteps - env->max_steps - 1;
-    if (max_offset < 0) max_offset = 0;
-    ag->data_offset = (max_offset > 0) ? (rand() % max_offset) : 0;
+    /* random starting offset (leave room for max_steps + 1 for obs lag) */
+    int max_offset = md->num_timesteps - env->max_steps - 2;
+    if (max_offset < 1) max_offset = 1;
+    ag->data_offset = 1 + (rand() % max_offset);
     ag->step = 0;
 
     ag->cash = INITIAL_CASH;
@@ -387,6 +417,17 @@ void c_step(TradingEnv* env) {
 
     /* clamp timestep */
     if (t >= md->num_timesteps) t = md->num_timesteps - 1;
+
+    /* Force-close if max_hold_hours exceeded (before action decode) */
+    if (env->max_hold_hours > 0 && ag->position_sym >= 0 &&
+        ag->hold_hours >= env->max_hold_hours) {
+        int cs = ag->position_sym % S;
+        if (is_tradable(md, t, cs)) {
+            close_position(env, t);
+            trade_events += 1;
+        }
+        /* If not tradable, will close next tradable step */
+    }
 
     /* current position info */
     int cur_sym = -1;
@@ -483,10 +524,10 @@ void c_step(TradingEnv* env) {
 
     /* compute equity after market move */
     float equity_after = compute_equity(env, t_new);
-    float borrow_fee = short_borrow_fee(env, t_new);
-    if (borrow_fee > 0.0f) {
-        ag->cash -= borrow_fee;
-        equity_after -= borrow_fee;
+    float bfee = borrow_fee(env, t_new);
+    if (bfee > 0.0f) {
+        ag->cash -= bfee;
+        equity_after -= bfee;
     }
 
     /* reward = percentage return (clipped) */

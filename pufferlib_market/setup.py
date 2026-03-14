@@ -15,7 +15,15 @@ from setuptools import setup, Extension
 # Paths
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent
-PUFFERLIB_OCEAN = REPO / "PufferLib" / "pufferlib" / "ocean"
+# Try system PufferLib first, fall back to local checkout
+_local_ocean = REPO / "PufferLib" / "pufferlib" / "ocean"
+try:
+    import pufferlib
+    PUFFERLIB_OCEAN = Path(pufferlib.__file__).parent / "ocean"
+except ImportError:
+    PUFFERLIB_OCEAN = _local_ocean
+if not PUFFERLIB_OCEAN.exists():
+    PUFFERLIB_OCEAN = _local_ocean
 
 # Find numpy include
 import numpy as np
