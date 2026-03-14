@@ -82,6 +82,9 @@ class HourlyTraderSimulationConfig:
     # with edge below backout_edge_threshold. 0 = disabled.
     backout_near_market_minutes: int = 0
     backout_edge_threshold: float = 0.005
+    max_hold_hours: Optional[int] = None
+    trailing_stop_pct: Optional[float] = None
+    force_exit_offset_pct: float = 0.1
 
 
 @dataclass(frozen=True)
@@ -148,6 +151,19 @@ class HourlyTraderMarketSimulator:
         if not math.isfinite(fill_buffer_bps) or fill_buffer_bps < 0.0:
             raise ValueError(f"fill_buffer_bps must be finite and >= 0, got {cfg.fill_buffer_bps}.")
         fill_buffer = fill_buffer_bps / 10_000.0
+        max_hold_hours = getattr(cfg, "max_hold_hours", None)
+        if max_hold_hours is not None:
+            max_hold_hours = int(max_hold_hours)
+            if max_hold_hours < 0:
+                raise ValueError(f"max_hold_hours must be >= 0, got {cfg.max_hold_hours}.")
+        trailing_stop_pct = getattr(cfg, "trailing_stop_pct", None)
+        if trailing_stop_pct is not None:
+            trailing_stop_pct = float(trailing_stop_pct)
+            if not math.isfinite(trailing_stop_pct) or trailing_stop_pct < 0.0:
+                raise ValueError(f"trailing_stop_pct must be finite and >= 0, got {cfg.trailing_stop_pct}.")
+        force_exit_offset_pct = float(getattr(cfg, "force_exit_offset_pct", 0.1) or 0.0)
+        if not math.isfinite(force_exit_offset_pct) or force_exit_offset_pct < 0.0:
+            raise ValueError(f"force_exit_offset_pct must be finite and >= 0, got {cfg.force_exit_offset_pct}.")
         max_leverage = float(getattr(cfg, "max_leverage", 1.0) or 1.0)
         if not math.isfinite(max_leverage) or max_leverage <= 0.0:
             raise ValueError(f"max_leverage must be finite and > 0, got {cfg.max_leverage}.")
@@ -259,6 +275,13 @@ class HourlyTraderMarketSimulator:
             if symbol not in positions:
                 continue
             positions[symbol] = float(raw_qty)
+        position_entry_times: Dict[str, pd.Timestamp] = {}
+        position_peak_closes: Dict[str, float] = {}
+        initial_ts = pd.Timestamp(frame["timestamp"].min()) if not frame.empty else None
+        if initial_ts is not None:
+            for sym, qty in positions.items():
+                if float(qty) > 0.0:
+                    position_entry_times[sym] = initial_ts
 
         open_orders: Dict[Tuple[str, str], OpenOrder] = {}
         for seed_order in (cfg.initial_open_orders or ()):
@@ -475,6 +498,14 @@ class HourlyTraderMarketSimulator:
                         cash_stock += proceeds
                 positions[sym] = float(positions.get(sym, 0.0)) - fill_qty
 
+            new_position = float(positions.get(sym, 0.0))
+            if new_position > 0.0:
+                position_entry_times.setdefault(sym, ts)
+                position_peak_closes.setdefault(sym, float(bar_close))
+            else:
+                position_entry_times.pop(sym, None)
+                position_peak_closes.pop(sym, None)
+
             fills.append(
                 FillRecord(
                     timestamp=ts,
@@ -620,6 +651,64 @@ class HourlyTraderMarketSimulator:
                 reserved_cash=float(reserved),
             )
 
+        def _update_position_trackers(ts: pd.Timestamp, current_group: pd.DataFrame) -> None:
+            for row in current_group.itertuples(index=False):
+                sym = str(row.symbol).upper()
+                qty = float(positions.get(sym, 0.0))
+                if qty > 0.0:
+                    position_entry_times.setdefault(sym, ts)
+                    close_price = float(row.close)
+                    prev_peak = float(position_peak_closes.get(sym, close_price))
+                    position_peak_closes[sym] = max(prev_peak, close_price)
+                else:
+                    position_entry_times.pop(sym, None)
+                    position_peak_closes.pop(sym, None)
+
+        def _risk_exit_price(close_price: float) -> float:
+            return float(close_price) * (1.0 - force_exit_offset_pct / 100.0)
+
+        def _apply_risk_exit_rules(ts: pd.Timestamp, current_group: pd.DataFrame) -> set[str]:
+            triggered_symbols: set[str] = set()
+            if max_hold_hours is None and trailing_stop_pct is None:
+                return triggered_symbols
+
+            for row in current_group.itertuples(index=False):
+                sym = str(row.symbol).upper()
+                qty = float(positions.get(sym, 0.0))
+                if qty <= 0.0:
+                    continue
+
+                close_price = float(row.close)
+                should_exit = False
+                held_since = position_entry_times.get(sym)
+                if max_hold_hours is not None and held_since is not None:
+                    held_hours = (ts - held_since).total_seconds() / 3600.0
+                    if held_hours >= float(max_hold_hours):
+                        should_exit = True
+
+                peak_close = float(position_peak_closes.get(sym, close_price))
+                if trailing_stop_pct is not None and peak_close > 0.0:
+                    drop_pct = (peak_close - close_price) / peak_close * 100.0
+                    if drop_pct >= float(trailing_stop_pct):
+                        should_exit = True
+
+                if not should_exit:
+                    continue
+
+                triggered_symbols.add(sym)
+                _cancel_same_side(sym, "buy")
+                _cancel_same_side(sym, "sell")
+                _place_order(
+                    ts,
+                    sym=sym,
+                    intent_side="sell",
+                    intent_qty=abs(qty),
+                    intent_price=_risk_exit_price(close_price),
+                    kind="exit",
+                )
+
+            return triggered_symbols
+
         # Determine symbol order: if config.symbols is provided, preserve that order.
         symbol_order: List[str]
         if cfg.symbols:
@@ -659,8 +748,13 @@ class HourlyTraderMarketSimulator:
                 if _cancel_is_effective(order, ts):
                     _cancel_same_side(order.symbol, order.side)
 
+            _update_position_trackers(ts, group)
+            risk_exit_symbols = _apply_risk_exit_rules(ts, group)
+
             # Place/update orders using this bar's action row.
             for sym in symbol_order:
+                if sym in risk_exit_symbols:
+                    continue
                 sym_group = group[group["symbol"] == sym]
                 if sym_group.empty:
                     continue

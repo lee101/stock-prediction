@@ -83,6 +83,24 @@ def test_decode_multiple_alloc_bins():
     assert btc_signal.allocation_pct == 1.0  # 100% alloc
 
 
+def test_decode_level_bins_preserves_price_offset():
+    logits = np.zeros(13)
+    logits[6] = 5.0  # symbol 0, alloc_idx=1, level_idx=2 when alloc_bins=2 level_bins=3
+    signals = decode_rl_action(
+        logits,
+        num_symbols=1,
+        symbol_names=["BTC"],
+        alloc_bins=2,
+        level_bins=3,
+        max_offset_bps=50.0,
+        top_k=1,
+    )
+
+    assert signals[0].direction == "long"
+    assert signals[0].allocation_pct == 1.0
+    assert signals[0].level_offset_bps == pytest.approx(50.0)
+
+
 def test_build_hybrid_prompt():
     """Test prompt generation."""
     signal = RLSignal(
