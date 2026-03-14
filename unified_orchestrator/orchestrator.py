@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import struct
 import sys
 import time
@@ -1063,6 +1064,9 @@ def _validate_trade_plan(plan: TradePlan, symbol: str) -> tuple[bool, str]:
     return True, "ok"
 
 
+STOCK_PEAKS_FILE = Path("strategy_state/stock_peaks.json")
+
+
 def execute_stock_signals(
     signals: dict[str, TradePlan],
     snapshot: UnifiedPortfolioSnapshot,
@@ -1077,8 +1081,75 @@ def execute_stock_signals(
     orders = []
     alpaca = TradingClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, paper=False)
 
+    # ── Stock trailing stop tracking ──────────────────────────────────────
+    # Same mechanism as crypto: track peak price, exit if price drops 0.3%.
+    # Exp06 stocks: trail 0.3% → Sortino 89.4, +6.77% (vs -1.09% baseline).
+    stock_syms = set(signals.keys())
+    stock_pos = {
+        sym: pos for sym, pos in snapshot.alpaca_positions.items()
+        if sym in stock_syms and pos.qty > 0
+    }
+    stock_peaks = {}
+    try:
+        if STOCK_PEAKS_FILE.exists():
+            stock_peaks = json.loads(STOCK_PEAKS_FILE.read_text())
+    except Exception:
+        stock_peaks = {}
+
+    stock_peaks = update_peak_prices(stock_peaks, stock_pos)
+    trail_exit_syms = set(get_trailing_stop_symbols(
+        stock_peaks, stock_pos, trail_pct=TRAILING_STOP_PCT,
+    ))
+
+    # Remove exited positions from peaks
+    for sym in list(stock_peaks):
+        if sym not in stock_pos:
+            del stock_peaks[sym]
+    try:
+        STOCK_PEAKS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = STOCK_PEAKS_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(stock_peaks, indent=2))
+        tmp.replace(STOCK_PEAKS_FILE)
+    except Exception:
+        pass
+
+    # Force-exit trailing stop positions
+    for sym in trail_exit_syms:
+        pos = snapshot.alpaca_positions.get(sym)
+        if pos and pos.qty > 0:
+            logger.info(f"  {sym}: TRAILING STOP — selling {pos.qty} shares near market")
+            if not dry_run:
+                try:
+                    # Cancel existing sells first
+                    from alpaca.trading.requests import GetOrdersRequest
+                    from alpaca.trading.enums import QueryOrderStatus
+                    open_orders = alpaca.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN))
+                    for order in open_orders:
+                        if str(order.symbol) == sym and order.side.value.lower() == "sell":
+                            alpaca.cancel_order_by_id(str(order.id))
+                    import time as _time
+                    _time.sleep(0.5)
+                    sell_price = round(pos.current_price * 0.999, 2)
+                    req = LimitOrderRequest(
+                        symbol=sym, qty=pos.qty, side=OrderSide.SELL,
+                        type="limit", time_in_force=TimeInForce.DAY,
+                        limit_price=sell_price,
+                    )
+                    result = alpaca.submit_order(req)
+                    orders.append({"symbol": sym, "action": "trailing_stop_sell",
+                                   "price": sell_price, "qty": pos.qty,
+                                   "order_id": str(result.id)})
+                except Exception as e:
+                    logger.error(f"  {sym}: trailing stop sell error: {e}")
+            else:
+                orders.append({"symbol": sym, "action": "trailing_stop_sell",
+                               "qty": pos.qty, "dry_run": True})
+
     for sym, plan in signals.items():
         try:
+            if sym in trail_exit_syms:
+                continue  # already exiting via trailing stop
+
             # Safety validation — applied to ALL orders
             ok, reason = _validate_trade_plan(plan, sym)
             if not ok:

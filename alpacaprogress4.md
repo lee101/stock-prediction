@@ -1269,3 +1269,41 @@ Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
 ### Deploy decision
 - No config exceeded baseline min_goodness=2.7965 - continuing search.
 
+
+## 2026-03-14 11:55 UTC Autonomous Research Batch (10 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | prod7_all | edge_rank | 1.3980 | 2.6627 | 0.1781 | 0.4860 | 16 | 0.005 | -0.001 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | prod7_all | edge_rank | 1.3980 | 2.6627 | 0.1781 | 0.4860 | 16 | 0.005 | -0.001 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | prod7_all | first_trigger | 1.3980 | 2.6627 | 0.1781 | 0.4860 | 16 | 0.005 | -0.001 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | prod7_all | first_trigger | 1.3980 | 2.6627 | 0.1781 | 0.4860 | 16 | 0.005 | -0.001 |
+| 5 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | prod7_all | edge_rank | -0.8496 | -0.5487 | -0.1394 | -0.1394 | 18 | 0.0025 | 0.0 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+
+
+## 2026-03-14 15:35 UTC Autonomous Research Batch (10 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | prod7_wd07 | edge_rank | 1.3980 | 2.6627 | 0.1781 | 0.4860 | 16 | 0.005 | -0.001 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | prod7_wd07 | edge_rank | 1.3980 | 2.6627 | 0.1781 | 0.4860 | 16 | 0.005 | -0.001 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | prod7_wd07 | edge_rank | -0.8496 | -0.5487 | -0.1394 | -0.1394 | 18 | 0.0025 | 0.0 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | prod7_wd07 | edge_rank | -0.8496 | -0.5487 | -0.1394 | -0.1394 | 18 | 0.0025 | 0.0 |
+| 5 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | prod7_wd07 | edge_rank | -1.9789 | -0.6887 | -0.8529 | -0.4096 | 14 | 0.0 | -0.001 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+
