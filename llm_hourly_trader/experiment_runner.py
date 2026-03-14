@@ -29,10 +29,11 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from llm_hourly_trader.config import SYMBOL_UNIVERSE, BacktestConfig, SymbolConfig
+from llm_hourly_trader.config import SYMBOL_UNIVERSE, SymbolConfig
 from llm_hourly_trader.gemini_wrapper import TradePlan, build_prompt
 from llm_hourly_trader.historical_error_bands import HistoricalForecastErrorEstimator
-from llm_hourly_trader.providers import call_llm
+from llm_hourly_trader.providers import CacheMissError, call_llm
+from llm_hourly_trader.windowing import parse_utc_timestamp, resolve_window_end
 
 DATA_DIRS = [
     Path(__file__).resolve().parent.parent / "trainingdatahourly" / "crypto",
@@ -138,6 +139,8 @@ def run_sequential_backtest(
     max_position_pct: float = 0.25,
     rate_limit: float = 4.2,
     leverage: float = 1.0,
+    end_timestamp: str | None = None,
+    cache_only: bool = False,
 ) -> dict:
     """Run a sequential backtest where each bar sees current position state."""
     all_bars = {}
@@ -179,7 +182,7 @@ def run_sequential_backtest(
             }
 
     fc_ends = [all_fc_h1[s]["timestamp"].max() for s in usable if not all_fc_h1[s].empty]
-    end_ts = min(fc_ends)
+    end_ts = resolve_window_end(fc_ends, end_timestamp)
     start_ts = end_ts - timedelta(days=days)
     print(f"  Window: {start_ts} -> {end_ts}")
 
@@ -286,7 +289,12 @@ def run_sequential_backtest(
             )
 
             # Call LLM
-            plan = call_llm(prompt, model=model)
+            try:
+                plan = call_llm(prompt, model=model, cache_only=cache_only)
+            except CacheMissError as exc:
+                raise RuntimeError(
+                    f"Cache-only replay missing response for {sym} at {parse_utc_timestamp(ts).isoformat()}"
+                ) from exc
             api_calls += 1
             if rate_limit > 0:
                 time.sleep(rate_limit)
@@ -365,6 +373,9 @@ def run_sequential_backtest(
         "leverage": leverage,
         "symbols": usable,
         "days": days,
+        "window_start": start_ts.isoformat(),
+        "window_end": end_ts.isoformat(),
+        "cache_only": cache_only,
         "api_calls": api_calls,
         "entries": entries,
         "exits": exits,
@@ -385,6 +396,10 @@ def main():
     parser.add_argument("--initial-cash", type=float, default=2000.0)
     parser.add_argument("--rate-limit", type=float, default=4.2)
     parser.add_argument("--leverage", type=float, nargs="+", default=[1.0])
+    parser.add_argument("--end-ts", type=str, default=None,
+                        help="Fixed UTC end timestamp for reproducible reruns (e.g. 2026-03-14T00:00:00Z)")
+    parser.add_argument("--cache-only", action="store_true",
+                        help="Replay from llm_hourly_trader/api_cache only; fail on any cache miss")
     args = parser.parse_args()
 
     print(f"\n{'='*70}")
@@ -394,6 +409,10 @@ def main():
     print(f"Days: {args.days}")
     print(f"Variants: {args.variants}")
     print(f"Leverage: {args.leverage}")
+    if args.end_ts:
+        print(f"End timestamp: {args.end_ts}")
+    if args.cache_only:
+        print("Mode: cache-only replay")
     if any(float(lev) > 1.0 for lev in args.leverage):
         print("NOTE: leverage >1x here is hypothetical backtest leverage, not spot live-parity.")
     print(f"{'='*70}\n")
@@ -413,6 +432,8 @@ def main():
                 initial_cash=args.initial_cash,
                 rate_limit=args.rate_limit,
                 leverage=lev,
+                end_timestamp=args.end_ts,
+                cache_only=args.cache_only,
             )
             results[label] = result
 
