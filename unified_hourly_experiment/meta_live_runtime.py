@@ -54,6 +54,7 @@ def compute_symbol_edge(
     action: Mapping[str, Any],
     fee_rate: float,
     short_only_symbols: Sequence[str],
+    entry_reference_price: float | None = None,
 ) -> float:
     """Compute edge score used for live entry filtering."""
     symbol_u = str(symbol).upper()
@@ -63,13 +64,16 @@ def compute_symbol_edge(
     sell_price = _to_float(action.get("sell_price"))
     pred_high = _to_float(action.get("predicted_high"))
     pred_low = _to_float(action.get("predicted_low"))
+    reference_price = _to_float(entry_reference_price)
     if is_short:
-        if sell_price <= 0:
+        effective_entry_price = reference_price if reference_price > 0 else sell_price
+        if effective_entry_price <= 0:
             return float("-inf")
-        return (sell_price - pred_low) / sell_price - fee_rate
-    if buy_price <= 0:
+        return (effective_entry_price - pred_low) / effective_entry_price - fee_rate
+    effective_entry_price = reference_price if reference_price > 0 else buy_price
+    if effective_entry_price <= 0:
         return float("-inf")
-    return (pred_high - buy_price) / buy_price - fee_rate
+    return (pred_high - effective_entry_price) / effective_entry_price - fee_rate
 
 
 def _to_float(value: Any) -> float:

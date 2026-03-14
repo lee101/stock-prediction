@@ -62,7 +62,7 @@ class TradingSignal:
 class PPOTrader:
     """Inference wrapper for trained PPO model."""
 
-    SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "LINKUSD"]
+    SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "LTCUSD", "AVAXUSD"]
 
     def __init__(
         self,
@@ -136,15 +136,24 @@ class PPOTrader:
             self.per_symbol_actions = 1
             self.side_block = self.num_symbols
 
-        # Infer hidden size
+        # Infer hidden size and architecture from state_dict keys
         input_proj_key = [k for k in state_dict if 'input_proj' in k and 'weight' in k]
-        if input_proj_key:
-            hidden = state_dict[input_proj_key[0]].shape[0]
-        else:
-            hidden = config.get("hidden_size", 512)
-        blocks = config.get("num_blocks", 3)
+        encoder_key = [k for k in state_dict if 'encoder' in k and 'weight' in k]
 
-        self.policy = Policy(self.obs_size, self.num_actions, hidden, blocks)
+        if encoder_key and not input_proj_key:
+            # train.py TradingPolicy (MLP with encoder)
+            hidden = state_dict[encoder_key[0]].shape[0]
+            from pufferlib_market.train import TradingPolicy
+            self.policy = TradingPolicy(self.obs_size, self.num_actions, hidden)
+        else:
+            # inference.py Policy (ResidualBlock)
+            if input_proj_key:
+                hidden = state_dict[input_proj_key[0]].shape[0]
+            else:
+                hidden = config.get("hidden_size", 512)
+            blocks = config.get("num_blocks", 3)
+            self.policy = Policy(self.obs_size, self.num_actions, hidden, blocks)
+
         self.policy.load_state_dict(state_dict)
         self.policy.to(self.device)
         self.policy.eval()

@@ -694,3 +694,5 @@ FastForecaster/sweeps/
 fastforecaster2/
 llm_hourly_trader/api_cache/
 rl-trading
+unified_hourly_experiment/leverage_sweep_results.json
+pufferlib_market/auto_improve_results.json

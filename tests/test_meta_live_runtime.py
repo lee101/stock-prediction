@@ -92,3 +92,25 @@ def test_compute_symbol_edge_long_and_short() -> None:
     )
     expected = (101.0 - 99.0) / 101.0 - 0.001
     assert math.isclose(short_edge, expected, rel_tol=1e-9)
+
+
+def test_compute_symbol_edge_uses_market_entry_reference_override() -> None:
+    long_edge = compute_symbol_edge(
+        symbol="NVDA",
+        action={"buy_price": 100.0, "predicted_high": 102.0, "sell_price": 101.0, "predicted_low": 98.0},
+        fee_rate=0.001,
+        short_only_symbols=[],
+        entry_reference_price=101.5,
+    )
+    expected_long = (102.0 - 101.5) / 101.5 - 0.001
+    assert math.isclose(long_edge, expected_long, rel_tol=1e-9)
+
+    short_edge = compute_symbol_edge(
+        symbol="TRIP",
+        action={"buy_price": 99.0, "predicted_high": 100.0, "sell_price": 101.0, "predicted_low": 99.0},
+        fee_rate=0.001,
+        short_only_symbols=["TRIP"],
+        entry_reference_price=100.25,
+    )
+    expected_short = (100.25 - 99.0) / 100.25 - 0.001
+    assert math.isclose(short_edge, expected_short, rel_tol=1e-9)

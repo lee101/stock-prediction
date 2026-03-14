@@ -59,8 +59,12 @@ class TradingPolicy(nn.Module):
         value = self.critic(h).squeeze(-1)
         return logits, value
 
-    def get_action(self, x, deterministic=False):
+    def get_action(self, x, deterministic=False, disable_shorts=False):
         logits, _ = self.forward(x)
+        if disable_shorts:
+            # Actions: 0=flat, 1..K=longs, K+1..2K=shorts. Mask shorts.
+            K = (self.num_actions - 1) // 2
+            logits[:, 1 + K:] = float("-inf")
         if deterministic:
             return logits.argmax(dim=-1)
         return Categorical(logits=logits).sample()
@@ -91,8 +95,11 @@ class ResidualTradingPolicy(nn.Module):
         h = self.out_norm(self.blocks(self.input_proj(x)))
         return self.actor(h), self.critic(h).squeeze(-1)
 
-    def get_action(self, x, deterministic=False):
+    def get_action(self, x, deterministic=False, disable_shorts=False):
         logits, _ = self.forward(x)
+        if disable_shorts:
+            K = (self.num_actions - 1) // 2
+            logits[:, 1 + K:] = float("-inf")
         if deterministic:
             return logits.argmax(dim=-1)
         return Categorical(logits=logits).sample()
@@ -112,6 +119,8 @@ def evaluate_random(args, policy, binding, obs_buf, act_buf, rew_buf, term_buf,
         action_allocation_bins=args.action_allocation_bins,
         action_level_bins=args.action_level_bins,
         action_max_offset_bps=args.action_max_offset_bps,
+        fill_slippage_bps=args.fill_slippage_bps,
+        max_hold_hours=args.max_hold_hours,
     )
     binding.vec_reset(vec_handle, args.seed)
 
@@ -125,7 +134,8 @@ def evaluate_random(args, policy, binding, obs_buf, act_buf, rew_buf, term_buf,
     while len(all_returns) < target_episodes:
         obs_tensor = torch.from_numpy(obs_buf.copy()).to(device)
         with torch.no_grad():
-            actions = policy.get_action(obs_tensor, deterministic=args.deterministic)
+            actions = policy.get_action(obs_tensor, deterministic=args.deterministic,
+                                        disable_shorts=args.disable_shorts)
         act_buf[:] = actions.cpu().numpy().astype(np.int32)
         binding.vec_step(vec_handle)
         total_steps += num_envs
@@ -202,6 +212,8 @@ def evaluate_sequential(args, policy, binding, obs_size, num_actions, device):
         action_allocation_bins=args.action_allocation_bins,
         action_level_bins=args.action_level_bins,
         action_max_offset_bps=args.action_max_offset_bps,
+        fill_slippage_bps=args.fill_slippage_bps,
+        max_hold_hours=args.max_hold_hours,
     )
     binding.vec_reset(vec_handle, args.seed)
 
@@ -214,7 +226,8 @@ def evaluate_sequential(args, policy, binding, obs_size, num_actions, device):
     while len(all_returns) < target_episodes:
         obs_tensor = torch.from_numpy(obs_buf_m.copy()).to(device)
         with torch.no_grad():
-            actions = policy.get_action(obs_tensor, deterministic=args.deterministic)
+            actions = policy.get_action(obs_tensor, deterministic=args.deterministic,
+                                        disable_shorts=args.disable_shorts)
         act_buf_m[:] = actions.cpu().numpy().astype(np.int32)
         binding.vec_step(vec_handle)
         total_steps += num_envs
@@ -246,6 +259,8 @@ def main():
     parser.add_argument("--action-allocation-bins", type=int, default=1)
     parser.add_argument("--action-level-bins", type=int, default=1)
     parser.add_argument("--action-max-offset-bps", type=float, default=0.0)
+    parser.add_argument("--fill-slippage-bps", type=float, default=0.0,
+                        help="Adverse fill slippage in bps (realistic: 5-12)")
     parser.add_argument("--num-envs", type=int, default=64)
     parser.add_argument("--num-episodes", type=int, default=500,
                         help="Target number of episodes for random mode")
@@ -257,6 +272,10 @@ def main():
     parser.add_argument("--hidden-size", type=int, default=256)
     parser.add_argument("--arch", choices=["mlp", "resmlp"], default="mlp")
     parser.add_argument("--cpu", action="store_true")
+    parser.add_argument("--max-hold-hours", type=int, default=0,
+                        help="Force close position after N hours (0=disabled)")
+    parser.add_argument("--disable-shorts", action="store_true",
+                        help="Mask short actions (long/flat only)")
 
     args = parser.parse_args()
 

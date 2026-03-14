@@ -72,6 +72,17 @@ class HourlyTraderSimulationConfig:
     qty_tol_pct: float = 0.05
     qty_tol_notional_usd: float = 100.0
 
+    # Separate cash pools for stock vs crypto (unified orchestrator mode).
+    # When enabled, stock entries draw from cash_stock and crypto entries from cash_crypto.
+    separate_cash_pools: bool = False
+    initial_cash_stock: float = 10_000.0
+    initial_cash_crypto: float = 5_000.0
+
+    # Backout simulation: minutes before NYSE open to close crypto positions
+    # with edge below backout_edge_threshold. 0 = disabled.
+    backout_near_market_minutes: int = 0
+    backout_edge_threshold: float = 0.005
+
 
 @dataclass(frozen=True)
 class OpenOrder:
@@ -233,7 +244,15 @@ class HourlyTraderMarketSimulator:
                 return None
             return pd.Timestamp(ts)
 
-        cash = float(cfg.initial_cash)
+        # Cash management: single pool or separate stock/crypto pools.
+        if cfg.separate_cash_pools:
+            cash_stock = float(cfg.initial_cash_stock)
+            cash_crypto = float(cfg.initial_cash_crypto)
+            cash = cash_stock + cash_crypto  # Total for equity calc
+        else:
+            cash = float(cfg.initial_cash)
+            cash_stock = cash
+            cash_crypto = cash
         positions: Dict[str, float] = {sym: 0.0 for sym in symbols}
         for raw_symbol, raw_qty in (cfg.initial_positions or {}).items():
             symbol = _normalize_symbol(raw_symbol)
@@ -338,6 +357,20 @@ class HourlyTraderMarketSimulator:
             return max(0.0, _equity()) * leverage
 
         def _available_cash(sym: str | None = None) -> float:
+            if cfg.separate_cash_pools and sym is not None:
+                # In separate pool mode, each asset class has its own cash
+                if meta[sym]["asset_class"] == "crypto":
+                    crypto_exposure = sum(abs(float(positions.get(s, 0))) * float(last_close.get(s, 0))
+                                          for s in symbols if meta[s]["asset_class"] == "crypto")
+                    crypto_reserved = sum(float(o.reserved_cash) for (s, _), o in open_orders.items()
+                                          if meta.get(s, {}).get("asset_class") == "crypto")
+                    return max(0.0, cash_crypto - crypto_exposure - crypto_reserved)
+                else:
+                    stock_exposure = sum(abs(float(positions.get(s, 0))) * float(last_close.get(s, 0))
+                                         for s in symbols if meta[s]["asset_class"] == "stock")
+                    stock_reserved = sum(float(o.reserved_cash) for (s, _), o in open_orders.items()
+                                         if meta.get(s, {}).get("asset_class") == "stock")
+                    return max(0.0, cash_stock * max_leverage - stock_exposure - stock_reserved)
             used = _gross_exposure() + reserved_cash
             return max(0.0, _max_entry_capacity(sym) - used)
 
@@ -393,7 +426,7 @@ class HourlyTraderMarketSimulator:
             bar_close: float,
             order: OpenOrder,
         ) -> None:
-            nonlocal cash, reserved_cash
+            nonlocal cash, reserved_cash, cash_stock, cash_crypto
             sym = order.symbol
             fee_rate = float(meta[sym]["maker_fee"])
             qty = float(order.qty)
@@ -424,12 +457,22 @@ class HourlyTraderMarketSimulator:
                 fee = notional * fee_rate
                 cost = notional + fee
                 cash -= cost
+                if cfg.separate_cash_pools:
+                    if meta[sym]["asset_class"] == "crypto":
+                        cash_crypto -= cost
+                    else:
+                        cash_stock -= cost
                 positions[sym] = float(positions.get(sym, 0.0)) + fill_qty
             else:
                 notional = fill_qty * price
                 fee = notional * fee_rate
                 proceeds = notional - fee
                 cash += proceeds
+                if cfg.separate_cash_pools:
+                    if meta[sym]["asset_class"] == "crypto":
+                        cash_crypto += proceeds
+                    else:
+                        cash_stock += proceeds
                 positions[sym] = float(positions.get(sym, 0.0)) - fill_qty
 
             fills.append(
@@ -465,7 +508,7 @@ class HourlyTraderMarketSimulator:
             )
 
         def _cancel_same_side(sym: str, side: str) -> None:
-            nonlocal reserved_cash
+            nonlocal reserved_cash, cash_stock, cash_crypto
             existing = open_orders.pop((sym, side), None)
             if existing is None:
                 return
@@ -505,7 +548,7 @@ class HourlyTraderMarketSimulator:
             return (qty_diff_pct < float(cfg.qty_tol_pct)) or (notional_diff < float(cfg.qty_tol_notional_usd))
 
         def _place_order(ts: pd.Timestamp, *, sym: str, intent_side: str, intent_qty: float, intent_price: float, kind: str) -> None:
-            nonlocal reserved_cash
+            nonlocal reserved_cash, cash_stock, cash_crypto
             side = intent_side.lower()
             if side not in {"buy", "sell"}:
                 return
