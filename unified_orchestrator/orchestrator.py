@@ -70,13 +70,15 @@ _rl_bridge_stock: RLGeminiBridge | None = None
 
 # Validated checkpoints (confirmed on held-out data):
 #   stocks: +50% median / 30-day window, Sortino=25 (featlag1, fee=5bps, long-only)
-#   crypto: autoresearch/slip_5bps = +5.21% median/30d OOS, 96% profitable (Mar 2026)
+#   crypto: autoresearch/longonly_forecast = +5.64% median/30d OOS, 100% profitable, Sortino 2.18
+#           Previous best: slip_5bps = +5.21% median/30d OOS, 96% profitable
 #           Old 300M models overfit badly (-3% to -16% OOS) — do NOT use
 STOCK_CHECKPOINT_CANDIDATES = [
     REPO / "pufferlib_market/checkpoints/stocks13_featlag1_fee5bps_longonly_run4/best.pt",
     REPO / "pufferlib_market/checkpoints/stocks13_issuedat_featlag1_fee5bps_longonly_run5/best.pt",
 ]
 CRYPTO_CHECKPOINT_CANDIDATES = [
+    REPO / "pufferlib_market/checkpoints/autoresearch/longonly_forecast/best.pt",
     REPO / "pufferlib_market/checkpoints/autoresearch/slip_5bps/best.pt",
     REPO / "pufferlib_market/checkpoints/autoresearch/ent_01/best.pt",
     REPO / "pufferlib_market/checkpoints/autoresearch/reg_combo_2/best.pt",
@@ -103,6 +105,7 @@ DELEVERAGE_MINUTES_BEFORE_CLOSE = 60  # Start deleveraging 1h before close
 _CHECKPOINT_DATA_HINTS = {
     "stocks13_featlag1_fee5bps_longonly_run4": REPO / "pufferlib_market/data/stocks13_hourly_forecast_mktd_v2_start20250915_featlag1.bin",
     "stocks13_issuedat_featlag1_fee5bps_longonly_run5": REPO / "pufferlib_market/data/stocks13_hourly_forecast_mktd_v2_start20250915_issuedat_featlag1.bin",
+    "longonly_forecast": REPO / "pufferlib_market/data/crypto6_train.bin",
     "slip_5bps": REPO / "pufferlib_market/data/crypto6_train.bin",
     "ent_01": REPO / "pufferlib_market/data/crypto6_train.bin",
     "reg_combo_2": REPO / "pufferlib_market/data/crypto6_train.bin",
