@@ -158,9 +158,9 @@ class ForecastConfigSelector:
         "crypto_multi_ohlc": ForecastConfig(
             tag=ForecastTag(symbols=("*", "*"), targets=("open", "high", "low", "close"), asset_type="crypto"),
             use_multivariate=False,
-            use_cross_learning=True,  # +9-11% for homogeneous crypto
+            use_cross_learning=False,  # Sweep of 1079 experiments: joint never beats independent
             use_multiscale=False,
-            mae_improvement=10.0,
+            mae_improvement=0.0,
             source="default",
         ),
         "stock_close_only": ForecastConfig(
