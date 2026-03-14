@@ -398,6 +398,7 @@ def train(args):
         smooth_downside_temperature=args.smooth_downside_temperature,
         trade_penalty=args.trade_penalty,
         fill_slippage_bps=args.fill_slippage_bps,
+        fill_probability=args.fill_probability,
         max_hold_hours=args.max_hold_hours,
     )
 
@@ -442,6 +443,7 @@ def train(args):
         smooth_downside_temperature=config.smooth_downside_temperature,
         trade_penalty=config.trade_penalty,
         fill_slippage_bps=config.fill_slippage_bps,
+        fill_probability=config.fill_probability,
         max_hold_hours=config.max_hold_hours,
     )
     binding.vec_reset(vec_handle, args.seed)
@@ -803,6 +805,12 @@ def main():
         type=float,
         default=0.0,
         help="Adverse fill slippage in basis points (realistic: 5-12). Buys fill higher, sells fill lower.",
+    )
+    parser.add_argument(
+        "--fill-probability",
+        type=float,
+        default=1.0,
+        help="Probability an order fills [0-1]. 1.0=always fills. 0.8=20%% of entries randomly rejected (simulates low liquidity).",
     )
     parser.add_argument("--num-envs", type=int, default=64)
     parser.add_argument("--seed", type=int, default=42)

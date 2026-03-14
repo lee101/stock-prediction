@@ -504,14 +504,23 @@ void c_step(TradingEnv* env) {
                     close_position(env, t);
                     trade_events += 1;
                 }
-                if (is_short_target) {
-                    open_short(env, t, target_sym, target_alloc, level_bps);
-                } else {
-                    open_long(env, t, target_sym, target_alloc, level_bps);
+                /* fill_probability gate: simulate unfilled orders due to low liquidity */
+                int fill_ok = 1;
+                if (env->fill_probability < 1.0f) {
+                    float roll = (float)rand() / (float)RAND_MAX;
+                    fill_ok = (roll <= env->fill_probability);
                 }
-                if (ag->position_sym == target_pos_id) {
-                    trade_events += 1;
+                if (fill_ok) {
+                    if (is_short_target) {
+                        open_short(env, t, target_sym, target_alloc, level_bps);
+                    } else {
+                        open_long(env, t, target_sym, target_alloc, level_bps);
+                    }
+                    if (ag->position_sym == target_pos_id) {
+                        trade_events += 1;
+                    }
                 }
+                /* else: order not filled, agent stays flat this step */
             }
         }
     }
