@@ -246,10 +246,6 @@ def _softmax(logits: list[float]) -> list[float]:
     return (e / e.sum()).tolist()
 
 
-RL_LONG_PROB_INDEX = {symbol: idx + 1 for idx, symbol in enumerate(SYMBOLS)}
-RL_SHORT_PROB_INDEX = {symbol: idx + 1 + len(SYMBOLS) for idx, symbol in enumerate(SYMBOLS)}
-
-
 def build_allocation_prompt(
     contexts: list[SymbolContext],
     rl_signal: RLSignal,
@@ -277,7 +273,7 @@ def build_allocation_prompt(
 
     # Per-symbol market context
     sym_sections = []
-    for ctx in contexts:
+    for i, ctx in enumerate(contexts):
         fc_h1_str = "unavailable"
         if ctx.fc_h1_confidence > 0:
             fc_h1_str = (
@@ -291,10 +287,8 @@ def build_allocation_prompt(
                 f"high {ctx.fc_h24_high_delta:+.2%}, low {ctx.fc_h24_low_delta:+.2%}"
             )
 
-        long_idx = RL_LONG_PROB_INDEX.get(ctx.symbol)
-        short_idx = RL_SHORT_PROB_INDEX.get(ctx.symbol)
-        rl_long_prob = probs[long_idx] if long_idx is not None and long_idx < len(probs) else 0.0
-        rl_short_prob = probs[short_idx] if short_idx is not None and short_idx < len(probs) else 0.0
+        rl_long_prob = probs[i + 1]  # actions 1-4 = long BTC/ETH/DOGE/AAVE
+        rl_short_prob = probs[i + 5]  # actions 5-8 = short
 
         kline_table = _format_klines_compact(ctx.klines, n=12)
 
@@ -405,31 +399,6 @@ ALLOC_FIELDS = {
 }
 
 
-def _parse_float_like(value: object, default: float = 0.0) -> float:
-    """Parse common LLM number formats like "$1,234.50" or "25%"."""
-    if value is None:
-        return default
-    if isinstance(value, (int, float)):
-        try:
-            out = float(value)
-        except (TypeError, ValueError):
-            return default
-        return out if np.isfinite(out) else default
-
-    text = str(value).strip()
-    if not text:
-        return default
-    text = text.replace(",", "")
-    match = re.search(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)", text)
-    if not match:
-        return default
-    try:
-        out = float(match.group(0))
-    except ValueError:
-        return default
-    return out if np.isfinite(out) else default
-
-
 def parse_allocation_response(text: str) -> AllocationPlan:
     """Parse Gemini's JSON response into an AllocationPlan."""
     # Try structured JSON first
@@ -453,11 +422,11 @@ def parse_allocation_response(text: str) -> AllocationPlan:
     )
 
     for sym, (pct_key, entry_key, exit_key) in ALLOC_FIELDS.items():
-        pct = max(0.0, _parse_float_like(data.get(pct_key, 0), default=0.0))
+        pct = float(data.get(pct_key, 0) or 0)
         if pct > 0:
             plan.allocations[sym] = min(pct, 100.0)
-            plan.entry_prices[sym] = max(0.0, _parse_float_like(data.get(entry_key, 0), default=0.0))
-            plan.exit_prices[sym] = max(0.0, _parse_float_like(data.get(exit_key, 0), default=0.0))
+            plan.entry_prices[sym] = float(data.get(entry_key, 0) or 0)
+            plan.exit_prices[sym] = float(data.get(exit_key, 0) or 0)
 
     # Clamp total to 100%
     total = sum(plan.allocations.values())

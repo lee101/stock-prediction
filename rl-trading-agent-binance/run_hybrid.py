@@ -231,9 +231,13 @@ def run_hybrid_backtest(
     parallel: int = 1,
     rate_limit: float = 2.0,
     checkpoint_path: str | None = None,
+    thinking_level: str | None = None,
 ) -> dict:
     """Run the RL+LLM hybrid backtest."""
-    cache_model = f"binance-hybrid-v1-{model}"
+    tag = f"binance-hybrid-v1-{model}"
+    if thinking_level:
+        tag += f"-think{thinking_level.lower()}"
+    cache_model = tag
 
     # Find checkpoint
     if checkpoint_path:
@@ -244,7 +248,7 @@ def run_hybrid_backtest(
     print(f"\n{'='*70}")
     print(f"RL + LLM Hybrid Trading Agent (Binance)")
     print(f"RL checkpoint: {ckpt_path}")
-    print(f"LLM: {model}")
+    print(f"LLM: {model}" + (f" (thinking={thinking_level})" if thinking_level else ""))
     print(f"Symbols: {symbols}")
     print(f"Days: {days} | Parallel: {parallel}")
     print(f"{'='*70}\n")
@@ -421,7 +425,10 @@ def run_hybrid_backtest(
         cached = get_cached(cache_model, prompt)
         if cached is not None:
             return sym, bar, TradePlan(**cached), rl_signal, idx
-        plan = call_llm(prompt, model=model)
+        kwargs = {"model": model}
+        if thinking_level:
+            kwargs["thinking_level"] = thinking_level
+        plan = call_llm(prompt, **kwargs)
         set_cached(cache_model, prompt, plan.__dict__)
         return sym, bar, plan, rl_signal, idx
 
@@ -652,59 +659,71 @@ def run_rl_only_backtest(
                     features[idx] = mktd.iloc[mktd.index.get_loc(before[-1])].values[:16].astype(np.float32)
         return features
 
-    # Run RL-only: use RL signal directly as trading action
+    # Run RL-only: at each timestep, get RL action which picks a symbol+direction
+    # Then emit actions for ALL symbols (long for the chosen one, hold for rest)
     action_rows = []
     bar_rows = []
     rl_actions = {"long": 0, "short": 0, "flat": 0}
 
+    # Collect all timestamps across symbols
+    all_windows = {}
     for sym in symbols:
         sym_bars = all_bars[sym]
         window = sym_bars[(sym_bars["timestamp"] >= start_ts) & (sym_bars["timestamp"] <= end_ts)].copy()
+        all_windows[sym] = window
         print(f"  {sym}: {len(window)} bars")
 
-        for _, bar in window.iterrows():
-            ts = bar["timestamp"]
+    # Get unique sorted timestamps
+    all_ts = sorted(set(
+        ts for sym in symbols for ts in all_windows[sym]["timestamp"].tolist()
+    ))
+    print(f"  Total unique timestamps: {len(all_ts)}")
+
+    for ts in all_ts:
+        features_all = get_all_features_at(ts)
+
+        obs = np.zeros(obs_size, dtype=np.float32)
+        obs[:num_symbols * 16] = features_all.flatten()
+        obs[num_symbols * 16] = 1.0
+        obs[num_symbols * 16 + 4] = 0.5
+        obs_t = torch.from_numpy(obs).unsqueeze(0)
+
+        with torch.no_grad():
+            logits, value = rl_policy(obs_t)
+            action = logits.argmax(dim=-1).item()
+            probs = torch.softmax(logits, dim=-1)
+            confidence = probs[0, action].item()
+
+        # Decode RL action
+        rl_target_sym = None
+        if action == 0:
+            rl_actions["flat"] += 1
+        else:
+            action_idx = action - 1
+            is_short = action_idx >= num_symbols
+            if is_short:
+                rl_actions["short"] += 1
+            else:
+                rl_target_sym = BINANCE6_SYMBOLS[action_idx]
+                rl_actions["long"] += 1
+
+        # Emit actions for each symbol at this timestamp
+        for sym in symbols:
+            w = all_windows[sym]
+            bar_match = w[w["timestamp"] == ts]
+            if bar_match.empty:
+                continue
+            bar = bar_match.iloc[0]
             close = float(bar["close"])
-            features_all = get_all_features_at(ts)
 
-            obs = np.zeros(obs_size, dtype=np.float32)
-            obs[:num_symbols * 16] = features_all.flatten()
-            obs[num_symbols * 16] = 1.0
-            obs[num_symbols * 16 + 4] = 0.5
-            obs_t = torch.from_numpy(obs).unsqueeze(0)
-
-            with torch.no_grad():
-                logits, value = rl_policy(obs_t)
-                action = logits.argmax(dim=-1).item()
-                probs = torch.softmax(logits, dim=-1)
-                confidence = probs[0, action].item()
-
-            if action == 0:
+            if rl_target_sym == sym:
+                direction = "long"
+                buy_price = close * 0.999
+                sell_price = close * 1.01
+            else:
                 direction = "hold"
                 buy_price = 0.0
                 sell_price = 0.0
-                rl_actions["flat"] += 1
-            else:
-                action_idx = action - 1
-                is_short = action_idx >= num_symbols
-                if is_short:
-                    # Can't short on spot - treat as hold
-                    direction = "hold"
-                    buy_price = 0.0
-                    sell_price = 0.0
-                    rl_actions["short"] += 1
-                else:
-                    target_sym = BINANCE6_SYMBOLS[action_idx]
-                    if target_sym == sym:
-                        direction = "long"
-                        buy_price = close * 0.999  # 0.1% below
-                        sell_price = close * 1.01   # 1% above
-                        rl_actions["long"] += 1
-                    else:
-                        direction = "hold"
-                        buy_price = 0.0
-                        sell_price = 0.0
-                        rl_actions["long"] += 1
 
             action_rows.append({
                 "timestamp": ts, "symbol": sym,
@@ -760,6 +779,8 @@ def main():
     parser.add_argument("--parallel", type=int, default=5)
     parser.add_argument("--rate-limit", type=float, default=0.0)
     parser.add_argument("--checkpoint", type=str, default=None)
+    parser.add_argument("--thinking-level", type=str, default=None,
+                        help="Thinking level for Gemini models (e.g., HIGH, MINIMAL)")
     parser.add_argument("--rl-only", action="store_true", help="Run RL-only backtest for comparison")
     parser.add_argument("--compare", action="store_true", help="Run both RL-only and hybrid, compare")
     args = parser.parse_args()
@@ -772,7 +793,8 @@ def main():
         print("="*70)
         rl_result = run_rl_only_backtest(args.symbols, args.days, args.checkpoint)
         hybrid_result = run_hybrid_backtest(
-            args.symbols, args.days, args.model, args.parallel, args.rate_limit, args.checkpoint
+            args.symbols, args.days, args.model, args.parallel, args.rate_limit, args.checkpoint,
+            args.thinking_level,
         )
         print("\n" + "="*70)
         print("COMPARISON SUMMARY")
@@ -784,7 +806,8 @@ def main():
         print("="*70)
     else:
         run_hybrid_backtest(
-            args.symbols, args.days, args.model, args.parallel, args.rate_limit, args.checkpoint
+            args.symbols, args.days, args.model, args.parallel, args.rate_limit, args.checkpoint,
+            args.thinking_level,
         )
 
 

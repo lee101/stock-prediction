@@ -142,12 +142,32 @@ def simulate_integrated(
     equity_history = []
     trades = []
     prev_plan = prev_plan_text
-    api_calls = 0
-    print(f"  {len(all_ts)} stateful decisions")
 
-    # The prompt depends on current holdings and the previous plan, so it must
-    # be built/evaluated sequentially to avoid look-ahead bias.
+    # Build all prompts first for parallel LLM calls
+    tasks = []
     for ti, ts in enumerate(all_ts):
+        # Build RL obs
+        portfolio = PortfolioSnapshot(
+            cash_usd=cash if ti == 0 else 0,  # placeholder
+            total_value_usd=initial_cash,
+            position_symbol=position_sym,
+            position_value_usd=0,
+            hold_hours=0,
+        )
+        # Get RL signal
+        klines_map = {}
+        for s in RL_SYMBOLS:
+            if s in bars_map:
+                hist = bars_map[s][bars_map[s].index <= ts].tail(96)
+                if not hist.empty:
+                    klines_map[s] = hist
+
+        try:
+            rl_sig = rl_gen.get_signal(portfolio=portfolio, klines_map=klines_map)
+        except Exception:
+            rl_sig = None
+
+        # Build symbol blocks
         sym_blocks = []
         prices = {}
         for s in symbols:
@@ -163,43 +183,21 @@ def simulate_integrated(
             if block:
                 sym_blocks.append(block)
 
-        current_price = prices.get(position_sym, position_entry) if position_sym else 0.0
-        position_value = position_qty * current_price if position_sym else 0.0
-        total_val = cash + position_value
-
         if not prices:
-            equity_history.append(total_val)
+            tasks.append((ti, ts, None, prices, rl_sig))
             continue
 
-        portfolio = PortfolioSnapshot(
-            cash_usd=cash,
-            total_value_usd=total_val,
-            position_symbol=position_sym,
-            position_value_usd=position_value,
-            hold_hours=hold_hours,
-        )
-
-        klines_map = {}
-        for s in RL_SYMBOLS:
-            if s in bars_map:
-                hist = bars_map[s][bars_map[s].index <= ts].tail(96)
-                if not hist.empty:
-                    klines_map[s] = hist
-
-        try:
-            rl_sig = rl_gen.get_signal(portfolio=portfolio, klines_map=klines_map)
-        except Exception:
-            rl_sig = None
-
+        # Current position info
         pos_str = "FLAT (all cash)"
         if position_sym and position_qty > 0:
-            pnl = (current_price - position_entry) / position_entry * 100
-            pos_str = (
-                f"{position_sym}: {position_qty:.6f} @ ${position_entry:.2f} "
-                f"(now ${current_price:.2f}, {pnl:+.2f}%, held {hold_hours}h)"
-            )
+            cur_price = prices.get(position_sym, position_entry)
+            pos_val = position_qty * cur_price
+            pnl = (cur_price - position_entry) / position_entry * 100
+            pos_str = f"{position_sym}: {position_qty:.6f} @ ${position_entry:.2f} (now ${cur_price:.2f}, {pnl:+.2f}%, held {hold_hours}h)"
 
+        total_val = cash + (position_qty * prices.get(position_sym, 0) if position_sym else 0)
         cash_pct = cash / max(total_val, 1) * 100
+
         prompt = PROMPT_INTEGRATED.format(
             cash=cash,
             cash_pct=cash_pct,
@@ -211,14 +209,50 @@ def simulate_integrated(
             symbol_blocks="\n".join(sym_blocks),
             prev_plan=prev_plan,
         )
+        tasks.append((ti, ts, prompt, prices, rl_sig))
 
-        cached = get_cached(cache_tag, prompt)
-        if cached:
-            plan = TradePlan(**cached)
-        else:
-            plan = call_llm(prompt, model=model, thinking_level=thinking_level)
-            set_cached(cache_tag, prompt, plan.__dict__)
-            api_calls += 1
+    # Parallel LLM calls
+    total = len(tasks)
+    api_calls = sum(1 for _, _, p, _, _ in tasks if p)
+    print(f"  {api_calls} API calls needed")
+
+    def call_llm_task(ti, ts, prompt, prices, rl_sig):
+        if prompt is None:
+            return ti, ts, TradePlan("hold", 0, 0, 0, "no data"), prices, rl_sig
+        c = get_cached(cache_tag, prompt)
+        if c:
+            return ti, ts, TradePlan(**c), prices, rl_sig
+        plan = call_llm(prompt, model=model, thinking_level=thinking_level)
+        set_cached(cache_tag, prompt, plan.__dict__)
+        return ti, ts, plan, prices, rl_sig
+
+    results = [None] * total
+    done = 0
+    t0 = time.time()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as pool:
+        futs = {pool.submit(call_llm_task, *t): t[0] for t in tasks}
+        for f in concurrent.futures.as_completed(futs):
+            ti, ts, plan, prices, rl_sig = f.result()
+            results[ti] = (ts, plan, prices, rl_sig)
+            done += 1
+            if done % max(1, total // 10) == 0:
+                el = time.time() - t0
+                rate = done / el if el > 0 else 0
+                print(f"    {done}/{total} ({rate:.1f}/s)")
+
+    # Sequential simulation
+    cash = initial_cash
+    position_sym = None
+    position_qty = 0.0
+    position_entry = 0.0
+    hold_hours = 0
+
+    for ts, plan, prices, rl_sig in results:
+        if not prices:
+            equity_history.append(cash)
+            continue
+
+        total_val = cash + (position_qty * prices.get(position_sym, 0) if position_sym else 0)
 
         # Check max hold / take-profit
         if position_sym and position_qty > 0:
@@ -326,23 +360,9 @@ def simulate_integrated(
                         position_qty = 0
                         hold_hours = 0
 
-        plan_snapshot = {
-            "direction": plan.direction,
-            "buy_price": round(plan.buy_price, 6),
-            "sell_price": round(plan.sell_price, 6),
-            "confidence": round(plan.confidence, 4),
-            "reasoning": (plan.reasoning or "")[:120],
-        }
-        if target_sym:
-            plan_snapshot["symbol"] = target_sym
-        prev_plan = json.dumps(plan_snapshot, sort_keys=True)
-
         # Equity snapshot
         pos_val = position_qty * prices.get(position_sym, 0) if position_sym else 0
         equity_history.append(cash + pos_val)
-
-        if (ti + 1) % max(1, len(all_ts) // 10) == 0:
-            print(f"    {ti + 1}/{len(all_ts)} decisions | API calls={api_calls}")
 
     # Metrics
     equity = np.array(equity_history, dtype=float)

@@ -6,9 +6,20 @@ Designed to stay under 8GB GPU memory:
   - 64 parallel envs
   - 256-step rollouts
   - Batch size 2048
+
+Improvements from autoresearch agent (2026-03):
+  - RunningObsNorm: online observation normalization
+  - Cosine LR with warmup (5% floor)
+  - Entropy annealing (start→end over training)
+  - Clip eps annealing (start→end over training)
+  - Value function clipping (PPO-style)
+  - AdamW with weight decay
+  - TF32 for faster matmuls
+  - non_blocking GPU transfers
 """
 
 import argparse
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -27,6 +38,64 @@ import pufferlib.vector
 # Local
 from pufferlib_market.environment import TradingEnvConfig, TradingEnv
 from pufferlib_market.metrics import annualize_total_return
+
+
+# ─── Running Observation Normalizer ──────────────────────────────────
+
+
+class RunningObsNorm:
+    """Online observation normalization using Welford's algorithm."""
+
+    def __init__(self, shape: int, clip: float = 10.0, eps: float = 1e-8):
+        self.mean = np.zeros(shape, dtype=np.float64)
+        self.var = np.ones(shape, dtype=np.float64)
+        self.count = 1e-4  # avoid div-by-zero
+        self.clip = clip
+        self.eps = eps
+
+    def update(self, batch: np.ndarray) -> None:
+        """Update running statistics with a batch of observations."""
+        batch_mean = batch.mean(axis=0).astype(np.float64)
+        batch_var = batch.var(axis=0).astype(np.float64)
+        batch_count = batch.shape[0]
+        self._update_from_moments(batch_mean, batch_var, batch_count)
+
+    def _update_from_moments(self, batch_mean, batch_var, batch_count):
+        delta = batch_mean - self.mean
+        total = self.count + batch_count
+        new_mean = self.mean + delta * batch_count / total
+        m_a = self.var * self.count
+        m_b = batch_var * batch_count
+        m2 = m_a + m_b + delta**2 * self.count * batch_count / total
+        self.mean = new_mean
+        self.var = m2 / total
+        self.count = total
+
+    def normalize(self, obs: np.ndarray) -> np.ndarray:
+        """Normalize observations using running statistics."""
+        std = np.sqrt(self.var + self.eps).astype(np.float32)
+        normed = (obs - self.mean.astype(np.float32)) / std
+        return np.clip(normed, -self.clip, self.clip).astype(np.float32)
+
+
+# ─── Schedule Helpers ────────────────────────────────────────────────
+
+
+def cosine_lr_with_warmup(update: int, num_updates: int, base_lr: float,
+                          warmup_frac: float = 0.02, min_ratio: float = 0.05) -> float:
+    """Cosine annealing LR with linear warmup and minimum floor."""
+    warmup_updates = int(num_updates * warmup_frac)
+    if update <= warmup_updates:
+        return base_lr * update / max(warmup_updates, 1)
+    progress = (update - warmup_updates) / max(num_updates - warmup_updates, 1)
+    cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
+    return base_lr * max(cosine_decay, min_ratio)
+
+
+def linear_anneal(update: int, num_updates: int, start: float, end: float) -> float:
+    """Linearly anneal a value from start to end over training."""
+    frac = min(update / max(num_updates, 1), 1.0)
+    return start + (end - start) * frac
 
 
 # ─── Policy Network ───────────────────────────────────────────────────
@@ -289,6 +358,12 @@ def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
     print(f"Device: {device}")
 
+    # Enable TF32 for faster matmuls on Ampere+ GPUs
+    if device.type == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        print("  TF32 enabled")
+
     # ── Load shared data ──
     data_path = str(Path(args.data_path).resolve())
     import pufferlib_market.binding as binding
@@ -322,6 +397,8 @@ def train(args):
         smooth_downside_penalty=args.smooth_downside_penalty,
         smooth_downside_temperature=args.smooth_downside_temperature,
         trade_penalty=args.trade_penalty,
+        fill_slippage_bps=args.fill_slippage_bps,
+        max_hold_hours=args.max_hold_hours,
     )
 
     obs_size = num_symbols * 16 + 5 + num_symbols
@@ -364,16 +441,24 @@ def train(args):
         smooth_downside_penalty=config.smooth_downside_penalty,
         smooth_downside_temperature=config.smooth_downside_temperature,
         trade_penalty=config.trade_penalty,
+        fill_slippage_bps=config.fill_slippage_bps,
+        max_hold_hours=config.max_hold_hours,
     )
     binding.vec_reset(vec_handle, args.seed)
     print(f"  Created {num_envs} parallel envs")
+
+    # ── Observation normalizer ──
+    obs_norm = RunningObsNorm(obs_size) if args.obs_norm else None
+    if obs_norm:
+        print("  RunningObsNorm enabled")
 
     # ── Policy ──
     if args.arch == "resmlp":
         policy = ResidualTradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
     else:
         policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
-    optimizer = optim.Adam(policy.parameters(), lr=args.lr, eps=1e-5)
+    optimizer = optim.AdamW(policy.parameters(), lr=args.lr, eps=1e-5,
+                            weight_decay=args.weight_decay)
     total_params = sum(p.numel() for p in policy.parameters())
     print(f"  Policy: {total_params:,} params ({total_params * 4 / 1e6:.1f} MB)")
     action_meta = {
@@ -428,17 +513,33 @@ def train(args):
 
     for update in range(start_update + 1, start_update + num_updates + 1):
         local_update = update - start_update
-        # ── Learning rate annealing ──
-        if args.anneal_lr:
+        # ── Learning rate schedule ──
+        if args.lr_schedule == "cosine":
+            lr_now = cosine_lr_with_warmup(local_update, num_updates, args.lr,
+                                           warmup_frac=args.lr_warmup_frac,
+                                           min_ratio=args.lr_min_ratio)
+            for pg in optimizer.param_groups:
+                pg["lr"] = lr_now
+        elif args.anneal_lr:
             frac = 1.0 - (local_update - 1) / max(num_updates, 1)
             lr_now = frac * args.lr
             for pg in optimizer.param_groups:
                 pg["lr"] = lr_now
 
+        # ── Entropy & clip annealing ──
+        ent_coef = linear_anneal(local_update, num_updates,
+                                 args.ent_coef, args.ent_coef_end) if args.anneal_ent else args.ent_coef
+        clip_eps = linear_anneal(local_update, num_updates,
+                                 args.clip_eps, args.clip_eps_end) if args.anneal_clip else args.clip_eps
+
         # ── Collect rollout ──
         policy.eval()
         for step in range(T):
-            obs_tensor = torch.from_numpy(obs_buf.copy()).to(device)
+            raw_obs = obs_buf.copy()
+            if obs_norm is not None:
+                obs_norm.update(raw_obs)
+                raw_obs = obs_norm.normalize(raw_obs)
+            obs_tensor = torch.from_numpy(raw_obs).to(device, non_blocking=True)
             buf_obs[step] = obs_tensor
 
             with torch.no_grad():
@@ -462,7 +563,10 @@ def train(args):
 
         # ── Compute advantages ──
         with torch.no_grad():
-            next_obs = torch.from_numpy(obs_buf.copy()).to(device)
+            raw_next = obs_buf.copy()
+            if obs_norm is not None:
+                raw_next = obs_norm.normalize(raw_next)
+            next_obs = torch.from_numpy(raw_next).to(device, non_blocking=True)
             next_value = policy.get_value(next_obs).cpu()
 
         # Flatten envs for GAE
@@ -483,11 +587,12 @@ def train(args):
 
         # ── PPO update ──
         policy.train()
-        b_obs = buf_obs.reshape(-1, obs_size).to(device)
-        b_act = buf_act.reshape(-1).to(device)
-        b_logprob = buf_logprob.reshape(-1).to(device)
-        b_advantages = advantages.reshape(-1).to(device)
-        b_returns = returns.reshape(-1).to(device)
+        b_obs = buf_obs.reshape(-1, obs_size).to(device, non_blocking=True)
+        b_act = buf_act.reshape(-1).to(device, non_blocking=True)
+        b_logprob = buf_logprob.reshape(-1).to(device, non_blocking=True)
+        b_advantages = advantages.reshape(-1).to(device, non_blocking=True)
+        b_returns = returns.reshape(-1).to(device, non_blocking=True)
+        b_values = buf_value.reshape(-1).to(device, non_blocking=True)
 
         # Normalise advantages
         b_advantages = (b_advantages - b_advantages.mean()) / (b_advantages.std() + 1e-8)
@@ -518,16 +623,24 @@ def train(args):
                 mb_adv = b_advantages[mb_idx]
 
                 pg_loss1 = -mb_adv * ratio
-                pg_loss2 = -mb_adv * torch.clamp(ratio, 1 - args.clip_eps, 1 + args.clip_eps)
+                pg_loss2 = -mb_adv * torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps)
                 pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
-                # Value loss (clipped)
-                v_loss = 0.5 * ((new_value - b_returns[mb_idx]) ** 2).mean()
+                # Value loss with clipping (PPO-style)
+                if args.clip_vloss:
+                    v_clipped = b_values[mb_idx] + torch.clamp(
+                        new_value - b_values[mb_idx], -clip_eps, clip_eps
+                    )
+                    v_loss_unclipped = (new_value - b_returns[mb_idx]) ** 2
+                    v_loss_clipped = (v_clipped - b_returns[mb_idx]) ** 2
+                    v_loss = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
+                else:
+                    v_loss = 0.5 * ((new_value - b_returns[mb_idx]) ** 2).mean()
 
                 # Entropy bonus
                 ent_loss = entropy.mean()
 
-                loss = pg_loss + args.vf_coef * v_loss - args.ent_coef * ent_loss
+                loss = pg_loss + args.vf_coef * v_loss - ent_coef * ent_loss
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -685,9 +798,16 @@ def main():
         default=0.02,
         help="Temperature for smooth downside shaping (smaller -> sharper downside proxy).",
     )
+    parser.add_argument(
+        "--fill-slippage-bps",
+        type=float,
+        default=0.0,
+        help="Adverse fill slippage in basis points (realistic: 5-12). Buys fill higher, sells fill lower.",
+    )
     parser.add_argument("--num-envs", type=int, default=64)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--short-borrow-apr", type=float, default=0.0, help="Annual borrow rate applied to open shorts")
+    parser.add_argument("--max-hold-hours", type=int, default=0, help="Force close position after N hours (0=disabled)")
 
     # Policy
     parser.add_argument("--hidden-size", type=int, default=256)
@@ -707,7 +827,18 @@ def main():
     parser.add_argument("--vf-coef", type=float, default=0.5)
     parser.add_argument("--ent-coef", type=float, default=0.01)
     parser.add_argument("--max-grad-norm", type=float, default=0.5)
-    parser.add_argument("--anneal-lr", action="store_true", help="Linear LR annealing")
+    parser.add_argument("--anneal-lr", action="store_true", help="Linear LR annealing (legacy)")
+    parser.add_argument("--lr-schedule", choices=["none", "cosine", "linear"], default="none",
+                        help="LR schedule: cosine (warmup+cosine+floor) or linear (legacy anneal)")
+    parser.add_argument("--lr-warmup-frac", type=float, default=0.02, help="Fraction of training for LR warmup")
+    parser.add_argument("--lr-min-ratio", type=float, default=0.05, help="Minimum LR as fraction of base (floor)")
+    parser.add_argument("--weight-decay", type=float, default=0.0, help="AdamW weight decay (0.005 recommended)")
+    parser.add_argument("--anneal-ent", action="store_true", help="Anneal entropy coefficient over training")
+    parser.add_argument("--ent-coef-end", type=float, default=0.02, help="Final entropy coef (with --anneal-ent)")
+    parser.add_argument("--anneal-clip", action="store_true", help="Anneal clip epsilon over training")
+    parser.add_argument("--clip-eps-end", type=float, default=0.05, help="Final clip eps (with --anneal-clip)")
+    parser.add_argument("--clip-vloss", action="store_true", help="PPO-style value function clipping")
+    parser.add_argument("--obs-norm", action="store_true", help="Running observation normalization")
     parser.add_argument("--resume-from", type=str, default=None, help="Checkpoint to resume from")
 
     # Output
