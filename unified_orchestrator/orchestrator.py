@@ -613,6 +613,31 @@ def get_crypto_signals(
         except Exception as e:
             logger.error(f"  {sym}: LLM error: {e}")
 
+    # Hard SMA-24 guard: override LONG → HOLD for any symbol where price < SMA-24.
+    # This fires even when the LLM ignores the TREND CAUTION prompt message.
+    from llm_hourly_trader.gemini_wrapper import TradePlan as _TradePlan
+    for sym, plan in list(signals.items()):
+        if plan.direction != "long":
+            continue
+        frame = history_frames.get(sym)
+        if frame is None or len(frame) < 24:
+            continue
+        _sma24g = float(frame["close"].iloc[-24:].mean())
+        _price_g = float(frame["close"].iloc[-1])
+        if _price_g < _sma24g:
+            logger.info(
+                f"  {sym}: SMA-24 HARD BLOCK overrides LONG→HOLD "
+                f"(price={_price_g:.4f} < sma24={_sma24g:.4f})"
+            )
+            signals[sym] = _TradePlan(
+                direction="hold",
+                buy_price=0.0,
+                sell_price=plan.sell_price,
+                confidence=plan.confidence,
+                reasoning=f"SMA-24 trend block; {plan.reasoning[:60]}",
+                allocation_pct=0,
+            )
+
     return signals
 
 
