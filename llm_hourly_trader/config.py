@@ -67,6 +67,8 @@ class BacktestConfig:
     model: str = "gemini-3.1-flash-lite-preview"
     prompt_variant: str = "default"
     parallel_workers: int = 1  # >1 for parallel API calls (codex/deepseek)
+    end_timestamp: Optional[str] = None  # fixed UTC end timestamp for reproducible reruns
+    cache_only: bool = False  # fail if prompt/model pair is not already cached
 
 
 # Stock market hours (Eastern): 9:30-16:00, but our hourly bars

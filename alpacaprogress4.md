@@ -78,6 +78,54 @@ Built a `mae_bands` prompt on current `BTCUSD` cache data without hitting the LL
 
 This confirms the causal MAE-band path works on real forecast caches and current hourly history.
 
+## Fixed-window BTCUSD comparison
+
+To make the comparison reproducible, added fixed `--end-ts` support and cache-only replay support to the hourly trader runners.
+
+Provider-backed run:
+
+```bash
+source .venv/bin/activate
+python -m llm_hourly_trader.experiment_runner \
+  --symbols BTCUSD \
+  --days 1 \
+  --variants uncertainty_strict freeform mae_bands \
+  --model gemini-3.1-flash-lite-preview \
+  --rate-limit 0 \
+  --end-ts 2026-03-14T00:00:00Z
+```
+
+Window:
+
+- `2026-03-13 00:00:00+00:00 -> 2026-03-14 00:00:00+00:00`
+
+Result:
+
+- `uncertainty_strict`: `+0.000%`, `0` trades
+- `freeform`: `+0.183%`, `6` trades, `Sortino 128.50`, realized PnL `+$4.49` on `$2,000`
+- `mae_bands`: `+0.098%`, `2` trades, `Sortino 16.91`, realized PnL `+$2.22` on `$2,000`
+
+Interpretation:
+
+- On this fixed BTC window, the freer prompt is better than the strict uncertainty gate and better than the MAE-band framing.
+- The MAE-band prompt still trades and stays profitable here, but it is more selective and captures less upside than `freeform`.
+
+Cache-only replay:
+
+```bash
+source .venv/bin/activate
+python -m llm_hourly_trader.experiment_runner \
+  --symbols BTCUSD \
+  --days 1 \
+  --variants uncertainty_strict freeform mae_bands \
+  --model gemini-3.1-flash-lite-preview \
+  --rate-limit 0 \
+  --end-ts 2026-03-14T00:00:00Z \
+  --cache-only
+```
+
+The cache-only replay reproduced the exact same metrics, confirming the fixed-window replay path works for prompt iteration without another live provider pass.
+
 
 ## Earlier Progress
 
@@ -1201,4 +1249,3 @@ Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
 
 ### Deploy decision
 - No config exceeded baseline min_goodness=2.7965 - continuing search.
-
