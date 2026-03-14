@@ -52,21 +52,33 @@ Cross-learning dramatically improves forecast accuracy by letting the model see 
 |--------|---------|---------|--------|--------|-----|
 | 1-day | +1.505 | 28.17 | 0.745 | 27 | +$46.11 |
 | 3-day | +13.218 | 81.85 | 1.415 | 82 | +$315.38 |
-| 7-day | running... | | | | |
+| 7-day | +32.693 | 47.72 | 2.283 | 186 | +$782.04 |
 
-Backtest is positive on both recent windows. 1-day (most recent 24h) shows +1.5% with 28 Sortino -- still profitable even in the period where live trading lost money. This confirms the live-backtest gap is from execution/fill differences, not from bad signals.
+All windows positive. Sortino excellent (28-82). MaxDD stays low (0.7-2.3% at 5x leverage). 7-day shows ~4.7%/day annualized return with 186 trades (26.6/day avg). The backtest signals are strong -- live divergence is execution-related.
 
 ## Prod Forecast Issue Found (2026-03-14)
 The cache refresh supervisor has `CHRONOS2_MODEL_ID_OVERRIDE` pointing to base Chronos2 model, which overrides the per-symbol LoRA-tuned checkpoints. This means prod forecasts use the **base model, not the LoRA fine-tuned models**. Needs investigation on whether removing this override is safe (LoRA checkpoints need to be loadable).
 
 Cross-learning requires processing multiple symbols jointly in `build_forecast_bundle`, but the cache refresh script processes them one at a time. Need to modify the refresh script to support joint prediction mode.
 
+## Correlation Analysis (2026-03-14)
+
+Best covariates for cross-learning (hourly return correlation, 720h window):
+
+| Target | #1 | #2 | #3 | #4 |
+|--------|---------|---------|---------|---------|
+| BTC | ETH (0.91) | LINK (0.86) | BNB (0.86) | SOL (0.84) |
+| ETH | LINK (0.92) | BTC (0.91) | SOL (0.84) | BNB (0.84) |
+| SOL | LINK (0.88) | DOGE (0.87) | AVAX (0.84) | ETH (0.84) |
+
+LINK is top-3 covariate for all targets. All crypto pairs are highly correlated (0.74-0.92).
+
 ## Next Steps
-1. Wait for 1d/7d backtests to complete
-2. Modify cache refresh script to support cross-learning (joint symbol processing)
-3. Test cross-learning forecasts end-to-end through LLM backtest
-4. If cross-learning backtest beats baseline, deploy to prod
-5. Consider retraining LoRA adapters on more recent data (last tuned Feb 6)
+1. Modify cache refresh to support cross-learning (joint symbol processing)
+2. Test cross-learning forecasts end-to-end through LLM backtest
+3. Fix remote 5090 forecast MAE eval pipeline (parquet output issue)
+4. Retrain LoRA adapters on recent data (last tuned Feb 6, 5+ weeks stale)
+5. Extend cross-learning to stock forecasts (NVDA, PLTR, etc)
 6. Per-symbol RL policy training sweep for BTC/ETH/SOL
 
 ## Experiments Log
