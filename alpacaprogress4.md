@@ -1345,3 +1345,47 @@ Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
 - Adding MSFT to symbol set: -0.12% vs -0.10% (worse)
 - Current production config remains best found
 
+
+## 2026-03-15 00:00 UTC Comprehensive System Improvements
+
+### Account status
+- Equity: $39,933 (+$209 today)
+- 30d P&L: -$17,274 (-30.31%) — primarily crypto crash (Feb-Mar 2026)
+- Recent 7d: roughly flat ($39-40k range since Mar 10 crash)
+
+### SMA-24 Trend Filter (DEPLOYED)
+
+Added three-layer SMA-24 defense to prevent bad crypto LONG entries in downtrends:
+
+1. **Layer 1 — RL hint suppression**: If price < 24h SMA, RL LONG hint zeroed out before LLM sees it
+2. **Layer 2 — Prompt warning**: "TREND CAUTION: price below SMA-24, prefer HOLD/FLAT" injected into LLM prompt
+3. **Layer 3 — Hard post-processing block**: After LLM inference, any LONG signal overridden to HOLD if price < SMA-24
+
+**Confirmed working (23:46 UTC)**: ETH LONG (conf=0.50) → overridden to HOLD → stale buy cancelled → 0 orders placed
+
+Same SMA filter applied to stock RL signals.
+
+### CSV Data Update
+- LTCUSD.csv and AVAXUSD.csv extended from Feb 6 → Mar 14, 2026 using Alpaca API
+- crypto5_hourly_val_2026q1.bin: 136h → **985h** (full 41-day bear market coverage)
+
+### Short-capable RL Model (short_capable_v2_100M)
+Trained 100M steps, no --disable-shorts:
+- In-sample: 278x return, sortino 102, WR 89% 
+- OOS 41-day eval: 1d -3.33%, 7d -15.51%, 30d -27.31%
+- **Decision: DO NOT DEPLOY** — trades 519 trades/30d vs 300 for longonly (73% more fees), worse at 7d
+
+### Current best production config
+- **Crypto**: `longonly_forecast` (autoresearch/slip_5bps) + SMA-24 hard block
+- **Stocks**: Meta-selector (sitting out — all strategies below threshold in current market)
+- **Services**: All RUNNING (orchestrator, binance-5min-collector, stock-cache-refresh, unified-stock-trader)
+
+### Val data comparisons (41-day bear market, crypto5_hourly_val_2026q1.bin)
+| Model | 1d | 7d | 30d | Trades/30d |
+|-------|----|----|-----|-----------|
+| longonly_forecast | -5.18% | -7.62% | -29.23% | 300 |
+| short_capable_v2 100M | -3.33% | -15.51% | -27.31% | 519 |
+
+→ Both suffer in bear market; longonly is better on 7d and trades less
+→ SMA filter prevents new entries in downtrend regardless of model
+
