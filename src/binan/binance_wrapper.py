@@ -351,6 +351,15 @@ def close_position_at_current_price(position, row):
         return None
 
 
+def cancel_order(symbol: str, order_id: int, client: Client | None = None):
+    client = _resolve_client(client)
+    try:
+        return client.cancel_order(symbol=symbol, orderId=order_id)
+    except Exception as e:
+        logger.error(f"Failed to cancel order {order_id} for {symbol}: {e}")
+        return None
+
+
 def cancel_all_orders(client: Client | None = None):
     client = _resolve_client(client)
     for symbol in crypto_symbols:
