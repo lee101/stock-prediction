@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from llm_hourly_trader.config import SYMBOL_UNIVERSE, BacktestConfig, SymbolConfig
 from llm_hourly_trader.gemini_wrapper import TradePlan, build_prompt
+from llm_hourly_trader.historical_error_bands import HistoricalForecastErrorEstimator
 from llm_hourly_trader.providers import call_llm
 
 DATA_DIRS = [
@@ -160,6 +161,23 @@ def run_sequential_backtest(
     if not usable:
         return {"error": "no usable symbols"}
 
+    use_mae_bands = variant in {"mae_bands", "historical_mae_bands"}
+    error_estimators: dict[str, dict[int, HistoricalForecastErrorEstimator]] = {}
+    if use_mae_bands:
+        for sym in usable:
+            error_estimators[sym] = {
+                1: HistoricalForecastErrorEstimator.from_frames(
+                    bars=all_bars[sym],
+                    forecasts=all_fc_h1[sym],
+                    horizon_hours=1,
+                ),
+                24: HistoricalForecastErrorEstimator.from_frames(
+                    bars=all_bars[sym],
+                    forecasts=all_fc_h24[sym],
+                    horizon_hours=24,
+                ),
+            }
+
     fc_ends = [all_fc_h1[s]["timestamp"].max() for s in usable if not all_fc_h1[s].empty]
     end_ts = min(fc_ends)
     start_ts = end_ts - timedelta(days=days)
@@ -239,6 +257,13 @@ def run_sequential_backtest(
             history = hist_slice.to_dict("records")
             fc_1h = get_forecast_at(all_fc_h1[sym], ts)
             fc_24h = get_forecast_at(all_fc_h24[sym], ts)
+            forecast_error_1h = None
+            forecast_error_24h = None
+            if use_mae_bands:
+                band_1h = error_estimators[sym][1].band_at(ts)
+                band_24h = error_estimators[sym][24].band_at(ts)
+                forecast_error_1h = band_1h.as_prompt_context() if band_1h else None
+                forecast_error_24h = band_24h.as_prompt_context() if band_24h else None
 
             current_pos_str = "flat"
             if pos:
@@ -256,6 +281,8 @@ def run_sequential_backtest(
                 maker_fee=fee_rate,
                 variant=variant,
                 position_info=position_info,
+                forecast_error_1h=forecast_error_1h,
+                forecast_error_24h=forecast_error_24h,
             )
 
             # Call LLM

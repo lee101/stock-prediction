@@ -35,6 +35,7 @@ from llm_hourly_trader.config import (
     SymbolConfig,
 )
 from llm_hourly_trader.gemini_wrapper import TradePlan, build_prompt
+from llm_hourly_trader.historical_error_bands import HistoricalForecastErrorEstimator
 from llm_hourly_trader.providers import call_llm
 
 DATA_DIRS = [
@@ -334,6 +335,23 @@ def run_backtest(
     if not usable_symbols:
         return {"error": "no usable symbols"}
 
+    use_mae_bands = config.prompt_variant in {"mae_bands", "historical_mae_bands"}
+    error_estimators: dict[str, dict[int, HistoricalForecastErrorEstimator]] = {}
+    if use_mae_bands:
+        for sym in usable_symbols:
+            error_estimators[sym] = {
+                1: HistoricalForecastErrorEstimator.from_frames(
+                    bars=all_bars[sym],
+                    forecasts=all_fc_h1[sym],
+                    horizon_hours=1,
+                ),
+                24: HistoricalForecastErrorEstimator.from_frames(
+                    bars=all_bars[sym],
+                    forecasts=all_fc_h24[sym],
+                    horizon_hours=24,
+                ),
+            }
+
     # Determine test window: end at earliest forecast cutoff, go back N days
     fc_ends = []
     for sym in usable_symbols:
@@ -377,6 +395,13 @@ def run_backtest(
             history = hist_slice.to_dict("records")
             fc_1h = get_forecast_at(all_fc_h1[sym], ts)
             fc_24h = get_forecast_at(all_fc_h24[sym], ts)
+            forecast_error_1h = None
+            forecast_error_24h = None
+            if use_mae_bands:
+                band_1h = error_estimators[sym][1].band_at(ts)
+                band_24h = error_estimators[sym][24].band_at(ts)
+                forecast_error_1h = band_1h.as_prompt_context() if band_1h else None
+                forecast_error_24h = band_24h.as_prompt_context() if band_24h else None
             prompt = build_prompt(
                 symbol=sym,
                 history_rows=history,
@@ -389,6 +414,8 @@ def run_backtest(
                 asset_class=sym_cfg.asset_class,
                 maker_fee=sym_cfg.maker_fee,
                 variant=config.prompt_variant,
+                forecast_error_1h=forecast_error_1h,
+                forecast_error_24h=forecast_error_24h,
             )
             tasks.append((sym, bar.to_dict(), prompt))
 
@@ -594,7 +621,25 @@ def main():
     parser.add_argument("--symbols", nargs="+", default=None)
     parser.add_argument("--group", choices=list(GROUPS.keys()), default=None)
     parser.add_argument("--days", type=int, default=7)
-    parser.add_argument("--prompt", choices=["default", "conservative", "aggressive"], default="default")
+    parser.add_argument(
+        "--prompt",
+        choices=[
+            "default",
+            "conservative",
+            "aggressive",
+            "position_context",
+            "no_forecast",
+            "h1_only",
+            "h24_only",
+            "uncertainty_gated",
+            "uncertainty_strict",
+            "freeform",
+            "mae_bands",
+            "fractional",
+            "anonymized",
+        ],
+        default="default",
+    )
     parser.add_argument("--max-hold-hours", type=int, default=6)
     parser.add_argument("--max-position-pct", type=float, default=0.25)
     parser.add_argument("--initial-cash", type=float, default=10_000.0)

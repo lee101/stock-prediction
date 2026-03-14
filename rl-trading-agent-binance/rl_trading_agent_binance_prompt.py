@@ -123,14 +123,13 @@ def build_live_prompt(
         vol_context = f"\nVOLUME: Current={recent_vol:.0f}, 24h avg={avg_vol_24:.0f}, ratio={vol_ratio:.2f}x"
 
     fc_section = ""
-    if fc_1h or fc_24h:
-        fc_section = f"""
-CHRONOS2 ML FORECASTS:
-1-hour forecast:
-{_fmt_forecast(fc_1h, current_price)}
-24-hour forecast:
-{_fmt_forecast(fc_24h, current_price)}
-"""
+    fc_parts = []
+    if fc_1h:
+        fc_parts.append(f"1-hour ahead:\n{_fmt_forecast(fc_1h, current_price)}")
+    if fc_24h:
+        fc_parts.append(f"24-hour ahead:\n{_fmt_forecast(fc_24h, current_price)}")
+    if fc_parts:
+        fc_section = "\nCHRONOS2 ML FORECASTS:\n" + "\n".join(fc_parts) + "\n"
 
     pos_section = "\nPOSITION: Flat (no position)\n"
     if position_info and position_info.get("qty", 0) > 0:
@@ -181,3 +180,103 @@ Think about the probability distribution of the next 1-6 hours:
 Only enter when expected_return > fees + slippage. Set buy_price and sell_price to capture the most likely profitable range.
 
 Respond with JSON: {{"direction": "long" or "hold", "buy_price": <entry>, "sell_price": <take profit>, "confidence": <0-1>, "reasoning": "<brief>"}}"""
+
+
+def build_live_prompt_freeform(
+    symbol: str,
+    history_rows: list[dict],
+    current_price: float,
+    fc_1h: Optional[dict] = None,
+    fc_24h: Optional[dict] = None,
+    position_info: Optional[dict] = None,
+    fee_bps: int = 10,
+    leverage: float = 1.0,
+    forecast_error_1h: Optional[dict] = None,
+    forecast_error_24h: Optional[dict] = None,
+) -> str:
+    recent = history_rows[-24:]
+    price_lines = []
+    for row in recent:
+        ts = str(row.get("timestamp", ""))[:16]
+        o, h, l, c = float(row["open"]), float(row["high"]), float(row["low"]), float(row["close"])
+        vol = float(row.get("volume", 0))
+        price_lines.append(f"  {ts}: O={o:.2f} H={h:.2f} L={l:.2f} C={c:.2f} V={vol:.0f}")
+
+    trend = _compute_trend_context(history_rows)
+    trend_parts = []
+    for key in ["ret_24h", "ret_48h", "ret_72h"]:
+        if key in trend:
+            trend_parts.append(f"{key.replace('ret_', '')}: {trend[key]:+.2f}%")
+    if "atr_pct" in trend:
+        trend_parts.append(f"ATR: {trend['atr_pct']:.2f}%")
+    if "up_hours_12" in trend:
+        trend_parts.append(f"Up hrs (12h): {trend['up_hours_12']}/12")
+    trend_line = " | ".join(trend_parts) if trend_parts else "N/A"
+
+    sr_line = ""
+    if "low_24h" in trend:
+        sr_line = f"24h range: ${trend['low_24h']:.2f} - ${trend['high_24h']:.2f} ({trend['range_pct']:.2f}% wide)"
+
+    fc_parts = []
+    if fc_1h:
+        fc_line = _fmt_forecast(fc_1h, current_price)
+        if forecast_error_1h and forecast_error_1h.get("mae_pct", 0) > 0:
+            mae = forecast_error_1h["mae_pct"]
+            fc_line += f"\n  Historical MAE: {mae:.2f}% (n={forecast_error_1h.get('samples', '?')})"
+        fc_parts.append(f"1h ahead:\n{fc_line}")
+    if fc_24h:
+        fc_line = _fmt_forecast(fc_24h, current_price)
+        if forecast_error_24h and forecast_error_24h.get("mae_pct", 0) > 0:
+            mae = forecast_error_24h["mae_pct"]
+            fc_line += f"\n  Historical MAE: {mae:.2f}% (n={forecast_error_24h.get('samples', '?')})"
+        fc_parts.append(f"24h ahead:\n{fc_line}")
+
+    fc_section = ""
+    if fc_parts:
+        fc_section = "\n## Chronos2 ML Forecasts:\n" + "\n".join(fc_parts) + "\n"
+
+    pos_section = "\n## Position: Flat (no position)\n"
+    if position_info and position_info.get("qty", 0) > 0:
+        entry = position_info.get("entry_price", 0)
+        held = position_info.get("held_hours", 0)
+        pnl_pct = (current_price - entry) / entry * 100 if entry > 0 else 0
+        pnl_usd = position_info["qty"] * (current_price - entry)
+        pos_section = f"""
+## Current Position:
+  Holding {position_info['qty']:.6f} {symbol} @ ${entry:.2f} entry
+  Held {held:.0f}h (max hold: 6h), P&L: ${pnl_usd:+.2f} ({pnl_pct:+.2f}%)
+"""
+
+    fee_str = f"{fee_bps}bps per side" if fee_bps > 0 else "0bps (zero-fee FDUSD pair)"
+
+    volumes = [float(r.get("volume", 0)) for r in history_rows if r.get("volume")]
+    vol_context = ""
+    if len(volumes) >= 24:
+        avg_vol_24 = np.mean(volumes[-24:])
+        recent_vol = volumes[-1]
+        vol_ratio = recent_vol / avg_vol_24 if avg_vol_24 > 0 else 1.0
+        vol_context = f"\nVolume: current={recent_vol:.0f}, 24h avg={avg_vol_24:.0f}, ratio={vol_ratio:.2f}x"
+
+    return f"""You are trading {symbol} (cryptocurrency) on 1-hour bars.
+
+Objective: maximize risk-adjusted returns after fees.
+
+Hard constraints:
+- LONG ONLY (spot market)
+- 1-hour decision intervals
+- Max hold time: 6 hours
+- Fees: {fee_str}
+{pos_section}
+Current price: ${current_price:.2f}
+{sr_line}
+Trend: {trend_line}{vol_context}
+{fc_section}
+## Last 24 hours:
+{chr(10).join(price_lines)}
+
+Use the data however you think is best.
+- If flat: decide whether there is enough edge to enter.
+- If long: decide whether to keep holding, set a realistic take-profit, or exit.
+- Do not force trades. Only act when edge clearly exceeds fees.
+
+Respond with JSON: {{"direction": "long" or "hold", "buy_price": <entry or 0>, "sell_price": <take-profit or 0>, "confidence": <0-1>, "reasoning": "<brief>"}}"""
