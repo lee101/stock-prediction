@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from newnanoalpacahourlyexp.marketsimulator.hourly_trader import (
     HourlyTraderMarketSimulator,
@@ -376,3 +377,94 @@ def test_hourly_trader_simulator_supports_seeded_positions_and_open_orders() -> 
     assert result.fills[0].price == 110.0
     assert result.final_positions == {}
     assert result.final_cash == 720.0
+
+
+def test_hourly_trader_simulator_max_hold_places_forced_exit_order() -> None:
+    ts0 = pd.Timestamp("2026-01-01T00:00:00Z")
+    ts1 = ts0 + pd.Timedelta(hours=1)
+    ts2 = ts1 + pd.Timedelta(hours=1)
+    ts3 = ts2 + pd.Timedelta(hours=1)
+
+    bars = pd.DataFrame(
+        [
+            {"timestamp": ts0, "symbol": "BTCUSD", "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0},
+            {"timestamp": ts1, "symbol": "BTCUSD", "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0},
+            {"timestamp": ts2, "symbol": "BTCUSD", "open": 100.0, "high": 100.4, "low": 99.8, "close": 101.0},
+            {"timestamp": ts3, "symbol": "BTCUSD", "open": 100.8, "high": 101.2, "low": 100.2, "close": 100.9},
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {"timestamp": ts0, "symbol": "BTCUSD", "buy_price": 100.0, "sell_price": 105.0, "buy_amount": 100.0, "sell_amount": 100.0},
+            {"timestamp": ts1, "symbol": "BTCUSD", "buy_price": 100.0, "sell_price": 105.0, "buy_amount": 0.0, "sell_amount": 100.0},
+            {"timestamp": ts2, "symbol": "BTCUSD", "buy_price": 100.0, "sell_price": 105.0, "buy_amount": 0.0, "sell_amount": 100.0},
+            {"timestamp": ts3, "symbol": "BTCUSD", "buy_price": 100.0, "sell_price": 105.0, "buy_amount": 0.0, "sell_amount": 100.0},
+        ]
+    )
+
+    sim = HourlyTraderMarketSimulator(
+        HourlyTraderSimulationConfig(
+            initial_cash=1000.0,
+            allocation_usd=1000.0,
+            allocation_pct=None,
+            decision_lag_bars=1,
+            enforce_market_hours=False,
+            fee_by_symbol={"BTCUSD": 0.0},
+            max_hold_hours=1,
+            force_exit_offset_pct=0.1,
+        )
+    )
+    result = sim.run(bars, actions)
+
+    assert [fill.side for fill in result.fills] == ["buy", "sell"]
+    assert result.fills[0].timestamp == ts1
+    assert result.fills[1].timestamp == ts3
+    assert result.fills[1].price == pytest.approx(101.0 * 0.999)
+    assert result.final_positions == {}
+
+
+def test_hourly_trader_simulator_trailing_stop_replaces_take_profit() -> None:
+    ts0 = pd.Timestamp("2026-01-01T00:00:00Z")
+    ts1 = ts0 + pd.Timedelta(hours=1)
+    ts2 = ts1 + pd.Timedelta(hours=1)
+    ts3 = ts2 + pd.Timedelta(hours=1)
+    ts4 = ts3 + pd.Timedelta(hours=1)
+
+    bars = pd.DataFrame(
+        [
+            {"timestamp": ts0, "symbol": "ETHUSD", "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0},
+            {"timestamp": ts1, "symbol": "ETHUSD", "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0},
+            {"timestamp": ts2, "symbol": "ETHUSD", "open": 100.5, "high": 101.6, "low": 100.2, "close": 101.5},
+            {"timestamp": ts3, "symbol": "ETHUSD", "open": 100.6, "high": 100.9, "low": 100.1, "close": 100.4},
+            {"timestamp": ts4, "symbol": "ETHUSD", "open": 100.3, "high": 100.5, "low": 99.8, "close": 100.1},
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {"timestamp": ts0, "symbol": "ETHUSD", "buy_price": 100.0, "sell_price": 104.0, "buy_amount": 100.0, "sell_amount": 100.0},
+            {"timestamp": ts1, "symbol": "ETHUSD", "buy_price": 100.0, "sell_price": 104.0, "buy_amount": 0.0, "sell_amount": 100.0},
+            {"timestamp": ts2, "symbol": "ETHUSD", "buy_price": 100.0, "sell_price": 104.0, "buy_amount": 0.0, "sell_amount": 100.0},
+            {"timestamp": ts3, "symbol": "ETHUSD", "buy_price": 100.0, "sell_price": 104.0, "buy_amount": 0.0, "sell_amount": 100.0},
+            {"timestamp": ts4, "symbol": "ETHUSD", "buy_price": 100.0, "sell_price": 104.0, "buy_amount": 0.0, "sell_amount": 100.0},
+        ]
+    )
+
+    sim = HourlyTraderMarketSimulator(
+        HourlyTraderSimulationConfig(
+            initial_cash=1000.0,
+            allocation_usd=1000.0,
+            allocation_pct=None,
+            decision_lag_bars=1,
+            enforce_market_hours=False,
+            fee_by_symbol={"ETHUSD": 0.0},
+            trailing_stop_pct=0.5,
+            force_exit_offset_pct=0.1,
+        )
+    )
+    result = sim.run(bars, actions)
+
+    assert [fill.side for fill in result.fills] == ["buy", "sell"]
+    assert result.fills[0].timestamp == ts1
+    assert result.fills[1].timestamp == ts4
+    assert result.fills[1].price == pytest.approx(100.4 * 0.999)
+    assert result.final_positions == {}
