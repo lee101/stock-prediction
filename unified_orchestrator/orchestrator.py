@@ -579,6 +579,17 @@ def get_crypto_signals(
             "autoresearch/slip_5bps, +5.2%/30d OOS validated",
         )
 
+        # Inject bearish context into prompt when price is below 24h SMA
+        trend_warning = ""
+        if frame is not None and len(frame) >= 24:
+            _sma24 = float(frame["close"].iloc[-24:].mean())
+            if current_price < _sma24:
+                trend_warning = (
+                    f"\nTREND CAUTION: {sym} price (${current_price:.4f}) is BELOW its 24h SMA "
+                    f"(${_sma24:.4f}). Market is in a SHORT-TERM DOWNTREND. "
+                    f"Strongly prefer HOLD/FLAT unless there is very clear reversal evidence."
+                )
+
         held_pos = snapshot.alpaca_positions.get(sym)
         prompt = build_unified_prompt(
             symbol=sym,
@@ -589,7 +600,7 @@ def get_crypto_signals(
             forecast_1h=forecast_1h,
             forecast_24h=forecast_24h,
             held_position=held_pos,
-        ) + rl_hint
+        ) + rl_hint + trend_warning
 
         try:
             plan = call_llm(prompt, model=model, thinking_level=thinking_level)
@@ -1049,6 +1060,17 @@ def get_stock_signals(
                 "stocks13_featlag1 validated PPO model",
             )
 
+            # Inject bearish context when price is below 24h SMA
+            stock_trend_warning = ""
+            if frame is not None and len(frame) >= 24:
+                _sma24s = float(frame["close"].iloc[-24:].mean())
+                if current_price < _sma24s:
+                    stock_trend_warning = (
+                        f"\nTREND CAUTION: {sym} price (${current_price:.2f}) is BELOW its 24h SMA "
+                        f"(${_sma24s:.2f}). SHORT-TERM DOWNTREND. "
+                        f"Strongly prefer HOLD/FLAT unless there is very clear reversal evidence."
+                    )
+
             prompt = build_unified_prompt(
                 symbol=sym,
                 history_rows=history,
@@ -1057,7 +1079,7 @@ def get_stock_signals(
                 asset_class="stock",
                 forecast_1h=forecast_1h,
                 forecast_24h=forecast_24h,
-            ) + rl_hint
+            ) + rl_hint + stock_trend_warning
 
             plan = call_llm(prompt, model=model, thinking_level=thinking_level)
 
