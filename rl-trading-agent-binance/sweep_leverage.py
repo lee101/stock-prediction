@@ -25,12 +25,19 @@ def simulate_leveraged(
     symbol_configs: dict[str, SymbolConfig],
     leverage: float = 1.0,
     margin_rate_annual: float = 0.10,
+    margin_fee_override: float | None = 0.001,
 ) -> dict:
-    """Simulate with leverage. Leverage > 1x = borrowed funds, incurs margin interest."""
+    """Simulate with leverage. Leverage > 1x = borrowed funds, incurs margin interest.
+    margin_fee_override: if set, all symbols pay this fee rate (margin mode = 10bps)."""
     cash = config.initial_cash
     positions: dict[str, dict] = {}
     equity_history: list[float] = []
     trades: list[dict] = []
+
+    def _fee(sym: str) -> float:
+        if margin_fee_override is not None and leverage > 1.0 + 1e-9:
+            return margin_fee_override
+        return symbol_configs[sym].maker_fee if sym in symbol_configs else 0.001
 
     merged = bars_df.merge(actions_df, on=["timestamp", "symbol"], how="inner", suffixes=("", "_act"))
     merged = merged.sort_values(["timestamp", "symbol"]).reset_index(drop=True)
@@ -58,7 +65,7 @@ def simulate_leveraged(
             held_hours = (ts - pos["open_time"]).total_seconds() / 3600.0
             if held_hours >= config.max_hold_hours:
                 close_price = float(row["close"])
-                fee_rate = symbol_configs[sym].maker_fee
+                fee_rate = _fee(sym)
                 pnl = (close_price - pos["cost_basis"]) * pos["qty"]
                 fee = pos["qty"] * close_price * fee_rate
                 interest = pos.get("total_interest", 0)
@@ -81,7 +88,7 @@ def simulate_leveraged(
             if sell_price <= 0:
                 continue
             high = float(row["high"])
-            fee_rate = symbol_configs[sym].maker_fee
+            fee_rate = _fee(sym)
             if high >= sell_price:
                 pnl = (sell_price - pos["cost_basis"]) * pos["qty"]
                 fee = pos["qty"] * sell_price * fee_rate
@@ -112,13 +119,12 @@ def simulate_leveraged(
             if buy_price <= 0 or confidence <= 0:
                 continue
             low = float(row["low"])
-            fee_rate = sym_cfg.maker_fee
+            fee_rate = _fee(sym)
 
             if low <= buy_price:
                 equity_alloc = cash * config.max_position_pct
                 notional = equity_alloc * leverage
                 qty = notional / (buy_price * (1 + fee_rate))
-                qty *= confidence
                 if qty <= 0:
                     continue
                 cost = qty * buy_price * (1 + fee_rate)

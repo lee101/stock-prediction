@@ -756,10 +756,19 @@ def _cancel_stale_open_orders(execution_mode: str, dry_run: bool) -> list[dict]:
     return list(_cleanup_open_orders(execution_mode, dry_run).active)
 
 
-def _repay_margin_debt_if_flat(state: PortfolioState, dry_run: bool, execution_mode: str) -> None:
+def _repay_margin_debt_if_flat(
+    state: PortfolioState,
+    dry_run: bool,
+    execution_mode: str,
+    active_symbols: list[str] | None = None,
+) -> None:
     if execution_mode != "margin":
         return
-    for cfg in TRADING_SYMBOLS.values():
+    check_symbols = active_symbols or list(TRADING_SYMBOLS.keys())
+    for sym_name in check_symbols:
+        cfg = TRADING_SYMBOLS.get(sym_name)
+        if not cfg:
+            continue
         asset_entry = get_margin_asset_balance(cfg.base_asset)
         if not asset_entry:
             continue
@@ -767,7 +776,12 @@ def _repay_margin_debt_if_flat(state: PortfolioState, dry_run: bool, execution_m
             net_asset = float(asset_entry.get("netAsset", 0.0))
         except (TypeError, ValueError):
             net_asset = 0.0
-        if net_asset > 0.00000001:
+        price = 0.0
+        try:
+            price = float(binance_wrapper.get_symbol_price(f"{cfg.base_asset}USDT"))
+        except Exception:
+            pass
+        if net_asset * price > 5.0:
             return
     borrowed_usdt = max(0.0, state.borrowed_quotes.get("USDT", 0.0))
     if borrowed_usdt <= 0.01:
@@ -973,6 +987,7 @@ def get_hybrid_signal(
     position_entry_price: float = 0.0,
     position_open_time: Optional[datetime] = None,
     execution_mode: str = "spot",
+    **kwargs,
 ) -> TradePlan:
     """Get RL+LLM hybrid trading signal for a symbol."""
     import torch
@@ -1035,10 +1050,18 @@ def get_hybrid_signal(
         }
 
     fee_bps = _execution_fee_bps(sym_cfg, execution_mode)
-    prompt = build_live_prompt(
-        sym_cfg.symbol, history_rows, current_price, fc_1h, fc_24h,
-        position_info=pos_info, fee_bps=fee_bps,
-    )
+    from rl_trading_agent_binance_prompt import build_live_prompt_freeform
+    prompt_variant = kwargs.get("prompt_variant", "optimization")
+    if prompt_variant == "freeform":
+        prompt = build_live_prompt_freeform(
+            sym_cfg.symbol, history_rows, current_price, fc_1h, fc_24h,
+            position_info=pos_info, fee_bps=fee_bps,
+        )
+    else:
+        prompt = build_live_prompt(
+            sym_cfg.symbol, history_rows, current_price, fc_1h, fc_24h,
+            position_info=pos_info, fee_bps=fee_bps,
+        )
 
     plan = call_llm(prompt, model=model, thinking_level=thinking_level)
     return plan
@@ -1057,6 +1080,7 @@ def run_trading_cycle(
     rl_checkpoint: Optional[str] = None,
     leverage: float = 1.0,
     execution_mode: str = "auto",
+    prompt_variant: str = "optimization",
 ):
     """Run one trading cycle across all symbols."""
     resolved_execution_mode = _resolve_execution_mode(execution_mode, leverage)
@@ -1111,7 +1135,7 @@ def run_trading_cycle(
         )
         for asset, qty in state.positions.items():
             logger.info(f"  Position: {asset} = {qty}")
-        _repay_margin_debt_if_flat(state, dry_run, resolved_execution_mode)
+        _repay_margin_debt_if_flat(state, dry_run, resolved_execution_mode, active_symbols=symbols)
 
         cleanup = _cleanup_open_orders(resolved_execution_mode, dry_run)
         open_orders = list(cleanup.active)
@@ -1120,7 +1144,48 @@ def run_trading_cycle(
             "open_after_cleanup": _serialize_orders(cleanup.active),
             "cancelled_stale": _serialize_orders(cleanup.cancelled),
             "placed": [],
+            "forced_exits": [],
         }
+
+        MAX_HOLD_HOURS = 6.0
+        for sym_name in symbols:
+            sym_cfg = TRADING_SYMBOLS.get(sym_name)
+            if not sym_cfg:
+                continue
+            pos_qty = state.positions.get(sym_cfg.base_asset, 0.0)
+            market_symbol = _execution_pair(sym_cfg, resolved_execution_mode)
+            try:
+                cur_price = float(binance_wrapper.get_symbol_price(market_symbol))
+            except Exception:
+                continue
+            pos_val = pos_qty * cur_price
+            if pos_val < MIN_TRADE_USD:
+                continue
+            _, open_time = get_position_entry(sym_cfg, execution_mode=resolved_execution_mode)
+            if not open_time:
+                continue
+            held_h = (datetime.now(timezone.utc) - open_time).total_seconds() / 3600.0
+            if held_h < MAX_HOLD_HOURS:
+                continue
+            logger.info(f"  FORCED EXIT {sym_cfg.symbol}: held {held_h:.1f}h > {MAX_HOLD_HOURS}h, market selling {pos_qty}")
+            for oo in list(open_orders):
+                if oo.get("symbol") == market_symbol and oo.get("side") == "SELL":
+                    try:
+                        _cancel_open_order(resolved_execution_mode, market_symbol, int(oo["orderId"]))
+                        open_orders.remove(oo)
+                    except Exception:
+                        pass
+            sell_price = cur_price * 0.995
+            order = place_limit_sell(sym_cfg, sell_price, pos_qty, execution_mode=resolved_execution_mode, dry_run=dry_run)
+            if order:
+                orders_placed.append(order)
+                open_orders.append(order)
+                cast_fe = cycle_snapshot["orders"]
+                assert isinstance(cast_fe, dict)
+                cast_fe_list = cast_fe["forced_exits"]
+                assert isinstance(cast_fe_list, list)
+                cast_fe_list.append(_serialize_order(order))
+                logger.info(f"  Forced exit sell @ ${sell_price:.2f}")
 
         for sym_name in symbols:
             sym_cfg = TRADING_SYMBOLS.get(sym_name)
@@ -1179,6 +1244,7 @@ def run_trading_cycle(
                     position_entry_price=entry_price,
                     position_open_time=open_time,
                     execution_mode=resolved_execution_mode,
+                    prompt_variant=prompt_variant,
                 )
             except Exception as exc:
                 logger.error(f"  Signal generation failed: {exc}")
@@ -1355,6 +1421,24 @@ def run_trading_cycle(
                     cast_placed = cast_orders["placed"]
                     assert isinstance(cast_placed, list)
                     cast_placed.append(serialized_order)
+
+                    # Place take-profit sell if buy already filled
+                    buy_status = order.get("status", "")
+                    filled_qty = float(order.get("executedQty", 0))
+                    if plan.sell_price > 0 and buy_status == "FILLED" and filled_qty > 0:
+                        tp_order = place_limit_sell(
+                            sym_cfg,
+                            plan.sell_price,
+                            filled_qty,
+                            execution_mode=resolved_execution_mode,
+                            dry_run=dry_run,
+                        )
+                        if tp_order:
+                            orders_placed.append(tp_order)
+                            open_orders.append(tp_order)
+                            tp_serialized = _serialize_order(tp_order)
+                            cast_placed.append(tp_serialized)
+                            logger.info(f"  Immediate take-profit sell @ ${plan.sell_price:.2f}")
                 else:
                     buy_action["status"] = "failed"
                     buy_action["reason"] = "order_not_placed"
@@ -1838,6 +1922,9 @@ def main():
                         help="Requested position multiplier. Auto mode switches to margin above 1x.")
     parser.add_argument("--execution-mode", type=str, default="auto", choices=sorted(SUPPORTED_EXECUTION_MODES),
                         help="Execution account to use: auto, spot, or margin.")
+    parser.add_argument("--prompt-variant", type=str, default="optimization",
+                        choices=["optimization", "freeform"],
+                        help="Prompt style for LLM signal generation.")
     args = parser.parse_args()
 
     dry_run = not args.live
@@ -1877,6 +1964,7 @@ def main():
                     dry_run=dry_run,
                     leverage=args.leverage,
                     execution_mode=args.execution_mode,
+                    prompt_variant=args.prompt_variant,
                 )
         except Exception as e:
             logger.error(f"Trading cycle error: {e}")
