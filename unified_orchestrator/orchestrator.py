@@ -533,6 +533,29 @@ def get_crypto_signals(
         except Exception as e:
             logger.warning(f"  Crypto RL signal generation failed: {e}")
 
+    # SMA-24 trend filter: suppress LONG hints when price is below 24h SMA.
+    # The longonly_forecast model cannot short, so its LONG hints in downtrends
+    # push the LLM into losing positions.  Zeroing them out lets the LLM use
+    # its own bearish judgment instead.
+    for sym, sig in list(rl_signal_map.items()):
+        if sig.direction != "long":
+            continue
+        frame = history_frames.get(sym)
+        if frame is None or len(frame) < 24:
+            continue
+        sma24 = float(frame["close"].iloc[-24:].mean())
+        current = float(frame["close"].iloc[-1])
+        if current < sma24:
+            logger.info(f"  {sym}: SMA-24 filter suppressed RL LONG hint (price={current:.4f} < sma24={sma24:.4f})")
+            rl_signal_map[sym] = RLSignal(
+                symbol_idx=sig.symbol_idx,
+                symbol_name=sig.symbol_name,
+                direction="flat",
+                confidence=0.0,
+                logit_gap=0.0,
+                allocation_pct=0.0,
+            )
+
     forecast_root = _choose_forecast_cache_root(fetch_symbols, CRYPTO_FORECAST_CACHE_CANDIDATES)
     forecast_frames_1h, forecast_frames_24h = _load_forecast_frames(fetch_symbols, forecast_root)
 
