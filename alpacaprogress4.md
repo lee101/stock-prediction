@@ -1307,3 +1307,41 @@ Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
 ### Deploy decision
 - No config exceeded baseline min_goodness=2.7965 - continuing search.
 
+
+
+## 2026-03-14 23:30 UTC System Health Check & Improvements
+
+### Infrastructure fixes
+- **binance-5min-collector**: Fixed `.venv` → `.venv313` (was FATAL, now RUNNING)
+- **stock-cache-refresh**: Restarted after diskcache I/O error on boot (now RUNNING)
+- **unified-orchestrator**: Running live, CRYPTO_ONLY regime. Next cycle: 21:01 UTC
+
+### Market sim results (production config, 1d/30d holdout)
+| Period | Return | Sortino | Max DD |
+|--------|--------|---------|--------|
+| 1-day  | -0.12% | -2.11   | 0.26%  |
+| 30-day | -0.08% | -0.17   | 0.98%  |
+
+**Context**: Market is bearish (BTC -30%, stocks -10% to -21%). Sit-out mechanism working correctly — protecting capital vs -8% to -21% raw strategy losses.
+
+### Crypto orchestrator backtest (30d)
+- `ultimate_combined`: -2.67% (vs momentum baseline -20.99%)
+- Best trend filter: `rl_trend_24h` (0 trades today = 0 loss)
+- Currently all signals are HOLD (low confidence)
+
+### Active positions (live account $39,913)
+- MSFT 57.94 shares, sell order $394.16 (above current $395.55) → fills Monday
+- BTCUSD 0.069249 (~$4,902)
+- PLTR sell order 3 @ $151.59 pending
+- SOL sell TP @ $87.75 pending
+
+### New training started
+- `short_capable_v2_100M`: SHORT-capable crypto RL, 100M steps, eta ~24min
+  - Training data: crypto5_hourly_train_2026.bin (2022-Jan 2026, 35785 steps)
+  - Goal: profit from downtrends with SHORT positions
+
+### Verified production config is optimal
+- core5+AAPL (leaderboard best): mean_sort=-2.53 vs production -1.14 (worse)
+- Adding MSFT to symbol set: -0.12% vs -0.10% (worse)
+- Current production config remains best found
+
