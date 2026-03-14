@@ -1,0 +1,57 @@
+{
+  "target": "ETHFDUSD",
+  "correlations": [
+    {
+      "symbol": "LINKFDUSD",
+      "abs_corr": 0.9151201301020213
+    },
+    {
+      "symbol": "BTCFDUSD",
+      "abs_corr": 0.9111507399733678
+    },
+    {
+      "symbol": "SOLFDUSD",
+      "abs_corr": 0.8420727705699205
+    },
+    {
+      "symbol": "BNBFDUSD",
+      "abs_corr": 0.8409817696459575
+    },
+    {
+      "symbol": "AVAXFDUSD",
+      "abs_corr": 0.836728755485112
+    },
+    {
+      "symbol": "ADAFDUSD",
+      "abs_corr": 0.831838301618876
+    },
+    {
+      "symbol": "DOGEFDUSD",
+      "abs_corr": 0.8273559285469656
+    },
+    {
+      "symbol": "XRPFDUSD",
+      "abs_corr": 0.8025398970960349
+    },
+    {
+      "symbol": "DOTFDUSD",
+      "abs_corr": 0.7742428597833063
+    },
+    {
+      "symbol": "LTCFDUSD",
+      "abs_corr": 0.7694680707140673
+    },
+    {
+      "symbol": "APTFDUSD",
+      "abs_corr": 0.7056634162227564
+    },
+    {
+      "symbol": "MATICFDUSD",
+      "abs_corr": 0.666680563844588
+    },
+    {
+      "symbol": "ATOMFDUSD",
+      "abs_corr": 0.6503871388736108
+    }
+  ]
+}
