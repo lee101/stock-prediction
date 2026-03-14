@@ -362,11 +362,18 @@ def build_meta_signals(
             live.log_event("meta_signal_skipped", symbol=symbol, reason="latest_action_missing", winner=winner)
             continue
 
+        market_entry_reference_price, market_entry_reference_source = live.resolve_live_entry_reference_price(
+            symbol,
+            default_price=float(action.get("sell_price" if symbol in short_only else "buy_price", 0.0) or 0.0),
+            is_short=(symbol in short_only),
+            use_market_orders=bool(args.market_order_entry),
+        )
         edge = compute_symbol_edge(
             symbol=symbol,
             action=action,
             fee_rate=float(args.fee_rate),
             short_only_symbols=short_only,
+            entry_reference_price=market_entry_reference_price,
         )
         if edge < float(args.min_edge):
             logger.info("{}: winner={} edge={:.4f} below {:.4f}", symbol, winner, edge, args.min_edge)
@@ -377,11 +384,15 @@ def build_meta_signals(
                 reason="edge_below_threshold",
                 edge=float(edge),
                 min_edge=float(args.min_edge),
+                market_entry_reference_price=float(market_entry_reference_price),
+                market_entry_reference_source=str(market_entry_reference_source),
             )
             continue
 
         action["edge"] = float(edge)
         action["meta_strategy"] = winner
+        action["market_entry_reference_price"] = float(market_entry_reference_price)
+        action["market_entry_reference_source"] = str(market_entry_reference_source)
         signals[symbol] = action
         side = "short" if symbol in short_only else "long"
         _, intensity = entry_intensity_fraction(
@@ -397,13 +408,14 @@ def build_meta_signals(
             ),
         )
         logger.info(
-            "{}: winner={} {} edge={:.4f} buy={:.2f} sell={:.2f} hold={:.1f}h int={:.3f}",
+            "{}: winner={} {} edge={:.4f} buy={:.2f} sell={:.2f} ref={:.2f} hold={:.1f}h int={:.3f}",
             symbol,
             winner,
             side,
             edge,
             float(action.get("buy_price", 0.0)),
             float(action.get("sell_price", 0.0)),
+            float(market_entry_reference_price),
             float(action.get("hold_hours", args.max_hold_hours)),
             intensity,
         )
@@ -415,6 +427,8 @@ def build_meta_signals(
             edge=float(edge),
             buy_price=float(action.get("buy_price", 0.0)),
             sell_price=float(action.get("sell_price", 0.0)),
+            market_entry_reference_price=float(market_entry_reference_price),
+            market_entry_reference_source=str(market_entry_reference_source),
             hold_hours=float(action.get("hold_hours", args.max_hold_hours)),
             intensity=float(intensity),
         )
@@ -442,6 +456,9 @@ def run_cycle(
         reselect_frequency=args.meta_reselect_frequency,
         selection_cache_day=str(selection_cache.selection_day) if selection_cache.selection_day is not None else None,
     )
+
+    if api is not None:
+        live.poll_broker_events(api, state, reason="pre_cycle")
 
     if api is not None:
         num_pos = live.manage_positions(
@@ -506,6 +523,7 @@ def run_cycle(
             max_positions=int(args.max_positions),
             market_order_entry=bool(args.market_order_entry),
             entry_order_ttl_hours=float(args.entry_order_ttl_hours),
+            fee_rate=float(args.fee_rate),
         )
         execution_mode = "live_execute"
     elif not market_open and signals:
@@ -517,6 +535,8 @@ def run_cycle(
     else:
         execution_mode = "dry_run"
 
+    if api is not None:
+        live.poll_broker_events(api, state, reason="post_cycle")
     live.save_state(state)
     live.log_event(
         "meta_cycle_complete",

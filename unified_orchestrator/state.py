@@ -239,7 +239,8 @@ def build_snapshot(now_utc: Optional[datetime] = None) -> UnifiedPortfolioSnapsh
     )
 
     build_alpaca_snapshot(snapshot)
-    build_binance_snapshot(snapshot)
+    # Binance removed — all crypto now routed through Alpaca
+    # build_binance_snapshot(snapshot)
 
     return snapshot
 

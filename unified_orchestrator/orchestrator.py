@@ -37,6 +37,10 @@ from unified_orchestrator.position_tracker import (
     save_entry_times,
     update_entry_times,
     get_force_exit_symbols,
+    load_peak_prices,
+    save_peak_prices,
+    update_peak_prices,
+    get_trailing_stop_symbols,
 )
 from unified_orchestrator.backout import select_backout_candidates, execute_backout
 from unified_orchestrator.conditional_orders import (
@@ -82,6 +86,20 @@ CRYPTO_SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "LTCUSD", "AVAXUSD"]
 # Max hours to hold a crypto position before forcing exit at near-market price.
 # Confirmed optimal by hold-sweep: Sortino=20.69 at 6h vs 11.66 at 4h, 6.16 at 12h.
 MAX_HOLD_HOURS = 6
+
+# Minimum LLM confidence to act on a buy signal.
+# Exp02 sweep: 0.7 optimal (Sortino=39.8 vs 30.9 at 0.4, +357% vs +257% return).
+MIN_CONFIDENCE_CRYPTO = 0.7
+
+# Trailing stop: exit if price drops this % from peak since entry.
+# Exp06 result: 0.3% trail → Sortino=76.5, MaxDD=4.7% (vs 30.9/28.3% baseline).
+TRAILING_STOP_PCT = 0.3
+
+# Leverage settings for stocks
+MAX_INTRADAY_LEVERAGE = 4.0   # Alpaca PDT 4x intraday
+MAX_OVERNIGHT_LEVERAGE = 2.0  # Must deleverage to 2x before market close
+MARGIN_INTEREST_ANNUAL = 0.0625  # 6.25% annual on leveraged portion
+DELEVERAGE_MINUTES_BEFORE_CLOSE = 60  # Start deleveraging 1h before close
 _CHECKPOINT_DATA_HINTS = {
     "stocks13_featlag1_fee5bps_longonly_run4": REPO / "pufferlib_market/data/stocks13_hourly_forecast_mktd_v2_start20250915_featlag1.bin",
     "stocks13_issuedat_featlag1_fee5bps_longonly_run5": REPO / "pufferlib_market/data/stocks13_hourly_forecast_mktd_v2_start20250915_issuedat_featlag1.bin",
@@ -348,12 +366,17 @@ def _build_crypto_rl_signal_map(history_frames: dict[str, object], bridge: RLGem
     )
 
     features = np.zeros((len(trained_symbols), 16), dtype=np.float32)
+    valid_symbols = []
     for idx, sym in enumerate(trained_symbols):
         frame = history_frames.get(sym)
         if frame is None or len(frame) < 72:
-            logger.warning(f"  Crypto RL skipped: {sym} only has {0 if frame is None else len(frame)} bars")
-            return {}
+            logger.warning(f"  Crypto RL skipped: {sym} only has {0 if frame is None else len(frame)} bars (need 72); using zeros")
+            continue
         features[idx] = compute_hourly_features(frame)
+        valid_symbols.append(sym)
+    if not valid_symbols:
+        logger.warning("  Crypto RL: no symbols had enough data, returning empty signals")
+        return {}
     return _decode_bridge_signal_map(bridge, features, trained_symbols)
 
 
@@ -374,16 +397,21 @@ def _build_stock_rl_signal_map(
     )
 
     features = np.zeros((len(trained_symbols), 16), dtype=np.float32)
+    valid_symbols = []
     for idx, sym in enumerate(trained_symbols):
         frame = history_frames.get(sym)
         if frame is None or len(frame) < 72:
-            logger.warning(f"  Stock RL skipped: {sym} only has {0 if frame is None else len(frame)} bars")
-            return {}
+            logger.warning(f"  Stock RL skipped: {sym} only has {0 if frame is None else len(frame)} bars (need 72); using zeros")
+            continue
         price_df = frame.loc[:, ["timestamp", "open", "high", "low", "close", "volume"]].copy()
         price_df["timestamp"] = pd.to_datetime(price_df["timestamp"], utc=True, errors="coerce").dt.floor("h")
         price_df = price_df.dropna(subset=["timestamp"]).drop_duplicates("timestamp", keep="last").set_index("timestamp")
         feature_df = compute_features(price_df, forecasts_1h.get(sym, pd.DataFrame()), forecasts_24h.get(sym, pd.DataFrame()))
         features[idx] = feature_df.iloc[-1].to_numpy(dtype=np.float32, copy=False)
+        valid_symbols.append(sym)
+    if not valid_symbols:
+        logger.warning("  Stock RL: no symbols had enough data, returning empty signals")
+        return {}
     return _decode_bridge_signal_map(bridge, features, trained_symbols)
 
 
@@ -606,8 +634,10 @@ def _place_crypto_tp_sell(alpaca, sym: str, pos, sell_price: float,
         return
 
     # Cancel any existing sell orders for this symbol first
+    import time as _time
     from alpaca.trading.requests import GetOrdersRequest
     from alpaca.trading.enums import QueryOrderStatus
+    canceled_any = False
     try:
         open_orders = alpaca.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN))
         for order in open_orders:
@@ -615,9 +645,14 @@ def _place_crypto_tp_sell(alpaca, sym: str, pos, sell_price: float,
             if sym_norm == sym and order.side.value.lower() == "sell":
                 if not dry_run:
                     alpaca.cancel_order_by_id(str(order.id))
+                    canceled_any = True
                 logger.info(f"  {sym}: canceled old TP sell {order.id} @ {order.limit_price}")
     except Exception as e:
         logger.debug(f"  {sym}: error canceling old sells: {e}")
+
+    # Brief pause after cancel to let Alpaca release held balance
+    if canceled_any:
+        _time.sleep(0.5)
 
     logger.info(f"  {sym}: placing TP sell {sell_qty:.8f} @ ${sell_price:.2f}")
     if not dry_run:
@@ -792,10 +827,29 @@ def execute_crypto_signals(
         if pos and pos.qty > 0:
             _place_crypto_force_exit_sell(alpaca, sym, pos, dry_run, orders)
 
+    # ── Trailing stop tracking ────────────────────────────────────────────
+    # Track peak price since entry for each position. If current price drops
+    # TRAILING_STOP_PCT% from peak, force exit. Exp06: 0.3% trail gives
+    # Sortino=76.5, MaxDD=4.7% (vs 30.9/28.3% with LLM TP alone).
+    peak_prices = load_peak_prices()
+    peak_prices = update_peak_prices(peak_prices, crypto_pos)
+    trailing_stop_syms = set(get_trailing_stop_symbols(
+        peak_prices, crypto_pos, trail_pct=TRAILING_STOP_PCT,
+    ))
+    # Don't double-exit symbols already force-exiting
+    trailing_stop_syms -= force_exit_syms
+    save_peak_prices(peak_prices)
+
+    for sym in trailing_stop_syms:
+        pos = snapshot.alpaca_positions.get(sym)
+        if pos and pos.qty > 0:
+            _place_crypto_force_exit_sell(alpaca, sym, pos, dry_run, orders)
+
     # Place take-profit sells on all other existing crypto positions
+    exit_syms = force_exit_syms | trailing_stop_syms
     for sym, plan in signals.items():
-        if sym in force_exit_syms:
-            continue  # already force-exiting
+        if sym in exit_syms:
+            continue  # already force-exiting or trailing-stop exiting
         pos = snapshot.alpaca_positions.get(sym)
         if pos and pos.qty > 0 and plan.sell_price > 0 and plan.sell_price > pos.current_price:
             _place_crypto_tp_sell(alpaca, sym, pos, plan.sell_price, dry_run, orders)
@@ -803,7 +857,7 @@ def execute_crypto_signals(
     # Sizing: use LLM's allocation_pct when available, else fall back to equal split
     num_long_signals = sum(
         1 for plan in signals.values()
-        if plan.direction == "long" and plan.confidence >= 0.4
+        if plan.direction == "long" and plan.confidence >= MIN_CONFIDENCE_CRYPTO
     )
     fallback_pct = min(0.40, 1.0 / max(num_long_signals, 1))
     logger.info(f"  Sizing: {num_long_signals} long signals, fallback {fallback_pct*100:.0f}% per symbol")
@@ -813,12 +867,12 @@ def execute_crypto_signals(
 
     for sym, plan in signals.items():
         try:
-            if plan.direction != "long" or plan.confidence < 0.4:
+            if plan.direction != "long" or plan.confidence < MIN_CONFIDENCE_CRYPTO:
                 continue
 
-            # Don't buy into a position we're actively force-exiting
-            if sym in force_exit_syms:
-                logger.info(f"  {sym}: skipping buy — force exit in progress")
+            # Don't buy into a position we're actively exiting
+            if sym in exit_syms:
+                logger.info(f"  {sym}: skipping buy — exit in progress")
                 continue
 
             # Safety validation
@@ -1067,14 +1121,27 @@ def execute_stock_signals(
             if pos and pos.qty > 0:
                 continue
 
-            # Use LLM allocation_pct if provided, else 20% of portfolio
-            total_stock = max(snapshot.total_stock_value, 1.0)
+            # Leverage-aware sizing: use up to 4x intraday, 2x near close
+            equity = max(snapshot.total_stock_value, 1.0)
+            long_val = sum(p.market_value for p in snapshot.alpaca_positions.values())
+            current_leverage = long_val / equity if equity > 0 else 0
+
+            # Determine max leverage based on time to close
+            if snapshot.minutes_to_close is not None and snapshot.minutes_to_close <= DELEVERAGE_MINUTES_BEFORE_CLOSE:
+                max_lev = MAX_OVERNIGHT_LEVERAGE
+            else:
+                max_lev = MAX_INTRADAY_LEVERAGE
+
+            max_total_exposure = equity * max_lev
+            room_for_new = max(0, max_total_exposure - long_val)
+
+            # Use LLM allocation_pct if provided, else 20% of equity
             alloc = plan.allocation_pct / 100.0 if plan.allocation_pct > 0 else 0.20
-            alloc = min(alloc, 0.40)  # hard cap at 40% per stock
-            max_position = total_stock * alloc
-            available = snapshot.alpaca_buying_power * 0.45
+            alloc = min(alloc, 0.50)  # hard cap at 50% per stock
+            max_position = equity * alloc
+            available = min(room_for_new, snapshot.alpaca_buying_power * 0.95)
             trade_usd = min(max_position, available)
-            logger.info(f"  {sym}: alloc={alloc*100:.0f}% → max ${max_position:.0f}")
+            logger.info(f"  {sym}: alloc={alloc*100:.0f}% lev={current_leverage:.2f}x/{max_lev:.0f}x → max ${trade_usd:.0f}")
 
             if trade_usd < 50:
                 logger.info(f"  {sym}: insufficient buying power (${trade_usd:.0f})")
@@ -1110,6 +1177,111 @@ def execute_stock_signals(
 
 
 # ---------------------------------------------------------------------------
+# End-of-day deleveraging
+# ---------------------------------------------------------------------------
+
+def deleverage_to_target(
+    snapshot: UnifiedPortfolioSnapshot,
+    target_leverage: float = MAX_OVERNIGHT_LEVERAGE,
+    dry_run: bool = True,
+    use_limit: bool = True,
+    limit_offset_pct: float = 0.05,
+) -> list[dict]:
+    """Sell stock positions to bring leverage down to target.
+
+    Called in the final hour before market close. Sells the smallest/worst
+    positions first to minimize disruption to high-conviction holdings.
+
+    Args:
+        use_limit: Use limit orders near current price instead of market orders.
+                   Limit price = current_price * (1 - limit_offset_pct/100).
+        limit_offset_pct: Percent below current price for limit (default 0.05%).
+    """
+    from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
+    from alpaca.trading.client import TradingClient
+    from alpaca.trading.requests import LimitOrderRequest
+    from alpaca.trading.enums import OrderSide, TimeInForce
+
+    equity = max(snapshot.total_stock_value, 1.0)
+    stock_positions = {
+        sym: pos for sym, pos in snapshot.alpaca_positions.items()
+        if sym not in set(CRYPTO_SYMBOLS) and pos.qty > 0
+    }
+    long_val = sum(p.market_value for p in stock_positions.values())
+    current_lev = long_val / equity
+
+    if current_lev <= target_leverage:
+        logger.info(f"  Deleverage: {current_lev:.2f}x <= {target_leverage:.1f}x target — no action needed")
+        return []
+
+    excess = long_val - equity * target_leverage
+    logger.info(f"  Deleverage: {current_lev:.2f}x → {target_leverage:.1f}x | need to sell ${excess:,.0f}")
+
+    # Sort positions: sell smallest first, then worst PnL
+    ranked = sorted(
+        stock_positions.items(),
+        key=lambda kv: (kv[1].market_value, kv[1].unrealized_pnl),
+    )
+
+    orders = []
+    alpaca = TradingClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, paper=False)
+    sold_value = 0.0
+
+    for sym, pos in ranked:
+        if sold_value >= excess:
+            break
+
+        # Sell full position if it fits, partial otherwise
+        remaining_excess = excess - sold_value
+        if pos.market_value <= remaining_excess * 1.2:
+            sell_qty = pos.qty
+        else:
+            sell_qty = round(remaining_excess / pos.current_price, 2)
+            sell_qty = min(sell_qty, pos.qty)
+
+        if sell_qty < 0.01:
+            continue
+
+        # Limit order near market price — fills quickly without market order slippage
+        limit_price = round(pos.current_price * (1 - limit_offset_pct / 100), 2)
+        sell_value = sell_qty * pos.current_price
+        order_type = "limit" if use_limit else "market"
+        logger.info(f"  Deleverage SELL: {sym} {sell_qty:.2f} shares @ ${limit_price:.2f} "
+                    f"({order_type}, ${sell_value:,.0f})")
+
+        if not dry_run:
+            try:
+                req = LimitOrderRequest(
+                    symbol=sym,
+                    qty=sell_qty,
+                    side=OrderSide.SELL,
+                    type="limit",
+                    time_in_force=TimeInForce.DAY,
+                    limit_price=limit_price,
+                )
+                result = alpaca.submit_order(req)
+                orders.append({
+                    "symbol": sym, "action": "deleverage_sell",
+                    "qty": sell_qty, "limit_price": limit_price,
+                    "order_id": str(result.id),
+                })
+                sold_value += sell_value
+            except Exception as e:
+                logger.error(f"  {sym}: deleverage sell error: {e}")
+        else:
+            orders.append({
+                "symbol": sym, "action": "deleverage_sell",
+                "qty": sell_qty, "limit_price": limit_price,
+                "dry_run": True,
+            })
+            sold_value += sell_value
+
+    new_lev = (long_val - sold_value) / equity
+    logger.info(f"  Deleverage complete: {current_lev:.2f}x → {new_lev:.2f}x ({len(orders)} sells)")
+    return orders
+
+
+# ---------------------------------------------------------------------------
 # Main trading cycle
 # ---------------------------------------------------------------------------
 
@@ -1129,7 +1301,12 @@ def run_cycle(
     # 1. Build snapshot
     snapshot = build_snapshot(now)
     logger.info(f"Regime: {snapshot.regime}")
-    logger.info(f"Stocks: ${snapshot.total_stock_value:,.0f} | Crypto: ${snapshot.total_crypto_value:,.0f}")
+    equity = max(snapshot.total_stock_value, 1.0)
+    long_val = sum(p.market_value for p in snapshot.alpaca_positions.values())
+    lev = long_val / equity if equity > 0 else 0
+    margin_cost_day = max(0, long_val - equity) * MARGIN_INTEREST_ANNUAL / 365
+    logger.info(f"Equity: ${equity:,.0f} | Positions: ${long_val:,.0f} | "
+                f"Leverage: {lev:.2f}x | Margin cost: ${margin_cost_day:.2f}/day")
     if snapshot.alpaca_positions:
         crypto_syms = set(CRYPTO_SYMBOLS)
         for sym, pos in snapshot.alpaca_positions.items():
@@ -1194,8 +1371,24 @@ def run_cycle(
 
     # 4. Stock signals during market hours (Gemini-driven)
     if snapshot.regime == "STOCK_HOURS":
+        # 4a. End-of-day deleveraging (final hour before close)
+        if snapshot.minutes_to_close is not None and snapshot.minutes_to_close <= DELEVERAGE_MINUTES_BEFORE_CLOSE:
+            logger.info(f"\n--- DELEVERAGE CHECK ({snapshot.minutes_to_close} min to close) ---")
+            delev_orders = deleverage_to_target(snapshot, MAX_OVERNIGHT_LEVERAGE, dry_run)
+            if delev_orders:
+                results["orders"].extend(delev_orders)
+                # Refresh snapshot after sells
+                snapshot = build_snapshot(datetime.now(timezone.utc))
+
+        # 4b. Generate and execute stock signals
         syms = stock_symbols or STOCK_SYMBOLS
         logger.info(f"\n--- STOCK SIGNALS ({len(syms)} symbols) ---")
+        # Log leverage info
+        equity = max(snapshot.total_stock_value, 1.0)
+        long_val = sum(p.market_value for p in snapshot.alpaca_positions.values()
+                       if p.symbol not in set(CRYPTO_SYMBOLS))
+        logger.info(f"  Leverage: {long_val / equity:.2f}x | Equity: ${equity:,.0f} | "
+                    f"Margin cost: ${max(0, long_val - equity) * MARGIN_INTEREST_ANNUAL / 365:.2f}/day")
         stock_signals = get_stock_signals(syms, snapshot, model, thinking_level, dry_run)
         if stock_signals:
             stock_orders = execute_stock_signals(stock_signals, snapshot, dry_run)

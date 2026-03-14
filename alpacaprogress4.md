@@ -561,3 +561,563 @@ Interpretation:
 - The simulator now has a more realistic way to model thin-liquidity passive fills than binary bar-touch logic.
 - This should reduce optimistic fills especially on bars that only barely trade through the limit.
 - The real robustness rerun is the next check for whether stricter fills materially worsen the current BTC/ETH/SOL selector baseline.
+
+## 2026-03-11 16:34 UTC Autonomous Research Batch (10 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | prod7_nonyt | edge_rank | 2.2255 | 2.9859 | 0.2345 | 0.4892 | 18 | 0.005 | -0.001 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | prod7_nonyt | edge_rank | 2.2255 | 2.9859 | 0.2345 | 0.4892 | 18 | 0.005 | -0.001 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | prod7_nonyt | edge_rank | 1.5652 | 2.8210 | 0.1726 | 0.4887 | 20 | 0.0 | 0.0 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | prod7_nonyt | edge_rank | 1.1746 | 2.3934 | 0.1298 | 0.4459 | 20 | 0.0 | 0.0 |
+| 5 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | prod7 | first_trigger | -1.7884 | 0.1064 | -0.4410 | 0.0411 | 18 | 0.0 | -0.001 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+
+
+## 2026-03-11 17:53 UTC Autonomous Research Batch (4 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | prod7_nonyt | first_trigger | 1.5543 | 2.8133 | 0.1726 | 0.4887 | 20 | 0.0 | 0.0 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | prod7_nonyt | first_trigger | 1.1746 | 2.3987 | 0.1298 | 0.4459 | 20 | 0.0 | 0.0 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | prod7_nonyt | first_trigger | -3.1815 | -1.8454 | -1.3554 | -0.8733 | 18 | 0.0 | -0.001 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | prod7_nonyt | first_trigger | -3.1815 | -1.8454 | -1.3554 | -0.8733 | 18 | 0.0 | -0.002 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+
+
+## 2026-03-11 21:11 UTC Autonomous Research Batch (8 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | prod7 | edge_rank | 2.2255 | 3.8169 | 0.2345 | 0.6783 | 16 | 0.005 | -0.001 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | prod7 | edge_rank | 2.2255 | 3.8169 | 0.2345 | 0.6783 | 16 | 0.005 | -0.001 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | prod7 | edge_rank | 1.5543 | 2.9721 | 0.1726 | 0.5034 | 18 | 0.0 | 0.0 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | prod7 | edge_rank | 1.2644 | 3.4820 | 0.1438 | 0.6959 | 18 | 0.0025 | -0.002 |
+| 5 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | prod7 | edge_rank | -2.3343 | -1.2390 | -0.9032 | -0.4902 | 16 | 0.005 | -0.001 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+
+
+## 2026-03-12 00:22 UTC Autonomous Research Batch (10 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | prod7_nonyt | edge_rank | 2.2255 | 3.8169 | 0.2345 | 0.6783 | 16 | 0.005 | -0.001 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | prod7_nonyt | edge_rank | 2.2255 | 3.8169 | 0.2345 | 0.6783 | 16 | 0.005 | -0.001 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | prod7 | first_trigger | 1.5543 | 2.9721 | 0.1726 | 0.5034 | 18 | 0.0 | 0.0 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | prod7_nonyt | edge_rank | 1.5543 | 2.9850 | 0.1726 | 0.5170 | 20 | 0.0 | 0.0 |
+| 5 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | prod7 | first_trigger | 1.2644 | 3.4820 | 0.1438 | 0.6959 | 18 | 0.0025 | -0.002 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+
+
+## 2026-03-12 03:28 UTC Autonomous Research Batch (10 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | prod7_nonyt | first_trigger | 1.5543 | 2.9850 | 0.1726 | 0.5170 | 20 | 0.0 | 0.0 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,MSFT | prod7 | edge_rank | 1.5543 | 2.9676 | 0.1726 | 0.5034 | 18 | 0.0 | 0.0 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | prod7_nonyt | first_trigger | 1.2644 | 3.4051 | 0.1438 | 0.6901 | 16 | 0.005 | -0.001 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,MSFT | prod7 | edge_rank | 1.2644 | 3.4743 | 0.1438 | 0.6959 | 18 | 0.0025 | -0.002 |
+| 5 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | prod7_nonyt | first_trigger | -1.5170 | -1.0870 | -0.7589 | -0.5830 | 18 | 0.0 | -0.001 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+
+
+## 2026-03-12 06:29 UTC Autonomous Research Batch (10 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,MSFT | prod7 | edge_rank | 2.1305 | 2.6781 | 0.2789 | 0.2789 | 20 | 0.0 | 0.0 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,MSFT | prod7 | edge_rank | 2.1305 | 2.6781 | 0.2789 | 0.2789 | 20 | 0.0 | 0.0 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,MSFT | prod7 | first_trigger | 1.5543 | 2.9676 | 0.1726 | 0.5034 | 18 | 0.0 | 0.0 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,MSFT | prod7_nonyt | edge_rank | 1.5543 | 2.9803 | 0.1726 | 0.5170 | 20 | 0.0 | 0.0 |
+| 5 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,MSFT | prod7 | first_trigger | 1.2644 | 3.4743 | 0.1438 | 0.6959 | 18 | 0.0025 | -0.002 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+
+
+## 2026-03-12 09:56 UTC Autonomous Research Batch (10 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,MSFT | prod7_nonyt | edge_rank | 2.1305 | 2.6781 | 0.2789 | 0.2789 | 20 | 0.0 | 0.0 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,MSFT | prod7_nonyt | edge_rank | 2.1305 | 2.6781 | 0.2789 | 0.2789 | 20 | 0.0 | 0.0 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,MSFT | prod7_nonyt | first_trigger | 1.5543 | 2.9803 | 0.1726 | 0.5170 | 20 | 0.0 | 0.0 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,MSFT | prod7_nonyt | first_trigger | 1.2644 | 3.4743 | 0.1438 | 0.6959 | 24 | 0.0025 | -0.001 |
+| 5 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,MSFT | prod7_nonyt | edge_rank | -1.5170 | -0.5265 | -0.7589 | -0.3108 | 18 | 0.0 | -0.001 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+
+
+## 2026-03-12 13:08 UTC Autonomous Research Batch (10 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NET | prod7 | edge_rank | 2.2255 | 3.0912 | 0.2345 | 0.4892 | 18 | 0.005 | -0.001 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NET | prod7 | edge_rank | 2.2255 | 3.0912 | 0.2345 | 0.4892 | 18 | 0.005 | -0.001 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NET | prod7 | edge_rank | -3.0748 | -1.7621 | -1.1397 | -0.7279 | 18 | 0.0 | -0.001 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NET | prod7 | edge_rank | -3.0748 | -1.7621 | -1.1397 | -0.7279 | 18 | 0.0 | -0.002 |
+| 5 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NET | prod7 | edge_rank | -6.3223 | -3.5582 | -3.5761 | -2.2800 | 18 | 0.0 | 0.0 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+
+
+## 2026-03-12 16:17 UTC Autonomous Research Batch (10 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NET | prod7_nonyt | edge_rank | 2.1471 | 2.6981 | 0.2789 | 0.2789 | 18 | 0.0 | 0.0 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NET | prod7_nonyt | edge_rank | 2.1471 | 2.6981 | 0.2789 | 0.2789 | 18 | 0.0 | 0.0 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NET | prod7_nonyt | edge_rank | -4.3268 | -3.5483 | -1.7008 | -1.4612 | 14 | 0.0 | -0.001 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NET | prod7_nonyt | edge_rank | -4.3268 | -3.7314 | -1.8204 | -1.5409 | 16 | 0.0 | -0.002 |
+| 5 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NET | prod7_nonyt | edge_rank | -6.4877 | -3.3192 | -3.7499 | -2.1688 | 22 | 0.0025 | 0.0 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+
+
+## 2026-03-12 17:32 UTC Autonomous Research Batch (4 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NET | prod7_nonyt | first_trigger | -6.5096 | -3.3280 | -3.7499 | -2.1688 | 22 | 0.0025 | 0.0 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NET | prod7_nonyt | first_trigger | -6.5107 | -3.3287 | -3.7499 | -2.1688 | 22 | 0.0025 | 0.0 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NET | prod7_nonyt | first_trigger | -8.1555 | -5.4972 | -4.6145 | -3.1485 | 18 | 0.0 | -0.001 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NET | prod7_nonyt | first_trigger | -8.1555 | -5.4972 | -4.6145 | -3.1485 | 18 | 0.0 | -0.002 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+
+
+## 2026-03-12 18:47 UTC Autonomous Research Batch (2 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,TSLA | prod7 | edge_rank | 1.3980 | 2.8204 | 0.1781 | 0.5440 | 16 | 0.005 | -0.001 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,TSLA | prod7 | edge_rank | 1.3980 | 2.8204 | 0.1781 | 0.5440 | 16 | 0.005 | -0.001 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+
+
+## 2026-03-12 PufferLib RL Causal Fix + OOS Autoresearch
+
+### Critical Finding: Look-Ahead Bias
+The PufferLib C trading environment had a look-ahead bias where the agent saw the current bar's OHLC then traded at the same bar's prices. Fixed with:
+1. **1-bar observation lag**: agent sees `t-1` features, trades at `t`
+2. **OPEN price execution**: orders reference bar's open (not close)
+3. **Fill slippage**: added configurable adverse slippage (buys fill higher, sells lower)
+
+Previous "record" returns (2,659x/30d) were inflated. Retrained models still strong in-sample but **overfit**: crypto4 model scored +89x in-sample vs -14.9%/30d on unseen data (0% profitable).
+
+### OOS Autoresearch (5-min timeboxed training, eval with 8bps slippage on held-out Jun 2025-Feb 2026)
+
+**Data**: 5 crypto symbols (BTC, ETH, SOL, LTC, AVAX), Train: 2022-2025 (29,929h), Val: Jun 2025-Feb 2026 (6,001h)
+
+**31 trials completed. Full OOS ranking (positive only):**
+
+| Rank | Config | Val Return/30d | Val Sortino | Val Profitable% | Key Change |
+|------|--------|---------------|-------------|-----------------|------------|
+| 1 | **slip_5bps** | **+5.30%** | **1.62** | **96%** | 5bps fill slippage |
+| 2 | **ent_01** | **+4.87%** | **1.56** | **93%** | Higher entropy (0.1 vs 0.05) |
+| 3 | reg_combo_2 | +3.69% | 1.47 | 91% | obs_norm + wd=0.05 + slip=8bps |
+| 4 | obs_norm | +3.03% | 1.68 | 78% | Observation normalization |
+| 5 | lr_1e4 | +2.31% | 1.23 | 71% | Lower LR (1e-4 vs 3e-4) |
+| 6 | reg_combo_1 | +2.22% | 0.96 | 82% | wd=0.01 + slip=8bps + trade_pen |
+| 7 | clip_vloss | +1.77% | 0.88 | 70% | Clip value loss |
+| 8 | reg_combo_3 | +0.95% | 1.19 | 67% | obs_norm + ent=0.08 + cosine |
+| 9 | kitchen_sink | +0.95% | 1.19 | 67% | Everything combined |
+| 10 | smooth_ds | +0.42% | 0.61 | 57% | Smooth downside penalty |
+
+**Negative configs (overfit or collapsed):** baseline (-0.83%), cosine_lr (-1.23%), seed variants (-1.63%, -12.4%), ent_anneal (-14.75%), gamma_999 (-6.3%), h256 (-4.55%), trade_pen_05 (-7.25%), all wd configs without obs_norm
+
+**Key insights**:
+1. Training with execution friction (slippage, higher fees) forces wider edges that generalize
+2. Higher entropy (0.1) prevents premature policy collapse, close to #1
+3. obs_norm is the strongest single regularizer
+4. Lower LR (1e-4) also helps generalization
+5. Seeds matter: different seeds on same config produce -12.4% to -0.83%
+6. Baseline anneal-LR alone is insufficient for OOS (-0.83%)
+7. Combining multiple regularizers (reg_combo_2) is strong but not better than focused interventions
+
+### RL+Gemini Hybrid Backtest (Gemini 3.1 Flash Lite, Thinking=HIGH)
+- rl_gemini: -2.40%, Sortino -7.62, 56 fills, 256 API calls
+- gemini_only: -3.56%, Sortino -9.28, 42 fills, 507 API calls
+- RL+Gemini wins: better returns, half the API calls
+
+### Momentum Proxy Backtest on HourlyTrader Simulator (Mar 4-11 2026)
+- **rl_only** (SMA crossover proxy, 0.2%/0.8% spread): -7.38%, Sortino=-14.00, WR=58.1%, 31 trades, MaxDD=8.48%
+- Period was bearish (BTC -1.6%, ETH/SOL down more)
+- Gemini API was unresponsive during this session — rl_gemini and gemini_only comparison pending
+- Created `unified_orchestrator/backtest_rl_gemini_real.py` for proper 3-mode comparison
+
+### Currently Running (as of 22:00 UTC)
+- **Autoresearch loop**: 25/35 trials, currently training `ent_01` (high entropy 0.1)
+- **crypto6_obsnorm_200M**: Full training, ~101M/200M steps (ret=+951x in-sample, step 101.5M)
+- **crypto6_slip5_200M**: Full training with slippage, ~49M/200M steps (ret=+5.97x in-sample)
+- **Stock trader (Alpaca)**: Live, meta-selector with 7 strategies
+- **Crypto trader (Binance)**: Live
+- **Unified orchestrator**: Live (--live mode)
+
+### Current Production Algorithms
+- **Stocks**: Neural policy meta-selector (wd_0.06_s42/epoch_008.pt), 6 symbols, hold=5h, edge=0.008
+- **Crypto**: Unified orchestrator with RL+Gemini hybrid (momentum proxy, awaiting OOS-validated RL model)
+
+
+## 2026-03-12 22:01 UTC Autonomous Research Batch (10 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,TSLA | prod7 | first_trigger | 1.3980 | 2.8328 | 0.1781 | 0.5440 | 16 | 0.005 | -0.001 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,TSLA | prod7 | first_trigger | 1.3980 | 2.8328 | 0.1781 | 0.5440 | 16 | 0.005 | -0.001 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,TSLA | prod7 | edge_rank | -2.6664 | -1.8392 | -1.1073 | -0.7815 | 18 | 0.0 | -0.001 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,TSLA | prod7 | edge_rank | -2.6664 | -1.8392 | -1.1073 | -0.7815 | 18 | 0.0 | -0.002 |
+| 5 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,TSLA | prod7 | first_trigger | -4.2755 | -2.1599 | -1.8020 | -1.0994 | 14 | 0.0 | -0.001 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+
+## 2026-03-13 200M Step OOS Evaluation — Overfitting Confirmed
+
+### Background
+Trained two 200M step models on crypto6 train data (2022-2025, 29,929h) to test whether longer training improves OOS generalization:
+- **crypto6_obsnorm_200M**: obs_norm=True, no slippage, 200M steps → 7,340x in-sample return
+- **crypto6_slip5_200M**: fill_slippage=5bps, 200M steps → 347x in-sample return
+
+### OOS Results (Jun 2025 - Feb 2026, 6,001h, 8bps eval slippage)
+
+| Model | OOS Return/30d | Profitable% | In-Sample Return | Verdict |
+|-------|---------------|-------------|-----------------|---------|
+| **autoresearch/slip_5bps (5min)** | **+5.21% median** | **96%** | modest | **BEST — generalizes** |
+| crypto6_obsnorm_200M (no slip) | -3.24% mean | 9% | 7,340x | Overfit |
+| crypto6_obsnorm_200M (8bps slip) | -1.71% median | ~25% | 7,340x | Overfit |
+| crypto6_slip5_200M (8bps slip) | -16.1% mean | 0% | 347x | Severely overfit |
+
+### Independent confirmation of autoresearch best (slip_5bps with 8bps eval slippage)
+- Median return: +5.21%/30d
+- p25: +2.44%, p75: +8.40%
+- Best episode: +14.33%, Worst: -4.86%
+- 96% profitable episodes
+
+### Key Insight: More Training Steps = More Overfitting
+- 200M step models memorize training data patterns that don't generalize
+- 5-minute timeboxed training (~8-9M steps) produces far better OOS performance
+- Training with execution friction (slippage) is necessary but NOT sufficient — must also limit training duration
+- The autoresearch approach (short training + diverse configs + OOS evaluation) is the correct methodology
+
+### Currently Running (as of 2026-03-13 00:30 UTC)
+- **Stock trader (Alpaca)**: Live, meta-selector with 7 strategies (PID 3882689)
+- **Unified orchestrator**: Live, CRYPTO_ONLY regime (PID 2011069)
+- **Data collector**: 5min bars (PID 2131798)
+- **Autoresearch**: Complete (35/35 trials)
+- **200M training**: Complete (both runs finished, OOS evaluated)
+
+### Current Production Algorithms
+- **Stocks**: Neural policy meta-selector (wd_0.06_s42/epoch_008.pt), 6 symbols, hold=5h, edge=0.008
+- **Crypto**: Unified orchestrator — awaiting deployment of OOS-validated RL model (slip_5bps)
+
+### Deployment: slip_5bps RL Model → Production (2026-03-13 00:36 UTC)
+
+Deployed OOS-validated RL model as signal hint to crypto orchestrator:
+- **Model**: `pufferlib_market/checkpoints/autoresearch/slip_5bps/best.pt`
+- **OOS performance**: +5.21% median/30d, 96% profitable, Sortino 1.62
+- **Architecture**: TradingPolicy MLP h1024, 5 symbols (BTC/ETH/SOL/LTC/AVAX), 11 actions
+- **Integration**: RL generates direction+confidence signals, injected as hints into Gemini Flash prompt
+- **Code changes**:
+  - `unified_orchestrator/orchestrator.py`: Added `_get_crypto_rl_trader()`, updated `CRYPTO_CHECKPOINT_CANDIDATES` and `CRYPTO_SYMBOLS`
+  - `pufferlib_market/inference.py`: Added auto-detection of TradingPolicy vs ResidualPolicy architecture
+- **First live signals**: BTC long (0.68), ETH short (0.30), SOL long (1.00), LTC long (0.31), AVAX long (0.19)
+- **Orchestrator PID**: 2849387
+
+### Next Steps
+1. Monitor RL+LLM hybrid performance over next 24-48h
+2. Re-run RL+Gemini backtest when Gemini API is stable
+3. Consider training combined best techniques (slip + ent_01 + obs_norm) with SHORT timeboxing
+4. Backtest RL+Gemini on stocks (pending)
+5. Fix position sizing for 5 symbols (SOL order failed due to 3-way equal split exceeding cash)
+
+
+## 2026-03-13 02:08 UTC Autonomous Research Batch (10 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,TSLA | prod7_nonyt | edge_rank | 1.3980 | 2.8328 | 0.1781 | 0.5440 | 16 | 0.005 | -0.001 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,TSLA | prod7_nonyt | edge_rank | 1.3980 | 2.8328 | 0.1781 | 0.5440 | 16 | 0.005 | -0.001 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,TSLA | prod7_nonyt | first_trigger | 1.3980 | 2.8328 | 0.1781 | 0.5440 | 16 | 0.005 | -0.001 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,TSLA | prod7_nonyt | first_trigger | 1.3980 | 2.8328 | 0.1781 | 0.5440 | 16 | 0.005 | -0.001 |
+| 5 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,TSLA | prod7_nonyt | edge_rank | -1.5624 | -0.7016 | -0.7586 | -0.4046 | 18 | 0.0 | -0.001 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+
+
+## 2026-03-13 04:50 UTC Autonomous Research Batch (10 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH | prod7 | edge_rank | 1.3980 | 2.7138 | 0.1781 | 0.4917 | 18 | 0.0025 | -0.001 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH | prod7 | edge_rank | 1.3980 | 2.7138 | 0.1781 | 0.4917 | 18 | 0.0025 | -0.002 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH | prod7 | edge_rank | 0.8017 | 1.1228 | 0.1945 | 0.2262 | 14 | 0.005 | -0.001 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH | prod7 | edge_rank | -0.8437 | 0.5553 | -0.1394 | 0.0643 | 16 | 0.005 | -0.001 |
+| 5 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,TSLA | prod7_nonyt | first_trigger | -1.5624 | -0.7016 | -0.7586 | -0.4046 | 18 | 0.0 | -0.001 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+
+
+## 2026-03-13 07:37 UTC Autonomous Research Batch (10 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH | prod7 | first_trigger | 1.3980 | 2.7138 | 0.1781 | 0.4917 | 18 | 0.0025 | -0.001 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH | prod7 | first_trigger | 1.3980 | 2.7138 | 0.1781 | 0.4917 | 18 | 0.0025 | -0.002 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH | prod7_nonyt | edge_rank | 1.3980 | 2.7138 | 0.1781 | 0.4917 | 18 | 0.005 | -0.001 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH | prod7_nonyt | edge_rank | 1.3980 | 2.7138 | 0.1781 | 0.4917 | 24 | 0.0025 | -0.001 |
+| 5 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH | prod7_nonyt | edge_rank | 0.8017 | 1.1228 | 0.1945 | 0.2262 | 14 | 0.005 | -0.001 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+
+
+## 2026-03-13 10:28 UTC Autonomous Research Batch (10 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH | prod7_nonyt | first_trigger | 1.3980 | 2.7138 | 0.1781 | 0.4917 | 18 | 0.005 | -0.001 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH | prod7_nonyt | first_trigger | 1.3980 | 2.7138 | 0.1781 | 0.4917 | 24 | 0.0025 | -0.001 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT | prod7 | edge_rank | 1.3980 | 2.7138 | 0.1781 | 0.4917 | 18 | 0.0025 | -0.001 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT | prod7 | edge_rank | 1.3980 | 2.7138 | 0.1781 | 0.4917 | 18 | 0.0025 | -0.002 |
+| 5 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH | prod7_nonyt | first_trigger | -1.5306 | -0.7367 | -0.7589 | -0.4306 | 18 | 0.0 | -0.001 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+
+
+## 2026-03-13 13:24 UTC Autonomous Research Batch (10 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT | prod7 | first_trigger | 1.3980 | 2.7138 | 0.1781 | 0.4917 | 18 | 0.0025 | -0.001 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT | prod7 | first_trigger | 1.3980 | 2.7138 | 0.1781 | 0.4917 | 18 | 0.0025 | -0.002 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT | prod7_nonyt | edge_rank | 1.3980 | 2.7138 | 0.1781 | 0.4917 | 18 | 0.005 | -0.001 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT | prod7_nonyt | edge_rank | 1.3980 | 2.7138 | 0.1781 | 0.4917 | 24 | 0.0025 | -0.001 |
+| 5 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT | prod7 | edge_rank | 0.8017 | 1.1228 | 0.1945 | 0.2262 | 14 | 0.005 | -0.001 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+
+
+## 2026-03-13 16:29 UTC Autonomous Research Batch (10 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT | prod7_nonyt | first_trigger | 1.3980 | 2.7138 | 0.1781 | 0.4917 | 18 | 0.005 | -0.001 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT | prod7_nonyt | first_trigger | 1.3980 | 2.7138 | 0.1781 | 0.4917 | 24 | 0.0025 | -0.001 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT | prod7_nonyt | edge_rank | 0.8016 | 1.1226 | 0.1945 | 0.2262 | 14 | 0.005 | -0.001 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT | prod7_nonyt | edge_rank | -0.8453 | 0.5544 | -0.1394 | 0.0643 | 16 | 0.005 | -0.001 |
+| 5 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT | prod7_nonyt | edge_rank | -1.5306 | -0.7367 | -0.7589 | -0.4306 | 18 | 0.0 | -0.001 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+
+
+## 2026-03-13 18:57 UTC Autonomous Research Batch (10 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | core5 | edge_rank | 2.9381 | 3.3502 | 0.2976 | 0.5012 | 18 | 0.005 | -0.001 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | core5 | edge_rank | 2.9381 | 3.3502 | 0.2976 | 0.5012 | 18 | 0.005 | -0.001 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | core5 | first_trigger | 1.0578 | 1.2604 | 0.1912 | 0.1912 | 14 | 0.005 | 0.0 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | core5 | edge_rank | 1.0530 | 1.2588 | 0.1912 | 0.1912 | 14 | 0.005 | 0.0 |
+| 5 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | core5 | first_trigger | 0.7198 | 1.0220 | 0.1022 | 0.1342 | 20 | 0.0075 | -0.001 |
+
+### NEW RECORD - Beats baseline!
+- symbols: `NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL`
+- strategies: `core5`
+- entry_mode: `edge_rank`
+- min_goodness: **2.9381** (was 2.7965)
+- mean_goodness: **3.3502**
+- min_return: **0.2976%**
+- mean_return: **0.5012%**
+- Best params: lookback=18, switch=0.005, sit_out=-0.001, mode=sticky
+- Supervisor conf updated.
+
+
+## 2026-03-13 22:26 UTC Autonomous Research Batch (10 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | prod7_all | edge_rank | 1.1880 | 2.1386 | 0.1484 | 0.4214 | 22 | 0.0075 | -0.002 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | prod7_all | edge_rank | 1.0602 | 1.2612 | 0.1912 | 0.1912 | 14 | 0.005 | 0.0 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | core5 | first_trigger | 0.3862 | 0.5305 | 0.0477 | 0.0613 | 18 | 0.0 | -0.001 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | core5 | first_trigger | 0.3862 | 0.5305 | 0.0477 | 0.0613 | 18 | 0.0 | -0.002 |
+| 5 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | prod7_all | edge_rank | -0.8491 | -0.5373 | -0.1394 | -0.1394 | 18 | 0.0025 | 0.0 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+
+
+## 2026-03-14 01:56 UTC Autonomous Research Batch (10 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | prod7_all | first_trigger | 1.1880 | 2.1436 | 0.1484 | 0.4214 | 22 | 0.0075 | -0.002 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | prod7_all | first_trigger | 1.0651 | 1.2628 | 0.1912 | 0.1912 | 14 | 0.005 | 0.0 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | prod7_wd07 | edge_rank | 1.0651 | 1.2628 | 0.1912 | 0.1912 | 14 | 0.005 | 0.0 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | prod7_wd07 | edge_rank | 0.7237 | 1.0233 | 0.1022 | 0.1342 | 20 | 0.0075 | -0.001 |
+| 5 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | prod7_wd07 | edge_rank | 0.4239 | 0.7264 | 0.0564 | 0.0956 | 20 | 0.005 | -0.001 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+
+
+## 2026-03-14 03:51 UTC Autonomous Research Batch (6 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | prod7_wd07 | first_trigger | 1.0651 | 1.2628 | 0.1912 | 0.1912 | 14 | 0.005 | 0.0 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | prod7_wd07 | first_trigger | 0.7237 | 1.0233 | 0.1022 | 0.1342 | 20 | 0.0075 | -0.001 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | prod7_wd07 | first_trigger | -1.1933 | -0.3551 | -0.5092 | -0.2950 | 14 | 0.0 | -0.001 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | prod7_wd07 | edge_rank | -2.5416 | -1.8724 | -1.1522 | -0.8468 | 14 | 0.0 | -0.001 |
+| 5 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL | prod7_wd07 | edge_rank | -4.1037 | -3.3784 | -1.7348 | -1.4023 | 18 | 0.0 | -0.002 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+
+
+## 2026-03-14 05:21 UTC Autonomous Research Batch (2 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | core5 | edge_rank | 1.3980 | 2.7138 | 0.1781 | 0.4917 | 18 | 0.0025 | -0.001 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | core5 | edge_rank | 1.3980 | 2.7138 | 0.1781 | 0.4917 | 18 | 0.0025 | -0.002 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+

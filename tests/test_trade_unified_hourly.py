@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import unified_hourly_experiment.trade_unified_hourly as live
 
 
@@ -109,6 +111,53 @@ def test_manage_positions_keeps_existing_protective_exit(monkeypatch) -> None:
 
     assert calls["cancelled"] == []
     assert calls["placed"] == []
+
+
+def test_manage_positions_reconciles_exit_price_to_broker_entry_basis(monkeypatch) -> None:
+    state = {
+        "positions": {
+            "PLTR": {
+                "entry_time": datetime.now(timezone.utc).isoformat(),
+                "entry_price": 150.14,
+                "exit_price": 150.74,
+                "hold_hours": 6.0,
+                "fee_rate": 0.001,
+            }
+        }
+    }
+    placed: list[tuple[str, float, float, str]] = []
+    events: list[tuple[str, dict]] = []
+
+    monkeypatch.setattr(
+        live,
+        "get_current_positions",
+        lambda api: {"PLTR": {"qty": 107.0, "price": 152.38, "avg_entry_price": 152.78}},
+    )
+    monkeypatch.setattr(live, "get_open_orders", lambda api: {})
+    monkeypatch.setattr(
+        live,
+        "place_exit_order",
+        lambda api, symbol, qty, sell_price, side="sell": placed.append((symbol, qty, sell_price, side)) or "exit-1",
+    )
+    monkeypatch.setattr(live, "log_trade", lambda event: None)
+    monkeypatch.setattr(live, "log_event", lambda event_type, **fields: events.append((event_type, fields)))
+
+    live.manage_positions(object(), state, max_hold_hours=6, active_symbols={"PLTR"})
+
+    assert len(placed) == 1
+    symbol, qty, sell_price, side = placed[0]
+    assert (symbol, qty, side) == ("PLTR", 107.0, "sell")
+    assert sell_price == pytest.approx(152.93278)
+    assert state["positions"]["PLTR"]["entry_price"] == 152.78
+    assert state["positions"]["PLTR"]["exit_price"] == pytest.approx(152.93278)
+    assert any(
+        event_type == "manage_position_action" and fields.get("action") == "entry_price_reconciled"
+        for event_type, fields in events
+    )
+    assert any(
+        event_type == "manage_position_action" and fields.get("action") == "exit_price_reconciled_to_entry_basis"
+        for event_type, fields in events
+    )
 
 
 def test_execute_trades_emits_entry_lifecycle_events(monkeypatch) -> None:
@@ -235,6 +284,75 @@ def test_execute_trades_uses_short_side_for_short_only_symbol(monkeypatch) -> No
     assert submitted[0].kwargs["side"] == "sell"
     assert state["positions"]["DBX"]["side"] == "short"
     assert state["positions"]["DBX"]["qty"] < 0
+
+
+def test_execute_trades_uses_market_entry_reference_price_for_market_orders(monkeypatch) -> None:
+    submitted: list[object] = []
+    state = {"positions": {}}
+
+    fake_requests = types.ModuleType("alpaca.trading.requests")
+
+    class _MarketOrderRequest:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _LimitOrderRequest:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    fake_requests.MarketOrderRequest = _MarketOrderRequest
+    fake_requests.LimitOrderRequest = _LimitOrderRequest
+
+    fake_enums = types.ModuleType("alpaca.trading.enums")
+    fake_enums.OrderSide = SimpleNamespace(BUY="buy", SELL="sell")
+    fake_enums.TimeInForce = SimpleNamespace(DAY="day")
+
+    monkeypatch.setitem(sys.modules, "alpaca.trading.requests", fake_requests)
+    monkeypatch.setitem(sys.modules, "alpaca.trading.enums", fake_enums)
+
+    class _DummyAPI:
+        def submit_order(self, order):
+            submitted.append(order)
+            return SimpleNamespace(id="entry-market-1")
+
+    monkeypatch.setattr(
+        live,
+        "get_account_info",
+        lambda api: {"equity": 10_000.0, "buying_power": 10_000.0, "cash": 5_000.0},
+    )
+    monkeypatch.setattr(live, "get_current_positions", lambda api: {})
+    monkeypatch.setattr(live, "get_open_orders", lambda api: {})
+    monkeypatch.setattr(live, "is_market_open_now", lambda: True)
+    monkeypatch.setattr(
+        live,
+        "entry_intensity_fraction",
+        lambda *args, **kwargs: (50.0, 0.5),
+    )
+    monkeypatch.setattr(live, "log_trade", lambda event: None)
+    monkeypatch.setattr(live, "log_event", lambda *args, **kwargs: None)
+
+    live.execute_trades(
+        _DummyAPI(),
+        {
+            "NVDA": {
+                "buy_price": 100.0,
+                "sell_price": 110.0,
+                "buy_amount": 50.0,
+                "sell_amount": 0.0,
+                "edge": 0.02,
+                "hold_hours": 4.0,
+                "market_entry_reference_price": 105.0,
+                "market_entry_reference_source": "quote_ask",
+            }
+        },
+        state,
+        max_positions=5,
+        market_order_entry=True,
+    )
+
+    assert submitted
+    assert submitted[0].kwargs["qty"] == 19
+    assert state["positions"]["NVDA"]["entry_price"] == 105.0
 
 
 def test_manage_positions_keeps_pending_entry_order(monkeypatch) -> None:
