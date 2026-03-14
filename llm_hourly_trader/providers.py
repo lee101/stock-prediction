@@ -20,6 +20,10 @@ warnings.filterwarnings("ignore", message=".*is not a valid ThinkingLevel.*")
 from llm_hourly_trader.cache import get_cached, set_cached
 from llm_hourly_trader.gemini_wrapper import TradePlan
 
+
+class CacheMissError(RuntimeError):
+    """Raised when cache-only replay is requested but a prompt has no cached response."""
+
 # ---------------------------------------------------------------------------
 # Gemini
 # ---------------------------------------------------------------------------
@@ -470,8 +474,15 @@ MODEL_PROVIDERS = {
 
 def call_llm(prompt: str, model: str, provider: Optional[str] = None,
              thinking_level: Optional[str] = None,
-             reasoning_effort: Optional[str] = None) -> TradePlan:
+             reasoning_effort: Optional[str] = None,
+             cache_only: bool = False) -> TradePlan:
     """Call any LLM provider with auto-detection."""
+    if cache_only:
+        cached = get_cached(model, prompt)
+        if cached is None:
+            raise CacheMissError(f"No cached response for model={model}")
+        return TradePlan(**cached)
+
     if provider is None:
         provider = MODEL_PROVIDERS.get(model)
         if provider is None:

@@ -36,7 +36,8 @@ from llm_hourly_trader.config import (
 )
 from llm_hourly_trader.gemini_wrapper import TradePlan, build_prompt
 from llm_hourly_trader.historical_error_bands import HistoricalForecastErrorEstimator
-from llm_hourly_trader.providers import call_llm
+from llm_hourly_trader.providers import CacheMissError, call_llm
+from llm_hourly_trader.windowing import parse_utc_timestamp, resolve_window_end
 
 DATA_DIRS = [
     Path(__file__).resolve().parent.parent / "trainingdatahourly" / "crypto",
@@ -310,6 +311,10 @@ def run_backtest(
     print(f"Symbols: {symbols}")
     print(f"Days: {days} | Max hold: {config.max_hold_hours}h | Max pos: {config.max_position_pct*100:.0f}%")
     print(f"Initial cash: ${config.initial_cash:,.2f}")
+    if config.end_timestamp:
+        print(f"Fixed end timestamp: {config.end_timestamp}")
+    if config.cache_only:
+        print("Mode: cache-only replay")
     print(f"{'='*60}\n")
 
     # Load data
@@ -357,7 +362,7 @@ def run_backtest(
     for sym in usable_symbols:
         if not all_fc_h1[sym].empty:
             fc_ends.append(all_fc_h1[sym]["timestamp"].max())
-    end_ts = min(fc_ends)
+    end_ts = resolve_window_end(fc_ends, config.end_timestamp)
     start_ts = end_ts - timedelta(days=days)
     print(f"\n  Window: {start_ts} -> {end_ts}")
 
@@ -428,7 +433,13 @@ def run_backtest(
     def _do_call(sym: str, bar: dict, prompt: str | None, idx: int) -> tuple[str, dict, TradePlan | None, int]:
         if prompt is None:
             return sym, bar, None, idx
-        plan = call_llm(prompt, model=config.model)
+        try:
+            plan = call_llm(prompt, model=config.model, cache_only=config.cache_only)
+        except CacheMissError as exc:
+            ts = parse_utc_timestamp(bar["timestamp"]).isoformat()
+            raise RuntimeError(
+                f"Cache-only replay missing response for {sym} at {ts}"
+            ) from exc
         return sym, bar, plan, idx
 
     # Dispatch with thread pool for parallel calls (codex/deepseek are I/O bound)
@@ -646,6 +657,10 @@ def main():
     parser.add_argument("--rate-limit", type=float, default=4.2)
     parser.add_argument("--model", type=str, default="gemini-3.1-flash-lite-preview")
     parser.add_argument("--parallel", type=int, default=1, help="Parallel API workers (for codex/deepseek)")
+    parser.add_argument("--end-ts", type=str, default=None,
+                        help="Fixed UTC end timestamp for reproducible reruns (e.g. 2026-03-14T00:00:00Z)")
+    parser.add_argument("--cache-only", action="store_true",
+                        help="Replay from llm_hourly_trader/api_cache only; fail on any cache miss")
     args = parser.parse_args()
 
     symbols = args.symbols or GROUPS.get(args.group, GROUPS["crypto"])
@@ -658,6 +673,8 @@ def main():
         model=args.model,
         prompt_variant=args.prompt,
         parallel_workers=args.parallel,
+        end_timestamp=args.end_ts,
+        cache_only=args.cache_only,
     )
 
     run_backtest(symbols=symbols, days=args.days, config=config)
