@@ -9,13 +9,14 @@ import torch
 
 from binanceneural.inference import generate_actions_from_frame
 from binanceneural.model import align_state_dict_input_dim, build_policy, policy_config_from_payload
+from binancecrosslearning.selector_cli import add_selector_realism_args, build_selection_config_from_args
 from binanceexp1.sweep import apply_action_overrides
 from src.torch_load_utils import torch_load_compat
 from src.torch_device_utils import require_cuda as require_cuda_device
 
 from newnanoalpacahourlyexp.config import DatasetConfig
 from newnanoalpacahourlyexp.data import AlpacaHourlyDataModule
-from newnanoalpacahourlyexp.marketsimulator.selector import SelectionConfig, run_best_trade_simulation
+from newnanoalpacahourlyexp.marketsimulator.selector import run_best_trade_simulation
 
 DEFAULT_SYMBOLS = "BTCUSDT,ETHUSDT,SOLUSDT,BNBUSDT,LINKUSDT,ADAUSDT,APTUSDT,AVAXUSDT"
 
@@ -124,6 +125,7 @@ def main() -> None:
     parser.add_argument("--allow-reentry-same-bar", action="store_true")
     parser.add_argument("--no-enforce-market-hours", action="store_true")
     parser.add_argument("--no-close-at-eod", action="store_true")
+    add_selector_realism_args(parser)
     parser.add_argument("--eval-days", type=float, default=None)
     parser.add_argument("--eval-hours", type=float, default=None)
     parser.add_argument("--maker-fee", type=float, default=0.0)
@@ -164,6 +166,17 @@ def main() -> None:
             sequence_length=args.sequence_length,
             forecast_horizons=forecast_horizons,
             cache_only=args.cache_only,
+            allow_short=bool(args.allow_short),
+            long_only_symbols=tuple(
+                token.strip().upper()
+                for token in str(args.long_only_symbols or "").split(",")
+                if token.strip()
+            ),
+            short_only_symbols=tuple(
+                token.strip().upper()
+                for token in str(args.short_only_symbols or "").split(",")
+                if token.strip()
+            ),
             moving_average_windows=ma_windows,
             min_history_hours=min_history_hours,
             val_fraction=val_fraction,
@@ -218,19 +231,11 @@ def main() -> None:
     bars = pd.concat(bars_frames, ignore_index=True)
     actions = pd.concat(action_frames, ignore_index=True)
 
-    cfg = SelectionConfig(
-        initial_cash=args.initial_cash,
-        min_edge=args.min_edge,
-        risk_weight=args.risk_weight,
-        edge_mode=args.edge_mode,
-        max_volume_fraction=args.max_volume_fraction,
-        max_hold_hours=args.max_hold_hours,
-        allow_reentry_same_bar=args.allow_reentry_same_bar,
-        enforce_market_hours=not args.no_enforce_market_hours,
-        close_at_eod=not args.no_close_at_eod,
-        fee_by_symbol=fee_by_symbol,
-        periods_per_year_by_symbol=periods_by_symbol,
+    cfg = build_selection_config_from_args(
+        args,
         symbols=symbols,
+        fee_by_symbol=fee_by_symbol,
+        periods_by_symbol=periods_by_symbol,
     )
 
     result = run_best_trade_simulation(bars, actions, cfg, horizon=args.horizon)

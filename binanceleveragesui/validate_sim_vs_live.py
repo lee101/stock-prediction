@@ -1538,5 +1538,122 @@ def main():
                  final_eq, starting_eq, args.fill_buffer_pct)
 
 
+def load_meta_logs(log_dir: Path, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> list[dict]:
+    """Load model_select events from JSONL logs for meta-aware replay."""
+    import json as _json
+    events = []
+    for log_file in sorted(log_dir.glob("margin-meta_*.jsonl")):
+        with open(log_file) as f:
+            for line in f:
+                try:
+                    rec = _json.loads(line.strip())
+                except Exception:
+                    continue
+                if rec.get("event") != "model_select":
+                    continue
+                ts = pd.Timestamp(rec["ts"], tz="UTC")
+                if start_ts <= ts <= end_ts:
+                    events.append(rec)
+    return sorted(events, key=lambda e: e["ts"])
+
+
+def replay_meta_selection(
+    log_dir: Path,
+    start: str,
+    end: str,
+    lookback: int = 12,
+    metric: str = "calmar",
+    selection_mode: str = "winner_cash",
+    cash_threshold: float = 0.0,
+    switch_margin: float = 0.0,
+    min_score_gap: float = 0.0,
+):
+    """Replay meta-selector decisions using logged history snapshots.
+
+    Loads model_select events from JSONL logs, reconstructs SignalHistory
+    from the logged snapshots, re-runs the selector, and compares the
+    replayed decision to the live decision.
+    """
+    from binanceleveragesui.trade_margin_meta import (
+        SignalHistory,
+        _run_hypothetical_score,
+        MODELS,
+    )
+
+    start_ts = pd.Timestamp(start, tz="UTC")
+    end_ts = pd.Timestamp(end, tz="UTC")
+
+    events = load_meta_logs(log_dir, start_ts, end_ts)
+    if not events:
+        print(f"no model_select events found in {log_dir} between {start} and {end}")
+        return
+
+    total = len(events)
+    match_count = 0
+    mismatch_details = []
+
+    for evt in events:
+        live_selected = evt.get("selected", "")
+        live_scores = evt.get("scores", {})
+        snapshots = evt.get("history_snapshots")
+
+        if not snapshots:
+            continue
+
+        # reconstruct histories and recompute scores
+        replay_scores = {}
+        for name, snap in snapshots.items():
+            h = SignalHistory()
+            h.timestamps = snap.get("timestamps", [])
+            h.buy_prices = snap.get("buy_prices", [])
+            h.sell_prices = snap.get("sell_prices", [])
+            h.buy_amounts = snap.get("buy_amounts", [])
+            h.sell_amounts = snap.get("sell_amounts", [])
+            h.closes = snap.get("closes", [])
+            h.equities = snap.get("equities", [])
+
+            fee = MODELS.get(name, {}).get("maker_fee", 0.001)
+            try:
+                score = _run_hypothetical_score(h, lookback, fee, 2.0, metric)
+            except Exception:
+                score = 0.0
+            replay_scores[name] = score
+
+        # determine replay winner
+        ranked = sorted(replay_scores.items(), key=lambda x: x[1], reverse=True)
+        replay_best = ranked[0][0] if ranked and ranked[0][1] > cash_threshold else ""
+
+        if replay_best == live_selected:
+            match_count += 1
+        else:
+            mismatch_details.append({
+                "ts": evt["ts"],
+                "live": live_selected,
+                "replay": replay_best,
+                "live_scores": live_scores,
+                "replay_scores": replay_scores,
+            })
+
+    has_snapshots = sum(1 for e in events if e.get("history_snapshots"))
+    parity = match_count / max(has_snapshots, 1) * 100
+
+    print(f"\nMeta-selector replay: {start} to {end}")
+    print(f"  events with snapshots: {has_snapshots}/{total}")
+    print(f"  selection match: {match_count}/{has_snapshots} ({parity:.1f}%)")
+    print(f"  mismatches: {len(mismatch_details)}")
+
+    for m in mismatch_details[:10]:
+        print(f"    {m['ts']}: live={m['live']} replay={m['replay']} "
+              f"scores_live={m['live_scores']} scores_replay={m['replay_scores']}")
+
+    return {
+        "total_events": total,
+        "events_with_snapshots": has_snapshots,
+        "match_count": match_count,
+        "parity_pct": parity,
+        "mismatches": mismatch_details,
+    }
+
+
 if __name__ == "__main__":
     main()
