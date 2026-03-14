@@ -366,15 +366,9 @@ def run_backtest(
     start_ts = end_ts - timedelta(days=days)
     print(f"\n  Window: {start_ts} -> {end_ts}")
 
-    # Collect LLM actions
-    action_rows = []
-    bar_rows = []
-    api_calls = 0
-    errors = 0
-
     sym_configs = {sym: SYMBOL_UNIVERSE.get(sym, SymbolConfig(sym, "crypto")) for sym in usable_symbols}
 
-    # Prepare all (symbol, bar) pairs grouped by timestamp for parallel dispatch
+    # Build per-symbol bar windows
     sym_windows = {}
     for sym in usable_symbols:
         sym_cfg = sym_configs[sym]
@@ -382,24 +376,143 @@ def run_backtest(
         window = sym_bars[(sym_bars["timestamp"] >= start_ts) & (sym_bars["timestamp"] <= end_ts)].copy()
         if sym_cfg.asset_class == "stock":
             window = window[window["timestamp"].apply(is_stock_trading_hour)]
-        sym_windows[sym] = window
+        sym_windows[sym] = window.reset_index(drop=True)
         print(f"\n  {sym} ({sym_cfg.asset_class}): {len(window)} bars, "
               f"directions={sym_cfg.allowed_directions}")
 
-    # Build all tasks: list of (sym, bar, prompt) for each bar
-    tasks: list[tuple[str, dict, str | None]] = []
+    # Get all unique timestamps in order (stateful: process sequentially)
+    all_ts_set: set = set()
     for sym in usable_symbols:
-        sym_bars = all_bars[sym]
-        for _, bar in sym_windows[sym].iterrows():
-            ts = bar["timestamp"]
+        all_ts_set.update(sym_windows[sym]["timestamp"].tolist())
+    all_ts_sorted = sorted(all_ts_set)
+    total_ts = len(all_ts_sorted)
+    total_api_est = sum(len(w) for w in sym_windows.values())
+    print(f"\n  Total timestamps: {total_ts}, symbols: {len(usable_symbols)}, "
+          f"est. API calls: {total_api_est} (sequential stateful mode)")
+
+    # ---- Stateful simulation state ----
+    sim_cash = config.initial_cash
+    # positions: sym -> {qty, cost_basis, open_time, direction, sell_price}
+    sim_positions: dict[str, dict] = {}
+    all_trades: list[dict] = []
+    equity_history: list[float] = []
+    timestamps_list: list[pd.Timestamp] = []
+    api_calls = 0
+    errors = 0
+    done_count = 0
+    t0 = time.time()
+
+    # Pre-build bar lookup dicts for fast access
+    bar_lookup: dict[str, dict] = {}  # (sym, ts_str) -> bar dict
+    for sym in usable_symbols:
+        for _, row in sym_windows[sym].iterrows():
+            bar_lookup[(sym, str(row["timestamp"]))] = row.to_dict()
+
+    for ts in all_ts_sorted:
+        ts_str = str(ts)
+        bars_at_ts = {sym: bar_lookup.get((sym, ts_str)) for sym in usable_symbols
+                      if (sym, ts_str) in bar_lookup}
+        if not bars_at_ts:
+            continue
+
+        # ---- Step 1: Close positions at max hold ----
+        for sym, bar in bars_at_ts.items():
+            pos = sim_positions.get(sym)
+            if pos is None:
+                continue
+            held_hours = (ts - pos["open_time"]).total_seconds() / 3600.0
+            if held_hours >= config.max_hold_hours:
+                close_price = float(bar["close"])
+                fee_rate = sym_configs[sym].maker_fee
+                if pos["direction"] == "long":
+                    proceeds = pos["qty"] * close_price * (1 - fee_rate)
+                    realized = (close_price - pos["cost_basis"]) * pos["qty"]
+                else:
+                    proceeds = pos["qty"] * (2 * pos["cost_basis"] - close_price) * (1 - fee_rate)
+                    realized = (pos["cost_basis"] - close_price) * pos["qty"]
+                sim_cash += proceeds
+                all_trades.append({
+                    "timestamp": str(ts), "symbol": sym, "side": "close",
+                    "price": close_price, "quantity": pos["qty"],
+                    "direction": pos["direction"], "realized_pnl": realized,
+                    "fee": pos["qty"] * close_price * fee_rate, "reason": "max_hold",
+                })
+                del sim_positions[sym]
+
+        # ---- Step 2: Process take-profit exits ----
+        for sym, bar in bars_at_ts.items():
+            pos = sim_positions.get(sym)
+            if pos is None or pos.get("sell_price", 0) <= 0:
+                continue
+            sell_price = pos["sell_price"]
+            high = float(bar["high"])
+            low = float(bar["low"])
+            fee_rate = sym_configs[sym].maker_fee
+            if pos["direction"] == "long" and high >= sell_price:
+                proceeds = pos["qty"] * sell_price * (1 - fee_rate)
+                realized = (sell_price - pos["cost_basis"]) * pos["qty"]
+                sim_cash += proceeds
+                all_trades.append({
+                    "timestamp": str(ts), "symbol": sym, "side": "sell",
+                    "price": sell_price, "quantity": pos["qty"],
+                    "direction": "long", "realized_pnl": realized,
+                    "fee": pos["qty"] * sell_price * fee_rate, "reason": "take_profit",
+                })
+                del sim_positions[sym]
+            elif pos["direction"] == "short" and low <= sell_price:
+                proceeds = pos["qty"] * (2 * pos["cost_basis"] - sell_price) * (1 - fee_rate)
+                realized = (pos["cost_basis"] - sell_price) * pos["qty"]
+                sim_cash += proceeds
+                all_trades.append({
+                    "timestamp": str(ts), "symbol": sym, "side": "cover",
+                    "price": sell_price, "quantity": pos["qty"],
+                    "direction": "short", "realized_pnl": realized,
+                    "fee": pos["qty"] * sell_price * fee_rate, "reason": "take_profit",
+                })
+                del sim_positions[sym]
+
+        # ---- Step 3: Compute current equity ----
+        inv_value = 0.0
+        for sym, pos in sim_positions.items():
+            bar = bars_at_ts.get(sym)
+            if bar is None:
+                continue
+            cp = float(bar["close"])
+            if pos["direction"] == "long":
+                inv_value += pos["qty"] * cp
+            else:
+                inv_value += pos["qty"] * (2 * pos["cost_basis"] - cp)
+        sim_equity = sim_cash + inv_value
+
+        # ---- Step 4: Call LLM for each symbol with actual current state ----
+        sym_plans: dict[str, TradePlan] = {}
+        for sym in usable_symbols:
+            bar = bars_at_ts.get(sym)
+            if bar is None:
+                continue
+            sym_bars = all_bars[sym]
             hist_slice = sym_bars[sym_bars["timestamp"] <= ts].tail(25)
             if len(hist_slice) < 5:
-                tasks.append((sym, bar.to_dict(), None))
                 continue
             sym_cfg = sym_configs[sym]
             history = hist_slice.to_dict("records")
             fc_1h = get_forecast_at(all_fc_h1[sym], ts)
             fc_24h = get_forecast_at(all_fc_h24[sym], ts)
+
+            # Build position_info with actual current state
+            pos = sim_positions.get(sym)
+            if pos:
+                held_h = (ts - pos["open_time"]).total_seconds() / 3600.0
+                position_info = {
+                    "qty": pos["qty"],
+                    "entry_price": pos["cost_basis"],
+                    "held_hours": held_h,
+                }
+                current_position_str = pos["direction"]
+            else:
+                position_info = {}
+                current_position_str = "flat"
+
             forecast_error_1h = None
             forecast_error_24h = None
             if use_mae_bands:
@@ -407,131 +520,141 @@ def run_backtest(
                 band_24h = error_estimators[sym][24].band_at(ts)
                 forecast_error_1h = band_1h.as_prompt_context() if band_1h else None
                 forecast_error_24h = band_24h.as_prompt_context() if band_24h else None
+
             prompt = build_prompt(
                 symbol=sym,
                 history_rows=history,
                 forecast_1h=fc_1h,
                 forecast_24h=fc_24h,
-                current_position="flat",
-                cash=config.initial_cash,
-                equity=config.initial_cash,
+                current_position=current_position_str,
+                cash=sim_cash,
+                equity=sim_equity,
                 allowed_directions=sym_cfg.allowed_directions,
                 asset_class=sym_cfg.asset_class,
                 maker_fee=sym_cfg.maker_fee,
                 variant=config.prompt_variant,
+                position_info=position_info,
                 forecast_error_1h=forecast_error_1h,
                 forecast_error_24h=forecast_error_24h,
             )
-            tasks.append((sym, bar.to_dict(), prompt))
 
-    total_tasks = len(tasks)
-    total_api = sum(1 for _, _, p in tasks if p is not None)
-    parallel = config.parallel_workers
-    print(f"\n  Total bars: {total_tasks}, API calls needed: {total_api}, "
-          f"parallel workers: {parallel}")
+            try:
+                plan = call_llm(prompt, model=config.model, cache_only=config.cache_only,
+                                thinking_level=config.thinking_level)
+            except CacheMissError as exc:
+                raise RuntimeError(
+                    f"Cache-only replay missing response for {sym} at {ts}"
+                ) from exc
 
-    def _do_call(sym: str, bar: dict, prompt: str | None, idx: int) -> tuple[str, dict, TradePlan | None, int]:
-        if prompt is None:
-            return sym, bar, None, idx
-        try:
-            plan = call_llm(prompt, model=config.model, cache_only=config.cache_only)
-        except CacheMissError as exc:
-            ts = parse_utc_timestamp(bar["timestamp"]).isoformat()
-            raise RuntimeError(
-                f"Cache-only replay missing response for {sym} at {ts}"
-            ) from exc
-        return sym, bar, plan, idx
+            api_calls += 1
+            if plan.reasoning.startswith("API error") or "exhausted" in plan.reasoning:
+                errors += 1
 
-    # Dispatch with thread pool for parallel calls (codex/deepseek are I/O bound)
-    results_ordered: list[tuple[str, dict, TradePlan | None, int]] = [None] * total_tasks
-    t0 = time.time()
-    done_count = 0
+            if plan.direction not in sym_cfg.allowed_directions and plan.direction != "hold":
+                plan = TradePlan("hold", 0, 0, 0, f"direction {plan.direction} not allowed")
 
-    if parallel > 1:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as pool:
-            futures = {
-                pool.submit(_do_call, sym, bar, prompt, idx): idx
-                for idx, (sym, bar, prompt) in enumerate(tasks)
-            }
-            for future in concurrent.futures.as_completed(futures):
-                sym, bar, plan, idx = future.result()
-                results_ordered[idx] = (sym, bar, plan, idx)
-                done_count += 1
-                if done_count % max(1, total_tasks // 20) == 0 or done_count == total_tasks:
-                    elapsed = time.time() - t0
-                    rate = done_count / elapsed if elapsed > 0 else 0
-                    eta = (total_tasks - done_count) / rate if rate > 0 else 0
-                    print(f"  Progress: {done_count}/{total_tasks} ({rate:.1f}/s, ETA {eta:.0f}s)")
-    else:
-        for idx, (sym, bar, prompt) in enumerate(tasks):
-            results_ordered[idx] = _do_call(sym, bar, prompt, idx)
-            done_count += 1
-            if config.rate_limit_seconds > 0 and prompt is not None:
-                time.sleep(config.rate_limit_seconds)
-            if done_count % max(1, total_tasks // 20) == 0:
-                elapsed = time.time() - t0
-                rate = done_count / elapsed if elapsed > 0 else 0
-                eta = (total_tasks - done_count) / rate if rate > 0 else 0
-                print(f"  Progress: {done_count}/{total_tasks} ({rate:.1f}/s, ETA {eta:.0f}s)")
+            last_close = float(bar["close"])
+            if plan.direction == "short":
+                if plan.buy_price > 0 and plan.buy_price < last_close:
+                    plan.buy_price = last_close * 1.001
+                if plan.sell_price > 0 and plan.sell_price > last_close:
+                    plan.sell_price = last_close * 0.995
 
-    # Process results in order
-    sym_bar_counts: dict[str, int] = {}
-    for sym, bar, plan, idx in results_ordered:
-        ts = bar["timestamp"] if isinstance(bar["timestamp"], pd.Timestamp) else pd.Timestamp(bar["timestamp"])
-        sym_bar_counts[sym] = sym_bar_counts.get(sym, 0) + 1
-        i = sym_bar_counts[sym] - 1
+            sym_plans[sym] = plan
 
-        if plan is None:
-            action_rows.append({
-                "timestamp": ts, "symbol": sym,
-                "buy_price": 0, "sell_price": 0, "direction": "hold", "confidence": 0,
-            })
-            bar_rows.append(bar)
-            continue
+            if rate_limit := config.rate_limit_seconds:
+                time.sleep(rate_limit)
 
-        api_calls += 1
-        if plan.reasoning.startswith("API error") or "exhausted" in plan.reasoning:
-            errors += 1
+        # ---- Step 5: Process entries + update sell prices ----
+        for sym, plan in sym_plans.items():
+            bar = bars_at_ts.get(sym)
+            if bar is None:
+                continue
+            pos = sim_positions.get(sym)
 
-        sym_cfg = sym_configs[sym]
-        if plan.direction not in sym_cfg.allowed_directions and plan.direction != "hold":
-            plan = TradePlan("hold", 0, 0, 0, f"direction {plan.direction} not allowed")
+            # Update take-profit for existing position
+            if pos and plan.sell_price > 0:
+                sim_positions[sym]["sell_price"] = plan.sell_price
 
-        last_close = float(bar["close"])
-        if plan.direction == "short":
-            if plan.buy_price > 0 and plan.buy_price < last_close:
-                plan.buy_price = last_close * 1.001
-            if plan.sell_price > 0 and plan.sell_price > last_close:
-                plan.sell_price = last_close * 0.995
+            # Try to enter if flat and LLM wants to trade
+            if pos is not None:
+                continue
+            if plan.direction == "hold":
+                continue
+            sym_cfg = sym_configs[sym]
+            if plan.direction not in sym_cfg.allowed_directions:
+                continue
+            buy_price = plan.buy_price
+            confidence = plan.confidence
+            if buy_price <= 0 or confidence <= 0:
+                continue
 
-        action_rows.append({
-            "timestamp": ts, "symbol": sym,
-            "buy_price": plan.buy_price, "sell_price": plan.sell_price,
-            "direction": plan.direction, "confidence": plan.confidence,
-        })
-        bar_rows.append(bar)
+            high = float(bar["high"])
+            low = float(bar["low"])
+            fee_rate = sym_cfg.maker_fee
 
-        if i % 24 == 0:
-            print(
-                f"  [{ts}] {sym} -> {plan.direction.upper()} "
-                f"(conf={plan.confidence:.1f}, buy={plan.buy_price:.2f}, sell={plan.sell_price:.2f})"
-            )
+            if plan.direction == "long" and low <= buy_price:
+                max_notional = sim_cash * config.max_position_pct
+                qty = max_notional / (buy_price * (1 + fee_rate)) * confidence
+                if qty <= 0:
+                    continue
+                cost = qty * buy_price * (1 + fee_rate)
+                sim_cash -= cost
+                sim_positions[sym] = {
+                    "qty": qty, "cost_basis": buy_price,
+                    "open_time": ts, "direction": "long",
+                    "sell_price": plan.sell_price,
+                }
+                all_trades.append({
+                    "timestamp": str(ts), "symbol": sym, "side": "buy",
+                    "price": buy_price, "quantity": qty,
+                    "direction": "long", "realized_pnl": 0,
+                    "fee": qty * buy_price * fee_rate, "reason": "entry",
+                })
+            elif plan.direction == "short" and high >= buy_price:
+                max_notional = sim_cash * config.max_position_pct
+                qty = max_notional / (buy_price * (1 + fee_rate)) * confidence
+                if qty <= 0:
+                    continue
+                cost = qty * buy_price * (1 + fee_rate)
+                sim_cash -= cost
+                sim_positions[sym] = {
+                    "qty": qty, "cost_basis": buy_price,
+                    "open_time": ts, "direction": "short",
+                    "sell_price": plan.sell_price,
+                }
+                all_trades.append({
+                    "timestamp": str(ts), "symbol": sym, "side": "short",
+                    "price": buy_price, "quantity": qty,
+                    "direction": "short", "realized_pnl": 0,
+                    "fee": qty * buy_price * fee_rate, "reason": "entry",
+                })
 
-    bars_df = pd.DataFrame(bar_rows)
-    actions_df = pd.DataFrame(action_rows)
+        # ---- Step 6: Equity snapshot ----
+        inv_value2 = 0.0
+        for sym, pos in sim_positions.items():
+            bar = bars_at_ts.get(sym)
+            if bar is None:
+                continue
+            cp = float(bar["close"])
+            if pos["direction"] == "long":
+                inv_value2 += pos["qty"] * cp
+            else:
+                inv_value2 += pos["qty"] * (2 * pos["cost_basis"] - cp)
+        equity_history.append(sim_cash + inv_value2)
+        timestamps_list.append(ts)
 
-    if bars_df.empty or actions_df.empty:
-        return {"error": "no data"}
+        done_count += 1
+        if done_count % max(1, total_ts // 20) == 0 or done_count == total_ts:
+            elapsed = time.time() - t0
+            rate = done_count / elapsed if elapsed > 0 else 0
+            eta = (total_ts - done_count) / rate if rate > 0 else 0
+            print(f"  Progress: {done_count}/{total_ts} ts ({rate:.1f} ts/s, ETA {eta:.0f}s) "
+                  f"equity=${sim_cash + inv_value2:,.0f}")
 
-    bars_df["timestamp"] = pd.to_datetime(bars_df["timestamp"], utc=True)
-    actions_df["timestamp"] = pd.to_datetime(actions_df["timestamp"], utc=True)
-
-    # Run simulation
-    print(f"\n  Running market simulation ({len(bars_df)} bars, {len(actions_df)} actions)...")
-    result = simulate(bars_df, actions_df, config, sym_configs)
-
-    metrics = result["metrics"]
-    all_trades = result["trades"]
+    # ---- Compute metrics ----
+    equity_arr = np.array(equity_history, dtype=float)
+    metrics = _compute_metrics(equity_arr, config.initial_cash)
     buys = sum(1 for t in all_trades if t["side"] in ("buy", "short"))
     exits = sum(1 for t in all_trades if t["side"] in ("sell", "cover", "close"))
     realized_pnl = sum(t["realized_pnl"] for t in all_trades)
@@ -607,8 +730,8 @@ def run_backtest(
 
     eq_path = RESULTS_DIR / f"{tag}_equity.csv"
     pd.DataFrame({
-        "timestamp": result["timestamps"],
-        "equity": result["equity_history"],
+        "timestamp": [str(t) for t in timestamps_list],
+        "equity": equity_history,
     }).to_csv(eq_path, index=False)
     print(f"  Equity: {eq_path}")
 
@@ -661,6 +784,8 @@ def main():
                         help="Fixed UTC end timestamp for reproducible reruns (e.g. 2026-03-14T00:00:00Z)")
     parser.add_argument("--cache-only", action="store_true",
                         help="Replay from llm_hourly_trader/api_cache only; fail on any cache miss")
+    parser.add_argument("--thinking-level", type=str, default=None,
+                        help="Enable model thinking: 'high'/'medium'/'low' for Gemini; any value for Anthropic adaptive thinking")
     args = parser.parse_args()
 
     symbols = args.symbols or GROUPS.get(args.group, GROUPS["crypto"])
@@ -675,6 +800,7 @@ def main():
         parallel_workers=args.parallel,
         end_timestamp=args.end_ts,
         cache_only=args.cache_only,
+        thinking_level=args.thinking_level,
     )
 
     run_backtest(symbols=symbols, days=args.days, config=config)

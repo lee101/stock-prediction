@@ -24,6 +24,20 @@ from llm_hourly_trader.gemini_wrapper import TradePlan
 class CacheMissError(RuntimeError):
     """Raised when cache-only replay is requested but a prompt has no cached response."""
 
+
+def _normalize_confidence(val) -> float:
+    """Normalize confidence to 0.0-1.0 range.
+
+    Handles models that return 0-100 instead of 0-1, or string values.
+    """
+    try:
+        c = float(val or 0)
+    except (ValueError, TypeError):
+        return 0.5
+    if c > 1.0:
+        c = c / 100.0  # 85 -> 0.85, 3.0 -> 0.03
+    return max(0.0, min(1.0, c))
+
 # ---------------------------------------------------------------------------
 # Gemini
 # ---------------------------------------------------------------------------
@@ -79,7 +93,7 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash", max_retries: int =
                 direction=data.get("direction", "hold").lower().strip(),
                 buy_price=float(data.get("buy_price", 0) or 0),
                 sell_price=float(data.get("sell_price", 0) or 0),
-                confidence=float(data.get("confidence", 0) or 0),
+                confidence=_normalize_confidence(data.get("confidence", 0)),
                 reasoning=data.get("reasoning", ""),
             )
             set_cached(model, prompt, plan.__dict__)
@@ -123,7 +137,7 @@ def call_openai(prompt: str, model: str = "gpt-4.1-mini", max_retries: int = 5) 
                 "direction": {"type": "string", "description": "long, short, or hold"},
                 "buy_price": {"type": "number", "description": "Limit entry price, 0 if no entry"},
                 "sell_price": {"type": "number", "description": "Take-profit price, 0 if no exit"},
-                "confidence": {"type": "number", "description": "0.0 to 1.0"},
+                "confidence": {"type": "number", "description": "Confidence as decimal 0.0-1.0 (e.g. 0.75 not 75)"},
                 "reasoning": {"type": "string", "description": "Brief explanation"},
             },
         },
@@ -152,7 +166,7 @@ def call_openai(prompt: str, model: str = "gpt-4.1-mini", max_retries: int = 5) 
                 direction=str(data.get("direction", "hold")).lower().strip(),
                 buy_price=float(data.get("buy_price", 0) or 0),
                 sell_price=float(data.get("sell_price", 0) or 0),
-                confidence=float(data.get("confidence", 0) or 0),
+                confidence=_normalize_confidence(data.get("confidence", 0)),
                 reasoning=str(data.get("reasoning", "")),
             )
             set_cached(model, prompt, plan.__dict__)
@@ -166,54 +180,102 @@ def call_openai(prompt: str, model: str = "gpt-4.1-mini", max_retries: int = 5) 
 # Anthropic (Claude Sonnet 4.6, etc.)
 # ---------------------------------------------------------------------------
 
-def call_anthropic(prompt: str, model: str = "claude-sonnet-4-6", max_retries: int = 5) -> TradePlan:
-    cached = get_cached(model, prompt)
+def call_anthropic(prompt: str, model: str = "claude-sonnet-4-6", max_retries: int = 5,
+                   thinking: bool = False, effort: str | None = None) -> TradePlan:
+    """Call Anthropic Claude API.
+
+    Args:
+        thinking: Enable extended thinking (adaptive mode).
+        effort: Output effort level — "low" for cheap backtesting, "high"/"max" for production.
+    """
+    cache_key = model + (f"_t={thinking}_e={effort}" if (thinking or effort) else "")
+    cached = get_cached(cache_key, prompt)
     if cached is not None:
         return TradePlan(**cached)
 
     import anthropic
 
-    client = anthropic.Anthropic()  # uses ANTHROPIC_API_KEY
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        # Try loading from env_real.py (project-local secrets file)
+        try:
+            import importlib.util, sys as _sys
+            _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            _spec = importlib.util.spec_from_file_location("env_real", os.path.join(_root, "env_real.py"))
+            _mod = importlib.util.module_from_spec(_spec)
+            _spec.loader.exec_module(_mod)
+            api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        except Exception:
+            pass
+
+    client = anthropic.Anthropic(api_key=api_key or None)  # uses ANTHROPIC_API_KEY
 
     tool_schema = {
         "name": "submit_trade_plan",
-        "description": "Submit your trading decision",
+        "description": "Submit your trading decision. confidence MUST be a decimal between 0.0 and 1.0 (NOT 0-100).",
         "input_schema": {
             "type": "object",
-            "required": ["direction", "buy_price", "sell_price", "confidence", "reasoning"],
+            "required": ["direction", "buy_price", "sell_price", "confidence"],
             "properties": {
                 "direction": {"type": "string", "description": "long, short, or hold"},
-                "buy_price": {"type": "number", "description": "Limit entry price, 0 if no entry"},
-                "sell_price": {"type": "number", "description": "Take-profit price, 0 if no exit"},
-                "confidence": {"type": "number", "description": "0.0 to 1.0"},
-                "reasoning": {"type": "string", "description": "Brief explanation"},
+                "buy_price": {"type": "number", "description": "Limit entry price in USD (must match asset price scale), 0 if no entry"},
+                "sell_price": {"type": "number", "description": "Take-profit price in USD (must match asset price scale), 0 if no exit"},
+                "confidence": {"type": "number", "description": "Confidence as decimal 0.0 to 1.0 (e.g. 0.75 for 75% confident). NEVER use 0-100 scale."},
             },
         },
     }
 
     for attempt in range(max_retries):
         try:
-            resp = client.messages.create(
-                model=model,
-                max_tokens=1024,
-                tools=[tool_schema],
-                tool_choice={"type": "tool", "name": "submit_trade_plan"},
-                messages=[{"role": "user", "content": prompt}],
+            if thinking:
+                # Thinking mode: can't force tool_use, ask for JSON text instead
+                json_instruction = (
+                    "\n\nRespond with ONLY a JSON object (no markdown fences): "
+                    '{"direction": "long"|"short"|"hold", "buy_price": <number>, '
+                    '"sell_price": <number>, "confidence": <0.0-1.0>, "reasoning": "<brief>"}'
+                )
+                kwargs = {
+                    "model": model,
+                    "max_tokens": 16000,
+                    "thinking": {"type": "enabled", "budget_tokens": 10000},
+                    "messages": [{"role": "user", "content": prompt + json_instruction}],
+                }
+                resp = client.messages.create(**kwargs)
+                text = ""
+                for block in resp.content:
+                    if block.type == "text":
+                        text = block.text
+                        break
+                # Strip markdown fences if present
+                text = re.sub(r"^```(?:json)?\n?", "", text.strip())
+                text = re.sub(r"\n?```$", "", text)
+                data = json.loads(text)
+            else:
+                kwargs = {
+                    "model": model,
+                    "max_tokens": 1024,
+                    "tools": [tool_schema],
+                    "tool_choice": {"type": "tool", "name": "submit_trade_plan"},
+                    "messages": [{"role": "user", "content": prompt}],
+                }
+                resp = client.messages.create(**kwargs)
+                data = None
+                for block in resp.content:
+                    if block.type == "tool_use" and block.name == "submit_trade_plan":
+                        data = block.input
+                        break
+                if data is None:
+                    return TradePlan("hold", 0, 0, 0, "No tool use in response")
+
+            plan = TradePlan(
+                direction=str(data.get("direction", "hold")).lower().strip(),
+                buy_price=float(data.get("buy_price", 0) or 0),
+                sell_price=float(data.get("sell_price", 0) or 0),
+                confidence=_normalize_confidence(data.get("confidence", 0)),
+                reasoning=str(data.get("reasoning", "")),
             )
-            # Extract tool use block
-            for block in resp.content:
-                if block.type == "tool_use" and block.name == "submit_trade_plan":
-                    data = block.input
-                    plan = TradePlan(
-                        direction=str(data.get("direction", "hold")).lower().strip(),
-                        buy_price=float(data.get("buy_price", 0) or 0),
-                        sell_price=float(data.get("sell_price", 0) or 0),
-                        confidence=float(data.get("confidence", 0) or 0),
-                        reasoning=str(data.get("reasoning", "")),
-                    )
-                    set_cached(model, prompt, plan.__dict__)
-                    return plan
-            return TradePlan("hold", 0, 0, 0, "No tool use in response")
+            set_cached(cache_key, prompt, plan.__dict__)
+            return plan
         except Exception as e:
             _handle_retry(e, attempt, max_retries)
     return TradePlan("hold", 0, 0, 0, "API exhausted")
@@ -260,7 +322,7 @@ def call_deepseek(prompt: str, model: str = "deepseek-chat", max_retries: int = 
                 direction=str(data.get("direction", "hold")).lower().strip(),
                 buy_price=float(data.get("buy_price", 0) or 0),
                 sell_price=float(data.get("sell_price", 0) or 0),
-                confidence=float(data.get("confidence", 0) or 0),
+                confidence=_normalize_confidence(data.get("confidence", 0)),
                 reasoning=str(data.get("reasoning", "")),
             )
             set_cached(model, prompt, plan.__dict__)
@@ -288,7 +350,7 @@ def _ensure_codex_schema() -> str:
                 "direction": {"type": "string", "description": "long, short, or hold"},
                 "buy_price": {"type": "number", "description": "Limit entry price, 0 if no entry"},
                 "sell_price": {"type": "number", "description": "Take-profit price, 0 if no exit"},
-                "confidence": {"type": "number", "description": "0.0 to 1.0"},
+                "confidence": {"type": "number", "description": "Confidence as decimal 0.0-1.0 (e.g. 0.75 not 75)"},
                 "reasoning": {"type": "string", "description": "Brief explanation"},
             },
         }
@@ -319,7 +381,7 @@ def call_openai_responses(prompt: str, model: str = "gpt-5.4", max_retries: int 
                 "direction": {"type": "string", "description": "long, short, or hold"},
                 "buy_price": {"type": "number", "description": "Limit entry price, 0 if no entry"},
                 "sell_price": {"type": "number", "description": "Take-profit price, 0 if no exit"},
-                "confidence": {"type": "number", "description": "0.0 to 1.0"},
+                "confidence": {"type": "number", "description": "Confidence as decimal 0.0-1.0 (e.g. 0.75 not 75)"},
                 "reasoning": {"type": "string", "description": "Brief explanation"},
             },
         },
@@ -340,7 +402,7 @@ def call_openai_responses(prompt: str, model: str = "gpt-5.4", max_retries: int 
                 direction=str(data.get("direction", "hold")).lower().strip(),
                 buy_price=float(data.get("buy_price", 0) or 0),
                 sell_price=float(data.get("sell_price", 0) or 0),
-                confidence=float(data.get("confidence", 0) or 0),
+                confidence=_normalize_confidence(data.get("confidence", 0)),
                 reasoning=str(data.get("reasoning", "")),
             )
             set_cached(model, prompt, plan.__dict__)
@@ -399,7 +461,7 @@ def call_codex(prompt: str, model: str = "gpt-5.4", max_retries: int = 2,
                 direction=str(data.get("direction", "hold")).lower().strip(),
                 buy_price=float(data.get("buy_price", 0) or 0),
                 sell_price=float(data.get("sell_price", 0) or 0),
-                confidence=float(data.get("confidence", 0) or 0),
+                confidence=_normalize_confidence(data.get("confidence", 0)),
                 reasoning=str(data.get("reasoning", "")),
             )
             set_cached(model, prompt, plan.__dict__)
@@ -435,6 +497,70 @@ def _handle_retry(e: Exception, attempt: int, max_retries: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# OpenRouter (routes Claude/GPT/etc through openrouter.ai)
+# ---------------------------------------------------------------------------
+
+def call_openrouter(prompt: str, model: str = "anthropic/claude-opus-4-6", max_retries: int = 5) -> TradePlan:
+    """Call any model via OpenRouter (OpenAI-compatible, uses OPENROUTER_API_KEY).
+
+    Model names use OpenRouter format, e.g.:
+      anthropic/claude-opus-4-6
+      anthropic/claude-sonnet-4-6
+    """
+    cache_key = f"openrouter/{model}"
+    cached = get_cached(cache_key, prompt)
+    if cached is not None:
+        return TradePlan(**cached)
+
+    from openai import OpenAI
+
+    client = OpenAI(
+        api_key=os.environ["OPENROUTER_API_KEY"],
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+    json_schema = {
+        "name": "trade_plan",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "required": ["direction", "buy_price", "sell_price", "confidence", "reasoning"],
+            "additionalProperties": False,
+            "properties": {
+                "direction": {"type": "string", "description": "long, short, or hold"},
+                "buy_price": {"type": "number", "description": "Limit entry price, 0 if no entry"},
+                "sell_price": {"type": "number", "description": "Take-profit price, 0 if no exit"},
+                "confidence": {"type": "number", "description": "Confidence 0.0-1.0"},
+                "reasoning": {"type": "string", "description": "Brief explanation"},
+            },
+        },
+    }
+
+    for attempt in range(max_retries):
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_schema", "json_schema": json_schema},
+                max_tokens=1024,
+                temperature=0.3,
+            )
+            data = json.loads(resp.choices[0].message.content)
+            plan = TradePlan(
+                direction=str(data.get("direction", "hold")).lower().strip(),
+                buy_price=float(data.get("buy_price", 0) or 0),
+                sell_price=float(data.get("sell_price", 0) or 0),
+                confidence=_normalize_confidence(data.get("confidence", 0)),
+                reasoning=str(data.get("reasoning", "")),
+            )
+            set_cached(cache_key, prompt, plan.__dict__)
+            return plan
+        except Exception as e:
+            _handle_retry(e, attempt, max_retries)
+    return TradePlan("hold", 0, 0, 0, "API exhausted")
+
+
+# ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
 
@@ -445,12 +571,14 @@ PROVIDER_FNS = {
     "anthropic": call_anthropic,
     "deepseek": call_deepseek,
     "codex": call_codex,
+    "openrouter": call_openrouter,
 }
 
 # Model -> provider mapping for convenience
 MODEL_PROVIDERS = {
     # Gemini
     "gemini-2.5-flash": "gemini",
+    "gemini-2.5-pro": "gemini",
     "gemini-3.1-flash-lite-preview": "gemini",
     "gemini-2.0-flash": "gemini",
     # OpenAI (direct API - needs billing credits)
@@ -463,9 +591,13 @@ MODEL_PROVIDERS = {
     "o4-mini": "openai",
     # OpenAI via Responses API
     "gpt-5.4": "openai_responses",
-    # Anthropic
+    # Anthropic (direct) — only if ANTHROPIC_API_KEY is set
+    "claude-opus-4-6": "anthropic",
     "claude-sonnet-4-6": "anthropic",
     "claude-haiku-4-5-20251001": "anthropic",
+    # Anthropic via OpenRouter (use openrouter/ prefix)
+    "openrouter/anthropic/claude-opus-4-6": "openrouter",
+    "openrouter/anthropic/claude-sonnet-4-6": "openrouter",
     # DeepSeek
     "deepseek-chat": "deepseek",
     "deepseek-reasoner": "deepseek",
@@ -476,7 +608,11 @@ def call_llm(prompt: str, model: str, provider: Optional[str] = None,
              thinking_level: Optional[str] = None,
              reasoning_effort: Optional[str] = None,
              cache_only: bool = False) -> TradePlan:
-    """Call any LLM provider with auto-detection."""
+    """Call any LLM provider with auto-detection.
+
+    For Claude models when ANTHROPIC_API_KEY is not set, use model name
+    "openrouter/anthropic/claude-opus-4-6" to route via OpenRouter.
+    """
     if cache_only:
         cached = get_cached(model, prompt)
         if cached is None:
@@ -488,8 +624,15 @@ def call_llm(prompt: str, model: str, provider: Optional[str] = None,
         if provider is None:
             if "gemini" in model:
                 provider = "gemini"
+            elif model.startswith("openrouter/"):
+                provider = "openrouter"
             elif "claude" in model:
-                provider = "anthropic"
+                # Fallback to OpenRouter if no direct Anthropic key
+                if not os.environ.get("ANTHROPIC_API_KEY"):
+                    provider = "openrouter"
+                    model = f"openrouter/anthropic/{model}" if not model.startswith("anthropic/") else f"openrouter/{model}"
+                else:
+                    provider = "anthropic"
             elif "deepseek" in model:
                 provider = "deepseek"
             else:
@@ -499,4 +642,11 @@ def call_llm(prompt: str, model: str, provider: Optional[str] = None,
         return fn(prompt, model=model, thinking_level=thinking_level)
     if provider == "openai_responses":
         return fn(prompt, model=model, reasoning_effort=reasoning_effort or "low")
+    if provider == "anthropic":
+        thinking = bool(thinking_level)
+        return fn(prompt, model=model, thinking=thinking, effort=reasoning_effort)
+    if provider == "openrouter":
+        # Strip "openrouter/" prefix for the actual model name passed to OpenRouter
+        or_model = model.removeprefix("openrouter/")
+        return fn(prompt, model=or_model)
     return fn(prompt, model=model)

@@ -69,6 +69,7 @@ class BacktestConfig:
     parallel_workers: int = 1  # >1 for parallel API calls (codex/deepseek)
     end_timestamp: Optional[str] = None  # fixed UTC end timestamp for reproducible reruns
     cache_only: bool = False  # fail if prompt/model pair is not already cached
+    thinking_level: Optional[str] = None  # "high"/"medium"/"low" for Gemini; any truthy for Anthropic thinking
 
 
 # Stock market hours (Eastern): 9:30-16:00, but our hourly bars
