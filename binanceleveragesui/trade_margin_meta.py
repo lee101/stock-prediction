@@ -289,6 +289,23 @@ class SignalHistory:
         dd = np.std(neg) if len(neg) > 1 else 1e-10
         return float(np.mean(rets)) / (dd + 1e-10)
 
+    def snapshot_for_replay(self) -> dict:
+        """Serialize history state for meta-aware replay."""
+        n = min(
+            len(self.timestamps), len(self.buy_prices), len(self.sell_prices),
+            len(self.buy_amounts), len(self.sell_amounts), len(self.closes), len(self.equities),
+        )
+        return {
+            "timestamps": [str(t) for t in self.timestamps[-n:]],
+            "buy_prices": [float(p) for p in self.buy_prices[-n:]],
+            "sell_prices": [float(p) for p in self.sell_prices[-n:]],
+            "buy_amounts": [float(a) for a in self.buy_amounts[-n:]],
+            "sell_amounts": [float(a) for a in self.sell_amounts[-n:]],
+            "closes": [float(c) for c in self.closes[-n:]],
+            "equities": [float(e) for e in self.equities[-n:]],
+            "size": n,
+        }
+
 
 def _normalize_profit_gate_mode(value: str) -> str:
     mode = str(value or "hypothetical").strip().lower()
@@ -2210,6 +2227,7 @@ def select_model(
     profit_gate_min_return: float = 0.0,
     profit_gate_mode: str = "hypothetical",
     profit_gate_returns: Optional[dict[str, float]] = None,
+    log_history_snapshot: bool = True,
 ) -> str:
     if metric not in SUPPORTED_SELECTION_METRICS:
         raise ValueError(f"Unsupported selection metric '{metric}'. Expected one of {SUPPORTED_SELECTION_METRICS}.")
@@ -2240,6 +2258,14 @@ def select_model(
             **score_kwargs,
         )
         scores[name] = s
+
+    _history_snapshots = {}
+    if log_history_snapshot:
+        for name, hist in histories.items():
+            try:
+                _history_snapshots[name] = hist.snapshot_for_replay()
+            except Exception:
+                pass
 
     if profit_gate_lookback_hours > 0 and profit_gate_returns is not None:
         profit_returns = {str(name): float(value) for name, value in profit_gate_returns.items()}
@@ -2290,6 +2316,7 @@ def select_model(
             score_gap=None,
             scores=scores,
             selected="cash",
+            history_snapshots=_history_snapshots,
         )
         return ""
 
@@ -2343,6 +2370,7 @@ def select_model(
                 score_gap=score_gap,
                 scores=scores,
                 selected=current_model,
+                history_snapshots=_history_snapshots,
             )
             return current_model
         reason = "threshold" if best_score <= cash_threshold else "low_gap"
@@ -2372,6 +2400,7 @@ def select_model(
             score_gap=score_gap,
             scores=scores,
             selected="cash",
+            history_snapshots=_history_snapshots,
         )
         return ""
     print(
@@ -2400,6 +2429,7 @@ def select_model(
         score_gap=score_gap,
         scores=scores,
         selected=best,
+        history_snapshots=_history_snapshots,
     )
     return best
 
