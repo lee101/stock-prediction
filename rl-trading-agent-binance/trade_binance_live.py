@@ -1425,6 +1425,22 @@ def run_trading_cycle(
                     # Place take-profit sell if buy already filled
                     buy_status = order.get("status", "")
                     filled_qty = float(order.get("executedQty", 0))
+                    if plan.sell_price > 0 and filled_qty <= 0 and buy_status in ("NEW", ""):
+                        # Query order to check if it filled (limit at market fills instantly)
+                        import time as _time
+                        _time.sleep(1)
+                        try:
+                            from src.binan.binance_margin import get_margin_asset_balance
+                            bal = get_margin_asset_balance(sym_cfg.base_asset)
+                            if bal:
+                                actual_free = float(bal.get("free", 0))
+                                buy_qty = float(order.get("origQty", 0))
+                                if actual_free >= buy_qty * 0.95:
+                                    filled_qty = buy_qty
+                                    buy_status = "FILLED"
+                                    logger.info(f"  Buy confirmed filled via balance check ({actual_free:.6f} >= {buy_qty:.6f})")
+                        except Exception:
+                            pass
                     if plan.sell_price > 0 and buy_status == "FILLED" and filled_qty > 0:
                         tp_order = place_limit_sell(
                             sym_cfg,

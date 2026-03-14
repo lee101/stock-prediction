@@ -90,8 +90,9 @@ CRYPTO_SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "LTCUSD", "AVAXUSD"]
 MAX_HOLD_HOURS = 6
 
 # Minimum LLM confidence to act on a buy signal.
-# Exp02 sweep: 0.7 optimal (Sortino=39.8 vs 30.9 at 0.4, +357% vs +257% return).
-MIN_CONFIDENCE_CRYPTO = 0.7
+# Exp02: 0.7 optimal on Mar 2-9 window, but HURT on Mar 7-14 (-40.7% vs -2.2%).
+# Exp07: Not robust across windows. Reverted to 0.4. Trailing stop is the real winner.
+MIN_CONFIDENCE_CRYPTO = 0.4
 
 # Trailing stop: exit if price drops this % from peak since entry.
 # Exp06 result: 0.3% trail → Sortino=76.5, MaxDD=4.7% (vs 30.9/28.3% baseline).
