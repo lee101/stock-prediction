@@ -111,6 +111,11 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     val = kwargs ? PyDict_GetItemString(kwargs, "fill_slippage_bps") : NULL;
     env->fill_slippage_bps = val ? (float)PyFloat_AsDouble(val) : 0.0f;
 
+    val = kwargs ? PyDict_GetItemString(kwargs, "fill_probability") : NULL;
+    env->fill_probability = val ? (float)PyFloat_AsDouble(val) : 1.0f;
+    if (env->fill_probability < 0.0f) env->fill_probability = 0.0f;
+    if (env->fill_probability > 1.0f) env->fill_probability = 1.0f;
+
     val = kwargs ? PyDict_GetItemString(kwargs, "max_hold_hours") : NULL;
     env->max_hold_hours = val ? (int)PyLong_AsLong(val) : 0;
 

@@ -51,6 +51,8 @@ prod7_prod7_nonyt_emfirsttrigger_mkt0_metp10_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,
 prod7_prod7_nonyt_emfirsttrigger_mkt0_metp10_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT",prod7_nonyt,first_trigger,False,p10,1.3980,2.7138,0.1781,0.4917,1.0538,24,0.0025,-0.001,sticky,done
 add_meta_core5_emedgerank_mkt0_metp10_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META",core5,edge_rank,False,p10,1.3980,2.7138,0.1781,0.4917,1.0538,18,0.0025,-0.001,sticky,done
 add_meta_core5_emedgerank_mkt0_metp10_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META",core5,edge_rank,False,p10,1.3980,2.7138,0.1781,0.4917,1.0538,18,0.0025,-0.002,sticky,done
+add_meta_core5_emfirsttrigger_mkt0_metp10_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META",core5,first_trigger,False,p10,1.3980,2.7138,0.1781,0.4917,1.0538,18,0.0025,-0.001,sticky,done
+add_meta_core5_emfirsttrigger_mkt0_metp10_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META",core5,first_trigger,False,p10,1.3980,2.7138,0.1781,0.4917,1.0538,18,0.0025,-0.002,sticky,done
 add_meta_prod7_emedgerank_mkt0_metp10_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META",prod7,edge_rank,False,p10,1.2644,3.4820,0.1438,0.6959,0.9500,18,0.0025,-0.002,sticky,done
 add_meta_prod7_emfirsttrigger_mkt0_metp10_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META",prod7,first_trigger,False,p10,1.2644,3.4820,0.1438,0.6959,0.9500,18,0.0025,-0.002,sticky,done
 add_meta_prod7_nonyt_emedgerank_mkt0_metp10_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META",prod7_nonyt,edge_rank,False,p10,1.2644,3.4051,0.1438,0.6901,0.9500,16,0.005,-0.001,sticky,done
@@ -80,6 +82,7 @@ add_aapl_core5_emedgerank_mkt0_metp10_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL",c
 add_aapl_prod7_wd07_emedgerank_mkt1_metp10_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL",prod7_wd07,edge_rank,True,p10,0.4239,0.7264,0.0564,0.0956,0.1750,20,0.005,-0.001,sticky,done
 add_aapl_core5_emfirsttrigger_mkt0_metsharpe_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL",core5,first_trigger,False,sharpe,0.3862,0.5305,0.0477,0.0613,0.1282,18,0.0,-0.001,sticky,done
 add_aapl_core5_emfirsttrigger_mkt0_metsharpe_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL",core5,first_trigger,False,sharpe,0.3862,0.5305,0.0477,0.0613,0.1282,18,0.0,-0.002,sticky,done
+add_meta_core5_emedgerank_mkt1_metp10_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META",core5,edge_rank,True,p10,-0.7324,1.1640,-0.2523,0.0869,-0.8623,16,0.005,-0.001,sticky,done
 no_nyt_prod7_emedgerank_mkt1_metp10_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH",prod7,edge_rank,True,p10,-0.8437,0.5553,-0.1394,0.0643,-1.3351,16,0.005,-0.001,sticky,done
 no_nyt_prod7_nonyt_emedgerank_mkt1_metp10_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH",prod7_nonyt,edge_rank,True,p10,-0.8437,0.5553,-0.1394,0.0643,-1.3351,16,0.005,-0.001,sticky,done
 prod7_prod7_emedgerank_mkt1_metp10_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT",prod7,edge_rank,True,p10,-0.8437,0.5553,-0.1394,0.0643,-1.3351,16,0.005,-0.001,sticky,done
@@ -87,6 +90,7 @@ prod7_prod7_nonyt_emedgerank_mkt1_metp10_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT"
 add_aapl_prod7_all_emedgerank_mkt1_metp10_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL",prod7_all,edge_rank,True,p10,-0.8491,-0.5373,-0.1394,-0.1394,-1.3351,18,0.0025,0.0,sticky,done
 add_aapl_prod7_all_emedgerank_mkt1_metp10_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL",prod7_all,edge_rank,True,p10,-0.8496,-0.5388,-0.1394,-0.1394,-1.3351,18,0.0025,0.0,sticky,done
 add_aapl_prod7_wd07_emedgerank_mkt1_metp10_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL",prod7_wd07,edge_rank,True,p10,-0.8496,-0.5388,-0.1394,-0.1394,-1.3351,18,0.0025,0.0,sticky,done
+add_meta_core5_emedgerank_mkt1_metp10_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META",core5,edge_rank,True,p10,-0.8496,-0.5487,-0.1394,-0.1394,-1.3351,18,0.0025,0.0,sticky,done
 add_aapl_prod7_wd07_emedgerank_mkt0_metsharpe_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL",prod7_wd07,edge_rank,False,sharpe,-1.1933,-0.3551,-0.5092,-0.2950,-0.9398,14,0.0,-0.001,sticky,done
 add_aapl_prod7_wd07_emfirsttrigger_mkt0_metsharpe_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL",prod7_wd07,first_trigger,False,sharpe,-1.1933,-0.3551,-0.5092,-0.2950,-0.9398,14,0.0,-0.001,sticky,done
 add_meta_prod7_nonyt_emedgerank_mkt0_metsharpe_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META",prod7_nonyt,edge_rank,False,sharpe,-1.5170,-1.0870,-0.7589,-0.5830,-1.0925,18,0.0,-0.001,sticky,done
@@ -120,6 +124,7 @@ add_aapl_prod7_all_emedgerank_mkt1_metsharpe_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,
 add_meta_prod7_emedgerank_mkt1_metsharpe_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META",prod7,edge_rank,True,sharpe,-2.3343,-1.2390,-0.9032,-0.4902,-1.4859,16,0.005,-0.001,sticky,done
 add_msft_prod7_emedgerank_mkt1_metsharpe_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,MSFT",prod7,edge_rank,True,sharpe,-2.3343,-1.2384,-0.9032,-0.4902,-1.4859,16,0.005,-0.001,sticky,done
 add_aapl_core5_emedgerank_mkt1_metsharpe_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL",core5,edge_rank,True,sharpe,-2.4449,-1.6968,-1.0864,-0.7644,-1.3730,14,0.0,-0.001,sticky,done
+add_meta_core5_emedgerank_mkt1_metsharpe_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META",core5,edge_rank,True,sharpe,-2.5139,-1.7963,-1.1130,-0.7911,-1.4051,14,0.0,-0.001,sticky,done
 add_aapl_prod7_wd07_emedgerank_mkt1_metsharpe_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL",prod7_wd07,edge_rank,True,sharpe,-2.5416,-1.8724,-1.1522,-0.8468,-1.3699,14,0.0,-0.001,sticky,done
 no_nyt_prod7_nonyt_emedgerank_mkt1_metsharpe_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH",prod7_nonyt,edge_rank,True,sharpe,-2.5761,-1.8322,-1.1391,-0.8091,-1.4769,14,0.0,-0.001,sticky,done
 prod7_prod7_nonyt_emedgerank_mkt1_metsharpe_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT",prod7_nonyt,edge_rank,True,sharpe,-2.5776,-1.8344,-1.1391,-0.8091,-1.4769,14,0.0,-0.001,sticky,done
@@ -149,6 +154,7 @@ add_aapl_prod7_all_emedgerank_mkt0_metsharpe_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,
 add_aapl_prod7_all_emedgerank_mkt0_metsharpe_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL",prod7_all,edge_rank,False,sharpe,-3.2132,-2.5066,-1.5165,-1.2639,-1.9273,16,0.0,-0.002,sticky,done
 add_aapl_prod7_all_emfirsttrigger_mkt0_metsharpe_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL",prod7_all,first_trigger,False,sharpe,-3.2140,-2.5096,-1.5165,-1.2639,-1.9273,16,0.0,-0.001,sticky,done
 add_aapl_prod7_all_emfirsttrigger_mkt0_metsharpe_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL",prod7_all,first_trigger,False,sharpe,-3.2140,-2.5096,-1.5165,-1.2639,-1.9273,16,0.0,-0.002,sticky,done
+add_meta_core5_emedgerank_mkt1_metsharpe_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META",core5,edge_rank,True,sharpe,-3.4604,-2.7326,-1.4931,-1.1564,-2.2932,18,0.0,-0.002,sticky,done
 add_aapl_prod7_all_emedgerank_mkt1_metsharpe_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL",prod7_all,edge_rank,True,sharpe,-3.9920,-3.2728,-1.7004,-1.3712,-2.6933,18,0.0,-0.002,sticky,done
 add_aapl_prod7_wd07_emedgerank_mkt1_metsharpe_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,AAPL",prod7_wd07,edge_rank,True,sharpe,-4.1037,-3.3784,-1.7348,-1.4023,-2.7638,18,0.0,-0.002,sticky,done
 add_tsla_prod7_emfirsttrigger_mkt0_metsharpe_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,TSLA",prod7,first_trigger,False,sharpe,-4.2755,-2.1599,-1.8020,-1.0994,-2.8876,14,0.0,-0.001,sticky,done
@@ -174,6 +180,8 @@ add_tsla_prod7_nonyt_emedgerank_mkt1_metp10_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,T
 add_net_prod7_nonyt_emedgerank_mkt0_metp10_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NET",prod7_nonyt,edge_rank,False,p10,-6.4877,-3.3192,-3.7499,-2.1688,-2.8590,22,0.0025,0.0,sticky,done
 add_net_prod7_nonyt_emedgerank_mkt0_metp10_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NET",prod7_nonyt,edge_rank,False,p10,-6.4877,-3.3192,-3.7499,-2.1688,-2.8590,22,0.0025,0.0,sticky,done
 add_net_prod7_nonyt_emfirsttrigger_mkt0_metp10_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NET",prod7_nonyt,first_trigger,False,p10,-6.5096,-3.3280,-3.7499,-2.1688,-2.8802,22,0.0025,0.0,sticky,done
+add_meta_core5_emedgerank_mkt0_metsharpe_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META",core5,edge_rank,False,sharpe,-6.5098,-2.7081,-2.9249,-1.3876,-3.8900,14,0.0,-0.001,winner,done
+add_meta_core5_emfirsttrigger_mkt0_metsharpe_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META",core5,first_trigger,False,sharpe,-6.5098,-2.7081,-2.9249,-1.3876,-3.8900,14,0.0,-0.001,winner,done
 add_net_prod7_nonyt_emfirsttrigger_mkt0_metp10_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NET",prod7_nonyt,first_trigger,False,p10,-6.5107,-3.3287,-3.7499,-2.1688,-2.8802,22,0.0025,0.0,sticky,done
 add_meta_prod7_emedgerank_mkt0_metsharpe_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META",prod7,edge_rank,False,sharpe,-6.9000,-5.5324,-2.4827,-2.3047,-5.2009,20,0.0,-0.001,sticky,done
 add_meta_prod7_emedgerank_mkt0_metsharpe_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META",prod7,edge_rank,False,sharpe,-6.9000,-5.5324,-2.4827,-2.3047,-5.2009,20,0.0,-0.002,sticky,done
@@ -189,6 +197,8 @@ add_net_prod7_nonyt_emfirsttrigger_mkt0_metsharpe_fast,"NVDA,PLTR,GOOG,DBX,TRIP,
 add_net_prod7_nonyt_emfirsttrigger_mkt0_metsharpe_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NET",prod7_nonyt,first_trigger,False,sharpe,-8.1555,-5.4972,-4.6145,-3.1485,-3.6274,18,0.0,-0.002,sticky,done
 add_tsla_prod7_emedgerank_mkt1_metp10_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,TSLA",prod7,edge_rank,True,p10,-8.5247,-6.6704,-4.2475,-3.1151,-4.2876,18,0.0075,0.0,sticky,done
 add_tsla_prod7_nonyt_emedgerank_mkt1_metp10_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,TSLA",prod7_nonyt,edge_rank,True,p10,-8.5476,-6.3617,-4.2475,-2.9964,-4.3106,18,0.0075,0.0,sticky,done
+add_meta_core5_emedgerank_mkt0_metsharpe_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META",core5,edge_rank,False,sharpe,-10.5653,-6.1731,-4.8376,-2.7594,-6.0582,16,0.0,-0.002,sticky,done
+add_meta_core5_emfirsttrigger_mkt0_metsharpe_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META",core5,first_trigger,False,sharpe,-10.5653,-6.1731,-4.8376,-2.7594,-6.0582,16,0.0,-0.002,sticky,done
 add_net_prod7_emedgerank_mkt0_metsharpe_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NET",prod7,edge_rank,False,sharpe,-11.5977,-9.6852,-6.0784,-4.7967,-5.7569,14,0.0,-0.001,sticky,done
 add_net_prod7_emfirsttrigger_mkt0_metsharpe_fast,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NET",prod7,first_trigger,False,sharpe,-11.5977,-9.6852,-6.0784,-4.7967,-5.7569,14,0.0,-0.001,sticky,done
 add_net_prod7_emedgerank_mkt0_metsharpe_fine,"NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NET",prod7,edge_rank,False,sharpe,-11.8269,-9.8179,-6.1704,-4.7195,-6.3008,16,0.0,-0.002,sticky,done
