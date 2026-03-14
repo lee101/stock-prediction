@@ -111,6 +111,7 @@ typedef struct {
     float          trade_penalty;   /* per-trade penalty (counting opens/closes) (default 0) */
     float          smoothness_penalty;/* penalty for return volatility (ret - prev_ret)^2 (default 0) */
     float          fill_slippage_bps; /* adverse fill slippage in basis points (default 0, realistic: 5-12) */
+    float          fill_probability;  /* probability an order fills [0,1]; 1.0 = always fills (default 1.0) */
 
     /* --- shared data (NOT owned, do not free) --- */
     MarketData*    data;

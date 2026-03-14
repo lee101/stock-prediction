@@ -28,14 +28,14 @@ class TradePlan:
     buy_price: float  # limit entry price (0 = no entry)
     sell_price: float  # limit exit / take-profit price (0 = no exit)
     confidence: float  # 0-1 how confident
-    reasoning: str  # brief explanation
+    reasoning: str = ""  # brief explanation (optional, saves output tokens)
     allocation_pct: float = 0.0  # 0-100, how much of equity to allocate
 
 
 if genai is not None:
     STRUCTURED_SCHEMA = genai.types.Schema(
         type=genai.types.Type.OBJECT,
-        required=["direction", "buy_price", "sell_price", "confidence", "reasoning"],
+        required=["direction", "buy_price", "sell_price", "confidence"],
         properties={
             "direction": genai.types.Schema(
                 type=genai.types.Type.STRING,
@@ -52,10 +52,6 @@ if genai is not None:
             "confidence": genai.types.Schema(
                 type=genai.types.Type.STRING,
                 description="Confidence 0.0 to 1.0 as a string",
-            ),
-            "reasoning": genai.types.Schema(
-                type=genai.types.Type.STRING,
-                description="Brief reasoning for the trade decision",
             ),
         },
     )
@@ -370,7 +366,7 @@ Current price: ${last_close:,.2f}
 
 Decide: {dir_str}.
 If holding a position: set sell_price for take-profit. If no position: set buy_price for entry.
-Only enter when expected_return > fees. Respond with JSON: {{"direction": "long" or "hold", "buy_price": <entry or 0>, "sell_price": <take-profit or 0>, "confidence": <0-1>, "reasoning": "<brief>"}}"""
+Only enter when expected_return > fees. Respond with JSON: {{"direction": "long" or "hold", "buy_price": <entry or 0>, "sell_price": <take-profit or 0>, "confidence": <0-1>}}"""
 
 
 def _prompt_fractional(
@@ -412,7 +408,7 @@ FRACTIONAL SIZING: You can scale in/out gradually.
 - exit_pct: fraction of current position to sell (0.0 = hold all, 1.0 = sell all, 0.5 = sell half)
 - For entries: confidence scales position size (0.3 = small, 1.0 = full allocation)
 
-Respond with JSON: {{"direction": "long" or "hold", "buy_price": <entry or 0>, "sell_price": <exit price or 0>, "exit_pct": <0.0-1.0>, "confidence": <0-1>, "reasoning": "<brief>"}}"""
+Respond with JSON: {{"direction": "long" or "hold", "buy_price": <entry or 0>, "sell_price": <exit price or 0>, "exit_pct": <0.0-1.0>, "confidence": <0-1>}}"""
 
 
 def _ci_spread_pct(fc: Optional[dict], current_price: float) -> float:
@@ -484,7 +480,7 @@ RISK RULE: Scale your confidence inversely to uncertainty.
 Current price: ${last_close:,.2f}
 
 Decide: {dir_str}.
-Respond with JSON: {{"direction": "long" or "hold", "buy_price": <entry or 0>, "sell_price": <take-profit or 0>, "confidence": <0-1>, "reasoning": "<brief>"}}"""
+Respond with JSON: {{"direction": "long" or "hold", "buy_price": <entry or 0>, "sell_price": <take-profit or 0>, "confidence": <0-1>}}"""
 
 
 def _prompt_uncertainty_strict(
@@ -543,7 +539,7 @@ STRICT RISK RULES:
 Current price: ${last_close:,.2f}
 
 Decide: {dir_str}.
-Respond with JSON: {{"direction": "long" or "hold", "buy_price": <entry or 0>, "sell_price": <take-profit or 0>, "confidence": <0-1>, "reasoning": "<brief>"}}"""
+Respond with JSON: {{"direction": "long" or "hold", "buy_price": <entry or 0>, "sell_price": <take-profit or 0>, "confidence": <0-1>}}"""
 
 
 def _prompt_freeform(
@@ -595,7 +591,7 @@ Use the data however you think is best.
 - Do not force trades. Only act when the expected edge is strong enough to clear fees and near-term noise.
 
 Decide: {dir_str}.
-Respond with JSON: {{"direction": "long" or "hold", "buy_price": <entry or 0>, "sell_price": <take-profit or 0>, "confidence": <0-1>, "reasoning": "<brief>"}}"""
+Respond with JSON: {{"direction": "long" or "hold", "buy_price": <entry or 0>, "sell_price": <take-profit or 0>, "confidence": <0-1>}}"""
 
 
 def _prompt_mae_bands(
@@ -653,7 +649,7 @@ Use the data however you think is best.
 - Do not force trades. Only act when the expected edge is strong enough to clear fees and near-term noise.
 
 Decide: {dir_str}.
-Respond with JSON: {{"direction": "long" or "hold", "buy_price": <entry or 0>, "sell_price": <take-profit or 0>, "confidence": <0-1>, "reasoning": "<brief>"}}"""
+Respond with JSON: {{"direction": "long" or "hold", "buy_price": <entry or 0>, "sell_price": <take-profit or 0>, "confidence": <0-1>}}"""
 
 
 def _prompt_anonymized(
@@ -686,7 +682,7 @@ Do NOT consider what asset this might be - analyze only the numbers.
 If entering, set buy_price slightly below current. Set sell_price as take-profit.
 Only trade when expected_return > fees.
 
-Respond with JSON: {{"direction": "long" or "hold", "buy_price": <entry or 0>, "sell_price": <take-profit or 0>, "confidence": <0-1>, "reasoning": "<brief>"}}"""
+Respond with JSON: {{"direction": "long" or "hold", "buy_price": <entry or 0>, "sell_price": <take-profit or 0>, "confidence": <0-1>}}"""
 
 
 # ---------------------------------------------------------------------------

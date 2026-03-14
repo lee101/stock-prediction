@@ -11,6 +11,15 @@ import pandas as pd
 
 FORECAST_CACHE = Path(__file__).resolve().parent.parent / "binanceneural" / "forecast_cache"
 
+# Historical 1h forecast MAE by symbol (from validation)
+FORECAST_MAE_1H = {
+    "BTCUSD": 0.55,
+    "ETHUSD": 0.75,
+    "SOLUSD": 0.97,
+    "DOGEUSD": 1.20,
+    "AAVEUSD": 1.50,
+}
+
 
 def _compute_trend_context(history_rows: list[dict]) -> dict:
     closes = [float(r["close"]) for r in history_rows]
@@ -64,7 +73,7 @@ def load_latest_forecast(symbol: str, horizon: int, cache_root: Optional[Path] =
         return None
 
 
-def _fmt_forecast(fc: Optional[dict], current_price: float) -> str:
+def _fmt_forecast(fc: Optional[dict], current_price: float, symbol: Optional[str] = None) -> str:
     if not fc:
         return "  No forecast available"
     lines = []
@@ -78,6 +87,9 @@ def _fmt_forecast(fc: Optional[dict], current_price: float) -> str:
         spread = fc["predicted_close_p90"] - fc["predicted_close_p10"]
         spread_pct = spread / current_price * 100
         lines.append(f"  90% CI spread: ${spread:.2f} ({spread_pct:.2f}%)")
+    if symbol and symbol in FORECAST_MAE_1H:
+        mae = FORECAST_MAE_1H[symbol]
+        lines.append(f"  Historical MAE: {mae:.2f}%")
     return "\n".join(lines) if lines else "  No forecast available"
 
 
@@ -125,7 +137,7 @@ def build_live_prompt(
     fc_section = ""
     fc_parts = []
     if fc_1h:
-        fc_parts.append(f"1-hour ahead:\n{_fmt_forecast(fc_1h, current_price)}")
+        fc_parts.append(f"1-hour ahead:\n{_fmt_forecast(fc_1h, current_price, symbol)}")
     if fc_24h:
         fc_parts.append(f"24-hour ahead:\n{_fmt_forecast(fc_24h, current_price)}")
     if fc_parts:
@@ -219,7 +231,7 @@ def build_live_prompt_freeform(
 
     fc_parts = []
     if fc_1h:
-        fc_line = _fmt_forecast(fc_1h, current_price)
+        fc_line = _fmt_forecast(fc_1h, current_price, symbol)
         if forecast_error_1h and forecast_error_1h.get("mae_pct", 0) > 0:
             mae = forecast_error_1h["mae_pct"]
             fc_line += f"\n  Historical MAE: {mae:.2f}% (n={forecast_error_1h.get('samples', '?')})"
