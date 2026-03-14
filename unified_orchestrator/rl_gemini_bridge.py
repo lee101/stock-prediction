@@ -47,6 +47,7 @@ class RLSignal:
     confidence: float  # 0-1, derived from softmax probability
     logit_gap: float  # gap between chosen action and flat action
     allocation_pct: float  # suggested position size
+    level_offset_bps: float = 0.0  # suggested entry price offset around the current price
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,7 @@ def decode_rl_action(
     symbol_names: list[str],
     alloc_bins: int = 1,
     level_bins: int = 1,
+    max_offset_bps: float = 0.0,
     top_k: int = 3,
 ) -> list[RLSignal]:
     """Decode RL logits into ranked trading signals.
@@ -117,19 +119,34 @@ def decode_rl_action(
             confidence = float(long_prob / (long_prob + flat_prob + 1e-8))
             logit_gap = float(long_logit - flat_logit)
             # Best allocation bin
-            best_alloc = (probs[long_start:long_end].argmax()) // level_bins
+            best_idx = int(probs[long_start:long_end].argmax())
+            best_alloc = best_idx // level_bins
+            best_level = best_idx % max(1, level_bins)
             alloc_pct = float(best_alloc + 1) / max(alloc_bins, 1)
+            if level_bins > 1 and max_offset_bps > 0:
+                frac = best_level / max(1, level_bins - 1)
+                level_offset_bps = (2.0 * frac - 1.0) * float(max_offset_bps)
+            else:
+                level_offset_bps = 0.0
         elif short_prob > long_prob and short_prob > flat_prob * 0.3:
             direction = "short"
             confidence = float(short_prob / (short_prob + flat_prob + 1e-8))
             logit_gap = float(short_logit - flat_logit)
-            best_alloc = (probs[short_start:short_end].argmax()) // level_bins
+            best_idx = int(probs[short_start:short_end].argmax())
+            best_alloc = best_idx // level_bins
+            best_level = best_idx % max(1, level_bins)
             alloc_pct = float(best_alloc + 1) / max(alloc_bins, 1)
+            if level_bins > 1 and max_offset_bps > 0:
+                frac = best_level / max(1, level_bins - 1)
+                level_offset_bps = (2.0 * frac - 1.0) * float(max_offset_bps)
+            else:
+                level_offset_bps = 0.0
         else:
             direction = "flat"
             confidence = float(flat_prob)
             logit_gap = 0.0
             alloc_pct = 0.0
+            level_offset_bps = 0.0
 
         signals.append(RLSignal(
             symbol_idx=sym_idx,
@@ -138,6 +155,7 @@ def decode_rl_action(
             confidence=confidence,
             logit_gap=logit_gap,
             allocation_pct=min(1.0, alloc_pct),
+            level_offset_bps=float(level_offset_bps),
         ))
 
     # Sort by confidence (non-flat first, then by confidence)
@@ -523,7 +541,7 @@ class RLGeminiBridge:
 
         return decode_rl_action(
             logits_np, num_symbols, symbol_names,
-            alloc_bins, level_bins, top_k,
+            alloc_bins, level_bins, spec.max_offset_bps, top_k,
         )
 
     def generate_plans(

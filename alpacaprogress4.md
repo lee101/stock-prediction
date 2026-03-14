@@ -1121,3 +1121,22 @@ Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
 ### Deploy decision
 - No config exceeded baseline min_goodness=2.7965 - continuing search.
 
+
+## 2026-03-14 07:56 UTC Autonomous Research Batch (10 experiments)
+
+Baseline: min_goodness=2.7965, mean_goodness=3.9151, min_return=0.4139%
+
+
+### Top-5 results this batch
+
+| Rank | Symbols | Strategies | Entry | min_goodness | mean_goodness | min_ret% | mean_ret% | lookback | switch | sit_out |
+|------|---------|-----------|-------|-------------|--------------|---------|---------|---------|--------|--------|
+| 1 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | core5 | first_trigger | 1.3980 | 2.7138 | 0.1781 | 0.4917 | 18 | 0.0025 | -0.001 |
+| 2 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | core5 | first_trigger | 1.3980 | 2.7138 | 0.1781 | 0.4917 | 18 | 0.0025 | -0.002 |
+| 3 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | core5 | edge_rank | -0.7324 | 1.1640 | -0.2523 | 0.0869 | 16 | 0.005 | -0.001 |
+| 4 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | core5 | edge_rank | -0.8496 | -0.5487 | -0.1394 | -0.1394 | 18 | 0.0025 | 0.0 |
+| 5 | NVDA,PLTR,GOOG,DBX,TRIP,MTCH,META | core5 | edge_rank | -2.5139 | -1.7963 | -1.1130 | -0.7911 | 14 | 0.0 | -0.001 |
+
+### Deploy decision
+- No config exceeded baseline min_goodness=2.7965 - continuing search.
+

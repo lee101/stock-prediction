@@ -35,6 +35,7 @@ class TradingEnvConfig:
         trade_penalty: float = 0.0,
         smoothness_penalty: float = 0.0,
         fill_slippage_bps: float = 0.0,
+        fill_probability: float = 1.0,
         max_hold_hours: int = 0,
         long_only: bool = False,
     ):
@@ -58,6 +59,7 @@ class TradingEnvConfig:
         self.trade_penalty = trade_penalty
         self.smoothness_penalty = smoothness_penalty
         self.fill_slippage_bps = fill_slippage_bps
+        self.fill_probability = max(0.0, min(1.0, float(fill_probability)))
         self.max_hold_hours = max(0, int(max_hold_hours))
         self.long_only = long_only
 
