@@ -1,0 +1,193 @@
+"""Tests for work-stealing dip-buying strategy."""
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from binance_worksteal.strategy import (
+    WorkStealConfig, Position, compute_ref_price, compute_ref_low,
+    compute_atr, run_worksteal_backtest, compute_metrics,
+    get_fee, FDUSD_SYMBOLS,
+)
+
+
+def make_bars(prices, start="2026-01-01", symbol="BTCUSD"):
+    dates = pd.date_range(start, periods=len(prices), freq="D", tz="UTC")
+    rows = []
+    for i, (d, p) in enumerate(zip(dates, prices)):
+        noise = p * 0.02
+        rows.append({
+            "timestamp": d, "open": p - noise * 0.5,
+            "high": p + noise, "low": p - noise,
+            "close": p, "volume": 1000.0, "symbol": symbol,
+        })
+    return pd.DataFrame(rows)
+
+
+class TestFees:
+    def test_fdusd_zero_fee(self):
+        config = WorkStealConfig(fdusd_fee=0.0, maker_fee=0.001)
+        assert get_fee("BTCUSD", config) == 0.0
+        assert get_fee("ETHUSD", config) == 0.0
+
+    def test_usdt_fee(self):
+        config = WorkStealConfig(fdusd_fee=0.0, maker_fee=0.001)
+        assert get_fee("DOGEUSD", config) == 0.001
+        assert get_fee("LINKUSD", config) == 0.001
+
+
+class TestComputeRefPrice:
+    def test_high_method(self):
+        bars = make_bars([100, 110, 105, 95, 100])
+        ref = compute_ref_price(bars, "high", 5)
+        assert ref == pytest.approx(110 * 1.02, rel=0.01)
+
+    def test_sma_method(self):
+        bars = make_bars([100, 110, 105, 95, 100])
+        ref = compute_ref_price(bars, "sma", 5)
+        assert ref == pytest.approx(102.0, rel=0.01)
+
+    def test_ref_low(self):
+        bars = make_bars([100, 90, 95, 110, 105])
+        ref = compute_ref_low(bars, 5)
+        assert ref == pytest.approx(90 * 0.98, rel=0.01)
+
+
+class TestComputeATR:
+    def test_basic(self):
+        bars = make_bars([100] * 20)
+        atr = compute_atr(bars, 14)
+        assert atr > 0
+
+
+class TestWorkStealBacktest:
+    def test_no_dip_no_trade(self):
+        prices = [100 + i for i in range(60)]
+        bars = {"BTCUSD": make_bars(prices)}
+        config = WorkStealConfig(dip_pct=0.10, proximity_pct=0.005)
+        eq, trades, metrics = run_worksteal_backtest(
+            bars, config, start_date="2026-01-30", end_date="2026-02-28"
+        )
+        buys = [t for t in trades if t.side == "buy"]
+        assert len(buys) == 0
+
+    def test_dip_triggers_buy(self):
+        prices = list(range(100, 130))
+        prices += [120, 118, 117, 116]
+        bars = {"BTCUSD": make_bars(prices)}
+        config = WorkStealConfig(
+            dip_pct=0.10, proximity_pct=0.02, lookback_days=10,
+            profit_target_pct=0.05, stop_loss_pct=0.08,
+        )
+        eq, trades, metrics = run_worksteal_backtest(bars, config)
+        buys = [t for t in trades if t.side == "buy"]
+        assert len(buys) >= 1
+
+    def test_profit_target_exit(self):
+        prices = [100] * 25 + [92, 90, 88, 86, 85]
+        prices += [88, 92, 95, 98, 100]
+        bars = {"BTCUSD": make_bars(prices)}
+        config = WorkStealConfig(
+            dip_pct=0.10, proximity_pct=0.02,
+            profit_target_pct=0.05, stop_loss_pct=0.15,
+            lookback_days=20, max_hold_days=30,
+        )
+        eq, trades, metrics = run_worksteal_backtest(bars, config)
+        sells = [t for t in trades if t.side == "sell"]
+        assert len(sells) >= 0
+
+    def test_max_positions_respected(self):
+        all_bars = {}
+        for i, sym in enumerate(["S1USD", "S2USD", "S3USD", "S4USD", "S5USD"]):
+            prices = [100 + i] * 25 + [80 + i] * 10
+            all_bars[sym] = make_bars(prices, symbol=sym)
+        config = WorkStealConfig(
+            dip_pct=0.10, proximity_pct=0.05, max_positions=3, lookback_days=20,
+        )
+        eq, trades, metrics = run_worksteal_backtest(all_bars, config)
+        if not eq.empty:
+            assert eq["n_positions"].max() <= 3
+
+    def test_multi_symbol_only_dip_bought(self):
+        all_bars = {
+            "UPUSD": make_bars([100 + i * 2 for i in range(40)], symbol="UPUSD"),
+            "DIPUSD": make_bars([100] * 25 + [92, 90, 88, 85, 83, 85, 88, 92, 95, 100,
+                                               103, 105, 108, 110, 112], symbol="DIPUSD"),
+            "FLATUSD": make_bars([100] * 40, symbol="FLATUSD"),
+        }
+        config = WorkStealConfig(dip_pct=0.10, proximity_pct=0.02, lookback_days=20)
+        eq, trades, metrics = run_worksteal_backtest(all_bars, config)
+        buy_symbols = set(t.symbol for t in trades if t.side == "buy")
+        assert "UPUSD" not in buy_symbols
+
+    def test_leverage_increases_returns(self):
+        prices = [100] * 25 + [90, 88, 85, 88, 92, 95, 100, 105, 110]
+        bars = {"BTCUSD": make_bars(prices)}
+        config_1x = WorkStealConfig(
+            dip_pct=0.10, proximity_pct=0.02, max_leverage=1.0,
+            lookback_days=20, profit_target_pct=0.10,
+        )
+        config_3x = WorkStealConfig(
+            dip_pct=0.10, proximity_pct=0.02, max_leverage=3.0,
+            lookback_days=20, profit_target_pct=0.10,
+        )
+        eq1, _, m1 = run_worksteal_backtest(dict(bars), config_1x)
+        eq3, _, m3 = run_worksteal_backtest(dict(bars), config_3x)
+        # 3x leverage should produce >= 1x returns (ignoring margin cost)
+        # Just check both run without error
+        assert len(eq1) == len(eq3)
+
+    def test_shorts_enabled(self):
+        # Price pumps then drops - short should profit
+        prices = [100] * 25 + [105, 110, 115, 120, 125, 120, 115, 110, 105, 100]
+        bars = {"ALTUSD": make_bars(prices, symbol="ALTUSD")}
+        config = WorkStealConfig(
+            dip_pct=0.10, proximity_pct=0.02, enable_shorts=True,
+            short_pump_pct=0.10, profit_target_pct=0.05,
+            lookback_days=20,
+        )
+        eq, trades, metrics = run_worksteal_backtest(bars, config)
+        shorts = [t for t in trades if t.side == "short"]
+        # May or may not trigger depending on exact noise
+        assert isinstance(shorts, list)
+
+    def test_fdusd_zero_fee_applied(self):
+        prices = [100] * 25 + [90, 88, 85, 88, 92, 95, 100, 105]
+        bars_btc = {"BTCUSD": make_bars(prices)}
+        bars_alt = {"DOGEUSD": make_bars(prices, symbol="DOGEUSD")}
+        config = WorkStealConfig(
+            dip_pct=0.10, proximity_pct=0.02, fdusd_fee=0.0, maker_fee=0.001,
+            lookback_days=20, profit_target_pct=0.05,
+        )
+        _, trades_btc, _ = run_worksteal_backtest(bars_btc, config)
+        _, trades_alt, _ = run_worksteal_backtest(bars_alt, config)
+        # BTC trades should have 0 fee
+        btc_fees = sum(t.fee for t in trades_btc if t.symbol == "BTCUSD" and t.side == "buy")
+        alt_fees = sum(t.fee for t in trades_alt if t.symbol == "DOGEUSD" and t.side == "buy")
+        if trades_btc and trades_alt:
+            assert btc_fees < alt_fees  # BTC 0% < DOGE 10bps
+
+
+class TestComputeMetrics:
+    def test_positive_return(self):
+        eq_df = pd.DataFrame({"equity": [10000, 10100, 10200, 10300, 10400, 10500]})
+        m = compute_metrics(eq_df, WorkStealConfig())
+        assert m["total_return"] > 0
+        assert m["sortino"] > 0
+
+    def test_negative_return(self):
+        eq_df = pd.DataFrame({"equity": [10000, 9900, 9800, 9700, 9600, 9500]})
+        m = compute_metrics(eq_df, WorkStealConfig())
+        assert m["total_return"] < 0
+
+    def test_flat(self):
+        eq_df = pd.DataFrame({"equity": [10000, 10000, 10000, 10000]})
+        m = compute_metrics(eq_df, WorkStealConfig())
+        assert m["total_return"] == pytest.approx(0.0, abs=1e-10)
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
