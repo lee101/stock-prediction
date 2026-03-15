@@ -414,6 +414,8 @@ def main():
                         help="8760 for hourly, 365 for daily")
     parser.add_argument("--max-steps-override", type=int, default=0,
                         help="Override max_steps for all experiments (e.g. 90 for daily)")
+    parser.add_argument("--fee-rate-override", type=float, default=-1.0,
+                        help="Override fee_rate for all experiments (e.g. 0.0 for FDUSD zero-fee)")
     args = parser.parse_args()
 
     leaderboard_path = Path(args.leaderboard)
@@ -467,6 +469,8 @@ def main():
             config.periods_per_year = args.periods_per_year
         if args.max_steps_override > 0:
             config.max_steps = args.max_steps_override
+        if args.fee_rate_override >= 0.0:
+            config.fee_rate = args.fee_rate_override
 
         print(f"\n{'='*60}")
         print(f"[{trial_num}] {desc}")
