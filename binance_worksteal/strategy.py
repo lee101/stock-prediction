@@ -46,7 +46,10 @@ class WorkStealConfig:
     rsi_filter: int = 0
     volume_spike_filter: float = 0.0
     # Risk management
-    max_drawdown_exit: float = 0.25  # bail out if DD exceeds this (0=disabled)
+    max_drawdown_exit: float = 0.25
+    # Momentum filter: only enter if N-day return > threshold
+    momentum_period: int = 0  # 0=disabled, e.g. 5 = 5-day return filter
+    momentum_min: float = -0.10  # min N-day return to enter (e.g. -0.10 = skip if down >10%)
 
 
 @dataclass
@@ -326,6 +329,13 @@ def run_worksteal_backtest(
                 close = float(bar["close"])
                 low_bar = float(bar["low"])
                 high_bar = float(bar["high"])
+
+                # Momentum filter: skip if recent return too negative
+                if config.momentum_period > 0 and len(history[sym]) > config.momentum_period:
+                    past_close = float(history[sym].iloc[-(config.momentum_period+1)]["close"])
+                    mom_ret = (close - past_close) / past_close
+                    if mom_ret < config.momentum_min:
+                        continue
 
                 # SMA trend filter: only enter longs if above SMA
                 if config.sma_filter_period > 0:
