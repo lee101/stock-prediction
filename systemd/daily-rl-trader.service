@@ -1,0 +1,15 @@
+[Unit]
+Description=Daily RL Crypto Trading Bot
+After=network.target
+
+[Service]
+Type=simple
+User=administrator
+WorkingDirectory=/nvme0n1-disk/code/stock-prediction
+ExecStart=/nvme0n1-disk/code/stock-prediction/.venv313/bin/python -u trade_daily_rl.py --daemon --paper
+Restart=on-failure
+RestartSec=60
+Environment=PYTHONPATH=/nvme0n1-disk/code/stock-prediction
+
+[Install]
+WantedBy=multi-user.target

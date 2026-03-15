@@ -4,6 +4,10 @@ Auto-research loop for PufferLib RL trading.
 Runs timeboxed training experiments (default 5 min each), evaluates on
 held-out validation data, and tracks results in a leaderboard CSV.
 
+The primary ranking signal can now come from multi-window holdout robustness
+and optional 30-day market validation, not only the raw C-env validation
+return. That keeps the search loop closer to the deployed replay target.
+
 Usage:
   python -u -m pufferlib_market.autoresearch_rl \
     --train-data pufferlib_market/data/crypto6_train.bin \
@@ -19,12 +23,13 @@ import json
 import os
 import random
 import signal
-import struct
 import subprocess
 import sys
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
+
+from src.robust_trading_metrics import summarize_scenario_results
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -190,12 +195,150 @@ def mutate_config(base: TrialConfig) -> TrialConfig:
     return TrialConfig(**{k: v for k, v in d.items() if k in TrialConfig.__dataclass_fields__})
 
 
+def _safe_float(value: object) -> float | None:
+    if value in (None, "", "None"):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _trim_error(text: str, *, limit: int = 400) -> str:
+    cleaned = " ".join(str(text).split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 3] + "..."
+
+
+def _run_capture(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    timeout_s: int = 0,
+) -> subprocess.CompletedProcess[str]:
+    kwargs: dict[str, object] = {
+        "capture_output": True,
+        "text": True,
+        "cwd": str(cwd),
+    }
+    if timeout_s > 0:
+        kwargs["timeout"] = int(timeout_s)
+    return subprocess.run(cmd, **kwargs)
+
+
+def summarize_holdout_payload(payload: dict[str, object]) -> dict[str, float]:
+    """Convert evaluate_holdout JSON into leaderboard-friendly metrics."""
+    windows = payload.get("windows")
+    if not isinstance(windows, list) or not windows:
+        return {}
+
+    scenario_rows: list[dict[str, float]] = []
+    for row in windows:
+        if not isinstance(row, dict):
+            continue
+        scenario_rows.append(
+            {
+                "return_pct": 100.0 * float(row.get("total_return", 0.0) or 0.0),
+                "annualized_return_pct": 100.0 * float(row.get("annualized_return", 0.0) or 0.0),
+                "sortino": float(row.get("sortino", 0.0) or 0.0),
+                "max_drawdown_pct": 100.0 * float(row.get("max_drawdown", 0.0) or 0.0),
+                "pnl_smoothness": 0.0,
+                "trade_count": float(row.get("num_trades", 0.0) or 0.0),
+            }
+        )
+
+    if not scenario_rows:
+        return {}
+
+    robust = summarize_scenario_results(scenario_rows)
+    summary = payload.get("summary", {}) if isinstance(payload.get("summary"), dict) else {}
+
+    return {
+        "holdout_robust_score": float(robust["robust_score"]),
+        "holdout_return_mean_pct": float(robust["return_mean_pct"]),
+        "holdout_return_p25_pct": float(robust["return_p25_pct"]),
+        "holdout_return_worst_pct": float(robust["return_worst_pct"]),
+        "holdout_sortino_p25": float(robust["sortino_p25"]),
+        "holdout_max_drawdown_worst_pct": float(robust["max_drawdown_worst_pct"]),
+        "holdout_negative_return_rate": float(robust["negative_return_rate"]),
+        "holdout_median_return_pct": 100.0 * float(summary.get("median_total_return", 0.0) or 0.0),
+        "holdout_p10_return_pct": 100.0 * float(summary.get("p10_total_return", 0.0) or 0.0),
+        "holdout_median_sortino": float(summary.get("median_sortino", 0.0) or 0.0),
+        "holdout_p90_max_drawdown_pct": 100.0 * float(summary.get("p90_max_drawdown", 0.0) or 0.0),
+    }
+
+
+def summarize_market_validation_payload(payload: object) -> dict[str, float]:
+    """Convert market_validation JSON into leaderboard-friendly metrics."""
+    if isinstance(payload, list):
+        row = payload[0] if payload else None
+    else:
+        row = payload
+    if not isinstance(row, dict):
+        return {}
+    return {
+        "market_return_pct": float(row.get("return_pct", 0.0) or 0.0),
+        "market_sortino": float(row.get("sortino", 0.0) or 0.0),
+        "market_max_drawdown_pct": float(row.get("max_drawdown_pct", 0.0) or 0.0),
+        "market_trade_count": float(row.get("trade_count", 0.0) or 0.0),
+        "market_goodness_score": float(row.get("goodness_score", 0.0) or 0.0),
+    }
+
+
+def select_rank_score(
+    metrics: dict[str, object],
+    *,
+    rank_metric: str = "auto",
+) -> tuple[str, float | None]:
+    """Choose the leaderboard ranking signal with sensible fallbacks."""
+    candidates = {
+        "market_goodness_score": _safe_float(metrics.get("market_goodness_score")),
+        "holdout_robust_score": _safe_float(metrics.get("holdout_robust_score")),
+        "val_return": _safe_float(metrics.get("val_return")),
+    }
+    if rank_metric == "auto":
+        for name in ("market_goodness_score", "holdout_robust_score", "val_return"):
+            score = candidates[name]
+            if score is not None:
+                return name, score
+        return "none", None
+    return rank_metric, candidates.get(rank_metric)
+
+
+def _leaderboard_sort_value(row: dict[str, str]) -> float:
+    rank_score = _safe_float(row.get("rank_score"))
+    if rank_score is not None:
+        return rank_score
+    val_return = _safe_float(row.get("val_return"))
+    if val_return is not None:
+        return val_return
+    return -float("inf")
+
+
 def run_trial(
     config: TrialConfig,
     train_data: str,
     val_data: str,
     time_budget: int,
     checkpoint_dir: str,
+    *,
+    holdout_data: str | None = None,
+    holdout_eval_steps: int = 0,
+    holdout_n_windows: int = 0,
+    holdout_seed: int = 1337,
+    holdout_end_within_steps: int = 0,
+    holdout_fee_rate: float = -1.0,
+    holdout_max_leverage: float = 1.0,
+    holdout_short_borrow_apr: float = 0.0,
+    eval_timeout_s: int = 0,
+    holdout_timeout_s: int = 0,
+    market_validation_asset_class: str = "",
+    market_validation_days: int = 30,
+    market_validation_cash: float = 10_000.0,
+    market_validation_symbols: str | None = None,
+    market_validation_timeout_s: int = 0,
+    rank_metric: str = "auto",
 ) -> dict:
     """Run a single training trial with time budget, then evaluate on val."""
     # Build training command
@@ -335,18 +478,14 @@ def run_trial(
     ]
     if config.arch == "resmlp":
         eval_cmd.extend(["--arch", "resmlp"])
-
+    val_return = None
+    val_wr = None
+    val_sortino = None
+    val_profitable_pct = None
+    eval_error = ""
     try:
-        result = subprocess.run(
-            eval_cmd, capture_output=True, text=True, timeout=120, cwd=str(REPO),
-        )
+        result = _run_capture(eval_cmd, cwd=REPO, timeout_s=eval_timeout_s)
         eval_output = result.stdout + result.stderr
-
-        # Parse eval results
-        val_return = None
-        val_wr = None
-        val_sortino = None
-        val_profitable_pct = None
         for line in eval_output.split("\n"):
             if "Return:" in line and "mean=" in line:
                 try:
@@ -369,34 +508,130 @@ def run_trial(
                     val_profitable_pct = float(pct_str)
                 except Exception:
                     pass
-
-        print(f"  Val: ret={val_return}, sortino={val_sortino}, "
-              f"wr={val_wr}, profitable={val_profitable_pct}%")
-
-        return {
-            "train_return": train_return,
-            "train_sortino": train_sortino,
-            "train_wr": train_wr,
-            "train_steps": total_steps,
-            "val_return": val_return,
-            "val_sortino": val_sortino,
-            "val_wr": val_wr,
-            "val_profitable_pct": val_profitable_pct,
-            "elapsed_s": elapsed,
-        }
-
+        if result.returncode != 0:
+            eval_error = _trim_error(result.stderr or result.stdout or f"eval exit {result.returncode}")
     except subprocess.TimeoutExpired:
-        return {
-            "error": "eval timeout",
-            "train_return": train_return,
-            "train_steps": total_steps,
-        }
+        eval_error = "eval timeout"
     except Exception as e:
-        return {
-            "error": f"eval error: {e}",
-            "train_return": train_return,
-            "train_steps": total_steps,
-        }
+        eval_error = f"eval error: {e}"
+
+    print(f"  Val: ret={val_return}, sortino={val_sortino}, "
+          f"wr={val_wr}, profitable={val_profitable_pct}%")
+
+    holdout_metrics: dict[str, float] = {}
+    holdout_error = ""
+    effective_holdout_data = holdout_data or val_data
+    if holdout_n_windows > 0 and holdout_eval_steps > 0:
+        print(
+            f"  Holdout: windows={holdout_n_windows}, steps={holdout_eval_steps}, "
+            f"data={effective_holdout_data}"
+        )
+        holdout_json_path = Path(checkpoint_dir) / "holdout_summary.json"
+        effective_holdout_fee = config.fee_rate if holdout_fee_rate < 0.0 else holdout_fee_rate
+        holdout_cmd = [
+            sys.executable, "-u", "-m", "pufferlib_market.evaluate_holdout",
+            "--checkpoint", str(ckpt_path),
+            "--data-path", effective_holdout_data,
+            "--eval-hours", str(holdout_eval_steps),
+            "--n-windows", str(holdout_n_windows),
+            "--seed", str(holdout_seed),
+            "--fee-rate", str(effective_holdout_fee),
+            "--max-leverage", str(holdout_max_leverage),
+            "--short-borrow-apr", str(holdout_short_borrow_apr),
+            "--periods-per-year", str(config.periods_per_year),
+            "--deterministic",
+            "--out", str(holdout_json_path),
+        ]
+        if holdout_end_within_steps > 0:
+            holdout_cmd.extend(["--end-within-hours", str(holdout_end_within_steps)])
+        try:
+            holdout_result = _run_capture(holdout_cmd, cwd=REPO, timeout_s=holdout_timeout_s)
+            if holdout_result.returncode != 0:
+                holdout_error = _trim_error(
+                    holdout_result.stderr or holdout_result.stdout or f"holdout exit {holdout_result.returncode}"
+                )
+            elif not holdout_json_path.exists():
+                holdout_error = "holdout output missing"
+            else:
+                holdout_payload = json.loads(holdout_json_path.read_text())
+                holdout_metrics = summarize_holdout_payload(holdout_payload)
+        except subprocess.TimeoutExpired:
+            holdout_error = "holdout timeout"
+        except Exception as e:
+            holdout_error = f"holdout error: {e}"
+
+        if holdout_metrics:
+            print(
+                "  Holdout summary: "
+                f"robust={holdout_metrics.get('holdout_robust_score')}, "
+                f"p25_ret={holdout_metrics.get('holdout_return_p25_pct')}%, "
+                f"worst_ret={holdout_metrics.get('holdout_return_worst_pct')}%"
+            )
+
+    market_metrics: dict[str, float] = {}
+    market_validation_error = ""
+    if market_validation_asset_class:
+        print(
+            f"  Market validation: asset_class={market_validation_asset_class}, "
+            f"days={market_validation_days}"
+        )
+        market_json_path = Path(checkpoint_dir) / "market_validation.json"
+        market_cmd = [
+            sys.executable, "-u", "-m", "unified_orchestrator.market_validation",
+            "--asset-class", market_validation_asset_class,
+            "--days", str(market_validation_days),
+            "--cash", str(market_validation_cash),
+            "--checkpoint", str(ckpt_path),
+            "--write-json", str(market_json_path),
+        ]
+        if market_validation_symbols:
+            symbols = [sym.strip().upper() for sym in market_validation_symbols.split(",") if sym.strip()]
+            if symbols:
+                market_cmd.extend(["--symbols", *symbols])
+        try:
+            market_result = _run_capture(market_cmd, cwd=REPO, timeout_s=market_validation_timeout_s)
+            if market_result.returncode != 0:
+                market_validation_error = _trim_error(
+                    market_result.stderr or market_result.stdout or f"market validation exit {market_result.returncode}"
+                )
+            elif not market_json_path.exists():
+                market_validation_error = "market validation output missing"
+            else:
+                market_payload = json.loads(market_json_path.read_text())
+                market_metrics = summarize_market_validation_payload(market_payload)
+        except subprocess.TimeoutExpired:
+            market_validation_error = "market validation timeout"
+        except Exception as e:
+            market_validation_error = f"market validation error: {e}"
+
+        if market_metrics:
+            print(
+                "  Market validation summary: "
+                f"return={market_metrics.get('market_return_pct')}%, "
+                f"sortino={market_metrics.get('market_sortino')}, "
+                f"goodness={market_metrics.get('market_goodness_score')}"
+            )
+
+    result_payload: dict[str, object] = {
+        "train_return": train_return,
+        "train_sortino": train_sortino,
+        "train_wr": train_wr,
+        "train_steps": total_steps,
+        "val_return": val_return,
+        "val_sortino": val_sortino,
+        "val_wr": val_wr,
+        "val_profitable_pct": val_profitable_pct,
+        "elapsed_s": elapsed,
+        "error": eval_error,
+        "holdout_error": holdout_error,
+        "market_validation_error": market_validation_error,
+    }
+    result_payload.update(holdout_metrics)
+    result_payload.update(market_metrics)
+    selected_metric, rank_score = select_rank_score(result_payload, rank_metric=rank_metric)
+    result_payload["rank_metric"] = selected_metric
+    result_payload["rank_score"] = rank_score
+    return result_payload
 
 
 def main():
@@ -416,6 +651,34 @@ def main():
                         help="Override max_steps for all experiments (e.g. 90 for daily)")
     parser.add_argument("--fee-rate-override", type=float, default=-1.0,
                         help="Override fee_rate for all experiments (e.g. 0.0 for FDUSD zero-fee)")
+    parser.add_argument("--holdout-data", default=None,
+                        help="Optional MKTD data for robust holdout evaluation (defaults to --val-data)")
+    parser.add_argument("--holdout-eval-steps", type=int, default=0,
+                        help="Window size for holdout evaluation; 0 uses each trial's max_steps")
+    parser.add_argument("--holdout-n-windows", type=int, default=20,
+                        help="Number of random holdout windows; 0 disables holdout robustness scoring")
+    parser.add_argument("--holdout-seed", type=int, default=1337)
+    parser.add_argument("--holdout-end-within-steps", type=int, default=0,
+                        help="Restrict holdout windows to end within the latest N steps")
+    parser.add_argument("--holdout-fee-rate", type=float, default=-1.0,
+                        help="Holdout fee rate override; negative inherits each trial config")
+    parser.add_argument("--holdout-max-leverage", type=float, default=1.0)
+    parser.add_argument("--holdout-short-borrow-apr", type=float, default=0.0)
+    parser.add_argument("--rank-metric",
+                        choices=["auto", "val_return", "holdout_robust_score", "market_goodness_score"],
+                        default="auto")
+    parser.add_argument("--market-validation-asset-class", choices=["", "crypto", "stock"], default="",
+                        help="Run unified_orchestrator.market_validation for each checkpoint when set")
+    parser.add_argument("--market-validation-days", type=int, default=30)
+    parser.add_argument("--market-validation-cash", type=float, default=10_000.0)
+    parser.add_argument("--market-validation-symbols", default=None,
+                        help="Comma-separated symbols override for market validation")
+    parser.add_argument("--eval-timeout-seconds", type=int, default=0,
+                        help="Optional timeout for the base validation subprocess; 0 disables it")
+    parser.add_argument("--holdout-timeout-seconds", type=int, default=0,
+                        help="Optional timeout for holdout evaluation; 0 disables it")
+    parser.add_argument("--market-validation-timeout-seconds", type=int, default=0,
+                        help="Optional timeout for market validation; 0 disables it")
     args = parser.parse_args()
 
     leaderboard_path = Path(args.leaderboard)
@@ -424,9 +687,15 @@ def main():
 
     # Initialize or load leaderboard
     fieldnames = [
-        "trial", "description", "val_return", "val_sortino", "val_wr",
+        "trial", "description", "rank_metric", "rank_score", "val_return", "val_sortino", "val_wr",
         "val_profitable_pct", "train_return", "train_sortino", "train_wr",
-        "train_steps", "elapsed_s", "error",
+        "train_steps", "elapsed_s", "error", "holdout_error", "market_validation_error",
+        "holdout_robust_score", "holdout_return_mean_pct", "holdout_return_p25_pct",
+        "holdout_return_worst_pct", "holdout_sortino_p25", "holdout_max_drawdown_worst_pct",
+        "holdout_negative_return_rate", "holdout_median_return_pct", "holdout_p10_return_pct",
+        "holdout_median_sortino", "holdout_p90_max_drawdown_pct",
+        "market_return_pct", "market_sortino", "market_max_drawdown_pct",
+        "market_trade_count", "market_goodness_score",
         "hidden_size", "lr", "ent_coef", "weight_decay", "fill_slippage_bps",
         "obs_norm", "anneal_lr", "anneal_ent", "anneal_clip", "lr_schedule",
         "arch", "fee_rate", "trade_penalty", "gamma",
@@ -442,7 +711,7 @@ def main():
     experiments = EXPERIMENTS[args.start_from:]
 
     # Add random mutations
-    best_val_return = -float("inf")
+    best_rank_score = -float("inf")
     best_config = TrialConfig()
 
     trial_num = len(existing_trials)
@@ -472,6 +741,8 @@ def main():
         if args.fee_rate_override >= 0.0:
             config.fee_rate = args.fee_rate_override
 
+        holdout_eval_steps = int(args.holdout_eval_steps) if int(args.holdout_eval_steps) > 0 else int(config.max_steps)
+
         print(f"\n{'='*60}")
         print(f"[{trial_num}] {desc}")
         print(f"{'='*60}")
@@ -485,13 +756,36 @@ def main():
         ckpt_dir = str(ckpt_root / desc)
         os.makedirs(ckpt_dir, exist_ok=True)
 
-        result = run_trial(config, args.train_data, args.val_data,
-                           args.time_budget, ckpt_dir)
+        result = run_trial(
+            config,
+            args.train_data,
+            args.val_data,
+            args.time_budget,
+            ckpt_dir,
+            holdout_data=args.holdout_data,
+            holdout_eval_steps=holdout_eval_steps,
+            holdout_n_windows=args.holdout_n_windows,
+            holdout_seed=args.holdout_seed,
+            holdout_end_within_steps=args.holdout_end_within_steps,
+            holdout_fee_rate=args.holdout_fee_rate,
+            holdout_max_leverage=args.holdout_max_leverage,
+            holdout_short_borrow_apr=args.holdout_short_borrow_apr,
+            eval_timeout_s=args.eval_timeout_seconds,
+            holdout_timeout_s=args.holdout_timeout_seconds,
+            market_validation_asset_class=args.market_validation_asset_class,
+            market_validation_days=args.market_validation_days,
+            market_validation_cash=args.market_validation_cash,
+            market_validation_symbols=args.market_validation_symbols,
+            market_validation_timeout_s=args.market_validation_timeout_seconds,
+            rank_metric=args.rank_metric,
+        )
 
         # Update leaderboard
         row = {
             "trial": trial_num,
             "description": desc,
+            "rank_metric": result.get("rank_metric"),
+            "rank_score": result.get("rank_score"),
             "val_return": result.get("val_return"),
             "val_sortino": result.get("val_sortino"),
             "val_wr": result.get("val_wr"),
@@ -502,6 +796,24 @@ def main():
             "train_steps": result.get("train_steps"),
             "elapsed_s": result.get("elapsed_s"),
             "error": result.get("error", ""),
+            "holdout_error": result.get("holdout_error", ""),
+            "market_validation_error": result.get("market_validation_error", ""),
+            "holdout_robust_score": result.get("holdout_robust_score"),
+            "holdout_return_mean_pct": result.get("holdout_return_mean_pct"),
+            "holdout_return_p25_pct": result.get("holdout_return_p25_pct"),
+            "holdout_return_worst_pct": result.get("holdout_return_worst_pct"),
+            "holdout_sortino_p25": result.get("holdout_sortino_p25"),
+            "holdout_max_drawdown_worst_pct": result.get("holdout_max_drawdown_worst_pct"),
+            "holdout_negative_return_rate": result.get("holdout_negative_return_rate"),
+            "holdout_median_return_pct": result.get("holdout_median_return_pct"),
+            "holdout_p10_return_pct": result.get("holdout_p10_return_pct"),
+            "holdout_median_sortino": result.get("holdout_median_sortino"),
+            "holdout_p90_max_drawdown_pct": result.get("holdout_p90_max_drawdown_pct"),
+            "market_return_pct": result.get("market_return_pct"),
+            "market_sortino": result.get("market_sortino"),
+            "market_max_drawdown_pct": result.get("market_max_drawdown_pct"),
+            "market_trade_count": result.get("market_trade_count"),
+            "market_goodness_score": result.get("market_goodness_score"),
             "hidden_size": config.hidden_size,
             "lr": config.lr,
             "ent_coef": config.ent_coef,
@@ -526,29 +838,41 @@ def main():
             writer.writerow(row)
 
         # Track best
-        val_ret = result.get("val_return")
-        if val_ret is not None and val_ret > best_val_return:
-            best_val_return = val_ret
+        rank_score = _safe_float(result.get("rank_score"))
+        if rank_score is not None and rank_score > best_rank_score:
+            best_rank_score = rank_score
             best_config = config
-            print(f"  *** NEW BEST val_return={val_ret:.4f} ***")
+            metric_name = str(result.get("rank_metric", "rank_score"))
+            print(f"  *** NEW BEST {metric_name}={rank_score:.4f} ***")
 
         trial_num += 1
         existing_trials.add(desc)
 
     # Print final leaderboard
     print(f"\n{'='*60}")
-    print("LEADERBOARD (sorted by val_return)")
+    print("LEADERBOARD (sorted by rank_score)")
     print(f"{'='*60}")
     if leaderboard_path.exists():
         with open(leaderboard_path) as f:
             reader = csv.DictReader(f)
             rows = list(reader)
-        rows_with_val = [r for r in rows if r.get("val_return") and r["val_return"] != "None"]
-        rows_with_val.sort(key=lambda r: float(r["val_return"]), reverse=True)
-        for r in rows_with_val[:15]:
-            print(f"  {r['description']:30s} val_ret={float(r['val_return']):+.4f} "
-                  f"val_sortino={r['val_sortino']:>8s} val_wr={r['val_wr']:>6s} "
-                  f"train_ret={r['train_return']:>10s} steps={r['train_steps']:>10s}")
+        rows_with_rank = [r for r in rows if _leaderboard_sort_value(r) > -float("inf")]
+        rows_with_rank.sort(key=_leaderboard_sort_value, reverse=True)
+        for r in rows_with_rank[:15]:
+            rank_metric = r.get("rank_metric") or "val_return"
+            rank_score = _safe_float(r.get("rank_score"))
+            val_ret = _safe_float(r.get("val_return"))
+            holdout_score = _safe_float(r.get("holdout_robust_score"))
+            market_score = _safe_float(r.get("market_goodness_score"))
+            rank_text = "n/a" if rank_score is None else f"{rank_score:+.4f}"
+            val_text = "n/a" if val_ret is None else f"{val_ret:+.4f}"
+            holdout_text = "n/a" if holdout_score is None else f"{holdout_score:+.2f}"
+            market_text = "n/a" if market_score is None else f"{market_score:+.2f}"
+            print(
+                f"  {r['description']:30s} rank[{rank_metric}]={rank_text} "
+                f"val_ret={val_text} holdout={holdout_text} market={market_text} "
+                f"steps={r['train_steps']:>10s}"
+            )
 
 
 if __name__ == "__main__":
