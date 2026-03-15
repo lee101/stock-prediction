@@ -52,6 +52,15 @@ logger = logging.getLogger("daily_rl")
 # ---------------------------------------------------------------------------
 
 DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/autoresearch_daily/trade_pen_05/best.pt"
+
+# Ensemble checkpoints (top OOS performers from mass sweep + original autoresearch)
+ENSEMBLE_CHECKPOINTS = [
+    "pufferlib_market/checkpoints/autoresearch_daily/trade_pen_05/best.pt",  # +20.0%, original
+    "pufferlib_market/checkpoints/mass_daily/tp0.15_s314/best.pt",           # +22.4%, best mass
+    "pufferlib_market/checkpoints/mass_daily/tp0.05_s123/best.pt",           # +14.9%
+    "pufferlib_market/checkpoints/mass_daily/tp0.10_s314/best.pt",           # +8.2%
+    "pufferlib_market/checkpoints/mass_daily/tp0.20_s7/best.pt",             # +7.7%
+]
 SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "LTCUSD", "AVAXUSD"]
 FEE_BPS = 10.0  # 10bps per side for crypto
 INITIAL_CAPITAL = 10_000.0
@@ -363,10 +372,57 @@ def run_backtest(
 # Live / Paper trading
 # ---------------------------------------------------------------------------
 
+def run_ensemble(
+    daily_dfs: Dict[str, pd.DataFrame],
+    prices: Dict[str, float],
+    checkpoints: List[str] = None,
+) -> tuple:
+    """Run ensemble of models and return majority-vote signal."""
+    if checkpoints is None:
+        checkpoints = [str(REPO / c) for c in ENSEMBLE_CHECKPOINTS if (REPO / c).exists()]
+
+    if not checkpoints:
+        raise RuntimeError("No ensemble checkpoints found")
+
+    signals = []
+    symbols_list = list(daily_dfs.keys())
+
+    for ckpt in checkpoints:
+        try:
+            trader = DailyPPOTrader(ckpt, device="cpu", symbols=symbols_list)
+            signal = trader.get_daily_signal(daily_dfs, prices)
+            signals.append(signal)
+        except Exception as e:
+            logger.warning(f"Ensemble member failed ({ckpt}): {e}")
+
+    if not signals:
+        raise RuntimeError("All ensemble members failed")
+
+    # Majority vote on action
+    from collections import Counter
+    actions = [s.action for s in signals]
+    vote = Counter(actions).most_common(1)[0]
+    winning_action = vote[0]
+    vote_count = vote[1]
+    total = len(signals)
+
+    # Find the signal matching the winning action (use highest confidence)
+    matching = [s for s in signals if s.action == winning_action]
+    best = max(matching, key=lambda s: s.confidence)
+
+    logger.info(f"Ensemble vote: {winning_action} ({vote_count}/{total} models agree)")
+    for i, s in enumerate(signals):
+        marker = " <--" if s.action == winning_action else ""
+        logger.info(f"  Model {i}: {s.action} (conf={s.confidence:.1%}){marker}")
+
+    return best, vote_count, total
+
+
 def run_once(
     checkpoint: str,
     use_llm: bool = False,
     paper: bool = True,
+    ensemble: bool = False,
 ):
     """Generate daily trading signal and optionally execute."""
     logger.info("Loading daily data...")
@@ -382,13 +438,18 @@ def run_once(
 
     prices = get_latest_prices(daily_dfs)
 
-    logger.info(f"Loading model: {checkpoint}")
-    trader = DailyPPOTrader(checkpoint, device="cpu", symbols=list(daily_dfs.keys()))
-
-    signal = trader.get_daily_signal(daily_dfs, prices)
+    if ensemble:
+        logger.info("Running ensemble inference...")
+        signal, vote_count, total = run_ensemble(daily_dfs, prices)
+        agreement = f" (ensemble: {vote_count}/{total} agree)"
+    else:
+        logger.info(f"Loading model: {checkpoint}")
+        trader = DailyPPOTrader(checkpoint, device="cpu", symbols=list(daily_dfs.keys()))
+        signal = trader.get_daily_signal(daily_dfs, prices)
+        agreement = ""
 
     logger.info(f"\n{'='*60}")
-    logger.info(f"DAILY RL SIGNAL ({datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')})")
+    logger.info(f"DAILY RL SIGNAL ({datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}){agreement}")
     logger.info(f"{'='*60}")
     logger.info(f"Action:     {signal.action}")
     logger.info(f"Symbol:     {signal.symbol or 'N/A'}")
@@ -465,6 +526,7 @@ def main():
     parser.add_argument("--use-llm", action="store_true", help="Use Gemini LLM as filter")
     parser.add_argument("--paper", action="store_true", default=True, help="Paper mode (no real trades)")
     parser.add_argument("--live", action="store_true", help="Live trading mode")
+    parser.add_argument("--ensemble", action="store_true", help="Use ensemble of top models (majority vote)")
     args = parser.parse_args()
 
     if args.live:
@@ -477,7 +539,7 @@ def main():
     elif args.daemon:
         run_daemon(checkpoint, use_llm=args.use_llm, paper=args.paper)
     else:
-        run_once(checkpoint, use_llm=args.use_llm, paper=args.paper)
+        run_once(checkpoint, use_llm=args.use_llm, paper=args.paper, ensemble=args.ensemble)
 
 
 if __name__ == "__main__":
