@@ -1,0 +1,1 @@
+{"action": "hold", "buy_price": 0.0, "sell_price": 0.0, "stop_price": 0.0, "confidence": 0.0, "reasoning": "Current price and all reference prices for PEPEUSD are reported as $0.00, making it impossible to set realistic buy, sell, or stop prices for execution. Cannot act on ambiguous data."}
