@@ -42,17 +42,17 @@ STATE_FILE = Path("binance_worksteal/live_state.json")
 LOG_FILE = Path("binance_worksteal/trade_log.jsonl")
 
 
-# Default config (best from sweep)
+# Default config (best from 30-symbol sweep)
 DEFAULT_CONFIG = WorkStealConfig(
-    dip_pct=0.12,
-    proximity_pct=0.01,
-    profit_target_pct=0.10,
-    stop_loss_pct=0.06,
-    max_positions=3,
-    max_hold_days=7,
-    lookback_days=10,
+    dip_pct=0.20,
+    proximity_pct=0.02,
+    profit_target_pct=0.15,
+    stop_loss_pct=0.10,
+    max_positions=5,
+    max_hold_days=14,
+    lookback_days=20,
     ref_price_method="high",
-    sma_filter_period=10,
+    sma_filter_period=20,
     trailing_stop_pct=0.03,
     max_drawdown_exit=0.25,
     enable_shorts=False,
@@ -348,11 +348,11 @@ def main():
     parser.add_argument("--dry-run", action="store_true", default=True)
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--daemon", action="store_true")
-    parser.add_argument("--dip-pct", type=float, default=0.12)
-    parser.add_argument("--profit-target", type=float, default=0.10)
-    parser.add_argument("--stop-loss", type=float, default=0.06)
-    parser.add_argument("--max-positions", type=int, default=3)
-    parser.add_argument("--sma-filter", type=int, default=10)
+    parser.add_argument("--dip-pct", type=float, default=0.20)
+    parser.add_argument("--profit-target", type=float, default=0.15)
+    parser.add_argument("--stop-loss", type=float, default=0.10)
+    parser.add_argument("--max-positions", type=int, default=5)
+    parser.add_argument("--sma-filter", type=int, default=20)
     parser.add_argument("--trailing-stop", type=float, default=0.03)
     args = parser.parse_args()
 
