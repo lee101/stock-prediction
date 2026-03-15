@@ -62,6 +62,7 @@ class TrialConfig:
     smooth_downside_penalty: float = 0.0
     arch: str = "mlp"
     max_steps: int = 720
+    periods_per_year: float = 8760.0
     seed: int = 42
     description: str = ""
 
@@ -224,6 +225,7 @@ def run_trial(
         "--weight-decay", str(config.weight_decay),
         "--checkpoint-dir", checkpoint_dir,
         "--arch", config.arch,
+        "--periods-per-year", str(config.periods_per_year),
     ]
     if config.anneal_lr:
         cmd.append("--anneal-lr")
@@ -329,6 +331,7 @@ def run_trial(
         "--num-episodes", "100",
         "--seed", "42",
         "--fill-slippage-bps", "8",  # always eval with realistic slippage
+        "--periods-per-year", str(config.periods_per_year),
     ]
     if config.arch == "resmlp":
         eval_cmd.extend(["--arch", "resmlp"])
@@ -407,6 +410,10 @@ def main():
     parser.add_argument("--checkpoint-root", default="pufferlib_market/checkpoints/autoresearch")
     parser.add_argument("--start-from", type=int, default=0,
                         help="Skip first N experiments")
+    parser.add_argument("--periods-per-year", type=float, default=8760.0,
+                        help="8760 for hourly, 365 for daily")
+    parser.add_argument("--max-steps-override", type=int, default=0,
+                        help="Override max_steps for all experiments (e.g. 90 for daily)")
     args = parser.parse_args()
 
     leaderboard_path = Path(args.leaderboard)
@@ -454,6 +461,12 @@ def main():
             desc = config.description
         else:
             config = build_config(exp_overrides)
+
+        # Apply global overrides from CLI
+        if args.periods_per_year != 8760.0:
+            config.periods_per_year = args.periods_per_year
+        if args.max_steps_override > 0:
+            config.max_steps = args.max_steps_override
 
         print(f"\n{'='*60}")
         print(f"[{trial_num}] {desc}")
