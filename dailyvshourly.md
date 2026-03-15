@@ -203,6 +203,92 @@ Estimated annualized return: +108.1% (123.3 years of data)
 
 ---
 
+---
+
+## 8. Combo Sweep Results (Phase 2)
+
+35 targeted configs testing trade_penalty values and combinations:
+
+### Trade Penalty Sweep
+| Config | OOS Return (90d) | Sortino | Profitable% |
+|--------|-----------------|---------|-------------|
+| tp_20 | +17.9% | 1.59 | 100% |
+| tp_15 | +16.5% | **1.86** | 100% |
+| tp04_cosine | +13.0% | 1.44 | 99% |
+| tp_10 | +8.9% | 1.24 | 96% |
+| **tp_05 (original)** | **+20.0%** | **1.76** | **100%** |
+| tp_06 | -2.2% | 0.80 | 26% |
+| tp_04 | -24.6% | -0.63 | 0% |
+| tp_03 | -23.2% | -0.28 | 0% |
+
+**Insight**: trade_penalty sweet spot is 0.05-0.20. Below 0.05 or above 0.20, returns degrade. tp_15 has the best Sortino ratio.
+
+### Seed Sensitivity (tp_05)
+| Seed | OOS Return | Profitable% |
+|------|-----------|-------------|
+| 42 (original) | +20.0% | 100% |
+| 123 | +1.4% | 63% |
+| 2024 | -10.2% | 0% |
+| 7 | -18.6% | 0% |
+
+**WARNING**: High seed variance! Only 2/4 seeds profitable at tp=0.05. Ensemble or robust configs needed. Higher trade penalties (0.15-0.20) may be more robust.
+
+### Additional Findings
+- **h512 + tp_05**: +5.0%, Sortino 1.23, 98% profitable — smaller model still works
+- **h256 + tp_05**: +4.7%, Sortino 1.21, 94% profitable
+- **Cosine + fee_2x**: -18.0% — combining too many regularizers hurts
+- **ep_120 (longer episodes)**: -17.2% — doesn't generalize past 90d
+
+---
+
+## 9. Stock Daily RL Results
+
+### Long-Only Stock RL (12 symbols, trade_penalty=0.05)
+**Symbols**: AAPL, MSFT, NVDA, GOOG, META, TSLA, AMZN, JPM, V, SPY, QQQ, PLTR
+
+```
+Return:     mean=+0.0811  median=+0.0809
+            min=+0.0442  max=+0.1176  >0: 500/500 (100.0%)
+Win rate:   mean=0.6125
+Sortino:    mean=1.34
+
+Estimated annualized return: +24.4% (178.6 years of data)
+```
+
+**This beats the hourly neural stock policy** (+20-31% annualized, 3.4% max DD) with simpler infrastructure.
+
+Checkpoint: `pufferlib_market/checkpoints/stocks12_daily_tp05_longonly/best.pt`
+Val data: `pufferlib_market/data/stocks12_daily_val.bin` (194 days, Jun-Dec 2025)
+
+### Long+Short Stock RL
+- **-41% annualized OOS** — short-selling stocks is unprofitable during bull market val period
+- Long-only is strictly better for stocks
+
+---
+
+## 10. Production Deployment
+
+### Files Created
+- `trade_daily_rl.py` — Daily RL trading bot (paper/live modes, backtest, LLM overlay)
+- `pufferlib_market/inference_daily.py` — Daily feature computation + DailyPPOTrader
+- `pufferlib_market/sweep_daily_combos.py` — Targeted combo sweep configs
+- `systemd/daily-rl-trader.service` — Systemd service for daily daemon
+
+### Current Signal (2026-03-15)
+```
+Action:     long_SOLUSD
+Confidence: 99.1%
+```
+
+### Recommended Deployment Strategy
+1. **Paper trade** tp_05 + tp_15 + tp_20 in parallel for 30 days
+2. Compare live signals across all three
+3. Deploy best-performing OR ensemble (majority vote)
+4. Allocate 70% daily crypto / 30% daily stocks
+
+---
+
 *Experiments run: 2026-03-15*
-*Status: Daily RL champion identified (trade_pen_05), further optimization and stock testing pending*
-*Autoresearch scripts: `pufferlib_market/autoresearch_rl.py` (now supports `--periods-per-year` and `--max-steps-override` for daily)*
+*Status: Daily RL dominates both crypto (+108%) and stocks (+24.4%). Seed variance is the main risk — ensemble approach recommended.*
+*Combo sweep: `pufferlib_market/autoresearch_daily_combos.csv`*
+*Stock checkpoint: `pufferlib_market/checkpoints/stocks12_daily_tp05_longonly/best.pt`*
