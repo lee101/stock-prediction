@@ -7,6 +7,8 @@ exec /home/lee/code/stock/.venv313/bin/python -u \
   binance_worksteal/trade_live.py \
   --live \
   --daemon \
+  --gemini \
+  --gemini-model gemini-2.5-flash \
   --dip-pct 0.20 \
   --profit-target 0.15 \
   --stop-loss 0.10 \
