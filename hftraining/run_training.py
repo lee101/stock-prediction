@@ -4,8 +4,8 @@ Main training runner script
 """
 
 import argparse
-import sys
 import os
+import sys
 from pathlib import Path
 import random
 from datetime import datetime
@@ -31,10 +31,10 @@ torch = get_torch()
 np = get_numpy()
 
 # Add current directory to path for imports
-current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, current_dir)
+current_dir = Path(__file__).resolve().parent
+sys.path.insert(0, str(current_dir))
 # Add parent directory to path
-sys.path.append(os.path.dirname(current_dir))
+sys.path.append(str(current_dir.parent))
 
 from config import create_config, ExperimentConfig, TrainingConfig
 from data_utils import load_training_data, StockDataProcessor, create_sequences, split_data

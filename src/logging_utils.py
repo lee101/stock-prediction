@@ -3,6 +3,7 @@ import os
 import sys
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
@@ -49,7 +50,7 @@ class EDTFormatter(logging.Formatter):
                 message = str(record.msg.__dict__)
 
             # Get file, function, and line number
-            filename = os.path.basename(record.pathname)
+            filename = Path(record.pathname).name
             func_name = record.funcName
             line_no = record.lineno
 
@@ -118,7 +119,7 @@ def setup_logging(log_file: str) -> logging.Logger:
     """Configure logging to output to both stdout and a file with optional compact formatting."""
     try:
         # Create logger
-        logger_name = os.path.splitext(os.path.basename(log_file))[0]
+        logger_name = Path(log_file).stem
         logger = logging.getLogger(logger_name)
         logger.setLevel(logging.DEBUG)
 

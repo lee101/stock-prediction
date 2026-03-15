@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -18,8 +17,8 @@ from typing import Dict, Iterable, List, Optional, Sequence
 
 import pandas as pd
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, REPO_ROOT)
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
 
 from bagsfm import (
     BagsConfig,

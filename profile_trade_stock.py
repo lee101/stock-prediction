@@ -23,7 +23,7 @@ Profiling Tips:
 
 import subprocess
 import sys
-import os
+from pathlib import Path
 
 def main():
     """Profile the trade_stock_e2e script."""
@@ -37,12 +37,13 @@ def main():
     print("=" * 80)
 
     # Set environment for PAPER mode
+    import os
     env = os.environ.copy()
     env['PAPER'] = '1'
 
     # Use venv python if available, otherwise sys.executable
-    venv_python = os.path.join(os.getcwd(), '.venv', 'bin', 'python')
-    python_exec = venv_python if os.path.exists(venv_python) else sys.executable
+    venv_python = Path.cwd() / '.venv' / 'bin' / 'python'
+    python_exec = str(venv_python) if venv_python.exists() else sys.executable
 
     # Run with cProfile
     cmd = [
@@ -62,7 +63,7 @@ def main():
         print("=" * 80)
 
     # Check if profile was created
-    if os.path.exists(profile_file):
+    if Path(profile_file).exists():
         print(f"\n✓ Profile data saved to {profile_file}")
 
         # Print basic stats

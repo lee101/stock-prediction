@@ -10,17 +10,17 @@ Returns a concise metrics dict so higher-level scripts can compare
 against the classic training variant.
 """
 
-import os
 import sys
+from pathlib import Path
 from typing import Dict, Any
 
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, current_dir)
-sys.path.append(os.path.dirname(current_dir))
+current_dir = Path(__file__).resolve().parent
+sys.path.insert(0, str(current_dir))
+sys.path.append(str(current_dir.parent))
 
 from hf_trainer import HFTrainingConfig, TransformerTradingModel
 from train_hf import StockDataset

@@ -4,7 +4,6 @@ Base Model Training Pipeline
 Trains a base model on multiple stock pairs, then allows fine-tuning for individual stocks
 """
 
-import os
 import sys
 import torch
 from torch.serialization import add_safe_globals
@@ -19,9 +18,9 @@ from tqdm import tqdm
 from dataclasses import fields
 
 # Add current directory to path
-current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, current_dir)
-sys.path.append(os.path.dirname(current_dir))
+current_dir = Path(__file__).resolve().parent
+sys.path.insert(0, str(current_dir))
+sys.path.append(str(current_dir.parent))
 
 from config import create_config, ExperimentConfig
 from train_hf import HFTrainer, StockDataset

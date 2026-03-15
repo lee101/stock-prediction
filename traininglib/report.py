@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime
 import json
-import os
+from pathlib import Path
 
 import torch
 
@@ -15,9 +15,9 @@ def write_report_markdown(
     eval_metrics: dict | None = None,
     notes: str | None = None,
 ):
-    directory = os.path.dirname(out_path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
+    out = Path(out_path)
+    if out.parent != Path('.'):
+        out.parent.mkdir(parents=True, exist_ok=True)
     now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
     device_info = "CPU"

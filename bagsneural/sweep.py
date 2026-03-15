@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 from dataclasses import dataclass
 from itertools import product
 from pathlib import Path
@@ -17,9 +16,9 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO_ROOT = Path(__file__).resolve().parent.parent
 import sys
-sys.path.insert(0, REPO_ROOT)
+sys.path.insert(0, str(REPO_ROOT))
 
 from bagsfm.config import CostConfig, SimulationConfig, TokenConfig
 from bagsfm.simulator import MarketSimulator

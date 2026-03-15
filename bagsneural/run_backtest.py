@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Convenience wrapper to backtest Bags.fm neural model."""
 
-import os
 import sys
+from pathlib import Path
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, REPO_ROOT)
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
 
 from bagsneural.backtest import main
 

@@ -6,6 +6,7 @@ import logging
 import os
 import warnings
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -120,14 +121,14 @@ class ChronosCompileConfig:
     @classmethod
     def production_compiled(cls) -> ChronosCompileConfig:
         """Production configuration with compilation (faster, tested as safe)."""
-        cache_dir = os.path.join(os.getcwd(), "compiled_models", "chronos2_torch_inductor")
+        cache_dir = Path.cwd() / "compiled_models" / "chronos2_torch_inductor"
         return cls(
             enabled=True,
             mode=SAFEST_MODE,
             backend=SAFEST_BACKEND,
             dtype=SAFEST_DTYPE,
             attn_implementation=SAFEST_ATTN_IMPL,
-            cache_dir=cache_dir,
+            cache_dir=str(cache_dir),
         )
 
     @classmethod
@@ -190,11 +191,12 @@ def apply(verbose: bool = True) -> int:
     os.environ.setdefault("CHRONOS_COMPILE_MODE", "reduce-overhead")
     os.environ.setdefault("CHRONOS_COMPILE_BACKEND", "inductor")
 
-    cache_dir = os.path.join(os.getcwd(), "compiled_models", "chronos2_torch_inductor")
-    os.makedirs(cache_dir, exist_ok=True)
-    if os.environ.get("TORCHINDUCTOR_CACHE_DIR") != cache_dir:
-        os.environ["TORCHINDUCTOR_CACHE_DIR"] = cache_dir
-        tweaks.append(f"Cache dir: {cache_dir}")
+    cache_dir = Path.cwd() / "compiled_models" / "chronos2_torch_inductor"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir_str = str(cache_dir)
+    if os.environ.get("TORCHINDUCTOR_CACHE_DIR") != cache_dir_str:
+        os.environ["TORCHINDUCTOR_CACHE_DIR"] = cache_dir_str
+        tweaks.append(f"Cache dir: {cache_dir_str}")
 
     try:
         import torch._inductor.config as inductor_config  # type: ignore

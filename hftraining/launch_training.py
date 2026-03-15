@@ -5,12 +5,11 @@ Launch script for HuggingFace-style training with enhanced logging
 
 import argparse
 import sys
-import os
 from pathlib import Path
 
 # Add current directory to path
-current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, current_dir)
+current_dir = Path(__file__).resolve().parent
+sys.path.insert(0, str(current_dir))
 
 from config import create_config
 from run_training import run_training
