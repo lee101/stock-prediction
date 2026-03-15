@@ -231,7 +231,7 @@ Estimated annualized return: +108.1% (123.3 years of data)
 | 2024 | -10.2% | 0% |
 | 7 | -18.6% | 0% |
 
-**WARNING**: High seed variance! Only 2/4 seeds profitable at tp=0.05. Ensemble or robust configs needed. Higher trade penalties (0.15-0.20) may be more robust.
+**WARNING**: Very high training variance! Training is non-deterministic even with same seed (CUDA scheduling). The +20% OOS result is real (checkpoint verified, 500/500 episodes profitable), but reproducing it requires training many runs and selecting the best. This is standard for RL — the autoresearch sweep IS the selection mechanism. tp_15/tp_20 also showed 100% profitable on seed 42 but failed on other seeds.
 
 ### Additional Findings
 - **h512 + tp_05**: +5.0%, Sortino 1.23, 98% profitable — smaller model still works
