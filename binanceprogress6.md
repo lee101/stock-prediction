@@ -280,6 +280,37 @@ Before the FDUSD-specific sweeps complete, we can evaluate existing models at FD
 
 Note: These use the 5-symbol crypto6 data (includes LTC/AVAX which would be USDT 10bps in reality). The FDUSD-3 specific sweeps are running now.
 
+## FDUSD-3 Sweep Results (Experiments 1 & 2 — IN PROGRESS)
+
+### Critical Finding: 3 Symbols Is Not Enough
+
+**ALL 35 configs are negative OOS on both hourly and daily** for the FDUSD-3 dataset (BTC, ETH, SOL only). This contrasts sharply with the 5-symbol crypto6 dataset where trade_pen_05 got +20% OOS daily and slip_5bps got +5.3% OOS hourly.
+
+**FDUSD Daily (fee=0, 3 symbols, 16/35 trials done):**
+| Rank | Config | OOS Return | Sortino | Profitable% |
+|------|--------|-----------|---------|-------------|
+| 1 | trade_pen_01 | -23.5% | -0.91 | 0% |
+| 2 | trade_pen_05 | -26.1% | -1.02 | 0% |
+| 3 | ent_anneal | -29.7% | -1.36 | 0% |
+
+**FDUSD Hourly (fee=0, 3 symbols, 13/35 trials done):**
+| Rank | Config | OOS Return | Sortino | Profitable% |
+|------|--------|-----------|---------|-------------|
+| 1 | wd_005 | -54.4% | -12.63 | 0% |
+| 2 | slip_10bps | -56.1% | -12.50 | 0% |
+| 3 | slip_5bps | -58.1% | -13.74 | 0% |
+
+**Why 3 symbols fails while 5 succeeds:**
+1. **Fewer opportunities**: RL agent has only 3 choices vs 5 — less ability to rotate between uncorrelated moves
+2. **BTC/ETH/SOL are highly correlated** (0.84-0.91) — diversification is minimal
+3. **The agent learned to exploit LTC/AVAX decorrelation** in the 5-symbol data — removing them eliminates this edge
+4. This confirms the memory finding: "more symbols = better"
+
+**Implication for Binance deployment:**
+- Pure FDUSD-3 (0% fee) RL alone won't work — need additional signal (Chronos2 forecasts, LLM overlay)
+- Alternative: Train on 5-8 symbols but execute only the FDUSD symbols at 0% fee (hybrid approach)
+- The LLM overlay + Chronos2 forecasts may provide the edge that pure RL can't find with 3 symbols
+
 ## Expected Outcome
 
 Based on prior findings, the prediction is:
