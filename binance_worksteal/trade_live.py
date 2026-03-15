@@ -190,7 +190,9 @@ def place_limit_sell(client, symbol: str, price: float, quantity: float):
         return None
 
 
-def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig, dry_run: bool = True):
+def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
+                    dry_run: bool = True, gemini_enabled: bool = False,
+                    gemini_model: str = "gemini-2.5-flash"):
     state = load_state()
     positions = state.get("positions", {})
     last_exit = state.get("last_exit", {})
@@ -300,33 +302,77 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig, dry_run
         for sym, score, fill_price, close in candidates[:slots]:
             if sym in positions:
                 continue
+
+            buy_price = fill_price
+            sell_target = fill_price * (1 + config.profit_target_pct)
+            stop = fill_price * (1 - config.stop_loss_pct)
+            confidence = 1.0
+            source = "rule"
+
+            # Gemini overlay: recalibrate prices
+            if gemini_enabled:
+                try:
+                    from binance_worksteal.gemini_overlay import (
+                        build_daily_prompt, call_gemini_daily, load_forecast_daily,
+                    )
+                    fc = load_forecast_daily(sym)
+                    rule_signal = {"buy_target": fill_price, "dip_score": score, "ref_price": 0, "sma_ok": True}
+                    recent = [{"timestamp": t.get("timestamp",""), "side": t.get("side",""),
+                               "symbol": t.get("symbol",""), "price": t.get("price",0),
+                               "pnl": t.get("pnl",0), "reason": t.get("reason","")}
+                              for t in list(state.get("recent_trades", []))[-5:]]
+                    prompt = build_daily_prompt(
+                        symbol=sym, bars=all_bars[sym], current_price=close,
+                        rule_signal=rule_signal, recent_trades=recent,
+                        forecast_24h=fc,
+                        fee_bps=0 if sym in FDUSD_SYMBOLS else 10,
+                    )
+                    plan = call_gemini_daily(prompt, model=gemini_model)
+                    if plan:
+                        if plan.action == "hold" and plan.confidence > 0.5:
+                            logger.info(f"GEMINI SKIP {sym}: {plan.reasoning}")
+                            continue
+                        if plan.action in ("buy", "adjust") and plan.confidence > 0.3:
+                            if plan.buy_price > 0:
+                                buy_price = plan.buy_price
+                            if plan.sell_price > 0:
+                                sell_target = plan.sell_price
+                            if plan.stop_price > 0:
+                                stop = plan.stop_price
+                            confidence = plan.confidence
+                            source = f"gemini(conf={confidence:.2f})"
+                            logger.info(f"GEMINI {sym}: {plan.action} buy=${buy_price:.2f} "
+                                        f"tp=${sell_target:.2f} sl=${stop:.2f} conf={confidence:.2f} "
+                                        f"reason={plan.reasoning}")
+                except Exception as e:
+                    logger.warning(f"Gemini call failed for {sym}: {e}")
+
             fee_rate = get_fee(sym, config)
             alloc = equity * config.max_position_pct
-            quantity = alloc / (fill_price * (1 + fee_rate))
+            quantity = alloc / (buy_price * (1 + fee_rate)) * min(confidence, 1.0)
             if quantity <= 0:
                 continue
 
-            logger.info(f"ENTRY {sym}: buy limit at {fill_price:.2f} "
-                        f"(close={close:.2f}, dip_score={score:.4f}, qty={quantity:.6f})")
+            logger.info(f"ENTRY {sym}: buy limit at {buy_price:.2f} "
+                        f"(close={close:.2f}, score={score:.4f}, qty={quantity:.6f}, {source})")
 
             if not dry_run:
-                # Handle FDUSD swap if needed
                 if sym in FDUSD_SYMBOLS:
                     swap_usdt_to_fdusd(client, alloc)
-                place_limit_buy(client, sym, fill_price, quantity, config)
+                place_limit_buy(client, sym, buy_price, quantity, config)
 
             positions[sym] = {
-                "entry_price": fill_price,
+                "entry_price": buy_price,
                 "entry_date": now.isoformat(),
                 "quantity": quantity,
                 "peak_price": close,
-                "target_sell": fill_price * (1 + config.profit_target_pct),
-                "stop_price": fill_price * (1 - config.stop_loss_pct),
+                "target_sell": sell_target,
+                "stop_price": stop,
             }
             log_trade({
                 "timestamp": now.isoformat(), "symbol": sym, "side": "buy",
-                "price": fill_price, "quantity": quantity,
-                "reason": f"dip_buy(score={score:.4f})",
+                "price": buy_price, "quantity": quantity,
+                "reason": f"dip_buy({source})",
                 "dry_run": dry_run,
             })
 
@@ -354,6 +400,8 @@ def main():
     parser.add_argument("--max-positions", type=int, default=5)
     parser.add_argument("--sma-filter", type=int, default=20)
     parser.add_argument("--trailing-stop", type=float, default=0.03)
+    parser.add_argument("--gemini", action="store_true", help="Enable Gemini LLM overlay")
+    parser.add_argument("--gemini-model", default="gemini-2.5-flash")
     args = parser.parse_args()
 
     if args.live:
@@ -389,19 +437,26 @@ def main():
         client = None
         logger.info("Running in DRY RUN mode")
 
+    gemini_on = getattr(args, "gemini", False)
+    g_model = getattr(args, "gemini_model", "gemini-2.5-flash")
+    if gemini_on:
+        logger.info(f"Gemini overlay enabled (model={g_model})")
+
     if args.daemon:
         logger.info("Starting daemon mode - runs daily at UTC midnight")
         while True:
             now = datetime.now(timezone.utc)
             next_run = (now + timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0)
             if now.hour == 0 and now.minute < 10:
-                run_daily_cycle(client, symbols, config, dry_run=args.dry_run)
+                run_daily_cycle(client, symbols, config, dry_run=args.dry_run,
+                                gemini_enabled=gemini_on, gemini_model=g_model)
                 next_run = (now + timedelta(days=1)).replace(hour=0, minute=5, second=0)
             sleep_secs = (next_run - datetime.now(timezone.utc)).total_seconds()
             logger.info(f"Next run in {sleep_secs/3600:.1f}h at {next_run}")
             time.sleep(max(60, sleep_secs))
     else:
-        run_daily_cycle(client, symbols, config, dry_run=args.dry_run)
+        run_daily_cycle(client, symbols, config, dry_run=args.dry_run,
+                        gemini_enabled=gemini_on, gemini_model=g_model)
 
 
 if __name__ == "__main__":
