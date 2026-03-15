@@ -267,6 +267,19 @@ Deploy winner on Binance testnet before real capital.
 | Max hold enforcement | configurable | Manual via bot | OK |
 | Position sizing | % of cash | Min notional varies | Need to check |
 
+## Early Results: Slippage Sensitivity Analysis
+
+Before the FDUSD-specific sweeps complete, we can evaluate existing models at FDUSD-realistic slippage (3bps instead of 8bps):
+
+| Strategy | 8bps Slippage | 3bps Slippage | Improvement |
+|----------|--------------|--------------|-------------|
+| **Daily trade_pen_05** | +108.1% ann, Sortino 1.76 | **+132.9% ann, Sortino 1.90** | +23% |
+| **Hourly slip_5bps** | +32.5% ann, Sortino 1.10 | **+84.8% ann, Sortino 1.61** | +161% (2.6x!) |
+
+**Critical finding**: Hourly trading benefits FAR more from lower slippage (2.6x improvement) because it trades ~6x more often. At FDUSD-realistic slippage, hourly narrows the gap to 1.6x (vs 3.3x at 8bps). But daily still wins.
+
+Note: These use the 5-symbol crypto6 data (includes LTC/AVAX which would be USDT 10bps in reality). The FDUSD-3 specific sweeps are running now.
+
 ## Expected Outcome
 
 Based on prior findings, the prediction is:

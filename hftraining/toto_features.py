@@ -62,7 +62,7 @@ class TotoFeatureGenerator:
         self._toto_model: Optional[TotoEmbeddingModel] = None
         self._cache_dir: Optional[Path] = None
         if self.options.enable_cache and self.options.cache_dir:
-            cache_path = Path(os.path.expanduser(self.options.cache_dir))
+            cache_path = Path(self.options.cache_dir).expanduser()
             cache_path.mkdir(parents=True, exist_ok=True)
             self._cache_dir = cache_path
 

@@ -39,10 +39,8 @@ class KronosPredictionCache:
         value_precision: Optional[int] = None,
     ):
         if cache_dir is None:
-            cache_dir = os.path.join(
-                os.path.dirname(os.path.dirname(__file__)),
-                ".cache",
-                "kronos_predictions",
+            cache_dir = str(
+                Path(__file__).resolve().parent.parent / ".cache" / "kronos_predictions"
             )
 
         self.cache_dir = Path(cache_dir)

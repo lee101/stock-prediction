@@ -4,7 +4,6 @@ Realistic Backtesting RL Trading System
 Incorporates real-world trading constraints and feeds backtesting metrics directly into rewards
 """
 
-import os
 import sys
 import torch
 import torch.nn as nn
@@ -21,9 +20,9 @@ from typing import Dict, List, Tuple, Optional
 # yfinance removed; rely on local CSVs if needed
 
 # Add paths
-current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, current_dir)
-sys.path.append(os.path.dirname(current_dir))
+current_dir = Path(__file__).resolve().parent
+sys.path.insert(0, str(current_dir))
+sys.path.append(str(current_dir.parent))
 
 from data_utils import StockDataProcessor, split_data
 from src.leverage_settings import DEFAULT_ANNUAL_LEVERAGE_COST, DEFAULT_TRADING_DAYS

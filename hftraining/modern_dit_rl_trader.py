@@ -18,10 +18,10 @@ from dataclasses import dataclass
 from typing import Dict, Tuple, Optional, List
 import math
 
-import os
 import sys
-current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, current_dir)
+from pathlib import Path
+current_dir = Path(__file__).resolve().parent
+sys.path.insert(0, str(current_dir))
 
 from data_utils import StockDataProcessor, split_data
 
