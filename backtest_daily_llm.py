@@ -515,6 +515,12 @@ def execute_daily_decision(
 
     # Open new position if allocation != 0 and not already positioned
     if target_direction != "flat" and symbol not in state.positions and target_leverage > 0:
+        # Normalize leverage by number of active symbols to prevent over-allocation
+        # E.g., 3 symbols each wanting 2x = 6x total, but we cap at max 5x overall
+        n_symbols = max(len(state.positions) + 1, 1)  # include this new position
+        max_per_symbol = min(target_leverage, 5.0 / n_symbols)  # cap total leverage at 5x
+        effective_leverage = max_per_symbol
+
         # Determine entry price
         if target_direction == "long":
             if buy_price > 0 and low <= buy_price <= high:
@@ -524,7 +530,7 @@ def execute_daily_decision(
             else:
                 fill = open_price * (1 + slippage_bps / 10000)
 
-            budget = state.cash * target_leverage
+            budget = max(state.cash, 0) * effective_leverage
             qty = budget / (fill * (1 + fee_rate))
             if qty > 0:
                 cost = qty * fill * (1 + fee_rate)
@@ -545,7 +551,7 @@ def execute_daily_decision(
             else:
                 fill = open_price * (1 - slippage_bps / 10000)
 
-            budget = state.cash * target_leverage
+            budget = max(state.cash, 0) * effective_leverage
             qty = budget / (fill * (1 + fee_rate))
             if qty > 0:
                 proceeds = qty * fill * (1 - fee_rate)
@@ -687,7 +693,7 @@ def print_results(state: BacktestState, initial_cash: float):
         print("No equity data!")
         return
 
-    equities = [e["equity"] for e in state.equity_curve]
+    equities = [float(e["equity"]) for e in state.equity_curve]
     final = equities[-1]
     total_ret = (final - initial_cash) / initial_cash
 
