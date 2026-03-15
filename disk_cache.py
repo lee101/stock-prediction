@@ -4,6 +4,7 @@ import os
 import pickle
 import shutil
 import time
+from pathlib import Path
 from typing import Callable, Iterable, Optional, Set
 
 import torch
@@ -35,7 +36,7 @@ def disk_cache(func: Optional[Callable] = None, *, ignore_kwargs: Optional[Itera
     """
 
     def _decorate(target: Callable) -> Callable:
-        cache_dir = os.path.join(os.path.dirname(__file__), '.cache', target.__name__)
+        cache_dir = Path(__file__).resolve().parent / '.cache' / target.__name__
         ignored: Set[str] = set(ignore_kwargs or ())
 
         @functools.wraps(target)
@@ -56,10 +57,10 @@ def disk_cache(func: Optional[Callable] = None, *, ignore_kwargs: Optional[Itera
                 key_parts.append(f"{k}:{_normalise_value(v)}")
 
             key = hashlib.md5(":".join(key_parts).encode()).hexdigest()
-            os.makedirs(cache_dir, exist_ok=True)
-            cache_file = os.path.join(cache_dir, f'{key}.pkl')
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache_file = cache_dir / f'{key}.pkl'
 
-            if os.path.exists(cache_file):
+            if cache_file.exists():
                 with open(cache_file, 'rb') as f:
                     return pickle.load(f)
 
@@ -70,10 +71,10 @@ def disk_cache(func: Optional[Callable] = None, *, ignore_kwargs: Optional[Itera
             return result
 
         def cache_clear():
-            if os.path.exists(cache_dir):
+            if cache_dir.exists():
                 shutil.rmtree(cache_dir)
             time.sleep(0.1)
-            os.makedirs(cache_dir, exist_ok=True)
+            cache_dir.mkdir(parents=True, exist_ok=True)
 
         wrapper.cache_clear = cache_clear  # type: ignore[attr-defined]
         return wrapper

@@ -4,12 +4,12 @@ Test script to verify the training pipeline works
 """
 
 import sys
-import os
+from pathlib import Path
 import torch
 
 # Add current directory to path
-current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, current_dir)
+current_dir = Path(__file__).resolve().parent
+sys.path.insert(0, str(current_dir))
 
 from config import create_config
 from data_utils import generate_synthetic_data, split_data

@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import time
 import warnings
+from pathlib import Path
 from typing import Optional
 
 warnings.filterwarnings("ignore", message=".*is not a valid ThinkingLevel.*")
@@ -116,8 +117,8 @@ def call_openai(prompt: str, model: str = "gpt-4.1-mini", max_retries: int = 5) 
 
     # Try codex auth first, fall back to OPENAI_API_KEY
     api_key = os.environ.get("OPENAI_API_KEY", "")
-    codex_path = os.path.expanduser("~/.codex/auth.json")
-    if os.path.exists(codex_path):
+    codex_path = Path("~/.codex/auth.json").expanduser()
+    if codex_path.exists():
         try:
             auth = json.load(open(codex_path))
             api_key = auth["tokens"]["access_token"]
@@ -200,8 +201,8 @@ def call_anthropic(prompt: str, model: str = "claude-sonnet-4-6", max_retries: i
         # Try loading from env_real.py (project-local secrets file)
         try:
             import importlib.util, sys as _sys
-            _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            _spec = importlib.util.spec_from_file_location("env_real", os.path.join(_root, "env_real.py"))
+            _root = Path(__file__).resolve().parent.parent
+            _spec = importlib.util.spec_from_file_location("env_real", str(_root / "env_real.py"))
             _mod = importlib.util.module_from_spec(_spec)
             _spec.loader.exec_module(_mod)
             api_key = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -337,11 +338,11 @@ def call_deepseek(prompt: str, model: str = "deepseek-chat", max_retries: int = 
 # ---------------------------------------------------------------------------
 
 # JSON schema file for codex --output-schema
-_CODEX_SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "codex_trade_schema.json")
+_CODEX_SCHEMA_PATH = Path(__file__).resolve().parent / "codex_trade_schema.json"
 
 def _ensure_codex_schema() -> str:
     """Write the JSON schema file once, return path."""
-    if not os.path.exists(_CODEX_SCHEMA_PATH):
+    if not _CODEX_SCHEMA_PATH.exists():
         schema = {
             "type": "object",
             "required": ["direction", "buy_price", "sell_price", "confidence", "reasoning"],

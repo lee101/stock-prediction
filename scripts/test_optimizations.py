@@ -8,9 +8,13 @@ Usage:
 
 import os
 import sys
+from pathlib import Path
 
 # Set minimal test environment
 os.environ["TESTING"] = "False"  # Enable caching
+
+# Project root for path setup
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 
 
 def test_prediction_cache():
@@ -18,9 +22,8 @@ def test_prediction_cache():
     print("\n=== Testing Kronos Prediction Cache ===")
 
     # Add project root to path
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if project_root not in sys.path:
-        sys.path.insert(0, project_root)
+    if _PROJECT_ROOT not in sys.path:
+        sys.path.insert(0, _PROJECT_ROOT)
 
     from src.kronos_prediction_cache import KronosPredictionCache
     import pandas as pd
@@ -109,9 +112,8 @@ def test_lazy_gpu_transfer():
     import torch
 
     # Add project root to path
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if project_root not in sys.path:
-        sys.path.insert(0, project_root)
+    if _PROJECT_ROOT not in sys.path:
+        sys.path.insert(0, _PROJECT_ROOT)
 
     from backtest_test3_inline import _get_lazy_numpy
 
@@ -190,9 +192,8 @@ def print_optimization_summary():
     print("="*60)
 
     # Add project root to path
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if project_root not in sys.path:
-        sys.path.insert(0, project_root)
+    if _PROJECT_ROOT not in sys.path:
+        sys.path.insert(0, _PROJECT_ROOT)
 
     from src.kronos_prediction_cache import get_prediction_cache
 

@@ -7,6 +7,7 @@ import fcntl
 import json
 import os
 import tempfile
+from pathlib import Path
 from collections.abc import MutableMapping
 
 try:
@@ -45,9 +46,9 @@ class MemoryShelf(JSONShelf):
     """
 
     def __init__(self, filename):
-        self.filename = filename
+        self.filename = Path(filename)
         self.data = {}
-        if os.path.exists(self.filename):
+        if self.filename.exists():
             self.load()
         else:
             # Create an empty file. Good idea? Maybe not. It's how
@@ -96,8 +97,8 @@ class FlatShelf(MemoryShelf):
 
     def save(self):
         # Atomic write: write to temp file, then rename
-        dir_path = os.path.dirname(os.path.abspath(self.filename))
-        fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix='.tmp')
+        dir_path = self.filename.resolve().parent
+        fd, tmp_path = tempfile.mkstemp(dir=str(dir_path), suffix='.tmp')
         try:
             with os.fdopen(fd, 'w') as f:
                 json.dump(self.data, f, default=default)

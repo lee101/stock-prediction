@@ -3,6 +3,7 @@
 HuggingFace-style Training Script Entry Point
 """
 
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -23,16 +24,15 @@ from collections import deque
 warnings.filterwarnings('ignore')
 from torch.utils.data import DataLoader, Dataset
 import sys
-import os
 import time
 import shutil
 import subprocess
 
 # Add current directory to path for imports
-current_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, current_dir)
+current_dir = Path(__file__).resolve().parent
+sys.path.insert(0, str(current_dir))
 # Add parent directory to path
-sys.path.append(os.path.dirname(current_dir))
+sys.path.append(str(current_dir.parent))
 
 from hf_trainer import (
     HFTrainingConfig,

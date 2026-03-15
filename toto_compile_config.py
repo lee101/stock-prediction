@@ -10,6 +10,7 @@ Usage:
 
 import os
 import warnings
+from pathlib import Path
 
 
 def apply(verbose=True):
@@ -56,10 +57,9 @@ def apply(verbose=True):
         pass
 
     # 6. Set compilation cache directory
-    cache_dir = os.path.join(os.getcwd(), "compiled_models", "torch_inductor")
-    if not os.path.exists(cache_dir):
-        os.makedirs(cache_dir, exist_ok=True)
-    os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", cache_dir)
+    cache_dir = Path.cwd() / "compiled_models" / "torch_inductor"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("TORCHINDUCTOR_CACHE_DIR", str(cache_dir))
     optimizations.append(f"Cache dir: {cache_dir}")
 
     # 7. Configure dynamo settings
