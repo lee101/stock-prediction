@@ -157,7 +157,37 @@ python -u -m pufferlib_market.autoresearch_rl \
     --checkpoint-root pufferlib_market/checkpoints/autoresearch_crypto8_daily
 ```
 
-### Current Best Configs (8-symbol daily, fee=0)
+### Current Best Configs
+
+**PRODUCTION CHAMPION: 23-sym mixed daily ent_anneal**
+
+```
+Checkpoint: pufferlib_market/checkpoints/autoresearch_mixed23_daily/ent_anneal/best.pt
+Symbols: 15 stocks + 8 crypto = 23 total
+Data: pufferlib_market/data/mixed23_daily_{train,val}.bin
+```
+
+| Metric | Value |
+|--------|-------|
+| OOS Return (90d mean) | **+26.69%** |
+| Annualized | **+160.1%** |
+| Sortino | **2.21** |
+| Profitable | **100%** (500/500 episodes) |
+| Worst episode | +11.74% |
+| Win rate | 57.8% |
+| Trades per 90d | 62.4 |
+
+**Evaluation command (authoritative C env):**
+```bash
+python -u -m pufferlib_market.evaluate \
+    --checkpoint pufferlib_market/checkpoints/autoresearch_mixed23_daily/ent_anneal/best.pt \
+    --data-path pufferlib_market/data/mixed23_daily_val.bin \
+    --deterministic --hidden-size 1024 \
+    --max-steps 90 --num-episodes 500 --seed 42 \
+    --fill-slippage-bps 5 --periods-per-year 365
+```
+
+**Other strong configs (8-symbol crypto daily, fee=0):**
 | Config | OOS Return | Sortino | Profitable% |
 |--------|-----------|---------|-------------|
 | clip_anneal | +18.84% | 1.85 | 100% |
@@ -265,10 +295,31 @@ models/
     └── chronos2_torch_inductor/        # Compiled for fast inference
 ```
 
+## Production Architecture
+
+The C env trains a **single-position agent** — it picks ONE symbol at a time to be long/short on, or stays flat. This IS work-stealing: the RL evaluates all 23 symbols and picks the best opportunity each day.
+
+```
+Daily at UTC midnight:
+  1. Load latest daily bars for all 23 symbols
+  2. Export to MKTD binary (or compute features in Python)
+  3. Run RL inference → picks ONE symbol + direction
+  4. [Optional] Pass to Gemini for entry/exit price refinement
+  5. Execute: close old position, open new one
+  6. Monitor with trailing stop (0.3%) throughout the day
+```
+
+**Important**: The Python backtest (trade_mixed_daily.py) has feature computation
+mismatches with the C env binary data. Always use C env evaluation (evaluate.py)
+as the authoritative benchmark. The Python scripts are for live inference only,
+where features must be computed on-the-fly from fresh market data.
+
 ## Key Learnings
-1. **More symbols = better**: 8 symbols >> 3 symbols (FDUSD-3 all negative, 8-sym +18.84%)
-2. **Daily >> hourly**: 3.3x better annualized returns (fewer trades, lower fee drag)
-3. **5-min timeboxed training**: Prevents overfitting (200M+ steps = -3% to -16% OOS)
-4. **FDUSD 0% fee**: Helps hourly 2.6x more than daily (hourly trades 6x more)
-5. **LLM allocation**: Must normalize across symbols (5.5x total = -92% drawdown)
-6. **clip_anneal surprise winner**: Not expected from original 5-sym sweep — diversity unlocks new edges
+1. **More diverse symbols = exponentially better**: 3-sym 0% positive → 8-sym 19% → 23-sym 46%
+2. **Stocks + crypto together beats either alone**: Uncorrelated assets maximize RL opportunity
+3. **23 is the sweet spot**: 32 symbols (+15% OOS) < 23 symbols (+27% OOS)
+4. **Daily >> hourly**: Confirmed across all symbol counts
+5. **5-min timeboxed training**: Prevents overfitting
+6. **ent_anneal is champion**: entropy annealing 0.08→0.02 with anneal-LR
+7. **trade_penalty counterproductive at 0% fee**: Was #1 at 10bps, now hurts
+8. **Single-position model**: C env trains single-position. Don't try multi-position in Python backtest
