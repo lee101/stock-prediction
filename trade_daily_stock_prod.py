@@ -254,7 +254,7 @@ def load_latest_quotes_with_source(
     paper: bool,
     fallback_prices: dict[str, float],
     data_client=None,
-) -> tuple[dict[str, float], str]:
+) -> tuple[dict[str, float], str, dict[str, str]]:
     from alpaca.data import StockLatestQuoteRequest
     from alpaca.data.enums import DataFeed
 
@@ -264,16 +264,26 @@ def load_latest_quotes_with_source(
         quotes = client.get_stock_latest_quote(request)
     except Exception as exc:
         logger.warning("Falling back to previous close prices for quotes: %s", exc)
-        return {symbol: float(fallback_prices[symbol]) for symbol in symbols}, "close_fallback"
+        prices = {symbol: float(fallback_prices[symbol]) for symbol in symbols}
+        sources = {symbol: "close_fallback" for symbol in symbols}
+        return prices, "close_fallback", sources
 
     prices: dict[str, float] = {}
+    quote_source_by_symbol: dict[str, str] = {}
     for symbol in symbols:
         quote = quotes.get(symbol)
         ask = float(getattr(quote, "ask_price", 0.0) or 0.0) if quote is not None else 0.0
         bid = float(getattr(quote, "bid_price", 0.0) or 0.0) if quote is not None else 0.0
         last_price = ask or bid or float(fallback_prices[symbol])
         prices[symbol] = last_price
-    return prices, "alpaca"
+        quote_source_by_symbol[symbol] = "alpaca" if (ask > 0.0 or bid > 0.0) else "close_fallback"
+
+    overall_source = (
+        "alpaca"
+        if all(source == "alpaca" for source in quote_source_by_symbol.values())
+        else "mixed_fallback"
+    )
+    return prices, overall_source, quote_source_by_symbol
 
 
 def load_latest_quotes(
@@ -283,7 +293,7 @@ def load_latest_quotes(
     fallback_prices: dict[str, float],
     data_client=None,
 ) -> dict[str, float]:
-    prices, _ = load_latest_quotes_with_source(
+    prices, _, _ = load_latest_quotes_with_source(
         symbols,
         paper=paper,
         fallback_prices=fallback_prices,
@@ -688,6 +698,7 @@ def run_once(
     now = datetime.now(timezone.utc)
     state = load_state(state_path)
     quote_data_source = "local"
+    quote_source_by_symbol: dict[str, str] = {}
     latest_bar = None
     market_open = None
     if data_source == "alpaca":
@@ -702,7 +713,7 @@ def run_once(
         )
         close_prices = latest_close_prices(frames)
         latest_bar = latest_bar_timestamp(frames)
-        quotes, quote_data_source = load_latest_quotes_with_source(
+        quotes, quote_data_source, quote_source_by_symbol = load_latest_quotes_with_source(
             symbols,
             paper=paper,
             fallback_prices=close_prices,
@@ -736,6 +747,7 @@ def run_once(
     payload["close_prices"] = close_prices
     payload["bar_data_source"] = bar_data_source
     payload["quote_data_source"] = quote_data_source
+    payload["quote_source_by_symbol"] = dict(quote_source_by_symbol)
     payload["latest_bar_timestamp"] = latest_bar.isoformat() if latest_bar is not None else None
     payload["bars_fresh"] = bars_fresh
     append_signal_log(payload)
@@ -750,9 +762,17 @@ def run_once(
     logger.info("Value est:  %.4f", float(signal.value_estimate))
     logger.info("Bars:       %s latest=%s fresh=%s", bar_data_source, latest_bar.isoformat() if latest_bar is not None else "n/a", bars_fresh)
     logger.info("Quotes:     %s", quote_data_source)
+    if quote_source_by_symbol:
+        fallback_symbols = sorted(symbol for symbol, source in quote_source_by_symbol.items() if source != "alpaca")
+        if fallback_symbols:
+            logger.info("Quote fallbacks: %s", ", ".join(fallback_symbols))
 
     executed = False
     if data_source == "alpaca":
+        allow_open = (
+            not signal.symbol
+            or quote_source_by_symbol.get(signal.symbol, quote_data_source) == "alpaca"
+        )
         if not dry_run and not bool(market_open):
             logger.warning("Market is closed; skipping order placement")
         elif not dry_run and not bars_fresh:
@@ -767,7 +787,7 @@ def run_once(
                 allocation_pct=allocation_pct,
                 dry_run=dry_run,
                 now=now,
-                allow_open=(quote_data_source == "alpaca"),
+                allow_open=allow_open,
             )
     else:
         logger.info("Local data mode selected; skipping execution")
