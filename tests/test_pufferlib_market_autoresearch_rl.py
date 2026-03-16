@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from pufferlib_market.autoresearch_rl import (
+    build_config,
     select_rank_score,
     summarize_holdout_payload,
     summarize_market_validation_payload,
@@ -118,3 +119,11 @@ def test_select_rank_score_uses_expected_fallback_order() -> None:
     assert select_rank_score(metrics, rank_metric="val_return") == ("val_return", 0.04)
     assert select_rank_score({"val_return": 0.01}, rank_metric="auto") == ("val_return", 0.01)
     assert select_rank_score({}, rank_metric="auto") == ("none", None)
+
+
+def test_build_config_accepts_stock_overrides() -> None:
+    config = build_config({"disable_shorts": True, "max_leverage": 2.0, "description": "stock_longonly"})
+
+    assert config.disable_shorts is True
+    assert config.max_leverage == pytest.approx(2.0)
+    assert config.description == "stock_longonly"
