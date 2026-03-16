@@ -24,6 +24,10 @@ sys.path.insert(0, str(REPO / "rl-trading-agent-binance"))
 
 from loguru import logger
 
+from src.llm_runtime_defaults import (
+    PROD_GEMINI_THINKING_LEVEL,
+    PROD_REASONING_EFFORT,
+)
 from unified_orchestrator.state import (
     build_snapshot,
     save_snapshot,
@@ -112,6 +116,10 @@ _CHECKPOINT_DATA_HINTS = {
     "ent_01": REPO / "pufferlib_market/data/crypto6_train.bin",
     "reg_combo_2": REPO / "pufferlib_market/data/crypto6_train.bin",
 }
+_CHECKPOINT_DATA_HINT_PREFIXES = [
+    ("stocks15_", REPO / "pufferlib_market/data/stocks15_hourly_forecast_mktd_v2_20260215.bin"),
+    ("stocks13_", REPO / "pufferlib_market/data/stocks13_hourly_forecast_mktd_v2_start20250915.bin"),
+]
 STOCK_FORECAST_CACHE_CANDIDATES = [
     REPO / "binanceneural/forecast_cache",
     REPO / "unified_hourly_experiment/forecast_cache",
@@ -195,9 +203,13 @@ _crypto_rl_trader = None
 
 
 def _checkpoint_data_path(checkpoint_path: Path) -> Path | None:
-    path = _CHECKPOINT_DATA_HINTS.get(checkpoint_path.parent.name)
+    checkpoint_name = checkpoint_path.parent.name
+    path = _CHECKPOINT_DATA_HINTS.get(checkpoint_name)
     if path is not None and path.exists():
         return path
+    for prefix, candidate in _CHECKPOINT_DATA_HINT_PREFIXES:
+        if checkpoint_name.startswith(prefix) and candidate.exists():
+            return candidate
     return None
 
 
@@ -496,7 +508,8 @@ def get_crypto_signals(
     symbols: list[str],
     snapshot: UnifiedPortfolioSnapshot,
     model: str = "gemini-3.1-flash-lite-preview",
-    thinking_level: str = "HIGH",
+    thinking_level: str = PROD_GEMINI_THINKING_LEVEL,
+    reasoning_effort: str = PROD_REASONING_EFFORT,
     dry_run: bool = True,
 ) -> dict[str, TradePlan]:
     """Generate LLM trading signals for crypto symbols using Alpaca historical data.
@@ -603,7 +616,12 @@ def get_crypto_signals(
         ) + rl_hint + trend_warning
 
         try:
-            plan = call_llm(prompt, model=model, thinking_level=thinking_level)
+            plan = call_llm(
+                prompt,
+                model=model,
+                thinking_level=thinking_level,
+                reasoning_effort=reasoning_effort,
+            )
             signals[sym] = plan
             alloc_str = f", alloc={plan.allocation_pct:.0f}%" if plan.allocation_pct > 0 else ""
             logger.info(
@@ -1007,7 +1025,8 @@ def get_stock_signals(
     symbols: list[str],
     snapshot: UnifiedPortfolioSnapshot,
     model: str = "gemini-3.1-flash-lite-preview",
-    thinking_level: str = "HIGH",
+    thinking_level: str = PROD_GEMINI_THINKING_LEVEL,
+    reasoning_effort: str = PROD_REASONING_EFFORT,
     dry_run: bool = True,
 ) -> dict[str, TradePlan]:
     """Generate LLM trading signals for stock symbols using Alpaca OHLCV data."""
@@ -1106,7 +1125,12 @@ def get_stock_signals(
                 forecast_24h=forecast_24h,
             ) + rl_hint + stock_trend_warning
 
-            plan = call_llm(prompt, model=model, thinking_level=thinking_level)
+            plan = call_llm(
+                prompt,
+                model=model,
+                thinking_level=thinking_level,
+                reasoning_effort=reasoning_effort,
+            )
 
             ok, reason = validate_plan_safety(plan, current_price, fee_bps=10.0)
             if not ok:
@@ -1454,7 +1478,8 @@ def run_cycle(
     crypto_symbols: list[str],
     stock_symbols: list[str] | None = None,
     model: str = "gemini-3.1-flash-lite-preview",
-    thinking_level: str = "HIGH",
+    thinking_level: str = PROD_GEMINI_THINKING_LEVEL,
+    reasoning_effort: str = PROD_REASONING_EFFORT,
     dry_run: bool = True,
 ) -> dict:
     """Run one unified trading cycle."""
@@ -1499,7 +1524,12 @@ def run_cycle(
     if snapshot.regime in ("CRYPTO_ONLY", "PRE_MARKET", "POST_MARKET", "STOCK_HOURS"):
         logger.info(f"\n--- CRYPTO SIGNALS ({len(crypto_symbols)} symbols) ---")
         crypto_signals = get_crypto_signals(
-            crypto_symbols, snapshot, model, thinking_level, dry_run
+            crypto_symbols,
+            snapshot,
+            model,
+            thinking_level,
+            reasoning_effort,
+            dry_run,
         )
         if crypto_signals:
             crypto_orders = execute_crypto_signals(crypto_signals, snapshot, dry_run)
@@ -1554,7 +1584,14 @@ def run_cycle(
                        if p.symbol not in set(CRYPTO_SYMBOLS))
         logger.info(f"  Leverage: {long_val / equity:.2f}x | Equity: ${equity:,.0f} | "
                     f"Margin cost: ${max(0, long_val - equity) * MARGIN_INTEREST_ANNUAL / 365:.2f}/day")
-        stock_signals = get_stock_signals(syms, snapshot, model, thinking_level, dry_run)
+        stock_signals = get_stock_signals(
+            syms,
+            snapshot,
+            model,
+            thinking_level,
+            reasoning_effort,
+            dry_run,
+        )
         if stock_signals:
             stock_orders = execute_stock_signals(stock_signals, snapshot, dry_run)
             results["orders"].extend(stock_orders)
@@ -1586,7 +1623,8 @@ def main():
     parser.add_argument("--crypto-symbols", nargs="+", default=CRYPTO_SYMBOLS)
     parser.add_argument("--stock-symbols", nargs="+", default=STOCK_SYMBOLS)
     parser.add_argument("--model", default="gemini-3.1-flash-lite-preview")
-    parser.add_argument("--thinking-level", default="HIGH")
+    parser.add_argument("--thinking-level", default=PROD_GEMINI_THINKING_LEVEL)
+    parser.add_argument("--reasoning-effort", default=PROD_REASONING_EFFORT)
     parser.add_argument("--dry-run", action="store_true", default=True)
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--once", action="store_true")
@@ -1605,6 +1643,7 @@ def main():
                 stock_symbols=args.stock_symbols,
                 model=args.model,
                 thinking_level=args.thinking_level,
+                reasoning_effort=args.reasoning_effort,
                 dry_run=dry_run,
             )
         except Exception as e:

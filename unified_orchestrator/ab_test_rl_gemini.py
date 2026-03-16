@@ -32,6 +32,7 @@ from newnanoalpacahourlyexp.marketsimulator.hourly_trader import (
     HourlyTraderMarketSimulator,
     HourlyTraderSimulationConfig,
 )
+from src.llm_runtime_defaults import BACKTEST_GEMINI_THINKING_LEVEL
 from unified_orchestrator.rl_gemini_bridge import (
     RLGeminiBridge,
     RLSignal,
@@ -69,7 +70,7 @@ def build_bars_and_actions_from_rl(
     bridge: RLGeminiBridge | None,
     mode: str = "rl_only",  # "rl_only" or "rl_gemini"
     model: str = "gemini-3.1-flash-lite-preview",
-    thinking_level: str = "HIGH",
+    thinking_level: str = BACKTEST_GEMINI_THINKING_LEVEL,
     days: int = 30,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Generate trading actions using RL model (optionally refined by Gemini).
@@ -145,7 +146,7 @@ def run_ab_test(
     days: int = 30,
     initial_cash: float = 10_000.0,
     model: str = "gemini-3.1-flash-lite-preview",
-    thinking_level: str = "HIGH",
+    thinking_level: str = BACKTEST_GEMINI_THINKING_LEVEL,
 ) -> dict:
     """Run A/B test comparing RL-only vs RL+Gemini."""
     num_symbols, num_timesteps, prices = load_mktd_data(data_path)
@@ -243,7 +244,7 @@ def main():
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--cash", type=float, default=10000.0)
     parser.add_argument("--model", default="gemini-3.1-flash-lite-preview")
-    parser.add_argument("--thinking-level", default="HIGH")
+    parser.add_argument("--thinking-level", default=BACKTEST_GEMINI_THINKING_LEVEL)
     args = parser.parse_args()
 
     run_ab_test(
