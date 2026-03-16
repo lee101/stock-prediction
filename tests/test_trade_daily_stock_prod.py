@@ -128,6 +128,36 @@ def test_execute_signal_refuses_to_trade_with_unmanaged_position(monkeypatch) ->
     assert state.active_symbol is None
 
 
+def test_execute_signal_with_open_gate_only_closes_existing_position(monkeypatch) -> None:
+    orders: list[tuple[str, float, str]] = []
+
+    def _fake_submit_market_order(client, *, symbol: str, qty: float, side: str):
+        orders.append((symbol, qty, side))
+        return SimpleNamespace(id=f"{symbol}-{side}")
+
+    monkeypatch.setattr(daily_stock, "submit_market_order", _fake_submit_market_order)
+
+    client = _FakeClient([SimpleNamespace(symbol="AAPL", qty="10", side="long")])
+    state = daily_stock.StrategyState(active_symbol="AAPL", active_qty=10.0)
+    signal = SimpleNamespace(symbol="MSFT", direction="long", action="long_MSFT")
+
+    changed = daily_stock.execute_signal(
+        signal,
+        client=client,
+        quotes={"AAPL": 100.0, "MSFT": 50.0},
+        state=state,
+        symbols=["AAPL", "MSFT"],
+        allocation_pct=25.0,
+        dry_run=False,
+        allow_open=False,
+    )
+
+    assert changed is True
+    assert orders == [("AAPL", 10.0, "sell")]
+    assert state.active_symbol is None
+    assert state.active_qty == 0.0
+
+
 def test_adopt_existing_position_populates_state() -> None:
     state = daily_stock.StrategyState()
     adopted = daily_stock.adopt_existing_position(
@@ -158,6 +188,30 @@ def test_load_latest_quotes_falls_back_to_close_prices() -> None:
     )
 
     assert prices == {"AAPL": 101.0, "MSFT": 202.0}
+
+    prices_with_source, source = daily_stock.load_latest_quotes_with_source(
+        ["AAPL", "MSFT"],
+        paper=True,
+        fallback_prices={"AAPL": 101.0, "MSFT": 202.0},
+        data_client=_BrokenQuoteClient(),
+    )
+    assert prices_with_source == {"AAPL": 101.0, "MSFT": 202.0}
+    assert source == "close_fallback"
+
+
+def test_bars_are_fresh_uses_age_gate() -> None:
+    latest_bar = pd.Timestamp("2026-03-14T00:00:00Z")
+
+    assert daily_stock.bars_are_fresh(
+        latest_bar=latest_bar,
+        now=datetime(2026, 3, 16, 13, 40, tzinfo=timezone.utc),
+        max_age_days=5,
+    ) is True
+    assert daily_stock.bars_are_fresh(
+        latest_bar=latest_bar,
+        now=datetime(2026, 3, 25, 13, 40, tzinfo=timezone.utc),
+        max_age_days=5,
+    ) is False
 
 
 def test_run_once_falls_back_to_local_daily_frames(monkeypatch, tmp_path: Path) -> None:
