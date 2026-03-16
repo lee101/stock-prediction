@@ -32,6 +32,7 @@ from newnanoalpacahourlyexp.marketsimulator.hourly_trader import (
     HourlyTraderMarketSimulator,
     HourlyTraderSimulationConfig,
 )
+from src.llm_runtime_defaults import BACKTEST_GEMINI_THINKING_LEVEL
 from unified_orchestrator.rl_gemini_bridge import (
     RLSignal,
     build_hybrid_prompt,
@@ -235,7 +236,7 @@ def run_backtest(
     initial_cash: float = 10_000.0,
     modes: list[str] | None = None,
     model: str = "gemini-2.5-flash",
-    thinking_level: str = "HIGH",
+    thinking_level: str = BACKTEST_GEMINI_THINKING_LEVEL,
     hidden_size: int = 1024,
     arch: str = "mlp",
     gemini_sample_rate: int = 4,  # Only call Gemini every N bars to save cost
@@ -590,7 +591,7 @@ def main():
     parser.add_argument("--days", type=int, default=7)
     parser.add_argument("--cash", type=float, default=10000.0)
     parser.add_argument("--model", default="gemini-2.5-flash")
-    parser.add_argument("--thinking-level", default="HIGH")
+    parser.add_argument("--thinking-level", default=BACKTEST_GEMINI_THINKING_LEVEL)
     parser.add_argument("--hidden-size", type=int, default=1024)
     parser.add_argument("--arch", default="mlp")
     parser.add_argument("--gemini-sample-rate", type=int, default=4,

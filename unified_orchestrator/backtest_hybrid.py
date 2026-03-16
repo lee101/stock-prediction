@@ -35,6 +35,10 @@ from env_real import *  # noqa: F401,F403 — exports API keys to os.environ
 
 from llm_hourly_trader.gemini_wrapper import TradePlan, build_prompt
 from llm_hourly_trader.providers import call_llm
+from src.llm_runtime_defaults import (
+    BACKTEST_GEMINI_THINKING_LEVEL,
+    BACKTEST_REASONING_EFFORT,
+)
 from newnanoalpacahourlyexp.marketsimulator.hourly_trader import (
     HourlyTraderMarketSimulator,
     HourlyTraderSimulationConfig,
@@ -216,8 +220,8 @@ def run_backtest(
     initial_cash: float = 10_000.0,
     modes: list[str] = None,
     model: str = "gemini-3.1-flash-lite-preview",
-    thinking_level: str = "HIGH",
-    reasoning_effort: str | None = None,
+    thinking_level: str = BACKTEST_GEMINI_THINKING_LEVEL,
+    reasoning_effort: str | None = BACKTEST_REASONING_EFFORT,
 ) -> dict:
     """Run backtest across modes with sequential position tracking.
 
@@ -474,8 +478,8 @@ def main():
     parser.add_argument("--days", type=int, default=7)
     parser.add_argument("--cash", type=float, default=10000.0)
     parser.add_argument("--model", default="gemini-3.1-flash-lite-preview")
-    parser.add_argument("--thinking-level", default="HIGH")
-    parser.add_argument("--reasoning-effort", default=None,
+    parser.add_argument("--thinking-level", default=BACKTEST_GEMINI_THINKING_LEVEL)
+    parser.add_argument("--reasoning-effort", default=BACKTEST_REASONING_EFFORT,
                         help="Effort level for Anthropic/OpenAI reasoning models (low/medium/high/max)")
     parser.add_argument("--modes", nargs="+", default=["rl_only", "gemini_only", "rl_gemini"])
     args = parser.parse_args()
