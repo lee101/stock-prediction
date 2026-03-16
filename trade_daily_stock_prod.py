@@ -260,7 +260,11 @@ def load_latest_quotes(
 
     client = data_client or build_data_client(paper=paper)
     request = StockLatestQuoteRequest(symbol_or_symbols=list(symbols), feed=DataFeed.IEX)
-    quotes = client.get_stock_latest_quote(request)
+    try:
+        quotes = client.get_stock_latest_quote(request)
+    except Exception as exc:
+        logger.warning("Falling back to previous close prices for quotes: %s", exc)
+        return {symbol: float(fallback_prices[symbol]) for symbol in symbols}
 
     prices: dict[str, float] = {}
     for symbol in symbols:
@@ -270,6 +274,23 @@ def load_latest_quotes(
         last_price = ask or bid or float(fallback_prices[symbol])
         prices[symbol] = last_price
     return prices
+
+
+def load_inference_frames(
+    symbols: Iterable[str],
+    *,
+    paper: bool,
+    data_dir: str,
+    now: datetime,
+    data_client=None,
+) -> tuple[dict[str, pd.DataFrame], str]:
+    try:
+        frames = load_alpaca_daily_frames(symbols, paper=paper, data_client=data_client, now=now)
+        return frames, "alpaca"
+    except Exception as exc:
+        logger.warning("Falling back to local daily CSVs for inference bars: %s", exc)
+        frames = load_local_daily_frames(symbols, data_dir=data_dir)
+        return frames, "local_fallback"
 
 
 def build_signal(
@@ -635,7 +656,13 @@ def run_once(
     if data_source == "alpaca":
         client = build_trading_client(paper=paper)
         data_client = build_data_client(paper=paper)
-        frames = load_alpaca_daily_frames(symbols, paper=paper, data_client=data_client, now=now)
+        frames, bar_data_source = load_inference_frames(
+            symbols,
+            paper=paper,
+            data_dir=data_dir,
+            now=now,
+            data_client=data_client,
+        )
         close_prices = latest_close_prices(frames)
         quotes = load_latest_quotes(symbols, paper=paper, fallback_prices=close_prices, data_client=data_client)
         live_positions = positions_by_symbol(client, symbols)
@@ -651,11 +678,13 @@ def run_once(
         frames = load_local_daily_frames(symbols, data_dir=data_dir)
         quotes = latest_close_prices(frames)
         portfolio = PortfolioContext()
+        bar_data_source = "local"
 
     signal, close_prices = build_signal(checkpoint, frames, portfolio=portfolio)
 
     payload = _signal_payload(signal, checkpoint=checkpoint, quotes=quotes)
     payload["close_prices"] = close_prices
+    payload["bar_data_source"] = bar_data_source
     append_signal_log(payload)
 
     logger.info("%s", "=" * 60)
