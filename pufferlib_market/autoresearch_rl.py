@@ -60,12 +60,14 @@ class TrialConfig:
     reward_scale: float = 10.0
     reward_clip: float = 5.0
     cash_penalty: float = 0.01
+    max_leverage: float = 1.0
     fill_slippage_bps: float = 0.0
     fee_rate: float = 0.001
     trade_penalty: float = 0.0
     downside_penalty: float = 0.0
     smooth_downside_penalty: float = 0.0
     arch: str = "mlp"
+    disable_shorts: bool = False
     max_steps: int = 720
     periods_per_year: float = 8760.0
     seed: int = 42
@@ -76,6 +78,9 @@ class TrialConfig:
 EXPERIMENTS: list[dict] = [
     # Baseline: vanilla PPO with anneal-LR
     {"description": "baseline_anneal_lr"},
+    {"description": "longonly", "disable_shorts": True},
+    {"description": "longonly_slip_5bps", "disable_shorts": True, "fill_slippage_bps": 5.0},
+    {"description": "longonly_obs_norm", "disable_shorts": True, "obs_norm": True},
 
     # Obs norm (was critical in earlier tests)
     {"description": "obs_norm", "obs_norm": True},
@@ -186,6 +191,7 @@ def mutate_config(base: TrialConfig) -> TrialConfig:
         "trade_penalty": [0.0, 0.01, 0.02, 0.05],
         "obs_norm": [True, False],
         "anneal_lr": [True, False],
+        "disable_shorts": [True, False],
     }
     keys = random.sample(list(mutable_params.keys()), min(3, len(mutable_params)))
     for k in keys:
@@ -360,6 +366,7 @@ def run_trial(
         "--reward-scale", str(config.reward_scale),
         "--reward-clip", str(config.reward_clip),
         "--cash-penalty", str(config.cash_penalty),
+        "--max-leverage", str(config.max_leverage),
         "--fee-rate", str(config.fee_rate),
         "--fill-slippage-bps", str(config.fill_slippage_bps),
         "--trade-penalty", str(config.trade_penalty),
@@ -380,6 +387,8 @@ def run_trial(
         cmd.extend(["--anneal-clip", "--clip-eps-end", str(config.clip_eps_end)])
     if config.clip_vloss:
         cmd.append("--clip-vloss")
+    if config.disable_shorts:
+        cmd.append("--disable-shorts")
     if config.lr_schedule != "none":
         cmd.extend([
             "--lr-schedule", config.lr_schedule,
@@ -473,11 +482,14 @@ def run_trial(
         "--max-steps", str(config.max_steps),
         "--num-episodes", "100",
         "--seed", "42",
+        "--max-leverage", str(config.max_leverage),
         "--fill-slippage-bps", "8",  # always eval with realistic slippage
         "--periods-per-year", str(config.periods_per_year),
     ]
     if config.arch == "resmlp":
         eval_cmd.extend(["--arch", "resmlp"])
+    if config.disable_shorts:
+        eval_cmd.append("--disable-shorts")
     val_return = None
     val_wr = None
     val_sortino = None
@@ -544,6 +556,8 @@ def run_trial(
         ]
         if holdout_end_within_steps > 0:
             holdout_cmd.extend(["--end-within-hours", str(holdout_end_within_steps)])
+        if config.disable_shorts:
+            holdout_cmd.append("--disable-shorts")
         try:
             holdout_result = _run_capture(holdout_cmd, cwd=REPO, timeout_s=holdout_timeout_s)
             if holdout_result.returncode != 0:
@@ -651,6 +665,10 @@ def main():
                         help="Override max_steps for all experiments (e.g. 90 for daily)")
     parser.add_argument("--fee-rate-override", type=float, default=-1.0,
                         help="Override fee_rate for all experiments (e.g. 0.0 for FDUSD zero-fee)")
+    parser.add_argument("--max-leverage-override", type=float, default=0.0,
+                        help="Override max_leverage for all experiments when > 0")
+    parser.add_argument("--disable-shorts-override", action="store_true",
+                        help="Mask short actions for all experiments")
     parser.add_argument("--holdout-data", default=None,
                         help="Optional MKTD data for robust holdout evaluation (defaults to --val-data)")
     parser.add_argument("--holdout-eval-steps", type=int, default=0,
@@ -698,7 +716,7 @@ def main():
         "market_trade_count", "market_goodness_score",
         "hidden_size", "lr", "ent_coef", "weight_decay", "fill_slippage_bps",
         "obs_norm", "anneal_lr", "anneal_ent", "anneal_clip", "lr_schedule",
-        "arch", "fee_rate", "trade_penalty", "gamma",
+        "arch", "fee_rate", "trade_penalty", "gamma", "max_leverage", "disable_shorts",
     ]
 
     existing_trials = set()
@@ -740,6 +758,10 @@ def main():
             config.max_steps = args.max_steps_override
         if args.fee_rate_override >= 0.0:
             config.fee_rate = args.fee_rate_override
+        if args.max_leverage_override > 0.0:
+            config.max_leverage = args.max_leverage_override
+        if args.disable_shorts_override:
+            config.disable_shorts = True
 
         holdout_eval_steps = int(args.holdout_eval_steps) if int(args.holdout_eval_steps) > 0 else int(config.max_steps)
 
@@ -828,6 +850,8 @@ def main():
             "fee_rate": config.fee_rate,
             "trade_penalty": config.trade_penalty,
             "gamma": config.gamma,
+            "max_leverage": config.max_leverage,
+            "disable_shorts": config.disable_shorts,
         }
 
         write_header = not leaderboard_path.exists()
