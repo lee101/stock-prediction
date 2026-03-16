@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import struct
 import sys
 import time
@@ -231,7 +232,140 @@ def run_inference(checkpoint: str, data_bin: str, hidden_size: int = 1024):
         "value": float(value.item()),
         "action": action,
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "all_probs": probs.tolist(),
+        "sym_names": sym_names,
     }
+
+
+STRATEGY_TAG = "mixed23_daily_rl"  # tag for position tracking
+
+CRYPTO_ALPACA = {"BTCUSD", "ETHUSD", "SOLUSD", "LTCUSD", "AVAXUSD", "DOGEUSD", "LINKUSD", "AAVEUSD", "UNIUSD"}
+
+
+def execute_signal(signal: dict, allocation_pct: float = 10.0) -> bool:
+    """Execute the RL signal on Alpaca. Returns True if order placed."""
+    import alpaca_wrapper as aw
+    from loguru import logger
+
+    tc = aw.TradingClient(aw.ALP_KEY_ID, aw.ALP_SECRET_KEY, paper=True)
+    account = tc.get_account()
+    portfolio_value = float(account.portfolio_value)
+    buying_power = float(account.buying_power)
+
+    symbol = signal["symbol"]
+    direction = signal["direction"]
+    confidence = signal["confidence"]
+
+    # Map symbol for Alpaca
+    # Crypto on Alpaca uses slash format: BTC/USD
+    is_crypto = symbol in CRYPTO_ALPACA
+    alpaca_symbol = symbol.replace("USD", "/USD") if is_crypto else symbol
+
+    logger.info(f"Account: portfolio=${portfolio_value:,.2f}, buying_power=${buying_power:,.2f}")
+    logger.info(f"Signal: {direction} {symbol} ({alpaca_symbol}) conf={confidence:.1%}")
+
+    # Calculate allocation
+    trade_value = portfolio_value * (allocation_pct / 100.0)
+    trade_value = min(trade_value, buying_power * 0.9)  # don't use 100% of BP
+
+    if trade_value < 1.0:
+        logger.warning(f"Trade value too small: ${trade_value:.2f}")
+        return False
+
+    # Get current price
+    price = 0.0
+    try:
+        if is_crypto:
+            from alpaca.data.requests import CryptoBarsRequest
+            from alpaca.data.timeframe import TimeFrame
+            bars = aw.crypto_client.get_crypto_bars(
+                CryptoBarsRequest(symbol_or_symbols=alpaca_symbol, timeframe=TimeFrame.Hour, limit=1)
+            )
+            data = bars[alpaca_symbol]
+            if data and len(data) > 0:
+                price = float(data[0].close)
+        else:
+            from alpaca.data.requests import StockBarsRequest
+            from alpaca.data.timeframe import TimeFrame
+            bars = aw.data_client.get_stock_bars(
+                StockBarsRequest(symbol_or_symbols=alpaca_symbol, timeframe=TimeFrame.Hour, limit=1)
+            )
+            data = bars[alpaca_symbol]
+            if data and len(data) > 0:
+                price = float(data[0].close)
+    except Exception as e:
+        logger.warning(f"Price fetch error for {alpaca_symbol}: {e}")
+
+    if price <= 0:
+        logger.error(f"Could not get price for {alpaca_symbol}")
+        return False
+
+    # Calculate quantity
+    if is_crypto:
+        qty = round(trade_value / price, 8)
+    else:
+        qty = int(trade_value / price)  # whole shares for stocks
+        if qty < 1:
+            qty = round(trade_value / price, 4)  # fractional shares
+
+    if qty <= 0:
+        logger.warning(f"Quantity too small for {alpaca_symbol}")
+        return False
+
+    # Place order — crypto can't be shorted on Alpaca, skip those
+    if direction == "SHORT" and is_crypto:
+        # Check if we hold this crypto to sell
+        try:
+            pos = tc.get_open_position(alpaca_symbol)
+            if float(pos.qty) > 0:
+                qty = min(qty, float(pos.qty))
+                logger.info(f"Selling existing {alpaca_symbol} position: {qty}")
+            else:
+                logger.info(f"SKIP: Can't short {alpaca_symbol} on Alpaca (no position to sell)")
+                return False
+        except Exception:
+            logger.info(f"SKIP: Can't short {alpaca_symbol} on Alpaca (no position)")
+            return False
+
+    side = aw.OrderSide.BUY if direction == "LONG" else aw.OrderSide.SELL
+    logger.info(f"Placing {side.value} order: {qty} {alpaca_symbol} @ ~${price:.2f} (${trade_value:,.2f})")
+
+    try:
+        order = tc.submit_order(
+            aw.MarketOrderRequest(
+                symbol=alpaca_symbol,
+                qty=qty,
+                side=side,
+                time_in_force="day" if not is_crypto else "gtc",
+            )
+        )
+        logger.info(f"Order submitted: {order.id} status={order.status}")
+        logger.info(f"  {order.side} {order.qty} {order.symbol} type={order.type}")
+
+        # Log for tracking
+        log_entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "strategy": STRATEGY_TAG,
+            "symbol": symbol,
+            "alpaca_symbol": alpaca_symbol,
+            "direction": direction,
+            "confidence": confidence,
+            "qty": float(qty),
+            "price_approx": price,
+            "trade_value": trade_value,
+            "order_id": str(order.id),
+            "status": str(order.status),
+        }
+        log_path = Path("strategy_state/mixed23_daily_trades.jsonl")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a") as f:
+            f.write(json.dumps(log_entry) + "\n")
+        logger.info(f"Trade logged to {log_path}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Order failed: {e}")
+        return False
 
 
 def main():
@@ -243,6 +377,8 @@ def main():
     parser.add_argument("--daemon", action="store_true", help="Run daily at midnight UTC")
     parser.add_argument("--dry-run", action="store_true", help="Print signal without executing")
     parser.add_argument("--hidden-size", type=int, default=1024)
+    parser.add_argument("--allocation-pct", type=float, default=10.0,
+                        help="Percentage of portfolio to allocate per trade (default 10%%)")
     args = parser.parse_args()
 
     symbols = args.symbols or DEFAULT_SYMBOLS
@@ -254,13 +390,33 @@ def main():
         signal = run_inference(args.checkpoint, data_bin, args.hidden_size)
 
         if not args.dry_run and signal["symbol"]:
-            print(f"\n  ACTION: {signal['direction']} {signal['symbol']}")
-            print(f"  TODO: Execute via Alpaca/Binance API")
+            print(f"\n  EXECUTING: {signal['direction']} {signal['symbol']}")
+            success = execute_signal(signal, args.allocation_pct)
+            # If primary signal can't execute (e.g., crypto short), try alternatives
+            if not success and "all_probs" in signal:
+                print(f"  Primary signal skipped, trying alternatives...")
+                probs = signal["all_probs"]
+                top_actions = np.argsort(probs)[::-1]
+                sym_names = signal.get("sym_names", DEFAULT_SYMBOLS)
+                S = len(sym_names)
+                for act in top_actions[1:6]:  # try next 5
+                    if act == 0:
+                        continue
+                    if act <= S:
+                        alt_dir, alt_sym = "LONG", sym_names[act - 1]
+                    else:
+                        alt_dir, alt_sym = "SHORT", sym_names[act - S - 1]
+                    alt_signal = {"direction": alt_dir, "symbol": alt_sym,
+                                 "confidence": float(probs[act])}
+                    print(f"  Trying: {alt_dir} {alt_sym} (conf={probs[act]:.3f})")
+                    if execute_signal(alt_signal, args.allocation_pct):
+                        break
         elif args.dry_run:
             print(f"\n  [DRY RUN] Would {signal['direction']} {signal['symbol'] or 'stay flat'}")
 
     elif args.daemon:
         print(f"Starting daily daemon for {len(symbols)} symbols...")
+        print(f"Allocation: {args.allocation_pct}% of portfolio per trade")
         while True:
             now = datetime.now(timezone.utc)
             # Run at 00:05 UTC daily
@@ -268,15 +424,25 @@ def main():
             if next_run <= now:
                 next_run += pd.Timedelta(days=1)
             wait_s = (next_run - now).total_seconds()
-            print(f"Next run: {next_run.isoformat()} (in {wait_s/3600:.1f}h)")
+            print(f"\nNext run: {next_run.isoformat()} (in {wait_s/3600:.1f}h)")
             time.sleep(wait_s)
 
             try:
+                print(f"\n{'='*60}")
+                print(f"DAILY RUN — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
+                print(f"{'='*60}")
                 data_bin, _, _ = export_live_binary(symbols, args.data_dir, TEMP_BIN)
                 signal = run_inference(args.checkpoint, data_bin, args.hidden_size)
-                print(f"\n  ACTION: {signal['direction']} {signal['symbol'] or 'FLAT'}")
+
+                if signal["symbol"]:
+                    print(f"\n  EXECUTING: {signal['direction']} {signal['symbol']}")
+                    execute_signal(signal, args.allocation_pct)
+                else:
+                    print(f"\n  SIGNAL: FLAT — closing any open positions from this strategy")
             except Exception as e:
                 print(f"  ERROR: {e}")
+                import traceback
+                traceback.print_exc()
     else:
         parser.print_help()
 
