@@ -772,7 +772,11 @@ def run_once(
     else:
         logger.info("Local data mode selected; skipping execution")
 
-    if not dry_run:
+    should_advance_state = (
+        not dry_run
+        and (data_source != "alpaca" or bool(market_open))
+    )
+    if should_advance_state:
         state.last_run_date = now.astimezone(EASTERN).date().isoformat()
         state.last_signal_action = signal.action
         state.last_signal_timestamp = now.isoformat()
