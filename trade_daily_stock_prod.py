@@ -248,13 +248,13 @@ def latest_close_prices(frames: dict[str, pd.DataFrame]) -> dict[str, float]:
     return {symbol: float(frame["close"].iloc[-1]) for symbol, frame in frames.items()}
 
 
-def load_latest_quotes(
+def load_latest_quotes_with_source(
     symbols: Iterable[str],
     *,
     paper: bool,
     fallback_prices: dict[str, float],
     data_client=None,
-) -> dict[str, float]:
+) -> tuple[dict[str, float], str]:
     from alpaca.data import StockLatestQuoteRequest
     from alpaca.data.enums import DataFeed
 
@@ -264,7 +264,7 @@ def load_latest_quotes(
         quotes = client.get_stock_latest_quote(request)
     except Exception as exc:
         logger.warning("Falling back to previous close prices for quotes: %s", exc)
-        return {symbol: float(fallback_prices[symbol]) for symbol in symbols}
+        return {symbol: float(fallback_prices[symbol]) for symbol in symbols}, "close_fallback"
 
     prices: dict[str, float] = {}
     for symbol in symbols:
@@ -273,6 +273,22 @@ def load_latest_quotes(
         bid = float(getattr(quote, "bid_price", 0.0) or 0.0) if quote is not None else 0.0
         last_price = ask or bid or float(fallback_prices[symbol])
         prices[symbol] = last_price
+    return prices, "alpaca"
+
+
+def load_latest_quotes(
+    symbols: Iterable[str],
+    *,
+    paper: bool,
+    fallback_prices: dict[str, float],
+    data_client=None,
+) -> dict[str, float]:
+    prices, _ = load_latest_quotes_with_source(
+        symbols,
+        paper=paper,
+        fallback_prices=fallback_prices,
+        data_client=data_client,
+    )
     return prices
 
 
@@ -329,8 +345,21 @@ def build_signal(
             value_estimate=float(signal.value_estimate),
             allocation_pct=0.0,
             level_offset_bps=0.0,
-        )
+    )
     return signal, prices
+
+
+def latest_bar_timestamp(frames: dict[str, pd.DataFrame]) -> pd.Timestamp:
+    if not frames:
+        raise ValueError("No frames available")
+    latest = pd.Timestamp(next(iter(frames.values()))["timestamp"].iloc[-1])
+    return latest.tz_localize("UTC") if latest.tzinfo is None else latest.tz_convert("UTC")
+
+
+def bars_are_fresh(*, latest_bar: pd.Timestamp, now: datetime, max_age_days: int = 5) -> bool:
+    latest_bar = latest_bar.tz_localize("UTC") if latest_bar.tzinfo is None else latest_bar.tz_convert("UTC")
+    age_days = (now.date() - latest_bar.date()).days
+    return age_days <= max(0, int(max_age_days))
 
 
 def _signed_position_qty(position) -> float:
@@ -393,6 +422,7 @@ def execute_signal(
     allocation_pct: float,
     dry_run: bool,
     now: Optional[datetime] = None,
+    allow_open: bool = True,
 ) -> bool:
     now = now or datetime.now(timezone.utc)
     symbol_set = [str(symbol).upper() for symbol in symbols]
@@ -427,6 +457,10 @@ def execute_signal(
 
     if desired_symbol is None:
         logger.info("Signal is flat; no new position opened")
+        return managed_position is not None
+
+    if not allow_open:
+        logger.warning("Skipping new position open for %s because execution safety gate is active", desired_symbol)
         return managed_position is not None
 
     account = client.get_account()
@@ -653,6 +687,9 @@ def run_once(
 ) -> dict:
     now = datetime.now(timezone.utc)
     state = load_state(state_path)
+    quote_data_source = "local"
+    latest_bar = None
+    market_open = None
     if data_source == "alpaca":
         client = build_trading_client(paper=paper)
         data_client = build_data_client(paper=paper)
@@ -664,7 +701,13 @@ def run_once(
             data_client=data_client,
         )
         close_prices = latest_close_prices(frames)
-        quotes = load_latest_quotes(symbols, paper=paper, fallback_prices=close_prices, data_client=data_client)
+        latest_bar = latest_bar_timestamp(frames)
+        quotes, quote_data_source = load_latest_quotes_with_source(
+            symbols,
+            paper=paper,
+            fallback_prices=close_prices,
+            data_client=data_client,
+        )
         live_positions = positions_by_symbol(client, symbols)
         if not dry_run:
             adopt_existing_position(state=state, live_positions=live_positions, now=now)
@@ -674,17 +717,27 @@ def run_once(
             account=client.get_account(),
             now=now,
         )
+        try:
+            market_open = bool(getattr(client.get_clock(), "is_open", False))
+        except Exception as exc:
+            logger.warning("Could not read Alpaca market clock: %s", exc)
+            market_open = False
     else:
         frames = load_local_daily_frames(symbols, data_dir=data_dir)
         quotes = latest_close_prices(frames)
         portfolio = PortfolioContext()
         bar_data_source = "local"
+        latest_bar = latest_bar_timestamp(frames)
 
     signal, close_prices = build_signal(checkpoint, frames, portfolio=portfolio)
+    bars_fresh = bars_are_fresh(latest_bar=latest_bar, now=now) if latest_bar is not None else False
 
     payload = _signal_payload(signal, checkpoint=checkpoint, quotes=quotes)
     payload["close_prices"] = close_prices
     payload["bar_data_source"] = bar_data_source
+    payload["quote_data_source"] = quote_data_source
+    payload["latest_bar_timestamp"] = latest_bar.isoformat() if latest_bar is not None else None
+    payload["bars_fresh"] = bars_fresh
     append_signal_log(payload)
 
     logger.info("%s", "=" * 60)
@@ -695,19 +748,27 @@ def run_once(
     logger.info("Direction:  %s", signal.direction or "N/A")
     logger.info("Confidence: %.1f%%", float(signal.confidence) * 100.0)
     logger.info("Value est:  %.4f", float(signal.value_estimate))
+    logger.info("Bars:       %s latest=%s fresh=%s", bar_data_source, latest_bar.isoformat() if latest_bar is not None else "n/a", bars_fresh)
+    logger.info("Quotes:     %s", quote_data_source)
 
     executed = False
     if data_source == "alpaca":
-        executed = execute_signal(
-            signal,
-            client=client,
-            quotes=quotes,
-            state=state,
-            symbols=symbols,
-            allocation_pct=allocation_pct,
-            dry_run=dry_run,
-            now=now,
-        )
+        if not dry_run and not bool(market_open):
+            logger.warning("Market is closed; skipping order placement")
+        elif not dry_run and not bars_fresh:
+            logger.warning("Latest inference bar is stale; skipping order placement")
+        else:
+            executed = execute_signal(
+                signal,
+                client=client,
+                quotes=quotes,
+                state=state,
+                symbols=symbols,
+                allocation_pct=allocation_pct,
+                dry_run=dry_run,
+                now=now,
+                allow_open=(quote_data_source == "alpaca"),
+            )
     else:
         logger.info("Local data mode selected; skipping execution")
 
