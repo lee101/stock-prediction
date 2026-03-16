@@ -772,10 +772,11 @@ def run_once(
     else:
         logger.info("Local data mode selected; skipping execution")
 
-    state.last_run_date = now.astimezone(EASTERN).date().isoformat()
-    state.last_signal_action = signal.action
-    state.last_signal_timestamp = now.isoformat()
-    save_state(state, path=state_path)
+    if not dry_run:
+        state.last_run_date = now.astimezone(EASTERN).date().isoformat()
+        state.last_signal_action = signal.action
+        state.last_signal_timestamp = now.isoformat()
+        save_state(state, path=state_path)
     payload["executed"] = executed
     logger.info("%s", "=" * 60)
     return payload
