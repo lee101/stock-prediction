@@ -189,7 +189,7 @@ def test_load_latest_quotes_falls_back_to_close_prices() -> None:
 
     assert prices == {"AAPL": 101.0, "MSFT": 202.0}
 
-    prices_with_source, source = daily_stock.load_latest_quotes_with_source(
+    prices_with_source, source, source_by_symbol = daily_stock.load_latest_quotes_with_source(
         ["AAPL", "MSFT"],
         paper=True,
         fallback_prices={"AAPL": 101.0, "MSFT": 202.0},
@@ -197,6 +197,27 @@ def test_load_latest_quotes_falls_back_to_close_prices() -> None:
     )
     assert prices_with_source == {"AAPL": 101.0, "MSFT": 202.0}
     assert source == "close_fallback"
+    assert source_by_symbol == {"AAPL": "close_fallback", "MSFT": "close_fallback"}
+
+
+def test_load_latest_quotes_tracks_partial_symbol_fallbacks() -> None:
+    class _QuoteClient:
+        def get_stock_latest_quote(self, request):
+            return {
+                "AAPL": SimpleNamespace(ask_price=150.0, bid_price=149.5),
+                "MSFT": SimpleNamespace(ask_price=0.0, bid_price=0.0),
+            }
+
+    prices, source, source_by_symbol = daily_stock.load_latest_quotes_with_source(
+        ["AAPL", "MSFT"],
+        paper=True,
+        fallback_prices={"AAPL": 101.0, "MSFT": 202.0},
+        data_client=_QuoteClient(),
+    )
+
+    assert prices == {"AAPL": 150.0, "MSFT": 202.0}
+    assert source == "mixed_fallback"
+    assert source_by_symbol == {"AAPL": "alpaca", "MSFT": "close_fallback"}
 
 
 def test_bars_are_fresh_uses_age_gate() -> None:
@@ -262,8 +283,12 @@ def test_run_once_falls_back_to_local_daily_frames(monkeypatch, tmp_path: Path) 
     )
     monkeypatch.setattr(
         daily_stock,
-        "load_latest_quotes",
-        lambda symbols, paper, fallback_prices, data_client=None: {"AAPL": 124.0, "MSFT": 235.0},
+        "load_latest_quotes_with_source",
+        lambda symbols, paper, fallback_prices, data_client=None: (
+            {"AAPL": 124.0, "MSFT": 235.0},
+            "alpaca",
+            {"AAPL": "alpaca", "MSFT": "alpaca"},
+        ),
     )
 
     state_path = tmp_path / "state.json"
@@ -279,6 +304,7 @@ def test_run_once_falls_back_to_local_daily_frames(monkeypatch, tmp_path: Path) 
     )
 
     assert payload["bar_data_source"] == "local_fallback"
+    assert payload["quote_data_source"] == "alpaca"
     assert payload["symbol"] == "AAPL"
     assert state_path.exists() is False
 
@@ -397,6 +423,7 @@ def test_run_once_market_closed_does_not_advance_state(monkeypatch, tmp_path: Pa
         lambda symbols, paper, fallback_prices, data_client=None: (
             {"AAPL": 1.0, "MSFT": 1.0},
             "alpaca",
+            {"AAPL": "alpaca", "MSFT": "alpaca"},
         ),
     )
     monkeypatch.setattr(
