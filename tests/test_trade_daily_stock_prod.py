@@ -344,3 +344,94 @@ def test_run_once_dry_run_does_not_advance_state(monkeypatch, tmp_path: Path) ->
     after = state_path.read_text()
 
     assert after == before
+
+
+def test_run_once_market_closed_does_not_advance_state(monkeypatch, tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        '{"active_symbol": null, "active_qty": 0.0, "last_run_date": null, "last_signal_action": null, "last_signal_timestamp": null, "last_order_id": null}'
+    )
+
+    monkeypatch.setattr(
+        daily_stock,
+        "load_inference_frames",
+        lambda symbols, paper, data_dir, now, data_client=None: (
+            {
+                "AAPL": pd.DataFrame(
+                    {
+                        "timestamp": pd.to_datetime(["2026-03-13T00:00:00Z"]),
+                        "open": [1.0],
+                        "high": [1.0],
+                        "low": [1.0],
+                        "close": [1.0],
+                        "volume": [1.0],
+                    }
+                ),
+                "MSFT": pd.DataFrame(
+                    {
+                        "timestamp": pd.to_datetime(["2026-03-13T00:00:00Z"]),
+                        "open": [1.0],
+                        "high": [1.0],
+                        "low": [1.0],
+                        "close": [1.0],
+                        "volume": [1.0],
+                    }
+                ),
+            },
+            "alpaca",
+        ),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "build_trading_client",
+        lambda paper: SimpleNamespace(
+            get_all_positions=lambda: [],
+            get_account=lambda: SimpleNamespace(cash=10_000.0, buying_power=10_000.0, portfolio_value=10_000.0),
+            get_clock=lambda: SimpleNamespace(is_open=False),
+        ),
+    )
+    monkeypatch.setattr(daily_stock, "build_data_client", lambda paper: object())
+    monkeypatch.setattr(
+        daily_stock,
+        "load_latest_quotes_with_source",
+        lambda symbols, paper, fallback_prices, data_client=None: (
+            {"AAPL": 1.0, "MSFT": 1.0},
+            "alpaca",
+        ),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "build_signal",
+        lambda checkpoint, frames, portfolio=daily_stock.PortfolioContext(), device="cpu": (
+            SimpleNamespace(
+                action="long_AAPL",
+                symbol="AAPL",
+                direction="long",
+                confidence=0.5,
+                value_estimate=0.0,
+            ),
+            {"AAPL": 1.0, "MSFT": 1.0},
+        ),
+    )
+    execute_calls: list[object] = []
+    monkeypatch.setattr(
+        daily_stock,
+        "execute_signal",
+        lambda *args, **kwargs: execute_calls.append((args, kwargs)) or False,
+    )
+
+    before = state_path.read_text()
+    daily_stock.run_once(
+        checkpoint="dummy.ckpt",
+        symbols=["AAPL", "MSFT"],
+        paper=True,
+        allocation_pct=25.0,
+        dry_run=False,
+        data_source="alpaca",
+        data_dir=str(tmp_path),
+        state_path=state_path,
+    )
+    after = state_path.read_text()
+
+    assert execute_calls == []
+    assert after == before
