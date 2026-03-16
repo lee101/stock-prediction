@@ -280,4 +280,67 @@ def test_run_once_falls_back_to_local_daily_frames(monkeypatch, tmp_path: Path) 
 
     assert payload["bar_data_source"] == "local_fallback"
     assert payload["symbol"] == "AAPL"
-    assert state_path.exists()
+    assert state_path.exists() is False
+
+
+def test_run_once_dry_run_does_not_advance_state(monkeypatch, tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        '{"active_symbol": null, "active_qty": 0.0, "last_run_date": null, "last_signal_action": null, "last_signal_timestamp": null, "last_order_id": null}'
+    )
+
+    monkeypatch.setattr(
+        daily_stock,
+        "build_signal",
+        lambda checkpoint, frames, portfolio=daily_stock.PortfolioContext(), device="cpu": (
+            SimpleNamespace(
+                action="flat",
+                symbol=None,
+                direction=None,
+                confidence=0.5,
+                value_estimate=0.0,
+            ),
+            {"AAPL": 123.0, "MSFT": 234.0},
+        ),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "load_local_daily_frames",
+        lambda symbols, data_dir, min_days=120: {
+            "AAPL": pd.DataFrame(
+                {
+                    "timestamp": pd.to_datetime(["2026-03-13T00:00:00Z"]),
+                    "open": [1.0],
+                    "high": [1.0],
+                    "low": [1.0],
+                    "close": [1.0],
+                    "volume": [1.0],
+                }
+            ),
+            "MSFT": pd.DataFrame(
+                {
+                    "timestamp": pd.to_datetime(["2026-03-13T00:00:00Z"]),
+                    "open": [1.0],
+                    "high": [1.0],
+                    "low": [1.0],
+                    "close": [1.0],
+                    "volume": [1.0],
+                }
+            ),
+        },
+    )
+
+    before = state_path.read_text()
+    daily_stock.run_once(
+        checkpoint="dummy.ckpt",
+        symbols=["AAPL", "MSFT"],
+        paper=True,
+        allocation_pct=25.0,
+        dry_run=True,
+        data_source="local",
+        data_dir=str(tmp_path),
+        state_path=state_path,
+    )
+    after = state_path.read_text()
+
+    assert after == before
