@@ -6,7 +6,7 @@ from hourlycryptomarketsimulator import HourlyCryptoMarketSimulator, SimulationC
 def test_simulator_generates_trades():
     bars = pd.DataFrame(
         {
-            "timestamp": pd.date_range("2024-01-01", periods=3, freq="H", tz="UTC"),
+            "timestamp": pd.date_range("2024-01-01", periods=3, freq="h", tz="UTC"),
             "high": [10.5, 10.8, 11.0],
             "low": [9.5, 10.0, 10.2],
             "close": [10.2, 10.6, 10.9],

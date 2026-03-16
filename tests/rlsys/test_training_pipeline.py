@@ -11,7 +11,7 @@ from rlsys.training import PPOTrainer
 
 
 def _make_dataframe(length: int = 256) -> pd.DataFrame:
-    index = pd.date_range("2024-01-01", periods=length, freq="H")
+    index = pd.date_range("2024-01-01", periods=length, freq="h")
     base_price = 100 + np.sin(np.linspace(0, 20, length)) * 2
     data = {
         "open": base_price + np.random.normal(0, 0.1, size=length),
