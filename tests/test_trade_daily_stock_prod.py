@@ -143,3 +143,87 @@ def test_adopt_existing_position_populates_state() -> None:
     assert state.active_qty == 3.0
     assert state.entry_price == 121.5
     assert state.entry_date == "2026-03-16"
+
+
+def test_load_latest_quotes_falls_back_to_close_prices() -> None:
+    class _BrokenQuoteClient:
+        def get_stock_latest_quote(self, request):
+            raise RuntimeError("quotes unavailable")
+
+    prices = daily_stock.load_latest_quotes(
+        ["AAPL", "MSFT"],
+        paper=True,
+        fallback_prices={"AAPL": 101.0, "MSFT": 202.0},
+        data_client=_BrokenQuoteClient(),
+    )
+
+    assert prices == {"AAPL": 101.0, "MSFT": 202.0}
+
+
+def test_run_once_falls_back_to_local_daily_frames(monkeypatch, tmp_path: Path) -> None:
+    rows = []
+    for idx in range(130):
+        ts = pd.Timestamp("2025-09-01T00:00:00Z") + pd.Timedelta(days=idx)
+        rows.append(
+            {
+                "timestamp": ts.isoformat(),
+                "open": 100 + idx,
+                "high": 101 + idx,
+                "low": 99 + idx,
+                "close": 100.5 + idx,
+                "volume": 1_000 + idx,
+            }
+        )
+    _write_daily_csv(tmp_path / "AAPL.csv", rows)
+    _write_daily_csv(tmp_path / "MSFT.csv", rows)
+
+    monkeypatch.setattr(
+        daily_stock,
+        "load_alpaca_daily_frames",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("alpaca bars unavailable")),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "build_trading_client",
+        lambda paper: SimpleNamespace(
+            get_all_positions=lambda: [],
+            get_account=lambda: SimpleNamespace(cash=10_000.0, buying_power=10_000.0, portfolio_value=10_000.0),
+        ),
+    )
+    monkeypatch.setattr(daily_stock, "build_data_client", lambda paper: object())
+    monkeypatch.setattr(daily_stock, "execute_signal", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        daily_stock,
+        "build_signal",
+        lambda checkpoint, frames, portfolio=daily_stock.PortfolioContext(), device="cpu": (
+            SimpleNamespace(
+                action="long_AAPL",
+                symbol="AAPL",
+                direction="long",
+                confidence=0.75,
+                value_estimate=1.25,
+            ),
+            {"AAPL": 123.0, "MSFT": 234.0},
+        ),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "load_latest_quotes",
+        lambda symbols, paper, fallback_prices, data_client=None: {"AAPL": 124.0, "MSFT": 235.0},
+    )
+
+    state_path = tmp_path / "state.json"
+    payload = daily_stock.run_once(
+        checkpoint="dummy.ckpt",
+        symbols=["AAPL", "MSFT"],
+        paper=True,
+        allocation_pct=25.0,
+        dry_run=True,
+        data_source="alpaca",
+        data_dir=str(tmp_path),
+        state_path=state_path,
+    )
+
+    assert payload["bar_data_source"] == "local_fallback"
+    assert payload["symbol"] == "AAPL"
+    assert state_path.exists()
