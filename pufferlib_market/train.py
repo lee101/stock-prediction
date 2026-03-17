@@ -38,6 +38,8 @@ import pufferlib.vector
 # Local
 from pufferlib_market.environment import TradingEnvConfig, TradingEnv
 from pufferlib_market.metrics import annualize_total_return
+from pufferlib_market.advantage_utils import normalize_advantages
+from src.checkpoint_manager import TopKCheckpointManager
 
 
 # ─── Running Observation Normalizer ──────────────────────────────────
@@ -397,6 +399,7 @@ def train(args):
         smooth_downside_penalty=args.smooth_downside_penalty,
         smooth_downside_temperature=args.smooth_downside_temperature,
         trade_penalty=args.trade_penalty,
+        smoothness_penalty=args.smoothness_penalty,
         fill_slippage_bps=args.fill_slippage_bps,
         fill_probability=args.fill_probability,
         max_hold_hours=args.max_hold_hours,
@@ -507,6 +510,9 @@ def train(args):
     start_time = time.time()
     best_return = resume_state.best_return
     start_update = resume_state.update
+    periodic_ckpt_mgr = TopKCheckpointManager(
+        Path(args.checkpoint_dir), max_keep=10, mode="max",
+    )
 
     print(f"\nTraining: {num_updates} updates, {args.total_timesteps:,} additional steps")
     print(f"  rollout_len={T}, num_envs={N}, batch_size={T * N}")
@@ -592,12 +598,17 @@ def train(args):
         b_obs = buf_obs.reshape(-1, obs_size).to(device, non_blocking=True)
         b_act = buf_act.reshape(-1).to(device, non_blocking=True)
         b_logprob = buf_logprob.reshape(-1).to(device, non_blocking=True)
-        b_advantages = advantages.reshape(-1).to(device, non_blocking=True)
         b_returns = returns.reshape(-1).to(device, non_blocking=True)
         b_values = buf_value.reshape(-1).to(device, non_blocking=True)
 
-        # Normalise advantages
-        b_advantages = (b_advantages - b_advantages.mean()) / (b_advantages.std() + 1e-8)
+        b_advantages = normalize_advantages(
+            advantages.to(device, non_blocking=True),
+            rewards=buf_reward.to(device, non_blocking=True),
+            mode=args.advantage_norm,
+            group_relative_size=args.group_relative_size,
+            group_relative_mix=args.group_relative_mix,
+            group_relative_clip=args.group_relative_clip,
+        ).reshape(-1)
 
         total_pg_loss = 0
         total_v_loss = 0
@@ -723,6 +734,8 @@ def train(args):
                 ),
                 ckpt_path,
             )
+            metric = ep_return if (log_info and "total_return" in log_info) else best_return
+            periodic_ckpt_mgr.register(ckpt_path, metric)
 
     # ── Final save ──
     ckpt_path = Path(args.checkpoint_dir) / "final.pt"
@@ -807,6 +820,12 @@ def main():
         help="Adverse fill slippage in basis points (realistic: 5-12). Buys fill higher, sells fill lower.",
     )
     parser.add_argument(
+        "--smoothness-penalty",
+        type=float,
+        default=0.0,
+        help="Penalty scale for volatile return changes: reward -= smoothness_penalty * (ret_t-ret_t-1)^2",
+    )
+    parser.add_argument(
         "--fill-probability",
         type=float,
         default=1.0,
@@ -831,6 +850,30 @@ def main():
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
+    parser.add_argument(
+        "--advantage-norm",
+        choices=["global", "per_env", "group_relative"],
+        default="global",
+        help="Advantage normalization: global PPO default, per-env sequence normalization, or GSPO-like group-relative weighting.",
+    )
+    parser.add_argument(
+        "--group-relative-size",
+        type=int,
+        default=8,
+        help="Group size for group-relative rollout weighting.",
+    )
+    parser.add_argument(
+        "--group-relative-mix",
+        type=float,
+        default=0.0,
+        help="How strongly to scale per-env advantages by group-relative rollout score.",
+    )
+    parser.add_argument(
+        "--group-relative-clip",
+        type=float,
+        default=2.0,
+        help="Clip z-scored rollout ranks before they rescale advantages.",
+    )
     parser.add_argument("--clip-eps", type=float, default=0.2)
     parser.add_argument("--vf-coef", type=float, default=0.5)
     parser.add_argument("--ent-coef", type=float, default=0.01)

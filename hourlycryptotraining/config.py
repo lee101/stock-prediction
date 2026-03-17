@@ -67,7 +67,7 @@ class TrainingConfig:
     wandb_entity: Optional[str] = None
     log_dir: Path = Path("tensorboard_logs") / "hourlycrypto"
     checkpoint_root: Path = Path("hourlycryptotraining") / "checkpoints"
-    top_k_checkpoints: int = 100
+    top_k_checkpoints: int = 10
     preload_checkpoint_path: Optional[Path] = None
     force_retrain: bool = False
     seed: int = 1337

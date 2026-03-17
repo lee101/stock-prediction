@@ -160,7 +160,7 @@ class TrainingConfig:
     wandb_entity: str | None = None
     log_dir: Path = Path("tensorboard_logs") / "binanceneural"
     checkpoint_root: Path = Path("binanceneural") / "checkpoints"
-    top_k_checkpoints: int = 50
+    top_k_checkpoints: int = 10
     preload_checkpoint_path: Path | None = None
     force_retrain: bool = False
     seed: int = 1337
