@@ -329,7 +329,7 @@ def train_one_run(
         use_compile=not bool(args.no_compile),
         dry_train_steps=args.dry_train_steps,
         num_workers=int(args.num_workers),
-        top_k_checkpoints=max(50, int(config.get("epochs", args.epochs))),
+        top_k_checkpoints=10,
     )
     trainer = BinanceHourlyTrainer(training_cfg, data)
     artifacts = trainer.train()

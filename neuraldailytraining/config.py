@@ -89,7 +89,7 @@ class DailyTrainingConfig:
     wandb_entity: Optional[str] = None
     log_dir: Path = Path("tensorboard_logs") / "neuraldaily"
     checkpoint_root: Path = Path("neuraldailytraining") / "checkpoints"
-    top_k_checkpoints: int = 50
+    top_k_checkpoints: int = 10
     preload_checkpoint_path: Optional[Path] = None
     force_retrain: bool = False
     seed: int = 1337

@@ -255,7 +255,7 @@ class DailyTrainingConfigV4:
     wandb_entity: Optional[str] = None
     log_dir: str = "tensorboard_logs/neuraldailyv4"
     checkpoint_root: str = "neuraldailyv4/checkpoints"
-    top_k_checkpoints: int = 50
+    top_k_checkpoints: int = 10
     preload_checkpoint_path: Optional[str] = None
     force_retrain: bool = False
     seed: int = 1337

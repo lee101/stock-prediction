@@ -24,6 +24,7 @@ except ImportError:
 from torch.nn.utils import clip_grad_norm_  # type: ignore
 from traininglib.optim_factory import MultiOptim
 
+from src.checkpoint_manager import TopKCheckpointManager
 from src.serialization_utils import serialize_for_checkpoint
 from src.torch_load_utils import torch_load_compat
 
@@ -195,6 +196,7 @@ class BinanceHourlyTrainer:
         history: list[TrainingHistoryEntry] = []
         best_score = float("-inf")
         best_checkpoint: Path | None = None
+        ckpt_mgr = TopKCheckpointManager(self.checkpoint_dir, max_keep=10, mode="max")
 
         global_step = 0
         for epoch in range(1, self.config.epochs + 1):
@@ -229,6 +231,7 @@ class BinanceHourlyTrainer:
             history.append(entry)
 
             ckpt_path = self._save_checkpoint(model, epoch, val_metrics)
+            ckpt_mgr.register(ckpt_path, val_metrics["score"], epoch=epoch)
             if val_metrics["score"] > best_score:
                 best_score = val_metrics["score"]
                 best_checkpoint = ckpt_path
