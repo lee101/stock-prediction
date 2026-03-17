@@ -41,17 +41,22 @@ def aggregate_actions(
     if not actions_list:
         return pd.DataFrame()
     merged = None
+    action_fields = (
+        "buy_price",
+        "sell_price",
+        "buy_amount",
+        "sell_amount",
+        "trade_amount",
+        "allocation_fraction",
+        "hold_hours",
+    )
     for idx, frame in enumerate(actions_list):
         if frame.empty:
             continue
         suffix = f"_c{idx}"
-        rename_cols = {
-            "buy_price": f"buy_price{suffix}",
-            "sell_price": f"sell_price{suffix}",
-            "buy_amount": f"buy_amount{suffix}",
-            "sell_amount": f"sell_amount{suffix}",
-            "trade_amount": f"trade_amount{suffix}",
-        }
+        rename_cols = {field: f"{field}{suffix}" for field in action_fields if field in frame.columns}
+        if not rename_cols:
+            continue
         subset = frame[["timestamp", "symbol", *rename_cols.keys()]].rename(columns=rename_cols)
         if merged is None:
             merged = subset
@@ -61,13 +66,7 @@ def aggregate_actions(
         return pd.DataFrame()
 
     out_rows = []
-    value_cols = {
-        "buy_price": [],
-        "sell_price": [],
-        "buy_amount": [],
-        "sell_amount": [],
-        "trade_amount": [],
-    }
+    value_cols = {field: [] for field in action_fields}
     for col in merged.columns:
         for key in value_cols:
             if col.startswith(key):
@@ -76,6 +75,8 @@ def aggregate_actions(
     for row in merged.itertuples(index=False):
         row_dict = {"timestamp": getattr(row, "timestamp"), "symbol": getattr(row, "symbol")}
         for key, cols in value_cols.items():
+            if not cols:
+                continue
             values = np.array([float(getattr(row, col)) for col in cols], dtype=np.float64)
             row_dict[key] = _trimmed_mean(values, trim_ratio)
         out_rows.append(row_dict)
@@ -108,16 +109,21 @@ def blend_actions(
 
     merged = None
     suffixes: List[str] = []
+    action_fields = (
+        "buy_price",
+        "sell_price",
+        "buy_amount",
+        "sell_amount",
+        "trade_amount",
+        "allocation_fraction",
+        "hold_hours",
+    )
     for idx, frame in enumerate(frames):
         suffix = f"_b{idx}"
+        rename_cols = {field: f"{field}{suffix}" for field in action_fields if field in frame.columns}
+        if not rename_cols:
+            continue
         suffixes.append(suffix)
-        rename_cols = {
-            "buy_price": f"buy_price{suffix}",
-            "sell_price": f"sell_price{suffix}",
-            "buy_amount": f"buy_amount{suffix}",
-            "sell_amount": f"sell_amount{suffix}",
-            "trade_amount": f"trade_amount{suffix}",
-        }
         subset = frame[["timestamp", "symbol", *rename_cols.keys()]].rename(columns=rename_cols)
         if merged is None:
             merged = subset
@@ -127,17 +133,16 @@ def blend_actions(
         return pd.DataFrame()
 
     value_cols = {
-        "buy_price": [f"buy_price{s}" for s in suffixes],
-        "sell_price": [f"sell_price{s}" for s in suffixes],
-        "buy_amount": [f"buy_amount{s}" for s in suffixes],
-        "sell_amount": [f"sell_amount{s}" for s in suffixes],
-        "trade_amount": [f"trade_amount{s}" for s in suffixes],
+        field: [f"{field}{suffix}" for suffix in suffixes if f"{field}{suffix}" in merged.columns]
+        for field in action_fields
     }
 
     out_rows = []
     for row in merged.itertuples(index=False):
         row_dict = {"timestamp": getattr(row, "timestamp"), "symbol": getattr(row, "symbol")}
         for key, cols in value_cols.items():
+            if not cols:
+                continue
             values = np.array([float(getattr(row, col)) for col in cols], dtype=np.float64)
             row_dict[key] = _weighted_mean(values, weight_array)
         out_rows.append(row_dict)

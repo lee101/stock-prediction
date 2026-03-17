@@ -14,6 +14,11 @@ import torch
 
 from binanceneural.inference import generate_actions_from_frame
 from binanceneural.model import align_state_dict_input_dim, build_policy, policy_config_from_payload
+from src.hourly_action_reforecast import (
+    HourlyActionReforecastConfig,
+    apply_hourly_action_reforecasting,
+    parse_reforecast_modes,
+)
 from src.allocation_utils import allocation_usd_for_symbol
 from src.symbol_utils import is_crypto_symbol
 from src.torch_device_utils import require_cuda as require_cuda_device
@@ -30,6 +35,23 @@ def _parse_symbols(raw: Optional[str]) -> list[str]:
     if not raw:
         return ["SOLUSD", "LINKUSD", "UNIUSD", "BTCUSD", "ETHUSD"]
     return [token.strip().upper() for token in raw.split(",") if token.strip()]
+
+
+def _parse_checkpoint_map(raw: Optional[str]) -> dict[str, Path]:
+    mapping: dict[str, Path] = {}
+    if not raw:
+        return mapping
+    for item in str(raw).split(","):
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError("Checkpoint map must be in SYMBOL=path format")
+        symbol, path = item.split("=", 1)
+        symbol = symbol.strip().upper()
+        if not symbol or not path:
+            continue
+        mapping[symbol] = Path(path).expanduser().resolve()
+    return mapping
 
 
 def _parse_int_tuple(raw: Optional[str]) -> Optional[Tuple[int, ...]]:
@@ -97,6 +119,21 @@ def _slice_eval_window(
     bars_slice = bars[(bars_ts >= ts_start) & (bars_ts <= ts_end)]
     actions_slice = actions[(actions_ts >= ts_start) & (actions_ts <= ts_end)]
     return actions_slice.reset_index(drop=True), bars_slice.reset_index(drop=True)
+
+
+def _trim_frame_for_inference(
+    frame: pd.DataFrame,
+    *,
+    rows_needed: Optional[int],
+    ts_end: Optional[pd.Timestamp],
+) -> pd.DataFrame:
+    out = frame.copy()
+    if ts_end is not None and not out.empty:
+        ts = pd.to_datetime(out["timestamp"], utc=True)
+        out = out[ts <= ts_end]
+    if rows_needed is not None and rows_needed > 0 and len(out) > rows_needed:
+        out = out.tail(rows_needed)
+    return out.reset_index(drop=True)
 
 
 def _resolve_data_root(symbol: str, crypto_root: Optional[Path], stock_root: Optional[Path]) -> Optional[Path]:
@@ -396,6 +433,45 @@ def _summarize_scenario_results(results: Sequence[Mapping[str, object]]) -> dict
     }
 
 
+def _score_metrics(metrics: Mapping[str, object]) -> tuple[float, float, float]:
+    sortino = _coerce_float(metrics.get("sortino"), default=float("-inf"))
+    total_return = _coerce_float(metrics.get("total_return"), default=float("-inf"))
+    max_drawdown = _coerce_float(metrics.get("max_drawdown"), default=float("-inf"))
+    return (sortino, total_return, max_drawdown)
+
+
+def _best_mode_summary(mode_summaries: Sequence[Mapping[str, object]]) -> Optional[dict[str, object]]:
+    ranked: list[dict[str, object]] = []
+    for summary in mode_summaries:
+        metrics = summary.get("best_metrics", {})
+        if not isinstance(metrics, Mapping):
+            continue
+        ranked.append(dict(summary))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda item: _score_metrics(item.get("best_metrics", {})), reverse=True)
+    return ranked[0]
+
+
+def _mode_slug(mode: str) -> str:
+    token = str(mode or "baseline").strip().lower()
+    return token.replace("+", "_plus_").replace("-", "_")
+
+
+def _common_eval_end_timestamp(frames: Sequence[pd.DataFrame]) -> pd.Timestamp:
+    latest_values: list[pd.Timestamp] = []
+    for frame in frames:
+        if frame is None or frame.empty:
+            continue
+        ts = pd.to_datetime(frame["timestamp"], utc=True).max()
+        if pd.isna(ts):
+            continue
+        latest_values.append(pd.Timestamp(ts))
+    if not latest_values:
+        raise RuntimeError("Failed to infer a common ts_end from loaded frames.")
+    return min(latest_values)
+
+
 def _load_initial_state(path: Path) -> tuple[float, dict[str, float], list[OpenOrder]]:
     payload = json.loads(path.read_text())
     if not isinstance(payload, Mapping):
@@ -469,7 +545,9 @@ def _load_initial_state(path: Path) -> tuple[float, dict[str, float], list[OpenO
 def main() -> None:
     parser = argparse.ArgumentParser(description="Backtest the live hourly trader loop with shared-cash execution.")
     parser.add_argument("--symbols", default=None)
-    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--checkpoint", default=None)
+    parser.add_argument("--checkpoints", default=None, help="Comma-separated SYMBOL=path map.")
+    parser.add_argument("--default-checkpoint", default=None)
     parser.add_argument("--sequence-length", type=int, default=128)
     parser.add_argument("--horizon", type=int, default=1)
     parser.add_argument("--forecast-horizons", default="1,24")
@@ -589,6 +667,17 @@ def main() -> None:
     )
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--device", default=None, help="Override device (cuda/cuda:0).")
+    parser.add_argument(
+        "--reforecast-modes",
+        default="baseline",
+        help="Comma-separated variants: baseline, gemini, amount_reforecasting, gemini+amount_reforecasting.",
+    )
+    parser.add_argument("--reforecast-model", default="gemini-3.1-flash-lite-preview")
+    parser.add_argument("--reforecast-prompt-variant", default="position_context")
+    parser.add_argument("--reforecast-cache-only", action="store_true")
+    parser.add_argument("--reforecast-min-signal-amount-pct", type=float, default=20.0)
+    parser.add_argument("--reforecast-max-rows-per-symbol", type=int, default=None)
+    parser.add_argument("--reforecast-max-gross-allocation", type=float, default=1.0)
     args = parser.parse_args()
 
     eval_days = args.eval_days
@@ -620,12 +709,17 @@ def main() -> None:
     vol_regime_long = args.vol_regime_long if args.vol_regime_long is not None else DatasetConfig().vol_regime_long
     min_history_hours = args.min_history_hours if args.min_history_hours is not None else DatasetConfig().min_history_hours
 
-    checkpoint = Path(args.checkpoint).expanduser().resolve()
+    checkpoint_map = _parse_checkpoint_map(args.checkpoints)
+    base_checkpoint = Path(args.checkpoint).expanduser().resolve() if args.checkpoint else None
+    default_checkpoint = Path(args.default_checkpoint).expanduser().resolve() if args.default_checkpoint else base_checkpoint
+    if not checkpoint_map and default_checkpoint is None:
+        raise ValueError("Provide --checkpoint, --default-checkpoint, or --checkpoints.")
     device = _resolve_device(args.device)
 
     all_bars = []
     all_actions = []
-    model: Optional[torch.nn.Module] = None
+    history_by_symbol: dict[str, pd.DataFrame] = {}
+    model_cache: dict[Path, torch.nn.Module] = {}
 
     crypto_root = Path(args.crypto_data_root) if args.crypto_data_root else None
     stock_root = Path(args.stock_data_root) if args.stock_data_root else None
@@ -633,6 +727,12 @@ def main() -> None:
 
     loaded: list[tuple[str, AlpacaHourlyDataModule, pd.DataFrame]] = []
     for symbol in symbols:
+        symbol_checkpoint = checkpoint_map.get(symbol) or default_checkpoint
+        if symbol_checkpoint is None:
+            raise ValueError(f"No checkpoint provided for {symbol}.")
+        if not symbol_checkpoint.exists():
+            raise FileNotFoundError(f"Checkpoint missing for {symbol}: {symbol_checkpoint}")
+
         data_cfg = DatasetConfig(
             symbol=symbol,
             data_root=_resolve_data_root(symbol, crypto_root, stock_root),
@@ -655,16 +755,10 @@ def main() -> None:
         data = AlpacaHourlyDataModule(data_cfg)
         frame = data.frame.copy()
         loaded.append((symbol, data, frame))
+        history_by_symbol[str(symbol).upper()] = frame.copy()
 
     # Resolve a common evaluation window end timestamp for consistent slicing.
-    ts_end_common = None
-    for _, _, frame in loaded:
-        ts = pd.to_datetime(frame["timestamp"], utc=True).max()
-        if pd.isna(ts):
-            continue
-        ts_end_common = ts if ts_end_common is None else max(ts_end_common, ts)
-    if ts_end_common is None:
-        raise RuntimeError("Failed to infer a common ts_end from loaded frames.")
+    ts_end_common = _common_eval_end_timestamp([frame for _, _, frame in loaded])
 
     eval_hours = 0.0
     if eval_days:
@@ -681,12 +775,17 @@ def main() -> None:
         # Include enough warmup history so the first evaluation decision has context.
         rows_needed = int(math.ceil(eval_hours)) + int(args.sequence_length) + 10
     for symbol, data, frame in loaded:
-        if rows_needed is not None and rows_needed > 0 and len(frame) > rows_needed:
-            frame = frame.tail(rows_needed).reset_index(drop=True)
+        frame = _trim_frame_for_inference(
+            frame,
+            rows_needed=rows_needed,
+            ts_end=ts_end_common,
+        )
         bars = frame[["timestamp", "symbol", "high", "low", "close"]].copy()
 
+        model = model_cache.get(symbol_checkpoint)
         if model is None:
-            model = _load_model(checkpoint, len(data.feature_columns), int(args.sequence_length))
+            model = _load_model(symbol_checkpoint, len(data.feature_columns), int(args.sequence_length))
+            model_cache[symbol_checkpoint] = model
 
         if context_lengths:
             agg = generate_actions_multi_context(
@@ -734,6 +833,7 @@ def main() -> None:
     if args.initial_state:
         initial_cash, initial_positions, initial_open_orders = _load_initial_state(Path(args.initial_state))
 
+    out_dir = None
     if args.output_dir:
         out_dir = Path(args.output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -766,68 +866,111 @@ def main() -> None:
         ]
     )
 
-    scenario_results: list[dict[str, object]] = []
-    single_result = None
-    for scenario in scenario_configs:
-        sim = HourlyTraderMarketSimulator(
-            HourlyTraderSimulationConfig(
-                initial_cash=float(scenario.initial_cash),
-                initial_positions=dict(scenario.initial_positions),
-                initial_open_orders=list(scenario.initial_open_orders),
-                allocation_usd=allocation_usd,
-                allocation_pct=allocation_pct,
-                allocation_mode=str(args.allocation_mode),
-                intensity_scale=float(args.intensity_scale),
-                price_offset_pct=float(args.price_offset_pct),
-                min_gap_pct=float(args.min_gap_pct),
-                fill_buffer_bps=float(args.fill_buffer_bps),
-                allow_short=bool(args.allow_short),
-                allow_position_adds=bool(args.allow_position_adds),
-                always_full_exit=bool(args.always_full_exit),
-                decision_lag_bars=int(args.decision_lag_bars),
-                cancel_ack_delay_bars=int(args.cancel_ack_delay_bars),
-                partial_fill_on_touch=bool(args.partial_fill_on_touch),
-                entry_near_book_bps=float(args.entry_near_book_bps) if args.entry_near_book_bps is not None else None,
-                early_stop_min_periods=early_stop_min_periods,
-                early_stop_pnl_vs_drawdown_multiple=float(args.early_stop_pnl_vs_drawdown_multiple),
-                symbols=[s.upper() for s in symbols],
+    reforecast_modes = parse_reforecast_modes(args.reforecast_modes)
+    mode_summaries: list[dict[str, object]] = []
+
+    for mode in reforecast_modes:
+        reforecast_config = HourlyActionReforecastConfig(
+            mode=mode,
+            llm_model=str(args.reforecast_model),
+            llm_prompt_variant=str(args.reforecast_prompt_variant),
+            llm_cache_only=bool(args.reforecast_cache_only),
+            llm_min_signal_amount_pct=float(args.reforecast_min_signal_amount_pct),
+            llm_max_rows_per_symbol=args.reforecast_max_rows_per_symbol,
+            max_gross_allocation=float(args.reforecast_max_gross_allocation),
+        )
+        actions_variant = apply_hourly_action_reforecasting(
+            actions_all,
+            history_by_symbol,
+            config=reforecast_config,
+            allow_short=bool(args.allow_short),
+        )
+
+        mode_out_dir = None
+        if out_dir is not None:
+            mode_out_dir = out_dir if len(reforecast_modes) == 1 else out_dir / _mode_slug(mode)
+            mode_out_dir.mkdir(parents=True, exist_ok=True)
+            (mode_out_dir / "actions.csv").write_text(actions_variant.to_csv(index=False))
+
+        scenario_results: list[dict[str, object]] = []
+        single_result = None
+        for scenario in scenario_configs:
+            sim = HourlyTraderMarketSimulator(
+                HourlyTraderSimulationConfig(
+                    initial_cash=float(scenario.initial_cash),
+                    initial_positions=dict(scenario.initial_positions),
+                    initial_open_orders=list(scenario.initial_open_orders),
+                    allocation_usd=allocation_usd,
+                    allocation_pct=allocation_pct,
+                    allocation_mode=str(args.allocation_mode),
+                    intensity_scale=float(args.intensity_scale),
+                    price_offset_pct=float(args.price_offset_pct),
+                    min_gap_pct=float(args.min_gap_pct),
+                    fill_buffer_bps=float(args.fill_buffer_bps),
+                    allow_short=bool(args.allow_short),
+                    allow_position_adds=bool(args.allow_position_adds),
+                    always_full_exit=bool(args.always_full_exit),
+                    decision_lag_bars=int(args.decision_lag_bars),
+                    cancel_ack_delay_bars=int(args.cancel_ack_delay_bars),
+                    partial_fill_on_touch=bool(args.partial_fill_on_touch),
+                    entry_near_book_bps=float(args.entry_near_book_bps) if args.entry_near_book_bps is not None else None,
+                    early_stop_min_periods=early_stop_min_periods,
+                    early_stop_pnl_vs_drawdown_multiple=float(args.early_stop_pnl_vs_drawdown_multiple),
+                    symbols=[s.upper() for s in symbols],
+                )
             )
-        )
-        result = sim.run(bars_all, actions_all)
-        if len(scenario_configs) == 1:
-            single_result = result
-        scenario_results.append(
-            {
-                "scenario": scenario.name,
-                "initial_cash": float(scenario.initial_cash),
-                "initial_positions": {k: float(v) for k, v in scenario.initial_positions.items()},
-                "initial_open_orders": int(len(scenario.initial_open_orders)),
-                "metrics": dict(result.metrics),
-                "terminated_early": bool(result.terminated_early),
-                "termination_reason": result.termination_reason,
-            }
-        )
+            result = sim.run(bars_all, actions_variant)
+            if len(scenario_configs) == 1:
+                single_result = result
+            scenario_results.append(
+                {
+                    "scenario": scenario.name,
+                    "initial_cash": float(scenario.initial_cash),
+                    "initial_positions": {k: float(v) for k, v in scenario.initial_positions.items()},
+                    "initial_open_orders": int(len(scenario.initial_open_orders)),
+                    "metrics": dict(result.metrics),
+                    "terminated_early": bool(result.terminated_early),
+                    "termination_reason": result.termination_reason,
+                }
+            )
 
-        if args.output_dir:
-            scenario_dir = out_dir / scenario.name
-            scenario_dir.mkdir(parents=True, exist_ok=True)
-            (scenario_dir / "per_hour.csv").write_text(result.per_hour.to_csv(index=False))
-            fills_rows = [f.__dict__ for f in result.fills]
-            (scenario_dir / "fills.csv").write_text(pd.DataFrame(fills_rows).to_csv(index=False))
-            (scenario_dir / "metrics.json").write_text(json.dumps(result.metrics, indent=2))
+            if mode_out_dir is not None:
+                scenario_dir = mode_out_dir / scenario.name
+                scenario_dir.mkdir(parents=True, exist_ok=True)
+                (scenario_dir / "per_hour.csv").write_text(result.per_hour.to_csv(index=False))
+                fills_rows = [f.__dict__ for f in result.fills]
+                (scenario_dir / "fills.csv").write_text(pd.DataFrame(fills_rows).to_csv(index=False))
+                (scenario_dir / "metrics.json").write_text(json.dumps(result.metrics, indent=2))
 
-    if len(scenario_results) == 1 and single_result is not None:
-        print(json.dumps(single_result.metrics, indent=2))
-        if args.output_dir:
-            (out_dir / "per_hour.csv").write_text(single_result.per_hour.to_csv(index=False))
-            fills_rows = [f.__dict__ for f in single_result.fills]
-            (out_dir / "fills.csv").write_text(pd.DataFrame(fills_rows).to_csv(index=False))
-            (out_dir / "metrics.json").write_text(json.dumps(single_result.metrics, indent=2))
-    else:
         summary = _summarize_scenario_results(scenario_results)
-        print(json.dumps(summary, indent=2))
-        if args.output_dir:
-            (out_dir / "scenario_summary.json").write_text(json.dumps(summary, indent=2))
+        summary["mode"] = mode
+        mode_summaries.append(summary)
+
+        if mode_out_dir is not None:
+            (mode_out_dir / "scenario_summary.json").write_text(json.dumps(summary, indent=2))
+            if len(scenario_results) == 1 and single_result is not None:
+                (mode_out_dir / "per_hour.csv").write_text(single_result.per_hour.to_csv(index=False))
+                fills_rows = [f.__dict__ for f in single_result.fills]
+                (mode_out_dir / "fills.csv").write_text(pd.DataFrame(fills_rows).to_csv(index=False))
+                (mode_out_dir / "metrics.json").write_text(json.dumps(single_result.metrics, indent=2))
+
+    if len(mode_summaries) == 1 and len(scenario_configs) == 1:
+        metrics = dict(mode_summaries[0].get("best_metrics", {}))
+        metrics["mode"] = mode_summaries[0].get("mode")
+        print(json.dumps(metrics, indent=2))
+        if out_dir is not None:
+            (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
+    else:
+        best_mode = _best_mode_summary(mode_summaries)
+        final_summary = {
+            "mode_count": len(mode_summaries),
+            "best_mode": best_mode.get("mode") if best_mode else None,
+            "best_mode_metrics": best_mode.get("best_metrics", {}) if best_mode else {},
+            "modes": mode_summaries,
+        }
+        print(json.dumps(final_summary, indent=2))
+        if out_dir is not None:
+            (out_dir / "reforecast_summary.json").write_text(json.dumps(final_summary, indent=2))
 
 
 if __name__ == "__main__":

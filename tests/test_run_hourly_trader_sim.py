@@ -5,10 +5,23 @@ import json
 import pandas as pd
 
 from newnanoalpacahourlyexp.run_hourly_trader_sim import (
+    _best_mode_summary,
     _build_starting_position_scenarios,
+    _common_eval_end_timestamp,
+    _trim_frame_for_inference,
     _load_initial_state,
+    _parse_checkpoint_map,
     _summarize_scenario_results,
 )
+
+
+def test_parse_checkpoint_map(tmp_path) -> None:
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_text("x")
+
+    parsed = _parse_checkpoint_map(f"ETHUSD={checkpoint}")
+
+    assert parsed == {"ETHUSD": checkpoint.resolve()}
 
 
 def test_load_initial_state_supports_alias_fields(tmp_path) -> None:
@@ -86,3 +99,47 @@ def test_summarize_scenario_results_ranks_by_sortino_then_return() -> None:
 
     assert summary["scenario_count"] == 3
     assert summary["best_scenario"] == "basket_long"
+
+
+def test_best_mode_summary_prefers_higher_sortino_then_return() -> None:
+    best = _best_mode_summary(
+        [
+            {"mode": "baseline", "best_metrics": {"sortino": 0.4, "total_return": 0.08, "max_drawdown": -0.05}},
+            {"mode": "gemini", "best_metrics": {"sortino": 0.8, "total_return": 0.03, "max_drawdown": -0.04}},
+            {"mode": "amount_reforecasting", "best_metrics": {"sortino": 0.8, "total_return": 0.05, "max_drawdown": -0.07}},
+        ]
+    )
+
+    assert best is not None
+    assert best["mode"] == "amount_reforecasting"
+
+
+def test_common_eval_end_timestamp_uses_overlapping_latest_timestamp() -> None:
+    early = pd.DataFrame({"timestamp": pd.date_range("2026-03-01", periods=4, freq="h", tz="UTC")})
+    late = pd.DataFrame({"timestamp": pd.date_range("2026-03-01", periods=8, freq="h", tz="UTC")})
+
+    ts_end = _common_eval_end_timestamp([early, late])
+
+    assert ts_end == pd.Timestamp("2026-03-01T03:00:00Z")
+
+
+def test_trim_frame_for_inference_respects_common_end_before_tail_selection() -> None:
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-03-01", periods=8, freq="h", tz="UTC"),
+            "symbol": ["SOLUSD"] * 8,
+            "close": range(8),
+        }
+    )
+
+    trimmed = _trim_frame_for_inference(
+        frame,
+        rows_needed=3,
+        ts_end=pd.Timestamp("2026-03-01T04:00:00Z"),
+    )
+
+    assert trimmed["timestamp"].tolist() == [
+        pd.Timestamp("2026-03-01T02:00:00Z"),
+        pd.Timestamp("2026-03-01T03:00:00Z"),
+        pd.Timestamp("2026-03-01T04:00:00Z"),
+    ]

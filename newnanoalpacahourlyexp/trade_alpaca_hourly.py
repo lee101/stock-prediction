@@ -8,15 +8,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Sequence, Tuple
 
+import pandas as pd
 import torch
 
 import alpaca_wrapper
-from binanceneural.inference import generate_actions_from_frame, generate_latest_action
+from binanceneural.inference import generate_latest_action
 from binanceneural.model import align_state_dict_input_dim, build_policy, policy_config_from_payload
 from src.allocation_utils import allocation_usd_for_symbol
+from src.hourly_action_reforecast import HourlyActionReforecastConfig, apply_hourly_action_reforecasting
 from src.hourly_trader_utils import (
     OrderIntent,
-    TradingPlan,
     build_order_intents,
     build_plan_from_action,
     ensure_valid_levels,
@@ -32,7 +33,7 @@ from src.torch_load_utils import torch_load_compat
 
 from .config import DatasetConfig, ExperimentConfig
 from .data import AlpacaHourlyDataModule
-from .inference import aggregate_actions, generate_actions_multi_context
+from .inference import generate_actions_multi_context
 
 
 logger = logging.getLogger("alpaca_hourly_trader")
@@ -383,15 +384,27 @@ def _run_cycle(
     allow_position_adds: bool,
     always_full_exit: bool,
     entry_near_book_bps: Optional[float],
+    reforecast_config: HourlyActionReforecastConfig,
     dry_run: bool,
 ) -> None:
     symbols_list = [str(sym).upper() for sym in symbols]
     refresher.refresh(list(symbols_list))
     account = alpaca_wrapper.get_account(use_cache=False)
     positions = alpaca_wrapper.get_all_positions()
+    open_orders_snapshot: Optional[list[object]]
+    if dry_run:
+        open_orders_snapshot = None
+    else:
+        try:
+            open_orders_snapshot = list(alpaca_wrapper.get_orders())
+        except Exception as exc:
+            logger.warning("Failed to fetch open orders at cycle start: %s", exc)
+            open_orders_snapshot = []
 
     exit_only_set = {s.upper() for s in exit_only_symbols}
     experiment_cfg = ExperimentConfig(context_lengths=context_lengths, trim_ratio=trim_ratio)
+    history_by_symbol: dict[str, pd.DataFrame] = {}
+    symbol_runs: list[dict[str, object]] = []
 
     for symbol in symbols_list:
         symbol = symbol.upper()
@@ -439,6 +452,7 @@ def _run_cycle(
             min_history_hours=min_history_hours,
         )
         data = AlpacaHourlyDataModule(data_cfg)
+        history_by_symbol[symbol] = data.frame.copy()
         model = _load_model(checkpoint, len(data.feature_columns), sequence_length)
 
         if context_lengths:
@@ -454,15 +468,6 @@ def _run_cycle(
                 continue
         else:
             action = _latest_action_single(model=model, data=data, horizon=horizon, device=device)
-
-        plan = build_plan_from_action(action, intensity_scale=intensity_scale)
-        buy_price = plan.buy_price * (1.0 - price_offset_pct)
-        sell_price = plan.sell_price * (1.0 + price_offset_pct)
-        adjusted = ensure_valid_levels(buy_price, sell_price, min_gap_pct=min_gap_pct)
-        if adjusted is None:
-            logger.warning("Invalid price levels for %s (buy=%.4f sell=%.4f)", symbol, buy_price, sell_price)
-            continue
-        buy_price, sell_price = adjusted
 
         position = _find_position(positions, symbol)
         position_qty = float(getattr(position, "qty", 0.0) or 0.0) if position else 0.0
@@ -482,6 +487,85 @@ def _run_cycle(
             exit_only = True
         if direction_conflict:
             exit_only = True
+
+        action["symbol"] = symbol
+        action["timestamp"] = pd.Timestamp(pd.to_datetime(action["timestamp"], utc=True))
+        symbol_runs.append(
+            {
+                "symbol": symbol,
+                "action": dict(action),
+                "directions": directions,
+                "position_qty": position_qty,
+                "allocation": allocation,
+                "exit_only": exit_only,
+                "position_context": {
+                    "qty": position_qty,
+                    "cash": float(getattr(account, "cash", 0.0) or 0.0),
+                    "equity": float(getattr(account, "equity", 0.0) or 0.0),
+                    "buying_power": float(getattr(account, "buying_power", 0.0) or 0.0),
+                    "avg_entry_price": float(getattr(position, "avg_entry_price", 0.0) or 0.0) if position else 0.0,
+                    "market_value": float(getattr(position, "market_value", 0.0) or 0.0) if position else 0.0,
+                    "side": str(getattr(position, "side", "") or "").lower() if position else "flat",
+                },
+            }
+        )
+
+    if not symbol_runs:
+        return
+
+    raw_actions_frame = pd.DataFrame([dict(run["action"]) for run in symbol_runs])
+    reforecasted_actions = apply_hourly_action_reforecasting(
+        raw_actions_frame,
+        history_by_symbol,
+        config=reforecast_config,
+        allow_short=bool(allow_short),
+        position_context_by_symbol={
+            str(run["symbol"]).upper(): dict(run["position_context"]) for run in symbol_runs
+        },
+    )
+    action_by_key = {
+        (str(row["symbol"]).upper(), pd.Timestamp(pd.to_datetime(row["timestamp"], utc=True))): dict(row)
+        for row in reforecasted_actions.to_dict("records")
+    }
+
+    for run in symbol_runs:
+        symbol = str(run["symbol"]).upper()
+        directions = run["directions"]
+        position_qty = float(run["position_qty"])
+        allocation = run["allocation"]
+        exit_only = bool(run["exit_only"])
+        raw_action = dict(run["action"])
+        action = action_by_key.get(
+            (symbol, pd.Timestamp(pd.to_datetime(raw_action["timestamp"], utc=True))),
+            raw_action,
+        )
+
+        if any(
+            abs(float(action.get(field, 0.0)) - float(raw_action.get(field, 0.0))) > 1e-9
+            for field in ("buy_price", "sell_price", "buy_amount", "sell_amount", "trade_amount", "allocation_fraction")
+        ):
+            logger.info(
+                "%s reforecast mode=%s buy %.4f->%.4f sell %.4f->%.4f buy_amt %.2f->%.2f sell_amt %.2f->%.2f",
+                symbol,
+                reforecast_config.normalized_mode(),
+                float(raw_action.get("buy_price", 0.0)),
+                float(action.get("buy_price", 0.0)),
+                float(raw_action.get("sell_price", 0.0)),
+                float(action.get("sell_price", 0.0)),
+                float(raw_action.get("buy_amount", 0.0)),
+                float(action.get("buy_amount", 0.0)),
+                float(raw_action.get("sell_amount", 0.0)),
+                float(action.get("sell_amount", 0.0)),
+            )
+
+        plan = build_plan_from_action(action, intensity_scale=intensity_scale)
+        buy_price = plan.buy_price * (1.0 - price_offset_pct)
+        sell_price = plan.sell_price * (1.0 + price_offset_pct)
+        adjusted = ensure_valid_levels(buy_price, sell_price, min_gap_pct=min_gap_pct)
+        if adjusted is None:
+            logger.warning("Invalid price levels for %s (buy=%.4f sell=%.4f)", symbol, buy_price, sell_price)
+            continue
+        buy_price, sell_price = adjusted
 
         intents = build_order_intents(
             plan,
@@ -505,22 +589,26 @@ def _run_cycle(
             logger.info("Exit-only mode for %s: %d intent(s)", symbol, len(intents))
 
         if not dry_run:
-            try:
-                current_open_orders = list(alpaca_wrapper.get_orders())
-            except Exception as exc:
-                logger.warning("Failed to fetch open orders for %s before reconcile: %s", symbol, exc)
-                current_open_orders = []
-            _reconcile_live_symbol_orders(
+            current_open_orders = open_orders_snapshot if open_orders_snapshot is not None else []
+            remaining_symbol_orders = _reconcile_live_symbol_orders(
                 symbol,
                 position_qty=position_qty,
                 intents=intents,
                 open_orders=current_open_orders,
                 dry_run=dry_run,
             )
+            if open_orders_snapshot is not None:
+                open_orders_snapshot = [
+                    order
+                    for order in open_orders_snapshot
+                    if _normalize_live_symbol(getattr(order, "symbol", "")) != symbol
+                ]
+                open_orders_snapshot.extend(remaining_symbol_orders)
 
         logger.info(
-            "%s action buy=%.4f sell=%.4f buy_amt=%.2f sell_amt=%.2f pos_qty=%.6f can_long=%s can_short=%s intents=%s",
+            "%s action mode=%s buy=%.4f sell=%.4f buy_amt=%.2f sell_amt=%.2f pos_qty=%.6f can_long=%s can_short=%s intents=%s",
             symbol,
+            reforecast_config.normalized_mode(),
             buy_price,
             sell_price,
             plan.buy_amount,
@@ -615,6 +703,13 @@ def main() -> None:
         default=25.0,
         help="Only stage new entry orders when the live book is within this many bps of the limit price (default: 25).",
     )
+    parser.add_argument("--reforecast-mode", default="baseline")
+    parser.add_argument("--reforecast-model", default="gemini-3.1-flash-lite-preview")
+    parser.add_argument("--reforecast-prompt-variant", default="position_context")
+    parser.add_argument("--reforecast-cache-only", action="store_true")
+    parser.add_argument("--reforecast-min-signal-amount-pct", type=float, default=20.0)
+    parser.add_argument("--reforecast-max-rows-per-symbol", type=int, default=None)
+    parser.add_argument("--reforecast-max-gross-allocation", type=float, default=1.0)
     parser.add_argument("--device", default=None, help="Override device (cuda/cuda:0).")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--buffer-seconds", type=int, default=30)
@@ -661,6 +756,15 @@ def main() -> None:
     crypto_root = Path(args.crypto_data_root) if args.crypto_data_root else None
     stock_root = Path(args.stock_data_root) if args.stock_data_root else None
     forecast_cache_root = Path(args.forecast_cache_root)
+    reforecast_config = HourlyActionReforecastConfig(
+        mode=str(args.reforecast_mode),
+        llm_model=str(args.reforecast_model),
+        llm_prompt_variant=str(args.reforecast_prompt_variant),
+        llm_cache_only=bool(args.reforecast_cache_only),
+        llm_min_signal_amount_pct=float(args.reforecast_min_signal_amount_pct),
+        llm_max_rows_per_symbol=args.reforecast_max_rows_per_symbol,
+        max_gross_allocation=float(args.reforecast_max_gross_allocation),
+    )
 
     # Cancel stale orders from previous runs on startup
     if not args.dry_run:
@@ -719,6 +823,7 @@ def main() -> None:
             allow_position_adds=bool(args.allow_position_adds),
             always_full_exit=bool(args.always_full_exit),
             entry_near_book_bps=args.entry_near_book_bps,
+            reforecast_config=reforecast_config,
             dry_run=args.dry_run,
         )
         if args.once:

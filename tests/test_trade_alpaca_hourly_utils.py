@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from newnanoalpacahourlyexp.trade_alpaca_hourly import (
     _allocation_usd,
@@ -13,6 +15,7 @@ from newnanoalpacahourlyexp.trade_alpaca_hourly import (
     _parse_horizon_map,
     _parse_symbols,
     _reconcile_live_symbol_orders,
+    main,
 )
 from src.hourly_trader_utils import (
     OrderIntent,
@@ -540,3 +543,41 @@ def test_filter_entry_intents_by_book_proximity_drops_far_entry_but_keeps_exit(m
     )
 
     assert [(intent.kind, intent.side) for intent in filtered] == [("exit", "sell")]
+
+
+def test_main_once_executes_cycle_immediately(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict] = []
+
+    monkeypatch.setattr(
+        "newnanoalpacahourlyexp.trade_alpaca_hourly._resolve_device",
+        lambda device_arg: torch.device("cuda"),
+    )
+    monkeypatch.setattr(
+        "newnanoalpacahourlyexp.trade_alpaca_hourly.HourlyDataValidator",
+        lambda *args, **kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        "newnanoalpacahourlyexp.trade_alpaca_hourly.HourlyDataRefresher",
+        lambda *args, **kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        "newnanoalpacahourlyexp.trade_alpaca_hourly._run_cycle",
+        lambda *args, **kwargs: calls.append({"args": args, "kwargs": kwargs}),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "trade_alpaca_hourly.py",
+            "--symbols",
+            "SOLUSD",
+            "--once",
+            "--dry-run",
+        ],
+    )
+
+    main()
+
+    assert len(calls) == 1
+    assert calls[0]["kwargs"]["dry_run"] is True
+    assert calls[0]["kwargs"]["reforecast_config"].normalized_mode() == "baseline"
