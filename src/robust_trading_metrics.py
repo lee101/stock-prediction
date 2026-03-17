@@ -91,6 +91,7 @@ def compute_market_sim_goodness_score(
     max_drawdown: float,
     pnl_smoothness: float,
     ulcer_index: float = 0.0,
+    sortino_clip: float = 10.0,
     trade_rate: float | None = None,
     trade_count: float | int | None = None,
     period_count: int | float | None = None,
@@ -113,9 +114,12 @@ def compute_market_sim_goodness_score(
             )
 
     smoothness_score = compute_pnl_smoothness_score(pnl_smoothness)
+    safe_sortino = float(np.nan_to_num(float(sortino), nan=0.0, posinf=float(sortino_clip), neginf=-float(sortino_clip)))
+    if sortino_clip > 0:
+        safe_sortino = float(np.clip(safe_sortino, -float(sortino_clip), float(sortino_clip)))
     raw_score = (
         100.0 * float(total_return)
-        + 0.8 * float(sortino)
+        + 0.8 * safe_sortino
         + 0.5 * smoothness_score
         - 12.0 * float(max_drawdown)
         - 0.08 * float(ulcer_index)

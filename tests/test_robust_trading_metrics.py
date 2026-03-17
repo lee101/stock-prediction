@@ -52,6 +52,28 @@ def test_compute_market_sim_goodness_score_accepts_trade_count() -> None:
     assert trade_count_score == pytest.approx(trade_rate_score)
 
 
+def test_compute_market_sim_goodness_score_clips_infinite_sortino() -> None:
+    score = compute_market_sim_goodness_score(
+        total_return=0.10,
+        sortino=float("inf"),
+        max_drawdown=0.01,
+        pnl_smoothness=0.001,
+        trade_count=5,
+        period_count=60,
+    )
+
+    assert score == pytest.approx(
+        compute_market_sim_goodness_score(
+            total_return=0.10,
+            sortino=10.0,
+            max_drawdown=0.01,
+            pnl_smoothness=0.001,
+            trade_count=5,
+            period_count=60,
+        )
+    )
+
+
 def test_summarize_lag_results_outputs_expected_fields() -> None:
     lag_results = [
         {"sortino": 2.0, "return_pct": 5.0, "max_drawdown_pct": 2.0, "pnl_smoothness": 0.002},
