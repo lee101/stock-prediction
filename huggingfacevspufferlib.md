@@ -313,23 +313,21 @@ tmux new-session -d -s hf_vs_pufferlib_puffer_20260317 \
 ```
 - Queue wrapper log: [`analysis/remote_logs/hf_vs_pufferlib_puffer_queue_20260317.log`](/nvme0n1-disk/code/stock-prediction/analysis/remote_logs/hf_vs_pufferlib_puffer_queue_20260317.log)
   - Note: like the HF queue, progress is recorded in each run directory rather than the wrapper log
-- Current active run: `puffer_open_close_AAPL_2024train`
+- Completed first run: `puffer_open_close_AAPL_2024train`
   - Run directory: [`analysis/hf_vs_pufferlib/runs/puffer_open_close_AAPL_2024train`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/runs/puffer_open_close_AAPL_2024train)
   - Train log: [`analysis/hf_vs_pufferlib/runs/puffer_open_close_AAPL_2024train/train.log`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/runs/puffer_open_close_AAPL_2024train/train.log)
-  - Exact train command: [`analysis/hf_vs_pufferlib/runs/puffer_open_close_AAPL_2024train/train_command.txt`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/runs/puffer_open_close_AAPL_2024train/train_command.txt)
-  - Current status as of **March 17, 2026 10:13 UTC**:
-    - still running
-    - reached epoch `24` / `global_step=1572864`
-    - latest logged `SPS=436.28`
-    - latest environment snapshot: `equity=2147.13`, `gross_pnl=38.6002`, `trading_cost=4.8065`, `financing_cost=0.9027`, `deleverage_notional=0.7240`
-    - no fresh run-local checkpoint or final summary JSON has been emitted yet, so shared-simulator holdout eval for the live `2.2M`-parameter run is still pending
-  - Available checkpoint baseline:
-    - the only currently loadable AAPL Puffer artifact is [`experiments/177374124039/model_000001.pt`](/nvme0n1-disk/code/stock-prediction/experiments/177374124039/model_000001.pt)
-    - its saved width is `256`, so it is not the current live `preset=small hidden=512` run logged above
-    - after adding checkpoint-shape inference to the evaluator, that older artifact still provides a reproducible baseline for AAPL holdout comparison
+  - Train summary: [`analysis/hf_vs_pufferlib/runs/puffer_open_close_AAPL_2024train/train_summary.json`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/runs/puffer_open_close_AAPL_2024train/train_summary.json)
+  - Shared-simulator holdout eval: [`analysis/hf_vs_pufferlib/evals/puffer_open_close_AAPL_2024train_eval_2025.json`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/evals/puffer_open_close_AAPL_2024train_eval_2025.json)
+  - Final train status:
+    - finished at epoch `31` / `global_step=2031616`
+    - final logged `policy_params=2240003`, `preset=small`, `hidden=512`
+    - final train environment snapshot: `equity=2429.84`, `gross_pnl=43.3079`, `trading_cost=5.4486`, `financing_cost=1.0294`, `deleverage_notional=0.7273`
+- Current active run as of **March 17, 2026 10:20 UTC**: `puffer_open_close_MSFT_2024train`
+  - Run directory: [`analysis/hf_vs_pufferlib/runs/puffer_open_close_MSFT_2024train`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/runs/puffer_open_close_MSFT_2024train)
+  - Train log: [`analysis/hf_vs_pufferlib/runs/puffer_open_close_MSFT_2024train/train.log`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/runs/puffer_open_close_MSFT_2024train/train.log)
+  - Exact train command: [`analysis/hf_vs_pufferlib/runs/puffer_open_close_MSFT_2024train/train_command.txt`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/runs/puffer_open_close_MSFT_2024train/train_command.txt)
+  - current status: just started and has not yet reached the first logged epoch snapshot
 - Remaining queue after the active run:
-  - `AAPL maxdiff`
-  - `MSFT open_close`
   - `MSFT maxdiff`
   - `NVDA open_close`
   - `NVDA maxdiff`
@@ -351,9 +349,9 @@ tmux new-session -d -s hf_vs_pufferlib_puffer_20260317 \
 - HF final model on `AAPL maxdiff` is lower return but cleaner on fills and drawdown
   - [`analysis/hf_vs_pufferlib/evals/hf_5sym_nototo_adamw_2024train_AAPL_maxdiff_alloc_signed_by_logits.json`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/evals/hf_5sym_nototo_adamw_2024train_AAPL_maxdiff_alloc_signed_by_logits.json)
   - result: `total_return=8.83%`, `sortino=1.6176`, `max_drawdown=-0.71%`, `fill_rate=3.70%`
-- Available Puffer AAPL baseline from the older `256`-width checkpoint
-  - shared-simulator result: `total_return=-0.77%`, `sortino=-1.4997`, `max_drawdown=-1.19%`, `turnover=0.6822`
-  - this is a stale saved artifact, not the still-running live `2.2M`-parameter AAPL open-close job
+- Live Puffer `AAPL open_close` holdout from the finished `512`-hidden run
+  - [`analysis/hf_vs_pufferlib/evals/puffer_open_close_AAPL_2024train_eval_2025.json`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/evals/puffer_open_close_AAPL_2024train_eval_2025.json)
+  - result: `total_return=1.22%`, `sortino=0.3737`, `max_drawdown=-30.11%`, `turnover=80.74`, `deleverage_notional=98.64`
 - Quick HF checkpoint sweep on `AAPL open_close alloc_signed_by_logits`
   - `checkpoint_step_7000` was best among saved checkpoints `5000, 6000, 7000, 8000, 9000, 10000, final_model`
   - ranked by Sortino: `7000 > 8000 > 6000 > 5000 > final_model > 10000 > 9000`
@@ -361,7 +359,7 @@ tmux new-session -d -s hf_vs_pufferlib_puffer_20260317 \
 
 ## Next Steps
 
-- Let the current Puffer AAPL `open_close` run finish and capture the first live `512`-hidden checkpoint or final summary JSON.
+- Keep the Puffer queue moving through `MSFT`, `NVDA`, `AMZN`, and `TSLA` after the first live AAPL result.
 - Keep the HF queue moving into `hf_5sym_toto_muon_2024train` after the no-Toto eval matrix finishes.
 - Promote HF checkpoints by shared market-sim ranking, not by `final_model.pth` alone.
-- Update this document with per-symbol and average metrics once the first live Puffer AAPL holdout eval is available.
+- Update this document with per-symbol and average metrics once the next Puffer symbols finish.
