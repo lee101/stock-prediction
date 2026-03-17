@@ -10,6 +10,11 @@ import numpy as np
 import pandas as pd
 from neural_trade_stock_e2e import _build_dataset_config
 from neuraldailytraining import DailyTradingRuntime
+from src.robust_trading_metrics import (
+    compute_market_sim_goodness_score,
+    compute_max_drawdown,
+    compute_pnl_smoothness,
+)
 from src.fixtures import all_crypto_symbols
 from src.date_utils import is_nyse_open_on_date
 
@@ -30,6 +35,7 @@ class NeuralDailyMarketSimulator:
         runtime: DailyTradingRuntime,
         symbols: Sequence[str],
         *,
+        maker_fee: float | None = None,
         stock_fee: float = 0.0008,  # Match training default (8 bps)
         crypto_fee: float = 0.0008,  # Match training default (8 bps)
         initial_cash: float = 1.0,
@@ -41,6 +47,9 @@ class NeuralDailyMarketSimulator:
     ) -> None:
         self.runtime = runtime
         self.symbols = [symbol.upper() for symbol in symbols]
+        if maker_fee is not None:
+            stock_fee = float(maker_fee)
+            crypto_fee = float(maker_fee)
         self.stock_fee = stock_fee
         self.crypto_fee = crypto_fee
         self.initial_cash = initial_cash
@@ -94,6 +103,7 @@ class NeuralDailyMarketSimulator:
         last_close: dict[str, float] = {symbol: float(frame["close"].iloc[-1]) for symbol, frame in self.frames.items()}
         results: list[SimulationResult] = []
         daily_returns: list[float] = []
+        trade_count = 0
 
         for date in dates:
             # Calculate leverage cost at start of day
@@ -159,11 +169,13 @@ class NeuralDailyMarketSimulator:
                 if low <= buy_price and buy_qty > 0:
                     cash -= buy_qty * buy_price * (1.0 + fee_rate)
                     inventory[symbol] += buy_qty
+                    trade_count += 1
                 # Sell leg
                 sellable = min(target_amount, inventory[symbol])
                 if high >= sell_price and sellable > 0:
                     cash += sellable * sell_price * (1.0 - fee_rate)
                     inventory[symbol] -= sellable
+                    trade_count += 1
             portfolio_value = cash
             for symbol, qty in inventory.items():
                 close_price = last_close.get(symbol)
@@ -190,10 +202,27 @@ class NeuralDailyMarketSimulator:
         final_equity = results[-1].equity if results else self.initial_cash
         total_leverage_costs = sum(result.leverage_cost for result in results)
         max_leverage = max((result.leverage for result in results), default=0.0)
+        equity_curve = [self.initial_cash, *[result.equity for result in results]]
+        total_return = (final_equity / self.initial_cash) - 1.0 if self.initial_cash else 0.0
+        max_drawdown = compute_max_drawdown(equity_curve)
+        pnl_smoothness = compute_pnl_smoothness(daily_returns)
+        goodness_score = compute_market_sim_goodness_score(
+            total_return=total_return,
+            sortino=sortino,
+            max_drawdown=max_drawdown,
+            pnl_smoothness=pnl_smoothness,
+            trade_count=trade_count,
+            period_count=len(results),
+        )
         summary = {
             "final_equity": final_equity,
             "pnl": final_equity - self.initial_cash,
+            "total_return": total_return,
             "sortino": sortino,
+            "max_drawdown": max_drawdown,
+            "pnl_smoothness": pnl_smoothness,
+            "goodness_score": goodness_score,
+            "trade_count": trade_count,
             "total_leverage_costs": total_leverage_costs,
             "max_leverage": max_leverage,
         }

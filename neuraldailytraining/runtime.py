@@ -183,12 +183,13 @@ class DailyTradingRuntime:
             confidence_score = 1.0
             if confidence is not None:
                 confidence_score = float(confidence[idx, -1].item())
-                if self.confidence_threshold is not None and confidence_score < self.confidence_threshold:
+                confidence_threshold = getattr(self, "confidence_threshold", None)
+                if confidence_threshold is not None and confidence_score < confidence_threshold:
                     LOGGER.info(
                         "Skipping %s due to low confidence %.3f < %.3f",
                         item["symbol"],
                         confidence_score,
-                        self.confidence_threshold,
+                        confidence_threshold,
                     )
                     trade_amount = 0.0
 

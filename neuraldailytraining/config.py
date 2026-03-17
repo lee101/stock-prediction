@@ -71,6 +71,7 @@ class DailyTrainingConfig:
     grad_clip: float = 1.0
     maker_fee: float = DEFAULT_MAKER_FEE_RATE
     return_weight: float = 0.08
+    smoothness_penalty: float = 0.0
     transformer_dim: int = 256
     transformer_layers: int = 4
     transformer_heads: int = 8

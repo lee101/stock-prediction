@@ -332,6 +332,14 @@ class NeuralDailyTrainer:
                     "sortino/val": val_metrics["sortino"],
                     "return/train": train_metrics["return"],
                     "return/val": val_metrics["return"],
+                    "total_return/train": train_metrics.get("total_return", 0.0),
+                    "total_return/val": val_metrics.get("total_return", 0.0),
+                    "drawdown/train": train_metrics.get("max_drawdown", 0.0),
+                    "drawdown/val": val_metrics.get("max_drawdown", 0.0),
+                    "smoothness/train": train_metrics.get("pnl_smoothness", 0.0),
+                    "smoothness/val": val_metrics.get("pnl_smoothness", 0.0),
+                    "goodness/train": train_metrics.get("goodness_score", 0.0),
+                    "goodness/val": val_metrics.get("goodness_score", 0.0),
                     "fill/buy_train": train_metrics["buy_fill"],
                     "fill/sell_train": train_metrics["sell_fill"],
                     "fill/buy_val": val_metrics["buy_fill"],
@@ -348,6 +356,10 @@ class NeuralDailyTrainer:
                 if "binary_return" in val_metrics:
                     log_dict["binary/sortino"] = val_metrics["binary_sortino"]
                     log_dict["binary/return"] = val_metrics["binary_return"]
+                    log_dict["binary/total_return"] = val_metrics.get("binary_total_return", 0.0)
+                    log_dict["binary/drawdown"] = val_metrics.get("binary_max_drawdown", 0.0)
+                    log_dict["binary/smoothness"] = val_metrics.get("binary_pnl_smoothness", 0.0)
+                    log_dict["binary/goodness"] = val_metrics.get("binary_goodness_score", 0.0)
                     log_dict["binary/buy_fill"] = val_metrics["binary_buy_fill"]
                     log_dict["binary/sell_fill"] = val_metrics["binary_sell_fill"]
 
@@ -463,10 +475,18 @@ class NeuralDailyTrainer:
         else:
             model.eval()
         totals = dict.fromkeys(("loss", "score", "sortino", "return", "buy_fill", "sell_fill"), 0.0)
+        totals["total_return"] = 0.0
+        totals["max_drawdown"] = 0.0
+        totals["pnl_smoothness"] = 0.0
+        totals["goodness_score"] = 0.0
         totals["avg_trade_amount"] = 0.0
         totals["avg_over_leverage"] = 0.0
         totals["avg_confidence"] = 0.0
         b_totals = dict.fromkeys(("score", "return", "buy_fill", "sell_fill"), 0.0)
+        b_totals["total_return"] = 0.0
+        b_totals["max_drawdown"] = 0.0
+        b_totals["pnl_smoothness"] = 0.0
+        b_totals["goodness_score"] = 0.0
         batches = 0
         amp_dtype = torch.bfloat16 if self.config.amp_dtype == "bfloat16" else torch.float16
         symbol_totals: dict[int, dict[str, float]] = {}
@@ -563,6 +583,33 @@ class NeuralDailyTrainer:
                     sim.returns,
                     return_weight=self.config.return_weight,
                     periods_per_year=self.periods_per_year,
+                    smoothness_penalty=getattr(self.config, "smoothness_penalty", 0.0),
+                )
+                total_return = (sim.portfolio_values[..., -1] / max(float(self.config.initial_cash), 1e-8)) - 1.0
+                running_peaks = torch.cummax(sim.portfolio_values, dim=-1).values
+                drawdowns = torch.where(
+                    running_peaks > 0,
+                    (running_peaks - sim.portfolio_values) / running_peaks.clamp_min(1e-8),
+                    torch.zeros_like(sim.portfolio_values),
+                )
+                max_drawdown = drawdowns.max(dim=-1).values
+                if sim.returns.shape[-1] > 1:
+                    pnl_smoothness = (sim.returns[..., 1:] - sim.returns[..., :-1]).std(dim=-1)
+                else:
+                    pnl_smoothness = torch.zeros_like(score)
+                smoothness_score = 1.0 / (1.0 + 250.0 * pnl_smoothness)
+                trade_events = (
+                    (sim.executed_buys.abs() > 1e-8) | (sim.executed_sells.abs() > 1e-8)
+                ).float().sum(dim=-1)
+                effective_periods = max(int(sim.returns.shape[-1]), 24)
+                trade_rate = trade_events / float(effective_periods)
+                excess_trade_rate = torch.relu(trade_rate - (1.0 / float(effective_periods)))
+                goodness_score = (
+                    100.0 * total_return
+                    + 0.8 * sortino
+                    + 0.5 * smoothness_score
+                    - 12.0 * max_drawdown
+                    - 2.0 * excess_trade_rate
                 )
                 symbol_ids = batch.get("symbol_id")
                 if symbol_ids is not None:
@@ -648,6 +695,10 @@ class NeuralDailyTrainer:
             totals["score"] += float(score.mean().item()) * batch_size
             totals["sortino"] += float(sortino.mean().item()) * batch_size
             totals["return"] += float(ann_return.mean().item()) * batch_size
+            totals["total_return"] += float(total_return.mean().item()) * batch_size
+            totals["max_drawdown"] += float(max_drawdown.mean().item()) * batch_size
+            totals["pnl_smoothness"] += float(pnl_smoothness.mean().item()) * batch_size
+            totals["goodness_score"] += float(goodness_score.mean().item()) * batch_size
             totals["buy_fill"] += float(sim.buy_fill_probability.mean().item()) * batch_size
             totals["sell_fill"] += float(sim.sell_fill_probability.mean().item()) * batch_size
             totals["avg_trade_amount"] += float(actions["trade_amount"].mean().item()) * batch_size
@@ -671,9 +722,39 @@ class NeuralDailyTrainer:
                     binary.returns,
                     return_weight=self.config.return_weight,
                     periods_per_year=self.periods_per_year,
+                    smoothness_penalty=getattr(self.config, "smoothness_penalty", 0.0),
+                )
+                b_total_return = (binary.portfolio_values[..., -1] / max(float(self.config.initial_cash), 1e-8)) - 1.0
+                b_running_peaks = torch.cummax(binary.portfolio_values, dim=-1).values
+                b_drawdowns = torch.where(
+                    b_running_peaks > 0,
+                    (b_running_peaks - binary.portfolio_values) / b_running_peaks.clamp_min(1e-8),
+                    torch.zeros_like(binary.portfolio_values),
+                )
+                b_max_drawdown = b_drawdowns.max(dim=-1).values
+                if binary.returns.shape[-1] > 1:
+                    b_pnl_smoothness = (binary.returns[..., 1:] - binary.returns[..., :-1]).std(dim=-1)
+                else:
+                    b_pnl_smoothness = torch.zeros_like(b_sortino)
+                b_smoothness_score = 1.0 / (1.0 + 250.0 * b_pnl_smoothness)
+                b_trade_events = (
+                    (binary.executed_buys.abs() > 1e-8) | (binary.executed_sells.abs() > 1e-8)
+                ).float().sum(dim=-1)
+                b_trade_rate = b_trade_events / float(effective_periods)
+                b_excess_trade_rate = torch.relu(b_trade_rate - (1.0 / float(effective_periods)))
+                b_goodness_score = (
+                    100.0 * b_total_return
+                    + 0.8 * b_sortino
+                    + 0.5 * b_smoothness_score
+                    - 12.0 * b_max_drawdown
+                    - 2.0 * b_excess_trade_rate
                 )
                 b_totals["score"] += float(b_sortino.mean().item()) * batch_size
                 b_totals["return"] += float(b_return.mean().item()) * batch_size
+                b_totals["total_return"] += float(b_total_return.mean().item()) * batch_size
+                b_totals["max_drawdown"] += float(b_max_drawdown.mean().item()) * batch_size
+                b_totals["pnl_smoothness"] += float(b_pnl_smoothness.mean().item()) * batch_size
+                b_totals["goodness_score"] += float(b_goodness_score.mean().item()) * batch_size
                 b_totals["buy_fill"] += float(binary.buy_fill_probability.mean().item()) * batch_size
                 b_totals["sell_fill"] += float(binary.sell_fill_probability.mean().item()) * batch_size
 
@@ -682,6 +763,10 @@ class NeuralDailyTrainer:
             "score": totals["score"] / max(1, batches),
             "sortino": totals["sortino"] / max(1, batches),
             "return": totals["return"] / max(1, batches),
+            "total_return": totals["total_return"] / max(1, batches),
+            "max_drawdown": totals["max_drawdown"] / max(1, batches),
+            "pnl_smoothness": totals["pnl_smoothness"] / max(1, batches),
+            "goodness_score": totals["goodness_score"] / max(1, batches),
             "buy_fill": totals["buy_fill"] / max(1, batches),
             "sell_fill": totals["sell_fill"] / max(1, batches),
             "avg_trade_amount": totals["avg_trade_amount"] / max(1, batches),
@@ -691,6 +776,10 @@ class NeuralDailyTrainer:
         if not train:
             metrics["binary_sortino"] = b_totals["score"] / max(1, batches)
             metrics["binary_return"] = b_totals["return"] / max(1, batches)
+            metrics["binary_total_return"] = b_totals["total_return"] / max(1, batches)
+            metrics["binary_max_drawdown"] = b_totals["max_drawdown"] / max(1, batches)
+            metrics["binary_pnl_smoothness"] = b_totals["pnl_smoothness"] / max(1, batches)
+            metrics["binary_goodness_score"] = b_totals["goodness_score"] / max(1, batches)
             metrics["binary_buy_fill"] = b_totals["buy_fill"] / max(1, batches)
             metrics["binary_sell_fill"] = b_totals["sell_fill"] / max(1, batches)
         averaged_symbol_stats: dict[int, dict[str, float]] = {}

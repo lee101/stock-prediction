@@ -47,6 +47,10 @@ def test_simulator_uses_default_crypto_fee() -> None:
 
     expected_pnl = (12.0 * (1 - 0.0008)) - (10.0 * (1 + 0.0008))
     assert math.isclose(summary["pnl"], expected_pnl, rel_tol=0, abs_tol=1e-6)
+    assert "max_drawdown" in summary
+    assert "pnl_smoothness" in summary
+    assert "goodness_score" in summary
+    assert "trade_count" in summary
 
 
 def test_runtime_applies_confidence_gate_and_group_mask(tmp_path) -> None:

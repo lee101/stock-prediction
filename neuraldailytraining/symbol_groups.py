@@ -310,6 +310,93 @@ def get_training_symbols_by_group(
     return sorted(result)
 
 
+def _dedupe_preserve(symbols: Iterable[str]) -> List[str]:
+    seen: Set[str] = set()
+    ordered: List[str] = []
+    for symbol in symbols:
+        normalized = str(symbol).strip().upper()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
+
+
+def build_broad_symbol_universe(
+    *,
+    data_root: str = "trainingdata/train",
+    base_symbols: Iterable[str] | None = None,
+    max_symbols: int = 48,
+    per_group_cap: int = 2,
+) -> List[str]:
+    """Build a broader mixed stock/crypto universe from available training data.
+
+    The selection keeps the existing base basket first, then adds a small number
+    of extra symbols from each known group so the expansion stays diversified
+    instead of over-concentrating in one sector.
+    """
+
+    available = set(list_training_symbols(data_root))
+    if base_symbols is None:
+        try:
+            from strategytraining.symbol_sources import load_trade_stock_symbols
+
+            base_symbols = load_trade_stock_symbols("trade_stock_e2e.py")
+        except Exception:
+            base_symbols = []
+
+    base_ordered = _dedupe_preserve(base_symbols)
+    if available:
+        selected = [symbol for symbol in base_ordered if symbol in available]
+        if not selected:
+            selected = base_ordered[:]
+    else:
+        selected = base_ordered[:]
+
+    selected_set = set(selected)
+    limit = max(int(max_symbols), 0)
+    group_cap = max(int(per_group_cap), 0)
+
+    def _maybe_add(symbol: str) -> None:
+        normalized = symbol.strip().upper()
+        if not normalized or normalized in selected_set:
+            return
+        if available and normalized not in available:
+            return
+        if limit and len(selected) >= limit:
+            return
+        selected.append(normalized)
+        selected_set.add(normalized)
+
+    if not limit or len(selected) < limit:
+        for group_name, group_symbols in SYMBOL_GROUPS.items():
+            added = 0
+            for symbol in _dedupe_preserve(group_symbols):
+                if group_cap and added >= group_cap:
+                    break
+                before = len(selected)
+                _maybe_add(symbol)
+                if len(selected) > before:
+                    added += 1
+                if limit and len(selected) >= limit:
+                    return selected[:limit]
+
+    if not limit or len(selected) < limit:
+        for group_symbols in SYMBOL_GROUPS.values():
+            for symbol in _dedupe_preserve(group_symbols):
+                _maybe_add(symbol)
+                if limit and len(selected) >= limit:
+                    return selected[:limit]
+
+    if available and (not limit or len(selected) < limit):
+        for symbol in sorted(available):
+            _maybe_add(symbol)
+            if limit and len(selected) >= limit:
+                return selected[:limit]
+
+    return selected[:limit] if limit else selected
+
+
 if __name__ == "__main__":
     # Test the grouping
     test_symbols = ["AAPL", "MSFT", "BTCUSD", "SPY", "GS", "UNKNOWN"]

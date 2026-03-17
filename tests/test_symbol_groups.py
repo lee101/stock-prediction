@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 
 from neuraldailytraining.symbol_groups import (
+    build_broad_symbol_universe,
     build_correlation_groups,
     group_ids_from_clusters,
 )
@@ -55,3 +56,21 @@ def test_correlation_groups_separate_crypto_and_equity():
     assert equity_groups  # at least one equity cluster
     assert crypto_groups  # crypto isolated into its own cluster set
     assert any("BTC-USD" in symbols for grp, symbols in clusters.items() if grp in crypto_groups)
+
+
+def test_build_broad_symbol_universe_preserves_base_and_caps_extensions(tmp_path):
+    for symbol in ("AAPL", "BTCUSD", "MSFT", "JPM", "ETHUSD", "XOM", "UNGROUPED"):
+        (tmp_path / f"{symbol}.csv").write_text("timestamp,open,high,low,close,volume\n", encoding="utf-8")
+
+    symbols = build_broad_symbol_universe(
+        data_root=str(tmp_path),
+        base_symbols=("AAPL", "BTCUSD"),
+        max_symbols=5,
+        per_group_cap=1,
+    )
+
+    assert symbols[:2] == ["AAPL", "BTCUSD"]
+    assert "MSFT" in symbols
+    assert "JPM" in symbols
+    assert len(symbols) == 5
+    assert "UNGROUPED" not in symbols
