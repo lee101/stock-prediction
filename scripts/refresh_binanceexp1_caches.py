@@ -17,8 +17,14 @@ from src.binance_hourly_csv_utils import append_hourly_binance_bars
 
 DATA_ROOT = PROJECT_ROOT / "trainingdatahourly" / "crypto"
 CACHE_ROOT = PROJECT_ROOT / "binanceneural" / "forecast_cache"
-SYMBOLS = ["SOLUSD", "BTCUSD", "ETHUSD"]
-USDT_FALLBACK = {"SOLUSD": "SOLUSDT", "BTCUSD": "BTCUSDT", "ETHUSD": "ETHUSDT"}
+SYMBOLS = ["SOLUSD", "LINKUSD", "UNIUSD", "BTCUSD", "ETHUSD"]
+USDT_FALLBACK = {
+    "SOLUSD": "SOLUSDT",
+    "LINKUSD": "LINKUSDT",
+    "UNIUSD": "UNIUSDT",
+    "BTCUSD": "BTCUSDT",
+    "ETHUSD": "ETHUSDT",
+}
 LOOKBACK_HOURS = 48
 HORIZONS = (1, 24)
 CONTEXT_HOURS = 24 * 14

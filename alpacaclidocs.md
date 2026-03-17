@@ -115,7 +115,7 @@ python -m binanceneural.binance_watcher_cli SYMBOL --side {buy|sell} \
 python scripts/refresh_binanceexp1_caches.py
 ```
 - Infinite loop, 5-min intervals
-- Refreshes price CSVs + Chronos2 forecast caches (h1) for SOLUSD, BTCUSD, ETHUSD
+- Refreshes price CSVs + Chronos2 forecast caches (`h1` and `h24`) for `SOLUSD`, `LINKUSD`, `UNIUSD`, `BTCUSD`, and `ETHUSD`
 - Run via supervisor alongside --cache-only bots
 
 ### 5. `scripts/state_inspector_cli.py` -- Trade State Inspector

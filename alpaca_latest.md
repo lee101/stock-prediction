@@ -1,6 +1,6 @@
 # Alpaca Hourly Trading Runbook (Live)
 
-Updated: 2026-02-05
+Updated: 2026-03-17
 
 This runbook covers running the hourly Alpaca trading loop with the best current checkpoints
 from `newnanoalpacahourlyexp/`, plus an exit-only guard for NFLX.
@@ -60,6 +60,30 @@ aws s3 sync s3://models/stock/models/alpaca/binanceneural/checkpoints/ binancene
   --include "alpaca_uniusd_20260204_231926/*" \
   --endpoint-url "$R2_ENDPOINT"
 ```
+
+## Local cache refresh
+
+Use this when hourly CSVs are current but `binanceneural/forecast_cache` is stale for the live symbols:
+
+```bash
+source .venv313/bin/activate
+python - <<'PY'
+from scripts.refresh_binanceexp1_caches import refresh_price_csv, refresh_forecast_cache
+
+for symbol in ["SOLUSD", "LINKUSD", "UNIUSD"]:
+    refresh_price_csv(symbol)
+for symbol in ["SOLUSD", "LINKUSD", "UNIUSD"]:
+    refresh_forecast_cache(symbol)
+PY
+```
+
+March 17, 2026 verification after refresh:
+- `trainingdatahourly/crypto/SOLUSD.csv` max timestamp `2026-03-17 20:00:00+00:00`
+- `trainingdatahourly/crypto/LINKUSD.csv` max timestamp `2026-03-17 21:00:00+00:00`
+- `trainingdatahourly/crypto/UNIUSD.csv` max timestamp `2026-03-17 21:00:00+00:00`
+- `binanceneural/forecast_cache/h1/LINKUSD.parquet` max timestamp `2026-03-17 21:00:00+00:00`
+- `binanceneural/forecast_cache/h1/UNIUSD.parquet` max timestamp `2026-03-17 21:00:00+00:00`
+- `binanceneural/forecast_cache/h24/UNIUSD.parquet` max timestamp `2026-03-17 21:00:00+00:00`
 
 ## API smoke test
 
