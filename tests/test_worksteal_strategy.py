@@ -170,6 +170,60 @@ class TestWorkStealBacktest:
         if trades_btc and trades_alt:
             assert btc_fees < alt_fees  # BTC 0% < DOGE 10bps
 
+    def test_base_asset_idle_mode_participates_in_eth_trend(self):
+        eth_prices = [100 + i * 2 for i in range(40)]
+        bars = {"ETHUSD": make_bars(eth_prices, symbol="ETHUSD")}
+        config = WorkStealConfig(
+            base_asset_symbol="ETHUSD",
+            base_asset_rebalance_min_cash=0.0,
+            lookback_days=10,
+        )
+
+        eq, trades, metrics = run_worksteal_backtest(bars, config)
+
+        assert trades == []
+        assert eq["base_asset_qty"].iloc[-1] > 0.0
+        assert metrics["final_equity"] > config.initial_cash
+
+    def test_base_asset_filter_can_keep_strategy_in_cash(self):
+        eth_prices = [200 - i * 3 for i in range(40)]
+        bars = {"ETHUSD": make_bars(eth_prices, symbol="ETHUSD")}
+        config = WorkStealConfig(
+            base_asset_symbol="ETHUSD",
+            base_asset_momentum_period=5,
+            base_asset_min_momentum=0.0,
+            base_asset_rebalance_min_cash=0.0,
+            lookback_days=10,
+        )
+
+        eq, _, metrics = run_worksteal_backtest(bars, config)
+
+        assert eq["base_asset_qty"].max() == pytest.approx(0.0)
+        assert metrics["final_equity"] == pytest.approx(config.initial_cash)
+
+    def test_base_asset_is_liquidated_to_fund_alt_entry(self):
+        eth_prices = [100 + i for i in range(25)] + [125 + i for i in range(15)]
+        alt_prices = [100] * 25 + [88, 85, 84, 86, 90, 95, 100, 105, 108, 110, 112, 114, 116, 118, 120]
+        bars = {
+            "ETHUSD": make_bars(eth_prices, symbol="ETHUSD"),
+            "ALTUSD": make_bars(alt_prices, symbol="ALTUSD"),
+        }
+        config = WorkStealConfig(
+            dip_pct=0.10,
+            proximity_pct=0.02,
+            lookback_days=20,
+            profit_target_pct=0.10,
+            stop_loss_pct=0.08,
+            base_asset_symbol="ETHUSD",
+            base_asset_rebalance_min_cash=0.0,
+        )
+
+        eq, trades, _ = run_worksteal_backtest(bars, config)
+
+        assert any(t.symbol == "ALTUSD" and t.side == "buy" for t in trades)
+        assert eq["base_asset_qty"].max() > 0.0
+        assert eq["base_asset_qty"].min() < eq["base_asset_qty"].max()
+
 
 class TestComputeMetrics:
     def test_positive_return(self):

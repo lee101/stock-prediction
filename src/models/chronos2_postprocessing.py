@@ -25,6 +25,17 @@ class Chronos2AggregationSpec:
         return self.sample_count and self.sample_count > 1
 
 
+@dataclass(frozen=True)
+class Chronos2ForecastRepair:
+    close_p10: float
+    close_p50: float
+    close_p90: float
+    high_p50: float
+    low_p50: float
+    forecast_move_pct: float
+    forecast_volatility_pct: float
+
+
 class ColumnScaler:
     """Column-wise scaler that can be inverted (currently supports mean/std)."""
 
@@ -146,3 +157,61 @@ def aggregate_quantile_forecasts(
 def chronos_rng(seed_value: int) -> np.random.Generator:
     seed = seed_value % (2**32)
     return np.random.default_rng(seed)
+
+
+def _coerce_positive_or_fallback(value: float | None, fallback: float) -> float:
+    try:
+        numeric = float(value) if value is not None else fallback
+    except (TypeError, ValueError):
+        return fallback
+    if not math.isfinite(numeric) or numeric <= 0.0:
+        return fallback
+    return numeric
+
+
+def repair_forecast_ohlc(
+    *,
+    last_close: float,
+    close_p50: float | None,
+    close_p10: float | None = None,
+    close_p90: float | None = None,
+    high_p50: float | None = None,
+    low_p50: float | None = None,
+) -> Chronos2ForecastRepair:
+    baseline = _coerce_positive_or_fallback(last_close, 0.0)
+    close50 = _coerce_positive_or_fallback(close_p50, baseline or 1.0)
+    close10 = _coerce_positive_or_fallback(close_p10, close50)
+    close90 = _coerce_positive_or_fallback(close_p90, close50)
+
+    ordered_close10 = min(close10, close50, close90)
+    ordered_close90 = max(close10, close50, close90)
+    ordered_close50 = min(max(close50, ordered_close10), ordered_close90)
+
+    repaired_high = _coerce_positive_or_fallback(
+        high_p50,
+        max(ordered_close50, ordered_close90),
+    )
+    repaired_low = _coerce_positive_or_fallback(
+        low_p50,
+        min(ordered_close50, ordered_close10),
+    )
+    repaired_high = max(repaired_high, repaired_low, ordered_close50)
+    repaired_low = min(repaired_low, repaired_high, ordered_close50)
+
+    move_pct = 0.0
+    if baseline:
+        move_pct = (ordered_close50 - baseline) / baseline
+
+    volatility_pct = 0.0
+    if baseline:
+        volatility_pct = max(ordered_close90 - ordered_close10, 0.0) / abs(baseline)
+
+    return Chronos2ForecastRepair(
+        close_p10=ordered_close10,
+        close_p50=ordered_close50,
+        close_p90=ordered_close90,
+        high_p50=repaired_high,
+        low_p50=repaired_low,
+        forecast_move_pct=move_pct,
+        forecast_volatility_pct=volatility_pct,
+    )

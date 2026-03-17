@@ -35,3 +35,19 @@ instead of reconfirming with me just do it - you are probably right and yea i ca
 Creating new experiment directories is expected and safe; keep experiments reproducible so we can rerun them and match marketsimulator PnL closely to production.
 
 if you find unexpected changes you should be thorough with resolving them yourself and git commit and push work as you go is expected, work end to end autonomously
+
+remote training on the 5090 server is expected when local runs are too slow or GPU-bound.
+- host: `administrator@93.127.141.100`
+- repo root: `/nvme0n1-disk/code/stock-prediction`
+- ssh style: `ssh -o StrictHostKeyChecking=no administrator@93.127.141.100`
+- after ssh: `cd /nvme0n1-disk/code/stock-prediction && source .venv313/bin/activate` (or `.venv312` when required) and export `PYTHONPATH=/nvme0n1-disk/code/stock-prediction:/nvme0n1-disk/code/stock-prediction/PufferLib:$PYTHONPATH`
+- prefer long-running `nohup`/`tmux` remote jobs, then fetch artifacts back with `rsync`/`scp`; do not rely on fragile interactive shells
+- use the concrete command templates in `docs/REMOTE_TRAINING_RUNBOOK.md`
+- for algorithm families, the default remote starting points are:
+  - daily unified RL / pufferlib_market sweeps from `pufferlib_market.autoresearch_rl` or other rl environments
+  - hourly Chronos2 -> forecast-cache -> RL probes from `scripts/launch_remote_hourly_chronos_rl.py`
+  - tagged Chronos2 LoRA batches from `scripts/run_crypto_lora_batch.py`
+  - ETH risk PPO via `fastalgorithms/eth_risk_ppo/run_train_remote.sh`
+  - Chronos2 tuning loras over trainingdata/ or binancetrainingdata/ daily or trainingdatahourly/
+  - existing binance chronos/neural sweep helpers like `scripts/run_sweeps_remote.sh` when working in those experiment trees
+- whenever you launch remote training, record the exact remote command, env, log path, and output artifact path in the relevant progress markdown so the run is reproducible

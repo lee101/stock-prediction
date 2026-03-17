@@ -35,6 +35,7 @@ class TrainConfig:
     preaug: str = "percent_change"
     val_hours: int = 168
     test_hours: int = 168
+    run_name_prefix: str | None = None
 
 
 @dataclass
@@ -168,7 +169,16 @@ def train_and_evaluate(cfg: TrainConfig, data_path: Path, output_root: Path) -> 
     train_inputs = [{"target": train_aug[target_cols].to_numpy(dtype=np.float32).T}]
     val_inputs = [{"target": val_aug[target_cols].to_numpy(dtype=np.float32).T}]
 
-    run_name = f"{cfg.symbol}_lora_{cfg.preaug}_ctx{cfg.context_length}_lr{cfg.learning_rate:.0e}_r{cfg.lora_r}_{time.strftime('%Y%m%d_%H%M%S')}"
+    if cfg.run_name_prefix:
+        run_name = (
+            f"{cfg.run_name_prefix}_{cfg.symbol}_lora_{cfg.preaug}_ctx{cfg.context_length}_"
+            f"lr{cfg.learning_rate:.0e}_r{cfg.lora_r}_{time.strftime('%Y%m%d_%H%M%S')}"
+        )
+    else:
+        run_name = (
+            f"{cfg.symbol}_lora_{cfg.preaug}_ctx{cfg.context_length}_"
+            f"lr{cfg.learning_rate:.0e}_r{cfg.lora_r}_{time.strftime('%Y%m%d_%H%M%S')}"
+        )
     output_dir = output_root / run_name
 
     class FakeConfig:
@@ -220,6 +230,12 @@ def main():
     parser.add_argument("--num-steps", type=int, default=1000)
     parser.add_argument("--lora-r", type=int, default=16)
     parser.add_argument("--preaug", type=str, default="percent_change")
+    parser.add_argument(
+        "--run-prefix",
+        type=str,
+        default=None,
+        help="Optional prefix added to the generated run/report name for batch/remote orchestration.",
+    )
     args = parser.parse_args()
 
     args.results_dir.mkdir(parents=True, exist_ok=True)
@@ -237,6 +253,7 @@ def main():
         num_steps=args.num_steps,
         lora_r=args.lora_r,
         preaug=args.preaug,
+        run_name_prefix=(str(args.run_prefix).strip() or None) if args.run_prefix else None,
     )
 
     logger.info("Training {} LoRA: ctx={} preaug={} lr={:.0e}", cfg.symbol, cfg.context_length, cfg.preaug, cfg.learning_rate)
@@ -244,6 +261,9 @@ def main():
     result = train_and_evaluate(cfg, data_path, args.output_root)
 
     result_path = args.results_dir / f"{result['run_name']}.json"
+    result["symbol"] = cfg.symbol
+    result["preaug_strategy"] = cfg.preaug
+    result["result_path"] = str(result_path)
     with open(result_path, "w") as f:
         json.dump(result, f, indent=2)
 

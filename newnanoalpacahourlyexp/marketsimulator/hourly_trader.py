@@ -18,6 +18,7 @@ from src.hourly_trader_utils import (
     infer_working_order_kind,
 )
 from src.metrics_utils import annualized_sortino, compute_step_returns
+from src.market_sim_early_exit import evaluate_drawdown_vs_profit_early_exit, print_early_exit
 from src.symbol_utils import is_crypto_symbol
 from src.trade_directions import resolve_trade_directions
 
@@ -718,6 +719,7 @@ class HourlyTraderMarketSimulator:
         else:
             symbol_order = list(symbols)
 
+        total_steps = int(frame["timestamp"].nunique())
         for ts, group in frame.groupby("timestamp", sort=True):
             ts = pd.Timestamp(ts)
 
@@ -859,6 +861,14 @@ class HourlyTraderMarketSimulator:
                     "open_orders": float(len(open_orders)),
                 }
             )
+            early_exit = evaluate_drawdown_vs_profit_early_exit(
+                equity_values,
+                total_steps=total_steps,
+                label="newnanoalpacahourlyexp.HourlyTraderMarketSimulator",
+            )
+            if early_exit.should_stop:
+                print_early_exit(early_exit)
+                break
 
         equity_curve = pd.Series(equity_values, index=pd.to_datetime([r["timestamp"] for r in per_hour_rows], utc=True))
         per_hour = pd.DataFrame(per_hour_rows)

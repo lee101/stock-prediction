@@ -1,0 +1,40 @@
+{
+  "allocation_summary": {
+    "max_alloc_pct": 0.07044254243373871,
+    "max_gross": 0.35221271216869354,
+    "mean_alloc_pct": 0.002164459821839138,
+    "mean_gross": 0.010822299109195691
+  },
+  "checkpoint": "pufferlib_market/checkpoints/mixed23_fresh_robust/robust_reg_tp01/best.pt",
+  "daily": {
+    "avg_hold_steps": 0.7662337662337663,
+    "max_drawdown": 0.019950919608656432,
+    "num_trades": 77,
+    "sortino": -2.4131331125274937,
+    "total_return": -0.017346320028144693,
+    "win_rate": 0.24675324675324675
+  },
+  "data_path": "/tmp/mixed23_val_60d_20251208_20260205.bin",
+  "date_range": {
+    "end": "2026-02-05",
+    "start": "2025-12-08"
+  },
+  "hourly_replay": {
+    "max_drawdown": 0.032653380067769716,
+    "num_orders": 76,
+    "num_trades": 76,
+    "sortino": -2.4524835456580303,
+    "total_return": -0.018779921331951666,
+    "win_rate": 0.23684210526315788
+  },
+  "objective_summary": {
+    "drawdown_excess": 0.0,
+    "max_drawdown": 0.020442243665456772,
+    "max_gross": 0.35221272706985474,
+    "mean_gross": 0.010822300799190998,
+    "objective": -0.5985129475593567,
+    "sortino": -2.4837818145751953,
+    "total_return": -0.017899930477142334,
+    "turnover_mean": 0.02121618576347828
+  }
+}

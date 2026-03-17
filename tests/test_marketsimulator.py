@@ -980,3 +980,21 @@ class TestQuantization:
         result = sim.run(bars, actions)
         buy = result.per_symbol["BTCUSD"].trades[0]
         assert buy.price == 95.123  # unmodified
+
+
+def test_binance_market_simulator_stops_early_when_drawdown_exceeds_profit(capsys: pytest.CaptureFixture[str]) -> None:
+    prices: list[tuple[float, float, float, float]] = []
+    for close in [100.0, 105.0, 110.0, 115.0, 120.0, 125.0, 130.0, 128.0, 120.0, 110.0, 95.0, 85.0]:
+        prices.append((close, close * 1.01, close * 0.99, close))
+    prices = prices * 2
+    bars = _make_bars(prices)
+    actions = _make_actions(
+        [{"buy_price": 100.0, "sell_price": 10_000.0, "buy_amount": 1.0, "sell_amount": 0.0}]
+        + [{"buy_price": 0.0, "sell_price": 10_000.0, "buy_amount": 0.0, "sell_amount": 0.0}] * (len(prices) - 1)
+    )
+
+    result = BinanceMarketSimulator(SimulationConfig(maker_fee=0.0, initial_cash=10_000.0)).run(bars, actions)
+    sym = result.per_symbol["BTCUSD"]
+
+    assert len(sym.equity_curve) < len(bars)
+    assert "early stopping" in capsys.readouterr().out.lower()

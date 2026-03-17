@@ -15,6 +15,7 @@ import torch
 from neuralhourlytradingv5.config import SimulationConfigV5
 from neuralhourlytradingv5.data import FeatureNormalizer, HOURLY_FEATURES_V5
 from neuralhourlytradingv5.model import HourlyCryptoPolicyV5
+from src.market_sim_early_exit import evaluate_drawdown_vs_profit_early_exit, print_early_exit
 
 
 @dataclass
@@ -86,12 +87,15 @@ class HourlyMarketSimulatorV5:
         equity_values: List[float] = []
         timestamps: List[pd.Timestamp] = []
         trades: List[TradeRecord] = []
+        total_steps = max(0, len(bars) - 24 - sequence_length)
+        last_bar_idx = sequence_length
 
         # Current position tracking
         current_position: Optional[Dict] = None
 
         # Walk forward hour by hour
         for i in range(sequence_length, len(bars) - 24):
+            last_bar_idx = i
             current_bar = bars.iloc[i]
             current_ts = pd.to_datetime(current_bar["timestamp"])
             current_close = float(current_bar["close"])
@@ -238,10 +242,18 @@ class HourlyMarketSimulatorV5:
             portfolio_value = cash + inventory * current_close
             equity_values.append(portfolio_value)
             timestamps.append(current_ts)
+            early_exit = evaluate_drawdown_vs_profit_early_exit(
+                equity_values,
+                total_steps=total_steps,
+                label="HourlyMarketSimulatorV5",
+            )
+            if early_exit.should_stop:
+                print_early_exit(early_exit)
+                break
 
         # Close any remaining position at end
         if current_position is not None and inventory > 0:
-            final_close = float(bars.iloc[-1]["close"])
+            final_close = float(bars.iloc[last_bar_idx]["close"])
             exit_value = inventory * final_close * (1 - self.maker_fee)
             pnl = exit_value - current_position["entry_value"]
 
@@ -249,7 +261,7 @@ class HourlyMarketSimulatorV5:
                 TradeRecord(
                     entry_timestamp=current_position["entry_ts"],
                     entry_price=current_position["entry_price"],
-                    exit_timestamp=pd.to_datetime(bars.iloc[-1]["timestamp"]),
+                    exit_timestamp=pd.to_datetime(bars.iloc[last_bar_idx]["timestamp"]),
                     exit_price=final_close,
                     position_size=current_position["position_size"],
                     position_length_target=current_position["target_hours"],

@@ -132,10 +132,10 @@ def test_simulate_daily_policy_level_bins_require_fill():
     tradable = np.ones((T, S), dtype=np.uint8)
     data = MktdData(version=2, symbols=symbols, features=features, prices=prices, tradable=tradable)
 
-    # alloc_bins=1, level_bins=3 => action=3 is long with +max_offset_bps, which is outside bar range.
+    # alloc_bins=1, level_bins=3 => action=1 is long with -max_offset_bps, which is below the bar range.
     res_no_fill = simulate_daily_policy(
         data,
-        lambda obs: 3,
+        lambda obs: 1,
         max_steps=2,
         fee_rate=0.0,
         max_leverage=1.0,
@@ -147,6 +147,86 @@ def test_simulate_daily_policy_level_bins_require_fill():
 
     assert res_no_fill.total_return == pytest.approx(0.0, abs=1e-12)
     assert res_no_fill.num_trades == 0
+
+
+def test_simulate_daily_policy_fill_buffer_requires_trade_through_limit_long() -> None:
+    symbols = ["AAA"]
+    close = np.asarray([100.0, 110.0, 121.0], dtype=np.float32)
+    low = np.asarray([99.98, 109.978, 120.978], dtype=np.float32)
+    high = close.copy()
+
+    features = np.zeros((3, 1, 16), dtype=np.float32)
+    prices = np.zeros((3, 1, 5), dtype=np.float32)
+    prices[:, 0, 0] = close
+    prices[:, 0, 1] = high
+    prices[:, 0, 2] = low
+    prices[:, 0, 3] = close
+    tradable = np.ones((3, 1), dtype=np.uint8)
+    data = MktdData(version=2, symbols=symbols, features=features, prices=prices, tradable=tradable)
+
+    res_touch = simulate_daily_policy(
+        data,
+        lambda obs: 1,
+        max_steps=2,
+        fee_rate=0.0,
+        fill_buffer_bps=0.0,
+        max_leverage=1.0,
+        periods_per_year=365.0,
+    )
+    res_buffered = simulate_daily_policy(
+        data,
+        lambda obs: 1,
+        max_steps=2,
+        fee_rate=0.0,
+        fill_buffer_bps=5.0,
+        max_leverage=1.0,
+        periods_per_year=365.0,
+    )
+
+    assert res_touch.total_return == pytest.approx(0.21, abs=1e-9)
+    assert res_touch.num_trades == 1
+    assert res_buffered.total_return == pytest.approx(0.0, abs=1e-12)
+    assert res_buffered.num_trades == 0
+
+
+def test_simulate_daily_policy_fill_buffer_requires_trade_through_limit_short() -> None:
+    symbols = ["AAA"]
+    close = np.asarray([100.0, 90.0, 81.0], dtype=np.float32)
+    high = np.asarray([100.02, 90.018, 81.0162], dtype=np.float32)
+    low = close.copy()
+
+    features = np.zeros((3, 1, 16), dtype=np.float32)
+    prices = np.zeros((3, 1, 5), dtype=np.float32)
+    prices[:, 0, 0] = close
+    prices[:, 0, 1] = high
+    prices[:, 0, 2] = low
+    prices[:, 0, 3] = close
+    tradable = np.ones((3, 1), dtype=np.uint8)
+    data = MktdData(version=2, symbols=symbols, features=features, prices=prices, tradable=tradable)
+
+    res_touch = simulate_daily_policy(
+        data,
+        lambda obs: 2,
+        max_steps=2,
+        fee_rate=0.0,
+        fill_buffer_bps=0.0,
+        max_leverage=1.0,
+        periods_per_year=365.0,
+    )
+    res_buffered = simulate_daily_policy(
+        data,
+        lambda obs: 2,
+        max_steps=2,
+        fee_rate=0.0,
+        fill_buffer_bps=5.0,
+        max_leverage=1.0,
+        periods_per_year=365.0,
+    )
+
+    assert res_touch.total_return == pytest.approx(0.19, abs=1e-9)
+    assert res_touch.num_trades == 1
+    assert res_buffered.total_return == pytest.approx(0.0, abs=1e-12)
+    assert res_buffered.num_trades == 0
 
 
 def test_simulate_daily_policy_short_borrow_fee_hits_flat_short() -> None:
@@ -191,3 +271,33 @@ def test_simulate_daily_policy_short_borrow_fee_hits_flat_short() -> None:
 
     assert res_long.total_return == pytest.approx(0.0, abs=1e-12)
     assert res_short.total_return == pytest.approx(expected_total_return, rel=1e-6, abs=1e-9)
+
+
+def test_simulate_daily_policy_prints_early_exit_when_drawdown_exceeds_profit(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    symbols = ["AAA"]
+    close = np.asarray(
+        [100.0, 104.0, 108.0, 112.0, 116.0, 120.0, 124.0, 128.0, 132.0, 120.0, 108.0, 96.0, 84.0, 72.0, 60.0, 58.0, 56.0, 54.0, 52.0, 50.0, 48.0],
+        dtype=np.float32,
+    )
+    features = np.zeros((len(close), 1, 16), dtype=np.float32)
+    prices = np.zeros((len(close), 1, 5), dtype=np.float32)
+    prices[:, 0, 0] = close
+    prices[:, 0, 1] = close
+    prices[:, 0, 2] = close
+    prices[:, 0, 3] = close
+    tradable = np.ones((len(close), 1), dtype=np.uint8)
+    data = MktdData(version=2, symbols=symbols, features=features, prices=prices, tradable=tradable)
+
+    result = simulate_daily_policy(
+        data,
+        lambda obs: 1,
+        max_steps=len(close) - 1,
+        fee_rate=0.0,
+        max_leverage=1.0,
+        periods_per_year=365.0,
+    )
+
+    assert result.max_drawdown > 0.0
+    assert "early stopping" in capsys.readouterr().out.lower()

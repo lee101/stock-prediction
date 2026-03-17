@@ -39,15 +39,31 @@ def _normalize_confidence(val) -> float:
         c = c / 100.0  # 85 -> 0.85, 3.0 -> 0.03
     return max(0.0, min(1.0, c))
 
+
+def _gemini_timeout_ms() -> int | None:
+    raw = os.environ.get("GEMINI_HTTP_TIMEOUT_MS", "120000").strip()
+    if not raw:
+        return None
+    try:
+        timeout_ms = int(raw)
+    except ValueError:
+        return 120000
+    return timeout_ms if timeout_ms > 0 else None
+
 # ---------------------------------------------------------------------------
 # Gemini
 # ---------------------------------------------------------------------------
 
 def call_gemini(prompt: str, model: str = "gemini-2.5-flash", max_retries: int = 3,
-                thinking_level: str | None = None) -> TradePlan:
-    cached = get_cached(model, prompt)
+                thinking_level: str | None = None,
+                cache_model: str | None = None,
+                provider_call_models: list[str] | None = None) -> TradePlan:
+    cache_key = cache_model or model
+    cached = get_cached(cache_key, prompt)
     if cached is not None:
         return TradePlan(**cached)
+    if provider_call_models is not None:
+        provider_call_models.append(model)
 
     from google import genai
     from google.genai import types
@@ -64,7 +80,11 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash", max_retries: int =
         },
     )
 
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    timeout_ms = _gemini_timeout_ms()
+    client = genai.Client(
+        api_key=os.environ["GEMINI_API_KEY"],
+        http_options=types.HttpOptions(timeout=timeout_ms) if timeout_ms else None,
+    )
 
     # Build config with optional thinking
     config_kwargs = {
@@ -97,7 +117,7 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash", max_retries: int =
                 confidence=_normalize_confidence(data.get("confidence", 0)),
                 reasoning=data.get("reasoning", ""),
             )
-            set_cached(model, prompt, plan.__dict__)
+            set_cached(cache_key, prompt, plan.__dict__)
             return plan
         except Exception as e:
             _handle_retry(e, attempt, max_retries)
@@ -108,10 +128,15 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash", max_retries: int =
 # OpenAI (GPT-4.1, GPT-5.x, o3, o4-mini, etc.)
 # ---------------------------------------------------------------------------
 
-def call_openai(prompt: str, model: str = "gpt-4.1-mini", max_retries: int = 5) -> TradePlan:
-    cached = get_cached(model, prompt)
+def call_openai(prompt: str, model: str = "gpt-4.1-mini", max_retries: int = 5,
+                cache_model: str | None = None,
+                provider_call_models: list[str] | None = None) -> TradePlan:
+    cache_key = cache_model or model
+    cached = get_cached(cache_key, prompt)
     if cached is not None:
         return TradePlan(**cached)
+    if provider_call_models is not None:
+        provider_call_models.append(model)
 
     from openai import OpenAI
 
@@ -170,7 +195,7 @@ def call_openai(prompt: str, model: str = "gpt-4.1-mini", max_retries: int = 5) 
                 confidence=_normalize_confidence(data.get("confidence", 0)),
                 reasoning=str(data.get("reasoning", "")),
             )
-            set_cached(model, prompt, plan.__dict__)
+            set_cached(cache_key, prompt, plan.__dict__)
             return plan
         except Exception as e:
             _handle_retry(e, attempt, max_retries)
@@ -182,17 +207,21 @@ def call_openai(prompt: str, model: str = "gpt-4.1-mini", max_retries: int = 5) 
 # ---------------------------------------------------------------------------
 
 def call_anthropic(prompt: str, model: str = "claude-sonnet-4-6", max_retries: int = 5,
-                   thinking: bool = False, effort: str | None = None) -> TradePlan:
+                   thinking: bool = False, effort: str | None = None,
+                   cache_model: str | None = None,
+                   provider_call_models: list[str] | None = None) -> TradePlan:
     """Call Anthropic Claude API.
 
     Args:
         thinking: Enable extended thinking (adaptive mode).
         effort: Output effort level — "low" for cheap backtesting, "high"/"max" for production.
     """
-    cache_key = model + (f"_t={thinking}_e={effort}" if (thinking or effort) else "")
+    cache_key = cache_model or (model + (f"_t={thinking}_e={effort}" if (thinking or effort) else ""))
     cached = get_cached(cache_key, prompt)
     if cached is not None:
         return TradePlan(**cached)
+    if provider_call_models is not None:
+        provider_call_models.append(model)
 
     import anthropic
 
@@ -286,10 +315,15 @@ def call_anthropic(prompt: str, model: str = "claude-sonnet-4-6", max_retries: i
 # DeepSeek (v3.2, reasoner, etc.) - uses OpenAI-compatible API
 # ---------------------------------------------------------------------------
 
-def call_deepseek(prompt: str, model: str = "deepseek-chat", max_retries: int = 5) -> TradePlan:
-    cached = get_cached(model, prompt)
+def call_deepseek(prompt: str, model: str = "deepseek-chat", max_retries: int = 5,
+                  cache_model: str | None = None,
+                  provider_call_models: list[str] | None = None) -> TradePlan:
+    cache_key = cache_model or model
+    cached = get_cached(cache_key, prompt)
     if cached is not None:
         return TradePlan(**cached)
+    if provider_call_models is not None:
+        provider_call_models.append(model)
 
     from openai import OpenAI
 
@@ -326,7 +360,7 @@ def call_deepseek(prompt: str, model: str = "deepseek-chat", max_retries: int = 
                 confidence=_normalize_confidence(data.get("confidence", 0)),
                 reasoning=str(data.get("reasoning", "")),
             )
-            set_cached(model, prompt, plan.__dict__)
+            set_cached(cache_key, prompt, plan.__dict__)
             return plan
         except Exception as e:
             _handle_retry(e, attempt, max_retries)
@@ -361,11 +395,16 @@ def _ensure_codex_schema() -> str:
 
 
 def call_openai_responses(prompt: str, model: str = "gpt-5.4", max_retries: int = 5,
-                          reasoning_effort: str = "low") -> TradePlan:
+                          reasoning_effort: str = "low",
+                          cache_model: str | None = None,
+                          provider_call_models: list[str] | None = None) -> TradePlan:
     """Call GPT-5.x via OpenAI Responses API with structured outputs."""
-    cached = get_cached(model, prompt)
+    cache_key = cache_model or model
+    cached = get_cached(cache_key, prompt)
     if cached is not None:
         return TradePlan(**cached)
+    if provider_call_models is not None:
+        provider_call_models.append(model)
 
     from openai import OpenAI
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
@@ -406,7 +445,7 @@ def call_openai_responses(prompt: str, model: str = "gpt-5.4", max_retries: int 
                 confidence=_normalize_confidence(data.get("confidence", 0)),
                 reasoning=str(data.get("reasoning", "")),
             )
-            set_cached(model, prompt, plan.__dict__)
+            set_cached(cache_key, prompt, plan.__dict__)
             return plan
         except Exception as e:
             _handle_retry(e, attempt, max_retries)
@@ -414,11 +453,16 @@ def call_openai_responses(prompt: str, model: str = "gpt-5.4", max_retries: int 
 
 
 def call_codex(prompt: str, model: str = "gpt-5.4", max_retries: int = 2,
-               reasoning_effort: str = "low") -> TradePlan:
+               reasoning_effort: str = "low",
+               cache_model: str | None = None,
+               provider_call_models: list[str] | None = None) -> TradePlan:
     """Call GPT-5.x via codex CLI (routes through ChatGPT Pro plan)."""
-    cached = get_cached(model, prompt)
+    cache_key = cache_model or model
+    cached = get_cached(cache_key, prompt)
     if cached is not None:
         return TradePlan(**cached)
+    if provider_call_models is not None:
+        provider_call_models.append(model)
 
     schema_path = _ensure_codex_schema()
 
@@ -465,7 +509,7 @@ def call_codex(prompt: str, model: str = "gpt-5.4", max_retries: int = 2,
                 confidence=_normalize_confidence(data.get("confidence", 0)),
                 reasoning=str(data.get("reasoning", "")),
             )
-            set_cached(model, prompt, plan.__dict__)
+            set_cached(cache_key, prompt, plan.__dict__)
             return plan
         except Exception as e:
             try:
@@ -501,17 +545,21 @@ def _handle_retry(e: Exception, attempt: int, max_retries: int) -> None:
 # OpenRouter (routes Claude/GPT/etc through openrouter.ai)
 # ---------------------------------------------------------------------------
 
-def call_openrouter(prompt: str, model: str = "anthropic/claude-opus-4-6", max_retries: int = 5) -> TradePlan:
+def call_openrouter(prompt: str, model: str = "anthropic/claude-opus-4-6", max_retries: int = 5,
+                    cache_model: str | None = None,
+                    provider_call_models: list[str] | None = None) -> TradePlan:
     """Call any model via OpenRouter (OpenAI-compatible, uses OPENROUTER_API_KEY).
 
     Model names use OpenRouter format, e.g.:
       anthropic/claude-opus-4-6
       anthropic/claude-sonnet-4-6
     """
-    cache_key = f"openrouter/{model}"
+    cache_key = cache_model or f"openrouter/{model}"
     cached = get_cached(cache_key, prompt)
     if cached is not None:
         return TradePlan(**cached)
+    if provider_call_models is not None:
+        provider_call_models.append(f"openrouter/{model}")
 
     from openai import OpenAI
 
@@ -605,49 +653,227 @@ MODEL_PROVIDERS = {
 }
 
 
+def _serialize_trade_plan(plan: TradePlan) -> str:
+    return json.dumps(
+        {
+            "direction": plan.direction,
+            "buy_price": float(plan.buy_price),
+            "sell_price": float(plan.sell_price),
+            "confidence": float(plan.confidence),
+            "reasoning": plan.reasoning,
+            "allocation_pct": float(getattr(plan, "allocation_pct", 0.0) or 0.0),
+        },
+        indent=2,
+        sort_keys=True,
+    )
+
+
+def _build_reprompt_prompt(
+    original_prompt: str,
+    prior_plan: TradePlan,
+    *,
+    pass_index: int,
+    total_passes: int,
+) -> str:
+    return (
+        "You are reviewing and potentially revising a trading plan.\n"
+        f"This is review pass {pass_index} of {total_passes}.\n"
+        "Re-read the full original task, then decide whether the prior plan should be kept "
+        "or improved. Optimize the complete plan for executable limit prices, expected net "
+        "PnL after fees/slippage, and consistency with the portfolio/position constraints.\n"
+        "You may keep the plan unchanged if it is already best. You may also revise any field, "
+        "including direction, buy_price, sell_price, confidence, reasoning, and allocation_pct.\n"
+        "Return ONLY the final trade-plan JSON in the same schema as before.\n\n"
+        "ORIGINAL TASK:\n"
+        f"{original_prompt}\n\n"
+        "PRIOR PLAN JSON:\n"
+        f"{_serialize_trade_plan(prior_plan)}\n"
+    )
+
+
+def _plan_is_actionable(plan: TradePlan) -> bool:
+    if str(plan.direction).lower().strip() != "hold":
+        return True
+    if float(getattr(plan, "buy_price", 0.0) or 0.0) > 0.0:
+        return True
+    if float(getattr(plan, "sell_price", 0.0) or 0.0) > 0.0:
+        return True
+    return False
+
+
+def _plan_has_entry(plan: TradePlan) -> bool:
+    return float(getattr(plan, "buy_price", 0.0) or 0.0) > 0.0
+
+
+def _should_run_reprompt(plan: TradePlan, reprompt_policy: str) -> bool:
+    if reprompt_policy == "always":
+        return True
+    if reprompt_policy == "actionable":
+        return _plan_is_actionable(plan)
+    if reprompt_policy == "entry_only":
+        return _plan_has_entry(plan)
+    raise ValueError(
+        "reprompt_policy must be one of ('always', 'actionable', 'entry_only'), "
+        f"got {reprompt_policy!r}"
+    )
+
+
+def _passes_reprompt_filters(
+    plan: TradePlan,
+    *,
+    review_max_confidence: float | None = None,
+) -> bool:
+    if review_max_confidence is not None:
+        confidence = float(getattr(plan, "confidence", 0.0) or 0.0)
+        if confidence > review_max_confidence:
+            return False
+    return True
+
+
+def _resolve_provider_and_model(
+    model: str,
+    provider: Optional[str] = None,
+) -> tuple[str, str]:
+    resolved_model = model
+    resolved_provider = provider or MODEL_PROVIDERS.get(resolved_model)
+    if resolved_provider is None:
+        if "gemini" in resolved_model:
+            resolved_provider = "gemini"
+        elif resolved_model.startswith("openrouter/"):
+            resolved_provider = "openrouter"
+        elif "claude" in resolved_model:
+            if not os.environ.get("ANTHROPIC_API_KEY"):
+                resolved_provider = "openrouter"
+                resolved_model = (
+                    f"openrouter/anthropic/{resolved_model}"
+                    if not resolved_model.startswith("anthropic/")
+                    else f"openrouter/{resolved_model}"
+                )
+            else:
+                resolved_provider = "anthropic"
+        elif "deepseek" in resolved_model:
+            resolved_provider = "deepseek"
+        else:
+            resolved_provider = "openai"
+    return resolved_provider, resolved_model
+
+
 def call_llm(prompt: str, model: str, provider: Optional[str] = None,
              thinking_level: Optional[str] = None,
+             review_thinking_level: Optional[str] = None,
              reasoning_effort: Optional[str] = None,
-             cache_only: bool = False) -> TradePlan:
+             cache_only: bool = False,
+             reprompt_passes: int = 1,
+             reprompt_policy: str = "always",
+             review_max_confidence: float | None = None,
+             review_model: str | None = None,
+             review_cache_namespace: str | None = None,
+             call_models: list[str] | None = None,
+             provider_models: list[str] | None = None) -> TradePlan:
     """Call any LLM provider with auto-detection.
 
     For Claude models when ANTHROPIC_API_KEY is not set, use model name
     "openrouter/anthropic/claude-opus-4-6" to route via OpenRouter.
     """
-    if cache_only:
-        cached = get_cached(model, prompt)
-        if cached is None:
-            raise CacheMissError(f"No cached response for model={model}")
-        return TradePlan(**cached)
+    if reprompt_passes < 1:
+        raise ValueError(f"reprompt_passes must be >= 1, got {reprompt_passes}")
+    _should_run_reprompt(TradePlan("hold", 0, 0, 0, ""), reprompt_policy)
+    primary_provider, primary_model = _resolve_provider_and_model(model, provider)
+    review_model_name = review_model or primary_model
+    review_thinking = review_thinking_level if review_thinking_level is not None else thinking_level
 
-    if provider is None:
-        provider = MODEL_PROVIDERS.get(model)
-        if provider is None:
-            if "gemini" in model:
-                provider = "gemini"
-            elif model.startswith("openrouter/"):
-                provider = "openrouter"
-            elif "claude" in model:
-                # Fallback to OpenRouter if no direct Anthropic key
-                if not os.environ.get("ANTHROPIC_API_KEY"):
-                    provider = "openrouter"
-                    model = f"openrouter/anthropic/{model}" if not model.startswith("anthropic/") else f"openrouter/{model}"
-                else:
-                    provider = "anthropic"
-            elif "deepseek" in model:
-                provider = "deepseek"
-            else:
-                provider = "openai"
-    fn = PROVIDER_FNS[provider]
-    if provider == "gemini" and thinking_level:
-        return fn(prompt, model=model, thinking_level=thinking_level)
-    if provider == "openai_responses":
-        return fn(prompt, model=model, reasoning_effort=reasoning_effort or "low")
-    if provider == "anthropic":
-        thinking = bool(thinking_level)
-        return fn(prompt, model=model, thinking=thinking, effort=reasoning_effort)
-    if provider == "openrouter":
-        # Strip "openrouter/" prefix for the actual model name passed to OpenRouter
-        or_model = model.removeprefix("openrouter/")
-        return fn(prompt, model=or_model)
-    return fn(prompt, model=model)
+    def _call_once(
+        prompt_text: str,
+        *,
+        model_name: str,
+        thinking: Optional[str],
+        cache_key_model: str,
+    ) -> TradePlan:
+        provider_name, resolved_model = _resolve_provider_and_model(
+            model_name,
+            provider if model_name == primary_model else None,
+        )
+        if call_models is not None:
+            call_models.append(resolved_model)
+        if cache_only:
+            cached = get_cached(cache_key_model, prompt_text)
+            if cached is None:
+                raise CacheMissError(f"No cached response for model={cache_key_model}")
+            return TradePlan(**cached)
+        cached = get_cached(cache_key_model, prompt_text)
+        if cached is not None:
+            return TradePlan(**cached)
+        fn = PROVIDER_FNS[provider_name]
+        if provider_name == "gemini" and thinking:
+            return fn(
+                prompt_text,
+                model=resolved_model,
+                thinking_level=thinking,
+                cache_model=cache_key_model,
+                provider_call_models=provider_models,
+            )
+        if provider_name == "openai_responses":
+            return fn(
+                prompt_text,
+                model=resolved_model,
+                reasoning_effort=reasoning_effort or "low",
+                cache_model=cache_key_model,
+                provider_call_models=provider_models,
+            )
+        if provider_name == "anthropic":
+            anthropic_thinking = bool(thinking)
+            return fn(
+                prompt_text,
+                model=resolved_model,
+                thinking=anthropic_thinking,
+                effort=reasoning_effort,
+                cache_model=cache_key_model,
+                provider_call_models=provider_models,
+            )
+        if provider_name == "openrouter":
+            # Strip "openrouter/" prefix for the actual model name passed to OpenRouter
+            or_model = resolved_model.removeprefix("openrouter/")
+            return fn(
+                prompt_text,
+                model=or_model,
+                cache_model=cache_key_model,
+                provider_call_models=provider_models,
+            )
+        return fn(
+            prompt_text,
+            model=resolved_model,
+            cache_model=cache_key_model,
+            provider_call_models=provider_models,
+        )
+
+    plan = _call_once(
+        prompt,
+        model_name=primary_model,
+        thinking=thinking_level,
+        cache_key_model=primary_model,
+    )
+
+    for pass_index in range(2, reprompt_passes + 1):
+        if not _should_run_reprompt(plan, reprompt_policy):
+            break
+        if not _passes_reprompt_filters(
+            plan,
+            review_max_confidence=review_max_confidence,
+        ):
+            break
+        reprompt = _build_reprompt_prompt(
+            prompt,
+            plan,
+            pass_index=pass_index,
+            total_passes=reprompt_passes,
+        )
+        review_cache_model = review_model_name
+        if review_cache_namespace:
+            review_cache_model = f"{review_model_name}::{review_cache_namespace}"
+        plan = _call_once(
+            reprompt,
+            model_name=review_model_name,
+            thinking=review_thinking,
+            cache_key_model=review_cache_model,
+        )
+    return plan

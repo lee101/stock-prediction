@@ -20,6 +20,7 @@ import pandas as pd
 
 from src.date_utils import is_nyse_open_on_date
 from src.fees import get_fee_for_symbol
+from src.market_sim_early_exit import evaluate_drawdown_vs_profit_early_exit, print_early_exit
 from src.metrics_utils import annualized_sortino
 from src.symbol_utils import is_crypto_symbol
 
@@ -197,6 +198,7 @@ def run_unified_simulation(
         }
 
     groups = merged.groupby("timestamp", sort=True)
+    total_steps = int(merged["timestamp"].nunique())
 
     cash = float(cfg.initial_cash)
     inventory = 0.0
@@ -260,6 +262,14 @@ def run_unified_simulation(
             mtm = inventory * price
         equity = cash + mtm
         equity_values.append((ts, equity))
+        early_exit = evaluate_drawdown_vs_profit_early_exit(
+            [value for _, value in equity_values],
+            total_steps=total_steps,
+            label="unified_hourly_experiment.run_unified_simulation",
+        )
+        if early_exit.should_stop:
+            print_early_exit(early_exit)
+            break
 
         # Force-close position after max hold hours
         if cfg.max_hold_hours and open_symbol and open_ts:

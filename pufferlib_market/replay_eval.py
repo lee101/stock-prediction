@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from pufferlib_market.evaluate import ResidualTradingPolicy, TradingPolicy
+from pufferlib_market.evaluate_multiperiod import load_policy, make_policy_fn
 from pufferlib_market.hourly_replay import (
     load_hourly_market,
     read_mktd,
@@ -55,12 +55,18 @@ def main() -> None:
     p.add_argument("--end-date", required=True, help="UTC date used to export the daily MKTD (inclusive)")
     p.add_argument("--max-steps", type=int, required=True, help="Episode steps (days), e.g. 50")
     p.add_argument("--fee-rate", type=float, default=0.001)
+    p.add_argument(
+        "--fill-buffer-bps",
+        type=float,
+        default=5.0,
+        help="Require the daily bar to trade through each limit by this many bps before fill.",
+    )
     p.add_argument("--max-leverage", type=float, default=1.0)
     p.add_argument("--short-borrow-apr", type=float, default=0.0)
     p.add_argument("--daily-periods-per-year", type=float, default=365.0)
     p.add_argument("--hourly-periods-per-year", type=float, default=8760.0)
-    p.add_argument("--arch", choices=["mlp", "resmlp"], default="mlp")
-    p.add_argument("--hidden-size", type=int, default=256)
+    p.add_argument("--arch", choices=["auto", "mlp", "resmlp"], default="auto")
+    p.add_argument("--hidden-size", type=int, default=None)
     p.add_argument("--deterministic", action="store_true")
     p.add_argument("--cpu", action="store_true")
     p.add_argument(
@@ -76,29 +82,27 @@ def main() -> None:
 
     daily_data = read_mktd(args.daily_data_path)
     S = daily_data.num_symbols
-    obs_size = S * 16 + 5 + S
-    num_actions = 1 + 2 * S
+    policy, _, _ = load_policy(
+        args.checkpoint,
+        S,
+        arch=args.arch,
+        hidden_size=args.hidden_size,
+        device=device,
+    )
 
-    if args.arch == "resmlp":
-        policy = ResidualTradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
-    else:
-        policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
-
-    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
-    policy.load_state_dict(ckpt["model"])
-    policy.eval()
-
-    def policy_fn(obs_np: np.ndarray) -> int:
-        obs = torch.from_numpy(obs_np.astype(np.float32, copy=False)).to(device).unsqueeze(0)
-        with torch.no_grad():
-            act = policy.get_action(obs, deterministic=bool(args.deterministic))
-        return int(act.item())
+    policy_fn = make_policy_fn(
+        policy,
+        num_symbols=S,
+        deterministic=bool(args.deterministic),
+        device=device,
+    )
 
     daily = simulate_daily_policy(
         daily_data,
         policy_fn,
         max_steps=args.max_steps,
         fee_rate=args.fee_rate,
+        fill_buffer_bps=args.fill_buffer_bps,
         max_leverage=args.max_leverage,
         short_borrow_apr=args.short_borrow_apr,
         periods_per_year=args.daily_periods_per_year,
@@ -157,6 +161,7 @@ def main() -> None:
         "hourly_data_root": str(args.hourly_data_root),
         "date_range": {"start": args.start_date, "end": args.end_date},
         "symbols": list(daily_data.symbols),
+        "fill_buffer_bps": float(args.fill_buffer_bps),
         "daily": {
             "total_return": daily.total_return,
             "annualized_return": daily_ann,

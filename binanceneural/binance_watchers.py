@@ -37,6 +37,7 @@ class WatcherPlan:
     dry_run: bool = False
     margin: bool = False
     side_effect_type: str = "NO_SIDE_EFFECT"
+    exchange_symbol: Optional[str] = None
 
 
 def _sanitize(value: str) -> str:
@@ -129,6 +130,20 @@ def _float_eq(a: float, b: float, tol: float = 1e-8) -> bool:
     return abs(float(a) - float(b)) <= tol
 
 
+def _float_rel_eq(a: object, b: object, *, rel_tol: float) -> bool:
+    try:
+        left = float(a)
+        right = float(b)
+    except (TypeError, ValueError):
+        return False
+    baseline = max(abs(left), abs(right), 1e-12)
+    return abs(left - right) / baseline <= max(0.0, float(rel_tol))
+
+
+def _float_qty_eq(a: object, b: object, *, rel_tol: float) -> bool:
+    return _float_rel_eq(a, b, rel_tol=rel_tol)
+
+
 def _price_within_tolerance(existing_price: object, new_price: float, tolerance: float) -> bool:
     try:
         existing = float(existing_price)
@@ -147,6 +162,14 @@ def _matches_plan(metadata: dict, plan: WatcherPlan) -> bool:
     if not _is_pid_alive(metadata.get("pid")):
         return False
     if metadata.get("symbol") != plan.symbol:
+        return False
+    requested_exchange_symbol = str(plan.exchange_symbol or binance_remap_symbols(plan.symbol)).upper()
+    metadata_exchange_symbol = str(
+        metadata.get("exchange_symbol")
+        or metadata.get("binance_symbol")
+        or ""
+    ).upper()
+    if metadata_exchange_symbol != requested_exchange_symbol:
         return False
     if metadata.get("side") != plan.side:
         return False
@@ -202,7 +225,7 @@ def spawn_watcher(plan: WatcherPlan) -> Optional[Path]:
     started_at = datetime.now(timezone.utc)
     expiry_minutes = max(1, int(plan.expiry_minutes))
     expiry_at = started_at + timedelta(minutes=expiry_minutes)
-    binance_symbol = binance_remap_symbols(plan.symbol)
+    binance_symbol = str(plan.exchange_symbol or binance_remap_symbols(plan.symbol)).upper()
     stdout_log_path, stderr_log_path = watcher_log_paths(config_path)
 
     metadata = {
@@ -220,6 +243,7 @@ def spawn_watcher(plan: WatcherPlan) -> Optional[Path]:
         "config_path": str(config_path),
         "poll_seconds": int(plan.poll_seconds),
         "price_tolerance": float(plan.price_tolerance),
+        "exchange_symbol": binance_symbol,
         "binance_symbol": binance_symbol,
         "dry_run": bool(plan.dry_run),
         "margin": bool(plan.margin),
@@ -251,6 +275,8 @@ def spawn_watcher(plan: WatcherPlan) -> Optional[Path]:
         str(config_path),
         "--price-tolerance",
         str(plan.price_tolerance),
+        "--exchange-symbol",
+        binance_symbol,
     ]
     if plan.dry_run:
         command.append("--dry-run")

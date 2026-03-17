@@ -1,9 +1,0 @@
-[
-  {
-    "name": "h1_6_24_ctx1024",
-    "forecast_horizons": [1, 6, 24],
-    "context_hours": 1024,
-    "batch_size": 64,
-    "description": "Standard per-symbol Chronos 1h/6h/24h feature mix with long context."
-  }
-]

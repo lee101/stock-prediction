@@ -45,6 +45,22 @@ class StubChronosWrapper:
         return SimpleNamespace(quantile_frames=quantile_frames)
 
 
+class BrokenChronosWrapper(StubChronosWrapper):
+    def predict_ohlc(self, *args, **kwargs) -> SimpleNamespace:  # type: ignore[no-untyped-def]
+        prediction = super().predict_ohlc(*args, **kwargs)
+        q10 = prediction.quantile_frames[0.1].copy()
+        q90 = prediction.quantile_frames[0.9].copy()
+        q50 = prediction.quantile_frames[0.5].copy()
+        q10["close"] = q90["close"] + 1.0
+        q90["close"] = q90["close"] - 2.0
+        q50["high"] = q50["close"] - 1.0
+        q50["low"] = q50["close"] + 1.0
+        prediction.quantile_frames[0.1] = q10
+        prediction.quantile_frames[0.5] = q50
+        prediction.quantile_frames[0.9] = q90
+        return prediction
+
+
 def test_forecast_generator_creates_cache(tmp_path):
     data_dir = tmp_path / "trainingdata" / "train"
     data_dir.mkdir(parents=True)
@@ -75,6 +91,34 @@ def test_forecast_generator_creates_cache(tmp_path):
     assert cached["forecast_move_pct"].iloc[0] != 0.0
     quantiles = json.loads(cached["quantile_levels"].iloc[0])
     assert all(level in quantiles for level in (0.1, 0.5, 0.9))
+
+
+def test_forecast_generator_repairs_broken_quantiles_and_high_low(tmp_path):
+    data_dir = tmp_path / "trainingdata" / "train"
+    data_dir.mkdir(parents=True)
+    cache_dir = tmp_path / "forecast_cache"
+    symbol = "TEST"
+    rows = [
+        {"timestamp": "2024-01-01", "Open": 10, "High": 11, "Low": 9, "Close": 10.5, "Volume": 100},
+        {"timestamp": "2024-01-02", "Open": 10.6, "High": 11.2, "Low": 10.2, "Close": 10.9, "Volume": 120},
+        {"timestamp": "2024-01-03", "Open": 10.8, "High": 11.5, "Low": 10.5, "Close": 11.3, "Volume": 140},
+    ]
+    pd.DataFrame(rows).to_csv(data_dir / f"{symbol}.csv", index=False)
+
+    config = ForecastGenerationConfig(context_length=2, batch_size=4, quantile_levels=(0.1, 0.5, 0.9))
+    generator = ChronosForecastGenerator(
+        data_dir=data_dir,
+        cache_dir=cache_dir,
+        config=config,
+        wrapper_factory=BrokenChronosWrapper,
+    )
+    generator.generate([symbol], start_date="2024-01-02", end_date="2024-01-03")
+
+    cached = pd.read_parquet(cache_dir / f"{symbol}.parquet")
+    row = cached.iloc[0]
+    assert row["predicted_close_p10"] <= row["predicted_close"] <= row["predicted_close_p90"]
+    assert row["predicted_low"] <= row["predicted_close"] <= row["predicted_high"]
+    assert row["forecast_volatility_pct"] >= 0.0
 
 
 def test_trade_window_join_with_forecasts(tmp_path):

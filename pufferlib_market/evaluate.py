@@ -121,6 +121,10 @@ def evaluate_random(args, policy, binding, obs_buf, act_buf, rew_buf, term_buf,
         action_max_offset_bps=args.action_max_offset_bps,
         fill_slippage_bps=args.fill_slippage_bps,
         max_hold_hours=args.max_hold_hours,
+        enable_drawdown_profit_early_exit=args.drawdown_profit_early_exit,
+        drawdown_profit_early_exit_verbose=args.drawdown_profit_early_exit_verbose,
+        drawdown_profit_early_exit_min_steps=args.drawdown_profit_early_exit_min_steps,
+        drawdown_profit_early_exit_progress_fraction=args.drawdown_profit_early_exit_progress_fraction,
     )
     binding.vec_reset(vec_handle, args.seed)
 
@@ -214,6 +218,10 @@ def evaluate_sequential(args, policy, binding, obs_size, num_actions, device):
         action_max_offset_bps=args.action_max_offset_bps,
         fill_slippage_bps=args.fill_slippage_bps,
         max_hold_hours=args.max_hold_hours,
+        enable_drawdown_profit_early_exit=args.drawdown_profit_early_exit,
+        drawdown_profit_early_exit_verbose=args.drawdown_profit_early_exit_verbose,
+        drawdown_profit_early_exit_min_steps=args.drawdown_profit_early_exit_min_steps,
+        drawdown_profit_early_exit_progress_fraction=args.drawdown_profit_early_exit_progress_fraction,
     )
     binding.vec_reset(vec_handle, args.seed)
 
@@ -276,6 +284,43 @@ def main():
                         help="Force close position after N hours (0=disabled)")
     parser.add_argument("--disable-shorts", action="store_true",
                         help="Mask short actions (long/flat only)")
+    parser.set_defaults(drawdown_profit_early_exit=True, drawdown_profit_early_exit_verbose=True)
+    parser.add_argument(
+        "--drawdown-profit-early-exit",
+        dest="drawdown_profit_early_exit",
+        action="store_true",
+        help="Stop validation episodes once max drawdown exceeds profit after the configured progress threshold.",
+    )
+    parser.add_argument(
+        "--no-drawdown-profit-early-exit",
+        dest="drawdown_profit_early_exit",
+        action="store_false",
+        help="Disable drawdown-vs-profit validation early exit.",
+    )
+    parser.add_argument(
+        "--drawdown-profit-early-exit-verbose",
+        dest="drawdown_profit_early_exit_verbose",
+        action="store_true",
+        help="Print the drawdown-vs-profit early-exit reason when the rule triggers.",
+    )
+    parser.add_argument(
+        "--quiet-drawdown-profit-early-exit",
+        dest="drawdown_profit_early_exit_verbose",
+        action="store_false",
+        help="Suppress drawdown-vs-profit early-exit prints.",
+    )
+    parser.add_argument(
+        "--drawdown-profit-early-exit-min-steps",
+        type=int,
+        default=20,
+        help="Minimum episode length before drawdown-vs-profit early exit can trigger.",
+    )
+    parser.add_argument(
+        "--drawdown-profit-early-exit-progress-fraction",
+        type=float,
+        default=0.5,
+        help="Episode progress threshold for drawdown-vs-profit early exit.",
+    )
 
     args = parser.parse_args()
 

@@ -20,6 +20,8 @@ from typing import Callable, Iterable, Optional
 import numpy as np
 import pandas as pd
 
+from src.market_sim_early_exit import evaluate_drawdown_vs_profit_early_exit, print_early_exit
+
 INITIAL_CASH = 10000.0
 
 FEATURES_PER_SYM = 16
@@ -218,12 +220,33 @@ def _close_position(cash: float, pos: Position, price: float, fee_rate: float) -
     return float(cash), bool(win)
 
 
-def _resolve_limit_fill_price(*, low: float, high: float, target_price: float) -> float | None:
+def _normalize_fill_buffer_bps(fill_buffer_bps: float) -> float:
+    value = float(fill_buffer_bps or 0.0)
+    if not np.isfinite(value) or value < 0.0:
+        raise ValueError(f"fill_buffer_bps must be finite and >= 0, got {fill_buffer_bps}.")
+    return value
+
+
+def _resolve_limit_fill_price(
+    *,
+    low: float,
+    high: float,
+    target_price: float,
+    is_buy: bool,
+    fill_buffer_bps: float = 0.0,
+) -> float | None:
     lo = float(min(low, high))
     hi = float(max(low, high))
     tp = float(target_price)
-    if tp < lo or tp > hi:
-        return None
+    fill_buffer = _normalize_fill_buffer_bps(fill_buffer_bps) / 10_000.0
+    if is_buy:
+        trigger = max(0.0, tp * (1.0 - fill_buffer))
+        if lo > trigger:
+            return None
+    else:
+        trigger = tp * (1.0 + fill_buffer)
+        if hi < trigger:
+            return None
     return tp
 
 
@@ -276,11 +299,18 @@ def _open_long_limit(
     max_leverage: float,
     allocation_pct: float,
     level_offset_bps: float,
+    fill_buffer_bps: float,
 ) -> tuple[float, Optional[Position]]:
     if close_price <= 0.0 or cash <= 0.0:
         return float(cash), None
     target_price = float(close_price) * (1.0 + float(level_offset_bps) / 10_000.0)
-    fill_price = _resolve_limit_fill_price(low=float(low_price), high=float(high_price), target_price=target_price)
+    fill_price = _resolve_limit_fill_price(
+        low=float(low_price),
+        high=float(high_price),
+        target_price=target_price,
+        is_buy=True,
+        fill_buffer_bps=fill_buffer_bps,
+    )
     if fill_price is None:
         return float(cash), None
     alloc = min(1.0, max(0.0, float(allocation_pct)))
@@ -314,11 +344,18 @@ def _open_short_limit(
     max_leverage: float,
     allocation_pct: float,
     level_offset_bps: float,
+    fill_buffer_bps: float,
 ) -> tuple[float, Optional[Position]]:
     if close_price <= 0.0 or cash <= 0.0:
         return float(cash), None
     target_price = float(close_price) * (1.0 + float(level_offset_bps) / 10_000.0)
-    fill_price = _resolve_limit_fill_price(low=float(low_price), high=float(high_price), target_price=target_price)
+    fill_price = _resolve_limit_fill_price(
+        low=float(low_price),
+        high=float(high_price),
+        target_price=target_price,
+        is_buy=False,
+        fill_buffer_bps=fill_buffer_bps,
+    )
     if fill_price is None:
         return float(cash), None
     alloc = min(1.0, max(0.0, float(allocation_pct)))
@@ -389,6 +426,7 @@ def simulate_daily_policy(
     action_allocation_bins: int = 1,
     action_level_bins: int = 1,
     action_max_offset_bps: float = 0.0,
+    fill_buffer_bps: float = 0.0,
 ) -> DailySimResult:
     """Pure-python simulation matching the C env's daily step semantics.
 
@@ -399,6 +437,7 @@ def simulate_daily_policy(
     T = data.num_timesteps
     if max_steps < 1 or max_steps >= T:
         raise ValueError(f"max_steps must be in [1, {T-1}] (got {max_steps})")
+    fill_buffer_bps = _normalize_fill_buffer_bps(fill_buffer_bps)
 
     cash = float(initial_cash)
     pos: Optional[Position] = None
@@ -416,6 +455,7 @@ def simulate_daily_policy(
     ret_count = 0
 
     actions = np.zeros((max_steps,), dtype=np.int32)
+    equity_history: list[float] = [float(initial_cash)]
     alloc_bins = max(1, int(action_allocation_bins))
     level_bins = max(1, int(action_level_bins))
     per_symbol_actions = alloc_bins * level_bins
@@ -496,6 +536,7 @@ def simulate_daily_policy(
                             max_leverage=max_leverage,
                             allocation_pct=target_alloc,
                             level_offset_bps=level_bps,
+                            fill_buffer_bps=fill_buffer_bps,
                         )
                     else:
                         cash, pos = _open_long_limit(
@@ -508,6 +549,7 @@ def simulate_daily_policy(
                             max_leverage=max_leverage,
                             allocation_pct=target_alloc,
                             level_offset_bps=level_bps,
+                            fill_buffer_bps=fill_buffer_bps,
                         )
                     if pos is not None and ((S + pos.sym) if pos.is_short else pos.sym) == target_pos_id:
                         hold_steps = 0
@@ -549,8 +591,22 @@ def simulate_daily_policy(
         dd = (peak_equity - equity_after) / peak_equity if peak_equity > 0 else 0.0
         if dd > max_dd:
             max_dd = dd
+        equity_history.append(float(equity_after))
 
-        done = (step >= max_steps) or (t_new >= T - 1) or (equity_after < initial_cash * 0.01)
+        early_exit = evaluate_drawdown_vs_profit_early_exit(
+            equity_history,
+            total_steps=max_steps + 1,
+            label="pufferlib_market.simulate_daily_policy",
+        )
+        if early_exit.should_stop:
+            print_early_exit(early_exit)
+
+        done = (
+            early_exit.should_stop
+            or (step >= max_steps)
+            or (t_new >= T - 1)
+            or (equity_after < initial_cash * 0.01)
+        )
         if done:
             # Close at t_new for final accounting (matches C env behavior).
             if pos is not None:
@@ -754,6 +810,12 @@ def replay_hourly_frozen_daily_actions(
     equity_curve = np.zeros((len(market.index),), dtype=np.float64)
     peak_equity = float(initial_cash)
     max_dd = 0.0
+    stopped_early = False
+    last_hi = -1
+    last_ts: pd.Timestamp | None = None
+    stopped_early = False
+    last_hi = -1
+    last_ts: pd.Timestamp | None = None
 
     for hi, ts in enumerate(market.index):
         day = ts.floor("D")
@@ -847,29 +909,54 @@ def replay_hourly_frozen_daily_actions(
             px = float(market.close[symbols[pos.sym]][hi])
             equity = _compute_equity(cash, pos, px)
         equity_curve[hi] = equity
+        last_hi = hi
+        last_ts = ts
         if equity > peak_equity:
             peak_equity = equity
         dd = (peak_equity - equity) / peak_equity if peak_equity > 0 else 0.0
         if dd > max_dd:
             max_dd = dd
+        early_exit = evaluate_drawdown_vs_profit_early_exit(
+            equity_curve[: hi + 1],
+            total_steps=len(market.index),
+            label="pufferlib_market.replay_hourly_frozen_daily_actions",
+        )
+        if early_exit.should_stop:
+            print_early_exit(early_exit)
+            stopped_early = True
+            break
 
-    # Terminal close at the final day trade hour (for total_return only).
-    final_close_ts = trade_ts[final_day_idx]
-    if final_close_ts in market.index and pos is not None:
-        hi_end = int(market.index.get_loc(final_close_ts))
-        px_end = float(market.close[symbols[pos.sym]][hi_end])
-        cash, win = _close_position(cash, pos, px_end, fee_rate)
-        num_trades += 1
-        winning_trades += int(win)
-        num_orders += 1
-        key = str(final_close_ts.floor("D").date())
-        orders_by_day[key] = orders_by_day.get(key, 0) + 1
-        pos = None
+    if stopped_early:
+        if pos is not None and last_hi >= 0 and last_ts is not None:
+            px_end = float(market.close[symbols[pos.sym]][last_hi])
+            cash, win = _close_position(cash, pos, px_end, fee_rate)
+            num_trades += 1
+            winning_trades += int(win)
+            num_orders += 1
+            key = str(last_ts.floor("D").date())
+            orders_by_day[key] = orders_by_day.get(key, 0) + 1
+            pos = None
+            equity_curve[last_hi] = float(cash)
+        used_equity_curve = equity_curve[: max(last_hi + 1, 0)]
+    else:
+        # Terminal close at the final day trade hour (for total_return only).
+        final_close_ts = trade_ts[final_day_idx]
+        if final_close_ts in market.index and pos is not None:
+            hi_end = int(market.index.get_loc(final_close_ts))
+            px_end = float(market.close[symbols[pos.sym]][hi_end])
+            cash, win = _close_position(cash, pos, px_end, fee_rate)
+            num_trades += 1
+            winning_trades += int(win)
+            num_orders += 1
+            key = str(final_close_ts.floor("D").date())
+            orders_by_day[key] = orders_by_day.get(key, 0) + 1
+            pos = None
+        used_equity_curve = equity_curve
 
     final_equity = float(cash)
     total_return = (final_equity - float(initial_cash)) / float(initial_cash)
 
-    rets = (equity_curve[1:] - equity_curve[:-1]) / np.clip(equity_curve[:-1], 1e-12, None)
+    rets = (used_equity_curve[1:] - used_equity_curve[:-1]) / np.clip(used_equity_curve[:-1], 1e-12, None)
     sortino = _compute_sortino(rets.astype(np.float64, copy=False), periods_per_year)
     win_rate = float(winning_trades / num_trades) if num_trades > 0 else 0.0
 
@@ -880,7 +967,7 @@ def replay_hourly_frozen_daily_actions(
         num_trades=int(num_trades),
         num_orders=int(num_orders),
         win_rate=float(win_rate),
-        equity_curve=equity_curve,
+        equity_curve=used_equity_curve,
         orders_by_day=orders_by_day,
     )
 
@@ -1131,26 +1218,49 @@ def simulate_hourly_policy(
             px = float(market.close[symbols[pos.sym]][hi])
             equity = _compute_equity(cash, pos, px)
         equity_curve[hi] = equity
+        last_hi = hi
+        last_ts = ts
         if equity > peak_equity:
             peak_equity = equity
         dd = (peak_equity - equity) / peak_equity if peak_equity > 0 else 0.0
         if dd > max_dd:
             max_dd = dd
+        early_exit = evaluate_drawdown_vs_profit_early_exit(
+            equity_curve[: hi + 1],
+            total_steps=len(market.index),
+            label="pufferlib_market.simulate_hourly_policy",
+        )
+        if early_exit.should_stop:
+            print_early_exit(early_exit)
+            stopped_early = True
+            break
 
-    # Terminal close for total_return only.
-    if final_close_ts in market.index and pos is not None:
-        hi_end = int(market.index.get_loc(final_close_ts))
-        px_end = float(market.close[symbols[pos.sym]][hi_end])
-        cash, win = _close_position(cash, pos, px_end, fee_rate)
-        _count_order(final_close_ts)
-        num_trades += 1
-        winning_trades += int(win)
-        pos = None
+    if stopped_early:
+        if pos is not None and last_hi >= 0 and last_ts is not None:
+            px_end = float(market.close[symbols[pos.sym]][last_hi])
+            cash, win = _close_position(cash, pos, px_end, fee_rate)
+            _count_order(last_ts)
+            num_trades += 1
+            winning_trades += int(win)
+            pos = None
+            equity_curve[last_hi] = float(cash)
+        used_equity_curve = equity_curve[: max(last_hi + 1, 0)]
+    else:
+        # Terminal close for total_return only.
+        if final_close_ts in market.index and pos is not None:
+            hi_end = int(market.index.get_loc(final_close_ts))
+            px_end = float(market.close[symbols[pos.sym]][hi_end])
+            cash, win = _close_position(cash, pos, px_end, fee_rate)
+            _count_order(final_close_ts)
+            num_trades += 1
+            winning_trades += int(win)
+            pos = None
+        used_equity_curve = equity_curve
 
     final_equity = float(cash)
     total_return = (final_equity - float(initial_cash)) / float(initial_cash)
 
-    rets = (equity_curve[1:] - equity_curve[:-1]) / np.clip(equity_curve[:-1], 1e-12, None)
+    rets = (used_equity_curve[1:] - used_equity_curve[:-1]) / np.clip(used_equity_curve[:-1], 1e-12, None)
     sortino = _compute_sortino(rets.astype(np.float64, copy=False), periods_per_year)
     win_rate = float(winning_trades / num_trades) if num_trades > 0 else 0.0
 
@@ -1161,6 +1271,6 @@ def simulate_hourly_policy(
         num_trades=int(num_trades),
         num_orders=int(num_orders),
         win_rate=float(win_rate),
-        equity_curve=equity_curve,
+        equity_curve=used_equity_curve,
         orders_by_day=orders_by_day,
     )

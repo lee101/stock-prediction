@@ -27,7 +27,7 @@ SWEEP_GRID = {
     "max_hold_days": [7, 14, 21, 30],
     "lookback_days": [10, 20, 30],
     "ref_price_method": ["high", "sma", "close"],
-    "max_leverage": [1.0, 2.0, 3.0],
+    "max_leverage": [1.0, 2.0, 3.0, 5.0],
     "enable_shorts": [False, True],
     "trailing_stop_pct": [0.0, 0.03, 0.05],
     "sma_filter_period": [0, 20, 50],

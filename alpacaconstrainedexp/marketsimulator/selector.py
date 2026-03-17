@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from src.fees import get_fee_for_symbol
+from src.market_sim_early_exit import evaluate_drawdown_vs_profit_early_exit, print_early_exit
 from src.metrics_utils import annualized_sortino, compute_step_returns
 from src.symbol_utils import is_crypto_symbol
 
@@ -75,6 +76,7 @@ def run_best_trade_simulation(
 
     merged = merged.sort_values(["timestamp", "symbol"]).reset_index(drop=True)
     groups = merged.groupby("timestamp", sort=True)
+    total_steps = int(merged["timestamp"].nunique())
 
     symbol_meta = _build_symbol_meta(merged, cfg)
     long_set = _normalize_set(cfg.long_symbols)
@@ -359,6 +361,14 @@ def run_best_trade_simulation(
                 "selected_side": selected_side,
             }
         )
+        early_exit = evaluate_drawdown_vs_profit_early_exit(
+            equity_values,
+            total_steps=total_steps,
+            label="alpacaconstrainedexp.run_best_trade_simulation",
+        )
+        if early_exit.should_stop:
+            print_early_exit(early_exit)
+            break
 
     equity_curve = pd.Series(equity_values, index=[row["timestamp"] for row in per_hour_rows])
     periods_per_year = _weighted_periods_per_year(symbol_meta, merged)

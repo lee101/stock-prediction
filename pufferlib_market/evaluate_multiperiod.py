@@ -141,6 +141,7 @@ def evaluate_period(
     *,
     num_symbols: int,
     fee_rate: float = 0.001,
+    fill_buffer_bps: float = 5.0,
     max_leverage: float = 1.0,
     periods_per_year: float = 8760.0,
     short_borrow_apr: float = 0.0,
@@ -173,6 +174,7 @@ def evaluate_period(
         policy_fn,
         max_steps=eval_hours,
         fee_rate=fee_rate,
+        fill_buffer_bps=fill_buffer_bps,
         max_leverage=max_leverage,
         periods_per_year=periods_per_year,
         short_borrow_apr=short_borrow_apr,
@@ -204,6 +206,7 @@ def evaluate_checkpoint(
     arch: str = "auto",
     hidden_size: Optional[int] = None,
     fee_rate: float = 0.001,
+    fill_buffer_bps: float = 5.0,
     max_leverage: float = 1.0,
     periods_per_year: float = 8760.0,
     short_borrow_apr: float = 0.0,
@@ -232,6 +235,7 @@ def evaluate_checkpoint(
             policy, data, hours,
             num_symbols=num_symbols,
             fee_rate=fee_rate,
+            fill_buffer_bps=fill_buffer_bps,
             max_leverage=max_leverage,
             periods_per_year=periods_per_year,
             short_borrow_apr=short_borrow_apr,
@@ -283,6 +287,12 @@ def main() -> None:
     parser.add_argument("--data-path", required=True, help="Path to MKTD .bin")
     parser.add_argument("--periods", default="1d,7d,30d", help="Comma-separated periods (default: 1d,7d,30d)")
     parser.add_argument("--fee-rate", type=float, default=0.001)
+    parser.add_argument(
+        "--fill-buffer-bps",
+        type=float,
+        default=5.0,
+        help="Require the daily bar to trade through each limit by this many bps before fill.",
+    )
     parser.add_argument("--max-leverage", type=float, default=1.0)
     parser.add_argument("--periods-per-year", type=float, default=8760.0)
     parser.add_argument("--short-borrow-apr", type=float, default=0.0)
@@ -325,6 +335,7 @@ def main() -> None:
             arch=args.arch,
             hidden_size=args.hidden_size,
             fee_rate=args.fee_rate,
+            fill_buffer_bps=args.fill_buffer_bps,
             max_leverage=args.max_leverage,
             periods_per_year=args.periods_per_year,
             short_borrow_apr=args.short_borrow_apr,

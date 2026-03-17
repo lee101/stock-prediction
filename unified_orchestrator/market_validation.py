@@ -51,6 +51,7 @@ from unified_orchestrator.orchestrator import (
 from unified_orchestrator.rl_gemini_bridge import RLGeminiBridge, RLSignal
 
 AssetClass = Literal["crypto", "stock"]
+DecisionCadence = Literal["hourly", "daily"]
 
 MAX_POSITION_PCT = 0.50
 CRYPTO_FALLBACK_CAP = 0.40
@@ -64,6 +65,7 @@ class ValidationConfig:
     asset_class: AssetClass
     days: int = 30
     initial_cash: float = 10_000.0
+    decision_cadence: DecisionCadence = "hourly"
     decision_lag_bars: int = 1
     cancel_ack_delay_bars: int = 1
     fill_buffer_bps: float = 5.0
@@ -326,6 +328,23 @@ def _candidate_timestamps(bar_frames: dict[str, pd.DataFrame], eval_symbols: lis
     return pd.Timestamp(start_ts), pd.Timestamp(end_ts), timestamps
 
 
+def _decision_timestamps(
+    timestamps: list[pd.Timestamp],
+    *,
+    cadence: DecisionCadence,
+) -> list[pd.Timestamp]:
+    if cadence == "hourly":
+        return list(timestamps)
+    if cadence != "daily":
+        raise ValueError(f"Unsupported decision cadence: {cadence}")
+
+    first_by_day: dict[pd.Timestamp, pd.Timestamp] = {}
+    for ts in timestamps:
+        day = pd.Timestamp(ts).floor("D")
+        first_by_day.setdefault(day, pd.Timestamp(ts))
+    return list(first_by_day.values())
+
+
 def build_validation_frames(
     *,
     checkpoint_path: str | Path,
@@ -367,6 +386,8 @@ def build_validation_frames(
 
     bars_rows: list[dict[str, float | str | pd.Timestamp]] = []
     action_rows: list[dict[str, float | str | pd.Timestamp]] = []
+    history_frames_by_ts: dict[pd.Timestamp, dict[str, pd.DataFrame]] = {}
+    current_rows_by_ts: dict[pd.Timestamp, dict[str, pd.Series]] = {}
 
     for ts in timestamps:
         history_frames: dict[str, pd.DataFrame] = {}
@@ -376,6 +397,29 @@ def build_validation_frames(
             if history is not None and not history.empty:
                 history_frames[sym] = history
                 current_rows[sym] = history.iloc[-1]
+        history_frames_by_ts[pd.Timestamp(ts)] = history_frames
+        current_rows_by_ts[pd.Timestamp(ts)] = current_rows
+
+        for sym in eval_symbols:
+            row = current_rows.get(sym)
+            if row is None:
+                continue
+            bars_rows.append(
+                {
+                    "timestamp": ts,
+                    "symbol": sym,
+                    "open": float(row["open"]),
+                    "high": float(row["high"]),
+                    "low": float(row["low"]),
+                    "close": float(row["close"]),
+                }
+            )
+
+    decision_timestamps = _decision_timestamps(timestamps, cadence=config.decision_cadence)
+    decision_rows: list[dict[str, float | str | pd.Timestamp]] = []
+    for ts in decision_timestamps:
+        history_frames = history_frames_by_ts[pd.Timestamp(ts)]
+        current_rows = current_rows_by_ts[pd.Timestamp(ts)]
 
         if config.asset_class == "crypto":
             signal_map = _build_crypto_rl_signal_map(history_frames, bridge)
@@ -408,27 +452,16 @@ def build_validation_frames(
                 asset_class=config.asset_class,
                 confidence_threshold=confidence_threshold,
             )
-
             buy_amount = _scaled_buy_amount_pct(
                 signal=signal,
                 spec_alloc_bins=spec.alloc_bins,
                 long_signal_count=long_signal_count,
                 asset_class=config.asset_class,
             )
-
-            bars_rows.append(
+            decision_rows.append(
                 {
                     "timestamp": ts,
-                    "symbol": sym,
-                    "open": float(row["open"]),
-                    "high": float(row["high"]),
-                    "low": float(row["low"]),
-                    "close": current_price,
-                }
-            )
-            action_rows.append(
-                {
-                    "timestamp": ts,
+                    "decision_timestamp": ts,
                     "symbol": sym,
                     "buy_price": float(plan.buy_price),
                     "sell_price": float(plan.sell_price),
@@ -436,6 +469,34 @@ def build_validation_frames(
                     "sell_amount": 100.0 if plan.sell_price > 0 else 0.0,
                 }
             )
+
+    if config.decision_cadence == "daily":
+        plan_by_day_symbol = {
+            (pd.Timestamp(row["decision_timestamp"]).floor("D"), str(row["symbol"]).upper()): row
+            for row in decision_rows
+        }
+        for ts in timestamps:
+            current_rows = current_rows_by_ts[pd.Timestamp(ts)]
+            day = pd.Timestamp(ts).floor("D")
+            for sym in eval_symbols:
+                if sym not in current_rows:
+                    continue
+                row = plan_by_day_symbol.get((day, sym))
+                if row is None:
+                    continue
+                action_rows.append(
+                    {
+                        "timestamp": ts,
+                        "decision_timestamp": row["decision_timestamp"],
+                        "symbol": sym,
+                        "buy_price": float(row["buy_price"]),
+                        "sell_price": float(row["sell_price"]),
+                        "buy_amount": float(row["buy_amount"]),
+                        "sell_amount": float(row["sell_amount"]),
+                    }
+                )
+    else:
+        action_rows = decision_rows
 
     bars_df = pd.DataFrame(bars_rows).sort_values(["timestamp", "symbol"]).reset_index(drop=True)
     actions_df = pd.DataFrame(action_rows).sort_values(["timestamp", "symbol"]).reset_index(drop=True)
@@ -466,6 +527,7 @@ def run_validation(
     asset_class: AssetClass,
     days: int = 30,
     initial_cash: float = 10_000.0,
+    decision_cadence: DecisionCadence = "hourly",
     eval_symbols: list[str] | None = None,
 ) -> ValidationResult:
     sim_profile = _sim_config_for(asset_class, initial_cash)
@@ -473,6 +535,7 @@ def run_validation(
         asset_class=asset_class,
         days=int(days),
         initial_cash=float(initial_cash),
+        decision_cadence=decision_cadence,
         decision_lag_bars=sim_profile.decision_lag_bars,
         cancel_ack_delay_bars=sim_profile.cancel_ack_delay_bars,
         fill_buffer_bps=sim_profile.fill_buffer_bps,
@@ -589,6 +652,7 @@ def main() -> None:
     parser.add_argument("--asset-class", choices=["crypto", "stock"], default="crypto")
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--cash", type=float, default=10_000.0)
+    parser.add_argument("--decision-cadence", choices=["hourly", "daily"], default="hourly")
     parser.add_argument("--symbols", nargs="*", default=None)
     parser.add_argument("--checkpoint", action="append", default=None, help="Checkpoint path(s) to validate")
     parser.add_argument("--write-json", default=None, help="Optional path to persist the validation summary")
@@ -607,6 +671,7 @@ def main() -> None:
             asset_class=asset_class,
             days=int(args.days),
             initial_cash=float(args.cash),
+            decision_cadence=args.decision_cadence,
             eval_symbols=args.symbols,
         )
         for checkpoint in checkpoints

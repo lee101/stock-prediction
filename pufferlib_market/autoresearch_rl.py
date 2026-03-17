@@ -54,20 +54,25 @@ class TrialConfig:
     lr_min_ratio: float = 0.05
     gamma: float = 0.99
     gae_lambda: float = 0.95
+    advantage_norm: str = "global"
+    group_relative_size: int = 8
+    group_relative_mix: float = 0.0
+    group_relative_clip: float = 2.0
     num_envs: int = 128
     rollout_len: int = 256
     ppo_epochs: int = 4
     reward_scale: float = 10.0
     reward_clip: float = 5.0
     cash_penalty: float = 0.01
-    max_leverage: float = 1.0
     fill_slippage_bps: float = 0.0
     fee_rate: float = 0.001
     trade_penalty: float = 0.0
+    drawdown_penalty: float = 0.0
     downside_penalty: float = 0.0
     smooth_downside_penalty: float = 0.0
+    smooth_downside_temperature: float = 0.02
+    smoothness_penalty: float = 0.0
     arch: str = "mlp"
-    disable_shorts: bool = False
     max_steps: int = 720
     periods_per_year: float = 8760.0
     seed: int = 42
@@ -78,9 +83,6 @@ class TrialConfig:
 EXPERIMENTS: list[dict] = [
     # Baseline: vanilla PPO with anneal-LR
     {"description": "baseline_anneal_lr"},
-    {"description": "longonly", "disable_shorts": True},
-    {"description": "longonly_slip_5bps", "disable_shorts": True, "fill_slippage_bps": 5.0},
-    {"description": "longonly_obs_norm", "disable_shorts": True, "obs_norm": True},
 
     # Obs norm (was critical in earlier tests)
     {"description": "obs_norm", "obs_norm": True},
@@ -126,6 +128,25 @@ EXPERIMENTS: list[dict] = [
     {"description": "reg_combo_3", "obs_norm": True, "anneal_ent": True, "ent_coef": 0.08, "ent_coef_end": 0.02,
      "lr_schedule": "cosine", "weight_decay": 0.005, "fill_slippage_bps": 5.0},
 
+    # Robust daily variants centered on the best 3-window mixed23 family
+    {"description": "robust_reg_wd02", "weight_decay": 0.02, "fill_slippage_bps": 8.0, "obs_norm": True},
+    {"description": "robust_reg_tp005", "weight_decay": 0.05, "fill_slippage_bps": 8.0, "obs_norm": True, "trade_penalty": 0.005},
+    {"description": "robust_reg_tp01", "weight_decay": 0.05, "fill_slippage_bps": 8.0, "obs_norm": True, "trade_penalty": 0.01},
+    {"description": "robust_reg_tp005_sds02", "weight_decay": 0.05, "fill_slippage_bps": 8.0, "obs_norm": True,
+     "trade_penalty": 0.005, "smooth_downside_penalty": 0.2},
+    {"description": "robust_reg_tp005_sds02_t01", "weight_decay": 0.05, "fill_slippage_bps": 8.0, "obs_norm": True,
+     "trade_penalty": 0.005, "smooth_downside_penalty": 0.2, "smooth_downside_temperature": 0.01},
+    {"description": "robust_reg_tp005_sds02_t05", "weight_decay": 0.05, "fill_slippage_bps": 8.0, "obs_norm": True,
+     "trade_penalty": 0.005, "smooth_downside_penalty": 0.2, "smooth_downside_temperature": 0.05},
+    {"description": "robust_reg_tp005_dd002", "weight_decay": 0.05, "fill_slippage_bps": 8.0, "obs_norm": True,
+     "trade_penalty": 0.005, "drawdown_penalty": 0.02},
+    {"description": "robust_reg_tp005_sm001", "weight_decay": 0.05, "fill_slippage_bps": 8.0, "obs_norm": True,
+     "trade_penalty": 0.005, "smoothness_penalty": 0.01},
+    {"description": "robust_reg_tp005_ent", "weight_decay": 0.05, "fill_slippage_bps": 8.0, "obs_norm": True,
+     "trade_penalty": 0.005, "anneal_ent": True, "ent_coef": 0.08, "ent_coef_end": 0.02},
+    {"description": "robust_reg_h512_tp005", "hidden_size": 512, "weight_decay": 0.05, "fill_slippage_bps": 8.0,
+     "obs_norm": True, "trade_penalty": 0.005},
+
     # Kitchen sink
     {"description": "kitchen_sink", "obs_norm": True, "anneal_ent": True, "anneal_clip": True,
      "clip_vloss": True, "lr_schedule": "cosine", "weight_decay": 0.01,
@@ -145,6 +166,35 @@ EXPERIMENTS: list[dict] = [
 
     # Higher gamma
     {"description": "gamma_999", "gamma": 0.999},
+
+    # GSPO/GRPO-inspired sequence/group-relative advantage shaping.
+    {"description": "per_env_adv", "obs_norm": True, "weight_decay": 0.05,
+     "fill_slippage_bps": 8.0, "advantage_norm": "per_env"},
+    {"description": "per_env_adv_smooth", "obs_norm": True, "weight_decay": 0.05,
+     "fill_slippage_bps": 8.0, "trade_penalty": 0.005, "smooth_downside_penalty": 0.2,
+     "smoothness_penalty": 0.01, "advantage_norm": "per_env"},
+    {"description": "gspo_like", "obs_norm": True, "weight_decay": 0.05,
+     "fill_slippage_bps": 8.0, "advantage_norm": "group_relative",
+     "group_relative_size": 8, "group_relative_mix": 0.25, "group_relative_clip": 1.5},
+    {"description": "gspo_like_mix15", "obs_norm": True, "weight_decay": 0.05,
+     "fill_slippage_bps": 8.0, "advantage_norm": "group_relative",
+     "group_relative_size": 16, "group_relative_mix": 0.15, "group_relative_clip": 1.0},
+    {"description": "gspo_like_mix40", "obs_norm": True, "weight_decay": 0.05,
+     "fill_slippage_bps": 8.0, "advantage_norm": "group_relative",
+     "group_relative_size": 16, "group_relative_mix": 0.4, "group_relative_clip": 1.5},
+    {"description": "gspo_like_smooth", "obs_norm": True, "weight_decay": 0.05,
+     "fill_slippage_bps": 8.0, "trade_penalty": 0.005, "smooth_downside_penalty": 0.2,
+     "smoothness_penalty": 0.01, "advantage_norm": "group_relative",
+     "group_relative_size": 8, "group_relative_mix": 0.25, "group_relative_clip": 1.5},
+    {"description": "gspo_like_smooth_mix15", "obs_norm": True, "weight_decay": 0.05,
+     "fill_slippage_bps": 8.0, "trade_penalty": 0.005, "smooth_downside_penalty": 0.2,
+     "smoothness_penalty": 0.01, "advantage_norm": "group_relative",
+     "group_relative_size": 16, "group_relative_mix": 0.15, "group_relative_clip": 1.0},
+    {"description": "gspo_like_drawdown_mix15", "obs_norm": True, "weight_decay": 0.05,
+     "fill_slippage_bps": 8.0, "trade_penalty": 0.005, "drawdown_penalty": 0.02,
+     "smooth_downside_penalty": 0.2, "smooth_downside_temperature": 0.01,
+     "smoothness_penalty": 0.005, "advantage_norm": "group_relative",
+     "group_relative_size": 16, "group_relative_mix": 0.15, "group_relative_clip": 1.0},
 
     # Shorter episodes (more episodes per training budget)
     {"description": "ep_360h", "max_steps": 360},
@@ -186,12 +236,16 @@ def mutate_config(base: TrialConfig) -> TrialConfig:
         "weight_decay": [0.0, 0.001, 0.005, 0.01, 0.05],
         "fill_slippage_bps": [0.0, 5.0, 8.0, 12.0],
         "gamma": [0.98, 0.99, 0.995],
+        "advantage_norm": ["global", "per_env", "group_relative"],
+        "group_relative_mix": [0.0, 0.15, 0.25, 0.4],
         "reward_scale": [5.0, 10.0, 20.0],
         "cash_penalty": [0.0, 0.005, 0.01, 0.02],
         "trade_penalty": [0.0, 0.01, 0.02, 0.05],
+        "drawdown_penalty": [0.0, 0.01, 0.02, 0.05],
+        "smooth_downside_temperature": [0.01, 0.02, 0.05],
+        "smoothness_penalty": [0.0, 0.005, 0.01, 0.02],
         "obs_norm": [True, False],
         "anneal_lr": [True, False],
-        "disable_shorts": [True, False],
     }
     keys = random.sample(list(mutable_params.keys()), min(3, len(mutable_params)))
     for k in keys:
@@ -292,6 +346,30 @@ def summarize_market_validation_payload(payload: object) -> dict[str, float]:
     }
 
 
+def summarize_replay_eval_payload(payload: object) -> dict[str, float]:
+    """Convert replay_eval JSON into leaderboard-friendly metrics."""
+    if not isinstance(payload, dict):
+        return {}
+
+    summary: dict[str, float] = {}
+    for section, prefix in (
+        ("daily", "replay_daily"),
+        ("hourly_replay", "replay_hourly"),
+        ("hourly_policy", "replay_hourly_policy"),
+    ):
+        row = payload.get(section)
+        if not isinstance(row, dict):
+            continue
+        summary[f"{prefix}_return_pct"] = 100.0 * float(row.get("total_return", 0.0) or 0.0)
+        summary[f"{prefix}_sortino"] = float(row.get("sortino", 0.0) or 0.0)
+        summary[f"{prefix}_max_drawdown_pct"] = 100.0 * float(row.get("max_drawdown", 0.0) or 0.0)
+        if "num_trades" in row:
+            summary[f"{prefix}_trade_count"] = float(row.get("num_trades", 0.0) or 0.0)
+        if "num_orders" in row:
+            summary[f"{prefix}_order_count"] = float(row.get("num_orders", 0.0) or 0.0)
+    return summary
+
+
 def select_rank_score(
     metrics: dict[str, object],
     *,
@@ -301,10 +379,17 @@ def select_rank_score(
     candidates = {
         "market_goodness_score": _safe_float(metrics.get("market_goodness_score")),
         "holdout_robust_score": _safe_float(metrics.get("holdout_robust_score")),
+        "replay_hourly_return_pct": _safe_float(metrics.get("replay_hourly_return_pct")),
+        "replay_hourly_policy_return_pct": _safe_float(metrics.get("replay_hourly_policy_return_pct")),
         "val_return": _safe_float(metrics.get("val_return")),
     }
     if rank_metric == "auto":
-        for name in ("market_goodness_score", "holdout_robust_score", "val_return"):
+        for name in (
+            "market_goodness_score",
+            "holdout_robust_score",
+            "replay_hourly_return_pct",
+            "val_return",
+        ):
             score = candidates[name]
             if score is not None:
                 return name, score
@@ -322,6 +407,25 @@ def _leaderboard_sort_value(row: dict[str, str]) -> float:
     return -float("inf")
 
 
+def select_experiments(
+    *,
+    start_from: int = 0,
+    descriptions: str = "",
+) -> list[dict]:
+    experiments = EXPERIMENTS[max(0, int(start_from)) :]
+    requested = [part.strip() for part in str(descriptions).split(",") if part.strip()]
+    if not requested:
+        return experiments
+
+    requested_set = set(requested)
+    selected = [exp for exp in experiments if str(exp.get("description", "")) in requested_set]
+    found = {str(exp.get("description", "")) for exp in selected}
+    missing = [name for name in requested if name not in found]
+    if missing:
+        raise ValueError(f"Unknown experiment description(s): {', '.join(missing)}")
+    return selected
+
+
 def run_trial(
     config: TrialConfig,
     train_data: str,
@@ -335,6 +439,7 @@ def run_trial(
     holdout_seed: int = 1337,
     holdout_end_within_steps: int = 0,
     holdout_fee_rate: float = -1.0,
+    holdout_fill_buffer_bps: float = 5.0,
     holdout_max_leverage: float = 1.0,
     holdout_short_borrow_apr: float = 0.0,
     eval_timeout_s: int = 0,
@@ -342,8 +447,17 @@ def run_trial(
     market_validation_asset_class: str = "",
     market_validation_days: int = 30,
     market_validation_cash: float = 10_000.0,
+    market_validation_decision_cadence: str = "hourly",
     market_validation_symbols: str | None = None,
     market_validation_timeout_s: int = 0,
+    replay_eval_data: str | None = None,
+    replay_eval_hourly_root: str = "",
+    replay_eval_start_date: str = "",
+    replay_eval_end_date: str = "",
+    replay_eval_run_hourly_policy: bool = False,
+    replay_eval_fill_buffer_bps: float = 5.0,
+    replay_eval_hourly_periods_per_year: float = 8760.0,
+    replay_eval_timeout_s: int = 0,
     rank_metric: str = "auto",
 ) -> dict:
     """Run a single training trial with time budget, then evaluate on val."""
@@ -358,6 +472,10 @@ def run_trial(
         "--ent-coef", str(config.ent_coef),
         "--gamma", str(config.gamma),
         "--gae-lambda", str(config.gae_lambda),
+        "--advantage-norm", str(config.advantage_norm),
+        "--group-relative-size", str(config.group_relative_size),
+        "--group-relative-mix", str(config.group_relative_mix),
+        "--group-relative-clip", str(config.group_relative_clip),
         "--clip-eps", str(config.clip_eps),
         "--num-envs", str(config.num_envs),
         "--rollout-len", str(config.rollout_len),
@@ -366,12 +484,14 @@ def run_trial(
         "--reward-scale", str(config.reward_scale),
         "--reward-clip", str(config.reward_clip),
         "--cash-penalty", str(config.cash_penalty),
-        "--max-leverage", str(config.max_leverage),
         "--fee-rate", str(config.fee_rate),
         "--fill-slippage-bps", str(config.fill_slippage_bps),
         "--trade-penalty", str(config.trade_penalty),
+        "--drawdown-penalty", str(config.drawdown_penalty),
         "--downside-penalty", str(config.downside_penalty),
         "--smooth-downside-penalty", str(config.smooth_downside_penalty),
+        "--smooth-downside-temperature", str(config.smooth_downside_temperature),
+        "--smoothness-penalty", str(config.smoothness_penalty),
         "--weight-decay", str(config.weight_decay),
         "--checkpoint-dir", checkpoint_dir,
         "--arch", config.arch,
@@ -387,8 +507,6 @@ def run_trial(
         cmd.extend(["--anneal-clip", "--clip-eps-end", str(config.clip_eps_end)])
     if config.clip_vloss:
         cmd.append("--clip-vloss")
-    if config.disable_shorts:
-        cmd.append("--disable-shorts")
     if config.lr_schedule != "none":
         cmd.extend([
             "--lr-schedule", config.lr_schedule,
@@ -482,14 +600,11 @@ def run_trial(
         "--max-steps", str(config.max_steps),
         "--num-episodes", "100",
         "--seed", "42",
-        "--max-leverage", str(config.max_leverage),
         "--fill-slippage-bps", "8",  # always eval with realistic slippage
         "--periods-per-year", str(config.periods_per_year),
     ]
     if config.arch == "resmlp":
         eval_cmd.extend(["--arch", "resmlp"])
-    if config.disable_shorts:
-        eval_cmd.append("--disable-shorts")
     val_return = None
     val_wr = None
     val_sortino = None
@@ -548,6 +663,7 @@ def run_trial(
             "--n-windows", str(holdout_n_windows),
             "--seed", str(holdout_seed),
             "--fee-rate", str(effective_holdout_fee),
+            "--fill-buffer-bps", str(holdout_fill_buffer_bps),
             "--max-leverage", str(holdout_max_leverage),
             "--short-borrow-apr", str(holdout_short_borrow_apr),
             "--periods-per-year", str(config.periods_per_year),
@@ -556,8 +672,6 @@ def run_trial(
         ]
         if holdout_end_within_steps > 0:
             holdout_cmd.extend(["--end-within-hours", str(holdout_end_within_steps)])
-        if config.disable_shorts:
-            holdout_cmd.append("--disable-shorts")
         try:
             holdout_result = _run_capture(holdout_cmd, cwd=REPO, timeout_s=holdout_timeout_s)
             if holdout_result.returncode != 0:
@@ -587,7 +701,8 @@ def run_trial(
     if market_validation_asset_class:
         print(
             f"  Market validation: asset_class={market_validation_asset_class}, "
-            f"days={market_validation_days}"
+            f"days={market_validation_days}, "
+            f"decision_cadence={market_validation_decision_cadence}"
         )
         market_json_path = Path(checkpoint_dir) / "market_validation.json"
         market_cmd = [
@@ -595,6 +710,7 @@ def run_trial(
             "--asset-class", market_validation_asset_class,
             "--days", str(market_validation_days),
             "--cash", str(market_validation_cash),
+            "--decision-cadence", str(market_validation_decision_cadence),
             "--checkpoint", str(ckpt_path),
             "--write-json", str(market_json_path),
         ]
@@ -626,6 +742,61 @@ def run_trial(
                 f"goodness={market_metrics.get('market_goodness_score')}"
             )
 
+    replay_metrics: dict[str, float] = {}
+    replay_eval_error = ""
+    effective_replay_data = replay_eval_data or holdout_data or val_data
+    if replay_eval_hourly_root and replay_eval_start_date and replay_eval_end_date:
+        print(
+            "  Replay eval: "
+            f"data={effective_replay_data}, "
+            f"hourly_root={replay_eval_hourly_root}, "
+            f"dates={replay_eval_start_date}..{replay_eval_end_date}"
+        )
+        replay_json_path = Path(checkpoint_dir) / "replay_eval.json"
+        replay_cmd = [
+            sys.executable, "-u", "-m", "pufferlib_market.replay_eval",
+            "--checkpoint", str(ckpt_path),
+            "--daily-data-path", str(effective_replay_data),
+            "--hourly-data-root", str(replay_eval_hourly_root),
+            "--start-date", str(replay_eval_start_date),
+            "--end-date", str(replay_eval_end_date),
+            "--max-steps", str(config.max_steps),
+            "--fee-rate", str(config.fee_rate),
+            "--fill-buffer-bps", str(replay_eval_fill_buffer_bps),
+            "--max-leverage", str(holdout_max_leverage),
+            "--short-borrow-apr", str(holdout_short_borrow_apr),
+            "--daily-periods-per-year", str(config.periods_per_year),
+            "--hourly-periods-per-year", str(replay_eval_hourly_periods_per_year),
+            "--arch", str(config.arch),
+            "--hidden-size", str(config.hidden_size),
+            "--deterministic",
+            "--output-json", str(replay_json_path),
+        ]
+        if replay_eval_run_hourly_policy:
+            replay_cmd.append("--run-hourly-policy")
+        try:
+            replay_result = _run_capture(replay_cmd, cwd=REPO, timeout_s=replay_eval_timeout_s)
+            if replay_result.returncode != 0:
+                replay_eval_error = _trim_error(
+                    replay_result.stderr or replay_result.stdout or f"replay eval exit {replay_result.returncode}"
+                )
+            elif not replay_json_path.exists():
+                replay_eval_error = "replay eval output missing"
+            else:
+                replay_payload = json.loads(replay_json_path.read_text())
+                replay_metrics = summarize_replay_eval_payload(replay_payload)
+        except subprocess.TimeoutExpired:
+            replay_eval_error = "replay eval timeout"
+        except Exception as e:
+            replay_eval_error = f"replay eval error: {e}"
+
+        if replay_metrics:
+            print(
+                "  Replay eval summary: "
+                f"hourly_replay_return={replay_metrics.get('replay_hourly_return_pct')}%, "
+                f"hourly_replay_sortino={replay_metrics.get('replay_hourly_sortino')}"
+            )
+
     result_payload: dict[str, object] = {
         "train_return": train_return,
         "train_sortino": train_sortino,
@@ -639,9 +810,11 @@ def run_trial(
         "error": eval_error,
         "holdout_error": holdout_error,
         "market_validation_error": market_validation_error,
+        "replay_eval_error": replay_eval_error,
     }
     result_payload.update(holdout_metrics)
     result_payload.update(market_metrics)
+    result_payload.update(replay_metrics)
     selected_metric, rank_score = select_rank_score(result_payload, rank_metric=rank_metric)
     result_payload["rank_metric"] = selected_metric
     result_payload["rank_score"] = rank_score
@@ -659,16 +832,14 @@ def main():
     parser.add_argument("--checkpoint-root", default="pufferlib_market/checkpoints/autoresearch")
     parser.add_argument("--start-from", type=int, default=0,
                         help="Skip first N experiments")
+    parser.add_argument("--descriptions", default="",
+                        help="Optional comma-separated subset of experiment descriptions to run")
     parser.add_argument("--periods-per-year", type=float, default=8760.0,
                         help="8760 for hourly, 365 for daily")
     parser.add_argument("--max-steps-override", type=int, default=0,
                         help="Override max_steps for all experiments (e.g. 90 for daily)")
     parser.add_argument("--fee-rate-override", type=float, default=-1.0,
                         help="Override fee_rate for all experiments (e.g. 0.0 for FDUSD zero-fee)")
-    parser.add_argument("--max-leverage-override", type=float, default=0.0,
-                        help="Override max_leverage for all experiments when > 0")
-    parser.add_argument("--disable-shorts-override", action="store_true",
-                        help="Mask short actions for all experiments")
     parser.add_argument("--holdout-data", default=None,
                         help="Optional MKTD data for robust holdout evaluation (defaults to --val-data)")
     parser.add_argument("--holdout-eval-steps", type=int, default=0,
@@ -680,15 +851,30 @@ def main():
                         help="Restrict holdout windows to end within the latest N steps")
     parser.add_argument("--holdout-fee-rate", type=float, default=-1.0,
                         help="Holdout fee rate override; negative inherits each trial config")
+    parser.add_argument("--holdout-fill-buffer-bps", type=float, default=5.0,
+                        help="Require holdout daily bars to trade through each limit by this many bps")
     parser.add_argument("--holdout-max-leverage", type=float, default=1.0)
     parser.add_argument("--holdout-short-borrow-apr", type=float, default=0.0)
     parser.add_argument("--rank-metric",
-                        choices=["auto", "val_return", "holdout_robust_score", "market_goodness_score"],
+                        choices=[
+                            "auto",
+                            "val_return",
+                            "holdout_robust_score",
+                            "market_goodness_score",
+                            "replay_hourly_return_pct",
+                            "replay_hourly_policy_return_pct",
+                        ],
                         default="auto")
     parser.add_argument("--market-validation-asset-class", choices=["", "crypto", "stock"], default="",
                         help="Run unified_orchestrator.market_validation for each checkpoint when set")
     parser.add_argument("--market-validation-days", type=int, default=30)
     parser.add_argument("--market-validation-cash", type=float, default=10_000.0)
+    parser.add_argument(
+        "--market-validation-decision-cadence",
+        choices=["hourly", "daily"],
+        default="hourly",
+        help="Decision frequency for unified_orchestrator.market_validation",
+    )
     parser.add_argument("--market-validation-symbols", default=None,
                         help="Comma-separated symbols override for market validation")
     parser.add_argument("--eval-timeout-seconds", type=int, default=0,
@@ -697,6 +883,21 @@ def main():
                         help="Optional timeout for holdout evaluation; 0 disables it")
     parser.add_argument("--market-validation-timeout-seconds", type=int, default=0,
                         help="Optional timeout for market validation; 0 disables it")
+    parser.add_argument("--replay-eval-data", default=None,
+                        help="Optional daily MKTD path for replay_eval (defaults to --holdout-data or --val-data)")
+    parser.add_argument("--replay-eval-hourly-root", default="",
+                        help="Run pufferlib_market.replay_eval when set to an hourly data root")
+    parser.add_argument("--replay-eval-start-date", default="",
+                        help="Inclusive UTC start date used for the replay_eval daily MKTD export")
+    parser.add_argument("--replay-eval-end-date", default="",
+                        help="Inclusive UTC end date used for the replay_eval daily MKTD export")
+    parser.add_argument("--replay-eval-run-hourly-policy", action="store_true",
+                        help="Also run the hourly-policy stress mode inside replay_eval")
+    parser.add_argument("--replay-eval-fill-buffer-bps", type=float, default=5.0,
+                        help="Require replay_eval daily bars to trade through each limit by this many bps")
+    parser.add_argument("--replay-eval-hourly-periods-per-year", type=float, default=8760.0)
+    parser.add_argument("--replay-eval-timeout-seconds", type=int, default=0,
+                        help="Optional timeout for replay_eval; 0 disables it")
     args = parser.parse_args()
 
     leaderboard_path = Path(args.leaderboard)
@@ -707,16 +908,24 @@ def main():
     fieldnames = [
         "trial", "description", "rank_metric", "rank_score", "val_return", "val_sortino", "val_wr",
         "val_profitable_pct", "train_return", "train_sortino", "train_wr",
-        "train_steps", "elapsed_s", "error", "holdout_error", "market_validation_error",
+        "train_steps", "elapsed_s", "error", "holdout_error", "market_validation_error", "replay_eval_error",
         "holdout_robust_score", "holdout_return_mean_pct", "holdout_return_p25_pct",
         "holdout_return_worst_pct", "holdout_sortino_p25", "holdout_max_drawdown_worst_pct",
         "holdout_negative_return_rate", "holdout_median_return_pct", "holdout_p10_return_pct",
         "holdout_median_sortino", "holdout_p90_max_drawdown_pct",
         "market_return_pct", "market_sortino", "market_max_drawdown_pct",
         "market_trade_count", "market_goodness_score",
+        "replay_daily_return_pct", "replay_daily_sortino", "replay_daily_max_drawdown_pct",
+        "replay_daily_trade_count",
+        "replay_hourly_return_pct", "replay_hourly_sortino", "replay_hourly_max_drawdown_pct",
+        "replay_hourly_trade_count", "replay_hourly_order_count",
+        "replay_hourly_policy_return_pct", "replay_hourly_policy_sortino",
+        "replay_hourly_policy_max_drawdown_pct", "replay_hourly_policy_trade_count",
+        "replay_hourly_policy_order_count",
         "hidden_size", "lr", "ent_coef", "weight_decay", "fill_slippage_bps",
         "obs_norm", "anneal_lr", "anneal_ent", "anneal_clip", "lr_schedule",
-        "arch", "fee_rate", "trade_penalty", "gamma", "max_leverage", "disable_shorts",
+        "arch", "fee_rate", "trade_penalty", "drawdown_penalty", "downside_penalty",
+        "smooth_downside_penalty", "smooth_downside_temperature", "smoothness_penalty", "gamma",
     ]
 
     existing_trials = set()
@@ -726,7 +935,7 @@ def main():
             for row in reader:
                 existing_trials.add(row.get("description", ""))
 
-    experiments = EXPERIMENTS[args.start_from:]
+    experiments = select_experiments(start_from=args.start_from, descriptions=args.descriptions)
 
     # Add random mutations
     best_rank_score = -float("inf")
@@ -758,10 +967,6 @@ def main():
             config.max_steps = args.max_steps_override
         if args.fee_rate_override >= 0.0:
             config.fee_rate = args.fee_rate_override
-        if args.max_leverage_override > 0.0:
-            config.max_leverage = args.max_leverage_override
-        if args.disable_shorts_override:
-            config.disable_shorts = True
 
         holdout_eval_steps = int(args.holdout_eval_steps) if int(args.holdout_eval_steps) > 0 else int(config.max_steps)
 
@@ -790,6 +995,7 @@ def main():
             holdout_seed=args.holdout_seed,
             holdout_end_within_steps=args.holdout_end_within_steps,
             holdout_fee_rate=args.holdout_fee_rate,
+            holdout_fill_buffer_bps=args.holdout_fill_buffer_bps,
             holdout_max_leverage=args.holdout_max_leverage,
             holdout_short_borrow_apr=args.holdout_short_borrow_apr,
             eval_timeout_s=args.eval_timeout_seconds,
@@ -797,8 +1003,17 @@ def main():
             market_validation_asset_class=args.market_validation_asset_class,
             market_validation_days=args.market_validation_days,
             market_validation_cash=args.market_validation_cash,
+            market_validation_decision_cadence=args.market_validation_decision_cadence,
             market_validation_symbols=args.market_validation_symbols,
             market_validation_timeout_s=args.market_validation_timeout_seconds,
+            replay_eval_data=args.replay_eval_data,
+            replay_eval_hourly_root=args.replay_eval_hourly_root,
+            replay_eval_start_date=args.replay_eval_start_date,
+            replay_eval_end_date=args.replay_eval_end_date,
+            replay_eval_run_hourly_policy=args.replay_eval_run_hourly_policy,
+            replay_eval_fill_buffer_bps=args.replay_eval_fill_buffer_bps,
+            replay_eval_hourly_periods_per_year=args.replay_eval_hourly_periods_per_year,
+            replay_eval_timeout_s=args.replay_eval_timeout_seconds,
             rank_metric=args.rank_metric,
         )
 
@@ -820,6 +1035,7 @@ def main():
             "error": result.get("error", ""),
             "holdout_error": result.get("holdout_error", ""),
             "market_validation_error": result.get("market_validation_error", ""),
+            "replay_eval_error": result.get("replay_eval_error", ""),
             "holdout_robust_score": result.get("holdout_robust_score"),
             "holdout_return_mean_pct": result.get("holdout_return_mean_pct"),
             "holdout_return_p25_pct": result.get("holdout_return_p25_pct"),
@@ -836,6 +1052,20 @@ def main():
             "market_max_drawdown_pct": result.get("market_max_drawdown_pct"),
             "market_trade_count": result.get("market_trade_count"),
             "market_goodness_score": result.get("market_goodness_score"),
+            "replay_daily_return_pct": result.get("replay_daily_return_pct"),
+            "replay_daily_sortino": result.get("replay_daily_sortino"),
+            "replay_daily_max_drawdown_pct": result.get("replay_daily_max_drawdown_pct"),
+            "replay_daily_trade_count": result.get("replay_daily_trade_count"),
+            "replay_hourly_return_pct": result.get("replay_hourly_return_pct"),
+            "replay_hourly_sortino": result.get("replay_hourly_sortino"),
+            "replay_hourly_max_drawdown_pct": result.get("replay_hourly_max_drawdown_pct"),
+            "replay_hourly_trade_count": result.get("replay_hourly_trade_count"),
+            "replay_hourly_order_count": result.get("replay_hourly_order_count"),
+            "replay_hourly_policy_return_pct": result.get("replay_hourly_policy_return_pct"),
+            "replay_hourly_policy_sortino": result.get("replay_hourly_policy_sortino"),
+            "replay_hourly_policy_max_drawdown_pct": result.get("replay_hourly_policy_max_drawdown_pct"),
+            "replay_hourly_policy_trade_count": result.get("replay_hourly_policy_trade_count"),
+            "replay_hourly_policy_order_count": result.get("replay_hourly_policy_order_count"),
             "hidden_size": config.hidden_size,
             "lr": config.lr,
             "ent_coef": config.ent_coef,
@@ -849,9 +1079,12 @@ def main():
             "arch": config.arch,
             "fee_rate": config.fee_rate,
             "trade_penalty": config.trade_penalty,
+            "drawdown_penalty": config.drawdown_penalty,
+            "downside_penalty": config.downside_penalty,
+            "smooth_downside_penalty": config.smooth_downside_penalty,
+            "smooth_downside_temperature": config.smooth_downside_temperature,
+            "smoothness_penalty": config.smoothness_penalty,
             "gamma": config.gamma,
-            "max_leverage": config.max_leverage,
-            "disable_shorts": config.disable_shorts,
         }
 
         write_header = not leaderboard_path.exists()

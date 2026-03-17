@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from dataclasses import dataclass, field
@@ -35,14 +36,11 @@ from env_real import *  # noqa: F401,F403 — exports API keys to os.environ
 
 from llm_hourly_trader.gemini_wrapper import TradePlan, build_prompt
 from llm_hourly_trader.providers import call_llm
-from src.llm_runtime_defaults import (
-    BACKTEST_GEMINI_THINKING_LEVEL,
-    BACKTEST_REASONING_EFFORT,
-)
 from newnanoalpacahourlyexp.marketsimulator.hourly_trader import (
     HourlyTraderMarketSimulator,
     HourlyTraderSimulationConfig,
 )
+from src.robust_trading_metrics import compute_max_drawdown
 from unified_orchestrator.rl_gemini_bridge import (
     RLSignal,
     build_hybrid_prompt,
@@ -50,6 +48,7 @@ from unified_orchestrator.rl_gemini_bridge import (
 
 FORECAST_DIR = REPO / "binanceneural" / "forecast_cache"
 DATA_DIR = REPO / "trainingdatahourly" / "crypto"
+MIN_CRYPTO_ENTRY_CONFIDENCE = 0.4
 
 
 @dataclass
@@ -214,14 +213,58 @@ def _update_position(
     return outcome
 
 
+def _suppress_low_confidence_entry(
+    plan: TradePlan,
+    position: PositionState,
+    *,
+    min_plan_confidence: float,
+) -> tuple[TradePlan, bool]:
+    if position.direction == "long":
+        return plan, False
+    if plan.direction != "long" or float(plan.buy_price) <= 0.0:
+        return plan, False
+    confidence = float(getattr(plan, "confidence", 0.0) or 0.0)
+    if confidence >= float(min_plan_confidence):
+        return plan, False
+    return (
+        TradePlan(
+            direction="hold",
+            buy_price=0.0,
+            sell_price=0.0,
+            confidence=confidence,
+            reasoning=(
+                f"{plan.reasoning} | suppressed_low_conf_entry("
+                f"{confidence:.2f}<{float(min_plan_confidence):.2f})"
+            ),
+        ),
+        True,
+    )
+
+
+def _decision_bucket(ts: pd.Timestamp, decision_cadence: str) -> pd.Timestamp:
+    if decision_cadence == "daily":
+        return ts.floor("D")
+    return ts
+
+
 def run_backtest(
     symbols: list[str],
     days: int = 7,
     initial_cash: float = 10_000.0,
     modes: list[str] = None,
     model: str = "gemini-3.1-flash-lite-preview",
-    thinking_level: str = BACKTEST_GEMINI_THINKING_LEVEL,
-    reasoning_effort: str | None = BACKTEST_REASONING_EFFORT,
+    thinking_level: str = "HIGH",
+    review_thinking_level: str | None = None,
+    reasoning_effort: str | None = None,
+    decision_cadence: str = "hourly",
+    reprompt_passes: int = 1,
+    reprompt_policy: str = "always",
+    review_max_confidence: float | None = None,
+    review_model: str | None = None,
+    review_cache_namespace: str | None = None,
+    min_plan_confidence: float = MIN_CRYPTO_ENTRY_CONFIDENCE,
+    start_ts: str | None = None,
+    end_ts: str | None = None,
 ) -> dict:
     """Run backtest across modes with sequential position tracking.
 
@@ -254,10 +297,24 @@ def run_backtest(
         return {}
 
     # Determine time window
-    end_ts = min(all_bars[s]["timestamp"].max() for s in usable)
-    start_ts = end_ts - pd.Timedelta(days=days)
-    print(f"\nBacktest window: {start_ts} to {end_ts} ({days}d)")
-    print(f"Model: {model} | thinking={thinking_level} | effort={reasoning_effort}")
+    end_bound = pd.Timestamp(end_ts, tz="UTC") if end_ts else min(all_bars[s]["timestamp"].max() for s in usable)
+    start_bound = pd.Timestamp(start_ts, tz="UTC") if start_ts else end_bound - pd.Timedelta(days=days)
+    if start_bound > end_bound:
+        raise ValueError(f"start_ts must be <= end_ts, got {start_bound} > {end_bound}")
+    if min_plan_confidence < 0.0:
+        raise ValueError(f"min_plan_confidence must be >= 0.0, got {min_plan_confidence}")
+    window_days = (end_bound - start_bound) / pd.Timedelta(days=1)
+    print(f"\nBacktest window: {start_bound} to {end_bound} ({window_days:.2f}d)")
+    print(
+        f"Model: {model} | thinking={thinking_level} | "
+        f"review_thinking={review_thinking_level if review_thinking_level is not None else thinking_level} | "
+        f"effort={reasoning_effort} | "
+        f"cadence={decision_cadence} | reprompt_passes={reprompt_passes} | "
+        f"reprompt_policy={reprompt_policy} | review_max_confidence={review_max_confidence} | "
+        f"min_plan_confidence={min_plan_confidence} | "
+        f"review_model={review_model or model} | "
+        f"review_cache_namespace={review_cache_namespace or '-'}"
+    )
 
     results = {}
 
@@ -269,11 +326,13 @@ def run_backtest(
         all_bar_dfs = []
         all_action_dfs = []
         api_calls = 0
+        logical_calls = 0
+        suppressed_low_conf_entries = 0
         t0 = time.time()
 
         for sym in usable:
             bars = all_bars[sym]
-            window = bars[(bars["timestamp"] >= start_ts) & (bars["timestamp"] <= end_ts)].copy()
+            window = bars[(bars["timestamp"] >= start_bound) & (bars["timestamp"] <= end_bound)].copy()
             if len(window) < 12:
                 continue
 
@@ -285,12 +344,16 @@ def run_backtest(
             prev_outcome: Optional[PrevPlanOutcome] = None
             cash = initial_cash
             equity = initial_cash
+            active_plan = TradePlan("hold", 0, 0, 0, "uninitialized")
+            last_decision_key: Optional[pd.Timestamp] = None
 
             for i, (_, bar) in enumerate(window.iterrows()):
                 ts = bar["timestamp"]
                 close = bar["close"]
                 bar_idx = bars.index.get_loc(bar.name)
                 prev_close = closes_all[bar_idx - 1] if bar_idx > 0 else close
+                decision_key = _decision_bucket(ts, decision_cadence)
+                refresh_plan = active_plan.reasoning == "uninitialized" or last_decision_key != decision_key
 
                 # Update position state from previous bar
                 if position.direction == "long":
@@ -299,59 +362,24 @@ def run_backtest(
                 else:
                     equity = cash
 
-                if mode == "rl_only":
-                    rl_sig = generate_rl_signal(closes_all, bar_idx)
-                    if rl_sig.direction == "long" and rl_sig.confidence > 0.55:
-                        buy_price = close * 0.998
-                        sell_price = close * 1.008
-                    else:
-                        buy_price = 0
-                        sell_price = close * 0.998
-                    plan = TradePlan(
-                        direction="long" if buy_price > 0 else "hold",
-                        buy_price=buy_price, sell_price=sell_price,
-                        confidence=rl_sig.confidence, reasoning="rl_momentum",
-                    )
-
-                elif mode == "gemini_only":
-                    hist_slice = bars[bars["timestamp"] <= ts].tail(25)
-                    fc_1h = get_forecast_at(all_fc_h1[sym], ts)
-                    fc_24h = get_forecast_at(all_fc_h24[sym], ts)
-
-                    # Build context header with time/day/position
-                    ctx_header = _build_context_header(
-                        ts, position, prev_outcome, cash, equity,
-                    )
-
-                    try:
-                        base_prompt = build_prompt(
-                            symbol=sym,
-                            history_rows=hist_slice.to_dict("records"),
-                            forecast_1h=fc_1h, forecast_24h=fc_24h,
-                            current_position=position.direction,
-                            cash=cash, equity=equity,
-                            allowed_directions=["long"],
-                            asset_class="crypto", maker_fee=0.0008,
+                if refresh_plan:
+                    if mode == "rl_only":
+                        rl_sig = generate_rl_signal(closes_all, bar_idx)
+                        if rl_sig.direction == "long" and rl_sig.confidence > 0.55:
+                            buy_price = close * 0.998
+                            sell_price = close * 1.008
+                        else:
+                            buy_price = 0
+                            sell_price = close * 0.998
+                        active_plan = TradePlan(
+                            direction="long" if buy_price > 0 else "hold",
+                            buy_price=buy_price,
+                            sell_price=sell_price,
+                            confidence=rl_sig.confidence,
+                            reasoning="rl_momentum",
                         )
-                        prompt = ctx_header + base_prompt
-                        plan = call_llm(prompt, model=model, thinking_level=thinking_level,
-                                        reasoning_effort=reasoning_effort)
-                        api_calls += 1
-                        buy_price = plan.buy_price if plan.direction == "long" else 0
-                        sell_price = plan.sell_price if plan.sell_price > 0 else close * 1.01
-                    except Exception as e:
-                        buy_price = 0
-                        sell_price = 0
-                        plan = TradePlan("hold", 0, 0, 0, f"error: {e}")
 
-                elif mode == "rl_gemini":
-                    rl_sig = generate_rl_signal(closes_all, bar_idx)
-
-                    if rl_sig.direction == "flat" and position.direction != "long":
-                        buy_price = 0
-                        sell_price = close * 0.998
-                        plan = TradePlan("hold", 0, sell_price, 0.3, "rl_flat")
-                    else:
+                    elif mode == "gemini_only":
                         hist_slice = bars[bars["timestamp"] <= ts].tail(25)
                         fc_1h = get_forecast_at(all_fc_h1[sym], ts)
                         fc_24h = get_forecast_at(all_fc_h24[sym], ts)
@@ -360,35 +388,123 @@ def run_backtest(
                             ts, position, prev_outcome, cash, equity,
                         )
 
-                        rl_sig_named = RLSignal(
-                            symbol_idx=0, symbol_name=sym,
-                            direction=rl_sig.direction,
-                            confidence=rl_sig.confidence,
-                            logit_gap=rl_sig.logit_gap,
-                            allocation_pct=rl_sig.allocation_pct,
-                        )
                         try:
-                            base_prompt = build_hybrid_prompt(
+                            base_prompt = build_prompt(
                                 symbol=sym,
-                                rl_signal=rl_sig_named,
                                 history_rows=hist_slice.to_dict("records"),
-                                current_price=close,
                                 forecast_1h=fc_1h,
                                 forecast_24h=fc_24h,
+                                current_position=position.direction,
+                                cash=cash,
+                                equity=equity,
+                                allowed_directions=["long"],
+                                asset_class="crypto",
+                                maker_fee=0.0008,
                             )
                             prompt = ctx_header + base_prompt
-                            plan = call_llm(prompt, model=model, thinking_level=thinking_level,
-                                            reasoning_effort=reasoning_effort)
-                            api_calls += 1
-                            buy_price = plan.buy_price if plan.direction == "long" else 0
-                            sell_price = plan.sell_price if plan.sell_price > 0 else close * 1.01
-                        except Exception as e:
-                            buy_price = close * 0.998 if rl_sig.confidence > 0.6 else 0
-                            sell_price = close * 1.01
-                            plan = TradePlan(
-                                "long" if buy_price > 0 else "hold",
-                                buy_price, sell_price, 0.3, f"fallback: {e}",
+                            call_models: list[str] = []
+                            provider_models: list[str] = []
+                            active_plan = call_llm(
+                                prompt,
+                                model=model,
+                                thinking_level=thinking_level,
+                                review_thinking_level=review_thinking_level,
+                                reasoning_effort=reasoning_effort,
+                                reprompt_passes=reprompt_passes,
+                                reprompt_policy=reprompt_policy,
+                                review_max_confidence=review_max_confidence,
+                                review_model=review_model,
+                                review_cache_namespace=review_cache_namespace,
+                                call_models=call_models,
+                                provider_models=provider_models,
                             )
+                            logical_calls += len(call_models)
+                            api_calls += len(provider_models)
+                        except Exception as e:
+                            active_plan = TradePlan("hold", 0, 0, 0, f"error: {e}")
+                        active_plan, suppressed = _suppress_low_confidence_entry(
+                            active_plan,
+                            position,
+                            min_plan_confidence=min_plan_confidence,
+                        )
+                        suppressed_low_conf_entries += int(suppressed)
+
+                    elif mode == "rl_gemini":
+                        rl_sig = generate_rl_signal(closes_all, bar_idx)
+
+                        if rl_sig.direction == "flat" and position.direction != "long":
+                            active_plan = TradePlan("hold", 0, close * 0.998, 0.3, "rl_flat")
+                        else:
+                            hist_slice = bars[bars["timestamp"] <= ts].tail(25)
+                            fc_1h = get_forecast_at(all_fc_h1[sym], ts)
+                            fc_24h = get_forecast_at(all_fc_h24[sym], ts)
+
+                            ctx_header = _build_context_header(
+                                ts, position, prev_outcome, cash, equity,
+                            )
+
+                            rl_sig_named = RLSignal(
+                                symbol_idx=0,
+                                symbol_name=sym,
+                                direction=rl_sig.direction,
+                                confidence=rl_sig.confidence,
+                                logit_gap=rl_sig.logit_gap,
+                                allocation_pct=rl_sig.allocation_pct,
+                            )
+                            try:
+                                base_prompt = build_hybrid_prompt(
+                                    symbol=sym,
+                                    rl_signal=rl_sig_named,
+                                    history_rows=hist_slice.to_dict("records"),
+                                    current_price=close,
+                                    forecast_1h=fc_1h,
+                                    forecast_24h=fc_24h,
+                                )
+                                prompt = ctx_header + base_prompt
+                                call_models = []
+                                provider_models = []
+                                active_plan = call_llm(
+                                    prompt,
+                                    model=model,
+                                    thinking_level=thinking_level,
+                                    review_thinking_level=review_thinking_level,
+                                    reasoning_effort=reasoning_effort,
+                                    reprompt_passes=reprompt_passes,
+                                    reprompt_policy=reprompt_policy,
+                                    review_max_confidence=review_max_confidence,
+                                    review_model=review_model,
+                                    review_cache_namespace=review_cache_namespace,
+                                    call_models=call_models,
+                                    provider_models=provider_models,
+                                )
+                                logical_calls += len(call_models)
+                                api_calls += len(provider_models)
+                            except Exception as e:
+                                buy_price = close * 0.998 if rl_sig.confidence > 0.6 else 0
+                                sell_price = close * 1.01
+                                active_plan = TradePlan(
+                                    "long" if buy_price > 0 else "hold",
+                                    buy_price,
+                                    sell_price,
+                                    0.3,
+                                    f"fallback: {e}",
+                                )
+                            active_plan, suppressed = _suppress_low_confidence_entry(
+                                active_plan,
+                                position,
+                                min_plan_confidence=min_plan_confidence,
+                            )
+                            suppressed_low_conf_entries += int(suppressed)
+                    last_decision_key = decision_key
+
+                plan = active_plan
+                buy_price = plan.buy_price if plan.direction == "long" else 0
+                if plan.sell_price > 0:
+                    sell_price = plan.sell_price
+                elif mode == "rl_only":
+                    sell_price = close * 0.998
+                else:
+                    sell_price = close * 1.01
 
                 # Update position tracking
                 prev_outcome = _update_position(position, plan, close, prev_close)
@@ -405,7 +521,8 @@ def run_backtest(
                     elapsed = time.time() - t0
                     rate = api_calls / max(elapsed, 0.1)
                     print(f"  {sym}: {i+1}/{len(window)} bars, "
-                          f"{api_calls} API calls, {elapsed:.0f}s ({rate:.1f} calls/s)")
+                          f"{api_calls} provider calls, {logical_calls} logical passes, "
+                          f"{elapsed:.0f}s ({rate:.1f} calls/s)")
 
             all_action_dfs.append(pd.DataFrame(actions))
 
@@ -418,7 +535,7 @@ def run_backtest(
 
         elapsed = time.time() - t0
         print(f"  Generated {len(actions_df)} actions in {elapsed:.0f}s "
-              f"({api_calls} API calls)")
+              f"({api_calls} provider calls, {logical_calls} logical passes)")
 
         # Run simulator
         cfg = HourlyTraderSimulationConfig(
@@ -436,14 +553,29 @@ def run_backtest(
             sim = HourlyTraderMarketSimulator(cfg)
             result = sim.run(bars_df, actions_df)
             total_return = (result.equity_curve.iloc[-1] / initial_cash - 1) * 100
+            max_drawdown = float(
+                compute_max_drawdown(result.equity_curve.to_numpy(dtype=float)) * 100.0
+            )
             results[mode] = {
                 "return_pct": total_return,
                 "final_equity": result.equity_curve.iloc[-1],
                 "fills": len(result.fills),
                 "sortino": result.metrics.get("sortino", 0),
-                "max_drawdown": result.metrics.get("max_drawdown_pct", 0),
+                "max_drawdown": max_drawdown,
                 "api_calls": api_calls,
+                "logical_calls": logical_calls,
                 "elapsed_s": elapsed,
+                "decision_cadence": decision_cadence,
+                "reprompt_passes": reprompt_passes,
+                "reprompt_policy": reprompt_policy,
+                "review_max_confidence": review_max_confidence,
+                "review_model": review_model or model,
+                "review_cache_namespace": review_cache_namespace,
+                "min_plan_confidence": min_plan_confidence,
+                "suppressed_low_conf_entries": suppressed_low_conf_entries,
+                "review_thinking_level": (
+                    review_thinking_level if review_thinking_level is not None else thinking_level
+                ),
             }
             print(f"  Return: {total_return:+.2f}%")
             print(f"  Sortino: {results[mode]['sortino']:.2f}")
@@ -466,7 +598,8 @@ def run_backtest(
                   f"Sortino={data['sortino']:.2f} | "
                   f"DD={data['max_drawdown']:.2f}% | "
                   f"{data['fills']} fills | "
-                  f"{data['api_calls']} API calls | "
+                  f"{data['api_calls']} provider calls | "
+                  f"{data['logical_calls']} logical passes | "
                   f"{data['elapsed_s']:.0f}s")
 
     return results
@@ -478,21 +611,55 @@ def main():
     parser.add_argument("--days", type=int, default=7)
     parser.add_argument("--cash", type=float, default=10000.0)
     parser.add_argument("--model", default="gemini-3.1-flash-lite-preview")
-    parser.add_argument("--thinking-level", default=BACKTEST_GEMINI_THINKING_LEVEL)
-    parser.add_argument("--reasoning-effort", default=BACKTEST_REASONING_EFFORT,
+    parser.add_argument("--thinking-level", default="HIGH")
+    parser.add_argument("--review-thinking-level", default=None,
+                        help="Optional thinking level for pass 2+. Defaults to --thinking-level.")
+    parser.add_argument("--reasoning-effort", default=None,
                         help="Effort level for Anthropic/OpenAI reasoning models (low/medium/high/max)")
+    parser.add_argument("--decision-cadence", choices=["hourly", "daily"], default="hourly")
+    parser.add_argument("--reprompt-passes", type=int, default=1,
+                        help="Total Gemini plan passes per decision. 1 = current behavior, 2 = review once.")
+    parser.add_argument("--reprompt-policy", choices=["always", "actionable", "entry_only"], default="always",
+                        help="When to run pass 2+. 'actionable' reviews any order-managing plan; 'entry_only' only reviews plans with a buy target.")
+    parser.add_argument("--review-max-confidence", type=float, default=None,
+                        help="Optional cap on first-pass confidence for running pass 2+. Example: 0.60 only reviews plans at 60% confidence or below.")
+    parser.add_argument("--review-model", default=None,
+                        help="Optional model to use for pass 2+. Defaults to the primary --model.")
+    parser.add_argument("--review-cache-namespace", default=None,
+                        help="Optional cache namespace for pass 2+, so reviewer variants do not reuse each other's cached outputs.")
+    parser.add_argument("--min-plan-confidence", type=float, default=MIN_CRYPTO_ENTRY_CONFIDENCE,
+                        help="Minimum confidence required for a new long entry in the simulator. Exits are never suppressed by this gate.")
+    parser.add_argument("--start-ts", default=None,
+                        help="Optional UTC start timestamp, e.g. 2025-12-08T15:00:00Z")
+    parser.add_argument("--end-ts", default=None,
+                        help="Optional UTC end timestamp, e.g. 2026-02-06T15:00:00Z")
     parser.add_argument("--modes", nargs="+", default=["rl_only", "gemini_only", "rl_gemini"])
+    parser.add_argument("--output-json", default=None)
     args = parser.parse_args()
 
-    run_backtest(
+    results = run_backtest(
         symbols=args.symbols,
         days=args.days,
         initial_cash=args.cash,
         modes=args.modes,
         model=args.model,
         thinking_level=args.thinking_level,
+        review_thinking_level=args.review_thinking_level,
         reasoning_effort=args.reasoning_effort,
+        decision_cadence=args.decision_cadence,
+        reprompt_passes=args.reprompt_passes,
+        reprompt_policy=args.reprompt_policy,
+        review_max_confidence=args.review_max_confidence,
+        review_model=args.review_model,
+        review_cache_namespace=args.review_cache_namespace,
+        min_plan_confidence=args.min_plan_confidence,
+        start_ts=args.start_ts,
+        end_ts=args.end_ts,
     )
+    if args.output_json:
+        out = Path(args.output_json)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(results, indent=2, sort_keys=True, default=float))
 
 
 if __name__ == "__main__":

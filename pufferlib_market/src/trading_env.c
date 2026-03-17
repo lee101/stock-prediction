@@ -215,6 +215,45 @@ static float borrow_fee(const TradingEnv* env, int t) {
     return 0.0f;
 }
 
+static int should_drawdown_profit_early_exit(
+    const TradingEnv* env,
+    float equity_after,
+    float* out_progress,
+    float* out_total_return
+) {
+    const AgentState* ag = &env->agent;
+    int total_steps = env->max_steps;
+    int min_steps = env->drawdown_profit_early_exit_min_steps;
+    float progress_fraction = env->drawdown_profit_early_exit_progress_fraction;
+
+    if (out_progress) *out_progress = 0.0f;
+    if (out_total_return) *out_total_return = 0.0f;
+
+    if (!env->enable_drawdown_profit_early_exit) {
+        return 0;
+    }
+    if (total_steps < 2) {
+        return 0;
+    }
+    if (total_steps < min_steps) {
+        return 0;
+    }
+    if (!isfinite(ag->initial_equity) || ag->initial_equity <= 0.0f) {
+        return 0;
+    }
+
+    float progress = (float)(ag->step + 1) / (float)total_steps;
+    if (progress > 1.0f) progress = 1.0f;
+    if (out_progress) *out_progress = progress;
+    if (progress < progress_fraction) {
+        return 0;
+    }
+
+    float total_return = (equity_after - ag->initial_equity) / ag->initial_equity;
+    if (out_total_return) *out_total_return = total_return;
+    return ag->max_drawdown > total_return;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Trade execution                                                    */
 /* ------------------------------------------------------------------ */
@@ -373,10 +412,15 @@ static void reset_agent_state(TradingEnv* env) {
     AgentState* ag = &env->agent;
     const MarketData* md = env->data;
 
-    /* random starting offset (leave room for max_steps + 1 for obs lag) */
-    int max_offset = md->num_timesteps - env->max_steps - 2;
-    if (max_offset < 1) max_offset = 1;
-    ag->data_offset = 1 + (rand() % max_offset);
+    /* Random starting offset. Offset 0 is valid because fill_observations clamps
+       the lagged observation bar back to 0 when needed. We only need enough room
+       for max_steps forward transitions to remain in-bounds. */
+    int max_offset = md->num_timesteps - env->max_steps - 1;
+    if (max_offset <= 0) {
+        ag->data_offset = 0;
+    } else {
+        ag->data_offset = rand() % (max_offset + 1);
+    }
     ag->step = 0;
 
     ag->cash = INITIAL_CASH;
@@ -392,6 +436,7 @@ static void reset_agent_state(TradingEnv* env) {
     ag->sum_ret = 0.0f;
     ag->ret_count = 0;
     ag->prev_ret = 0.0f;
+    ag->max_drawdown = 0.0f;
 }
 
 void c_reset(TradingEnv* env) {
@@ -556,6 +601,13 @@ void c_step(TradingEnv* env) {
     if (equity_after > ag->peak_equity) {
         ag->peak_equity = equity_after;
     }
+    float current_drawdown = 0.0f;
+    if (ag->peak_equity > 0.0f) {
+        current_drawdown = (ag->peak_equity - equity_after) / ag->peak_equity;
+        if (current_drawdown > ag->max_drawdown) {
+            ag->max_drawdown = current_drawdown;
+        }
+    }
 
     /* reward shaping (configurable via env params) */
     float reward = ret * env->reward_scale;
@@ -571,11 +623,8 @@ void c_step(TradingEnv* env) {
     }
 
     /* drawdown penalty: penalize equity dropping below peak */
-    if (env->drawdown_penalty > 0.0f && ag->peak_equity > 0.0f) {
-        float dd = (ag->peak_equity - equity_after) / ag->peak_equity;
-        if (dd > 0.0f) {
-            reward -= env->drawdown_penalty * dd;
-        }
+    if (env->drawdown_penalty > 0.0f && current_drawdown > 0.0f) {
+        reward -= env->drawdown_penalty * current_drawdown;
     }
 
     /* downside penalty: penalize negative returns more than positive returns.
@@ -612,25 +661,44 @@ void c_step(TradingEnv* env) {
         float ret_diff = ret - ag->prev_ret;
         reward -= env->smoothness_penalty * (ret_diff * ret_diff);
     }
-    ag->prev_ret = ret;
 
+    int early_exit = 0;
+    float early_exit_progress = 0.0f;
+    float early_exit_total_return = 0.0f;
+    if (should_drawdown_profit_early_exit(
+        env,
+        equity_after,
+        &early_exit_progress,
+        &early_exit_total_return
+    )) {
+        early_exit = 1;
+    }
+    ag->prev_ret = ret;
     env->rewards[0] = reward;
 
     /* check terminal */
     int done = (ag->step >= env->max_steps) ||
                (t_new >= md->num_timesteps - 1) ||
+               early_exit ||
                (equity_after < INITIAL_CASH * 0.01f);  /* bankrupt */
 
     if (done) {
+        if (early_exit && env->drawdown_profit_early_exit_verbose) {
+            fprintf(
+                stderr,
+                "[pufferlib_market.binding] early stopping at %.1f%%: max drawdown %.2f%% exceeds profit %.2f%%.\n",
+                early_exit_progress * 100.0f,
+                ag->max_drawdown * 100.0f,
+                early_exit_total_return * 100.0f
+            );
+        }
         /* close position for final accounting */
         if (ag->position_sym >= 0) {
             close_position(env, t_new);
         }
         float final_equity = ag->cash;
         float total_return = (final_equity - ag->initial_equity) / ag->initial_equity;
-        float max_dd = (ag->peak_equity > 0.0f)
-            ? (ag->peak_equity - equity_after) / ag->peak_equity
-            : 0.0f;
+        float max_dd = ag->max_drawdown;
 
         /* sortino ratio */
         float sortino = 0.0f;

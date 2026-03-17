@@ -57,6 +57,42 @@ def _normalise_daily_index(df: pd.DataFrame) -> pd.DataFrame:
     return df.set_index("date")
 
 
+def _coalesce_duplicate_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if not df.columns.duplicated().any():
+        return df
+
+    merged: dict[str, pd.Series] = {}
+    for name in dict.fromkeys(str(col) for col in df.columns):
+        cols = df.loc[:, df.columns == name]
+        if isinstance(cols, pd.Series):
+            merged[name] = cols
+            continue
+        if cols.shape[1] == 1:
+            merged[name] = cols.iloc[:, 0]
+            continue
+
+        combined = cols.bfill(axis=1).iloc[:, 0]
+        for col_idx in range(cols.shape[1]):
+            series = cols.iloc[:, col_idx]
+            overlap = combined.notna() & series.notna()
+            if not bool(overlap.any()):
+                continue
+            left = pd.to_numeric(combined[overlap], errors="coerce")
+            right = pd.to_numeric(series[overlap], errors="coerce")
+            valid = left.notna() & right.notna()
+            if bool(valid.any()) and not np.allclose(
+                left[valid].to_numpy(dtype=float, copy=False),
+                right[valid].to_numpy(dtype=float, copy=False),
+                atol=1e-12,
+                rtol=0.0,
+                equal_nan=True,
+            ):
+                raise ValueError(f"Conflicting duplicate column values for {name!r}")
+        merged[name] = combined
+
+    return pd.DataFrame(merged, index=df.index)
+
+
 def load_price_data(symbol: str, data_root: Path) -> pd.DataFrame:
     """Load daily OHLCV CSV for a symbol from either flat or {crypto,stocks}/ layout."""
     symbol = symbol.upper()
@@ -70,6 +106,7 @@ def load_price_data(symbol: str, data_root: Path) -> pd.DataFrame:
         raise FileNotFoundError(f"No price data for {symbol} under {data_root}")
     df = pd.read_csv(path)
     df.columns = [str(c).lower() for c in df.columns]
+    df = _coalesce_duplicate_columns(df)
     df = _normalise_daily_index(df)
     required = ["open", "high", "low", "close", "volume"]
     missing = [c for c in required if c not in df.columns]

@@ -38,6 +38,10 @@ class TradingEnvConfig:
         fill_probability: float = 1.0,
         max_hold_hours: int = 0,
         long_only: bool = False,
+        enable_drawdown_profit_early_exit: bool = False,
+        drawdown_profit_early_exit_verbose: bool = False,
+        drawdown_profit_early_exit_min_steps: int = 20,
+        drawdown_profit_early_exit_progress_fraction: float = 0.5,
     ):
         self.data_path = str(Path(data_path).resolve())
         self.max_steps = max_steps
@@ -62,6 +66,13 @@ class TradingEnvConfig:
         self.fill_probability = max(0.0, min(1.0, float(fill_probability)))
         self.max_hold_hours = max(0, int(max_hold_hours))
         self.long_only = long_only
+        self.enable_drawdown_profit_early_exit = bool(enable_drawdown_profit_early_exit)
+        self.drawdown_profit_early_exit_verbose = bool(drawdown_profit_early_exit_verbose)
+        self.drawdown_profit_early_exit_min_steps = max(0, int(drawdown_profit_early_exit_min_steps))
+        self.drawdown_profit_early_exit_progress_fraction = max(
+            0.0,
+            min(1.0, float(drawdown_profit_early_exit_progress_fraction)),
+        )
 
 
 def _load_binding():
@@ -120,6 +131,10 @@ class TradingEnv(GymnasiumPufferEnv):
             trade_penalty=config.trade_penalty,
             smoothness_penalty=config.smoothness_penalty,
             max_hold_hours=config.max_hold_hours,
+            enable_drawdown_profit_early_exit=config.enable_drawdown_profit_early_exit,
+            drawdown_profit_early_exit_verbose=config.drawdown_profit_early_exit_verbose,
+            drawdown_profit_early_exit_min_steps=config.drawdown_profit_early_exit_min_steps,
+            drawdown_profit_early_exit_progress_fraction=config.drawdown_profit_early_exit_progress_fraction,
         )
 
     @staticmethod
