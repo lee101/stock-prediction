@@ -21,6 +21,7 @@ from loguru import logger
 from neuraldailytraining import DailyTradingRuntime
 from neuraldailytraining.config import DailyDatasetConfig
 from neuraldailytraining.runtime import TradingPlan
+from src.neural_daily_deployment import load_deployment_config, resolve_deployment_settings
 from src.logging_utils import setup_logging
 from src.process_utils import spawn_open_position_at_maxdiff_takeprofit
 from src.risk_state import resolve_probe_state, ProbeState
@@ -177,6 +178,19 @@ def _resolve_symbols(args: argparse.Namespace) -> Sequence[str]:
         return tuple(symbol.upper() for symbol in args.symbols)
     dataset = DailyDatasetConfig()
     return dataset.symbols
+
+
+def _resolve_runtime_settings(args: argparse.Namespace) -> dict[str, object]:
+    deployment_payload = None
+    if args.deployment_config:
+        deployment_payload = load_deployment_config(args.deployment_config)
+    return resolve_deployment_settings(
+        deployment_payload=deployment_payload,
+        checkpoint=args.checkpoint,
+        symbols=args.symbols,
+        risk_threshold=args.risk_threshold,
+        confidence_threshold=args.confidence_threshold,
+    )
 
 
 @dataclass
@@ -355,7 +369,11 @@ class NeuralTradingLoop:
 def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Neural daily trading with probe mode")
-    parser.add_argument("--checkpoint", required=True, help="Path to the neuraldaily checkpoint")
+    parser.add_argument("--checkpoint", help="Path to the neuraldaily checkpoint")
+    parser.add_argument(
+        "--deployment-config",
+        help="Optional deployment JSON with checkpoint, symbols, and threshold defaults.",
+    )
     parser.add_argument("--symbols", nargs="*", help="Symbols to trade (default: all from config)")
     parser.add_argument("--data-root", default="trainingdata/train")
     parser.add_argument("--forecast-cache", default="strategytraining/forecast_cache")
@@ -367,6 +385,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--account-fraction", type=float, default=DEFAULT_ACCOUNT_FRACTION)
     parser.add_argument("--min-trade-amount", type=float, default=0.05)
     parser.add_argument("--risk-threshold", type=float, help="Override risk threshold")
+    parser.add_argument("--confidence-threshold", type=float, help="Override confidence threshold")
     parser.add_argument("--disable-probe-mode", action="store_true", help="Disable probe mode")
     parser.add_argument("--once", action="store_true", help="Run once and exit")
     return parser.parse_args()
@@ -378,26 +397,38 @@ def main() -> int:
 
     # Setup logging
     log_file = setup_logging("neural_daily_trade_with_probe")
+    resolved = _resolve_runtime_settings(args)
+    resolved_checkpoint = str(resolved["checkpoint"])
+    resolved_symbols = tuple(resolved["symbols"])
+    resolved_risk_threshold = resolved["risk_threshold"]
+    resolved_confidence_threshold = resolved["confidence_threshold"]
+
     logger.info(f"Starting neural daily trading with probe mode")
     logger.info(f"Log file: {log_file}")
-    logger.info(f"Checkpoint: {args.checkpoint}")
+    logger.info(f"Checkpoint: {resolved_checkpoint}")
+    if args.deployment_config:
+        logger.info(f"Deployment config: {args.deployment_config}")
     logger.info(f"Probe mode: {'DISABLED' if args.disable_probe_mode else 'ENABLED (default)'}")
 
     # Build dataset config
     from neural_trade_stock_e2e import _build_dataset_config
     dataset_cfg = _build_dataset_config(args)
+    if resolved_symbols:
+        dataset_cfg.symbols = tuple(resolved_symbols)
 
     # Initialize runtime
     runtime = DailyTradingRuntime(
-        args.checkpoint,
+        resolved_checkpoint,
         dataset_config=dataset_cfg,
         device=args.device,
-        risk_threshold=args.risk_threshold,
+        risk_threshold=resolved_risk_threshold,
+        confidence_threshold=resolved_confidence_threshold,
     )
 
-    symbols = args.symbols or list(dataset_cfg.symbols)
+    symbols = list(resolved_symbols or dataset_cfg.symbols)
     logger.info(f"Trading {len(symbols)} symbols: {', '.join(symbols)}")
     logger.info(f"Risk threshold: {runtime.risk_threshold}")
+    logger.info(f"Confidence threshold: {runtime.confidence_threshold}")
 
     # Initialize trading loop
     trading_loop = NeuralTradingLoop(
