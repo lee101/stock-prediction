@@ -23,6 +23,19 @@ except Exception:  # pragma: no cover - pandas optional for synthetic runs
     pd = None
 
 
+def _coerce_filter_timestamp(index: "pd.DatetimeIndex", raw_value: Optional[str]) -> Optional["pd.Timestamp"]:
+    if raw_value is None:
+        return None
+    timestamp = pd.to_datetime(raw_value, errors="raise")
+    if index.tz is not None:
+        if timestamp.tzinfo is None:
+            return timestamp.tz_localize(index.tz)
+        return timestamp.tz_convert(index.tz)
+    if timestamp.tzinfo is not None:
+        return timestamp.tz_convert("UTC").tz_localize(None)
+    return timestamp
+
+
 @dataclass
 class MarketEnvConfig:
     """Configuration options for :class:`MarketEnv`."""
@@ -241,8 +254,8 @@ class MarketEnv(gym.Env):
         start = self.cfg.start_date
         end = self.cfg.end_date
         if (start is not None or end is not None) and isinstance(frame.index, pd.DatetimeIndex):
-            start_ts = pd.to_datetime(start) if start is not None else None
-            end_ts = pd.to_datetime(end) if end is not None else None
+            start_ts = _coerce_filter_timestamp(frame.index, start)
+            end_ts = _coerce_filter_timestamp(frame.index, end)
             if start_ts is not None:
                 frame = frame[frame.index >= start_ts]
             if end_ts is not None:

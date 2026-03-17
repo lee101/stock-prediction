@@ -1,0 +1,62 @@
+{
+  "model": {
+    "hidden_size": 384,
+    "num_layers": 8,
+    "num_heads": 8,
+    "intermediate_size": 1536,
+    "dropout": 0.1
+  },
+  "data": {
+    "sequence_length": 64,
+    "prediction_horizon": 1,
+    "train_ratio": 0.85,
+    "val_ratio": 0.15,
+    "test_ratio": 0.0,
+    "symbols": ["AAPL", "MSFT", "NVDA", "AMZN", "TSLA"],
+    "start_date": "2021-12-03",
+    "data_dir": "analysis/hf_vs_pufferlib/data/train_5sym_until_2024-12-31",
+    "use_toto_forecasts": true,
+    "toto_device": "cuda",
+    "toto_horizon": 8,
+    "toto_num_samples": 512,
+    "augment_data": false
+  },
+  "training": {
+    "learning_rate": 5e-05,
+    "optimizer": "muon",
+    "weight_decay": 0.01,
+    "gradient_accumulation_steps": 1,
+    "warmup_steps": 1500,
+    "max_steps": 40000,
+    "batch_size": 16,
+    "dataloader_num_workers": 4,
+    "use_mixed_precision": true,
+    "gradient_checkpointing": true,
+    "precision": "bf16",
+    "profit_loss_weight": 0.4,
+    "transaction_cost_bps": 5.0,
+    "early_stopping_patience": 24
+  },
+  "evaluation": {
+    "evaluation_strategy": "steps",
+    "eval_steps": 250,
+    "logging_steps": 50,
+    "save_steps": 1000,
+    "save_total_limit": 3,
+    "load_best_model_at_end": true
+  },
+  "system": {
+    "device": "cuda",
+    "use_data_parallel": false,
+    "allow_tf32": true,
+    "auto_batch_size": false
+  },
+  "output": {
+    "output_dir": "../analysis/hf_vs_pufferlib/runs/hf_5sym_toto_muon_2024train",
+    "logging_dir": "../analysis/hf_vs_pufferlib/runs/hf_5sym_toto_muon_2024train/logs",
+    "cache_dir": "../analysis/hf_vs_pufferlib/runs/hf_5sym_toto_muon_2024train/cache",
+    "report_to": ["tensorboard"]
+  },
+  "experiment_name": "hf_5sym_toto_muon_2024train",
+  "description": "HF attention trainer on five stock symbols through 2024 with Toto forecasts and Muon optimization, evaluated on 2025 holdout."
+}
