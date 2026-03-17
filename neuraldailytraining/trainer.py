@@ -499,7 +499,14 @@ class NeuralDailyTrainer:
                 slot[name] = slot.get(name, 0.0) + float(val)
                 slot["count"] += 1
 
-        for batch_data in loader:
+        max_batches = (
+            getattr(self.config, "max_train_batches_per_epoch", None)
+            if train
+            else getattr(self.config, "max_val_batches_per_epoch", None)
+        )
+        max_batches = None if max_batches is None else max(int(max_batches), 0)
+
+        for batch_index, batch_data in enumerate(loader, start=1):
             batch = {k: v.to(self.device, non_blocking=True) for k, v in batch_data.items()}
 
             # Apply augmentations during training
@@ -757,6 +764,9 @@ class NeuralDailyTrainer:
                 b_totals["goodness_score"] += float(b_goodness_score.mean().item()) * batch_size
                 b_totals["buy_fill"] += float(binary.buy_fill_probability.mean().item()) * batch_size
                 b_totals["sell_fill"] += float(binary.sell_fill_probability.mean().item()) * batch_size
+
+            if max_batches and batch_index >= max_batches:
+                break
 
         metrics = {
             "loss": totals["loss"] / max(1, batches),

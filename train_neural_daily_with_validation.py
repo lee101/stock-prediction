@@ -98,6 +98,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default=None)
     parser.add_argument("--use-amp", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--use-compile", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--max-train-batches-per-epoch", type=int, default=None)
+    parser.add_argument("--max-val-batches-per-epoch", type=int, default=None)
     parser.add_argument("--dry-run", action="store_true", help="Quick test with minimal steps.")
 
     return parser.parse_args()
@@ -135,6 +137,26 @@ def _resolve_training_symbols(args: argparse.Namespace) -> tuple[str, ...]:
     from neuraldailytraining.config import DailyDatasetConfig
 
     return tuple(DailyDatasetConfig().symbols)
+
+
+def _resolve_dataset_window(args: argparse.Namespace) -> tuple[float, int]:
+    effective_val_fraction = float(args.val_fraction)
+    effective_validation_days = int(args.validation_days)
+    if args.dry_run:
+        effective_val_fraction = min(effective_val_fraction, 0.05)
+        effective_validation_days = min(effective_validation_days, 20)
+    return effective_val_fraction, effective_validation_days
+
+
+def _resolve_epoch_batch_limits(args: argparse.Namespace) -> tuple[int | None, int | None]:
+    effective_max_train_batches = args.max_train_batches_per_epoch
+    effective_max_val_batches = args.max_val_batches_per_epoch
+    if args.dry_run:
+        if effective_max_train_batches is None:
+            effective_max_train_batches = 100
+        if effective_max_val_batches is None:
+            effective_max_val_batches = 8
+    return effective_max_train_batches, effective_max_val_batches
 
 
 def _resolve_simulation_start_date(simulator, sim_days: int, sim_start_date: str | None) -> str | None:
@@ -219,11 +241,8 @@ def train_with_validation(args: argparse.Namespace) -> None:
     print(f"Training on {len(symbols)} symbols")
 
     # Build configs
-    effective_val_fraction = args.val_fraction
-    effective_validation_days = args.validation_days
-    if args.dry_run:
-        effective_val_fraction = min(float(args.val_fraction), 0.05)
-        effective_validation_days = min(int(args.validation_days), 20)
+    effective_val_fraction, effective_validation_days = _resolve_dataset_window(args)
+    effective_max_train_batches, effective_max_val_batches = _resolve_epoch_batch_limits(args)
 
     dataset_cfg = DailyDatasetConfig(
         symbols=symbols,
@@ -238,7 +257,9 @@ def train_with_validation(args: argparse.Namespace) -> None:
     if args.dry_run:
         print(
             f"Dry run enabled: using val_fraction={effective_val_fraction:.3f} "
-            f"validation_days={effective_validation_days}"
+            f"validation_days={effective_validation_days} "
+            f"max_train_batches={effective_max_train_batches} "
+            f"max_val_batches={effective_max_val_batches}"
         )
 
     base_run_name = args.run_name or time.strftime("neuraldaily_validated_%Y%m%d_%H%M%S")
@@ -266,6 +287,8 @@ def train_with_validation(args: argparse.Namespace) -> None:
         device=args.device,
         use_amp=args.use_amp,
         use_compile=args.use_compile,
+        max_train_batches_per_epoch=effective_max_train_batches,
+        max_val_batches_per_epoch=effective_max_val_batches,
         dry_train_steps=100 if args.dry_run else None,
         dataset=dataset_cfg,
     )
@@ -400,6 +423,8 @@ def train_with_validation(args: argparse.Namespace) -> None:
             "sim_days": args.sim_days,
             "smoothness_penalty": args.smoothness_penalty,
             "selection_metric": args.selection_metric,
+            "max_train_batches_per_epoch": effective_max_train_batches,
+            "max_val_batches_per_epoch": effective_max_val_batches,
         },
     }
     summary_path.write_text(json.dumps(summary, indent=2))
