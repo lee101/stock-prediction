@@ -40,6 +40,7 @@ class NeuralDailyMarketSimulator:
         crypto_fee: float = 0.0008,  # Match training default (8 bps)
         initial_cash: float = 1.0,
         account_fraction: float | None = None,
+        min_trade_amount: float = 0.0,
         leverage_fee_rate: float = 0.065,
         equity_max_leverage: float = 2.0,
         crypto_max_leverage: float = 1.0,
@@ -55,6 +56,7 @@ class NeuralDailyMarketSimulator:
         self.crypto_fee = crypto_fee
         self.initial_cash = initial_cash
         self.account_fraction = None if account_fraction is None else max(float(account_fraction), 0.0)
+        self.min_trade_amount = max(float(min_trade_amount), 0.0)
         self.leverage_fee_rate = leverage_fee_rate
         self.daily_leverage_rate = leverage_fee_rate / 365.0
         self.equity_max_leverage = equity_max_leverage
@@ -170,6 +172,8 @@ class NeuralDailyMarketSimulator:
                 last_close[symbol] = float(row["close"])
                 plan = plan_lookup.get(symbol.upper())
                 if plan is None:
+                    continue
+                if float(plan.trade_amount) <= self.min_trade_amount:
                     continue
                 buy_price = max(plan.buy_price, 1e-6)
                 sell_price = max(plan.sell_price, 1e-6)
@@ -311,6 +315,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional live-style notional fraction. When set, trade_amount is treated as an allocation multiplier.",
     )
+    parser.add_argument("--min-trade-amount", type=float, default=0.0, help="Skip plans at or below this trade_amount.")
     parser.add_argument("--stock-fee", type=float, default=0.0008, help="Per-leg fee rate for stocks (fractional, 8 bps to match training).")
     parser.add_argument(
         "--crypto-fee", type=float, default=0.0008, help="Per-leg fee rate for crypto (fractional, 8 bps)."
@@ -365,6 +370,7 @@ def run_cli_simulation() -> None:
         crypto_fee=args.crypto_fee,
         initial_cash=args.initial_cash,
         account_fraction=args.account_fraction,
+        min_trade_amount=args.min_trade_amount,
     )
     results, summary = simulator.run(start_date=args.start_date, days=args.days)
     print(f"{'Date':<15} {'Equity':>12} {'Cash':>12} {'Return':>10} {'Leverage':>10} {'LevCost':>10}")

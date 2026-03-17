@@ -51,6 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--window-stride-days", type=int, default=20)
     parser.add_argument("--start-date", nargs="*", help="Optional explicit start dates instead of auto recent windows.")
     parser.add_argument("--account-fractions", default="0.15")
+    parser.add_argument("--min-trade-amounts", default="0.0,0.05")
     parser.add_argument("--risk-thresholds", default="0.25,0.5,0.75,1.0")
     parser.add_argument("--confidence-thresholds", default="none,0.2,0.35,0.5")
     parser.add_argument("--stock-fee", type=float, default=0.0008)
@@ -189,6 +190,7 @@ def evaluate_checkpoint_grid(
     start_dates: tuple[str, ...],
     days: int,
     account_fractions: tuple[float | None, ...],
+    min_trade_amounts: tuple[float | None, ...],
     stock_fee: float,
     crypto_fee: float,
     initial_cash: float,
@@ -213,33 +215,38 @@ def evaluate_checkpoint_grid(
         crypto_fee=crypto_fee,
         initial_cash=initial_cash,
         account_fraction=account_fractions[0],
+        min_trade_amount=min_trade_amounts[0] or 0.0,
     )
 
-    total_pairs = len(account_fractions) * len(risk_thresholds) * len(confidence_thresholds)
+    total_pairs = len(account_fractions) * len(min_trade_amounts) * len(risk_thresholds) * len(confidence_thresholds)
     pair_index = 0
     for account_fraction in account_fractions:
         simulator.account_fraction = None if account_fraction is None else float(account_fraction)
-        for risk_threshold in risk_thresholds:
-            runtime.risk_threshold = float(risk_threshold or 0.0)
-            for confidence_threshold in confidence_thresholds:
-                pair_index += 1
-                runtime.confidence_threshold = None if confidence_threshold is None else float(confidence_threshold)
-                print(
-                    f"  pair {pair_index}/{total_pairs}: account_fraction={simulator.account_fraction} "
-                    f"risk={runtime.risk_threshold} confidence={runtime.confidence_threshold}"
-                )
-                for start_date in start_dates:
-                    _, summary = simulator.run(start_date=start_date, days=days)
-                    scenario_rows.append(
-                        build_scenario_row(
-                            start_date=start_date,
-                            days=days,
-                            summary=summary,
-                            account_fraction=account_fraction,
-                            risk_threshold=risk_threshold,
-                            confidence_threshold=confidence_threshold,
-                        )
+        for min_trade_amount in min_trade_amounts:
+            simulator.min_trade_amount = float(min_trade_amount or 0.0)
+            for risk_threshold in risk_thresholds:
+                runtime.risk_threshold = float(risk_threshold or 0.0)
+                for confidence_threshold in confidence_thresholds:
+                    pair_index += 1
+                    runtime.confidence_threshold = None if confidence_threshold is None else float(confidence_threshold)
+                    print(
+                        f"  pair {pair_index}/{total_pairs}: account_fraction={simulator.account_fraction} "
+                        f"min_trade_amount={simulator.min_trade_amount} risk={runtime.risk_threshold} "
+                        f"confidence={runtime.confidence_threshold}"
                     )
+                    for start_date in start_dates:
+                        _, summary = simulator.run(start_date=start_date, days=days)
+                        scenario_rows.append(
+                            build_scenario_row(
+                                start_date=start_date,
+                                days=days,
+                                summary=summary,
+                                account_fraction=account_fraction,
+                                min_trade_amount=min_trade_amount,
+                                risk_threshold=risk_threshold,
+                                confidence_threshold=confidence_threshold,
+                            )
+                        )
 
     parameter_summaries = summarize_threshold_scenarios(scenario_rows, sortino_clip=sortino_clip)
     if not parameter_summaries:
@@ -274,6 +281,7 @@ def _promote_checkpoint(
         active_config_path,
         checkpoint=checkpoint_path,
         account_fraction=best_parameters.get("account_fraction"),
+        min_trade_amount=best_parameters.get("min_trade_amount"),
         risk_threshold=best_parameters.get("risk_threshold"),
         confidence_threshold=best_parameters.get("confidence_threshold"),
         symbols=symbols,
@@ -295,12 +303,15 @@ def main() -> int:
     risk_thresholds = parse_optional_float_grid(args.risk_thresholds, allow_none=False)
     confidence_thresholds = parse_optional_float_grid(args.confidence_thresholds, allow_none=True)
     account_fractions = parse_optional_float_grid(args.account_fractions, allow_none=True)
+    min_trade_amounts = parse_optional_float_grid(args.min_trade_amounts, allow_none=True)
     if not risk_thresholds:
         raise ValueError("At least one risk threshold is required.")
     if not confidence_thresholds:
         raise ValueError("At least one confidence threshold is required.")
     if not account_fractions:
         raise ValueError("At least one account fraction is required.")
+    if not min_trade_amounts:
+        raise ValueError("At least one min trade amount is required.")
 
     explicit_symbols = tuple(symbol.upper() for symbol in args.symbols) if args.symbols else None
     reference_checkpoint = candidate_paths[0]
@@ -345,6 +356,7 @@ def main() -> int:
             start_dates=start_dates,
             days=args.days,
             account_fractions=account_fractions,
+            min_trade_amounts=min_trade_amounts,
             stock_fee=args.stock_fee,
             crypto_fee=args.crypto_fee,
             initial_cash=args.initial_cash,
@@ -357,7 +369,8 @@ def main() -> int:
             f"{Path(result['checkpoint']).name}: {args.selection_metric}="
             f"{selection_metric_value(best, args.selection_metric):.4f} "
             f"robust={best['robust_score']:.4f} return_p25={best['return_p25_pct']:.2f}% sortino_p25={best['sortino_p25']:.4f} "
-            f"acct={best.get('account_fraction')} risk={best['risk_threshold']} confidence={best['confidence_threshold']}"
+            f"acct={best.get('account_fraction')} min_trade={best.get('min_trade_amount')} "
+            f"risk={best['risk_threshold']} confidence={best['confidence_threshold']}"
         )
 
     checkpoint_results.sort(key=lambda item: selection_metric_sort_key(item["best_parameters"], args.selection_metric), reverse=True)
@@ -392,6 +405,7 @@ def main() -> int:
         "days": int(args.days),
         "start_dates": list(start_dates),
         "account_fractions": [None if value is None else float(value) for value in account_fractions],
+        "min_trade_amounts": [None if value is None else float(value) for value in min_trade_amounts],
         "risk_thresholds": [None if value is None else float(value) for value in risk_thresholds],
         "confidence_thresholds": [None if value is None else float(value) for value in confidence_thresholds],
         "baseline_checkpoint": str(baseline_checkpoint) if baseline_checkpoint else None,
@@ -425,6 +439,7 @@ def main() -> int:
                 "stock_fee": float(args.stock_fee),
                 "crypto_fee": float(args.crypto_fee),
                 "account_fractions": [None if value is None else float(value) for value in account_fractions],
+                "min_trade_amounts": [None if value is None else float(value) for value in min_trade_amounts],
                 "baseline_checkpoint": str(baseline_checkpoint) if baseline_checkpoint else None,
                 "selection_metric": args.selection_metric,
             },

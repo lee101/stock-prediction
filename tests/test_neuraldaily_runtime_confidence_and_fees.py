@@ -84,6 +84,36 @@ def test_simulator_account_fraction_uses_notional_sizing() -> None:
     assert math.isclose(summary["pnl"], expected_pnl, rel_tol=0, abs_tol=1e-6)
 
 
+def test_simulator_min_trade_amount_skips_small_signals() -> None:
+    dates = pd.date_range("2024-01-01", periods=3, freq="D", tz="UTC")
+    frame = pd.DataFrame(
+        {
+            "date": dates,
+            "open": [10.0, 11.0, 12.0],
+            "high": [13.0, 13.0, 13.0],
+            "low": [9.0, 10.0, 11.0],
+            "close": [10.0, 11.0, 12.0],
+        }
+    )
+
+    class DummyRuntime:
+        def __init__(self, builder: _DummyBuilder) -> None:
+            self._builder = builder
+            self.non_tradable: set[str] = set()
+
+        def plan_batch(self, symbols, **_) -> list[SimpleNamespace]:
+            return [
+                SimpleNamespace(symbol=symbol, buy_price=10.0, sell_price=12.0, trade_amount=0.04) for symbol in symbols
+            ]
+
+    runtime = DummyRuntime(_DummyBuilder(frame))
+    simulator = NeuralDailyMarketSimulator(runtime, ("BTCUSD",), initial_cash=100.0, min_trade_amount=0.05)
+    _, summary = simulator.run(days=1)
+
+    assert math.isclose(summary["pnl"], 0.0, rel_tol=0, abs_tol=1e-9)
+    assert summary["trade_count"] == 0
+
+
 def test_runtime_applies_confidence_gate_and_group_mask(tmp_path) -> None:
     dates = pd.date_range("2024-02-01", periods=2, freq="D", tz="UTC")
     frame = pd.DataFrame(

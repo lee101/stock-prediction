@@ -4,13 +4,15 @@
 
 - Sortino-first active checkpoint: `neuraldailytraining/checkpoints/active_latest.pt` -> `neuraldailytraining/checkpoints/neuraldaily_broad24_goodness_20260317_cap24x2_epoch001/epoch_0001.pt`
 - Active deployment config: `neuraldailytraining/checkpoints/active_latest.json`
-- Current promoted live settings: `account_fraction=0.2`, `risk_threshold=1.0`, `confidence_threshold=None`
+- Current promoted live settings: `account_fraction=0.2`, `min_trade_amount=0.0`, `risk_threshold=1.0`, `confidence_threshold=None`
 - 24-symbol live universe: `EQIX GS COST CRM AXP BA GE LLY AVGO SPY SHOP GLD PLTR MCD V VTI QQQ MA SAP COUR ADBE INTC QUBT BTCUSD`
 - Latest sweep reports:
   - return-heavy selection: `analysis/neural_daily_deploy_sweep_20260317_fast.json`
   - sortino-first reselection: `analysis/neural_daily_deploy_selection_20260317_sortino.json`
   - live-sized broad24 retune: `analysis/neural_daily_deploy_sweep_20260317_broad24_sizing.json`
   - live-sized active selection: `analysis/neural_daily_deploy_selection_20260317_broad24_sizing.json`
+  - min-trade gate check: `analysis/neural_daily_deploy_sweep_20260317_broad24_mintrade.json`
+  - confidence gate check: `analysis/neural_daily_deploy_sweep_20260317_broad24_confidence.json`
 
 ### Current Live Command
 ```bash
@@ -29,6 +31,7 @@ python sweep_neural_daily_deployment.py \
   --window-count 2 \
   --window-stride-days 30 \
   --account-fractions 0.05,0.1,0.15,0.2 \
+  --min-trade-amounts 0.0,0.03,0.05,0.08 \
   --risk-thresholds 0.5,1.0 \
   --confidence-thresholds none,0.35,0.5 \
   --selection-metric sortino_p25 \
