@@ -56,7 +56,13 @@ This comparison started on **March 17, 2026 (UTC)** and should keep running thro
 ```bash
 source .venv313/bin/activate && python -m pytest tests/test_compare_hf_pufferlib_marketsim.py -q
 ```
-- Result: `2 passed`
+- Result: `5 passed`
+- Coverage now includes:
+  - flat HF checkpoint eval
+  - flat Puffer checkpoint eval
+  - UTC `timestamp` filtering for HF eval
+  - UTC `timestamp` filtering for Puffer eval
+  - Puffer policy-shape inference when the summary JSON drifts from the checkpoint
 
 ### Dataset Split Regression
 
@@ -189,6 +195,26 @@ PY
   - the Toto config starts and writes config output, but its warm-up/bootstrap stage is much slower than the no-Toto config
   - I kept the Toto config in the queued long-run path, but the no-Toto config is the stable first live benchmark
 
+### HF Resume Regression
+
+- Bug found on March 17, 2026:
+  - the no-Toto HF run crashed at step `5330` with `RuntimeError: unscale_() has already been called on this optimizer since the last update()`
+  - root cause: the mixed-precision trainer skipped optimizer steps on non-finite grad norm after `unscale_()` without resetting the scaler state
+- Fix:
+  - [`hftraining/hf_trainer.py`](/nvme0n1-disk/code/stock-prediction/hftraining/hf_trainer.py)
+  - [`hftraining/train_hf.py`](/nvme0n1-disk/code/stock-prediction/hftraining/train_hf.py)
+  - [`hftraining/run_training.py`](/nvme0n1-disk/code/stock-prediction/hftraining/run_training.py)
+  - [`analysis/hf_vs_pufferlib/run_hf_local.sh`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/run_hf_local.sh)
+- Regression test:
+```bash
+source .venv313/bin/activate && python -m pytest tests/test_hftrainer_step_timing.py -q
+```
+- Result: `4 passed`
+- New behavior:
+  - skipped non-finite steps reset the scaler cleanly
+  - `--resume_from_checkpoint` is actually honored
+  - the HF queue retries from the latest checkpoint instead of dying on the first transient failure
+
 ### Puffer Date-Filter Regression
 
 - Bug found on March 17, 2026:
@@ -225,6 +251,20 @@ source .venv313/bin/activate && python -m pufferlibtraining3.pufferrl \
 ```
 - Result: completed successfully with `SPS≈631`
 
+### Benchmark Harness Robustness
+
+- Bug found on March 17, 2026:
+  - [`compare_hf_pufferlib_marketsim.py`](/nvme0n1-disk/code/stock-prediction/compare_hf_pufferlib_marketsim.py) had the same naive-vs-UTC date filter bug as the env loaders
+  - the Puffer evaluator also assumed the summary JSON policy shape was always current, which broke on stale run metadata
+- Fix:
+  - benchmark date filtering now aligns start/end timestamps to the CSV index timezone
+  - Puffer eval now infers hidden size and tower widths from the checkpoint `state_dict` when the summary JSON is stale
+- Verified with:
+```bash
+source .venv313/bin/activate && python -m pytest tests/test_compare_hf_pufferlib_marketsim.py -q
+```
+- Result: `5 passed`
+
 ## Live Run Ledger
 
 ### Access Mode
@@ -246,12 +286,19 @@ tmux new-session -d -s hf_vs_pufferlib_hf_20260317 \
   - Run directory: [`analysis/hf_vs_pufferlib/runs/hf_5sym_nototo_adamw_2024train`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/runs/hf_5sym_nototo_adamw_2024train)
   - Train log: [`analysis/hf_vs_pufferlib/runs/hf_5sym_nototo_adamw_2024train/train.log`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/runs/hf_5sym_nototo_adamw_2024train/train.log)
   - Exact train command: [`analysis/hf_vs_pufferlib/runs/hf_5sym_nototo_adamw_2024train/train_command.txt`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/runs/hf_5sym_nototo_adamw_2024train/train_command.txt)
-  - Current status as of **March 17, 2026 09:56 UTC**:
-    - still running
-    - passed step `2000` and wrote [`analysis/hf_vs_pufferlib/runs/hf_5sym_nototo_adamw_2024train/checkpoint_step_2000.pth`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/runs/hf_5sym_nototo_adamw_2024train/checkpoint_step_2000.pth)
-    - later reached step `4500`, where validation logged `eval_loss=1.2664`, `action_loss=1.0357`, `price_loss=0.4614`
-    - throughput is roughly `13-15` train steps/s between eval blocks
-    - one transient large negative training loss spike appeared around step `2700`, so the profit-weighted loss needs monitoring even though validation stayed stable
+  - Current status as of **March 17, 2026 10:13 UTC**:
+    - training completed successfully
+    - total train steps: `10250`
+    - total epochs: `77`
+    - best validation loss: `1.408074` at step `5250`
+    - final model path: [`analysis/hf_vs_pufferlib/runs/hf_5sym_nototo_adamw_2024train/final_model.pth`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/runs/hf_5sym_nototo_adamw_2024train/final_model.pth)
+    - run report: [`analysis/hf_vs_pufferlib/runs/hf_5sym_nototo_adamw_2024train/run_report.md`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/runs/hf_5sym_nototo_adamw_2024train/run_report.md)
+    - the queue wrapper is still active because it is running the holdout eval matrix for this config before moving to the Toto+Muon config
+  - First generated holdout evals from the queue:
+    - [`analysis/hf_vs_pufferlib/evals/hf_5sym_nototo_adamw_2024train_AAPL_open_close_alloc_only.json`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/evals/hf_5sym_nototo_adamw_2024train_AAPL_open_close_alloc_only.json)
+    - [`analysis/hf_vs_pufferlib/evals/hf_5sym_nototo_adamw_2024train_AAPL_open_close_alloc_signed_by_logits.json`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/evals/hf_5sym_nototo_adamw_2024train_AAPL_open_close_alloc_signed_by_logits.json)
+    - [`analysis/hf_vs_pufferlib/evals/hf_5sym_nototo_adamw_2024train_AAPL_maxdiff_alloc_only.json`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/evals/hf_5sym_nototo_adamw_2024train_AAPL_maxdiff_alloc_only.json)
+    - [`analysis/hf_vs_pufferlib/evals/hf_5sym_nototo_adamw_2024train_AAPL_maxdiff_alloc_signed_by_logits.json`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/evals/hf_5sym_nototo_adamw_2024train_AAPL_maxdiff_alloc_signed_by_logits.json)
 - Queued next in the same HF session:
   - `hf_5sym_toto_muon_2024train`
   - output path will be [`analysis/hf_vs_pufferlib/runs/hf_5sym_toto_muon_2024train`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/runs/hf_5sym_toto_muon_2024train)
@@ -270,12 +317,16 @@ tmux new-session -d -s hf_vs_pufferlib_puffer_20260317 \
   - Run directory: [`analysis/hf_vs_pufferlib/runs/puffer_open_close_AAPL_2024train`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/runs/puffer_open_close_AAPL_2024train)
   - Train log: [`analysis/hf_vs_pufferlib/runs/puffer_open_close_AAPL_2024train/train.log`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/runs/puffer_open_close_AAPL_2024train/train.log)
   - Exact train command: [`analysis/hf_vs_pufferlib/runs/puffer_open_close_AAPL_2024train/train_command.txt`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/runs/puffer_open_close_AAPL_2024train/train_command.txt)
-  - Current status as of **March 17, 2026 09:56 UTC**:
+  - Current status as of **March 17, 2026 10:13 UTC**:
     - still running
-    - reached epoch `2` / `global_step=196608`
-    - logged `SPS=1533.56`
-    - dashboard ETA for the first run fell to about `19m35s`
-    - latest environment snapshot: `equity=0.4840`, `trading_cost=0.00115`, `financing_cost=0.00015`, `deleverage_notional=0.4753`
+    - reached epoch `24` / `global_step=1572864`
+    - latest logged `SPS=436.28`
+    - latest environment snapshot: `equity=2147.13`, `gross_pnl=38.6002`, `trading_cost=4.8065`, `financing_cost=0.9027`, `deleverage_notional=0.7240`
+    - no fresh run-local checkpoint or final summary JSON has been emitted yet, so shared-simulator holdout eval for the live `2.2M`-parameter run is still pending
+  - Available checkpoint baseline:
+    - the only currently loadable AAPL Puffer artifact is [`experiments/177374124039/model_000001.pt`](/nvme0n1-disk/code/stock-prediction/experiments/177374124039/model_000001.pt)
+    - its saved width is `256`, so it is not the current live `preset=small hidden=512` run logged above
+    - after adding checkpoint-shape inference to the evaluator, that older artifact still provides a reproducible baseline for AAPL holdout comparison
 - Remaining queue after the active run:
   - `AAPL maxdiff`
   - `MSFT open_close`
@@ -287,11 +338,30 @@ tmux new-session -d -s hf_vs_pufferlib_puffer_20260317 \
   - `TSLA open_close`
   - `TSLA maxdiff`
 
+## Interim AAPL Holdout Readout
+
+- Shared holdout window: `2025-01-02` through `2025-11-28`
+- Shared execution assumptions: `open_close` or `maxdiff`, `5 bps` fee, `5 bps` slippage, `4x` intraday cap, `2x` overnight cap
+- Best currently observed HF checkpoint on `AAPL open_close` is still the manual probe at `checkpoint_step_7000`
+  - `alloc_signed_by_logits`: `total_return=46.52%`, `sortino=1.4464`, `max_drawdown=-25.34%`, `turnover=19.59`
+  - `alloc_only`: `total_return=44.40%`, `sortino=1.4073`, `max_drawdown=-25.34%`
+- HF final model underperformed that checkpoint on the same holdout
+  - [`analysis/hf_vs_pufferlib/evals/hf_5sym_nototo_adamw_2024train_AAPL_open_close_alloc_signed_by_logits.json`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/evals/hf_5sym_nototo_adamw_2024train_AAPL_open_close_alloc_signed_by_logits.json)
+  - result: `total_return=19.22%`, `sortino=0.9088`, `max_drawdown=-36.35%`
+- HF final model on `AAPL maxdiff` is lower return but cleaner on fills and drawdown
+  - [`analysis/hf_vs_pufferlib/evals/hf_5sym_nototo_adamw_2024train_AAPL_maxdiff_alloc_signed_by_logits.json`](/nvme0n1-disk/code/stock-prediction/analysis/hf_vs_pufferlib/evals/hf_5sym_nototo_adamw_2024train_AAPL_maxdiff_alloc_signed_by_logits.json)
+  - result: `total_return=8.83%`, `sortino=1.6176`, `max_drawdown=-0.71%`, `fill_rate=3.70%`
+- Available Puffer AAPL baseline from the older `256`-width checkpoint
+  - shared-simulator result: `total_return=-0.77%`, `sortino=-1.4997`, `max_drawdown=-1.19%`, `turnover=0.6822`
+  - this is a stale saved artifact, not the still-running live `2.2M`-parameter AAPL open-close job
+- Quick HF checkpoint sweep on `AAPL open_close alloc_signed_by_logits`
+  - `checkpoint_step_7000` was best among saved checkpoints `5000, 6000, 7000, 8000, 9000, 10000, final_model`
+  - ranked by Sortino: `7000 > 8000 > 6000 > 5000 > final_model > 10000 > 9000`
+  - implication: for HF, market-sim checkpoint selection matters more than just taking `final_model.pth`
+
 ## Next Steps
 
-- Let the current HF and Puffer queues continue running through March 17, 2026 UTC.
-- When the first non-smoke checkpoints finish, run shared-simulator evaluation with:
-  - `open_close`
-  - `maxdiff`
-  - HF action modes `alloc_only` and `alloc_signed_by_logits`
-- Update this document with per-symbol and average metrics, then promote the strongest configuration.
+- Let the current Puffer AAPL `open_close` run finish and capture the first live `512`-hidden checkpoint or final summary JSON.
+- Keep the HF queue moving into `hf_5sym_toto_muon_2024train` after the no-Toto eval matrix finishes.
+- Promote HF checkpoints by shared market-sim ranking, not by `final_model.pth` alone.
+- Update this document with per-symbol and average metrics once the first live Puffer AAPL holdout eval is available.

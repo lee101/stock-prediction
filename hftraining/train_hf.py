@@ -410,6 +410,21 @@ class HFTrainer:
     def step(self, value: int) -> None:
         self.global_step = int(value)
 
+    def load_checkpoint(self, checkpoint_path: str | Path) -> None:
+        """Restore model and optimizer state from a saved checkpoint."""
+        payload = torch.load(Path(checkpoint_path), map_location=self.device, weights_only=False)
+        self.model.load_state_dict(payload['model_state_dict'], strict=False)
+        self.optimizer.load_state_dict(payload['optimizer_state_dict'])
+        self.scheduler.load_state_dict(payload['scheduler_state_dict'])
+        self.global_step = int(payload.get('global_step', 0))
+        self.current_epoch = int(payload.get('epoch', 0))
+        self.training_logger.logger.info(
+            "Resumed checkpoint from %s at step %d epoch %d",
+            checkpoint_path,
+            self.global_step,
+            self.current_epoch,
+        )
+
     def _get_gpu_metrics(self):
         """Safely collect GPU metrics if CUDA is available."""
         metrics = {}
@@ -789,9 +804,9 @@ class HFTrainer:
         
         # Training loop
         self.model.train()
-        pbar = tqdm(total=self.config.max_steps, desc="Training", ncols=120)
+        pbar = tqdm(total=self.config.max_steps, initial=self.global_step, desc="Training", ncols=120)
         
-        epoch = 0
+        epoch = int(self.current_epoch)
         while self.global_step < self.config.max_steps:
             epoch += 1
             self.current_epoch = epoch
@@ -1213,6 +1228,7 @@ class HFTrainer:
                         f"Non-finite grad norm at step {self.global_step}: {grad_norm} — skipping optimizer step"
                     )
                     self.optimizer.zero_grad(set_to_none=True)
+                    self.mp_trainer.reset_after_skipped_step()
                     self.global_step += 1
                     return total_loss.item() * self.config.gradient_accumulation_steps
         

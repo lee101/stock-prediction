@@ -436,6 +436,10 @@ def run_training(config: ExperimentConfig):
         train_dataset=train_dataset,
         eval_dataset=val_dataset
     )
+
+    resume_path = getattr(config.output, "resume_from_checkpoint", None)
+    if resume_path:
+        trainer.load_checkpoint(resume_path)
     
     # Start training
     print("Starting training...")

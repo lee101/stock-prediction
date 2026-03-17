@@ -507,6 +507,11 @@ class MixedPrecisionTrainer:
             self.scaler.update()
         else:
             optimizer.step()
+
+    def reset_after_skipped_step(self) -> None:
+        """Reset GradScaler state after manually skipping an optimizer step."""
+        if self.enabled:
+            self.scaler.update()
     
     def autocast(self):
         if self.enabled:

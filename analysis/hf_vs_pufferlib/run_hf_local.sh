@@ -42,13 +42,35 @@ PY
   run_dir="analysis/hf_vs_pufferlib/runs/${run_name}"
   mkdir -p "$run_dir"
 
-  train_cmd=(
-    python -m hftraining.run_training
-    --config_file "$config_path"
-  )
-  printf '%q ' "${train_cmd[@]}" > "$run_dir/train_command.txt"
-  printf '\n' >> "$run_dir/train_command.txt"
-  "${train_cmd[@]}" > "$run_dir/train.log" 2>&1
+  if [[ ! -f "$run_dir/final_model.pth" ]]; then
+    attempts=0
+    while [[ ! -f "$run_dir/final_model.pth" ]]; do
+      latest_checkpoint="$(find "$run_dir" -maxdepth 1 -type f -name 'checkpoint_step_*.pth' | sort -V | tail -n 1)"
+      train_cmd=(
+        python -m hftraining.run_training
+        --config_file "$config_path"
+      )
+      if [[ -n "$latest_checkpoint" ]]; then
+        train_cmd+=(
+          --resume_from_checkpoint "$latest_checkpoint"
+        )
+      fi
+
+      printf '%q ' "${train_cmd[@]}" > "$run_dir/train_command.txt"
+      printf '\n' >> "$run_dir/train_command.txt"
+      printf '\n[%s] starting train attempt %d\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$((attempts + 1))" >> "$run_dir/train.log"
+      if "${train_cmd[@]}" >> "$run_dir/train.log" 2>&1; then
+        break
+      fi
+
+      attempts=$((attempts + 1))
+      if [[ $attempts -ge 3 ]]; then
+        printf '[%s] training failed after %d attempts\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$attempts" >> "$run_dir/train.log"
+        exit 1
+      fi
+      printf '[%s] retrying from latest checkpoint after failed attempt %d\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$attempts" >> "$run_dir/train.log"
+    done
+  fi
 
   checkpoint_path="$run_dir/final_model.pth"
   processor_path="$run_dir/data_processor.pkl"

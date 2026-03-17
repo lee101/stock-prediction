@@ -26,6 +26,19 @@ from pufferlibtraining3.models import MarketPolicy, PolicyConfig
 sys.modules.setdefault("hf_trainer", hf_trainer_module)
 
 
+def _coerce_filter_timestamp(index: pd.Index, raw_value: str | None) -> pd.Timestamp | None:
+    if raw_value is None:
+        return None
+    timestamp = pd.to_datetime(raw_value, errors="raise")
+    if isinstance(index, pd.DatetimeIndex) and index.tz is not None:
+        if timestamp.tzinfo is None:
+            return timestamp.tz_localize(index.tz)
+        return timestamp.tz_convert(index.tz)
+    if timestamp.tzinfo is not None:
+        return timestamp.tz_convert("UTC").tz_localize(None)
+    return timestamp
+
+
 def _load_market_frame(
     data_root: str | Path,
     symbol: str,
@@ -59,9 +72,9 @@ def _load_market_frame(
 
     frame = frame.dropna(axis=0, how="any")
     if start_date is not None:
-        frame = frame[frame.index >= pd.to_datetime(start_date)]
+        frame = frame[frame.index >= _coerce_filter_timestamp(frame.index, start_date)]
     if end_date is not None:
-        frame = frame[frame.index <= pd.to_datetime(end_date)]
+        frame = frame[frame.index <= _coerce_filter_timestamp(frame.index, end_date)]
     if frame.empty:
         raise ValueError(f"No rows left for symbol '{symbol}' after date filtering")
     return frame
@@ -170,6 +183,53 @@ def _coerce_hf_config(raw: Any) -> HFTrainingConfig:
     if isinstance(raw, dict):
         return HFTrainingConfig(**raw)
     raise TypeError(f"Unsupported HF config payload type: {type(raw)!r}")
+
+
+def _sequential_module_weights(
+    state_dict: dict[str, Any],
+    prefix: str,
+) -> tuple[tuple[int, ...], bool]:
+    widths: list[tuple[int, int]] = []
+    saw_layer_norm = False
+    needle = f"{prefix}."
+    for key, value in state_dict.items():
+        if not key.startswith(needle) or not key.endswith(".weight") or not hasattr(value, "ndim"):
+            continue
+        module_idx = key[len(needle): -len(".weight")]
+        if not module_idx.isdigit():
+            continue
+        tensor = value
+        if tensor.ndim == 2:
+            widths.append((int(module_idx), int(tensor.shape[0])))
+        elif tensor.ndim == 1:
+            saw_layer_norm = True
+    widths.sort(key=lambda item: item[0])
+    return tuple(width for _, width in widths), saw_layer_norm
+
+
+def _resolve_policy_config_from_state_dict(
+    state_dict: dict[str, Any],
+    fallback: PolicyConfig,
+) -> PolicyConfig:
+    hidden_size = int(fallback.hidden_size)
+    encoder_weight = state_dict.get("encoder.0.weight")
+    if hasattr(encoder_weight, "ndim") and encoder_weight.ndim == 2:
+        hidden_size = int(encoder_weight.shape[0])
+
+    actor_layers, actor_has_layer_norm = _sequential_module_weights(state_dict, "actor_tower")
+    critic_layers, critic_has_layer_norm = _sequential_module_weights(state_dict, "critic_tower")
+    _, encoder_has_layer_norm = _sequential_module_weights(state_dict, "encoder")
+
+    return PolicyConfig(
+        hidden_size=hidden_size,
+        actor_layers=actor_layers or tuple(int(width) for width in fallback.actor_layers),
+        critic_layers=critic_layers or tuple(int(width) for width in fallback.critic_layers),
+        activation=str(fallback.activation),
+        dropout_p=float(fallback.dropout_p),
+        layer_norm=bool(fallback.layer_norm or actor_has_layer_norm or critic_has_layer_norm or encoder_has_layer_norm),
+        use_lstm=bool(fallback.use_lstm),
+        rnn_hidden_size=int(fallback.rnn_hidden_size),
+    )
 
 
 @dataclass
@@ -417,10 +477,14 @@ class PufferEvaluator:
         self.checkpoint_path = Path(resolved_checkpoint)
 
     def build_policy(self, env: MarketEnv) -> MarketPolicy:
-        policy = MarketPolicy(env, self.policy_config).to(self.device)
         state_dict = torch.load(self.checkpoint_path, map_location=self.device, weights_only=False)
+        if not isinstance(state_dict, dict):
+            raise TypeError(f"Puffer checkpoint '{self.checkpoint_path}' is not a state_dict mapping")
+        resolved_policy_config = _resolve_policy_config_from_state_dict(state_dict, self.policy_config)
+        policy = MarketPolicy(env, resolved_policy_config).to(self.device)
         policy.load_state_dict(state_dict, strict=False)
         policy.eval()
+        self.policy_config = resolved_policy_config
         return policy
 
     def action_fn(self, policy: MarketPolicy) -> Callable[[np.ndarray, MarketEnv], np.ndarray | int]:

@@ -3,6 +3,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
+from torch.utils.data import DataLoader
 
 from hftraining.hf_trainer import HFTrainingConfig, TransformerTradingModel
 from hftraining.train_hf import HFTrainer, StockDataset
@@ -100,3 +102,59 @@ def test_drain_step_events_handles_pending(tmp_path: Path) -> None:
     drained = trainer._drain_step_events()
     assert len(drained) == 1
     assert math.isclose(drained[0], 0.008, rel_tol=1e-5)
+
+
+def test_non_finite_grad_norm_resets_mixed_precision_scaler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    trainer = _make_trainer(tmp_path, max_steps=2)
+    batch = next(iter(DataLoader(trainer.train_dataset, batch_size=2, shuffle=False)))
+    batch = {key: value.to(trainer.device) for key, value in batch.items()}
+
+    class FakeScaler:
+        def __init__(self) -> None:
+            self._unscaled = False
+            self.update_calls = 0
+
+        def scale(self, loss):
+            return loss
+
+        def unscale_(self, optimizer) -> None:
+            del optimizer
+            if self._unscaled:
+                raise RuntimeError("unscale_() has already been called on this optimizer since the last update().")
+            self._unscaled = True
+
+        def step(self, optimizer) -> None:
+            del optimizer
+            self._unscaled = False
+
+        def update(self) -> None:
+            self.update_calls += 1
+            self._unscaled = False
+
+    fake_scaler = FakeScaler()
+    trainer.mp_trainer.enabled = True
+    trainer.mp_trainer.scaler = fake_scaler
+    trainer.config.skip_non_finite_grads = True
+    trainer.config.gradient_accumulation_steps = 1
+
+    monkeypatch.setattr(torch.nn.utils, "clip_grad_norm_", lambda *args, **kwargs: torch.tensor(float("inf")))
+
+    loss1 = trainer.training_step(batch)
+    loss2 = trainer.training_step(batch)
+
+    assert math.isfinite(loss1)
+    assert math.isfinite(loss2)
+    assert fake_scaler.update_calls == 2
+
+
+def test_load_checkpoint_restores_training_state(tmp_path: Path) -> None:
+    trainer = _make_trainer(tmp_path, max_steps=2)
+    trainer.global_step = 7
+    trainer.current_epoch = 3
+    checkpoint_path = trainer.save_checkpoint()
+
+    restored = _make_trainer(tmp_path / "restored", max_steps=2)
+    restored.load_checkpoint(checkpoint_path)
+
+    assert restored.global_step == 7
+    assert restored.current_epoch == 3
