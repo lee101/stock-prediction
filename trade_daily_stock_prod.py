@@ -440,6 +440,17 @@ def execute_signal(
     managed_symbol = state.active_symbol.upper() if state.active_symbol else None
     desired_symbol = signal.symbol.upper() if signal.symbol and signal.direction == "long" else None
 
+    if managed_symbol is not None and managed_symbol not in live_positions:
+        logger.warning(
+            "Managed state tracked %s but no live position exists; clearing stale state before execution",
+            managed_symbol,
+        )
+        state.active_symbol = None
+        state.active_qty = 0.0
+        state.entry_price = 0.0
+        state.entry_date = None
+        managed_symbol = None
+
     unmanaged = sorted(symbol for symbol in live_positions if symbol != managed_symbol)
     if unmanaged:
         logger.warning(
@@ -605,8 +616,23 @@ def run_backtest(
     symbols: Iterable[str],
     data_dir: str,
     days: int,
+    data_source: str = "alpaca",
+    paper: bool = True,
+    now: Optional[datetime] = None,
+    data_client=None,
 ) -> dict[str, float]:
-    frames = load_local_daily_frames(symbols, data_dir=data_dir, min_days=days + 120)
+    if data_source == "alpaca":
+        frames = load_alpaca_daily_frames(
+            symbols,
+            paper=paper,
+            min_days=days + 120,
+            now=now,
+            data_client=data_client,
+        )
+    elif data_source == "local":
+        frames = load_local_daily_frames(symbols, data_dir=data_dir, min_days=days + 120)
+    else:
+        raise ValueError(f"Unsupported backtest data_source={data_source!r}")
     indexed = {
         symbol: frame.set_index("timestamp")[["open", "high", "low", "close", "volume"]].copy()
         for symbol, frame in frames.items()
@@ -861,7 +887,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--dry-run", action="store_true", help="Print signals without placing orders")
     parser.add_argument("--paper", action="store_true", default=True, help="Use the Alpaca paper account")
     parser.add_argument("--live", action="store_true", help="Use the Alpaca live account")
-    parser.add_argument("--backtest", action="store_true", help="Run a local historical backtest")
+    parser.add_argument("--backtest", action="store_true", help="Run a historical backtest")
     parser.add_argument("--backtest-days", type=int, default=60)
     parser.add_argument("--symbols", nargs="+", default=None)
     return parser.parse_args(argv)
@@ -879,6 +905,8 @@ def main(argv: Optional[list[str]] = None) -> None:
             symbols=symbols,
             data_dir=args.data_dir,
             days=args.backtest_days,
+            data_source=args.data_source,
+            paper=paper,
         )
         return
 

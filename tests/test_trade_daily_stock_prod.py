@@ -13,6 +13,23 @@ def _write_daily_csv(path: Path, rows: list[dict[str, object]]) -> None:
     pd.DataFrame(rows).to_csv(path, index=False)
 
 
+def _make_aligned_daily_frame(rows: int = 140) -> pd.DataFrame:
+    data = []
+    for idx in range(rows):
+        ts = pd.Timestamp("2025-01-01T00:00:00Z") + pd.Timedelta(days=idx)
+        data.append(
+            {
+                "timestamp": ts,
+                "open": 100.0 + idx,
+                "high": 101.0 + idx,
+                "low": 99.0 + idx,
+                "close": 100.5 + idx,
+                "volume": 1_000.0 + idx,
+            }
+        )
+    return pd.DataFrame(data)
+
+
 def test_load_local_daily_frames_aligns_common_dates(tmp_path: Path) -> None:
     _write_daily_csv(
         tmp_path / "AAPL.csv",
@@ -128,6 +145,38 @@ def test_execute_signal_refuses_to_trade_with_unmanaged_position(monkeypatch) ->
     assert state.active_symbol is None
 
 
+def test_execute_signal_clears_stale_state_when_live_position_is_missing(monkeypatch) -> None:
+    called = False
+
+    def _fake_submit_market_order(client, *, symbol: str, qty: float, side: str):
+        nonlocal called
+        called = True
+        return SimpleNamespace(id="unexpected")
+
+    monkeypatch.setattr(daily_stock, "submit_market_order", _fake_submit_market_order)
+
+    client = _FakeClient([])
+    state = daily_stock.StrategyState(active_symbol="PLTR", active_qty=10.0, entry_price=123.0, entry_date="2026-03-17")
+    signal = SimpleNamespace(symbol=None, direction=None, action="flat")
+
+    changed = daily_stock.execute_signal(
+        signal,
+        client=client,
+        quotes={},
+        state=state,
+        symbols=["PLTR", "MSFT"],
+        allocation_pct=25.0,
+        dry_run=False,
+    )
+
+    assert changed is False
+    assert called is False
+    assert state.active_symbol is None
+    assert state.active_qty == 0.0
+    assert state.entry_price == 0.0
+    assert state.entry_date is None
+
+
 def test_execute_signal_with_open_gate_only_closes_existing_position(monkeypatch) -> None:
     orders: list[tuple[str, float, str]] = []
 
@@ -233,6 +282,85 @@ def test_bars_are_fresh_uses_age_gate() -> None:
         now=datetime(2026, 3, 25, 13, 40, tzinfo=timezone.utc),
         max_age_days=5,
     ) is False
+
+
+def test_run_backtest_uses_alpaca_frames_when_requested(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+    frames = {"AAPL": _make_aligned_daily_frame(), "MSFT": _make_aligned_daily_frame()}
+
+    class _DummyTrader:
+        def __init__(self, checkpoint, device, long_only, symbols):
+            self.SYMBOLS = list(symbols)
+            self.cash = 0.0
+            self.current_position = None
+            self.position_qty = 0.0
+            self.entry_price = 0.0
+
+        def get_daily_signal(self, history, prices):
+            return SimpleNamespace(action="flat", symbol=None, direction=None, confidence=0.0, value_estimate=0.0)
+
+        def update_state(self, *args, **kwargs):
+            return None
+
+        def step_day(self):
+            return None
+
+    def _fake_load_alpaca(symbols, *, paper, min_days, now=None, data_client=None):
+        calls.append(
+            {
+                "symbols": list(symbols),
+                "paper": paper,
+                "min_days": min_days,
+                "now": now,
+                "data_client": data_client,
+            }
+        )
+        return frames
+
+    monkeypatch.setattr(daily_stock, "load_alpaca_daily_frames", _fake_load_alpaca)
+    monkeypatch.setattr(
+        daily_stock,
+        "load_local_daily_frames",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("local loader should not be used")),
+    )
+    monkeypatch.setattr(daily_stock, "DailyPPOTrader", _DummyTrader)
+
+    results = daily_stock.run_backtest(
+        checkpoint="dummy.ckpt",
+        symbols=["AAPL", "MSFT"],
+        data_dir="unused",
+        days=5,
+        data_source="alpaca",
+        paper=False,
+    )
+
+    assert calls == [
+        {
+            "symbols": ["AAPL", "MSFT"],
+            "paper": False,
+            "min_days": 125,
+            "now": None,
+            "data_client": None,
+        }
+    ]
+    assert results["total_return"] == 0.0
+    assert results["trades"] == 0.0
+
+
+def test_main_passes_backtest_data_source_and_paper(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_run_backtest(**kwargs):
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(daily_stock, "run_backtest", _fake_run_backtest)
+
+    daily_stock.main(["--backtest", "--live", "--data-source", "alpaca", "--backtest-days", "15"])
+
+    assert captured["data_source"] == "alpaca"
+    assert captured["paper"] is False
+    assert captured["days"] == 15
 
 
 def test_run_once_falls_back_to_local_daily_frames(monkeypatch, tmp_path: Path) -> None:
