@@ -15,6 +15,7 @@ from src.hourly_trader_utils import (
     build_order_intents,
     build_plan_from_action,
     ensure_valid_levels,
+    is_entry_within_fill_distance_bps,
     infer_working_order_kind,
 )
 from src.metrics_utils import annualized_sortino, compute_step_returns
@@ -85,6 +86,9 @@ class HourlyTraderSimulationConfig:
     max_hold_hours: Optional[int] = None
     trailing_stop_pct: Optional[float] = None
     force_exit_offset_pct: float = 0.1
+    entry_near_book_bps: Optional[float] = None
+    early_stop_min_periods: Optional[int] = None
+    early_stop_pnl_vs_drawdown_multiple: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -123,7 +127,9 @@ class HourlyTraderSimulationResult:
     final_reserved_cash: float
     final_positions: Dict[str, float]
     open_orders: List[OpenOrder]
-    metrics: Dict[str, float] = field(default_factory=dict)
+    metrics: Dict[str, float | bool | str] = field(default_factory=dict)
+    terminated_early: bool = False
+    termination_reason: Optional[str] = None
 
 
 class HourlyTraderMarketSimulator:
@@ -170,6 +176,24 @@ class HourlyTraderMarketSimulator:
         cash_buffer = float(getattr(cfg, "cash_buffer", 0.99) or 0.99)
         if not math.isfinite(cash_buffer) or cash_buffer <= 0.0 or cash_buffer > 1.0:
             raise ValueError(f"cash_buffer must be in (0, 1], got {cfg.cash_buffer}.")
+        entry_near_book_bps = getattr(cfg, "entry_near_book_bps", None)
+        if entry_near_book_bps is not None:
+            entry_near_book_bps = float(entry_near_book_bps)
+            if not math.isfinite(entry_near_book_bps) or entry_near_book_bps < 0.0:
+                raise ValueError(f"entry_near_book_bps must be finite and >= 0, got {cfg.entry_near_book_bps}.")
+        early_stop_min_periods = getattr(cfg, "early_stop_min_periods", None)
+        if early_stop_min_periods is not None:
+            early_stop_min_periods = int(early_stop_min_periods)
+            if early_stop_min_periods < 0:
+                raise ValueError(f"early_stop_min_periods must be >= 0, got {cfg.early_stop_min_periods}.")
+            if early_stop_min_periods == 0:
+                early_stop_min_periods = None
+        early_stop_multiple = float(getattr(cfg, "early_stop_pnl_vs_drawdown_multiple", 1.0) or 0.0)
+        if not math.isfinite(early_stop_multiple) or early_stop_multiple < 0.0:
+            raise ValueError(
+                "early_stop_pnl_vs_drawdown_multiple must be finite and >= 0, "
+                f"got {cfg.early_stop_pnl_vs_drawdown_multiple}."
+            )
 
         bars = bars.copy()
         actions = actions.copy()
@@ -361,6 +385,8 @@ class HourlyTraderMarketSimulator:
         fills: List[FillRecord] = []
         equity_values: List[float] = []
         per_hour_rows: List[Dict[str, float | str]] = []
+        terminated_early = False
+        termination_reason: Optional[str] = None
 
         def _min_notional(sym: str) -> float:
             if meta[sym]["asset_class"] == "crypto":
@@ -578,7 +604,16 @@ class HourlyTraderMarketSimulator:
             notional_diff = abs((float(existing.qty) - float(qty)) * float(price))
             return (qty_diff_pct < float(cfg.qty_tol_pct)) or (notional_diff < float(cfg.qty_tol_notional_usd))
 
-        def _place_order(ts: pd.Timestamp, *, sym: str, intent_side: str, intent_qty: float, intent_price: float, kind: str) -> None:
+        def _place_order(
+            ts: pd.Timestamp,
+            *,
+            sym: str,
+            intent_side: str,
+            intent_qty: float,
+            intent_price: float,
+            kind: str,
+            reference_price: Optional[float] = None,
+        ) -> None:
             nonlocal reserved_cash, cash_stock, cash_crypto
             side = intent_side.lower()
             if side not in {"buy", "sell"}:
@@ -587,6 +622,16 @@ class HourlyTraderMarketSimulator:
             price = float(intent_price)
             if qty <= 0 or price <= 0:
                 return
+
+            if kind == "entry" and entry_near_book_bps is not None and entry_near_book_bps > 0.0:
+                allow_entry, _ = is_entry_within_fill_distance_bps(
+                    side,
+                    price,
+                    max_distance_bps=entry_near_book_bps,
+                    reference_price=reference_price,
+                )
+                if not allow_entry:
+                    return
 
             fee_rate = float(meta[sym]["maker_fee"])
             min_notional = _min_notional(sym)
@@ -705,6 +750,7 @@ class HourlyTraderMarketSimulator:
                     intent_qty=abs(qty),
                     intent_price=_risk_exit_price(close_price),
                     kind="exit",
+                    reference_price=close_price,
                 )
 
             return triggered_symbols
@@ -842,6 +888,7 @@ class HourlyTraderMarketSimulator:
                         intent_qty=float(intent.qty),
                         intent_price=float(intent.limit_price),
                         kind=str(intent.kind),
+                        reference_price=float(row.close),
                     )
 
             # Record combined equity at this timestamp.
@@ -860,13 +907,32 @@ class HourlyTraderMarketSimulator:
                 }
             )
 
+            if early_stop_min_periods is not None and len(equity_values) >= early_stop_min_periods:
+                equity_array = np.asarray(equity_values, dtype=float)
+                running_peaks = np.maximum.accumulate(equity_array)
+                max_drawdown_abs = float(np.max(running_peaks - equity_array)) if equity_array.size else 0.0
+                pnl_abs = float(equity_array[-1] - equity_array[0]) if equity_array.size else 0.0
+                stop_threshold = max_drawdown_abs * early_stop_multiple
+                if pnl_abs <= stop_threshold:
+                    terminated_early = True
+                    termination_reason = (
+                        f"Stopped after {len(equity_values)} periods because pnl_abs={pnl_abs:.2f} "
+                        f"<= {early_stop_multiple:.2f} * max_drawdown_abs={max_drawdown_abs:.2f}."
+                    )
+                    break
+
         equity_curve = pd.Series(equity_values, index=pd.to_datetime([r["timestamp"] for r in per_hour_rows], utc=True))
         per_hour = pd.DataFrame(per_hour_rows)
 
         # Annualization: use average periods-per-year across symbols as a rough heuristic.
         periods = [float(meta[s]["periods_per_year"]) for s in symbols if float(meta[s]["periods_per_year"]) > 0]
         periods_per_year = float(np.mean(periods)) if periods else float(24 * 365)
-        metrics = self._compute_metrics(equity_curve, periods_per_year)
+        metrics = self._compute_metrics(
+            equity_curve,
+            periods_per_year,
+            terminated_early=terminated_early,
+            termination_reason=termination_reason,
+        )
 
         return HourlyTraderSimulationResult(
             equity_curve=equity_curve,
@@ -877,20 +943,48 @@ class HourlyTraderMarketSimulator:
             final_positions={k: float(v) for k, v in positions.items() if abs(float(v)) > 1e-12},
             open_orders=list(open_orders.values()),
             metrics=metrics,
+            terminated_early=terminated_early,
+            termination_reason=termination_reason,
         )
 
     @staticmethod
-    def _compute_metrics(equity_curve: pd.Series, periods_per_year: float) -> Dict[str, float]:
+    def _compute_metrics(
+        equity_curve: pd.Series,
+        periods_per_year: float,
+        *,
+        terminated_early: bool = False,
+        termination_reason: Optional[str] = None,
+    ) -> Dict[str, float | bool | str]:
         if equity_curve.empty:
-            return {"total_return": 0.0, "sortino": 0.0}
+            metrics: Dict[str, float | bool | str] = {
+                "total_return": 0.0,
+                "sortino": 0.0,
+                "mean_hourly_return": 0.0,
+                "max_drawdown": 0.0,
+                "pnl_abs": 0.0,
+                "periods": 0,
+                "terminated_early": bool(terminated_early),
+            }
+            if termination_reason:
+                metrics["termination_reason"] = termination_reason
+            return metrics
         returns = compute_step_returns(equity_curve.values)
         sortino = annualized_sortino(returns, periods_per_year=periods_per_year)
         total_return = (equity_curve.iloc[-1] - equity_curve.iloc[0]) / equity_curve.iloc[0]
-        return {
+        running_max = equity_curve.cummax()
+        drawdown = (equity_curve / running_max) - 1.0
+        metrics = {
             "total_return": float(total_return),
             "sortino": float(sortino),
             "mean_hourly_return": float(returns.mean() if returns.size else 0.0),
+            "max_drawdown": float(drawdown.min() if not drawdown.empty else 0.0),
+            "pnl_abs": float(equity_curve.iloc[-1] - equity_curve.iloc[0]),
+            "periods": int(len(equity_curve)),
+            "terminated_early": bool(terminated_early),
         }
+        if termination_reason:
+            metrics["termination_reason"] = termination_reason
+        return metrics
 
 
 __all__ = [

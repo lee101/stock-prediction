@@ -379,6 +379,75 @@ def test_hourly_trader_simulator_supports_seeded_positions_and_open_orders() -> 
     assert result.final_cash == 720.0
 
 
+def test_hourly_trader_simulator_entry_near_book_bps_blocks_far_entries() -> None:
+    ts0 = pd.Timestamp("2026-01-05T15:00:00Z")
+    ts1 = ts0 + pd.Timedelta(hours=1)
+
+    bars = pd.DataFrame(
+        [
+            {"timestamp": ts0, "symbol": "ETHUSD", "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0},
+            {"timestamp": ts1, "symbol": "ETHUSD", "open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0},
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {"timestamp": ts0, "symbol": "ETHUSD", "buy_price": 99.0, "sell_price": 110.0, "buy_amount": 100.0, "sell_amount": 0.0},
+            {"timestamp": ts1, "symbol": "ETHUSD", "buy_price": 99.0, "sell_price": 110.0, "buy_amount": 0.0, "sell_amount": 0.0},
+        ]
+    )
+
+    sim = HourlyTraderMarketSimulator(
+        HourlyTraderSimulationConfig(
+            initial_cash=1000.0,
+            allocation_usd=1000.0,
+            allocation_pct=None,
+            decision_lag_bars=1,
+            fee_by_symbol={"ETHUSD": 0.0},
+            enforce_market_hours=False,
+            entry_near_book_bps=25.0,
+        )
+    )
+    result = sim.run(bars, actions)
+
+    assert result.fills == []
+    assert result.per_hour.iloc[0]["open_orders"] == 0.0
+    assert result.open_orders == []
+
+
+def test_hourly_trader_simulator_early_stop_reports_reason_after_threshold() -> None:
+    timestamps = pd.date_range("2026-01-01T00:00:00Z", periods=5, freq="h")
+    bars = pd.DataFrame(
+        [
+            {"timestamp": ts, "symbol": "BTCUSD", "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0}
+            for ts in timestamps
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {"timestamp": ts, "symbol": "BTCUSD", "buy_price": 100.0, "sell_price": 101.0, "buy_amount": 0.0, "sell_amount": 0.0}
+            for ts in timestamps
+        ]
+    )
+
+    sim = HourlyTraderMarketSimulator(
+        HourlyTraderSimulationConfig(
+            initial_cash=1000.0,
+            allocation_pct=None,
+            decision_lag_bars=1,
+            fee_by_symbol={"BTCUSD": 0.0},
+            enforce_market_hours=False,
+            early_stop_min_periods=3,
+            early_stop_pnl_vs_drawdown_multiple=1.0,
+        )
+    )
+    result = sim.run(bars, actions)
+
+    assert result.terminated_early is True
+    assert len(result.per_hour) == 3
+    assert "pnl_abs=0.00" in (result.termination_reason or "")
+    assert result.metrics["terminated_early"] is True
+
+
 def test_hourly_trader_simulator_max_hold_places_forced_exit_order() -> None:
     ts0 = pd.Timestamp("2026-01-01T00:00:00Z")
     ts1 = ts0 + pd.Timedelta(hours=1)

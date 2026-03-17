@@ -20,6 +20,7 @@ from src.hourly_trader_utils import (
     build_order_intents,
     build_plan_from_action,
     ensure_valid_levels,
+    is_entry_within_fill_distance_bps,
 )
 from src.hourly_order_reconcile import orders_to_cancel_for_live_symbol
 from src.hourly_data_refresh import HourlyDataRefresher
@@ -270,6 +271,76 @@ def _reconcile_live_symbol_orders(
     return [order for order in symbol_orders if _order_identity(order) not in cancelled_ids]
 
 
+def _filter_entry_intents_by_book_proximity(
+    symbol: str,
+    intents: Sequence[OrderIntent],
+    *,
+    max_entry_distance_bps: Optional[float],
+) -> list[OrderIntent]:
+    try:
+        threshold_bps = None if max_entry_distance_bps is None else float(max_entry_distance_bps)
+    except (TypeError, ValueError):
+        threshold_bps = None
+    if threshold_bps is None or threshold_bps <= 0.0:
+        return list(intents)
+
+    if not any(intent.kind == "entry" and float(intent.qty) > 0.0 for intent in intents):
+        return list(intents)
+
+    try:
+        quote = alpaca_wrapper.latest_data(symbol)
+        bid_price = float(getattr(quote, "bid_price", 0.0) or 0.0)
+        ask_price = float(getattr(quote, "ask_price", 0.0) or 0.0)
+    except Exception as exc:
+        logger.warning(
+            "Skipping entry intents for %s because live quote lookup failed under near-book gate: %s",
+            symbol,
+            exc,
+        )
+        return [intent for intent in intents if intent.kind != "entry"]
+
+    filtered: list[OrderIntent] = []
+    for intent in intents:
+        if intent.kind != "entry":
+            filtered.append(intent)
+            continue
+
+        allow_entry, distance_bps = is_entry_within_fill_distance_bps(
+            intent.side,
+            float(intent.limit_price),
+            max_distance_bps=threshold_bps,
+            bid_price=bid_price,
+            ask_price=ask_price,
+        )
+        if allow_entry:
+            filtered.append(intent)
+            continue
+
+        if distance_bps is None:
+            logger.info(
+                "%s skipping %s entry qty=%.6f @ %.4f because book distance is unavailable (bid=%.4f ask=%.4f)",
+                symbol,
+                intent.side,
+                float(intent.qty),
+                float(intent.limit_price),
+                bid_price,
+                ask_price,
+            )
+            continue
+
+        logger.info(
+            "%s skipping %s entry qty=%.6f @ %.4f because book distance %.2f bps exceeds %.2f bps (bid=%.4f ask=%.4f)",
+            symbol,
+            intent.side,
+            float(intent.qty),
+            float(intent.limit_price),
+            float(distance_bps),
+            float(threshold_bps),
+            bid_price,
+            ask_price,
+        )
+
+    return filtered
 
 
 def _run_cycle(
@@ -311,6 +382,7 @@ def _run_cycle(
     exit_only_symbols: Sequence[str],
     allow_position_adds: bool,
     always_full_exit: bool,
+    entry_near_book_bps: Optional[float],
     dry_run: bool,
 ) -> None:
     symbols_list = [str(sym).upper() for sym in symbols]
@@ -424,6 +496,11 @@ def _run_cycle(
             allow_position_adds=bool(allow_position_adds),
             always_full_exit=bool(always_full_exit),
         )
+        intents = _filter_entry_intents_by_book_proximity(
+            symbol,
+            intents,
+            max_entry_distance_bps=entry_near_book_bps,
+        )
         if exit_only:
             logger.info("Exit-only mode for %s: %d intent(s)", symbol, len(intents))
 
@@ -532,6 +609,12 @@ def main() -> None:
         help="Respect model sell_amount/buy_amount for partial exits when a position is open.",
     )
     parser.set_defaults(always_full_exit=True)
+    parser.add_argument(
+        "--entry-near-book-bps",
+        type=float,
+        default=25.0,
+        help="Only stage new entry orders when the live book is within this many bps of the limit price (default: 25).",
+    )
     parser.add_argument("--device", default=None, help="Override device (cuda/cuda:0).")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--buffer-seconds", type=int, default=30)
@@ -635,6 +718,7 @@ def main() -> None:
             exit_only_symbols=exit_only_symbols,
             allow_position_adds=bool(args.allow_position_adds),
             always_full_exit=bool(args.always_full_exit),
+            entry_near_book_bps=args.entry_near_book_bps,
             dry_run=args.dry_run,
         )
         if args.once:

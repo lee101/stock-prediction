@@ -25,6 +25,15 @@ class Chronos2AggregationSpec:
         return self.sample_count and self.sample_count > 1
 
 
+@dataclass(frozen=True)
+class RepairedForecastOHLC:
+    close_p10: float
+    close_p50: float
+    close_p90: float
+    high_p50: float
+    low_p50: float
+
+
 class ColumnScaler:
     """Column-wise scaler that can be inverted (currently supports mean/std)."""
 
@@ -146,3 +155,49 @@ def aggregate_quantile_forecasts(
 def chronos_rng(seed_value: int) -> np.random.Generator:
     seed = seed_value % (2**32)
     return np.random.default_rng(seed)
+
+
+def repair_forecast_ohlc(
+    *,
+    last_close: float,
+    close_p50: Optional[float],
+    close_p10: Optional[float] = None,
+    close_p90: Optional[float] = None,
+    high_p50: Optional[float] = None,
+    low_p50: Optional[float] = None,
+) -> RepairedForecastOHLC:
+    try:
+        base_close_value = float(last_close)
+    except (TypeError, ValueError):
+        base_close_value = 0.0
+    base_close = base_close_value if math.isfinite(base_close_value) and base_close_value > 0.0 else 1.0
+
+    def _sanitize(value: Optional[float], fallback: float) -> float:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return float(fallback)
+        if not math.isfinite(numeric) or numeric <= 0.0:
+            return float(fallback)
+        return float(numeric)
+
+    repaired_close_p50 = _sanitize(close_p50, base_close)
+    repaired_close_p10 = _sanitize(close_p10, repaired_close_p50)
+    repaired_close_p90 = _sanitize(close_p90, repaired_close_p50)
+    repaired_low_p50 = _sanitize(low_p50, min(base_close, repaired_close_p50))
+    repaired_high_p50 = _sanitize(high_p50, max(base_close, repaired_close_p50))
+
+    floor = max(min(base_close, repaired_close_p50) * 1e-6, 1e-8)
+    repaired_close_p10 = max(floor, min(repaired_close_p10, repaired_close_p50))
+    repaired_close_p90 = max(repaired_close_p50, repaired_close_p90)
+
+    repaired_low_p50 = max(floor, min(repaired_low_p50, repaired_close_p50, repaired_high_p50))
+    repaired_high_p50 = max(repaired_high_p50, repaired_close_p50, repaired_low_p50)
+
+    return RepairedForecastOHLC(
+        close_p10=float(repaired_close_p10),
+        close_p50=float(repaired_close_p50),
+        close_p90=float(repaired_close_p90),
+        high_p50=float(repaired_high_p50),
+        low_p50=float(repaired_low_p50),
+    )

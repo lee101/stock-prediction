@@ -42,9 +42,10 @@ class AlpacaHourlyDataModule:
             self.feature_columns = tuple(config.feature_columns)
         self.primary_horizon = int(config.forecast_horizons[0])
         self.frame = self._prepare_frame()
-        if len(self.frame) < config.min_history_hours:
+        required_history = _effective_min_history_bars(config.symbol, config.min_history_hours)
+        if len(self.frame) < required_history:
             raise ValueError(
-                f"Insufficient hourly history ({len(self.frame)} rows, minimum {config.min_history_hours})."
+                f"Insufficient hourly history ({len(self.frame)} rows, minimum {required_history})."
             )
         val_hours = int(max(0, config.validation_days) * 24)
         if val_hours > 0 and len(self.frame) > (val_hours + config.sequence_length):
@@ -142,9 +143,11 @@ class AlpacaHourlyDataModule:
         frame = pd.read_csv(path)
         frame.columns = [col.lower() for col in frame.columns]
         frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
-        if "symbol" not in frame.columns:
-            frame["symbol"] = self.config.symbol.upper()
-        frame["symbol"] = frame["symbol"].astype(str).str.upper()
+        # Some historical exports mix venue aliases inside a single symbol file
+        # (for example BTCUSDT rows stored in BTCUSD.csv). Once the file has been
+        # selected for a specific symbol, treat every row as that requested symbol
+        # so forecast joins and downstream constraints stay aligned.
+        frame["symbol"] = self.config.symbol.upper()
         cols = ["timestamp", "symbol", "open", "high", "low", "close", "volume"]
         return frame[cols].sort_values("timestamp").reset_index(drop=True)
 
@@ -307,6 +310,16 @@ class AlpacaMultiSymbolDataModule:
 
 
 # ------------------------------------------------------------------
+
+
+def _effective_min_history_bars(symbol: str, min_history_hours: int) -> int:
+    required = max(int(min_history_hours or 0), 0)
+    if required <= 0:
+        return 0
+    if is_crypto_symbol(symbol):
+        return required
+    # Regular-hour stock files carry about 7 hourly bars per trading day, not 24.
+    return max(1, int(math.ceil(required * (7.0 / 24.0))))
 
 
 def _infer_periods_per_year(timestamps: Iterable[pd.Timestamp], asset_class: str) -> float:

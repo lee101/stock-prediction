@@ -4,7 +4,9 @@ import argparse
 import json
 import math
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional, Sequence, Tuple
 
 import pandas as pd
@@ -12,6 +14,7 @@ import torch
 
 from binanceneural.inference import generate_actions_from_frame
 from binanceneural.model import align_state_dict_input_dim, build_policy, policy_config_from_payload
+from src.allocation_utils import allocation_usd_for_symbol
 from src.symbol_utils import is_crypto_symbol
 from src.torch_device_utils import require_cuda as require_cuda_device
 from src.torch_load_utils import torch_load_compat
@@ -119,6 +122,278 @@ def _coerce_ts(value: object) -> pd.Timestamp:
     if pd.isna(ts):
         raise ValueError(f"Invalid timestamp value: {value!r}")
     return pd.Timestamp(ts)
+
+
+@dataclass(frozen=True)
+class SimulationScenario:
+    name: str
+    initial_cash: float
+    initial_positions: dict[str, float]
+    initial_open_orders: tuple[OpenOrder, ...] = ()
+
+
+def _first_close_by_symbol(bars: pd.DataFrame) -> dict[str, float]:
+    if bars.empty:
+        return {}
+    frame = bars.copy()
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
+    frame["symbol"] = frame["symbol"].astype(str).str.upper()
+    frame = frame.sort_values(["timestamp", "symbol"]).drop_duplicates(subset=["symbol"], keep="first")
+    closes: dict[str, float] = {}
+    for row in frame.itertuples(index=False):
+        close_price = _coerce_float(getattr(row, "close", 0.0), default=0.0)
+        if close_price <= 0.0:
+            continue
+        closes[str(row.symbol).upper()] = close_price
+    return closes
+
+
+def _seed_notional_for_symbol(
+    symbol: str,
+    *,
+    initial_cash: float,
+    allocation_usd: Optional[float],
+    allocation_pct: Optional[float],
+    allocation_mode: str,
+    symbols_count: int,
+) -> float:
+    account_view = SimpleNamespace(
+        cash=float(initial_cash),
+        equity=float(initial_cash),
+        buying_power=float(initial_cash),
+    )
+    allocation = allocation_usd_for_symbol(
+        account_view,
+        symbol=symbol,
+        allocation_usd=allocation_usd,
+        allocation_pct=allocation_pct,
+        allocation_mode=allocation_mode,
+        symbols_count=max(1, int(symbols_count)),
+        prefer_cash_for_crypto=True,
+    )
+    if allocation is not None and allocation > 0.0:
+        return float(allocation)
+    return max(0.0, float(initial_cash) / max(1, int(symbols_count)))
+
+
+def _scenario_positions_for_symbols(
+    symbols: Sequence[str],
+    close_by_symbol: Mapping[str, float],
+    *,
+    initial_cash: float,
+    allocation_usd: Optional[float],
+    allocation_pct: Optional[float],
+    allocation_mode: str,
+    side_sign: float,
+) -> dict[str, float]:
+    positions: dict[str, float] = {}
+    symbols_count = len(symbols)
+    for symbol in symbols:
+        close_price = _coerce_float(close_by_symbol.get(symbol), default=0.0)
+        if close_price <= 0.0:
+            continue
+        seed_notional = _seed_notional_for_symbol(
+            symbol,
+            initial_cash=initial_cash,
+            allocation_usd=allocation_usd,
+            allocation_pct=allocation_pct,
+            allocation_mode=allocation_mode,
+            symbols_count=symbols_count,
+        )
+        if seed_notional <= 0.0:
+            continue
+        positions[symbol] = float(side_sign) * (seed_notional / close_price)
+    return positions
+
+
+def _add_unique_scenario(
+    scenarios: list[SimulationScenario],
+    seen: set[tuple[tuple[tuple[str, float], ...], tuple[tuple[str, str, float, float, str], ...], float]],
+    scenario: SimulationScenario,
+) -> None:
+    positions_key = tuple(sorted((str(symbol).upper(), float(qty)) for symbol, qty in scenario.initial_positions.items()))
+    orders_key = tuple(
+        sorted(
+            (
+                str(order.symbol).upper(),
+                str(order.side).lower(),
+                float(order.qty),
+                float(order.limit_price),
+                str(order.kind).lower(),
+            )
+            for order in scenario.initial_open_orders
+        )
+    )
+    key = (positions_key, orders_key, float(scenario.initial_cash))
+    if key in seen:
+        return
+    seen.add(key)
+    scenarios.append(scenario)
+
+
+def _build_starting_position_scenarios(
+    *,
+    bars: pd.DataFrame,
+    symbols: Sequence[str],
+    initial_cash: float,
+    allocation_usd: Optional[float],
+    allocation_pct: Optional[float],
+    allocation_mode: str,
+    allow_short: bool,
+    initial_positions: Optional[Mapping[str, float]] = None,
+    initial_open_orders: Optional[Sequence[OpenOrder]] = None,
+    symbol_limit: int = 3,
+) -> list[SimulationScenario]:
+    normalized_symbols = [str(symbol).upper() for symbol in symbols]
+    close_by_symbol = _first_close_by_symbol(bars)
+    seed_symbols = [symbol for symbol in normalized_symbols if symbol in close_by_symbol]
+    if symbol_limit > 0:
+        seed_symbols = seed_symbols[: int(symbol_limit)]
+
+    scenarios: list[SimulationScenario] = []
+    seen: set[tuple[tuple[tuple[str, float], ...], tuple[tuple[str, str, float, float, str], ...], float]] = set()
+
+    _add_unique_scenario(
+        scenarios,
+        seen,
+        SimulationScenario(
+            name="flat",
+            initial_cash=float(initial_cash),
+            initial_positions={},
+        ),
+    )
+
+    provided_positions = {
+        _normalize_symbol(symbol): float(qty)
+        for symbol, qty in (initial_positions or {}).items()
+        if _normalize_symbol(symbol)
+    }
+    provided_orders = tuple(initial_open_orders or ())
+    if provided_positions or provided_orders:
+        _add_unique_scenario(
+            scenarios,
+            seen,
+            SimulationScenario(
+                name="provided_state",
+                initial_cash=float(initial_cash),
+                initial_positions=provided_positions,
+                initial_open_orders=provided_orders,
+            ),
+        )
+
+    if not seed_symbols:
+        return scenarios
+
+    basket_long = _scenario_positions_for_symbols(
+        seed_symbols,
+        close_by_symbol,
+        initial_cash=initial_cash,
+        allocation_usd=allocation_usd,
+        allocation_pct=allocation_pct,
+        allocation_mode=allocation_mode,
+        side_sign=1.0,
+    )
+    if basket_long:
+        _add_unique_scenario(
+            scenarios,
+            seen,
+            SimulationScenario(
+                name="basket_long",
+                initial_cash=float(initial_cash),
+                initial_positions=basket_long,
+            ),
+        )
+
+    for symbol in seed_symbols:
+        single_long = _scenario_positions_for_symbols(
+            [symbol],
+            close_by_symbol,
+            initial_cash=initial_cash,
+            allocation_usd=allocation_usd,
+            allocation_pct=allocation_pct,
+            allocation_mode=allocation_mode,
+            side_sign=1.0,
+        )
+        if single_long:
+            _add_unique_scenario(
+                scenarios,
+                seen,
+                SimulationScenario(
+                    name=f"long_{symbol}",
+                    initial_cash=float(initial_cash),
+                    initial_positions=single_long,
+                ),
+            )
+
+    if not allow_short:
+        return scenarios
+
+    basket_short = _scenario_positions_for_symbols(
+        seed_symbols,
+        close_by_symbol,
+        initial_cash=initial_cash,
+        allocation_usd=allocation_usd,
+        allocation_pct=allocation_pct,
+        allocation_mode=allocation_mode,
+        side_sign=-1.0,
+    )
+    if basket_short:
+        _add_unique_scenario(
+            scenarios,
+            seen,
+            SimulationScenario(
+                name="basket_short",
+                initial_cash=float(initial_cash),
+                initial_positions=basket_short,
+            ),
+        )
+
+    for symbol in seed_symbols:
+        single_short = _scenario_positions_for_symbols(
+            [symbol],
+            close_by_symbol,
+            initial_cash=initial_cash,
+            allocation_usd=allocation_usd,
+            allocation_pct=allocation_pct,
+            allocation_mode=allocation_mode,
+            side_sign=-1.0,
+        )
+        if single_short:
+            _add_unique_scenario(
+                scenarios,
+                seen,
+                SimulationScenario(
+                    name=f"short_{symbol}",
+                    initial_cash=float(initial_cash),
+                    initial_positions=single_short,
+                ),
+            )
+
+    return scenarios
+
+
+def _summarize_scenario_results(results: Sequence[Mapping[str, object]]) -> dict[str, object]:
+    serialized = [dict(result) for result in results]
+    if not serialized:
+        return {"scenario_count": 0, "best_scenario": None, "scenarios": []}
+
+    def _score(item: Mapping[str, object]) -> tuple[float, float, float]:
+        metrics = item.get("metrics", {})
+        if not isinstance(metrics, Mapping):
+            return (float("-inf"), float("-inf"), float("-inf"))
+        sortino = _coerce_float(metrics.get("sortino"), default=float("-inf"))
+        total_return = _coerce_float(metrics.get("total_return"), default=float("-inf"))
+        max_drawdown = _coerce_float(metrics.get("max_drawdown"), default=float("-inf"))
+        return (sortino, total_return, max_drawdown)
+
+    ranked = sorted(serialized, key=_score, reverse=True)
+    best = ranked[0]
+    return {
+        "scenario_count": len(ranked),
+        "best_scenario": best.get("scenario"),
+        "best_metrics": best.get("metrics", {}),
+        "scenarios": ranked,
+    }
 
 
 def _load_initial_state(path: Path) -> tuple[float, dict[str, float], list[OpenOrder]]:
@@ -229,6 +504,11 @@ def main() -> None:
         help="Require bar to trade through limit by this many bps before fill (realism control, default: 5).",
     )
     parser.add_argument(
+        "--allow-short",
+        action="store_true",
+        help="Allow short entries in the simulator and include short seeded scenarios for multi-start runs.",
+    )
+    parser.add_argument(
         "--allow-position-adds",
         action="store_true",
         help="Allow same-side add orders while already in a position (legacy behavior).",
@@ -273,9 +553,54 @@ def main() -> None:
         default=None,
         help="Optional JSON file containing seeded initial cash, positions, and open orders for replay parity.",
     )
+    parser.add_argument(
+        "--multi-start",
+        action="store_true",
+        help="Evaluate flat plus seeded starting-position scenarios instead of a single starting state.",
+    )
+    parser.add_argument(
+        "--starting-position-symbol-limit",
+        type=int,
+        default=3,
+        help="Maximum number of symbols to use when generating seeded starting-position scenarios (default: 3).",
+    )
+    parser.add_argument(
+        "--entry-near-book-bps",
+        type=float,
+        default=25.0,
+        help="Require entry limits to be within this many bps of the current bar close before placing them (default: 25).",
+    )
+    parser.add_argument(
+        "--early-stop-min-periods",
+        type=int,
+        default=None,
+        help="If set, stop a scenario once it has run this many periods and PnL still does not beat drawdown.",
+    )
+    parser.add_argument(
+        "--early-stop-pnl-vs-drawdown-multiple",
+        type=float,
+        default=1.0,
+        help="PnL must exceed this multiple of absolute max drawdown to continue once early-stop checks begin.",
+    )
+    parser.add_argument(
+        "--robust-60d",
+        action="store_true",
+        help="Shortcut for a 60-day multi-start evaluation with the 30-period PnL-vs-drawdown early-stop enabled.",
+    )
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--device", default=None, help="Override device (cuda/cuda:0).")
     args = parser.parse_args()
+
+    eval_days = args.eval_days
+    eval_hours_arg = args.eval_hours
+    multi_start = bool(args.multi_start)
+    early_stop_min_periods = args.early_stop_min_periods
+    if args.robust_60d:
+        if eval_days is None and eval_hours_arg is None:
+            eval_days = 60.0
+        multi_start = True
+        if early_stop_min_periods is None:
+            early_stop_min_periods = 30
 
     symbols = _parse_symbols(args.symbols)
     forecast_horizons = tuple(int(x) for x in str(args.forecast_horizons).split(",") if str(x).strip())
@@ -342,10 +667,10 @@ def main() -> None:
         raise RuntimeError("Failed to infer a common ts_end from loaded frames.")
 
     eval_hours = 0.0
-    if args.eval_days:
-        eval_hours = max(eval_hours, float(args.eval_days) * 24.0)
-    if args.eval_hours:
-        eval_hours = max(eval_hours, float(args.eval_hours))
+    if eval_days:
+        eval_hours = max(eval_hours, float(eval_days) * 24.0)
+    if eval_hours_arg:
+        eval_hours = max(eval_hours, float(eval_hours_arg))
     ts_start_common = None
     if eval_hours > 0:
         ts_start_common = ts_end_common - pd.Timedelta(hours=eval_hours)
@@ -404,43 +729,105 @@ def main() -> None:
     actions_all = pd.concat(all_actions, ignore_index=True)
 
     initial_cash = float(args.initial_cash)
-    initial_positions: Optional[dict[str, float]] = None
-    initial_open_orders: Optional[list[OpenOrder]] = None
+    initial_positions: dict[str, float] = {}
+    initial_open_orders: list[OpenOrder] = []
     if args.initial_state:
         initial_cash, initial_positions, initial_open_orders = _load_initial_state(Path(args.initial_state))
-
-    sim = HourlyTraderMarketSimulator(
-        HourlyTraderSimulationConfig(
-            initial_cash=float(initial_cash),
-            initial_positions=initial_positions,
-            initial_open_orders=initial_open_orders,
-            allocation_usd=float(args.allocation_usd) if args.allocation_usd is not None else None,
-            allocation_pct=float(args.allocation_pct) if args.allocation_pct is not None else None,
-            allocation_mode=str(args.allocation_mode),
-            intensity_scale=float(args.intensity_scale),
-            price_offset_pct=float(args.price_offset_pct),
-            min_gap_pct=float(args.min_gap_pct),
-            fill_buffer_bps=float(args.fill_buffer_bps),
-            allow_position_adds=bool(args.allow_position_adds),
-            always_full_exit=bool(args.always_full_exit),
-            decision_lag_bars=int(args.decision_lag_bars),
-            cancel_ack_delay_bars=int(args.cancel_ack_delay_bars),
-            partial_fill_on_touch=bool(args.partial_fill_on_touch),
-            symbols=[s.upper() for s in symbols],
-        )
-    )
-    result = sim.run(bars_all, actions_all)
-    print(json.dumps(result.metrics, indent=2))
 
     if args.output_dir:
         out_dir = Path(args.output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "bars.csv").write_text(bars_all.to_csv(index=False))
         (out_dir / "actions.csv").write_text(actions_all.to_csv(index=False))
-        (out_dir / "per_hour.csv").write_text(result.per_hour.to_csv(index=False))
-        fills_rows = [f.__dict__ for f in result.fills]
-        (out_dir / "fills.csv").write_text(pd.DataFrame(fills_rows).to_csv(index=False))
-        (out_dir / "metrics.json").write_text(json.dumps(result.metrics, indent=2))
+
+    allocation_usd = float(args.allocation_usd) if args.allocation_usd is not None else None
+    allocation_pct = float(args.allocation_pct) if args.allocation_pct is not None else None
+    scenario_configs = (
+        _build_starting_position_scenarios(
+            bars=bars_all,
+            symbols=symbols,
+            initial_cash=float(initial_cash),
+            allocation_usd=allocation_usd,
+            allocation_pct=allocation_pct,
+            allocation_mode=str(args.allocation_mode),
+            allow_short=bool(args.allow_short),
+            initial_positions=initial_positions,
+            initial_open_orders=initial_open_orders,
+            symbol_limit=max(0, int(args.starting_position_symbol_limit)),
+        )
+        if multi_start
+        else [
+            SimulationScenario(
+                name="provided_state" if (initial_positions or initial_open_orders) else "flat",
+                initial_cash=float(initial_cash),
+                initial_positions=dict(initial_positions),
+                initial_open_orders=tuple(initial_open_orders),
+            )
+        ]
+    )
+
+    scenario_results: list[dict[str, object]] = []
+    single_result = None
+    for scenario in scenario_configs:
+        sim = HourlyTraderMarketSimulator(
+            HourlyTraderSimulationConfig(
+                initial_cash=float(scenario.initial_cash),
+                initial_positions=dict(scenario.initial_positions),
+                initial_open_orders=list(scenario.initial_open_orders),
+                allocation_usd=allocation_usd,
+                allocation_pct=allocation_pct,
+                allocation_mode=str(args.allocation_mode),
+                intensity_scale=float(args.intensity_scale),
+                price_offset_pct=float(args.price_offset_pct),
+                min_gap_pct=float(args.min_gap_pct),
+                fill_buffer_bps=float(args.fill_buffer_bps),
+                allow_short=bool(args.allow_short),
+                allow_position_adds=bool(args.allow_position_adds),
+                always_full_exit=bool(args.always_full_exit),
+                decision_lag_bars=int(args.decision_lag_bars),
+                cancel_ack_delay_bars=int(args.cancel_ack_delay_bars),
+                partial_fill_on_touch=bool(args.partial_fill_on_touch),
+                entry_near_book_bps=float(args.entry_near_book_bps) if args.entry_near_book_bps is not None else None,
+                early_stop_min_periods=early_stop_min_periods,
+                early_stop_pnl_vs_drawdown_multiple=float(args.early_stop_pnl_vs_drawdown_multiple),
+                symbols=[s.upper() for s in symbols],
+            )
+        )
+        result = sim.run(bars_all, actions_all)
+        if len(scenario_configs) == 1:
+            single_result = result
+        scenario_results.append(
+            {
+                "scenario": scenario.name,
+                "initial_cash": float(scenario.initial_cash),
+                "initial_positions": {k: float(v) for k, v in scenario.initial_positions.items()},
+                "initial_open_orders": int(len(scenario.initial_open_orders)),
+                "metrics": dict(result.metrics),
+                "terminated_early": bool(result.terminated_early),
+                "termination_reason": result.termination_reason,
+            }
+        )
+
+        if args.output_dir:
+            scenario_dir = out_dir / scenario.name
+            scenario_dir.mkdir(parents=True, exist_ok=True)
+            (scenario_dir / "per_hour.csv").write_text(result.per_hour.to_csv(index=False))
+            fills_rows = [f.__dict__ for f in result.fills]
+            (scenario_dir / "fills.csv").write_text(pd.DataFrame(fills_rows).to_csv(index=False))
+            (scenario_dir / "metrics.json").write_text(json.dumps(result.metrics, indent=2))
+
+    if len(scenario_results) == 1 and single_result is not None:
+        print(json.dumps(single_result.metrics, indent=2))
+        if args.output_dir:
+            (out_dir / "per_hour.csv").write_text(single_result.per_hour.to_csv(index=False))
+            fills_rows = [f.__dict__ for f in single_result.fills]
+            (out_dir / "fills.csv").write_text(pd.DataFrame(fills_rows).to_csv(index=False))
+            (out_dir / "metrics.json").write_text(json.dumps(single_result.metrics, indent=2))
+    else:
+        summary = _summarize_scenario_results(scenario_results)
+        print(json.dumps(summary, indent=2))
+        if args.output_dir:
+            (out_dir / "scenario_summary.json").write_text(json.dumps(summary, indent=2))
 
 
 if __name__ == "__main__":

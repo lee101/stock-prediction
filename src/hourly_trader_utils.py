@@ -112,6 +112,104 @@ def ensure_valid_levels(buy_price: float, sell_price: float, *, min_gap_pct: flo
     return float(buy_price), float(sell_price)
 
 
+def entry_fill_reference_price(
+    side: str,
+    *,
+    bid_price: Optional[float] = None,
+    ask_price: Optional[float] = None,
+    reference_price: Optional[float] = None,
+) -> Optional[float]:
+    side_norm = str(side).lower()
+    candidates: tuple[Optional[float], ...]
+    if side_norm == "buy":
+        candidates = (ask_price, bid_price, reference_price)
+    elif side_norm == "sell":
+        candidates = (bid_price, ask_price, reference_price)
+    else:
+        return None
+
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        try:
+            numeric = float(candidate)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(numeric) and numeric > 0.0:
+            return numeric
+    return None
+
+
+def entry_fill_distance_bps(
+    side: str,
+    limit_price: float,
+    *,
+    bid_price: Optional[float] = None,
+    ask_price: Optional[float] = None,
+    reference_price: Optional[float] = None,
+) -> Optional[float]:
+    try:
+        limit = float(limit_price)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(limit) or limit <= 0.0:
+        return None
+
+    fill_reference = entry_fill_reference_price(
+        side,
+        bid_price=bid_price,
+        ask_price=ask_price,
+        reference_price=reference_price,
+    )
+    if fill_reference is None:
+        return None
+
+    side_norm = str(side).lower()
+    if side_norm == "buy":
+        if fill_reference <= limit:
+            return 0.0
+        distance_pct = (fill_reference - limit) / limit
+    elif side_norm == "sell":
+        if fill_reference >= limit:
+            return 0.0
+        distance_pct = (limit - fill_reference) / limit
+    else:
+        return None
+    return float(distance_pct * 10_000.0)
+
+
+def is_entry_within_fill_distance_bps(
+    side: str,
+    limit_price: float,
+    *,
+    max_distance_bps: Optional[float],
+    bid_price: Optional[float] = None,
+    ask_price: Optional[float] = None,
+    reference_price: Optional[float] = None,
+) -> tuple[bool, Optional[float]]:
+    if max_distance_bps is None:
+        return True, None
+    try:
+        threshold_bps = float(max_distance_bps)
+    except (TypeError, ValueError):
+        return False, None
+    if not math.isfinite(threshold_bps):
+        return False, None
+    if threshold_bps <= 0.0:
+        return True, None
+
+    distance_bps = entry_fill_distance_bps(
+        side,
+        limit_price,
+        bid_price=bid_price,
+        ask_price=ask_price,
+        reference_price=reference_price,
+    )
+    if distance_bps is None:
+        return False, None
+    return distance_bps <= threshold_bps, distance_bps
+
+
 def build_order_intents(
     plan: TradingPlan,
     *,
@@ -288,5 +386,8 @@ __all__ = [
     "build_plan_from_action",
     "directional_entry_amount",
     "entry_intensity_fraction",
+    "entry_fill_distance_bps",
+    "entry_fill_reference_price",
     "ensure_valid_levels",
+    "is_entry_within_fill_distance_bps",
 ]

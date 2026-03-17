@@ -8,6 +8,7 @@ import pytest
 
 from newnanoalpacahourlyexp.trade_alpaca_hourly import (
     _allocation_usd,
+    _filter_entry_intents_by_book_proximity,
     _parse_checkpoint_map,
     _parse_horizon_map,
     _parse_symbols,
@@ -18,8 +19,10 @@ from src.hourly_trader_utils import (
     TradingPlan,
     build_order_intents,
     directional_entry_amount,
+    entry_fill_distance_bps,
     entry_intensity_fraction,
     ensure_valid_levels,
+    is_entry_within_fill_distance_bps,
 )
 
 
@@ -57,6 +60,22 @@ def test_ensure_valid_levels_rejects_nonpositive():
 def test_ensure_valid_levels_enforces_gap():
     buy, sell = ensure_valid_levels(100.0, 99.0, min_gap_pct=0.01)
     assert sell > buy
+
+
+def test_entry_fill_distance_bps_uses_ask_for_buy_entry():
+    assert entry_fill_distance_bps("buy", 100.0, ask_price=100.2, bid_price=100.0) == pytest.approx(20.0)
+
+
+def test_is_entry_within_fill_distance_bps_allows_crossed_buy():
+    allowed, distance_bps = is_entry_within_fill_distance_bps(
+        "buy",
+        100.0,
+        max_distance_bps=25.0,
+        ask_price=99.9,
+        bid_price=99.8,
+    )
+    assert allowed is True
+    assert distance_bps == pytest.approx(0.0)
 
 
 def test_directional_entry_amount_uses_sell_amount_for_short():
@@ -485,3 +504,39 @@ def test_reconcile_live_symbol_orders_keeps_matching_entry_and_exit_pair(monkeyp
 
     assert cancelled == []
     assert [str(order.id) for order in remaining] == ["buy-1", "sell-1"]
+
+
+def test_filter_entry_intents_by_book_proximity_keeps_close_entry_and_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "newnanoalpacahourlyexp.trade_alpaca_hourly.alpaca_wrapper.latest_data",
+        lambda symbol: SimpleNamespace(bid_price=99.95, ask_price=100.20),
+    )
+
+    filtered = _filter_entry_intents_by_book_proximity(
+        "ETHUSD",
+        [
+            OrderIntent(side="buy", qty=1.0, limit_price=100.0, kind="entry"),
+            OrderIntent(side="sell", qty=1.0, limit_price=102.0, kind="exit"),
+        ],
+        max_entry_distance_bps=25.0,
+    )
+
+    assert [(intent.kind, intent.side) for intent in filtered] == [("entry", "buy"), ("exit", "sell")]
+
+
+def test_filter_entry_intents_by_book_proximity_drops_far_entry_but_keeps_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "newnanoalpacahourlyexp.trade_alpaca_hourly.alpaca_wrapper.latest_data",
+        lambda symbol: SimpleNamespace(bid_price=99.90, ask_price=100.40),
+    )
+
+    filtered = _filter_entry_intents_by_book_proximity(
+        "ETHUSD",
+        [
+            OrderIntent(side="buy", qty=1.0, limit_price=100.0, kind="entry"),
+            OrderIntent(side="sell", qty=1.0, limit_price=102.0, kind="exit"),
+        ],
+        max_entry_distance_bps=25.0,
+    )
+
+    assert [(intent.kind, intent.side) for intent in filtered] == [("exit", "sell")]
