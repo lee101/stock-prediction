@@ -50,11 +50,13 @@ def test_build_scenario_row_and_annualized_return_pct() -> None:
             "final_equity": 1.2,
             "pnl": 0.2,
         },
+        account_fraction=0.15,
         risk_threshold=0.5,
         confidence_threshold=0.35,
     )
     assert row["return_pct"] == 20.0
     assert row["max_drawdown_pct"] == 3.0
+    assert row["account_fraction"] == 0.15
     assert row["risk_threshold"] == 0.5
     assert row["confidence_threshold"] == 0.35
     assert math.isclose(row["annualized_return_pct"], annualized_return_pct(0.20, 60), rel_tol=0, abs_tol=1e-9)
@@ -64,6 +66,7 @@ def test_summarize_threshold_scenarios_groups_rows() -> None:
     rows = [
         {
             "start_date": "2026-01-01",
+            "account_fraction": 0.15,
             "risk_threshold": 0.5,
             "confidence_threshold": 0.2,
             "return_pct": 5.0,
@@ -76,6 +79,7 @@ def test_summarize_threshold_scenarios_groups_rows() -> None:
         },
         {
             "start_date": "2026-01-21",
+            "account_fraction": 0.15,
             "risk_threshold": 0.5,
             "confidence_threshold": 0.2,
             "return_pct": 4.0,
@@ -88,6 +92,7 @@ def test_summarize_threshold_scenarios_groups_rows() -> None:
         },
         {
             "start_date": "2026-01-01",
+            "account_fraction": 0.25,
             "risk_threshold": 1.0,
             "confidence_threshold": None,
             "return_pct": -1.0,
@@ -103,6 +108,7 @@ def test_summarize_threshold_scenarios_groups_rows() -> None:
     summaries = summarize_threshold_scenarios(rows)
 
     assert len(summaries) == 2
+    assert summaries[0]["account_fraction"] == 0.15
     assert summaries[0]["risk_threshold"] == 0.5
     assert summaries[0]["confidence_threshold"] == 0.2
     assert summaries[0]["scenario_count"] == 2
@@ -114,6 +120,7 @@ def test_deployment_config_round_trip_and_resolution(tmp_path: Path) -> None:
     write_deployment_config(
         target,
         checkpoint=tmp_path / "model.pt",
+        account_fraction=0.15,
         risk_threshold=0.75,
         confidence_threshold=0.3,
         symbols=("spy", "qqq"),
@@ -128,12 +135,14 @@ def test_deployment_config_round_trip_and_resolution(tmp_path: Path) -> None:
         deployment_payload=payload,
         checkpoint=None,
         symbols=None,
+        account_fraction=None,
         risk_threshold=None,
         confidence_threshold=None,
     )
 
     assert Path(resolved["checkpoint"]).name == "model.pt"
     assert resolved["symbols"] == ("SPY", "QQQ")
+    assert resolved["account_fraction"] == 0.15
     assert resolved["risk_threshold"] == 0.75
     assert resolved["confidence_threshold"] == 0.3
 
@@ -143,17 +152,20 @@ def test_resolve_deployment_settings_prefers_explicit_overrides() -> None:
         deployment_payload={
             "checkpoint": "/tmp/base.pt",
             "symbols": ["spy"],
+            "account_fraction": 0.2,
             "risk_threshold": 0.25,
             "confidence_threshold": 0.15,
         },
         checkpoint="/tmp/override.pt",
         symbols=("qqq", "iwm"),
+        account_fraction=0.1,
         risk_threshold=0.5,
         confidence_threshold=0.4,
     )
 
     assert resolved["checkpoint"] == "/tmp/override.pt"
     assert resolved["symbols"] == ("QQQ", "IWM")
+    assert resolved["account_fraction"] == 0.1
     assert resolved["risk_threshold"] == 0.5
     assert resolved["confidence_threshold"] == 0.4
 

@@ -103,6 +103,7 @@ def build_scenario_row(
     start_date: str,
     days: int,
     summary: Mapping[str, Any],
+    account_fraction: float | None,
     risk_threshold: float | None,
     confidence_threshold: float | None,
 ) -> dict[str, Any]:
@@ -110,6 +111,7 @@ def build_scenario_row(
     return {
         "start_date": str(start_date),
         "days": int(days),
+        "account_fraction": None if account_fraction is None else float(account_fraction),
         "risk_threshold": None if risk_threshold is None else float(risk_threshold),
         "confidence_threshold": None if confidence_threshold is None else float(confidence_threshold),
         "return_pct": total_return * 100.0,
@@ -129,20 +131,22 @@ def summarize_threshold_scenarios(
     *,
     sortino_clip: float = 10.0,
 ) -> list[dict[str, Any]]:
-    grouped: dict[tuple[float | None, float | None], list[Mapping[str, Any]]] = defaultdict(list)
+    grouped: dict[tuple[float | None, float | None, float | None], list[Mapping[str, Any]]] = defaultdict(list)
     for row in rows:
         key = (
+            None if row.get("account_fraction") is None else float(row["account_fraction"]),
             None if row.get("risk_threshold") is None else float(row["risk_threshold"]),
             None if row.get("confidence_threshold") is None else float(row["confidence_threshold"]),
         )
         grouped[key].append(row)
 
     summaries: list[dict[str, Any]] = []
-    for (risk_threshold, confidence_threshold), group_rows in grouped.items():
+    for (account_fraction, risk_threshold, confidence_threshold), group_rows in grouped.items():
         summary = summarize_scenario_results(group_rows, sortino_clip=sortino_clip)
         goodness_values = np.asarray([float(row.get("goodness_score", 0.0) or 0.0) for row in group_rows], dtype=float)
         summary.update(
             {
+                "account_fraction": account_fraction,
                 "risk_threshold": risk_threshold,
                 "confidence_threshold": confidence_threshold,
                 "scenario_count": len(group_rows),
@@ -203,6 +207,7 @@ def write_deployment_config(
     path: str | Path,
     *,
     checkpoint: str | Path,
+    account_fraction: float | None,
     risk_threshold: float | None,
     confidence_threshold: float | None,
     symbols: Sequence[str],
@@ -213,6 +218,7 @@ def write_deployment_config(
 ) -> Path:
     payload: dict[str, Any] = {
         "checkpoint": str(Path(checkpoint).resolve()),
+        "account_fraction": None if account_fraction is None else float(account_fraction),
         "risk_threshold": None if risk_threshold is None else float(risk_threshold),
         "confidence_threshold": None if confidence_threshold is None else float(confidence_threshold),
         "symbols": [str(symbol).upper() for symbol in symbols],
@@ -240,6 +246,7 @@ def resolve_deployment_settings(
     deployment_payload: Mapping[str, Any] | None,
     checkpoint: str | None = None,
     symbols: Sequence[str] | None = None,
+    account_fraction: float | None = None,
     risk_threshold: float | None = None,
     confidence_threshold: float | None = None,
 ) -> dict[str, Any]:
@@ -253,6 +260,15 @@ def resolve_deployment_settings(
     else:
         resolved_symbols = tuple(str(symbol).upper() for symbol in payload.get("symbols", []) if symbol)
 
+    resolved_account_fraction = (
+        float(account_fraction)
+        if account_fraction is not None
+        else (
+            None
+            if payload.get("account_fraction") is None
+            else float(payload["account_fraction"])
+        )
+    )
     resolved_risk_threshold = (
         float(risk_threshold)
         if risk_threshold is not None
@@ -274,6 +290,7 @@ def resolve_deployment_settings(
     return {
         "checkpoint": str(resolved_checkpoint),
         "symbols": resolved_symbols,
+        "account_fraction": resolved_account_fraction,
         "risk_threshold": resolved_risk_threshold,
         "confidence_threshold": resolved_confidence_threshold,
     }

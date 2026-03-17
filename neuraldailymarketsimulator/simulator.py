@@ -39,6 +39,7 @@ class NeuralDailyMarketSimulator:
         stock_fee: float = 0.0008,  # Match training default (8 bps)
         crypto_fee: float = 0.0008,  # Match training default (8 bps)
         initial_cash: float = 1.0,
+        account_fraction: float | None = None,
         leverage_fee_rate: float = 0.065,
         equity_max_leverage: float = 2.0,
         crypto_max_leverage: float = 1.0,
@@ -53,6 +54,7 @@ class NeuralDailyMarketSimulator:
         self.stock_fee = stock_fee
         self.crypto_fee = crypto_fee
         self.initial_cash = initial_cash
+        self.account_fraction = None if account_fraction is None else max(float(account_fraction), 0.0)
         self.leverage_fee_rate = leverage_fee_rate
         self.daily_leverage_rate = leverage_fee_rate / 365.0
         self.equity_max_leverage = equity_max_leverage
@@ -76,6 +78,20 @@ class NeuralDailyMarketSimulator:
 
         if not self.frames:
             raise ValueError("No symbols have usable historical data for simulation.")
+
+    def _target_trade_qty(
+        self,
+        *,
+        trade_amount: float,
+        current_equity: float,
+        price: float,
+    ) -> float:
+        safe_amount = max(float(trade_amount), 0.0)
+        safe_price = max(float(price), 1e-6)
+        if self.account_fraction is None:
+            return safe_amount
+        target_notional = max(float(current_equity), 0.0) * self.account_fraction * safe_amount
+        return target_notional / safe_price
 
     def _available_dates(self) -> list[pd.Timestamp]:
         union: set[pd.Timestamp] = set()
@@ -157,9 +173,11 @@ class NeuralDailyMarketSimulator:
                     continue
                 buy_price = max(plan.buy_price, 1e-6)
                 sell_price = max(plan.sell_price, 1e-6)
-                # trade_amount is a scaling factor (0-2x for stocks, 0-1x for crypto)
-                # It represents the intensity of the trade, not the actual fraction of equity
-                target_amount = float(plan.trade_amount)
+                target_amount = self._target_trade_qty(
+                    trade_amount=float(plan.trade_amount),
+                    current_equity=current_equity,
+                    price=buy_price,
+                )
                 fee_rate = self.crypto_fee if symbol in self.crypto_symbols else self.stock_fee
                 high = float(row["high"])
                 low = float(row["low"])
@@ -287,6 +305,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start-date", help="Optional ISO start date for the simulation window.")
     parser.add_argument("--days", type=int, default=5)
     parser.add_argument("--initial-cash", type=float, default=1.0)
+    parser.add_argument(
+        "--account-fraction",
+        type=float,
+        default=None,
+        help="Optional live-style notional fraction. When set, trade_amount is treated as an allocation multiplier.",
+    )
     parser.add_argument("--stock-fee", type=float, default=0.0008, help="Per-leg fee rate for stocks (fractional, 8 bps to match training).")
     parser.add_argument(
         "--crypto-fee", type=float, default=0.0008, help="Per-leg fee rate for crypto (fractional, 8 bps)."
@@ -340,6 +364,7 @@ def run_cli_simulation() -> None:
         stock_fee=args.stock_fee,
         crypto_fee=args.crypto_fee,
         initial_cash=args.initial_cash,
+        account_fraction=args.account_fraction,
     )
     results, summary = simulator.run(start_date=args.start_date, days=args.days)
     print(f"{'Date':<15} {'Equity':>12} {'Cash':>12} {'Return':>10} {'Leverage':>10} {'LevCost':>10}")

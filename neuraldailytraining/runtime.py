@@ -64,6 +64,7 @@ class DailyTradingRuntime:
         if not isinstance(normalizer, FeatureNormalizer):
             raise ValueError("Checkpoint normalizer is invalid.")
         ckpt_config = _reconstruct_training_config(payload.get("config"))
+        self.training_config = ckpt_config
         self.sequence_length = ckpt_config.sequence_length if ckpt_config else len(feature_columns)
         self.dataset_config = dataset_config or (ckpt_config.dataset if ckpt_config else DailyDatasetConfig())
         self.dataset_config.sequence_length = self.sequence_length
@@ -76,6 +77,9 @@ class DailyTradingRuntime:
             self.risk_threshold = float(max(0.0, inferred))
         else:
             self.risk_threshold = float(max(0.0, risk_threshold))
+        self.account_fraction_for_training = float(
+            max(0.0, getattr(ckpt_config, "account_fraction_for_training", 1.0) if ckpt_config else 1.0)
+        )
         self.confidence_threshold = confidence_threshold if confidence_threshold is None else float(confidence_threshold)
         policy_config = DailyPolicyConfig(
             input_dim=len(self.feature_columns),

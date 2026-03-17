@@ -58,6 +58,7 @@ class DualModeSimulator:
         *,
         maker_fee: float = 0.0008,
         initial_cash: float = 1.0,
+        account_fraction: float | None = None,
         leverage_fee_rate: float = 0.065,
         equity_max_leverage: float = 2.0,
         crypto_max_leverage: float = 1.0,
@@ -67,6 +68,7 @@ class DualModeSimulator:
         self.symbols = [symbol.upper() for symbol in symbols]
         self.maker_fee = maker_fee
         self.initial_cash = initial_cash
+        self.account_fraction = None if account_fraction is None else max(float(account_fraction), 0.0)
         self.leverage_fee_rate = leverage_fee_rate
         self.daily_leverage_rate = leverage_fee_rate / 365.0
         self.equity_max_leverage = equity_max_leverage
@@ -89,6 +91,14 @@ class DualModeSimulator:
 
         if not self.frames:
             raise ValueError("No symbols have usable historical data for simulation.")
+
+    def _target_trade_qty(self, *, trade_amount: float, current_equity: float, price: float) -> float:
+        safe_amount = max(float(trade_amount), 0.0)
+        safe_price = max(float(price), 1e-6)
+        if self.account_fraction is None:
+            return safe_amount
+        target_notional = max(float(current_equity), 0.0) * self.account_fraction * safe_amount
+        return target_notional / safe_price
 
     def _available_dates(self) -> List[pd.Timestamp]:
         union: set[pd.Timestamp] = set()
@@ -216,22 +226,34 @@ class DualModeSimulator:
 
                 buy_price = max(plan.buy_price, 1e-6)
                 sell_price = max(plan.sell_price, 1e-6)
-                target_amount = float(plan.trade_amount)
+                normal_target_qty = self._target_trade_qty(
+                    trade_amount=float(plan.trade_amount),
+                    current_equity=normal_cash + sum(
+                        normal_inventory.get(sym, 0.0) * last_close.get(sym, 0.0) for sym in self.symbols
+                    ),
+                    price=buy_price,
+                )
+                probe_target_qty = self._target_trade_qty(
+                    trade_amount=float(plan.trade_amount),
+                    current_equity=probe_cash + sum(
+                        probe_inventory.get(sym, 0.0) * last_close.get(sym, 0.0) for sym in self.symbols
+                    ),
+                    price=buy_price,
+                )
                 high = float(row["high"])
                 low = float(row["low"])
 
                 # === NORMAL MODE TRADING ===
                 # Buy leg
                 max_affordable = normal_cash / (buy_price * (1.0 + self.maker_fee))
-                normal_buy_qty = min(target_amount, max_affordable)
+                normal_buy_qty = min(normal_target_qty, max_affordable)
                 if low <= buy_price and normal_buy_qty > 0:
                     normal_cash -= normal_buy_qty * buy_price * (1.0 + self.maker_fee)
                     normal_inventory[symbol] += normal_buy_qty
 
                 # Sell leg
-                normal_sellable = min(target_amount, normal_inventory[symbol])
+                normal_sellable = min(normal_target_qty, normal_inventory[symbol])
                 if high >= sell_price and normal_sellable > 0:
-                    entry_price = normal_inventory[symbol] * buy_price  # Approximate
                     exit_value = normal_sellable * sell_price * (1.0 - self.maker_fee)
                     normal_cash += exit_value
                     pnl = exit_value - (normal_sellable * buy_price * (1.0 + self.maker_fee))
@@ -259,11 +281,8 @@ class DualModeSimulator:
                 if should_probe:
                     # Probe mode: cap at probe limit
                     probe_target_notional = min(self.probe_notional_limit, probe_cash * 0.01)
-                    probe_target_qty = probe_target_notional / buy_price
+                    probe_target_qty = probe_target_notional / max(buy_price, 1e-6)
                     probe_trades_today += 1
-                else:
-                    # Normal mode: use model's suggestion
-                    probe_target_qty = target_amount
 
                 # Buy leg
                 probe_max_affordable = probe_cash / (buy_price * (1.0 + self.maker_fee))

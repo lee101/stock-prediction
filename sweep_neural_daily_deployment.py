@@ -50,6 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--window-count", type=int, default=3)
     parser.add_argument("--window-stride-days", type=int, default=20)
     parser.add_argument("--start-date", nargs="*", help="Optional explicit start dates instead of auto recent windows.")
+    parser.add_argument("--account-fractions", default="0.15")
     parser.add_argument("--risk-thresholds", default="0.25,0.5,0.75,1.0")
     parser.add_argument("--confidence-thresholds", default="none,0.2,0.35,0.5")
     parser.add_argument("--stock-fee", type=float, default=0.0008)
@@ -85,6 +86,7 @@ def _resolve_dataset_runtime(
     data_root: str | None,
     forecast_cache: str | None,
     device: str | None,
+    account_fraction: float | None = None,
     risk_threshold: float | None = None,
     confidence_threshold: float | None = None,
 ) -> DailyTradingRuntime:
@@ -121,6 +123,18 @@ def _baseline_checkpoint_from_active(
     if active_link_path.exists() or active_link_path.is_symlink():
         return active_link_path.resolve()
     return None
+
+
+def _load_active_baseline_payload(active_config_path: Path) -> dict[str, Any] | None:
+    if not active_config_path.exists():
+        return None
+    try:
+        payload = load_deployment_config(active_config_path)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
 
 
 def _resolve_start_dates(
@@ -174,6 +188,7 @@ def evaluate_checkpoint_grid(
     confidence_thresholds: tuple[float | None, ...],
     start_dates: tuple[str, ...],
     days: int,
+    account_fractions: tuple[float | None, ...],
     stock_fee: float,
     crypto_fee: float,
     initial_cash: float,
@@ -197,30 +212,34 @@ def evaluate_checkpoint_grid(
         stock_fee=stock_fee,
         crypto_fee=crypto_fee,
         initial_cash=initial_cash,
+        account_fraction=account_fractions[0],
     )
 
-    total_pairs = len(risk_thresholds) * len(confidence_thresholds)
+    total_pairs = len(account_fractions) * len(risk_thresholds) * len(confidence_thresholds)
     pair_index = 0
-    for risk_threshold in risk_thresholds:
-        runtime.risk_threshold = float(risk_threshold or 0.0)
-        for confidence_threshold in confidence_thresholds:
-            pair_index += 1
-            runtime.confidence_threshold = None if confidence_threshold is None else float(confidence_threshold)
-            print(
-                f"  pair {pair_index}/{total_pairs}: risk={runtime.risk_threshold} "
-                f"confidence={runtime.confidence_threshold}"
-            )
-            for start_date in start_dates:
-                _, summary = simulator.run(start_date=start_date, days=days)
-                scenario_rows.append(
-                    build_scenario_row(
-                        start_date=start_date,
-                        days=days,
-                        summary=summary,
-                        risk_threshold=risk_threshold,
-                        confidence_threshold=confidence_threshold,
-                    )
+    for account_fraction in account_fractions:
+        simulator.account_fraction = None if account_fraction is None else float(account_fraction)
+        for risk_threshold in risk_thresholds:
+            runtime.risk_threshold = float(risk_threshold or 0.0)
+            for confidence_threshold in confidence_thresholds:
+                pair_index += 1
+                runtime.confidence_threshold = None if confidence_threshold is None else float(confidence_threshold)
+                print(
+                    f"  pair {pair_index}/{total_pairs}: account_fraction={simulator.account_fraction} "
+                    f"risk={runtime.risk_threshold} confidence={runtime.confidence_threshold}"
                 )
+                for start_date in start_dates:
+                    _, summary = simulator.run(start_date=start_date, days=days)
+                    scenario_rows.append(
+                        build_scenario_row(
+                            start_date=start_date,
+                            days=days,
+                            summary=summary,
+                            account_fraction=account_fraction,
+                            risk_threshold=risk_threshold,
+                            confidence_threshold=confidence_threshold,
+                        )
+                    )
 
     parameter_summaries = summarize_threshold_scenarios(scenario_rows, sortino_clip=sortino_clip)
     if not parameter_summaries:
@@ -254,6 +273,7 @@ def _promote_checkpoint(
     write_deployment_config(
         active_config_path,
         checkpoint=checkpoint_path,
+        account_fraction=best_parameters.get("account_fraction"),
         risk_threshold=best_parameters.get("risk_threshold"),
         confidence_threshold=best_parameters.get("confidence_threshold"),
         symbols=symbols,
@@ -274,10 +294,13 @@ def main() -> int:
 
     risk_thresholds = parse_optional_float_grid(args.risk_thresholds, allow_none=False)
     confidence_thresholds = parse_optional_float_grid(args.confidence_thresholds, allow_none=True)
+    account_fractions = parse_optional_float_grid(args.account_fractions, allow_none=True)
     if not risk_thresholds:
         raise ValueError("At least one risk threshold is required.")
     if not confidence_thresholds:
         raise ValueError("At least one confidence threshold is required.")
+    if not account_fractions:
+        raise ValueError("At least one account fraction is required.")
 
     explicit_symbols = tuple(symbol.upper() for symbol in args.symbols) if args.symbols else None
     reference_checkpoint = candidate_paths[0]
@@ -304,6 +327,7 @@ def main() -> int:
             active_link_path=Path(args.active_link).expanduser(),
         )
     )
+    active_baseline_payload = _load_active_baseline_payload(Path(args.active_config).expanduser())
     evaluation_paths = list(candidate_paths)
     if baseline_checkpoint is not None and baseline_checkpoint not in evaluation_paths:
         evaluation_paths.append(baseline_checkpoint)
@@ -320,6 +344,7 @@ def main() -> int:
             confidence_thresholds=confidence_thresholds,
             start_dates=start_dates,
             days=args.days,
+            account_fractions=account_fractions,
             stock_fee=args.stock_fee,
             crypto_fee=args.crypto_fee,
             initial_cash=args.initial_cash,
@@ -332,20 +357,28 @@ def main() -> int:
             f"{Path(result['checkpoint']).name}: {args.selection_metric}="
             f"{selection_metric_value(best, args.selection_metric):.4f} "
             f"robust={best['robust_score']:.4f} return_p25={best['return_p25_pct']:.2f}% sortino_p25={best['sortino_p25']:.4f} "
-            f"risk={best['risk_threshold']} confidence={best['confidence_threshold']}"
+            f"acct={best.get('account_fraction')} risk={best['risk_threshold']} confidence={best['confidence_threshold']}"
         )
 
     checkpoint_results.sort(key=lambda item: selection_metric_sort_key(item["best_parameters"], args.selection_metric), reverse=True)
 
     best_overall = checkpoint_results[0]
     best_overall_summary = best_overall["best_parameters"]
+    baseline_summary = None
+    if active_baseline_payload is not None:
+        active_checkpoint = active_baseline_payload.get("checkpoint")
+        active_summary = active_baseline_payload.get("summary")
+        if active_checkpoint and active_summary and str(Path(str(active_checkpoint)).resolve()) == str(best_overall["checkpoint"]):
+            baseline_summary = active_summary
     baseline_result = None
-    if baseline_checkpoint is not None:
+    if baseline_summary is None and baseline_checkpoint is not None:
         baseline_result = next((item for item in checkpoint_results if item["checkpoint"] == str(baseline_checkpoint)), None)
+        if baseline_result is not None:
+            baseline_summary = baseline_result["best_parameters"]
 
     promote_decision = should_promote_candidate(
         best_overall_summary,
-        baseline_result["best_parameters"] if baseline_result else None,
+        baseline_summary,
         min_robust_improvement=args.min_robust_improvement,
         min_return_p25_pct=args.min_return_p25_pct,
         min_sortino_p25=args.min_sortino_p25,
@@ -358,9 +391,11 @@ def main() -> int:
         "symbols": list(resolved_symbols),
         "days": int(args.days),
         "start_dates": list(start_dates),
+        "account_fractions": [None if value is None else float(value) for value in account_fractions],
         "risk_thresholds": [None if value is None else float(value) for value in risk_thresholds],
         "confidence_thresholds": [None if value is None else float(value) for value in confidence_thresholds],
         "baseline_checkpoint": str(baseline_checkpoint) if baseline_checkpoint else None,
+        "active_baseline_summary": baseline_summary,
         "best_overall": {
             "checkpoint": best_overall["checkpoint"],
             "best_parameters": best_overall_summary,
@@ -389,6 +424,7 @@ def main() -> int:
                 "days": int(args.days),
                 "stock_fee": float(args.stock_fee),
                 "crypto_fee": float(args.crypto_fee),
+                "account_fractions": [None if value is None else float(value) for value in account_fractions],
                 "baseline_checkpoint": str(baseline_checkpoint) if baseline_checkpoint else None,
                 "selection_metric": args.selection_metric,
             },

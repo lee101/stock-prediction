@@ -188,6 +188,7 @@ def _resolve_runtime_settings(args: argparse.Namespace) -> dict[str, object]:
         deployment_payload=deployment_payload,
         checkpoint=args.checkpoint,
         symbols=args.symbols,
+        account_fraction=args.account_fraction,
         risk_threshold=args.risk_threshold,
         confidence_threshold=args.confidence_threshold,
     )
@@ -382,7 +383,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-days", type=int, default=40)
     parser.add_argument("--device", default=None)
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SECONDS)
-    parser.add_argument("--account-fraction", type=float, default=DEFAULT_ACCOUNT_FRACTION)
+    parser.add_argument("--account-fraction", type=float, default=None)
     parser.add_argument("--min-trade-amount", type=float, default=0.05)
     parser.add_argument("--risk-threshold", type=float, help="Override risk threshold")
     parser.add_argument("--confidence-threshold", type=float, help="Override confidence threshold")
@@ -400,6 +401,7 @@ def main() -> int:
     resolved = _resolve_runtime_settings(args)
     resolved_checkpoint = str(resolved["checkpoint"])
     resolved_symbols = tuple(resolved["symbols"])
+    resolved_account_fraction = resolved["account_fraction"]
     resolved_risk_threshold = resolved["risk_threshold"]
     resolved_confidence_threshold = resolved["confidence_threshold"]
 
@@ -427,6 +429,7 @@ def main() -> int:
 
     symbols = list(resolved_symbols or dataset_cfg.symbols)
     logger.info(f"Trading {len(symbols)} symbols: {', '.join(symbols)}")
+    logger.info(f"Account fraction: {resolved_account_fraction if resolved_account_fraction is not None else DEFAULT_ACCOUNT_FRACTION}")
     logger.info(f"Risk threshold: {runtime.risk_threshold}")
     logger.info(f"Confidence threshold: {runtime.confidence_threshold}")
 
@@ -435,7 +438,7 @@ def main() -> int:
         runtime,
         symbols,
         interval_seconds=args.interval,
-        account_fraction=args.account_fraction,
+        account_fraction=resolved_account_fraction if resolved_account_fraction is not None else DEFAULT_ACCOUNT_FRACTION,
         min_trade_amount=args.min_trade_amount,
         enable_probe_mode=not args.disable_probe_mode,
     )
