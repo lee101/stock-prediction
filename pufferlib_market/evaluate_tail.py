@@ -200,6 +200,12 @@ def main() -> None:
     parser.add_argument("--data-path", required=True, help="Path to MKTD .bin")
     parser.add_argument("--eval-hours", type=int, default=720, help="Number of steps to simulate (default: 720h ~= 30d)")
     parser.add_argument("--fee-rate", type=float, default=0.001)
+    parser.add_argument(
+        "--fill-buffer-bps",
+        type=float,
+        default=5.0,
+        help="Require the daily bar to trade through each limit by this many bps before fill.",
+    )
     parser.add_argument("--max-leverage", type=float, default=1.0)
     parser.add_argument("--periods-per-year", type=float, default=8760.0)
     parser.add_argument("--short-borrow-apr", type=float, default=0.0)
@@ -292,6 +298,7 @@ def main() -> None:
         _policy_fn,
         max_steps=int(args.eval_hours),
         fee_rate=float(args.fee_rate),
+        fill_buffer_bps=float(args.fill_buffer_bps),
         max_leverage=float(args.max_leverage),
         periods_per_year=float(args.periods_per_year),
         short_borrow_apr=float(args.short_borrow_apr),
@@ -309,6 +316,7 @@ def main() -> None:
         "eval_hours": int(args.eval_hours),
         "decision_lag": int(decision_lag),
         "fee_rate": float(args.fee_rate),
+        "fill_buffer_bps": float(args.fill_buffer_bps),
         "max_leverage": float(args.max_leverage),
         "short_borrow_apr": float(args.short_borrow_apr),
         "periods_per_year": float(args.periods_per_year),

@@ -15,6 +15,8 @@ import pandas as pd
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+from src.market_sim_early_exit import evaluate_drawdown_vs_profit_early_exit, print_early_exit
+
 FDUSD_SYMBOLS = {"BTCUSD", "ETHUSD", "SOLUSD", "BNBUSD"}
 MARGIN_ANNUAL_RATE = 0.0625  # 6.25% per year
 
@@ -50,6 +52,12 @@ class WorkStealConfig:
     # Momentum filter: only enter if N-day return > threshold
     momentum_period: int = 0  # 0=disabled, e.g. 5 = 5-day return filter
     momentum_min: float = -0.10  # min N-day return to enter (e.g. -0.10 = skip if down >10%)
+    # Optional idle base asset: sweep free cash into this symbol when risk-on.
+    base_asset_symbol: str = ""
+    base_asset_sma_filter_period: int = 0
+    base_asset_momentum_period: int = 0
+    base_asset_min_momentum: float = 0.0
+    base_asset_rebalance_min_cash: float = 1.0
 
 
 @dataclass
@@ -155,6 +163,105 @@ def _compute_margin_interest(pos: Position, current_date: pd.Timestamp, rate: fl
     return pos.margin_borrowed * daily_rate * days_held
 
 
+def _normalize_base_asset_symbol(config: WorkStealConfig) -> str | None:
+    value = str(config.base_asset_symbol or "").strip().upper()
+    return value or None
+
+
+def _base_asset_should_hold(
+    *,
+    base_symbol: str | None,
+    current_bars: Dict[str, pd.Series],
+    history: Dict[str, pd.DataFrame],
+    config: WorkStealConfig,
+) -> bool:
+    if base_symbol is None:
+        return False
+    bar = current_bars.get(base_symbol)
+    hist = history.get(base_symbol)
+    if bar is None or hist is None or hist.empty:
+        return False
+
+    close = float(bar["close"])
+    if close <= 0:
+        return False
+
+    if config.base_asset_sma_filter_period > 0:
+        if len(hist) < config.base_asset_sma_filter_period:
+            return False
+        sma = compute_sma(hist, config.base_asset_sma_filter_period)
+        if close < sma:
+            return False
+
+    if config.base_asset_momentum_period > 0:
+        if len(hist) <= config.base_asset_momentum_period:
+            return False
+        past_close = float(hist.iloc[-(config.base_asset_momentum_period + 1)]["close"])
+        if past_close > 0:
+            momentum = (close - past_close) / past_close
+            if momentum < config.base_asset_min_momentum:
+                return False
+
+    return True
+
+
+def _buy_base_asset(
+    *,
+    cash: float,
+    base_qty: float,
+    price: float,
+    fee_rate: float,
+    min_cash: float,
+) -> tuple[float, float]:
+    if cash <= min_cash or price <= 0:
+        return float(cash), float(base_qty)
+    deployable_cash = float(cash - min_cash)
+    if deployable_cash <= 0:
+        return float(cash), float(base_qty)
+    denom = price * (1.0 + fee_rate)
+    if denom <= 0:
+        return float(cash), float(base_qty)
+    qty = deployable_cash / denom
+    if qty <= 0:
+        return float(cash), float(base_qty)
+    cost = qty * denom
+    return float(cash - cost), float(base_qty + qty)
+
+
+def _sell_base_asset_for_cash(
+    *,
+    cash: float,
+    base_qty: float,
+    price: float,
+    fee_rate: float,
+    required_cash: float,
+) -> tuple[float, float]:
+    if required_cash <= cash or base_qty <= 0 or price <= 0:
+        return float(cash), float(base_qty)
+    net_price = price * (1.0 - fee_rate)
+    if net_price <= 0:
+        return float(cash), float(base_qty)
+    needed = required_cash - cash
+    qty = min(base_qty, needed / net_price)
+    if qty <= 0:
+        return float(cash), float(base_qty)
+    proceeds = qty * net_price
+    return float(cash + proceeds), float(base_qty - qty)
+
+
+def _sell_all_base_asset(
+    *,
+    cash: float,
+    base_qty: float,
+    price: float,
+    fee_rate: float,
+) -> tuple[float, float]:
+    if base_qty <= 0 or price <= 0:
+        return float(cash), float(base_qty)
+    proceeds = base_qty * price * (1.0 - fee_rate)
+    return float(cash + proceeds), 0.0
+
+
 def run_worksteal_backtest(
     all_bars: Dict[str, pd.DataFrame],
     config: WorkStealConfig,
@@ -176,6 +283,8 @@ def run_worksteal_backtest(
         all_dates = [d for d in all_dates if d <= end_ts]
 
     cash = config.initial_cash
+    base_symbol = _normalize_base_asset_symbol(config)
+    base_qty = 0.0
     positions: Dict[str, Position] = {}
     trades: List[TradeLog] = []
     equity_rows: List[Dict] = []
@@ -207,7 +316,10 @@ def run_worksteal_backtest(
                     inv_value += pos.quantity * close
                 else:  # short
                     inv_value += pos.quantity * (2 * pos.entry_price - close)
-        current_equity = cash + inv_value
+        base_value = 0.0
+        if base_symbol is not None and base_symbol in current_bars:
+            base_value = base_qty * float(current_bars[base_symbol]["close"])
+        current_equity = cash + inv_value + base_value
 
         # 1. Check exits
         symbols_to_exit = []
@@ -297,6 +409,21 @@ def run_worksteal_backtest(
             last_exit[sym] = date
             del positions[sym]
 
+        hold_base_asset = _base_asset_should_hold(
+            base_symbol=base_symbol,
+            current_bars=current_bars,
+            history=history,
+            config=config,
+        )
+        if base_symbol is not None and base_symbol in current_bars and not hold_base_asset:
+            base_fee = get_fee(base_symbol, config)
+            cash, base_qty = _sell_all_base_asset(
+                cash=cash,
+                base_qty=base_qty,
+                price=float(current_bars[base_symbol]["close"]),
+                fee_rate=base_fee,
+            )
+
         # 2. Market breadth filter
         if config.market_breadth_filter > 0:
             n_dipping = 0
@@ -318,6 +445,8 @@ def run_worksteal_backtest(
             candidates = []
 
             for sym, bar in current_bars.items():
+                if base_symbol is not None and sym == base_symbol:
+                    continue
                 if sym in positions:
                     continue
                 if sym in last_exit:
@@ -384,7 +513,7 @@ def run_worksteal_backtest(
             for sym, direction, score, fill_price, bar in candidates[:slots]:
                 if sym in positions:
                     continue
-                if cash <= 0 and direction == "long":
+                if cash <= 0 and direction == "long" and base_qty <= 0:
                     continue
 
                 fee_rate = get_fee(sym, config)
@@ -392,6 +521,15 @@ def run_worksteal_backtest(
                 max_alloc = base_equity * config.max_position_pct * config.max_leverage
 
                 if direction == "long":
+                    if base_symbol is not None and hold_base_asset and base_symbol in current_bars:
+                        base_fee = get_fee(base_symbol, config)
+                        cash, base_qty = _sell_base_asset_for_cash(
+                            cash=cash,
+                            base_qty=base_qty,
+                            price=float(current_bars[base_symbol]["close"]),
+                            fee_rate=base_fee,
+                            required_cash=max_alloc,
+                        )
                     alloc = min(max_alloc, cash)
                     quantity = alloc / (fill_price * (1 + fee_rate))
                     if quantity <= 0:
@@ -449,6 +587,16 @@ def run_worksteal_backtest(
                         direction="short",
                     ))
 
+        if base_symbol is not None and hold_base_asset and base_symbol in current_bars:
+            base_fee = get_fee(base_symbol, config)
+            cash, base_qty = _buy_base_asset(
+                cash=cash,
+                base_qty=base_qty,
+                price=float(current_bars[base_symbol]["close"]),
+                fee_rate=base_fee,
+                min_cash=max(0.0, float(config.base_asset_rebalance_min_cash)),
+            )
+
         # 3. Compute equity
         inventory_value = 0.0
         for sym, pos in positions.items():
@@ -465,24 +613,38 @@ def run_worksteal_backtest(
                 if pos.direction == "long":
                     inventory_value += pos.quantity * pos.entry_price
 
-        equity = cash + inventory_value
+        base_asset_value = 0.0
+        if base_symbol is not None and base_symbol in current_bars:
+            base_asset_value = base_qty * float(current_bars[base_symbol]["close"])
+
+        equity = cash + inventory_value + base_asset_value
         equity_rows.append({
             "timestamp": date,
             "equity": equity,
             "cash": cash,
             "inventory_value": inventory_value,
+            "base_asset_symbol": base_symbol or "",
+            "base_asset_qty": base_qty,
+            "base_asset_value": base_asset_value,
             "n_positions": len(positions),
             "n_long": sum(1 for p in positions.values() if p.direction == "long"),
             "n_short": sum(1 for p in positions.values() if p.direction == "short"),
             "positions": ",".join(f"{p.direction[0]}:{s}" for s, p in positions.items()),
-            "leverage": (abs(inventory_value) + cash) / max(equity, 1) if equity > 0 else 0,
+            "leverage": (abs(inventory_value) + base_asset_value) / max(equity, 1) if equity > 0 else 0,
         })
 
-        # Early exit on max drawdown
-        if config.max_drawdown_exit > 0 and len(equity_rows) > 1:
+        profit_vs_drawdown_exit = evaluate_drawdown_vs_profit_early_exit(
+            [float(row["equity"]) for row in equity_rows],
+            total_steps=len(all_dates),
+            label="binance_worksteal.run_worksteal_backtest",
+        )
+
+        # Early exit on max drawdown or when drawdown already exceeds profit halfway through.
+        if profit_vs_drawdown_exit.should_stop or (config.max_drawdown_exit > 0 and len(equity_rows) > 1):
             peak_eq = max(r["equity"] for r in equity_rows)
             dd = (equity - peak_eq) / peak_eq if peak_eq > 0 else 0
-            if dd < -config.max_drawdown_exit:
+            trigger_max_dd = config.max_drawdown_exit > 0 and dd < -config.max_drawdown_exit
+            if profit_vs_drawdown_exit.should_stop or trigger_max_dd:
                 # Force close all positions
                 for sym, pos in list(positions.items()):
                     if sym in current_bars:
@@ -507,10 +669,32 @@ def run_worksteal_backtest(
                         direction=pos.direction,
                     ))
                 positions.clear()
+                if base_symbol is not None and base_symbol in current_bars:
+                    base_fee = get_fee(base_symbol, config)
+                    cash, base_qty = _sell_all_base_asset(
+                        cash=cash,
+                        base_qty=base_qty,
+                        price=float(current_bars[base_symbol]["close"]),
+                        fee_rate=base_fee,
+                    )
                 n_days_active = len(equity_rows)
-                print(f"  EARLY EXIT: DD={dd:.1%} after {n_days_active}d, "
-                      f"equity=${equity:.0f} -> ${cash:.0f}")
+                if profit_vs_drawdown_exit.should_stop:
+                    print_early_exit(profit_vs_drawdown_exit)
+                    print(
+                        f"  EARLY EXIT: drawdown exceeded profit after {n_days_active}d, "
+                        f"equity=${equity:.0f} -> ${cash:.0f}",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"  EARLY EXIT: DD={dd:.1%} after {n_days_active}d, "
+                        f"equity=${equity:.0f} -> ${cash:.0f}",
+                        flush=True,
+                    )
                 equity_rows[-1]["equity"] = cash
+                equity_rows[-1]["cash"] = cash
+                equity_rows[-1]["base_asset_qty"] = base_qty
+                equity_rows[-1]["base_asset_value"] = 0.0
                 equity_rows[-1]["n_positions"] = 0
                 break
 

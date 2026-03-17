@@ -157,6 +157,7 @@ def watch(
     poll_seconds: int = typer.Option(30, "--poll-seconds"),
     price_tolerance: float = typer.Option(0.0, "--price-tolerance"),
     config_path: Optional[Path] = typer.Option(None, "--config-path"),
+    exchange_symbol: Optional[str] = typer.Option(None, "--exchange-symbol"),
     dry_run: bool = typer.Option(False, "--dry-run/--live"),
     margin: bool = typer.Option(False, "--margin/--no-margin"),
     side_effect_type: str = typer.Option("NO_SIDE_EFFECT", "--side-effect-type"),
@@ -165,7 +166,7 @@ def watch(
     status = _load_status(config_path)
     started_at = _now()
     expiry_at = started_at + timedelta(minutes=max(1, int(expiry_minutes)))
-    binance_symbol = binance_remap_symbols(symbol)
+    binance_symbol = str(exchange_symbol or binance_remap_symbols(symbol)).upper()
 
     status_defaults = {
         "config_version": status.get("config_version", 1),
@@ -178,12 +179,13 @@ def watch(
         "started_at": started_at.isoformat(),
         "state": "running",
         "active": True,
+        "exchange_symbol": binance_symbol,
         "binance_symbol": binance_symbol,
     }
     status.update({k: v for k, v in status_defaults.items() if k not in status})
     _write_status(config_path, status)
 
-    rules = resolve_symbol_rules(symbol)
+    rules = resolve_symbol_rules(exchange_symbol or symbol)
     price = quantize_price(float(limit_price), tick_size=rules.tick_size, side=side)
     qty = quantize_qty(float(target_qty), step_size=rules.step_size)
 

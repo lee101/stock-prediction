@@ -205,6 +205,51 @@ def test_execution_pair_uses_usdt_pairs_for_margin_on_fdusd_symbols() -> None:
     assert trade_binance_live._execution_pair(sol, "margin") == "SOLUSDT"
 
 
+def test_normalize_live_trade_plan_sets_visible_exit_for_held_position() -> None:
+    btc = trade_binance_live.TRADING_SYMBOLS["BTCUSD"]
+    plan = trade_binance_live.TradePlan(
+        direction="hold",
+        buy_price=0.0,
+        sell_price=0.0,
+        confidence=0.85,
+        reasoning="hold without target",
+    )
+
+    normalized = trade_binance_live._normalize_live_trade_plan(
+        plan,
+        btc,
+        current_price=70537.44,
+        execution_mode="margin",
+        position_qty=0.01473671,
+        position_entry_price=71000.0,
+    )
+
+    assert normalized.direction == "hold"
+    assert normalized.sell_price == pytest.approx(71242.8144)
+
+
+def test_normalize_live_trade_plan_sets_exit_for_long_entry_without_target() -> None:
+    eth = trade_binance_live.TRADING_SYMBOLS["ETHUSD"]
+    plan = trade_binance_live.TradePlan(
+        direction="long",
+        buy_price=2175.0,
+        sell_price=0.0,
+        confidence=0.65,
+        reasoning="enter long",
+    )
+
+    normalized = trade_binance_live._normalize_live_trade_plan(
+        plan,
+        eth,
+        current_price=2181.18,
+        execution_mode="margin",
+    )
+
+    assert normalized.buy_price == pytest.approx(2175.0)
+    assert normalized.sell_price > normalized.buy_price
+    assert normalized.sell_price == pytest.approx(2202.9918)
+
+
 def test_quote_buying_power_only_counts_borrow_headroom_in_margin_mode() -> None:
     state = trade_binance_live.PortfolioState(
         fdusd_balance=50.0,

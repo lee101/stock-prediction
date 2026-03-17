@@ -45,6 +45,37 @@ def _batch_from_context(context: pd.DataFrame, prediction_length: int, base: flo
     return _DummyBatch(quantile_frames={0.1: frame, 0.5: frame, 0.9: frame})
 
 
+def _broken_batch_from_context(context: pd.DataFrame, prediction_length: int, base: float) -> _DummyBatch:
+    last_ts = pd.to_datetime(context["timestamp"].iloc[-1], utc=True)
+    future = [last_ts + pd.Timedelta(hours=i) for i in range(1, int(prediction_length) + 1)]
+    idx = pd.DatetimeIndex(future, name="timestamp")
+    q10 = pd.DataFrame(
+        {
+            "close": [float(base) + 2.0] * int(prediction_length),
+            "high": [float(base) - 0.25] * int(prediction_length),
+            "low": [float(base) - 1.25] * int(prediction_length),
+        },
+        index=idx,
+    )
+    q50 = pd.DataFrame(
+        {
+            "close": [float(base)] * int(prediction_length),
+            "high": [float(base) - 0.25] * int(prediction_length),
+            "low": [float(base) - 1.25] * int(prediction_length),
+        },
+        index=idx,
+    )
+    q90 = pd.DataFrame(
+        {
+            "close": [float(base) - 2.0] * int(prediction_length),
+            "high": [float(base) - 0.75] * int(prediction_length),
+            "low": [float(base) - 1.75] * int(prediction_length),
+        },
+        index=idx,
+    )
+    return _DummyBatch(quantile_frames={0.1: q10, 0.5: q50, 0.9: q90})
+
+
 class _ModeWrapper:
     def __init__(self) -> None:
         self.calls: list[str] = []
@@ -127,6 +158,26 @@ class _BatchOnlyWrapper:
         del args, kwargs
         self.calls.append("joint")
         raise RuntimeError("joint unavailable")
+
+
+class _BrokenBatchWrapper:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def predict_ohlc_batch(
+        self,
+        contexts: list[pd.DataFrame],
+        *,
+        symbols: list[str] | None = None,
+        prediction_length: int,
+        context_length: int | None = None,
+        batch_size: int | None = None,
+        predict_kwargs: dict | None = None,
+        **_: object,
+    ) -> list[_DummyBatch]:
+        del symbols, context_length, batch_size, predict_kwargs
+        self.calls.append("batch")
+        return [_broken_batch_from_context(ctx, prediction_length, base=111.0) for ctx in contexts]
 
 
 def _build_cfg(tmp_path: Path, symbol: str = "TEST") -> ForecastConfig:
@@ -256,3 +307,18 @@ def test_manager_routes_time_covariates_through_batch_path(tmp_path: Path) -> No
         "session_progress",
     ]
     assert len(first_future) == 2
+
+
+def test_manager_repairs_broken_quantiles_and_high_low(tmp_path: Path) -> None:
+    history = _make_history("TEST", rows=80)
+    wrapper = _BrokenBatchWrapper()
+    manager = ChronosForecastManager(_build_cfg(tmp_path), wrapper_factory=lambda: wrapper)
+
+    out = manager._generate_forecast_chunk(history, [40, 41])
+
+    assert out is not None
+    assert not out.empty
+    assert (out["predicted_close_p10"] <= out["predicted_close_p50"]).all()
+    assert (out["predicted_close_p50"] <= out["predicted_close_p90"]).all()
+    assert (out["predicted_low_p50"] <= out["predicted_close_p50"]).all()
+    assert (out["predicted_close_p50"] <= out["predicted_high_p50"]).all()

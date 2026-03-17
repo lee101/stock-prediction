@@ -119,6 +119,32 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     val = kwargs ? PyDict_GetItemString(kwargs, "max_hold_hours") : NULL;
     env->max_hold_hours = val ? (int)PyLong_AsLong(val) : 0;
 
+    val = kwargs ? PyDict_GetItemString(kwargs, "enable_drawdown_profit_early_exit") : NULL;
+    env->enable_drawdown_profit_early_exit = val ? PyObject_IsTrue(val) : 0;
+    if (env->enable_drawdown_profit_early_exit < 0) {
+        return -1;
+    }
+
+    val = kwargs ? PyDict_GetItemString(kwargs, "drawdown_profit_early_exit_verbose") : NULL;
+    env->drawdown_profit_early_exit_verbose = val ? PyObject_IsTrue(val) : 0;
+    if (env->drawdown_profit_early_exit_verbose < 0) {
+        return -1;
+    }
+
+    val = kwargs ? PyDict_GetItemString(kwargs, "drawdown_profit_early_exit_min_steps") : NULL;
+    env->drawdown_profit_early_exit_min_steps = val ? (int)PyLong_AsLong(val) : 20;
+    if (env->drawdown_profit_early_exit_min_steps < 0) {
+        env->drawdown_profit_early_exit_min_steps = 0;
+    }
+
+    val = kwargs ? PyDict_GetItemString(kwargs, "drawdown_profit_early_exit_progress_fraction") : NULL;
+    env->drawdown_profit_early_exit_progress_fraction = val ? (float)PyFloat_AsDouble(val) : 0.5f;
+    if (env->drawdown_profit_early_exit_progress_fraction < 0.0f) {
+        env->drawdown_profit_early_exit_progress_fraction = 0.0f;
+    } else if (env->drawdown_profit_early_exit_progress_fraction > 1.0f) {
+        env->drawdown_profit_early_exit_progress_fraction = 1.0f;
+    }
+
     int S = g_shared_data->num_symbols;
     int side_block = S * env->action_allocation_bins * env->action_level_bins;
     env->obs_size = S * FEATURES_PER_SYM + 5 + S;

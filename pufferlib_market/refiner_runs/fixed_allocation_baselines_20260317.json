@@ -1,0 +1,98 @@
+[
+  {
+    "checkpoint": "robust_reg_tp01",
+    "window": "full_range",
+    "allocation": "fixed_1x",
+    "daily_total_return": 0.9988070507504381,
+    "daily_sortino": 2.302548927224675,
+    "daily_max_drawdown": 0.46387247046942365,
+    "hourly_total_return": 0.4559225529914731,
+    "hourly_sortino": 1.0473624743198937,
+    "hourly_max_drawdown": 0.47595364922238786,
+    "hourly_num_orders": 337
+  },
+  {
+    "checkpoint": "robust_reg_tp01",
+    "window": "full_range",
+    "allocation": "fixed_5x",
+    "daily_total_return": -1.7352943724823533,
+    "daily_sortino": -1.4984014698126897,
+    "daily_max_drawdown": 1.3283350035202106,
+    "hourly_total_return": -1.7389221955845962,
+    "hourly_sortino": -0.2801467503144997,
+    "hourly_max_drawdown": 1.338944961933949,
+    "hourly_num_orders": 13
+  },
+  {
+    "checkpoint": "robust_reg_tp01",
+    "window": "latest_60d",
+    "allocation": "fixed_1x",
+    "daily_total_return": 0.08863491213694379,
+    "daily_sortino": 1.7740262554369925,
+    "daily_max_drawdown": 0.19176786291059297,
+    "hourly_total_return": 0.027390864813352893,
+    "hourly_sortino": 0.5869038719670006,
+    "hourly_max_drawdown": 0.25964451358421614,
+    "hourly_num_orders": 76
+  },
+  {
+    "checkpoint": "robust_reg_tp01",
+    "window": "latest_60d",
+    "allocation": "fixed_5x",
+    "daily_total_return": -0.2878843327471699,
+    "daily_sortino": 1.6513213867993226,
+    "daily_max_drawdown": 0.7606082965377409,
+    "hourly_total_return": -0.4913279278951055,
+    "hourly_sortino": 0.7998292987805039,
+    "hourly_max_drawdown": 0.8803469596940829,
+    "hourly_num_orders": 76
+  },
+  {
+    "checkpoint": "gspo_like_mix15",
+    "window": "full_range",
+    "allocation": "fixed_1x",
+    "daily_total_return": 0.6036306570643355,
+    "daily_sortino": 1.8550152958699573,
+    "daily_max_drawdown": 0.4942820322967648,
+    "hourly_total_return": 0.32284890147106254,
+    "hourly_sortino": 0.911308401327838,
+    "hourly_max_drawdown": 0.49486540644107857,
+    "hourly_num_orders": 382
+  },
+  {
+    "checkpoint": "gspo_like_mix15",
+    "window": "full_range",
+    "allocation": "fixed_5x",
+    "daily_total_return": -0.9927174317525398,
+    "daily_sortino": 0.9135204883529698,
+    "daily_max_drawdown": 0.9982296368830348,
+    "hourly_total_return": -0.9952380153426087,
+    "hourly_sortino": 60727319746733.01,
+    "hourly_max_drawdown": 1.0134946639515228,
+    "hourly_num_orders": 382
+  },
+  {
+    "checkpoint": "gspo_like_mix15",
+    "window": "latest_60d",
+    "allocation": "fixed_1x",
+    "daily_total_return": 0.2755512298554149,
+    "daily_sortino": 4.04437237273358,
+    "daily_max_drawdown": 0.21050588974404352,
+    "hourly_total_return": 0.31581067722235456,
+    "hourly_sortino": 2.642634637646226,
+    "hourly_max_drawdown": 0.22862177319112276,
+    "hourly_num_orders": 88
+  },
+  {
+    "checkpoint": "gspo_like_mix15",
+    "window": "latest_60d",
+    "allocation": "fixed_5x",
+    "daily_total_return": 0.35330894887825126,
+    "daily_sortino": 3.983696286093704,
+    "daily_max_drawdown": 0.7956894255315412,
+    "hourly_total_return": 0.6161569097249965,
+    "hourly_sortino": 2.530705322403058,
+    "hourly_max_drawdown": 0.8087133930739395,
+    "hourly_num_orders": 88
+  }
+]

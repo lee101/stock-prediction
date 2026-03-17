@@ -15,6 +15,7 @@ import pandas as pd
 from src.date_utils import is_nyse_open_on_date
 from src.fees import get_fee_for_symbol
 from src.hourly_trader_utils import entry_intensity_fraction
+from src.market_sim_early_exit import evaluate_drawdown_vs_profit_early_exit, print_early_exit
 from src.metrics_utils import annualized_sortino
 from src.robust_trading_metrics import (
     compute_market_sim_goodness_score,
@@ -486,6 +487,19 @@ def run_portfolio_simulation(
         return max(0.0, (trigger - open_px) / open_px)
 
     groups = merged.groupby("timestamp", sort=True)
+    total_steps = int(merged["timestamp"].nunique())
+
+    def _append_equity_snapshot(ts: pd.Timestamp) -> bool:
+        equity_values.append((ts, _equity()))
+        early_exit = evaluate_drawdown_vs_profit_early_exit(
+            [value for _, value in equity_values],
+            total_steps=total_steps,
+            label="unified_hourly_experiment.run_portfolio_simulation",
+        )
+        if early_exit.should_stop:
+            print_early_exit(early_exit)
+            return True
+        return False
 
     for ts, group in groups:
         ts = pd.Timestamp(ts)
@@ -644,7 +658,8 @@ def run_portfolio_simulation(
         # 4. Find new entries if we have open slots
         open_slots = cfg.max_positions - len(positions) - len(pending_entries)
         if open_slots <= 0:
-            equity_values.append((ts, _equity()))
+            if _append_equity_snapshot(ts):
+                break
             continue
 
         held_symbols = set(positions.keys()) | set(pending_entries.keys())
@@ -783,7 +798,8 @@ def run_portfolio_simulation(
                     "bars_left": int(cfg.entry_order_ttl_hours),
                 }
 
-        equity_values.append((ts, _equity()))
+        if _append_equity_snapshot(ts):
+            break
 
     final_equity = _equity()
     if equity_values:

@@ -1,0 +1,25 @@
+{
+  "epoch": 1,
+  "train_objective": -12.020482063293457,
+  "train_summary": {
+    "drawdown_excess": 0.73406583070755,
+    "max_drawdown": 0.98406583070755,
+    "max_gross": 4.389036178588867,
+    "mean_gross": 1.2004843950271606,
+    "objective": -12.020482063293457,
+    "sortino": 0.2591745853424072,
+    "total_return": -0.8005587458610535,
+    "turnover_mean": 1.8595008850097656
+  },
+  "val_objective": -3.9948890209198,
+  "val_summary": {
+    "drawdown_excess": 0.28790217638015747,
+    "max_drawdown": 0.5379021763801575,
+    "max_gross": 2.9127585887908936,
+    "mean_gross": 0.8413348197937012,
+    "objective": -3.9948890209198,
+    "sortino": 2.051206588745117,
+    "total_return": 0.6468414068222046,
+    "turnover_mean": 1.3010337352752686
+  }
+}

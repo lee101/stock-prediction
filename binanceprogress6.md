@@ -4,6 +4,273 @@
 
 Find the **highest Sortino, lowest max-drawdown, best annualized PnL** strategy for pure crypto trading on Binance. This will run live on Binance — every decision here must be validated in a market simulator that closely matches real execution.
 
+## 2026-03-16 Mixed23 Daily Robustness Pass
+
+This pass focused on the **daily mixed23 RL stack** under more realistic replay
+semantics, not the older pure-crypto hourly plan above.
+
+### What changed
+
+- Daily replay now requires bars to trade **through** a limit by `5bp` before fill.
+- The same fill rule is wired through `replay_eval`, `evaluate_holdout`,
+  `evaluate_tail`, `evaluate_multiperiod`, and `autoresearch_rl`.
+- Added `pufferlib_market/meta_replay_eval.py` to test adaptive checkpoint
+  switching without lookahead.
+
+### Repro commands
+
+#### 1. Re-export the latest 60-day mixed23 validation window
+
+```bash
+source .venv313/bin/activate
+PYTHONPATH=$PWD/PufferLib:$PYTHONPATH python -m pufferlib_market.export_data_daily \
+  --symbols AAPL,NFLX,NVDA,ADBE,ADSK,COIN,GOOG,MSFT,PYPL,SAP,TSLA,BTCUSD,ETHUSD,SOLUSD,LTCUSD,AVAXUSD,DOGEUSD,LINKUSD,AAVEUSD,UNIUSD,DOTUSD,SHIBUSD,XRPUSD \
+  --output /tmp/mixed23_val_60d_20251208_20260205.bin \
+  --start-date 2025-12-08 --end-date 2026-02-05 --min-days 60
+```
+
+#### 2. Replay the current checkpoints with 5bp fill-through
+
+```bash
+source .venv313/bin/activate
+PYTHONPATH=$PWD/PufferLib:$PYTHONPATH python -m pufferlib_market.replay_eval \
+  --checkpoint pufferlib_market/checkpoints/mixed23_fresh_replay/ent_anneal/best.pt \
+  --daily-data-path /tmp/mixed23_val_60d_20251208_20260205.bin \
+  --hourly-data-root trainingdatahourly \
+  --start-date 2025-12-08 --end-date 2026-02-05 \
+  --max-steps 59 --fill-buffer-bps 5 --deterministic --cpu \
+  --output-json pufferlib_market/replay_eval_5bp_60d/ent_anneal.json
+```
+
+Repeat for:
+- `pufferlib_market/checkpoints/mixed23_fresh_targeted/reg_combo_2/best.pt`
+- `pufferlib_market/checkpoints/mixed23_fresh_replay/wd_01/best.pt`
+- `pufferlib_market/checkpoints/mixed23_fresh_replay/clip_vloss/best.pt`
+
+#### 3. Test the best current-window adaptive selector
+
+```bash
+source .venv313/bin/activate
+PYTHONPATH=$PWD/PufferLib:$PYTHONPATH python -m pufferlib_market.meta_replay_eval \
+  --checkpoint pufferlib_market/checkpoints/mixed23_fresh_replay/ent_anneal/best.pt \
+  --checkpoint pufferlib_market/checkpoints/mixed23_fresh_targeted/reg_combo_2/best.pt \
+  --checkpoint pufferlib_market/checkpoints/mixed23_fresh_replay/wd_01/best.pt \
+  --labels ent_anneal,reg_combo_2,wd_01 \
+  --daily-data-path /tmp/mixed23_val_60d_20251208_20260205.bin \
+  --hourly-data-root trainingdatahourly \
+  --start-date 2025-12-08 --end-date 2026-02-05 \
+  --max-steps 59 --fill-buffer-bps 5 \
+  --lookback-days 14 --metric return \
+  --selection-mode sticky --switch-margin 0.01 \
+  --recency-halflife-days 5 \
+  --deterministic --cpu \
+  --output-json pufferlib_market/meta_replay_5bp_60d/sticky_return_lb14_hl5_sm001.json
+```
+
+#### 4. Re-test that same selector on earlier 60-day windows
+
+```bash
+source .venv313/bin/activate
+PYTHONPATH=$PWD/PufferLib:$PYTHONPATH python -m pufferlib_market.export_data_daily \
+  --symbols AAPL,NFLX,NVDA,ADBE,ADSK,COIN,GOOG,MSFT,PYPL,SAP,TSLA,BTCUSD,ETHUSD,SOLUSD,LTCUSD,AVAXUSD,DOGEUSD,LINKUSD,AAVEUSD,UNIUSD,DOTUSD,SHIBUSD,XRPUSD \
+  --output /tmp/mixed23_val_60d_20251009_20251207.bin \
+  --start-date 2025-10-09 --end-date 2025-12-07 --min-days 60
+
+PYTHONPATH=$PWD/PufferLib:$PYTHONPATH python -m pufferlib_market.export_data_daily \
+  --symbols AAPL,NFLX,NVDA,ADBE,ADSK,COIN,GOOG,MSFT,PYPL,SAP,TSLA,BTCUSD,ETHUSD,SOLUSD,LTCUSD,AVAXUSD,DOGEUSD,LINKUSD,AAVEUSD,UNIUSD,DOTUSD,SHIBUSD,XRPUSD \
+  --output /tmp/mixed23_val_60d_20250810_20251008.bin \
+  --start-date 2025-08-10 --end-date 2025-10-08 --min-days 60
+```
+
+Then rerun the same `meta_replay_eval` command with:
+- `--daily-data-path /tmp/mixed23_val_60d_20251009_20251207.bin --start-date 2025-10-09 --end-date 2025-12-07`
+- `--daily-data-path /tmp/mixed23_val_60d_20250810_20251008.bin --start-date 2025-08-10 --end-date 2025-10-08`
+
+### Latest-window results (`2025-12-08..2026-02-05`)
+
+| Strategy | Daily Return | Daily MaxDD | Hourly Replay Return | Hourly Replay MaxDD |
+|----------|--------------|-------------|----------------------|---------------------|
+| `ent_anneal` | `+62.37%` | `15.54%` | `+8.02%` | `34.77%` |
+| `reg_combo_2` | `+30.24%` | `21.59%` | `+27.53%` | `34.21%` |
+| `wd_01` | `+13.25%` | `20.19%` | `+11.11%` | `26.52%` |
+| `clip_vloss` | `-23.73%` | `27.01%` | `-11.76%` | `22.01%` |
+| `meta sticky return 14/5 + sm=0.01` | `+74.26%` | `13.83%` | `+41.27%` | `24.86%` |
+
+### 3-window robustness check
+
+Saved artifacts:
+- `pufferlib_market/replay_eval_5bp_60d/*.json`
+- `pufferlib_market/meta_replay_5bp_60d/*.json`
+- `pufferlib_market/meta_replay_5bp_3window_sweep.csv`
+- `pufferlib_market/mixed23_3window_strategy_summary.csv`
+
+| Strategy | `2025-12-08..2026-02-05` Hourly | `2025-10-09..2025-12-07` Hourly | `2025-08-10..2025-10-08` Hourly |
+|----------|----------------------------------|----------------------------------|----------------------------------|
+| `ent_anneal` | `+8.02%` | `-42.43%` | `-9.51%` |
+| `reg_combo_2` | `+27.53%` | `+29.23%` | `+21.33%` |
+| `wd_01` | `+11.11%` | `-15.01%` | `-42.47%` |
+| `meta sticky return 14/5 + sm=0.01` | `+41.27%` | `-47.79%` | `-4.75%` |
+
+### Current read
+
+- Best **current slice**: `meta sticky return 14/5 + sm=0.01`
+- Best **3-window hourly robustness**: `reg_combo_2`
+- Best **latest-window pure daily PnL**: `ent_anneal`
+- Decision: **no live promotion yet**. The meta selector is too regime-sensitive, and no new selector from the 3-window sweep stayed positive on hourly replay across all tested windows.
+
+## 2026-03-16 Robust Daily Variant Sweep
+
+This pass extended the daily RL sweep around the only mixed23 family that had
+stayed positive on all three 60-day hourly replay windows: `reg_combo_2`.
+
+### What changed
+
+- `pufferlib_market.train` now exposes `--smoothness-penalty`.
+- `pufferlib_market.autoresearch_rl` now supports and records
+  `drawdown_penalty`, `smooth_downside_penalty`, and `smoothness_penalty`.
+- Added a targeted robust-daily batch around `reg_combo_2`:
+  - `robust_reg_wd02`
+  - `robust_reg_tp005`
+  - `robust_reg_tp01`
+  - `robust_reg_tp005_sds02`
+  - `robust_reg_tp005_dd002`
+  - `robust_reg_tp005_sm001`
+  - `robust_reg_tp005_ent`
+  - `robust_reg_h512_tp005`
+
+### Repro command
+
+```bash
+source .venv313/bin/activate
+PYTHONPATH=$PWD/PufferLib:$PYTHONPATH python -u -m pufferlib_market.autoresearch_rl \
+  --train-data pufferlib_market/data/mixed23_fresh_train.bin \
+  --val-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --time-budget 180 --max-trials 8 \
+  --descriptions robust_reg_wd02,robust_reg_tp005,robust_reg_tp01,robust_reg_tp005_sds02,robust_reg_tp005_dd002,robust_reg_tp005_sm001,robust_reg_tp005_ent,robust_reg_h512_tp005 \
+  --periods-per-year 365 --max-steps-override 90 \
+  --holdout-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --holdout-eval-steps 90 --holdout-n-windows 20 \
+  --holdout-fee-rate 0.001 --holdout-fill-buffer-bps 5 \
+  --replay-eval-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --replay-eval-hourly-root trainingdatahourly \
+  --replay-eval-start-date 2025-06-01 \
+  --replay-eval-end-date 2026-02-05 \
+  --replay-eval-fill-buffer-bps 5 \
+  --rank-metric replay_hourly_return_pct \
+  --leaderboard pufferlib_market/autoresearch_mixed23_fresh_robust_leaderboard.csv \
+  --checkpoint-root pufferlib_market/checkpoints/mixed23_fresh_robust
+```
+
+### Full fresh-val sweep result (`2025-06-01..2026-02-05`)
+
+Artifacts:
+- `pufferlib_market/autoresearch_mixed23_fresh_robust_leaderboard.csv`
+- `pufferlib_market/checkpoints/mixed23_fresh_robust/*/best.pt`
+
+| Config | Replay Hourly Return | Val Return | Holdout Robust | Notes |
+|--------|---------------------:|-----------:|---------------:|-------|
+| `robust_reg_tp005_sds02` | `+7.31%` | `-5.59%` | `-147.26` | Best replay, but daily/holdout weak |
+| `robust_reg_tp005_ent` | `-1.97%` | `-7.69%` | `-191.95` | Near-flat replay, weak elsewhere |
+| `robust_reg_tp01` | `-3.57%` | `+64.43%` | `-95.92` | Best balanced new candidate |
+| `robust_reg_tp005_sm001` | `-8.83%` | `+22.74%` | `-140.66` | Smoothness helped less than trade penalty |
+| `robust_reg_h512_tp005` | `-18.92%` | `+49.42%` | `-71.64` | Best holdout score, unstable replay |
+| `robust_reg_tp005_dd002` | `-26.84%` | `+35.45%` | `-95.24` | Drawdown penalty hurt replay |
+
+### 3-window replay retest
+
+Exact per-window outputs:
+- `pufferlib_market/mixed23_robust_3window_results.csv`
+- `pufferlib_market/mixed23_robust_3window_summary.csv`
+
+Tested set:
+- existing baselines: `reg_combo_2`, `ent_anneal`
+- new finalists: `robust_reg_tp01`, `robust_reg_tp005_sds02`, `robust_reg_tp005_ent`, `robust_reg_h512_tp005`
+
+| Strategy | Mean Hourly Return | Worst Hourly Return | Mean Hourly MaxDD | Worst Hourly MaxDD |
+|----------|--------------------:|--------------------:|------------------:|-------------------:|
+| `reg_combo_2` | `+26.03%` | `+21.33%` | `26.98%` | `34.21%` |
+| `robust_reg_tp01` | `+6.39%` | `-15.24%` | `28.34%` | `30.97%` |
+| `robust_reg_h512_tp005` | `+21.79%` | `-48.55%` | `40.78%` | `53.87%` |
+| `robust_reg_tp005_ent` | `-14.69%` | `-23.22%` | `37.16%` | `41.80%` |
+| `ent_anneal` | `-14.64%` | `-42.43%` | `37.61%` | `49.40%` |
+| `robust_reg_tp005_sds02` | `-23.33%` | `-44.64%` | `36.28%` | `46.92%` |
+
+### Current read
+
+- No new daily checkpoint beat `reg_combo_2` on 3-window hourly robustness.
+- `robust_reg_tp01` is the most credible new secondary candidate:
+  - current 60-day hourly replay: `+4.01%`
+  - current 60-day hourly max drawdown: `25.80%`
+  - versus `reg_combo_2`: `+27.53%` return, `34.21%` max drawdown
+- That means `robust_reg_tp01` buys lower drawdown on the latest window, but it
+  gives up too much return and fails the older window.
+- Decision: keep `reg_combo_2` as the best robustness anchor, keep
+  `robust_reg_tp01` as the main “lower-DD” branch for follow-up variants, and do
+  not promote any new checkpoint to live trading yet.
+
+## 2026-03-16 Symbol Expansion Reality Check
+
+Looked at the simpler Chronos2-style flow in `../btcmarketsbot` for pair ideas.
+Useful signal from that codebase:
+
+- `../btcmarketsbot/docs/trainingprocesses.md` still treats Chronos post-processing
+  as a mostly universal calibration problem, not a per-pair tuning problem.
+- That supports using the simpler bot for **pair discovery**, but keeping the
+  unified RL stack as the actual selection layer.
+
+### What the current mixed23 crypto sleeve already has
+
+The current fresh mixed23 daily binaries already include many of the names that
+show up as strong on the simpler Chronos leaderboard:
+
+- already present: `SOLUSD`, `AVAXUSD`, `LINKUSD`, `UNIUSD`, `DOTUSD`, `SHIBUSD`
+- also already present from the existing crypto sleeve: `BTCUSD`, `ETHUSD`,
+  `LTCUSD`, `DOGEUSD`, `AAVEUSD`, `XRPUSD`
+
+### Candidate adds from the pasted list
+
+Missing from mixed23 but locally visible somewhere in the repo:
+
+- `ADAUSD`
+- `TRXUSD`
+- `APTUSD`
+
+### Data readiness check
+
+Using the actual daily source root (`trainingdata/`) that aligns with the fresh
+mixed23 binaries:
+
+- `trainingdata/ADAUSD.csv`: `2021-08-27 .. 2025-08-26`
+- `trainingdata/TRXUSD.csv`: `2022-04-01 .. 2023-04-19`
+- `trainingdata/APTUSD.csv`: missing
+
+Using the current hourly collector tree (`trainingdatahourly/`):
+
+- `ADAUSD`: only `48` hourly bars (`2026-02-04 .. 2026-02-06`)
+- `APTUSD`: only `48` hourly bars (`2026-02-04 .. 2026-02-06`)
+- `TRXUSD`: stale (`2022-04-01 .. 2023-04-19`)
+
+### Implication
+
+- A clean `mixed26` export for the current fresh window is **not possible yet**.
+- The blocker is data freshness / backfill, not model code.
+- For the current daily unified RL stack, the next universe-expansion task is:
+  1. repair/backfill `ADAUSD`
+  2. repair/backfill `APTUSD`
+  3. decide whether `TRXUSD` is still worth adding after fresh history exists
+  4. only then train a `mixed26` or `mixed25` variant
+
+### Practical read
+
+- The symbol list from the simpler Chronos bot is still useful as a discovery
+  queue.
+- But right now, most of the high-signal names from that queue are either already
+  inside mixed23 or not fresh enough locally to support the current daily RL
+  evaluation window.
+- So the next win is not “throw more symbols into mixed23 immediately”; it is
+  “fix the data for the next 2-3 candidate symbols and then retest the expanded
+  universe under the same 5bp replay gate.”
+
 ## Previous Key Findings (binanceprogress1-5 + dailyvshourly.md)
 
 | Finding | Source | Impact |
@@ -377,3 +644,765 @@ This penalizes high-return strategies with poor risk management. A +200% return 
 *Data: 5 crypto symbols × hourly+daily × train+val exports needed*
 *Compute: ~12 GPU-hours for full sweep*
 *Target: Identify production candidate within 24h*
+
+## 2026-03-16 Remote Chronos2 -> RL pipeline
+
+Added a reproducible remote-first hourly pipeline:
+
+- launcher: `scripts/launch_remote_hourly_chronos_rl.py`
+- tagged LoRA batch runner: `scripts/run_crypto_lora_batch.py`
+- shared plan/window helpers: `src/remote_training_pipeline.py`
+
+The launcher now:
+
+- computes the latest shared hourly train/val window locally
+- writes `analysis/remote_runs/<run_id>/launch_manifest.json`
+- launches a detached remote pipeline on `administrator@93.127.141.100:/nvme0n1-disk/code/stock-prediction`
+- runs Chronos2 LoRA batch -> promotion -> forecast caches -> forecast-feature MKTD export -> `pufferlib_market.autoresearch_rl`
+
+Important fix from the first live probe:
+
+- remote pipeline shell used `set -u` and failed when `PYTHONPATH` was unset
+- fixed by exporting `PYTHONPATH="$PWD:$PWD/PufferLib:${PYTHONPATH:-}"`
+
+### Live probe
+
+Run id:
+
+- `probe_hourly_remote_live_fix_20260316`
+
+Launch command:
+
+```bash
+source .venv313/bin/activate
+python scripts/launch_remote_hourly_chronos_rl.py \
+  --run-id probe_hourly_remote_live_fix_20260316 \
+  --symbols BTCUSD,ETHUSD \
+  --preaugs baseline \
+  --context-lengths 128 \
+  --learning-rates 5e-5 \
+  --num-steps 120 \
+  --train-hours 336 \
+  --val-hours 72 \
+  --time-budget 300 \
+  --max-trials 1 \
+  --descriptions baseline_anneal_lr \
+  --no-sync
+```
+
+Artifacts/logs:
+
+- local manifest: `analysis/remote_runs/probe_hourly_remote_live_fix_20260316/launch_manifest.json`
+- remote pid: `3795881`
+- remote log: `analysis/remote_runs/probe_hourly_remote_live_fix_20260316/pipeline.log`
+
+Current status:
+
+- LoRA batch completed successfully for `BTCUSD` and `ETHUSD`
+- promotion into `hyperparams/chronos2/hourly/{BTCUSD,ETHUSD}.json` completed
+- pipeline has advanced into `scripts/build_hourly_forecast_caches.py`
+
+Probe LoRA metrics from `analysis/remote_runs/probe_hourly_remote_live_fix_20260316/lora_results/probe_hourly_remote_live_fix_20260316_batch_summary.csv`:
+
+| Symbol | Preaug | Ctx | LR | Val MAE% | Test MAE% | Val Consistency | Test Consistency | Elapsed |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| BTCUSD | baseline | 128 | 5e-5 | 3.2096 | 2.4037 | 5.7406 | 3.2260 | 33.4s |
+| ETHUSD | baseline | 128 | 5e-5 | 2.9631 | 2.4817 | 5.3171 | 3.6232 | 36.1s |
+
+Monitoring commands:
+
+```bash
+ssh -o StrictHostKeyChecking=no administrator@93.127.141.100 \
+  'cd /nvme0n1-disk/code/stock-prediction && tail -n 80 analysis/remote_runs/probe_hourly_remote_live_fix_20260316/pipeline.log'
+
+rsync -az -e "ssh -o StrictHostKeyChecking=no" \
+  administrator@93.127.141.100:/nvme0n1-disk/code/stock-prediction/analysis/remote_runs/probe_hourly_remote_live_fix_20260316/ \
+  analysis/remote_runs/probe_hourly_remote_live_fix_20260316/remote_run/
+```
+
+### Bounds-aware relaunch
+
+The first probe still overran the remote data freshness during validation export because local hourly data was ahead of the 5090 box by roughly two days. The launcher now checks remote overlap bounds before building windows.
+
+Fresh relaunch:
+
+- run id: `probe_hourly_remote_live_bounds_20260316`
+- local manifest: `analysis/remote_runs/probe_hourly_remote_live_bounds_20260316/launch_manifest.json`
+- remote pid: `3907425`
+- effective shared window:
+  - train: `2026-02-25T04:00:00+00:00 .. 2026-03-11T03:00:00+00:00`
+  - val: `2026-03-11T04:00:00+00:00 .. 2026-03-14T03:00:00+00:00`
+
+Current status at write time:
+
+- remote pipeline has started successfully and re-entered the LoRA batch with the corrected windowing path
+
+## 2026-03-16 Gemini Double-Pass Daily Replay
+
+Goal:
+
+- test a two-pass Gemini path:
+  - pass 1: normal Gemini trade plan
+  - pass 2: Gemini re-reads the full task plus the prior JSON plan and can revise the whole plan
+- score it on the daily-decision hourly-replay simulator before considering deployment
+
+Code changes:
+
+- `llm_hourly_trader/providers.py`
+  - added `reprompt_passes` support in `call_llm`
+  - added a Gemini review prompt builder for pass 2+
+  - added bounded Gemini HTTP timeout support via `GEMINI_HTTP_TIMEOUT_MS` (default `120000`)
+- `unified_orchestrator/backtest_hybrid.py`
+  - added `--decision-cadence {hourly,daily}`
+  - added `--reprompt-passes`
+  - added `--output-json`
+  - fixed max drawdown reporting to compute from the equity curve instead of reading a nonexistent simulator metric key
+- `unified_orchestrator/orchestrator.py`
+  - added `--reprompt-passes` to the live orchestrator CLI
+  - threaded `reprompt_passes` into both crypto and stock `call_llm(...)`
+
+Tests:
+
+```bash
+source .venv313/bin/activate
+pytest -q \
+  tests/test_llm_hourly_trader_provider_cache_only.py \
+  tests/test_unified_orchestrator_backtest_hybrid.py \
+  tests/test_unified_orchestrator_orchestrator.py
+```
+
+Result:
+
+- `10 passed`
+
+### 60-day baseline: current model, single pass
+
+Command:
+
+```bash
+source .venv313/bin/activate
+python -m unified_orchestrator.backtest_hybrid \
+  --symbols BTCUSD ETHUSD SOLUSD LTCUSD AVAXUSD \
+  --days 60 \
+  --modes gemini_only \
+  --decision-cadence daily \
+  --reprompt-passes 1 \
+  --output-json analysis/gemini_reprompt_60d_20260316/crypto5_daily_single_pass.json
+```
+
+Exact replay window selected by the simulator:
+
+- `2025-12-08 15:00:00+00:00 .. 2026-02-06 15:00:00+00:00`
+
+Saved artifact:
+
+- `analysis/gemini_reprompt_60d_20260316/crypto5_daily_single_pass.json`
+
+Baseline metrics:
+
+- return: `-17.08%`
+- sortino: `-5.27`
+- max drawdown: `20.60%`
+- fills: `168`
+- logical Gemini calls: `305`
+
+### Double-pass outcome on the same model/key
+
+Command attempted:
+
+```bash
+source .venv313/bin/activate
+python -m unified_orchestrator.backtest_hybrid \
+  --symbols BTCUSD ETHUSD SOLUSD LTCUSD AVAXUSD \
+  --days 60 \
+  --modes gemini_only \
+  --decision-cadence daily \
+  --reprompt-passes 2 \
+  --output-json analysis/gemini_reprompt_60d_20260316/crypto5_daily_double_pass.json
+```
+
+What happened:
+
+- the run progressed through all of `BTCUSD` and deep into `ETHUSD`
+- Gemini calls were no longer able to hang forever because the new HTTP timeout/retry path bounded them
+- but the run hit a hard quota ceiling on the current production model/key:
+  - `429 RESOURCE_EXHAUSTED`
+  - `limit: 500`
+  - `metric: generativelanguage.googleapis.com/generate_content_free_tier_requests`
+  - `model: gemini-3.1-flash-lite`
+
+Implication:
+
+- the 60-day daily 5-symbol replay needs `305` decisions
+- a double-pass replay needs `610` Gemini requests
+- with the current free-tier `gemini-3.1-flash-lite` quota, this experiment cannot complete in one day on the current key/model
+
+Decision:
+
+- do **not** deploy double-pass Gemini on the current production model/key
+- reasons:
+  - no completed 60-day PnL result for the double-pass path yet
+  - it is quota-infeasible on the current Gemini bucket
+  - it is materially slower even with the cache isolating pass 2
+
+Next realistic follow-up:
+
+- either rerun tomorrow after quota reset on the same model
+- or test a mixed setup where pass 1 stays on current prod and pass 2 uses a different Gemini model/quota bucket
+
+### Mixed-model actionable reviewer path
+
+Code changes:
+
+- `llm_hourly_trader/providers.py`
+  - added `reprompt_policy=actionable`
+  - added `reprompt_policy=entry_only`
+  - added `review_model` so pass 2 can use a different Gemini bucket
+  - added `review_thinking_level` so pass 2 can use a lighter Gemini thinking config than pass 1
+  - added call tracing so backtests can distinguish logical passes from uncached provider calls
+- `unified_orchestrator/backtest_hybrid.py`
+  - forwards `review_model`
+  - forwards `review_thinking_level`
+  - forwards `review_cache_namespace`
+  - reports actual provider calls separately from logical passes
+  - fixes the explicit-window banner so it reports the true timestamp span instead of the default `--days`
+- `unified_orchestrator/orchestrator.py`
+  - live path now accepts `--review-model`
+  - live path now accepts `--review-thinking-level`
+
+Focused verification:
+
+```bash
+source .venv313/bin/activate
+pytest -q \
+  tests/test_llm_hourly_trader_provider_cache_only.py \
+  tests/test_unified_orchestrator_backtest_hybrid.py \
+  tests/test_unified_orchestrator_orchestrator.py
+```
+
+Result:
+
+- `18 passed`
+
+Low-cost smoke test:
+
+```bash
+source .venv313/bin/activate
+python -m unified_orchestrator.backtest_hybrid \
+  --symbols BTCUSD \
+  --days 2 \
+  --modes gemini_only \
+  --decision-cadence daily \
+  --reprompt-passes 2 \
+  --reprompt-policy actionable \
+  --review-model gemini-2.5-flash \
+  --output-json analysis/gemini_reprompt_60d_20260317/smoke_btc_daily_actionable_review25.json
+```
+
+Smoke result:
+
+- artifact: `analysis/gemini_reprompt_60d_20260317/smoke_btc_daily_actionable_review25.json`
+- window: `2026-03-14 10:00:00+00:00 .. 2026-03-16 10:00:00+00:00`
+- return: `+0.00%`
+- fills: `0`
+- provider calls: `3`
+- takeaway: mixed-model review works, and `actionable` really skips pass 2 on flat holds
+
+Cached 60-day first-pass analysis on the exact baseline window:
+
+```bash
+source .venv313/bin/activate
+python scripts/analyze_actionable_reprompts.py \
+  --symbols BTCUSD ETHUSD SOLUSD LTCUSD AVAXUSD \
+  --start-ts 2025-12-08T15:00:00Z \
+  --end-ts 2026-02-06T15:00:00Z \
+  --output-json analysis/gemini_reprompt_60d_20260317/crypto5_actionable_counts.json
+```
+
+Actionable-plan counts from cached single-pass prompts:
+
+- `BTCUSD`: `40 / 61` actionable
+- `ETHUSD`: `13 / 61` actionable
+- `SOLUSD`: `17 / 61` actionable
+- `LTCUSD`: `24 / 61` actionable
+- `AVAXUSD`: `20 / 61` actionable
+- total: `114 / 305` actionable
+
+Entry-only review counts from the same cached first-pass prompts:
+
+- `BTCUSD`: `18 / 61`
+- `ETHUSD`: `8 / 61`
+- `SOLUSD`: `8 / 61`
+- `LTCUSD`: `8 / 61`
+- `AVAXUSD`: `8 / 61`
+- total: `50 / 305`
+
+Category mix on the same window:
+
+- `50` `entry_with_exit`
+- `64` `exit_only`
+- `191` `flat_hold`
+
+Implication:
+
+- the mixed-model 60-day replay should need about `305` logical first-pass decisions but only about `114` second-pass Gemini reviewer calls
+- that makes the split-bucket path operationally plausible even though the old same-model double-pass was impossible
+- the new `entry_only` policy is the cheapest realistic follow-up: it would review only `50` entry plans and skip `64` exit-management holds
+
+Next speed lever:
+
+- reviewer pass latency is still high because pass 2 currently inherits the same `HIGH` thinking config as pass 1 unless overridden
+- the code now supports `--review-thinking-level`, so the next cheap runtime experiment is:
+  - keep pass 1 on the current production-like thinking level
+  - run pass 2 with `LOW` or no extra thinking
+- reviewer experiments now also support `--review-cache-namespace`, so `LOW` and `HIGH` reviewer runs no longer silently share the same pass-2 cache entries
+- reviewer experiments now also support `--review-max-confidence`, so pass 2 can be limited to shakier first-pass plans
+
+Confidence-capped entry-review counts from the same cached first-pass prompts:
+
+```bash
+source .venv313/bin/activate
+python scripts/analyze_actionable_reprompts.py \
+  --symbols BTCUSD ETHUSD SOLUSD LTCUSD AVAXUSD \
+  --start-ts 2025-12-08T15:00:00Z \
+  --end-ts 2026-02-06T15:00:00Z \
+  --reprompt-policy entry_only \
+  --review-max-confidence 0.60 \
+  --output-json analysis/gemini_reprompt_60d_20260317/crypto5_entryonly_conf06_counts.json
+
+python scripts/analyze_actionable_reprompts.py \
+  --symbols BTCUSD ETHUSD SOLUSD LTCUSD AVAXUSD \
+  --start-ts 2025-12-08T15:00:00Z \
+  --end-ts 2026-02-06T15:00:00Z \
+  --reprompt-policy entry_only \
+  --review-max-confidence 0.55 \
+  --output-json analysis/gemini_reprompt_60d_20260317/crypto5_entryonly_conf055_counts.json
+```
+
+Counts:
+
+- `entry_only`: `50 / 305`
+- `entry_only + conf<=0.60`: `33 / 305`
+- `entry_only + conf<=0.55`: `13 / 305`
+
+Interpretation:
+
+- `0.60` looks like the first sensible confidence cap if we want a meaningfully cheaper reviewer without dropping to almost no second-pass coverage
+- `0.55` is probably too aggressive for the first full-basket follow-up unless the uncapped `entry_only` run still comes back too slow
+
+Chronos-side follow-up from codebase review:
+
+- best low-blast-radius hook for OHLC smoothing / band-clamp experiments:
+  - hourly cache writer: `binanceneural/forecasts.py`
+  - daily cache writer: `strategytrainingneural/forecast_cache.py`
+- best implementation shape:
+  - one shared postprocessor under `src/models/chronos2_postprocessing.py`
+  - writer-edge integration first, consumer-edge feature expansion only if the RL model needs band width explicitly
+
+Current run in progress:
+
+```bash
+source .venv313/bin/activate
+python -u -m unified_orchestrator.backtest_hybrid \
+  --symbols BTCUSD ETHUSD SOLUSD LTCUSD AVAXUSD \
+  --modes gemini_only \
+  --decision-cadence daily \
+  --reprompt-passes 2 \
+  --reprompt-policy actionable \
+  --review-model gemini-2.5-flash \
+  --start-ts 2025-12-08T15:00:00Z \
+  --end-ts 2026-02-06T15:00:00Z \
+  --output-json analysis/gemini_reprompt_60d_20260317/crypto5_daily_actionable_review25_60d.json
+```
+
+Additional reviewer-isolation probes:
+
+1. Latest-window BTC smoke with isolated `entry_only + LOW` reviewer:
+
+```bash
+source .venv313/bin/activate
+python -m unified_orchestrator.backtest_hybrid \
+  --symbols BTCUSD \
+  --days 2 \
+  --modes gemini_only \
+  --decision-cadence daily \
+  --reprompt-passes 2 \
+  --reprompt-policy entry_only \
+  --review-model gemini-2.5-flash \
+  --review-thinking-level LOW \
+  --review-cache-namespace entry-low-smoke \
+  --output-json analysis/gemini_reprompt_60d_20260317/smoke_btc_daily_entryonly_review25_low.json
+```
+
+Result:
+
+- artifact: `analysis/gemini_reprompt_60d_20260317/smoke_btc_daily_entryonly_review25_low.json`
+- window: `2026-03-14 11:00:00+00:00 .. 2026-03-16 11:00:00+00:00`
+- `3` provider calls
+- `3` logical passes
+- `0` fills
+- takeaway: this slice had no entry reviews, so it only validated the isolated-cache machinery
+
+2. Early-December BTC probe with isolated `entry_only + LOW` reviewer:
+
+```bash
+source .venv313/bin/activate
+python -u -m unified_orchestrator.backtest_hybrid \
+  --symbols BTCUSD \
+  --modes gemini_only \
+  --decision-cadence daily \
+  --reprompt-passes 2 \
+  --reprompt-policy entry_only \
+  --review-model gemini-2.5-flash \
+  --review-thinking-level LOW \
+  --review-cache-namespace entry-low-dec-btc \
+  --start-ts 2025-12-08T15:00:00Z \
+  --end-ts 2025-12-10T23:00:00Z \
+  --output-json analysis/gemini_reprompt_60d_20260317/smoke_btc_dec_entryonly_review25_low.json
+```
+
+Result:
+
+- artifact: `analysis/gemini_reprompt_60d_20260317/smoke_btc_dec_entryonly_review25_low.json`
+- `3` provider calls
+- `4` logical passes
+- `0` fills
+- takeaway: this window did trigger at least one isolated entry review without forcing a full pass-1 rerun
+
+BTC-only canary now running:
+
+```bash
+source .venv313/bin/activate
+python -u -m unified_orchestrator.backtest_hybrid \
+  --symbols BTCUSD \
+  --modes gemini_only \
+  --decision-cadence daily \
+  --reprompt-passes 2 \
+  --reprompt-policy entry_only \
+  --review-model gemini-2.5-flash \
+  --review-thinking-level LOW \
+  --review-cache-namespace btc60-entry-low \
+  --start-ts 2025-12-08T15:00:00Z \
+  --end-ts 2026-02-06T15:00:00Z \
+  --output-json analysis/gemini_reprompt_60d_20260317/btc60_entryonly_review25_low.json
+```
+
+BTC-only confidence-capped canaries now running:
+
+```bash
+source .venv313/bin/activate
+python -u -m unified_orchestrator.backtest_hybrid \
+  --symbols BTCUSD \
+  --modes gemini_only \
+  --decision-cadence daily \
+  --reprompt-passes 2 \
+  --reprompt-policy entry_only \
+  --review-max-confidence 0.60 \
+  --review-model gemini-2.5-flash \
+  --review-thinking-level LOW \
+  --review-cache-namespace btc60-entry-low-conf06 \
+  --start-ts 2025-12-08T15:00:00Z \
+  --end-ts 2026-02-06T15:00:00Z \
+  --output-json analysis/gemini_reprompt_60d_20260317/btc60_entryonly_conf06_review25_low.json
+
+python -u -m unified_orchestrator.backtest_hybrid \
+  --symbols BTCUSD \
+  --modes gemini_only \
+  --decision-cadence daily \
+  --reprompt-passes 2 \
+  --reprompt-policy entry_only \
+  --review-max-confidence 0.55 \
+  --review-model gemini-2.5-flash \
+  --review-thinking-level LOW \
+  --review-cache-namespace btc60-entry-low-conf055 \
+  --start-ts 2025-12-08T15:00:00Z \
+  --end-ts 2026-02-06T15:00:00Z \
+  --output-json analysis/gemini_reprompt_60d_20260317/btc60_entryonly_conf055_review25_low.json
+```
+
+First completed capped-review result:
+
+- artifact: `analysis/gemini_reprompt_60d_20260317/btc60_entryonly_conf055_review25_low.json`
+- config:
+  - `reprompt_policy=entry_only`
+  - `review_max_confidence=0.55`
+  - `review_model=gemini-2.5-flash`
+  - `review_thinking_level=LOW`
+- metrics:
+  - return: `-26.40%`
+  - sortino: `-4.27`
+  - max drawdown: `35.91%`
+  - fills: `39`
+- versus BTC single-pass baseline:
+  - return improved by `+1.38%`
+  - sortino improved by `+0.69`
+  - max drawdown improved by `0.80%`
+  - fills dropped by `20`
+- conclusion:
+  - this is a real improvement over single-pass on the 60-day BTC window
+  - but it is still materially negative, so it is not a production candidate by itself
+  - it does justify keeping the cheaper confidence-capped reviewer family in the search set
+
+Instrumentation note:
+
+- historical `provider calls` on the already-running canaries are best treated as an upper bound
+- after this result, provider-call tracing was tightened so future runs count actual provider function invocations rather than outer cache misses under concurrent cache fills
+
+Reference baseline on the same BTC window:
+
+```bash
+source .venv313/bin/activate
+python -u -m unified_orchestrator.backtest_hybrid \
+  --symbols BTCUSD \
+  --modes gemini_only \
+  --decision-cadence daily \
+  --reprompt-passes 1 \
+  --start-ts 2025-12-08T15:00:00Z \
+  --end-ts 2026-02-06T15:00:00Z \
+  --output-json analysis/gemini_reprompt_60d_20260317/btc60_single_pass.json
+```
+
+BTC single-pass baseline:
+
+- artifact: `analysis/gemini_reprompt_60d_20260317/btc60_single_pass.json`
+- return: `-27.77%`
+- sortino: `-4.97`
+- max drawdown: `36.71%`
+- fills: `59`
+
+Chronos writer-edge cleanup:
+
+- added shared forecast repair in `src/models/chronos2_postprocessing.py`
+- wired that repair into:
+  - `binanceneural/forecasts.py`
+  - `strategytrainingneural/forecast_cache.py`
+  - `binanceneural/trade_binance_daily_levels.py`
+- behavior:
+  - monotonic close quantiles
+  - high/low wrapped around repaired close
+  - move/volatility derived from repaired values instead of raw broken quantiles
+
+Focused verification after the Gemini and Chronos changes:
+
+```bash
+source .venv313/bin/activate
+pytest -q \
+  tests/test_llm_hourly_trader_provider_cache_only.py \
+  tests/test_unified_orchestrator_backtest_hybrid.py \
+  tests/test_unified_orchestrator_orchestrator.py \
+  tests/test_analyze_actionable_reprompts.py \
+  tests/test_trade_binance_daily_levels.py \
+  tests/test_chronos2_postprocessing.py \
+  tests/test_strategytrainingneural_forecasts.py \
+  tests/test_chronos_forecast_manager_modes.py
+```
+
+Result:
+
+- `32 passed`
+
+### `../btcmarketsbot` ideas worth stealing later
+
+Useful:
+
+- exchange metadata filter plus an explicit executable universe allowlist
+- account-conditioned universe pruning: keep symbols containing held assets even if they fall outside the main candidate list
+- Chronos-side OHLC post-processing with:
+  - `wick_scale=0.75`
+  - `body_scale=1.0`
+  - band-clamped OHLC consistency
+- optional close-median EMA smoothing and explicit forecast uncertainty bands (`low_band` / `high_band`)
+- multi-symbol Chronos batching with a bounded context window
+
+Not useful:
+
+- the repo mostly picks the first `N` pairs rather than actually scoring them
+- no meaningful FDUSD or fee-free routing logic was found
+- the old spread/ticker logic is tied to deprecated Poloniex metadata
+
+### 2026-03-17: simulator alignment, reviewer comparison, and next RL branch
+
+Backtest alignment change:
+
+- `unified_orchestrator/backtest_hybrid.py` now enforces a minimum confidence floor for new long entries in the simulator, matching the live crypto execution behavior more closely.
+- This gate only suppresses fresh entries while flat. It does not suppress exits for positions already held.
+- The backtest now records `min_plan_confidence` and `suppressed_low_conf_entries` in the output JSON.
+
+Focused verification:
+
+```bash
+source .venv313/bin/activate
+pytest -q \
+  tests/test_unified_orchestrator_backtest_hybrid.py \
+  tests/test_pufferlib_market_autoresearch_rl.py
+```
+
+Result:
+
+- `18 passed`
+
+#### Cached 60d confidence-floor sweep on single-pass Gemini
+
+Window:
+
+- `2025-12-08T15:00:00Z .. 2026-02-06T15:00:00Z`
+
+Commands:
+
+```bash
+source .venv313/bin/activate
+python -u -m unified_orchestrator.backtest_hybrid \
+  --symbols BTCUSD \
+  --modes gemini_only \
+  --decision-cadence daily \
+  --reprompt-passes 1 \
+  --min-plan-confidence 0.4 \
+  --start-ts 2025-12-08T15:00:00Z \
+  --end-ts 2026-02-06T15:00:00Z \
+  --output-json analysis/gemini_reprompt_60d_20260317/btc60_single_pass_conf04.json
+
+python -u -m unified_orchestrator.backtest_hybrid \
+  --symbols BTCUSD \
+  --modes gemini_only \
+  --decision-cadence daily \
+  --reprompt-passes 1 \
+  --min-plan-confidence 0.5 \
+  --start-ts 2025-12-08T15:00:00Z \
+  --end-ts 2026-02-06T15:00:00Z \
+  --output-json analysis/gemini_reprompt_60d_20260317/btc60_single_pass_conf05.json
+
+python -u -m unified_orchestrator.backtest_hybrid \
+  --symbols BTCUSD \
+  --modes gemini_only \
+  --decision-cadence daily \
+  --reprompt-passes 1 \
+  --min-plan-confidence 0.55 \
+  --start-ts 2025-12-08T15:00:00Z \
+  --end-ts 2026-02-06T15:00:00Z \
+  --output-json analysis/gemini_reprompt_60d_20260317/btc60_single_pass_conf055.json
+
+python -u -m unified_orchestrator.backtest_hybrid \
+  --symbols BTCUSD ETHUSD SOLUSD LTCUSD AVAXUSD \
+  --modes gemini_only \
+  --decision-cadence daily \
+  --reprompt-passes 1 \
+  --min-plan-confidence 0.4 \
+  --start-ts 2025-12-08T15:00:00Z \
+  --end-ts 2026-02-06T15:00:00Z \
+  --output-json analysis/gemini_reprompt_60d_20260317/crypto5_daily_single_pass_conf04.json
+
+python -u -m unified_orchestrator.backtest_hybrid \
+  --symbols BTCUSD ETHUSD SOLUSD LTCUSD AVAXUSD \
+  --modes gemini_only \
+  --decision-cadence daily \
+  --reprompt-passes 1 \
+  --min-plan-confidence 0.5 \
+  --start-ts 2025-12-08T15:00:00Z \
+  --end-ts 2026-02-06T15:00:00Z \
+  --output-json analysis/gemini_reprompt_60d_20260317/crypto5_daily_single_pass_conf05.json
+```
+
+Results:
+
+- BTC `0.40` floor: unchanged from baseline
+  - return `-27.77%`, sortino `-4.97`, max drawdown `36.71%`, fills `59`, suppressed entries `0`
+- BTC `0.50` floor: slightly worse
+  - return `-28.39%`, sortino `-5.06`, max drawdown `37.24%`, fills `57`, suppressed entries `1`
+- BTC `0.55` floor: same as `0.50`
+  - return `-28.39%`, sortino `-5.06`, max drawdown `37.24%`, fills `57`, suppressed entries `1`
+- 5-symbol `0.40` floor: unchanged from baseline
+  - return `-17.08%`, sortino `-5.27`, max drawdown `20.60%`, fills `168`, suppressed entries `0`
+- 5-symbol `0.50` floor: slightly worse
+  - return `-17.19%`, sortino `-5.32`, max drawdown `20.70%`, fills `166`, suppressed entries `1`
+
+Conclusion:
+
+- The recent reviewer gains are not explained by a simple stricter confidence gate.
+- Matching the live `0.40` floor is still the right simulator default, but pushing the floor higher hurt this window.
+
+#### BTC capped-review update
+
+Artifact:
+
+- `analysis/gemini_reprompt_60d_20260317/btc60_entryonly_conf06_review25_low.json`
+
+Result on the same BTC 60d window:
+
+- config:
+  - `reprompt_policy=entry_only`
+  - `review_max_confidence=0.60`
+  - `review_model=gemini-2.5-flash`
+  - `review_thinking_level=LOW`
+- metrics:
+  - return `-26.44%`
+  - sortino `-4.20`
+  - max drawdown `35.94%`
+  - fills `13`
+- versus single-pass:
+  - return improved by `+1.34%`
+  - sortino improved by `+0.76`
+  - max drawdown improved by `0.77%`
+  - fills dropped by `46`
+- versus the earlier `conf<=0.55` reviewer:
+  - return is slightly worse by `0.04%`
+  - sortino is slightly better by `0.07`
+  - max drawdown is slightly worse by `0.03%`
+  - fills dropped by `26`
+
+Read:
+
+- `conf<=0.60` is the cleanest BTC reviewer candidate so far because it keeps almost the same PnL improvement while cutting fills very aggressively.
+- It is still negative on the 60-day BTC window, so it is not deployable by itself.
+
+#### RL autoresearch wiring fix: `smooth_downside_temperature`
+
+Problem:
+
+- `pufferlib_market.train` and the C environment already support `smooth_downside_temperature`.
+- `pufferlib_market.autoresearch_rl` was not forwarding that knob, so every smooth-downside experiment was silently stuck on the trainer default temperature.
+
+Fix:
+
+- added `smooth_downside_temperature` to `TrialConfig`
+- passed `--smooth-downside-temperature` through the train command
+- logged the knob in leaderboard rows
+- added two new robust daily variants:
+  - `robust_reg_tp005_sds02_t01`
+  - `robust_reg_tp005_sds02_t05`
+
+Started targeted sweep:
+
+```bash
+source .venv313/bin/activate
+PYTHONPATH=$PWD/PufferLib:$PYTHONPATH python -u -m pufferlib_market.autoresearch_rl \
+  --train-data pufferlib_market/data/mixed23_fresh_train.bin \
+  --val-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --time-budget 180 --max-trials 3 \
+  --descriptions robust_reg_tp005_sds02,robust_reg_tp005_sds02_t01,robust_reg_tp005_sds02_t05 \
+  --periods-per-year 365 --max-steps-override 90 \
+  --holdout-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --holdout-eval-steps 90 --holdout-n-windows 20 \
+  --holdout-fee-rate 0.001 --holdout-fill-buffer-bps 5 \
+  --replay-eval-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --replay-eval-hourly-root trainingdatahourly \
+  --replay-eval-start-date 2025-06-01 \
+  --replay-eval-end-date 2026-02-05 \
+  --replay-eval-fill-buffer-bps 5 \
+  --rank-metric replay_hourly_return_pct \
+  --leaderboard pufferlib_market/autoresearch_mixed23_fresh_sds_temp_leaderboard.csv \
+  --checkpoint-root pufferlib_market/checkpoints/mixed23_fresh_sds_temp
+```
+
+Current status:
+
+- the sweep is running
+- leaderboard now exists:
+  - `pufferlib_market/autoresearch_mixed23_fresh_sds_temp_leaderboard.csv`
+- trial `0` baseline (`robust_reg_tp005_sds02`, `smooth_downside_temperature=0.02`) has finished:
+  - validation return `-12.35%`
+  - hourly replay return `+7.97%`
+  - hourly replay sortino `1.66`
+  - hourly replay max drawdown `44.93%`
+  - holdout robust score `-186.57`
+- first checkpoint exists:
+  - `pufferlib_market/checkpoints/mixed23_fresh_sds_temp/robust_reg_tp005_sds02/best.pt`

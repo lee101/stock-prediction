@@ -1,0 +1,365 @@
+{
+  "candidates": {
+    "ent_anneal": {
+      "checkpoint": "pufferlib_market/checkpoints/mixed23_fresh_replay/ent_anneal/best.pt",
+      "daily": {
+        "max_drawdown": 0.15538701258126603,
+        "num_trades": 49,
+        "sortino": 8.923733532176636,
+        "total_return": 0.623686882794596,
+        "win_rate": 0.6326530612244898
+      },
+      "hourly_replay": {
+        "max_drawdown": 0.3477380319929813,
+        "num_orders": 82,
+        "num_trades": 41,
+        "sortino": 1.0103424325618056,
+        "total_return": 0.08017693753522034,
+        "win_rate": 0.5853658536585366
+      }
+    },
+    "reg_combo_2": {
+      "checkpoint": "pufferlib_market/checkpoints/mixed23_fresh_targeted/reg_combo_2/best.pt",
+      "daily": {
+        "max_drawdown": 0.21593127951969593,
+        "num_trades": 40,
+        "sortino": 4.215273283532887,
+        "total_return": 0.3024111096408931,
+        "win_rate": 0.55
+      },
+      "hourly_replay": {
+        "max_drawdown": 0.3421202819978281,
+        "num_orders": 80,
+        "num_trades": 40,
+        "sortino": 2.160276176760618,
+        "total_return": 0.27529402246029333,
+        "win_rate": 0.525
+      }
+    },
+    "wd_01": {
+      "checkpoint": "pufferlib_market/checkpoints/mixed23_fresh_replay/wd_01/best.pt",
+      "daily": {
+        "max_drawdown": 0.20189622189194747,
+        "num_trades": 49,
+        "sortino": 2.397798957525225,
+        "total_return": 0.13251355881799992,
+        "win_rate": 0.5918367346938775
+      },
+      "hourly_replay": {
+        "max_drawdown": 0.2652487731386501,
+        "num_orders": 88,
+        "num_trades": 44,
+        "sortino": 1.268122782235606,
+        "total_return": 0.11106874309239338,
+        "win_rate": 0.6818181818181818
+      }
+    }
+  },
+  "daily_data_path": "/tmp/mixed23_val_60d_20251208_20260205.bin",
+  "date_range": {
+    "end": "2026-02-05",
+    "start": "2025-12-08"
+  },
+  "decision_winners": [
+    {
+      "date": "2025-12-08",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-12-09",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-12-10",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-12-11",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-12-12",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-12-13",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-12-14",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-12-15",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-12-16",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-12-17",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-12-18",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-12-19",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-12-20",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-12-21",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-12-22",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-12-23",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-12-24",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-12-25",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-12-26",
+      "winner": "wd_01"
+    },
+    {
+      "date": "2025-12-27",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2025-12-28",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2025-12-29",
+      "winner": "wd_01"
+    },
+    {
+      "date": "2025-12-30",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2025-12-31",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2026-01-01",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2026-01-02",
+      "winner": "wd_01"
+    },
+    {
+      "date": "2026-01-03",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2026-01-04",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2026-01-05",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2026-01-06",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2026-01-07",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2026-01-08",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2026-01-09",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2026-01-10",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2026-01-11",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2026-01-12",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2026-01-13",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2026-01-14",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2026-01-15",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2026-01-16",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2026-01-17",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2026-01-18",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2026-01-19",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2026-01-20",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2026-01-21",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2026-01-22",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2026-01-23",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2026-01-24",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2026-01-25",
+      "winner": "wd_01"
+    },
+    {
+      "date": "2026-01-26",
+      "winner": "wd_01"
+    },
+    {
+      "date": "2026-01-27",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2026-01-28",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2026-01-29",
+      "winner": "wd_01"
+    },
+    {
+      "date": "2026-01-30",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2026-01-31",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2026-02-01",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2026-02-02",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2026-02-03",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2026-02-04",
+      "winner": "reg_combo_2"
+    }
+  ],
+  "fill_buffer_bps": 5.0,
+  "hourly_data_root": "trainingdatahourly",
+  "meta": {
+    "daily": {
+      "max_drawdown": 0.1307399979290447,
+      "num_trades": 45,
+      "sortino": 8.738433272000204,
+      "total_return": 0.6094826648193874,
+      "win_rate": 0.6
+    },
+    "hourly_replay": {
+      "max_drawdown": 0.18564454487579202,
+      "num_orders": 78,
+      "num_trades": 39,
+      "sortino": 3.2144048115152994,
+      "total_return": 0.3768367631588091,
+      "win_rate": 0.5897435897435898
+    },
+    "winners": {
+      "latest_winner": "reg_combo_2",
+      "switch_count": 13,
+      "winner_counts": {
+        "ent_anneal": 29,
+        "reg_combo_2": 24,
+        "wd_01": 6
+      }
+    }
+  },
+  "selector": {
+    "fallback_strategy": "ent_anneal",
+    "lookback_days": 10,
+    "metric": "return",
+    "min_score_gap": 0.0,
+    "recency_halflife_days": 4.0,
+    "require_full_window": true,
+    "selection_mode": "sticky",
+    "sit_out_threshold": null,
+    "switch_margin": 0.0
+  },
+  "symbols": [
+    "AAPL",
+    "NFLX",
+    "NVDA",
+    "ADBE",
+    "ADSK",
+    "COIN",
+    "GOOG",
+    "MSFT",
+    "PYPL",
+    "SAP",
+    "TSLA",
+    "BTCUSD",
+    "ETHUSD",
+    "SOLUSD",
+    "LTCUSD",
+    "AVAXUSD",
+    "DOGEUSD",
+    "LINKUSD",
+    "AAVEUSD",
+    "UNIUSD",
+    "DOTUSD",
+    "SHIBUSD",
+    "XRPUSD"
+  ]
+}

@@ -187,6 +187,129 @@ python -u -m pufferlib_market.evaluate \
     --fill-slippage-bps 5 --periods-per-year 365
 ```
 
+**Latest local fresh-universe retest (March 16, 2026):**
+
+The local workspace does not currently contain the legacy `mixed23_daily_{train,val}.bin`
+artifacts or the documented `autoresearch_mixed23_daily/ent_anneal` checkpoint, and the
+old 23-symbol stock+crypto universe is now clipped by stale symbols like `NET`, `SPY`, and
+`QQQ`. A fresh 23-symbol mixed universe aligned through **2026-02-05** was rebuilt locally
+and re-swept over the strongest regularized configs.
+
+```
+Fresh train data: pufferlib_market/data/mixed23_fresh_train.bin
+Fresh val data:   pufferlib_market/data/mixed23_fresh_val.bin
+Leaderboard:      pufferlib_market/autoresearch_mixed23_fresh_targeted_leaderboard.csv
+Best checkpoint:  pufferlib_market/checkpoints/mixed23_fresh_targeted/reg_combo_2/best.pt
+```
+
+Targeted sweep result on the fresh universe:
+
+| Config | Val Return | Val Sortino | Profitable% | Holdout Robust Score |
+|--------|-----------:|------------:|------------:|---------------------:|
+| `reg_combo_2` | **+15.72%** | **1.64** | **99.0%** | **-121.12** |
+| `slip_10bps` | -12.59% | 0.26 | 0.0% | -173.50 |
+| `clip_vloss` | -35.28% | -0.97 | 0.0% | -295.84 |
+| `wd_01` | -56.61% | -1.04 | 0.0% | -349.80 |
+
+Reproduction command:
+
+```bash
+python -u -m pufferlib_market.autoresearch_rl \
+    --train-data pufferlib_market/data/mixed23_fresh_train.bin \
+    --val-data pufferlib_market/data/mixed23_fresh_val.bin \
+    --time-budget 60 --max-trials 4 \
+    --descriptions clip_vloss,wd_01,slip_10bps,reg_combo_2 \
+    --leaderboard pufferlib_market/autoresearch_mixed23_fresh_targeted_leaderboard.csv \
+    --checkpoint-root pufferlib_market/checkpoints/mixed23_fresh_targeted \
+    --periods-per-year 365 --max-steps-override 90 \
+    --holdout-data pufferlib_market/data/mixed23_fresh_val.bin \
+    --holdout-eval-steps 90 --holdout-n-windows 20 \
+    --holdout-fee-rate 0.001 \
+    --rank-metric holdout_robust_score
+```
+
+**Intraday replay stress test on the same fresh 90-day window (March 16, 2026):**
+
+The leaderboard above is still based on the daily C environment, so each fresh
+checkpoint was also replayed against aligned hourly bars from the same
+`mixed23_fresh_val.bin` window (`2025-06-01` through **2026-02-05**) using
+`python -m pufferlib_market.replay_eval --run-hourly-policy`.
+
+Saved reports:
+
+```
+pufferlib_market/replay_eval_mixed23_fresh_reg_combo_2.json
+pufferlib_market/replay_eval_mixed23_fresh_ent_anneal.json
+pufferlib_market/replay_eval_mixed23_fresh_clip_vloss.json
+```
+
+Comparison:
+
+| Config | Daily Return | Hourly Replay Return | Hourly Replay Sortino | Hourly Replay Max DD | Hourly Policy Return | Hourly Policy Orders |
+|--------|-------------:|---------------------:|----------------------:|---------------------:|---------------------:|---------------------:|
+| `reg_combo_2` | -22.66% | **-19.36%** | -1.32 | 67.22% | -74.11% | 966 |
+| `ent_anneal` | **-18.78%** | -26.76% | **0.80** | **43.99%** | **-55.75%** | **446** |
+| `clip_vloss` | -44.79% | -35.37% | 0.52 | 54.24% | -70.44% | 546 |
+
+Interpretation:
+
+- None of the previously saved fresh checkpoints are robust enough to deploy
+  as-is once intraday execution stress is considered.
+- Among the previously saved checkpoints, `reg_combo_2` remained the least bad
+  on the more realistic "frozen daily action replayed hourly" path, which is
+  the closest match to the current daily bot.
+- `ent_anneal` is less bad than the others if the policy is naively re-run every
+  hour, but that mode still thrashes badly and is not a valid deployment target.
+- The next optimization target should be reducing intraday drawdown/churn under
+  hourly replay, not just improving the daily close-to-close leaderboard.
+
+Replay-ranked sweep actually run on the same four configs:
+
+```bash
+python -u -m pufferlib_market.autoresearch_rl \
+    --train-data pufferlib_market/data/mixed23_fresh_train.bin \
+    --val-data pufferlib_market/data/mixed23_fresh_val.bin \
+    --time-budget 60 --max-trials 4 \
+    --descriptions ent_anneal,clip_vloss,wd_01,reg_combo_2 \
+    --periods-per-year 365 --max-steps-override 90 \
+    --holdout-data pufferlib_market/data/mixed23_fresh_val.bin \
+    --holdout-eval-steps 90 --holdout-n-windows 20 \
+    --holdout-fee-rate 0.001 \
+    --replay-eval-data pufferlib_market/data/mixed23_fresh_val.bin \
+    --replay-eval-hourly-root trainingdatahourly \
+    --replay-eval-start-date 2025-06-01 \
+    --replay-eval-end-date 2026-02-05 \
+    --replay-eval-run-hourly-policy \
+    --rank-metric replay_hourly_return_pct \
+    --leaderboard pufferlib_market/autoresearch_mixed23_fresh_replay_leaderboard.csv \
+    --checkpoint-root pufferlib_market/checkpoints/mixed23_fresh_replay
+```
+
+Replay-ranked leaderboard result:
+
+```
+Leaderboard:     pufferlib_market/autoresearch_mixed23_fresh_replay_leaderboard.csv
+Best checkpoint: pufferlib_market/checkpoints/mixed23_fresh_replay/ent_anneal/best.pt
+```
+
+| Config | Replay Hourly Return | Val Return | Holdout Robust Score |
+|--------|---------------------:|-----------:|---------------------:|
+| `ent_anneal` | **+57.22%** | -32.81% | -285.68 |
+| `wd_01` | +5.56% | -36.78% | -282.17 |
+| `clip_vloss` | -1.41% | -22.50% | -216.06 |
+| `reg_combo_2` | -48.48% | **+22.54%** | **-148.00** |
+
+Interpretation of the replay-ranked retrain:
+
+- The ranking flips completely once the search is told to optimize the frozen
+  daily action replay metric.
+- A fresh `ent_anneal` retrain is now best on hourly replay, but it conflicts
+  sharply with both the daily validation return and the multi-window holdout
+  score, so it is not yet a clean production switch.
+- `reg_combo_2` still dominates the old daily/holdout metrics, but it collapses
+  under the replay target, which confirms the daily leaderboard alone is
+  misleading for deployment.
+
 **Other strong configs (8-symbol crypto daily, fee=0):**
 | Config | OOS Return | Sortino | Profitable% |
 |--------|-----------|---------|-------------|
@@ -314,6 +437,151 @@ mismatches with the C env binary data. Always use C env evaluation (evaluate.py)
 as the authoritative benchmark. The Python scripts are for live inference only,
 where features must be computed on-the-fly from fresh market data.
 
+## 60-Day Mixed23 Retest (2025-12-08 to 2026-02-05)
+
+Re-exported the exact 60-day daily validation slice to keep replay_eval aligned with
+the hourly replay window:
+
+```bash
+python -m pufferlib_market.export_data_daily \
+  --symbols AAPL,NFLX,NVDA,ADBE,ADSK,COIN,GOOG,MSFT,PYPL,SAP,TSLA,BTCUSD,ETHUSD,SOLUSD,LTCUSD,AVAXUSD,DOGEUSD,LINKUSD,AAVEUSD,UNIUSD,DOTUSD,SHIBUSD,XRPUSD \
+  --output /tmp/mixed23_val_60d_20251208_20260205.bin \
+  --start-date 2025-12-08 --end-date 2026-02-05 --min-days 60
+```
+
+Saved 60-day comparison: `pufferlib_market/replay_eval_mixed23_60d_comparison.csv`
+
+| Checkpoint | Daily Return | Daily MaxDD | Hourly Replay Return | Hourly Replay MaxDD | Hourly Policy Return |
+|------------|--------------|-------------|----------------------|---------------------|----------------------|
+| `ent_anneal` | `+62.37%` | `15.54%` | `+8.02%` | `34.77%` | `-65.56%` |
+| `reg_combo_2` | `+30.24%` | `21.59%` | `+27.53%` | `34.21%` | `-47.06%` |
+| `wd_01` | `+13.25%` | `20.19%` | `+11.11%` | `26.52%` | `-37.59%` |
+| `clip_vloss` | `-23.73%` | `27.01%` | `-11.76%` | `22.01%` | `-51.20%` |
+
+Takeaway:
+- `ent_anneal` still wins on pure daily PnL and daily drawdown.
+- `reg_combo_2` is the best recent checkpoint on frozen-daily hourly replay.
+- `wd_01` is the most balanced recent compromise, but it is not a clear winner.
+- None of these checkpoints are safe to deploy as true hourly policies; hourly-policy replay remains strongly negative for all four.
+- Result: **no production switch yet**. Keep ranking on both daily and hourly-replay metrics until one checkpoint wins both with lower drawdown.
+
+## 5bp Fill Buffer + Adaptive Meta Retest (2026-03-16)
+
+The replay/holdout stack now requires daily bars to trade **through** a limit by
+`5bp` before a fill, matching the hourly trader simulator's fill semantics more
+closely. Relevant artifacts:
+
+- `pufferlib_market/replay_eval_5bp_60d/*.json`
+- `pufferlib_market/meta_replay_5bp_60d/*.json`
+- `pufferlib_market/meta_replay_5bp_3window_sweep.csv`
+- `pufferlib_market/mixed23_3window_strategy_summary.csv`
+
+### Latest 60d window (2025-12-08 to 2026-02-05)
+
+The best **current-window** adaptive selector was:
+
+- selector: `sticky return`, `lookback=14d`, `recency_halflife=5d`, `switch_margin=0.01`
+- file: `pufferlib_market/meta_replay_5bp_60d/sticky_return_lb14_hl5_sm001.json`
+
+Current-window comparison:
+
+| Strategy | Daily Return | Daily MaxDD | Hourly Replay Return | Hourly Replay MaxDD |
+|----------|--------------|-------------|----------------------|---------------------|
+| `ent_anneal` | `+62.37%` | `15.54%` | `+8.02%` | `34.77%` |
+| `reg_combo_2` | `+30.24%` | `21.59%` | `+27.53%` | `34.21%` |
+| `wd_01` | `+13.25%` | `20.19%` | `+11.11%` | `26.52%` |
+| `meta sticky return 14/5 + sm=0.01` | `+74.26%` | `13.83%` | `+41.27%` | `24.86%` |
+
+That selector only switched `3` times over the 59 decision days, which is why it
+looked attractive for live use.
+
+### 3x60d robustness check
+
+Replayed the same meta selector unchanged on the two immediately previous 60-day windows:
+
+| Window | `reg_combo_2` Hourly Replay | Meta Hourly Replay | `reg_combo_2` Daily | Meta Daily |
+|--------|-----------------------------|--------------------|---------------------|------------|
+| `2025-12-08..2026-02-05` | `+27.53%` | `+41.27%` | `+30.24%` | `+74.26%` |
+| `2025-10-09..2025-12-07` | `+29.23%` | `-47.79%` | `+20.57%` | `-28.48%` |
+| `2025-08-10..2025-10-08` | `+21.33%` | `-4.75%` | `+21.57%` | `-20.46%` |
+
+Takeaway:
+
+- The latest-window meta winner is **not robust** across adjacent 60-day windows.
+- The 3-window sweep in `pufferlib_market/meta_replay_5bp_3window_sweep.csv` did **not** find a selector that stayed positive on hourly replay across all three windows.
+- `reg_combo_2` remains the only checkpoint in this batch that stayed positive on hourly replay on all three tested windows.
+- `ent_anneal` still dominates the latest window on pure daily PnL, but it fails badly on the older windows.
+- Result: **still no production switch**. The selector logic needs a better regime gate or a broader checkpoint set before it is safe to deploy live.
+
+## Robust Daily Variant Sweep (2026-03-16)
+
+I then ran a targeted daily sweep centered on the only family that had held up
+across the three replay windows: `reg_combo_2`. This required exposing
+`--smoothness-penalty` in `pufferlib_market.train` and wiring
+`drawdown_penalty`, `smooth_downside_penalty`, and `smoothness_penalty`
+through `pufferlib_market.autoresearch_rl`.
+
+Sweep command:
+
+```bash
+source .venv313/bin/activate
+PYTHONPATH=$PWD/PufferLib:$PYTHONPATH python -u -m pufferlib_market.autoresearch_rl \
+  --train-data pufferlib_market/data/mixed23_fresh_train.bin \
+  --val-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --time-budget 180 --max-trials 8 \
+  --descriptions robust_reg_wd02,robust_reg_tp005,robust_reg_tp01,robust_reg_tp005_sds02,robust_reg_tp005_dd002,robust_reg_tp005_sm001,robust_reg_tp005_ent,robust_reg_h512_tp005 \
+  --periods-per-year 365 --max-steps-override 90 \
+  --holdout-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --holdout-eval-steps 90 --holdout-n-windows 20 \
+  --holdout-fee-rate 0.001 --holdout-fill-buffer-bps 5 \
+  --replay-eval-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --replay-eval-hourly-root trainingdatahourly \
+  --replay-eval-start-date 2025-06-01 \
+  --replay-eval-end-date 2026-02-05 \
+  --replay-eval-fill-buffer-bps 5 \
+  --rank-metric replay_hourly_return_pct \
+  --leaderboard pufferlib_market/autoresearch_mixed23_fresh_robust_leaderboard.csv \
+  --checkpoint-root pufferlib_market/checkpoints/mixed23_fresh_robust
+```
+
+Artifacts:
+
+- `pufferlib_market/autoresearch_mixed23_fresh_robust_leaderboard.csv`
+- `pufferlib_market/checkpoints/mixed23_fresh_robust/*/best.pt`
+- `pufferlib_market/mixed23_robust_3window_results.csv`
+- `pufferlib_market/mixed23_robust_3window_summary.csv`
+
+Fresh full-val leaderboard:
+
+| Config | Replay Hourly Return | Val Return | Holdout Robust |
+|--------|---------------------:|-----------:|---------------:|
+| `robust_reg_tp005_sds02` | `+7.31%` | `-5.59%` | `-147.26` |
+| `robust_reg_tp005_ent` | `-1.97%` | `-7.69%` | `-191.95` |
+| `robust_reg_tp01` | `-3.57%` | `+64.43%` | `-95.92` |
+| `robust_reg_h512_tp005` | `-18.92%` | `+49.42%` | `-71.64` |
+
+Three-window replay retest:
+
+| Strategy | Mean Hourly Return | Worst Hourly Return | Worst Hourly MaxDD |
+|----------|--------------------:|--------------------:|-------------------:|
+| `reg_combo_2` | `+26.03%` | `+21.33%` | `34.21%` |
+| `robust_reg_tp01` | `+6.39%` | `-15.24%` | `30.97%` |
+| `robust_reg_h512_tp005` | `+21.79%` | `-48.55%` | `53.87%` |
+| `robust_reg_tp005_ent` | `-14.69%` | `-23.22%` | `41.80%` |
+| `ent_anneal` | `-14.64%` | `-42.43%` | `49.40%` |
+| `robust_reg_tp005_sds02` | `-23.33%` | `-44.64%` | `46.92%` |
+
+Takeaway:
+
+- No new daily checkpoint dominated `reg_combo_2` across the same three replay windows.
+- `robust_reg_tp01` is the only new branch worth carrying forward: on the latest
+  60-day window it lowers hourly replay max drawdown from `34.21%` to `25.80%`,
+  but hourly replay return also drops from `+27.53%` to `+4.01%`, and it turns
+  negative on the older window.
+- Result: **still no production switch**. Keep `reg_combo_2` as the current
+  robustness anchor and treat `robust_reg_tp01` as the main lower-drawdown branch
+  for the next follow-up sweep.
+
 ## Key Learnings
 1. **More diverse symbols = exponentially better**: 3-sym 0% positive → 8-sym 19% → 23-sym 46%
 2. **Stocks + crypto together beats either alone**: Uncorrelated assets maximize RL opportunity
@@ -323,3 +591,4 @@ where features must be computed on-the-fly from fresh market data.
 6. **ent_anneal is champion**: entropy annealing 0.08→0.02 with anneal-LR
 7. **trade_penalty counterproductive at 0% fee**: Was #1 at 10bps, now hurts
 8. **Single-position model**: C env trains single-position. Don't try multi-position in Python backtest
+9. **Adaptive checkpoint switching can look amazing on one window and fail on adjacent windows**: rank selectors on multiple recent windows, not just the latest slice

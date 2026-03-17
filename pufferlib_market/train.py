@@ -403,6 +403,10 @@ def train(args):
         fill_slippage_bps=args.fill_slippage_bps,
         fill_probability=args.fill_probability,
         max_hold_hours=args.max_hold_hours,
+        enable_drawdown_profit_early_exit=args.drawdown_profit_early_exit,
+        drawdown_profit_early_exit_verbose=args.drawdown_profit_early_exit_verbose,
+        drawdown_profit_early_exit_min_steps=args.drawdown_profit_early_exit_min_steps,
+        drawdown_profit_early_exit_progress_fraction=args.drawdown_profit_early_exit_progress_fraction,
     )
 
     obs_size = num_symbols * 16 + 5 + num_symbols
@@ -448,6 +452,10 @@ def train(args):
         fill_slippage_bps=config.fill_slippage_bps,
         fill_probability=config.fill_probability,
         max_hold_hours=config.max_hold_hours,
+        enable_drawdown_profit_early_exit=config.enable_drawdown_profit_early_exit,
+        drawdown_profit_early_exit_verbose=config.drawdown_profit_early_exit_verbose,
+        drawdown_profit_early_exit_min_steps=config.drawdown_profit_early_exit_min_steps,
+        drawdown_profit_early_exit_progress_fraction=config.drawdown_profit_early_exit_progress_fraction,
     )
     binding.vec_reset(vec_handle, args.seed)
     print(f"  Created {num_envs} parallel envs")
@@ -835,6 +843,28 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--short-borrow-apr", type=float, default=0.0, help="Annual borrow rate applied to open shorts")
     parser.add_argument("--max-hold-hours", type=int, default=0, help="Force close position after N hours (0=disabled)")
+    parser.add_argument(
+        "--drawdown-profit-early-exit",
+        action="store_true",
+        help="Stop an episode once max drawdown exceeds profit after the configured progress threshold.",
+    )
+    parser.add_argument(
+        "--drawdown-profit-early-exit-verbose",
+        action="store_true",
+        help="Print the drawdown-vs-profit early-exit reason when the rule triggers.",
+    )
+    parser.add_argument(
+        "--drawdown-profit-early-exit-min-steps",
+        type=int,
+        default=20,
+        help="Minimum episode length before drawdown-vs-profit early exit can trigger.",
+    )
+    parser.add_argument(
+        "--drawdown-profit-early-exit-progress-fraction",
+        type=float,
+        default=0.5,
+        help="Episode progress threshold for drawdown-vs-profit early exit.",
+    )
 
     # Policy
     parser.add_argument("--hidden-size", type=int, default=256)

@@ -7,7 +7,10 @@ from typing import Dict, Iterable, List, Optional
 import numpy as np
 import pandas as pd
 
+from binanceneural.execution import quantize_down as _quantize_down
+from binanceneural.execution import quantize_up as _quantize_up
 from differentiable_loss_utils import DEFAULT_MAKER_FEE_RATE, HOURLY_PERIODS_PER_YEAR
+from src.market_sim_early_exit import evaluate_drawdown_vs_profit_early_exit, print_early_exit
 
 
 @dataclass
@@ -76,6 +79,7 @@ def run_shared_cash_simulation(
     """Simulate trades across symbols with a single shared cash balance."""
     sim_config = config or SimulationConfig()
     prepared = _prepare_frame(bars, actions, decision_lag_bars=sim_config.decision_lag_bars)
+    total_steps = int(prepared["timestamp"].nunique())
 
     cash = float(sim_config.initial_cash)
     inventory: Dict[str, float] = {}
@@ -248,8 +252,17 @@ def run_shared_cash_simulation(
                 "inventory_value": inventory_value,
             }
         )
+        decision = evaluate_drawdown_vs_profit_early_exit(
+            equity_values,
+            total_steps=total_steps,
+            label="BinanceMarketSimulator[shared_cash]",
+        )
+        if decision.should_stop:
+            print_early_exit(decision)
+            break
 
-    equity_curve = pd.Series(equity_values, index=prepared["timestamp"].drop_duplicates().values)
+    equity_index = [row["timestamp"] for row in per_hour_rows]
+    equity_curve = pd.Series(equity_values, index=pd.DatetimeIndex(equity_index))
     metrics = _compute_metrics(equity_curve)
     per_symbol: Dict[str, SymbolResult] = {}
     for symbol, trades in trades_by_symbol.items():
@@ -338,6 +351,7 @@ def _simulate_symbol(frame: pd.DataFrame, symbol: str, config: SimulationConfig)
     equity_values: List[float] = []
     per_hour_rows: List[Dict[str, float]] = []
     trades: List[TradeRecord] = []
+    total_steps = int(len(frame))
 
     for row in frame.itertuples(index=False):
         ts = getattr(row, "timestamp")
@@ -482,8 +496,17 @@ def _simulate_symbol(frame: pd.DataFrame, symbol: str, config: SimulationConfig)
                 "sell_filled": float(executed_sell > 0),
             }
         )
+        decision = evaluate_drawdown_vs_profit_early_exit(
+            equity_values,
+            total_steps=total_steps,
+            label=f"BinanceMarketSimulator[{symbol}]",
+        )
+        if decision.should_stop:
+            print_early_exit(decision)
+            break
 
-    equity_curve = pd.Series(equity_values, index=frame["timestamp"].values)
+    equity_index = [row["timestamp"] for row in per_hour_rows]
+    equity_curve = pd.Series(equity_values, index=pd.DatetimeIndex(equity_index))
     per_hour = pd.DataFrame(per_hour_rows)
     metrics = _compute_metrics(equity_curve)
     return SymbolResult(equity_curve=equity_curve, trades=trades, per_hour=per_hour, metrics=metrics)

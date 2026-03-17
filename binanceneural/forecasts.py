@@ -12,6 +12,7 @@ import pandas as pd
 
 from src.chronos2_params import resolve_chronos2_params
 from src.date_utils import is_nyse_open_on_date
+from src.models.chronos2_postprocessing import repair_forecast_ohlc
 
 try:  # pragma: no cover - optional heavy dependency
     from src.models.chronos2_wrapper import Chronos2OHLCWrapper, Chronos2PredictionBatch
@@ -303,14 +304,19 @@ class ChronosForecastManager:
                 rows.append(self._heuristic_forecast(context, rec["target_ts"]))
                 continue
 
-            # Ensure ordering before persisting.
-            close = float(row["predicted_close_p50"])
-            high = float(row["predicted_high_p50"])
-            low = float(row["predicted_low_p50"])
-            high_adj = max(high, close, low)
-            low_adj = min(low, close, high)
-            row["predicted_high_p50"] = high_adj
-            row["predicted_low_p50"] = low_adj
+            repaired = repair_forecast_ohlc(
+                last_close=last_close,
+                close_p50=row.get("predicted_close_p50"),
+                close_p10=row.get("predicted_close_p10"),
+                close_p90=row.get("predicted_close_p90"),
+                high_p50=row.get("predicted_high_p50"),
+                low_p50=row.get("predicted_low_p50"),
+            )
+            row["predicted_close_p10"] = repaired.close_p10
+            row["predicted_close_p50"] = repaired.close_p50
+            row["predicted_close_p90"] = repaired.close_p90
+            row["predicted_high_p50"] = repaired.high_p50
+            row["predicted_low_p50"] = repaired.low_p50
             rows.append(row)
         if not rows:
             return pd.DataFrame()

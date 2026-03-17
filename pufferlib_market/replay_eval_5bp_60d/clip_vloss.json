@@ -1,0 +1,78 @@
+{
+  "checkpoint": "pufferlib_market/checkpoints/mixed23_fresh_replay/clip_vloss/best.pt",
+  "daily": {
+    "annualized_return": -0.8129164653303256,
+    "avg_hold_steps": 1.2553191489361701,
+    "max_drawdown": 0.27009135390290556,
+    "num_trades": 47,
+    "sortino": -2.2565425245153348,
+    "total_return": -0.2373433932836645,
+    "win_rate": 0.574468085106383
+  },
+  "daily_data_path": "/tmp/mixed23_val_60d_20251208_20260205.bin",
+  "date_range": {
+    "end": "2026-02-05",
+    "start": "2025-12-08"
+  },
+  "fill_buffer_bps": 5.0,
+  "hourly_data_root": "trainingdatahourly",
+  "hourly_replay": {
+    "annualized_return": -0.5389027339678827,
+    "max_drawdown": 0.22010240027188452,
+    "max_orders_in_day": 2,
+    "mean_orders_per_day": 1.2,
+    "nonzero_order_days": 37,
+    "num_orders": 72,
+    "num_trades": 36,
+    "sortino": -0.6290108035351836,
+    "top_order_days": [
+      {
+        "date": "2025-12-09",
+        "orders": 2
+      },
+      {
+        "date": "2025-12-13",
+        "orders": 2
+      },
+      {
+        "date": "2025-12-15",
+        "orders": 2
+      },
+      {
+        "date": "2025-12-18",
+        "orders": 2
+      },
+      {
+        "date": "2025-12-19",
+        "orders": 2
+      }
+    ],
+    "total_return": -0.11762308434904208,
+    "win_rate": 0.5555555555555556
+  },
+  "symbols": [
+    "AAPL",
+    "NFLX",
+    "NVDA",
+    "ADBE",
+    "ADSK",
+    "COIN",
+    "GOOG",
+    "MSFT",
+    "PYPL",
+    "SAP",
+    "TSLA",
+    "BTCUSD",
+    "ETHUSD",
+    "SOLUSD",
+    "LTCUSD",
+    "AVAXUSD",
+    "DOGEUSD",
+    "LINKUSD",
+    "AAVEUSD",
+    "UNIUSD",
+    "DOTUSD",
+    "SHIBUSD",
+    "XRPUSD"
+  ]
+}

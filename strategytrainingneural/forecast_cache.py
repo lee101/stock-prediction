@@ -11,6 +11,7 @@ import pandas as pd
 
 from strategytraining.collect_strategy_pnl_dataset import StrategyPnLCollector
 from src.chronos2_params import resolve_chronos2_params
+from src.models.chronos2_postprocessing import repair_forecast_ohlc
 
 try:  # pragma: no cover - optional dependency in tests
     from src.models.chronos2_wrapper import (
@@ -371,24 +372,25 @@ class ChronosForecastGenerator:
         q50_high = _extract(0.5, "high")
         q50_low = _extract(0.5, "low")
 
-        move_pct = 0.0
-        if q50_close is not None and last_close:
-            move_pct = (q50_close - last_close) / last_close
-
-        volatility_pct = 0.0
-        if q10_close is not None and q90_close is not None and last_close:
-            volatility_pct = (q90_close - q10_close) / abs(last_close)
+        repaired = repair_forecast_ohlc(
+            last_close=last_close,
+            close_p50=q50_close,
+            close_p10=q10_close,
+            close_p90=q90_close,
+            high_p50=q50_high,
+            low_p50=q50_low,
+        )
 
         row: ForecastRow = {
             "symbol": symbol,
             "timestamp": pd.to_datetime(target_ts, utc=True),
-            "predicted_close": q50_close or 0.0,
-            "predicted_close_p10": q10_close or 0.0,
-            "predicted_close_p90": q90_close or 0.0,
-            "predicted_high": q50_high or 0.0,
-            "predicted_low": q50_low or 0.0,
-            "forecast_move_pct": move_pct,
-            "forecast_volatility_pct": volatility_pct,
+            "predicted_close": repaired.close_p50,
+            "predicted_close_p10": repaired.close_p10,
+            "predicted_close_p90": repaired.close_p90,
+            "predicted_high": repaired.high_p50,
+            "predicted_low": repaired.low_p50,
+            "forecast_move_pct": repaired.forecast_move_pct,
+            "forecast_volatility_pct": repaired.forecast_volatility_pct,
             "context_close": last_close,
             "quantile_levels": json.dumps(tuple(float(q) for q in quantile_levels)),
             "use_multivariate": use_multivariate,

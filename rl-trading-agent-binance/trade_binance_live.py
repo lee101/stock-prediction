@@ -453,6 +453,70 @@ def _effective_leverage(execution_mode: str, leverage: float) -> float:
     return requested
 
 
+def _minimum_live_exit_price(
+    sym_cfg: BinanceSymbolConfig,
+    current_price: float,
+    execution_mode: str,
+    entry_price: float = 0.0,
+) -> float:
+    current = max(0.0, float(current_price))
+    if current <= 0.0:
+        return 0.0
+    fee_rate = _execution_fee_bps(sym_cfg, execution_mode) / 10000.0
+    targets = [current * 1.01]
+    entry = max(0.0, float(entry_price))
+    if entry > 0.0:
+        # Keep the fallback exit above approximate round-trip breakeven.
+        targets.append(entry * (1.0 + 2.0 * fee_rate + 0.0005))
+    return max(targets)
+
+
+def _normalize_live_trade_plan(
+    plan: TradePlan,
+    sym_cfg: BinanceSymbolConfig,
+    current_price: float,
+    execution_mode: str,
+    *,
+    position_qty: float = 0.0,
+    position_entry_price: float = 0.0,
+) -> TradePlan:
+    direction = str(plan.direction or "hold").strip().lower()
+    if direction not in {"long", "hold"}:
+        direction = "hold"
+
+    buy_price = _safe_float(plan.buy_price) or 0.0
+    sell_price = _safe_float(plan.sell_price) or 0.0
+    confidence = _safe_float(plan.confidence) or 0.0
+    allocation_pct = _safe_float(getattr(plan, "allocation_pct", 0.0)) or 0.0
+    normalized = TradePlan(
+        direction=direction,
+        buy_price=float(buy_price),
+        sell_price=float(sell_price),
+        confidence=float(confidence),
+        reasoning=str(plan.reasoning),
+        allocation_pct=float(allocation_pct),
+    )
+
+    if direction == "long" and normalized.buy_price <= 0.0:
+        normalized.buy_price = max(float(current_price) * 0.999, 0.0)
+
+    needs_exit = direction == "long" or float(position_qty) > 0.0
+    if needs_exit:
+        min_exit = _minimum_live_exit_price(
+            sym_cfg,
+            current_price=float(current_price),
+            execution_mode=execution_mode,
+            entry_price=float(position_entry_price),
+        )
+        min_reference = max(float(current_price), normalized.buy_price)
+        if normalized.sell_price <= min_reference:
+            normalized.sell_price = max(min_exit, min_reference)
+        else:
+            normalized.sell_price = max(normalized.sell_price, min_exit)
+
+    return normalized
+
+
 def _get_market_price(sym_cfg: BinanceSymbolConfig, execution_mode: str) -> float:
     return float(binance_wrapper.get_symbol_price(_execution_pair(sym_cfg, execution_mode)))
 
@@ -1064,7 +1128,14 @@ def get_hybrid_signal(
         )
 
     plan = call_llm(prompt, model=model, thinking_level=thinking_level)
-    return plan
+    return _normalize_live_trade_plan(
+        plan,
+        sym_cfg,
+        current_price=current_price,
+        execution_mode=execution_mode,
+        position_qty=position_qty,
+        position_entry_price=position_entry_price,
+    )
 
 
 # ---------------------------------------------------------------------------

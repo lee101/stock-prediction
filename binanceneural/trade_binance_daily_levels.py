@@ -12,10 +12,16 @@ import pandas as pd
 from loguru import logger
 
 from src.chronos2_params import resolve_chronos2_params
+from src.models.chronos2_postprocessing import repair_forecast_ohlc
 from src.models.chronos2_wrapper import Chronos2OHLCWrapper
 from src.price_guard import enforce_gap
 from src.process_utils import enforce_min_spread
 from src.binan import binance_wrapper
+from src.binan.stable_quote_router import (
+    ensure_stable_quote_balance,
+    get_spendable_quote_balance,
+    preferred_spot_execution_symbol,
+)
 from src.tradinglib.direction_filter import compute_predicted_close_return, should_trade_predicted_close_return
 
 from .binance_watchers import WatcherPlan, spawn_watcher, stop_existing_watcher
@@ -23,7 +29,6 @@ from .execution import (
     get_free_balances,
     quantize_price,
     quantize_qty,
-    resolve_binance_symbol,
     resolve_symbol_rules,
 )
 
@@ -155,16 +160,21 @@ def _forecast_today_levels(
         prev_close = float(context["close"].iloc[-1])
     except Exception:
         prev_close = None
-    predicted_close_return = compute_predicted_close_return(predicted_close_p50, prev_close)
+    repaired = repair_forecast_ohlc(
+        last_close=prev_close or 0.0,
+        close_p50=predicted_close_p50,
+        high_p50=sell_price,
+        low_p50=buy_price,
+    )
 
     return DailyLevels(
         day_start=day_start,
         issued_at=issued_at,
-        buy_price=buy_price,
-        sell_price=sell_price,
-        predicted_close_p50=predicted_close_p50,
+        buy_price=repaired.low_p50,
+        sell_price=repaired.high_p50,
+        predicted_close_p50=repaired.close_p50,
         prev_close=prev_close,
-        predicted_close_return=predicted_close_return,
+        predicted_close_return=compute_predicted_close_return(repaired.close_p50, prev_close),
     )
 
 
@@ -210,6 +220,14 @@ def _extract_fill_price(status: dict) -> Optional[float]:
     return price
 
 
+def _relative_bps_distance(reference_price: float, target_price: float) -> float:
+    ref = float(reference_price)
+    tgt = float(target_price)
+    if ref <= 0.0 or tgt <= 0.0:
+        return float("inf")
+    return abs(ref - tgt) / ref * 10_000.0
+
+
 def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = argparse.ArgumentParser(description="Trade Binance spot using daily Chronos2 buy/sell levels (grid-like cycles).")
     parser.add_argument("--symbol", default="SOLUSD", help="Internal USD-quoted symbol (default: SOLUSD).")
@@ -227,6 +245,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument("--context-length", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--maker-fee", type=float, default=0.0)
+    parser.add_argument(
+        "--entry-proximity-bps",
+        type=float,
+        default=25.0,
+        help="Only open a new entry if live price is within this many bps of the buy limit; prevents unnecessary quote conversion.",
+    )
     parser.add_argument(
         "--min-predicted-close-return-pct",
         type=float,
@@ -255,6 +279,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     symbol = str(args.symbol).strip().upper()
+    execution_symbol = preferred_spot_execution_symbol(symbol)
     buy_q = float(args.buy_quantile)
     sell_q = float(args.sell_quantile)
     if not (0.0 < buy_q < 1.0) or not (0.0 < sell_q < 1.0):
@@ -267,6 +292,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     stop_loss_buffer_pct = float(args.stop_loss_market_buffer_pct)
     if stop_loss_buffer_pct < 0.0 or stop_loss_buffer_pct >= 1.0:
         raise ValueError("--stop-loss-market-buffer-pct must be in [0, 1).")
+    entry_proximity_bps = float(args.entry_proximity_bps)
+    if entry_proximity_bps < 0.0:
+        raise ValueError("--entry-proximity-bps must be >= 0.")
 
     levels = _forecast_today_levels(
         symbol=symbol,
@@ -284,7 +312,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     buy_price, sell_price = enforce_min_spread(buy_price, sell_price, min_spread_pct=float(args.min_spread_pct))
     buy_price, sell_price = enforce_gap(symbol, buy_price, sell_price, min_gap_pct=float(args.min_spread_pct))
 
-    rules = resolve_symbol_rules(symbol)
+    rules = resolve_symbol_rules(execution_symbol)
     buy_price = quantize_price(buy_price, tick_size=rules.tick_size, side="buy")
     sell_price = quantize_price(sell_price, tick_size=rules.tick_size, side="sell")
     if sell_price <= buy_price:
@@ -305,8 +333,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         )
 
     logger.info(
-        "Daily levels for {} (issued_at={} day={}): buy={:.6f} sell={:.6f} (q_low={:.2f} q_high={:.2f})",
+        "Daily levels for {} via {} (issued_at={} day={}): buy={:.6f} sell={:.6f} (q_low={:.2f} q_high={:.2f})",
         symbol,
+        execution_symbol,
         levels.issued_at,
         levels.day_start,
         buy_price,
@@ -329,7 +358,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         expiry_minutes = max(1, remaining_minutes)
 
         # Always reconcile balances per-loop: this script is intended to run indefinitely in prod.
-        quote_free, base_free = get_free_balances(symbol)
+        quote_free, base_free = get_free_balances(execution_symbol)
+        spendable_quote = get_spendable_quote_balance(execution_symbol)
 
         # If we have any meaningful base balance, prioritize selling it at today's sell level
         # before starting a new entry cycle. This avoids accidental position stacking when
@@ -354,6 +384,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                         expiry_minutes=int(expiry_minutes),
                         poll_seconds=int(args.poll_seconds),
                         price_tolerance=float(args.price_tolerance),
+                        exchange_symbol=execution_symbol,
                         dry_run=bool(args.dry_run),
                     )
                 )
@@ -370,9 +401,29 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             break
 
         # Compute buy sizing (per-cycle) based on allocation_usdt and current free balances.
-        max_quote = float(args.allocation_usdt) if args.allocation_usdt is not None else float(quote_free)
+        max_quote = float(args.allocation_usdt) if args.allocation_usdt is not None else float(spendable_quote)
         if max_quote <= 0:
-            logger.warning("No free quote balance available for {}; sleeping.", symbol)
+            logger.warning(
+                "No spendable quote balance available for {} via {} (preferred_quote_free={:.8f}); sleeping.",
+                symbol,
+                execution_symbol,
+                float(quote_free),
+            )
+            time.sleep(max(5, int(args.poll_seconds)))
+            continue
+
+        current_price = binance_wrapper.get_symbol_price(execution_symbol)
+        current_distance_bps = _relative_bps_distance(float(current_price or 0.0), buy_price)
+        if current_distance_bps > entry_proximity_bps:
+            logger.info(
+                "Skipping entry for {} via {}: live price {:.6f} is {:.2f}bps from buy limit {:.6f} (threshold {:.2f}bps); no funding or order placement.",
+                symbol,
+                execution_symbol,
+                float(current_price or 0.0),
+                current_distance_bps,
+                buy_price,
+                entry_proximity_bps,
+            )
             time.sleep(max(5, int(args.poll_seconds)))
             continue
 
@@ -399,11 +450,27 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             time.sleep(max(5, int(args.poll_seconds)))
             continue
 
+        required_quote = buy_qty * buy_price * (1.0 + float(args.maker_fee))
+        if not ensure_stable_quote_balance(
+            execution_symbol,
+            required_quote,
+            dry_run=bool(args.dry_run),
+        ):
+            logger.warning(
+                "Unable to source required quote balance for {} via {}: required={:.8f}",
+                symbol,
+                execution_symbol,
+                required_quote,
+            )
+            time.sleep(max(5, int(args.poll_seconds)))
+            continue
+
         cycle += 1
         logger.info(
-            "Cycle {}: waiting to buy {} qty={:.8f} @ {:.6f} (expiry_minutes={})",
+            "Cycle {}: waiting to buy {} via {} qty={:.8f} @ {:.6f} (expiry_minutes={})",
             cycle,
             symbol,
+            execution_symbol,
             buy_qty,
             buy_price,
             expiry_minutes,
@@ -419,6 +486,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 expiry_minutes=int(expiry_minutes),
                 poll_seconds=int(args.poll_seconds),
                 price_tolerance=float(args.price_tolerance),
+                exchange_symbol=execution_symbol,
                 dry_run=bool(args.dry_run),
             )
         )
@@ -458,6 +526,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 expiry_minutes=int(expiry_minutes),
                 poll_seconds=int(args.poll_seconds),
                 price_tolerance=float(args.price_tolerance),
+                exchange_symbol=execution_symbol,
                 dry_run=bool(args.dry_run),
             )
         )
@@ -478,7 +547,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             logger.info("Exit watcher finished (state={}).", exit_status.get("state"))
             continue
 
-        binance_symbol = resolve_binance_symbol(symbol)
+        binance_symbol = execution_symbol
         poll = max(1, int(args.poll_seconds))
         while True:
             status = _load_watcher_status(exit_path)
@@ -497,7 +566,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                 )
                 stop_existing_watcher(exit_path, reason="stop_loss")
 
-                _, base_free2 = get_free_balances(symbol)
+                _, base_free2 = get_free_balances(execution_symbol)
                 base_qty2 = quantize_qty(float(base_free2), step_size=rules.step_size)
                 if base_qty2 > 0 and (rules.min_qty is None or base_qty2 >= float(rules.min_qty)):
                     if rules.min_notional is None or base_qty2 * float(current_price) >= float(rules.min_notional):
@@ -520,6 +589,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
                                 expiry_minutes=int(expiry_minutes),
                                 poll_seconds=int(args.poll_seconds),
                                 price_tolerance=float(args.price_tolerance),
+                                exchange_symbol=execution_symbol,
                                 dry_run=bool(args.dry_run),
                             )
                         )

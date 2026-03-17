@@ -24,10 +24,6 @@ sys.path.insert(0, str(REPO / "rl-trading-agent-binance"))
 
 from loguru import logger
 
-from src.llm_runtime_defaults import (
-    PROD_GEMINI_THINKING_LEVEL,
-    PROD_REASONING_EFFORT,
-)
 from unified_orchestrator.state import (
     build_snapshot,
     save_snapshot,
@@ -89,6 +85,7 @@ CRYPTO_CHECKPOINT_CANDIDATES = [
     REPO / "pufferlib_market/checkpoints/autoresearch/reg_combo_2/best.pt",
 ]
 CRYPTO_SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "LTCUSD", "AVAXUSD"]
+MIN_ACTIONABLE_CRYPTO_NOTIONAL = 1.0
 
 # Max hours to hold a crypto position before forcing exit at near-market price.
 # Confirmed optimal by hold-sweep: Sortino=20.69 at 6h vs 11.66 at 4h, 6.16 at 12h.
@@ -116,10 +113,6 @@ _CHECKPOINT_DATA_HINTS = {
     "ent_01": REPO / "pufferlib_market/data/crypto6_train.bin",
     "reg_combo_2": REPO / "pufferlib_market/data/crypto6_train.bin",
 }
-_CHECKPOINT_DATA_HINT_PREFIXES = [
-    ("stocks15_", REPO / "pufferlib_market/data/stocks15_hourly_forecast_mktd_v2_20260215.bin"),
-    ("stocks13_", REPO / "pufferlib_market/data/stocks13_hourly_forecast_mktd_v2_start20250915.bin"),
-]
 STOCK_FORECAST_CACHE_CANDIDATES = [
     REPO / "binanceneural/forecast_cache",
     REPO / "unified_hourly_experiment/forecast_cache",
@@ -173,6 +166,62 @@ CRYPTO_PAIRS = {"BTCUSD": "BTCUSDT", "ETHUSD": "ETHUSDT", "SOLUSD": "SOLUSDT",
 STOCK_SYMBOLS = ["NVDA", "PLTR", "META", "MSFT", "NET"]
 
 
+def _has_actionable_crypto_position(pos: Position | None) -> bool:
+    """Return True when a crypto position is large enough to manage live."""
+
+    if pos is None:
+        return False
+    qty = float(getattr(pos, "qty", 0.0) or 0.0)
+    if qty <= 0.0:
+        return False
+    try:
+        market_value = float(pos.market_value)
+    except Exception:
+        current = float(getattr(pos, "current_price", 0.0) or 0.0)
+        avg = float(getattr(pos, "avg_price", 0.0) or 0.0)
+        market_value = qty * (current if current > 0.0 else avg)
+    return market_value >= MIN_ACTIONABLE_CRYPTO_NOTIONAL
+
+
+def _with_fallback_crypto_exit_target(
+    sym: str,
+    plan: TradePlan,
+    held_position: Position | None,
+    current_price: float,
+    fee_bps: float = 16.0,
+) -> TradePlan:
+    """Ensure live held crypto positions always retain a take-profit target."""
+
+    if not _has_actionable_crypto_position(held_position):
+        return plan
+
+    sell_price = float(getattr(plan, "sell_price", 0.0) or 0.0)
+    if sell_price > float(current_price):
+        return plan
+
+    fee_floor = 1.0 + max(float(fee_bps), 0.0) / 10_000.0 + 0.0005
+    avg_price = float(getattr(held_position, "avg_price", 0.0) or 0.0)
+    current_floor = float(current_price) * 1.008
+    target_floor = max(current_floor, avg_price * fee_floor if avg_price > 0.0 else 0.0)
+    fallback_sell = max(float(current_price) * 1.001, target_floor)
+    logger.warning(
+        f"  {sym}: held crypto position missing actionable exit target "
+        f"(sell=${sell_price:.2f}) — using fallback sell=${fallback_sell:.2f}"
+    )
+    return TradePlan(
+        direction=plan.direction,
+        buy_price=float(getattr(plan, "buy_price", 0.0) or 0.0),
+        sell_price=float(fallback_sell),
+        confidence=max(float(getattr(plan, "confidence", 0.0) or 0.0), 0.05),
+        reasoning=(
+            f"{getattr(plan, 'reasoning', '')} | fallback_exit_target"
+            if getattr(plan, "reasoning", "")
+            else "fallback_exit_target"
+        ),
+        allocation_pct=float(getattr(plan, "allocation_pct", 0.0) or 0.0),
+    )
+
+
 def _get_crypto_rl_trader():
     """Lazy-load PPOTrader for crypto RL signals."""
     global _crypto_rl_trader
@@ -203,13 +252,9 @@ _crypto_rl_trader = None
 
 
 def _checkpoint_data_path(checkpoint_path: Path) -> Path | None:
-    checkpoint_name = checkpoint_path.parent.name
-    path = _CHECKPOINT_DATA_HINTS.get(checkpoint_name)
+    path = _CHECKPOINT_DATA_HINTS.get(checkpoint_path.parent.name)
     if path is not None and path.exists():
         return path
-    for prefix, candidate in _CHECKPOINT_DATA_HINT_PREFIXES:
-        if checkpoint_name.startswith(prefix) and candidate.exists():
-            return candidate
     return None
 
 
@@ -508,8 +553,12 @@ def get_crypto_signals(
     symbols: list[str],
     snapshot: UnifiedPortfolioSnapshot,
     model: str = "gemini-3.1-flash-lite-preview",
-    thinking_level: str = PROD_GEMINI_THINKING_LEVEL,
-    reasoning_effort: str = PROD_REASONING_EFFORT,
+    thinking_level: str = "HIGH",
+    review_thinking_level: str | None = None,
+    reprompt_passes: int = 1,
+    reprompt_policy: str = "always",
+    review_max_confidence: float | None = None,
+    review_model: str | None = None,
     dry_run: bool = True,
 ) -> dict[str, TradePlan]:
     """Generate LLM trading signals for crypto symbols using Alpaca historical data.
@@ -604,6 +653,7 @@ def get_crypto_signals(
                 )
 
         held_pos = snapshot.alpaca_positions.get(sym)
+        actionable_held_pos = held_pos if _has_actionable_crypto_position(held_pos) else None
         prompt = build_unified_prompt(
             symbol=sym,
             history_rows=history,
@@ -612,7 +662,7 @@ def get_crypto_signals(
             asset_class="crypto",
             forecast_1h=forecast_1h,
             forecast_24h=forecast_24h,
-            held_position=held_pos,
+            held_position=actionable_held_pos,
         ) + rl_hint + trend_warning
 
         try:
@@ -620,8 +670,13 @@ def get_crypto_signals(
                 prompt,
                 model=model,
                 thinking_level=thinking_level,
-                reasoning_effort=reasoning_effort,
+                review_thinking_level=review_thinking_level,
+                reprompt_passes=reprompt_passes,
+                reprompt_policy=reprompt_policy,
+                review_max_confidence=review_max_confidence,
+                review_model=review_model,
             )
+            plan = _with_fallback_crypto_exit_target(sym, plan, actionable_held_pos, current_price)
             signals[sym] = plan
             alloc_str = f", alloc={plan.allocation_pct:.0f}%" if plan.allocation_pct > 0 else ""
             logger.info(
@@ -896,7 +951,7 @@ def execute_crypto_signals(
     crypto_pos = {
         sym: pos
         for sym, pos in snapshot.alpaca_positions.items()
-        if sym in all_crypto_syms
+        if sym in all_crypto_syms and _has_actionable_crypto_position(pos)
     }
     entry_times = load_entry_times()
     entry_times = update_entry_times(entry_times, crypto_pos)
@@ -1025,8 +1080,12 @@ def get_stock_signals(
     symbols: list[str],
     snapshot: UnifiedPortfolioSnapshot,
     model: str = "gemini-3.1-flash-lite-preview",
-    thinking_level: str = PROD_GEMINI_THINKING_LEVEL,
-    reasoning_effort: str = PROD_REASONING_EFFORT,
+    thinking_level: str = "HIGH",
+    review_thinking_level: str | None = None,
+    reprompt_passes: int = 1,
+    reprompt_policy: str = "always",
+    review_max_confidence: float | None = None,
+    review_model: str | None = None,
     dry_run: bool = True,
 ) -> dict[str, TradePlan]:
     """Generate LLM trading signals for stock symbols using Alpaca OHLCV data."""
@@ -1129,7 +1188,11 @@ def get_stock_signals(
                 prompt,
                 model=model,
                 thinking_level=thinking_level,
-                reasoning_effort=reasoning_effort,
+                review_thinking_level=review_thinking_level,
+                reprompt_passes=reprompt_passes,
+                reprompt_policy=reprompt_policy,
+                review_max_confidence=review_max_confidence,
+                review_model=review_model,
             )
 
             ok, reason = validate_plan_safety(plan, current_price, fee_bps=10.0)
@@ -1478,8 +1541,12 @@ def run_cycle(
     crypto_symbols: list[str],
     stock_symbols: list[str] | None = None,
     model: str = "gemini-3.1-flash-lite-preview",
-    thinking_level: str = PROD_GEMINI_THINKING_LEVEL,
-    reasoning_effort: str = PROD_REASONING_EFFORT,
+    thinking_level: str = "HIGH",
+    review_thinking_level: str | None = None,
+    reprompt_passes: int = 1,
+    reprompt_policy: str = "always",
+    review_max_confidence: float | None = None,
+    review_model: str | None = None,
     dry_run: bool = True,
 ) -> dict:
     """Run one unified trading cycle."""
@@ -1501,7 +1568,8 @@ def run_cycle(
         crypto_syms = set(CRYPTO_SYMBOLS)
         for sym, pos in snapshot.alpaca_positions.items():
             if sym in crypto_syms:
-                logger.info(f"  Crypto: {sym} {pos.qty:.6f} @ ${pos.current_price:.2f} (${pos.market_value:.0f})")
+                prefix = "Crypto" if _has_actionable_crypto_position(pos) else "Crypto dust"
+                logger.info(f"  {prefix}: {sym} {pos.qty:.6f} @ ${pos.current_price:.2f} (${pos.market_value:.0f})")
             else:
                 logger.info(f"  Stock: {sym} {pos.qty} @ ${pos.avg_price:.2f} (${pos.market_value:.0f})")
     logger.info(f"{'=' * 70}")
@@ -1528,7 +1596,11 @@ def run_cycle(
             snapshot,
             model,
             thinking_level,
-            reasoning_effort,
+            review_thinking_level,
+            reprompt_passes,
+            reprompt_policy,
+            review_max_confidence,
+            review_model,
             dry_run,
         )
         if crypto_signals:
@@ -1589,7 +1661,11 @@ def run_cycle(
             snapshot,
             model,
             thinking_level,
-            reasoning_effort,
+            review_thinking_level,
+            reprompt_passes,
+            reprompt_policy,
+            review_max_confidence,
+            review_model,
             dry_run,
         )
         if stock_signals:
@@ -1623,8 +1699,17 @@ def main():
     parser.add_argument("--crypto-symbols", nargs="+", default=CRYPTO_SYMBOLS)
     parser.add_argument("--stock-symbols", nargs="+", default=STOCK_SYMBOLS)
     parser.add_argument("--model", default="gemini-3.1-flash-lite-preview")
-    parser.add_argument("--thinking-level", default=PROD_GEMINI_THINKING_LEVEL)
-    parser.add_argument("--reasoning-effort", default=PROD_REASONING_EFFORT)
+    parser.add_argument("--thinking-level", default="HIGH")
+    parser.add_argument("--review-thinking-level", default=None,
+                        help="Optional thinking level for pass 2+. Defaults to --thinking-level.")
+    parser.add_argument("--reprompt-passes", type=int, default=1,
+                        help="Total Gemini plan passes per symbol. 1 = current behavior, 2 = review once.")
+    parser.add_argument("--reprompt-policy", choices=["always", "actionable", "entry_only"], default="always",
+                        help="When to run pass 2+. 'actionable' reviews any order-managing plan; 'entry_only' only reviews plans with a buy target.")
+    parser.add_argument("--review-max-confidence", type=float, default=None,
+                        help="Optional cap on first-pass confidence for running pass 2+. Example: 0.60 only reviews plans at 60% confidence or below.")
+    parser.add_argument("--review-model", default=None,
+                        help="Optional alternate model for review pass 2+. Defaults to the primary model.")
     parser.add_argument("--dry-run", action="store_true", default=True)
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--once", action="store_true")
@@ -1643,7 +1728,11 @@ def main():
                 stock_symbols=args.stock_symbols,
                 model=args.model,
                 thinking_level=args.thinking_level,
-                reasoning_effort=args.reasoning_effort,
+                review_thinking_level=args.review_thinking_level,
+                reprompt_passes=args.reprompt_passes,
+                reprompt_policy=args.reprompt_policy,
+                review_max_confidence=args.review_max_confidence,
+                review_model=args.review_model,
                 dry_run=dry_run,
             )
         except Exception as e:

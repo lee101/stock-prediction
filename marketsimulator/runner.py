@@ -19,6 +19,7 @@ except Exception:  # pragma: no cover
 from marketsimulator.logging_utils import logger
 
 from src.fixtures import crypto_symbols
+from src.market_sim_early_exit import evaluate_drawdown_vs_profit_early_exit, print_early_exit
 
 from .data_feed import DEFAULT_DATA_ROOT
 from .environment import activate_simulation
@@ -386,6 +387,15 @@ def simulate_strategy(
                     positions_detail=close_positions_detail,
                 )
             )
+            early_exit = evaluate_drawdown_vs_profit_early_exit(
+                [float(snapshot.equity) for snapshot in daily_snapshots],
+                total_steps=max(1, int(days) * 2),
+                label="marketsimulator.simulate_strategy",
+            )
+            if early_exit.should_stop:
+                print_early_exit(early_exit)
+                logger.info("[sim] Early stopping after day %s because drawdown exceeded profit.", day + 1)
+                break
             previous_picks = close_picks
 
             controller.advance_steps(end_steps)

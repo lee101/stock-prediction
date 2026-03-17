@@ -41,6 +41,14 @@ def main():
     parser.add_argument("--cash", type=float, default=10000.0)
     parser.add_argument("--trailing-stop", type=float, default=0.0)
     parser.add_argument("--cooldown", type=int, default=1)
+    parser.add_argument("--max-leverage", type=float, default=1.0)
+    parser.add_argument("--enable-shorts", action="store_true")
+    parser.add_argument("--short-pump-pct", type=float, default=0.10)
+    parser.add_argument("--base-asset", default="", help="Optional idle base asset, e.g. ETHUSD.")
+    parser.add_argument("--base-asset-sma-period", type=int, default=0)
+    parser.add_argument("--base-asset-momentum-period", type=int, default=0)
+    parser.add_argument("--base-asset-min-momentum", type=float, default=0.0)
+    parser.add_argument("--base-asset-rebalance-min-cash", type=float, default=1.0)
     args = parser.parse_args()
 
     symbols = args.symbols or FULL_UNIVERSE
@@ -74,11 +82,21 @@ def main():
         initial_cash=args.cash,
         trailing_stop_pct=args.trailing_stop,
         reentry_cooldown_days=args.cooldown,
+        max_leverage=args.max_leverage,
+        enable_shorts=bool(args.enable_shorts),
+        short_pump_pct=args.short_pump_pct,
+        base_asset_symbol=args.base_asset,
+        base_asset_sma_filter_period=args.base_asset_sma_period,
+        base_asset_momentum_period=args.base_asset_momentum_period,
+        base_asset_min_momentum=args.base_asset_min_momentum,
+        base_asset_rebalance_min_cash=args.base_asset_rebalance_min_cash,
     )
 
     print(f"\nConfig: dip={config.dip_pct:.0%} prox={config.proximity_pct:.1%} "
           f"tp={config.profit_target_pct:.0%} sl={config.stop_loss_pct:.0%} "
-          f"maxpos={config.max_positions} maxhold={config.max_hold_days}d")
+          f"maxpos={config.max_positions} maxhold={config.max_hold_days}d "
+          f"lev={config.max_leverage:.1f}x "
+          f"base={config.base_asset_symbol or 'cash'}")
 
     equity_df, trades, metrics = run_worksteal_backtest(
         all_bars, config,

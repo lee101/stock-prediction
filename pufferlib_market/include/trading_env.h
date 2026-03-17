@@ -68,6 +68,7 @@ typedef struct {
     float  sum_ret;
     int    ret_count;
     float  prev_ret;            /* previous return for smoothness calc */
+    float  max_drawdown;        /* running max drawdown over the episode */
     int    data_offset;         /* starting row in the data (randomised) */
     int    step;                /* current step within episode */
 } AgentState;
@@ -88,6 +89,10 @@ typedef struct {
     float          short_borrow_apr;/* annual borrow rate applied to open short notional */
     float          periods_per_year;/* annualisation factor for metrics (e.g. 8760 for hourly, 365 for daily) */
     int            max_hold_hours;  /* force close position after this many hours (0=disabled) */
+    int            enable_drawdown_profit_early_exit;   /* stop once running max drawdown exceeds profit after progress threshold */
+    int            drawdown_profit_early_exit_verbose;  /* print explicit early-exit reason when enabled */
+    int            drawdown_profit_early_exit_min_steps;/* minimum episode length before the rule applies */
+    float          drawdown_profit_early_exit_progress_fraction; /* progress threshold for the rule */
 
     /* --- action-space config ---
        Action layout:

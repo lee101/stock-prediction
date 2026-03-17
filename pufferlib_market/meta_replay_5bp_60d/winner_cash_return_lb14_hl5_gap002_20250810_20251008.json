@@ -1,0 +1,365 @@
+{
+  "candidates": {
+    "ent_anneal": {
+      "checkpoint": "pufferlib_market/checkpoints/mixed23_fresh_replay/ent_anneal/best.pt",
+      "daily": {
+        "max_drawdown": 0.3049903124888417,
+        "num_trades": 50,
+        "sortino": -3.1183665697298286,
+        "total_return": -0.26826592009603145,
+        "win_rate": 0.42
+      },
+      "hourly_replay": {
+        "max_drawdown": 0.28664935214078313,
+        "num_orders": 82,
+        "num_trades": 41,
+        "sortino": -0.4022315149361079,
+        "total_return": -0.09508696209747941,
+        "win_rate": 0.43902439024390244
+      }
+    },
+    "reg_combo_2": {
+      "checkpoint": "pufferlib_market/checkpoints/mixed23_fresh_targeted/reg_combo_2/best.pt",
+      "daily": {
+        "max_drawdown": 0.23452249495577007,
+        "num_trades": 38,
+        "sortino": 3.4487038519797903,
+        "total_return": 0.21574808513420377,
+        "win_rate": 0.4473684210526316
+      },
+      "hourly_replay": {
+        "max_drawdown": 0.252467990592008,
+        "num_orders": 76,
+        "num_trades": 38,
+        "sortino": 2.094294187828394,
+        "total_return": 0.21330120301132355,
+        "win_rate": 0.4473684210526316
+      }
+    },
+    "wd_01": {
+      "checkpoint": "pufferlib_market/checkpoints/mixed23_fresh_replay/wd_01/best.pt",
+      "daily": {
+        "max_drawdown": 0.541003964321302,
+        "num_trades": 47,
+        "sortino": -6.208652311322783,
+        "total_return": -0.518728759687138,
+        "win_rate": 0.40425531914893614
+      },
+      "hourly_replay": {
+        "max_drawdown": 0.47584027905077086,
+        "num_orders": 72,
+        "num_trades": 36,
+        "sortino": -3.702435728827272,
+        "total_return": -0.4246987039028244,
+        "win_rate": 0.5
+      }
+    }
+  },
+  "daily_data_path": "/tmp/mixed23_val_60d_20250810_20251008.bin",
+  "date_range": {
+    "end": "2025-10-08",
+    "start": "2025-08-10"
+  },
+  "decision_winners": [
+    {
+      "date": "2025-08-10",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-08-11",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-08-12",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-08-13",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-08-14",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-08-15",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-08-16",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-08-17",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-08-18",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-08-19",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-08-20",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-08-21",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-08-22",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-08-23",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-08-24",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2025-08-25",
+      "winner": null
+    },
+    {
+      "date": "2025-08-26",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2025-08-27",
+      "winner": null
+    },
+    {
+      "date": "2025-08-28",
+      "winner": null
+    },
+    {
+      "date": "2025-08-29",
+      "winner": null
+    },
+    {
+      "date": "2025-08-30",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2025-08-31",
+      "winner": "reg_combo_2"
+    },
+    {
+      "date": "2025-09-01",
+      "winner": null
+    },
+    {
+      "date": "2025-09-02",
+      "winner": null
+    },
+    {
+      "date": "2025-09-03",
+      "winner": null
+    },
+    {
+      "date": "2025-09-04",
+      "winner": null
+    },
+    {
+      "date": "2025-09-05",
+      "winner": null
+    },
+    {
+      "date": "2025-09-06",
+      "winner": null
+    },
+    {
+      "date": "2025-09-07",
+      "winner": null
+    },
+    {
+      "date": "2025-09-08",
+      "winner": null
+    },
+    {
+      "date": "2025-09-09",
+      "winner": null
+    },
+    {
+      "date": "2025-09-10",
+      "winner": null
+    },
+    {
+      "date": "2025-09-11",
+      "winner": null
+    },
+    {
+      "date": "2025-09-12",
+      "winner": null
+    },
+    {
+      "date": "2025-09-13",
+      "winner": null
+    },
+    {
+      "date": "2025-09-14",
+      "winner": null
+    },
+    {
+      "date": "2025-09-15",
+      "winner": null
+    },
+    {
+      "date": "2025-09-16",
+      "winner": null
+    },
+    {
+      "date": "2025-09-17",
+      "winner": null
+    },
+    {
+      "date": "2025-09-18",
+      "winner": null
+    },
+    {
+      "date": "2025-09-19",
+      "winner": null
+    },
+    {
+      "date": "2025-09-20",
+      "winner": null
+    },
+    {
+      "date": "2025-09-21",
+      "winner": null
+    },
+    {
+      "date": "2025-09-22",
+      "winner": null
+    },
+    {
+      "date": "2025-09-23",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-09-24",
+      "winner": "ent_anneal"
+    },
+    {
+      "date": "2025-09-25",
+      "winner": null
+    },
+    {
+      "date": "2025-09-26",
+      "winner": null
+    },
+    {
+      "date": "2025-09-27",
+      "winner": null
+    },
+    {
+      "date": "2025-09-28",
+      "winner": null
+    },
+    {
+      "date": "2025-09-29",
+      "winner": null
+    },
+    {
+      "date": "2025-09-30",
+      "winner": null
+    },
+    {
+      "date": "2025-10-01",
+      "winner": null
+    },
+    {
+      "date": "2025-10-02",
+      "winner": null
+    },
+    {
+      "date": "2025-10-03",
+      "winner": null
+    },
+    {
+      "date": "2025-10-04",
+      "winner": null
+    },
+    {
+      "date": "2025-10-05",
+      "winner": null
+    },
+    {
+      "date": "2025-10-06",
+      "winner": null
+    },
+    {
+      "date": "2025-10-07",
+      "winner": null
+    }
+  ],
+  "fill_buffer_bps": 5.0,
+  "hourly_data_root": "trainingdatahourly",
+  "meta": {
+    "daily": {
+      "max_drawdown": 0.25031783095600857,
+      "num_trades": 17,
+      "sortino": -3.944570126832255,
+      "total_return": -0.25031783095600857,
+      "win_rate": 0.29411764705882354
+    },
+    "hourly_replay": {
+      "max_drawdown": 0.26524308645310885,
+      "num_orders": 32,
+      "num_trades": 16,
+      "sortino": -1.1022174695913871,
+      "total_return": -0.17406213393159323,
+      "win_rate": 0.375
+    },
+    "winners": {
+      "latest_winner": null,
+      "switch_count": 8,
+      "winner_counts": {
+        "cash": 39,
+        "ent_anneal": 16,
+        "reg_combo_2": 4
+      }
+    }
+  },
+  "selector": {
+    "fallback_strategy": "ent_anneal",
+    "lookback_days": 14,
+    "metric": "return",
+    "min_score_gap": 0.02,
+    "recency_halflife_days": 5.0,
+    "require_full_window": true,
+    "selection_mode": "winner_cash",
+    "sit_out_threshold": null,
+    "switch_margin": 0.0
+  },
+  "symbols": [
+    "AAPL",
+    "NFLX",
+    "NVDA",
+    "ADBE",
+    "ADSK",
+    "COIN",
+    "GOOG",
+    "MSFT",
+    "PYPL",
+    "SAP",
+    "TSLA",
+    "BTCUSD",
+    "ETHUSD",
+    "SOLUSD",
+    "LTCUSD",
+    "AVAXUSD",
+    "DOGEUSD",
+    "LINKUSD",
+    "AAVEUSD",
+    "UNIUSD",
+    "DOTUSD",
+    "SHIBUSD",
+    "XRPUSD"
+  ]
+}

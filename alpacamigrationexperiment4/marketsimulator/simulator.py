@@ -10,6 +10,7 @@ import pandas as pd
 
 from src.date_utils import is_nyse_open_on_date
 from src.fees import get_fee_for_symbol
+from src.market_sim_early_exit import evaluate_drawdown_vs_profit_early_exit, print_early_exit
 from src.metrics_utils import annualized_sortino, compute_step_returns
 from src.symbol_utils import is_crypto_symbol
 
@@ -153,6 +154,7 @@ class AlpacaMarketSimulator:
         equity_values: List[float] = []
         per_hour_rows: List[Dict[str, float | str]] = []
         trades: List[TradeRecord] = []
+        total_steps = int(len(frame))
 
         max_hold_delta = None
         if self.config.max_hold_hours is not None and self.config.max_hold_hours > 0:
@@ -359,8 +361,17 @@ class AlpacaMarketSimulator:
                     "cycle_profit": float(cycle_profit),
                 }
             )
+            decision = evaluate_drawdown_vs_profit_early_exit(
+                equity_values,
+                total_steps=total_steps,
+                label=f"AlpacaMarketSimulator[{symbol}]",
+            )
+            if decision.should_stop:
+                print_early_exit(decision)
+                break
 
-        equity_curve = pd.Series(equity_values, index=frame["timestamp"].values)
+        equity_index = [row["timestamp"] for row in per_hour_rows]
+        equity_curve = pd.Series(equity_values, index=pd.DatetimeIndex(equity_index))
         per_hour = pd.DataFrame(per_hour_rows)
         metrics = self._compute_metrics(equity_curve, float(meta["periods_per_year"]))
         return SymbolSimulationResult(

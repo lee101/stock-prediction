@@ -19,10 +19,18 @@ REPO = ROOT.parent
 _local_ocean = REPO / "PufferLib" / "pufferlib" / "ocean"
 try:
     import pufferlib
-    PUFFERLIB_OCEAN = Path(pufferlib.__file__).parent / "ocean"
+    _system_ocean = Path(pufferlib.__file__).parent / "ocean"
 except ImportError:
-    PUFFERLIB_OCEAN = _local_ocean
-if not PUFFERLIB_OCEAN.exists():
+    _system_ocean = None
+
+
+def _has_env_binding_header(path: Path | None) -> bool:
+    return path is not None and (path / "env_binding.h").exists()
+
+
+if _has_env_binding_header(_system_ocean):
+    PUFFERLIB_OCEAN = _system_ocean
+else:
     PUFFERLIB_OCEAN = _local_ocean
 
 # Find numpy include
