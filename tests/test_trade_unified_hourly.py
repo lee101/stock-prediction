@@ -355,6 +355,75 @@ def test_execute_trades_uses_market_entry_reference_price_for_market_orders(monk
     assert state["positions"]["NVDA"]["entry_price"] == 105.0
 
 
+def test_place_exit_order_supports_fractional_stock_qty(monkeypatch) -> None:
+    submitted: list[object] = []
+    events: list[tuple[str, dict]] = []
+
+    fake_requests = types.ModuleType("alpaca.trading.requests")
+
+    class _LimitOrderRequest:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    fake_requests.LimitOrderRequest = _LimitOrderRequest
+
+    fake_enums = types.ModuleType("alpaca.trading.enums")
+    fake_enums.OrderSide = SimpleNamespace(BUY="buy", SELL="sell")
+    fake_enums.TimeInForce = SimpleNamespace(DAY="day", GTC="gtc")
+
+    monkeypatch.setitem(sys.modules, "alpaca.trading.requests", fake_requests)
+    monkeypatch.setitem(sys.modules, "alpaca.trading.enums", fake_enums)
+    monkeypatch.setattr(live, "log_event", lambda event_type, **fields: events.append((event_type, fields)))
+
+    class _DummyAPI:
+        def submit_order(self, order):
+            submitted.append(order)
+            return SimpleNamespace(id="exit-frac-1")
+
+    order_id = live.place_exit_order(_DummyAPI(), "MSFT", 0.94, 397.37, side="sell")
+
+    assert order_id == "exit-frac-1"
+    assert submitted
+    assert submitted[0].kwargs["qty"] == pytest.approx(0.94)
+    assert submitted[0].kwargs["time_in_force"] == "day"
+    assert any(event_type == "exit_order_submit_succeeded" for event_type, _ in events)
+
+
+def test_force_close_position_supports_fractional_stock_qty(monkeypatch) -> None:
+    submitted: list[object] = []
+    events: list[tuple[str, dict]] = []
+
+    fake_requests = types.ModuleType("alpaca.trading.requests")
+
+    class _LimitOrderRequest:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    fake_requests.LimitOrderRequest = _LimitOrderRequest
+
+    fake_enums = types.ModuleType("alpaca.trading.enums")
+    fake_enums.OrderSide = SimpleNamespace(BUY="buy", SELL="sell")
+    fake_enums.TimeInForce = SimpleNamespace(DAY="day", GTC="gtc")
+
+    monkeypatch.setitem(sys.modules, "alpaca.trading.requests", fake_requests)
+    monkeypatch.setitem(sys.modules, "alpaca.trading.enums", fake_enums)
+    monkeypatch.setattr(live, "log_event", lambda event_type, **fields: events.append((event_type, fields)))
+    monkeypatch.setattr(live, "log_trade", lambda payload: None)
+
+    class _DummyAPI:
+        def submit_order(self, order):
+            submitted.append(order)
+            return SimpleNamespace(id="force-close-frac-1")
+
+    live.force_close_position(_DummyAPI(), "MSFT", 0.94, 397.1146)
+
+    assert submitted
+    assert submitted[0].kwargs["qty"] == pytest.approx(0.94)
+    assert submitted[0].kwargs["time_in_force"] == "day"
+    assert submitted[0].kwargs["limit_price"] == pytest.approx(round(397.1146 * 0.997, 2))
+    assert any(event_type == "force_close_submit_succeeded" for event_type, _ in events)
+
+
 def test_manage_positions_keeps_pending_entry_order(monkeypatch) -> None:
     state = {
         "positions": {
@@ -473,6 +542,32 @@ def test_execute_trades_skips_existing_matching_open_entry_order(monkeypatch) ->
     assert submitted == []
     assert state["positions"]["NVDA"]["entry_order_id"] == "entry-1"
     assert any(event_type == "entry_skipped" and fields.get("reason") == "existing_open_entry_order" for event_type, fields in events)
+
+
+def test_manage_positions_force_closes_untracked_fractional_stock_only(monkeypatch) -> None:
+    state = {"positions": {}, "pending_close": []}
+    forced: list[tuple[str, float, float]] = []
+
+    monkeypatch.setattr(
+        live,
+        "get_current_positions",
+        lambda api: {
+            "MSFT": {"qty": 0.94, "price": 397.1146},
+            "ETHUSD": {"qty": 1.8e-08, "price": 2236.3},
+        },
+    )
+    monkeypatch.setattr(live, "get_open_orders", lambda api: {})
+    monkeypatch.setattr(
+        live,
+        "force_close_position",
+        lambda api, symbol, qty, current_price=0: forced.append((symbol, qty, current_price)),
+    )
+    monkeypatch.setattr(live, "log_event", lambda *args, **kwargs: None)
+
+    live.manage_positions(object(), state, max_hold_hours=6, active_symbols={"NVDA", "PLTR"})
+
+    assert forced == [("MSFT", 0.94, 397.1146)]
+    assert state["pending_close"] == ["MSFT"]
 
 
 def test_poll_broker_events_logs_and_dedupes(monkeypatch) -> None:

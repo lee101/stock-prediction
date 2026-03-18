@@ -828,6 +828,23 @@ def _has_open_exit_order(symbol_orders: List[object], *, qty: float) -> bool:
     return any(_normalize_order_side(getattr(order, "side", None)) == exit_side for order in symbol_orders)
 
 
+def _is_fractional_quantity(qty: float) -> bool:
+    try:
+        abs_qty = abs(float(qty))
+    except (TypeError, ValueError):
+        return False
+    if abs_qty <= 0:
+        return False
+    return not abs_qty.is_integer()
+
+
+def _equity_notional(qty: float, price: float) -> float:
+    try:
+        return abs(float(qty)) * float(price)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def cancel_symbol_orders(api, symbol: str, orders_by_symbol: Dict):
     for order in orders_by_symbol.get(symbol, []):
         try:
@@ -846,33 +863,45 @@ def place_exit_order(api, symbol: str, qty: float, sell_price: float, side: str 
 
     order_side = OrderSide.SELL if side == "sell" else OrderSide.BUY
     abs_qty = abs(qty)
-    if abs_qty < 1:
-        log_event("exit_order_skipped", symbol=symbol, qty=abs_qty, side=side, reason="qty_below_one")
+    if abs_qty <= 0:
+        log_event("exit_order_skipped", symbol=symbol, qty=abs_qty, side=side, reason="non_positive_qty")
         return None
+    if not is_crypto_symbol(symbol) and _equity_notional(abs_qty, sell_price) < 1.0:
+        log_event(
+            "exit_order_skipped",
+            symbol=symbol,
+            qty=abs_qty,
+            side=side,
+            reason="notional_below_one",
+            limit_price=round(sell_price, 2),
+        )
+        return None
+    order_qty = float(abs_qty) if _is_fractional_quantity(abs_qty) else int(abs_qty)
+    time_in_force = TimeInForce.DAY if isinstance(order_qty, float) else TimeInForce.GTC
 
     try:
         order = LimitOrderRequest(
             symbol=symbol,
-            qty=int(abs_qty),
+            qty=order_qty,
             side=order_side,
             limit_price=round(sell_price, 2),
-            time_in_force=TimeInForce.GTC,
+            time_in_force=time_in_force,
         )
         log_event(
             "exit_order_submit_requested",
             symbol=symbol,
-            qty=int(abs_qty),
+            qty=order_qty,
             side=side,
             limit_price=round(sell_price, 2),
-            time_in_force="gtc",
+            time_in_force="day" if time_in_force == TimeInForce.DAY else "gtc",
         )
         result = api.submit_order(order)
         logger.info("{}: exit order placed - {} {} @ ${:.2f} (id={})",
-                    symbol, side, int(abs_qty), sell_price, result.id)
+                    symbol, side, order_qty, sell_price, result.id)
         log_event(
             "exit_order_submit_succeeded",
             symbol=symbol,
-            qty=int(abs_qty),
+            qty=order_qty,
             side=side,
             limit_price=round(sell_price, 2),
             order_id=str(result.id),
@@ -883,7 +912,7 @@ def place_exit_order(api, symbol: str, qty: float, sell_price: float, side: str 
         log_event(
             "exit_order_submit_failed",
             symbol=symbol,
-            qty=int(abs_qty),
+            qty=order_qty,
             side=side,
             limit_price=round(sell_price, 2),
             error=str(e),
@@ -895,22 +924,33 @@ def force_close_position(api, symbol: str, qty: float, current_price: float = 0)
     from alpaca.trading.requests import LimitOrderRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
 
-    if abs(qty) < 1:
-        log_event("force_close_skipped", symbol=symbol, qty=float(qty), reason="qty_below_one")
+    abs_qty = abs(float(qty))
+    if abs_qty <= 0:
+        log_event("force_close_skipped", symbol=symbol, qty=float(qty), reason="non_positive_qty")
         return
     side = OrderSide.SELL if qty > 0 else OrderSide.BUY
     if current_price <= 0:
         logger.error("{}: no price for limit close, skipping", symbol)
         log_event("force_close_skipped", symbol=symbol, qty=float(qty), reason="missing_current_price")
         return
+    if not is_crypto_symbol(symbol) and _equity_notional(abs_qty, current_price) < 1.0:
+        log_event(
+            "force_close_skipped",
+            symbol=symbol,
+            qty=float(qty),
+            reason="notional_below_one",
+            current_price=float(current_price),
+        )
+        return
     try:
         if side == OrderSide.SELL:
             price = round(current_price * 0.997, 2)
         else:
             price = round(current_price * 1.003, 2)
+        order_qty = float(abs_qty) if _is_fractional_quantity(abs_qty) else int(abs_qty)
         order = LimitOrderRequest(
             symbol=symbol,
-            qty=int(abs(qty)),
+            qty=order_qty,
             side=side,
             limit_price=price,
             time_in_force=TimeInForce.DAY,
@@ -918,19 +958,19 @@ def force_close_position(api, symbol: str, qty: float, current_price: float = 0)
         log_event(
             "force_close_submit_requested",
             symbol=symbol,
-            qty=int(abs(qty)),
+            qty=order_qty,
             side=_normalize_order_side(side),
             limit_price=price,
             current_price=float(current_price),
         )
         result = api.submit_order(order)
-        logger.info("{}: force-close limit {} shares @ ${:.2f} (cur=${:.2f})", symbol, int(abs(qty)), price, current_price)
-        log_trade({"event": "force_close", "symbol": symbol, "qty": int(abs(qty)),
+        logger.info("{}: force-close limit {} shares @ ${:.2f} (cur=${:.2f})", symbol, order_qty, price, current_price)
+        log_trade({"event": "force_close", "symbol": symbol, "qty": order_qty,
                    "price": price, "cur_price": current_price, "order_id": str(result.id)})
         log_event(
             "force_close_submit_succeeded",
             symbol=symbol,
-            qty=int(abs(qty)),
+            qty=order_qty,
             side=_normalize_order_side(side),
             limit_price=price,
             current_price=float(current_price),
@@ -941,7 +981,7 @@ def force_close_position(api, symbol: str, qty: float, current_price: float = 0)
         log_event(
             "force_close_submit_failed",
             symbol=symbol,
-            qty=int(abs(qty)),
+            qty=order_qty,
             side=_normalize_order_side(side),
             current_price=float(current_price),
             error=str(e),
@@ -1148,7 +1188,11 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
     for symbol, pos_data in positions.items():
         qty = pos_data.get("qty", 0) if isinstance(pos_data, dict) else 0
         cur_price = pos_data.get("price", 0) if isinstance(pos_data, dict) else 0
-        if symbol not in tracked and abs(qty) >= 1 and symbol not in pending_close:
+        abs_qty = abs(float(qty))
+        should_force_close_untracked = abs_qty >= 1
+        if not should_force_close_untracked and not is_crypto_symbol(symbol):
+            should_force_close_untracked = _equity_notional(abs_qty, cur_price) >= 1.0
+        if symbol not in tracked and should_force_close_untracked and symbol not in pending_close:
             if active_symbols and symbol not in active_symbols:
                 logger.info("{}: untracked position not in active set ({} shares), force closing", symbol, qty)
                 log_event("manage_position_action", symbol=symbol, action="force_close_untracked", reason="untracked_not_active", qty=float(qty))
@@ -1164,7 +1208,8 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
     for s in pending_close:
         if s in positions:
             pq = positions[s].get("qty", 0) if isinstance(positions[s], dict) else float(positions[s])
-            if abs(pq) >= 1:
+            cur_price = positions[s].get("price", 0) if isinstance(positions[s], dict) else 0
+            if abs(pq) >= 1 or (not is_crypto_symbol(s) and _equity_notional(pq, cur_price) >= 1.0):
                 still_pending.append(s)
     state["pending_close"] = still_pending
 
