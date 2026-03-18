@@ -183,9 +183,10 @@ class Chronos2HourlyTuner:
                 continue
             close = pd.Series(
                 train_df["close"].to_numpy(dtype=np.float64),
-                index=pd.to_datetime(train_df["timestamp"], utc=True, errors="coerce"),
+                index=pd.to_datetime(train_df["timestamp"], utc=True, errors="coerce").floor("h"),
             )
-            close = close.dropna()
+            close = close[~close.index.isna()]
+            close = close[~close.index.duplicated(keep="last")].dropna()
             if close.empty:
                 continue
             close_history[str(symbol).upper()] = close

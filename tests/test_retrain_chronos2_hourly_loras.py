@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from scripts.retrain_chronos2_hourly_loras import update_hourly_hparams
+from scripts.retrain_chronos2_hourly_loras import _build_save_name, update_hourly_hparams
 
 
 def _read(path: Path) -> dict:
@@ -61,3 +61,14 @@ def test_update_hourly_hparams_falls_back_to_base_config(tmp_path: Path) -> None
     assert isinstance(payload.get("validation"), dict)
     assert isinstance(payload.get("test"), dict)
     assert isinstance(payload.get("windows"), dict)
+
+
+def test_build_save_name_prefers_explicit_name() -> None:
+    value = _build_save_name("SOFI", save_name="exact_run_name", save_name_suffix="ignored")
+    assert value == "exact_run_name"
+
+
+def test_build_save_name_uses_suffix_when_explicit_name_missing() -> None:
+    value = _build_save_name("SOFI", save_name=None, save_name_suffix="stockexp")
+    assert value is not None
+    assert value.startswith("SOFI_lora_stockexp_")

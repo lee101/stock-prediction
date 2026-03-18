@@ -5,7 +5,9 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 
 import json
+import pandas as pd
 
+from src.chronos2_objective import build_correlation_cohort_map, build_correlation_matrix
 from src.hourly_data_utils import resolve_hourly_symbol_path
 
 
@@ -223,6 +225,120 @@ def stock_expansion_sort_key(row: Mapping[str, Any]) -> tuple[float, float, floa
     )
 
 
+def resolve_hourly_hyperparams_path(
+    symbol: str,
+    *,
+    hyperparam_root: Path = Path("hyperparams"),
+) -> Path:
+    normalized = str(symbol or "").strip().upper()
+    if not normalized:
+        raise ValueError("symbol is required")
+    return Path(hyperparam_root) / "chronos2" / "hourly" / f"{normalized}.json"
+
+
+def has_hourly_hyperparams(
+    symbol: str,
+    *,
+    hyperparam_root: Path = Path("hyperparams"),
+) -> bool:
+    return resolve_hourly_hyperparams_path(symbol, hyperparam_root=hyperparam_root).exists()
+
+
+def _resolve_hourly_context_length(
+    symbol: str,
+    *,
+    hyperparam_root: Path = Path("hyperparams"),
+    default: int = 1024,
+) -> int:
+    path = resolve_hourly_hyperparams_path(symbol, hyperparam_root=hyperparam_root)
+    if not path.exists():
+        return int(default)
+    try:
+        payload = json.loads(path.read_text())
+        config = payload.get("config") if isinstance(payload, Mapping) else {}
+        context_length = int((config or {}).get("context_length", default))
+    except Exception:
+        return int(default)
+    return max(1, int(context_length))
+
+
+def build_hourly_return_correlation_cohorts(
+    symbols: Sequence[str],
+    *,
+    data_root: Path,
+    lookback_hours: int = 24 * 120,
+    min_periods: int = 24 * 5,
+    max_size: int = 4,
+    min_abs_corr: float = 0.25,
+    include_negative: bool = False,
+) -> dict[str, tuple[str, ...]]:
+    normalized_symbols: list[str] = []
+    seen: set[str] = set()
+    for symbol in symbols:
+        normalized = str(symbol or "").strip().upper()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            normalized_symbols.append(normalized)
+
+    close_history: dict[str, pd.Series] = {}
+    data_root = Path(data_root)
+    for symbol in normalized_symbols:
+        csv_path = resolve_hourly_symbol_path(symbol, data_root)
+        if csv_path is None or not csv_path.exists():
+            continue
+        try:
+            frame = pd.read_csv(csv_path, usecols=["timestamp", "close"])
+        except Exception:
+            continue
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce").dt.floor("h")
+        frame = frame.dropna(subset=["timestamp"]).sort_values("timestamp")
+        frame = frame.drop_duplicates(subset=["timestamp"], keep="last")
+        if lookback_hours > 0 and len(frame) > int(lookback_hours) + 24:
+            frame = frame.tail(int(lookback_hours) + 24).copy()
+        if frame.empty:
+            continue
+        close_history[symbol] = pd.Series(
+            frame["close"].to_numpy(dtype="float64"),
+            index=frame["timestamp"],
+        )
+
+    corr = build_correlation_matrix(
+        close_history,
+        lookback=int(lookback_hours) if lookback_hours > 0 else None,
+        min_periods=int(min_periods),
+    )
+    return build_correlation_cohort_map(
+        corr,
+        max_size=int(max_size),
+        min_abs_corr=float(min_abs_corr),
+        include_negative=bool(include_negative),
+    )
+
+
+def candidate_hourly_tuning_command(
+    symbol: str,
+    *,
+    holdout_hours: int = 168,
+    prediction_length: int = 24,
+    cohort_size: int = 4,
+    cohort_min_abs_corr: float = 0.25,
+) -> str:
+    normalized = str(symbol or "").strip().upper()
+    if not normalized:
+        raise ValueError("symbol is required")
+    return (
+        "python hyperparam_chronos_hourly.py "
+        f"--symbols {normalized} "
+        "--quick "
+        f"--holdout-hours {int(holdout_hours)} "
+        f"--prediction-length {int(prediction_length)} "
+        "--objective composite "
+        f"--cohort-size {int(cohort_size)} "
+        f"--cohort-min-abs-corr {float(cohort_min_abs_corr)} "
+        "--save-hyperparams"
+    )
+
+
 def candidate_lora_command(
     symbol: str,
     *,
@@ -231,11 +347,13 @@ def candidate_lora_command(
     num_steps: int = 1500,
     learning_rate: float = 5e-5,
     context_length: int = 1024,
+    covariate_symbols: Sequence[str] | None = None,
+    covariate_cols: Sequence[str] | None = ("close",),
 ) -> str:
     normalized = str(symbol or "").strip().upper()
     if not normalized:
         raise ValueError("symbol is required")
-    return (
+    command = (
         "python scripts/retrain_chronos2_hourly_loras.py "
         f"--symbol {normalized} "
         f"--data-root {data_root} "
@@ -245,20 +363,114 @@ def candidate_lora_command(
         f"--num-steps {int(num_steps)} "
         f"--save-name-suffix stockexp"
     )
+    normalized_covariates = [
+        str(peer or "").strip().upper()
+        for peer in (covariate_symbols or ())
+        if str(peer or "").strip()
+    ]
+    if normalized_covariates:
+        command += f" --covariate-symbols {','.join(normalized_covariates)}"
+    normalized_covariate_cols = [str(col or "").strip() for col in (covariate_cols or ()) if str(col or "").strip()]
+    if normalized_covariates and normalized_covariate_cols:
+        command += f" --covariate-cols {','.join(normalized_covariate_cols)}"
+    return command
+
+
+def candidate_training_plan(
+    symbol: str,
+    *,
+    comparison_symbols: Sequence[str],
+    data_root: Path = Path("trainingdatahourly/stocks"),
+    hyperparam_root: Path = Path("hyperparams"),
+    correlation_cohorts: Mapping[str, Sequence[str]] | None = None,
+    lookback_hours: int = 24 * 120,
+    min_periods: int = 24 * 5,
+    max_cohort_size: int = 4,
+    min_abs_corr: float = 0.25,
+    include_negative: bool = False,
+    tuning_holdout_hours: int = 168,
+    tuning_prediction_length: int = 24,
+    lora_num_steps: int = 1500,
+    lora_learning_rate: float = 5e-5,
+    default_context_length: int = 1024,
+) -> dict[str, Any]:
+    normalized = str(symbol or "").strip().upper()
+    if not normalized:
+        raise ValueError("symbol is required")
+
+    if correlation_cohorts is None:
+        symbols = [normalized, *comparison_symbols]
+        correlation_cohorts = build_hourly_return_correlation_cohorts(
+            symbols,
+            data_root=Path(data_root),
+            lookback_hours=int(lookback_hours),
+            min_periods=int(min_periods),
+            max_size=int(max_cohort_size),
+            min_abs_corr=float(min_abs_corr),
+            include_negative=bool(include_negative),
+        )
+
+    peers = tuple(
+        str(peer or "").strip().upper()
+        for peer in correlation_cohorts.get(normalized, ())
+        if str(peer or "").strip() and str(peer or "").strip().upper() != normalized
+    )
+    hourly_config_exists = has_hourly_hyperparams(normalized, hyperparam_root=Path(hyperparam_root))
+    context_length = _resolve_hourly_context_length(
+        normalized,
+        hyperparam_root=Path(hyperparam_root),
+        default=int(default_context_length),
+    )
+    lora_context_length = context_length if hourly_config_exists else int(default_context_length)
+    if not hourly_config_exists:
+        recommended_next_step = "hourly_tune"
+        recommended_reason = "No stored hourly Chronos2 config; tune base hourly params before LoRA."
+    elif peers:
+        recommended_next_step = "multivariate_lora"
+        recommended_reason = f"Use correlated peers to test multivariate LoRA: {', '.join(peers)}"
+    else:
+        recommended_next_step = "single_symbol_lora"
+        recommended_reason = "Hourly config exists; proceed with single-symbol LoRA baseline."
+
+    return {
+        "hourly_config_exists": hourly_config_exists,
+        "recommended_next_step": recommended_next_step,
+        "recommended_reason": recommended_reason,
+        "recommended_peer_symbols": list(peers),
+        "hourly_tuning_command": candidate_hourly_tuning_command(
+            normalized,
+            holdout_hours=int(tuning_holdout_hours),
+            prediction_length=int(tuning_prediction_length),
+            cohort_size=int(max_cohort_size),
+            cohort_min_abs_corr=float(min_abs_corr),
+        ),
+        "lora_command": candidate_lora_command(
+            normalized,
+            context_length=int(lora_context_length),
+            learning_rate=float(lora_learning_rate),
+            num_steps=int(lora_num_steps),
+            covariate_symbols=peers,
+        ),
+    }
 
 
 __all__ = [
     "DEFAULT_STOCK_EXPANSION_CANDIDATES",
     "StockExpansionCandidate",
+    "build_hourly_return_correlation_cohorts",
     "candidate_from_mapping",
+    "candidate_hourly_tuning_command",
     "candidate_lora_command",
+    "candidate_training_plan",
     "count_candidate_history_rows",
     "candidates_to_jsonable",
     "default_stock_expansion_candidates",
     "extract_reforecast_metrics",
     "filter_candidates_with_hourly_data",
+    "has_hourly_hyperparams",
     "load_stock_expansion_manifest",
     "manifest_side_defaults",
+    "resolve_hourly_hyperparams_path",
     "split_candidates_by_history",
     "stock_expansion_sort_key",
     "summarize_reforecast_result",

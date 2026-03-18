@@ -127,6 +127,21 @@ def _parse_symbols(raw: Optional[Sequence[str]], default: str) -> List[str]:
     return [normalize_compact_symbol(t) for t in default.split(",") if t.strip()]
 
 
+def _build_save_name(
+    symbol: str,
+    *,
+    save_name: Optional[str],
+    save_name_suffix: Optional[str],
+) -> Optional[str]:
+    explicit = str(save_name or "").strip()
+    if explicit:
+        return explicit
+    suffix = str(save_name_suffix or "").strip()
+    if suffix:
+        return f"{symbol}_lora_{suffix}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+    return None
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Retrain Chronos2 hourly LoRAs and update hyperparams/chronos2/hourly.")
     parser.add_argument("--symbol", action="append", dest="symbols", help="Symbol to retrain (repeatable or comma-separated).")
@@ -144,6 +159,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--val-hours", type=int, default=168)
     parser.add_argument("--test-hours", type=int, default=168)
     parser.add_argument("--seed", type=int, default=1337)
+    parser.add_argument("--save-name", default=None, help="Optional exact run folder name.")
     parser.add_argument("--save-name-suffix", default=None, help="Optional suffix appended to the run folder name.")
     parser.add_argument("--no-update-hparams", action="store_true")
     parser.add_argument("--hyperparam-dir", type=Path, default=DEFAULT_HPARAM_DIR)
@@ -158,9 +174,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     logger.info("Retraining {} Chronos2 LoRA(s): {}", len(symbols), symbols)
 
     for symbol in symbols:
-        save_name = None
-        if args.save_name_suffix:
-            save_name = f"{symbol}_lora_{args.save_name_suffix}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+        save_name = _build_save_name(
+            symbol,
+            save_name=args.save_name,
+            save_name_suffix=args.save_name_suffix,
+        )
 
         covariate_symbols = tuple(
             normalize_compact_symbol(s.strip())
