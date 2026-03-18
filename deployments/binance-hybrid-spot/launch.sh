@@ -7,7 +7,7 @@ exec /home/lee/code/stock/.venv313/bin/python -u \
   rl-trading-agent-binance/trade_binance_live.py \
   --live \
   --model gemini-3.1-flash-lite-preview \
-  --symbols BTCUSD ETHUSD SOLUSD \
+  --symbols BTCUSD ETHUSD SOLUSD DOGEUSD AAVEUSD LINKUSD \
   --execution-mode margin \
   --leverage 5 \
   --interval 3600 \

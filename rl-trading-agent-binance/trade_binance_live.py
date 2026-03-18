@@ -102,10 +102,11 @@ TRADING_SYMBOLS = {
     "DOGEUSD": BinanceSymbolConfig("DOGEUSD", "DOGEUSDT", "USDT", "DOGE", 0.001, 0.10),
     "SUIUSD": BinanceSymbolConfig("SUIUSD", "SUIUSDT", "USDT", "SUI", 0.001, 0.15),
     "AAVEUSD": BinanceSymbolConfig("AAVEUSD", "AAVEUSDT", "USDT", "AAVE", 0.001, 0.15),
+    "LINKUSD": BinanceSymbolConfig("LINKUSD", "LINKUSDT", "USDT", "LINK", 0.001, 0.10),
+    "XRPUSD": BinanceSymbolConfig("XRPUSD", "XRPUSDT", "USDT", "XRP", 0.001, 0.10),
 }
 
-# Minimum trade sizes
-MIN_TRADE_USD = 12.0  # Binance min notional is typically $10
+MIN_TRADE_USD = 12.0
 SUPPORTED_EXECUTION_MODES = {"auto", "spot", "margin"}
 ACCOUNT_TRANSFER_RESERVES = {
     "USDT": 1e-6,
@@ -116,6 +117,8 @@ ACCOUNT_TRANSFER_RESERVES = {
     "DOGE": 1e-5,
     "SUI": 1e-5,
     "AAVE": 1e-8,
+    "LINK": 1e-8,
+    "XRP": 1e-5,
 }
 
 

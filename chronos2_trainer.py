@@ -89,6 +89,8 @@ class TrainerConfig:
     merge_lora: bool = True
     seed: int = 1337
     save_name: Optional[str] = None
+    covariate_symbols: Tuple[str, ...] = ()
+    covariate_cols: Tuple[str, ...] = ("close",)
 
 
 @dataclass
@@ -170,6 +172,23 @@ def _split_windows(df: pd.DataFrame, val_hours: int, test_hours: int):
 def _prepare_inputs(df: pd.DataFrame, target_cols: Sequence[str]) -> List[Dict[str, Any]]:
     values = df[list(target_cols)].to_numpy(dtype=np.float32).T
     return [{"target": values}]
+
+
+def _prepare_inputs_multivariate(
+    df: pd.DataFrame,
+    target_cols: Sequence[str],
+    covariate_dfs: List[pd.DataFrame],
+    covariate_cols: Sequence[str],
+) -> List[Dict[str, Any]]:
+    target_values = df[list(target_cols)].to_numpy(dtype=np.float32).T
+    all_channels = [target_values]
+    for cov_df in covariate_dfs:
+        aligned = cov_df.reindex(df.index)
+        aligned = aligned.ffill().bfill()
+        cov_values = aligned[list(covariate_cols)].to_numpy(dtype=np.float32).T
+        all_channels.append(cov_values)
+    stacked = np.concatenate(all_channels, axis=0)
+    return [{"target": stacked}]
 
 
 def _median_quantile_index(quantiles: Sequence[float]) -> int:
@@ -463,6 +482,16 @@ def run_finetune(config: TrainerConfig) -> FineTuneReport:
     df = _load_hourly_frame(data_path, config.target_cols)
     train_df, val_df, test_df = _split_windows(df, config.val_hours, config.test_hours)
 
+    covariate_dfs: List[pd.DataFrame] = []
+    if config.covariate_symbols:
+        for cov_sym in config.covariate_symbols:
+            cov_path = _resolve_data_path(cov_sym.upper(), config.data_root)
+            cov_cols = list(config.covariate_cols) if config.covariate_cols else list(config.target_cols)
+            cov_df = _load_hourly_frame(cov_path, tuple(cov_cols))
+            cov_df = cov_df.set_index("timestamp") if "timestamp" in cov_df.columns else cov_df
+            covariate_dfs.append(cov_df)
+            logger.info("Loaded covariate {} ({} rows, cols={})", cov_sym, len(cov_df), cov_cols)
+
     if config.finetune_mode == "lora" and config.learning_rate <= 1e-5:
         logger.warning(
             "LoRA often benefits from higher LR (e.g. 1e-4). Current: {:.2e}",
@@ -471,8 +500,16 @@ def run_finetune(config: TrainerConfig) -> FineTuneReport:
 
     pipeline = _load_pipeline(config.model_id, config.device_map, config.torch_dtype)
 
-    train_inputs = _prepare_inputs(train_df, config.target_cols)
-    val_inputs = _prepare_inputs(val_df, config.target_cols)
+    if covariate_dfs:
+        train_df_indexed = train_df.set_index("timestamp") if "timestamp" in train_df.columns else train_df
+        val_df_indexed = val_df.set_index("timestamp") if "timestamp" in val_df.columns else val_df
+        train_inputs = _prepare_inputs_multivariate(
+            train_df_indexed, config.target_cols, covariate_dfs, config.covariate_cols)
+        val_inputs = _prepare_inputs_multivariate(
+            val_df_indexed, config.target_cols, covariate_dfs, config.covariate_cols)
+    else:
+        train_inputs = _prepare_inputs(train_df, config.target_cols)
+        val_inputs = _prepare_inputs(val_df, config.target_cols)
 
     run_name = config.save_name or f"{symbol}_{config.finetune_mode}_{time.strftime('%Y%m%d_%H%M%S')}"
     output_dir = config.output_root / run_name
