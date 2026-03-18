@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from types import ModuleType
 
 import pandas as pd
 
@@ -36,6 +38,69 @@ def test_load_local_daily_frames_aligns_common_dates(tmp_path: Path) -> None:
     assert list(frames) == ["AAPL", "MSFT"]
     assert frames["AAPL"]["timestamp"].dt.strftime("%Y-%m-%d").tolist() == ["2026-01-02", "2026-01-03"]
     assert frames["MSFT"]["timestamp"].dt.strftime("%Y-%m-%d").tolist() == ["2026-01-02", "2026-01-03"]
+
+
+def test_frames_from_alpaca_bars_handles_single_symbol_without_multiindex() -> None:
+    bars_df = pd.DataFrame(
+        [
+            {"timestamp": "2026-01-01T00:00:00Z", "open": 10, "high": 11, "low": 9, "close": 10.5, "volume": 100},
+            {"timestamp": "2026-01-02T00:00:00Z", "open": 11, "high": 12, "low": 10, "close": 11.5, "volume": 110},
+        ]
+    )
+
+    frames = daily_stock._frames_from_alpaca_bars(
+        symbols=["AAPL"],
+        bars_df=bars_df,
+        now=datetime(2026, 1, 3, tzinfo=timezone.utc),
+    )
+
+    assert list(frames) == ["AAPL"]
+    assert len(frames["AAPL"]) == 2
+
+
+def test_load_alpaca_daily_frames_recovers_missing_symbol_with_single_symbol_retry(monkeypatch) -> None:
+    fake_alpaca_data_enums = ModuleType("alpaca.data.enums")
+    fake_alpaca_data_enums.DataFeed = SimpleNamespace(IEX="iex", SIP="sip")
+    monkeypatch.setitem(sys.modules, "alpaca.data.enums", fake_alpaca_data_enums)
+
+    aapl = daily_stock._normalize_daily_frame(
+        pd.DataFrame(
+            [
+                {"timestamp": "2026-01-01T00:00:00Z", "open": 10, "high": 11, "low": 9, "close": 10.5, "volume": 100},
+                {"timestamp": "2026-01-02T00:00:00Z", "open": 11, "high": 12, "low": 10, "close": 11.5, "volume": 110},
+            ]
+        )
+    )
+    msft = daily_stock._normalize_daily_frame(
+        pd.DataFrame(
+            [
+                {"timestamp": "2026-01-01T00:00:00Z", "open": 20, "high": 21, "low": 19, "close": 20.5, "volume": 200},
+                {"timestamp": "2026-01-02T00:00:00Z", "open": 21, "high": 22, "low": 20, "close": 21.5, "volume": 210},
+            ]
+        )
+    )
+
+    def _fake_request(*, symbols, feed, **_kwargs):
+        key = (tuple(symbols), feed)
+        if key == (("AAPL", "MSFT"), "iex"):
+            return {"AAPL": aapl}
+        if key == (("MSFT",), "iex"):
+            return {"MSFT": msft}
+        return {}
+
+    monkeypatch.setattr(daily_stock, "_request_alpaca_daily_frames", _fake_request)
+
+    frames = daily_stock.load_alpaca_daily_frames(
+        ["AAPL", "MSFT"],
+        paper=True,
+        min_days=2,
+        data_client=object(),
+        now=datetime(2026, 1, 3, tzinfo=timezone.utc),
+    )
+
+    assert list(frames) == ["AAPL", "MSFT"]
+    assert len(frames["AAPL"]) == 2
+    assert len(frames["MSFT"]) == 2
 
 
 def test_should_run_today_only_after_market_open_window() -> None:

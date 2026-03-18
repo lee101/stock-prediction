@@ -17,7 +17,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Sequence
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -169,6 +169,63 @@ def build_data_client(*, paper: bool):
     return StockHistoricalDataClient(key_id, secret)
 
 
+def _frames_from_alpaca_bars(
+    *,
+    symbols: Sequence[str],
+    bars_df: pd.DataFrame | None,
+    now: datetime,
+) -> dict[str, pd.DataFrame]:
+    if bars_df is None or len(bars_df) == 0:
+        return {}
+
+    ordered_symbols = [str(symbol).upper() for symbol in symbols]
+    frames: dict[str, pd.DataFrame] = {}
+    if isinstance(bars_df.index, pd.MultiIndex):
+        grouped = bars_df.reset_index().groupby("symbol", sort=False)
+        for symbol, group in grouped:
+            normalized = _normalize_daily_frame(group)
+            frames[str(symbol).upper()] = _drop_incomplete_session(normalized, now=now)
+        return frames
+
+    flat = bars_df.reset_index()
+    if "symbol" in flat.columns:
+        grouped = flat.groupby("symbol", sort=False)
+        for symbol, group in grouped:
+            normalized = _normalize_daily_frame(group)
+            frames[str(symbol).upper()] = _drop_incomplete_session(normalized, now=now)
+        return frames
+
+    if len(ordered_symbols) != 1:
+        raise RuntimeError("Expected Alpaca bars dataframe to include symbol information for multi-symbol requests")
+    normalized = _normalize_daily_frame(flat)
+    frames[ordered_symbols[0]] = _drop_incomplete_session(normalized, now=now)
+    return frames
+
+
+def _request_alpaca_daily_frames(
+    *,
+    client,
+    symbols: Sequence[str],
+    start: datetime,
+    end: datetime,
+    feed,
+    now: datetime,
+) -> dict[str, pd.DataFrame]:
+    from alpaca.data import StockBarsRequest, TimeFrame
+
+    request = StockBarsRequest(
+        symbol_or_symbols=list(symbols),
+        timeframe=TimeFrame.Day,
+        start=start,
+        end=end,
+        adjustment="raw",
+        feed=feed,
+    )
+    bars = client.get_stock_bars(request)
+    bars_df = getattr(bars, "df", None)
+    return _frames_from_alpaca_bars(symbols=symbols, bars_df=bars_df, now=now)
+
+
 def load_alpaca_daily_frames(
     symbols: Iterable[str],
     *,
@@ -178,39 +235,80 @@ def load_alpaca_daily_frames(
     now: Optional[datetime] = None,
     data_client=None,
 ) -> dict[str, pd.DataFrame]:
-    from alpaca.data import StockBarsRequest, TimeFrame
     from alpaca.data.enums import DataFeed
 
     now = now or datetime.now(timezone.utc)
     client = data_client or build_data_client(paper=paper)
-    request = StockBarsRequest(
-        symbol_or_symbols=list(symbols),
-        timeframe=TimeFrame.Day,
-        start=now - timedelta(days=history_days),
-        end=now,
-        feed=DataFeed.IEX,
-    )
-    bars = client.get_stock_bars(request)
-    bars_df = getattr(bars, "df", None)
-    if bars_df is None or len(bars_df) == 0:
-        raise RuntimeError("No Alpaca daily bars returned")
+    ordered_symbols = [str(symbol).upper() for symbol in symbols]
+    start = now - timedelta(days=history_days)
 
     frames: dict[str, pd.DataFrame] = {}
-    if isinstance(bars_df.index, pd.MultiIndex):
-        grouped = bars_df.reset_index().groupby("symbol", sort=False)
-        for symbol, group in grouped:
-            normalized = _normalize_daily_frame(group)
-            normalized = _drop_incomplete_session(normalized, now=now)
-            if len(normalized) < min_days:
-                raise ValueError(f"{symbol}: only {len(normalized)} completed Alpaca bars, need {min_days}")
-            frames[str(symbol).upper()] = normalized
-    else:
-        raise RuntimeError("Expected Alpaca bars dataframe to use a MultiIndex by symbol")
+    insufficient_counts: dict[str, int] = {}
+    fetch_errors: list[str] = []
 
-    missing = [symbol for symbol in symbols if symbol.upper() not in frames]
+    def _accept_resolved(candidates: dict[str, pd.DataFrame]) -> None:
+        for symbol, frame in candidates.items():
+            rows = len(frame)
+            if rows < min_days:
+                insufficient_counts[symbol] = max(rows, insufficient_counts.get(symbol, 0))
+                continue
+            frames[symbol] = frame
+            insufficient_counts.pop(symbol, None)
+
+    def _remaining_symbols() -> list[str]:
+        return [symbol for symbol in ordered_symbols if symbol not in frames]
+
+    for feed in (DataFeed.IEX, DataFeed.SIP):
+        remaining = _remaining_symbols()
+        if not remaining:
+            break
+        try:
+            _accept_resolved(
+                _request_alpaca_daily_frames(
+                    client=client,
+                    symbols=remaining,
+                    start=start,
+                    end=now,
+                    feed=feed,
+                    now=now,
+                )
+            )
+        except Exception as exc:
+            fetch_errors.append(f"{getattr(feed, 'value', feed)} batch: {exc}")
+
+        for symbol in list(_remaining_symbols()):
+            try:
+                _accept_resolved(
+                    _request_alpaca_daily_frames(
+                        client=client,
+                        symbols=[symbol],
+                        start=start,
+                        end=now,
+                        feed=feed,
+                        now=now,
+                    )
+                )
+            except Exception as exc:
+                fetch_errors.append(f"{getattr(feed, 'value', feed)} {symbol}: {exc}")
+
+    if not frames:
+        details = f" ({'; '.join(fetch_errors)})" if fetch_errors else ""
+        raise RuntimeError(f"No Alpaca daily bars returned{details}")
+
+    missing = _remaining_symbols()
     if missing:
-        raise RuntimeError(f"Missing Alpaca daily bars for: {', '.join(missing)}")
-    return _align_frames({symbol.upper(): frames[symbol.upper()] for symbol in symbols})
+        missing_with_counts = [
+            f"{symbol} ({insufficient_counts[symbol]} bars)"
+            if symbol in insufficient_counts
+            else symbol
+            for symbol in missing
+        ]
+        if any(symbol in insufficient_counts for symbol in missing):
+            raise ValueError(
+                f"Missing enough Alpaca daily bars for: {', '.join(missing_with_counts)}; need at least {min_days}"
+            )
+        raise RuntimeError(f"Missing Alpaca daily bars for: {', '.join(missing_with_counts)}")
+    return _align_frames({symbol: frames[symbol] for symbol in ordered_symbols})
 
 
 def load_state(path: Path = STATE_PATH) -> StrategyState:

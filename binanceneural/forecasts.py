@@ -662,7 +662,9 @@ def build_forecast_bundle(
         if merged is None:
             merged = horizon_frame
         else:
-            merged = merged.merge(horizon_frame, on=["timestamp", "symbol"], how="inner")
+            # Preserve the full union of forecast timestamps so sparse long-horizon
+            # caches do not collapse shorter-horizon history.
+            merged = merged.merge(horizon_frame, on=["timestamp", "symbol"], how="outer")
     if merged is None:
         raise RuntimeError(
             f"No Chronos forecasts available for {symbol}. Generate caches first or disable cache_only."

@@ -33,6 +33,16 @@ class AssetMeta:
     can_short: bool = False
 
 
+def _effective_min_history_bars(symbol: str, min_history_hours: int) -> int:
+    value = max(0, int(min_history_hours))
+    if value <= 0:
+        return 0
+    if is_crypto_symbol(symbol):
+        return value
+    trading_days = math.ceil(value / 24.0)
+    return max(1, int(trading_days * 7))
+
+
 class AlpacaHourlyDataModule:
     def __init__(self, config: DatasetConfig) -> None:
         self.config = config
@@ -42,9 +52,10 @@ class AlpacaHourlyDataModule:
             self.feature_columns = tuple(config.feature_columns)
         self.primary_horizon = int(config.forecast_horizons[0])
         self.frame = self._prepare_frame()
-        if len(self.frame) < config.min_history_hours:
+        min_history_bars = _effective_min_history_bars(config.symbol, int(config.min_history_hours))
+        if len(self.frame) < min_history_bars:
             raise ValueError(
-                f"Insufficient hourly history ({len(self.frame)} rows, minimum {config.min_history_hours})."
+                f"Insufficient hourly history ({len(self.frame)} rows, minimum {min_history_bars})."
             )
         val_hours = int(max(0, config.validation_days) * 24)
         if val_hours > 0 and len(self.frame) > (val_hours + config.sequence_length):
@@ -346,6 +357,7 @@ __all__ = [
     "AlpacaMultiSymbolDataModule",
     "AssetMeta",
     "FeatureNormalizer",
+    "_effective_min_history_bars",
     "build_default_feature_columns",
     "build_feature_frame",
 ]

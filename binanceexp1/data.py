@@ -518,15 +518,21 @@ def build_feature_frame(frame: pd.DataFrame, config: DatasetConfig) -> pd.DataFr
         # rely on build_default_feature_columns() even when some horizons are
         # unavailable (e.g. offline runs or partial forecast bundles).
         if close_col in frame.columns:
-            frame[f"chronos_close_delta{suffix}"] = (frame[close_col] - ref) / ref
+            frame[f"chronos_close_delta{suffix}"] = ((frame[close_col] - ref) / ref).replace(
+                [np.inf, -np.inf], np.nan
+            ).fillna(0.0)
         else:
             frame[f"chronos_close_delta{suffix}"] = 0.0
         if high_col in frame.columns:
-            frame[f"chronos_high_delta{suffix}"] = (frame[high_col] - ref) / ref
+            frame[f"chronos_high_delta{suffix}"] = ((frame[high_col] - ref) / ref).replace(
+                [np.inf, -np.inf], np.nan
+            ).fillna(0.0)
         else:
             frame[f"chronos_high_delta{suffix}"] = 0.0
         if low_col in frame.columns:
-            frame[f"chronos_low_delta{suffix}"] = (frame[low_col] - ref) / ref
+            frame[f"chronos_low_delta{suffix}"] = ((frame[low_col] - ref) / ref).replace(
+                [np.inf, -np.inf], np.nan
+            ).fillna(0.0)
         else:
             frame[f"chronos_low_delta{suffix}"] = 0.0
         # Forecast confidence: inverse of quantile spread (narrow spread = high confidence).
@@ -534,7 +540,9 @@ def build_feature_frame(frame: pd.DataFrame, config: DatasetConfig) -> pd.DataFr
         p10_col = f"predicted_close_p10{suffix}"
         if close_col in frame.columns and p90_col in frame.columns and p10_col in frame.columns:
             spread = (frame[p90_col] - frame[p10_col]).abs()
-            frame[f"forecast_confidence{suffix}"] = ref / spread.clip(lower=1e-6)
+            frame[f"forecast_confidence{suffix}"] = (ref / spread.clip(lower=1e-6)).replace(
+                [np.inf, -np.inf], np.nan
+            ).fillna(0.0)
         else:
             frame[f"forecast_confidence{suffix}"] = 0.0
 
@@ -593,7 +601,7 @@ def _build_forecast_interaction_columns(horizons: Sequence[int]) -> list[str]:
 
 def _series_or_zero(frame: pd.DataFrame, column: str) -> pd.Series:
     if column in frame.columns:
-        return frame[column].astype(float)
+        return frame[column].astype(float).replace([np.inf, -np.inf], np.nan).fillna(0.0)
     return pd.Series(0.0, index=frame.index, dtype=np.float32)
 
 

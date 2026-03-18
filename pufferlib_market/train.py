@@ -39,7 +39,7 @@ import pufferlib.vector
 from pufferlib_market.environment import TradingEnvConfig, TradingEnv
 from pufferlib_market.metrics import annualize_total_return
 from pufferlib_market.advantage_utils import normalize_advantages
-from src.checkpoint_manager import TopKCheckpointManager
+from src.checkpoint_manager import TopKCheckpointManager, prune_periodic_checkpoints
 
 
 # ─── Running Observation Normalizer ──────────────────────────────────
@@ -519,7 +519,11 @@ def train(args):
     best_return = resume_state.best_return
     start_update = resume_state.update
     periodic_ckpt_mgr = TopKCheckpointManager(
-        Path(args.checkpoint_dir), max_keep=10, mode="max",
+        Path(args.checkpoint_dir), max_keep=args.max_periodic_checkpoints, mode="max",
+    )
+    prune_periodic_checkpoints(
+        Path(args.checkpoint_dir),
+        max_keep_latest=args.max_periodic_checkpoints,
     )
 
     print(f"\nTraining: {num_updates} updates, {args.total_timesteps:,} additional steps")
@@ -925,6 +929,12 @@ def main():
     # Output
     parser.add_argument("--checkpoint-dir", default="pufferlib_market/checkpoints")
     parser.add_argument("--save-every", type=int, default=50)
+    parser.add_argument(
+        "--max-periodic-checkpoints",
+        type=int,
+        default=int(os.getenv("PUFFERLIB_MAX_PERIODIC_CHECKPOINTS", "3")),
+        help="How many periodic update_*.pt checkpoints to retain alongside best/final.",
+    )
     parser.add_argument("--cpu", action="store_true")
 
     args = parser.parse_args()
