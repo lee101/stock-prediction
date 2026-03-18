@@ -118,6 +118,44 @@ class _DummyPipeline:
         return pd.DataFrame(rows)
 
 
+class _DummyTensorPipeline:
+    def __init__(self) -> None:
+        self.model = object()
+        self.predict_calls: list[dict[str, object]] = []
+
+    def predict(self, inputs, prediction_length: int, batch_size: int | None = None, predict_batches_jointly: bool = False):  # type: ignore[no-untyped-def]
+        if chronos2_mod.torch is None:
+            raise RuntimeError("torch unavailable")
+        self.predict_calls.append(
+            {
+                "num_inputs": len(inputs),
+                "prediction_length": prediction_length,
+                "batch_size": batch_size,
+                "predict_batches_jointly": predict_batches_jointly,
+            }
+        )
+        outputs = []
+        for input_idx, payload in enumerate(inputs):
+            target = payload["target"]
+            num_variates = int(target.shape[0])
+            samples = []
+            for sample_idx in range(5):
+                sample = chronos2_mod.torch.stack(
+                    [
+                        chronos2_mod.torch.arange(
+                            float(10 * (input_idx + 1) + variate_idx + sample_idx),
+                            float(10 * (input_idx + 1) + variate_idx + sample_idx + prediction_length),
+                            dtype=chronos2_mod.torch.float32,
+                        )
+                        for variate_idx in range(num_variates)
+                    ],
+                    dim=0,
+                )
+                samples.append(sample)
+            outputs.append(chronos2_mod.torch.stack(samples, dim=1))
+        return outputs
+
+
 def _quantile_column(level: float) -> str:
     return format(level, "g")
 
@@ -187,6 +225,68 @@ def test_predict_kwargs_alias_cross_learning() -> None:
     last_kwargs = pipeline.recorded_kwargs[-1]
     assert last_kwargs.get("predict_batches_jointly") is True
     assert "cross_learning" not in last_kwargs
+
+
+@pytest.mark.skipif(chronos2_mod.torch is None, reason="torch required")
+def test_predict_ohlc_multivariate_preserves_hourly_cadence() -> None:
+    df = _make_dataframe(48)
+    df["timestamp"] = pd.date_range("2024-01-01", periods=48, freq="h", tz="UTC")
+    wrapper = Chronos2OHLCWrapper(
+        pipeline=_DummyTensorPipeline(),
+        id_column="symbol",
+        timestamp_column="timestamp",
+        target_columns=("open", "high", "low", "close"),
+        default_context_length=24,
+        quantile_levels=(0.1, 0.5, 0.9),
+        preaugmentation_dirs=(),
+    )
+
+    batch = wrapper.predict_ohlc_multivariate(
+        df.iloc[:-1],
+        symbol="BTCUSD",
+        prediction_length=3,
+        context_length=24,
+        batch_size=1,
+    )
+
+    last_ts = pd.to_datetime(df.iloc[:-1]["timestamp"].iloc[-1], utc=True)
+    expected = pd.date_range(last_ts + pd.Timedelta(hours=1), periods=3, freq="h", tz="UTC")
+    assert batch.quantile_frames[0.5].index.equals(expected)
+
+
+@pytest.mark.skipif(chronos2_mod.torch is None, reason="torch required")
+def test_predict_ohlc_joint_preserves_hourly_cadence() -> None:
+    base = _make_dataframe(48)
+    base["timestamp"] = pd.date_range("2024-01-01", periods=48, freq="h", tz="UTC")
+    other = base.copy()
+    other["symbol"] = "ETHUSD"
+    wrapper = Chronos2OHLCWrapper(
+        pipeline=_DummyTensorPipeline(),
+        id_column="symbol",
+        timestamp_column="timestamp",
+        target_columns=("open", "high", "low", "close"),
+        default_context_length=24,
+        quantile_levels=(0.1, 0.5, 0.9),
+        preaugmentation_dirs=(),
+    )
+
+    batches = wrapper.predict_ohlc_joint(
+        [base.iloc[:-1], other.iloc[:-1]],
+        symbols=["BTCUSD", "ETHUSD"],
+        prediction_length=2,
+        context_length=24,
+        batch_size=2,
+    )
+
+    expected = pd.date_range(
+        pd.to_datetime(base.iloc[:-1]["timestamp"].iloc[-1], utc=True) + pd.Timedelta(hours=1),
+        periods=2,
+        freq="h",
+        tz="UTC",
+    )
+    assert len(batches) == 2
+    assert batches[0].quantile_frames[0.5].index.equals(expected)
+    assert batches[1].quantile_frames[0.5].index.equals(expected)
 
 
 def test_unload_blocks_future_predictions() -> None:
