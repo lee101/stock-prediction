@@ -106,6 +106,53 @@ def _resolve_baseline_metrics_path(*, output_dir: Path, baseline_source_dir: Pat
     return Path(source_dir) / "metrics.json"
 
 
+def _load_forecast_cache_mae(path: Path) -> dict[str, dict[int, float]]:
+    path = Path(path)
+    if not path.exists():
+        return {}
+    payload = json.loads(path.read_text())
+    rows = payload.get("metrics") or []
+    result: dict[str, dict[int, float]] = {}
+    for row in rows:
+        symbol = str((row or {}).get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        try:
+            horizon = int((row or {}).get("horizon_hours"))
+            mae_percent = float((row or {}).get("mae_percent"))
+        except (TypeError, ValueError):
+            continue
+        result.setdefault(symbol, {})[horizon] = mae_percent
+    return result
+
+
+def _candidate_mae_snapshot(mae_by_symbol: dict[str, dict[int, float]], symbol: str) -> dict[str, float]:
+    horizons = mae_by_symbol.get(str(symbol or "").strip().upper(), {})
+    return {
+        "candidate_mae_h1_percent": float(horizons.get(1, 0.0) or 0.0),
+        "candidate_mae_h24_percent": float(horizons.get(24, 0.0) or 0.0),
+    }
+
+
+def _candidate_mae_gate_reason(
+    *,
+    symbol: str,
+    mae_snapshot: dict[str, float],
+    max_h1_mae_percent: float,
+    max_h24_mae_percent: float,
+) -> str:
+    failures: list[str] = []
+    h1 = float(mae_snapshot.get("candidate_mae_h1_percent", 0.0) or 0.0)
+    h24 = float(mae_snapshot.get("candidate_mae_h24_percent", 0.0) or 0.0)
+    if float(max_h1_mae_percent) > 0.0 and h1 > float(max_h1_mae_percent):
+        failures.append(f"h1 MAE {h1:.4f}% exceeds gate {float(max_h1_mae_percent):.4f}%")
+    if float(max_h24_mae_percent) > 0.0 and h24 > float(max_h24_mae_percent):
+        failures.append(f"h24 MAE {h24:.4f}% exceeds gate {float(max_h24_mae_percent):.4f}%")
+    if not failures:
+        return ""
+    return f"forecast cache gate for {str(symbol or '').strip().upper()}: {'; '.join(failures)}"
+
+
 def _baseline_metric(metrics: dict[str, object], key: str) -> float:
     try:
         return float(metrics.get(key, 0.0) or 0.0)
@@ -245,6 +292,8 @@ def _result_row(
     metrics: dict[str, object],
     summary_path: Path,
     baseline_metrics: dict[str, object] | None,
+    sim_ran: bool = True,
+    mae_snapshot: dict[str, float] | None = None,
 ) -> dict[str, object]:
     total_return = _baseline_metric(metrics, "total_return")
     sortino = _baseline_metric(metrics, "sortino")
@@ -252,11 +301,13 @@ def _result_row(
     baseline_total_return = _baseline_metric(baseline_metrics or {}, "total_return")
     baseline_sortino = _baseline_metric(baseline_metrics or {}, "sortino")
     baseline_max_drawdown = _baseline_metric(baseline_metrics or {}, "max_drawdown")
+    mae_snapshot = dict(mae_snapshot or {})
     return {
         "symbol": symbol,
         "side": side,
         "sector": sector,
         "priority": int(priority),
+        "sim_ran": bool(sim_ran),
         "total_return": total_return,
         "sortino": sortino,
         "max_drawdown": max_drawdown,
@@ -271,7 +322,66 @@ def _result_row(
         "summary_path": str(summary_path),
         "lora_command": candidate_lora_command(symbol),
         "thesis": thesis,
+        "candidate_mae_h1_percent": float(mae_snapshot.get("candidate_mae_h1_percent", 0.0) or 0.0),
+        "candidate_mae_h24_percent": float(mae_snapshot.get("candidate_mae_h24_percent", 0.0) or 0.0),
     }
+
+
+def _write_cache_gate_summary(
+    *,
+    candidate_output_dir: Path,
+    symbol: str,
+    side: str,
+    mae_snapshot: dict[str, float],
+    gate_reason: str,
+    max_h1_mae_percent: float,
+    max_h24_mae_percent: float,
+) -> Path:
+    candidate_output_dir = Path(candidate_output_dir)
+    candidate_output_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = candidate_output_dir / "cache_gate.json"
+    payload = {
+        "symbol": str(symbol).strip().upper(),
+        "side": str(side).strip(),
+        "gate_reason": gate_reason,
+        "candidate_mae_h1_percent": float(mae_snapshot.get("candidate_mae_h1_percent", 0.0) or 0.0),
+        "candidate_mae_h24_percent": float(mae_snapshot.get("candidate_mae_h24_percent", 0.0) or 0.0),
+        "max_h1_mae_percent": float(max_h1_mae_percent),
+        "max_h24_mae_percent": float(max_h24_mae_percent),
+    }
+    summary_path.write_text(json.dumps(payload, indent=2) + "\n")
+    return summary_path
+
+
+def _skipped_result_row(
+    *,
+    candidate: StockExpansionCandidate,
+    baseline_metrics: dict[str, object] | None,
+    summary_path: Path,
+    mae_snapshot: dict[str, float],
+    gate_reason: str,
+) -> dict[str, object]:
+    return _result_row(
+        symbol=candidate.symbol,
+        side=candidate.side,
+        sector=candidate.sector,
+        priority=candidate.priority,
+        thesis=candidate.thesis,
+        metrics={
+            "total_return": -1.0,
+            "sortino": -999.0,
+            "max_drawdown": 1.0,
+            "final_equity": 0.0,
+            "num_fills": 0.0,
+            "terminated_early": True,
+            "termination_reason": gate_reason,
+            "termination_progress_fraction": 0.0,
+        },
+        summary_path=summary_path,
+        baseline_metrics=baseline_metrics,
+        sim_ran=False,
+        mae_snapshot=mae_snapshot,
+    )
 
 
 def _assess_promotion(
@@ -361,11 +471,11 @@ def _build_promotion_summary(
 
 def _trial_sort_key(row: dict[str, object]) -> tuple[float, float, float, float, float]:
     return (
+        1.0 if bool(row.get("sim_ran", True)) else 0.0,
         float(row.get("sortino_delta_vs_baseline", float("-inf"))),
         float(row.get("total_return_delta_vs_baseline", float("-inf"))),
         -float(row.get("max_drawdown_delta_vs_baseline", float("inf"))),
         float(row.get("sortino", float("-inf"))),
-        float(row.get("total_return", float("-inf"))),
     )
 
 
@@ -376,6 +486,7 @@ def _write_csv(path: Path, rows: Sequence[dict[str, object]]) -> None:
         "side",
         "sector",
         "priority",
+        "sim_ran",
         "total_return",
         "sortino",
         "max_drawdown",
@@ -388,6 +499,8 @@ def _write_csv(path: Path, rows: Sequence[dict[str, object]]) -> None:
         "max_drawdown_delta_vs_baseline",
         "promotable",
         "promotion_reason",
+        "candidate_mae_h1_percent",
+        "candidate_mae_h24_percent",
         "summary_path",
         "lora_command",
         "thesis",
@@ -446,6 +559,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--promotion-min-return-delta", type=float, default=0.0)
     parser.add_argument("--promotion-min-sortino-delta", type=float, default=0.0)
     parser.add_argument("--promotion-max-drawdown-delta", type=float, default=0.0)
+    parser.add_argument("--candidate-max-h1-mae-percent", type=float, default=0.0)
+    parser.add_argument("--candidate-max-h24-mae-percent", type=float, default=0.0)
     parser.add_argument("--initial-state", type=Path, default=None)
     args = parser.parse_args(argv)
 
@@ -526,6 +641,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_json=output_dir / "forecast_cache_mae.json",
             force_rebuild=bool(args.force_cache_rebuild),
         )
+    mae_by_symbol = _load_forecast_cache_mae(output_dir / "forecast_cache_mae.json")
 
     checkpoint_path = Path(default_checkpoint).expanduser().resolve()
     baseline_dir = output_dir / "baseline"
@@ -570,7 +686,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         metrics=baseline_metrics,
         summary_path=baseline_summary_path,
         baseline_metrics=None,
-    )
+        sim_ran=True,
+        )
     baseline_row["lora_command"] = ""
     rows: list[dict[str, object]] = [baseline_row]
 
@@ -582,6 +699,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             base_short_only_symbols=base_short_only_symbols,
         )
         candidate_output_dir = output_dir / candidate.symbol
+        mae_snapshot = _candidate_mae_snapshot(mae_by_symbol, candidate.symbol)
+        gate_reason = _candidate_mae_gate_reason(
+            symbol=candidate.symbol,
+            mae_snapshot=mae_snapshot,
+            max_h1_mae_percent=float(args.candidate_max_h1_mae_percent),
+            max_h24_mae_percent=float(args.candidate_max_h24_mae_percent),
+        )
+        if gate_reason:
+            summary_path = _write_cache_gate_summary(
+                candidate_output_dir=candidate_output_dir,
+                symbol=candidate.symbol,
+                side=candidate.side,
+                mae_snapshot=mae_snapshot,
+                gate_reason=gate_reason,
+                max_h1_mae_percent=float(args.candidate_max_h1_mae_percent),
+                max_h24_mae_percent=float(args.candidate_max_h24_mae_percent),
+            )
+            rows.append(
+                _skipped_result_row(
+                    candidate=candidate,
+                    baseline_metrics=baseline_metrics,
+                    summary_path=summary_path,
+                    mae_snapshot=mae_snapshot,
+                    gate_reason=gate_reason,
+                )
+            )
+            continue
         try:
             if bool(args.reuse_candidate_results) and not bool(args.force_candidate_rerun) and _trial_done(candidate_output_dir):
                 metrics = _read_metrics(candidate_output_dir)
@@ -621,6 +765,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 metrics=metrics,
                 summary_path=candidate_output_dir / "metrics.json",
                 baseline_metrics=baseline_metrics,
+                sim_ran=True,
+                mae_snapshot=mae_snapshot,
             )
         )
 

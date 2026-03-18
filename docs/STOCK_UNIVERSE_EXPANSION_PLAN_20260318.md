@@ -113,6 +113,7 @@ python scripts/retrain_chronos2_hourly_loras.py \
 - Reuse the existing early-exit helper in [`src/market_sim_early_exit.py`](/nvme0n1-disk/code/stock-prediction/src/market_sim_early_exit.py) and add comparability gates against the current live baseline.
 - Persist the result of each pass/fail decision in `promotion_summary.json` so deployment can be driven from a recorded gate instead of manual inspection.
 - When running one symbol per output directory, point later runs at the first completed baseline with `--baseline-source-dir` so the unchanged live basket is not recomputed each time.
+- Add a forecast-cache quality gate before simulation so candidates with obviously broken h1 or h24 MAE can be skipped early and recorded in `cache_gate.json` instead of burning a full 120-day sim.
 - Proposed early-out rules for 120-day runs:
   - After 30 percent of bars, stop if candidate max drawdown is already materially worse than baseline and return is negative.
   - After 50 percent of bars, stop if Sortino is far below baseline and drawdown still exceeds profit.
