@@ -123,6 +123,18 @@ def _candidate_direction_lists(
     return long_only, short_only
 
 
+def _resolve_cache_symbols(
+    *,
+    base_symbols: Sequence[str],
+    ready_candidates: Sequence[StockExpansionCandidate],
+    candidate_only_cache_build: bool,
+) -> list[str]:
+    cache_symbols = [candidate.symbol for candidate in ready_candidates]
+    if not candidate_only_cache_build:
+        cache_symbols = list(base_symbols) + cache_symbols
+    return cache_symbols
+
+
 def _run_trial(
     *,
     symbols: Sequence[str],
@@ -257,6 +269,91 @@ def _result_row(
     }
 
 
+def _assess_promotion(
+    row: dict[str, object],
+    *,
+    min_return_delta: float,
+    min_sortino_delta: float,
+    max_drawdown_delta: float,
+) -> dict[str, object]:
+    if str(row.get("symbol") or "").upper() == "BASE":
+        return {
+            "promotable": False,
+            "promotion_reason": "Baseline row is not a candidate for promotion.",
+            "promotion_failures": ["baseline row"],
+        }
+
+    failures: list[str] = []
+    total_return_delta = float(row.get("total_return_delta_vs_baseline", 0.0) or 0.0)
+    sortino_delta = float(row.get("sortino_delta_vs_baseline", 0.0) or 0.0)
+    max_drawdown_delta_vs_baseline = float(row.get("max_drawdown_delta_vs_baseline", 0.0) or 0.0)
+    terminated_early = bool(row.get("terminated_early", False))
+    termination_reason = str(row.get("termination_reason") or "").strip()
+
+    if terminated_early:
+        failures.append(termination_reason or "candidate terminated early")
+    if total_return_delta < float(min_return_delta):
+        failures.append(
+            f"return delta {total_return_delta:.6f} below promotion floor {float(min_return_delta):.6f}"
+        )
+    if sortino_delta < float(min_sortino_delta):
+        failures.append(f"sortino delta {sortino_delta:.4f} below promotion floor {float(min_sortino_delta):.4f}")
+    if max_drawdown_delta_vs_baseline > float(max_drawdown_delta):
+        failures.append(
+            f"max drawdown delta {max_drawdown_delta_vs_baseline:.6f} exceeds promotion cap "
+            f"{float(max_drawdown_delta):.6f}"
+        )
+
+    if failures:
+        return {
+            "promotable": False,
+            "promotion_reason": "; ".join(failures),
+            "promotion_failures": failures,
+        }
+
+    return {
+        "promotable": True,
+        "promotion_reason": (
+            f"return delta {total_return_delta:.6f}, "
+            f"sortino delta {sortino_delta:.4f}, "
+            f"max drawdown delta {max_drawdown_delta_vs_baseline:.6f}"
+        ),
+        "promotion_failures": [],
+    }
+
+
+def _build_promotion_summary(
+    rows: Sequence[dict[str, object]],
+    *,
+    min_return_delta: float,
+    min_sortino_delta: float,
+    max_drawdown_delta: float,
+) -> dict[str, object]:
+    thresholds = {
+        "min_return_delta": float(min_return_delta),
+        "min_sortino_delta": float(min_sortino_delta),
+        "max_drawdown_delta": float(max_drawdown_delta),
+    }
+    promotable_candidates = [row for row in rows if bool(row.get("promotable", False))]
+    promoted_row = promotable_candidates[0] if promotable_candidates else None
+    if promoted_row is not None:
+        reason = str(promoted_row.get("promotion_reason") or "").strip()
+        promotion_reason = (
+            f"{promoted_row['symbol']} cleared promotion thresholds. {reason}".strip()
+        )
+    else:
+        rejected_symbols = [str(row.get("symbol") or "") for row in rows if str(row.get("symbol") or "").upper() != "BASE"]
+        joined = ",".join(rejected_symbols)
+        promotion_reason = f"No candidate met promotion thresholds. Rejected candidates: {joined}"
+    return {
+        "promote": promoted_row is not None,
+        "promoted_symbol": None if promoted_row is None else str(promoted_row["symbol"]),
+        "promotion_reason": promotion_reason,
+        "thresholds": thresholds,
+        "promotable_candidates": [str(row["symbol"]) for row in promotable_candidates],
+    }
+
+
 def _trial_sort_key(row: dict[str, object]) -> tuple[float, float, float, float, float]:
     return (
         float(row.get("sortino_delta_vs_baseline", float("-inf"))),
@@ -284,6 +381,8 @@ def _write_csv(path: Path, rows: Sequence[dict[str, object]]) -> None:
         "total_return_delta_vs_baseline",
         "sortino_delta_vs_baseline",
         "max_drawdown_delta_vs_baseline",
+        "promotable",
+        "promotion_reason",
         "summary_path",
         "lora_command",
         "thesis",
@@ -316,6 +415,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--eval-days", type=float, default=120.0)
     parser.add_argument("--skip-cache-build", action="store_true")
     parser.add_argument("--force-cache-rebuild", action="store_true")
+    parser.add_argument(
+        "--candidate-only-cache-build",
+        action="store_true",
+        help="Only refresh forecast caches for candidate symbols instead of rebuilding the full base basket.",
+    )
     parser.add_argument("--reuse-baseline", action="store_true", default=True)
     parser.add_argument("--force-baseline-rerun", action="store_true")
     parser.add_argument("--reuse-candidate-results", action="store_true", default=True)
@@ -328,6 +432,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--baseline-return-tolerance", type=float, default=0.02)
     parser.add_argument("--baseline-sortino-tolerance", type=float, default=0.50)
     parser.add_argument("--baseline-max-drawdown-tolerance", type=float, default=0.02)
+    parser.add_argument("--promotion-min-return-delta", type=float, default=0.0)
+    parser.add_argument("--promotion-min-sortino-delta", type=float, default=0.0)
+    parser.add_argument("--promotion-max-drawdown-delta", type=float, default=0.0)
     parser.add_argument("--initial-state", type=Path, default=None)
     args = parser.parse_args(argv)
 
@@ -395,8 +502,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("No non-base candidates have sufficient hourly stock data.")
 
     if not args.skip_cache_build:
+        cache_symbols = _resolve_cache_symbols(
+            base_symbols=base_symbols,
+            ready_candidates=ready,
+            candidate_only_cache_build=bool(args.candidate_only_cache_build),
+        )
         _build_forecast_caches(
-            symbols=list(base_symbols) + [candidate.symbol for candidate in ready],
+            symbols=cache_symbols,
             data_root=args.stock_data_root,
             forecast_cache_root=args.forecast_cache_root,
             lookback_hours=float(args.cache_lookback_hours),
@@ -496,11 +608,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     sorted_rows = [rows[0]] + sorted(rows[1:], key=_trial_sort_key, reverse=True)
+    for row in sorted_rows:
+        assessment = _assess_promotion(
+            row,
+            min_return_delta=float(args.promotion_min_return_delta),
+            min_sortino_delta=float(args.promotion_min_sortino_delta),
+            max_drawdown_delta=float(args.promotion_max_drawdown_delta),
+        )
+        row.update(assessment)
     (output_dir / "expansion_results.json").write_text(json.dumps(sorted_rows, indent=2) + "\n")
     _write_csv(output_dir / "expansion_results.csv", sorted_rows)
     (output_dir / "baseline_metrics.json").write_text(json.dumps(baseline_metrics, indent=2) + "\n")
     if failed_candidates:
         (output_dir / "failed_candidates.json").write_text(json.dumps(failed_candidates, indent=2) + "\n")
+    promotion_summary = _build_promotion_summary(
+        sorted_rows,
+        min_return_delta=float(args.promotion_min_return_delta),
+        min_sortino_delta=float(args.promotion_min_sortino_delta),
+        max_drawdown_delta=float(args.promotion_max_drawdown_delta),
+    )
+    (output_dir / "promotion_summary.json").write_text(json.dumps(promotion_summary, indent=2) + "\n")
 
     top_lora_commands = [
         {
@@ -521,8 +648,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"return={float(row.get('total_return', 0.0)):.6f} "
             f"max_dd={float(row.get('max_drawdown', 0.0)):.6f} "
             f"delta_sortino={float(row.get('sortino_delta_vs_baseline', 0.0)):.4f} "
+            f"promotable={bool(row.get('promotable', False))} "
             f"terminated_early={bool(row.get('terminated_early', False))}"
         )
+    print(promotion_summary["promotion_reason"])
     return 0
 
 
