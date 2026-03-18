@@ -253,7 +253,7 @@ python scripts/run_alpaca_stock_expansion.py \
   - `analysis/alpaca_stock_expansion_intc_lora_20260318/expansion_results.json`
   - `analysis/alpaca_stock_expansion_intc_lora_20260318/promotion_summary.json`
 
-## Active Multivariate LoRA
+## Completed Multivariate LoRA Trial
 
 - symbol: `SOFI`
 - runner: local `RTX 5090`
@@ -317,9 +317,11 @@ python scripts/run_alpaca_stock_expansion.py \
 - rebuilt forecast cache outcome:
   - `h1 MAE%=5.7553`
   - `h24 MAE%=6.6636`
-- current state:
-  - cache gate still passes, but the LoRA barely changed forecast quality versus the base SOFI cache.
-  - the follow-on `run_alpaca_stock_expansion.py` process is still active, so promotion is not decided yet.
+- market simulator outcome vs baseline:
+  - baseline: `return=-0.041069`, `sortino=-6.7113`, `max_drawdown=0.041186`
+  - `SOFI` LoRA: `return=-0.040488`, `sortino=-7.2631`, `max_drawdown=0.040634`
+- decision: rejected
+  - reason: cache gate still passed, but `Sortino` regressed by `-0.5518`, so the candidate did not meet promotion thresholds.
 
 ## Tuned-Config Evaluation Command
 
