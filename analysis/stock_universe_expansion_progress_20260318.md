@@ -20,6 +20,10 @@
   - This recovers peer relationships across stock CSVs that use different minute offsets.
 - Applied the same hourly bucket normalization inside `hyperparam_chronos_hourly.py` so hourly tuning cohort scoring uses the same corrected alignment.
   - Follow-up fix: `_build_cohort_map()` now uses `.dt.floor("h")` on timestamp series; the previous `.floor("h")` call crashed the real `TTD` tuner path before it could score any configs.
+- Fixed `src/models/chronos2_wrapper.py` so true multivariate/joint Chronos inference preserves the source cadence instead of defaulting inferred frequencies to daily steps.
+  - This was especially important for hourly stock experiments, where multivariate forecasts could otherwise be timestamped at the wrong horizon.
+- Fixed `hyperparam_chronos_hourly.py` so `use_multivariate=True` now routes through the real OHLC multivariate wrapper instead of looping over single-target `predict_df` calls.
+  - Regression coverage now includes `tests/test_chronos2_wrapper.py`, `tests/test_hyperparam_chronos_hourly_objective.py`, `tests/test_chronos_forecast_manager_modes.py`, and `tests/test_build_hourly_forecast_caches.py`.
 - Extended `scripts/run_alpaca_stock_expansion.py` to write training recommendations per candidate:
   - `recommended_next_step`
   - `recommended_reason`
@@ -128,7 +132,7 @@ python hyperparam_chronos_hourly.py \
 - decision: rejected
   - reason: tuning did not improve the forecast cache gate; `TTD` remained an immediate reject before market-sim promotion could matter.
 
-## Active Multivariate LoRA
+## Completed Multivariate LoRA Trial
 
 - symbol: `TTD`
 - runner: local `RTX 5090`
@@ -168,7 +172,7 @@ python -u scripts/retrain_chronos2_hourly_loras.py \
 - decision: rejected
   - reason: multivariate LoRA was a large improvement over the original `TTD` cache, but it still missed the hard gate (`10%`) on both horizons, so it never reached a real market-sim comparison.
 
-## Active Multivariate LoRA
+## Completed Multivariate LoRA Trial
 
 - symbol: `INTC`
 - runner: local `RTX 5090`
@@ -196,13 +200,19 @@ python -u scripts/retrain_chronos2_hourly_loras.py \
 
 - log path: `analysis/local_training_logs/intc_lora_stockexp_multivar_20260318.log`
 - output artifact path: `chronos2_finetuned/INTC_lora_stockexp_multivar_20260318/finetuned-ckpt`
-- first log lines confirm covariates loaded:
-  - `NVDA`
-  - `NET`
-  - `META`
-  - `GOOG`
+- training outcome:
+  - `val_mae%=8.8221`
+  - `test_mae%=11.4416`
+- rebuilt forecast cache outcome:
+  - `h1 MAE%=0.9225`
+  - `h24 MAE%=8.5875`
+- market simulator outcome vs baseline:
+  - baseline: `return=-0.041069`, `sortino=-6.7113`, `max_drawdown=0.041186`
+  - `INTC` LoRA: `return=-0.039686`, `sortino=-7.0823`, `max_drawdown=0.039780`
+- decision: rejected
+  - reason: return and drawdown improved, but `Sortino` regressed by `-0.3711`, so the candidate still did not meet promotion thresholds.
 
-## Armed Follow-On Evaluation
+## Completed Follow-On Evaluation
 
 - session: `tmux` session `intc_lora_stockexp_multivar_eval_20260318`
 - start gate: waits for `chronos2_finetuned/INTC_lora_stockexp_multivar_20260318/finetuned-ckpt`
@@ -237,6 +247,72 @@ python scripts/run_alpaca_stock_expansion.py \
   --candidate-max-h24-mae-percent 10 \
   --output-dir analysis/alpaca_stock_expansion_intc_lora_20260318
 ```
+
+- written artifacts:
+  - `analysis/alpaca_stock_expansion_intc_lora_20260318/forecast_cache_mae.json`
+  - `analysis/alpaca_stock_expansion_intc_lora_20260318/expansion_results.json`
+  - `analysis/alpaca_stock_expansion_intc_lora_20260318/promotion_summary.json`
+
+## Active Multivariate LoRA
+
+- symbol: `SOFI`
+- runner: local `RTX 5090`
+- reason local: remote host `administrator@93.127.141.100` is still inaccessible from this session (`Permission denied (publickey,password)`).
+- started at: `2026-03-18 21:23 UTC`
+- training session: `tmux` session `sofi_lora_stockexp_multivar_20260318`
+- eval session: `tmux` session `sofi_lora_stockexp_multivar_eval_20260318`
+- env:
+  - `cd /nvme0n1-disk/code/stock-prediction`
+  - `source .venv313/bin/activate`
+- training command:
+
+```bash
+python -u scripts/retrain_chronos2_hourly_loras.py \
+  --symbol SOFI \
+  --data-root trainingdatahourly/stocks \
+  --output-root chronos2_finetuned \
+  --context-length 1024 \
+  --batch-size 32 \
+  --learning-rate 5e-05 \
+  --num-steps 1500 \
+  --save-name SOFI_lora_stockexp_multivar_20260318 \
+  --covariate-symbols NET,PLTR,META,NVDA \
+  --covariate-cols close \
+  --no-update-hparams
+```
+
+- evaluation command chain:
+
+```bash
+python scripts/build_hourly_forecast_caches.py \
+  --symbols SOFI \
+  --data-root trainingdatahourly/stocks \
+  --forecast-cache-root unified_hourly_experiment/forecast_cache \
+  --horizons 1,24 \
+  --model-id chronos2_finetuned/SOFI_lora_stockexp_multivar_20260318/finetuned-ckpt \
+  --context-hours 1024 \
+  --batch-size 32 \
+  --lookback-hours 5000 \
+  --force-rebuild \
+  --output-json analysis/alpaca_stock_expansion_sofi_lora_20260318/forecast_cache_mae.json
+
+python scripts/run_alpaca_stock_expansion.py \
+  --manifest-path docs/stock_universe_candidates_20260318.json \
+  --candidate-symbols SOFI \
+  --base-stock-universe live20260318 \
+  --base-long-only-symbols NVDA,PLTR,GOOG,AAPL,MSFT,META,TSLA,NET,DBX,SOFI,INTC,MU,TTD,PATH,NBIS,TME \
+  --baseline-source-dir analysis/alpaca_stock_expansion_pfe_20260318/baseline \
+  --skip-cache-build \
+  --candidate-max-h1-mae-percent 10 \
+  --candidate-max-h24-mae-percent 10 \
+  --output-dir analysis/alpaca_stock_expansion_sofi_lora_20260318
+```
+
+- training log path: `analysis/local_training_logs/sofi_lora_stockexp_multivar_20260318.log`
+- eval log path: `analysis/local_training_logs/sofi_lora_stockexp_multivar_eval_20260318.log`
+- output artifact path: `chronos2_finetuned/SOFI_lora_stockexp_multivar_20260318/finetuned-ckpt`
+- initial signal:
+  - covariates loaded cleanly: `NET`, `PLTR`, `META`, `NVDA`
 
 ## Tuned-Config Evaluation Command
 

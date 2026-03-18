@@ -242,6 +242,28 @@ def _normalize_frequency(value: Optional[str]) -> Optional[str]:
     return None
 
 
+def _infer_prediction_step(
+    timestamps: pd.Series | pd.DatetimeIndex,
+) -> pd.DateOffset | pd.Timedelta:
+    ts_index = pd.DatetimeIndex(pd.to_datetime(timestamps, utc=True, errors="coerce")).dropna()
+    if len(ts_index) > 1:
+        try:
+            freq = pd.infer_freq(ts_index)
+        except ValueError:
+            freq = None
+        if freq:
+            try:
+                return pd.tseries.frequencies.to_offset(freq)
+            except Exception:
+                pass
+        deltas = ts_index.to_series().diff().dropna()
+        if not deltas.empty:
+            delta = deltas.median()
+            if pd.notna(delta) and delta > pd.Timedelta(0):
+                return pd.Timedelta(delta)
+    return pd.Timedelta(days=1)
+
+
 def _default_preaug_dirs(frequency: Optional[str]) -> Tuple[Path, ...]:
     base_dirs = (
         Path("preaugstrategies") / "chronos2",
@@ -1362,15 +1384,8 @@ class Chronos2OHLCWrapper:
         quantile_frames: QuantileFrameMap = {}
         last_timestamp = df[self.timestamp_column].iloc[-1] if self.timestamp_column in df.columns else pd.Timestamp.now(tz="UTC")
 
-        # Infer frequency for future timestamps
-        if len(df) > 1 and self.timestamp_column in df.columns:
-            freq = pd.infer_freq(df[self.timestamp_column])
-            if freq is None:
-                delta = (df[self.timestamp_column].iloc[-1] - df[self.timestamp_column].iloc[-2])
-            else:
-                delta = pd.Timedelta(days=1)  # Default to daily
-        else:
-            delta = pd.Timedelta(days=1)
+        # Preserve the source cadence so hourly multivariate forecasts stay hourly.
+        delta = _infer_prediction_step(df[self.timestamp_column]) if self.timestamp_column in df.columns else pd.Timedelta(days=1)
 
         future_timestamps = [last_timestamp + delta * (i + 1) for i in range(prediction_length)]
         future_index = pd.DatetimeIndex(future_timestamps, name=self.timestamp_column)
@@ -1530,9 +1545,7 @@ class Chronos2OHLCWrapper:
 
             # Build timestamps
             last_ts = df[self.timestamp_column].iloc[-1] if self.timestamp_column in df.columns else pd.Timestamp.now(tz="UTC")
-            delta = pd.Timedelta(days=1)
-            if len(df) > 1 and self.timestamp_column in df.columns:
-                delta = df[self.timestamp_column].iloc[-1] - df[self.timestamp_column].iloc[-2]
+            delta = _infer_prediction_step(df[self.timestamp_column]) if self.timestamp_column in df.columns else pd.Timedelta(days=1)
 
             future_timestamps = [last_ts + delta * (i + 1) for i in range(prediction_length)]
             future_index = pd.DatetimeIndex(future_timestamps, name=self.timestamp_column)

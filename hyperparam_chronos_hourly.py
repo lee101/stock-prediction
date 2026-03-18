@@ -42,6 +42,7 @@ from src.chronos2_objective import (
     build_correlation_matrix,
     compute_chronos_objective,
 )
+from src.models.chronos2_wrapper import Chronos2OHLCWrapper
 
 
 # Hourly-specific parameter grid
@@ -118,6 +119,7 @@ class Chronos2HourlyTuner:
         self.enable_cross_learning = bool(enable_cross_learning)
         self.preserve_existing_model_id = bool(preserve_existing_model_id)
         self.model = None
+        self.wrapper: Optional[Chronos2OHLCWrapper] = None
         self.results: List[Dict] = []
 
     def _get_data_path(self, symbol: str) -> Optional[Path]:
@@ -206,7 +208,7 @@ class Chronos2HourlyTuner:
 
     def _load_model(self):
         """Load Chronos2 model (lazy loading)."""
-        if self.model is not None:
+        if self.model is not None and self.wrapper is not None:
             return
 
         try:
@@ -216,6 +218,14 @@ class Chronos2HourlyTuner:
             self.model = Chronos2Pipeline.from_pretrained(
                 self.model_id,
                 device_map=self.device,
+            )
+            self.wrapper = Chronos2OHLCWrapper(
+                pipeline=self.model,
+                device_hint=self.device,
+                default_context_length=8192,
+                quantile_levels=(0.1, 0.5, 0.9),
+                preaugmentation_dirs=(),
+                multiscale_enabled=False,
             )
             logger.info("Chronos2 model loaded")
 
@@ -278,25 +288,20 @@ class Chronos2HourlyTuner:
             df = df.iloc[-context_length:].copy()
 
         if use_multivariate:
-            # Predict OHLC together
-            targets = ["open", "high", "low", "close"]
-            # For multivariate, we need to melt the dataframe
-            # Chronos2 expects long format for multi-target
-            quantile_results = {}
-            for q in [0.1, 0.5, 0.9]:
-                results = {}
-                for target in targets:
-                    predictions = self.model.predict_df(
-                        df,
-                        id_column="symbol",
-                        timestamp_column="timestamp",
-                        target=target,
-                        prediction_length=prediction_length,
-                        quantile_levels=[q],
-                    )
-                    results[target] = predictions[str(q)].values
-                quantile_results[q] = pd.DataFrame(results)
-            return quantile_results
+            if self.wrapper is None:
+                raise RuntimeError("Chronos2 OHLC wrapper is unavailable for multivariate evaluation.")
+            batch = self.wrapper.predict_ohlc_multivariate(
+                df,
+                symbol=symbol,
+                prediction_length=prediction_length,
+                context_length=context_length,
+                quantile_levels=(0.1, 0.5, 0.9),
+                batch_size=1,
+            )
+            return {
+                float(level): frame.copy()
+                for level, frame in batch.quantile_frames.items()
+            }
         else:
             # Close only
             predictions = self.model.predict_df(
