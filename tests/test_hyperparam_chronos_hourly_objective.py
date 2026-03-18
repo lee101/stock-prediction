@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Dict, List, Tuple
 
+import pandas as pd
+
 from hyperparam_chronos_hourly import Chronos2HourlyTuner
 
 
@@ -80,3 +82,29 @@ def test_grid_search_uses_composite_selection_metric() -> None:
     assert best["context_length"] == 40
     assert best["cohort_used"] == 1
     assert best["cohort_requested"] == 1
+
+
+def test_build_cohort_map_floors_series_timestamps() -> None:
+    class _RealCohortTuner(Chronos2HourlyTuner):
+        def __init__(self) -> None:
+            super().__init__(holdout_hours=24, prediction_length=1, objective="composite", cohort_size=1)
+
+        def load_data(self, symbol: str):  # type: ignore[override]
+            minutes = "05" if symbol == "AAA" else "55"
+            base = 100.0 if symbol == "AAA" else 200.0
+            timestamps = pd.date_range("2026-01-01T00:00:00Z", periods=60, freq="h")
+            df = pd.DataFrame(
+                {
+                    "timestamp": [ts.strftime(f"%Y-%m-%dT%H:{minutes}:00Z") for ts in timestamps],
+                    "close": [base + float(i) for i in range(len(timestamps))],
+                }
+            )
+            split_idx = len(df) - self.holdout_hours
+            return df.iloc[:split_idx].copy(), df.iloc[split_idx:].copy()
+
+    tuner = _RealCohortTuner()
+
+    cohort_map = tuner._build_cohort_map(["AAA", "BBB"])
+
+    assert cohort_map["AAA"] == ("BBB",)
+    assert cohort_map["BBB"] == ("AAA",)
