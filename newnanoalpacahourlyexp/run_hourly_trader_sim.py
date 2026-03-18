@@ -29,6 +29,12 @@ def _parse_symbols(raw: Optional[str]) -> list[str]:
     return [token.strip().upper() for token in raw.split(",") if token.strip()]
 
 
+def _parse_symbol_list(raw: Optional[str]) -> list[str]:
+    if not raw:
+        return []
+    return [token.strip().upper() for token in str(raw).split(",") if token.strip()]
+
+
 def _parse_int_tuple(raw: Optional[str]) -> Optional[Tuple[int, ...]]:
     if raw is None:
         return None
@@ -268,6 +274,47 @@ def main() -> None:
     parser.set_defaults(partial_fill_on_touch=True)
     parser.add_argument("--eval-days", type=float, default=None)
     parser.add_argument("--eval-hours", type=float, default=None)
+    parser.add_argument("--allow-short", action="store_true")
+    parser.add_argument("--long-only-symbols", default=None, help="Comma-separated symbols to restrict to long-only.")
+    parser.add_argument("--short-only-symbols", default=None, help="Comma-separated symbols to restrict to short-only.")
+    parser.add_argument(
+        "--drawdown-profit-early-exit",
+        dest="drawdown_profit_early_exit",
+        action="store_true",
+        help="Enable generic drawdown-vs-profit early exit.",
+    )
+    parser.add_argument(
+        "--no-drawdown-profit-early-exit",
+        dest="drawdown_profit_early_exit",
+        action="store_false",
+        help="Disable generic drawdown-vs-profit early exit.",
+    )
+    parser.set_defaults(drawdown_profit_early_exit=True)
+    parser.add_argument("--drawdown-profit-early-exit-min-steps", type=int, default=20)
+    parser.add_argument("--drawdown-profit-early-exit-progress-fraction", type=float, default=0.5)
+    parser.add_argument(
+        "--baseline-comparability-early-exit",
+        dest="baseline_comparability_early_exit",
+        action="store_true",
+        help="Enable staged early exit relative to supplied baseline metrics.",
+    )
+    parser.add_argument(
+        "--no-baseline-comparability-early-exit",
+        dest="baseline_comparability_early_exit",
+        action="store_false",
+        help="Disable staged early exit relative to supplied baseline metrics.",
+    )
+    parser.set_defaults(baseline_comparability_early_exit=False)
+    parser.add_argument("--baseline-total-return", type=float, default=None)
+    parser.add_argument("--baseline-sortino", type=float, default=None)
+    parser.add_argument("--baseline-max-drawdown", type=float, default=None)
+    parser.add_argument("--baseline-early-exit-min-steps", type=int, default=40)
+    parser.add_argument("--baseline-stage1-progress", type=float, default=0.30)
+    parser.add_argument("--baseline-stage2-progress", type=float, default=0.50)
+    parser.add_argument("--baseline-stage3-progress", type=float, default=0.75)
+    parser.add_argument("--baseline-return-tolerance", type=float, default=0.02)
+    parser.add_argument("--baseline-sortino-tolerance", type=float, default=0.50)
+    parser.add_argument("--baseline-max-drawdown-tolerance", type=float, default=0.02)
     parser.add_argument(
         "--initial-state",
         default=None,
@@ -294,6 +341,8 @@ def main() -> None:
     vol_regime_short = args.vol_regime_short if args.vol_regime_short is not None else DatasetConfig().vol_regime_short
     vol_regime_long = args.vol_regime_long if args.vol_regime_long is not None else DatasetConfig().vol_regime_long
     min_history_hours = args.min_history_hours if args.min_history_hours is not None else DatasetConfig().min_history_hours
+    long_only_symbols = _parse_symbol_list(args.long_only_symbols)
+    short_only_symbols = _parse_symbol_list(args.short_only_symbols)
 
     checkpoint = Path(args.checkpoint).expanduser().resolve()
     device = _resolve_device(args.device)
@@ -426,6 +475,23 @@ def main() -> None:
             decision_lag_bars=int(args.decision_lag_bars),
             cancel_ack_delay_bars=int(args.cancel_ack_delay_bars),
             partial_fill_on_touch=bool(args.partial_fill_on_touch),
+            allow_short=bool(args.allow_short),
+            long_only_symbols=long_only_symbols,
+            short_only_symbols=short_only_symbols,
+            enable_drawdown_profit_early_exit=bool(args.drawdown_profit_early_exit),
+            drawdown_profit_early_exit_min_steps=int(args.drawdown_profit_early_exit_min_steps),
+            drawdown_profit_early_exit_progress_fraction=float(args.drawdown_profit_early_exit_progress_fraction),
+            enable_baseline_comparability_early_exit=bool(args.baseline_comparability_early_exit),
+            baseline_total_return=args.baseline_total_return,
+            baseline_sortino=args.baseline_sortino,
+            baseline_max_drawdown=args.baseline_max_drawdown,
+            baseline_early_exit_min_steps=int(args.baseline_early_exit_min_steps),
+            baseline_stage1_progress=float(args.baseline_stage1_progress),
+            baseline_stage2_progress=float(args.baseline_stage2_progress),
+            baseline_stage3_progress=float(args.baseline_stage3_progress),
+            baseline_return_tolerance=float(args.baseline_return_tolerance),
+            baseline_sortino_tolerance=float(args.baseline_sortino_tolerance),
+            baseline_max_drawdown_tolerance=float(args.baseline_max_drawdown_tolerance),
             symbols=[s.upper() for s in symbols],
         )
     )

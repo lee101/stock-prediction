@@ -21,8 +21,6 @@ from src.alpaca_stock_expansion import (
     default_stock_expansion_candidates,
     load_stock_expansion_manifest,
     split_candidates_by_history,
-    stock_expansion_sort_key,
-    summarize_reforecast_result,
     write_stock_expansion_manifest,
 )
 
@@ -31,6 +29,11 @@ DEFAULT_CHECKPOINT = (
     "binanceneural/checkpoints/"
     "alpaca_cross_global_mixed14_robust_short_seq128_lb4000_20260205_2319/epoch_004.pt"
 )
+DEFAULT_BASE_STOCK_SYMBOLS = "NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT,AAPL,MSFT,META,TSLA,NET,BKNG,EBAY,EXPE"
+BASE_STOCK_UNIVERSE_ALIASES = {
+    "stock19": DEFAULT_BASE_STOCK_SYMBOLS,
+    "live20260318": DEFAULT_BASE_STOCK_SYMBOLS,
+}
 
 
 def _parse_csv(raw: str | None) -> list[str]:
@@ -39,12 +42,15 @@ def _parse_csv(raw: str | None) -> list[str]:
     return [token.strip().upper() for token in str(raw).split(",") if token.strip()]
 
 
-def _candidate_args(candidate: StockExpansionCandidate) -> tuple[list[str], list[str]]:
-    if candidate.side == "short":
-        return [], [candidate.symbol]
-    if candidate.side == "both":
-        return [], []
-    return [candidate.symbol], []
+def _resolve_base_symbols(raw: str | None) -> list[str]:
+    value = str(raw or "").strip()
+    if not value:
+        value = DEFAULT_BASE_STOCK_SYMBOLS
+    value = BASE_STOCK_UNIVERSE_ALIASES.get(value, value)
+    symbols = _parse_csv(value)
+    if not symbols:
+        raise ValueError(f"Unable to resolve base stock symbols from {raw!r}")
+    return symbols
 
 
 def _run_command(cmd: Sequence[str]) -> None:
@@ -86,28 +92,64 @@ def _build_forecast_caches(
     _run_command(cmd)
 
 
-def _run_candidate_eval(
-    *,
+def _read_metrics(output_dir: Path) -> dict[str, object]:
+    metrics_path = Path(output_dir) / "metrics.json"
+    return json.loads(metrics_path.read_text())
+
+
+def _baseline_metric(metrics: dict[str, object], key: str) -> float:
+    try:
+        return float(metrics.get(key, 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _candidate_direction_lists(
     candidate: StockExpansionCandidate,
-    base_stock_universe: str,
-    default_checkpoint: Path,
+    *,
+    base_long_only_symbols: Sequence[str],
+    base_short_only_symbols: Sequence[str],
+) -> tuple[list[str], list[str]]:
+    long_only = [str(symbol).strip().upper() for symbol in base_long_only_symbols if str(symbol).strip()]
+    short_only = [str(symbol).strip().upper() for symbol in base_short_only_symbols if str(symbol).strip()]
+    if candidate.side == "long" and candidate.symbol not in long_only:
+        long_only.append(candidate.symbol)
+    elif candidate.side == "short" and candidate.symbol not in short_only:
+        short_only.append(candidate.symbol)
+    return long_only, short_only
+
+
+def _run_trial(
+    *,
+    symbols: Sequence[str],
+    checkpoint: Path,
     stock_data_root: Path,
     forecast_cache_root: Path,
     output_dir: Path,
     moving_average_windows: str,
     min_history_hours: int,
+    eval_days: float,
+    long_only_symbols: Sequence[str],
+    short_only_symbols: Sequence[str],
+    baseline_metrics: dict[str, object] | None,
+    enable_baseline_gate: bool,
+    baseline_early_exit_min_steps: int,
+    baseline_stage1_progress: float,
+    baseline_stage2_progress: float,
+    baseline_stage3_progress: float,
+    baseline_return_tolerance: float,
+    baseline_sortino_tolerance: float,
+    baseline_max_drawdown_tolerance: float,
+    initial_state: Path | None = None,
 ) -> dict[str, object]:
-    long_only_symbols, short_only_symbols = _candidate_args(candidate)
     cmd = [
         sys.executable,
         "-m",
         "newnanoalpacahourlyexp.run_hourly_trader_sim",
-        "--stock-universe",
-        base_stock_universe,
         "--symbols",
-        candidate.symbol,
-        "--default-checkpoint",
-        str(default_checkpoint),
+        ",".join(symbols),
+        "--checkpoint",
+        str(checkpoint),
         "--sequence-length",
         "128",
         "--horizon",
@@ -125,14 +167,14 @@ def _run_candidate_eval(
         "--allocation-mode",
         "portfolio",
         "--cache-only",
-        "--robust-60d",
         "--allow-short",
-        "--entry-near-book-bps",
-        "25",
+        "--eval-days",
+        str(float(eval_days)),
         "--moving-average-windows",
-        moving_average_windows,
+        str(moving_average_windows),
         "--min-history-hours",
         str(int(min_history_hours)),
+        "--no-drawdown-profit-early-exit",
         "--output-dir",
         str(output_dir),
     ]
@@ -140,23 +182,85 @@ def _run_candidate_eval(
         cmd.extend(["--long-only-symbols", ",".join(long_only_symbols)])
     if short_only_symbols:
         cmd.extend(["--short-only-symbols", ",".join(short_only_symbols)])
+    if initial_state is not None:
+        cmd.extend(["--initial-state", str(initial_state)])
+    if enable_baseline_gate and baseline_metrics is not None:
+        cmd.extend(
+            [
+                "--baseline-comparability-early-exit",
+                "--baseline-total-return",
+                str(_baseline_metric(baseline_metrics, "total_return")),
+                "--baseline-sortino",
+                str(_baseline_metric(baseline_metrics, "sortino")),
+                "--baseline-max-drawdown",
+                str(_baseline_metric(baseline_metrics, "max_drawdown")),
+                "--baseline-early-exit-min-steps",
+                str(int(baseline_early_exit_min_steps)),
+                "--baseline-stage1-progress",
+                str(float(baseline_stage1_progress)),
+                "--baseline-stage2-progress",
+                str(float(baseline_stage2_progress)),
+                "--baseline-stage3-progress",
+                str(float(baseline_stage3_progress)),
+                "--baseline-return-tolerance",
+                str(float(baseline_return_tolerance)),
+                "--baseline-sortino-tolerance",
+                str(float(baseline_sortino_tolerance)),
+                "--baseline-max-drawdown-tolerance",
+                str(float(baseline_max_drawdown_tolerance)),
+            ]
+        )
     _run_command(cmd)
+    return _read_metrics(output_dir)
 
-    summary_path = output_dir / "reforecast_summary.json"
-    summary = json.loads(summary_path.read_text())
-    row = summarize_reforecast_result(summary)
-    row.update(
-        {
-            "symbol": candidate.symbol,
-            "side": candidate.side,
-            "sector": candidate.sector,
-            "priority": candidate.priority,
-            "thesis": candidate.thesis,
-            "summary_path": str(summary_path),
-            "lora_command": candidate_lora_command(candidate.symbol),
-        }
+
+def _result_row(
+    *,
+    symbol: str,
+    side: str,
+    sector: str,
+    priority: int,
+    thesis: str,
+    metrics: dict[str, object],
+    summary_path: Path,
+    baseline_metrics: dict[str, object] | None,
+) -> dict[str, object]:
+    total_return = _baseline_metric(metrics, "total_return")
+    sortino = _baseline_metric(metrics, "sortino")
+    max_drawdown = _baseline_metric(metrics, "max_drawdown")
+    baseline_total_return = _baseline_metric(baseline_metrics or {}, "total_return")
+    baseline_sortino = _baseline_metric(baseline_metrics or {}, "sortino")
+    baseline_max_drawdown = _baseline_metric(baseline_metrics or {}, "max_drawdown")
+    return {
+        "symbol": symbol,
+        "side": side,
+        "sector": sector,
+        "priority": int(priority),
+        "total_return": total_return,
+        "sortino": sortino,
+        "max_drawdown": max_drawdown,
+        "final_equity": _baseline_metric(metrics, "final_equity"),
+        "num_fills": int(_baseline_metric(metrics, "num_fills")),
+        "terminated_early": bool(metrics.get("terminated_early", False)),
+        "termination_reason": str(metrics.get("termination_reason") or ""),
+        "termination_progress_fraction": _baseline_metric(metrics, "termination_progress_fraction"),
+        "total_return_delta_vs_baseline": total_return - baseline_total_return,
+        "sortino_delta_vs_baseline": sortino - baseline_sortino,
+        "max_drawdown_delta_vs_baseline": max_drawdown - baseline_max_drawdown,
+        "summary_path": str(summary_path),
+        "lora_command": candidate_lora_command(symbol),
+        "thesis": thesis,
+    }
+
+
+def _trial_sort_key(row: dict[str, object]) -> tuple[float, float, float, float, float]:
+    return (
+        float(row.get("sortino_delta_vs_baseline", float("-inf"))),
+        float(row.get("total_return_delta_vs_baseline", float("-inf"))),
+        -float(row.get("max_drawdown_delta_vs_baseline", float("inf"))),
+        float(row.get("sortino", float("-inf"))),
+        float(row.get("total_return", float("-inf"))),
     )
-    return row
 
 
 def _write_csv(path: Path, rows: Sequence[dict[str, object]]) -> None:
@@ -166,63 +270,57 @@ def _write_csv(path: Path, rows: Sequence[dict[str, object]]) -> None:
         "side",
         "sector",
         "priority",
-        "best_mode",
-        "best_scenario",
-        "best_total_return",
-        "best_sortino",
-        "best_max_drawdown",
-        "flat_sortino",
-        "flat_total_return",
-        "flat_max_drawdown",
-        "flat_pnl_abs",
+        "total_return",
+        "sortino",
+        "max_drawdown",
+        "final_equity",
+        "num_fills",
+        "terminated_early",
+        "termination_progress_fraction",
+        "total_return_delta_vs_baseline",
+        "sortino_delta_vs_baseline",
+        "max_drawdown_delta_vs_baseline",
         "summary_path",
         "lora_command",
         "thesis",
+        "termination_reason",
     ]
     with path.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
-            flat = row.get("flat") or {}
-            writer.writerow(
-                {
-                    "symbol": row.get("symbol"),
-                    "side": row.get("side"),
-                    "sector": row.get("sector"),
-                    "priority": row.get("priority"),
-                    "best_mode": row.get("best_mode"),
-                    "best_scenario": row.get("best_scenario"),
-                    "best_total_return": row.get("best_total_return"),
-                    "best_sortino": row.get("best_sortino"),
-                    "best_max_drawdown": row.get("best_max_drawdown"),
-                    "flat_sortino": flat.get("sortino"),
-                    "flat_total_return": flat.get("total_return"),
-                    "flat_max_drawdown": flat.get("max_drawdown"),
-                    "flat_pnl_abs": flat.get("pnl_abs"),
-                    "summary_path": row.get("summary_path"),
-                    "lora_command": row.get("lora_command"),
-                    "thesis": row.get("thesis"),
-                }
-            )
+            writer.writerow({field: row.get(field) for field in fieldnames})
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Evaluate stock-universe expansion candidates by adding one symbol at a time to the Alpaca hourly stock base universe.",
+        description="Evaluate stock-universe expansion candidates by adding one symbol at a time to the current live base universe.",
     )
-    parser.add_argument("--base-stock-universe", default="stock19")
+    parser.add_argument("--base-stock-universe", default="live20260318")
+    parser.add_argument("--base-long-only-symbols", default=None)
+    parser.add_argument("--base-short-only-symbols", default=None)
     parser.add_argument("--default-checkpoint", default=DEFAULT_CHECKPOINT)
     parser.add_argument("--stock-data-root", type=Path, default=Path("trainingdatahourly/stocks"))
-    parser.add_argument("--forecast-cache-root", type=Path, default=Path("binanceneural/forecast_cache"))
+    parser.add_argument("--forecast-cache-root", type=Path, default=Path("unified_hourly_experiment/forecast_cache"))
     parser.add_argument("--output-dir", type=Path, default=Path("analysis/alpaca_stock_expansion_20260318"))
     parser.add_argument("--manifest-path", type=Path, default=None)
     parser.add_argument("--candidate-symbols", default=None, help="Optional comma-separated subset of candidate symbols.")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--moving-average-windows", default="168,600,720")
     parser.add_argument("--min-history-hours", type=int, default=480)
-    parser.add_argument("--cache-lookback-hours", type=float, default=1800.0)
+    parser.add_argument("--cache-lookback-hours", type=float, default=5000.0)
+    parser.add_argument("--eval-days", type=float, default=120.0)
     parser.add_argument("--skip-cache-build", action="store_true")
     parser.add_argument("--force-cache-rebuild", action="store_true")
+    parser.add_argument("--disable-baseline-gate", action="store_true")
+    parser.add_argument("--baseline-early-exit-min-steps", type=int, default=40)
+    parser.add_argument("--baseline-stage1-progress", type=float, default=0.30)
+    parser.add_argument("--baseline-stage2-progress", type=float, default=0.50)
+    parser.add_argument("--baseline-stage3-progress", type=float, default=0.75)
+    parser.add_argument("--baseline-return-tolerance", type=float, default=0.02)
+    parser.add_argument("--baseline-sortino-tolerance", type=float, default=0.50)
+    parser.add_argument("--baseline-max-drawdown-tolerance", type=float, default=0.02)
+    parser.add_argument("--initial-state", type=Path, default=None)
     args = parser.parse_args(argv)
 
     output_dir = Path(args.output_dir)
@@ -252,6 +350,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.limit and args.limit > 0:
         candidates = list(candidates)[: int(args.limit)]
 
+    base_symbols = _resolve_base_symbols(base_stock_universe)
+    base_symbol_set = set(base_symbols)
+    base_long_only_symbols = _parse_csv(args.base_long_only_symbols)
+    base_short_only_symbols = _parse_csv(args.base_short_only_symbols)
+
+    already_in_base = [candidate for candidate in candidates if candidate.symbol in base_symbol_set]
+    if already_in_base:
+        payload = [{"symbol": candidate.symbol, "side": candidate.side} for candidate in already_in_base]
+        (output_dir / "already_in_base_candidates.json").write_text(json.dumps(payload, indent=2) + "\n")
+    candidates = [candidate for candidate in candidates if candidate.symbol not in base_symbol_set]
+
     required_history_rows = _effective_min_history_bars("AAPL", int(args.min_history_hours))
     ready, insufficient_history, missing = split_candidates_by_history(
         candidates,
@@ -275,11 +384,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             json.dumps(insufficient_payload, indent=2) + "\n"
         )
     if not ready:
-        raise SystemExit("No candidates have hourly stock data.")
+        raise SystemExit("No non-base candidates have sufficient hourly stock data.")
 
     if not args.skip_cache_build:
         _build_forecast_caches(
-            symbols=[candidate.symbol for candidate in ready],
+            symbols=list(base_symbols) + [candidate.symbol for candidate in ready],
             data_root=args.stock_data_root,
             forecast_cache_root=args.forecast_cache_root,
             lookback_hours=float(args.cache_lookback_hours),
@@ -287,95 +396,104 @@ def main(argv: Sequence[str] | None = None) -> int:
             force_rebuild=bool(args.force_cache_rebuild),
         )
 
-    baseline_dir = output_dir / "baseline"
-    baseline_cmd = [
-        sys.executable,
-        "-m",
-        "newnanoalpacahourlyexp.run_hourly_trader_sim",
-        "--stock-universe",
-        base_stock_universe,
-        "--stock-universe-only",
-        "--default-checkpoint",
-        default_checkpoint,
-        "--sequence-length",
-        "128",
-        "--horizon",
-        "1",
-        "--forecast-horizons",
-        "1,24",
-        "--context-lengths",
-        "64,96,192",
-        "--forecast-cache-root",
-        str(args.forecast_cache_root),
-        "--stock-data-root",
-        str(args.stock_data_root),
-        "--allocation-pct",
-        "0.2",
-        "--allocation-mode",
-        "portfolio",
-        "--cache-only",
-        "--robust-60d",
-        "--allow-short",
-        "--entry-near-book-bps",
-        "25",
-        "--moving-average-windows",
-        str(args.moving_average_windows),
-        "--min-history-hours",
-        str(int(args.min_history_hours)),
-        "--output-dir",
-        str(baseline_dir),
-    ]
-    _run_command(baseline_cmd)
-    baseline_summary = json.loads((baseline_dir / "reforecast_summary.json").read_text())
-    rows: list[dict[str, object]] = [
-        {
-            "symbol": base_stock_universe,
-            "side": "mixed",
-            "sector": "base",
-            "priority": 999,
-            "thesis": "Base stock universe baseline.",
-            "summary_path": str(baseline_dir / "reforecast_summary.json"),
-            "lora_command": "",
-            **summarize_reforecast_result(baseline_summary),
-        }
-    ]
-
     checkpoint_path = Path(default_checkpoint).expanduser().resolve()
+    baseline_dir = output_dir / "baseline"
+    baseline_metrics = _run_trial(
+        symbols=base_symbols,
+        checkpoint=checkpoint_path,
+        stock_data_root=args.stock_data_root,
+        forecast_cache_root=args.forecast_cache_root,
+        output_dir=baseline_dir,
+        moving_average_windows=str(args.moving_average_windows),
+        min_history_hours=int(args.min_history_hours),
+        eval_days=float(args.eval_days),
+        long_only_symbols=base_long_only_symbols,
+        short_only_symbols=base_short_only_symbols,
+        baseline_metrics=None,
+        enable_baseline_gate=False,
+        baseline_early_exit_min_steps=int(args.baseline_early_exit_min_steps),
+        baseline_stage1_progress=float(args.baseline_stage1_progress),
+        baseline_stage2_progress=float(args.baseline_stage2_progress),
+        baseline_stage3_progress=float(args.baseline_stage3_progress),
+        baseline_return_tolerance=float(args.baseline_return_tolerance),
+        baseline_sortino_tolerance=float(args.baseline_sortino_tolerance),
+        baseline_max_drawdown_tolerance=float(args.baseline_max_drawdown_tolerance),
+        initial_state=args.initial_state,
+    )
+
+    baseline_row = _result_row(
+        symbol="BASE",
+        side="mixed",
+        sector="base",
+        priority=999,
+        thesis="Current live base stock universe baseline.",
+        metrics=baseline_metrics,
+        summary_path=baseline_dir / "metrics.json",
+        baseline_metrics=None,
+    )
+    baseline_row["lora_command"] = ""
+    rows: list[dict[str, object]] = [baseline_row]
+
     failed_candidates: list[dict[str, object]] = []
     for candidate in ready:
+        long_only_symbols, short_only_symbols = _candidate_direction_lists(
+            candidate,
+            base_long_only_symbols=base_long_only_symbols,
+            base_short_only_symbols=base_short_only_symbols,
+        )
+        candidate_output_dir = output_dir / candidate.symbol
         try:
-            row = _run_candidate_eval(
-                candidate=candidate,
-                base_stock_universe=base_stock_universe,
-                default_checkpoint=checkpoint_path,
+            metrics = _run_trial(
+                symbols=list(base_symbols) + [candidate.symbol],
+                checkpoint=checkpoint_path,
                 stock_data_root=args.stock_data_root,
                 forecast_cache_root=args.forecast_cache_root,
-                output_dir=output_dir / candidate.symbol,
+                output_dir=candidate_output_dir,
                 moving_average_windows=str(args.moving_average_windows),
                 min_history_hours=int(args.min_history_hours),
+                eval_days=float(args.eval_days),
+                long_only_symbols=long_only_symbols,
+                short_only_symbols=short_only_symbols,
+                baseline_metrics=baseline_metrics,
+                enable_baseline_gate=not bool(args.disable_baseline_gate),
+                baseline_early_exit_min_steps=int(args.baseline_early_exit_min_steps),
+                baseline_stage1_progress=float(args.baseline_stage1_progress),
+                baseline_stage2_progress=float(args.baseline_stage2_progress),
+                baseline_stage3_progress=float(args.baseline_stage3_progress),
+                baseline_return_tolerance=float(args.baseline_return_tolerance),
+                baseline_sortino_tolerance=float(args.baseline_sortino_tolerance),
+                baseline_max_drawdown_tolerance=float(args.baseline_max_drawdown_tolerance),
+                initial_state=args.initial_state,
             )
         except RuntimeError as exc:
-            failed_candidates.append(
-                {
-                    "symbol": candidate.symbol,
-                    "side": candidate.side,
-                    "error": str(exc),
-                }
-            )
+            failed_candidates.append({"symbol": candidate.symbol, "side": candidate.side, "error": str(exc)})
             continue
-        rows.append(row)
+        rows.append(
+            _result_row(
+                symbol=candidate.symbol,
+                side=candidate.side,
+                sector=candidate.sector,
+                priority=candidate.priority,
+                thesis=candidate.thesis,
+                metrics=metrics,
+                summary_path=candidate_output_dir / "metrics.json",
+                baseline_metrics=baseline_metrics,
+            )
+        )
 
-    sorted_rows = [rows[0]] + sorted(rows[1:], key=stock_expansion_sort_key, reverse=True)
+    sorted_rows = [rows[0]] + sorted(rows[1:], key=_trial_sort_key, reverse=True)
     (output_dir / "expansion_results.json").write_text(json.dumps(sorted_rows, indent=2) + "\n")
     _write_csv(output_dir / "expansion_results.csv", sorted_rows)
+    (output_dir / "baseline_metrics.json").write_text(json.dumps(baseline_metrics, indent=2) + "\n")
     if failed_candidates:
         (output_dir / "failed_candidates.json").write_text(json.dumps(failed_candidates, indent=2) + "\n")
 
     top_lora_commands = [
         {
             "symbol": row["symbol"],
-            "flat": row.get("flat"),
-            "best_scenario": row.get("best_scenario"),
+            "total_return_delta_vs_baseline": row.get("total_return_delta_vs_baseline"),
+            "sortino_delta_vs_baseline": row.get("sortino_delta_vs_baseline"),
+            "max_drawdown_delta_vs_baseline": row.get("max_drawdown_delta_vs_baseline"),
             "lora_command": row.get("lora_command"),
         }
         for row in sorted_rows[1:6]
@@ -383,13 +501,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     (output_dir / "top_lora_commands.json").write_text(json.dumps(top_lora_commands, indent=2) + "\n")
 
     for row in sorted_rows:
-        flat = row.get("flat") or {}
         print(
             f"{row['symbol']:>18} "
-            f"flat_sortino={float(flat.get('sortino', 0.0)):.4f} "
-            f"flat_return={float(flat.get('total_return', 0.0)):.6f} "
-            f"best_scenario={row.get('best_scenario')} "
-            f"best_sortino={float(row.get('best_sortino', 0.0)):.4f}"
+            f"sortino={float(row.get('sortino', 0.0)):.4f} "
+            f"return={float(row.get('total_return', 0.0)):.6f} "
+            f"max_dd={float(row.get('max_drawdown', 0.0)):.6f} "
+            f"delta_sortino={float(row.get('sortino_delta_vs_baseline', 0.0)):.4f} "
+            f"terminated_early={bool(row.get('terminated_early', False))}"
         )
     return 0
 
