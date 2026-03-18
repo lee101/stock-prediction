@@ -92,14 +92,44 @@ def load_stock_expansion_manifest(path: Path) -> tuple[str, str, list[StockExpan
     base_stock_universe = str(payload.get("base_stock_universe") or "").strip()
     default_checkpoint = str(payload.get("default_checkpoint") or "").strip()
     raw_candidates = payload.get("candidates") or []
-    candidates = [candidate_from_mapping(row) for row in raw_candidates]
+    side_defaults = manifest_side_defaults(payload)
+    candidates = [
+        candidate_from_mapping(
+            row,
+            default_side=side_defaults.get(str((row or {}).get("symbol") or "").strip().upper(), "long"),
+        )
+        for row in raw_candidates
+    ]
     return base_stock_universe, default_checkpoint, candidates
 
 
-def candidate_from_mapping(payload: Mapping[str, Any]) -> StockExpansionCandidate:
+def manifest_side_defaults(payload: Mapping[str, Any]) -> dict[str, str]:
+    raw_policy = payload.get("side_policy")
+    if not isinstance(raw_policy, Mapping):
+        return {}
+
+    defaults: dict[str, str] = {}
+
+    def _apply(symbols: Any, side: str) -> None:
+        if not isinstance(symbols, Sequence) or isinstance(symbols, (str, bytes)):
+            return
+        for symbol in symbols:
+            normalized = str(symbol or "").strip().upper()
+            if normalized:
+                defaults[normalized] = side
+
+    _apply(raw_policy.get("long_only_symbols"), "long")
+    _apply(raw_policy.get("already_live_long_only_symbols"), "long")
+    _apply(raw_policy.get("short_only_symbols"), "short")
+    _apply(raw_policy.get("evaluate_both_sides_symbols"), "both")
+    _apply(raw_policy.get("both_sides_symbols"), "both")
+    return defaults
+
+
+def candidate_from_mapping(payload: Mapping[str, Any], *, default_side: str = "long") -> StockExpansionCandidate:
     return StockExpansionCandidate(
         symbol=str(payload.get("symbol") or ""),
-        side=str(payload.get("side") or "long"),
+        side=str(payload.get("side") or default_side or "long"),
         sector=str(payload.get("sector") or ""),
         thesis=str(payload.get("thesis") or ""),
         priority=int(payload.get("priority") or 0),
@@ -228,6 +258,7 @@ __all__ = [
     "extract_reforecast_metrics",
     "filter_candidates_with_hourly_data",
     "load_stock_expansion_manifest",
+    "manifest_side_defaults",
     "split_candidates_by_history",
     "stock_expansion_sort_key",
     "summarize_reforecast_result",
