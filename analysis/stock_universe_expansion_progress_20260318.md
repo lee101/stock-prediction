@@ -84,6 +84,46 @@ python -u scripts/retrain_chronos2_hourly_loras.py \
   - `DBX`
   - `META`
 
+## Armed Follow-On Evaluation
+
+- session: `tmux` session `f_lora_stockexp_multivar_eval_20260318`
+- start gate: waits for `chronos2_finetuned/F_lora_stockexp_multivar_20260318/finetuned-ckpt`
+- log path: `analysis/local_training_logs/f_lora_stockexp_multivar_eval_20260318.log`
+- result directory: `analysis/alpaca_stock_expansion_f_lora_20260318`
+- evaluation steps:
+  1. Rebuild only `F` hourly forecast caches using the new checkpoint.
+  2. Re-run one-symbol expansion evaluation for `F` against the current live baseline.
+- cache rebuild command:
+
+```bash
+python scripts/build_hourly_forecast_caches.py \
+  --symbols F \
+  --data-root trainingdatahourly/stocks \
+  --forecast-cache-root unified_hourly_experiment/forecast_cache \
+  --horizons 1,24 \
+  --model-id chronos2_finetuned/F_lora_stockexp_multivar_20260318/finetuned-ckpt \
+  --context-hours 2048 \
+  --batch-size 32 \
+  --lookback-hours 5000 \
+  --force-rebuild \
+  --output-json analysis/alpaca_stock_expansion_f_lora_20260318/forecast_cache_mae.json
+```
+
+- follow-on market-sim command:
+
+```bash
+python scripts/run_alpaca_stock_expansion.py \
+  --manifest-path docs/stock_universe_candidates_20260318.json \
+  --candidate-symbols F \
+  --base-stock-universe live20260318 \
+  --base-long-only-symbols NVDA,PLTR,GOOG,AAPL,MSFT,META,TSLA,NET,DBX,SOFI,INTC,MU,TTD,PATH,NBIS,TME \
+  --baseline-source-dir analysis/alpaca_stock_expansion_pfe_20260318/baseline \
+  --skip-cache-build \
+  --candidate-max-h1-mae-percent 10 \
+  --candidate-max-h24-mae-percent 10 \
+  --output-dir analysis/alpaca_stock_expansion_f_lora_20260318
+```
+
 ## Short Proof Run
 
 - completed smoke run:
