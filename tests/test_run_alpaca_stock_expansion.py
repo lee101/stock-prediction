@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from scripts.run_alpaca_stock_expansion import (
     _assess_promotion,
     _build_promotion_summary,
+    _candidate_mae_gate_reason,
+    _candidate_mae_snapshot,
+    _load_forecast_cache_mae,
     _resolve_baseline_metrics_path,
     _candidate_direction_lists,
     _resolve_base_symbols,
     _resolve_cache_symbols,
+    _skipped_result_row,
 )
 from src.alpaca_stock_expansion import StockExpansionCandidate
 
@@ -118,6 +124,60 @@ def test_assess_promotion_rejects_early_terminated_candidate() -> None:
     )
     assert rejected["promotable"] is False
     assert "baseline gate" in str(rejected["promotion_reason"])
+
+
+def test_load_forecast_cache_mae_and_snapshot(tmp_path) -> None:
+    path = tmp_path / "forecast_cache_mae.json"
+    path.write_text(
+        """
+{
+  "metrics": [
+    {"symbol": "MU", "horizon_hours": 1, "mae_percent": 0.8},
+    {"symbol": "MU", "horizon_hours": 24, "mae_percent": 15.2},
+    {"symbol": "PFE", "horizon_hours": 24, "mae_percent": 2.2}
+  ]
+}
+""".strip()
+    )
+    payload = _load_forecast_cache_mae(path)
+    assert payload["MU"][1] == 0.8
+    assert payload["MU"][24] == 15.2
+    assert _candidate_mae_snapshot(payload, "MU") == {
+        "candidate_mae_h1_percent": 0.8,
+        "candidate_mae_h24_percent": 15.2,
+    }
+
+
+def test_candidate_mae_gate_reason_blocks_bad_cache_quality() -> None:
+    reason = _candidate_mae_gate_reason(
+        symbol="MU",
+        mae_snapshot={"candidate_mae_h1_percent": 0.8, "candidate_mae_h24_percent": 15.2},
+        max_h1_mae_percent=0.0,
+        max_h24_mae_percent=10.0,
+    )
+    assert "h24 MAE 15.2000%" in reason
+
+    ok = _candidate_mae_gate_reason(
+        symbol="PFE",
+        mae_snapshot={"candidate_mae_h1_percent": 1.9, "candidate_mae_h24_percent": 2.2},
+        max_h1_mae_percent=0.0,
+        max_h24_mae_percent=10.0,
+    )
+    assert ok == ""
+
+
+def test_skipped_result_row_marks_candidate_as_not_run() -> None:
+    row = _skipped_result_row(
+        candidate=StockExpansionCandidate("MU", side="long", priority=88, thesis="memory"),
+        baseline_metrics={"total_return": -0.04, "sortino": -6.7, "max_drawdown": 0.04},
+        summary_path=Path("/tmp/cache_gate.json"),
+        mae_snapshot={"candidate_mae_h1_percent": 0.8, "candidate_mae_h24_percent": 15.2},
+        gate_reason="forecast cache gate for MU: h24 MAE 15.2000% exceeds gate 10.0000%",
+    )
+    assert row["sim_ran"] is False
+    assert row["terminated_early"] is True
+    assert row["candidate_mae_h24_percent"] == 15.2
+    assert "forecast cache gate" in str(row["termination_reason"])
 
 
 def test_build_promotion_summary_selects_first_promotable_candidate() -> None:
