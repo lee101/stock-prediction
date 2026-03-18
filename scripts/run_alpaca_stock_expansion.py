@@ -97,6 +97,10 @@ def _read_metrics(output_dir: Path) -> dict[str, object]:
     return json.loads(metrics_path.read_text())
 
 
+def _trial_done(output_dir: Path) -> bool:
+    return (Path(output_dir) / "metrics.json").exists()
+
+
 def _baseline_metric(metrics: dict[str, object], key: str) -> float:
     try:
         return float(metrics.get(key, 0.0) or 0.0)
@@ -312,6 +316,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--eval-days", type=float, default=120.0)
     parser.add_argument("--skip-cache-build", action="store_true")
     parser.add_argument("--force-cache-rebuild", action="store_true")
+    parser.add_argument("--reuse-baseline", action="store_true", default=True)
+    parser.add_argument("--force-baseline-rerun", action="store_true")
+    parser.add_argument("--reuse-candidate-results", action="store_true", default=True)
+    parser.add_argument("--force-candidate-rerun", action="store_true")
     parser.add_argument("--disable-baseline-gate", action="store_true")
     parser.add_argument("--baseline-early-exit-min-steps", type=int, default=40)
     parser.add_argument("--baseline-stage1-progress", type=float, default=0.30)
@@ -398,28 +406,31 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     checkpoint_path = Path(default_checkpoint).expanduser().resolve()
     baseline_dir = output_dir / "baseline"
-    baseline_metrics = _run_trial(
-        symbols=base_symbols,
-        checkpoint=checkpoint_path,
-        stock_data_root=args.stock_data_root,
-        forecast_cache_root=args.forecast_cache_root,
-        output_dir=baseline_dir,
-        moving_average_windows=str(args.moving_average_windows),
-        min_history_hours=int(args.min_history_hours),
-        eval_days=float(args.eval_days),
-        long_only_symbols=base_long_only_symbols,
-        short_only_symbols=base_short_only_symbols,
-        baseline_metrics=None,
-        enable_baseline_gate=False,
-        baseline_early_exit_min_steps=int(args.baseline_early_exit_min_steps),
-        baseline_stage1_progress=float(args.baseline_stage1_progress),
-        baseline_stage2_progress=float(args.baseline_stage2_progress),
-        baseline_stage3_progress=float(args.baseline_stage3_progress),
-        baseline_return_tolerance=float(args.baseline_return_tolerance),
-        baseline_sortino_tolerance=float(args.baseline_sortino_tolerance),
-        baseline_max_drawdown_tolerance=float(args.baseline_max_drawdown_tolerance),
-        initial_state=args.initial_state,
-    )
+    if bool(args.reuse_baseline) and not bool(args.force_baseline_rerun) and _trial_done(baseline_dir):
+        baseline_metrics = _read_metrics(baseline_dir)
+    else:
+        baseline_metrics = _run_trial(
+            symbols=base_symbols,
+            checkpoint=checkpoint_path,
+            stock_data_root=args.stock_data_root,
+            forecast_cache_root=args.forecast_cache_root,
+            output_dir=baseline_dir,
+            moving_average_windows=str(args.moving_average_windows),
+            min_history_hours=int(args.min_history_hours),
+            eval_days=float(args.eval_days),
+            long_only_symbols=base_long_only_symbols,
+            short_only_symbols=base_short_only_symbols,
+            baseline_metrics=None,
+            enable_baseline_gate=False,
+            baseline_early_exit_min_steps=int(args.baseline_early_exit_min_steps),
+            baseline_stage1_progress=float(args.baseline_stage1_progress),
+            baseline_stage2_progress=float(args.baseline_stage2_progress),
+            baseline_stage3_progress=float(args.baseline_stage3_progress),
+            baseline_return_tolerance=float(args.baseline_return_tolerance),
+            baseline_sortino_tolerance=float(args.baseline_sortino_tolerance),
+            baseline_max_drawdown_tolerance=float(args.baseline_max_drawdown_tolerance),
+            initial_state=args.initial_state,
+        )
 
     baseline_row = _result_row(
         symbol="BASE",
@@ -443,28 +454,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         candidate_output_dir = output_dir / candidate.symbol
         try:
-            metrics = _run_trial(
-                symbols=list(base_symbols) + [candidate.symbol],
-                checkpoint=checkpoint_path,
-                stock_data_root=args.stock_data_root,
-                forecast_cache_root=args.forecast_cache_root,
-                output_dir=candidate_output_dir,
-                moving_average_windows=str(args.moving_average_windows),
-                min_history_hours=int(args.min_history_hours),
-                eval_days=float(args.eval_days),
-                long_only_symbols=long_only_symbols,
-                short_only_symbols=short_only_symbols,
-                baseline_metrics=baseline_metrics,
-                enable_baseline_gate=not bool(args.disable_baseline_gate),
-                baseline_early_exit_min_steps=int(args.baseline_early_exit_min_steps),
-                baseline_stage1_progress=float(args.baseline_stage1_progress),
-                baseline_stage2_progress=float(args.baseline_stage2_progress),
-                baseline_stage3_progress=float(args.baseline_stage3_progress),
-                baseline_return_tolerance=float(args.baseline_return_tolerance),
-                baseline_sortino_tolerance=float(args.baseline_sortino_tolerance),
-                baseline_max_drawdown_tolerance=float(args.baseline_max_drawdown_tolerance),
-                initial_state=args.initial_state,
-            )
+            if bool(args.reuse_candidate_results) and not bool(args.force_candidate_rerun) and _trial_done(candidate_output_dir):
+                metrics = _read_metrics(candidate_output_dir)
+            else:
+                metrics = _run_trial(
+                    symbols=list(base_symbols) + [candidate.symbol],
+                    checkpoint=checkpoint_path,
+                    stock_data_root=args.stock_data_root,
+                    forecast_cache_root=args.forecast_cache_root,
+                    output_dir=candidate_output_dir,
+                    moving_average_windows=str(args.moving_average_windows),
+                    min_history_hours=int(args.min_history_hours),
+                    eval_days=float(args.eval_days),
+                    long_only_symbols=long_only_symbols,
+                    short_only_symbols=short_only_symbols,
+                    baseline_metrics=baseline_metrics,
+                    enable_baseline_gate=not bool(args.disable_baseline_gate),
+                    baseline_early_exit_min_steps=int(args.baseline_early_exit_min_steps),
+                    baseline_stage1_progress=float(args.baseline_stage1_progress),
+                    baseline_stage2_progress=float(args.baseline_stage2_progress),
+                    baseline_stage3_progress=float(args.baseline_stage3_progress),
+                    baseline_return_tolerance=float(args.baseline_return_tolerance),
+                    baseline_sortino_tolerance=float(args.baseline_sortino_tolerance),
+                    baseline_max_drawdown_tolerance=float(args.baseline_max_drawdown_tolerance),
+                    initial_state=args.initial_state,
+                )
         except RuntimeError as exc:
             failed_candidates.append({"symbol": candidate.symbol, "side": candidate.side, "error": str(exc)})
             continue
