@@ -14,6 +14,7 @@ import torch
 import alpaca_wrapper
 from binanceneural.inference import generate_latest_action
 from binanceneural.model import align_state_dict_input_dim, build_policy, policy_config_from_payload
+from src.alpaca_stock_universes import available_stock_universe_names, merge_symbols_with_stock_universe
 from src.allocation_utils import allocation_usd_for_symbol
 from src.hourly_action_reforecast import HourlyActionReforecastConfig, apply_hourly_action_reforecasting
 from src.hourly_trader_utils import (
@@ -630,7 +631,20 @@ def _run_cycle(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Hourly Alpaca trading loop (Chronos2 + Binance neural policy).")
-    parser.add_argument("--symbols", default="SOLUSD,LINKUSD,UNIUSD")
+    parser.add_argument("--symbols", default=None)
+    parser.add_argument(
+        "--stock-universe",
+        default=None,
+        help=(
+            "Optional named stock preset to add. Available: "
+            + ", ".join(available_stock_universe_names())
+        ),
+    )
+    parser.add_argument(
+        "--stock-universe-only",
+        action="store_true",
+        help="Use only the named stock universe instead of appending it to the default/base --symbols set.",
+    )
     parser.add_argument("--checkpoints", default=None, help="Comma-separated SYMBOL=path map.")
     parser.add_argument("--default-checkpoint", default=None)
     parser.add_argument("--sequence-length", type=int, default=96)
@@ -718,7 +732,7 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    symbols = _parse_symbols(args.symbols)
+    base_symbols = _parse_symbols(args.symbols)
     checkpoint_map = _parse_checkpoint_map(args.checkpoints)
     default_checkpoint = Path(args.default_checkpoint).expanduser().resolve() if args.default_checkpoint else None
     forecast_horizons_default = tuple(int(x) for x in args.forecast_horizons.split(",") if x.strip())
@@ -739,6 +753,13 @@ def main() -> None:
     min_history_hours = args.min_history_hours if args.min_history_hours is not None else DatasetConfig().min_history_hours
     long_only_symbols = [token.strip().upper() for token in (args.long_only_symbols or "").split(",") if token.strip()]
     short_only_symbols = [token.strip().upper() for token in (args.short_only_symbols or "").split(",") if token.strip()]
+    symbols, long_only_symbols, short_only_symbols = merge_symbols_with_stock_universe(
+        base_symbols=base_symbols,
+        stock_universe=args.stock_universe,
+        long_only_symbols=long_only_symbols,
+        short_only_symbols=short_only_symbols,
+        universe_only=bool(args.stock_universe_only),
+    )
 
     device = _resolve_device(args.device)
 

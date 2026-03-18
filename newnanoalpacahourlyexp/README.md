@@ -104,6 +104,28 @@ python -m newnanoalpacahourlyexp.trade_alpaca_hourly \
   --intensity-scale 1.0
 ```
 
+Stock-heavy hourly paper/live run using the named stock universe presets:
+
+```bash
+python -m newnanoalpacahourlyexp.trade_alpaca_hourly \
+  --stock-universe stock21_plus_pltr_nflx \
+  --stock-universe-only \
+  --allow-short \
+  --default-checkpoint binanceneural/checkpoints/alpaca_cross_global_mixed14_robust_short_seq128_lb4000_20260205_2319/epoch_004.pt \
+  --sequence-length 128 \
+  --horizon 1 \
+  --forecast-horizons 1,24 \
+  --forecast-cache-root binanceneural/forecast_cache \
+  --stock-data-root trainingdatahourly/stocks \
+  --allocation-pct 0.2 \
+  --allocation-mode portfolio \
+  --entry-near-book-bps 25 \
+  --moving-average-windows 168,600,720 \
+  --min-history-hours 480 \
+  --dry-run \
+  --once
+```
+
 Best-trade selector (single position across symbols):
 
 ```bash
@@ -154,6 +176,8 @@ sudo bash scripts/setup_systemd_alpaca_exit_nflx.sh
 - GPU is required for both training and inference. Use `--device cuda` (or `cuda:0`) if you need to pin a GPU.
 - `--maker-fee` and `--periods-per-year` let you override fee/annualization assumptions per run.
 - `--no-enforce-market-hours` or `--no-close-at-eod` can be used to disable stock-only guards.
+- Named stock presets are exposed via `--stock-universe`; see `live8`, `stock19`, `stock21_plus_pltr_nflx`, `ai_tech_long11`, `software_short11`, and `ai_long_short22`.
+- For current stock-hourly data, use shorter feature windows such as `--moving-average-windows 168,600,720 --min-history-hours 480`; the older `2376h` MA window drops too many newer stock rows.
 
 ## Suggested artifact sync (R2)
 

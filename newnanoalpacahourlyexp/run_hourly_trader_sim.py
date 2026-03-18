@@ -14,12 +14,9 @@ import torch
 
 from binanceneural.inference import generate_actions_from_frame
 from binanceneural.model import align_state_dict_input_dim, build_policy, policy_config_from_payload
-from src.hourly_action_reforecast import (
-    HourlyActionReforecastConfig,
-    apply_hourly_action_reforecasting,
-    parse_reforecast_modes,
-)
+from src.alpaca_stock_universes import available_stock_universe_names, merge_symbols_with_stock_universe
 from src.allocation_utils import allocation_usd_for_symbol
+from src.hourly_action_reforecast import HourlyActionReforecastConfig, apply_hourly_action_reforecasting, parse_reforecast_modes
 from src.symbol_utils import is_crypto_symbol
 from src.torch_device_utils import require_cuda as require_cuda_device
 from src.torch_load_utils import torch_load_compat
@@ -61,6 +58,12 @@ def _parse_int_tuple(raw: Optional[str]) -> Optional[Tuple[int, ...]]:
     if not values:
         return None
     return tuple(int(v) for v in values)
+
+
+def _parse_symbol_csv(raw: Optional[str]) -> list[str]:
+    if not raw:
+        return []
+    return [token.strip().upper() for token in str(raw).split(",") if token.strip()]
 
 
 def _resolve_device(device_arg: Optional[str]) -> torch.device:
@@ -545,6 +548,19 @@ def _load_initial_state(path: Path) -> tuple[float, dict[str, float], list[OpenO
 def main() -> None:
     parser = argparse.ArgumentParser(description="Backtest the live hourly trader loop with shared-cash execution.")
     parser.add_argument("--symbols", default=None)
+    parser.add_argument(
+        "--stock-universe",
+        default=None,
+        help=(
+            "Optional named stock preset to add. Available: "
+            + ", ".join(available_stock_universe_names())
+        ),
+    )
+    parser.add_argument(
+        "--stock-universe-only",
+        action="store_true",
+        help="Use only the named stock universe instead of appending it to the default/base --symbols set.",
+    )
     parser.add_argument("--checkpoint", default=None)
     parser.add_argument("--checkpoints", default=None, help="Comma-separated SYMBOL=path map.")
     parser.add_argument("--default-checkpoint", default=None)
@@ -586,6 +602,8 @@ def main() -> None:
         action="store_true",
         help="Allow short entries in the simulator and include short seeded scenarios for multi-start runs.",
     )
+    parser.add_argument("--long-only-symbols", default=None, help="Comma-separated symbols to restrict to long-only.")
+    parser.add_argument("--short-only-symbols", default=None, help="Comma-separated symbols to restrict to short-only.")
     parser.add_argument(
         "--allow-position-adds",
         action="store_true",
@@ -691,7 +709,16 @@ def main() -> None:
         if early_stop_min_periods is None:
             early_stop_min_periods = 30
 
-    symbols = _parse_symbols(args.symbols)
+    base_symbols = _parse_symbols(args.symbols)
+    long_only_symbols = _parse_symbol_csv(args.long_only_symbols)
+    short_only_symbols = _parse_symbol_csv(args.short_only_symbols)
+    symbols, long_only_symbols, short_only_symbols = merge_symbols_with_stock_universe(
+        base_symbols=base_symbols,
+        stock_universe=args.stock_universe,
+        long_only_symbols=long_only_symbols,
+        short_only_symbols=short_only_symbols,
+        universe_only=bool(args.stock_universe_only),
+    )
     forecast_horizons = tuple(int(x) for x in str(args.forecast_horizons).split(",") if str(x).strip())
     context_lengths = tuple(int(x) for x in str(args.context_lengths).split(",") if str(x).strip())
     experiment_cfg = ExperimentConfig(context_lengths=context_lengths, trim_ratio=float(args.trim_ratio))
@@ -908,6 +935,8 @@ def main() -> None:
                     min_gap_pct=float(args.min_gap_pct),
                     fill_buffer_bps=float(args.fill_buffer_bps),
                     allow_short=bool(args.allow_short),
+                    long_only_symbols=tuple(long_only_symbols),
+                    short_only_symbols=tuple(short_only_symbols),
                     allow_position_adds=bool(args.allow_position_adds),
                     always_full_exit=bool(args.always_full_exit),
                     decision_lag_bars=int(args.decision_lag_bars),

@@ -137,6 +137,28 @@ python -m newnanoalpacahourlyexp.trade_alpaca_hourly \
   --once
 ```
 
+Stock-universe dry run:
+
+```bash
+python -m newnanoalpacahourlyexp.trade_alpaca_hourly \
+  --stock-universe stock21_plus_pltr_nflx \
+  --stock-universe-only \
+  --allow-short \
+  --default-checkpoint binanceneural/checkpoints/alpaca_cross_global_mixed14_robust_short_seq128_lb4000_20260205_2319/epoch_004.pt \
+  --sequence-length 128 \
+  --horizon 1 \
+  --forecast-horizons 1,24 \
+  --forecast-cache-root binanceneural/forecast_cache \
+  --stock-data-root trainingdatahourly/stocks \
+  --allocation-pct 0.2 \
+  --allocation-mode portfolio \
+  --entry-near-book-bps 25 \
+  --moving-average-windows 168,600,720 \
+  --min-history-hours 480 \
+  --dry-run \
+  --once
+```
+
 ## NFLX exit-only guard (live)
 
 ```bash
@@ -167,3 +189,4 @@ sudo journalctl -u alpaca-exit-nflx -f
 - `PAPER=0` is required for live trading; omit it or set `PAPER=1` for paper.
 - The hourly loop refreshes local hourly CSVs and computes Chronos forecasts on GPU as needed.
 - If you want cache-only forecasts, add `--cache-only` (ensure `binanceneural/forecast_cache/` is populated).
+- For current stock-hourly replays, prefer `--moving-average-windows 168,600,720 --min-history-hours 480`; the legacy `2376h` MA window leaves many stock symbols with no usable feature rows.
