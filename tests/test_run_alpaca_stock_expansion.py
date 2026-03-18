@@ -3,6 +3,7 @@ from __future__ import annotations
 from scripts.run_alpaca_stock_expansion import (
     _assess_promotion,
     _build_promotion_summary,
+    _resolve_baseline_metrics_path,
     _candidate_direction_lists,
     _resolve_base_symbols,
     _resolve_cache_symbols,
@@ -55,6 +56,19 @@ def test_resolve_cache_symbols_supports_candidate_only_mode() -> None:
         ready_candidates=ready,
         candidate_only_cache_build=True,
     ) == ["PFE", "F"]
+
+
+def test_resolve_baseline_metrics_path_supports_external_baseline_source(tmp_path) -> None:
+    output_dir = tmp_path / "trial"
+    external = tmp_path / "baseline_source"
+    assert _resolve_baseline_metrics_path(
+        output_dir=output_dir,
+        baseline_source_dir=None,
+    ) == output_dir / "baseline" / "metrics.json"
+    assert _resolve_baseline_metrics_path(
+        output_dir=output_dir,
+        baseline_source_dir=external,
+    ) == external / "metrics.json"
 
 
 def test_assess_promotion_requires_non_regressing_candidate() -> None:
