@@ -19,7 +19,7 @@ from chronos2_trainer import TrainerConfig, run_finetune
 from src.binance_symbol_utils import normalize_compact_symbol, proxy_symbol_to_usd
 
 
-DEFAULT_SYMBOLS = "BTCFDUSD,ETHFDUSD,SOLFDUSD,BNBFDUSD"
+DEFAULT_SYMBOLS = "BTCFDUSD,ETHFDUSD,SOLUSDT,BNBUSDT"
 DEFAULT_DATA_ROOT = Path("trainingdatahourlybinance")
 DEFAULT_HPARAM_DIR = Path("hyperparams") / "chronos2" / "hourly"
 
@@ -147,6 +147,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--save-name-suffix", default=None, help="Optional suffix appended to the run folder name.")
     parser.add_argument("--no-update-hparams", action="store_true")
     parser.add_argument("--hyperparam-dir", type=Path, default=DEFAULT_HPARAM_DIR)
+    parser.add_argument("--covariate-symbols", default=None, help="Comma-separated covariate symbols for multivariate training.")
+    parser.add_argument("--covariate-cols", default="close", help="Comma-separated covariate columns (default: close).")
     args = parser.parse_args(argv)
 
     symbols = _parse_symbols(args.symbols, args.default_symbols)
@@ -159,6 +161,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         save_name = None
         if args.save_name_suffix:
             save_name = f"{symbol}_lora_{args.save_name_suffix}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+
+        covariate_symbols = tuple(
+            normalize_compact_symbol(s.strip())
+            for s in (args.covariate_symbols or "").split(",")
+            if s.strip()
+        )
+        covariate_cols = tuple(c.strip() for c in args.covariate_cols.split(",") if c.strip())
 
         cfg = TrainerConfig(
             symbol=symbol,
@@ -177,6 +186,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             finetune_mode="lora",
             seed=int(args.seed),
             save_name=save_name,
+            covariate_symbols=covariate_symbols,
+            covariate_cols=covariate_cols,
         )
 
         logger.info("Fine-tuning LoRA for {} (steps={}, lr={:.2e})", symbol, cfg.num_steps, cfg.learning_rate)

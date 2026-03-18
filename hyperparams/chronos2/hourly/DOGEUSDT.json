@@ -1,0 +1,34 @@
+{
+  "symbol": "DOGEUSDT",
+  "model": "chronos2",
+  "config": {
+    "name": "hourly_ctx512_skip1_single",
+    "model_id": "chronos2_finetuned/DOGEUSDT_lora_hourly_ctx512_lr1e4_20260318_040341/finetuned-ckpt",
+    "device_map": "cuda",
+    "context_length": 512,
+    "batch_size": 32,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "aggregation": "median",
+    "sample_count": 0,
+    "scaler": "none",
+    "predict_kwargs": {},
+    "skip_rates": [
+      1
+    ],
+    "aggregation_method": "single",
+    "use_multivariate": false
+  },
+  "validation": {},
+  "test": {},
+  "windows": {},
+  "metadata": {
+    "source": "retrain_chronos2_hourly_loras",
+    "generated_at": "2026-03-18T04:22:42Z",
+    "frequency": "hourly",
+    "finetuned_model_id": "chronos2_finetuned/DOGEUSDT_lora_hourly_ctx512_lr1e4_20260318_040341/finetuned-ckpt"
+  }
+}

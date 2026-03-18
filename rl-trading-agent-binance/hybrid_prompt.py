@@ -39,8 +39,11 @@ from rl_signal import (
 SYMBOL_BINANCE_MAP = {
     "BTCUSD": ("BTCFDUSD", "BTC", "FDUSD"),
     "ETHUSD": ("ETHFDUSD", "ETH", "FDUSD"),
+    "SOLUSD": ("SOLUSDT", "SOL", "USDT"),
     "DOGEUSD": ("DOGEUSDT", "DOGE", "USDT"),
     "AAVEUSD": ("AAVEUSDT", "AAVE", "USDT"),
+    "LINKUSD": ("LINKUSDT", "LINK", "USDT"),
+    "XRPUSD": ("XRPUSDT", "XRP", "USDT"),
 }
 
 
