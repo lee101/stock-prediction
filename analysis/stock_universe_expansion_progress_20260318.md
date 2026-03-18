@@ -19,6 +19,7 @@
 - Fixed hourly stock cohort generation in `src/alpaca_stock_expansion.py` to floor timestamps to hourly buckets and deduplicate per bucket.
   - This recovers peer relationships across stock CSVs that use different minute offsets.
 - Applied the same hourly bucket normalization inside `hyperparam_chronos_hourly.py` so hourly tuning cohort scoring uses the same corrected alignment.
+  - Follow-up fix: `_build_cohort_map()` now uses `.dt.floor("h")` on timestamp series; the previous `.floor("h")` call crashed the real `TTD` tuner path before it could score any configs.
 - Extended `scripts/run_alpaca_stock_expansion.py` to write training recommendations per candidate:
   - `recommended_next_step`
   - `recommended_reason`
@@ -72,77 +73,76 @@
 - decision: rejected
   - reason: return and drawdown improved slightly, but `Sortino` regressed by `-0.2328`, so the candidate did not meet promotion thresholds.
 
-## Active Training Run
+## Completed Multivariate LoRA Trial
 
 - symbol: `PFE`
 - runner: local `RTX 5090`
-- started at: `2026-03-18 20:43 UTC`
-- session: `tmux` session `pfe_lora_stockexp_multivar_20260318`
+- training session: `tmux` session `pfe_lora_stockexp_multivar_20260318`
+- eval session: `tmux` session `pfe_lora_stockexp_multivar_eval_20260318`
+- training log path: `analysis/local_training_logs/pfe_lora_stockexp_multivar_20260318.log`
+- eval log path: `analysis/local_training_logs/pfe_lora_stockexp_multivar_eval_20260318.log`
+- output artifact path: `chronos2_finetuned/PFE_lora_stockexp_multivar_20260318/finetuned-ckpt`
+- training outcome:
+  - `val_mae%=1.5617`
+  - `test_mae%=3.1063`
+- rebuilt forecast cache outcome:
+  - `h1 MAE%=1.9165`
+  - `h24 MAE%=2.1824`
+- market simulator outcome vs baseline:
+  - baseline: `return=-0.041069`, `sortino=-6.7113`, `max_drawdown=0.041186`
+  - `PFE` LoRA: `return=-0.039127`, `sortino=-7.1234`, `max_drawdown=0.039280`
+- decision: rejected
+  - reason: return and drawdown improved again, but `Sortino` regressed by `-0.4121`, so the candidate did not meet promotion thresholds.
+
+## Active Hourly Tune
+
+- symbol: `TTD`
+- runner: local `RTX 5090`
+- started at: `2026-03-18 20:58 UTC`
+- session: `tmux` session `ttd_hourly_tune_20260318_retry`
 - env:
   - `cd /nvme0n1-disk/code/stock-prediction`
   - `source .venv313/bin/activate`
 - command:
 
 ```bash
-python -u scripts/retrain_chronos2_hourly_loras.py \
-  --symbol PFE \
-  --data-root trainingdatahourly/stocks \
-  --output-root chronos2_finetuned \
-  --context-length 2048 \
-  --batch-size 32 \
-  --learning-rate 5e-05 \
-  --num-steps 1500 \
-  --save-name PFE_lora_stockexp_multivar_20260318 \
-  --covariate-symbols TRIP,META,NYT \
-  --covariate-cols close \
-  --no-update-hparams
+python hyperparam_chronos_hourly.py \
+  --symbols TTD \
+  --quick \
+  --holdout-hours 168 \
+  --prediction-length 24 \
+  --objective composite \
+  --cohort-size 4 \
+  --cohort-min-abs-corr 0.25 \
+  --save-hyperparams
 ```
 
-- log path: `analysis/local_training_logs/pfe_lora_stockexp_multivar_20260318.log`
-- output artifact path: `chronos2_finetuned/PFE_lora_stockexp_multivar_20260318/finetuned-ckpt`
-- first log lines confirm covariates loaded:
-  - `TRIP`
-  - `META`
-  - `NYT`
+- log path: `analysis/local_training_logs/ttd_hourly_tune_20260318.log`
+- expected config output path: `hyperparams/chronos2/hourly/TTD.json`
+- note:
+  - first attempt failed immediately on a real pandas timestamp-floor bug in `_build_cohort_map()`.
+  - that bug is now fixed and covered by regression tests.
 
 ## Armed Follow-On Evaluation
 
-- session: `tmux` session `pfe_lora_stockexp_multivar_eval_20260318`
-- start gate: waits for `chronos2_finetuned/PFE_lora_stockexp_multivar_20260318/finetuned-ckpt`
-- log path: `analysis/local_training_logs/pfe_lora_stockexp_multivar_eval_20260318.log`
-- result directory: `analysis/alpaca_stock_expansion_pfe_lora_20260318`
-- evaluation steps:
-  1. Rebuild only `PFE` hourly forecast caches using the new checkpoint.
-  2. Re-run one-symbol expansion evaluation for `PFE` against the current live baseline.
-- cache rebuild command:
-
-```bash
-python scripts/build_hourly_forecast_caches.py \
-  --symbols PFE \
-  --data-root trainingdatahourly/stocks \
-  --forecast-cache-root unified_hourly_experiment/forecast_cache \
-  --horizons 1,24 \
-  --model-id chronos2_finetuned/PFE_lora_stockexp_multivar_20260318/finetuned-ckpt \
-  --context-hours 2048 \
-  --batch-size 32 \
-  --lookback-hours 5000 \
-  --force-rebuild \
-  --output-json analysis/alpaca_stock_expansion_pfe_lora_20260318/forecast_cache_mae.json
-```
-
+- session: `tmux` session `ttd_hourly_tune_eval_20260318`
+- start gate: waits for `hyperparams/chronos2/hourly/TTD.json`
+- log path: `analysis/local_training_logs/ttd_hourly_tune_eval_20260318.log`
+- result directory: `analysis/alpaca_stock_expansion_ttd_tuned_20260318`
+- evaluation step:
+  1. Re-run one-symbol expansion evaluation for `TTD` using the tuned hourly Chronos2 config.
 - follow-on market-sim command:
 
 ```bash
 python scripts/run_alpaca_stock_expansion.py \
   --manifest-path docs/stock_universe_candidates_20260318.json \
-  --candidate-symbols PFE \
+  --candidate-symbols TTD \
   --base-stock-universe live20260318 \
   --base-long-only-symbols NVDA,PLTR,GOOG,AAPL,MSFT,META,TSLA,NET,DBX,SOFI,INTC,MU,TTD,PATH,NBIS,TME \
   --baseline-source-dir analysis/alpaca_stock_expansion_pfe_20260318/baseline \
-  --skip-cache-build \
   --candidate-max-h1-mae-percent 10 \
   --candidate-max-h24-mae-percent 10 \
-  --output-dir analysis/alpaca_stock_expansion_pfe_lora_20260318
+  --output-dir analysis/alpaca_stock_expansion_ttd_tuned_20260318
 ```
 
 ## Short Proof Run

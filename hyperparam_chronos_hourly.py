@@ -181,9 +181,10 @@ class Chronos2HourlyTuner:
                 continue
             if "timestamp" not in train_df.columns or "close" not in train_df.columns:
                 continue
+            timestamps = pd.to_datetime(train_df["timestamp"], utc=True, errors="coerce").dt.floor("h")
             close = pd.Series(
                 train_df["close"].to_numpy(dtype=np.float64),
-                index=pd.to_datetime(train_df["timestamp"], utc=True, errors="coerce").floor("h"),
+                index=timestamps,
             )
             close = close[~close.index.isna()]
             close = close[~close.index.duplicated(keep="last")].dropna()
