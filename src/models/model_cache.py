@@ -19,6 +19,12 @@ __all__ = [
 
 
 _SANITIZE_PATTERN = re.compile(r"[^a-zA-Z0-9._-]+")
+_DEFAULT_FALLBACK_DIRS = (
+    Path("/vfast/compiled_models"),
+    Path("/var/tmp/stock-prediction-compiled-models"),
+    Path("/tmp/stock-prediction-compiled-models"),
+)
+_DEFAULT_MIN_FREE_BYTES = 10 * 1024 * 1024 * 1024
 
 class ModelCacheError(RuntimeError):
     """Raised when persisting or loading compiled model artifacts fails."""
@@ -28,6 +34,53 @@ def _sanitize_identifier(identifier: str) -> str:
     cleaned = _SANITIZE_PATTERN.sub("-", identifier.strip())
     cleaned = cleaned.strip("-")
     return cleaned or "default"
+
+
+def _resolve_free_bytes(path: Path) -> int:
+    candidate = path.expanduser()
+    if not candidate.is_absolute():
+        candidate = (Path.cwd() / candidate).resolve()
+    probe = candidate
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    return int(shutil.disk_usage(probe).free)
+
+
+def _min_free_bytes() -> int:
+    raw = os.getenv("COMPILED_MODELS_MIN_FREE_BYTES", "").strip()
+    if not raw:
+        return _DEFAULT_MIN_FREE_BYTES
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_MIN_FREE_BYTES
+    return max(0, value)
+
+
+def _fallback_dirs() -> tuple[Path, ...]:
+    raw = os.getenv("COMPILED_MODELS_FALLBACK_DIRS", "").strip()
+    if not raw:
+        return _DEFAULT_FALLBACK_DIRS
+    paths = []
+    for token in raw.split(os.pathsep):
+        token = token.strip()
+        if token:
+            paths.append(Path(token).expanduser())
+    return tuple(paths) or _DEFAULT_FALLBACK_DIRS
+
+
+def _select_root(base_root: Path) -> Path:
+    min_free = _min_free_bytes()
+    candidates = (base_root, *_fallback_dirs())
+    for candidate in candidates:
+        try:
+            free_bytes = _resolve_free_bytes(candidate)
+        except Exception:
+            continue
+        if free_bytes < min_free:
+            continue
+        return candidate
+    return base_root
 
 
 def dtype_to_token(dtype: Any) -> str:
@@ -76,7 +129,11 @@ class ModelCacheManager:
     root: Optional[Path] = None
 
     def __post_init__(self) -> None:
-        base_root = self.root if self.root is not None else Path(os.getenv("COMPILED_MODELS_DIR", "compiled_models"))
+        if self.root is not None:
+            base_root = Path(self.root)
+        else:
+            configured = Path(os.getenv("COMPILED_MODELS_DIR", "compiled_models"))
+            base_root = _select_root(configured)
         self.root = Path(base_root)
         self.root.mkdir(parents=True, exist_ok=True)
         self._ns_root = self.root / _sanitize_identifier(self.namespace)
@@ -220,7 +277,13 @@ class ModelCacheManager:
             except Exception as exc:  # pragma: no cover - torch missing
                 raise ModelCacheError("Unable to persist model state without torch.") from exc
             state_path = weights_dir / "model_state.pt"
-            torch.save(model.state_dict(), state_path)  # type: ignore[arg-type]
+            tmp_state_path = state_path.with_suffix(".pt.tmp")
+            try:
+                torch.save(model.state_dict(), tmp_state_path)  # type: ignore[arg-type]
+                tmp_state_path.replace(state_path)
+            except Exception as exc:
+                tmp_state_path.unlink(missing_ok=True)
+                raise ModelCacheError(f"Failed to persist model state to {state_path}") from exc
             metadata["state_path"] = state_path.name
             fmt = "state_dict"
 

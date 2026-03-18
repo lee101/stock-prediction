@@ -114,3 +114,40 @@ def test_min_history_hours_not_converted_for_crypto(tmp_path: Path, monkeypatch)
 
     with pytest.raises(ValueError, match="Insufficient hourly history"):
         data_mod.AlpacaHourlyDataModule(cfg)
+
+
+def test_partial_secondary_horizon_forecasts_do_not_collapse_stock_history(tmp_path: Path) -> None:
+    import newnanoalpacahourlyexp.data as data_mod
+    from newnanoalpacahourlyexp.config import DatasetConfig
+
+    symbol = "TEST"
+    timestamps = pd.date_range("2026-01-01", periods=320, freq="h", tz="UTC")
+    _write_hourly_history_csv(tmp_path / "stocks" / f"{symbol}.csv", symbol, timestamps)
+    _write_forecast_parquet(tmp_path / "cache" / "h1" / f"{symbol}.parquet", symbol, timestamps)
+    _write_forecast_parquet(tmp_path / "cache" / "h24" / f"{symbol}.parquet", symbol, timestamps[::24])
+
+    cfg = DatasetConfig(
+        symbol=symbol,
+        data_root=tmp_path / "stocks",
+        forecast_cache_root=tmp_path / "cache",
+        forecast_horizons=(1, 24),
+        cache_only=True,
+        sequence_length=32,
+        min_history_hours=200,
+        max_feature_lookback_hours=200,
+        validation_days=0,
+        feature_columns=(
+            "close",
+            "predicted_close_p50_h1",
+            "predicted_high_p50_h1",
+            "predicted_low_p50_h1",
+            "chronos_close_delta_h24",
+            "forecast_confidence_h24",
+        ),
+    )
+
+    module = data_mod.AlpacaHourlyDataModule(cfg)
+
+    assert len(module.frame) == 200
+    assert (module.frame["chronos_close_delta_h24"] == 0.0).any()
+    assert (module.frame["forecast_confidence_h24"] == 0.0).any()

@@ -4,7 +4,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from src.checkpoint_manager import TopKCheckpointManager
+from src.checkpoint_manager import TopKCheckpointManager, prune_periodic_checkpoints
 
 
 def test_keeps_top_k():
@@ -64,3 +64,29 @@ def test_no_prune_under_limit():
             mgr.register(p, float(i))
         existing = sorted(d.glob("epoch_*.pt"))
         assert len(existing) == 5
+
+
+def test_prune_periodic_checkpoints_keeps_latest_and_manifest_entries():
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        update_paths = []
+        for i in range(1, 6):
+            path = d / f"update_{i:06d}.pt"
+            path.write_text(f"data{i}")
+            update_paths.append(path)
+        manifest = d / ".topk_manifest.json"
+        manifest.write_text(
+            json.dumps(
+                [
+                    {"path": str(update_paths[1]), "metric": 0.9, "epoch": 2},
+                    {"path": str(update_paths[3]), "metric": 1.1, "epoch": 4},
+                ]
+            )
+        )
+
+        summary = prune_periodic_checkpoints(d, max_keep_latest=1)
+
+        remaining = sorted(path.name for path in d.glob("update_*.pt"))
+        assert remaining == ["update_000002.pt", "update_000004.pt", "update_000005.pt"]
+        assert summary.scanned == 5
+        assert summary.removed == 2
