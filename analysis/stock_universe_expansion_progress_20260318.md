@@ -159,40 +159,83 @@ python -u scripts/retrain_chronos2_hourly_loras.py \
 - first checkpoint signal:
   - at `500/1500`, `eval_loss=1.467`
 
+- completed training outcome:
+  - `val_mae%=0.2556`
+  - `test_mae%=1.5668`
+- rebuilt forecast cache outcome:
+  - `h1 MAE%=10.8580`
+  - `h24 MAE%=12.5066`
+- decision: rejected
+  - reason: multivariate LoRA was a large improvement over the original `TTD` cache, but it still missed the hard gate (`10%`) on both horizons, so it never reached a real market-sim comparison.
+
+## Active Multivariate LoRA
+
+- symbol: `INTC`
+- runner: local `RTX 5090`
+- started at: `2026-03-18 21:06 UTC`
+- session: `tmux` session `intc_lora_stockexp_multivar_20260318`
+- env:
+  - `cd /nvme0n1-disk/code/stock-prediction`
+  - `source .venv313/bin/activate`
+- command:
+
+```bash
+python -u scripts/retrain_chronos2_hourly_loras.py \
+  --symbol INTC \
+  --data-root trainingdatahourly/stocks \
+  --output-root chronos2_finetuned \
+  --context-length 2048 \
+  --batch-size 32 \
+  --learning-rate 5e-05 \
+  --num-steps 1500 \
+  --save-name INTC_lora_stockexp_multivar_20260318 \
+  --covariate-symbols NVDA,NET,META,GOOG \
+  --covariate-cols close \
+  --no-update-hparams
+```
+
+- log path: `analysis/local_training_logs/intc_lora_stockexp_multivar_20260318.log`
+- output artifact path: `chronos2_finetuned/INTC_lora_stockexp_multivar_20260318/finetuned-ckpt`
+- first log lines confirm covariates loaded:
+  - `NVDA`
+  - `NET`
+  - `META`
+  - `GOOG`
+
 ## Armed Follow-On Evaluation
 
-- session: `tmux` session `ttd_lora_stockexp_multivar_eval_20260318`
-- start gate: waits for `chronos2_finetuned/TTD_lora_stockexp_multivar_20260318/finetuned-ckpt`
-- log path: `analysis/local_training_logs/ttd_lora_stockexp_multivar_eval_20260318.log`
-- result directory: `analysis/alpaca_stock_expansion_ttd_lora_20260318`
+- session: `tmux` session `intc_lora_stockexp_multivar_eval_20260318`
+- start gate: waits for `chronos2_finetuned/INTC_lora_stockexp_multivar_20260318/finetuned-ckpt`
+- log path: `analysis/local_training_logs/intc_lora_stockexp_multivar_eval_20260318.log`
+- result directory: `analysis/alpaca_stock_expansion_intc_lora_20260318`
 - evaluation steps:
-  1. Rebuild only `TTD` hourly forecast caches using the new checkpoint.
-  2. Re-run one-symbol expansion evaluation for `TTD` against the current live baseline.
+  1. Rebuild only `INTC` hourly forecast caches using the new checkpoint.
+  2. Re-run one-symbol expansion evaluation for `INTC` against the current live baseline.
 - follow-on market-sim command:
 
 ```bash
 python scripts/build_hourly_forecast_caches.py \
-  --symbols TTD \
+  --symbols INTC \
   --data-root trainingdatahourly/stocks \
   --forecast-cache-root unified_hourly_experiment/forecast_cache \
   --horizons 1,24 \
-  --model-id chronos2_finetuned/TTD_lora_stockexp_multivar_20260318/finetuned-ckpt \
-  --context-hours 1024 \
+  --model-id chronos2_finetuned/INTC_lora_stockexp_multivar_20260318/finetuned-ckpt \
+  --context-hours 2048 \
   --batch-size 32 \
   --lookback-hours 5000 \
   --force-rebuild \
-  --output-json analysis/alpaca_stock_expansion_ttd_lora_20260318/forecast_cache_mae.json
+  --output-json analysis/alpaca_stock_expansion_intc_lora_20260318/forecast_cache_mae.json
 
 python scripts/run_alpaca_stock_expansion.py \
   --manifest-path docs/stock_universe_candidates_20260318.json \
-  --candidate-symbols TTD \
+  --candidate-symbols INTC \
   --base-stock-universe live20260318 \
   --base-long-only-symbols NVDA,PLTR,GOOG,AAPL,MSFT,META,TSLA,NET,DBX,SOFI,INTC,MU,TTD,PATH,NBIS,TME \
   --baseline-source-dir analysis/alpaca_stock_expansion_pfe_20260318/baseline \
   --skip-cache-build \
   --candidate-max-h1-mae-percent 10 \
   --candidate-max-h24-mae-percent 10 \
-  --output-dir analysis/alpaca_stock_expansion_ttd_lora_20260318
+  --output-dir analysis/alpaca_stock_expansion_intc_lora_20260318
 ```
 
 ## Tuned-Config Evaluation Command
