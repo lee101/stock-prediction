@@ -311,8 +311,15 @@ python scripts/run_alpaca_stock_expansion.py \
 - training log path: `analysis/local_training_logs/sofi_lora_stockexp_multivar_20260318.log`
 - eval log path: `analysis/local_training_logs/sofi_lora_stockexp_multivar_eval_20260318.log`
 - output artifact path: `chronos2_finetuned/SOFI_lora_stockexp_multivar_20260318/finetuned-ckpt`
-- initial signal:
-  - covariates loaded cleanly: `NET`, `PLTR`, `META`, `NVDA`
+- training outcome:
+  - `val_mae%=3.5084`
+  - `test_mae%=16.1681`
+- rebuilt forecast cache outcome:
+  - `h1 MAE%=5.7553`
+  - `h24 MAE%=6.6636`
+- current state:
+  - cache gate still passes, but the LoRA barely changed forecast quality versus the base SOFI cache.
+  - the follow-on `run_alpaca_stock_expansion.py` process is still active, so promotion is not decided yet.
 
 ## Tuned-Config Evaluation Command
 
