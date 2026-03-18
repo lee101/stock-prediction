@@ -101,6 +101,11 @@ def _trial_done(output_dir: Path) -> bool:
     return (Path(output_dir) / "metrics.json").exists()
 
 
+def _resolve_baseline_metrics_path(*, output_dir: Path, baseline_source_dir: Path | None) -> Path:
+    source_dir = Path(baseline_source_dir) if baseline_source_dir is not None else Path(output_dir) / "baseline"
+    return Path(source_dir) / "metrics.json"
+
+
 def _baseline_metric(metrics: dict[str, object], key: str) -> float:
     try:
         return float(metrics.get(key, 0.0) or 0.0)
@@ -422,6 +427,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--reuse-baseline", action="store_true", default=True)
     parser.add_argument("--force-baseline-rerun", action="store_true")
+    parser.add_argument(
+        "--baseline-source-dir",
+        type=Path,
+        default=None,
+        help="Optional directory containing an existing baseline metrics.json to reuse across separate candidate runs.",
+    )
     parser.add_argument("--reuse-candidate-results", action="store_true", default=True)
     parser.add_argument("--force-candidate-rerun", action="store_true")
     parser.add_argument("--disable-baseline-gate", action="store_true")
@@ -518,8 +529,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     checkpoint_path = Path(default_checkpoint).expanduser().resolve()
     baseline_dir = output_dir / "baseline"
-    if bool(args.reuse_baseline) and not bool(args.force_baseline_rerun) and _trial_done(baseline_dir):
-        baseline_metrics = _read_metrics(baseline_dir)
+    baseline_metrics_path = _resolve_baseline_metrics_path(
+        output_dir=output_dir,
+        baseline_source_dir=args.baseline_source_dir,
+    )
+    baseline_summary_path = baseline_metrics_path
+    if bool(args.reuse_baseline) and not bool(args.force_baseline_rerun) and baseline_metrics_path.exists():
+        baseline_metrics = json.loads(baseline_metrics_path.read_text())
     else:
         baseline_metrics = _run_trial(
             symbols=base_symbols,
@@ -543,6 +559,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             baseline_max_drawdown_tolerance=float(args.baseline_max_drawdown_tolerance),
             initial_state=args.initial_state,
         )
+        baseline_summary_path = baseline_dir / "metrics.json"
 
     baseline_row = _result_row(
         symbol="BASE",
@@ -551,7 +568,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         priority=999,
         thesis="Current live base stock universe baseline.",
         metrics=baseline_metrics,
-        summary_path=baseline_dir / "metrics.json",
+        summary_path=baseline_summary_path,
         baseline_metrics=None,
     )
     baseline_row["lora_command"] = ""
@@ -619,6 +636,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     (output_dir / "expansion_results.json").write_text(json.dumps(sorted_rows, indent=2) + "\n")
     _write_csv(output_dir / "expansion_results.csv", sorted_rows)
     (output_dir / "baseline_metrics.json").write_text(json.dumps(baseline_metrics, indent=2) + "\n")
+    if args.baseline_source_dir is not None:
+        (output_dir / "baseline_source.json").write_text(
+            json.dumps({"baseline_source_dir": str(Path(args.baseline_source_dir))}, indent=2) + "\n"
+        )
     if failed_candidates:
         (output_dir / "failed_candidates.json").write_text(json.dumps(failed_candidates, indent=2) + "\n")
     promotion_summary = _build_promotion_summary(
