@@ -50,12 +50,34 @@
   - peers: `META, SOFI, NET, EXPE`
   - note: no stored hourly Chronos2 config exists yet.
 
-## Active Training Run
+## Completed Multivariate LoRA Trial
 
+- symbol: `F`
 - runner: local `RTX 5090`
 - reason local: remote host `administrator@93.127.141.100` is currently inaccessible from this session (`Permission denied (publickey,password)`).
-- started at: `2026-03-18 20:22 UTC`
-- session: `tmux` session `f_lora_stockexp_multivar_20260318`
+- training session: `tmux` session `f_lora_stockexp_multivar_20260318`
+- eval session: `tmux` session `f_lora_stockexp_multivar_eval_20260318`
+- training log path: `analysis/local_training_logs/f_lora_stockexp_multivar_20260318.log`
+- eval log path: `analysis/local_training_logs/f_lora_stockexp_multivar_eval_20260318.log`
+- output artifact path: `chronos2_finetuned/F_lora_stockexp_multivar_20260318/finetuned-ckpt`
+- training outcome:
+  - `val_mae%=1.4267`
+  - `test_mae%=2.1510`
+- rebuilt forecast cache outcome:
+  - `h1 MAE%=3.9817`
+  - `h24 MAE%=4.7542`
+- market simulator outcome vs baseline:
+  - baseline: `return=-0.041069`, `sortino=-6.7113`, `max_drawdown=0.041186`
+  - `F` LoRA: `return=-0.039196`, `sortino=-6.9440`, `max_drawdown=0.039854`
+- decision: rejected
+  - reason: return and drawdown improved slightly, but `Sortino` regressed by `-0.2328`, so the candidate did not meet promotion thresholds.
+
+## Active Training Run
+
+- symbol: `PFE`
+- runner: local `RTX 5090`
+- started at: `2026-03-18 20:43 UTC`
+- session: `tmux` session `pfe_lora_stockexp_multivar_20260318`
 - env:
   - `cd /nvme0n1-disk/code/stock-prediction`
   - `source .venv313/bin/activate`
@@ -63,50 +85,49 @@
 
 ```bash
 python -u scripts/retrain_chronos2_hourly_loras.py \
-  --symbol F \
+  --symbol PFE \
   --data-root trainingdatahourly/stocks \
   --output-root chronos2_finetuned \
   --context-length 2048 \
   --batch-size 32 \
   --learning-rate 5e-05 \
   --num-steps 1500 \
-  --save-name F_lora_stockexp_multivar_20260318 \
-  --covariate-symbols TRIP,EXPE,DBX,META \
+  --save-name PFE_lora_stockexp_multivar_20260318 \
+  --covariate-symbols TRIP,META,NYT \
   --covariate-cols close \
   --no-update-hparams
 ```
 
-- log path: `analysis/local_training_logs/f_lora_stockexp_multivar_20260318.log`
-- output artifact path: `chronos2_finetuned/F_lora_stockexp_multivar_20260318/finetuned-ckpt`
+- log path: `analysis/local_training_logs/pfe_lora_stockexp_multivar_20260318.log`
+- output artifact path: `chronos2_finetuned/PFE_lora_stockexp_multivar_20260318/finetuned-ckpt`
 - first log lines confirm covariates loaded:
   - `TRIP`
-  - `EXPE`
-  - `DBX`
   - `META`
+  - `NYT`
 
 ## Armed Follow-On Evaluation
 
-- session: `tmux` session `f_lora_stockexp_multivar_eval_20260318`
-- start gate: waits for `chronos2_finetuned/F_lora_stockexp_multivar_20260318/finetuned-ckpt`
-- log path: `analysis/local_training_logs/f_lora_stockexp_multivar_eval_20260318.log`
-- result directory: `analysis/alpaca_stock_expansion_f_lora_20260318`
+- session: `tmux` session `pfe_lora_stockexp_multivar_eval_20260318`
+- start gate: waits for `chronos2_finetuned/PFE_lora_stockexp_multivar_20260318/finetuned-ckpt`
+- log path: `analysis/local_training_logs/pfe_lora_stockexp_multivar_eval_20260318.log`
+- result directory: `analysis/alpaca_stock_expansion_pfe_lora_20260318`
 - evaluation steps:
-  1. Rebuild only `F` hourly forecast caches using the new checkpoint.
-  2. Re-run one-symbol expansion evaluation for `F` against the current live baseline.
+  1. Rebuild only `PFE` hourly forecast caches using the new checkpoint.
+  2. Re-run one-symbol expansion evaluation for `PFE` against the current live baseline.
 - cache rebuild command:
 
 ```bash
 python scripts/build_hourly_forecast_caches.py \
-  --symbols F \
+  --symbols PFE \
   --data-root trainingdatahourly/stocks \
   --forecast-cache-root unified_hourly_experiment/forecast_cache \
   --horizons 1,24 \
-  --model-id chronos2_finetuned/F_lora_stockexp_multivar_20260318/finetuned-ckpt \
+  --model-id chronos2_finetuned/PFE_lora_stockexp_multivar_20260318/finetuned-ckpt \
   --context-hours 2048 \
   --batch-size 32 \
   --lookback-hours 5000 \
   --force-rebuild \
-  --output-json analysis/alpaca_stock_expansion_f_lora_20260318/forecast_cache_mae.json
+  --output-json analysis/alpaca_stock_expansion_pfe_lora_20260318/forecast_cache_mae.json
 ```
 
 - follow-on market-sim command:
@@ -114,14 +135,14 @@ python scripts/build_hourly_forecast_caches.py \
 ```bash
 python scripts/run_alpaca_stock_expansion.py \
   --manifest-path docs/stock_universe_candidates_20260318.json \
-  --candidate-symbols F \
+  --candidate-symbols PFE \
   --base-stock-universe live20260318 \
   --base-long-only-symbols NVDA,PLTR,GOOG,AAPL,MSFT,META,TSLA,NET,DBX,SOFI,INTC,MU,TTD,PATH,NBIS,TME \
   --baseline-source-dir analysis/alpaca_stock_expansion_pfe_20260318/baseline \
   --skip-cache-build \
   --candidate-max-h1-mae-percent 10 \
   --candidate-max-h24-mae-percent 10 \
-  --output-dir analysis/alpaca_stock_expansion_f_lora_20260318
+  --output-dir analysis/alpaca_stock_expansion_pfe_lora_20260318
 ```
 
 ## Short Proof Run
