@@ -48,6 +48,7 @@ python download_hourly_data.py --only-stocks --symbols PLUG,ONDS,AAL,NOK,BMNR,NB
 ### Phase 2: Cache Build for Trial Candidates
 
 - Use the current live cache root and horizon layout so trial symbols match production expectations.
+- After the first baseline cache fill, prefer candidate-only refreshes so sequential one-by-one trials do not waste time rebuilding the unchanged live basket.
 
 ```bash
 source .venv313/bin/activate
@@ -110,6 +111,7 @@ python scripts/retrain_chronos2_hourly_loras.py \
 
 - Keep using the same universe-expansion evaluation path in [`scripts/run_alpaca_stock_expansion.py`](/nvme0n1-disk/code/stock-prediction/scripts/run_alpaca_stock_expansion.py), but extend it from the current `--robust-60d` posture to a 120-day window.
 - Reuse the existing early-exit helper in [`src/market_sim_early_exit.py`](/nvme0n1-disk/code/stock-prediction/src/market_sim_early_exit.py) and add comparability gates against the current live baseline.
+- Persist the result of each pass/fail decision in `promotion_summary.json` so deployment can be driven from a recorded gate instead of manual inspection.
 - Proposed early-out rules for 120-day runs:
   - After 30 percent of bars, stop if candidate max drawdown is already materially worse than baseline and return is negative.
   - After 50 percent of bars, stop if Sortino is far below baseline and drawdown still exceeds profit.
