@@ -9,6 +9,7 @@ from src.alpaca_stock_expansion import (
     default_stock_expansion_candidates,
     filter_candidates_with_hourly_data,
     load_stock_expansion_manifest,
+    manifest_side_defaults,
     split_candidates_by_history,
     stock_expansion_sort_key,
     summarize_reforecast_result,
@@ -41,6 +42,47 @@ def test_stock_expansion_candidate_normalized_accepts_aliases() -> None:
     candidate = StockExpansionCandidate("aal", side="long_short", priority=3).normalized()
     assert candidate.symbol == "AAL"
     assert candidate.side == "both"
+
+
+def test_manifest_side_defaults_respects_top_level_policy() -> None:
+    defaults = manifest_side_defaults(
+        {
+            "side_policy": {
+                "long_only_symbols": ["NVDA", "MU"],
+                "evaluate_both_sides_symbols": ["F", "PFE"],
+                "short_only_symbols": ["AAL"],
+            }
+        }
+    )
+    assert defaults["NVDA"] == "long"
+    assert defaults["MU"] == "long"
+    assert defaults["F"] == "both"
+    assert defaults["PFE"] == "both"
+    assert defaults["AAL"] == "short"
+
+
+def test_load_stock_expansion_manifest_uses_top_level_side_policy_for_legacy_rows(tmp_path) -> None:
+    manifest = tmp_path / "legacy_manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "base_stock_universe": "live20260318",
+                "default_checkpoint": "demo.pt",
+                "side_policy": {
+                    "long_only_symbols": ["MU"],
+                    "evaluate_both_sides_symbols": ["F", "PFE"],
+                },
+                "candidates": [
+                    {"symbol": "MU", "priority": 10},
+                    {"symbol": "F", "priority": 9},
+                    {"symbol": "PFE", "priority": 8},
+                ],
+            }
+        )
+    )
+
+    _base_universe, _checkpoint, loaded = load_stock_expansion_manifest(manifest)
+    assert [candidate.side for candidate in loaded] == ["long", "both", "both"]
 
 
 def test_filter_candidates_with_hourly_data_separates_missing(tmp_path) -> None:
