@@ -2,6 +2,43 @@
   "requested_at": "2026-03-18T00:00:00Z",
   "paper": false,
   "source": "user_requested_live_stock_expansion_batch",
+  "raw_snapshot_file": "docs/stock_universe_market_snapshot_20260318.json",
+  "side_policy": {
+    "note": "Evaluate some non-tech names as long-or-short candidates, but keep tech names like NVDA out of the short bucket in the initial rollout.",
+    "long_only_symbols": [
+      "NVDA",
+      "SOFI",
+      "INTC",
+      "TSLA",
+      "MU",
+      "TTD",
+      "NBIS",
+      "TME",
+      "PATH"
+    ],
+    "evaluate_both_sides_symbols": [
+      "PLUG",
+      "ONDS",
+      "AAL",
+      "NOK",
+      "F",
+      "BMNR",
+      "MARA",
+      "BTG",
+      "PFE",
+      "OWL",
+      "RIG",
+      "ABEV",
+      "ITUB",
+      "HIMS",
+      "RCAT",
+      "RKLB"
+    ],
+    "already_live_long_only_symbols": [
+      "NVDA",
+      "TSLA"
+    ]
+  },
   "current_live_supervisor_symbols": [
     "NVDA",
     "PLTR",
@@ -68,6 +105,30 @@
       "MARA",
       "HIMS",
       "PATH",
+      "RCAT",
+      "RKLB"
+    ]
+  },
+  "short_candidate_seed_groups": {
+    "cyclicals_and_transport": [
+      "AAL",
+      "F",
+      "RIG"
+    ],
+    "defensive_and_value": [
+      "PFE",
+      "BTG",
+      "ABEV",
+      "ITUB",
+      "NOK"
+    ],
+    "speculative_non_tech": [
+      "PLUG",
+      "ONDS",
+      "BMNR",
+      "MARA",
+      "OWL",
+      "HIMS",
       "RCAT",
       "RKLB"
     ]

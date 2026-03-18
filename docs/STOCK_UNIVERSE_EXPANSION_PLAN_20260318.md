@@ -9,9 +9,17 @@
 ## Requested Batch
 
 - Manifest written to [`docs/stock_universe_candidates_20260318.json`](/nvme0n1-disk/code/stock-prediction/docs/stock_universe_candidates_20260318.json).
+- Raw pasted market snapshot written to [`docs/stock_universe_market_snapshot_20260318.json`](/nvme0n1-disk/code/stock-prediction/docs/stock_universe_market_snapshot_20260318.json).
 - Already live and cache-ready from the requested batch: `NVDA`, `TSLA`.
 - History-ready but not yet cache-ready: `SOFI`, `INTC`, `MU`, `F`, `PFE`, `TTD`.
 - Missing hourly stock history and therefore blocked on ingest first: `PLUG`, `ONDS`, `AAL`, `NOK`, `BMNR`, `NBIS`, `TME`, `MARA`, `BTG`, `OWL`, `RIG`, `ABEV`, `ITUB`, `HIMS`, `PATH`, `RCAT`, `RKLB`.
+
+## Direction Policy
+
+- Keep tech and AI-heavy names out of the short bucket in the first cycle.
+- Treat `NVDA`, `SOFI`, `INTC`, `TSLA`, `MU`, `TTD`, `NBIS`, `TME`, and `PATH` as long-only candidates for the initial research pass.
+- Allow `PLUG`, `ONDS`, `AAL`, `NOK`, `F`, `BMNR`, `MARA`, `BTG`, `PFE`, `OWL`, `RIG`, `ABEV`, `ITUB`, `HIMS`, `RCAT`, and `RKLB` to be evaluated as long-or-short candidates in simulation.
+- `NVDA` is already live, so the first new one-by-one additions should start at `SOFI`, not `NVDA`.
 
 ## Immediate Trial Order
 
@@ -88,6 +96,7 @@ python scripts/retrain_chronos2_hourly_loras.py \
   - `international_adrs`: `TME,ABEV,ITUB`
   - `speculative_small_cap`: `ONDS,BMNR,NBIS,MARA,HIMS,PATH,RCAT,RKLB`
 - Use the existing `--covariate-symbols` path in [`scripts/retrain_chronos2_hourly_loras.py`](/nvme0n1-disk/code/stock-prediction/scripts/retrain_chronos2_hourly_loras.py) for multivariate LoRA runs after the single-symbol baseline is stable.
+- For directional grouping, keep a separate short-candidate research set so the tech long book is not polluted by forced short experiments.
 
 ### Phase 6: Iron Model Layer
 
