@@ -18,7 +18,11 @@ from src.hourly_trader_utils import (
     infer_working_order_kind,
 )
 from src.metrics_utils import annualized_sortino, compute_step_returns
-from src.market_sim_early_exit import evaluate_drawdown_vs_profit_early_exit, print_early_exit
+from src.market_sim_early_exit import (
+    evaluate_baseline_comparability_early_exit,
+    evaluate_drawdown_vs_profit_early_exit,
+    print_early_exit,
+)
 from src.symbol_utils import is_crypto_symbol
 from src.trade_directions import resolve_trade_directions
 
@@ -86,6 +90,20 @@ class HourlyTraderSimulationConfig:
     max_hold_hours: Optional[int] = None
     trailing_stop_pct: Optional[float] = None
     force_exit_offset_pct: float = 0.1
+    enable_drawdown_profit_early_exit: bool = True
+    drawdown_profit_early_exit_min_steps: int = 20
+    drawdown_profit_early_exit_progress_fraction: float = 0.5
+    enable_baseline_comparability_early_exit: bool = False
+    baseline_total_return: Optional[float] = None
+    baseline_sortino: Optional[float] = None
+    baseline_max_drawdown: Optional[float] = None
+    baseline_early_exit_min_steps: int = 40
+    baseline_stage1_progress: float = 0.30
+    baseline_stage2_progress: float = 0.50
+    baseline_stage3_progress: float = 0.75
+    baseline_return_tolerance: float = 0.02
+    baseline_sortino_tolerance: float = 0.50
+    baseline_max_drawdown_tolerance: float = 0.02
 
 
 @dataclass(frozen=True)
@@ -124,7 +142,7 @@ class HourlyTraderSimulationResult:
     final_reserved_cash: float
     final_positions: Dict[str, float]
     open_orders: List[OpenOrder]
-    metrics: Dict[str, float] = field(default_factory=dict)
+    metrics: Dict[str, object] = field(default_factory=dict)
 
 
 class HourlyTraderMarketSimulator:
@@ -362,6 +380,9 @@ class HourlyTraderMarketSimulator:
         fills: List[FillRecord] = []
         equity_values: List[float] = []
         per_hour_rows: List[Dict[str, float | str]] = []
+        terminated_early = False
+        termination_reason = ""
+        termination_progress_fraction = 0.0
 
         def _min_notional(sym: str) -> float:
             if meta[sym]["asset_class"] == "crypto":
@@ -861,13 +882,43 @@ class HourlyTraderMarketSimulator:
                     "open_orders": float(len(open_orders)),
                 }
             )
-            early_exit = evaluate_drawdown_vs_profit_early_exit(
-                equity_values,
-                total_steps=total_steps,
-                label="newnanoalpacahourlyexp.HourlyTraderMarketSimulator",
-            )
-            if early_exit.should_stop:
+            early_exit = None
+            if bool(getattr(cfg, "enable_baseline_comparability_early_exit", False)):
+                periods = [float(meta[s]["periods_per_year"]) for s in symbols if float(meta[s]["periods_per_year"]) > 0]
+                periods_per_year = float(np.mean(periods)) if periods else float(24 * 365)
+                early_exit = evaluate_baseline_comparability_early_exit(
+                    equity_values,
+                    total_steps=total_steps,
+                    label="newnanoalpacahourlyexp.HourlyTraderMarketSimulator",
+                    periods_per_year=periods_per_year,
+                    baseline_total_return=getattr(cfg, "baseline_total_return", None),
+                    baseline_sortino=getattr(cfg, "baseline_sortino", None),
+                    baseline_max_drawdown=getattr(cfg, "baseline_max_drawdown", None),
+                    min_total_steps=int(getattr(cfg, "baseline_early_exit_min_steps", 40) or 40),
+                    stage1_progress=float(getattr(cfg, "baseline_stage1_progress", 0.30) or 0.30),
+                    stage2_progress=float(getattr(cfg, "baseline_stage2_progress", 0.50) or 0.50),
+                    stage3_progress=float(getattr(cfg, "baseline_stage3_progress", 0.75) or 0.75),
+                    return_tolerance=float(getattr(cfg, "baseline_return_tolerance", 0.02) or 0.02),
+                    sortino_tolerance=float(getattr(cfg, "baseline_sortino_tolerance", 0.50) or 0.50),
+                    max_drawdown_tolerance=float(
+                        getattr(cfg, "baseline_max_drawdown_tolerance", 0.02) or 0.02
+                    ),
+                )
+            elif bool(getattr(cfg, "enable_drawdown_profit_early_exit", True)):
+                early_exit = evaluate_drawdown_vs_profit_early_exit(
+                    equity_values,
+                    total_steps=total_steps,
+                    label="newnanoalpacahourlyexp.HourlyTraderMarketSimulator",
+                    min_total_steps=int(getattr(cfg, "drawdown_profit_early_exit_min_steps", 20) or 20),
+                    progress_fraction=float(
+                        getattr(cfg, "drawdown_profit_early_exit_progress_fraction", 0.5) or 0.5
+                    ),
+                )
+            if early_exit is not None and early_exit.should_stop:
                 print_early_exit(early_exit)
+                terminated_early = True
+                termination_reason = str(early_exit.reason or "")
+                termination_progress_fraction = float(early_exit.progress_fraction)
                 break
 
         equity_curve = pd.Series(equity_values, index=pd.to_datetime([r["timestamp"] for r in per_hour_rows], utc=True))
@@ -877,6 +928,15 @@ class HourlyTraderMarketSimulator:
         periods = [float(meta[s]["periods_per_year"]) for s in symbols if float(meta[s]["periods_per_year"]) > 0]
         periods_per_year = float(np.mean(periods)) if periods else float(24 * 365)
         metrics = self._compute_metrics(equity_curve, periods_per_year)
+        metrics.update(
+            {
+                "final_equity": float(equity_curve.iloc[-1]) if not equity_curve.empty else float(cfg.initial_cash),
+                "num_fills": float(len(fills)),
+                "terminated_early": bool(terminated_early),
+                "termination_reason": str(termination_reason),
+                "termination_progress_fraction": float(termination_progress_fraction),
+            }
+        )
 
         return HourlyTraderSimulationResult(
             equity_curve=equity_curve,
@@ -892,14 +952,19 @@ class HourlyTraderMarketSimulator:
     @staticmethod
     def _compute_metrics(equity_curve: pd.Series, periods_per_year: float) -> Dict[str, float]:
         if equity_curve.empty:
-            return {"total_return": 0.0, "sortino": 0.0}
+            return {"total_return": 0.0, "sortino": 0.0, "mean_hourly_return": 0.0, "max_drawdown": 0.0}
         returns = compute_step_returns(equity_curve.values)
         sortino = annualized_sortino(returns, periods_per_year=periods_per_year)
         total_return = (equity_curve.iloc[-1] - equity_curve.iloc[0]) / equity_curve.iloc[0]
+        equity_values = equity_curve.values.astype(float)
+        running_max = np.maximum.accumulate(equity_values)
+        drawdowns = np.where(running_max > 0.0, (running_max - equity_values) / running_max, 0.0)
+        max_drawdown = float(np.max(drawdowns)) if drawdowns.size else 0.0
         return {
             "total_return": float(total_return),
             "sortino": float(sortino),
             "mean_hourly_return": float(returns.mean() if returns.size else 0.0),
+            "max_drawdown": max_drawdown,
         }
 
 

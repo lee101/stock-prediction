@@ -468,3 +468,54 @@ def test_hourly_trader_simulator_trailing_stop_replaces_take_profit() -> None:
     assert result.fills[1].timestamp == ts4
     assert result.fills[1].price == pytest.approx(100.4 * 0.999)
     assert result.final_positions == {}
+
+
+def test_hourly_trader_simulator_baseline_gate_terminates_weak_candidate() -> None:
+    ts0 = pd.Timestamp("2026-01-01T00:00:00Z")
+    ts1 = ts0 + pd.Timedelta(hours=1)
+    ts2 = ts1 + pd.Timedelta(hours=1)
+    ts3 = ts2 + pd.Timedelta(hours=1)
+
+    bars = pd.DataFrame(
+        [
+            {"timestamp": ts0, "symbol": "BTCUSD", "open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0},
+            {"timestamp": ts1, "symbol": "BTCUSD", "open": 90.0, "high": 90.0, "low": 90.0, "close": 90.0},
+            {"timestamp": ts2, "symbol": "BTCUSD", "open": 80.0, "high": 80.0, "low": 80.0, "close": 80.0},
+            {"timestamp": ts3, "symbol": "BTCUSD", "open": 70.0, "high": 70.0, "low": 70.0, "close": 70.0},
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {"timestamp": ts0, "symbol": "BTCUSD", "buy_price": 100.0, "sell_price": 110.0, "buy_amount": 0.0, "sell_amount": 0.0},
+            {"timestamp": ts1, "symbol": "BTCUSD", "buy_price": 100.0, "sell_price": 110.0, "buy_amount": 0.0, "sell_amount": 0.0},
+            {"timestamp": ts2, "symbol": "BTCUSD", "buy_price": 100.0, "sell_price": 110.0, "buy_amount": 0.0, "sell_amount": 0.0},
+            {"timestamp": ts3, "symbol": "BTCUSD", "buy_price": 100.0, "sell_price": 110.0, "buy_amount": 0.0, "sell_amount": 0.0},
+        ]
+    )
+
+    sim = HourlyTraderMarketSimulator(
+        HourlyTraderSimulationConfig(
+            initial_cash=0.0,
+            initial_positions={"BTCUSD": 1.0},
+            decision_lag_bars=1,
+            enforce_market_hours=False,
+            fee_by_symbol={"BTCUSD": 0.0},
+            enable_drawdown_profit_early_exit=False,
+            enable_baseline_comparability_early_exit=True,
+            baseline_total_return=0.05,
+            baseline_sortino=1.0,
+            baseline_max_drawdown=0.02,
+            baseline_early_exit_min_steps=4,
+            baseline_stage1_progress=0.25,
+            baseline_stage2_progress=0.50,
+            baseline_stage3_progress=0.75,
+            baseline_return_tolerance=0.01,
+            baseline_sortino_tolerance=0.25,
+            baseline_max_drawdown_tolerance=0.01,
+        )
+    )
+    result = sim.run(bars, actions)
+
+    assert result.metrics["terminated_early"] is True
+    assert "baseline gate" in str(result.metrics["termination_reason"])
+    assert float(result.metrics["max_drawdown"]) >= 0.10
