@@ -16,7 +16,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from newnanoalpacahourlyexp.data import _effective_min_history_bars
 from src.alpaca_stock_expansion import (
     StockExpansionCandidate,
-    candidate_lora_command,
+    build_hourly_return_correlation_cohorts,
+    candidate_training_plan,
     count_candidate_history_rows,
     default_stock_expansion_candidates,
     load_stock_expansion_manifest,
@@ -294,6 +295,7 @@ def _result_row(
     baseline_metrics: dict[str, object] | None,
     sim_ran: bool = True,
     mae_snapshot: dict[str, float] | None = None,
+    training_plan: dict[str, object] | None = None,
 ) -> dict[str, object]:
     total_return = _baseline_metric(metrics, "total_return")
     sortino = _baseline_metric(metrics, "sortino")
@@ -302,6 +304,7 @@ def _result_row(
     baseline_sortino = _baseline_metric(baseline_metrics or {}, "sortino")
     baseline_max_drawdown = _baseline_metric(baseline_metrics or {}, "max_drawdown")
     mae_snapshot = dict(mae_snapshot or {})
+    training_plan = dict(training_plan or {})
     return {
         "symbol": symbol,
         "side": side,
@@ -320,7 +323,12 @@ def _result_row(
         "sortino_delta_vs_baseline": sortino - baseline_sortino,
         "max_drawdown_delta_vs_baseline": max_drawdown - baseline_max_drawdown,
         "summary_path": str(summary_path),
-        "lora_command": candidate_lora_command(symbol),
+        "hourly_config_exists": bool(training_plan.get("hourly_config_exists", False)),
+        "recommended_next_step": str(training_plan.get("recommended_next_step") or ""),
+        "recommended_reason": str(training_plan.get("recommended_reason") or ""),
+        "recommended_peer_symbols": list(training_plan.get("recommended_peer_symbols") or []),
+        "hourly_tuning_command": str(training_plan.get("hourly_tuning_command") or ""),
+        "lora_command": str(training_plan.get("lora_command") or ""),
         "thesis": thesis,
         "candidate_mae_h1_percent": float(mae_snapshot.get("candidate_mae_h1_percent", 0.0) or 0.0),
         "candidate_mae_h24_percent": float(mae_snapshot.get("candidate_mae_h24_percent", 0.0) or 0.0),
@@ -360,6 +368,7 @@ def _skipped_result_row(
     summary_path: Path,
     mae_snapshot: dict[str, float],
     gate_reason: str,
+    training_plan: dict[str, object] | None = None,
 ) -> dict[str, object]:
     return _result_row(
         symbol=candidate.symbol,
@@ -381,6 +390,7 @@ def _skipped_result_row(
         baseline_metrics=baseline_metrics,
         sim_ran=False,
         mae_snapshot=mae_snapshot,
+        training_plan=training_plan,
     )
 
 
@@ -502,6 +512,11 @@ def _write_csv(path: Path, rows: Sequence[dict[str, object]]) -> None:
         "candidate_mae_h1_percent",
         "candidate_mae_h24_percent",
         "summary_path",
+        "hourly_config_exists",
+        "recommended_next_step",
+        "recommended_reason",
+        "recommended_peer_symbols",
+        "hourly_tuning_command",
         "lora_command",
         "thesis",
         "termination_reason",
@@ -627,6 +642,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not ready:
         raise SystemExit("No non-base candidates have sufficient hourly stock data.")
 
+    training_correlation_cohorts = build_hourly_return_correlation_cohorts(
+        [*base_symbols, *(candidate.symbol for candidate in ready)],
+        data_root=args.stock_data_root,
+    )
+    training_plans = {
+        candidate.symbol: candidate_training_plan(
+            candidate.symbol,
+            comparison_symbols=base_symbols,
+            data_root=args.stock_data_root,
+            correlation_cohorts=training_correlation_cohorts,
+        )
+        for candidate in ready
+    }
+
     if not args.skip_cache_build:
         cache_symbols = _resolve_cache_symbols(
             base_symbols=base_symbols,
@@ -687,8 +716,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         summary_path=baseline_summary_path,
         baseline_metrics=None,
         sim_ran=True,
-        )
+        training_plan=None,
+    )
     baseline_row["lora_command"] = ""
+    baseline_row["hourly_tuning_command"] = ""
     rows: list[dict[str, object]] = [baseline_row]
 
     failed_candidates: list[dict[str, object]] = []
@@ -700,6 +731,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         candidate_output_dir = output_dir / candidate.symbol
         mae_snapshot = _candidate_mae_snapshot(mae_by_symbol, candidate.symbol)
+        training_plan = training_plans.get(candidate.symbol, {})
         gate_reason = _candidate_mae_gate_reason(
             symbol=candidate.symbol,
             mae_snapshot=mae_snapshot,
@@ -723,6 +755,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     summary_path=summary_path,
                     mae_snapshot=mae_snapshot,
                     gate_reason=gate_reason,
+                    training_plan=training_plan,
                 )
             )
             continue
@@ -767,6 +800,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 baseline_metrics=baseline_metrics,
                 sim_ran=True,
                 mae_snapshot=mae_snapshot,
+                training_plan=training_plan,
             )
         )
 
@@ -799,14 +833,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     top_lora_commands = [
         {
             "symbol": row["symbol"],
+            "recommended_next_step": row.get("recommended_next_step"),
+            "recommended_reason": row.get("recommended_reason"),
+            "recommended_peer_symbols": row.get("recommended_peer_symbols"),
             "total_return_delta_vs_baseline": row.get("total_return_delta_vs_baseline"),
             "sortino_delta_vs_baseline": row.get("sortino_delta_vs_baseline"),
             "max_drawdown_delta_vs_baseline": row.get("max_drawdown_delta_vs_baseline"),
+            "hourly_tuning_command": row.get("hourly_tuning_command"),
             "lora_command": row.get("lora_command"),
         }
         for row in sorted_rows[1:6]
     ]
     (output_dir / "top_lora_commands.json").write_text(json.dumps(top_lora_commands, indent=2) + "\n")
+    (output_dir / "top_training_commands.json").write_text(json.dumps(top_lora_commands, indent=2) + "\n")
 
     for row in sorted_rows:
         print(

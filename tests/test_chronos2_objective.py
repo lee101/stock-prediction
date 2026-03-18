@@ -98,3 +98,32 @@ def test_build_correlation_matrix_and_cohort_selection() -> None:
     )
     assert "AAA" in cohort_map
     assert len(cohort_map["AAA"]) <= 2
+
+
+def test_build_correlation_matrix_keeps_overlap_when_one_symbol_is_disjoint() -> None:
+    idx = pd.date_range("2026-01-01", periods=120, freq="h", tz="UTC")
+    base = pd.Series(np.linspace(100.0, 120.0, len(idx)), index=idx)
+    peer = base * 1.02
+    disjoint_idx = pd.date_range("2025-12-01", periods=48, freq="h", tz="UTC")
+    disjoint = pd.Series(np.linspace(10.0, 12.0, len(disjoint_idx)), index=disjoint_idx)
+
+    corr = build_correlation_matrix(
+        {
+            "AAA": base,
+            "BBB": peer,
+            "ZZZ": disjoint,
+        },
+        lookback=120,
+        min_periods=24,
+    )
+
+    assert not corr.empty
+    assert corr.loc["AAA", "BBB"] > 0.99
+    cohort = select_correlation_cohort(
+        symbol="AAA",
+        corr_matrix=corr,
+        max_size=2,
+        min_abs_corr=0.2,
+        include_negative=False,
+    )
+    assert "BBB" in cohort
