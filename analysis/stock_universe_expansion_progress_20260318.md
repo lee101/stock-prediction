@@ -17,6 +17,7 @@
   - `NOK`: failed forecast cache gate.
   - `RIG`: failed forecast cache gate.
   - `MARA`: failed forecast cache gate.
+  - `RKLB`: failed forecast cache gate.
 
 ## Completed History Ingest Batch
 
@@ -334,6 +335,32 @@ python scripts/run_alpaca_stock_expansion.py \
     - `h24 MAE%=21.6344`
   - decision: rejected
     - reason: `MARA` missed both cache gates badly on the base checkpoint, so it stays in the tune-or-retrain bucket and does not earn a simulator run against the live `ABEV` baseline.
+
+## Completed First-Pass Evaluation
+
+- symbol: `RKLB`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 04:03 UTC`
+- command:
+
+```bash
+python scripts/run_alpaca_stock_expansion.py \
+  --manifest-path docs/stock_universe_candidates_20260318.json \
+  --candidate-symbols RKLB \
+  --baseline-source-dir analysis/alpaca_stock_expansion_abev_20260319/ABEV \
+  --candidate-only-cache-build \
+  --candidate-max-h1-mae-percent 10 \
+  --candidate-max-h24-mae-percent 10 \
+  --output-dir analysis/alpaca_stock_expansion_rklb_20260319
+```
+
+- current status:
+  - `RKLB` failed the forecast cache gate on the base Chronos2 checkpoint.
+  - cache MAE from `analysis/alpaca_stock_expansion_rklb_20260319/forecast_cache_mae.json`:
+    - `h1 MAE%=13.3793`
+    - `h24 MAE%=14.9696`
+  - decision: rejected
+    - reason: `RKLB` missed both cache gates on the base checkpoint, so it stays in the tune-or-retrain bucket and does not earn a simulator run against the live `ABEV` baseline.
 
 ## Fixes Applied In This Iteration
 
