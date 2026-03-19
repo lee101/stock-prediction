@@ -26,9 +26,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rl_trading_agent_binance_prompt import build_live_prompt, load_latest_forecast
 from llm_hourly_trader.providers import call_llm
 from llm_hourly_trader.gemini_wrapper import TradePlan
-from src.dynamic_position_sizing import compute_position_scale, compute_atr_pct, NO_FORECAST_FALLBACK_SCALE
+from src.binance_symbol_utils import forecast_cache_symbol_candidates
+from src.forecast_cache_lookup import load_latest_forecast_from_cache
+from src.hourly_data_utils import resolve_hourly_symbol_path
 
 CACHE_DIR = Path("rl-trading-agent-binance/signal_cache")
+SIGNAL_COLUMNS = [
+    "timestamp",
+    "symbol",
+    "direction",
+    "buy_price",
+    "sell_price",
+    "confidence",
+    "reasoning",
+]
 
 SYMBOL_FEE = {
     "BTCUSD": 0.0, "ETHUSD": 0.0,
@@ -44,30 +55,35 @@ SYMBOL_MAX_POS = {
     "XRPUSD": 0.10, "AVAXUSD": 0.10,
 }
 
-BASE_MAE_PCT = {
-    "BTCUSD": 0.0055, "ETHUSD": 0.008,
-    "SOLUSD": 0.012, "DOGEUSD": 0.018,
-    "AAVEUSD": 0.017, "LINKUSD": 0.008,
-    "XRPUSD": 0.008, "AVAXUSD": 0.013,
-}
+
+def _cache_namespace(
+    *,
+    signal_mode: str,
+    model: str,
+    thinking_level: str,
+    forecast_cache_root: Optional[Path],
+) -> str:
+    root = ""
+    if forecast_cache_root is not None:
+        root = str(Path(forecast_cache_root).resolve())
+    return f"{signal_mode}|{model}|{thinking_level}|{root}"
 
 
-
-def _cache_key(symbol: str, ts_str: str, model: str) -> Path:
+def _cache_key(symbol: str, ts_str: str, cache_namespace: str) -> Path:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    h = hashlib.md5(f"{symbol}_{ts_str}_{model}".encode()).hexdigest()[:12]
+    h = hashlib.md5(f"{symbol}_{ts_str}_{cache_namespace}".encode()).hexdigest()[:12]
     return CACHE_DIR / f"{symbol}_{ts_str}_{h}.json"
 
 
-def _get_cached(symbol: str, ts_str: str, model: str) -> Optional[dict]:
-    path = _cache_key(symbol, ts_str, model)
+def _get_cached(symbol: str, ts_str: str, cache_namespace: str) -> Optional[dict]:
+    path = _cache_key(symbol, ts_str, cache_namespace)
     if path.exists():
         return json.loads(path.read_text())
     return None
 
 
-def _set_cached(symbol: str, ts_str: str, model: str, plan: TradePlan):
-    path = _cache_key(symbol, ts_str, model)
+def _set_cached(symbol: str, ts_str: str, cache_namespace: str, plan: TradePlan):
+    path = _cache_key(symbol, ts_str, cache_namespace)
     path.write_text(json.dumps({
         "direction": plan.direction,
         "buy_price": plan.buy_price,
@@ -78,41 +94,115 @@ def _set_cached(symbol: str, ts_str: str, model: str, plan: TradePlan):
 
 
 def load_hourly_bars(symbol: str, data_root: str = "trainingdatahourly/crypto") -> pd.DataFrame:
-    path = Path(data_root) / f"{symbol}.csv"
-    if not path.exists():
-        raise FileNotFoundError(f"No hourly data: {path}")
+    path = None
+    for candidate in forecast_cache_symbol_candidates(symbol):
+        path = resolve_hourly_symbol_path(candidate, Path(data_root))
+        if path is not None:
+            break
+    if path is None:
+        raise FileNotFoundError(f"No hourly data for {symbol} under {data_root}")
     df = pd.read_csv(path, parse_dates=["timestamp"])
     df = df.sort_values("timestamp").drop_duplicates("timestamp", keep="last")
+    df["symbol"] = symbol
     return df
 
 
 def load_forecast_at(symbol: str, timestamp: pd.Timestamp, horizon: int,
                      cache_root: Optional[Path] = None) -> Optional[dict]:
-    root = cache_root or (REPO / "binanceneural" / "forecast_cache")
-    path = root / f"h{horizon}" / f"{symbol}.parquet"
-    if not path.exists():
-        return None
-    try:
-        df = pd.read_parquet(path)
-        if df.empty:
-            return None
-        if "timestamp" in df.columns:
-            df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-            df = df[df["timestamp"] <= timestamp].sort_values("timestamp")
-            if df.empty:
-                return None
-            row = df.iloc[-1]
-        else:
-            row = df.iloc[-1]
-        result = {}
-        for col in df.columns:
-            try:
-                result[col] = float(row[col])
-            except (ValueError, TypeError):
-                pass
-        return result
-    except Exception:
-        return None
+    default_root = REPO / "binanceneural" / "forecast_cache"
+    candidate_roots: list[Path] = []
+    if cache_root is not None:
+        candidate_roots.append(Path(cache_root))
+    if not candidate_roots or candidate_roots[-1] != default_root:
+        candidate_roots.append(default_root)
+    for root in candidate_roots:
+        forecast = load_latest_forecast_from_cache(symbol, int(horizon), root, as_of=timestamp)
+        if forecast is not None:
+            return forecast
+    return None
+
+
+def build_forecast_rule_signal(
+    *,
+    symbol: str,
+    current_price: float,
+    fc_1h: Optional[dict],
+    fc_24h: Optional[dict],
+    total_cost: float = 0.0020,
+    min_reward_risk: float = 1.10,
+) -> dict:
+    del symbol
+    if current_price <= 0.0:
+        return {
+            "direction": "hold",
+            "buy_price": 0.0,
+            "sell_price": 0.0,
+            "confidence": 0.0,
+            "reasoning": "invalid_price",
+        }
+
+    forecasts = [fc for fc in (fc_1h, fc_24h) if fc]
+    if not forecasts:
+        return {
+            "direction": "hold",
+            "buy_price": 0.0,
+            "sell_price": 0.0,
+            "confidence": 0.0,
+            "reasoning": "missing_forecast",
+        }
+
+    close_targets = [
+        float(fc["predicted_close_p50"])
+        for fc in forecasts
+        if fc.get("predicted_close_p50") is not None
+    ]
+    high_targets = [
+        float(fc.get("predicted_high_p50", fc.get("predicted_close_p50", current_price)))
+        for fc in forecasts
+    ]
+    low_targets = [
+        float(fc.get("predicted_low_p50", current_price))
+        for fc in forecasts
+    ]
+    if not close_targets:
+        return {
+            "direction": "hold",
+            "buy_price": 0.0,
+            "sell_price": 0.0,
+            "confidence": 0.0,
+            "reasoning": "missing_close_target",
+        }
+
+    expected_close = float(np.mean(close_targets))
+    expected_high = float(max(high_targets)) if high_targets else expected_close
+    expected_low = float(min(low_targets)) if low_targets else current_price
+    close_edge = (expected_close - current_price) / current_price
+    upside_edge = (expected_high - current_price) / current_price
+    downside_risk = max(0.0, (current_price - expected_low) / current_price)
+    usable_edge = max(close_edge, upside_edge)
+    reward_risk = usable_edge / max(downside_risk, 0.0025)
+
+    if usable_edge <= total_cost or reward_risk < min_reward_risk:
+        return {
+            "direction": "hold",
+            "buy_price": 0.0,
+            "sell_price": 0.0,
+            "confidence": 0.0,
+            "reasoning": "edge_below_threshold",
+        }
+
+    entry_discount = min(max(usable_edge * 0.35, 0.0005), 0.0030)
+    buy_price = current_price * (1.0 - entry_discount)
+    sell_floor = buy_price * 1.0025
+    sell_price = max(sell_floor, min(expected_high, current_price * (1.0 + max(total_cost, usable_edge * 0.85))))
+    confidence = min(0.95, max(0.05, usable_edge / 0.02 * min(reward_risk / 2.0, 1.0)))
+    return {
+        "direction": "long",
+        "buy_price": float(buy_price),
+        "sell_price": float(sell_price),
+        "confidence": float(confidence),
+        "reasoning": f"edge={usable_edge:.4f},rr={reward_risk:.2f}",
+    }
 
 
 def generate_signals(
@@ -123,6 +213,10 @@ def generate_signals(
     model: str = "gemini-3.1-flash-lite-preview",
     thinking_level: str = "HIGH",
     rate_limit: float = 1.5,
+    signal_mode: str = "gemini",
+    forecast_cache_root: Optional[Path] = None,
+    forecast_rule_total_cost: float = 0.0020,
+    forecast_rule_min_reward_risk: float = 1.10,
 ) -> pd.DataFrame:
     start_ts = pd.Timestamp(start_date, tz="UTC")
     end_ts = pd.Timestamp(end_date, tz="UTC")
@@ -133,26 +227,24 @@ def generate_signals(
 
     all_bars_sorted = bars.sort_values("timestamp").reset_index(drop=True)
 
+    cache_namespace = _cache_namespace(
+        signal_mode=signal_mode,
+        model=model,
+        thinking_level=thinking_level,
+        forecast_cache_root=forecast_cache_root,
+    )
+
     results = []
     api_calls = 0
     for idx in range(len(window_bars)):
         ts = window_bars.iloc[idx]["timestamp"]
         ts_str = ts.strftime("%Y%m%d_%H")
 
-        fc_1h_pre = load_forecast_at(symbol, ts, 1)
-        fc_quantiles = {}
-        if fc_1h_pre:
-            fc_quantiles = {
-                "fc_p10": fc_1h_pre.get("predicted_close_p10", 0.0),
-                "fc_p50": fc_1h_pre.get("predicted_close_p50", 0.0),
-                "fc_p90": fc_1h_pre.get("predicted_close_p90", 0.0),
-            }
-
-        cached = _get_cached(symbol, ts_str, model)
+        cached = _get_cached(symbol, ts_str, cache_namespace)
         if cached:
             results.append({
                 "timestamp": ts, "symbol": symbol,
-                **cached, **fc_quantiles,
+                **cached,
             })
             continue
 
@@ -164,10 +256,28 @@ def generate_signals(
         context_rows = all_bars_sorted.iloc[context_start:context_end].to_dict("records")
 
         current_price = float(context_rows[-1]["close"])
-        fc_1h = fc_1h_pre
-        fc_4h = load_forecast_at(symbol, ts, 4)
-        fc_12h = load_forecast_at(symbol, ts, 12)
-        fc_24h = load_forecast_at(symbol, ts, 24)
+        fc_1h = load_forecast_at(symbol, ts, 1, cache_root=forecast_cache_root)
+        fc_4h = load_forecast_at(symbol, ts, 4, cache_root=forecast_cache_root)
+        fc_12h = load_forecast_at(symbol, ts, 12, cache_root=forecast_cache_root)
+        fc_24h = load_forecast_at(symbol, ts, 24, cache_root=forecast_cache_root)
+
+        if signal_mode == "forecast_rule":
+            signal = build_forecast_rule_signal(
+                symbol=symbol,
+                current_price=current_price,
+                fc_1h=fc_1h,
+                fc_24h=fc_24h,
+                total_cost=float(forecast_rule_total_cost),
+                min_reward_risk=float(forecast_rule_min_reward_risk),
+            )
+            results.append(
+                {
+                    "timestamp": ts,
+                    "symbol": symbol,
+                    **signal,
+                }
+            )
+            continue
 
         fee_bps = int(SYMBOL_FEE.get(symbol, 0.001) * 10000)
         prompt = build_live_prompt(
@@ -179,7 +289,7 @@ def generate_signals(
 
         try:
             plan = call_llm(prompt, model=model, thinking_level=thinking_level)
-            _set_cached(symbol, ts_str, model, plan)
+            _set_cached(symbol, ts_str, cache_namespace, plan)
             results.append({
                 "timestamp": ts, "symbol": symbol,
                 "direction": plan.direction,
@@ -187,7 +297,6 @@ def generate_signals(
                 "sell_price": plan.sell_price,
                 "confidence": plan.confidence,
                 "reasoning": plan.reasoning,
-                **fc_quantiles,
             })
             api_calls += 1
             if api_calls % 50 == 0:
@@ -197,9 +306,44 @@ def generate_signals(
             print(f"  {symbol} @ {ts_str}: API error: {e}")
             time.sleep(5)
 
+    if not results:
+        return pd.DataFrame(columns=SIGNAL_COLUMNS)
     if api_calls > 0:
         print(f"  {symbol}: {api_calls} new API calls, {len(results)} total signals")
-    return pd.DataFrame(results)
+    return pd.DataFrame(results, columns=SIGNAL_COLUMNS)
+
+
+def _parse_window_days(raw: Optional[str]) -> list[int]:
+    values: list[int] = []
+    if raw is None:
+        return values
+    for token in str(raw).split(","):
+        token = token.strip()
+        if not token:
+            continue
+        day_count = int(token)
+        if day_count <= 0 or day_count in values:
+            continue
+        values.append(day_count)
+    return values
+
+
+def _slice_frame_map(
+    frames: dict[str, pd.DataFrame],
+    *,
+    start_ts: pd.Timestamp,
+    end_ts: pd.Timestamp,
+) -> dict[str, pd.DataFrame]:
+    sliced: dict[str, pd.DataFrame] = {}
+    for symbol, frame in frames.items():
+        local = frame.copy()
+        if local.empty or "timestamp" not in local.columns:
+            continue
+        local["timestamp"] = pd.to_datetime(local["timestamp"], utc=True)
+        window = local[(local["timestamp"] >= start_ts) & (local["timestamp"] <= end_ts)].reset_index(drop=True)
+        if not window.empty:
+            sliced[symbol] = window
+    return sliced
 
 
 def simulate_portfolio(
@@ -210,6 +354,7 @@ def simulate_portfolio(
     margin_rate_annual: float = 0.10,
     max_hold_hours: float = 6.0,
     margin_fee: float = 0.001,
+    symbol_max_pos_overrides: Optional[dict[str, float]] = None,
 ) -> dict:
     all_signals = pd.concat(list(signals_map.values()), ignore_index=True)
     all_signals["timestamp"] = pd.to_datetime(all_signals["timestamp"], utc=True)
@@ -221,7 +366,6 @@ def simulate_portfolio(
         b["timestamp"] = pd.to_datetime(b["timestamp"], utc=True)
         all_bars_list.append(b)
     all_bars = pd.concat(all_bars_list, ignore_index=True)
-    bars_by_symbol = {sym: grp for sym, grp in all_bars.groupby("symbol")}
 
     merged = all_bars.merge(all_signals, on=["timestamp", "symbol"], how="inner")
     merged = merged.sort_values(["timestamp", "symbol"]).reset_index(drop=True)
@@ -295,18 +439,11 @@ def simulate_portfolio(
             if float(row["low"]) > buy_price:
                 continue
 
-            max_pct = SYMBOL_MAX_POS.get(sym, 0.10)
-            fc_p10 = float(row.get("fc_p10", 0) or 0)
-            fc_p50 = float(row.get("fc_p50", 0) or 0)
-            fc_p90 = float(row.get("fc_p90", 0) or 0)
-            current_price = float(row["close"])
-            sym_bars = bars_by_symbol.get(sym, pd.DataFrame())
-            atr_pct = compute_atr_pct(sym_bars, ts)
-            base_mae = BASE_MAE_PCT.get(sym, 0.01)
-            scale = compute_position_scale(fc_p10, fc_p50, fc_p90, current_price, atr_pct, base_mae)
-            if scale <= 0:
-                scale = NO_FORECAST_FALLBACK_SCALE
-            equity_alloc = cash * max_pct * scale
+            override_max_pos = None
+            if symbol_max_pos_overrides:
+                override_max_pos = symbol_max_pos_overrides.get(sym)
+            max_pct = float(override_max_pos if override_max_pos is not None else SYMBOL_MAX_POS.get(sym, 0.10))
+            equity_alloc = cash * max_pct
             if equity_alloc < 12:
                 continue
             notional = equity_alloc * leverage
@@ -395,12 +532,28 @@ def main():
     parser.add_argument("--start", default="2026-02-16")
     parser.add_argument("--end", default="2026-03-18")
     parser.add_argument("--model", default="gemini-3.1-flash-lite-preview")
+    parser.add_argument("--signal-mode", choices=("gemini", "forecast_rule"), default="gemini")
     parser.add_argument("--thinking", default="HIGH")
     parser.add_argument("--leverage", type=float, default=5.0)
     parser.add_argument("--cash", type=float, default=10000.0)
     parser.add_argument("--rate-limit", type=float, default=1.0)
     parser.add_argument("--data-root", default="trainingdatahourly/crypto")
+    parser.add_argument("--forecast-cache-root", type=Path, default=None)
+    parser.add_argument("--windows", default=None, help="Optional comma-separated window lengths in days ending at --end.")
+    parser.add_argument("--forecast-rule-total-cost-bps", type=float, default=20.0)
+    parser.add_argument("--forecast-rule-min-reward-risk", type=float, default=1.10)
+    parser.add_argument("--add-symbol-forecast-rule-total-cost-bps", type=float, default=None)
+    parser.add_argument("--add-symbol-forecast-rule-min-reward-risk", type=float, default=None)
+    parser.add_argument("--add-symbol-max-pos", type=float, default=None)
     args = parser.parse_args()
+    if args.add_symbol_max_pos is not None and float(args.add_symbol_max_pos) <= 0:
+        raise SystemExit("--add-symbol-max-pos must be positive")
+
+    window_days = _parse_window_days(args.windows)
+    end_ts = pd.Timestamp(args.end, tz="UTC")
+    signal_start = args.start
+    if window_days:
+        signal_start = str((end_ts - pd.Timedelta(days=max(window_days))).date())
 
     all_symbols = list(args.symbols)
     if args.add_symbol and args.add_symbol not in all_symbols:
@@ -416,71 +569,140 @@ def main():
     signals_map = {}
     for sym in all_symbols:
         print(f"  Processing {sym}...")
+        forecast_rule_total_cost = float(args.forecast_rule_total_cost_bps) / 10000.0
+        forecast_rule_min_reward_risk = float(args.forecast_rule_min_reward_risk)
+        if args.add_symbol and sym == args.add_symbol:
+            if args.add_symbol_forecast_rule_total_cost_bps is not None:
+                forecast_rule_total_cost = float(args.add_symbol_forecast_rule_total_cost_bps) / 10000.0
+            if args.add_symbol_forecast_rule_min_reward_risk is not None:
+                forecast_rule_min_reward_risk = float(args.add_symbol_forecast_rule_min_reward_risk)
         signals_map[sym] = generate_signals(
-            sym, bars_map[sym], args.start, args.end,
+            sym, bars_map[sym], signal_start, args.end,
             model=args.model, thinking_level=args.thinking,
             rate_limit=args.rate_limit,
+            signal_mode=args.signal_mode,
+            forecast_cache_root=args.forecast_cache_root,
+            forecast_rule_total_cost=forecast_rule_total_cost,
+            forecast_rule_min_reward_risk=forecast_rule_min_reward_risk,
         )
         print(f"  {sym}: {len(signals_map[sym])} signals")
 
-    # Baseline: original symbols only
     baseline_symbols = list(args.symbols)
-    print(f"\n{'='*60}")
-    print(f"BASELINE: {baseline_symbols}")
-    baseline = simulate_portfolio(
-        {s: bars_map[s] for s in baseline_symbols},
-        {s: signals_map[s] for s in baseline_symbols},
-        initial_cash=args.cash, leverage=args.leverage,
+    if not window_days:
+        window_days = []
+
+    window_specs = (
+        [(f"{days}d", end_ts - pd.Timedelta(days=days), end_ts) for days in window_days]
+        if window_days
+        else [("full", pd.Timestamp(signal_start, tz="UTC"), end_ts)]
     )
-    print(f"  Return: {baseline['return_pct']:+.2f}%")
-    print(f"  Sortino: {baseline['sortino']:.2f}")
-    print(f"  Max DD: {baseline['max_dd_pct']:.2f}%")
-    print(f"  Trades: {baseline['n_trades']}")
-    for sym, pnl in baseline['per_symbol_pnl'].items():
-        print(f"    {sym}: ${pnl:+.2f}")
 
-    if args.add_symbol:
-        print(f"\n{'='*60}")
-        print(f"WITH {args.add_symbol}: {all_symbols}")
-        extended = simulate_portfolio(
-            bars_map, signals_map,
-            initial_cash=args.cash, leverage=args.leverage,
+    baseline = None
+    extended = None
+    window_results: list[dict[str, object]] = []
+    add_symbol_max_pos_overrides: dict[str, float] = {}
+    if args.add_symbol and args.add_symbol_max_pos is not None:
+        add_symbol_max_pos_overrides[str(args.add_symbol).strip().upper()] = float(args.add_symbol_max_pos)
+    for label, start_ts, window_end_ts in window_specs:
+        baseline_bars = _slice_frame_map(
+            {s: bars_map[s] for s in baseline_symbols},
+            start_ts=start_ts,
+            end_ts=window_end_ts,
         )
-        print(f"  Return: {extended['return_pct']:+.2f}%")
-        print(f"  Sortino: {extended['sortino']:.2f}")
-        print(f"  Max DD: {extended['max_dd_pct']:.2f}%")
-        print(f"  Trades: {extended['n_trades']}")
-        for sym, pnl in extended['per_symbol_pnl'].items():
-            print(f"    {sym}: ${pnl:+.2f}")
-
+        baseline_signals = _slice_frame_map(
+            {s: signals_map[s] for s in baseline_symbols},
+            start_ts=start_ts,
+            end_ts=window_end_ts,
+        )
+        baseline = simulate_portfolio(
+            baseline_bars,
+            baseline_signals,
+            initial_cash=args.cash,
+            leverage=args.leverage,
+        )
         print(f"\n{'='*60}")
-        print(f"COMPARISON:")
-        delta_ret = extended['return_pct'] - baseline['return_pct']
-        delta_sort = extended['sortino'] - baseline['sortino']
-        delta_dd = extended['max_dd_pct'] - baseline['max_dd_pct']
-        print(f"  Return delta: {delta_ret:+.2f}%")
-        print(f"  Sortino delta: {delta_sort:+.2f}")
-        print(f"  Max DD delta: {delta_dd:+.2f}%")
-        new_sym_pnl = extended['per_symbol_pnl'].get(args.add_symbol, 0)
-        verdict = "ACCEPT" if new_sym_pnl > 0 and delta_sort >= -0.5 else "REJECT"
-        print(f"  {args.add_symbol} standalone P&L: ${new_sym_pnl:+.2f}")
-        print(f"  Verdict: {verdict}")
+        print(f"BASELINE {label}: {baseline_symbols} ({start_ts.date()} -> {window_end_ts.date()})")
+        print(f"  Return: {baseline['return_pct']:+.2f}%")
+        print(f"  Sortino: {baseline['sortino']:.2f}")
+        print(f"  Max DD: {baseline['max_dd_pct']:.2f}%")
+        print(f"  Trades: {baseline['n_trades']}")
 
-    # Save results
+        row: dict[str, object] = {
+            "window": label,
+            "start": str(start_ts.date()),
+            "end": str(window_end_ts.date()),
+            "baseline": {k: v for k, v in baseline.items() if k not in ("equity_df", "trades_df")},
+        }
+
+        if args.add_symbol:
+            extended_bars = _slice_frame_map(bars_map, start_ts=start_ts, end_ts=window_end_ts)
+            extended_signals = _slice_frame_map(signals_map, start_ts=start_ts, end_ts=window_end_ts)
+            extended = simulate_portfolio(
+                extended_bars,
+                extended_signals,
+                initial_cash=args.cash,
+                leverage=args.leverage,
+                symbol_max_pos_overrides=add_symbol_max_pos_overrides,
+            )
+            print(f"WITH {args.add_symbol} {label}: {all_symbols}")
+            print(f"  Return: {extended['return_pct']:+.2f}%")
+            print(f"  Sortino: {extended['sortino']:.2f}")
+            print(f"  Max DD: {extended['max_dd_pct']:.2f}%")
+            print(f"  Trades: {extended['n_trades']}")
+            delta_ret = extended['return_pct'] - baseline['return_pct']
+            delta_sort = extended['sortino'] - baseline['sortino']
+            delta_dd = extended['max_dd_pct'] - baseline['max_dd_pct']
+            new_sym_pnl = extended['per_symbol_pnl'].get(args.add_symbol, 0)
+            verdict = "ACCEPT" if new_sym_pnl > 0 and delta_sort >= -0.5 else "REJECT"
+            print(f"  Return delta: {delta_ret:+.2f}%")
+            print(f"  Sortino delta: {delta_sort:+.2f}")
+            print(f"  Max DD delta: {delta_dd:+.2f}%")
+            print(f"  {args.add_symbol} standalone P&L: ${new_sym_pnl:+.2f}")
+            print(f"  Verdict: {verdict}")
+            row["extended"] = {k: v for k, v in extended.items() if k not in ("equity_df", "trades_df")}
+            row["comparison"] = {
+                "return_delta": float(delta_ret),
+                "sortino_delta": float(delta_sort),
+                "max_dd_delta": float(delta_dd),
+                "new_symbol_pnl": float(new_sym_pnl),
+                "verdict": verdict,
+            }
+
+        window_results.append(row)
+
     out_dir = Path(f"analysis/hybrid_symbol_eval_{time.strftime('%Y%m%d')}")
     out_dir.mkdir(parents=True, exist_ok=True)
     result = {
         "baseline_symbols": baseline_symbols,
         "add_symbol": args.add_symbol,
-        "start": args.start, "end": args.end,
-        "model": args.model, "leverage": args.leverage,
-        "baseline": {k: v for k, v in baseline.items() if k not in ("equity_df", "trades_df")},
+        "start": signal_start,
+        "end": args.end,
+        "model": args.model,
+        "signal_mode": args.signal_mode,
+        "leverage": args.leverage,
+        "forecast_cache_root": str(args.forecast_cache_root) if args.forecast_cache_root else None,
+        "forecast_rule_total_cost_bps": float(args.forecast_rule_total_cost_bps),
+        "forecast_rule_min_reward_risk": float(args.forecast_rule_min_reward_risk),
+        "add_symbol_forecast_rule_total_cost_bps": (
+            float(args.add_symbol_forecast_rule_total_cost_bps)
+            if args.add_symbol_forecast_rule_total_cost_bps is not None
+            else None
+        ),
+        "add_symbol_forecast_rule_min_reward_risk": (
+            float(args.add_symbol_forecast_rule_min_reward_risk)
+            if args.add_symbol_forecast_rule_min_reward_risk is not None
+            else None
+        ),
+        "add_symbol_max_pos": (
+            float(args.add_symbol_max_pos)
+            if args.add_symbol_max_pos is not None
+            else None
+        ),
+        "windows": window_results,
     }
-    if args.add_symbol:
-        result["extended"] = {k: v for k, v in extended.items() if k not in ("equity_df", "trades_df")}
 
     tag = args.add_symbol or "baseline"
-    result_path = out_dir / f"eval_{tag}.json"
+    result_path = out_dir / f"eval_{tag}_{args.signal_mode}.json"
     result_path.write_text(json.dumps(result, indent=2, default=str))
     print(f"\nResults saved to {result_path}")
 

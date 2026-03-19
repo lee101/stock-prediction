@@ -14,6 +14,21 @@ DEFAULT_STABLE_QUOTES: Tuple[str, ...] = (
     "USD",
 )
 
+DEFAULT_FORECAST_CACHE_QUOTES: Tuple[str, ...] = (
+    "USDT",
+    "FDUSD",
+    "USDC",
+    "BUSD",
+    "TUSD",
+    "USDP",
+    "U",
+)
+
+_BASE_SYMBOL_ALIASES = {
+    "RNDR": "RENDER",
+    "RENDER": "RNDR",
+}
+
 
 def normalize_compact_symbol(symbol: str) -> str:
     """Normalize a symbol to Binance-style compact format (e.g., 'BTC/USDT' -> 'BTCUSDT')."""
@@ -94,6 +109,60 @@ def stable_quote_aliases_from_usd(
     return aliases
 
 
+def forecast_cache_symbol_candidates(
+    symbol: str,
+    *,
+    stable_quotes: Sequence[str] = DEFAULT_FORECAST_CACHE_QUOTES,
+) -> List[str]:
+    """Return forecast-cache lookup candidates for Binance-style crypto symbols.
+
+    The order intentionally prefers the exact symbol first, then a USD proxy,
+    then the preferred stable-quote aliases (USDT before FDUSD) so live
+    ``BNBUSD``-style symbols can consume newer ``BNBUSDT`` forecast caches.
+    """
+    normalized = normalize_compact_symbol(symbol)
+    if not normalized:
+        return []
+
+    out: List[str] = []
+    seen = set()
+
+    def _push(value: str) -> None:
+        candidate = normalize_compact_symbol(value)
+        if candidate and candidate not in seen:
+            out.append(candidate)
+            seen.add(candidate)
+
+    _push(normalized)
+
+    if (
+        normalized.endswith("USD")
+        and len(normalized) > len("USD")
+        and not normalized.endswith(("FDUSD", "USDT", "USDC", "TUSD", "USDP"))
+    ):
+        usd_proxy = normalized
+    else:
+        split_quotes = tuple(dict.fromkeys([*stable_quotes, "USD"]))
+        usd_proxy = proxy_symbol_to_usd(normalized, stable_quotes=split_quotes)
+    _push(usd_proxy)
+
+    if usd_proxy.endswith("USD"):
+        for alias in stable_quote_aliases_from_usd(usd_proxy, stable_quotes=stable_quotes):
+            _push(alias)
+        base = usd_proxy[: -len("USD")]
+    else:
+        base = normalized
+
+    alias_base = _BASE_SYMBOL_ALIASES.get(base)
+    if alias_base:
+        alias_proxy = f"{alias_base}USD"
+        _push(alias_proxy)
+        for alias in stable_quote_aliases_from_usd(alias_proxy, stable_quotes=stable_quotes):
+            _push(alias)
+
+    return out
+
+
 def unique_symbols(items: Iterable[str]) -> List[str]:
     """Order-preserving de-duplication for symbol lists."""
     out: List[str] = []
@@ -108,7 +177,9 @@ def unique_symbols(items: Iterable[str]) -> List[str]:
 
 
 __all__ = [
+    "DEFAULT_FORECAST_CACHE_QUOTES",
     "DEFAULT_STABLE_QUOTES",
+    "forecast_cache_symbol_candidates",
     "normalize_compact_symbol",
     "proxy_symbol_to_usd",
     "split_stable_quote_symbol",
