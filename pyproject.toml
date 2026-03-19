@@ -69,8 +69,6 @@ dependencies = [
 [project.scripts]
 diff-market-train = "differentiable_market.train:main"
 diff-market-backtest = "differentiable_market.marketsimulator.run:main"
-diff-market-toto-train = "differentiable_market_totoembedding.train:main"
-diff-market-kronos-train = "differentiable_market_kronos.train:main"
 stockagent2-pipeline = "stockagent2.cli:main"
 puffer-training2 = "pufferlibtraining2.cli:main"
 puffer-training3 = "pufferlibtraining3.pufferrl:main"
@@ -265,14 +263,11 @@ default-groups = []
 # Default workspace keeps core packages that resolve cleanly under Python 3.12+.
 members = [
     "differentiable_market",
-    "differentiable_market_kronos",
-    "differentiable_market_totoembedding",
     "gymrl",
     "hfshared",
     "hfinference",
     "hftraining",
     "marketsimulator",
-    "toto",
     "traininglib",
 ]
 
@@ -296,7 +291,6 @@ extra-build-dependencies = { "flash-attn" = ["torch"] }
 
 [tool.uv.sources]
 stock-trading-suite = { workspace = true }
-toto = { workspace = true }
 torch = { index = "pytorch-cu128" }
 torchvision = { index = "pytorch-cu128" }
 torchaudio = { index = "pytorch-cu128" }
@@ -447,13 +441,10 @@ known-first-party = [
     "src",
     "marketsimulator",
     "differentiable_market",
-    "differentiable_market_kronos",
-    "differentiable_market_totoembedding",
     "gymrl",
     "hfshared",
     "hfinference",
     "hftraining",
-    "toto",
     "traininglib",
     "strategytraining",
     "strategytrainingneural",
