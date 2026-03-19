@@ -1,0 +1,21 @@
+{
+  "symbol": "AVB",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "AVB",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": -1.3194288677186705,
+    "keep_open_net_return": -1.2799623888568021,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 0.03946647886186838,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 0.036638518795371056,
+    "sell_advantage": 0.09491641540080309,
+    "instant_close_buy_return": 1.6231700871139765,
+    "instant_close_sell_return": 0.12423431675415486,
+    "keep_open_buy_return": 1.6598086059093475,
+    "keep_open_sell_return": 0.21915073215495795
+  }
+}

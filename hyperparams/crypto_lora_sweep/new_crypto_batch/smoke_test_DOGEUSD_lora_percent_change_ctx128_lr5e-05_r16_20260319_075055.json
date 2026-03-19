@@ -1,0 +1,44 @@
+{
+  "config": {
+    "symbol": "DOGEUSD",
+    "context_length": 128,
+    "prediction_length": 24,
+    "batch_size": 32,
+    "learning_rate": 5e-05,
+    "num_steps": 200,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "preaug": "percent_change",
+    "val_hours": 168,
+    "test_hours": 168,
+    "run_name_prefix": "smoke_test"
+  },
+  "run_name": "smoke_test_DOGEUSD_lora_percent_change_ctx128_lr5e-05_r16_20260319_075055",
+  "output_dir": "chronos2_finetuned/smoke_test_DOGEUSD_lora_percent_change_ctx128_lr5e-05_r16_20260319_075055",
+  "val": {
+    "mae_mean": 0.00291175430174917,
+    "mae_std": 0.0013483382040050164,
+    "mae_max": 0.005351286381483078,
+    "mae_p90": 0.0045916095841676,
+    "mae_percent_mean": 3.115678389867147,
+    "mae_percent_std": 1.4054320421622457,
+    "mae_percent_max": 5.404522895812988,
+    "count": 12
+  },
+  "test": {
+    "mae_mean": 0.0025840067440488688,
+    "mae_std": 0.0009911724318957251,
+    "mae_max": 0.004866586998105049,
+    "mae_p90": 0.0033947935327887533,
+    "mae_percent_mean": 2.7772103746732077,
+    "mae_percent_std": 1.04280488686271,
+    "mae_percent_max": 4.99455451965332,
+    "count": 12
+  },
+  "val_consistency_score": 4.505047762732022,
+  "test_consistency_score": 3.9638160615985965,
+  "symbol": "DOGEUSD",
+  "preaug_strategy": "percent_change",
+  "result_path": "hyperparams/crypto_lora_sweep/new_crypto_batch/smoke_test_DOGEUSD_lora_percent_change_ctx128_lr5e-05_r16_20260319_075055.json"
+}

@@ -1,0 +1,21 @@
+{
+  "symbol": "CMG",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "CMG",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": -10.436842734285165,
+    "keep_open_net_return": -10.22074391291244,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 0.21609882137272507,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 0.452636806294322,
+    "sell_advantage": 0.2676925982814282,
+    "instant_close_buy_return": -7.962544411420822,
+    "instant_close_sell_return": 2.5939379021292552,
+    "keep_open_buy_return": -7.5099076051265,
+    "keep_open_sell_return": 2.8616305004106835
+  }
+}

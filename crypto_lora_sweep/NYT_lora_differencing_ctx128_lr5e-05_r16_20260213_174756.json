@@ -1,0 +1,40 @@
+{
+  "config": {
+    "symbol": "NYT",
+    "context_length": 128,
+    "prediction_length": 24,
+    "batch_size": 32,
+    "learning_rate": 5e-05,
+    "num_steps": 500,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "preaug": "differencing",
+    "val_hours": 168,
+    "test_hours": 168
+  },
+  "run_name": "NYT_lora_differencing_ctx128_lr5e-05_r16_20260213_174756",
+  "output_dir": "chronos2_finetuned/NYT_lora_differencing_ctx128_lr5e-05_r16_20260213_174756",
+  "val": {
+    "mae_mean": 0.8144617165896721,
+    "mae_std": 0.4699833425639496,
+    "mae_max": 1.8973483090754542,
+    "mae_p90": 1.4777591492903093,
+    "mae_percent_mean": 1.185969534819482,
+    "mae_percent_std": 0.6859778070342709,
+    "mae_percent_max": 2.815694630325319,
+    "count": 12
+  },
+  "test": {
+    "mae_mean": 2.14352616786981,
+    "mae_std": 3.8586010988108406,
+    "mae_max": 14.424831449811661,
+    "mae_p90": 4.154090453046787,
+    "mae_percent_mean": 3.1192283128958813,
+    "mae_percent_std": 5.657521686047361,
+    "mae_percent_max": 21.08820299567401,
+    "count": 12
+  },
+  "val_consistency_score": 2.0178759669883686,
+  "test_consistency_score": 11.338681560752999
+}

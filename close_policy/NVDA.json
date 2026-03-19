@@ -1,0 +1,21 @@
+{
+  "symbol": "NVDA",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "NVDA",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": -0.46440877579152584,
+    "keep_open_net_return": -0.049330465495586354,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 0.4150783102959395,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 1.2360696727409959,
+    "sell_advantage": 0.14752468094229698,
+    "instant_close_buy_return": 0.4171536723151803,
+    "instant_close_sell_return": 1.177973859012127,
+    "keep_open_buy_return": 1.6532233450561762,
+    "keep_open_sell_return": 1.325498539954424
+  }
+}

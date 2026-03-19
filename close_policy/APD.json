@@ -1,0 +1,21 @@
+{
+  "symbol": "APD",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "APD",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": -2.900469148007687,
+    "keep_open_net_return": -2.365456285944674,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 0.535012862063013,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 1.4286718267248943,
+    "sell_advantage": 0.3547043778235093,
+    "instant_close_buy_return": 0.6394117727177218,
+    "instant_close_sell_return": -0.7370813644956797,
+    "keep_open_buy_return": 2.068083599442616,
+    "keep_open_sell_return": -0.38237698667217046
+  }
+}

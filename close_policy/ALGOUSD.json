@@ -1,0 +1,21 @@
+{
+  "symbol": "ALGOUSD",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "ALGOUSD",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": 39.56558890454471,
+    "keep_open_net_return": 46.12834266666323,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 6.562753762118518,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 16.864516016212292,
+    "sell_advantage": 5.011329930275679,
+    "instant_close_buy_return": 5.22538935940247,
+    "instant_close_sell_return": 17.78626225888729,
+    "keep_open_buy_return": 22.089905375614762,
+    "keep_open_sell_return": 22.79759218916297
+  }
+}

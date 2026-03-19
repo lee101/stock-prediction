@@ -1,0 +1,252 @@
+{
+  "crypto5/trade_pen_05 [PROD]": {
+    "mean_return": 0.2025,
+    "median_return": 0.2031,
+    "avg_trades": 59.7,
+    "win_rate": 0.5365,
+    "sortino": 1.78,
+    "annualized_pct": 110.6,
+    "p05_return": 0.1273,
+    "p95_return": 0.281
+  },
+  "crypto5/cosine_lr": {
+    "mean_return": 0.0572,
+    "median_return": 0.0576,
+    "avg_trades": 48.1,
+    "win_rate": 0.5011,
+    "sortino": 1.18,
+    "annualized_pct": 25.0,
+    "p05_return": -0.0047,
+    "p95_return": 0.1165
+  },
+  "crypto5/ent_001": {
+    "mean_return": 0.0112,
+    "median_return": 0.0086,
+    "avg_trades": 62.6,
+    "win_rate": 0.5453,
+    "sortino": 0.73,
+    "annualized_pct": 3.6,
+    "p05_return": -0.0996,
+    "p95_return": 0.1282
+  },
+  "crypto8/clip_anneal": {
+    "mean_return": 0.1878,
+    "median_return": 0.1874,
+    "avg_trades": 77.4,
+    "win_rate": 0.5462,
+    "sortino": 1.84,
+    "annualized_pct": 100.8,
+    "p05_return": 0.1521,
+    "p95_return": 0.2266
+  },
+  "crypto8/slip_10bps": {
+    "mean_return": 0.1431,
+    "median_return": 0.1434,
+    "avg_trades": 78.0,
+    "win_rate": 0.5513,
+    "sortino": 1.71,
+    "annualized_pct": 71.8,
+    "p05_return": 0.0965,
+    "p95_return": 0.1912
+  },
+  "crypto8/envs_256": {
+    "mean_return": 0.091,
+    "median_return": 0.091,
+    "avg_trades": 79.2,
+    "win_rate": 0.4897,
+    "sortino": 1.42,
+    "annualized_pct": 42.2,
+    "p05_return": 0.0486,
+    "p95_return": 0.1332
+  },
+  "crypto8/wd_05": {
+    "mean_return": 0.0793,
+    "median_return": 0.0789,
+    "avg_trades": 75.7,
+    "win_rate": 0.5242,
+    "sortino": 1.36,
+    "annualized_pct": 36.0,
+    "p05_return": 0.0259,
+    "p95_return": 0.1365
+  },
+  "crypto8/trade_pen_05": {
+    "mean_return": -0.1743,
+    "median_return": -0.1753,
+    "avg_trades": 72.2,
+    "win_rate": 0.4942,
+    "sortino": 0.23,
+    "annualized_pct": -100.0,
+    "p05_return": -0.2126,
+    "p95_return": -0.1318
+  },
+  "mixed23/baseline_anneal_lr": {
+    "mean_return": 0.294,
+    "median_return": 0.2954,
+    "avg_trades": 64.3,
+    "win_rate": 0.5813,
+    "sortino": 2.47,
+    "annualized_pct": 183.1,
+    "p05_return": 0.1956,
+    "p95_return": 0.3955
+  },
+  "mixed23/ent_anneal": {
+    "mean_return": 0.2998,
+    "median_return": 0.3007,
+    "avg_trades": 62.2,
+    "win_rate": 0.5827,
+    "sortino": 2.33,
+    "annualized_pct": 188.2,
+    "p05_return": 0.1985,
+    "p95_return": 0.4008
+  },
+  "mixed23/clip_anneal": {
+    "mean_return": 0.2065,
+    "median_return": 0.2066,
+    "avg_trades": 63.0,
+    "win_rate": 0.5518,
+    "sortino": 1.87,
+    "annualized_pct": 113.2,
+    "p05_return": 0.1218,
+    "p95_return": 0.2964
+  },
+  "mixed23/envs_256": {
+    "mean_return": 0.1616,
+    "median_return": 0.1615,
+    "avg_trades": 70.1,
+    "win_rate": 0.5888,
+    "sortino": 1.77,
+    "annualized_pct": 82.9,
+    "p05_return": 0.0798,
+    "p95_return": 0.2415
+  },
+  "mixed23/trade_pen_05": {
+    "mean_return": -0.0229,
+    "median_return": -0.0242,
+    "avg_trades": 57.8,
+    "win_rate": 0.5689,
+    "sortino": 0.65,
+    "annualized_pct": -10.1,
+    "p05_return": -0.1434,
+    "p95_return": 0.1052
+  },
+  "mixed23/wd_005": {
+    "mean_return": 0.1101,
+    "median_return": 0.1095,
+    "avg_trades": 64.3,
+    "win_rate": 0.5663,
+    "sortino": 1.57,
+    "annualized_pct": 52.5,
+    "p05_return": 0.0545,
+    "p95_return": 0.1664
+  },
+  "combos/tp05_cosine": {
+    "mean_return": -0.2482,
+    "median_return": -0.2492,
+    "avg_trades": 32.4,
+    "win_rate": 0.4896,
+    "sortino": -0.44,
+    "annualized_pct": -100.0,
+    "p05_return": -0.2759,
+    "p95_return": -0.2182
+  },
+  "combos/tp05_ent001": {
+    "mean_return": -0.0011,
+    "median_return": 0.0005,
+    "avg_trades": 53.3,
+    "win_rate": 0.5382,
+    "sortino": 0.96,
+    "annualized_pct": -0.7,
+    "p05_return": -0.0622,
+    "p95_return": 0.0588
+  },
+  "combos/tp05_wd01": {
+    "mean_return": -0.2231,
+    "median_return": -0.2217,
+    "avg_trades": 57.1,
+    "win_rate": 0.4662,
+    "sortino": -0.65,
+    "annualized_pct": -100.0,
+    "p05_return": -0.2959,
+    "p95_return": -0.1523
+  },
+  "combos/tp06_cosine": {
+    "mean_return": -0.1468,
+    "median_return": -0.1465,
+    "avg_trades": 32.8,
+    "win_rate": 0.4755,
+    "sortino": -0.06,
+    "annualized_pct": -100.0,
+    "p05_return": -0.184,
+    "p95_return": -0.1101
+  },
+  "combos/tp08_cosine": {
+    "mean_return": -0.3028,
+    "median_return": -0.3027,
+    "avg_trades": 28.8,
+    "win_rate": 0.447,
+    "sortino": -1.15,
+    "annualized_pct": -100.0,
+    "p05_return": -0.3313,
+    "p95_return": -0.273
+  },
+  "mass/tp0.05_s42": {
+    "mean_return": -0.0361,
+    "median_return": -0.0363,
+    "avg_trades": 57.2,
+    "win_rate": 0.5042,
+    "sortino": 0.7,
+    "annualized_pct": -13.9,
+    "p05_return": -0.0647,
+    "p95_return": -0.0048
+  },
+  "mass/tp0.05_s123": {
+    "mean_return": 0.1545,
+    "median_return": 0.1551,
+    "avg_trades": 56.3,
+    "win_rate": 0.5469,
+    "sortino": 1.61,
+    "annualized_pct": 78.2,
+    "p05_return": 0.0614,
+    "p95_return": 0.2541
+  },
+  "mass/tp0.10_s42": {
+    "mean_return": 0.0272,
+    "median_return": 0.0268,
+    "avg_trades": 38.4,
+    "win_rate": 0.5126,
+    "sortino": 0.94,
+    "annualized_pct": 10.9,
+    "p05_return": -0.0547,
+    "p95_return": 0.1151
+  },
+  "mass/tp0.10_s123": {
+    "mean_return": -0.0682,
+    "median_return": -0.065,
+    "avg_trades": 43.9,
+    "win_rate": 0.4915,
+    "sortino": 0.61,
+    "annualized_pct": -25.1,
+    "p05_return": -0.134,
+    "p95_return": -0.0038
+  },
+  "mass/tp0.15_s42": {
+    "mean_return": -0.252,
+    "median_return": -0.2522,
+    "avg_trades": 26.5,
+    "win_rate": 0.4385,
+    "sortino": -0.78,
+    "annualized_pct": -100.0,
+    "p05_return": -0.3044,
+    "p95_return": -0.2029
+  },
+  "mass/tp0.20_s42": {
+    "mean_return": -0.0047,
+    "median_return": -0.0075,
+    "avg_trades": 14.0,
+    "win_rate": 0.4783,
+    "sortino": 0.64,
+    "annualized_pct": -2.3,
+    "p05_return": -0.0832,
+    "p95_return": 0.0762
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "symbol": "BA",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "BA",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": -1.0459176138974726,
+    "keep_open_net_return": -0.854143101722002,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 0.1917745121754706,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 0.4003233462572098,
+    "sell_advantage": 0.23892502766102552,
+    "instant_close_buy_return": 0.04216855391860008,
+    "instant_close_sell_return": 0.42164689395576715,
+    "keep_open_buy_return": 0.44249190017580986,
+    "keep_open_sell_return": 0.6605719216167927
+  }
+}

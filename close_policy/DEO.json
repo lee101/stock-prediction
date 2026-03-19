@@ -1,0 +1,21 @@
+{
+  "symbol": "DEO",
+  "close_policy": "INSTANT_CLOSE",
+  "comparison": {
+    "symbol": "DEO",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": -4.689235047553666,
+    "keep_open_net_return": -4.690311920945533,
+    "best_policy": "INSTANT_CLOSE",
+    "advantage": 0.001076873391866684,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": -0.0035895779728889465,
+    "sell_advantage": 0.0,
+    "instant_close_buy_return": 0.26269604451954365,
+    "instant_close_sell_return": -2.29685295955278,
+    "keep_open_buy_return": 0.2591064665466547,
+    "keep_open_sell_return": -2.29685295955278
+  }
+}

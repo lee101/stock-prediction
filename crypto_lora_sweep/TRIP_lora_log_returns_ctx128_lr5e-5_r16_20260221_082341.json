@@ -1,0 +1,19 @@
+{
+  "run_name": "TRIP_lora_log_returns_ctx128_lr5e-5_r16_20260221_082341",
+  "config": {
+    "symbol": "TRIP",
+    "preaug": "log_returns",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 71.5005111694336,
+    "mae_percent_std": 40.045814514160156
+  },
+  "test": {
+    "mae_percent_mean": 31.679643630981445,
+    "mae_percent_std": 11.17519760131836
+  }
+}

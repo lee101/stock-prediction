@@ -1,0 +1,21 @@
+{
+  "symbol": "GS",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "GS",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": 3.5618918775580823,
+    "keep_open_net_return": 5.037336697219871,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 1.4754448196617886,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 2.075318259303458,
+    "sell_advantage": 2.842831102316268,
+    "instant_close_buy_return": 3.2604466704651713,
+    "instant_close_sell_return": 2.7858509588986635,
+    "keep_open_buy_return": 5.335764929768629,
+    "keep_open_sell_return": 5.628682061214931
+  }
+}

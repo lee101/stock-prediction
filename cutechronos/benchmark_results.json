@@ -1,0 +1,28 @@
+{
+  "original_chronos2": {
+    "label": "original_chronos2",
+    "avg_latency_ms": 48.797959490912035,
+    "std_latency_ms": 0.06521047907881439,
+    "min_latency_ms": 48.73274901183322,
+    "peak_gpu_memory_mb": 247.58447265625,
+    "per_symbol_mae": {
+      "sym_0": NaN
+    },
+    "avg_mae": NaN
+  },
+  "cute_chronos2": {
+    "label": "cute_chronos2",
+    "avg_latency_ms": 35.053958505159244,
+    "std_latency_ms": 1.2139865139033645,
+    "min_latency_ms": 33.83997199125588,
+    "peak_gpu_memory_mb": 247.3642578125,
+    "per_symbol_mae": {
+      "sym_0": NaN
+    },
+    "avg_mae": NaN
+  },
+  "comparison": {
+    "mae_delta": NaN,
+    "speedup": 1.3920812818823285
+  }
+}

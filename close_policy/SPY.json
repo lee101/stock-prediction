@@ -1,0 +1,21 @@
+{
+  "symbol": "SPY",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "SPY",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": 0.13483528920914978,
+    "keep_open_net_return": 0.2664703336195089,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 0.13163504441035911,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 0.1851014280691743,
+    "sell_advantage": 0.2536820527166128,
+    "instant_close_buy_return": 0.5538622126914561,
+    "instant_close_sell_return": 0.345907561131753,
+    "keep_open_buy_return": 0.7389636407606304,
+    "keep_open_sell_return": 0.5995896138483658
+  }
+}

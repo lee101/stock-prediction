@@ -1,0 +1,21 @@
+{
+  "symbol": "SONY",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "SONY",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": -0.3009485522052273,
+    "keep_open_net_return": -0.19526656239759183,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 0.10568198980763549,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 0.12939974607434124,
+    "sell_advantage": 0.22287353756837547,
+    "instant_close_buy_return": 0.9518216928699985,
+    "instant_close_sell_return": 0.2738999400753528,
+    "keep_open_buy_return": 1.0812214389443398,
+    "keep_open_sell_return": 0.49677347764372826
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "symbol": "ARKW",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "ARKW",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": -4.662824606639333,
+    "keep_open_net_return": -4.45747393288184,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 0.2053506737574935,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 0.5775505490601063,
+    "sell_advantage": 0.10695169679820538,
+    "instant_close_buy_return": 0.4273653868585825,
+    "instant_close_sell_return": -1.7796427849680185,
+    "keep_open_buy_return": 1.0049159359186888,
+    "keep_open_sell_return": -1.6726910881698132
+  }
+}
