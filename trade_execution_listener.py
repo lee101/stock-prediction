@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,13 +15,15 @@ try:
 except Exception:  # pragma: no cover - optional dependency at runtime
     Stream = None  # type: ignore
 
-from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
+from env_real import ALP_KEY_ID, ALP_KEY_ID_PROD, ALP_SECRET_KEY, ALP_SECRET_KEY_PROD
 from src.trade_execution_monitor import (
-    TradeEvent,
+    PositionLots,
     TradeExecutionMonitor,
     load_events_from_file,
     trade_event_from_dict,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -72,33 +75,51 @@ async def _run_alpaca(listener: TradeExecutionMonitor, paper: bool) -> None:  # 
     if Stream is None:
         raise RuntimeError("alpaca-trade-api is not installed; cannot use --mode=alpaca")
 
-    stream = Stream(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, paper=paper)
+    key_id = ALP_KEY_ID if paper else ALP_KEY_ID_PROD
+    secret_key = ALP_SECRET_KEY if paper else ALP_SECRET_KEY_PROD
+    stream = Stream(key_id, secret_key, paper=paper)
 
     @stream.on_trade_updates
     async def _(data):
+        raw_qty = getattr(data, "qty", None) or getattr(getattr(data, "order", None), "filled_qty", None)
+        raw_price = getattr(data, "price", None) or getattr(getattr(data, "order", None), "filled_avg_price", None)
         payload = {
             "symbol": getattr(data, "symbol", None) or getattr(getattr(data, "order", None), "symbol", None),
             "side": getattr(getattr(data, "order", None), "side", None),
-            "quantity": float(
-                getattr(data, "qty", None)
-                or getattr(getattr(data, "order", None), "filled_qty", 0.0)
-                or 0.0
-            ),
-            "price": float(
-                getattr(data, "price", None)
-                or getattr(getattr(data, "order", None), "filled_avg_price", 0.0)
-                or 0.0
-            ),
+            "quantity": float(raw_qty) if raw_qty is not None else 0.0,
+            "price": float(raw_price) if raw_price is not None else 0.0,
             "timestamp": getattr(data, "timestamp", datetime.now(timezone.utc).isoformat()),
         }
-        listener.process_event(trade_event_from_dict(payload))
+        event = trade_event_from_dict(payload)
+        if event is not None:
+            listener.process_event(event)
 
     await stream._run_forever()  # type: ignore[attr-defined]
+
+
+def _seed_positions_from_alpaca(listener: TradeExecutionMonitor) -> None:
+    """Seed the listener with current Alpaca positions so closes are recognised after restart."""
+    try:
+        from alpaca_wrapper import get_all_positions
+        positions = get_all_positions()
+        for pos in positions:
+            symbol = getattr(pos, "symbol", None)
+            qty = float(getattr(pos, "qty", 0))
+            avg_price = float(getattr(pos, "avg_entry_price", 0))
+            if not symbol or qty == 0 or avg_price == 0:
+                continue
+            lots = listener._lots_by_symbol.setdefault(symbol, PositionLots())
+            lots._lots.append((qty, avg_price))
+            logger.info("Seeded %s: qty=%.4f @ %.2f", symbol, qty, avg_price)
+    except Exception as exc:
+        logger.warning("Could not seed positions from Alpaca: %s", exc)
 
 
 def main(argv: Optional[list[str]] = None) -> None:
     args = _parse_args(argv)
     listener = TradeExecutionMonitor(state_suffix=args.state_suffix)
+    if args.mode == "alpaca":
+        _seed_positions_from_alpaca(listener)
     if args.mode == "stdin":
         _run_stdin(listener)
     elif args.mode == "file":
