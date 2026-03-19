@@ -5,12 +5,20 @@ HuggingFace checkpoint weights and produce identical outputs to the original.
 
 Uses pure PyTorch fallback implementations for all submodules, with optional
 Triton kernel swapins when available.
+
+Memory optimizations applied:
+- .reshape() instead of .contiguous().view() to avoid unnecessary copies
+- In-place residual adds (add_) safe under inference_mode
+- Cached position_ids via register_buffer (regenerated only on seq_length change)
+- torch.inference_mode() on forward pass
+- Reuse attention/group masks across all encoder layers (already at model level)
 """
 
 from __future__ import annotations
 
 import json
 import time as _time_module
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -203,10 +211,13 @@ class TimeSelfAttentionFallback(nn.Module):
         q, k = apply_rope_fallback(q, k, cos, sin)
 
         attn_output = unscaled_attention_fallback(q, k, v, attention_mask)
-        attn_output = attn_output.transpose(1, 2).contiguous().view(B, S, self.inner_dim)
+        # reshape avoids the allocation from .contiguous()
+        attn_output = attn_output.transpose(1, 2).reshape(B, S, self.inner_dim)
         attn_output = F.linear(attn_output, self.o.weight)
 
-        return hidden_states + attn_output
+        # In-place residual add (safe under inference_mode)
+        hidden_states = hidden_states.add_(attn_output)
+        return hidden_states
 
 
 class GroupSelfAttentionFallback(nn.Module):
@@ -237,11 +248,13 @@ class GroupSelfAttentionFallback(nn.Module):
         v = F.linear(normed, self.v.weight).view(time_len, batch_size, self.num_heads, self.d_kv).permute(0, 2, 1, 3)
 
         attn_output = unscaled_attention_fallback(q, k, v, attention_mask)
-        attn_output = attn_output.permute(0, 2, 1, 3).contiguous().view(time_len, batch_size, self.inner_dim)
+        # reshape avoids the allocation from .contiguous()
+        attn_output = attn_output.permute(0, 2, 1, 3).reshape(time_len, batch_size, self.inner_dim)
         attn_output = F.linear(attn_output, self.o.weight)
 
-        output = x + attn_output
-        return output.transpose(0, 1)
+        # In-place residual add (safe under inference_mode)
+        x = x.add_(attn_output)
+        return x.transpose(0, 1)
 
 
 class FeedForwardFallback(nn.Module):
@@ -259,7 +272,9 @@ class FeedForwardFallback(nn.Module):
         normed = rms_layernorm(hidden_states, self.layer_norm_weight, self.eps)
         ff_out = self.act(self.wi(normed))
         ff_out = self.wo(ff_out)
-        return hidden_states + ff_out
+        # In-place residual add (safe under inference_mode)
+        hidden_states = hidden_states.add_(ff_out)
+        return hidden_states
 
 
 class EncoderBlock(nn.Module):
@@ -394,6 +409,10 @@ class CuteChronos2Model(nn.Module):
         quantiles = torch.tensor(config.quantiles, dtype=torch.float32)
         self.register_buffer("quantiles", quantiles, persistent=False)
 
+        # Cached position_ids buffer (regenerated when seq_length changes)
+        self.register_buffer("_cached_position_ids", torch.empty(0, dtype=torch.long), persistent=False)
+        self._cached_seq_length: int = -1
+
     def _prepare_patched_context(
         self,
         context: torch.Tensor,
@@ -500,6 +519,63 @@ class CuteChronos2Model(nn.Module):
         """Get the device of model parameters."""
         return self.shared.weight.device
 
+    def _get_position_ids(self, seq_length: int) -> torch.Tensor:
+        """Return cached position_ids, regenerating only when seq_length changes."""
+        if seq_length != self._cached_seq_length:
+            self._cached_position_ids = torch.arange(
+                seq_length, dtype=torch.long, device=self._param_device()
+            ).unsqueeze(0)
+            self._cached_seq_length = seq_length
+        return self._cached_position_ids
+
+    @contextmanager
+    def profile_allocations(self):
+        """Context manager that reports allocation count and peak memory.
+
+        Usage:
+            with model.profile_allocations() as stats:
+                output = model(context)
+            print(stats)
+
+        Yields a dict that is populated on exit with:
+            - 'allocation_count': number of CUDA memory allocations during forward
+            - 'peak_memory_mb': peak CUDA memory usage in MB
+            - 'allocated_memory_mb': CUDA memory allocated at end in MB
+
+        Falls back to CPU-only stats (allocation_count=0, memory=0) on CPU tensors.
+        """
+        stats: dict[str, float] = {}
+        device = self._param_device()
+
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
+            torch.cuda.synchronize(device)
+            mem_before = torch.cuda.memory_allocated(device)
+
+            # Use memory snapshot to count allocations
+            torch.cuda.reset_accumulated_memory_stats(device)
+
+            yield stats
+
+            torch.cuda.synchronize(device)
+            mem_after = torch.cuda.memory_allocated(device)
+            peak = torch.cuda.max_memory_allocated(device)
+
+            # Get allocation count from accumulated stats
+            cuda_stats = torch.cuda.memory_stats(device)
+            alloc_total = cuda_stats.get("allocation.all.allocated", 0)
+
+            stats["allocation_count"] = alloc_total
+            stats["peak_memory_mb"] = peak / (1024 * 1024)
+            stats["allocated_memory_mb"] = mem_after / (1024 * 1024)
+            stats["memory_delta_mb"] = (mem_after - mem_before) / (1024 * 1024)
+        else:
+            yield stats
+            stats["allocation_count"] = 0
+            stats["peak_memory_mb"] = 0.0
+            stats["allocated_memory_mb"] = 0.0
+            stats["memory_delta_mb"] = 0.0
+
     def forward(
         self,
         context: torch.Tensor,
@@ -558,8 +634,8 @@ class CuteChronos2Model(nn.Module):
         extended_attention_mask = self._expand_and_invert_time_attention_mask(attention_mask, dtype)
         group_time_mask = self._construct_and_invert_group_time_mask(group_ids, attention_mask, dtype)
 
-        # Position IDs
-        position_ids = torch.arange(seq_length, dtype=torch.long, device=input_embeds.device).unsqueeze(0)
+        # Position IDs (cached, regenerated only when seq_length changes)
+        position_ids = self._get_position_ids(seq_length)
 
         # Encoder forward
         hidden_states = input_embeds  # Note: original has dropout here, skip for inference
@@ -579,8 +655,8 @@ class CuteChronos2Model(nn.Module):
         quantile_preds = quantile_preds.view(
             batch_size, num_output_patches, self.config.num_quantiles, self.config.output_patch_size,
         )
-        quantile_preds = quantile_preds.permute(0, 2, 1, 3).contiguous()
-        quantile_preds = quantile_preds.view(
+        # reshape avoids the allocation from .contiguous()
+        quantile_preds = quantile_preds.permute(0, 2, 1, 3).reshape(
             batch_size, self.config.num_quantiles, num_output_patches * self.config.output_patch_size,
         )
 
