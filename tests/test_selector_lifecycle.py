@@ -347,6 +347,7 @@ class TestWorkSteal:
             result = _handle_work_steal(
                 state, actions, SYMBOLS,
                 horizon=1, risk_weight=0.0,
+                allow_short=False, margin=False,
                 work_steal_min_profit_pct=0.0,
                 work_steal_min_edge=0.0,
                 work_steal_edge_margin=0.0,
@@ -373,6 +374,7 @@ class TestWorkSteal:
             result = _handle_work_steal(
                 state, actions, SYMBOLS,
                 horizon=1, risk_weight=0.0,
+                allow_short=False, margin=False,
                 work_steal_min_profit_pct=0.01,
                 work_steal_min_edge=0.0,
                 work_steal_edge_margin=0.0,
@@ -389,6 +391,7 @@ class TestWorkSteal:
         result = _handle_work_steal(
             state, {}, SYMBOLS,
             horizon=1, risk_weight=0.0,
+            allow_short=False, margin=False,
             work_steal_min_profit_pct=0.0,
             work_steal_min_edge=0.0,
             work_steal_edge_margin=0.0,

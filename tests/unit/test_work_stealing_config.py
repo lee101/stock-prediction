@@ -141,12 +141,12 @@ class TestForceImmediate:
 
         assert should_force_immediate_crypto(rank=1, dt=dt) is True
 
-    def test_second_crypto_out_of_hours_no_force(self):
-        """Rank 2 crypto out of hours should not force immediate."""
+    def test_third_crypto_out_of_hours_no_force(self):
+        """Rank 3 crypto out of hours should not force immediate (default count=2)."""
         est = pytz.timezone("US/Eastern")
         dt = est.localize(datetime(2025, 1, 18, 10, 0, 0))  # Weekend
 
-        assert should_force_immediate_crypto(rank=2, dt=dt) is False
+        assert should_force_immediate_crypto(rank=3, dt=dt) is False
 
     def test_crypto_during_market_hours_no_force(self):
         """Crypto during market hours should not force immediate."""

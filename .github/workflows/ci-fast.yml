@@ -41,6 +41,39 @@ jobs:
           RUFF_TARGETS="neuraldailytraining/model.py neuraldailytraining/runtime.py neuraldailytraining/trainer.py neuraldailymarketsimulator/simulator.py tests/test_neuraldailytraining.py tests/test_neuraldaily_alignment.py tests/test_neuraldaily_runtime_confidence_and_fees.py tests/test_trainer_utils.py tests/test_non_tradable_io.py"
           ruff format --check $RUFF_TARGETS
 
+      - name: Report to CI Sentinel
+        if: always()
+        env:
+          CI_SENTINEL_ID: ${{ vars.CI_SENTINEL_ID }}
+          CI_SENTINEL_KEY: ${{ secrets.CODEX_INFINITY_API_KEY }}
+        run: |
+          if [ -z "$CI_SENTINEL_ID" ] || [ -z "$CI_SENTINEL_KEY" ]; then
+            echo "CI Sentinel not configured, skipping report"
+            exit 0
+          fi
+          # Collect failure output from previous steps
+          FAILURE_OUTPUT=""
+          if [ "${{ job.status }}" = "failure" ]; then
+            FAILURE_OUTPUT=$(cat /tmp/ci-failure-output.txt 2>/dev/null | tail -c 12288 || echo "See GitHub Actions logs")
+          fi
+          curl -sf -X POST "https://codex-infinity.com/api/ci-sentinels/${CI_SENTINEL_ID}/events" \
+            -H "Authorization: Bearer ${CI_SENTINEL_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"external_id\": \"${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}\",
+              \"repo\": \"${GITHUB_REPOSITORY}\",
+              \"branch\": \"${GITHUB_REF_NAME}\",
+              \"commit_sha\": \"${GITHUB_SHA}\",
+              \"workflow\": \"${GITHUB_WORKFLOW}\",
+              \"job_name\": \"${GITHUB_JOB}\",
+              \"run_number\": ${GITHUB_RUN_NUMBER},
+              \"run_attempt\": ${GITHUB_RUN_ATTEMPT},
+              \"status\": \"completed\",
+              \"conclusion\": \"${{ job.status }}\",
+              \"logs_url\": \"https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\",
+              \"failure_output\": $(echo "$FAILURE_OUTPUT" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || echo '\"\"')
+            }" || echo "Warning: Failed to report to CI Sentinel"
+
   fast-unit-tests:
     name: Fast Unit Tests (CPU)
     runs-on: ubuntu-latest
@@ -111,6 +144,39 @@ jobs:
             --maxfail=3 \
             tests/
 
+      - name: Report to CI Sentinel
+        if: always()
+        env:
+          CI_SENTINEL_ID: ${{ vars.CI_SENTINEL_ID }}
+          CI_SENTINEL_KEY: ${{ secrets.CODEX_INFINITY_API_KEY }}
+        run: |
+          if [ -z "$CI_SENTINEL_ID" ] || [ -z "$CI_SENTINEL_KEY" ]; then
+            echo "CI Sentinel not configured, skipping report"
+            exit 0
+          fi
+          # Collect failure output from previous steps
+          FAILURE_OUTPUT=""
+          if [ "${{ job.status }}" = "failure" ]; then
+            FAILURE_OUTPUT=$(cat /tmp/ci-failure-output.txt 2>/dev/null | tail -c 12288 || echo "See GitHub Actions logs")
+          fi
+          curl -sf -X POST "https://codex-infinity.com/api/ci-sentinels/${CI_SENTINEL_ID}/events" \
+            -H "Authorization: Bearer ${CI_SENTINEL_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"external_id\": \"${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}\",
+              \"repo\": \"${GITHUB_REPOSITORY}\",
+              \"branch\": \"${GITHUB_REF_NAME}\",
+              \"commit_sha\": \"${GITHUB_SHA}\",
+              \"workflow\": \"${GITHUB_WORKFLOW}\",
+              \"job_name\": \"${GITHUB_JOB}\",
+              \"run_number\": ${GITHUB_RUN_NUMBER},
+              \"run_attempt\": ${GITHUB_RUN_ATTEMPT},
+              \"status\": \"completed\",
+              \"conclusion\": \"${{ job.status }}\",
+              \"logs_url\": \"https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\",
+              \"failure_output\": $(echo "$FAILURE_OUTPUT" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || echo '\"\"')
+            }" || echo "Warning: Failed to report to CI Sentinel"
+
   type-check:
     name: Type Checking
     runs-on: ubuntu-latest
@@ -145,3 +211,36 @@ jobs:
       - name: Type check with mypy
         continue-on-error: true
         run: mypy src --config-file pyproject.toml
+
+      - name: Report to CI Sentinel
+        if: always()
+        env:
+          CI_SENTINEL_ID: ${{ vars.CI_SENTINEL_ID }}
+          CI_SENTINEL_KEY: ${{ secrets.CODEX_INFINITY_API_KEY }}
+        run: |
+          if [ -z "$CI_SENTINEL_ID" ] || [ -z "$CI_SENTINEL_KEY" ]; then
+            echo "CI Sentinel not configured, skipping report"
+            exit 0
+          fi
+          # Collect failure output from previous steps
+          FAILURE_OUTPUT=""
+          if [ "${{ job.status }}" = "failure" ]; then
+            FAILURE_OUTPUT=$(cat /tmp/ci-failure-output.txt 2>/dev/null | tail -c 12288 || echo "See GitHub Actions logs")
+          fi
+          curl -sf -X POST "https://codex-infinity.com/api/ci-sentinels/${CI_SENTINEL_ID}/events" \
+            -H "Authorization: Bearer ${CI_SENTINEL_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"external_id\": \"${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}\",
+              \"repo\": \"${GITHUB_REPOSITORY}\",
+              \"branch\": \"${GITHUB_REF_NAME}\",
+              \"commit_sha\": \"${GITHUB_SHA}\",
+              \"workflow\": \"${GITHUB_WORKFLOW}\",
+              \"job_name\": \"${GITHUB_JOB}\",
+              \"run_number\": ${GITHUB_RUN_NUMBER},
+              \"run_attempt\": ${GITHUB_RUN_ATTEMPT},
+              \"status\": \"completed\",
+              \"conclusion\": \"${{ job.status }}\",
+              \"logs_url\": \"https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\",
+              \"failure_output\": $(echo "$FAILURE_OUTPUT" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || echo '\"\"')
+            }" || echo "Warning: Failed to report to CI Sentinel"
