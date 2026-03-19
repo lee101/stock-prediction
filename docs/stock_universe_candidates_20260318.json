@@ -60,7 +60,7 @@
     "ABEV"
   ],
   "next_trial_order": [
-    "RKLB"
+    "RIG"
   ],
   "covariate_seed_groups": {
     "semis_and_ai": [
@@ -217,7 +217,7 @@
       "currently_live": false,
       "history_rows": 1142,
       "forecast_cache_horizons": [],
-      "status": "history_ready_needs_cache_and_retrain",
+      "status": "rejected_retrain_softgate_sim",
       "thesis": "Telecom and infrastructure factor candidate with lower growth beta."
     },
     {
@@ -317,7 +317,7 @@
       "currently_live": false,
       "history_rows": 992,
       "forecast_cache_horizons": [],
-      "status": "rejected_first_pass_cache_gate",
+      "status": "rejected_retrain_cache_gate",
       "thesis": "Alternative asset management factor candidate after data coverage is added."
     },
     {
@@ -327,7 +327,7 @@
       "currently_live": false,
       "history_rows": 1005,
       "forecast_cache_horizons": [],
-      "status": "rejected_first_pass_cache_gate",
+      "status": "active_single_symbol_lora",
       "thesis": "Energy and offshore drilling cyclicality candidate."
     },
     {
@@ -387,7 +387,7 @@
       "currently_live": false,
       "history_rows": 1012,
       "forecast_cache_horizons": [],
-      "status": "rejected_first_pass_cache_gate",
+      "status": "rejected_retrain_cache_gate",
       "thesis": "Space and defense-adjacent growth name with potential regime diversification."
     }
   ]
