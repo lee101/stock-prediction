@@ -57,12 +57,12 @@
     "EXPE"
   ],
   "next_trial_order": [
-    "SOFI",
-    "INTC",
-    "MU",
-    "PFE",
-    "F",
-    "TTD"
+    "ITUB",
+    "PLUG",
+    "NOK",
+    "BTG",
+    "RIG",
+    "ABEV"
   ],
   "covariate_seed_groups": {
     "semis_and_ai": [
@@ -153,9 +153,9 @@
       "company": "Plug Power Inc.",
       "priority": 30,
       "currently_live": false,
-      "history_rows": 0,
+      "history_rows": 1256,
       "forecast_cache_horizons": [],
-      "status": "needs_history_ingest",
+      "status": "history_ready_needs_cache_and_retrain",
       "thesis": "Speculative clean-energy exposure; only worth simming after hourly history quality is confirmed."
     },
     {
@@ -193,9 +193,9 @@
       "company": "American Airlines Group Inc.",
       "priority": 35,
       "currently_live": false,
-      "history_rows": 0,
+      "history_rows": 1051,
       "forecast_cache_horizons": [],
-      "status": "needs_history_ingest",
+      "status": "rejected_first_pass_worse_than_baseline",
       "thesis": "Travel cyclicals can diversify the tech-heavy basket once data is in place."
     },
     {
@@ -217,9 +217,9 @@
       "company": "Nokia Oyj",
       "priority": 25,
       "currently_live": false,
-      "history_rows": 0,
+      "history_rows": 1142,
       "forecast_cache_horizons": [],
-      "status": "needs_history_ingest",
+      "status": "history_ready_needs_cache_and_retrain",
       "thesis": "Telecom and infrastructure factor candidate with lower growth beta."
     },
     {
@@ -297,9 +297,9 @@
       "company": "B2Gold Corp.",
       "priority": 18,
       "currently_live": false,
-      "history_rows": 0,
+      "history_rows": 1006,
       "forecast_cache_horizons": [],
-      "status": "needs_history_ingest",
+      "status": "history_ready_needs_cache_and_retrain",
       "thesis": "Gold miner hedge candidate that could offset tech-led drawdowns."
     },
     {
@@ -327,9 +327,9 @@
       "company": "Transocean Ltd.",
       "priority": 16,
       "currently_live": false,
-      "history_rows": 0,
+      "history_rows": 1005,
       "forecast_cache_horizons": [],
-      "status": "needs_history_ingest",
+      "status": "history_ready_needs_cache_and_retrain",
       "thesis": "Energy and offshore drilling cyclicality candidate."
     },
     {
@@ -337,9 +337,9 @@
       "company": "Ambev S.A.",
       "priority": 14,
       "currently_live": false,
-      "history_rows": 0,
+      "history_rows": 1000,
       "forecast_cache_horizons": [],
-      "status": "needs_history_ingest",
+      "status": "history_ready_needs_cache_and_retrain",
       "thesis": "Lower-volatility international consumer staple ADR."
     },
     {
@@ -347,9 +347,9 @@
       "company": "Itaú Unibanco Holding S.A.",
       "priority": 22,
       "currently_live": false,
-      "history_rows": 0,
+      "history_rows": 995,
       "forecast_cache_horizons": [],
-      "status": "needs_history_ingest",
+      "status": "history_ready_needs_cache_and_retrain",
       "thesis": "International financials exposure that may diversify US growth risk."
     },
     {
