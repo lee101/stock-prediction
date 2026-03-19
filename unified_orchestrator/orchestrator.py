@@ -273,6 +273,21 @@ def _checkpoint_data_path(checkpoint_path: Path) -> Path | None:
     return None
 
 
+def _is_daily_checkpoint(checkpoint_path: Path) -> bool:
+    """Detect whether a checkpoint was trained on daily (vs hourly) data.
+
+    Checks two signals:
+      1. The data-hint .bin filename contains 'daily'.
+      2. The checkpoint directory path contains 'daily' or 'mass_daily'.
+    """
+    data_path = _checkpoint_data_path(checkpoint_path)
+    if data_path is not None and "daily" in data_path.name.lower():
+        return True
+    # Fallback: check directory names in checkpoint path
+    path_parts = [p.lower() for p in checkpoint_path.parts]
+    return any("daily" in part for part in path_parts)
+
+
 def _read_mktd_symbols(data_path: Path) -> list[str]:
     with data_path.open("rb") as handle:
         header = handle.read(64)
@@ -434,7 +449,20 @@ def _decode_bridge_signal_map(
 
 def _build_crypto_rl_signal_map(history_frames: dict[str, object], bridge: RLGeminiBridge) -> dict[str, RLSignal]:
     import numpy as np
-    from pufferlib_market.inference import compute_hourly_features
+
+    daily = _is_daily_checkpoint(bridge.checkpoint_path)
+    if daily:
+        from pufferlib_market.inference_daily import compute_daily_features
+        min_bars = 60
+        feature_fn = compute_daily_features
+        bar_label = "daily"
+    else:
+        from pufferlib_market.inference import compute_hourly_features
+        min_bars = 72
+        feature_fn = compute_hourly_features
+        bar_label = "hourly"
+
+    logger.info(f"  Crypto RL using {bar_label} features (checkpoint: {bridge.checkpoint_path.parent.name})")
 
     spec = bridge.get_checkpoint_spec()
     trained_symbols = _read_trained_symbols_for_checkpoint(
@@ -446,10 +474,10 @@ def _build_crypto_rl_signal_map(history_frames: dict[str, object], bridge: RLGem
     valid_symbols = []
     for idx, sym in enumerate(trained_symbols):
         frame = history_frames.get(sym)
-        if frame is None or len(frame) < 72:
-            logger.warning(f"  Crypto RL skipped: {sym} only has {0 if frame is None else len(frame)} bars (need 72); using zeros")
+        if frame is None or len(frame) < min_bars:
+            logger.warning(f"  Crypto RL skipped: {sym} only has {0 if frame is None else len(frame)} {bar_label} bars (need {min_bars}); using zeros")
             continue
-        features[idx] = compute_hourly_features(frame)
+        features[idx] = feature_fn(frame)
         valid_symbols.append(sym)
     if not valid_symbols:
         logger.warning("  Crypto RL: no symbols had enough data, returning empty signals")
@@ -501,17 +529,14 @@ def _format_rl_hint(signal: RLSignal | None, source: str) -> str:
     )
 
 
-def _fetch_crypto_history_frames(data_client, symbols: list[str], now, *, lookback_hours: int = 78):
-    """Fetch hourly bars for each crypto symbol individually.
+def _fetch_crypto_bars(data_client, symbols: list[str], now, *, timeframe, lookback, limit: int):
+    """Fetch crypto bars for each symbol individually at the given timeframe.
 
     Alpaca's batch CryptoBarsRequest is unreliable (only returns one symbol's
     data when multiple are requested).  Individual requests are slower but
     consistent.
     """
-    from datetime import timedelta
-
     from alpaca.data.requests import CryptoBarsRequest
-    from alpaca.data.timeframe import TimeFrame
 
     frames = {}
     for sym in symbols:
@@ -519,10 +544,10 @@ def _fetch_crypto_history_frames(data_client, symbols: list[str], now, *, lookba
         try:
             req = CryptoBarsRequest(
                 symbol_or_symbols=request_sym,
-                timeframe=TimeFrame.Hour,
-                start=now - timedelta(hours=lookback_hours),
+                timeframe=timeframe,
+                start=now - lookback,
                 end=now,
-                limit=72,
+                limit=limit,
             )
             bars = data_client.get_crypto_bars(req)
             raw_df = getattr(bars, "df", None)
@@ -532,6 +557,27 @@ def _fetch_crypto_history_frames(data_client, symbols: list[str], now, *, lookba
         except Exception as e:
             logger.debug(f"  {sym}: bars fetch error: {e}")
     return frames
+
+
+def _fetch_crypto_history_frames(data_client, symbols: list[str], now, *, lookback_hours: int = 78):
+    """Fetch hourly bars for each crypto symbol."""
+    from datetime import timedelta
+    from alpaca.data.timeframe import TimeFrame
+    return _fetch_crypto_bars(data_client, symbols, now, timeframe=TimeFrame.Hour,
+                              lookback=timedelta(hours=lookback_hours), limit=72)
+
+
+def _fetch_crypto_daily_history_frames(data_client, symbols: list[str], now, *, lookback_days: int = 100):
+    """Fetch daily bars for each crypto symbol.
+
+    Used when the deployed RL checkpoint was trained on daily features.
+    We fetch ~100 days so compute_daily_features has enough history for
+    its 60-day rolling windows.
+    """
+    from datetime import timedelta
+    from alpaca.data.timeframe import TimeFrame
+    return _fetch_crypto_bars(data_client, symbols, now, timeframe=TimeFrame.Day,
+                              lookback=timedelta(days=lookback_days), limit=lookback_days)
 
 
 def _fetch_stock_history_frames(data_client, symbols: list[str], now, *, lookback_hours: int = 78):
@@ -606,7 +652,14 @@ def get_crypto_signals(
     rl_signal_map: dict[str, RLSignal] = {}
     if rl_bridge is not None:
         try:
-            rl_signal_map = _build_crypto_rl_signal_map(history_frames, rl_bridge)
+            # Daily checkpoints need daily bars; hourly checkpoints reuse the
+            # hourly history_frames already fetched above.
+            if _is_daily_checkpoint(rl_bridge.checkpoint_path):
+                rl_frames = _fetch_crypto_daily_history_frames(data_client, fetch_symbols, now)
+                logger.info(f"  Fetched daily bars for {len(rl_frames)}/{len(fetch_symbols)} crypto symbols")
+            else:
+                rl_frames = history_frames
+            rl_signal_map = _build_crypto_rl_signal_map(rl_frames, rl_bridge)
         except Exception as e:
             logger.warning(f"  Crypto RL signal generation failed: {e}")
 
