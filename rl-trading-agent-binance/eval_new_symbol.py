@@ -147,6 +147,8 @@ def generate_signals(
 
         current_price = float(context_rows[-1]["close"])
         fc_1h = load_forecast_at(symbol, ts, 1)
+        fc_4h = load_forecast_at(symbol, ts, 4)
+        fc_12h = load_forecast_at(symbol, ts, 12)
         fc_24h = load_forecast_at(symbol, ts, 24)
 
         fee_bps = int(SYMBOL_FEE.get(symbol, 0.001) * 10000)
@@ -154,6 +156,7 @@ def generate_signals(
             symbol, context_rows, current_price,
             fc_1h=fc_1h, fc_24h=fc_24h,
             fee_bps=fee_bps,
+            fc_4h=fc_4h, fc_12h=fc_12h,
         )
 
         try:

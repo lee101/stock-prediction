@@ -20,6 +20,28 @@ FORECAST_MAE_1H = {
     "AAVEUSD": 1.50,
 }
 
+FORECAST_MAE_4H = {
+    "BTCUSD": 0.83,
+    "ETHUSD": 1.13,
+    "SOLUSD": 1.46,
+    "DOGEUSD": 1.80,
+    "AAVEUSD": 2.25,
+}
+
+FORECAST_MAE_12H = {
+    "BTCUSD": 1.38,
+    "ETHUSD": 1.88,
+    "SOLUSD": 2.43,
+    "DOGEUSD": 3.00,
+    "AAVEUSD": 3.75,
+}
+
+FORECAST_MAE_BY_HORIZON = {
+    1: FORECAST_MAE_1H,
+    4: FORECAST_MAE_4H,
+    12: FORECAST_MAE_12H,
+}
+
 
 def _compute_trend_context(history_rows: list[dict]) -> dict:
     closes = [float(r["close"]) for r in history_rows]
@@ -73,7 +95,7 @@ def load_latest_forecast(symbol: str, horizon: int, cache_root: Optional[Path] =
         return None
 
 
-def _fmt_forecast(fc: Optional[dict], current_price: float, symbol: Optional[str] = None) -> str:
+def _fmt_forecast(fc: Optional[dict], current_price: float, symbol: Optional[str] = None, horizon: Optional[int] = None) -> str:
     if not fc:
         return "  No forecast available"
     lines = []
@@ -87,9 +109,12 @@ def _fmt_forecast(fc: Optional[dict], current_price: float, symbol: Optional[str
         spread = fc["predicted_close_p90"] - fc["predicted_close_p10"]
         spread_pct = spread / current_price * 100
         lines.append(f"  90% CI spread: ${spread:.2f} ({spread_pct:.2f}%)")
-    if symbol and symbol in FORECAST_MAE_1H:
-        mae = FORECAST_MAE_1H[symbol]
-        lines.append(f"  Historical MAE: {mae:.2f}%")
+    if symbol and horizon is not None:
+        mae_table = FORECAST_MAE_BY_HORIZON.get(horizon, FORECAST_MAE_1H)
+        if symbol in mae_table:
+            lines.append(f"  Historical MAE: {mae_table[symbol]:.2f}%")
+    elif symbol and symbol in FORECAST_MAE_1H:
+        lines.append(f"  Historical MAE: {FORECAST_MAE_1H[symbol]:.2f}%")
     return "\n".join(lines) if lines else "  No forecast available"
 
 
@@ -102,6 +127,8 @@ def build_live_prompt(
     position_info: Optional[dict] = None,
     fee_bps: int = 10,
     leverage: float = 1.0,
+    fc_4h: Optional[dict] = None,
+    fc_12h: Optional[dict] = None,
 ) -> str:
     recent = history_rows[-12:]
     price_lines = []
@@ -136,10 +163,9 @@ def build_live_prompt(
 
     fc_section = ""
     fc_parts = []
-    if fc_1h:
-        fc_parts.append(f"1-hour ahead:\n{_fmt_forecast(fc_1h, current_price, symbol)}")
-    if fc_24h:
-        fc_parts.append(f"24-hour ahead:\n{_fmt_forecast(fc_24h, current_price)}")
+    for h, fc in [(1, fc_1h), (4, fc_4h), (12, fc_12h), (24, fc_24h)]:
+        if fc:
+            fc_parts.append(f"{h}-hour ahead:\n{_fmt_forecast(fc, current_price, symbol, horizon=h)}")
     if fc_parts:
         fc_section = "\nCHRONOS2 ML FORECASTS:\n" + "\n".join(fc_parts) + "\n"
 
@@ -205,6 +231,10 @@ def build_live_prompt_freeform(
     leverage: float = 1.0,
     forecast_error_1h: Optional[dict] = None,
     forecast_error_24h: Optional[dict] = None,
+    fc_4h: Optional[dict] = None,
+    fc_12h: Optional[dict] = None,
+    forecast_error_4h: Optional[dict] = None,
+    forecast_error_12h: Optional[dict] = None,
 ) -> str:
     recent = history_rows[-24:]
     price_lines = []
@@ -230,18 +260,19 @@ def build_live_prompt_freeform(
         sr_line = f"24h range: ${trend['low_24h']:.2f} - ${trend['high_24h']:.2f} ({trend['range_pct']:.2f}% wide)"
 
     fc_parts = []
-    if fc_1h:
-        fc_line = _fmt_forecast(fc_1h, current_price, symbol)
-        if forecast_error_1h and forecast_error_1h.get("mae_pct", 0) > 0:
-            mae = forecast_error_1h["mae_pct"]
-            fc_line += f"\n  Historical MAE: {mae:.2f}% (n={forecast_error_1h.get('samples', '?')})"
-        fc_parts.append(f"1h ahead:\n{fc_line}")
-    if fc_24h:
-        fc_line = _fmt_forecast(fc_24h, current_price)
-        if forecast_error_24h and forecast_error_24h.get("mae_pct", 0) > 0:
-            mae = forecast_error_24h["mae_pct"]
-            fc_line += f"\n  Historical MAE: {mae:.2f}% (n={forecast_error_24h.get('samples', '?')})"
-        fc_parts.append(f"24h ahead:\n{fc_line}")
+    _horizon_specs = [
+        (1, fc_1h, forecast_error_1h),
+        (4, fc_4h, forecast_error_4h),
+        (12, fc_12h, forecast_error_12h),
+        (24, fc_24h, forecast_error_24h),
+    ]
+    for h, fc, fc_err in _horizon_specs:
+        if not fc:
+            continue
+        fc_line = _fmt_forecast(fc, current_price, symbol, horizon=h)
+        if fc_err and fc_err.get("mae_pct", 0) > 0:
+            fc_line += f"\n  Historical MAE: {fc_err['mae_pct']:.2f}% (n={fc_err.get('samples', '?')})"
+        fc_parts.append(f"{h}h ahead:\n{fc_line}")
 
     fc_section = ""
     if fc_parts:
