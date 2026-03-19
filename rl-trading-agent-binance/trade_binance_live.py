@@ -1134,7 +1134,19 @@ def get_hybrid_signal(
             fc_4h=fc_4h, fc_12h=fc_12h,
         )
 
-    plan = call_llm(prompt, model=model, thinking_level=thinking_level)
+    reprompt_passes = kwargs.get("reprompt_passes", 1)
+    review_model = kwargs.get("review_model", None)
+    reprompt_policy = kwargs.get("reprompt_policy", "entry_only")
+    review_cache_ns = f"review_{review_model}" if review_model else None
+    plan = call_llm(
+        prompt,
+        model=model,
+        thinking_level=thinking_level,
+        reprompt_passes=reprompt_passes,
+        review_model=review_model,
+        reprompt_policy=reprompt_policy,
+        review_cache_namespace=review_cache_ns,
+    )
     return _normalize_live_trade_plan(
         plan,
         sym_cfg,
@@ -1159,6 +1171,9 @@ def run_trading_cycle(
     leverage: float = 1.0,
     execution_mode: str = "auto",
     prompt_variant: str = "optimization",
+    reprompt_passes: int = 1,
+    review_model: Optional[str] = None,
+    reprompt_policy: str = "entry_only",
 ):
     """Run one trading cycle across all symbols."""
     resolved_execution_mode = _resolve_execution_mode(execution_mode, leverage)
@@ -1171,6 +1186,9 @@ def run_trading_cycle(
         "mode": "live" if not dry_run else "dry_run",
         "model": model,
         "thinking_level": thinking_level,
+        "reprompt_passes": reprompt_passes,
+        "review_model": review_model,
+        "reprompt_policy": reprompt_policy,
         "execution_mode": resolved_execution_mode,
         "requested_leverage": float(leverage),
         "effective_leverage": float(effective_leverage),
@@ -1323,6 +1341,9 @@ def run_trading_cycle(
                     position_open_time=open_time,
                     execution_mode=resolved_execution_mode,
                     prompt_variant=prompt_variant,
+                    reprompt_passes=reprompt_passes,
+                    review_model=review_model,
+                    reprompt_policy=reprompt_policy,
                 )
             except Exception as exc:
                 logger.error(f"  Signal generation failed: {exc}")
@@ -2019,6 +2040,13 @@ def main():
     parser.add_argument("--prompt-variant", type=str, default="optimization",
                         choices=["optimization", "freeform"],
                         help="Prompt style for LLM signal generation.")
+    parser.add_argument("--reprompt-passes", type=int, default=1,
+                        help="Number of LLM passes (1=single, 2+=review). Default 1.")
+    parser.add_argument("--review-model", type=str, default=None,
+                        help="Stronger model for review passes (e.g. gemini-2.5-pro). Default: same as --model.")
+    parser.add_argument("--reprompt-policy", type=str, default="entry_only",
+                        choices=["always", "entry_only", "actionable"],
+                        help="When to reprompt: always, entry_only (default), actionable.")
     args = parser.parse_args()
 
     dry_run = not args.live
@@ -2059,6 +2087,9 @@ def main():
                     leverage=args.leverage,
                     execution_mode=args.execution_mode,
                     prompt_variant=args.prompt_variant,
+                    reprompt_passes=args.reprompt_passes,
+                    review_model=args.review_model,
+                    reprompt_policy=args.reprompt_policy,
                 )
         except Exception as e:
             logger.error(f"Trading cycle error: {e}")
