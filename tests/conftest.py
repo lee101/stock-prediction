@@ -323,6 +323,30 @@ def pytest_ignore_collect(path, config):
     if rel.startswith("tests/.uvcache/"):
         return True
 
+    # On fast CI (GitHub-hosted runners), skip prod/integration tests and
+    # provisioning tests — they need self-hosted runners with full dependencies.
+    if os.environ.get("FAST_CI") == "1":
+        for prefix in ("tests/prod/", "tests/provisioning/", "tests/pufferlibtraining2/"):
+            if rel.startswith(prefix):
+                return True
+        # Tests that depend on local-only modules (binance_worksteal, benchmark_chronos2, etc.)
+        _FAST_CI_SKIP = {
+            "tests/test_benchmark_chronos2_direct.py",
+            "tests/test_build_hourly_forecast_caches.py",
+            "tests/test_chronos2_real_data.py",
+            "tests/test_critical_math.py",
+            "tests/test_forecast_cache_metrics.py",
+            "tests/test_maxdiff_price_cache.py",
+            "tests/test_pctdiff_price_cache.py",
+            "tests/test_rl_trainingbinance.py",
+            "tests/test_worksteal_allocation_refiner_eval.py",
+            "tests/test_worksteal_gemini_intraday_eval.py",
+            "tests/test_worksteal_sweep.py",
+            "tests/test_worksteal_trade_live.py",
+        }
+        if rel in _FAST_CI_SKIP:
+            return True
+
     experimental_root = (root / "tests" / "experimental").resolve()
     if p == experimental_root or experimental_root in p.parents:
         return not config.getoption("--run-experimental")

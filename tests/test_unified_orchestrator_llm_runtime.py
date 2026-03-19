@@ -9,18 +9,26 @@ def test_run_cycle_forwards_llm_runtime_settings(monkeypatch) -> None:
         alpaca_cash=10_000.0,
         regime="STOCK_HOURS",
     )
-    captured: dict[str, tuple[str, str, bool, tuple[str, ...]]] = {}
+    captured: dict[str, tuple] = {}
 
     monkeypatch.setattr(orchestrator, "build_snapshot", lambda now=None: snapshot)
     monkeypatch.setattr(orchestrator, "save_snapshot", lambda snapshot: None)
     monkeypatch.setattr(orchestrator, "read_pending_fills", lambda since_minutes=65: [])
 
-    def _fake_get_crypto_signals(symbols, snapshot, model, thinking_level, reasoning_effort, dry_run):
-        captured["crypto"] = (thinking_level, reasoning_effort, dry_run, tuple(symbols))
+    def _fake_get_crypto_signals(
+        symbols, snapshot, model, thinking_level,
+        review_thinking_level, reprompt_passes, reprompt_policy,
+        review_max_confidence, review_model, dry_run,
+    ):
+        captured["crypto"] = (thinking_level, dry_run, tuple(symbols))
         return {}
 
-    def _fake_get_stock_signals(symbols, snapshot, model, thinking_level, reasoning_effort, dry_run):
-        captured["stock"] = (thinking_level, reasoning_effort, dry_run, tuple(symbols))
+    def _fake_get_stock_signals(
+        symbols, snapshot, model, thinking_level,
+        review_thinking_level, reprompt_passes, reprompt_policy,
+        review_max_confidence, review_model, dry_run,
+    ):
+        captured["stock"] = (thinking_level, dry_run, tuple(symbols))
         return {}
 
     monkeypatch.setattr(orchestrator, "get_crypto_signals", _fake_get_crypto_signals)
@@ -31,9 +39,8 @@ def test_run_cycle_forwards_llm_runtime_settings(monkeypatch) -> None:
         stock_symbols=["NVDA"],
         model="gemini-3.1-flash-lite-preview",
         thinking_level="HIGH",
-        reasoning_effort="high",
         dry_run=True,
     )
 
-    assert captured["crypto"] == ("HIGH", "high", True, ("BTCUSD",))
-    assert captured["stock"] == ("HIGH", "high", True, ("NVDA",))
+    assert captured["crypto"] == ("HIGH", True, ("BTCUSD",))
+    assert captured["stock"] == ("HIGH", True, ("NVDA",))

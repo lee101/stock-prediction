@@ -76,7 +76,9 @@ class DailyTradingRuntime:
             self.risk_threshold = float(max(0.0, inferred))
         else:
             self.risk_threshold = float(max(0.0, risk_threshold))
-        self.confidence_threshold = confidence_threshold if confidence_threshold is None else float(confidence_threshold)
+        self.confidence_threshold = (
+            confidence_threshold if confidence_threshold is None else float(confidence_threshold)
+        )
         policy_config = DailyPolicyConfig(
             input_dim=len(self.feature_columns),
             hidden_dim=(ckpt_config.transformer_dim if ckpt_config else 256),

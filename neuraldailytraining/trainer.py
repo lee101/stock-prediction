@@ -19,7 +19,7 @@ from hourlycryptotraining.optimizers import Muon
 from torch.nn.utils import clip_grad_norm_
 from wandboard import WandBoardLogger
 
-from .checkpoints import CheckpointRecord, save_checkpoint, write_manifest
+from .checkpoints import CheckpointRecord, load_checkpoint, save_checkpoint, write_manifest
 from .config import DailyTrainingConfig
 from .data import DailyDataModule, FeatureNormalizer
 from .model import DailyMultiAssetPolicy, DailyPolicyConfig, MultiSymbolDailyPolicy
@@ -230,7 +230,6 @@ class NeuralDailyTrainer:
 
         # Load pretrained weights if specified
         if self.config.preload_checkpoint_path:
-            from .checkpoints import load_checkpoint
             preload_path = Path(self.config.preload_checkpoint_path)
             if preload_path.exists():
                 print(f"Loading pretrained weights from {preload_path}")
@@ -777,7 +776,7 @@ __all__ = [
     "TrainingArtifacts",
     "TrainingHistoryEntry",
     "TrainingSummary",
-    "apply_symbol_dropout",
     "apply_batch_permutation",
     "apply_price_scale_augmentation",
+    "apply_symbol_dropout",
 ]

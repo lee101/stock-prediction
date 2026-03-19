@@ -1,0 +1,106 @@
+Root: /home/lee/code/stock
+Device: cuda
+Periods: [30, 60, 120]
+Sort by: 120d Sortino
+
+Discovered 30 checkpoints
+  Missing fdusd3_daily_val.bin (obs_size=56)
+  Missing crypto5_daily_val.bin (obs_size=90)
+  Missing crypto8_daily_val.bin (obs_size=141)
+  Missing crypto10_daily_val.bin (obs_size=175)
+  Missing crypto11_daily_val.bin (obs_size=192)
+  Missing stocks12_daily_val.bin (obs_size=209)
+  Missing crypto15_daily_val.bin (obs_size=260)
+  Loaded mixed23_fresh_val.bin: 23 symbols, 250 days
+  Missing mixed32_daily_val.bin (obs_size=549)
+
+[1/30] mixed23_fresh_clip_vloss: 120d ret=+54.6% sortino=2.72 maxDD=31.2% WR=66% trades=88
+[2/30] mixed23_fresh_ent_anneal: 120d ret=-22.8% sortino=-0.70 maxDD=36.2% WR=57% trades=94
+[3/30] mixed23_fresh_gspo/gspo_like: 120d ret=+68.2% sortino=3.72 maxDD=43.1% WR=63% trades=86
+[4/30] mixed23_fresh_gspo/gspo_like_smooth: 120d ret=+46.5% sortino=2.92 maxDD=34.5% WR=51% trades=87
+[5/30] mixed23_fresh_gspo/per_env_adv: 120d ret=+79.4% sortino=4.08 maxDD=27.3% WR=58% trades=79
+[6/30] mixed23_fresh_gspo/reg_combo_2: 120d ret=+48.7% sortino=3.15 maxDD=36.9% WR=52% trades=87
+[7/30] mixed23_fresh_gspo/robust_reg_tp01: 120d ret=+175.2% sortino=7.60 maxDD=22.8% WR=70% trades=43
+[8/30] mixed23_fresh_gspo2/gspo_like: 120d ret=+238.4% sortino=8.15 maxDD=24.9% WR=65% trades=77
+[9/30] mixed23_fresh_gspo2/gspo_like_drawdown_mix15: 120d ret=+183.4% sortino=7.82 maxDD=20.6% WR=67% trades=48
+[10/30] mixed23_fresh_gspo2/gspo_like_mix15: 120d ret=+126.6% sortino=5.79 maxDD=26.2% WR=61% trades=67
+[11/30] mixed23_fresh_gspo2/gspo_like_mix40: 120d ret=+34.5% sortino=2.57 maxDD=32.2% WR=56% trades=68
+[12/30] mixed23_fresh_gspo2/gspo_like_smooth_mix15: 120d ret=+235.6% sortino=9.35 maxDD=17.2% WR=72% trades=79
+[13/30] mixed23_fresh_gspo2/per_env_adv_smooth: 120d ret=+250.7% sortino=9.40 maxDD=21.4% WR=67% trades=63
+[14/30] mixed23_fresh_gspo_seed7/gspo_like_mix15_seed7: 120d ret=+38.9% sortino=2.52 maxDD=42.1% WR=61% trades=75
+[15/30] mixed23_fresh_replay/clip_vloss: 120d ret=-40.7% sortino=-2.21 maxDD=47.4% WR=58% trades=92
+[16/30] mixed23_fresh_replay/ent_anneal: 120d ret=-31.6% sortino=-1.56 maxDD=55.0% WR=49% trades=96
+[17/30] mixed23_fresh_replay/reg_combo_2: 120d ret=+125.2% sortino=5.65 maxDD=27.3% WR=58% trades=64
+[18/30] mixed23_fresh_replay/wd_01: 120d ret=-23.3% sortino=-0.90 maxDD=47.9% WR=61% trades=92
+[19/30] mixed23_fresh_robust/robust_reg_h512_tp005: 120d ret=+331.9% sortino=10.38 maxDD=19.4% WR=72% trades=74
+[20/30] mixed23_fresh_robust/robust_reg_tp005: 120d ret=+209.2% sortino=9.75 maxDD=16.8% WR=67% trades=76
+[21/30] mixed23_fresh_robust/robust_reg_tp005_dd002: 120d ret=+111.7% sortino=5.87 maxDD=23.7% WR=60% trades=68
+[22/30] mixed23_fresh_robust/robust_reg_tp005_ent: 120d ret=-21.1% sortino=-1.04 maxDD=33.7% WR=53% trades=81
+[23/30] mixed23_fresh_robust/robust_reg_tp005_sds02: 120d ret=-18.6% sortino=-1.21 maxDD=42.6% WR=54% trades=43
+[24/30] mixed23_fresh_robust/robust_reg_tp005_sm001: 120d ret=+68.2% sortino=3.69 maxDD=28.4% WR=54% trades=85
+[25/30] mixed23_fresh_robust/robust_reg_tp01: 120d ret=+131.6% sortino=6.12 maxDD=24.3% WR=66% trades=67
+[26/30] mixed23_fresh_robust/robust_reg_wd02: 120d ret=-13.8% sortino=-0.55 maxDD=37.5% WR=49% trades=80
+[27/30] mixed23_fresh_sds_temp/robust_reg_tp005_sds02: 120d ret=-14.1% sortino=-0.33 maxDD=38.8% WR=57% trades=63
+[28/30] mixed23_fresh_sds_temp/robust_reg_tp005_sds02_t01: 120d ret=+136.9% sortino=6.43 maxDD=24.1% WR=60% trades=40
+[29/30] mixed23_fresh_sds_temp/robust_reg_tp005_sds02_t05: 120d ret=+275.4% sortino=10.46 maxDD=19.2% WR=69% trades=55
+[30/30] mixed23_fresh_targeted/reg_combo_2: 120d ret=+31.2% sortino=2.40 maxDD=42.6% WR=53% trades=76
+
+Evaluation complete in 4s
+  Results: 90 rows from 30 checkpoints
+  Skipped: 0, Errors: 0
+
+CSV written to: /home/lee/code/stock/.claude/worktrees/agent-a9ffbfa3/reports/comprehensive_marketsim_120d.csv
+
+========================================================================================================================
+  LEADERBOARD (sorted by 120d Sortino)
+========================================================================================================================
+Rank  Checkpoint                                         Universe     Days      Ret%      Ann%   Sortino   MaxDD%  Trades    WR%   Hold
+------------------------------------------------------------------------------------------------------------------------
+   1  mixed23_fresh_sds_temp/robust_reg_tp005_sds02_t05  23sym         120    +275.4   +5492.1    10.459     19.2      55     69    2.2
+   2  mixed23_fresh_robust/robust_reg_h512_tp005         23sym         120    +331.9   +8466.0    10.383     19.4      74     72    1.6
+   3  mixed23_fresh_robust/robust_reg_tp005              23sym         120    +209.2   +2996.9     9.747     16.8      76     67    1.6
+   4  mixed23_fresh_gspo2/per_env_adv_smooth             23sym         120    +250.7   +4444.7     9.398     21.4      63     67    1.9
+   5  mixed23_fresh_gspo2/gspo_like_smooth_mix15         23sym         120    +235.6   +3875.9     9.345     17.2      79     72    1.5
+   6  mixed23_fresh_gspo2/gspo_like                      23sym         120    +238.4   +3975.6     8.153     24.9      77     65    1.6
+   7  mixed23_fresh_gspo2/gspo_like_drawdown_mix15       23sym         120    +183.4   +2276.1     7.816     20.6      48     67    2.5
+   8  mixed23_fresh_gspo/robust_reg_tp01                 23sym         120    +175.2   +2074.9     7.602     22.8      43     70    2.8
+   9  mixed23_fresh_sds_temp/robust_reg_tp005_sds02_t01  23sym         120    +136.9   +1278.7     6.428     24.1      40     60    3.0
+  10  mixed23_fresh_robust/robust_reg_tp01               23sym         120    +131.6   +1187.0     6.117     24.3      67     66    1.8
+  11  mixed23_fresh_robust/robust_reg_tp005_dd002        23sym         120    +111.7    +878.8     5.865     23.7      68     60    1.8
+  12  mixed23_fresh_gspo2/gspo_like_mix15                23sym         120    +126.6   +1104.3     5.794     26.2      67     61    1.8
+  13  mixed23_fresh_replay/reg_combo_2                   23sym         120    +125.2   +1081.5     5.650     27.3      64     58    1.9
+  14  mixed23_fresh_gspo/per_env_adv                     23sym         120     +79.4    +492.0     4.084     27.3      79     58    1.5
+  15  mixed23_fresh_gspo/gspo_like                       23sym         120     +68.2    +385.8     3.720     43.1      86     63    1.4
+  16  mixed23_fresh_robust/robust_reg_tp005_sm001        23sym         120     +68.2    +386.4     3.693     28.4      85     54    1.4
+  17  mixed23_fresh_gspo/reg_combo_2                     23sym         120     +48.7    +234.2     3.153     36.9      87     52    1.4
+  18  mixed23_fresh_gspo/gspo_like_smooth                23sym         120     +46.5    +219.4     2.920     34.5      87     51    1.4
+  19  mixed23_fresh_clip_vloss                           23sym         120     +54.6    +276.1     2.720     31.2      88     66    1.4
+  20  mixed23_fresh_gspo2/gspo_like_mix40                23sym         120     +34.5    +146.5     2.569     32.2      68     56    1.8
+  21  mixed23_fresh_gspo_seed7/gspo_like_mix15_seed7     23sym         120     +38.9    +171.4     2.524     42.1      75     61    1.6
+  22  mixed23_fresh_targeted/reg_combo_2                 23sym         120     +31.2    +128.3     2.397     42.6      76     53    1.6
+  23  mixed23_fresh_sds_temp/robust_reg_tp005_sds02      23sym         120     -14.1     -37.0    -0.327     38.8      63     57    1.9
+  24  mixed23_fresh_robust/robust_reg_wd02               23sym         120     -13.8     -36.3    -0.545     37.5      80     49    1.5
+  25  mixed23_fresh_ent_anneal                           23sym         120     -22.8     -54.4    -0.701     36.2      94     57    1.3
+  26  mixed23_fresh_replay/wd_01                         23sym         120     -23.3     -55.4    -0.903     47.9      92     61    1.3
+  27  mixed23_fresh_robust/robust_reg_tp005_ent          23sym         120     -21.1     -51.5    -1.040     33.7      81     53    1.5
+  28  mixed23_fresh_robust/robust_reg_tp005_sds02        23sym         120     -18.6     -46.5    -1.211     42.6      43     54    2.8
+  29  mixed23_fresh_replay/ent_anneal                    23sym         120     -31.6     -68.5    -1.562     55.0      96     49    1.2
+  30  mixed23_fresh_replay/clip_vloss                    23sym         120     -40.7     -79.6    -2.207     47.4      92     58    1.3
+
+Total: 30 checkpoints evaluated at 120d
+
+========================================================================================================================
+  TOP 10 - Multi-Period Summary
+========================================================================================================================
+Checkpoint                                          30d Ret%  30d Sort  60d Ret%  60d Sort  120d Ret%  120d Sort
+--------------------------------------------------------------------------------------------------------------
+mixed23_fresh_sds_temp/robust_reg_tp005_sds02_t05     +15.5     4.520    +28.1     3.931   +275.4    10.459
+mixed23_fresh_robust/robust_reg_h512_tp005            +21.6     5.922    +23.5     3.393   +331.9    10.383
+mixed23_fresh_robust/robust_reg_tp005                 +21.2     6.850    +29.5     4.383   +209.2     9.747
+mixed23_fresh_gspo2/per_env_adv_smooth                 +9.3     2.945    +23.0     3.566   +250.7     9.398
+mixed23_fresh_gspo2/gspo_like_smooth_mix15             +9.7     3.040    +41.8     5.694   +235.6     9.345
+mixed23_fresh_gspo2/gspo_like                         +14.6     4.403    +26.0     3.811   +238.4     8.153
+mixed23_fresh_gspo2/gspo_like_drawdown_mix15           -6.9    -1.060    +31.6     4.620   +183.4     7.816
+mixed23_fresh_gspo/robust_reg_tp01                    +17.4     5.353    +11.4     2.194   +175.2     7.602
+mixed23_fresh_sds_temp/robust_reg_tp005_sds02_t01     +15.0     4.272     +2.1     0.863   +136.9     6.428
+mixed23_fresh_robust/robust_reg_tp01                  +20.0     5.605    +14.5     2.564   +131.6     6.117

@@ -15,6 +15,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
+from src.forecast_cache_lookup import load_latest_forecast_from_cache
 
 try:
     from google import genai
@@ -71,20 +72,14 @@ else:
     DAILY_SCHEMA = None
 
 
-def load_forecast_daily(symbol: str, cache_root: Optional[Path] = None) -> Optional[dict]:
+def load_forecast_daily(
+    symbol: str,
+    cache_root: Optional[Path] = None,
+    *,
+    as_of: pd.Timestamp | str | None = None,
+) -> Optional[dict]:
     root = cache_root or FORECAST_CACHE
-    path = root / "h24" / f"{symbol}.parquet"
-    if not path.exists():
-        return None
-    try:
-        df = pd.read_parquet(path)
-        if df.empty:
-            return None
-        row = df.iloc[-1]
-        return {k: float(row[k]) for k in df.columns if k != "timestamp"
-                and pd.notna(row[k])}
-    except Exception:
-        return None
+    return load_latest_forecast_from_cache(symbol, 24, root, as_of=as_of)
 
 
 def build_daily_prompt(

@@ -72,16 +72,24 @@ _rl_bridge_stock: RLGeminiBridge | None = None
 # Validated checkpoints (confirmed on held-out data):
 #   stocks: +50% median / 30-day window, Sortino=25 (featlag1, fee=5bps, long-only)
 #   crypto: mass_daily/tp0.15_s314 = Sortino 4.18, +73.2% on 120d market sim (daily RL)
-#           Previous: longonly_forecast = +5.64% median/30d OOS, Sortino 2.18
-#           Previous: slip_5bps = +5.21% median/30d OOS, 96% profitable
+#           Confirmed best crypto5 model (217 ckpts evaluated 2026-03-19)
+#           Runners-up: tp0.10_s42 (S=4.01), tp0.20_s123 (S=3.86, best 180d)
 #           Old 300M models overfit badly (-3% to -16% OOS) — do NOT use
 STOCK_CHECKPOINT_CANDIDATES = [
     REPO / "pufferlib_market/checkpoints/stocks13_featlag1_fee5bps_longonly_run4/best.pt",
     REPO / "pufferlib_market/checkpoints/stocks13_issuedat_featlag1_fee5bps_longonly_run5/best.pt",
 ]
 CRYPTO_CHECKPOINT_CANDIDATES = [
-    # Best daily model: Sortino 4.18, +73.2% 120d market sim (vs prev Sortino 2.34, +31.9%)
+    # Comprehensive eval 2026-03-19: 217 checkpoints, 5 periods (30-180d)
+    # Best crypto5-compatible (obs_size=90) by 120d Sortino:
+    #   #1 tp0.15_s314:  Sortino 4.18, +73.2% 120d, MaxDD 25.6%, WR 67%
+    #   #2 tp0.10_s42:   Sortino 4.01, +62.3% 120d, MaxDD 21.3%, WR 57%
+    #   #3 tp0.20_s123:  Sortino 3.86, +63.2% 120d, MaxDD 22.2%, WR 64%, best 180d (+81.1%, S=3.04)
+    #   #4 tp0.05_s123:  Sortino 3.78, +65.0% 120d, MaxDD 20.8%, WR 59%
     REPO / "pufferlib_market/checkpoints/mass_daily/tp0.15_s314/best.pt",
+    REPO / "pufferlib_market/checkpoints/mass_daily/tp0.10_s42/best.pt",
+    REPO / "pufferlib_market/checkpoints/mass_daily/tp0.20_s123/best.pt",
+    REPO / "pufferlib_market/checkpoints/mass_daily/tp0.05_s123/best.pt",
     REPO / "pufferlib_market/checkpoints/autoresearch/longonly_forecast/best.pt",
     REPO / "pufferlib_market/checkpoints/autoresearch/slip_5bps/best.pt",
     REPO / "pufferlib_market/checkpoints/autoresearch/ent_01/best.pt",
@@ -112,6 +120,9 @@ _CHECKPOINT_DATA_HINTS = {
     "stocks13_featlag1_fee5bps_longonly_run4": REPO / "pufferlib_market/data/stocks13_hourly_forecast_mktd_v2_start20250915_featlag1.bin",
     "stocks13_issuedat_featlag1_fee5bps_longonly_run5": REPO / "pufferlib_market/data/stocks13_hourly_forecast_mktd_v2_start20250915_issuedat_featlag1.bin",
     "tp0.15_s314": REPO / "pufferlib_market/data/crypto5_daily_train.bin",
+    "tp0.10_s42": REPO / "pufferlib_market/data/crypto5_daily_train.bin",
+    "tp0.20_s123": REPO / "pufferlib_market/data/crypto5_daily_train.bin",
+    "tp0.05_s123": REPO / "pufferlib_market/data/crypto5_daily_train.bin",
     "longonly_forecast": REPO / "pufferlib_market/data/crypto6_train.bin",
     "slip_5bps": REPO / "pufferlib_market/data/crypto6_train.bin",
     "ent_01": REPO / "pufferlib_market/data/crypto6_train.bin",

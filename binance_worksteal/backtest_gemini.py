@@ -61,6 +61,7 @@ def run_gemini_backtest(
     model: str = "gemini-2.5-flash",
     use_cache: bool = True,
     api_key: Optional[str] = None,
+    forecast_cache_root: Optional[Path] = None,
 ) -> tuple:
     """Run backtest with Gemini overlay on candidates identified by rule-based system."""
     for sym in list(all_bars.keys()):
@@ -153,7 +154,7 @@ def run_gemini_backtest(
                         "target_sell": pos.target_exit_price,
                         "stop_price": pos.stop_price,
                     }
-                    fc = load_forecast_daily(sym)
+                    fc = load_forecast_daily(sym, cache_root=forecast_cache_root, as_of=date)
                     prompt = build_daily_prompt(
                         symbol=sym, bars=history[sym], current_price=close,
                         rule_signal={"action": "hold_or_exit"},
@@ -251,7 +252,7 @@ def run_gemini_backtest(
                 if cached:
                     plan = cached
                 else:
-                    fc = load_forecast_daily(sym)
+                    fc = load_forecast_daily(sym, cache_root=forecast_cache_root, as_of=date)
                     # Build universe snapshot
                     uni_lines = []
                     for s2, b2 in sorted(current_bars.items()):
@@ -403,12 +404,18 @@ def main():
     parser.add_argument("--end-date", default=None)
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--model", default="gemini-2.5-flash")
+    parser.add_argument("--symbols", nargs="+", default=None, help="Optional symbol subset (default: full work-steal universe).")
+    parser.add_argument("--forecast-cache-root", type=Path, default=None, help="Optional forecast cache root override.")
+    parser.add_argument("--output-json", type=Path, default=None, help="Optional JSON path for summary metrics.")
     parser.add_argument("--no-cache", action="store_true")
     parser.add_argument("--rule-only", action="store_true", help="Run without Gemini for comparison")
     args = parser.parse_args()
 
     from binance_worksteal.backtest import FULL_UNIVERSE
-    all_bars = load_daily_bars(args.data_dir, FULL_UNIVERSE)
+    symbols = list(args.symbols) if args.symbols else list(FULL_UNIVERSE)
+    all_bars = load_daily_bars(args.data_dir, symbols)
+    if not all_bars:
+        raise SystemExit(f"No daily bars loaded from {args.data_dir} for symbols={symbols}")
     print(f"Loaded {len(all_bars)} symbols")
 
     if not args.start_date:
@@ -433,11 +440,22 @@ def main():
         )
         print("\n=== RULE-ONLY ===")
         print_results(eq, trades, m)
+        payload = {
+            "mode": "rule_only",
+            "symbols": sorted(all_bars),
+            "data_dir": str(args.data_dir),
+            "forecast_cache_root": str(args.forecast_cache_root) if args.forecast_cache_root else None,
+            "start_date": str(args.start_date),
+            "end_date": str(args.end_date),
+            "metrics": m,
+            "trade_count": len(trades),
+        }
     else:
         eq, trades, m = run_gemini_backtest(
             {k: v.copy() for k, v in all_bars.items()}, config,
             start_date=args.start_date, end_date=args.end_date,
             model=args.model, use_cache=not args.no_cache,
+            forecast_cache_root=args.forecast_cache_root,
         )
         print(f"\n=== GEMINI ENHANCED ({args.model}) ===")
         print(f"Return: {m.get('total_return_pct',0):.2f}%")
@@ -446,6 +464,22 @@ def main():
         print(f"WinRate: {m.get('win_rate',0):.1f}%")
         print(f"Trades: {m.get('n_trades',0)}")
         print(f"LLM calls: {m.get('llm_calls',0)}, overrides: {m.get('llm_overrides',0)}")
+        payload = {
+            "mode": "gemini_overlay",
+            "symbols": sorted(all_bars),
+            "model": str(args.model),
+            "data_dir": str(args.data_dir),
+            "forecast_cache_root": str(args.forecast_cache_root) if args.forecast_cache_root else None,
+            "start_date": str(args.start_date),
+            "end_date": str(args.end_date),
+            "metrics": m,
+            "trade_count": len(trades),
+        }
+
+    if args.output_json is not None:
+        args.output_json.parent.mkdir(parents=True, exist_ok=True)
+        args.output_json.write_text(json.dumps(payload, indent=2) + "\n")
+        print(f"Wrote {args.output_json}")
 
 
 if __name__ == "__main__":

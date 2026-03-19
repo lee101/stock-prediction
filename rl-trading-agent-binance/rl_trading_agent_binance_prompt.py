@@ -7,6 +7,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
+from src.forecast_cache_lookup import load_latest_forecast_from_cache
 
 
 FORECAST_CACHE = Path(__file__).resolve().parent.parent / "binanceneural" / "forecast_cache"
@@ -19,6 +20,140 @@ FORECAST_MAE_1H = {
     "DOGEUSD": 1.20,
     "AAVEUSD": 1.50,
 }
+
+FORECAST_MAE_4H = {
+    "BTCUSD": 0.83,
+    "ETHUSD": 1.13,
+    "SOLUSD": 1.46,
+    "DOGEUSD": 1.80,
+    "AAVEUSD": 2.25,
+}
+
+FORECAST_MAE_12H = {
+    "BTCUSD": 1.38,
+    "ETHUSD": 1.88,
+    "SOLUSD": 2.43,
+    "DOGEUSD": 3.00,
+    "AAVEUSD": 3.75,
+}
+
+FORECAST_MAE_BY_HORIZON = {
+    1: FORECAST_MAE_1H,
+    4: FORECAST_MAE_4H,
+    12: FORECAST_MAE_12H,
+}
+
+
+def build_cross_asset_context(all_symbol_bars: dict) -> str:
+    """Build cross-asset correlation and regime context.
+
+    Args:
+        all_symbol_bars: dict of {symbol: DataFrame with OHLCV columns}
+
+    Returns:
+        String block to insert into prompt.
+    """
+    if not all_symbol_bars:
+        return ""
+
+    returns_24h = {}
+    for sym, df in all_symbol_bars.items():
+        if df is None or (hasattr(df, "empty") and df.empty):
+            continue
+        if hasattr(df, "iloc") and len(df) >= 25:
+            closes = df["close"].astype(float).values
+            ret = (closes[-1] - closes[-25]) / closes[-25] * 100
+            returns_24h[sym] = ret
+        elif isinstance(df, list) and len(df) >= 25:
+            closes = [float(r["close"]) for r in df]
+            ret = (closes[-1] - closes[-25]) / closes[-25] * 100
+            returns_24h[sym] = ret
+
+    if len(returns_24h) < 2:
+        return ""
+
+    btc_key = None
+    for k in returns_24h:
+        if "BTC" in k.upper():
+            btc_key = k
+            break
+
+    btc_ret = returns_24h.get(btc_key, 0.0) if btc_key else None
+    alt_rets = {k: v for k, v in returns_24h.items() if k != btc_key}
+    avg_alt_ret = np.mean(list(alt_rets.values())) if alt_rets else 0.0
+
+    # regime classification
+    threshold = 0.5
+    if btc_ret is not None:
+        if btc_ret > threshold and avg_alt_ret > threshold:
+            regime = "risk-on"
+        elif btc_ret < -threshold and avg_alt_ret < -threshold:
+            regime = "risk-off"
+        elif abs(btc_ret - avg_alt_ret) > 1.5:
+            regime = "rotation"
+        else:
+            regime = "neutral"
+    else:
+        avg_all = np.mean(list(returns_24h.values()))
+        if avg_all > threshold:
+            regime = "risk-on"
+        elif avg_all < -threshold:
+            regime = "risk-off"
+        else:
+            regime = "neutral"
+
+    # BTC-ETH rolling correlation (use hourly returns if enough data)
+    eth_key = None
+    for k in all_symbol_bars:
+        if "ETH" in k.upper():
+            eth_key = k
+            break
+
+    corr_str = "N/A"
+    if btc_key and eth_key and btc_key in all_symbol_bars and eth_key in all_symbol_bars:
+        btc_df = all_symbol_bars[btc_key]
+        eth_df = all_symbol_bars[eth_key]
+        try:
+            if hasattr(btc_df, "iloc"):
+                btc_c = btc_df["close"].astype(float).values
+                eth_c = eth_df["close"].astype(float).values
+            else:
+                btc_c = np.array([float(r["close"]) for r in btc_df])
+                eth_c = np.array([float(r["close"]) for r in eth_df])
+            n = min(len(btc_c), len(eth_c), 25)
+            if n >= 3:
+                btc_r = np.diff(btc_c[-n:]) / btc_c[-n:-1]
+                eth_r = np.diff(eth_c[-n:]) / eth_c[-n:-1]
+                if np.std(btc_r) > 0 and np.std(eth_r) > 0:
+                    corr = np.corrcoef(btc_r, eth_r)[0, 1]
+                    if np.isfinite(corr):
+                        corr_str = f"{corr:.2f}"
+        except Exception:
+            pass
+
+    # dominance line
+    dom_line = ""
+    if btc_ret is not None:
+        dom_line = f"BTC dominance: BTC {btc_ret:+.1f}% vs alts {avg_alt_ret:+.1f}%"
+    else:
+        dom_line = f"Avg return: {np.mean(list(returns_24h.values())):+.1f}%"
+
+    # top movers
+    sorted_movers = sorted(returns_24h.items(), key=lambda x: abs(x[1]), reverse=True)
+    movers = sorted_movers[:5]
+    mover_parts = []
+    for sym, ret in movers:
+        short = sym.replace("USD", "").replace("USDT", "")
+        mover_parts.append(f"{short} {ret:+.1f}%")
+    movers_line = ", ".join(mover_parts) if mover_parts else "N/A"
+
+    lines = [
+        "=== Market Regime ===",
+        f"Regime: {regime} | {dom_line}",
+        f"BTC-ETH correlation (24h): {corr_str}",
+        f"Top movers (24h): {movers_line}",
+    ]
+    return "\n".join(lines)
 
 
 def _compute_trend_context(history_rows: list[dict]) -> dict:
@@ -53,27 +188,10 @@ def _compute_trend_context(history_rows: list[dict]) -> dict:
 
 def load_latest_forecast(symbol: str, horizon: int, cache_root: Optional[Path] = None) -> Optional[dict]:
     root = cache_root or FORECAST_CACHE
-    path = root / f"h{horizon}" / f"{symbol}.parquet"
-    if not path.exists():
-        return None
-    try:
-        df = pd.read_parquet(path)
-        if df.empty:
-            return None
-        row = df.iloc[-1]
-        result = {}
-        for col in df.columns:
-            try:
-                val = float(row[col])
-                result[col] = val
-            except (ValueError, TypeError):
-                pass
-        return result
-    except Exception:
-        return None
+    return load_latest_forecast_from_cache(symbol, int(horizon), root)
 
 
-def _fmt_forecast(fc: Optional[dict], current_price: float, symbol: Optional[str] = None) -> str:
+def _fmt_forecast(fc: Optional[dict], current_price: float, symbol: Optional[str] = None, horizon: Optional[int] = None) -> str:
     if not fc:
         return "  No forecast available"
     lines = []
@@ -87,9 +205,12 @@ def _fmt_forecast(fc: Optional[dict], current_price: float, symbol: Optional[str
         spread = fc["predicted_close_p90"] - fc["predicted_close_p10"]
         spread_pct = spread / current_price * 100
         lines.append(f"  90% CI spread: ${spread:.2f} ({spread_pct:.2f}%)")
-    if symbol and symbol in FORECAST_MAE_1H:
-        mae = FORECAST_MAE_1H[symbol]
-        lines.append(f"  Historical MAE: {mae:.2f}%")
+    if symbol and horizon is not None:
+        mae_table = FORECAST_MAE_BY_HORIZON.get(horizon, FORECAST_MAE_1H)
+        if symbol in mae_table:
+            lines.append(f"  Historical MAE: {mae_table[symbol]:.2f}%")
+    elif symbol and symbol in FORECAST_MAE_1H:
+        lines.append(f"  Historical MAE: {FORECAST_MAE_1H[symbol]:.2f}%")
     return "\n".join(lines) if lines else "  No forecast available"
 
 
@@ -102,6 +223,9 @@ def build_live_prompt(
     position_info: Optional[dict] = None,
     fee_bps: int = 10,
     leverage: float = 1.0,
+    fc_4h: Optional[dict] = None,
+    fc_12h: Optional[dict] = None,
+    cross_asset_context: str = "",
 ) -> str:
     recent = history_rows[-12:]
     price_lines = []
@@ -136,10 +260,9 @@ def build_live_prompt(
 
     fc_section = ""
     fc_parts = []
-    if fc_1h:
-        fc_parts.append(f"1-hour ahead:\n{_fmt_forecast(fc_1h, current_price, symbol)}")
-    if fc_24h:
-        fc_parts.append(f"24-hour ahead:\n{_fmt_forecast(fc_24h, current_price)}")
+    for h, fc in [(1, fc_1h), (4, fc_4h), (12, fc_12h), (24, fc_24h)]:
+        if fc:
+            fc_parts.append(f"{h}-hour ahead:\n{_fmt_forecast(fc, current_price, symbol, horizon=h)}")
     if fc_parts:
         fc_section = "\nCHRONOS2 ML FORECASTS:\n" + "\n".join(fc_parts) + "\n"
 
@@ -155,6 +278,10 @@ CURRENT POSITION:
   Held {held:.0f}h (auto-close at 6h), P&L: ${pnl_usd:+.2f} ({pnl_pct:+.2f}%)
   EXIT DECISION: If profitable and momentum fading, take profits. If losing, set tight stop.
 """
+
+    cross_section = ""
+    if cross_asset_context:
+        cross_section = f"\n{cross_asset_context}\n"
 
     fee_str = f"{fee_bps}bps per side" if fee_bps > 0 else "0bps (zero-fee FDUSD pair)"
     lev_str = f"{leverage:.0f}x" if leverage > 1 else "1x (no leverage)"
@@ -173,7 +300,7 @@ CURRENT PRICE: ${current_price:.2f}
 {pos_section}
 TREND CONTEXT: {trend_line}
 {vol_context}
-{fc_section}
+{cross_section}{fc_section}
 LAST 12 HOURS:
 {chr(10).join(price_lines)}
 
@@ -205,6 +332,11 @@ def build_live_prompt_freeform(
     leverage: float = 1.0,
     forecast_error_1h: Optional[dict] = None,
     forecast_error_24h: Optional[dict] = None,
+    fc_4h: Optional[dict] = None,
+    fc_12h: Optional[dict] = None,
+    forecast_error_4h: Optional[dict] = None,
+    forecast_error_12h: Optional[dict] = None,
+    cross_asset_context: str = "",
 ) -> str:
     recent = history_rows[-24:]
     price_lines = []
@@ -230,18 +362,19 @@ def build_live_prompt_freeform(
         sr_line = f"24h range: ${trend['low_24h']:.2f} - ${trend['high_24h']:.2f} ({trend['range_pct']:.2f}% wide)"
 
     fc_parts = []
-    if fc_1h:
-        fc_line = _fmt_forecast(fc_1h, current_price, symbol)
-        if forecast_error_1h and forecast_error_1h.get("mae_pct", 0) > 0:
-            mae = forecast_error_1h["mae_pct"]
-            fc_line += f"\n  Historical MAE: {mae:.2f}% (n={forecast_error_1h.get('samples', '?')})"
-        fc_parts.append(f"1h ahead:\n{fc_line}")
-    if fc_24h:
-        fc_line = _fmt_forecast(fc_24h, current_price)
-        if forecast_error_24h and forecast_error_24h.get("mae_pct", 0) > 0:
-            mae = forecast_error_24h["mae_pct"]
-            fc_line += f"\n  Historical MAE: {mae:.2f}% (n={forecast_error_24h.get('samples', '?')})"
-        fc_parts.append(f"24h ahead:\n{fc_line}")
+    _horizon_specs = [
+        (1, fc_1h, forecast_error_1h),
+        (4, fc_4h, forecast_error_4h),
+        (12, fc_12h, forecast_error_12h),
+        (24, fc_24h, forecast_error_24h),
+    ]
+    for h, fc, fc_err in _horizon_specs:
+        if not fc:
+            continue
+        fc_line = _fmt_forecast(fc, current_price, symbol, horizon=h)
+        if fc_err and fc_err.get("mae_pct", 0) > 0:
+            fc_line += f"\n  Historical MAE: {fc_err['mae_pct']:.2f}% (n={fc_err.get('samples', '?')})"
+        fc_parts.append(f"{h}h ahead:\n{fc_line}")
 
     fc_section = ""
     if fc_parts:
@@ -269,6 +402,10 @@ def build_live_prompt_freeform(
         vol_ratio = recent_vol / avg_vol_24 if avg_vol_24 > 0 else 1.0
         vol_context = f"\nVolume: current={recent_vol:.0f}, 24h avg={avg_vol_24:.0f}, ratio={vol_ratio:.2f}x"
 
+    cross_section = ""
+    if cross_asset_context:
+        cross_section = f"\n{cross_asset_context}\n"
+
     return f"""You are trading {symbol} (cryptocurrency) on 1-hour bars.
 
 Objective: maximize risk-adjusted returns after fees.
@@ -282,7 +419,7 @@ Hard constraints:
 Current price: ${current_price:.2f}
 {sr_line}
 Trend: {trend_line}{vol_context}
-{fc_section}
+{cross_section}{fc_section}
 ## Last 24 hours:
 {chr(10).join(price_lines)}
 

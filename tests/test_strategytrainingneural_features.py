@@ -34,12 +34,12 @@ def test_current_symbols_split(tmp_path: Path, monkeypatch):
     sample.write_text(
         """
 def main():
-    symbols = ["AAPL", "ETH-USD", "NVDA", "BTC-USD"]
+    symbols = ["AAPL", "ETHUSD", "NVDA", "BTCUSD"]
 """,
         encoding="utf-8",
     )
     symbols = current_symbols.load_current_symbols(sample)
-    assert symbols == ["AAPL", "ETH-USD", "NVDA", "BTC-USD"]
+    assert symbols == ["AAPL", "ETHUSD", "NVDA", "BTCUSD"]
     stocks, crypto = current_symbols.split_by_asset_class(symbols)
     assert stocks == ["AAPL", "NVDA"]
-    assert crypto == ["ETH-USD", "BTC-USD"]
+    assert crypto == ["ETHUSD", "BTCUSD"]

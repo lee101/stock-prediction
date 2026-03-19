@@ -8,7 +8,7 @@
 #include <stdio.h>
 
 /* ---------- constants ---------- */
-#define MAX_SYMBOLS       32
+#define MAX_SYMBOLS       64
 #define FEATURES_PER_SYM  16
 #define PRICE_FEATS       5   /* O H L C V */
 #define SYM_NAME_LEN      16

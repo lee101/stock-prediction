@@ -10,8 +10,9 @@ import numpy as np
 import pandas as pd
 from neural_trade_stock_e2e import _build_dataset_config
 from neuraldailytraining import DailyTradingRuntime
-from src.fixtures import all_crypto_symbols
+
 from src.date_utils import is_nyse_open_on_date
+from src.fixtures import all_crypto_symbols
 
 
 @dataclass
@@ -254,29 +255,50 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--val-fraction", type=float, default=0.2)
     parser.add_argument("--validation-days", type=int, default=40)
     parser.add_argument("--device", default=None)
-    parser.add_argument("--crypto-only", action="store_true", help="Restrict dataset/simulation to crypto symbols only.")
+    parser.add_argument(
+        "--crypto-only", action="store_true", help="Restrict dataset/simulation to crypto symbols only."
+    )
     parser.add_argument("--start-date", help="Optional ISO start date for the simulation window.")
     parser.add_argument("--days", type=int, default=5)
     parser.add_argument("--initial-cash", type=float, default=1.0)
-    parser.add_argument("--stock-fee", type=float, default=0.0008, help="Per-leg fee rate for stocks (fractional, 8 bps to match training).")
+    parser.add_argument(
+        "--stock-fee",
+        type=float,
+        default=0.0008,
+        help="Per-leg fee rate for stocks (fractional, 8 bps to match training).",
+    )
     parser.add_argument(
         "--crypto-fee", type=float, default=0.0008, help="Per-leg fee rate for crypto (fractional, 8 bps)."
     )
     parser.add_argument("--maker-fee", type=float, default=0.0008)
     parser.add_argument("--risk-threshold", type=float, help="Optional override for the runtime risk threshold.")
-    parser.add_argument("--confidence-threshold", type=float, default=None, help="Minimum confidence required to trade.")
+    parser.add_argument(
+        "--confidence-threshold", type=float, default=None, help="Minimum confidence required to trade."
+    )
     parser.add_argument(
         "--ignore-non-tradable",
         action="store_true",
         help="Ignore checkpoint non_tradable file and allow all symbols.",
     )
     # Dataset / grouping flags (kept consistent with neural_trade_stock_e2e)
-    parser.add_argument("--require-forecasts", action=argparse.BooleanOptionalAction, default=False, help="Fail if forecast cache missing rows.")
+    parser.add_argument(
+        "--require-forecasts",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Fail if forecast cache missing rows.",
+    )
     parser.add_argument("--forecast-fill-strategy", choices=("persistence", "fail"), default="persistence")
-    parser.add_argument("--forecast-cache-writeback", action=argparse.BooleanOptionalAction, default=True, help="Persist filled forecasts to cache.")
+    parser.add_argument(
+        "--forecast-cache-writeback",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Persist filled forecasts to cache.",
+    )
     parser.add_argument("--grouping-strategy", choices=("static", "correlation"), default="correlation")
     parser.add_argument("--symbol-dropout-rate", type=float, default=0.1)
-    parser.add_argument("--exclude-symbols-file", help="Optional newline-delimited list of symbols to drop from training.")
+    parser.add_argument(
+        "--exclude-symbols-file", help="Optional newline-delimited list of symbols to drop from training."
+    )
     parser.add_argument("--exclude-symbol", nargs="*", help="Inline symbols to drop from training.")
     parser.add_argument("--corr-min", type=float, default=0.6, help="Correlation threshold for grouping.")
     parser.add_argument("--corr-max-group", type=int, default=12, help="Max symbols per correlation cluster.")
