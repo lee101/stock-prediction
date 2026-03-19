@@ -277,6 +277,7 @@ binanceleveragesui/checkpoints
 binanceleveragesui_rlcuda/artifacts*
 binanceneural/forecast_cache_backup/
 binanceneural/binanceneural/forecast_cache/
+binanceneural/deep_sweep_results/
 
 # =============================================================================
 # Alpaca experiment artifacts
@@ -475,6 +476,7 @@ tests/test_binance*.py
 !tests/test_binance_symbol_utils.py
 !tests/test_binancechronossolexperiment_forecast_windowing.py
 !tests/test_binance_watcher_cli_fill_details.py
+!tests/test_binanceneural_wandb.py
 tests/test_default_strategy_checkpoint.py
 tests/test_download_hourly_update.py
 tests/test_marketsimlong*.py
