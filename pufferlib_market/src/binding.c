@@ -131,7 +131,12 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     if (env->fill_probability > 1.0f) env->fill_probability = 1.0f;
 
     val = kwargs ? PyDict_GetItemString(kwargs, "forced_offset") : NULL;
-    env->forced_offset = val ? (int)PyLong_AsLong(val) : -1;
+    if (val) {
+        int offset = (int)PyLong_AsLong(val);
+        env->forced_offset = (offset < -1) ? -1 : offset;
+    } else {
+        env->forced_offset = -1;
+    }
 
     val = kwargs ? PyDict_GetItemString(kwargs, "max_hold_hours") : NULL;
     env->max_hold_hours = val ? (int)PyLong_AsLong(val) : 0;
@@ -197,7 +202,10 @@ static int my_put(Env* env, PyObject* args, PyObject* kwargs) {
     PyObject* val;
 
     val = PyDict_GetItemString(kwargs, "forced_offset");
-    if (val) env->forced_offset = (int)PyLong_AsLong(val);
+    if (val) {
+        int offset = (int)PyLong_AsLong(val);
+        env->forced_offset = (offset < -1) ? -1 : offset;
+    }
 
     return 0;
 }
@@ -240,7 +248,7 @@ static PyObject* my_vec_set_offsets(PyObject* self, PyObject* args) {
             val = PyLong_AsLong(item);
             Py_DECREF(item);
         }
-        vec->envs[i]->forced_offset = (int)val;
+        vec->envs[i]->forced_offset = (val < -1) ? -1 : (int)val;
     }
     Py_RETURN_NONE;
 }
