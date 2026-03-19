@@ -12,6 +12,89 @@
   - `MU`: failed forecast cache gate.
   - `TTD`: failed forecast cache gate.
 
+## Completed History Ingest Batch
+
+- runner: local `RTX 5090` workstation
+- env:
+  - `cd /nvme0n1-disk/code/stock-prediction`
+  - `source .venv313/bin/activate`
+- command:
+
+```bash
+python -m alpacaconstrainedexp.refresh_hourly_data \
+  --symbols AAL,BTG,RIG,ABEV,ITUB,NOK,PLUG \
+  --data-root trainingdatahourly \
+  --backfill-hours 5000 \
+  --overlap-hours 2
+```
+
+- output hourly CSVs now exist under `trainingdatahourly/stocks/` for:
+  - `AAL` (`1051` rows)
+  - `BTG` (`1006` rows)
+  - `RIG` (`1005` rows)
+  - `ABEV` (`1000` rows)
+  - `ITUB` (`995` rows)
+  - `NOK` (`1142` rows)
+  - `PLUG` (`1256` rows)
+- note:
+  - the refresher still reports most stocks as `stale` after the session because the validator uses a flat `6h` threshold against the last hourly equity bar. The files themselves were written successfully and are sufficient for expansion backtests.
+
+## Completed First-Pass Evaluation
+
+- symbol: `AAL`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 01:51 UTC`
+- command:
+
+```bash
+python scripts/run_alpaca_stock_expansion.py \
+  --manifest-path docs/stock_universe_candidates_20260318.json \
+  --candidate-symbols AAL \
+  --base-stock-universe live20260318 \
+  --baseline-source-dir analysis/alpaca_stock_expansion_pfe_20260318/baseline \
+  --candidate-only-cache-build \
+  --candidate-max-h1-mae-percent 10 \
+  --candidate-max-h24-mae-percent 10 \
+  --output-dir analysis/alpaca_stock_expansion_aal_20260319
+```
+
+- current status:
+  - `AAL` passed the forecast cache gate on the base Chronos2 checkpoint.
+  - cache MAE so far from `analysis/alpaca_stock_expansion_aal_20260319/forecast_cache_mae.json`:
+    - `h1 MAE%=8.3361`
+    - `h24 MAE%=9.4679`
+  - final 120-day market simulator result from `analysis/alpaca_stock_expansion_aal_20260319/AAL/metrics.json`:
+    - `return=-0.043932`
+    - `sortino=-6.9282`
+    - `max_drawdown=0.043932`
+    - `num_fills=2144`
+  - baseline comparison:
+    - baseline: `return=-0.041069`, `sortino=-6.7113`, `max_drawdown=0.041186`
+  - decision: rejected
+    - reason: `AAL` made return, Sortino, and max drawdown all worse than the current live baseline, so it is not worth a retrain cycle yet.
+
+## Active First-Pass Evaluation
+
+- symbol: `ITUB`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 01:56 UTC`
+- command:
+
+```bash
+python scripts/run_alpaca_stock_expansion.py \
+  --manifest-path docs/stock_universe_candidates_20260318.json \
+  --candidate-symbols ITUB \
+  --base-stock-universe live20260318 \
+  --baseline-source-dir analysis/alpaca_stock_expansion_pfe_20260318/baseline \
+  --candidate-only-cache-build \
+  --candidate-max-h1-mae-percent 10 \
+  --candidate-max-h24-mae-percent 10 \
+  --output-dir analysis/alpaca_stock_expansion_itub_20260319
+```
+
+- current status:
+  - first-pass cache build and 120-day sim are running.
+
 ## Fixes Applied In This Iteration
 
 - Fixed `src/chronos2_objective.py` to build correlation matrices with an outer join instead of a global inner join.
