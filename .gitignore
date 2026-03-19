@@ -93,7 +93,10 @@ hyperparams_optimized_all/
 # =============================================================================
 # Hyperparams and strategy configs (generated, not source)
 # =============================================================================
+best/
+hyperparams/best/
 hyperparams/chronos2/
+hyperparams/chronos2_long/
 hyperparams/close_policy
 preaugstrategies/chronos2/
 preaugstrategies/best/
