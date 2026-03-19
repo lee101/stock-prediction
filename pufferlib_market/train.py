@@ -632,15 +632,21 @@ def train(args):
     else:
         _compiled_ppo_loss = _ppo_loss_fn
 
-    # ── Rollout buffers ──
+    # ── Rollout buffers (on GPU when possible to avoid per-step CPU↔GPU copies) ──
     T = args.rollout_len
     N = num_envs
-    buf_obs = torch.zeros((T, N, obs_size), dtype=torch.float32)
-    buf_act = torch.zeros((T, N), dtype=torch.long)
-    buf_logprob = torch.zeros((T, N), dtype=torch.float32)
+    if use_cuda_graph:
+        buf_obs = torch.zeros((T, N, obs_size), dtype=torch.float32, device=device)
+        buf_act = torch.zeros((T, N), dtype=torch.long, device=device)
+        buf_logprob = torch.zeros((T, N), dtype=torch.float32, device=device)
+        buf_value = torch.zeros((T, N), dtype=torch.float32, device=device)
+    else:
+        buf_obs = torch.zeros((T, N, obs_size), dtype=torch.float32)
+        buf_act = torch.zeros((T, N), dtype=torch.long)
+        buf_logprob = torch.zeros((T, N), dtype=torch.float32)
+        buf_value = torch.zeros((T, N), dtype=torch.float32)
     buf_reward = torch.zeros((T, N), dtype=torch.float32)
     buf_done = torch.zeros((T, N), dtype=torch.float32)
-    buf_value = torch.zeros((T, N), dtype=torch.float32)
 
     # ── Training loop ──
     global_step = resume_state.global_step
@@ -686,7 +692,7 @@ def train(args):
         policy.eval()
         for step in range(T):
             if use_cuda_graph:
-                # Fast path: CUDA graph inference
+                # Fast path: CUDA graph inference (buffers on GPU, only actions go to CPU)
                 if obs_norm is not None:
                     obs_norm.update(obs_buf)
                     np.copyto(_pinned_obs.numpy(), obs_norm.normalize(obs_buf))
@@ -694,15 +700,13 @@ def train(args):
                     np.copyto(_pinned_obs.numpy(), obs_buf)
                 _static_obs.copy_(_pinned_obs, non_blocking=True)
                 _inference_graph.replay()
-                # Store rollout data
-                buf_obs[step] = _static_obs.cpu()
-                buf_act[step] = _static_action.cpu()
-                buf_logprob[step] = _static_logprob.cpu()
-                buf_value[step] = _static_value.cpu()
-                # Actions to C env (single cpu transfer, reuse)
-                torch.cuda.current_stream().synchronize()
-                _pinned_action.copy_(_static_action.to(torch.int32))
-                act_buf[:] = _pinned_action.numpy()
+                # Store on GPU (no .cpu() calls)
+                buf_obs[step].copy_(_static_obs)
+                buf_act[step].copy_(_static_action)
+                buf_logprob[step].copy_(_static_logprob)
+                buf_value[step].copy_(_static_value)
+                # Only action needs CPU for C env
+                act_buf[:] = _static_action.cpu().to(torch.int32).numpy()
             else:
                 # Fallback: eager inference (CPU or no CUDA graph)
                 raw_obs = obs_buf.copy()
@@ -733,7 +737,8 @@ def train(args):
             next_obs = torch.from_numpy(raw_next).to(device, non_blocking=True)
             next_value = policy.get_value(next_obs).cpu()
 
-        # Flatten envs for GAE
+        # GAE on CPU (sequential loop, small cost)
+        values_cpu = buf_value.cpu() if buf_value.is_cuda else buf_value
         advantages = torch.zeros_like(buf_reward)
         last_gae = torch.zeros(N)
 
@@ -741,21 +746,22 @@ def train(args):
             if t == T - 1:
                 next_val = next_value
             else:
-                next_val = buf_value[t + 1]
+                next_val = values_cpu[t + 1]
             not_done = 1.0 - buf_done[t]
-            delta = buf_reward[t] + args.gamma * next_val * not_done - buf_value[t]
+            delta = buf_reward[t] + args.gamma * next_val * not_done - values_cpu[t]
             last_gae = delta + args.gamma * args.gae_lambda * not_done * last_gae
             advantages[t] = last_gae
 
-        returns = advantages + buf_value
+        returns = advantages + values_cpu
 
         # ── PPO update ──
         policy.train()
-        b_obs = buf_obs.reshape(-1, obs_size).to(device, non_blocking=True)
-        b_act = buf_act.reshape(-1).to(device, non_blocking=True)
-        b_logprob = buf_logprob.reshape(-1).to(device, non_blocking=True)
+        # buf_obs/act/logprob/value are already on GPU when using CUDA graphs
+        b_obs = buf_obs.reshape(-1, obs_size) if buf_obs.is_cuda else buf_obs.reshape(-1, obs_size).to(device, non_blocking=True)
+        b_act = buf_act.reshape(-1) if buf_act.is_cuda else buf_act.reshape(-1).to(device, non_blocking=True)
+        b_logprob = buf_logprob.reshape(-1) if buf_logprob.is_cuda else buf_logprob.reshape(-1).to(device, non_blocking=True)
         b_returns = returns.reshape(-1).to(device, non_blocking=True)
-        b_values = buf_value.reshape(-1).to(device, non_blocking=True)
+        b_values = values_cpu.reshape(-1).to(device, non_blocking=True)
 
         b_advantages = normalize_advantages(
             advantages.to(device, non_blocking=True),
