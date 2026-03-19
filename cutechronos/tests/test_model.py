@@ -17,6 +17,12 @@ import torch
 from cutechronos.model import CuteChronos2Model
 from cutechronos.tests.conftest import build_model_pair
 
+# All tests in this module require the original Chronos2Model (and therefore
+# the upstream chronos-forecasting package).  build_model_pair() will call
+# pytest.skip() if the package is not available, but the marker lets CI
+# filter the entire module cheaply with ``-m "not model_required"``.
+pytestmark = pytest.mark.model_required
+
 
 # -------------------------------------------------------------------
 # Test: matching outputs with from_original weight copy
