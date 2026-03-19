@@ -14,6 +14,7 @@
   - `TTD`: failed forecast cache gate.
   - `PLUG`: failed forecast cache gate.
   - `NOK`: failed forecast cache gate.
+  - `RIG`: failed forecast cache gate.
 
 ## Completed History Ingest Batch
 
@@ -211,6 +212,32 @@ python scripts/run_alpaca_stock_expansion.py \
     - active Supervisor config synced: `/etc/supervisor/conf.d/unified-stock-trader.conf`
     - explicit live env now includes `PAPER=0`
     - live status after deploy: `unified-stock-trader RUNNING`
+
+## Completed First-Pass Evaluation
+
+- symbol: `RIG`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 03:49 UTC`
+- command:
+
+```bash
+python scripts/run_alpaca_stock_expansion.py \
+  --manifest-path docs/stock_universe_candidates_20260318.json \
+  --candidate-symbols RIG \
+  --baseline-source-dir analysis/alpaca_stock_expansion_btg_20260319/BTG \
+  --candidate-only-cache-build \
+  --candidate-max-h1-mae-percent 10 \
+  --candidate-max-h24-mae-percent 10 \
+  --output-dir analysis/alpaca_stock_expansion_rig_20260319
+```
+
+- current status:
+  - `RIG` failed the forecast cache gate on the base Chronos2 checkpoint.
+  - cache MAE from `analysis/alpaca_stock_expansion_rig_20260319/forecast_cache_mae.json`:
+    - `h1 MAE%=13.0350`
+    - `h24 MAE%=15.3028`
+  - decision: rejected
+    - reason: `RIG` missed both cache gates on the base checkpoint, so it stays in the tune-or-retrain bucket and does not earn a simulator run against the live `BTG` baseline.
 
 ## Fixes Applied In This Iteration
 
