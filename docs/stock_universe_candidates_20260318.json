@@ -60,7 +60,6 @@
     "ABEV"
   ],
   "next_trial_order": [
-    "ONDS",
     "OWL",
     "NBIS",
     "BMNR",
@@ -167,7 +166,7 @@
       "currently_live": false,
       "history_rows": 1085,
       "forecast_cache_horizons": [],
-      "status": "history_ready_needs_cache_and_retrain",
+      "status": "rejected_first_pass_cache_gate",
       "thesis": "Small-cap aerospace and drone-adjacent name; high-volatility tail candidate."
     },
     {
