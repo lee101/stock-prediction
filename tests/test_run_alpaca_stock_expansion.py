@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from scripts.run_alpaca_stock_expansion import (
     _assess_promotion,
     _build_promotion_summary,
@@ -9,6 +11,7 @@ from scripts.run_alpaca_stock_expansion import (
     _candidate_mae_snapshot,
     _load_forecast_cache_mae,
     _resolve_baseline_metrics_path,
+    _resolve_forecast_cache_mae_path,
     _candidate_direction_lists,
     _resolve_base_symbols,
     _resolve_cache_symbols,
@@ -170,6 +173,41 @@ def test_load_forecast_cache_mae_and_snapshot(tmp_path) -> None:
         "candidate_mae_h1_percent": 0.8,
         "candidate_mae_h24_percent": 15.2,
     }
+
+
+def test_resolve_forecast_cache_mae_path_reuses_external_source(tmp_path) -> None:
+    output_dir = tmp_path / "trial"
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source_path = source_dir / "forecast_cache_mae.json"
+    source_path.write_text(
+        """
+{
+  "metrics": [
+    {"symbol": "F", "horizon_hours": 1, "mae_percent": 4.0},
+    {"symbol": "F", "horizon_hours": 24, "mae_percent": 4.8}
+  ]
+}
+""".strip()
+    )
+    resolved = _resolve_forecast_cache_mae_path(
+        output_dir=output_dir,
+        skip_cache_build=True,
+        forecast_cache_mae_source=source_dir,
+        require_existing_summary=True,
+    )
+    assert resolved == output_dir / "forecast_cache_mae.json"
+    assert resolved.read_text() == source_path.read_text()
+
+
+def test_resolve_forecast_cache_mae_path_requires_summary_when_skipping_with_gate(tmp_path) -> None:
+    with pytest.raises(SystemExit, match="Missing forecast cache MAE summary"):
+        _resolve_forecast_cache_mae_path(
+            output_dir=tmp_path / "trial",
+            skip_cache_build=True,
+            forecast_cache_mae_source=None,
+            require_existing_summary=True,
+        )
 
 
 def test_candidate_mae_gate_reason_blocks_bad_cache_quality() -> None:

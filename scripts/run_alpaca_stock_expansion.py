@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -131,6 +132,45 @@ def _load_forecast_cache_mae(path: Path) -> dict[str, dict[int, float]]:
             continue
         result.setdefault(symbol, {})[horizon] = mae_percent
     return result
+
+
+def _coerce_forecast_cache_mae_source_path(source: Path | None) -> Path | None:
+    if source is None:
+        return None
+    source_path = Path(source)
+    if source_path.is_dir():
+        source_path = source_path / "forecast_cache_mae.json"
+    return source_path
+
+
+def _resolve_forecast_cache_mae_path(
+    *,
+    output_dir: Path,
+    skip_cache_build: bool,
+    forecast_cache_mae_source: Path | None,
+    require_existing_summary: bool,
+) -> Path:
+    output_path = Path(output_dir) / "forecast_cache_mae.json"
+    if output_path.exists():
+        return output_path
+
+    source_path = _coerce_forecast_cache_mae_source_path(forecast_cache_mae_source)
+    if source_path is not None:
+        if not source_path.exists():
+            raise SystemExit(f"Forecast cache MAE source does not exist: {source_path}")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if source_path.resolve() != output_path.resolve():
+            shutil.copyfile(source_path, output_path)
+        return output_path
+
+    if skip_cache_build and require_existing_summary:
+        raise SystemExit(
+            "Missing forecast cache MAE summary for --skip-cache-build with candidate MAE gates. "
+            "Pass --forecast-cache-mae-source pointing to an existing forecast_cache_mae.json, "
+            "or rerun without --skip-cache-build."
+        )
+
+    return output_path
 
 
 def _candidate_mae_snapshot(mae_by_symbol: dict[str, dict[int, float]], symbol: str) -> dict[str, float]:
@@ -546,6 +586,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--forecast-cache-root", type=Path, default=Path("unified_hourly_experiment/forecast_cache"))
     parser.add_argument("--output-dir", type=Path, default=Path("analysis/alpaca_stock_expansion_20260318"))
     parser.add_argument("--manifest-path", type=Path, default=None)
+    parser.add_argument(
+        "--forecast-cache-mae-source",
+        type=Path,
+        default=None,
+        help="Optional existing forecast_cache_mae.json file or source directory to reuse when skipping cache builds.",
+    )
     parser.add_argument("--candidate-symbols", default=None, help="Optional comma-separated subset of candidate symbols.")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--moving-average-windows", default="168,600,720")
@@ -662,6 +708,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         for candidate in ready
     }
 
+    mae_summary_required = (
+        float(args.candidate_max_h1_mae_percent) > 0.0 or float(args.candidate_max_h24_mae_percent) > 0.0
+    )
+    mae_summary_path = output_dir / "forecast_cache_mae.json"
     if not args.skip_cache_build:
         cache_symbols = _resolve_cache_symbols(
             base_symbols=base_symbols,
@@ -673,10 +723,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             data_root=args.stock_data_root,
             forecast_cache_root=args.forecast_cache_root,
             lookback_hours=float(args.cache_lookback_hours),
-            output_json=output_dir / "forecast_cache_mae.json",
+            output_json=mae_summary_path,
             force_rebuild=bool(args.force_cache_rebuild),
         )
-    mae_by_symbol = _load_forecast_cache_mae(output_dir / "forecast_cache_mae.json")
+    mae_summary_path = _resolve_forecast_cache_mae_path(
+        output_dir=output_dir,
+        skip_cache_build=bool(args.skip_cache_build),
+        forecast_cache_mae_source=args.forecast_cache_mae_source,
+        require_existing_summary=mae_summary_required,
+    )
+    mae_by_symbol = _load_forecast_cache_mae(mae_summary_path)
 
     checkpoint_path = Path(default_checkpoint).expanduser().resolve()
     baseline_dir = output_dir / "baseline"

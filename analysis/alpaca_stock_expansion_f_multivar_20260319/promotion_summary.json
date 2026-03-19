@@ -1,0 +1,11 @@
+{
+  "promote": false,
+  "promoted_symbol": null,
+  "promotion_reason": "No candidate met promotion thresholds. Rejected candidates: F",
+  "thresholds": {
+    "min_return_delta": 0.0,
+    "min_sortino_delta": 0.0,
+    "max_drawdown_delta": 0.0
+  },
+  "promotable_candidates": []
+}
