@@ -11,4 +11,5 @@ exec /home/lee/code/stock/.venv313/bin/python -u \
   --execution-mode margin \
   --leverage 5 \
   --interval 3600 \
+  --fallback-mode chronos2 \
   "$@"
