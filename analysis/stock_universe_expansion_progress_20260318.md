@@ -23,6 +23,7 @@
   - `HIMS`: failed forecast cache gate.
   - `ONDS`: failed forecast cache gate.
   - `OWL`: failed forecast cache gate.
+  - `NBIS`: failed forecast cache gate.
 
 ## Completed History Ingest Batch
 
@@ -496,6 +497,32 @@ python scripts/run_alpaca_stock_expansion.py \
     - `h24 MAE%=12.0786`
   - decision: rejected
     - reason: `OWL` came close on `h1` but still missed both cache gates on the base checkpoint, so it stays in the tune-or-retrain bucket and does not earn a simulator run against the live `ABEV` baseline.
+
+## Completed First-Pass Evaluation
+
+- symbol: `NBIS`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 04:18 UTC`
+- command:
+
+```bash
+python scripts/run_alpaca_stock_expansion.py \
+  --manifest-path docs/stock_universe_candidates_20260318.json \
+  --candidate-symbols NBIS \
+  --baseline-source-dir analysis/alpaca_stock_expansion_abev_20260319/ABEV \
+  --candidate-only-cache-build \
+  --candidate-max-h1-mae-percent 10 \
+  --candidate-max-h24-mae-percent 10 \
+  --output-dir analysis/alpaca_stock_expansion_nbis_20260319
+```
+
+- current status:
+  - `NBIS` failed the forecast cache gate on the base Chronos2 checkpoint.
+  - cache MAE from `analysis/alpaca_stock_expansion_nbis_20260319/forecast_cache_mae.json`:
+    - `h1 MAE%=12.0542`
+    - `h24 MAE%=14.2682`
+  - decision: rejected
+    - reason: `NBIS` missed both cache gates on the base checkpoint, so it stays in the tune-or-retrain bucket and does not earn a simulator run against the live `ABEV` baseline.
 
 ## Fixes Applied In This Iteration
 
