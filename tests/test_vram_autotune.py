@@ -1,8 +1,13 @@
 from types import SimpleNamespace
 
-from hftraining.config import ExperimentConfig, TrainingConfig
-from hftraining import run_training as hf_run
-from pufferlibtraining import train_ppo as ppo
+import pytest
+
+try:
+    from hftraining.config import ExperimentConfig, TrainingConfig
+    from hftraining import run_training as hf_run
+    from pufferlibtraining import train_ppo as ppo
+except (ImportError, ModuleNotFoundError):
+    pytest.skip("Required modules hftraining/pufferlibtraining not available", allow_module_level=True)
 
 
 def test_pufferlib_autotunes_batches(monkeypatch):

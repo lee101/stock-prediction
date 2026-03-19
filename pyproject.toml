@@ -317,6 +317,8 @@ unresolved-attribute = "ignore"
 
 [tool.mypy]
 python_version = "3.11"
+explicit_package_bases = true  # Avoid "stock-prediction is not a valid package name" from dir name
+mypy_path = ["."]
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false  # Start permissive, tighten over time
