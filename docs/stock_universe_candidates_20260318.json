@@ -56,10 +56,20 @@
     "EBAY",
     "EXPE",
     "ITUB",
-    "BTG"
+    "BTG",
+    "ABEV"
   ],
   "next_trial_order": [
-    "ABEV"
+    "MARA",
+    "RKLB",
+    "PATH",
+    "TME",
+    "HIMS",
+    "ONDS",
+    "OWL",
+    "NBIS",
+    "BMNR",
+    "RCAT"
   ],
   "covariate_seed_groups": {
     "semis_and_ai": [
@@ -160,9 +170,9 @@
       "company": "Ondas Inc.",
       "priority": 20,
       "currently_live": false,
-      "history_rows": 0,
+      "history_rows": 1085,
       "forecast_cache_horizons": [],
-      "status": "needs_history_ingest",
+      "status": "history_ready_needs_cache_and_retrain",
       "thesis": "Small-cap aerospace and drone-adjacent name; high-volatility tail candidate."
     },
     {
@@ -244,9 +254,9 @@
       "company": "Bitmine Immersion Technologies, Inc.",
       "priority": 15,
       "currently_live": false,
-      "history_rows": 0,
+      "history_rows": 1140,
       "forecast_cache_horizons": [],
-      "status": "needs_history_ingest",
+      "status": "history_ready_needs_cache_and_retrain",
       "thesis": "Very high-volatility small-cap crypto-adjacent name; only after data and liquidity checks."
     },
     {
@@ -254,9 +264,9 @@
       "company": "Nebius Group N.V.",
       "priority": 18,
       "currently_live": false,
-      "history_rows": 0,
+      "history_rows": 1092,
       "forecast_cache_horizons": [],
-      "status": "needs_history_ingest",
+      "status": "history_ready_needs_cache_and_retrain",
       "thesis": "Speculative AI infrastructure candidate that may behave differently from US megacap tech."
     },
     {
@@ -264,9 +274,9 @@
       "company": "Tencent Music Entertainment Group",
       "priority": 24,
       "currently_live": false,
-      "history_rows": 0,
+      "history_rows": 989,
       "forecast_cache_horizons": [],
-      "status": "needs_history_ingest",
+      "status": "history_ready_needs_cache_and_retrain",
       "thesis": "International internet and ADR exposure for geographic diversification."
     },
     {
@@ -274,9 +284,9 @@
       "company": "MARA Holdings, Inc.",
       "priority": 28,
       "currently_live": false,
-      "history_rows": 0,
+      "history_rows": 1181,
       "forecast_cache_horizons": [],
-      "status": "needs_history_ingest",
+      "status": "history_ready_needs_cache_and_retrain",
       "thesis": "Crypto beta proxy with different event sensitivity from pure equities."
     },
     {
@@ -314,9 +324,9 @@
       "company": "Blue Owl Capital Inc.",
       "priority": 20,
       "currently_live": false,
-      "history_rows": 0,
+      "history_rows": 992,
       "forecast_cache_horizons": [],
-      "status": "needs_history_ingest",
+      "status": "history_ready_needs_cache_and_retrain",
       "thesis": "Alternative asset management factor candidate after data coverage is added."
     },
     {
@@ -333,10 +343,10 @@
       "symbol": "ABEV",
       "company": "Ambev S.A.",
       "priority": 14,
-      "currently_live": false,
+      "currently_live": true,
       "history_rows": 1000,
       "forecast_cache_horizons": [],
-      "status": "history_ready_needs_cache_and_retrain",
+      "status": "promoted_live_20260319",
       "thesis": "Lower-volatility international consumer staple ADR."
     },
     {
@@ -354,9 +364,9 @@
       "company": "Hims & Hers Health, Inc.",
       "priority": 22,
       "currently_live": false,
-      "history_rows": 0,
+      "history_rows": 1089,
       "forecast_cache_horizons": [],
-      "status": "needs_history_ingest",
+      "status": "history_ready_needs_cache_and_retrain",
       "thesis": "Consumer digital health growth name for later high-beta expansion."
     },
     {
@@ -364,9 +374,9 @@
       "company": "UiPath, Inc.",
       "priority": 26,
       "currently_live": false,
-      "history_rows": 0,
+      "history_rows": 1019,
       "forecast_cache_horizons": [],
-      "status": "needs_history_ingest",
+      "status": "history_ready_needs_cache_and_retrain",
       "thesis": "Automation and software factor candidate for a later enterprise-tech batch."
     },
     {
@@ -374,9 +384,9 @@
       "company": "Red Cat Holdings, Inc.",
       "priority": 12,
       "currently_live": false,
-      "history_rows": 0,
+      "history_rows": 1012,
       "forecast_cache_horizons": [],
-      "status": "needs_history_ingest",
+      "status": "history_ready_needs_cache_and_retrain",
       "thesis": "Micro-cap drone and defense-adjacent candidate, high-risk and data-sensitive."
     },
     {
@@ -384,9 +394,9 @@
       "company": "Rocket Lab Corporation",
       "priority": 27,
       "currently_live": false,
-      "history_rows": 0,
+      "history_rows": 1012,
       "forecast_cache_horizons": [],
-      "status": "needs_history_ingest",
+      "status": "history_ready_needs_cache_and_retrain",
       "thesis": "Space and defense-adjacent growth name with potential regime diversification."
     }
   ]
