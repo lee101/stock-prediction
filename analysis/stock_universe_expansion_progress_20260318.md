@@ -1243,3 +1243,168 @@ python -u scripts/retrain_chronos2_hourly_loras.py \
   - simulated Sortino worsened to `-5.9790` from baseline `-5.8506`
 - decision: rejected
   - reason: the LoRA finally pushed `h1` below gate, but `h24` still missed the strict threshold and even the relaxed research sim failed the actual promotion rule because Sortino regressed against the live `ABEV` baseline.
+
+## Completed Hourly Tune
+
+- symbol: `RKLB`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 05:05 UTC`
+- tuned config path: `hyperparams/chronos2/hourly/RKLB.json`
+- tuning command:
+
+```bash
+python hyperparam_chronos_hourly.py \
+  --symbols RKLB \
+  --quick \
+  --holdout-hours 168 \
+  --prediction-length 24 \
+  --objective composite \
+  --cohort-size 4 \
+  --cohort-min-abs-corr 0.25 \
+  --save-hyperparams
+```
+
+- tuning outcome:
+  - saved `hyperparams/chronos2/hourly/RKLB.json`
+  - best objective config: `context_length=1024`, `skip_rates=[1]`, `aggregation=single`, `multivariate=False`
+  - tuner reported `pct_return_mae=1.5071%`
+- tuned follow-on cache outcome:
+  - `h1 MAE%=13.3793`
+  - `h24 MAE%=14.9696`
+- promotion summary from `analysis/alpaca_stock_expansion_rklb_tuned_20260319/promotion_summary.json`:
+  - `promote=false`
+  - reason: `No candidate met promotion thresholds. Rejected candidates: RKLB`
+- decision: move to multivariate LoRA
+  - reason: the tuned hourly config did not improve the realized cache gate, so `RKLB` moved to the evaluator-recommended multivariate LoRA path with `PLTR, NVDA, NET, META`.
+
+## Started Multivariate LoRA Trial
+
+- symbol: `RKLB`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 05:09 UTC`
+- training log path: `analysis/local_training_logs/rklb_lora_stockexp_multivar_20260319.log`
+- output artifact path: `chronos2_finetuned/RKLB_lora_stockexp_multivar_20260319/finetuned-ckpt`
+- training command:
+
+```bash
+python -u scripts/retrain_chronos2_hourly_loras.py \
+  --symbol RKLB \
+  --data-root trainingdatahourly/stocks \
+  --output-root chronos2_finetuned \
+  --context-length 1024 \
+  --batch-size 32 \
+  --learning-rate 5e-05 \
+  --num-steps 1500 \
+  --save-name RKLB_lora_stockexp_multivar_20260319 \
+  --covariate-symbols PLTR,NVDA,NET,META \
+  --covariate-cols close \
+  --no-update-hparams
+```
+
+- current status:
+  - startup validated cleanly in a 1-step smoke run:
+    - artifact: `chronos2_finetuned/RKLB_lora_stockexp_multivar_smoke_20260319/finetuned-ckpt`
+    - smoke outcome: `val_mae%=4.5845`, `test_mae%=3.5420`
+  - full 1500-step run launched with peers `PLTR, NVDA, NET, META`.
+
+## Completed Multivariate LoRA Trial
+
+- symbol: `RKLB`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 05:09 UTC`
+- training log path: `analysis/local_training_logs/rklb_lora_stockexp_multivar_20260319.log`
+- output artifact path: `chronos2_finetuned/RKLB_lora_stockexp_multivar_20260319/finetuned-ckpt`
+- training outcome:
+  - `val_mae%=1.7887`
+  - `test_mae%=2.1666`
+
+## Completed Follow-On Evaluation
+
+- symbol: `RKLB`
+- evaluation directory: `analysis/alpaca_stock_expansion_rklb_lora_20260319`
+- rebuilt forecast cache outcome:
+  - `h1 MAE%=14.0942`
+  - `h24 MAE%=15.9921`
+- strict-gate promotion summary from `analysis/alpaca_stock_expansion_rklb_lora_20260319/promotion_summary.json`:
+  - `promote=false`
+  - reason: `No candidate met promotion thresholds. Rejected candidates: RKLB`
+- decision: rejected
+  - reason: despite strong trainer metrics, the real cache pipeline emitted repeated heuristic fallbacks and both horizons landed well above the `10%` gate, so `RKLB` never earned a simulator comparison against the live `ABEV` baseline.
+
+## Completed Soft-Gate Research Sim
+
+- symbol: `NOK`
+- evaluation directory: `analysis/alpaca_stock_expansion_nok_softgate_20260319`
+- relaxed gate used only for research:
+  - `candidate_max_h24_mae_percent=11.25`
+- simulated outcome:
+  - return `-0.0340083` vs baseline `-0.0335545`
+  - Sortino `-5.7834` vs baseline `-5.8506`
+  - max drawdown `0.0345393` vs baseline `0.0337971`
+- promotion summary from `analysis/alpaca_stock_expansion_nok_softgate_20260319/promotion_summary.json`:
+  - `promote=false`
+  - reason: `No candidate met promotion thresholds. Rejected candidates: NOK`
+- decision: rejected
+  - reason: the relaxed-gate research sim improved Sortino slightly, but return and max drawdown both regressed against the live `ABEV` baseline, so `NOK` is not worth more retrain work right now.
+
+## Completed Hourly Tune
+
+- symbol: `RIG`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 05:22 UTC`
+- tuned config path: `hyperparams/chronos2/hourly/RIG.json`
+- tuning command:
+
+```bash
+python hyperparam_chronos_hourly.py \
+  --symbols RIG \
+  --quick \
+  --holdout-hours 168 \
+  --prediction-length 24 \
+  --objective composite \
+  --cohort-size 4 \
+  --cohort-min-abs-corr 0.25 \
+  --save-hyperparams
+```
+
+- tuning outcome:
+  - saved `hyperparams/chronos2/hourly/RIG.json`
+  - best objective config: `context_length=1024`, `skip_rates=[1]`, `aggregation=single`, `multivariate=True`
+  - tuner reported `pct_return_mae=6.0401%`
+  - tuner found no usable correlated cohort peers (`cohort_used=0/0`)
+- tuned follow-on cache outcome:
+  - `h1 MAE%=13.0350`
+  - `h24 MAE%=15.3028`
+- promotion summary from `analysis/alpaca_stock_expansion_rig_tuned_20260319/promotion_summary.json`:
+  - `promote=false`
+  - reason: `No candidate met promotion thresholds. Rejected candidates: RIG`
+- decision: move to single-symbol LoRA
+  - reason: the tuned hourly config did not improve the realized cache gate, and the evaluator recommends the single-symbol LoRA baseline because there is no usable correlated cohort for `RIG`.
+
+## Started Single-Symbol LoRA Trial
+
+- symbol: `RIG`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 05:24 UTC`
+- training log path: `analysis/local_training_logs/rig_lora_stockexp_single_20260319.log`
+- output artifact path: `chronos2_finetuned/RIG_lora_stockexp_single_20260319/finetuned-ckpt`
+- training command:
+
+```bash
+python -u scripts/retrain_chronos2_hourly_loras.py \
+  --symbol RIG \
+  --data-root trainingdatahourly/stocks \
+  --output-root chronos2_finetuned \
+  --context-length 1024 \
+  --batch-size 32 \
+  --learning-rate 5e-05 \
+  --num-steps 1500 \
+  --save-name RIG_lora_stockexp_single_20260319 \
+  --no-update-hparams
+```
+
+- current status:
+  - startup validated cleanly in a 1-step smoke run:
+    - artifact: `chronos2_finetuned/RIG_lora_stockexp_single_smoke_20260319/finetuned-ckpt`
+    - smoke outcome: `val_mae%=4.3410`, `test_mae%=4.9974`
+  - full 1500-step run is active on the single-symbol baseline.

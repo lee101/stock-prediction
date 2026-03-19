@@ -1,0 +1,53 @@
+{
+  "symbol": "RIG",
+  "model": "chronos2",
+  "config": {
+    "name": "hourly_ctx1024_skip1_single",
+    "model_id": "amazon/chronos-2",
+    "device_map": "cuda",
+    "context_length": 1024,
+    "batch_size": 32,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
+    "aggregation": "median",
+    "sample_count": 0,
+    "scaler": "meanstd",
+    "predict_kwargs": {},
+    "skip_rates": [
+      1
+    ],
+    "aggregation_method": "single",
+    "use_multivariate": true
+  },
+  "validation": {
+    "price_mae": 0.3811300539970395,
+    "pct_return_mae": 0.060400959429007854,
+    "pct_return_mae_smoothness": 0.0038871260470643527,
+    "direction_accuracy": 0.2916666666666667,
+    "objective": 0.04717812021214704,
+    "latency_s": 0.06476593017578125
+  },
+  "windows": {
+    "val_window": 168,
+    "test_window": 168,
+    "forecast_horizon": 24
+  },
+  "metadata": {
+    "source": "hyperparam_chronos_hourly",
+    "generated_at": "2026-03-19T05:23:01.617043Z",
+    "selection_metric": "validation_objective",
+    "selection_value": 0.04717812021214704,
+    "frequency": "hourly",
+    "smoothness_weight": 0.35,
+    "direction_bonus": 0.05,
+    "cohort_symbols": [],
+    "cohort_used_symbols": [],
+    "cohort_requested": 0,
+    "cohort_used": 0,
+    "cross_learning_enabled": false,
+    "model_id_source": "tuner_default"
+  }
+}
