@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import json
 import os
 import re
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 
+TRAIN_PY_RELATIVE = "src/autoresearch_stock/train.py"
+MODULE_NAME = "autoresearch_stock"
 DEFAULT_ANALYSIS_DIR = Path("analysis/autoresearch_stock_agent")
 DEFAULT_EXPERIMENT_BUNDLE_ROOT = Path("experiments/autoresearch_stock_agent")
 DEFAULT_EXPERIMENT_CODE_ROOT = Path("src/autoresearch_stock/experiments")
@@ -132,13 +135,11 @@ def _write_text(path: Path, text: str) -> None:
 
 
 def _sha256_text(text: str) -> str:
-    import hashlib
-
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _snapshot_train_py(repo_root: Path) -> tuple[str, str]:
-    path = repo_root / "src/autoresearch_stock/train.py"
+    path = repo_root / TRAIN_PY_RELATIVE
     text = path.read_text(encoding="utf-8")
     return _sha256_text(text), text
 
@@ -366,7 +367,7 @@ Recent scheduler history:
 {os.linesep.join(_history_summary_lines(recent_history))}
 
 Required experiment command:
-`{python_path} -m autoresearch_stock.train --frequency {frequency} > {train_log} 2>&1`
+`{python_path} -m {MODULE_NAME}.train --frequency {frequency} > {train_log} 2>&1`
 
 Required workflow:
 1. Inspect the current training code and recent history.
@@ -659,7 +660,7 @@ def run_turn(
                 "#!/usr/bin/env bash",
                 "set -euo pipefail",
                 f'cd "{repo_root}"',
-                f'"{python_path}" -m autoresearch_stock.train --frequency {selection.frequency} > "{run_dir / f"train_{selection.frequency}.log"}" 2>&1',
+                f'"{python_path}" -m {MODULE_NAME}.train --frequency {selection.frequency} > "{run_dir / f"train_{selection.frequency}.log"}" 2>&1',
                 "",
             ]
         ),
@@ -707,8 +708,8 @@ def run_turn(
         diff_path,
         before_text,
         after_text,
-        fromfile="src/autoresearch_stock/train.py.before",
-        tofile="src/autoresearch_stock/train.py.after",
+        fromfile=f"{TRAIN_PY_RELATIVE}.before",
+        tofile=f"{TRAIN_PY_RELATIVE}.after",
     )
     _write_text(experiment_dir / "train.py.after", after_text)
 
