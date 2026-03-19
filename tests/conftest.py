@@ -306,7 +306,7 @@ def _module_available(module: str) -> bool:
         return False
 
 
-def pytest_ignore_collect(path, config):
+def pytest_ignore_collect(collection_path, config):
     """Skip suites that are disabled by default or require optional packages.
 
     This prevents import-time failures during collection (which would happen
@@ -314,7 +314,7 @@ def pytest_ignore_collect(path, config):
     """
 
     root = Path(str(config.rootpath)).resolve()
-    p = Path(str(path)).resolve()
+    p = Path(str(collection_path)).resolve()
     try:
         rel = p.relative_to(root).as_posix()
     except ValueError:

@@ -1,320 +1,464 @@
+#!/usr/bin/env python3
+"""Benchmark the fast C++ market env against the Python reference implementation."""
+
 from __future__ import annotations
 
 import argparse
 import csv
 import json
-import sys
-import time
+import math
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from time import perf_counter
+
+import numpy as np
+import torch
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-SRC_ROOT = REPO_ROOT / "src"
-if SRC_ROOT.exists() and str(SRC_ROOT) not in sys.path:
-    sys.path.insert(0, str(SRC_ROOT))
+try:  # Optional dependency when only synthetic data is required.
+    import pandas as pd
+except Exception:  # pragma: no cover - pandas is part of core deps but guarded for safety
+    pd = None
 
-import numpy as np  # noqa: E402
-import torch  # noqa: E402
-from pufferlibtraining3.envs.market_env import MarketEnv, MarketEnvConfig  # noqa: E402
+from pufferlibtraining3.envs.market_env import MarketEnv, MarketEnvConfig
 
-from fastmarketsim import FastMarketEnv  # noqa: E402
+from fastmarketsim import FastMarketEnv
 
 
-BENCHMARK_METRICS: tuple[str, ...] = (
-    "reward",
-    "gross",
-    "trading_cost",
-    "financing_cost",
-    "equity",
-)
-CSV_FIELDNAMES = [
-    "metric",
-    "count",
-    "python_mean",
-    "fast_mean",
-    "python_std",
-    "fast_std",
-    "mean_delta",
-    "abs_diff_mean",
-    "rel_diff_mean",
-    "max_abs_diff",
+CSV_COLUMNS = [
+    "timestamp",
+    "symbol",
+    "backend",
+    "steps",
+    "total_time_s",
+    "avg_step_ms",
+    "reward_sum",
+    "equity_final",
+    "position_final",
+    "reward_mae",
+    "reward_max",
+    "equity_mae",
+    "equity_max",
+    "obs_max",
+    "speedup",
 ]
 
 
-def _build_price_tensor(total_steps: int, seed: int) -> torch.Tensor:
-    generator = torch.Generator(device="cpu").manual_seed(int(seed))
-    steps = torch.randn((total_steps,), generator=generator) * 0.01
+@dataclass(slots=True)
+class RunStats:
+    backend: str
+    symbol: str
+    elapsed: float
+    step_count: int
+    rewards: list[float]
+    equities: list[float]
+    positions: list[float]
+    observations: list[np.ndarray]
+
+    @property
+    def avg_step_ms(self) -> float:
+        return (self.elapsed / max(self.step_count, 1)) * 1000.0
+
+    @property
+    def reward_sum(self) -> float:
+        return float(sum(self.rewards))
+
+    @property
+    def equity_final(self) -> float:
+        return float(self.equities[-1]) if self.equities else 0.0
+
+    @property
+    def position_final(self) -> float:
+        return float(self.positions[-1]) if self.positions else 0.0
+
+
+@dataclass(slots=True)
+class DeltaStats:
+    compared_steps: int
+    reward_mae: float
+    reward_max: float
+    equity_mae: float
+    equity_max: float
+    obs_max: float
+    speedup: float
+    python_avg_ms: float
+    fast_avg_ms: float
+
+
+def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Compare FastMarketEnv with MarketEnv.")
+    parser.add_argument(
+        "--symbols",
+        nargs="+",
+        default=["AAPL", "MSFT", "NVDA"],
+        help="Symbols to benchmark (default: AAPL MSFT NVDA).",
+    )
+    parser.add_argument(
+        "--data-root",
+        type=Path,
+        default=Path("trainingdata"),
+        help="Directory containing CSV price data (default: trainingdata).",
+    )
+    parser.add_argument(
+        "--context-len",
+        type=int,
+        default=64,
+        help="Context window length passed to both envs (default: 64).",
+    )
+    parser.add_argument(
+        "--horizon",
+        type=int,
+        default=1,
+        help="Prediction horizon (default: 1).",
+    )
+    parser.add_argument(
+        "--steps",
+        type=int,
+        default=512,
+        help="Number of actions to replay (default: 512).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=1337,
+        help="Random seed for action generation and synthetic fallbacks (default: 1337).",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cpu",
+        help="Device string for FastMarketEnv (default: cpu).",
+    )
+    parser.add_argument(
+        "--output-prefix",
+        type=Path,
+        default=Path("results/bench_fast_vs_python"),
+        help="Prefix for CSV/JSON outputs (default: results/bench_fast_vs_python).",
+    )
+    return parser.parse_args(argv)
+
+
+def _required_rows(context_len: int, steps: int, horizon: int) -> int:
+    return context_len + steps + max(2, horizon) + 8
+
+
+def _candidate_paths(root: Path, symbol: str) -> list[Path]:
+    if not root.exists():
+        return []
+    upper = symbol.strip().upper()
+    patterns = [f"**/{upper}.csv", f"**/{upper}_*.csv"]
+    paths: list[Path] = []
+    for pattern in patterns:
+        paths.extend(sorted(root.glob(pattern)))
+    if not paths:
+        paths = sorted(root.glob("**/*.csv"))
+    return paths
+
+
+def _select_numeric_columns(frame: pd.DataFrame) -> tuple[list[str], pd.DataFrame]:  # type: ignore[name-defined]
+    lowered = {col: str(col).lower() for col in frame.columns}
+    frame = frame.rename(columns=lowered)
+    frame = frame.dropna(axis=0, how="any")
+    required = ["open", "high", "low", "close"]
+    if any(col not in frame.columns for col in required):
+        raise ValueError("missing OHLC columns")
+    numeric_cols = list(required)
+    for col in frame.columns:
+        if col in required:
+            continue
+        series = frame[col]
+        if pd.api.types.is_numeric_dtype(series):  # type: ignore[attr-defined]
+            numeric_cols.append(col)
+    trimmed = frame[numeric_cols].reset_index(drop=True)
+    return numeric_cols, trimmed
+
+
+def _load_prices_from_csv(path: Path, rows_needed: int) -> tuple[torch.Tensor, tuple[str, ...]] | None:
+    if pd is None:
+        return None
+    try:
+        frame = pd.read_csv(path, nrows=rows_needed + 2048)
+    except Exception:
+        frame = pd.read_csv(path)
+    try:
+        columns, trimmed = _select_numeric_columns(frame)
+    except ValueError:
+        return None
+    if len(trimmed) < rows_needed:
+        try:
+            frame_full = pd.read_csv(path)
+            columns, trimmed = _select_numeric_columns(frame_full)
+        except Exception:
+            return None
+        if len(trimmed) < rows_needed:
+            return None
+    subset = trimmed.iloc[:rows_needed]
+    tensor = torch.from_numpy(subset.to_numpy(dtype=np.float32))
+    return tensor, tuple(columns)
+
+
+def _synth_prices(rows: int, seed: int) -> tuple[torch.Tensor, tuple[str, ...]]:
+    gen = torch.Generator(device="cpu").manual_seed(int(seed))
+    steps = torch.randn((rows,), generator=gen) * 0.02
     log_prices = steps.cumsum(dim=0)
     base = torch.exp(log_prices)
-    open_prices = base
-    noise = torch.randn((total_steps,), generator=generator) * 0.001
-    close_prices = base * torch.exp(noise)
-    swing = torch.rand((total_steps,), generator=generator) * 0.01
-    high_prices = torch.maximum(open_prices, close_prices) * (1.0 + swing)
-    low_prices = torch.minimum(open_prices, close_prices) * (1.0 - swing)
-    stacked = torch.stack([open_prices, high_prices, low_prices, close_prices], dim=1)
-    return stacked.to(torch.float32).contiguous()
+    open_ = base
+    close = base * torch.exp(torch.randn_like(base, generator=gen) * 0.001)
+    high = torch.maximum(open_, close) * (1.0 + torch.rand_like(base, generator=gen) * 0.01)
+    low = torch.minimum(open_, close) * (1.0 - torch.rand_like(base, generator=gen) * 0.01)
+    tensor = torch.stack([open_, high, low, close], dim=1).to(torch.float32)
+    return tensor, ("open", "high", "low", "close")
 
 
-def _make_actions(num_steps: int, seed: int) -> np.ndarray:
-    rng = np.random.default_rng(seed)
-    return rng.uniform(-1.0, 1.0, size=num_steps).astype(np.float32)
-
-
-@dataclass
-class BenchmarkMeta:
-    num_steps_requested: int
-    num_steps_executed: int
-    context_len: int
-    horizon: int
-    seed: int
-    timestamp: str
-
-
-def _collect_metrics(
-    py_env: MarketEnv,
-    fast_env: FastMarketEnv,
-    actions: Sequence[float],
-) -> tuple[dict[str, list[float]], dict[str, list[float]], list[float], float, float, int]:
-    py_metrics: dict[str, list[float]] = {key: [] for key in BENCHMARK_METRICS}
-    fast_metrics: dict[str, list[float]] = {key: [] for key in BENCHMARK_METRICS}
-    observation_diffs: list[float] = []
-    py_runtime = 0.0
-    fast_runtime = 0.0
-
-    py_obs, _ = py_env.reset()
-    fast_obs, _ = fast_env.reset()
-    observation_diffs.append(float(np.max(np.abs(py_obs - fast_obs))))
-
-    executed = 0
-    for raw_action in actions:
-        action_value = float(raw_action)
-
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        start_time = time.perf_counter()
-        py_obs, py_reward, py_done, py_truncated, py_info = py_env.step(action_value)
-        py_runtime += time.perf_counter() - start_time
-
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        start_time = time.perf_counter()
-        fast_obs, fast_reward, fast_done, fast_truncated, fast_info = fast_env.step(action_value)
-        fast_runtime += time.perf_counter() - start_time
-
-        observation_diffs.append(float(np.max(np.abs(py_obs - fast_obs))))
-
-        py_metrics["reward"].append(py_reward)
-        fast_metrics["reward"].append(fast_reward)
-        py_metrics["gross"].append(py_info.get("gross_pnl", 0.0))
-        fast_metrics["gross"].append(fast_info.get("gross_pnl", 0.0))
-
-        py_metrics["trading_cost"].append(py_info.get("trading_cost", 0.0))
-        fast_trade_cost = fast_info.get("trading_cost", 0.0) + fast_info.get("deleverage_cost", 0.0)
-        fast_metrics["trading_cost"].append(fast_trade_cost)
-
-        py_metrics["financing_cost"].append(py_info.get("financing_cost", 0.0))
-        fast_metrics["financing_cost"].append(fast_info.get("financing_cost", 0.0))
-
-        py_metrics["equity"].append(py_info.get("equity", 0.0))
-        fast_metrics["equity"].append(fast_info.get("equity", 0.0))
-
-        executed += 1
-        if py_done or py_truncated or fast_done or fast_truncated:
-            break
-
-    return py_metrics, fast_metrics, observation_diffs, py_runtime, fast_runtime, executed
-
-
-def _summarize_metric(name: str, py_values: Iterable[float], fast_values: Iterable[float]) -> dict[str, float]:
-    py_arr = np.asarray(list(py_values), dtype=np.float64)
-    fast_arr = np.asarray(list(fast_values), dtype=np.float64)
-    if py_arr.size == 0 or fast_arr.size == 0:
-        return {
-            "metric": name,
-            "count": 0,
-            "python_mean": 0.0,
-            "fast_mean": 0.0,
-            "python_std": 0.0,
-            "fast_std": 0.0,
-            "mean_delta": 0.0,
-            "abs_diff_mean": 0.0,
-            "rel_diff_mean": 0.0,
-            "max_abs_diff": 0.0,
-        }
-
-    limit = min(py_arr.size, fast_arr.size)
-    py_arr = py_arr[:limit]
-    fast_arr = fast_arr[:limit]
-    diff = fast_arr - py_arr
-    abs_diff = np.abs(diff)
-    py_mean = float(py_arr.mean())
-    fast_mean = float(fast_arr.mean())
-    denom = max(abs(py_mean), 1e-9)
-    rel_diff = abs(fast_mean - py_mean) / denom
-
-    return {
-        "metric": name,
-        "count": int(limit),
-        "python_mean": py_mean,
-        "fast_mean": fast_mean,
-        "python_std": float(py_arr.std(ddof=0)),
-        "fast_std": float(fast_arr.std(ddof=0)),
-        "mean_delta": float(fast_mean - py_mean),
-        "abs_diff_mean": float(abs_diff.mean()),
-        "rel_diff_mean": float(rel_diff),
-        "max_abs_diff": float(abs_diff.max()),
-    }
-
-
-def _summarize_observations(diffs: Sequence[float]) -> dict[str, float]:
-    if not diffs:
-        max_diff = 0.0
-        mean_diff = 0.0
-    else:
-        arr = np.asarray(diffs, dtype=np.float64)
-        max_diff = float(arr.max())
-        mean_diff = float(arr.mean())
-    return {
-        "metric": "observation_max_abs_diff",
-        "count": len(diffs),
-        "python_mean": 0.0,
-        "fast_mean": 0.0,
-        "python_std": 0.0,
-        "fast_std": 0.0,
-        "mean_delta": mean_diff,
-        "abs_diff_mean": mean_diff,
-        "rel_diff_mean": 0.0,
-        "max_abs_diff": max_diff,
-    }
-
-
-def _runtime_row(py_seconds: float, fast_seconds: float, count: int) -> dict[str, float]:
-    denom = max(py_seconds, 1e-9)
-    rel = (fast_seconds - py_seconds) / denom
-    return {
-        "metric": "runtime_seconds",
-        "count": int(count),
-        "python_mean": float(py_seconds),
-        "fast_mean": float(fast_seconds),
-        "python_std": 0.0,
-        "fast_std": 0.0,
-        "mean_delta": float(fast_seconds - py_seconds),
-        "abs_diff_mean": abs(float(fast_seconds - py_seconds)),
-        "rel_diff_mean": float(rel),
-        "max_abs_diff": abs(float(fast_seconds - py_seconds)),
-    }
-
-
-def run_benchmark(
+def load_price_tensor(
+    symbol: str,
+    data_root: Path,
+    rows_needed: int,
     *,
-    num_steps: int,
-    context_len: int,
-    horizon: int,
     seed: int,
-) -> tuple[list[dict[str, float]], BenchmarkMeta]:
-    total_steps = num_steps + context_len + max(4, horizon + 2)
-    prices = _build_price_tensor(total_steps, seed)
-    price_columns = ("open", "high", "low", "close")
+) -> tuple[torch.Tensor, tuple[str, ...]]:
+    for path in _candidate_paths(data_root, symbol):
+        loaded = _load_prices_from_csv(path, rows_needed)
+        if loaded is not None:
+            try:
+                rel = path.relative_to(data_root)
+            except ValueError:
+                rel = path
+            print(f"[bench] Loaded {rows_needed} rows for {symbol} from {rel}")
+            return loaded
+    print(f"[bench] Falling back to synthetic prices for {symbol} (no usable CSV found).")
+    return _synth_prices(rows_needed, seed)
 
-    cfg = MarketEnvConfig(
-        context_len=context_len,
-        horizon=horizon,
-        device="cpu",
+
+def _base_env_config(args: argparse.Namespace) -> MarketEnvConfig:
+    synth_len = max(_required_rows(args.context_len, args.steps, args.horizon) * 2, 4096)
+    return MarketEnvConfig(
+        context_len=args.context_len,
+        horizon=args.horizon,
+        action_space="continuous",
+        reward_scale=1.0,
         random_reset=False,
-        start_index=context_len,
-        episode_length=num_steps + 1,
-        synth_T=total_steps,
+        start_index=args.context_len,
+        episode_length=args.steps,
+        device="cpu",
+        synth_T=synth_len,
     )
 
-    py_env = MarketEnv(prices=prices.clone(), price_columns=price_columns, cfg=cfg)
-    fast_env = FastMarketEnv(prices=prices.clone(), price_columns=price_columns, cfg=cfg, device="cpu")
 
+def _run_env(name: str, env, actions: Sequence[float], symbol: str) -> RunStats:
+    observations: list[np.ndarray] = []
+    rewards: list[float] = []
+    equities: list[float] = []
+    positions: list[float] = []
+    start = perf_counter()
     try:
-        actions = _make_actions(num_steps, seed)
-        (
-            py_metrics,
-            fast_metrics,
-            observation_diffs,
-            py_runtime,
-            fast_runtime,
-            executed,
-        ) = _collect_metrics(py_env, fast_env, actions)
+        env.reset()
+        for action in actions:
+            obs, reward, done, truncated, info = env.step(float(action))
+            observations.append(np.array(obs, copy=True))
+            rewards.append(float(reward))
+            equities.append(float(info.get("equity", getattr(env, "equity", 0.0))))
+            positions.append(float(info.get("position", getattr(env, "position", 0.0))))
+            if done or truncated:
+                break
     finally:
-        py_env.close()
-        fast_env.close()
-
-    rows: list[dict[str, float]] = []
-    for metric in BENCHMARK_METRICS:
-        rows.append(_summarize_metric(metric, py_metrics[metric], fast_metrics[metric]))
-    rows.append(_summarize_observations(observation_diffs))
-    rows.append(_runtime_row(py_runtime, fast_runtime, executed))
-
-    meta = BenchmarkMeta(
-        num_steps_requested=num_steps,
-        num_steps_executed=executed,
-        context_len=context_len,
-        horizon=horizon,
-        seed=seed,
-        timestamp=datetime.now(UTC).isoformat(),
+        elapsed = perf_counter() - start
+        env.close()
+    return RunStats(
+        backend=name,
+        symbol=symbol,
+        elapsed=elapsed,
+        step_count=len(rewards),
+        rewards=rewards,
+        equities=equities,
+        positions=positions,
+        observations=observations,
     )
-    return rows, meta
 
 
-def _write_csv(rows: Sequence[dict[str, float]], path: Path) -> None:
+def _compare_runs(python_stats: RunStats, fast_stats: RunStats) -> DeltaStats:
+    steps = min(python_stats.step_count, fast_stats.step_count)
+    if steps == 0:
+        return DeltaStats(
+            compared_steps=0,
+            reward_mae=float("nan"),
+            reward_max=float("nan"),
+            equity_mae=float("nan"),
+            equity_max=float("nan"),
+            obs_max=float("nan"),
+            speedup=float("nan"),
+            python_avg_ms=python_stats.avg_step_ms,
+            fast_avg_ms=fast_stats.avg_step_ms,
+        )
+    py_rewards = np.asarray(python_stats.rewards[:steps], dtype=np.float64)
+    fast_rewards = np.asarray(fast_stats.rewards[:steps], dtype=np.float64)
+    reward_diff = np.abs(py_rewards - fast_rewards)
+    py_equity = np.asarray(python_stats.equities[:steps], dtype=np.float64)
+    fast_equity = np.asarray(fast_stats.equities[:steps], dtype=np.float64)
+    equity_diff = np.abs(py_equity - fast_equity)
+    obs_max = 0.0
+    for py_obs, fast_obs in zip(python_stats.observations[:steps], fast_stats.observations[:steps]):
+        obs_delta = np.max(np.abs(py_obs - fast_obs))
+        if obs_delta > obs_max:
+            obs_max = float(obs_delta)
+    python_avg_ms = python_stats.avg_step_ms
+    fast_avg_ms = fast_stats.avg_step_ms
+    speedup = python_avg_ms / fast_avg_ms if fast_avg_ms > 0 and math.isfinite(python_avg_ms) else float("nan")
+    return DeltaStats(
+        compared_steps=steps,
+        reward_mae=float(np.mean(reward_diff)),
+        reward_max=float(np.max(reward_diff)),
+        equity_mae=float(np.mean(equity_diff)),
+        equity_max=float(np.max(equity_diff)),
+        obs_max=float(obs_max),
+        speedup=float(speedup),
+        python_avg_ms=python_avg_ms,
+        fast_avg_ms=fast_avg_ms,
+    )
+
+
+def _csv_row(stats: RunStats, timestamp: str) -> dict:
+    return {
+        "timestamp": timestamp,
+        "symbol": stats.symbol,
+        "backend": stats.backend,
+        "steps": stats.step_count,
+        "total_time_s": round(stats.elapsed, 6),
+        "avg_step_ms": round(stats.avg_step_ms, 6),
+        "reward_sum": round(stats.reward_sum, 6),
+        "equity_final": round(stats.equity_final, 6),
+        "position_final": round(stats.position_final, 6),
+        "reward_mae": "",
+        "reward_max": "",
+        "equity_mae": "",
+        "equity_max": "",
+        "obs_max": "",
+        "speedup": "",
+    }
+
+
+def _delta_row(symbol: str, delta: DeltaStats, timestamp: str) -> dict:
+    return {
+        "timestamp": timestamp,
+        "symbol": symbol,
+        "backend": "delta",
+        "steps": delta.compared_steps,
+        "total_time_s": "",
+        "avg_step_ms": "",
+        "reward_sum": "",
+        "equity_final": "",
+        "position_final": "",
+        "reward_mae": round(delta.reward_mae, 10),
+        "reward_max": round(delta.reward_max, 10),
+        "equity_mae": round(delta.equity_mae, 10),
+        "equity_max": round(delta.equity_max, 10),
+        "obs_max": round(delta.obs_max, 10),
+        "speedup": round(delta.speedup, 6),
+    }
+
+
+def _write_csv(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=CSV_FIELDNAMES)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=CSV_COLUMNS)
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
 
 
-def _write_json(meta: BenchmarkMeta, rows: Sequence[dict[str, float]], path: Path) -> None:
-    payload = {
-        "meta": meta.__dict__,
-        "rows": rows,
+def benchmark_symbol(
+    symbol: str,
+    prices: torch.Tensor,
+    columns: tuple[str, ...],
+    cfg: MarketEnvConfig,
+    actions: Sequence[float],
+    device: str,
+    timestamp: str,
+) -> tuple[list[dict], dict]:
+    python_env = MarketEnv(prices=prices.clone(), price_columns=columns, cfg=cfg)
+    fast_cfg = replace(cfg, device=device)
+    fast_env = FastMarketEnv(prices=prices.clone(), price_columns=columns, cfg=fast_cfg, device=device)
+    py_stats = _run_env("python", python_env, actions, symbol)
+    fast_stats = _run_env("fast", fast_env, actions, symbol)
+    delta = _compare_runs(py_stats, fast_stats)
+    print(
+        f"[bench] {symbol}: python {py_stats.avg_step_ms:.3f} ms | fast {fast_stats.avg_step_ms:.3f} ms | "
+        f"speedup {delta.speedup:.2f}x | obs Δ {delta.obs_max:.2e}"
+    )
+    csv_rows = [_csv_row(py_stats, timestamp), _csv_row(fast_stats, timestamp), _delta_row(symbol, delta, timestamp)]
+    summary = {
+        "python": {
+            "steps": py_stats.step_count,
+            "avg_step_ms": py_stats.avg_step_ms,
+            "total_time_s": py_stats.elapsed,
+            "reward_sum": py_stats.reward_sum,
+            "equity_final": py_stats.equity_final,
+        },
+        "fast": {
+            "steps": fast_stats.step_count,
+            "avg_step_ms": fast_stats.avg_step_ms,
+            "total_time_s": fast_stats.elapsed,
+            "reward_sum": fast_stats.reward_sum,
+            "equity_final": fast_stats.equity_final,
+        },
+        "delta": {
+            "compared_steps": delta.compared_steps,
+            "reward_mae": delta.reward_mae,
+            "reward_max": delta.reward_max,
+            "equity_mae": delta.equity_mae,
+            "equity_max": delta.equity_max,
+            "obs_max": delta.obs_max,
+            "speedup": delta.speedup,
+            "python_avg_ms": delta.python_avg_ms,
+            "fast_avg_ms": delta.fast_avg_ms,
+        },
     }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w") as handle:
-        json.dump(payload, handle, indent=2)
+    return csv_rows, summary
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Benchmark fast market env against python reference")
-    parser.add_argument("--num-steps", type=int, default=512, help="Number of benchmark steps to execute")
-    parser.add_argument("--context-len", type=int, default=64, help="Context window length")
-    parser.add_argument("--horizon", type=int, default=1, help="Prediction horizon in steps")
-    parser.add_argument("--seed", type=int, default=20250318, help="Random seed for reproducibility")
-    parser.add_argument(
-        "--output-csv",
-        type=Path,
-        default=Path("results/bench_fast_vs_python.csv"),
-        help="Path to write CSV summary",
-    )
-    parser.add_argument(
-        "--output-json",
-        type=Path,
-        default=Path("results/bench_fast_vs_python.json"),
-        help="Path to write JSON payload",
-    )
-    args = parser.parse_args()
+def main(argv: Iterable[str] | None = None) -> int:
+    args = parse_args(argv)
+    timestamp = datetime.now(UTC).isoformat()
+    rows_needed = _required_rows(args.context_len, args.steps, args.horizon)
+    rng = np.random.default_rng(args.seed)
+    actions = rng.uniform(-1.0, 1.0, size=args.steps).astype(np.float32)
+    cfg = _base_env_config(args)
+    output_csv = args.output_prefix.with_suffix(".csv")
+    output_json = args.output_prefix.with_suffix(".json")
 
-    rows, meta = run_benchmark(
-        num_steps=args.num_steps,
-        context_len=args.context_len,
-        horizon=args.horizon,
-        seed=args.seed,
-    )
-    _write_csv(rows, args.output_csv)
-    _write_json(meta, rows, args.output_json)
-    print(f"Wrote benchmark summary to {args.output_csv} and {args.output_json}")
+    all_rows: list[dict] = []
+    summary: dict = {
+        "generated_at": timestamp,
+        "context_len": args.context_len,
+        "horizon": args.horizon,
+        "steps": args.steps,
+        "symbols": {},
+    }
+
+    for symbol in args.symbols:
+        prices, columns = load_price_tensor(symbol, args.data_root, rows_needed, seed=args.seed)
+        csv_rows, symbol_summary = benchmark_symbol(
+            symbol,
+            prices,
+            columns,
+            cfg,
+            actions,
+            args.device,
+            timestamp,
+        )
+        all_rows.extend(csv_rows)
+        summary["symbols"][symbol.upper()] = symbol_summary
+
+    _write_csv(output_csv, all_rows)
+    output_json.parent.mkdir(parents=True, exist_ok=True)
+    with output_json.open("w", encoding="utf-8") as handle:
+        json.dump(summary, handle, indent=2, sort_keys=True)
+    print(f"[bench] Wrote benchmark CSV to {output_csv}")
+    print(f"[bench] Wrote benchmark JSON to {output_json}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
