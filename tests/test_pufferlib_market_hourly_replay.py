@@ -12,6 +12,24 @@ from pufferlib_market.hourly_replay import (
 )
 
 
+def _single_symbol_daily_data(close: np.ndarray) -> MktdData:
+    close = np.asarray(close, dtype=np.float32)
+    features = np.zeros((len(close), 1, 16), dtype=np.float32)
+    prices = np.zeros((len(close), 1, 5), dtype=np.float32)
+    prices[:, 0, 0] = close
+    prices[:, 0, 1] = close
+    prices[:, 0, 2] = close
+    prices[:, 0, 3] = close
+    tradable = np.ones((len(close), 1), dtype=np.uint8)
+    return MktdData(
+        version=2,
+        symbols=["AAA"],
+        features=features,
+        prices=prices,
+        tradable=tradable,
+    )
+
+
 def test_hourly_replay_matches_daily_when_hourly_close_is_piecewise_constant():
     # 1 symbol, 3 days, 2-step episode (t=0->1, 1->2)
     symbols = ["AAA"]
@@ -276,19 +294,11 @@ def test_simulate_daily_policy_short_borrow_fee_hits_flat_short() -> None:
 def test_simulate_daily_policy_prints_early_exit_when_drawdown_exceeds_profit(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    symbols = ["AAA"]
     close = np.asarray(
         [100.0, 104.0, 108.0, 112.0, 116.0, 120.0, 124.0, 128.0, 132.0, 120.0, 108.0, 96.0, 84.0, 72.0, 60.0, 58.0, 56.0, 54.0, 52.0, 50.0, 48.0],
         dtype=np.float32,
     )
-    features = np.zeros((len(close), 1, 16), dtype=np.float32)
-    prices = np.zeros((len(close), 1, 5), dtype=np.float32)
-    prices[:, 0, 0] = close
-    prices[:, 0, 1] = close
-    prices[:, 0, 2] = close
-    prices[:, 0, 3] = close
-    tradable = np.ones((len(close), 1), dtype=np.uint8)
-    data = MktdData(version=2, symbols=symbols, features=features, prices=prices, tradable=tradable)
+    data = _single_symbol_daily_data(close)
 
     result = simulate_daily_policy(
         data,
@@ -301,3 +311,61 @@ def test_simulate_daily_policy_prints_early_exit_when_drawdown_exceeds_profit(
 
     assert result.max_drawdown > 0.0
     assert "early stopping" in capsys.readouterr().out.lower()
+
+
+def test_simulate_daily_policy_can_early_exit_on_max_drawdown_threshold(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    data = _single_symbol_daily_data(
+        np.asarray(
+            [100.0, 108.0, 116.0, 124.0, 132.0, 140.0, 138.0, 126.0, 114.0, 102.0, 90.0, 88.0, 86.0, 84.0, 82.0, 80.0, 78.0, 76.0, 74.0, 72.0, 70.0],
+            dtype=np.float32,
+        )
+    )
+
+    result = simulate_daily_policy(
+        data,
+        lambda obs: 1,
+        max_steps=20,
+        fee_rate=0.0,
+        max_leverage=1.0,
+        periods_per_year=365.0,
+        enable_drawdown_profit_early_exit=False,
+        early_exit_max_drawdown=0.20,
+        drawdown_profit_early_exit_min_steps=6,
+        drawdown_profit_early_exit_progress_fraction=0.5,
+    )
+
+    assert result.stopped_early is True
+    assert result.evaluated_steps < 20
+    assert "max drawdown" in result.stop_reason.lower()
+    assert "max drawdown" in capsys.readouterr().out.lower()
+
+
+def test_simulate_daily_policy_can_early_exit_on_running_sortino_threshold(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    data = _single_symbol_daily_data(
+        np.asarray(
+            [100.0, 102.0, 99.0, 101.0, 98.0, 100.0, 97.0, 99.0, 96.0, 98.0, 95.0, 97.0, 94.0, 96.0, 93.0, 95.0, 92.0, 94.0, 91.0, 93.0, 90.0],
+            dtype=np.float32,
+        )
+    )
+
+    result = simulate_daily_policy(
+        data,
+        lambda obs: 1,
+        max_steps=20,
+        fee_rate=0.0,
+        max_leverage=1.0,
+        periods_per_year=365.0,
+        enable_drawdown_profit_early_exit=False,
+        early_exit_min_sortino=0.0,
+        drawdown_profit_early_exit_min_steps=6,
+        drawdown_profit_early_exit_progress_fraction=0.5,
+    )
+
+    assert result.stopped_early is True
+    assert result.evaluated_steps < 20
+    assert "sortino" in result.stop_reason.lower()
+    assert "sortino" in capsys.readouterr().out.lower()

@@ -7,6 +7,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
+from src.forecast_cache_lookup import load_latest_forecast_from_cache
 
 
 FORECAST_CACHE = Path(__file__).resolve().parent.parent / "binanceneural" / "forecast_cache"
@@ -187,24 +188,7 @@ def _compute_trend_context(history_rows: list[dict]) -> dict:
 
 def load_latest_forecast(symbol: str, horizon: int, cache_root: Optional[Path] = None) -> Optional[dict]:
     root = cache_root or FORECAST_CACHE
-    path = root / f"h{horizon}" / f"{symbol}.parquet"
-    if not path.exists():
-        return None
-    try:
-        df = pd.read_parquet(path)
-        if df.empty:
-            return None
-        row = df.iloc[-1]
-        result = {}
-        for col in df.columns:
-            try:
-                val = float(row[col])
-                result[col] = val
-            except (ValueError, TypeError):
-                pass
-        return result
-    except Exception:
-        return None
+    return load_latest_forecast_from_cache(symbol, int(horizon), root)
 
 
 def _fmt_forecast(fc: Optional[dict], current_price: float, symbol: Optional[str] = None, horizon: Optional[int] = None) -> str:
