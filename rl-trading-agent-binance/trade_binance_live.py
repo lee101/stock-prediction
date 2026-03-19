@@ -1042,6 +1042,81 @@ def place_margin_limit_sell(
 
 
 # ---------------------------------------------------------------------------
+# Chronos2 Forecast Fallback (no LLM needed)
+# ---------------------------------------------------------------------------
+
+def _chronos2_fallback_signal(
+    sym_cfg: BinanceSymbolConfig,
+    current_price: float,
+    fc_1h: Optional[dict],
+    fc_24h: Optional[dict],
+    position_qty: float = 0.0,
+    position_entry_price: float = 0.0,
+    position_open_time: Optional[datetime] = None,
+    execution_mode: str = "spot",
+) -> TradePlan:
+    """Generate a trade signal from Chronos2 forecasts alone when LLM is unavailable.
+
+    Logic:
+    - If holding a position: set take-profit from 1h forecast high, check for exit.
+    - If flat: enter long when both 1h and 24h forecasts predict > threshold upside.
+    """
+    fee_bps = _execution_fee_bps(sym_cfg, execution_mode)
+    fee_rate = fee_bps / 10000.0
+    min_edge = fee_rate * 3  # need 3x fees to justify entry
+
+    # If we have a position, manage exit
+    if position_qty > 0 and position_entry_price > 0:
+        held_hours = 0.0
+        if position_open_time:
+            held_hours = (datetime.now(timezone.utc) - position_open_time).total_seconds() / 3600.0
+
+        # Force exit if approaching max hold (6h)
+        if held_hours >= 5.5:  # slightly before the hard 6h cutoff in run_trading_cycle
+            sell_price = current_price * 0.995
+            return TradePlan("hold", 0, sell_price, 0.8, f"chronos2_fallback: forced exit at {held_hours:.1f}h")
+
+        # Use 1h forecast for exit price
+        if fc_1h and "predicted_high_p50" in fc_1h:
+            predicted_high = fc_1h["predicted_high_p50"]
+            if predicted_high > position_entry_price * (1 + 2 * fee_rate):
+                return TradePlan("hold", 0, predicted_high, 0.6, "chronos2_fallback: tp from 1h forecast high")
+
+        # Default: hold with take-profit above breakeven
+        tp = max(current_price * 1.005, position_entry_price * (1 + 2 * fee_rate + 0.002))
+        return TradePlan("hold", 0, tp, 0.5, "chronos2_fallback: hold with default tp")
+
+    # Flat: decide whether to enter
+    if not fc_1h or not fc_24h:
+        return TradePlan("hold", 0, 0, 0, "chronos2_fallback: no forecasts available")
+
+    predicted_close_1h = fc_1h.get("predicted_close_p50", current_price)
+    predicted_close_24h = fc_24h.get("predicted_close_p50", current_price)
+    delta_1h = (predicted_close_1h - current_price) / current_price
+    delta_24h = (predicted_close_24h - current_price) / current_price
+
+    # Both horizons must agree on upside exceeding minimum edge
+    if delta_1h > min_edge and delta_24h > min_edge:
+        # Use p10 as a safety check -- if even the pessimistic forecast is positive
+        p10_1h = fc_1h.get("predicted_close_p10", current_price)
+        p10_delta = (p10_1h - current_price) / current_price
+
+        confidence = min(0.8, max(0.4, delta_1h * 10))
+        if p10_delta > 0:
+            confidence = min(confidence + 0.1, 0.9)
+
+        buy_price = current_price * 0.999
+        predicted_high_1h = fc_1h.get("predicted_high_p50", predicted_close_1h)
+        sell_price = max(predicted_high_1h, current_price * (1 + 2 * fee_rate + 0.003))
+        return TradePlan(
+            "long", buy_price, sell_price, confidence,
+            f"chronos2_fallback: 1h={delta_1h:+.3f} 24h={delta_24h:+.3f}",
+        )
+
+    return TradePlan("hold", 0, 0, 0, f"chronos2_fallback: insufficient edge 1h={delta_1h:+.4f} 24h={delta_24h:+.4f}")
+
+
+# ---------------------------------------------------------------------------
 # Hybrid Signal Generation
 # ---------------------------------------------------------------------------
 
@@ -1071,91 +1146,108 @@ def get_hybrid_signal(
     **kwargs,
 ) -> TradePlan:
     """Get RL+LLM hybrid trading signal for a symbol."""
-    import torch
-    import torch.nn as nn
-
-    # Get current market data
     market_symbol = _execution_pair(sym_cfg, execution_mode)
     price = binance_wrapper.get_symbol_price(market_symbol)
     if not price:
         return TradePlan("hold", 0, 0, 0, "no price data")
 
     current_price = float(price)
+    fallback_mode = kwargs.get("fallback_mode", None)
 
-    # Use prefetched bars if available, otherwise fetch from Binance
-    history_rows = kwargs.get("prefetched_bars")
-    if history_rows is None:
-        from src.binan import binance_wrapper as bw
-        try:
-            pair = market_symbol
-            try:
-                klines = bw.get_client().get_klines(symbol=pair, interval="1h", limit=72)
-            except Exception:
-                if execution_mode == "spot" and sym_cfg.quote_asset == "FDUSD":
-                    pair = sym_cfg.base_asset + "USDT"
-                    logger.info(f"  Falling back to {pair} (FDUSD not available)")
-                    klines = bw.get_client().get_klines(symbol=pair, interval="1h", limit=72)
-                else:
-                    raise
-            history_rows = _klines_to_rows(klines)
-        except Exception as e:
-            logger.error(f"Failed to get klines for {market_symbol}: {e}")
-            return TradePlan("hold", 0, 0, 0, f"klines error: {e}")
-
-    if len(history_rows) < 12:
-        return TradePlan("hold", 0, 0, 0, "insufficient history")
-
-    # Load Chronos2 forecasts
+    # Load Chronos2 forecasts (needed for both LLM prompt and fallback)
     from rl_trading_agent_binance_prompt import build_live_prompt, load_latest_forecast
     fc_1h = load_latest_forecast(sym_cfg.symbol, 1)
-    fc_4h = load_latest_forecast(sym_cfg.symbol, 4)
-    fc_12h = load_latest_forecast(sym_cfg.symbol, 12)
     fc_24h = load_latest_forecast(sym_cfg.symbol, 24)
 
-    # Build position context
-    pos_info = None
-    if position_qty > 0 and position_entry_price > 0:
-        held_hours = 0.0
-        if position_open_time:
-            held_hours = (datetime.now(timezone.utc) - position_open_time).total_seconds() / 3600.0
-        pos_info = {
-            "qty": position_qty,
-            "entry_price": position_entry_price,
-            "held_hours": held_hours,
-        }
-
-    fee_bps = _execution_fee_bps(sym_cfg, execution_mode)
-    from rl_trading_agent_binance_prompt import build_live_prompt_freeform
-    prompt_variant = kwargs.get("prompt_variant", "optimization")
-    cross_ctx = kwargs.get("cross_asset_context", "")
-    if prompt_variant == "freeform":
-        prompt = build_live_prompt_freeform(
-            sym_cfg.symbol, history_rows, current_price, fc_1h, fc_24h,
-            position_info=pos_info, fee_bps=fee_bps,
-            fc_4h=fc_4h, fc_12h=fc_12h,
-            cross_asset_context=cross_ctx,
+    if fallback_mode == "chronos2":
+        plan = _chronos2_fallback_signal(
+            sym_cfg, current_price, fc_1h, fc_24h,
+            position_qty=position_qty,
+            position_entry_price=position_entry_price,
+            position_open_time=position_open_time,
+            execution_mode=execution_mode,
         )
     else:
-        prompt = build_live_prompt(
-            sym_cfg.symbol, history_rows, current_price, fc_1h, fc_24h,
-            position_info=pos_info, fee_bps=fee_bps,
-            fc_4h=fc_4h, fc_12h=fc_12h,
-            cross_asset_context=cross_ctx,
-        )
+        # Fetch klines for LLM prompt
+        history_rows = kwargs.get("prefetched_bars")
+        if history_rows is None:
+            from src.binan import binance_wrapper as bw
+            try:
+                pair = market_symbol
+                try:
+                    klines = bw.get_client().get_klines(symbol=pair, interval="1h", limit=72)
+                except Exception:
+                    if execution_mode == "spot" and sym_cfg.quote_asset == "FDUSD":
+                        pair = sym_cfg.base_asset + "USDT"
+                        logger.info(f"  Falling back to {pair} (FDUSD not available)")
+                        klines = bw.get_client().get_klines(symbol=pair, interval="1h", limit=72)
+                    else:
+                        raise
+                history_rows = _klines_to_rows(klines)
+            except Exception as e:
+                logger.error(f"Failed to get klines for {market_symbol}: {e}")
+                return TradePlan("hold", 0, 0, 0, f"klines error: {e}")
 
-    reprompt_passes = kwargs.get("reprompt_passes", 1)
-    review_model = kwargs.get("review_model", None)
-    reprompt_policy = kwargs.get("reprompt_policy", "entry_only")
-    review_cache_ns = f"review_{review_model}" if review_model else None
-    plan = call_llm(
-        prompt,
-        model=model,
-        thinking_level=thinking_level,
-        reprompt_passes=reprompt_passes,
-        review_model=review_model,
-        reprompt_policy=reprompt_policy,
-        review_cache_namespace=review_cache_ns,
-    )
+        if len(history_rows) < 12:
+            return TradePlan("hold", 0, 0, 0, "insufficient history")
+
+        fc_4h = load_latest_forecast(sym_cfg.symbol, 4)
+        fc_12h = load_latest_forecast(sym_cfg.symbol, 12)
+
+        pos_info = None
+        if position_qty > 0 and position_entry_price > 0:
+            held_hours = 0.0
+            if position_open_time:
+                held_hours = (datetime.now(timezone.utc) - position_open_time).total_seconds() / 3600.0
+            pos_info = {
+                "qty": position_qty,
+                "entry_price": position_entry_price,
+                "held_hours": held_hours,
+            }
+
+        fee_bps = _execution_fee_bps(sym_cfg, execution_mode)
+        from rl_trading_agent_binance_prompt import build_live_prompt_freeform
+        prompt_variant = kwargs.get("prompt_variant", "optimization")
+        cross_ctx = kwargs.get("cross_asset_context", "")
+        if prompt_variant == "freeform":
+            prompt = build_live_prompt_freeform(
+                sym_cfg.symbol, history_rows, current_price, fc_1h, fc_24h,
+                position_info=pos_info, fee_bps=fee_bps,
+                fc_4h=fc_4h, fc_12h=fc_12h,
+                cross_asset_context=cross_ctx,
+            )
+        else:
+            prompt = build_live_prompt(
+                sym_cfg.symbol, history_rows, current_price, fc_1h, fc_24h,
+                position_info=pos_info, fee_bps=fee_bps,
+                fc_4h=fc_4h, fc_12h=fc_12h,
+                cross_asset_context=cross_ctx,
+            )
+
+        reprompt_passes = kwargs.get("reprompt_passes", 1)
+        review_model = kwargs.get("review_model", None)
+        reprompt_policy = kwargs.get("reprompt_policy", "entry_only")
+        review_cache_ns = f"review_{review_model}" if review_model else None
+        plan = call_llm(
+            prompt,
+            model=model,
+            thinking_level=thinking_level,
+            reprompt_passes=reprompt_passes,
+            review_model=review_model,
+            reprompt_policy=reprompt_policy,
+            review_cache_namespace=review_cache_ns,
+        )
+        # Fallback to Chronos2 when LLM is rate-limited/exhausted
+        if plan.reasoning and "exhausted" in plan.reasoning.lower() and plan.confidence == 0:
+            logger.warning(f"  LLM exhausted for {sym_cfg.symbol}, falling back to Chronos2")
+            plan = _chronos2_fallback_signal(
+                sym_cfg, current_price, fc_1h, fc_24h,
+                position_qty=position_qty,
+                position_entry_price=position_entry_price,
+                position_open_time=position_open_time,
+                execution_mode=execution_mode,
+            )
+
     return _normalize_live_trade_plan(
         plan,
         sym_cfg,
@@ -1183,6 +1275,7 @@ def run_trading_cycle(
     reprompt_passes: int = 1,
     review_model: Optional[str] = None,
     reprompt_policy: str = "entry_only",
+    fallback_mode: Optional[str] = None,
 ):
     """Run one trading cycle across all symbols."""
     resolved_execution_mode = _resolve_execution_mode(execution_mode, leverage)
@@ -1378,6 +1471,7 @@ def run_trading_cycle(
                     reprompt_policy=reprompt_policy,
                     cross_asset_context=cross_asset_context,
                     prefetched_bars=all_symbol_bars.get(sym_name),
+                    fallback_mode=fallback_mode,
                 )
             except Exception as exc:
                 logger.error(f"  Signal generation failed: {exc}")
@@ -2081,6 +2175,9 @@ def main():
     parser.add_argument("--reprompt-policy", type=str, default="entry_only",
                         choices=["always", "entry_only", "actionable"],
                         help="When to reprompt: always, entry_only (default), actionable.")
+    parser.add_argument("--fallback-mode", type=str, default=None,
+                        choices=["chronos2"],
+                        help="Fallback signal mode when LLM is unavailable. chronos2=use Chronos2 forecasts directly.")
     args = parser.parse_args()
 
     dry_run = not args.live
@@ -2124,6 +2221,7 @@ def main():
                     reprompt_passes=args.reprompt_passes,
                     review_model=args.review_model,
                     reprompt_policy=args.reprompt_policy,
+                    fallback_mode=args.fallback_mode,
                 )
         except Exception as e:
             logger.error(f"Trading cycle error: {e}")
