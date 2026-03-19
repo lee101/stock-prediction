@@ -30,6 +30,14 @@ def test_resolve_base_symbols_supports_current_live_alias() -> None:
     assert symbols[0] == "NVDA"
     assert "EXPE" in symbols
     assert symbols[-1] == "ITUB"
+    assert "BTG" not in symbols
+
+
+def test_resolve_base_symbols_supports_post_btg_live_alias() -> None:
+    symbols = _resolve_base_symbols("live20260319_post_btg")
+    assert symbols[0] == "NVDA"
+    assert "ITUB" in symbols
+    assert symbols[-1] == "BTG"
 
 
 def test_candidate_direction_lists_append_only_the_candidate_side() -> None:
