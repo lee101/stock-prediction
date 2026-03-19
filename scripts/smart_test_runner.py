@@ -194,9 +194,14 @@ def run_tests(test_files: List[str], label: str, verbose: bool = False, dry_run:
     if verbose:
         cmd.append("-v")
 
+    # Ignore experimental tests (often have missing deps)
+    cmd.extend(["--ignore=tests/experimental"])
+
     # Add fail-fast for priority tests
     if label == "priority":
         cmd.append("-x")  # Stop on first failure
+    else:
+        cmd.append("--maxfail=20")  # Allow some failures in remaining tests
 
     result = subprocess.run(cmd)
 
