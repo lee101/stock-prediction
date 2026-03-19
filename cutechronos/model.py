@@ -10,6 +10,7 @@ Triton kernel swapins when available.
 from __future__ import annotations
 
 import json
+import time as _time_module
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -760,3 +761,152 @@ class CuteChronos2Model(nn.Module):
         model.load_chronos2_weights(state_dict)
         model.eval()
         return model
+
+    @classmethod
+    def from_pretrained_compiled(
+        cls,
+        model_path: str | Path,
+        compile_mode: str = "reduce-overhead",
+    ) -> "CuteChronos2Model":
+        """Load a CuteChronos2Model and apply torch.compile for faster inference.
+
+        The forward method is compiled while preprocessing (NaN handling,
+        instance normalization) runs in eager mode to avoid graph breaks.
+
+        Args:
+            model_path: path to directory containing config.json and model weights
+            compile_mode: torch.compile mode (e.g., "reduce-overhead", "max-autotune",
+                          "default"). Defaults to "reduce-overhead" for best latency.
+
+        Returns:
+            Initialized model with compiled forward, in eval mode.
+        """
+        model = cls.from_pretrained(model_path)
+        model = _apply_torch_compile(model, compile_mode=compile_mode)
+        return model
+
+    @torch.inference_mode()
+    def predict(
+        self,
+        context: torch.Tensor,
+        context_mask: torch.Tensor | None = None,
+        num_output_patches: int = 1,
+    ) -> torch.Tensor:
+        """Run inference with torch.inference_mode for optimal performance.
+
+        This is the recommended entry point for inference. It wraps forward()
+        with inference_mode which disables autograd tracking and version
+        counting for maximum throughput.
+
+        Args:
+            context: (B, L) raw time series values (may contain NaN)
+            context_mask: (B, L) binary mask (1=valid, 0=missing), optional
+            num_output_patches: number of output patches to predict
+
+        Returns:
+            quantile_preds: (B, Q, H) where Q=num_quantiles, H=num_output_patches*patch_size
+        """
+        return self.forward(context, context_mask=context_mask, num_output_patches=num_output_patches)
+
+
+def _apply_torch_compile(
+    model: CuteChronos2Model,
+    compile_mode: str = "reduce-overhead",
+) -> CuteChronos2Model:
+    """Apply torch.compile to a CuteChronos2Model's forward method.
+
+    Uses fullgraph=False so torch.compile can handle graph breaks from
+    NaN handling and dynamic control flow in preprocessing gracefully.
+
+    Args:
+        model: the model to compile (must be in eval mode)
+        compile_mode: torch.compile mode
+
+    Returns:
+        The same model instance with compiled forward.
+    """
+    if not hasattr(torch, "compile"):
+        print("[cutechronos] torch.compile not available, using eager mode.")
+        return model
+
+    try:
+        model.forward = torch.compile(  # type: ignore[assignment]
+            model.forward,
+            mode=compile_mode,
+            fullgraph=False,
+        )
+        print(f"[cutechronos] torch.compile enabled (mode={compile_mode}).")
+    except Exception as exc:
+        print(f"[cutechronos] torch.compile failed ({exc}); using eager mode.")
+    return model
+
+
+def benchmark_eager_vs_compiled(
+    model_path: str | Path,
+    *,
+    context_length: int = 512,
+    batch_size: int = 4,
+    warmup_iters: int = 3,
+    bench_iters: int = 10,
+    device: str = "cpu",
+    compile_mode: str = "reduce-overhead",
+) -> dict[str, float]:
+    """Benchmark eager vs compiled CuteChronos2Model inference.
+
+    Args:
+        model_path: path to Chronos2 checkpoint directory
+        context_length: length of input context
+        batch_size: batch size for benchmark
+        warmup_iters: number of warmup iterations (not timed)
+        bench_iters: number of benchmark iterations
+        device: device to run on ("cpu" or "cuda")
+        compile_mode: torch.compile mode
+
+    Returns:
+        Dict with eager_ms, compiled_ms, speedup keys.
+    """
+    torch.manual_seed(42)
+    context = torch.randn(batch_size, context_length, device=device) * 0.1 + 100.0
+
+    # Eager model
+    eager_model = CuteChronos2Model.from_pretrained(model_path)
+    eager_model = eager_model.to(device).eval()
+
+    # Warmup eager
+    for _ in range(warmup_iters):
+        eager_model.predict(context)
+    if device == "cuda":
+        torch.cuda.synchronize()
+
+    # Benchmark eager
+    t0 = _time_module.perf_counter()
+    for _ in range(bench_iters):
+        eager_model.predict(context)
+    if device == "cuda":
+        torch.cuda.synchronize()
+    eager_total = _time_module.perf_counter() - t0
+    eager_ms = (eager_total / bench_iters) * 1000.0
+
+    # Compiled model
+    compiled_model = CuteChronos2Model.from_pretrained_compiled(model_path, compile_mode=compile_mode)
+    compiled_model = compiled_model.to(device).eval()
+
+    # Warmup compiled (includes compilation)
+    for _ in range(warmup_iters):
+        compiled_model.predict(context)
+    if device == "cuda":
+        torch.cuda.synchronize()
+
+    # Benchmark compiled
+    t0 = _time_module.perf_counter()
+    for _ in range(bench_iters):
+        compiled_model.predict(context)
+    if device == "cuda":
+        torch.cuda.synchronize()
+    compiled_total = _time_module.perf_counter() - t0
+    compiled_ms = (compiled_total / bench_iters) * 1000.0
+
+    speedup = eager_ms / compiled_ms if compiled_ms > 0 else 0.0
+
+    print(f"[cutechronos benchmark] eager={eager_ms:.1f}ms  compiled={compiled_ms:.1f}ms  speedup={speedup:.2f}x")
+    return {"eager_ms": eager_ms, "compiled_ms": compiled_ms, "speedup": speedup}
