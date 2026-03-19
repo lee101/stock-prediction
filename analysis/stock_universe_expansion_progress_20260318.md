@@ -216,6 +216,8 @@ python scripts/run_alpaca_stock_expansion.py \
 
 - Updated `scripts/run_alpaca_stock_expansion.py` so the default base stock universe is `live20260319`.
   - Future first-pass screens now compare against the actual live basket that already includes `ITUB`, while `live20260318` remains available as the pre-promotion alias for reproducibility.
+- Updated `scripts/run_alpaca_stock_expansion.py` again after the `BTG` deploy so the default base stock universe is `live20260319_post_btg`.
+  - `live20260319` is preserved as the `ITUB`-only baseline, while new trials now default to the current live basket with both `ITUB` and `BTG`.
 - Fixed `src/chronos2_objective.py` to build correlation matrices with an outer join instead of a global inner join.
   - This prevents mixed-history symbols from collapsing the entire cohort map.
 - Fixed hourly stock cohort generation in `src/alpaca_stock_expansion.py` to floor timestamps to hourly buckets and deduplicate per bucket.
