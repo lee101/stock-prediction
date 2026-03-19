@@ -1,0 +1,30 @@
+{
+  "metrics": [
+    {
+      "symbol": "PATH",
+      "horizon_hours": 1,
+      "count": 891,
+      "mae": 1.8582567242684955,
+      "mae_percent": 13.011902902091505,
+      "start_timestamp": "2025-09-18T19:00:00+00:00",
+      "end_timestamp": "2026-03-18T19:00:00+00:00",
+      "model_id": "chronos2_finetuned/PATH_lora_stockexp_multivar_20260319/finetuned-ckpt",
+      "context_hours": 1024,
+      "batch_size": 32,
+      "cache_dir": "unified_hourly_experiment/forecast_cache/h1"
+    },
+    {
+      "symbol": "PATH",
+      "horizon_hours": 24,
+      "count": 585,
+      "mae": 2.1380164683627383,
+      "mae_percent": 15.002121652738362,
+      "start_timestamp": "2025-09-19T18:00:00+00:00",
+      "end_timestamp": "2026-03-18T18:00:00+00:00",
+      "model_id": "chronos2_finetuned/PATH_lora_stockexp_multivar_20260319/finetuned-ckpt",
+      "context_hours": 1024,
+      "batch_size": 32,
+      "cache_dir": "unified_hourly_experiment/forecast_cache/h24"
+    }
+  ]
+}

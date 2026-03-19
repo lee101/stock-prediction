@@ -1496,3 +1496,117 @@ python -u scripts/retrain_chronos2_hourly_loras.py \
     - artifact: `chronos2_finetuned/PATH_lora_stockexp_multivar_smoke_20260319/finetuned-ckpt`
     - smoke outcome: `val_mae%=2.2262`, `test_mae%=2.4837`
   - full 1500-step run is active with peers `NET, MSFT, PLTR, DBX`.
+
+## Completed Multivariate LoRA Trial
+
+- symbol: `PATH`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 05:32 UTC`
+- training log path: `analysis/local_training_logs/path_lora_stockexp_multivar_20260319.log`
+- output artifact path: `chronos2_finetuned/PATH_lora_stockexp_multivar_20260319/finetuned-ckpt`
+- training outcome:
+  - `val_mae%=1.6146`
+  - `test_mae%=1.5895`
+
+## Completed Follow-On Evaluation
+
+- symbol: `PATH`
+- evaluation directory: `analysis/alpaca_stock_expansion_path_lora_20260319`
+- rebuilt forecast cache outcome:
+  - `h1 MAE%=13.0119`
+  - `h24 MAE%=15.0021`
+- strict-gate promotion summary from `analysis/alpaca_stock_expansion_path_lora_20260319/promotion_summary.json`:
+  - `promote=false`
+  - reason: `No candidate met promotion thresholds. Rejected candidates: PATH`
+- decision: rejected
+  - reason: even after the multivariate LoRA with `NET, MSFT, PLTR, DBX`, the real cache pipeline still emitted repeated heuristic fallbacks and stayed well above both MAE gates, so `PATH` remains a cache-quality reject.
+
+## Runner Fix
+
+- component: `scripts/run_alpaca_stock_expansion.py`
+- issue:
+  - `--skip-cache-build` in a fresh output directory could silently bypass candidate MAE gates because no local `forecast_cache_mae.json` existed to load.
+- fix:
+  - added `--forecast-cache-mae-source` so rebased evaluations can explicitly reuse an existing `forecast_cache_mae.json`
+  - `--skip-cache-build` now raises an actionable error when MAE gates are enabled but no summary is available
+- validation:
+
+```bash
+pytest tests/test_run_alpaca_stock_expansion.py -q
+```
+
+  - outcome: `15 passed`
+
+## Completed Rebased Evaluation
+
+- symbol: `F`
+- evaluation directory: `analysis/alpaca_stock_expansion_f_rebase_20260319`
+- baseline: current live `ABEV` basket
+- simulator outcome:
+  - `return=-0.032538`
+  - `sortino=-6.0765`
+  - `max_drawdown=0.033253`
+- baseline comparison:
+  - baseline: `return=-0.033554`, `sortino=-5.8506`, `max_drawdown=0.033797`
+- decision: move to multivariate LoRA
+  - reason: `F` again improved return and max drawdown but still regressed Sortino by about `-0.2259`, so the remaining serious path was the evaluator-recommended multivariate LoRA with `TRIP, EXPE, DBX, META`.
+
+## Started Multivariate LoRA Trial
+
+- symbol: `F`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 05:47 UTC`
+- training log path: `analysis/local_training_logs/f_lora_stockexp_multivar_20260319.log`
+- output artifact path: `chronos2_finetuned/F_lora_stockexp_multivar_20260319/finetuned-ckpt`
+- training command:
+
+```bash
+python -u scripts/retrain_chronos2_hourly_loras.py \
+  --symbol F \
+  --data-root trainingdatahourly/stocks \
+  --output-root chronos2_finetuned \
+  --context-length 2048 \
+  --batch-size 32 \
+  --learning-rate 5e-05 \
+  --num-steps 1500 \
+  --save-name F_lora_stockexp_multivar_20260319 \
+  --covariate-symbols TRIP,EXPE,DBX,META \
+  --covariate-cols close \
+  --no-update-hparams
+```
+
+- current status:
+  - startup validated cleanly in a 1-step smoke run:
+    - artifact: `chronos2_finetuned/F_lora_stockexp_multivar_smoke_20260319/finetuned-ckpt`
+    - smoke outcome: `val_mae%=2.1770`, `test_mae%=2.9874`
+
+## Completed Multivariate LoRA Trial
+
+- symbol: `F`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 05:47 UTC`
+- training log path: `analysis/local_training_logs/f_lora_stockexp_multivar_20260319.log`
+- output artifact path: `chronos2_finetuned/F_lora_stockexp_multivar_20260319/finetuned-ckpt`
+- training outcome:
+  - `val_mae%=1.5534`
+  - `test_mae%=2.3437`
+
+## Completed Follow-On Evaluation
+
+- symbol: `F`
+- evaluation directory: `analysis/alpaca_stock_expansion_f_multivar_20260319`
+- rebuilt forecast cache outcome:
+  - `h1 MAE%=4.0562`
+  - `h24 MAE%=4.6900`
+- final 120-day market simulator result from `analysis/alpaca_stock_expansion_f_multivar_20260319/F/metrics.json`:
+  - `return=-0.032534`
+  - `sortino=-6.0759`
+  - `max_drawdown=0.033249`
+  - `num_fills=2118`
+- baseline comparison:
+  - baseline: `return=-0.033554`, `sortino=-5.8506`, `max_drawdown=0.033797`
+- strict-gate promotion summary from `analysis/alpaca_stock_expansion_f_multivar_20260319/promotion_summary.json`:
+  - `promote=false`
+  - reason: `No candidate met promotion thresholds. Rejected candidates: F`
+- decision: rejected
+  - reason: the multivariate LoRA preserved the good cache quality but did not change the live-strategy interaction. `F` still improved return and drawdown while regressing Sortino by about `-0.2253`, so it is not promotable against the current `ABEV` live basket.

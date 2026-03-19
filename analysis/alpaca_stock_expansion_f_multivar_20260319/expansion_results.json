@@ -1,0 +1,73 @@
+[
+  {
+    "symbol": "BASE",
+    "side": "mixed",
+    "sector": "base",
+    "priority": 999,
+    "sim_ran": true,
+    "total_return": -0.03355448310042084,
+    "sortino": -5.850606335477407,
+    "max_drawdown": 0.033797068306057554,
+    "final_equity": 9664.455168995792,
+    "num_fills": 2118,
+    "terminated_early": false,
+    "termination_reason": "",
+    "termination_progress_fraction": 0.0,
+    "total_return_delta_vs_baseline": -0.03355448310042084,
+    "sortino_delta_vs_baseline": -5.850606335477407,
+    "max_drawdown_delta_vs_baseline": 0.033797068306057554,
+    "summary_path": "analysis/alpaca_stock_expansion_abev_20260319/ABEV/metrics.json",
+    "hourly_config_exists": false,
+    "recommended_next_step": "",
+    "recommended_reason": "",
+    "recommended_peer_symbols": [],
+    "hourly_tuning_command": "",
+    "lora_command": "",
+    "thesis": "Current live base stock universe baseline.",
+    "candidate_mae_h1_percent": 0.0,
+    "candidate_mae_h24_percent": 0.0,
+    "promotable": false,
+    "promotion_reason": "Baseline row is not a candidate for promotion.",
+    "promotion_failures": [
+      "baseline row"
+    ]
+  },
+  {
+    "symbol": "F",
+    "side": "both",
+    "sector": "",
+    "priority": 72,
+    "sim_ran": true,
+    "total_return": -0.032533561693805495,
+    "sortino": -6.0758644469149745,
+    "max_drawdown": 0.03324860639905349,
+    "final_equity": 9674.664383061945,
+    "num_fills": 2118,
+    "terminated_early": false,
+    "termination_reason": "",
+    "termination_progress_fraction": 0.0,
+    "total_return_delta_vs_baseline": 0.0010209214066153466,
+    "sortino_delta_vs_baseline": -0.2252581114375678,
+    "max_drawdown_delta_vs_baseline": -0.0005484619070040622,
+    "summary_path": "analysis/alpaca_stock_expansion_f_multivar_20260319/F/metrics.json",
+    "hourly_config_exists": true,
+    "recommended_next_step": "multivariate_lora",
+    "recommended_reason": "Use correlated peers to test multivariate LoRA: TRIP, EXPE, DBX, META",
+    "recommended_peer_symbols": [
+      "TRIP",
+      "EXPE",
+      "DBX",
+      "META"
+    ],
+    "hourly_tuning_command": "python hyperparam_chronos_hourly.py --symbols F --quick --holdout-hours 168 --prediction-length 24 --objective composite --cohort-size 4 --cohort-min-abs-corr 0.25 --save-hyperparams",
+    "lora_command": "python scripts/retrain_chronos2_hourly_loras.py --symbol F --data-root trainingdatahourly/stocks --output-root chronos2_finetuned --context-length 2048 --learning-rate 5e-05 --num-steps 1500 --save-name-suffix stockexp --covariate-symbols TRIP,EXPE,DBX,META --covariate-cols close",
+    "thesis": "Cheap, liquid industrial and consumer cyclical exposure for regime diversification.",
+    "candidate_mae_h1_percent": 4.056152455273663,
+    "candidate_mae_h24_percent": 4.689968237047209,
+    "promotable": false,
+    "promotion_reason": "sortino delta -0.2253 below promotion floor 0.0000",
+    "promotion_failures": [
+      "sortino delta -0.2253 below promotion floor 0.0000"
+    ]
+  }
+]

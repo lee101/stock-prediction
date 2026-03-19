@@ -60,7 +60,7 @@
     "ABEV"
   ],
   "next_trial_order": [
-    "PATH"
+    "INTC"
   ],
   "covariate_seed_groups": {
     "semis_and_ai": [
@@ -173,7 +173,7 @@
       "currently_live": false,
       "history_rows": 9369,
       "forecast_cache_horizons": [],
-      "status": "history_ready_needs_cache_and_retrain",
+      "status": "rejected_retrain_sortino_regression",
       "thesis": "Liquid high-beta fintech with enough history for immediate cache build and Chronos2 retraining."
     },
     {
@@ -367,7 +367,7 @@
       "currently_live": false,
       "history_rows": 1019,
       "forecast_cache_horizons": [],
-      "status": "active_multivariate_lora",
+      "status": "rejected_retrain_cache_gate",
       "thesis": "Automation and software factor candidate for a later enterprise-tech batch."
     },
     {
