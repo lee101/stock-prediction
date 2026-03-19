@@ -72,6 +72,15 @@ CHECKPOINT_DIRS = [
     "pufferlib_market/checkpoints/stocks12_daily_tp05",
     "pufferlib_market/checkpoints/stocks12_daily_tp05_longonly",
     "pufferlib_market/checkpoints/mixed32_daily_ent_anneal",
+    "pufferlib_market/checkpoints/mixed23_fresh_clip_vloss",
+    "pufferlib_market/checkpoints/mixed23_fresh_ent_anneal",
+    "pufferlib_market/checkpoints/mixed23_fresh_gspo",
+    "pufferlib_market/checkpoints/mixed23_fresh_gspo2",
+    "pufferlib_market/checkpoints/mixed23_fresh_gspo_seed7",
+    "pufferlib_market/checkpoints/mixed23_fresh_replay",
+    "pufferlib_market/checkpoints/mixed23_fresh_robust",
+    "pufferlib_market/checkpoints/mixed23_fresh_sds_temp",
+    "pufferlib_market/checkpoints/mixed23_fresh_targeted",
 ]
 
 DATA_DIR = "pufferlib_market/data"
@@ -85,7 +94,7 @@ OBS_SIZE_TO_VAL_DATA = {
     192: "crypto11_daily_val.bin",
     209: "stocks12_daily_val.bin",
     260: "crypto15_daily_val.bin",
-    396: "mixed23_daily_val.bin",
+    396: "mixed23_fresh_val.bin",
     549: "mixed32_daily_val.bin",
 }
 

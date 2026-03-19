@@ -86,6 +86,8 @@ def test_promote_chronos2_lora_reports_selects_best_and_writes_config(tmp_path: 
     written = json.loads((out_dir / "AAVEUSDT.json").read_text())
     assert written["symbol"] == "AAVEUSDT"
     assert written["config"]["model_id"] == str(run2 / "finetuned-ckpt")
+    assert written["config"]["context_length"] == 1024
+    assert written["config"]["batch_size"] == 64
 
 
 def test_promote_chronos2_lora_reports_accepts_crypto_sweep_schema(tmp_path: Path) -> None:
@@ -177,5 +179,7 @@ def test_promote_chronos2_lora_reports_accepts_crypto_sweep_schema(tmp_path: Pat
     written = json.loads((out_dir / "DOGEUSDT.json").read_text())
     assert written["symbol"] == "DOGEUSDT"
     assert written["config"]["model_id"] == str(run2 / "finetuned-ckpt")
+    assert written["config"]["context_length"] == 512
+    assert written["config"]["batch_size"] == 32
     assert written["metadata"]["preaug_strategy"] == "percent_change"
     assert written["validation"]["mae_percent"] == 2.8

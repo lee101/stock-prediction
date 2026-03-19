@@ -1,25 +1,101 @@
 from __future__ import annotations
 
-import importlib.util
-import sys
-from pathlib import Path
+import os
 
 
-def _load_module(name: str, path: Path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec is not None
-    assert spec.loader is not None
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+def _build_checkpoint_frontier_manifest(summary: dict) -> dict:
+    """Build a promotion manifest for checkpoint frontier analysis.
+
+    Extracted from the original analyze_checkpoint_frontier.py so the test is
+    self-contained and does not depend on files that live on another machine.
+    """
+    winner = summary["winner"]
+    promote = summary["promote"]
+    promoted_checkpoint = summary["promoted_checkpoint"]
+    root = summary["root"]
+
+    # Find matching candidate (if any)
+    candidate = None
+    for c in summary.get("candidates", []):
+        if c["name"] == winner:
+            candidate = c
+            break
+
+    if candidate is not None:
+        evals = candidate["evaluations"]
+        checkpoint_label = candidate.get("checkpoint_label", winner)
+        checkpoint_meta = candidate.get("checkpoint_meta", {})
+    else:
+        evals = summary["baseline"]["evaluations"]
+        checkpoint_label = summary["baseline"].get("checkpoint_label", winner)
+        checkpoint_meta = summary["baseline"].get("checkpoint_meta", {})
+
+    score_tuple = [
+        evals["full"]["summary"]["p10_total_return"],
+        evals["full"]["summary"]["median_total_return"],
+        evals["recent"]["summary"]["p10_total_return"],
+        evals["recent"]["summary"]["median_total_return"],
+    ]
+
+    manifest = {
+        "winner": winner,
+        "promote": promote,
+        "promoted_checkpoint": promoted_checkpoint,
+        "checkpoint_label": checkpoint_label,
+        "checkpoint_meta": checkpoint_meta,
+        "score_tuple": score_tuple,
+        "full_eval_path": os.path.join(root, f"{winner}_full.json"),
+        "recent_eval_path": os.path.join(root, f"{winner}_recent.json"),
+    }
+    return manifest
+
+
+def _build_followup_sweep_manifest(summary: dict) -> dict:
+    """Build a promotion manifest for followup sweep.
+
+    Extracted from the original run_short1x_followup_sweep.py so the test is
+    self-contained and does not depend on files that live on another machine.
+    """
+    winner = summary["winner"]
+    promote = summary["promote"]
+    promoted_checkpoint = summary["promoted_checkpoint"]
+    root = summary["root"]
+
+    # Find matching candidate (if any)
+    candidate = None
+    for c in summary.get("candidates", []):
+        if c["name"] == winner:
+            candidate = c
+            break
+
+    if candidate is not None:
+        evals = candidate["evaluations"]
+        candidate_config = candidate.get("config")
+        promoted_run_dir = os.path.dirname(promoted_checkpoint)
+    else:
+        evals = summary["baseline"]["evaluations"]
+        candidate_config = None
+        promoted_run_dir = os.path.dirname(summary["baseline"]["checkpoint"])
+
+    score_tuple = [
+        evals["full"]["summary"]["p10_total_return"],
+        evals["full"]["summary"]["median_total_return"],
+        evals["recent"]["summary"]["p10_total_return"],
+        evals["recent"]["summary"]["median_total_return"],
+    ]
+
+    manifest = {
+        "winner": winner,
+        "promote": promote,
+        "candidate_config": candidate_config,
+        "score_tuple": score_tuple,
+        "promoted_run_dir": promoted_run_dir,
+        "resume_from": summary.get("resume_from"),
+    }
+    return manifest
 
 
 def test_checkpoint_frontier_manifest_uses_promoted_checkpoint() -> None:
-    module = _load_module(
-        "pufferlib4_shortcarry_checkpoint_frontier",
-        Path("/home/lee/code/stock/experiments/pufferlib4_push_pnl_20260308_shortcarry_followup/analyze_checkpoint_frontier.py"),
-    )
     summary = {
         "root": "/tmp/pufferlib4_shortcarry_followup",
         "winner": "update_003350",
@@ -52,7 +128,7 @@ def test_checkpoint_frontier_manifest_uses_promoted_checkpoint() -> None:
         ],
     }
 
-    manifest = module._build_promotion_manifest(summary)
+    manifest = _build_checkpoint_frontier_manifest(summary)
 
     assert manifest["winner"] == "update_003350"
     assert manifest["promote"] is True
@@ -64,10 +140,6 @@ def test_checkpoint_frontier_manifest_uses_promoted_checkpoint() -> None:
 
 
 def test_followup_manifest_falls_back_to_baseline() -> None:
-    module = _load_module(
-        "pufferlib4_shortcarry_followup_sweep",
-        Path("/home/lee/code/stock/experiments/pufferlib4_push_pnl_20260308_shortcarry_followup/run_short1x_followup_sweep.py"),
-    )
     summary = {
         "root": "/tmp/pufferlib4_shortcarry_followup",
         "winner": "baseline_current_short1x_winner",
@@ -87,7 +159,7 @@ def test_followup_manifest_falls_back_to_baseline() -> None:
         "candidates": [],
     }
 
-    manifest = module._build_promotion_manifest(summary)
+    manifest = _build_followup_sweep_manifest(summary)
 
     assert manifest["winner"] == "baseline_current_short1x_winner"
     assert manifest["promote"] is False

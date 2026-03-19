@@ -52,7 +52,7 @@ DEFAULT_SYMBOLS = [
     "AAVEUSD",
 ]
 
-DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/autoresearch_mixed23_daily/ent_anneal/best.pt"
+DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/mixed23_fresh_targeted/reg_combo_2/best.pt"
 INITIAL_CASH = 10_000.0
 REPO = Path(__file__).resolve().parent
 
@@ -286,23 +286,38 @@ def run_backtest(args: argparse.Namespace) -> dict[str, object]:
             action_allocation_bins=trader.action_allocation_bins,
             action_level_bins=trader.action_level_bins,
             action_max_offset_bps=trader.action_max_offset_bps,
+            enable_drawdown_profit_early_exit=not args.disable_drawdown_profit_early_exit,
+            drawdown_profit_early_exit_min_steps=args.drawdown_profit_early_exit_min_steps,
+            drawdown_profit_early_exit_progress_fraction=args.drawdown_profit_early_exit_progress_fraction,
+            early_exit_max_drawdown=args.early_exit_max_drawdown,
+            early_exit_min_sortino=args.early_exit_min_sortino,
         )
 
     steps = min(args.max_steps, data.num_timesteps - 1)
+    evaluated_steps = int(result.evaluated_steps) if int(result.evaluated_steps) > 0 else int(steps)
     report = {
         "checkpoint": args.checkpoint,
         "data_root": args.data_root,
         "symbols": symbols,
         "date_range": {"start": args.start, "end": args.end},
         "aligned_days": int(data.num_timesteps),
-        "eval_steps": int(steps),
+        "requested_max_steps": int(steps),
+        "eval_steps": evaluated_steps,
         "total_return": float(result.total_return),
-        "annualized_return": float(annualize_total_return(result.total_return, periods=steps, periods_per_year=args.periods_per_year)),
+        "annualized_return": float(
+            annualize_total_return(
+                result.total_return,
+                periods=max(evaluated_steps, 1),
+                periods_per_year=args.periods_per_year,
+            )
+        ),
         "sortino": float(result.sortino),
         "max_drawdown": float(result.max_drawdown),
         "num_trades": int(result.num_trades),
         "win_rate": float(result.win_rate),
         "avg_hold_steps": float(result.avg_hold_steps),
+        "stopped_early": bool(result.stopped_early),
+        "stop_reason": str(result.stop_reason),
     }
     print(json.dumps(report, indent=2, sort_keys=True))
     if args.output_json:
@@ -345,6 +360,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-leverage", type=float, default=1.0)
     parser.add_argument("--periods-per-year", type=float, default=365.0)
     parser.add_argument("--short-borrow-apr", type=float, default=0.0)
+    parser.add_argument(
+        "--disable-drawdown-profit-early-exit",
+        action="store_true",
+        help="Disable the default drawdown-vs-profit screening exit in the daily replay.",
+    )
+    parser.add_argument(
+        "--drawdown-profit-early-exit-min-steps",
+        type=int,
+        default=20,
+        help="Minimum replay length before any early-exit screening rule can stop the run.",
+    )
+    parser.add_argument(
+        "--drawdown-profit-early-exit-progress-fraction",
+        type=float,
+        default=0.5,
+        help="Progress fraction that must elapse before any early-exit screening rule can stop the run.",
+    )
+    parser.add_argument(
+        "--early-exit-max-drawdown",
+        type=float,
+        default=None,
+        help="Optional max drawdown threshold, e.g. 0.25 to stop once running drawdown reaches 25%%.",
+    )
+    parser.add_argument(
+        "--early-exit-min-sortino",
+        type=float,
+        default=None,
+        help="Optional running Sortino threshold to stop obvious losers during long backtests.",
+    )
     parser.add_argument("--cash", type=float, default=INITIAL_CASH)
     parser.add_argument("--current-symbol", default=None)
     parser.add_argument("--current-direction", choices=["long", "short"], default=None)
