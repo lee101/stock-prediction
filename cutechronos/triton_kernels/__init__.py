@@ -16,3 +16,13 @@ try:
     from .attention import unscaled_attention
 except ImportError:
     pass
+
+try:
+    from .fused_layernorm_linear import fused_rms_norm_linear, fused_rms_norm_qkv
+except ImportError:
+    pass
+
+try:
+    from .fused_preprocess import triton_fused_preprocess
+except ImportError:
+    pass
