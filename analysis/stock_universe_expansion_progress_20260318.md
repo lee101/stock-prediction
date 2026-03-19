@@ -578,12 +578,13 @@ python scripts/run_alpaca_stock_expansion.py \
   - decision: rejected
     - reason: `RCAT` missed both cache gates badly on the base checkpoint, so it stays in the tune-or-retrain bucket and does not earn a simulator run against the live `ABEV` baseline.
 
-## Next Improvement Target
+## Completed Hourly Tune
 
-- closest near-miss from the completed first-pass cache screen: `OWL`
-  - first-pass cache MAE: `h1=10.3220%`, `h24=12.0786%`
-  - recommended next step from `analysis/alpaca_stock_expansion_owl_20260319/expansion_results.json`: `hourly_tune`
-  - planned follow-on command:
+- symbol: `OWL`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 04:25 UTC`
+- tuned config path: `hyperparams/chronos2/hourly/OWL.json`
+- tuning command:
 
 ```bash
 python hyperparam_chronos_hourly.py \
@@ -596,6 +597,46 @@ python hyperparam_chronos_hourly.py \
   --cohort-min-abs-corr 0.25 \
   --save-hyperparams
 ```
+
+- tuning outcome:
+  - saved `hyperparams/chronos2/hourly/OWL.json`
+  - best objective config: `context_length=1024`, `skip_rates=[1]`, `aggregation=single`, `multivariate=True`
+  - tuner reported `pct_return_mae=30.6795%`
+- tuned follow-on cache outcome:
+  - `h1 MAE%=10.3220`
+  - `h24 MAE%=12.0786`
+- decision: rejected
+  - reason: the tuned hourly config was loaded (`ctx=1024`, `batch=32`) but did not improve the cache gate, so `OWL` stays below promotion quality and moves to the multivariate LoRA step.
+
+## Started Multivariate LoRA Trial
+
+- symbol: `OWL`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 04:28 UTC`
+- log path: `analysis/local_training_logs/owl_lora_stockexp_multivar_20260319.log`
+- output artifact path: `chronos2_finetuned/OWL_lora_stockexp_multivar_20260319/finetuned-ckpt`
+- command:
+
+```bash
+python -u scripts/retrain_chronos2_hourly_loras.py \
+  --symbol OWL \
+  --data-root trainingdatahourly/stocks \
+  --output-root chronos2_finetuned \
+  --context-length 1024 \
+  --batch-size 32 \
+  --learning-rate 5e-05 \
+  --num-steps 1500 \
+  --save-name OWL_lora_stockexp_multivar_20260319 \
+  --covariate-symbols META,PLTR,EXPE,TRIP \
+  --covariate-cols close \
+  --no-update-hparams
+```
+
+- current status:
+  - startup validated cleanly in a 1-step smoke run:
+    - artifact: `chronos2_finetuned/OWL_lora_stockexp_multivar_smoke_20260319/finetuned-ckpt`
+    - smoke outcome: covariate loading, model load, fine-tune, and checkpoint write all succeeded.
+  - full 1500-step run is active with peers `META, PLTR, EXPE, TRIP`.
 
 ## Fixes Applied In This Iteration
 
