@@ -506,7 +506,6 @@ tests/prod/brokers/test_binance*.py
 tests/prod/cli/test_binance*.py
 
 # Experimental data utilities
-src/data_loading_utils.py
 src/metrics_utils.py
 
 # =============================================================================
