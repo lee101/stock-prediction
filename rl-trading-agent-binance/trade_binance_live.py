@@ -1045,6 +1045,20 @@ def place_margin_limit_sell(
 # Hybrid Signal Generation
 # ---------------------------------------------------------------------------
 
+def _klines_to_rows(klines: list) -> list[dict]:
+    rows = []
+    for k in klines:
+        rows.append({
+            "timestamp": pd.Timestamp(k[0], unit="ms", tz="UTC").isoformat(),
+            "open": float(k[1]),
+            "high": float(k[2]),
+            "low": float(k[3]),
+            "close": float(k[4]),
+            "volume": float(k[5]),
+        })
+    return rows
+
+
 def get_hybrid_signal(
     sym_cfg: BinanceSymbolConfig,
     model: str = "gemini-3.1-flash-lite-preview",
@@ -1068,33 +1082,25 @@ def get_hybrid_signal(
 
     current_price = float(price)
 
-    # Load recent hourly bars from Binance
-    from src.binan import binance_wrapper as bw
-    try:
-        # Try primary pair, fall back to USDT if FDUSD not available
-        pair = market_symbol
+    # Use prefetched bars if available, otherwise fetch from Binance
+    history_rows = kwargs.get("prefetched_bars")
+    if history_rows is None:
+        from src.binan import binance_wrapper as bw
         try:
-            klines = bw.get_client().get_klines(symbol=pair, interval="1h", limit=72)
-        except Exception:
-            if execution_mode == "spot" and sym_cfg.quote_asset == "FDUSD":
-                pair = sym_cfg.base_asset + "USDT"
-                logger.info(f"  Falling back to {pair} (FDUSD not available)")
+            pair = market_symbol
+            try:
                 klines = bw.get_client().get_klines(symbol=pair, interval="1h", limit=72)
-            else:
-                raise
-        history_rows = []
-        for k in klines:
-            history_rows.append({
-                "timestamp": pd.Timestamp(k[0], unit="ms", tz="UTC").isoformat(),
-                "open": float(k[1]),
-                "high": float(k[2]),
-                "low": float(k[3]),
-                "close": float(k[4]),
-                "volume": float(k[5]),
-            })
-    except Exception as e:
-        logger.error(f"Failed to get klines for {market_symbol}: {e}")
-        return TradePlan("hold", 0, 0, 0, f"klines error: {e}")
+            except Exception:
+                if execution_mode == "spot" and sym_cfg.quote_asset == "FDUSD":
+                    pair = sym_cfg.base_asset + "USDT"
+                    logger.info(f"  Falling back to {pair} (FDUSD not available)")
+                    klines = bw.get_client().get_klines(symbol=pair, interval="1h", limit=72)
+                else:
+                    raise
+            history_rows = _klines_to_rows(klines)
+        except Exception as e:
+            logger.error(f"Failed to get klines for {market_symbol}: {e}")
+            return TradePlan("hold", 0, 0, 0, f"klines error: {e}")
 
     if len(history_rows) < 12:
         return TradePlan("hold", 0, 0, 0, "insufficient history")
@@ -1121,17 +1127,20 @@ def get_hybrid_signal(
     fee_bps = _execution_fee_bps(sym_cfg, execution_mode)
     from rl_trading_agent_binance_prompt import build_live_prompt_freeform
     prompt_variant = kwargs.get("prompt_variant", "optimization")
+    cross_ctx = kwargs.get("cross_asset_context", "")
     if prompt_variant == "freeform":
         prompt = build_live_prompt_freeform(
             sym_cfg.symbol, history_rows, current_price, fc_1h, fc_24h,
             position_info=pos_info, fee_bps=fee_bps,
             fc_4h=fc_4h, fc_12h=fc_12h,
+            cross_asset_context=cross_ctx,
         )
     else:
         prompt = build_live_prompt(
             sym_cfg.symbol, history_rows, current_price, fc_1h, fc_24h,
             position_info=pos_info, fee_bps=fee_bps,
             fc_4h=fc_4h, fc_12h=fc_12h,
+            cross_asset_context=cross_ctx,
         )
 
     reprompt_passes = kwargs.get("reprompt_passes", 1)
@@ -1283,6 +1292,29 @@ def run_trading_cycle(
                 cast_fe_list.append(_serialize_order(order))
                 logger.info(f"  Forced exit sell @ ${sell_price:.2f}")
 
+        # Prefetch bars for all symbols (used for cross-asset context + per-symbol signals)
+        cross_asset_context = ""
+        all_symbol_bars: dict[str, list[dict]] = {}
+        try:
+            from src.binan import binance_wrapper as bw
+            for sn in symbols:
+                sc = TRADING_SYMBOLS.get(sn)
+                if not sc:
+                    continue
+                mp = _execution_pair(sc, resolved_execution_mode)
+                try:
+                    kl = bw.get_client().get_klines(symbol=mp, interval="1h", limit=72)
+                    all_symbol_bars[sn] = _klines_to_rows(kl)
+                except Exception:
+                    pass
+            if len(all_symbol_bars) >= 2:
+                from rl_trading_agent_binance_prompt import build_cross_asset_context
+                cross_asset_context = build_cross_asset_context(all_symbol_bars)
+                if cross_asset_context:
+                    logger.info(f"Cross-asset context:\n{cross_asset_context}")
+        except Exception as exc:
+            logger.warning(f"Cross-asset context failed: {exc}")
+
         for sym_name in symbols:
             sym_cfg = TRADING_SYMBOLS.get(sym_name)
             if not sym_cfg:
@@ -1344,6 +1376,8 @@ def run_trading_cycle(
                     reprompt_passes=reprompt_passes,
                     review_model=review_model,
                     reprompt_policy=reprompt_policy,
+                    cross_asset_context=cross_asset_context,
+                    prefetched_bars=all_symbol_bars.get(sym_name),
                 )
             except Exception as exc:
                 logger.error(f"  Signal generation failed: {exc}")
