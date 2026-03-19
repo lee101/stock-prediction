@@ -148,8 +148,10 @@ class TestFightingResolution:
 
     def test_fighting_resolved_by_better_pnl(self, coordinator, mock_account):
         """Fighting allowed if new order has better PnL."""
-        # Setup fighting history
-        for i in range(2):  # 2 prior steals (need 3 total to fight)
+        # Setup fighting history - need WORK_STEALING_FIGHT_THRESHOLD - 1 steals
+        # to trigger _would_cause_fight (default threshold=5, so need 4 steals)
+        from src.work_stealing_config import WORK_STEALING_FIGHT_THRESHOLD
+        for i in range(WORK_STEALING_FIGHT_THRESHOLD - 1):
             coordinator._record_steal(
                 from_symbol="AAPL",
                 to_symbol="MSFT",
@@ -191,8 +193,10 @@ class TestFightingResolution:
 
     def test_fighting_blocked_by_worse_pnl(self, coordinator, mock_account):
         """Fighting blocked if new order has worse PnL."""
-        # Setup fighting history
-        for i in range(2):
+        # Setup fighting history - need WORK_STEALING_FIGHT_THRESHOLD - 1 steals
+        # to trigger _would_cause_fight (default threshold=5, so need 4 steals)
+        from src.work_stealing_config import WORK_STEALING_FIGHT_THRESHOLD
+        for i in range(WORK_STEALING_FIGHT_THRESHOLD - 1):
             coordinator._record_steal(
                 from_symbol="AAPL",
                 to_symbol="MSFT",

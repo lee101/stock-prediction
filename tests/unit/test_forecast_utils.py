@@ -57,9 +57,10 @@ class TestExtractForecastedPnl:
 
 
 class TestLoadLatestForecastSnapshot:
-    @patch("src.forecast_utils.load_latest_forecast_snapshot")
-    def test_loads_forecast_snapshot(self, mock_load):
-        mock_load.return_value = {
+    @patch("src.forecast_utils._load_latest_forecast_snapshot")
+    @patch("src.forecast_utils.get_results_dir")
+    def test_loads_forecast_snapshot(self, mock_results_dir, mock_inner_load):
+        mock_inner_load.return_value = {
             "AAPL": {"maxdiff_forecasted_pnl": 100.0},
             "BTCUSD": {"avg_return": 0.05},
         }
@@ -67,4 +68,4 @@ class TestLoadLatestForecastSnapshot:
         result = load_latest_forecast_snapshot()
         assert "AAPL" in result
         assert "BTCUSD" in result
-        mock_load.assert_called_once()
+        mock_inner_load.assert_called_once()
