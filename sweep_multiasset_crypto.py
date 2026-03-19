@@ -10,7 +10,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
-import pandas as pd
 import torch
 
 from binancechronossolexperiment.data import ChronosSolDataModule, SplitConfig
@@ -18,8 +17,8 @@ from binanceneural.data import FeatureNormalizer
 from src.forecast_horizon_utils import resolve_required_forecast_horizons
 from unified_hourly_experiment.multiasset_policy import (
     MultiAssetConfig,
+    MultiAssetPolicy,
     DifferentiablePortfolioSim,
-    build_multiasset_policy,
 )
 
 REPO = Path(__file__).resolve().parents[1]
@@ -45,7 +44,8 @@ def load_checkpoint(ckpt_path: str, device: str = "cuda"):
         max_len=cfg["max_len"],
         dropout=cfg.get("dropout", 0.3),
     )
-    model = build_multiasset_policy(config)
+    include_cash = cfg.get("include_cash", False)
+    model = MultiAssetPolicy(config, include_cash=include_cash)
     model.load_state_dict(ckpt["state_dict"])
     model = model.to(device).eval()
     normalizer = FeatureNormalizer.from_dict(ckpt["normalizer"])
@@ -123,17 +123,18 @@ def simulate_multiasset_window(
             feat_tensor = torch.stack(feat_list).unsqueeze(0).to(device)  # (1, num_assets, seq, feat)
             alloc, _ = model(feat_tensor)
             alloc_np = alloc[0].cpu().numpy()
+            # strip cash slot if present
+            asset_alloc = alloc_np[:len(symbols)]
 
-            # portfolio return
             asset_returns = np.array([returns_by_sym[sym][t + 1] for sym in symbols])
-            port_return = (alloc_np * asset_returns).sum()
-            turnover = np.abs(alloc_np - prev_alloc).sum()
+            port_return = (asset_alloc * asset_returns).sum()
+            turnover = np.abs(asset_alloc - prev_alloc).sum()
             tx_cost = turnover * maker_fee
-            margin_cost = margin_hourly_rate * max(0, alloc_np.sum() - 1.0)
+            margin_cost = margin_hourly_rate * max(0, asset_alloc.sum() - 1.0)
             net_return = port_return - tx_cost - margin_cost
             cash *= (1 + net_return)
             equity_curve.append(cash)
-            prev_alloc = alloc_np
+            prev_alloc = asset_alloc
             if turnover > 0.01:
                 num_rebalances += 1
 

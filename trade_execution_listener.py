@@ -16,6 +16,7 @@ except Exception:  # pragma: no cover - optional dependency at runtime
 
 from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 from src.trade_execution_monitor import (
+    TradeEvent,
     TradeExecutionMonitor,
     load_events_from_file,
     trade_event_from_dict,
@@ -59,8 +60,6 @@ def _run_stdin(listener: TradeExecutionMonitor) -> None:
         except json.JSONDecodeError:
             continue
         event = trade_event_from_dict(payload)
-        if event is None:
-            continue
         listener.process_event(event)
 
 
@@ -77,18 +76,22 @@ async def _run_alpaca(listener: TradeExecutionMonitor, paper: bool) -> None:  # 
 
     @stream.on_trade_updates
     async def _(data):
-        raw_qty = getattr(data, "qty", None) or getattr(getattr(data, "order", None), "filled_qty", None)
-        raw_price = getattr(data, "price", None) or getattr(getattr(data, "order", None), "filled_avg_price", None)
         payload = {
             "symbol": getattr(data, "symbol", None) or getattr(getattr(data, "order", None), "symbol", None),
             "side": getattr(getattr(data, "order", None), "side", None),
-            "quantity": float(raw_qty) if raw_qty is not None else 0.0,
-            "price": float(raw_price) if raw_price is not None else 0.0,
+            "quantity": float(
+                getattr(data, "qty", None)
+                or getattr(getattr(data, "order", None), "filled_qty", 0.0)
+                or 0.0
+            ),
+            "price": float(
+                getattr(data, "price", None)
+                or getattr(getattr(data, "order", None), "filled_avg_price", 0.0)
+                or 0.0
+            ),
             "timestamp": getattr(data, "timestamp", datetime.now(timezone.utc).isoformat()),
         }
-        event = trade_event_from_dict(payload)
-        if event is not None:
-            listener.process_event(event)
+        listener.process_event(trade_event_from_dict(payload))
 
     await stream._run_forever()  # type: ignore[attr-defined]
 

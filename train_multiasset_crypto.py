@@ -12,18 +12,16 @@ from typing import Dict, List, Tuple
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
-import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Dataset
 
 from binancechronossolexperiment.data import ChronosSolDataModule, SplitConfig
-from binanceneural.data import FeatureNormalizer, build_default_feature_columns
+from binanceneural.data import FeatureNormalizer
 from src.forecast_horizon_utils import resolve_required_forecast_horizons
 from unified_hourly_experiment.multiasset_policy import (
     MultiAssetConfig,
     MultiAssetPolicy,
     DifferentiablePortfolioSim,
-    build_multiasset_policy,
 )
 
 REPO = Path(__file__).resolve().parents[1]
@@ -71,7 +69,6 @@ def load_crypto_data(
 ) -> Tuple[Dict, Dict, List[str], FeatureNormalizer]:
     """Load multiple crypto symbols, align timestamps, return train/val splits."""
     forecast_horizons = (1,)
-    feature_columns = None
     frames = {}
 
     for sym in symbols:
@@ -92,11 +89,6 @@ def load_crypto_data(
                 max_history_days=max_history_days,
             )
             frames[sym] = dm.full_frame
-            if feature_columns is None:
-                feature_columns = list(dm.normalizer.mean.shape[0] * [None])
-                feature_columns = [c for c in dm.train_frame.columns
-                                   if c not in ("timestamp", "symbol", "open", "high", "low", "close",
-                                                "volume", "reference_close") and not c.startswith("predicted_")]
             print(f"loaded {sym}: {len(dm.full_frame)} rows")
         except Exception as e:
             print(f"SKIP {sym}: {e}")
@@ -113,7 +105,6 @@ def load_crypto_data(
     all_symbols = list(frames.keys())
     # fit normalizer on first 85% of common timestamps
     split_idx = int(len(common_ts) * 0.85)
-    train_ts = set(common_ts[:split_idx])
 
     # collect feature columns from first symbol
     first_sym = all_symbols[0]
@@ -221,29 +212,35 @@ class MultiAssetCryptoTrainer:
         sim: DifferentiablePortfolioSim,
         features: torch.Tensor,
         returns: torch.Tensor,
+        entropy_coef: float = 0.1,
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
         batch_size, horizon, num_assets = returns.shape
-        allocations = []
+        include_cash = getattr(model, "include_cash", False)
+
+        allocations_full = []
         portfolio_state = torch.ones(batch_size, num_assets, device=self.device) / num_assets
 
         for t in range(horizon):
-            alloc, _ = model(features, portfolio_state)
-            allocations.append(alloc)
+            alloc_raw, _ = model(features, portfolio_state)
+            allocations_full.append(alloc_raw)
             portfolio_state = portfolio_state * (1 + returns[:, t])
             portfolio_state = portfolio_state / (portfolio_state.sum(dim=-1, keepdim=True) + 1e-8)
 
-        allocations = torch.stack(allocations, dim=1)
-        equity_curve, portfolio_returns = sim(allocations, returns)
+        allocations_full = torch.stack(allocations_full, dim=1)  # (batch, horizon, num_assets+cash)
+        # extract asset allocations for sim (cash earns 0)
+        asset_allocs = allocations_full[:, :, :num_assets]
+
+        equity_curve, portfolio_returns = sim(asset_allocs, returns)
         sortino = sim.compute_sortino(portfolio_returns)
-        entropy = -(allocations * torch.log(allocations + 1e-8)).sum(dim=-1).mean()
+        entropy = -(allocations_full * torch.log(allocations_full + 1e-8)).sum(dim=-1).mean()
 
-        # add margin cost penalty: proportional to mean leverage-like allocation
-        margin_penalty = self.margin_hourly_rate * allocations.sum(dim=-1).mean() * horizon
+        margin_penalty = self.margin_hourly_rate * asset_allocs.sum(dim=-1).mean() * horizon
 
-        loss = -sortino.mean() - 0.01 * entropy + margin_penalty
+        loss = -sortino.mean() - entropy_coef * entropy + margin_penalty
 
         total_return = (equity_curve[:, -1] - 1).mean()
-        turnover = torch.abs(allocations[:, 1:] - allocations[:, :-1]).sum(dim=-1).mean()
+        turnover = torch.abs(asset_allocs[:, 1:] - asset_allocs[:, :-1]).sum(dim=-1).mean()
+        cash_frac = allocations_full[:, :, -1].mean().item() if include_cash else 0.0
 
         return loss, {
             "loss": loss.item(),
@@ -251,6 +248,7 @@ class MultiAssetCryptoTrainer:
             "return": total_return.item() * 100,
             "turnover": turnover.item(),
             "entropy": entropy.item(),
+            "cash_pct": cash_frac * 100,
         }
 
     def train(self) -> Path:
@@ -289,7 +287,7 @@ class MultiAssetCryptoTrainer:
             dropout=0.2,
         )
 
-        model = build_multiasset_policy(config).to(self.device)
+        model = MultiAssetPolicy(config, include_cash=True).to(self.device)
         sim = DifferentiablePortfolioSim(len(symbols), transaction_cost=self.maker_fee).to(self.device)
         optimizer = torch.optim.AdamW(model.parameters(), lr=self.lr, weight_decay=self.wd)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.epochs)
@@ -302,7 +300,7 @@ class MultiAssetCryptoTrainer:
 
         for epoch in range(1, self.epochs + 1):
             model.train()
-            tm = {"loss": 0, "sortino": 0, "return": 0, "turnover": 0, "entropy": 0}
+            tm = {"loss": 0, "sortino": 0, "return": 0, "turnover": 0, "entropy": 0, "cash_pct": 0}
             nb = 0
             for features, returns in train_loader:
                 features, returns = features.to(self.device), returns.to(self.device)
@@ -318,7 +316,7 @@ class MultiAssetCryptoTrainer:
                 tm[k] /= max(1, nb)
 
             model.eval()
-            vm = {"loss": 0, "sortino": 0, "return": 0, "turnover": 0, "entropy": 0}
+            vm = {"loss": 0, "sortino": 0, "return": 0, "turnover": 0, "entropy": 0, "cash_pct": 0}
             nb = 0
             with torch.no_grad():
                 for features, returns in val_loader:
@@ -343,6 +341,7 @@ class MultiAssetCryptoTrainer:
                     "num_layers": config.num_layers,
                     "max_len": config.max_len,
                     "dropout": config.dropout,
+                    "include_cash": True,
                 },
                 "symbols": symbols,
                 "feature_columns": feat_cols,
@@ -359,8 +358,9 @@ class MultiAssetCryptoTrainer:
 
             print(
                 f"ep{epoch:02d} train sort={tm['sortino']:.3f} ret={tm['return']:.2f}% "
-                f"turn={tm['turnover']:.3f} | val sort={vm['sortino']:.3f} ret={vm['return']:.2f}% "
-                f"turn={vm['turnover']:.3f} {'*' if ckpt_path == best_ckpt else ''}"
+                f"turn={tm['turnover']:.3f} cash={tm.get('cash_pct',0):.0f}% | "
+                f"val sort={vm['sortino']:.3f} ret={vm['return']:.2f}% "
+                f"turn={vm['turnover']:.3f} cash={vm.get('cash_pct',0):.0f}% {'*' if ckpt_path == best_ckpt else ''}"
             )
 
         config_out = {
