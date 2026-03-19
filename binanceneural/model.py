@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import math
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass
 from typing import Dict, Mapping, Tuple
 
 import torch
@@ -62,7 +61,7 @@ def _scaled_dot_product_attention_reference(
 
     if attn_mask is not None:
         if attn_mask.dtype == torch.bool:
-            scores = scores.masked_fill(attn_mask, float("-inf"))
+            scores = scores.masked_fill(~attn_mask, float("-inf"))
         else:
             scores = scores + attn_mask
 
@@ -355,9 +354,6 @@ class MultiQueryAttention(nn.Module):
         self.causal = config.use_causal_attention
         self.rms_eps = config.rms_norm_eps
         self.attention_window = config.attention_window if config.attention_window and config.attention_window > 0 else None
-        self._window_mask: torch.Tensor | None = None
-        self._window_mask_len = 0
-        self._window_mask_device: torch.device | None = None
         self.use_value_embedding = bool(config.use_value_embedding) and int(config.value_embedding_every) > 0
         if self.use_value_embedding:
             every = int(config.value_embedding_every)
@@ -733,7 +729,7 @@ def align_state_dict_input_dim(
 
     target = int(input_dim)
     if weight.shape[1] < target:
-        pad = torch.zeros(weight.shape[0], target - weight.shape[1], dtype=weight.dtype)
+        pad = torch.zeros(weight.shape[0], target - weight.shape[1], dtype=weight.dtype, device=weight.device)
         updated = torch.cat([weight, pad], dim=1)
     else:
         updated = weight[:, :target]
@@ -748,7 +744,8 @@ __all__ = [
     "BinanceHourlyPolicyNano",
     "BinancePolicyBase",
     "PolicyConfig",
-    "build_policy",
+    "PositionalEncoding",
     "align_state_dict_input_dim",
+    "build_policy",
     "policy_config_from_payload",
 ]
