@@ -342,6 +342,12 @@ cppsimulator/build/CMakeFiles/
 cppsimulator/build/run_sim
 cppsimulator/build_py/market_sim_ext.so
 
+# Autoresearch run artifacts (results tracked in git only when noteworthy)
+autoresearch_crypto/results.tsv
+autoresearch_crypto/experiments/
+autoresearch_stock/experiments/
+autoresearch_stock/prompts/
+
 # =============================================================================
 # Strategy and portfolio artifacts
 # =============================================================================

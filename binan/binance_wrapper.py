@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, List, Mapping, cast
 from binance import Client
 from loguru import logger
 
+from binan.binance_conversion import coerce_amount
 from env_real import BINANCE_API_KEY, BINANCE_SECRET
 from src.stock_utils import binance_remap_symbols
 
@@ -116,14 +117,7 @@ def get_client(client: Client | None = None) -> Client:
     return _resolve_client(client)
 
 
-def _coerce_balance_value(value: Any) -> float:
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    if not math.isfinite(numeric):
-        return 0.0
-    return numeric
+_coerce_balance_value = coerce_amount
 
 
 def _normalize_symbol(symbol: str) -> str:
@@ -137,7 +131,7 @@ def _normalize_symbol(symbol: str) -> str:
 def _extract_filter_value(filter_entry: Mapping[str, Any], keys: Iterable[str]) -> float | None:
     for key in keys:
         if key in filter_entry:
-            return _coerce_balance_value(filter_entry.get(key))
+            return coerce_amount(filter_entry.get(key))
     return None
 
 
@@ -351,6 +345,15 @@ def close_position_at_current_price(position, row):
         return None
 
 
+def cancel_order(symbol: str, order_id: int, client: Client | None = None):
+    client = _resolve_client(client)
+    try:
+        return client.cancel_order(symbol=symbol, orderId=order_id)
+    except Exception as e:
+        logger.error(f"Failed to cancel order {order_id} for {symbol}: {e}")
+        return None
+
+
 def cancel_all_orders(client: Client | None = None):
     client = _resolve_client(client)
     for symbol in crypto_symbols:
@@ -472,15 +475,15 @@ def get_asset_free_balance(asset: str, client: Client | None = None) -> float:
     balance = get_asset_balance(asset, balances=get_account_balances(client=client))
     if balance is None:
         return 0.0
-    return _coerce_balance_value(balance.get("free"))
+    return coerce_amount(balance.get("free"))
 
 
 def get_asset_total_balance(asset: str, client: Client | None = None) -> float:
     balance = get_asset_balance(asset, balances=get_account_balances(client=client))
     if balance is None:
         return 0.0
-    free = _coerce_balance_value(balance.get("free"))
-    locked = _coerce_balance_value(balance.get("locked"))
+    free = coerce_amount(balance.get("free"))
+    locked = coerce_amount(balance.get("locked"))
     return free + locked
 
 
@@ -499,8 +502,8 @@ def get_account_value_usdt(
         asset = entry.get("asset")
         if not isinstance(asset, str) or not asset:
             continue
-        free = _coerce_balance_value(entry.get("free"))
-        locked = _coerce_balance_value(entry.get("locked"))
+        free = coerce_amount(entry.get("free"))
+        locked = coerce_amount(entry.get("locked"))
         total_amount = free + locked if include_locked else free
         if total_amount <= 0:
             continue

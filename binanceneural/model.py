@@ -682,13 +682,13 @@ def policy_config_from_payload(
 
     return PolicyConfig(
         input_dim=input_dim,
-        hidden_dim=_maybe(payload.get("transformer_dim", payload.get("hidden_dim")), int, 256),
-        dropout=_maybe(payload.get("transformer_dropout", payload.get("dropout")), float, 0.1),
+        hidden_dim=_maybe(payload.get("transformer_dim") or payload.get("hidden_dim"), int, 256),
+        dropout=_maybe(payload.get("transformer_dropout") or payload.get("dropout"), float, 0.1),
         price_offset_pct=_maybe(payload.get("price_offset_pct"), float, 0.0003),
         min_price_gap_pct=_maybe(payload.get("min_price_gap_pct"), float, 0.0003),
         trade_amount_scale=_maybe(payload.get("trade_amount_scale"), float, 100.0),
-        num_heads=_maybe(payload.get("transformer_heads", payload.get("num_heads")), int, 8),
-        num_layers=_maybe(payload.get("transformer_layers", payload.get("num_layers")), int, 4),
+        num_heads=_maybe(payload.get("transformer_heads") or payload.get("num_heads"), int, 8),
+        num_layers=_maybe(payload.get("transformer_layers") or payload.get("num_layers"), int, 4),
         max_len=max_len,
         use_midpoint_offsets=bool(payload.get("use_midpoint_offsets", True)),
         model_arch=str(payload.get("model_arch", "classic")),

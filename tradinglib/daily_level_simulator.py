@@ -6,7 +6,6 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from src.market_sim_early_exit import evaluate_drawdown_vs_profit_early_exit, print_early_exit
 from src.tradinglib.metrics import PnlMetrics, pnl_metrics
 
 
@@ -155,7 +154,6 @@ def simulate_daily_levels_on_intraday_bars(
     current_day: Optional[pd.Timestamp] = None
     last_bar_close: Optional[float] = None
     last_bar_ts: Optional[pd.Timestamp] = None
-    total_steps = int(len(bars_frame))
 
     def _record_trade(ts: pd.Timestamp, side: str, price: float, qty: float, reason: str) -> None:
         trades.append(
@@ -312,14 +310,6 @@ def simulate_daily_levels_on_intraday_bars(
                     "closed": float(closed),
                 }
             )
-        early_exit = evaluate_drawdown_vs_profit_early_exit(
-            equity_values,
-            total_steps=total_steps,
-            label="tradinglib.simulate_daily_levels_on_intraday_bars",
-        )
-        if early_exit.should_stop:
-            print_early_exit(early_exit)
-            break
 
     # Close any remaining position at the end of the simulation (at last close).
     if cfg.close_at_eod and base_qty > 0 and last_bar_close is not None and last_bar_ts is not None:

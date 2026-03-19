@@ -5,6 +5,9 @@ import pytest
 import torch
 from hourlycryptotraining.model import HourlyCryptoPolicy, PolicyHeadConfig
 
+_DEFAULT_MIN_GAP_PCT = 0.0003   # 3 basis points
+_DEFAULT_OFFSET_PCT = 0.003     # 30 basis points
+
 
 class TestModelPriceSpreadValidation:
     """Ensure the model never outputs inverted or insufficient spreads."""
@@ -16,9 +19,9 @@ class TestModelPriceSpreadValidation:
             input_dim=50,
             hidden_dim=128,
             dropout=0.1,
-            price_offset_pct=0.003,
+            price_offset_pct=_DEFAULT_OFFSET_PCT,
             max_trade_qty=1.0,
-            min_price_gap_pct=0.0003,  # 3 basis points
+            min_price_gap_pct=_DEFAULT_MIN_GAP_PCT,
             num_heads=4,
             num_layers=2,
             max_len=256,
@@ -159,22 +162,22 @@ class TestModelPriceSpreadValidation:
             input_dim=50,
             hidden_dim=128,
             dropout=0.1,
-            price_offset_pct=0.003,
+            price_offset_pct=_DEFAULT_OFFSET_PCT,
             max_trade_qty=1.0,
-            min_price_gap_pct=0.0003,  # Should be 3bp
+            min_price_gap_pct=_DEFAULT_MIN_GAP_PCT,
             num_heads=4,
             num_layers=2,
             max_len=256,
         )
 
         # Verify minimum gap is at least 3 basis points
-        assert config.min_gap_pct >= 0.0003, (
-            f"min_price_gap_pct too small! {config.min_gap_pct} < 0.0003 (3bp)"
+        assert config.min_price_gap_pct >= _DEFAULT_MIN_GAP_PCT, (
+            f"min_price_gap_pct too small! {config.min_price_gap_pct} < {_DEFAULT_MIN_GAP_PCT} (3bp)"
         )
 
         # Also shouldn't be ridiculously large (> 1%)
-        assert config.min_gap_pct <= 0.01, (
-            f"min_price_gap_pct too large! {config.min_gap_pct} > 0.01 (100bp)"
+        assert config.min_price_gap_pct <= 0.01, (
+            f"min_price_gap_pct too large! {config.min_price_gap_pct} > 0.01 (100bp)"
         )
 
     def test_decode_actions_implementation_has_gap_enforcement(self, policy):
