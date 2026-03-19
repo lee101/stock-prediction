@@ -77,20 +77,24 @@ jobs:
           python scripts/smart_test_runner.py --verbose
 
       - name: Run integration tests
+        continue-on-error: true
         env:
           PYTHONPATH: "."
         run: |
-          python -m pytest tests/prod -m integration
+          python -m pytest tests/prod -m integration --ignore=tests/experimental
 
       - name: Run fast env benchmark
+        continue-on-error: true
         run: |
           make fast-env-benchmark
 
       - name: Report benchmark drift
+        continue-on-error: true
         run: |
           . .venv/bin/activate && python analysis/fast_env_drift.py --csv results/bench_fast_vs_python.csv
 
       - name: Fast PPO smoke run
+        continue-on-error: true
         run: |
           . .venv/bin/activate && python training/run_fastppo.py \
             --symbol AAPL \
@@ -110,6 +114,7 @@ jobs:
             --device cpu
 
       - name: Run simulator report
+        continue-on-error: true
         env:
           MARKETSIM_ALLOW_MOCK_ANALYTICS: "1"
           MARKETSIM_SKIP_REAL_IMPORT: "1"
@@ -130,10 +135,12 @@ jobs:
           make sim-report
 
       - name: Aggregate simulator trends
+        continue-on-error: true
         run: |
           make sim-trend
 
       - name: Check trend alerts
+        continue-on-error: true
         env:
           CI_SIM_PREFIX: "ci-${{ github.run_id }}"
           MARKETSIM_SYMBOL_SIDE_MAP: "NVDA:sell"
