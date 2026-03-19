@@ -59,7 +59,6 @@
     "BTG"
   ],
   "next_trial_order": [
-    "RIG",
     "ABEV"
   ],
   "covariate_seed_groups": {
@@ -327,7 +326,7 @@
       "currently_live": false,
       "history_rows": 1005,
       "forecast_cache_horizons": [],
-      "status": "history_ready_needs_cache_and_retrain",
+      "status": "rejected_first_pass_cache_gate",
       "thesis": "Energy and offshore drilling cyclicality candidate."
     },
     {
