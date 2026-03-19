@@ -22,3 +22,9 @@ train:
 
 test:
 	cd .. && $(PYTHON) -c "import pufferlib_market.binding; print('binding OK')"
+
+.PHONY: fast-env-benchmark
+fast-env-benchmark:
+	. .venv/bin/activate && python scripts/fast_env_benchmark.py \
+		--output-csv results/bench_fast_vs_python.csv \
+		--output-json results/bench_fast_vs_python.json
