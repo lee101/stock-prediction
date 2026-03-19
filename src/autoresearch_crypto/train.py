@@ -10,16 +10,14 @@ import argparse
 import copy
 import logging
 import math
-import os
 import sys
 import time
-from pathlib import Path
 
 import torch
 from torch.nn.utils import clip_grad_norm_
 
 from binanceneural.config import PolicyConfig
-from binanceneural.model import BinancePolicyBase, build_policy
+from binanceneural.model import build_policy
 from differentiable_loss_utils import (
     HOURLY_PERIODS_PER_YEAR,
     compute_loss_by_type,
@@ -29,7 +27,6 @@ from differentiable_loss_utils import (
 
 from .prepare import (
     TIME_BUDGET,
-    CryptoTaskConfig,
     evaluate_model,
     prepare_task,
     print_metrics,
