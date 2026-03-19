@@ -1,0 +1,21 @@
+{
+  "symbol": "NFLX",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "NFLX",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": 1.2294911852804944,
+    "keep_open_net_return": 1.5558198397047815,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 0.32632865442428716,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 0.4768990684533492,
+    "sell_advantage": 0.6108630890958011,
+    "instant_close_buy_return": 1.0879528563236818,
+    "instant_close_sell_return": 0.6839823606424034,
+    "keep_open_buy_return": 1.564851924777031,
+    "keep_open_sell_return": 1.2948454497382045
+  }
+}

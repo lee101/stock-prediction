@@ -1,0 +1,21 @@
+{
+  "symbol": "BNTX",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "BNTX",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": 3.496815242106095,
+    "keep_open_net_return": 4.565415450721048,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 1.0686002086149529,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 2.954289924236946,
+    "sell_advantage": 0.6077108107274398,
+    "instant_close_buy_return": 1.8678346928209066,
+    "instant_close_sell_return": 2.887101450469345,
+    "keep_open_buy_return": 4.8221246170578524,
+    "keep_open_sell_return": 3.4948122611967847
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "symbol": "ED",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "ED",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": 0.8193439567112364,
+    "keep_open_net_return": 1.113667060213629,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 0.29432310350239255,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 0.7845561020076275,
+    "sell_advantage": 0.19652092596516013,
+    "instant_close_buy_return": 0.8067848067730665,
+    "instant_close_sell_return": 1.990958814858459,
+    "keep_open_buy_return": 1.591340908780694,
+    "keep_open_sell_return": 2.187479740823619
+  }
+}

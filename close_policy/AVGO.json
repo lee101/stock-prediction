@@ -1,0 +1,21 @@
+{
+  "symbol": "AVGO",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "AVGO",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": 0.04103772511007264,
+    "keep_open_net_return": 0.8283501582336612,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 0.7873124331235886,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 1.937661282136105,
+    "sell_advantage": 0.6867134384810925,
+    "instant_close_buy_return": 0.6323241727659479,
+    "instant_close_sell_return": 1.938318200991489,
+    "keep_open_buy_return": 2.569985454902053,
+    "keep_open_sell_return": 2.6250316394725814
+  }
+}

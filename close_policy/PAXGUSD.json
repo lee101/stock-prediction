@@ -1,0 +1,15 @@
+{
+  "symbol": "PAXGUSD",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "PAXGUSD",
+    "is_crypto": true,
+    "num_simulations": 10,
+    "instant_close_net_return": 8.794955824501812,
+    "keep_open_net_return": 13.23117220401764,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 4.436216379515827,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0
+  }
+}

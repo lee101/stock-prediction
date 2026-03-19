@@ -1,0 +1,19 @@
+{
+  "run_name": "NET_lora_differencing_ctx128_lr5e-5_r16_20260221_080636",
+  "config": {
+    "symbol": "NET",
+    "preaug": "differencing",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 128.54173278808594,
+    "mae_percent_std": 9.194700241088867
+  },
+  "test": {
+    "mae_percent_mean": 131.7287139892578,
+    "mae_percent_std": 8.80299186706543
+  }
+}

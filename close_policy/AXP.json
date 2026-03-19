@@ -1,0 +1,21 @@
+{
+  "symbol": "AXP",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "AXP",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": 2.362416274379939,
+    "keep_open_net_return": 2.791925307828933,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 0.42950903344899416,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 0.41799450758844614,
+    "sell_advantage": 1.013702256605029,
+    "instant_close_buy_return": 1.2357462337240577,
+    "instant_close_sell_return": 0.8642348600551486,
+    "keep_open_buy_return": 1.6537407413125038,
+    "keep_open_sell_return": 1.8779371166601777
+  }
+}

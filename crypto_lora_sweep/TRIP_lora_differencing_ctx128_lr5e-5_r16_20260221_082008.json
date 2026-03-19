@@ -1,0 +1,19 @@
+{
+  "run_name": "TRIP_lora_differencing_ctx128_lr5e-5_r16_20260221_082008",
+  "config": {
+    "symbol": "TRIP",
+    "preaug": "differencing",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 173.01119995117188,
+    "mae_percent_std": 17.977252960205078
+  },
+  "test": {
+    "mae_percent_mean": 116.48513793945312,
+    "mae_percent_std": 18.21591567993164
+  }
+}

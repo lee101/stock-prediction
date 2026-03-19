@@ -1,0 +1,21 @@
+{
+  "symbol": "DUK",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "DUK",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": 0.7946849325089715,
+    "keep_open_net_return": 1.13604442239739,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 0.34135948988841847,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 0.7852095365524292,
+    "sell_advantage": 0.352655429742299,
+    "instant_close_buy_return": 0.6454091379418969,
+    "instant_close_sell_return": 1.0100936196977273,
+    "keep_open_buy_return": 1.4306186744943261,
+    "keep_open_sell_return": 1.3627490494400263
+  }
+}

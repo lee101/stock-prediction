@@ -1,0 +1,19 @@
+{
+  "run_name": "EBAY_lora_log_returns_ctx128_lr5e-5_r16_20260221_083116",
+  "config": {
+    "symbol": "EBAY",
+    "preaug": "log_returns",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 35.6336555480957,
+    "mae_percent_std": 11.789599418640137
+  },
+  "test": {
+    "mae_percent_mean": 33.7747688293457,
+    "mae_percent_std": 4.693349361419678
+  }
+}

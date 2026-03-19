@@ -1,0 +1,28 @@
+{
+  "run_id": "smoke2",
+  "generated_at": "2026-03-19T07:52:23Z",
+  "results": [
+    {
+      "config": {
+        "symbol": "DOGEUSD",
+        "preaug": "percent_change",
+        "context_length": 128,
+        "batch_size": 32,
+        "learning_rate": 5e-05,
+        "num_steps": 200,
+        "prediction_length": 24,
+        "lora_r": 16
+      },
+      "status": "error",
+      "run_name": null,
+      "result_path": null,
+      "output_dir": null,
+      "val_mae_percent": null,
+      "test_mae_percent": null,
+      "val_consistency_score": null,
+      "test_consistency_score": null,
+      "elapsed_s": 9.184590578079224,
+      "error": "^^^^^^^^^\n  File \"/nvme0n1-disk/code/stock-prediction/.venv313/lib/python3.13/site-packages/transformers/modeling_utils.py\", line 4725, in caching_allocator_warmup\n    free_device_memory, total_device_memory = accelerator_module.mem_get_info(index)\n                                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^\n  File \"/nvme0n1-disk/code/stock-prediction/.venv313/lib/python3.13/site-packages/torch/cuda/memory.py\", line 838, in mem_get_info\n    return torch.cuda.cudart().cudaMemGetInfo(device)\n           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^\ntorch.AcceleratorError: CUDA error: out of memory\nSearch for `cudaErrorMemoryAllocation' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.\nCUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.\nFor debugging consider passing CUDA_LAUNCH_BLOCKING=1\nCompile with `TORCH_USE_CUDA_DSA` to enable device-side assertions."
+    }
+  ]
+}

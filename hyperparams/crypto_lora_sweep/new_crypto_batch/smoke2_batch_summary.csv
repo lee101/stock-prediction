@@ -1,0 +1,13 @@
+symbol,preaug,context_length,batch_size,learning_rate,num_steps,prediction_length,lora_r,status,run_name,result_path,output_dir,val_mae_percent,test_mae_percent,val_consistency_score,test_consistency_score,elapsed_s,error
+DOGEUSD,percent_change,128,32,5e-05,200,24,16,error,,,,,,,,9.184590578079224,"^^^^^^^^^
+  File ""/nvme0n1-disk/code/stock-prediction/.venv313/lib/python3.13/site-packages/transformers/modeling_utils.py"", line 4725, in caching_allocator_warmup
+    free_device_memory, total_device_memory = accelerator_module.mem_get_info(index)
+                                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^
+  File ""/nvme0n1-disk/code/stock-prediction/.venv313/lib/python3.13/site-packages/torch/cuda/memory.py"", line 838, in mem_get_info
+    return torch.cuda.cudart().cudaMemGetInfo(device)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+torch.AcceleratorError: CUDA error: out of memory
+Search for `cudaErrorMemoryAllocation' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing CUDA_LAUNCH_BLOCKING=1
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions."

@@ -1,0 +1,21 @@
+{
+  "symbol": "CHD",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "CHD",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": -3.844632856431417,
+    "keep_open_net_return": -3.6733789749559946,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 0.17125388147542253,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 0.665145834791474,
+    "sell_advantage": -0.09429955389350653,
+    "instant_close_buy_return": 0.4510385636240244,
+    "instant_close_sell_return": -1.766847752733156,
+    "keep_open_buy_return": 1.1161843984154984,
+    "keep_open_sell_return": -1.8611473066266626
+  }
+}

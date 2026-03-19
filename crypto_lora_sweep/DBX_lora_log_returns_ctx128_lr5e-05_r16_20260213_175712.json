@@ -1,0 +1,40 @@
+{
+  "config": {
+    "symbol": "DBX",
+    "context_length": 128,
+    "prediction_length": 24,
+    "batch_size": 32,
+    "learning_rate": 5e-05,
+    "num_steps": 500,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "preaug": "log_returns",
+    "val_hours": 168,
+    "test_hours": 168
+  },
+  "run_name": "DBX_lora_log_returns_ctx128_lr5e-05_r16_20260213_175712",
+  "output_dir": "chronos2_finetuned/DBX_lora_log_returns_ctx128_lr5e-05_r16_20260213_175712",
+  "val": {
+    "mae_mean": 0.5449203637739023,
+    "mae_std": 0.24641910673173192,
+    "mae_max": 0.9283769726753235,
+    "mae_p90": 0.9002039194107055,
+    "mae_percent_mean": 1.942440087441355,
+    "mae_percent_std": 0.8952037961418339,
+    "mae_percent_max": 3.4506846219301224,
+    "count": 12
+  },
+  "test": {
+    "mae_mean": 0.5136826771001021,
+    "mae_std": 0.17585763286778272,
+    "mae_max": 0.7786076068878174,
+    "mae_p90": 0.7124599635601044,
+    "mae_percent_mean": 1.9813763482185702,
+    "mae_percent_std": 0.6659933837932916,
+    "mae_percent_max": 2.914067357778549,
+    "count": 12
+  },
+  "val_consistency_score": 2.842515345858902,
+  "test_consistency_score": 2.5941803429832095
+}

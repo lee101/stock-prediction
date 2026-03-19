@@ -520,13 +520,15 @@ class CuteChronos2Model(nn.Module):
         return self.shared.weight.device
 
     def _get_position_ids(self, seq_length: int) -> torch.Tensor:
-        """Return cached position_ids, regenerating only when seq_length changes."""
-        if seq_length != self._cached_seq_length:
-            self._cached_position_ids = torch.arange(
-                seq_length, dtype=torch.long, device=self._param_device()
-            ).unsqueeze(0)
-            self._cached_seq_length = seq_length
-        return self._cached_position_ids
+        """Generate position_ids tensor.
+
+        Creates a fresh tensor each time to be compatible with CUDA graphs
+        (torch.compile reduce-overhead mode). The cost is negligible compared
+        to the attention computation.
+        """
+        return torch.arange(
+            seq_length, dtype=torch.long, device=self._param_device()
+        ).unsqueeze(0)
 
     @contextmanager
     def profile_allocations(self):

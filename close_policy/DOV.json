@@ -1,0 +1,21 @@
+{
+  "symbol": "DOV",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "DOV",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": -4.883619217784144,
+    "keep_open_net_return": -4.4818205257179216,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 0.40179869206622243,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 1.1187731235986575,
+    "sell_advantage": 0.2205558493733406,
+    "instant_close_buy_return": 0.7476984866661951,
+    "instant_close_sell_return": -1.930227130651474,
+    "keep_open_buy_return": 1.8664716102648526,
+    "keep_open_sell_return": -1.7096712812781334
+  }
+}

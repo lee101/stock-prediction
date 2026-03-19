@@ -76,8 +76,8 @@ def test_optimized_multi_output_patches(num_output_patches: int):
 # Test: position_ids caching correctness
 # -------------------------------------------------------------------
 
-def test_position_ids_caching():
-    """Verify position_ids are cached and reused correctly."""
+def test_position_ids_deterministic():
+    """Verify position_ids produce deterministic results across calls."""
     cute = build_cute_only()
 
     torch.manual_seed(0)
@@ -85,22 +85,13 @@ def test_position_ids_caching():
 
     with torch.no_grad():
         out1 = cute(context1)
-
-    cached_len_1 = cute._cached_seq_length
-    cached_ids_1 = cute._cached_position_ids.clone()
-    assert cached_len_1 > 0, "Position IDs should be cached after first forward"
-
-    # Second call with same context_length should reuse cache
-    with torch.no_grad():
         out2 = cute(context1)
 
-    assert cute._cached_seq_length == cached_len_1, "Cache length should not change"
-    assert torch.equal(cute._cached_position_ids, cached_ids_1), "Cached IDs should be identical"
-    assert torch.equal(out1, out2), "Outputs should be identical with cached position IDs"
+    assert torch.equal(out1, out2), "Outputs should be identical across calls"
 
 
-def test_position_ids_cache_invalidation():
-    """Verify position_ids cache is invalidated when seq_length changes."""
+def test_position_ids_different_seq_lengths():
+    """Verify model handles different seq lengths correctly."""
     cute = build_cute_only()
 
     torch.manual_seed(0)
@@ -108,15 +99,13 @@ def test_position_ids_cache_invalidation():
     context_256 = torch.randn(1, 256) * 0.1 + 100
 
     with torch.no_grad():
-        cute(context_512)
-        len_after_512 = cute._cached_seq_length
+        out_512 = cute(context_512)
+        out_256 = cute(context_256)
 
-        cute(context_256)
-        len_after_256 = cute._cached_seq_length
-
-    assert len_after_512 != len_after_256, (
-        "Cache should be invalidated when seq_length changes"
-    )
+    # Different context lengths should produce different shaped internal sequences
+    # but same output shape (determined by num_output_patches=1 default)
+    assert out_512.shape[0] == 2
+    assert out_256.shape[0] == 1
 
 
 # -------------------------------------------------------------------
@@ -293,20 +282,12 @@ def test_determinism_across_batch_sizes():
 # -------------------------------------------------------------------
 
 def test_position_ids_values():
-    """Verify cached position IDs have correct values."""
+    """Verify _get_position_ids returns correct sequential values."""
     cute = build_cute_only()
 
-    torch.manual_seed(0)
-    context = torch.randn(2, 512) * 0.1 + 100
-
-    with torch.no_grad():
-        cute(context)
-
-    pos_ids = cute._cached_position_ids
-    seq_len = cute._cached_seq_length
-
-    assert pos_ids.shape == (1, seq_len), f"Expected shape (1, {seq_len}), got {pos_ids.shape}"
-    expected = torch.arange(seq_len, dtype=torch.long, device=pos_ids.device).unsqueeze(0)
+    pos_ids = cute._get_position_ids(34)
+    assert pos_ids.shape == (1, 34), f"Expected shape (1, 34), got {pos_ids.shape}"
+    expected = torch.arange(34, dtype=torch.long).unsqueeze(0)
     assert torch.equal(pos_ids, expected), "Position IDs should be sequential from 0"
 
 

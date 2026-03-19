@@ -1,0 +1,19 @@
+{
+  "run_name": "EBAY_lora_percent_change_ctx128_lr5e-5_r16_20260221_082922",
+  "config": {
+    "symbol": "EBAY",
+    "preaug": "percent_change",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 36.683319091796875,
+    "mae_percent_std": 12.068467140197754
+  },
+  "test": {
+    "mae_percent_mean": 32.6619987487793,
+    "mae_percent_std": 4.4236602783203125
+  }
+}

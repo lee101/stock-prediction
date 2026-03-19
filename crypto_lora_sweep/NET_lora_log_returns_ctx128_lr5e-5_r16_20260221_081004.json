@@ -1,0 +1,19 @@
+{
+  "run_name": "NET_lora_log_returns_ctx128_lr5e-5_r16_20260221_081004",
+  "config": {
+    "symbol": "NET",
+    "preaug": "log_returns",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 48.46650695800781,
+    "mae_percent_std": 5.666152477264404
+  },
+  "test": {
+    "mae_percent_mean": 434.12896728515625,
+    "mae_percent_std": 80.28668212890625
+  }
+}
