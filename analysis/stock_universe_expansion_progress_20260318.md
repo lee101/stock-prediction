@@ -974,3 +974,83 @@ python scripts/run_alpaca_stock_expansion.py \
 - completed smoke run:
   - artifact: `chronos2_finetuned/F_lora_stockexp_multivar_smoke_20260318/finetuned-ckpt`
   - outcome: command path and covariate loading validated successfully before the full run.
+
+## Completed Multivariate LoRA Trial
+
+- symbol: `OWL`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 04:28 UTC`
+- log path: `analysis/local_training_logs/owl_lora_stockexp_multivar_20260319.log`
+- output artifact path: `chronos2_finetuned/OWL_lora_stockexp_multivar_20260319/finetuned-ckpt`
+- training outcome:
+  - `val_mae%=18.9221`
+  - `test_mae%=24.1881`
+- rebuilt forecast cache outcome:
+  - `h1 MAE%=13.4962`
+  - `h24 MAE%=15.7451`
+- promotion summary from `analysis/alpaca_stock_expansion_owl_lora_20260319/promotion_summary.json`:
+  - `promote=false`
+  - reason: `No candidate met promotion thresholds. Rejected candidates: OWL`
+- decision: rejected
+  - reason: the multivariate LoRA path made `OWL` materially worse than both the base and tuned checkpoints on `h1` and `h24`, so it remains below the cache gate and does not earn a simulator run against the live `ABEV` baseline.
+
+## Completed Hourly Tune
+
+- symbol: `NOK`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 04:36 UTC`
+- tuned config path: `hyperparams/chronos2/hourly/NOK.json`
+- tuning command:
+
+```bash
+python hyperparam_chronos_hourly.py \
+  --symbols NOK \
+  --quick \
+  --holdout-hours 168 \
+  --prediction-length 24 \
+  --objective composite \
+  --cohort-size 4 \
+  --cohort-min-abs-corr 0.25 \
+  --save-hyperparams
+```
+
+- tuning outcome:
+  - saved `hyperparams/chronos2/hourly/NOK.json`
+  - best objective config: `context_length=1024`, `skip_rates=[1]`, `aggregation=single`, `multivariate=True`
+  - tuner reported `pct_return_mae=8.4974%`
+- tuned follow-on cache outcome:
+  - `h1 MAE%=9.4432`
+  - `h24 MAE%=11.1331`
+- promotion summary from `analysis/alpaca_stock_expansion_nok_tuned_20260319/promotion_summary.json`:
+  - `promote=false`
+  - reason: `No candidate met promotion thresholds. Rejected candidates: NOK`
+- decision: move to retrain
+  - reason: the tuned hourly config loaded correctly (`ctx=1024`, `batch=32`) but did not change the realized cache MAE at all, so `NOK` remains blocked on the `h24` gate and now moves to the single-symbol LoRA step.
+
+## Started Single-Symbol LoRA Trial
+
+- symbol: `NOK`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 04:38 UTC`
+- training log path: `analysis/local_training_logs/nok_lora_stockexp_single_20260319.log`
+- output artifact path: `chronos2_finetuned/NOK_lora_stockexp_single_20260319/finetuned-ckpt`
+- training command:
+
+```bash
+python -u scripts/retrain_chronos2_hourly_loras.py \
+  --symbol NOK \
+  --data-root trainingdatahourly/stocks \
+  --output-root chronos2_finetuned \
+  --context-length 1024 \
+  --batch-size 32 \
+  --learning-rate 5e-05 \
+  --num-steps 1500 \
+  --save-name NOK_lora_stockexp_single_20260319 \
+  --no-update-hparams
+```
+
+- current status:
+  - startup validated cleanly in a 1-step smoke run:
+    - artifact: `chronos2_finetuned/NOK_lora_stockexp_single_smoke_20260319/finetuned-ckpt`
+    - smoke outcome: `val_mae%=8.1683`, `test_mae%=10.7665`
+  - full 1500-step run is active on the single-symbol LoRA baseline because the evaluator recommended `single_symbol_lora` rather than a multivariate cohort for `NOK`.
