@@ -1,3 +1,7 @@
 [submodule "automl_common"]
 	path = automl_common
 	url = git@github.com:automl/automl_common.git
+
+[submodule "autoresearch"]
+	path = autoresearch
+	url = https://github.com/karpathy/autoresearch.git
