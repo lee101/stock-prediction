@@ -60,7 +60,6 @@
     "ABEV"
   ],
   "next_trial_order": [
-    "MARA",
     "RKLB",
     "PATH",
     "TME",
@@ -286,7 +285,7 @@
       "currently_live": false,
       "history_rows": 1181,
       "forecast_cache_horizons": [],
-      "status": "history_ready_needs_cache_and_retrain",
+      "status": "rejected_first_pass_cache_gate",
       "thesis": "Crypto beta proxy with different event sensitivity from pure equities."
     },
     {
