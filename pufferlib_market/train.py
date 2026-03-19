@@ -19,6 +19,7 @@ Improvements from autoresearch agent (2026-03):
 """
 
 import argparse
+import atexit
 import math
 import os
 import time
@@ -30,6 +31,11 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.distributions import Categorical
+
+try:
+    import wandb
+except ImportError:
+    wandb = None
 
 # PufferLib imports
 import pufferlib
@@ -498,6 +504,23 @@ def train(args):
             )
         )
 
+    # ── Weights & Biases ──
+    wandb_run = None
+    if args.wandb_project is not None:
+        if wandb is None:
+            print("WARNING: --wandb-project set but wandb not installed. pip install wandb")
+        elif args.wandb_mode == "disabled":
+            print("  W&B disabled via --wandb-mode=disabled")
+        else:
+            wandb_run = wandb.init(
+                project=args.wandb_project,
+                entity=args.wandb_entity,
+                config=vars(args),
+                mode=args.wandb_mode,
+            )
+            atexit.register(wandb_run.finish)
+            print(f"  W&B run: {wandb_run.url or wandb_run.id}")
+
     # ── Estimate GPU memory ──
     rollout_mem = num_envs * args.rollout_len * (obs_size * 4 + 4 * 4) / 1e6
     print(f"  Estimated rollout buffer: {rollout_mem:.1f} MB")
@@ -730,6 +753,29 @@ def train(args):
                 f"pg={avg_pg:.4f}  vl={avg_vl:.4f}  ent={avg_ent:.3f}"
             )
 
+        # ── W&B logging (single path for both branches) ──
+        if wandb_run is not None:
+            wb_metrics = {
+                "loss/policy": avg_pg,
+                "loss/value": avg_vl,
+                "loss/entropy": avg_ent,
+                "loss/total": avg_pg + args.vf_coef * avg_vl - ent_coef * avg_ent,
+                "train/lr": optimizer.param_groups[0]["lr"],
+                "train/ent_coef": ent_coef,
+                "train/clip_eps": clip_eps,
+                "perf/steps_per_sec": sps,
+                "global_step": global_step,
+            }
+            if log_info and "total_return" in log_info:
+                wb_metrics.update({
+                    "train/return": ep_return,
+                    "train/annualized_return": ep_annualized,
+                    "train/sortino": ep_sortino,
+                    "train/win_rate": ep_wr,
+                    "train/num_trades": ep_trades,
+                })
+            wandb_run.log(wb_metrics, step=global_step)
+
         # ── Periodic checkpoint ──
         if update % args.save_every == 0:
             ckpt_path = Path(args.checkpoint_dir) / f"update_{update:06d}.pt"
@@ -936,6 +982,15 @@ def main():
         help="How many periodic update_*.pt checkpoints to retain alongside best/final.",
     )
     parser.add_argument("--cpu", action="store_true")
+
+    # Weights & Biases
+    parser.add_argument("--wandb-project", type=str, default=None,
+                        help="W&B project name (enables logging when set)")
+    parser.add_argument("--wandb-entity", type=str, default=None,
+                        help="W&B entity (team or username)")
+    parser.add_argument("--wandb-mode", type=str, default="online",
+                        choices=["online", "offline", "disabled"],
+                        help="W&B run mode")
 
     args = parser.parse_args()
     train(args)
