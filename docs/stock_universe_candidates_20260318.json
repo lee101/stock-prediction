@@ -60,7 +60,7 @@
     "ABEV"
   ],
   "next_trial_order": [
-    "NBIS"
+    "RKLB"
   ],
   "covariate_seed_groups": {
     "semis_and_ai": [
@@ -257,7 +257,7 @@
       "currently_live": false,
       "history_rows": 1092,
       "forecast_cache_horizons": [],
-      "status": "active_multivariate_lora",
+      "status": "rejected_retrain_cache_gate",
       "thesis": "Speculative AI infrastructure candidate that may behave differently from US megacap tech."
     },
     {

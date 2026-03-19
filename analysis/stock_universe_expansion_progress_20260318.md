@@ -1219,3 +1219,27 @@ python -u scripts/retrain_chronos2_hourly_loras.py \
     - artifact: `chronos2_finetuned/NBIS_lora_stockexp_multivar_smoke_20260319/finetuned-ckpt`
     - smoke outcome: `val_mae%=4.2773`, `test_mae%=18.4523`
   - full 1500-step run is active with peers `PLTR, NVDA, NET, GOOG`.
+
+## Completed Multivariate LoRA Trial
+
+- symbol: `NBIS`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 04:55 UTC`
+- training log path: `analysis/local_training_logs/nbis_lora_stockexp_multivar_20260319.log`
+- output artifact path: `chronos2_finetuned/NBIS_lora_stockexp_multivar_20260319/finetuned-ckpt`
+- training outcome:
+  - `val_mae%=2.0952`
+  - `test_mae%=15.2995`
+- rebuilt forecast cache outcome:
+  - `h1 MAE%=9.2047`
+  - `h24 MAE%=10.1838`
+- strict-gate promotion summary from `analysis/alpaca_stock_expansion_nbis_lora_20260319/promotion_summary.json`:
+  - `promote=false`
+  - reason: `No candidate met promotion thresholds. Rejected candidates: NBIS`
+- soft-gate research sim from `analysis/alpaca_stock_expansion_nbis_lora_softgate_20260319`:
+  - relaxed gate used only for research: `candidate_max_h24_mae_percent=10.25`
+  - simulated return improved to `-0.0317950` from baseline `-0.0335545`
+  - simulated max drawdown improved to `0.0320248` from baseline `0.0337971`
+  - simulated Sortino worsened to `-5.9790` from baseline `-5.8506`
+- decision: rejected
+  - reason: the LoRA finally pushed `h1` below gate, but `h24` still missed the strict threshold and even the relaxed research sim failed the actual promotion rule because Sortino regressed against the live `ABEV` baseline.
