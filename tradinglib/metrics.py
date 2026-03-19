@@ -7,6 +7,11 @@ import numpy as np
 
 from src.metrics_utils import annualized_sharpe, annualized_sortino, compute_step_returns
 
+# Boundary constants for annualized_return_from_returns
+_GROSS_RETURN_FLOOR = 1e-8  # floor for individual gross returns to keep log-space finite
+_LOG_RETURN_FLOOR = -50.0   # annualized log-return below this is clamped to -100%
+_LOG_RETURN_CAP = 50.0      # annualized log-return above this is capped
+
 
 @dataclass(frozen=True)
 class TradeStats:
@@ -52,15 +57,23 @@ def total_return(equity_curve: Iterable[float]) -> float:
 
 def annualized_return_from_returns(returns: Iterable[float], periods_per_year: float) -> float:
     arr = np.asarray(list(returns), dtype=np.float64)
-    if arr.size == 0:
+    if arr.size < 2:
         return 0.0
-    compounded = float(np.prod(1.0 + arr))
-    if compounded <= 0.0:
+    gross = 1.0 + arr
+    if np.prod(gross) <= 0.0:
         return 0.0
+    # Clamp individual gross returns to a small positive floor so log-space
+    # calculation doesn't blow up, but don't discard the whole series.
+    gross = np.maximum(gross, _GROSS_RETURN_FLOOR)
     years = arr.size / float(periods_per_year)
     if years <= 0:
         return 0.0
-    return float(compounded ** (1.0 / years) - 1.0)
+    annualized_log_return = float(np.sum(np.log(gross)) / years)
+    if annualized_log_return <= _LOG_RETURN_FLOOR:
+        return -1.0
+    if annualized_log_return >= _LOG_RETURN_CAP:
+        return float(np.expm1(_LOG_RETURN_CAP))
+    return float(np.expm1(annualized_log_return))
 
 
 def drawdown_curve(equity_curve: Iterable[float]) -> np.ndarray:
