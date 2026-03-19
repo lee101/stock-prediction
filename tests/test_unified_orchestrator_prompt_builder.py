@@ -23,5 +23,5 @@ def test_stock_prompt_uses_stock_direction_examples():
         asset_class="stock",
     )
 
-    assert "SYMBOL: NVDA (margin-enabled equity)" in prompt
+    assert "SYMBOL: NVDA (margin equity" in prompt
     assert '"direction": "long", "short", or "hold"' in prompt

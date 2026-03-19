@@ -778,8 +778,11 @@ ptyprocess==0.7.0
     # via
     #   pexpect
     #   terminado
-pufferlib==3.0.0
-    # via -r requirements.in
+# pufferlib==3.0.0
+#     # via -r requirements.in
+#     # NOTE: Commented out for CI - pufferlib is only needed for RL training,
+#     # not CI tests, and it causes numpy version conflicts (requires numpy<2.0
+#     # which conflicts with other deps requiring numpy>=2.0).
 pyro-api==0.1.2
 pyro-ppl==1.9.1
     # via -r requirements.in
