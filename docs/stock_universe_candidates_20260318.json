@@ -54,10 +54,10 @@
     "NET",
     "BKNG",
     "EBAY",
-    "EXPE"
+    "EXPE",
+    "ITUB"
   ],
   "next_trial_order": [
-    "ITUB",
     "PLUG",
     "NOK",
     "BTG",
@@ -346,10 +346,10 @@
       "symbol": "ITUB",
       "company": "Itaú Unibanco Holding S.A.",
       "priority": 22,
-      "currently_live": false,
+      "currently_live": true,
       "history_rows": 995,
       "forecast_cache_horizons": [],
-      "status": "history_ready_needs_cache_and_retrain",
+      "status": "promoted_live_20260319",
       "thesis": "International financials exposure that may diversify US growth risk."
     },
     {
