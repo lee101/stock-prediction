@@ -2,9 +2,10 @@
 
 ## Current Live Status
 
-- Live Supervisor now runs `PAPER=0` with `ITUB` and `BTG` added to the stock universe.
+- Live Supervisor now runs `PAPER=0` with `ITUB`, `BTG`, and `ABEV` added to the stock universe.
 - `ITUB` was the first new stock candidate to clear the 120-day promotion gate and be deployed live.
 - `BTG` is the second promoted live addition from the current one-by-one expansion batch.
+- `ABEV` is the third promoted live addition from the current one-by-one expansion batch.
 - Current rejects remain:
   - `SOFI`: forecast quality acceptable, Sortino regressed.
   - `INTC`: forecast quality acceptable, Sortino regressed.
@@ -239,12 +240,82 @@ python scripts/run_alpaca_stock_expansion.py \
   - decision: rejected
     - reason: `RIG` missed both cache gates on the base checkpoint, so it stays in the tune-or-retrain bucket and does not earn a simulator run against the live `BTG` baseline.
 
+## Completed First-Pass Evaluation
+
+- symbol: `ABEV`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 03:51 UTC`
+- command:
+
+```bash
+python scripts/run_alpaca_stock_expansion.py \
+  --manifest-path docs/stock_universe_candidates_20260318.json \
+  --candidate-symbols ABEV \
+  --baseline-source-dir analysis/alpaca_stock_expansion_btg_20260319/BTG \
+  --candidate-only-cache-build \
+  --candidate-max-h1-mae-percent 10 \
+  --candidate-max-h24-mae-percent 10 \
+  --output-dir analysis/alpaca_stock_expansion_abev_20260319
+```
+
+- current status:
+  - `ABEV` passed the forecast cache gate on the base Chronos2 checkpoint.
+  - cache MAE from `analysis/alpaca_stock_expansion_abev_20260319/forecast_cache_mae.json`:
+    - `h1 MAE%=6.7103`
+    - `h24 MAE%=7.8806`
+  - final 120-day market simulator result from `analysis/alpaca_stock_expansion_abev_20260319/ABEV/metrics.json`:
+    - `return=-0.033554`
+    - `sortino=-5.8506`
+    - `max_drawdown=0.033797`
+    - `num_fills=2118`
+  - baseline comparison:
+    - baseline: `return=-0.036784`, `sortino=-6.2673`, `max_drawdown=0.036860`
+  - decision: promoted and deployed
+    - reason: `ABEV` improved return by `+0.003229`, Sortino by `+0.4167`, and max drawdown by `-0.003063` versus the current live baseline.
+  - live deploy:
+    - repo config updated: `deployments/unified-stock-trader/supervisor.conf`
+    - active Supervisor config synced: `/etc/supervisor/conf.d/unified-stock-trader.conf`
+    - explicit live env remains `PAPER=0`
+    - live status after deploy: `unified-stock-trader RUNNING`
+
+## Completed History Ingest Batch
+
+- runner: local `RTX 5090` workstation
+- env:
+  - `cd /nvme0n1-disk/code/stock-prediction`
+  - `source .venv313/bin/activate`
+- command:
+
+```bash
+python -m alpacaconstrainedexp.refresh_hourly_data \
+  --symbols ONDS,BMNR,NBIS,TME,MARA,OWL,HIMS,PATH,RCAT,RKLB \
+  --data-root trainingdatahourly \
+  --backfill-hours 5000 \
+  --overlap-hours 2
+```
+
+- output hourly CSVs now exist under `trainingdatahourly/stocks/` for:
+  - `ONDS` (`1085` rows)
+  - `BMNR` (`1140` rows)
+  - `NBIS` (`1092` rows)
+  - `TME` (`989` rows)
+  - `MARA` (`1181` rows)
+  - `OWL` (`992` rows)
+  - `HIMS` (`1089` rows)
+  - `PATH` (`1019` rows)
+  - `RCAT` (`1012` rows)
+  - `RKLB` (`1012` rows)
+- note:
+  - the refresher summary line was misleading and ended with `no hourly data available`, but the per-symbol CSVs were written correctly and are usable for one-by-one expansion trials.
+
 ## Fixes Applied In This Iteration
 
 - Updated `scripts/run_alpaca_stock_expansion.py` so the default base stock universe is `live20260319`.
   - Future first-pass screens now compare against the actual live basket that already includes `ITUB`, while `live20260318` remains available as the pre-promotion alias for reproducibility.
 - Updated `scripts/run_alpaca_stock_expansion.py` again after the `BTG` deploy so the default base stock universe is `live20260319_post_btg`.
   - `live20260319` is preserved as the `ITUB`-only baseline, while new trials now default to the current live basket with both `ITUB` and `BTG`.
+- Updated `scripts/run_alpaca_stock_expansion.py` again after the `ABEV` deploy so the default base stock universe is `live20260319_post_abev`.
+  - `live20260319_post_btg` remains available for reproducibility, while new trials now default to the current live basket with `ITUB`, `BTG`, and `ABEV`.
 - Fixed `src/chronos2_objective.py` to build correlation matrices with an outer join instead of a global inner join.
   - This prevents mixed-history symbols from collapsing the entire cohort map.
 - Fixed hourly stock cohort generation in `src/alpaca_stock_expansion.py` to floor timestamps to hourly buckets and deduplicate per bucket.
