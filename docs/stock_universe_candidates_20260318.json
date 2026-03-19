@@ -60,7 +60,6 @@
     "ABEV"
   ],
   "next_trial_order": [
-    "HIMS",
     "ONDS",
     "OWL",
     "NBIS",
@@ -362,7 +361,7 @@
       "currently_live": false,
       "history_rows": 1089,
       "forecast_cache_horizons": [],
-      "status": "history_ready_needs_cache_and_retrain",
+      "status": "rejected_first_pass_cache_gate",
       "thesis": "Consumer digital health growth name for later high-beta expansion."
     },
     {
