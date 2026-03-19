@@ -530,14 +530,19 @@ def call_codex(prompt: str, model: str = "gpt-5.4", max_retries: int = 2,
 
 def _handle_retry(e: Exception, attempt: int, max_retries: int) -> None:
     err_str = str(e)
-    if "429" in err_str or "rate" in err_str.lower():
+    is_rate_limit = "429" in err_str or "rate" in err_str.lower() or "quota" in err_str.lower() or "exhausted" in err_str.lower()
+    if is_rate_limit:
         delay_match = re.search(r"retry.?(?:in|after).?(\d+\.?\d*)", err_str, re.IGNORECASE)
-        wait = float(delay_match.group(1)) + 1 if delay_match else 30 * (attempt + 1)
+        if delay_match:
+            wait = float(delay_match.group(1)) + 1
+        else:
+            wait = min(30 * (2 ** attempt), 300)
         if attempt < max_retries - 1:
-            time.sleep(min(wait, 90))
+            time.sleep(wait)
             return
     elif attempt < max_retries - 1:
-        time.sleep(2 * (attempt + 1))
+        wait = min(2 * (2 ** attempt), 60)
+        time.sleep(wait)
         return
 
 
