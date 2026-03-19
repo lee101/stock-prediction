@@ -46,7 +46,14 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv pip install --system --requirement requirements.txt
+          # Use requirements-ci.txt (CPU-friendly, no CUDA build deps) if no GPU
+          if nvidia-smi &>/dev/null; then
+            echo "GPU detected, installing full requirements"
+            uv pip install --system --requirement requirements.txt
+          else
+            echo "No GPU detected, using CI requirements"
+            uv pip install --system --requirement requirements-ci.txt
+          fi
           uv pip install --system ty ruff pyright flake8
 
       - name: Lint with Ruff
