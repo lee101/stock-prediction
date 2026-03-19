@@ -1,0 +1,113 @@
+[
+  {
+    "name": "tp0.15_s314",
+    "total_return": 0.7321316571691728,
+    "annualized_return": 4.317207004063686,
+    "sortino": 4.1805202105987025,
+    "max_drawdown": 0.2563485750699554,
+    "num_trades": 33,
+    "win_rate": 0.6666666666666666
+  },
+  {
+    "name": "tp0.10_s42",
+    "total_return": 0.6227270502603652,
+    "annualized_return": 3.3601020618245228,
+    "sortino": 4.009393993163741,
+    "max_drawdown": 0.21338648790522333,
+    "num_trades": 44,
+    "win_rate": 0.5681818181818182
+  },
+  {
+    "name": "tp0.20_s123",
+    "total_return": 0.631765078630017,
+    "annualized_return": 3.4343874704750466,
+    "sortino": 3.8601903913771087,
+    "max_drawdown": 0.22203399020130532,
+    "num_trades": 28,
+    "win_rate": 0.6428571428571429
+  },
+  {
+    "name": "tp0.05_s123",
+    "total_return": 0.6504067638843284,
+    "annualized_return": 3.5902810394487243,
+    "sortino": 3.783297642125713,
+    "max_drawdown": 0.2082174698684933,
+    "num_trades": 68,
+    "win_rate": 0.5882352941176471
+  },
+  {
+    "name": "tp0.20_s2024",
+    "total_return": 0.5158241564905917,
+    "annualized_return": 2.5438351032281816,
+    "sortino": 3.20269405094338,
+    "max_drawdown": 0.2138555296592127,
+    "num_trades": 30,
+    "win_rate": 0.6
+  },
+  {
+    "name": "ensemble_top3_logit_avg",
+    "total_return": 0.6956360207488033,
+    "annualized_return": 3.983717629355577,
+    "sortino": 4.177726699185255,
+    "max_drawdown": 0.1674918006361524,
+    "num_trades": 27,
+    "win_rate": 0.6666666666666666,
+    "mode": "logit_avg",
+    "n_models": 3
+  },
+  {
+    "name": "ensemble_top3_majority_vote",
+    "total_return": 0.6676854508190849,
+    "annualized_return": 3.738023119598508,
+    "sortino": 3.9338491967767526,
+    "max_drawdown": 0.2518636410655736,
+    "num_trades": 35,
+    "win_rate": 0.6,
+    "mode": "majority_vote",
+    "n_models": 3
+  },
+  {
+    "name": "ensemble_top3_softmax_avg",
+    "total_return": 0.4511124032069305,
+    "annualized_return": 2.103421085588933,
+    "sortino": 2.988390659927043,
+    "max_drawdown": 0.1674557432405366,
+    "num_trades": 33,
+    "win_rate": 0.5757575757575758,
+    "mode": "softmax_avg",
+    "n_models": 3
+  },
+  {
+    "name": "ensemble_top5_logit_avg",
+    "total_return": 0.5973883642206789,
+    "annualized_return": 3.1563009644229867,
+    "sortino": 3.7335092466884765,
+    "max_drawdown": 0.20563625992776596,
+    "num_trades": 31,
+    "win_rate": 0.5806451612903226,
+    "mode": "logit_avg",
+    "n_models": 5
+  },
+  {
+    "name": "ensemble_top5_majority_vote",
+    "total_return": 0.6633234435408798,
+    "annualized_return": 3.7004289118992952,
+    "sortino": 3.9338691734281457,
+    "max_drawdown": 0.1610595467753662,
+    "num_trades": 38,
+    "win_rate": 0.5789473684210527,
+    "mode": "majority_vote",
+    "n_models": 5
+  },
+  {
+    "name": "ensemble_top5_softmax_avg",
+    "total_return": 0.4394915610874721,
+    "annualized_return": 2.028443086660111,
+    "sortino": 2.9179458463736005,
+    "max_drawdown": 0.21730828196102248,
+    "num_trades": 30,
+    "win_rate": 0.5666666666666667,
+    "mode": "softmax_avg",
+    "n_models": 5
+  }
+]
