@@ -2,8 +2,9 @@
 
 ## Current Live Status
 
-- Live Supervisor now runs `PAPER=0` with `ITUB` added to the stock universe.
-- `ITUB` is the first new stock candidate to clear the 120-day promotion gate and has been deployed live.
+- Live Supervisor now runs `PAPER=0` with `ITUB` and `BTG` added to the stock universe.
+- `ITUB` was the first new stock candidate to clear the 120-day promotion gate and be deployed live.
+- `BTG` is the second promoted live addition from the current one-by-one expansion batch.
 - Current rejects remain:
   - `SOFI`: forecast quality acceptable, Sortino regressed.
   - `INTC`: forecast quality acceptable, Sortino regressed.
@@ -12,6 +13,7 @@
   - `MU`: failed forecast cache gate.
   - `TTD`: failed forecast cache gate.
   - `PLUG`: failed forecast cache gate.
+  - `NOK`: failed forecast cache gate.
 
 ## Completed History Ingest Batch
 
@@ -142,6 +144,73 @@ python scripts/run_alpaca_stock_expansion.py \
     - reason: `No candidate met promotion thresholds. Rejected candidates: PLUG`
   - decision: rejected
     - reason: `PLUG` failed both cache gates and terminated before the simulator stage, so the next useful step is tuning or retraining rather than a production candidate comparison.
+
+## Completed First-Pass Evaluation
+
+- symbol: `NOK`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 03:37 UTC`
+- command:
+
+```bash
+python scripts/run_alpaca_stock_expansion.py \
+  --manifest-path docs/stock_universe_candidates_20260318.json \
+  --candidate-symbols NOK \
+  --baseline-source-dir analysis/alpaca_stock_expansion_itub_20260319/ITUB \
+  --candidate-only-cache-build \
+  --candidate-max-h1-mae-percent 10 \
+  --candidate-max-h24-mae-percent 10 \
+  --output-dir analysis/alpaca_stock_expansion_nok_20260319
+```
+
+- current status:
+  - `NOK` cleared the short-horizon forecast cache gate but failed on `h24`.
+  - cache MAE from `analysis/alpaca_stock_expansion_nok_20260319/forecast_cache_mae.json`:
+    - `h1 MAE%=9.4432`
+    - `h24 MAE%=11.1331`
+  - promotion summary from `analysis/alpaca_stock_expansion_nok_20260319/promotion_summary.json`:
+    - `promote=false`
+    - reason: `No candidate met promotion thresholds. Rejected candidates: NOK`
+  - decision: rejected
+    - reason: `NOK` was close enough to keep on the retrain list, but the `24h` cache error still exceeded the `10%` gate, so it did not earn a simulator run on the base checkpoint.
+
+## Completed First-Pass Evaluation
+
+- symbol: `BTG`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 03:39 UTC`
+- command:
+
+```bash
+python scripts/run_alpaca_stock_expansion.py \
+  --manifest-path docs/stock_universe_candidates_20260318.json \
+  --candidate-symbols BTG \
+  --baseline-source-dir analysis/alpaca_stock_expansion_itub_20260319/ITUB \
+  --candidate-only-cache-build \
+  --candidate-max-h1-mae-percent 10 \
+  --candidate-max-h24-mae-percent 10 \
+  --output-dir analysis/alpaca_stock_expansion_btg_20260319
+```
+
+- current status:
+  - `BTG` passed the forecast cache gate on the base Chronos2 checkpoint.
+  - cache MAE from `analysis/alpaca_stock_expansion_btg_20260319/forecast_cache_mae.json`:
+    - `h1 MAE%=8.0979`
+    - `h24 MAE%=9.3240`
+  - final 120-day market simulator result from `analysis/alpaca_stock_expansion_btg_20260319/BTG/metrics.json`:
+    - `return=-0.036784`
+    - `sortino=-6.2673`
+    - `max_drawdown=0.036860`
+    - `num_fills=2118`
+  - baseline comparison:
+    - baseline: `return=-0.039515`, `sortino=-6.4767`, `max_drawdown=0.039762`
+  - decision: promoted and deployed
+    - reason: `BTG` improved return by `+0.002731`, Sortino by `+0.2094`, and max drawdown by `-0.002902` versus the current live baseline.
+  - live deploy:
+    - repo config updated: `deployments/unified-stock-trader/supervisor.conf`
+    - active Supervisor config synced: `/etc/supervisor/conf.d/unified-stock-trader.conf`
+    - explicit live env now includes `PAPER=0`
+    - live status after deploy: `unified-stock-trader RUNNING`
 
 ## Fixes Applied In This Iteration
 
