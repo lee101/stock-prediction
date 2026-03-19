@@ -39,7 +39,7 @@ DEFAULT_SYMBOLS = [
     "BTCUSD", "ETHUSD", "SOLUSD", "LTCUSD", "AVAXUSD", "DOGEUSD", "LINKUSD", "AAVEUSD",
 ]
 
-DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/autoresearch_mixed23_daily/ent_anneal/best.pt"
+DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/mixed23_fresh_targeted/reg_combo_2/best.pt"
 DATA_DIR = "trainingdata/train"
 TEMP_BIN = "/tmp/mixed23_daily_live.bin"
 

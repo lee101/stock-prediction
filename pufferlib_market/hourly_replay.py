@@ -20,7 +20,11 @@ from typing import Callable, Iterable, Optional
 import numpy as np
 import pandas as pd
 
-from src.market_sim_early_exit import evaluate_drawdown_vs_profit_early_exit, print_early_exit
+from src.market_sim_early_exit import (
+    evaluate_drawdown_vs_profit_early_exit,
+    evaluate_metric_threshold_early_exit,
+    print_early_exit,
+)
 
 INITIAL_CASH = 10000.0
 
@@ -156,6 +160,9 @@ class DailySimResult:
     num_trades: int
     win_rate: float
     avg_hold_steps: float
+    stopped_early: bool = False
+    stop_reason: str = ""
+    evaluated_steps: int = 0
 
 
 def _is_tradable(data: MktdData, t: int, sym: int) -> bool:
@@ -427,6 +434,12 @@ def simulate_daily_policy(
     action_level_bins: int = 1,
     action_max_offset_bps: float = 0.0,
     fill_buffer_bps: float = 0.0,
+    enable_drawdown_profit_early_exit: bool = True,
+    drawdown_profit_early_exit_verbose: bool = True,
+    drawdown_profit_early_exit_min_steps: int = 20,
+    drawdown_profit_early_exit_progress_fraction: float = 0.5,
+    early_exit_max_drawdown: float | None = None,
+    early_exit_min_sortino: float | None = None,
 ) -> DailySimResult:
     """Pure-python simulation matching the C env's daily step semantics.
 
@@ -593,16 +606,36 @@ def simulate_daily_policy(
             max_dd = dd
         equity_history.append(float(equity_after))
 
-        early_exit = evaluate_drawdown_vs_profit_early_exit(
+        early_exit = None
+        if enable_drawdown_profit_early_exit:
+            drawdown_profit_exit = evaluate_drawdown_vs_profit_early_exit(
+                equity_history,
+                total_steps=max_steps + 1,
+                label="pufferlib_market.simulate_daily_policy",
+                min_total_steps=drawdown_profit_early_exit_min_steps,
+                progress_fraction=drawdown_profit_early_exit_progress_fraction,
+            )
+            if drawdown_profit_exit.should_stop:
+                if drawdown_profit_early_exit_verbose:
+                    print_early_exit(drawdown_profit_exit)
+                early_exit = drawdown_profit_exit
+
+        metric_threshold_exit = evaluate_metric_threshold_early_exit(
             equity_history,
             total_steps=max_steps + 1,
             label="pufferlib_market.simulate_daily_policy",
+            periods_per_year=periods_per_year,
+            max_drawdown_limit=early_exit_max_drawdown,
+            min_sortino_limit=early_exit_min_sortino,
+            min_total_steps=drawdown_profit_early_exit_min_steps,
+            progress_fraction=drawdown_profit_early_exit_progress_fraction,
         )
-        if early_exit.should_stop:
-            print_early_exit(early_exit)
+        if metric_threshold_exit.should_stop:
+            print_early_exit(metric_threshold_exit)
+            early_exit = metric_threshold_exit
 
         done = (
-            early_exit.should_stop
+            (early_exit is not None and early_exit.should_stop)
             or (step >= max_steps)
             or (t_new >= T - 1)
             or (equity_after < initial_cash * 0.01)
@@ -637,6 +670,9 @@ def simulate_daily_policy(
                 num_trades=int(num_trades),
                 win_rate=float(win_rate),
                 avg_hold_steps=float(avg_hold),
+                stopped_early=bool(early_exit is not None and early_exit.should_stop),
+                stop_reason=early_exit.reason if early_exit is not None else "",
+                evaluated_steps=int(step),
             )
 
 
