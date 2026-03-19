@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rl_trading_agent_binance_prompt import build_live_prompt, load_latest_forecast
 from llm_hourly_trader.providers import call_llm
 from llm_hourly_trader.gemini_wrapper import TradePlan
+from src.dynamic_position_sizing import compute_position_scale, compute_atr_pct, NO_FORECAST_FALLBACK_SCALE
 
 CACHE_DIR = Path("rl-trading-agent-binance/signal_cache")
 
@@ -42,6 +43,14 @@ SYMBOL_MAX_POS = {
     "AAVEUSD": 0.15, "LINKUSD": 0.10,
     "XRPUSD": 0.10, "AVAXUSD": 0.10,
 }
+
+BASE_MAE_PCT = {
+    "BTCUSD": 0.0055, "ETHUSD": 0.008,
+    "SOLUSD": 0.012, "DOGEUSD": 0.018,
+    "AAVEUSD": 0.017, "LINKUSD": 0.008,
+    "XRPUSD": 0.008, "AVAXUSD": 0.013,
+}
+
 
 
 def _cache_key(symbol: str, ts_str: str, model: str) -> Path:
@@ -130,11 +139,20 @@ def generate_signals(
         ts = window_bars.iloc[idx]["timestamp"]
         ts_str = ts.strftime("%Y%m%d_%H")
 
+        fc_1h_pre = load_forecast_at(symbol, ts, 1)
+        fc_quantiles = {}
+        if fc_1h_pre:
+            fc_quantiles = {
+                "fc_p10": fc_1h_pre.get("predicted_close_p10", 0.0),
+                "fc_p50": fc_1h_pre.get("predicted_close_p50", 0.0),
+                "fc_p90": fc_1h_pre.get("predicted_close_p90", 0.0),
+            }
+
         cached = _get_cached(symbol, ts_str, model)
         if cached:
             results.append({
                 "timestamp": ts, "symbol": symbol,
-                **cached,
+                **cached, **fc_quantiles,
             })
             continue
 
@@ -146,7 +164,7 @@ def generate_signals(
         context_rows = all_bars_sorted.iloc[context_start:context_end].to_dict("records")
 
         current_price = float(context_rows[-1]["close"])
-        fc_1h = load_forecast_at(symbol, ts, 1)
+        fc_1h = fc_1h_pre
         fc_4h = load_forecast_at(symbol, ts, 4)
         fc_12h = load_forecast_at(symbol, ts, 12)
         fc_24h = load_forecast_at(symbol, ts, 24)
@@ -169,6 +187,7 @@ def generate_signals(
                 "sell_price": plan.sell_price,
                 "confidence": plan.confidence,
                 "reasoning": plan.reasoning,
+                **fc_quantiles,
             })
             api_calls += 1
             if api_calls % 50 == 0:
@@ -202,6 +221,7 @@ def simulate_portfolio(
         b["timestamp"] = pd.to_datetime(b["timestamp"], utc=True)
         all_bars_list.append(b)
     all_bars = pd.concat(all_bars_list, ignore_index=True)
+    bars_by_symbol = {sym: grp for sym, grp in all_bars.groupby("symbol")}
 
     merged = all_bars.merge(all_signals, on=["timestamp", "symbol"], how="inner")
     merged = merged.sort_values(["timestamp", "symbol"]).reset_index(drop=True)
@@ -276,7 +296,17 @@ def simulate_portfolio(
                 continue
 
             max_pct = SYMBOL_MAX_POS.get(sym, 0.10)
-            equity_alloc = cash * max_pct
+            fc_p10 = float(row.get("fc_p10", 0) or 0)
+            fc_p50 = float(row.get("fc_p50", 0) or 0)
+            fc_p90 = float(row.get("fc_p90", 0) or 0)
+            current_price = float(row["close"])
+            sym_bars = bars_by_symbol.get(sym, pd.DataFrame())
+            atr_pct = compute_atr_pct(sym_bars, ts)
+            base_mae = BASE_MAE_PCT.get(sym, 0.01)
+            scale = compute_position_scale(fc_p10, fc_p50, fc_p90, current_price, atr_pct, base_mae)
+            if scale <= 0:
+                scale = NO_FORECAST_FALLBACK_SCALE
+            equity_alloc = cash * max_pct * scale
             if equity_alloc < 12:
                 continue
             notional = equity_alloc * leverage
