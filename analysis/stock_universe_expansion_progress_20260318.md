@@ -1610,3 +1610,56 @@ python -u scripts/retrain_chronos2_hourly_loras.py \
   - reason: `No candidate met promotion thresholds. Rejected candidates: F`
 - decision: rejected
   - reason: the multivariate LoRA preserved the good cache quality but did not change the live-strategy interaction. `F` still improved return and drawdown while regressing Sortino by about `-0.2253`, so it is not promotable against the current `ABEV` live basket.
+
+## Frontier Audit
+
+- finding:
+  - the manifest was stale for several high-priority names. Their multivariate branches had already been run on `2026-03-18`, but the candidate statuses still said they needed retraining.
+- audited artifacts:
+  - `analysis/local_training_logs/intc_lora_stockexp_multivar_20260318.log`
+  - `analysis/local_training_logs/intc_lora_stockexp_multivar_eval_20260318.log`
+  - `analysis/local_training_logs/pfe_lora_stockexp_multivar_20260318.log`
+  - `analysis/local_training_logs/pfe_lora_stockexp_multivar_eval_20260318.log`
+  - `analysis/local_training_logs/sofi_lora_stockexp_multivar_20260318.log`
+  - `analysis/local_training_logs/sofi_lora_stockexp_multivar_eval_20260318.log`
+  - `analysis/local_training_logs/mu_lora_stockexp_multivar_20260318.log`
+  - `analysis/local_training_logs/mu_lora_stockexp_multivar_eval_20260318.log`
+  - `analysis/local_training_logs/ttd_lora_stockexp_multivar_20260318.log`
+  - `analysis/local_training_logs/ttd_lora_stockexp_multivar_eval_20260318.log`
+- closeout summary:
+  - `INTC` multivariate already finished with `val_mae%=8.8221`, `test_mae%=11.4416` and still failed promotion on Sortino.
+  - `PFE` multivariate already finished with `val_mae%=1.5617`, `test_mae%=3.1063` and still failed promotion on Sortino.
+  - `SOFI` multivariate already failed promotion on Sortino with `sortino=-7.2631`.
+  - `MU` multivariate terminated at the cache gate even after retrain.
+  - `TTD` multivariate terminated at the cache gate even after retrain.
+- decision:
+  - the serious high-priority Chronos2 multivariate frontier for this stock batch is effectively exhausted.
+
+## Aborted Smoke Retry
+
+- symbol: `INTC`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 05:59 UTC`
+- artifact path: `chronos2_finetuned/INTC_lora_stockexp_multivar_smoke_20260319/finetuned-ckpt`
+- smoke command:
+
+```bash
+python -u scripts/retrain_chronos2_hourly_loras.py \
+  --symbol INTC \
+  --data-root trainingdatahourly/stocks \
+  --output-root chronos2_finetuned \
+  --context-length 2048 \
+  --batch-size 32 \
+  --learning-rate 5e-05 \
+  --num-steps 1 \
+  --save-name INTC_lora_stockexp_multivar_smoke_20260319 \
+  --covariate-symbols NVDA,NET,META,GOOG \
+  --covariate-cols close \
+  --no-update-hparams
+```
+
+- smoke outcome:
+  - `val_mae%=12.4300`
+  - `test_mae%=15.1430`
+- decision: do not rerun full training
+  - reason: the retry smoke was materially worse than the already-recorded March 18 multivariate run, so there is no justification for burning another duplicate 1500-step job on `INTC`.
