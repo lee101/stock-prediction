@@ -25,6 +25,7 @@
   - `OWL`: failed forecast cache gate.
   - `NBIS`: failed forecast cache gate.
   - `BMNR`: failed forecast cache gate.
+  - `RCAT`: failed forecast cache gate.
 
 ## Completed History Ingest Batch
 
@@ -550,6 +551,51 @@ python scripts/run_alpaca_stock_expansion.py \
     - `h24 MAE%=22.9856`
   - decision: rejected
     - reason: `BMNR` missed both cache gates badly on the base checkpoint, so it stays in the tune-or-retrain bucket and does not earn a simulator run against the live `ABEV` baseline.
+
+## Completed First-Pass Evaluation
+
+- symbol: `RCAT`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 04:22 UTC`
+- command:
+
+```bash
+python scripts/run_alpaca_stock_expansion.py \
+  --manifest-path docs/stock_universe_candidates_20260318.json \
+  --candidate-symbols RCAT \
+  --baseline-source-dir analysis/alpaca_stock_expansion_abev_20260319/ABEV \
+  --candidate-only-cache-build \
+  --candidate-max-h1-mae-percent 10 \
+  --candidate-max-h24-mae-percent 10 \
+  --output-dir analysis/alpaca_stock_expansion_rcat_20260319
+```
+
+- current status:
+  - `RCAT` failed the forecast cache gate on the base Chronos2 checkpoint.
+  - cache MAE from `analysis/alpaca_stock_expansion_rcat_20260319/forecast_cache_mae.json`:
+    - `h1 MAE%=19.4586`
+    - `h24 MAE%=22.5221`
+  - decision: rejected
+    - reason: `RCAT` missed both cache gates badly on the base checkpoint, so it stays in the tune-or-retrain bucket and does not earn a simulator run against the live `ABEV` baseline.
+
+## Next Improvement Target
+
+- closest near-miss from the completed first-pass cache screen: `OWL`
+  - first-pass cache MAE: `h1=10.3220%`, `h24=12.0786%`
+  - recommended next step from `analysis/alpaca_stock_expansion_owl_20260319/expansion_results.json`: `hourly_tune`
+  - planned follow-on command:
+
+```bash
+python hyperparam_chronos_hourly.py \
+  --symbols OWL \
+  --quick \
+  --holdout-hours 168 \
+  --prediction-length 24 \
+  --objective composite \
+  --cohort-size 4 \
+  --cohort-min-abs-corr 0.25 \
+  --save-hyperparams
+```
 
 ## Fixes Applied In This Iteration
 
