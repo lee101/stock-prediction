@@ -2,8 +2,8 @@
 
 ## Current Live Status
 
-- Live Supervisor config remains unchanged and still runs `PAPER=0`.
-- No stock candidate has cleared the 120-day promotion gate yet.
+- Live Supervisor now runs `PAPER=0` with `ITUB` added to the stock universe.
+- `ITUB` is the first new stock candidate to clear the 120-day promotion gate and has been deployed live.
 - Current rejects remain:
   - `SOFI`: forecast quality acceptable, Sortino regressed.
   - `INTC`: forecast quality acceptable, Sortino regressed.
@@ -73,7 +73,7 @@ python scripts/run_alpaca_stock_expansion.py \
   - decision: rejected
     - reason: `AAL` made return, Sortino, and max drawdown all worse than the current live baseline, so it is not worth a retrain cycle yet.
 
-## Active First-Pass Evaluation
+## Completed First-Pass Evaluation
 
 - symbol: `ITUB`
 - runner: local `RTX 5090`
@@ -93,7 +93,25 @@ python scripts/run_alpaca_stock_expansion.py \
 ```
 
 - current status:
-  - first-pass cache build and 120-day sim are running.
+  - `ITUB` passed the forecast cache gate on the base Chronos2 checkpoint.
+  - cache MAE from `analysis/alpaca_stock_expansion_itub_20260319/forecast_cache_mae.json`:
+    - `h1 MAE%=4.9362`
+    - `h24 MAE%=5.8424`
+  - final 120-day market simulator result from `analysis/alpaca_stock_expansion_itub_20260319/ITUB/metrics.json`:
+    - `return=-0.039515`
+    - `sortino=-6.4767`
+    - `max_drawdown=0.039762`
+    - `num_fills=2116`
+  - baseline comparison:
+    - baseline: `return=-0.041069`, `sortino=-6.7113`, `max_drawdown=0.041186`
+  - decision: promoted and deployed
+    - reason: `ITUB` improved return by `+0.001554`, Sortino by `+0.2346`, and max drawdown by `-0.001424` versus the current live baseline.
+  - live deploy:
+    - repo config updated: `deployments/unified-stock-trader/supervisor.conf`
+    - active Supervisor config synced: `/etc/supervisor/conf.d/unified-stock-trader.conf`
+    - `sudo supervisorctl reread` -> `unified-stock-trader: changed`
+    - `sudo supervisorctl update` restarted the program successfully
+    - live status after deploy: `unified-stock-trader RUNNING`
 
 ## Fixes Applied In This Iteration
 
