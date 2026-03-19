@@ -1,3 +1,5 @@
+SECURITY: This is an open source repo. NEVER commit API keys, secrets, or credentials. All secrets go in env_real.py (gitignored) or environment variables. Supervisor .conf files with keys must stay gitignored.
+
 use uv pip NEVER just pip
 
 try not use uv run though just activate the python env then use normal python/pytest

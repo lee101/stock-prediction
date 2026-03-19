@@ -23,6 +23,7 @@ class SweepConfig:
     symbol: str
     preaug: str
     context_length: int
+    batch_size: int
     learning_rate: float
     num_steps: int
     prediction_length: int
@@ -67,6 +68,8 @@ def build_train_cmd(
         str(int(cfg.context_length)),
         "--prediction-length",
         str(int(cfg.prediction_length)),
+        "--batch-size",
+        str(int(cfg.batch_size)),
         "--learning-rate",
         str(float(cfg.learning_rate)),
         "--num-steps",
@@ -85,6 +88,7 @@ def iter_sweep_configs(
     symbols: Sequence[str],
     preaugs: Sequence[str],
     context_lengths: Sequence[int],
+    batch_size: int,
     learning_rates: Sequence[float],
     num_steps: int,
     prediction_length: int,
@@ -100,6 +104,7 @@ def iter_sweep_configs(
                             symbol=symbol,
                             preaug=preaug,
                             context_length=int(context_length),
+                            batch_size=int(batch_size),
                             learning_rate=float(learning_rate),
                             num_steps=int(num_steps),
                             prediction_length=int(prediction_length),
@@ -161,6 +166,7 @@ def _write_summary_csv(path: Path, results: Sequence[SweepResult]) -> None:
         "symbol",
         "preaug",
         "context_length",
+        "batch_size",
         "learning_rate",
         "num_steps",
         "prediction_length",
@@ -185,6 +191,7 @@ def _write_summary_csv(path: Path, results: Sequence[SweepResult]) -> None:
                     "symbol": result.config.symbol,
                     "preaug": result.config.preaug,
                     "context_length": result.config.context_length,
+                    "batch_size": result.config.batch_size,
                     "learning_rate": result.config.learning_rate,
                     "num_steps": result.config.num_steps,
                     "prediction_length": result.config.prediction_length,
@@ -323,6 +330,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--results-dir", type=Path, default=Path("hyperparams/crypto_lora_sweep"))
     parser.add_argument("--preaugs", default="baseline,percent_change,log_returns")
     parser.add_argument("--context-lengths", default="128,256")
+    parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--learning-rates", default="5e-5,1e-4")
     parser.add_argument("--num-steps", type=int, default=1000)
     parser.add_argument("--prediction-length", type=int, default=24)
@@ -341,6 +349,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         symbols=symbols,
         preaugs=preaugs,
         context_lengths=context_lengths,
+        batch_size=int(args.batch_size),
         learning_rates=learning_rates,
         num_steps=int(args.num_steps),
         prediction_length=int(args.prediction_length),
