@@ -1,0 +1,21 @@
+{
+  "symbol": "CVX",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "CVX",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": -1.2179274167865515,
+    "keep_open_net_return": -0.9583273369353265,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 0.259600079851225,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 0.5009584641084075,
+    "sell_advantage": 0.3643751295749098,
+    "instant_close_buy_return": 0.23927234229631722,
+    "instant_close_sell_return": 0.36268352065235376,
+    "keep_open_buy_return": 0.7402308064047247,
+    "keep_open_sell_return": 0.7270586502272636
+  }
+}

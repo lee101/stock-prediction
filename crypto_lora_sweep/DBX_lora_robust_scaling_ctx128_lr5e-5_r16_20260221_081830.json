@@ -1,0 +1,19 @@
+{
+  "run_name": "DBX_lora_robust_scaling_ctx128_lr5e-5_r16_20260221_081830",
+  "config": {
+    "symbol": "DBX",
+    "preaug": "robust_scaling",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 80.73165893554688,
+    "mae_percent_std": 22.837427139282227
+  },
+  "test": {
+    "mae_percent_mean": 28.016904830932617,
+    "mae_percent_std": 4.478222846984863
+  }
+}

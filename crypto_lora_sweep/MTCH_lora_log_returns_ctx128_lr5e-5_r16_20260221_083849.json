@@ -1,0 +1,19 @@
+{
+  "run_name": "MTCH_lora_log_returns_ctx128_lr5e-5_r16_20260221_083849",
+  "config": {
+    "symbol": "MTCH",
+    "preaug": "log_returns",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 58.82944869995117,
+    "mae_percent_std": 18.40913200378418
+  },
+  "test": {
+    "mae_percent_mean": 137.19622802734375,
+    "mae_percent_std": 86.48262023925781
+  }
+}

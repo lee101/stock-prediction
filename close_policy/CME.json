@@ -1,0 +1,21 @@
+{
+  "symbol": "CME",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "CME",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": -0.862985989835579,
+    "keep_open_net_return": -0.3393955757492222,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 0.5235904140863568,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 0.4671358480118215,
+    "sell_advantage": 1.2781655293656513,
+    "instant_close_buy_return": 1.7722949502058327,
+    "instant_close_sell_return": 0.6113153847400099,
+    "keep_open_buy_return": 2.2394307982176542,
+    "keep_open_sell_return": 1.8894809141056612
+  }
+}

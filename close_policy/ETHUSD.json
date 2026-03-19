@@ -1,0 +1,15 @@
+{
+  "symbol": "ETHUSD",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "ETHUSD",
+    "is_crypto": true,
+    "num_simulations": 10,
+    "instant_close_net_return": 2.294956101104617,
+    "keep_open_net_return": 3.4732836354523897,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 1.1783275343477726,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0
+  }
+}

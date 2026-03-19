@@ -1,0 +1,40 @@
+{
+  "config": {
+    "symbol": "YELP",
+    "context_length": 128,
+    "prediction_length": 24,
+    "batch_size": 32,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "preaug": "percent_change",
+    "val_hours": 168,
+    "test_hours": 168
+  },
+  "run_name": "YELP_lora_percent_change_ctx128_lr5e-05_r16_20260213_162027",
+  "output_dir": "chronos2_finetuned/YELP_lora_percent_change_ctx128_lr5e-05_r16_20260213_162027",
+  "val": {
+    "mae_mean": 0.34288355832298595,
+    "mae_std": 0.18954798140186552,
+    "mae_max": 0.7147989869117737,
+    "mae_p90": 0.5411655485630036,
+    "mae_percent_mean": 1.129016187041998,
+    "mae_percent_std": 0.6227200883364045,
+    "mae_percent_max": 2.3492829874157906,
+    "count": 12
+  },
+  "test": {
+    "mae_mean": 0.7831113152205944,
+    "mae_std": 0.5660345207258758,
+    "mae_max": 2.3270108699798584,
+    "mae_p90": 1.2008135318756104,
+    "mae_percent_mean": 2.9068138372773924,
+    "mae_percent_std": 2.256904661292434,
+    "mae_percent_max": 9.416129440069199,
+    "count": 12
+  },
+  "val_consistency_score": 1.806456271322338,
+  "test_consistency_score": 5.988060848761151
+}

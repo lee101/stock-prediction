@@ -1,0 +1,968 @@
+import json
+import math
+import os
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Iterable, Optional
+
+import alpaca_wrapper
+import typer
+from data_curate_daily import download_exchange_latest_data, get_ask, get_bid
+from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
+from scripts.alpaca_cli import get_strategy_for_symbol, set_strategy_for_symbol
+from src.forecast_utils import extract_forecasted_pnl, load_latest_forecast_snapshot
+from src.maxdiff_entry_guard import _effective_entry_quantities, _sum_order_qty
+from src.maxdiff_exit_tracker import ExitTargetTracker
+from src.logging_utils import setup_logging
+from src.stock_utils import pairs_equal
+from src.trading_obj_utils import filter_to_realistic_positions
+from src.work_stealing_coordinator import get_coordinator
+
+# Global logger for general maxdiff_cli operations
+logger = setup_logging("maxdiff_cli.log")
+
+
+def _get_watcher_logger(symbol: str, side: str, mode: str):
+    """Get a symbol-specific logger for watcher operations.
+
+    Args:
+        symbol: Trading symbol (e.g., 'BTCUSD', 'AAPL')
+        side: 'buy' or 'sell'
+        mode: 'entry' or 'exit'
+
+    Returns:
+        Logger instance that writes to logs/{symbol}_{side}_{mode}_watcher.log
+    """
+    from pathlib import Path
+
+    # Create logs directory if it doesn't exist
+    log_dir = Path("logs")
+    log_dir.mkdir(exist_ok=True)
+
+    # Create symbol-specific log file
+    log_filename = f"logs/{symbol.lower()}_{side}_{mode}_watcher.log"
+    return setup_logging(log_filename)
+
+StockHistoricalDataClient: type[Any] | None = None
+
+try:
+    from alpaca.data import StockHistoricalDataClient as _StockHistoricalDataClient
+except Exception as exc:  # pragma: no cover - fallback in simulator environments
+    logger.warning(f"StockHistoricalDataClient unavailable: {exc}")
+else:
+    StockHistoricalDataClient = _StockHistoricalDataClient
+
+
+app = typer.Typer(help="Maxdiff strategy helpers for staged entry/exit automation.")
+STATUS_VERSION = 1
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _normalize_side(side: str) -> str:
+    return "buy" if str(side).lower().startswith("b") else "sell"
+
+
+def _normalize_config_path(config_path: Optional[Path]) -> Optional[Path]:
+    if config_path is None:
+        return None
+    return config_path.expanduser().resolve()
+
+
+def _load_status(config_path: Optional[Path]) -> dict:
+    if config_path is None:
+        return {}
+    if not config_path.exists():
+        return {}
+    try:
+        with config_path.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.warning("Failed to read watcher status %s: %s", config_path, exc)
+        return {}
+
+
+def _write_status_file(config_path: Optional[Path], status: dict) -> None:
+    if config_path is None:
+        return
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = config_path.with_suffix(config_path.suffix + ".tmp")
+        with temp_path.open("w", encoding="utf-8") as handle:
+            json.dump(status, handle, indent=2, sort_keys=True)
+        temp_path.replace(config_path)
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.warning("Failed to persist watcher status %s: %s", config_path, exc)
+
+
+def _prepare_status(config_path: Optional[Path], defaults: dict) -> dict:
+    status = _load_status(config_path)
+    status.update(defaults)
+    status.setdefault("config_version", STATUS_VERSION)
+    # Store PGID (process group ID) instead of PID because watchers are spawned
+    # with start_new_session=True and we use os.killpg() to terminate them.
+    # The PGID is the shell's PID when spawned with shell=True + start_new_session=True.
+    status["pid"] = os.getpgid(os.getpid())
+    if config_path is not None:
+        status["config_path"] = str(config_path)
+    return status
+
+
+def _update_status(config_path: Optional[Path], status: dict, **changes) -> dict:
+    status.update(changes)
+    status["last_update"] = _now().isoformat()
+    _write_status_file(config_path, status)
+    return status
+
+
+def _entry_requires_cash(side: str, price: float, qty: float) -> bool:
+    if qty <= 0 or price <= 0:
+        return False
+
+    refresh = getattr(alpaca_wrapper, "refresh_account_cache", None)
+    if callable(refresh):
+        refresh()
+
+    notional = abs(price * qty)
+    cash = float(getattr(alpaca_wrapper, "cash", 0.0) or 0.0)
+    # Fall back to buying power when cash is suppressed (common on margin accounts)
+    buying_power = float(getattr(alpaca_wrapper, "buying_power", cash) or cash)
+    total_bp = float(getattr(alpaca_wrapper, "total_buying_power", buying_power) or buying_power)
+    available = max(cash, buying_power, total_bp)
+    if side == "buy":
+        if notional > available:
+            logger.info(
+                "Skipping order to avoid leverage: notional=%.2f, available=%.2f (cash=%.2f bp=%.2f tbp=%.2f)",
+                notional,
+                available,
+                cash,
+                buying_power,
+                total_bp,
+            )
+            return False
+        return True
+    # For shorts, require enough cash buffer to avoid immediate leverage swings.
+    equity = float(getattr(alpaca_wrapper, "equity", 0.0) or 0.0)
+    if total_bp > equity * 1.05:
+        logger.info(
+            "Skipping short to avoid leverage: total_bp=%.2f exceeds equity=%.2f",
+            total_bp,
+            equity,
+        )
+        return False
+    return True
+
+
+def _position_for_symbol(symbol: str, entry_side: str) -> Optional[object]:
+    positions = filter_to_realistic_positions(alpaca_wrapper.get_all_positions())
+    for pos in positions:
+        if not hasattr(pos, "symbol") or not pairs_equal(pos.symbol, symbol):
+            continue
+        side = getattr(pos, "side", "").lower()
+        if entry_side == "buy" and side == "long":
+            return pos
+        if entry_side == "sell" and side == "short":
+            return pos
+    return None
+
+
+def _orders_for_symbol(symbol: str, side: Optional[str] = None) -> Iterable[object]:
+    desired_side = None if side is None else side.lower()
+    orders = alpaca_wrapper.get_open_orders()
+    for order in orders:
+        if not hasattr(order, "symbol") or not pairs_equal(order.symbol, symbol):
+            continue
+        if desired_side and getattr(order, "side", "").lower() != desired_side:
+            continue
+        yield order
+
+
+def _cancel_orders(symbol: str, side: Optional[str] = None) -> None:
+    for order in list(_orders_for_symbol(symbol, side=side)):
+        try:
+            alpaca_wrapper.cancel_order(order)
+            time.sleep(0.25)
+        except Exception as exc:
+            logger.warning("Failed cancelling %s order for %s: %s", side or "any", symbol, exc)
+
+
+def _cancel_old_orders(symbol: str, side: Optional[str] = None, max_age_hours: int = 24) -> int:
+    """Cancel orders older than max_age_hours. Returns number of orders canceled."""
+    now = _now()
+    max_age_delta = timedelta(hours=max_age_hours)
+    canceled_count = 0
+
+    for order in list(_orders_for_symbol(symbol, side=side)):
+        submitted_at = getattr(order, "submitted_at", None)
+        if submitted_at is None:
+            continue
+
+        # Ensure submitted_at is timezone-aware
+        if submitted_at.tzinfo is None:
+            submitted_at = submitted_at.replace(tzinfo=timezone.utc)
+
+        age = now - submitted_at
+        if age > max_age_delta:
+            try:
+                order_age_hours = age.total_seconds() / 3600
+                logger.info(
+                    "Canceling old %s order for %s (age: %.1f hours, submitted: %s)",
+                    side or "any",
+                    symbol,
+                    order_age_hours,
+                    submitted_at.isoformat(),
+                )
+                alpaca_wrapper.cancel_order(order)
+                canceled_count += 1
+                time.sleep(0.25)
+            except Exception as exc:
+                logger.warning("Failed canceling old %s order for %s: %s", side or "any", symbol, exc)
+
+    return canceled_count
+
+
+def _latest_reference_price(symbol: str, side: str, fallback_client=None) -> Optional[float]:
+    try:
+        quote = alpaca_wrapper.latest_data(symbol)
+        if side == "buy":
+            price = getattr(quote, "ask_price", None)
+            if price in (None, 0):
+                price = getattr(quote, "bid_price", None)
+        else:
+            price = getattr(quote, "bid_price", None)
+            if price in (None, 0):
+                price = getattr(quote, "ask_price", None)
+        if price and price > 0:
+            return float(price)
+    except Exception as exc:
+        logger.debug("latest_data unavailable for %s: %s", symbol, exc)
+
+    if fallback_client is None:
+        return None
+    try:
+        download_exchange_latest_data(fallback_client, symbol)
+        if side == "buy":
+            price = get_ask(symbol)
+        else:
+            price = get_bid(symbol)
+        return float(price) if price else None
+    except Exception as exc:
+        logger.warning("Fallback price fetch failed for %s: %s", symbol, exc)
+        return None
+
+
+def _within_tolerance(reference_price: float, limit_price: float, tolerance_pct: float) -> bool:
+    if reference_price <= 0 or limit_price <= 0:
+        return False
+    diff = abs(reference_price - limit_price) / limit_price
+    return diff <= tolerance_pct
+
+
+def _has_takeprofit_order(symbol: str, exit_side: str, target_price: float, tolerance: float) -> bool:
+    for order in _orders_for_symbol(symbol, side=exit_side):
+        limit_price = getattr(order, "limit_price", None)
+        if limit_price is None:
+            continue
+        try:
+            limit_value = float(limit_price)
+        except (TypeError, ValueError):
+            continue
+        if math.isclose(limit_value, target_price, rel_tol=tolerance, abs_tol=target_price * tolerance):
+            return True
+    return False
+
+
+def _ensure_strategy_tag(symbol: str) -> None:
+    existing = get_strategy_for_symbol(symbol)
+    if existing != "highlow":
+        set_strategy_for_symbol(symbol, "highlow")
+
+
+@app.command("open-position")
+def open_position_at_maxdiff_takeprofit(
+    symbol: str,
+    side: str = typer.Option(..., "--side", help="Entry side for the strategy (buy/sell)."),
+    limit_price: float = typer.Option(..., "--limit-price", help="Limit price to stage entry."),
+    target_qty: float = typer.Option(..., "--target-qty", help="Quantity to accumulate."),
+    tolerance_pct: float = typer.Option(
+        0.0066,
+        "--tolerance-pct",
+        help="Relative tolerance (e.g. 0.0066 == 0.66%%) before staging the entry order.",
+    ),
+    expiry_minutes: int = typer.Option(
+        24 * 60,
+        "--expiry-minutes",
+        help="Maximum time to keep watching/maintaining the entry order.",
+    ),
+    asset_class: str = typer.Option(
+        "equity",
+        "--asset-class",
+        help="Asset class hint (affects clean-up semantics).",
+    ),
+    poll_seconds: int = typer.Option(
+        45,
+        "--poll-seconds",
+        help="Polling cadence while monitoring price thresholds.",
+    ),
+    config_path: Optional[Path] = typer.Option(
+        None,
+        "--config-path",
+        help="Path to persist watcher status updates.",
+    ),
+    force_immediate: bool = typer.Option(
+        False,
+        "--force-immediate",
+        help="Submit the staged order without waiting for price tolerance triggers.",
+    ),
+    priority_rank: Optional[int] = typer.Option(
+        None,
+        "--priority-rank",
+        help="Optional priority ranking used for coordination across watchers.",
+    ),
+) -> None:
+    side = _normalize_side(side)
+
+    # Use symbol-specific logger for this watcher
+    watcher_logger = _get_watcher_logger(symbol, side, "entry")
+
+    if limit_price <= 0 or target_qty <= 0:
+        watcher_logger.error(
+            "Invalid maxdiff open parameters for %s: limit_price=%.4f target_qty=%.4f",
+            symbol,
+            limit_price,
+            target_qty,
+        )
+        return
+
+    # Enforce broker min cost basis ($1) to avoid 403 cost basis errors
+    min_notional_qty = 1.0 / max(limit_price, 1e-9)
+    if target_qty < min_notional_qty:
+        watcher_logger.info(
+            "Raising target_qty for %s to meet $1 min notional (%.6f -> %.6f @ %.4f)",
+            symbol,
+            target_qty,
+            min_notional_qty,
+            limit_price,
+        )
+        target_qty = min_notional_qty
+
+    _ensure_strategy_tag(symbol)
+    config_path = _normalize_config_path(config_path)
+    expiry_minutes = max(int(expiry_minutes), 1)
+    now = _now()
+    expiry = now + timedelta(minutes=expiry_minutes)
+
+    if priority_rank is not None:
+        watcher_logger.info(
+            "Starting maxdiff entry watcher for %s side=%s limit=%.4f qty=%.4f tolerance=%.4f "
+            "expiry=%s force_immediate=%s priority_rank=%s",
+            symbol,
+            side,
+            limit_price,
+            target_qty,
+            tolerance_pct,
+            expiry.isoformat(),
+            force_immediate,
+            priority_rank,
+        )
+    else:
+        watcher_logger.info(
+            "Starting maxdiff entry watcher for %s side=%s limit=%.4f qty=%.4f tolerance=%.4f expiry=%s "
+            "force_immediate=%s",
+            symbol,
+            side,
+            limit_price,
+            target_qty,
+            tolerance_pct,
+            expiry.isoformat(),
+            force_immediate,
+        )
+
+    status = _prepare_status(
+        config_path,
+        {
+            "mode": "entry",
+            "symbol": symbol,
+            "side": side,
+            "limit_price": float(limit_price),
+            "target_qty": float(target_qty),
+            "tolerance_pct": float(tolerance_pct),
+            "expiry_minutes": expiry_minutes,
+            "expiry_at": expiry.isoformat(),
+            "started_at": now.isoformat(),
+            "asset_class": asset_class,
+            "active": True,
+            "force_immediate": bool(force_immediate),
+        },
+    )
+    if priority_rank is not None:
+        try:
+            status["priority_rank"] = int(priority_rank)
+        except (TypeError, ValueError):
+            status["priority_rank"] = priority_rank
+    status.setdefault("pending_qty", 0.0)
+    status = _update_status(config_path, status, state="initializing")
+
+    fallback_client = None
+    if StockHistoricalDataClient is not None:
+        try:
+            fallback_client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
+        except Exception as exc:
+            watcher_logger.debug("StockHistoricalDataClient init failed: %s", exc)
+
+    consecutive_errors = 0
+    # Crypto watchers run 24/7 - retry indefinitely
+    # Stock watchers have a limit to avoid wasting resources when market is closed
+    is_crypto = asset_class.lower() == "crypto"
+    max_consecutive_errors = None if is_crypto else 10  # None = unlimited retries for crypto
+    error_sleep_seconds = 60  # Sleep 1 minute on errors before retrying
+    # Keep pending reservations alive for a few polling intervals to absorb API lag
+    pending_ttl_seconds = max(120, poll_seconds * 3)
+
+    try:
+        while True:
+            try:
+                now = _now()
+                if now >= expiry:
+                    watcher_logger.info("Entry watcher expired for %s; cancelling staged orders.", symbol)
+                    _cancel_orders(symbol, side=side)
+                    if asset_class.lower() == "crypto":
+                        _cancel_orders(symbol)
+                    status = _update_status(
+                        config_path,
+                        status,
+                        state="expired",
+                        active=False,
+                        expired_at=now.isoformat(),
+                    )
+                    break
+
+                position = _position_for_symbol(symbol, side)
+                active_orders = list(_orders_for_symbol(symbol, side=side))
+                current_qty = float(getattr(position, "qty", 0.0) or 0.0) if position else 0.0
+                open_order_qty = _sum_order_qty(active_orders)
+                effective_qty, remaining_qty, pending_qty, target_reached = _effective_entry_quantities(
+                    status=status,
+                    current_qty=current_qty,
+                    open_order_qty=open_order_qty,
+                    target_qty=target_qty,
+                    now=now,
+                    pending_ttl_seconds=pending_ttl_seconds,
+                )
+
+                status = _update_status(
+                    config_path,
+                    status,
+                    active=True,
+                    position_qty=current_qty,
+                    open_order_count=len(active_orders),
+                    open_order_qty=open_order_qty,
+                    effective_qty=effective_qty,
+                    remaining_qty=remaining_qty,
+                    pending_qty=pending_qty,
+                )
+
+                # If we're effectively at target (including pending + open orders), do nothing.
+                if target_reached:
+                    status = _update_status(config_path, status, state="position_open")
+                    time.sleep(poll_seconds)
+                    consecutive_errors = 0
+                    continue
+
+                # Ignore tiny leftover positions to avoid thrashing
+                min_significant_qty = max(0.003, target_qty * 0.005)  # 0.5% of target or 0.003 minimum
+                if 0 < current_qty < min_significant_qty and remaining_qty > 0:
+                    watcher_logger.info(
+                        "Ignoring insignificant position for %s: %.6f (< %.6f threshold) - targeting full %.6f",
+                        symbol,
+                        current_qty,
+                        min_significant_qty,
+                        target_qty,
+                    )
+
+                if active_orders:
+                    # Cancel orders older than 1 day (24 hours)
+                    canceled_count = _cancel_old_orders(symbol, side=side, max_age_hours=24)
+                    if canceled_count > 0:
+                        watcher_logger.info(
+                            "Canceled %d old order(s) for %s %s - will place fresh order on next iteration",
+                            canceled_count,
+                            symbol,
+                            side,
+                        )
+                        # Refresh order list after canceling
+                        active_orders = list(_orders_for_symbol(symbol, side=side))
+                        open_order_qty = _sum_order_qty(active_orders)
+                        status = _update_status(
+                            config_path,
+                            status,
+                            state="old_orders_canceled",
+                            open_order_count=len(active_orders),
+                            open_order_qty=open_order_qty,
+                        )
+                        time.sleep(poll_seconds)
+                        consecutive_errors = 0
+                        continue
+
+                    # If there are still active orders (not old), wait for them to fill
+                    status = _update_status(config_path, status, state="awaiting_fill")
+                    time.sleep(poll_seconds)
+                    consecutive_errors = 0
+                    continue
+
+                reference_price = _latest_reference_price(symbol, side, fallback_client=fallback_client)
+                status = _update_status(
+                    config_path,
+                    status,
+                    last_reference_price=reference_price,
+                )
+
+                if reference_price is None:
+                    status = _update_status(config_path, status, state="awaiting_price")
+                    time.sleep(poll_seconds)
+                    consecutive_errors = 0
+                    continue
+
+                skip_tolerance = bool(status.get("force_immediate"))
+                if not skip_tolerance and not _within_tolerance(reference_price, limit_price, tolerance_pct):
+                    status = _update_status(config_path, status, state="waiting_for_trigger")
+                    time.sleep(poll_seconds)
+                    consecutive_errors = 0
+                    continue
+                if skip_tolerance and status.get("state") != "trigger_override":
+                    status = _update_status(config_path, status, state="trigger_override")
+
+                has_cash = _entry_requires_cash(side, limit_price, target_qty)
+
+                if not has_cash:
+                    try:
+                        coordinator = get_coordinator()
+                        forecast_data = load_latest_forecast_snapshot()
+                        forecast = forecast_data.get(symbol, {})
+                        forecasted_pnl = extract_forecasted_pnl(forecast, default=0.0)
+
+                        stolen_symbol = coordinator.attempt_steal(
+                            symbol=symbol,
+                            side=side,
+                            limit_price=limit_price,
+                            qty=target_qty,
+                            current_price=reference_price,
+                            forecasted_pnl=forecasted_pnl,
+                            mode=status.get("mode", "normal"),
+                            entry_strategy=status.get("entry_strategy"),
+                        )
+
+                        if stolen_symbol:
+                            watcher_logger.info(f"{symbol}: Successfully stole capacity from {stolen_symbol}")
+                            status = _update_status(
+                                config_path, status, state="work_steal_success", stolen_from=stolen_symbol
+                            )
+                        else:
+                            watcher_logger.debug(f"{symbol}: Work steal failed, still blocked by capacity")
+                            status = _update_status(config_path, status, state="blocked_no_cash")
+                            time.sleep(poll_seconds)
+                            consecutive_errors = 0
+                            continue
+                    except Exception as exc:
+                        watcher_logger.warning(f"Failed work stealing for {symbol}: {exc}")
+                        status = _update_status(config_path, status, state="blocked_no_cash")
+                        time.sleep(poll_seconds)
+                        consecutive_errors = 0
+                        continue
+
+                status = _update_status(config_path, status, state="submitting_order")
+                try:
+                    order_qty = remaining_qty if remaining_qty > 0 else target_qty
+                    result = alpaca_wrapper.open_order_at_price_or_all(symbol, order_qty, side, limit_price)
+                except Exception as exc:
+                    watcher_logger.error("Failed to submit staged entry order for %s: %s", symbol, exc)
+                    status = _update_status(
+                        config_path,
+                        status,
+                        state="order_error",
+                        error=str(exc),
+                    )
+                else:
+                    outcome = "accepted" if result is not None else "queued"
+                    # Reserve the submitted quantity to prevent immediate re-ordering if fills aren't reflected yet
+                    pending_qty += order_qty
+                    pending_expiry = now + timedelta(seconds=pending_ttl_seconds)
+                    status = _update_status(
+                        config_path,
+                        status,
+                        state="order_submitted",
+                        order_submission=outcome,
+                        pending_qty=pending_qty,
+                        pending_expires_at=pending_expiry.isoformat(),
+                    )
+                    consecutive_errors = 0  # Reset error counter on success
+                time.sleep(poll_seconds)
+            except KeyboardInterrupt:
+                # Always propagate keyboard interrupts
+                raise
+            except Exception as poll_exc:
+                consecutive_errors += 1
+                error_limit_str = "unlimited" if max_consecutive_errors is None else str(max_consecutive_errors)
+                watcher_logger.error(
+                    "Error in entry watcher polling loop for %s (attempt %d/%s): %s",
+                    symbol,
+                    consecutive_errors,
+                    error_limit_str,
+                    poll_exc,
+                    exc_info=True,
+                )
+                status = _update_status(
+                    config_path,
+                    status,
+                    state="polling_error",
+                    last_poll_error=str(poll_exc),
+                    consecutive_errors=consecutive_errors,
+                )
+                # Only check error limit for non-crypto (crypto retries indefinitely)
+                if max_consecutive_errors is not None and consecutive_errors >= max_consecutive_errors:
+                    watcher_logger.error(
+                        "Entry watcher for %s exceeded max consecutive errors (%d), terminating.",
+                        symbol,
+                        max_consecutive_errors,
+                    )
+                    status = _update_status(
+                        config_path,
+                        status,
+                        state="error_limit_exceeded",
+                        active=False,
+                    )
+                    raise
+                # Sleep before retrying
+                watcher_logger.info(
+                    "Entry watcher for %s sleeping %ds before retry (error %d/%s)",
+                    symbol,
+                    error_sleep_seconds,
+                    consecutive_errors,
+                    error_limit_str,
+                )
+                time.sleep(error_sleep_seconds)
+    except KeyboardInterrupt:
+        logger.info("Entry watcher interrupted for %s; marking as cancelled.", symbol)
+        status = _update_status(
+            config_path,
+            status,
+            state="cancelled",
+            active=False,
+            cancelled_at=_now().isoformat(),
+        )
+        raise
+    except Exception as exc:
+        status = _update_status(
+            config_path,
+            status,
+            state="error",
+            active=False,
+            error=str(exc),
+        )
+        raise
+    finally:
+        if status.get("active", False):
+            _update_status(config_path, status, active=False)
+
+
+@app.command("close-position")
+def close_position_at_maxdiff_takeprofit(
+    symbol: str,
+    side: str = typer.Option(..., "--side", help="Entry side originally used (buy/sell)."),
+    takeprofit_price: float = typer.Option(..., "--takeprofit-price", help="Target price to unwind the position."),
+    expiry_minutes: int = typer.Option(
+        24 * 60,
+        "--expiry-minutes",
+        help="Maximum monitoring window to re-arm take-profit orders.",
+    ),
+    asset_class: str = typer.Option(
+        "equity",
+        "--asset-class",
+        help="Asset class hint (affects clean-up semantics).",
+    ),
+    poll_seconds: int = typer.Option(
+        45,
+        "--poll-seconds",
+        help="Polling cadence while monitoring take-profit placement.",
+    ),
+    price_tolerance: float = typer.Option(
+        0.001,
+        "--price-tolerance",
+        help="Relative tolerance when checking for existing take-profit orders.",
+    ),
+    config_path: Optional[Path] = typer.Option(
+        None,
+        "--config-path",
+        help="Path to persist watcher status updates.",
+    ),
+    target_qty: Optional[float] = typer.Option(
+        None,
+        "--target-qty",
+        help="Optional maximum quantity to close; defaults to unwinding the entire position.",
+    ),
+) -> None:
+    side = _normalize_side(side)
+    exit_side = "sell" if side == "buy" else "buy"
+
+    # Use symbol-specific logger for this watcher
+    watcher_logger = _get_watcher_logger(symbol, exit_side, "exit")
+
+    if takeprofit_price <= 0:
+        watcher_logger.error("Invalid takeprofit price %.4f for %s", takeprofit_price, symbol)
+        return
+
+    _ensure_strategy_tag(symbol)
+    config_path = _normalize_config_path(config_path)
+    expiry_minutes = max(int(expiry_minutes), 1)
+    now = _now()
+    expiry = now + timedelta(minutes=expiry_minutes)
+
+    watcher_logger.info(
+        "Starting maxdiff takeprofit watcher for %s entry_side=%s takeprofit=%.4f expiry=%s",
+        symbol,
+        side,
+        takeprofit_price,
+        expiry.isoformat(),
+    )
+
+    status = _prepare_status(
+        config_path,
+        {
+            "mode": "exit",
+            "symbol": symbol,
+            "side": side,
+            "exit_side": exit_side,
+            "takeprofit_price": float(takeprofit_price),
+            "price_tolerance": float(price_tolerance),
+            "expiry_minutes": expiry_minutes,
+            "expiry_at": expiry.isoformat(),
+            "started_at": now.isoformat(),
+            "asset_class": asset_class,
+            "active": True,
+        },
+    )
+    status = _update_status(config_path, status, state="initializing")
+    tracker = ExitTargetTracker(target_qty)
+    if tracker.is_partial():
+        status = _update_status(
+            config_path,
+            status,
+            target_qty=tracker.target_qty,
+            target_remaining=tracker.remaining(),
+            target_filled=tracker.filled_qty,
+        )
+
+    consecutive_errors = 0
+    # Track last successful order submission to prevent rapid cancel/reopen cycles
+    # when API returns empty lists due to rate limiting
+    last_order_submitted_at: Optional[datetime] = None
+    # Cooldown period: don't cancel/replace within this window after placing an order
+    order_cooldown_seconds = max(poll_seconds * 3, 60)  # At least 3 poll cycles or 60s
+    # Crypto watchers run 24/7 - retry indefinitely
+    # Stock watchers have a limit to avoid wasting resources when market is closed
+    is_crypto = asset_class.lower() == "crypto"
+    max_consecutive_errors = None if is_crypto else 10  # None = unlimited retries for crypto
+    error_sleep_seconds = 60  # Sleep 1 minute on errors before retrying
+
+    try:
+        while True:
+            try:
+                now = _now()
+                if now >= expiry:
+                    watcher_logger.info("Takeprofit watcher expired for %s; cancelling exit orders.", symbol)
+                    _cancel_orders(symbol, side=exit_side)
+                    if asset_class.lower() == "crypto":
+                        _cancel_orders(symbol)
+                    status = _update_status(
+                        config_path,
+                        status,
+                        state="expired",
+                        active=False,
+                        expired_at=now.isoformat(),
+                    )
+                    break
+
+                position = _position_for_symbol(symbol, side)
+                qty = abs(float(getattr(position, "qty", 0.0) or 0.0)) if position else 0.0
+                base_updates = {
+                    "active": True,
+                    "position_qty": qty,
+                }
+                if tracker.is_partial():
+                    base_updates.update(
+                        target_qty=tracker.target_qty,
+                        target_remaining=tracker.remaining(),
+                        target_filled=tracker.filled_qty,
+                    )
+                status = _update_status(config_path, status, **base_updates)
+
+                if position is None or qty <= 0:
+                    status = _update_status(config_path, status, state="awaiting_position")
+                    _cancel_orders(symbol, side=exit_side)
+                    # Reset submission tracker since we have no position to exit
+                    last_order_submitted_at = None
+                    time.sleep(poll_seconds)
+                    consecutive_errors = 0  # Reset error counter on success
+                    continue
+
+                order_qty, remaining_target, target_reached = tracker.plan_order(qty)
+                if tracker.is_partial():
+                    status = _update_status(
+                        config_path,
+                        status,
+                        target_qty=tracker.target_qty,
+                        target_remaining=remaining_target,
+                        target_filled=tracker.filled_qty,
+                    )
+
+                if target_reached:
+                    watcher_logger.info(
+                        "Target exit quantity filled for %s; shutting down watcher.",
+                        symbol,
+                    )
+                    _cancel_orders(symbol, side=exit_side)
+                    if asset_class.lower() == "crypto":
+                        _cancel_orders(symbol)
+                    status = _update_status(
+                        config_path,
+                        status,
+                        state="target_filled",
+                        active=False,
+                        target_remaining=0.0,
+                        target_filled=tracker.filled_qty,
+                    )
+                    break
+
+                if order_qty <= 0:
+                    status = _update_status(config_path, status, state="awaiting_target_qty")
+                    time.sleep(poll_seconds)
+                    consecutive_errors = 0
+                    continue
+
+                if _has_takeprofit_order(symbol, exit_side, takeprofit_price, tolerance=price_tolerance):
+                    # Even if we have a takeprofit order, cancel it if it's >1 day old
+                    canceled_count = _cancel_old_orders(symbol, side=exit_side, max_age_hours=24)
+                    if canceled_count > 0:
+                        watcher_logger.info(
+                            "Canceled %d old exit order(s) for %s %s - will place fresh order on next iteration",
+                            canceled_count,
+                            symbol,
+                            exit_side,
+                        )
+                        status = _update_status(config_path, status, state="old_exit_orders_canceled")
+                        # Reset submission tracker since we canceled
+                        last_order_submitted_at = None
+                        time.sleep(poll_seconds)
+                        consecutive_errors = 0
+                        continue
+
+                    status = _update_status(config_path, status, state="watching_orders")
+                    time.sleep(poll_seconds)
+                    consecutive_errors = 0  # Reset error counter on success
+                    continue
+
+                # Guard against rapid cancel/reopen when API returns empty due to rate limits
+                # If we recently submitted an order, don't cancel and re-submit
+                if last_order_submitted_at is not None:
+                    time_since_submit = (now - last_order_submitted_at).total_seconds()
+                    if time_since_submit < order_cooldown_seconds:
+                        watcher_logger.debug(
+                            "Skipping order replacement for %s - within cooldown period "
+                            "(%.1fs since last submit, cooldown=%ds). "
+                            "Order may exist but API returned empty list (rate limit?).",
+                            symbol,
+                            time_since_submit,
+                            order_cooldown_seconds,
+                        )
+                        status = _update_status(
+                            config_path,
+                            status,
+                            state="cooldown_wait",
+                            time_since_submit=time_since_submit,
+                            cooldown_seconds=order_cooldown_seconds,
+                        )
+                        time.sleep(poll_seconds)
+                        consecutive_errors = 0
+                        continue
+
+                _cancel_orders(symbol, side=exit_side)
+                status = _update_status(config_path, status, state="submitting_exit")
+                try:
+                    result = alpaca_wrapper.open_order_at_price(symbol, order_qty, exit_side, takeprofit_price)
+                except Exception as exc:
+                    watcher_logger.error("Failed to submit takeprofit order for %s: %s", symbol, exc)
+                    status = _update_status(
+                        config_path,
+                        status,
+                        state="exit_error",
+                        error=str(exc),
+                    )
+                else:
+                    # Track successful submission (result is None if anti-flap skipped, still counts)
+                    last_order_submitted_at = now
+                    open_orders = list(_orders_for_symbol(symbol, side=exit_side))
+                    status = _update_status(
+                        config_path,
+                        status,
+                        state="exit_submitted",
+                        open_order_count=len(open_orders),
+                        last_order_submitted_at=now.isoformat(),
+                    )
+                    consecutive_errors = 0  # Reset error counter on success
+                time.sleep(poll_seconds)
+            except KeyboardInterrupt:
+                # Always propagate keyboard interrupts
+                raise
+            except Exception as poll_exc:
+                consecutive_errors += 1
+                watcher_logger.error(
+                    "Error in exit watcher polling loop for %s (consecutive errors: %d): %s",
+                    symbol,
+                    consecutive_errors,
+                    poll_exc,
+                    exc_info=True,
+                )
+                status = _update_status(
+                    config_path,
+                    status,
+                    state="polling_error",
+                    last_poll_error=str(poll_exc),
+                    consecutive_errors=consecutive_errors,
+                )
+                # Sleep before retrying - unlimited retries to handle temporary API outages
+                watcher_logger.info(
+                    "Exit watcher for %s sleeping %ds before retry (consecutive errors: %d)",
+                    symbol,
+                    error_sleep_seconds,
+                    consecutive_errors,
+                )
+                time.sleep(error_sleep_seconds)
+    except KeyboardInterrupt:
+        watcher_logger.info("Takeprofit watcher interrupted for %s; marking as cancelled.", symbol)
+        status = _update_status(
+            config_path,
+            status,
+            state="cancelled",
+            active=False,
+            cancelled_at=_now().isoformat(),
+        )
+        raise
+    except Exception as exc:
+        status = _update_status(
+            config_path,
+            status,
+            state="error",
+            active=False,
+            error=str(exc),
+        )
+        raise
+    finally:
+        if status.get("active", False):
+            _update_status(config_path, status, active=False)
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised via CLI
+    app()

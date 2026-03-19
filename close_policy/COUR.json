@@ -1,0 +1,21 @@
+{
+  "symbol": "COUR",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "COUR",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": -10.809350648429245,
+    "keep_open_net_return": -10.295205009286292,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 0.5141456391429529,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 0.3302992699900642,
+    "sell_advantage": 1.3835195545107126,
+    "instant_close_buy_return": -4.363458058796823,
+    "instant_close_sell_return": 1.0848251456627622,
+    "keep_open_buy_return": -4.033158788806759,
+    "keep_open_sell_return": 2.468344700173475
+  }
+}

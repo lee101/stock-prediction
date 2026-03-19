@@ -1,0 +1,19 @@
+{
+  "run_name": "DBX_lora_differencing_ctx128_lr5e-5_r16_20260221_081332",
+  "config": {
+    "symbol": "DBX",
+    "preaug": "differencing",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 241.9521026611328,
+    "mae_percent_std": 31.246946334838867
+  },
+  "test": {
+    "mae_percent_mean": 136.91908264160156,
+    "mae_percent_std": 13.0067720413208
+  }
+}

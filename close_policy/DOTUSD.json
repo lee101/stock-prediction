@@ -1,0 +1,21 @@
+{
+  "symbol": "DOTUSD",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "DOTUSD",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": 7.525979779660702,
+    "keep_open_net_return": 12.288432506844401,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 4.7624527271837,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 12.191493241116405,
+    "sell_advantage": 3.6833494942402467,
+    "instant_close_buy_return": 6.979838600382209,
+    "instant_close_sell_return": 13.062614347436465,
+    "keep_open_buy_return": 19.171331841498613,
+    "keep_open_sell_return": 16.745963841676712
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "run_name": "DBX_lora_log_returns_ctx128_lr5e-5_r16_20260221_081651",
+  "config": {
+    "symbol": "DBX",
+    "preaug": "log_returns",
+    "context_length": 128,
+    "learning_rate": 5e-05,
+    "num_steps": 1000,
+    "lora_r": 16
+  },
+  "val": {
+    "mae_percent_mean": 28.16535186767578,
+    "mae_percent_std": 8.854949951171875
+  },
+  "test": {
+    "mae_percent_mean": 11.128262519836426,
+    "mae_percent_std": 1.3513834476470947
+  }
+}

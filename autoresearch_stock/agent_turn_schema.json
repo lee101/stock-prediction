@@ -1,0 +1,79 @@
+{
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "touched_files": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "train_log": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "robust_score": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "val_loss": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "training_seconds": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "total_seconds": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "peak_vram_mb": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "num_steps": {
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "status",
+    "summary",
+    "touched_files",
+    "train_log",
+    "robust_score",
+    "val_loss",
+    "training_seconds",
+    "total_seconds",
+    "peak_vram_mb",
+    "num_steps",
+    "notes"
+  ],
+  "additionalProperties": false
+}

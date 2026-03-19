@@ -1,0 +1,21 @@
+{
+  "symbol": "CL",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "CL",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": -2.5445975488983095,
+    "keep_open_net_return": -1.957079283427447,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 0.5875182654708624,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 0.07240219507366419,
+    "sell_advantage": 1.8859920755494386,
+    "instant_close_buy_return": 1.8510297080501914,
+    "instant_close_sell_return": -0.5661503796000034,
+    "keep_open_buy_return": 1.9234319031238556,
+    "keep_open_sell_return": 1.3198416959494352
+  }
+}

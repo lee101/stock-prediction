@@ -1,0 +1,21 @@
+{
+  "symbol": "CAT",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "CAT",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": -10.02505042636767,
+    "keep_open_net_return": -9.648092447139788,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 0.3769579792278819,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 0.7796964276349172,
+    "sell_advantage": 0.47683016455266625,
+    "instant_close_buy_return": 0.7639817387098446,
+    "instant_close_sell_return": -5.260747153079137,
+    "keep_open_buy_return": 1.5436781663447618,
+    "keep_open_sell_return": -4.783916988526471
+  }
+}

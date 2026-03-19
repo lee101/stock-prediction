@@ -1,0 +1,111 @@
+{
+  "checkpoint": "pufferlib_market/checkpoints/mixed23_fresh_ent_anneal/best.pt",
+  "daily": {
+    "annualized_return": -0.5698835514463131,
+    "avg_hold_steps": 1.2,
+    "max_drawdown": 0.3486155529833231,
+    "num_trades": 75,
+    "sortino": -0.883601562937963,
+    "total_return": -0.18782174978305866,
+    "win_rate": 0.4533333333333333
+  },
+  "daily_data_path": "pufferlib_market/data/mixed23_fresh_val.bin",
+  "date_range": {
+    "end": "2026-02-05",
+    "start": "2025-06-01"
+  },
+  "hourly_data_root": "trainingdatahourly",
+  "hourly_policy": {
+    "annualized_return": -0.9633478300033965,
+    "max_drawdown": 0.8290120517946681,
+    "max_orders_in_day": 48,
+    "mean_orders_per_day": 4.9010989010989015,
+    "nonzero_order_days": 73,
+    "num_orders": 446,
+    "num_trades": 223,
+    "sortino": -2.47894403953765,
+    "top_order_days": [
+      {
+        "date": "2025-06-03",
+        "orders": 48
+      },
+      {
+        "date": "2025-06-15",
+        "orders": 48
+      },
+      {
+        "date": "2025-06-25",
+        "orders": 48
+      },
+      {
+        "date": "2025-06-26",
+        "orders": 48
+      },
+      {
+        "date": "2025-08-03",
+        "orders": 48
+      }
+    ],
+    "total_return": -0.5574703340890189,
+    "win_rate": 0.47085201793721976
+  },
+  "hourly_replay": {
+    "annualized_return": -0.717189429834292,
+    "max_drawdown": 0.43986120336714324,
+    "max_orders_in_day": 2,
+    "mean_orders_per_day": 1.6483516483516483,
+    "nonzero_order_days": 76,
+    "num_orders": 150,
+    "num_trades": 75,
+    "sortino": 0.7974297044101117,
+    "top_order_days": [
+      {
+        "date": "2025-06-02",
+        "orders": 2
+      },
+      {
+        "date": "2025-06-03",
+        "orders": 2
+      },
+      {
+        "date": "2025-06-04",
+        "orders": 2
+      },
+      {
+        "date": "2025-06-05",
+        "orders": 2
+      },
+      {
+        "date": "2025-06-07",
+        "orders": 2
+      }
+    ],
+    "total_return": -0.26759323186788697,
+    "win_rate": 0.44
+  },
+  "symbols": [
+    "AAPL",
+    "NFLX",
+    "NVDA",
+    "ADBE",
+    "ADSK",
+    "COIN",
+    "GOOG",
+    "MSFT",
+    "PYPL",
+    "SAP",
+    "TSLA",
+    "BTCUSD",
+    "ETHUSD",
+    "SOLUSD",
+    "LTCUSD",
+    "AVAXUSD",
+    "DOGEUSD",
+    "LINKUSD",
+    "AAVEUSD",
+    "UNIUSD",
+    "DOTUSD",
+    "SHIBUSD",
+    "XRPUSD"
+  ]
+}

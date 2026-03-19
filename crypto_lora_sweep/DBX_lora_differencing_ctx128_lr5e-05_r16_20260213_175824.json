@@ -1,0 +1,40 @@
+{
+  "config": {
+    "symbol": "DBX",
+    "context_length": 128,
+    "prediction_length": 24,
+    "batch_size": 32,
+    "learning_rate": 5e-05,
+    "num_steps": 500,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "preaug": "differencing",
+    "val_hours": 168,
+    "test_hours": 168
+  },
+  "run_name": "DBX_lora_differencing_ctx128_lr5e-05_r16_20260213_175824",
+  "output_dir": "chronos2_finetuned/DBX_lora_differencing_ctx128_lr5e-05_r16_20260213_175824",
+  "val": {
+    "mae_mean": 0.47140537401057375,
+    "mae_std": 0.22735846610288526,
+    "mae_max": 0.754955902819832,
+    "mae_p90": 0.7172589818936147,
+    "mae_percent_mean": 1.6776042767524924,
+    "mae_percent_std": 0.8146736986011033,
+    "mae_percent_max": 2.7037593542380725,
+    "count": 12
+  },
+  "test": {
+    "mae_mean": 0.44081848189483736,
+    "mae_std": 0.17915397035645544,
+    "mae_max": 0.9172945440917584,
+    "mae_p90": 0.6002106201256004,
+    "mae_percent_mean": 1.7085207693248448,
+    "mae_percent_std": 0.6888101961048771,
+    "mae_percent_max": 3.4920049664122454,
+    "count": 12
+  },
+  "val_consistency_score": 2.392787649298718,
+  "test_consistency_score": 2.5879711265035037
+}

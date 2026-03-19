@@ -1,0 +1,21 @@
+{
+  "symbol": "CRM",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "CRM",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": -4.167584234150127,
+    "keep_open_net_return": -2.692311926977709,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 1.4752723071724176,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 0.7358806906268001,
+    "sell_advantage": 4.181693708524108,
+    "instant_close_buy_return": 1.0627171373926103,
+    "instant_close_sell_return": 1.1884272191673517,
+    "keep_open_buy_return": 1.7985978280194104,
+    "keep_open_sell_return": 5.37012092769146
+  }
+}

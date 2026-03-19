@@ -1,0 +1,21 @@
+{
+  "symbol": "COF",
+  "close_policy": "KEEP_OPEN",
+  "comparison": {
+    "symbol": "COF",
+    "is_crypto": false,
+    "num_simulations": 10,
+    "instant_close_net_return": 0.7976829728577285,
+    "keep_open_net_return": 1.8429470492410474,
+    "best_policy": "KEEP_OPEN",
+    "advantage": 1.0452640763833188,
+    "instant_close_fees": 0.0,
+    "keep_open_opportunity_cost": 0.0,
+    "buy_advantage": 3.1186520552728325,
+    "sell_advantage": 0.36556151404511184,
+    "instant_close_buy_return": 0.7589789608027786,
+    "instant_close_sell_return": 1.234625835204497,
+    "keep_open_buy_return": 3.877631016075611,
+    "keep_open_sell_return": 1.6001873492496088
+  }
+}
