@@ -16,6 +16,7 @@
   - `PLUG`: failed forecast cache gate.
   - `NOK`: failed forecast cache gate.
   - `RIG`: failed forecast cache gate.
+  - `MARA`: failed forecast cache gate.
 
 ## Completed History Ingest Batch
 
@@ -307,6 +308,32 @@ python -m alpacaconstrainedexp.refresh_hourly_data \
   - `RKLB` (`1012` rows)
 - note:
   - the refresher summary line was misleading and ended with `no hourly data available`, but the per-symbol CSVs were written correctly and are usable for one-by-one expansion trials.
+
+## Completed First-Pass Evaluation
+
+- symbol: `MARA`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 04:01 UTC`
+- command:
+
+```bash
+python scripts/run_alpaca_stock_expansion.py \
+  --manifest-path docs/stock_universe_candidates_20260318.json \
+  --candidate-symbols MARA \
+  --baseline-source-dir analysis/alpaca_stock_expansion_abev_20260319/ABEV \
+  --candidate-only-cache-build \
+  --candidate-max-h1-mae-percent 10 \
+  --candidate-max-h24-mae-percent 10 \
+  --output-dir analysis/alpaca_stock_expansion_mara_20260319
+```
+
+- current status:
+  - `MARA` failed the forecast cache gate on the base Chronos2 checkpoint.
+  - cache MAE from `analysis/alpaca_stock_expansion_mara_20260319/forecast_cache_mae.json`:
+    - `h1 MAE%=19.1680`
+    - `h24 MAE%=21.6344`
+  - decision: rejected
+    - reason: `MARA` missed both cache gates badly on the base checkpoint, so it stays in the tune-or-retrain bucket and does not earn a simulator run against the live `ABEV` baseline.
 
 ## Fixes Applied In This Iteration
 
