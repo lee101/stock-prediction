@@ -59,9 +59,7 @@
     "BTG",
     "ABEV"
   ],
-  "next_trial_order": [
-    "RCAT"
-  ],
+  "next_trial_order": [],
   "covariate_seed_groups": {
     "semis_and_ai": [
       "NVDA",
@@ -377,7 +375,7 @@
       "currently_live": false,
       "history_rows": 1012,
       "forecast_cache_horizons": [],
-      "status": "history_ready_needs_cache_and_retrain",
+      "status": "rejected_first_pass_cache_gate",
       "thesis": "Micro-cap drone and defense-adjacent candidate, high-risk and data-sensitive."
     },
     {
