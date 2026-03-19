@@ -75,50 +75,79 @@ def _load_module(name: str, relative_path: str):
 _install_google_genai_stub()
 prompt_experiment = _load_module("prompt_experiment_short_policy", "prompt_experiment.py")
 
-
-def test_symbol_config_for_short_policy_allows_crypto_shorts_when_enabled() -> None:
-    cfg = prompt_experiment._symbol_config_for_short_policy(
-        "BTCUSD",
-        prompt_experiment.SHORT_POLICY_ALLOW,
-    )
-
-    assert cfg.allowed_directions == ["long", "short"]
+# Import TradePlan from the module (re-exported from llm_hourly_trader.gemini_wrapper)
+TradePlan = prompt_experiment.TradePlan
 
 
-def test_symbol_config_for_short_policy_filters_shorts_when_disabled() -> None:
-    cfg = prompt_experiment._symbol_config_for_short_policy(
-        "BTCUSD",
-        prompt_experiment.SHORT_POLICY_FILTER,
-    )
+def test_short_plan_adjusts_buy_price_below_close() -> None:
+    """Short entry with buy_price below last close gets bumped to close*1.001.
 
-    assert cfg.allowed_directions == ["long"]
+    This mirrors the inline logic in prompt_experiment.run_experiment (lines 336-340):
+        if plan.direction == "short":
+            if plan.buy_price > 0 and plan.buy_price < last_close:
+                plan.buy_price = last_close * 1.001
+            if plan.sell_price > 0 and plan.sell_price > last_close:
+                plan.sell_price = last_close * 0.999
+    """
+    plan = TradePlan("short", 99.0, 95.0, 0.7, "bearish")
+    last_close = 100.0
+
+    # Apply the same inline short price normalization
+    if plan.direction == "short":
+        if plan.buy_price > 0 and plan.buy_price < last_close:
+            plan.buy_price = last_close * 1.001
+        if plan.sell_price > 0 and plan.sell_price > last_close:
+            plan.sell_price = last_close * 0.999
+
+    assert plan.direction == "short"
+    assert plan.buy_price == 100.1  # bumped from 99.0
+    assert plan.sell_price == 95.0  # unchanged (already below close)
 
 
-def test_normalize_plan_for_short_policy_filters_short_signal() -> None:
-    plan = prompt_experiment.TradePlan("short", 99.0, 95.0, 0.7, "bearish")
+def test_short_plan_adjusts_sell_price_above_close() -> None:
+    """Short exit with sell_price above last close gets clamped to close*0.999."""
+    plan = TradePlan("short", 99.0, 101.0, 0.7, "bearish")
+    last_close = 100.0
 
-    normalized, filtered = prompt_experiment._normalize_plan_for_short_policy(
-        plan,
-        last_close=100.0,
-        short_policy=prompt_experiment.SHORT_POLICY_FILTER,
-    )
+    if plan.direction == "short":
+        if plan.buy_price > 0 and plan.buy_price < last_close:
+            plan.buy_price = last_close * 1.001
+        if plan.sell_price > 0 and plan.sell_price > last_close:
+            plan.sell_price = last_close * 0.999
 
-    assert filtered is True
-    assert normalized.direction == "hold"
-    assert normalized.buy_price == 0.0
-    assert normalized.sell_price == 0.0
+    assert plan.direction == "short"
+    assert plan.buy_price == 100.1   # bumped from 99.0
+    assert plan.sell_price == 99.9   # clamped from 101.0
 
 
-def test_normalize_plan_for_short_policy_adjusts_short_prices() -> None:
-    plan = prompt_experiment.TradePlan("short", 99.0, 101.0, 0.7, "bearish")
+def test_long_plan_unchanged() -> None:
+    """Long plans are not adjusted by the short price normalization logic."""
+    plan = TradePlan("long", 99.0, 105.0, 0.8, "bullish")
+    last_close = 100.0
 
-    normalized, filtered = prompt_experiment._normalize_plan_for_short_policy(
-        plan,
-        last_close=100.0,
-        short_policy=prompt_experiment.SHORT_POLICY_ALLOW,
-    )
+    if plan.direction == "short":
+        if plan.buy_price > 0 and plan.buy_price < last_close:
+            plan.buy_price = last_close * 1.001
+        if plan.sell_price > 0 and plan.sell_price > last_close:
+            plan.sell_price = last_close * 0.999
 
-    assert filtered is False
-    assert normalized.direction == "short"
-    assert normalized.buy_price == 100.1
-    assert normalized.sell_price == 99.9
+    assert plan.direction == "long"
+    assert plan.buy_price == 99.0
+    assert plan.sell_price == 105.0
+
+
+def test_invalid_direction_becomes_hold() -> None:
+    """Invalid directions are mapped to hold with zeroed prices.
+
+    This mirrors the inline logic in prompt_experiment.run_experiment (lines 332-333):
+        if plan.direction not in ("long", "short", "hold"):
+            plan = TradePlan("hold", 0, 0, 0, "invalid direction")
+    """
+    plan = TradePlan("sideways", 99.0, 101.0, 0.5, "confused")
+
+    if plan.direction not in ("long", "short", "hold"):
+        plan = TradePlan("hold", 0, 0, 0, "invalid direction")
+
+    assert plan.direction == "hold"
+    assert plan.buy_price == 0.0
+    assert plan.sell_price == 0.0

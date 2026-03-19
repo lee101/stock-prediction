@@ -34,6 +34,11 @@ from .model import BinancePolicyBase, PolicyConfig, build_policy
 
 
 try:
+    import wandb as _wandb
+except ImportError:
+    _wandb = None  # type: ignore[assignment]
+
+try:
     from torch.optim._muon import Muon
     MUON_AVAILABLE = True
 except Exception:
@@ -113,6 +118,8 @@ class BinanceHourlyTrainer:
                 torch.backends.cuda.enable_flash_sdp(True)
             if hasattr(torch.backends.cuda, "enable_mem_efficient_sdp"):
                 torch.backends.cuda.enable_mem_efficient_sdp(True)
+
+        wandb_run = self._init_wandb()
 
         policy_cfg = PolicyConfig(
             input_dim=len(self.data.feature_columns),
@@ -244,6 +251,24 @@ class BinanceHourlyTrainer:
                 f"Sortino: {val_metrics['sortino']:.4f} Return: {val_metrics['return']:.4f}"
             )
 
+            if wandb_run is not None:
+                lr_now = optimizer.param_groups[0]["lr"] if hasattr(optimizer, "param_groups") else self.config.learning_rate
+                wandb_run.log({
+                    "epoch": epoch,
+                    "train/loss": train_metrics["loss"],
+                    "train/sortino": train_metrics["sortino"],
+                    "train/return": train_metrics["return"],
+                    "train/score": train_metrics["score"],
+                    "val/loss": val_metrics["loss"],
+                    "val/sortino": val_metrics["sortino"],
+                    "val/return": val_metrics["return"],
+                    "val/score": val_metrics["score"],
+                    "learning_rate": lr_now,
+                }, step=epoch)
+
+        if wandb_run is not None:
+            wandb_run.finish()
+
         return TrainingArtifacts(
             state_dict=model.state_dict(),
             normalizer=self.data.normalizer,
@@ -253,6 +278,23 @@ class BinanceHourlyTrainer:
             checkpoint_paths=list(self.checkpoint_dir.glob("*.pt")),
             best_checkpoint=best_checkpoint,
         )
+
+    def _init_wandb(self):
+        if _wandb is None or not self.config.wandb_project:
+            return None
+        try:
+            cfg_dict = serialize_for_checkpoint(self.config)
+            run = _wandb.init(
+                project=self.config.wandb_project,
+                entity=self.config.wandb_entity,
+                name=self.config.run_name,
+                config=cfg_dict,
+                reinit=True,
+            )
+            return run
+        except Exception as e:
+            logger.warning("wandb init failed: %s", e)
+            return None
 
     def _run_epoch(
         self,

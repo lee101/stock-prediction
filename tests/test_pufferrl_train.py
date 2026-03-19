@@ -2,8 +2,12 @@ import pathlib
 
 import numpy as np
 import pandas as pd
+import pytest
 
-from pufferlibtraining import pufferrl
+try:
+    from pufferlibtraining import pufferrl
+except (ImportError, ModuleNotFoundError):
+    pytest.skip("Required module pufferlibtraining.pufferrl not available", allow_module_level=True)
 
 
 def _write_dummy_data(tmp_path, symbol="AAA", rows=128):

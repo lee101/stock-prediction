@@ -269,8 +269,8 @@ def export_binary(
     root = Path(data_root)
     cache_root = Path(forecast_cache_root)
     symbol_list = _resolve_symbols(symbols, root)
-    if len(symbol_list) > 32:
-        raise ValueError(f"MKTD format supports max 32 symbols, got {len(symbol_list)}")
+    if len(symbol_list) > 64:
+        raise ValueError(f"MKTD format supports max 64 symbols, got {len(symbol_list)}")
 
     raw_prices: dict[str, pd.DataFrame] = {}
     for sym in symbol_list:

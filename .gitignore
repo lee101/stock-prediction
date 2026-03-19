@@ -1,4 +1,10 @@
 # =============================================================================
+# Claude Code worktrees and supervisor
+# =============================================================================
+.claude/worktrees/
+supervisor/
+
+# =============================================================================
 # Virtual environments and caches
 # =============================================================================
 .venv
@@ -87,7 +93,10 @@ hyperparams_optimized_all/
 # =============================================================================
 # Hyperparams and strategy configs (generated, not source)
 # =============================================================================
+best/
+hyperparams/best/
 hyperparams/chronos2/
+hyperparams/chronos2_long/
 hyperparams/close_policy
 preaugstrategies/chronos2/
 preaugstrategies/best/
@@ -277,6 +286,7 @@ binanceleveragesui/checkpoints
 binanceleveragesui_rlcuda/artifacts*
 binanceneural/forecast_cache_backup/
 binanceneural/binanceneural/forecast_cache/
+binanceneural/deep_sweep_results/
 
 # =============================================================================
 # Alpaca experiment artifacts
@@ -407,6 +417,7 @@ TimingBot/
 # Deploy and infra
 # =============================================================================
 deployments/
+supervisor/
 githubagent/actions-runner/externals/
 githubagent/actions-runner/externals/bin
 githubagent/actions-runner/bin
@@ -475,6 +486,7 @@ tests/test_binance*.py
 !tests/test_binance_symbol_utils.py
 !tests/test_binancechronossolexperiment_forecast_windowing.py
 !tests/test_binance_watcher_cli_fill_details.py
+!tests/test_binanceneural_wandb.py
 tests/test_default_strategy_checkpoint.py
 tests/test_download_hourly_update.py
 tests/test_marketsimlong*.py
@@ -494,7 +506,6 @@ tests/prod/brokers/test_binance*.py
 tests/prod/cli/test_binance*.py
 
 # Experimental data utilities
-src/data_loading_utils.py
 src/metrics_utils.py
 
 # =============================================================================
@@ -674,3 +685,10 @@ binanceleveragesui/train_with_buffer.py
 
 # Live trading
 bagsfm_state.json
+
+# =============================================================================
+# Runtime caches and state (sensitive/ephemeral)
+# =============================================================================
+**/signal_cache/
+**/gemini_cache_eval/
+**/live_state.json

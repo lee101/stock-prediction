@@ -559,7 +559,7 @@ def run_hybrid_backtest(
 
 def main():
     parser = argparse.ArgumentParser(description="Hybrid RL+Gemini daily backtest")
-    parser.add_argument("--checkpoint", default="pufferlib_market/checkpoints/autoresearch_mixed23_daily/ent_anneal/best.pt")
+    parser.add_argument("--checkpoint", default="pufferlib_market/checkpoints/mixed23_fresh_targeted/reg_combo_2/best.pt")
     parser.add_argument("--symbols", default="BTCUSD,ETHUSD,SOLUSD,AAPL,MSFT,NVDA,GOOG,AMZN,META,TSLA,PLTR,NET,JPM,V")
     parser.add_argument("--start-date", default="2025-06-01")
     parser.add_argument("--end-date", default="2025-12-01")
