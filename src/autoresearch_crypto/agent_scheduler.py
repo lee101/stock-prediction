@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import json
 import os
 import re
@@ -137,7 +138,6 @@ def _write_text(path: Path, text: str) -> None:
 
 
 def _sha256_text(text: str) -> str:
-    import hashlib
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
