@@ -412,11 +412,13 @@ static void reset_agent_state(TradingEnv* env) {
     AgentState* ag = &env->agent;
     const MarketData* md = env->data;
 
-    /* Random starting offset. Offset 0 is valid because fill_observations clamps
-       the lagged observation bar back to 0 when needed. We only need enough room
-       for max_steps forward transitions to remain in-bounds. */
+    /* Starting offset: use forced_offset if set, otherwise random. */
     int max_offset = md->num_timesteps - env->max_steps - 1;
-    if (max_offset <= 0) {
+    if (env->forced_offset >= 0) {
+        ag->data_offset = env->forced_offset;
+        if (ag->data_offset > max_offset && max_offset >= 0)
+            ag->data_offset = max_offset;
+    } else if (max_offset <= 0) {
         ag->data_offset = 0;
     } else {
         ag->data_offset = rand() % (max_offset + 1);

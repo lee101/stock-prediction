@@ -118,6 +118,9 @@ typedef struct {
     float          fill_slippage_bps; /* adverse fill slippage in basis points (default 0, realistic: 5-12) */
     float          fill_probability;  /* probability an order fills [0,1]; 1.0 = always fills (default 1.0) */
 
+    /* --- deterministic offset for eval (set to -1 for random) --- */
+    int            forced_offset;    /* if >= 0, use this exact data_offset instead of random */
+
     /* --- shared data (NOT owned, do not free) --- */
     MarketData*    data;
 
