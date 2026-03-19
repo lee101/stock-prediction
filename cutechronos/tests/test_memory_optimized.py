@@ -19,6 +19,7 @@ from cutechronos.tests.conftest import build_model_pair, build_cute_only
 # Test: optimized output matches original within tight tolerance
 # -------------------------------------------------------------------
 
+@pytest.mark.model_required
 @pytest.mark.parametrize(
     "batch_size,context_length",
     [(2, 512), (1, 256), (3, 128), (1, 64)],
@@ -50,6 +51,7 @@ def test_optimized_matches_original(batch_size: int, context_length: int):
 # Test: optimized output matches with multiple output patches
 # -------------------------------------------------------------------
 
+@pytest.mark.model_required
 @pytest.mark.parametrize("num_output_patches", [1, 2, 4], ids=["P1", "P2", "P4"])
 def test_optimized_multi_output_patches(num_output_patches: int):
     """Verify matching with multiple output patches after optimization."""
