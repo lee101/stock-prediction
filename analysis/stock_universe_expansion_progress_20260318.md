@@ -1136,3 +1136,86 @@ python -u scripts/retrain_chronos2_hourly_loras.py \
     - artifact: `chronos2_finetuned/TME_lora_stockexp_multivar_smoke_20260319/finetuned-ckpt`
     - smoke outcome: `val_mae%=13.5911`, `test_mae%=11.7607`
   - full 1500-step run is active with peers `ITUB, META, PLTR, NVDA`.
+
+## Completed Multivariate LoRA Trial
+
+- symbol: `TME`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 04:46 UTC`
+- training log path: `analysis/local_training_logs/tme_lora_stockexp_multivar_20260319.log`
+- output artifact path: `chronos2_finetuned/TME_lora_stockexp_multivar_20260319/finetuned-ckpt`
+- training outcome:
+  - `val_mae%=12.3284`
+  - `test_mae%=10.5245`
+- rebuilt forecast cache outcome:
+  - `h1 MAE%=17.3820`
+  - `h24 MAE%=20.7000`
+- promotion summary from `analysis/alpaca_stock_expansion_tme_lora_20260319/promotion_summary.json`:
+  - `promote=false`
+  - reason: `No candidate met promotion thresholds. Rejected candidates: TME`
+- decision: rejected
+  - reason: the multivariate LoRA checkpoint degraded the real cache pipeline badly, with repeated heuristic fallbacks and both horizons landing far above the `10%` gate.
+
+## Completed Hourly Tune
+
+- symbol: `NBIS`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 04:53 UTC`
+- tuned config path: `hyperparams/chronos2/hourly/NBIS.json`
+- tuning command:
+
+```bash
+python hyperparam_chronos_hourly.py \
+  --symbols NBIS \
+  --quick \
+  --holdout-hours 168 \
+  --prediction-length 24 \
+  --objective composite \
+  --cohort-size 4 \
+  --cohort-min-abs-corr 0.25 \
+  --save-hyperparams
+```
+
+- tuning outcome:
+  - saved `hyperparams/chronos2/hourly/NBIS.json`
+  - best objective config: `context_length=2048`, `skip_rates=[1]`, `aggregation=single`, `multivariate=True`
+  - tuner reported `pct_return_mae=15.2276%`
+  - tuner found no usable correlated cohort peers (`cohort_used=0/0`)
+- tuned follow-on cache outcome:
+  - `h1 MAE%=12.0542`
+  - `h24 MAE%=14.2682`
+- promotion summary from `analysis/alpaca_stock_expansion_nbis_tuned_20260319/promotion_summary.json`:
+  - `promote=false`
+  - reason: `No candidate met promotion thresholds. Rejected candidates: NBIS`
+- decision: move to multivariate LoRA
+  - reason: the tuned hourly config loaded correctly but produced exactly the same realized cache gate as first pass, so `NBIS` now moves to the evaluator-recommended multivariate LoRA path with `PLTR, NVDA, NET, GOOG`.
+
+## Started Multivariate LoRA Trial
+
+- symbol: `NBIS`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 04:55 UTC`
+- training log path: `analysis/local_training_logs/nbis_lora_stockexp_multivar_20260319.log`
+- output artifact path: `chronos2_finetuned/NBIS_lora_stockexp_multivar_20260319/finetuned-ckpt`
+- training command:
+
+```bash
+python -u scripts/retrain_chronos2_hourly_loras.py \
+  --symbol NBIS \
+  --data-root trainingdatahourly/stocks \
+  --output-root chronos2_finetuned \
+  --context-length 2048 \
+  --batch-size 32 \
+  --learning-rate 5e-05 \
+  --num-steps 1500 \
+  --save-name NBIS_lora_stockexp_multivar_20260319 \
+  --covariate-symbols PLTR,NVDA,NET,GOOG \
+  --covariate-cols close \
+  --no-update-hparams
+```
+
+- current status:
+  - startup validated cleanly in a 1-step smoke run:
+    - artifact: `chronos2_finetuned/NBIS_lora_stockexp_multivar_smoke_20260319/finetuned-ckpt`
+    - smoke outcome: `val_mae%=4.2773`, `test_mae%=18.4523`
+  - full 1500-step run is active with peers `PLTR, NVDA, NET, GOOG`.

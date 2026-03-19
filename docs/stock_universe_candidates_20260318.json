@@ -59,7 +59,9 @@
     "BTG",
     "ABEV"
   ],
-  "next_trial_order": [],
+  "next_trial_order": [
+    "NBIS"
+  ],
   "covariate_seed_groups": {
     "semis_and_ai": [
       "NVDA",
@@ -255,7 +257,7 @@
       "currently_live": false,
       "history_rows": 1092,
       "forecast_cache_horizons": [],
-      "status": "rejected_first_pass_cache_gate",
+      "status": "active_multivariate_lora",
       "thesis": "Speculative AI infrastructure candidate that may behave differently from US megacap tech."
     },
     {
@@ -265,7 +267,7 @@
       "currently_live": false,
       "history_rows": 989,
       "forecast_cache_horizons": [],
-      "status": "history_ready_needs_cache_and_retrain",
+      "status": "rejected_retrain_cache_gate",
       "thesis": "International internet and ADR exposure for geographic diversification."
     },
     {
