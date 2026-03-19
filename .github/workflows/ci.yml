@@ -71,10 +71,14 @@ jobs:
         run: python -m pyright
 
       - name: Run smart test suite (change-aware, fail-fast)
+        env:
+          PYTHONPATH: "."
         run: |
           python scripts/smart_test_runner.py --verbose
 
       - name: Run integration tests
+        env:
+          PYTHONPATH: "."
         run: |
           python -m pytest tests/prod -m integration
 
