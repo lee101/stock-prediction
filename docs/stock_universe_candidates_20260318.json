@@ -58,7 +58,6 @@
     "ITUB"
   ],
   "next_trial_order": [
-    "PLUG",
     "NOK",
     "BTG",
     "RIG",
@@ -155,7 +154,7 @@
       "currently_live": false,
       "history_rows": 1256,
       "forecast_cache_horizons": [],
-      "status": "history_ready_needs_cache_and_retrain",
+      "status": "rejected_first_pass_cache_gate",
       "thesis": "Speculative clean-energy exposure; only worth simming after hourly history quality is confirmed."
     },
     {

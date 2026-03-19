@@ -22,6 +22,14 @@ def test_resolve_base_symbols_supports_live_alias() -> None:
     assert symbols[0] == "NVDA"
     assert "MSFT" in symbols
     assert "EXPE" in symbols
+    assert "ITUB" not in symbols
+
+
+def test_resolve_base_symbols_supports_current_live_alias() -> None:
+    symbols = _resolve_base_symbols("live20260319")
+    assert symbols[0] == "NVDA"
+    assert "EXPE" in symbols
+    assert symbols[-1] == "ITUB"
 
 
 def test_candidate_direction_lists_append_only_the_candidate_side() -> None:

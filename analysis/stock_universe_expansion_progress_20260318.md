@@ -11,6 +11,7 @@
   - `F`: return and drawdown improved, Sortino regressed.
   - `MU`: failed forecast cache gate.
   - `TTD`: failed forecast cache gate.
+  - `PLUG`: failed forecast cache gate.
 
 ## Completed History Ingest Batch
 
@@ -113,8 +114,39 @@ python scripts/run_alpaca_stock_expansion.py \
     - `sudo supervisorctl update` restarted the program successfully
     - live status after deploy: `unified-stock-trader RUNNING`
 
+## Completed First-Pass Evaluation
+
+- symbol: `PLUG`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 03:17 UTC`
+- command:
+
+```bash
+python scripts/run_alpaca_stock_expansion.py \
+  --manifest-path docs/stock_universe_candidates_20260318.json \
+  --candidate-symbols PLUG \
+  --baseline-source-dir analysis/alpaca_stock_expansion_itub_20260319/ITUB \
+  --candidate-only-cache-build \
+  --candidate-max-h1-mae-percent 10 \
+  --candidate-max-h24-mae-percent 10 \
+  --output-dir analysis/alpaca_stock_expansion_plug_20260319
+```
+
+- current status:
+  - `PLUG` failed the forecast cache gate on the base Chronos2 checkpoint.
+  - cache MAE from `analysis/alpaca_stock_expansion_plug_20260319/forecast_cache_mae.json`:
+    - `h1 MAE%=16.0449`
+    - `h24 MAE%=17.7900`
+  - promotion summary from `analysis/alpaca_stock_expansion_plug_20260319/promotion_summary.json`:
+    - `promote=false`
+    - reason: `No candidate met promotion thresholds. Rejected candidates: PLUG`
+  - decision: rejected
+    - reason: `PLUG` failed both cache gates and terminated before the simulator stage, so the next useful step is tuning or retraining rather than a production candidate comparison.
+
 ## Fixes Applied In This Iteration
 
+- Updated `scripts/run_alpaca_stock_expansion.py` so the default base stock universe is `live20260319`.
+  - Future first-pass screens now compare against the actual live basket that already includes `ITUB`, while `live20260318` remains available as the pre-promotion alias for reproducibility.
 - Fixed `src/chronos2_objective.py` to build correlation matrices with an outer join instead of a global inner join.
   - This prevents mixed-history symbols from collapsing the entire cohort map.
 - Fixed hourly stock cohort generation in `src/alpaca_stock_expansion.py` to floor timestamps to hourly buckets and deduplicate per bucket.

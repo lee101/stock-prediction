@@ -30,10 +30,12 @@ DEFAULT_CHECKPOINT = (
     "binanceneural/checkpoints/"
     "alpaca_cross_global_mixed14_robust_short_seq128_lb4000_20260205_2319/epoch_004.pt"
 )
-DEFAULT_BASE_STOCK_SYMBOLS = "NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT,AAPL,MSFT,META,TSLA,NET,BKNG,EBAY,EXPE"
+LIVE_20260318_BASE_STOCK_SYMBOLS = "NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT,AAPL,MSFT,META,TSLA,NET,BKNG,EBAY,EXPE"
+DEFAULT_BASE_STOCK_SYMBOLS = f"{LIVE_20260318_BASE_STOCK_SYMBOLS},ITUB"
 BASE_STOCK_UNIVERSE_ALIASES = {
-    "stock19": DEFAULT_BASE_STOCK_SYMBOLS,
-    "live20260318": DEFAULT_BASE_STOCK_SYMBOLS,
+    "stock19": LIVE_20260318_BASE_STOCK_SYMBOLS,
+    "live20260318": LIVE_20260318_BASE_STOCK_SYMBOLS,
+    "live20260319": DEFAULT_BASE_STOCK_SYMBOLS,
 }
 
 
@@ -532,7 +534,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Evaluate stock-universe expansion candidates by adding one symbol at a time to the current live base universe.",
     )
-    parser.add_argument("--base-stock-universe", default="live20260318")
+    parser.add_argument("--base-stock-universe", default="live20260319")
     parser.add_argument("--base-long-only-symbols", default=None)
     parser.add_argument("--base-short-only-symbols", default=None)
     parser.add_argument("--default-checkpoint", default=DEFAULT_CHECKPOINT)
