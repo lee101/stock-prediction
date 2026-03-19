@@ -265,7 +265,7 @@
       "currently_live": false,
       "history_rows": 989,
       "forecast_cache_horizons": [],
-      "status": "rejected_first_pass_cache_gate",
+      "status": "history_ready_needs_cache_and_retrain",
       "thesis": "International internet and ADR exposure for geographic diversification."
     },
     {
