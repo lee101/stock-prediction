@@ -1102,6 +1102,8 @@ def get_hybrid_signal(
     # Load Chronos2 forecasts
     from rl_trading_agent_binance_prompt import build_live_prompt, load_latest_forecast
     fc_1h = load_latest_forecast(sym_cfg.symbol, 1)
+    fc_4h = load_latest_forecast(sym_cfg.symbol, 4)
+    fc_12h = load_latest_forecast(sym_cfg.symbol, 12)
     fc_24h = load_latest_forecast(sym_cfg.symbol, 24)
 
     # Build position context
@@ -1123,11 +1125,13 @@ def get_hybrid_signal(
         prompt = build_live_prompt_freeform(
             sym_cfg.symbol, history_rows, current_price, fc_1h, fc_24h,
             position_info=pos_info, fee_bps=fee_bps,
+            fc_4h=fc_4h, fc_12h=fc_12h,
         )
     else:
         prompt = build_live_prompt(
             sym_cfg.symbol, history_rows, current_price, fc_1h, fc_24h,
             position_info=pos_info, fee_bps=fee_bps,
+            fc_4h=fc_4h, fc_12h=fc_12h,
         )
 
     plan = call_llm(prompt, model=model, thinking_level=thinking_level)
