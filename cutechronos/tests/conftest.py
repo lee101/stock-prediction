@@ -1,61 +1,52 @@
-"""Shared test fixtures for CuteChronos2Model tests."""
+"""Shared test helpers for cutechronos preprocessing tests."""
 
-import os
-import sys
-
-import pytest
 import torch
 
-# Ensure chronos2 source is importable
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "chronos-forecasting", "src"))
 
-from chronos.chronos2.config import Chronos2CoreConfig
-from chronos.chronos2.model import Chronos2Model
+def make_context(B: int, L: int, nan_frac: float = 0.1, seed: int = 42) -> torch.Tensor:
+    """Create a random context tensor with some NaN values sprinkled in."""
+    gen = torch.Generator().manual_seed(seed)
+    ctx = torch.randn(B, L, generator=gen)
+    mask = torch.rand(B, L, generator=gen) < nan_frac
+    ctx[mask] = float("nan")
+    return ctx
 
-from cutechronos.model import CuteChronos2Model
 
+def compare_outputs(
+    result: tuple,
+    ref: tuple,
+    atol: float = 1e-5,
+    label: str = "",
+):
+    """Compare preprocessing output against reference, asserting shape and value match."""
+    patched, attn, loc, scale = result
+    ref_patched, ref_attn, ref_loc, ref_scale = ref
 
-def make_test_config() -> Chronos2CoreConfig:
-    """Create a Chronos2CoreConfig for testing (no dropout for determinism)."""
-    return Chronos2CoreConfig(
-        d_model=768,
-        d_kv=64,
-        d_ff=3072,
-        num_layers=12,
-        num_heads=12,
-        dropout_rate=0.0,
-        layer_norm_epsilon=1e-6,
-        initializer_factor=0.05,
-        feed_forward_proj="relu",
-        vocab_size=2,
-        rope_theta=10000.0,
-        attn_implementation="eager",
-        chronos_config={
-            "context_length": 512,
-            "input_patch_size": 16,
-            "input_patch_stride": 16,
-            "output_patch_size": 16,
-            "max_output_patches": 4,
-            "quantiles": [
-                0.01, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45,
-                0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 0.99,
-            ],
-            "use_reg_token": True,
-            "use_arcsinh": True,
-        },
+    prefix = f"[{label}] " if label else ""
+
+    # Shapes
+    assert patched.shape == ref_patched.shape, (
+        f"{prefix}patched shape mismatch: {patched.shape} vs {ref_patched.shape}"
+    )
+    assert attn.shape == ref_attn.shape, (
+        f"{prefix}attn_mask shape mismatch: {attn.shape} vs {ref_attn.shape}"
+    )
+    assert loc.shape == ref_loc.shape, (
+        f"{prefix}loc shape mismatch: {loc.shape} vs {ref_loc.shape}"
+    )
+    assert scale.shape == ref_scale.shape, (
+        f"{prefix}scale shape mismatch: {scale.shape} vs {ref_scale.shape}"
     )
 
+    # Values
+    max_err_patched = (patched.float() - ref_patched.float()).abs().max().item()
+    max_err_attn = (attn.float() - ref_attn.float()).abs().max().item()
+    max_err_loc = (loc.float() - ref_loc.float()).abs().max().item()
+    max_err_scale = (scale.float() - ref_scale.float()).abs().max().item()
 
-def build_model_pair():
-    """Build an original and cute model pair sharing the same random weights."""
-    torch.manual_seed(42)
-    config = make_test_config()
-    original = Chronos2Model(config).eval()
-    cute = CuteChronos2Model.from_original(original)
-    return original, cute
-
-
-def build_cute_only():
-    """Build a CuteChronos2Model (discards the original)."""
-    _, cute = build_model_pair()
-    return cute
+    assert max_err_loc < atol, f"{prefix}loc max error {max_err_loc} >= {atol}"
+    assert max_err_scale < atol, f"{prefix}scale max error {max_err_scale} >= {atol}"
+    assert max_err_attn < atol, f"{prefix}attn_mask max error {max_err_attn} >= {atol}"
+    assert max_err_patched < atol, (
+        f"{prefix}patched max error {max_err_patched} >= {atol}"
+    )
