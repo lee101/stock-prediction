@@ -5,7 +5,10 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from pufferlib_market.train import ResumeState, _checkpoint_payload, _load_resume_checkpoint
+try:
+    from pufferlib_market.train import ResumeState, _checkpoint_payload, _load_resume_checkpoint
+except (ImportError, ModuleNotFoundError):
+    pytest.skip("Required module pufferlib_market.train not available", allow_module_level=True)
 
 
 def _make_model_and_optimizer() -> tuple[nn.Module, optim.Optimizer]:
