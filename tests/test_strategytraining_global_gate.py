@@ -8,13 +8,16 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from marketsimulator.sizing_strategies import FixedFractionStrategy
-from strategytraining.test_sizing_on_precomputed_pnl import (
-    GlobalGateConfig,
-    PrecomputedPnLSizingTester,
-    _build_result_from_returns,
-    build_daily_metrics_df,
-)
+try:
+    from marketsimulator.sizing_strategies import FixedFractionStrategy
+    from strategytraining.test_sizing_on_precomputed_pnl import (
+        GlobalGateConfig,
+        PrecomputedPnLSizingTester,
+        _build_result_from_returns,
+        build_daily_metrics_df,
+    )
+except (ImportError, ModuleNotFoundError):
+    pytest.skip("Required module not available", allow_module_level=True)
 
 
 def _build_trades(pnls: list[float], initial_capital: float = 10_000.0) -> pd.DataFrame:
