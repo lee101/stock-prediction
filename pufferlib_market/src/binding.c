@@ -9,10 +9,24 @@
 /* Forward declarations required before env_binding.h */
 static MarketData* g_shared_data = NULL;
 
-/* Tell env_binding.h we provide our own my_shared */
+/* Tell env_binding.h we provide our own my_shared, my_put, my_get, and custom methods */
 #define MY_SHARED
-
+#define MY_PUT
+#define MY_GET
 #define Env TradingEnv
+
+/* Include Python.h early so we can forward-declare custom methods before
+   env_binding.h expands the method table that references them. */
+#include <Python.h>
+#include <numpy/arrayobject.h>
+
+static PyObject* my_vec_set_offsets(PyObject* self, PyObject* args);
+static PyObject* my_vec_env_at(PyObject* self, PyObject* args);
+
+#define MY_METHODS \
+    {"vec_set_offsets", (PyCFunction)my_vec_set_offsets, METH_VARARGS, "Set forced_offset per env in a VecEnv"}, \
+    {"vec_env_at", (PyCFunction)my_vec_env_at, METH_VARARGS, "Get env handle at index in a VecEnv"}
+
 #include "env_binding.h"
 
 /* ---------- shared market data (one per worker process) ---------- */
@@ -116,6 +130,9 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     if (env->fill_probability < 0.0f) env->fill_probability = 0.0f;
     if (env->fill_probability > 1.0f) env->fill_probability = 1.0f;
 
+    val = kwargs ? PyDict_GetItemString(kwargs, "forced_offset") : NULL;
+    env->forced_offset = val ? (int)PyLong_AsLong(val) : -1;
+
     val = kwargs ? PyDict_GetItemString(kwargs, "max_hold_hours") : NULL;
     env->max_hold_hours = val ? (int)PyLong_AsLong(val) : 0;
 
@@ -163,6 +180,85 @@ static int my_log(PyObject* dict, Log* log) {
     return 0;
 }
 
+static PyObject* my_get(PyObject* dict, Env* env) {
+    /* Return per-env log data (same fields as my_log) */
+    assign_to_dict(dict, "total_return", env->log.total_return);
+    assign_to_dict(dict, "sortino",      env->log.sortino);
+    assign_to_dict(dict, "max_drawdown", env->log.max_drawdown);
+    assign_to_dict(dict, "num_trades",   env->log.num_trades);
+    assign_to_dict(dict, "win_rate",     env->log.win_rate);
+    assign_to_dict(dict, "avg_hold_hours", env->log.avg_hold_hours);
+    assign_to_dict(dict, "n",           env->log.n);
+    return dict;
+}
+
+static int my_put(Env* env, PyObject* args, PyObject* kwargs) {
+    if (!kwargs) return 0;
+    PyObject* val;
+
+    val = PyDict_GetItemString(kwargs, "forced_offset");
+    if (val) env->forced_offset = (int)PyLong_AsLong(val);
+
+    return 0;
+}
+
 static void my_free(Env* env) {
     (void)env;
+}
+
+/* ---------- custom methods for fast eval ---------- */
+
+static PyObject* my_vec_set_offsets(PyObject* self, PyObject* args) {
+    /* vec_set_offsets(vec_handle, offsets_array) */
+    if (PyTuple_Size(args) != 2) {
+        PyErr_SetString(PyExc_TypeError, "vec_set_offsets requires 2 arguments");
+        return NULL;
+    }
+    VecEnv* vec = unpack_vecenv(args);
+    if (!vec) return NULL;
+
+    PyObject* arr_obj = PyTuple_GetItem(args, 1);
+    if (!PyObject_TypeCheck(arr_obj, &PyArray_Type)) {
+        PyErr_SetString(PyExc_TypeError, "offsets must be a numpy array");
+        return NULL;
+    }
+    PyArrayObject* offsets = (PyArrayObject*)arr_obj;
+    if (PyArray_NDIM(offsets) != 1 || PyArray_SIZE(offsets) != vec->num_envs) {
+        PyErr_SetString(PyExc_ValueError, "offsets length must match num_envs");
+        return NULL;
+    }
+
+    for (int i = 0; i < vec->num_envs; i++) {
+        long val = 0;
+        if (PyArray_TYPE(offsets) == NPY_INT32) {
+            val = ((int32_t*)PyArray_DATA(offsets))[i];
+        } else if (PyArray_TYPE(offsets) == NPY_INT64) {
+            val = ((int64_t*)PyArray_DATA(offsets))[i];
+        } else {
+            /* generic fallback */
+            PyObject* item = PyArray_GETITEM(offsets, (char*)PyArray_DATA(offsets) + i * PyArray_STRIDE(offsets, 0));
+            val = PyLong_AsLong(item);
+            Py_DECREF(item);
+        }
+        vec->envs[i]->forced_offset = (int)val;
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject* my_vec_env_at(PyObject* self, PyObject* args) {
+    /* vec_env_at(vec_handle, index) -> env_handle */
+    if (PyTuple_Size(args) != 2) {
+        PyErr_SetString(PyExc_TypeError, "vec_env_at requires 2 arguments");
+        return NULL;
+    }
+    VecEnv* vec = unpack_vecenv(args);
+    if (!vec) return NULL;
+
+    PyObject* idx_obj = PyTuple_GetItem(args, 1);
+    int idx = (int)PyLong_AsLong(idx_obj);
+    if (idx < 0 || idx >= vec->num_envs) {
+        PyErr_SetString(PyExc_IndexError, "env index out of range");
+        return NULL;
+    }
+    return PyLong_FromVoidPtr(vec->envs[idx]);
 }
