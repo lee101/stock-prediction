@@ -1,37 +1,35 @@
-.env
+# =============================================================================
+# Virtual environments and caches
+# =============================================================================
 .venv
-.venvci
-.venv314a
+.venv311/
+.venv312
+.venv312c
+.venv312uv/
 .venv313
+.venv313fast
+.venv313torch/
 .venv314
-*.pt 
-*.pth
-portfolio_optimization_results*
-traininglogs*
-training/traininglogs
-training/models
-
-expresults.md
-backtestdata
-.env2
+.venv314a
+.venvci
+.uvcache/
 .cache
-data
-results
-env.py
-!src/fastmarketsim/env.py
-env_real.py
-logs
-lightning_logs
-lightning_logs*
-lightning_logsminute
+.tmp_bench_data
+.locks
+.env
+.env2
+.env.local
+.envrc
 
-strategy_state/
-current_state_config/
-testresults/
-data/_simulator/
-
-
-optuna_test
+# =============================================================================
+# Python artifacts
+# =============================================================================
+__pycache__
+__pycache__*
+*.egg-info/
+stock_trading_suite.egg-info
+*.so
+build
 .pytest_cache
 pytest-of-*
 .ruff_cache
@@ -42,341 +40,222 @@ htmlcov/
 *.cover
 .hypothesis/
 
-__pycache__
-__pycache__*
-logfile.log
-*.log
-positions_shelf.json
+# =============================================================================
+# Model weights and checkpoints
+# =============================================================================
 *.pt
+*.pth
+*.npz
+*.safetensors
+checkpoints
+compiled_models/
+
+# =============================================================================
+# Training data directories
+# =============================================================================
 trainingdata
+trainingdata/
 trainingdata2/
+trainingdatabp/
+trainingdatadaily
+trainingdatahourly/
+trainingdata5min/
+trainingdatabinance
+trainingdatahourlybinance
+trainingdatahourlybinance/
+trainingdatadailybinance
+trainingdatadailybinance/
+trainingdata.local_backup_20260204_222309/
+binancetrainingdatahourly
+binance_spot_hourly/
+binance_spot_daily/
+binance_spot_*/
+tradingdata/
+tradingdatahourly/
+
+# =============================================================================
+# Stale/legacy data directories (canonical: hyperparams/, preaugstrategies/)
+# =============================================================================
+chronos2
+crypto_improved/
+kronos/
+hyperparams_extended/
+hyperparams_quick/
+hyperparams_compile_compare/
+hyperparams_optimized_all/
+
+# =============================================================================
+# Hyperparams and strategy configs (generated, not source)
+# =============================================================================
+hyperparams/chronos2/
+hyperparams/close_policy
+preaugstrategies/chronos2/
+preaugstrategies/best/
+
+# =============================================================================
+# Experiment directories and artifacts
+# =============================================================================
+experiments/*/
+experiments/**/*.json
+experiments/**/*.md
+experiments/**/*.txt
+experiments/**/*.bin
+experiments/**/folds/
+experiments/**/checkpoints/
+experiments/**/finetuned/
+experiments/model_sizes
+experiments/walk_forward/
+experiments/*sweep*
+experiments/binance_daily_levels/
+experiments/stock_sortino_lag_robust_*/results.json
+experiments/stock_sortino_lag_robust_*/configs.json
+experiments/stock_sortino_lag_robust_*/summary.json
+experiments/stock_sortino_lag_robust_*/config_*.json
+experiments/sui_sortino_max/artifacts/
+experiments/shortable_full_auto/run_*
+experiments/alpaca_stock_modern_rlcuda_*/
+experiments/v13_results/
+experimental/
+
+# =============================================================================
+# Logs and results
+# =============================================================================
+logs
+logs/pnl/
+*.log
+*.log.*
+logfile.log
+nohup.out
 traininglogs
+traininglogs*
 traininglogs_temp
 training_log.txt
-portfolio_sim_results/
-portfolio_optimization_results_20250824_210102.json
-portfolio_optimization_results_20250824_210102_best_config.json
-optimization_reports/
 improved_training_log.txt
-toto
-predictions/
-models
+optimized_training_log.txt
+*results.md
+!binanceresults.md
+EXPERIMENTS_LOG.md
+allresults.md
+expresults.md
+claudeideas.md
+scratch.txt
+scratches
+metric_history.json
+
+# =============================================================================
+# Training module artifacts
+# =============================================================================
+training/traininglogs
+training/models
 training/training
 training/quick_hf_output
 training/quick_hf_output/
-hftraining/hftraining
-hftraining/test_logs/
-hftraining/output
-optimized_training_log.txt
 training/production_model/
+training/production_model
 training/differentiable_training_history.png
 training/optimization_results
-training/quick_training_results
-quick_simulation_results_forecasts.csv
-quick_simulation_results_strategies.csv
-POSITION_SIZING_RESULTS.md
-LEVERAGE_BACKTEST_SUMMARY.md
-LEVERAGE_ANALYSIS_RESULTS.md
-BACKTESTING_SUMMARY.md
-BACKTESTING_README.md
-claudeideas.md
-simulationresults
 training/optimization_results/
-trainingdata/
-predictions
-portfolio_sim_results/
-models
-optimization_reports/
-toto
-rlinference/models
-rlinference/logs
-rlinference/data
-hftraining/logs
-hftraining/test_cache
-hftraining/test_logs
-hftraining/test_output
-hftraining/trainingdata/
-hftraining/checkpoints/
-hftraining/hftraining
-improved_training_log.txt
-optimized_training_log.txt
-training_log.txt
-training/quick_hf_output
 training/quick_training_results
-training/models
-training/production_model
 training/results
 training/training/runs
 training/training/improvement_cycles
 training/training/traininglogs
 training/training/visualizations
-training/differentiable_training_history.png
-#
-# Differentiable Market experiment artifacts
-differentiable_market/experiment_runs/
-differentiable_market/experiment_runs_*/
-differentiable_market/runs/
+
+hftraining/hftraining
+hftraining/test_logs/
+hftraining/test_cache
+hftraining/test_output
+hftraining/output
+hftraining/trainingdata/
+hftraining/checkpoints/
+hftraining/logs
+hftraining/tensorboard
+hftraining/reports/
+hftraining/models/
+hftraining/quick_test_logs_*
+hftraining/quick_test_output*
+
+tototraining/tensorboard_logs
+tototraining/mlruns
+tototraining/temp_predictions_*.json
+tototraining/artifacts/
+tototraining/checkpoints
+tototraining/stock_models
+tototraining/priority_models/
+
+kronostraining/artifacts/checkpoints
+kronostraining/artifacts
+
+# =============================================================================
+# Model/data directories
+# =============================================================================
+toto
+models
+predictions/
+predictions
+data
+data/_simulator/
+results
+backtestdata
+cache
+resources
+reports
+runs
+forecast_cache
+
+# =============================================================================
+# Market sim and backtesting
+# =============================================================================
+simulationresults
+simulation_results/
+portfolio_sim_results/
+backtest_results/
+backtest_cache/
+backtest_*/
+marketsim_results_*/
+marketsimulator/run_logs
+pnlforecast_cache/
+pnlforecast_results/
+multivariate_group_results/
+
+# =============================================================================
+# RL training artifacts
+# =============================================================================
+rlinference/models
+rlinference/logs
+rlinference/data
 pufferlibtraining/logs
 pufferlibtraining/models
 pufferlibtraining/cache
 pufferlibtraining/output
 pufferlibtraining/runs
-hftraining/output
-.coverage
-scratch.txt
-SCINet/
-algo-trading-bot/
-public-trading-bot/
-tototraining/tensorboard_logs
-tototraining/mlruns
-hftraining/tensorboard
-tototraining/temp_predictions_0.json
-tototraining/temp_predictions_15.json
-tototraining/temp_predictions_5.json
-gymrl/artifacts/
-gymrl/runs/
-hftraining/reports/
-scratches
-stock_test.db
-stock.db
-portfolio_risk.png
-tototraining/artifacts/
-compiled_models/
-tototraining/checkpoints
-external/kronos/
-.tmp_bench_data
-.venv312
-runs
-runs
-hftraining/quick_test_logs_*
-hftraining/quick_test_output*
-.venv312c
-nanochat
-marketsimulator/environment.py
-tmp
-stock_trading_suite.egg-info
-gymrl/gymrl.egg-info/
-*.egg-info/
-pynvml
-kronostraining/artifacts/checkpoints
-kronostraining/artifacts
-metric_history.json
-# Allow tracked source model implementations while keeping build artifacts ignored
-!src/models/
-src/models/__pycache__/
-src/models/__pycache__/**
-!src/models/*.py
-!src/models/**/*.py
-differentiable_market/evals
-.env.local
-.envrc
-allresults.md
-gymrl/gymrl.egg-info/
-wandb/
-reports
-wandb
-tensorboard_logs/
-gymrl/cache
-trainingdatadaily
-trainingdatahourly/
-evaltests/backtests
-analysis
-analysis_runner_funcs
-analysis_listing.txt
-analysis_listing_repr.txt
 pufferlib
 PufferLib
-.venv313fast
-resources
+PufferLib4/
+pufferlib_market/auto_improve_results.json
+rl-trading
 rlinc_market/rlinc_cmarket.cpython-312-x86_64-linux-gnu.so
-cppsimulator/build/CMakeFiles/
-cppsimulator/build/run_sim
-external
-cache
-marketsimulator/run_logs
-githubagent/actions-runner/externals/
-githubagent/actions-runner/externals/bin
-githubagent/actions-runner/bin
-cppsimulator/build_py/market_sim_ext.so
-nanochat
-external
-tototraining/stock_models
-tototraining/priority_models/
-nohup.out
-strategytraining/datasets/
-strategytraining/reports/
-quick_results_20251101_042457.csv
-hyperparams/close_policy
-workstealingsimulator/full_strategy_dataset_20251101_211202_strategy_performance.parquet
-workstealingsimulator/full_strategy_dataset_20251101_211202_trades.parquet
-strategytraining/benchmark_results/
-diagnose_watcher
-backtest_results/
-optimization_test.prof
-optimization_test.svg
-optimization_analysis_prof.md
-optimization_analysis_svg.md
-simulation_results/
-chronos2_benchmarks
-backtest_cache/
-trade_stock_e2e_paper.prof
-build
-*.so
-stategytraining/forecast_cache/
-strategytraining/forecast_cache/
-backtest_test3_inline.log*
-plots
-strategytraining2/datasets/
-hourlycryptotraining/checkpoints/
-hourlycryptotraining/forecast_cache_hourly/
-hourlycryptotraining/checkpoints
-hourlycryptotraining/checkpoints.py
-hourlycryptotraining/checkpoints_1024ctx
-hourlycryptotraining/checkpoints_1024ctx_amp
-hourlycryptotraining/checkpoints_1024ctx_b32
-hourlycryptotraining/checkpoints_256ctx
-hourlycryptotraining/checkpoints_ema
-tmp_dbg
-tmp_dbg2
-tmp_dbg3
-tmp_toto_export
-hourlycryptotraining/checkpoints_*
-neuraldailytraining/checkpoints/
-hourlycryptomarketsimulator/*.csv
-.locks
-trainingdatabp/
-strategytraining/forecast_cache_backup_20251130_091549/
-llms_vs_chronos2_returns.png
-gemini_vs_chronos2_returns.png
-nepa
-neuraldailyv4/checkpoints/
-neuraldailyv3timed/checkpoints/
-experiments/model_sizes
-experiments/walk_forward/
-positions_shelf.json.bak
-experiments/stock_sortino_lag_robust_*/results.json
-binanceleveragesui/result_*.json
-binanceleveragesui/*sweep*results*.json
-tmp0pdsx9bp
-tmp0qpqh2a8
-tmp386ifzby
-tmp3j38yrr_
-tmp3mh_hfwf
-tmp3t9sdoqd
-tmp3w9kn9ss
-tmp41rq8gsj
-tmp4w299dph
-tmp57tzai8g
-tmp59nf5efd
-tmp5pvzui3_
-tmp5pw9gnwe
-tmp6t65code
-tmp6x22hqpn
-tmp7mjalygt
-tmp8d1jzz42
-tmp8txadrpe
-tmp9658ksoz
-tmp9qt5_php
-tmp9tck5nzc
-tmp_7ubkx4y
-tmp_dbg
-tmp_dbg2
-tmp_dbg3
-tmp_q2kikb1
-tmp_toto_export
-tmp_vufxir5
-tmpa317c48r
-tmpapnjfpte
-tmpas0jj_45
-tmpbcge1ytx
-tmpbeef2faa
-tmpbrjzlr8b
-tmpdg0pvs1d
-tmpdryy5xjn
-tmpds7vreeb
-tmpeedxryk2
-tmpegmnaa78
-tmpely5clo7
-tmpf39n7e2c
-tmpf6c48uu0
-tmpf_e5rc17
-tmpfanc0msr
-tmpfz37_ll7
-tmpgcewido1
-tmpgogdsqes
-tmpgtl3fi45
-tmpgtxyxc_9
-tmpgtzhlhr1
-tmphrpwc068
-tmpht98stjf
-tmpii3ycpc0
-tmpkww3aoex
-tmplskb2zet
-tmpm1hlh9jg
-tmpm6_dmjdb
-tmpm_re6pu8
-tmpmcckvhg6
-tmpookvns3x
-tmpowykkomc
-tmppdvo9msf
-tmpq44jyb_4
-tmpq7lasc6c
-tmpq_6hhwzh
-tmpqi4_9xb4
-tmpqjazu916
-tmpqjbxe85w
-tmpqljy72c7
-tmpqs4ts7_e
-tmprf662qb1
-tmprw7mjwb_
-tmpseq6qwoi
-tmpskq8r988
-tmpt8sf0lpv
-tmpuaql2z3o
-tmpvww4wuso
-tmpw5dyk_82
-tmpx7y0emvb
-tmpxk68eska
-tmpxnv2vjhy
-tmpy6m47gbo
-tmpz_z_j_6o
-tmpzl4mp6di
-pnlforecast_cache/
-pnlforecast_results/
-experiments/v13_results/
-tmp*
-bagstraining/
-bagsneural/checkpoints/
 
-# Live trading PnL logs
-logs/pnl/
-exit_plans.json
-tradingdata/
-tradingdatahourly/
-trainingdatahourlybinance
-trainingdatahourlybinance/
-binancetrainingdatahourly
-binance_spot_hourly/
-binance_spot_daily/
-binance_spot_*/
-trainingdata5min/
-trainingdatadailybinance
-trainingdatadailybinance/
-bagsfm_state.json
-strategy_state/binance_holdings_snapshots.db
+# =============================================================================
+# Differentiable Market experiment artifacts
+# =============================================================================
+differentiable_market/experiment_runs/
+differentiable_market/experiment_runs_*/
+differentiable_market/runs/
+differentiable_market/evals
 
-# Experiment logs and results
-*.log.*
-*results.md
-!binanceresults.md
-EXPERIMENTS_LOG.md
+# =============================================================================
+# Gym RL artifacts
+# =============================================================================
+gymrl/artifacts/
+gymrl/runs/
+gymrl/gymrl.egg-info/
+gymrl/cache
 
-# Experiment directories (not code modules)
-alpacawide/
-chronos2_finetuned/
-marketsim_results_*/
-
-# Experiment artifacts within modules
+# =============================================================================
+# Binance experiment artifacts
+# =============================================================================
 binance*/checkpoints/
 binance*/forecast_cache*/
 binance*/chronos_finetuned/
@@ -384,17 +263,205 @@ binance*/outputs/
 binance*/marketsimulator/
 binance*/plots/
 binance*/results/
+binance*/artifacts*/
+binance*/artifacts_*/
+binanceleveragesui/result_*.json
+binanceleveragesui/*sweep*results*.json
+binanceleveragesui/meta_*.json
+binanceleveragesui/doge_*.json
+binanceleveragesui/btc_*.json
+binanceleveragesui/mw_results_*.json
+binanceleveragesui/r5_*.json
+binanceleveragesui/*_epoch_*.json
+binanceleveragesui/checkpoints
+binanceleveragesui_rlcuda/artifacts*
+binanceneural/forecast_cache_backup/
+binanceneural/binanceneural/forecast_cache/
 
-# Experiment configs and strategies
-hyperparams/chronos2/
-preaugstrategies/chronos2/
-experiments/*sweep*
-experiments/binance_daily_levels/
+# =============================================================================
+# Alpaca experiment artifacts
+# =============================================================================
+alpacawide/
+alpacanewccrosslearning/outputs/
+alpacanewccrosslearning/forecast_cache/
+alpacanewccrosslearning/forecast_cache
+alpacanewccrosslearning/forecast_cache_grouped
+alpacanewccrosslearning/chronos_finetuned/
+alpacaconstrainedexp/outputs/
+alpacaconstrainedexp/forecast_cache/
+alpacaconstrainedexp/chronos_finetuned/
+alpaca_go/alpaca_go_bin
+alpaca_go/.env
+alpaca_go/.watcher_state/
+alpaca_cli_paper.log*
 
-# One-off/temporary scripts (keep utility scripts tracked)
+# =============================================================================
+# Crypto experiment artifacts
+# =============================================================================
+cryptoalpacaexperiment/checkpoints/
+cryptoalpacaexperiment/forecast_cache/
+chronos2_finetuned/
+chronos2_benchmarks
+
+# =============================================================================
+# Hourly crypto training artifacts
+# =============================================================================
+hourlycryptotraining/checkpoints/
+hourlycryptotraining/checkpoints_*
+hourlycryptotraining/forecast_cache_hourly/
+hourlycryptomarketsimulator/*.csv
+
+# =============================================================================
+# Neural daily training artifacts
+# =============================================================================
+neuraldailytraining/checkpoints/
+neuraldailyv4/checkpoints/
+neuraldailyv3timed/checkpoints/
+
+# =============================================================================
+# Unified hourly experiment artifacts
+# =============================================================================
+unified_hourly_experiment/forecast_cache/
+unified_hourly_experiment/checkpoints/
+unified_hourly_experiment/marketsimulator/native/
+unified_hourly_experiment/leverage_sweep_results.json
+
+# =============================================================================
+# Other experiment module artifacts
+# =============================================================================
+FastForecaster/seed_sweeps/
+FastForecaster/sweeps/
+fastforecaster2/
+fastalgorithms/*/artifacts/
+llm_hourly_trader/api_cache/
+newnanoalpacahourlyexp/outputs/
+bagstraining/
+bagsneural/checkpoints/
+preaug_sweeps/
+cppsimulator/build/CMakeFiles/
+cppsimulator/build/run_sim
+cppsimulator/build_py/market_sim_ext.so
+
+# =============================================================================
+# Strategy and portfolio artifacts
+# =============================================================================
+strategy_state/
+strategy_state/binance_holdings_snapshots.db
+current_state_config/
+portfolio_optimization_results*
+portfolio_optimization_results_20250824_210102.json
+portfolio_optimization_results_20250824_210102_best_config.json
+optimization_reports/
+portfolio_risk.png
+positions_shelf.json
+positions_shelf.json.bak
+exit_plans.json
+bagsfm_state.json
+testresults/
+quick_simulation_results_forecasts.csv
+quick_simulation_results_strategies.csv
+quick_results_20251101_042457.csv
+workstealingsimulator/full_strategy_dataset_20251101_211202_strategy_performance.parquet
+workstealingsimulator/full_strategy_dataset_20251101_211202_trades.parquet
+
+# =============================================================================
+# Strategytraining artifacts
+# =============================================================================
+strategytraining/datasets/
+strategytraining/reports/
+strategytraining/benchmark_results/
+strategytraining/forecast_cache/
+strategytraining/forecast_cache_backup_20251130_091549/
+stategytraining/forecast_cache/
+strategytraining2/datasets/
+
+# =============================================================================
+# Wandb and tensorboard
+# =============================================================================
+wandb/
+wandb
+tensorboard_logs/
+lightning_logs
+lightning_logs*
+lightning_logsminute
+
+# =============================================================================
+# External and third-party
+# =============================================================================
+external
+external/kronos/
+SCINet/
+algo-trading-bot/
+public-trading-bot/
+nanochat
+pynvml
+TimingBot/
+
+# =============================================================================
+# Deploy and infra
+# =============================================================================
+deployments/
+githubagent/actions-runner/externals/
+githubagent/actions-runner/externals/bin
+githubagent/actions-runner/bin
+
+# =============================================================================
+# Progress/tracking docs
+# =============================================================================
+currentlyrunning.md
+*progress*.md
+!alpacaprogress.md
+!binanceprogress2.md
+POSITION_SIZING_RESULTS.md
+LEVERAGE_BACKTEST_SUMMARY.md
+LEVERAGE_ANALYSIS_RESULTS.md
+BACKTESTING_SUMMARY.md
+BACKTESTING_README.md
+
+# =============================================================================
+# Temp files and misc
+# =============================================================================
+tmp*
+*.bak
+/1
+analysis
+analysis_runner_funcs
+analysis_listing.txt
+analysis_listing_repr.txt
+diagnose_watcher
+plots
+nepa
+docsignore
+leaderboards
+best_backup
+misc
+optimization_test.prof
+optimization_test.svg
+optimization_analysis_prof.md
+optimization_analysis_svg.md
+trade_stock_e2e_paper.prof
+backtest_test3_inline.log*
+llms_vs_chronos2_returns.png
+gemini_vs_chronos2_returns.png
+evaltests/backtests
+env.py
+!src/fastmarketsim/env.py
+env_real.py
+optuna_test
+stock_test.db
+stock.db
+marketsimulator/environment.py
+
+# =============================================================================
+# Scripts (one-off/generated)
+# =============================================================================
 scripts/queue_followups.sh
+scripts/cron_*.txt
+scripts/monitor_*.sh
 
+# =============================================================================
 # Experimental tests
+# =============================================================================
 tests/test_alpaca_data_wrapper_backfill.py
 tests/test_bagsfm_*.py
 tests/test_bags*.py
@@ -423,50 +490,18 @@ tests/prod/cli/test_binance*.py
 # Experimental data utilities
 src/data_loading_utils.py
 src/metrics_utils.py
-alpaca_cli_paper.log*
-binanceneural/forecast_cache_backup/
-newnanoalpacahourlyexp/outputs/
 
-# Local experimental/training artifacts
-experimental/
-*.npz
-*.safetensors
-binance*/artifacts*/
-binance*/artifacts_*/
-experiments/alpaca_stock_modern_rlcuda_*/
-experiments/*/checkpoint-*/
-experiments/*/finetuned/
-alpacanewccrosslearning/outputs/
-alpacanewccrosslearning/forecast_cache/
-alpacanewccrosslearning/chronos_finetuned/
-alpacaconstrainedexp/outputs/
-alpacaconstrainedexp/forecast_cache/
-alpacaconstrainedexp/chronos_finetuned/
-trainingdatabinance
-trainingdata.local_backup_20260204_222309/
-binanceneural/binanceneural/forecast_cache/
-alpacanewccrosslearning/forecast_cache
-alpacanewccrosslearning/forecast_cache_grouped
-alpaca_go/alpaca_go_bin
-alpaca_go/.env
-alpaca_go/.watcher_state/
-experiments/**/folds/
-experiments/**/*.bin
-experiments/**/checkpoints/
-backtest_*/
-unified_hourly_experiment/forecast_cache/
-unified_hourly_experiment/checkpoints/
-scripts/cron_*.txt
-scripts/monitor_*.sh
-binanceleveragesui/checkpoints
-binanceleveragesui_rlcuda/artifacts*
-experiments/sui_sortino_max/artifacts/
-binanceleveragesui_rlcuda/artifacts*
-
+# =============================================================================
+# Allow tracked source model implementations
+# =============================================================================
+!src/models/
+src/models/__pycache__/
+src/models/__pycache__/**
+!src/models/*.py
+!src/models/**/*.py
 
 # =============================================================================
 # Root-level convenience copies (originals live in src/)
-# These are manually copied for flat-import convenience; track src/ versions
 # =============================================================================
 /advanced_position_sizing.py
 /allocation_utils.py
@@ -621,79 +656,15 @@ binanceleveragesui_rlcuda/artifacts*
 # Duplicate package (original in src/fastmarketsim/)
 /fastmarketsim/
 
-# Experiment result artifacts (configs, summaries)
-experiments/stock_sortino_lag_robust_*/configs.json
-experiments/stock_sortino_lag_robust_*/summary.json
-experiments/stock_sortino_lag_robust_*/config_*.json
-
 # binanceleveragesui one-off scripts
 binanceleveragesui/retrain_full_pipeline.py
 binanceleveragesui/run_step3_only.py
 binanceleveragesui/test_probe_strategy.py
 binanceleveragesui/train_with_buffer.py
-checkpoints
-cryptoalpacaexperiment/checkpoints/
-forecast_cache
-cryptoalpacaexperiment/forecast_cache/
-experiments/shortable_full_auto/run_*
 
-# Large unused venvs and caches
-.venv311/
-.venv312uv/
-.venv313torch/
-.uvcache/
-hftraining/models/
+# =============================================================================
+# Large unused venvs
+# =============================================================================
 
-# Deployment artifacts (checkpoints + configs for live bots)
-deployments/
-
-# Experiment result directories and files
-experiments/*/
-experiments/**/*.json
-experiments/**/*.md
-experiments/**/*.txt
-
-# Binance leverage sweep/search result JSONs
-binanceleveragesui/meta_*.json
-binanceleveragesui/doge_*.json
-binanceleveragesui/btc_*.json
-binanceleveragesui/mw_results_*.json
-binanceleveragesui/r5_*.json
-binanceleveragesui/*_epoch_*.json
-
-# Strategy config outputs
-preaugstrategies/best/
-
-# Progress/tracking docs
-currentlyrunning.md
-Binanceprogress3.md
-*progress*.md
-!alpacaprogress.md
-!binanceprogress2.md
-
-# Separate projects
-TimingBot/
-
-# Fastalgorithms artifacts
-fastalgorithms/*/artifacts/
-
-# Preaug sweep reports
-preaug_sweeps/
-
-# Misc stray files
-/1
-*.bak
-
-# Native sim build artifacts
-unified_hourly_experiment/marketsimulator/native/
-PufferLib4/
-
-# Additional generated experiment artifacts
-FastForecaster/seed_sweeps/
-FastForecaster/sweeps/
-fastforecaster2/
-llm_hourly_trader/api_cache/
-rl-trading
-unified_hourly_experiment/leverage_sweep_results.json
-pufferlib_market/auto_improve_results.json
-multivariate_group_results/
+# Live trading
+bagsfm_state.json
