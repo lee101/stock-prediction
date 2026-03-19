@@ -1,1 +1,1 @@
-"""Utilities and scripts for analysis workflows."""
+"""Analysis utilities and CLI tools for CI instrumentation."""
