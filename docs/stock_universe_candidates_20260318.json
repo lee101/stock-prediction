@@ -60,7 +60,7 @@
     "ABEV"
   ],
   "next_trial_order": [
-    "INTC"
+    "PLUG"
   ],
   "covariate_seed_groups": {
     "semis_and_ai": [
@@ -183,7 +183,7 @@
       "currently_live": false,
       "history_rows": 10185,
       "forecast_cache_horizons": [],
-      "status": "history_ready_needs_cache_and_retrain",
+      "status": "rejected_retrain_sortino_regression",
       "thesis": "Large-cap semiconductor diversification against NVDA and MU."
     },
     {
@@ -227,7 +227,7 @@
       "currently_live": false,
       "history_rows": 9914,
       "forecast_cache_horizons": [],
-      "status": "history_ready_needs_cache_and_retrain",
+      "status": "rejected_retrain_cache_gate",
       "thesis": "Semiconductor memory-cycle name with strong covariance utility versus NVDA and INTC."
     },
     {
@@ -237,7 +237,7 @@
       "currently_live": false,
       "history_rows": 10030,
       "forecast_cache_horizons": [],
-      "status": "history_ready_needs_cache_and_retrain",
+      "status": "rejected_retrain_sortino_regression",
       "thesis": "Cheap, liquid industrial and consumer cyclical exposure for regime diversification."
     },
     {
@@ -287,7 +287,7 @@
       "currently_live": false,
       "history_rows": 1747,
       "forecast_cache_horizons": [],
-      "status": "history_ready_needs_cache_and_retrain",
+      "status": "rejected_retrain_cache_gate",
       "thesis": "Ad-tech growth name; enough history to test but shorter than the larger-cap candidates."
     },
     {
@@ -307,7 +307,7 @@
       "currently_live": false,
       "history_rows": 10052,
       "forecast_cache_horizons": [],
-      "status": "history_ready_needs_cache_and_retrain",
+      "status": "rejected_retrain_sortino_regression",
       "thesis": "Large-cap defensive healthcare name with low measured correlation against the tech-heavy core."
     },
     {
