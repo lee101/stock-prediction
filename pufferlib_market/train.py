@@ -525,6 +525,113 @@ def train(args):
     rollout_mem = num_envs * args.rollout_len * (obs_size * 4 + 4 * 4) / 1e6
     print(f"  Estimated rollout buffer: {rollout_mem:.1f} MB")
 
+    # ── CUDA graph for rollout inference ──
+    use_cuda_graph = device.type == "cuda"
+    if use_cuda_graph:
+        # Static GPU buffers (required for CUDA graph capture)
+        _static_obs = torch.zeros(num_envs, obs_size, device=device)
+        _static_logits = torch.zeros(num_envs, num_actions, device=device)
+        _static_value = torch.zeros(num_envs, device=device)
+        # Outputs computed from logits inside graph
+        _static_action = torch.zeros(num_envs, dtype=torch.long, device=device)
+        _static_logprob = torch.zeros(num_envs, device=device)
+
+        # Short-mask tensor (baked into graph)
+        _short_mask_idx = 1 + (num_actions - 1) // 2 if args.disable_shorts else 0
+
+        def _graph_forward():
+            """Forward + sample inside CUDA graph (no Categorical, no Python control flow)."""
+            logits, value = policy(_static_obs)
+            _static_logits.copy_(logits)
+            _static_value.copy_(value)
+            if _short_mask_idx > 0:
+                _static_logits[:, _short_mask_idx:] = torch.finfo(logits.dtype).min
+            # Manual multinomial sampling (CUDA-graph-safe)
+            probs = torch.softmax(_static_logits, dim=-1)
+            action = torch.multinomial(probs, 1).squeeze(-1)
+            _static_action.copy_(action)
+            log_probs_all = torch.log_softmax(_static_logits, dim=-1)
+            _static_logprob.copy_(log_probs_all.gather(1, action.unsqueeze(1)).squeeze(1))
+
+        # Warmup
+        policy.eval()
+        with torch.no_grad():
+            for _ in range(3):
+                _graph_forward()
+        torch.cuda.synchronize()
+
+        # Capture
+        _inference_graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(_inference_graph):
+            with torch.no_grad():
+                _graph_forward()
+        torch.cuda.synchronize()
+        print("  CUDA graph captured for rollout inference")
+
+    # Pinned memory for fast CPU↔GPU transfers
+    _pinned_obs = torch.zeros(num_envs, obs_size, dtype=torch.float32, pin_memory=True) if use_cuda_graph else None
+    _pinned_action = torch.zeros(num_envs, dtype=torch.int32, pin_memory=True) if use_cuda_graph else None
+
+    # ── torch.compile for PPO update ──
+    def _ppo_loss_fn(policy, obs, act, old_logprob, advantages, returns, old_values,
+                     clip_eps_t, vf_coef_t, ent_coef_t, clip_vloss):
+        """PPO loss computation (compilable)."""
+        logits, new_value = policy(obs)
+        # Manual log_prob and entropy (avoids Categorical Python control flow for fullgraph)
+        log_probs_all = torch.log_softmax(logits, dim=-1)
+        new_logprob = log_probs_all.gather(1, act.unsqueeze(1)).squeeze(1)
+        probs = torch.softmax(logits, dim=-1)
+        entropy = -(probs * log_probs_all).sum(-1)
+
+        log_ratio = new_logprob - old_logprob
+        ratio = log_ratio.exp()
+
+        pg_loss1 = -advantages * ratio
+        pg_loss2 = -advantages * torch.clamp(ratio, 1 - clip_eps_t, 1 + clip_eps_t)
+        pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+
+        if clip_vloss:
+            v_clipped = old_values + torch.clamp(new_value - old_values, -clip_eps_t, clip_eps_t)
+            v_loss = 0.5 * torch.max(
+                (new_value - returns) ** 2,
+                (v_clipped - returns) ** 2,
+            ).mean()
+        else:
+            v_loss = 0.5 * ((new_value - returns) ** 2).mean()
+
+        ent_loss = entropy.mean()
+        loss = pg_loss + vf_coef_t * v_loss - ent_coef_t * ent_loss
+        return loss, pg_loss, v_loss, ent_loss
+
+    if device.type == "cuda":
+        try:
+            _compiled_ppo_loss = torch.compile(_ppo_loss_fn, mode="reduce-overhead", fullgraph=True)
+            # Warmup compile with dummy data
+            policy.train()
+            _dummy_obs = torch.randn(2048, obs_size, device=device)
+            _dummy_act = torch.randint(0, num_actions, (2048,), device=device)
+            _dummy_lp = torch.zeros(2048, device=device)
+            _dummy_adv = torch.zeros(2048, device=device)
+            _dummy_ret = torch.zeros(2048, device=device)
+            _dummy_val = torch.zeros(2048, device=device)
+            _clip_t = torch.tensor(0.2, device=device)
+            _vf_t = torch.tensor(0.5, device=device)
+            _ent_t = torch.tensor(0.01, device=device)
+            for _ in range(3):
+                _l, _, _, _ = _compiled_ppo_loss(policy, _dummy_obs, _dummy_act, _dummy_lp,
+                                                  _dummy_adv, _dummy_ret, _dummy_val,
+                                                  _clip_t, _vf_t, _ent_t, False)
+                _l.backward()
+                optimizer.zero_grad()
+            torch.cuda.synchronize()
+            del _dummy_obs, _dummy_act, _dummy_lp, _dummy_adv, _dummy_ret, _dummy_val, _l
+            print("  torch.compile: PPO loss compiled (reduce-overhead, fullgraph=True)")
+        except Exception as e:
+            print(f"  torch.compile: failed ({e}), using eager PPO")
+            _compiled_ppo_loss = _ppo_loss_fn
+    else:
+        _compiled_ppo_loss = _ppo_loss_fn
+
     # ── Rollout buffers ──
     T = args.rollout_len
     N = num_envs
@@ -578,30 +685,44 @@ def train(args):
         # ── Collect rollout ──
         policy.eval()
         for step in range(T):
-            raw_obs = obs_buf.copy()
-            if obs_norm is not None:
-                obs_norm.update(raw_obs)
-                raw_obs = obs_norm.normalize(raw_obs)
-            obs_tensor = torch.from_numpy(raw_obs).to(device, non_blocking=True)
-            buf_obs[step] = obs_tensor
+            if use_cuda_graph:
+                # Fast path: CUDA graph inference
+                if obs_norm is not None:
+                    obs_norm.update(obs_buf)
+                    np.copyto(_pinned_obs.numpy(), obs_norm.normalize(obs_buf))
+                else:
+                    np.copyto(_pinned_obs.numpy(), obs_buf)
+                _static_obs.copy_(_pinned_obs, non_blocking=True)
+                _inference_graph.replay()
+                # Store rollout data
+                buf_obs[step] = _static_obs.cpu()
+                buf_act[step] = _static_action.cpu()
+                buf_logprob[step] = _static_logprob.cpu()
+                buf_value[step] = _static_value.cpu()
+                # Actions to C env (single cpu transfer, reuse)
+                torch.cuda.current_stream().synchronize()
+                _pinned_action.copy_(_static_action.to(torch.int32))
+                act_buf[:] = _pinned_action.numpy()
+            else:
+                # Fallback: eager inference (CPU or no CUDA graph)
+                raw_obs = obs_buf.copy()
+                if obs_norm is not None:
+                    obs_norm.update(raw_obs)
+                    raw_obs = obs_norm.normalize(raw_obs)
+                obs_tensor = torch.from_numpy(raw_obs).to(device, non_blocking=True)
+                buf_obs[step] = obs_tensor
+                with torch.no_grad():
+                    action, logprob, _, value = policy.get_action_and_value(
+                        obs_tensor, disable_shorts=args.disable_shorts,
+                    )
+                buf_act[step] = action.cpu()
+                buf_logprob[step] = logprob.cpu()
+                buf_value[step] = value.cpu()
+                act_buf[:] = action.cpu().numpy().astype(np.int32)
 
-            with torch.no_grad():
-                action, logprob, _, value = policy.get_action_and_value(
-                    obs_tensor,
-                    disable_shorts=args.disable_shorts,
-                )
-
-            buf_act[step] = action.cpu()
-            buf_logprob[step] = logprob.cpu()
-            buf_value[step] = value.cpu()
-
-            # Write actions to C buffer and step
-            act_buf[:] = action.cpu().numpy().astype(np.int32)
             binding.vec_step(vec_handle)
-
             buf_reward[step] = torch.from_numpy(rew_buf.copy())
             buf_done[step] = torch.from_numpy(term_buf.copy().astype(np.float32))
-
             global_step += N
 
         # ── Compute advantages ──
@@ -653,42 +774,22 @@ def train(args):
         batch_size = T * N
         mb_size = args.minibatch_size
 
+        # Scalar tensors for compiled PPO (avoid reallocation)
+        clip_eps_t = torch.tensor(clip_eps, device=device)
+        vf_coef_t = torch.tensor(args.vf_coef, device=device)
+        ent_coef_t = torch.tensor(ent_coef, device=device)
+
         for epoch in range(args.ppo_epochs):
             indices = torch.randperm(batch_size, device=device)
             for start in range(0, batch_size, mb_size):
                 end = min(start + mb_size, batch_size)
                 mb_idx = indices[start:end]
 
-                _, new_logprob, entropy, new_value = policy.get_action_and_value(
-                    b_obs[mb_idx],
-                    b_act[mb_idx],
-                    disable_shorts=args.disable_shorts,
+                loss, pg_loss, v_loss, ent_loss = _compiled_ppo_loss(
+                    policy, b_obs[mb_idx], b_act[mb_idx], b_logprob[mb_idx],
+                    b_advantages[mb_idx], b_returns[mb_idx], b_values[mb_idx],
+                    clip_eps_t, vf_coef_t, ent_coef_t, args.clip_vloss,
                 )
-
-                # PPO clipped objective
-                log_ratio = new_logprob - b_logprob[mb_idx]
-                ratio = log_ratio.exp()
-                mb_adv = b_advantages[mb_idx]
-
-                pg_loss1 = -mb_adv * ratio
-                pg_loss2 = -mb_adv * torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps)
-                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
-
-                # Value loss with clipping (PPO-style)
-                if args.clip_vloss:
-                    v_clipped = b_values[mb_idx] + torch.clamp(
-                        new_value - b_values[mb_idx], -clip_eps, clip_eps
-                    )
-                    v_loss_unclipped = (new_value - b_returns[mb_idx]) ** 2
-                    v_loss_clipped = (v_clipped - b_returns[mb_idx]) ** 2
-                    v_loss = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
-                else:
-                    v_loss = 0.5 * ((new_value - b_returns[mb_idx]) ** 2).mean()
-
-                # Entropy bonus
-                ent_loss = entropy.mean()
-
-                loss = pg_loss + args.vf_coef * v_loss - ent_coef * ent_loss
 
                 optimizer.zero_grad()
                 loss.backward()
