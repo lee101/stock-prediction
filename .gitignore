@@ -408,6 +408,7 @@ TimingBot/
 # Deploy and infra
 # =============================================================================
 deployments/
+supervisor/
 githubagent/actions-runner/externals/
 githubagent/actions-runner/externals/bin
 githubagent/actions-runner/bin
@@ -676,3 +677,10 @@ binanceleveragesui/train_with_buffer.py
 
 # Live trading
 bagsfm_state.json
+
+# =============================================================================
+# Runtime caches and state (sensitive/ephemeral)
+# =============================================================================
+**/signal_cache/
+**/gemini_cache_eval/
+**/live_state.json
