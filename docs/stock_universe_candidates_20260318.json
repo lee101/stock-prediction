@@ -60,7 +60,7 @@
     "ABEV"
   ],
   "next_trial_order": [
-    "RIG"
+    "PATH"
   ],
   "covariate_seed_groups": {
     "semis_and_ai": [
@@ -327,7 +327,7 @@
       "currently_live": false,
       "history_rows": 1005,
       "forecast_cache_horizons": [],
-      "status": "active_single_symbol_lora",
+      "status": "rejected_retrain_cache_gate",
       "thesis": "Energy and offshore drilling cyclicality candidate."
     },
     {
@@ -367,7 +367,7 @@
       "currently_live": false,
       "history_rows": 1019,
       "forecast_cache_horizons": [],
-      "status": "rejected_first_pass_cache_gate",
+      "status": "active_multivariate_lora",
       "thesis": "Automation and software factor candidate for a later enterprise-tech batch."
     },
     {

@@ -1408,3 +1408,91 @@ python -u scripts/retrain_chronos2_hourly_loras.py \
     - artifact: `chronos2_finetuned/RIG_lora_stockexp_single_smoke_20260319/finetuned-ckpt`
     - smoke outcome: `val_mae%=4.3410`, `test_mae%=4.9974`
   - full 1500-step run is active on the single-symbol baseline.
+
+## Completed Single-Symbol LoRA Trial
+
+- symbol: `RIG`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 05:24 UTC`
+- training log path: `analysis/local_training_logs/rig_lora_stockexp_single_20260319.log`
+- output artifact path: `chronos2_finetuned/RIG_lora_stockexp_single_20260319/finetuned-ckpt`
+- training outcome:
+  - `val_mae%=2.3538`
+  - `test_mae%=3.0388`
+
+## Completed Follow-On Evaluation
+
+- symbol: `RIG`
+- evaluation directory: `analysis/alpaca_stock_expansion_rig_lora_20260319`
+- rebuilt forecast cache outcome:
+  - `h1 MAE%=17.0920`
+  - `h24 MAE%=19.5189`
+- strict-gate promotion summary from `analysis/alpaca_stock_expansion_rig_lora_20260319/promotion_summary.json`:
+  - `promote=false`
+  - reason: `No candidate met promotion thresholds. Rejected candidates: RIG`
+- decision: rejected
+  - reason: the single-symbol LoRA looked clean in trainer metrics, but the real cache pipeline emitted repeated heuristic fallbacks and both horizons worsened badly versus the already-rejected tuned/base checkpoint, so `RIG` remains below promotion quality.
+
+## Completed Hourly Tune
+
+- symbol: `PATH`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 05:31 UTC`
+- tuned config path: `hyperparams/chronos2/hourly/PATH.json`
+- tuning command:
+
+```bash
+python hyperparam_chronos_hourly.py \
+  --symbols PATH \
+  --quick \
+  --holdout-hours 168 \
+  --prediction-length 24 \
+  --objective composite \
+  --cohort-size 4 \
+  --cohort-min-abs-corr 0.25 \
+  --save-hyperparams
+```
+
+- tuning outcome:
+  - saved `hyperparams/chronos2/hourly/PATH.json`
+  - best objective config: `context_length=1024`, `skip_rates=[1]`, `aggregation=single`, `multivariate=True`
+  - tuner reported `pct_return_mae=5.6334%`
+  - tuner found no usable correlated cohort peers (`cohort_used=0/0`)
+- tuned follow-on cache outcome:
+  - `h1 MAE%=12.9369`
+  - `h24 MAE%=15.0405`
+- promotion summary from `analysis/alpaca_stock_expansion_path_tuned_20260319/promotion_summary.json`:
+  - `promote=false`
+  - reason: `No candidate met promotion thresholds. Rejected candidates: PATH`
+- decision: move to multivariate LoRA
+  - reason: the tuned hourly config did not change the realized cache gate, so `PATH` moves to the evaluator-recommended multivariate LoRA path with `NET, MSFT, PLTR, DBX`.
+
+## Started Multivariate LoRA Trial
+
+- symbol: `PATH`
+- runner: local `RTX 5090`
+- started at: `2026-03-19 05:32 UTC`
+- training log path: `analysis/local_training_logs/path_lora_stockexp_multivar_20260319.log`
+- output artifact path: `chronos2_finetuned/PATH_lora_stockexp_multivar_20260319/finetuned-ckpt`
+- training command:
+
+```bash
+python -u scripts/retrain_chronos2_hourly_loras.py \
+  --symbol PATH \
+  --data-root trainingdatahourly/stocks \
+  --output-root chronos2_finetuned \
+  --context-length 1024 \
+  --batch-size 32 \
+  --learning-rate 5e-05 \
+  --num-steps 1500 \
+  --save-name PATH_lora_stockexp_multivar_20260319 \
+  --covariate-symbols NET,MSFT,PLTR,DBX \
+  --covariate-cols close \
+  --no-update-hparams
+```
+
+- current status:
+  - startup validated cleanly in a 1-step smoke run:
+    - artifact: `chronos2_finetuned/PATH_lora_stockexp_multivar_smoke_20260319/finetuned-ckpt`
+    - smoke outcome: `val_mae%=2.2262`, `test_mae%=2.4837`
+  - full 1500-step run is active with peers `NET, MSFT, PLTR, DBX`.

@@ -1,7 +1,7 @@
 {
   "all_results": [
     {
-      "symbol": "RIG",
+      "symbol": "PATH",
       "context_length": 1024,
       "skip_rates": [
         1
@@ -12,25 +12,25 @@
       "cohort_symbols": [],
       "cohort_requested": 0,
       "status": "success",
-      "price_mae": 0.37376202583312956,
-      "price_rmse": 0.37828322704824985,
-      "pct_return_mae": 0.0592332846011299,
-      "pct_return_mae_smoothness": 0.008511883200697566,
-      "direction_accuracy": 0.2916666666666667,
-      "objective": 0.04762911038804071,
-      "latency_s": 1.646070957183838,
+      "price_mae": 0.6932849057515466,
+      "price_rmse": 0.7970397702801673,
+      "pct_return_mae": 0.05600039626426062,
+      "pct_return_mae_smoothness": 0.008864089479236767,
+      "direction_accuracy": 0.3333333333333333,
+      "objective": 0.04243616091532683,
+      "latency_s": 1.4460573196411133,
       "n_samples": 24,
-      "target_pct_return_mae": 0.0592332846011299,
-      "target_pct_return_mae_smoothness": 0.008511883200697566,
-      "target_objective": 0.04762911038804071,
+      "target_pct_return_mae": 0.05600039626426062,
+      "target_pct_return_mae_smoothness": 0.008864089479236767,
+      "target_objective": 0.04243616091532683,
       "cohort_used": 0,
       "cohort_used_symbols": [],
       "evaluated_symbols": [
-        "RIG"
+        "PATH"
       ]
     },
     {
-      "symbol": "RIG",
+      "symbol": "PATH",
       "context_length": 1024,
       "skip_rates": [
         1
@@ -41,25 +41,25 @@
       "cohort_symbols": [],
       "cohort_requested": 0,
       "status": "success",
-      "price_mae": 0.3811300539970395,
-      "price_rmse": 0.38285289638436915,
-      "pct_return_mae": 0.060400959429007854,
-      "pct_return_mae_smoothness": 0.0038871260470643527,
-      "direction_accuracy": 0.2916666666666667,
-      "objective": 0.04717812021214704,
-      "latency_s": 0.06476593017578125,
+      "price_mae": 0.6974112526575729,
+      "price_rmse": 0.7989786663080578,
+      "pct_return_mae": 0.05633370376878618,
+      "pct_return_mae_smoothness": 0.005938875547091413,
+      "direction_accuracy": 0.3333333333333333,
+      "objective": 0.04174564354360151,
+      "latency_s": 0.06466126441955566,
       "n_samples": 24,
-      "target_pct_return_mae": 0.060400959429007854,
-      "target_pct_return_mae_smoothness": 0.0038871260470643527,
-      "target_objective": 0.04717812021214704,
+      "target_pct_return_mae": 0.05633370376878618,
+      "target_pct_return_mae_smoothness": 0.005938875547091413,
+      "target_objective": 0.04174564354360151,
       "cohort_used": 0,
       "cohort_used_symbols": [],
       "evaluated_symbols": [
-        "RIG"
+        "PATH"
       ]
     },
     {
-      "symbol": "RIG",
+      "symbol": "PATH",
       "context_length": 1024,
       "skip_rates": [
         1
@@ -70,25 +70,25 @@
       "cohort_symbols": [],
       "cohort_requested": 0,
       "status": "success",
-      "price_mae": 0.37376202583312956,
-      "price_rmse": 0.37828322704824985,
-      "pct_return_mae": 0.0592332846011299,
-      "pct_return_mae_smoothness": 0.008511883200697566,
-      "direction_accuracy": 0.2916666666666667,
-      "objective": 0.04762911038804071,
-      "latency_s": 0.03769540786743164,
+      "price_mae": 0.6932849057515466,
+      "price_rmse": 0.7970397702801673,
+      "pct_return_mae": 0.05600039626426062,
+      "pct_return_mae_smoothness": 0.008864089479236767,
+      "direction_accuracy": 0.3333333333333333,
+      "objective": 0.04243616091532683,
+      "latency_s": 0.03696751594543457,
       "n_samples": 24,
-      "target_pct_return_mae": 0.0592332846011299,
-      "target_pct_return_mae_smoothness": 0.008511883200697566,
-      "target_objective": 0.04762911038804071,
+      "target_pct_return_mae": 0.05600039626426062,
+      "target_pct_return_mae_smoothness": 0.008864089479236767,
+      "target_objective": 0.04243616091532683,
       "cohort_used": 0,
       "cohort_used_symbols": [],
       "evaluated_symbols": [
-        "RIG"
+        "PATH"
       ]
     },
     {
-      "symbol": "RIG",
+      "symbol": "PATH",
       "context_length": 1024,
       "skip_rates": [
         1
@@ -99,25 +99,25 @@
       "cohort_symbols": [],
       "cohort_requested": 0,
       "status": "success",
-      "price_mae": 0.3811300539970395,
-      "price_rmse": 0.38285289638436915,
-      "pct_return_mae": 0.060400959429007854,
-      "pct_return_mae_smoothness": 0.0038871260470643527,
-      "direction_accuracy": 0.2916666666666667,
-      "objective": 0.04717812021214704,
-      "latency_s": 0.04006385803222656,
+      "price_mae": 0.6974112526575729,
+      "price_rmse": 0.7989786663080578,
+      "pct_return_mae": 0.05633370376878618,
+      "pct_return_mae_smoothness": 0.005938875547091413,
+      "direction_accuracy": 0.3333333333333333,
+      "objective": 0.04174564354360151,
+      "latency_s": 0.03937983512878418,
       "n_samples": 24,
-      "target_pct_return_mae": 0.060400959429007854,
-      "target_pct_return_mae_smoothness": 0.0038871260470643527,
-      "target_objective": 0.04717812021214704,
+      "target_pct_return_mae": 0.05633370376878618,
+      "target_pct_return_mae_smoothness": 0.005938875547091413,
+      "target_objective": 0.04174564354360151,
       "cohort_used": 0,
       "cohort_used_symbols": [],
       "evaluated_symbols": [
-        "RIG"
+        "PATH"
       ]
     },
     {
-      "symbol": "RIG",
+      "symbol": "PATH",
       "context_length": 1024,
       "skip_rates": [
         1,
@@ -130,25 +130,25 @@
       "cohort_symbols": [],
       "cohort_requested": 0,
       "status": "success",
-      "price_mae": 0.37376202583312956,
-      "price_rmse": 0.37828322704824985,
-      "pct_return_mae": 0.0592332846011299,
-      "pct_return_mae_smoothness": 0.008511883200697566,
-      "direction_accuracy": 0.2916666666666667,
-      "objective": 0.04762911038804071,
-      "latency_s": 0.1190495491027832,
+      "price_mae": 0.6932849057515466,
+      "price_rmse": 0.7970397702801673,
+      "pct_return_mae": 0.05600039626426062,
+      "pct_return_mae_smoothness": 0.008864089479236767,
+      "direction_accuracy": 0.3333333333333333,
+      "objective": 0.04243616091532683,
+      "latency_s": 0.11896610260009766,
       "n_samples": 24,
-      "target_pct_return_mae": 0.0592332846011299,
-      "target_pct_return_mae_smoothness": 0.008511883200697566,
-      "target_objective": 0.04762911038804071,
+      "target_pct_return_mae": 0.05600039626426062,
+      "target_pct_return_mae_smoothness": 0.008864089479236767,
+      "target_objective": 0.04243616091532683,
       "cohort_used": 0,
       "cohort_used_symbols": [],
       "evaluated_symbols": [
-        "RIG"
+        "PATH"
       ]
     },
     {
-      "symbol": "RIG",
+      "symbol": "PATH",
       "context_length": 1024,
       "skip_rates": [
         1,
@@ -161,25 +161,25 @@
       "cohort_symbols": [],
       "cohort_requested": 0,
       "status": "success",
-      "price_mae": 0.3811300539970395,
-      "price_rmse": 0.38285289638436915,
-      "pct_return_mae": 0.060400959429007854,
-      "pct_return_mae_smoothness": 0.0038871260470643527,
-      "direction_accuracy": 0.2916666666666667,
-      "objective": 0.04717812021214704,
-      "latency_s": 0.12437748908996582,
+      "price_mae": 0.6974112526575729,
+      "price_rmse": 0.7989786663080578,
+      "pct_return_mae": 0.05633370376878618,
+      "pct_return_mae_smoothness": 0.005938875547091413,
+      "direction_accuracy": 0.3333333333333333,
+      "objective": 0.04174564354360151,
+      "latency_s": 0.12070870399475098,
       "n_samples": 24,
-      "target_pct_return_mae": 0.060400959429007854,
-      "target_pct_return_mae_smoothness": 0.0038871260470643527,
-      "target_objective": 0.04717812021214704,
+      "target_pct_return_mae": 0.05633370376878618,
+      "target_pct_return_mae_smoothness": 0.005938875547091413,
+      "target_objective": 0.04174564354360151,
       "cohort_used": 0,
       "cohort_used_symbols": [],
       "evaluated_symbols": [
-        "RIG"
+        "PATH"
       ]
     },
     {
-      "symbol": "RIG",
+      "symbol": "PATH",
       "context_length": 1024,
       "skip_rates": [
         1,
@@ -192,25 +192,25 @@
       "cohort_symbols": [],
       "cohort_requested": 0,
       "status": "success",
-      "price_mae": 0.408766899903615,
-      "price_rmse": 0.44682704526937755,
-      "pct_return_mae": 0.06478080822561254,
-      "pct_return_mae_smoothness": 0.014300603504505533,
+      "price_mae": 0.7846771049499516,
+      "price_rmse": 0.9507287137074358,
+      "pct_return_mae": 0.063382641756862,
+      "pct_return_mae_smoothness": 0.01656730216716863,
       "direction_accuracy": 0.2916666666666667,
-      "objective": 0.055202686118856134,
-      "latency_s": 0.12218070030212402,
+      "objective": 0.05459786418203767,
+      "latency_s": 0.11502909660339355,
       "n_samples": 24,
-      "target_pct_return_mae": 0.06478080822561254,
-      "target_pct_return_mae_smoothness": 0.014300603504505533,
-      "target_objective": 0.055202686118856134,
+      "target_pct_return_mae": 0.063382641756862,
+      "target_pct_return_mae_smoothness": 0.01656730216716863,
+      "target_objective": 0.05459786418203767,
       "cohort_used": 0,
       "cohort_used_symbols": [],
       "evaluated_symbols": [
-        "RIG"
+        "PATH"
       ]
     },
     {
-      "symbol": "RIG",
+      "symbol": "PATH",
       "context_length": 1024,
       "skip_rates": [
         1,
@@ -223,25 +223,25 @@
       "cohort_symbols": [],
       "cohort_requested": 0,
       "status": "success",
-      "price_mae": 0.41517167727152476,
-      "price_rmse": 0.44514364221822544,
-      "pct_return_mae": 0.06579582841070124,
-      "pct_return_mae_smoothness": 0.009245994918508887,
+      "price_mae": 0.7871848678588872,
+      "price_rmse": 0.944721758593558,
+      "pct_return_mae": 0.0635852074199424,
+      "pct_return_mae_smoothness": 0.01350566196568923,
       "direction_accuracy": 0.2916666666666667,
-      "objective": 0.05444859329884601,
-      "latency_s": 0.12754082679748535,
+      "objective": 0.05372885577460029,
+      "latency_s": 0.12328171730041504,
       "n_samples": 24,
-      "target_pct_return_mae": 0.06579582841070124,
-      "target_pct_return_mae_smoothness": 0.009245994918508887,
-      "target_objective": 0.05444859329884601,
+      "target_pct_return_mae": 0.0635852074199424,
+      "target_pct_return_mae_smoothness": 0.01350566196568923,
+      "target_objective": 0.05372885577460029,
       "cohort_used": 0,
       "cohort_used_symbols": [],
       "evaluated_symbols": [
-        "RIG"
+        "PATH"
       ]
     },
     {
-      "symbol": "RIG",
+      "symbol": "PATH",
       "context_length": 2048,
       "skip_rates": [
         1
@@ -252,25 +252,25 @@
       "cohort_symbols": [],
       "cohort_requested": 0,
       "status": "success",
-      "price_mae": 1.1993113303184506,
-      "price_rmse": 1.2016882528537502,
-      "pct_return_mae": 0.190065187055222,
-      "pct_return_mae_smoothness": 0.011901258017714056,
-      "direction_accuracy": 0.2916666666666667,
-      "objective": 0.17964729402808857,
-      "latency_s": 0.03963494300842285,
+      "price_mae": 1.5110299777984617,
+      "price_rmse": 1.5994538169243424,
+      "pct_return_mae": 0.12205411775431839,
+      "pct_return_mae_smoothness": 0.017325257220077016,
+      "direction_accuracy": 0.6666666666666666,
+      "objective": 0.09478462444801203,
+      "latency_s": 0.03965020179748535,
       "n_samples": 24,
-      "target_pct_return_mae": 0.190065187055222,
-      "target_pct_return_mae_smoothness": 0.011901258017714056,
-      "target_objective": 0.17964729402808857,
+      "target_pct_return_mae": 0.12205411775431839,
+      "target_pct_return_mae_smoothness": 0.017325257220077016,
+      "target_objective": 0.09478462444801203,
       "cohort_used": 0,
       "cohort_used_symbols": [],
       "evaluated_symbols": [
-        "RIG"
+        "PATH"
       ]
     },
     {
-      "symbol": "RIG",
+      "symbol": "PATH",
       "context_length": 2048,
       "skip_rates": [
         1
@@ -281,25 +281,25 @@
       "cohort_symbols": [],
       "cohort_requested": 0,
       "status": "success",
-      "price_mae": 1.2098830286661781,
-      "price_rmse": 1.2104884354575793,
-      "pct_return_mae": 0.19174057506595532,
-      "pct_return_mae_smoothness": 0.004625995294022489,
-      "direction_accuracy": 0.2916666666666667,
-      "objective": 0.17877634008552987,
-      "latency_s": 0.04136466979980469,
+      "price_mae": 1.5026821088790892,
+      "price_rmse": 1.589274008285876,
+      "pct_return_mae": 0.12137981493369054,
+      "pct_return_mae_smoothness": 0.011184644956991341,
+      "direction_accuracy": 0.6666666666666666,
+      "objective": 0.09196110733530419,
+      "latency_s": 0.04102468490600586,
       "n_samples": 24,
-      "target_pct_return_mae": 0.19174057506595532,
-      "target_pct_return_mae_smoothness": 0.004625995294022489,
-      "target_objective": 0.17877634008552987,
+      "target_pct_return_mae": 0.12137981493369054,
+      "target_pct_return_mae_smoothness": 0.011184644956991341,
+      "target_objective": 0.09196110733530419,
       "cohort_used": 0,
       "cohort_used_symbols": [],
       "evaluated_symbols": [
-        "RIG"
+        "PATH"
       ]
     },
     {
-      "symbol": "RIG",
+      "symbol": "PATH",
       "context_length": 2048,
       "skip_rates": [
         1
@@ -310,25 +310,25 @@
       "cohort_symbols": [],
       "cohort_requested": 0,
       "status": "success",
-      "price_mae": 1.1993113303184506,
-      "price_rmse": 1.2016882528537502,
-      "pct_return_mae": 0.190065187055222,
-      "pct_return_mae_smoothness": 0.011901258017714056,
-      "direction_accuracy": 0.2916666666666667,
-      "objective": 0.17964729402808857,
-      "latency_s": 0.038414955139160156,
+      "price_mae": 1.5110299777984617,
+      "price_rmse": 1.5994538169243424,
+      "pct_return_mae": 0.12205411775431839,
+      "pct_return_mae_smoothness": 0.017325257220077016,
+      "direction_accuracy": 0.6666666666666666,
+      "objective": 0.09478462444801203,
+      "latency_s": 0.03776073455810547,
       "n_samples": 24,
-      "target_pct_return_mae": 0.190065187055222,
-      "target_pct_return_mae_smoothness": 0.011901258017714056,
-      "target_objective": 0.17964729402808857,
+      "target_pct_return_mae": 0.12205411775431839,
+      "target_pct_return_mae_smoothness": 0.017325257220077016,
+      "target_objective": 0.09478462444801203,
       "cohort_used": 0,
       "cohort_used_symbols": [],
       "evaluated_symbols": [
-        "RIG"
+        "PATH"
       ]
     },
     {
-      "symbol": "RIG",
+      "symbol": "PATH",
       "context_length": 2048,
       "skip_rates": [
         1
@@ -339,25 +339,25 @@
       "cohort_symbols": [],
       "cohort_requested": 0,
       "status": "success",
-      "price_mae": 1.2098830286661781,
-      "price_rmse": 1.2104884354575793,
-      "pct_return_mae": 0.19174057506595532,
-      "pct_return_mae_smoothness": 0.004625995294022489,
-      "direction_accuracy": 0.2916666666666667,
-      "objective": 0.17877634008552987,
-      "latency_s": 0.04100298881530762,
+      "price_mae": 1.5026821088790892,
+      "price_rmse": 1.589274008285876,
+      "pct_return_mae": 0.12137981493369054,
+      "pct_return_mae_smoothness": 0.011184644956991341,
+      "direction_accuracy": 0.6666666666666666,
+      "objective": 0.09196110733530419,
+      "latency_s": 0.0409703254699707,
       "n_samples": 24,
-      "target_pct_return_mae": 0.19174057506595532,
-      "target_pct_return_mae_smoothness": 0.004625995294022489,
-      "target_objective": 0.17877634008552987,
+      "target_pct_return_mae": 0.12137981493369054,
+      "target_pct_return_mae_smoothness": 0.011184644956991341,
+      "target_objective": 0.09196110733530419,
       "cohort_used": 0,
       "cohort_used_symbols": [],
       "evaluated_symbols": [
-        "RIG"
+        "PATH"
       ]
     },
     {
-      "symbol": "RIG",
+      "symbol": "PATH",
       "context_length": 2048,
       "skip_rates": [
         1,
@@ -365,47 +365,47 @@
         3
       ],
       "aggregation_method": "single",
-      "use_multivariate": false,
-      "scaler": "meanstd",
-      "cohort_symbols": [],
-      "cohort_requested": 0,
-      "status": "error",
-      "error": "Insufficient data: 4826 < 6144"
-    },
-    {
-      "symbol": "RIG",
-      "context_length": 2048,
-      "skip_rates": [
-        1,
-        2,
-        3
-      ],
-      "aggregation_method": "single",
-      "use_multivariate": true,
-      "scaler": "meanstd",
-      "cohort_symbols": [],
-      "cohort_requested": 0,
-      "status": "error",
-      "error": "Insufficient data: 4826 < 6144"
-    },
-    {
-      "symbol": "RIG",
-      "context_length": 2048,
-      "skip_rates": [
-        1,
-        2,
-        3
-      ],
-      "aggregation_method": "median",
       "use_multivariate": false,
       "scaler": "meanstd",
       "cohort_symbols": [],
       "cohort_requested": 0,
       "status": "error",
-      "error": "Insufficient data: 4826 < 6144"
+      "error": "Insufficient data: 4759 < 6144"
     },
     {
-      "symbol": "RIG",
+      "symbol": "PATH",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "single",
+      "use_multivariate": true,
+      "scaler": "meanstd",
+      "cohort_symbols": [],
+      "cohort_requested": 0,
+      "status": "error",
+      "error": "Insufficient data: 4759 < 6144"
+    },
+    {
+      "symbol": "PATH",
+      "context_length": 2048,
+      "skip_rates": [
+        1,
+        2,
+        3
+      ],
+      "aggregation_method": "median",
+      "use_multivariate": false,
+      "scaler": "meanstd",
+      "cohort_symbols": [],
+      "cohort_requested": 0,
+      "status": "error",
+      "error": "Insufficient data: 4759 < 6144"
+    },
+    {
+      "symbol": "PATH",
       "context_length": 2048,
       "skip_rates": [
         1,
@@ -418,12 +418,12 @@
       "cohort_symbols": [],
       "cohort_requested": 0,
       "status": "error",
-      "error": "Insufficient data: 4826 < 6144"
+      "error": "Insufficient data: 4759 < 6144"
     }
   ],
   "best_per_symbol": {
-    "RIG": {
-      "symbol": "RIG",
+    "PATH": {
+      "symbol": "PATH",
       "context_length": 1024,
       "skip_rates": [
         1
@@ -434,24 +434,24 @@
       "cohort_symbols": [],
       "cohort_requested": 0,
       "status": "success",
-      "price_mae": 0.3811300539970395,
-      "price_rmse": 0.38285289638436915,
-      "pct_return_mae": 0.060400959429007854,
-      "pct_return_mae_smoothness": 0.0038871260470643527,
-      "direction_accuracy": 0.2916666666666667,
-      "objective": 0.04717812021214704,
-      "latency_s": 0.06476593017578125,
+      "price_mae": 0.6974112526575729,
+      "price_rmse": 0.7989786663080578,
+      "pct_return_mae": 0.05633370376878618,
+      "pct_return_mae_smoothness": 0.005938875547091413,
+      "direction_accuracy": 0.3333333333333333,
+      "objective": 0.04174564354360151,
+      "latency_s": 0.06466126441955566,
       "n_samples": 24,
-      "target_pct_return_mae": 0.060400959429007854,
-      "target_pct_return_mae_smoothness": 0.0038871260470643527,
-      "target_objective": 0.04717812021214704,
+      "target_pct_return_mae": 0.05633370376878618,
+      "target_pct_return_mae_smoothness": 0.005938875547091413,
+      "target_objective": 0.04174564354360151,
       "cohort_used": 0,
       "cohort_used_symbols": [],
       "evaluated_symbols": [
-        "RIG"
+        "PATH"
       ]
     }
   },
   "selection_metric": "objective",
-  "timestamp": "2026-03-19T05:23:01.615905"
+  "timestamp": "2026-03-19T05:31:31.598061"
 }
