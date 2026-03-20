@@ -426,6 +426,7 @@ def simulate_daily_policy(
     *,
     max_steps: int,
     fee_rate: float = 0.001,
+    slippage_bps: float = 0.0,
     max_leverage: float = 1.0,
     periods_per_year: float = 365.0,
     short_borrow_apr: float = 0.0,
@@ -434,6 +435,9 @@ def simulate_daily_policy(
     action_level_bins: int = 1,
     action_max_offset_bps: float = 0.0,
     fill_buffer_bps: float = 0.0,
+    trailing_stop_pct: float = 0.0,
+    max_hold_bars: int = 0,
+    min_notional_usd: float = 0.0,
     enable_drawdown_profit_early_exit: bool = True,
     drawdown_profit_early_exit_verbose: bool = True,
     drawdown_profit_early_exit_min_steps: int = 20,
@@ -445,6 +449,19 @@ def simulate_daily_policy(
 
     This is used to generate a daily action trace (and a baseline metric set)
     without relying on the compiled binding.
+
+    Production-fidelity parameters:
+        slippage_bps: Adverse fill slippage in basis points applied on top of
+            fee_rate (e.g. 3bps for Alpaca crypto). Buy fills at price*(1+slip),
+            sell fills at price*(1-slip). Default 0 (no extra slippage).
+        trailing_stop_pct: Fraction below peak-since-entry that triggers a forced
+            exit at the current bar's close (e.g. 0.003 = 0.3%). 0 = disabled.
+            Matches production TRAILING_STOP_PCT = 0.003.
+        max_hold_bars: Force-exit after holding this many bars (e.g. 6 for 6
+            daily steps). 0 = disabled. Matches production MAX_HOLD_HOURS = 6.
+        min_notional_usd: Skip opening a position if the dollar value of the
+            position would be below this threshold (e.g. 12.0 for $12 minimum).
+            0 = disabled. Matches production min notional check.
     """
     S = data.num_symbols
     T = data.num_timesteps
@@ -452,8 +469,22 @@ def simulate_daily_policy(
         raise ValueError(f"max_steps must be in [1, {T-1}] (got {max_steps})")
     fill_buffer_bps = _normalize_fill_buffer_bps(fill_buffer_bps)
 
+    # Slippage: applied on top of fee_rate as adverse execution cost.
+    # Buys fill at price*(1+slip), sells at price*(1-slip). We model this by
+    # adding slippage_bps/10000 to the effective fee_rate for position opens and
+    # using it symmetrically on closes. This exactly matches production where
+    # Alpaca crypto has 0 commission but ~2-5bps market-impact slippage.
+    slip_frac = max(0.0, float(slippage_bps)) / 10_000.0
+    effective_fee = float(fee_rate) + slip_frac
+
+    # Production constraints
+    _trailing_stop = max(0.0, float(trailing_stop_pct))
+    _max_hold = max(0, int(max_hold_bars))
+    _min_notional = max(0.0, float(min_notional_usd))
+
     cash = float(initial_cash)
     pos: Optional[Position] = None
+    pos_peak_price: float = 0.0   # peak close price since entry (for trailing stop)
     hold_steps = 0
     step = 0
     peak_equity = float(initial_cash)
@@ -487,6 +518,11 @@ def simulate_daily_policy(
         price_cur = float(data.prices[t, cur_sym, P_CLOSE]) if cur_sym >= 0 else 0.0
         equity_before = _compute_equity(cash, pos, price_cur) if cur_sym >= 0 else float(cash)
 
+        # Update peak price for trailing stop tracking (long positions only)
+        if pos is not None and not pos.is_short and price_cur > 0.0:
+            if price_cur > pos_peak_price:
+                pos_peak_price = price_cur
+
         obs = _build_obs(data, t, pos, cash, hold_steps, step, max_steps)
         action = int(policy_fn(obs))
         if action < 0 or action > 2 * side_block:
@@ -498,10 +534,11 @@ def simulate_daily_policy(
         if action == 0:
             if pos is not None:
                 if cur_tradable:
-                    cash, win = _close_position(cash, pos, price_cur, fee_rate)
+                    cash, win = _close_position(cash, pos, price_cur, effective_fee)
                     num_trades += 1
                     winning_trades += int(win)
                     pos = None
+                    pos_peak_price = 0.0
                     hold_steps = 0
                 else:
                     hold_steps += 1
@@ -532,25 +569,32 @@ def simulate_daily_policy(
                     hold_steps += 1
                 else:
                     if pos is not None:
-                        cash, win = _close_position(cash, pos, price_cur, fee_rate)
+                        cash, win = _close_position(cash, pos, price_cur, effective_fee)
                         num_trades += 1
                         winning_trades += int(win)
+                        pos = None
+                        pos_peak_price = 0.0
                     close_px = float(data.prices[t, target_sym, P_CLOSE])
                     low_px = float(data.prices[t, target_sym, P_LOW])
                     high_px = float(data.prices[t, target_sym, P_HIGH])
-                    if is_short_target:
+                    # Min notional check: skip if position value would be too small
+                    open_budget = cash * max_leverage * target_alloc
+                    if _min_notional > 0.0 and open_budget < _min_notional:
+                        pass  # below min notional — stay flat
+                    elif is_short_target:
                         cash, pos = _open_short_limit(
                             cash=cash,
                             sym=target_sym,
                             close_price=close_px,
                             low_price=low_px,
                             high_price=high_px,
-                            fee_rate=fee_rate,
+                            fee_rate=effective_fee,
                             max_leverage=max_leverage,
                             allocation_pct=target_alloc,
                             level_offset_bps=level_bps,
                             fill_buffer_bps=fill_buffer_bps,
                         )
+                        pos_peak_price = 0.0  # trailing stop not applied to shorts
                     else:
                         cash, pos = _open_long_limit(
                             cash=cash,
@@ -558,12 +602,14 @@ def simulate_daily_policy(
                             close_price=close_px,
                             low_price=low_px,
                             high_price=high_px,
-                            fee_rate=fee_rate,
+                            fee_rate=effective_fee,
                             max_leverage=max_leverage,
                             allocation_pct=target_alloc,
                             level_offset_bps=level_bps,
                             fill_buffer_bps=fill_buffer_bps,
                         )
+                        # Initialise peak price to the fill price for trailing stop
+                        pos_peak_price = float(pos.entry_price) if pos is not None else 0.0
                     if pos is not None and ((S + pos.sym) if pos.is_short else pos.sym) == target_pos_id:
                         hold_steps = 0
         else:
@@ -589,6 +635,35 @@ def simulate_daily_policy(
                 periods_per_year=periods_per_year,
             )
             equity_after = _compute_equity(cash, pos, price_new)
+
+            # --- Trailing stop (long positions only, matches production 0.3% below peak) ---
+            if (
+                _trailing_stop > 0.0
+                and not pos.is_short
+                and pos_peak_price > 0.0
+                and price_new < pos_peak_price * (1.0 - _trailing_stop)
+            ):
+                cash, win = _close_position(cash, pos, price_new, effective_fee)
+                num_trades += 1
+                winning_trades += int(win)
+                pos = None
+                pos_peak_price = 0.0
+                hold_steps = 0
+                equity_after = float(cash)
+
+            # --- Max hold: force exit after max_hold_bars bars ---
+            elif _max_hold > 0 and pos is not None and hold_steps >= _max_hold:
+                cash, win = _close_position(cash, pos, price_new, effective_fee)
+                num_trades += 1
+                winning_trades += int(win)
+                pos = None
+                pos_peak_price = 0.0
+                hold_steps = 0
+                equity_after = float(cash)
+
+            # Update peak price for next bar
+            elif pos is not None and not pos.is_short and price_new > pos_peak_price:
+                pos_peak_price = price_new
 
         ret = 0.0
         if equity_before > 1e-6:
@@ -644,10 +719,11 @@ def simulate_daily_policy(
             # Close at t_new for final accounting (matches C env behavior).
             if pos is not None:
                 price_end = float(data.prices[t_new, pos.sym, P_CLOSE])
-                cash, win = _close_position(cash, pos, price_end, fee_rate)
+                cash, win = _close_position(cash, pos, price_end, effective_fee)
                 num_trades += 1
                 winning_trades += int(win)
                 pos = None
+                pos_peak_price = 0.0
 
             final_equity = float(cash)
             total_return = (final_equity - initial_equity) / initial_equity
