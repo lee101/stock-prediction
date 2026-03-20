@@ -359,6 +359,19 @@ class TestComputeMetrics:
         m = compute_metrics(eq_df, WorkStealConfig())
         assert m["total_return"] == pytest.approx(0.0, abs=1e-10)
 
+    def test_trade_counts_use_completed_exits(self):
+        eq_df = pd.DataFrame({"equity": [10000, 10100, 10050, 10200]})
+        trades = [
+            type("Trade", (), {"side": "buy", "pnl": 0.0})(),
+            type("Trade", (), {"side": "sell", "pnl": 25.0})(),
+            type("Trade", (), {"side": "short", "pnl": 0.0})(),
+            type("Trade", (), {"side": "cover", "pnl": -10.0})(),
+        ]
+        m = compute_metrics(eq_df, WorkStealConfig(), trades=trades)
+        assert m["n_orders"] == 4
+        assert m["n_trades"] == 2
+        assert m["win_rate"] == pytest.approx(50.0)
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

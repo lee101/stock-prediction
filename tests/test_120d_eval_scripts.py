@@ -59,12 +59,9 @@ class TestHybridSpotEval:
         args = parse_args(["--cash", "50000"])
         assert args.cash == 50000.0
 
-    def test_deployed_symbols_count(self):
+    def test_default_symbols_use_auto_universe(self):
         from scripts.run_120d_hybrid_spot_eval import DEFAULT_SYMBOLS
-        syms = DEFAULT_SYMBOLS.split(",")
-        assert len(syms) == 6
-        assert "BTCUSD" in syms
-        assert "LINKUSD" in syms
+        assert DEFAULT_SYMBOLS == "auto"
 
     def test_build_parser_returns_parser(self):
         from scripts.run_120d_hybrid_spot_eval import build_parser

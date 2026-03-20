@@ -3,7 +3,7 @@
 Hybrid RL + Gemini daily trading backtest with market simulator validation.
 
 Pipeline:
-  1. RL model (ent_anneal 23-sym) generates per-symbol signals (direction + confidence)
+  1. RL checkpoint generates per-symbol signals from the trained universe
   2. Gemini gets FULL context:
      - RL signal (direction, confidence, action probabilities)
      - Chronos2 h24 forecast (predicted close/high/low, p10/p90 bands)
@@ -19,8 +19,8 @@ Pipeline:
 
 Usage:
     python -u backtest_hybrid_rl_gemini.py \
-        --checkpoint pufferlib_market/checkpoints/autoresearch_mixed23_daily/ent_anneal/best.pt \
-        --symbols BTCUSD,ETHUSD,SOLUSD,AAPL,MSFT,NVDA \
+        --checkpoint pufferlib_market/checkpoints/mixed23_fresh_targeted/reg_combo_2/best.pt \
+        --symbols auto \
         --start-date 2025-06-01 --end-date 2025-12-01 \
         --mode hybrid  # or "rl_only" for comparison
 """
@@ -41,16 +41,13 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# marketsimulator.py is shadowed by marketsimulator/ package — register before exec
-import types as _types
-_ms_mod = _types.ModuleType("marketsimulator_py")
-_ms_mod.__file__ = str(Path(__file__).resolve().parent / "marketsimulator.py")
-sys.modules["marketsimulator_py"] = _ms_mod
-_ms_code = Path(_ms_mod.__file__).read_text()
-exec(compile(_ms_code, _ms_mod.__file__, "exec"), _ms_mod.__dict__)
-SimulationConfig = _ms_mod.SimulationConfig
-run_shared_cash_simulation = _ms_mod.run_shared_cash_simulation
-
+from unified_orchestrator.orchestrator import (
+    _build_crypto_rl_signal_map,
+    _num_symbols_from_obs_size,
+    _read_trained_symbols_for_checkpoint,
+)
+from unified_orchestrator.rl_gemini_bridge import RLSignal, RLGeminiBridge
+from binanceneural.marketsimulator import SimulationConfig, run_shared_cash_simulation
 
 CRYPTO_SYMBOLS = {"BTCUSD", "ETHUSD", "SOLUSD", "LTCUSD", "AVAXUSD",
                   "DOGEUSD", "LINKUSD", "AAVEUSD", "UNIUSD"}
@@ -94,6 +91,12 @@ class BacktestContext:
     prev_forecasts: Dict[str, dict] = field(default_factory=dict)
     prev_forecast_accuracy: Dict[str, float] = field(default_factory=dict)
     equity_curve: List[dict] = field(default_factory=list)
+    signal_universe: List[str] = field(default_factory=list)
+    execution_symbols: List[str] = field(default_factory=list)
+    requested_start: str = ""
+    requested_end: str = ""
+    effective_start: str = ""
+    effective_end: str = ""
 
 
 def load_daily_bars(symbol: str) -> pd.DataFrame:
@@ -128,15 +131,78 @@ def load_forecast_h24(symbol: str) -> Optional[pd.DataFrame]:
     return None
 
 
-def get_rl_signals(
+def _dedupe_symbols(symbols: List[str]) -> List[str]:
+    cleaned: List[str] = []
+    seen: set[str] = set()
+    for raw in symbols:
+        sym = str(raw or "").strip().upper()
+        if not sym or sym in seen:
+            continue
+        cleaned.append(sym)
+        seen.add(sym)
+    return cleaned
+
+
+def _load_bridge_and_trained_symbols(
     checkpoint_path: str,
+    hidden_size: int = 1024,
+) -> Tuple[RLGeminiBridge, List[str]]:
+    bridge = RLGeminiBridge(checkpoint_path=checkpoint_path, hidden_size=hidden_size)
+    spec = bridge.get_checkpoint_spec()
+    trained_symbols = _read_trained_symbols_for_checkpoint(
+        Path(checkpoint_path),
+        _num_symbols_from_obs_size(spec.obs_size),
+    )
+    return bridge, trained_symbols
+
+
+def resolve_backtest_symbols(
+    requested_symbols: Optional[List[str]],
+    trained_symbols: List[str],
+) -> Tuple[List[str], List[str]]:
+    requested = _dedupe_symbols(list(requested_symbols or []))
+    if not requested or requested == ["AUTO"]:
+        execution_symbols = list(trained_symbols)
+    else:
+        execution_symbols = requested
+    load_symbols = _dedupe_symbols([*trained_symbols, *execution_symbols])
+    return execution_symbols, load_symbols
+
+
+def resolve_effective_end_date(
+    end_date: Optional[str],
+    bars_dict: Dict[str, pd.DataFrame],
+    execution_symbols: List[str],
+) -> Tuple[pd.Timestamp, pd.Timestamp]:
+    available_ends = [
+        pd.Timestamp(df["timestamp"].max())
+        for sym, df in bars_dict.items()
+        if sym in execution_symbols and not df.empty
+    ]
+    if not available_ends:
+        raise ValueError("No backtest bars available for execution symbols.")
+    available_end = max(available_ends)
+    if available_end.tz is None:
+        available_end = available_end.tz_localize("UTC")
+    requested_end = pd.Timestamp(end_date, tz="UTC") if end_date else available_end
+    return requested_end, min(requested_end, available_end)
+
+
+def _signal_from_rl(signal: Optional[RLSignal], symbol: str) -> SymbolSignal:
+    if signal is None:
+        return SymbolSignal(symbol=symbol, rl_direction="flat", rl_confidence=0.0, rl_action_probs=[])
+    return SymbolSignal(
+        symbol=symbol,
+        rl_direction=str(signal.direction),
+        rl_confidence=float(signal.confidence),
+        rl_action_probs=[],
+    )
+
+
+def _fallback_momentum_signals(
     bars_dict: Dict[str, pd.DataFrame],
     date: pd.Timestamp,
-    hidden_size: int = 1024,
 ) -> List[SymbolSignal]:
-    """Run RL inference on daily bars to get per-symbol signals."""
-    # For now, use a simplified signal extraction from daily features
-    # In production, this would load the PPO model and run inference
     signals = []
     for sym, df in bars_dict.items():
         day_rows = df[df["timestamp"] == date]
@@ -144,19 +210,14 @@ def get_rl_signals(
             continue
         bar = day_rows.iloc[0]
         idx = day_rows.index[0]
-
-        # Simple momentum-based signal as placeholder
-        # (real implementation loads checkpoint and runs policy forward pass)
         if idx < 5:
             signals.append(SymbolSignal(sym, "flat", 0.3, []))
             continue
 
         close = float(bar["close"])
-        prev_close = float(df.iloc[idx-1]["close"])
+        prev_close = float(df.iloc[idx - 1]["close"])
         ret_1d = (close - prev_close) / prev_close
-
-        sma5 = float(df["close"].iloc[max(0,idx-4):idx+1].mean())
-        sma20 = float(df["close"].iloc[max(0,idx-19):idx+1].mean())
+        sma20 = float(df["close"].iloc[max(0, idx - 19):idx + 1].mean())
 
         if close > sma20 and ret_1d > -0.02:
             direction = "long"
@@ -169,8 +230,37 @@ def get_rl_signals(
             confidence = 0.3
 
         signals.append(SymbolSignal(sym, direction, confidence, []))
-
     return signals
+
+
+def get_rl_signals(
+    checkpoint_path: str,
+    bars_dict: Dict[str, pd.DataFrame],
+    date: pd.Timestamp,
+    hidden_size: int = 1024,
+    bridge: Optional[RLGeminiBridge] = None,
+    trained_symbols: Optional[List[str]] = None,
+) -> List[SymbolSignal]:
+    """Run RL inference on daily bars to get per-symbol signals."""
+    if bridge is None or trained_symbols is None:
+        bridge, trained_symbols = _load_bridge_and_trained_symbols(checkpoint_path, hidden_size=hidden_size)
+
+    history_frames: Dict[str, pd.DataFrame] = {}
+    for sym in trained_symbols:
+        df = bars_dict.get(sym)
+        if df is None:
+            continue
+        history = df[df["timestamp"] <= date]
+        if not history.empty:
+            history_frames[sym] = history
+
+    try:
+        signal_map = _build_crypto_rl_signal_map(history_frames, bridge)
+    except Exception as exc:
+        print(f"  [{date.strftime('%Y-%m-%d')}] RL inference failed, falling back to momentum proxy: {exc}")
+        return _fallback_momentum_signals(bars_dict, date)
+
+    return [_signal_from_rl(signal_map.get(sym), sym) for sym in trained_symbols]
 
 
 def build_gemini_prompt(
@@ -358,10 +448,13 @@ def run_hybrid_backtest(
 ) -> Tuple[BacktestContext, Dict[str, float]]:
     """Run RL+Gemini hybrid or RL-only backtest."""
 
-    print(f"Loading data for {len(symbols)} symbols...")
+    rl_bridge, trained_symbols = _load_bridge_and_trained_symbols(checkpoint)
+    execution_symbols, load_symbols = resolve_backtest_symbols(symbols, trained_symbols)
+
+    print(f"Loading data for {len(load_symbols)} symbols...")
     all_bars = {}
     all_forecasts = {}
-    for sym in symbols:
+    for sym in load_symbols:
         try:
             all_bars[sym] = load_daily_bars(sym)
             all_forecasts[sym] = load_forecast_h24(sym)
@@ -369,22 +462,37 @@ def run_hybrid_backtest(
         except FileNotFoundError:
             print(f"  {sym}: SKIP (no data)")
 
+    execution_symbols = [sym for sym in execution_symbols if sym in all_bars]
+    if not execution_symbols:
+        raise ValueError("No execution symbols had local daily data for the requested backtest.")
+
     start = pd.Timestamp(start_date, tz="UTC")
-    end = pd.Timestamp(end_date, tz="UTC") if end_date else min(df["timestamp"].max() for df in all_bars.values())
+    requested_end, end = resolve_effective_end_date(end_date, all_bars, execution_symbols)
 
     # Build actions for marketsimulator
     all_actions = []
     all_bar_data = []
-    ctx = BacktestContext(cash=initial_cash)
-    n_symbols = len(all_bars)
+    ctx = BacktestContext(
+        cash=initial_cash,
+        signal_universe=list(trained_symbols),
+        execution_symbols=list(execution_symbols),
+        requested_start=start.isoformat(),
+        requested_end=requested_end.isoformat(),
+        effective_start=start.isoformat(),
+        effective_end=end.isoformat(),
+    )
+    n_symbols = len(execution_symbols)
 
     dates = sorted(set().union(*(
         set(df[(df["timestamp"] >= start) & (df["timestamp"] <= end)]["timestamp"].values)
-        for df in all_bars.values()
+        for sym, df in all_bars.items()
+        if sym in execution_symbols
     )))
 
-    print(f"\nBacktest: {len(dates)} days, {mode} mode, {n_symbols} symbols")
-    print(f"  Period: {start.date()} to {end.date()}")
+    print(f"\nBacktest: {len(dates)} days, {mode} mode, {n_symbols} execution symbols")
+    print(f"  Requested period: {start.date()} to {requested_end.date()}")
+    print(f"  Effective period: {start.date()} to {end.date()}")
+    print(f"  RL signal universe: {len(trained_symbols)} symbols")
     print()
 
     for i, date in enumerate(dates):
@@ -393,13 +501,19 @@ def run_hybrid_backtest(
             date = date.tz_localize("UTC")
 
         # Get RL signals
-        rl_signals = get_rl_signals(checkpoint, all_bars, date)
+        rl_signals = get_rl_signals(
+            checkpoint,
+            all_bars,
+            date,
+            bridge=rl_bridge,
+            trained_symbols=trained_symbols,
+        )
         signal_map = {s.symbol: s for s in rl_signals}
 
         # Collect all decisions first (for portfolio-level normalization)
         daily_decisions = {}
 
-        for sym in all_bars:
+        for sym in execution_symbols:
             day_rows = all_bars[sym][all_bars[sym]["timestamp"] == date]
             if day_rows.empty:
                 continue
@@ -560,7 +674,7 @@ def run_hybrid_backtest(
 def main():
     parser = argparse.ArgumentParser(description="Hybrid RL+Gemini daily backtest")
     parser.add_argument("--checkpoint", default="pufferlib_market/checkpoints/mixed23_fresh_targeted/reg_combo_2/best.pt")
-    parser.add_argument("--symbols", default="BTCUSD,ETHUSD,SOLUSD,AAPL,MSFT,NVDA,GOOG,AMZN,META,TSLA,PLTR,NET,JPM,V")
+    parser.add_argument("--symbols", default="auto")
     parser.add_argument("--start-date", default="2025-06-01")
     parser.add_argument("--end-date", default="2025-12-01")
     parser.add_argument("--mode", choices=["hybrid", "rl_only"], default="hybrid")

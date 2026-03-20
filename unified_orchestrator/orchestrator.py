@@ -152,6 +152,15 @@ _CHECKPOINT_DATA_HINTS = {
     "slip_5bps": REPO / "pufferlib_market/data/crypto6_train.bin",
     "ent_01": REPO / "pufferlib_market/data/crypto6_train.bin",
     "reg_combo_2": REPO / "pufferlib_market/data/crypto6_train.bin",
+    "mixed23_fresh_targeted": REPO / "pufferlib_market/data/mixed23_fresh_train.bin",
+    "mixed23_fresh_replay": REPO / "pufferlib_market/data/mixed23_fresh_train.bin",
+    "mixed23_fresh_robust": REPO / "pufferlib_market/data/mixed23_fresh_train.bin",
+    "mixed23_fresh_gspo": REPO / "pufferlib_market/data/mixed23_fresh_train.bin",
+    "mixed23_fresh_gspo2": REPO / "pufferlib_market/data/mixed23_fresh_train.bin",
+    "mixed23_fresh_gspo_seed7": REPO / "pufferlib_market/data/mixed23_fresh_train.bin",
+    "mixed23_fresh_clip_vloss": REPO / "pufferlib_market/data/mixed23_fresh_train.bin",
+    "mixed23_fresh_ent_anneal": REPO / "pufferlib_market/data/mixed23_fresh_train.bin",
+    "mixed23_fresh_sds_temp": REPO / "pufferlib_market/data/mixed23_fresh_train.bin",
 }
 STOCK_FORECAST_CACHE_CANDIDATES = [
     REPO / "binanceneural/forecast_cache",
@@ -291,10 +300,41 @@ def _get_crypto_rl_trader():
 _crypto_rl_trader = None
 
 
+def _checkpoint_hint_keys(checkpoint_path: Path) -> list[str]:
+    keys: list[str] = []
+    parent = checkpoint_path.parent
+    rel_parts: tuple[str, ...] = ()
+    if "checkpoints" in parent.parts:
+        idx = parent.parts.index("checkpoints")
+        rel_parts = tuple(str(part) for part in parent.parts[idx + 1:] if str(part) not in ("", "."))
+    else:
+        checkpoint_root = REPO / "pufferlib_market" / "checkpoints"
+        try:
+            rel_parent = checkpoint_path.resolve().relative_to(checkpoint_root.resolve()).parent
+            rel_parts = tuple(str(part) for part in rel_parent.parts if str(part) not in ("", "."))
+        except Exception:
+            rel_parts = tuple(str(part) for part in parent.parts if str(part) not in ("", "."))
+    if rel_parts:
+        for length in range(len(rel_parts), 0, -1):
+            keys.append("/".join(rel_parts[:length]))
+        keys.append(rel_parts[-1])
+    else:
+        keys.append(parent.name)
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for key in keys:
+        if key and key not in seen:
+            ordered.append(key)
+            seen.add(key)
+    return ordered
+
+
 def _checkpoint_data_path(checkpoint_path: Path) -> Path | None:
-    path = _CHECKPOINT_DATA_HINTS.get(checkpoint_path.parent.name)
-    if path is not None and path.exists():
-        return path
+    for key in _checkpoint_hint_keys(checkpoint_path):
+        path = _CHECKPOINT_DATA_HINTS.get(key)
+        if path is not None and path.exists():
+            return path
     return None
 
 
@@ -307,6 +347,8 @@ def _is_daily_checkpoint(checkpoint_path: Path) -> bool:
     """
     data_path = _checkpoint_data_path(checkpoint_path)
     if data_path is not None and "daily" in data_path.name.lower():
+        return True
+    if any(key.startswith("mixed23_fresh") for key in _checkpoint_hint_keys(checkpoint_path)):
         return True
     # Fallback: check directory names in checkpoint path
     path_parts = [p.lower() for p in checkpoint_path.parts]
