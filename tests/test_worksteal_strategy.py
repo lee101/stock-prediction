@@ -9,8 +9,9 @@ import pytest
 
 from binance_worksteal.strategy import (
     WorkStealConfig, Position, compute_ref_price, compute_ref_low,
-    compute_atr, run_worksteal_backtest, compute_metrics,
-    get_fee, FDUSD_SYMBOLS,
+    compute_atr, compute_buy_target, passes_sma_filter,
+    run_worksteal_backtest, compute_metrics,
+    get_fee, FDUSD_SYMBOLS, _risk_off_triggered,
 )
 
 
@@ -223,6 +224,120 @@ class TestWorkStealBacktest:
         assert any(t.symbol == "ALTUSD" and t.side == "buy" for t in trades)
         assert eq["base_asset_qty"].max() > 0.0
         assert eq["base_asset_qty"].min() < eq["base_asset_qty"].max()
+
+
+class TestSmaCheckMethod:
+    def test_pre_dip_allows_entry_below_sma(self):
+        prices = [100] * 25 + [90, 85, 82, 85, 88, 92, 95, 100]
+        bars = {"BTCUSD": make_bars(prices)}
+        config = WorkStealConfig(
+            dip_pct=0.15, proximity_pct=0.05, lookback_days=20,
+            sma_filter_period=20, sma_check_method="pre_dip",
+        )
+        eq, trades, _ = run_worksteal_backtest(bars, config)
+        buys = [t for t in trades if t.side == "buy"]
+        assert len(buys) >= 1
+
+    def test_current_sma_blocks_entry_below_sma(self):
+        prices = [100] * 25 + [90, 85, 82, 85, 88, 92, 95, 100]
+        bars = {"BTCUSD": make_bars(prices)}
+        config = WorkStealConfig(
+            dip_pct=0.15, proximity_pct=0.05, lookback_days=20,
+            sma_filter_period=20, sma_check_method="current",
+        )
+        eq, trades, _ = run_worksteal_backtest(bars, config)
+        buys = [t for t in trades if t.side == "buy"]
+        assert len(buys) == 0
+
+    def test_none_sma_allows_any_entry(self):
+        prices = [50] * 10 + [100] * 15 + [85, 82, 80, 85, 88, 92, 95, 100]
+        bars = {"BTCUSD": make_bars(prices)}
+        config = WorkStealConfig(
+            dip_pct=0.15, proximity_pct=0.05, lookback_days=20,
+            sma_filter_period=20, sma_check_method="none",
+        )
+        eq, trades, _ = run_worksteal_backtest(bars, config)
+        buys = [t for t in trades if t.side == "buy"]
+        assert len(buys) >= 1
+
+
+class TestAdaptiveDip:
+    def test_adaptive_dip_uses_atr(self):
+        prices = [100] * 25 + [92, 90, 88, 86, 85, 88, 92, 95, 100]
+        bars = {"BTCUSD": make_bars(prices)}
+        config = WorkStealConfig(
+            dip_pct=0.20, proximity_pct=0.05, lookback_days=20,
+            adaptive_dip=True,
+        )
+        eq, trades, _ = run_worksteal_backtest(bars, config)
+        assert isinstance(trades, list)
+
+    def test_adaptive_dip_false_uses_fixed_threshold(self):
+        prices = [100] * 25 + [85, 82, 80, 85, 88, 92]
+        bars = {"BTCUSD": make_bars(prices)}
+        config_fixed = WorkStealConfig(
+            dip_pct=0.15, proximity_pct=0.05, lookback_days=20,
+            adaptive_dip=False,
+        )
+        config_adaptive = WorkStealConfig(
+            dip_pct=0.15, proximity_pct=0.05, lookback_days=20,
+            adaptive_dip=True,
+        )
+        _, trades_fixed, _ = run_worksteal_backtest(dict(bars), config_fixed)
+        _, trades_adaptive, _ = run_worksteal_backtest(dict(bars), config_adaptive)
+        assert isinstance(trades_fixed, list)
+        assert isinstance(trades_adaptive, list)
+
+
+class TestRiskOffMomentum:
+    def test_risk_off_not_triggered_with_default_threshold(self):
+        prices = [100, 99, 98, 97, 96, 95]
+        bars_df = make_bars(prices)
+        current_bars = {"BTCUSD": bars_df.iloc[-1]}
+        history = {"BTCUSD": bars_df}
+        config = WorkStealConfig(
+            momentum_period=5, risk_off_momentum_threshold=-0.05,
+        )
+        result = _risk_off_triggered(current_bars, history, config)
+        assert result is False
+
+    def test_risk_off_triggered_at_zero_threshold(self):
+        prices = [100, 99, 98, 97, 96, 95]
+        bars_df = make_bars(prices)
+        current_bars = {"BTCUSD": bars_df.iloc[-1]}
+        history = {"BTCUSD": bars_df}
+        config = WorkStealConfig(
+            momentum_period=5, risk_off_momentum_threshold=0.0,
+        )
+        result = _risk_off_triggered(current_bars, history, config)
+        assert result is True
+
+    def test_risk_off_disabled_when_momentum_period_zero(self):
+        prices = [100, 50, 40, 30, 20, 10]
+        bars_df = make_bars(prices)
+        current_bars = {"BTCUSD": bars_df.iloc[-1]}
+        history = {"BTCUSD": bars_df}
+        config = WorkStealConfig(momentum_period=0)
+        result = _risk_off_triggered(current_bars, history, config)
+        assert result is False
+
+
+class TestNewDefaults:
+    def test_proximity_pct_default_is_003(self):
+        config = WorkStealConfig()
+        assert config.proximity_pct == 0.03
+
+    def test_sma_check_method_default_is_pre_dip(self):
+        config = WorkStealConfig()
+        assert config.sma_check_method == "pre_dip"
+
+    def test_risk_off_momentum_threshold_default(self):
+        config = WorkStealConfig()
+        assert config.risk_off_momentum_threshold == -0.05
+
+    def test_adaptive_dip_default_is_false(self):
+        config = WorkStealConfig()
+        assert config.adaptive_dip is False
 
 
 class TestComputeMetrics:

@@ -26,8 +26,8 @@ import pandas as pd
 from loguru import logger
 
 from binance_worksteal.strategy import (
-    WorkStealConfig, compute_ref_price, compute_sma, compute_rsi,
-    compute_volume_ratio, get_fee, FDUSD_SYMBOLS,
+    WorkStealConfig, compute_ref_price, compute_buy_target,
+    passes_sma_filter, get_fee, FDUSD_SYMBOLS,
 )
 
 # Binance API
@@ -45,7 +45,7 @@ LOG_FILE = Path("binance_worksteal/trade_log.jsonl")
 # Default config (best from 30-symbol sweep)
 DEFAULT_CONFIG = WorkStealConfig(
     dip_pct=0.20,
-    proximity_pct=0.02,
+    proximity_pct=0.03,
     profit_target_pct=0.15,
     stop_loss_pct=0.10,
     max_positions=5,
@@ -53,6 +53,7 @@ DEFAULT_CONFIG = WorkStealConfig(
     lookback_days=20,
     ref_price_method="high",
     sma_filter_period=20,
+    sma_check_method="pre_dip",
     trailing_stop_pct=0.03,
     max_drawdown_exit=0.25,
     enable_shorts=False,
@@ -281,14 +282,11 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
 
             close = float(bars.iloc[-1]["close"])
 
-            # SMA filter
-            if config.sma_filter_period > 0:
-                sma = compute_sma(bars, config.sma_filter_period)
-                if close < sma:
-                    continue
+            if not passes_sma_filter(bars, config, close):
+                continue
 
             ref_high = compute_ref_price(bars, config.ref_price_method, config.lookback_days)
-            buy_target = ref_high * (1 - config.dip_pct)
+            buy_target = compute_buy_target(bars, ref_high, config)
             dist = (close - buy_target) / ref_high
 
             if dist <= config.proximity_pct:
