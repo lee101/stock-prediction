@@ -1496,3 +1496,110 @@ Current status:
 - first trial currently active: `ent_anneal`
 - observed live child process:
   - `187694 /nvme0n1-disk/code/stock-prediction/.venv313/bin/python -u -m pufferlib_market.train ... --checkpoint-dir pufferlib_market/checkpoints/mixed23_champions_long_20260321_003/ent_anneal`
+
+#### Mixed23 latest-data refresh + retrain (2026-03-20 UTC)
+
+Goal:
+
+- stop training on the stale February mixed23 bins
+- refresh the mixed23 source data to the latest available March bars
+- retrain the best mixed23 families on a recent validation slice that can still support `30/60/90/120d` marketsim scoring
+
+Local data refresh commands:
+
+```bash
+source .venv313/bin/activate
+python update_daily_data.py \
+  --symbols AAPL NFLX NVDA ADBE ADSK COIN GOOG MSFT PYPL SAP TSLA \
+            BTCUSD ETHUSD SOLUSD LTCUSD AVAXUSD DOGEUSD LINKUSD AAVEUSD UNIUSD DOTUSD SHIBUSD XRPUSD
+
+python download_hourly_data.py \
+  --symbols AAPL NFLX NVDA ADBE ADSK COIN GOOG MSFT PYPL SAP TSLA \
+            BTCUSD ETHUSD SOLUSD LTCUSD AVAXUSD DOGEUSD LINKUSD AAVEUSD UNIUSD DOTUSD SHIBUSD XRPUSD \
+  --sleep 0.1
+```
+
+Observed refresh result:
+
+- daily `trainingdata/train` moved to a common latest date of `2026-03-20`
+- hourly `trainingdatahourly` (using the same candidate order as `pufferlib_market.hourly_replay`) moved to a common latest date of `2026-03-20 19:00:00+00:00`
+- daily append counts:
+  - stocks: `+29` to `+30` rows each
+  - crypto: `+42` rows each
+- hourly updates:
+  - stale stock names such as `NFLX`, `ADBE`, `PYPL`, `SAP` were extended through March 20
+  - stale crypto names such as `LTCUSD`, `AVAXUSD`, `UNIUSD`, `DOTUSD`, `SHIBUSD`, `XRPUSD` were extended through March 20
+
+Latest exported bins:
+
+```bash
+source .venv313/bin/activate
+PYTHONPATH=$PWD:$PWD/PufferLib:$PYTHONPATH python -m pufferlib_market.export_data_daily \
+  --symbols AAPL,NFLX,NVDA,ADBE,ADSK,COIN,GOOG,MSFT,PYPL,SAP,TSLA,BTCUSD,ETHUSD,SOLUSD,LTCUSD,AVAXUSD,DOGEUSD,LINKUSD,AAVEUSD,UNIUSD,DOTUSD,SHIBUSD,XRPUSD \
+  --data-root trainingdata/train \
+  --output pufferlib_market/data/mixed23_latest_train_20260320.bin \
+  --end-date 2025-09-21 \
+  --min-days 200
+
+PYTHONPATH=$PWD:$PWD/PufferLib:$PYTHONPATH python -m pufferlib_market.export_data_daily \
+  --symbols AAPL,NFLX,NVDA,ADBE,ADSK,COIN,GOOG,MSFT,PYPL,SAP,TSLA,BTCUSD,ETHUSD,SOLUSD,LTCUSD,AVAXUSD,DOGEUSD,LINKUSD,AAVEUSD,UNIUSD,DOTUSD,SHIBUSD,XRPUSD \
+  --data-root trainingdata/train \
+  --output pufferlib_market/data/mixed23_latest_val_20250922_20260320.bin \
+  --start-date 2025-09-22 \
+  --end-date 2026-03-20 \
+  --min-days 180
+```
+
+Exported ranges:
+
+- train bin:
+  - `pufferlib_market/data/mixed23_latest_train_20260320.bin`
+  - `2024-01-01 .. 2025-09-21`
+  - `630` days
+- validation/holdout/replay bin:
+  - `pufferlib_market/data/mixed23_latest_val_20250922_20260320.bin`
+  - `2025-09-22 .. 2026-03-20`
+  - `180` days
+
+Remote training note:
+
+- the stale run `mixed23_champions_long_20260321_003` was stopped because it still used:
+  - `pufferlib_market/data/mixed23_fresh_train.bin`
+  - `pufferlib_market/data/mixed23_fresh_val.bin`
+
+Current latest-data run:
+
+```bash
+source .venv313/bin/activate
+python scripts/launch_mixed23_retrain.py \
+  --run-id mixed23_latest_champions_20260321_001 \
+  --preset champions \
+  --time-budget 1800 \
+  --train-data pufferlib_market/data/mixed23_latest_train_20260320.bin \
+  --val-data pufferlib_market/data/mixed23_latest_val_20250922_20260320.bin \
+  --holdout-data pufferlib_market/data/mixed23_latest_val_20250922_20260320.bin \
+  --replay-eval-start-date 2025-09-22 \
+  --replay-eval-end-date 2026-03-20
+```
+
+Remote metadata:
+
+- host: `administrator@93.127.141.100`
+- repo: `/nvme0n1-disk/code/stock-prediction`
+- env: `.venv313`
+- remote PID: `314048`
+- remote log: `analysis/remote_runs/mixed23_latest_champions_20260321_001/pipeline.log`
+- local manifest: `analysis/remote_runs/mixed23_latest_champions_20260321_001/launch_manifest.json`
+- leaderboard target:
+  - `pufferlib_market/mixed23_latest_champions_20260321_001_leaderboard.csv`
+- checkpoint root:
+  - `pufferlib_market/checkpoints/mixed23_latest_champions_20260321_001`
+- post-train marketsim output:
+  - `analysis/remote_runs/mixed23_latest_champions_20260321_001/marketsim_30_60_90_120.csv`
+
+Current status:
+
+- remote log timestamp: `2026-03-20T22:51:13Z`
+- first active trial: `ent_anneal`
+- observed live child process:
+  - `314144 /nvme0n1-disk/code/stock-prediction/.venv313/bin/python -u -m pufferlib_market.train --data-path pufferlib_market/data/mixed23_latest_train_20260320.bin ... --checkpoint-dir pufferlib_market/checkpoints/mixed23_latest_champions_20260321_001/ent_anneal`
