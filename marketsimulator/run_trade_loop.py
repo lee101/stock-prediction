@@ -409,8 +409,9 @@ def _compute_step_metrics(report) -> dict[str, float]:
         closes = [report.initial_cash] + closes
 
     step_returns = compute_step_returns(closes)
-    sharpe = annualized_sharpe(step_returns, periods_per_year=252.0)
-    sortino = annualized_sortino(step_returns, periods_per_year=252.0)
+    # Use 365 for daily crypto data (trades 24/7, 365 days/year, not 252)
+    sharpe = annualized_sharpe(step_returns, periods_per_year=365.0)
+    sortino = annualized_sortino(step_returns, periods_per_year=365.0)
 
     return {
         "return": float(report.total_return_pct),
