@@ -24,7 +24,7 @@ MARGIN_ANNUAL_RATE = 0.0625  # 6.25% per year
 @dataclass
 class WorkStealConfig:
     dip_pct: float = 0.10
-    proximity_pct: float = 0.005
+    proximity_pct: float = 0.03
     profit_target_pct: float = 0.05
     stop_loss_pct: float = 0.08
     max_positions: int = 5
@@ -49,6 +49,12 @@ class WorkStealConfig:
     volume_spike_filter: float = 0.0
     # Risk management
     max_drawdown_exit: float = 0.25
+    # SMA check method: "current" (legacy: close>=SMA), "pre_dip" (any of last 5 closes>=SMA), "none"
+    sma_check_method: str = "pre_dip"
+    # ATR-based adaptive dip threshold
+    adaptive_dip: bool = False
+    # Risk-off momentum threshold (fires when mean momentum < this)
+    risk_off_momentum_threshold: float = -0.05
     # Momentum filter: only enter if N-day return > threshold
     momentum_period: int = 0  # 0=disabled, e.g. 5 = 5-day return filter
     momentum_min: float = -0.10  # min N-day return to enter (e.g. -0.10 = skip if down >10%)
@@ -161,6 +167,49 @@ def _compute_margin_interest(pos: Position, current_date: pd.Timestamp, rate: fl
     days_held = max(1, (current_date - pos.entry_date).days)
     daily_rate = rate / 365.0
     return pos.margin_borrowed * daily_rate * days_held
+
+
+def _risk_off_triggered(
+    current_bars: Dict[str, pd.Series],
+    history: Dict[str, pd.DataFrame],
+    config: WorkStealConfig,
+) -> bool:
+    if config.momentum_period > 0:
+        momentums: list[float] = []
+        for sym, bar in current_bars.items():
+            hist = history.get(sym)
+            if hist is None or len(hist) <= config.momentum_period:
+                continue
+            past_close = float(hist.iloc[-(config.momentum_period + 1)]["close"])
+            if past_close <= 0.0:
+                continue
+            momentums.append((float(bar["close"]) - past_close) / past_close)
+        if momentums and float(np.mean(momentums)) < config.risk_off_momentum_threshold:
+            return True
+    return False
+
+
+def passes_sma_filter(bars: pd.DataFrame, config: WorkStealConfig, close: float) -> bool:
+    if config.sma_filter_period <= 0:
+        return True
+    sma = compute_sma(bars, config.sma_filter_period)
+    if config.sma_check_method == "current":
+        return close >= sma
+    elif config.sma_check_method == "pre_dip":
+        n_check = min(5, len(bars) - 1)
+        if n_check > 0:
+            recent_closes = bars["close"].values[-(n_check + 1):-1]
+            return any(float(c) >= sma for c in recent_closes)
+        return True
+    return True  # "none"
+
+
+def compute_buy_target(bars: pd.DataFrame, ref_high: float, config: WorkStealConfig) -> float:
+    if config.adaptive_dip:
+        atr = compute_atr(bars, 14)
+        dip = min(config.dip_pct, max(0.05, 2.5 * atr / ref_high))
+        return ref_high * (1.0 - dip)
+    return ref_high * (1.0 - config.dip_pct)
 
 
 def _normalize_base_asset_symbol(config: WorkStealConfig) -> str | None:
@@ -440,6 +489,10 @@ def run_worksteal_backtest(
         else:
             skip_entries = False
 
+        # 2b. Risk-off filter
+        if not skip_entries:
+            skip_entries = _risk_off_triggered(current_bars, history, config)
+
         # 3. Check entries (work-stealing)
         if len(positions) < config.max_positions and not skip_entries:
             candidates = []
@@ -466,11 +519,8 @@ def run_worksteal_backtest(
                     if mom_ret < config.momentum_min:
                         continue
 
-                # SMA trend filter: only enter longs if above SMA
-                if config.sma_filter_period > 0:
-                    sma = compute_sma(history[sym], config.sma_filter_period)
-                    if close < sma:
-                        continue  # skip: below trend
+                if not passes_sma_filter(history[sym], config, close):
+                    continue
 
                 # RSI filter: only buy oversold
                 if config.rsi_filter > 0:
@@ -486,7 +536,7 @@ def run_worksteal_backtest(
 
                 # Long candidate: dip from recent high
                 ref_high = compute_ref_price(history[sym], config.ref_price_method, config.lookback_days)
-                buy_target = ref_high * (1 - config.dip_pct)
+                buy_target = compute_buy_target(history[sym], ref_high, config)
                 dist_long = (close - buy_target) / ref_high
 
                 if dist_long <= config.proximity_pct:
