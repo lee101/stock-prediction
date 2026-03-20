@@ -25,6 +25,7 @@ from datetime import datetime, timezone, timedelta
 
 from src.forecast_horizon_utils import resolve_required_forecast_horizons
 from src.margin_position_utils import remaining_entry_notional as shared_remaining_entry_notional
+from src.binan.history_dedupe import dedupe_margin_orders, dedupe_margin_trades
 from binancechronossolexperiment.data import ChronosSolDataModule, SplitConfig
 from binancechronossolexperiment.inference import load_policy_checkpoint
 from binanceneural.inference import generate_latest_action
@@ -70,6 +71,8 @@ def pull_prod_fills(symbol: str, start_ms: int, end_ms: int):
         raw_trades.extend(get_margin_trades(symbol, start_time=cursor, end_time=chunk_end, limit=1000))
         raw_orders.extend(get_all_margin_orders(symbol, start_time=cursor, end_time=chunk_end, limit=500))
         cursor = chunk_end
+    raw_trades = dedupe_margin_trades(raw_trades)
+    raw_orders = dedupe_margin_orders(raw_orders)
 
     trades = []
     for t in raw_trades:
@@ -144,6 +147,7 @@ def reconstruct_initial_state(symbol: str, start_ms: int, lookback_hours: int = 
         chunk_end = min(cursor + MS_24H, start_ms)
         raw.extend(get_margin_trades(symbol, start_time=cursor, end_time=chunk_end, limit=1000))
         cursor = chunk_end
+    raw = dedupe_margin_trades(raw)
     if not raw:
         return 0.0, None
 

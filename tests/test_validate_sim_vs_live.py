@@ -9,6 +9,7 @@ from binanceleveragesui.validate_sim_vs_live import (
     effective_position_side_from_qty,
     load_5m_bars,
     match_trades,
+    pull_prod_fills,
     reconstruct_initial_state,
     resolve_initial_replay_state,
     simulate_5m,
@@ -138,6 +139,57 @@ def test_load_5m_bars_uses_trade_margin_meta_loader(
         )
     ]
     assert loaded.equals(expected)
+
+
+def test_pull_prod_fills_dedupes_chunk_boundary_trade_and_order_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trade = {
+        "id": 99,
+        "time": 1_700_000_000_000,
+        "isBuyer": True,
+        "price": "100.0",
+        "qty": "10.0",
+        "quoteQty": "1000.0",
+        "commission": "1.0",
+        "commissionAsset": "USDT",
+        "orderId": 123,
+    }
+    order = {
+        "orderId": 123,
+        "time": 1_700_000_000_000,
+        "updateTime": 1_700_000_000_000,
+        "side": "BUY",
+        "status": "FILLED",
+        "price": "100.0",
+        "origQty": "10.0",
+        "executedQty": "10.0",
+        "cummulativeQuoteQty": "1000.0",
+    }
+    trade_calls: list[tuple[int, int]] = []
+    order_calls: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(
+        "binanceleveragesui.validate_sim_vs_live.get_margin_trades",
+        lambda symbol, start_time, end_time, limit=1000: trade_calls.append((start_time, end_time)) or [dict(trade)],
+    )
+    monkeypatch.setattr(
+        "binanceleveragesui.validate_sim_vs_live.get_all_margin_orders",
+        lambda symbol, start_time, end_time, limit=500: order_calls.append((start_time, end_time)) or [dict(order)],
+    )
+
+    agg, tdf, odf = pull_prod_fills(
+        "DOGEUSDT",
+        start_ms=0,
+        end_ms=(24 * 3600 * 1000) + 1,
+    )
+
+    assert len(trade_calls) == 2
+    assert len(order_calls) == 2
+    assert len(tdf) == 1
+    assert len(agg) == 1
+    assert agg.iloc[0]["total_qty"] == pytest.approx(10.0)
+    assert len(odf) == 1
 
 
 def test_match_trades_marks_prod_rows_unmatched_when_sim_is_empty():
@@ -474,6 +526,33 @@ def test_reconstruct_initial_state_preserves_net_short(
 
     assert inv == pytest.approx(-12.0)
     assert entry_ts == short_ts
+
+
+def test_reconstruct_initial_state_dedupes_duplicate_boundary_trades(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    buy_ts = pd.Timestamp("2026-01-01 00:45:00+00:00")
+
+    monkeypatch.setattr(
+        "binanceleveragesui.validate_sim_vs_live.get_margin_trades",
+        lambda *args, **kwargs: [
+            {
+                "id": 77,
+                "qty": "5",
+                "isBuyer": True,
+                "time": int(buy_ts.timestamp() * 1000),
+            }
+        ],
+    )
+
+    inv, entry_ts = reconstruct_initial_state(
+        "DOGEUSDT",
+        start_ms=int(pd.Timestamp("2026-01-03 00:00:00+00:00").timestamp() * 1000),
+        lookback_hours=48,
+    )
+
+    assert inv == pytest.approx(5.0)
+    assert entry_ts == buy_ts
 
 
 @pytest.mark.parametrize("live_like", [False, True])
