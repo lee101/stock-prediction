@@ -70,7 +70,11 @@ def median_from_predictions(predictions: list[torch.Tensor], quantiles: list[flo
 
 def compute_mae(pred: torch.Tensor, actual: torch.Tensor) -> float:
     length = min(len(pred), len(actual))
-    return (pred[:length] - actual[:length]).abs().mean().item()
+    diff = (pred[:length] - actual[:length]).abs()
+    valid = ~torch.isnan(diff)
+    if not valid.any():
+        return float("nan")
+    return diff[valid].mean().item()
 
 
 # ---------------------------------------------------------------------------
@@ -159,15 +163,21 @@ def main():
     parser.add_argument("--n-warmup", type=int, default=2)
     parser.add_argument("--n-runs", type=int, default=10)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--data-dir", default="trainingdata", help="Directory with CSV files")
-    parser.add_argument("--output", default="cutechronos/benchmark_results.json")
+    parser.add_argument("--data-dir", default=None, help="Directory with CSV files (close column required)")
+    parser.add_argument("--output", default="benchmark_results.json")
     args = parser.parse_args()
 
-    # Resolve data directory relative to repo root
+    # Resolve data directory
     repo_root = Path(__file__).resolve().parent.parent
-    data_dir = repo_root / args.data_dir
+    if args.data_dir is None:
+        # Generate synthetic data if no data directory specified
+        data_dir = None
+    else:
+        data_dir = Path(args.data_dir)
+        if not data_dir.is_absolute():
+            data_dir = repo_root / data_dir
 
-    print(f"Loading data from {data_dir}")
+    print(f"Loading data from {data_dir or 'synthetic'}")
     print(f"Symbols: {args.symbols}")
     print(f"Context length: {args.context_length}, Prediction length: {args.prediction_length}")
     print(f"Device: {args.device}")
@@ -176,19 +186,31 @@ def main():
     # Load data
     contexts = []
     actuals = []
-    for sym in args.symbols:
-        csv_path = data_dir / f"{sym}.csv"
-        if not csv_path.exists():
-            print(f"WARNING: {csv_path} not found, skipping {sym}")
-            continue
-        ctx, act = load_series(str(csv_path), args.context_length, args.prediction_length)
-        contexts.append(ctx)
-        actuals.append(act)
-        print(f"  {sym}: context {ctx.shape}, actual {act.shape}")
+    if data_dir is not None:
+        for sym in args.symbols:
+            csv_path = data_dir / f"{sym}.csv"
+            if not csv_path.exists():
+                print(f"WARNING: {csv_path} not found, skipping {sym}")
+                continue
+            ctx, act = load_series(str(csv_path), args.context_length, args.prediction_length)
+            contexts.append(ctx)
+            actuals.append(act)
+            print(f"  {sym}: context {ctx.shape}, actual {act.shape}")
 
     if not contexts:
-        print("No data loaded, exiting.")
-        return
+        # Generate synthetic time series data for benchmarking
+        print("  No CSV data found, generating synthetic series...")
+        torch.manual_seed(42)
+        for i, sym in enumerate(args.symbols):
+            total = args.context_length + args.prediction_length
+            # Random walk with drift (mimics price data)
+            returns = torch.randn(total) * 0.02 + 0.0001
+            prices = 100.0 * torch.exp(returns.cumsum(0))
+            ctx = prices[:args.context_length]
+            act = prices[args.context_length:]
+            contexts.append(ctx)
+            actuals.append(act)
+            print(f"  {sym} (synthetic): context {ctx.shape}, actual {act.shape}")
 
     results = {}
 
