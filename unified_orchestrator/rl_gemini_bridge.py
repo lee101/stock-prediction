@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import struct
 import sys
+import time
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -32,7 +34,21 @@ from torch.distributions import Categorical
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
+try:
+    from loguru import logger as _logger
+except ImportError:  # pragma: no cover
+    import logging as _logging
+    _logger = _logging.getLogger(__name__)
+
 from llm_hourly_trader.gemini_wrapper import TradePlan
+
+# Signal source labels logged at INFO each cycle so we can track Gemini reliability.
+_SOURCE_GEMINI_RL = "gemini_rl"
+_SOURCE_RL_ONLY = "rl_only"
+_SOURCE_FALLBACK_HOLD = "fallback_hold"
+
+# How long to wait after a 429 rate-limit before retrying (seconds).
+_RATE_LIMIT_BACKOFF_S = 5
 
 
 # ─── RL Signal Extraction ────────────────────────────────────────────
@@ -166,6 +182,71 @@ def decode_rl_action(
 def _softmax(x: np.ndarray) -> np.ndarray:
     e = np.exp(x - x.max())
     return e / e.sum()
+
+
+# ─── Fallback Plan Helpers ────────────────────────────────────────────
+
+
+def _rl_only_plan(signal: RLSignal, price: float, *, reason: str = "") -> TradePlan:
+    """Build a TradePlan from RL signal alone (no LLM).
+
+    Limit prices are derived from the signal direction + a fixed basis-point spread:
+      LONG:  buy 0.2% below current, sell 1.0% above current
+      SHORT: sell 0.2% above current (entry), buy 0.99% below (cover target)
+    Confidence is discounted by 20% since there is no LLM validation pass.
+    """
+    reasoning_parts = [f"[{_SOURCE_RL_ONLY}]"]
+    if reason:
+        reasoning_parts.append(reason)
+    reasoning_parts.append(
+        f"{signal.direction} conf={signal.confidence:.2f} gap={signal.logit_gap:+.2f}"
+    )
+    reasoning = " | ".join(reasoning_parts)
+
+    if signal.direction == "long":
+        buy_price = price * 0.998
+        sell_price = price * 1.010
+    elif signal.direction == "short":
+        buy_price = price * 0.990
+        sell_price = price * 1.002
+    else:
+        buy_price = 0.0
+        sell_price = 0.0
+
+    return TradePlan(
+        direction=signal.direction,
+        buy_price=buy_price,
+        sell_price=sell_price,
+        confidence=signal.confidence * 0.8,
+        reasoning=reasoning,
+        allocation_pct=signal.allocation_pct * 100.0,
+    )
+
+
+def _hold_plan(*, reason: str = "") -> TradePlan:
+    """Return a neutral HOLD plan with a fallback_hold source tag."""
+    reasoning = f"[{_SOURCE_FALLBACK_HOLD}] {reason}" if reason else f"[{_SOURCE_FALLBACK_HOLD}]"
+    return TradePlan(
+        direction="hold",
+        buy_price=0.0,
+        sell_price=0.0,
+        confidence=0.0,
+        reasoning=reasoning,
+    )
+
+
+def _tag_plan_source(plan: TradePlan, source: str) -> TradePlan:
+    """Prepend [source] to plan.reasoning for traceability. Returns a new TradePlan."""
+    tag = f"[{source}]"
+    reasoning = f"{tag} {plan.reasoning}" if plan.reasoning else tag
+    return TradePlan(
+        direction=plan.direction,
+        buy_price=plan.buy_price,
+        sell_price=plan.sell_price,
+        confidence=plan.confidence,
+        reasoning=reasoning,
+        allocation_pct=plan.allocation_pct,
+    )
 
 
 def build_portfolio_observation(
@@ -399,6 +480,10 @@ class RLGeminiBridge:
 
     def _load_checkpoint_payload(self) -> dict:
         if self._checkpoint_payload is None:
+            if not self.checkpoint_path.exists():
+                msg = f"Checkpoint file not found: {self.checkpoint_path}"
+                _logger.error(msg)
+                raise FileNotFoundError(msg)
             payload = torch.load(str(self.checkpoint_path), map_location=self.device, weights_only=False)
             if not isinstance(payload, dict):
                 payload = {"model": payload}
@@ -469,7 +554,7 @@ class RLGeminiBridge:
         return self._checkpoint_spec
 
     def _load_policy(self, obs_size: int | None = None, num_actions: int | None = None) -> nn.Module:
-        """Load policy from checkpoint."""
+        """Load policy from checkpoint, with explicit dimension-mismatch logging."""
         if self._policy is not None:
             return self._policy
 
@@ -477,15 +562,21 @@ class RLGeminiBridge:
 
         spec = self.get_checkpoint_spec()
         if obs_size is not None and int(obs_size) != spec.obs_size:
-            raise ValueError(
-                f"Observation size {obs_size} does not match checkpoint {self.checkpoint_path} "
-                f"(expected {spec.obs_size})"
+            msg = (
+                f"Checkpoint {self.checkpoint_path}: obs_size mismatch — "
+                f"caller provided {obs_size}, checkpoint expects {spec.obs_size}. "
+                f"Is the right symbol list / feature set being used?"
             )
+            _logger.error(msg)
+            raise ValueError(msg)
         if num_actions is not None and int(num_actions) != spec.num_actions:
-            raise ValueError(
-                f"Action count {num_actions} does not match checkpoint {self.checkpoint_path} "
-                f"(expected {spec.num_actions})"
+            msg = (
+                f"Checkpoint {self.checkpoint_path}: num_actions mismatch — "
+                f"caller provided {num_actions}, checkpoint expects {spec.num_actions}. "
+                f"Check alloc_bins/level_bins and num_symbols configuration."
             )
+            _logger.error(msg)
+            raise ValueError(msg)
 
         if spec.arch == "resmlp":
             policy = ResidualTradingPolicy(
@@ -504,6 +595,10 @@ class RLGeminiBridge:
         policy.to(self.device)
         policy.eval()
         self._policy = policy
+        _logger.info(
+            f"Checkpoint loaded: {self.checkpoint_path.name} "
+            f"arch={spec.arch} obs={spec.obs_size} actions={spec.num_actions} hidden={spec.hidden_size}"
+        )
         return policy
 
     def get_rl_signals(
@@ -559,6 +654,14 @@ class RLGeminiBridge:
     ) -> dict[str, TradePlan]:
         """Generate Gemini-refined trade plans from RL signals.
 
+        When Gemini fails (timeout, API error, rate limit, malformed response):
+          1. If rate-limited (HTTP 429): back off for _RATE_LIMIT_BACKOFF_S seconds
+             and retry once with a simplified prompt.
+          2. If the retry also fails (or error was not 429): fall back to an RL-only
+             plan derived from the RL signal direction and current price.
+        The resulting plan is always tagged with a [source] prefix in reasoning so
+        signal origin is visible in logs.
+
         Args:
             rl_signals: RL signals from get_rl_signals()
             price_histories: Dict of symbol -> list of OHLCV dicts
@@ -572,7 +675,7 @@ class RLGeminiBridge:
             prev_plans: Dict of symbol -> previous hour's plan dict
 
         Returns:
-            Dict of symbol -> TradePlan
+            Dict of symbol -> TradePlan (never contains None values)
         """
         from llm_hourly_trader.providers import call_llm
 
@@ -589,23 +692,12 @@ class RLGeminiBridge:
 
             if dry_run:
                 # Generate plan directly from RL signal without LLM
-                if signal.direction == "long":
-                    buy_price = price * 0.998  # 0.2% below
-                    sell_price = price * 1.01   # 1% above
-                elif signal.direction == "short":
-                    buy_price = price * 0.99    # cover 1% below
-                    sell_price = price * 1.002  # entry 0.2% above
-                else:
-                    continue
-
-                plans[sym] = TradePlan(
-                    direction=signal.direction,
-                    buy_price=buy_price,
-                    sell_price=sell_price,
-                    confidence=signal.confidence,
-                    reasoning=f"RL signal: {signal.direction} conf={signal.confidence:.2f} "
-                              f"gap={signal.logit_gap:+.2f}",
+                plan = _rl_only_plan(signal, price, reason="dry_run")
+                _logger.info(
+                    f"  {sym}: [{_SOURCE_RL_ONLY}] dry_run "
+                    f"direction={plan.direction} conf={plan.confidence:.2f}"
                 )
+                plans[sym] = plan
                 continue
 
             # Build hybrid prompt with forecasts + prev plan + all signals
@@ -625,28 +717,97 @@ class RLGeminiBridge:
                 all_rl_signals=rl_signals,
             )
 
-            try:
-                plan = call_llm(
-                    prompt, model=model, thinking_level=thinking_level,
-                )
-                plans[sym] = plan
-            except Exception as e:
-                # Fall back to RL-only plan
-                if signal.direction == "long":
-                    buy_price = price * 0.998
-                    sell_price = price * 1.01
-                elif signal.direction == "short":
-                    buy_price = price * 0.99
-                    sell_price = price * 1.002
-                else:
-                    continue
-
-                plans[sym] = TradePlan(
-                    direction=signal.direction,
-                    buy_price=buy_price,
-                    sell_price=sell_price,
-                    confidence=signal.confidence * 0.8,  # Discount for no LLM validation
-                    reasoning=f"RL-only (LLM error: {e}): {signal.direction}",
-                )
+            plan = self._call_llm_with_fallback(
+                sym=sym,
+                signal=signal,
+                price=price,
+                prompt=prompt,
+                model=model,
+                thinking_level=thinking_level,
+                call_llm=call_llm,
+            )
+            plans[sym] = plan
 
         return plans
+
+    def _call_llm_with_fallback(
+        self,
+        *,
+        sym: str,
+        signal: RLSignal,
+        price: float,
+        prompt: str,
+        model: str,
+        thinking_level: str,
+        call_llm,
+    ) -> TradePlan:
+        """Call the LLM with retry logic and Chronos2-only fallback.
+
+        Retry strategy:
+          - On 429 rate-limit: wait _RATE_LIMIT_BACKOFF_S seconds, retry once
+            with a simplified prompt (fewer history bars, no portfolio context).
+          - On malformed response (bad JSON / wrong fields): retry once with the
+            same simplified prompt.
+          - After 2 failures: return an RL-only fallback plan.
+
+        Always logs the signal source at INFO level.
+        """
+        def _is_rate_limit(exc: Exception) -> bool:
+            msg = str(exc).lower()
+            return "429" in msg or "rate limit" in msg or "quota" in msg or "resource_exhausted" in msg
+
+        def _simplified_prompt() -> str:
+            # Rebuild with less context to reduce tokens and avoid parsing failures
+            return build_hybrid_prompt(
+                symbol=sym,
+                rl_signal=signal,
+                history_rows=[],  # omit history in retry
+                current_price=price,
+                portfolio_context="",  # omit portfolio context in retry
+                forecast_1h=None,
+                forecast_24h=None,
+                prev_plan=None,
+                all_rl_signals=None,
+            )
+
+        last_exc: Exception | None = None
+        for attempt in range(2):
+            use_prompt = prompt if attempt == 0 else _simplified_prompt()
+            try:
+                plan = call_llm(use_prompt, model=model, thinking_level=thinking_level)
+                tagged = _tag_plan_source(plan, _SOURCE_GEMINI_RL)
+                _logger.info(
+                    f"  {sym}: [{_SOURCE_GEMINI_RL}] "
+                    f"direction={tagged.direction} conf={tagged.confidence:.2f}"
+                )
+                return tagged
+            except Exception as exc:
+                last_exc = exc
+                tb = traceback.format_exc()
+                if _is_rate_limit(exc) and attempt == 0:
+                    _logger.warning(
+                        f"  {sym}: Gemini rate-limited (attempt {attempt+1}): {exc} — "
+                        f"backing off {_RATE_LIMIT_BACKOFF_S}s then retrying with simplified prompt"
+                    )
+                    time.sleep(_RATE_LIMIT_BACKOFF_S)
+                elif attempt == 0:
+                    _logger.warning(
+                        f"  {sym}: Gemini call failed (attempt {attempt+1}): {exc} — "
+                        f"retrying with simplified prompt\n{tb}"
+                    )
+                else:
+                    _logger.error(
+                        f"  {sym}: Gemini call failed after 2 attempts — "
+                        f"falling back to RL-only plan. Last error: {exc}\n{tb}"
+                    )
+
+        # Both attempts failed — fall back to RL-only plan
+        fallback = _rl_only_plan(
+            signal, price,
+            reason=f"LLM failed: {type(last_exc).__name__}: {str(last_exc)[:80]}",
+        )
+        _logger.info(
+            f"  {sym}: [{_SOURCE_RL_ONLY}] fallback "
+            f"direction={fallback.direction} conf={fallback.confidence:.2f}"
+        )
+        return fallback
