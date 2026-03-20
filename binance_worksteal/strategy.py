@@ -106,8 +106,10 @@ def get_fee(symbol: str, config: WorkStealConfig) -> float:
 
 
 def compute_ref_price(bars: pd.DataFrame, method: str, lookback: int) -> float:
+    if bars.empty:
+        return 0.0
     if len(bars) < 2:
-        return bars["close"].iloc[-1]
+        return float(bars["close"].iloc[-1])
     window = bars.tail(lookback)
     if method == "high":
         return float(window["high"].max())
@@ -119,20 +121,24 @@ def compute_ref_price(bars: pd.DataFrame, method: str, lookback: int) -> float:
 
 
 def compute_ref_low(bars: pd.DataFrame, lookback: int) -> float:
+    if bars.empty:
+        return 0.0
     if len(bars) < 2:
-        return bars["close"].iloc[-1]
+        return float(bars["close"].iloc[-1])
     window = bars.tail(lookback)
     return float(window["low"].min())
 
 
 def compute_sma(bars: pd.DataFrame, period: int) -> float:
+    if bars.empty:
+        return 0.0
     if len(bars) < period:
         return float(bars["close"].mean())
     return float(bars["close"].iloc[-period:].mean())
 
 
 def compute_rsi(bars: pd.DataFrame, period: int = 14) -> float:
-    if len(bars) < period + 1:
+    if bars.empty or len(bars) < period + 1:
         return 50.0
     closes = bars["close"].values[-(period+1):]
     deltas = np.diff(closes)
@@ -147,7 +153,7 @@ def compute_rsi(bars: pd.DataFrame, period: int = 14) -> float:
 
 
 def compute_volume_ratio(bars: pd.DataFrame, period: int = 20) -> float:
-    if len(bars) < period + 1 or "volume" not in bars.columns:
+    if bars.empty or len(bars) < period + 1 or "volume" not in bars.columns:
         return 1.0
     avg_vol = bars["volume"].iloc[-(period+1):-1].mean()
     current_vol = bars["volume"].iloc[-1]
@@ -157,6 +163,8 @@ def compute_volume_ratio(bars: pd.DataFrame, period: int = 20) -> float:
 
 
 def compute_atr(bars: pd.DataFrame, period: int = 14) -> float:
+    if bars.empty:
+        return 0.0
     if len(bars) < period + 1:
         return float(bars["high"].iloc[-1] - bars["low"].iloc[-1])
     high = bars["high"].values[-period:]
@@ -210,6 +218,8 @@ def _risk_off_triggered(
 def passes_sma_filter(bars: pd.DataFrame, config: WorkStealConfig, close: float) -> bool:
     if config.sma_filter_period <= 0:
         return True
+    if bars.empty:
+        return True
     sma = compute_sma(bars, config.sma_filter_period)
     if config.sma_check_method == "current":
         return close >= sma
@@ -218,11 +228,13 @@ def passes_sma_filter(bars: pd.DataFrame, config: WorkStealConfig, close: float)
         if n_check > 0:
             recent_closes = bars["close"].values[-(n_check + 1):-1]
             return any(float(c) >= sma for c in recent_closes)
-        return True
+        return close >= sma
     return True  # "none"
 
 
 def compute_buy_target(bars: pd.DataFrame, ref_high: float, config: WorkStealConfig) -> float:
+    if ref_high <= 0:
+        return 0.0
     if config.adaptive_dip:
         atr = compute_atr(bars, 14)
         dip = min(config.dip_pct, max(0.05, 2.5 * atr / ref_high))
@@ -877,18 +889,22 @@ def compute_metrics(equity_df: pd.DataFrame, config: WorkStealConfig,
     if equity_df.empty or len(equity_df) < 2:
         return {}
     values = equity_df["equity"].values.astype(float)
+    if not np.isfinite(values).all() or values[0] <= 0:
+        return {}
     returns = np.diff(values) / np.clip(values[:-1], 1e-8, None)
+    returns = np.nan_to_num(returns, nan=0.0, posinf=0.0, neginf=0.0)
 
     total_return = (values[-1] - values[0]) / values[0]
-    mean_ret = returns.mean()
+    mean_ret = float(returns.mean())
     downside = returns[returns < 0]
-    downside_std = downside.std() if len(downside) > 1 else 1e-8
+    downside_std = float(downside.std()) if len(downside) > 1 else 1e-8
 
     sortino = mean_ret / max(downside_std, 1e-8) * np.sqrt(365)
-    sharpe = mean_ret / max(returns.std(), 1e-8) * np.sqrt(365)
+    ret_std = float(returns.std()) if len(returns) > 1 else 1e-8
+    sharpe = mean_ret / max(ret_std, 1e-8) * np.sqrt(365)
 
     peak = np.maximum.accumulate(values)
-    drawdown = (values - peak) / peak
+    drawdown = np.where(peak > 0, (values - peak) / peak, 0.0)
     max_dd = float(drawdown.min())
 
     n_days = len(equity_df)
@@ -911,6 +927,7 @@ def compute_metrics(equity_df: pd.DataFrame, config: WorkStealConfig,
         "n_trades": int(len(exits)),
         "final_equity": float(values[-1]),
         "mean_daily_return": float(mean_ret),
+        "win_rate": win_rate,
         "win_rate": win_rate,
     }
 

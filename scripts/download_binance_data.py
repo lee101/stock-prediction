@@ -13,11 +13,24 @@ from loguru import logger
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
-SYMBOLS = [
+ORIGINAL_30 = [
     "BTC", "ETH", "SOL", "DOGE", "AVAX", "LINK", "AAVE", "LTC", "XRP", "DOT",
     "UNI", "NEAR", "APT", "ICP", "SHIB", "ADA", "FIL", "ARB", "OP", "INJ",
     "SUI", "TIA", "SEI", "ATOM", "ALGO", "BCH", "BNB", "TRX", "PEPE", "MATIC",
 ]
+
+EXPANDED_40 = [
+    "HBAR", "VET", "RENDER", "FET", "GRT",
+    "SAND", "MANA", "AXS", "CRV", "COMP",
+    "MKR", "SNX", "ENJ", "1INCH", "SUSHI",
+    "YFI", "BAT", "ZRX", "THETA", "FTM",
+    "RUNE", "KAVA", "EGLD", "CHZ", "GALA",
+    "APE", "LDO", "GMX", "PENDLE", "WLD",
+    "JUP", "W", "ENA", "STX", "FLOKI",
+    "TON", "KAS", "ONDO", "JASMY", "CFX",
+]
+
+SYMBOLS = ORIGINAL_30 + EXPANDED_40
 
 DAILY_DIR = _REPO_ROOT / "trainingdata" / "train"
 HOURLY_DIR = _REPO_ROOT / "trainingdatahourlybinance"
@@ -186,7 +199,7 @@ def download_symbol(sym: str, interval: str, out_dir: Path, start: datetime, end
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Download Binance klines for 30 crypto symbols.")
+    parser = argparse.ArgumentParser(description="Download Binance klines for crypto symbols (70 default).")
     parser.add_argument("--symbols", nargs="+", default=None, help="Override symbol list")
     parser.add_argument("--start", default="2022-01-01", help="Start date (default: 2022-01-01)")
     parser.add_argument("--end", default=None, help="End date (default: now)")

@@ -14,13 +14,26 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 
 
-DEFAULT_SYMBOLS = [
+ORIGINAL_30_SYMBOLS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT",
     "AAVEUSDT", "LTCUSDT", "XRPUSDT", "DOTUSDT", "UNIUSDT", "NEARUSDT",
     "APTUSDT", "ICPUSDT", "SHIBUSDT", "ADAUSDT", "FILUSDT", "ARBUSDT",
     "OPUSDT", "INJUSDT", "SUIUSDT", "TIAUSDT", "SEIUSDT", "ATOMUSDT",
     "ALGOUSDT", "BCHUSDT", "BNBUSDT", "TRXUSDT", "PEPEUSDT", "MATICUSDT",
 ]
+
+EXPANDED_SYMBOLS = [
+    "HBARUSDT", "VETUSDT", "RENDERUSDT", "FETUSDT", "GRTUSDT",
+    "SANDUSDT", "MANAUSDT", "AXSUSDT", "CRVUSDT", "COMPUSDT",
+    "MKRUSDT", "SNXUSDT", "ENJUSDT", "1INCHUSDT", "SUSHIUSDT",
+    "YFIUSDT", "BATUSDT", "ZRXUSDT", "THETAUSDT", "FTMUSDT",
+    "RUNEUSDT", "KAVAUSDT", "EGLDUSDT", "CHZUSDT", "GALAUSDT",
+    "APEUSDT", "LDOUSDT", "GMXUSDT", "PENDLEUSDT", "WLDUSDT",
+    "JUPUSDT", "WUSDT", "ENAUSDT", "STXUSDT", "FLOKIUSDT",
+    "TONUSDT", "KASUSDT", "ONDOUSDT", "JASMYUSDT", "CFXUSDT",
+]
+
+DEFAULT_SYMBOLS = ORIGINAL_30_SYMBOLS + EXPANDED_SYMBOLS
 
 FEATURE_NAMES = [
     "open_norm", "high_norm", "low_norm", "close_norm", "volume_norm",
@@ -67,6 +80,97 @@ def load_symbol_data(data_dir: str, symbol: str) -> Optional[pd.DataFrame]:
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     df = df.sort_values("timestamp").drop_duplicates("timestamp", keep="last").reset_index(drop=True)
     return df
+
+
+def validate_symbol_data(
+    df: pd.DataFrame,
+    min_bars: int = 365,
+    max_missing_pct: float = 0.05,
+) -> Tuple[bool, str]:
+    if df is None or df.empty:
+        return False, "no data"
+    if len(df) < min_bars:
+        return False, f"only {len(df)} bars, need {min_bars}"
+    required_cols = {"timestamp", "open", "high", "low", "close"}
+    missing = required_cols - set(df.columns)
+    if missing:
+        return False, f"missing columns: {missing}"
+    ts = pd.to_datetime(df["timestamp"], utc=True).sort_values()
+    if len(ts) < 2:
+        return False, "fewer than 2 timestamps"
+    expected_days = (ts.iloc[-1] - ts.iloc[0]).days + 1
+    if expected_days <= 0:
+        return False, "invalid date range"
+    missing_pct = 1.0 - len(ts) / expected_days
+    if missing_pct > max_missing_pct:
+        return False, f"{missing_pct:.1%} missing bars (max {max_missing_pct:.0%})"
+    close = df["close"].astype(float)
+    if (close <= 0).any():
+        return False, "non-positive close prices"
+    return True, "ok"
+
+
+def _avg_daily_volume_usd(df: pd.DataFrame, lookback_days: int = 90) -> float:
+    if "volume" not in df.columns or df.empty:
+        return 0.0
+    recent = df.tail(lookback_days)
+    if recent.empty:
+        return 0.0
+    return float((recent["volume"] * recent["close"]).mean())
+
+
+def filter_symbols_by_volume(
+    data_dir: str,
+    symbols: Optional[List[str]] = None,
+    min_avg_daily_volume_usd: float = 1_000_000.0,
+    lookback_days: int = 90,
+) -> List[str]:
+    symbols = symbols or DEFAULT_SYMBOLS
+    passed = []
+    for sym in symbols:
+        df = load_symbol_data(data_dir, sym)
+        if df is None:
+            continue
+        if _avg_daily_volume_usd(df, lookback_days) >= min_avg_daily_volume_usd:
+            passed.append(sym)
+    return passed
+
+
+def discover_symbols(
+    data_dir: str,
+    min_bars: int = 365,
+    max_missing_pct: float = 0.05,
+    min_avg_daily_volume_usd: float = 1_000_000.0,
+    lookback_days: int = 90,
+) -> List[str]:
+    data_path = Path(data_dir)
+    if not data_path.exists():
+        return []
+    valid = []
+    for csv_file in sorted(data_path.glob("*USDT.csv")):
+        sym = csv_file.stem
+        df = load_symbol_data(data_dir, sym)
+        if df is None:
+            continue
+        ok, _reason = validate_symbol_data(df, min_bars=min_bars, max_missing_pct=max_missing_pct)
+        if not ok:
+            continue
+        if _avg_daily_volume_usd(df, lookback_days) < min_avg_daily_volume_usd:
+            continue
+        valid.append(sym)
+    return valid
+
+
+def generate_symbols_arg(
+    data_dir: str = "trainingdata/train",
+    min_bars: int = 365,
+    min_avg_daily_volume_usd: float = 1_000_000.0,
+    use_usd_suffix: bool = True,
+) -> str:
+    symbols = discover_symbols(data_dir, min_bars=min_bars, min_avg_daily_volume_usd=min_avg_daily_volume_usd)
+    if use_usd_suffix:
+        symbols = [s.replace("USDT", "USD") for s in symbols]
+    return " ".join(symbols)
 
 
 def compute_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -322,5 +426,7 @@ def build_sequential_datasets(
     return train_ds, val_ds, test_ds, loaded
 
 
-def build_dataloader(dataset, batch_size: int = 32, shuffle: bool = True) -> DataLoader:
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=0, drop_last=False)
+def build_dataloader(dataset, batch_size: int = 32, shuffle: bool = True,
+                     num_workers: int = 0, pin_memory: bool = False) -> DataLoader:
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle,
+                     num_workers=num_workers, pin_memory=pin_memory, drop_last=False)
