@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Tuple
 
 from src.market_sim_early_exit import evaluate_drawdown_vs_profit_early_exit, print_early_exit
@@ -49,16 +49,21 @@ class WorkStealConfig:
     volume_spike_filter: float = 0.0
     # Risk management
     max_drawdown_exit: float = 0.25
+    deleverage_threshold: float = 0.0
+    target_leverage: float = 0.0
+    entry_proximity_bps: float = 3000.0
+    risk_off_ref_price_method: str = "high"
+    risk_off_market_breadth_filter: float = 0.70
+    risk_off_trigger_sma_period: int = 30
+    risk_off_trigger_momentum_period: int = 7
+    rebalance_seeded_positions: bool = True
     # SMA check method: "current" (legacy: close>=SMA), "pre_dip" (any of last 5 closes>=SMA), "none"
     sma_check_method: str = "pre_dip"
-    # ATR-based adaptive dip threshold
     adaptive_dip: bool = False
-    # Risk-off momentum threshold (fires when mean momentum < this)
     risk_off_momentum_threshold: float = -0.05
-    # Momentum filter: only enter if N-day return > threshold
-    momentum_period: int = 0  # 0=disabled, e.g. 5 = 5-day return filter
-    momentum_min: float = -0.10  # min N-day return to enter (e.g. -0.10 = skip if down >10%)
-    # Optional idle base asset: sweep free cash into this symbol when risk-on.
+    momentum_period: int = 0
+    momentum_min: float = -0.10
+    initial_holdings: Dict[str, float] = field(default_factory=dict)
     base_asset_symbol: str = ""
     base_asset_sma_filter_period: int = 0
     base_asset_momentum_period: int = 0
@@ -174,13 +179,26 @@ def _risk_off_triggered(
     history: Dict[str, pd.DataFrame],
     config: WorkStealConfig,
 ) -> bool:
-    if config.momentum_period > 0:
+    if config.risk_off_trigger_sma_period > 0:
+        n_above = 0
+        n_total = 0
+        for sym, bar in current_bars.items():
+            hist = history.get(sym)
+            if hist is None or len(hist) < config.risk_off_trigger_sma_period:
+                continue
+            n_total += 1
+            if float(bar["close"]) >= compute_sma(hist, config.risk_off_trigger_sma_period):
+                n_above += 1
+        if n_total > 0 and (n_above / n_total) < 0.5:
+            return True
+
+    if config.risk_off_trigger_momentum_period > 0:
         momentums: list[float] = []
         for sym, bar in current_bars.items():
             hist = history.get(sym)
-            if hist is None or len(hist) <= config.momentum_period:
+            if hist is None or len(hist) <= config.risk_off_trigger_momentum_period:
                 continue
-            past_close = float(hist.iloc[-(config.momentum_period + 1)]["close"])
+            past_close = float(hist.iloc[-(config.risk_off_trigger_momentum_period + 1)]["close"])
             if past_close <= 0.0:
                 continue
             momentums.append((float(bar["close"]) - past_close) / past_close)
@@ -210,6 +228,107 @@ def compute_buy_target(bars: pd.DataFrame, ref_high: float, config: WorkStealCon
         dip = min(config.dip_pct, max(0.05, 2.5 * atr / ref_high))
         return ref_high * (1.0 - dip)
     return ref_high * (1.0 - config.dip_pct)
+
+
+def compute_market_breadth_skip(
+    current_bars: Dict[str, pd.Series],
+    history: Dict[str, pd.DataFrame],
+    config: WorkStealConfig,
+) -> bool:
+    if config.market_breadth_filter > 0:
+        n_total = 0
+        n_dipping = 0
+        for sym in current_bars:
+            if sym not in history or len(history[sym]) < 5:
+                continue
+            n_total += 1
+            prev_close = float(history[sym].iloc[-2]["close"])
+            if float(current_bars[sym]["close"]) < prev_close:
+                n_dipping += 1
+        breadth_ratio = n_dipping / max(n_total, 1)
+        return breadth_ratio > config.market_breadth_filter
+    return False
+
+
+def resolve_entry_config(
+    *,
+    current_bars: Dict[str, pd.Series],
+    history: Dict[str, pd.DataFrame],
+    config: WorkStealConfig,
+) -> WorkStealConfig:
+    if not _risk_off_triggered(current_bars, history, config):
+        return config
+    return replace(
+        config,
+        ref_price_method=str(config.risk_off_ref_price_method or config.ref_price_method),
+        market_breadth_filter=float(max(config.market_breadth_filter, config.risk_off_market_breadth_filter)),
+    )
+
+
+def build_entry_candidates(
+    current_bars: Dict[str, pd.Series],
+    history: Dict[str, pd.DataFrame],
+    positions: Dict[str, object],
+    last_exit: Dict[str, pd.Timestamp],
+    date: pd.Timestamp,
+    config: WorkStealConfig,
+    base_symbol: str | None = None,
+) -> list:
+    candidates = []
+    for sym, bar in current_bars.items():
+        if base_symbol is not None and sym == base_symbol:
+            continue
+        if sym in positions:
+            continue
+        if sym in last_exit:
+            if (date - last_exit[sym]).days < config.reentry_cooldown_days:
+                continue
+        if sym not in history or len(history[sym]) < config.lookback_days:
+            continue
+
+        close = float(bar["close"])
+        low_bar = float(bar["low"])
+        high_bar = float(bar["high"])
+
+        if config.momentum_period > 0 and len(history[sym]) > config.momentum_period:
+            past_close = float(history[sym].iloc[-(config.momentum_period + 1)]["close"])
+            mom_ret = (close - past_close) / past_close
+            if mom_ret < config.momentum_min:
+                continue
+
+        if not passes_sma_filter(history[sym], config, close):
+            continue
+
+        if config.rsi_filter > 0:
+            rsi = compute_rsi(history[sym], 14)
+            if rsi > config.rsi_filter:
+                continue
+
+        if config.volume_spike_filter > 0:
+            vol_ratio = compute_volume_ratio(history[sym], 20)
+            if vol_ratio < config.volume_spike_filter:
+                continue
+
+        ref_high = compute_ref_price(history[sym], config.ref_price_method, config.lookback_days)
+        buy_target = compute_buy_target(history[sym], ref_high, config)
+        dist_long = (close - buy_target) / ref_high
+
+        if dist_long <= config.proximity_pct:
+            dip_score = -dist_long
+            fill_price = max(buy_target, low_bar)
+            candidates.append((sym, "long", dip_score, fill_price, bar))
+
+        if config.enable_shorts:
+            ref_low = compute_ref_low(history[sym], config.lookback_days)
+            short_target = ref_low * (1 + config.short_pump_pct)
+            dist_short = (short_target - close) / ref_low
+            if dist_short <= config.proximity_pct:
+                pump_score = -dist_short
+                fill_price = min(short_target, high_bar)
+                candidates.append((sym, "short", pump_score, fill_price, bar))
+
+    candidates.sort(key=lambda x: x[2], reverse=True)
+    return candidates
 
 
 def _normalize_base_asset_symbol(config: WorkStealConfig) -> str | None:

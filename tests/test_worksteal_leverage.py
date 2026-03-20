@@ -164,6 +164,7 @@ class TestBacktestLeverage:
             initial_cash=10000.0, max_leverage=leverage,
             margin_annual_rate=MARGIN_ANNUAL_RATE, max_position_pct=0.25,
             max_drawdown_exit=0.0,
+            risk_off_trigger_momentum_period=0, risk_off_trigger_sma_period=0,
         )
         start = str(bars_a["timestamp"].min().date())
         end = str(bars_a["timestamp"].max().date())
