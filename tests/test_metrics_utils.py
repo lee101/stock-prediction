@@ -23,9 +23,11 @@ def test_annualized_sortino_all_positive_matches_sharpe():
 
 
 def test_annualized_sortino_with_downside():
+    # Formula must match C env: downside_dev = sqrt(sum_neg_sq / total_n)
+    # where total_n is ALL steps and sum_neg_sq is sum of squared negative returns.
     returns = np.array([0.01, -0.02, 0.03, -0.01])
     mean = returns.mean()
     downside = returns[returns < 0]
-    downside_std = downside.std(ddof=1)
-    expected = mean / downside_std * np.sqrt(252.0)
+    downside_dev = np.sqrt(np.sum(downside ** 2) / returns.size)
+    expected = mean / downside_dev * np.sqrt(365.0)
     assert np.isclose(annualized_sortino(returns), expected)
