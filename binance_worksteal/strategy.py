@@ -893,6 +893,7 @@ def compute_metrics(equity_df: pd.DataFrame, config: WorkStealConfig,
 
     n_days = len(equity_df)
     win_rate = 0.0
+    exits: List[TradeLog] = []
     if trades:
         exits = [t for t in trades if t.side in ("sell", "cover")]
         wins = [t for t in exits if t.pnl > 0]
@@ -906,6 +907,8 @@ def compute_metrics(equity_df: pd.DataFrame, config: WorkStealConfig,
         "max_drawdown": float(max_dd),
         "max_drawdown_pct": float(max_dd * 100),
         "n_days": n_days,
+        "n_orders": int(len(trades or [])),
+        "n_trades": int(len(exits)),
         "final_equity": float(values[-1]),
         "mean_daily_return": float(mean_ret),
         "win_rate": win_rate,

@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Run 120-day backtest of the deployed hybrid RL+Gemini spot strategy.
+"""Run a 120-day backtest of the hybrid RL+Gemini spot strategy.
 
-Wraps backtest_hybrid_rl_gemini.py with deployed config:
-  - 6 symbols: BTCUSD,ETHUSD,SOLUSD,DOGEUSD,AAVEUSD,LINKUSD
-  - Gemini 2.5 Flash with cache
-  - ~120 days: 2025-11-15 to 2026-03-19
+Defaults to the trained universe for the configured checkpoint so the replay
+matches the checkpoint's actual symbol breadth instead of a stale manual list.
 """
 from __future__ import annotations
 
@@ -15,10 +13,10 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 
-DEFAULT_SYMBOLS = "BTCUSD,ETHUSD,SOLUSD,DOGEUSD,AAVEUSD,LINKUSD"
+DEFAULT_SYMBOLS = "auto"
 DEFAULT_START = "2025-11-15"
 DEFAULT_END = "2026-03-19"
-DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/autoresearch_mixed23_daily/ent_anneal/best.pt"
+DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/mixed23_fresh_targeted/reg_combo_2/best.pt"
 DEFAULT_MODEL = "gemini-2.5-flash"
 DEFAULT_CASH = 10000.0
 DEFAULT_REPORT = "reports/120d_hybrid_spot_eval.json"
@@ -76,9 +74,13 @@ def run_eval(args):
 
     result = {
         "config": {
-            "symbols": symbols,
-            "start_date": args.start_date,
-            "end_date": args.end_date,
+            "requested_symbols": symbols,
+            "execution_symbols": list(ctx.execution_symbols),
+            "signal_universe": list(ctx.signal_universe),
+            "requested_start_date": args.start_date,
+            "requested_end_date": args.end_date,
+            "effective_start_date": ctx.effective_start,
+            "effective_end_date": ctx.effective_end,
             "mode": args.mode,
             "model": args.model,
             "cash": args.cash,
@@ -98,6 +100,9 @@ def run_eval(args):
     print(f"\n{'='*60}")
     print(f"120-DAY HYBRID SPOT EVAL ({args.mode.upper()})")
     print(f"{'='*60}")
+    print(f"  Execution universe: {len(ctx.execution_symbols)} symbols")
+    print(f"  Signal universe:    {len(ctx.signal_universe)} symbols")
+    print(f"  Effective end:      {ctx.effective_end[:10] if ctx.effective_end else 'n/a'}")
     print(f"  Total return:   {metrics.get('total_return', 0)*100:+.2f}%")
     print(f"  Annualized:     {metrics.get('annualized_return', 0)*100:+.1f}%")
     print(f"  Sortino:        {metrics.get('sortino', 0):.2f}")
