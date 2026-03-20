@@ -14,6 +14,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from src.binan.binance_margin import get_all_margin_orders, get_margin_trades
+from src.binan.history_dedupe import dedupe_margin_orders, dedupe_margin_trades
 from src.binan.binance_wrapper import get_client
 from src.binan.hybrid_cycle_trace import (
     DEFAULT_TRACE_DIR,
@@ -62,7 +63,7 @@ def pull_margin_orders(symbols: list[str], start_ts: pd.Timestamp, end_ts: pd.Ti
                 row = dict(order)
                 row["symbol"] = symbol
                 rows.append(row)
-    return rows
+    return dedupe_margin_orders(rows)
 
 
 def pull_margin_trades(symbols: list[str], start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> list[dict[str, Any]]:
@@ -79,7 +80,7 @@ def pull_margin_trades(symbols: list[str], start_ts: pd.Timestamp, end_ts: pd.Ti
                 row = dict(trade)
                 row["symbol"] = symbol
                 rows.append(row)
-    return rows
+    return dedupe_margin_trades(rows)
 
 
 def fetch_5m_bars(symbol: str, start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> pd.DataFrame:
