@@ -19,13 +19,13 @@ import numpy as np
 import pandas as pd
 
 from binance_worksteal.strategy import (
-    WorkStealConfig, Position, TradeLog,
+    WorkStealConfig, Position, TradeLog, compute_metrics,
     compute_ref_price, compute_sma, get_fee, load_daily_bars,
     FDUSD_SYMBOLS,
 )
 from binance_worksteal.gemini_overlay import (
     DailyTradePlan, build_daily_prompt, call_gemini_daily,
-    load_forecast_daily,
+    load_forecast_daily, list_forecast_coverage,
 )
 
 CACHE_DIR = Path("binance_worksteal/gemini_cache")
@@ -83,6 +83,7 @@ def run_gemini_backtest(
     recent_trades: List[dict] = []
     llm_calls = 0
     llm_overrides = 0
+    llm_skips = 0
 
     for date in all_dates:
         current_bars = {}
@@ -101,14 +102,12 @@ def run_gemini_backtest(
         if not current_bars:
             continue
 
-        # Compute equity
         inv_value = 0.0
         for sym, pos in positions.items():
             if sym in current_bars:
                 inv_value += pos.quantity * float(current_bars[sym]["close"])
         current_equity = cash + inv_value
 
-        # 1. Exits -- check all positions
         exits = []
         for sym, pos in list(positions.items()):
             if sym not in current_bars:
@@ -140,7 +139,6 @@ def run_gemini_backtest(
                     exit_price = close
                     reason = "max_hold"
 
-            # Ask Gemini if we should adjust exit for open positions
             if exit_price is None and sym in history:
                 date_str = str(date.date())
                 cached = _get_cached_plan(f"exit_{sym}", date_str) if use_cache else None
@@ -167,7 +165,7 @@ def run_gemini_backtest(
                         _set_cached_plan(f"exit_{sym}", date_str, plan)
 
                 if plan and plan.action == "sell" and plan.confidence > 0.5:
-                    exit_price = close  # market exit
+                    exit_price = close
                     reason = f"gemini_exit(conf={plan.confidence:.2f})"
                     llm_overrides += 1
                 elif plan and plan.action == "adjust":
@@ -201,7 +199,6 @@ def run_gemini_backtest(
             last_exit[sym] = date
             del positions[sym]
 
-        # 2. Entries -- find rule-based candidates, enhance with Gemini
         if len(positions) < config.max_positions:
             candidates = []
             for sym, bar in current_bars.items():
@@ -247,13 +244,11 @@ def run_gemini_backtest(
                 close = float(bar["close"])
                 date_str = str(date.date())
 
-                # Ask Gemini to recalibrate
                 cached = _get_cached_plan(f"entry_{sym}", date_str) if use_cache else None
                 if cached:
                     plan = cached
                 else:
                     fc = load_forecast_daily(sym, cache_root=forecast_cache_root, as_of=date)
-                    # Build universe snapshot
                     uni_lines = []
                     for s2, b2 in sorted(current_bars.items()):
                         if s2 in history and len(history[s2]) >= 5:
@@ -262,7 +257,7 @@ def run_gemini_backtest(
                             chg = (c2 - prev) / prev * 100
                             in_pos = "HELD" if s2 in positions else ""
                             uni_lines.append(f"  {s2:10s} ${c2:>10.2f} {chg:+5.1f}% {in_pos}")
-                    universe_summary = "\n".join(uni_lines[:15])  # top 15
+                    universe_summary = "\n".join(uni_lines[:15])
 
                     prompt = build_daily_prompt(
                         symbol=sym, bars=history[sym], current_price=close,
@@ -275,7 +270,6 @@ def run_gemini_backtest(
                     if plan and use_cache:
                         _set_cached_plan(f"entry_{sym}", date_str, plan)
 
-                # Use Gemini prices if available, else fall back to rule
                 if plan and plan.action in ("buy", "adjust") and plan.confidence > 0.3:
                     buy_price = plan.buy_price if plan.buy_price > 0 else rule_fill_price
                     sell_target = plan.sell_price if plan.sell_price > 0 else rule_fill_price * (1 + config.profit_target_pct)
@@ -284,7 +278,8 @@ def run_gemini_backtest(
                     llm_overrides += 1
                     source = f"gemini(conf={confidence:.2f})"
                 elif plan and plan.action == "hold" and plan.confidence > 0.5:
-                    continue  # Gemini says skip
+                    llm_skips += 1
+                    continue
                 else:
                     buy_price = rule_fill_price
                     sell_target = rule_fill_price * (1 + config.profit_target_pct)
@@ -292,10 +287,9 @@ def run_gemini_backtest(
                     confidence = 0.5
                     source = "rule_only"
 
-                # Check fill: did low reach buy_price?
                 low_bar = float(bar["low"])
                 if low_bar > buy_price:
-                    continue  # no fill
+                    continue
 
                 fee_rate = get_fee(sym, config)
                 alloc = min(cash, current_equity * config.max_position_pct)
@@ -303,7 +297,6 @@ def run_gemini_backtest(
                 if quantity <= 0:
                     continue
 
-                # Scale by confidence
                 quantity *= min(confidence, 1.0)
                 cost = quantity * buy_price * (1 + fee_rate)
                 cash -= cost
@@ -328,7 +321,6 @@ def run_gemini_backtest(
                     "price": buy_price, "pnl": 0, "reason": source,
                 })
 
-        # Equity
         inv_value = sum(
             pos.quantity * float(current_bars[sym]["close"])
             for sym, pos in positions.items()
@@ -340,7 +332,6 @@ def run_gemini_backtest(
             "n_positions": len(positions),
         })
 
-        # Max DD exit
         if config.max_drawdown_exit > 0 and len(equity_rows) > 1:
             peak_eq = max(r["equity"] for r in equity_rows)
             dd = (equity - peak_eq) / peak_eq if peak_eq > 0 else 0
@@ -364,55 +355,71 @@ def run_gemini_backtest(
                 break
 
     equity_df = pd.DataFrame(equity_rows)
-    metrics = _compute_metrics(equity_df, trades)
+    metrics = compute_metrics(equity_df, config, trades)
+    metrics["n_trades"] = len(trades)
     metrics["llm_calls"] = llm_calls
     metrics["llm_overrides"] = llm_overrides
+    metrics["llm_skips"] = llm_skips
     return equity_df, trades, metrics
 
 
-def _compute_metrics(equity_df, trades):
-    if equity_df.empty or len(equity_df) < 2:
-        return {}
-    values = equity_df["equity"].values.astype(float)
-    returns = np.diff(values) / np.clip(values[:-1], 1e-8, None)
-    total_return = (values[-1] - values[0]) / values[0]
-    mean_ret = returns.mean()
-    downside = returns[returns < 0]
-    downside_std = downside.std() if len(downside) > 1 else 1e-8
-    sortino = mean_ret / max(downside_std, 1e-8) * np.sqrt(365)
-    sharpe = mean_ret / max(returns.std(), 1e-8) * np.sqrt(365)
-    peak = np.maximum.accumulate(values)
-    dd = (values - peak) / peak
-    exits = [t for t in trades if t.side == "sell"]
-    wins = [t for t in exits if t.pnl > 0]
-    return {
-        "total_return_pct": float(total_return * 100),
-        "sortino": float(sortino),
-        "sharpe": float(sharpe),
-        "max_drawdown_pct": float(dd.min() * 100),
-        "win_rate": len(wins) / len(exits) * 100 if exits else 0,
-        "n_trades": len(trades),
-        "n_days": len(equity_df),
-        "final_equity": float(values[-1]),
-    }
+def _print_comparison(rule_m: dict, gemini_m: dict, model_name: str):
+    print(f"\n{'='*70}")
+    print(f"COMPARISON: Rule-Only vs Gemini ({model_name})")
+    print(f"{'='*70}")
+    print(f"{'Metric':<20s} {'Rule-Only':>12s} {'Gemini':>12s} {'Delta':>12s}")
+    print(f"{'-'*56}")
+    for key, label, fmt in [
+        ("total_return_pct", "Return %", ".2f"),
+        ("sortino", "Sortino", ".2f"),
+        ("sharpe", "Sharpe", ".2f"),
+        ("max_drawdown_pct", "Max DD %", ".2f"),
+        ("win_rate", "Win Rate %", ".1f"),
+        ("n_trades", "Trades", ".0f"),
+    ]:
+        rv = rule_m.get(key, 0)
+        gv = gemini_m.get(key, 0)
+        delta = gv - rv
+        print(f"{label:<20s} {rv:>12{fmt}} {gv:>12{fmt}} {delta:>+12{fmt}}")
+    print(f"{'='*70}")
+    if "llm_calls" in gemini_m:
+        print(f"LLM calls: {gemini_m['llm_calls']}, overrides: {gemini_m.get('llm_overrides',0)}, skips: {gemini_m.get('llm_skips',0)}")
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", default="trainingdata/train")
-    parser.add_argument("--start-date", default=None)
-    parser.add_argument("--end-date", default=None)
+    parser.add_argument("--start-date", "--start", default=None)
+    parser.add_argument("--end-date", "--end", default=None)
     parser.add_argument("--days", type=int, default=30)
-    parser.add_argument("--model", default="gemini-2.5-flash")
-    parser.add_argument("--symbols", nargs="+", default=None, help="Optional symbol subset (default: full work-steal universe).")
-    parser.add_argument("--forecast-cache-root", type=Path, default=None, help="Optional forecast cache root override.")
-    parser.add_argument("--output-json", type=Path, default=None, help="Optional JSON path for summary metrics.")
+    parser.add_argument("--gemini-model", "--model", default="gemini-2.5-flash")
+    parser.add_argument("--symbols", nargs="+", default=None)
+    parser.add_argument("--forecast-cache-root", type=Path, default=None)
+    parser.add_argument("--output-json", type=Path, default=None)
+    parser.add_argument("--use-cache", action="store_true", default=True)
     parser.add_argument("--no-cache", action="store_true")
-    parser.add_argument("--rule-only", action="store_true", help="Run without Gemini for comparison")
+    parser.add_argument("--rule-only", action="store_true")
+    parser.add_argument("--compare", action="store_true", help="Run both rule-only and Gemini, print comparison table")
+    parser.add_argument("--forecast-coverage", action="store_true", help="Print Chronos2 forecast coverage report")
     args = parser.parse_args()
+
+    if args.no_cache:
+        args.use_cache = False
 
     from binance_worksteal.backtest import FULL_UNIVERSE
     symbols = list(args.symbols) if args.symbols else list(FULL_UNIVERSE)
+
+    if args.forecast_coverage:
+        cov = list_forecast_coverage(symbols, cache_root=args.forecast_cache_root)
+        print(f"Chronos2 h24 forecast coverage: {len(cov['covered'])}/{len(symbols)}")
+        print(f"  Cache dir: {cov['cache_dir']}")
+        if cov["covered"]:
+            print(f"  Covered: {', '.join(sorted(cov['covered']))}")
+        if cov["missing"]:
+            print(f"  Missing:  {', '.join(sorted(cov['missing']))}")
+        if not args.compare and not args.rule_only and not args.start_date:
+            return 0
+
     all_bars = load_daily_bars(args.data_dir, symbols)
     if not all_bars:
         raise SystemExit(f"No daily bars loaded from {args.data_dir} for symbols={symbols}")
@@ -432,7 +439,31 @@ def main():
         max_drawdown_exit=0.25,
     )
 
-    if args.rule_only:
+    if args.compare:
+        from binance_worksteal.strategy import run_worksteal_backtest, print_results
+        print("\n--- Running rule-only baseline ---")
+        req, rtrades, rm = run_worksteal_backtest(
+            {k: v.copy() for k, v in all_bars.items()}, config,
+            start_date=args.start_date, end_date=args.end_date,
+        )
+        print("\n--- Running Gemini overlay ---")
+        geq, gtrades, gm = run_gemini_backtest(
+            {k: v.copy() for k, v in all_bars.items()}, config,
+            start_date=args.start_date, end_date=args.end_date,
+            model=args.gemini_model, use_cache=args.use_cache,
+            forecast_cache_root=args.forecast_cache_root,
+        )
+        _print_comparison(rm, gm, args.gemini_model)
+        payload = {
+            "mode": "compare",
+            "symbols": sorted(all_bars),
+            "model": args.gemini_model,
+            "start_date": args.start_date,
+            "end_date": args.end_date,
+            "rule_metrics": rm,
+            "gemini_metrics": gm,
+        }
+    elif args.rule_only:
         from binance_worksteal.strategy import run_worksteal_backtest, print_results
         eq, trades, m = run_worksteal_backtest(
             {k: v.copy() for k, v in all_bars.items()}, config,
@@ -454,20 +485,20 @@ def main():
         eq, trades, m = run_gemini_backtest(
             {k: v.copy() for k, v in all_bars.items()}, config,
             start_date=args.start_date, end_date=args.end_date,
-            model=args.model, use_cache=not args.no_cache,
+            model=args.gemini_model, use_cache=args.use_cache,
             forecast_cache_root=args.forecast_cache_root,
         )
-        print(f"\n=== GEMINI ENHANCED ({args.model}) ===")
+        print(f"\n=== GEMINI ENHANCED ({args.gemini_model}) ===")
         print(f"Return: {m.get('total_return_pct',0):.2f}%")
         print(f"Sortino: {m.get('sortino',0):.2f}")
         print(f"MaxDD: {m.get('max_drawdown_pct',0):.2f}%")
         print(f"WinRate: {m.get('win_rate',0):.1f}%")
         print(f"Trades: {m.get('n_trades',0)}")
-        print(f"LLM calls: {m.get('llm_calls',0)}, overrides: {m.get('llm_overrides',0)}")
+        print(f"LLM calls: {m.get('llm_calls',0)}, overrides: {m.get('llm_overrides',0)}, skips: {m.get('llm_skips',0)}")
         payload = {
             "mode": "gemini_overlay",
             "symbols": sorted(all_bars),
-            "model": str(args.model),
+            "model": str(args.gemini_model),
             "data_dir": str(args.data_dir),
             "forecast_cache_root": str(args.forecast_cache_root) if args.forecast_cache_root else None,
             "start_date": str(args.start_date),

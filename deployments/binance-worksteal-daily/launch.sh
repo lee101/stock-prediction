@@ -13,6 +13,9 @@ exec /home/lee/code/stock/.venv313/bin/python -u \
   --max-positions 5 \
   --sma-filter 20 \
   --trailing-stop 0.03 \
+  --entry-proximity-bps 3000 \
+  --entry-poll-hours 4 \
+  --health-report-hours 6 \
   --symbols BTCUSD ETHUSD SOLUSD DOGEUSD AVAXUSD LINKUSD AAVEUSD LTCUSD \
             XRPUSD DOTUSD UNIUSD NEARUSD APTUSD ICPUSD SHIBUSD ADAUSD \
             FILUSD ARBUSD OPUSD INJUSD SUIUSD TIAUSD SEIUSD ATOMUSD \

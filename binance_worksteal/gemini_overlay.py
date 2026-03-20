@@ -7,6 +7,7 @@ previous trades, market regime -- and outputs adjusted buy/sell prices.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -17,6 +18,8 @@ import numpy as np
 import pandas as pd
 from src.forecast_cache_lookup import load_latest_forecast_from_cache
 
+from binance_worksteal.strategy import FDUSD_SYMBOLS
+
 try:
     from google import genai
     from google.genai import types
@@ -24,7 +27,16 @@ except ImportError:
     genai = None
     types = None
 
+logger = logging.getLogger(__name__)
+
 FORECAST_CACHE = Path(__file__).resolve().parent.parent / "binanceneural" / "forecast_cache"
+
+SYMBOL_TO_PAIR = {
+    "BTCUSD": {"fdusd": "BTCFDUSD", "usdt": "BTCUSDT"},
+    "ETHUSD": {"fdusd": "ETHFDUSD", "usdt": "ETHUSDT"},
+    "SOLUSD": {"fdusd": "SOLFDUSD", "usdt": "SOLUSDT"},
+    "BNBUSD": {"fdusd": "BNBFDUSD", "usdt": "BNBUSDT"},
+}
 
 
 @dataclass
@@ -77,9 +89,42 @@ def load_forecast_daily(
     cache_root: Optional[Path] = None,
     *,
     as_of: pd.Timestamp | str | None = None,
+    max_forecast_age_hours: int = 24,
 ) -> Optional[dict]:
     root = cache_root or FORECAST_CACHE
-    return load_latest_forecast_from_cache(symbol, 24, root, as_of=as_of)
+    result = load_latest_forecast_from_cache(symbol, 24, root, as_of=as_of)
+    if result is None:
+        return None
+    issued_at = result.get("issued_at")
+    if issued_at is not None and max_forecast_age_hours > 0:
+        try:
+            issued_ts = pd.Timestamp(issued_at, unit="s") if isinstance(issued_at, (int, float)) else pd.Timestamp(issued_at)
+            if issued_ts.tzinfo is None:
+                issued_ts = issued_ts.tz_localize("UTC")
+            ref = pd.Timestamp(as_of) if as_of is not None else pd.Timestamp.now("UTC")
+            if ref.tzinfo is None:
+                ref = ref.tz_localize("UTC")
+            age_hours = (ref - issued_ts).total_seconds() / 3600.0
+            if age_hours > max_forecast_age_hours:
+                logger.warning(
+                    "stale forecast for %s: %.1fh old (max %dh), skipping",
+                    symbol, age_hours, max_forecast_age_hours,
+                )
+                return None
+        except Exception:
+            pass
+    return result
+
+
+def _execution_pair_info(symbol: str) -> tuple[str, str]:
+    if symbol in FDUSD_SYMBOLS and symbol in SYMBOL_TO_PAIR:
+        pair = SYMBOL_TO_PAIR[symbol]["fdusd"]
+        note = f"Execute on {pair} (FDUSD pairs have 0% maker fee)"
+        return pair, note
+    base = symbol.replace("USD", "")
+    pair = f"{base}USDT"
+    note = f"Execute on {pair} (USDT pairs have 10bps fee)"
+    return pair, note
 
 
 def build_daily_prompt(
@@ -92,8 +137,8 @@ def build_daily_prompt(
     forecast_24h: Optional[dict] = None,
     universe_summary: Optional[str] = None,
     fee_bps: int = 10,
+    entry_proximity_bps: Optional[float] = None,
 ) -> str:
-    # Last 20 daily bars
     recent = bars.tail(20)
     price_lines = []
     for _, row in recent.iterrows():
@@ -103,7 +148,6 @@ def build_daily_prompt(
         chg = (c - o) / o * 100
         price_lines.append(f"  {ts}: O={o:.2f} H={h:.2f} L={l:.2f} C={c:.2f} V={vol:.0f} ({chg:+.1f}%)")
 
-    # Trend context
     closes = bars["close"].values
     trend_parts = []
     for n, label in [(1, "1d"), (5, "5d"), (10, "10d"), (20, "20d")]:
@@ -117,7 +161,6 @@ def build_daily_prompt(
         sma50 = np.mean(closes[-50:])
         trend_parts.append(f"SMA50: ${sma50:.2f}")
 
-    # Volatility
     if len(bars) >= 14:
         highs = bars["high"].values[-14:]
         lows = bars["low"].values[-14:]
@@ -127,7 +170,6 @@ def build_daily_prompt(
         atr_pct = atr / current_price * 100
         trend_parts.append(f"ATR14: ${atr:.2f} ({atr_pct:.1f}%)")
 
-    # Recent high/low
     if len(bars) >= 20:
         high_20 = float(bars["high"].tail(20).max())
         low_20 = float(bars["low"].tail(20).min())
@@ -137,7 +179,6 @@ def build_daily_prompt(
 
     trend_line = " | ".join(trend_parts)
 
-    # Forecast section
     fc_section = ""
     if forecast_24h:
         fc_lines = []
@@ -152,7 +193,6 @@ def build_daily_prompt(
             fc_lines.append(f"  90% CI: ${forecast_24h['predicted_close_p10']:.2f} - ${forecast_24h['predicted_close_p90']:.2f} (spread: {spread/current_price*100:.2f}%)")
         fc_section = "\nCHRONOS2 24h FORECAST:\n" + "\n".join(fc_lines) + "\n"
 
-    # Position section
     pos_section = "\nPOSITION: Flat (no open position)\n"
     if position_info and position_info.get("quantity", 0) > 0:
         entry = position_info["entry_price"]
@@ -170,18 +210,16 @@ CURRENT POSITION:
   Current stop: ${position_info.get('stop_price', 0):.2f}
 """
 
-    # Recent trades section
     trades_section = ""
     if recent_trades:
         trade_lines = []
-        for t in recent_trades[-5:]:  # last 5 trades
+        for t in recent_trades[-5:]:
             trade_lines.append(
                 f"  {t.get('timestamp','')[:10]} {t['side']:>5s} {t['symbol']} "
                 f"@ ${t['price']:.2f} pnl=${t.get('pnl',0):+.2f} ({t.get('reason','')})"
             )
         trades_section = "\nRECENT TRADES:\n" + "\n".join(trade_lines) + "\n"
 
-    # Rule-based signal
     signal_section = ""
     if rule_signal:
         sig_lines = []
@@ -195,12 +233,16 @@ CURRENT POSITION:
             sig_lines.append(f"  SMA-20 filter: {'PASS' if rule_signal['sma_ok'] else 'FAIL'}")
         signal_section = "\nRULE-BASED SIGNAL:\n" + "\n".join(sig_lines) + "\n"
 
-    # Universe summary
     universe_section = ""
     if universe_summary:
         universe_section = f"\nUNIVERSE SNAPSHOT:\n{universe_summary}\n"
 
     fee_str = f"{fee_bps}bps" if fee_bps > 0 else "0bps (FDUSD)"
+
+    exec_pair, exec_note = _execution_pair_info(symbol)
+    exec_section = f"\nEXECUTION: {exec_note}"
+    if entry_proximity_bps is not None:
+        exec_section += f"\n  Entry within {entry_proximity_bps:.0f} bps of buy target to qualify as dip candidate."
 
     return f"""You are a daily cryptocurrency trader optimizing a work-stealing dip-buying strategy across 30 symbols.
 
@@ -216,7 +258,7 @@ SYMBOL: {symbol}
 CURRENT PRICE: ${current_price:.2f}
 {pos_section}
 TREND: {trend_line}
-{fc_section}{signal_section}{trades_section}{universe_section}
+{fc_section}{signal_section}{trades_section}{universe_section}{exec_section}
 LAST 20 DAILY BARS:
 {chr(10).join(price_lines)}
 
@@ -242,12 +284,15 @@ def call_gemini_daily(
     api_key: Optional[str] = None,
     temperature: float = 0.3,
     max_retries: int = 3,
+    fallback_plan: Optional[DailyTradePlan] = None,
 ) -> Optional[DailyTradePlan]:
     if genai is None:
-        return None
+        logger.warning("google.genai not installed, returning fallback")
+        return fallback_plan
     key = api_key or os.environ.get("GEMINI_API_KEY", "")
     if not key:
-        return None
+        logger.warning("no GEMINI_API_KEY, returning fallback")
+        return fallback_plan
 
     client = genai.Client(api_key=key)
 
@@ -273,8 +318,110 @@ def call_gemini_daily(
                 reasoning=str(data.get("reasoning", "")),
             )
         except Exception as e:
+            delay = 2 ** attempt
             if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
+                logger.warning(
+                    "gemini retry %d/%d for model=%s: %s (backoff %ds)",
+                    attempt + 1, max_retries, model, e, delay,
+                )
+                time.sleep(delay)
             else:
-                return None
-    return None
+                logger.error(
+                    "gemini failed after %d retries: %s, returning fallback",
+                    max_retries, e,
+                )
+                return fallback_plan
+    return fallback_plan
+
+
+def backtest_gemini_decisions(
+    bars: pd.DataFrame,
+    candidates: List[dict],
+    model: str = "gemini-2.5-flash",
+    api_key: Optional[str] = None,
+    use_cache: bool = True,
+    cache_dir: Optional[Path] = None,
+    forecast_cache_root: Optional[Path] = None,
+) -> List[dict]:
+    """Run Gemini decisions on historical bar data for a list of candidates.
+
+    Each candidate dict: {"symbol": str, "date": str, "current_price": float,
+                          "rule_signal": dict, "position_info": dict|None}
+
+    Returns list of dicts with symbol, date, plan fields.
+    """
+    cdir = cache_dir or Path("binance_worksteal/gemini_cache/backtest")
+    cdir.mkdir(parents=True, exist_ok=True)
+    results = []
+
+    for cand in candidates:
+        symbol = cand["symbol"]
+        date_str = cand["date"]
+        cache_path = cdir / f"{symbol}_{date_str}.json"
+
+        if use_cache and cache_path.exists():
+            try:
+                data = json.loads(cache_path.read_text())
+                plan = DailyTradePlan(**data)
+            except Exception:
+                plan = None
+        else:
+            sym_bars = bars[bars["symbol"] == symbol] if "symbol" in bars.columns else bars
+            if sym_bars.empty:
+                results.append({"symbol": symbol, "date": date_str, "plan": None})
+                continue
+            date_ts = pd.Timestamp(date_str, tz="UTC")
+            hist = sym_bars[sym_bars["timestamp"] <= date_ts]
+            if hist.empty:
+                results.append({"symbol": symbol, "date": date_str, "plan": None})
+                continue
+
+            current_price = cand["current_price"]
+            fc = load_forecast_daily(
+                symbol, cache_root=forecast_cache_root, as_of=date_ts,
+            )
+            prompt = build_daily_prompt(
+                symbol=symbol, bars=hist, current_price=current_price,
+                rule_signal=cand.get("rule_signal", {}),
+                position_info=cand.get("position_info"),
+                forecast_24h=fc,
+                fee_bps=0 if symbol in FDUSD_SYMBOLS else 10,
+            )
+            plan = call_gemini_daily(prompt, model=model, api_key=api_key)
+            if plan is not None and use_cache:
+                cache_path.write_text(json.dumps({
+                    "action": plan.action, "buy_price": plan.buy_price,
+                    "sell_price": plan.sell_price, "stop_price": plan.stop_price,
+                    "confidence": plan.confidence, "reasoning": plan.reasoning,
+                }))
+
+        results.append({
+            "symbol": symbol,
+            "date": date_str,
+            "action": plan.action if plan else None,
+            "buy_price": plan.buy_price if plan else 0.0,
+            "sell_price": plan.sell_price if plan else 0.0,
+            "confidence": plan.confidence if plan else 0.0,
+            "reasoning": plan.reasoning if plan else "",
+            "plan": plan,
+        })
+    return results
+
+
+def list_forecast_coverage(
+    symbols: List[str],
+    cache_root: Optional[Path] = None,
+    horizon: int = 24,
+) -> dict:
+    """Check which symbols have h24 forecasts and which are missing."""
+    root = cache_root or FORECAST_CACHE
+    horizon_dir = root / f"h{horizon}"
+    covered = []
+    missing = []
+    for sym in symbols:
+        fc = load_latest_forecast_from_cache(sym, horizon, root)
+        if fc is not None:
+            covered.append(sym)
+        else:
+            missing.append(sym)
+    return {"covered": covered, "missing": missing, "cache_dir": str(horizon_dir)}
