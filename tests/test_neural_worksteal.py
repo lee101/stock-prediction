@@ -688,6 +688,156 @@ class TestMultistepTraining:
         assert "sortino" in metrics
 
 
+class TestAMP:
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+    def test_train_epoch_amp(self):
+        S, F, T = 3, 11, 10
+        device = torch.device("cuda")
+        model = DailyWorkStealPolicy(
+            n_features=F, n_symbols=S, hidden_dim=32,
+            num_layers=1, num_heads=2, seq_len=T,
+        ).to(device)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        scaler = torch.amp.GradScaler("cuda")
+
+        symbol_data, symbol_features, dates, symbols = _make_fake_bars(50, S)
+        ds = WorkStealDataset(symbol_data, symbol_features, dates, seq_len=T, symbols=symbols)
+        loader = build_dataloader(ds, batch_size=8, shuffle=True)
+
+        config = {
+            "maker_fee": 0.001, "initial_cash": 10000.0, "temperature": 5e-4,
+            "max_positions": 3, "loss_type": "sortino", "return_weight": 0.05,
+            "grad_clip": 1.0,
+        }
+        metrics = train_epoch(model, loader, optimizer, device, config, scaler=scaler)
+        assert "loss" in metrics
+        assert not np.isnan(metrics["loss"])
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+    def test_train_epoch_multistep_amp(self):
+        S, F, T, R = 3, 11, 10, 5
+        device = torch.device("cuda")
+        model = PerSymbolWorkStealPolicy(
+            n_features=F, n_symbols=S, hidden_dim=32,
+            num_temporal_layers=1, num_cross_layers=1, num_heads=2, seq_len=T,
+        ).to(device)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        scaler = torch.amp.GradScaler("cuda")
+
+        symbol_data, symbol_features, dates, symbols = _make_fake_bars(60, S)
+        ds = WorkStealSequentialDataset(
+            symbol_data, symbol_features, dates,
+            seq_len=T, rollout_len=R, symbols=symbols,
+        )
+        loader = build_dataloader(ds, batch_size=4, shuffle=True)
+
+        config = {
+            "maker_fee": 0.001, "initial_cash": 10000.0, "temperature": 0.02,
+            "max_positions": 3, "max_hold_days": 14, "loss_type": "sortino",
+            "return_weight": 0.05, "grad_clip": 1.0,
+        }
+        metrics = train_epoch_multistep(model, loader, optimizer, device, config, scaler=scaler)
+        assert "loss" in metrics
+        assert not np.isnan(metrics["loss"])
+
+    def test_amp_fallback_cpu(self):
+        S, F, T = 3, 11, 10
+        device = torch.device("cpu")
+        model = DailyWorkStealPolicy(
+            n_features=F, n_symbols=S, hidden_dim=32,
+            num_layers=1, num_heads=2, seq_len=T,
+        )
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+
+        symbol_data, symbol_features, dates, symbols = _make_fake_bars(50, S)
+        ds = WorkStealDataset(symbol_data, symbol_features, dates, seq_len=T, symbols=symbols)
+        loader = build_dataloader(ds, batch_size=8, shuffle=True)
+
+        config = {
+            "maker_fee": 0.001, "initial_cash": 10000.0, "temperature": 5e-4,
+            "max_positions": 3, "loss_type": "sortino", "return_weight": 0.05,
+            "grad_clip": 1.0,
+        }
+        metrics = train_epoch(model, loader, optimizer, device, config, scaler=None)
+        assert "loss" in metrics
+
+
+class TestGradCheckpoint:
+    def test_rollout_with_grad_checkpoint(self):
+        B, R, T, S, F = 2, 5, 10, 3, 11
+        torch.manual_seed(42)
+        model = PerSymbolWorkStealPolicy(
+            n_features=F, n_symbols=S, hidden_dim=32,
+            num_temporal_layers=1, num_cross_layers=1, num_heads=2, seq_len=T,
+        )
+        nn.init.normal_(model.head.weight, std=0.1)
+        nn.init.normal_(model.head.bias, std=0.1)
+
+        features = torch.randn(B, R, T, S, F)
+        cur_close = torch.rand(B, R, S) * 100 + 50
+        t_high = cur_close * 1.10
+        t_low = cur_close * 0.80
+        t_close = cur_close + torch.randn(B, R, S)
+
+        result = run_multistep_rollout(
+            features_seq=features,
+            target_highs=t_high, target_lows=t_low,
+            target_closes=t_close, current_closes=cur_close,
+            model=model, temperature=0.05, initial_cash=10000.0,
+            use_grad_checkpoint=True,
+        )
+        loss, _, _, _ = compute_loss_by_type(
+            result["returns"], "sortino",
+            periods_per_year=DAILY_PERIODS_PER_YEAR_CRYPTO,
+        )
+        loss.backward()
+        grad_count = sum(1 for p in model.parameters() if p.grad is not None and p.grad.norm() > 0)
+        assert grad_count > 0
+
+    def test_grad_checkpoint_matches_no_checkpoint(self):
+        B, R, T, S, F = 2, 3, 10, 3, 11
+        features = torch.randn(B, R, T, S, F)
+        cur_close = torch.rand(B, R, S) * 100 + 50
+        t_high = cur_close * 1.10
+        t_low = cur_close * 0.80
+        t_close = cur_close + torch.randn(B, R, S)
+
+        for gc in [False, True]:
+            torch.manual_seed(123)
+            model = PerSymbolWorkStealPolicy(
+                n_features=F, n_symbols=S, hidden_dim=32,
+                num_temporal_layers=1, num_cross_layers=1, num_heads=2, seq_len=T,
+            )
+            result = run_multistep_rollout(
+                features_seq=features,
+                target_highs=t_high, target_lows=t_low,
+                target_closes=t_close, current_closes=cur_close,
+                model=model, temperature=0.05, initial_cash=10000.0,
+                use_grad_checkpoint=gc,
+            )
+            if gc:
+                ret_gc = result["returns"].detach().clone()
+            else:
+                ret_no_gc = result["returns"].detach().clone()
+        assert torch.allclose(ret_gc, ret_no_gc, atol=1e-5)
+
+
+class TestDataLoaderOptimized:
+    def test_pin_memory_and_workers(self):
+        symbol_data, symbol_features, dates, symbols = _make_fake_bars(100, 3)
+        ds = WorkStealDataset(symbol_data, symbol_features, dates, seq_len=10, symbols=symbols)
+        loader = build_dataloader(ds, batch_size=8, shuffle=False, num_workers=0, pin_memory=False)
+        batch = next(iter(loader))
+        assert batch["features"].shape[0] <= 8
+
+    def test_dataloader_default_backward_compat(self):
+        symbol_data, symbol_features, dates, symbols = _make_fake_bars(100, 3)
+        ds = WorkStealDataset(symbol_data, symbol_features, dates, seq_len=10, symbols=symbols)
+        loader = build_dataloader(ds, batch_size=8, shuffle=False)
+        batch = next(iter(loader))
+        assert batch["features"].shape[0] <= 8
+
+
 class TestBuildDatasets:
     def test_build_datasets_real_data(self):
         data_dir = "trainingdata/train"

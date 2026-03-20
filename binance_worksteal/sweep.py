@@ -152,7 +152,7 @@ def run_sweep(
 
     for i, combo in enumerate(combos):
         params = dict(zip(keys, combo))
-        config = WorkStealConfig(initial_cash=cash, strict_fill=realistic, **params)
+        config = WorkStealConfig(initial_cash=cash, **params)
 
         multi = eval_config_multi_window(all_bars, config, windows, csim_fn)
         if multi is None:

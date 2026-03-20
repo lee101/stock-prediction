@@ -21,7 +21,9 @@ from typing import Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import numpy as np
 import pandas as pd
+import torch
 from loguru import logger
 
 from binance_worksteal.strategy import (
@@ -33,6 +35,8 @@ from binance_worksteal.strategy import (
     resolve_entry_config,
     FDUSD_SYMBOLS,
 )
+from binance_worksteal.data import compute_features, FEATURE_NAMES
+from binance_worksteal.model import DailyWorkStealPolicy, PerSymbolWorkStealPolicy
 
 # Binance API
 try:
@@ -105,6 +109,134 @@ def _relative_bps_distance(reference_price: float, candidate_price: float) -> fl
     return abs(float(candidate_price) - ref) / ref * 10_000.0
 
 
+def load_neural_model(checkpoint_path: str, device: str = "cpu"):
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    cfg = ckpt["config"]
+    model_type = cfg.get("model_type", "persymbol")
+    n_features = cfg.get("n_features", len(FEATURE_NAMES))
+    n_symbols = cfg.get("n_symbols", 30)
+    hidden_dim = cfg.get("hidden_dim", 128)
+    num_layers = cfg.get("num_layers", 4)
+    num_heads = cfg.get("num_heads", 4)
+    seq_len = cfg.get("seq_len", 30)
+    dropout = cfg.get("dropout", 0.0)
+
+    if model_type == "persymbol":
+        num_temporal = max(1, num_layers // 2)
+        num_cross = max(1, num_layers - num_temporal)
+        model = PerSymbolWorkStealPolicy(
+            n_features=n_features, n_symbols=n_symbols,
+            hidden_dim=hidden_dim,
+            num_temporal_layers=num_temporal, num_cross_layers=num_cross,
+            num_heads=num_heads, seq_len=seq_len, dropout=dropout,
+        )
+    else:
+        model = DailyWorkStealPolicy(
+            n_features=n_features, n_symbols=n_symbols,
+            hidden_dim=hidden_dim, num_layers=num_layers,
+            num_heads=num_heads, seq_len=seq_len, dropout=dropout,
+        )
+
+    model.load_state_dict(ckpt["state_dict"])
+    model.eval()
+    model.to(device)
+
+    symbols = cfg.get("symbols", [])
+    return model, symbols, cfg
+
+
+def prepare_neural_features(
+    all_bars: Dict[str, pd.DataFrame],
+    model_symbols: List[str],
+    seq_len: int = 30,
+) -> Optional[torch.Tensor]:
+    sym_to_idx = {sym: i for i, sym in enumerate(model_symbols)}
+    n_symbols = len(model_symbols)
+    n_features = len(FEATURE_NAMES)
+
+    all_dates = set()
+    sym_feats = {}
+    for sym in model_symbols:
+        strategy_sym = _normalize_strategy_symbol(sym)
+        bars = all_bars.get(strategy_sym)
+        if bars is None:
+            bars = all_bars.get(sym)
+        if bars is None or len(bars) < seq_len:
+            continue
+        feats = compute_features(bars)
+        sym_feats[sym] = (bars, feats)
+        for ts in bars["timestamp"].tolist():
+            all_dates.add(ts)
+
+    if not sym_feats:
+        return None
+
+    sorted_dates = sorted(all_dates)
+    if len(sorted_dates) < seq_len:
+        return None
+
+    use_dates = sorted_dates[-seq_len:]
+    date_to_idx = {d: i for i, d in enumerate(use_dates)}
+
+    feature_array = np.zeros((seq_len, n_symbols, n_features), dtype=np.float32)
+    for sym, (bars, feats) in sym_feats.items():
+        si = sym_to_idx[sym]
+        for row_idx in range(len(bars)):
+            ts = bars["timestamp"].iloc[row_idx]
+            if ts in date_to_idx:
+                di = date_to_idx[ts]
+                vals = feats.iloc[row_idx].values[:n_features]
+                feature_array[di, si, :len(vals)] = vals
+
+    tensor = torch.from_numpy(feature_array).unsqueeze(0)  # [1, seq_len, n_symbols, n_features]
+    return tensor
+
+
+@torch.no_grad()
+def run_neural_inference(
+    model,
+    all_bars: Dict[str, pd.DataFrame],
+    model_symbols: List[str],
+    seq_len: int = 30,
+) -> Optional[Dict[str, Dict[str, float]]]:
+    features = prepare_neural_features(all_bars, model_symbols, seq_len)
+    if features is None:
+        return None
+
+    actions = model(features)
+    buy_offset = actions["buy_offset"][0].cpu().numpy()
+    sell_offset = actions["sell_offset"][0].cpu().numpy()
+    intensity = actions["intensity"][0].cpu().numpy()
+
+    if np.isnan(buy_offset).any() or np.isnan(sell_offset).any() or np.isnan(intensity).any():
+        logger.warning("Neural model produced NaN outputs, falling back to rules")
+        return None
+
+    predictions = {}
+    for i, sym in enumerate(model_symbols):
+        strategy_sym = _normalize_strategy_symbol(sym)
+        predictions[strategy_sym] = {
+            "buy_offset": float(buy_offset[i]),
+            "sell_offset": float(sell_offset[i]),
+            "intensity": float(intensity[i]),
+        }
+    return predictions
+
+
+def _try_neural_inference(neural_model, all_bars, neural_model_symbols, neural_seq_len):
+    try:
+        predictions = run_neural_inference(
+            neural_model, all_bars, neural_model_symbols, neural_seq_len,
+        )
+        if predictions:
+            log_event({"type": "neural_inference", "predictions": predictions})
+            logger.info(f"Neural inference: {len(predictions)} symbol predictions")
+        return predictions
+    except Exception as e:
+        logger.warning(f"Neural inference failed, falling back to rules: {e}")
+        return None
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--symbols", nargs="+", default=None)
@@ -160,6 +292,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--poll-seconds", type=int, default=300)
     parser.add_argument("--entry-poll-hours", type=int, default=4)
     parser.add_argument("--health-report-hours", type=int, default=6)
+    parser.add_argument("--neural-model", default=None, help="Path to neural model checkpoint (.pt)")
+    parser.add_argument("--neural-symbols", nargs="+", default=None, help="Symbols the model was trained on")
     return parser
 
 
@@ -527,11 +661,13 @@ def _stage_entry_candidates(
     slots: int,
     gemini_enabled: bool = False,
     gemini_model: str = "gemini-2.5-flash",
+    neural_predictions: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> dict:
     n_staged = 0
     n_already_held = 0
     n_proximity_skip = 0
     n_gemini_skip = 0
+    n_neural_skip = 0
 
     for sym, direction, score, fill_price, bar in candidates:
         if n_staged >= slots:
@@ -545,6 +681,33 @@ def _stage_entry_candidates(
         stop = fill_price * (1 - entry_config.stop_loss_pct)
         confidence = 1.0
         source = "rule"
+        neural_override = None
+
+        if neural_predictions and sym in neural_predictions:
+            pred = neural_predictions[sym]
+            intensity = pred["intensity"]
+            if intensity < 0.1:
+                logger.info(f"NEURAL SKIP {sym}: intensity={intensity:.3f} < 0.1")
+                n_neural_skip += 1
+                continue
+            neural_buy_offset = pred["buy_offset"]
+            neural_sell_offset = pred["sell_offset"]
+            buy_price = close * (1.0 - neural_buy_offset)
+            sell_target = close * (1.0 + neural_sell_offset)
+            stop = buy_price * (1 - entry_config.stop_loss_pct)
+            if intensity > 0.5:
+                confidence = min(1.0 + (intensity - 0.5), 1.5)
+            source = f"neural(int={intensity:.2f})"
+            neural_override = {
+                "buy_offset": neural_buy_offset,
+                "sell_offset": neural_sell_offset,
+                "intensity": intensity,
+                "original_fill_price": fill_price,
+            }
+            logger.info(
+                f"NEURAL {sym}: buy_offset={neural_buy_offset:.4f} sell_offset={neural_sell_offset:.4f} "
+                f"intensity={intensity:.3f} buy=${buy_price:.2f} tp=${sell_target:.2f}"
+            )
 
         if gemini_enabled:
             try:
@@ -606,7 +769,7 @@ def _stage_entry_candidates(
         if not dry_run:
             order = place_limit_buy(client, sym, buy_price, quantity, entry_config)
 
-        pending_entries[sym] = {
+        entry = {
             "buy_price": buy_price,
             "placed_at": now.isoformat(),
             "expires_at": (now + PENDING_ENTRY_TTL).isoformat(),
@@ -618,6 +781,9 @@ def _stage_entry_candidates(
             "order_id": None if order is None else order.get("orderId"),
             "status": "preview" if dry_run else "open",
         }
+        if neural_override:
+            entry["neural_override"] = neural_override
+        pending_entries[sym] = entry
         staged_symbols.add(sym)
         trade = {
             "timestamp": now.isoformat(), "symbol": sym, "side": "staged_buy",
@@ -625,6 +791,8 @@ def _stage_entry_candidates(
             "reason": f"dip_buy({source})",
             "dry_run": dry_run,
         }
+        if neural_override:
+            trade["neural_override"] = neural_override
         log_trade(trade)
         recent_trades.append(trade)
         n_staged += 1
@@ -634,6 +802,7 @@ def _stage_entry_candidates(
         "n_already_held": n_already_held,
         "n_proximity_skip": n_proximity_skip,
         "n_gemini_skip": n_gemini_skip,
+        "n_neural_skip": n_neural_skip,
     }
 
 
@@ -693,7 +862,9 @@ def run_health_report(client, symbols: List[str], config: WorkStealConfig, dry_r
 
 def run_entry_scan(client, symbols: List[str], config: WorkStealConfig,
                    dry_run: bool = True, gemini_enabled: bool = False,
-                   gemini_model: str = "gemini-2.5-flash"):
+                   gemini_model: str = "gemini-2.5-flash",
+                   neural_model=None, neural_model_symbols: Optional[List[str]] = None,
+                   neural_seq_len: int = 30):
     state = load_state()
     positions = normalize_live_positions(state.get("positions", {}), config)
     pending_entries = _normalize_pending_entries(state.get("pending_entries", {}))
@@ -716,6 +887,12 @@ def run_entry_scan(client, symbols: List[str], config: WorkStealConfig,
         log_event({"type": "entry_scan", "n_checked": len(all_bars), "n_candidates": 0, "n_staged": 0, "skip_reason": "market_breadth_risk_off"})
         return
 
+    neural_predictions = None
+    if neural_model is not None and neural_model_symbols:
+        neural_predictions = _try_neural_inference(
+            neural_model, all_bars, neural_model_symbols, neural_seq_len,
+        )
+
     staged_symbols = set(positions) | set(pending_entries)
     candidates = build_entry_candidates(
         date=pd.Timestamp(now),
@@ -734,12 +911,13 @@ def run_entry_scan(client, symbols: List[str], config: WorkStealConfig,
         recent_trades=recent_trades, entry_config=entry_config, config=config,
         equity=equity, now=now, dry_run=dry_run, slots=slots,
         gemini_enabled=gemini_enabled, gemini_model=gemini_model,
+        neural_predictions=neural_predictions,
     )
 
     logger.info(
         f"ENTRY SCAN SUMMARY: candidates={len(candidates)} staged={counts['n_staged']} "
         f"already_held={counts['n_already_held']} proximity_skip={counts['n_proximity_skip']} "
-        f"gemini_skip={counts['n_gemini_skip']}"
+        f"gemini_skip={counts['n_gemini_skip']} neural_skip={counts['n_neural_skip']}"
     )
     log_event({
         "type": "entry_scan",
@@ -757,7 +935,9 @@ def run_entry_scan(client, symbols: List[str], config: WorkStealConfig,
 
 def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
                     dry_run: bool = True, gemini_enabled: bool = False,
-                    gemini_model: str = "gemini-2.5-flash"):
+                    gemini_model: str = "gemini-2.5-flash",
+                    neural_model=None, neural_model_symbols: Optional[List[str]] = None,
+                    neural_seq_len: int = 30):
     state = load_state()
     positions = normalize_live_positions(state.get("positions", {}), config)
     pending_entries = _normalize_pending_entries(state.get("pending_entries", {}))
@@ -865,8 +1045,14 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
     # Stage new entries
     entry_config = resolve_entry_config(current_bars=current_bars, history=all_bars, config=config)
     skip_entries = compute_market_breadth_skip(current_bars, all_bars, entry_config)
-    counts = {"n_staged": 0, "n_proximity_skip": 0, "n_gemini_skip": 0, "n_already_held": 0}
+    counts = {"n_staged": 0, "n_proximity_skip": 0, "n_gemini_skip": 0, "n_already_held": 0, "n_neural_skip": 0}
     n_candidates = 0
+
+    neural_predictions = None
+    if neural_model is not None and neural_model_symbols and not skip_entries:
+        neural_predictions = _try_neural_inference(
+            neural_model, all_bars, neural_model_symbols, neural_seq_len,
+        )
 
     if len(positions) >= config.max_positions:
         logger.info(f"ENTRY SCAN: skipped, max positions ({config.max_positions}) reached")
@@ -893,11 +1079,13 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
             recent_trades=recent_trades, entry_config=entry_config, config=config,
             equity=equity, now=now, dry_run=dry_run, slots=slots,
             gemini_enabled=gemini_enabled, gemini_model=gemini_model,
+            neural_predictions=neural_predictions,
         )
 
     logger.info(
         f"ENTRY SUMMARY: candidates={n_candidates} staged={counts['n_staged']} "
         f"proximity_skip={counts['n_proximity_skip']} gemini_skip={counts['n_gemini_skip']} "
+        f"neural_skip={counts['n_neural_skip']} "
         f"already_held={counts['n_already_held']} risk_off={skip_entries}"
     )
     log_event({
@@ -957,6 +1145,22 @@ def main():
     if gemini_on:
         logger.info(f"Gemini overlay enabled (model={g_model})")
 
+    nn_model = None
+    nn_symbols = None
+    nn_seq_len = 30
+    if args.neural_model:
+        try:
+            nn_model, nn_symbols_loaded, nn_cfg = load_neural_model(args.neural_model)
+            nn_seq_len = nn_cfg.get("seq_len", 30)
+            if args.neural_symbols:
+                nn_symbols = args.neural_symbols
+            else:
+                nn_symbols = nn_symbols_loaded
+            logger.info(f"Neural model loaded: {args.neural_model} ({len(nn_symbols)} symbols, seq_len={nn_seq_len})")
+        except Exception as e:
+            logger.error(f"Failed to load neural model: {e}")
+            nn_model = None
+
     if args.daemon:
         entry_poll_h = int(args.entry_poll_hours)
         health_h = int(args.health_report_hours)
@@ -973,6 +1177,9 @@ def main():
                 dry_run=startup_dry_run,
                 gemini_enabled=gemini_on,
                 gemini_model=g_model,
+                neural_model=nn_model,
+                neural_model_symbols=nn_symbols,
+                neural_seq_len=nn_seq_len,
             )
             if not startup_dry_run:
                 last_cycle_date = datetime.now(timezone.utc).date().isoformat()
@@ -990,6 +1197,9 @@ def main():
                     dry_run=args.dry_run,
                     gemini_enabled=gemini_on,
                     gemini_model=g_model,
+                    neural_model=nn_model,
+                    neural_model_symbols=nn_symbols,
+                    neural_seq_len=nn_seq_len,
                 )
                 last_cycle_date = now.date().isoformat()
                 last_entry_scan_hour = now.strftime("%Y-%m-%dT%H")
@@ -1026,6 +1236,9 @@ def main():
                         dry_run=args.dry_run,
                         gemini_enabled=gemini_on,
                         gemini_model=g_model,
+                        neural_model=nn_model,
+                        neural_model_symbols=nn_symbols,
+                        neural_seq_len=nn_seq_len,
                     )
                     last_entry_scan_hour = current_hour
 
@@ -1038,7 +1251,9 @@ def main():
             time.sleep(max(60, min(float(args.poll_seconds), sleep_secs)))
     else:
         run_daily_cycle(client, symbols, config, dry_run=args.dry_run,
-                        gemini_enabled=gemini_on, gemini_model=g_model)
+                        gemini_enabled=gemini_on, gemini_model=g_model,
+                        neural_model=nn_model, neural_model_symbols=nn_symbols,
+                        neural_seq_len=nn_seq_len)
 
 
 if __name__ == "__main__":

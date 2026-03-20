@@ -4,7 +4,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -12,16 +14,22 @@ from binance_worksteal.trade_live import (
     DEFAULT_CONFIG,
     EVENTS_FILE,
     _relative_bps_distance,
+    _stage_entry_candidates,
     build_arg_parser,
     build_runtime_config,
+    load_neural_model,
     log_event,
     normalize_live_positions,
     plan_legacy_rebalance_exits,
+    prepare_neural_features,
     reconcile_pending_entries,
     run_daily_cycle,
     run_entry_scan,
     run_health_report,
+    run_neural_inference,
 )
+from binance_worksteal.model import PerSymbolWorkStealPolicy
+from binance_worksteal.data import FEATURE_NAMES
 
 
 def make_bars(prices: list[float], symbol: str) -> pd.DataFrame:
@@ -461,3 +469,356 @@ def test_run_daily_cycle_logs_entry_summary_event(monkeypatch, tmp_path):
     assert "n_staged" in evt
     assert "n_proximity_skip" in evt
     assert "risk_off" in evt
+
+
+# ---- Neural integration tests ----
+
+def _make_dummy_checkpoint(tmp_path, n_symbols=3, seq_len=10, hidden_dim=32):
+    symbols = [f"SYM{i}USDT" for i in range(n_symbols)]
+    model = PerSymbolWorkStealPolicy(
+        n_features=len(FEATURE_NAMES), n_symbols=n_symbols,
+        hidden_dim=hidden_dim, num_temporal_layers=1, num_cross_layers=1,
+        num_heads=2, seq_len=seq_len, dropout=0.0,
+    )
+    ckpt_path = tmp_path / "test_model.pt"
+    torch.save({
+        "state_dict": model.state_dict(),
+        "epoch": 1,
+        "metrics": {"sortino": 1.0},
+        "config": {
+            "n_features": len(FEATURE_NAMES),
+            "n_symbols": n_symbols,
+            "hidden_dim": hidden_dim,
+            "num_layers": 2,
+            "num_heads": 2,
+            "seq_len": seq_len,
+            "dropout": 0.0,
+            "symbols": symbols,
+            "model_type": "persymbol",
+        },
+    }, ckpt_path)
+    return ckpt_path, symbols
+
+
+def test_load_neural_model(tmp_path):
+    ckpt_path, symbols = _make_dummy_checkpoint(tmp_path)
+    model, loaded_symbols, cfg = load_neural_model(str(ckpt_path))
+    assert isinstance(model, PerSymbolWorkStealPolicy)
+    assert loaded_symbols == symbols
+    assert cfg["seq_len"] == 10
+    assert not model.training
+
+
+def test_load_neural_model_flat(tmp_path):
+    from binance_worksteal.model import DailyWorkStealPolicy
+    n_symbols = 3
+    symbols = [f"SYM{i}USDT" for i in range(n_symbols)]
+    model = DailyWorkStealPolicy(
+        n_features=len(FEATURE_NAMES), n_symbols=n_symbols,
+        hidden_dim=32, num_layers=2, num_heads=2, seq_len=10,
+    )
+    ckpt_path = tmp_path / "flat_model.pt"
+    torch.save({
+        "state_dict": model.state_dict(),
+        "epoch": 1,
+        "metrics": {},
+        "config": {
+            "n_features": len(FEATURE_NAMES),
+            "n_symbols": n_symbols,
+            "hidden_dim": 32,
+            "num_layers": 2,
+            "num_heads": 2,
+            "seq_len": 10,
+            "dropout": 0.0,
+            "symbols": symbols,
+            "model_type": "flat",
+        },
+    }, ckpt_path)
+    loaded_model, loaded_symbols, cfg = load_neural_model(str(ckpt_path))
+    assert isinstance(loaded_model, DailyWorkStealPolicy)
+    assert loaded_symbols == symbols
+
+
+def _make_fake_bars_for_symbols(model_symbols, n_days=40, seed=None):
+    rng = np.random.RandomState(seed)
+    all_bars = {}
+    for sym in model_symbols:
+        strategy_sym = f"{sym[:-4]}USD"
+        dates = pd.date_range("2024-01-01", periods=n_days, freq="D", tz="UTC")
+        prices = 100.0 + rng.randn(n_days).cumsum()
+        prices = np.maximum(prices, 1.0)
+        all_bars[strategy_sym] = pd.DataFrame({
+            "timestamp": dates,
+            "open": prices + 0.5,
+            "high": prices + 2.0,
+            "low": prices - 2.0,
+            "close": prices,
+            "volume": rng.rand(n_days) * 1e6,
+            "symbol": strategy_sym,
+        })
+    return all_bars
+
+
+def test_prepare_neural_features():
+    symbols = ["SYM0USDT", "SYM1USDT"]
+    all_bars = _make_fake_bars_for_symbols(symbols, n_days=40, seed=42)
+
+    tensor = prepare_neural_features(all_bars, symbols, seq_len=10)
+    assert tensor is not None
+    assert tensor.shape == (1, 10, 2, len(FEATURE_NAMES))
+    assert not torch.isnan(tensor).any()
+
+
+def test_prepare_neural_features_insufficient_data():
+    all_bars = {
+        "SYM0USD": pd.DataFrame({
+            "timestamp": pd.date_range("2024-01-01", periods=5, freq="D", tz="UTC"),
+            "open": [100] * 5, "high": [101] * 5, "low": [99] * 5,
+            "close": [100] * 5, "volume": [1000] * 5, "symbol": "SYM0USD",
+        })
+    }
+    result = prepare_neural_features(all_bars, ["SYM0USDT"], seq_len=30)
+    assert result is None
+
+
+def test_run_neural_inference(tmp_path):
+    n_symbols = 2
+    seq_len = 10
+    ckpt_path, symbols = _make_dummy_checkpoint(tmp_path, n_symbols=n_symbols, seq_len=seq_len)
+    model, model_symbols, cfg = load_neural_model(str(ckpt_path))
+
+    all_bars = _make_fake_bars_for_symbols(model_symbols, n_days=40, seed=42)
+
+    predictions = run_neural_inference(model, all_bars, model_symbols, seq_len)
+    assert predictions is not None
+    for sym in model_symbols:
+        strategy_sym = f"{sym[:-4]}USD"
+        assert strategy_sym in predictions
+        pred = predictions[strategy_sym]
+        assert 0.0 <= pred["buy_offset"] <= 0.30
+        assert 0.0 <= pred["sell_offset"] <= 0.30
+        assert 0.0 <= pred["intensity"] <= 1.0
+
+
+def test_run_neural_inference_no_data():
+    model = PerSymbolWorkStealPolicy(
+        n_features=len(FEATURE_NAMES), n_symbols=2,
+        hidden_dim=32, num_temporal_layers=1, num_cross_layers=1,
+        num_heads=2, seq_len=10,
+    )
+    model.eval()
+    predictions = run_neural_inference(model, {}, ["SYM0USDT", "SYM1USDT"], 10)
+    assert predictions is None
+
+
+def test_stage_entry_candidates_with_neural_predictions(monkeypatch, tmp_path):
+    monkeypatch.setattr("binance_worksteal.trade_live.LOG_FILE", tmp_path / "trade_log.jsonl")
+
+    bars = make_bars([100.0] * 29 + [90.0], "DIPUSD")
+    all_bars = {"DIPUSD": bars}
+    current_bar = bars.iloc[-1]
+
+    neural_predictions = {
+        "DIPUSD": {
+            "buy_offset": 0.05,
+            "sell_offset": 0.10,
+            "intensity": 0.7,
+        }
+    }
+
+    config = build_runtime_config(
+        build_arg_parser().parse_args([
+            "--dip-pct", "0.10", "--lookback-days", "20",
+            "--sma-filter", "0", "--entry-proximity-bps", "5000",
+            "--risk-off-trigger-sma-period", "0",
+            "--risk-off-trigger-momentum-period", "0",
+            "--risk-off-market-breadth-filter", "0",
+        ])
+    )
+
+    candidates = [("DIPUSD", "long", 0.5, 90.0, current_bar)]
+    pending_entries = {}
+    recent_trades = []
+    now = datetime(2026, 3, 18, tzinfo=timezone.utc)
+
+    counts = _stage_entry_candidates(
+        client=None, candidates=candidates, all_bars=all_bars,
+        staged_symbols=set(), pending_entries=pending_entries,
+        recent_trades=recent_trades, entry_config=config, config=config,
+        equity=10000.0, now=now, dry_run=True, slots=5,
+        neural_predictions=neural_predictions,
+    )
+
+    assert counts["n_staged"] == 1
+    assert "DIPUSD" in pending_entries
+    entry = pending_entries["DIPUSD"]
+    assert "neural" in entry["source"]
+    assert entry["neural_override"]["buy_offset"] == 0.05
+    assert entry["neural_override"]["sell_offset"] == 0.10
+    assert entry["neural_override"]["intensity"] == 0.7
+    expected_buy = 90.0 * (1.0 - 0.05)
+    assert abs(entry["buy_price"] - expected_buy) < 0.01
+
+    trades = [json.loads(l) for l in (tmp_path / "trade_log.jsonl").read_text().strip().split("\n")]
+    assert trades[0].get("neural_override") is not None
+
+
+def test_stage_entry_candidates_neural_skip_low_intensity(monkeypatch, tmp_path):
+    monkeypatch.setattr("binance_worksteal.trade_live.LOG_FILE", tmp_path / "trade_log.jsonl")
+
+    bars = make_bars([100.0] * 29 + [90.0], "DIPUSD")
+    current_bar = bars.iloc[-1]
+
+    neural_predictions = {
+        "DIPUSD": {"buy_offset": 0.05, "sell_offset": 0.10, "intensity": 0.05},
+    }
+
+    config = build_runtime_config(build_arg_parser().parse_args([
+        "--dip-pct", "0.10", "--sma-filter", "0", "--entry-proximity-bps", "5000",
+        "--risk-off-trigger-sma-period", "0", "--risk-off-trigger-momentum-period", "0",
+        "--risk-off-market-breadth-filter", "0",
+    ]))
+
+    counts = _stage_entry_candidates(
+        client=None, candidates=[("DIPUSD", "long", 0.5, 90.0, current_bar)],
+        all_bars={"DIPUSD": bars}, staged_symbols=set(), pending_entries={},
+        recent_trades=[], entry_config=config, config=config,
+        equity=10000.0, now=datetime(2026, 3, 18, tzinfo=timezone.utc),
+        dry_run=True, slots=5, neural_predictions=neural_predictions,
+    )
+
+    assert counts["n_neural_skip"] == 1
+    assert counts["n_staged"] == 0
+
+
+def test_stage_entry_candidates_no_neural_falls_back_to_rules(monkeypatch, tmp_path):
+    monkeypatch.setattr("binance_worksteal.trade_live.LOG_FILE", tmp_path / "trade_log.jsonl")
+
+    bars = make_bars([100.0] * 29 + [90.0], "DIPUSD")
+    current_bar = bars.iloc[-1]
+
+    config = build_runtime_config(build_arg_parser().parse_args([
+        "--dip-pct", "0.10", "--sma-filter", "0", "--entry-proximity-bps", "5000",
+        "--risk-off-trigger-sma-period", "0", "--risk-off-trigger-momentum-period", "0",
+        "--risk-off-market-breadth-filter", "0",
+    ]))
+
+    counts = _stage_entry_candidates(
+        client=None, candidates=[("DIPUSD", "long", 0.5, 90.0, current_bar)],
+        all_bars={"DIPUSD": bars}, staged_symbols=set(), pending_entries={},
+        recent_trades=[], entry_config=config, config=config,
+        equity=10000.0, now=datetime(2026, 3, 18, tzinfo=timezone.utc),
+        dry_run=True, slots=5, neural_predictions=None,
+    )
+
+    assert counts["n_staged"] == 1
+    assert counts["n_neural_skip"] == 0
+
+
+def test_stage_entry_candidates_neural_high_intensity_boosts_confidence(monkeypatch, tmp_path):
+    monkeypatch.setattr("binance_worksteal.trade_live.LOG_FILE", tmp_path / "trade_log.jsonl")
+
+    bars = make_bars([100.0] * 29 + [90.0], "DIPUSD")
+    current_bar = bars.iloc[-1]
+
+    neural_predictions = {
+        "DIPUSD": {"buy_offset": 0.05, "sell_offset": 0.10, "intensity": 0.9},
+    }
+
+    config = build_runtime_config(build_arg_parser().parse_args([
+        "--dip-pct", "0.10", "--sma-filter", "0", "--entry-proximity-bps", "5000",
+        "--risk-off-trigger-sma-period", "0", "--risk-off-trigger-momentum-period", "0",
+        "--risk-off-market-breadth-filter", "0",
+    ]))
+
+    pending_entries = {}
+    _stage_entry_candidates(
+        client=None, candidates=[("DIPUSD", "long", 0.5, 90.0, current_bar)],
+        all_bars={"DIPUSD": bars}, staged_symbols=set(), pending_entries=pending_entries,
+        recent_trades=[], entry_config=config, config=config,
+        equity=10000.0, now=datetime(2026, 3, 18, tzinfo=timezone.utc),
+        dry_run=True, slots=5, neural_predictions=neural_predictions,
+    )
+
+    entry = pending_entries["DIPUSD"]
+    assert entry["confidence"] > 1.0
+
+
+def test_run_daily_cycle_with_neural_model(monkeypatch, tmp_path):
+    monkeypatch.setattr("binance_worksteal.trade_live.STATE_FILE", tmp_path / "live_state.json")
+    monkeypatch.setattr("binance_worksteal.trade_live.LOG_FILE", tmp_path / "trade_log.jsonl")
+    monkeypatch.setattr("binance_worksteal.trade_live.EVENTS_FILE", tmp_path / "events.jsonl")
+
+    n_symbols = 1
+    symbols = ["DIPUSDT"]
+    model = PerSymbolWorkStealPolicy(
+        n_features=len(FEATURE_NAMES), n_symbols=n_symbols,
+        hidden_dim=32, num_temporal_layers=1, num_cross_layers=1,
+        num_heads=2, seq_len=10, dropout=0.0,
+    )
+    model.eval()
+
+    bars = make_bars([100.0] * 29 + [90.0], "DIPUSD")
+    monkeypatch.setattr("binance_worksteal.trade_live.fetch_daily_bars",
+                        lambda client, symbol, lookback_days=30: bars)
+
+    config = build_runtime_config(build_arg_parser().parse_args([
+        "--dip-pct", "0.10", "--lookback-days", "20", "--sma-filter", "0",
+        "--risk-off-trigger-sma-period", "0", "--risk-off-trigger-momentum-period", "0",
+        "--risk-off-market-breadth-filter", "0",
+    ]))
+
+    run_daily_cycle(
+        client=None, symbols=["DIPUSD"], config=config, dry_run=True,
+        neural_model=model, neural_model_symbols=symbols, neural_seq_len=10,
+    )
+
+    events_path = tmp_path / "events.jsonl"
+    assert events_path.exists()
+    events = [json.loads(line) for line in events_path.read_text().strip().split("\n")]
+    neural_events = [e for e in events if e.get("type") == "neural_inference"]
+    assert len(neural_events) >= 1
+    assert "predictions" in neural_events[0]
+
+
+def test_run_daily_cycle_neural_fallback_on_error(monkeypatch, tmp_path):
+    monkeypatch.setattr("binance_worksteal.trade_live.STATE_FILE", tmp_path / "live_state.json")
+    monkeypatch.setattr("binance_worksteal.trade_live.LOG_FILE", tmp_path / "trade_log.jsonl")
+    monkeypatch.setattr("binance_worksteal.trade_live.EVENTS_FILE", tmp_path / "events.jsonl")
+
+    class BrokenModel:
+        def __call__(self, x):
+            raise RuntimeError("model error")
+
+    bars = make_bars([100.0] * 29 + [90.0], "DIPUSD")
+    monkeypatch.setattr("binance_worksteal.trade_live.fetch_daily_bars",
+                        lambda client, symbol, lookback_days=30: bars)
+
+    config = build_runtime_config(build_arg_parser().parse_args([
+        "--dip-pct", "0.10", "--lookback-days", "20", "--sma-filter", "0",
+        "--risk-off-trigger-sma-period", "0", "--risk-off-trigger-momentum-period", "0",
+        "--risk-off-market-breadth-filter", "0",
+    ]))
+
+    run_daily_cycle(
+        client=None, symbols=["DIPUSD"], config=config, dry_run=True,
+        neural_model=BrokenModel(), neural_model_symbols=["DIPUSDT"],
+        neural_seq_len=10,
+    )
+
+    state = json.loads((tmp_path / "live_state.json").read_text())
+    assert "DIPUSD" in state["pending_entries"]
+
+
+def test_parser_neural_model_args():
+    parser = build_arg_parser()
+    args = parser.parse_args(["--neural-model", "/tmp/model.pt", "--neural-symbols", "BTCUSDT", "ETHUSDT"])
+    assert args.neural_model == "/tmp/model.pt"
+    assert args.neural_symbols == ["BTCUSDT", "ETHUSDT"]
+
+
+def test_parser_neural_model_args_defaults():
+    parser = build_arg_parser()
+    args = parser.parse_args([])
+    assert args.neural_model is None
+    assert args.neural_symbols is None
