@@ -1,0 +1,14 @@
+{
+  "unified-orchestrator": {
+    "crypto_symbols": ["SOLUSD", "LTCUSD", "AVAXUSD"],
+    "stock_symbols": ["NVDA", "PLTR", "META", "MSFT", "NET"]
+  },
+  "alpaca-hourly-trader": {
+    "crypto_symbols": ["BTCUSD", "ETHUSD"],
+    "stock_symbols": []
+  },
+  "trade-unified-hourly-meta": {
+    "crypto_symbols": [],
+    "stock_symbols": ["GOOG", "DBX", "TRIP", "MTCH", "NYT", "AAPL", "TSLA", "BKNG", "EBAY", "EXPE", "ITUB", "BTG", "ABEV"]
+  }
+}
