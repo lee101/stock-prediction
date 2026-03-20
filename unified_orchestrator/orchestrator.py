@@ -95,7 +95,32 @@ CRYPTO_CHECKPOINT_CANDIDATES = [
     REPO / "pufferlib_market/checkpoints/autoresearch/ent_01/best.pt",
     REPO / "pufferlib_market/checkpoints/autoresearch/reg_combo_2/best.pt",
 ]
-CRYPTO_SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "LTCUSD", "AVAXUSD"]
+_CRYPTO_SYMBOLS_DEFAULT = ["BTCUSD", "ETHUSD", "SOLUSD", "LTCUSD", "AVAXUSD"]
+_STOCK_SYMBOLS_DEFAULT = ["NVDA", "PLTR", "META", "MSFT", "NET"]
+
+def _load_symbols_from_config() -> tuple[list[str], list[str]]:
+    """Load symbol sets from service_config.json, falling back to hardcoded defaults.
+
+    The config assigns exclusive symbol ownership across services to prevent
+    duplicate orders on the same Alpaca account.
+    """
+    try:
+        from unified_orchestrator.symbol_lock import load_service_symbols
+        crypto, stocks = load_service_symbols("unified-orchestrator")
+        if crypto or stocks:
+            logger.info(
+                "Symbol ownership loaded from service_config.json: crypto={} stocks={}",
+                crypto, stocks,
+            )
+            return crypto, stocks
+    except Exception as exc:
+        logger.warning("Could not load service_config.json ({}); using hardcoded defaults", exc)
+    return list(_CRYPTO_SYMBOLS_DEFAULT), list(_STOCK_SYMBOLS_DEFAULT)
+
+_cfg_crypto, _cfg_stocks = _load_symbols_from_config()
+CRYPTO_SYMBOLS: list[str] = _cfg_crypto
+STOCK_SYMBOLS: list[str] = _cfg_stocks
+
 MIN_ACTIONABLE_CRYPTO_NOTIONAL = 1.0
 
 # Max hours to hold a crypto position before forcing exit at near-market price.
@@ -105,7 +130,7 @@ MAX_HOLD_HOURS = 6
 # Minimum LLM confidence to act on a buy signal.
 # Exp02: 0.7 optimal on Mar 2-9 window, but HURT on Mar 7-14 (-40.7% vs -2.2%).
 # Exp07: Not robust across windows. Reverted to 0.4. Trailing stop is the real winner.
-MIN_CONFIDENCE_CRYPTO = 0.4
+MIN_CONFIDENCE_CRYPTO = 0.25
 
 # Trailing stop: exit if price drops this % from peak since entry.
 # Exp06 result: 0.3% trail → Sortino=76.5, MaxDD=4.7% (vs 30.9/28.3% baseline).
@@ -178,7 +203,7 @@ CRYPTO_PAIRS = {"BTCUSD": "BTCUSDT", "ETHUSD": "ETHUSDT", "SOLUSD": "SOLUSDT",
                 "LTCUSD": "LTCUSDT", "AVAXUSD": "AVAXUSDT",
                 "DOGEUSD": "DOGEUSDT", "SUIUSD": "SUIUSDT", "AAVEUSD": "AAVEUSDT"}
 
-STOCK_SYMBOLS = ["NVDA", "PLTR", "META", "MSFT", "NET"]
+# STOCK_SYMBOLS is now loaded from service_config.json via _load_symbols_from_config() above.
 
 
 def _has_actionable_crypto_position(pos: Position | None) -> bool:
@@ -663,10 +688,11 @@ def get_crypto_signals(
         except Exception as e:
             logger.warning(f"  Crypto RL signal generation failed: {e}")
 
-    # SMA-24 trend filter: suppress LONG hints when price is below 24h SMA.
-    # The longonly_forecast model cannot short, so its LONG hints in downtrends
-    # push the LLM into losing positions.  Zeroing them out lets the LLM use
-    # its own bearish judgment instead.
+    # SMA-24 trend filter: soften LONG hints when price is below 24h SMA.
+    # Old behavior: hard suppress (zeroed out allocation, forced flat) — caused 0 trades
+    # when all crypto prices fell below 24h SMA during the March 2026 crash.
+    # New behavior: reduce allocation by 50% as a caution signal; let the LLM
+    # decide with the full context.  Only suppress entirely when price is >5% below SMA.
     for sym, sig in list(rl_signal_map.items()):
         if sig.direction != "long":
             continue
@@ -676,15 +702,37 @@ def get_crypto_signals(
         sma24 = float(frame["close"].iloc[-24:].mean())
         current = float(frame["close"].iloc[-1])
         if current < sma24:
-            logger.info(f"  {sym}: SMA-24 filter suppressed RL LONG hint (price={current:.4f} < sma24={sma24:.4f})")
-            rl_signal_map[sym] = RLSignal(
-                symbol_idx=sig.symbol_idx,
-                symbol_name=sig.symbol_name,
-                direction="flat",
-                confidence=0.0,
-                logit_gap=0.0,
-                allocation_pct=0.0,
-            )
+            discount_pct = (sma24 - current) / sma24  # positive when below SMA
+            if discount_pct > 0.05:
+                # More than 5% below SMA — hard suppress (strong downtrend)
+                logger.warning(
+                    f"[CRYPTO_SIGNAL] {sym}: SMA-24 HARD SUPPRESS RL LONG hint "
+                    f"(price={current:.4f} < sma24={sma24:.4f}, discount={discount_pct:.1%} >5%)"
+                )
+                rl_signal_map[sym] = RLSignal(
+                    symbol_idx=sig.symbol_idx,
+                    symbol_name=sig.symbol_name,
+                    direction="flat",
+                    confidence=0.0,
+                    logit_gap=0.0,
+                    allocation_pct=0.0,
+                )
+            else:
+                # Mild discount (<5%) — reduce allocation by 50%, keep signal alive
+                old_alloc = sig.allocation_pct
+                new_alloc = old_alloc * 0.5
+                logger.warning(
+                    f"[CRYPTO_SIGNAL] {sym}: SMA-24 soft filter — price={current:.4f} < sma24={sma24:.4f} "
+                    f"(discount={discount_pct:.1%}), reducing allocation {old_alloc:.0%} -> {new_alloc:.0%}"
+                )
+                rl_signal_map[sym] = RLSignal(
+                    symbol_idx=sig.symbol_idx,
+                    symbol_name=sig.symbol_name,
+                    direction=sig.direction,
+                    confidence=sig.confidence,
+                    logit_gap=sig.logit_gap,
+                    allocation_pct=new_alloc,
+                )
 
     forecast_root = _choose_forecast_cache_root(fetch_symbols, CRYPTO_FORECAST_CACHE_CANDIDATES)
     forecast_frames_1h, forecast_frames_24h = _load_forecast_frames(fetch_symbols, forecast_root)
@@ -733,6 +781,16 @@ def get_crypto_signals(
             held_position=actionable_held_pos,
         ) + rl_hint + trend_warning
 
+        # Log the RL hint being injected (before LLM call)
+        rl_sig = rl_signal_map.get(sym)
+        if rl_sig is not None and rl_sig.direction != "flat":
+            logger.info(
+                f"[CRYPTO_SIGNAL] {sym}: RL hint injected — dir={rl_sig.direction} "
+                f"conf={rl_sig.confidence:.2f} alloc={rl_sig.allocation_pct:.0%}"
+            )
+        else:
+            logger.info(f"[CRYPTO_SIGNAL] {sym}: no RL hint (flat/suppressed)")
+
         try:
             plan = call_llm(
                 prompt,
@@ -748,14 +806,20 @@ def get_crypto_signals(
             signals[sym] = plan
             alloc_str = f", alloc={plan.allocation_pct:.0f}%" if plan.allocation_pct > 0 else ""
             logger.info(
-                f"  {sym}: {plan.direction} (conf={plan.confidence:.2f}, "
-                f"buy=${plan.buy_price:.2f}, sell=${plan.sell_price:.2f}{alloc_str})"
+                f"[CRYPTO_SIGNAL] {sym}: LLM→dir={plan.direction} conf={plan.confidence:.2f} "
+                f"buy=${plan.buy_price:.2f} sell=${plan.sell_price:.2f}{alloc_str} "
+                f"reason={getattr(plan, 'reasoning', '')[:80]!r}"
             )
         except Exception as e:
             logger.error(f"  {sym}: LLM error: {e}")
 
-    # Hard SMA-24 guard: override LONG → HOLD for any symbol where price < SMA-24.
-    # This fires even when the LLM ignores the TREND CAUTION prompt message.
+    # SMA-24 post-LLM guard: soften LONG signals when price is below 24h SMA.
+    # Old behavior: hard LONG→HOLD override for ANY discount — caused 0 trades when all
+    # crypto fell below SMA during March 2026 crash.
+    # New behavior:
+    #   - mild discount (<2%): log warning, pass through unchanged
+    #   - moderate discount (2-5%): reduce allocation_pct by 50%
+    #   - extreme discount (>5%): hard LONG→HOLD (strong sustained downtrend)
     from llm_hourly_trader.gemini_wrapper import TradePlan as _TradePlan
     for sym, plan in list(signals.items()):
         if plan.direction != "long":
@@ -765,18 +829,44 @@ def get_crypto_signals(
             continue
         _sma24g = float(frame["close"].iloc[-24:].mean())
         _price_g = float(frame["close"].iloc[-1])
-        if _price_g < _sma24g:
-            logger.info(
-                f"  {sym}: SMA-24 HARD BLOCK overrides LONG→HOLD "
-                f"(price={_price_g:.4f} < sma24={_sma24g:.4f})"
+        if _price_g >= _sma24g:
+            continue
+        discount_pct = (_sma24g - _price_g) / _sma24g
+        if discount_pct > 0.05:
+            # Extreme discount — hard block
+            logger.warning(
+                f"[CRYPTO_SIGNAL] {sym}: SMA-24 HARD BLOCK LONG→HOLD "
+                f"(price={_price_g:.4f} < sma24={_sma24g:.4f}, discount={discount_pct:.1%} >5%)"
             )
             signals[sym] = _TradePlan(
                 direction="hold",
                 buy_price=0.0,
                 sell_price=plan.sell_price,
                 confidence=plan.confidence,
-                reasoning=f"SMA-24 trend block; {plan.reasoning[:60]}",
+                reasoning=f"SMA-24 hard block (>{discount_pct:.1%} below); {plan.reasoning[:60]}",
                 allocation_pct=0,
+            )
+        elif discount_pct > 0.02:
+            # Moderate discount — reduce allocation by 50%
+            old_alloc = plan.allocation_pct
+            new_alloc = old_alloc * 0.5
+            logger.warning(
+                f"[CRYPTO_SIGNAL] {sym}: SMA-24 soft filter: price {_price_g:.2f} < SMA24 {_sma24g:.2f}, "
+                f"reducing allocation {old_alloc:.0%} -> {new_alloc:.0%} (discount={discount_pct:.1%})"
+            )
+            signals[sym] = _TradePlan(
+                direction=plan.direction,
+                buy_price=plan.buy_price,
+                sell_price=plan.sell_price,
+                confidence=plan.confidence,
+                reasoning=f"SMA-24 soft filter ({discount_pct:.1%} below); {plan.reasoning[:60]}",
+                allocation_pct=new_alloc,
+            )
+        else:
+            # Mild discount (<2%) — just log, don't modify
+            logger.info(
+                f"[CRYPTO_SIGNAL] {sym}: SMA-24 mild caution (price={_price_g:.4f} < sma24={_sma24g:.4f}, "
+                f"discount={discount_pct:.1%} <2%) — passing through unchanged"
             )
 
     return signals
@@ -983,27 +1073,59 @@ def execute_crypto_signals(
             ))
         snapshot.alpaca_pending_orders = refreshed_orders
 
-    # Cancel stale pending buy orders for crypto symbols (GTC orders from last cycle
-    # have stale prices — replace with fresh signals each hour)
+    # Cancel stale pending buy orders for crypto symbols (GTC orders from last
+    # cycle have stale prices — replace with fresh signals each hour).
+    #
+    # FIX (cancel-then-reorder timing gap): Only cancel an existing buy order
+    # when the new signal targets a price more than 0.1% different from the
+    # existing limit.  Orders whose price is still close to the new target are
+    # kept in place, eliminating the window where no active buy order exists
+    # between cancel and re-place.  Symbols with a kept order are recorded in
+    # kept_order_syms so the placement loop below skips re-placing them.
     crypto_sym_set = {sym for sym in signals}
     from alpaca.trading.requests import GetOrdersRequest
     from alpaca.trading.enums import QueryOrderStatus
     open_orders = alpaca.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN))
     canceled_for: set[str] = set()
+    kept_order_syms: set[str] = set()  # symbols whose existing buy order is still valid
     for order in open_orders:
         sym_norm = _norm(str(order.symbol))
-        if sym_norm in crypto_sym_set and order.side.value.lower() == "buy":
-            if dry_run:
+        if sym_norm not in crypto_sym_set or order.side.value.lower() != "buy":
+            continue
+        plan = signals.get(sym_norm)
+        existing_price = float(order.limit_price) if order.limit_price else 0.0
+        new_price = float(plan.buy_price) if plan and plan.buy_price > 0 else 0.0
+        # Keep the existing order when the new signal targets a price within 0.1%
+        if new_price > 0 and existing_price > 0:
+            price_diff_pct = abs(new_price - existing_price) / existing_price * 100
+            if price_diff_pct <= 0.1:
                 logger.info(
-                    f"  {sym_norm}: [DRY RUN] would cancel stale buy order {order.id} @ {order.limit_price}"
+                    f"  {sym_norm}: keeping existing buy {order.id} @ {existing_price:.2f}"
+                    f" (new target {new_price:.2f} within 0.1%)"
                 )
+                kept_order_syms.add(sym_norm)
                 continue
-            try:
-                alpaca.cancel_order_by_id(str(order.id))
-                canceled_for.add(sym_norm)
-                logger.info(f"  {sym_norm}: canceled stale buy order {order.id} @ {order.limit_price}")
-            except Exception as e:
-                logger.warning(f"  {sym_norm}: failed to cancel stale order: {e}")
+        if dry_run:
+            logger.info(
+                f"  {sym_norm}: [DRY RUN] would cancel stale buy order"
+                f" {order.id} @ {existing_price}"
+            )
+            continue
+        try:
+            alpaca.cancel_order_by_id(str(order.id))
+            canceled_for.add(sym_norm)
+            logger.info(
+                f"  {sym_norm}: canceled stale buy order {order.id} @ {existing_price}"
+            )
+        except Exception as e:
+            logger.warning(f"  {sym_norm}: failed to cancel stale order: {e}")
+
+    # FIX (cash tracking after cancellations): Alpaca's ledger takes a moment
+    # to release buying-power reserved by cancelled orders.  Sleep 1 s after
+    # any live cancellations so the account refresh below reads settled cash.
+    if canceled_for and not dry_run:
+        import time as _cancel_sleep
+        _cancel_sleep.sleep(1.0)
 
     # LLM calls and order cancellation can both leave the cycle snapshot stale.
     # Refresh from Alpaca immediately before sizing so we do not size off cash
@@ -1073,11 +1195,28 @@ def execute_crypto_signals(
     for sym, plan in signals.items():
         try:
             if plan.direction != "long" or plan.confidence < MIN_CONFIDENCE_CRYPTO:
+                if plan.direction == "long" and plan.confidence < MIN_CONFIDENCE_CRYPTO:
+                    logger.info(
+                        f"[CRYPTO_SIGNAL] {sym}: SUPPRESSED — conf={plan.confidence:.2f} "
+                        f"< MIN_CONFIDENCE_CRYPTO={MIN_CONFIDENCE_CRYPTO:.2f} (direction=long)"
+                    )
+                elif plan.direction != "long":
+                    logger.info(
+                        f"[CRYPTO_SIGNAL] {sym}: TradePlan direction={plan.direction} — skipping entry"
+                    )
                 continue
 
             # Don't buy into a position we're actively exiting
             if sym in exit_syms:
                 logger.info(f"  {sym}: skipping buy — exit in progress")
+                continue
+
+            # FIX (cancel-then-reorder timing gap): skip re-placing a buy order
+            # whose existing price is still valid (within 0.1% of new target).
+            # The old order remains live, so placing a second order would double
+            # the position size.
+            if sym in kept_order_syms:
+                logger.info(f"  {sym}: skipping buy — existing order kept in place")
                 continue
 
             # Safety validation
@@ -1114,6 +1253,11 @@ def execute_crypto_signals(
 
             qty = trade_size / buy_price
 
+            logger.info(
+                f"[CRYPTO_SIGNAL] {sym}: EXECUTING TradePlan — dir={plan.direction} "
+                f"conf={plan.confidence:.2f} alloc={alloc:.0%} buy=${buy_price:.2f} "
+                f"sell=${plan.sell_price:.2f} qty={qty:.6f} trade_size=${trade_size:.0f}"
+            )
             logger.info(f"  {sym}: BUY {qty:.6f} @ ${buy_price:.2f} (${trade_size:.0f})")
             if not dry_run:
                 req = LimitOrderRequest(
@@ -1338,7 +1482,9 @@ def execute_stock_signals(
     try:
         if STOCK_PEAKS_FILE.exists():
             stock_peaks = json.loads(STOCK_PEAKS_FILE.read_text())
-    except Exception:
+    except Exception as e:
+        # FIX: log instead of silently resetting — helps diagnose disk/JSON issues
+        logger.warning(f"  Stock peaks load failed, starting fresh: {e}")
         stock_peaks = {}
 
     stock_peaks = update_peak_prices(stock_peaks, stock_pos)
@@ -1355,8 +1501,10 @@ def execute_stock_signals(
         tmp = STOCK_PEAKS_FILE.with_suffix(".tmp")
         tmp.write_text(json.dumps(stock_peaks, indent=2))
         tmp.replace(STOCK_PEAKS_FILE)
-    except Exception:
-        pass
+    except Exception as e:
+        # FIX: log instead of silently swallowing — a failed save means the next
+        # restart will see stale peaks and could misfire trailing stops.
+        logger.error(f"  Failed to save stock peaks: {e}")
 
     # Force-exit trailing stop positions
     for sym in trail_exit_syms:
@@ -1788,6 +1936,18 @@ def main():
     if args.live:
         logger.warning("LIVE TRADING MODE")
         time.sleep(3)
+
+    # Startup conflict check: warn if another service has open positions on our symbols.
+    try:
+        from unified_orchestrator.symbol_lock import warn_position_conflicts, assert_no_overlaps
+        assert_no_overlaps()
+        logger.info("Symbol ownership config: no overlaps detected across services.")
+        from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
+        from alpaca.trading.client import TradingClient as _TC
+        _startup_alpaca = _TC(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, paper=False)
+        warn_position_conflicts("unified-orchestrator", _startup_alpaca)
+    except Exception as _conflict_exc:
+        logger.warning("Startup conflict check failed (non-fatal): {}", _conflict_exc)
 
     while True:
         try:
