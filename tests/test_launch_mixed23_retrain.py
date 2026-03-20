@@ -1,128 +1,70 @@
-"""Tests for scripts/launch_mixed23_retrain.py config generation."""
-import pytest
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
 from scripts.launch_mixed23_retrain import (
-    TrainConfig,
-    build_configs,
-    config_to_train_cmd,
-    config_to_eval_cmd,
+    PRESET_DESCRIPTIONS,
     TRAIN_DATA,
-    CHECKPOINT_ROOT,
-    REPO,
+    VAL_DATA,
+    _build_rsync_cmd,
+    _write_local_manifest,
+    parse_args,
+    resolve_descriptions,
 )
 
 
-@pytest.mark.unit
-def test_build_configs_returns_five():
-    configs = build_configs()
-    assert len(configs) == 5
+def test_resolve_descriptions_uses_champions_preset_by_default() -> None:
+    assert resolve_descriptions(preset="champions") == list(PRESET_DESCRIPTIONS["champions"])
 
 
-@pytest.mark.unit
-def test_config_names_unique():
-    configs = build_configs()
-    names = [c.name for c in configs]
-    assert len(names) == len(set(names))
+def test_resolve_descriptions_honors_override_order() -> None:
+    assert resolve_descriptions(preset="champions", descriptions="foo, bar,baz") == ["foo", "bar", "baz"]
 
 
-@pytest.mark.unit
-def test_cosine_lr_config():
-    cfg = [c for c in build_configs() if c.name == "cosine_lr_ent_anneal"][0]
-    assert cfg.lr_schedule == "cosine"
-    assert cfg.lr_warmup_frac == 0.10
-    assert cfg.anneal_ent is True
-    assert cfg.ent_coef == 0.05
-    assert cfg.ent_coef_end == 0.01
+def test_parse_args_defaults_to_longer_budget_and_replay_rank() -> None:
+    args = parse_args([])
+
+    assert args.time_budget == 1800
+    assert args.rank_metric == "replay_hourly_return_pct"
+    assert args.max_steps_override == 90
+    assert args.train_data == TRAIN_DATA
+    assert args.val_data == VAL_DATA
 
 
-@pytest.mark.unit
-def test_wide_config():
-    cfg = [c for c in build_configs() if c.name == "wide_h2048"][0]
-    assert cfg.hidden_size == 2048
-    assert cfg.arch == "resmlp"
+def test_build_rsync_cmd_targets_remote_repo() -> None:
+    cmd = _build_rsync_cmd(
+        "user@example.com",
+        "/remote/repo",
+        extra_paths=["pufferlib_market/data/mixed23_fresh_train.bin"],
+    )
+
+    assert cmd[:4] == ["rsync", "-azR", "-e", "ssh -o StrictHostKeyChecking=no"]
+    assert "scripts/launch_mixed23_retrain.py" in cmd
+    assert "src/remote_training_pipeline.py" in cmd
+    assert "pufferlib_market/fast_marketsim_eval.py" in cmd
+    assert "pufferlib_market/data/mixed23_fresh_train.bin" in cmd
+    assert cmd[-1] == "user@example.com:/remote/repo/"
 
 
-@pytest.mark.unit
-def test_deep_config():
-    cfg = [c for c in build_configs() if c.name == "deep_4block_lowlr"][0]
-    assert cfg.lr == 1e-4
-    assert cfg.arch == "resmlp"
+def test_write_local_manifest_records_marketsim_pull(tmp_path: Path) -> None:
+    args = parse_args(["--run-id", "demo123"])
+    manifest_path = _write_local_manifest(
+        manifest_dir=tmp_path / "demo123",
+        args=args,
+        plan_payload={
+            "remote_log_path": "analysis/remote_runs/demo123/pipeline.log",
+            "remote_run_dir": "analysis/remote_runs/demo123",
+            "leaderboard_path": "pufferlib_market/demo123_leaderboard.csv",
+            "post_eval_output_path": "analysis/remote_runs/demo123/marketsim_30_60_90_120.csv",
+        },
+        pipeline_script="#!/usr/bin/env bash\n",
+        rsync_cmd=["rsync", "dummy"],
+    )
 
-
-@pytest.mark.unit
-def test_high_entropy_config():
-    cfg = [c for c in build_configs() if c.name == "high_entropy_gc05"][0]
-    assert cfg.ent_coef == 0.03
-    assert cfg.max_grad_norm == 0.5
-
-
-@pytest.mark.unit
-def test_long_rollout_config():
-    cfg = [c for c in build_configs() if c.name == "long_rollout_bigbatch"][0]
-    assert cfg.rollout_len == 512
-    assert cfg.minibatch_size == 4096
-
-
-@pytest.mark.unit
-def test_train_cmd_has_data_path():
-    cfg = build_configs()[0]
-    cmd = config_to_train_cmd(cfg, REPO)
-    assert "--data-path" in cmd
-    assert any(TRAIN_DATA in arg for arg in cmd)
-
-
-@pytest.mark.unit
-def test_train_cmd_anneal_ent_flag():
-    cfg = [c for c in build_configs() if c.anneal_ent][0]
-    cmd = config_to_train_cmd(cfg, REPO)
-    assert "--anneal-ent" in cmd
-
-
-@pytest.mark.unit
-def test_train_cmd_no_anneal_ent_when_false():
-    cfg = TrainConfig(name="test", anneal_ent=False)
-    cmd = config_to_train_cmd(cfg, REPO)
-    assert "--anneal-ent" not in cmd
-
-
-@pytest.mark.unit
-def test_train_cmd_checkpoint_dir():
-    cfg = build_configs()[0]
-    cmd = config_to_train_cmd(cfg, REPO)
-    idx = cmd.index("--checkpoint-dir")
-    ckpt_dir = cmd[idx + 1]
-    assert CHECKPOINT_ROOT in ckpt_dir
-    assert cfg.name in ckpt_dir
-
-
-@pytest.mark.unit
-def test_eval_cmd_output_path():
-    cfg = build_configs()[0]
-    cmd = config_to_eval_cmd(cfg, REPO)
-    assert "comprehensive_marketsim_eval.py" in " ".join(cmd)
-    assert "--output" in cmd
-
-
-@pytest.mark.unit
-def test_all_configs_valid_arch():
-    for cfg in build_configs():
-        assert cfg.arch in ("mlp", "resmlp")
-
-
-@pytest.mark.unit
-def test_all_configs_positive_lr():
-    for cfg in build_configs():
-        assert cfg.lr > 0
-
-
-@pytest.mark.unit
-def test_train_cmd_obs_norm_flag():
-    cfg = TrainConfig(name="test", obs_norm=True)
-    cmd = config_to_train_cmd(cfg, REPO)
-    assert "--obs-norm" in cmd
-
-
-@pytest.mark.unit
-def test_train_cmd_clip_vloss_flag():
-    cfg = TrainConfig(name="test", clip_vloss=True)
-    cmd = config_to_train_cmd(cfg, REPO)
-    assert "--clip-vloss" in cmd
+    payload = json.loads(manifest_path.read_text())
+    assert payload["commands"]["rsync_push"] == ["rsync", "dummy"]
+    assert payload["commands"]["pull_marketsim_csv"][-2] == (
+        "administrator@93.127.141.100:/nvme0n1-disk/code/stock-prediction/"
+        "analysis/remote_runs/demo123/marketsim_30_60_90_120.csv"
+    )
