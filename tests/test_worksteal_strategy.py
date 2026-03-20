@@ -233,6 +233,7 @@ class TestSmaCheckMethod:
         config = WorkStealConfig(
             dip_pct=0.15, proximity_pct=0.05, lookback_days=20,
             sma_filter_period=20, sma_check_method="pre_dip",
+            risk_off_trigger_momentum_period=0, risk_off_trigger_sma_period=0,
         )
         eq, trades, _ = run_worksteal_backtest(bars, config)
         buys = [t for t in trades if t.side == "buy"]
@@ -255,6 +256,7 @@ class TestSmaCheckMethod:
         config = WorkStealConfig(
             dip_pct=0.15, proximity_pct=0.05, lookback_days=20,
             sma_filter_period=20, sma_check_method="none",
+            risk_off_trigger_momentum_period=0, risk_off_trigger_sma_period=0,
         )
         eq, trades, _ = run_worksteal_backtest(bars, config)
         buys = [t for t in trades if t.side == "buy"]
@@ -307,7 +309,7 @@ class TestRiskOffMomentum:
         current_bars = {"BTCUSD": bars_df.iloc[-1]}
         history = {"BTCUSD": bars_df}
         config = WorkStealConfig(
-            momentum_period=5, risk_off_momentum_threshold=0.0,
+            risk_off_trigger_momentum_period=5, risk_off_momentum_threshold=0.0,
         )
         result = _risk_off_triggered(current_bars, history, config)
         assert result is True
