@@ -92,7 +92,9 @@ def read_pending_fills(since_minutes: int = 60) -> list[dict]:
             event_ts = datetime.fromisoformat(event["timestamp"]).timestamp()
             if event_ts > cutoff:
                 events.append(event)
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, KeyError) as e:
+            # FIX: log malformed lines so corrupt fill_events.jsonl is visible
+            logger.debug(f"read_pending_fills: skipping malformed line: {e!r} | {line[:80]!r}")
             continue
     return events
 
