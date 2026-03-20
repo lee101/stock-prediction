@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from src.remote_training_pipeline import (
+    build_remote_autoresearch_plan,
     build_remote_hourly_chronos_rl_plan,
     compute_hourly_train_val_window,
     render_remote_pipeline_script,
@@ -165,3 +166,67 @@ def test_render_remote_pipeline_script_activates_env_and_runs_commands(tmp_path:
     assert 'export PYTHONPATH="$PWD:$PWD/PufferLib:${PYTHONPATH:-}"' in script
     assert "scripts/run_crypto_lora_batch.py" in script
     assert "pufferlib_market.autoresearch_rl" in script
+
+
+def test_build_remote_autoresearch_plan_includes_replay_and_post_eval() -> None:
+    plan = build_remote_autoresearch_plan(
+        run_id="mixed23_probe",
+        train_data_path="pufferlib_market/data/mixed23_fresh_train.bin",
+        val_data_path="pufferlib_market/data/mixed23_fresh_val.bin",
+        time_budget=1800,
+        max_trials=4,
+        descriptions=["reg_combo_2", "robust_reg_tp01"],
+        rank_metric="replay_hourly_return_pct",
+        periods_per_year=365.0,
+        max_steps_override=90,
+        holdout_data="pufferlib_market/data/mixed23_fresh_val.bin",
+        holdout_eval_steps=90,
+        holdout_n_windows=20,
+        holdout_fee_rate=0.001,
+        replay_eval_hourly_root="trainingdatahourly",
+        replay_eval_start_date="2025-06-01",
+        replay_eval_end_date="2026-02-05",
+        post_eval_periods=[30, 60, 90, 120],
+        post_eval_sort_period=120,
+    )
+
+    assert plan.remote_run_dir == "analysis/remote_runs/mixed23_probe"
+    assert plan.post_eval_output_path == "analysis/remote_runs/mixed23_probe/marketsim_30_60_90_120.csv"
+    assert len(plan.commands) == 2
+    autoresearch_cmd = list(plan.commands[0])
+    assert "--holdout-data" in autoresearch_cmd
+    assert "--replay-eval-hourly-root" in autoresearch_cmd
+    assert "--rank-metric" in autoresearch_cmd
+    assert autoresearch_cmd[0:4] == ["python", "-u", "-m", "pufferlib_market.autoresearch_rl"]
+    post_eval_cmd = list(plan.commands[1])
+    assert post_eval_cmd[0:3] == ["python", "-u", "pufferlib_market/fast_marketsim_eval.py"]
+    assert "--checkpoint-dirs" in post_eval_cmd
+    assert "--sequential" in post_eval_cmd
+
+
+def test_render_remote_pipeline_script_supports_autoresearch_plan() -> None:
+    plan = build_remote_autoresearch_plan(
+        run_id="mixed23_probe2",
+        train_data_path="train.bin",
+        val_data_path="val.bin",
+        time_budget=300,
+        max_trials=1,
+        descriptions=["reg_combo_2"],
+        holdout_data="val.bin",
+        holdout_eval_steps=30,
+        holdout_n_windows=4,
+        replay_eval_hourly_root="trainingdatahourly",
+        replay_eval_start_date="2025-06-01",
+        replay_eval_end_date="2026-02-05",
+        post_eval_periods=[30, 120],
+    )
+
+    script = render_remote_pipeline_script(
+        remote_dir="/nvme0n1-disk/code/stock-prediction",
+        remote_env=".venv313",
+        plan=plan,
+    )
+
+    assert "source .venv313/bin/activate" in script
+    assert "pufferlib_market.autoresearch_rl" in script
+    assert "pufferlib_market/fast_marketsim_eval.py" in script

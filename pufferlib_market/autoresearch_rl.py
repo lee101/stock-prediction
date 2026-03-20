@@ -537,12 +537,24 @@ def run_trial(
             if proc.poll() is None:
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
                 proc.wait(timeout=10)
+            try:
+                if proc.stdout is not None:
+                    remainder = proc.stdout.read()
+                    if remainder:
+                        stdout_lines.extend(
+                            line.strip()
+                            for line in remainder.decode("utf-8", errors="replace").splitlines()
+                            if line.strip()
+                        )
+            except Exception:
+                pass
         except Exception:
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
             except Exception:
                 pass
         elapsed = time.time() - t0
+        return_code = proc.poll()
 
         # Parse training stats from last logged line
         train_return = None
@@ -583,8 +595,13 @@ def run_trial(
         if pts:
             ckpt_path = max(pts, key=lambda p: p.stat().st_mtime)
         else:
+            error_text = "no checkpoint"
+            if return_code not in (None, 0):
+                error_tail = _trim_error("\n".join(stdout_lines[-12:]))
+                if error_tail:
+                    error_text = f"train failed (exit {return_code}): {error_tail}"
             return {
-                "error": "no checkpoint",
+                "error": error_text,
                 "train_return": train_return,
                 "train_steps": total_steps,
             }
