@@ -30,7 +30,7 @@ def main():
     parser.add_argument("--end-date", default=None)
     parser.add_argument("--days", type=int, default=30, help="Backtest last N days if no start/end")
     parser.add_argument("--dip-pct", type=float, default=0.10)
-    parser.add_argument("--proximity-pct", type=float, default=0.005)
+    parser.add_argument("--proximity-pct", type=float, default=0.03)
     parser.add_argument("--profit-target", type=float, default=0.05)
     parser.add_argument("--stop-loss", type=float, default=0.08)
     parser.add_argument("--max-positions", type=int, default=5)
@@ -49,6 +49,9 @@ def main():
     parser.add_argument("--base-asset-momentum-period", type=int, default=0)
     parser.add_argument("--base-asset-min-momentum", type=float, default=0.0)
     parser.add_argument("--base-asset-rebalance-min-cash", type=float, default=1.0)
+    parser.add_argument("--sma-filter", type=int, default=20)
+    parser.add_argument("--sma-check-method", choices=["current", "pre_dip", "none"], default="pre_dip")
+    parser.add_argument("--adaptive-dip", action="store_true")
     args = parser.parse_args()
 
     symbols = args.symbols or FULL_UNIVERSE
@@ -90,6 +93,9 @@ def main():
         base_asset_momentum_period=args.base_asset_momentum_period,
         base_asset_min_momentum=args.base_asset_min_momentum,
         base_asset_rebalance_min_cash=args.base_asset_rebalance_min_cash,
+        sma_filter_period=args.sma_filter,
+        sma_check_method=args.sma_check_method,
+        adaptive_dip=args.adaptive_dip,
     )
 
     print(f"\nConfig: dip={config.dip_pct:.0%} prox={config.proximity_pct:.1%} "
