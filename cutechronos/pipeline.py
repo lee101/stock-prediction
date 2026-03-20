@@ -1,9 +1,9 @@
-"""CuteChronos2Pipeline -- a drop-in wrapper around Chronos2Pipeline.
+"""CuteChronos2Pipeline -- drop-in pipeline for Chronos-2 inference.
 
-For now this delegates to the original Chronos2Model (the real model
-implementation).  Once the custom Triton/CUDA-backed CuteChronos2Model
-lands, ``from_pretrained`` will load *that* instead while keeping the
-same public API.
+Supports two backends:
+- ``use_cute=True`` (default): Uses CuteChronos2Model with custom Triton
+  kernels and optional torch.compile for maximum performance.
+- ``use_cute=False``: Delegates to the original upstream Chronos2Model.
 """
 
 from __future__ import annotations
@@ -19,18 +19,39 @@ from einops import rearrange
 logger = logging.getLogger(__name__)
 
 
-def _load_model(model_path: str, device: str = "cuda", dtype: torch.dtype = torch.bfloat16):
-    """Load model weights via the upstream Chronos2Pipeline loader, then
-    extract the underlying model and move it to *device*.
-
-    When ``cutechronos.model.CuteChronos2Model`` becomes available this
-    function will load into that class instead.
-    """
+def _load_model_original(model_path: str, device: str = "cuda", dtype: torch.dtype = torch.bfloat16):
+    """Load via the upstream Chronos2Pipeline (requires chronos-forecasting)."""
     from chronos.chronos2 import Chronos2Pipeline
 
     pipeline = Chronos2Pipeline.from_pretrained(model_path, dtype=dtype)
     model = pipeline.model
     model = model.to(device)
+    model.eval()
+    return model
+
+
+def _load_model_cute(
+    model_path: str,
+    device: str = "cuda",
+    dtype: torch.dtype = torch.bfloat16,
+    compile_mode: str | None = None,
+):
+    """Load via CuteChronos2Model (no upstream dependency for inference)."""
+    from huggingface_hub import snapshot_download
+    from cutechronos.model import CuteChronos2Model
+
+    # Resolve HuggingFace model ID to local path
+    local_path = snapshot_download(
+        model_path,
+        allow_patterns=["*.json", "*.safetensors", "*.bin"],
+    )
+
+    if compile_mode:
+        model = CuteChronos2Model.from_pretrained_compiled(local_path, compile_mode=compile_mode)
+    else:
+        model = CuteChronos2Model.from_pretrained(local_path)
+
+    model = model.to(device=device, dtype=dtype)
     model.eval()
     return model
 
@@ -56,11 +77,18 @@ class CuteChronos2Pipeline:
       ``prediction_length <= model_prediction_length``.
     """
 
-    def __init__(self, model, *, device: str = "cuda"):
+    def __init__(self, model, *, device: str = "cuda", _is_cute: bool = False):
         self.model = model
         self._device = device
+        self._is_cute = _is_cute
 
     # -- properties ----------------------------------------------------------
+
+    def _get_config(self):
+        """Access the model config, handling both CuteChronos2Model and original."""
+        if self._is_cute:
+            return self.model.config
+        return self.model.chronos_config
 
     @property
     def device(self) -> str:
@@ -68,23 +96,26 @@ class CuteChronos2Pipeline:
 
     @property
     def model_context_length(self) -> int:
-        return self.model.chronos_config.context_length
+        return self._get_config().context_length
 
     @property
     def model_output_patch_size(self) -> int:
-        return self.model.chronos_config.output_patch_size
+        return self._get_config().output_patch_size
 
     @property
     def model_prediction_length(self) -> int:
-        return self.model.chronos_config.max_output_patches * self.model.chronos_config.output_patch_size
+        cfg = self._get_config()
+        max_patches = getattr(cfg, "max_output_patches", 64)
+        return max_patches * cfg.output_patch_size
 
     @property
     def quantiles(self) -> list[float]:
-        return self.model.chronos_config.quantiles
+        return self._get_config().quantiles
 
     @property
     def max_output_patches(self) -> int:
-        return self.model.chronos_config.max_output_patches
+        cfg = self._get_config()
+        return getattr(cfg, "max_output_patches", 64)
 
     # -- factory -------------------------------------------------------------
 
@@ -95,6 +126,8 @@ class CuteChronos2Pipeline:
         *,
         device: str = "cuda",
         dtype: torch.dtype = torch.bfloat16,
+        use_cute: bool = True,
+        compile_mode: str | None = None,
     ) -> "CuteChronos2Pipeline":
         """Load a Chronos-2 model and wrap it in a CuteChronos2Pipeline.
 
@@ -106,18 +139,39 @@ class CuteChronos2Pipeline:
             Target device, default ``"cuda"``.
         dtype
             Model dtype, default ``torch.bfloat16``.
+        use_cute
+            If True (default), use CuteChronos2Model with custom kernels.
+            If False, use the original upstream Chronos2Model.
+        compile_mode
+            If set (e.g. ``"reduce-overhead"``), apply torch.compile to the
+            CuteChronos2Model. Only effective when ``use_cute=True``.
         """
-        model = _load_model(model_path, device=device, dtype=dtype)
-        return cls(model, device=device)
+        if use_cute:
+            model = _load_model_cute(model_path, device=device, dtype=dtype, compile_mode=compile_mode)
+            return cls(model, device=device, _is_cute=True)
+        else:
+            model = _load_model_original(model_path, device=device, dtype=dtype)
+            return cls(model, device=device, _is_cute=False)
 
     # -- helpers -------------------------------------------------------------
+
+    @staticmethod
+    def _left_pad_and_stack(tensors: List[torch.Tensor]) -> torch.Tensor:
+        """Left-pad variable-length 1D tensors and stack into a 2D batch."""
+        max_len = max(t.shape[-1] for t in tensors)
+        padded = []
+        for t in tensors:
+            pad_len = max_len - t.shape[-1]
+            if pad_len > 0:
+                pad = torch.full((pad_len,), float("nan"), dtype=t.dtype, device=t.device)
+                t = torch.cat([pad, t])
+            padded.append(t)
+        return torch.stack(padded)
 
     def _prepare_context(self, context: Union[torch.Tensor, List[torch.Tensor]]) -> torch.Tensor:
         """Normalise *context* to a 2-D float32 tensor on the right device."""
         if isinstance(context, list):
-            from chronos.utils import left_pad_and_stack_1D
-
-            context = left_pad_and_stack_1D(context)
+            context = self._left_pad_and_stack(context)
         if context.ndim == 1:
             context = context.unsqueeze(0)
         if context.ndim == 3 and context.shape[1] == 1:
@@ -175,16 +229,21 @@ class CuteChronos2Pipeline:
         num_output_patches = math.ceil(prediction_length / self.model_output_patch_size)
         num_output_patches = min(num_output_patches, self.max_output_patches)
 
-        # group_ids: each series independent
-        group_ids = torch.arange(batch_size, dtype=torch.long, device=self._device)
+        if self._is_cute:
+            # CuteChronos2Model: direct tensor in/out
+            preds = self.model(ctx, num_output_patches=num_output_patches)
+        else:
+            # Original Chronos2Model: named kwargs, ModelOutput return
+            group_ids = torch.arange(batch_size, dtype=torch.long, device=self._device)
+            output = self.model(
+                context=ctx,
+                group_ids=group_ids,
+                num_output_patches=num_output_patches,
+            )
+            preds = output.quantile_preds
 
-        output = self.model(
-            context=ctx,
-            group_ids=group_ids,
-            num_output_patches=num_output_patches,
-        )
-        # output.quantile_preds: (B, Q, H)
-        preds = output.quantile_preds[..., :prediction_length]
+        # preds: (B, Q, H) - truncate to requested length
+        preds = preds[..., :prediction_length]
         preds = preds.to(dtype=torch.float32, device="cpu")
 
         # Return as list of (1, Q, H) tensors for API compatibility
@@ -238,13 +297,19 @@ class CuteChronos2Pipeline:
             indices = [training_quantile_levels.index(q) for q in quantile_levels]
             quantiles = [p[..., indices] for p in predictions]
         else:
-            # Interpolate for non-standard quantile levels
-            from chronos.utils import interpolate_quantiles
+            # Linear interpolation for non-standard quantile levels
+            quantiles = []
+            tq = torch.tensor(training_quantile_levels, dtype=torch.float32)
+            for p in predictions:
+                interp_results = []
+                for ql in quantile_levels:
+                    idx = torch.searchsorted(tq, ql).clamp(1, len(tq) - 1).item()
+                    lo, hi = idx - 1, idx
+                    frac = (ql - tq[lo].item()) / max(tq[hi].item() - tq[lo].item(), 1e-9)
+                    val = p[..., lo] * (1 - frac) + p[..., hi] * frac
+                    interp_results.append(val)
+                quantiles.append(torch.stack(interp_results, dim=-1))
 
-            quantiles = [
-                interpolate_quantiles(quantile_levels, training_quantile_levels, p)
-                for p in predictions
-            ]
 
         # median as "mean"
         median_idx = training_quantile_levels.index(0.5)
