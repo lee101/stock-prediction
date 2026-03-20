@@ -156,15 +156,21 @@ class AlpacaCryptoWatcher(threading.Thread):
                     pair.sell_order_id = None
 
     def _check_position_exists(self, symbol: str) -> bool:
-        """Check if we currently hold a position in this symbol."""
+        """Check if we currently hold a position in this symbol.
+
+        Returns True if a non-zero position exists.  On API error, returns
+        False conservatively (do not assume a position exists) and logs the
+        error so it is visible in production logs.
+        """
         try:
             positions = self.alpaca.get_all_positions()
             for pos in positions:
                 sym_norm = str(pos.symbol).replace("/", "")
                 if sym_norm == symbol and float(pos.qty) > 0:
                     return True
-        except Exception:
-            pass
+        except Exception as e:
+            # FIX: was silently swallowed — log so errors surface in production
+            logger.warning(f"Watcher: _check_position_exists({symbol}) API error: {e}")
         return False
 
     def _on_buy_fill(self, pair: OrderPair) -> None:

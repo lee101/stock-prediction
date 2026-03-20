@@ -150,6 +150,12 @@ def update_peak_prices(
     - New positions: initialize peak at current_price.
     - Existing positions: update peak if current_price > stored peak.
     - Exited positions: remove from tracker.
+
+    Restart safety: if the stored peak is below the current price (e.g. the
+    asset rallied while the orchestrator was offline), the stale peak would
+    never trigger a trailing stop — but we still reset it to current_price so
+    the high-water mark is accurate going forward.  Resetting upward is always
+    safe: it cannot trigger a stop immediately.
     """
     updated: dict[str, float] = {}
     for sym, pos in current_positions.items():
@@ -158,12 +164,24 @@ def update_peak_prices(
         current = float(getattr(pos, "current_price", 0))
         if current <= 0:
             continue
-        old_peak = peaks.get(sym, 0.0)
+        stored_peak = peaks.get(sym, 0.0)
+        old_peak = stored_peak
+        # FIX: Validate peak on load — if stored peak is below current price,
+        # the data is stale (price recovered after a restart gap).  Reset to
+        # current so the trailing stop starts fresh from here rather than
+        # firing immediately on a spurious old-peak comparison.
+        if old_peak < current:
+            if old_peak > 0:
+                logger.info(
+                    f"  PeakTracker: {sym} stale peak ${old_peak:.2f} < current ${current:.2f} "
+                    f"— resetting peak to current price (restart safety)"
+                )
+            else:
+                logger.info(f"  PeakTracker: {sym} new position — peak initialized at ${current:.2f}")
+            old_peak = current
         new_peak = max(old_peak, current)
-        if old_peak == 0:
-            logger.info(f"  PeakTracker: {sym} new position — peak initialized at ${current:.2f}")
-        elif new_peak > old_peak:
-            logger.info(f"  PeakTracker: {sym} new peak ${new_peak:.2f} (was ${old_peak:.2f})")
+        if new_peak > stored_peak and stored_peak > 0:
+            logger.info(f"  PeakTracker: {sym} new peak ${new_peak:.2f} (was ${stored_peak:.2f})")
         updated[sym] = new_peak
     return updated
 

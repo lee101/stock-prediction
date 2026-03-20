@@ -216,8 +216,9 @@ def build_binance_snapshot(snapshot: UnifiedPortfolioSnapshot) -> None:
                     broker="binance",
                     order_id=str(order.get("orderId", "")),
                 ))
-        except Exception:
-            pass
+        except Exception as e:
+            # FIX: log instead of silently swallowing Binance order-fetch errors
+            logger.debug(f"Failed to fetch Binance open orders: {e}")
 
     except Exception as e:
         logger.error(f"Failed to build Binance snapshot: {e}")
