@@ -474,6 +474,30 @@ def _minimum_live_exit_price(
     return max(targets)
 
 
+_PROVIDER_FAILURE_REASON_PREFIXES = (
+    "api exhausted",
+    "codex api exhausted",
+    "api error:",
+    "no tool use in response",
+    "could not parse response",
+    "failed to parse response",
+    "all retries exhausted",
+)
+
+
+def _trade_plan_indicates_provider_failure(plan: TradePlan) -> bool:
+    """Return True when a plan is a synthetic hold caused by provider failure."""
+    reasoning = str(getattr(plan, "reasoning", "") or "").strip().lower()
+    if not reasoning:
+        return False
+    direction = str(getattr(plan, "direction", "") or "").strip().lower()
+    if direction and direction != "hold":
+        return False
+    return any(
+        reasoning.startswith(prefix) for prefix in _PROVIDER_FAILURE_REASON_PREFIXES
+    )
+
+
 def _normalize_live_trade_plan(
     plan: TradePlan,
     sym_cfg: BinanceSymbolConfig,
@@ -1238,8 +1262,12 @@ def get_hybrid_signal(
             review_cache_namespace=review_cache_ns,
         )
         # Fallback to Chronos2 when LLM is rate-limited/exhausted
-        if plan.reasoning and "exhausted" in plan.reasoning.lower() and plan.confidence == 0:
-            logger.warning(f"  LLM exhausted for {sym_cfg.symbol}, falling back to Chronos2")
+        if _trade_plan_indicates_provider_failure(plan):
+            logger.warning(
+                "  Provider failure for {} ({}), falling back to Chronos2",
+                sym_cfg.symbol,
+                plan.reasoning,
+            )
             plan = _chronos2_fallback_signal(
                 sym_cfg, current_price, fc_1h, fc_24h,
                 position_qty=position_qty,

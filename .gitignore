@@ -483,6 +483,7 @@ tests/test_alpaca_data_wrapper_backfill.py
 tests/test_bagsfm_*.py
 tests/test_bags*.py
 tests/test_binance*.py
+!tests/test_binance_status.py
 !tests/test_binance_symbol_utils.py
 !tests/test_binancechronossolexperiment_forecast_windowing.py
 !tests/test_binance_watcher_cli_fill_details.py

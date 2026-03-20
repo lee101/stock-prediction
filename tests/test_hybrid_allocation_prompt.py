@@ -250,6 +250,81 @@ def test_normalize_live_trade_plan_sets_exit_for_long_entry_without_target() -> 
     assert normalized.sell_price == pytest.approx(2202.9918)
 
 
+@pytest.mark.parametrize(
+    ("reasoning", "expected"),
+    [
+        ("API exhausted", True),
+        ("codex API exhausted", True),
+        ("API error: rate limited", True),
+        ("No tool use in response", True),
+        ("Could not parse response", True),
+        ("Failed to parse response", True),
+        ("All retries exhausted", True),
+        ("Stay flat while forecasts disagree.", False),
+    ],
+)
+def test_trade_plan_indicates_provider_failure(reasoning: str, expected: bool) -> None:
+    plan = trade_binance_live.TradePlan(
+        direction="hold",
+        buy_price=0.0,
+        sell_price=0.0,
+        confidence=0.0,
+        reasoning=reasoning,
+    )
+
+    assert trade_binance_live._trade_plan_indicates_provider_failure(plan) is expected
+
+
+def test_get_hybrid_signal_falls_back_on_provider_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    prompt_module = _load_module("rl_trading_agent_binance_prompt", "rl_trading_agent_binance_prompt.py")
+    btc = trade_binance_live.TRADING_SYMBOLS["BTCUSD"]
+    expected = trade_binance_live.TradePlan(
+        direction="long",
+        buy_price=69900.0,
+        sell_price=70500.0,
+        confidence=0.55,
+        reasoning="chronos2_fallback: test",
+    )
+
+    monkeypatch.setattr(trade_binance_live.binance_wrapper, "get_symbol_price", lambda symbol: 70000.0)
+    monkeypatch.setattr(prompt_module, "load_latest_forecast", lambda symbol, horizon: {"predicted_close_p50": 70100.0})
+    monkeypatch.setattr(prompt_module, "build_live_prompt", lambda *args, **kwargs: "prompt")
+    monkeypatch.setattr(
+        trade_binance_live,
+        "call_llm",
+        lambda *args, **kwargs: trade_binance_live.TradePlan(
+            direction="hold",
+            buy_price=0.0,
+            sell_price=0.0,
+            confidence=0.0,
+            reasoning="API error: rate limited",
+        ),
+    )
+    monkeypatch.setattr(trade_binance_live, "_chronos2_fallback_signal", lambda *args, **kwargs: expected)
+    monkeypatch.setattr(trade_binance_live, "_normalize_live_trade_plan", lambda plan, *args, **kwargs: plan)
+
+    plan = trade_binance_live.get_hybrid_signal(
+        btc,
+        model="gemini-3.1-flash-lite-preview",
+        thinking_level="HIGH",
+        position_qty=0.0,
+        execution_mode="margin",
+        prefetched_bars=[
+            {
+                "timestamp": f"2026-03-20T{hour:02d}:00:00Z",
+                "open": 70000.0 + hour,
+                "high": 70010.0 + hour,
+                "low": 69990.0 + hour,
+                "close": 70005.0 + hour,
+                "volume": 1000.0 + hour,
+            }
+            for hour in range(24)
+        ],
+    )
+
+    assert plan is expected
+
+
 def test_quote_buying_power_only_counts_borrow_headroom_in_margin_mode() -> None:
     state = trade_binance_live.PortfolioState(
         fdusd_balance=50.0,
