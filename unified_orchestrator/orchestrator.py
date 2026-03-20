@@ -929,7 +929,6 @@ def _place_crypto_tp_sell(alpaca, sym: str, pos, sell_price: float,
         return
 
     # Cancel any existing sell orders for this symbol first
-    import time as _time
     from alpaca.trading.requests import GetOrdersRequest
     from alpaca.trading.enums import QueryOrderStatus
     canceled_any = False
@@ -947,7 +946,7 @@ def _place_crypto_tp_sell(alpaca, sym: str, pos, sell_price: float,
 
     # Brief pause after cancel to let Alpaca release held balance
     if canceled_any:
-        _time.sleep(0.5)
+        time.sleep(0.5)
 
     logger.info(f"  {sym}: placing TP sell {sell_qty:.8f} @ ${sell_price:.2f}")
     if not dry_run:
@@ -1082,7 +1081,7 @@ def execute_crypto_signals(
     # kept in place, eliminating the window where no active buy order exists
     # between cancel and re-place.  Symbols with a kept order are recorded in
     # kept_order_syms so the placement loop below skips re-placing them.
-    crypto_sym_set = {sym for sym in signals}
+    crypto_sym_set = set(signals)
     from alpaca.trading.requests import GetOrdersRequest
     from alpaca.trading.enums import QueryOrderStatus
     open_orders = alpaca.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN))
@@ -1124,8 +1123,7 @@ def execute_crypto_signals(
     # to release buying-power reserved by cancelled orders.  Sleep 1 s after
     # any live cancellations so the account refresh below reads settled cash.
     if canceled_for and not dry_run:
-        import time as _cancel_sleep
-        _cancel_sleep.sleep(1.0)
+        time.sleep(1.0)
 
     # LLM calls and order cancellation can both leave the cycle snapshot stale.
     # Refresh from Alpaca immediately before sizing so we do not size off cash
@@ -1520,8 +1518,7 @@ def execute_stock_signals(
                     for order in open_orders:
                         if str(order.symbol) == sym and order.side.value.lower() == "sell":
                             alpaca.cancel_order_by_id(str(order.id))
-                    import time as _time
-                    _time.sleep(0.5)
+                    time.sleep(0.5)
                     sell_price = round(pos.current_price * 0.999, 2)
                     req = LimitOrderRequest(
                         symbol=sym, qty=pos.qty, side=OrderSide.SELL,
