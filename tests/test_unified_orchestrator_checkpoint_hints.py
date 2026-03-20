@@ -50,3 +50,35 @@ def test_checkpoint_data_path_uses_explicit_hint(monkeypatch, tmp_path: Path) ->
     monkeypatch.setitem(orchestrator._CHECKPOINT_DATA_HINTS, checkpoint.parent.name, explicit_path)
 
     assert orchestrator._checkpoint_data_path(checkpoint) == explicit_path
+
+
+def test_checkpoint_data_path_prefers_specific_family_hint_over_leaf_collision(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    wrong_path = tmp_path / "crypto6_train.bin"
+    correct_path = tmp_path / "mixed23_fresh_train.bin"
+    _write_mktd_header(wrong_path, ["BTCUSD"] * 6)
+    _write_mktd_header(correct_path, ["BTCUSD"] * 23)
+
+    checkpoint = tmp_path / "checkpoints" / "mixed23_fresh_targeted" / "reg_combo_2" / "best.pt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_bytes(b"")
+
+    monkeypatch.setitem(orchestrator._CHECKPOINT_DATA_HINTS, "reg_combo_2", wrong_path)
+    monkeypatch.setitem(orchestrator._CHECKPOINT_DATA_HINTS, "mixed23_fresh_targeted", correct_path)
+
+    assert orchestrator._checkpoint_data_path(checkpoint) == correct_path
+
+
+def test_is_daily_checkpoint_detects_mixed23_fresh_family(monkeypatch, tmp_path: Path) -> None:
+    data_path = tmp_path / "mixed23_fresh_train.bin"
+    _write_mktd_header(data_path, ["BTCUSD"] * 23)
+
+    checkpoint = tmp_path / "checkpoints" / "mixed23_fresh_targeted" / "reg_combo_2" / "best.pt"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_bytes(b"")
+
+    monkeypatch.setitem(orchestrator._CHECKPOINT_DATA_HINTS, "mixed23_fresh_targeted", data_path)
+
+    assert orchestrator._is_daily_checkpoint(checkpoint) is True
