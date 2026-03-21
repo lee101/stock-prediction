@@ -3,11 +3,22 @@ PufferLib-compatible Python wrapper for the C trading environment.
 """
 
 import importlib
-import numpy as np
-import gymnasium
 from pathlib import Path
 
-from pufferlib.emulation import GymnasiumPufferEnv
+try:  # Optional dependency: only needed for live env execution
+    from pufferlib.emulation import GymnasiumPufferEnv  # type: ignore[import-error]
+    _PUFFERLIB_IMPORT_ERROR: ModuleNotFoundError | None = None
+except ModuleNotFoundError as exc:  # pragma: no cover - exercised in CI without pufferlib
+    _PUFFERLIB_IMPORT_ERROR = exc
+
+    class GymnasiumPufferEnv:  # type: ignore[no-redef]
+        """Placeholder used when pufferlib isn't installed."""
+
+        def __init__(self, *args, **kwargs) -> None:
+            raise ModuleNotFoundError(
+                "pufferlib is required to construct TradingEnv; "
+                'install it with `uv pip install "pufferlib>=3,<4"` or add the PufferLib repo to PYTHONPATH.'
+            ) from _PUFFERLIB_IMPORT_ERROR
 
 
 class TradingEnvConfig:
