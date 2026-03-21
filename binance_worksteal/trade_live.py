@@ -17,7 +17,7 @@ import time
 from dataclasses import replace
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -28,12 +28,18 @@ from loguru import logger
 
 from binance_worksteal.strategy import (
     WorkStealConfig,
+    SymbolDiagnostic,
     build_entry_candidates,
+    compute_breadth_ratio,
     compute_market_breadth_skip,
+    compute_ref_price,
+    compute_sma,
     get_fee,
     load_daily_bars,
+    passes_sma_filter,
     resolve_entry_config,
     FDUSD_SYMBOLS,
+    _risk_off_triggered,
 )
 from binance_worksteal.data import compute_features, FEATURE_NAMES
 from binance_worksteal.model import DailyWorkStealPolicy, PerSymbolWorkStealPolicy
@@ -294,6 +300,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--health-report-hours", type=int, default=6)
     parser.add_argument("--neural-model", default=None, help="Path to neural model checkpoint (.pt)")
     parser.add_argument("--neural-symbols", nargs="+", default=None, help="Symbols the model was trained on")
+    parser.add_argument("--diagnose", action="store_true", help="Run one diagnostic cycle showing why each symbol is filtered")
+    parser.add_argument("--min-dip-pct", type=float, default=0.10, help="Floor for adaptive dip reduction (default 0.10)")
+    parser.add_argument("--adaptive-dip-cycles", type=int, default=3, help="Zero-candidate cycles before reducing dip_pct")
     return parser
 
 
@@ -806,6 +815,18 @@ def _stage_entry_candidates(
     }
 
 
+def _count_sma_pass_fail(all_bars: Dict[str, pd.DataFrame], config: WorkStealConfig) -> Tuple[int, int]:
+    n_pass = 0
+    n_fail = 0
+    for bars in all_bars.values():
+        close = float(bars.iloc[-1]["close"])
+        if passes_sma_filter(bars, config, close):
+            n_pass += 1
+        else:
+            n_fail += 1
+    return n_pass, n_fail
+
+
 def run_health_report(client, symbols: List[str], config: WorkStealConfig, dry_run: bool = True):
     state = load_state()
     positions = normalize_live_positions(state.get("positions", {}), config)
@@ -827,7 +848,6 @@ def run_health_report(client, symbols: List[str], config: WorkStealConfig, dry_r
     entry_config = resolve_entry_config(current_bars=current_bars, history=all_bars, config=config)
     risk_off = compute_market_breadth_skip(current_bars, all_bars, entry_config)
 
-    from binance_worksteal.strategy import compute_ref_price
     nearest_dip_bps = float("inf")
     nearest_dip_sym = ""
     for sym, bars in all_bars.items():
@@ -937,17 +957,32 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
                     dry_run: bool = True, gemini_enabled: bool = False,
                     gemini_model: str = "gemini-2.5-flash",
                     neural_model=None, neural_model_symbols: Optional[List[str]] = None,
-                    neural_seq_len: int = 30):
+                    neural_seq_len: int = 30,
+                    min_dip_pct: float = 0.10,
+                    adaptive_dip_cycles: int = 3):
     state = load_state()
     positions = normalize_live_positions(state.get("positions", {}), config)
     pending_entries = _normalize_pending_entries(state.get("pending_entries", {}))
     last_exit = {_normalize_strategy_symbol(sym): ts for sym, ts in state.get("last_exit", {}).items()}
     recent_trades = list(state.get("recent_trades", []))
 
+    # Adaptive dip: track consecutive zero-candidate cycles
+    zero_candidate_cycles = int(state.get("zero_candidate_cycles", 0))
+    original_dip_pct = config.dip_pct
+    if adaptive_dip_cycles > 0 and zero_candidate_cycles >= adaptive_dip_cycles and config.dip_pct > min_dip_pct:
+        steps = (zero_candidate_cycles - adaptive_dip_cycles) + 1
+        reduction = 0.02 * steps
+        new_dip = max(min_dip_pct, config.dip_pct - reduction)
+        logger.info(
+            f"ADAPTIVE DIP: {zero_candidate_cycles} zero-candidate cycles, "
+            f"reducing dip_pct {config.dip_pct:.2f} -> {new_dip:.2f} (floor={min_dip_pct:.2f})"
+        )
+        config = replace(config, dip_pct=new_dip)
+
     now = datetime.now(timezone.utc)
     logger.info(
         f"Daily cycle at {now.isoformat()}, {len(positions)} open positions, "
-        f"{len(pending_entries)} pending entries"
+        f"{len(pending_entries)} pending entries, dip_pct={config.dip_pct:.2f}"
     )
 
     all_bars = _fetch_all_bars(client, symbols, config.lookback_days)
@@ -1045,8 +1080,20 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
     # Stage new entries
     entry_config = resolve_entry_config(current_bars=current_bars, history=all_bars, config=config)
     skip_entries = compute_market_breadth_skip(current_bars, all_bars, entry_config)
+    risk_off = _risk_off_triggered(current_bars, all_bars, entry_config)
     counts = {"n_staged": 0, "n_proximity_skip": 0, "n_gemini_skip": 0, "n_already_held": 0, "n_neural_skip": 0}
     n_candidates = 0
+
+    # Log market breadth details
+    breadth_ratio, n_breadth_dipping, n_breadth_total = compute_breadth_ratio(current_bars, all_bars)
+    logger.info(
+        f"MARKET STATE: breadth={n_breadth_dipping}/{n_breadth_total} dipping ({breadth_ratio:.1%}) "
+        f"threshold={entry_config.market_breadth_filter:.0%} breadth_skip={skip_entries} risk_off={risk_off}"
+    )
+
+    # Log SMA pass/fail
+    sma_pass, sma_fail = _count_sma_pass_fail(all_bars, config)
+    logger.info(f"SMA FILTER: {sma_pass} pass, {sma_fail} fail (period={config.sma_filter_period}, method={config.sma_check_method})")
 
     neural_predictions = None
     if neural_model is not None and neural_model_symbols and not skip_entries:
@@ -1060,6 +1107,7 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
         logger.info("ENTRY SCAN: skipped, market breadth risk-off")
     else:
         staged_symbols = set(positions) | set(pending_entries)
+        diagnostics: List[SymbolDiagnostic] = []
         candidates = build_entry_candidates(
             date=pd.Timestamp(now),
             current_bars=current_bars,
@@ -1068,10 +1116,33 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
             last_exit={sym: pd.Timestamp(ts) for sym, ts in last_exit.items()},
             config=entry_config,
             base_symbol=None,
+            diagnostics=diagnostics,
         )
         n_candidates = len(candidates)
         slots = config.max_positions - len(positions) - len(pending_entries)
         logger.info(f"ENTRY SCAN: {len(all_bars)} symbols checked, {n_candidates} candidates found")
+
+        # Log top 5 closest to entry
+        prox_diags = [d for d in diagnostics if d.dist_pct > 0]
+        prox_diags.sort(key=lambda d: d.dist_pct)
+        if prox_diags:
+            logger.info("TOP 5 CLOSEST TO ENTRY:")
+            for d in prox_diags[:5]:
+                logger.info(
+                    f"  {d.symbol}: close=${d.close:.4f} target=${d.buy_target:.4f} "
+                    f"dist={d.dist_pct:.4f} ({d.dist_pct*100:.1f}% away) "
+                    f"{'BLOCKED:' + d.filter_reason if d.filter_reason else 'CANDIDATE'}"
+                )
+
+        # Log filter reason summary
+        reason_counts: Dict[str, int] = {}
+        for d in diagnostics:
+            if d.filter_reason:
+                key = d.filter_reason.split("(")[0]
+                reason_counts[key] = reason_counts.get(key, 0) + 1
+        if reason_counts:
+            parts = [f"{r}={c}" for r, c in sorted(reason_counts.items(), key=lambda x: -x[1])]
+            logger.info(f"FILTER REASONS: {', '.join(parts)}")
 
         counts = _stage_entry_candidates(
             client=client, candidates=candidates, all_bars=all_bars,
@@ -1099,12 +1170,21 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
         **counts,
     })
 
+    # Track consecutive zero-candidate cycles for adaptive dip
+    if n_candidates == 0 and not skip_entries:
+        state["zero_candidate_cycles"] = zero_candidate_cycles + 1
+        logger.info(f"ADAPTIVE: zero_candidate_cycles={zero_candidate_cycles + 1}")
+    elif counts["n_staged"] > 0:
+        state["zero_candidate_cycles"] = 0
+
     # Save state
     state["positions"] = positions
     state["pending_entries"] = pending_entries
     state["last_exit"] = last_exit
     state["recent_trades"] = recent_trades[-50:]
     state["peak_equity"] = max(state.get("peak_equity", 0), equity)
+    if config.dip_pct != original_dip_pct:
+        state["effective_dip_pct"] = config.dip_pct
     save_state(state)
 
     logger.info(
@@ -1113,6 +1193,116 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
     for sym, pos in positions.items():
         logger.info(f"  {sym}: entry={pos['entry_price']:.2f} "
                     f"target={pos['target_sell']:.2f} stop={pos['stop_price']:.2f}")
+
+
+def run_diagnose(client, symbols: List[str], config: WorkStealConfig):
+    """One-shot diagnostic: show exactly why each symbol passes/fails entry filters."""
+    all_bars = _fetch_all_bars(client, symbols, config.lookback_days)
+    if not all_bars:
+        logger.error("No bar data fetched for any symbol")
+        return
+    current_bars = {sym: bars.iloc[-1] for sym, bars in all_bars.items()}
+    now = datetime.now(timezone.utc)
+
+    # Market breadth
+    breadth_ratio, n_dipping, n_total = compute_breadth_ratio(current_bars, all_bars)
+    entry_config = resolve_entry_config(current_bars=current_bars, history=all_bars, config=config)
+    breadth_skip = compute_market_breadth_skip(current_bars, all_bars, entry_config)
+    risk_off = _risk_off_triggered(current_bars, all_bars, entry_config)
+
+    print(f"\n{'='*70}")
+    print(f"WORKSTEAL DIAGNOSTIC  {now.isoformat()}")
+    print(f"{'='*70}")
+    print(f"Symbols with data:  {len(all_bars)}/{len(symbols)}")
+    print(f"Market breadth:     {n_dipping}/{n_total} dipping ({breadth_ratio:.1%})")
+    print(f"Breadth threshold:  {entry_config.market_breadth_filter:.0%}")
+    print(f"Breadth skip:       {breadth_skip}")
+    print(f"Risk-off triggered: {risk_off}")
+    print(f"Config dip_pct:     {config.dip_pct:.0%}")
+    print(f"Config proximity:   {config.proximity_pct:.0%}")
+    print(f"SMA filter period:  {config.sma_filter_period}")
+    print(f"SMA check method:   {config.sma_check_method}")
+
+    # SMA pass/fail summary
+    sma_pass_count, sma_fail_count = _count_sma_pass_fail(all_bars, config)
+    print(f"SMA filter:         {sma_pass_count} pass, {sma_fail_count} fail")
+
+    # Run with diagnostics
+    diagnostics: List[SymbolDiagnostic] = []
+    state = load_state()
+    positions = normalize_live_positions(state.get("positions", {}), config)
+    last_exit = {_normalize_strategy_symbol(sym): ts for sym, ts in state.get("last_exit", {}).items()}
+
+    candidates = build_entry_candidates(
+        date=pd.Timestamp(now),
+        current_bars=current_bars,
+        history=all_bars,
+        positions={},
+        last_exit={sym: pd.Timestamp(ts) for sym, ts in last_exit.items()} if last_exit else {},
+        config=entry_config,
+        base_symbol=None,
+        diagnostics=diagnostics,
+    )
+
+    print(f"\nCandidates found:   {len(candidates)}")
+
+    # Show candidates
+    if candidates:
+        print(f"\n--- CANDIDATES (would enter) ---")
+        for sym, direction, score, fill_price, bar in candidates:
+            close = float(bar["close"])
+            print(f"  {sym:12s} dir={direction} score={score:.4f} fill=${fill_price:.4f} close=${close:.4f}")
+
+    # Show filtered symbols sorted by proximity to entry
+    filtered = [d for d in diagnostics if not d.is_candidate and d.filter_reason]
+    proximity_diags = [d for d in diagnostics if d.dist_pct > 0]
+    proximity_diags.sort(key=lambda d: d.dist_pct)
+
+    print(f"\n--- TOP 10 CLOSEST TO ENTRY (by distance to buy target) ---")
+    for d in proximity_diags[:10]:
+        dip_needed = d.dist_pct * 100
+        print(
+            f"  {d.symbol:12s} close=${d.close:<12.4f} ref_high=${d.ref_high:<12.4f} "
+            f"buy_target=${d.buy_target:<12.4f} dist={d.dist_pct:.4f} ({dip_needed:.1f}% more dip needed) "
+            f"{'** BLOCKED: ' + d.filter_reason if d.filter_reason else 'CANDIDATE'}"
+        )
+
+    # Group filter reasons
+    reason_counts: Dict[str, int] = {}
+    for d in filtered:
+        key = d.filter_reason.split("(")[0]
+        reason_counts[key] = reason_counts.get(key, 0) + 1
+
+    print(f"\n--- FILTER SUMMARY ---")
+    for reason, count in sorted(reason_counts.items(), key=lambda x: -x[1]):
+        print(f"  {reason:30s} {count} symbols")
+
+    # Show all per-symbol details
+    print(f"\n--- ALL SYMBOL DETAILS ---")
+    for d in sorted(diagnostics, key=lambda x: x.symbol):
+        status = "CANDIDATE" if d.is_candidate else f"FILTERED: {d.filter_reason}"
+        parts = [f"  {d.symbol:12s}"]
+        if d.close > 0:
+            parts.append(f"close=${d.close:<10.4f}")
+        if d.ref_high > 0:
+            parts.append(f"ref=${d.ref_high:<10.4f}")
+        if d.buy_target > 0:
+            parts.append(f"tgt=${d.buy_target:<10.4f}")
+        if d.dist_pct != 0:
+            parts.append(f"dist={d.dist_pct:.4f}")
+        if not d.sma_pass:
+            parts.append(f"sma={d.sma_value:.4f}")
+        parts.append(status)
+        print(" ".join(parts))
+
+    # Suggest adaptive thresholds
+    if not candidates:
+        min_dist = min((d.dist_pct for d in proximity_diags), default=999)
+        if min_dist < 999:
+            print(f"\n--- SUGGESTIONS ---")
+            print(f"  Smallest distance to entry: {min_dist:.4f} ({min_dist*100:.1f}%)")
+            print(f"  To capture nearest, increase proximity_pct to ~{min_dist + 0.01:.3f}")
+            print(f"  Or reduce dip_pct to ~{max(0.05, config.dip_pct - min_dist):.3f}")
 
 
 def main():
@@ -1126,6 +1316,11 @@ def main():
     symbols = args.symbols or FULL_UNIVERSE
 
     config = build_runtime_config(args)
+
+    if args.diagnose:
+        client = None
+        run_diagnose(client, symbols, config)
+        return 0
 
     # Initialize Binance client
     if not args.dry_run and BinanceClient:
@@ -1168,6 +1363,8 @@ def main():
         last_cycle_date = None
         last_entry_scan_hour = None
         last_health_hour = None
+        _min_dip = float(args.min_dip_pct)
+        _adap_cycles = int(args.adaptive_dip_cycles)
         if args.run_on_start:
             startup_dry_run = args.dry_run or args.startup_preview_only
             run_daily_cycle(
@@ -1180,6 +1377,8 @@ def main():
                 neural_model=nn_model,
                 neural_model_symbols=nn_symbols,
                 neural_seq_len=nn_seq_len,
+                min_dip_pct=_min_dip,
+                adaptive_dip_cycles=_adap_cycles,
             )
             if not startup_dry_run:
                 last_cycle_date = datetime.now(timezone.utc).date().isoformat()
@@ -1200,6 +1399,8 @@ def main():
                     neural_model=nn_model,
                     neural_model_symbols=nn_symbols,
                     neural_seq_len=nn_seq_len,
+                    min_dip_pct=_min_dip,
+                    adaptive_dip_cycles=_adap_cycles,
                 )
                 last_cycle_date = now.date().isoformat()
                 last_entry_scan_hour = now.strftime("%Y-%m-%dT%H")
@@ -1253,7 +1454,9 @@ def main():
         run_daily_cycle(client, symbols, config, dry_run=args.dry_run,
                         gemini_enabled=gemini_on, gemini_model=g_model,
                         neural_model=nn_model, neural_model_symbols=nn_symbols,
-                        neural_seq_len=nn_seq_len)
+                        neural_seq_len=nn_seq_len,
+                        min_dip_pct=float(args.min_dip_pct),
+                        adaptive_dip_cycles=int(args.adaptive_dip_cycles))
 
 
 if __name__ == "__main__":
