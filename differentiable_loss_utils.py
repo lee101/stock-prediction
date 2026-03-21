@@ -191,21 +191,24 @@ def simulate_hourly_trades(
     dtype = closes.dtype
     temperature_tensor = torch.as_tensor(temperature, dtype=dtype, device=device)
     fee = torch.as_tensor(maker_fee, dtype=dtype, device=device)
-    max_leverage_tensor = torch.broadcast_to(_as_tensor(max_leverage, closes), closes.shape)
-    can_short_tensor = torch.broadcast_to(_as_tensor(can_short, closes), batch_shape)
-    can_long_tensor = torch.broadcast_to(_as_tensor(can_long, closes), batch_shape)
+    max_leverage_tensor = _as_tensor(max_leverage, closes).expand(closes.shape)
+    can_short_tensor = _as_tensor(can_short, closes).expand(batch_shape)
+    can_long_tensor = _as_tensor(can_long, closes).expand(batch_shape)
     cash = torch.full(batch_shape, initial_cash, dtype=dtype, device=device)
     inventory = torch.full(batch_shape, initial_inventory, dtype=dtype, device=device)
     prev_value = cash + inventory * closes[..., 0]
 
-    pnl_list = []
-    return_list = []
-    value_list = []
-    buy_prob_list = []
-    sell_prob_list = []
-    exec_buy_list = []
-    exec_sell_list = []
-    inventory_history = []
+    fee_buy = 1.0 + fee
+    fee_sell = 1.0 - fee
+
+    pnl_out = torch.empty(*batch_shape, steps, dtype=dtype, device=device)
+    returns_out = torch.empty(*batch_shape, steps, dtype=dtype, device=device)
+    values_out = torch.empty(*batch_shape, steps, dtype=dtype, device=device)
+    buy_prob_out = torch.empty(*batch_shape, steps, dtype=dtype, device=device)
+    sell_prob_out = torch.empty(*batch_shape, steps, dtype=dtype, device=device)
+    exec_buy_out = torch.empty(*batch_shape, steps, dtype=dtype, device=device)
+    exec_sell_out = torch.empty(*batch_shape, steps, dtype=dtype, device=device)
+    inventory_out = torch.empty(*batch_shape, steps, dtype=dtype, device=device)
 
     for idx in range(steps):
         close = closes[..., idx]
@@ -233,16 +236,16 @@ def simulate_hourly_trades(
         # Allow borrowing up to ``step_limit`` * equity; translated to units.
         max_buy_cash = torch.where(
             b_price > 0,
-            cash / _safe_denominator(b_price * (1.0 + fee)),
-            torch.zeros_like(cash),
+            cash / _safe_denominator(b_price * fee_buy),
+            0.0,
         )
 
         target_notional = step_limit * torch.clamp(equity, min=_EPS)
         current_notional = inventory * b_price
         leveraged_capacity = torch.where(
             b_price > 0,
-            torch.clamp(target_notional - current_notional, min=0.0) / _safe_denominator(b_price * (1.0 + fee)),
-            torch.zeros_like(cash),
+            torch.clamp(target_notional - current_notional, min=0.0) / _safe_denominator(b_price * fee_buy),
+            0.0,
         )
 
         buy_capacity = torch.where(step_limit <= 1.0 + 1e-6, torch.clamp(max_buy_cash, min=0.0), leveraged_capacity)
@@ -255,12 +258,11 @@ def simulate_hourly_trades(
                 torch.minimum(buy_qty, cover_only_cap),
             )
 
-        # Long-close capacity is always allowed; short-open capacity depends on can_short.
         long_to_close = torch.clamp(inventory, min=0.0)
         max_short_qty = torch.where(
             s_price > 0,
-            (step_limit * torch.clamp(equity, min=_EPS)) / _safe_denominator(s_price * (1.0 + fee)),
-            torch.zeros_like(cash),
+            (step_limit * torch.clamp(equity, min=_EPS)) / _safe_denominator(s_price * fee_buy),
+            0.0,
         )
         current_short_qty = torch.clamp(-inventory, min=0.0)
         short_open_cap = torch.clamp(max_short_qty - current_short_qty, min=0.0)
@@ -270,7 +272,7 @@ def simulate_hourly_trades(
         executed_buys = buy_qty * buy_prob
         executed_sells = sell_qty * sell_prob
 
-        cash = cash - executed_buys * b_price * (1.0 + fee) + executed_sells * s_price * (1.0 - fee)
+        cash = cash - executed_buys * b_price * fee_buy + executed_sells * s_price * fee_sell
         inventory = inventory + executed_buys - executed_sells
 
         if margin_cost_per_step > 0:
@@ -286,35 +288,26 @@ def simulate_hourly_trades(
         returns = pnl / _safe_denominator(prior_value)
         prev_value = portfolio_value
 
-        pnl_list.append(pnl)
-        return_list.append(returns)
-        value_list.append(portfolio_value)
-        buy_prob_list.append(buy_prob)
-        sell_prob_list.append(sell_prob)
-        exec_buy_list.append(executed_buys)
-        exec_sell_list.append(executed_sells)
-        inventory_history.append(inventory.clone())
-
-    pnl_tensor = torch.stack(pnl_list, dim=-1)
-    returns_tensor = torch.stack(return_list, dim=-1)
-    values_tensor = torch.stack(value_list, dim=-1)
-    buy_prob_tensor = torch.stack(buy_prob_list, dim=-1)
-    sell_prob_tensor = torch.stack(sell_prob_list, dim=-1)
-    exec_buy_tensor = torch.stack(exec_buy_list, dim=-1)
-    exec_sell_tensor = torch.stack(exec_sell_list, dim=-1)
-    inventory_path_tensor = torch.stack(inventory_history, dim=-1)
+        pnl_out[..., idx] = pnl
+        returns_out[..., idx] = returns
+        values_out[..., idx] = portfolio_value
+        buy_prob_out[..., idx] = buy_prob
+        sell_prob_out[..., idx] = sell_prob
+        exec_buy_out[..., idx] = executed_buys
+        exec_sell_out[..., idx] = executed_sells
+        inventory_out[..., idx] = inventory
 
     return HourlySimulationResult(
-        pnl=pnl_tensor,
-        returns=returns_tensor,
-        portfolio_values=values_tensor,
+        pnl=pnl_out,
+        returns=returns_out,
+        portfolio_values=values_out,
         cash=cash,
         inventory=inventory,
-        buy_fill_probability=buy_prob_tensor,
-        sell_fill_probability=sell_prob_tensor,
-        executed_buys=exec_buy_tensor,
-        executed_sells=exec_sell_tensor,
-        inventory_path=inventory_path_tensor,
+        buy_fill_probability=buy_prob_out,
+        sell_fill_probability=sell_prob_out,
+        executed_buys=exec_buy_out,
+        executed_sells=exec_sell_out,
+        inventory_path=inventory_out,
     )
 
 
@@ -381,19 +374,22 @@ def simulate_hourly_trades_binary(
     fee = torch.as_tensor(maker_fee, dtype=dtype, device=device)
     cash = torch.full(batch_shape, initial_cash, dtype=dtype, device=device)
     inventory = torch.full(batch_shape, initial_inventory, dtype=dtype, device=device)
-    max_leverage_tensor = torch.broadcast_to(_as_tensor(max_leverage, closes), closes.shape)
-    can_short_tensor = torch.broadcast_to(_as_tensor(can_short, closes), batch_shape)
-    can_long_tensor = torch.broadcast_to(_as_tensor(can_long, closes), batch_shape)
+    max_leverage_tensor = _as_tensor(max_leverage, closes).expand(closes.shape)
+    can_short_tensor = _as_tensor(can_short, closes).expand(batch_shape)
+    can_long_tensor = _as_tensor(can_long, closes).expand(batch_shape)
     prev_value = cash + inventory * closes[..., 0]
 
-    pnl_list = []
-    return_list = []
-    value_list = []
-    buy_fill_list = []
-    sell_fill_list = []
-    exec_buy_list = []
-    exec_sell_list = []
-    inventory_history = []
+    fee_buy = 1.0 + fee
+    fee_sell = 1.0 - fee
+
+    pnl_out = torch.empty(*batch_shape, steps, dtype=dtype, device=device)
+    returns_out = torch.empty(*batch_shape, steps, dtype=dtype, device=device)
+    values_out = torch.empty(*batch_shape, steps, dtype=dtype, device=device)
+    buy_fill_out = torch.empty(*batch_shape, steps, dtype=dtype, device=device)
+    sell_fill_out = torch.empty(*batch_shape, steps, dtype=dtype, device=device)
+    exec_buy_out = torch.empty(*batch_shape, steps, dtype=dtype, device=device)
+    exec_sell_out = torch.empty(*batch_shape, steps, dtype=dtype, device=device)
+    inventory_out = torch.empty(*batch_shape, steps, dtype=dtype, device=device)
 
     for idx in range(steps):
         close = closes[..., idx]
@@ -420,19 +416,19 @@ def simulate_hourly_trades_binary(
         equity = cash + inventory * close
         max_buy_cash = torch.where(
             b_price > 0,
-            cash / _safe_denominator(b_price * (1.0 + fee)),
-            torch.zeros_like(cash),
+            cash / _safe_denominator(b_price * fee_buy),
+            0.0,
         )
         target_notional = step_limit * torch.clamp(equity, min=_EPS)
         current_notional = inventory * b_price
         leveraged_capacity = torch.where(
             b_price > 0,
-            torch.clamp(target_notional - current_notional, min=0.0) / _safe_denominator(b_price * (1.0 + fee)),
-            torch.zeros_like(cash),
+            torch.clamp(target_notional - current_notional, min=0.0) / _safe_denominator(b_price * fee_buy),
+            0.0,
         )
         buy_capacity = torch.where(step_limit <= 1.0 + 1e-6, torch.clamp(max_buy_cash, min=0.0), leveraged_capacity)
 
-        buy_qty = torch.where(buy_fill, b_frac_limit * buy_capacity, torch.zeros_like(cash))
+        buy_qty = torch.where(buy_fill, b_frac_limit * buy_capacity, 0.0)
         cover_only_cap = torch.clamp(-inventory, min=0.0)
         buy_qty = torch.where(
             can_long_tensor > 0.5,
@@ -443,18 +439,18 @@ def simulate_hourly_trades_binary(
         long_to_close = torch.clamp(inventory, min=0.0)
         max_short_qty = torch.where(
             s_price > 0,
-            (step_limit * torch.clamp(equity, min=_EPS)) / _safe_denominator(s_price * (1.0 + fee)),
-            torch.zeros_like(cash),
+            (step_limit * torch.clamp(equity, min=_EPS)) / _safe_denominator(s_price * fee_buy),
+            0.0,
         )
         current_short_qty = torch.clamp(-inventory, min=0.0)
         short_open_cap = torch.clamp(max_short_qty - current_short_qty, min=0.0)
         sell_capacity = long_to_close + torch.where(can_short_tensor > 0.5, short_open_cap, 0.0)
-        sell_qty = torch.where(sell_fill, s_frac_limit * sell_capacity, torch.zeros_like(cash))
+        sell_qty = torch.where(sell_fill, s_frac_limit * sell_capacity, 0.0)
 
         executed_buys = buy_qty
         executed_sells = sell_qty
 
-        cash = cash - executed_buys * b_price * (1.0 + fee) + executed_sells * s_price * (1.0 - fee)
+        cash = cash - executed_buys * b_price * fee_buy + executed_sells * s_price * fee_sell
         inventory = inventory + executed_buys - executed_sells
 
         if margin_cost_per_step > 0:
@@ -470,35 +466,26 @@ def simulate_hourly_trades_binary(
         returns = pnl / _safe_denominator(prior_value)
         prev_value = portfolio_value
 
-        pnl_list.append(pnl)
-        return_list.append(returns)
-        value_list.append(portfolio_value)
-        buy_fill_list.append(buy_fill.float())
-        sell_fill_list.append(sell_fill.float())
-        exec_buy_list.append(executed_buys)
-        exec_sell_list.append(executed_sells)
-        inventory_history.append(inventory.clone())
-
-    pnl_tensor = torch.stack(pnl_list, dim=-1)
-    returns_tensor = torch.stack(return_list, dim=-1)
-    values_tensor = torch.stack(value_list, dim=-1)
-    buy_fill_tensor = torch.stack(buy_fill_list, dim=-1)
-    sell_fill_tensor = torch.stack(sell_fill_list, dim=-1)
-    exec_buy_tensor = torch.stack(exec_buy_list, dim=-1)
-    exec_sell_tensor = torch.stack(exec_sell_list, dim=-1)
-    inventory_path_tensor = torch.stack(inventory_history, dim=-1)
+        pnl_out[..., idx] = pnl
+        returns_out[..., idx] = returns
+        values_out[..., idx] = portfolio_value
+        buy_fill_out[..., idx] = buy_fill.float()
+        sell_fill_out[..., idx] = sell_fill.float()
+        exec_buy_out[..., idx] = executed_buys
+        exec_sell_out[..., idx] = executed_sells
+        inventory_out[..., idx] = inventory
 
     return HourlySimulationResult(
-        pnl=pnl_tensor,
-        returns=returns_tensor,
-        portfolio_values=values_tensor,
+        pnl=pnl_out,
+        returns=returns_out,
+        portfolio_values=values_out,
         cash=cash,
         inventory=inventory,
-        buy_fill_probability=buy_fill_tensor,
-        sell_fill_probability=sell_fill_tensor,
-        executed_buys=exec_buy_tensor,
-        executed_sells=exec_sell_tensor,
-        inventory_path=inventory_path_tensor,
+        buy_fill_probability=buy_fill_out,
+        sell_fill_probability=sell_fill_out,
+        executed_buys=exec_buy_out,
+        executed_sells=exec_sell_out,
+        inventory_path=inventory_out,
     )
 
 
