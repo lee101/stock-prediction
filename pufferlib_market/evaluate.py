@@ -24,6 +24,14 @@ import torch.nn as nn
 from torch.distributions import Categorical
 
 from pufferlib_market.metrics import annualize_total_return
+from pufferlib_market.evaluate_sliding import (
+    compute_calmar,
+    sliding_window_eval,
+    aggregate_sliding_results,
+    print_sliding_results,
+    _build_policy_fn,
+)
+from pufferlib_market.hourly_replay import read_mktd
 
 
 class TradingPolicy(nn.Module):
@@ -321,6 +329,22 @@ def main():
         default=0.5,
         help="Episode progress threshold for drawdown-vs-profit early exit.",
     )
+    parser.add_argument(
+        "--calmar",
+        action="store_true",
+        help="Compute and print Calmar ratio (annualized_return / max_drawdown).",
+    )
+    parser.add_argument(
+        "--sliding",
+        action="store_true",
+        help="Use sliding window evaluation instead of random episodes.",
+    )
+    parser.add_argument(
+        "--stride",
+        type=int,
+        default=168,
+        help="Stride (bars) between sliding window starts (default: 168 = 1 week hourly).",
+    )
 
     args = parser.parse_args()
 
@@ -378,6 +402,43 @@ def main():
     term_buf = np.zeros((num_envs,), dtype=np.uint8)
     trunc_buf = np.zeros((num_envs,), dtype=np.uint8)
 
+    # --- Sliding window evaluation path ---
+    if args.sliding:
+        data = read_mktd(args.data_path)
+        policy_fn = _build_policy_fn(
+            policy, device,
+            deterministic=args.deterministic,
+            disable_shorts=args.disable_shorts,
+        )
+        sliding_results = sliding_window_eval(
+            policy_fn,
+            data,
+            episode_len=args.max_steps,
+            stride=args.stride,
+            fee_rate=args.fee_rate,
+            max_leverage=args.max_leverage,
+            periods_per_year=args.periods_per_year,
+            short_borrow_apr=args.short_borrow_apr,
+            action_allocation_bins=args.action_allocation_bins,
+            action_level_bins=args.action_level_bins,
+            action_max_offset_bps=args.action_max_offset_bps,
+            enable_drawdown_profit_early_exit=args.drawdown_profit_early_exit,
+            drawdown_profit_early_exit_verbose=args.drawdown_profit_early_exit_verbose,
+            drawdown_profit_early_exit_min_steps=args.drawdown_profit_early_exit_min_steps,
+            drawdown_profit_early_exit_progress_fraction=args.drawdown_profit_early_exit_progress_fraction,
+        )
+        stats = aggregate_sliding_results(
+            sliding_results,
+            episode_len=args.max_steps,
+            periods_per_year=args.periods_per_year,
+        )
+        print_sliding_results(sliding_results, stats)
+        if args.calmar:
+            print(f"\nCalmar ratio: {stats['calmar']:.4f}  "
+                  f"(annualized_return={stats['annualized_return']*100:+.2f}% / "
+                  f"worst_max_drawdown={stats['worst_max_drawdown']:.4f})")
+        return
+
     if args.mode == "random":
         returns, trades, win_rates, sortinos = evaluate_random(
             args, policy, binding, obs_buf, act_buf, rew_buf, term_buf,
@@ -419,6 +480,7 @@ def main():
     total_steps = steps_per_episode * len(returns)
     periods_per_year = args.periods_per_year if args.periods_per_year > 0 else 8760.0
     years = total_steps / periods_per_year
+    annualized = None
     if years > 0 and cum_mult > 0:
         annualized = annualize_total_return(
             float(cum_mult - 1.0),
@@ -426,6 +488,13 @@ def main():
             periods_per_year=float(periods_per_year),
         )
         print(f"Estimated annualized return: {annualized*100:+.1f}% ({years:.1f} years of data)")
+
+    # Calmar ratio
+    if args.calmar and annualized is not None:
+        worst_dd = float(np.max(np.abs(returns[returns < 0]))) if np.any(returns < 0) else 0.0
+        calmar = compute_calmar(annualized, worst_dd)
+        print(f"Calmar ratio:               {calmar:.4f}  "
+              f"(annualized={annualized*100:+.2f}% / worst_loss={worst_dd:.4f})")
 
     # Distribution of returns
     percentiles = [5, 25, 50, 75, 95]
