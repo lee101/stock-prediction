@@ -249,7 +249,6 @@ def apply_rope(
         return _rope_pytorch(q, k, cos, sin)
 
     B, T, Hq, D = q.shape
-    _, _, Hk, _ = k.shape
     half_dim = D // 2
 
     if D % 2 != 0:
@@ -280,7 +279,6 @@ def apply_rope_fused(
     q: torch.Tensor,
     k: torch.Tensor,
     inv_freq: torch.Tensor,
-    seq_len: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Fully fused RoPE: compute cos/sin from inv_freq and apply to Q, K.
 
@@ -291,13 +289,10 @@ def apply_rope_fused(
     Returns rotated Q, K with same shapes/dtype.
     """
     B, T, Hq, D = q.shape
-    _, _, Hk, _ = k.shape
     half_dim = D // 2
-    if seq_len is None:
-        seq_len = T
 
     def _fallback():
-        t = torch.arange(seq_len, device=q.device, dtype=torch.float32)
+        t = torch.arange(T, device=q.device, dtype=torch.float32)
         freqs = torch.outer(t, inv_freq.float())
         cos = freqs.cos()[None, :, None, :]
         sin = freqs.sin()[None, :, None, :]
