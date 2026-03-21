@@ -430,6 +430,119 @@ EXPERIMENTS: list[dict] = [
 TRIAL_CONFIGS = EXPERIMENTS
 
 
+# ---------------------------------------------------------------------------
+# Stock-specific experiment configurations for Alpaca US equity daily trading.
+#
+# Key differences vs crypto:
+#   - Alpaca fee ~10bps per trade (fee_rate=0.001); include realistic slippage too.
+#   - Daily bars: periods_per_year=252. max_steps set at run time via --max-steps-override.
+#   - Long-only makes sense for the bull-market regime; no --long-only flag in train.py
+#     so we use heavy short_borrow_apr to deter shorts, and high trade_penalty to
+#     discourage excessive churn on daily bars.
+#   - anneal_lr is critical — keeps it for all configs.
+# ---------------------------------------------------------------------------
+
+STOCK_EXPERIMENTS: list[dict] = [
+    # Baseline: same defaults but fee=10bps (Alpaca maker/taker)
+    {"description": "stock_baseline"},
+
+    # --- Trade penalty sweep (reduce churn on daily bars) ---
+    {"description": "stock_trade_pen_01", "trade_penalty": 0.01},
+    {"description": "stock_trade_pen_02", "trade_penalty": 0.02},
+    {"description": "stock_trade_pen_03", "trade_penalty": 0.03},
+    {"description": "stock_trade_pen_05", "trade_penalty": 0.05},
+    {"description": "stock_trade_pen_08", "trade_penalty": 0.08},
+    {"description": "stock_trade_pen_10", "trade_penalty": 0.10},
+
+    # --- Long/short access (no borrow cost — full short access) ---
+    {"description": "stock_longshort",
+     "short_borrow_apr": 0.0, "trade_penalty": 0.02},
+
+    # --- Entropy coefficient variants ---
+    {"description": "stock_ent_03", "ent_coef": 0.03},
+    {"description": "stock_ent_05", "ent_coef": 0.05},   # matches baseline
+    {"description": "stock_ent_08", "ent_coef": 0.08},
+
+    # --- Hidden size variants ---
+    {"description": "stock_h512", "hidden_size": 512},
+    {"description": "stock_h1024", "hidden_size": 1024},   # matches baseline
+
+    # --- Slippage variants (train with friction to force wider edges) ---
+    {"description": "stock_slip_5bps",  "fill_slippage_bps": 5.0},
+    {"description": "stock_slip_10bps", "fill_slippage_bps": 10.0},
+    {"description": "stock_slip_15bps", "fill_slippage_bps": 15.0},
+
+    # --- LR schedule variants ---
+    {"description": "stock_cosine_lr",
+     "lr_schedule": "cosine", "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05},
+    {"description": "stock_no_anneal", "anneal_lr": False},
+
+    # --- Gamma (discount) variants ---
+    {"description": "stock_high_gamma_999", "gamma": 0.999},
+    {"description": "stock_gamma_995",      "gamma": 0.995},
+
+    # --- Risk/penalty shaping ---
+    {"description": "stock_drawdown_pen",
+     "drawdown_penalty": 0.05, "trade_penalty": 0.03},
+    {"description": "stock_smooth_pen",
+     "smooth_downside_penalty": 0.5, "smooth_downside_temperature": 0.02,
+     "trade_penalty": 0.02},
+
+    # --- Reward scale variants ---
+    {"description": "stock_reward_scale_5",  "reward_scale": 5.0,  "trade_penalty": 0.03},
+    {"description": "stock_reward_scale_20", "reward_scale": 20.0, "trade_penalty": 0.03},
+
+    # --- Observation normalisation (often helps with heterogeneous stock features) ---
+    {"description": "stock_obs_norm",       "obs_norm": True},
+    {"description": "stock_obs_norm_tp05",  "obs_norm": True, "trade_penalty": 0.05},
+
+    # --- Weight decay for generalisation ---
+    {"description": "stock_wd_01",   "weight_decay": 0.01},
+    {"description": "stock_wd_05",   "weight_decay": 0.05},
+
+    # --- Combined strong regularisation ---
+    {"description": "stock_reg_combo",
+     "obs_norm": True, "weight_decay": 0.05, "fill_slippage_bps": 10.0,
+     "trade_penalty": 0.05},
+
+    # --- Robust champion (transplanted from crypto best-daily findings) ---
+    {"description": "stock_robust_champion",
+     "hidden_size": 1024, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+     "obs_norm": True, "anneal_lr": True, "lr_schedule": "cosine",
+     "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05,
+     "weight_decay": 0.005, "ent_coef": 0.05},
+
+    # --- Sortino-focused: low entropy + high trade penalty ---
+    {"description": "stock_sortino_low_ent_tp",
+     "ent_coef": 0.01, "trade_penalty": 0.10},
+
+    # --- cosine + slippage cross ---
+    {"description": "stock_cosine_slip",
+     "lr_schedule": "cosine", "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05,
+     "fill_slippage_bps": 10.0, "trade_penalty": 0.05},
+
+    # --- Alternative seeds (variance check on best config) ---
+    {"description": "stock_trade_pen_05_s123",
+     "trade_penalty": 0.05, "seed": 123},
+    {"description": "stock_trade_pen_05_s7",
+     "trade_penalty": 0.05, "seed": 7},
+
+    # --- Smaller model + strong reg (may generalise with fewer daily bars) ---
+    {"description": "stock_h512_reg",
+     "hidden_size": 512, "obs_norm": True, "weight_decay": 0.05,
+     "fill_slippage_bps": 10.0, "trade_penalty": 0.05},
+
+    # Random mutations to explore the neighbourhood
+    {"description": "random_1"},
+    {"description": "random_2"},
+    {"description": "random_3"},
+]
+
+# Default data paths used when --stocks is given and no explicit --train-data is provided.
+_STOCK_DEFAULT_TRAIN = "pufferlib_market/data/stocks12_daily_train.bin"
+_STOCK_DEFAULT_VAL   = "pufferlib_market/data/stocks12_daily_val.bin"
+
+
 def build_config(overrides: dict) -> TrialConfig:
     """Create a TrialConfig with overrides applied."""
     cfg = TrialConfig(**{k: v for k, v in overrides.items() if k in TrialConfig.__dataclass_fields__})
@@ -620,12 +733,14 @@ def _leaderboard_sort_value(row: dict[str, str]) -> float:
     return -float("inf")
 
 
-def select_experiments(
+def _select_from_pool(
+    pool: list[dict],
     *,
     start_from: int = 0,
     descriptions: str = "",
 ) -> list[dict]:
-    experiments = EXPERIMENTS[max(0, int(start_from)) :]
+    """Generic helper: filter a pool list by start_from offset and optional description subset."""
+    experiments = pool[max(0, int(start_from)) :]
     requested = [part.strip() for part in str(descriptions).split(",") if part.strip()]
     if not requested:
         return experiments
@@ -637,6 +752,14 @@ def select_experiments(
     if missing:
         raise ValueError(f"Unknown experiment description(s): {', '.join(missing)}")
     return selected
+
+
+def select_experiments(
+    *,
+    start_from: int = 0,
+    descriptions: str = "",
+) -> list[dict]:
+    return _select_from_pool(EXPERIMENTS, start_from=start_from, descriptions=descriptions)
 
 
 def run_trial(
@@ -1087,8 +1210,16 @@ def run_trial(
 def main():
     parser = argparse.ArgumentParser(description="Auto-research RL trading configs")
     listing_only = "--list-experiments" in sys.argv
-    parser.add_argument("--train-data", required=not listing_only)
-    parser.add_argument("--val-data", required=not listing_only)
+    stocks_mode = "--stocks" in sys.argv
+    # In stocks mode the data paths default to stocks12 daily bins so they are
+    # optional even if not listing.
+    data_required = not listing_only and not stocks_mode
+    parser.add_argument("--stocks", action="store_true",
+                        help="Use stock-specific configs and Alpaca daily defaults "
+                             "(fee_rate=0.001, periods_per_year=252, "
+                             "data defaults to stocks12_daily_{train,val}.bin)")
+    parser.add_argument("--train-data", required=data_required, default=None)
+    parser.add_argument("--val-data", required=data_required, default=None)
     parser.add_argument("--time-budget", type=int, default=300,
                         help="Training time budget per trial in seconds")
     parser.add_argument("--max-trials", type=int, default=50)
@@ -1170,8 +1301,32 @@ def main():
                         help="W&B project name; when set each trial is logged as a separate run in this project")
     args = parser.parse_args()
 
+    # --stocks: apply stock-mode defaults before anything else so that
+    # user overrides (explicit --train-data etc.) can still win.
+    if args.stocks:
+        if args.train_data is None:
+            args.train_data = _STOCK_DEFAULT_TRAIN
+        if args.val_data is None:
+            args.val_data = _STOCK_DEFAULT_VAL
+        # periods_per_year default is 8760 (hourly); override to 252 (daily)
+        # only when the user has NOT already supplied their own value.
+        if args.periods_per_year == 8760.0:
+            args.periods_per_year = 252.0
+        # fee_rate override: 10bps Alpaca fee when not already overridden
+        if args.fee_rate_override < 0.0:
+            args.fee_rate_override = 0.001
+        # Sensible daily max_steps when not already overridden
+        if args.max_steps_override == 0:
+            args.max_steps_override = 252
+        # Default leaderboard and checkpoint root for stocks
+        if args.leaderboard == "pufferlib_market/autoresearch_leaderboard.csv":
+            args.leaderboard = "autoresearch_stock_daily_leaderboard.csv"
+        if args.checkpoint_root == "pufferlib_market/checkpoints/autoresearch":
+            args.checkpoint_root = "pufferlib_market/checkpoints/autoresearch_stock"
+
     if args.list_experiments:
-        for cfg_dict in EXPERIMENTS:
+        experiment_pool = STOCK_EXPERIMENTS if args.stocks else EXPERIMENTS
+        for cfg_dict in experiment_pool:
             desc = cfg_dict.get("description", "")
             gpu = cfg_dict.get("requires_gpu", "")
             gpu_note = f" [requires_gpu={gpu}]" if gpu else ""
@@ -1216,7 +1371,19 @@ def main():
             for row in reader:
                 existing_trials.add(row.get("description", ""))
 
-    experiments = select_experiments(start_from=args.start_from, descriptions=args.descriptions)
+    if args.stocks:
+        experiments = _select_from_pool(
+            STOCK_EXPERIMENTS,
+            start_from=args.start_from,
+            descriptions=args.descriptions,
+        )
+        print(f"[stocks mode] {len(experiments)} stock configs, "
+              f"train={args.train_data}, val={args.val_data}, "
+              f"fee_override={args.fee_rate_override}, "
+              f"periods_per_year={args.periods_per_year}, "
+              f"max_steps={args.max_steps_override}")
+    else:
+        experiments = select_experiments(start_from=args.start_from, descriptions=args.descriptions)
 
     # Add random mutations
     best_rank_score = -float("inf")
