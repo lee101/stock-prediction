@@ -515,6 +515,8 @@ def train(args):
             wandb_run = wandb.init(
                 project=args.wandb_project,
                 entity=args.wandb_entity,
+                name=args.wandb_run_name or None,
+                group=args.wandb_group or None,
                 config=vars(args),
                 mode=args.wandb_mode,
             )
@@ -1095,6 +1097,10 @@ def main():
                         help="W&B project name (enables logging when set)")
     parser.add_argument("--wandb-entity", type=str, default=None,
                         help="W&B entity (team or username)")
+    parser.add_argument("--wandb-run-name", type=str, default=None,
+                        help="W&B run name (defaults to auto-generated)")
+    parser.add_argument("--wandb-group", type=str, default=None,
+                        help="W&B run group (useful for grouping autoresearch trials)")
     parser.add_argument("--wandb-mode", type=str, default="online",
                         choices=["online", "offline", "disabled"],
                         help="W&B run mode")
