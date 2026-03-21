@@ -77,6 +77,9 @@ class TrialConfig:
     periods_per_year: float = 8760.0
     seed: int = 42
     description: str = ""
+    max_leverage: float = 1.0
+    short_borrow_apr: float = 0.0
+    requires_gpu: str = ""  # e.g. "a100", "h100", "" = any GPU (dispatcher metadata only)
 
 
 # Define experiment configurations to test
@@ -214,6 +217,103 @@ EXPERIMENTS: list[dict] = [
     {"description": "random_1"},
     {"description": "random_2"},
     {"description": "random_3"},
+
+    # -----------------------------------------------------------------------
+    # Sortino-focused configs (optimise for risk-adjusted returns, not raw PnL)
+    # -----------------------------------------------------------------------
+
+    # High trade penalty → less churn → smoother equity curve
+    {"description": "trade_pen_high",
+     "trade_penalty": 0.10},
+
+    # Very high trade penalty variant
+    {"description": "trade_pen_vhigh",
+     "trade_penalty": 0.20},
+
+    # Match production crypto slippage closely (3bps)
+    {"description": "slip_3bps",
+     "fill_slippage_bps": 3.0},
+
+    # Combined conservative: high trade penalty + low slippage
+    {"description": "combined_smooth",
+     "trade_penalty": 0.08, "fill_slippage_bps": 3.0, "ent_coef": 0.02},
+
+    # reg_combo_3 was top-1 Sortino on crypto10 (val_sortino=2.82) — replicate
+    # with tighter trade penalty for even smoother PnL
+    {"description": "sortino_top1_tp",
+     "weight_decay": 0.005, "fill_slippage_bps": 5.0, "obs_norm": True,
+     "anneal_ent": True, "ent_coef": 0.08, "ent_coef_end": 0.02,
+     "lr_schedule": "cosine", "trade_penalty": 0.05},
+
+    # Smooth-downside penalty focused on minimising downside volatility
+    {"description": "sortino_sds_pen",
+     "weight_decay": 0.05, "fill_slippage_bps": 8.0, "obs_norm": True,
+     "smooth_downside_penalty": 0.5, "smooth_downside_temperature": 0.02,
+     "trade_penalty": 0.02},
+
+    # Drawdown penalty + slippage to stay out of losing streaks
+    {"description": "sortino_dd_slip",
+     "fill_slippage_bps": 5.0, "obs_norm": True, "weight_decay": 0.02,
+     "drawdown_penalty": 0.05, "trade_penalty": 0.02},
+
+    # Low entropy (more exploitation) + trade penalty (already trade_pen_05
+    # is #1 Sortino on autoresearch_daily; push entropy lower too)
+    {"description": "sortino_low_ent_tp",
+     "ent_coef": 0.01, "trade_penalty": 0.10},
+
+    # reg_combo_3 exact clone but with higher trade penalty
+    {"description": "sortino_rc3_tp08",
+     "weight_decay": 0.005, "fill_slippage_bps": 5.0, "obs_norm": True,
+     "anneal_ent": True, "ent_coef": 0.08, "ent_coef_end": 0.02,
+     "lr_schedule": "cosine", "trade_penalty": 0.08},
+
+    # Best of two worlds: cosine LR (good Sortino) + slippage training
+    {"description": "sortino_cosine_slip",
+     "lr_schedule": "cosine", "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05,
+     "fill_slippage_bps": 5.0, "trade_penalty": 0.05},
+
+    # Smoothness + downside penalty ensemble
+    {"description": "sortino_smooth_combo",
+     "weight_decay": 0.03, "fill_slippage_bps": 5.0, "obs_norm": True,
+     "smooth_downside_penalty": 0.3, "smoothness_penalty": 0.01,
+     "trade_penalty": 0.05},
+
+    # --- Leverage experiments ---
+    {"description": "leverage_15x",
+     "max_leverage": 1.5, "short_borrow_apr": 0.0001712,
+     "fill_slippage_bps": 5.0, "anneal_lr": True,
+     "ent_coef": 0.05, "trade_penalty": 0.05},
+
+    {"description": "leverage_2x",
+     "max_leverage": 2.0, "short_borrow_apr": 0.0001712,
+     "fill_slippage_bps": 5.0, "anneal_lr": True,
+     "ent_coef": 0.05, "trade_penalty": 0.05},
+
+    {"description": "leverage_2x_tp01",
+     "max_leverage": 2.0, "short_borrow_apr": 0.0001712,
+     "fill_slippage_bps": 8.0, "anneal_lr": True,
+     "ent_coef": 0.05, "trade_penalty": 0.01},
+
+    {"description": "leverage_2x_no_slip",
+     "max_leverage": 2.0, "short_borrow_apr": 0.0001712,
+     "fill_slippage_bps": 0.0, "anneal_lr": True,
+     "ent_coef": 0.05},
+
+    # --- Large architecture (requires A100+) ---
+    {"description": "h2048_anneal",
+     "hidden_size": 2048, "anneal_lr": True,
+     "ent_coef": 0.05, "fill_slippage_bps": 5.0,
+     "trade_penalty": 0.05, "requires_gpu": "a100"},
+
+    {"description": "h2048_resmlp_anneal",
+     "hidden_size": 2048, "arch": "resmlp", "anneal_lr": True,
+     "ent_coef": 0.05, "fill_slippage_bps": 5.0,
+     "requires_gpu": "a100"},
+
+    {"description": "h4096_anneal",
+     "hidden_size": 4096, "anneal_lr": True,
+     "ent_coef": 0.05, "fill_slippage_bps": 5.0,
+     "requires_gpu": "h100"},
 ]
 
 
@@ -433,6 +533,8 @@ def run_trial(
     time_budget: int,
     checkpoint_dir: str,
     *,
+    wandb_project: str | None = None,
+    wandb_group: str | None = None,
     holdout_data: str | None = None,
     holdout_eval_steps: int = 0,
     holdout_n_windows: int = 0,
@@ -496,6 +598,8 @@ def run_trial(
         "--checkpoint-dir", checkpoint_dir,
         "--arch", config.arch,
         "--periods-per-year", str(config.periods_per_year),
+        "--max-leverage", str(config.max_leverage),
+        "--short-borrow-apr", str(config.short_borrow_apr),
     ]
     if config.anneal_lr:
         cmd.append("--anneal-lr")
@@ -513,6 +617,13 @@ def run_trial(
             "--lr-warmup-frac", str(config.lr_warmup_frac),
             "--lr-min-ratio", str(config.lr_min_ratio),
         ])
+    if wandb_project:
+        cmd.extend([
+            "--wandb-project", wandb_project,
+            "--wandb-run-name", config.description,
+        ])
+        if wandb_group:
+            cmd.extend(["--wandb-group", wandb_group])
 
     # Run training with time budget
     print(f"\n  Training for {time_budget}s...")
@@ -823,8 +934,9 @@ def run_trial(
 
 def main():
     parser = argparse.ArgumentParser(description="Auto-research RL trading configs")
-    parser.add_argument("--train-data", required=True)
-    parser.add_argument("--val-data", required=True)
+    listing_only = "--list-experiments" in sys.argv
+    parser.add_argument("--train-data", required=not listing_only)
+    parser.add_argument("--val-data", required=not listing_only)
     parser.add_argument("--time-budget", type=int, default=300,
                         help="Training time budget per trial in seconds")
     parser.add_argument("--max-trials", type=int, default=50)
@@ -898,11 +1010,28 @@ def main():
     parser.add_argument("--replay-eval-hourly-periods-per-year", type=float, default=8760.0)
     parser.add_argument("--replay-eval-timeout-seconds", type=int, default=0,
                         help="Optional timeout for replay_eval; 0 disables it")
+    parser.add_argument("--list-experiments", action="store_true",
+                        help="Print all experiment names and exit")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Override random seed for all trials (default: use each trial config's seed field)")
+    parser.add_argument("--wandb-project", type=str, default=None,
+                        help="W&B project name; when set each trial is logged as a separate run in this project")
     args = parser.parse_args()
+
+    if args.list_experiments:
+        for cfg_dict in EXPERIMENTS:
+            desc = cfg_dict.get("description", "")
+            gpu = cfg_dict.get("requires_gpu", "")
+            gpu_note = f" [requires_gpu={gpu}]" if gpu else ""
+            print(f"{desc}{gpu_note}")
+        sys.exit(0)
 
     leaderboard_path = Path(args.leaderboard)
     ckpt_root = Path(args.checkpoint_root)
     ckpt_root.mkdir(parents=True, exist_ok=True)
+
+    # W&B group ties all trials in this autoresearch run together on the dashboard
+    wandb_group = f"autoresearch_{int(time.time())}" if args.wandb_project else None
 
     # Initialize or load leaderboard
     fieldnames = [
@@ -967,6 +1096,8 @@ def main():
             config.max_steps = args.max_steps_override
         if args.fee_rate_override >= 0.0:
             config.fee_rate = args.fee_rate_override
+        if args.seed is not None:
+            config.seed = args.seed
 
         holdout_eval_steps = int(args.holdout_eval_steps) if int(args.holdout_eval_steps) > 0 else int(config.max_steps)
 
@@ -989,6 +1120,8 @@ def main():
             args.val_data,
             args.time_budget,
             ckpt_dir,
+            wandb_project=args.wandb_project,
+            wandb_group=wandb_group,
             holdout_data=args.holdout_data,
             holdout_eval_steps=holdout_eval_steps,
             holdout_n_windows=args.holdout_n_windows,
