@@ -104,6 +104,8 @@ class BinanceHourlyTrainer:
             raise ValueError(
                 f"fill_temperature must be > 0 for differentiable fills (got {self.config.fill_temperature})."
             )
+        if hasattr(torch, "_dynamo") and hasattr(torch._dynamo, "config"):
+            torch._dynamo.config.suppress_errors = True
         if self.config.use_tf32:
             if hasattr(torch, "set_float32_matmul_precision"):
                 torch.set_float32_matmul_precision("high")
@@ -182,7 +184,7 @@ class BinanceHourlyTrainer:
                 logger.warning("Preload checkpoint not found: %s", preload_path)
 
         if self.config.use_compile and hasattr(torch, "compile"):
-            model = torch.compile(model, mode="max-autotune")
+            model = torch.compile(model, mode="max-autotune", fullgraph=False)
 
         optimizer = self._build_optimizer(model)
         self._warmup_base_lrs = [group.get("lr", self.config.learning_rate) for group in optimizer.param_groups]
@@ -629,7 +631,8 @@ class BinanceHourlyTrainer:
             muon_params, adam_groups = self._split_muon_params(model, self.config)
             optimizers: list[torch.optim.Optimizer] = []
             if adam_groups:
-                optimizers.append(torch.optim.AdamW(adam_groups, lr=self.config.learning_rate))
+                fused = self.device.type == "cuda"
+                optimizers.append(torch.optim.AdamW(adam_groups, lr=self.config.learning_rate, fused=fused))
             if muon_params:
                 muon_wd = 0.0 if self.config.cautious_weight_decay else self.config.weight_decay
                 optimizers.append(
@@ -654,10 +657,14 @@ class BinanceHourlyTrainer:
         return self._build_adamw(model)
 
     def _build_adamw(self, model: BinancePolicyBase) -> torch.optim.Optimizer:
+        fused = self.device.type == "cuda"
         _, adam_groups = self._split_muon_params(model, self.config, muon=False)
         if not adam_groups:
-            return torch.optim.AdamW(model.parameters(), lr=self.config.learning_rate, weight_decay=self.config.weight_decay)
-        return torch.optim.AdamW(adam_groups, lr=self.config.learning_rate)
+            return torch.optim.AdamW(
+                model.parameters(), lr=self.config.learning_rate,
+                weight_decay=self.config.weight_decay, fused=fused,
+            )
+        return torch.optim.AdamW(adam_groups, lr=self.config.learning_rate, fused=fused)
 
     @staticmethod
     def _split_muon_params(
