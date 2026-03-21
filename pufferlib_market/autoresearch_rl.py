@@ -1318,6 +1318,10 @@ def main():
         # Sensible daily max_steps when not already overridden
         if args.max_steps_override == 0:
             args.max_steps_override = 252
+        # Holdout eval window must fit inside val data (stocks12_daily_val has 194 timesteps;
+        # window needs steps+1 rows, so cap at 90 to leave plenty of room for 20 windows).
+        if args.holdout_eval_steps == 0:
+            args.holdout_eval_steps = 90
         # Default leaderboard and checkpoint root for stocks
         if args.leaderboard == "pufferlib_market/autoresearch_leaderboard.csv":
             args.leaderboard = "autoresearch_stock_daily_leaderboard.csv"
