@@ -191,8 +191,13 @@ class BinanceHourlyTrainer:
         ]
         self._amp_context, self._scaler = self._build_amp()
 
-        train_loader = self.data.train_dataloader(self.config.batch_size, self.config.num_workers)
-        val_loader = self.data.val_dataloader(self.config.batch_size, self.config.num_workers)
+        if self.device.type == "cuda" and hasattr(self.data, "gpu_cached_dataloader"):
+            train_loader = self.data.gpu_cached_dataloader("train", self.config.batch_size, self.device, shuffle=True)
+            val_loader = self.data.gpu_cached_dataloader("val", self.config.batch_size, self.device, shuffle=False)
+            logger.info("Using GPU-cached dataloaders")
+        else:
+            train_loader = self.data.train_dataloader(self.config.batch_size, self.config.num_workers)
+            val_loader = self.data.val_dataloader(self.config.batch_size, self.config.num_workers)
         self._total_train_steps = max(1, len(train_loader) * max(1, self.config.epochs))
         if self.config.dry_train_steps:
             self._total_train_steps = min(
@@ -320,19 +325,21 @@ class BinanceHourlyTrainer:
             compiler = getattr(torch, "compiler", None)
             mark_step_begin = getattr(compiler, "cudagraph_mark_step_begin", None) if compiler is not None else None
 
+        nb = self.device.type == "cuda"
+
         for batch in loader:
             if mark_step_begin is not None:
                 mark_step_begin()
-            features = batch["features"].to(self.device)
+            features = batch["features"].to(self.device, non_blocking=nb)
             if train and self.config.feature_noise_std > 0:
                 features = features + self.config.feature_noise_std * torch.randn_like(features)
-            opens = batch["open"].to(self.device) if "open" in batch else None
-            highs = batch["high"].to(self.device)
-            lows = batch["low"].to(self.device)
-            closes = batch["close"].to(self.device)
-            reference_close = batch["reference_close"].to(self.device)
-            chronos_high = batch["chronos_high"].to(self.device)
-            chronos_low = batch["chronos_low"].to(self.device)
+            opens = batch["open"].to(self.device, non_blocking=nb) if "open" in batch else None
+            highs = batch["high"].to(self.device, non_blocking=nb)
+            lows = batch["low"].to(self.device, non_blocking=nb)
+            closes = batch["close"].to(self.device, non_blocking=nb)
+            reference_close = batch["reference_close"].to(self.device, non_blocking=nb)
+            chronos_high = batch["chronos_high"].to(self.device, non_blocking=nb)
+            chronos_low = batch["chronos_low"].to(self.device, non_blocking=nb)
 
             split_amp = bool(self.config.split_amp) and self._amp_context is not None
             use_vsim = bool(self.config.use_vectorized_sim) and simulate_hourly_trades_fast is not None
