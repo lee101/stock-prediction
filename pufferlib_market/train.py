@@ -846,6 +846,11 @@ def train(args):
             )
             atexit.register(wandb_run.finish)
             print(f"  W&B run: {wandb_run.url or wandb_run.id}")
+            wandb_run.log({
+                "hyperparams/trade_penalty": args.trade_penalty,
+                "hyperparams/fill_slippage_bps": args.fill_slippage_bps,
+                "hyperparams/fee_rate": args.fee_rate,
+            }, step=0)
 
     # ── Estimate GPU memory ──
     rollout_mem = num_envs * args.rollout_len * (obs_size * 4 + 4 * 4) / 1e6
@@ -1170,6 +1175,17 @@ def train(args):
                     ),
                     ckpt_path,
                 )
+                if wandb_run is not None:
+                    try:
+                        artifact = wandb.Artifact(
+                            f"checkpoint-{wandb_run.id}",
+                            type="model",
+                            metadata={"val_return": best_return, "global_step": global_step},
+                        )
+                        artifact.add_file(str(ckpt_path))
+                        wandb_run.log_artifact(artifact)
+                    except Exception:
+                        pass  # never crash training due to artifact upload failure
 
             print(
                 f"[{local_update:4d}/{num_updates}] "
@@ -1206,6 +1222,9 @@ def train(args):
                     "train/sortino": ep_sortino,
                     "train/win_rate": ep_wr,
                     "train/num_trades": ep_trades,
+                    "train/episode_return_mean": ep_return,
+                    "train/episode_return_std": float(log_info.get("return_std", 0.0)),
+                    "train/episode_length_mean": float(args.max_steps),
                 })
             wandb_run.log(wb_metrics, step=global_step)
 
