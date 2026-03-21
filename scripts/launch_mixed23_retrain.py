@@ -79,7 +79,7 @@ def _build_rsync_cmd(remote_host: str, remote_dir: str, *, extra_paths: Sequence
     paths = [
         "scripts/launch_mixed23_retrain.py",
         "src/remote_training_pipeline.py",
-        "pufferlib_market/fast_marketsim_eval.py",
+        "pufferlib_market/",
         "AGENTS.md",
         "docs/REMOTE_TRAINING_RUNBOOK.md",
     ]
@@ -152,6 +152,14 @@ def _write_local_manifest(
                 "ssh -o StrictHostKeyChecking=no",
                 f"{args.remote_host}:{args.remote_dir}/{plan_payload['remote_run_dir']}/",
                 str(manifest_dir) + "/remote_run/",
+            ],
+            "pull_checkpoints": [
+                "rsync",
+                "-az",
+                "-e",
+                "ssh -o StrictHostKeyChecking=no",
+                f"{args.remote_host}:{args.remote_dir}/pufferlib_market/checkpoints/{plan_payload['run_id']}/",
+                str(manifest_dir) + "/checkpoints/",
             ],
             "pull_leaderboard": [
                 "scp",

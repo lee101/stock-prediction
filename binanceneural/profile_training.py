@@ -45,7 +45,7 @@ from differentiable_loss_utils import (
 )
 
 
-TIMING_KEYS = ["data_loading", "forward", "simulation", "loss_compute", "backward", "optimizer_step", "total"]
+TIMING_KEYS = ["data_loading", "data_transfer", "forward", "simulation", "loss_compute", "backward", "optimizer_step", "total"]
 DEFAULT_HORIZONS = (1, 4, 12, 24)
 
 
@@ -135,7 +135,7 @@ def run_one_step(model, optimizer, batch, device, sim_fn, step_timings):
     chronos_low = batch["chronos_low"].to(device)
 
     t_data = time.perf_counter()
-    step_timings["data_loading"].append(t_data - t0)
+    step_timings["data_transfer"].append(t_data - t0)
 
     outputs = model(features)
     actions = model.decode_actions(
@@ -257,6 +257,11 @@ def print_gpu_info(device):
         pass
 
 
+def _sync(device):
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+
+
 def run_pytorch_profiler(model, optimizer, loader, device, sim_fn, num_steps, loader_is_dict):
     activities = [ProfilerActivity.CPU]
     if device.type == "cuda":
@@ -274,7 +279,12 @@ def run_pytorch_profiler(model, optimizer, loader, device, sim_fn, num_steps, lo
     ) as prof:
         step_timings = _empty_timings()
         for _ in range(min(num_steps + 1, len(loader))):
+            _sync(device)
+            t_data_start = time.perf_counter()
             batch, batch_iter = _next_batch(batch_iter, loader, loader_is_dict)
+            _sync(device)
+            t_data_end = time.perf_counter()
+            step_timings["data_loading"].append(t_data_end - t_data_start)
             run_one_step(model, optimizer, batch, device, sim_fn, step_timings)
             prof.step()
 
@@ -309,7 +319,12 @@ def run_cprofile(model, optimizer, loader, device, sim_fn, num_steps, loader_is_
     pr.enable()
 
     for _ in range(min(num_steps, len(loader))):
+        _sync(device)
+        t_data_start = time.perf_counter()
         batch, batch_iter = _next_batch(batch_iter, loader, loader_is_dict)
+        _sync(device)
+        t_data_end = time.perf_counter()
+        step_timings["data_loading"].append(t_data_end - t_data_start)
         run_one_step(model, optimizer, batch, device, sim_fn, step_timings)
 
     pr.disable()
