@@ -242,23 +242,31 @@ def compute_buy_target(bars: pd.DataFrame, ref_high: float, config: WorkStealCon
     return ref_high * (1.0 - config.dip_pct)
 
 
+def compute_breadth_ratio(
+    current_bars: Dict[str, pd.Series],
+    history: Dict[str, pd.DataFrame],
+) -> Tuple[float, int, int]:
+    n_total = 0
+    n_dipping = 0
+    for sym in current_bars:
+        if sym not in history or len(history[sym]) < 5:
+            continue
+        n_total += 1
+        prev_close = float(history[sym].iloc[-2]["close"])
+        if float(current_bars[sym]["close"]) < prev_close:
+            n_dipping += 1
+    ratio = n_dipping / max(n_total, 1)
+    return ratio, n_dipping, n_total
+
+
 def compute_market_breadth_skip(
     current_bars: Dict[str, pd.Series],
     history: Dict[str, pd.DataFrame],
     config: WorkStealConfig,
 ) -> bool:
     if config.market_breadth_filter > 0:
-        n_total = 0
-        n_dipping = 0
-        for sym in current_bars:
-            if sym not in history or len(history[sym]) < 5:
-                continue
-            n_total += 1
-            prev_close = float(history[sym].iloc[-2]["close"])
-            if float(current_bars[sym]["close"]) < prev_close:
-                n_dipping += 1
-        breadth_ratio = n_dipping / max(n_total, 1)
-        return breadth_ratio > config.market_breadth_filter
+        ratio, _, _ = compute_breadth_ratio(current_bars, history)
+        return ratio > config.market_breadth_filter
     return False
 
 
@@ -277,6 +285,20 @@ def resolve_entry_config(
     )
 
 
+@dataclass
+class SymbolDiagnostic:
+    symbol: str
+    close: float = 0.0
+    ref_high: float = 0.0
+    buy_target: float = 0.0
+    dist_pct: float = 0.0
+    sma_value: float = 0.0
+    sma_pass: bool = True
+    momentum_ret: float = 0.0
+    filter_reason: str = ""
+    is_candidate: bool = False
+
+
 def build_entry_candidates(
     current_bars: Dict[str, pd.Series],
     history: Dict[str, pd.DataFrame],
@@ -285,50 +307,97 @@ def build_entry_candidates(
     date: pd.Timestamp,
     config: WorkStealConfig,
     base_symbol: str | None = None,
+    diagnostics: Optional[List] = None,
 ) -> list:
     candidates = []
     for sym, bar in current_bars.items():
+        diag = SymbolDiagnostic(symbol=sym) if diagnostics is not None else None
         if base_symbol is not None and sym == base_symbol:
+            if diag:
+                diag.filter_reason = "base_asset"
+                diagnostics.append(diag)
             continue
         if sym in positions:
+            if diag:
+                diag.filter_reason = "already_held"
+                diagnostics.append(diag)
             continue
         if sym in last_exit:
             if (date - last_exit[sym]).days < config.reentry_cooldown_days:
+                if diag:
+                    diag.filter_reason = "cooldown"
+                    diagnostics.append(diag)
                 continue
         if sym not in history or len(history[sym]) < config.lookback_days:
+            if diag:
+                diag.filter_reason = "insufficient_history"
+                diagnostics.append(diag)
             continue
 
         close = float(bar["close"])
         low_bar = float(bar["low"])
         high_bar = float(bar["high"])
+        if diag:
+            diag.close = close
 
         if config.momentum_period > 0 and len(history[sym]) > config.momentum_period:
             past_close = float(history[sym].iloc[-(config.momentum_period + 1)]["close"])
             mom_ret = (close - past_close) / past_close
+            if diag:
+                diag.momentum_ret = mom_ret
             if mom_ret < config.momentum_min:
+                if diag:
+                    diag.filter_reason = f"momentum({mom_ret:.3f}<{config.momentum_min:.3f})"
+                    diagnostics.append(diag)
                 continue
 
-        if not passes_sma_filter(history[sym], config, close):
+        sma_ok = passes_sma_filter(history[sym], config, close)
+        if diag:
+            diag.sma_pass = sma_ok
+            if config.sma_filter_period > 0:
+                diag.sma_value = compute_sma(history[sym], config.sma_filter_period)
+        if not sma_ok:
+            if diag:
+                diag.filter_reason = f"sma_filter(close={close:.2f},sma={diag.sma_value:.2f})"
+                diagnostics.append(diag)
             continue
 
         if config.rsi_filter > 0:
             rsi = compute_rsi(history[sym], 14)
             if rsi > config.rsi_filter:
+                if diag:
+                    diag.filter_reason = f"rsi({rsi:.1f}>{config.rsi_filter})"
+                    diagnostics.append(diag)
                 continue
 
         if config.volume_spike_filter > 0:
             vol_ratio = compute_volume_ratio(history[sym], 20)
             if vol_ratio < config.volume_spike_filter:
+                if diag:
+                    diag.filter_reason = f"volume({vol_ratio:.2f}<{config.volume_spike_filter:.2f})"
+                    diagnostics.append(diag)
                 continue
 
         ref_high = compute_ref_price(history[sym], config.ref_price_method, config.lookback_days)
         buy_target = compute_buy_target(history[sym], ref_high, config)
         dist_long = (close - buy_target) / ref_high
+        if diag:
+            diag.ref_high = ref_high
+            diag.buy_target = buy_target
+            diag.dist_pct = dist_long
 
         if dist_long <= config.proximity_pct:
             dip_score = -dist_long
             fill_price = max(buy_target, low_bar)
             candidates.append((sym, "long", dip_score, fill_price, bar))
+            if diag:
+                diag.is_candidate = True
+                diag.filter_reason = ""
+                diagnostics.append(diag)
+        else:
+            if diag:
+                diag.filter_reason = f"proximity(dist={dist_long:.4f}>{config.proximity_pct:.4f})"
+                diagnostics.append(diag)
 
         if config.enable_shorts:
             ref_low = compute_ref_low(history[sym], config.lookback_days)
