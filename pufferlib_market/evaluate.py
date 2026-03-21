@@ -34,30 +34,39 @@ from pufferlib_market.evaluate_sliding import (
 from pufferlib_market.hourly_replay import read_mktd
 
 
+def _act(name: str) -> nn.Module:
+    if name == "relu_sq":
+        from pufferlib_market.train import _ReLUSq
+        return _ReLUSq()
+    if name == "gelu":
+        return nn.GELU()
+    return nn.ReLU()
+
+
 class TradingPolicy(nn.Module):
     """Must match the architecture in train.py exactly."""
 
-    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256):
+    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256, activation: str = "relu"):
         super().__init__()
         self.obs_size = obs_size
         self.num_actions = num_actions
 
         self.encoder = nn.Sequential(
             nn.Linear(obs_size, hidden),
-            nn.ReLU(),
+            _act(activation),
             nn.Linear(hidden, hidden),
-            nn.ReLU(),
+            _act(activation),
             nn.Linear(hidden, hidden),
-            nn.ReLU(),
+            _act(activation),
         )
         self.actor = nn.Sequential(
             nn.Linear(hidden, hidden // 2),
-            nn.ReLU(),
+            _act(activation),
             nn.Linear(hidden // 2, num_actions),
         )
         self.critic = nn.Sequential(
             nn.Linear(hidden, hidden // 2),
-            nn.ReLU(),
+            _act(activation),
             nn.Linear(hidden // 2, 1),
         )
 
@@ -111,6 +120,63 @@ class ResidualTradingPolicy(nn.Module):
         if deterministic:
             return logits.argmax(dim=-1)
         return Categorical(logits=logits).sample()
+
+
+def load_policy(ckpt: dict, obs_size: int, num_actions: int, hidden: int, arch: str, device) -> nn.Module:
+    """Create and load the right policy class based on arch (from checkpoint or CLI arg)."""
+    # Prefer arch stored in checkpoint over CLI arg (backwards compat: older ckpts have no 'arch')
+    ckpt_arch = ckpt.get("arch", arch)
+    if ckpt_arch in ("resmlp",):
+        policy = ResidualTradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
+    elif ckpt_arch in ("transformer",):
+        from pufferlib_market.train import TransformerTradingPolicy
+        _base = TransformerTradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
+        policy = _wrap_train_policy(_base, num_actions)
+    elif ckpt_arch in ("gru",):
+        from pufferlib_market.train import GRUTradingPolicy
+        _base = GRUTradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
+        policy = _wrap_train_policy(_base, num_actions)
+    elif ckpt_arch in ("depth_recurrence",):
+        from pufferlib_market.train import DepthRecurrenceTradingPolicy
+        _base = DepthRecurrenceTradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
+        policy = _wrap_train_policy(_base, num_actions)
+    elif ckpt_arch in ("mlp_relu_sq",):
+        policy = TradingPolicy(obs_size, num_actions, hidden=hidden, activation="relu_sq").to(device)
+    else:
+        policy = TradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
+    policy.load_state_dict(ckpt["model"])
+    policy.eval()
+    return policy
+
+
+def _wrap_train_policy(base_policy: nn.Module, num_actions: int) -> nn.Module:
+    """Wrap a train.py policy (with get_action_and_value) so it has get_action for evaluate.py."""
+    class _Wrapped(nn.Module):
+        def __init__(self, inner):
+            super().__init__()
+            self.inner = inner
+            self.obs_size = inner.obs_size
+            self.num_actions = inner.num_actions
+
+        def forward(self, x):
+            return self.inner.forward(x)
+
+        def get_action(self, x, deterministic=False, disable_shorts=False):
+            logits, _ = self.inner.forward(x)
+            if disable_shorts:
+                K = (num_actions - 1) // 2
+                logits[:, 1 + K:] = float("-inf")
+            if deterministic:
+                return logits.argmax(dim=-1)
+            return Categorical(logits=logits).sample()
+
+        def load_state_dict(self, state_dict, **kw):
+            return self.inner.load_state_dict(state_dict, **kw)
+
+        def state_dict(self, **kw):
+            return self.inner.state_dict(**kw)
+
+    return _Wrapped(base_policy)
 
 
 def evaluate_random(args, policy, binding, obs_buf, act_buf, rew_buf, term_buf,
@@ -379,15 +445,11 @@ def main():
     )
     print(f"Device: {device}, deterministic: {args.deterministic}, arch: {args.arch}")
 
-    # Load policy
-    if args.arch == "resmlp":
-        policy = ResidualTradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
-    else:
-        policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
-    policy.load_state_dict(ckpt["model"])
-    policy.eval()
+    # Load policy — arch is read from checkpoint if present, else falls back to --arch CLI arg
+    policy = load_policy(ckpt, obs_size, num_actions, args.hidden_size, args.arch, device)
+    arch_used = ckpt.get("arch", args.arch)
     print(f"Loaded checkpoint: update={ckpt.get('update', '?')}, "
-          f"train_best_return={ckpt.get('best_return', '?'):.4f}")
+          f"train_best_return={ckpt.get('best_return', '?'):.4f}, arch={arch_used}")
 
     # Load shared data
     import pufferlib_market.binding as binding
