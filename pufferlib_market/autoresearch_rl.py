@@ -1030,24 +1030,21 @@ def run_trial(
     result_payload["rank_metric"] = selected_metric
     result_payload["rank_score"] = rank_score
 
-    # Log trial-level summary to the child W&B run that was opened by train.py.
-    # We update the wandb summary (not log()) so the metrics appear in the run
-    # summary panel rather than as a timestep in the training curve.
     if wandb_project and _wandb_module is not None:
         try:
-            # The child train.py subprocess owns the wandb run; we call wandb.init
-            # with reinit=True and resume="allow" to attach to / create a summary run
-            # for this trial.  The child already called wandb.finish() via atexit, so
-            # this opens a fresh run that we immediately finish.
             summary_run = _wandb_module.init(
                 project=wandb_project,
                 name=config.description,
                 group=wandb_group or None,
                 config=asdict(config),
                 reinit=True,
-                resume="allow",
             )
-            summary_updates: dict = {}
+            summary_updates: dict = {
+                "trial/elapsed_s": elapsed,
+                "trial/train_steps": total_steps,
+                "trial/rank_score": rank_score,
+                "trial/rank_metric": selected_metric,
+            }
             if val_return is not None:
                 summary_updates["best_val_return"] = val_return
             if val_sortino is not None:
@@ -1060,18 +1057,11 @@ def run_trial(
                 summary_updates["train/final_return"] = train_return
             if train_sortino is not None:
                 summary_updates["train/final_sortino"] = train_sortino
-            summary_updates["trial/elapsed_s"] = elapsed
-            summary_updates["trial/train_steps"] = total_steps
-            summary_updates["trial/rank_score"] = rank_score
-            summary_updates["trial/rank_metric"] = selected_metric
-            # Holdout metrics (prefix already set by summarize_holdout_payload)
             for k, v in holdout_metrics.items():
                 summary_updates[f"holdout/{k}"] = v
-            # Market validation
             for k, v in market_metrics.items():
                 summary_updates[f"market/{k}"] = v
-            if summary_updates:
-                summary_run.summary.update(summary_updates)
+            summary_run.summary.update(summary_updates)
             summary_run.finish()
         except Exception:
             pass  # never crash autoresearch due to wandb errors
