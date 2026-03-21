@@ -37,15 +37,26 @@ try:
 except ImportError:
     wandb = None
 
-# PufferLib imports
-import pufferlib
-import pufferlib.vector
+# PufferLib imports are optional during CI to avoid numpy pinning conflicts.
+_PUFFERLIB_IMPORT_ERROR = None
+try:
+    import pufferlib  # type: ignore
+    import pufferlib.vector  # type: ignore
+    _PUFFERLIB_AVAILABLE = True
+except ImportError as exc:  # pragma: no cover - exercised when dependency is missing
+    pufferlib = None  # type: ignore
+    _PUFFERLIB_AVAILABLE = False
+    _PUFFERLIB_IMPORT_ERROR = exc
 
 # Local
-from pufferlib_market.environment import TradingEnvConfig, TradingEnv
-from pufferlib_market.metrics import annualize_total_return
-from pufferlib_market.advantage_utils import normalize_advantages
-from src.checkpoint_manager import TopKCheckpointManager, prune_periodic_checkpoints
+
+def _require_pufferlib() -> None:
+    """Ensure PufferLib is installed before running training entrypoints."""
+    if not _PUFFERLIB_AVAILABLE:
+        raise ImportError(
+            "pufferlib is required to run the pufferlib_market training loop. "
+            "Install it (e.g. `uv pip install pufferlib==3.0.0`) before calling train()."
+        ) from _PUFFERLIB_IMPORT_ERROR
 
 
 # ─── Running Observation Normalizer ──────────────────────────────────
@@ -657,6 +668,12 @@ def compute_gae(rewards, values, dones, gamma=0.99, gae_lambda=0.95):
 
 
 def train(args):
+    _require_pufferlib()
+    from pufferlib_market.environment import TradingEnvConfig
+    from pufferlib_market.metrics import annualize_total_return
+    from pufferlib_market.advantage_utils import normalize_advantages
+    from src.checkpoint_manager import TopKCheckpointManager, prune_periodic_checkpoints
+
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
     print(f"Device: {device}")
 
