@@ -352,7 +352,7 @@ def main():
                         help="Use argmax actions instead of sampling")
     parser.add_argument("--mode", choices=["random", "sequential"], default="random")
     parser.add_argument("--hidden-size", type=int, default=256)
-    parser.add_argument("--arch", choices=["mlp", "resmlp"], default="mlp")
+    parser.add_argument("--arch", choices=["mlp", "resmlp", "transformer", "gru", "depth_recurrence", "mlp_relu_sq"], default="mlp")
     parser.add_argument("--cpu", action="store_true")
     parser.add_argument("--max-hold-hours", type=int, default=0,
                         help="Force close position after N hours (0=disabled)")
