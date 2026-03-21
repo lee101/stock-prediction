@@ -1,11 +1,29 @@
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
 
 from src.binance_symbol_utils import forecast_cache_symbol_candidates
+
+
+def _normalize_forecast_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    normalized = frame.copy()
+    time_col = "issued_at" if "issued_at" in normalized.columns else "timestamp"
+    if time_col in normalized.columns:
+        normalized[time_col] = pd.to_datetime(normalized[time_col], utc=True, errors="coerce")
+        normalized = normalized.dropna(subset=[time_col]).sort_values(time_col).reset_index(drop=True)
+    return normalized
+
+
+@lru_cache(maxsize=256)
+def _read_forecast_frame(path_str: str, mtime_ns: int, size_bytes: int) -> pd.DataFrame:
+    del mtime_ns, size_bytes
+    return _normalize_forecast_frame(pd.read_parquet(path_str))
 
 
 def load_latest_forecast_from_cache(
@@ -35,20 +53,14 @@ def load_latest_forecast_from_cache(
         if not path.exists():
             continue
         try:
-            frame = pd.read_parquet(path)
+            stat = path.stat()
+            frame = _read_forecast_frame(str(path.resolve()), int(stat.st_mtime_ns), int(stat.st_size))
         except Exception:
             continue
         if frame.empty:
             continue
 
-        frame = frame.copy()
         time_col = "issued_at" if "issued_at" in frame.columns else "timestamp"
-        if time_col in frame.columns:
-            frame[time_col] = pd.to_datetime(frame[time_col], utc=True, errors="coerce")
-            frame = frame.dropna(subset=[time_col]).sort_values(time_col).reset_index(drop=True)
-        if frame.empty:
-            continue
-
         if as_of_ts is not None and time_col in frame.columns:
             eligible = frame[frame[time_col] <= as_of_ts]
             if eligible.empty:
