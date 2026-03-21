@@ -293,12 +293,11 @@ class BinanceHourlyPolicy(BinancePolicyBase):
         return out
 
 try:
-    from binanceneural.kernels.rope import apply_rope as _triton_apply_rope, HAS_TRITON as _HAS_TRITON_ROPE
-    from binanceneural.kernels.norm import rms_norm as _triton_rms_norm, fused_rms_norm_qkv as _triton_fused_rms_norm_qkv
+    from binanceneural.kernels.rope import apply_rope as _triton_apply_rope
+    from binanceneural.kernels.norm import rms_norm as _triton_rms_norm
     _HAS_TRITON_KERNELS = True
 except Exception:
     _HAS_TRITON_KERNELS = False
-    _HAS_TRITON_ROPE = False
 
 
 def _rms_norm(x: torch.Tensor, eps: float) -> torch.Tensor:
