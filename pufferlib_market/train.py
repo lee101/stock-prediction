@@ -20,6 +20,7 @@ Improvements from autoresearch agent (2026-03):
 
 import argparse
 import atexit
+import importlib
 import math
 import os
 import time
@@ -37,8 +38,9 @@ try:
 except ImportError:
     wandb = None
 
+# PufferLib imports are resolved lazily inside train() to keep unit tests lightweight.
+
 # Local
-from pufferlib_market.environment import TradingEnvConfig
 from pufferlib_market.metrics import annualize_total_return
 from pufferlib_market.advantage_utils import normalize_advantages
 from src.checkpoint_manager import TopKCheckpointManager, prune_periodic_checkpoints
@@ -653,6 +655,16 @@ def compute_gae(rewards, values, dones, gamma=0.99, gae_lambda=0.95):
 
 
 def train(args):
+    try:
+        importlib.import_module("pufferlib.vector")
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "pufferlib is required to run pufferlib_market.train.train(). "
+            "Install it with `uv pip install \"pufferlib<4\"` or enable the RL extras."
+        ) from exc
+
+    from pufferlib_market.environment import TradingEnvConfig
+
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
     print(f"Device: {device}")
 
