@@ -210,7 +210,7 @@ class TradingPolicy(nn.Module):
     ~500K params to stay well under 8GB GPU.
     """
 
-    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256):
+    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256, activation: str = "relu"):
         super().__init__()
         self.obs_size = obs_size
         self.num_actions = num_actions
@@ -218,24 +218,24 @@ class TradingPolicy(nn.Module):
         # Shared feature extractor
         self.encoder = nn.Sequential(
             nn.Linear(obs_size, hidden),
-            nn.ReLU(),
+            get_activation(activation),
             nn.Linear(hidden, hidden),
-            nn.ReLU(),
+            get_activation(activation),
             nn.Linear(hidden, hidden),
-            nn.ReLU(),
+            get_activation(activation),
         )
 
         # Policy head (actor)
         self.actor = nn.Sequential(
             nn.Linear(hidden, hidden // 2),
-            nn.ReLU(),
+            get_activation(activation),
             nn.Linear(hidden // 2, num_actions),
         )
 
         # Value head (critic)
         self.critic = nn.Sequential(
             nn.Linear(hidden, hidden // 2),
-            nn.ReLU(),
+            get_activation(activation),
             nn.Linear(hidden // 2, 1),
         )
 
@@ -783,6 +783,8 @@ def train(args):
             obs_size, num_actions, hidden=args.hidden_size,
             activation=args.activation,
         ).to(device)
+    elif args.arch == "mlp_relu_sq":
+        policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size, activation="relu_sq").to(device)
     else:
         policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
     if args.optimizer == "muon":
