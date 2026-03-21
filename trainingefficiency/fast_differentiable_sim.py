@@ -115,9 +115,9 @@ def simulate_hourly_trades_fast(
     dtype = closes.dtype
     fee = torch.as_tensor(maker_fee, dtype=dtype, device=device)
 
-    max_lev = torch.broadcast_to(_as_tensor(max_leverage, closes), closes.shape)
-    can_short_t = torch.broadcast_to(_as_tensor(can_short, closes), batch_shape)
-    can_long_t = torch.broadcast_to(_as_tensor(can_long, closes), batch_shape)
+    max_lev = _as_tensor(max_leverage, closes).expand(closes.shape)
+    can_short_t = _as_tensor(can_short, closes).expand(batch_shape)
+    can_long_t = _as_tensor(can_long, closes).expand(batch_shape)
 
     # Pre-compute fill probabilities and clamped prices (vectorized)
     b_prices, s_prices, buy_probs, sell_probs = _precompute_fill_probs(
@@ -163,14 +163,14 @@ def simulate_hourly_trades_fast(
 
         # Buy capacity
         max_buy_cash = torch.where(
-            bp > 0, cash / (bp * fee_buy + _EPS), torch.zeros_like(cash),
+            bp > 0, cash / (bp * fee_buy + _EPS), 0.0,
         )
         target_notional = sl * equity_pos
         current_notional = inventory * bp
         leveraged_cap = torch.where(
             bp > 0,
             torch.clamp(target_notional - current_notional, min=0.0) / (bp * fee_buy + _EPS),
-            torch.zeros_like(cash),
+            0.0,
         )
         buy_cap = torch.where(sl <= 1.0 + 1e-6, torch.clamp(max_buy_cash, min=0.0), leveraged_cap)
         buy_qty = bf * buy_cap
@@ -182,10 +182,10 @@ def simulate_hourly_trades_fast(
         # Sell capacity
         long_to_close = torch.clamp(inventory, min=0.0)
         max_short = torch.where(
-            sp > 0, target_notional / (sp * fee_buy + _EPS), torch.zeros_like(cash),
+            sp > 0, target_notional / (sp * fee_buy + _EPS), 0.0,
         )
         short_open = torch.clamp(max_short - torch.clamp(-inventory, min=0.0), min=0.0)
-        sell_cap = long_to_close + torch.where(can_short_t > 0.5, short_open, torch.zeros_like(cash))
+        sell_cap = long_to_close + torch.where(can_short_t > 0.5, short_open, 0.0)
         sell_qty = sf * sell_cap
 
         # Execute
