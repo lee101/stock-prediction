@@ -143,6 +143,17 @@ boosting = [
     "xgboost>=2.1.1",
 ]
 
+sp500 = [
+    "yfinance>=0.2.0",
+    "pandas>=2.0.0",
+    "lxml>=5.0.0",
+]
+
+# CuteDSL is a sibling repo providing Triton-optimised Chronos2 kernels.
+# Setup: run `make setup-cutedsl` to create the symlink, then:
+#   source .venv313/bin/activate && uv pip install -e cutedsl/
+cutedsl = []
+
 all = [
     "chronos-forecasting>=2.0.0",
     "neuralforecast>=3.1",
