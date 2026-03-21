@@ -691,9 +691,12 @@ def open_order_at_price_or_all(symbol, qty, side, price):
         if not same_side:
             continue  # Skip opposite side orders entirely
 
-        # Price tolerance: within 0.03% (tighter to allow ramp_into_position to work)
+        # Price tolerance: crypto uses 50 bps (price moves fast, avoids constant cancel/replace);
+        # stocks use 10 bps (tighter to keep limit prices fresh).
+        is_crypto = is_crypto_symbol(symbol) or symbol.upper() in crypto_symbols
+        price_tolerance = 0.005 if is_crypto else 0.001  # 50 bps crypto, 10 bps stocks
         price_diff_pct = abs(existing_price - price) / price if price > 0 else float('inf')
-        price_similar = price_diff_pct < 0.0003  # 3 bps = 0.03%
+        price_similar = price_diff_pct < price_tolerance
 
         # Qty tolerance: within 5% OR notional difference < $100
         qty_diff_pct = abs(existing_qty - qty) / qty if qty > 0 else float('inf')
