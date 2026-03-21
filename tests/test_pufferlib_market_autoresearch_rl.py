@@ -352,6 +352,46 @@ def test_run_trial_collects_replay_eval_metrics(monkeypatch, tmp_path: Path) -> 
     assert result["rank_score"] == pytest.approx(3.0)
 
 
+def test_run_trial_surfaces_train_failure_when_no_checkpoint(monkeypatch, tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "trial"
+    checkpoint_dir.mkdir()
+
+    class _FakeStdout:
+        def readline(self) -> bytes:
+            return b""
+
+        def read(self) -> bytes:
+            return (
+                b"market_data_load: cannot open missing.bin\n"
+                b"RuntimeError: Failed to load market data from missing.bin\n"
+            )
+
+    class _FakePopen:
+        def __init__(self, *args, **kwargs) -> None:
+            self.stdout = _FakeStdout()
+            self.pid = 12345
+
+        def poll(self) -> int:
+            return 1
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 1
+
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl.subprocess.Popen", _FakePopen)
+
+    result = run_trial(
+        TrialConfig(description="broken"),
+        "train.bin",
+        "val.bin",
+        1,
+        str(checkpoint_dir),
+    )
+
+    assert result["train_steps"] == 0
+    assert "train failed (exit 1)" in result["error"]
+    assert "Failed to load market data" in result["error"]
+
+
 def test_run_trial_passes_holdout_fill_buffer_bps(monkeypatch, tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "trial"
     checkpoint_dir.mkdir()

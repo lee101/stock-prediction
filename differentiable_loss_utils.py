@@ -10,6 +10,7 @@ time steps (hours).
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 from typing import Iterable, Tuple
 
@@ -22,6 +23,17 @@ HOURLY_PERIODS_PER_YEAR = 24 * 365  # 8760 hours
 DAILY_PERIODS_PER_YEAR_CRYPTO = 365  # Crypto trades 24/7
 DAILY_PERIODS_PER_YEAR_STOCK = 252   # ~252 trading days/year for stocks
 _EPS = 1e-8
+
+_COMPILE_ENABLED = not os.environ.get("TORCH_NO_COMPILE", "")
+
+
+def _maybe_compile(fn=None, **kwargs):
+    """Conditionally apply torch.compile; respects TORCH_NO_COMPILE env var."""
+    if fn is None:
+        return lambda f: _maybe_compile(f, **kwargs)
+    if _COMPILE_ENABLED and hasattr(torch, "compile"):
+        return torch.compile(fn, **kwargs)
+    return fn
 
 
 def get_periods_per_year(frequency: str = "hourly", symbol: str = "") -> float:
@@ -490,6 +502,33 @@ def simulate_hourly_trades_binary(
     )
 
 
+def _has_smoothness(penalty: float | torch.Tensor) -> bool:
+    if isinstance(penalty, (int, float)):
+        return penalty != 0.0
+    return bool(penalty.any())
+
+
+def _apply_smoothness(loss: torch.Tensor, hourly_returns: torch.Tensor, penalty: float | torch.Tensor) -> torch.Tensor:
+    if not _has_smoothness(penalty) or hourly_returns.shape[-1] <= 1:
+        return loss
+    weight = _as_tensor(penalty, hourly_returns)
+    diffs = hourly_returns[..., 1:] - hourly_returns[..., :-1]
+    return loss + (weight * diffs.abs().mean(dim=-1)).mean()
+
+
+@_maybe_compile(mode="reduce-overhead")
+def _sortino_core(hourly_returns: torch.Tensor, periods: torch.Tensor, return_weight: float) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Fused sortino core: mean -> downside_std -> sortino -> score."""
+    mean_return = hourly_returns.mean(dim=-1)
+    downside_sq = torch.clamp(-hourly_returns, min=0.0).square()
+    downside_std = (downside_sq.mean(dim=-1) + _EPS).sqrt()
+    sortino = mean_return / downside_std.clamp(min=_EPS)
+    sortino = sortino * periods.clamp(min=_EPS).sqrt()
+    annual_return = mean_return * periods
+    score = sortino + return_weight * annual_return
+    return score, sortino, annual_return
+
+
 def compute_hourly_objective(
     hourly_returns: torch.Tensor,
     *,
@@ -498,21 +537,13 @@ def compute_hourly_objective(
     smoothness_penalty: float | torch.Tensor = 0.0,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Return (score, sortino, annual_return) for hourly return series."""
-
     if hourly_returns.ndim == 0:
         raise ValueError("hourly_returns must have at least one dimension")
-    mean_return = hourly_returns.mean(dim=-1)
-    downside = torch.clamp(-hourly_returns, min=0.0)
-    downside_std = torch.sqrt(torch.mean(downside**2, dim=-1) + _EPS)
-    sortino = mean_return / _safe_denominator(downside_std)
-    periods = _as_tensor(periods_per_year, mean_return)
-    sortino = sortino * torch.sqrt(torch.clamp(periods, min=_EPS))
-    annual_return = mean_return * periods
-    score = sortino + return_weight * annual_return
-    if smoothness_penalty > 0:
+    periods = _as_tensor(periods_per_year, hourly_returns)
+    score, sortino, annual_return = _sortino_core(hourly_returns, periods, return_weight)
+    if _has_smoothness(smoothness_penalty) and hourly_returns.shape[-1] > 1:
         returns_diff = hourly_returns[..., 1:] - hourly_returns[..., :-1]
-        volatility_penalty = returns_diff.std(dim=-1) * smoothness_penalty
-        score = score - volatility_penalty
+        score = score - returns_diff.std(dim=-1) * smoothness_penalty
     return score, sortino, annual_return
 
 
@@ -532,16 +563,10 @@ def combined_sortino_pnl_loss(
         return_weight=return_weight,
     )
     loss = -target_sign * score.mean()
-
-    smooth_weight = _as_tensor(smoothness_penalty, hourly_returns)
-    if torch.any(smooth_weight != 0):
-        if hourly_returns.shape[-1] > 1:
-            diffs = hourly_returns[..., 1:] - hourly_returns[..., :-1]
-            smoothness = diffs.abs().mean(dim=-1)
-            loss = loss + (smooth_weight * smoothness).mean()
-    return loss
+    return _apply_smoothness(loss, hourly_returns, smoothness_penalty)
 
 
+@_maybe_compile(mode="reduce-overhead")
 def compute_sharpe_objective(
     hourly_returns: torch.Tensor,
     *,
@@ -559,6 +584,7 @@ def compute_sharpe_objective(
     return score, sharpe, annual_return
 
 
+@_maybe_compile(mode="reduce-overhead")
 def compute_calmar_objective(
     hourly_returns: torch.Tensor,
     *,
@@ -623,30 +649,41 @@ def compute_multiwindow_objective(
     window_fractions: Iterable[float] = (0.33, 0.5, 0.75, 1.0),
     aggregation: str = "minimax",
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Multi-window robustness objective: optimize worst-case score across time windows.
+    """Multi-window robustness objective with shared prefix sums.
 
-    Computes sortino-based score on multiple trailing sub-windows of the return
-    series and aggregates them. With aggregation="minimax", the model is trained
-    to maximize its worst-window performance.
-
-    Returns (score, sortino_of_full, annual_return_of_full).
+    Computes sortino-based score on multiple trailing sub-windows sharing
+    a single cumsum/cummax pass. Returns (score, sortino_full, annual_full).
     """
     T = hourly_returns.shape[-1]
     fracs = sorted(set(window_fractions))
+    ppy = _as_tensor(periods_per_year, hourly_returns)
+
+    full_cumsum = None
+    if dd_penalty > 0:
+        full_cumsum = torch.cumsum(hourly_returns, dim=-1)
+
     window_scores = []
+    sortino_full = None
+    annual_full = None
     for frac in fracs:
         w = max(int(T * frac), 2)
         sub = hourly_returns[..., -w:]
-        sub_ppy = _as_tensor(periods_per_year, hourly_returns)
-        sc, _, _ = compute_hourly_objective(
-            sub, periods_per_year=sub_ppy, return_weight=return_weight,
-        )
+        sc, s_ratio, a_ret = _sortino_core(sub, ppy, return_weight)
+        if frac >= 1.0 or w >= T:
+            sortino_full = s_ratio
+            annual_full = a_ret
         if dd_penalty > 0:
-            cum = torch.cumsum(sub, dim=-1)
-            rmax = torch.cummax(cum, dim=-1).values
-            max_dd = (rmax - cum).max(dim=-1).values
+            start_idx = T - w
+            cum_sub = full_cumsum[..., start_idx:]
+            if start_idx > 0:
+                cum_sub = cum_sub - full_cumsum[..., start_idx - 1:start_idx]
+            rmax = torch.cummax(cum_sub, dim=-1).values
+            max_dd = (rmax - cum_sub).max(dim=-1).values
             sc = sc - dd_penalty * max_dd
         window_scores.append(sc)
+
+    if sortino_full is None:
+        _, sortino_full, annual_full = _sortino_core(hourly_returns, ppy, return_weight)
 
     stacked = torch.stack(window_scores, dim=0)
     if aggregation == "minimax":
@@ -658,9 +695,6 @@ def compute_multiwindow_objective(
     else:
         score = stacked.min(dim=0).values
 
-    _, sortino_full, annual_full = compute_hourly_objective(
-        hourly_returns, periods_per_year=periods_per_year, return_weight=return_weight,
-    )
     return score, sortino_full, annual_full
 
 
@@ -707,10 +741,5 @@ def compute_loss_by_type(
         )
 
     loss = -target_sign * score.mean()
-    smooth_weight = _as_tensor(smoothness_penalty, hourly_returns)
-    if torch.any(smooth_weight != 0):
-        if hourly_returns.shape[-1] > 1:
-            diffs = hourly_returns[..., 1:] - hourly_returns[..., :-1]
-            smoothness = diffs.abs().mean(dim=-1)
-            loss = loss + (smooth_weight * smoothness).mean()
+    loss = _apply_smoothness(loss, hourly_returns, smoothness_penalty)
     return loss, score, ratio, annual_return
