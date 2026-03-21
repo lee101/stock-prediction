@@ -46,6 +46,7 @@ from pufferlib_market.environment import TradingEnvConfig, TradingEnv
 from pufferlib_market.metrics import annualize_total_return
 from pufferlib_market.advantage_utils import normalize_advantages
 from src.checkpoint_manager import TopKCheckpointManager, prune_periodic_checkpoints
+from pufferlib_market.kernels.fused_mlp import fused_mlp_relu, HAS_TRITON
 
 
 # ─── Running Observation Normalizer ──────────────────────────────────
@@ -216,8 +217,13 @@ class TradingPolicy(nn.Module):
         super().__init__()
         self.obs_size = obs_size
         self.num_actions = num_actions
+        self._activation_name = activation
+        # Precompute whether fused kernel can be used (activation must be relu).
+        # x.is_cuda is still checked at forward time since the model can be on CPU.
+        self._can_fuse = HAS_TRITON and activation == "relu"
 
-        # Shared feature extractor
+        # Shared feature extractor — kept as Sequential for checkpoint compatibility.
+        # encoder[0,2,4] are the Linear layers; encoder[1,3,5] are activations.
         self.encoder = nn.Sequential(
             nn.Linear(obs_size, hidden),
             get_activation(activation),
@@ -250,8 +256,28 @@ class TradingPolicy(nn.Module):
         nn.init.orthogonal_(self.actor[-1].weight, gain=0.01)
         nn.init.orthogonal_(self.critic[-1].weight, gain=1.0)
 
+    def _encode(self, x: torch.Tensor) -> torch.Tensor:
+        """Encode observations through the three-layer MLP encoder.
+
+        When Triton is available and activation is ReLU, fuses the first two
+        Linear+ReLU layers into a single kernel to avoid the intermediate
+        hidden-wide allocation. The third layer is always a standard F.linear.
+        """
+        if self._can_fuse and x.is_cuda:
+            h = fused_mlp_relu(
+                x,
+                self.encoder[0].weight, self.encoder[0].bias,
+                self.encoder[2].weight, self.encoder[2].bias,
+            )
+            # fused_mlp_relu returns BF16; cast to match encoder[4]'s FP32 weights
+            h = h.to(self.encoder[4].weight.dtype)
+            h = self.encoder[5](self.encoder[4](h))
+        else:
+            h = self.encoder(x)
+        return h
+
     def forward(self, x):
-        h = self.encoder(x)
+        h = self._encode(x)
         logits = self.actor(h)
         value = self.critic(h).squeeze(-1)
         return logits, value
@@ -268,7 +294,7 @@ class TradingPolicy(nn.Module):
         return action, log_prob, entropy, value
 
     def get_value(self, x):
-        h = self.encoder(x)
+        h = self._encode(x)
         return self.critic(h).squeeze(-1)
 
 
@@ -582,6 +608,7 @@ class DepthRecurrenceTradingPolicy(nn.Module):
             for _ in range(num_blocks)
         ])
         self.act_name = activation
+        self._can_fuse = HAS_TRITON and activation == "relu"
         self.out_norm = nn.LayerNorm(hidden)
 
         self.actor = nn.Sequential(
@@ -603,11 +630,23 @@ class DepthRecurrenceTradingPolicy(nn.Module):
         nn.init.orthogonal_(self.critic[-1].weight, gain=1.0)
 
     def _apply_block(self, x: torch.Tensor, block: nn.ModuleDict) -> torch.Tensor:
-        """Apply one pre-norm residual block."""
+        """Apply one pre-norm residual block.
+
+        Fuses Linear+ReLU+Linear via Triton kernel when available (relu activation only).
+        """
         h = block["norm"](x)
-        h = block["fc1"](h)
-        h = relu_sq(h) if self.act_name == "relu_sq" else torch.relu(h) if self.act_name == "relu" else torch.nn.functional.gelu(h)
-        h = block["fc2"](h)
+        if self._can_fuse and x.is_cuda:
+            h = fused_mlp_relu(
+                h,
+                block["fc1"].weight, block["fc1"].bias,
+                block["fc2"].weight, block["fc2"].bias,
+            )
+            # fused_mlp_relu returns BF16; cast back to match residual x dtype
+            h = h.to(x.dtype)
+        else:
+            h = block["fc1"](h)
+            h = relu_sq(h) if self.act_name == "relu_sq" else torch.relu(h) if self.act_name == "relu" else torch.nn.functional.gelu(h)
+            h = block["fc2"](h)
         return x + h
 
     def forward(self, x: torch.Tensor):
@@ -908,10 +947,18 @@ def train(args):
     _pinned_action = torch.zeros(num_envs, dtype=torch.int32, pin_memory=True) if use_cuda_graph else None
 
     # ── torch.compile for PPO update ──
+    _use_bf16 = getattr(args, "use_bf16", False) and device.type == "cuda"
+    if _use_bf16:
+        print("  BF16 autocast enabled for PPO forward pass")
+
     def _ppo_loss_fn(policy, obs, act, old_logprob, advantages, returns, old_values,
                      clip_eps_t, vf_coef_t, ent_coef_t, clip_vloss):
-        """PPO loss computation (compilable)."""
-        logits, new_value = policy(obs)
+        """PPO loss computation (compilable, optionally BF16)."""
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=_use_bf16):
+            logits, new_value = policy(obs)
+        # Cast back to float32 for loss numerics
+        logits = logits.float()
+        new_value = new_value.float()
         # Manual log_prob and entropy (avoids Categorical Python control flow for fullgraph)
         log_probs_all = torch.log_softmax(logits, dim=-1)
         new_logprob = log_probs_all.gather(1, act.unsqueeze(1)).squeeze(1)
@@ -938,7 +985,12 @@ def train(args):
         loss = pg_loss + vf_coef_t * v_loss - ent_coef_t * ent_loss
         return loss, pg_loss, v_loss, ent_loss
 
-    if device.type == "cuda":
+    # torch.compile(reduce-overhead) captures its own internal CUDA graphs, which
+    # conflicts with manual CUDAGraph capture used by --cuda-graph-ppo.  Skip
+    # compilation when the PPO CUDA graph is requested; the graph replay provides
+    # equivalent Python-overhead reduction.
+    _use_cuda_graph_ppo = getattr(args, "cuda_graph_ppo", False) and device.type == "cuda"
+    if device.type == "cuda" and not _use_cuda_graph_ppo:
         try:
             _compiled_ppo_loss = torch.compile(_ppo_loss_fn, mode="reduce-overhead", fullgraph=True)
             # Warmup compile with dummy data
@@ -965,7 +1017,74 @@ def train(args):
             print(f"  torch.compile: failed ({e}), using eager PPO")
             _compiled_ppo_loss = _ppo_loss_fn
     else:
+        if _use_cuda_graph_ppo:
+            print("  torch.compile: skipped (--cuda-graph-ppo uses its own CUDA graph)")
         _compiled_ppo_loss = _ppo_loss_fn
+
+    # ── CUDA graph for PPO update ──
+    # Uses static GPU tensors of exactly minibatch_size. The last partial batch
+    # (if batch_size % mb_size != 0) falls back to eager. Optimizer.step() stays
+    # outside the graph because it mutates parameters.
+    _ppo_graph = None
+    _ppo_static: dict = {}
+    if _use_cuda_graph_ppo:
+        mb_size_static = args.minibatch_size
+        # Allocate persistent static input/output tensors
+        _ppo_static["obs"] = torch.zeros(mb_size_static, obs_size, device=device)
+        _ppo_static["act"] = torch.zeros(mb_size_static, dtype=torch.long, device=device)
+        _ppo_static["logprob"] = torch.zeros(mb_size_static, device=device)
+        _ppo_static["adv"] = torch.zeros(mb_size_static, device=device)
+        _ppo_static["ret"] = torch.zeros(mb_size_static, device=device)
+        _ppo_static["val"] = torch.zeros(mb_size_static, device=device)
+        _ppo_static["clip_eps"] = torch.tensor(0.2, device=device)
+        _ppo_static["vf_coef"] = torch.tensor(0.5, device=device)
+        _ppo_static["ent_coef"] = torch.tensor(0.01, device=device)
+        # Outputs (written inside graph)
+        _ppo_static["loss"] = torch.tensor(0.0, device=device)
+        _ppo_static["pg_loss"] = torch.tensor(0.0, device=device)
+        _ppo_static["v_loss"] = torch.tensor(0.0, device=device)
+        _ppo_static["ent_loss"] = torch.tensor(0.0, device=device)
+
+        def _ppo_graph_body():
+            # Always use the uncompiled loss inside the CUDA graph.
+            # torch.compile (reduce-overhead) internally uses its own CUDA graph
+            # mechanism which conflicts with our outer manual CUDAGraph capture.
+            loss, pg, vl, el = _ppo_loss_fn(
+                policy,
+                _ppo_static["obs"], _ppo_static["act"], _ppo_static["logprob"],
+                _ppo_static["adv"], _ppo_static["ret"], _ppo_static["val"],
+                _ppo_static["clip_eps"], _ppo_static["vf_coef"], _ppo_static["ent_coef"],
+                args.clip_vloss,
+            )
+            loss.backward()
+            _ppo_static["loss"].copy_(loss.detach())
+            _ppo_static["pg_loss"].copy_(pg.detach())
+            _ppo_static["v_loss"].copy_(vl.detach())
+            _ppo_static["ent_loss"].copy_(el.detach())
+
+        # Use a private CUDA stream for capture and replay.
+        # This isolates the PPO graph from the default stream used by
+        # torch.compile (reduce-overhead), preventing cudaErrorStreamCaptureImplicit.
+        _ppo_stream = torch.cuda.Stream(device=device)
+
+        # Warmup passes on the private stream (fills CUDA caches before capture)
+        policy.train()
+        with torch.cuda.stream(_ppo_stream):
+            for _ in range(3):
+                optimizer.zero_grad(set_to_none=False)
+                _ppo_graph_body()
+                nn.utils.clip_grad_norm_(policy.parameters(), args.max_grad_norm)
+                optimizer.step()
+        _ppo_stream.synchronize()
+
+        # Capture graph on the private stream
+        optimizer.zero_grad(set_to_none=False)
+        _ppo_graph = torch.cuda.CUDAGraph()
+        with torch.cuda.stream(_ppo_stream):
+            with torch.cuda.graph(_ppo_graph, stream=_ppo_stream):
+                _ppo_graph_body()
+        _ppo_stream.synchronize()
+        print(f"  CUDA graph captured for PPO update (minibatch_size={mb_size_static})")
 
     # ── Rollout buffers (on GPU when possible to avoid per-step CPU↔GPU copies) ──
     T = args.rollout_len
@@ -1120,26 +1239,52 @@ def train(args):
         vf_coef_t = torch.tensor(args.vf_coef, device=device)
         ent_coef_t = torch.tensor(ent_coef, device=device)
 
+        # Update CUDA-graph scalar tensors with current annealed values
+        if _use_cuda_graph_ppo and _ppo_graph is not None:
+            _ppo_static["clip_eps"].fill_(clip_eps)
+            _ppo_static["vf_coef"].fill_(args.vf_coef)
+            _ppo_static["ent_coef"].fill_(ent_coef)
+
         for epoch in range(args.ppo_epochs):
             indices = torch.randperm(batch_size, device=device)
             for start in range(0, batch_size, mb_size):
                 end = min(start + mb_size, batch_size)
                 mb_idx = indices[start:end]
+                is_full_batch = (end - start) == mb_size
 
-                loss, pg_loss, v_loss, ent_loss = _compiled_ppo_loss(
-                    policy, b_obs[mb_idx], b_act[mb_idx], b_logprob[mb_idx],
-                    b_advantages[mb_idx], b_returns[mb_idx], b_values[mb_idx],
-                    clip_eps_t, vf_coef_t, ent_coef_t, args.clip_vloss,
-                )
+                if _use_cuda_graph_ppo and _ppo_graph is not None and is_full_batch:
+                    # CUDA graph path: copy minibatch into static tensors, replay graph
+                    _ppo_static["obs"].copy_(b_obs[mb_idx])
+                    _ppo_static["act"].copy_(b_act[mb_idx])
+                    _ppo_static["logprob"].copy_(b_logprob[mb_idx])
+                    _ppo_static["adv"].copy_(b_advantages[mb_idx])
+                    _ppo_static["ret"].copy_(b_returns[mb_idx])
+                    _ppo_static["val"].copy_(b_values[mb_idx])
+                    optimizer.zero_grad(set_to_none=False)
+                    with torch.cuda.stream(_ppo_stream):
+                        _ppo_graph.replay()
+                    # Make default stream wait for PPO graph without blocking CPU
+                    torch.cuda.current_stream().wait_stream(_ppo_stream)
+                    nn.utils.clip_grad_norm_(policy.parameters(), args.max_grad_norm)
+                    optimizer.step()
+                    total_pg_loss += _ppo_static["pg_loss"].item()
+                    total_v_loss += _ppo_static["v_loss"].item()
+                    total_entropy += _ppo_static["ent_loss"].item()
+                else:
+                    # Eager path: partial last batch or when CUDA graph PPO is off
+                    loss, pg_loss, v_loss, ent_loss = _compiled_ppo_loss(
+                        policy, b_obs[mb_idx], b_act[mb_idx], b_logprob[mb_idx],
+                        b_advantages[mb_idx], b_returns[mb_idx], b_values[mb_idx],
+                        clip_eps_t, vf_coef_t, ent_coef_t, args.clip_vloss,
+                    )
+                    optimizer.zero_grad()
+                    loss.backward()
+                    nn.utils.clip_grad_norm_(policy.parameters(), args.max_grad_norm)
+                    optimizer.step()
+                    total_pg_loss += pg_loss.item()
+                    total_v_loss += v_loss.item()
+                    total_entropy += ent_loss.item()
 
-                optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(policy.parameters(), args.max_grad_norm)
-                optimizer.step()
-
-                total_pg_loss += pg_loss.item()
-                total_v_loss += v_loss.item()
-                total_entropy += ent_loss.item()
                 num_mb += 1
 
         # ── Logging ──
@@ -1451,6 +1596,23 @@ def main():
     parser.add_argument("--clip-vloss", action="store_true", help="PPO-style value function clipping")
     parser.add_argument("--obs-norm", action="store_true", help="Running observation normalization")
     parser.add_argument("--resume-from", type=str, default=None, help="Checkpoint to resume from")
+    parser.add_argument(
+        "--cuda-graph-ppo",
+        action="store_true",
+        help=(
+            "Capture PPO forward+backward in a CUDA graph for reduced Python overhead. "
+            "Requires fixed minibatch_size that evenly divides batch_size. "
+            "Off by default; explicitly opt-in."
+        ),
+    )
+    parser.add_argument(
+        "--use-bf16",
+        action="store_true",
+        help=(
+            "Wrap PPO forward pass in BF16 autocast (RTX 5090 / Ampere+ native BF16 Tensor cores). "
+            "Loss is computed in FP32 for numerical stability."
+        ),
+    )
 
     # Output
     parser.add_argument("--checkpoint-dir", default="pufferlib_market/checkpoints")
