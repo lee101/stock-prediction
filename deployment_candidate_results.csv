@@ -1,0 +1,31 @@
+model,epoch,period,return_pct,sortino,max_drawdown,buys,note
+baseline_epoch8,8,1d,-0.21,-5.35,0.52,6,"Original best (9sym, stored result from Mar 2026 eval)"
+baseline_epoch8,8,7d,-2.76,-10.87,3.16,12,"Original best (9sym, stored result from Mar 2026 eval)"
+baseline_epoch8,8,30d,-14.15,-10.32,15.47,63,"Original best (9sym, stored result from Mar 2026 eval)"
+baseline_epoch8,8,60d,-12.1,-7.51,12.35,115,"Original best (9sym, stored result from Mar 2026 eval)"
+baseline_epoch8,8,120d,-19.31,-8.24,20.05,177,"Original best (9sym, stored result from Mar 2026 eval)"
+baseline_epoch8,8,150d,-18.81,-5.95,20.1,249,"Original best (9sym, stored result from Mar 2026 eval)"
+baseline_6sym_epoch26,26,1d,-0.99,-13.2,1.7,3,Existing 6sym best-60d (edge=0.008 eval)
+baseline_6sym_epoch26,26,7d,-1.3,-10.05,1.49,4,Existing 6sym best-60d (edge=0.008 eval)
+baseline_6sym_epoch26,26,30d,-3.01,-6.77,3.84,13,Existing 6sym best-60d (edge=0.008 eval)
+baseline_6sym_epoch26,26,60d,4.74,4.14,4.81,32,Existing 6sym best-60d (edge=0.008 eval)
+baseline_6sym_epoch26,26,120d,-1.06,-0.69,5.32,57,Existing 6sym best-60d (edge=0.008 eval)
+baseline_6sym_epoch26,26,150d,-6.62,-2.13,8.36,73,Existing 6sym best-60d (edge=0.008 eval)
+opt_retrain_v1_ep5,5,1d,-1.3,-16.61,1.63,6,"New 9sym retrain seed=42, best epoch"
+opt_retrain_v1_ep5,5,7d,-1.73,-9.01,2.48,12,"New 9sym retrain seed=42, best epoch"
+opt_retrain_v1_ep5,5,30d,-5.16,-8.73,5.99,45,"New 9sym retrain seed=42, best epoch"
+opt_retrain_v1_ep5,5,60d,-7.48,-3.67,9.3,97,"New 9sym retrain seed=42, best epoch"
+opt_retrain_v1_ep5,5,120d,-15.5,-12.55,16.05,209,"New 9sym retrain seed=42, best epoch"
+opt_retrain_v1_ep5,5,150d,-19.02,-9.05,19.52,263,"New 9sym retrain seed=42, best epoch"
+opt_retrain_6sym_ep20,20,1d,-1.42,-14.72,2.2,3,"New 6sym retrain seed=42, best-60d epoch"
+opt_retrain_6sym_ep20,20,7d,-1.19,-9.6,1.33,5,"New 6sym retrain seed=42, best-60d epoch"
+opt_retrain_6sym_ep20,20,30d,-3.23,-7.67,3.78,15,"New 6sym retrain seed=42, best-60d epoch"
+opt_retrain_6sym_ep20,20,60d,1.89,3.26,2.79,35,"New 6sym retrain seed=42, best-60d epoch"
+opt_retrain_6sym_ep20,20,120d,-4.39,-3.33,6.35,70,"New 6sym retrain seed=42, best-60d epoch"
+opt_retrain_6sym_ep20,20,150d,-7.11,-2.55,9.0,80,"New 6sym retrain seed=42, best-60d epoch"
+deployment_candidate,26,1d,-0.99,-13.2,1.7,3,Selected deployment candidate: best 60d on current data
+deployment_candidate,26,7d,-1.3,-10.05,1.49,4,Selected deployment candidate: best 60d on current data
+deployment_candidate,26,30d,-3.01,-6.77,3.84,13,Selected deployment candidate: best 60d on current data
+deployment_candidate,26,60d,4.74,4.14,4.81,32,Selected deployment candidate: best 60d on current data
+deployment_candidate,26,120d,-1.06,-0.69,5.32,57,Selected deployment candidate: best 60d on current data
+deployment_candidate,26,150d,-6.62,-2.13,8.36,73,Selected deployment candidate: best 60d on current data
