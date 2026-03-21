@@ -532,10 +532,37 @@ STOCK_EXPERIMENTS: list[dict] = [
      "hidden_size": 512, "obs_norm": True, "weight_decay": 0.05,
      "fill_slippage_bps": 10.0, "trade_penalty": 0.05},
 
-    # Random mutations to explore the neighbourhood
+    # Random mutations to explore the neighbourhood (30 slots per sweep pass)
     {"description": "random_1"},
     {"description": "random_2"},
     {"description": "random_3"},
+    {"description": "random_4"},
+    {"description": "random_5"},
+    {"description": "random_6"},
+    {"description": "random_7"},
+    {"description": "random_8"},
+    {"description": "random_9"},
+    {"description": "random_10"},
+    {"description": "random_11"},
+    {"description": "random_12"},
+    {"description": "random_13"},
+    {"description": "random_14"},
+    {"description": "random_15"},
+    {"description": "random_16"},
+    {"description": "random_17"},
+    {"description": "random_18"},
+    {"description": "random_19"},
+    {"description": "random_20"},
+    {"description": "random_21"},
+    {"description": "random_22"},
+    {"description": "random_23"},
+    {"description": "random_24"},
+    {"description": "random_25"},
+    {"description": "random_26"},
+    {"description": "random_27"},
+    {"description": "random_28"},
+    {"description": "random_29"},
+    {"description": "random_30"},
 ]
 
 # Default data paths used when --stocks is given and no explicit --train-data is provided.
