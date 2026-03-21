@@ -12,7 +12,26 @@ import torch.nn.functional as F
 from .config import PolicyConfig
 from .kernels.attention import HAS_TRITON, multi_query_attention as _triton_mqa
 
+try:
+    from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+    HAS_FLEX_ATTENTION = True
+except ImportError:
+    HAS_FLEX_ATTENTION = False
+
 logger = logging.getLogger(__name__)
+
+_flex_block_mask_cache: dict[tuple[int, str], object] = {}
+
+
+def _get_flex_causal_mask(seq_len: int, device: torch.device) -> object:
+    key = (seq_len, str(device))
+    if key not in _flex_block_mask_cache:
+        def causal_mask(b, h, q_idx, kv_idx):
+            return q_idx >= kv_idx
+        _flex_block_mask_cache[key] = create_block_mask(
+            causal_mask, B=None, H=None, Q_LEN=seq_len, KV_LEN=seq_len, device=device,
+        )
+    return _flex_block_mask_cache[key]
 
 
 def _is_attention_backend_error(exc: BaseException) -> bool:
@@ -384,6 +403,7 @@ class MultiQueryAttention(nn.Module):
             self.dilated_strides = [int(s) for s in config.dilated_strides.split(",")]
         # Number of memory tokens (needed for mask construction)
         self.num_memory_tokens = int(config.num_memory_tokens) if config.num_memory_tokens else 0
+        self.use_flex_attention = bool(config.use_flex_attention) and HAS_FLEX_ATTENTION
 
     def forward(self, x: torch.Tensor, cos_sin: Tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
         B, T, _ = x.shape
@@ -431,9 +451,15 @@ class MultiQueryAttention(nn.Module):
             and self.head_dim in (16, 32, 64, 128)
         )
 
+        use_flex = (
+            self.use_flex_attention
+            and q.is_cuda
+            and attn_mask is None
+            and self.causal
+            and dropout_p == 0.0
+        )
+
         if use_triton:
-            # Triton kernel handles MQA natively (K/V may have fewer heads than Q).
-            # Build a float additive mask from the bool mask if needed.
             triton_mask: torch.Tensor | None = None
             if attn_mask is not None:
                 if attn_mask.dtype == torch.bool:
@@ -442,7 +468,6 @@ class MultiQueryAttention(nn.Module):
                     ).masked_fill_(~attn_mask, float("-inf"))
                 else:
                     triton_mask = attn_mask.to(q.dtype)
-                # Ensure 4D: [B_or_1, H_or_1, S, S]
                 while triton_mask.dim() < 4:
                     triton_mask = triton_mask.unsqueeze(0)
             y = _triton_mqa(
@@ -452,8 +477,10 @@ class MultiQueryAttention(nn.Module):
                 causal=self.causal if attn_mask is None else False,
                 mask=triton_mask,
             )
+        elif use_flex:
+            block_mask = _get_flex_causal_mask(T, q.device)
+            y = flex_attention(q, k, v, block_mask=block_mask, enable_gqa=True)
         else:
-            # Fallback: expand K/V to match Q heads, then use SDPA
             if self.n_kv_head != self.n_head:
                 n_rep = self.n_head // self.n_kv_head
                 k = k.repeat_interleave(n_rep, dim=1)
@@ -766,6 +793,7 @@ def policy_config_from_payload(
         value_embedding_scale=_maybe(payload.get("value_embedding_scale"), float, 1.0),
         num_memory_tokens=_maybe(payload.get("num_memory_tokens"), int, 0),
         dilated_strides=str(payload.get("dilated_strides", "")),
+        use_flex_attention=bool(payload.get("use_flex_attention", True)),
         num_outputs=_maybe(payload.get("num_outputs"), int, 4),
         max_hold_hours=_maybe(payload.get("max_hold_hours"), float, 24.0),
     )
@@ -801,6 +829,7 @@ __all__ = [
     "BinanceHourlyPolicy",
     "BinanceHourlyPolicyNano",
     "BinancePolicyBase",
+    "HAS_FLEX_ATTENTION",
     "PolicyConfig",
     "PositionalEncoding",
     "align_state_dict_input_dim",

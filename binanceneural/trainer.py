@@ -153,6 +153,7 @@ class BinanceHourlyTrainer:
             max_hold_hours=self.config.max_hold_hours,
             num_memory_tokens=self.config.num_memory_tokens,
             dilated_strides=self.config.dilated_strides,
+            use_flex_attention=self.config.use_flex_attention,
         )
         model = build_policy(policy_cfg).to(self.device)
 
