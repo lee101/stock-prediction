@@ -829,8 +829,8 @@ def run_trial(
         "--fill-slippage-bps", "8",  # always eval with realistic slippage
         "--periods-per-year", str(config.periods_per_year),
     ]
-    if config.arch == "resmlp":
-        eval_cmd.extend(["--arch", "resmlp"])
+    if config.arch != "mlp":
+        eval_cmd.extend(["--arch", config.arch])
     val_return = None
     val_wr = None
     val_sortino = None
