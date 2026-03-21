@@ -31,6 +31,11 @@ from pathlib import Path
 
 from src.robust_trading_metrics import summarize_scenario_results
 
+try:
+    import wandb as _wandb_module
+except ImportError:
+    _wandb_module = None
+
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -73,10 +78,14 @@ class TrialConfig:
     smooth_downside_temperature: float = 0.02
     smoothness_penalty: float = 0.0
     arch: str = "mlp"
+    optimizer: str = "adamw"  # "adamw" or "muon"
     max_steps: int = 720
     periods_per_year: float = 8760.0
     seed: int = 42
     description: str = ""
+    max_leverage: float = 1.0
+    short_borrow_apr: float = 0.0
+    requires_gpu: str = ""  # e.g. "a100", "h100", "" = any GPU (dispatcher metadata only)
 
 
 # Define experiment configurations to test
@@ -214,7 +223,324 @@ EXPERIMENTS: list[dict] = [
     {"description": "random_1"},
     {"description": "random_2"},
     {"description": "random_3"},
+
+    # -----------------------------------------------------------------------
+    # Sortino-focused configs (optimise for risk-adjusted returns, not raw PnL)
+    # -----------------------------------------------------------------------
+
+    # High trade penalty → less churn → smoother equity curve
+    {"description": "trade_pen_high",
+     "trade_penalty": 0.10},
+
+    # Very high trade penalty variant
+    {"description": "trade_pen_vhigh",
+     "trade_penalty": 0.20},
+
+    # Match production crypto slippage closely (3bps)
+    {"description": "slip_3bps",
+     "fill_slippage_bps": 3.0},
+
+    # Combined conservative: high trade penalty + low slippage
+    {"description": "combined_smooth",
+     "trade_penalty": 0.08, "fill_slippage_bps": 3.0, "ent_coef": 0.02},
+
+    # reg_combo_3 was top-1 Sortino on crypto10 (val_sortino=2.82) — replicate
+    # with tighter trade penalty for even smoother PnL
+    {"description": "sortino_top1_tp",
+     "weight_decay": 0.005, "fill_slippage_bps": 5.0, "obs_norm": True,
+     "anneal_ent": True, "ent_coef": 0.08, "ent_coef_end": 0.02,
+     "lr_schedule": "cosine", "trade_penalty": 0.05},
+
+    # Smooth-downside penalty focused on minimising downside volatility
+    {"description": "sortino_sds_pen",
+     "weight_decay": 0.05, "fill_slippage_bps": 8.0, "obs_norm": True,
+     "smooth_downside_penalty": 0.5, "smooth_downside_temperature": 0.02,
+     "trade_penalty": 0.02},
+
+    # Drawdown penalty + slippage to stay out of losing streaks
+    {"description": "sortino_dd_slip",
+     "fill_slippage_bps": 5.0, "obs_norm": True, "weight_decay": 0.02,
+     "drawdown_penalty": 0.05, "trade_penalty": 0.02},
+
+    # Low entropy (more exploitation) + trade penalty (already trade_pen_05
+    # is #1 Sortino on autoresearch_daily; push entropy lower too)
+    {"description": "sortino_low_ent_tp",
+     "ent_coef": 0.01, "trade_penalty": 0.10},
+
+    # reg_combo_3 exact clone but with higher trade penalty
+    {"description": "sortino_rc3_tp08",
+     "weight_decay": 0.005, "fill_slippage_bps": 5.0, "obs_norm": True,
+     "anneal_ent": True, "ent_coef": 0.08, "ent_coef_end": 0.02,
+     "lr_schedule": "cosine", "trade_penalty": 0.08},
+
+    # Best of two worlds: cosine LR (good Sortino) + slippage training
+    {"description": "sortino_cosine_slip",
+     "lr_schedule": "cosine", "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05,
+     "fill_slippage_bps": 5.0, "trade_penalty": 0.05},
+
+    # Smoothness + downside penalty ensemble
+    {"description": "sortino_smooth_combo",
+     "weight_decay": 0.03, "fill_slippage_bps": 5.0, "obs_norm": True,
+     "smooth_downside_penalty": 0.3, "smoothness_penalty": 0.01,
+     "trade_penalty": 0.05},
+
+    # --- Leverage experiments ---
+    {"description": "leverage_15x",
+     "max_leverage": 1.5, "short_borrow_apr": 0.0001712,
+     "fill_slippage_bps": 5.0, "anneal_lr": True,
+     "ent_coef": 0.05, "trade_penalty": 0.05},
+
+    {"description": "leverage_2x",
+     "max_leverage": 2.0, "short_borrow_apr": 0.0001712,
+     "fill_slippage_bps": 5.0, "anneal_lr": True,
+     "ent_coef": 0.05, "trade_penalty": 0.05},
+
+    {"description": "leverage_2x_tp01",
+     "max_leverage": 2.0, "short_borrow_apr": 0.0001712,
+     "fill_slippage_bps": 8.0, "anneal_lr": True,
+     "ent_coef": 0.05, "trade_penalty": 0.01},
+
+    {"description": "leverage_2x_no_slip",
+     "max_leverage": 2.0, "short_borrow_apr": 0.0001712,
+     "fill_slippage_bps": 0.0, "anneal_lr": True,
+     "ent_coef": 0.05},
+
+    # --- Large architecture (requires A100+) ---
+    {"description": "h2048_anneal",
+     "hidden_size": 2048, "anneal_lr": True,
+     "ent_coef": 0.05, "fill_slippage_bps": 5.0,
+     "trade_penalty": 0.05, "requires_gpu": "a100"},
+
+    {"description": "h2048_resmlp_anneal",
+     "hidden_size": 2048, "arch": "resmlp", "anneal_lr": True,
+     "ent_coef": 0.05, "fill_slippage_bps": 5.0,
+     "requires_gpu": "a100"},
+
+    {"description": "h4096_anneal",
+     "hidden_size": 4096, "anneal_lr": True,
+     "ent_coef": 0.05, "fill_slippage_bps": 5.0,
+     "requires_gpu": "h100"},
+
+    # Architecture experiments — transformer / GRU / depth-recurrence / relu_sq
+    # arch values silently fall back to mlp in train.py until those archs land
+    {"description": "transformer_h256",
+     "arch": "transformer", "hidden_size": 256},
+    {"description": "transformer_h256_tp05",
+     "arch": "transformer", "hidden_size": 256, "trade_penalty": 0.05},
+    {"description": "gru_h256",
+     "arch": "gru", "hidden_size": 256},
+    {"description": "gru_h512",
+     "arch": "gru", "hidden_size": 512},
+    {"description": "depth_recur_h512",
+     "arch": "depth_recurrence", "hidden_size": 512},
+    {"description": "depth_recur_h1024",
+     "arch": "depth_recurrence", "hidden_size": 1024},
+    # mlp_relu_sq: relu² activation sharpens gradients on positive activations
+    {"description": "relu_sq_h1024",
+     "arch": "mlp_relu_sq", "hidden_size": 1024},
+    {"description": "relu_sq_tp05",
+     "arch": "mlp_relu_sq", "hidden_size": 1024, "trade_penalty": 0.05},
+
+    # Large model variants
+    {"description": "h2048_anneal_tp05",
+     "hidden_size": 2048, "anneal_lr": True,
+     "ent_coef": 0.05, "fill_slippage_bps": 5.0,
+     "trade_penalty": 0.05, "requires_gpu": "a100"},
+
+    # Combinations of best daily factors
+    {"description": "combo_best_daily",
+     "hidden_size": 1024, "trade_penalty": 0.05,
+     "fill_slippage_bps": 5.0, "lr_schedule": "cosine",
+     "obs_norm": True, "anneal_lr": True},
+    {"description": "combo_best_hourly",
+     "hidden_size": 1024, "fill_slippage_bps": 5.0,
+     "obs_norm": True, "ent_coef": 0.05, "anneal_lr": True,
+     "trade_penalty": 0.01},
+
+    # Calmar-proxy: drawdown + downside penalties approximate annual_return/max_dd
+    {"description": "calmar_focus",
+     "trade_penalty": 0.03,
+     "drawdown_penalty": 0.1, "smooth_downside_penalty": 0.2},
+    {"description": "calmar_strong",
+     "trade_penalty": 0.05,
+     "drawdown_penalty": 0.2, "smooth_downside_penalty": 0.3},
+
+    # Cosine LR × trade-penalty and slippage crosses
+    {"description": "cosine_lr_tp05",
+     "lr_schedule": "cosine", "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05,
+     "trade_penalty": 0.05, "anneal_lr": True},
+    {"description": "cosine_lr_slip5",
+     "lr_schedule": "cosine", "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05,
+     "fill_slippage_bps": 5.0, "anneal_lr": True},
+
+    # Entropy annealing × trade-penalty cross
+    {"description": "ent_anneal_tp05",
+     "anneal_ent": True, "ent_coef": 0.08, "ent_coef_end": 0.02,
+     "trade_penalty": 0.05},
+    {"description": "ent01_tp03",
+     "ent_coef": 0.1, "trade_penalty": 0.03},
+
+    # Variance testing: best configs at alternative seeds
+    {"description": "trade_pen_05_s123",
+     "trade_penalty": 0.05, "seed": 123},
+    {"description": "trade_pen_05_s7",
+     "trade_penalty": 0.05, "seed": 7},
+    {"description": "slip5_s123",
+     "fill_slippage_bps": 5.0, "seed": 123},
+
+    # GAE lambda sweep
+    {"description": "gae_lambda_09",
+     "gae_lambda": 0.9, "trade_penalty": 0.05},
+    {"description": "gae_lambda_099",
+     "gae_lambda": 0.99, "trade_penalty": 0.05},
+
+    # Reward scale sweep
+    {"description": "reward_scale_5",
+     "reward_scale": 5.0, "trade_penalty": 0.05},
+    {"description": "reward_scale_20",
+     "reward_scale": 20.0, "trade_penalty": 0.05},
+
+    # Longer rollout / more PPO reuse
+    {"description": "rollout_512_tp05",
+     "rollout_len": 512, "trade_penalty": 0.05},
+    {"description": "ppo_epochs_8",
+     "ppo_epochs": 8, "trade_penalty": 0.05},
+
+    # Combined champion: trade_pen + obs_norm + cosine + slip + anneal + wd
+    {"description": "robust_champion",
+     "hidden_size": 1024, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+     "obs_norm": True, "anneal_lr": True, "lr_schedule": "cosine",
+     "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05,
+     "weight_decay": 0.005, "ent_coef": 0.05},
+
+    # Muon optimizer experiments — Newton-Schulz orthogonalization, 2-3x more stable than Adam
+    {"description": "muon_baseline",
+     "optimizer": "muon", "lr": 0.02, "trade_penalty": 0.0},
+    {"description": "muon_tp05",
+     "optimizer": "muon", "lr": 0.02, "trade_penalty": 0.05},
+    {"description": "muon_tp05_slip5",
+     "optimizer": "muon", "lr": 0.02, "trade_penalty": 0.05, "fill_slippage_bps": 5.0},
+    {"description": "muon_lr001",
+     "optimizer": "muon", "lr": 0.01, "trade_penalty": 0.05},
+    {"description": "muon_relu_sq",
+     "optimizer": "muon", "lr": 0.02, "arch": "mlp_relu_sq", "trade_penalty": 0.05},
 ]
+
+# Alias used by sweep scripts and verification commands.
+TRIAL_CONFIGS = EXPERIMENTS
+
+
+# ---------------------------------------------------------------------------
+# Stock-specific experiment configurations for Alpaca US equity daily trading.
+#
+# Key differences vs crypto:
+#   - Alpaca fee ~10bps per trade (fee_rate=0.001); include realistic slippage too.
+#   - Daily bars: periods_per_year=252. max_steps set at run time via --max-steps-override.
+#   - Long-only makes sense for the bull-market regime; no --long-only flag in train.py
+#     so we use heavy short_borrow_apr to deter shorts, and high trade_penalty to
+#     discourage excessive churn on daily bars.
+#   - anneal_lr is critical — keeps it for all configs.
+# ---------------------------------------------------------------------------
+
+STOCK_EXPERIMENTS: list[dict] = [
+    # Baseline: same defaults but fee=10bps (Alpaca maker/taker)
+    {"description": "stock_baseline"},
+
+    # --- Trade penalty sweep (reduce churn on daily bars) ---
+    {"description": "stock_trade_pen_01", "trade_penalty": 0.01},
+    {"description": "stock_trade_pen_02", "trade_penalty": 0.02},
+    {"description": "stock_trade_pen_03", "trade_penalty": 0.03},
+    {"description": "stock_trade_pen_05", "trade_penalty": 0.05},
+    {"description": "stock_trade_pen_08", "trade_penalty": 0.08},
+    {"description": "stock_trade_pen_10", "trade_penalty": 0.10},
+
+    # --- Long/short access (no borrow cost — full short access) ---
+    {"description": "stock_longshort",
+     "short_borrow_apr": 0.0, "trade_penalty": 0.02},
+
+    # --- Entropy coefficient variants ---
+    {"description": "stock_ent_03", "ent_coef": 0.03},
+    {"description": "stock_ent_05", "ent_coef": 0.05},   # matches baseline
+    {"description": "stock_ent_08", "ent_coef": 0.08},
+
+    # --- Hidden size variants ---
+    {"description": "stock_h512", "hidden_size": 512},
+    {"description": "stock_h1024", "hidden_size": 1024},   # matches baseline
+
+    # --- Slippage variants (train with friction to force wider edges) ---
+    {"description": "stock_slip_5bps",  "fill_slippage_bps": 5.0},
+    {"description": "stock_slip_10bps", "fill_slippage_bps": 10.0},
+    {"description": "stock_slip_15bps", "fill_slippage_bps": 15.0},
+
+    # --- LR schedule variants ---
+    {"description": "stock_cosine_lr",
+     "lr_schedule": "cosine", "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05},
+    {"description": "stock_no_anneal", "anneal_lr": False},
+
+    # --- Gamma (discount) variants ---
+    {"description": "stock_high_gamma_999", "gamma": 0.999},
+    {"description": "stock_gamma_995",      "gamma": 0.995},
+
+    # --- Risk/penalty shaping ---
+    {"description": "stock_drawdown_pen",
+     "drawdown_penalty": 0.05, "trade_penalty": 0.03},
+    {"description": "stock_smooth_pen",
+     "smooth_downside_penalty": 0.5, "smooth_downside_temperature": 0.02,
+     "trade_penalty": 0.02},
+
+    # --- Reward scale variants ---
+    {"description": "stock_reward_scale_5",  "reward_scale": 5.0,  "trade_penalty": 0.03},
+    {"description": "stock_reward_scale_20", "reward_scale": 20.0, "trade_penalty": 0.03},
+
+    # --- Observation normalisation (often helps with heterogeneous stock features) ---
+    {"description": "stock_obs_norm",       "obs_norm": True},
+    {"description": "stock_obs_norm_tp05",  "obs_norm": True, "trade_penalty": 0.05},
+
+    # --- Weight decay for generalisation ---
+    {"description": "stock_wd_01",   "weight_decay": 0.01},
+    {"description": "stock_wd_05",   "weight_decay": 0.05},
+
+    # --- Combined strong regularisation ---
+    {"description": "stock_reg_combo",
+     "obs_norm": True, "weight_decay": 0.05, "fill_slippage_bps": 10.0,
+     "trade_penalty": 0.05},
+
+    # --- Robust champion (transplanted from crypto best-daily findings) ---
+    {"description": "stock_robust_champion",
+     "hidden_size": 1024, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+     "obs_norm": True, "anneal_lr": True, "lr_schedule": "cosine",
+     "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05,
+     "weight_decay": 0.005, "ent_coef": 0.05},
+
+    # --- Sortino-focused: low entropy + high trade penalty ---
+    {"description": "stock_sortino_low_ent_tp",
+     "ent_coef": 0.01, "trade_penalty": 0.10},
+
+    # --- cosine + slippage cross ---
+    {"description": "stock_cosine_slip",
+     "lr_schedule": "cosine", "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05,
+     "fill_slippage_bps": 10.0, "trade_penalty": 0.05},
+
+    # --- Alternative seeds (variance check on best config) ---
+    {"description": "stock_trade_pen_05_s123",
+     "trade_penalty": 0.05, "seed": 123},
+    {"description": "stock_trade_pen_05_s7",
+     "trade_penalty": 0.05, "seed": 7},
+
+    # --- Smaller model + strong reg (may generalise with fewer daily bars) ---
+    {"description": "stock_h512_reg",
+     "hidden_size": 512, "obs_norm": True, "weight_decay": 0.05,
+     "fill_slippage_bps": 10.0, "trade_penalty": 0.05},
+
+    # Random mutations to explore the neighbourhood
+    {"description": "random_1"},
+    {"description": "random_2"},
+    {"description": "random_3"},
+]
+
+# Default data paths used when --stocks is given and no explicit --train-data is provided.
+_STOCK_DEFAULT_TRAIN = "pufferlib_market/data/stocks12_daily_train.bin"
+_STOCK_DEFAULT_VAL   = "pufferlib_market/data/stocks12_daily_val.bin"
 
 
 def build_config(overrides: dict) -> TrialConfig:
@@ -407,12 +733,14 @@ def _leaderboard_sort_value(row: dict[str, str]) -> float:
     return -float("inf")
 
 
-def select_experiments(
+def _select_from_pool(
+    pool: list[dict],
     *,
     start_from: int = 0,
     descriptions: str = "",
 ) -> list[dict]:
-    experiments = EXPERIMENTS[max(0, int(start_from)) :]
+    """Generic helper: filter a pool list by start_from offset and optional description subset."""
+    experiments = pool[max(0, int(start_from)) :]
     requested = [part.strip() for part in str(descriptions).split(",") if part.strip()]
     if not requested:
         return experiments
@@ -426,6 +754,14 @@ def select_experiments(
     return selected
 
 
+def select_experiments(
+    *,
+    start_from: int = 0,
+    descriptions: str = "",
+) -> list[dict]:
+    return _select_from_pool(EXPERIMENTS, start_from=start_from, descriptions=descriptions)
+
+
 def run_trial(
     config: TrialConfig,
     train_data: str,
@@ -433,6 +769,8 @@ def run_trial(
     time_budget: int,
     checkpoint_dir: str,
     *,
+    wandb_project: str | None = None,
+    wandb_group: str | None = None,
     holdout_data: str | None = None,
     holdout_eval_steps: int = 0,
     holdout_n_windows: int = 0,
@@ -496,6 +834,8 @@ def run_trial(
         "--checkpoint-dir", checkpoint_dir,
         "--arch", config.arch,
         "--periods-per-year", str(config.periods_per_year),
+        "--max-leverage", str(config.max_leverage),
+        "--short-borrow-apr", str(config.short_borrow_apr),
     ]
     if config.anneal_lr:
         cmd.append("--anneal-lr")
@@ -513,6 +853,15 @@ def run_trial(
             "--lr-warmup-frac", str(config.lr_warmup_frac),
             "--lr-min-ratio", str(config.lr_min_ratio),
         ])
+    if config.optimizer != "adamw":
+        cmd.extend(["--optimizer", config.optimizer])
+    if wandb_project:
+        cmd.extend([
+            "--wandb-project", wandb_project,
+            "--wandb-run-name", config.description,
+        ])
+        if wandb_group:
+            cmd.extend(["--wandb-group", wandb_group])
 
     # Run training with time budget
     print(f"\n  Training for {time_budget}s...")
@@ -620,8 +969,8 @@ def run_trial(
         "--fill-slippage-bps", "8",  # always eval with realistic slippage
         "--periods-per-year", str(config.periods_per_year),
     ]
-    if config.arch == "resmlp":
-        eval_cmd.extend(["--arch", "resmlp"])
+    if config.arch != "mlp":
+        eval_cmd.extend(["--arch", config.arch])
     val_return = None
     val_wr = None
     val_sortino = None
@@ -835,13 +1184,59 @@ def run_trial(
     selected_metric, rank_score = select_rank_score(result_payload, rank_metric=rank_metric)
     result_payload["rank_metric"] = selected_metric
     result_payload["rank_score"] = rank_score
+
+    if wandb_project and _wandb_module is not None:
+        try:
+            summary_run = _wandb_module.init(
+                project=wandb_project,
+                name=config.description,
+                group=wandb_group or None,
+                config=asdict(config),
+                reinit=True,
+            )
+            summary_updates: dict = {
+                "trial/elapsed_s": elapsed,
+                "trial/train_steps": total_steps,
+                "trial/rank_score": rank_score,
+                "trial/rank_metric": selected_metric,
+            }
+            if val_return is not None:
+                summary_updates["best_val_return"] = val_return
+            if val_sortino is not None:
+                summary_updates["val/sortino"] = val_sortino
+            if val_wr is not None:
+                summary_updates["val/win_rate"] = val_wr
+            if val_profitable_pct is not None:
+                summary_updates["val/profitable_pct"] = val_profitable_pct
+            if train_return is not None:
+                summary_updates["train/final_return"] = train_return
+            if train_sortino is not None:
+                summary_updates["train/final_sortino"] = train_sortino
+            for k, v in holdout_metrics.items():
+                summary_updates[f"holdout/{k}"] = v
+            for k, v in market_metrics.items():
+                summary_updates[f"market/{k}"] = v
+            summary_run.summary.update(summary_updates)
+            summary_run.finish()
+        except Exception:
+            pass  # never crash autoresearch due to wandb errors
+
     return result_payload
 
 
 def main():
     parser = argparse.ArgumentParser(description="Auto-research RL trading configs")
-    parser.add_argument("--train-data", required=True)
-    parser.add_argument("--val-data", required=True)
+    listing_only = "--list-experiments" in sys.argv
+    stocks_mode = "--stocks" in sys.argv
+    # In stocks mode the data paths default to stocks12 daily bins so they are
+    # optional even if not listing.
+    data_required = not listing_only and not stocks_mode
+    parser.add_argument("--stocks", action="store_true",
+                        help="Use stock-specific configs and Alpaca daily defaults "
+                             "(fee_rate=0.001, periods_per_year=252, "
+                             "data defaults to stocks12_daily_{train,val}.bin)")
+    parser.add_argument("--train-data", required=data_required, default=None)
+    parser.add_argument("--val-data", required=data_required, default=None)
     parser.add_argument("--time-budget", type=int, default=300,
                         help="Training time budget per trial in seconds")
     parser.add_argument("--max-trials", type=int, default=50)
@@ -915,11 +1310,52 @@ def main():
     parser.add_argument("--replay-eval-hourly-periods-per-year", type=float, default=8760.0)
     parser.add_argument("--replay-eval-timeout-seconds", type=int, default=0,
                         help="Optional timeout for replay_eval; 0 disables it")
+    parser.add_argument("--list-experiments", action="store_true",
+                        help="Print all experiment names and exit")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Override random seed for all trials (default: use each trial config's seed field)")
+    parser.add_argument("--wandb-project", type=str, default=None,
+                        help="W&B project name; when set each trial is logged as a separate run in this project")
     args = parser.parse_args()
+
+    # --stocks: apply stock-mode defaults before anything else so that
+    # user overrides (explicit --train-data etc.) can still win.
+    if args.stocks:
+        if args.train_data is None:
+            args.train_data = _STOCK_DEFAULT_TRAIN
+        if args.val_data is None:
+            args.val_data = _STOCK_DEFAULT_VAL
+        # periods_per_year default is 8760 (hourly); override to 252 (daily)
+        # only when the user has NOT already supplied their own value.
+        if args.periods_per_year == 8760.0:
+            args.periods_per_year = 252.0
+        # fee_rate override: 10bps Alpaca fee when not already overridden
+        if args.fee_rate_override < 0.0:
+            args.fee_rate_override = 0.001
+        # Sensible daily max_steps when not already overridden
+        if args.max_steps_override == 0:
+            args.max_steps_override = 252
+        # Default leaderboard and checkpoint root for stocks
+        if args.leaderboard == "pufferlib_market/autoresearch_leaderboard.csv":
+            args.leaderboard = "autoresearch_stock_daily_leaderboard.csv"
+        if args.checkpoint_root == "pufferlib_market/checkpoints/autoresearch":
+            args.checkpoint_root = "pufferlib_market/checkpoints/autoresearch_stock"
+
+    if args.list_experiments:
+        experiment_pool = STOCK_EXPERIMENTS if args.stocks else EXPERIMENTS
+        for cfg_dict in experiment_pool:
+            desc = cfg_dict.get("description", "")
+            gpu = cfg_dict.get("requires_gpu", "")
+            gpu_note = f" [requires_gpu={gpu}]" if gpu else ""
+            print(f"{desc}{gpu_note}")
+        sys.exit(0)
 
     leaderboard_path = Path(args.leaderboard)
     ckpt_root = Path(args.checkpoint_root)
     ckpt_root.mkdir(parents=True, exist_ok=True)
+
+    # W&B group ties all trials in this autoresearch run together on the dashboard
+    wandb_group = f"autoresearch_{int(time.time())}" if args.wandb_project else None
 
     # Initialize or load leaderboard
     fieldnames = [
@@ -952,7 +1388,19 @@ def main():
             for row in reader:
                 existing_trials.add(row.get("description", ""))
 
-    experiments = select_experiments(start_from=args.start_from, descriptions=args.descriptions)
+    if args.stocks:
+        experiments = _select_from_pool(
+            STOCK_EXPERIMENTS,
+            start_from=args.start_from,
+            descriptions=args.descriptions,
+        )
+        print(f"[stocks mode] {len(experiments)} stock configs, "
+              f"train={args.train_data}, val={args.val_data}, "
+              f"fee_override={args.fee_rate_override}, "
+              f"periods_per_year={args.periods_per_year}, "
+              f"max_steps={args.max_steps_override}")
+    else:
+        experiments = select_experiments(start_from=args.start_from, descriptions=args.descriptions)
 
     # Add random mutations
     best_rank_score = -float("inf")
@@ -984,6 +1432,8 @@ def main():
             config.max_steps = args.max_steps_override
         if args.fee_rate_override >= 0.0:
             config.fee_rate = args.fee_rate_override
+        if args.seed is not None:
+            config.seed = args.seed
 
         holdout_eval_steps = int(args.holdout_eval_steps) if int(args.holdout_eval_steps) > 0 else int(config.max_steps)
 
@@ -1006,6 +1456,8 @@ def main():
             args.val_data,
             args.time_budget,
             ckpt_dir,
+            wandb_project=args.wandb_project,
+            wandb_group=wandb_group,
             holdout_data=args.holdout_data,
             holdout_eval_steps=holdout_eval_steps,
             holdout_n_windows=args.holdout_n_windows,

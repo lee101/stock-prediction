@@ -4,9 +4,15 @@ Export hourly OHLCV crypto data to MKTD v2 binary for ``pufferlib_market``.
 The output format matches ``pufferlib_market`` C environment expectations:
   - Header (MKTD v2)
   - Symbol table
-  - Feature tensor: float32[T, S, 16]
+  - Feature tensor: float32[T, S, 16]  (or [T, S, 20] with --cross-features)
   - Price tensor: float32[T, S, 5]   (open, high, low, close, volume)
   - Tradable mask: uint8[T, S]
+
+Backwards compatibility:
+  Without --cross-features the output is byte-for-byte identical to previous
+  versions.  Files written with --cross-features have features_per_sym=20 in
+  the header and require the C extension to be compiled with
+  FEATURES_PER_SYM=20.
 """
 
 from __future__ import annotations
@@ -19,6 +25,11 @@ from typing import Iterable
 
 import numpy as np
 import pandas as pd
+
+from pufferlib_market.cross_symbol_features import (
+    CROSS_FEATURES,
+    compute_cross_features,
+)
 
 FEATURES_PER_SYM = 16
 PRICE_FEATURES = 5
@@ -179,6 +190,9 @@ def export_binary(
     end_date: str | None = None,
     min_hours: int = 24 * 90,
     min_coverage: float = 0.95,
+    cross_features: bool = False,
+    cross_anchor: str = "BTC",
+    cross_window: int = 24,
 ) -> dict[str, object]:
     root = Path(data_root)
     symbol_list = _resolve_symbols(symbols, root)
@@ -238,9 +252,25 @@ def export_binary(
 
     num_symbols = len(aligned_symbols)
     num_timesteps = len(index)
-    feature_arr = np.stack(feature_list, axis=1)  # [T, S, 16]
-    price_arr = np.stack(price_list, axis=1)      # [T, S, 5]
-    mask_arr = np.stack(mask_list, axis=1)        # [T, S]
+    base_feature_arr = np.stack(feature_list, axis=1)  # [T, S, 16]
+    price_arr = np.stack(price_list, axis=1)            # [T, S, 5]
+    mask_arr = np.stack(mask_list, axis=1)              # [T, S]
+
+    # Optionally append 4 cross-symbol features per symbol.
+    # Without cross_features the output is byte-for-byte identical to previous.
+    if cross_features:
+        close_prices = price_arr[:, :, 3]  # [T, S] close prices
+        extra = compute_cross_features(
+            close_prices,
+            aligned_symbols,
+            window=cross_window,
+            anchor_symbol=cross_anchor,
+        )  # [T, S, 4]
+        feature_arr = np.concatenate([base_feature_arr, extra], axis=2)  # [T, S, 20]
+        features_per_sym_out = FEATURES_PER_SYM + CROSS_FEATURES
+    else:
+        feature_arr = base_feature_arr
+        features_per_sym_out = FEATURES_PER_SYM
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("wb") as handle:
@@ -250,7 +280,7 @@ def export_binary(
             VERSION,
             num_symbols,
             num_timesteps,
-            FEATURES_PER_SYM,
+            features_per_sym_out,
             PRICE_FEATURES,
             b"\x00" * 40,
         )
@@ -267,6 +297,7 @@ def export_binary(
         "symbols": aligned_symbols,
         "num_symbols": num_symbols,
         "num_timesteps": num_timesteps,
+        "features_per_sym": features_per_sym_out,
         "start": str(index[0]),
         "end": str(index[-1]),
     }
@@ -285,6 +316,18 @@ def main() -> None:
     parser.add_argument("--end-date", default=None, help="Optional inclusive end timestamp/date (UTC)")
     parser.add_argument("--min-hours", type=int, default=24 * 90, help="Minimum aligned hours required")
     parser.add_argument("--min-coverage", type=float, default=0.95, help="Minimum per-symbol coverage ratio [0,1]")
+    parser.add_argument(
+        "--cross-features",
+        action="store_true",
+        default=False,
+        help=(
+            "Append 4 cross-symbol features per symbol (rolling_corr_anchor, "
+            "rolling_beta, relative_return, breadth_rank), bumping features_per_sym "
+            "from 16 to 20.  Requires C env recompiled with FEATURES_PER_SYM=20."
+        ),
+    )
+    parser.add_argument("--cross-anchor", default="BTC", help="Anchor symbol name for cross features (default: BTC)")
+    parser.add_argument("--cross-window", type=int, default=24, help="Rolling window in hours for cross features (default: 24)")
     args = parser.parse_args()
 
     symbols = [s for s in args.symbols.split(",")] if args.symbols else []
@@ -296,10 +339,13 @@ def main() -> None:
         end_date=args.end_date,
         min_hours=max(2, int(args.min_hours)),
         min_coverage=min(max(float(args.min_coverage), 0.0), 1.0),
+        cross_features=args.cross_features,
+        cross_anchor=args.cross_anchor,
+        cross_window=args.cross_window,
     )
     print(
         "Wrote {path} | symbols={num_symbols} | timesteps={num_timesteps} | "
-        "start={start} | end={end}".format(**report)
+        "features_per_sym={features_per_sym} | start={start} | end={end}".format(**report)
     )
     print("Symbols:", ",".join(report["symbols"]))  # type: ignore[index]
 

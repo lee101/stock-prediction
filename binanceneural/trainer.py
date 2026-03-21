@@ -104,6 +104,8 @@ class BinanceHourlyTrainer:
             raise ValueError(
                 f"fill_temperature must be > 0 for differentiable fills (got {self.config.fill_temperature})."
             )
+        if hasattr(torch, "_dynamo") and hasattr(torch._dynamo, "config"):
+            torch._dynamo.config.suppress_errors = True
         if self.config.use_tf32:
             if hasattr(torch, "set_float32_matmul_precision"):
                 torch.set_float32_matmul_precision("high")
@@ -182,7 +184,7 @@ class BinanceHourlyTrainer:
                 logger.warning("Preload checkpoint not found: %s", preload_path)
 
         if self.config.use_compile and hasattr(torch, "compile"):
-            model = torch.compile(model, mode="max-autotune")
+            model = torch.compile(model, mode="max-autotune", fullgraph=False)
 
         optimizer = self._build_optimizer(model)
         self._warmup_base_lrs = [group.get("lr", self.config.learning_rate) for group in optimizer.param_groups]
@@ -191,8 +193,13 @@ class BinanceHourlyTrainer:
         ]
         self._amp_context, self._scaler = self._build_amp()
 
-        train_loader = self.data.train_dataloader(self.config.batch_size, self.config.num_workers)
-        val_loader = self.data.val_dataloader(self.config.batch_size, self.config.num_workers)
+        if self.device.type == "cuda" and hasattr(self.data, "gpu_cached_dataloader"):
+            train_loader = self.data.gpu_cached_dataloader("train", self.config.batch_size, self.device, shuffle=True)
+            val_loader = self.data.gpu_cached_dataloader("val", self.config.batch_size, self.device, shuffle=False)
+            logger.info("Using GPU-cached dataloaders")
+        else:
+            train_loader = self.data.train_dataloader(self.config.batch_size, self.config.num_workers)
+            val_loader = self.data.val_dataloader(self.config.batch_size, self.config.num_workers)
         self._total_train_steps = max(1, len(train_loader) * max(1, self.config.epochs))
         if self.config.dry_train_steps:
             self._total_train_steps = min(
@@ -320,19 +327,21 @@ class BinanceHourlyTrainer:
             compiler = getattr(torch, "compiler", None)
             mark_step_begin = getattr(compiler, "cudagraph_mark_step_begin", None) if compiler is not None else None
 
+        nb = self.device.type == "cuda"
+
         for batch in loader:
             if mark_step_begin is not None:
                 mark_step_begin()
-            features = batch["features"].to(self.device)
+            features = batch["features"].to(self.device, non_blocking=nb)
             if train and self.config.feature_noise_std > 0:
                 features = features + self.config.feature_noise_std * torch.randn_like(features)
-            opens = batch["open"].to(self.device) if "open" in batch else None
-            highs = batch["high"].to(self.device)
-            lows = batch["low"].to(self.device)
-            closes = batch["close"].to(self.device)
-            reference_close = batch["reference_close"].to(self.device)
-            chronos_high = batch["chronos_high"].to(self.device)
-            chronos_low = batch["chronos_low"].to(self.device)
+            opens = batch["open"].to(self.device, non_blocking=nb) if "open" in batch else None
+            highs = batch["high"].to(self.device, non_blocking=nb)
+            lows = batch["low"].to(self.device, non_blocking=nb)
+            closes = batch["close"].to(self.device, non_blocking=nb)
+            reference_close = batch["reference_close"].to(self.device, non_blocking=nb)
+            chronos_high = batch["chronos_high"].to(self.device, non_blocking=nb)
+            chronos_low = batch["chronos_low"].to(self.device, non_blocking=nb)
 
             split_amp = bool(self.config.split_amp) and self._amp_context is not None
             use_vsim = bool(self.config.use_vectorized_sim) and simulate_hourly_trades_fast is not None
@@ -629,7 +638,8 @@ class BinanceHourlyTrainer:
             muon_params, adam_groups = self._split_muon_params(model, self.config)
             optimizers: list[torch.optim.Optimizer] = []
             if adam_groups:
-                optimizers.append(torch.optim.AdamW(adam_groups, lr=self.config.learning_rate))
+                fused = self.device.type == "cuda"
+                optimizers.append(torch.optim.AdamW(adam_groups, lr=self.config.learning_rate, fused=fused))
             if muon_params:
                 muon_wd = 0.0 if self.config.cautious_weight_decay else self.config.weight_decay
                 optimizers.append(
@@ -654,10 +664,14 @@ class BinanceHourlyTrainer:
         return self._build_adamw(model)
 
     def _build_adamw(self, model: BinancePolicyBase) -> torch.optim.Optimizer:
+        fused = self.device.type == "cuda"
         _, adam_groups = self._split_muon_params(model, self.config, muon=False)
         if not adam_groups:
-            return torch.optim.AdamW(model.parameters(), lr=self.config.learning_rate, weight_decay=self.config.weight_decay)
-        return torch.optim.AdamW(adam_groups, lr=self.config.learning_rate)
+            return torch.optim.AdamW(
+                model.parameters(), lr=self.config.learning_rate,
+                weight_decay=self.config.weight_decay, fused=fused,
+            )
+        return torch.optim.AdamW(adam_groups, lr=self.config.learning_rate, fused=fused)
 
     @staticmethod
     def _split_muon_params(
