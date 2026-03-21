@@ -78,6 +78,7 @@ class TrialConfig:
     smooth_downside_temperature: float = 0.02
     smoothness_penalty: float = 0.0
     arch: str = "mlp"
+    optimizer: str = "adamw"  # "adamw" or "muon"
     max_steps: int = 720
     periods_per_year: float = 8760.0
     seed: int = 42
@@ -411,6 +412,18 @@ EXPERIMENTS: list[dict] = [
      "obs_norm": True, "anneal_lr": True, "lr_schedule": "cosine",
      "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05,
      "weight_decay": 0.005, "ent_coef": 0.05},
+
+    # Muon optimizer experiments — Newton-Schulz orthogonalization, 2-3x more stable than Adam
+    {"description": "muon_baseline",
+     "optimizer": "muon", "lr": 0.02, "trade_penalty": 0.0},
+    {"description": "muon_tp05",
+     "optimizer": "muon", "lr": 0.02, "trade_penalty": 0.05},
+    {"description": "muon_tp05_slip5",
+     "optimizer": "muon", "lr": 0.02, "trade_penalty": 0.05, "fill_slippage_bps": 5.0},
+    {"description": "muon_lr001",
+     "optimizer": "muon", "lr": 0.01, "trade_penalty": 0.05},
+    {"description": "muon_relu_sq",
+     "optimizer": "muon", "lr": 0.02, "arch": "mlp_relu_sq", "trade_penalty": 0.05},
 ]
 
 # Alias used by sweep scripts and verification commands.
@@ -717,6 +730,8 @@ def run_trial(
             "--lr-warmup-frac", str(config.lr_warmup_frac),
             "--lr-min-ratio", str(config.lr_min_ratio),
         ])
+    if config.optimizer != "adamw":
+        cmd.extend(["--optimizer", config.optimizer])
     if wandb_project:
         cmd.extend([
             "--wandb-project", wandb_project,
