@@ -239,7 +239,9 @@ class BinanceHourlyPolicy(BinancePolicyBase):
                 batch_first=True,
                 activation="gelu",
             )
-            self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=config.num_layers)
+            self.encoder = nn.TransformerEncoder(
+                encoder_layer, num_layers=config.num_layers, enable_nested_tensor=False,
+            )
         self._attention_backend_fallback = False
         self.norm = nn.LayerNorm(config.hidden_dim)
         self.head = nn.Linear(config.hidden_dim, config.num_outputs)
