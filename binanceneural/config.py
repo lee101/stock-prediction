@@ -175,6 +175,7 @@ class TrainingConfig:
     use_vectorized_sim: bool = False
     use_tf32: bool = True
     use_flash_attention: bool = True
+    accumulation_steps: int = 1
     forecast_config: ForecastConfig = field(default_factory=ForecastConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
 

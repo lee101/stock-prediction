@@ -21,6 +21,12 @@ try:
 except ImportError:
     simulate_hourly_trades_fast = None
     simulate_hourly_trades_compiled = None
+try:
+    from trainingefficiency.triton_sim_kernel import simulate_hourly_trades_triton
+    HAS_TRITON_SIM = True
+except ImportError:
+    simulate_hourly_trades_triton = None
+    HAS_TRITON_SIM = False
 from torch.nn.utils import clip_grad_norm_  # type: ignore
 from traininglib.optim_factory import MultiOptim
 
@@ -184,7 +190,7 @@ class BinanceHourlyTrainer:
                 logger.warning("Preload checkpoint not found: %s", preload_path)
 
         if self.config.use_compile and hasattr(torch, "compile"):
-            model = torch.compile(model, mode="max-autotune", fullgraph=False)
+            model = torch.compile(model, mode="reduce-overhead", fullgraph=False)
 
         optimizer = self._build_optimizer(model)
         self._warmup_base_lrs = [group.get("lr", self.config.learning_rate) for group in optimizer.param_groups]
@@ -323,215 +329,238 @@ class BinanceHourlyTrainer:
         current_epoch: int = 1,
     ) -> tuple[dict[str, float], int]:
         model.train(train)
-        total_loss = 0.0
-        total_score = 0.0
-        total_sortino = 0.0
-        total_return = 0.0
+        device = self.device
+        loss_sum = torch.zeros(1, device=device)
+        score_sum = torch.zeros(1, device=device)
+        sortino_sum = torch.zeros(1, device=device)
+        return_sum = torch.zeros(1, device=device)
         steps = 0
 
-        # Torch compile may wrap forward in CUDAGraphs; mark the start of each step to
-        # avoid "overwritten output" errors when internal tensors are reused across runs.
         mark_step_begin = None
         if bool(self.config.use_compile):
             compiler = getattr(torch, "compiler", None)
             mark_step_begin = getattr(compiler, "cudagraph_mark_step_begin", None) if compiler is not None else None
 
-        nb = self.device.type == "cuda"
+        nb = device.type == "cuda"
+        accum_steps = max(1, self.config.accumulation_steps) if train else 1
 
-        for batch in loader:
-            if mark_step_begin is not None:
-                mark_step_begin()
-            features = batch["features"].to(self.device, non_blocking=nb)
-            if train and self.config.feature_noise_std > 0:
-                features = features + self.config.feature_noise_std * torch.randn_like(features)
-            opens = batch["open"].to(self.device, non_blocking=nb) if "open" in batch else None
-            highs = batch["high"].to(self.device, non_blocking=nb)
-            lows = batch["low"].to(self.device, non_blocking=nb)
-            closes = batch["close"].to(self.device, non_blocking=nb)
-            reference_close = batch["reference_close"].to(self.device, non_blocking=nb)
-            chronos_high = batch["chronos_high"].to(self.device, non_blocking=nb)
-            chronos_low = batch["chronos_low"].to(self.device, non_blocking=nb)
+        split_amp = bool(self.config.split_amp) and self._amp_context is not None
+        use_vsim = bool(self.config.use_vectorized_sim) and simulate_hourly_trades_fast is not None
+        sim_context = nullcontext() if split_amp else self._amp_context
+        scale = float(self.config.trade_amount_scale)
+        base_lag = int(self.config.decision_lag_bars)
+        lag_range_str = self.config.decision_lag_range.strip()
+        lag_list = [int(x) for x in lag_range_str.split(",") if x.strip()] if lag_range_str else [base_lag]
 
-            split_amp = bool(self.config.split_amp) and self._amp_context is not None
-            use_vsim = bool(self.config.use_vectorized_sim) and simulate_hourly_trades_fast is not None
+        if HAS_TRITON_SIM and device.type == "cuda":
+            sim_fn = simulate_hourly_trades_triton
+        elif use_vsim:
+            sim_fn = simulate_hourly_trades_fast
+        else:
+            sim_fn = simulate_hourly_trades
 
-            with self._amp_context:
-                outputs = model(features)
-                actions = model.decode_actions(
-                    outputs,
-                    reference_close=reference_close,
-                    chronos_high=chronos_high,
-                    chronos_low=chronos_low,
-                )
-
-            sim_context = nullcontext() if split_amp else self._amp_context
-
-            with sim_context:
-                scale = float(self.config.trade_amount_scale)
-                if split_amp:
-                    trade_intensity = actions["trade_amount"].float() / scale
-                    buy_intensity = actions["buy_amount"].float() / scale
-                    sell_intensity = actions["sell_amount"].float() / scale
-                    sim_highs = highs.float()
-                    sim_lows = lows.float()
-                    sim_closes = closes.float()
-                    sim_opens = opens.float() if opens is not None else None
-                    sim_buy = actions["buy_price"].float()
-                    sim_sell = actions["sell_price"].float()
-                else:
-                    trade_intensity = actions["trade_amount"] / scale
-                    buy_intensity = actions["buy_amount"] / scale
-                    sell_intensity = actions["sell_amount"] / scale
-                    sim_highs = highs
-                    sim_lows = lows
-                    sim_closes = closes
-                    sim_opens = opens
-                    sim_buy = actions["buy_price"]
-                    sim_sell = actions["sell_price"]
-
-                sim_kwargs = {
-                    "highs": sim_highs,
-                    "lows": sim_lows,
-                    "closes": sim_closes,
-                    "opens": sim_opens,
-                    "buy_prices": sim_buy,
-                    "sell_prices": sim_sell,
-                    "trade_intensity": trade_intensity,
-                    "buy_trade_intensity": buy_intensity,
-                    "sell_trade_intensity": sell_intensity,
-                    "maker_fee": batch.get("maker_fee", self.config.maker_fee),
-                    "initial_cash": self.config.initial_cash,
-                    "can_short": batch.get("can_short", False),
-                    "can_long": batch.get("can_long", True),
-                    "max_leverage": self.config.max_leverage,
-                    "market_order_entry": self.config.market_order_entry,
-                    "fill_buffer_pct": self._get_fill_buffer(current_epoch),
-                    "margin_annual_rate": float(self.config.margin_annual_rate),
-                }
-                base_lag = int(self.config.decision_lag_bars)
-                lag_range_str = self.config.decision_lag_range.strip()
-                lag_list = [int(x) for x in lag_range_str.split(",") if x.strip()] if lag_range_str else [base_lag]
-
-                sim_fn = simulate_hourly_trades_fast if use_vsim else simulate_hourly_trades
-
-                if train and len(lag_list) > 1:
-                    all_losses = []
-                    all_scores = []
-                    all_sortinos = []
-                    all_returns_val = []
-                    for lag_i in lag_list:
-                        sim_i = sim_fn(
-                            **sim_kwargs,
-                            temperature=float(self.config.fill_temperature),
-                            decision_lag_bars=lag_i,
-                        )
-                        ret_i = sim_i.returns.float()
-                        ppy = batch.get("periods_per_year", None)
-                        if ppy is None:
-                            ppy = float(self.config.periods_per_year or HOURLY_PERIODS_PER_YEAR)
-                        lo_i, sc_i, so_i, ar_i = compute_loss_by_type(
-                            ret_i,
-                            self.config.loss_type,
-                            target_sign=self.config.sortino_target_sign,
-                            periods_per_year=ppy,
-                            return_weight=self.config.return_weight,
-                            smoothness_penalty=self.config.smoothness_penalty,
-                            dd_penalty=self.config.dd_penalty,
-                            multiwindow_fractions=self.config.multiwindow_fractions,
-                            multiwindow_aggregation=self.config.multiwindow_aggregation,
-                        )
-                        all_losses.append(lo_i)
-                        all_scores.append(sc_i.detach())
-                        all_sortinos.append(so_i.detach())
-                        all_returns_val.append(ar_i.detach())
-                    loss = sum(all_losses) / len(all_losses)
-                    score = sum(all_scores) / len(all_scores)
-                    sortino = sum(all_sortinos) / len(all_sortinos)
-                    annual_return = sum(all_returns_val) / len(all_returns_val)
-                else:
-                    val_lag = max(lag_list) if not train else base_lag
-                    if (not train) and bool(self.config.validation_use_binary_fills):
-                        sim = simulate_hourly_trades_binary(**sim_kwargs, decision_lag_bars=val_lag)
-                    else:
-                        sim = sim_fn(
-                            **sim_kwargs,
-                            temperature=float(self.config.fill_temperature),
-                            decision_lag_bars=val_lag,
-                        )
-
-            if not (train and len(lag_list) > 1):
-                returns = sim.returns.float()
-                periods_per_year = batch.get("periods_per_year", None)
-                if periods_per_year is None:
-                    periods_per_year = float(self.config.periods_per_year or HOURLY_PERIODS_PER_YEAR)
-                loss, score, sortino, annual_return = compute_loss_by_type(
-                    returns,
-                    self.config.loss_type,
-                    target_sign=self.config.sortino_target_sign,
-                    periods_per_year=periods_per_year,
-                    return_weight=self.config.return_weight,
-                    smoothness_penalty=self.config.smoothness_penalty,
-                    dd_penalty=self.config.dd_penalty,
-                    multiwindow_fractions=self.config.multiwindow_fractions,
-                    multiwindow_aggregation=self.config.multiwindow_aggregation,
-                )
-
-            if train and self.config.spread_penalty > 0:
-                bp = actions["buy_price"]
-                sp = actions["sell_price"]
-                tgt = self.config.spread_target
-                buy_gap = (bp - lows[..., : bp.shape[-1]]) / closes[..., : bp.shape[-1]].clamp(min=1e-4)
-                sell_gap = (highs[..., : sp.shape[-1]] - sp) / closes[..., : sp.shape[-1]].clamp(min=1e-4)
-                buy_pen = torch.relu(tgt - buy_gap).mean()
-                sell_pen = torch.relu(tgt - sell_gap).mean()
-                loss = loss + self.config.spread_penalty * (buy_pen + sell_pen)
-
+        grad_context = torch.inference_mode() if not train else nullcontext()
+        with grad_context:
             if train and optimizer is not None:
                 optimizer.zero_grad(set_to_none=True)
-                if self._scaler is not None:
-                    self._scaler.scale(loss).backward()
-                    if self.config.grad_clip:
-                        self._scaler.unscale_(optimizer)
-                        clip_grad_norm_(model.parameters(), self.config.grad_clip)
-                    self._apply_schedules(optimizer, global_step)
-                    if self.config.warmup_steps and global_step < self.config.warmup_steps:
-                        warmup_frac = float(global_step + 1) / float(self.config.warmup_steps)
-                        for group, base_lr in zip(optimizer.param_groups, self._warmup_base_lrs):
-                            group["lr"] = float(base_lr) * warmup_frac
-                    self._scaler.step(optimizer)
-                    self._scaler.update()
-                    self._apply_cautious_weight_decay(model, self.config.muon_lr)
-                else:
-                    loss.backward()
-                    if self.config.grad_clip:
-                        clip_grad_norm_(model.parameters(), self.config.grad_clip)
-                    self._apply_schedules(optimizer, global_step)
-                    if self.config.warmup_steps and global_step < self.config.warmup_steps:
-                        warmup_frac = float(global_step + 1) / float(self.config.warmup_steps)
-                        for group, base_lr in zip(optimizer.param_groups, self._warmup_base_lrs):
-                            group["lr"] = float(base_lr) * warmup_frac
-                    optimizer.step()
-                    self._apply_cautious_weight_decay(model, self.config.muon_lr)
-                global_step += 1
 
-            total_loss += float(loss.detach().mean().item())
-            total_score += float(score.detach().mean().item())
-            total_sortino += float(sortino.detach().mean().item())
-            total_return += float(annual_return.detach().mean().item())
-            steps += 1
+            for batch_idx, batch in enumerate(loader):
+                if mark_step_begin is not None:
+                    mark_step_begin()
+                features = batch["features"].to(device, non_blocking=nb)
+                if train and self.config.feature_noise_std > 0:
+                    features = features + self.config.feature_noise_std * torch.randn_like(features)
+                opens = batch["open"].to(device, non_blocking=nb) if "open" in batch else None
+                highs = batch["high"].to(device, non_blocking=nb)
+                lows = batch["low"].to(device, non_blocking=nb)
+                closes = batch["close"].to(device, non_blocking=nb)
+                reference_close = batch["reference_close"].to(device, non_blocking=nb)
+                chronos_high = batch["chronos_high"].to(device, non_blocking=nb)
+                chronos_low = batch["chronos_low"].to(device, non_blocking=nb)
 
-            if self.config.dry_train_steps and steps >= self.config.dry_train_steps:
-                break
+                with self._amp_context:
+                    outputs = model(features)
+                    actions = model.decode_actions(
+                        outputs,
+                        reference_close=reference_close,
+                        chronos_high=chronos_high,
+                        chronos_low=chronos_low,
+                    )
+
+                with sim_context:
+                    if split_amp:
+                        trade_intensity = actions["trade_amount"].float() / scale
+                        buy_intensity = actions["buy_amount"].float() / scale
+                        sell_intensity = actions["sell_amount"].float() / scale
+                        sim_highs = highs.float()
+                        sim_lows = lows.float()
+                        sim_closes = closes.float()
+                        sim_opens = opens.float() if opens is not None else None
+                        sim_buy = actions["buy_price"].float()
+                        sim_sell = actions["sell_price"].float()
+                    else:
+                        trade_intensity = actions["trade_amount"] / scale
+                        buy_intensity = actions["buy_amount"] / scale
+                        sell_intensity = actions["sell_amount"] / scale
+                        sim_highs = highs
+                        sim_lows = lows
+                        sim_closes = closes
+                        sim_opens = opens
+                        sim_buy = actions["buy_price"]
+                        sim_sell = actions["sell_price"]
+
+                    sim_kwargs = {
+                        "highs": sim_highs,
+                        "lows": sim_lows,
+                        "closes": sim_closes,
+                        "opens": sim_opens,
+                        "buy_prices": sim_buy,
+                        "sell_prices": sim_sell,
+                        "trade_intensity": trade_intensity,
+                        "buy_trade_intensity": buy_intensity,
+                        "sell_trade_intensity": sell_intensity,
+                        "maker_fee": batch.get("maker_fee", self.config.maker_fee),
+                        "initial_cash": self.config.initial_cash,
+                        "can_short": batch.get("can_short", False),
+                        "can_long": batch.get("can_long", True),
+                        "max_leverage": self.config.max_leverage,
+                        "market_order_entry": self.config.market_order_entry,
+                        "fill_buffer_pct": self._get_fill_buffer(current_epoch),
+                        "margin_annual_rate": float(self.config.margin_annual_rate),
+                    }
+
+                    if train and len(lag_list) > 1:
+                        all_losses = []
+                        all_scores = []
+                        all_sortinos = []
+                        all_returns_val = []
+                        for lag_i in lag_list:
+                            sim_i = sim_fn(
+                                **sim_kwargs,
+                                temperature=float(self.config.fill_temperature),
+                                decision_lag_bars=lag_i,
+                            )
+                            ret_i = sim_i.returns.float()
+                            ppy = batch.get("periods_per_year", None)
+                            if ppy is None:
+                                ppy = float(self.config.periods_per_year or HOURLY_PERIODS_PER_YEAR)
+                            lo_i, sc_i, so_i, ar_i = compute_loss_by_type(
+                                ret_i,
+                                self.config.loss_type,
+                                target_sign=self.config.sortino_target_sign,
+                                periods_per_year=ppy,
+                                return_weight=self.config.return_weight,
+                                smoothness_penalty=self.config.smoothness_penalty,
+                                dd_penalty=self.config.dd_penalty,
+                                multiwindow_fractions=self.config.multiwindow_fractions,
+                                multiwindow_aggregation=self.config.multiwindow_aggregation,
+                            )
+                            all_losses.append(lo_i)
+                            all_scores.append(sc_i)
+                            all_sortinos.append(so_i)
+                            all_returns_val.append(ar_i)
+                        loss = sum(all_losses) / len(all_losses)
+                        with torch.no_grad():
+                            score = sum(all_scores) / len(all_scores)
+                            sortino = sum(all_sortinos) / len(all_sortinos)
+                            annual_return = sum(all_returns_val) / len(all_returns_val)
+                    else:
+                        val_lag = max(lag_list) if not train else base_lag
+                        if (not train) and bool(self.config.validation_use_binary_fills):
+                            sim = simulate_hourly_trades_binary(**sim_kwargs, decision_lag_bars=val_lag)
+                        else:
+                            sim = sim_fn(
+                                **sim_kwargs,
+                                temperature=float(self.config.fill_temperature),
+                                decision_lag_bars=val_lag,
+                            )
+
+                if not (train and len(lag_list) > 1):
+                    returns = sim.returns.float()
+                    periods_per_year = batch.get("periods_per_year", None)
+                    if periods_per_year is None:
+                        periods_per_year = float(self.config.periods_per_year or HOURLY_PERIODS_PER_YEAR)
+                    loss, score, sortino, annual_return = compute_loss_by_type(
+                        returns,
+                        self.config.loss_type,
+                        target_sign=self.config.sortino_target_sign,
+                        periods_per_year=periods_per_year,
+                        return_weight=self.config.return_weight,
+                        smoothness_penalty=self.config.smoothness_penalty,
+                        dd_penalty=self.config.dd_penalty,
+                        multiwindow_fractions=self.config.multiwindow_fractions,
+                        multiwindow_aggregation=self.config.multiwindow_aggregation,
+                    )
+
+                if train and self.config.spread_penalty > 0:
+                    bp = actions["buy_price"]
+                    sp = actions["sell_price"]
+                    tgt = self.config.spread_target
+                    buy_gap = (bp - lows[..., : bp.shape[-1]]) / closes[..., : bp.shape[-1]].clamp(min=1e-4)
+                    sell_gap = (highs[..., : sp.shape[-1]] - sp) / closes[..., : sp.shape[-1]].clamp(min=1e-4)
+                    buy_pen = torch.relu(tgt - buy_gap).mean()
+                    sell_pen = torch.relu(tgt - sell_gap).mean()
+                    loss = loss + self.config.spread_penalty * (buy_pen + sell_pen)
+
+                if train and optimizer is not None:
+                    loss_scaled = loss / accum_steps
+                    if self._scaler is not None:
+                        self._scaler.scale(loss_scaled).backward()
+                    else:
+                        loss_scaled.backward()
+                    if (batch_idx + 1) % accum_steps == 0:
+                        global_step = self._optimizer_step(model, optimizer, global_step)
+
+                with torch.no_grad():
+                    loss_sum += loss.detach().mean()
+                    score_sum += score.detach().mean()
+                    sortino_sum += sortino.detach().mean()
+                    return_sum += annual_return.detach().mean()
+                steps += 1
+
+                if self.config.dry_train_steps and steps >= self.config.dry_train_steps:
+                    break
+
+            if train and optimizer is not None and steps % accum_steps != 0:
+                global_step = self._optimizer_step(model, optimizer, global_step, flush=True)
 
         if steps == 0:
             raise RuntimeError("No batches available for training/validation")
+        n = float(steps)
         metrics = {
-            "loss": total_loss / steps,
-            "score": total_score / steps,
-            "sortino": total_sortino / steps,
-            "return": total_return / steps,
+            "loss": float(loss_sum.item()) / n,
+            "score": float(score_sum.item()) / n,
+            "sortino": float(sortino_sum.item()) / n,
+            "return": float(return_sum.item()) / n,
         }
         return metrics, global_step
+
+    def _optimizer_step(
+        self,
+        model: BinancePolicyBase,
+        optimizer: torch.optim.Optimizer,
+        global_step: int,
+        flush: bool = False,
+    ) -> int:
+        if self._scaler is not None:
+            self._scaler.unscale_(optimizer)
+        if self.config.grad_clip:
+            clip_grad_norm_(model.parameters(), self.config.grad_clip)
+        if not flush:
+            self._apply_schedules(optimizer, global_step)
+            if self.config.warmup_steps and global_step < self.config.warmup_steps:
+                warmup_frac = float(global_step + 1) / float(self.config.warmup_steps)
+                for group, base_lr in zip(optimizer.param_groups, self._warmup_base_lrs):
+                    group["lr"] = float(base_lr) * warmup_frac
+        if self._scaler is not None:
+            self._scaler.step(optimizer)
+            self._scaler.update()
+        else:
+            optimizer.step()
+        if not flush:
+            self._apply_cautious_weight_decay(model, self.config.muon_lr)
+        optimizer.zero_grad(set_to_none=True)
+        return global_step + 1
 
     def _build_amp(self):
         if not self.config.use_amp or self.device.type != "cuda":
