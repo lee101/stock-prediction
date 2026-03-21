@@ -37,12 +37,12 @@ try:
 except ImportError:
     wandb = None
 
-# PufferLib imports
-import pufferlib
-import pufferlib.vector
+# PufferLib imports are deferred to inside train() so this module can be
+# imported in CPU-only / unit-test environments where pufferlib is not
+# installed.  Only the neural-network classes (TradingPolicy, etc.) are
+# needed at import time and they have no pufferlib dependency.
 
 # Local
-from pufferlib_market.environment import TradingEnvConfig, TradingEnv
 from pufferlib_market.metrics import annualize_total_return
 from pufferlib_market.advantage_utils import normalize_advantages
 from src.checkpoint_manager import TopKCheckpointManager, prune_periodic_checkpoints
@@ -698,6 +698,17 @@ def compute_gae(rewards, values, dones, gamma=0.99, gae_lambda=0.95):
 
 
 def train(args):
+    # Lazy pufferlib imports — only needed at training time, not import time.
+    try:
+        import pufferlib  # noqa: F401
+        import pufferlib.vector  # noqa: F401
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "pufferlib is required to run pufferlib_market.train.train(). "
+            "Install it with `uv pip install \"pufferlib<4\"` or enable the RL extras."
+        ) from exc
+    from pufferlib_market.environment import TradingEnvConfig, TradingEnv  # noqa: F401
+
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
     print(f"Device: {device}")
 
