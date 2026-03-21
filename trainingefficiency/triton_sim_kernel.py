@@ -7,8 +7,13 @@ Remains fully differentiable via custom autograd Function.
 from __future__ import annotations
 
 import torch
-import triton
-import triton.language as tl
+
+try:
+    import triton
+    import triton.language as tl
+    HAS_TRITON = True
+except ImportError:
+    HAS_TRITON = False
 
 from differentiable_loss_utils import (
     HourlySimulationResult,
@@ -19,118 +24,110 @@ from differentiable_loss_utils import (
 )
 from trainingefficiency.fast_differentiable_sim import _precompute_fill_probs
 
+if HAS_TRITON:
+    @triton.jit
+    def _sim_step_fwd_kernel(
+        # State (read/write)
+        cash_ptr,
+        inv_ptr,
+        prev_val_ptr,
+        # Pre-computed per-step inputs (read)
+        close_ptr,
+        bp_ptr,
+        sp_ptr,
+        buy_prob_ptr,
+        sell_prob_ptr,
+        bf_ptr,
+        sf_ptr,
+        sl_ptr,
+        # Batch-level inputs (read)
+        can_short_ptr,
+        can_long_ptr,
+        # Outputs for this step (write)
+        pnl_ptr,
+        ret_ptr,
+        val_ptr,
+        exec_buy_ptr,
+        exec_sell_ptr,
+        inv_out_ptr,
+        # Scalars
+        fee_buy,
+        fee_sell,
+        margin_cost_per_step,
+        has_margin: tl.constexpr,
+        has_can_long: tl.constexpr,
+        EPS: tl.constexpr,
+        BLOCK_SIZE: tl.constexpr,
+        N,
+    ):
+        pid = tl.program_id(0)
+        offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offs < N
 
-@triton.jit
-def _sim_step_fwd_kernel(
-    # State (read/write)
-    cash_ptr,
-    inv_ptr,
-    prev_val_ptr,
-    # Pre-computed per-step inputs (read)
-    close_ptr,
-    bp_ptr,
-    sp_ptr,
-    buy_prob_ptr,
-    sell_prob_ptr,
-    bf_ptr,
-    sf_ptr,
-    sl_ptr,
-    # Batch-level inputs (read)
-    can_short_ptr,
-    can_long_ptr,
-    # Outputs for this step (write)
-    pnl_ptr,
-    ret_ptr,
-    val_ptr,
-    exec_buy_ptr,
-    exec_sell_ptr,
-    inv_out_ptr,
-    # Scalars
-    fee_buy,
-    fee_sell,
-    margin_cost_per_step,
-    has_margin: tl.constexpr,
-    has_can_long: tl.constexpr,
-    EPS: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-    N,
-):
-    pid = tl.program_id(0)
-    offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = offs < N
+        cash = tl.load(cash_ptr + offs, mask=mask)
+        inv = tl.load(inv_ptr + offs, mask=mask)
+        prev_v = tl.load(prev_val_ptr + offs, mask=mask)
+        close = tl.load(close_ptr + offs, mask=mask)
+        bp = tl.load(bp_ptr + offs, mask=mask)
+        sp = tl.load(sp_ptr + offs, mask=mask)
+        b_prob = tl.load(buy_prob_ptr + offs, mask=mask)
+        s_prob = tl.load(sell_prob_ptr + offs, mask=mask)
+        bf = tl.load(bf_ptr + offs, mask=mask)
+        sf = tl.load(sf_ptr + offs, mask=mask)
+        sl = tl.load(sl_ptr + offs, mask=mask)
+        can_short = tl.load(can_short_ptr + offs, mask=mask)
 
-    cash = tl.load(cash_ptr + offs, mask=mask)
-    inv = tl.load(inv_ptr + offs, mask=mask)
-    prev_v = tl.load(prev_val_ptr + offs, mask=mask)
-    close = tl.load(close_ptr + offs, mask=mask)
-    bp = tl.load(bp_ptr + offs, mask=mask)
-    sp = tl.load(sp_ptr + offs, mask=mask)
-    b_prob = tl.load(buy_prob_ptr + offs, mask=mask)
-    s_prob = tl.load(sell_prob_ptr + offs, mask=mask)
-    bf = tl.load(bf_ptr + offs, mask=mask)
-    sf = tl.load(sf_ptr + offs, mask=mask)
-    sl = tl.load(sl_ptr + offs, mask=mask)
-    can_short = tl.load(can_short_ptr + offs, mask=mask)
+        equity = cash + inv * close
+        equity_pos = tl.maximum(equity, EPS)
 
-    # equity
-    equity = cash + inv * close
-    equity_pos = tl.maximum(equity, EPS)
+        bp_fee = bp * fee_buy + EPS
+        max_buy_cash = tl.where(bp > 0.0, cash / bp_fee, 0.0)
+        target_notional = sl * equity_pos
+        current_notional = inv * bp
+        room = tl.maximum(target_notional - current_notional, 0.0)
+        leveraged_cap = tl.where(bp > 0.0, room / bp_fee, 0.0)
+        buy_cap = tl.where(sl <= 1.0 + 1e-6, tl.maximum(max_buy_cash, 0.0), leveraged_cap)
+        buy_qty = bf * buy_cap
 
-    # buy capacity
-    bp_fee = bp * fee_buy + EPS
-    max_buy_cash = tl.where(bp > 0.0, cash / bp_fee, 0.0)
-    target_notional = sl * equity_pos
-    current_notional = inv * bp
-    room = tl.maximum(target_notional - current_notional, 0.0)
-    leveraged_cap = tl.where(bp > 0.0, room / bp_fee, 0.0)
-    buy_cap = tl.where(sl <= 1.0 + 1e-6, tl.maximum(max_buy_cash, 0.0), leveraged_cap)
-    buy_qty = bf * buy_cap
+        if has_can_long:
+            can_long = tl.load(can_long_ptr + offs, mask=mask)
+            cover_cap = tl.maximum(-inv, 0.0)
+            buy_qty = tl.where(can_long > 0.5, buy_qty, tl.minimum(buy_qty, cover_cap))
 
-    if has_can_long:
-        can_long = tl.load(can_long_ptr + offs, mask=mask)
-        cover_cap = tl.maximum(-inv, 0.0)
-        buy_qty = tl.where(can_long > 0.5, buy_qty, tl.minimum(buy_qty, cover_cap))
+        long_to_close = tl.maximum(inv, 0.0)
+        sp_fee = sp * fee_buy + EPS
+        max_short = tl.where(sp > 0.0, target_notional / sp_fee, 0.0)
+        cur_short = tl.maximum(-inv, 0.0)
+        short_open = tl.maximum(max_short - cur_short, 0.0)
+        sell_cap = long_to_close + tl.where(can_short > 0.5, short_open, 0.0)
+        sell_qty = sf * sell_cap
 
-    # sell capacity
-    long_to_close = tl.maximum(inv, 0.0)
-    sp_fee = sp * fee_buy + EPS
-    max_short = tl.where(sp > 0.0, target_notional / sp_fee, 0.0)
-    cur_short = tl.maximum(-inv, 0.0)
-    short_open = tl.maximum(max_short - cur_short, 0.0)
-    sell_cap = long_to_close + tl.where(can_short > 0.5, short_open, 0.0)
-    sell_qty = sf * sell_cap
+        exec_buys = buy_qty * b_prob
+        exec_sells = sell_qty * s_prob
 
-    # execute
-    exec_buys = buy_qty * b_prob
-    exec_sells = sell_qty * s_prob
+        cash = cash - exec_buys * bp * fee_buy + exec_sells * sp * fee_sell
+        inv = inv + exec_buys - exec_sells
 
-    cash = cash - exec_buys * bp * fee_buy + exec_sells * sp * fee_sell
-    inv = inv + exec_buys - exec_sells
+        if has_margin:
+            pos_val = tl.abs(inv * close)
+            eq = cash + inv * close
+            margin_used = tl.maximum(pos_val - tl.maximum(eq, 0.0), 0.0)
+            cash = cash - margin_used * margin_cost_per_step
 
-    # margin interest
-    if has_margin:
-        pos_val = tl.abs(inv * close)
-        eq = cash + inv * close
-        margin_used = tl.maximum(pos_val - tl.maximum(eq, 0.0), 0.0)
-        cash = cash - margin_used * margin_cost_per_step
+        portfolio_value = cash + inv * close
+        pnl = portfolio_value - prev_v
+        ret = pnl / tl.maximum(prev_v, EPS)
 
-    # pnl
-    portfolio_value = cash + inv * close
-    pnl = portfolio_value - prev_v
-    ret = pnl / tl.maximum(prev_v, EPS)
+        tl.store(cash_ptr + offs, cash, mask=mask)
+        tl.store(inv_ptr + offs, inv, mask=mask)
+        tl.store(prev_val_ptr + offs, portfolio_value, mask=mask)
 
-    # store state
-    tl.store(cash_ptr + offs, cash, mask=mask)
-    tl.store(inv_ptr + offs, inv, mask=mask)
-    tl.store(prev_val_ptr + offs, portfolio_value, mask=mask)
-
-    # store outputs
-    tl.store(pnl_ptr + offs, pnl, mask=mask)
-    tl.store(ret_ptr + offs, ret, mask=mask)
-    tl.store(val_ptr + offs, portfolio_value, mask=mask)
-    tl.store(exec_buy_ptr + offs, exec_buys, mask=mask)
-    tl.store(exec_sell_ptr + offs, exec_sells, mask=mask)
-    tl.store(inv_out_ptr + offs, inv, mask=mask)
+        tl.store(pnl_ptr + offs, pnl, mask=mask)
+        tl.store(ret_ptr + offs, ret, mask=mask)
+        tl.store(val_ptr + offs, portfolio_value, mask=mask)
+        tl.store(exec_buy_ptr + offs, exec_buys, mask=mask)
+        tl.store(exec_sell_ptr + offs, exec_sells, mask=mask)
+        tl.store(inv_out_ptr + offs, inv, mask=mask)
 
 
 def _triton_sim_forward(
@@ -175,10 +172,10 @@ def _triton_sim_forward(
     inv_out = torch.empty(steps, N, dtype=dtype, device=device)
 
     BLOCK_SIZE = 256
-    grid = lambda: (triton.cdiv(N, BLOCK_SIZE),)
+    grid = (triton.cdiv(N, BLOCK_SIZE),)
 
     for idx in range(steps):
-        _sim_step_fwd_kernel[grid()](
+        _sim_step_fwd_kernel[grid](
             cash, inv, prev_val,
             closes_t[idx], bp_t[idx], sp_t[idx],
             buy_probs_t[idx], sell_probs_t[idx],
@@ -466,8 +463,7 @@ def simulate_hourly_trades_triton(
     fee_buy = 1.0 + fee.item()
     fee_sell = 1.0 - fee.item()
 
-    if not closes.is_cuda:
-        # CPU fallback: use PyTorch path
+    if not HAS_TRITON or not closes.is_cuda:
         pnl, ret, val, eb, es, inv_p, fc, fi = _pytorch_sim_forward(
             closes, b_prices, s_prices, buy_probs, sell_probs,
             b_frac, s_frac, max_lev, can_short_t, can_long_t,
