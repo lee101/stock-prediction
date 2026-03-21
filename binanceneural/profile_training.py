@@ -1,260 +1,400 @@
 #!/usr/bin/env python3
-"""Profile binanceneural training for 2 epochs.
+"""Profile the crypto RL training pipeline.
 
-Outputs:
-  profiles/neural_cuda_trace.json  — Chrome trace for chrome://tracing
-  profiles/neural_report.md        — top-20 GPU kernels by time
+Runs N training steps with PyTorch profiler + cProfile, outputs per-component
+timing breakdown (data loading, forward, sim, loss, backward), flame graph
+data, GPU utilization, and peak memory.
+
+Uses synthetic data by default so it runs without training CSVs.
+Pass --real-data to use actual BinanceHourlyDataModule if CSVs are available.
 
 Usage:
-  cd /nvme0n1-disk/code/stock-prediction
-  source .venv313/bin/activate
-  python binanceneural/profile_training.py [--symbols AAPL,NVDA] [--epochs 2]
+    python binanceneural/profile_training.py --steps 5
+    python binanceneural/profile_training.py --steps 10 --arch nano
+    python binanceneural/profile_training.py --steps 5 --real-data --symbol DOGEUSD
 """
 from __future__ import annotations
 
 import argparse
-import os
-import subprocess
+import cProfile
+import io
+import pstats
 import sys
 import time
 from pathlib import Path
 
-# Ensure project root is on path
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+import torch
+from torch.profiler import ProfilerActivity, profile, schedule
+from torch.utils.data import DataLoader, TensorDataset
 
-os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-PROFILES_DIR = PROJECT_ROOT / "profiles"
-CUDA_PROFILE_SCRIPT = Path("/nvme0n1-disk/code/dotfiles/cuda_profile_to_md.py")
+from binanceneural.config import DatasetConfig
+from binanceneural.data import BinanceHourlyDataModule, build_default_feature_columns
+from binanceneural.model import PolicyConfig, build_policy
 
-# Stocks that have both CSV price data and forecast cache parquets available
-DEFAULT_SYMBOLS = ["AAPL", "NVDA", "DBX"]
-STOCK_DATA_ROOT = PROJECT_ROOT / "trainingdatahourly" / "stocks"
-STOCK_CACHE_ROOT = PROJECT_ROOT / "unified_hourly_experiment" / "forecast_cache"
+try:
+    from trainingefficiency.fast_differentiable_sim import simulate_hourly_trades_fast
+except ImportError:
+    simulate_hourly_trades_fast = None
+
+from differentiable_loss_utils import (
+    HOURLY_PERIODS_PER_YEAR,
+    compute_loss_by_type,
+    simulate_hourly_trades,
+)
 
 
-def _check_symbol_data(symbol: str) -> bool:
-    """Return True if both price CSV and h1 forecast cache exist for symbol."""
-    csv = STOCK_DATA_ROOT / f"{symbol}.csv"
-    parquet = STOCK_CACHE_ROOT / "h1" / f"{symbol}.parquet"
-    return csv.exists() and parquet.exists()
+TIMING_KEYS = ["data_loading", "forward", "simulation", "loss_compute", "backward", "optimizer_step", "total"]
+DEFAULT_HORIZONS = (1, 4, 12, 24)
 
 
-def _select_symbols(requested: list[str]) -> list[str]:
-    available = [s for s in requested if _check_symbol_data(s)]
-    if not available:
-        raise FileNotFoundError(
-            f"None of {requested} have both price CSV and forecast cache. "
-            f"Check {STOCK_DATA_ROOT} and {STOCK_CACHE_ROOT}/h1/"
+def _empty_timings():
+    return {k: [] for k in TIMING_KEYS}
+
+
+def _synthetic_loader(batch_size, seq_len, input_dim, num_batches=64):
+    """Generate a DataLoader of synthetic batches matching real data shapes."""
+    n = batch_size * num_batches
+    base_price = 100.0
+    features = torch.randn(n, seq_len, input_dim)
+    closes = base_price + torch.randn(n, seq_len) * 2
+    opens = closes + torch.randn(n, seq_len) * 0.5
+    highs = closes + torch.abs(torch.randn(n, seq_len)) * 1.5
+    lows = closes - torch.abs(torch.randn(n, seq_len)) * 1.5
+    reference_close = closes[:, -1:].expand_as(closes).clone()
+    chronos_high = highs + torch.abs(torch.randn(n, seq_len)) * 0.5
+    chronos_low = lows - torch.abs(torch.randn(n, seq_len)) * 0.5
+
+    ds = TensorDataset(features, opens, highs, lows, closes, reference_close, chronos_high, chronos_low)
+    return DataLoader(ds, batch_size=batch_size, shuffle=True, drop_last=True)
+
+
+def _batch_from_tuple(tensors):
+    """Convert TensorDataset tuple to dict matching real data format."""
+    features, opens, highs, lows, closes, ref_close, c_high, c_low = tensors
+    return {
+        "features": features,
+        "open": opens,
+        "high": highs,
+        "low": lows,
+        "close": closes,
+        "reference_close": ref_close,
+        "chronos_high": c_high,
+        "chronos_low": c_low,
+    }
+
+
+def build_components(args):
+    input_dim = len(build_default_feature_columns(DEFAULT_HORIZONS))
+    use_real = getattr(args, "real_data", False)
+
+    if use_real:
+        ds_cfg = DatasetConfig(
+            symbol=args.symbol,
+            data_root=Path("trainingdatahourly") / "crypto",
+            forecast_cache_root=Path("binanceneural") / "forecast_cache",
+            forecast_horizons=DEFAULT_HORIZONS,
+            sequence_length=args.seq_len,
+            validation_days=70,
+            cache_only=True,
         )
-    return available
+        data_module = BinanceHourlyDataModule(ds_cfg)
+        input_dim = len(data_module.feature_columns)
+        loader = data_module.train_dataloader(args.batch_size, num_workers=0)
+        loader_is_dict = True
+    else:
+        loader = _synthetic_loader(args.batch_size, args.seq_len, input_dim)
+        loader_is_dict = False
 
-
-def run_neural_profiling(
-    symbols: list[str],
-    epochs: int,
-    profiles_dir: Path,
-) -> None:
-    """Run binanceneural training under torch.profiler, write outputs."""
-    import torch
-    from torch.profiler import profile, ProfilerActivity, schedule
-
-    profiles_dir.mkdir(parents=True, exist_ok=True)
-    trace_path = profiles_dir / "neural_cuda_trace.json"
-    report_path = profiles_dir / "neural_report.md"
-
-    available_symbols = _select_symbols(symbols)
-    print(f"[neural profiler] symbols={available_symbols}")
-    print(f"[neural profiler] epochs={epochs}, output={profiles_dir}")
-
-    from binanceneural.config import DatasetConfig, TrainingConfig
-    from binanceneural.data import MultiSymbolDataModule
-    from binanceneural.trainer import BinanceHourlyTrainer
-
-    dataset_config = DatasetConfig(
-        symbol=available_symbols[0],
-        data_root=str(STOCK_DATA_ROOT),
-        forecast_cache_root=str(STOCK_CACHE_ROOT),
-        forecast_horizons=(1,),
-        sequence_length=32,
-        val_fraction=0.15,
-        min_history_hours=100,
-        validation_days=30,
-        cache_only=True,
+    policy_cfg = PolicyConfig(
+        input_dim=input_dim,
+        hidden_dim=args.dim,
+        num_heads=args.heads,
+        num_layers=args.layers,
+        max_len=max(args.seq_len, 32),
+        dropout=0.1,
+        model_arch=args.arch,
     )
-
-    print(f"[neural profiler] Loading data for {available_symbols} ...")
-    t0 = time.perf_counter()
-    data_module = MultiSymbolDataModule(available_symbols, dataset_config)
-    print(
-        f"[neural profiler] Data loaded in {time.perf_counter() - t0:.1f}s "
-        f"({len(data_module.train_dataset)} train samples, "
-        f"{len(data_module.feature_columns)} features)"
-    )
-
-    train_config = TrainingConfig(
-        epochs=epochs,
-        batch_size=32,
-        sequence_length=32,
-        learning_rate=1e-4,
-        weight_decay=1e-4,
-        grad_clip=1.0,
-        transformer_dim=256,
-        transformer_layers=4,
-        transformer_heads=8,
-        transformer_dropout=0.1,
-        return_weight=0.15,
-        fill_temperature=5e-4,
-        maker_fee=0.001,
-        max_leverage=2.0,
-        decision_lag_bars=1,
-        fill_buffer_pct=0.0005,
-        validation_use_binary_fills=True,
-        use_amp=False,      # keep simple for profiling
-        use_tf32=True,
-        use_flash_attention=True,
-        use_compile=False,  # skip compile to measure base kernels
-        run_name="profile_run",
-        checkpoint_root=Path("/tmp/neural_profile_checkpoints"),
-        seed=42,
-        num_workers=0,
-        dry_train_steps=20,  # cap each epoch at 20 steps
-    )
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[neural profiler] device={device}")
+    model = build_policy(policy_cfg).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.03)
+    return model, optimizer, loader, device, loader_is_dict
 
+
+def run_one_step(model, optimizer, batch, device, sim_fn, step_timings):
+    t0 = time.perf_counter()
+
+    features = batch["features"].to(device)
+    opens = batch["open"].to(device) if "open" in batch else None
+    highs = batch["high"].to(device)
+    lows = batch["low"].to(device)
+    closes = batch["close"].to(device)
+    reference_close = batch["reference_close"].to(device)
+    chronos_high = batch["chronos_high"].to(device)
+    chronos_low = batch["chronos_low"].to(device)
+
+    t_data = time.perf_counter()
+    step_timings["data_loading"].append(t_data - t0)
+
+    outputs = model(features)
+    actions = model.decode_actions(
+        outputs,
+        reference_close=reference_close,
+        chronos_high=chronos_high,
+        chronos_low=chronos_low,
+    )
+
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    t_fwd = time.perf_counter()
+    step_timings["forward"].append(t_fwd - t_data)
+
+    scale = 100.0
+    sim_result = sim_fn(
+        highs=highs,
+        lows=lows,
+        closes=closes,
+        opens=opens,
+        buy_prices=actions["buy_price"],
+        sell_prices=actions["sell_price"],
+        trade_intensity=actions["trade_amount"] / scale,
+        buy_trade_intensity=actions["buy_amount"] / scale,
+        sell_trade_intensity=actions["sell_amount"] / scale,
+        maker_fee=0.001,
+        initial_cash=1.0,
+        can_short=False,
+        can_long=True,
+        max_leverage=1.0,
+        market_order_entry=False,
+        fill_buffer_pct=0.0005,
+        margin_annual_rate=0.0,
+        temperature=5e-4,
+        decision_lag_bars=0,
+    )
+
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    t_sim = time.perf_counter()
+    step_timings["simulation"].append(t_sim - t_fwd)
+
+    returns = sim_result.returns.float()
+    loss, _score, _sortino, _annual_return = compute_loss_by_type(
+        returns, "sortino", periods_per_year=HOURLY_PERIODS_PER_YEAR
+    )
+
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    t_loss = time.perf_counter()
+    step_timings["loss_compute"].append(t_loss - t_sim)
+
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    t_bwd = time.perf_counter()
+    step_timings["backward"].append(t_bwd - t_loss)
+
+    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    optimizer.step()
+
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    t_opt = time.perf_counter()
+    step_timings["optimizer_step"].append(t_opt - t_bwd)
+    step_timings["total"].append(t_opt - t0)
+
+    return loss.item()
+
+
+def _next_batch(batch_iter, loader, loader_is_dict):
+    try:
+        raw = next(batch_iter)
+    except StopIteration:
+        batch_iter = iter(loader)
+        raw = next(batch_iter)
+    if loader_is_dict:
+        return raw, batch_iter
+    return _batch_from_tuple(raw), batch_iter
+
+
+def print_timing_breakdown(step_timings, num_steps):
+    total = sum(step_timings["total"])
+    print(f"\n{'='*60}")
+    print(f"TIMING BREAKDOWN ({num_steps} steps, {total:.3f}s total)")
+    print(f"{'='*60}")
+    print(f"{'Component':<20} {'Total (s)':>10} {'Per-step (ms)':>14} {'Pct':>8}")
+    print(f"{'-'*52}")
+    for key in TIMING_KEYS[:-1]:
+        vals = step_timings[key]
+        t = sum(vals)
+        per_step = t / len(vals) * 1000
+        pct = t / total * 100
+        print(f"{key:<20} {t:>10.4f} {per_step:>14.2f} {pct:>7.1f}%")
+    print(f"{'-'*52}")
+    print(f"{'steps/sec':<20} {num_steps / total:>10.2f}")
+
+
+def print_gpu_info(device):
+    if device.type != "cuda":
+        print("\nGPU: not available (CPU mode)")
+        return
+    print(f"\n{'='*60}")
+    print("GPU INFO")
+    print(f"{'='*60}")
+    print(f"Device: {torch.cuda.get_device_name(0)}")
+    peak_mb = torch.cuda.max_memory_allocated() / 1024**2
+    current_mb = torch.cuda.memory_allocated() / 1024**2
+    reserved_mb = torch.cuda.memory_reserved() / 1024**2
+    print(f"Peak memory allocated: {peak_mb:.1f} MB")
+    print(f"Current memory allocated: {current_mb:.1f} MB")
+    print(f"Memory reserved: {reserved_mb:.1f} MB")
+    try:
+        utilization = torch.cuda.utilization(0)
+        print(f"GPU utilization: {utilization}%")
+    except Exception:
+        pass
+
+
+def run_pytorch_profiler(model, optimizer, loader, device, sim_fn, num_steps, loader_is_dict):
     activities = [ProfilerActivity.CPU]
-    if torch.cuda.is_available():
+    if device.type == "cuda":
         activities.append(ProfilerActivity.CUDA)
 
-    # Profiler schedule: skip=2, wait=1, warmup=1, active=5, repeat=1
-    prof_schedule = schedule(skip_first=2, wait=1, warmup=1, active=5, repeat=1)
-
-    print("[neural profiler] Starting profiled training ...")
-    t_start = time.perf_counter()
-
-    trainer = BinanceHourlyTrainer(train_config, data_module)
-
-    # Monkey-patch _run_epoch to call prof.step() after each batch
-    # We inject profiler stepping by wrapping the original method
-    _orig_run_epoch = trainer._run_epoch
-
-    # We'll store the profiler in a mutable container so the closure can access it
-    profiler_ref: list = [None]
-    step_counter: list[int] = [0]
-
-    def _patched_run_epoch(model, loader, optimizer, *, train, global_step, current_epoch=1):
-        prof = profiler_ref[0]
-        if prof is None:
-            return _orig_run_epoch(
-                model, loader, optimizer,
-                train=train, global_step=global_step, current_epoch=current_epoch,
-            )
-
-        # We can't easily intercept batch-level steps in the original _run_epoch,
-        # so we call it normally and step the profiler once per epoch.
-        # This is sufficient to capture kernel activity across the epoch.
-        result = _orig_run_epoch(
-            model, loader, optimizer,
-            train=train, global_step=global_step, current_epoch=current_epoch,
-        )
-        step_counter[0] += 1
-        prof.step()
-        return result
-
-    trainer._run_epoch = _patched_run_epoch  # type: ignore[method-assign]
+    batch_iter = iter(loader)
+    prof_schedule = schedule(wait=0, warmup=1, active=min(num_steps, 3), repeat=1)
 
     with profile(
         activities=activities,
         schedule=prof_schedule,
         record_shapes=True,
+        profile_memory=True,
         with_stack=True,
     ) as prof:
-        profiler_ref[0] = prof
-        artifacts = trainer.train()
+        step_timings = _empty_timings()
+        for _ in range(min(num_steps + 1, len(loader))):
+            batch, batch_iter = _next_batch(batch_iter, loader, loader_is_dict)
+            run_one_step(model, optimizer, batch, device, sim_fn, step_timings)
+            prof.step()
 
-    elapsed = time.perf_counter() - t_start
-    print(f"[neural profiler] Training complete in {elapsed:.1f}s")
-    print(f"[neural profiler] Profiler steps: {step_counter[0]}")
-
-    print(f"[neural profiler] Exporting trace to {trace_path} ...")
+    trace_path = Path("binanceneural") / "profile_trace.json"
     prof.export_chrome_trace(str(trace_path))
+    print(f"\nChrome trace saved to: {trace_path}")
 
-    # Handle torch profiler .tmp rename (torch writes .json.tmp then renames)
-    tmp_trace = profiles_dir / (trace_path.name + ".tmp")
-    if not trace_path.exists() and tmp_trace.exists() and tmp_trace.stat().st_size > 0:
-        print(f"[neural profiler] Renaming {tmp_trace.name} -> {trace_path.name}")
-        tmp_trace.rename(trace_path)
+    print(f"\n{'='*60}")
+    print("PYTORCH PROFILER - TOP CPU OPS")
+    print(f"{'='*60}")
+    print(prof.key_averages().table(sort_by="cpu_time_total", row_limit=25))
 
-    _generate_md_report(str(trace_path), str(report_path))
-    _print_summary(trace_path, report_path)
+    if device.type == "cuda":
+        print(f"\n{'='*60}")
+        print("PYTORCH PROFILER - TOP CUDA OPS")
+        print(f"{'='*60}")
+        print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=25))
 
+    print(f"\n{'='*60}")
+    print("PYTORCH PROFILER - TOP MEMORY")
+    print(f"{'='*60}")
+    print(prof.key_averages().table(sort_by="self_cpu_memory_usage", row_limit=15))
 
-def _generate_md_report(trace_path: str, report_path: str) -> None:
-    """Generate markdown report from Chrome trace using cuda_profile_to_md.py."""
-    if CUDA_PROFILE_SCRIPT.exists():
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(CUDA_PROFILE_SCRIPT),
-                "--trace", trace_path,
-                "--output", report_path,
-                "--top", "20",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            print(f"[neural profiler] cuda_profile_to_md stderr: {result.stderr[:500]}")
-    else:
-        sys.path.insert(0, "/nvme0n1-disk/code/dotfiles")
-        try:
-            from cuda_profile_to_md import trace_to_markdown
-            md = trace_to_markdown(trace_path, top_n=20)
-            Path(report_path).write_text(md)
-        except ImportError:
-            Path(report_path).write_text(
-                "# Neural CUDA Profiling Report\n\n_cuda_profile_to_md not available._\n"
-            )
+    return prof
 
 
-def _print_summary(trace_path: Path, report_path: Path) -> None:
-    print("\n=== Neural Profiling Outputs ===")
-    for path, label in [
-        (trace_path, "Chrome trace (chrome://tracing)"),
-        (report_path, "Markdown report"),
-    ]:
-        exists = Path(path).exists()
-        size = Path(path).stat().st_size if exists else 0
-        status = f"{size:,} bytes" if exists else "NOT GENERATED"
-        print(f"  {label}: {path} [{status}]")
+def run_cprofile(model, optimizer, loader, device, sim_fn, num_steps, loader_is_dict):
+    batch_iter = iter(loader)
+    step_timings = _empty_timings()
+
+    pr = cProfile.Profile()
+    pr.enable()
+
+    for _ in range(min(num_steps, len(loader))):
+        batch, batch_iter = _next_batch(batch_iter, loader, loader_is_dict)
+        run_one_step(model, optimizer, batch, device, sim_fn, step_timings)
+
+    pr.disable()
+
+    prof_path = Path("binanceneural") / "profile_cprofile.prof"
+    pr.dump_stats(str(prof_path))
+    print(f"\ncProfile data saved to: {prof_path}")
+
+    s = io.StringIO()
+    ps = pstats.Stats(pr, stream=s).strip_dirs().sort_stats("cumulative")
+    ps.print_stats(30)
+    print(f"\n{'='*60}")
+    print("CPROFILE - TOP CUMULATIVE")
+    print(f"{'='*60}")
+    print(s.getvalue())
+
+    return step_timings
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Profile binanceneural training")
-    parser.add_argument(
-        "--symbols",
-        default=",".join(DEFAULT_SYMBOLS),
-        help=f"Comma-separated stock symbols (default: {','.join(DEFAULT_SYMBOLS)})",
-    )
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=2,
-        help="Number of training epochs to profile (default: 2)",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=Path,
-        default=PROFILES_DIR,
-        help="Directory for profile outputs (default: profiles/)",
-    )
+def main():
+    parser = argparse.ArgumentParser(description="Profile crypto RL training pipeline")
+    parser.add_argument("--steps", type=int, default=5)
+    parser.add_argument("--symbol", default="DOGEUSD")
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--seq-len", type=int, default=48)
+    parser.add_argument("--dim", type=int, default=512)
+    parser.add_argument("--heads", type=int, default=8)
+    parser.add_argument("--layers", type=int, default=6)
+    parser.add_argument("--arch", default="classic")
+    parser.add_argument("--use-fast-sim", action="store_true")
+    parser.add_argument("--skip-pytorch-profiler", action="store_true")
+    parser.add_argument("--real-data", action="store_true",
+                        help="Use real BinanceHourlyDataModule instead of synthetic data")
     args = parser.parse_args()
 
-    symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
-    run_neural_profiling(symbols, args.epochs, args.output_dir)
+    print(f"Profiling {args.steps} training steps")
+    print(f"Symbol: {args.symbol}, Arch: {args.arch}, Dim: {args.dim}, Layers: {args.layers}")
+    print(f"Batch: {args.batch_size}, Seq: {args.seq_len}")
+    print(f"Data: {'real' if args.real_data else 'synthetic'}")
+
+    if args.use_fast_sim and simulate_hourly_trades_fast is not None:
+        sim_fn = simulate_hourly_trades_fast
+        print("Sim: fast_differentiable_sim")
+    else:
+        sim_fn = simulate_hourly_trades
+        print("Sim: differentiable_loss_utils (baseline)")
+
+    print("\nBuilding model...")
+    model, optimizer, loader, device, loader_is_dict = build_components(args)
+
+    param_count = sum(p.numel() for p in model.parameters())
+    trainable_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Model params: {param_count:,} ({trainable_count:,} trainable)")
+
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats()
+
+    print("\nWarmup step...")
+    batch_iter = iter(loader)
+    warmup_batch, batch_iter = _next_batch(batch_iter, loader, loader_is_dict)
+    run_one_step(model, optimizer, warmup_batch, device, sim_fn, _empty_timings())
+
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats()
+
+    print(f"\nRunning {args.steps} steps with cProfile...")
+    step_timings = run_cprofile(model, optimizer, loader, device, sim_fn, args.steps, loader_is_dict)
+    print_timing_breakdown(step_timings, len(step_timings["total"]))
+
+    if not args.skip_pytorch_profiler:
+        print(f"\nRunning {args.steps} steps with PyTorch profiler...")
+        run_pytorch_profiler(model, optimizer, loader, device, sim_fn, args.steps, loader_is_dict)
+
+    print_gpu_info(device)
+
+    total_time = sum(step_timings["total"])
+    actual_steps = len(step_timings["total"])
+    print(f"\n{'='*60}")
+    print("SUMMARY")
+    print(f"{'='*60}")
+    print(f"Steps completed: {actual_steps}")
+    print(f"Total time: {total_time:.3f}s")
+    print(f"Steps/sec: {actual_steps / total_time:.2f}")
+    if device.type == "cuda":
+        print(f"Peak GPU memory: {torch.cuda.max_memory_allocated() / 1024**2:.1f} MB")
 
 
 if __name__ == "__main__":
