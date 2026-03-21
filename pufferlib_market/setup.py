@@ -49,6 +49,9 @@ ext = Extension(
     ],
     extra_compile_args=[
         "-O3", "-march=native", "-ffast-math",
+        "-funroll-loops",
+        "-fomit-frame-pointer",
+        "-DNDEBUG",
         "-std=c11",
         "-Wno-unused-function",
     ],
