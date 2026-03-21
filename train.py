@@ -19,6 +19,7 @@ Improvements from autoresearch agent (2026-03):
 """
 
 import argparse
+import atexit
 import math
 import os
 import time
@@ -31,6 +32,11 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.distributions import Categorical
 
+try:
+    import wandb
+except ImportError:
+    wandb = None
+
 # PufferLib imports
 import pufferlib
 import pufferlib.vector
@@ -39,7 +45,7 @@ import pufferlib.vector
 from pufferlib_market.environment import TradingEnvConfig, TradingEnv
 from pufferlib_market.metrics import annualize_total_return
 from pufferlib_market.advantage_utils import normalize_advantages
-from src.checkpoint_manager import TopKCheckpointManager
+from src.checkpoint_manager import TopKCheckpointManager, prune_periodic_checkpoints
 
 
 # ─── Running Observation Normalizer ──────────────────────────────────
@@ -498,19 +504,149 @@ def train(args):
             )
         )
 
+    # ── Weights & Biases ──
+    wandb_run = None
+    if args.wandb_project is not None:
+        if wandb is None:
+            print("WARNING: --wandb-project set but wandb not installed. pip install wandb")
+        elif args.wandb_mode == "disabled":
+            print("  W&B disabled via --wandb-mode=disabled")
+        else:
+            wandb_run = wandb.init(
+                project=args.wandb_project,
+                entity=args.wandb_entity,
+                config=vars(args),
+                mode=args.wandb_mode,
+            )
+            atexit.register(wandb_run.finish)
+            print(f"  W&B run: {wandb_run.url or wandb_run.id}")
+
     # ── Estimate GPU memory ──
     rollout_mem = num_envs * args.rollout_len * (obs_size * 4 + 4 * 4) / 1e6
     print(f"  Estimated rollout buffer: {rollout_mem:.1f} MB")
 
-    # ── Rollout buffers ──
+    # ── CUDA graph for rollout inference ──
+    use_cuda_graph = device.type == "cuda"
+    if use_cuda_graph:
+        # Static GPU buffers (required for CUDA graph capture)
+        _static_obs = torch.zeros(num_envs, obs_size, device=device)
+        _static_logits = torch.zeros(num_envs, num_actions, device=device)
+        _static_value = torch.zeros(num_envs, device=device)
+        # Outputs computed from logits inside graph
+        _static_action = torch.zeros(num_envs, dtype=torch.long, device=device)
+        _static_logprob = torch.zeros(num_envs, device=device)
+
+        # Short-mask tensor (baked into graph)
+        _short_mask_idx = 1 + (num_actions - 1) // 2 if args.disable_shorts else 0
+
+        def _graph_forward():
+            """Forward + sample inside CUDA graph (no Categorical, no Python control flow)."""
+            logits, value = policy(_static_obs)
+            _static_logits.copy_(logits)
+            _static_value.copy_(value)
+            if _short_mask_idx > 0:
+                _static_logits[:, _short_mask_idx:] = torch.finfo(logits.dtype).min
+            # Manual multinomial sampling (CUDA-graph-safe)
+            probs = torch.softmax(_static_logits, dim=-1)
+            action = torch.multinomial(probs, 1).squeeze(-1)
+            _static_action.copy_(action)
+            log_probs_all = torch.log_softmax(_static_logits, dim=-1)
+            _static_logprob.copy_(log_probs_all.gather(1, action.unsqueeze(1)).squeeze(1))
+
+        # Warmup
+        policy.eval()
+        with torch.no_grad():
+            for _ in range(3):
+                _graph_forward()
+        torch.cuda.synchronize()
+
+        # Capture
+        _inference_graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(_inference_graph):
+            with torch.no_grad():
+                _graph_forward()
+        torch.cuda.synchronize()
+        print("  CUDA graph captured for rollout inference")
+
+    # Pinned memory for fast CPU↔GPU transfers
+    _pinned_obs = torch.zeros(num_envs, obs_size, dtype=torch.float32, pin_memory=True) if use_cuda_graph else None
+    _pinned_action = torch.zeros(num_envs, dtype=torch.int32, pin_memory=True) if use_cuda_graph else None
+
+    # ── torch.compile for PPO update ──
+    def _ppo_loss_fn(policy, obs, act, old_logprob, advantages, returns, old_values,
+                     clip_eps_t, vf_coef_t, ent_coef_t, clip_vloss):
+        """PPO loss computation (compilable)."""
+        logits, new_value = policy(obs)
+        # Manual log_prob and entropy (avoids Categorical Python control flow for fullgraph)
+        log_probs_all = torch.log_softmax(logits, dim=-1)
+        new_logprob = log_probs_all.gather(1, act.unsqueeze(1)).squeeze(1)
+        probs = torch.softmax(logits, dim=-1)
+        entropy = -(probs * log_probs_all).sum(-1)
+
+        log_ratio = new_logprob - old_logprob
+        ratio = log_ratio.exp()
+
+        pg_loss1 = -advantages * ratio
+        pg_loss2 = -advantages * torch.clamp(ratio, 1 - clip_eps_t, 1 + clip_eps_t)
+        pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+
+        if clip_vloss:
+            v_clipped = old_values + torch.clamp(new_value - old_values, -clip_eps_t, clip_eps_t)
+            v_loss = 0.5 * torch.max(
+                (new_value - returns) ** 2,
+                (v_clipped - returns) ** 2,
+            ).mean()
+        else:
+            v_loss = 0.5 * ((new_value - returns) ** 2).mean()
+
+        ent_loss = entropy.mean()
+        loss = pg_loss + vf_coef_t * v_loss - ent_coef_t * ent_loss
+        return loss, pg_loss, v_loss, ent_loss
+
+    if device.type == "cuda":
+        try:
+            _compiled_ppo_loss = torch.compile(_ppo_loss_fn, mode="reduce-overhead", fullgraph=True)
+            # Warmup compile with dummy data
+            policy.train()
+            _dummy_obs = torch.randn(2048, obs_size, device=device)
+            _dummy_act = torch.randint(0, num_actions, (2048,), device=device)
+            _dummy_lp = torch.zeros(2048, device=device)
+            _dummy_adv = torch.zeros(2048, device=device)
+            _dummy_ret = torch.zeros(2048, device=device)
+            _dummy_val = torch.zeros(2048, device=device)
+            _clip_t = torch.tensor(0.2, device=device)
+            _vf_t = torch.tensor(0.5, device=device)
+            _ent_t = torch.tensor(0.01, device=device)
+            for _ in range(3):
+                _l, _, _, _ = _compiled_ppo_loss(policy, _dummy_obs, _dummy_act, _dummy_lp,
+                                                  _dummy_adv, _dummy_ret, _dummy_val,
+                                                  _clip_t, _vf_t, _ent_t, False)
+                _l.backward()
+                optimizer.zero_grad()
+            torch.cuda.synchronize()
+            del _dummy_obs, _dummy_act, _dummy_lp, _dummy_adv, _dummy_ret, _dummy_val, _l
+            print("  torch.compile: PPO loss compiled (reduce-overhead, fullgraph=True)")
+        except Exception as e:
+            print(f"  torch.compile: failed ({e}), using eager PPO")
+            _compiled_ppo_loss = _ppo_loss_fn
+    else:
+        _compiled_ppo_loss = _ppo_loss_fn
+
+    # ── Rollout buffers (on GPU when possible to avoid per-step CPU↔GPU copies) ──
     T = args.rollout_len
     N = num_envs
-    buf_obs = torch.zeros((T, N, obs_size), dtype=torch.float32)
-    buf_act = torch.zeros((T, N), dtype=torch.long)
-    buf_logprob = torch.zeros((T, N), dtype=torch.float32)
+    if use_cuda_graph:
+        buf_obs = torch.zeros((T, N, obs_size), dtype=torch.float32, device=device)
+        buf_act = torch.zeros((T, N), dtype=torch.long, device=device)
+        buf_logprob = torch.zeros((T, N), dtype=torch.float32, device=device)
+        buf_value = torch.zeros((T, N), dtype=torch.float32, device=device)
+    else:
+        buf_obs = torch.zeros((T, N, obs_size), dtype=torch.float32)
+        buf_act = torch.zeros((T, N), dtype=torch.long)
+        buf_logprob = torch.zeros((T, N), dtype=torch.float32)
+        buf_value = torch.zeros((T, N), dtype=torch.float32)
     buf_reward = torch.zeros((T, N), dtype=torch.float32)
     buf_done = torch.zeros((T, N), dtype=torch.float32)
-    buf_value = torch.zeros((T, N), dtype=torch.float32)
 
     # ── Training loop ──
     global_step = resume_state.global_step
@@ -519,7 +655,11 @@ def train(args):
     best_return = resume_state.best_return
     start_update = resume_state.update
     periodic_ckpt_mgr = TopKCheckpointManager(
-        Path(args.checkpoint_dir), max_keep=10, mode="max",
+        Path(args.checkpoint_dir), max_keep=args.max_periodic_checkpoints, mode="max",
+    )
+    prune_periodic_checkpoints(
+        Path(args.checkpoint_dir),
+        max_keep_latest=args.max_periodic_checkpoints,
     )
 
     print(f"\nTraining: {num_updates} updates, {args.total_timesteps:,} additional steps")
@@ -551,30 +691,42 @@ def train(args):
         # ── Collect rollout ──
         policy.eval()
         for step in range(T):
-            raw_obs = obs_buf.copy()
-            if obs_norm is not None:
-                obs_norm.update(raw_obs)
-                raw_obs = obs_norm.normalize(raw_obs)
-            obs_tensor = torch.from_numpy(raw_obs).to(device, non_blocking=True)
-            buf_obs[step] = obs_tensor
+            if use_cuda_graph:
+                # Fast path: CUDA graph inference (buffers on GPU, only actions go to CPU)
+                if obs_norm is not None:
+                    obs_norm.update(obs_buf)
+                    np.copyto(_pinned_obs.numpy(), obs_norm.normalize(obs_buf))
+                else:
+                    np.copyto(_pinned_obs.numpy(), obs_buf)
+                _static_obs.copy_(_pinned_obs, non_blocking=True)
+                _inference_graph.replay()
+                # Store on GPU (no .cpu() calls)
+                buf_obs[step].copy_(_static_obs)
+                buf_act[step].copy_(_static_action)
+                buf_logprob[step].copy_(_static_logprob)
+                buf_value[step].copy_(_static_value)
+                # Only action needs CPU for C env
+                act_buf[:] = _static_action.cpu().to(torch.int32).numpy()
+            else:
+                # Fallback: eager inference (CPU or no CUDA graph)
+                raw_obs = obs_buf.copy()
+                if obs_norm is not None:
+                    obs_norm.update(raw_obs)
+                    raw_obs = obs_norm.normalize(raw_obs)
+                obs_tensor = torch.from_numpy(raw_obs).to(device, non_blocking=True)
+                buf_obs[step] = obs_tensor
+                with torch.no_grad():
+                    action, logprob, _, value = policy.get_action_and_value(
+                        obs_tensor, disable_shorts=args.disable_shorts,
+                    )
+                buf_act[step] = action.cpu()
+                buf_logprob[step] = logprob.cpu()
+                buf_value[step] = value.cpu()
+                act_buf[:] = action.cpu().numpy().astype(np.int32)
 
-            with torch.no_grad():
-                action, logprob, _, value = policy.get_action_and_value(
-                    obs_tensor,
-                    disable_shorts=args.disable_shorts,
-                )
-
-            buf_act[step] = action.cpu()
-            buf_logprob[step] = logprob.cpu()
-            buf_value[step] = value.cpu()
-
-            # Write actions to C buffer and step
-            act_buf[:] = action.cpu().numpy().astype(np.int32)
             binding.vec_step(vec_handle)
-
             buf_reward[step] = torch.from_numpy(rew_buf.copy())
             buf_done[step] = torch.from_numpy(term_buf.copy().astype(np.float32))
-
             global_step += N
 
         # ── Compute advantages ──
@@ -585,7 +737,8 @@ def train(args):
             next_obs = torch.from_numpy(raw_next).to(device, non_blocking=True)
             next_value = policy.get_value(next_obs).cpu()
 
-        # Flatten envs for GAE
+        # GAE on CPU (sequential loop, small cost)
+        values_cpu = buf_value.cpu() if buf_value.is_cuda else buf_value
         advantages = torch.zeros_like(buf_reward)
         last_gae = torch.zeros(N)
 
@@ -593,21 +746,22 @@ def train(args):
             if t == T - 1:
                 next_val = next_value
             else:
-                next_val = buf_value[t + 1]
+                next_val = values_cpu[t + 1]
             not_done = 1.0 - buf_done[t]
-            delta = buf_reward[t] + args.gamma * next_val * not_done - buf_value[t]
+            delta = buf_reward[t] + args.gamma * next_val * not_done - values_cpu[t]
             last_gae = delta + args.gamma * args.gae_lambda * not_done * last_gae
             advantages[t] = last_gae
 
-        returns = advantages + buf_value
+        returns = advantages + values_cpu
 
         # ── PPO update ──
         policy.train()
-        b_obs = buf_obs.reshape(-1, obs_size).to(device, non_blocking=True)
-        b_act = buf_act.reshape(-1).to(device, non_blocking=True)
-        b_logprob = buf_logprob.reshape(-1).to(device, non_blocking=True)
+        # buf_obs/act/logprob/value are already on GPU when using CUDA graphs
+        b_obs = buf_obs.reshape(-1, obs_size) if buf_obs.is_cuda else buf_obs.reshape(-1, obs_size).to(device, non_blocking=True)
+        b_act = buf_act.reshape(-1) if buf_act.is_cuda else buf_act.reshape(-1).to(device, non_blocking=True)
+        b_logprob = buf_logprob.reshape(-1) if buf_logprob.is_cuda else buf_logprob.reshape(-1).to(device, non_blocking=True)
         b_returns = returns.reshape(-1).to(device, non_blocking=True)
-        b_values = buf_value.reshape(-1).to(device, non_blocking=True)
+        b_values = values_cpu.reshape(-1).to(device, non_blocking=True)
 
         b_advantages = normalize_advantages(
             advantages.to(device, non_blocking=True),
@@ -626,42 +780,22 @@ def train(args):
         batch_size = T * N
         mb_size = args.minibatch_size
 
+        # Scalar tensors for compiled PPO (avoid reallocation)
+        clip_eps_t = torch.tensor(clip_eps, device=device)
+        vf_coef_t = torch.tensor(args.vf_coef, device=device)
+        ent_coef_t = torch.tensor(ent_coef, device=device)
+
         for epoch in range(args.ppo_epochs):
             indices = torch.randperm(batch_size, device=device)
             for start in range(0, batch_size, mb_size):
                 end = min(start + mb_size, batch_size)
                 mb_idx = indices[start:end]
 
-                _, new_logprob, entropy, new_value = policy.get_action_and_value(
-                    b_obs[mb_idx],
-                    b_act[mb_idx],
-                    disable_shorts=args.disable_shorts,
+                loss, pg_loss, v_loss, ent_loss = _compiled_ppo_loss(
+                    policy, b_obs[mb_idx], b_act[mb_idx], b_logprob[mb_idx],
+                    b_advantages[mb_idx], b_returns[mb_idx], b_values[mb_idx],
+                    clip_eps_t, vf_coef_t, ent_coef_t, args.clip_vloss,
                 )
-
-                # PPO clipped objective
-                log_ratio = new_logprob - b_logprob[mb_idx]
-                ratio = log_ratio.exp()
-                mb_adv = b_advantages[mb_idx]
-
-                pg_loss1 = -mb_adv * ratio
-                pg_loss2 = -mb_adv * torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps)
-                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
-
-                # Value loss with clipping (PPO-style)
-                if args.clip_vloss:
-                    v_clipped = b_values[mb_idx] + torch.clamp(
-                        new_value - b_values[mb_idx], -clip_eps, clip_eps
-                    )
-                    v_loss_unclipped = (new_value - b_returns[mb_idx]) ** 2
-                    v_loss_clipped = (v_clipped - b_returns[mb_idx]) ** 2
-                    v_loss = 0.5 * torch.max(v_loss_unclipped, v_loss_clipped).mean()
-                else:
-                    v_loss = 0.5 * ((new_value - b_returns[mb_idx]) ** 2).mean()
-
-                # Entropy bonus
-                ent_loss = entropy.mean()
-
-                loss = pg_loss + args.vf_coef * v_loss - ent_coef * ent_loss
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -725,6 +859,29 @@ def train(args):
                 f"step={global_step:8,d}  sps={sps:.0f}  "
                 f"pg={avg_pg:.4f}  vl={avg_vl:.4f}  ent={avg_ent:.3f}"
             )
+
+        # ── W&B logging (single path for both branches) ──
+        if wandb_run is not None:
+            wb_metrics = {
+                "loss/policy": avg_pg,
+                "loss/value": avg_vl,
+                "loss/entropy": avg_ent,
+                "loss/total": avg_pg + args.vf_coef * avg_vl - ent_coef * avg_ent,
+                "train/lr": optimizer.param_groups[0]["lr"],
+                "train/ent_coef": ent_coef,
+                "train/clip_eps": clip_eps,
+                "perf/steps_per_sec": sps,
+                "global_step": global_step,
+            }
+            if log_info and "total_return" in log_info:
+                wb_metrics.update({
+                    "train/return": ep_return,
+                    "train/annualized_return": ep_annualized,
+                    "train/sortino": ep_sortino,
+                    "train/win_rate": ep_wr,
+                    "train/num_trades": ep_trades,
+                })
+            wandb_run.log(wb_metrics, step=global_step)
 
         # ── Periodic checkpoint ──
         if update % args.save_every == 0:
@@ -925,7 +1082,22 @@ def main():
     # Output
     parser.add_argument("--checkpoint-dir", default="pufferlib_market/checkpoints")
     parser.add_argument("--save-every", type=int, default=50)
+    parser.add_argument(
+        "--max-periodic-checkpoints",
+        type=int,
+        default=int(os.getenv("PUFFERLIB_MAX_PERIODIC_CHECKPOINTS", "3")),
+        help="How many periodic update_*.pt checkpoints to retain alongside best/final.",
+    )
     parser.add_argument("--cpu", action="store_true")
+
+    # Weights & Biases
+    parser.add_argument("--wandb-project", type=str, default=None,
+                        help="W&B project name (enables logging when set)")
+    parser.add_argument("--wandb-entity", type=str, default=None,
+                        help="W&B entity (team or username)")
+    parser.add_argument("--wandb-mode", type=str, default="online",
+                        choices=["online", "offline", "disabled"],
+                        help="W&B run mode")
 
     args = parser.parse_args()
     train(args)

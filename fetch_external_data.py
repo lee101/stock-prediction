@@ -24,11 +24,20 @@ except Exception:
 
 def _standardize_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    # Handle MultiIndex columns from newer yfinance (e.g. ('Close', 'RIVN'))
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
     # Lowercase columns and standardize names
-    df.columns = [str(c).lower().replace(' ', '_') for c in df.columns]
+    df.columns = [c.lower().replace(' ', '_') for c in df.columns]
+    # Align to common schema where possible
+    rename = {
+        'adj_close': 'adj_close',
+        'open': 'open',
+        'high': 'high',
+        'low': 'low',
+        'close': 'close',
+        'volume': 'volume',
+    }
+    for k, v in list(rename.items()):
+        if k in df.columns:
+            df[v] = df[k]
     # Reset index if it's a DatetimeIndex
     if isinstance(df.index, pd.DatetimeIndex):
         df = df.reset_index().rename(columns={'index': 'date', 'datetime': 'date'})

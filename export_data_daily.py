@@ -194,7 +194,6 @@ def export_binary(
     start_date: str | None = None,
     end_date: str | None = None,
     min_days: int = 200,
-    union: bool = False,
 ) -> None:
     symbols = [s.strip().upper() for s in symbols if s.strip()]
     if not symbols:
@@ -203,29 +202,14 @@ def export_binary(
         raise ValueError("Too many symbols (max 64)")
 
     original_prices: dict[str, pd.DataFrame] = {}
-    failed_symbols: list[str] = []
     for sym in symbols:
-        try:
-            original_prices[sym] = load_price_data(sym, data_root)
-        except FileNotFoundError as e:
-            print(f"WARNING: skipping {sym}: {e}", file=sys.stderr)
-            failed_symbols.append(sym)
-    for sym in failed_symbols:
-        symbols.remove(sym)
-    if not symbols:
-        raise ValueError("No symbols had loadable data")
+        original_prices[sym] = load_price_data(sym, data_root)
 
+    # Limit common window to where all symbols have at least some data.
     starts = [df.index.min() for df in original_prices.values()]
     ends = [df.index.max() for df in original_prices.values()]
-    if union:
-        # Union mode: use earliest start / latest end across all symbols.
-        # Symbols missing data for part of the range get tradable=0.
-        start = min(starts)
-        end = max(ends)
-    else:
-        # Intersection mode (original): common window where all overlap.
-        start = max(starts)
-        end = min(ends)
+    start = max(starts)
+    end = min(ends)
     if start_date is not None:
         start = max(start, pd.to_datetime(start_date, utc=True))
     if end_date is not None:
@@ -290,10 +274,6 @@ def export_binary(
 
     print(f"Wrote {output_path} ({num_symbols} symbols, {num_timesteps} days)")
     print(f"Date range: {full_index[0]} to {full_index[-1]}")
-    for si, sym in enumerate(symbols):
-        tradable_days = int(mask_arr[:, si].sum())
-        pct = 100.0 * tradable_days / num_timesteps
-        print(f"  {sym:15s}: {tradable_days:5d}/{num_timesteps} tradable days ({pct:5.1f}%)")
 
 
 def main() -> None:
@@ -304,7 +284,6 @@ def main() -> None:
     parser.add_argument("--start-date", default=None, help="Optional ISO start date")
     parser.add_argument("--end-date", default=None, help="Optional ISO end date")
     parser.add_argument("--min-days", type=int, default=200, help="Minimum aligned calendar days required")
-    parser.add_argument("--union", action="store_true", help="Use union of all symbol date ranges (tradable mask handles gaps)")
     args = parser.parse_args()
 
     try:
@@ -315,7 +294,6 @@ def main() -> None:
             start_date=args.start_date,
             end_date=args.end_date,
             min_days=args.min_days,
-            union=args.union,
         )
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)

@@ -4,11 +4,11 @@ Export hourly OHLCV + forecast cache features to MKTD v2 binary for ``pufferlib_
 The output format matches the compiled C environment expectations:
   - Header (MKTD v2)
   - Symbol table (16-byte null-padded ASCII names)
-  - Feature tensor: float32[T, S, 16]
+  - Feature tensor: float32[T, S, F]  (F=16 by default, 18/20 with extra horizons)
   - Price tensor: float32[T, S, 5]   (open, high, low, close, volume)
   - Tradable mask: uint8[T, S]       (1=observed bar, 0=missing/non-tradable)
 
-Feature layout (16 floats per symbol):
+Default feature layout (16 floats per symbol, --horizons 1,24):
   0  chronos_close_delta_h1
   1  chronos_high_delta_h1
   2  chronos_low_delta_h1
@@ -25,6 +25,10 @@ Feature layout (16 floats per symbol):
   13 atr_pct_24h
   14 trend_72h
   15 drawdown_72h
+
+Extra features appended for each additional horizon (e.g. h48, h168):
+  +0  chronos_close_delta_hN
+  +1  forecast_confidence_hN
 """
 
 from __future__ import annotations
@@ -38,7 +42,8 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
-FEATURES_PER_SYM = 16
+BASE_FEATURES_PER_SYM = 16  # features produced by the default h1+h24 horizons
+EXTRA_FEATURES_PER_HORIZON = 2  # close_delta + confidence for each additional horizon
 PRICE_FEATURES = 5
 MAGIC = b"MKTD"
 VERSION = 2
@@ -182,7 +187,25 @@ def _forecast_confidence(
     return conf.replace([np.inf, -np.inf], np.nan).fillna(0.5).astype(np.float32)
 
 
-def compute_features(price_df: pd.DataFrame, fc_h1: pd.DataFrame, fc_h24: pd.DataFrame) -> pd.DataFrame:
+def compute_features(
+    price_df: pd.DataFrame,
+    fc_h1: pd.DataFrame,
+    fc_h24: pd.DataFrame,
+    extra_forecasts: list[tuple[int, pd.DataFrame]] | None = None,
+) -> pd.DataFrame:
+    """Compute per-bar feature matrix.
+
+    Args:
+        price_df: OHLCV price data aligned to the export index.
+        fc_h1: Forecast cache dataframe for the h1 horizon.
+        fc_h24: Forecast cache dataframe for the h24 horizon.
+        extra_forecasts: Optional list of (horizon_hours, forecast_df) pairs for
+            horizons beyond the default h1/h24 (e.g. h48, h168).  Each adds 2
+            features: chronos_close_delta_hN and forecast_confidence_hN.
+
+    Returns:
+        DataFrame with BASE_FEATURES_PER_SYM + 2*len(extra_forecasts) float32 columns.
+    """
     close = price_df["close"].astype(float)
     high = price_df["high"].astype(float)
     low = price_df["low"].astype(float)
@@ -230,7 +253,7 @@ def compute_features(price_df: pd.DataFrame, fc_h1: pd.DataFrame, fc_h24: pd.Dat
     roll_max = close.rolling(72, min_periods=1).max()
     feat["drawdown_72h"] = ((close - roll_max) / roll_max.clip(lower=1e-8)).fillna(0.0).clip(-1.0, 0.0).astype(np.float32)
 
-    expected = [
+    base_cols = [
         "chronos_close_delta_h1",
         "chronos_high_delta_h1",
         "chronos_low_delta_h1",
@@ -248,9 +271,22 @@ def compute_features(price_df: pd.DataFrame, fc_h1: pd.DataFrame, fc_h24: pd.Dat
         "trend_72h",
         "drawdown_72h",
     ]
-    feat = feat[expected].replace([np.inf, -np.inf], np.nan).fillna(0.0).astype(np.float32)
-    if feat.shape[1] != FEATURES_PER_SYM:
-        raise AssertionError("Feature-width mismatch for MKTD export")
+    assert len(base_cols) == BASE_FEATURES_PER_SYM
+
+    # Extra horizons: each adds close_delta + confidence (2 features)
+    extra_cols: list[str] = []
+    for h, fc_extra in (extra_forecasts or []):
+        delta_col = f"chronos_close_delta_h{h}"
+        conf_col = f"forecast_confidence_h{h}"
+        feat[delta_col] = _forecast_delta(fc_extra, feat.index, "predicted_close_p50", close)
+        feat[conf_col] = _forecast_confidence(fc_extra, feat.index, close)
+        extra_cols += [delta_col, conf_col]
+
+    all_cols = base_cols + extra_cols
+    feat = feat[all_cols].replace([np.inf, -np.inf], np.nan).fillna(0.0).astype(np.float32)
+    expected_width = BASE_FEATURES_PER_SYM + EXTRA_FEATURES_PER_HORIZON * len(extra_forecasts or [])
+    if feat.shape[1] != expected_width:
+        raise AssertionError(f"Feature-width mismatch: got {feat.shape[1]}, expected {expected_width}")
     return feat
 
 
@@ -260,6 +296,7 @@ def export_binary(
     forecast_cache_root: Path,
     output_path: Path,
     *,
+    horizons: list[int] | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
     feature_lag: int = 0,
@@ -269,8 +306,14 @@ def export_binary(
     root = Path(data_root)
     cache_root = Path(forecast_cache_root)
     symbol_list = _resolve_symbols(symbols, root)
-    if len(symbol_list) > 32:
-        raise ValueError(f"MKTD format supports max 32 symbols, got {len(symbol_list)}")
+    if len(symbol_list) > 64:
+        raise ValueError(f"MKTD format supports max 64 symbols, got {len(symbol_list)}")
+
+    # Determine active horizons; default = [1, 24] for backward compatibility
+    active_horizons: list[int] = sorted(set(horizons)) if horizons else [1, 24]
+    # Extra horizons are those beyond the default pair {1, 24}
+    extra_horizons: list[int] = [h for h in active_horizons if h not in (1, 24)]
+    features_per_sym = BASE_FEATURES_PER_SYM + EXTRA_FEATURES_PER_HORIZON * len(extra_horizons)
 
     raw_prices: dict[str, pd.DataFrame] = {}
     for sym in symbol_list:
@@ -316,11 +359,23 @@ def export_binary(
         except FileNotFoundError:
             fc_h24 = pd.DataFrame()
 
+        extra_forecast_data: list[tuple[int, pd.DataFrame]] = []
+        for h in extra_horizons:
+            try:
+                fc_extra = _read_forecast(sym, cache_root, h)
+            except FileNotFoundError:
+                print(
+                    f"WARNING: forecast cache missing for {sym} h{h} — filling with zeros",
+                    file=sys.stderr,
+                )
+                fc_extra = pd.DataFrame()
+            extra_forecast_data.append((h, fc_extra))
+
         aligned = frame.reindex(index, method="ffill").bfill()
         aligned["volume"] = aligned["volume"].where(observed_mask.astype(bool), 0.0)
         aligned = aligned.fillna(0.0)
 
-        feat = compute_features(aligned, fc_h1, fc_h24)
+        feat = compute_features(aligned, fc_h1, fc_h24, extra_forecasts=extra_forecast_data)
 
         aligned_symbols.append(sym)
         feature_list.append(feat.to_numpy(dtype=np.float32, copy=False))
@@ -335,7 +390,7 @@ def export_binary(
 
     num_symbols = len(aligned_symbols)
     num_timesteps = len(index)
-    feature_arr = np.stack(feature_list, axis=1)  # [T, S, 16]
+    feature_arr = np.stack(feature_list, axis=1)  # [T, S, F]
     price_arr = np.stack(price_list, axis=1)      # [T, S, 5]
     mask_arr = np.stack(mask_list, axis=1)        # [T, S]
 
@@ -358,7 +413,7 @@ def export_binary(
             VERSION,
             num_symbols,
             num_timesteps,
-            FEATURES_PER_SYM,
+            features_per_sym,
             PRICE_FEATURES,
             b"\x00" * 40,
         )
@@ -389,7 +444,17 @@ def main() -> None:
         help="Comma-separated symbol list. If empty, discover all CSV symbols under data-root.",
     )
     parser.add_argument("--data-root", default="trainingdatahourly", help="Root folder containing hourly CSV files")
-    parser.add_argument("--forecast-cache-root", required=True, help="Forecast cache root containing h1/ and h24/ parquets")
+    parser.add_argument("--forecast-cache-root", required=True, help="Forecast cache root containing hN/ parquet directories")
+    parser.add_argument(
+        "--horizons",
+        default="1,24",
+        help=(
+            "Comma-separated forecast horizons in hours (default: '1,24'). "
+            "Must always include 1 and 24 (the base pair). "
+            "Add 48 and/or 168 for extended forecasts, e.g. '1,24,48,168'. "
+            "Each extra horizon appends 2 features (close_delta + confidence)."
+        ),
+    )
     parser.add_argument("--output", default="pufferlib_market/data/hourly_forecast_mktd_v2.bin", help="Output .bin file")
     parser.add_argument("--start-date", default=None, help="Optional inclusive start timestamp/date (UTC)")
     parser.add_argument("--end-date", default=None, help="Optional inclusive end timestamp/date (UTC)")
