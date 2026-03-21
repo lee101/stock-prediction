@@ -104,7 +104,7 @@ class BinanceHourlyTrainer:
             raise ValueError(
                 f"fill_temperature must be > 0 for differentiable fills (got {self.config.fill_temperature})."
             )
-        if hasattr(torch, "_dynamo") and hasattr(torch._dynamo, "config"):
+        if bool(self.config.use_compile) and hasattr(torch, "_dynamo") and hasattr(torch._dynamo, "config"):
             torch._dynamo.config.suppress_errors = True
         if self.config.use_tf32:
             if hasattr(torch, "set_float32_matmul_precision"):
@@ -194,9 +194,18 @@ class BinanceHourlyTrainer:
         self._amp_context, self._scaler = self._build_amp()
 
         if self.device.type == "cuda" and hasattr(self.data, "gpu_cached_dataloader"):
-            train_loader = self.data.gpu_cached_dataloader("train", self.config.batch_size, self.device, shuffle=True)
-            val_loader = self.data.gpu_cached_dataloader("val", self.config.batch_size, self.device, shuffle=False)
-            logger.info("Using GPU-cached dataloaders")
+            try:
+                train_loader = self.data.gpu_cached_dataloader("train", self.config.batch_size, self.device, shuffle=True)
+                val_loader = self.data.gpu_cached_dataloader("val", self.config.batch_size, self.device, shuffle=False)
+                logger.info("Using GPU-cached dataloaders")
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    logger.warning(f"GPU cache OOM, falling back to CPU streaming: {e}")
+                    torch.cuda.empty_cache()
+                    train_loader = self.data.train_dataloader(self.config.batch_size, self.config.num_workers)
+                    val_loader = self.data.val_dataloader(self.config.batch_size, self.config.num_workers)
+                else:
+                    raise
         else:
             train_loader = self.data.train_dataloader(self.config.batch_size, self.config.num_workers)
             val_loader = self.data.val_dataloader(self.config.batch_size, self.config.num_workers)
