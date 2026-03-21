@@ -37,12 +37,8 @@ try:
 except ImportError:
     wandb = None
 
-# PufferLib imports
-import pufferlib
-import pufferlib.vector
-
 # Local
-from pufferlib_market.environment import TradingEnvConfig, TradingEnv
+from pufferlib_market.environment import TradingEnvConfig
 from pufferlib_market.metrics import annualize_total_return
 from pufferlib_market.advantage_utils import normalize_advantages
 from src.checkpoint_manager import TopKCheckpointManager, prune_periodic_checkpoints
