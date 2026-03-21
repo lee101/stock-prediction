@@ -454,6 +454,39 @@ def candidate_training_plan(
     }
 
 
+_SP500_WIKIPEDIA_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+_DEFAULT_SP500_CACHE = "trainingdatadaily/stocks/sp500_symbols.txt"
+
+
+def get_sp500_symbols(
+    use_cache: bool = True,
+    cache_file: str = _DEFAULT_SP500_CACHE,
+) -> list[str]:
+    """Return S&P500 constituent symbols.
+
+    If use_cache is True and cache_file exists, reads from the cached file.
+    Otherwise fetches the current list from Wikipedia and (if use_cache is True)
+    saves it to cache_file for future calls.
+    """
+    import pandas as pd  # noqa: PLC0415
+
+    cache_path = Path(cache_file)
+    if use_cache and cache_path.exists():
+        lines = cache_path.read_text(encoding="utf-8").splitlines()
+        return [line.strip().upper() for line in lines if line.strip() and not line.startswith("#")]
+
+    tables = pd.read_html(_SP500_WIKIPEDIA_URL)
+    df = tables[0]
+    col = next((c for c in df.columns if str(c).strip().lower() in ("symbol", "ticker")), df.columns[0])
+    symbols = [str(s).strip().replace(".", "-") for s in df[col].tolist() if str(s).strip()]
+
+    if use_cache:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text("\n".join(symbols) + "\n", encoding="utf-8")
+
+    return symbols
+
+
 __all__ = [
     "DEFAULT_STOCK_EXPANSION_CANDIDATES",
     "StockExpansionCandidate",
@@ -467,6 +500,7 @@ __all__ = [
     "default_stock_expansion_candidates",
     "extract_reforecast_metrics",
     "filter_candidates_with_hourly_data",
+    "get_sp500_symbols",
     "has_hourly_hyperparams",
     "load_stock_expansion_manifest",
     "manifest_side_defaults",

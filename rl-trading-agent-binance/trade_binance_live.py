@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -771,6 +772,16 @@ def _matching_open_orders(open_orders: list[dict], symbol: str, side: str) -> li
     ]
 
 
+def _binance_error_code(exc: Exception) -> int | None:
+    if hasattr(exc, "code"):
+        return int(exc.code)
+    m = re.search(r"APIError\(code=(-?\d+)\)", str(exc))
+    return int(m.group(1)) if m else None
+
+
+_BINANCE_ORDER_GONE_CODES = {-2011, -2013}
+
+
 def _dedupe_side_orders(
     open_orders: list[dict],
     *,
@@ -797,20 +808,27 @@ def _dedupe_side_orders(
             return open_orders, True
 
     logger.info(f"  Replacing {len(matches)} existing {side.upper()} order(s) on {symbol}")
+    cancelled = []
     for order in matches:
         order_id = order.get("orderId")
         if order_id is None:
-            logger.warning(f"  Cannot cancel open order without orderId on {symbol}: {order}")
-            return open_orders, True
+            logger.warning(f"  No orderId on {symbol} order, treating as gone: {order}")
+            cancelled.append(order)
+            continue
         if dry_run:
             logger.info(f"    [DRY RUN] Would cancel order {order_id}")
             continue
         try:
             _cancel_open_order(execution_mode, symbol, int(order_id))
+            cancelled.append(order)
         except Exception as exc:
-            logger.warning(f"  Failed to cancel open {side.upper()} order {order_id} on {symbol}: {exc}")
-            return open_orders, True
-    remaining = [order for order in open_orders if order not in matches]
+            code = _binance_error_code(exc)
+            if code in _BINANCE_ORDER_GONE_CODES:
+                logger.info(f"  Order {order_id} on {symbol} already gone (code={code}), will replace")
+            else:
+                logger.warning(f"  Failed to cancel {side.upper()} order {order_id} on {symbol}: {exc}, placing new order anyway")
+            cancelled.append(order)
+    remaining = [order for order in open_orders if order not in cancelled]
     return remaining, False
 
 
