@@ -125,6 +125,7 @@ def _checkpoint_payload(
     best_return: float,
     disable_shorts: bool,
     action_meta: dict[str, int | float],
+    arch: str = "mlp",
 ) -> dict[str, object]:
     return {
         "model": policy.state_dict(),
@@ -133,6 +134,7 @@ def _checkpoint_payload(
         "global_step": int(global_step),
         "best_return": float(best_return),
         "disable_shorts": bool(disable_shorts),
+        "arch": arch,
         **action_meta,
     }
 
@@ -1174,6 +1176,7 @@ def train(args):
                         best_return=best_return,
                         disable_shorts=bool(args.disable_shorts),
                         action_meta=action_meta,
+                        arch=args.arch,
                     ),
                     ckpt_path,
                 )
