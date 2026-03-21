@@ -54,25 +54,34 @@ def _mask_disallowed_shorts(
     return masked
 
 
+def _act_holdout(name: str) -> nn.Module:
+    if name == "relu_sq":
+        from pufferlib_market.train import _ReLUSq
+        return _ReLUSq()
+    if name == "gelu":
+        return nn.GELU()
+    return nn.ReLU()
+
+
 class TradingPolicy(nn.Module):
-    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256):
+    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256, activation: str = "relu"):
         super().__init__()
         self.encoder = nn.Sequential(
             nn.Linear(obs_size, hidden),
-            nn.ReLU(),
+            _act_holdout(activation),
             nn.Linear(hidden, hidden),
-            nn.ReLU(),
+            _act_holdout(activation),
             nn.Linear(hidden, hidden),
-            nn.ReLU(),
+            _act_holdout(activation),
         )
         self.actor = nn.Sequential(
             nn.Linear(hidden, hidden // 2),
-            nn.ReLU(),
+            _act_holdout(activation),
             nn.Linear(hidden // 2, num_actions),
         )
         self.critic = nn.Sequential(
             nn.Linear(hidden, hidden // 2),
-            nn.ReLU(),
+            _act_holdout(activation),
             nn.Linear(hidden // 2, 1),
         )
 
@@ -163,13 +172,21 @@ def _infer_action_grid(
 
 
 def _infer_arch(state_dict: dict[str, torch.Tensor]) -> str:
-    if "input_proj.weight" in state_dict:
+    keys = set(state_dict.keys())
+    if "input_proj.weight" in keys:
         return "resmlp"
-    if "encoder.0.weight" in state_dict:
+    if "encoder.0.weight" in keys:
         return "mlp"
+    # Transformer: has attn.in_proj_weight or sym_embed
+    if any(k.startswith("attn.") or k.startswith("sym_embed") for k in keys):
+        return "transformer"
+    # GRU: has gru.weight_ih_l0
+    if any("gru." in k for k in keys):
+        return "gru"
+    # DepthRecurrence: has blocks.0.net.0.weight and shares block weights
+    if any(k.startswith("blocks.") for k in keys):
+        return "depth_recurrence"
     for key in state_dict:
-        if key.startswith(("input_proj.", "blocks.")):
-            return "resmlp"
         if key.startswith("encoder."):
             return "mlp"
     raise ValueError("Could not infer policy arch from checkpoint state_dict keys")
@@ -300,11 +317,24 @@ def main() -> None:
     )
     per_symbol_actions = int(alloc_bins) * int(level_bins)
 
-    arch = _infer_arch(state_dict)
+    # Use arch stored in checkpoint (added in newer checkpoints) or infer from state_dict
+    stored_arch = payload.get("arch", "") if isinstance(payload, dict) else ""
+    arch = stored_arch if stored_arch else _infer_arch(state_dict)
     hidden = _infer_hidden_size(state_dict, arch=arch)
     if arch == "resmlp":
         num_blocks = _infer_resmlp_blocks(state_dict)
         policy = ResidualTradingPolicy(obs_size, num_actions, hidden=int(hidden), num_blocks=int(num_blocks)).to(device)
+    elif arch == "transformer":
+        from pufferlib_market.train import TransformerTradingPolicy
+        policy = TransformerTradingPolicy(obs_size, num_actions, hidden=int(hidden)).to(device)
+    elif arch == "gru":
+        from pufferlib_market.train import GRUTradingPolicy
+        policy = GRUTradingPolicy(obs_size, num_actions, hidden=int(hidden)).to(device)
+    elif arch == "depth_recurrence":
+        from pufferlib_market.train import DepthRecurrenceTradingPolicy
+        policy = DepthRecurrenceTradingPolicy(obs_size, num_actions, hidden=int(hidden)).to(device)
+    elif arch == "mlp_relu_sq":
+        policy = TradingPolicy(obs_size, num_actions, hidden=int(hidden), activation="relu_sq").to(device)
     else:
         policy = TradingPolicy(obs_size, num_actions, hidden=int(hidden)).to(device)
     policy.load_state_dict(state_dict)

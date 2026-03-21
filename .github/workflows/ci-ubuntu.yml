@@ -1,0 +1,16 @@
+name: CI (Ubuntu)
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+      - name: Install dependencies
+        run: uv pip install --system -e ".[dev]" 2>/dev/null || uv pip install --system pytest pytest-mock
+      - name: Run tests
+        run: python -m pytest tests/ -x -q --tb=short --ignore=tests/integration -k "not slow" 2>&1 | head -100

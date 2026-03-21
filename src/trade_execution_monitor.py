@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +11,8 @@ from jsonshelve import FlatShelf
 
 from stock.state import get_state_file, resolve_state_suffix
 from src.trade_stock_state_utils import normalize_side_for_key, state_key
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -84,8 +87,12 @@ class TradeHistoryWriter:
         if not self._loaded:
             try:
                 self.store.load()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001
+                _log.warning(
+                    "TradeHistoryWriter: failed to load state file '%s': %s — starting with empty state.",
+                    self.store.path if hasattr(self.store, "path") else "unknown",
+                    exc,
+                )
             self._loaded = True
 
     def append(self, symbol: str, side: str, qty: float, pnl: float, timestamp: datetime) -> None:

@@ -10,6 +10,7 @@ from torch import nn
 import torch.nn.functional as F
 
 from .config import PolicyConfig
+from .kernels.attention import HAS_TRITON, multi_query_attention as _triton_mqa
 
 logger = logging.getLogger(__name__)
 
@@ -239,7 +240,9 @@ class BinanceHourlyPolicy(BinancePolicyBase):
                 batch_first=True,
                 activation="gelu",
             )
-            self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=config.num_layers)
+            self.encoder = nn.TransformerEncoder(
+                encoder_layer, num_layers=config.num_layers, enable_nested_tensor=False,
+            )
         self._attention_backend_fallback = False
         self.norm = nn.LayerNorm(config.hidden_dim)
         self.head = nn.Linear(config.hidden_dim, config.num_outputs)
@@ -291,7 +294,18 @@ class BinanceHourlyPolicy(BinancePolicyBase):
             out["allocation_logits"] = logits[..., 5:6]
         return out
 
+try:
+    from binanceneural.kernels.rope import apply_rope as _triton_apply_rope
+    from binanceneural.kernels.norm import rms_norm as _triton_rms_norm
+    _HAS_TRITON_KERNELS = True
+except Exception:
+    _HAS_TRITON_KERNELS = False
+
+
 def _rms_norm(x: torch.Tensor, eps: float) -> torch.Tensor:
+    """Unweighted T5-style RMS norm. Uses Triton kernel when available on CUDA."""
+    if _HAS_TRITON_KERNELS and x.is_cuda:
+        return _triton_rms_norm(x, weight=None, eps=eps)
     if hasattr(F, "rms_norm"):
         return F.rms_norm(x, (x.size(-1),), eps=eps)
     variance = x.pow(2).mean(dim=-1, keepdim=True)
@@ -385,8 +399,13 @@ class MultiQueryAttention(nn.Module):
             v_input = v_input + self.value_embedding[:T].unsqueeze(0) * self.value_embedding_scale
         v = self.v_proj(v_input).view(B, T, self.n_kv_head, self.head_dim)
 
-        q = _apply_rotary_emb(q, cos, sin)
-        k = _apply_rotary_emb(k, cos, sin)
+        # Apply RoPE to Q and K. Use fused Triton kernel (both Q+K in one launch)
+        # when available; fall back to sequential PyTorch otherwise.
+        if _HAS_TRITON_KERNELS and q.is_cuda:
+            q, k = _triton_apply_rope(q, k, cos, sin)
+        else:
+            q = _apply_rotary_emb(q, cos, sin)
+            k = _apply_rotary_emb(k, cos, sin)
         if self.use_qk_norm:
             q = _rms_norm(q, eps=self.rms_eps)
             k = _rms_norm(k, eps=self.rms_eps)
@@ -395,19 +414,58 @@ class MultiQueryAttention(nn.Module):
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
-        if self.n_kv_head != self.n_head:
-            n_rep = self.n_head // self.n_kv_head
-            k = k.repeat_interleave(n_rep, dim=1)
-            v = v.repeat_interleave(n_rep, dim=1)
         attn_mask = self._build_attention_mask(T, x.device)
-        y = _scaled_dot_product_attention_with_fallback(
-            q,
-            k,
-            v,
-            attn_mask=attn_mask,
-            is_causal=self.causal if attn_mask is None else False,
-            dropout_p=self.dropout.p if self.training else 0.0,
+        dropout_p = self.dropout.p if self.training else 0.0
+
+        # Use the Triton fused MQA kernel when:
+        #   1. Triton is available
+        #   2. Not training (kernel has no backward pass)
+        #   3. Inputs are on CUDA
+        #   4. No dropout (kernel doesn't support dropout)
+        #   5. head_dim is in supported set {16, 32, 64, 128}
+        use_triton = (
+            HAS_TRITON
+            and not self.training
+            and q.is_cuda
+            and dropout_p == 0.0
+            and self.head_dim in (16, 32, 64, 128)
         )
+
+        if use_triton:
+            # Triton kernel handles MQA natively (K/V may have fewer heads than Q).
+            # Build a float additive mask from the bool mask if needed.
+            triton_mask: torch.Tensor | None = None
+            if attn_mask is not None:
+                if attn_mask.dtype == torch.bool:
+                    triton_mask = torch.zeros(
+                        attn_mask.shape, dtype=q.dtype, device=q.device
+                    ).masked_fill_(~attn_mask, float("-inf"))
+                else:
+                    triton_mask = attn_mask.to(q.dtype)
+                # Ensure 4D: [B_or_1, H_or_1, S, S]
+                while triton_mask.dim() < 4:
+                    triton_mask = triton_mask.unsqueeze(0)
+            y = _triton_mqa(
+                q,
+                k,
+                v,
+                causal=self.causal if attn_mask is None else False,
+                mask=triton_mask,
+            )
+        else:
+            # Fallback: expand K/V to match Q heads, then use SDPA
+            if self.n_kv_head != self.n_head:
+                n_rep = self.n_head // self.n_kv_head
+                k = k.repeat_interleave(n_rep, dim=1)
+                v = v.repeat_interleave(n_rep, dim=1)
+            y = _scaled_dot_product_attention_with_fallback(
+                q,
+                k,
+                v,
+                attn_mask=attn_mask,
+                is_causal=self.causal if attn_mask is None else False,
+                dropout_p=dropout_p,
+            )
         y = y.transpose(1, 2).contiguous().view(B, T, -1)
         return self.out_proj(y)
 

@@ -102,27 +102,30 @@ void market_data_free(MarketData* md) {
 /*  Observation                                                        */
 /* ------------------------------------------------------------------ */
 
-static void fill_observations(TradingEnv* env) {
-    const MarketData* md = env->data;
-    const AgentState* ag = &env->agent;
+static void fill_observations(TradingEnv* __restrict__ env) {
+    const MarketData* __restrict__ md = env->data;
+    const AgentState* __restrict__ ag = &env->agent;
     const int S = md->num_symbols;
     int t = ag->data_offset + ag->step;
 
     /* clamp to valid range */
-    if (t < 0) t = 0;
-    if (t >= md->num_timesteps) t = md->num_timesteps - 1;
+    if (__builtin_expect(t < 0, 0)) t = 0;
+    if (__builtin_expect(t >= md->num_timesteps, 0)) t = md->num_timesteps - 1;
 
     /* Observation lag: agent sees features from t-1 to prevent look-ahead bias.
        The agent decides based on the PREVIOUS bar's information, then trades
        execute at bar t. This matches real trading where you can only see
        completed bars before making decisions. */
     int t_obs = t - 1;
-    if (t_obs < 0) t_obs = 0;
+    if (__builtin_expect(t_obs < 0, 0)) t_obs = 0;
 
-    /* per-symbol features (lagged by 1 bar) */
-    memcpy(env->observations,
-           &md->features[t_obs * S * FEATURES_PER_SYM],
-           S * FEATURES_PER_SYM * sizeof(float));
+    /* Prefetch next timestep's feature row into L1 cache */
+    const float* __restrict__ feat_src = &md->features[t_obs * S * FEATURES_PER_SYM];
+    __builtin_prefetch(feat_src + S * FEATURES_PER_SYM, 0, 1);
+
+    /* per-symbol features (lagged by 1 bar) — compiler will vectorize with AVX2 */
+    float* __restrict__ obs_dst = env->observations;
+    memcpy(obs_dst, feat_src, (size_t)S * FEATURES_PER_SYM * sizeof(float));
 
     /* portfolio state uses LAGGED prices (t-1) for position valuation shown
        to the agent, matching what a real trader would see before bar t closes */
@@ -145,20 +148,21 @@ static void fill_observations(TradingEnv* env) {
         }
     }
 
-    env->observations[base + 0] = ag->cash / INITIAL_CASH;
-    env->observations[base + 1] = pos_val / INITIAL_CASH;
-    env->observations[base + 2] = unreal_pnl / INITIAL_CASH;
-    env->observations[base + 3] = (float)ag->hold_hours / (float)(env->max_steps > 0 ? env->max_steps : 1);
-    env->observations[base + 4] = (float)ag->step / (float)(env->max_steps > 0 ? env->max_steps : 1);
+    obs_dst[base + 0] = ag->cash / INITIAL_CASH;
+    obs_dst[base + 1] = pos_val / INITIAL_CASH;
+    obs_dst[base + 2] = unreal_pnl / INITIAL_CASH;
+    obs_dst[base + 3] = (float)ag->hold_hours / (float)(env->max_steps > 0 ? env->max_steps : 1);
+    obs_dst[base + 4] = (float)ag->step / (float)(env->max_steps > 0 ? env->max_steps : 1);
 
-    /* one-hot position encoding */
+    /* one-hot position encoding — zero then set hot entry */
+#pragma GCC ivdep
     for (int i = 0; i < S; i++) {
-        env->observations[base + 5 + i] = 0.0f;
+        obs_dst[base + 5 + i] = 0.0f;
     }
     if (ag->position_sym >= 0 && ag->position_sym < S) {
-        env->observations[base + 5 + ag->position_sym] = 1.0f;
+        obs_dst[base + 5 + ag->position_sym] = 1.0f;
     } else if (ag->position_sym >= S && ag->position_sym < 2 * S) {
-        env->observations[base + 5 + (ag->position_sym - S)] = -1.0f;
+        obs_dst[base + 5 + (ag->position_sym - S)] = -1.0f;
     }
 }
 
@@ -463,11 +467,11 @@ void c_step(TradingEnv* env) {
     env->terminals[0] = 0;
 
     /* clamp timestep */
-    if (t >= md->num_timesteps) t = md->num_timesteps - 1;
+    if (__builtin_expect(t >= md->num_timesteps, 0)) t = md->num_timesteps - 1;
 
     /* Force-close if max_hold_hours exceeded (before action decode) */
-    if (env->max_hold_hours > 0 && ag->position_sym >= 0 &&
-        ag->hold_hours >= env->max_hold_hours) {
+    if (__builtin_expect(env->max_hold_hours > 0 && ag->position_sym >= 0 &&
+        ag->hold_hours >= env->max_hold_hours, 0)) {
         int cs = ag->position_sym % S;
         if (is_tradable(md, t, cs)) {
             close_position(env, t);
@@ -493,6 +497,9 @@ void c_step(TradingEnv* env) {
             }
         }
     }
+
+    /* prefetch price data for this timestep */
+    __builtin_prefetch(&md->prices[t * S * PRICE_FEATS], 0, 1);
 
     /* compute equity before action */
     float equity_before = compute_equity(env, t);
@@ -684,7 +691,7 @@ void c_step(TradingEnv* env) {
                early_exit ||
                (equity_after < INITIAL_CASH * 0.01f);  /* bankrupt */
 
-    if (done) {
+    if (__builtin_expect(done, 0)) {
         if (early_exit && env->drawdown_profit_early_exit_verbose) {
             fprintf(
                 stderr,
