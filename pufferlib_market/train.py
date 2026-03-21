@@ -342,6 +342,300 @@ class ResidualTradingPolicy(nn.Module):
         return self.critic(h).squeeze(-1)
 
 
+# ─── Activation helpers ──────────────────────────────────────────────
+
+
+def relu_sq(x: torch.Tensor) -> torch.Tensor:
+    """ReLU² activation: proven better than ReLU/GELU at small scale (cutellm research)."""
+    return torch.relu(x) ** 2
+
+
+def get_activation(name: str):
+    """Return an activation function by name."""
+    if name == "relu":
+        return nn.ReLU()
+    elif name == "relu_sq":
+        return _ReLUSq()
+    elif name == "gelu":
+        return nn.GELU()
+    else:
+        raise ValueError(f"Unknown activation: {name!r}. Choose relu, relu_sq, or gelu.")
+
+
+class _ReLUSq(nn.Module):
+    """Module wrapper for relu_sq activation."""
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return relu_sq(x)
+
+
+# ─── TransformerTradingPolicy ─────────────────────────────────────────
+
+
+class TransformerTradingPolicy(nn.Module):
+    """
+    Treats each symbol as a token. Uses multi-head self-attention across symbols
+    + a feedforward head. Inspired by cross-symbol correlation reasoning.
+
+    obs shape: (batch, S*16 + 5 + S) where S=num_symbols
+    Strategy:
+      1. Split obs into per-symbol features (S*16) and portfolio state (5+S)
+      2. Reshape per-symbol features to (batch, S, 16)
+      3. Project to (batch, S, embed_dim) with a linear layer
+      4. Apply multi-head self-attention across symbols
+      5. Flatten + concat portfolio state -> MLP head for actor/critic
+    """
+
+    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256,
+                 activation: str = "relu"):
+        super().__init__()
+        self.obs_size = obs_size
+        self.num_actions = num_actions
+
+        # Infer num_symbols from obs_size: obs = S*16 + 5 + S => S*17 + 5 = obs_size
+        # S = (obs_size - 5) / 17
+        num_symbols = (obs_size - 5) // 17
+        self.num_symbols = num_symbols
+        self.per_symbol_features = 16
+        self.portfolio_size = obs_size - num_symbols * 16  # 5 + S
+
+        # Embedding: project 16-dim per-symbol features -> hidden//4 (embed_dim)
+        embed_dim = max(hidden // 4, 32)
+        self.embed_dim = embed_dim
+        self.symbol_proj = nn.Linear(self.per_symbol_features, embed_dim)
+
+        # Multi-head self-attention (num_heads=4, or fewer if embed_dim is small)
+        num_heads = min(4, embed_dim // 8) if embed_dim >= 8 else 1
+        num_heads = max(num_heads, 1)
+        self.attn = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=num_heads,
+                                          batch_first=True)
+        self.attn_norm = nn.LayerNorm(embed_dim)
+
+        # MLP after attention
+        attn_out_size = num_symbols * embed_dim + self.portfolio_size
+        act = get_activation(activation)
+        self.mlp = nn.Sequential(
+            nn.Linear(attn_out_size, hidden),
+            act,
+            nn.Linear(hidden, hidden),
+            get_activation(activation),
+        )
+
+        self.actor = nn.Sequential(
+            nn.Linear(hidden, hidden // 2),
+            get_activation(activation),
+            nn.Linear(hidden // 2, num_actions),
+        )
+        self.critic = nn.Sequential(
+            nn.Linear(hidden, hidden // 2),
+            get_activation(activation),
+            nn.Linear(hidden // 2, 1),
+        )
+
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                nn.init.zeros_(m.bias)
+        nn.init.orthogonal_(self.actor[-1].weight, gain=0.01)
+        nn.init.orthogonal_(self.critic[-1].weight, gain=1.0)
+
+    def forward(self, x: torch.Tensor):
+        batch = x.shape[0]
+        # Split: per-symbol part and portfolio state
+        sym_flat = x[:, :self.num_symbols * self.per_symbol_features]
+        portfolio = x[:, self.num_symbols * self.per_symbol_features:]
+
+        # Reshape to (batch, S, 16) -> project to (batch, S, embed_dim)
+        sym_tokens = sym_flat.view(batch, self.num_symbols, self.per_symbol_features)
+        sym_emb = self.symbol_proj(sym_tokens)  # (batch, S, embed_dim)
+
+        # Self-attention across symbols
+        attn_out, _ = self.attn(sym_emb, sym_emb, sym_emb)
+        sym_emb = self.attn_norm(sym_emb + attn_out)  # residual + norm
+
+        # Flatten symbols + concat portfolio
+        h = torch.cat([sym_emb.reshape(batch, -1), portfolio], dim=-1)
+        h = self.mlp(h)
+
+        logits = self.actor(h)
+        value = self.critic(h).squeeze(-1)
+        return logits, value
+
+    def get_action_and_value(self, x: torch.Tensor, action=None, *, disable_shorts: bool = False):
+        logits, value = self.forward(x)
+        if disable_shorts:
+            logits = _mask_short_logits(logits, self.num_actions)
+        dist = Categorical(logits=logits)
+        if action is None:
+            action = dist.sample()
+        log_prob = dist.log_prob(action)
+        entropy = dist.entropy()
+        return action, log_prob, entropy, value
+
+    def get_value(self, x: torch.Tensor):
+        _, value = self.forward(x)
+        return value
+
+
+# ─── GRUTradingPolicy ─────────────────────────────────────────────────
+
+
+class GRUTradingPolicy(nn.Module):
+    """
+    GRU-gated policy: uses GRU cells for temporal gating within the feedforward pass.
+    The input is processed through GRU cells (treating the hidden layers as a sequence)
+    to allow gated information flow inspired by temporal sequence models.
+
+    Concretely: input projection -> 2-layer GRU (seq_len=1, batch=batch) -> actor/critic heads.
+    """
+
+    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256,
+                 activation: str = "relu"):
+        super().__init__()
+        self.obs_size = obs_size
+        self.num_actions = num_actions
+
+        # Input projection
+        self.input_proj = nn.Linear(obs_size, hidden)
+        self.input_act = get_activation(activation)
+
+        # 2-layer GRU: processes the hidden representation with gating
+        self.gru = nn.GRU(input_size=hidden, hidden_size=hidden, num_layers=2, batch_first=True)
+
+        self.out_norm = nn.LayerNorm(hidden)
+
+        self.actor = nn.Sequential(
+            nn.Linear(hidden, hidden // 2),
+            get_activation(activation),
+            nn.Linear(hidden // 2, num_actions),
+        )
+        self.critic = nn.Sequential(
+            nn.Linear(hidden, hidden // 2),
+            get_activation(activation),
+            nn.Linear(hidden // 2, 1),
+        )
+
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                nn.init.zeros_(m.bias)
+        nn.init.orthogonal_(self.actor[-1].weight, gain=0.01)
+        nn.init.orthogonal_(self.critic[-1].weight, gain=1.0)
+
+    def forward(self, x: torch.Tensor):
+        h = self.input_act(self.input_proj(x))  # (batch, hidden)
+        # GRU expects (batch, seq_len, input_size); use seq_len=1
+        h_seq = h.unsqueeze(1)  # (batch, 1, hidden)
+        gru_out, _ = self.gru(h_seq)  # (batch, 1, hidden)
+        h = self.out_norm(gru_out.squeeze(1))  # (batch, hidden)
+
+        logits = self.actor(h)
+        value = self.critic(h).squeeze(-1)
+        return logits, value
+
+    def get_action_and_value(self, x: torch.Tensor, action=None, *, disable_shorts: bool = False):
+        logits, value = self.forward(x)
+        if disable_shorts:
+            logits = _mask_short_logits(logits, self.num_actions)
+        dist = Categorical(logits=logits)
+        if action is None:
+            action = dist.sample()
+        log_prob = dist.log_prob(action)
+        entropy = dist.entropy()
+        return action, log_prob, entropy, value
+
+    def get_value(self, x: torch.Tensor):
+        _, value = self.forward(x)
+        return value
+
+
+# ─── DepthRecurrenceTradingPolicy ─────────────────────────────────────
+
+
+class DepthRecurrenceTradingPolicy(nn.Module):
+    """
+    N unique MLP blocks executed K times (depth recurrence).
+    Uses N=3 blocks run K=2 times = 6 effective layers at 3-block parameter cost.
+    Gives more representational capacity without proportionally more parameters.
+    From cutellm depth-recurrence research.
+    """
+
+    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256,
+                 num_blocks: int = 3, num_recurrences: int = 2,
+                 activation: str = "relu"):
+        super().__init__()
+        self.obs_size = obs_size
+        self.num_actions = num_actions
+        self.num_blocks = num_blocks
+        self.num_recurrences = num_recurrences
+
+        self.input_proj = nn.Linear(obs_size, hidden)
+
+        # N unique blocks (each is a pre-norm residual: LN -> Linear -> act -> Linear)
+        self.blocks = nn.ModuleList([
+            nn.ModuleDict({
+                "norm": nn.LayerNorm(hidden),
+                "fc1": nn.Linear(hidden, hidden),
+                "fc2": nn.Linear(hidden, hidden),
+            })
+            for _ in range(num_blocks)
+        ])
+        self.act_name = activation
+        self.out_norm = nn.LayerNorm(hidden)
+
+        self.actor = nn.Sequential(
+            nn.Linear(hidden, hidden // 2),
+            get_activation(activation),
+            nn.Linear(hidden // 2, num_actions),
+        )
+        self.critic = nn.Sequential(
+            nn.Linear(hidden, hidden // 2),
+            get_activation(activation),
+            nn.Linear(hidden // 2, 1),
+        )
+
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+                nn.init.zeros_(m.bias)
+        nn.init.orthogonal_(self.actor[-1].weight, gain=0.01)
+        nn.init.orthogonal_(self.critic[-1].weight, gain=1.0)
+
+    def _apply_block(self, x: torch.Tensor, block: nn.ModuleDict) -> torch.Tensor:
+        """Apply one pre-norm residual block."""
+        h = block["norm"](x)
+        h = block["fc1"](h)
+        h = relu_sq(h) if self.act_name == "relu_sq" else torch.relu(h) if self.act_name == "relu" else torch.nn.functional.gelu(h)
+        h = block["fc2"](h)
+        return x + h
+
+    def forward(self, x: torch.Tensor):
+        h = self.input_proj(x)
+        # Run all N blocks K times
+        for _ in range(self.num_recurrences):
+            for block in self.blocks:
+                h = self._apply_block(h, block)
+        h = self.out_norm(h)
+
+        logits = self.actor(h)
+        value = self.critic(h).squeeze(-1)
+        return logits, value
+
+    def get_action_and_value(self, x: torch.Tensor, action=None, *, disable_shorts: bool = False):
+        logits, value = self.forward(x)
+        if disable_shorts:
+            logits = _mask_short_logits(logits, self.num_actions)
+        dist = Categorical(logits=logits)
+        if action is None:
+            action = dist.sample()
+        log_prob = dist.log_prob(action)
+        entropy = dist.entropy()
+        return action, log_prob, entropy, value
+
+    def get_value(self, x: torch.Tensor):
+        _, value = self.forward(x)
+        return value
+
+
 # ─── PPO Training Loop ────────────────────────────────────────────────
 
 def compute_gae(rewards, values, dones, gamma=0.99, gae_lambda=0.95):
@@ -474,10 +768,40 @@ def train(args):
     # ── Policy ──
     if args.arch == "resmlp":
         policy = ResidualTradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
+    elif args.arch == "transformer":
+        policy = TransformerTradingPolicy(
+            obs_size, num_actions, hidden=args.hidden_size,
+            activation=args.activation,
+        ).to(device)
+    elif args.arch == "gru":
+        policy = GRUTradingPolicy(
+            obs_size, num_actions, hidden=args.hidden_size,
+            activation=args.activation,
+        ).to(device)
+    elif args.arch == "depth_recurrence":
+        policy = DepthRecurrenceTradingPolicy(
+            obs_size, num_actions, hidden=args.hidden_size,
+            activation=args.activation,
+        ).to(device)
     else:
         policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
-    optimizer = optim.AdamW(policy.parameters(), lr=args.lr, eps=1e-5,
-                            weight_decay=args.weight_decay)
+    if args.optimizer == "muon":
+        from pufferlib_market.muon import make_muon_optimizer
+        optimizer = make_muon_optimizer(
+            policy,
+            muon_lr=args.lr,
+            muon_momentum=args.muon_momentum,
+            adamw_lr=args.muon_adamw_lr,
+            adamw_wd=args.weight_decay,
+            ns_steps=args.muon_ns_steps,
+        )
+        print(
+            f"  Optimizer: Muon (lr={args.lr}, momentum={args.muon_momentum},"
+            f" ns_steps={args.muon_ns_steps}, adamw_lr={args.muon_adamw_lr})"
+        )
+    else:
+        optimizer = optim.AdamW(policy.parameters(), lr=args.lr, eps=1e-5,
+                                weight_decay=args.weight_decay)
     total_params = sum(p.numel() for p in policy.parameters())
     print(f"  Policy: {total_params:,} params ({total_params * 4 / 1e6:.1f} MB)")
     action_meta = {
@@ -1027,8 +1351,22 @@ def main():
 
     # Policy
     parser.add_argument("--hidden-size", type=int, default=256)
-    parser.add_argument("--arch", choices=["mlp", "resmlp"], default="mlp",
-                        help="Architecture: mlp (default) or resmlp (residual+LayerNorm)")
+    parser.add_argument(
+        "--arch",
+        choices=["mlp", "resmlp", "transformer", "gru", "depth_recurrence"],
+        default="mlp",
+        help=(
+            "Architecture: mlp (default), resmlp (residual+LayerNorm), "
+            "transformer (symbol-level attention), gru (GRU-gated), "
+            "depth_recurrence (N blocks × K passes)"
+        ),
+    )
+    parser.add_argument(
+        "--activation",
+        choices=["relu", "relu_sq", "gelu"],
+        default="relu",
+        help="Activation function for new architectures (relu_sq proven better at small scale)",
+    )
     parser.add_argument("--disable-shorts", action="store_true", help="Mask short actions (long/flat only)")
 
     # PPO
@@ -1073,6 +1411,15 @@ def main():
     parser.add_argument("--lr-warmup-frac", type=float, default=0.02, help="Fraction of training for LR warmup")
     parser.add_argument("--lr-min-ratio", type=float, default=0.05, help="Minimum LR as fraction of base (floor)")
     parser.add_argument("--weight-decay", type=float, default=0.0, help="AdamW weight decay (0.005 recommended)")
+    parser.add_argument(
+        "--optimizer",
+        choices=["adamw", "muon"],
+        default="adamw",
+        help="Optimizer: adamw (default) or muon (Newton-Schulz orthogonalised SGD for weight matrices)",
+    )
+    parser.add_argument("--muon-momentum", type=float, default=0.95, help="SGD momentum for Muon (default 0.95)")
+    parser.add_argument("--muon-ns-steps", type=int, default=5, help="Newton-Schulz iterations for Muon (default 5)")
+    parser.add_argument("--muon-adamw-lr", type=float, default=3e-4, help="AdamW lr for 1D params when using Muon (default 3e-4)")
     parser.add_argument("--anneal-ent", action="store_true", help="Anneal entropy coefficient over training")
     parser.add_argument("--ent-coef-end", type=float, default=0.02, help="Final entropy coef (with --anneal-ent)")
     parser.add_argument("--anneal-clip", action="store_true", help="Anneal clip epsilon over training")
