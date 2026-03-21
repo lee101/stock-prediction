@@ -358,6 +358,198 @@ def build_autoresearch_cmd(
 
 
 @dataclass(frozen=True)
+class RemoteAutoresearchPlan:
+    run_id: str
+    remote_run_dir: str
+    remote_script_path: str
+    remote_log_path: str
+    remote_pid_path: str
+    train_data_path: str
+    val_data_path: str
+    leaderboard_path: str
+    checkpoint_root: str
+    post_eval_output_path: str | None
+    commands: tuple[tuple[str, ...], ...]
+
+    def as_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["commands"] = [list(command) for command in self.commands]
+        return payload
+
+
+def _append_optional_cli_arg(cmd: list[str], flag: str, value: object) -> None:
+    if value is None:
+        return
+    if isinstance(value, str):
+        if not value:
+            return
+        cmd.extend([flag, value])
+        return
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return
+        cmd.extend([flag, ",".join(str(item) for item in value)])
+        return
+    cmd.extend([flag, str(value)])
+
+
+def build_remote_autoresearch_plan(
+    *,
+    run_id: str,
+    train_data_path: str,
+    val_data_path: str,
+    time_budget: int,
+    max_trials: int,
+    descriptions: Sequence[str],
+    rank_metric: str = "auto",
+    leaderboard_path: str | None = None,
+    checkpoint_root: str | None = None,
+    periods_per_year: float | None = None,
+    max_steps_override: int = 0,
+    fee_rate_override: float = -1.0,
+    holdout_data: str | None = None,
+    holdout_eval_steps: int = 0,
+    holdout_n_windows: int = 0,
+    holdout_seed: int = 1337,
+    holdout_end_within_steps: int = 0,
+    holdout_fee_rate: float = -1.0,
+    holdout_fill_buffer_bps: float = 5.0,
+    holdout_max_leverage: float = 1.0,
+    holdout_short_borrow_apr: float = 0.0,
+    replay_eval_data: str | None = None,
+    replay_eval_hourly_root: str = "",
+    replay_eval_start_date: str = "",
+    replay_eval_end_date: str = "",
+    replay_eval_fill_buffer_bps: float = 5.0,
+    replay_eval_run_hourly_policy: bool = False,
+    replay_eval_hourly_periods_per_year: float = 8760.0,
+    market_validation_asset_class: str = "",
+    market_validation_days: int = 0,
+    market_validation_cash: float = 10_000.0,
+    market_validation_decision_cadence: str = "hourly",
+    market_validation_symbols: Sequence[str] | None = None,
+    remote_run_root: str = DEFAULT_REMOTE_RUN_ROOT,
+    post_eval_periods: Sequence[int] | None = None,
+    post_eval_sort_period: int = 120,
+    post_eval_max_workers: int = 4,
+    post_eval_cache_path: str | None = None,
+    post_eval_use_compile: bool = False,
+    post_eval_parallel: bool = False,
+) -> RemoteAutoresearchPlan:
+    run_dir = f"{remote_run_root.rstrip('/')}/{run_id}"
+    leaderboard = leaderboard_path or f"pufferlib_market/{run_id}_leaderboard.csv"
+    checkpoints = checkpoint_root or f"pufferlib_market/checkpoints/{run_id}"
+    remote_script_path = f"{run_dir}/pipeline.sh"
+    remote_log_path = f"{run_dir}/pipeline.log"
+    remote_pid_path = f"{run_dir}/pipeline.pid"
+
+    cmd = build_autoresearch_cmd(
+        train_data=train_data_path,
+        val_data=val_data_path,
+        leaderboard=leaderboard,
+        checkpoint_root=checkpoints,
+        time_budget=time_budget,
+        max_trials=max_trials,
+        descriptions=descriptions,
+        rank_metric=rank_metric,
+    )
+    _append_optional_cli_arg(cmd, "--periods-per-year", periods_per_year)
+    if max_steps_override > 0:
+        _append_optional_cli_arg(cmd, "--max-steps-override", max_steps_override)
+    if fee_rate_override >= 0.0:
+        _append_optional_cli_arg(cmd, "--fee-rate-override", fee_rate_override)
+    if holdout_data:
+        _append_optional_cli_arg(cmd, "--holdout-data", holdout_data)
+        if holdout_eval_steps > 0:
+            _append_optional_cli_arg(cmd, "--holdout-eval-steps", holdout_eval_steps)
+        if holdout_n_windows > 0:
+            _append_optional_cli_arg(cmd, "--holdout-n-windows", holdout_n_windows)
+        _append_optional_cli_arg(cmd, "--holdout-seed", holdout_seed)
+        if holdout_end_within_steps > 0:
+            _append_optional_cli_arg(cmd, "--holdout-end-within-steps", holdout_end_within_steps)
+        if holdout_fee_rate >= 0.0:
+            _append_optional_cli_arg(cmd, "--holdout-fee-rate", holdout_fee_rate)
+        _append_optional_cli_arg(cmd, "--holdout-fill-buffer-bps", holdout_fill_buffer_bps)
+        _append_optional_cli_arg(cmd, "--holdout-max-leverage", holdout_max_leverage)
+        _append_optional_cli_arg(cmd, "--holdout-short-borrow-apr", holdout_short_borrow_apr)
+    if market_validation_asset_class:
+        _append_optional_cli_arg(cmd, "--market-validation-asset-class", market_validation_asset_class)
+        if market_validation_days > 0:
+            _append_optional_cli_arg(cmd, "--market-validation-days", market_validation_days)
+        _append_optional_cli_arg(cmd, "--market-validation-cash", market_validation_cash)
+        _append_optional_cli_arg(
+            cmd,
+            "--market-validation-decision-cadence",
+            market_validation_decision_cadence,
+        )
+        if market_validation_symbols:
+            _append_optional_cli_arg(
+                cmd,
+                "--market-validation-symbols",
+                normalize_symbols(market_validation_symbols),
+            )
+    replay_enabled = bool(replay_eval_hourly_root and replay_eval_start_date and replay_eval_end_date)
+    if replay_enabled:
+        _append_optional_cli_arg(cmd, "--replay-eval-data", replay_eval_data or holdout_data or val_data_path)
+        _append_optional_cli_arg(cmd, "--replay-eval-hourly-root", replay_eval_hourly_root)
+        _append_optional_cli_arg(cmd, "--replay-eval-start-date", replay_eval_start_date)
+        _append_optional_cli_arg(cmd, "--replay-eval-end-date", replay_eval_end_date)
+        _append_optional_cli_arg(cmd, "--replay-eval-fill-buffer-bps", replay_eval_fill_buffer_bps)
+        _append_optional_cli_arg(
+            cmd,
+            "--replay-eval-hourly-periods-per-year",
+            replay_eval_hourly_periods_per_year,
+        )
+        if replay_eval_run_hourly_policy:
+            cmd.append("--replay-eval-run-hourly-policy")
+
+    commands: list[list[str]] = [cmd]
+    post_eval_output_path: str | None = None
+    if post_eval_periods:
+        periods = [int(period) for period in post_eval_periods if int(period) > 0]
+        if periods:
+            post_eval_output_path = f"{run_dir}/marketsim_{'_'.join(str(period) for period in periods)}.csv"
+            fast_eval_cmd = [
+                "python",
+                "-u",
+                "pufferlib_market/fast_marketsim_eval.py",
+                "--root",
+                ".",
+                "--output",
+                post_eval_output_path,
+                "--periods",
+                ",".join(str(period) for period in periods),
+                "--sort-period",
+                str(int(post_eval_sort_period)),
+                "--checkpoint-dirs",
+                checkpoints,
+                "--max-workers",
+                str(int(post_eval_max_workers)),
+            ]
+            cache_path = post_eval_cache_path or f"{run_dir}/marketsim_cache.json"
+            fast_eval_cmd.extend(["--cache-path", cache_path])
+            if not post_eval_use_compile:
+                fast_eval_cmd.append("--no-compile")
+            if not post_eval_parallel:
+                fast_eval_cmd.append("--sequential")
+            commands.append(fast_eval_cmd)
+
+    return RemoteAutoresearchPlan(
+        run_id=str(run_id),
+        remote_run_dir=run_dir,
+        remote_script_path=remote_script_path,
+        remote_log_path=remote_log_path,
+        remote_pid_path=remote_pid_path,
+        train_data_path=str(train_data_path),
+        val_data_path=str(val_data_path),
+        leaderboard_path=leaderboard,
+        checkpoint_root=checkpoints,
+        post_eval_output_path=post_eval_output_path,
+        commands=tuple(tuple(command) for command in commands),
+    )
+
+
+@dataclass(frozen=True)
 class RemotePipelinePlan:
     run_id: str
     symbols: tuple[str, ...]
@@ -523,7 +715,7 @@ def render_remote_pipeline_script(
     *,
     remote_dir: str,
     remote_env: str,
-    plan: RemotePipelinePlan,
+    plan: RemotePipelinePlan | RemoteAutoresearchPlan,
 ) -> str:
     lines = [
         "#!/usr/bin/env bash",
@@ -532,7 +724,7 @@ def render_remote_pipeline_script(
         f"source {shlex.quote(str(remote_env).rstrip('/'))}/bin/activate",
         'export PYTHONPATH="$PWD:$PWD/PufferLib:${PYTHONPATH:-}"',
         f"mkdir -p {shlex.quote(plan.remote_run_dir)}",
-        "echo \"[$(date -u +%Y-%m-%dT%H:%M:%SZ)] starting remote hourly Chronos2/RL pipeline\"",
+        "echo \"[$(date -u +%Y-%m-%dT%H:%M:%SZ)] starting remote pipeline\"",
     ]
     for command in plan.commands:
         lines.append(f"echo \"+ {shell_join(command)}\"")
@@ -547,7 +739,9 @@ __all__ = [
     "DEFAULT_REMOTE_HOST",
     "DEFAULT_REMOTE_RUN_ROOT",
     "HourlyTrainValWindow",
+    "RemoteAutoresearchPlan",
     "RemotePipelinePlan",
+    "build_remote_autoresearch_plan",
     "build_hourly_train_val_window_from_bounds",
     "build_autoresearch_cmd",
     "build_export_hourly_forecast_cmd",

@@ -163,24 +163,17 @@ class BinanceHourlyDataModule:
         )
 
     def train_dataloader(self, batch_size: int, num_workers: int = 0) -> DataLoader:
-        return DataLoader(
-            self.train_dataset,
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=num_workers,
-            drop_last=True,
-            pin_memory=True,
-        )
+        return _make_dataloader(self.train_dataset, batch_size, shuffle=True, num_workers=num_workers, drop_last=True)
 
     def val_dataloader(self, batch_size: int, num_workers: int = 0) -> DataLoader:
-        return DataLoader(
-            self.val_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=num_workers,
-            drop_last=False,
-            pin_memory=True,
-        )
+        return _make_dataloader(self.val_dataset, batch_size, shuffle=False, num_workers=num_workers, drop_last=False)
+
+    def gpu_cached_dataloader(
+        self, dataset_name: str, batch_size: int, device: torch.device, shuffle: bool = True
+    ) -> DataLoader:
+        base = self.train_dataset if dataset_name == "train" else self.val_dataset
+        cached = GPUCachedDataset(base, device)
+        return _make_dataloader(cached, batch_size, shuffle=shuffle, num_workers=0, drop_last=(dataset_name == "train"), pin_memory=False)
 
     # ------------------------------------------------------------------
     def _prepare_frame(self) -> pd.DataFrame:
@@ -224,10 +217,69 @@ class BinanceHourlyDataModule:
         )
 
 
+def _make_dataloader(
+    dataset: Dataset, batch_size: int, shuffle: bool, num_workers: int, drop_last: bool, pin_memory: bool = True
+) -> DataLoader:
+    persistent = num_workers > 0
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        drop_last=drop_last,
+        pin_memory=pin_memory,
+        persistent_workers=persistent,
+    )
+
+
+class GPUCachedDataset(Dataset):
+    """Wraps a BinanceHourlyDataset by pre-transferring all arrays to GPU tensors."""
+
+    def __init__(self, base: BinanceHourlyDataset, device: torch.device) -> None:
+        self.seq_len = base.seq_len
+        self._device = device
+        self._len = len(base)
+        self._t_can_long = torch.tensor(base._can_long, device=device)
+        self._t_can_short = torch.tensor(base._can_short, device=device)
+        self.features = torch.as_tensor(base.features, dtype=torch.float32, device=device)
+        self.opens = torch.as_tensor(base.opens, dtype=torch.float32, device=device)
+        self.highs = torch.as_tensor(base.highs, dtype=torch.float32, device=device)
+        self.lows = torch.as_tensor(base.lows, dtype=torch.float32, device=device)
+        self.closes = torch.as_tensor(base.closes, dtype=torch.float32, device=device)
+        self.reference_close = torch.as_tensor(base.reference_close, dtype=torch.float32, device=device)
+        self.chronos_high = torch.as_tensor(base.chronos_high, dtype=torch.float32, device=device)
+        self.chronos_low = torch.as_tensor(base.chronos_low, dtype=torch.float32, device=device)
+        self.all_horizons = {
+            k: torch.as_tensor(v, dtype=torch.float32, device=device)
+            for k, v in base.all_horizons.items()
+        }
+
+    def __len__(self) -> int:
+        return self._len
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        s, e = idx, idx + self.seq_len
+        payload = {
+            "features": self.features[s:e],
+            "open": self.opens[s:e],
+            "high": self.highs[s:e],
+            "low": self.lows[s:e],
+            "close": self.closes[s:e],
+            "reference_close": self.reference_close[s:e],
+            "chronos_high": self.chronos_high[s:e],
+            "chronos_low": self.chronos_low[s:e],
+            "can_long": self._t_can_long,
+            "can_short": self._t_can_short,
+        }
+        for key, values in self.all_horizons.items():
+            payload[key] = values[s:e]
+        return payload
+
+
 class MultiSymbolDataset(Dataset):
     """Concatenate multiple BinanceHourlyDatasets for multi-pair training."""
 
-    def __init__(self, datasets: List[BinanceHourlyDataset]) -> None:
+    def __init__(self, datasets: List[Dataset]) -> None:
         self.datasets = datasets
         self.lengths = [len(ds) for ds in datasets]
         self.cumulative_lengths = [0] + list(np.cumsum(self.lengths))
@@ -314,24 +366,20 @@ class MultiSymbolDataModule:
         self.frame = target_module.frame
 
     def train_dataloader(self, batch_size: int, num_workers: int = 0) -> DataLoader:
-        return DataLoader(
-            self.train_dataset,
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=num_workers,
-            drop_last=True,
-            pin_memory=True,
-        )
+        return _make_dataloader(self.train_dataset, batch_size, shuffle=True, num_workers=num_workers, drop_last=True)
 
     def val_dataloader(self, batch_size: int, num_workers: int = 0) -> DataLoader:
-        return DataLoader(
-            self.val_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=num_workers,
-            drop_last=False,
-            pin_memory=True,
-        )
+        return _make_dataloader(self.val_dataset, batch_size, shuffle=False, num_workers=num_workers, drop_last=False)
+
+    def gpu_cached_dataloader(
+        self, dataset_name: str, batch_size: int, device: torch.device, shuffle: bool = True
+    ) -> DataLoader:
+        if dataset_name == "train":
+            cached_subs = [GPUCachedDataset(ds, device) for ds in self.train_dataset.datasets]
+            cached = MultiSymbolDataset(cached_subs)
+        else:
+            cached = GPUCachedDataset(self.val_dataset, device)
+        return _make_dataloader(cached, batch_size, shuffle=shuffle, num_workers=0, drop_last=(dataset_name == "train"), pin_memory=False)
 
 
 # ------------------------------------------------------------------
@@ -405,6 +453,7 @@ __all__ = [
     "BinanceHourlyDataModule",
     "BinanceHourlyDataset",
     "FeatureNormalizer",
+    "GPUCachedDataset",
     "MultiSymbolDataModule",
     "build_default_feature_columns",
     "build_feature_frame",
