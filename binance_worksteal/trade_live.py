@@ -1171,10 +1171,13 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
     })
 
     # Track consecutive zero-candidate cycles for adaptive dip
-    if n_candidates == 0 and not skip_entries:
+    sufficient_data = len(all_bars) >= len(symbols) * 0.5
+    if n_candidates == 0 and not skip_entries and sufficient_data:
         state["zero_candidate_cycles"] = zero_candidate_cycles + 1
         logger.info(f"ADAPTIVE: zero_candidate_cycles={zero_candidate_cycles + 1}")
-    elif counts["n_staged"] > 0:
+    elif n_candidates == 0 and not sufficient_data:
+        logger.warning(f"ADAPTIVE: skipped counter increment, only {len(all_bars)}/{len(symbols)} symbols had data")
+    elif n_candidates > 0:
         state["zero_candidate_cycles"] = 0
 
     # Save state
@@ -1317,22 +1320,23 @@ def main():
 
     config = build_runtime_config(args)
 
+    # Initialize Binance client
+    client = None
+    if BinanceClient:
+        try:
+            from env_real import BINANCE_API_KEY, BINANCE_SECRET
+            client = BinanceClient(BINANCE_API_KEY, BINANCE_SECRET)
+        except Exception as e:
+            logger.warning(f"Binance client unavailable: {e}")
+
     if args.diagnose:
-        client = None
         run_diagnose(client, symbols, config)
         return 0
 
-    # Initialize Binance client
-    if not args.dry_run and BinanceClient:
-        try:
-            sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-            from env_real import BINANCE_API_KEY, BINANCE_SECRET
-            client = BinanceClient(BINANCE_API_KEY, BINANCE_SECRET)
-        except ImportError:
-            logger.error("env_real.py not found - need BINANCE_API_KEY and BINANCE_SECRET")
-            return 1
-    else:
-        client = None
+    if client is None and not args.dry_run:
+        logger.error("Binance client required for live mode but unavailable")
+        return 1
+    elif client is None:
         logger.info("Running in DRY RUN mode")
 
     gemini_on = getattr(args, "gemini", False)
