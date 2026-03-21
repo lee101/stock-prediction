@@ -73,6 +73,7 @@ class PolicyConfig:
     num_memory_tokens: int = 0  # 0=disabled, e.g. 4-16 for global memory
     # Dilated attention: different head groups attend at different strides
     dilated_strides: str = ""  # e.g. "1,4,24" - one stride per head group
+    use_flex_attention: bool = True  # use FlexAttention when available (PyTorch 2.4+, CUDA)
     num_outputs: int = 4
     max_hold_hours: float = 24.0
 
@@ -176,6 +177,7 @@ class TrainingConfig:
     use_tf32: bool = True
     use_flash_attention: bool = True
     accumulation_steps: int = 1
+    use_flex_attention: bool = True
     forecast_config: ForecastConfig = field(default_factory=ForecastConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
 
