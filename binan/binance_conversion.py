@@ -114,7 +114,7 @@ def execute_stable_quote_conversion(
         raise ValueError(f"Unsupported conversion side {plan.side!r}.")
     normalized_plan = _normalize_sell_conversion_plan(plan)
     if not normalized_plan.quantity or normalized_plan.quantity <= 0.0:
-        raise ValueError(f"SELL conversion plan requires quantity, got {plan.quantity}.")
+        raise ValueError(f"SELL conversion plan requires quantity, got {normalized_plan.quantity}.")
 
     resolved_client = client or binance_wrapper.get_client()
     if resolved_client is None:
@@ -149,7 +149,6 @@ def _normalize_sell_conversion_plan(plan: StableQuoteConversionPlan) -> StableQu
 
 __all__ = [
     "StableQuoteConversionPlan",
-    "_normalize_sell_conversion_plan",
     "build_stable_quote_conversion_plan",
     "coerce_amount",
     "compute_spendable_quote",

@@ -7,7 +7,7 @@ import json
 import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Tuple
 import torch  # noqa: early import to warm page cache
 import numpy as np
 import pandas as pd
@@ -226,6 +226,7 @@ def main():
     parser.add_argument("--results-dir", type=Path, default=DEFAULT_RESULTS_DIR)
     parser.add_argument("--context-length", type=int, default=128)
     parser.add_argument("--prediction-length", type=int, default=24)
+    parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--learning-rate", type=float, default=5e-5)
     parser.add_argument("--num-steps", type=int, default=1000)
     parser.add_argument("--lora-r", type=int, default=16)
@@ -249,6 +250,7 @@ def main():
         symbol=args.symbol,
         context_length=args.context_length,
         prediction_length=args.prediction_length,
+        batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         num_steps=args.num_steps,
         lora_r=args.lora_r,
@@ -256,7 +258,14 @@ def main():
         run_name_prefix=(str(args.run_prefix).strip() or None) if args.run_prefix else None,
     )
 
-    logger.info("Training {} LoRA: ctx={} preaug={} lr={:.0e}", cfg.symbol, cfg.context_length, cfg.preaug, cfg.learning_rate)
+    logger.info(
+        "Training {} LoRA: ctx={} batch={} preaug={} lr={:.0e}",
+        cfg.symbol,
+        cfg.context_length,
+        cfg.batch_size,
+        cfg.preaug,
+        cfg.learning_rate,
+    )
 
     result = train_and_evaluate(cfg, data_path, args.output_root)
 

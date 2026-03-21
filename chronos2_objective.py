@@ -116,7 +116,10 @@ def build_correlation_matrix(
     if not aligned:
         return pd.DataFrame()
 
-    frame = pd.concat(aligned, axis=1, join="inner")
+    # Use an outer join so symbols with shorter or staggered histories do not
+    # erase the overlap for the rest of the universe. Pairwise correlation will
+    # still honor `min_periods` on the overlapping timestamps for each pair.
+    frame = pd.concat(aligned, axis=1, join="outer").sort_index()
     if frame.empty:
         return pd.DataFrame()
     if lookback is not None and lookback > 0 and len(frame) > lookback:
