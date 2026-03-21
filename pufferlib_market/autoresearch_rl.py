@@ -31,6 +31,11 @@ from pathlib import Path
 
 from src.robust_trading_metrics import summarize_scenario_results
 
+try:
+    import wandb as _wandb_module
+except ImportError:
+    _wandb_module = None
+
 REPO = Path(__file__).resolve().parent.parent
 
 
@@ -314,7 +319,102 @@ EXPERIMENTS: list[dict] = [
      "hidden_size": 4096, "anneal_lr": True,
      "ent_coef": 0.05, "fill_slippage_bps": 5.0,
      "requires_gpu": "h100"},
+
+    # Architecture experiments — transformer / GRU / depth-recurrence / relu_sq
+    # arch values silently fall back to mlp in train.py until those archs land
+    {"description": "transformer_h256",
+     "arch": "transformer", "hidden_size": 256},
+    {"description": "transformer_h256_tp05",
+     "arch": "transformer", "hidden_size": 256, "trade_penalty": 0.05},
+    {"description": "gru_h256",
+     "arch": "gru", "hidden_size": 256},
+    {"description": "gru_h512",
+     "arch": "gru", "hidden_size": 512},
+    {"description": "depth_recur_h512",
+     "arch": "depth_recurrence", "hidden_size": 512},
+    {"description": "depth_recur_h1024",
+     "arch": "depth_recurrence", "hidden_size": 1024},
+    # mlp_relu_sq: relu² activation sharpens gradients on positive activations
+    {"description": "relu_sq_h1024",
+     "arch": "mlp_relu_sq", "hidden_size": 1024},
+    {"description": "relu_sq_tp05",
+     "arch": "mlp_relu_sq", "hidden_size": 1024, "trade_penalty": 0.05},
+
+    # Large model variants
+    {"description": "h2048_anneal_tp05",
+     "hidden_size": 2048, "anneal_lr": True,
+     "ent_coef": 0.05, "fill_slippage_bps": 5.0,
+     "trade_penalty": 0.05, "requires_gpu": "a100"},
+
+    # Combinations of best daily factors
+    {"description": "combo_best_daily",
+     "hidden_size": 1024, "trade_penalty": 0.05,
+     "fill_slippage_bps": 5.0, "lr_schedule": "cosine",
+     "obs_norm": True, "anneal_lr": True},
+    {"description": "combo_best_hourly",
+     "hidden_size": 1024, "fill_slippage_bps": 5.0,
+     "obs_norm": True, "ent_coef": 0.05, "anneal_lr": True,
+     "trade_penalty": 0.01},
+
+    # Calmar-proxy: drawdown + downside penalties approximate annual_return/max_dd
+    {"description": "calmar_focus",
+     "trade_penalty": 0.03,
+     "drawdown_penalty": 0.1, "smooth_downside_penalty": 0.2},
+    {"description": "calmar_strong",
+     "trade_penalty": 0.05,
+     "drawdown_penalty": 0.2, "smooth_downside_penalty": 0.3},
+
+    # Cosine LR × trade-penalty and slippage crosses
+    {"description": "cosine_lr_tp05",
+     "lr_schedule": "cosine", "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05,
+     "trade_penalty": 0.05, "anneal_lr": True},
+    {"description": "cosine_lr_slip5",
+     "lr_schedule": "cosine", "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05,
+     "fill_slippage_bps": 5.0, "anneal_lr": True},
+
+    # Entropy annealing × trade-penalty cross
+    {"description": "ent_anneal_tp05",
+     "anneal_ent": True, "ent_coef": 0.08, "ent_coef_end": 0.02,
+     "trade_penalty": 0.05},
+    {"description": "ent01_tp03",
+     "ent_coef": 0.1, "trade_penalty": 0.03},
+
+    # Variance testing: best configs at alternative seeds
+    {"description": "trade_pen_05_s123",
+     "trade_penalty": 0.05, "seed": 123},
+    {"description": "trade_pen_05_s7",
+     "trade_penalty": 0.05, "seed": 7},
+    {"description": "slip5_s123",
+     "fill_slippage_bps": 5.0, "seed": 123},
+
+    # GAE lambda sweep
+    {"description": "gae_lambda_09",
+     "gae_lambda": 0.9, "trade_penalty": 0.05},
+    {"description": "gae_lambda_099",
+     "gae_lambda": 0.99, "trade_penalty": 0.05},
+
+    # Reward scale sweep
+    {"description": "reward_scale_5",
+     "reward_scale": 5.0, "trade_penalty": 0.05},
+    {"description": "reward_scale_20",
+     "reward_scale": 20.0, "trade_penalty": 0.05},
+
+    # Longer rollout / more PPO reuse
+    {"description": "rollout_512_tp05",
+     "rollout_len": 512, "trade_penalty": 0.05},
+    {"description": "ppo_epochs_8",
+     "ppo_epochs": 8, "trade_penalty": 0.05},
+
+    # Combined champion: trade_pen + obs_norm + cosine + slip + anneal + wd
+    {"description": "robust_champion",
+     "hidden_size": 1024, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+     "obs_norm": True, "anneal_lr": True, "lr_schedule": "cosine",
+     "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05,
+     "weight_decay": 0.005, "ent_coef": 0.05},
 ]
+
+# Alias used by sweep scripts and verification commands.
+TRIAL_CONFIGS = EXPERIMENTS
 
 
 def build_config(overrides: dict) -> TrialConfig:
@@ -929,6 +1029,53 @@ def run_trial(
     selected_metric, rank_score = select_rank_score(result_payload, rank_metric=rank_metric)
     result_payload["rank_metric"] = selected_metric
     result_payload["rank_score"] = rank_score
+
+    # Log trial-level summary to the child W&B run that was opened by train.py.
+    # We update the wandb summary (not log()) so the metrics appear in the run
+    # summary panel rather than as a timestep in the training curve.
+    if wandb_project and _wandb_module is not None:
+        try:
+            # The child train.py subprocess owns the wandb run; we call wandb.init
+            # with reinit=True and resume="allow" to attach to / create a summary run
+            # for this trial.  The child already called wandb.finish() via atexit, so
+            # this opens a fresh run that we immediately finish.
+            summary_run = _wandb_module.init(
+                project=wandb_project,
+                name=config.description,
+                group=wandb_group or None,
+                config=asdict(config),
+                reinit=True,
+                resume="allow",
+            )
+            summary_updates: dict = {}
+            if val_return is not None:
+                summary_updates["best_val_return"] = val_return
+            if val_sortino is not None:
+                summary_updates["val/sortino"] = val_sortino
+            if val_wr is not None:
+                summary_updates["val/win_rate"] = val_wr
+            if val_profitable_pct is not None:
+                summary_updates["val/profitable_pct"] = val_profitable_pct
+            if train_return is not None:
+                summary_updates["train/final_return"] = train_return
+            if train_sortino is not None:
+                summary_updates["train/final_sortino"] = train_sortino
+            summary_updates["trial/elapsed_s"] = elapsed
+            summary_updates["trial/train_steps"] = total_steps
+            summary_updates["trial/rank_score"] = rank_score
+            summary_updates["trial/rank_metric"] = selected_metric
+            # Holdout metrics (prefix already set by summarize_holdout_payload)
+            for k, v in holdout_metrics.items():
+                summary_updates[f"holdout/{k}"] = v
+            # Market validation
+            for k, v in market_metrics.items():
+                summary_updates[f"market/{k}"] = v
+            if summary_updates:
+                summary_run.summary.update(summary_updates)
+            summary_run.finish()
+        except Exception:
+            pass  # never crash autoresearch due to wandb errors
+
     return result_payload
 
 
