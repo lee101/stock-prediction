@@ -174,22 +174,36 @@ source /nvme0n1-disk/code/stock-prediction/.venv313/bin/activate
 cd /nvme0n1-disk/code/stock-prediction
 
 python -m pufferlib_market.autoresearch_rl \
-    --h100-mode \
+    --stocks12 \
     --train-data pufferlib_market/data/stocks12_daily_train.bin \
     --val-data pufferlib_market/data/stocks12_daily_val.bin \
     --time-budget 90 \
     --max-trials 500 \
+    --max-timesteps-per-sample 200 \
     --leaderboard autoresearch_stock_h100_leaderboard.csv \
     --checkpoint-root pufferlib_market/checkpoints/autoresearch_stock_h100
 ```
 
 Notes:
-- `--h100-mode` uses H100_STOCK_EXPERIMENTS pool, sets periods_per_year=252, fee_rate=0.001, holdout_eval_steps=90
-- **stocks12_daily_train.bin**: 1302 days matching post-2022 market regime — better generalization than extended
+- `--stocks12` uses combined pool (STOCK_EXPERIMENTS + H100_STOCK_EXPERIMENTS non-gpu), sets periods_per_year=252, fee_rate=0.001, holdout_eval_steps=90
+- **`--max-timesteps-per-sample 200`**: caps each trial at 3.1M steps (12 syms × 1302 days × 200 = 3,124,800)
+  - This is CRITICAL — without the cap, H100 settings overfits at 15.6M steps (5x too many)
+  - With cap: H100 trains 3.1M steps in ~9s, then runs holdout (~30s) = ~40s/trial
+  - 500 trials × ~40s = ~5.5 hours on H100
+- **DO NOT use `--h100-mode`**: that forces num_envs=256, minibatch_size=4096, which with 3.1M cap gives only 47 PPO updates (vs 94 with default 128 envs) — worse convergence per step
+- **stocks12_daily_train.bin**: 1302 days matching post-2022 market regime
 - **Same val**: stocks12_daily_val.bin (158 days, 2025-09-01 to 2026-02-05) for fair comparison
-- **90s budget**: H100 at ~3.5x RTX 5090 speed reaches ~14M steps — the proven non-overfitting regime
-- **500 trials × 90s = 12.5 hours** (within H100 daily budget)
-- stocks12 obs_size=209 (smaller than stocks20 obs_size=345) → faster steps/sec
+- **500 trials × ~40s = ~5.5 hours** on H100 (better than 12.5h estimate)
+
+### CRITICAL: Why NOT --h100-mode for the actual H100 run
+
+The `--h100-mode` flag forces `num_envs=256, minibatch_size=4096` which causes overfitting:
+- A40 with h100 settings: ~190k sps → 15.6M steps hit in 82s → OVERFIT (5x too many steps)
+- Real H100 with h100 settings: ~500k sps → 15.6M steps hit in 31s → same overfitting
+- stock_drawdown_pen discovered at A40 DEFAULT settings: ~35k sps → 3.2M steps in 90s ✓
+
+With `--max-timesteps-per-sample 200`, training always caps at 3.1M steps regardless of GPU speed.
+This replicates the non-overfitting regime where stock_drawdown_pen was discovered.
 
 ### eval_hours calibration (CRITICAL)
 
