@@ -40,11 +40,24 @@ python launch_stocks_autoresearch_remote.py --gpu-type h100 --max-trials 500 \
   --val-data pufferlib_market/data/stocks12_daily_val.bin
 ```
 
-### Architecture scaling status (arch comparison running 2026-03-22)
-- h2048 + lr=1e-4 vs h1024 + lr=1e-4 on stocks11_2015: **IN PROGRESS**
-  - 8 configs × 450s each running on RTX 5090 (2 parallel, ~18M steps each)
-  - Results expected ~2 hours from 15:00
-  - If h2048 > h1024 → add h2048 as primary H100 config for stocks11
+### Architecture scaling: h2048 vs h1024 COMPLETED (2026-03-22)
+
+**Arch comparison results (8 configs × 450s, 65-68M steps each):**
+
+| Config | stocks11_2015 robust | stocks11_2012 robust | Winner |
+|--------|---------------------|---------------------|--------|
+| lr1e4_anneal_s777 | **-54.9** | **-40.3** | ← BEST on BOTH |
+| lr1e4_s42 | -57.0 | -82.9 | h1024 wins |
+| lr1e4_s9621 | -61.0 | -51.8 | h1024 wins |
+| lr1e4_h2048_s777 | -79.6 | -122.7 | h1024 wins |
+| lr1e4_h2048_s42 | -116.5 | -53.4 | **h1024 wins** |
+
+**Conclusion: h2048 does NOT outperform h1024 at lr=1e-4. Use h1024.**
+
+**stocks11_2012 (4840 days) > stocks11_2015 (3895 days):**
+- lr1e4_anneal_s777: -40.3 (2012) vs -54.9 (2015) — **2012 wins**
+- Added 5 lr=1e-4 H100-specific configs to STOCK_EXPERIMENTS (top of H100 section)
+- Updated launch_stocks_autoresearch_remote.py default to stocks11_2012 data
 
 ---
 
