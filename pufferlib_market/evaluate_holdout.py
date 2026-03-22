@@ -173,16 +173,16 @@ def _infer_action_grid(
 
 def _infer_arch(state_dict: dict[str, torch.Tensor]) -> str:
     keys = set(state_dict.keys())
+    # GRU must come before resmlp: GRUTradingPolicy also has input_proj.weight
+    if any("gru." in k for k in keys):
+        return "gru"
+    # Transformer: has attn.in_proj_weight or sym_embed (symbol_proj also present)
+    if any(k.startswith("attn.") or k.startswith("sym_embed") or k.startswith("symbol_proj") for k in keys):
+        return "transformer"
     if "input_proj.weight" in keys:
         return "resmlp"
     if "encoder.0.weight" in keys:
         return "mlp"
-    # Transformer: has attn.in_proj_weight or sym_embed
-    if any(k.startswith("attn.") or k.startswith("sym_embed") for k in keys):
-        return "transformer"
-    # GRU: has gru.weight_ih_l0
-    if any("gru." in k for k in keys):
-        return "gru"
     # DepthRecurrence: has blocks.0.net.0.weight and shares block weights
     if any(k.startswith("blocks.") for k in keys):
         return "depth_recurrence"
@@ -198,9 +198,19 @@ def _infer_hidden_size(state_dict: dict[str, torch.Tensor], *, arch: str) -> int
         if w is None or w.ndim != 2:
             raise ValueError("Checkpoint missing input_proj.weight for resmlp")
         return int(w.shape[0])
+    if arch == "transformer":
+        # TransformerTradingPolicy: mlp.0.weight shape is (hidden, attn_out_size)
+        w = state_dict.get("mlp.0.weight")
+        if w is not None and w.ndim == 2:
+            return int(w.shape[0])
+    if arch == "gru":
+        # GRUTradingPolicy: input_proj.weight shape is (hidden, obs_size)
+        w = state_dict.get("input_proj.weight")
+        if w is not None and w.ndim == 2:
+            return int(w.shape[0])
     w = state_dict.get("encoder.0.weight")
     if w is None or w.ndim != 2:
-        raise ValueError("Checkpoint missing encoder.0.weight for mlp")
+        raise ValueError(f"Checkpoint missing weight key for arch={arch}")
     return int(w.shape[0])
 
 
