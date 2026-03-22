@@ -352,6 +352,36 @@ def scp_from(pod: PoolPod, remote: str, local: str) -> None:
         raise RuntimeError(f"scp_from failed: {result.stderr.strip()}")
 
 
+def sync_data_files(
+    pod: PoolPod,
+    *,
+    repo_root: Path,
+    data_files: list[str],
+    remote_dir: str = "/workspace/stock-prediction",
+) -> None:
+    """Rsync specific data files to the pod."""
+    if not data_files:
+        return
+    ssh_exec(pod, f"mkdir -p {shlex.quote(remote_dir)}/pufferlib_market/data")
+    for df in data_files:
+        local_path = repo_root / df
+        if not local_path.exists():
+            print(f"  [warn] data file not found locally: {local_path}")
+            continue
+        remote_path = f"root@{pod.ssh_host}:{remote_dir}/{df}"
+        cmd = [
+            "rsync", "-az",
+            "-e", f"ssh -o StrictHostKeyChecking=no -p {pod.ssh_port}",
+            str(local_path),
+            remote_path,
+        ]
+        print(f"  Syncing {df} ({local_path.stat().st_size / 1e6:.1f}MB)...")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if result.returncode not in (0, 23):
+            raise RuntimeError(f"rsync data failed: {result.stderr.strip()}")
+    print(f"  Data sync complete ({len(data_files)} files)")
+
+
 def bootstrap_pod(
     pod: PoolPod,
     *,
@@ -372,7 +402,6 @@ def bootstrap_pod(
         f"root@{pod.ssh_host}:{remote_dir}/",
     ]
     result = subprocess.run(rsync_cmd, capture_output=True, text=True, timeout=300)
-    # exit code 23 = partial transfer (benign chown errors on /workspace)
     if result.returncode not in (0, 23):
         raise RuntimeError(f"rsync failed (exit {result.returncode}): {result.stderr.strip()}")
 
@@ -414,6 +443,7 @@ def run_rl_experiment_on_pod(
     checkpoint_dir: str = "",
     leaderboard: str = "",
     remote_dir: str = "/workspace/stock-prediction",
+    descriptions: str = "",
 ) -> dict:
     """Run autoresearch on pod, pull back leaderboard + top checkpoints."""
     remote_leaderboard = leaderboard or f"pufferlib_market/{run_id}_leaderboard.csv"
@@ -425,6 +455,10 @@ def run_rl_experiment_on_pod(
     if wandb_project:
         wandb_export += f"\nexport WANDB_PROJECT={shlex.quote(wandb_project)}"
 
+    extra_args = []
+    if descriptions:
+        extra_args.extend(["--descriptions", shlex.quote(descriptions)])
+
     train_cmd = " ".join([
         "python", "-u", "-m", "pufferlib_market.autoresearch_rl",
         "--train-data", shlex.quote(train_data),
@@ -433,6 +467,7 @@ def run_rl_experiment_on_pod(
         "--max-trials", str(int(max_trials)),
         "--leaderboard", shlex.quote(remote_leaderboard),
         "--checkpoint-root", shlex.quote(remote_checkpoint_dir),
+        *extra_args,
     ])
 
     experiment_script = f"""
@@ -566,6 +601,9 @@ def cmd_run(args: argparse.Namespace) -> None:
     remote_dir = args.remote_dir
     bootstrap_pod(pod, repo_root=REPO_ROOT, remote_dir=remote_dir)
 
+    data_files = [args.train_data, args.val_data]
+    sync_data_files(pod, repo_root=REPO_ROOT, data_files=data_files, remote_dir=remote_dir)
+
     pod.status = "busy"
     pod.current_experiment = args.experiment
     save_pool_state(state)
@@ -581,6 +619,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             wandb_project=args.wandb_project,
             wandb_api_key=os.environ.get("WANDB_API_KEY", ""),
             remote_dir=remote_dir,
+            descriptions=getattr(args, "descriptions", ""),
         )
     finally:
         pod.status = "ready"
@@ -669,6 +708,10 @@ def main() -> None:
     run_p.add_argument(
         "--budget-limit", type=float, default=10.0,
         help="Max USD to spend on this run (setup + training). 0 = no limit.",
+    )
+    run_p.add_argument(
+        "--descriptions", default="",
+        help="Comma-separated subset of experiment descriptions to run",
     )
 
     # cleanup
