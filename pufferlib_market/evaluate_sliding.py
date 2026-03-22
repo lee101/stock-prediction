@@ -378,7 +378,8 @@ def main():
     if "action_max_offset_bps" in ckpt:
         args.action_max_offset_bps = max(0.0, float(ckpt["action_max_offset_bps"]))
 
-    obs_size = num_symbols * 16 + 5 + num_symbols
+    features_per_sym = data.features.shape[2]
+    obs_size = num_symbols * features_per_sym + 5 + num_symbols
     per_symbol_actions = max(1, int(args.action_allocation_bins)) * max(1, int(args.action_level_bins))
     num_actions = 1 + 2 * num_symbols * per_symbol_actions
 
