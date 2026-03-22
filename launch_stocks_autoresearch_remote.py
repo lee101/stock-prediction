@@ -181,6 +181,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         help="Step cap per sample. 700 × 53,240 samples = 37.27M steps for stocks11_2012 (optimal). "
                              "H100 at 400k sps hits this in ~93s; RTX 5090 at 92k sps hits it in ~405s. "
                              "Use 700 for stocks11_2012 (confirmed optimal step count).")
+    parser.add_argument("--start-from", type=int, default=96,
+                        help="Start index in STOCK_EXPERIMENTS pool. Default 96 = first lr=1e-4 anneal config "
+                             "(skips indices 0-95 which use lr=3e-4 and collapse on stocks11_2012 data).")
     parser.add_argument("--remote-host", default=DEFAULT_REMOTE_HOST)
     parser.add_argument("--remote-dir", default=DEFAULT_REMOTE_DIR)
     parser.add_argument("--remote-env", default=DEFAULT_REMOTE_ENV)
@@ -212,6 +215,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         leaderboard_path=LEADERBOARD_NAME,
         checkpoint_root=CHECKPOINT_ROOT,
         stocks_mode=True,  # use STOCK_EXPERIMENTS pool (not crypto EXPERIMENTS)
+        start_from=int(args.start_from),
     )
     pipeline_script = render_remote_pipeline_script(
         remote_dir=str(args.remote_dir),
