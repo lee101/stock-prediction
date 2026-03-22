@@ -1266,6 +1266,7 @@ def run_trial(
     rank_metric: str = "auto",
     max_timesteps_per_sample: int = 1000,
     best_trial_rank_score: float = -float("inf"),
+    best_trial_val_return: float = -float("inf"),
     early_reject_threshold: float = 0.8,
     multi_period_eval_windows: tuple[int, ...] | None = None,
     multi_period_n_windows_per_size: int = 8,
@@ -1401,8 +1402,10 @@ def run_trial(
                 except Exception:
                     pass
 
-                # Early rejection at 25% and 50% of time budget
-                if best_trial_rank_score > -float("inf") and time_budget >= 60:
+                # Early rejection at 25% and 50% of time budget.
+                # Compare _quick_val_eval (raw val_return) against best_trial_val_return
+                # (also raw val_return, not holdout_robust_score which is a different scale).
+                if best_trial_val_return > -float("inf") and time_budget >= 60:
                     progress = (time.time() - t0) / max(time_budget, 1)
                     if progress >= 0.25 and not _check_25:
                         _check_25 = True
@@ -1411,10 +1414,10 @@ def run_trial(
                             mid_ckpt = pts[-1]
                             mid_val = _quick_val_eval(mid_ckpt)
                             if mid_val is not None:
-                                threshold = best_trial_rank_score * early_reject_threshold
+                                threshold = best_trial_val_return * early_reject_threshold
                                 if mid_val < threshold:
                                     print(f"  EARLY REJECT at 25%: val_ret={mid_val:+.4f} "
-                                          f"< {threshold:+.4f} (best*{early_reject_threshold})")
+                                          f"< {threshold:+.4f} (best_val*{early_reject_threshold})")
                                     early_rejected = True
                                     break
                                 else:
@@ -1426,10 +1429,10 @@ def run_trial(
                             mid_ckpt = pts[-1]
                             mid_val = _quick_val_eval(mid_ckpt)
                             if mid_val is not None:
-                                threshold = best_trial_rank_score * early_reject_threshold
+                                threshold = best_trial_val_return * early_reject_threshold
                                 if mid_val < threshold:
                                     print(f"  EARLY REJECT at 50%: val_ret={mid_val:+.4f} "
-                                          f"< {threshold:+.4f} (best*{early_reject_threshold})")
+                                          f"< {threshold:+.4f} (best_val*{early_reject_threshold})")
                                     early_rejected = True
                                     break
                                 else:
@@ -2110,6 +2113,7 @@ def main():
 
     # Add random mutations
     best_rank_score = -float("inf")
+    best_val_return = -float("inf")  # tracked separately — same scale as _quick_val_eval
     best_config = TrialConfig()
 
     trial_num = len(existing_trials)
@@ -2213,6 +2217,7 @@ def main():
             rank_metric=args.rank_metric,
             max_timesteps_per_sample=args.max_timesteps_per_sample,
             best_trial_rank_score=best_rank_score,
+            best_trial_val_return=best_val_return,
             early_reject_threshold=args.early_reject_threshold,
             multi_period_eval_windows=(
                 tuple(int(x.strip()) for x in args.multi_period_windows.split(",") if x.strip())
@@ -2314,6 +2319,10 @@ def main():
             best_config = config
             metric_name = str(result.get("rank_metric", "rank_score"))
             print(f"  *** NEW BEST {metric_name}={rank_score:.4f} ***")
+        # Track best val_return separately (same scale as early-reject _quick_val_eval)
+        val_ret = _safe_float(result.get("val_return"))
+        if val_ret is not None and val_ret > best_val_return:
+            best_val_return = val_ret
 
         trial_num += 1
         existing_trials.add(desc)
