@@ -664,6 +664,8 @@ def run_worksteal_backtest(
         if config.deleverage_threshold > 0 and positions:
             delev_notional = 0.0
             delev_inv = 0.0
+            worst_sym = None
+            worst_pnl = float("inf")
             for sym, pos in positions.items():
                 if sym in current_bars:
                     c = float(current_bars[sym]["close"])
@@ -671,56 +673,45 @@ def run_worksteal_backtest(
                     interest = _compute_margin_interest(pos, date, config.margin_annual_rate)
                     if pos.direction == "long":
                         delev_inv += pos.quantity * c - interest
+                        pnl_pct = (c - pos.entry_price) / pos.entry_price
                     else:
                         delev_inv += pos.quantity * (pos.entry_price - c) - interest
+                        pnl_pct = (pos.entry_price - c) / pos.entry_price
+                    if pnl_pct < worst_pnl:
+                        worst_pnl = pnl_pct
+                        worst_sym = sym
                 else:
                     delev_notional += pos.quantity * pos.entry_price
                     if pos.direction == "long":
                         delev_inv += pos.quantity * pos.entry_price
             delev_equity = cash + delev_inv
-            if delev_equity > 0:
+            if delev_equity > 0 and worst_sym is not None:
                 current_lev = delev_notional / delev_equity
                 if current_lev > config.max_leverage + config.deleverage_threshold:
-                    target_lev = config.target_leverage if config.target_leverage > 0 else config.max_leverage
-                    worst_sym = None
-                    worst_pnl = float("inf")
-                    for sym, pos in positions.items():
-                        if sym not in current_bars:
-                            continue
-                        c = float(current_bars[sym]["close"])
-                        if pos.direction == "long":
-                            pnl_pct = (c - pos.entry_price) / pos.entry_price
-                        else:
-                            pnl_pct = (pos.entry_price - c) / pos.entry_price
-                        if pnl_pct < worst_pnl:
-                            worst_pnl = pnl_pct
-                            worst_sym = sym
-                    if worst_sym is not None:
-                        pos = positions[worst_sym]
-                        fee_rate = get_fee(worst_sym, config)
-                        close_p = float(current_bars[worst_sym]["close"])
-                        margin_interest = _compute_margin_interest(pos, date, config.margin_annual_rate)
-                        if pos.direction == "long":
-                            proceeds = pos.quantity * close_p * (1 - fee_rate)
-                            pnl = proceeds - pos.cost_basis - margin_interest
-                            cash += proceeds
-                            side = "sell"
-                        else:
-                            pnl = pos.quantity * (pos.entry_price - close_p) - \
-                                  pos.quantity * close_p * fee_rate - \
-                                  pos.quantity * pos.entry_price * fee_rate - margin_interest
-                            cash += pos.cost_basis + pnl
-                            side = "cover"
-                        trades.append(TradeLog(
-                            timestamp=date, symbol=worst_sym, side=side,
-                            price=close_p, quantity=pos.quantity,
-                            notional=pos.quantity * close_p,
-                            fee=pos.quantity * close_p * fee_rate + margin_interest,
-                            pnl=pnl, reason="deleverage", direction=pos.direction,
-                        ))
-                        last_exit[worst_sym] = date
-                        del positions[worst_sym]
-
+                    pos = positions[worst_sym]
+                    fee_rate = get_fee(worst_sym, config)
+                    close_p = float(current_bars[worst_sym]["close"])
+                    margin_interest = _compute_margin_interest(pos, date, config.margin_annual_rate)
+                    if pos.direction == "long":
+                        proceeds = pos.quantity * close_p * (1 - fee_rate)
+                        pnl = proceeds - pos.cost_basis - margin_interest
+                        cash += proceeds
+                        side = "sell"
+                    else:
+                        pnl = pos.quantity * (pos.entry_price - close_p) - \
+                              pos.quantity * close_p * fee_rate - \
+                              pos.quantity * pos.entry_price * fee_rate - margin_interest
+                        cash += pos.cost_basis + pnl
+                        side = "cover"
+                    trades.append(TradeLog(
+                        timestamp=date, symbol=worst_sym, side=side,
+                        price=close_p, quantity=pos.quantity,
+                        notional=pos.quantity * close_p,
+                        fee=pos.quantity * close_p * fee_rate + margin_interest,
+                        pnl=pnl, reason="deleverage", direction=pos.direction,
+                    ))
+                    last_exit[worst_sym] = date
+                    del positions[worst_sym]
         hold_base_asset = _base_asset_should_hold(
             base_symbol=base_symbol,
             current_bars=current_bars,
