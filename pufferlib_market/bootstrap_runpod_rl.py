@@ -313,7 +313,31 @@ def main() -> None:
         action="store_true",
         help="Print what would be done without executing",
     )
+    parser.add_argument(
+        "--inference-only",
+        action="store_true",
+        default=(os.environ.get("INFERENCE_ONLY", "0") == "1"),
+        help=(
+            "Inference-only mode: skip R2 data download, wandb setup, and exit handler. "
+            "Builds the C extension and exits so inference_server_daily.py can run separately. "
+            "Activated automatically when INFERENCE_ONLY=1 env var is set."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.inference_only:
+        remote_dir = Path(args.remote_dir)
+        print("=== Bootstrap (inference-only) ===")
+        print(f"  run_id:     {args.run_id}")
+        print(f"  remote_dir: {remote_dir}")
+        print("  Skipping R2 data download, wandb, and exit handler (inference-only mode).")
+        is_h100 = detect_h100()
+        print(f"  h100_detected: {is_h100}")
+        if is_h100:
+            print(f"  h100_overrides: {get_h100_training_overrides()}")
+        print()
+        print("Inference environment is ready.")
+        return
 
     if args.dry_run:
         print(f"[dry-run] Would download data: {args.data_files}")
