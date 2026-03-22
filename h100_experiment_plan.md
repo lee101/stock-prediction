@@ -1,72 +1,93 @@
-# H100 Experiment Plan
+# H100 Experiment Plan (Updated 2026-03-22)
 
-## Executive Summary
+## Executive Summary — REVISED
 
-Local RTX 5090 scaling sweep (73 configs, 90s/trial) showed that stocks20 produces the highest
-number of configs with positive holdout robustness (2 vs 1 for stocks12, 0 for stocks15). The
-H100 will run the `--h100-mode` experiment pool on stocks20 with 200s/trial, targeting 150 trials,
-focusing on the two winning config families: `slip_10bps` and `ent_05`.
+**The original plan targeting stocks20 was based on contaminated data.**
 
-## Local Sweep Results (RTX 5090)
+Original 73-config RTX 5090 sweep showed stocks20 winning (2 configs with positive holdout).
+After fixing stock split adjustments (NFLX 10:1 Nov 2025, NVDA 10:1, GOOG 20:1, TSLA 3:1,
+AMZN 20:1, AVGO 10:1), the "stocks20 positive holdout" result was entirely an artifact of
+policies shorting the fake NFLX -93% price drop.
 
-### Data files tested
+**New conclusion with clean data:**
+- stocks20 at 90s/trial → ALL configs negative holdout (no NFLX artifact to exploit)
+- stocks12 at 90s/trial → h100_slip_10bps: 90% windows profitable (neg=10%), median=+5.6%
+- stocks12 random_mut_2272 (300s training) → ALL 20 windows profitable, median=+10.5%, p10=+5.2%
 
-| Dataset  | Symbols | Train timesteps | Val timesteps | Common window              |
-|----------|---------|-----------------|---------------|----------------------------|
-| stocks12 | 12      | 1211            | 194           | 2022-02-07 – 2025-08-31    |
-| stocks15 | 15      | 1277            | 178           | 2022-02-07 – 2025-08-31    |
-| stocks20 | 20      | 1302            | 158           | 2022-02-07 – 2026-02-05    |
+**H100 strategy: Use stocks12 with longer budget (200s → ~14M steps on H100)**
 
-### Top results by holdout_robust_score (73 configs, 90s/trial, ~4.3M steps)
+---
 
-| Config                    | Symbols | val_return | holdout_robust | neg_rate | h_sortino |
-|---------------------------|---------|------------|----------------|----------|-----------|
-| stocks12 slip_10bps       | 12      | +1.37      | **+21.04**     | **0%**   | 11.99     |
-| stocks20 ent_05           | 20      | -0.14      | **+19.19**     | **0%**   | 5.06      |
-| stocks20 trade_pen_10     | 20      | +0.03      | **+2.23**      | **0%**   | 3.09      |
-| stocks15 trade_pen_08     | 15      | +0.59      | -4.03          | 10%      | 2.62      |
-| stocks12 reward_scale_5   | 12      | +0.25      | -6.66          | 10%      | 2.44      |
-| stocks12 trade_pen_03     | 12      | +0.25      | -14.43         | 15%      | 1.93      |
-| stocks12 ent_08           | 12      | +0.30      | -15.07         | 10%      | 1.68      |
+## Data Quality Fixes Applied (2026-03-22)
 
-### Symbol count summary
+All binaries have been re-exported with split-adjusted CSVs.
 
-| Dataset  | Configs tested | Best holdout | Configs > 0 |
-|----------|----------------|--------------|-------------|
-| stocks12 | 23             | +21.04       | 1 (4.3%)    |
-| stocks15 | 25             | -4.03        | 0 (0%)      |
-| stocks20 | 25             | +19.19       | 2 (8.0%)    |
+### Stock splits fixed (backups at `.pre_split_backup`)
 
-## Key Findings
+| Symbol | Split  | Date       | Pre-split rows (daily) |
+|--------|--------|------------|------------------------|
+| NFLX   | 10:1   | 2025-11-15 | (previous session)     |
+| NVDA   | 10:1   | 2024-06-10 | 587                    |
+| GOOG   | 20:1   | 2022-07-18 | 110                    |
+| TSLA   |  3:1   | 2022-08-25 | 138                    |
+| AMZN   | 20:1   | 2022-06-06 | 82 daily + 3306 hourly |
+| AVGO   | 10:1   | 2024-07-15 | 667 daily + 6969 hourly|
 
-- **stocks20 wins for generalization**: stocks20 is the only dataset with multiple configs
-  producing positive holdout robustness. More symbols give the policy more diverse trading
-  opportunities and reduce regime concentration.
+Remaining "big drops" are verified real market events:
+- NFLX: -35% on 2022-04-20 (Q1 2022 subscriber loss earnings)
+- META: -26% on 2022-02-03 (Q4 2021 earnings miss, stocks15 only)
+- INTC: -26% on 2024-08-01 (Q2 2024 earnings disaster, stocks15 only)
 
-- **stocks15 is a dead zone**: despite sitting between stocks12 and stocks20 in size, stocks15
-  produced zero configs with positive holdout across 25 configurations. This suggests the specific
-  symbol mix (15 symbols dominated by lower-cap growth names) is unfavorable.
+### Re-exported binaries (all clean, verified)
 
-- **Two winning config families on stocks20**:
-  1. `ent_05` (default entropy coefficient): positive holdout with 0% negative windows and
-     Sortino 5.06. Lower entropy forces more decisive trades on 20 symbols simultaneously.
-  2. `trade_pen_10` (heavy trade penalty): also positive holdout with 0% negative windows.
-     Reduces excessive churn on daily bars.
+| File                             | Symbols | Train days | Val days |
+|----------------------------------|---------|-----------|---------|
+| stocks12_daily_{train,val}.bin   | 12      | 1302      | 158     |
+| stocks15_daily_{train,val}.bin   | 15      | 1302      | 113     |
+| stocks20_daily_train.bin         | 20      | 1302      | —       |
+| stocks20_daily_val.bin           | 20      | —         | 158     |
+| stocks20_cross_daily_{train,val} | 20      | 1302      | 158     |
 
-- **slip_10bps dominates on stocks12**: with val_return=1.37 and holdout=+21.04, this is the
-  single best config overall. Training with 10bps slippage forces the policy to find only
-  wide-edge opportunities. Worth testing on stocks20 with longer H100 training.
+---
 
-- **h2048 not tested on RTX 5090** (too slow for 90s budget). H100 ~3-4x faster so h2048 will
-  fit in 200s comfortably (~14M steps vs ~4M on RTX 5090).
+## Clean Data Sweep Results (2026-03-22, RTX 5090, 90s/trial)
 
-- **More steps helps**: the 90s runs produced `random_mut_2272` which got val_return=0.9195 with
-  300s training. H100 at 200s/trial and ~3.5x speedup = ~14M steps, expected to improve.
+### stocks12 (12 symbols)
 
-## H100 Configuration
+| Config              | holdout | neg_rate | median% | p10%   |
+|---------------------|---------|----------|---------|--------|
+| h100_slip_10bps     | -22.84  | **10%**  | +5.64   | +0.92  |
+| h100_ent_05         | -35.80  | **10%**  | +9.62   | +0.71  |
+| h100_mut2272_slip5  | -44.56  | 20%      | +4.35   | -4.15  |
+| h100_mut2272_wd01   | -78.54  | 50%      | +0.69   | -11.78 |
+| h100_mut2272_style  | -102.73 | 75%      | -4.48   | -14.17 |
 
-**Dataset**: stocks20 (20 symbols, 1302 train days, 158 val days)
-**Binary files**: `pufferlib_market/data/stocks20_daily_{train,val}.bin`
+### stocks20 (20 symbols) — all FAILED with clean data
+
+| Config              | holdout  | neg_rate | median% |
+|---------------------|----------|----------|---------|
+| h100_ent_05         | -77.11   | 50%      | +0.99   |
+| h100_mut2272_style  | -87.69   | 55%      | -2.18   |
+| h100_slip_5bps      | -134.29  | 85%      | -14.47  |
+| h100_mut2272_slip5  | -138.80  | 65%      | -8.61   |
+| h100_slip_10bps     | -139.15  | 75%      | -9.25   |
+
+### Current SOTA baseline (random_mut_2272, 300s training, stocks12)
+
+| Metric                | Value     |
+|-----------------------|-----------|
+| holdout neg_rate      | **0%** (all 20 windows profitable) |
+| holdout median        | +10.5%    |
+| holdout p10           | +5.2%     |
+| holdout median Sortino| 1.55      |
+
+---
+
+## H100 Configuration — UPDATED
+
+**Dataset**: stocks12 (12 symbols, 1302 train days, 158 val days)
+**Binary files**: `pufferlib_market/data/stocks12_daily_{train,val}.bin`
+**Symbols**: AAPL, MSFT, NVDA, GOOG, META, TSLA, SPY, QQQ, PLTR, JPM, V, AMZN
 
 ### Recommended H100 command
 
@@ -76,6 +97,8 @@ cd /nvme0n1-disk/code/stock-prediction
 
 python -m pufferlib_market.autoresearch_rl \
     --h100-mode \
+    --train-data pufferlib_market/data/stocks12_daily_train.bin \
+    --val-data pufferlib_market/data/stocks12_daily_val.bin \
     --time-budget 200 \
     --max-trials 150 \
     --leaderboard autoresearch_stock_h100_leaderboard.csv \
@@ -83,48 +106,55 @@ python -m pufferlib_market.autoresearch_rl \
 ```
 
 Notes:
-- `--h100-mode` automatically selects `H100_STOCK_EXPERIMENTS`, uses stocks20 data,
-  sets periods_per_year=252, fee_rate=0.001, holdout_eval_steps=90
+- `--h100-mode` uses H100_STOCK_EXPERIMENTS pool, sets periods_per_year=252, fee_rate=0.001, holdout_eval_steps=90
+- Explicitly pass `--train-data` and `--val-data` to override the default stocks20 data
 - 200s budget × 150 trials = ~8.3 hours total
 - H100 expected ~3.5x faster than RTX 5090 (~14M steps vs ~4M at same wall time)
+- stocks12 obs_size=209 (smaller than stocks20 obs_size=345) → faster steps/sec → even more steps per trial
 
-### Alternative: stocks12 with slip_10bps focus
+---
 
-```bash
-python -m pufferlib_market.autoresearch_rl \
-    --stocks \
-    --train-data pufferlib_market/data/stocks12_daily_train.bin \
-    --val-data pufferlib_market/data/stocks12_daily_val.bin \
-    --descriptions stock_slip_10bps,stock_slip_5bps,stock_slip_15bps \
-    --time-budget 300 \
-    --max-trials 15 \
-    --leaderboard autoresearch_stock_h100_slip_leaderboard.csv \
-    --checkpoint-root pufferlib_market/checkpoints/autoresearch_stock_h100_slip
-```
+## Key Findings
 
-## Expected Outcomes
+- **stocks20 results were invalid**: Original 73-config sweep showed stocks20 winning because
+  NFLX had an unadjusted 10:1 forward split creating a fake -93% single-day drop in val data.
+  Policies that shorted NFLX generated enormous artificial returns. After split-adjustment, all
+  stocks20 configs fail in holdout at 90s budget.
+
+- **stocks12 with slip_10bps is the best clean-data config at 90s**:
+  h100_slip_10bps gets 90% windows profitable (only 2/20 lose), median=+5.64%.
+  At H100's ~14M steps, expect this to approach 100% (like random_mut_2272 with 300s training).
+
+- **random_mut_2272 still works with clean data**: Evaluated on fixed stocks12 val
+  (158 days, no split artifacts) → all 20 windows profitable, median=+10.5%, p10=+5.2%.
+
+- **h2048 configs in H100 pool are stocks12-safe**: The h2048 variants require ~2.5x more memory
+  but stocks12's smaller obs space makes them feasible even at H100 speeds.
+
+---
+
+## Expected Outcomes (REVISED)
 
 | Metric               | Current SOTA (random_mut_2272) | Expected H100 Target |
 |----------------------|-------------------------------|----------------------|
-| val_return           | 0.9195                        | > 1.2 (≥30% better)  |
-| holdout_robust_score | (not available)               | > 10.0               |
-| holdout_neg_rate     | (not available)               | < 5%                 |
-| Sortino (holdout)    | 3.80                          | > 4.5                |
-| All 20 windows prof  | yes                           | yes                  |
+| holdout neg_rate     | 0%                            | 0%                   |
+| holdout median       | +10.5%                        | > +15%               |
+| holdout p10          | +5.2%                         | > +8%                |
+| holdout Sortino p10  | 1.52                          | > 2.0                |
+
+---
 
 ## H100 Experiment Pool Summary
 
-The `--h100-mode` pool (`H100_STOCK_EXPERIMENTS`) contains 127 configs:
-- 27 structured configs targeting the local sweep winners
+`H100_STOCK_EXPERIMENTS` contains 127 configs (used with `--h100-mode`):
+- 27 structured configs (slip_10bps, ent_05, mut2272-style variants, h2048, etc.)
 - 100 random mutations for exploration
 
-Structured configs include:
-- slip_10bps / slip_5bps / slip_15bps (test slippage training on stocks20)
-- ent_05 / ent_03 / ent_08 (entropy coefficient sweep)
-- trade_pen_10 and cross-combinations with slippage
-- h2048 variants (only viable on H100, marked `requires_gpu="h100"`)
-- Cosine LR, obs_norm, weight_decay crosses with best local configs
-- Multi-seed repeats of top configs
+With stocks12 data, the structured configs that showed promise at 90s local:
+1. `h100_slip_10bps` — 90% windows profitable at 90s. Best clean-data config.
+2. `h100_ent_05` — 90% windows profitable at 90s, median=+9.6%.
+
+---
 
 ## How to Pull Results
 
@@ -142,6 +172,8 @@ for r in rows[:10]:
 ls -la pufferlib_market/checkpoints/autoresearch_stock_h100/
 ```
 
+---
+
 ## Deployment Condition
 
 If the best H100 checkpoint beats the current Alpaca deployment (random_mut_2272):
@@ -157,20 +189,20 @@ echo "Deployed ${BEST_CONFIG} as new stocks_deployment_candidate.pt"
 ```
 
 Deployment conditions:
-- holdout_robust_score > current SOTA
-- holdout_negative_return_rate < 10% (< 2 losing windows out of 20)
-- holdout_median_sortino > 3.5
+- holdout_negative_return_rate = 0% (ALL 20 windows profitable)
+- holdout_p10 > current (+5.2%)
+- holdout_median_sortino > current (1.55)
 - No single window exceeds -15% return
+
+---
 
 ## Data Files
 
 ```
-pufferlib_market/data/stocks20_daily_train.bin  (20 symbols, 1302 days: 2022-02-07 to 2025-08-31)
-pufferlib_market/data/stocks20_daily_val.bin    (20 symbols,  158 days: 2025-09-01 to 2026-02-05)
+pufferlib_market/data/stocks12_daily_train.bin  (12 symbols, 1302 days: 2022-02-07 to 2025-08-31)
+pufferlib_market/data/stocks12_daily_val.bin    (12 symbols,  158 days: 2025-09-01 to 2026-02-05)
 ```
 
-Symbols: AAPL, MSFT, NVDA, GOOG, META, TSLA, AMZN, AMD, JPM, SPY, QQQ, PLTR, NET, NFLX,
-         ADBE, CRM, AVGO, V, COST, ADSK
+Symbols: AAPL, MSFT, NVDA, GOOG, META, TSLA, SPY, QQQ, PLTR, JPM, V, AMZN
 
-Data sources: trainingdata/train/{SYM}.csv (primary) + trainingdatahourly/stocks/{SYM}.csv
-(hourly bars resampled to daily, used to extend timeline).
+Data sources: trainingdata/train/{SYM}.csv (split-adjusted, backup at .pre_split_backup)
