@@ -47,10 +47,11 @@ typedef struct {
 typedef struct {
     int       num_symbols;
     int       num_timesteps;
+    int       features_per_sym; /* 16 for v1/v2, may differ for v3+ */
     char      sym_names[MAX_SYMBOLS][SYM_NAME_LEN];
 
     /* pointers into mmapped / malloced data */
-    float*    features;         /* [T][S][FEATURES_PER_SYM] */
+    float*    features;         /* [T][S][features_per_sym] */
     float*    prices;           /* [T][S][PRICE_FEATS] */
     unsigned char* tradable;    /* optional [T][S] uint8 mask (1=tradable, 0=market closed) */
 
@@ -140,18 +141,20 @@ typedef struct {
 
 /* ---------- observation layout ----------
  *
+ * F = md->features_per_sym  (16 for v1/v2, 20 for v3)
+ *
  * For each symbol s in [0, S):
- *   obs[s*FEATURES_PER_SYM + 0..15]  = feature vector at current timestep
+ *   obs[s*F + 0..F-1]  = feature vector at current timestep
  *
  * Then portfolio state:
- *   obs[S*FEATURES_PER_SYM + 0]      = cash / INITIAL_CASH
- *   obs[S*FEATURES_PER_SYM + 1]      = position_value / INITIAL_CASH  (signed: neg for short)
- *   obs[S*FEATURES_PER_SYM + 2]      = unrealised_pnl / INITIAL_CASH
- *   obs[S*FEATURES_PER_SYM + 3]      = hours_in_position / max_steps
- *   obs[S*FEATURES_PER_SYM + 4]      = episode_progress
- *   obs[S*FEATURES_PER_SYM + 5..4+S] = one-hot current position (0 if flat)
+ *   obs[S*F + 0]      = cash / INITIAL_CASH
+ *   obs[S*F + 1]      = position_value / INITIAL_CASH  (signed: neg for short)
+ *   obs[S*F + 2]      = unrealised_pnl / INITIAL_CASH
+ *   obs[S*F + 3]      = hours_in_position / max_steps
+ *   obs[S*F + 4]      = episode_progress
+ *   obs[S*F + 5..4+S] = one-hot current position (0 if flat)
  *
- * Total obs_size = S*FEATURES_PER_SYM + 5 + S
+ * Total obs_size = S*F + 5 + S
  * ---------------------------------------- */
 
 /* ---------- core pufferlib functions ---------- */
@@ -169,7 +172,7 @@ void        market_data_free(MarketData* md);
 /* ---------- inline helpers ---------- */
 
 static inline float get_feature(const MarketData* md, int t, int s, int f) {
-    return md->features[(t * md->num_symbols + s) * FEATURES_PER_SYM + f];
+    return md->features[(t * md->num_symbols + s) * md->features_per_sym + f];
 }
 
 static inline float get_price(const MarketData* md, int t, int s, int p) {
