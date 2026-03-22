@@ -696,6 +696,15 @@ STOCK_EXPERIMENTS: list[dict] = [
      "trade_penalty": 0.03, "obs_norm": True, "weight_decay": 0.05,
      "fill_slippage_bps": 5.0, "ent_coef": 0.05},
 
+    # Best combinations (from 2026-03-22 tp03 variants sweep with extended training)
+    # tp03 + seed 2272 is best; tp03 + wd=0.01 is 2nd best; h2048 is 3rd best
+    {"description": "tp03_s2272_wd01",
+     "trade_penalty": 0.03, "seed": 2272, "weight_decay": 0.01},
+    {"description": "tp03_h2048_wd01",
+     "trade_penalty": 0.03, "hidden_size": 2048, "weight_decay": 0.01},
+    {"description": "tp03_s2272_h2048",
+     "trade_penalty": 0.03, "seed": 2272, "hidden_size": 2048},
+
     # Random mutations to explore the neighbourhood (30 slots per sweep pass)
     {"description": "random_1"},
     {"description": "random_2"},

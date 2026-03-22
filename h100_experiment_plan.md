@@ -333,6 +333,28 @@ New H100 goal: find configs that are profitable even in the hard 201-day val per
 With 1200 trials and 5-15% hit rate (from local calibration): expect 60-180 positive-score configs.
 The best-of-1200 should significantly exceed the local 1/7 result (trade_pen_03 at +3.1 robust score).
 
+### tp03 variants sweep findings (2026-03-22, seed 1337, extended training)
+
+16 trade_pen_03 variants tested with extended training data. Key results:
+
+| Variant | Score | Worst | Median | Notes |
+|---------|-------|-------|--------|-------|
+| tp03_s2272 | **-33.8** | -0.6% | 0% | Seed 2272 is best explicit seed |
+| tp03_wd01 | -39.4 | -14.7% | +5.6% | wd=0.01 helps; positive median! |
+| tp03_h2048 | -50.0 | -9.0% | +6.0% | Larger net benefits from 5yr data |
+| stock_trade_pen_03 | -71.5 | -15.5% | -0.6% | Baseline (seed 1337 is mediocre) |
+| tp03_cosine | -72.1 | -8.2% | -1.0% | Cosine LR similar to default |
+| tp03_ent03 | -76.7 | -10.9% | -3.2% | Lower entropy worse |
+| tp03_h512 | -87.2 | -17.3% | -1.6% | Smaller net is worse |
+| tp03_slip5 | -129.6 | -22.5% | -10.6% | **Slippage training HURTS** |
+| tp03_slip10 | -110.4 | -26.6% | -0.6% | **Slippage training HURTS** |
+| tp03_obs | -124.1 | -22.6% | -7.3% | obs_norm HURTS with trade_pen_03 |
+| tp03_full_reg | -138.5 | -30.0% | -7.0% | Everything combined = worst |
+
+**Rule: use trade_pen_03 WITHOUT slippage, WITHOUT obs_norm, WITH wd=0.01 or h2048**
+
+Pool now includes best combinations: `tp03_s2272_wd01`, `tp03_h2048_wd01`, `tp03_s2272_h2048`
+
 ---
 
 ## H100 Experiment Pool Summary
