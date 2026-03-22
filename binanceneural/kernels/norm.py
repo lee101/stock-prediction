@@ -302,6 +302,10 @@ def fused_rms_norm_qkv(
 
     BLOCK_N = triton.next_power_of_2(N)
     D_max = max(Dq, Dk, Dv)
+    # CC compatibility: BLOCK_D capped at 128 to keep register pressure in
+    # check on all supported GPUs.  A100 (CC 8.0) and H100 (CC 9.0) both have
+    # ample SRAM (192-228 KB/SM), but the QKV kernel loads three weight tiles
+    # of shape (BLOCK_D, BLOCK_N) simultaneously, so 128 is the safe ceiling.
     BLOCK_D = min(128, triton.next_power_of_2(D_max))
 
     grid = (num_rows, triton.cdiv(D_max, BLOCK_D))
