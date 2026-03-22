@@ -66,20 +66,21 @@ def generate_actions_from_frame(
                 chronos_high=c_high,
                 chronos_low=c_low,
             )
+            decoded_cpu = {k: v.cpu() for k, v in decoded.items()}
             take = -1
             row = {
                     "timestamp": frame["timestamp"].iloc[idx],
                     "symbol": frame["symbol"].iloc[idx],
-                    "buy_price": float(decoded["buy_price"][0, take].cpu().item()),
-                    "sell_price": float(decoded["sell_price"][0, take].cpu().item()),
-                    "buy_amount": float(decoded["buy_amount"][0, take].cpu().item()),
-                    "sell_amount": float(decoded["sell_amount"][0, take].cpu().item()),
-                    "trade_amount": float(decoded["trade_amount"][0, take].cpu().item()),
+                    "buy_price": float(decoded_cpu["buy_price"][0, take].item()),
+                    "sell_price": float(decoded_cpu["sell_price"][0, take].item()),
+                    "buy_amount": float(decoded_cpu["buy_amount"][0, take].item()),
+                    "sell_amount": float(decoded_cpu["sell_amount"][0, take].item()),
+                    "trade_amount": float(decoded_cpu["trade_amount"][0, take].item()),
                 }
-            if "hold_hours" in decoded:
-                row["hold_hours"] = float(decoded["hold_hours"][0, take].cpu().item())
-            if "allocation_fraction" in decoded:
-                row["allocation_fraction"] = float(decoded["allocation_fraction"][0, take].cpu().item())
+            if "hold_hours" in decoded_cpu:
+                row["hold_hours"] = float(decoded_cpu["hold_hours"][0, take].item())
+            if "allocation_fraction" in decoded_cpu:
+                row["allocation_fraction"] = float(decoded_cpu["allocation_fraction"][0, take].item())
             actions.append(row)
 
     return pd.DataFrame(actions)
@@ -127,7 +128,7 @@ def generate_latest_action(
     c_high = torch.from_numpy(frame[high_col].to_numpy(dtype=np.float32)[start:end]).unsqueeze(0).to(device)
     c_low = torch.from_numpy(frame[low_col].to_numpy(dtype=np.float32)[start:end]).unsqueeze(0).to(device)
 
-    with torch.no_grad():
+    with torch.inference_mode():
         outputs = model(seq)
         decoded = model.decode_actions(
             outputs,
@@ -136,24 +137,25 @@ def generate_latest_action(
             chronos_low=c_low,
         )
 
+    decoded_cpu = {k: v.cpu() for k, v in decoded.items()}
     take = -1
     close_col = f"predicted_close_p50_h{int(horizon)}"
     result = {
         "timestamp": frame["timestamp"].iloc[-1],
         "symbol": frame["symbol"].iloc[-1],
-        "buy_price": float(decoded["buy_price"][0, take].cpu().item()),
-        "sell_price": float(decoded["sell_price"][0, take].cpu().item()),
-        "buy_amount": float(decoded["buy_amount"][0, take].cpu().item()),
-        "sell_amount": float(decoded["sell_amount"][0, take].cpu().item()),
-        "trade_amount": float(decoded["trade_amount"][0, take].cpu().item()),
+        "buy_price": float(decoded_cpu["buy_price"][0, take].item()),
+        "sell_price": float(decoded_cpu["sell_price"][0, take].item()),
+        "buy_amount": float(decoded_cpu["buy_amount"][0, take].item()),
+        "sell_amount": float(decoded_cpu["sell_amount"][0, take].item()),
+        "trade_amount": float(decoded_cpu["trade_amount"][0, take].item()),
         "predicted_high": float(frame[high_col].iloc[-1]),
         "predicted_low": float(frame[low_col].iloc[-1]),
         "predicted_close": float(frame[close_col].iloc[-1]) if close_col in frame.columns else 0.0,
     }
-    if "hold_hours" in decoded:
-        result["hold_hours"] = float(decoded["hold_hours"][0, take].cpu().item())
-    if "allocation_fraction" in decoded:
-        result["allocation_fraction"] = float(decoded["allocation_fraction"][0, take].cpu().item())
+    if "hold_hours" in decoded_cpu:
+        result["hold_hours"] = float(decoded_cpu["hold_hours"][0, take].item())
+    if "allocation_fraction" in decoded_cpu:
+        result["allocation_fraction"] = float(decoded_cpu["allocation_fraction"][0, take].item())
     return result
 
 
