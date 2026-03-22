@@ -39,4 +39,17 @@ if you find unexpected changes you should be thorough with resolving them yourse
 
 aiming for the best pnl and smoothness in pnl sortino etc low max drawdown trading strategy we can find methodically on our marketsimulator
 we control everything here so forking projects and C cuda kernels etc is fine we own this and can do whatever we want to succeed
-we have a few projects like nanochat autoresearch modded-nanogpt etc that are here as examples of code and the chronos2 project is important as we train loras and fit hyperparameters/preaugmentations of that too 
+we have a few projects like nanochat autoresearch modded-nanogpt etc that are here as examples of code and the chronos2 project is important as we train loras and fit hyperparameters/preaugmentations of that too
+
+## Production
+see prod.md for whats running, marketsim scores, deploy commands, and monitoring
+always update prod.md when deploying or changing production systems
+validate with binary-fill marketsim at lag>=2 before deploying any neural model
+soft sigmoid fills have lookahead bias -- never trust training sortino alone
+
+## Marketsim Realism
+- fee=10bps, margin=6.25%, fill_buffer=5bps, max_hold=6h, decision_lag>=2
+- validation_use_binary_fills=True (default in config.py)
+- fill_temperature=0.01 (reduced from 5e-4 to limit gradient leakage)
+- test at slippage 0/5/10/20 bps before deploying
+- pufferlib C sim with binary fills is ground truth -- binanceneural soft sim is for training gradients only
