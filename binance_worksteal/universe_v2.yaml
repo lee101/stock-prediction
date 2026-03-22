@@ -1,0 +1,533 @@
+# Universe v2: 50+ symbols for work-stealing strategy
+# fee_tier: fdusd = 0% (BTC/ETH/SOL/BNB), usdt = 10bps
+# has_lora: true if Chronos2 LoRA trained for this symbol
+
+symbols:
+  # --- FDUSD tier (0% fee) ---
+  - symbol: BTCUSD
+    usdt_pair: BTCUSDT
+    fee_tier: fdusd
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: ETHUSD
+    usdt_pair: ETHUSDT
+    fee_tier: fdusd
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: SOLUSD
+    usdt_pair: SOLUSDT
+    fee_tier: fdusd
+    margin_eligible: true
+    has_lora: true
+    min_notional: 10.0
+
+  - symbol: BNBUSD
+    usdt_pair: BNBUSDT
+    fee_tier: fdusd
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  # --- Original 30 (USDT tier) ---
+  - symbol: DOGEUSD
+    usdt_pair: DOGEUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: true
+    min_notional: 10.0
+
+  - symbol: AVAXUSD
+    usdt_pair: AVAXUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: true
+    min_notional: 10.0
+
+  - symbol: LINKUSD
+    usdt_pair: LINKUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: true
+    min_notional: 10.0
+
+  - symbol: AAVEUSD
+    usdt_pair: AAVEUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: true
+    min_notional: 10.0
+
+  - symbol: LTCUSD
+    usdt_pair: LTCUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: true
+    min_notional: 10.0
+
+  - symbol: XRPUSD
+    usdt_pair: XRPUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: true
+    min_notional: 10.0
+
+  - symbol: DOTUSD
+    usdt_pair: DOTUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: true
+    min_notional: 10.0
+
+  - symbol: UNIUSD
+    usdt_pair: UNIUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: NEARUSD
+    usdt_pair: NEARUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: APTUSD
+    usdt_pair: APTUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: ICPUSD
+    usdt_pair: ICPUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: SHIBUSD
+    usdt_pair: SHIBUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: ADAUSD
+    usdt_pair: ADAUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: FILUSD
+    usdt_pair: FILUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: ARBUSD
+    usdt_pair: ARBUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: OPUSD
+    usdt_pair: OPUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: INJUSD
+    usdt_pair: INJUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: SUIUSD
+    usdt_pair: SUIUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: TIAUSD
+    usdt_pair: TIAUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: SEIUSD
+    usdt_pair: SEIUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: ATOMUSD
+    usdt_pair: ATOMUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: ALGOUSD
+    usdt_pair: ALGOUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: BCHUSD
+    usdt_pair: BCHUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: TRXUSD
+    usdt_pair: TRXUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: PEPEUSD
+    usdt_pair: PEPEUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: MATICUSD
+    usdt_pair: MATICUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  # --- New additions (expansion to 50+) ---
+  - symbol: TAOUSD
+    usdt_pair: TAOUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: ZECUSD
+    usdt_pair: ZECUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: HYPEUSD
+    usdt_pair: HYPEUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: FETUSD
+    usdt_pair: FETUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: ENJUSD
+    usdt_pair: ENJUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: CFGUSD
+    usdt_pair: CFGUSDT
+    fee_tier: usdt
+    margin_eligible: false
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: RUNEUSD
+    usdt_pair: RUNEUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: WIFUSD
+    usdt_pair: WIFUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: JUPUSD
+    usdt_pair: JUPUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: THETAUSD
+    usdt_pair: THETAUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: SANDUSD
+    usdt_pair: SANDUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: MANAUSD
+    usdt_pair: MANAUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: AXSUSD
+    usdt_pair: AXSUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: GMXUSD
+    usdt_pair: GMXUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: MKRUSD
+    usdt_pair: MKRUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: COMPUSD
+    usdt_pair: COMPUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: SNXUSD
+    usdt_pair: SNXUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: LDOUSD
+    usdt_pair: LDOUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: PENDLEUSD
+    usdt_pair: PENDLEUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: STXUSD
+    usdt_pair: STXUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  # --- From EXPANDED_UNIVERSE ---
+  - symbol: HBARUSD
+    usdt_pair: HBARUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: VETUSD
+    usdt_pair: VETUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: RENDERUSD
+    usdt_pair: RENDERUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: GRTUSD
+    usdt_pair: GRTUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: CRVUSD
+    usdt_pair: CRVUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: 1INCHUSD
+    usdt_pair: 1INCHUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: SUSHIUSD
+    usdt_pair: SUSHIUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: YFIUSD
+    usdt_pair: YFIUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: BATUSD
+    usdt_pair: BATUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: ZRXUSD
+    usdt_pair: ZRXUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: FTMUSD
+    usdt_pair: FTMUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: KAVAUSD
+    usdt_pair: KAVAUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: EGLDUSD
+    usdt_pair: EGLDUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: CHZUSD
+    usdt_pair: CHZUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: GALAUSD
+    usdt_pair: GALAUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: APEUSD
+    usdt_pair: APEUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: WLDUSD
+    usdt_pair: WLDUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: WUSD
+    usdt_pair: WUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: ENAUSD
+    usdt_pair: ENAUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: FLOKIUSD
+    usdt_pair: FLOKIUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: TONUSD
+    usdt_pair: TONUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: KASUSD
+    usdt_pair: KASUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: ONDOUSD
+    usdt_pair: ONDOUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: JASMYUSD
+    usdt_pair: JASMYUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+
+  - symbol: CFXUSD
+    usdt_pair: CFXUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
