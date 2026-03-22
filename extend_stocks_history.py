@@ -106,6 +106,7 @@ def main() -> None:
     parser.add_argument("--train-end", default="2025-08-31", help="End of training period")
     parser.add_argument("--val-start", default="2025-09-01")
     parser.add_argument("--val-end", default="2026-03-20")
+    parser.add_argument("--bin-suffix", default="2015", help="Suffix for output bin names (e.g. '2012' → stocks11_daily_train_2012.bin)")
     args = parser.parse_args()
     
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
@@ -124,7 +125,7 @@ def main() -> None:
     if args.export_bin:
         sym_str = ",".join(symbols)
         # Export training bin
-        train_bin = f"pufferlib_market/data/stocks{len(symbols)}_daily_train_2015.bin"
+        train_bin = f"pufferlib_market/data/stocks{len(symbols)}_daily_train_{args.bin_suffix}.bin"
         print(f"\nExporting training bin: {train_bin}")
         cmd = [
             "python3", "-m", "pufferlib_market.export_data_daily",
@@ -136,7 +137,7 @@ def main() -> None:
         subprocess.run(cmd, check=True, cwd=str(REPO))
         
         # Export val bin
-        val_bin = f"pufferlib_market/data/stocks{len(symbols)}_daily_val_2015.bin"
+        val_bin = f"pufferlib_market/data/stocks{len(symbols)}_daily_val_{args.bin_suffix}.bin"
         print(f"Exporting val bin: {val_bin}")
         cmd = [
             "python3", "-m", "pufferlib_market.export_data_daily",
