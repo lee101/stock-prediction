@@ -60,12 +60,14 @@ def _load_policy(checkpoint_path: str, obs_size: int, num_actions: int, device: 
     return policy
 
 
-def _read_data_header(data_path: str) -> tuple[int, int]:
-    """Read MKTD binary header.  Returns (num_symbols, num_timesteps)."""
+def _read_data_header(data_path: str) -> tuple[int, int, int]:
+    """Read MKTD binary header.  Returns (num_symbols, num_timesteps, features_per_sym)."""
     with open(data_path, "rb") as f:
         header = f.read(24)
-    _, _, num_symbols, num_timesteps, _, _ = struct.unpack("<4sIIIII", header)
-    return int(num_symbols), int(num_timesteps)
+    _, _, num_symbols, num_timesteps, features_per_sym, _ = struct.unpack("<4sIIIII", header)
+    if features_per_sym == 0:
+        features_per_sym = 16  # v1/v2 backwards compat
+    return int(num_symbols), int(num_timesteps), int(features_per_sym)
 
 
 # ---------------------------------------------------------------------------
@@ -288,8 +290,8 @@ def benchmark_tts(
         dev_str = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(dev_str)
 
-    num_symbols, num_timesteps = _read_data_header(data_path)
-    obs_size = num_symbols * 16 + 5 + num_symbols
+    num_symbols, num_timesteps, features_per_sym = _read_data_header(data_path)
+    obs_size = num_symbols * features_per_sym + 5 + num_symbols
     n_actions = 1 + 2 * num_symbols
 
     policy = _load_policy(checkpoint_path, obs_size, n_actions, device)
@@ -411,8 +413,8 @@ def main():
     # Single-decision mode
     import pufferlib_market.binding as binding
 
-    num_symbols, num_timesteps = _read_data_header(str(data))
-    obs_size = num_symbols * 16 + 5 + num_symbols
+    num_symbols, num_timesteps, features_per_sym = _read_data_header(str(data))
+    obs_size = num_symbols * features_per_sym + 5 + num_symbols
     n_actions = 1 + 2 * num_symbols
 
     device = torch.device(dev_str)
