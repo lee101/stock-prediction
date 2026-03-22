@@ -86,6 +86,10 @@ class TrialConfig:
     max_leverage: float = 1.0
     short_borrow_apr: float = 0.0
     requires_gpu: str = ""  # e.g. "a100", "h100", "" = any GPU (dispatcher metadata only)
+    # H100-scale training settings (passed through to train.py)
+    minibatch_size: int = 2048
+    use_bf16: bool = False
+    cuda_graph_ppo: bool = False
 
 
 # Define experiment configurations to test
@@ -532,6 +536,74 @@ STOCK_EXPERIMENTS: list[dict] = [
      "hidden_size": 512, "obs_norm": True, "weight_decay": 0.05,
      "fill_slippage_bps": 10.0, "trade_penalty": 0.05},
 
+    # -----------------------------------------------------------------------
+    # H100-scale configs: 256 parallel envs, minibatch 4096, BF16, CUDA graph
+    # -----------------------------------------------------------------------
+
+    # Replicate best known config (h1024 + anneal_lr) at H100 scale
+    {"description": "h1024_h100",
+     "hidden_size": 1024, "anneal_lr": True, "ent_coef": 0.05,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+
+    # h2048 was under-converged at 50M steps — H100's 4x more data/step may fix it
+    {"description": "h2048_h100",
+     "hidden_size": 2048, "anneal_lr": True, "ent_coef": 0.05,
+     "fill_slippage_bps": 5.0, "trade_penalty": 0.05,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+
+    # ResidualMLP at H100 scale
+    {"description": "resmlp_h100",
+     "arch": "resmlp", "hidden_size": 1024, "anneal_lr": True, "ent_coef": 0.05,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+
+    # Transformer can now afford wider hidden at H100 speed
+    {"description": "transformer_h100",
+     "arch": "transformer", "hidden_size": 512, "anneal_lr": True,
+     "trade_penalty": 0.05,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+
+    # Muon optimizer needs faster steps to converge — H100 enables that
+    {"description": "muon_h100",
+     "optimizer": "muon", "lr": 0.02, "hidden_size": 1024,
+     "trade_penalty": 0.05,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+
+    # Replicate OOS best (ent_coef=0.05) at H100 scale
+    {"description": "ent_005_h100",
+     "ent_coef": 0.05, "hidden_size": 1024, "anneal_lr": True,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+
+    # Slippage friction to force wider edges — H100 scale
+    {"description": "slip_5bps_h100",
+     "fill_slippage_bps": 5.0, "hidden_size": 1024, "anneal_lr": True,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+
+    # --- Muon H100 variants ---
+    {"description": "muon_wd_0",
+     "optimizer": "muon", "lr": 0.02, "weight_decay": 0.0,
+     "hidden_size": 1024, "trade_penalty": 0.05,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+
+    {"description": "muon_wd_005",
+     "optimizer": "muon", "lr": 0.02, "weight_decay": 0.005,
+     "hidden_size": 1024, "trade_penalty": 0.05,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+
+    {"description": "muon_ent_005",
+     "optimizer": "muon", "lr": 0.02, "ent_coef": 0.05,
+     "hidden_size": 1024, "trade_penalty": 0.05,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+
     # Random mutations to explore the neighbourhood (30 slots per sweep pass)
     {"description": "random_1"},
     {"description": "random_2"},
@@ -882,6 +954,12 @@ def run_trial(
         ])
     if config.optimizer != "adamw":
         cmd.extend(["--optimizer", config.optimizer])
+    if config.minibatch_size != 2048:
+        cmd.extend(["--minibatch-size", str(config.minibatch_size)])
+    if config.use_bf16:
+        cmd.append("--use-bf16")
+    if config.cuda_graph_ppo:
+        cmd.append("--cuda-graph-ppo")
     if wandb_project:
         cmd.extend([
             "--wandb-project", wandb_project,
@@ -1262,6 +1340,12 @@ def main():
                         help="Use stock-specific configs and Alpaca daily defaults "
                              "(fee_rate=0.001, periods_per_year=252, "
                              "data defaults to stocks12_daily_{train,val}.bin)")
+    parser.add_argument("--h100-mode", action="store_true",
+                        help="H100 scale-up: num_envs=256, minibatch=4096, bf16, cuda-graph-ppo, "
+                             "time_budget=200s. Overrides per-config settings for all trials.")
+    parser.add_argument("--scale-pairs", type=int, default=0,
+                        help="Use stocksN_daily_{train,val}.bin instead of stocks12. "
+                             "Falls back to stocks12 if the file does not exist.")
     parser.add_argument("--train-data", required=data_required, default=None)
     parser.add_argument("--val-data", required=data_required, default=None)
     parser.add_argument("--time-budget", type=int, default=300,
@@ -1345,6 +1429,10 @@ def main():
                         help="W&B project name; when set each trial is logged as a separate run in this project")
     args = parser.parse_args()
 
+    # --h100-mode: shorten time budget to match A100 wall-time (H100 is ~2x faster)
+    if args.h100_mode and args.time_budget == 300:
+        args.time_budget = 200
+
     # --stocks: apply stock-mode defaults before anything else so that
     # user overrides (explicit --train-data etc.) can still win.
     if args.stocks:
@@ -1372,6 +1460,25 @@ def main():
         if args.checkpoint_root == "pufferlib_market/checkpoints/autoresearch":
             args.checkpoint_root = "pufferlib_market/checkpoints/autoresearch_stock"
 
+        # --scale-pairs N: resolve stocksN data paths, fallback to stocks12
+        if args.scale_pairs > 0:
+            n = args.scale_pairs
+            candidate_train = f"pufferlib_market/data/stocks{n}_daily_train.bin"
+            candidate_val   = f"pufferlib_market/data/stocks{n}_daily_val.bin"
+            train_abs = REPO / candidate_train
+            val_abs   = REPO / candidate_val
+            if train_abs.exists() and val_abs.exists():
+                if args.train_data is None or args.train_data == _STOCK_DEFAULT_TRAIN:
+                    args.train_data = candidate_train
+                if args.val_data is None or args.val_data == _STOCK_DEFAULT_VAL:
+                    args.val_data = candidate_val
+                print(f"[scale-pairs] Using stocks{n} data: {candidate_train}")
+            else:
+                print(
+                    f"[scale-pairs] WARNING: stocks{n}_daily_{{train,val}}.bin not found "
+                    f"at {train_abs} — falling back to stocks12"
+                )
+
     if args.list_experiments:
         experiment_pool = STOCK_EXPERIMENTS if args.stocks else EXPERIMENTS
         for cfg_dict in experiment_pool:
@@ -1390,7 +1497,7 @@ def main():
 
     # Initialize or load leaderboard
     fieldnames = [
-        "trial", "description", "rank_metric", "rank_score", "val_return", "val_sortino", "val_wr",
+        "trial", "description", "gpu_type", "rank_metric", "rank_score", "val_return", "val_sortino", "val_wr",
         "val_profitable_pct", "train_return", "train_sortino", "train_wr",
         "train_steps", "elapsed_s", "error", "holdout_error", "market_validation_error", "replay_eval_error",
         "holdout_robust_score", "holdout_return_mean_pct", "holdout_return_p25_pct",
@@ -1466,6 +1573,15 @@ def main():
         if args.seed is not None:
             config.seed = args.seed
 
+        # --h100-mode: force H100 hardware settings on every trial
+        if args.h100_mode:
+            config.num_envs = 256
+            config.minibatch_size = 4096
+            config.use_bf16 = True
+            config.cuda_graph_ppo = True
+
+        gpu_type = "h100" if (args.h100_mode or config.requires_gpu == "h100") else "a100"
+
         holdout_eval_steps = int(args.holdout_eval_steps) if int(args.holdout_eval_steps) > 0 else int(config.max_steps)
 
         print(f"\n{'='*60}")
@@ -1521,6 +1637,7 @@ def main():
         row = {
             "trial": trial_num,
             "description": desc,
+            "gpu_type": gpu_type,
             "rank_metric": result.get("rank_metric"),
             "rank_score": result.get("rank_score"),
             "val_return": result.get("val_return"),
