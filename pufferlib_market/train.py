@@ -20,6 +20,7 @@ Improvements from autoresearch agent (2026-03):
 
 import argparse
 import atexit
+import contextlib
 import math
 import os
 import sys
@@ -1123,6 +1124,20 @@ def train(args):
     buf_reward = torch.zeros((T, N), dtype=torch.float32)
     buf_done = torch.zeros((T, N), dtype=torch.float32)
 
+    # Pre-allocate PPO update buffers (avoid per-update GPU allocations)
+    # advantages on CPU (GAE loop is sequential), flat GPU tensors for minibatch shuffle
+    _advantages = torch.zeros((T, N), dtype=torch.float32)
+    _last_gae = torch.zeros(N)
+    _b_obs = torch.zeros(T * N, obs_size, dtype=torch.float32, device=device)
+    _b_act = torch.zeros(T * N, dtype=torch.long, device=device)
+    _b_logprob = torch.zeros(T * N, dtype=torch.float32, device=device)
+    _b_returns = torch.zeros(T * N, dtype=torch.float32, device=device)
+    _b_values = torch.zeros(T * N, dtype=torch.float32, device=device)
+    _b_advantages = torch.zeros(T * N, dtype=torch.float32, device=device)
+    _clip_eps_t = torch.tensor(args.clip_eps, device=device)
+    _vf_coef_t = torch.tensor(args.vf_coef, device=device)
+    _ent_coef_t = torch.tensor(args.ent_coef, device=device)
+
     # ── Training loop ──
     global_step = resume_state.global_step
     num_updates = args.total_timesteps // (T * N)
@@ -1137,6 +1152,11 @@ def train(args):
         Path(args.checkpoint_dir),
         max_keep_latest=args.max_periodic_checkpoints,
     )
+
+    _profile_steps = args.profile_steps
+    if _profile_steps > 0:
+        Path("profile_output").mkdir(exist_ok=True)
+        print(f"  torch.profiler: will trace first {_profile_steps} PPO update(s) → profile_output/")
 
     print(f"\nTraining: {num_updates} updates, {args.total_timesteps:,} additional steps")
     print(f"  rollout_len={T}, num_envs={N}, batch_size={T * N}")
@@ -1215,38 +1235,34 @@ def train(args):
 
         # GAE on CPU (sequential loop, small cost)
         values_cpu = buf_value.cpu() if buf_value.is_cuda else buf_value
-        advantages = torch.zeros_like(buf_reward)
-        last_gae = torch.zeros(N)
+        advantages = _advantages
+        advantages.zero_()
+        _last_gae.zero_()
 
         for t in reversed(range(T)):
-            if t == T - 1:
-                next_val = next_value
-            else:
-                next_val = values_cpu[t + 1]
+            next_val = next_value if t == T - 1 else values_cpu[t + 1]
             not_done = 1.0 - buf_done[t]
             delta = buf_reward[t] + args.gamma * next_val * not_done - values_cpu[t]
-            last_gae = delta + args.gamma * args.gae_lambda * not_done * last_gae
-            advantages[t] = last_gae
+            _last_gae.copy_(delta + args.gamma * args.gae_lambda * not_done * _last_gae)
+            advantages[t] = _last_gae
 
         returns = advantages + values_cpu
 
         # ── PPO update ──
         policy.train()
-        # buf_obs/act/logprob/value are already on GPU when using CUDA graphs
-        b_obs = buf_obs.reshape(-1, obs_size) if buf_obs.is_cuda else buf_obs.reshape(-1, obs_size).to(device, non_blocking=True)
-        b_act = buf_act.reshape(-1) if buf_act.is_cuda else buf_act.reshape(-1).to(device, non_blocking=True)
-        b_logprob = buf_logprob.reshape(-1) if buf_logprob.is_cuda else buf_logprob.reshape(-1).to(device, non_blocking=True)
-        b_returns = returns.reshape(-1).to(device, non_blocking=True)
-        b_values = values_cpu.reshape(-1).to(device, non_blocking=True)
-
-        b_advantages = normalize_advantages(
+        _b_obs.copy_(buf_obs.reshape(-1, obs_size), non_blocking=True)
+        _b_act.copy_(buf_act.reshape(-1), non_blocking=True)
+        _b_logprob.copy_(buf_logprob.reshape(-1), non_blocking=True)
+        _b_returns.copy_(returns.reshape(-1), non_blocking=True)
+        _b_values.copy_(values_cpu.reshape(-1), non_blocking=True)
+        _b_advantages.copy_(normalize_advantages(
             advantages.to(device, non_blocking=True),
             rewards=buf_reward.to(device, non_blocking=True),
             mode=args.advantage_norm,
             group_relative_size=args.group_relative_size,
             group_relative_mix=args.group_relative_mix,
             group_relative_clip=args.group_relative_clip,
-        ).reshape(-1)
+        ).reshape(-1), non_blocking=True)
 
         total_pg_loss = 0
         total_v_loss = 0
@@ -1256,58 +1272,77 @@ def train(args):
         batch_size = T * N
         mb_size = args.minibatch_size
 
-        # Scalar tensors for compiled PPO (avoid reallocation)
-        clip_eps_t = torch.tensor(clip_eps, device=device)
-        vf_coef_t = torch.tensor(args.vf_coef, device=device)
-        ent_coef_t = torch.tensor(ent_coef, device=device)
+        _clip_eps_t.fill_(clip_eps)
+        _vf_coef_t.fill_(args.vf_coef)
+        _ent_coef_t.fill_(ent_coef)
 
-        # Update CUDA-graph scalar tensors with current annealed values
         if _use_cuda_graph_ppo and _ppo_graph is not None:
             _ppo_static["clip_eps"].fill_(clip_eps)
             _ppo_static["vf_coef"].fill_(args.vf_coef)
             _ppo_static["ent_coef"].fill_(ent_coef)
 
-        for epoch in range(args.ppo_epochs):
-            indices = torch.randperm(batch_size, device=device)
-            for start in range(0, batch_size, mb_size):
-                end = min(start + mb_size, batch_size)
-                mb_idx = indices[start:end]
-                is_full_batch = (end - start) == mb_size
+        _prof_ctx = (
+            torch.profiler.profile(
+                activities=[
+                    torch.profiler.ProfilerActivity.CPU,
+                    torch.profiler.ProfilerActivity.CUDA,
+                ],
+                profile_memory=True,
+                record_shapes=True,
+                with_stack=True,
+            )
+            if _profile_steps > 0 and local_update <= _profile_steps else None
+        )
 
-                if _use_cuda_graph_ppo and _ppo_graph is not None and is_full_batch:
-                    # CUDA graph path: copy minibatch into static tensors, replay graph
-                    _ppo_static["obs"].copy_(b_obs[mb_idx])
-                    _ppo_static["act"].copy_(b_act[mb_idx])
-                    _ppo_static["logprob"].copy_(b_logprob[mb_idx])
-                    _ppo_static["adv"].copy_(b_advantages[mb_idx])
-                    _ppo_static["ret"].copy_(b_returns[mb_idx])
-                    _ppo_static["val"].copy_(b_values[mb_idx])
-                    optimizer.zero_grad(set_to_none=False)
-                    with torch.cuda.stream(_ppo_stream):
-                        _ppo_graph.replay()
-                    # Make default stream wait for PPO graph without blocking CPU
-                    torch.cuda.current_stream().wait_stream(_ppo_stream)
-                    nn.utils.clip_grad_norm_(policy.parameters(), args.max_grad_norm)
-                    optimizer.step()
-                    total_pg_loss += _ppo_static["pg_loss"].item()
-                    total_v_loss += _ppo_static["v_loss"].item()
-                    total_entropy += _ppo_static["ent_loss"].item()
-                else:
-                    # Eager path: partial last batch or when CUDA graph PPO is off
-                    loss, pg_loss, v_loss, ent_loss = _compiled_ppo_loss(
-                        policy, b_obs[mb_idx], b_act[mb_idx], b_logprob[mb_idx],
-                        b_advantages[mb_idx], b_returns[mb_idx], b_values[mb_idx],
-                        clip_eps_t, vf_coef_t, ent_coef_t, args.clip_vloss,
-                    )
-                    optimizer.zero_grad()
-                    loss.backward()
-                    nn.utils.clip_grad_norm_(policy.parameters(), args.max_grad_norm)
-                    optimizer.step()
-                    total_pg_loss += pg_loss.item()
-                    total_v_loss += v_loss.item()
-                    total_entropy += ent_loss.item()
+        with (_prof_ctx if _prof_ctx is not None else contextlib.nullcontext()):
+            for epoch in range(args.ppo_epochs):
+                indices = torch.randperm(batch_size, device=device)
+                for start in range(0, batch_size, mb_size):
+                    end = min(start + mb_size, batch_size)
+                    mb_idx = indices[start:end]
+                    is_full_batch = (end - start) == mb_size
 
-                num_mb += 1
+                    if _use_cuda_graph_ppo and _ppo_graph is not None and is_full_batch:
+                        # CUDA graph path: copy minibatch into static tensors, replay graph
+                        _ppo_static["obs"].copy_(_b_obs[mb_idx])
+                        _ppo_static["act"].copy_(_b_act[mb_idx])
+                        _ppo_static["logprob"].copy_(_b_logprob[mb_idx])
+                        _ppo_static["adv"].copy_(_b_advantages[mb_idx])
+                        _ppo_static["ret"].copy_(_b_returns[mb_idx])
+                        _ppo_static["val"].copy_(_b_values[mb_idx])
+                        optimizer.zero_grad(set_to_none=False)
+                        with torch.cuda.stream(_ppo_stream):
+                            _ppo_graph.replay()
+                        # Make default stream wait for PPO graph without blocking CPU
+                        torch.cuda.current_stream().wait_stream(_ppo_stream)
+                        nn.utils.clip_grad_norm_(policy.parameters(), args.max_grad_norm)
+                        optimizer.step()
+                        total_pg_loss += _ppo_static["pg_loss"].item()
+                        total_v_loss += _ppo_static["v_loss"].item()
+                        total_entropy += _ppo_static["ent_loss"].item()
+                    else:
+                        # Eager path: partial last batch or when CUDA graph PPO is off
+                        loss, pg_loss, v_loss, ent_loss = _compiled_ppo_loss(
+                            policy, _b_obs[mb_idx], _b_act[mb_idx], _b_logprob[mb_idx],
+                            _b_advantages[mb_idx], _b_returns[mb_idx], _b_values[mb_idx],
+                            _clip_eps_t, _vf_coef_t, _ent_coef_t, args.clip_vloss,
+                        )
+                        optimizer.zero_grad()
+                        loss.backward()
+                        nn.utils.clip_grad_norm_(policy.parameters(), args.max_grad_norm)
+                        optimizer.step()
+                        total_pg_loss += pg_loss.item()
+                        total_v_loss += v_loss.item()
+                        total_entropy += ent_loss.item()
+
+                    num_mb += 1
+
+        if _prof_ctx is not None:
+            _trace_path = Path("profile_output") / f"trace_update_{local_update:04d}.json"
+            _prof_ctx.export_chrome_trace(str(_trace_path))
+            print(f"  [profiler] Chrome trace: {_trace_path}")
+            print(_prof_ctx.key_averages(group_by_stack_n=5).table(
+                sort_by="self_cuda_memory_usage", row_limit=20))
 
         # ── Logging ──
         log_info = binding.vec_log(vec_handle)
@@ -1661,6 +1696,12 @@ def main():
         help="How many periodic update_*.pt checkpoints to retain alongside best/final.",
     )
     parser.add_argument("--cpu", action="store_true")
+    parser.add_argument(
+        "--profile-steps",
+        type=int,
+        default=0,
+        help="Wrap first N PPO updates with torch.profiler and export Chrome trace to profile_output/.",
+    )
 
     # Weights & Biases
     parser.add_argument("--wandb-project", type=str, default=None,
