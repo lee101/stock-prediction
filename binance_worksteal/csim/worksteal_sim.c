@@ -3,7 +3,7 @@
 #include <string.h>
 #include "worksteal_sim.h"
 
-#define MAX_SYM 64
+#define MAX_SYM 256
 #define IDX(sym, bar) ((sym) * n_bars + (bar))
 
 typedef struct {
@@ -324,7 +324,7 @@ void worksteal_simulate(
                 double fill = cands[k].fill_price;
 
                 if (cands[k].direction == 0) { /* long */
-                    double alloc = max_alloc < cash ? max_alloc : cash;
+                    double alloc = max_alloc;
                     double qty = alloc / (fill * (1.0 + fee_rate));
                     if (qty <= 0) continue;
 

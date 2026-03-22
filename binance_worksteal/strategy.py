@@ -660,6 +660,67 @@ def run_worksteal_backtest(
             last_exit[sym] = date
             del positions[sym]
 
+        # 1b. Deleveraging: close worst position if over-leveraged
+        if config.deleverage_threshold > 0 and positions:
+            delev_notional = 0.0
+            delev_inv = 0.0
+            for sym, pos in positions.items():
+                if sym in current_bars:
+                    c = float(current_bars[sym]["close"])
+                    delev_notional += pos.quantity * c
+                    interest = _compute_margin_interest(pos, date, config.margin_annual_rate)
+                    if pos.direction == "long":
+                        delev_inv += pos.quantity * c - interest
+                    else:
+                        delev_inv += pos.quantity * (pos.entry_price - c) - interest
+                else:
+                    delev_notional += pos.quantity * pos.entry_price
+                    if pos.direction == "long":
+                        delev_inv += pos.quantity * pos.entry_price
+            delev_equity = cash + delev_inv
+            if delev_equity > 0:
+                current_lev = delev_notional / delev_equity
+                if current_lev > config.max_leverage + config.deleverage_threshold:
+                    target_lev = config.target_leverage if config.target_leverage > 0 else config.max_leverage
+                    worst_sym = None
+                    worst_pnl = float("inf")
+                    for sym, pos in positions.items():
+                        if sym not in current_bars:
+                            continue
+                        c = float(current_bars[sym]["close"])
+                        if pos.direction == "long":
+                            pnl_pct = (c - pos.entry_price) / pos.entry_price
+                        else:
+                            pnl_pct = (pos.entry_price - c) / pos.entry_price
+                        if pnl_pct < worst_pnl:
+                            worst_pnl = pnl_pct
+                            worst_sym = sym
+                    if worst_sym is not None:
+                        pos = positions[worst_sym]
+                        fee_rate = get_fee(worst_sym, config)
+                        close_p = float(current_bars[worst_sym]["close"])
+                        margin_interest = _compute_margin_interest(pos, date, config.margin_annual_rate)
+                        if pos.direction == "long":
+                            proceeds = pos.quantity * close_p * (1 - fee_rate)
+                            pnl = proceeds - pos.cost_basis - margin_interest
+                            cash += proceeds
+                            side = "sell"
+                        else:
+                            pnl = pos.quantity * (pos.entry_price - close_p) - \
+                                  pos.quantity * close_p * fee_rate - \
+                                  pos.quantity * pos.entry_price * fee_rate - margin_interest
+                            cash += pos.cost_basis + pnl
+                            side = "cover"
+                        trades.append(TradeLog(
+                            timestamp=date, symbol=worst_sym, side=side,
+                            price=close_p, quantity=pos.quantity,
+                            notional=pos.quantity * close_p,
+                            fee=pos.quantity * close_p * fee_rate + margin_interest,
+                            pnl=pnl, reason="deleverage", direction=pos.direction,
+                        ))
+                        last_exit[worst_sym] = date
+                        del positions[worst_sym]
+
         hold_base_asset = _base_asset_should_hold(
             base_symbol=base_symbol,
             current_bars=current_bars,
@@ -774,7 +835,7 @@ def run_worksteal_backtest(
             for sym, direction, score, fill_price, bar in candidates[:slots]:
                 if sym in positions:
                     continue
-                if cash <= 0 and direction == "long" and base_qty <= 0:
+                if cash <= 0 and direction == "long" and config.max_leverage <= 1.0 and base_qty <= 0:
                     continue
 
                 fee_rate = get_fee(sym, config)
@@ -791,13 +852,13 @@ def run_worksteal_backtest(
                             fee_rate=base_fee,
                             required_cash=max_alloc,
                         )
-                    alloc = min(max_alloc, cash)
+                    alloc = max_alloc
                     quantity = alloc / (fill_price * (1 + fee_rate))
                     if quantity <= 0:
                         continue
 
                     actual_cost = quantity * fill_price * (1 + fee_rate)
-                    borrowed = max(0, actual_cost - cash)
+                    borrowed = max(0.0, actual_cost - cash)
                     cash -= min(actual_cost, cash)
 
                     positions[sym] = Position(
@@ -879,6 +940,14 @@ def run_worksteal_backtest(
             base_asset_value = base_qty * float(current_bars[base_symbol]["close"])
 
         equity = cash + inventory_value + base_asset_value
+
+        total_notional = 0.0
+        for sym, pos in positions.items():
+            if sym in current_bars:
+                total_notional += pos.quantity * float(current_bars[sym]["close"])
+            else:
+                total_notional += pos.quantity * pos.entry_price
+
         equity_rows.append({
             "timestamp": date,
             "equity": equity,
@@ -891,7 +960,7 @@ def run_worksteal_backtest(
             "n_long": sum(1 for p in positions.values() if p.direction == "long"),
             "n_short": sum(1 for p in positions.values() if p.direction == "short"),
             "positions": ",".join(f"{p.direction[0]}:{s}" for s, p in positions.items()),
-            "leverage": (abs(inventory_value) + base_asset_value) / max(equity, 1) if equity > 0 else 0,
+            "leverage": total_notional / max(equity, 1) if equity > 0 else 0,
         })
 
         profit_vs_drawdown_exit = evaluate_drawdown_vs_profit_early_exit(
