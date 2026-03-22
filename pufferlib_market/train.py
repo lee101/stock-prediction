@@ -773,10 +773,21 @@ def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
     print(f"Device: {device}")
 
+    # Seed all RNG sources for reproducible weight initialization.
+    # The C env seed is set separately via vec_init/vec_reset below.
+    torch.manual_seed(args.seed)
+    if device.type == "cuda":
+        torch.cuda.manual_seed_all(args.seed)
+    import random as _random
+    import numpy as _np
+    _random.seed(args.seed)
+    _np.random.seed(args.seed)
+
     # Enable TF32 for faster matmuls on Ampere+ GPUs
     if device.type == "cuda":
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = False  # required for reproducibility
         print("  TF32 enabled")
 
     # ── Load shared data ──
