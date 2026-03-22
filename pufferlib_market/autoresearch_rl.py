@@ -789,6 +789,86 @@ STOCK_EXPERIMENTS: list[dict] = [
     {"description": "lr1e4_h2048_s42",  "lr": 1e-4, "anneal_lr": False, "hidden_size": 2048,
      "num_envs": 256, "minibatch_size": 4096, "seed": 42},
 
+    # -----------------------------------------------------------------------
+    # Focused lr=1e-4 + anneal_lr=True exploration (added 2026-03-22)
+    # Context: arch comparison confirmed lr1e4_anneal_s777 → robust=-40.3 on stocks11_2012
+    # (BEST known). Now systematically exploring around this winner:
+    #   (A) More seeds — is seed=777 lucky or is anneal+lr1e4 consistently good?
+    #   (B) Trade penalty — reduce over-trading (10bps fee already, adding penalty may generalize)
+    #   (C) Fill slippage training — forces wider edges → should generalize better
+    #   (D) Entropy tuning — 0.05 default; try 0.03 (less noise) and 0.08 (more explore)
+    #   (E) Weight decay — standard regularizer
+    #   (F) Combo tests — best features combined
+    #   (G) lr=2e-4 midpoint — between 1e-4 and 3e-4
+    # All use h1024 (confirmed >> h2048), stocks11_2012 data (confirmed >> 2015/2019)
+    # -----------------------------------------------------------------------
+    # (A) Seed sweep — same config as lr1e4_anneal_s777, different seeds
+    {"description": "lr1e4_anneal_s42",    "lr": 1e-4, "anneal_lr": True, "seed": 42},
+    {"description": "lr1e4_anneal_s9621",  "lr": 1e-4, "anneal_lr": True, "seed": 9621},
+    {"description": "lr1e4_anneal_s1137",  "lr": 1e-4, "anneal_lr": True, "seed": 1137},
+    {"description": "lr1e4_anneal_s2718",  "lr": 1e-4, "anneal_lr": True, "seed": 2718},
+    {"description": "lr1e4_anneal_s31415", "lr": 1e-4, "anneal_lr": True, "seed": 31415},
+    {"description": "lr1e4_anneal_s1234",  "lr": 1e-4, "anneal_lr": True, "seed": 1234},
+    {"description": "lr1e4_anneal_s5678",  "lr": 1e-4, "anneal_lr": True, "seed": 5678},
+    {"description": "lr1e4_anneal_s314",   "lr": 1e-4, "anneal_lr": True, "seed": 314},
+    {"description": "lr1e4_anneal_s271",   "lr": 1e-4, "anneal_lr": True, "seed": 271},
+    {"description": "lr1e4_anneal_s42_ent05", "lr": 1e-4, "anneal_lr": True, "seed": 42, "ent_coef": 0.05},
+    # (B) Trade penalty (all anneal=True, seed=777)
+    {"description": "lr1e4_anneal_tp01",   "lr": 1e-4, "anneal_lr": True, "seed": 777, "trade_penalty": 0.01},
+    {"description": "lr1e4_anneal_tp02",   "lr": 1e-4, "anneal_lr": True, "seed": 777, "trade_penalty": 0.02},
+    {"description": "lr1e4_anneal_tp03",   "lr": 1e-4, "anneal_lr": True, "seed": 777, "trade_penalty": 0.03},
+    # (C) Fill slippage during training (all anneal=True, seed=777)
+    {"description": "lr1e4_anneal_slip5",  "lr": 1e-4, "anneal_lr": True, "seed": 777, "fill_slippage_bps": 5.0},
+    {"description": "lr1e4_anneal_slip8",  "lr": 1e-4, "anneal_lr": True, "seed": 777, "fill_slippage_bps": 8.0},
+    {"description": "lr1e4_anneal_slip12", "lr": 1e-4, "anneal_lr": True, "seed": 777, "fill_slippage_bps": 12.0},
+    # (D) Entropy tuning (anneal=True, seed=777)
+    {"description": "lr1e4_anneal_ent03",  "lr": 1e-4, "anneal_lr": True, "seed": 777, "ent_coef": 0.03},
+    {"description": "lr1e4_anneal_ent08",  "lr": 1e-4, "anneal_lr": True, "seed": 777, "ent_coef": 0.08},
+    # (E) Weight decay (anneal=True, seed=777)
+    {"description": "lr1e4_anneal_wd001",  "lr": 1e-4, "anneal_lr": True, "seed": 777, "weight_decay": 0.001},
+    {"description": "lr1e4_anneal_wd005",  "lr": 1e-4, "anneal_lr": True, "seed": 777, "weight_decay": 0.005},
+    {"description": "lr1e4_anneal_wd01",   "lr": 1e-4, "anneal_lr": True, "seed": 777, "weight_decay": 0.01},
+    # (F) Combo tests
+    {"description": "lr1e4_anneal_tp01_slip5",  "lr": 1e-4, "anneal_lr": True, "seed": 777,
+     "trade_penalty": 0.01, "fill_slippage_bps": 5.0},
+    {"description": "lr1e4_anneal_tp01_slip8",  "lr": 1e-4, "anneal_lr": True, "seed": 777,
+     "trade_penalty": 0.01, "fill_slippage_bps": 8.0},
+    {"description": "lr1e4_anneal_wd005_slip5", "lr": 1e-4, "anneal_lr": True, "seed": 777,
+     "weight_decay": 0.005, "fill_slippage_bps": 5.0},
+    {"description": "lr1e4_anneal_wd001_s42",   "lr": 1e-4, "anneal_lr": True, "seed": 42,
+     "weight_decay": 0.001},
+    {"description": "lr1e4_anneal_tp01_s42",    "lr": 1e-4, "anneal_lr": True, "seed": 42,
+     "trade_penalty": 0.01},
+    # (G) lr=2e-4 (midpoint — may converge faster while still stable)
+    {"description": "lr2e4_anneal_s777",   "lr": 2e-4, "anneal_lr": True, "seed": 777},
+    {"description": "lr2e4_anneal_s42",    "lr": 2e-4, "anneal_lr": True, "seed": 42},
+    {"description": "lr2e4_anneal_s9621",  "lr": 2e-4, "anneal_lr": True, "seed": 9621},
+    # -----------------------------------------------------------------------
+    # Architecture exploration (added 2026-03-22)
+    # Context: mlp h1024 is current best. Testing:
+    #   (H) transformer — cross-symbol attention (each symbol = token).
+    #       Learns correlations like "when NVDA up → buy MSFT".
+    #       Could be powerful for stocks where cross-symbol signals exist.
+    #   (I) resmlp — residual MLP, deeper effective capacity without h2048 cost.
+    #   (J) gru — gated temporal policy, learns short-term trend gating.
+    # All use lr=1e-4 + anneal (confirmed critical for stocks11_2012).
+    # seed=777 (best known) + seed=42 (comparison).
+    # -----------------------------------------------------------------------
+    # (H) Transformer (cross-symbol attention)
+    {"description": "transformer_lr1e4_s777",    "lr": 1e-4, "anneal_lr": True, "seed": 777, "arch": "transformer"},
+    {"description": "transformer_lr1e4_s42",     "lr": 1e-4, "anneal_lr": True, "seed": 42,  "arch": "transformer"},
+    {"description": "transformer_lr1e4_s9621",   "lr": 1e-4, "anneal_lr": True, "seed": 9621,"arch": "transformer"},
+    {"description": "transformer_lr1e4_h512_s777","lr": 1e-4, "anneal_lr": True, "seed": 777, "arch": "transformer", "hidden_size": 512},
+    # (I) ResidualMLP
+    {"description": "resmlp_lr1e4_s777",         "lr": 1e-4, "anneal_lr": True, "seed": 777, "arch": "resmlp"},
+    {"description": "resmlp_lr1e4_s42",          "lr": 1e-4, "anneal_lr": True, "seed": 42,  "arch": "resmlp"},
+    {"description": "resmlp_lr1e4_h2048_s777",   "lr": 1e-4, "anneal_lr": True, "seed": 777, "arch": "resmlp",
+     "hidden_size": 2048, "num_envs": 256, "minibatch_size": 4096},
+    # (J) GRU
+    {"description": "gru_lr1e4_s777",            "lr": 1e-4, "anneal_lr": True, "seed": 777, "arch": "gru"},
+    {"description": "gru_lr1e4_s42",             "lr": 1e-4, "anneal_lr": True, "seed": 42,  "arch": "gru"},
+    # -----------------------------------------------------------------------
+
     # Random mutations — slots so H100 500-trial runs get ~400+ random trials
     # (after ~92 named configs). Each slot calls mutate_config(best_config) at runtime.
     *[{"description": f"random_{i}"} for i in range(1, 451)],

@@ -1,5 +1,36 @@
 # H100 Experiment Plan (Updated 2026-03-22)
 
+## Executive Summary — v10 (OPTIMAL TIME BUDGET + ARCH EXPLORATION)
+
+**Key findings (2026-03-22 afternoon experiments v10):**
+
+### CRITICAL: RTX 5090 single-process optimal time budget is 200s (not 450s)
+
+At full GPU utilization (single training process), RTX 5090 achieves ~187k sps on
+stocks11_2012 with h1024 model. This means:
+- `--time-budget 450` → **84M steps** → OVERFIT (robust=-148 vs -40 at 37M steps)
+- `--time-budget 200` → **37M steps** → OPTIMAL (sweet spot ~35-45M steps)
+- `--time-budget 450` with 2 concurrent → ~42M steps each → also OK but wastes time
+
+**RTX 5090 single-process recommendations:**
+- h1024 stocks11_2012: `--time-budget 200` (gives 37M steps at 187k sps)
+- h2048 stocks11_2012: `--time-budget 220` (gives ~40M steps at ~180k sps, larger batch slows slightly)
+- transformer/gru: TBD (may be slower → longer budget OK)
+
+**H100 at 390k sps: `--time-budget 90` → 35M steps → still correct.**
+
+### Architecture exploration (added 2026-03-22)
+
+New configs added to STOCK_EXPERIMENTS (indices 128-136):
+- `transformer_lr1e4_s{777,42,9621}` — cross-symbol attention transformer
+- `transformer_lr1e4_h512_s777` — smaller transformer
+- `resmlp_lr1e4_s{777,42}`, `resmlp_lr1e4_h2048_s777` — residual MLP
+- `gru_lr1e4_s{777,42}` — GRU-gated policy
+
+All use lr=1e-4 + anneal_lr=True (confirmed critical).
+
+---
+
 ## Executive Summary — v9 (lr=1e-4 CRITICAL FOR stocks11 DATA)
 
 **Key findings since v8 (2026-03-22 afternoon experiments):**
