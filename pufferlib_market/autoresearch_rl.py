@@ -565,9 +565,211 @@ STOCK_EXPERIMENTS: list[dict] = [
     {"description": "random_30"},
 ]
 
+# ---------------------------------------------------------------------------
+# H100 experiment configurations for stocks20 dataset.
+#
+# Local RTX 5090 scaling sweep findings (2026-03-22, 90s trials, 67 configs):
+#
+#   Symbol count vs holdout_robust_score (higher=better):
+#     stocks12: best=+21.04 (slip_10bps), 1/21 configs > 0
+#     stocks20: best=+19.19 (ent_05), 2/23 configs > 0
+#     stocks15: best=-4.03  (trade_pen_08), 0/23 configs > 0
+#
+#   Top local configurations:
+#     stocks12 slip_10bps:   holdout=+21.04, val=1.37, 0% neg windows (90s run)
+#     stocks20 ent_05:       holdout=+19.19, val=-0.14, 0% neg windows
+#     stocks20 trade_pen_10: holdout=+2.23,  val=+0.03, 0% neg windows
+#
+#   H100 strategy: use stocks20 (more opportunity), focus on configs that showed
+#   0% negative holdout windows. Longer training (200s vs 90s) should improve val
+#   returns since 90s only gets ~4M steps — H100 ~3.5x faster = ~14M steps.
+#
+#   Also test h2048 on stocks20 (too slow for 90s RTX 5090 but viable on H100).
+# ---------------------------------------------------------------------------
+
+H100_STOCK_EXPERIMENTS: list[dict] = [
+    # --- Replicate best local findings on stocks20 ---
+    # slip_10bps: best on stocks12 (holdout=+21.04). Test on stocks20.
+    {"description": "h100_slip_10bps",
+     "fill_slippage_bps": 10.0},
+    {"description": "h100_slip_5bps",
+     "fill_slippage_bps": 5.0},
+    {"description": "h100_slip_15bps",
+     "fill_slippage_bps": 15.0},
+
+    # ent_05: best on stocks20 (holdout=+19.19). Replicate at full budget.
+    {"description": "h100_ent_05",
+     "ent_coef": 0.05},
+    {"description": "h100_ent_03",
+     "ent_coef": 0.03},
+    {"description": "h100_ent_08",
+     "ent_coef": 0.08},
+
+    # trade_pen_10: 2nd best on stocks20 (holdout=+2.23). Cross with slippage.
+    {"description": "h100_trade_pen_10",
+     "trade_penalty": 0.10},
+    {"description": "h100_trade_pen_08_slip10",
+     "trade_penalty": 0.08, "fill_slippage_bps": 10.0},
+    {"description": "h100_trade_pen_10_slip5",
+     "trade_penalty": 0.10, "fill_slippage_bps": 5.0},
+    {"description": "h100_trade_pen_05_slip10",
+     "trade_penalty": 0.05, "fill_slippage_bps": 10.0},
+
+    # --- H100-only: h2048 configs (too slow for RTX 5090 90s budget) ---
+    {"description": "h100_h2048_ent05",
+     "hidden_size": 2048, "ent_coef": 0.05,
+     "requires_gpu": "h100"},
+    {"description": "h100_h2048_slip10",
+     "hidden_size": 2048, "fill_slippage_bps": 10.0,
+     "requires_gpu": "h100"},
+    {"description": "h100_h2048_tp10",
+     "hidden_size": 2048, "trade_penalty": 0.10,
+     "requires_gpu": "h100"},
+    {"description": "h100_h2048_tp08_slip10",
+     "hidden_size": 2048, "trade_penalty": 0.08, "fill_slippage_bps": 10.0,
+     "requires_gpu": "h100"},
+
+    # --- Combinations of best local features ---
+    {"description": "h100_ent05_slip10",
+     "ent_coef": 0.05, "fill_slippage_bps": 10.0},
+    {"description": "h100_ent05_tp10",
+     "ent_coef": 0.05, "trade_penalty": 0.10},
+    {"description": "h100_ent03_slip10",
+     "ent_coef": 0.03, "fill_slippage_bps": 10.0},
+    {"description": "h100_ent03_tp10",
+     "ent_coef": 0.03, "trade_penalty": 0.10},
+    {"description": "h100_obs_norm_slip10",
+     "obs_norm": True, "fill_slippage_bps": 10.0},
+    {"description": "h100_wd005_slip10",
+     "weight_decay": 0.005, "fill_slippage_bps": 10.0},
+    {"description": "h100_wd005_ent05",
+     "weight_decay": 0.005, "ent_coef": 0.05},
+    {"description": "h100_cosine_ent05",
+     "lr_schedule": "cosine", "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05,
+     "ent_coef": 0.05},
+    {"description": "h100_cosine_slip10",
+     "lr_schedule": "cosine", "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05,
+     "fill_slippage_bps": 10.0},
+    {"description": "h100_anneal_ent_slip10",
+     "anneal_ent": True, "ent_coef": 0.08, "ent_coef_end": 0.02,
+     "fill_slippage_bps": 10.0},
+
+    # --- Cross seeds for best configs ---
+    {"description": "h100_slip_10bps_s123",
+     "fill_slippage_bps": 10.0, "seed": 123},
+    {"description": "h100_ent_05_s123",
+     "ent_coef": 0.05, "seed": 123},
+    {"description": "h100_slip_10bps_s7",
+     "fill_slippage_bps": 10.0, "seed": 7},
+
+    # --- Random mutations to explore neighborhood ---
+    {"description": "random_1"},
+    {"description": "random_2"},
+    {"description": "random_3"},
+    {"description": "random_4"},
+    {"description": "random_5"},
+    {"description": "random_6"},
+    {"description": "random_7"},
+    {"description": "random_8"},
+    {"description": "random_9"},
+    {"description": "random_10"},
+    {"description": "random_11"},
+    {"description": "random_12"},
+    {"description": "random_13"},
+    {"description": "random_14"},
+    {"description": "random_15"},
+    {"description": "random_16"},
+    {"description": "random_17"},
+    {"description": "random_18"},
+    {"description": "random_19"},
+    {"description": "random_20"},
+    {"description": "random_21"},
+    {"description": "random_22"},
+    {"description": "random_23"},
+    {"description": "random_24"},
+    {"description": "random_25"},
+    {"description": "random_26"},
+    {"description": "random_27"},
+    {"description": "random_28"},
+    {"description": "random_29"},
+    {"description": "random_30"},
+    {"description": "random_31"},
+    {"description": "random_32"},
+    {"description": "random_33"},
+    {"description": "random_34"},
+    {"description": "random_35"},
+    {"description": "random_36"},
+    {"description": "random_37"},
+    {"description": "random_38"},
+    {"description": "random_39"},
+    {"description": "random_40"},
+    {"description": "random_41"},
+    {"description": "random_42"},
+    {"description": "random_43"},
+    {"description": "random_44"},
+    {"description": "random_45"},
+    {"description": "random_46"},
+    {"description": "random_47"},
+    {"description": "random_48"},
+    {"description": "random_49"},
+    {"description": "random_50"},
+    {"description": "random_51"},
+    {"description": "random_52"},
+    {"description": "random_53"},
+    {"description": "random_54"},
+    {"description": "random_55"},
+    {"description": "random_56"},
+    {"description": "random_57"},
+    {"description": "random_58"},
+    {"description": "random_59"},
+    {"description": "random_60"},
+    {"description": "random_61"},
+    {"description": "random_62"},
+    {"description": "random_63"},
+    {"description": "random_64"},
+    {"description": "random_65"},
+    {"description": "random_66"},
+    {"description": "random_67"},
+    {"description": "random_68"},
+    {"description": "random_69"},
+    {"description": "random_70"},
+    {"description": "random_71"},
+    {"description": "random_72"},
+    {"description": "random_73"},
+    {"description": "random_74"},
+    {"description": "random_75"},
+    {"description": "random_76"},
+    {"description": "random_77"},
+    {"description": "random_78"},
+    {"description": "random_79"},
+    {"description": "random_80"},
+    {"description": "random_81"},
+    {"description": "random_82"},
+    {"description": "random_83"},
+    {"description": "random_84"},
+    {"description": "random_85"},
+    {"description": "random_86"},
+    {"description": "random_87"},
+    {"description": "random_88"},
+    {"description": "random_89"},
+    {"description": "random_90"},
+    {"description": "random_91"},
+    {"description": "random_92"},
+    {"description": "random_93"},
+    {"description": "random_94"},
+    {"description": "random_95"},
+    {"description": "random_96"},
+    {"description": "random_97"},
+    {"description": "random_98"},
+    {"description": "random_99"},
+    {"description": "random_100"},
+]
+
 # Default data paths used when --stocks is given and no explicit --train-data is provided.
-_STOCK_DEFAULT_TRAIN = "pufferlib_market/data/stocks12_daily_train.bin"
-_STOCK_DEFAULT_VAL   = "pufferlib_market/data/stocks12_daily_val.bin"
+# Updated 2026-03-22: stocks20 is now the default — broader market coverage (20 diverse
+# symbols) produced 2 configs with positive holdout on the RTX 5090 scaling sweep.
+_STOCK_DEFAULT_TRAIN = "pufferlib_market/data/stocks20_daily_train.bin"
+_STOCK_DEFAULT_VAL   = "pufferlib_market/data/stocks20_daily_val.bin"
 
 
 def build_config(overrides: dict) -> TrialConfig:
@@ -1254,14 +1456,18 @@ def run_trial(
 def main():
     parser = argparse.ArgumentParser(description="Auto-research RL trading configs")
     listing_only = "--list-experiments" in sys.argv
-    stocks_mode = "--stocks" in sys.argv
-    # In stocks mode the data paths default to stocks12 daily bins so they are
+    stocks_mode = "--stocks" in sys.argv or "--h100-mode" in sys.argv
+    # In stocks mode the data paths default to stocks20 daily bins so they are
     # optional even if not listing.
     data_required = not listing_only and not stocks_mode
     parser.add_argument("--stocks", action="store_true",
                         help="Use stock-specific configs and Alpaca daily defaults "
                              "(fee_rate=0.001, periods_per_year=252, "
-                             "data defaults to stocks12_daily_{train,val}.bin)")
+                             "data defaults to stocks20_daily_{train,val}.bin)")
+    parser.add_argument("--h100-mode", action="store_true",
+                        help="Use H100-optimized experiment pool (H100_STOCK_EXPERIMENTS) focused on "
+                             "stocks20 with configs derived from local RTX 5090 scaling sweep. "
+                             "Implies --stocks. Data defaults to stocks20_daily_{train,val}.bin.")
     parser.add_argument("--train-data", required=data_required, default=None)
     parser.add_argument("--val-data", required=data_required, default=None)
     parser.add_argument("--time-budget", type=int, default=300,
@@ -1345,7 +1551,11 @@ def main():
                         help="W&B project name; when set each trial is logged as a separate run in this project")
     args = parser.parse_args()
 
-    # --stocks: apply stock-mode defaults before anything else so that
+    # --h100-mode implies --stocks and selects the H100-optimised experiment pool.
+    if getattr(args, "h100_mode", False):
+        args.stocks = True
+
+    # --stocks / --h100-mode: apply stock-mode defaults before anything else so that
     # user overrides (explicit --train-data etc.) can still win.
     if args.stocks:
         if args.train_data is None:
@@ -1362,18 +1572,29 @@ def main():
         # Sensible daily max_steps when not already overridden
         if args.max_steps_override == 0:
             args.max_steps_override = 252
-        # Holdout eval window must fit inside val data (stocks12_daily_val has 194 timesteps;
-        # window needs steps+1 rows, so cap at 90 to leave plenty of room for 20 windows).
+        # Holdout eval window: stocks20_daily_val has 158 timesteps; cap at 90
+        # so 20 random windows can fit comfortably.
         if args.holdout_eval_steps == 0:
             args.holdout_eval_steps = 90
         # Default leaderboard and checkpoint root for stocks
         if args.leaderboard == "pufferlib_market/autoresearch_leaderboard.csv":
-            args.leaderboard = "autoresearch_stock_daily_leaderboard.csv"
+            if getattr(args, "h100_mode", False):
+                args.leaderboard = "autoresearch_stock_h100_leaderboard.csv"
+            else:
+                args.leaderboard = "autoresearch_stock_daily_leaderboard.csv"
         if args.checkpoint_root == "pufferlib_market/checkpoints/autoresearch":
-            args.checkpoint_root = "pufferlib_market/checkpoints/autoresearch_stock"
+            if getattr(args, "h100_mode", False):
+                args.checkpoint_root = "pufferlib_market/checkpoints/autoresearch_stock_h100"
+            else:
+                args.checkpoint_root = "pufferlib_market/checkpoints/autoresearch_stock"
 
     if args.list_experiments:
-        experiment_pool = STOCK_EXPERIMENTS if args.stocks else EXPERIMENTS
+        if getattr(args, "h100_mode", False):
+            experiment_pool = H100_STOCK_EXPERIMENTS
+        elif args.stocks:
+            experiment_pool = STOCK_EXPERIMENTS
+        else:
+            experiment_pool = EXPERIMENTS
         for cfg_dict in experiment_pool:
             desc = cfg_dict.get("description", "")
             gpu = cfg_dict.get("requires_gpu", "")
@@ -1420,12 +1641,18 @@ def main():
                 existing_trials.add(row.get("description", ""))
 
     if args.stocks:
+        if getattr(args, "h100_mode", False):
+            pool = H100_STOCK_EXPERIMENTS
+            mode_label = "h100 stocks mode"
+        else:
+            pool = STOCK_EXPERIMENTS
+            mode_label = "stocks mode"
         experiments = _select_from_pool(
-            STOCK_EXPERIMENTS,
+            pool,
             start_from=args.start_from,
             descriptions=args.descriptions,
         )
-        print(f"[stocks mode] {len(experiments)} stock configs, "
+        print(f"[{mode_label}] {len(experiments)} configs, "
               f"train={args.train_data}, val={args.val_data}, "
               f"fee_override={args.fee_rate_override}, "
               f"periods_per_year={args.periods_per_year}, "
