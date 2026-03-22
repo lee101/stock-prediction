@@ -35,6 +35,9 @@ from src.remote_training_pipeline import (
 
 TRAIN_DATA = "pufferlib_market/data/stocks11_daily_train_2012.bin"  # 11 syms × 4840 days (2012-06-01 to 2025-08-31)
 VAL_DATA = "pufferlib_market/data/stocks11_daily_val_2012.bin"  # 11 syms × 201 days (2025-09-01 to 2026-03-20)
+# Cross-feature bins (20 feat/sym: adds rolling_corr, rolling_beta, relative_return, breadth_rank)
+TRAIN_DATA_CROSS = "pufferlib_market/data/stocks11_daily_train_2012_cross.bin"
+VAL_DATA_CROSS = "pufferlib_market/data/stocks11_daily_val_2012_cross.bin"
 FEE_OVERRIDE = 0.001  # Alpaca 10bps
 HOLDOUT_EVAL_STEPS = 90  # fits in 201-day val set
 HOLDOUT_N_WINDOWS = 20
@@ -155,6 +158,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--train-data", default=TRAIN_DATA)
     parser.add_argument("--val-data", default=VAL_DATA)
     parser.add_argument("--holdout-data", default=VAL_DATA)
+    parser.add_argument("--cross-features", action="store_true",
+                        help="Use cross-feature bins (20 feat/sym). Overrides --train-data/--val-data "
+                             "to use stocks11_daily_{train,val}_2012_cross.bin. "
+                             "Add these bins to rsync before launching.")
     parser.add_argument("--time-budget", type=int, default=120,
                         help="Seconds per trial safety timeout. At H100 ~400k sps: 120s >> 37M step cap (71-96s).")
     parser.add_argument("--max-trials", type=int, default=500,
@@ -182,11 +189,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         help="Step cap per sample. 700 × 53,240 samples = 37.27M steps for stocks11_2012 (optimal). "
                              "H100 at 400k sps hits this in ~93s; RTX 5090 at 92k sps hits it in ~405s. "
                              "Use 700 for stocks11_2012 (confirmed optimal step count).")
-    parser.add_argument("--start-from", type=int, default=167,
-                        help="Start index in STOCK_EXPERIMENTS pool. Default 167 = M-block start "
-                             "(smooth_downside_penalty configs + random mutations). "
-                             "All named configs 96-166 are tested locally before H100 launch. "
-                             "Use 96 to re-run all named configs, 172 for pure random mutations.")
+    parser.add_argument("--start-from", type=int, default=187,
+                        help="Start index in STOCK_EXPERIMENTS pool. Default 187 = pure random mutation zone "
+                             "(after sdp02 named block at 172-186). Pairs with --seed-only to run exactly "
+                             "s1137's config with 500 different seeds. Use 172 to also test sdp02 block first.")
+    parser.add_argument("--seed-only", action="store_true", default=True,
+                        help="In random-mutation mode, only change the seed (keep all other params). "
+                             "Default: True. With --start-from 187, all 500 H100 trials use s1137's exact "
+                             "config (lr=1e-4, h=1024, ent=0.05, sdp=0.0, anneal=True) with different seeds. "
+                             "Evidence: sdp=0.2 hurts good seeds (seed=1464: -37.25 → -56.18).")
     parser.add_argument("--remote-host", default=DEFAULT_REMOTE_HOST)
     parser.add_argument("--remote-dir", default=DEFAULT_REMOTE_DIR)
     parser.add_argument("--remote-env", default=DEFAULT_REMOTE_ENV)
@@ -197,6 +208,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+
+    # Cross-feature override
+    if args.cross_features:
+        args.train_data = TRAIN_DATA_CROSS
+        args.val_data = VAL_DATA_CROSS
+        args.holdout_data = VAL_DATA_CROSS
 
     plan = build_remote_autoresearch_plan(
         run_id=str(args.run_id),
@@ -219,6 +236,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         checkpoint_root=CHECKPOINT_ROOT,
         stocks_mode=True,  # use STOCK_EXPERIMENTS pool (not crypto EXPERIMENTS)
         start_from=int(args.start_from),
+        seed_only=bool(args.seed_only),
     )
     pipeline_script = render_remote_pipeline_script(
         remote_dir=str(args.remote_dir),
