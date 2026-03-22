@@ -2,7 +2,7 @@ CC = gcc
 CFLAGS = -O3 -march=native -Wall -Wextra -Wpedantic -std=c11
 LDFLAGS = -lm
 
-SRCS = main.c trade_loop.c market_sim.c binance_rest.c policy_infer.c
+SRCS = main.c trade_loop.c market_sim.c binance_rest.c policy_infer.c vendor/cJSON.c
 OBJS = $(SRCS:.c=.o)
 
 # libtorch (optional)
@@ -11,10 +11,8 @@ ifdef TORCH_DIR
   LDFLAGS += -L$(TORCH_DIR)/lib -ltorch -lc10 -Wl,-rpath,$(TORCH_DIR)/lib
 endif
 
-# libcurl (optional, for real binance_rest)
-ifdef USE_CURL
-  LDFLAGS += -lcurl -lssl -lcrypto
-endif
+# libcurl + openssl for binance REST API
+LDFLAGS += -lcurl -lssl -lcrypto
 
 .PHONY: all clean test test_parity test_valgrind
 
@@ -33,8 +31,8 @@ test: test_market_sim test_binance_rest
 test_market_sim: tests/test_market_sim.c market_sim.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
-test_binance_rest: tests/test_binance_rest.c binance_rest.c
-	$(CC) $(CFLAGS) -o $@ $^ -lm
+test_binance_rest: tests/test_binance_rest.c binance_rest.c vendor/cJSON.c
+	$(CC) $(CFLAGS) -o $@ $^ -lm -lcurl -lssl -lcrypto
 
 test_sim_parity: tests/test_sim_parity.c market_sim.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
