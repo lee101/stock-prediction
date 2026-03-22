@@ -273,15 +273,19 @@ def fast_holdout_eval(
     n_completed = 0
     early_exited = False
 
+    # Static CUDA obs buffer; _obs_cpu is a zero-copy view of the numpy obs_bufs array
+    _obs_cuda = torch.zeros(n_windows, obs_size, dtype=torch.float32, device=device)
+    _obs_cpu = torch.from_numpy(obs_bufs)
+
     # Run episodes - all windows step in lockstep
     for step in range(eval_hours + 10):  # +10 safety margin
         if not active.any():
             break
 
         # Batched GPU inference - THE key speedup
-        obs_tensor = torch.from_numpy(obs_bufs).to(device, non_blocking=True)
+        _obs_cuda.copy_(_obs_cpu, non_blocking=True)
         with torch.no_grad():
-            logits, _ = compiled_policy(obs_tensor)
+            logits, _ = compiled_policy(_obs_cuda)
 
         # Mask shorts if needed
         if disable_shorts:
