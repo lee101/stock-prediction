@@ -30,6 +30,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from src.robust_trading_metrics import summarize_scenario_results
+from pufferlib_market.early_stopper import combined_score as _combined_score, PolynomialEarlyStopper, BestKnownTracker
 
 try:
     import wandb as _wandb_module
@@ -1627,7 +1628,9 @@ def run_trial(
     max_timesteps_per_sample: int = 1000,
     best_trial_rank_score: float = -float("inf"),
     best_trial_val_return: float = -float("inf"),
+    best_trial_combined_score: float = -float("inf"),
     early_reject_threshold: float = 0.8,
+    use_poly_prune: bool = True,
     multi_period_eval_windows: tuple[int, ...] | None = None,
     multi_period_n_windows_per_size: int = 8,
     multi_period_fill_slippage_bps: float = 8.0,
@@ -1722,8 +1725,11 @@ def run_trial(
     t0 = time.time()
     early_rejected = False
 
-    def _quick_val_eval(ckpt: Path) -> float | None:
-        """Run a fast C-env eval on a checkpoint against val data."""
+    def _quick_val_eval(ckpt: Path) -> tuple[float | None, float | None, float | None]:
+        """Run a fast C-env eval on a checkpoint against val data.
+
+        Returns (val_return, val_sortino, val_wr).
+        """
         qcmd = [
             sys.executable, "-u", "-m", "pufferlib_market.evaluate",
             "--checkpoint", str(ckpt),
@@ -1738,14 +1744,30 @@ def run_trial(
         ]
         if config.arch != "mlp":
             qcmd.extend(["--arch", config.arch])
+        q_return: float | None = None
+        q_sortino: float | None = None
+        q_wr: float | None = None
         try:
             qr = _run_capture(qcmd, cwd=REPO, timeout_s=60)
             for qline in qr.stdout.split("\n"):
                 if "Return:" in qline and "mean=" in qline:
-                    return float(qline.split("mean=")[1].split()[0])
+                    try:
+                        q_return = float(qline.split("mean=")[1].split()[0])
+                    except Exception:
+                        pass
+                elif "Sortino:" in qline and "mean=" in qline:
+                    try:
+                        q_sortino = float(qline.split("mean=")[1].split()[0])
+                    except Exception:
+                        pass
+                elif "Win rate:" in qline and "mean=" in qline:
+                    try:
+                        q_wr = float(qline.split("mean=")[1].split()[0])
+                    except Exception:
+                        pass
         except Exception:
             pass
-        return None
+        return q_return, q_sortino, q_wr
 
     try:
         proc = subprocess.Popen(
@@ -1753,8 +1775,10 @@ def run_trial(
             cwd=str(REPO), preexec_fn=os.setsid,
         )
         stdout_lines = []
-        _check_25 = False
-        _check_50 = False
+        _checks_done: set[float] = set()
+        _poly_stopper = PolynomialEarlyStopper()
+        # (progress_threshold, poly_tolerance): 25% only collects; 50%/75% may prune
+        _check_schedule = [(0.25, None), (0.50, 0.70), (0.75, 0.80)]
         try:
             while time.time() - t0 < time_budget:
                 if proc.poll() is not None:
@@ -1766,41 +1790,56 @@ def run_trial(
                 except Exception:
                     pass
 
-                # Early rejection at 25% and 50% of time budget.
-                # Compare _quick_val_eval (raw val_return) against best_trial_val_return
-                # (also raw val_return, not holdout_robust_score which is a different scale).
-                if best_trial_val_return > -float("inf") and time_budget >= 60:
+                if time_budget >= 60:
                     progress = (time.time() - t0) / max(time_budget, 1)
-                    if progress >= 0.25 and not _check_25:
-                        _check_25 = True
+                    for _threshold, _poly_tol in _check_schedule:
+                        if progress < _threshold or _threshold in _checks_done:
+                            continue
+                        _checks_done.add(_threshold)
                         pts = sorted(Path(checkpoint_dir).glob("*.pt"), key=lambda p: p.stat().st_mtime)
-                        if pts:
-                            mid_ckpt = pts[-1]
-                            mid_val = _quick_val_eval(mid_ckpt)
-                            if mid_val is not None:
-                                threshold = best_trial_val_return * early_reject_threshold
-                                if mid_val < threshold:
-                                    print(f"  EARLY REJECT at 25%: val_ret={mid_val:+.4f} "
-                                          f"< {threshold:+.4f} (best_val*{early_reject_threshold})")
+                        if not pts:
+                            continue
+                        mid_ret, mid_sort, mid_wr = _quick_val_eval(pts[-1])
+                        mid_comb = _combined_score(mid_ret, mid_sort, mid_wr)
+                        pct = f"{int(_threshold * 100)}%"
+                        if mid_comb is not None:
+                            _poly_stopper.add_observation(_threshold, mid_comb)
+                        if _poly_tol is None:
+                            # collect-only check (25%)
+                            if not use_poly_prune and mid_ret is not None and best_trial_val_return > -float("inf"):
+                                threshold_val = best_trial_val_return * early_reject_threshold
+                                if mid_ret < threshold_val:
+                                    print(f"  EARLY REJECT at {pct}: val_ret={mid_ret:+.4f} "
+                                          f"< {threshold_val:+.4f} (best_val*{early_reject_threshold})")
                                     early_rejected = True
                                     break
                                 else:
-                                    print(f"  25% check: val_ret={mid_val:+.4f} >= {threshold:+.4f}, continuing")
-                    if progress >= 0.50 and not _check_50:
-                        _check_50 = True
-                        pts = sorted(Path(checkpoint_dir).glob("*.pt"), key=lambda p: p.stat().st_mtime)
-                        if pts:
-                            mid_ckpt = pts[-1]
-                            mid_val = _quick_val_eval(mid_ckpt)
-                            if mid_val is not None:
-                                threshold = best_trial_val_return * early_reject_threshold
-                                if mid_val < threshold:
-                                    print(f"  EARLY REJECT at 50%: val_ret={mid_val:+.4f} "
-                                          f"< {threshold:+.4f} (best_val*{early_reject_threshold})")
+                                    print(f"  {pct} check: val_ret={mid_ret:+.4f} comb={mid_comb} >= {threshold_val:+.4f}, continuing")
+                            else:
+                                comb_str = f"{mid_comb:+.4f}" if mid_comb is not None else "None"
+                                print(f"  {pct} check: val_ret={mid_ret} sortino={mid_sort} comb={comb_str} (collecting)")
+                        elif use_poly_prune:
+                            prune, proj = _poly_stopper.should_prune(best_trial_combined_score, tolerance=_poly_tol)
+                            proj_str = f"{proj:+.4f}" if proj is not None else "None"
+                            if prune:
+                                print(f"  POLY PRUNE at {pct}: projected={proj_str} "
+                                      f"< best_combined*{_poly_tol}={best_trial_combined_score * _poly_tol:+.4f}")
+                                early_rejected = True
+                                break
+                            else:
+                                print(f"  {pct} poly check: projected={proj_str} >= threshold, continuing")
+                        else:
+                            if mid_ret is not None and best_trial_val_return > -float("inf"):
+                                threshold_val = best_trial_val_return * early_reject_threshold
+                                if mid_ret < threshold_val:
+                                    print(f"  EARLY REJECT at {pct}: val_ret={mid_ret:+.4f} "
+                                          f"< {threshold_val:+.4f} (best_val*{early_reject_threshold})")
                                     early_rejected = True
                                     break
                                 else:
-                                    print(f"  50% check: val_ret={mid_val:+.4f} >= {threshold:+.4f}, continuing")
+                                    print(f"  {pct} check: val_ret={mid_ret:+.4f} >= {threshold_val:+.4f}, continuing")
+                    if early_rejected:
+                        break
 
             # Kill if still running
             if proc.poll() is None:
@@ -2140,6 +2179,7 @@ def run_trial(
         "replay_eval_error": replay_eval_error,
         "early_rejected": early_rejected,
         "smooth_error": smooth_error,
+        "poly_projected_final": _poly_stopper.projected_final(),
     }
     result_payload.update(holdout_metrics)
     result_payload.update(market_metrics)
@@ -2314,7 +2354,25 @@ def main():
                         help="Override random seed for all trials (default: use each trial config's seed field)")
     parser.add_argument("--wandb-project", type=str, default=None,
                         help="W&B project name; when set each trial is logged as a separate run in this project")
+    parser.add_argument("--poly-prune", action="store_true", default=True,
+                        help="Use polynomial curve fitting for early stopping (default: True). "
+                             "Pass --no-poly-prune to revert to fixed-threshold early rejection.")
+    parser.add_argument("--no-poly-prune", dest="poly_prune", action="store_false")
+    parser.add_argument("--local", action="store_true",
+                        help="Preset for local RTX GPU: sets --time-budget 60 if not overridden")
+    parser.add_argument("--a40", action="store_true",
+                        help="Preset for A40 GPU: sets --time-budget 180 and --a40-mode if not overridden")
     args = parser.parse_args()
+
+    # --local: RTX GPU preset — short time budget for quick iteration
+    if args.local and args.time_budget == 300:
+        args.time_budget = 60
+
+    # --a40: convenience alias that implies --a40-mode with a sensible budget
+    if args.a40:
+        args.a40_mode = True
+        if args.time_budget == 300:
+            args.time_budget = 180
 
     # --h100-mode implies --stocks and selects the H100-optimised experiment pool.
     # Also shorten time budget to 200s (H100 ~2x faster than A100 baseline of 300s).
@@ -2479,9 +2537,25 @@ def main():
     else:
         experiments = select_experiments(start_from=args.start_from, descriptions=args.descriptions)
 
+    _best_known_path = Path(args.checkpoint_root).parent / "best_known_metrics.json"
+    _best_tracker = BestKnownTracker(_best_known_path)
+
+    def _infer_track(train_data_path: str, val_data_path: str) -> str:
+        combined = (train_data_path + val_data_path).lower()
+        if "stock" in combined:
+            return "stocks_daily"
+        if "fdusd" in combined or "usdt" in combined:
+            return "binance_crypto"
+        if "mixed" in combined:
+            return "mixed"
+        return "hourly_crypto"
+
+    _track = _infer_track(args.train_data or "", args.val_data or "")
+
     # Add random mutations
     best_rank_score = -float("inf")
     best_val_return = -float("inf")  # tracked separately — same scale as _quick_val_eval
+    best_combined_score = _best_tracker.get_best(_track)
     best_config = TrialConfig()
 
     trial_num = len(existing_trials)
@@ -2587,7 +2661,9 @@ def main():
             max_timesteps_per_sample=args.max_timesteps_per_sample,
             best_trial_rank_score=best_rank_score,
             best_trial_val_return=best_val_return,
+            best_trial_combined_score=best_combined_score,
             early_reject_threshold=args.early_reject_threshold,
+            use_poly_prune=args.poly_prune,
             multi_period_eval_windows=(
                 tuple(int(x.strip()) for x in args.multi_period_windows.split(",") if x.strip())
                 if args.multi_period_eval else None
@@ -2692,6 +2768,12 @@ def main():
         val_ret = _safe_float(result.get("val_return"))
         if val_ret is not None and val_ret > best_val_return:
             best_val_return = val_ret
+        trial_combined = _combined_score(
+            result.get("val_return"), result.get("val_sortino"), result.get("val_wr")
+        )
+        if trial_combined is not None:
+            if _best_tracker.update(_track, trial_combined, config.description):
+                best_combined_score = trial_combined
 
         trial_num += 1
         existing_trials.add(desc)
