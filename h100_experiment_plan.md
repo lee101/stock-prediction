@@ -1,5 +1,27 @@
 # H100 Experiment Plan (Updated 2026-03-22)
 
+## Executive Summary — REVISED (v5: extended training data breakthrough)
+
+**KEY FINDING (v5, 2026-03-22 local calibration):**
+Extending training data from 2022–2025 (1302 days) to 2020–2025 (1797 days) dramatically improves
+generalization on the hard extended val (Sep 2025 – Mar 2026). The extended val includes the
+Nov 2025 – Feb 2026 bear market period where all models with old training data fail.
+
+| Config | Old training (1302d) | New training (1797d) | Val tested |
+|--------|---------------------|---------------------|------------|
+| stock_trade_pen_03 | -102 (20% neg, worst=-14.6%) | **+3.1 (p25=+4%, worst=-0.15%)** | 201-day (hard) |
+| stock_baseline | -87 (55% neg) | -89 (similar) | 201-day |
+
+**With old training: 0/7 positive configs on hard val. With new training: 1/7 positive (trade_pen_03).**
+
+**H100 strategy v5: Use stocks12_daily_train_2019.bin (1797 days, Oct 2020 – Aug 2025)**
+- New step cap: 12 × 1797 × 200 = 4,312,800 (H100 hits in ~12s at 350k sps)
+- Val: stocks12_daily_val.bin (201 days, Sep 2025 – Mar 2026, updated to include bear market)
+- Expected hit rate: 5-15% positive configs (vs 0% with old 1302-day training)
+- 1200 trials × ~40s each = ~13.3 hours on H100
+
+---
+
 ## Executive Summary — REVISED (v4: diversity over targeting)
 
 **The original plan targeting stocks20 was based on contaminated data.**
@@ -49,13 +71,15 @@ Remaining "big drops" are verified real market events:
 
 ### Re-exported binaries (all clean, verified)
 
-| File                             | Symbols | Train days | Val days |
-|----------------------------------|---------|-----------|---------|
-| stocks12_daily_{train,val}.bin   | 12      | 1302      | 158     |
-| stocks15_daily_{train,val}.bin   | 15      | 1302      | 113     |
-| stocks20_daily_train.bin         | 20      | 1302      | —       |
-| stocks20_daily_val.bin           | 20      | —         | 158     |
-| stocks20_cross_daily_{train,val} | 20      | 1302      | 158     |
+| File                             | Symbols | Train days | Val days | Notes |
+|----------------------------------|---------|-----------|---------|-------|
+| stocks12_daily_train.bin         | 12      | 1302      | —       | 2022-02-07 to 2025-08-31 |
+| stocks12_daily_train_2019.bin    | 12      | 1797      | —       | **2020-09-30 to 2025-08-31 (H100 target)** |
+| stocks12_daily_val.bin           | 12      | —         | 201     | **2025-09-01 to 2026-03-20 (extended, hard)** |
+| stocks15_daily_{train,val}.bin   | 15      | 1302      | 113     | |
+| stocks20_daily_train.bin         | 20      | 1302      | —       | Can't extend (AMD/NET/NFLX from 2022) |
+| stocks20_daily_val.bin           | 20      | —         | 201     | 2025-09-01 to 2026-03-20 |
+| stocks20_cross_daily_{train,val} | 20      | 1302      | 158     | |
 
 ---
 
@@ -83,12 +107,15 @@ Remaining "big drops" are verified real market events:
 
 ### Current SOTA baseline (random_mut_2272, 300s training, stocks12)
 
-| Metric                | Value     |
-|-----------------------|-----------|
-| holdout neg_rate      | **0%** (all 20 windows profitable) |
-| holdout median        | +10.5%    |
-| holdout p10           | +5.2%     |
-| holdout median Sortino| 1.55      |
+| Metric                | Old val (158d, easy) | New val (201d, hard) |
+|-----------------------|----------------------|----------------------|
+| holdout neg_rate      | **0%** (all 20 windows) | ~55% (fails on bear market) |
+| holdout median        | +10.5%               | ~-1.4% to -7.6% (non-deterministic) |
+| holdout p10           | +5.2%                | ~-15% |
+| holdout median Sortino| 1.55                 | negative |
+
+**rmu2272 fails on the hard 201-day val** — the Nov 2025–Feb 2026 bear market breaks it.
+The H100 target model must beat rmu2272 on the **hard val** (201 days), not the easy one.
 
 ---
 
@@ -143,27 +170,38 @@ Use `time_budget=90` with `max_trials=500` for H100.
 
 ---
 
-## Dataset Decision — FINAL (2026-03-22 Local Experiments)
+## Dataset Decision — UPDATED (2026-03-22 v5: extended training wins on hard val)
 
-**CONCLUSION: Use stocks12_daily_train.bin (1302 days, 2022-02-07 to 2025-08-31), NOT the extended dataset.**
+**CONCLUSION: Use stocks12_daily_train_2019.bin (1797 days, 2020-09-30 to 2025-08-31) for H100.**
 
-### Why stocks12_extended (1797 days back to 2020) is WORSE
+### Why the previous "extended data is worse" finding was wrong
 
-Local 20-trial autoresearch sweep (90s/trial) comparing datasets:
+The previous finding (v4) used the **OLD 158-day val** (Sep–Feb 2026), which was mostly a bull
+market (Sep–Nov 2025). The **new 201-day val** (Sep 2025 – Mar 2026) includes the Nov 2025 –
+Feb 2026 bear market where all 2022-trained models fail.
 
-| Config              | stocks12_orig (1302d) | stocks12_extended (1797d) | stocks11 (2434d, no PLTR) |
-|---------------------|----------------------|---------------------------|---------------------------|
-| stock_trade_pen_02  | neg=20%, med=+11.2%  | neg=55%, med=-2.1%        | neg=30%, med=+2.9%        |
-| stock_longshort     | neg=15%, med=+9.6%   | neg=25%, med=+9.6%        | neg=65%, med=-7.3%        |
-| stock_baseline      | neg=65%, med=-6.2%   | neg=85%, med=-9.1%        | neg=45%, med=+1.6%        |
-| Best score          | **-25.8** (trade_pen_02) | -47.6 (trade_pen_10)   | -46.4 (trade_pen_02)      |
+| Experiment            | Training data | Val data | Best score | Notes |
+|-----------------------|---------------|----------|-----------|-------|
+| Previous v4 finding   | 1302 days (2022–2025) | 158 days (Sep–Feb 2026, easy) | -25.8 | Old easy val |
+| Extended data (prev)  | 1797 days (2020–2025) | 158 days (same easy val)      | -47.6 | Worse on easy val |
+| **New 50-trial (v5)** | 1302 days (2022–2025) | **201 days (Sep–Mar 2026, hard)** | **-44.97** (best: 0% loss windows) | 0/50 positive |
+| **New train2019 (v5)**| **1797 days (2020–2025)** | **201 days (hard)** | **+3.10 (stock_trade_pen_03!)** | 1/7 positive |
 
-**Reason**: The extra 2020-2021 data (COVID recovery, zero-rate bull market) is from a very different
-market regime than the val period (2025-2026, post-rate-hike). Adding out-of-distribution historical
-data hurts generalization. The val period matches the post-2022 regime better.
+**Root cause**: The 2020–2021 data (COVID recovery + 2021 bull market) teaches the model about
+market cycles — specifically, recognizing when NOT to trade (bear markets). The 2022-only training
+data lacks this: models only see one bear market (2022 tech crash) and one recovery. Adding the
+2020–2021 data improves regime detection for the 2025–2026 bear market.
 
-**Also confirmed**: stocks11 (no PLTR, more data) also worse than stocks12_orig. More data ≠ better
-when the extra data is from a different distribution.
+**Key data limits** (what restricts the start date):
+- stocks12: PLTR IPO 2020-09-30 → effective start 2020-09-30 (1797 calendar days)
+- stocks20: AMD/NET/NFLX only from 2022-02-07 → cannot extend stocks20 further back
+- stocks11 (no PLTR): can extend to 2019-01-02 but loses PLTR; not recommended
+
+### Extended training binary
+- **File**: `pufferlib_market/data/stocks12_daily_train_2019.bin`
+- **Range**: 2020-09-30 to 2025-08-31 (1797 calendar days, ~1240 trading days)
+- **Samples**: 12 × 1797 = 21,564 per epoch
+- **New step cap**: 21,564 × 200 = **4,312,800 steps** (H100 hits at ~12s, A40 hits at ~64s)
 
 ---
 
@@ -181,7 +219,7 @@ cd /nvme0n1-disk/code/stock-prediction
 
 python -m pufferlib_market.autoresearch_rl \
     --stocks12 \
-    --train-data pufferlib_market/data/stocks12_daily_train.bin \
+    --train-data pufferlib_market/data/stocks12_daily_train_2019.bin \
     --val-data pufferlib_market/data/stocks12_daily_val.bin \
     --time-budget 90 \
     --max-trials 1200 \
@@ -192,16 +230,16 @@ python -m pufferlib_market.autoresearch_rl \
 
 Notes:
 - `--stocks12` uses combined pool (STOCK_EXPERIMENTS + H100_STOCK_EXPERIMENTS non-gpu), sets periods_per_year=252, fee_rate=0.001, holdout_eval_steps=90
-- **`--max-timesteps-per-sample 200`**: caps each trial at 3.1M steps (12 syms × 1302 days × 200 = 3,124,800)
-  - This is CRITICAL — without the cap, H100 settings overfits at 15.6M steps (5x too many)
-  - **On H100 at ~350k sps**: 3.1M step cap hit in ~9s. `time_budget=90` is irrelevant (training finishes at step cap long before 90s). Total per trial: ~35-40s (9s train + 25-30s eval)
-  - **Early rejection is irrelevant for H100**: training completes at 9s, before the 25% check fires at 22.5s. `--early-reject-threshold` has no effect.
-  - 1200 trials × ~35s = ~11.7 hours on H100
-  - On A40 (local): 3.1M step cap hit in ~43s, total ~90-120s/trial
-- **DO NOT use `--h100-mode`**: that forces num_envs=256, minibatch_size=4096, which with 3.1M cap gives only 47 PPO updates (vs 94 with default 128 envs) — worse convergence per step
-- **stocks12_daily_train.bin**: 1302 days matching post-2022 market regime
-- **Same val**: stocks12_daily_val.bin (158 days, 2025-09-01 to 2026-02-05) for fair comparison
-- **1200 trials** = ~24x more exploration than v2 50-trial local sweep; expect ~24 positive-score configs
+- **`--max-timesteps-per-sample 200`**: caps each trial at 4.3M steps (12 syms × 1797 days × 200 = 4,312,800)
+  - This is CRITICAL — without the cap, H100 settings overfits at 20M+ steps
+  - **On H100 at ~350k sps**: 4.3M step cap hit in ~12s. `time_budget=90` is irrelevant. Total per trial: ~40-45s (12s train + 28-32s eval)
+  - **Early rejection is irrelevant for H100**: training completes at cap before 25% time check fires.
+  - 1200 trials × ~42s = ~14 hours on H100
+  - On A40 (local): 4.3M step cap hit in ~64s, total ~90-120s/trial
+- **DO NOT use `--h100-mode`**: that forces num_envs=256, minibatch_size=4096 → fewer PPO updates per step count → worse convergence
+- **stocks12_daily_train_2019.bin**: 1797 days (Oct 2020–Aug 2025) — includes 2021 bull + 2022 bear; much better generalization on hard extended val (201 days through Mar 2026)
+- **Val**: stocks12_daily_val.bin (201 days, 2025-09-01 to 2026-03-20) — includes the Nov 2025–Feb 2026 bear market regime
+- **1200 trials** with 5-15% expected hit rate → 60-180 positive-score configs (vs 0/50 with old training)
 
 ### CRITICAL: Why NOT --h100-mode for the actual H100 run
 
@@ -279,22 +317,21 @@ Reference on random_mut_2272 (stocks12_daily_val.bin):
 
 ---
 
-## Expected Outcomes (REVISED v4)
+## Expected Outcomes (REVISED v5)
 
-Reliable SOTA baseline is random_mut_2272 (0% neg, +10.5% med, p10=+5.2%, Sortino=1.55).
-H100 goal: find a config that reliably beats this across 20 holdout windows.
-Note: stock_drawdown_pen (+24.9) was a lucky run — not a reliable target.
+**Val is now 201 days (hard: includes Nov 2025–Feb 2026 bear market). All old baselines FAIL.**
+New H100 goal: find configs that are profitable even in the hard 201-day val period.
 
-| Metric               | Reliable SOTA (random_mut_2272) | Lucky v2 run (drawdown_pen) | H100 Target    |
-|----------------------|---------------------------------|-----------------------------|----------------|
-| holdout neg_rate     | **0%**                          | 0% (lucky)                  | 0%             |
-| holdout median       | +10.5%                          | +22.9% (lucky)              | > +15%         |
-| holdout p10          | +5.2%                           | +4.8% (lucky)               | > +7%          |
-| holdout Sortino med  | 1.55                            | 7.25 (lucky)                | > 2.0          |
-| holdout worst window | +3.3%                           | +3.3% (lucky)               | > +3%          |
+| Metric               | rmu2272 on hard val | local best (trade_pen_03, 1797d) | H100 Target (hard val) |
+|----------------------|---------------------|----------------------------------|------------------------|
+| holdout neg_rate     | ~55% (fails)        | ~0% (best worst=-0.15%)         | < 10%                  |
+| holdout median       | ~-3% to -8%         | +15.9%                          | > +5%                  |
+| holdout p10          | ~-15%               | +4.0% (p25)                     | > 0%                   |
+| holdout worst window | ~-20%               | -0.15%                          | > -5%                  |
+| robust score         | ~-90                | +3.1                            | > 0                    |
 
-These are realistic targets achievable with 1200 diverse trials. If a drawpen-style lucky run
-repeats (likely once or twice in 1200 trials), targets can be exceeded significantly.
+With 1200 trials and 5-15% hit rate (from local calibration): expect 60-180 positive-score configs.
+The best-of-1200 should significantly exceed the local 1/7 result (trade_pen_03 at +3.1 robust score).
 
 ---
 
