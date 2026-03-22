@@ -315,7 +315,7 @@ class BinanceHourlyPolicy(BinancePolicyBase):
 
 try:
     from binanceneural.kernels.rope import apply_rope as _triton_apply_rope
-    from binanceneural.kernels.norm import rms_norm as _triton_rms_norm
+    from binanceneural.kernels.norm import rms_norm as _triton_rms_norm, fused_rms_norm_qkv as _triton_fused_rms_norm_qkv
     _HAS_TRITON_KERNELS = True
 except Exception:
     _HAS_TRITON_KERNELS = False
@@ -405,19 +405,64 @@ class MultiQueryAttention(nn.Module):
         self.num_memory_tokens = int(config.num_memory_tokens) if config.num_memory_tokens else 0
         self.use_flex_attention = bool(config.use_flex_attention) and HAS_FLEX_ATTENTION
 
-    def forward(self, x: torch.Tensor, cos_sin: Tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        cos_sin: Tuple[torch.Tensor, torch.Tensor],
+        x_pre_norm: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Forward pass for multi-query attention.
+
+        Args:
+            x: Input tensor (B, T, hidden_dim). When x_pre_norm is None this is
+               the already-normalized residual (legacy path). When x_pre_norm is
+               provided this is the raw residual used only for the value branch;
+               the fused norm+QKV kernel normalizes x_pre_norm.
+            cos_sin: Rotary embeddings (cos, sin).
+            x_pre_norm: Optional raw (un-normalized) input (B, T, hidden_dim).
+               When provided the fused_rms_norm_qkv kernel is used to compute
+               norm(x_pre_norm) -> Q, K, V in a single kernel launch instead of
+               three separate ops.
+        """
         B, T, _ = x.shape
         cos, sin = cos_sin
-        q = self.q_proj(x).view(B, T, self.n_head, self.head_dim)
-        k = self.k_proj(x).view(B, T, self.n_kv_head, self.head_dim)
-        v_input = x
-        if self.value_embedding is not None:
-            if T > self.value_embedding.size(0):
-                raise ValueError(
-                    f"Sequence length {T} exceeds value embedding max_len {self.value_embedding.size(0)}."
-                )
-            v_input = v_input + self.value_embedding[:T].unsqueeze(0) * self.value_embedding_scale
-        v = self.v_proj(v_input).view(B, T, self.n_kv_head, self.head_dim)
+
+        if x_pre_norm is not None and _HAS_TRITON_KERNELS and x_pre_norm.is_cuda:
+            # Fused path: one kernel call normalizes x_pre_norm and computes
+            # Q, K, V projections simultaneously (saving two redundant norm passes).
+            q_flat, k_flat, v_flat = _triton_fused_rms_norm_qkv(
+                x_pre_norm,
+                None,  # unweighted RMS norm — no learnable scale (matches _rms_norm)
+                self.q_proj.weight,
+                self.k_proj.weight,
+                self.v_proj.weight,
+                eps=self.rms_eps,
+            )
+            q = q_flat.view(B, T, self.n_head, self.head_dim)
+            k = k_flat.view(B, T, self.n_kv_head, self.head_dim)
+            if self.value_embedding is not None:
+                # value_embedding is added to normalized x before V projection.
+                # x (first argument) is already normalized in the fused path, so
+                # use it to apply the additive embedding then re-project.
+                if T > self.value_embedding.size(0):
+                    raise ValueError(
+                        f"Sequence length {T} exceeds value embedding max_len {self.value_embedding.size(0)}."
+                    )
+                v_input = x + self.value_embedding[:T].unsqueeze(0) * self.value_embedding_scale
+                v = self.v_proj(v_input).view(B, T, self.n_kv_head, self.head_dim)
+            else:
+                v = v_flat.view(B, T, self.n_kv_head, self.head_dim)
+        else:
+            q = self.q_proj(x).view(B, T, self.n_head, self.head_dim)
+            k = self.k_proj(x).view(B, T, self.n_kv_head, self.head_dim)
+            v_input = x
+            if self.value_embedding is not None:
+                if T > self.value_embedding.size(0):
+                    raise ValueError(
+                        f"Sequence length {T} exceeds value embedding max_len {self.value_embedding.size(0)}."
+                    )
+                v_input = v_input + self.value_embedding[:T].unsqueeze(0) * self.value_embedding_scale
+            v = self.v_proj(v_input).view(B, T, self.n_kv_head, self.head_dim)
 
         # Apply RoPE to Q and K. Use fused Triton kernel (both Q+K in one launch)
         # when available; fall back to sequential PyTorch otherwise.
@@ -627,7 +672,14 @@ class NanoTransformerBlock(nn.Module):
 
     def forward(self, x: torch.Tensor, cos_sin: Tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
         x0 = x
-        x = x + self.dropout(self.attn(_rms_norm(x, self.rms_eps), cos_sin))
+        # x_normed is always computed: it feeds attn() on the CPU/no-Triton path,
+        # and the fused Triton path re-derives it internally from x_pre_norm=x0
+        # to avoid a separate norm kernel launch for Q/K/V projections.
+        x_normed = _rms_norm(x, self.rms_eps)
+        if _HAS_TRITON_KERNELS and x.is_cuda:
+            x = x + self.dropout(self.attn(x_normed, cos_sin, x_pre_norm=x0))
+        else:
+            x = x + self.dropout(self.attn(x_normed, cos_sin))
         if self.use_residual_scalars:
             x = self.attn_resid_scale * x + self.attn_skip_scale * x0
         x0 = x

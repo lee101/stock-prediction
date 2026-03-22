@@ -11,11 +11,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 # Patch RunPodClient import before loading the module so we don't need network/API key.
+# We insert the mock only temporarily: after importing gpu_pool_rl we restore the original
+# (or remove the mock) so that test_runpod_client.py can import the real src.runpod_client
+# without getting the mock.
 import sys
 _mock_runpod = MagicMock()
 _mock_pod_cls = MagicMock()
 _mock_pod_cfg_cls = MagicMock()
-sys.modules.setdefault("src.runpod_client", _mock_runpod)
+_real_runpod_module = sys.modules.get("src.runpod_client")  # None if not yet imported
+sys.modules["src.runpod_client"] = _mock_runpod
 
 from pufferlib_market.gpu_pool_rl import (  # noqa: E402
     DEFAULT_POOL_LIMITS,
@@ -25,10 +29,12 @@ from pufferlib_market.gpu_pool_rl import (  # noqa: E402
     PoolPod,
     PoolState,
     _count_gpu_type,
+    _detect_remote_h100,
     _find_available_pod,
     _resolve_gpu,
     bootstrap_pod,
     check_running_cost,
+    cmd_run,
     estimate_cost,
     load_pool_state,
     refresh_pod_status,
@@ -36,6 +42,12 @@ from pufferlib_market.gpu_pool_rl import (  # noqa: E402
     cmd_status,
     POOL_STATE_FILE,
 )
+
+# Restore the real src.runpod_client module so other test files see the real module.
+if _real_runpod_module is None:
+    sys.modules.pop("src.runpod_client", None)
+else:
+    sys.modules["src.runpod_client"] = _real_runpod_module
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +276,13 @@ def test_refresh_pod_status_warns_on_api_error(capsys: pytest.CaptureFixture) ->
 # ---------------------------------------------------------------------------
 
 def test_cmd_status_empty_pool(capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
+    """When a state file exists but has no pods, show 'Pool is empty'."""
     pool_file = tmp_path / "pool.json"
+
+    # Write an empty state so the file EXISTS but has no pods.
+    empty_state = PoolState()
+    with patch("pufferlib_market.gpu_pool_rl.POOL_STATE_FILE", pool_file):
+        save_pool_state(empty_state)
 
     mock_client = MagicMock()
     mock_client.list_pods.return_value = []
@@ -518,8 +536,6 @@ def test_cmd_run_refuses_when_over_budget(tmp_path: Path) -> None:
 
 def test_cmd_run_allows_when_within_budget(tmp_path: Path) -> None:
     """cmd_run proceeds when estimated cost is within budget_limit."""
-    from pufferlib_market.gpu_pool_rl import cmd_run
-
     pool_file = tmp_path / "pool.json"
     mock_client = MagicMock()
     mock_client.list_pods.return_value = []
@@ -538,6 +554,8 @@ def test_cmd_run_allows_when_within_budget(tmp_path: Path) -> None:
         budget_limit=100.0,  # generous limit
         train_data="pufferlib_market/data/train.bin",
         val_data="pufferlib_market/data/val.bin",
+        dry_run=False,
+        descriptions="",
     )
 
     bootstrap_called = []
@@ -553,6 +571,7 @@ def test_cmd_run_allows_when_within_budget(tmp_path: Path) -> None:
         patch("pufferlib_market.gpu_pool_rl._require_client", return_value=mock_client),
         patch("pufferlib_market.gpu_pool_rl.get_or_create_pod", side_effect=mock_get_or_create),
         patch("pufferlib_market.gpu_pool_rl.bootstrap_pod", side_effect=mock_bootstrap),
+        patch("pufferlib_market.gpu_pool_rl.sync_data_files"),
         patch("pufferlib_market.gpu_pool_rl.run_rl_experiment_on_pod", return_value={"status": "completed"}),
     ):
         cmd_run(args)
@@ -562,8 +581,6 @@ def test_cmd_run_allows_when_within_budget(tmp_path: Path) -> None:
 
 def test_cmd_run_no_limit_when_budget_zero(tmp_path: Path) -> None:
     """budget_limit=0 disables the budget check and proceeds to provision."""
-    from pufferlib_market.gpu_pool_rl import cmd_run
-
     pool_file = tmp_path / "pool.json"
     mock_client = MagicMock()
     mock_client.list_pods.return_value = []
@@ -582,6 +599,8 @@ def test_cmd_run_no_limit_when_budget_zero(tmp_path: Path) -> None:
         budget_limit=0,  # disable limit
         train_data="pufferlib_market/data/train.bin",
         val_data="pufferlib_market/data/val.bin",
+        dry_run=False,
+        descriptions="",
     )
 
     with (
@@ -589,7 +608,134 @@ def test_cmd_run_no_limit_when_budget_zero(tmp_path: Path) -> None:
         patch("pufferlib_market.gpu_pool_rl._require_client", return_value=mock_client),
         patch("pufferlib_market.gpu_pool_rl.get_or_create_pod", return_value=ready_pod),
         patch("pufferlib_market.gpu_pool_rl.bootstrap_pod"),
+        patch("pufferlib_market.gpu_pool_rl.sync_data_files"),
         patch("pufferlib_market.gpu_pool_rl.run_rl_experiment_on_pod", return_value={"status": "completed"}),
     ):
         # Should not raise SystemExit even though h100 @ $3.89/hr with 1h budget is expensive
         cmd_run(args)
+
+
+# ---------------------------------------------------------------------------
+# cmd_status — no network when no state file
+# ---------------------------------------------------------------------------
+
+def test_cmd_status_no_state_file_prints_no_pool_state(
+    capsys: pytest.CaptureFixture, tmp_path: Path
+) -> None:
+    """When no state file exists, status prints 'No pool state found' without hitting network."""
+    pool_file = tmp_path / "does_not_exist.json"
+    args = SimpleNamespace()
+
+    with patch("pufferlib_market.gpu_pool_rl.POOL_STATE_FILE", pool_file):
+        cmd_status(args)
+
+    captured = capsys.readouterr()
+    assert "No pool state found" in captured.out
+    # _require_client must NOT have been called (no API key needed)
+
+
+# ---------------------------------------------------------------------------
+# cmd_run --dry-run
+# ---------------------------------------------------------------------------
+
+def test_cmd_run_dry_run_prints_plan(capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
+    """--dry-run prints what would happen without calling _require_client or provisioning."""
+    pool_file = tmp_path / "pool.json"
+
+    args = SimpleNamespace(
+        gpu="a100",
+        gpu_count=1,
+        time_budget=600,
+        max_trials=50,
+        experiment="dry_exp",
+        wandb_project="stock",
+        remote_dir="/workspace/stock-prediction",
+        stop_after=False,
+        budget_limit=10.0,
+        train_data="pufferlib_market/data/train.bin",
+        val_data="pufferlib_market/data/val.bin",
+        dry_run=True,
+        descriptions="",
+    )
+
+    require_client_called = []
+
+    def _fake_require_client():
+        require_client_called.append(True)
+        return MagicMock()
+
+    with (
+        patch("pufferlib_market.gpu_pool_rl.POOL_STATE_FILE", pool_file),
+        patch("pufferlib_market.gpu_pool_rl._require_client", side_effect=_fake_require_client),
+    ):
+        cmd_run(args)
+
+    assert not require_client_called, "_require_client must NOT be called during dry-run"
+    captured = capsys.readouterr()
+    assert "[dry-run]" in captured.out
+    assert "dry_exp" in captured.out
+    assert "NVIDIA A100 80GB PCIe" in captured.out
+    assert "No pod provisioned" in captured.out
+
+
+def test_cmd_run_dry_run_warns_over_budget(capsys: pytest.CaptureFixture, tmp_path: Path) -> None:
+    """--dry-run still warns when estimated cost exceeds budget, but does not exit."""
+    pool_file = tmp_path / "pool.json"
+
+    args = SimpleNamespace(
+        gpu="h100",
+        gpu_count=1,
+        time_budget=7200,
+        max_trials=50,
+        experiment="big_exp",
+        wandb_project="stock",
+        remote_dir="/workspace/stock-prediction",
+        stop_after=False,
+        budget_limit=0.01,  # tiny budget → should warn
+        train_data="pufferlib_market/data/train.bin",
+        val_data="pufferlib_market/data/val.bin",
+        dry_run=True,
+        descriptions="",
+    )
+
+    with patch("pufferlib_market.gpu_pool_rl.POOL_STATE_FILE", pool_file):
+        # Must not raise SystemExit
+        cmd_run(args)
+
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.out
+    assert "No pod provisioned" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# _detect_remote_h100
+# ---------------------------------------------------------------------------
+
+def test_detect_remote_h100_true_when_h100_in_name() -> None:
+    pod = _make_pod()
+    result = MagicMock()
+    result.returncode = 0
+    result.stdout = "NVIDIA H100 80GB HBM3\n"
+
+    with patch("pufferlib_market.gpu_pool_rl.ssh_exec", return_value=result):
+        assert _detect_remote_h100(pod) is True
+
+
+def test_detect_remote_h100_false_when_a100() -> None:
+    pod = _make_pod()
+    result = MagicMock()
+    result.returncode = 0
+    result.stdout = "NVIDIA A100 80GB PCIe\n"
+
+    with patch("pufferlib_market.gpu_pool_rl.ssh_exec", return_value=result):
+        assert _detect_remote_h100(pod) is False
+
+
+def test_detect_remote_h100_false_on_error() -> None:
+    pod = _make_pod()
+    result = MagicMock()
+    result.returncode = 1
+    result.stdout = ""
+
+    with patch("pufferlib_market.gpu_pool_rl.ssh_exec", return_value=result):
+        assert _detect_remote_h100(pod) is False

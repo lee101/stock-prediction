@@ -126,8 +126,28 @@ class RunPodClient:
             return response.json()
         return {}
 
-    def list_gpu_types(self) -> list[dict]:
-        data = self._graphql("query { gpuTypes { id displayName memoryInGb } }")
+    def list_gpu_types(self, include_pricing: bool = True) -> list[dict]:
+        """Return available GPU types from RunPod.
+
+        Each entry has at least: ``id``, ``displayName``, ``memoryInGb``.
+        When *include_pricing* is True (default) the query also fetches
+        ``lowestPrice { minimumBidPrice unInterruptablePrice }`` so callers
+        can compare on-demand cost across GPU types.
+
+        Example::
+
+            from src.runpod_client import RunPodClient
+            c = RunPodClient(api_key="...")
+            print(c.list_gpu_types())
+        """
+        if include_pricing:
+            query = (
+                "query { gpuTypes { id displayName memoryInGb"
+                " lowestPrice { minimumBidPrice unInterruptablePrice } } }"
+            )
+        else:
+            query = "query { gpuTypes { id displayName memoryInGb } }"
+        data = self._graphql(query)
         return data.get("gpuTypes", [])
 
     def find_gpu_type_id(self, name_substr: str) -> str:

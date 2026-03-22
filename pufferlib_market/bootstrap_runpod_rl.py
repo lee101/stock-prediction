@@ -240,6 +240,46 @@ def _parse_csv_paths(raw: str, base_dir: Optional[Path] = None) -> list[Path]:
     return paths
 
 
+def detect_h100() -> bool:
+    """Return True when the pod's first GPU is an H100.
+
+    Detection order:
+    1. ``RUNPOD_GPU_TYPE`` environment variable (set by RunPod template or caller).
+    2. ``nvidia-smi --query-gpu=name`` output (available on all CUDA pods).
+
+    Falls back to False on any error so the bootstrap never crashes due to
+    GPU-detection failures.
+    """
+    gpu_type_env = os.environ.get("RUNPOD_GPU_TYPE", "")
+    if gpu_type_env:
+        return "h100" in gpu_type_env.lower()
+
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            first_line = result.stdout.strip().splitlines()[0].lower()
+            return "h100" in first_line
+    except Exception:
+        pass
+    return False
+
+
+def get_h100_training_overrides() -> list[str]:
+    """Return extra training CLI args to pass when running on an H100.
+
+    H100 has substantially more CUDA cores and HBM3 bandwidth than A100, so
+    we scale ``--num-envs`` up and enable CUDA-graph capture for the PPO
+    update step.
+    """
+    return ["--num-envs", "256", "--cuda-graph-ppo"]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Bootstrap RunPod RL training pod")
     parser.add_argument("--run-id", required=True, help="Unique identifier for this training run")
@@ -281,6 +321,10 @@ def main() -> None:
         print(f"[dry-run] Would register exit handler for: {args.checkpoint_dirs}")
         if args.checkpoint_run_id:
             print(f"[dry-run] Would download resume checkpoint from run: {args.checkpoint_run_id}")
+        is_h100 = detect_h100()
+        print(f"[dry-run] H100 detected: {is_h100}")
+        if is_h100:
+            print(f"[dry-run] Would add H100 training overrides: {get_h100_training_overrides()}")
         return
 
     remote_dir = Path(args.remote_dir)
@@ -317,7 +361,11 @@ def main() -> None:
     log_files = _parse_csv_paths(args.log_files, base_dir=remote_dir)
     register_exit_handler(r2_client, args.run_id, ckpt_dirs, log_files)
 
-    # 6. Summary
+    # 6. Detect GPU type for training overrides
+    is_h100 = detect_h100()
+    h100_overrides = get_h100_training_overrides() if is_h100 else []
+
+    # 7. Summary
     print()
     print("=== Bootstrap complete ===")
     print(f"  run_id:          {args.run_id}")
@@ -326,8 +374,13 @@ def main() -> None:
     print(f"  checkpoint_dirs: {[str(d) for d in ckpt_dirs]}")
     print(f"  log_files:       {[str(f) for f in log_files]}")
     print(f"  wandb:           {'configured' if wandb_key else 'not configured'}")
+    print(f"  h100_detected:   {is_h100}")
+    if h100_overrides:
+        print(f"  h100_overrides:  {h100_overrides}")
     print()
     print("Training environment is ready. Start training now.")
+    if h100_overrides:
+        print(f"Suggested extra training args for H100: {' '.join(h100_overrides)}")
 
 
 if __name__ == "__main__":

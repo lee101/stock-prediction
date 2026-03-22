@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from binance_worksteal.strategy import (
     WorkStealConfig, load_daily_bars, run_worksteal_backtest, print_results,
 )
+from binance_worksteal.universe import load_universe, get_symbols
 
 
 ORIGINAL_30_UNIVERSE = [
@@ -38,7 +39,8 @@ FULL_UNIVERSE = ORIGINAL_30_UNIVERSE + EXPANDED_UNIVERSE
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", default="trainingdata/train")
-    parser.add_argument("--symbols", nargs="+", default=None, help="Override symbol list")
+    parser.add_argument("--universe-file", default=None, help="YAML universe config file")
+    parser.add_argument("--symbols", nargs="+", default=None, help="Override symbol list (takes precedence over universe file)")
     parser.add_argument("--start-date", default=None)
     parser.add_argument("--end-date", default=None)
     parser.add_argument("--days", type=int, default=30, help="Backtest last N days if no start/end")
@@ -67,7 +69,14 @@ def main():
     parser.add_argument("--adaptive-dip", action="store_true")
     args = parser.parse_args()
 
-    symbols = args.symbols or FULL_UNIVERSE
+    if args.symbols:
+        symbols = args.symbols
+    elif args.universe_file:
+        universe = load_universe(args.universe_file)
+        symbols = get_symbols(universe)
+        print(f"Loaded {len(symbols)} symbols from {args.universe_file}")
+    else:
+        symbols = FULL_UNIVERSE
     print(f"Loading data for {len(symbols)} symbols from {args.data_dir}")
 
     all_bars = load_daily_bars(args.data_dir, symbols)
