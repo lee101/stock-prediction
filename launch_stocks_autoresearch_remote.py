@@ -191,12 +191,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         help="Step cap per sample. 700 × 53,240 samples = 37.27M steps for stocks11_2012 (optimal). "
                              "H100 at 400k sps hits this in ~93s; RTX 5090 at 92k sps hits it in ~405s. "
                              "Use 700 for stocks11_2012 (confirmed optimal step count).")
-    parser.add_argument("--start-from", type=int, default=187,
-                        help="Start index in STOCK_EXPERIMENTS pool. Default 187 = N-block first, then random seeds. "
-                             "Indices 187-194: N-block h256 formula (h=256, lr=3e-4, slip=12, dp=0.01). "
-                             "Index 195+: random_1..450 → mutate_config(best_config, seed_only). "
-                             "If N-block h256 wins best_config, subsequent seeds use h256+lr=1e-4+slip12+dp01. "
-                             "Use 195 to skip N-block and go straight to seed sweep.")
+    parser.add_argument("--start-from", type=int, default=204,
+                        help="Start index in STOCK_EXPERIMENTS pool. Default 204 = directly to random seed sweep. "
+                             "Skips O-block (187-195) and N-block (196-203) which are all confirmed degenerate "
+                             "locally and would contaminate best_config for subsequent seed_only mutations "
+                             "(e.g., s1137_ppo_epochs2 at -49.64 would make all 1000 seeds use ppo_epochs=2). "
+                             "Use --start-from 187 to also run O-block/N-block as a sanity check.")
     parser.add_argument("--seed-only", action="store_true", default=True,
                         help="In random-mutation mode, only change the seed (keep all other params). "
                              "Default: True. With --start-from 195, all 500 H100 trials use s1137's exact "
