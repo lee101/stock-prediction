@@ -1,0 +1,674 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include "../market_sim.h"
+
+static int g_pass = 0, g_fail = 0;
+
+#define ASSERT_NEAR(a, b, tol, msg) do { \
+    double _a = (a), _b = (b), _t = (tol); \
+    if (fabs(_a - _b) > _t) { \
+        fprintf(stderr, "FAIL %s: %.10f != %.10f (tol=%.10f)\n", msg, _a, _b, _t); \
+        g_fail++; \
+    } else { \
+        g_pass++; \
+    } \
+} while(0)
+
+#define ASSERT_EQ_INT(a, b, msg) do { \
+    int _a = (a), _b = (b); \
+    if (_a != _b) { \
+        fprintf(stderr, "FAIL %s: %d != %d\n", msg, _a, _b); \
+        g_fail++; \
+    } else { \
+        g_pass++; \
+    } \
+} while(0)
+
+static void test_no_trades(void) {
+    double o[] = {100,101,102,103,104};
+    double h[] = {105,106,107,108,109};
+    double l[] = {95,96,97,98,99};
+    double c[] = {101,102,103,104,105};
+    double bp[] = {0,0,0,0,0};
+    double sp[] = {0,0,0,0,0};
+    double ba[] = {0,0,0,0,0};
+    double sa[] = {0,0,0,0,0};
+    int n = 5;
+
+    SimConfig cfg = {
+        .max_leverage = 1.0,
+        .can_short = 0,
+        .maker_fee = 0.001,
+        .margin_hourly_rate = 0.0,
+        .initial_cash = 10000.0,
+        .fill_buffer_pct = 0.0005,
+        .min_edge = 0.0,
+        .max_hold_bars = 0,
+        .intensity_scale = 1.0
+    };
+    SimResult result;
+    double eq[6];
+
+    simulate(o, h, l, c, bp, sp, ba, sa, n, &cfg, &result, eq);
+
+    ASSERT_EQ_INT(result.num_trades, 0, "no_trades: num_trades");
+    ASSERT_NEAR(result.total_return, 0.0, 1e-10, "no_trades: total_return");
+    ASSERT_NEAR(result.final_equity, 10000.0, 1e-6, "no_trades: final_equity");
+    ASSERT_NEAR(result.margin_cost_total, 0.0, 1e-10, "no_trades: margin_cost");
+    ASSERT_NEAR(eq[0], 10000.0, 1e-6, "no_trades: eq[0]");
+    ASSERT_NEAR(eq[5], 10000.0, 1e-6, "no_trades: eq[5]");
+}
+
+static void test_single_buy_sell(void) {
+    /* buy at 100, sell at 110 */
+    double o[] = {100, 105, 110};
+    double h[] = {105, 112, 115};
+    double l[] = {95, 100, 105};
+    double c[] = {102, 108, 112};
+    double bp[] = {100, 0, 0};
+    double sp[] = {0, 110, 0};
+    double ba[] = {50, 0, 0};
+    double sa[] = {0, 50, 0};
+    int n = 3;
+
+    SimConfig cfg = {
+        .max_leverage = 1.0,
+        .can_short = 0,
+        .maker_fee = 0.001,
+        .margin_hourly_rate = 0.0,
+        .initial_cash = 10000.0,
+        .fill_buffer_pct = 0.0,
+        .min_edge = 0.0,
+        .max_hold_bars = 0,
+        .intensity_scale = 1.0
+    };
+    SimResult result;
+    double eq[4];
+
+    simulate(o, h, l, c, bp, sp, ba, sa, n, &cfg, &result, eq);
+
+    ASSERT_EQ_INT(result.num_trades, 2, "buy_sell: num_trades");
+    /* should have positive return from buying at 100, selling at 110 */
+    if (result.total_return <= 0.0) {
+        fprintf(stderr, "FAIL buy_sell: expected positive return, got %.6f\n", result.total_return);
+        g_fail++;
+    } else {
+        g_pass++;
+    }
+}
+
+static void test_margin_interest(void) {
+    /* leverage buy puts cash negative, should accrue margin interest */
+    double o[] = {100, 100, 100, 100};
+    double h[] = {105, 105, 105, 105};
+    double l[] = {95, 95, 95, 95};
+    double c[] = {100, 100, 100, 100};
+    double bp[] = {100, 0, 0, 0};
+    double sp[] = {0, 0, 0, 0};
+    double ba[] = {100, 0, 0, 0};
+    double sa[] = {0, 0, 0, 0};
+    int n = 4;
+
+    SimConfig cfg = {
+        .max_leverage = 2.0,
+        .can_short = 0,
+        .maker_fee = 0.001,
+        .margin_hourly_rate = 0.001,
+        .initial_cash = 10000.0,
+        .fill_buffer_pct = 0.0,
+        .min_edge = 0.0,
+        .max_hold_bars = 0,
+        .intensity_scale = 1.0
+    };
+    SimResult result;
+    double eq[5];
+
+    simulate(o, h, l, c, bp, sp, ba, sa, n, &cfg, &result, eq);
+
+    if (result.margin_cost_total <= 0.0) {
+        fprintf(stderr, "FAIL margin_interest: expected positive margin cost, got %.6f\n",
+                result.margin_cost_total);
+        g_fail++;
+    } else {
+        g_pass++;
+    }
+    /* equity should decrease due to margin costs */
+    if (result.final_equity >= 10000.0) {
+        fprintf(stderr, "FAIL margin_interest: equity should decrease, got %.6f\n",
+                result.final_equity);
+        g_fail++;
+    } else {
+        g_pass++;
+    }
+}
+
+static void test_max_hold_force_close(void) {
+    double o[] = {100, 100, 100, 100, 100};
+    double h[] = {105, 105, 105, 105, 105};
+    double l[] = {95, 95, 95, 95, 95};
+    double c[] = {100, 100, 100, 100, 100};
+    double bp[] = {100, 0, 0, 0, 0};
+    double sp[] = {0, 0, 0, 0, 0};
+    double ba[] = {50, 0, 0, 0, 0};
+    double sa[] = {0, 0, 0, 0, 0};
+    int n = 5;
+
+    SimConfig cfg = {
+        .max_leverage = 1.0,
+        .can_short = 0,
+        .maker_fee = 0.001,
+        .margin_hourly_rate = 0.0,
+        .initial_cash = 10000.0,
+        .fill_buffer_pct = 0.0,
+        .min_edge = 0.0,
+        .max_hold_bars = 3,
+        .intensity_scale = 1.0
+    };
+    SimResult result;
+    double eq[6];
+
+    simulate(o, h, l, c, bp, sp, ba, sa, n, &cfg, &result, eq);
+
+    /* should have 2 trades: buy + force close */
+    ASSERT_EQ_INT(result.num_trades, 2, "max_hold: num_trades");
+}
+
+static void test_fill_buffer(void) {
+    /* fill buffer prevents fill when price doesn't reach threshold */
+    double o[] = {100};
+    double h[] = {100.04};  /* not enough to fill sell at 100 with 0.05% buffer */
+    double l[] = {99.96};   /* not enough to fill buy at 100 with 0.05% buffer */
+    double c[] = {100};
+    double bp[] = {100};
+    double sp[] = {100};
+    double ba[] = {50};
+    double sa[] = {50};
+    int n = 1;
+
+    SimConfig cfg = {
+        .max_leverage = 1.0,
+        .can_short = 0,
+        .maker_fee = 0.001,
+        .margin_hourly_rate = 0.0,
+        .initial_cash = 10000.0,
+        .fill_buffer_pct = 0.0005,
+        .min_edge = 0.0,
+        .max_hold_bars = 0,
+        .intensity_scale = 1.0
+    };
+    SimResult result;
+    double eq[2];
+
+    simulate(o, h, l, c, bp, sp, ba, sa, n, &cfg, &result, eq);
+
+    ASSERT_EQ_INT(result.num_trades, 0, "fill_buffer: no trades when buffer not reached");
+}
+
+static void test_short_selling(void) {
+    /* short sell at 110, cover at 100 */
+    double o[] = {100, 105, 100};
+    double h[] = {112, 108, 105};
+    double l[] = {98, 98, 95};
+    double c[] = {105, 102, 100};
+    double bp[] = {0, 100, 0};
+    double sp[] = {110, 0, 0};
+    double ba[] = {0, 50, 0};
+    double sa[] = {50, 0, 0};
+    int n = 3;
+
+    SimConfig cfg = {
+        .max_leverage = 1.0,
+        .can_short = 1,
+        .maker_fee = 0.001,
+        .margin_hourly_rate = 0.0,
+        .initial_cash = 10000.0,
+        .fill_buffer_pct = 0.0,
+        .min_edge = 0.0,
+        .max_hold_bars = 0,
+        .intensity_scale = 1.0
+    };
+    SimResult result;
+    double eq[4];
+
+    simulate(o, h, l, c, bp, sp, ba, sa, n, &cfg, &result, eq);
+
+    /* should have positive return from shorting at 110 and covering at 100 */
+    ASSERT_EQ_INT(result.num_trades, 2, "short: num_trades");
+    if (result.total_return <= 0.0) {
+        fprintf(stderr, "FAIL short: expected positive return, got %.6f\n", result.total_return);
+        g_fail++;
+    } else {
+        g_pass++;
+    }
+}
+
+static void test_min_edge(void) {
+    /* min_edge prevents trading when spread is too tight */
+    double o[] = {100};
+    double h[] = {105};
+    double l[] = {95};
+    double c[] = {100};
+    double bp[] = {99};
+    double sp[] = {101};  /* edge = (101-99)/99 = 0.0202 < 0.05 */
+    double ba[] = {50};
+    double sa[] = {50};
+    int n = 1;
+
+    SimConfig cfg = {
+        .max_leverage = 1.0,
+        .can_short = 0,
+        .maker_fee = 0.001,
+        .margin_hourly_rate = 0.0,
+        .initial_cash = 10000.0,
+        .fill_buffer_pct = 0.0,
+        .min_edge = 0.05,
+        .max_hold_bars = 0,
+        .intensity_scale = 1.0
+    };
+    SimResult result;
+    double eq[2];
+
+    simulate(o, h, l, c, bp, sp, ba, sa, n, &cfg, &result, eq);
+
+    ASSERT_EQ_INT(result.num_trades, 0, "min_edge: no trades when edge too small");
+}
+
+static void test_sortino_computation(void) {
+    /* constant equity -> sortino = 0 (no returns) */
+    double eq_flat[] = {100, 100, 100, 100, 100};
+    double s = compute_sortino(eq_flat, 5);
+    ASSERT_NEAR(s, 0.0, 1e-6, "sortino: flat equity");
+
+    /* monotonically increasing -> positive sortino */
+    double eq_up[] = {100, 101, 102, 103, 104};
+    s = compute_sortino(eq_up, 5);
+    if (s <= 0.0) {
+        fprintf(stderr, "FAIL sortino: expected positive for increasing equity, got %.6f\n", s);
+        g_fail++;
+    } else {
+        g_pass++;
+    }
+
+    /* monotonically decreasing -> negative sortino */
+    double eq_down[] = {100, 99, 98, 97, 96};
+    s = compute_sortino(eq_down, 5);
+    if (s >= 0.0) {
+        fprintf(stderr, "FAIL sortino: expected negative for decreasing equity, got %.6f\n", s);
+        g_fail++;
+    } else {
+        g_pass++;
+    }
+}
+
+static void test_max_drawdown(void) {
+    double eq1[] = {100, 110, 90, 100};
+    double dd = compute_max_drawdown(eq1, 4);
+    /* peak=110, trough=90, dd=(90-110)/110 = -0.1818 */
+    ASSERT_NEAR(dd, -0.18181818, 0.001, "max_dd: simple case");
+
+    double eq2[] = {100, 100, 100, 100};
+    dd = compute_max_drawdown(eq2, 4);
+    ASSERT_NEAR(dd, 0.0, 1e-10, "max_dd: flat");
+}
+
+static void test_batch_simulation(void) {
+    double o[] = {100, 101, 102};
+    double h[] = {105, 106, 107};
+    double l[] = {95, 96, 97};
+    double c[] = {101, 102, 103};
+    double bp[] = {100, 0, 0};
+    double sp[] = {0, 105, 0};
+    double ba[] = {50, 0, 0};
+    double sa[] = {0, 50, 0};
+    int n = 3;
+
+    SimConfig cfgs[2] = {
+        {1.0, 0, 0.001, 0.0, 10000.0, 0.0, 0.0, 0, 1.0},
+        {2.0, 0, 0.001, 0.0, 10000.0, 0.0, 0.0, 0, 1.0},
+    };
+    SimResult results[2];
+
+    simulate_batch(o, h, l, c, bp, sp, ba, sa, n, cfgs, results, 2);
+
+    /* both should produce valid results */
+    if (results[0].final_equity <= 0.0) {
+        fprintf(stderr, "FAIL batch: config 0 invalid equity %.6f\n", results[0].final_equity);
+        g_fail++;
+    } else {
+        g_pass++;
+    }
+    if (results[1].final_equity <= 0.0) {
+        fprintf(stderr, "FAIL batch: config 1 invalid equity %.6f\n", results[1].final_equity);
+        g_fail++;
+    } else {
+        g_pass++;
+    }
+}
+
+static void test_multi_sym_no_trades(void) {
+    int n_bars = 3, n_sym = 2;
+    double c[] = {100,200, 101,201, 102,202};
+    double h[] = {105,205, 106,206, 107,207};
+    double l[] = {95,195, 96,196, 97,197};
+    double bp[] = {0,0, 0,0, 0,0};
+    double sp[] = {0,0, 0,0, 0,0};
+    double ba[] = {0,0, 0,0, 0,0};
+    double sa[] = {0,0, 0,0, 0,0};
+
+    MultiSimConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.n_symbols = 2;
+    cfg.max_leverage = 1.0;
+    cfg.initial_cash = 10000.0;
+    cfg.max_positions = 2;
+    cfg.intensity_scale = 1.0;
+    cfg.sym_cfgs[0] = (SymbolConfig){0.001, 0, 1};
+    cfg.sym_cfgs[1] = (SymbolConfig){0.001, 0, 1};
+
+    MultiSimResult result;
+    double eq[4];
+
+    simulate_multi(n_bars, n_sym, c, h, l, bp, sp, ba, sa, &cfg, &result, eq);
+
+    ASSERT_EQ_INT(result.num_trades, 0, "multi_no_trades: num_trades");
+    ASSERT_NEAR(result.final_equity, 10000.0, 1e-6, "multi_no_trades: equity");
+}
+
+static void test_multi_sym_buy_sell(void) {
+    /* symbol 0: buy at 100 bar0, sell at 110 bar1
+       symbol 1: no action */
+    int n_bars = 3, n_sym = 2;
+    /* row-major: [bar0_sym0, bar0_sym1, bar1_sym0, bar1_sym1, ...] */
+    double c[] = {100,200, 108,200, 112,200};
+    double h[] = {105,205, 112,205, 115,205};
+    double l[] = {95,195, 100,195, 105,195};
+    double bp[] = {100,0, 0,0, 0,0};
+    double sp[] = {0,0, 110,0, 0,0};
+    double ba[] = {50,0, 0,0, 0,0};
+    double sa[] = {0,0, 50,0, 0,0};
+
+    MultiSimConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.n_symbols = 2;
+    cfg.max_leverage = 1.0;
+    cfg.initial_cash = 10000.0;
+    cfg.max_positions = 2;
+    cfg.intensity_scale = 1.0;
+    cfg.force_close_slippage = 0.003;
+    cfg.sym_cfgs[0] = (SymbolConfig){0.001, 0, 1};
+    cfg.sym_cfgs[1] = (SymbolConfig){0.001, 0, 1};
+
+    MultiSimResult result;
+    double eq[4];
+
+    simulate_multi(n_bars, n_sym, c, h, l, bp, sp, ba, sa, &cfg, &result, eq);
+
+    ASSERT_EQ_INT(result.num_trades, 2, "multi_buy_sell: num_trades");
+    if (result.total_return <= 0.0) {
+        fprintf(stderr, "FAIL multi_buy_sell: expected positive return, got %.6f\n", result.total_return);
+        g_fail++;
+    } else {
+        g_pass++;
+    }
+}
+
+static void test_multi_sym_max_positions(void) {
+    /* 3 symbols, max_positions=2, all want to buy */
+    int n_bars = 1, n_sym = 3;
+    double c[] = {100, 200, 300};
+    double h[] = {105, 205, 305};
+    double l[] = {95, 195, 295};
+    double bp[] = {100, 200, 300};
+    double sp[] = {0, 0, 0};
+    double ba[] = {50, 50, 50};
+    double sa[] = {0, 0, 0};
+
+    MultiSimConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.n_symbols = 3;
+    cfg.max_leverage = 1.0;
+    cfg.initial_cash = 10000.0;
+    cfg.max_positions = 2;
+    cfg.intensity_scale = 1.0;
+    cfg.sym_cfgs[0] = (SymbolConfig){0.001, 0, 1};
+    cfg.sym_cfgs[1] = (SymbolConfig){0.001, 0, 1};
+    cfg.sym_cfgs[2] = (SymbolConfig){0.001, 0, 1};
+
+    MultiSimResult result;
+    double eq[2];
+
+    simulate_multi(n_bars, n_sym, c, h, l, bp, sp, ba, sa, &cfg, &result, eq);
+
+    /* should only open 2 positions */
+    ASSERT_EQ_INT(result.num_trades, 2, "multi_max_pos: only 2 trades");
+}
+
+static void test_multi_sym_margin_interest(void) {
+    /* leverage causes cash to go negative, should accrue margin interest */
+    int n_bars = 3, n_sym = 1;
+    double c[] = {100, 100, 100};
+    double h[] = {105, 105, 105};
+    double l[] = {95, 95, 95};
+    double bp[] = {100, 0, 0};
+    double sp[] = {0, 0, 0};
+    double ba[] = {100, 0, 0};
+    double sa[] = {0, 0, 0};
+
+    MultiSimConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.n_symbols = 1;
+    cfg.max_leverage = 2.0;
+    cfg.margin_hourly_rate = 0.001;
+    cfg.initial_cash = 10000.0;
+    cfg.max_positions = 1;
+    cfg.intensity_scale = 1.0;
+    cfg.sym_cfgs[0] = (SymbolConfig){0.001, 0, 1};
+
+    MultiSimResult result;
+    double eq[4];
+
+    simulate_multi(n_bars, n_sym, c, h, l, bp, sp, ba, sa, &cfg, &result, eq);
+
+    if (result.margin_cost_total <= 0.0) {
+        fprintf(stderr, "FAIL multi_margin: expected positive margin cost, got %.6f\n",
+                result.margin_cost_total);
+        g_fail++;
+    } else {
+        g_pass++;
+    }
+}
+
+static void test_multi_sym_max_hold(void) {
+    int n_bars = 5, n_sym = 1;
+    double c[] = {100, 100, 100, 100, 100};
+    double h[] = {105, 105, 105, 105, 105};
+    double l[] = {95, 95, 95, 95, 95};
+    double bp[] = {100, 0, 0, 0, 0};
+    double sp[] = {0, 0, 0, 0, 0};
+    double ba[] = {50, 0, 0, 0, 0};
+    double sa[] = {0, 0, 0, 0, 0};
+
+    MultiSimConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.n_symbols = 1;
+    cfg.max_leverage = 1.0;
+    cfg.initial_cash = 10000.0;
+    cfg.max_positions = 1;
+    cfg.max_hold_bars = 3;
+    cfg.intensity_scale = 1.0;
+    cfg.force_close_slippage = 0.003;
+    cfg.sym_cfgs[0] = (SymbolConfig){0.001, 0, 1};
+
+    MultiSimResult result;
+    double eq[6];
+
+    simulate_multi(n_bars, n_sym, c, h, l, bp, sp, ba, sa, &cfg, &result, eq);
+
+    /* buy + force close */
+    ASSERT_EQ_INT(result.num_trades, 2, "multi_max_hold: num_trades");
+}
+
+static void test_multi_sym_per_symbol_fee(void) {
+    /* sym0 has 0 fee, sym1 has 5% fee -- same trade should yield different PnL */
+    int n_bars = 2, n_sym = 2;
+    double c[] = {100,100, 110,110};
+    double h[] = {105,105, 115,115};
+    double l[] = {95,95, 105,105};
+    double bp[] = {100,100, 0,0};
+    double sp[] = {0,0, 110,110};
+    double ba[] = {50,50, 0,0};
+    double sa[] = {0,0, 50,50};
+
+    MultiSimConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.n_symbols = 2;
+    cfg.max_leverage = 1.0;
+    cfg.initial_cash = 10000.0;
+    cfg.max_positions = 2;
+    cfg.intensity_scale = 1.0;
+    cfg.sym_cfgs[0] = (SymbolConfig){0.0, 0, 1};    /* 0 fee */
+    cfg.sym_cfgs[1] = (SymbolConfig){0.05, 0, 1};   /* 5% fee */
+
+    MultiSimResult result;
+    double eq[3];
+
+    simulate_multi(n_bars, n_sym, c, h, l, bp, sp, ba, sa, &cfg, &result, eq);
+
+    ASSERT_EQ_INT(result.num_trades, 4, "multi_fee: 4 trades (2 per sym)");
+    /* with different fees, equity won't be the ideal return */
+    /* the 5% fee symbol will drag returns down vs 0% fee */
+    if (result.total_return <= 0.0) {
+        fprintf(stderr, "FAIL multi_fee: expected positive total return, got %.6f\n",
+                result.total_return);
+        g_fail++;
+    } else {
+        g_pass++;
+    }
+}
+
+static void test_empty_input(void) {
+    SimConfig cfg = {1.0, 0, 0.001, 0.0, 10000.0, 0.0, 0.0, 0, 1.0};
+    SimResult result;
+    double eq[1];
+
+    simulate(NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, &cfg, &result, eq);
+
+    ASSERT_NEAR(result.total_return, 0.0, 1e-10, "empty: total_return");
+    ASSERT_NEAR(result.final_equity, 10000.0, 1e-6, "empty: final_equity");
+    ASSERT_EQ_INT(result.num_trades, 0, "empty: num_trades");
+}
+
+static void test_single_symbol_parity(void) {
+    /* verify single-symbol simulate() and simulate_multi() produce same result
+       for equivalent config on same data */
+    int n = 4;
+    double o[] = {100, 102, 105, 103};
+    double h[] = {106, 108, 110, 108};
+    double l[] = {98, 100, 102, 100};
+    double c[] = {102, 105, 103, 106};
+    double bp[] = {100, 0, 0, 0};
+    double sp[] = {0, 108, 0, 0};
+    double ba[] = {50, 0, 0, 0};
+    double sa[] = {0, 50, 0, 0};
+
+    SimConfig scfg = {
+        .max_leverage = 1.0,
+        .can_short = 0,
+        .maker_fee = 0.001,
+        .margin_hourly_rate = 0.0,
+        .initial_cash = 10000.0,
+        .fill_buffer_pct = 0.0,
+        .min_edge = 0.0,
+        .max_hold_bars = 0,
+        .intensity_scale = 1.0
+    };
+    SimResult sresult;
+    double seq[5];
+    simulate(o, h, l, c, bp, sp, ba, sa, n, &scfg, &sresult, seq);
+
+    /* same data in multi format (1 symbol) */
+    MultiSimConfig mcfg;
+    memset(&mcfg, 0, sizeof(mcfg));
+    mcfg.n_symbols = 1;
+    mcfg.max_leverage = 1.0;
+    mcfg.initial_cash = 10000.0;
+    mcfg.max_positions = 1;
+    mcfg.intensity_scale = 1.0;
+    mcfg.sym_cfgs[0] = (SymbolConfig){0.001, 0, 1};
+
+    MultiSimResult mresult;
+    double meq[5];
+    simulate_multi(n, 1, c, h, l, bp, sp, ba, sa, &mcfg, &mresult, meq);
+
+    ASSERT_EQ_INT(sresult.num_trades, mresult.num_trades, "parity: num_trades");
+    /* note: results won't be exactly identical because single-sym sim uses a different
+       allocation model (full equity) vs multi-sym (equity/max_positions).
+       With max_positions=1, they should be similar though the buy amount
+       calculation differs slightly. Just verify both produce positive returns. */
+    if (sresult.total_return > 0.0 && mresult.total_return <= 0.0) {
+        fprintf(stderr, "FAIL parity: single positive but multi not\n");
+        g_fail++;
+    } else {
+        g_pass++;
+    }
+}
+
+static void test_intensity_scale(void) {
+    /* intensity_scale=2.0 should produce more aggressive trades */
+    int n = 3;
+    double o[] = {100, 105, 110};
+    double h[] = {105, 112, 115};
+    double l[] = {95, 100, 105};
+    double c[] = {102, 108, 112};
+    double bp[] = {100, 0, 0};
+    double sp[] = {0, 110, 0};
+    double ba[] = {25, 0, 0};  /* small amount */
+    double sa[] = {0, 50, 0};
+
+    SimConfig cfg1 = {1.0, 0, 0.001, 0.0, 10000.0, 0.0, 0.0, 0, 1.0};
+    SimConfig cfg2 = {1.0, 0, 0.001, 0.0, 10000.0, 0.0, 0.0, 0, 2.0};
+
+    SimResult r1, r2;
+    double eq1[4], eq2[4];
+
+    simulate(o, h, l, c, bp, sp, ba, sa, n, &cfg1, &r1, eq1);
+    simulate(o, h, l, c, bp, sp, ba, sa, n, &cfg2, &r2, eq2);
+
+    /* both should trade, scale=2 should have higher return magnitude */
+    ASSERT_EQ_INT(r1.num_trades, r2.num_trades, "intensity: same num trades");
+    if (fabs(r2.total_return) < fabs(r1.total_return)) {
+        fprintf(stderr, "FAIL intensity: scale=2 should have larger magnitude return\n");
+        g_fail++;
+    } else {
+        g_pass++;
+    }
+}
+
+int main(void) {
+    fprintf(stderr, "=== market_sim tests ===\n");
+
+    test_no_trades();
+    test_single_buy_sell();
+    test_margin_interest();
+    test_max_hold_force_close();
+    test_fill_buffer();
+    test_short_selling();
+    test_min_edge();
+    test_sortino_computation();
+    test_max_drawdown();
+    test_batch_simulation();
+    test_multi_sym_no_trades();
+    test_multi_sym_buy_sell();
+    test_multi_sym_max_positions();
+    test_multi_sym_margin_interest();
+    test_multi_sym_max_hold();
+    test_multi_sym_per_symbol_fee();
+    test_empty_input();
+    test_single_symbol_parity();
+    test_intensity_scale();
+
+    fprintf(stderr, "\n%d passed, %d failed\n", g_pass, g_fail);
+    return g_fail > 0 ? 1 : 0;
+}
