@@ -43,24 +43,22 @@ SAMPLE_EPOCHS = [1, 2, 3, 5, 8, 10, 15, 20]
 
 TRAINING_OVERRIDES = dict(
     epochs=20,
-    batch_size=16,
-    sequence_length=72,
-    learning_rate=1e-4,
+    batch_size=64,
+    sequence_length=48,
+    learning_rate=1e-5,
     weight_decay=0.04,
-    return_weight=0.10,
+    return_weight=0.05,
     transformer_dim=384,
     transformer_layers=6,
-    transformer_heads=8,
-    fill_temperature=0.1,
+    transformer_heads=6,
+    fill_temperature=5e-4,
     fill_buffer_pct=0.0005,
     loss_type="sortino",
     lr_schedule="cosine",
     lr_min_ratio=0.01,
-    model_arch="nano",
-    num_memory_tokens=8,
-    dilated_strides="1,2,6,24",
+    model_arch="classic",
     feature_noise_std=0.0,
-    transformer_dropout=0.1,
+    checkpoint_keep_all=True,
 )
 
 
