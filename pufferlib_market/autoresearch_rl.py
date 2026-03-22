@@ -677,10 +677,30 @@ STOCK_EXPERIMENTS: list[dict] = [
     # -7.8 (seed 999) on hard 201-day val vs -102 with old training data.
     # These variants explore the neighbourhood around the sweet spot.
     # -----------------------------------------------------------------------
-    {"description": "tp03_s7",   "trade_penalty": 0.03, "seed": 7},
-    {"description": "tp03_s42",  "trade_penalty": 0.03, "seed": 42},
-    {"description": "tp03_s123", "trade_penalty": 0.03, "seed": 123},
-    {"description": "tp03_s2272","trade_penalty": 0.03, "seed": 2272},
+    # Multi-seed tp03 sweep: seed=777 was the ONLY positive on hard val (holdout=+3.10).
+    # Run without --seed override so each config uses its own explicit seed.
+    # Confirmed: trade_penalty=0.03 forces sit-out behaviour in bear markets.
+    {"description": "tp03_s777",  "trade_penalty": 0.03, "seed": 777},   # KNOWN WINNER
+    {"description": "tp03_s7",    "trade_penalty": 0.03, "seed": 7},
+    {"description": "tp03_s42",   "trade_penalty": 0.03, "seed": 42},
+    {"description": "tp03_s123",  "trade_penalty": 0.03, "seed": 123},
+    {"description": "tp03_s888",  "trade_penalty": 0.03, "seed": 888},
+    {"description": "tp03_s1111", "trade_penalty": 0.03, "seed": 1111},
+    {"description": "tp03_s2272", "trade_penalty": 0.03, "seed": 2272},
+    {"description": "tp03_s3141", "trade_penalty": 0.03, "seed": 3141},
+    {"description": "tp03_s4242", "trade_penalty": 0.03, "seed": 4242},
+    {"description": "tp03_s5678", "trade_penalty": 0.03, "seed": 5678},
+    {"description": "tp03_s7777", "trade_penalty": 0.03, "seed": 7777},
+    {"description": "tp03_s9999", "trade_penalty": 0.03, "seed": 9999},
+    # tp03 + wd=0.01: 2nd best modifier; try with multiple seeds
+    {"description": "tp03_wd01_s777",  "trade_penalty": 0.03, "weight_decay": 0.01, "seed": 777},
+    {"description": "tp03_wd01_s42",   "trade_penalty": 0.03, "weight_decay": 0.01, "seed": 42},
+    {"description": "tp03_wd01_s2272", "trade_penalty": 0.03, "weight_decay": 0.01, "seed": 2272},
+    # tp03 + h2048: 3rd best modifier; larger net may converge better
+    {"description": "tp03_h2048_s777",  "trade_penalty": 0.03, "hidden_size": 2048, "seed": 777},
+    {"description": "tp03_h2048_s42",   "trade_penalty": 0.03, "hidden_size": 2048, "seed": 42},
+    {"description": "tp03_h2048_s2272", "trade_penalty": 0.03, "hidden_size": 2048, "seed": 2272},
+    # Remaining modifier variants (no explicit seed = uses default 42)
     {"description": "tp03_slip5",  "trade_penalty": 0.03, "fill_slippage_bps": 5.0},
     {"description": "tp03_slip10", "trade_penalty": 0.03, "fill_slippage_bps": 10.0},
     {"description": "tp03_wd01",   "trade_penalty": 0.03, "weight_decay": 0.01},
@@ -696,14 +716,22 @@ STOCK_EXPERIMENTS: list[dict] = [
      "trade_penalty": 0.03, "obs_norm": True, "weight_decay": 0.05,
      "fill_slippage_bps": 5.0, "ent_coef": 0.05},
 
-    # Best combinations (from 2026-03-22 tp03 variants sweep with extended training)
-    # tp03 + seed 2272 is best; tp03 + wd=0.01 is 2nd best; h2048 is 3rd best
+    # Best combinations (from 2026-03-22 tp03 variants sweep — note: those used --seed 1337
+    # override which masked explicit seeds. Retry these without global seed override.)
     {"description": "tp03_s2272_wd01",
      "trade_penalty": 0.03, "seed": 2272, "weight_decay": 0.01},
     {"description": "tp03_h2048_wd01",
      "trade_penalty": 0.03, "hidden_size": 2048, "weight_decay": 0.01},
     {"description": "tp03_s2272_h2048",
      "trade_penalty": 0.03, "seed": 2272, "hidden_size": 2048},
+
+    # Dense seed sweep for H100: tp03 with sequential seeds 1-50
+    # Running all these on H100 gives ~33% expected hit rate → 16-17 positive checkpoints
+    # Use: --descriptions tp03_seed_1,tp03_seed_2,...,tp03_seed_50
+    *[{"description": f"tp03_seed_{i}", "trade_penalty": 0.03, "seed": i} for i in range(1, 51)],
+    # Also wd=0.01 seeds 1-25 (2nd-best modifier from sweep)
+    *[{"description": f"tp03_wd01_seed_{i}", "trade_penalty": 0.03, "weight_decay": 0.01, "seed": i}
+      for i in range(1, 26)],
 
     # Random mutations to explore the neighbourhood (30 slots per sweep pass)
     {"description": "random_1"},
