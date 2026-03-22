@@ -50,6 +50,13 @@ DEFAULT_TIME_BUDGET = 300
 DEFAULT_MAX_TRIALS = 50
 DEFAULT_WANDB_PROJECT = "stock"
 
+_STOCKS_DEFAULT_TRAIN = "pufferlib_market/data/stocks12_daily_train.bin"
+_STOCKS_DEFAULT_VAL = "pufferlib_market/data/stocks12_daily_val.bin"
+_STOCKS_FEE_RATE = 0.001
+_STOCKS_MAX_STEPS = 252
+_STOCKS_PERIODS_PER_YEAR = 252.0
+_STOCKS_HOLDOUT_EVAL_STEPS = 90
+
 # SSH options used consistently across all remote calls.
 _SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes"]
 
@@ -238,6 +245,8 @@ def run_local(args: argparse.Namespace, *, seed: int | None = None) -> int:
         "--checkpoint-root", checkpoint_dir,
         "--wandb-project", args.wandb_project,
     ]
+    if args.stocks:
+        cmd += ["--stocks"]
     if args.descriptions:
         cmd += ["--descriptions", args.descriptions]
     if seed is not None:
@@ -284,6 +293,8 @@ def _build_remote_autoresearch_cmd(
         "--checkpoint-root", remote_checkpoints,
         "--wandb-project", args.wandb_project,
     ]
+    if args.stocks:
+        parts += ["--stocks"]
     if args.descriptions:
         parts += ["--descriptions", args.descriptions]
     if seed is not None:
@@ -347,13 +358,16 @@ def run_remote(args: argparse.Namespace, *, seed: int | None = None) -> int:
             else:
                 print(f"[warning] Data file not found locally, skipping upload: {data_path}")
 
-        # 5. Bootstrap: create venv + install dependencies.
+        # 5. Bootstrap: create venv + install dependencies + build C ext.
         bootstrap_cmd = (
+            f"set -euo pipefail && "
             f"cd {remote_dir} && "
             f"pip install uv -q && "
-            f"uv venv {remote_env} --python python3 -q && "
+            f"uv venv {remote_env} --python python3.13 2>/dev/null || uv venv {remote_env} && "
             f"source {remote_env}/bin/activate && "
-            f"uv pip install -e . -q 2>&1 | tail -5"
+            f"uv pip install -e . -q && "
+            f"{{ [ -d PufferLib ] && uv pip install -e PufferLib/ -q || true; }} && "
+            f"cd pufferlib_market && python setup.py build_ext --inplace -q && cd .."
         )
         _ssh_run(ssh_host, ssh_port, bootstrap_cmd)
 
@@ -578,8 +592,14 @@ def print_dry_run_plan(
 
     print("[dry-run] Dispatch RL Training Plan")
     print(f"  Run ID:       {args.run_id}")
+    print(f"  Mode:         {'stocks' if getattr(args, 'stocks', False) else 'crypto'}")
     print(f"  Data (train): {args.data_train}")
     print(f"  Data (val):   {args.data_val}")
+    if args.stocks:
+        print(f"  fee_rate:     {_STOCKS_FEE_RATE}")
+        print(f"  max_steps:    {_STOCKS_MAX_STEPS}")
+        print(f"  periods/year: {_STOCKS_PERIODS_PER_YEAR}")
+        print(f"  holdout_eval_steps: {_STOCKS_HOLDOUT_EVAL_STEPS}")
     print(f"  Routing:      {routing_str}")
     print(f"  GPU:          {gpu_type}")
     print(f"  W&B project:  {args.wandb_project}")
@@ -605,7 +625,7 @@ def print_dry_run_plan(
         print("  Steps:")
         print(f"    1. Provision/reuse RunPod pod ({gpu_type})")
         print(f"    2. rsync code to {DEFAULT_REMOTE_WORKSPACE}")
-        print(f"    3. bootstrap: pip install uv, uv pip install -e .")
+        print(f"    3. bootstrap: pip install uv, uv pip install -e ., uv pip install -e PufferLib/, build_ext --inplace")
         print(f"    4. Upload data files ({args.data_train}, {args.data_val})")
         print(
             f"    5. autoresearch_rl: {args.max_trials} trials x {args.time_budget}s each "
@@ -647,13 +667,26 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
+    # --stocks must be parsed before required check so we can make data paths optional.
+    _stocks_mode = "--stocks" in (argv if argv is not None else sys.argv[1:])
+
     req = parser.add_argument_group("required")
-    req.add_argument("--data-train", required=True, metavar="PATH",
+    req.add_argument("--data-train", required=not _stocks_mode, default=None, metavar="PATH",
                      help="Training MKTD binary file (.bin)")
-    req.add_argument("--data-val", required=True, metavar="PATH",
+    req.add_argument("--data-val", required=not _stocks_mode, default=None, metavar="PATH",
                      help="Validation MKTD binary file (.bin)")
 
     opt = parser.add_argument_group("optional")
+    opt.add_argument(
+        "--stocks", action="store_true",
+        help=(
+            "Use stock-specific configs: stocks12_daily_{train,val}.bin as data defaults, "
+            f"fee_rate={_STOCKS_FEE_RATE}, max_steps={_STOCKS_MAX_STEPS}, "
+            f"periods_per_year={_STOCKS_PERIODS_PER_YEAR}, "
+            f"holdout_eval_steps={_STOCKS_HOLDOUT_EVAL_STEPS}. "
+            "Passes --stocks to autoresearch_rl on the remote pod."
+        ),
+    )
     opt.add_argument("--run-id", default=None, metavar="STR",
                      help="Experiment run ID (auto-generated if not set)")
     opt.add_argument("--time-budget", type=int, default=DEFAULT_TIME_BUDGET,
@@ -701,6 +734,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+
+    # --stocks: apply data-path defaults if user did not supply them.
+    if args.stocks:
+        if not args.data_train:
+            args.data_train = _STOCKS_DEFAULT_TRAIN
+        if not args.data_val:
+            args.data_val = _STOCKS_DEFAULT_VAL
 
     # Auto-generate run ID if not supplied.
     if not args.run_id:
