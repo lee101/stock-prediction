@@ -211,7 +211,7 @@ def evaluate_random(args, policy, binding, obs_buf, act_buf, rew_buf, term_buf,
 
     while len(all_returns) < target_episodes:
         obs_tensor = torch.from_numpy(obs_buf.copy()).to(device)
-        with torch.no_grad():
+        with torch.inference_mode():
             actions = policy.get_action(obs_tensor, deterministic=args.deterministic,
                                         disable_shorts=args.disable_shorts)
         act_buf[:] = actions.cpu().numpy().astype(np.int32)
@@ -307,7 +307,7 @@ def evaluate_sequential(args, policy, binding, obs_size, num_actions, device):
 
     while len(all_returns) < target_episodes:
         obs_tensor = torch.from_numpy(obs_buf_m.copy()).to(device)
-        with torch.no_grad():
+        with torch.inference_mode():
             actions = policy.get_action(obs_tensor, deterministic=args.deterministic,
                                         disable_shorts=args.disable_shorts)
         act_buf_m[:] = actions.cpu().numpy().astype(np.int32)
