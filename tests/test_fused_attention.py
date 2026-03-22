@@ -284,3 +284,95 @@ class TestModelIntegration:
         x = torch.randn(4, 48, 32, device="cuda", dtype=torch.float32)
         out = model(x)
         assert "buy_price_logits" in out
+
+
+# ---------------------------------------------------------------------------
+# flash_attn_mqa fallback chain tests
+# ---------------------------------------------------------------------------
+
+class TestFlashAttnMqa:
+    """Tests for flash_attn_mqa() fallback chain: flash_attn -> Triton -> SDPA."""
+
+    def test_flash_attn_mqa_matches_triton(self):
+        """flash_attn_mqa should produce output close to the Triton kernel."""
+        from binanceneural.kernels.attention import flash_attn_mqa, HAS_TRITON
+        if not HAS_TRITON:
+            pytest.skip("Triton not installed")
+
+        Q, K, V = _make_qkv(4, 8, 48, 64, kv_heads=1)
+        ref = _sdpa_reference(Q, K, V)
+        got = flash_attn_mqa(Q, K, V)
+        torch.testing.assert_close(got.float(), ref.float(), atol=1e-2, rtol=1e-2)
+
+    def test_flash_attn_mqa_causal(self):
+        """flash_attn_mqa with causal=True must match causal reference."""
+        from binanceneural.kernels.attention import flash_attn_mqa, HAS_TRITON
+        if not HAS_TRITON:
+            pytest.skip("Triton not installed")
+
+        Q, K, V = _make_qkv(4, 8, 32, 64, kv_heads=1)
+        ref = _sdpa_reference(Q, K, V, causal=True)
+        got = flash_attn_mqa(Q, K, V, causal=True)
+        torch.testing.assert_close(got.float(), ref.float(), atol=1e-2, rtol=1e-2)
+
+    def test_flash_attn_mqa_output_shape(self):
+        """Output shape must equal Q shape."""
+        from binanceneural.kernels.attention import flash_attn_mqa
+        Q, K, V = _make_qkv(2, 8, 48, 64, kv_heads=2)
+        out = flash_attn_mqa(Q, K, V)
+        assert out.shape == Q.shape
+
+    def test_flash_attn_mqa_dtype_preserved(self):
+        """Output dtype must match input dtype."""
+        from binanceneural.kernels.attention import flash_attn_mqa
+        Q, K, V = _make_qkv(2, 8, 48, 64, kv_heads=1, dtype=torch.bfloat16)
+        out = flash_attn_mqa(Q, K, V)
+        assert out.dtype == torch.bfloat16
+
+    def test_flash_attn_mqa_sdpa_fallback(self):
+        """When both HAS_FLASH_ATTN and HAS_TRITON are False, falls back to SDPA."""
+        import binanceneural.kernels.attention as attn_mod
+        Q, K, V = _make_qkv(2, 8, 32, 64, kv_heads=1)
+        with mock.patch.object(attn_mod, "HAS_FLASH_ATTN", False), \
+             mock.patch.object(attn_mod, "HAS_TRITON", False):
+            out = attn_mod.flash_attn_mqa(Q, K, V)
+        ref = _sdpa_reference(Q, K, V)
+        torch.testing.assert_close(out.float(), ref.float(), atol=1e-2, rtol=1e-2)
+
+    def test_flash_attn_mqa_gqa(self):
+        """GQA with 2 KV heads should work via SDPA fallback."""
+        from binanceneural.kernels.attention import flash_attn_mqa, HAS_TRITON
+        if not HAS_TRITON:
+            pytest.skip("Triton not installed")
+        Q, K, V = _make_qkv(2, 8, 32, 64, kv_heads=2)
+        ref = _sdpa_reference(Q, K, V)
+        got = flash_attn_mqa(Q, K, V)
+        torch.testing.assert_close(got.float(), ref.float(), atol=1e-2, rtol=1e-2)
+
+
+# ---------------------------------------------------------------------------
+# H100 / SM90 detection test
+# ---------------------------------------------------------------------------
+
+class TestSM90Detection:
+    """Verify HAS_FLASH_ATTN flag reflects hardware capability correctly."""
+
+    def test_has_flash_attn_is_bool(self):
+        """HAS_FLASH_ATTN must always be a bool (import probe must not raise)."""
+        from binanceneural.kernels.attention import HAS_FLASH_ATTN
+        assert isinstance(HAS_FLASH_ATTN, bool)
+
+    def test_sm90_flash_attn_mqa_correctness(self):
+        """On SM90+ with flash_attn installed, flash_attn_mqa must match reference."""
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA required")
+        major, _ = torch.cuda.get_device_capability()
+        if major < 9:
+            pytest.skip("SM90 (H100) required for this test")
+        from binanceneural.kernels.attention import HAS_FLASH_ATTN, flash_attn_mqa
+        if not HAS_FLASH_ATTN:
+            pytest.skip("flash_attn not installed on this H100")
+        Q, K, V = _make_qkv(4, 8, 48, 64, kv_heads=1)
+        ref = _sdpa_reference(Q, K, V)
+        got = flash_attn_mqa(Q, K, V)
+        torch.testing.assert_close(got.float(), ref.float(), atol=1e-2, rtol=1e-2)

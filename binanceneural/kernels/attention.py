@@ -31,6 +31,18 @@ try:
 except Exception:
     HAS_TRITON = False
 
+try:
+    from flash_attn.cute import flash_attn_func as _flash_attn_func_inner
+    # Quick probe: attempt a tiny call to verify the kernel actually works on
+    # this GPU.  flash-attn-4 raises AssertionError for unsupported SM versions.
+    _probe = torch.zeros(1, 4, 1, 64, dtype=torch.bfloat16, device="cuda") if torch.cuda.is_available() else None
+    if _probe is not None:
+        _flash_attn_func_inner(_probe, _probe, _probe, causal=False)
+    HAS_FLASH_ATTN = True
+    del _probe
+except Exception:
+    HAS_FLASH_ATTN = False
+
 
 # ---------------------------------------------------------------------------
 # Triton kernel
@@ -263,7 +275,12 @@ def multi_query_attention(
 
     out = torch.empty_like(Q)
 
-    # Block sizes tuned for short sequences typical in this model (S=48)
+    # Block sizes tuned for short sequences typical in this model (S=48).
+    # CC compatibility: these tile sizes fit comfortably in SRAM on all
+    # supported GPUs (A100 CC 8.0: 192 KB, H100 CC 9.0: 228 KB, CC 7.x: 96 KB).
+    # The online-softmax accumulator (BLOCK_M x D) in FP32 for D=128 is
+    # 128*128*4 = 64 KB per program, well within any SM's SRAM budget.
+    # For sequences > 256 BLOCK_N is reduced to limit the score tile size.
     if S <= 64:
         BLOCK_M = 32
         BLOCK_N = 32
@@ -326,3 +343,60 @@ def multi_query_attention(
     )
 
     return out
+
+
+def flash_attn_mqa(
+    Q: torch.Tensor,
+    K: torch.Tensor,
+    V: torch.Tensor,
+    *,
+    causal: bool = False,
+    scale: float | None = None,
+) -> torch.Tensor:
+    """Flash Attention wrapper for multi-query/grouped-query attention.
+
+    Uses flash-attn when available; falls back to the Triton MQA kernel, then
+    SDPA.  All inputs must be on CUDA.
+
+    Parameters
+    ----------
+    Q : [batch, num_heads, seq, head_dim]  (BCHD layout — same as Triton kernel)
+    K : [batch, num_kv_heads, seq, head_dim]
+    V : [batch, num_kv_heads, seq, head_dim]
+    causal : apply causal mask
+    scale : query scale; defaults to 1/sqrt(head_dim)
+
+    Returns
+    -------
+    [batch, num_heads, seq, head_dim] same dtype as Q
+    """
+    if HAS_FLASH_ATTN:
+        # flash_attn_func expects contiguous (B, T, H, D) layout.
+        # Transpose produces non-contiguous strides, so make contiguous explicitly.
+        q_bthd = Q.transpose(1, 2).contiguous()  # (B, H, T, D) -> (B, T, H, D)
+        k_bthd = K.transpose(1, 2).contiguous()
+        v_bthd = V.transpose(1, 2).contiguous()
+        out_bthd = _flash_attn_func_inner(
+            q_bthd,
+            k_bthd,
+            v_bthd,
+            softmax_scale=scale,
+            causal=causal,
+        )
+        return out_bthd.transpose(1, 2).contiguous()  # back to (B, H, T, D)
+
+    if HAS_TRITON:
+        return multi_query_attention(Q, K, V, causal=causal, scale=scale)
+
+    # SDPA fallback (with KV head expansion for MQA/GQA)
+    _, H, _, _ = Q.shape
+    _, KVH, _, _ = K.shape
+    if KVH != H:
+        n_rep = H // KVH
+        K = K.repeat_interleave(n_rep, dim=1)
+        V = V.repeat_interleave(n_rep, dim=1)
+    # Pass scale directly to SDPA so it applies it once internally.
+    # Default of None lets SDPA use 1/sqrt(head_dim) automatically.
+    return torch.nn.functional.scaled_dot_product_attention(
+        Q, K, V, is_causal=causal, scale=scale
+    )
