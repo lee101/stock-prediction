@@ -1279,10 +1279,10 @@ def mutate_config(base: TrialConfig, *, stocks_mode: bool = False) -> TrialConfi
     """Randomly mutate a config for exploration."""
     d = asdict(base)
     # Pick 2-3 params to mutate
-    # stocks_mode: restrict lr to [1e-4, 2e-4] only — 3e-4/5e-4 collapse to hold-cash on stocks data
+    # stocks_mode: include 3e-4 — seed=1137 collapses at 3e-4, but other seeds thrive (random_mut_4424)
     mutable_params = {
         "hidden_size": [256, 512, 1024, 2048],
-        "lr": [1e-4, 2e-4] if stocks_mode else [1e-4, 2e-4, 3e-4, 5e-4],
+        "lr": [1e-4, 2e-4, 3e-4] if stocks_mode else [1e-4, 2e-4, 3e-4, 5e-4],
         "ent_coef": [0.01, 0.03, 0.05, 0.08, 0.1],
         "weight_decay": [0.0, 0.001, 0.005, 0.01, 0.05],
         "fill_slippage_bps": [0.0, 5.0, 8.0, 12.0],
