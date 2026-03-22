@@ -869,6 +869,49 @@ STOCK_EXPERIMENTS: list[dict] = [
     {"description": "gru_lr1e4_s42",             "lr": 1e-4, "anneal_lr": True, "seed": 42,  "arch": "gru"},
     # -----------------------------------------------------------------------
 
+    # ---------------------------------------------------------------------------
+    # (K) s1137 hyperparam cross — seed=1137 is best seed on stocks11_2012 (robust=-21.4)
+    # Cross with best hyperparams to find the optimal combination.
+    # s5678 is 2nd best (robust=-55.5), worth testing too.
+    # 2026-03-22: added after main seed sweep confirmed s1137 dominance.
+    # ---------------------------------------------------------------------------
+    # s1137 × trade penalty
+    {"description": "s1137_tp01", "lr": 1e-4, "anneal_lr": True, "seed": 1137, "trade_penalty": 0.01},
+    {"description": "s1137_tp02", "lr": 1e-4, "anneal_lr": True, "seed": 1137, "trade_penalty": 0.02},
+    {"description": "s1137_tp03", "lr": 1e-4, "anneal_lr": True, "seed": 1137, "trade_penalty": 0.03},
+    # s1137 × slippage (forces agent to find wider edges)
+    {"description": "s1137_slip5",  "lr": 1e-4, "anneal_lr": True, "seed": 1137, "fill_slippage_bps": 5.0},
+    {"description": "s1137_slip8",  "lr": 1e-4, "anneal_lr": True, "seed": 1137, "fill_slippage_bps": 8.0},
+    {"description": "s1137_slip12", "lr": 1e-4, "anneal_lr": True, "seed": 1137, "fill_slippage_bps": 12.0},
+    # s1137 × entropy
+    {"description": "s1137_ent03",  "lr": 1e-4, "anneal_lr": True, "seed": 1137, "ent_coef": 0.03},
+    {"description": "s1137_ent07",  "lr": 1e-4, "anneal_lr": True, "seed": 1137, "ent_coef": 0.07},
+    # s1137 × weight decay
+    {"description": "s1137_wd003",  "lr": 1e-4, "anneal_lr": True, "seed": 1137, "weight_decay": 0.003},
+    {"description": "s1137_wd01",   "lr": 1e-4, "anneal_lr": True, "seed": 1137, "weight_decay": 0.01},
+    # s1137 × combo (trade penalty + slippage — best of both friction sources)
+    {"description": "s1137_tp02_slip8",  "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "trade_penalty": 0.02, "fill_slippage_bps": 8.0},
+    {"description": "s1137_tp01_ent03",  "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "trade_penalty": 0.01, "ent_coef": 0.03},
+    {"description": "s1137_tp01_wd003",  "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "trade_penalty": 0.01, "weight_decay": 0.003},
+    # s5678 × best hyperparams (2nd best seed)
+    {"description": "s5678_tp01",   "lr": 1e-4, "anneal_lr": True, "seed": 5678, "trade_penalty": 0.01},
+    {"description": "s5678_tp02",   "lr": 1e-4, "anneal_lr": True, "seed": 5678, "trade_penalty": 0.02},
+    {"description": "s5678_slip8",  "lr": 1e-4, "anneal_lr": True, "seed": 5678, "fill_slippage_bps": 8.0},
+    {"description": "s5678_ent03",  "lr": 1e-4, "anneal_lr": True, "seed": 5678, "ent_coef": 0.03},
+    # Additional seeds to explore (beyond the initial 9-seed sweep)
+    {"description": "lr1e4_anneal_s8675", "lr": 1e-4, "anneal_lr": True, "seed": 8675},
+    {"description": "lr1e4_anneal_s2345", "lr": 1e-4, "anneal_lr": True, "seed": 2345},
+    {"description": "lr1e4_anneal_s999",  "lr": 1e-4, "anneal_lr": True, "seed": 999},
+    {"description": "lr1e4_anneal_s13",   "lr": 1e-4, "anneal_lr": True, "seed": 13},
+    # s1137 × architecture
+    {"description": "s1137_transformer", "lr": 1e-4, "anneal_lr": True, "seed": 1137, "arch": "transformer"},
+    {"description": "s1137_resmlp",      "lr": 1e-4, "anneal_lr": True, "seed": 1137, "arch": "resmlp"},
+    {"description": "s1137_gru",         "lr": 1e-4, "anneal_lr": True, "seed": 1137, "arch": "gru"},
+    # -----------------------------------------------------------------------
+
     # Random mutations — slots so H100 500-trial runs get ~400+ random trials
     # (after ~92 named configs). Each slot calls mutate_config(best_config) at runtime.
     *[{"description": f"random_{i}"} for i in range(1, 451)],
