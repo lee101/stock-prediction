@@ -219,17 +219,54 @@ class PPOTrader:
 
         return obs
 
-    def get_signal(self, features: np.ndarray, prices: dict) -> TradingSignal:
+    def get_signal(
+        self,
+        features: np.ndarray,
+        prices: dict,
+        tts_k: int = 1,
+        tts_data_path: Optional[str] = None,
+        tts_timestep: int = 0,
+        tts_horizon: int = 20,
+        tts_gamma: float = 0.99,
+        tts_fee_rate: float = 0.001,
+        tts_fill_slippage_bps: float = 5.0,
+    ) -> TradingSignal:
         """
         Get trading signal from current market state.
 
         Args:
             features: [num_symbols, 16] feature array
             prices: dict of {symbol: current_price}
+            tts_k: if > 1, use K-rollout test-time search instead of greedy argmax.
+                   Requires tts_data_path and tts_timestep.
+            tts_data_path: path to MKTD binary (required when tts_k > 1)
+            tts_timestep: current position in the data file (required when tts_k > 1)
+            tts_horizon: steps per rollout (default 20)
+            tts_gamma: discount factor for TTS (default 0.99)
+            tts_fee_rate: fee rate used in TTS rollouts (default 0.001)
+            tts_fill_slippage_bps: slippage bps used in TTS rollouts (default 5.0)
 
         Returns:
             TradingSignal with action recommendation
         """
+        if tts_k > 1:
+            if tts_data_path is None:
+                raise ValueError("tts_data_path is required when tts_k > 1")
+            from pufferlib_market.inference_tts import get_signal_tts
+            signal, _stats = get_signal_tts(
+                trader=self,
+                features=features,
+                prices=prices,
+                data_path=tts_data_path,
+                current_timestep=tts_timestep,
+                tts_k=tts_k,
+                horizon=tts_horizon,
+                gamma=tts_gamma,
+                fee_rate=tts_fee_rate,
+                fill_slippage_bps=tts_fill_slippage_bps,
+            )
+            return signal
+
         obs = self.build_observation(features, prices)
         obs_t = torch.from_numpy(obs).unsqueeze(0).to(self.device)
 
@@ -240,42 +277,40 @@ class PPOTrader:
             confidence = probs[0, action].item()
             value_est = value.item()
 
-        # Decode action
+        return self._decode_action(action, confidence, value_est)
+
+    def _decode_action(self, action: int, confidence: float, value_est: float) -> TradingSignal:
+        """Decode a raw action index into a TradingSignal."""
         if action == 0:
             return TradingSignal("flat", None, None, confidence, value_est, 0.0, 0.0)
-        else:
-            if self.per_symbol_actions > 1:
-                # Allocation bins mode
-                action_idx = action - 1
-                is_short = action_idx >= self.side_block
-                if is_short:
-                    action_idx -= self.side_block
-                sym_idx = action_idx // self.per_symbol_actions
-                rem = action_idx % self.per_symbol_actions
-                alloc_idx = rem // self.action_level_bins
-                level_idx = rem % self.action_level_bins
-                alloc_pct = (alloc_idx + 1) / max(1, self.action_allocation_bins)
-                if self.action_level_bins > 1 and self.action_max_offset_bps > 0:
-                    frac = level_idx / max(1, self.action_level_bins - 1)
-                    level_bps = (2.0 * frac - 1.0) * self.action_max_offset_bps
-                else:
-                    level_bps = 0.0
-                symbol = self.SYMBOLS[sym_idx]
-                direction = "short" if is_short else "long"
-                action_str = f"{direction}_{symbol}"
-                return TradingSignal(action_str, symbol, direction, confidence, value_est, alloc_pct, level_bps)
-            elif self.long_only:
-                sym_idx = action - 1
-                symbol = self.SYMBOLS[sym_idx]
-                return TradingSignal(f"long_{symbol}", symbol, "long", confidence, value_est, 1.0, 0.0)
+        if self.per_symbol_actions > 1:
+            action_idx = action - 1
+            is_short = action_idx >= self.side_block
+            if is_short:
+                action_idx -= self.side_block
+            sym_idx = action_idx // self.per_symbol_actions
+            rem = action_idx % self.per_symbol_actions
+            alloc_idx = rem // self.action_level_bins
+            level_idx = rem % self.action_level_bins
+            alloc_pct = (alloc_idx + 1) / max(1, self.action_allocation_bins)
+            if self.action_level_bins > 1 and self.action_max_offset_bps > 0:
+                frac = level_idx / max(1, self.action_level_bins - 1)
+                level_bps = (2.0 * frac - 1.0) * self.action_max_offset_bps
             else:
-                action_idx = action - 1
-                is_short = action_idx >= self.num_symbols
-                sym_idx = action_idx % self.num_symbols
-                symbol = self.SYMBOLS[sym_idx]
-                direction = "short" if is_short else "long"
-                action_str = f"{direction}_{symbol}"
-                return TradingSignal(action_str, symbol, direction, confidence, value_est, 1.0, 0.0)
+                level_bps = 0.0
+            symbol = self.SYMBOLS[sym_idx]
+            direction = "short" if is_short else "long"
+            return TradingSignal(f"{direction}_{symbol}", symbol, direction, confidence, value_est, alloc_pct, level_bps)
+        if self.long_only:
+            sym_idx = action - 1
+            symbol = self.SYMBOLS[sym_idx]
+            return TradingSignal(f"long_{symbol}", symbol, "long", confidence, value_est, 1.0, 0.0)
+        action_idx = action - 1
+        is_short = action_idx >= self.num_symbols
+        sym_idx = action_idx % self.num_symbols
+        symbol = self.SYMBOLS[sym_idx]
+        direction = "short" if is_short else "long"
+        return TradingSignal(f"{direction}_{symbol}", symbol, direction, confidence, value_est, 1.0, 0.0)
 
     def update_state(self, action: int, fill_price: float, symbol: str):
         """Update internal state after trade execution."""
