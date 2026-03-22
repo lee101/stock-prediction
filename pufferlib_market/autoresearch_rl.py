@@ -759,6 +759,24 @@ H100_STOCK_EXPERIMENTS: list[dict] = [
     {"description": "h100_ent_08",
      "ent_coef": 0.08},
 
+    # trade_pen: stock_trade_pen_05 showed score=-3.5, 5%neg, +27.8%med on stocks12 (v2 sweep)
+    # — best single-trial result, beating random_mut_2272. Multiple seeds + variations critical.
+    {"description": "h100_trade_pen_05",
+     "trade_penalty": 0.05},
+    {"description": "h100_trade_pen_05_s123",
+     "trade_penalty": 0.05, "seed": 123},
+    {"description": "h100_trade_pen_05_s7",
+     "trade_penalty": 0.05, "seed": 7},
+    {"description": "h100_trade_pen_05_s42",
+     "trade_penalty": 0.05, "seed": 42},
+    {"description": "h100_trade_pen_05_ent03",
+     "trade_penalty": 0.05, "ent_coef": 0.03},
+    {"description": "h100_trade_pen_05_ent08",
+     "trade_penalty": 0.05, "ent_coef": 0.08},
+    {"description": "h100_trade_pen_05_wd005",
+     "trade_penalty": 0.05, "weight_decay": 0.005},
+    {"description": "h100_trade_pen_05_anneal_ent",
+     "trade_penalty": 0.05, "anneal_ent": True, "ent_coef": 0.08, "ent_coef_end": 0.02},
     # trade_pen_10: 2nd best on stocks20 (holdout=+2.23). Cross with slippage.
     {"description": "h100_trade_pen_10",
      "trade_penalty": 0.10},
