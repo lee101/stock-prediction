@@ -25,23 +25,24 @@ GPU_ALIASES: dict[str, str] = {
     "l40s": "NVIDIA L40S",
     "l40": "NVIDIA L40",
     "a40": "NVIDIA A40",
-    "rtx6000-ada": "NVIDIA RTX 6000 Ada Generation",
+    "6000-ada": "NVIDIA RTX 6000 Ada Generation",
+    "rtx6000": "NVIDIA RTX 6000 Ada Generation",
 }
 
 # Backwards-compatible alias
 TRAINING_GPU_TYPES = GPU_ALIASES
 
 HOURLY_RATES: dict[str, float] = {
-    "NVIDIA A100 80GB PCIe": 1.64,
-    "NVIDIA A100-SXM4-80GB": 1.94,
-    "NVIDIA H100 80GB HBM3": 3.89,
-    "NVIDIA H100 SXM": 4.49,
-    "NVIDIA GeForce RTX 4090": 0.69,
-    "NVIDIA GeForce RTX 5090": 1.25,
+    "NVIDIA A100 80GB PCIe": 1.19,
+    "NVIDIA A100-SXM4-80GB": 1.39,
+    "NVIDIA H100 80GB HBM3": 1.99,
+    "NVIDIA H100 SXM": 2.69,
+    "NVIDIA GeForce RTX 4090": 0.34,
+    "NVIDIA GeForce RTX 5090": 0.69,
     "NVIDIA L40S": 0.79,
     "NVIDIA L40": 0.69,
-    "NVIDIA A40": 0.69,
-    "NVIDIA RTX 6000 Ada Generation": 0.79,  # ~$0.79/hr, 48GB VRAM CC 8.9
+    "NVIDIA A40": 0.35,
+    "NVIDIA RTX 6000 Ada Generation": 0.74,
 }
 
 
@@ -154,7 +155,7 @@ class RunPodClient:
 
     def find_gpu_type_id(self, name_substr: str) -> str:
         needle = name_substr.lower()
-        for gpu in self.list_gpu_types():
+        for gpu in self.list_gpu_types(include_pricing=False):
             display_name = gpu.get("displayName", "")
             gpu_id = gpu.get("id", "")
             if needle in display_name.lower() or needle in gpu_id.lower():
@@ -181,6 +182,7 @@ class RunPodClient:
             "name": config.name,
             "gpuTypeId": gpu_type_id,
             "gpuCount": config.gpu_count,
+            "cloudType": "ALL",
             "volumeInGb": config.volume_size,
             "containerDiskInGb": config.container_disk,
             "startSsh": True,

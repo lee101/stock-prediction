@@ -149,6 +149,11 @@ sp500 = [
     "lxml>=5.0.0",
 ]
 
+ssm = [
+    "mamba-ssm>=2.2",
+    "causal-conv1d>=1.4",
+]
+
 # CuteDSL is a sibling repo providing Triton-optimised Chronos2 kernels.
 # Setup: run `make setup-cutedsl` to create the symlink, then:
 #   source .venv313/bin/activate && uv pip install -e cutedsl/

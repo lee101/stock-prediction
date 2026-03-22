@@ -128,14 +128,11 @@ class ChronosForecastManager:
                     f"need >{min_idx} rows for forecasting but found {len(history)}."
                 )
             return existing
-        missing_indices: List[int] = []
-        for idx in range(min_idx, len(history)):
-            target_ts = history.iloc[idx]["timestamp"]
-            if target_ts <= start_ts or target_ts > end_ts:
-                continue
-            if target_ts in existing_ts:
-                continue
-            missing_indices.append(idx)
+        all_ts = history["timestamp"].iloc[min_idx:]
+        mask = (all_ts > start_ts) & (all_ts <= end_ts)
+        if existing_ts:
+            mask &= ~all_ts.isin(existing_ts)
+        missing_indices = list(mask.index[mask.values])
 
         if not missing_indices:
             return existing
