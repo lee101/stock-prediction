@@ -426,6 +426,15 @@ echo "BOOTSTRAP_OK"
     print(f"  Bootstrap complete on {pod.name}")
 
 
+def _detect_remote_h100(pod: PoolPod) -> bool:
+    """Return True when the pod's first GPU is an H100 (via nvidia-smi over SSH)."""
+    result = ssh_exec(pod, "nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1")
+    if result.returncode == 0:
+        first_line = result.stdout.strip().lower()
+        return "h100" in first_line
+    return False
+
+
 def run_rl_experiment_on_pod(
     pod: PoolPod,
     *,
@@ -454,6 +463,12 @@ def run_rl_experiment_on_pod(
     extra_args = []
     if descriptions:
         extra_args.extend(["--descriptions", shlex.quote(descriptions)])
+
+    # Auto-detect H100 and add scale-up overrides when running on one.
+    is_h100 = _detect_remote_h100(pod)
+    if is_h100:
+        print(f"  [{pod.name}] H100 detected — adding --num-envs 256 --cuda-graph-ppo")
+        extra_args.extend(["--num-envs", "256", "--cuda-graph-ppo"])
 
     train_cmd = " ".join([
         "python", "-u", "-m", "pufferlib_market.autoresearch_rl",
@@ -535,8 +550,16 @@ ls {shlex.quote(remote_checkpoint_dir)}/best.pt 2>/dev/null || true
 
 
 def cmd_status(args: argparse.Namespace) -> None:
-    client = _require_client()
     state = load_pool_state()
+
+    # If the pool state file does not exist there is nothing to query — skip the
+    # network call and print a helpful message instead.
+    if not POOL_STATE_FILE.exists():
+        print("No pool state found.")
+        print(f"Limits: {json.dumps(state.limits)}")
+        return
+
+    client = _require_client()
     refresh_pod_status(state, client)
     save_pool_state(state)
 
@@ -570,12 +593,34 @@ def cmd_status(args: argparse.Namespace) -> None:
 
 
 def cmd_run(args: argparse.Namespace) -> None:
+    dry_run: bool = getattr(args, "dry_run", False)
+
+    if dry_run:
+        gpu_type = _resolve_gpu(args.gpu)
+        budget_limit: float = getattr(args, "budget_limit", 10.0)
+        print("[dry-run] Would run experiment:")
+        print(f"  experiment:   {args.experiment}")
+        print(f"  gpu:          {gpu_type}")
+        print(f"  time_budget:  {args.time_budget}s")
+        print(f"  max_trials:   {args.max_trials}")
+        print(f"  train_data:   {args.train_data}")
+        print(f"  val_data:     {args.val_data}")
+        print(f"  remote_dir:   {args.remote_dir}")
+        print(f"  budget_limit: ${budget_limit:.2f}")
+        est_cost = _print_cost_estimate(gpu_type, args.time_budget)
+        if budget_limit > 0 and est_cost > budget_limit:
+            print(f"[dry-run] WARNING: estimated cost ${est_cost:.2f} exceeds budget limit ${budget_limit:.2f}")
+        else:
+            print("[dry-run] Cost check passed.")
+        print("[dry-run] No pod provisioned.")
+        return
+
     client = _require_client()
     state = load_pool_state()
     refresh_pod_status(state, client)
 
     gpu_type = _resolve_gpu(args.gpu)
-    budget_limit: float = getattr(args, "budget_limit", 10.0)
+    budget_limit = getattr(args, "budget_limit", 10.0)
 
     est_cost = _print_cost_estimate(gpu_type, args.time_budget)
     if budget_limit > 0 and est_cost > budget_limit:
@@ -708,6 +753,10 @@ def main() -> None:
     run_p.add_argument(
         "--descriptions", default="",
         help="Comma-separated subset of experiment descriptions to run",
+    )
+    run_p.add_argument(
+        "--dry-run", action="store_true",
+        help="Validate config and print what would be done without provisioning a pod",
     )
 
     # cleanup
