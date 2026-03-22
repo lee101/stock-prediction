@@ -272,6 +272,12 @@ def _run_single_window(
     binding.vec_set_offsets(vec_handle, np.array([start_idx], dtype=np.int32))
     binding.vec_reset(vec_handle, start_idx)
 
+    # Snapshot env log BEFORE the episode so we can compute per-window deltas.
+    # env->log is cumulative (never reset by c_reset), so without this, window 2+
+    # would return cumulative totals instead of per-window values.
+    env_handle = binding.vec_env_at(vec_handle, 0)
+    log_before = dict(binding.env_get(env_handle))
+
     # Save original weights before TTT so we can restore them after
     original_state = None
     if apply_ttt:
@@ -348,9 +354,15 @@ def _run_single_window(
             policy.eval()
 
         if term_buf[0]:
-            env_handle = binding.vec_env_at(vec_handle, 0)
-            env_data = binding.env_get(env_handle)
-            result_data = env_data
+            env_data_after = dict(binding.env_get(env_handle))
+            # Compute per-window deltas to avoid cumulative log contamination
+            _DELTA_KEYS = ("total_return", "sortino", "max_drawdown", "num_trades", "win_rate")
+            result_data = {k: env_data_after[k] - log_before[k] for k in _DELTA_KEYS
+                          if k in env_data_after and k in log_before}
+            # Fall back to raw values for any keys not in the snapshot
+            for k in env_data_after:
+                if k not in result_data:
+                    result_data[k] = env_data_after[k]
             episode_done = True
 
     # Restore original weights (TTT is per-window only)
@@ -662,6 +674,18 @@ def meta_select_holdout_eval(
     alloc_bins = int(first_payload.get("action_allocation_bins", 1)) if isinstance(first_payload, dict) else 1
     level_bins = int(first_payload.get("action_level_bins", 1)) if isinstance(first_payload, dict) else 1
 
+    # Validate that all checkpoints share the same action grid before creating the env.
+    # Mixing checkpoints with different grids silently handicaps the ones that don't match.
+    for ckpt_path, _, payload in policies[1:]:
+        p_alloc = int(payload.get("action_allocation_bins", 1)) if isinstance(payload, dict) else 1
+        p_level = int(payload.get("action_level_bins", 1)) if isinstance(payload, dict) else 1
+        if p_alloc != alloc_bins or p_level != level_bins:
+            raise ValueError(
+                f"Checkpoint {ckpt_path} has incompatible action grid: "
+                f"alloc_bins={p_alloc} (expected {alloc_bins}), "
+                f"level_bins={p_level} (expected {level_bins})"
+            )
+
     import pufferlib_market.binding as binding
     binding.shared(data_path=str(Path(data_path).resolve()))
 
@@ -692,14 +716,20 @@ def meta_select_holdout_eval(
             print(f"  Meta window {win_i+1}/{n_windows} start={start_idx} selecting from "
                   f"{len(policies)} checkpoints ...", end="", flush=True)
 
-        # Selection phase: run each policy for selection_steps and measure return
+        # Selection phase: run each policy for selection_steps and measure actual trading return.
+        # We use env_get() total_return delta rather than shaped reward to avoid ranking
+        # on scaled/clipped/penalty-adjusted reward signals that don't reflect true PnL.
         selection_returns = []
         for _ckpt_path, sel_policy, _ in policies:
             sel_policy.eval()
             binding.vec_set_offsets(vec_handle, np.array([int(start_idx)], dtype=np.int32))
             binding.vec_reset(vec_handle, int(start_idx))
 
-            sel_cumulative_reward = 0.0
+            # Snapshot log before selection episode
+            sel_env_handle = binding.vec_env_at(vec_handle, 0)
+            sel_log_before = dict(binding.env_get(sel_env_handle))
+
+            sel_terminated = False
             for _step in range(selection_steps):
                 obs_tensor = torch.from_numpy(obs_buf[:1].copy()).to(device)
                 with torch.no_grad():
@@ -707,11 +737,17 @@ def meta_select_holdout_eval(
                 action = logits.argmax(dim=-1) if deterministic else Categorical(logits=logits).sample()
                 act_buf[0] = int(action.item())
                 binding.vec_step(vec_handle)
-                sel_cumulative_reward += float(rew_buf[0])
                 if term_buf[0]:
+                    sel_terminated = True
                     break
 
-            selection_returns.append(sel_cumulative_reward)
+            # Use actual total_return delta as selection criterion
+            sel_log_after = dict(binding.env_get(sel_env_handle))
+            if sel_terminated and "total_return" in sel_log_after and "total_return" in sel_log_before:
+                sel_return = sel_log_after["total_return"] - sel_log_before["total_return"]
+            else:
+                sel_return = sel_log_after.get("total_return", 0.0) - sel_log_before.get("total_return", 0.0)
+            selection_returns.append(sel_return)
 
         # Pick best checkpoint
         best_idx = int(np.argmax(selection_returns))
@@ -726,6 +762,10 @@ def meta_select_holdout_eval(
         binding.vec_set_offsets(vec_handle, np.array([int(start_idx)], dtype=np.int32))
         binding.vec_reset(vec_handle, int(start_idx))
 
+        # Snapshot log before this evaluation episode for delta computation
+        eval_env_handle = binding.vec_env_at(vec_handle, 0)
+        eval_log_before = dict(binding.env_get(eval_env_handle))
+
         result_data = None
         for _step in range(eval_steps + 10):
             obs_tensor = torch.from_numpy(obs_buf[:1].copy()).to(device)
@@ -735,8 +775,13 @@ def meta_select_holdout_eval(
             act_buf[0] = int(action.item())
             binding.vec_step(vec_handle)
             if term_buf[0]:
-                env_handle = binding.vec_env_at(vec_handle, 0)
-                result_data = binding.env_get(env_handle)
+                eval_log_after = dict(binding.env_get(eval_env_handle))
+                _DELTA_KEYS = ("total_return", "sortino", "max_drawdown", "num_trades", "win_rate")
+                result_data = {k: eval_log_after[k] - eval_log_before[k] for k in _DELTA_KEYS
+                               if k in eval_log_after and k in eval_log_before}
+                for k in eval_log_after:
+                    if k not in result_data:
+                        result_data[k] = eval_log_after[k]
                 break
 
         if result_data is not None:

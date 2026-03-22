@@ -163,12 +163,17 @@ def pull_from_manifest(manifest_path: Path, *, dry_run: bool, local_dir: str) ->
 
     print(f"  $ {' '.join(modified_cmd)}")
     if not dry_run:
+        # Track pre-existing files so we return only newly pulled ones on success.
+        pre_existing = set(Path(local_dir).rglob("best.pt"))
         result = subprocess.run(modified_cmd)
         if result.returncode != 0:
-            print(f"  [warn] rsync returned non-zero exit code {result.returncode}", file=sys.stderr)
+            print(f"  [error] rsync failed (exit {result.returncode})", file=sys.stderr)
+            return []  # don't return stale files on rsync failure
+        newly_pulled = [p for p in Path(local_dir).rglob("best.pt") if p not in pre_existing]
+        return newly_pulled
 
-    # Discover what was pulled
-    return list(Path(local_dir).rglob("best.pt"))
+    # Dry-run: return empty list (nothing was actually pulled)
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -432,9 +437,10 @@ def main(argv: list[str] | None = None) -> int:
     if not pulled_checkpoints:
         if args.dry_run:
             print("\n[dry-run] would have pulled checkpoints (none available locally yet)")
+            return 0
         else:
-            print("[warn] no checkpoints were pulled", file=sys.stderr)
-        return 0
+            print("[error] no checkpoints were pulled", file=sys.stderr)
+            return 1
 
     # Print summary of pulled checkpoints
     print(f"\n[pulled] {len(pulled_checkpoints)} checkpoint(s):")
