@@ -25,6 +25,7 @@ GPU_ALIASES: dict[str, str] = {
     "l40s": "NVIDIA L40S",
     "l40": "NVIDIA L40",
     "a40": "NVIDIA A40",
+    "rtx6000-ada": "NVIDIA RTX 6000 Ada Generation",
 }
 
 # Backwards-compatible alias
@@ -40,6 +41,7 @@ HOURLY_RATES: dict[str, float] = {
     "NVIDIA L40S": 0.79,
     "NVIDIA L40": 0.69,
     "NVIDIA A40": 0.69,
+    "NVIDIA RTX 6000 Ada Generation": 0.79,  # ~$0.79/hr, 48GB VRAM CC 8.9
 }
 
 

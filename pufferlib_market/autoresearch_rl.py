@@ -618,6 +618,43 @@ STOCK_EXPERIMENTS: list[dict] = [
      "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
      "requires_gpu": "h100"},
 
+    # -----------------------------------------------------------------------
+    # A40/RTX6000-Ada configs: 128 parallel envs, minibatch 2048, BF16, CUDA graph
+    # A40: CC 8.6 (Ampere), 48GB VRAM, $0.69/hr — same price as RTX 4090 but 48GB
+    # RTX 6000 Ada: CC 8.9 (Ada Lovelace), 48GB VRAM, $0.79/hr
+    # -----------------------------------------------------------------------
+
+    # Replicate best known config (h1024 + anneal_lr) at A40 scale
+    {"description": "h1024_a40",
+     "hidden_size": 1024, "anneal_lr": True, "ent_coef": 0.05,
+     "num_envs": 128, "minibatch_size": 2048, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "a40"},
+
+    # h2048 now feasible with A40's 48GB VRAM
+    {"description": "h2048_a40",
+     "hidden_size": 2048, "anneal_lr": True, "ent_coef": 0.05,
+     "fill_slippage_bps": 5.0, "trade_penalty": 0.05,
+     "num_envs": 128, "minibatch_size": 2048, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "a40"},
+
+    # ResidualMLP at A40 scale
+    {"description": "resmlp_a40",
+     "arch": "resmlp", "hidden_size": 1024, "anneal_lr": True, "ent_coef": 0.05,
+     "num_envs": 128, "minibatch_size": 2048, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "a40"},
+
+    # Slippage friction to force wider edges — A40 scale
+    {"description": "slip_5bps_a40",
+     "fill_slippage_bps": 5.0, "hidden_size": 1024, "anneal_lr": True,
+     "num_envs": 128, "minibatch_size": 2048, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "a40"},
+
+    # Replicate OOS best (ent_coef=0.05) at A40 scale
+    {"description": "ent_005_a40",
+     "ent_coef": 0.05, "hidden_size": 1024, "anneal_lr": True,
+     "num_envs": 128, "minibatch_size": 2048, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "a40"},
+
     # Random mutations to explore the neighbourhood (30 slots per sweep pass)
     {"description": "random_1"},
     {"description": "random_2"},
@@ -1437,6 +1474,9 @@ def main():
     parser.add_argument("--h100-mode", action="store_true",
                         help="H100 scale-up: num_envs=256, minibatch=4096, bf16, cuda-graph-ppo, "
                              "time_budget=200s. Overrides per-config settings for all trials.")
+    parser.add_argument("--a40-mode", action="store_true",
+                        help="A40/RTX6000-Ada optimized: 128 envs, bf16, cuda-graph-ppo, "
+                             "time_budget=250s. Overrides per-config settings for all trials.")
     parser.add_argument("--scale-pairs", type=int, default=0,
                         help="Use stocksN_daily_{train,val}.bin instead of stocks12. "
                              "Falls back to stocks12 if the file does not exist.")
@@ -1530,6 +1570,10 @@ def main():
     # --h100-mode: shorten time budget to match A100 wall-time (H100 is ~2x faster)
     if args.h100_mode and args.time_budget == 300:
         args.time_budget = 200
+
+    # --a40-mode: A40 is ~1.5x faster than A100 per dollar; use 250s budget
+    if args.a40_mode and args.time_budget == 300:
+        args.time_budget = 250
 
     # --stocks: apply stock-mode defaults before anything else so that
     # user overrides (explicit --train-data etc.) can still win.
@@ -1678,7 +1722,19 @@ def main():
             config.use_bf16 = True
             config.cuda_graph_ppo = True
 
-        gpu_type = "h100" if (args.h100_mode or config.requires_gpu == "h100") else "a100"
+        # --a40-mode: force A40/RTX6000-Ada hardware settings on every trial
+        if args.a40_mode:
+            config.num_envs = 128
+            config.minibatch_size = 2048
+            config.use_bf16 = True
+            config.cuda_graph_ppo = True
+
+        if args.h100_mode or config.requires_gpu == "h100":
+            gpu_type = "h100"
+        elif args.a40_mode or config.requires_gpu == "a40":
+            gpu_type = "a40"
+        else:
+            gpu_type = "a40"  # default to A40 (cost-efficient 48GB)
 
         holdout_eval_steps = int(args.holdout_eval_steps) if int(args.holdout_eval_steps) > 0 else int(config.max_steps)
 
