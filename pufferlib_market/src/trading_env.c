@@ -47,6 +47,13 @@ MarketData* market_data_load(const char* path) {
     md->file_buf      = buf;
     md->file_size     = (size_t)file_size;
 
+    /* Read features_per_sym from header (v3+); fall back to FEATURES_PER_SYM for v1/v2. */
+    if (hdr->features_per_sym > 0) {
+        md->features_per_sym = (int)hdr->features_per_sym;
+    } else {
+        md->features_per_sym = FEATURES_PER_SYM;
+    }
+
     if (md->num_symbols > MAX_SYMBOLS) {
         fprintf(stderr, "market_data_load: too many symbols %d (max %d)\n",
                 md->num_symbols, MAX_SYMBOLS);
@@ -63,7 +70,7 @@ MarketData* market_data_load(const char* path) {
 
     /* feature array */
     md->features = (float*)ptr;
-    ptr += (size_t)md->num_timesteps * md->num_symbols * FEATURES_PER_SYM * sizeof(float);
+    ptr += (size_t)md->num_timesteps * md->num_symbols * md->features_per_sym * sizeof(float);
 
     /* price array */
     md->prices = (float*)ptr;
@@ -119,16 +126,17 @@ static void fill_observations(TradingEnv* __restrict__ env) {
     int t_obs = t - 1;
     if (UNLIKELY(t_obs < 0)) t_obs = 0;
 
-    const float* __restrict__ feat_src = &md->features[t_obs * S * FEATURES_PER_SYM];
-    __builtin_prefetch(feat_src + S * FEATURES_PER_SYM, 0, 1);
+    const int F = md->features_per_sym;
+    const float* __restrict__ feat_src = &md->features[t_obs * S * F];
+    __builtin_prefetch(feat_src + S * F, 0, 1);
 
     /* per-symbol features (lagged by 1 bar) — compiler will vectorize with AVX2 */
     float* __restrict__ obs_dst = env->observations;
-    memcpy(obs_dst, feat_src, (size_t)S * FEATURES_PER_SYM * sizeof(float));
+    memcpy(obs_dst, feat_src, (size_t)S * F * sizeof(float));
 
     /* portfolio state uses LAGGED prices (t-1) for position valuation shown
        to the agent, matching what a real trader would see before bar t closes */
-    int base = S * FEATURES_PER_SYM;
+    int base = S * F;
     float pos_val = 0.0f;
     float unreal_pnl = 0.0f;
 
@@ -740,7 +748,7 @@ __attribute__((hot)) void c_step(TradingEnv* env) {
     } else {
         int t_next = t_new + 1;
         if (LIKELY(t_next < md->num_timesteps)) {
-            __builtin_prefetch(&md->features[t_next * S * FEATURES_PER_SYM], 0, 1);
+            __builtin_prefetch(&md->features[t_next * S * md->features_per_sym], 0, 1);
             __builtin_prefetch(&md->prices[t_next * S * PRICE_FEATS], 0, 1);
         }
         fill_observations(env);

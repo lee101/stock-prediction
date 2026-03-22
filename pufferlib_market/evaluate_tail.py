@@ -242,7 +242,8 @@ def main() -> None:
     tail = _slice_tail(data, steps=int(args.eval_hours))
 
     num_symbols = tail.num_symbols
-    obs_size = num_symbols * 16 + 5 + num_symbols
+    features_per_sym = tail.features.shape[2]
+    obs_size = num_symbols * features_per_sym + 5 + num_symbols
     fallback_actions = 1 + 2 * num_symbols
     num_actions = _infer_num_actions(state_dict, fallback=fallback_actions)
     if num_actions != fallback_actions:
