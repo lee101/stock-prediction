@@ -252,7 +252,7 @@ def _fused_obs_norm_linear_relu_fallback(
 ) -> torch.Tensor:
     """Pure PyTorch fallback: normalize then linear+relu."""
     obs_norm = (obs.float() - mean.float()) / (std.float() + eps)
-    h = F.linear(obs_norm.to(weight.dtype), weight, bias)
+    h = F.linear(obs_norm.to(weight.dtype), weight, bias.to(weight.dtype))
     return F.relu(h)
 
 
