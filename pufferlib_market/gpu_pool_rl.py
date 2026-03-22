@@ -383,8 +383,12 @@ pip install uv --quiet
 uv venv .venv313 --python python3.13 2>/dev/null || uv venv .venv313
 source .venv313/bin/activate
 uv pip install -e . --quiet
-cd pufferlib_market
-python setup.py build_ext --inplace
+# Install vendored PufferLib so pufferlib_market.train can import it.
+if [ -d PufferLib ]; then
+    uv pip install -e PufferLib/ --quiet
+fi
+# Build the C trading environment extension.
+cd pufferlib_market && python setup.py build_ext --inplace && cd ..
 echo "BOOTSTRAP_OK"
 """
     result = ssh_exec(pod, setup_script)
