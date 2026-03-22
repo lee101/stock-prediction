@@ -164,8 +164,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                              "Add these bins to rsync before launching.")
     parser.add_argument("--time-budget", type=int, default=120,
                         help="Seconds per trial safety timeout. At H100 ~400k sps: 120s >> 37M step cap (71-96s).")
-    parser.add_argument("--max-trials", type=int, default=500,
-                        help="500 trials × ~93s = ~13 hours on H100. Maximizes seed exploration.")
+    parser.add_argument("--max-trials", type=int, default=1000,
+                        help="1000 trials: ~8% escape rate → ~80 good models. "
+                             "Early rejection (25%% checkpoint) cuts degenerate trials to ~28s each, "
+                             "so 1000 trials ≈ 80 × 93s + 920 × 28s = 33,000s ≈ 9 hours on H100.")
     parser.add_argument(
         "--rank-metric",
         choices=[
@@ -189,11 +191,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         help="Step cap per sample. 700 × 53,240 samples = 37.27M steps for stocks11_2012 (optimal). "
                              "H100 at 400k sps hits this in ~93s; RTX 5090 at 92k sps hits it in ~405s. "
                              "Use 700 for stocks11_2012 (confirmed optimal step count).")
-    parser.add_argument("--start-from", type=int, default=195,
-                        help="Start index in STOCK_EXPERIMENTS pool. Default 195 = pure random mutation zone "
-                             "(random_1 starts at 195 after N-block h256 configs at 187-194). "
-                             "Pairs with --seed-only to run s1137's exact config with 500 different seeds. "
-                             "Use 187 to also test N-block h256 formula first.")
+    parser.add_argument("--start-from", type=int, default=187,
+                        help="Start index in STOCK_EXPERIMENTS pool. Default 187 = N-block first, then random seeds. "
+                             "Indices 187-194: N-block h256 formula (h=256, lr=3e-4, slip=12, dp=0.01). "
+                             "Index 195+: random_1..450 → mutate_config(best_config, seed_only). "
+                             "If N-block h256 wins best_config, subsequent seeds use h256+lr=1e-4+slip12+dp01. "
+                             "Use 195 to skip N-block and go straight to seed sweep.")
     parser.add_argument("--seed-only", action="store_true", default=True,
                         help="In random-mutation mode, only change the seed (keep all other params). "
                              "Default: True. With --start-from 195, all 500 H100 trials use s1137's exact "

@@ -987,7 +987,27 @@ STOCK_EXPERIMENTS: list[dict] = [
     {"description": "sdp02_s5678", "lr": 1e-4, "anneal_lr": True, "seed": 5678,
      "smooth_downside_penalty": 0.2, "smooth_downside_temperature": 0.01},
 
-    # --- N-block: stocks12-champion formula on stocks11_2012 (indices 187-194) ---
+    # --- O-block: PPO infrastructure params + gamma sweep (indices 195-202) ---
+    # s1137 is baseline (h=1024, lr=1e-4, ent=0.05, seed=1137, rollout=256, envs=128, mb=2048)
+    # Testing whether PPO update dynamics affect the s1137 performance.
+    {"description": "s1137_rollout128", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "rollout_len": 128},
+    {"description": "s1137_rollout512", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "rollout_len": 512},
+    {"description": "s1137_envs256", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "num_envs": 256, "minibatch_size": 4096},
+    {"description": "s1137_mb4096", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "minibatch_size": 4096},
+    {"description": "s1137_gamma98", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "gamma": 0.98},
+    {"description": "s1137_ppo_epochs2", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "ppo_epochs": 2},
+    {"description": "s1137_ppo_epochs8", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "ppo_epochs": 8},
+    {"description": "s1137_lr_schedule_cos", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "lr_schedule": "cosine"},
+
+    # --- N-block: stocks12-champion formula on stocks11_2012 (indices 203-210) ---
     # random_mut_4424 (stocks12 leaderboard) got robust=-4.02 with 0% neg using:
     # h=256, lr=3e-4, slip=12bps, dp=0.01, anneal_lr=True (no sdp, no wd)
     # Testing whether this formula transfers to stocks11_2012 (4840 days vs shorter stocks12).
