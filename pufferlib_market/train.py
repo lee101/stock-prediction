@@ -954,7 +954,7 @@ def train(args):
 
         # Warmup
         policy.eval()
-        with torch.no_grad():
+        with torch.inference_mode():
             for _ in range(3):
                 _graph_forward()
         torch.cuda.synchronize()
@@ -962,7 +962,7 @@ def train(args):
         # Capture
         _inference_graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(_inference_graph):
-            with torch.no_grad():
+            with torch.inference_mode():
                 _graph_forward()
         torch.cuda.synchronize()
         print("  CUDA graph captured for rollout inference")
@@ -1214,7 +1214,7 @@ def train(args):
                     raw_obs = obs_norm.normalize(raw_obs)
                 obs_tensor = torch.from_numpy(raw_obs).to(device, non_blocking=True)
                 buf_obs[step] = obs_tensor
-                with torch.no_grad():
+                with torch.inference_mode():
                     action, logprob, _, value = policy.get_action_and_value(
                         obs_tensor, disable_shorts=args.disable_shorts,
                     )
@@ -1229,7 +1229,7 @@ def train(args):
             global_step += N
 
         # ── Compute advantages ──
-        with torch.no_grad():
+        with torch.inference_mode():
             raw_next = obs_buf.copy()
             if obs_norm is not None:
                 raw_next = obs_norm.normalize(raw_next)
