@@ -2,7 +2,7 @@ CC = gcc
 CFLAGS = -O3 -march=native -Wall -Wextra -Wpedantic -std=c11
 LDFLAGS = -lm
 
-SRCS = main.c trade_loop.c market_sim.c binance_rest.c policy_infer.c vendor/cJSON.c
+SRCS = main.c trade_loop.c market_sim.c binance_rest.c policy_infer.c vendor/cJSON.c mktd_reader.c
 OBJS = $(SRCS:.c=.o)
 
 # libtorch (optional)
@@ -24,9 +24,10 @@ ctrader: $(OBJS)
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-test: test_market_sim test_binance_rest
+test: test_market_sim test_binance_rest test_mktd_reader
 	./test_market_sim
 	./test_binance_rest
+	./test_mktd_reader
 
 test_market_sim: tests/test_market_sim.c market_sim.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
@@ -40,9 +41,13 @@ test_sim_parity: tests/test_sim_parity.c market_sim.c
 test_parity: test_sim_parity
 	./test_sim_parity
 
-test_valgrind: test_market_sim test_binance_rest
+test_mktd_reader: tests/test_mktd_reader.c mktd_reader.c market_sim.c
+	$(CC) $(CFLAGS) -o $@ $^ -lm
+
+test_valgrind: test_market_sim test_binance_rest test_mktd_reader
 	valgrind --leak-check=full --error-exitcode=1 ./test_market_sim
 	valgrind --leak-check=full --error-exitcode=1 ./test_binance_rest
+	valgrind --leak-check=full --error-exitcode=1 ./test_mktd_reader
 
 clean:
-	rm -f ctrader test_market_sim test_binance_rest test_sim_parity $(OBJS)
+	rm -f ctrader test_market_sim test_binance_rest test_sim_parity test_mktd_reader $(OBJS)
