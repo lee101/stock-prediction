@@ -854,6 +854,36 @@ H100_STOCK_EXPERIMENTS: list[dict] = [
      "lr": 5e-4, "ent_coef": 0.08, "weight_decay": 0.005,
      "fill_slippage_bps": 0.0, "obs_norm": True, "anneal_lr": True},
 
+    # --- stock_drawdown_pen variants (0% neg, +22.9% med, sortino=7.25 on stocks12 v2 sweep) ---
+    # drawdown_penalty=0.05 + trade_penalty=0.03 found as new SOTA (v2 sweep trial 20)
+    # Score=+24.9 > random_mut_2272 score=-5.15; worst window +3.3%, max_dd_worst=9.2%
+    {"description": "h100_drawpen_style",
+     "drawdown_penalty": 0.05, "trade_penalty": 0.03},
+    {"description": "h100_drawpen_s123",
+     "drawdown_penalty": 0.05, "trade_penalty": 0.03, "seed": 123},
+    {"description": "h100_drawpen_s7",
+     "drawdown_penalty": 0.05, "trade_penalty": 0.03, "seed": 7},
+    {"description": "h100_drawpen_s42",
+     "drawdown_penalty": 0.05, "trade_penalty": 0.03, "seed": 42},
+    {"description": "h100_drawpen_s999",
+     "drawdown_penalty": 0.05, "trade_penalty": 0.03, "seed": 999},
+    {"description": "h100_drawpen_s2272",
+     "drawdown_penalty": 0.05, "trade_penalty": 0.03, "seed": 2272},
+    {"description": "h100_drawpen_tp05",
+     "drawdown_penalty": 0.05, "trade_penalty": 0.05},
+    {"description": "h100_drawpen_tp02",
+     "drawdown_penalty": 0.05, "trade_penalty": 0.02},
+    {"description": "h100_drawpen_dd02",
+     "drawdown_penalty": 0.02, "trade_penalty": 0.03},
+    {"description": "h100_drawpen_dd10",
+     "drawdown_penalty": 0.10, "trade_penalty": 0.03},
+    {"description": "h100_drawpen_ent03",
+     "drawdown_penalty": 0.05, "trade_penalty": 0.03, "ent_coef": 0.03},
+    {"description": "h100_drawpen_wd005",
+     "drawdown_penalty": 0.05, "trade_penalty": 0.03, "weight_decay": 0.005},
+    {"description": "h100_drawpen_slip5",
+     "drawdown_penalty": 0.05, "trade_penalty": 0.03, "fill_slippage_bps": 5.0},
+
     # --- Cross seeds for best configs ---
     {"description": "h100_slip_10bps_s123",
      "fill_slippage_bps": 10.0, "seed": 123},
