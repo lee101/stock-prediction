@@ -157,7 +157,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--holdout-data", default=VAL_DATA)
     parser.add_argument("--time-budget", type=int, default=120,
                         help="Seconds per trial safety timeout. At H100 ~400k sps: 120s >> 37M step cap (71-96s).")
-    parser.add_argument("--max-trials", type=int, default=200)
+    parser.add_argument("--max-trials", type=int, default=500,
+                        help="500 trials × ~93s = ~13 hours on H100. Maximizes seed exploration.")
     parser.add_argument(
         "--rank-metric",
         choices=[
@@ -181,9 +182,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         help="Step cap per sample. 700 × 53,240 samples = 37.27M steps for stocks11_2012 (optimal). "
                              "H100 at 400k sps hits this in ~93s; RTX 5090 at 92k sps hits it in ~405s. "
                              "Use 700 for stocks11_2012 (confirmed optimal step count).")
-    parser.add_argument("--start-from", type=int, default=96,
-                        help="Start index in STOCK_EXPERIMENTS pool. Default 96 = first lr=1e-4 anneal config "
-                             "(skips indices 0-95 which use lr=3e-4 and collapse on stocks11_2012 data).")
+    parser.add_argument("--start-from", type=int, default=167,
+                        help="Start index in STOCK_EXPERIMENTS pool. Default 167 = M-block start "
+                             "(smooth_downside_penalty configs + random mutations). "
+                             "All named configs 96-166 are tested locally before H100 launch. "
+                             "Use 96 to re-run all named configs, 172 for pure random mutations.")
     parser.add_argument("--remote-host", default=DEFAULT_REMOTE_HOST)
     parser.add_argument("--remote-dir", default=DEFAULT_REMOTE_DIR)
     parser.add_argument("--remote-env", default=DEFAULT_REMOTE_ENV)
