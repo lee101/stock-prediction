@@ -270,7 +270,7 @@ class PPOTrader:
         obs = self.build_observation(features, prices)
         obs_t = torch.from_numpy(obs).unsqueeze(0).to(self.device)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             logits, value = self.policy(obs_t)
             probs = torch.softmax(logits, dim=-1)
             action = logits.argmax(dim=-1).item()
