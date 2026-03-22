@@ -119,10 +119,12 @@ class TopKCheckpointManager:
         checkpoint_dir: Path | str,
         max_keep: int = 10,
         mode: str = "max",
+        r2_prefix: str | None = None,
     ):
         self.checkpoint_dir = Path(checkpoint_dir)
         self.max_keep = max_keep
         self.mode = mode  # "max" = higher is better, "min" = lower is better
+        self.r2_prefix = r2_prefix
         self._entries: list[dict] = []
         self._manifest_path = self.checkpoint_dir / ".topk_manifest.json"
         self._load_manifest()
@@ -145,6 +147,19 @@ class TopKCheckpointManager:
         })
         self._prune()
         self._save_manifest()
+        if self.r2_prefix and any(str(path) == e["path"] for e in self._entries):
+            self.upload_to_r2(path)
+
+    def upload_to_r2(self, path: Path) -> None:
+        """Upload a checkpoint file to R2. Logs a warning on failure; never raises."""
+        try:
+            from src.r2_client import R2Client
+            client = R2Client()
+            r2_key = f"{self.r2_prefix}/{path.name}"
+            client.upload_file(str(path), r2_key)
+            logger.info("Uploaded checkpoint to R2: %s", r2_key)
+        except Exception as exc:
+            logger.warning("R2 upload failed for %s: %s", path, exc)
 
     def _prune(self):
         if len(self._entries) <= self.max_keep:
@@ -157,7 +172,7 @@ class TopKCheckpointManager:
             p = Path(entry["path"])
             if p.exists():
                 p.unlink()
-                logger.info(f"Pruned checkpoint: {p.name} (metric={entry['metric']:.4f})")
+                logger.info("Pruned checkpoint: %s (metric=%.4f)", p.name, entry["metric"])
 
 
 __all__ = [
