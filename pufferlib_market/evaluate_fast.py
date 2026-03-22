@@ -390,6 +390,10 @@ def fast_holdout_eval(
 # Multi-period evaluation
 # ---------------------------------------------------------------------------
 
+# Weights for smoothness_score: shorter windows penalise single-spike wins more.
+_SMOOTHNESS_WEIGHTS: dict[int, int] = {5: 3, 15: 2, 30: 2, 60: 1, 90: 1}
+
+
 def multi_period_eval(
     checkpoint_path: str,
     data_path: str,
@@ -413,7 +417,6 @@ def multi_period_eval(
     Shorter windows get more weight (penalises single-spike wins).
     Weights: 5d=3, 15d=2, 30d=2, 60d=1, 90d=1 (total weight=9).
     """
-    _WEIGHTS: dict[int, int] = {5: 3, 15: 2, 30: 2, 60: 1, 90: 1}
 
     per_size: dict[int, dict] = {}
     for ws in window_sizes:
@@ -444,9 +447,9 @@ def multi_period_eval(
             "median_sortino": float(summary.get("median_sortino", 0.0)),
         }
 
-    total_weight = sum(_WEIGHTS.get(d, 1) for d in window_sizes)
+    total_weight = sum(_SMOOTHNESS_WEIGHTS.get(d, 1) for d in window_sizes)
     smoothness_score = sum(
-        _WEIGHTS.get(d, 1) * max(min(per_size[d]["p10_sortino"], 5.0), -5.0)
+        _SMOOTHNESS_WEIGHTS.get(d, 1) * max(min(per_size[d]["p10_sortino"], 5.0), -5.0)
         for d in window_sizes
     ) / total_weight
 
