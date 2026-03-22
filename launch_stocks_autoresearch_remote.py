@@ -155,7 +155,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--train-data", default=TRAIN_DATA)
     parser.add_argument("--val-data", default=VAL_DATA)
     parser.add_argument("--holdout-data", default=VAL_DATA)
-    parser.add_argument("--time-budget", type=int, default=300, help="Seconds per trial")
+    parser.add_argument("--time-budget", type=int, default=90,
+                        help="Seconds per trial (90=H100 sweet spot: ~35M steps ≈ A40 300s convergence)")
     parser.add_argument("--max-trials", type=int, default=200)
     parser.add_argument(
         "--rank-metric",
@@ -176,8 +177,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--holdout-fill-buffer-bps", type=float, default=5.0)
     parser.add_argument("--holdout-fee-rate", type=float, default=FEE_OVERRIDE)
     parser.add_argument("--fee-rate-override", type=float, default=FEE_OVERRIDE)
-    parser.add_argument("--max-timesteps-per-sample", type=int, default=200,
-                        help="Cap training samples per symbol per trial (200=~4.3M steps on 1797-day data)")
+    parser.add_argument("--max-timesteps-per-sample", type=int, default=10000,
+                        help="Cap timesteps per sample per trial (10000=~215M max, effectively no cap at 90s; use 10000 for H100)")
     parser.add_argument("--remote-host", default=DEFAULT_REMOTE_HOST)
     parser.add_argument("--remote-dir", default=DEFAULT_REMOTE_DIR)
     parser.add_argument("--remote-env", default=DEFAULT_REMOTE_ENV)
@@ -208,6 +209,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         holdout_fill_buffer_bps=float(args.holdout_fill_buffer_bps),
         leaderboard_path=LEADERBOARD_NAME,
         checkpoint_root=CHECKPOINT_ROOT,
+        stocks_mode=True,  # use STOCK_EXPERIMENTS pool (not crypto EXPERIMENTS)
     )
     pipeline_script = render_remote_pipeline_script(
         remote_dir=str(args.remote_dir),

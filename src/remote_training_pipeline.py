@@ -332,6 +332,7 @@ def build_autoresearch_cmd(
     descriptions: Sequence[str],
     rank_metric: str = "auto",
     max_timesteps_per_sample: int = 0,
+    stocks_mode: bool = False,
 ) -> list[str]:
     cmd = [
         "python",
@@ -353,6 +354,8 @@ def build_autoresearch_cmd(
         "--rank-metric",
         str(rank_metric),
     ]
+    if stocks_mode:
+        cmd.append("--stocks12")
     if descriptions:
         cmd.extend(["--descriptions", ",".join(str(item).strip() for item in descriptions if str(item).strip())])
     if max_timesteps_per_sample > 0:
@@ -411,6 +414,7 @@ def build_remote_autoresearch_plan(
     max_steps_override: int = 0,
     max_timesteps_per_sample: int = 0,
     fee_rate_override: float = -1.0,
+    stocks_mode: bool = False,
     holdout_data: str | None = None,
     holdout_eval_steps: int = 0,
     holdout_n_windows: int = 0,
@@ -457,6 +461,7 @@ def build_remote_autoresearch_plan(
         descriptions=descriptions,
         rank_metric=rank_metric,
         max_timesteps_per_sample=max_timesteps_per_sample,
+        stocks_mode=stocks_mode,
     )
     _append_optional_cli_arg(cmd, "--periods-per-year", periods_per_year)
     if max_steps_override > 0:
