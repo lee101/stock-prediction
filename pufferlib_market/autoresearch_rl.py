@@ -929,6 +929,27 @@ STOCK_EXPERIMENTS: list[dict] = [
     # lr=2e-4 × s5678 (2nd best seed at -55.5 — does higher LR help it?)
     {"description": "s5678_lr2e4",    "lr": 2e-4, "anneal_lr": True, "seed": 5678},
 
+    # (M) smooth_downside_penalty experiments — KEY for reducing negative windows
+    # robust_score formula: -50 × negative_return_rate dominates.
+    # random_mut_2272 (stocks12 champion) used smooth_downside_temperature=0.01 → 0% negative.
+    # Hypothesis: smooth_downside_penalty penalizes training-time drawdowns → more conservative
+    # strategy → fewer negative holdout windows.
+    # ---------------------------------------------------------------------------
+    # Exact random_mut_2272 formula applied to s1137 base
+    {"description": "s1137_sdp01_t001",  "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "smooth_downside_penalty": 0.1, "smooth_downside_temperature": 0.01},
+    # Lighter version — don't disrupt s1137's good strategy too much
+    {"description": "s1137_sdp005_t002", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "smooth_downside_penalty": 0.05, "smooth_downside_temperature": 0.02},
+    # Temperature sweep (how sharp the downside penalty) with fixed penalty=0.1
+    {"description": "s1137_sdp01_t002",  "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "smooth_downside_penalty": 0.1, "smooth_downside_temperature": 0.02},
+    {"description": "s1137_sdp02_t001",  "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "smooth_downside_penalty": 0.2, "smooth_downside_temperature": 0.01},
+    # s5678 also gets the smooth downside treatment (2nd best seed)
+    {"description": "s5678_sdp01_t001",  "lr": 1e-4, "anneal_lr": True, "seed": 5678,
+     "smooth_downside_penalty": 0.1, "smooth_downside_temperature": 0.01},
+
     # Random mutations — slots so H100 500-trial runs get ~400+ random trials
     # (after ~99 named configs). Each slot calls mutate_config(best_config) at runtime.
     *[{"description": f"random_{i}"} for i in range(1, 451)],
