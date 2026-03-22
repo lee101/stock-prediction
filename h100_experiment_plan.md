@@ -83,6 +83,21 @@ Remaining "big drops" are verified real market events:
 
 ---
 
+## Overfitting at 300s Budget (2026-03-22 Finding)
+
+Local validation confirmed critical overfitting when training budget exceeds ~90s on stocks12:
+
+| Config          | Budget | holdout neg_rate | holdout median | Notes         |
+|-----------------|--------|------------------|----------------|---------------|
+| h100_slip_10bps | 90s    | **10%**          | +5.64%         | Good          |
+| h100_slip_10bps | 300s   | **50%**          | +0.20%         | Overfit       |
+
+**Conclusion**: stocks12 optimal budget is ~90s (~4M steps on RTX 5090).
+H100 at ~3.5x speedup reaches ~4M steps in 90s with better GPU utilization.
+Use `time_budget=90` with `max_trials=500` for H100.
+
+---
+
 ## H100 Configuration — UPDATED
 
 **Dataset**: stocks12 (12 symbols, 1302 train days, 158 val days)
@@ -99,18 +114,18 @@ python -m pufferlib_market.autoresearch_rl \
     --h100-mode \
     --train-data pufferlib_market/data/stocks12_daily_train.bin \
     --val-data pufferlib_market/data/stocks12_daily_val.bin \
-    --time-budget 200 \
-    --max-trials 150 \
+    --time-budget 90 \
+    --max-trials 500 \
     --leaderboard autoresearch_stock_h100_leaderboard.csv \
     --checkpoint-root pufferlib_market/checkpoints/autoresearch_stock_h100
 ```
 
 Notes:
 - `--h100-mode` uses H100_STOCK_EXPERIMENTS pool, sets periods_per_year=252, fee_rate=0.001, holdout_eval_steps=90
-- Explicitly pass `--train-data` and `--val-data` to override the default stocks20 data
-- 200s budget × 150 trials = ~8.3 hours total
-- H100 expected ~3.5x faster than RTX 5090 (~14M steps vs ~4M at same wall time)
-- stocks12 obs_size=209 (smaller than stocks20 obs_size=345) → faster steps/sec → even more steps per trial
+- Explicitly pass `--train-data` and `--val-data` to point at stocks12 (not the stocks20 default)
+- **90s budget**: H100 at ~3.5x RTX 5090 speed reaches ~4M steps — the proven non-overfitting regime
+- **500 trials × 90s = 12.5 hours** (within H100 daily budget)
+- stocks12 obs_size=209 (smaller than stocks20 obs_size=345) → faster steps/sec
 
 ---
 
