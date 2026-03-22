@@ -22,6 +22,7 @@ import argparse
 import atexit
 import math
 import os
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -868,6 +869,9 @@ def train(args):
         pull_dest = Path(args.checkpoint_dir) / "pulled.pt"
         print(f"  Pulling checkpoint from R2: {args.r2_pull_checkpoint} -> {pull_dest}")
         R2Client().download_file(args.r2_pull_checkpoint, pull_dest)
+        if not args.resume_from:
+            args.resume_from = str(pull_dest)
+            print(f"  Auto-setting --resume-from to pulled checkpoint: {pull_dest}")
 
     resume_state = ResumeState()
     if args.resume_from:
@@ -1432,6 +1436,14 @@ def train(args):
         ),
         ckpt_path,
     )
+    if args.r2_prefix:
+        from src.r2_client import R2Client
+        r2_key = f"{args.r2_prefix}/{ckpt_path.name}"
+        try:
+            R2Client().upload_file(str(ckpt_path), r2_key)
+            print(f"  Uploaded final checkpoint to R2: {r2_key}")
+        except Exception as e:
+            print(f"  [warn] Failed to upload final checkpoint to R2: {e}", file=sys.stderr)
 
     binding.vec_close(vec_handle)
     print(f"\nTraining complete. Best return: {best_return:.4f}")
