@@ -1065,12 +1065,14 @@ def mutate_config(base: TrialConfig) -> TrialConfig:
         "group_relative_mix": [0.0, 0.15, 0.25, 0.4],
         "reward_scale": [5.0, 10.0, 20.0],
         "cash_penalty": [0.0, 0.005, 0.01, 0.02],
-        "trade_penalty": [0.0, 0.01, 0.02, 0.05],
+        "trade_penalty": [0.0, 0.01, 0.02, 0.03, 0.05],  # 0.03 is KNOWN WINNER (tp03_s777)
         "drawdown_penalty": [0.0, 0.01, 0.02, 0.05],
+        "smooth_downside_penalty": [0.0, 0.1, 0.2, 0.5],
         "smooth_downside_temperature": [0.01, 0.02, 0.05],
         "smoothness_penalty": [0.0, 0.005, 0.01, 0.02],
         "obs_norm": [True, False],
         "anneal_lr": [True, False],
+        "anneal_ent": [True, False],
     }
     keys = random.sample(list(mutable_params.keys()), min(3, len(mutable_params)))
     for k in keys:
