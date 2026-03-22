@@ -97,7 +97,7 @@ class TrainingConfig:
     price_offset_pct: float = 0.0003
     min_price_gap_pct: float = 0.0003
     trade_amount_scale: float = 100.0
-    fill_temperature: float = 5e-4
+    fill_temperature: float = 0.01
     decision_lag_bars: int = 0
     decision_lag_range: str = ""  # e.g. "0,1,2" -- average loss across lags during training
     market_order_entry: bool = False
@@ -153,7 +153,7 @@ class TrainingConfig:
     weight_decay_schedule: str = "none"
     weight_decay_end: float = 0.0
     ema_decay: float = 0.0
-    validation_use_binary_fills: bool = False
+    validation_use_binary_fills: bool = True
     dry_train_steps: int | None = None
     device: str | None = None
     run_name: str | None = None
