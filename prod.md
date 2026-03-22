@@ -5,7 +5,12 @@
 ### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- RUNNING
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`
 - **Launch**: `deployments/binance-hybrid-spot/launch.sh`
-- **Model**: Gemini 3.1 Flash Lite + Chronos2 fallback (per-symbol signals)
+- **Model**: Pufferlib robust_reg_tp005_ent (h1024 MLP, PPO) + RL-only fallback when Gemini unavailable
+- **RL Checkpoint**: `pufferlib_market/checkpoints/mixed23_a40_sweep/robust_reg_tp005_ent/best.pt`
+- **RL Marketsim**: +191.4% return, Sort=23.94, 59% WR, 80 trades/30d (C sim, binary fills, 5bps slippage)
+- **Slippage robustness**: +181.6% @0bps, +191.4% @5bps, +252.8% @10bps, +194.3% @20bps, +168.1% @30bps
+- **Config**: obs_norm, wd=0.05, slip=8bps, tp=0.005, ent_anneal 0.08->0.02
+- **A40 sweep cost**: $0.53 for 50 trials
 - **Symbols**: BTCUSD, ETHUSD, SOLUSD, DOGEUSD, AAVEUSD, LINKUSD
 - **Mode**: Cross-margin, 5x leverage, hourly cycles
 - **Max hold**: 6h forced exit

@@ -1781,6 +1781,47 @@ def _allocation_plan_has_error(plan: AllocationPlan) -> bool:
     ))
 
 
+def _rl_signal_to_allocation_plan(
+    rl_signal: RLSignal,
+    contexts: list,
+    rl_gen: RLSignalGenerator,
+    effective_leverage: float,
+) -> Optional[AllocationPlan]:
+    """Convert an RL signal directly into an AllocationPlan, bypassing Gemini.
+
+    Returns None if the RL signal is FLAT (no trade needed).
+    """
+    if rl_signal.direction == "flat" or rl_signal.target_symbol is None:
+        return None
+
+    sym = rl_signal.target_symbol
+    ctx_map = {c.symbol: c for c in contexts}
+    ctx = ctx_map.get(sym)
+    if ctx is None:
+        logger.warning(f"RL target {sym} not in available contexts, skipping")
+        return None
+
+    probs = np.exp(np.array(rl_signal.logits, dtype=np.float64))
+    probs = probs / probs.sum()
+    target_prob = float(probs[rl_signal.action])
+
+    alloc_pct = min(max(target_prob * 100.0, 15.0), 50.0)
+
+    price = ctx.price
+    entry_price = price * 0.999
+    exit_price = price * 1.008
+
+    plan = AllocationPlan(
+        allocations={sym: alloc_pct},
+        entry_prices={sym: entry_price},
+        exit_prices={sym: exit_price},
+        reasoning=f"rl_only_fallback: {rl_signal.action_name} prob={target_prob:.2%} value={rl_signal.value:.3f}",
+        timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+    )
+    logger.info(f"RL-only plan: {sym} {alloc_pct:.0f}% entry=${entry_price:.2f} exit=${exit_price:.2f}")
+    return plan
+
+
 def _get_current_positions_valued(
     state: PortfolioState,
     execution_mode: str,
@@ -1884,7 +1925,7 @@ def run_hybrid_trading_cycle(
 
         cache_root = Path(forecast_cache_root)
         try:
-            contexts = gather_symbol_contexts(cache_root)
+            contexts = gather_symbol_contexts(cache_root, symbols=rl_gen.symbols)
         except Exception as exc:
             logger.error(f"Failed to gather market context: {exc}")
             cycle_snapshot["status"] = "context_error"
@@ -1927,28 +1968,55 @@ def run_hybrid_trading_cycle(
             positions=state.positions,
             prev_plan=_prev_plan,
             prev_outcome=_prev_outcome,
+            rl_symbols=rl_gen.symbols,
+            rl_action_names=rl_gen.action_names,
         )
         cycle_snapshot["prompt_chars"] = len(prompt)
 
+        tradable_syms = [ctx.symbol for ctx in contexts]
         logger.info(f"Prompt built ({len(prompt)} chars), calling Gemini...")
+        gemini_failed = False
         try:
-            plan = call_gemini_allocation(prompt, model=gemini_model)
+            plan = call_gemini_allocation(prompt, model=gemini_model, tradable_symbols=tradable_syms)
         except Exception as exc:
             logger.error(f"Gemini call failed: {exc}")
-            cycle_snapshot["status"] = "gemini_error"
-            cycle_snapshot["error"] = str(exc)
-            return []
+            gemini_failed = True
+            plan = AllocationPlan(reasoning=f"API error: {exc}")
 
         cycle_snapshot["allocation_plan"] = _serialize_allocation_plan(plan)
-        if _allocation_plan_has_error(plan):
-            logger.warning(f"Skipping execution due to invalid allocation plan: {plan.reasoning}")
-            cycle_snapshot["status"] = "invalid_allocation_plan"
-            return []
 
-        if not plan.allocations and not plan.reasoning:
-            logger.warning("Empty allocation plan, skipping execution")
-            cycle_snapshot["status"] = "empty_allocation_plan"
-            return []
+        use_rl_only = False
+        if gemini_failed or _allocation_plan_has_error(plan):
+            rl_plan = _rl_signal_to_allocation_plan(
+                rl_signal, contexts, rl_gen, effective_leverage,
+            )
+            if rl_plan is not None:
+                logger.info("Gemini unavailable, using RL-only fallback for execution")
+                plan = rl_plan
+                use_rl_only = True
+                cycle_snapshot["allocation_plan"] = _serialize_allocation_plan(plan)
+                cycle_snapshot["allocation_source"] = "rl_only_fallback"
+            else:
+                reason = "gemini_error" if gemini_failed else "invalid_allocation_plan"
+                logger.info(f"Gemini unavailable and RL signal is FLAT, no action needed")
+                cycle_snapshot["status"] = f"{reason}_rl_flat"
+                cycle_snapshot["allocation_source"] = "rl_flat_no_action"
+                return []
+
+        if not use_rl_only and not plan.allocations and not plan.reasoning:
+            rl_plan = _rl_signal_to_allocation_plan(
+                rl_signal, contexts, rl_gen, effective_leverage,
+            )
+            if rl_plan is not None:
+                logger.info("Empty Gemini plan, using RL-only fallback for execution")
+                plan = rl_plan
+                use_rl_only = True
+                cycle_snapshot["allocation_plan"] = _serialize_allocation_plan(plan)
+                cycle_snapshot["allocation_source"] = "rl_only_fallback"
+            else:
+                logger.warning("Empty allocation plan and RL is FLAT, skipping execution")
+                cycle_snapshot["status"] = "empty_allocation_plan_rl_flat"
+                return []
 
         target_values = {
             sym: state.total_value_usd * pct / 100.0 * effective_leverage
@@ -2242,7 +2310,7 @@ def main():
             forecast_cache_root=args.forecast_cache,
         )
         logger.info(f"Hybrid mode: RL={rl_checkpoint} + Gemini={args.model}")
-        logger.info(f"RL symbols: {', '.join(RL_SYMBOLS)}")
+        logger.info(f"RL symbols ({rl_gen.num_symbols}): {', '.join(rl_gen.symbols)}")
 
     while True:
         try:
