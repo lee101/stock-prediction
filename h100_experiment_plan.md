@@ -4,20 +4,36 @@
 
 **Key findings (2026-03-22 afternoon experiments v10):**
 
-### CRITICAL: RTX 5090 single-process optimal time budget is 200s (not 450s)
+### CRITICAL: Use step-based cap, not time-based budget (RL variance + SPS variance)
 
-At full GPU utilization (single training process), RTX 5090 achieves ~187k sps on
-stocks11_2012 with h1024 model. This means:
-- `--time-budget 450` → **84M steps** → OVERFIT (robust=-148 vs -40 at 37M steps)
-- `--time-budget 200` → **37M steps** → OPTIMAL (sweet spot ~35-45M steps)
-- `--time-budget 450` with 2 concurrent → ~42M steps each → also OK but wastes time
+**Problem found 2026-03-22:** SPS varies 3x (63k–187k) between runs due to CUDA warmup
+and GPU memory competition. A time budget gives inconsistent step counts → inconsistent results.
 
-**RTX 5090 single-process recommendations:**
-- h1024 stocks11_2012: `--time-budget 200` (gives 37M steps at 187k sps)
-- h2048 stocks11_2012: `--time-budget 220` (gives ~40M steps at ~180k sps, larger batch slows slightly)
-- transformer/gru: TBD (may be slower → longer budget OK)
+**Solution:** `--max-timesteps-per-sample 700` caps at exactly `700 × 53,240 = 37.27M steps`
+for stocks11_2012 (11 syms × 4840 calendar days). Training halts when step cap hit.
 
-**H100 at 390k sps: `--time-budget 90` → 35M steps → still correct.**
+- Use `--time-budget 600` as a safety timeout (at slowest SPS: 37M/63k=587s < 600s)
+- h1024 stocks11_2012: `--max-timesteps-per-sample 700` (37.27M steps)
+- h2048 stocks11_2012: same (h2048 runs ~10% slower but still hits cap)
+- transformer/gru: same (these may be slower → higher GPU requirement but same step cap)
+
+RTX 5090 timing at full GPU:
+- 37M steps at 187k sps = ~200s (when GPU fully warm, no zombie processes)
+- 37M steps at 92k sps = ~402s (early in run, CUDA warmup phase)
+
+**H100 at ~400k sps: `--max-timesteps-per-sample 700` also correct. Step cap = 37.27M steps.**
+Previously used `--time-budget 90` which gave ~35-47M steps depending on SPS — now more precise.
+
+### RL Training Variance Note (IMPORTANT)
+Same config (lr1e4_anneal_s777, seed=777) across 3 runs:
+- Arch comparison (2 concurrent, 450s, ~41M steps): robust=-40.3 ← BEST SEEN
+- 200s single-process (12.7M steps, underfit): robust=-64.9
+- 37M-step-capped single-process: robust=-86.1
+
+Variance is real — RL is non-deterministic even with same seed. The sweep covers 100
+configs specifically to find consistently strong performers (not relying on a single
+lucky run). The H100 run should pick the config that wins MOST in the local sweep,
+not just the best single result.
 
 ### Architecture exploration (added 2026-03-22)
 
