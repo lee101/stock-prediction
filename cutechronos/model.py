@@ -125,7 +125,13 @@ def unscaled_attention_fallback(
     v: torch.Tensor,
     mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Unscaled dot-product attention (NO 1/sqrt(d_k) scaling)."""
+    """Unscaled dot-product attention (NO 1/sqrt(d_k) scaling).
+
+    On CUDA, uses SDPA with scale=1.0 for automatic kernel selection
+    (FlashAttention2, cuDNN, etc.). Falls back to eager on CPU.
+    """
+    if q.is_cuda:
+        return F.scaled_dot_product_attention(q, k, v, attn_mask=mask, scale=1.0)
     scores = torch.matmul(q, k.transpose(-2, -1))
     if mask is not None:
         scores = scores + mask

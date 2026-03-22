@@ -2,7 +2,10 @@
 
 Replaces the original TimeSelfAttention (RMSNorm -> QKV proj -> RoPE ->
 unscaled attention -> O proj -> residual) with a streamlined version that
-uses Triton kernels when available and pure-PyTorch fallbacks otherwise.
+uses the fastest available attention backend:
+  1. SDPA with scale=1.0 (preferred on CUDA -- auto-selects FlashAttention2/cuDNN)
+  2. Triton custom kernel (if available)
+  3. Pure-PyTorch eager fallback
 
 cuBLAS-backed F.linear is used for the QKV / O projections (already fast
 for 768x768).
@@ -20,6 +23,7 @@ from cutechronos.modules._fallbacks import (
     compute_cos_sin as _compute_cos_sin_fallback,
     unscaled_attention as _unscaled_attention_fallback,
 )
+from cutechronos.modules.flex_attention import sdpa_unscaled_attention as _sdpa_attn
 
 # ---------------------------------------------------------------------------
 # Try importing Triton kernels; fall back to PyTorch implementations.
@@ -146,8 +150,10 @@ class FusedTimeSelfAttention(nn.Module):
                 query_states, key_states, cos, sin
             )
 
-        # 5. Unscaled attention
-        if on_cuda and _has_triton_attn:
+        # 5. Unscaled attention (SDPA preferred: auto-selects FlashAttn2/cuDNN)
+        if on_cuda:
+            attn_output = _sdpa_attn(query_states, key_states, value_states, attention_mask)
+        elif _has_triton_attn:
             attn_output = _unscaled_attention_triton(query_states, key_states, value_states, attention_mask)
         else:
             attn_output = _unscaled_attention_fallback(query_states, key_states, value_states, attention_mask)
