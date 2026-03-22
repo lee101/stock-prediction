@@ -169,7 +169,7 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
 
     int S = g_shared_data->num_symbols;
     int side_block = S * env->action_allocation_bins * env->action_level_bins;
-    env->obs_size = S * FEATURES_PER_SYM + 5 + S;
+    env->obs_size = S * g_shared_data->features_per_sym + 5 + S;
     env->num_actions = 1 + 2 * side_block;
 
     return 0;

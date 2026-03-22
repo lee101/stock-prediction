@@ -405,29 +405,29 @@ class TransformerTradingPolicy(nn.Module):
     Treats each symbol as a token. Uses multi-head self-attention across symbols
     + a feedforward head. Inspired by cross-symbol correlation reasoning.
 
-    obs shape: (batch, S*16 + 5 + S) where S=num_symbols
+    obs shape: (batch, S*F + 5 + S) where S=num_symbols, F=features_per_sym
     Strategy:
-      1. Split obs into per-symbol features (S*16) and portfolio state (5+S)
-      2. Reshape per-symbol features to (batch, S, 16)
+      1. Split obs into per-symbol features (S*F) and portfolio state (5+S)
+      2. Reshape per-symbol features to (batch, S, F)
       3. Project to (batch, S, embed_dim) with a linear layer
       4. Apply multi-head self-attention across symbols
       5. Flatten + concat portfolio state -> MLP head for actor/critic
     """
 
     def __init__(self, obs_size: int, num_actions: int, hidden: int = 256,
-                 activation: str = "relu"):
+                 activation: str = "relu", features_per_sym: int = 16):
         super().__init__()
         self.obs_size = obs_size
         self.num_actions = num_actions
 
-        # Infer num_symbols from obs_size: obs = S*16 + 5 + S => S*17 + 5 = obs_size
-        # S = (obs_size - 5) / 17
-        num_symbols = (obs_size - 5) // 17
+        # Infer num_symbols from obs_size and features_per_sym:
+        # obs = S*F + 5 + S => S*(F+1) + 5 = obs_size => S = (obs_size - 5) / (F+1)
+        num_symbols = (obs_size - 5) // (features_per_sym + 1)
         self.num_symbols = num_symbols
-        self.per_symbol_features = 16
-        self.portfolio_size = obs_size - num_symbols * 16  # 5 + S
+        self.per_symbol_features = features_per_sym
+        self.portfolio_size = obs_size - num_symbols * features_per_sym  # 5 + S
 
-        # Embedding: project 16-dim per-symbol features -> hidden//4 (embed_dim)
+        # Embedding: project features_per_sym-dim per-symbol features -> hidden//4 (embed_dim)
         embed_dim = max(hidden // 4, 32)
         self.embed_dim = embed_dim
         self.symbol_proj = nn.Linear(self.per_symbol_features, embed_dim)
@@ -473,7 +473,7 @@ class TransformerTradingPolicy(nn.Module):
         sym_flat = x[:, :self.num_symbols * self.per_symbol_features]
         portfolio = x[:, self.num_symbols * self.per_symbol_features:]
 
-        # Reshape to (batch, S, 16) -> project to (batch, S, embed_dim)
+        # Reshape to (batch, S, F) -> project to (batch, S, embed_dim)
         sym_tokens = sym_flat.view(batch, self.num_symbols, self.per_symbol_features)
         sym_emb = self.symbol_proj(sym_tokens)  # (batch, S, embed_dim)
 
@@ -725,12 +725,14 @@ def train(args):
     binding.shared(data_path=data_path)
     print(f"Loaded market data from {data_path}")
 
-    # ── Read binary header to get num_symbols ──
+    # ── Read binary header to get num_symbols and features_per_sym ──
     import struct
     with open(data_path, "rb") as f:
         header = f.read(64)
-    _, _, num_symbols, num_timesteps, _, _ = struct.unpack("<4sIIIII", header[:24])
-    print(f"  {num_symbols} symbols, {num_timesteps} timesteps")
+    _, _, num_symbols, num_timesteps, features_per_sym, _ = struct.unpack("<4sIIIII", header[:24])
+    if features_per_sym == 0:
+        features_per_sym = 16  # v1/v2 backwards compat
+    print(f"  {num_symbols} symbols, {num_timesteps} timesteps, {features_per_sym} features/sym")
 
     # ── Env config ──
     config = TradingEnvConfig(
@@ -762,7 +764,7 @@ def train(args):
         drawdown_profit_early_exit_progress_fraction=args.drawdown_profit_early_exit_progress_fraction,
     )
 
-    obs_size = num_symbols * 16 + 5 + num_symbols
+    obs_size = num_symbols * features_per_sym + 5 + num_symbols
     per_symbol_actions = config.action_allocation_bins * config.action_level_bins
     num_actions = 1 + 2 * num_symbols * per_symbol_actions
     print(f"  obs_size={obs_size}, num_actions={num_actions}")
@@ -825,6 +827,7 @@ def train(args):
         policy = TransformerTradingPolicy(
             obs_size, num_actions, hidden=args.hidden_size,
             activation=args.activation,
+            features_per_sym=features_per_sym,
         ).to(device)
     elif args.arch == "gru":
         policy = GRUTradingPolicy(

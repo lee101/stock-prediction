@@ -176,9 +176,11 @@ def fast_holdout_eval(
     # Read data header
     with open(data_path, "rb") as f:
         header = f.read(64)
-    _, _, num_symbols, num_timesteps, _, _ = struct.unpack("<4sIIIII", header[:24])
+    _, _, num_symbols, num_timesteps, features_per_sym, _ = struct.unpack("<4sIIIII", header[:24])
+    if features_per_sym == 0:
+        features_per_sym = 16  # v1/v2 backwards compat
 
-    obs_size = num_symbols * 16 + 5 + num_symbols
+    obs_size = num_symbols * features_per_sym + 5 + num_symbols
 
     # Load checkpoint
     payload = torch.load(checkpoint_path, map_location=device, weights_only=False)

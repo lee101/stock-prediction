@@ -60,6 +60,7 @@ def load_policy(
     arch: str = "auto",
     hidden_size: Optional[int] = None,
     device: torch.device = torch.device("cpu"),
+    features_per_sym: int = 16,
 ) -> tuple[nn.Module, dict, int]:
     """Load a checkpoint and build the policy network.
 
@@ -77,7 +78,7 @@ def load_policy(
             f"Only supports alloc_bins=1 level_bins=1 (got {action_allocation_bins}, {action_level_bins})"
         )
 
-    obs_size = num_symbols * 16 + 5 + num_symbols
+    obs_size = num_symbols * features_per_sym + 5 + num_symbols
     fallback_actions = 1 + 2 * num_symbols
     num_actions = _infer_num_actions(state_dict, fallback=fallback_actions)
 
@@ -220,9 +221,11 @@ def evaluate_checkpoint(
     device = torch.device(device_str)
     data = read_mktd(Path(data_path))
     num_symbols = data.num_symbols
+    features_per_sym = data.features.shape[2]
 
     policy, _, num_actions = load_policy(
         checkpoint_path, num_symbols, arch=arch, hidden_size=hidden_size, device=device,
+        features_per_sym=features_per_sym,
     )
 
     shortable_mask = _build_shortable_mask(data.symbols, shortable_symbols)
