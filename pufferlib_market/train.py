@@ -49,6 +49,7 @@ from pufferlib_market.metrics import annualize_total_return
 from pufferlib_market.advantage_utils import normalize_advantages
 from src.checkpoint_manager import TopKCheckpointManager, prune_periodic_checkpoints
 from pufferlib_market.kernels.fused_mlp import fused_mlp_relu, HAS_TRITON
+from pufferlib_market.kernels.fused_obs_encode import fused_obs_norm_linear_relu
 
 
 # ─── Running Observation Normalizer ──────────────────────────────────
@@ -224,7 +225,13 @@ class TradingPolicy(nn.Module):
         # x.is_cuda is still checked at forward time since the model can be on CPU.
         self._can_fuse = HAS_TRITON and activation == "relu"
 
-        # Shared feature extractor — kept as Sequential for checkpoint compatibility.
+        # Running obs-norm statistics (set by set_obs_norm_stats() when --obs-norm is used).
+        # Stored as non-parameter buffers so they move with the model but are not trained.
+        # When None, the fused obs-encode path is disabled and raw obs is passed directly.
+        self.register_buffer("obs_mean", None)
+        self.register_buffer("obs_std",  None)
+
+        # Shared feature extractor -- kept as Sequential for checkpoint compatibility.
         # encoder[0,2,4] are the Linear layers; encoder[1,3,5] are activations.
         self.encoder = nn.Sequential(
             nn.Linear(obs_size, hidden),
@@ -258,23 +265,75 @@ class TradingPolicy(nn.Module):
         nn.init.orthogonal_(self.actor[-1].weight, gain=0.01)
         nn.init.orthogonal_(self.critic[-1].weight, gain=1.0)
 
+    def set_obs_norm_stats(self, mean: "np.ndarray", std: "np.ndarray") -> None:
+        """Update running obs-norm statistics in the GPU buffers for fused obs-encode.
+
+        Called every rollout step when --obs-norm is active. Reuses existing GPU
+        buffers via in-place copy to avoid re-allocating on each call.
+
+        Args:
+            mean: (obs_size,) float32 numpy array -- running mean from RunningObsNorm.
+            std:  (obs_size,) float32 numpy array -- running std from RunningObsNorm.
+        """
+        device = self.encoder[0].weight.device
+        mean_t = torch.as_tensor(mean, dtype=torch.float32)
+        std_t  = torch.as_tensor(std,  dtype=torch.float32)
+        if self.obs_mean is None:
+            self.obs_mean = mean_t.to(device)
+            self.obs_std  = std_t.to(device)
+        else:
+            self.obs_mean.copy_(mean_t, non_blocking=True)
+            self.obs_std.copy_(std_t,   non_blocking=True)
+
     def _encode(self, x: torch.Tensor) -> torch.Tensor:
         """Encode observations through the three-layer MLP encoder.
 
-        When Triton is available and activation is ReLU, fuses the first two
-        Linear+ReLU layers into a single kernel to avoid the intermediate
-        hidden-wide allocation. The third layer is always a standard F.linear.
+        Three paths, in priority order:
+        1. Fused obs-encode (obs_mean/std set + Triton + CUDA + hidden >= 256):
+           Runs (obs - mean) / std + Linear[0] + ReLU in one Triton kernel,
+           eliminating the large obs_norm intermediate allocation.
+           Then fuses Linear[2]+ReLU+Linear[4]+ReLU via fused_mlp_relu.
+        2. Fused MLP only (Triton + CUDA, no obs-norm buffers):
+           Fuses Linear[0]+ReLU+Linear[2]+ReLU via fused_mlp_relu, then
+           applies encoder[4..5] normally.
+        3. Fallback: standard nn.Sequential pass.
         """
-        if self._can_fuse and x.is_cuda:
+        hidden = self.encoder[0].weight.shape[0]
+        use_fused_obs = (
+            self._can_fuse
+            and x.is_cuda
+            and self.obs_mean is not None
+            and self.obs_std is not None
+            and hidden >= 256
+        )
+        if use_fused_obs:
+            # Path 1: fused obs-normalize + first linear + relu
+            h = fused_obs_norm_linear_relu(
+                x,
+                self.obs_mean, self.obs_std,
+                self.encoder[0].weight, self.encoder[0].bias,
+            )
+            # fused_obs_norm_linear_relu returns BF16; fuse remaining two layers
+            h = fused_mlp_relu(
+                h,
+                self.encoder[2].weight, self.encoder[2].bias,
+                self.encoder[4].weight, self.encoder[4].bias,
+            )
+            # fused_mlp_relu returns BF16; cast to match actor/critic weight dtype
+            # (actor/critic are typically FP32)
+            h = h.to(self.actor[0].weight.dtype)
+        elif self._can_fuse and x.is_cuda:
+            # Path 2: fused first two linear+relu layers, no obs-norm
             h = fused_mlp_relu(
                 x,
                 self.encoder[0].weight, self.encoder[0].bias,
                 self.encoder[2].weight, self.encoder[2].bias,
             )
-            # fused_mlp_relu returns BF16; cast to match encoder[4]'s FP32 weights
+            # fused_mlp_relu returns BF16; cast to match encoder[4]'s weights
             h = h.to(self.encoder[4].weight.dtype)
             h = self.encoder[5](self.encoder[4](h))
         else:
+            # Path 3: standard sequential
             h = self.encoder(x)
         return h
 
@@ -844,6 +903,25 @@ def train(args):
         policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size, activation="relu_sq").to(device)
     else:
         policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
+
+    # Enable fused GPU obs-normalize + first-linear + ReLU when:
+    #   - TradingPolicy (has set_obs_norm_stats / obs_mean buffer)
+    #   - Triton is available
+    #   - obs_norm (Welford stats) is enabled via --obs-norm
+    #   - Running on CUDA with hidden_size >= 256 (kernel overhead not worth it below)
+    # When active, raw (un-normalized) obs are stored in buf_obs and the fused kernel
+    # handles normalization on-device, eliminating the CPU normalize step and the
+    # large (B, OBS) obs_norm intermediate allocation.
+    _use_fused_obs_encode = (
+        isinstance(policy, TradingPolicy)
+        and HAS_TRITON
+        and obs_norm is not None
+        and device.type == "cuda"
+        and args.hidden_size >= 256
+    )
+    if _use_fused_obs_encode:
+        print("  fused_obs_norm_linear_relu enabled (GPU obs-normalize + first linear fused)")
+
     if args.optimizer == "muon":
         from pufferlib_market.muon import make_muon_optimizer
         optimizer = make_muon_optimizer(
@@ -1214,7 +1292,16 @@ def train(args):
                 raw_obs = obs_buf.copy()
                 if obs_norm is not None:
                     obs_norm.update(raw_obs)
-                    raw_obs = obs_norm.normalize(raw_obs)
+                    if _use_fused_obs_encode:
+                        # Push updated Welford stats to policy GPU buffers so the
+                        # fused kernel can normalize on-device. Store raw obs in
+                        # buf_obs so the kernel handles (obs - mean) / std itself.
+                        policy.set_obs_norm_stats(
+                            obs_norm.mean.astype(np.float32),
+                            np.sqrt(obs_norm.var + obs_norm.eps).astype(np.float32),
+                        )
+                    else:
+                        raw_obs = obs_norm.normalize(raw_obs)
                 obs_tensor = torch.from_numpy(raw_obs).to(device, non_blocking=True)
                 buf_obs[step] = obs_tensor
                 with torch.inference_mode():
@@ -1234,7 +1321,9 @@ def train(args):
         # ── Compute advantages ──
         with torch.inference_mode():
             raw_next = obs_buf.copy()
-            if obs_norm is not None:
+            if obs_norm is not None and not _use_fused_obs_encode:
+                # Standard path: CPU normalize before GPU transfer.
+                # Fused path: policy._encode handles normalization on-device.
                 raw_next = obs_norm.normalize(raw_next)
             next_obs = torch.from_numpy(raw_next).to(device, non_blocking=True)
             next_value = policy.get_value(next_obs).cpu()
