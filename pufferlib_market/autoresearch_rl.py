@@ -1006,6 +1006,9 @@ STOCK_EXPERIMENTS: list[dict] = [
      "ppo_epochs": 8},
     {"description": "s1137_lr_schedule_cos", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
      "lr_schedule": "cosine"},
+    # h=512 with proven lr=1e-4 + s1137: test if smaller capacity also escapes degenerate min
+    {"description": "s1137_h512", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "hidden_size": 512},
 
     # --- N-block: stocks12-champion formula on stocks11_2012 (indices 203-210) ---
     # random_mut_4424 (stocks12 leaderboard) got robust=-4.02 with 0% neg using:
@@ -1367,7 +1370,8 @@ def mutate_config(base: TrialConfig, *, stocks_mode: bool = False, seed_only: bo
         # stocks_mode/stocks11_2012: lr=1e-4 ONLY — lr=2e-4/3e-4 ALL hit -64.87 degenerate minimum.
         # random_mut_4424 (lr=3e-4) worked on stocks12 but stocks11_2012 data is fundamentally harder.
         mutable_params = {
-            "hidden_size": [256, 512, 1024],
+            # stocks_mode: h=256 catastrophically bad (-121 to -146) on stocks11_2012. Only 512/1024 viable.
+            "hidden_size": [512, 1024] if stocks_mode else [256, 512, 1024],
             "lr": [1e-4] if stocks_mode else [1e-4, 2e-4, 3e-4, 5e-4],
             "ent_coef": [0.01, 0.03, 0.05, 0.08, 0.1],
             "weight_decay": [0.0, 0.001, 0.005, 0.01, 0.05],
