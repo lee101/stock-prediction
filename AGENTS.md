@@ -53,3 +53,18 @@ remote training on the 5090 server is expected when local runs are too slow or G
   - Chronos2 tuning loras over trainingdata/ or binancetrainingdata/ daily or trainingdatahourly/
   - existing binance chronos/neural sweep helpers like `scripts/run_sweeps_remote.sh` when working in those experiment trees
 - whenever you launch remote training, record the exact remote command, env, log path, and output artifact path in the relevant progress markdown so the run is reproducible
+
+## Training Optimization (2026-03-22)
+- Triton fused sim kernel: `trainingefficiency/triton_sim_kernel.py` -- single GPU kernel per timestep
+- GPU-cached dataloaders with OOM fallback: `binanceneural/data.py` GPUCachedDataset
+- Fused loss: compiled sortino core, shared cumsum across windows
+- torch.compile reduce-overhead, fused AdamW, inference_mode for validation
+- Gradient accumulation via `config.accumulation_steps`
+- FlexAttention support (PyTorch 2.4+): `binanceneural/model.py`
+- Benchmark: `python binanceneural/benchmark_training.py --steps 20`
+- Profile: `python binanceneural/profile_training.py --steps 5`
+
+## Deployment
+- `scripts/deploy_crypto_model.sh <checkpoint> [symbols...]` -- updates binance-hybrid-spot launch, restarts supervisor
+- RunPod API key in env_real.py for A100 scaling
+- Remote 5090 autoresearch: `python -m pufferlib_market.autoresearch_rl --train-data <.bin> --val-data <.bin> --time-budget 7200`
