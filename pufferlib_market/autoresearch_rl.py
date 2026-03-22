@@ -711,6 +711,31 @@ STOCK_EXPERIMENTS: list[dict] = [
 # ---------------------------------------------------------------------------
 
 H100_STOCK_EXPERIMENTS: list[dict] = [
+    # --- A100-validated winners: combo configs validated at 1200s on stocks12 ---
+    # combo_best_daily: val_return=+1.81, Sortino=3.76 (best return). All positive in-sample.
+    {"description": "h100_combo_best_daily",
+     "hidden_size": 1024, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+     "lr_schedule": "cosine", "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05,
+     "obs_norm": True, "anneal_lr": True, "ent_coef": 0.05},
+    # robust_champion: val_return=+1.80, Sortino=4.67 (best risk-adjusted). All positive in-sample.
+    {"description": "h100_robust_champion",
+     "hidden_size": 1024, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+     "lr_schedule": "cosine", "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05,
+     "obs_norm": True, "anneal_lr": True, "weight_decay": 0.005, "ent_coef": 0.05},
+    # Variations on the winning theme
+    {"description": "h100_combo_slip10",
+     "hidden_size": 1024, "trade_penalty": 0.05, "fill_slippage_bps": 10.0,
+     "lr_schedule": "cosine", "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05,
+     "obs_norm": True, "anneal_lr": True, "ent_coef": 0.05},
+    {"description": "h100_combo_tp03",
+     "hidden_size": 1024, "trade_penalty": 0.03, "fill_slippage_bps": 5.0,
+     "lr_schedule": "cosine", "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05,
+     "obs_norm": True, "anneal_lr": True, "ent_coef": 0.05},
+    {"description": "h100_combo_wd01",
+     "hidden_size": 1024, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+     "lr_schedule": "cosine", "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05,
+     "obs_norm": True, "anneal_lr": True, "weight_decay": 0.01, "ent_coef": 0.05},
+
     # --- Replicate best local findings on stocks20 ---
     # slip_10bps: best on stocks12 (holdout=+21.04). Test on stocks20.
     {"description": "h100_slip_10bps",
