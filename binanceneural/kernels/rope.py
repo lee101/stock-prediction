@@ -266,6 +266,11 @@ def apply_rope(
     q_out = torch.empty_like(q_cont)
     k_out = torch.empty_like(k_cont)
 
+    # CC compatibility: BLOCK_S capped at next_power_of_2(min(T, 64)) which
+    # keeps register usage low on all GPUs (CC 7.x through CC 12.x).
+    # The RoPE kernel is memory-bandwidth bound; larger BLOCK_S would not
+    # improve throughput on H100/A100 because the bottleneck is element-wise
+    # ops on FP32 cos/sin, not SRAM utilization.
     BLOCK_S = triton.next_power_of_2(min(T, 64))
     is_bf16 = q.dtype == torch.bfloat16
 
@@ -311,6 +316,7 @@ def apply_rope_fused(
     q_out = torch.empty_like(q_cont)
     k_out = torch.empty_like(k_cont)
 
+    # Same BLOCK_S policy as apply_rope — see CC comment there.
     BLOCK_S = triton.next_power_of_2(min(T, 64))
     is_bf16 = q.dtype == torch.bfloat16
     inv_freq_c = inv_freq.contiguous().float()
