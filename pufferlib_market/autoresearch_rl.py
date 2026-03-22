@@ -1865,13 +1865,13 @@ def main():
 
     # --h100-mode implies --stocks and selects the H100-optimised experiment pool.
     # Also shorten time budget to 200s (H100 ~2x faster than A100 baseline of 300s).
-    if getattr(args, "h100_mode", False):
+    if args.h100_mode:
         args.stocks = True
         if args.time_budget == 300:
             args.time_budget = 200
 
     # --stocks12 implies --stocks and defaults to stocks12 data.
-    if getattr(args, "stocks12", False):
+    if args.stocks12:
         args.stocks = True
 
     # --a40-mode: A40 is ~1.5x faster than A100 per dollar; use 250s budget
@@ -1882,12 +1882,12 @@ def main():
     # user overrides (explicit --train-data etc.) can still win.
     if args.stocks:
         if args.train_data is None:
-            if getattr(args, "stocks12", False) and not getattr(args, "h100_mode", False):
+            if args.stocks12 and not args.h100_mode:
                 args.train_data = "pufferlib_market/data/stocks12_daily_train.bin"
             else:
                 args.train_data = _STOCK_DEFAULT_TRAIN
         if args.val_data is None:
-            if getattr(args, "stocks12", False) and not getattr(args, "h100_mode", False):
+            if args.stocks12 and not args.h100_mode:
                 args.val_data = "pufferlib_market/data/stocks12_daily_val.bin"
             else:
                 args.val_data = _STOCK_DEFAULT_VAL
@@ -1907,16 +1907,16 @@ def main():
             args.holdout_eval_steps = 90
         # Default leaderboard and checkpoint root for stocks
         if args.leaderboard == "pufferlib_market/autoresearch_leaderboard.csv":
-            if getattr(args, "h100_mode", False):
+            if args.h100_mode:
                 args.leaderboard = "autoresearch_stock_h100_leaderboard.csv"
-            elif getattr(args, "stocks12", False):
+            elif args.stocks12:
                 args.leaderboard = "autoresearch_stock12_daily_leaderboard.csv"
             else:
                 args.leaderboard = "autoresearch_stock_daily_leaderboard.csv"
         if args.checkpoint_root == "pufferlib_market/checkpoints/autoresearch":
-            if getattr(args, "h100_mode", False):
+            if args.h100_mode:
                 args.checkpoint_root = "pufferlib_market/checkpoints/autoresearch_stock_h100"
-            elif getattr(args, "stocks12", False):
+            elif args.stocks12:
                 args.checkpoint_root = "pufferlib_market/checkpoints/autoresearch_stock12"
             else:
                 args.checkpoint_root = "pufferlib_market/checkpoints/autoresearch_stock"
@@ -1941,13 +1941,12 @@ def main():
                 )
 
     if args.list_experiments:
-        if getattr(args, "h100_mode", False):
+        if args.h100_mode:
             experiment_pool = H100_STOCK_EXPERIMENTS
-        elif getattr(args, "stocks12", False):
-            h100_on = getattr(args, "h100_mode", False)
+        elif args.stocks12:
             experiment_pool = STOCK_EXPERIMENTS + [
                 e for e in H100_STOCK_EXPERIMENTS
-                if h100_on or e.get("requires_gpu") != "h100"
+                if e.get("requires_gpu") != "h100"
             ]
         elif args.stocks:
             experiment_pool = STOCK_EXPERIMENTS
@@ -2002,14 +2001,13 @@ def main():
                 existing_trials.add(row.get("description", ""))
 
     if args.stocks:
-        if getattr(args, "h100_mode", False):
+        if args.h100_mode:
             pool = H100_STOCK_EXPERIMENTS
             mode_label = "h100 stocks mode"
-        elif getattr(args, "stocks12", False):
-            h100_on = getattr(args, "h100_mode", False)
+        elif args.stocks12:
             pool = STOCK_EXPERIMENTS + [
                 e for e in H100_STOCK_EXPERIMENTS
-                if h100_on or e.get("requires_gpu") != "h100"
+                if e.get("requires_gpu") != "h100"
             ]
             mode_label = "stocks12 mode"
         else:

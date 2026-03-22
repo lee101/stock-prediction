@@ -1508,7 +1508,7 @@ def train(args):
                 else:
                     _es_no_improve += 1
                     if _es_no_improve >= _es_patience:
-                        print(f"Early stop: val_return did not improve for {_es_patience} checks")
+                        print(f"Early stop: ep_return did not improve for {_es_patience} checks")
                         break
         else:
             print(
