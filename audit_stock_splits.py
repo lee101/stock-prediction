@@ -70,10 +70,18 @@ BINARY_EXPORTS = [
         "extra_args": [],
     },
     {
+        "name": "stocks12_daily_train_2019",
+        "symbols": "AAPL,MSFT,NVDA,GOOG,META,TSLA,SPY,QQQ,PLTR,JPM,V,AMZN",
+        "start": "2019-01-02",  # effective start: 2020-09-30 (PLTR IPO)
+        "end": "2025-08-31",
+        "output": "pufferlib_market/data/stocks12_daily_train_2019.bin",
+        "extra_args": ["--min-days", "100"],
+    },
+    {
         "name": "stocks12_daily_val",
         "symbols": "AAPL,MSFT,NVDA,GOOG,META,TSLA,SPY,QQQ,PLTR,JPM,V,AMZN",
         "start": "2025-09-01",
-        "end": "2026-02-28",
+        "end": "2026-03-20",
         "output": "pufferlib_market/data/stocks12_daily_val.bin",
         "extra_args": ["--min-days", "100"],
     },
@@ -89,7 +97,7 @@ BINARY_EXPORTS = [
         "name": "stocks20_daily_val",
         "symbols": "AAPL,MSFT,NVDA,GOOG,META,TSLA,AMZN,AMD,JPM,SPY,QQQ,PLTR,NET,NFLX,ADBE,CRM,AVGO,V,COST,ADSK",
         "start": "2025-09-01",
-        "end": "2026-02-28",
+        "end": "2026-03-20",
         "output": "pufferlib_market/data/stocks20_daily_val.bin",
         "extra_args": ["--min-days", "100"],
     },
