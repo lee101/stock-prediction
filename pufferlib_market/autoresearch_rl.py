@@ -808,6 +808,34 @@ H100_STOCK_EXPERIMENTS: list[dict] = [
      "anneal_ent": True, "ent_coef": 0.08, "ent_coef_end": 0.02,
      "fill_slippage_bps": 10.0},
 
+    # --- random_mut_4424 variants (0% negative in orig sweep; h=256 is surprisingly good) ---
+    # random_mut_4424: h=256, slip=12, ent=0.05, wd=0.0, obs_norm=False, anneal_lr=True
+    # Smaller network = more regularized, fewer params to overfit
+    {"description": "h100_rmu4424_style",
+     "hidden_size": 256, "fill_slippage_bps": 12.0, "ent_coef": 0.05,
+     "weight_decay": 0.0, "anneal_lr": True},
+    {"description": "h100_rmu4424_wd005",
+     "hidden_size": 256, "fill_slippage_bps": 12.0, "ent_coef": 0.05,
+     "weight_decay": 0.005, "anneal_lr": True},
+    {"description": "h100_rmu4424_slip8",
+     "hidden_size": 256, "fill_slippage_bps": 8.0, "ent_coef": 0.05,
+     "weight_decay": 0.0, "anneal_lr": True},
+    {"description": "h100_h256_mut2272",
+     "hidden_size": 256, "fill_slippage_bps": 12.0, "ent_coef": 0.03,
+     "weight_decay": 0.005, "anneal_lr": True},
+
+    # --- random_mut_1228 variants (0% negative; obs_norm=True, high ent, no slippage) ---
+    # random_mut_1228: lr=5e-4, ent=0.08, wd=0.001, slip=0, obs_norm=True, anneal_lr=True
+    {"description": "h100_rmu1228_style",
+     "lr": 5e-4, "ent_coef": 0.08, "weight_decay": 0.001,
+     "fill_slippage_bps": 0.0, "obs_norm": True, "anneal_lr": True},
+    {"description": "h100_rmu1228_slip5",
+     "lr": 5e-4, "ent_coef": 0.08, "weight_decay": 0.001,
+     "fill_slippage_bps": 5.0, "obs_norm": True, "anneal_lr": True},
+    {"description": "h100_rmu1228_wd005",
+     "lr": 5e-4, "ent_coef": 0.08, "weight_decay": 0.005,
+     "fill_slippage_bps": 0.0, "obs_norm": True, "anneal_lr": True},
+
     # --- Cross seeds for best configs ---
     {"description": "h100_slip_10bps_s123",
      "fill_slippage_bps": 10.0, "seed": 123},
@@ -815,6 +843,12 @@ H100_STOCK_EXPERIMENTS: list[dict] = [
      "ent_coef": 0.05, "seed": 123},
     {"description": "h100_slip_10bps_s7",
      "fill_slippage_bps": 10.0, "seed": 7},
+    {"description": "h100_mut2272_s4424",
+     "fill_slippage_bps": 12.0, "ent_coef": 0.03,
+     "weight_decay": 0.005, "anneal_lr": True, "seed": 4424},
+    {"description": "h100_rmu4424_s2272",
+     "hidden_size": 256, "fill_slippage_bps": 12.0, "ent_coef": 0.05,
+     "weight_decay": 0.0, "anneal_lr": True, "seed": 2272},
 
     # --- Random mutations to explore neighborhood ---
     {"description": "random_1"},

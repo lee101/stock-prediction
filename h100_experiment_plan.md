@@ -98,17 +98,37 @@ Use `time_budget=90` with `max_trials=500` for H100.
 
 ---
 
-## H100 Configuration — UPDATED
+## Dataset Decision — FINAL (2026-03-22 Local Experiments)
 
-**Dataset**: stocks12_extended (12 symbols, 1797 train days, 158 val days) — preferred; falls back to stocks12 (1302 days)
-**Binary files**: `pufferlib_market/data/stocks12_extended_{train,val}.bin` or `stocks12_daily_{train,val}.bin`
+**CONCLUSION: Use stocks12_daily_train.bin (1302 days, 2022-02-07 to 2025-08-31), NOT the extended dataset.**
+
+### Why stocks12_extended (1797 days back to 2020) is WORSE
+
+Local 20-trial autoresearch sweep (90s/trial) comparing datasets:
+
+| Config              | stocks12_orig (1302d) | stocks12_extended (1797d) | stocks11 (2434d, no PLTR) |
+|---------------------|----------------------|---------------------------|---------------------------|
+| stock_trade_pen_02  | neg=20%, med=+11.2%  | neg=55%, med=-2.1%        | neg=30%, med=+2.9%        |
+| stock_longshort     | neg=15%, med=+9.6%   | neg=25%, med=+9.6%        | neg=65%, med=-7.3%        |
+| stock_baseline      | neg=65%, med=-6.2%   | neg=85%, med=-9.1%        | neg=45%, med=+1.6%        |
+| Best score          | **-25.8** (trade_pen_02) | -47.6 (trade_pen_10)   | -46.4 (trade_pen_02)      |
+
+**Reason**: The extra 2020-2021 data (COVID recovery, zero-rate bull market) is from a very different
+market regime than the val period (2025-2026, post-rate-hike). Adding out-of-distribution historical
+data hurts generalization. The val period matches the post-2022 regime better.
+
+**Also confirmed**: stocks11 (no PLTR, more data) also worse than stocks12_orig. More data ≠ better
+when the extra data is from a different distribution.
+
+---
+
+## H100 Configuration — FINAL
+
+**Dataset**: stocks12 (12 symbols, 1302 train days, 158 val days)
+**Binary files**: `pufferlib_market/data/stocks12_daily_{train,val}.bin`
 **Symbols**: AAPL, MSFT, NVDA, GOOG, META, TSLA, SPY, QQQ, PLTR, JPM, V, AMZN
 
-**Data note**: stocks12_extended goes back to 2020-09-30 (PLTR IPO), adding 38% more training data vs
-stocks12 (2022-02-07). stocks11 (no PLTR) goes back to 2019-01-02 with 2434 days.
-All data downloaded from yfinance with auto-adjust=True (split-corrected).
-
-### Recommended H100 command (with extended data)
+### Recommended H100 command
 
 ```bash
 source /nvme0n1-disk/code/stock-prediction/.venv313/bin/activate
@@ -116,7 +136,7 @@ cd /nvme0n1-disk/code/stock-prediction
 
 python -m pufferlib_market.autoresearch_rl \
     --h100-mode \
-    --train-data pufferlib_market/data/stocks12_extended_train.bin \
+    --train-data pufferlib_market/data/stocks12_daily_train.bin \
     --val-data pufferlib_market/data/stocks12_daily_val.bin \
     --time-budget 90 \
     --max-trials 500 \
@@ -126,9 +146,9 @@ python -m pufferlib_market.autoresearch_rl \
 
 Notes:
 - `--h100-mode` uses H100_STOCK_EXPERIMENTS pool, sets periods_per_year=252, fee_rate=0.001, holdout_eval_steps=90
-- **Extended data**: stocks12_extended has 1797 train days (vs 1302), improving generalization
-- **Same val**: uses original stocks12_daily_val.bin (158 days, 2025-09-01 to 2026-02-05) for fair comparison
-- **90s budget**: H100 at ~3.5x RTX 5090 speed reaches ~4M steps — the proven non-overfitting regime
+- **stocks12_daily_train.bin**: 1302 days matching post-2022 market regime — better generalization than extended
+- **Same val**: stocks12_daily_val.bin (158 days, 2025-09-01 to 2026-02-05) for fair comparison
+- **90s budget**: H100 at ~3.5x RTX 5090 speed reaches ~14M steps — the proven non-overfitting regime
 - **500 trials × 90s = 12.5 hours** (within H100 daily budget)
 - stocks12 obs_size=209 (smaller than stocks20 obs_size=345) → faster steps/sec
 
