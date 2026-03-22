@@ -525,6 +525,7 @@ src/models/__pycache__/
 src/models/__pycache__/**
 !src/models/*.py
 !src/models/**/*.py
+!ctrader/models/.gitkeep
 
 # =============================================================================
 # Root-level convenience copies (originals live in src/)
