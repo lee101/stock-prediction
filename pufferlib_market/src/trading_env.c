@@ -109,17 +109,16 @@ static void fill_observations(TradingEnv* __restrict__ env) {
     int t = ag->data_offset + ag->step;
 
     /* clamp to valid range */
-    if (__builtin_expect(t < 0, 0)) t = 0;
-    if (__builtin_expect(t >= md->num_timesteps, 0)) t = md->num_timesteps - 1;
+    if (UNLIKELY(t < 0)) t = 0;
+    if (UNLIKELY(t >= md->num_timesteps)) t = md->num_timesteps - 1;
 
     /* Observation lag: agent sees features from t-1 to prevent look-ahead bias.
        The agent decides based on the PREVIOUS bar's information, then trades
        execute at bar t. This matches real trading where you can only see
        completed bars before making decisions. */
     int t_obs = t - 1;
-    if (__builtin_expect(t_obs < 0, 0)) t_obs = 0;
+    if (UNLIKELY(t_obs < 0)) t_obs = 0;
 
-    /* Prefetch next timestep's feature row into L1 cache */
     const float* __restrict__ feat_src = &md->features[t_obs * S * FEATURES_PER_SYM];
     __builtin_prefetch(feat_src + S * FEATURES_PER_SYM, 0, 1);
 
@@ -454,7 +453,7 @@ void c_reset(TradingEnv* env) {
     fill_observations(env);
 }
 
-void c_step(TradingEnv* env) {
+__attribute__((hot)) void c_step(TradingEnv* env) {
     AgentState* ag = &env->agent;
     const MarketData* md = env->data;
     const int S = md->num_symbols;
@@ -467,11 +466,11 @@ void c_step(TradingEnv* env) {
     env->terminals[0] = 0;
 
     /* clamp timestep */
-    if (__builtin_expect(t >= md->num_timesteps, 0)) t = md->num_timesteps - 1;
+    if (UNLIKELY(t >= md->num_timesteps)) t = md->num_timesteps - 1;
 
     /* Force-close if max_hold_hours exceeded (before action decode) */
-    if (__builtin_expect(env->max_hold_hours > 0 && ag->position_sym >= 0 &&
-        ag->hold_hours >= env->max_hold_hours, 0)) {
+    if (UNLIKELY(env->max_hold_hours > 0 && ag->position_sym >= 0 &&
+        ag->hold_hours >= env->max_hold_hours)) {
         int cs = ag->position_sym % S;
         if (is_tradable(md, t, cs)) {
             close_position(env, t);
@@ -498,7 +497,6 @@ void c_step(TradingEnv* env) {
         }
     }
 
-    /* prefetch price data for this timestep */
     __builtin_prefetch(&md->prices[t * S * PRICE_FEATS], 0, 1);
 
     /* compute equity before action */
@@ -691,7 +689,7 @@ void c_step(TradingEnv* env) {
                early_exit ||
                (equity_after < INITIAL_CASH * 0.01f);  /* bankrupt */
 
-    if (__builtin_expect(done, 0)) {
+    if (UNLIKELY(done)) {
         if (early_exit && env->drawdown_profit_early_exit_verbose) {
             fprintf(
                 stderr,
@@ -740,6 +738,11 @@ void c_step(TradingEnv* env) {
         reset_agent_state(env);
         fill_observations(env);
     } else {
+        int t_next = t_new + 1;
+        if (LIKELY(t_next < md->num_timesteps)) {
+            __builtin_prefetch(&md->features[t_next * S * FEATURES_PER_SYM], 0, 1);
+            __builtin_prefetch(&md->prices[t_next * S * PRICE_FEATS], 0, 1);
+        }
         fill_observations(env);
     }
 }
