@@ -1033,10 +1033,10 @@ STOCK_EXPERIMENTS: list[dict] = [
     {"description": "h256_lr3e4_s1137", "hidden_size": 256, "lr": 3e-4,
      "seed": 1137, "anneal_lr": True},
 
-    # Random mutations — slots so H100 500-trial runs get ~400+ random trials.
-    # H100 uses --start-from 195 --seed-only (index 195 = random_1 after N-block).
+    # Random mutations — slots so H100 1000-trial runs get ~800+ random trials.
+    # H100 uses --start-from 187 --seed-only (O-block first, then random seeds).
     # Each slot calls mutate_config(best_config) at runtime.
-    *[{"description": f"random_{i}"} for i in range(1, 451)],
+    *[{"description": f"random_{i}"} for i in range(1, 1001)],
 ]
 
 # Dense tp03 seed sweeps — moved out of main pool (all negative at 300s on extended val).
