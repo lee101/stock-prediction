@@ -334,6 +334,7 @@ def build_autoresearch_cmd(
     max_timesteps_per_sample: int = 0,
     stocks_mode: bool = False,
     start_from: int = 0,
+    seed_only: bool = False,
 ) -> list[str]:
     cmd = [
         "python",
@@ -363,6 +364,8 @@ def build_autoresearch_cmd(
         cmd.extend(["--max-timesteps-per-sample", str(int(max_timesteps_per_sample))])
     if start_from > 0:
         cmd.extend(["--start-from", str(int(start_from))])
+    if seed_only:
+        cmd.append("--seed-only")
     return cmd
 
 
@@ -419,6 +422,7 @@ def build_remote_autoresearch_plan(
     fee_rate_override: float = -1.0,
     stocks_mode: bool = False,
     start_from: int = 0,
+    seed_only: bool = False,
     holdout_data: str | None = None,
     holdout_eval_steps: int = 0,
     holdout_n_windows: int = 0,
@@ -467,6 +471,7 @@ def build_remote_autoresearch_plan(
         max_timesteps_per_sample=max_timesteps_per_sample,
         stocks_mode=stocks_mode,
         start_from=start_from,
+        seed_only=seed_only,
     )
     _append_optional_cli_arg(cmd, "--periods-per-year", periods_per_year)
     if max_steps_override > 0:
