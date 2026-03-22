@@ -19,7 +19,7 @@ import numpy as np
 def combined_score(
     val_return: Optional[float],
     val_sortino: Optional[float],
-    val_wr: Optional[float],
+    val_wr: Optional[float] = None,
 ) -> Optional[float]:
     """Combine return and sortino with equal weight (0.5 each).
 
