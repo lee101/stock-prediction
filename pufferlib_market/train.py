@@ -22,6 +22,7 @@ import argparse
 import atexit
 import math
 import os
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -863,6 +864,15 @@ def train(args):
         "action_level_bins": int(config.action_level_bins),
         "action_max_offset_bps": float(config.action_max_offset_bps),
     }
+    if args.r2_pull_checkpoint:
+        from src.r2_client import R2Client
+        pull_dest = Path(args.checkpoint_dir) / "pulled.pt"
+        print(f"  Pulling checkpoint from R2: {args.r2_pull_checkpoint} -> {pull_dest}")
+        R2Client().download_file(args.r2_pull_checkpoint, pull_dest)
+        if not args.resume_from:
+            args.resume_from = str(pull_dest)
+            print(f"  Auto-setting --resume-from to pulled checkpoint: {pull_dest}")
+
     resume_state = ResumeState()
     if args.resume_from:
         resume_state = _load_resume_checkpoint(
@@ -1121,6 +1131,7 @@ def train(args):
     start_update = resume_state.update
     periodic_ckpt_mgr = TopKCheckpointManager(
         Path(args.checkpoint_dir), max_keep=args.max_periodic_checkpoints, mode="max",
+        r2_prefix=args.r2_prefix,
     )
     prune_periodic_checkpoints(
         Path(args.checkpoint_dir),
@@ -1347,6 +1358,8 @@ def train(args):
                         wandb_run.log_artifact(artifact)
                     except Exception:
                         pass  # never crash training due to artifact upload failure
+                if args.r2_prefix:
+                    periodic_ckpt_mgr.upload_to_r2(ckpt_path)
 
             print(
                 f"[{local_update:4d}/{num_updates}] "
@@ -1423,6 +1436,14 @@ def train(args):
         ),
         ckpt_path,
     )
+    if args.r2_prefix:
+        from src.r2_client import R2Client
+        r2_key = f"{args.r2_prefix}/{ckpt_path.name}"
+        try:
+            R2Client().upload_file(str(ckpt_path), r2_key)
+            print(f"  Uploaded final checkpoint to R2: {r2_key}")
+        except Exception as e:
+            print(f"  [warn] Failed to upload final checkpoint to R2: {e}", file=sys.stderr)
 
     binding.vec_close(vec_handle)
     print(f"\nTraining complete. Best return: {best_return:.4f}")
@@ -1502,7 +1523,8 @@ def main():
         default=1.0,
         help="Probability an order fills [0-1]. 1.0=always fills. 0.8=20%% of entries randomly rejected (simulates low liquidity).",
     )
-    parser.add_argument("--num-envs", type=int, default=64)
+    parser.add_argument("--num-envs", type=int, default=64,
+                        help="Number of parallel envs (default 64). For H100, consider --num-envs 256 (4x default) for better GPU utilization.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--short-borrow-apr", type=float, default=0.0, help="Annual borrow rate applied to open shorts")
     parser.add_argument("--max-hold-hours", type=int, default=0, help="Force close position after N hours (0=disabled)")
@@ -1628,6 +1650,10 @@ def main():
     # Output
     parser.add_argument("--checkpoint-dir", default="pufferlib_market/checkpoints")
     parser.add_argument("--save-every", type=int, default=50)
+    parser.add_argument("--r2-prefix", type=str, default=None,
+                        help="R2 prefix for checkpoint backup, e.g. 'rl-checkpoints/run-001'")
+    parser.add_argument("--r2-pull-checkpoint", type=str, default=None,
+                        help="R2 key to download before training starts, saved as <checkpoint-dir>/pulled.pt")
     parser.add_argument(
         "--max-periodic-checkpoints",
         type=int,

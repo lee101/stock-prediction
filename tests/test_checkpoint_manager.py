@@ -3,6 +3,7 @@
 import json
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from src.checkpoint_manager import TopKCheckpointManager, prune_periodic_checkpoints
 
@@ -90,3 +91,54 @@ def test_prune_periodic_checkpoints_keeps_latest_and_manifest_entries():
         assert remaining == ["update_000002.pt", "update_000004.pt", "update_000005.pt"]
         assert summary.scanned == 5
         assert summary.removed == 2
+
+
+def test_r2_upload_called_on_register_when_r2_prefix_set():
+    """Verify upload_to_r2 is called when r2_prefix is set.
+
+    Uses patch.object on the method rather than patch("src.r2_client.R2Client")
+    to avoid triggering the real boto3 import at module scope in src/r2_client.py.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        mgr = TopKCheckpointManager(d, max_keep=5, mode="max", r2_prefix="test-prefix")
+        p = d / "epoch_001.pt"
+        p.write_text("data")
+
+        with patch.object(TopKCheckpointManager, "upload_to_r2") as mock_upload:
+            mgr.register(p, metric=1.0, epoch=1)
+            mock_upload.assert_called_once_with(p)
+
+
+def test_r2_upload_not_called_when_r2_prefix_not_set():
+    """Verify upload_to_r2 is NOT called when r2_prefix is None (default)."""
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        mgr = TopKCheckpointManager(d, max_keep=5, mode="max")
+        p = d / "epoch_001.pt"
+        p.write_text("data")
+
+        with patch.object(TopKCheckpointManager, "upload_to_r2") as mock_upload:
+            mgr.register(p, metric=1.0, epoch=1)
+            mock_upload.assert_not_called()
+
+
+def test_r2_upload_not_called_for_pruned_checkpoint():
+    """Verify upload_to_r2 is NOT called for a checkpoint that gets pruned out of top-k."""
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        mgr = TopKCheckpointManager(d, max_keep=1, mode="max", r2_prefix="test-prefix")
+
+        # Register a good checkpoint first so it holds the top-1 slot
+        p_best = d / "epoch_002.pt"
+        p_best.write_text("best")
+        with patch.object(TopKCheckpointManager, "upload_to_r2") as mock_upload:
+            mgr.register(p_best, metric=2.0, epoch=2)
+            mock_upload.assert_called_once_with(p_best)
+
+        # Register a worse checkpoint — it gets pruned immediately and should NOT be uploaded
+        p_worse = d / "epoch_001.pt"
+        p_worse.write_text("worse")
+        with patch.object(TopKCheckpointManager, "upload_to_r2") as mock_upload:
+            mgr.register(p_worse, metric=0.5, epoch=1)
+            mock_upload.assert_not_called()
