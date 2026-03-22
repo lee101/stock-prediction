@@ -1,0 +1,4 @@
+*.o
+ctrader
+test_market_sim
+test_binance_rest
