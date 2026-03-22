@@ -950,6 +950,43 @@ STOCK_EXPERIMENTS: list[dict] = [
     {"description": "s5678_sdp01_t001",  "lr": 1e-4, "anneal_lr": True, "seed": 5678,
      "smooth_downside_penalty": 0.1, "smooth_downside_temperature": 0.01},
 
+    # --- SDP-02 seed sweep (indices 622-631): sdp=0.2, sdt=0.01 + varied seeds
+    # Tests whether the smooth_downside_penalty=0.2, temperature=0.01 config
+    # (the random_mut_2272 formula) allows MORE seeds to escape the -64.87 degenerate
+    # minimum compared to seed-only mode (no sdp). If success rate is >20% here
+    # vs ~11% seed-only, H100 should use this config for the seed sweep.
+    {"description": "sdp02_s1464", "lr": 1e-4, "anneal_lr": True, "seed": 1464,
+     "smooth_downside_penalty": 0.2, "smooth_downside_temperature": 0.01},
+    {"description": "sdp02_s2718", "lr": 1e-4, "anneal_lr": True, "seed": 2718,
+     "smooth_downside_penalty": 0.2, "smooth_downside_temperature": 0.01},
+    {"description": "sdp02_s31415", "lr": 1e-4, "anneal_lr": True, "seed": 31415,
+     "smooth_downside_penalty": 0.2, "smooth_downside_temperature": 0.01},
+    {"description": "sdp02_s1234", "lr": 1e-4, "anneal_lr": True, "seed": 1234,
+     "smooth_downside_penalty": 0.2, "smooth_downside_temperature": 0.01},
+    {"description": "sdp02_s314", "lr": 1e-4, "anneal_lr": True, "seed": 314,
+     "smooth_downside_penalty": 0.2, "smooth_downside_temperature": 0.01},
+    {"description": "sdp02_s271", "lr": 1e-4, "anneal_lr": True, "seed": 271,
+     "smooth_downside_penalty": 0.2, "smooth_downside_temperature": 0.01},
+    {"description": "sdp02_s999", "lr": 1e-4, "anneal_lr": True, "seed": 999,
+     "smooth_downside_penalty": 0.2, "smooth_downside_temperature": 0.01},
+    {"description": "sdp02_s555", "lr": 1e-4, "anneal_lr": True, "seed": 555,
+     "smooth_downside_penalty": 0.2, "smooth_downside_temperature": 0.01},
+    {"description": "sdp02_s7777", "lr": 1e-4, "anneal_lr": True, "seed": 7777,
+     "smooth_downside_penalty": 0.2, "smooth_downside_temperature": 0.01},
+    {"description": "sdp02_s2024", "lr": 1e-4, "anneal_lr": True, "seed": 2024,
+     "smooth_downside_penalty": 0.2, "smooth_downside_temperature": 0.01},
+    # Known-bad seeds without sdp: all at -64.87. Testing if sdp=0.2 rescues them.
+    {"description": "sdp02_s7860", "lr": 1e-4, "anneal_lr": True, "seed": 7860,
+     "smooth_downside_penalty": 0.2, "smooth_downside_temperature": 0.01},
+    {"description": "sdp02_s4533", "lr": 1e-4, "anneal_lr": True, "seed": 4533,
+     "smooth_downside_penalty": 0.2, "smooth_downside_temperature": 0.01},
+    {"description": "sdp02_s4438", "lr": 1e-4, "anneal_lr": True, "seed": 4438,
+     "smooth_downside_penalty": 0.2, "smooth_downside_temperature": 0.01},
+    {"description": "sdp02_s6828", "lr": 1e-4, "anneal_lr": True, "seed": 6828,
+     "smooth_downside_penalty": 0.2, "smooth_downside_temperature": 0.01},
+    {"description": "sdp02_s5678", "lr": 1e-4, "anneal_lr": True, "seed": 5678,
+     "smooth_downside_penalty": 0.2, "smooth_downside_temperature": 0.01},
+
     # Random mutations — slots so H100 500-trial runs get ~400+ random trials
     # (after ~99 named configs). Each slot calls mutate_config(best_config) at runtime.
     *[{"description": f"random_{i}"} for i in range(1, 451)],
