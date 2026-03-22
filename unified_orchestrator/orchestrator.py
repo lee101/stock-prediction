@@ -51,6 +51,8 @@ from unified_orchestrator.conditional_orders import (
     TradingStep,
 )
 
+from src.split_monitor import check_recent_splits, log_split_event
+
 from llm_hourly_trader.providers import call_llm
 from llm_hourly_trader.gemini_wrapper import TradePlan
 
@@ -1577,10 +1579,56 @@ def execute_stock_signals(
                 orders.append({"symbol": sym, "action": "trailing_stop_sell",
                                "qty": pos.qty, "dry_run": True})
 
+    # ── Split detection ───────────────────────────────────────────────────
+    # Forward splits make our stored entry_price stale (pre-split price is
+    # 1/factor higher than current price), which causes fake unrealised losses
+    # and corrupts the policy observation. Force-close before the policy sees
+    # the distorted data.
+    if stock_pos:
+        recent_splits = check_recent_splits(list(stock_pos), lookback_days=7)
+        if recent_splits:
+            logger.warning(f"  Split-affected positions detected: {list(recent_splits)} — force-closing")
+            from alpaca.trading.requests import GetOrdersRequest
+            from alpaca.trading.enums import QueryOrderStatus
+            for sym, ratio in recent_splits.items():
+                log_split_event(sym, ratio)
+                pos = snapshot.alpaca_positions.get(sym)
+                if pos and pos.qty > 0:
+                    logger.warning(f"  {sym}: SPLIT FORCE-CLOSE — selling {pos.qty} shares near market")
+                    if not dry_run:
+                        try:
+                            open_orders = alpaca.get_orders(
+                                GetOrdersRequest(status=QueryOrderStatus.OPEN)
+                            )
+                            for order in open_orders:
+                                if str(order.symbol) == sym and order.side.value.lower() == "sell":
+                                    alpaca.cancel_order_by_id(str(order.id))
+                            time.sleep(0.5)
+                            sell_price = round(pos.current_price * 0.999, 2)
+                            req = LimitOrderRequest(
+                                symbol=sym, qty=pos.qty, side=OrderSide.SELL,
+                                type="limit", time_in_force=TimeInForce.DAY,
+                                limit_price=sell_price,
+                            )
+                            result = alpaca.submit_order(req)
+                            orders.append({
+                                "symbol": sym, "action": "split_force_close",
+                                "price": sell_price, "qty": pos.qty,
+                                "order_id": str(result.id),
+                            })
+                        except Exception as e:
+                            logger.error(f"  {sym}: split force-close order error: {e}")
+                    else:
+                        orders.append({
+                            "symbol": sym, "action": "split_force_close",
+                            "qty": pos.qty, "dry_run": True,
+                        })
+            trail_exit_syms |= set(recent_splits)
+
     for sym, plan in signals.items():
         try:
             if sym in trail_exit_syms:
-                continue  # already exiting via trailing stop
+                continue  # already exiting via trailing stop or split force-close
 
             # Safety validation — applied to ALL orders
             ok, reason = _validate_trade_plan(plan, sym)

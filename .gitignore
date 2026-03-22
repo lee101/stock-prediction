@@ -702,5 +702,4 @@ bagsfm_state.json
 **/gemini_cache_eval/
 **/live_state.json
 chronos2_long
-*.prof
-binanceneural/profile_trace.json
+profile_output/

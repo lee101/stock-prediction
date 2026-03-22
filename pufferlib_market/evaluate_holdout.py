@@ -309,7 +309,8 @@ def main() -> None:
 
     data = read_mktd(Path(args.data_path))
     num_symbols = data.num_symbols
-    obs_size = int(num_symbols) * 16 + 5 + int(num_symbols)
+    features_per_sym = int(data.features.shape[2])
+    obs_size = int(num_symbols) * features_per_sym + 5 + int(num_symbols)
     num_actions, alloc_bins, level_bins, max_offset_bps = _infer_action_grid(
         payload=payload,
         state_dict=state_dict,

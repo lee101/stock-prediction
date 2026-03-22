@@ -96,7 +96,7 @@ def validate_conversion(
     torch.manual_seed(42)
     context = torch.randn(2, 512) * 0.1 + 100.0
 
-    with torch.no_grad():
+    with torch.inference_mode():
         # Original
         orig_out = orig_pipe.model(context.to(device))
         orig_preds = orig_out.quantile_preds
