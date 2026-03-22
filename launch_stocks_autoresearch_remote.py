@@ -33,10 +33,10 @@ from src.remote_training_pipeline import (
     render_remote_pipeline_script,
 )
 
-TRAIN_DATA = "pufferlib_market/data/stocks12_daily_train.bin"
-VAL_DATA = "pufferlib_market/data/stocks12_daily_val.bin"
+TRAIN_DATA = "pufferlib_market/data/stocks12_daily_train_2019.bin"  # extended: 2020-09-30 to 2025-08-31 (1797 days)
+VAL_DATA = "pufferlib_market/data/stocks12_daily_val.bin"  # extended: 2025-09-01 to 2026-03-20 (201 days)
 FEE_OVERRIDE = 0.001  # Alpaca 10bps
-HOLDOUT_EVAL_STEPS = 90  # fits in 194-day val set
+HOLDOUT_EVAL_STEPS = 90  # fits in 201-day val set
 HOLDOUT_N_WINDOWS = 20
 MAX_STEPS_OVERRIDE = 252  # daily steps per year
 PERIODS_PER_YEAR = 252.0
@@ -176,6 +176,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--holdout-fill-buffer-bps", type=float, default=5.0)
     parser.add_argument("--holdout-fee-rate", type=float, default=FEE_OVERRIDE)
     parser.add_argument("--fee-rate-override", type=float, default=FEE_OVERRIDE)
+    parser.add_argument("--max-timesteps-per-sample", type=int, default=200,
+                        help="Cap training samples per symbol per trial (200=~4.3M steps on 1797-day data)")
     parser.add_argument("--remote-host", default=DEFAULT_REMOTE_HOST)
     parser.add_argument("--remote-dir", default=DEFAULT_REMOTE_DIR)
     parser.add_argument("--remote-env", default=DEFAULT_REMOTE_ENV)
@@ -197,6 +199,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         rank_metric=str(args.rank_metric),
         periods_per_year=float(args.periods_per_year),
         max_steps_override=int(args.max_steps_override),
+        max_timesteps_per_sample=int(args.max_timesteps_per_sample),
         fee_rate_override=float(args.fee_rate_override),
         holdout_data=str(args.holdout_data),
         holdout_eval_steps=int(args.holdout_eval_steps),
