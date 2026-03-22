@@ -1237,13 +1237,14 @@ def build_config(overrides: dict) -> TrialConfig:
     return cfg
 
 
-def mutate_config(base: TrialConfig) -> TrialConfig:
+def mutate_config(base: TrialConfig, *, stocks_mode: bool = False) -> TrialConfig:
     """Randomly mutate a config for exploration."""
     d = asdict(base)
     # Pick 2-3 params to mutate
+    # stocks_mode: restrict lr to [1e-4, 2e-4] only — 3e-4/5e-4 collapse to hold-cash on stocks data
     mutable_params = {
         "hidden_size": [256, 512, 1024, 2048],
-        "lr": [1e-4, 2e-4, 3e-4, 5e-4],
+        "lr": [1e-4, 2e-4] if stocks_mode else [1e-4, 2e-4, 3e-4, 5e-4],
         "ent_coef": [0.01, 0.03, 0.05, 0.08, 0.1],
         "weight_decay": [0.0, 0.001, 0.005, 0.01, 0.05],
         "fill_slippage_bps": [0.0, 5.0, 8.0, 12.0],
@@ -1258,7 +1259,8 @@ def mutate_config(base: TrialConfig) -> TrialConfig:
         "smooth_downside_temperature": [0.01, 0.02, 0.05],
         "smoothness_penalty": [0.0, 0.005, 0.01, 0.02],
         "obs_norm": [True, False],
-        "anneal_lr": [True, False],
+        # stocks_mode: anneal_lr=True is critical; False collapses. Don't mutate away from it.
+        "anneal_lr": [True] if stocks_mode else [True, False],
         "anneal_ent": [True, False],
     }
     keys = random.sample(list(mutable_params.keys()), min(3, len(mutable_params)))
@@ -2361,7 +2363,7 @@ def main():
 
         # Handle random mutations
         if desc.startswith("random_"):
-            config = mutate_config(best_config)
+            config = mutate_config(best_config, stocks_mode=args.stocks)
             desc = config.description
         else:
             config = build_config(exp_overrides)
