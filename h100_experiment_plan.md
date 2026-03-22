@@ -1,5 +1,36 @@
 # H100 Experiment Plan (Updated 2026-03-22)
 
+## Executive Summary — REVISED (v6: training duration breakthrough)
+
+**ROOT CAUSE OF RECENT FAILURES FOUND (2026-03-22):**
+All recent local sweeps used `--max-timesteps-per-sample 200` which caps training at
+**4.3M steps**. But winning models need **33–37M steps** (~300s on A40). With 8x fewer
+steps, models don't converge → 0 positive results in 34+ trials with tp03/wd01 variants.
+
+| Setup | Steps | Time (A40) | Hard val results |
+|-------|-------|------------|-----------------|
+| cap=200 (recent sweeps) | ~4.3M | ~35s/trial | **0/34 positive** |
+| no cap, 300s budget (original) | ~33-37M | 300s/trial | **~4-5% positive** |
+
+**Proven winning models on extended 201-day hard val (binary fill, Sep 2025–Mar 2026):**
+- `random_mut_9497` (h=1024, wd=0.005, slip=12bps, ent=0.05): **median=+9.9%, p10=-2.3%**
+- `random_mut_112` (h=256, standard config): **median=+6.8%, p10=-4.7%**
+- `random_mut_7392` (h=1024, wd=0.005, no slip): **median=+6.3%, p10=-6.7%**
+
+**CORRECT H100 command (v6):**
+```bash
+python launch_stocks_autoresearch_remote.py \
+  --gpu-type h100 --max-trials 500 \
+  --time-budget 90 \
+  --max-timesteps-per-sample 10000
+```
+- `--time-budget 90`: H100 at ~390k steps/sec × 90s = **~35M steps** ≈ A40 300s sweet spot
+- `--max-timesteps-per-sample 10000`: effectively no cap (215M max >> 35M in 90s)
+- `--stocks12` added automatically by the launcher (uses STOCK_EXPERIMENTS pool)
+- Expected: 500 trials × 90s each = **~12.5 hours**; ~20-25 positive models (4-5% hit rate)
+
+---
+
 ## Executive Summary — REVISED (v5: extended training data breakthrough)
 
 **KEY FINDING (v5, 2026-03-22 local calibration):**
