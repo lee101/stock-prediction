@@ -229,6 +229,7 @@ class BinanceHourlyTrainer:
         ckpt_mgr = TopKCheckpointManager(self.checkpoint_dir, max_keep=10, mode="max")
 
         global_step = 0
+        print(f"Training: {len(train_loader)} train batches, {len(val_loader)} val batches", flush=True)
         for epoch in range(1, self.config.epochs + 1):
             train_metrics, global_step = self._run_epoch(
                 model,
