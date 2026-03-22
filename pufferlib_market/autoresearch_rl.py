@@ -571,6 +571,31 @@ STOCK_EXPERIMENTS: list[dict] = [
     # H100-scale configs: 256 parallel envs, minibatch 4096, BF16, CUDA graph
     # -----------------------------------------------------------------------
 
+    # FIRST: lr=1e-4 + anneal H100 configs — validated best for stocks11 data (2015/2012)
+    # Arch comparison 2026-03-22: lr1e4_anneal_s777 → robust=-40.3 (2012), -54.9 (2015)
+    # beats all lr=3e-4 configs AND h2048 configs on stocks11 data
+    # H100 at ~450k sps × 90s = 40M steps — converges well above 33M threshold
+    {"description": "lr1e4_anneal_h100",
+     "lr": 1e-4, "anneal_lr": True, "ent_coef": 0.05, "seed": 777,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+    {"description": "lr1e4_anneal_h100_s42",
+     "lr": 1e-4, "anneal_lr": True, "ent_coef": 0.05, "seed": 42,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+    {"description": "lr1e4_anneal_h100_s9621",
+     "lr": 1e-4, "anneal_lr": True, "ent_coef": 0.05, "seed": 9621,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+    {"description": "lr1e4_noanneal_h100",
+     "lr": 1e-4, "anneal_lr": False, "ent_coef": 0.05, "seed": 9621,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+    {"description": "lr1e4_anneal_wd01_h100",
+     "lr": 1e-4, "anneal_lr": True, "ent_coef": 0.05, "weight_decay": 0.01, "seed": 777,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+
     # Replicate best known config (h1024 + anneal_lr) at H100 scale
     {"description": "h1024_h100",
      "hidden_size": 1024, "anneal_lr": True, "ent_coef": 0.05,
