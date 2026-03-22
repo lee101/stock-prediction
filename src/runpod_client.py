@@ -22,6 +22,9 @@ GPU_ALIASES: dict[str, str] = {
     "h100-sxm": "NVIDIA H100 SXM",
     "4090": "NVIDIA GeForce RTX 4090",
     "5090": "NVIDIA GeForce RTX 5090",
+    "l40s": "NVIDIA L40S",
+    "l40": "NVIDIA L40",
+    "a40": "NVIDIA A40",
 }
 
 # Backwards-compatible alias
@@ -34,6 +37,9 @@ HOURLY_RATES: dict[str, float] = {
     "NVIDIA H100 SXM": 4.49,
     "NVIDIA GeForce RTX 4090": 0.69,
     "NVIDIA GeForce RTX 5090": 1.25,
+    "NVIDIA L40S": 0.79,
+    "NVIDIA L40": 0.69,
+    "NVIDIA A40": 0.69,
 }
 
 
