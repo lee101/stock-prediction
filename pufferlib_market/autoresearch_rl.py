@@ -727,7 +727,7 @@ STOCK_EXPERIMENTS: list[dict] = [
 
     # Random mutations — 300 slots so H100 500-trial runs get ~218 random trials
     # (after ~82 named configs). Each slot calls mutate_config(best_config) at runtime.
-    *[{"description": f"random_{i}"} for i in range(1, 301)],
+    *[{"description": f"random_{i}"} for i in range(1, 451)],
 ]
 
 # Dense tp03 seed sweeps — moved out of main pool (all negative at 300s on extended val).
