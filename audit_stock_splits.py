@@ -120,14 +120,7 @@ def _is_valid_ticker(sym: str) -> bool:
     and crypto pairs.  Valid tickers consist of uppercase letters, digits,
     dots, hyphens, and carets (BRK.B, BF.B, SPY^, etc.).
     """
-    if not sym:
-        return False
-    if "," in sym:
-        return False
-    # Must start with uppercase letter and be composed of valid ticker chars
-    if not re.match(r"^[A-Z][A-Z0-9.\-^]*$", sym):
-        return False
-    return True
+    return bool(re.match(r"^[A-Z][A-Z0-9.\-^]*$", sym))
 
 
 def _is_crypto_symbol(sym: str) -> bool:
@@ -172,7 +165,6 @@ def _scan_big_drops(df: pd.DataFrame) -> list[tuple[str, float]]:
     Uses the last close price per unique date to avoid false positives from
     duplicate rows (e.g. SPAC re-listings that produce two rows per day).
     """
-    # Keep last row per normalized date
     daily = df.groupby(DATE_COL, as_index=False).last().sort_values(DATE_COL).reset_index(drop=True)
     closes = daily["close"].values
     dates = daily[DATE_COL].values
@@ -225,11 +217,9 @@ def _apply_split_to_csv(csv_path: Path, split_date: str, factor: float) -> None:
     df.to_csv(csv_path, index=False)
 
 
-def _build_real_event_lookup() -> dict[tuple[str, str], str]:
-    return {(sym, d): desc for sym, d, desc in KNOWN_REAL_EVENTS}
-
-
-REAL_EVENT_LOOKUP = _build_real_event_lookup()
+REAL_EVENT_LOOKUP: dict[tuple[str, str], str] = {
+    (sym, d): desc for sym, d, desc in KNOWN_REAL_EVENTS
+}
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +274,6 @@ def audit_symbol(
                     df = _load_csv_normalized(daily_path)  # reload after fix
                     records.append(AuditRecord(sym, split_date_str, factor, "FIXED"))
             else:
-                # Price didn't drop by expected amount — already adjusted
                 records.append(AuditRecord(sym, split_date_str, factor, "OK"))
 
         # --- Scan for unrecognized big drops (not explained by any known split) ---
@@ -300,7 +289,6 @@ def audit_symbol(
     # --- Check hourly file for same splits ---
     if hourly_path is not None and hourly_path.exists() and len(yf_splits) > 0:
         df_h = _load_csv_normalized(hourly_path)
-        fixed_hourly_dates: set[str] = set()
 
         for split_dt_tz, factor in yf_splits.items():
             if factor < MIN_SPLIT_FACTOR:
@@ -330,8 +318,6 @@ def audit_symbol(
             expected_drop = -1.0 + (1.0 / factor)  # e.g. -0.9 for 10:1 split
 
             if abs(max_drop - expected_drop) < SPLIT_RATIO_TOLERANCE + 0.05:
-                # Hourly file also appears unadjusted
-                fixed_hourly_dates.add(split_date_str)
                 if dry_run:
                     records.append(AuditRecord(sym, split_date_str, factor, "FIXED_HOURLY(dry)"))
                 else:
