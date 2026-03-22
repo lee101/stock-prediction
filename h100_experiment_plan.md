@@ -100,11 +100,15 @@ Use `time_budget=90` with `max_trials=500` for H100.
 
 ## H100 Configuration — UPDATED
 
-**Dataset**: stocks12 (12 symbols, 1302 train days, 158 val days)
-**Binary files**: `pufferlib_market/data/stocks12_daily_{train,val}.bin`
+**Dataset**: stocks12_extended (12 symbols, 1797 train days, 158 val days) — preferred; falls back to stocks12 (1302 days)
+**Binary files**: `pufferlib_market/data/stocks12_extended_{train,val}.bin` or `stocks12_daily_{train,val}.bin`
 **Symbols**: AAPL, MSFT, NVDA, GOOG, META, TSLA, SPY, QQQ, PLTR, JPM, V, AMZN
 
-### Recommended H100 command
+**Data note**: stocks12_extended goes back to 2020-09-30 (PLTR IPO), adding 38% more training data vs
+stocks12 (2022-02-07). stocks11 (no PLTR) goes back to 2019-01-02 with 2434 days.
+All data downloaded from yfinance with auto-adjust=True (split-corrected).
+
+### Recommended H100 command (with extended data)
 
 ```bash
 source /nvme0n1-disk/code/stock-prediction/.venv313/bin/activate
@@ -112,7 +116,7 @@ cd /nvme0n1-disk/code/stock-prediction
 
 python -m pufferlib_market.autoresearch_rl \
     --h100-mode \
-    --train-data pufferlib_market/data/stocks12_daily_train.bin \
+    --train-data pufferlib_market/data/stocks12_extended_train.bin \
     --val-data pufferlib_market/data/stocks12_daily_val.bin \
     --time-budget 90 \
     --max-trials 500 \
@@ -122,10 +126,28 @@ python -m pufferlib_market.autoresearch_rl \
 
 Notes:
 - `--h100-mode` uses H100_STOCK_EXPERIMENTS pool, sets periods_per_year=252, fee_rate=0.001, holdout_eval_steps=90
-- Explicitly pass `--train-data` and `--val-data` to point at stocks12 (not the stocks20 default)
+- **Extended data**: stocks12_extended has 1797 train days (vs 1302), improving generalization
+- **Same val**: uses original stocks12_daily_val.bin (158 days, 2025-09-01 to 2026-02-05) for fair comparison
 - **90s budget**: H100 at ~3.5x RTX 5090 speed reaches ~4M steps — the proven non-overfitting regime
 - **500 trials × 90s = 12.5 hours** (within H100 daily budget)
 - stocks12 obs_size=209 (smaller than stocks20 obs_size=345) → faster steps/sec
+
+### eval_hours calibration (CRITICAL)
+
+When using `evaluate_fast` (C env) on daily data, `eval_hours` counts **calendar days**, not trading days.
+To evaluate ~90 trading days, use `eval_hours=130` (90 × 7/5 ≈ 126, rounded to 130).
+
+The autoresearch `holdout_eval_steps=90` calls `evaluate_holdout.py` (Python sim) which counts 90 **trading bars**.
+These two give different results:
+- `evaluate_holdout --eval-hours 90` ≈ 90 trading days
+- `evaluate_fast --eval-hours 90` ≈ 64 trading days → use `--eval-hours 130` for equivalent
+
+Reference on random_mut_2272 (stocks12_daily_val.bin):
+| Evaluator | eval_hours | median_return | p10_return |
+|-----------|-----------|--------------|------------|
+| evaluate_holdout | 90 | +4.9% | -11.6% |
+| evaluate_fast | 90 | +0.3% | -12.2% |
+| evaluate_fast | 130 | +8.6% | -18.9% |
 
 ---
 
