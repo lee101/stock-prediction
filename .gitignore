@@ -30,6 +30,7 @@ profiles/
 .env
 .env2
 .env.local
+.env.binance-hybrid
 .envrc
 
 # =============================================================================
@@ -704,3 +705,4 @@ bagsfm_state.json
 **/live_state.json
 chronos2_long
 profile_output/
+deployments/
