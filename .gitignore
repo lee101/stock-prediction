@@ -703,3 +703,4 @@ bagsfm_state.json
 **/live_state.json
 chronos2_long
 *.prof
+binanceneural/profile_trace.json
