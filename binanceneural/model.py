@@ -773,10 +773,165 @@ class BinanceHourlyPolicyNano(BinancePolicyBase):
         return out
 
 
+try:
+    from mamba_ssm import Mamba2 as _Mamba2
+    HAS_MAMBA = True
+except ImportError:
+    _Mamba2 = None
+    HAS_MAMBA = False
+
+try:
+    from mamba_ssm.modules.mamba3 import Mamba3 as _Mamba3
+    HAS_MAMBA3 = True
+except ImportError:
+    _Mamba3 = None
+    HAS_MAMBA3 = False
+
+
+class PureTorchSSMBlock(nn.Module):
+    """S4-style SSM fallback when mamba-ssm is unavailable."""
+
+    def __init__(self, d_model: int, d_state: int = 64, expand: int = 2, dropout: float = 0.0) -> None:
+        super().__init__()
+        d_inner = d_model * expand
+        self.in_proj = nn.Linear(d_model, d_inner * 2, bias=False)
+        self.conv1d = nn.Conv1d(d_inner, d_inner, kernel_size=4, padding=3, groups=d_inner, bias=True)
+        self.A_log = nn.Parameter(torch.log(torch.randn(d_inner, d_state).abs() + 1e-4))
+        self.D = nn.Parameter(torch.ones(d_inner))
+        self.dt_proj = nn.Linear(d_inner, d_inner, bias=True)
+        self.B_proj = nn.Linear(d_inner, d_state, bias=False)
+        self.C_proj = nn.Linear(d_inner, d_state, bias=False)
+        self.out_proj = nn.Linear(d_inner, d_model, bias=False)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, L, _ = x.shape
+        xz = self.in_proj(x)
+        x_inner, z = xz.chunk(2, dim=-1)
+        x_conv = self.conv1d(x_inner.transpose(1, 2))[:, :, :L].transpose(1, 2)
+        x_conv = F.silu(x_conv)
+        dt = F.softplus(self.dt_proj(x_conv))
+        B_t = self.B_proj(x_conv)
+        C_t = self.C_proj(x_conv)
+        A = -torch.exp(self.A_log)
+        d_inner, d_state = A.shape
+        h = torch.zeros(B, d_inner, d_state, device=x.device, dtype=x.dtype)
+        ys = []
+        for t in range(L):
+            dt_t = dt[:, t, :].unsqueeze(-1)
+            B_t_t = B_t[:, t, :].unsqueeze(1)
+            x_t = x_conv[:, t, :].unsqueeze(-1)
+            h = h * torch.exp(A.unsqueeze(0) * dt_t) + x_t * B_t_t * dt_t
+            y_t = (h * C_t[:, t, :].unsqueeze(1)).sum(-1)
+            ys.append(y_t)
+        y = torch.stack(ys, dim=1)
+        y = y + x_conv * self.D.unsqueeze(0).unsqueeze(0)
+        y = y * F.silu(z)
+        return self.dropout(self.out_proj(y))
+
+
+class BinanceHourlyPolicyMamba(BinancePolicyBase):
+    """Mamba3/Mamba2 SSM policy. Falls back to pure-torch SSM if mamba-ssm unavailable."""
+
+    def __init__(self, config: PolicyConfig) -> None:
+        super().__init__(
+            price_offset_pct=config.price_offset_pct,
+            min_price_gap_pct=config.min_price_gap_pct,
+            trade_amount_scale=config.trade_amount_scale,
+            use_midpoint_offsets=config.use_midpoint_offsets,
+            max_hold_hours=config.max_hold_hours,
+        )
+        self.config = config
+        self.embed = nn.Linear(config.input_dim, config.hidden_dim, bias=False)
+        d_state = 64
+        chunk_size = 16
+        expand = 2
+
+        if HAS_MAMBA3:
+            logger.info("Using Mamba3 SSM backend")
+            self.layers = nn.ModuleList([
+                _Mamba3(
+                    d_model=config.hidden_dim,
+                    d_state=d_state,
+                    headdim=min(64, config.hidden_dim),
+                    expand=expand,
+                    chunk_size=chunk_size,
+                    layer_idx=i,
+                    n_layer=config.num_layers,
+                )
+                for i in range(config.num_layers)
+            ])
+            self._backend = "mamba3"
+        elif HAS_MAMBA:
+            logger.info("Using Mamba2 SSM backend")
+            self.layers = nn.ModuleList([
+                _Mamba2(
+                    d_model=config.hidden_dim,
+                    d_state=d_state,
+                    headdim=min(64, config.hidden_dim),
+                    expand=expand,
+                    chunk_size=chunk_size,
+                    layer_idx=i,
+                )
+                for i in range(config.num_layers)
+            ])
+            self._backend = "mamba2"
+        else:
+            logger.warning("mamba-ssm not available, using pure-torch SSM fallback")
+            self.layers = nn.ModuleList([
+                PureTorchSSMBlock(
+                    d_model=config.hidden_dim,
+                    d_state=d_state,
+                    expand=expand,
+                    dropout=config.dropout,
+                )
+                for _ in range(config.num_layers)
+            ])
+            self._backend = "pure_torch"
+
+        self.norms = nn.ModuleList([nn.LayerNorm(config.hidden_dim) for _ in range(config.num_layers)])
+        self.final_norm = nn.LayerNorm(config.hidden_dim)
+        self.head = nn.Linear(config.hidden_dim, config.num_outputs, bias=False)
+        self._init_weights()
+
+    def _init_weights(self) -> None:
+        nn.init.zeros_(self.head.weight)
+        for m in self.modules():
+            if isinstance(m, nn.Linear) and m is not self.head:
+                fan_in = m.weight.size(1)
+                std = 1.0 / math.sqrt(fan_in)
+                nn.init.normal_(m.weight, mean=0.0, std=std)
+
+    def forward(self, features: torch.Tensor) -> Dict[str, torch.Tensor]:
+        h = self.embed(features)
+        for norm, layer in zip(self.norms, self.layers):
+            residual = h
+            h = norm(h)
+            h = residual + layer(h)
+        h = self.final_norm(h)
+        logits = self.head(h)
+        softcap = float(self.config.logits_softcap)
+        if softcap > 0:
+            logits = softcap * torch.tanh(logits / softcap)
+        out = {
+            "buy_price_logits": logits[..., 0:1],
+            "sell_price_logits": logits[..., 1:2],
+            "buy_amount_logits": logits[..., 2:3],
+            "sell_amount_logits": logits[..., 3:4],
+        }
+        if logits.shape[-1] > 4:
+            out["hold_hours_logits"] = logits[..., 4:5]
+        if logits.shape[-1] > 5:
+            out["allocation_logits"] = logits[..., 5:6]
+        return out
+
+
 def build_policy(policy_cfg: PolicyConfig) -> BinancePolicyBase:
     arch = (policy_cfg.model_arch or "classic").lower()
     if arch in {"nano", "nanochat", "modern"}:
         return BinanceHourlyPolicyNano(policy_cfg)
+    if arch in {"mamba", "mamba2", "mamba3", "ssm"}:
+        return BinanceHourlyPolicyMamba(policy_cfg)
     return BinanceHourlyPolicy(policy_cfg)
 
 
@@ -879,9 +1034,12 @@ def align_state_dict_input_dim(
 
 __all__ = [
     "BinanceHourlyPolicy",
+    "BinanceHourlyPolicyMamba",
     "BinanceHourlyPolicyNano",
     "BinancePolicyBase",
     "HAS_FLEX_ATTENTION",
+    "HAS_MAMBA",
+    "HAS_MAMBA3",
     "PolicyConfig",
     "PositionalEncoding",
     "align_state_dict_input_dim",

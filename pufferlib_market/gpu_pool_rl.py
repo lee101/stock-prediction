@@ -72,18 +72,23 @@ _FALLBACK_GPU_ALIASES: dict[str, str] = {
     "h100-sxm": "NVIDIA H100 SXM",
     "4090": "NVIDIA GeForce RTX 4090",
     "5090": "NVIDIA GeForce RTX 5090",
+    "l40s": "NVIDIA L40S",
+    "l40": "NVIDIA L40",
     "a40": "NVIDIA A40",
-    "rtx6000-ada": "NVIDIA RTX 6000 Ada Generation",
+    "6000-ada": "NVIDIA RTX 6000 Ada Generation",
+    "rtx6000": "NVIDIA RTX 6000 Ada Generation",
 }
 _FALLBACK_HOURLY_RATES: dict[str, float] = {
-    "NVIDIA A100 80GB PCIe": 1.64,
-    "NVIDIA A100-SXM4-80GB": 1.94,
-    "NVIDIA H100 80GB HBM3": 3.89,
-    "NVIDIA H100 SXM": 4.49,
-    "NVIDIA GeForce RTX 4090": 0.69,
-    "NVIDIA GeForce RTX 5090": 1.25,
-    "NVIDIA A40": 0.69,
-    "NVIDIA RTX 6000 Ada Generation": 0.79,  # ~$0.79/hr, 48GB VRAM CC 8.9
+    "NVIDIA A100 80GB PCIe": 1.19,
+    "NVIDIA A100-SXM4-80GB": 1.39,
+    "NVIDIA H100 80GB HBM3": 1.99,
+    "NVIDIA H100 SXM": 2.69,
+    "NVIDIA GeForce RTX 4090": 0.34,
+    "NVIDIA GeForce RTX 5090": 0.69,
+    "NVIDIA L40S": 0.79,
+    "NVIDIA L40": 0.69,
+    "NVIDIA A40": 0.35,
+    "NVIDIA RTX 6000 Ada Generation": 0.74,
 }
 
 GPU_ALIASES: dict[str, str] = (
@@ -93,14 +98,11 @@ HOURLY_RATES: dict[str, float] = (
     _RC_HOURLY_RATES if isinstance(_RC_HOURLY_RATES, dict) else _FALLBACK_HOURLY_RATES
 )
 
-# Cost comparison (flops/dollar):
-# A40 48GB: $0.69/hr — best for 48GB model training (same price as RTX 4090 but 48GB VRAM)
-# RTX 6000 Ada 48GB: $0.79/hr — Ada arch, faster than A40 per dollar for Triton kernels
-# H100 80GB: $3.89/hr — 5x more expensive, use only for largest models (h4096+) or final runs
-# RTX 4090 24GB: $0.69/hr — limited VRAM, good for h1024 with small batch
 DEFAULT_POOL_LIMITS: dict[str, int] = {
-    "NVIDIA A40": 2,           # Primary training GPU (48GB VRAM, cost-efficient)
-    "NVIDIA H100 80GB HBM3": 0,  # Reserved for final large-scale runs
+    "NVIDIA A40": 2,
+    "NVIDIA RTX 6000 Ada Generation": 1,
+    "NVIDIA A100 80GB PCIe": 1,
+    "NVIDIA H100 80GB HBM3": 0,
 }
 
 SETUP_OVERHEAD_SECS = 1800  # code sync + bootstrap + teardown
@@ -750,7 +752,7 @@ def main() -> None:
     # run
     run_p = sub.add_parser("run", help="Run an RL experiment on a GPU pod")
     run_p.add_argument("--experiment", "-e", required=True, help="Experiment / run ID")
-    run_p.add_argument("--gpu", default="a100", help="GPU type alias (a100, h100, 4090, …)")
+    run_p.add_argument("--gpu", default="4090", help="GPU type alias (4090, a40, 6000-ada, a100, …)")
     run_p.add_argument("--gpu-count", type=int, default=1)
     run_p.add_argument("--train-data", required=True, help="Path to training .bin on pod")
     run_p.add_argument("--val-data", required=True, help="Path to validation .bin on pod")
