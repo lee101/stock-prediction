@@ -1275,35 +1275,44 @@ def build_config(overrides: dict) -> TrialConfig:
     return cfg
 
 
-def mutate_config(base: TrialConfig, *, stocks_mode: bool = False) -> TrialConfig:
-    """Randomly mutate a config for exploration."""
+def mutate_config(base: TrialConfig, *, stocks_mode: bool = False, seed_only: bool = False) -> TrialConfig:
+    """Randomly mutate a config for exploration.
+
+    stocks_mode=True: forces lr=1e-4 (other lrs hit -64.87 degenerate on stocks11_2012).
+    seed_only=True: only mutates the seed (for pure seed sweeps around a known-good config).
+    """
     d = asdict(base)
-    # Pick 2-3 params to mutate
-    # stocks_mode: include 3e-4 — seed=1137 collapses at 3e-4, but other seeds thrive (random_mut_4424)
-    mutable_params = {
-        "hidden_size": [256, 512, 1024, 2048],
-        "lr": [1e-4, 2e-4, 3e-4] if stocks_mode else [1e-4, 2e-4, 3e-4, 5e-4],
-        "ent_coef": [0.01, 0.03, 0.05, 0.08, 0.1],
-        "weight_decay": [0.0, 0.001, 0.005, 0.01, 0.05],
-        "fill_slippage_bps": [0.0, 5.0, 8.0, 12.0],
-        "gamma": [0.98, 0.99, 0.995],
-        "advantage_norm": ["global", "per_env", "group_relative"],
-        "group_relative_mix": [0.0, 0.15, 0.25, 0.4],
-        "reward_scale": [5.0, 10.0, 20.0],
-        "cash_penalty": [0.0, 0.005, 0.01, 0.02],
-        "trade_penalty": [0.0, 0.01, 0.02, 0.03, 0.05],  # 0.03 is KNOWN WINNER (tp03_s777)
-        "drawdown_penalty": [0.0, 0.01, 0.02, 0.05],
-        "smooth_downside_penalty": [0.0, 0.1, 0.2, 0.5],
-        "smooth_downside_temperature": [0.01, 0.02, 0.05],
-        "smoothness_penalty": [0.0, 0.005, 0.01, 0.02],
-        "obs_norm": [True, False],
-        # stocks_mode: anneal_lr=True is critical; False collapses. Don't mutate away from it.
-        "anneal_lr": [True] if stocks_mode else [True, False],
-        "anneal_ent": [True, False],
-    }
-    keys = random.sample(list(mutable_params.keys()), min(3, len(mutable_params)))
-    for k in keys:
-        d[k] = random.choice(mutable_params[k])
+    if not seed_only:
+        # Pick 2-3 params to mutate
+        # stocks_mode/stocks11_2012: lr=1e-4 ONLY — lr=2e-4/3e-4 ALL hit -64.87 degenerate minimum.
+        # random_mut_4424 (lr=3e-4) worked on stocks12 but stocks11_2012 data is fundamentally harder.
+        mutable_params = {
+            "hidden_size": [256, 512, 1024],
+            "lr": [1e-4] if stocks_mode else [1e-4, 2e-4, 3e-4, 5e-4],
+            "ent_coef": [0.01, 0.03, 0.05, 0.08, 0.1],
+            "weight_decay": [0.0, 0.001, 0.005, 0.01, 0.05],
+            "fill_slippage_bps": [0.0, 5.0, 8.0, 12.0],
+            "gamma": [0.98, 0.99, 0.995],
+            "advantage_norm": ["global", "per_env", "group_relative"],
+            "group_relative_mix": [0.0, 0.15, 0.25, 0.4],
+            "reward_scale": [5.0, 10.0, 20.0],
+            "cash_penalty": [0.0, 0.005, 0.01, 0.02],
+            "trade_penalty": [0.0, 0.01, 0.02, 0.03, 0.05],
+            "drawdown_penalty": [0.0, 0.01, 0.02, 0.05],
+            "smooth_downside_penalty": [0.0, 0.1, 0.2, 0.5],
+            "smooth_downside_temperature": [0.01, 0.02, 0.05],
+            "smoothness_penalty": [0.0, 0.005, 0.01, 0.02],
+            "obs_norm": [True, False],
+            # stocks_mode: anneal_lr=True is critical; False collapses. Don't mutate away from it.
+            "anneal_lr": [True] if stocks_mode else [True, False],
+            "anneal_ent": [True, False],
+        }
+        keys = random.sample(list(mutable_params.keys()), min(3, len(mutable_params)))
+        for k in keys:
+            d[k] = random.choice(mutable_params[k])
+    # stocks_mode: force lr=1e-4 always — other lrs hit -64.87 degenerate minimum on stocks11_2012
+    if stocks_mode:
+        d["lr"] = 1e-4
     # h2048 needs 256 envs + 4096 minibatch for adequate step throughput on H100
     if d.get("hidden_size") == 2048:
         d["num_envs"] = 256
@@ -2102,6 +2111,10 @@ def main():
     # In stocks mode the data paths default to stocks12/stocks20 daily bins so they are
     # optional even if not listing.
     data_required = not listing_only and not stocks_mode
+    parser.add_argument("--seed-only", action="store_true",
+                        help="Random mutations only change seed (not other hyperparams). "
+                             "Used for pure seed sweeps around a known-good config. "
+                             "Best with --stocks and --start-from 172.")
     parser.add_argument("--stocks", action="store_true",
                         help="Use stock-specific configs and Alpaca daily defaults "
                              "(fee_rate=0.001, periods_per_year=252, "
@@ -2401,7 +2414,8 @@ def main():
 
         # Handle random mutations
         if desc.startswith("random_"):
-            config = mutate_config(best_config, stocks_mode=args.stocks)
+            seed_only = getattr(args, "seed_only", False)
+            config = mutate_config(best_config, stocks_mode=args.stocks, seed_only=seed_only)
             desc = config.description
         else:
             config = build_config(exp_overrides)
