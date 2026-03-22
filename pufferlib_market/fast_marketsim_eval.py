@@ -243,7 +243,7 @@ def try_compile_policy(policy: nn.Module) -> nn.Module:
         compiled = torch.compile(policy, mode="reduce-overhead")
         # Warmup with a dummy forward pass to trigger compilation
         dummy = torch.zeros(1, policy.encoder[0].in_features if hasattr(policy, 'encoder') else policy.input_proj.in_features)
-        with torch.no_grad():
+        with torch.inference_mode():
             compiled(dummy)
         return compiled
     except Exception:
@@ -255,7 +255,7 @@ def make_policy_fn(policy: nn.Module, device: torch.device) -> Callable[[np.ndar
     """Create a deterministic policy function for simulate_daily_policy."""
     def _fn(obs: np.ndarray) -> int:
         obs_t = torch.from_numpy(obs.astype(np.float32, copy=False)).to(device=device).view(1, -1)
-        with torch.no_grad():
+        with torch.inference_mode():
             logits, _ = policy(obs_t)
         return int(torch.argmax(logits, dim=-1).item())
     return _fn
