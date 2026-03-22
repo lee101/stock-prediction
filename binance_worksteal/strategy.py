@@ -69,6 +69,7 @@ class WorkStealConfig:
     base_asset_momentum_period: int = 0
     base_asset_min_momentum: float = 0.0
     base_asset_rebalance_min_cash: float = 1.0
+    forecast_bias_weight: float = 0.0
 
 
 @dataclass
@@ -516,6 +517,7 @@ def run_worksteal_backtest(
     config: WorkStealConfig,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    forecast_data: Optional[Dict] = None,
 ) -> Tuple[pd.DataFrame, List[TradeLog], Dict[str, float]]:
     for sym in list(all_bars.keys()):
         df = all_bars[sym].copy()
@@ -754,6 +756,15 @@ def run_worksteal_backtest(
                         pump_score = -dist_short
                         fill_price = min(short_target, high_bar)
                         candidates.append((sym, "short", pump_score, fill_price, bar))
+
+            if forecast_data and config.forecast_bias_weight > 0:
+                from binance_worksteal.forecast_integration import get_forecast_multiplier
+                adjusted = []
+                for sym, direction, score, fill_price, bar in candidates:
+                    fm = get_forecast_multiplier(sym, date, forecast_data, float(bar["close"]))
+                    adjusted_score = score * (1 + config.forecast_bias_weight * fm)
+                    adjusted.append((sym, direction, adjusted_score, fill_price, bar))
+                candidates = adjusted
 
             candidates.sort(key=lambda x: x[2], reverse=True)
 
