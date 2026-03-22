@@ -36,8 +36,8 @@ python3 -u -m pufferlib_market.autoresearch_rl \
   --holdout-data pufferlib_market/data/stocks11_daily_val_2012_cross.bin \
   --time-budget 600 \
   --max-timesteps-per-sample 700 \
-  --max-trials 6 \
-  --start-from 101 \
+  --max-trials 4 \
+  --descriptions "lr1e4_anneal_s1137,lr1e4_anneal_s5678,s1137_sdp01_t001,s5678_sdp01_t001" \
   --rank-metric holdout_robust_score \
   --holdout-eval-steps 90 \
   --holdout-n-windows 20 \
