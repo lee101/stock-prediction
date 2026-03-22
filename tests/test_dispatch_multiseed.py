@@ -203,6 +203,7 @@ def test_run_local_passes_seed_to_subprocess(monkeypatch, tmp_path: Path) -> Non
         checkpoint_dir="",
         wandb_project="test",
         descriptions="",
+        stocks=False,
     )
     dispatch.run_local(args, seed=123)
     assert captured_cmds, "subprocess.run should have been called"
@@ -233,6 +234,7 @@ def test_run_local_no_seed_when_none(monkeypatch, tmp_path: Path) -> None:
         checkpoint_dir="",
         wandb_project="test",
         descriptions="",
+        stocks=False,
     )
     dispatch.run_local(args, seed=None)
     cmd = captured_cmds[0]
@@ -252,6 +254,7 @@ def test_build_remote_autoresearch_cmd_includes_seed() -> None:
         max_trials=2,
         wandb_project="test",
         descriptions="",
+        stocks=False,
     )
     cmd = dispatch._build_remote_autoresearch_cmd(
         args, "/workspace", "lb.csv", "checkpoints", seed=7
@@ -268,6 +271,7 @@ def test_build_remote_autoresearch_cmd_no_seed_when_none() -> None:
         max_trials=2,
         wandb_project="test",
         descriptions="",
+        stocks=False,
     )
     cmd = dispatch._build_remote_autoresearch_cmd(
         args, "/workspace", "lb.csv", "checkpoints", seed=None
@@ -371,6 +375,7 @@ def test_run_remote_raises_on_budget_exceeded(monkeypatch) -> None:
         leaderboard="",
         descriptions="",
         budget_limit=0.01,  # tiny limit — a100 will exceed this
+        stocks=False,
     )
 
     # Ensure RunPodClient is never created
@@ -405,6 +410,7 @@ def test_run_remote_proceeds_when_budget_zero(monkeypatch, capsys) -> None:
         leaderboard="",
         descriptions="",
         budget_limit=0,  # disabled
+        stocks=False,
     )
 
     monkeypatch.setattr(dispatch, "HOURLY_RATES", _REAL_HOURLY_RATES)
@@ -444,6 +450,7 @@ def test_print_dry_run_plan_shows_cost_estimate(monkeypatch, capsys) -> None:
         vram_threshold_gb=16.0,
         budget_limit=5.0,
         seeds=[42],
+        stocks=False,
     )
     dispatch.print_dry_run_plan(args, remote=True)
     captured = capsys.readouterr()
@@ -474,6 +481,7 @@ def test_print_dry_run_plan_warns_over_budget(monkeypatch, capsys) -> None:
         vram_threshold_gb=16.0,
         budget_limit=0.01,  # very tight
         seeds=[42],
+        stocks=False,
     )
     dispatch.print_dry_run_plan(args, remote=True)
     captured = capsys.readouterr()
