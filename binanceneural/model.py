@@ -831,7 +831,7 @@ class PureTorchSSMBlock(nn.Module):
 
 
 class BinanceHourlyPolicyMamba(BinancePolicyBase):
-    """Mamba3/Mamba2 SSM policy. Falls back to pure-torch SSM if mamba-ssm unavailable."""
+    """Mamba2 SSM policy. Falls back to pure-torch SSM on CPU or when mamba-ssm unavailable."""
 
     def __init__(self, config: PolicyConfig) -> None:
         super().__init__(
@@ -848,7 +848,7 @@ class BinanceHourlyPolicyMamba(BinancePolicyBase):
         expand = 2
 
         if HAS_MAMBA3:
-            logger.info("Using Mamba3 SSM backend")
+            logger.info("Using Mamba3 SSM backend (CUDA-only, CPU falls back to pure-torch)")
             self.layers = nn.ModuleList([
                 _Mamba3(
                     d_model=config.hidden_dim,
@@ -863,7 +863,7 @@ class BinanceHourlyPolicyMamba(BinancePolicyBase):
             ])
             self._backend = "mamba3"
         elif HAS_MAMBA:
-            logger.info("Using Mamba2 SSM backend")
+            logger.info("Using Mamba2 SSM backend (CUDA-only, CPU falls back to pure-torch)")
             self.layers = nn.ModuleList([
                 _Mamba2(
                     d_model=config.hidden_dim,
@@ -889,10 +889,26 @@ class BinanceHourlyPolicyMamba(BinancePolicyBase):
             ])
             self._backend = "pure_torch"
 
+        self._cpu_fallback: nn.ModuleList | None = None
         self.norms = nn.ModuleList([nn.LayerNorm(config.hidden_dim) for _ in range(config.num_layers)])
         self.final_norm = nn.LayerNorm(config.hidden_dim)
         self.head = nn.Linear(config.hidden_dim, config.num_outputs, bias=False)
         self._init_weights()
+
+    def _get_cpu_fallback(self) -> nn.ModuleList:
+        if self._cpu_fallback is None:
+            d_state = 64
+            expand = 2
+            self._cpu_fallback = nn.ModuleList([
+                PureTorchSSMBlock(
+                    d_model=self.config.hidden_dim,
+                    d_state=d_state,
+                    expand=expand,
+                    dropout=self.config.dropout,
+                )
+                for _ in range(self.config.num_layers)
+            ])
+        return self._cpu_fallback
 
     def _init_weights(self) -> None:
         nn.init.zeros_(self.head.weight)
@@ -904,7 +920,9 @@ class BinanceHourlyPolicyMamba(BinancePolicyBase):
 
     def forward(self, features: torch.Tensor) -> Dict[str, torch.Tensor]:
         h = self.embed(features)
-        for norm, layer in zip(self.norms, self.layers):
+        use_cuda_ssm = h.is_cuda and self._backend != "pure_torch"
+        active_layers = self.layers if use_cuda_ssm else self._get_cpu_fallback()
+        for norm, layer in zip(self.norms, active_layers):
             residual = h
             h = norm(h)
             h = residual + layer(h)
