@@ -385,16 +385,21 @@ def _build_obs(
     max_steps: int,
 ) -> np.ndarray:
     S = data.num_symbols
-    obs_size = S * FEATURES_PER_SYM + 5 + S
+    F = int(data.features.shape[2])
+    obs_size = S * F + 5 + S
     obs = np.zeros((obs_size,), dtype=np.float32)
 
-    obs[: S * FEATURES_PER_SYM] = data.features[t].reshape(-1)
+    # Mirror C env's 1-bar observation lag (t_obs = t-1, clamped to 0).
+    # The agent sees features from the *previous* bar so execution on the
+    # current bar's open price does not introduce look-ahead bias.
+    t_obs = max(0, t - 1)
+    obs[: S * F] = data.features[t_obs].reshape(-1)
 
-    base = S * FEATURES_PER_SYM
+    base = S * F
     pos_val = 0.0
     unreal = 0.0
     if pos is not None:
-        price = float(data.prices[t, pos.sym, P_CLOSE])
+        price = float(data.prices[t_obs, pos.sym, P_CLOSE])
         if pos.is_short:
             pos_val = -(pos.qty * price)
             unreal = pos.qty * (pos.entry_price - price)
@@ -1093,15 +1098,18 @@ def _build_obs_hourly_price(
 ) -> np.ndarray:
     """Observation for running a daily-trained policy at intra-day frequency.
 
-    Per-symbol features come from the daily MKTD row for the calendar day.
+    Per-symbol features come from the daily MKTD row for the *previous* calendar
+    day (1-bar lag matching the C env) to avoid look-ahead bias.
     Portfolio fields are computed using the current hourly price.
     """
     S = data.num_symbols
-    obs_size = S * FEATURES_PER_SYM + 5 + S
+    F = int(data.features.shape[2])
+    obs_size = S * F + 5 + S
     obs = np.zeros((obs_size,), dtype=np.float32)
-    obs[: S * FEATURES_PER_SYM] = data.features[t_day].reshape(-1)
+    t_obs = max(0, t_day - 1)
+    obs[: S * F] = data.features[t_obs].reshape(-1)
 
-    base = S * FEATURES_PER_SYM
+    base = S * F
     pos_val = 0.0
     unreal = 0.0
     if pos is not None:
