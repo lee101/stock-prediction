@@ -1,5 +1,53 @@
 # H100 Experiment Plan (Updated 2026-03-22)
 
+## Executive Summary — v9 (lr=1e-4 CRITICAL FOR stocks11 DATA)
+
+**Key findings since v8 (2026-03-22 afternoon experiments):**
+
+### CRITICAL: lr=1e-4 (not 3e-4) is required for stocks11_2015 convergence
+- All tp03_s777 configs (lr=3e-4, default) **collapse to hold-cash on stocks11 data**
+  - Trained 45M steps on stocks11_2015, gave ZERO trades in evaluation
+  - encoder.0.weight shape (1024, 192) confirms correct obs_size — it's purely a LR issue
+- lr=1e-4 (no-anneal) converges on stocks11_2015 → the best result so far
+- **The 3x robustness advantage of stocks11 is ONLY achieved with lr=1e-4 configs**
+- Evidence from 450s sweep (16 trials):
+  - stocks11 best: random_mut_9621 (lr=1e-4, no-anneal) → robust=-41.2, med=+4.7%
+  - stocks12 best: random_mut_6320 (lr=3e-4, anneal) → robust=-46.6, med=+4.3%
+- The SAME config (random_mut_9621, lr=1e-4) on stocks12 gives robust=-128.7 → confirms lr mismatch
+
+### Why lr=1e-4 for stocks11, lr=3e-4 for stocks12?
+- stocks11_2015 (2015-2025): 3895 steps, includes volatile regimes (2015 China crash,
+  2018 correction, COVID crash). Higher gradient variance → lower LR needed to stabilize.
+- stocks12_2019 (2019-2025): 1797 steps, mostly coherent bull market. Higher LR works.
+
+### Fix applied: Added lr=1e-4 named configs to STOCK_EXPERIMENTS
+New configs added (before random mutations, indices ~82-91):
+- `lr1e4_s777`, `lr1e4_s42`, `lr1e4_s9621`, `lr1e4_s1137`
+- `lr1e4_wd01_s777`, `lr1e4_wd005_s777`, `lr1e4_slip5_s777`, `lr1e4_anneal_s777`
+- `lr1e4_h2048_s777` (256 envs, 4096 minibatch), `lr1e4_h2048_s42`
+
+### H100 commands (v9 — UPDATED WITH lr=1e-4 FIX)
+```bash
+# PREFERRED: stocks11_2015 — now with lr=1e-4 configs in early pool
+# These named configs (indices 82-91) ensure convergence in first 92 trials
+# Random mutations from trial 92 also include 25% lr=1e-4 (in mutation space)
+python launch_stocks_autoresearch_remote.py --gpu-type h100 --max-trials 500
+# Note: launch_stocks_autoresearch_remote.py now defaults to stocks11_2015 data
+
+# ALTERNATIVE: stocks12 (lr=3e-4 works here, proven 4-5% hit rate)
+python launch_stocks_autoresearch_remote.py --gpu-type h100 --max-trials 500 \
+  --train-data pufferlib_market/data/stocks12_daily_train_2019.bin \
+  --val-data pufferlib_market/data/stocks12_daily_val.bin
+```
+
+### Architecture scaling status (arch comparison running 2026-03-22)
+- h2048 + lr=1e-4 vs h1024 + lr=1e-4 on stocks11_2015: **IN PROGRESS**
+  - 8 configs × 450s each running on RTX 5090 (2 parallel, ~18M steps each)
+  - Results expected ~2 hours from 15:00
+  - If h2048 > h1024 → add h2048 as primary H100 config for stocks11
+
+---
+
 ## Executive Summary — v8 (LOCAL VALIDATION + STOCKS11 WINNER)
 
 **Key findings since v7:**
@@ -17,7 +65,7 @@
 - Added `anneal_ent` option for entropy scheduling
 - Added `smooth_downside_penalty` [0.0, 0.1, 0.2, 0.5]
 
-### 3. H100 commands (v8 — RECOMMENDED ORDER)
+### 3. H100 commands (v8 — superseded by v9)
 ```bash
 # FIRST: stocks11 extended (2x data, 3x better robustness from first principles)
 python launch_stocks_autoresearch_remote.py --gpu-type h100 --max-trials 500 \
