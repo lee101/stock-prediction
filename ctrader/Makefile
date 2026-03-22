@@ -16,7 +16,7 @@ ifdef USE_CURL
   LDFLAGS += -lcurl -lssl -lcrypto
 endif
 
-.PHONY: all clean test test_valgrind
+.PHONY: all clean test test_parity test_valgrind
 
 all: ctrader
 
@@ -36,9 +36,15 @@ test_market_sim: tests/test_market_sim.c market_sim.c
 test_binance_rest: tests/test_binance_rest.c binance_rest.c
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
+test_sim_parity: tests/test_sim_parity.c market_sim.c
+	$(CC) $(CFLAGS) -o $@ $^ -lm
+
+test_parity: test_sim_parity
+	./test_sim_parity
+
 test_valgrind: test_market_sim test_binance_rest
 	valgrind --leak-check=full --error-exitcode=1 ./test_market_sim
 	valgrind --leak-check=full --error-exitcode=1 ./test_binance_rest
 
 clean:
-	rm -f ctrader test_market_sim test_binance_rest $(OBJS)
+	rm -f ctrader test_market_sim test_binance_rest test_sim_parity $(OBJS)
