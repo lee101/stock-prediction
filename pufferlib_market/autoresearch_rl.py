@@ -987,8 +987,31 @@ STOCK_EXPERIMENTS: list[dict] = [
     {"description": "sdp02_s5678", "lr": 1e-4, "anneal_lr": True, "seed": 5678,
      "smooth_downside_penalty": 0.2, "smooth_downside_temperature": 0.01},
 
-    # Random mutations — slots so H100 500-trial runs get ~400+ random trials
-    # (after ~99 named configs). Each slot calls mutate_config(best_config) at runtime.
+    # --- N-block: stocks12-champion formula on stocks11_2012 (indices 187-194) ---
+    # random_mut_4424 (stocks12 leaderboard) got robust=-4.02 with 0% neg using:
+    # h=256, lr=3e-4, slip=12bps, dp=0.01, anneal_lr=True (no sdp, no wd)
+    # Testing whether this formula transfers to stocks11_2012 (4840 days vs shorter stocks12).
+    # Key question: does slip=12bps+dp=0.01 prevent the lr=3e-4 hold-cash collapse?
+    {"description": "h256_lr3e4_slip12_dp01_s1137", "hidden_size": 256, "lr": 3e-4,
+     "fill_slippage_bps": 12.0, "drawdown_penalty": 0.01, "seed": 1137, "anneal_lr": True},
+    {"description": "h256_lr3e4_slip12_dp01_s5678", "hidden_size": 256, "lr": 3e-4,
+     "fill_slippage_bps": 12.0, "drawdown_penalty": 0.01, "seed": 5678, "anneal_lr": True},
+    {"description": "h256_lr1e4_slip12_dp01_s1137", "hidden_size": 256, "lr": 1e-4,
+     "fill_slippage_bps": 12.0, "drawdown_penalty": 0.01, "seed": 1137, "anneal_lr": True},
+    {"description": "h256_lr1e4_s1137", "hidden_size": 256, "lr": 1e-4,
+     "seed": 1137, "anneal_lr": True},
+    {"description": "h512_lr3e4_slip12_dp01_s1137", "hidden_size": 512, "lr": 3e-4,
+     "fill_slippage_bps": 12.0, "drawdown_penalty": 0.01, "seed": 1137, "anneal_lr": True},
+    {"description": "h256_lr3e4_slip12_dp0_s1137", "hidden_size": 256, "lr": 3e-4,
+     "fill_slippage_bps": 12.0, "seed": 1137, "anneal_lr": True},
+    {"description": "h256_lr3e4_slip0_dp01_s1137", "hidden_size": 256, "lr": 3e-4,
+     "drawdown_penalty": 0.01, "seed": 1137, "anneal_lr": True},
+    {"description": "h256_lr3e4_s1137", "hidden_size": 256, "lr": 3e-4,
+     "seed": 1137, "anneal_lr": True},
+
+    # Random mutations — slots so H100 500-trial runs get ~400+ random trials.
+    # H100 uses --start-from 195 --seed-only (index 195 = random_1 after N-block).
+    # Each slot calls mutate_config(best_config) at runtime.
     *[{"description": f"random_{i}"} for i in range(1, 451)],
 ]
 

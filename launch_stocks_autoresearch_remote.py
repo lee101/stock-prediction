@@ -189,15 +189,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         help="Step cap per sample. 700 × 53,240 samples = 37.27M steps for stocks11_2012 (optimal). "
                              "H100 at 400k sps hits this in ~93s; RTX 5090 at 92k sps hits it in ~405s. "
                              "Use 700 for stocks11_2012 (confirmed optimal step count).")
-    parser.add_argument("--start-from", type=int, default=187,
-                        help="Start index in STOCK_EXPERIMENTS pool. Default 187 = pure random mutation zone "
-                             "(after sdp02 named block at 172-186). Pairs with --seed-only to run exactly "
-                             "s1137's config with 500 different seeds. Use 172 to also test sdp02 block first.")
+    parser.add_argument("--start-from", type=int, default=195,
+                        help="Start index in STOCK_EXPERIMENTS pool. Default 195 = pure random mutation zone "
+                             "(random_1 starts at 195 after N-block h256 configs at 187-194). "
+                             "Pairs with --seed-only to run s1137's exact config with 500 different seeds. "
+                             "Use 187 to also test N-block h256 formula first.")
     parser.add_argument("--seed-only", action="store_true", default=True,
                         help="In random-mutation mode, only change the seed (keep all other params). "
-                             "Default: True. With --start-from 187, all 500 H100 trials use s1137's exact "
+                             "Default: True. With --start-from 195, all 500 H100 trials use s1137's exact "
                              "config (lr=1e-4, h=1024, ent=0.05, sdp=0.0, anneal=True) with different seeds. "
-                             "Evidence: sdp=0.2 hurts good seeds (seed=1464: -37.25 → -56.18).")
+                             "Evidence: sdp=0.2 hurts good seeds (seed=1464: -37.25 → -56.18). "
+                             "Use --start-from 187 to also test N-block h256 configs before random seeds.")
     parser.add_argument("--remote-host", default=DEFAULT_REMOTE_HOST)
     parser.add_argument("--remote-dir", default=DEFAULT_REMOTE_DIR)
     parser.add_argument("--remote-env", default=DEFAULT_REMOTE_ENV)
