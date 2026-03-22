@@ -169,6 +169,22 @@ EXPERIMENTS: list[dict] = [
     {"description": "robust_reg_h512_tp005", "hidden_size": 512, "weight_decay": 0.05, "fill_slippage_bps": 8.0,
      "obs_norm": True, "trade_penalty": 0.005},
 
+    # Multi-seed validation of champion (robust_reg_tp005_ent)
+    {"description": "robust_reg_tp005_ent_seed42", "weight_decay": 0.05, "fill_slippage_bps": 8.0, "obs_norm": True,
+     "trade_penalty": 0.005, "anneal_ent": True, "ent_coef": 0.08, "ent_coef_end": 0.02, "seed": 42},
+    {"description": "robust_reg_tp005_ent_seed7", "weight_decay": 0.05, "fill_slippage_bps": 8.0, "obs_norm": True,
+     "trade_penalty": 0.005, "anneal_ent": True, "ent_coef": 0.08, "ent_coef_end": 0.02, "seed": 7},
+    {"description": "robust_reg_tp005_ent_seed123", "weight_decay": 0.05, "fill_slippage_bps": 8.0, "obs_norm": True,
+     "trade_penalty": 0.005, "anneal_ent": True, "ent_coef": 0.08, "ent_coef_end": 0.02, "seed": 123},
+
+    # h1536: larger model with champion regularization
+    {"description": "h1536_robust_ent", "hidden_size": 1536, "weight_decay": 0.05, "fill_slippage_bps": 8.0,
+     "obs_norm": True, "trade_penalty": 0.005, "anneal_ent": True, "ent_coef": 0.08, "ent_coef_end": 0.02},
+
+    # h2048 with champion regularization
+    {"description": "h2048_robust_ent", "hidden_size": 2048, "weight_decay": 0.05, "fill_slippage_bps": 8.0,
+     "obs_norm": True, "trade_penalty": 0.005, "anneal_ent": True, "ent_coef": 0.08, "ent_coef_end": 0.02},
+
     # Kitchen sink
     {"description": "kitchen_sink", "obs_norm": True, "anneal_ent": True, "anneal_clip": True,
      "clip_vloss": True, "lr_schedule": "cosine", "weight_decay": 0.01,
