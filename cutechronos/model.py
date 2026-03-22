@@ -675,7 +675,7 @@ class CuteChronos2Model(nn.Module):
 
         Maps the original weight names to our module structure.
         """
-        with torch.no_grad():
+        with torch.inference_mode():
             # Shared embedding
             self.shared.weight.copy_(state_dict["shared.weight"])
 

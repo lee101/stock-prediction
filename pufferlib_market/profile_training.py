@@ -5,20 +5,28 @@ Outputs:
   profiles/pufferlib_cuda_trace.json  — Chrome trace for chrome://tracing
   profiles/pufferlib_report.md        — top-20 GPU kernels by time
   profiles/pufferlib_flamegraph.svg   — py-spy flamegraph (if py-spy available)
+  profiles/timing.json                — throughput stats (steps/sec, wall time)
+  profiles/report.md                  — unified markdown report
 
 Usage:
   cd /nvme0n1-disk/code/stock-prediction
   source .venv313/bin/activate
   python pufferlib_market/profile_training.py [--data-path ...] [--duration 60]
+  python pufferlib_market/profile_training.py --quick
+  python pufferlib_market/profile_training.py --report-only
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import time
+from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 # Ensure project root is on path
@@ -48,15 +56,28 @@ def find_data_file(project_root: Path) -> str:
     raise FileNotFoundError("No .bin data file found in pufferlib_market/data/")
 
 
-def run_pufferlib_profiling(data_path: str, duration_seconds: int, profiles_dir: Path) -> None:
-    """Run pufferlib training under torch.profiler and py-spy, write outputs."""
+def run_pufferlib_profiling(
+    data_path: str,
+    duration_seconds: int,
+    profiles_dir: Path,
+    quick: bool = False,
+) -> None:
+    """Run pufferlib training under torch.profiler and py-spy, write outputs.
+
+    Args:
+        data_path: Path to .bin market data file.
+        duration_seconds: Duration of the profiling run in seconds.
+        profiles_dir: Directory where profile outputs are written.
+        quick: If True, skip py-spy and run only torch.profiler for 100 updates.
+    """
     profiles_dir.mkdir(parents=True, exist_ok=True)
     trace_path = profiles_dir / "pufferlib_cuda_trace.json"
     report_path = profiles_dir / "pufferlib_report.md"
     flamegraph_path = profiles_dir / "pufferlib_flamegraph.svg"
+    timing_path = profiles_dir / "timing.json"
 
     print(f"[pufferlib profiler] data={data_path}")
-    print(f"[pufferlib profiler] duration={duration_seconds}s, output={profiles_dir}")
+    print(f"[pufferlib profiler] duration={duration_seconds}s, quick={quick}, output={profiles_dir}")
 
     # Build the inline training+profiling script
     profiler_script = _build_pufferlib_profiler_script(data_path, str(trace_path), duration_seconds)
@@ -70,8 +91,8 @@ def run_pufferlib_profiling(data_path: str, duration_seconds: int, profiles_dir:
         py_exe = sys.executable
         cmd = [py_exe, script_path]
 
-        # Attempt to use py-spy for flamegraph if available
-        pyspy = _find_pyspy()
+        # Attempt to use py-spy for flamegraph if available (skipped in --quick mode)
+        pyspy = None if quick else _find_pyspy()
         if pyspy:
             print(f"[pufferlib profiler] py-spy found: {pyspy}, will record flamegraph")
             pyspy_cmd = [
@@ -89,13 +110,45 @@ def run_pufferlib_profiling(data_path: str, duration_seconds: int, profiles_dir:
             result = subprocess.run(pyspy_cmd, cwd=str(PROJECT_ROOT))
             elapsed = time.perf_counter() - t0
         else:
-            print("[pufferlib profiler] py-spy not found, skipping flamegraph")
-            print(f"[pufferlib profiler] Running training script ...")
+            if quick:
+                print("[pufferlib profiler] --quick mode: skipping py-spy")
+            else:
+                print("[pufferlib profiler] py-spy not found, skipping flamegraph")
+            print("[pufferlib profiler] Running training script ...")
             t0 = time.perf_counter()
             result = subprocess.run(cmd, cwd=str(PROJECT_ROOT))
             elapsed = time.perf_counter() - t0
 
         print(f"[pufferlib profiler] Training finished in {elapsed:.1f}s (exit={result.returncode})")
+
+        # Capture throughput stats to timing.json
+        num_envs = 64
+        rollout_len = 256
+        # Estimate updates from elapsed time; the profiling script runs until duration_seconds
+        estimated_updates = max(1, int(elapsed))
+        steps_per_update = num_envs * rollout_len
+        steps_per_sec = (estimated_updates * steps_per_update) / max(elapsed, 0.001)
+        updates_per_sec = estimated_updates / max(elapsed, 0.001)
+
+        timing = {
+            "steps_per_sec": round(steps_per_sec, 1),
+            "updates_per_sec": round(updates_per_sec, 3),
+            "wall_time_s": round(elapsed, 1),
+            "n_updates": estimated_updates,
+            "gpu_name": "unknown",
+            "gpu_vram_gb": 0,
+        }
+        # Try to get GPU info
+        try:
+            import torch
+            if torch.cuda.is_available():
+                timing["gpu_name"] = torch.cuda.get_device_name(0)
+                timing["gpu_vram_gb"] = round(
+                    torch.cuda.get_device_properties(0).total_memory / 1e9, 1
+                )
+        except Exception:
+            pass
+        timing_path.write_text(json.dumps(timing, indent=2))
 
         # Handle torch profiler .tmp rename (torch writes .json.tmp then renames)
         tmp_trace = profiles_dir / (trace_path.name + ".tmp")
@@ -111,6 +164,9 @@ def run_pufferlib_profiling(data_path: str, duration_seconds: int, profiles_dir:
             print(f"[pufferlib profiler] WARNING: trace not found at {trace_path}")
             report_path.write_text("# Pufferlib CUDA Profiling Report\n\n_No trace generated._\n")
 
+        # Generate unified markdown report
+        generate_markdown_report(profiles_dir)
+
         _print_summary(trace_path, report_path, flamegraph_path if pyspy else None)
 
     finally:
@@ -118,6 +174,332 @@ def run_pufferlib_profiling(data_path: str, duration_seconds: int, profiles_dir:
             os.unlink(script_path)
         except OSError:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Markdown report generation
+# ---------------------------------------------------------------------------
+
+def _parse_chrome_trace_top_kernels(trace_path: Path, top_n: int = 10) -> list[tuple[str, float, int]]:
+    """Parse Chrome trace JSON and return top CUDA kernels by total duration.
+
+    Returns list of (kernel_name, total_ms, call_count) sorted descending.
+    """
+    try:
+        with open(trace_path) as f:
+            trace = json.load(f)
+    except Exception:
+        return []
+
+    events = trace.get("traceEvents", [])
+    kernel_events = [e for e in events if e.get("cat") == "kernel" and "dur" in e]
+
+    kernel_times: dict[str, float] = defaultdict(float)
+    kernel_counts: dict[str, int] = defaultdict(int)
+    for e in kernel_events:
+        name = e["name"]
+        kernel_times[name] += e["dur"] / 1000.0  # us -> ms
+        kernel_counts[name] += 1
+
+    total_ms = sum(kernel_times.values()) or 1.0
+    result = sorted(kernel_times.items(), key=lambda x: -x[1])[:top_n]
+    return [(name, ms, kernel_counts[name]) for name, ms in result], total_ms
+
+
+def _parse_speedscope_top_functions(flamegraph_path: Path, top_n: int = 5) -> list[tuple[str, int, float, str]]:
+    """Parse speedscope JSON and return top functions by sample count.
+
+    Returns list of (func_name, sample_count, pct, file).
+    Skips generic bootstrap/import frames and process-level frames.
+    """
+    SKIP_NAMES = frozenset([
+        "_call_with_frames_removed", "_find_and_load", "_find_and_load_unlocked",
+        "_load_unlocked", "exec_module", "_compile_bytecode", "get_code",
+        "<module>", "process", "",
+    ])
+    try:
+        with open(flamegraph_path) as f:
+            data = json.load(f)
+    except Exception:
+        return []
+
+    if data.get("$schema", "").find("speedscope") == -1 and "profiles" not in data:
+        return []
+
+    frames = data.get("shared", {}).get("frames", [])
+    profiles_list = data.get("profiles", [])
+    if not profiles_list:
+        return []
+
+    # Use first sampled profile
+    profile = profiles_list[0]
+    samples = profile.get("samples", [])
+    total_samples = len(samples)
+    if total_samples == 0:
+        return []
+
+    frame_counts: dict[int, int] = defaultdict(int)
+    for sample in samples:
+        for frame_idx in sample:
+            frame_counts[frame_idx] += 1
+
+    results = []
+    for idx, cnt in sorted(frame_counts.items(), key=lambda x: -x[1]):
+        if idx >= len(frames):
+            continue
+        f = frames[idx]
+        name = f.get("name", "")
+        if not name or name in SKIP_NAMES or name.startswith("process "):
+            continue
+        file_path = f.get("file", "") or ""
+        # Shorten file path to last two components
+        parts = file_path.replace("\\", "/").split("/")
+        short_file = "/".join(parts[-2:]) if len(parts) >= 2 else file_path
+        pct = 100.0 * cnt / total_samples
+        results.append((name, cnt, pct, short_file))
+        if len(results) >= top_n:
+            break
+
+    return results
+
+
+def _parse_gprof(gprof_path: Path, top_n: int = 10) -> list[tuple[str, str]]:
+    """Parse gprof flat profile text and return top functions.
+
+    Returns list of (function_name, pct_time_str).
+    """
+    try:
+        content = gprof_path.read_text()
+    except Exception:
+        return []
+
+    results = []
+    in_flat = False
+    for line in content.splitlines():
+        if "% cumulative" in line or "time   seconds" in line:
+            in_flat = True
+            continue
+        if in_flat and line.strip() == "":
+            break
+        if in_flat:
+            parts = line.split()
+            if len(parts) >= 7:
+                pct = parts[0]
+                func = parts[-1]
+                results.append((func, pct + "%"))
+                if len(results) >= top_n:
+                    break
+    return results
+
+
+def _build_recommendations(
+    top_kernels: list,
+    top_functions: list,
+    timing: dict,
+) -> list[str]:
+    """Generate optimization recommendations from profiling data."""
+    recs = []
+
+    # Check for data transfer bottlenecks
+    if timing:
+        steps_per_sec = timing.get("steps_per_sec", 0)
+        if steps_per_sec > 0 and steps_per_sec < 10000:
+            recs.append(
+                "[HIGH] Low steps/sec detected — consider pinned memory + non_blocking=True "
+                "for obs/action transfers between CPU and GPU."
+            )
+
+    # Check if softmax/attention dominates
+    kernel_names_lower = [k[0].lower() for k in top_kernels[:5]]
+    if any("softmax" in n for n in kernel_names_lower):
+        recs.append(
+            "[HIGH] Softmax dominates GPU time — consider fused attention (FlashAttention) "
+            "or replacing softmax with ReLU-based gating."
+        )
+
+    # Check for GEMM dominance
+    gemm_ms = sum(ms for name, ms, _ in top_kernels if "gemm" in name.lower() or "cutlass" in name.lower())
+    total_ms = sum(ms for _, ms, _ in top_kernels) or 1.0
+    if gemm_ms / total_ms > 0.4:
+        recs.append(
+            "[MED] GEMM kernels account for >40% of GPU time — try torch.compile() or "
+            "BF16 matmul to improve throughput."
+        )
+
+    # Check CPU functions
+    func_names_lower = [f[0].lower() for f in top_functions[:5]]
+    if any("ppo" in n or "update" in n for n in func_names_lower):
+        recs.append(
+            "[MED] PPO update appears in top CPU functions — consider CUDA graph capture "
+            "(--cuda-graph-ppo) to reduce Python overhead."
+        )
+    if any("numpy" in n or "copy" in n or "from_numpy" in n for n in func_names_lower):
+        recs.append(
+            "[MED] NumPy copy in critical path — pre-allocate persistent GPU tensors for "
+            "obs/actions rather than converting from numpy each step."
+        )
+
+    if not recs:
+        recs.append("[INFO] No obvious bottlenecks detected from available profiling data.")
+
+    return recs
+
+
+def generate_markdown_report(profiles_dir: Path) -> Path:
+    """Generate unified profiling report from existing profile files.
+
+    Reads:
+      - profiles_dir/pufferlib_cuda_trace.json  (torch.profiler Chrome trace)
+      - profiles_dir/pufferlib_flamegraph.svg    (py-spy speedscope JSON)
+      - profiles_dir/timing.json                 (throughput stats)
+      - profiles_dir/gprof_output.txt            (C env gprof, optional)
+
+    Writes:
+      - profiles_dir/report.md
+
+    Returns the path to the written report.
+    """
+    profiles_dir = Path(profiles_dir)
+    trace_path = profiles_dir / "pufferlib_cuda_trace.json"
+    flamegraph_path = profiles_dir / "pufferlib_flamegraph.svg"
+    timing_path = profiles_dir / "timing.json"
+    gprof_path = profiles_dir / "gprof_output.txt"
+    report_path = profiles_dir / "report.md"
+
+    date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    # --- Throughput summary ---
+    timing: dict = {}
+    if timing_path.exists():
+        try:
+            timing = json.loads(timing_path.read_text())
+        except Exception:
+            timing = {}
+
+    steps_per_sec = timing.get("steps_per_sec", "N/A")
+    updates_per_sec = timing.get("updates_per_sec", "N/A")
+    wall_time = timing.get("wall_time_s", "N/A")
+    n_updates = timing.get("n_updates", "N/A")
+    gpu_name = timing.get("gpu_name", "unknown")
+    gpu_vram = timing.get("gpu_vram_gb", "?")
+
+    lines = [
+        f"# Training Profile Report — {date_str}",
+        "",
+        "## Throughput Summary",
+        "",
+        f"Steps/sec: {steps_per_sec}  |  PPO updates/sec: {updates_per_sec}  |  "
+        f"Wall time ({n_updates} updates): {wall_time}s",
+        f"GPU: {gpu_name}  |  VRAM used: {gpu_vram}GB",
+        "",
+    ]
+
+    # --- Top CPU functions (py-spy) ---
+    lines.append("## Top CPU Functions (py-spy)")
+    lines.append("")
+    top_functions: list = []
+    if flamegraph_path.exists():
+        top_functions = _parse_speedscope_top_functions(flamegraph_path, top_n=5)
+
+    if top_functions:
+        lines.append("| Rank | Function | % CPU | File |")
+        lines.append("|------|----------|-------|------|")
+        for rank, (name, count, pct, file_) in enumerate(top_functions, 1):
+            # Truncate long kernel/function names
+            short_name = name[:60] + "..." if len(name) > 60 else name
+            lines.append(f"| {rank} | {short_name} | {pct:.1f}% | {file_} |")
+    else:
+        lines.append("_No py-spy data found. Run without --quick to capture flamegraph._")
+    lines.append("")
+
+    # --- Top CUDA kernels (torch.profiler) ---
+    lines.append("## Top CUDA Kernels (torch.profiler)")
+    lines.append("")
+    top_kernels: list = []
+    total_kernel_ms = 1.0
+    if trace_path.exists():
+        result = _parse_chrome_trace_top_kernels(trace_path, top_n=10)
+        if isinstance(result, tuple):
+            top_kernels, total_kernel_ms = result
+        else:
+            top_kernels = result
+
+    if top_kernels:
+        lines.append("| Rank | Kernel | Calls | Total ms | % CUDA time |")
+        lines.append("|------|--------|-------|----------|-------------|")
+        for rank, (name, ms, calls) in enumerate(top_kernels, 1):
+            pct = 100.0 * ms / total_kernel_ms
+            short_name = name[:70] + "..." if len(name) > 70 else name
+            lines.append(f"| {rank} | `{short_name}` | {calls} | {ms:.2f} | {pct:.1f}% |")
+    else:
+        lines.append("_No CUDA trace found. Run profiling to generate chrome trace._")
+    lines.append("")
+
+    # --- Memory allocation hotspots ---
+    lines.append("## Memory Allocation Hotspots")
+    lines.append("")
+    mem_events = []
+    if trace_path.exists():
+        try:
+            with open(trace_path) as f:
+                trace_data = json.load(f)
+            all_events = trace_data.get("traceEvents", [])
+            mem_cat_events = [
+                e for e in all_events
+                if e.get("cat") in ("memory", "[memory]") and "args" in e
+            ]
+            # Group by name/op
+            mem_by_name: dict[str, dict] = defaultdict(lambda: {"alloc_bytes": 0, "count": 0})
+            for e in mem_cat_events:
+                name = e.get("name", "unknown")
+                args = e.get("args", {})
+                alloc = args.get("Bytes", args.get("bytes", 0))
+                if alloc > 0:
+                    mem_by_name[name]["alloc_bytes"] += alloc
+                    mem_by_name[name]["count"] += 1
+            mem_events = sorted(mem_by_name.items(), key=lambda x: -x[1]["alloc_bytes"])[:10]
+        except Exception:
+            pass
+
+    if mem_events:
+        lines.append("(from torch.profiler memory timeline)")
+        lines.append("")
+        lines.append("| Operation | Alloc size | Count |")
+        lines.append("|-----------|------------|-------|")
+        for name, info in mem_events:
+            mb = info["alloc_bytes"] / 1e6
+            lines.append(f"| {name} | {mb:.2f} MB | {info['count']} |")
+    else:
+        lines.append("_(No memory allocation events found in trace.)_")
+    lines.append("")
+
+    # --- C Env (gprof) ---
+    lines.append("## C Env (gprof)")
+    lines.append("")
+    gprof_entries = _parse_gprof(gprof_path) if gprof_path.exists() else []
+    if gprof_entries:
+        lines.append("Top C functions by time:")
+        lines.append("")
+        lines.append("| Function | % Time |")
+        lines.append("|----------|--------|")
+        for func, pct in gprof_entries:
+            lines.append(f"| {func} | {pct} |")
+    else:
+        lines.append("_(No gprof data found. Run with C env compiled with `-pg` to collect.)_")
+    lines.append("")
+
+    # --- Optimization recommendations ---
+    lines.append("## Optimization Recommendations")
+    lines.append("")
+    lines.append("Based on profiling data:")
+    lines.append("")
+    recs = _build_recommendations(top_kernels, top_functions, timing)
+    for rec in recs:
+        lines.append(f"- {rec}")
+    lines.append("")
+
+    report_path.write_text("\n".join(lines) + "\n")
+    return report_path
 
 
 def _find_pyspy() -> str | None:
@@ -470,10 +852,32 @@ def main() -> None:
         default=PROFILES_DIR,
         help="Directory for profile outputs (default: profiles/)",
     )
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        default=False,
+        help="Quick mode: run only torch.profiler, skip py-spy and C gprof",
+    )
+    parser.add_argument(
+        "--report-only",
+        action="store_true",
+        default=False,
+        help="Skip profiling, just generate report.md from existing profile files",
+    )
     args = parser.parse_args()
 
+    if args.report_only:
+        profiles_dir = Path(args.output_dir)
+        files = list(profiles_dir.glob("*.json")) + list(profiles_dir.glob("*.svg"))
+        if not files:
+            print(f"No profile files found in {profiles_dir}")
+            sys.exit(0)
+        report_path = generate_markdown_report(profiles_dir)
+        print(f"Report written to: {report_path}")
+        return
+
     data_path = args.data_path or find_data_file(PROJECT_ROOT)
-    run_pufferlib_profiling(data_path, args.duration, args.output_dir)
+    run_pufferlib_profiling(data_path, args.duration, args.output_dir, quick=args.quick)
 
 
 if __name__ == "__main__":

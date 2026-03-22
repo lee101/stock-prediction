@@ -1147,6 +1147,9 @@ def train(args):
     start_time = time.time()
     best_return = resume_state.best_return
     start_update = resume_state.update
+    _es_patience = getattr(args, "early_stop_patience", 0)
+    _es_best = -float("inf")
+    _es_no_improve = 0
     periodic_ckpt_mgr = TopKCheckpointManager(
         Path(args.checkpoint_dir), max_keep=args.max_periodic_checkpoints, mode="max",
         r2_prefix=args.r2_prefix,
@@ -1407,6 +1410,17 @@ def train(args):
                 f"pg={avg_pg:.4f}  vl={avg_vl:.4f}  ent={avg_ent:.3f}  "
                 f"n={n:.0f}"
             )
+
+            # Early stopping: track whether ep_return improves
+            if _es_patience > 0:
+                if ep_return >= _es_best + 0.001:
+                    _es_best = ep_return
+                    _es_no_improve = 0
+                else:
+                    _es_no_improve += 1
+                    if _es_no_improve >= _es_patience:
+                        print(f"Early stop: val_return did not improve for {_es_patience} checks")
+                        break
         else:
             print(
                 f"[{local_update:4d}/{num_updates}] "
@@ -1699,6 +1713,13 @@ def main():
         help="How many periodic update_*.pt checkpoints to retain alongside best/final.",
     )
     parser.add_argument("--cpu", action="store_true")
+    parser.add_argument(
+        "--early-stop-patience",
+        type=int,
+        default=0,
+        help="Stop training early if ep_return does not improve by >=0.001 for N consecutive "
+             "logging steps. 0 disables early stopping.",
+    )
     parser.add_argument(
         "--profile-steps",
         type=int,
