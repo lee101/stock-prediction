@@ -69,7 +69,10 @@ alpaca_trading.requests.MarketOrderRequest = object
 sys.modules["alpaca.trading.client"].TradingClient = DummyTradingClient
 sys.modules["alpaca.trading.enums"].OrderSide = types.SimpleNamespace(BUY='buy', SELL='sell')
 sys.modules["alpaca.trading.requests"].MarketOrderRequest = object
-sys.modules.setdefault("typer", types.ModuleType("typer"))
+try:
+    import typer as _typer_real  # noqa: F401 (ensure real typer is in sys.modules)
+except ImportError:
+    sys.modules.setdefault("typer", types.ModuleType("typer"))
 sys.modules.setdefault("cachetools", types.ModuleType("cachetools"))
 cachetools_mod = sys.modules["cachetools"]
 def cached(**kwargs):
@@ -132,6 +135,10 @@ jsonshelve_mod.FlatShelf = FlatShelf
 sys.modules.setdefault("jsonshelve", jsonshelve_mod)
 fixtures_mod = types.ModuleType("src.fixtures")
 fixtures_mod.crypto_symbols = []
+fixtures_mod.all_crypto_symbols = []
+fixtures_mod.active_crypto_symbols = []
+fixtures_mod.all_stock_symbols = []
+fixtures_mod.active_stock_symbols = []
 sys.modules["src.fixtures"] = fixtures_mod
 logging_utils_mod = types.ModuleType("logging_utils")
 
