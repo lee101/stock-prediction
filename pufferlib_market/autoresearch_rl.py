@@ -39,6 +39,15 @@ except ImportError:
 REPO = Path(__file__).resolve().parent.parent
 
 
+def _read_mktd_header(path: str | Path) -> tuple[int, int]:
+    """Read num_symbols and num_timesteps from an MKTD .bin header."""
+    import struct
+    with open(str(path), "rb") as f:
+        header = f.read(64)
+    _, _, num_symbols, num_timesteps, _, _ = struct.unpack("<4sIIIII", header[:24])
+    return int(num_symbols), int(num_timesteps)
+
+
 @dataclass
 class TrialConfig:
     """Hyperparameters to sweep."""
@@ -86,6 +95,10 @@ class TrialConfig:
     max_leverage: float = 1.0
     short_borrow_apr: float = 0.0
     requires_gpu: str = ""  # e.g. "a100", "h100", "" = any GPU (dispatcher metadata only)
+    # H100-scale training settings (passed through to train.py)
+    minibatch_size: int = 2048
+    use_bf16: bool = False
+    cuda_graph_ppo: bool = False
 
 
 # Define experiment configurations to test
@@ -311,6 +324,11 @@ EXPERIMENTS: list[dict] = [
      "ent_coef": 0.05, "fill_slippage_bps": 5.0,
      "trade_penalty": 0.05, "requires_gpu": "a100"},
 
+    {"description": "h2048_ent_anneal",
+     "hidden_size": 2048, "anneal_lr": True, "anneal_ent": True,
+     "ent_coef": 0.08, "ent_coef_end": 0.02, "fill_slippage_bps": 5.0,
+     "trade_penalty": 0.05, "requires_gpu": "a100"},
+
     {"description": "h2048_resmlp_anneal",
      "hidden_size": 2048, "arch": "resmlp", "anneal_lr": True,
      "ent_coef": 0.05, "fill_slippage_bps": 5.0,
@@ -531,6 +549,74 @@ STOCK_EXPERIMENTS: list[dict] = [
     {"description": "stock_h512_reg",
      "hidden_size": 512, "obs_norm": True, "weight_decay": 0.05,
      "fill_slippage_bps": 10.0, "trade_penalty": 0.05},
+
+    # -----------------------------------------------------------------------
+    # H100-scale configs: 256 parallel envs, minibatch 4096, BF16, CUDA graph
+    # -----------------------------------------------------------------------
+
+    # Replicate best known config (h1024 + anneal_lr) at H100 scale
+    {"description": "h1024_h100",
+     "hidden_size": 1024, "anneal_lr": True, "ent_coef": 0.05,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+
+    # h2048 was under-converged at 50M steps — H100's 4x more data/step may fix it
+    {"description": "h2048_h100",
+     "hidden_size": 2048, "anneal_lr": True, "ent_coef": 0.05,
+     "fill_slippage_bps": 5.0, "trade_penalty": 0.05,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+
+    # ResidualMLP at H100 scale
+    {"description": "resmlp_h100",
+     "arch": "resmlp", "hidden_size": 1024, "anneal_lr": True, "ent_coef": 0.05,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+
+    # Transformer can now afford wider hidden at H100 speed
+    {"description": "transformer_h100",
+     "arch": "transformer", "hidden_size": 512, "anneal_lr": True,
+     "trade_penalty": 0.05,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+
+    # Muon optimizer needs faster steps to converge — H100 enables that
+    {"description": "muon_h100",
+     "optimizer": "muon", "lr": 0.02, "hidden_size": 1024,
+     "trade_penalty": 0.05,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+
+    # Replicate OOS best (ent_coef=0.05) at H100 scale
+    {"description": "ent_005_h100",
+     "ent_coef": 0.05, "hidden_size": 1024, "anneal_lr": True,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+
+    # Slippage friction to force wider edges — H100 scale
+    {"description": "slip_5bps_h100",
+     "fill_slippage_bps": 5.0, "hidden_size": 1024, "anneal_lr": True,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+
+    # --- Muon H100 variants ---
+    {"description": "muon_wd_0",
+     "optimizer": "muon", "lr": 0.02, "weight_decay": 0.0,
+     "hidden_size": 1024, "trade_penalty": 0.05,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+
+    {"description": "muon_wd_005",
+     "optimizer": "muon", "lr": 0.02, "weight_decay": 0.005,
+     "hidden_size": 1024, "trade_penalty": 0.05,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+
+    {"description": "muon_ent_005",
+     "optimizer": "muon", "lr": 0.02, "ent_coef": 0.05,
+     "hidden_size": 1024, "trade_penalty": 0.05,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
 
     # Random mutations to explore the neighbourhood (30 slots per sweep pass)
     {"description": "random_1"},
@@ -1026,13 +1112,26 @@ def run_trial(
     replay_eval_hourly_periods_per_year: float = 8760.0,
     replay_eval_timeout_s: int = 0,
     rank_metric: str = "auto",
+    max_timesteps_per_sample: int = 1000,
+    best_trial_rank_score: float = -float("inf"),
+    early_reject_threshold: float = 0.8,
 ) -> dict:
     """Run a single training trial with time budget, then evaluate on val."""
+    # Cap total_timesteps based on dataset size to prevent overfitting
+    try:
+        num_symbols, num_timesteps = _read_mktd_header(train_data)
+        num_samples = num_symbols * num_timesteps
+        total_timesteps = min(999_999_999, num_samples * max_timesteps_per_sample)
+        print(f"  Data: {num_symbols} syms x {num_timesteps} steps = {num_samples:,} samples, "
+              f"cap={total_timesteps:,} steps ({max_timesteps_per_sample}x)")
+    except Exception:
+        total_timesteps = 999_999_999
+
     # Build training command
     cmd = [
         sys.executable, "-u", "-m", "pufferlib_market.train",
         "--data-path", train_data,
-        "--total-timesteps", "999999999",  # will be killed by timeout
+        "--total-timesteps", str(total_timesteps),
         "--max-steps", str(config.max_steps),
         "--hidden-size", str(config.hidden_size),
         "--lr", str(config.lr),
@@ -1084,6 +1183,12 @@ def run_trial(
         ])
     if config.optimizer != "adamw":
         cmd.extend(["--optimizer", config.optimizer])
+    if config.minibatch_size != 2048:
+        cmd.extend(["--minibatch-size", str(config.minibatch_size)])
+    if config.use_bf16:
+        cmd.append("--use-bf16")
+    if config.cuda_graph_ppo:
+        cmd.append("--cuda-graph-ppo")
     if wandb_project:
         cmd.extend([
             "--wandb-project", wandb_project,
@@ -1095,12 +1200,41 @@ def run_trial(
     # Run training with time budget
     print(f"\n  Training for {time_budget}s...")
     t0 = time.time()
+    early_rejected = False
+
+    def _quick_val_eval(ckpt: Path) -> float | None:
+        """Run a fast C-env eval on a checkpoint against val data."""
+        qcmd = [
+            sys.executable, "-u", "-m", "pufferlib_market.evaluate",
+            "--checkpoint", str(ckpt),
+            "--data-path", val_data,
+            "--deterministic",
+            "--hidden-size", str(config.hidden_size),
+            "--max-steps", str(config.max_steps),
+            "--num-episodes", "30",
+            "--seed", "42",
+            "--fill-slippage-bps", "8",
+            "--periods-per-year", str(config.periods_per_year),
+        ]
+        if config.arch != "mlp":
+            qcmd.extend(["--arch", config.arch])
+        try:
+            qr = _run_capture(qcmd, cwd=REPO, timeout_s=60)
+            for qline in qr.stdout.split("\n"):
+                if "Return:" in qline and "mean=" in qline:
+                    return float(qline.split("mean=")[1].split()[0])
+        except Exception:
+            pass
+        return None
+
     try:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             cwd=str(REPO), preexec_fn=os.setsid,
         )
         stdout_lines = []
+        _check_25 = False
+        _check_50 = False
         try:
             while time.time() - t0 < time_budget:
                 if proc.poll() is not None:
@@ -1111,6 +1245,41 @@ def run_trial(
                         stdout_lines.append(line.decode("utf-8", errors="replace").strip())
                 except Exception:
                     pass
+
+                # Early rejection at 25% and 50% of time budget
+                if best_trial_rank_score > -float("inf") and time_budget >= 60:
+                    progress = (time.time() - t0) / max(time_budget, 1)
+                    if progress >= 0.25 and not _check_25:
+                        _check_25 = True
+                        pts = sorted(Path(checkpoint_dir).glob("*.pt"), key=lambda p: p.stat().st_mtime)
+                        if pts:
+                            mid_ckpt = pts[-1]
+                            mid_val = _quick_val_eval(mid_ckpt)
+                            if mid_val is not None:
+                                threshold = best_trial_rank_score * early_reject_threshold
+                                if mid_val < threshold:
+                                    print(f"  EARLY REJECT at 25%: val_ret={mid_val:+.4f} "
+                                          f"< {threshold:+.4f} (best*{early_reject_threshold})")
+                                    early_rejected = True
+                                    break
+                                else:
+                                    print(f"  25% check: val_ret={mid_val:+.4f} >= {threshold:+.4f}, continuing")
+                    if progress >= 0.50 and not _check_50:
+                        _check_50 = True
+                        pts = sorted(Path(checkpoint_dir).glob("*.pt"), key=lambda p: p.stat().st_mtime)
+                        if pts:
+                            mid_ckpt = pts[-1]
+                            mid_val = _quick_val_eval(mid_ckpt)
+                            if mid_val is not None:
+                                threshold = best_trial_rank_score * early_reject_threshold
+                                if mid_val < threshold:
+                                    print(f"  EARLY REJECT at 50%: val_ret={mid_val:+.4f} "
+                                          f"< {threshold:+.4f} (best*{early_reject_threshold})")
+                                    early_rejected = True
+                                    break
+                                else:
+                                    print(f"  50% check: val_ret={mid_val:+.4f} >= {threshold:+.4f}, continuing")
+
             # Kill if still running
             if proc.poll() is None:
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
@@ -1159,22 +1328,23 @@ def run_trial(
     except Exception as e:
         return {"error": str(e), "train_return": None}
 
+    early_tag = " [EARLY REJECTED]" if early_rejected else ""
     print(f"  Training done: {elapsed:.0f}s, {total_steps:,} steps, "
-          f"ret={train_return}, sortino={train_sortino}, wr={train_wr}")
+          f"ret={train_return}, sortino={train_sortino}, wr={train_wr}{early_tag}")
 
     # Check if checkpoint exists
     ckpt_path = Path(checkpoint_dir) / "best.pt"
     if not ckpt_path.exists():
-        # Try final.pt
         ckpt_path = Path(checkpoint_dir) / "final.pt"
     if not ckpt_path.exists():
-        # Find any .pt file
         pts = list(Path(checkpoint_dir).glob("*.pt"))
         if pts:
             ckpt_path = max(pts, key=lambda p: p.stat().st_mtime)
         else:
             error_text = "no checkpoint"
-            if return_code not in (None, 0):
+            if early_rejected:
+                error_text = "early rejected, no checkpoint"
+            elif return_code not in (None, 0):
                 error_tail = _trim_error("\n".join(stdout_lines[-12:]))
                 if error_tail:
                     error_text = f"train failed (exit {return_code}): {error_tail}"
@@ -1182,6 +1352,7 @@ def run_trial(
                 "error": error_text,
                 "train_return": train_return,
                 "train_steps": total_steps,
+                "early_rejected": early_rejected,
             }
 
     # Evaluate on validation data
@@ -1406,6 +1577,7 @@ def run_trial(
         "holdout_error": holdout_error,
         "market_validation_error": market_validation_error,
         "replay_eval_error": replay_eval_error,
+        "early_rejected": early_rejected,
     }
     result_payload.update(holdout_metrics)
     result_payload.update(market_metrics)
@@ -1467,7 +1639,11 @@ def main():
     parser.add_argument("--h100-mode", action="store_true",
                         help="Use H100-optimized experiment pool (H100_STOCK_EXPERIMENTS) focused on "
                              "stocks20 with configs derived from local RTX 5090 scaling sweep. "
-                             "Implies --stocks. Data defaults to stocks20_daily_{train,val}.bin.")
+                             "Implies --stocks. Data defaults to stocks20_daily_{train,val}.bin. "
+                             "Also sets time_budget=200s if not overridden.")
+    parser.add_argument("--scale-pairs", type=int, default=0,
+                        help="Use stocksN_daily_{train,val}.bin instead of stocks20. "
+                             "Falls back to stocks20 if the file does not exist.")
     parser.add_argument("--train-data", required=data_required, default=None)
     parser.add_argument("--val-data", required=data_required, default=None)
     parser.add_argument("--time-budget", type=int, default=300,
@@ -1543,6 +1719,10 @@ def main():
     parser.add_argument("--replay-eval-hourly-periods-per-year", type=float, default=8760.0)
     parser.add_argument("--replay-eval-timeout-seconds", type=int, default=0,
                         help="Optional timeout for replay_eval; 0 disables it")
+    parser.add_argument("--max-timesteps-per-sample", type=int, default=1000,
+                        help="Cap total_timesteps at num_samples * this value (prevents overfitting)")
+    parser.add_argument("--early-reject-threshold", type=float, default=0.8,
+                        help="Kill trial if val_ret < best_so_far * this at 25%%/50%% budget")
     parser.add_argument("--list-experiments", action="store_true",
                         help="Print all experiment names and exit")
     parser.add_argument("--seed", type=int, default=None,
@@ -1552,8 +1732,11 @@ def main():
     args = parser.parse_args()
 
     # --h100-mode implies --stocks and selects the H100-optimised experiment pool.
+    # Also shorten time budget to 200s (H100 ~2x faster than A100 baseline of 300s).
     if getattr(args, "h100_mode", False):
         args.stocks = True
+        if args.time_budget == 300:
+            args.time_budget = 200
 
     # --stocks / --h100-mode: apply stock-mode defaults before anything else so that
     # user overrides (explicit --train-data etc.) can still win.
@@ -1588,6 +1771,25 @@ def main():
             else:
                 args.checkpoint_root = "pufferlib_market/checkpoints/autoresearch_stock"
 
+        # --scale-pairs N: resolve stocksN data paths, fallback to stocks12
+        if args.scale_pairs > 0:
+            n = args.scale_pairs
+            candidate_train = f"pufferlib_market/data/stocks{n}_daily_train.bin"
+            candidate_val   = f"pufferlib_market/data/stocks{n}_daily_val.bin"
+            train_abs = REPO / candidate_train
+            val_abs   = REPO / candidate_val
+            if train_abs.exists() and val_abs.exists():
+                if args.train_data is None or args.train_data == _STOCK_DEFAULT_TRAIN:
+                    args.train_data = candidate_train
+                if args.val_data is None or args.val_data == _STOCK_DEFAULT_VAL:
+                    args.val_data = candidate_val
+                print(f"[scale-pairs] Using stocks{n} data: {candidate_train}")
+            else:
+                print(
+                    f"[scale-pairs] WARNING: stocks{n}_daily_{{train,val}}.bin not found "
+                    f"at {train_abs} — falling back to stocks12"
+                )
+
     if args.list_experiments:
         if getattr(args, "h100_mode", False):
             experiment_pool = H100_STOCK_EXPERIMENTS
@@ -1611,7 +1813,7 @@ def main():
 
     # Initialize or load leaderboard
     fieldnames = [
-        "trial", "description", "rank_metric", "rank_score", "val_return", "val_sortino", "val_wr",
+        "trial", "description", "gpu_type", "rank_metric", "rank_score", "val_return", "val_sortino", "val_wr",
         "val_profitable_pct", "train_return", "train_sortino", "train_wr",
         "train_steps", "elapsed_s", "error", "holdout_error", "market_validation_error", "replay_eval_error",
         "holdout_robust_score", "holdout_return_mean_pct", "holdout_return_p25_pct",
@@ -1693,6 +1895,15 @@ def main():
         if args.seed is not None:
             config.seed = args.seed
 
+        # --h100-mode: force H100 hardware settings on every trial
+        if args.h100_mode:
+            config.num_envs = 256
+            config.minibatch_size = 4096
+            config.use_bf16 = True
+            config.cuda_graph_ppo = True
+
+        gpu_type = "h100" if (args.h100_mode or config.requires_gpu == "h100") else "a100"
+
         holdout_eval_steps = int(args.holdout_eval_steps) if int(args.holdout_eval_steps) > 0 else int(config.max_steps)
 
         print(f"\n{'='*60}")
@@ -1742,12 +1953,16 @@ def main():
             replay_eval_hourly_periods_per_year=args.replay_eval_hourly_periods_per_year,
             replay_eval_timeout_s=args.replay_eval_timeout_seconds,
             rank_metric=args.rank_metric,
+            max_timesteps_per_sample=args.max_timesteps_per_sample,
+            best_trial_rank_score=best_rank_score,
+            early_reject_threshold=args.early_reject_threshold,
         )
 
         # Update leaderboard
         row = {
             "trial": trial_num,
             "description": desc,
+            "gpu_type": gpu_type,
             "rank_metric": result.get("rank_metric"),
             "rank_score": result.get("rank_score"),
             "val_return": result.get("val_return"),

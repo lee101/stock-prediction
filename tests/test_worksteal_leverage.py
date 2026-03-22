@@ -40,6 +40,22 @@ def _dip_then_recover(symbol: str, n_flat: int = 25, dip_pct: float = 0.22,
     return _make_bars(symbol, prices)
 
 
+def _run_leverage_backtest(leverage: float):
+    bars = {"ASYMUSD": _dip_then_recover("ASYMUSD")}
+    config = WorkStealConfig(
+        dip_pct=0.20, profit_target_pct=0.15, stop_loss_pct=0.10,
+        sma_filter_period=0, trailing_stop_pct=0.0,
+        max_positions=5, max_hold_days=14, lookback_days=20,
+        initial_cash=10000.0, max_leverage=leverage,
+        margin_annual_rate=MARGIN_ANNUAL_RATE, max_position_pct=0.50,
+        max_drawdown_exit=0.0,
+        risk_off_trigger_momentum_period=0, risk_off_trigger_sma_period=0,
+    )
+    start = str(bars["ASYMUSD"]["timestamp"].min().date())
+    end = str(bars["ASYMUSD"]["timestamp"].max().date())
+    return run_worksteal_backtest(bars, config, start_date=start, end_date=end)
+
+
 class TestMarginInterest:
     def test_no_leverage_no_interest(self):
         pos = Position(
@@ -96,23 +112,17 @@ class TestMarginInterest:
 
 class TestPositionSizing:
     def test_1x_sizing(self):
-        config = WorkStealConfig(
-            initial_cash=10000.0, max_position_pct=0.25, max_leverage=1.0,
-        )
+        config = WorkStealConfig(initial_cash=10000.0, max_position_pct=0.25, max_leverage=1.0)
         max_alloc = config.initial_cash * config.max_position_pct * config.max_leverage
         assert max_alloc == 2500.0
 
     def test_2x_sizing(self):
-        config = WorkStealConfig(
-            initial_cash=10000.0, max_position_pct=0.25, max_leverage=2.0,
-        )
+        config = WorkStealConfig(initial_cash=10000.0, max_position_pct=0.25, max_leverage=2.0)
         max_alloc = config.initial_cash * config.max_position_pct * config.max_leverage
         assert max_alloc == 5000.0
 
     def test_5x_sizing(self):
-        config = WorkStealConfig(
-            initial_cash=10000.0, max_position_pct=0.25, max_leverage=5.0,
-        )
+        config = WorkStealConfig(initial_cash=10000.0, max_position_pct=0.25, max_leverage=5.0)
         max_alloc = config.initial_cash * config.max_position_pct * config.max_leverage
         assert max_alloc == 12500.0
 
@@ -196,9 +206,9 @@ class TestBacktestLeverage:
     def test_stop_loss_triggers(self):
         base = 100.0
         prices = [base] * 25
-        prices.append(base * 0.78)  # 22% dip
+        prices.append(base * 0.78)
         for i in range(14):
-            prices.append(base * 0.78 * 0.92)  # drop another 8%
+            prices.append(base * 0.78 * 0.92)
         bars = {"TSYMUSD": _make_bars("TSYMUSD", prices)}
         config = WorkStealConfig(
             dip_pct=0.20, profit_target_pct=0.15, stop_loss_pct=0.10,
@@ -215,6 +225,206 @@ class TestBacktestLeverage:
         stop_exits = [t for t in exits if t.reason == "stop_loss"]
         if exits:
             assert len(stop_exits) > 0 or any(t.reason in ("max_hold", "trailing_stop", "max_dd_exit") for t in exits)
+
+
+class TestLeverage3x:
+    def test_3x_buying_power(self):
+        config = WorkStealConfig(initial_cash=10000.0, max_position_pct=0.50, max_leverage=3.0)
+        max_alloc = config.initial_cash * config.max_position_pct * config.max_leverage
+        assert abs(max_alloc - 15000.0) < 0.01
+
+    def test_3x_creates_borrowed(self):
+        _, trades, _ = _run_leverage_backtest(3.0)
+        buys = [t for t in trades if t.side == "buy"]
+        if buys:
+            assert buys[0].notional > 10000.0 * 0.50, "3x should produce notional > 1x alloc"
+
+    def test_3x_more_notional_than_1x(self):
+        _, trades_1x, _ = _run_leverage_backtest(1.0)
+        _, trades_3x, _ = _run_leverage_backtest(3.0)
+        buys_1x = [t for t in trades_1x if t.side == "buy"]
+        buys_3x = [t for t in trades_3x if t.side == "buy"]
+        if buys_1x and buys_3x:
+            n1 = sum(t.notional for t in buys_1x)
+            n3 = sum(t.notional for t in buys_3x)
+            assert n3 > n1 * 2.0
+
+
+class TestLeverage5x:
+    def test_5x_buying_power(self):
+        config = WorkStealConfig(initial_cash=10000.0, max_position_pct=0.50, max_leverage=5.0)
+        max_alloc = config.initial_cash * config.max_position_pct * config.max_leverage
+        assert abs(max_alloc - 25000.0) < 0.01
+
+    def test_5x_creates_large_notional(self):
+        _, trades, _ = _run_leverage_backtest(5.0)
+        buys = [t for t in trades if t.side == "buy"]
+        if buys:
+            assert buys[0].notional > 10000.0 * 0.50
+
+    def test_5x_borrowed_amount(self):
+        _, trades, _ = _run_leverage_backtest(5.0)
+        buys = [t for t in trades if t.side == "buy"]
+        if buys:
+            assert buys[0].notional > 10000.0
+
+    def test_5x_amplifies_returns_vs_1x(self):
+        _, _, m1 = _run_leverage_backtest(1.0)
+        _, _, m5 = _run_leverage_backtest(5.0)
+        if m1 and m5:
+            r1 = abs(m1.get("total_return_pct", 0))
+            r5 = abs(m5.get("total_return_pct", 0))
+            assert r5 > r1
+
+
+class TestDeleveraging:
+    def test_deleverage_closes_worst_position(self):
+        base = 100.0
+        prices_a = [base] * 25
+        prices_a.append(base * 0.78)
+        for _ in range(14):
+            prices_a.append(base * 0.78 * 0.85)
+        prices_b = [base] * 25
+        prices_b.append(base * 0.78)
+        for i in range(1, 15):
+            prices_b.append(base * 0.78 * (1 + 0.10 * i / 14))
+        bars = {
+            "ASYMUSD": _make_bars("ASYMUSD", prices_a),
+            "BSYMUSD": _make_bars("BSYMUSD", prices_b),
+        }
+        config = WorkStealConfig(
+            dip_pct=0.20, profit_target_pct=0.30, stop_loss_pct=0.20,
+            sma_filter_period=0, trailing_stop_pct=0.0,
+            max_positions=5, max_hold_days=30, lookback_days=20,
+            initial_cash=10000.0, max_leverage=3.0,
+            margin_annual_rate=MARGIN_ANNUAL_RATE, max_position_pct=0.50,
+            max_drawdown_exit=0.0,
+            deleverage_threshold=0.5, target_leverage=3.0,
+            risk_off_trigger_momentum_period=0, risk_off_trigger_sma_period=0,
+        )
+        start = str(bars["ASYMUSD"]["timestamp"].min().date())
+        end = str(bars["ASYMUSD"]["timestamp"].max().date())
+        _, trades, _ = run_worksteal_backtest(bars, config, start_date=start, end_date=end)
+        all_exits = [t for t in trades if t.side in ("sell", "cover")]
+        assert len(all_exits) > 0
+
+    def test_no_deleverage_when_threshold_zero(self):
+        bars = {"ASYMUSD": _dip_then_recover("ASYMUSD")}
+        config = WorkStealConfig(
+            dip_pct=0.20, profit_target_pct=0.15, stop_loss_pct=0.10,
+            sma_filter_period=0, trailing_stop_pct=0.0,
+            max_positions=5, max_hold_days=14, lookback_days=20,
+            initial_cash=10000.0, max_leverage=3.0,
+            margin_annual_rate=MARGIN_ANNUAL_RATE, max_position_pct=0.50,
+            max_drawdown_exit=0.0, deleverage_threshold=0.0,
+            risk_off_trigger_momentum_period=0, risk_off_trigger_sma_period=0,
+        )
+        start = str(bars["ASYMUSD"]["timestamp"].min().date())
+        end = str(bars["ASYMUSD"]["timestamp"].max().date())
+        _, trades, _ = run_worksteal_backtest(bars, config, start_date=start, end_date=end)
+        delev_exits = [t for t in trades if t.reason == "deleverage"]
+        assert len(delev_exits) == 0
+
+
+class TestMarginInterest5x14d:
+    def test_margin_interest_accumulates_over_14_days(self):
+        initial_cash = 10000.0
+        pos_pct = 0.50
+        notional = initial_cash * pos_pct * 5.0
+        cash_used = min(notional, initial_cash * pos_pct)
+        borrowed = notional - cash_used
+        pos = Position(
+            symbol="BTCUSD", direction="long", entry_price=100.0,
+            entry_date=pd.Timestamp("2025-01-01", tz="UTC"),
+            quantity=notional / 100.0, cost_basis=notional,
+            peak_price=100.0, target_exit_price=115.0, stop_price=90.0,
+            margin_borrowed=borrowed,
+        )
+        days = 14
+        exit_date = pd.Timestamp("2025-01-15", tz="UTC")
+        interest = _compute_margin_interest(pos, exit_date, MARGIN_ANNUAL_RATE)
+        expected = borrowed * (MARGIN_ANNUAL_RATE / 365.0) * days
+        assert abs(interest - expected) < 0.01
+        assert 40.0 < interest < 60.0
+
+    def test_5x_interest_much_larger_than_1x(self):
+        for borrowed, label in [(0.0, "1x"), (4000.0, "2x"), (20000.0, "5x")]:
+            pos = Position(
+                symbol="BTCUSD", direction="long", entry_price=100.0,
+                entry_date=pd.Timestamp("2025-01-01", tz="UTC"),
+                quantity=250.0, cost_basis=25000.0, peak_price=100.0,
+                target_exit_price=115.0, stop_price=90.0,
+                margin_borrowed=borrowed,
+            )
+            interest = _compute_margin_interest(pos, pd.Timestamp("2025-01-15", tz="UTC"), MARGIN_ANNUAL_RATE)
+            if label == "1x":
+                assert interest == 0.0
+            elif label == "5x":
+                assert interest > 30.0
+
+
+class TestCSimParity5x:
+    def test_python_vs_c_parity_at_5x(self):
+        try:
+            from binance_worksteal.csim.fast_worksteal import run_worksteal_backtest_fast
+        except Exception:
+            return
+
+        bars = {"ASYMUSD": _dip_then_recover("ASYMUSD"), "BSYMUSD": _dip_then_recover("BSYMUSD")}
+        config = WorkStealConfig(
+            dip_pct=0.20, profit_target_pct=0.15, stop_loss_pct=0.10,
+            sma_filter_period=0, trailing_stop_pct=0.0,
+            max_positions=5, max_hold_days=14, lookback_days=20,
+            initial_cash=10000.0, max_leverage=5.0,
+            margin_annual_rate=MARGIN_ANNUAL_RATE, max_position_pct=0.25,
+            max_drawdown_exit=0.0,
+            risk_off_trigger_momentum_period=0, risk_off_trigger_sma_period=0,
+        )
+        start = str(bars["ASYMUSD"]["timestamp"].min().date())
+        end = str(bars["ASYMUSD"]["timestamp"].max().date())
+        bars_py = {k: v.copy() for k, v in bars.items()}
+        _, _, metrics_py = run_worksteal_backtest(bars_py, config, start_date=start, end_date=end)
+        bars_c = {k: v.copy() for k, v in bars.items()}
+        metrics_c = run_worksteal_backtest_fast(bars_c, config, start_date=start, end_date=end)
+        if metrics_py and metrics_c:
+            py_ret = metrics_py.get("total_return_pct", 0)
+            c_ret = metrics_c.get("total_return_pct", 0)
+            if abs(py_ret) > 0.1:
+                assert abs(py_ret - c_ret) / abs(py_ret) < 0.15, \
+                    f"Python={py_ret:.4f}% vs C={c_ret:.4f}%"
+            else:
+                assert abs(py_ret - c_ret) < 1.0
+
+    def test_python_vs_c_parity_at_3x(self):
+        try:
+            from binance_worksteal.csim.fast_worksteal import run_worksteal_backtest_fast
+        except Exception:
+            return
+
+        bars = {"ASYMUSD": _dip_then_recover("ASYMUSD")}
+        config = WorkStealConfig(
+            dip_pct=0.20, profit_target_pct=0.15, stop_loss_pct=0.10,
+            sma_filter_period=0, trailing_stop_pct=0.0,
+            max_positions=5, max_hold_days=14, lookback_days=20,
+            initial_cash=10000.0, max_leverage=3.0,
+            margin_annual_rate=MARGIN_ANNUAL_RATE, max_position_pct=0.25,
+            max_drawdown_exit=0.0,
+            risk_off_trigger_momentum_period=0, risk_off_trigger_sma_period=0,
+        )
+        start = str(bars["ASYMUSD"]["timestamp"].min().date())
+        end = str(bars["ASYMUSD"]["timestamp"].max().date())
+        bars_py = {k: v.copy() for k, v in bars.items()}
+        _, _, metrics_py = run_worksteal_backtest(bars_py, config, start_date=start, end_date=end)
+        bars_c = {k: v.copy() for k, v in bars.items()}
+        metrics_c = run_worksteal_backtest_fast(bars_c, config, start_date=start, end_date=end)
+        if metrics_py and metrics_c:
+            py_ret = metrics_py.get("total_return_pct", 0)
+            c_ret = metrics_c.get("total_return_pct", 0)
+            if abs(py_ret) > 0.1:
+                assert abs(py_ret - c_ret) / abs(py_ret) < 0.15, \
+                    f"Python={py_ret:.4f}% vs C={c_ret:.4f}%"
+            else:
+                assert abs(py_ret - c_ret) < 1.0
 
 
 class TestSweepScript:

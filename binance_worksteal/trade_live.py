@@ -11,6 +11,7 @@ Runs daily at UTC midnight:
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import sys
 import time
@@ -246,6 +247,8 @@ def _try_neural_inference(neural_model, all_bars, neural_model_symbols, neural_s
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--symbols", nargs="+", default=None)
+    parser.add_argument("--universe-file", default=None, help="YAML file with symbol universe")
+    parser.add_argument("--max-symbols", type=int, default=100, help="Safety cap on number of symbols")
     parser.add_argument("--dry-run", action="store_true", default=True)
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--daemon", action="store_true")
@@ -303,6 +306,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--diagnose", action="store_true", help="Run one diagnostic cycle showing why each symbol is filtered")
     parser.add_argument("--min-dip-pct", type=float, default=0.10, help="Floor for adaptive dip reduction (default 0.10)")
     parser.add_argument("--adaptive-dip-cycles", type=int, default=3, help="Zero-candidate cycles before reducing dip_pct")
+    parser.add_argument("--dip-pct-fallback", nargs="+", type=float, default=None,
+                        help="Descending dip thresholds for tiered entry (e.g. 0.20 0.15 0.12)")
     return parser
 
 
@@ -493,12 +498,43 @@ def log_event(event: dict):
         f.write(json.dumps(event, default=str) + "\n")
 
 
-def _fetch_all_bars(client, symbols: List[str], lookback_days: int) -> Dict[str, pd.DataFrame]:
+def load_universe_file(path: str) -> List[str]:
+    """Load symbols from a YAML universe file."""
+    import yaml
+    with open(path) as f:
+        data = yaml.safe_load(f)
+    if not isinstance(data, dict) or "symbols" not in data:
+        raise ValueError(f"Universe file must have a 'symbols' key: {path}")
+    symbols = []
+    for entry in data["symbols"]:
+        if isinstance(entry, str):
+            symbols.append(_normalize_strategy_symbol(entry))
+        elif isinstance(entry, dict) and "symbol" in entry:
+            symbols.append(_normalize_strategy_symbol(entry["symbol"]))
+    return symbols
+
+
+def _fetch_all_bars(client, symbols: List[str], lookback_days: int,
+                    max_workers: int = 10) -> Dict[str, pd.DataFrame]:
+    t0 = time.monotonic()
+
+    def _fetch_one(sym: str) -> Tuple[str, Optional[pd.DataFrame]]:
+        try:
+            bars = fetch_daily_bars(client, sym, lookback_days + 10)
+            if not bars.empty and len(bars) > lookback_days:
+                return sym, bars
+        except Exception as e:
+            logger.warning(f"Failed to fetch bars for {sym}: {e}")
+        return sym, None
+
     all_bars = {}
-    for sym in symbols:
-        bars = fetch_daily_bars(client, sym, lookback_days + 10)
-        if not bars.empty and len(bars) > lookback_days:
-            all_bars[sym] = bars
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+        for sym, bars in pool.map(_fetch_one, symbols):
+            if bars is not None:
+                all_bars[sym] = bars
+
+    elapsed = time.monotonic() - t0
+    logger.info(f"Fetched bars for {len(all_bars)}/{len(symbols)} symbols in {elapsed:.1f}s")
     return all_bars
 
 
@@ -884,7 +920,8 @@ def run_entry_scan(client, symbols: List[str], config: WorkStealConfig,
                    dry_run: bool = True, gemini_enabled: bool = False,
                    gemini_model: str = "gemini-2.5-flash",
                    neural_model=None, neural_model_symbols: Optional[List[str]] = None,
-                   neural_seq_len: int = 30):
+                   neural_seq_len: int = 30,
+                   dip_pct_fallback: Optional[List[float]] = None):
     state = load_state()
     positions = normalize_live_positions(state.get("positions", {}), config)
     pending_entries = _normalize_pending_entries(state.get("pending_entries", {}))
@@ -914,15 +951,32 @@ def run_entry_scan(client, symbols: List[str], config: WorkStealConfig,
         )
 
     staged_symbols = set(positions) | set(pending_entries)
-    candidates = build_entry_candidates(
-        date=pd.Timestamp(now),
-        current_bars=current_bars,
-        history=all_bars,
-        positions={},
-        last_exit={sym: pd.Timestamp(ts) for sym, ts in last_exit.items()},
-        config=entry_config,
-        base_symbol=None,
-    )
+    dip_tiers = dip_pct_fallback if dip_pct_fallback else None
+    last_exit_ts = {sym: pd.Timestamp(ts) for sym, ts in last_exit.items()}
+
+    if dip_tiers and len(dip_tiers) > 1:
+        logger.info(f"TIERED DIP (entry_scan): tiers {[f'{t:.0%}' for t in dip_tiers]}")
+        candidates, tier_map = _build_tiered_candidates(
+            dip_tiers=dip_tiers,
+            current_bars=current_bars,
+            history=all_bars,
+            positions=positions,
+            last_exit=last_exit_ts,
+            date=pd.Timestamp(now),
+            entry_config=entry_config,
+            max_positions=config.max_positions,
+            pending_entries=pending_entries,
+        )
+    else:
+        candidates = build_entry_candidates(
+            date=pd.Timestamp(now),
+            current_bars=current_bars,
+            history=all_bars,
+            positions={},
+            last_exit=last_exit_ts,
+            config=entry_config,
+            base_symbol=None,
+        )
     logger.info(f"ENTRY SCAN: {len(all_bars)} symbols checked, {len(candidates)} candidates found")
 
     counts = _stage_entry_candidates(
@@ -953,13 +1007,75 @@ def run_entry_scan(client, symbols: List[str], config: WorkStealConfig,
         save_state(state)
 
 
+def _build_tiered_candidates(
+    *,
+    dip_tiers: List[float],
+    current_bars: Dict[str, pd.Series],
+    history: Dict[str, pd.DataFrame],
+    positions: dict,
+    last_exit: Dict[str, pd.Timestamp],
+    date: pd.Timestamp,
+    entry_config: WorkStealConfig,
+    max_positions: int,
+    pending_entries: dict,
+    diagnostics: Optional[List[SymbolDiagnostic]] = None,
+) -> Tuple[list, Dict[str, int]]:
+    """Run tiered dip passes, filling slots from deepest dip to shallowest.
+
+    Returns (candidates, tier_map) where tier_map maps symbol -> tier index.
+    """
+    filled_symbols: set = set(positions) | set(pending_entries)
+    all_candidates = []
+    tier_map: Dict[str, int] = {}
+    slots = max_positions - len(filled_symbols)
+
+    for tier_idx, dip_pct in enumerate(dip_tiers):
+        if slots <= 0:
+            break
+        tier_config = replace(entry_config, dip_pct=dip_pct)
+        tier_diags: Optional[List[SymbolDiagnostic]] = [] if diagnostics is not None else None
+        candidates = build_entry_candidates(
+            date=date,
+            current_bars=current_bars,
+            history=history,
+            positions={sym: True for sym in filled_symbols},
+            last_exit=last_exit,
+            config=tier_config,
+            base_symbol=None,
+            diagnostics=tier_diags,
+        )
+        if diagnostics is not None and tier_diags:
+            if tier_idx == 0:
+                diagnostics.extend(tier_diags)
+
+        new_this_tier = 0
+        for c in candidates:
+            sym = c[0]
+            if sym in filled_symbols:
+                continue
+            if new_this_tier >= slots:
+                break
+            all_candidates.append(c)
+            tier_map[sym] = tier_idx
+            filled_symbols.add(sym)
+            new_this_tier += 1
+
+        slots -= new_this_tier
+        if new_this_tier > 0:
+            tier_label = f"{dip_pct:.0%}"
+            logger.info(f"TIER {tier_idx} (dip={tier_label}): {new_this_tier} candidates, {slots} slots remaining")
+
+    return all_candidates, tier_map
+
+
 def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
                     dry_run: bool = True, gemini_enabled: bool = False,
                     gemini_model: str = "gemini-2.5-flash",
                     neural_model=None, neural_model_symbols: Optional[List[str]] = None,
                     neural_seq_len: int = 30,
                     min_dip_pct: float = 0.10,
-                    adaptive_dip_cycles: int = 3):
+                    adaptive_dip_cycles: int = 3,
+                    dip_pct_fallback: Optional[List[float]] = None):
     state = load_state()
     positions = normalize_live_positions(state.get("positions", {}), config)
     pending_entries = _normalize_pending_entries(state.get("pending_entries", {}))
@@ -986,7 +1102,6 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
     )
 
     all_bars = _fetch_all_bars(client, symbols, config.lookback_days)
-    logger.info(f"Fetched bars for {len(all_bars)}/{len(symbols)} symbols")
 
     equity = get_account_equity(client) if not dry_run else config.initial_cash
     recent_trades.extend(
@@ -1101,6 +1216,8 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
             neural_model, all_bars, neural_model_symbols, neural_seq_len,
         )
 
+    tier_map: Dict[str, int] = {}
+
     if len(positions) >= config.max_positions:
         logger.info(f"ENTRY SCAN: skipped, max positions ({config.max_positions}) reached")
     elif skip_entries:
@@ -1108,19 +1225,42 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
     else:
         staged_symbols = set(positions) | set(pending_entries)
         diagnostics: List[SymbolDiagnostic] = []
-        candidates = build_entry_candidates(
-            date=pd.Timestamp(now),
-            current_bars=current_bars,
-            history=all_bars,
-            positions={},
-            last_exit={sym: pd.Timestamp(ts) for sym, ts in last_exit.items()},
-            config=entry_config,
-            base_symbol=None,
-            diagnostics=diagnostics,
-        )
+        last_exit_ts = {sym: pd.Timestamp(ts) for sym, ts in last_exit.items()}
+
+        if dip_pct_fallback and len(dip_pct_fallback) > 1:
+            logger.info(f"TIERED DIP: using tiers {[f'{t:.0%}' for t in dip_pct_fallback]}")
+            candidates, tier_map = _build_tiered_candidates(
+                dip_tiers=dip_pct_fallback,
+                current_bars=current_bars,
+                history=all_bars,
+                positions=positions,
+                last_exit=last_exit_ts,
+                date=pd.Timestamp(now),
+                entry_config=entry_config,
+                max_positions=config.max_positions,
+                pending_entries=pending_entries,
+                diagnostics=diagnostics,
+            )
+        else:
+            candidates = build_entry_candidates(
+                date=pd.Timestamp(now),
+                current_bars=current_bars,
+                history=all_bars,
+                positions={},
+                last_exit=last_exit_ts,
+                config=entry_config,
+                base_symbol=None,
+                diagnostics=diagnostics,
+            )
+
         n_candidates = len(candidates)
         slots = config.max_positions - len(positions) - len(pending_entries)
         logger.info(f"ENTRY SCAN: {len(all_bars)} symbols checked, {n_candidates} candidates found")
+
+        if tier_map:
+            for sym, tier_idx in tier_map.items():
+                tier_dip = dip_pct_fallback[tier_idx] if dip_pct_fallback else config.dip_pct
+                logger.info(f"  {sym}: tier {tier_idx} (dip={tier_dip:.0%})")
 
         # Log top 5 closest to entry
         prox_diags = [d for d in diagnostics if d.dist_pct > 0]
@@ -1159,7 +1299,7 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
         f"neural_skip={counts['n_neural_skip']} "
         f"already_held={counts['n_already_held']} risk_off={skip_entries}"
     )
-    log_event({
+    event_data = {
         "type": "entry_scan",
         "n_checked": len(all_bars),
         "n_candidates": n_candidates,
@@ -1168,7 +1308,11 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
         "n_pending": len(pending_entries),
         "equity": equity,
         **counts,
-    })
+    }
+    if dip_tiers and len(dip_tiers) > 1:
+        event_data["dip_tiers"] = dip_tiers
+        event_data["tier_map"] = {sym: idx for sym, idx in tier_map.items()} if tier_map else {}
+    log_event(event_data)
 
     # Track consecutive zero-candidate cycles for adaptive dip
     sufficient_data = len(all_bars) >= len(symbols) * 0.5
@@ -1316,7 +1460,14 @@ def main():
         args.dry_run = False
 
     from binance_worksteal.backtest import FULL_UNIVERSE
-    symbols = args.symbols or FULL_UNIVERSE
+    if args.symbols:
+        symbols = args.symbols
+    elif args.universe_file:
+        symbols = load_universe_file(args.universe_file)
+        logger.info(f"Loaded {len(symbols)} symbols from {args.universe_file}")
+    else:
+        symbols = FULL_UNIVERSE
+    symbols = symbols[:args.max_symbols]
 
     config = build_runtime_config(args)
 
@@ -1369,6 +1520,9 @@ def main():
         last_health_hour = None
         _min_dip = float(args.min_dip_pct)
         _adap_cycles = int(args.adaptive_dip_cycles)
+        _dip_fallback = args.dip_pct_fallback
+        if _dip_fallback:
+            logger.info(f"Tiered dip fallback enabled: {_dip_fallback}")
         if args.run_on_start:
             startup_dry_run = args.dry_run or args.startup_preview_only
             run_daily_cycle(
@@ -1383,6 +1537,7 @@ def main():
                 neural_seq_len=nn_seq_len,
                 min_dip_pct=_min_dip,
                 adaptive_dip_cycles=_adap_cycles,
+                dip_pct_fallback=_dip_fallback,
             )
             if not startup_dry_run:
                 last_cycle_date = datetime.now(timezone.utc).date().isoformat()
@@ -1405,6 +1560,7 @@ def main():
                     neural_seq_len=nn_seq_len,
                     min_dip_pct=_min_dip,
                     adaptive_dip_cycles=_adap_cycles,
+                    dip_pct_fallback=_dip_fallback,
                 )
                 last_cycle_date = now.date().isoformat()
                 last_entry_scan_hour = now.strftime("%Y-%m-%dT%H")
@@ -1444,6 +1600,7 @@ def main():
                         neural_model=nn_model,
                         neural_model_symbols=nn_symbols,
                         neural_seq_len=nn_seq_len,
+                        dip_pct_fallback=_dip_fallback,
                     )
                     last_entry_scan_hour = current_hour
 
@@ -1460,7 +1617,8 @@ def main():
                         neural_model=nn_model, neural_model_symbols=nn_symbols,
                         neural_seq_len=nn_seq_len,
                         min_dip_pct=float(args.min_dip_pct),
-                        adaptive_dip_cycles=int(args.adaptive_dip_cycles))
+                        adaptive_dip_cycles=int(args.adaptive_dip_cycles),
+                        dip_pct_fallback=args.dip_pct_fallback)
 
 
 if __name__ == "__main__":

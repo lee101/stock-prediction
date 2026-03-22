@@ -8,6 +8,7 @@ import pytest
 
 from pufferlib_market.autoresearch_rl import (
     TrialConfig,
+    _read_mktd_header,
     run_trial,
     summarize_replay_eval_payload,
     select_experiments,
@@ -524,3 +525,117 @@ def test_run_trial_passes_risk_penalties_to_train_command(monkeypatch, tmp_path:
     assert train_cmd[train_cmd.index("--group-relative-size") + 1] == "16"
     assert train_cmd[train_cmd.index("--group-relative-mix") + 1] == "0.25"
     assert train_cmd[train_cmd.index("--group-relative-clip") + 1] == "1.5"
+
+
+def test_run_trial_caps_total_timesteps(monkeypatch, tmp_path: Path) -> None:
+    import struct
+    # Create a minimal fake MKTD header
+    train_bin = tmp_path / "train.bin"
+    num_symbols = 10
+    num_timesteps = 100
+    header = struct.pack("<4sIIIII", b"MKTD", 1, num_symbols, num_timesteps, 16, 0)
+    header += b"\x00" * (64 - len(header))
+    train_bin.write_bytes(header)
+
+    checkpoint_dir = tmp_path / "trial"
+    checkpoint_dir.mkdir()
+    (checkpoint_dir / "best.pt").write_bytes(b"checkpoint")
+
+    class _FakeStdout:
+        def readline(self) -> bytes:
+            return b""
+
+    train_commands: list[list[str]] = []
+
+    class _FakePopen:
+        def __init__(self, cmd, *args, **kwargs) -> None:
+            train_commands.append(list(cmd))
+            self.stdout = _FakeStdout()
+            self.pid = 12345
+
+        def poll(self) -> int:
+            return 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    def _fake_run_capture(cmd: list[str], *, cwd: Path, timeout_s: int = 0) -> subprocess.CompletedProcess[str]:
+        if "pufferlib_market.evaluate" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0,
+                stdout="Return: mean=0.10\nWin rate: mean=0.55\nSortino: mean=1.20\n>0: 10/10 (100.0%)\n",
+                stderr="",
+            )
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl.subprocess.Popen", _FakePopen)
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl._run_capture", _fake_run_capture)
+
+    run_trial(
+        TrialConfig(description="test_cap"),
+        str(train_bin),
+        "val.bin",
+        1,
+        str(checkpoint_dir),
+        max_timesteps_per_sample=500,
+    )
+
+    assert train_commands
+    train_cmd = train_commands[0]
+    total_ts = int(train_cmd[train_cmd.index("--total-timesteps") + 1])
+    # 10 symbols * 100 timesteps * 500 = 500,000
+    assert total_ts == 500_000
+
+
+def test_run_trial_result_includes_early_rejected(monkeypatch, tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "trial"
+    checkpoint_dir.mkdir()
+    (checkpoint_dir / "best.pt").write_bytes(b"checkpoint")
+
+    class _FakeStdout:
+        def readline(self) -> bytes:
+            return b""
+
+    class _FakePopen:
+        def __init__(self, *args, **kwargs) -> None:
+            self.stdout = _FakeStdout()
+            self.pid = 12345
+
+        def poll(self) -> int:
+            return 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    def _fake_run_capture(cmd: list[str], *, cwd: Path, timeout_s: int = 0) -> subprocess.CompletedProcess[str]:
+        if "pufferlib_market.evaluate" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0,
+                stdout="Return: mean=0.10\nWin rate: mean=0.55\nSortino: mean=1.20\n>0: 10/10 (100.0%)\n",
+                stderr="",
+            )
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl.subprocess.Popen", _FakePopen)
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl._run_capture", _fake_run_capture)
+
+    result = run_trial(
+        TrialConfig(description="test_rej"),
+        "train.bin",
+        "val.bin",
+        1,
+        str(checkpoint_dir),
+    )
+
+    assert "early_rejected" in result
+    assert result["early_rejected"] is False
+
+
+def test_read_mktd_header_parses_real_file() -> None:
+    import os
+    path = "pufferlib_market/data/mixed23_latest_train_20260320.bin"
+    if not os.path.exists(path):
+        pytest.skip("mixed23 train data not available")
+    ns, nt = _read_mktd_header(path)
+    assert ns == 23
+    assert nt > 0

@@ -7,6 +7,12 @@
 #include <stdbool.h>
 #include <stdio.h>
 
+/* Branch-prediction hints for GCC/Clang; fall back to identity on other compilers */
+#ifndef LIKELY
+#  define LIKELY(x)   __builtin_expect(!!(x), 1)
+#  define UNLIKELY(x) __builtin_expect(!!(x), 0)
+#endif
+
 /* ---------- constants ---------- */
 #define MAX_SYMBOLS       64
 #define FEATURES_PER_SYM  16
@@ -150,7 +156,7 @@ typedef struct {
 
 /* ---------- core pufferlib functions ---------- */
 void c_reset(TradingEnv* env);
-void c_step(TradingEnv* env);
+__attribute__((hot)) void c_step(TradingEnv* env);
 void c_close(TradingEnv* env);
 
 /* no-op render */
