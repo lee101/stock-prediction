@@ -33,8 +33,8 @@ from src.remote_training_pipeline import (
     render_remote_pipeline_script,
 )
 
-TRAIN_DATA = "pufferlib_market/data/stocks11_daily_train_2015.bin"  # 11 syms × 3895 days (2015-01-02 to 2025-08-31)
-VAL_DATA = "pufferlib_market/data/stocks11_daily_val_2015.bin"  # 11 syms × 201 days (2025-09-01 to 2026-03-20)
+TRAIN_DATA = "pufferlib_market/data/stocks11_daily_train_2012.bin"  # 11 syms × 4840 days (2012-06-01 to 2025-08-31)
+VAL_DATA = "pufferlib_market/data/stocks11_daily_val_2012.bin"  # 11 syms × 201 days (2025-09-01 to 2026-03-20)
 FEE_OVERRIDE = 0.001  # Alpaca 10bps
 HOLDOUT_EVAL_STEPS = 90  # fits in 201-day val set
 HOLDOUT_N_WINDOWS = 20
