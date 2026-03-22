@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -180,30 +179,48 @@ def run_pufferlib_profiling(
 # Markdown report generation
 # ---------------------------------------------------------------------------
 
-def _parse_chrome_trace_top_kernels(trace_path: Path, top_n: int = 10) -> list[tuple[str, float, int]]:
-    """Parse Chrome trace JSON and return top CUDA kernels by total duration.
+def _load_trace_events(trace_path: Path) -> list:
+    """Load traceEvents list from a Chrome trace JSON file.
 
-    Returns list of (kernel_name, total_ms, call_count) sorted descending.
+    Returns empty list on any parse error.
     """
     try:
         with open(trace_path) as f:
-            trace = json.load(f)
+            return json.load(f).get("traceEvents", [])
     except Exception:
         return []
 
-    events = trace.get("traceEvents", [])
-    kernel_events = [e for e in events if e.get("cat") == "kernel" and "dur" in e]
+
+def _parse_chrome_trace_top_kernels(
+    trace_path: Path,
+    top_n: int = 10,
+    events: list | None = None,
+) -> tuple[list[tuple[str, float, int]], float]:
+    """Parse Chrome trace JSON and return top CUDA kernels by total duration.
+
+    Args:
+        trace_path: Path to the Chrome trace JSON file.
+        top_n: Number of top kernels to return.
+        events: Pre-loaded traceEvents list; if provided, trace_path is not read.
+
+    Returns (kernels, total_kernel_ms) where kernels is a list of
+    (kernel_name, total_ms, call_count) sorted descending by total_ms.
+    Returns ([], 1.0) on any parse error.
+    """
+    if events is None:
+        events = _load_trace_events(trace_path)
 
     kernel_times: dict[str, float] = defaultdict(float)
     kernel_counts: dict[str, int] = defaultdict(int)
-    for e in kernel_events:
-        name = e["name"]
-        kernel_times[name] += e["dur"] / 1000.0  # us -> ms
-        kernel_counts[name] += 1
+    for e in events:
+        if e.get("cat") == "kernel" and "dur" in e:
+            name = e["name"]
+            kernel_times[name] += e["dur"] / 1000.0  # us -> ms
+            kernel_counts[name] += 1
 
     total_ms = sum(kernel_times.values()) or 1.0
-    result = sorted(kernel_times.items(), key=lambda x: -x[1])[:top_n]
-    return [(name, ms, kernel_counts[name]) for name, ms in result], total_ms
+    top = sorted(kernel_times.items(), key=lambda x: -x[1])[:top_n]
+    return [(name, ms, kernel_counts[name]) for name, ms in top], total_ms
 
 
 def _parse_speedscope_top_functions(flamegraph_path: Path, top_n: int = 5) -> list[tuple[str, int, float, str]]:
@@ -412,18 +429,32 @@ def generate_markdown_report(profiles_dir: Path) -> Path:
         lines.append("_No py-spy data found. Run without --quick to capture flamegraph._")
     lines.append("")
 
+    # Load trace once; extract both kernel and memory data in a single pass
+    top_kernels: list[tuple[str, float, int]] = []
+    total_kernel_ms = 1.0
+    mem_events: list = []
+    if trace_path.exists():
+        trace_events = _load_trace_events(trace_path)
+        top_kernels, total_kernel_ms = _parse_chrome_trace_top_kernels(
+            trace_path, top_n=10, events=trace_events
+        )
+        try:
+            mem_by_name: dict[str, dict] = defaultdict(lambda: {"alloc_bytes": 0, "count": 0})
+            for e in trace_events:
+                if e.get("cat") in ("memory", "[memory]") and "args" in e:
+                    name = e.get("name", "unknown")
+                    args = e["args"]
+                    alloc = args.get("Bytes", args.get("bytes", 0))
+                    if alloc > 0:
+                        mem_by_name[name]["alloc_bytes"] += alloc
+                        mem_by_name[name]["count"] += 1
+            mem_events = sorted(mem_by_name.items(), key=lambda x: -x[1]["alloc_bytes"])[:10]
+        except Exception:
+            pass
+
     # --- Top CUDA kernels (torch.profiler) ---
     lines.append("## Top CUDA Kernels (torch.profiler)")
     lines.append("")
-    top_kernels: list = []
-    total_kernel_ms = 1.0
-    if trace_path.exists():
-        result = _parse_chrome_trace_top_kernels(trace_path, top_n=10)
-        if isinstance(result, tuple):
-            top_kernels, total_kernel_ms = result
-        else:
-            top_kernels = result
-
     if top_kernels:
         lines.append("| Rank | Kernel | Calls | Total ms | % CUDA time |")
         lines.append("|------|--------|-------|----------|-------------|")
@@ -438,28 +469,6 @@ def generate_markdown_report(profiles_dir: Path) -> Path:
     # --- Memory allocation hotspots ---
     lines.append("## Memory Allocation Hotspots")
     lines.append("")
-    mem_events = []
-    if trace_path.exists():
-        try:
-            with open(trace_path) as f:
-                trace_data = json.load(f)
-            all_events = trace_data.get("traceEvents", [])
-            mem_cat_events = [
-                e for e in all_events
-                if e.get("cat") in ("memory", "[memory]") and "args" in e
-            ]
-            # Group by name/op
-            mem_by_name: dict[str, dict] = defaultdict(lambda: {"alloc_bytes": 0, "count": 0})
-            for e in mem_cat_events:
-                name = e.get("name", "unknown")
-                args = e.get("args", {})
-                alloc = args.get("Bytes", args.get("bytes", 0))
-                if alloc > 0:
-                    mem_by_name[name]["alloc_bytes"] += alloc
-                    mem_by_name[name]["count"] += 1
-            mem_events = sorted(mem_by_name.items(), key=lambda x: -x[1]["alloc_bytes"])[:10]
-        except Exception:
-            pass
 
     if mem_events:
         lines.append("(from torch.profiler memory timeline)")
