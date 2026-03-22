@@ -725,45 +725,17 @@ STOCK_EXPERIMENTS: list[dict] = [
     {"description": "tp03_s2272_h2048",
      "trade_penalty": 0.03, "seed": 2272, "hidden_size": 2048},
 
-    # Dense seed sweep for H100: tp03 with sequential seeds 1-50
-    # Running all these on H100 gives ~33% expected hit rate → 16-17 positive checkpoints
-    # Use: --descriptions tp03_seed_1,tp03_seed_2,...,tp03_seed_50
+    # Random mutations — 300 slots so H100 500-trial runs get ~218 random trials
+    # (after ~82 named configs). Each slot calls mutate_config(best_config) at runtime.
+    *[{"description": f"random_{i}"} for i in range(1, 301)],
+]
+
+# Dense tp03 seed sweeps — moved out of main pool (all negative at 300s on extended val).
+# Run with: --descriptions tp03_seed_1,...,tp03_seed_50
+STOCK_TP03_SEED_EXPERIMENTS = [
     *[{"description": f"tp03_seed_{i}", "trade_penalty": 0.03, "seed": i} for i in range(1, 51)],
-    # Also wd=0.01 seeds 1-25 (2nd-best modifier from sweep)
     *[{"description": f"tp03_wd01_seed_{i}", "trade_penalty": 0.03, "weight_decay": 0.01, "seed": i}
       for i in range(1, 26)],
-
-    # Random mutations to explore the neighbourhood (30 slots per sweep pass)
-    {"description": "random_1"},
-    {"description": "random_2"},
-    {"description": "random_3"},
-    {"description": "random_4"},
-    {"description": "random_5"},
-    {"description": "random_6"},
-    {"description": "random_7"},
-    {"description": "random_8"},
-    {"description": "random_9"},
-    {"description": "random_10"},
-    {"description": "random_11"},
-    {"description": "random_12"},
-    {"description": "random_13"},
-    {"description": "random_14"},
-    {"description": "random_15"},
-    {"description": "random_16"},
-    {"description": "random_17"},
-    {"description": "random_18"},
-    {"description": "random_19"},
-    {"description": "random_20"},
-    {"description": "random_21"},
-    {"description": "random_22"},
-    {"description": "random_23"},
-    {"description": "random_24"},
-    {"description": "random_25"},
-    {"description": "random_26"},
-    {"description": "random_27"},
-    {"description": "random_28"},
-    {"description": "random_29"},
-    {"description": "random_30"},
 ]
 
 # ---------------------------------------------------------------------------
