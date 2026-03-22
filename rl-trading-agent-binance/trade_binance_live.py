@@ -1884,7 +1884,7 @@ def run_hybrid_trading_cycle(
 
         cache_root = Path(forecast_cache_root)
         try:
-            contexts = gather_symbol_contexts(cache_root)
+            contexts = gather_symbol_contexts(cache_root, symbols=rl_gen.symbols)
         except Exception as exc:
             logger.error(f"Failed to gather market context: {exc}")
             cycle_snapshot["status"] = "context_error"
@@ -1927,12 +1927,15 @@ def run_hybrid_trading_cycle(
             positions=state.positions,
             prev_plan=_prev_plan,
             prev_outcome=_prev_outcome,
+            rl_symbols=rl_gen.symbols,
+            rl_action_names=rl_gen.action_names,
         )
         cycle_snapshot["prompt_chars"] = len(prompt)
 
+        tradable_syms = [ctx.symbol for ctx in contexts]
         logger.info(f"Prompt built ({len(prompt)} chars), calling Gemini...")
         try:
-            plan = call_gemini_allocation(prompt, model=gemini_model)
+            plan = call_gemini_allocation(prompt, model=gemini_model, tradable_symbols=tradable_syms)
         except Exception as exc:
             logger.error(f"Gemini call failed: {exc}")
             cycle_snapshot["status"] = "gemini_error"
@@ -2242,7 +2245,7 @@ def main():
             forecast_cache_root=args.forecast_cache,
         )
         logger.info(f"Hybrid mode: RL={rl_checkpoint} + Gemini={args.model}")
-        logger.info(f"RL symbols: {', '.join(RL_SYMBOLS)}")
+        logger.info(f"RL symbols ({rl_gen.num_symbols}): {', '.join(rl_gen.symbols)}")
 
     while True:
         try:
