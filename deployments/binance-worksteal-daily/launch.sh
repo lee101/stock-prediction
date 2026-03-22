@@ -16,6 +16,7 @@ exec /home/lee/code/stock/.venv313/bin/python -u \
   --entry-proximity-bps 3000 \
   --entry-poll-hours 4 \
   --health-report-hours 6 \
+  --dip-pct-fallback 0.20 0.15 0.12 \
   --symbols BTCUSD ETHUSD SOLUSD DOGEUSD AVAXUSD LINKUSD AAVEUSD LTCUSD \
             XRPUSD DOTUSD UNIUSD NEARUSD APTUSD ICPUSD SHIBUSD ADAUSD \
             FILUSD ARBUSD OPUSD INJUSD SUIUSD TIAUSD SEIUSD ATOMUSD \
