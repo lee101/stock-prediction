@@ -29,6 +29,7 @@ from rl_signal import (
     RLSignal,
     SYMBOLS,
     ACTION_NAMES,
+    SYMBOL_TO_BINANCE_PAIR,
     _load_forecast_parquet,
 )
 
@@ -166,10 +167,15 @@ def _get_forecast_latest(cache_root: Path, symbol: str, horizon: int) -> dict:
 
 def gather_symbol_contexts(
     forecast_cache_root: Path,
+    symbols: Optional[tuple[str, ...]] = None,
 ) -> list[SymbolContext]:
-    """Fetch all data for all 4 RL symbols."""
+    """Fetch data for all tradable RL symbols."""
+    if symbols is None:
+        symbols = SYMBOLS
     contexts = []
-    for sym in SYMBOLS:
+    for sym in symbols:
+        if sym not in SYMBOL_BINANCE_MAP:
+            continue
         pair, base, quote = SYMBOL_BINANCE_MAP[sym]
         try:
             klines = _fetch_klines(pair, limit=96)
@@ -257,14 +263,24 @@ def build_allocation_prompt(
     positions: dict[str, float],  # base_asset -> qty
     prev_plan: Optional[AllocationPlan] = None,
     prev_outcome: Optional[PlanOutcome] = None,
+    rl_symbols: Optional[tuple[str, ...]] = None,
+    rl_action_names: Optional[list[str]] = None,
 ) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     probs = _softmax(rl_signal.logits)
-    prob_labels = [f"{ACTION_NAMES[i]}={probs[i]:.0%}" for i in range(len(probs))]
+    action_names = rl_action_names if rl_action_names else ACTION_NAMES
+    prob_labels = [f"{action_names[i]}={probs[i]:.0%}" for i in range(min(len(probs), len(action_names)))]
+
+    # Build symbol -> action index mapping for RL probs
+    _rl_syms = rl_symbols if rl_symbols else SYMBOLS
+    _n_rl = len(_rl_syms)
+    sym_to_rl_idx = {sym: i for i, sym in enumerate(_rl_syms)}
 
     # Portfolio section
     pos_lines = []
     for ctx in contexts:
+        if ctx.symbol not in SYMBOL_BINANCE_MAP:
+            continue
         _, base, _ = SYMBOL_BINANCE_MAP[ctx.symbol]
         qty = positions.get(base, 0)
         val = qty * ctx.price
@@ -290,8 +306,14 @@ def build_allocation_prompt(
                 f"high {ctx.fc_h24_high_delta:+.2%}, low {ctx.fc_h24_low_delta:+.2%}"
             )
 
-        rl_long_prob = probs[i + 1]  # actions 1-4 = long BTC/ETH/DOGE/AAVE
-        rl_short_prob = probs[i + 5]  # actions 5-8 = short
+        # Look up RL prob indices dynamically
+        rl_idx = sym_to_rl_idx.get(ctx.symbol)
+        if rl_idx is not None and (rl_idx + 1) < len(probs):
+            rl_long_prob = probs[rl_idx + 1]
+            rl_short_prob = probs[_n_rl + rl_idx + 1] if (_n_rl + rl_idx + 1) < len(probs) else 0.0
+        else:
+            rl_long_prob = 0.0
+            rl_short_prob = 0.0
 
         kline_table = _format_klines_compact(ctx.klines, n=12)
 
@@ -327,7 +349,28 @@ Last 12h:
     rl_rec = rl_signal.action_name
     rl_value = rl_signal.value
 
-    prompt = f"""You are a quantitative portfolio manager optimizing hourly allocations across 4 crypto assets on Binance spot (long-only, no leverage, no shorting).
+    n_ctx = len(contexts)
+    ctx_syms = [ctx.symbol for ctx in contexts]
+
+    # Build dynamic JSON schema for response
+    json_fields = []
+    for ctx in contexts:
+        short = ctx.symbol.replace("USD", "").lower()
+        json_fields.append(f'  "{short}_pct": <0-100>')
+        json_fields.append(f'  "{short}_entry": <price or 0>')
+        json_fields.append(f'  "{short}_exit": <price or 0>')
+    json_fields.append('  "reasoning": "<2-3 sentences explaining your allocation rationale>"')
+    json_template = "{{\n" + ",\n".join(json_fields) + "\n}}"
+
+    # Determine fee info
+    fee_info = []
+    for ctx in contexts:
+        if ctx.symbol in SYMBOL_BINANCE_MAP:
+            _, _, quote = SYMBOL_BINANCE_MAP[ctx.symbol]
+            fee = "0 fees" if quote == "FDUSD" else "10bps per side"
+            fee_info.append(f"{ctx.symbol.replace('USD','')} on {quote} = {fee}")
+
+    prompt = f"""You are a quantitative portfolio manager optimizing hourly allocations across {n_ctx} crypto assets on Binance spot (long-only, no leverage, no shorting).
 
 OBJECTIVE: Maximize risk-adjusted returns. Prioritize:
 1. Sortino ratio (penalize downside, reward upside)
@@ -351,9 +394,9 @@ Positions:
 {market_section}
 
 === RL POLICY ANALYSIS ===
-Trained on 40K+ hours of historical data, 4-symbol portfolio rotator.
+Trained on 40K+ hours of historical data, {_n_rl}-symbol portfolio rotator.
 Recommendation: {rl_rec} | Value estimate: {rl_value:.3f}
-Action probabilities: {', '.join(prob_labels)}
+Action probabilities: {', '.join(prob_labels[:20])}
 Note: RL policy can short but we are spot-only (long or cash).
 
 === ALLOCATION INSTRUCTIONS ===
@@ -365,28 +408,13 @@ For each symbol with allocation > 0, set:
 - exit_price: take-profit price (your target exit)
 
 Guidelines:
-- Fees: BTC/ETH on FDUSD = 0 fees. DOGE/AAVE on USDT = 10bps per side.
+- Fees: {'. '.join(fee_info)}.
 - Only allocate to symbols where Chronos2 forecast AND technicals AND RL signal show alignment.
 - Prefer fewer concentrated bets over thin spread across many symbols.
 - If all signals are mixed or bearish, stay mostly/fully in cash. Cash is a position.
-- Think about correlation: BTC and ETH often move together, diversification into DOGE/AAVE can reduce risk.
 
 Respond with JSON:
-{{
-  "btc_pct": <0-100>,
-  "btc_entry": <price or 0>,
-  "btc_exit": <price or 0>,
-  "eth_pct": <0-100>,
-  "eth_entry": <price or 0>,
-  "eth_exit": <price or 0>,
-  "doge_pct": <0-100>,
-  "doge_entry": <price or 0>,
-  "doge_exit": <price or 0>,
-  "aave_pct": <0-100>,
-  "aave_entry": <price or 0>,
-  "aave_exit": <price or 0>,
-  "reasoning": "<2-3 sentences explaining your allocation rationale>"
-}}"""
+{json_template}"""
     return prompt
 
 
@@ -397,18 +425,32 @@ Respond with JSON:
 ALLOC_FIELDS = {
     "BTCUSD": ("btc_pct", "btc_entry", "btc_exit"),
     "ETHUSD": ("eth_pct", "eth_entry", "eth_exit"),
+    "SOLUSD": ("sol_pct", "sol_entry", "sol_exit"),
     "DOGEUSD": ("doge_pct", "doge_entry", "doge_exit"),
     "AAVEUSD": ("aave_pct", "aave_entry", "aave_exit"),
+    "LINKUSD": ("link_pct", "link_entry", "link_exit"),
+    "XRPUSD": ("xrp_pct", "xrp_entry", "xrp_exit"),
+    "LTCUSD": ("ltc_pct", "ltc_entry", "ltc_exit"),
+    "AVAXUSD": ("avax_pct", "avax_entry", "avax_exit"),
+    "UNIUSD": ("uni_pct", "uni_entry", "uni_exit"),
+    "DOTUSD": ("dot_pct", "dot_entry", "dot_exit"),
+    "SHIBUSD": ("shib_pct", "shib_entry", "shib_exit"),
 }
+
+
+def _alloc_fields_for_symbol(sym: str) -> tuple[str, str, str]:
+    if sym in ALLOC_FIELDS:
+        return ALLOC_FIELDS[sym]
+    short = sym.replace("USD", "").lower()
+    return (f"{short}_pct", f"{short}_entry", f"{short}_exit")
 
 
 def parse_allocation_response(text: str) -> AllocationPlan:
     """Parse Gemini's JSON response into an AllocationPlan."""
-    # Try structured JSON first
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
-        m = re.search(r'\{[^{}]*"btc_pct"[^{}]*\}', text, re.DOTALL)
+        m = re.search(r'\{[^{}]*"[a-z]+_pct"[^{}]*\}', text, re.DOTALL)
         if not m:
             m = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL)
         if m:
@@ -424,14 +466,26 @@ def parse_allocation_response(text: str) -> AllocationPlan:
         timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
     )
 
-    for sym, (pct_key, entry_key, exit_key) in ALLOC_FIELDS.items():
+    for sym in ALLOC_FIELDS:
+        pct_key, entry_key, exit_key = _alloc_fields_for_symbol(sym)
         pct = float(data.get(pct_key, 0) or 0)
         if pct > 0:
             plan.allocations[sym] = min(pct, 100.0)
             plan.entry_prices[sym] = float(data.get(entry_key, 0) or 0)
             plan.exit_prices[sym] = float(data.get(exit_key, 0) or 0)
 
-    # Clamp total to 100%
+    # Also parse any _pct keys not in ALLOC_FIELDS
+    for key, val in data.items():
+        if key.endswith("_pct") and key != "reasoning":
+            short = key.replace("_pct", "")
+            sym = f"{short.upper()}USD"
+            if sym not in plan.allocations:
+                pct = float(val or 0)
+                if pct > 0:
+                    plan.allocations[sym] = min(pct, 100.0)
+                    plan.entry_prices[sym] = float(data.get(f"{short}_entry", 0) or 0)
+                    plan.exit_prices[sym] = float(data.get(f"{short}_exit", 0) or 0)
+
     total = sum(plan.allocations.values())
     if total > 100:
         scale = 100.0 / total
@@ -448,29 +502,28 @@ def call_gemini_allocation(
     prompt: str,
     model: str = "gemini-3.1-flash-lite-preview",
     max_retries: int = 3,
+    tradable_symbols: Optional[list[str]] = None,
 ) -> AllocationPlan:
     """Call Gemini and parse allocation response."""
     from google import genai
     from google.genai import types
 
+    if tradable_symbols is None:
+        tradable_symbols = ["BTCUSD", "ETHUSD", "DOGEUSD", "AAVEUSD"]
+    props = {}
+    required = ["reasoning"]
+    for sym in tradable_symbols:
+        pct_key, entry_key, exit_key = _alloc_fields_for_symbol(sym)
+        props[pct_key] = genai.types.Schema(type=genai.types.Type.STRING)
+        props[entry_key] = genai.types.Schema(type=genai.types.Type.STRING)
+        props[exit_key] = genai.types.Schema(type=genai.types.Type.STRING)
+        required.append(pct_key)
+    props["reasoning"] = genai.types.Schema(type=genai.types.Type.STRING)
+
     schema = genai.types.Schema(
         type=genai.types.Type.OBJECT,
-        required=["btc_pct", "eth_pct", "doge_pct", "aave_pct", "reasoning"],
-        properties={
-            "btc_pct": genai.types.Schema(type=genai.types.Type.STRING),
-            "btc_entry": genai.types.Schema(type=genai.types.Type.STRING),
-            "btc_exit": genai.types.Schema(type=genai.types.Type.STRING),
-            "eth_pct": genai.types.Schema(type=genai.types.Type.STRING),
-            "eth_entry": genai.types.Schema(type=genai.types.Type.STRING),
-            "eth_exit": genai.types.Schema(type=genai.types.Type.STRING),
-            "doge_pct": genai.types.Schema(type=genai.types.Type.STRING),
-            "doge_entry": genai.types.Schema(type=genai.types.Type.STRING),
-            "doge_exit": genai.types.Schema(type=genai.types.Type.STRING),
-            "aave_pct": genai.types.Schema(type=genai.types.Type.STRING),
-            "aave_entry": genai.types.Schema(type=genai.types.Type.STRING),
-            "aave_exit": genai.types.Schema(type=genai.types.Type.STRING),
-            "reasoning": genai.types.Schema(type=genai.types.Type.STRING),
-        },
+        required=required,
+        properties=props,
     )
 
     client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY", ""))

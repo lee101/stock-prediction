@@ -1,11 +1,9 @@
 """Live RL signal generator for Binance spot trading.
 
-Loads the autoresearch-trained TradingPolicy and produces trading signals
-from live kline data + Chronos2 forecast cache.
+Supports both legacy 4-symbol checkpoints and pufferlib portfolio-level
+models (e.g. mixed23 with obs_dim=396, action_dim=47).
 
-Symbols (fixed order matching training): BTCUSD, ETHUSD, DOGEUSD, AAVEUSD
-Obs: 73-dim = 4*16 market features + 5 portfolio state + 4 position encoding
-Actions: 0=flat, 1-4=long(BTC,ETH,DOGE,AAVE), 5-8=short (treated as flat for spot)
+Architecture and symbol count are auto-detected from the checkpoint.
 """
 from __future__ import annotations
 
@@ -24,18 +22,61 @@ except ImportError:
     import logging
     logger = logging.getLogger(__name__)
 
-SYMBOLS = ("BTCUSD", "ETHUSD", "DOGEUSD", "AAVEUSD")
 FEATURES_PER_SYM = 16
+INITIAL_CASH = 10000.0
+
+# Legacy defaults (backward compat for importers)
+SYMBOLS = ("BTCUSD", "ETHUSD", "DOGEUSD", "AAVEUSD")
 NUM_SYMBOLS = 4
 OBS_SIZE = NUM_SYMBOLS * FEATURES_PER_SYM + 5 + NUM_SYMBOLS  # 73
 NUM_ACTIONS = 1 + 2 * NUM_SYMBOLS  # 9
-INITIAL_CASH = 10000.0
 
 ACTION_NAMES = [
     "FLAT",
     "LONG_BTC", "LONG_ETH", "LONG_DOGE", "LONG_AAVE",
     "SHORT_BTC", "SHORT_ETH", "SHORT_DOGE", "SHORT_AAVE",
 ]
+
+# Mixed23 symbol order (must match pufferlib_market/data/mixed23_*.bin)
+MIXED23_SYMBOLS = (
+    "AAPL", "NFLX", "NVDA", "ADBE", "ADSK", "COIN", "GOOG", "MSFT",
+    "PYPL", "SAP", "TSLA",
+    "BTCUSD", "ETHUSD", "SOLUSD", "LTCUSD", "AVAXUSD", "DOGEUSD",
+    "LINKUSD", "AAVEUSD", "UNIUSD", "DOTUSD", "SHIBUSD", "XRPUSD",
+)
+
+# Map from symbol name -> Binance trading pair for live kline fetch
+SYMBOL_TO_BINANCE_PAIR = {
+    "BTCUSD": "BTCFDUSD",
+    "ETHUSD": "ETHFDUSD",
+    "SOLUSD": "SOLUSDT",
+    "DOGEUSD": "DOGEUSDT",
+    "AAVEUSD": "AAVEUSDT",
+    "LINKUSD": "LINKUSDT",
+    "XRPUSD": "XRPUSDT",
+    "LTCUSD": "LTCUSDT",
+    "AVAXUSD": "AVAXUSDT",
+    "UNIUSD": "UNIUSDT",
+    "DOTUSD": "DOTUSDT",
+    "SHIBUSD": "SHIBUSDT",
+}
+
+# Known obs_size -> symbol tuple mapping for auto-detection
+_OBS_SIZE_TO_SYMBOLS = {
+    73: ("BTCUSD", "ETHUSD", "DOGEUSD", "AAVEUSD"),
+    396: MIXED23_SYMBOLS,
+}
+
+
+def _build_action_names(symbols: tuple[str, ...]) -> list[str]:
+    names = ["FLAT"]
+    for sym in symbols:
+        short = sym.replace("USD", "")
+        names.append(f"LONG_{short}")
+    for sym in symbols:
+        short = sym.replace("USD", "")
+        names.append(f"SHORT_{short}")
+    return names
 
 
 # ---------------------------------------------------------------------------
@@ -56,9 +97,11 @@ class RunningObsNorm(nn.Module):
 
 
 class TradingPolicy(nn.Module):
-    def __init__(self, obs_size: int, num_actions: int, hidden: int = 1024):
+    def __init__(self, obs_size: int, num_actions: int, hidden: int = 1024, use_obs_norm: bool = True):
         super().__init__()
-        self.obs_norm = RunningObsNorm(obs_size)
+        self._use_obs_norm = use_obs_norm
+        if use_obs_norm:
+            self.obs_norm = RunningObsNorm(obs_size)
         self.encoder = nn.Sequential(
             nn.Linear(obs_size, hidden), nn.ReLU(),
             nn.Linear(hidden, hidden), nn.ReLU(),
@@ -74,7 +117,8 @@ class TradingPolicy(nn.Module):
         )
 
     def forward(self, x):
-        x = self.obs_norm(x)
+        if self._use_obs_norm:
+            x = self.obs_norm(x)
         h = self.encoder(x)
         return self.actor(h), self.critic(h).squeeze(-1)
 
@@ -174,7 +218,7 @@ class PortfolioSnapshot:
     """Current portfolio state for obs construction."""
     cash_usd: float = 0.0
     total_value_usd: float = 0.0
-    position_symbol: Optional[str] = None  # e.g. "BTCUSD" or None if flat
+    position_symbol: Optional[str] = None
     position_value_usd: float = 0.0
     unrealized_pnl_usd: float = 0.0
     hold_hours: int = 0
@@ -189,10 +233,50 @@ class PortfolioSnapshot:
 class RLSignal:
     action: int
     action_name: str
-    target_symbol: Optional[str]  # None if flat
+    target_symbol: Optional[str]
     direction: str  # "long", "flat"
     logits: list[float] = field(default_factory=list)
     value: float = 0.0
+
+
+def _infer_obs_size(state_dict: dict) -> int:
+    if "encoder.0.weight" in state_dict:
+        return int(state_dict["encoder.0.weight"].shape[1])
+    if "input_proj.weight" in state_dict:
+        return int(state_dict["input_proj.weight"].shape[1])
+    raise ValueError("Cannot infer obs_size from checkpoint state_dict")
+
+
+def _infer_num_actions(state_dict: dict) -> int:
+    for key in ("actor.2.bias", "actor.2.weight"):
+        if key in state_dict:
+            t = state_dict[key]
+            return int(t.shape[0])
+    raise ValueError("Cannot infer num_actions from checkpoint state_dict")
+
+
+def _infer_hidden_size(state_dict: dict) -> int:
+    if "encoder.0.weight" in state_dict:
+        return int(state_dict["encoder.0.weight"].shape[0])
+    if "input_proj.weight" in state_dict:
+        return int(state_dict["input_proj.weight"].shape[0])
+    return 1024
+
+
+def _has_obs_norm(state_dict: dict) -> bool:
+    return "obs_norm.running_mean" in state_dict
+
+
+def _infer_num_symbols(obs_size: int) -> int:
+    # obs = S * 16 + 5 + S = S * 17 + 5
+    return (obs_size - 5) // 17
+
+
+def _infer_symbols(obs_size: int) -> tuple[str, ...]:
+    if obs_size in _OBS_SIZE_TO_SYMBOLS:
+        return _OBS_SIZE_TO_SYMBOLS[obs_size]
+    n = _infer_num_symbols(obs_size)
+    return tuple(f"SYM{i}" for i in range(n))
 
 
 class RLSignalGenerator:
@@ -201,23 +285,53 @@ class RLSignalGenerator:
         checkpoint_path: str | Path,
         forecast_cache_root: str | Path = "binanceneural/forecast_cache",
         device: str = "cpu",
+        symbols: Optional[tuple[str, ...]] = None,
     ):
         self.device = torch.device(device)
         self.forecast_cache_root = Path(forecast_cache_root)
 
         ckpt = torch.load(str(checkpoint_path), map_location=self.device, weights_only=False)
-        hidden = ckpt.get("hidden_size", 1024)
+        state_dict = ckpt["model"]
 
-        self.policy = TradingPolicy(OBS_SIZE, NUM_ACTIONS, hidden=hidden)
-        self.policy.load_state_dict(ckpt["model"])
+        obs_size = _infer_obs_size(state_dict)
+        num_actions = _infer_num_actions(state_dict)
+        hidden = _infer_hidden_size(state_dict)
+        use_obs_norm = _has_obs_norm(state_dict)
+
+        self.num_symbols = _infer_num_symbols(obs_size)
+        self.obs_size = obs_size
+        self.num_actions = num_actions
+
+        if symbols is not None:
+            self.symbols = symbols
+        else:
+            self.symbols = _infer_symbols(obs_size)
+
+        if len(self.symbols) != self.num_symbols:
+            raise ValueError(
+                f"Symbol count mismatch: obs_size={obs_size} implies "
+                f"{self.num_symbols} symbols but got {len(self.symbols)}"
+            )
+
+        alloc_bins = ckpt.get("action_allocation_bins", 1)
+        level_bins = ckpt.get("action_level_bins", 1)
+        self.per_symbol_actions = alloc_bins * level_bins
+        self.disable_shorts = ckpt.get("disable_shorts", False)
+
+        self.action_names = _build_action_names(self.symbols)
+
+        self.policy = TradingPolicy(obs_size, num_actions, hidden=hidden, use_obs_norm=use_obs_norm)
+        self.policy.load_state_dict(state_dict)
         self.policy.to(self.device).eval()
+
         logger.info(
-            f"RL policy loaded: hidden={hidden}, update={ckpt.get('update')}, "
-            f"steps={ckpt.get('global_step')}"
+            f"RL policy loaded: obs_size={obs_size}, num_actions={num_actions}, "
+            f"hidden={hidden}, symbols={self.num_symbols}, "
+            f"obs_norm={use_obs_norm}, "
+            f"update={ckpt.get('update')}, steps={ckpt.get('global_step')}"
         )
 
     def _fetch_klines(self, binance_pair: str, limit: int = 96) -> pd.DataFrame:
-        """Fetch hourly klines from Binance."""
         from src.binan import binance_wrapper as bw
         klines = bw.get_client().get_klines(symbol=binance_pair, interval="1h", limit=limit)
         rows = []
@@ -235,21 +349,16 @@ class RLSignalGenerator:
         return df
 
     def _build_market_features(self, klines_map: dict[str, pd.DataFrame]) -> np.ndarray:
-        """Build [4, 16] feature matrix from klines + forecast cache."""
-        features = np.zeros((NUM_SYMBOLS, FEATURES_PER_SYM), dtype=np.float32)
-
-        for i, sym in enumerate(SYMBOLS):
+        features = np.zeros((self.num_symbols, FEATURES_PER_SYM), dtype=np.float32)
+        for i, sym in enumerate(self.symbols):
             klines = klines_map.get(sym)
             if klines is None or klines.empty:
                 continue
-
             fc_h1 = _load_forecast_parquet(self.forecast_cache_root, 1, sym)
             fc_h24 = _load_forecast_parquet(self.forecast_cache_root, 24, sym)
-
             feat_arr = compute_symbol_features(klines, fc_h1, fc_h24)
             if len(feat_arr) > 0:
-                features[i] = feat_arr[-1]  # latest row
-
+                features[i] = feat_arr[-1]
         return features
 
     def _build_obs(
@@ -257,14 +366,11 @@ class RLSignalGenerator:
         market_features: np.ndarray,
         portfolio: PortfolioSnapshot,
     ) -> np.ndarray:
-        """Assemble 73-dim observation vector."""
-        obs = np.zeros(OBS_SIZE, dtype=np.float32)
+        S = self.num_symbols
+        obs = np.zeros(self.obs_size, dtype=np.float32)
+        obs[:S * FEATURES_PER_SYM] = market_features.flatten()
 
-        # Market features [0:64]
-        obs[:NUM_SYMBOLS * FEATURES_PER_SYM] = market_features.flatten()
-
-        # Portfolio state [64:69]
-        base = NUM_SYMBOLS * FEATURES_PER_SYM
+        base = S * FEATURES_PER_SYM
         obs[base + 0] = portfolio.cash_usd / INITIAL_CASH
         pos_val = portfolio.position_value_usd
         if portfolio.is_short:
@@ -272,14 +378,34 @@ class RLSignalGenerator:
         obs[base + 1] = pos_val / INITIAL_CASH
         obs[base + 2] = portfolio.unrealized_pnl_usd / INITIAL_CASH
         obs[base + 3] = min(portfolio.hold_hours / 720.0, 1.0)
-        obs[base + 4] = 0.25  # episode progress - fixed for live
+        obs[base + 4] = 0.25  # episode progress
 
-        # Position encoding [69:73]
-        if portfolio.position_symbol and portfolio.position_symbol in SYMBOLS:
-            sym_idx = SYMBOLS.index(portfolio.position_symbol)
+        if portfolio.position_symbol and portfolio.position_symbol in self.symbols:
+            sym_idx = self.symbols.index(portfolio.position_symbol)
             obs[base + 5 + sym_idx] = -1.0 if portfolio.is_short else 1.0
 
         return obs
+
+    def _decode_action(self, action: int) -> tuple[Optional[str], str]:
+        """Decode flat action index to (target_symbol, direction).
+
+        Action layout: 0=flat, 1..S*psa=long, S*psa+1..2*S*psa=short
+        where psa = per_symbol_actions (alloc_bins * level_bins).
+        """
+        if action == 0:
+            return None, "flat"
+        S = self.num_symbols
+        psa = self.per_symbol_actions
+        side_block = S * psa
+        if action <= side_block:
+            idx = action - 1
+            sym_idx = idx // psa
+            return self.symbols[sym_idx], "long"
+        elif action <= 2 * side_block:
+            idx = action - 1 - side_block
+            sym_idx = idx // psa
+            return self.symbols[sym_idx], "short"
+        return None, "flat"
 
     def get_signal(
         self,
@@ -287,18 +413,12 @@ class RLSignalGenerator:
         klines_map: Optional[dict[str, pd.DataFrame]] = None,
         binance_pairs: Optional[dict[str, str]] = None,
     ) -> RLSignal:
-        """Get RL trading signal.
-
-        Either pass pre-fetched klines_map (symbol→DataFrame) or
-        binance_pairs (symbol→pair) to fetch live.
-        """
         if klines_map is None:
             if binance_pairs is None:
                 binance_pairs = {
-                    "BTCUSD": "BTCFDUSD",
-                    "ETHUSD": "ETHFDUSD",
-                    "DOGEUSD": "DOGEUSDT",
-                    "AAVEUSD": "AAVEUSDT",
+                    sym: SYMBOL_TO_BINANCE_PAIR[sym]
+                    for sym in self.symbols
+                    if sym in SYMBOL_TO_BINANCE_PAIR
                 }
             klines_map = {}
             for sym, pair in binance_pairs.items():
@@ -318,16 +438,22 @@ class RLSignalGenerator:
         action = int(logits_np.argmax())
         value_f = float(value[0].cpu())
 
-        # For spot trading: shorts map to flat
-        if action >= 5:
-            action = 0
+        target_symbol, direction = self._decode_action(action)
 
-        target_symbol = SYMBOLS[action - 1] if 1 <= action <= 4 else None
-        direction = "long" if target_symbol else "flat"
+        # For spot trading: shorts map to flat
+        if direction == "short":
+            action = 0
+            target_symbol = None
+            direction = "flat"
+
+        action_name = "FLAT"
+        if target_symbol is not None:
+            short_name = target_symbol.replace("USD", "")
+            action_name = f"LONG_{short_name}"
 
         sig = RLSignal(
             action=action,
-            action_name=ACTION_NAMES[action],
+            action_name=action_name,
             target_symbol=target_symbol,
             direction=direction,
             logits=logits_np.tolist(),
@@ -335,6 +461,6 @@ class RLSignalGenerator:
         )
         logger.info(
             f"RL signal: {sig.action_name} (value={sig.value:.3f}, "
-            f"logits={[f'{l:.2f}' for l in sig.logits]})"
+            f"top_logits={sorted(enumerate(sig.logits), key=lambda x: -x[1])[:5]})"
         )
         return sig
