@@ -1,6 +1,6 @@
 # H100 Experiment Plan (Updated 2026-03-22)
 
-## Executive Summary — REVISED (v3: drawdown_pen is new SOTA)
+## Executive Summary — REVISED (v4: diversity over targeting)
 
 **The original plan targeting stocks20 was based on contaminated data.**
 
@@ -9,15 +9,21 @@ After fixing stock split adjustments (NFLX 10:1 Nov 2025, NVDA 10:1, GOOG 20:1, 
 AMZN 20:1, AVGO 10:1), the "stocks20 positive holdout" result was entirely an artifact of
 policies shorting the fake NFLX -93% price drop.
 
-**New conclusion with clean data (v2 50-trial sweep on stocks12_daily_train.bin):**
-- stocks12 `stock_drawdown_pen` (90s): **NEW SOTA** — 0% neg, +22.9% med, +4.8% p10, Sortino=7.25, score=+24.9
-- stocks12 `stock_trade_pen_05_s123` (52s): 0% neg, +16.6% med, +7.7% p10, Sortino=4.76, score=+14.9
-- stocks12 `random_mut_2272` (300s): 0% neg, +10.5% med, +5.2% p10 (old SOTA, now beaten)
+**Current state with clean data:**
+- **Reliable SOTA baseline**: `random_mut_2272` (300s, 300M steps) — 0% neg, +10.5% med, +5.2% p10, Sortino=1.55
+- **Lucky v2 SOTA (not reproducible)**: `stock_drawdown_pen` — 1/50 trials hit score=+24.9; 13-seed verification sweep ALL failed (scores -49 to -170)
+- **Conclusion**: RL training has high variance. No single config reliably beats random_mut_2272 at 90s.
 
-**Key insight**: `drawdown_penalty=0.05 + trade_penalty=0.03` (no slippage training) beats
-all previous approaches. Drawdown penalty acts as a superior regularizer vs training slippage.
+**Critical finding (2026-03-22 standalone drawpen verification):**
+`stock_drawdown_pen` (+24.9, 0% neg) in the v2 50-trial sweep was a **lucky training run**.
+Verified by running all 13 drawpen seed/param variants: every single one failed (scores -49 to -170).
+RL is non-deterministic even with same seed — deploy verified checkpoints, never retrain expecting same.
 
-**H100 strategy: Use stocks12 at 90s/trial × 500 trials, targeting drawdown_pen variants**
+**H100 strategy: DIVERSITY over depth — run 1000+ trials with 3.1M step cap**
+- H100 at ~350k sps hits 3.1M step cap in ~9s → each trial runs ~35s total (train + eval)
+- In 12 hours: ~1200+ diverse configs explored (vs 50 local, 500 original plan)
+- With ~2% hit rate for positive scores → expect 24+ positive-score configs from 1200 trials
+- Goal: find a reliable config that consistently beats random_mut_2272 across 20 holdout windows
 
 ---
 
@@ -178,7 +184,7 @@ python -m pufferlib_market.autoresearch_rl \
     --train-data pufferlib_market/data/stocks12_daily_train.bin \
     --val-data pufferlib_market/data/stocks12_daily_val.bin \
     --time-budget 90 \
-    --max-trials 500 \
+    --max-trials 1200 \
     --max-timesteps-per-sample 200 \
     --leaderboard autoresearch_stock_h100_leaderboard.csv \
     --checkpoint-root pufferlib_market/checkpoints/autoresearch_stock_h100
@@ -188,12 +194,14 @@ Notes:
 - `--stocks12` uses combined pool (STOCK_EXPERIMENTS + H100_STOCK_EXPERIMENTS non-gpu), sets periods_per_year=252, fee_rate=0.001, holdout_eval_steps=90
 - **`--max-timesteps-per-sample 200`**: caps each trial at 3.1M steps (12 syms × 1302 days × 200 = 3,124,800)
   - This is CRITICAL — without the cap, H100 settings overfits at 15.6M steps (5x too many)
-  - With cap: H100 trains 3.1M steps in ~9s, then runs holdout (~30s) = ~40s/trial
-  - 500 trials × ~40s = ~5.5 hours on H100
+  - **On H100 at ~350k sps**: 3.1M step cap hit in ~9s. `time_budget=90` is irrelevant (training finishes at step cap long before 90s). Total per trial: ~35-40s (9s train + 25-30s eval)
+  - **Early rejection is irrelevant for H100**: training completes at 9s, before the 25% check fires at 22.5s. `--early-reject-threshold` has no effect.
+  - 1200 trials × ~35s = ~11.7 hours on H100
+  - On A40 (local): 3.1M step cap hit in ~43s, total ~90-120s/trial
 - **DO NOT use `--h100-mode`**: that forces num_envs=256, minibatch_size=4096, which with 3.1M cap gives only 47 PPO updates (vs 94 with default 128 envs) — worse convergence per step
 - **stocks12_daily_train.bin**: 1302 days matching post-2022 market regime
 - **Same val**: stocks12_daily_val.bin (158 days, 2025-09-01 to 2026-02-05) for fair comparison
-- **500 trials × ~40s = ~5.5 hours** on H100 (better than 12.5h estimate)
+- **1200 trials** = ~24x more exploration than v2 50-trial local sweep; expect ~24 positive-score configs
 
 ### CRITICAL: Why NOT --h100-mode for the actual H100 run
 
@@ -231,43 +239,62 @@ Reference on random_mut_2272 (stocks12_daily_val.bin):
   Policies that shorted NFLX generated enormous artificial returns. After split-adjustment, all
   stocks20 configs fail in holdout at 90s budget.
 
-- **NEW SOTA: stock_drawdown_pen** (2026-03-22 v2 sweep, trial 20):
-  `drawdown_penalty=0.05, trade_penalty=0.03, no slippage` → 0% neg, +22.9% med, Sortino=7.25.
-  Beats random_mut_2272 comprehensively. Worst window = +3.3% (ALL 20 profitable with margin).
-  H100_STOCK_EXPERIMENTS now has 13 drawpen variants exploring seeds + hyperparams.
+- **stock_drawdown_pen was a LUCKY RUN** (2026-03-22 verification):
+  Standalone sweep of all 13 drawpen seed/param variants (h100_drawpen_style through h100_drawpen_slip5)
+  with early rejection disabled and correct step cap (200x):
+  - ALL 13 variants: negative holdout scores (-49 to -170)
+  - stock_drawdown_pen's +24.9 score in v2 sweep = 1 lucky run out of 50+ attempts (~2% hit rate)
+  - RL training is non-deterministic; same config with same seed gives wildly different results
+  - Don't target drawpen configs specifically; include them in the pool for coverage
 
-- **2nd best: stock_trade_pen_05_s123** (0% neg, +16.6% med, +7.7% p10):
-  `trade_penalty=0.05, seed=123` — more reliable than stock_trade_pen_05 (which had 1 negative window).
-  H100 pool has 8 trade_pen_05 variants covering seeds + ent/wd/anneal_ent.
+- **random_mut_2272 is the reliable SOTA baseline**: 0% neg, +10.5% med, p10=+5.2%, Sortino=1.55.
+  This was trained with 300s budget. At 90s, most configs fail; random_mut_2272 required 300s.
+  For H100, the reliable baseline is the target to beat.
 
-- **stocks12 with slip_10bps was the best clean-data config at 90s** (before v2 sweep):
-  h100_slip_10bps gets 90% windows profitable (only 2/20 lose), median=+5.64%.
-  Superseded by drawdown_pen approach.
+- **Early rejection is irrelevant for H100 runs**: With `--max-timesteps-per-sample 200` (3.1M
+  step cap), H100 at ~350k sps hits the cap in ~9s. The 25%/50% time budget checks fire at 22.5s
+  and 45s respectively. Since training completes at 9s (proc exits), the while loop exits before
+  any check. `--early-reject-threshold` has no effect on H100 runs.
 
-- **random_mut_2272 still works with clean data**: Evaluated on fixed stocks12 val
-  (158 days, no split artifacts) → all 20 windows profitable, median=+10.5%, p10=+5.2%.
-  Now the baseline to beat (not SOTA).
+- **Early rejection has cross-family bias on A40**: If fast configs (rmu1228_slip5, val_ret=0.305)
+  run before drawpen configs (val_ret≈0.1 at final), the threshold 0.305×0.8=0.244 causes
+  early rejection of drawpen at 25% check. In v2 sweep this didn't happen because all scores
+  were negative before trial 20. For A40 local sweeps mixing config families, use
+  `--early-reject-threshold 0.3` or lower.
 
-- **Drawdown penalty > slippage training**: `drawdown_penalty=0.05` with no training slippage
-  outperforms `fill_slippage_bps=12` as a regularization strategy for stocks12.
+- **Optimal step cap is 3.1M (200x)**: stocks12 with 90s/trial, RL converges best at ~3.1M steps.
+  More steps → overfitting (300s sweep: 50% negative windows). Less steps → undertraining.
+  At 200x multiplier: cap = 12 × 1302 × 200 = 3,124,800 steps. This is the sweet spot.
+
+- **2nd best v2 sweep: stock_trade_pen_05_s123** (0% neg, +16.6% med, +7.7% p10):
+  `trade_penalty=0.05, seed=123` — also a lucky run (trial 1 in a sweep of 50). H100 pool
+  has 8 trade_pen_05 variants. Include for coverage; expect ~2% positive hit rate.
+
+- **stocks12 with slip_10bps was the best CONSISTENT config at 90s**: Before v2 sweep,
+  h100_slip_10bps got 90% windows profitable (2/20 lose), median=+5.64%.
+  This is more reproducible than drawpen/trade_pen lucky runs.
 
 - **h2048 configs in H100 pool are stocks12-safe**: The h2048 variants require ~2.5x more memory
   but stocks12's smaller obs space makes them feasible even at H100 speeds.
 
 ---
 
-## Expected Outcomes (REVISED v3)
+## Expected Outcomes (REVISED v4)
 
-New deployment bar is stock_drawdown_pen (0% neg, +22.9% med, p10=+4.8%, Sortino=7.25).
-H100 goal: find a drawpen variant with higher p10 (better worst-case floor).
+Reliable SOTA baseline is random_mut_2272 (0% neg, +10.5% med, p10=+5.2%, Sortino=1.55).
+H100 goal: find a config that reliably beats this across 20 holdout windows.
+Note: stock_drawdown_pen (+24.9) was a lucky run — not a reliable target.
 
-| Metric               | Old SOTA (random_mut_2272) | New SOTA (stock_drawdown_pen) | H100 Target    |
-|----------------------|---------------------------|-------------------------------|----------------|
-| holdout neg_rate     | 0%                        | **0%**                        | 0%             |
-| holdout median       | +10.5%                    | **+22.9%**                    | > +25%         |
-| holdout p10          | +5.2%                     | **+4.8%**                     | > +10%         |
-| holdout Sortino med  | 1.55                      | **7.25**                      | > 7.0          |
-| holdout worst window | +3.3% (drawpen)           | **+3.3%**                     | > +5%          |
+| Metric               | Reliable SOTA (random_mut_2272) | Lucky v2 run (drawdown_pen) | H100 Target    |
+|----------------------|---------------------------------|-----------------------------|----------------|
+| holdout neg_rate     | **0%**                          | 0% (lucky)                  | 0%             |
+| holdout median       | +10.5%                          | +22.9% (lucky)              | > +15%         |
+| holdout p10          | +5.2%                           | +4.8% (lucky)               | > +7%          |
+| holdout Sortino med  | 1.55                            | 7.25 (lucky)                | > 2.0          |
+| holdout worst window | +3.3%                           | +3.3% (lucky)               | > +3%          |
+
+These are realistic targets achievable with 1200 diverse trials. If a drawpen-style lucky run
+repeats (likely once or twice in 1200 trials), targets can be exceeded significantly.
 
 ---
 
@@ -284,10 +311,11 @@ H100 goal: find a drawpen variant with higher p10 (better worst-case floor).
 - 4 `h100_rmu4424_*` variants (h=256 small-network regularization)
 - 3 `h100_rmu1228_*` variants (obs_norm=True + high ent + no slippage)
 
-With stocks12 data, the structured configs that showed promise (ordered by 90s local results):
-1. `h100_drawpen_*` — 13 variants of NEW SOTA (stock_drawdown_pen: 0% neg, +22.9% med)
-2. `h100_trade_pen_05_*` — 8 variants of 2nd best (stock_trade_pen_05_s123: 0% neg, +16.6% med)
-3. `h100_slip_10bps` — 90% windows profitable at 90s (old best before v2 sweep)
+With stocks12 data, config families included for coverage (note: all have ~2% positive hit rate):
+1. `h100_drawpen_*` — 13 variants (drawdown_pen was lucky v2 run; included for chance of repeat)
+2. `h100_trade_pen_05_*` — 8 variants (trade_pen_05_s123 was lucky v2 run; included for coverage)
+3. `h100_slip_10bps` — most CONSISTENT config at 90s (90% windows profitable, reproducible)
+4. Random mutations — 100 slots for exploration of novel hyperparameter combinations
 
 ---
 
@@ -323,11 +351,12 @@ cp pufferlib_market/checkpoints/autoresearch_stock_h100/${BEST_CONFIG}/best.pt \
 echo "Deployed ${BEST_CONFIG} as new stocks_deployment_candidate.pt"
 ```
 
-Deployment conditions (updated to match new SOTA stock_drawdown_pen):
+Deployment conditions (must beat reliable SOTA random_mut_2272):
 - holdout_negative_return_rate = 0% (ALL 20 windows profitable)
-- holdout_p10 > +4.8% (stock_drawdown_pen bar)
-- holdout_median_sortino > 7.0 (stock_drawdown_pen bar is 7.25)
-- No single window exceeds -5% return (stock_drawdown_pen worst = +3.3%)
+- holdout_p10 > +5.2% (random_mut_2272 bar)
+- holdout_median_sortino > 1.55 (random_mut_2272 bar)
+- holdout_median > +10.5% (random_mut_2272 bar)
+- Validated at slippage 0/5/10/20 bps before deploying
 
 ---
 
