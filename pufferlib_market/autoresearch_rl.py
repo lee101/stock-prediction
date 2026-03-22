@@ -99,6 +99,7 @@ class TrialConfig:
     minibatch_size: int = 2048
     use_bf16: bool = True   # BF16 safe for PPO; ~20-30% speedup on RTX 5090/A40/H100
     cuda_graph_ppo: bool = True  # Static shapes work for PPO; ~10-20% extra speedup
+    time_budget_override: int = 0  # Override global time_budget for this config (0 = use global)
 
 
 # Define experiment configurations to test
@@ -576,10 +577,25 @@ STOCK_EXPERIMENTS: list[dict] = [
      "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
      "requires_gpu": "h100"},
 
-    # h2048 was under-converged at 50M steps — H100's 4x more data/step may fix it
+    # h2048 at H100 scale — 256 envs gets ~148k sps on RTX5090, ~520k on H100 → 47M steps @ 90s
+    # trade_penalty=0.03 is proven winner (tp03_s777 +9.79%). fill_slippage=5bps for friction.
     {"description": "h2048_h100",
      "hidden_size": 2048, "anneal_lr": True, "ent_coef": 0.05,
-     "fill_slippage_bps": 5.0, "trade_penalty": 0.05,
+     "fill_slippage_bps": 5.0, "trade_penalty": 0.03,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+
+    # h2048 H100 variant with tp03 seed 777 (known convergence seed)
+    {"description": "h2048_h100_tp03_s777",
+     "hidden_size": 2048, "anneal_lr": True, "ent_coef": 0.05, "seed": 777,
+     "fill_slippage_bps": 5.0, "trade_penalty": 0.03,
+     "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "h100"},
+
+    # h2048 H100 with weight_decay for regularization (h2048 is 4x larger, needs more reg)
+    {"description": "h2048_h100_wd01",
+     "hidden_size": 2048, "anneal_lr": True, "ent_coef": 0.05,
+     "fill_slippage_bps": 5.0, "trade_penalty": 0.03, "weight_decay": 0.01,
      "num_envs": 256, "minibatch_size": 4096, "cuda_graph_ppo": True, "use_bf16": True,
      "requires_gpu": "h100"},
 
@@ -725,8 +741,31 @@ STOCK_EXPERIMENTS: list[dict] = [
     {"description": "tp03_s2272_h2048",
      "trade_penalty": 0.03, "seed": 2272, "hidden_size": 2048},
 
-    # Random mutations — 300 slots so H100 500-trial runs get ~218 random trials
-    # (after ~82 named configs). Each slot calls mutate_config(best_config) at runtime.
+    # -----------------------------------------------------------------------
+    # lr=1e-4 configs — KEY for stocks11 data (2015-2025, longer/more-volatile history)
+    # Finding 2026-03-22: lr=3e-4 (anneal) converges for stocks12_2019 but collapses to
+    # hold-cash on stocks11_2015. lr=1e-4 (no-anneal) converges on stocks11_2015.
+    # random_mut_9621 (lr=1e-4, no-anneal) gave robust=-41.2 vs stocks12's -128.7 on
+    # the same config — 3x better robustness. These named configs ensure H100 runs on
+    # stocks11 data hit converging configs early (before random mutations at trial ~92).
+    # -----------------------------------------------------------------------
+    {"description": "lr1e4_s777",     "lr": 1e-4, "anneal_lr": False, "seed": 777},
+    {"description": "lr1e4_s42",      "lr": 1e-4, "anneal_lr": False, "seed": 42},
+    {"description": "lr1e4_s9621",    "lr": 1e-4, "anneal_lr": False, "seed": 9621},  # seed from winning trial
+    {"description": "lr1e4_s1137",    "lr": 1e-4, "anneal_lr": False, "seed": 1137},
+    {"description": "lr1e4_wd01_s777", "lr": 1e-4, "anneal_lr": False, "weight_decay": 0.01, "seed": 777},
+    {"description": "lr1e4_wd005_s777","lr": 1e-4, "anneal_lr": False, "weight_decay": 0.005, "seed": 777},
+    {"description": "lr1e4_slip5_s777","lr": 1e-4, "anneal_lr": False, "fill_slippage_bps": 5.0, "seed": 777},
+    {"description": "lr1e4_anneal_s777","lr": 1e-4, "anneal_lr": True, "seed": 777},
+    # h2048 + lr=1e-4: test if larger net helps on stocks11's longer/noisier data
+    # num_envs=256 keeps sps high despite larger net (148k on RTX5090, ~520k on H100)
+    {"description": "lr1e4_h2048_s777", "lr": 1e-4, "anneal_lr": False, "hidden_size": 2048,
+     "num_envs": 256, "minibatch_size": 4096, "seed": 777},
+    {"description": "lr1e4_h2048_s42",  "lr": 1e-4, "anneal_lr": False, "hidden_size": 2048,
+     "num_envs": 256, "minibatch_size": 4096, "seed": 42},
+
+    # Random mutations — slots so H100 500-trial runs get ~400+ random trials
+    # (after ~92 named configs). Each slot calls mutate_config(best_config) at runtime.
     *[{"description": f"random_{i}"} for i in range(1, 451)],
 ]
 
@@ -1055,7 +1094,7 @@ def mutate_config(base: TrialConfig) -> TrialConfig:
     d = asdict(base)
     # Pick 2-3 params to mutate
     mutable_params = {
-        "hidden_size": [256, 512, 1024],
+        "hidden_size": [256, 512, 1024, 2048],
         "lr": [1e-4, 2e-4, 3e-4, 5e-4],
         "ent_coef": [0.01, 0.03, 0.05, 0.08, 0.1],
         "weight_decay": [0.0, 0.001, 0.005, 0.01, 0.05],
@@ -1077,6 +1116,10 @@ def mutate_config(base: TrialConfig) -> TrialConfig:
     keys = random.sample(list(mutable_params.keys()), min(3, len(mutable_params)))
     for k in keys:
         d[k] = random.choice(mutable_params[k])
+    # h2048 needs 256 envs + 4096 minibatch for adequate step throughput on H100
+    if d.get("hidden_size") == 2048:
+        d["num_envs"] = 256
+        d["minibatch_size"] = 4096
     d["description"] = f"random_mut_{random.randint(0, 9999)}"
     d["seed"] = random.randint(1, 9999)
     return TrialConfig(**{k: v for k, v in d.items() if k in TrialConfig.__dataclass_fields__})
@@ -1388,6 +1431,10 @@ def run_trial(
         ])
         if wandb_group:
             cmd.extend(["--wandb-group", wandb_group])
+
+    # Allow per-config time budget override (e.g. h2048 needs more steps than h1024)
+    if config.time_budget_override > 0:
+        time_budget = config.time_budget_override
 
     # Run training with time budget
     print(f"\n  Training for {time_budget}s...")
