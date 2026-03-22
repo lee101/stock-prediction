@@ -110,8 +110,6 @@ class TopKCheckpointManager:
         mgr = TopKCheckpointManager(checkpoint_dir, max_keep=10, mode="max")
         # After saving a checkpoint:
         mgr.register(path, metric_value)
-        # Or use the convenience method:
-        mgr.maybe_prune()
     """
 
     def __init__(

@@ -25,6 +25,67 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
+# CC-aware autotune config selection.
+#
+# H100 (CC 9.0) and A100 (CC 8.0) have higher memory bandwidth and larger
+# SRAM per SM than older GPUs, so they benefit from larger block sizes.
+#   - A100: 192 KB SRAM/SM, 312 GB/s HBM BW
+#   - H100: 228 KB SRAM/SM, 3.35 TB/s HBM BW (SXM5)
+#   - RTX 5090 (CC 12.0): 128 KB SRAM/SM, ~1.8 TB/s HBM BW
+#   - RTX 4090 (CC 8.9): 99 KB SRAM/SM
+#
+# Larger BLOCK_H and BLOCK_D tiles allow more compute to be done per memory
+# load, improving arithmetic intensity.  num_stages controls the software
+# pipeline depth for HBM prefetching.
+# ---------------------------------------------------------------------------
+
+
+def _get_autotune_configs():
+    """Return CC-appropriate autotune configs for the fused MLP kernel.
+
+    Uses torch.cuda.get_device_capability() to pick configs that best match
+    the memory hierarchy of the target GPU class:
+      - CC >= 9 (H100, RTX 5090): large tiles, deep pipeline
+      - CC 8.x (A100, RTX 3090/4090): medium-large tiles
+      - CC < 8 (V100, older): conservative tiles
+    Falls back to a safe single config when CUDA is not available.
+    """
+    if not torch.cuda.is_available():
+        return [triton.Config({"BLOCK_M": 64, "BLOCK_D": 64, "BLOCK_H": 64, "BLOCK_K": 32}, num_stages=3, num_warps=4)]
+    major, _minor = torch.cuda.get_device_capability()
+    if major >= 9:
+        # H100 (CC 9.0), RTX 5090 (CC 12.0): very wide SRAM + tensor cores
+        # benefit from the largest tiles and deepest pipeline.
+        return [
+            triton.Config({"BLOCK_M": 128, "BLOCK_D": 256, "BLOCK_H": 256, "BLOCK_K": 64}, num_stages=4, num_warps=8),
+            triton.Config({"BLOCK_M": 256, "BLOCK_D": 128, "BLOCK_H": 256, "BLOCK_K": 64}, num_stages=4, num_warps=8),
+            triton.Config({"BLOCK_M": 128, "BLOCK_D": 128, "BLOCK_H": 128, "BLOCK_K": 64}, num_stages=4, num_warps=4),
+            triton.Config({"BLOCK_M": 64,  "BLOCK_D": 128, "BLOCK_H": 128, "BLOCK_K": 64}, num_stages=3, num_warps=4),
+            triton.Config({"BLOCK_M": 128, "BLOCK_D": 64,  "BLOCK_H": 128, "BLOCK_K": 32}, num_stages=3, num_warps=4),
+            triton.Config({"BLOCK_M": 64,  "BLOCK_D": 64,  "BLOCK_H": 64,  "BLOCK_K": 32}, num_stages=4, num_warps=4),
+        ]
+    elif major == 8:
+        # A100 (CC 8.0) and RTX 3090/4090 (CC 8.6/8.9): 192 KB SRAM/SM.
+        # Larger tiles than CC 7.x but slightly smaller than H100 to stay
+        # within SRAM limits when using software-pipelined stages.
+        return [
+            triton.Config({"BLOCK_M": 128, "BLOCK_D": 256, "BLOCK_H": 128, "BLOCK_K": 64}, num_stages=4, num_warps=8),
+            triton.Config({"BLOCK_M": 256, "BLOCK_D": 128, "BLOCK_H": 128, "BLOCK_K": 64}, num_stages=4, num_warps=8),
+            triton.Config({"BLOCK_M": 128, "BLOCK_D": 128, "BLOCK_H": 128, "BLOCK_K": 64}, num_stages=3, num_warps=8),
+            triton.Config({"BLOCK_M": 64,  "BLOCK_D": 128, "BLOCK_H": 64,  "BLOCK_K": 32}, num_stages=4, num_warps=4),
+            triton.Config({"BLOCK_M": 64,  "BLOCK_D": 64,  "BLOCK_H": 64,  "BLOCK_K": 32}, num_stages=4, num_warps=4),
+        ]
+    else:
+        # CC 7.x (V100) and older: smaller SRAM, use conservative tiles.
+        return [
+            triton.Config({"BLOCK_M": 64,  "BLOCK_D": 64,  "BLOCK_H": 64,  "BLOCK_K": 32}, num_stages=4, num_warps=4),
+            triton.Config({"BLOCK_M": 128, "BLOCK_D": 64,  "BLOCK_H": 64,  "BLOCK_K": 32}, num_stages=4, num_warps=4),
+            triton.Config({"BLOCK_M": 64,  "BLOCK_D": 128, "BLOCK_H": 64,  "BLOCK_K": 32}, num_stages=4, num_warps=4),
+            triton.Config({"BLOCK_M": 128, "BLOCK_D": 128, "BLOCK_H": 64,  "BLOCK_K": 32}, num_stages=4, num_warps=8),
+        ]
+
+
+# ---------------------------------------------------------------------------
 # Triton kernel: fully fused Linear1 + bias1 + ReLU + Linear2 + bias2
 # Avoids materializing the (M, D_HIDDEN) intermediate tensor.
 #
@@ -34,20 +95,17 @@ except ImportError:
 #   2. ReLU in-register
 #   3. acc += relu_hidden @ W2[d_tile, h:h+BLOCK_H].T
 # Then add b2 and store.
+#
+# CC compatibility:
+#   - A100 (CC 8.0): 192 KB SRAM/SM — supports BLOCK_H/BLOCK_D up to 256
+#   - H100 (CC 9.0): 228 KB SRAM/SM — supports largest tiles; best perf
+#   - RTX 5090 (CC 12.0): same SM arch family as H100, similar perf
+#   - Older (CC 7.x): 96 KB SRAM/SM — use <=128 tiles to avoid spill
 # ---------------------------------------------------------------------------
 
 if HAS_TRITON:
     @triton.autotune(
-        configs=[
-            triton.Config({"BLOCK_M": 64,  "BLOCK_D": 64,  "BLOCK_H": 64,  "BLOCK_K": 32}, num_stages=4, num_warps=4),
-            triton.Config({"BLOCK_M": 128, "BLOCK_D": 64,  "BLOCK_H": 64,  "BLOCK_K": 32}, num_stages=4, num_warps=4),
-            triton.Config({"BLOCK_M": 64,  "BLOCK_D": 128, "BLOCK_H": 64,  "BLOCK_K": 32}, num_stages=4, num_warps=4),
-            triton.Config({"BLOCK_M": 128, "BLOCK_D": 128, "BLOCK_H": 64,  "BLOCK_K": 32}, num_stages=4, num_warps=8),
-            triton.Config({"BLOCK_M": 64,  "BLOCK_D": 64,  "BLOCK_H": 128, "BLOCK_K": 32}, num_stages=3, num_warps=4),
-            triton.Config({"BLOCK_M": 128, "BLOCK_D": 64,  "BLOCK_H": 128, "BLOCK_K": 32}, num_stages=3, num_warps=4),
-            triton.Config({"BLOCK_M": 64,  "BLOCK_D": 128, "BLOCK_H": 128, "BLOCK_K": 64}, num_stages=3, num_warps=4),
-            triton.Config({"BLOCK_M": 128, "BLOCK_D": 128, "BLOCK_H": 128, "BLOCK_K": 64}, num_stages=3, num_warps=8),
-        ],
+        configs=_get_autotune_configs(),
         key=["M", "D_IN", "D_HIDDEN", "D_OUT"],
     )
     @triton.jit
