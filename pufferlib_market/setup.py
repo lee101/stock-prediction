@@ -48,7 +48,7 @@ ext = Extension(
         np.get_include(),
     ],
     extra_compile_args=[
-        "-O3", "-march=native", "-ffast-math",
+        "-O3", "-march=native", "-mavx2", "-ffast-math",
         "-funroll-loops",
         "-fomit-frame-pointer",
         "-DNDEBUG",
