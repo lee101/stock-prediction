@@ -111,7 +111,7 @@ def best_action_tts(
     if K <= 1:
         dev = torch.device(device if torch.cuda.is_available() else "cpu")
         obs_t = torch.from_numpy(current_obs).unsqueeze(0).to(dev)
-        with torch.no_grad():
+        with torch.inference_mode():
             logits, _ = policy(obs_t)
         best = int(logits.argmax(dim=-1).item())
         return best, float(logits[0, best].item()), {"margin": 0.0, "action_returns": []}
@@ -170,7 +170,7 @@ def best_action_tts(
             break
 
         obs_tensor = torch.from_numpy(obs_bufs).to(dev, non_blocking=True)
-        with torch.no_grad():
+        with torch.inference_mode():
             logits, _ = policy(obs_tensor)
 
         if deterministic_after_first:
@@ -257,7 +257,7 @@ def get_signal_tts(
 
     # Get confidence and value from a single forward pass, then decode using PPOTrader's method
     obs_t = torch.from_numpy(obs).unsqueeze(0).to(trader.device)
-    with torch.no_grad():
+    with torch.inference_mode():
         logits, value = trader.policy(obs_t)
         probs = torch.softmax(logits, dim=-1)
         confidence = float(probs[0, best_action].item())
