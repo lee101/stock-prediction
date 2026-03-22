@@ -671,6 +671,31 @@ STOCK_EXPERIMENTS: list[dict] = [
      "num_envs": 128, "minibatch_size": 2048, "cuda_graph_ppo": True, "use_bf16": True,
      "requires_gpu": "a40"},
 
+    # -----------------------------------------------------------------------
+    # trade_pen_03 variants — KEY CONFIG for extended training (2020-2025).
+    # local calibration 2026-03-22: trade_pen_03 scored +3.1 (seed 777) and
+    # -7.8 (seed 999) on hard 201-day val vs -102 with old training data.
+    # These variants explore the neighbourhood around the sweet spot.
+    # -----------------------------------------------------------------------
+    {"description": "tp03_s7",   "trade_penalty": 0.03, "seed": 7},
+    {"description": "tp03_s42",  "trade_penalty": 0.03, "seed": 42},
+    {"description": "tp03_s123", "trade_penalty": 0.03, "seed": 123},
+    {"description": "tp03_s2272","trade_penalty": 0.03, "seed": 2272},
+    {"description": "tp03_slip5",  "trade_penalty": 0.03, "fill_slippage_bps": 5.0},
+    {"description": "tp03_slip10", "trade_penalty": 0.03, "fill_slippage_bps": 10.0},
+    {"description": "tp03_wd01",   "trade_penalty": 0.03, "weight_decay": 0.01},
+    {"description": "tp03_wd05",   "trade_penalty": 0.03, "weight_decay": 0.05},
+    {"description": "tp03_obs",    "trade_penalty": 0.03, "obs_norm": True},
+    {"description": "tp03_ent03",  "trade_penalty": 0.03, "ent_coef": 0.03},
+    {"description": "tp03_annent", "trade_penalty": 0.03, "anneal_ent": True},
+    {"description": "tp03_h512",   "trade_penalty": 0.03, "hidden_size": 512},
+    {"description": "tp03_h2048",  "trade_penalty": 0.03, "hidden_size": 2048},
+    {"description": "tp03_cosine", "trade_penalty": 0.03,
+     "lr_schedule": "cosine", "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05},
+    {"description": "tp03_full_reg",
+     "trade_penalty": 0.03, "obs_norm": True, "weight_decay": 0.05,
+     "fill_slippage_bps": 5.0, "ent_coef": 0.05},
+
     # Random mutations to explore the neighbourhood (30 slots per sweep pass)
     {"description": "random_1"},
     {"description": "random_2"},
