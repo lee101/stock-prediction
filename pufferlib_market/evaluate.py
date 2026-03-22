@@ -122,7 +122,7 @@ class ResidualTradingPolicy(nn.Module):
         return Categorical(logits=logits).sample()
 
 
-def load_policy(ckpt: dict, obs_size: int, num_actions: int, hidden: int, arch: str, device) -> nn.Module:
+def load_policy(ckpt: dict, obs_size: int, num_actions: int, hidden: int, arch: str, device, features_per_sym: int = 16) -> nn.Module:
     """Create and load the right policy class based on arch (from checkpoint or CLI arg)."""
     # Prefer arch stored in checkpoint over CLI arg (backwards compat: older ckpts have no 'arch')
     ckpt_arch = ckpt.get("arch", arch)
@@ -130,7 +130,7 @@ def load_policy(ckpt: dict, obs_size: int, num_actions: int, hidden: int, arch: 
         policy = ResidualTradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
     elif ckpt_arch in ("transformer",):
         from pufferlib_market.train import TransformerTradingPolicy
-        _base = TransformerTradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
+        _base = TransformerTradingPolicy(obs_size, num_actions, hidden=hidden, features_per_sym=features_per_sym).to(device)
         policy = _wrap_train_policy(_base, num_actions)
     elif ckpt_arch in ("gru",):
         from pufferlib_market.train import GRUTradingPolicy
@@ -419,9 +419,11 @@ def main():
     # Read binary header
     with open(args.data_path, "rb") as f:
         header = f.read(64)
-    _, _, num_symbols, num_timesteps, _, _ = struct.unpack("<4sIIIII", header[:24])
+    _, _, num_symbols, num_timesteps, features_per_sym, _ = struct.unpack("<4sIIIII", header[:24])
+    if features_per_sym == 0:
+        features_per_sym = 16  # v1/v2 backwards compat
 
-    obs_size = num_symbols * 16 + 5 + num_symbols
+    obs_size = num_symbols * features_per_sym + 5 + num_symbols
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
     if "action_allocation_bins" in ckpt:
         args.action_allocation_bins = max(1, int(ckpt["action_allocation_bins"]))
@@ -446,7 +448,7 @@ def main():
     print(f"Device: {device}, deterministic: {args.deterministic}, arch: {args.arch}")
 
     # Load policy — arch is read from checkpoint if present, else falls back to --arch CLI arg
-    policy = load_policy(ckpt, obs_size, num_actions, args.hidden_size, args.arch, device)
+    policy = load_policy(ckpt, obs_size, num_actions, args.hidden_size, args.arch, device, features_per_sym=features_per_sym)
     arch_used = ckpt.get("arch", args.arch)
     print(f"Loaded checkpoint: update={ckpt.get('update', '?')}, "
           f"train_best_return={ckpt.get('best_return', '?'):.4f}, arch={arch_used}")

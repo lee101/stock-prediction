@@ -82,11 +82,7 @@ def read_mktd(path: str | Path) -> MktdData:
             raise ValueError(f"Invalid features_per_sym={features_per_sym} in {path}")
         if price_features <= 0:
             raise ValueError(f"Invalid price_features={price_features} in {path}")
-        if features_per_sym != FEATURES_PER_SYM:
-            raise ValueError(
-                f"Unsupported features_per_sym={features_per_sym} in {path} "
-                f"(expected {FEATURES_PER_SYM})"
-            )
+        # Accept any features_per_sym; the feature array is read generically below.
         if price_features != PRICE_FEATS:
             raise ValueError(
                 f"Unsupported price_features={price_features} in {path} "
