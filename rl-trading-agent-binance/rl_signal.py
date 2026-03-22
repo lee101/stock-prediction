@@ -407,11 +407,27 @@ class RLSignalGenerator:
             return self.symbols[sym_idx], "short"
         return None, "flat"
 
+    def _action_to_symbol(self, action: int) -> Optional[str]:
+        """Return the symbol for a given action index, or None for FLAT."""
+        sym, _ = self._decode_action(action)
+        return sym
+
+    def _mask_logits(self, logits: np.ndarray, tradable_symbols: list[str]) -> np.ndarray:
+        """Mask logits for non-tradable symbols to -inf. Action 0 (FLAT) is never masked."""
+        masked = logits.copy()
+        tradable_set = set(tradable_symbols)
+        for i in range(1, len(masked)):
+            sym = self._action_to_symbol(i)
+            if sym is not None and sym not in tradable_set:
+                masked[i] = -np.inf
+        return masked
+
     def get_signal(
         self,
         portfolio: PortfolioSnapshot,
         klines_map: Optional[dict[str, pd.DataFrame]] = None,
         binance_pairs: Optional[dict[str, str]] = None,
+        tradable_symbols: Optional[list[str]] = None,
     ) -> RLSignal:
         if klines_map is None:
             if binance_pairs is None:
@@ -435,6 +451,8 @@ class RLSignalGenerator:
             logits, value = self.policy(obs_t)
 
         logits_np = logits[0].cpu().numpy()
+        if tradable_symbols is not None:
+            logits_np = self._mask_logits(logits_np, tradable_symbols)
         action = int(logits_np.argmax())
         value_f = float(value[0].cpu())
 
