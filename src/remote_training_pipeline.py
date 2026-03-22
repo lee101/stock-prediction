@@ -335,6 +335,7 @@ def build_autoresearch_cmd(
     stocks_mode: bool = False,
     start_from: int = 0,
     seed_only: bool = False,
+    poly_prune: bool = True,
 ) -> list[str]:
     cmd = [
         "python",
@@ -366,6 +367,8 @@ def build_autoresearch_cmd(
         cmd.extend(["--start-from", str(int(start_from))])
     if seed_only:
         cmd.append("--seed-only")
+    if not poly_prune:
+        cmd.append("--no-poly-prune")
     return cmd
 
 
@@ -459,6 +462,10 @@ def build_remote_autoresearch_plan(
     remote_log_path = f"{run_dir}/pipeline.log"
     remote_pid_path = f"{run_dir}/pipeline.pid"
 
+    # stocks_mode: polynomial early stopping is ineffective (combined_score gap
+    # between degenerate and escaped seeds is only ~4%), so use fixed 25% threshold
+    # rejection instead (--no-poly-prune), which cuts degenerate trials from ~60s
+    # to ~30s on H100.
     cmd = build_autoresearch_cmd(
         train_data=train_data_path,
         val_data=val_data_path,
@@ -472,6 +479,7 @@ def build_remote_autoresearch_plan(
         stocks_mode=stocks_mode,
         start_from=start_from,
         seed_only=seed_only,
+        poly_prune=not stocks_mode,
     )
     _append_optional_cli_arg(cmd, "--periods-per-year", periods_per_year)
     if max_steps_override > 0:
