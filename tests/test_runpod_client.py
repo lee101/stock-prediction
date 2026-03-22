@@ -442,3 +442,81 @@ def test_create_pod_resolves_5090_alias():
     _, mutation_kwargs = mock_session.post.call_args_list[1]
     inp = mutation_kwargs["json"]["variables"]["input"]
     assert inp["gpuTypeId"] == "NVIDIA_GEFORCE_RTX_5090"
+
+
+# ---------------------------------------------------------------------------
+# list_gpu_types — health-check / pricing query
+# ---------------------------------------------------------------------------
+
+def test_list_gpu_types_returns_list():
+    client, mock_session = _make_client()
+
+    resp = _json_response({
+        "data": {
+            "gpuTypes": [
+                {
+                    "id": "NVIDIA_A100_PCIE_80GB",
+                    "displayName": "NVIDIA A100 80GB PCIe",
+                    "memoryInGb": 80,
+                    "lowestPrice": {"minimumBidPrice": 1.20, "unInterruptablePrice": 1.64},
+                },
+                {
+                    "id": "NVIDIA_H100_80GB_HBM3",
+                    "displayName": "NVIDIA H100 80GB HBM3",
+                    "memoryInGb": 80,
+                    "lowestPrice": {"minimumBidPrice": 2.99, "unInterruptablePrice": 3.89},
+                },
+            ]
+        }
+    })
+    mock_session.post.return_value = resp
+
+    gpus = client.list_gpu_types()
+
+    assert len(gpus) == 2
+    assert gpus[0]["id"] == "NVIDIA_A100_PCIE_80GB"
+    assert gpus[0]["displayName"] == "NVIDIA A100 80GB PCIe"
+    assert gpus[0]["memoryInGb"] == 80
+    assert gpus[0]["lowestPrice"]["unInterruptablePrice"] == 1.64
+
+
+def test_list_gpu_types_without_pricing_omits_lowest_price_from_query():
+    """include_pricing=False should not request lowestPrice field."""
+    client, mock_session = _make_client()
+
+    resp = _json_response({
+        "data": {"gpuTypes": [{"id": "NVIDIA_A100_PCIE_80GB", "displayName": "NVIDIA A100 80GB PCIe", "memoryInGb": 80}]}
+    })
+    mock_session.post.return_value = resp
+
+    client.list_gpu_types(include_pricing=False)
+
+    _, call_kwargs = mock_session.post.call_args
+    query_str = call_kwargs["json"]["query"]
+    assert "lowestPrice" not in query_str
+
+
+def test_list_gpu_types_with_pricing_includes_lowest_price_in_query():
+    """include_pricing=True (default) should include lowestPrice in the query."""
+    client, mock_session = _make_client()
+
+    resp = _json_response({"data": {"gpuTypes": []}})
+    mock_session.post.return_value = resp
+
+    client.list_gpu_types(include_pricing=True)
+
+    _, call_kwargs = mock_session.post.call_args
+    query_str = call_kwargs["json"]["query"]
+    assert "lowestPrice" in query_str
+    assert "minimumBidPrice" in query_str
+    assert "unInterruptablePrice" in query_str
+
+
+def test_list_gpu_types_returns_empty_on_empty_response():
+    client, mock_session = _make_client()
+
+    resp = _json_response({"data": {"gpuTypes": []}})
+    mock_session.post.return_value = resp
+
+    gpus = client.list_gpu_types()
+    assert gpus == []
