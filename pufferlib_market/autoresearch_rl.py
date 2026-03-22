@@ -1086,6 +1086,7 @@ def select_rank_score(
 ) -> tuple[str, float | None]:
     """Choose the leaderboard ranking signal with sensible fallbacks."""
     candidates = {
+        "smooth_score": _safe_float(metrics.get("smooth_score")),
         "market_goodness_score": _safe_float(metrics.get("market_goodness_score")),
         "holdout_robust_score": _safe_float(metrics.get("holdout_robust_score")),
         "replay_hourly_return_pct": _safe_float(metrics.get("replay_hourly_return_pct")),
@@ -1094,12 +1095,13 @@ def select_rank_score(
     }
     if rank_metric == "auto":
         for name in (
+            "smooth_score",
             "market_goodness_score",
             "holdout_robust_score",
             "replay_hourly_return_pct",
             "val_return",
         ):
-            score = candidates[name]
+            score = candidates.get(name)
             if score is not None:
                 return name, score
         return "none", None
@@ -1183,6 +1185,9 @@ def run_trial(
     max_timesteps_per_sample: int = 1000,
     best_trial_rank_score: float = -float("inf"),
     early_reject_threshold: float = 0.8,
+    multi_period_eval_windows: tuple[int, ...] | None = None,
+    multi_period_n_windows_per_size: int = 8,
+    multi_period_fill_slippage_bps: float = 8.0,
 ) -> dict:
     """Run a single training trial with time budget, then evaluate on val."""
     # Cap total_timesteps based on dataset size to prevent overfitting
@@ -1631,6 +1636,45 @@ def run_trial(
                 f"hourly_replay_sortino={replay_metrics.get('replay_hourly_sortino')}"
             )
 
+    smooth_metrics: dict[str, float] = {}
+    smooth_error = ""
+    if multi_period_eval_windows:
+        print(
+            f"  Multi-period eval: windows={multi_period_eval_windows}, "
+            f"n_per_size={multi_period_n_windows_per_size}, data={effective_holdout_data}"
+        )
+        try:
+            from pufferlib_market.evaluate_fast import multi_period_eval as _mpe
+            effective_holdout_fee = config.fee_rate if holdout_fee_rate < 0.0 else holdout_fee_rate
+            mp_result = _mpe(
+                str(ckpt_path),
+                str(effective_holdout_data),
+                window_sizes=multi_period_eval_windows,
+                n_windows_per_size=multi_period_n_windows_per_size,
+                fee_rate=effective_holdout_fee,
+                fill_slippage_bps=multi_period_fill_slippage_bps,
+                periods_per_year=config.periods_per_year,
+                max_leverage=holdout_max_leverage,
+                short_borrow_apr=holdout_short_borrow_apr,
+                deterministic=True,
+                arch=config.arch,
+                hidden_size=config.hidden_size,
+            )
+            smooth_metrics["smooth_score"] = float(mp_result["smoothness_score"])
+            for ws in multi_period_eval_windows:
+                ps = mp_result["per_size"].get(ws, {})
+                smooth_metrics[f"smooth_{ws}d_p10_sortino"] = float(ps.get("p10_sortino", 0.0))
+            print(
+                f"  Multi-period smooth_score={smooth_metrics.get('smooth_score'):+.4f} "
+                + " ".join(
+                    f"{ws}d={smooth_metrics.get(f'smooth_{ws}d_p10_sortino', 0.0):+.3f}"
+                    for ws in multi_period_eval_windows
+                )
+            )
+        except Exception as e:
+            smooth_error = f"multi_period_eval error: {e}"
+            print(f"  Multi-period eval FAILED: {smooth_error}")
+
     result_payload: dict[str, object] = {
         "train_return": train_return,
         "train_sortino": train_sortino,
@@ -1646,10 +1690,12 @@ def run_trial(
         "market_validation_error": market_validation_error,
         "replay_eval_error": replay_eval_error,
         "early_rejected": early_rejected,
+        "smooth_error": smooth_error,
     }
     result_payload.update(holdout_metrics)
     result_payload.update(market_metrics)
     result_payload.update(replay_metrics)
+    result_payload.update(smooth_metrics)
     selected_metric, rank_score = select_rank_score(result_payload, rank_metric=rank_metric)
     result_payload["rank_metric"] = selected_metric
     result_payload["rank_score"] = rank_score
@@ -1696,8 +1742,8 @@ def run_trial(
 def main():
     parser = argparse.ArgumentParser(description="Auto-research RL trading configs")
     listing_only = "--list-experiments" in sys.argv
-    stocks_mode = "--stocks" in sys.argv or "--h100-mode" in sys.argv
-    # In stocks mode the data paths default to stocks20 daily bins so they are
+    stocks_mode = "--stocks" in sys.argv or "--h100-mode" in sys.argv or "--stocks12" in sys.argv
+    # In stocks mode the data paths default to stocks12/stocks20 daily bins so they are
     # optional even if not listing.
     data_required = not listing_only and not stocks_mode
     parser.add_argument("--stocks", action="store_true",
@@ -1709,6 +1755,12 @@ def main():
                              "stocks20 with configs derived from local RTX 5090 scaling sweep. "
                              "Implies --stocks. Data defaults to stocks20_daily_{train,val}.bin. "
                              "Also sets time_budget=200s if not overridden.")
+    parser.add_argument("--stocks12", action="store_true",
+                        help="Convenience flag: use stocks12 data by default and run the combined pool "
+                             "(STOCK_EXPERIMENTS + H100_STOCK_EXPERIMENTS, excluding requires_gpu='h100' "
+                             "configs unless --h100-mode is also set). "
+                             "Sets periods_per_year=252, fee_rate=0.001, holdout_eval_steps=90. "
+                             "Implies --stocks. Data defaults to stocks12_daily_{train,val}.bin.")
     parser.add_argument("--a40-mode", action="store_true",
                         help="A40/RTX6000-Ada optimized: 128 envs, bf16, cuda-graph-ppo, "
                              "time_budget=250s. Overrides per-config settings for all trials.")
@@ -1752,11 +1804,20 @@ def main():
                             "auto",
                             "val_return",
                             "holdout_robust_score",
+                            "smooth_score",
                             "market_goodness_score",
                             "replay_hourly_return_pct",
                             "replay_hourly_policy_return_pct",
                         ],
                         default="auto")
+    parser.add_argument("--multi-period-eval", action="store_true",
+                        help="Evaluate across multiple window sizes (5,15,30,60,90 trading days) and rank by smoothness_score")
+    parser.add_argument("--multi-period-windows", default="5,15,30,60,90",
+                        help="Comma-separated window sizes for multi-period eval (default: 5,15,30,60,90)")
+    parser.add_argument("--multi-period-n-per-size", type=int, default=8,
+                        help="Number of random windows per window size in multi-period eval (default: 8)")
+    parser.add_argument("--multi-period-slippage-bps", type=float, default=8.0,
+                        help="Fill slippage bps for multi-period eval (default: 8.0)")
     parser.add_argument("--market-validation-asset-class", choices=["", "crypto", "stock"], default="",
                         help="Run unified_orchestrator.market_validation for each checkpoint when set")
     parser.add_argument("--market-validation-days", type=int, default=30)
@@ -1809,17 +1870,27 @@ def main():
         if args.time_budget == 300:
             args.time_budget = 200
 
+    # --stocks12 implies --stocks and defaults to stocks12 data.
+    if getattr(args, "stocks12", False):
+        args.stocks = True
+
     # --a40-mode: A40 is ~1.5x faster than A100 per dollar; use 250s budget
     if args.a40_mode and args.time_budget == 300:
         args.time_budget = 250
 
-    # --stocks / --h100-mode: apply stock-mode defaults before anything else so that
+    # --stocks / --h100-mode / --stocks12: apply stock-mode defaults before anything else so that
     # user overrides (explicit --train-data etc.) can still win.
     if args.stocks:
         if args.train_data is None:
-            args.train_data = _STOCK_DEFAULT_TRAIN
+            if getattr(args, "stocks12", False) and not getattr(args, "h100_mode", False):
+                args.train_data = "pufferlib_market/data/stocks12_daily_train.bin"
+            else:
+                args.train_data = _STOCK_DEFAULT_TRAIN
         if args.val_data is None:
-            args.val_data = _STOCK_DEFAULT_VAL
+            if getattr(args, "stocks12", False) and not getattr(args, "h100_mode", False):
+                args.val_data = "pufferlib_market/data/stocks12_daily_val.bin"
+            else:
+                args.val_data = _STOCK_DEFAULT_VAL
         # periods_per_year default is 8760 (hourly); override to 252 (daily)
         # only when the user has NOT already supplied their own value.
         if args.periods_per_year == 8760.0:
@@ -1838,11 +1909,15 @@ def main():
         if args.leaderboard == "pufferlib_market/autoresearch_leaderboard.csv":
             if getattr(args, "h100_mode", False):
                 args.leaderboard = "autoresearch_stock_h100_leaderboard.csv"
+            elif getattr(args, "stocks12", False):
+                args.leaderboard = "autoresearch_stock12_daily_leaderboard.csv"
             else:
                 args.leaderboard = "autoresearch_stock_daily_leaderboard.csv"
         if args.checkpoint_root == "pufferlib_market/checkpoints/autoresearch":
             if getattr(args, "h100_mode", False):
                 args.checkpoint_root = "pufferlib_market/checkpoints/autoresearch_stock_h100"
+            elif getattr(args, "stocks12", False):
+                args.checkpoint_root = "pufferlib_market/checkpoints/autoresearch_stock12"
             else:
                 args.checkpoint_root = "pufferlib_market/checkpoints/autoresearch_stock"
 
@@ -1868,6 +1943,12 @@ def main():
     if args.list_experiments:
         if getattr(args, "h100_mode", False):
             experiment_pool = H100_STOCK_EXPERIMENTS
+        elif getattr(args, "stocks12", False):
+            h100_on = getattr(args, "h100_mode", False)
+            experiment_pool = STOCK_EXPERIMENTS + [
+                e for e in H100_STOCK_EXPERIMENTS
+                if h100_on or e.get("requires_gpu") != "h100"
+            ]
         elif args.stocks:
             experiment_pool = STOCK_EXPERIMENTS
         else:
@@ -1904,6 +1985,9 @@ def main():
         "replay_hourly_policy_return_pct", "replay_hourly_policy_sortino",
         "replay_hourly_policy_max_drawdown_pct", "replay_hourly_policy_trade_count",
         "replay_hourly_policy_order_count",
+        "smooth_score", "smooth_error",
+        "smooth_5d_p10_sortino", "smooth_15d_p10_sortino", "smooth_30d_p10_sortino",
+        "smooth_60d_p10_sortino", "smooth_90d_p10_sortino",
         "hidden_size", "lr", "ent_coef", "weight_decay", "fill_slippage_bps",
         "obs_norm", "anneal_lr", "anneal_ent", "anneal_clip", "lr_schedule",
         "arch", "fee_rate", "trade_penalty", "drawdown_penalty", "downside_penalty",
@@ -1921,6 +2005,13 @@ def main():
         if getattr(args, "h100_mode", False):
             pool = H100_STOCK_EXPERIMENTS
             mode_label = "h100 stocks mode"
+        elif getattr(args, "stocks12", False):
+            h100_on = getattr(args, "h100_mode", False)
+            pool = STOCK_EXPERIMENTS + [
+                e for e in H100_STOCK_EXPERIMENTS
+                if h100_on or e.get("requires_gpu") != "h100"
+            ]
+            mode_label = "stocks12 mode"
         else:
             pool = STOCK_EXPERIMENTS
             mode_label = "stocks mode"
@@ -2043,6 +2134,12 @@ def main():
             max_timesteps_per_sample=args.max_timesteps_per_sample,
             best_trial_rank_score=best_rank_score,
             early_reject_threshold=args.early_reject_threshold,
+            multi_period_eval_windows=(
+                tuple(int(x.strip()) for x in args.multi_period_windows.split(",") if x.strip())
+                if args.multi_period_eval else None
+            ),
+            multi_period_n_windows_per_size=args.multi_period_n_per_size,
+            multi_period_fill_slippage_bps=args.multi_period_slippage_bps,
         )
 
         # Update leaderboard
@@ -2095,6 +2192,13 @@ def main():
             "replay_hourly_policy_max_drawdown_pct": result.get("replay_hourly_policy_max_drawdown_pct"),
             "replay_hourly_policy_trade_count": result.get("replay_hourly_policy_trade_count"),
             "replay_hourly_policy_order_count": result.get("replay_hourly_policy_order_count"),
+            "smooth_score": result.get("smooth_score"),
+            "smooth_error": result.get("smooth_error", ""),
+            "smooth_5d_p10_sortino": result.get("smooth_5d_p10_sortino"),
+            "smooth_15d_p10_sortino": result.get("smooth_15d_p10_sortino"),
+            "smooth_30d_p10_sortino": result.get("smooth_30d_p10_sortino"),
+            "smooth_60d_p10_sortino": result.get("smooth_60d_p10_sortino"),
+            "smooth_90d_p10_sortino": result.get("smooth_90d_p10_sortino"),
             "hidden_size": config.hidden_size,
             "lr": config.lr,
             "ent_coef": config.ent_coef,
