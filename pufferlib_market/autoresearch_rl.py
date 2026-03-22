@@ -912,8 +912,25 @@ STOCK_EXPERIMENTS: list[dict] = [
     {"description": "s1137_gru",         "lr": 1e-4, "anneal_lr": True, "seed": 1137, "arch": "gru"},
     # -----------------------------------------------------------------------
 
+    # (L) s1137 × additional axes — critical gaps from first sweep pass
+    # 2026-03-22: tp/slip/ent/wd confirmed to hurt s1137. Testing LR, capacity, and regularization.
+    # ---------------------------------------------------------------------------
+    # lr=2e-4 is between 1e-4 (good) and 3e-4 (collapses) — may improve in-sample learning
+    {"description": "s1137_lr2e4",     "lr": 2e-4, "anneal_lr": True, "seed": 1137},
+    # h2048 failed badly with s777(-163)/s42(-133) but s1137 may handle larger capacity differently
+    {"description": "s1137_h2048",     "lr": 1e-4, "anneal_lr": True, "seed": 1137, "hidden_size": 2048,
+     "num_envs": 256, "minibatch_size": 4096},
+    # obs_norm=True: normalizing observations may stabilize gradients for daily data
+    {"description": "s1137_obs_norm",  "lr": 1e-4, "anneal_lr": True, "seed": 1137, "obs_norm": True},
+    # gamma=0.995: longer planning horizon may help daily bars where trends last weeks
+    {"description": "s1137_gamma995",  "lr": 1e-4, "anneal_lr": True, "seed": 1137, "gamma": 0.995},
+    # anneal_ent: decaying entropy may help exploitation late in training
+    {"description": "s1137_anneal_ent","lr": 1e-4, "anneal_lr": True, "seed": 1137, "anneal_ent": True},
+    # lr=2e-4 × s5678 (2nd best seed at -55.5 — does higher LR help it?)
+    {"description": "s5678_lr2e4",    "lr": 2e-4, "anneal_lr": True, "seed": 5678},
+
     # Random mutations — slots so H100 500-trial runs get ~400+ random trials
-    # (after ~92 named configs). Each slot calls mutate_config(best_config) at runtime.
+    # (after ~99 named configs). Each slot calls mutate_config(best_config) at runtime.
     *[{"description": f"random_{i}"} for i in range(1, 451)],
 ]
 
