@@ -15,15 +15,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 LEADERBOARDS = [
-    "autoresearch_stocks12_ext_per_env1_leaderboard.csv",
-    "autoresearch_stocks12_ext_per_env2_leaderboard.csv",
+    "autoresearch_stocks12_tp05_family1_leaderboard.csv",
+    "autoresearch_stocks12_tp05_family2_leaderboard.csv",
     "autoresearch_stocks12_ext_focused1_leaderboard.csv",
     "autoresearch_stocks12_ext_focused2_leaderboard.csv",
 ]
 
 CHECKPOINT_ROOTS = {
-    "ext_per_env1": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_per_env1",
-    "ext_per_env2": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_per_env2",
+    "tp05_family1": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1",
+    "tp05_family2": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family2",
     "ext_focused1": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_focused1",
     "ext_focused2": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_focused2",
 }
@@ -35,7 +35,7 @@ ENSEMBLE_CKPTS = [
 ]
 
 VAL_DATA = "pufferlib_market/data/stocks12_daily_val.bin"
-ESCAPE_THRESHOLD = -50.0  # score > -50 means escaped degenerate state
+ESCAPE_THRESHOLD = -57.0  # score > -57 triggers deep eval (prev threshold was -50)
 EVAL_SCRIPT = """
 import sys, json
 sys.path.insert(0, '.')
@@ -197,8 +197,8 @@ def main():
     print()
 
     roots = [
-        "pufferlib_market/checkpoints/autoresearch_stocks12_ext_per_env1",
-        "pufferlib_market/checkpoints/autoresearch_stocks12_ext_per_env2",
+        "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1",
+        "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family2",
         "pufferlib_market/checkpoints/autoresearch_stocks12_ext_focused1",
         "pufferlib_market/checkpoints/autoresearch_stocks12_ext_focused2",
     ]
