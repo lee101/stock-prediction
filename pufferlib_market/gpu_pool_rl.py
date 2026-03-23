@@ -464,6 +464,16 @@ def run_rl_experiment_on_pod(
     leaderboard: str = "",
     remote_dir: str = "/workspace/stock-prediction",
     descriptions: str = "",
+    stocks_mode: bool = False,
+    rank_metric: str = "",
+    start_from: int = 0,
+    holdout_eval_steps: int = 0,
+    holdout_n_windows: int = 0,
+    holdout_fill_buffer_bps: float = 0.0,
+    max_steps_override: int = 0,
+    max_timesteps_per_sample: int = 0,
+    fee_rate_override: float = -1.0,
+    no_poly_prune: bool = False,
 ) -> dict:
     """Run autoresearch on pod, pull back leaderboard + top checkpoints."""
     remote_leaderboard = leaderboard or f"pufferlib_market/{run_id}_leaderboard.csv"
@@ -478,6 +488,26 @@ def run_rl_experiment_on_pod(
     extra_args = []
     if descriptions:
         extra_args.extend(["--descriptions", shlex.quote(descriptions)])
+    if stocks_mode:
+        extra_args.append("--stocks")
+    if rank_metric:
+        extra_args.extend(["--rank-metric", shlex.quote(rank_metric)])
+    if start_from > 0:
+        extra_args.extend(["--start-from", str(start_from)])
+    if holdout_eval_steps > 0:
+        extra_args.extend(["--holdout-eval-steps", str(holdout_eval_steps)])
+    if holdout_n_windows > 0:
+        extra_args.extend(["--holdout-n-windows", str(holdout_n_windows)])
+    if holdout_fill_buffer_bps > 0:
+        extra_args.extend(["--holdout-fill-buffer-bps", str(holdout_fill_buffer_bps)])
+    if max_steps_override > 0:
+        extra_args.extend(["--max-steps-override", str(max_steps_override)])
+    if max_timesteps_per_sample > 0:
+        extra_args.extend(["--max-timesteps-per-sample", str(max_timesteps_per_sample)])
+    if fee_rate_override >= 0:
+        extra_args.extend(["--fee-rate-override", str(fee_rate_override)])
+    if no_poly_prune:
+        extra_args.append("--no-poly-prune")
 
     # Auto-detect H100 and add scale-up overrides when running on one.
     is_h100 = _detect_remote_h100(pod)
@@ -676,6 +706,16 @@ def cmd_run(args: argparse.Namespace) -> None:
             wandb_api_key=os.environ.get("WANDB_API_KEY", ""),
             remote_dir=remote_dir,
             descriptions=getattr(args, "descriptions", ""),
+            stocks_mode=getattr(args, "stocks", False),
+            rank_metric=getattr(args, "rank_metric", ""),
+            start_from=getattr(args, "start_from", 0),
+            holdout_eval_steps=getattr(args, "holdout_eval_steps", 0),
+            holdout_n_windows=getattr(args, "holdout_n_windows", 0),
+            holdout_fill_buffer_bps=getattr(args, "holdout_fill_buffer_bps", 0.0),
+            max_steps_override=getattr(args, "max_steps_override", 0),
+            max_timesteps_per_sample=getattr(args, "max_timesteps_per_sample", 0),
+            fee_rate_override=getattr(args, "fee_rate_override", -1.0),
+            no_poly_prune=getattr(args, "no_poly_prune", False),
         )
     finally:
         pod.status = "ready"
@@ -768,6 +808,46 @@ def main() -> None:
     run_p.add_argument(
         "--descriptions", default="",
         help="Comma-separated subset of experiment descriptions to run",
+    )
+    run_p.add_argument(
+        "--stocks", action="store_true",
+        help="Use STOCK_EXPERIMENTS pool (daily stock bars, Alpaca)",
+    )
+    run_p.add_argument(
+        "--rank-metric", default="holdout_robust_score",
+        help="Ranking metric for autoresearch leaderboard",
+    )
+    run_p.add_argument(
+        "--start-from", type=int, default=0,
+        help="Start index in experiments pool (skip first N configs)",
+    )
+    run_p.add_argument(
+        "--holdout-eval-steps", type=int, default=0,
+        help="Steps per holdout window (0 = autoresearch default)",
+    )
+    run_p.add_argument(
+        "--holdout-n-windows", type=int, default=0,
+        help="Number of holdout windows (0 = autoresearch default)",
+    )
+    run_p.add_argument(
+        "--holdout-fill-buffer-bps", type=float, default=0.0,
+        help="Fill buffer bps for holdout eval",
+    )
+    run_p.add_argument(
+        "--max-steps-override", type=int, default=0,
+        help="Max episode steps override (0 = use env default)",
+    )
+    run_p.add_argument(
+        "--max-timesteps-per-sample", type=int, default=0,
+        help="Total timestep cap per trial (0 = use time-budget only)",
+    )
+    run_p.add_argument(
+        "--fee-rate-override", type=float, default=-1.0,
+        help="Fee rate override in decimal (e.g. 0.001 for 10bps). -1 = use default.",
+    )
+    run_p.add_argument(
+        "--no-poly-prune", action="store_true",
+        help="Disable polynomial early stopping",
     )
     run_p.add_argument(
         "--dry-run", action="store_true",
