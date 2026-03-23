@@ -1653,6 +1653,54 @@ H100_STOCK_EXPERIMENTS: list[dict] = [
     {"description": "h100_drawpen_slip5",
      "drawdown_penalty": 0.05, "trade_penalty": 0.03, "fill_slippage_bps": 5.0},
 
+    # --- random_mut_2201 seed sweep (2026-03-23 BEST model: +11.74% med, 1/50 neg) ---
+    # random_mut_2201: h=256, ent=0.08, slip=12bps, dp=0.01, sp=0.005, wd=0.0, anneal_lr=True
+    # This config is UNIQUELY good in deterministic eval (stochastic eval was wrong/misleading)
+    # Sweep many seeds — escape rate unknown, need many trials to find similar models
+    {"description": "rmu2201_style",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True},
+    {"description": "rmu2201_s123",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True, "seed": 123},
+    {"description": "rmu2201_s42",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True, "seed": 42},
+    {"description": "rmu2201_s777",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True, "seed": 777},
+    {"description": "rmu2201_s2272",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True, "seed": 2272},
+    {"description": "rmu2201_s9999",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True, "seed": 9999},
+    # Variants: try smoothness_penalty = 0.01 (2x) and 0.02 (4x)
+    {"description": "rmu2201_sp01",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.01, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True},
+    {"description": "rmu2201_sp02",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.02, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True},
+    # Variant: ent=0.06 (between 0.05 and 0.08)
+    {"description": "rmu2201_ent06",
+     "hidden_size": 256, "ent_coef": 0.06, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True},
+    # Variant: slip=15bps (even more friction)
+    {"description": "rmu2201_slip15",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 15.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True},
+
     # --- Cross seeds for best configs ---
     {"description": "h100_slip_10bps_s123",
      "fill_slippage_bps": 10.0, "seed": 123},
