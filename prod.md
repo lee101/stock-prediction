@@ -85,6 +85,8 @@
   # Bot runs at 9:35 AM, drops today's incomplete bar, uses T-1 data → fills at T OPEN
   ```
 - **Why softmax_avg beats logit_avg**: 8597 occasionally has high-confidence wrong calls that dominate logit averaging but normalize away in softmax_avg. logit_avg gave 4/50 neg (worse than 2201 alone), softmax_avg gives 0/50.
+- **CONCENTRATION RISK**: Ensemble allocates ~83% of time to NVDA. The worst windows (bars 55-104 in val = Dec 2025-Feb 2026) overlap with NVDA's -17.4% correction. Performance is partially driven by NVDA's overall strong period, not genuine diversification. Monitor if NVDA enters sustained bear market.
+- **Next step**: per_env autoresearch should find models with more balanced symbol allocation (4 instances running: autoresearch_stocks12_per_env{1,2,3,4})
 
 ## Model Search Noise Floor (2026-03-23)
 
