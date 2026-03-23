@@ -68,7 +68,7 @@ from binanceneural.execution import (
 from llm_hourly_trader.providers import call_llm
 from llm_hourly_trader.gemini_wrapper import TradePlan
 
-from rl_signal import RLSignalGenerator, PortfolioSnapshot, SYMBOLS as RL_SYMBOLS
+from rl_signal import RLSignalGenerator, PortfolioSnapshot, SYMBOLS as RL_SYMBOLS, SYMBOL_TO_BINANCE_PAIR
 from hybrid_prompt import (
     gather_symbol_contexts,
     build_allocation_prompt,
@@ -1847,6 +1847,7 @@ def run_hybrid_trading_cycle(
     dry_run: bool = True,
     leverage: float = 1.0,
     execution_mode: str = "auto",
+    tradable_symbols: Optional[list[str]] = None,
 ):
     """Hybrid RL+Chronos2+Gemini portfolio allocation cycle."""
     global _prev_plan, _prev_outcome, _prev_portfolio_value
@@ -1924,8 +1925,11 @@ def run_hybrid_trading_cycle(
         }
 
         cache_root = Path(forecast_cache_root)
+        all_crypto_syms = tuple(
+            s for s in rl_gen.symbols if s in SYMBOL_TO_BINANCE_PAIR
+        )
         try:
-            contexts = gather_symbol_contexts(cache_root, symbols=rl_gen.symbols)
+            contexts = gather_symbol_contexts(cache_root, symbols=all_crypto_syms)
         except Exception as exc:
             logger.error(f"Failed to gather market context: {exc}")
             cycle_snapshot["status"] = "context_error"
@@ -1952,7 +1956,11 @@ def run_hybrid_trading_cycle(
 
         klines_map = {ctx.symbol: ctx.klines for ctx in contexts}
         try:
-            rl_signal = rl_gen.get_signal(portfolio=portfolio_snap, klines_map=klines_map)
+            rl_signal = rl_gen.get_signal(
+                portfolio=portfolio_snap,
+                klines_map=klines_map,
+                tradable_symbols=tradable_symbols,
+            )
         except Exception as exc:
             logger.error(f"RL signal error: {exc}")
             cycle_snapshot["status"] = "rl_signal_error"
@@ -2322,6 +2330,7 @@ def main():
                     dry_run=dry_run,
                     leverage=args.leverage,
                     execution_mode=args.execution_mode,
+                    tradable_symbols=args.symbols,
                 )
             else:
                 run_trading_cycle(
