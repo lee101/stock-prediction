@@ -1901,43 +1901,63 @@ def build_config(overrides: dict) -> TrialConfig:
     return cfg
 
 
-def mutate_config(base: TrialConfig, *, stocks_mode: bool = False, seed_only: bool = False) -> TrialConfig:
+def mutate_config(base: TrialConfig, *, stocks_mode: bool = False, seed_only: bool = False,
+                  per_env_focused: bool = False) -> TrialConfig:
     """Randomly mutate a config for exploration.
 
     stocks_mode=True: restricts to lr in [1e-4, 3e-4] and slip in [0, 5bps] (safe for stocks11_2012).
       - lr=3e-4 + wd=0.01 + tp=0.05 + slip=5bps + anneal_lr is the best known formula (-4.05).
       - slip>5bps (8/10/12/15bps) all cause hold-cash on stocks11_2012.
     seed_only=True: only mutates the seed (for pure seed sweeps around a known-good config).
+    per_env_focused=True: tight mutation space around proven per_env stocks12 config.
+      - Locks anneal_lr=True always (False causes degenerate hold-cash on stocks12).
+      - Locks advantage_norm in [per_env, group_relative] (global collapses to NVDA-only).
+      - Locks hidden_size in [256, 512] (proven range; 1024 rarely escapes per_env).
+      - Only varies: ent_coef, fill_slippage_bps, drawdown_penalty, smoothness_penalty, gamma.
     """
     d = asdict(base)
     if not seed_only:
-        # Pick 2-3 params to mutate
-        mutable_params = {
-            # stocks_mode: h=256 catastrophically bad (-121 to -146) on stocks11_2012. Only 512/1024 viable.
-            "hidden_size": [512, 1024] if stocks_mode else [256, 512, 1024],
-            # stocks_mode: lr=3e-4 + wd=0.01 + tp=0.05 + slip=5bps is BEST (-4.05).
-            # lr=1e-4 P-block did not beat q-block winner. Allow both 1e-4 and 3e-4.
-            # Exclude 2e-4/5e-4: no evidence of benefit yet.
-            "lr": [1e-4, 3e-4] if stocks_mode else [1e-4, 2e-4, 3e-4, 5e-4],
-            "ent_coef": [0.01, 0.03, 0.05, 0.08, 0.1],
-            "weight_decay": [0.0, 0.001, 0.005, 0.01, 0.05],
-            # stocks_mode: slip>5bps destroys training (slip10/12/15 all hold-cash). Keep 0 or 5.
-            "fill_slippage_bps": [0.0, 5.0] if stocks_mode else [0.0, 5.0, 8.0, 12.0],
-            "gamma": [0.98, 0.99, 0.995],
-            "advantage_norm": ["global", "per_env", "group_relative"],
-            "group_relative_mix": [0.0, 0.15, 0.25, 0.4],
-            "reward_scale": [5.0, 10.0, 20.0],
-            "cash_penalty": [0.0, 0.005, 0.01, 0.02],
-            "trade_penalty": [0.0, 0.01, 0.02, 0.03, 0.05],
-            "drawdown_penalty": [0.0, 0.01, 0.02, 0.05],
-            "smooth_downside_penalty": [0.0, 0.1, 0.2, 0.5],
-            "smooth_downside_temperature": [0.01, 0.02, 0.05],
-            "smoothness_penalty": [0.0, 0.005, 0.01, 0.02],
-            "obs_norm": [True, False],
-            # stocks_mode: anneal_lr=True is critical; False collapses. Don't mutate away from it.
-            "anneal_lr": [True] if stocks_mode else [True, False],
-            "anneal_ent": [True, False],
-        }
+        if per_env_focused:
+            # Tight per_env mutation space based on rmu8597 (seed=1168, stocks12 daily)
+            mutable_params = {
+                "hidden_size": [256, 512],
+                "ent_coef": [0.05, 0.08, 0.1],
+                "fill_slippage_bps": [8.0, 12.0],
+                "drawdown_penalty": [0.0, 0.01, 0.02],
+                "smoothness_penalty": [0.0, 0.005, 0.01],
+                "gamma": [0.99, 0.995],
+                "weight_decay": [0.0, 0.001],
+                "advantage_norm": ["per_env", "group_relative"],
+                "anneal_lr": [True],  # never mutate away from True
+            }
+        else:
+            # Pick 2-3 params to mutate
+            mutable_params = {
+                # stocks_mode: h=256 catastrophically bad (-121 to -146) on stocks11_2012. Only 512/1024 viable.
+                "hidden_size": [512, 1024] if stocks_mode else [256, 512, 1024],
+                # stocks_mode: lr=3e-4 + wd=0.01 + tp=0.05 + slip=5bps is BEST (-4.05).
+                # lr=1e-4 P-block did not beat q-block winner. Allow both 1e-4 and 3e-4.
+                # Exclude 2e-4/5e-4: no evidence of benefit yet.
+                "lr": [1e-4, 3e-4] if stocks_mode else [1e-4, 2e-4, 3e-4, 5e-4],
+                "ent_coef": [0.01, 0.03, 0.05, 0.08, 0.1],
+                "weight_decay": [0.0, 0.001, 0.005, 0.01, 0.05],
+                # stocks_mode: slip>5bps destroys training (slip10/12/15 all hold-cash). Keep 0 or 5.
+                "fill_slippage_bps": [0.0, 5.0] if stocks_mode else [0.0, 5.0, 8.0, 12.0],
+                "gamma": [0.98, 0.99, 0.995],
+                "advantage_norm": ["global", "per_env", "group_relative"],
+                "group_relative_mix": [0.0, 0.15, 0.25, 0.4],
+                "reward_scale": [5.0, 10.0, 20.0],
+                "cash_penalty": [0.0, 0.005, 0.01, 0.02],
+                "trade_penalty": [0.0, 0.01, 0.02, 0.03, 0.05],
+                "drawdown_penalty": [0.0, 0.01, 0.02, 0.05],
+                "smooth_downside_penalty": [0.0, 0.1, 0.2, 0.5],
+                "smooth_downside_temperature": [0.01, 0.02, 0.05],
+                "smoothness_penalty": [0.0, 0.005, 0.01, 0.02],
+                "obs_norm": [True, False],
+                # stocks_mode: anneal_lr=True is critical; False collapses. Don't mutate away from it.
+                "anneal_lr": [True] if stocks_mode else [True, False],
+                "anneal_ent": [True, False],
+            }
         keys = random.sample(list(mutable_params.keys()), min(3, len(mutable_params)))
         for k in keys:
             d[k] = random.choice(mutable_params[k])
@@ -2787,6 +2807,12 @@ def main():
                         help="Random mutations only change seed (not other hyperparams). "
                              "Used for pure seed sweeps around a known-good config. "
                              "Best with --stocks and --start-from 172.")
+    parser.add_argument("--per-env-focused", action="store_true",
+                        help="Restrict random mutations to safe per_env stocks12 combinations: "
+                             "locks anneal_lr=True, advantage_norm in [per_env, group_relative], "
+                             "h in [256, 512]. Use with --init-best-config v_rmu2201_per_env_style "
+                             "to focus search around proven per_env config. "
+                             "Increases per_env escape rate by avoiding known-bad mutations.")
     parser.add_argument("--stocks", action="store_true",
                         help="Use stock-specific configs and Alpaca daily defaults "
                              "(fee_rate=0.001, periods_per_year=252, "
@@ -3163,7 +3189,9 @@ def main():
         # Handle random mutations
         if desc.startswith("random_"):
             seed_only = getattr(args, "seed_only", False)
-            config = mutate_config(best_config, stocks_mode=args.stocks, seed_only=seed_only)
+            per_env_focused = getattr(args, "per_env_focused", False)
+            config = mutate_config(best_config, stocks_mode=args.stocks, seed_only=seed_only,
+                                   per_env_focused=per_env_focused)
             desc = config.description
         else:
             config = build_config(exp_overrides)
