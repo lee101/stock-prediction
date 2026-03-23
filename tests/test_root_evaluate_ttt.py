@@ -44,7 +44,10 @@ _do_ttt_update = evaluate_ttt_root._do_ttt_update
 _load_policy = evaluate_ttt_root._load_policy
 _print_comparison_table = evaluate_ttt_root._print_comparison_table
 
-from pufferlib_market.train import TradingPolicy, ResidualTradingPolicy
+try:
+    from pufferlib_market.train import TradingPolicy, ResidualTradingPolicy
+except (ImportError, ModuleNotFoundError):
+    pytest.skip("pufferlib_market or pufferlib not installed", allow_module_level=True)
 
 
 # ---------------------------------------------------------------------------

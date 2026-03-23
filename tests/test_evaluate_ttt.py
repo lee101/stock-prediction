@@ -15,8 +15,11 @@ import pytest
 import torch
 import torch.nn as nn
 
-from pufferlib_market.lora import LoRALinear, LoRAPolicy, reset_adam_state
-from pufferlib_market.train import TradingPolicy
+try:
+    from pufferlib_market.lora import LoRALinear, LoRAPolicy, reset_adam_state
+    from pufferlib_market.train import TradingPolicy
+except (ImportError, ModuleNotFoundError):
+    pytest.skip("pufferlib_market or pufferlib not installed", allow_module_level=True)
 
 
 # ---------------------------------------------------------------------------
