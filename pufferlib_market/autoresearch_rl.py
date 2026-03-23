@@ -1459,6 +1459,50 @@ STOCK_EXPERIMENTS: list[dict] = [
      "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
      "seed": 123},
 
+    # --- random_mut_2201 seed sweep (2026-03-23: BEST model +11.74% med, 1/50 neg) ---
+    # Config: h=256, ent=0.08, slip=12bps, drawdown_pen=0.01, smoothness_pen=0.005
+    # All variants use anneal_lr=True, wd=0.0, lr=3e-4 (defaults)
+    {"description": "v_rmu2201_style",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True},
+    {"description": "v_rmu2201_s123",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True, "seed": 123},
+    {"description": "v_rmu2201_s42",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True, "seed": 42},
+    {"description": "v_rmu2201_s777",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True, "seed": 777},
+    {"description": "v_rmu2201_s2272",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True, "seed": 2272},
+    {"description": "v_rmu2201_s9999",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True, "seed": 9999},
+    {"description": "v_rmu2201_sp01",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.01, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True},
+    {"description": "v_rmu2201_sp02",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.02, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True},
+    {"description": "v_rmu2201_ent06",
+     "hidden_size": 256, "ent_coef": 0.06, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True},
+    {"description": "v_rmu2201_slip15",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 15.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True},
+
     # Random mutations — slots so H100 1000-trial runs get ~800+ random trials.
     # best_config is pre-seeded with winning formula when stocks_mode+seed_only.
     # Each slot calls mutate_config(best_config) at runtime.
@@ -2474,6 +2518,7 @@ def run_trial(
             "--short-borrow-apr", str(holdout_short_borrow_apr),
             "--periods-per-year", str(config.periods_per_year),
             "--deterministic",
+            "--no-early-stop",
             "--out", str(holdout_json_path),
         ]
         if holdout_end_within_steps > 0:
