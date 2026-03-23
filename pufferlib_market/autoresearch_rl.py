@@ -2882,6 +2882,9 @@ def main():
                         help="Use polynomial curve fitting for early stopping (default: True). "
                              "Pass --no-poly-prune to revert to fixed-threshold early rejection.")
     parser.add_argument("--no-poly-prune", dest="poly_prune", action="store_false")
+    parser.add_argument("--init-best-config", type=str, default="",
+                        help="Pre-seed best_config from a named experiment (e.g. 'v_rmu2201_style'). "
+                             "Subsequent random mutations start from this config instead of TrialConfig() defaults.")
     parser.add_argument("--local", action="store_true",
                         help="Preset for local RTX GPU: sets --time-budget 60 if not overridden")
     parser.add_argument("--a40", action="store_true",
@@ -3087,7 +3090,24 @@ def main():
     # Without this, seed_only mutations of the default TrialConfig() have wd=0/tp=0/slip=0
     # which ALL collapse to hold-cash on stocks11_2012.
     _seed_only = getattr(args, "seed_only", False)
-    if getattr(args, "stocks", False) and _seed_only:
+    _init_desc = getattr(args, "init_best_config", "")
+    if _init_desc:
+        # Load a named config as the starting best_config for mutations.
+        _init_pool = experiments if experiments else (pool if "pool" in dir() else [])
+        _found = next((e for e in _init_pool if e.get("description") == _init_desc), None)
+        if _found is None:
+            # Also search the full STOCK_EXPERIMENTS and H100_STOCK_EXPERIMENTS pools
+            for _p in [STOCK_EXPERIMENTS, H100_STOCK_EXPERIMENTS]:
+                _found = next((e for e in _p if e.get("description") == _init_desc), None)
+                if _found:
+                    break
+        if _found:
+            best_config = build_config(_found)
+            print(f"  [init-best-config] Pre-seeding best_config from '{_init_desc}': {_found}")
+        else:
+            print(f"  [init-best-config] WARNING: '{_init_desc}' not found, using TrialConfig() defaults")
+            best_config = TrialConfig()
+    elif getattr(args, "stocks", False) and _seed_only:
         best_config = TrialConfig(
             weight_decay=0.01,
             trade_penalty=0.05,
