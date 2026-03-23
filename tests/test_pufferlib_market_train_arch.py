@@ -17,6 +17,8 @@ import pytest
 import torch
 import torch.nn as nn
 
+pytestmark = pytest.mark.unit
+
 from pufferlib_market.train import (
     TradingPolicy,
     relu_sq,
