@@ -56,9 +56,11 @@ DEFAULT_SYMBOLS = [
     "AMZN",
 ]
 DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/autoresearch_stock/random_mut_2201/best.pt"
-# Ensemble: 2201 (primary) + 8597 → softmax_avg → 0/50 neg, med=13.57%, p10=4.03%
+# Ensemble: 2201 (primary) + 8597 + 5526 → softmax_avg → 0/50 neg, med=14.94%, p10=7.64%
+# 5526 alone is poor (26/50 neg) but adds tail diversity; P10 improved from 5.15% to 7.64%
 DEFAULT_EXTRA_CHECKPOINTS = [
     "pufferlib_market/checkpoints/autoresearch_stocks12_fresh/random_mut_8597/best.pt",
+    "pufferlib_market/checkpoints/autoresearch_stocks12_ext_per_env1/random_mut_5526/best.pt",
 ]
 DEFAULT_DATA_DIR = "trainingdata"
 DEFAULT_ALLOCATION_PCT = 25.0
