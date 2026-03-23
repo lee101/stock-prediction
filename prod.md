@@ -50,17 +50,18 @@
 - **Symbols**: NVDA, PLTR, GOOG, DBX, TRIP, MTCH, NYT, AAPL, MSFT, META, TSLA, NET, BKNG, EBAY, EXPE, ITUB, BTG, ABEV
 - **Equity**: ~$46,467
 
-### 4. Alpaca Daily PPO Trader (`trade_daily_stock_prod.py`) -- READY TO DEPLOY
-- **Checkpoint**: `pufferlib_market/checkpoints/autoresearch_stock/random_mut_2201/best.pt`
+### 4. Alpaca Daily PPO Trader (`trade_daily_stock_prod.py`) -- READY TO DEPLOY (ENSEMBLE)
 - **Architecture**: h=256 MLP PPO, stocks12 (AAPL,MSFT,NVDA,GOOG,META,TSLA,SPY,QQQ,JPM,V,AMZN,PLTR)
-- **Config**: lr=3e-4, ent=0.08, slip=12bps, drawdown_pen=0.01, smoothness_pen=0.005
-- **Holdout eval** (50 windows, Sep2025-Mar2026, deterministic, no-early-stop):
-  - Median: **+11.74%** / 90 days
-  - P10: **+3.61%** (worst window: -0.37%)
-  - P90: +22.40%
-  - Negative windows: **1/50 (2%)**
-  - Sortino median: 12.32, p10: 4.68
-  - Trades/window: ~24 median (22-31 range)
+- **Primary checkpoint**: `pufferlib_market/checkpoints/autoresearch_stock/random_mut_2201/best.pt`
+- **Ensemble checkpoint**: `pufferlib_market/checkpoints/autoresearch_stocks12_fresh/random_mut_8597/best.pt`
+- **Ensemble method**: softmax_avg (average probabilities, not logits)
+- **Ensemble holdout eval** (50 windows, Sep2025-Mar2026, deterministic, no-early-stop):
+  - Median: **+13.57%** / 90 days
+  - P10: **+4.03%** (worst window: **+3.39%**)
+  - Negative windows: **0/50 (0%)** — ZERO negative windows
+- **Single model evals** (for reference):
+  - random_mut_2201 alone: med=+11.74%, p10=+3.61%, 1/50 neg
+  - random_mut_8597 alone: med=+9.38%, p10=+0.71%, 5/50 neg
 - **NOTE**: No supervisor config yet — must start manually or add supervisor entry
 - **NOTE**: Previous default (stocks12_daily_tp05_longonly) scored -2.55% median, 32/50 negative
 - **NOTE**: random_mut_2272 (prev deployed) scored -5.14% median, 29/50 negative
@@ -68,11 +69,13 @@
   ```bash
   source .venv313/bin/activate
   python trade_daily_stock_prod.py --live
-  # Uses DEFAULT_CHECKPOINT = random_mut_2201/best.pt
+  # Ensemble by default: 2201 (primary) + 8597 (softmax_avg)
+  # Single model: python trade_daily_stock_prod.py --live --no-ensemble
   ```
 - **Eval command**:
   ```bash
   source .venv313/bin/activate
+  # Eval single model 2201:
   python -m pufferlib_market.evaluate_holdout \
     --checkpoint pufferlib_market/checkpoints/autoresearch_stock/random_mut_2201/best.pt \
     --data-path pufferlib_market/data/stocks12_daily_val.bin \
@@ -81,6 +84,31 @@
   # NOTE: lag=0 IS correct for daily models (1-bar obs lag built-in to C env)
   # Bot runs at 9:35 AM, drops today's incomplete bar, uses T-1 data → fills at T OPEN
   ```
+- **Why softmax_avg beats logit_avg**: 8597 occasionally has high-confidence wrong calls that dominate logit averaging but normalize away in softmax_avg. logit_avg gave 4/50 neg (worse than 2201 alone), softmax_avg gives 0/50.
+
+## Model Search Noise Floor (2026-03-23)
+
+### Seed variance characterization — how many seeds produce "real" results?
+
+**rmu2201 base config** (h=256, ent=0.08, slip=12, dp=0.01, sp=0.005, wd=0.0, global advantage_norm):
+- 24 seeds tested (30-window eval, seed=42)
+- Positive median rate: ~7/24 = 29% of seeds produce positive median returns
+- Deployment-quality rate: **0/24** (need ≤5% neg rate = ≤1.5/30 neg)
+- Best seed: s14 (16.45% med, 6/30 neg → 50-win: 12.95%, 13/50 neg) — NOT deployable
+- High-variance outlier: s23 (23.95% med, 22/50 neg = 44% neg) — high mean, terrible consistency
+- **Conclusion**: rmu2201 base config produces ~0% deployment-quality rate. The original random_mut_2201 was an extremely lucky accident.
+
+**per_env advantage_norm config** (h=256, ent=0.08, slip=12, dp=0.01, sp=0.005, wd=0.0, per_env advantage_norm):
+- Discovered via autoresearch trial: random_mut_8597 (seed=1168) → 9.38% med, 5/50 neg (10%) — improvement!
+- 3-seed variance characterization running (seeds 42, 123, 777) — see autoresearch_stocks12_per_env_sweep.csv
+- **Deployment target**: ≤5% neg rate (≤2.5/50 windows). random_mut_2201 achieves 2%.
+- **Working hypothesis**: per_env advantage normalization is more stable for multi-asset portfolios
+
+### Interpretation guide
+- Score = -135.64 → degenerate policy (actively loses money, identical trajectory across models)
+- Score = -50.0 → hold-cash policy (no trades, 0% return every window)
+- Score > -100 → escaped degenerate state (real signal, worth 50-window deep eval)
+- Deployment quality threshold: 50-window med >5%, neg <5% (i.e., <3/50 neg windows)
 
 ## Best Candidate Models (Not Yet Deployed)
 
