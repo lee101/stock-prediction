@@ -44,12 +44,43 @@
   ```
 - **Diagnostics**: `python binance_worksteal/trade_live.py --diagnose --symbols BTCUSD ETHUSD`
 
-### 3. Alpaca Stock Trader (`unified-stock-trader`) -- STOPPED
-- **Checkpoint**: `unified_hourly_experiment/checkpoints/wd_0.04/epoch_009.pt`
-- **Architecture**: classic h512, 6L, 8 heads, seq=48
-- **Symbols**: NVDA, PLTR, GOOG, DBX, TRIP, MTCH, NYT
-- **Marketsim (30d)**: Sort=2.68, +1.71%, 33 trades
+### 3. Alpaca Stock Trader (`unified-stock-trader`) -- RUNNING (hourly meta-selector)
+- **Bot**: `unified_hourly_experiment/trade_unified_hourly_meta.py`
+- **Architecture**: Chronos2 hourly, multiple models + meta-selector
+- **Symbols**: NVDA, PLTR, GOOG, DBX, TRIP, MTCH, NYT, AAPL, MSFT, META, TSLA, NET, BKNG, EBAY, EXPE, ITUB, BTG, ABEV
 - **Equity**: ~$46,467
+
+### 4. Alpaca Daily PPO Trader (`trade_daily_stock_prod.py`) -- READY TO DEPLOY
+- **Checkpoint**: `pufferlib_market/checkpoints/autoresearch_stock/random_mut_2201/best.pt`
+- **Architecture**: h=256 MLP PPO, stocks12 (AAPL,MSFT,NVDA,GOOG,META,TSLA,SPY,QQQ,JPM,V,AMZN,PLTR)
+- **Config**: lr=3e-4, ent=0.08, slip=12bps, drawdown_pen=0.01, smoothness_pen=0.005
+- **Holdout eval** (50 windows, Sep2025-Mar2026, deterministic, no-early-stop):
+  - Median: **+11.74%** / 90 days
+  - P10: **+3.61%** (worst window: -0.37%)
+  - P90: +22.40%
+  - Negative windows: **1/50 (2%)**
+  - Sortino median: 12.32, p10: 4.68
+  - Trades/window: ~24 median (22-31 range)
+- **NOTE**: No supervisor config yet — must start manually or add supervisor entry
+- **NOTE**: Previous default (stocks12_daily_tp05_longonly) scored -2.55% median, 32/50 negative
+- **NOTE**: random_mut_2272 (prev deployed) scored -5.14% median, 29/50 negative
+- **Deploy command**:
+  ```bash
+  source .venv313/bin/activate
+  python trade_daily_stock_prod.py --live
+  # Uses DEFAULT_CHECKPOINT = random_mut_2201/best.pt
+  ```
+- **Eval command**:
+  ```bash
+  source .venv313/bin/activate
+  python -m pufferlib_market.evaluate_holdout \
+    --checkpoint pufferlib_market/checkpoints/autoresearch_stock/random_mut_2201/best.pt \
+    --data-path pufferlib_market/data/stocks12_daily_val.bin \
+    --eval-hours 90 --n-windows 50 --seed 42 \
+    --fee-rate 0.001 --fill-buffer-bps 5.0 --deterministic --no-early-stop
+  # NOTE: lag=0 IS correct for daily models (1-bar obs lag built-in to C env)
+  # Bot runs at 9:35 AM, drops today's incomplete bar, uses T-1 data → fills at T OPEN
+  ```
 
 ## Best Candidate Models (Not Yet Deployed)
 
@@ -101,6 +132,13 @@ sudo tail -20 /var/log/supervisor/binance-hybrid-spot-error.log
 ```
 
 ## Incidents
+
+### 2026-03-23 -- Daily stock PPO: autoresearch leaderboard metric was wrong
+- **What**: The autoresearch leaderboard ranked random_mut_2272 as best (robust_score=-5.15) and random_mut_2201 as worst (-110.76) on the holdout set. In reality the ranking is inverted.
+- **Root cause**: Autoresearch used stochastic policy + `enable_drawdown_profit_early_exit=True` for holdout eval. Both inflate results for mediocre models. Deterministic + no-early-stop is the correct production proxy.
+- **Impact**: random_mut_2272 was deployed (now known to be -5.14% median, 29/50 negative). random_mut_2201 (the actual best: +11.74% median, 1/50 negative) was ranked last and not deployed.
+- **Fix**: Added `--no-early-stop` flag to `evaluate_holdout.py`. Updated DEFAULT_CHECKPOINT to random_mut_2201. Always use `--deterministic --no-early-stop` for final candidate selection.
+- **Note**: random_mut_2201 uses h=256 (NOT h=1024) — shows smaller networks with right config can outperform.
 
 ### 2026-03-22 18:54 UTC -- Gemini API key revoked
 - **What**: Gemini API key revoked/leaked. Bot received 403 PERMISSION_DENIED for 13+ hours. RL fallback also broken due to obs mismatch (always outputs LONG_UNI for non-configured symbol). Both primary and fallback signals broken simultaneously. No trades executed.

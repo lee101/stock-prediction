@@ -53,7 +53,7 @@ DEFAULT_SYMBOLS = [
     "V",
     "AMZN",
 ]
-DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/stocks12_daily_tp05_longonly/best.pt"
+DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/autoresearch_stock/random_mut_2201/best.pt"
 DEFAULT_DATA_DIR = "trainingdata"
 DEFAULT_ALLOCATION_PCT = 25.0
 STATE_PATH = REPO / "strategy_state/daily_stock_rl_state.json"
