@@ -17,15 +17,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 LEADERBOARDS = [
     "autoresearch_stocks12_tp05_family1_leaderboard.csv",
     "autoresearch_stocks12_tp05_family2_leaderboard.csv",
-    "autoresearch_stocks12_ext_focused1_leaderboard.csv",
-    "autoresearch_stocks12_ext_focused2_leaderboard.csv",
+    "autoresearch_stocks12_tp05_seedonly1_leaderboard.csv",
+    "autoresearch_stocks12_tp05_seedonly2_leaderboard.csv",
 ]
 
 CHECKPOINT_ROOTS = {
     "tp05_family1": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1",
     "tp05_family2": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family2",
-    "ext_focused1": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_focused1",
-    "ext_focused2": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_focused2",
+    "tp05_seedonly1": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_seedonly1",
+    "tp05_seedonly2": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_seedonly2",
 }
 
 # Current production: tp05_s123 standalone: med=16.52%, p10=10.45%, worst=5.62%, 0/50 neg
@@ -35,7 +35,7 @@ ENSEMBLE_CKPTS = [
 ]
 
 VAL_DATA = "pufferlib_market/data/stocks12_daily_val.bin"
-ESCAPE_THRESHOLD = -57.0  # score > -57 triggers deep eval (prev threshold was -50)
+ESCAPE_THRESHOLD = -40.0  # score > -40 triggers deep eval; -50=hold-cash, -47 to -49 = near-hold-cash (not useful)
 EVAL_SCRIPT = """
 import sys, json
 sys.path.insert(0, '.')
@@ -199,8 +199,8 @@ def main():
     roots = [
         "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1",
         "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family2",
-        "pufferlib_market/checkpoints/autoresearch_stocks12_ext_focused1",
-        "pufferlib_market/checkpoints/autoresearch_stocks12_ext_focused2",
+        "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_seedonly1",
+        "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_seedonly2",
     ]
 
     while True:
