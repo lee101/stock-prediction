@@ -162,8 +162,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         help="Use cross-feature bins (20 feat/sym). Overrides --train-data/--val-data "
                              "to use stocks11_daily_{train,val}_2012_cross.bin. "
                              "Add these bins to rsync before launching.")
-    parser.add_argument("--time-budget", type=int, default=120,
-                        help="Seconds per trial safety timeout. At H100 ~400k sps: 120s >> 37M step cap (71-96s).")
+    parser.add_argument("--time-budget", type=int, default=0,
+                        help="Seconds per trial safety timeout. 0 = auto-select from --gpu-type. "
+                             "H100 ~400k sps → 120s cap. A40 ~300k sps → 155s cap. A100 ~350k sps → 135s cap.")
     parser.add_argument("--max-trials", type=int, default=1000,
                         help="1000 trials: ~8% escape rate → ~80 good models. "
                              "Early rejection (25%% checkpoint) cuts degenerate trials to ~28s each, "
@@ -191,18 +192,21 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         help="Step cap per sample. 700 × 53,240 samples = 37.27M steps for stocks11_2012 (optimal). "
                              "H100 at 400k sps hits this in ~93s; RTX 5090 at 92k sps hits it in ~405s. "
                              "Use 700 for stocks11_2012 (confirmed optimal step count).")
-    parser.add_argument("--start-from", type=int, default=204,
-                        help="Start index in STOCK_EXPERIMENTS pool. Default 204 = directly to random seed sweep. "
-                             "Skips O-block (187-195) and N-block (196-203) which are all confirmed degenerate "
-                             "locally and would contaminate best_config for subsequent seed_only mutations "
-                             "(e.g., s1137_ppo_epochs2 at -49.64 would make all 1000 seeds use ppo_epochs=2). "
-                             "Use --start-from 187 to also run O-block/N-block as a sanity check.")
+    parser.add_argument("--start-from", type=int, default=233,
+                        help="Start index in STOCK_EXPERIMENTS pool. Default 233 = Q-block start. "
+                             "Q-block (233-265) finds s123 (-4.05) → best_config updated. "
+                             "R-block (266-268): r_grpo at -5.81 (GRPO+winning formula). "
+                             "S-block (269-291): more seeds + s123 variations. "
+                             "T-block (292-300): champion formula variants (likely fail). "
+                             "U-block (301-325): GRPO seed sweep (25 configs). "
+                             "Random mutations: 326-1326 (pre-seeded with winning formula). "
+                             "Use --start-from 326 to skip all deterministic blocks.")
     parser.add_argument("--seed-only", action="store_true", default=True,
                         help="In random-mutation mode, only change the seed (keep all other params). "
-                             "Default: True. With --start-from 195, all 500 H100 trials use s1137's exact "
-                             "config (lr=1e-4, h=1024, ent=0.05, sdp=0.0, anneal=True) with different seeds. "
-                             "Evidence: sdp=0.2 hurts good seeds (seed=1464: -37.25 → -56.18). "
-                             "Use --start-from 187 to also test N-block h256 configs before random seeds.")
+                             "Default: True. best_config is pre-seeded with winning formula "
+                             "(lr=3e-4, wd=0.01, tp=0.05, slip=5bps) so all 1000 trials use "
+                             "the confirmed formula with random seeds. "
+                             "~17%% escape rate → ~170 good models from 1000 trials.")
     parser.add_argument("--remote-host", default=DEFAULT_REMOTE_HOST)
     parser.add_argument("--remote-dir", default=DEFAULT_REMOTE_DIR)
     parser.add_argument("--remote-env", default=DEFAULT_REMOTE_ENV)
@@ -211,8 +215,30 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+_GPU_TYPE_TIME_BUDGETS: dict[str, int] = {
+    # estimated sps × 37M step cap / sps = seconds; add ~30% headroom
+    "h100": 120,    # ~400k sps → 93s; 120s cap
+    "a100": 135,    # ~350k sps → 106s; 135s cap
+    "a40":  155,    # ~300k sps → 124s; 155s cap
+    "rtx5090": 450,  # ~92k sps → 405s; 450s cap
+    "rtx4090": 500,
+    "default": 300,
+}
+
+
+def _resolve_time_budget(args: argparse.Namespace) -> int:
+    """Return effective time budget: use explicit value if >0, else auto from gpu_type."""
+    if args.time_budget > 0:
+        return int(args.time_budget)
+    gpu = str(args.gpu_type).lower().strip()
+    return _GPU_TYPE_TIME_BUDGETS.get(gpu, _GPU_TYPE_TIME_BUDGETS["default"])
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+
+    # Resolve time budget from gpu_type when not explicitly set (time_budget=0)
+    effective_time_budget = _resolve_time_budget(args)
 
     # Cross-feature override
     if args.cross_features:
@@ -224,7 +250,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_id=str(args.run_id),
         train_data_path=str(args.train_data),
         val_data_path=str(args.val_data),
-        time_budget=int(args.time_budget),
+        time_budget=effective_time_budget,
         max_trials=int(args.max_trials),
         descriptions=[],  # empty: autoresearch_rl random-mutation mode
         rank_metric=str(args.rank_metric),
