@@ -65,6 +65,8 @@ def _sync(device: torch.device):
 def benchmark(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     has_cuda = device.type == "cuda"
+    if has_cuda and hasattr(torch, "set_float32_matmul_precision"):
+        torch.set_float32_matmul_precision("high")
 
     config = TrainingConfig(
         batch_size=args.batch_size,
@@ -74,6 +76,10 @@ def benchmark(args):
         transformer_dim=args.hidden_dim,
         transformer_layers=args.num_layers,
         transformer_heads=args.num_heads,
+        model_arch=args.model_arch,
+        num_memory_tokens=args.num_memory_tokens,
+        dilated_strides=args.dilated_strides,
+        attention_window=args.attention_window,
         maker_fee=0.001,
         max_leverage=1.0,
         fill_temperature=5e-4,
@@ -88,6 +94,10 @@ def benchmark(args):
         num_layers=args.num_layers,
         max_len=args.seq_len,
         dropout=0.1,
+        model_arch=args.model_arch,
+        num_memory_tokens=args.num_memory_tokens,
+        dilated_strides=args.dilated_strides,
+        attention_window=args.attention_window,
     )
 
     model = build_policy(policy_cfg).to(device)
@@ -203,6 +213,10 @@ def benchmark(args):
             "hidden_dim": args.hidden_dim,
             "num_layers": args.num_layers,
             "num_heads": args.num_heads,
+            "model_arch": args.model_arch,
+            "num_memory_tokens": args.num_memory_tokens,
+            "dilated_strides": args.dilated_strides,
+            "attention_window": args.attention_window,
             "steps": args.steps,
             "warmup": args.warmup,
             "use_fast_sim": args.use_fast_sim,
@@ -236,6 +250,10 @@ def main():
     parser.add_argument("--hidden-dim", type=int, default=256)
     parser.add_argument("--num-layers", type=int, default=4)
     parser.add_argument("--num-heads", type=int, default=4)
+    parser.add_argument("--model-arch", choices=("classic", "nano"), default="classic")
+    parser.add_argument("--num-memory-tokens", type=int, default=0)
+    parser.add_argument("--dilated-strides", default="")
+    parser.add_argument("--attention-window", type=int, default=None)
     parser.add_argument("--use-fast-sim", action="store_true")
     parser.add_argument("--use-compile", action="store_true")
     args = parser.parse_args()
