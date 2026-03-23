@@ -526,7 +526,10 @@ def call_gemini_allocation(
         properties=props,
     )
 
-    client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY", ""))
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY not set - generate a new key at Google AI Studio")
+    client = genai.Client(api_key=api_key)
     config_kwargs = dict(
         response_mime_type="application/json",
         response_schema=schema,

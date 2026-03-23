@@ -343,6 +343,30 @@ class TestEquityCurve:
         # Combined should be 2 * initial_cash (one per symbol, no trades)
         assert abs(result.combined_equity.iloc[0] - 10_000.0) < 1e-4
 
+    def test_single_symbol_can_start_with_seeded_inventory(self):
+        """Single-symbol simulator supports inherited positions."""
+        bars = _make_bars([
+            (100, 111, 99, 110),
+        ])
+        actions = _make_actions([
+            {"buy_price": 0.0, "sell_price": 108.0, "trade_amount": 100},
+        ])
+        config = SimulationConfig(
+            maker_fee=0.0,
+            initial_cash=500.0,
+            initial_inventory_by_symbol={"BTCUSD": 2.0},
+            initial_cost_basis_by_symbol={"BTCUSD": 100.0},
+        )
+        sim = BinanceMarketSimulator(config)
+        result = sim.run(bars, actions)
+
+        trades = result.per_symbol["BTCUSD"].trades
+        assert len(trades) == 1
+        assert trades[0].side == "sell"
+        assert trades[0].quantity == pytest.approx(2.0)
+        assert trades[0].realized_pnl == pytest.approx(16.0)
+        assert result.per_symbol["BTCUSD"].equity_curve.iloc[-1] == pytest.approx(716.0)
+
 
 # ---------------------------------------------------------------------------
 # Max hold enforcement
@@ -501,6 +525,38 @@ class TestSharedCash:
             all_trades.extend(sym_result.trades)
         total_cost = sum(t.notional * (1 + FEE) for t in all_trades if t.side == "buy")
         assert total_cost <= 1000.0 + 1e-6
+
+    def test_shared_cash_supports_seeded_start_state(self):
+        """Shared-cash simulation marks seeded inventory to market and can exit it."""
+        bars_btc = _make_bars([(100, 112, 99, 111)], symbol="BTCUSD")
+        bars_eth = _make_bars([(50, 51, 49, 50)], symbol="ETHUSD")
+        bars = pd.concat([bars_btc, bars_eth], ignore_index=True)
+        actions_btc = _make_actions(
+            [{"buy_price": 0.0, "sell_price": 110.0, "trade_amount": 100}],
+            symbol="BTCUSD",
+        )
+        actions_eth = _make_actions(
+            [{"buy_price": 0.0, "sell_price": 0.0, "trade_amount": 0}],
+            symbol="ETHUSD",
+        )
+        actions = pd.concat([actions_btc, actions_eth], ignore_index=True)
+
+        result = run_shared_cash_simulation(
+            bars,
+            actions,
+            SimulationConfig(
+                maker_fee=0.0,
+                initial_cash=750.0,
+                initial_inventory_by_symbol={"BTCUSD": 1.5},
+                initial_cost_basis_by_symbol={"BTCUSD": 100.0},
+            ),
+        )
+
+        btc_trades = result.per_symbol["BTCUSD"].trades
+        assert len(btc_trades) == 1
+        assert btc_trades[0].side == "sell"
+        assert btc_trades[0].quantity == pytest.approx(1.5)
+        assert result.combined_equity.iloc[-1] == pytest.approx(915.0)
 
 
 # ---------------------------------------------------------------------------

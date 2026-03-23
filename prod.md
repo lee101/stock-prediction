@@ -2,7 +2,7 @@
 
 ## Active Deployments
 
-### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- RUNNING
+### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- BROKEN -- Gemini key revoked + RL obs mismatch
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`
 - **Launch**: `deployments/binance-hybrid-spot/launch.sh`
 - **Model**: Pufferlib robust_reg_tp005_ent (h1024 MLP, PPO) + RL-only fallback when Gemini unavailable
@@ -12,11 +12,12 @@
 - **Config**: obs_norm, wd=0.05, slip=8bps, tp=0.005, ent_anneal 0.08->0.02
 - **A40 sweep cost**: $0.53 for 50 trials
 - **Symbols**: BTCUSD, ETHUSD, SOLUSD, DOGEUSD, AAVEUSD, LINKUSD
-- **Mode**: Cross-margin, 5x leverage, hourly cycles
+- **Mode**: Cross-margin, leverage reduced from 5x to 0.5x
 - **Max hold**: 6h forced exit
 - **Fees**: 10bps maker
-- **Equity**: ~$2,500
+- **Equity**: ~$3,056 (down from ~$3,333 on Mar 21)
 - **Marketsim (30d Feb-Mar)**: +10.0%, Sort=8.74, 293 entries, 2.94% MaxDD
+- **RL signal broken**: Always outputs LONG_UNI due to 23-sym model fed 6-sym obs. Fix: action masking for tradable symbols.
 - **Eval command**:
   ```bash
   # Backtest is built into the bot's Chronos2 fallback path
@@ -87,9 +88,22 @@ bash scripts/deploy_crypto_model.sh <checkpoint_path> BTCUSD ETHUSD SOLUSD DOGEU
 bash scripts/deploy_crypto_model.sh --remove-rl
 ```
 
+## Security
+- API keys must go in `.env.binance-hybrid` (gitignored), never in supervisor.conf or code
+- Revoked key: `AIzaSyAHHu9-eq3YufxMcCFOWjpyff9pgrOXoX0` (already in git history, cannot be un-leaked)
+- Generate new key at Google AI Studio and place in `.env.binance-hybrid`
+
 ## Monitoring
 ```bash
 sudo supervisorctl status binance-hybrid-spot
 sudo tail -50 /var/log/supervisor/binance-hybrid-spot.log
 sudo tail -20 /var/log/supervisor/binance-hybrid-spot-error.log
 ```
+
+## Incidents
+
+### 2026-03-22 18:54 UTC -- Gemini API key revoked
+- **What**: Gemini API key revoked/leaked. Bot received 403 PERMISSION_DENIED for 13+ hours. RL fallback also broken due to obs mismatch (always outputs LONG_UNI for non-configured symbol). Both primary and fallback signals broken simultaneously. No trades executed.
+- **Impact**: Portfolio dropped from $3,333 (Mar 21) to $3,056 (Mar 23). Still holding 107.78 LINK (~$980).
+- **Root cause**: API key was hardcoded in supervisor.conf and committed to git. Google detected it as leaked.
+- **Remediation**: Move API key to gitignored `.env.binance-hybrid`, reduce leverage 5x->0.5x, add action masking to RL signal.
