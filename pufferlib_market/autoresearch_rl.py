@@ -2885,6 +2885,10 @@ def main():
     parser.add_argument("--init-best-config", type=str, default="",
                         help="Pre-seed best_config from a named experiment (e.g. 'v_rmu2201_style'). "
                              "Subsequent random mutations start from this config instead of TrialConfig() defaults.")
+    parser.add_argument("--lock-best-config", action="store_true", default=False,
+                        help="Never update best_config from trial results. All mutations always come from the "
+                             "init config (set via --init-best-config or defaults). Useful for broad random "
+                             "search around a known-good config without drift into bad regions.")
     parser.add_argument("--local", action="store_true",
                         help="Preset for local RTX GPU: sets --time-budget 60 if not overridden")
     parser.add_argument("--a40", action="store_true",
@@ -3321,9 +3325,11 @@ def main():
 
         # Track best
         rank_score = _safe_float(result.get("rank_score"))
+        _lock = getattr(args, "lock_best_config", False)
         if rank_score is not None and rank_score > best_rank_score:
             best_rank_score = rank_score
-            best_config = config
+            if not _lock:
+                best_config = config
             metric_name = str(result.get("rank_metric", "rank_score"))
             print(f"  *** NEW BEST {metric_name}={rank_score:.4f} ***")
         # Track best val_return separately (same scale as early-reject _quick_val_eval)
