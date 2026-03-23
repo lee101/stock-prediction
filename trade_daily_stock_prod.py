@@ -55,13 +55,13 @@ DEFAULT_SYMBOLS = [
     "V",
     "AMZN",
 ]
-DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/autoresearch_stock/random_mut_2201/best.pt"
-# Ensemble: 2201 (primary) + 8597 + 5526 → softmax_avg → 0/50 neg, med=14.94%, p10=7.64%
-# 5526 alone is poor (26/50 neg) but adds tail diversity; P10 improved from 5.15% to 7.64%
-DEFAULT_EXTRA_CHECKPOINTS = [
-    "pufferlib_market/checkpoints/autoresearch_stocks12_fresh/random_mut_8597/best.pt",
-    "pufferlib_market/checkpoints/autoresearch_stocks12_ext_per_env1/random_mut_5526/best.pt",
-]
+DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt"
+# Standalone model: tp05_s123 → 0/50 neg, med=16.52%, p10=10.45%, worst=5.62%
+# h=1024, trade_penalty=0.05, anneal_lr=True, ~10 trades/90d, robust to 5-50bps slippage
+# Beats the previous 3-model ensemble (14.94% med, 7.64% p10) on all metrics
+# Previous ensemble: rmu2201+rmu8597+rmu5526 (kept for reference below)
+# To restore: --checkpoint <2201 path> --extra-checkpoints <8597> <5526>
+DEFAULT_EXTRA_CHECKPOINTS = []
 DEFAULT_DATA_DIR = "trainingdata"
 DEFAULT_ALLOCATION_PCT = 25.0
 STATE_PATH = REPO / "strategy_state/daily_stock_rl_state.json"

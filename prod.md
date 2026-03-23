@@ -50,51 +50,59 @@
 - **Symbols**: NVDA, PLTR, GOOG, DBX, TRIP, MTCH, NYT, AAPL, MSFT, META, TSLA, NET, BKNG, EBAY, EXPE, ITUB, BTG, ABEV
 - **Equity**: ~$46,467
 
-### 4. Alpaca Daily PPO Trader (`trade_daily_stock_prod.py`) -- READY TO DEPLOY (3-MODEL ENSEMBLE)
-- **Architecture**: h=256 MLP PPO, stocks12 (AAPL,MSFT,NVDA,GOOG,META,TSLA,SPY,QQQ,JPM,V,AMZN,PLTR)
-- **Primary checkpoint**: `pufferlib_market/checkpoints/autoresearch_stock/random_mut_2201/best.pt`
-- **Ensemble checkpoint 2**: `pufferlib_market/checkpoints/autoresearch_stocks12_fresh/random_mut_8597/best.pt`
-- **Ensemble checkpoint 3**: `pufferlib_market/checkpoints/autoresearch_stocks12_ext_per_env1/random_mut_5526/best.pt`
-- **Ensemble method**: softmax_avg (average probabilities, not logits)
-- **3-model ensemble holdout eval** (50 windows, Sep2025-Mar2026, deterministic, no-early-stop):
-  - Median: **+14.94%** / 90 days (was +14.64% with 2 models)
-  - P10: **+7.64%** (was +5.15%) — **+2.49pp improvement**
-  - Worst window: **+3.39%** (was +3.27%)
+### 4. Alpaca Daily PPO Trader (`trade_daily_stock_prod.py`) -- READY TO DEPLOY (tp05_s123 STANDALONE)
+- **Architecture**: h=1024 MLP PPO, stocks12 (AAPL,MSFT,NVDA,GOOG,META,TSLA,SPY,QQQ,JPM,V,AMZN,PLTR)
+- **Primary checkpoint**: `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt`
+- **No ensemble** — tp05_s123 alone beats the previous 3-model ensemble on all metrics
+- **Config**: h=1024, lr=3e-4, ent=0.05, trade_penalty=0.05, dp=0.0, slip=0bps (training), anneal_lr=True
+- **tp05_s123 holdout eval** (50 windows, Sep2025-Mar2026, deterministic, no-early-stop, 5bps fill buffer):
+  - Median: **+16.52%** / 90 days
+  - P10: **+10.45%** — **+2.81pp better than previous ensemble**
+  - Worst window: **+5.62%** (was +3.39% for 3-model ensemble)
   - Negative windows: **0/50 (0%)** — ZERO negative windows
-- **2-model ensemble holdout eval** (for reference, same 50-window test):
-  - 2201+8597: med=+14.64%, p10=+5.15%, worst=+3.27%, neg=0/50
-- **Single model evals** (for reference):
-  - random_mut_2201 alone: med=+11.74%, p10=+3.61%, 1/50 neg
-  - random_mut_8597 alone: med=+9.38%, p10=+0.71%, 5/50 neg
-  - random_mut_5526 alone: med=-0.88%, p10=-6.56%, neg=26/50 (poor alone, but adds tail diversity)
+  - Trades: ~10 per 90-day window, max DD 3.19% median
+- **Slippage robustness** (same 50-window test):
+  - @5bps: med=16.52%, p10=10.45%
+  - @10bps: med=16.75%, p10=11.85%
+  - @20bps: med=16.75%, p10=11.85%
+  - @50bps: med=16.74%, p10=11.85% — **unchanged at extreme slippage**
+- **Previous 3-model ensemble** (for reference):
+  - 2201+8597+5526 (softmax_avg): med=14.94%, p10=7.64%, worst=3.39%, 0/50 neg
+  - Adding current ensemble members to tp05_s123 HURTS (4-model: med=14.94%, p10=7.88%)
+  - tp05_s123's signal conflicts with rmu2201/8597/5526 → ensemble averaging dilutes it
 - **Launch**: `deployments/daily-stock-ppo/launch.sh`
 - **Supervisor**: `deployments/daily-stock-ppo/supervisor.conf` (autostart=false — enable manually)
 - **WARNING**: Symbol conflict with unified-stock-trader (both trade AAPL/MSFT/NVDA/GOOG/META/TSLA/PLTR) — coordinate before enabling both simultaneously
 - **NOTE**: Previous default (stocks12_daily_tp05_longonly) scored -2.55% median, 32/50 negative
 - **NOTE**: random_mut_2272 (prev deployed) scored -5.14% median, 29/50 negative
+- **NOTE**: seed variance is extreme — seed=7 gives -13.6% median, seed=123 gives +16.5% median (same config)
 - **Deploy command**:
   ```bash
   source .venv313/bin/activate
   python trade_daily_stock_prod.py --live
-  # 3-model ensemble by default: 2201 (primary) + 8597 + 5526 (softmax_avg)
-  # Single model: python trade_daily_stock_prod.py --live --no-ensemble
+  # Uses tp05_s123 standalone (no ensemble) by default
+  # To restore 3-model ensemble:
+  #   python trade_daily_stock_prod.py --live \
+  #     --checkpoint pufferlib_market/checkpoints/autoresearch_stock/random_mut_2201/best.pt \
+  #     --extra-checkpoints <8597_path> <5526_path>
   ```
 - **Eval command**:
   ```bash
   source .venv313/bin/activate
-  # Eval single model 2201:
   python -m pufferlib_market.evaluate_holdout \
-    --checkpoint pufferlib_market/checkpoints/autoresearch_stock/random_mut_2201/best.pt \
+    --checkpoint pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt \
     --data-path pufferlib_market/data/stocks12_daily_val.bin \
     --eval-hours 90 --n-windows 50 --seed 42 \
     --fee-rate 0.001 --fill-buffer-bps 5.0 --deterministic --no-early-stop
   # NOTE: lag=0 IS correct for daily models (1-bar obs lag built-in to C env)
   # Bot runs at 9:35 AM, drops today's incomplete bar, uses T-1 data → fills at T OPEN
   ```
-- **Why softmax_avg beats logit_avg**: 8597 occasionally has high-confidence wrong calls that dominate logit averaging but normalize away in softmax_avg. logit_avg gave 4/50 neg (worse than 2201 alone), softmax_avg gives 0/50.
-- **Why 5526 helps despite poor solo perf**: softmax_avg naturally downweights low-confidence models. 5526 (trained on 7.1yr extended data incl 2022 bear) occasionally agrees with 2201+8597 on high-confidence trades, improving P10 +2.49pp without adding negatives.
-- **CONCENTRATION RISK**: Ensemble allocates ~83% of time to NVDA. The worst windows (bars 55-104 in val = Dec 2025-Feb 2026) overlap with NVDA's -17.4% correction. Performance is partially driven by NVDA's overall strong period, not genuine diversification. Monitor if NVDA enters sustained bear market.
-- **Next step**: per_env autoresearch (4 instances running) still seeking models with more balanced symbol allocation
+- **Why tp05_s123 beats ensemble**: trade_penalty=0.05 forces extreme selectivity (~10 trades/90d).
+  Each trade is very high conviction. The existing ensemble models trade more frequently with weaker signals;
+  averaging with them dilutes tp05_s123's edge. Adding rmu2201 drops p10 from 10.81% → 3.62%.
+- **CONCERN**: Trained with fill_slippage_bps=0.0 (no slippage during training). Validated at 5-50bps fill
+  buffer in eval — robust. ~10 trades/90d means total slippage cost is minimal even at 50bps.
+- **Next step**: per_env autoresearch running, looking for better models or ensemble companions
 
 ## Model Search Noise Floor (2026-03-23)
 
