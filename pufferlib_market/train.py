@@ -948,8 +948,12 @@ def train(args):
             f" ns_steps={args.muon_ns_steps}, adamw_lr={args.muon_adamw_lr})"
         )
     else:
-        optimizer = optim.AdamW(policy.parameters(), lr=args.lr, eps=1e-5,
-                                weight_decay=args.weight_decay)
+        _adamw_kwargs: dict = dict(lr=args.lr, eps=1e-5, weight_decay=args.weight_decay)
+        # fused=True uses a single CUDA kernel per parameter group instead of
+        # per-tensor ops — measurably faster on CUDA (PyTorch 2.0+).
+        if device.type == "cuda":
+            _adamw_kwargs["fused"] = True
+        optimizer = optim.AdamW(policy.parameters(), **_adamw_kwargs)
     total_params = sum(p.numel() for p in policy.parameters())
     print(f"  Policy: {total_params:,} params ({total_params * 4 / 1e6:.1f} MB)")
     action_meta = {
@@ -1048,10 +1052,13 @@ def train(args):
                 _graph_forward()
         torch.cuda.synchronize()
 
-        # Capture
+        # Capture: use no_grad (not inference_mode) inside the graph context.
+        # inference_mode as outer context marks policy parameters as inference
+        # tensors, causing "inplace update outside InferenceMode" errors when the
+        # PPO update graph later tries to update those same parameters.
         _inference_graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(_inference_graph):
-            with torch.inference_mode():
+            with torch.no_grad():
                 _graph_forward()
         torch.cuda.synchronize()
         print("  CUDA graph captured for rollout inference")
@@ -1107,23 +1114,27 @@ def train(args):
     if device.type == "cuda" and not _use_cuda_graph_ppo:
         try:
             _compiled_ppo_loss = torch.compile(_ppo_loss_fn, mode="reduce-overhead", fullgraph=True)
-            # Warmup compile with dummy data
+            # Warmup compile with dummy data of the same shape as the real minibatches.
+            # Using args.minibatch_size avoids a shape mismatch that would trigger
+            # recompilation on the first real PPO update.
             policy.train()
-            _dummy_obs = torch.randn(2048, obs_size, device=device)
-            _dummy_act = torch.randint(0, num_actions, (2048,), device=device)
-            _dummy_lp = torch.zeros(2048, device=device)
-            _dummy_adv = torch.zeros(2048, device=device)
-            _dummy_ret = torch.zeros(2048, device=device)
-            _dummy_val = torch.zeros(2048, device=device)
+            _dummy_obs = torch.randn(args.minibatch_size, obs_size, device=device)
+            _dummy_act = torch.randint(0, num_actions, (args.minibatch_size,), device=device)
+            _dummy_lp = torch.zeros(args.minibatch_size, device=device)
+            _dummy_adv = torch.zeros(args.minibatch_size, device=device)
+            _dummy_ret = torch.zeros(args.minibatch_size, device=device)
+            _dummy_val = torch.zeros(args.minibatch_size, device=device)
             _clip_t = torch.tensor(0.2, device=device)
             _vf_t = torch.tensor(0.5, device=device)
             _ent_t = torch.tensor(0.01, device=device)
             for _ in range(3):
+                optimizer.zero_grad()
                 _l, _, _, _ = _compiled_ppo_loss(policy, _dummy_obs, _dummy_act, _dummy_lp,
                                                   _dummy_adv, _dummy_ret, _dummy_val,
                                                   _clip_t, _vf_t, _ent_t, False)
                 _l.backward()
-                optimizer.zero_grad()
+            # Clear gradients left over from the warmup before training starts.
+            optimizer.zero_grad()
             torch.cuda.synchronize()
             del _dummy_obs, _dummy_act, _dummy_lp, _dummy_adv, _dummy_ret, _dummy_val, _l
             print("  torch.compile: PPO loss compiled (reduce-overhead, fullgraph=True)")
@@ -1325,8 +1336,11 @@ def train(args):
                 act_buf[:] = action.cpu().numpy().astype(np.int32)
 
             binding.vec_step(vec_handle)
-            buf_reward[step] = torch.from_numpy(rew_buf.copy())
-            buf_done[step] = torch.from_numpy(term_buf.copy().astype(np.float32))
+            # from_numpy shares memory with the C buffer; the __setitem__ on
+            # buf_reward/buf_done immediately copies values into the pre-allocated
+            # tensor, so no explicit numpy .copy() is needed here.
+            buf_reward[step] = torch.from_numpy(rew_buf)
+            buf_done[step] = torch.from_numpy(term_buf.astype(np.float32))
             global_step += N
 
         # ── Compute advantages ──
