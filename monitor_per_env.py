@@ -28,11 +28,10 @@ CHECKPOINT_ROOTS = {
     "ext_focused2": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_focused2",
 }
 
-# Current 3-model ensemble (2201+8597+5526): med=14.94%, p10=7.64%, 0/50 neg
+# Current production: tp05_s123 standalone: med=16.52%, p10=10.45%, worst=5.62%, 0/50 neg
+# (Previous 3-model ensemble 2201+8597+5526 was med=14.94%, p10=7.64% — tp05 beats it solo)
 ENSEMBLE_CKPTS = [
-    "pufferlib_market/checkpoints/autoresearch_stock/random_mut_2201/best.pt",
-    "pufferlib_market/checkpoints/autoresearch_stocks12_fresh/random_mut_8597/best.pt",
-    "pufferlib_market/checkpoints/autoresearch_stocks12_ext_per_env1/random_mut_5526/best.pt",
+    "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt",
 ]
 
 VAL_DATA = "pufferlib_market/data/stocks12_daily_val.bin"
@@ -104,9 +103,9 @@ ensemble3 = EnsembleTrader({ensemble_ckpts!r} + [new_ckpt], num_symbols=val_data
 ensemble3_fn = ensemble3.get_policy_fn(deterministic=True)
 
 results = {{}}
-results['current_ensemble'] = eval_policy(ensemble_fn, '2201+8597+5526')
+results['current_ensemble'] = eval_policy(ensemble_fn, 'tp05_s123')
 results['candidate'] = eval_policy(new_fn, 'new_candidate')
-results['ensemble4'] = eval_policy(ensemble3_fn, '2201+8597+5526+new')
+results['ensemble4'] = eval_policy(ensemble3_fn, 'tp05_s123+new')
 print(json.dumps(results, indent=2))
 """
 
@@ -222,15 +221,15 @@ def main():
                 if result is not None:
                     ens2 = result['current_ensemble']
                     cand_r = result['candidate']
-                    ens3 = result['ensemble3']
-                    print(f"  Current ensemble (2201+8597): med={ens2['med']:.2f}% p10={ens2['p10']:.2f}% neg={ens2['neg']}/50")
+                    ens3 = result['ensemble4']
+                    print(f"  Current (tp05_s123 alone):    med={ens2['med']:.2f}% p10={ens2['p10']:.2f}% neg={ens2['neg']}/50")
                     print(f"  Candidate alone:              med={cand_r['med']:.2f}% p10={cand_r['p10']:.2f}% neg={cand_r['neg']}/50")
-                    print(f"  3-model ensemble:             med={ens3['med']:.2f}% p10={ens3['p10']:.2f}% neg={ens3['neg']}/50")
-                    improvement = ens3['neg'] <= ens2['neg'] and ens3['med'] >= ens2['med'] - 1.0
+                    print(f"  2-model (tp05+new):           med={ens3['med']:.2f}% p10={ens3['p10']:.2f}% neg={ens3['neg']}/50")
+                    improvement = ens3['neg'] <= ens2['neg'] and ens3['p10'] >= ens2['p10'] - 0.5
                     if improvement:
-                        print(f"  *** IMPROVES ENSEMBLE! Add {desc}/best.pt to ensemble ***")
+                        print(f"  *** IMPROVES BASELINE! Add {desc}/best.pt alongside tp05_s123 ***")
                     else:
-                        print(f"  Does not improve ensemble (neg: {ens2['neg']}→{ens3['neg']}, med: {ens2['med']:.1f}→{ens3['med']:.1f})")
+                        print(f"  Does not improve baseline (neg: {ens2['neg']}→{ens3['neg']}, p10: {ens2['p10']:.1f}→{ens3['p10']:.1f})")
                     result['checkpoint'] = ckpt
                     result['raw_score_20win'] = score
                     save_deep_eval(lb_path, desc, result)

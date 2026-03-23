@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 3-model ensemble PPO daily stock trader
+# Standalone PPO daily stock trader: tp05_s123 (h=1024, trade_penalty=0.05)
 # Runs once daily at ~9:35 AM ET, signals via Alpaca live API
-# Ensemble: random_mut_2201 + random_mut_8597 + random_mut_5526 (softmax_avg)
-# Val: 0/50 negative windows, med=+14.94%/90d, p10=+7.64%/90d
+# Val: 0/50 negative windows, med=+16.52%/90d, p10=+10.45%/90d, worst=+5.62%
 
 cd /nvme0n1-disk/code/stock-prediction
 source .venv313/bin/activate
