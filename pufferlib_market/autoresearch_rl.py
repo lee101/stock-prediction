@@ -1412,8 +1412,55 @@ STOCK_EXPERIMENTS: list[dict] = [
      "trade_penalty": 0.05, "obs_norm": False, "lr_schedule": "cosine",
      "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05, "anneal_lr": True, "seed": 42},
 
+    # -----------------------------------------------------------------------
+    # U-block: GRPO + winning formula seed sweep (added 2026-03-23)
+    #
+    # r_grpo_wd01_tp05_slip5 scored -5.81 (val_ret=0.1693, val_sort=1.59) —
+    # almost as good as s123 (-4.05) at 90s budget. GRPO advantage norm with
+    # group_size=8, mix=0.25, clip=1.5 is a strong combination.
+    # Strategy: sweep 20 seeds of GRPO+winning formula to find best GRPO seed.
+    # Plus: GRPO+s123 with different mix ratios and group sizes.
+    # -----------------------------------------------------------------------
+    # (A) GRPO seed sweep with winning formula
+    *[{"description": f"u_grpo_s{s}",
+       "advantage_norm": "group_relative", "group_relative_size": 8,
+       "group_relative_mix": 0.25, "group_relative_clip": 1.5,
+       "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+       "seed": s}
+      for s in [123, 5678, 314, 200, 400, 500, 600, 700, 800, 900,
+                1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 9999]],
+
+    # (B) GRPO mix ratio variations with s123 (best seed so far)
+    {"description": "u_grpo_mix0_s123",
+     "advantage_norm": "group_relative", "group_relative_size": 8,
+     "group_relative_mix": 0.0, "group_relative_clip": 1.5,
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+     "seed": 123},
+    {"description": "u_grpo_mix15_s123",
+     "advantage_norm": "group_relative", "group_relative_size": 8,
+     "group_relative_mix": 0.15, "group_relative_clip": 1.5,
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+     "seed": 123},
+    {"description": "u_grpo_mix50_s123",
+     "advantage_norm": "group_relative", "group_relative_size": 8,
+     "group_relative_mix": 0.5, "group_relative_clip": 1.5,
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+     "seed": 123},
+
+    # (C) GRPO group size variations with s123
+    {"description": "u_grpo_gs4_s123",
+     "advantage_norm": "group_relative", "group_relative_size": 4,
+     "group_relative_mix": 0.25, "group_relative_clip": 1.5,
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+     "seed": 123},
+    {"description": "u_grpo_gs16_s123",
+     "advantage_norm": "group_relative", "group_relative_size": 16,
+     "group_relative_mix": 0.25, "group_relative_clip": 1.5,
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+     "seed": 123},
+
     # Random mutations — slots so H100 1000-trial runs get ~800+ random trials.
-    # H100 uses --start-from 187 --seed-only (O-block first, then random seeds).
+    # best_config is pre-seeded with winning formula when stocks_mode+seed_only.
     # Each slot calls mutate_config(best_config) at runtime.
     *[{"description": f"random_{i}"} for i in range(1, 1001)],
 ]
@@ -2940,7 +2987,25 @@ def main():
     best_rank_score = -float("inf")
     best_val_return = -float("inf")  # tracked separately — same scale as _quick_val_eval
     best_combined_score = _best_tracker.get_best(_track)
-    best_config = TrialConfig()
+
+    # In stocks_mode + seed_only: pre-seed best_config with the confirmed winning formula
+    # (lr=3e-4, wd=0.01, tp=0.05, slip=5bps, h=1024, anneal_lr=True) so that all random
+    # seed_only mutations use this formula from trial 1, even with --start-from 301.
+    # Without this, seed_only mutations of the default TrialConfig() have wd=0/tp=0/slip=0
+    # which ALL collapse to hold-cash on stocks11_2012.
+    _seed_only = getattr(args, "seed_only", False)
+    if getattr(args, "stocks", False) and _seed_only:
+        best_config = TrialConfig(
+            weight_decay=0.01,
+            trade_penalty=0.05,
+            fill_slippage_bps=5.0,
+            lr=3e-4,
+            anneal_lr=True,
+            hidden_size=1024,
+            ent_coef=0.05,
+        )
+    else:
+        best_config = TrialConfig()
 
     trial_num = len(existing_trials)
 
