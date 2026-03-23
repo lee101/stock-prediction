@@ -50,18 +50,23 @@
 - **Symbols**: NVDA, PLTR, GOOG, DBX, TRIP, MTCH, NYT, AAPL, MSFT, META, TSLA, NET, BKNG, EBAY, EXPE, ITUB, BTG, ABEV
 - **Equity**: ~$46,467
 
-### 4. Alpaca Daily PPO Trader (`trade_daily_stock_prod.py`) -- READY TO DEPLOY (ENSEMBLE)
+### 4. Alpaca Daily PPO Trader (`trade_daily_stock_prod.py`) -- READY TO DEPLOY (3-MODEL ENSEMBLE)
 - **Architecture**: h=256 MLP PPO, stocks12 (AAPL,MSFT,NVDA,GOOG,META,TSLA,SPY,QQQ,JPM,V,AMZN,PLTR)
 - **Primary checkpoint**: `pufferlib_market/checkpoints/autoresearch_stock/random_mut_2201/best.pt`
-- **Ensemble checkpoint**: `pufferlib_market/checkpoints/autoresearch_stocks12_fresh/random_mut_8597/best.pt`
+- **Ensemble checkpoint 2**: `pufferlib_market/checkpoints/autoresearch_stocks12_fresh/random_mut_8597/best.pt`
+- **Ensemble checkpoint 3**: `pufferlib_market/checkpoints/autoresearch_stocks12_ext_per_env1/random_mut_5526/best.pt`
 - **Ensemble method**: softmax_avg (average probabilities, not logits)
-- **Ensemble holdout eval** (50 windows, Sep2025-Mar2026, deterministic, no-early-stop):
-  - Median: **+13.57%** / 90 days
-  - P10: **+4.03%** (worst window: **+3.39%**)
+- **3-model ensemble holdout eval** (50 windows, Sep2025-Mar2026, deterministic, no-early-stop):
+  - Median: **+14.94%** / 90 days (was +14.64% with 2 models)
+  - P10: **+7.64%** (was +5.15%) — **+2.49pp improvement**
+  - Worst window: **+3.39%** (was +3.27%)
   - Negative windows: **0/50 (0%)** — ZERO negative windows
+- **2-model ensemble holdout eval** (for reference, same 50-window test):
+  - 2201+8597: med=+14.64%, p10=+5.15%, worst=+3.27%, neg=0/50
 - **Single model evals** (for reference):
   - random_mut_2201 alone: med=+11.74%, p10=+3.61%, 1/50 neg
   - random_mut_8597 alone: med=+9.38%, p10=+0.71%, 5/50 neg
+  - random_mut_5526 alone: med=-0.88%, p10=-6.56%, neg=26/50 (poor alone, but adds tail diversity)
 - **Launch**: `deployments/daily-stock-ppo/launch.sh`
 - **Supervisor**: `deployments/daily-stock-ppo/supervisor.conf` (autostart=false — enable manually)
 - **WARNING**: Symbol conflict with unified-stock-trader (both trade AAPL/MSFT/NVDA/GOOG/META/TSLA/PLTR) — coordinate before enabling both simultaneously
@@ -71,7 +76,7 @@
   ```bash
   source .venv313/bin/activate
   python trade_daily_stock_prod.py --live
-  # Ensemble by default: 2201 (primary) + 8597 (softmax_avg)
+  # 3-model ensemble by default: 2201 (primary) + 8597 + 5526 (softmax_avg)
   # Single model: python trade_daily_stock_prod.py --live --no-ensemble
   ```
 - **Eval command**:
@@ -87,8 +92,9 @@
   # Bot runs at 9:35 AM, drops today's incomplete bar, uses T-1 data → fills at T OPEN
   ```
 - **Why softmax_avg beats logit_avg**: 8597 occasionally has high-confidence wrong calls that dominate logit averaging but normalize away in softmax_avg. logit_avg gave 4/50 neg (worse than 2201 alone), softmax_avg gives 0/50.
+- **Why 5526 helps despite poor solo perf**: softmax_avg naturally downweights low-confidence models. 5526 (trained on 7.1yr extended data incl 2022 bear) occasionally agrees with 2201+8597 on high-confidence trades, improving P10 +2.49pp without adding negatives.
 - **CONCENTRATION RISK**: Ensemble allocates ~83% of time to NVDA. The worst windows (bars 55-104 in val = Dec 2025-Feb 2026) overlap with NVDA's -17.4% correction. Performance is partially driven by NVDA's overall strong period, not genuine diversification. Monitor if NVDA enters sustained bear market.
-- **Next step**: per_env autoresearch should find models with more balanced symbol allocation (4 instances running: autoresearch_stocks12_per_env{1,2,3,4})
+- **Next step**: per_env autoresearch (4 instances running) still seeking models with more balanced symbol allocation
 
 ## Model Search Noise Floor (2026-03-23)
 
