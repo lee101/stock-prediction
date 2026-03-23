@@ -62,7 +62,9 @@
 - **Single model evals** (for reference):
   - random_mut_2201 alone: med=+11.74%, p10=+3.61%, 1/50 neg
   - random_mut_8597 alone: med=+9.38%, p10=+0.71%, 5/50 neg
-- **NOTE**: No supervisor config yet — must start manually or add supervisor entry
+- **Launch**: `deployments/daily-stock-ppo/launch.sh`
+- **Supervisor**: `deployments/daily-stock-ppo/supervisor.conf` (autostart=false — enable manually)
+- **WARNING**: Symbol conflict with unified-stock-trader (both trade AAPL/MSFT/NVDA/GOOG/META/TSLA/PLTR) — coordinate before enabling both simultaneously
 - **NOTE**: Previous default (stocks12_daily_tp05_longonly) scored -2.55% median, 32/50 negative
 - **NOTE**: random_mut_2272 (prev deployed) scored -5.14% median, 29/50 negative
 - **Deploy command**:
