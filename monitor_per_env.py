@@ -15,22 +15,24 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 LEADERBOARDS = [
-    "autoresearch_stocks12_per_env1_leaderboard.csv",
-    "autoresearch_stocks12_per_env2_leaderboard.csv",
     "autoresearch_stocks12_ext_per_env1_leaderboard.csv",
     "autoresearch_stocks12_ext_per_env2_leaderboard.csv",
+    "autoresearch_stocks12_ext_focused1_leaderboard.csv",
+    "autoresearch_stocks12_ext_focused2_leaderboard.csv",
 ]
 
 CHECKPOINT_ROOTS = {
-    "per_env1": "pufferlib_market/checkpoints/autoresearch_stocks12_per_env1",
-    "per_env2": "pufferlib_market/checkpoints/autoresearch_stocks12_per_env2",
     "ext_per_env1": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_per_env1",
     "ext_per_env2": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_per_env2",
+    "ext_focused1": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_focused1",
+    "ext_focused2": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_focused2",
 }
 
+# Current 3-model ensemble (2201+8597+5526): med=14.94%, p10=7.64%, 0/50 neg
 ENSEMBLE_CKPTS = [
     "pufferlib_market/checkpoints/autoresearch_stock/random_mut_2201/best.pt",
     "pufferlib_market/checkpoints/autoresearch_stocks12_fresh/random_mut_8597/best.pt",
+    "pufferlib_market/checkpoints/autoresearch_stocks12_ext_per_env1/random_mut_5526/best.pt",
 ]
 
 VAL_DATA = "pufferlib_market/data/stocks12_daily_val.bin"
@@ -102,9 +104,9 @@ ensemble3 = EnsembleTrader({ensemble_ckpts!r} + [new_ckpt], num_symbols=val_data
 ensemble3_fn = ensemble3.get_policy_fn(deterministic=True)
 
 results = {{}}
-results['current_ensemble'] = eval_policy(ensemble_fn, '2201+8597')
+results['current_ensemble'] = eval_policy(ensemble_fn, '2201+8597+5526')
 results['candidate'] = eval_policy(new_fn, 'new_candidate')
-results['ensemble3'] = eval_policy(ensemble3_fn, '2201+8597+new')
+results['ensemble4'] = eval_policy(ensemble3_fn, '2201+8597+5526+new')
 print(json.dumps(results, indent=2))
 """
 
@@ -196,10 +198,10 @@ def main():
     print()
 
     roots = [
-        "pufferlib_market/checkpoints/autoresearch_stocks12_per_env1",
-        "pufferlib_market/checkpoints/autoresearch_stocks12_per_env2",
         "pufferlib_market/checkpoints/autoresearch_stocks12_ext_per_env1",
         "pufferlib_market/checkpoints/autoresearch_stocks12_ext_per_env2",
+        "pufferlib_market/checkpoints/autoresearch_stocks12_ext_focused1",
+        "pufferlib_market/checkpoints/autoresearch_stocks12_ext_focused2",
     ]
 
     while True:
