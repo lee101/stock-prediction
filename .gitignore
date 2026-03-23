@@ -1,17 +1,11 @@
-# =============================================================================
 # Claude Code worktrees and supervisor
-# =============================================================================
 .claude/worktrees/
 supervisor/
 
-# =============================================================================
 # Profiling outputs
-# =============================================================================
 profiles/
 
-# =============================================================================
 # Virtual environments and caches
-# =============================================================================
 .venv
 .venv311/
 .venv312
@@ -30,11 +24,10 @@ profiles/
 .env
 .env2
 .env.local
+.env.binance-hybrid
 .envrc
 
-# =============================================================================
 # Python artifacts
-# =============================================================================
 __pycache__
 __pycache__*
 *.egg-info/
@@ -51,9 +44,7 @@ htmlcov/
 *.cover
 .hypothesis/
 
-# =============================================================================
 # Model weights and checkpoints
-# =============================================================================
 *.pt
 *.pth
 *.npz
@@ -61,9 +52,7 @@ htmlcov/
 checkpoints
 compiled_models/
 
-# =============================================================================
 # Training data directories
-# =============================================================================
 trainingdata
 trainingdata/
 trainingdata2/
@@ -84,9 +73,7 @@ binance_spot_*/
 tradingdata/
 tradingdatahourly/
 
-# =============================================================================
 # Stale/legacy data directories (canonical: hyperparams/, preaugstrategies/)
-# =============================================================================
 chronos2
 crypto_improved/
 kronos/
@@ -95,9 +82,7 @@ hyperparams_quick/
 hyperparams_compile_compare/
 hyperparams_optimized_all/
 
-# =============================================================================
 # Hyperparams and strategy configs (generated, not source)
-# =============================================================================
 best/
 hyperparams/best/
 hyperparams/chronos2/
@@ -106,9 +91,7 @@ hyperparams/close_policy
 preaugstrategies/chronos2/
 preaugstrategies/best/
 
-# =============================================================================
 # Experiment directories and artifacts
-# =============================================================================
 experiments/*/
 experiments/**/*.json
 experiments/**/*.md
@@ -131,9 +114,7 @@ experiments/alpaca_stock_modern_rlcuda_*/
 experiments/v13_results/
 experimental/
 
-# =============================================================================
 # Logs and results
-# =============================================================================
 logs
 logs/pnl/
 *.log
@@ -156,9 +137,7 @@ scratch.txt
 scratches
 metric_history.json
 
-# =============================================================================
 # Training module artifacts
-# =============================================================================
 training/traininglogs
 training/models
 training/training
@@ -201,9 +180,7 @@ tototraining/priority_models/
 kronostraining/artifacts/checkpoints
 kronostraining/artifacts
 
-# =============================================================================
 # Model/data directories
-# =============================================================================
 toto
 models
 predictions/
@@ -218,9 +195,7 @@ reports
 runs
 forecast_cache
 
-# =============================================================================
 # Market sim and backtesting
-# =============================================================================
 simulationresults
 simulation_results/
 portfolio_sim_results/
@@ -233,9 +208,7 @@ pnlforecast_cache/
 pnlforecast_results/
 multivariate_group_results/
 
-# =============================================================================
 # RL training artifacts
-# =============================================================================
 rlinference/models
 rlinference/logs
 rlinference/data
@@ -251,25 +224,19 @@ pufferlib_market/auto_improve_results.json
 rl-trading
 rlinc_market/rlinc_cmarket.cpython-312-x86_64-linux-gnu.so
 
-# =============================================================================
 # Differentiable Market experiment artifacts
-# =============================================================================
 differentiable_market/experiment_runs/
 differentiable_market/experiment_runs_*/
 differentiable_market/runs/
 differentiable_market/evals
 
-# =============================================================================
 # Gym RL artifacts
-# =============================================================================
 gymrl/artifacts/
 gymrl/runs/
 gymrl/gymrl.egg-info/
 gymrl/cache
 
-# =============================================================================
 # Binance experiment artifacts
-# =============================================================================
 binance*/checkpoints/
 binance*/forecast_cache*/
 binance*/chronos_finetuned/
@@ -293,9 +260,7 @@ binanceneural/forecast_cache_backup/
 binanceneural/binanceneural/forecast_cache/
 binanceneural/deep_sweep_results/
 
-# =============================================================================
 # Alpaca experiment artifacts
-# =============================================================================
 alpacawide/
 alpacanewccrosslearning/outputs/
 alpacanewccrosslearning/forecast_cache/
@@ -310,40 +275,30 @@ alpaca_go/.env
 alpaca_go/.watcher_state/
 alpaca_cli_paper.log*
 
-# =============================================================================
 # Crypto experiment artifacts
-# =============================================================================
 cryptoalpacaexperiment/checkpoints/
 cryptoalpacaexperiment/forecast_cache/
 chronos2_finetuned/
 chronos2_benchmarks
 
-# =============================================================================
 # Hourly crypto training artifacts
-# =============================================================================
 hourlycryptotraining/checkpoints/
 hourlycryptotraining/checkpoints_*
 hourlycryptotraining/forecast_cache_hourly/
 hourlycryptomarketsimulator/*.csv
 
-# =============================================================================
 # Neural daily training artifacts
-# =============================================================================
 neuraldailytraining/checkpoints/
 neuraldailyv4/checkpoints/
 neuraldailyv3timed/checkpoints/
 
-# =============================================================================
 # Unified hourly experiment artifacts
-# =============================================================================
 unified_hourly_experiment/forecast_cache/
 unified_hourly_experiment/checkpoints/
 unified_hourly_experiment/marketsimulator/native/
 unified_hourly_experiment/leverage_sweep_results.json
 
-# =============================================================================
 # Other experiment module artifacts
-# =============================================================================
 FastForecaster/seed_sweeps/
 FastForecaster/sweeps/
 fastforecaster2/
@@ -363,9 +318,7 @@ autoresearch_crypto/experiments/
 autoresearch_stock/experiments/
 autoresearch_stock/prompts/
 
-# =============================================================================
 # Strategy and portfolio artifacts
-# =============================================================================
 strategy_state/
 strategy_state/binance_holdings_snapshots.db
 current_state_config/
@@ -385,9 +338,7 @@ quick_results_20251101_042457.csv
 workstealingsimulator/full_strategy_dataset_20251101_211202_strategy_performance.parquet
 workstealingsimulator/full_strategy_dataset_20251101_211202_trades.parquet
 
-# =============================================================================
 # Strategytraining artifacts
-# =============================================================================
 strategytraining/datasets/
 strategytraining/reports/
 strategytraining/benchmark_results/
@@ -396,9 +347,7 @@ strategytraining/forecast_cache_backup_20251130_091549/
 stategytraining/forecast_cache/
 strategytraining2/datasets/
 
-# =============================================================================
 # Wandb and tensorboard
-# =============================================================================
 wandb/
 wandb
 tensorboard_logs/
@@ -406,9 +355,7 @@ lightning_logs
 lightning_logs*
 lightning_logsminute
 
-# =============================================================================
 # External and third-party
-# =============================================================================
 external
 external/kronos/
 SCINet/
@@ -419,18 +366,14 @@ cutedsl
 pynvml
 TimingBot/
 
-# =============================================================================
 # Deploy and infra
-# =============================================================================
 deployments/
 supervisor/
 githubagent/actions-runner/externals/
 githubagent/actions-runner/externals/bin
 githubagent/actions-runner/bin
 
-# =============================================================================
 # Progress/tracking docs
-# =============================================================================
 currentlyrunning.md
 *progress*.md
 !alpacaprogress.md
@@ -443,9 +386,7 @@ LEVERAGE_ANALYSIS_RESULTS.md
 BACKTESTING_SUMMARY.md
 BACKTESTING_README.md
 
-# =============================================================================
 # Temp files and misc
-# =============================================================================
 tmp*
 *.bak
 /1
@@ -477,16 +418,12 @@ stock_test.db
 stock.db
 marketsimulator/environment.py
 
-# =============================================================================
 # Scripts (one-off/generated)
-# =============================================================================
 scripts/queue_followups.sh
 scripts/cron_*.txt
 scripts/monitor_*.sh
 
-# =============================================================================
 # Experimental tests
-# =============================================================================
 tests/test_alpaca_data_wrapper_backfill.py
 tests/test_bagsfm_*.py
 tests/test_bags*.py
@@ -517,9 +454,6 @@ tests/prod/cli/test_binance*.py
 # Experimental data utilities
 src/metrics_utils.py
 
-# =============================================================================
-# Allow tracked source model implementations
-# =============================================================================
 !src/models/
 src/models/__pycache__/
 src/models/__pycache__/**
@@ -527,9 +461,7 @@ src/models/__pycache__/**
 !src/models/**/*.py
 !ctrader/models/.gitkeep
 
-# =============================================================================
 # Root-level convenience copies (originals live in src/)
-# =============================================================================
 /advanced_position_sizing.py
 /allocation_utils.py
 /alpaca_utils.py
@@ -689,18 +621,16 @@ binanceleveragesui/run_step3_only.py
 binanceleveragesui/test_probe_strategy.py
 binanceleveragesui/train_with_buffer.py
 
-# =============================================================================
 # Large unused venvs
-# =============================================================================
 
 # Live trading
 bagsfm_state.json
 
-# =============================================================================
 # Runtime caches and state (sensitive/ephemeral)
-# =============================================================================
 **/signal_cache/
+*.prof
 **/gemini_cache_eval/
 **/live_state.json
 chronos2_long
 profile_output/
+deployments/

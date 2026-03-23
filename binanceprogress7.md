@@ -1,114 +1,209 @@
-# Progress Report: Daily RL Deployment Decision (2026-03-16)
+# Binance Model Refresh Pass (2026-03-23)
 
-## TL;DR
+## Runtime Findings
 
-**Daily RL beats current prod on every metric. Current prod crypto signals are at 0% confidence (effectively offline). Deploy daily RL as primary crypto strategy.**
+- Current hybrid live allocator is effectively **not trading** on `2026-03-23`.
+  - Evidence: `strategy_state/hybrid_trade_cycles/hybrid-cycle_20260323.jsonl`
+  - Repeated status: `invalid_allocation_plan_rl_flat`
+  - Root cause in log payload:
+    - Gemini API error `403 PERMISSION_DENIED`
+    - Message: API key was reported as leaked
+  - Result: no orders placed, allocation falls back to cash.
 
-## Current Production State
+- Legacy `binanceneural` live state did lose money before that handoff.
+  - Evidence: `strategy_state/binanceneural_pnl_state_live.json`
+  - Realized PnL total: `-1232.47`
+  - Biggest losers:
+    - `DOGEUSDT`: `-670.91`
+    - `SOLUSD`: `-391.06`
+    - `AAVEUSDT`: `-267.57`
+    - `BTCUSD`: `-260.92`
 
-### Alpaca Paper Account: $55,473
-| Position | Value | PnL | Notes |
-|----------|-------|-----|-------|
-| NVDA | $16,738 | -2.5% | Largest holding |
-| UNIUSD | $14,372 | +5.3% | Crypto |
-| BTCUSD | $5,781 | -6.3% | Underwater |
-| CRM | $3,702 | -17.5% | Losing |
-| ETHUSD | $3,562 | +181.4% | Legacy entry at $798 |
-| SOLUSD | $3,294 | +1.6% | Flat |
-| PLTR/NET/others | ~$600 | Mixed | Small |
+## Validation Harness Work
 
-### Current Prod Crypto Signal Status: BROKEN
-The unified orchestrator is generating **"hold" signals with 0% confidence** for all 5 crypto symbols. No new crypto trades are being placed. This is effectively an offline system for crypto.
+### Code changes
 
-### Daily RL Signal Status: STRONG
-The daily RL ensemble (5 models) unanimously signals **LONG SOLUSD with 97-99% confidence** as of 2026-03-16. The `trade_mixed_daily.py` hybrid service is running in paper mode with 5 crypto + 18 stock positions tracked.
+- `binanceneural.marketsimulator`
+  - Added seeded-start support via:
+    - `initial_inventory_by_symbol`
+    - `initial_cost_basis_by_symbol`
+  - Works in both single-symbol and shared-cash simulation.
 
-## Head-to-Head Comparison
+- New script:
+  - `scripts/run_binanceneural_robustness_sweep.py`
+  - Evaluates checkpoint candidates across:
+    - multiple windows
+    - seeded start states
+    - decision lags
+    - fill-buffer / slippage assumptions
+    - action intensity / offset overrides
 
-### Backtest Performance (OOS validation, same time period)
+- `scripts/run_deep_binanceneural_sweep.py`
+  - Added modern architecture flags:
+    - `--model-arch`
+    - `--num-memory-tokens`
+    - `--dilated-strides`
+    - `--attention-window`
+    - `--use-compile`
+    - `--use-vectorized-sim`
+    - `--accumulation-steps`
+    - `--decision-lag-range`
+    - `--forecast-horizons`
 
-| Strategy | Annualized | Sortino | Profitable% | Worst Episode |
-|----------|-----------|---------|-------------|--------------|
-| **Daily RL (mixed-23 ent_anneal)** | **+160%** | **2.38** | **100%** | **+11.7%** |
-| Daily RL (crypto-5 trade_pen_05) | +108% | 1.76 | 100% | +6.8% |
-| Daily RL (crypto-8 clip_anneal) | +108% | 1.85 | 100% | N/A |
-| Stock daily (long-only, 12 sym) | +24.4% | 1.34 | 100% | +4.4% |
-| Hourly RL (slip_5bps) | +32.5% | 1.10 | 79% | -4.9% |
-| **Current prod hourly** | **0% signals** | **N/A** | **N/A** | **Offline** |
+- `binanceneural/benchmark_training.py`
+  - Added matching architecture flags for throughput probes.
+  - Enabled TF32 matmul precision so benchmark matches real trainer settings more closely.
 
-### Robustness Caveats
+### Tests
 
-| Concern | Finding | Impact |
-|---------|---------|--------|
-| **Seed variance** | Only 30% of training runs are OOS-profitable (6/20 in mass sweep) | Use verified checkpoints only; don't retrain |
-| **Holdout degradation** | Mixed-23 ent_anneal: val=+30.9% but holdout_mean=-10.9% | Extended evaluation shows lower returns than simple val |
-| **Realistic estimate** | After accounting for variance and holdout, expect +20-40% annualized | Still beats hourly (+32.5%) and current prod (0%) |
-| **Execution gap** | Live fills ~2-3% worse per trade than backtest (from binanceprogress5) | Daily has fewer trades → less cumulative gap |
+- `pytest tests/test_marketsimulator.py tests/test_run_binanceneural_robustness_sweep.py -q`
+- Result: `56 passed`
 
-## Best Models for Deployment
+## Robustness Baseline
 
-### Tier 1: Verified + OOS Profitable
-1. `autoresearch_daily/trade_pen_05/best.pt` — +20% OOS, Sortino 1.76, **original best**
-2. `mass_daily/tp0.15_s314/best.pt` — +22.4% OOS, Sortino 2.11, **highest Sortino**
-3. `mass_daily/tp0.05_s123/best.pt` — +14.9% OOS, Sortino 1.58
+Command run:
 
-### Tier 2: Mixed-23 (stocks+crypto combined)
-4. `autoresearch_mixed23_daily/ent_anneal/best.pt` — +30.9% val, Sortino 2.38, but holdout shows variance
-5. `autoresearch_mixed23_daily/baseline_anneal_lr/best.pt` — +30.1% val, holdout_mean +7%
-
-### Tier 3: Crypto-8 (zero-fee optimized)
-6. `autoresearch_crypto8_daily/clip_anneal/best.pt` — +18.8% OOS, Sortino 1.85
-
-## Running Services
-
-| Service | Status | Script | Mode |
-|---------|--------|--------|------|
-| `daily-rl-trader` | **ACTIVE** | `trade_mixed_daily.py` | Paper, hybrid RL+Gemini |
-| `unified-orchestrator` | ACTIVE | `unified_orchestrator.orchestrator` | Live (but crypto signals broken) |
-| `alpaca-hourly-trader` | INACTIVE | — | — |
-
-## Deployment Recommendation
-
-### Immediate (TODAY):
-1. **Keep `daily-rl-trader` running in paper mode** — it's already generating signals with the mixed-23 model and Gemini overlay
-2. **Monitor for 7 more days** — the service has been running ~1 day, need more signal data
-3. **The unified-orchestrator crypto portion is broken** — generating 0% confidence signals. Daily RL is strictly better even conservatively.
-
-### Week 2:
-4. **Switch daily-rl-trader from --paper to live** (remove `--paper` flag) for crypto positions ONLY
-5. **Keep unified-orchestrator for stock positions** (NVDA, CRM, PLTR, etc.) until daily stock RL is validated
-6. **Capital allocation**: 50% crypto (daily RL), 50% stocks (existing orchestrator)
-
-### Week 4:
-7. **If daily RL crypto > +5% over 30 days**, expand to 70% capital
-8. **Test daily stock RL** on paper for 30 days
-9. **Compare ensemble vs single-model** performance in live conditions
-
-## Key Config Details
-
-**Current daily-rl-trader service:**
-```
-trade_mixed_daily.py --daemon --mode hybrid --paper
-  --top-k 2              # top 2 symbols per cycle
-  --max-positions 2      # max 2 concurrent positions
-  --max-position-fraction 0.25  # 25% of account per position
-  --max-hold-days 5      # force-close after 5 days
-  --llm-model gemini-3.1-flash-lite-preview
+```bash
+source .venv313/bin/activate
+python scripts/run_binanceneural_robustness_sweep.py \
+  --checkpoints binanceneural/checkpoints/crypto_portfolio_6sym \
+  --sample-epochs 12 \
+  --symbols BTCUSD ETHUSD SOLUSD DOGEUSD AAVEUSD LINKUSD \
+  --sequence-length 48 \
+  --window-hours 168,336,720 \
+  --decision-lag-list 1,2 \
+  --fill-buffer-bps-list 0,5,10 \
+  --output-dir analysis/binanceneural_robustness_crypto_portfolio_6sym
 ```
 
-**Ensemble crypto models (in trade_daily_rl.py):**
-- 5 checkpoints, majority vote
-- All agree on LONG SOLUSD as of 2026-03-16
-- Can be used as supplementary signal to mixed-23
+Artifacts:
 
-## Fee Optimization Note
+- Summary: `analysis/binanceneural_robustness_crypto_portfolio_6sym/summary.csv`
+- Scenarios: `analysis/binanceneural_robustness_crypto_portfolio_6sym/scenarios.csv`
 
-For Binance deployment specifically (not Alpaca):
-- FDUSD pairs (BTC/ETH/SOL): 0% maker fee
-- Train on 8+ symbols but execute on FDUSD-3 at 0% fee
-- clip_anneal config is optimal for zero-fee (trade_penalty counterproductive with zero fees)
-- 3 symbols alone insufficient (too correlated) — need diversified training data
+Result for `crypto_portfolio_6sym/epoch_012.pt`:
 
----
+- `selection_score`: `-133.56`
+- `return_mean_pct`: `-8.64%`
+- `return_worst_pct`: `-17.60%`
+- `max_drawdown_worst_pct`: `18.63%`
+- `negative_return_rate`: `1.0`
 
-*Status: Daily RL running paper, monitoring signals. Deploy live crypto in 7 days if signals consistent.*
+Key scenario read:
+
+- Worst cluster is the `168h` window with `lag=2` and `fill_buffer_bps=10`.
+- Even the best cluster stayed negative:
+  - around `-0.36%` return with `lag=1`, `fill_buffer_bps=0`
+- Conclusion:
+  - this checkpoint is not a promotion candidate
+  - do not use it as the “best algorithm” baseline
+
+## Training Efficiency Read
+
+Local GPU: `RTX 3090 Ti 24GB`
+
+Benchmark commands:
+
+```bash
+source .venv313/bin/activate
+python binanceneural/benchmark_training.py \
+  --steps 20 --warmup 5 \
+  --batch-size 16 --seq-len 72 \
+  --hidden-dim 256 --num-layers 4 --num-heads 8 \
+  --use-fast-sim --use-compile
+
+python binanceneural/benchmark_training.py \
+  --steps 20 --warmup 5 \
+  --batch-size 16 --seq-len 72 \
+  --hidden-dim 256 --num-layers 4 --num-heads 8 \
+  --model-arch nano --num-memory-tokens 4 \
+  --dilated-strides 1,4,24 \
+  --use-fast-sim --use-compile
+
+python binanceneural/benchmark_training.py \
+  --steps 20 --warmup 5 \
+  --batch-size 8 --seq-len 96 \
+  --hidden-dim 384 --num-layers 6 --num-heads 8 \
+  --model-arch nano --num-memory-tokens 8 \
+  --dilated-strides 1,4,24,72 --attention-window 96 \
+  --use-fast-sim --use-compile
+```
+
+Observed throughput:
+
+| Config | Steps/s | Samples/s | Peak VRAM |
+|--------|--------:|----------:|----------:|
+| classic `256x4` | `8.13` | `130.14` | `139.1 MB` |
+| nano `256x4` + mem4 + dilated | `7.89` | `126.18` | `34.9 MB` |
+| nano `384x6` + mem8 + dilated | `5.84` | `46.73` | `71.2 MB` |
+
+Read:
+
+- `256` width is the current sweet spot.
+- `384x6` is too expensive for the first search pass.
+- Nano is slightly slower than classic at this size on the 3090 Ti, but the VRAM footprint is much lower.
+- That means the next sweep should focus on:
+  - `192`
+  - `256`
+  - `320`
+  - not `384x6` yet
+
+## Local Proof Sweep
+
+Command running:
+
+```bash
+source .venv313/bin/activate
+python scripts/run_deep_binanceneural_sweep.py \
+  --symbols SOLUSD \
+  --dims 192 256 384 \
+  --wds 0.03 \
+  --lrs 1e-4 \
+  --forecast-horizons 1,24 \
+  --sequence-length 96 \
+  --batch-size 16 \
+  --transformer-layers 4 \
+  --transformer-heads 8 \
+  --validation-days 90 \
+  --model-arch nano \
+  --num-memory-tokens 4 \
+  --dilated-strides 1,4,24 \
+  --attention-window 96 \
+  --return-weight 0.08 \
+  --fill-buffer-pct 0.0005 \
+  --decision-lag-bars 1 \
+  --decision-lag-range 0,1,2 \
+  --loss-type sortino \
+  --use-compile \
+  --use-vectorized-sim \
+  --epochs 4 \
+  --patience 2 \
+  --results-dir analysis/solusd_modern_size_sweep_local \
+  --no-wandb
+```
+
+Current status at last check:
+
+- process still active locally
+- no checkpoint files written yet
+- first config had reached:
+  - `Training: 2043 train batches, 136 val batches`
+
+## Remote Status
+
+Attempted remote connectivity checks from this shell did not return usable output:
+
+```bash
+ssh -o StrictHostKeyChecking=no administrator@93.127.141.100 \
+  'cd /nvme0n1-disk/code/stock-prediction && source .venv313/bin/activate && python -V'
+```
+
+```bash
+ssh -o BatchMode=yes -o StrictHostKeyChecking=no administrator@93.127.141.100 'echo ok'
+```
+
+Result:
+
+- remote training was **not launched** from this shell
+- no reproducible remote run id / log path exists yet
+- next step is to resolve the SSH/auth/connectivity issue, then launch the `192/256/320` trio sweep remotely

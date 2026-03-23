@@ -17,6 +17,8 @@ from src.market_sim_early_exit import evaluate_drawdown_vs_profit_early_exit, pr
 class SimulationConfig:
     maker_fee: float = DEFAULT_MAKER_FEE_RATE
     initial_cash: float = 10_000.0
+    initial_inventory_by_symbol: Optional[Dict[str, float]] = None
+    initial_cost_basis_by_symbol: Optional[Dict[str, float]] = None
     enable_probe_mode: bool = False
     probe_notional: float = 1.0
     max_hold_hours: Optional[int] = None
@@ -85,11 +87,26 @@ def run_shared_cash_simulation(
     prepared = _prepare_frame(bars, actions, decision_lag_bars=sim_config.decision_lag_bars)
     total_steps = int(prepared["timestamp"].nunique())
 
+    seeded_inventory = _normalize_symbol_float_map(sim_config.initial_inventory_by_symbol)
+    seeded_cost_basis = _normalize_symbol_float_map(sim_config.initial_cost_basis_by_symbol)
+    first_rows = prepared.sort_values(["symbol", "timestamp"]).groupby("symbol", sort=False).first()
+
     cash = float(sim_config.initial_cash)
     inventory: Dict[str, float] = {}
     cost_basis: Dict[str, float] = {}
     open_time: Dict[str, Optional[pd.Timestamp]] = {}
     probe_mode: Dict[str, bool] = {}
+
+    for symbol in prepared["symbol"].astype(str).str.upper().unique():
+        seeded_qty = float(seeded_inventory.get(symbol, 0.0))
+        if seeded_qty <= 0.0:
+            continue
+        first_row = first_rows.loc[symbol]
+        inventory[symbol] = seeded_qty
+        cost_basis[symbol] = float(
+            seeded_cost_basis.get(symbol, float(first_row.get("close", 0.0) or 0.0))
+        )
+        open_time[symbol] = pd.to_datetime(first_row["timestamp"], utc=True)
 
     amount_scale: Dict[str, float] = {
         symbol: _resolve_amount_scale(frame) for symbol, frame in prepared.groupby("symbol")
@@ -355,11 +372,28 @@ def _resolve_amount_scale(frame: pd.DataFrame) -> float:
     return 100.0 if max_val > 1.5 else 1.0
 
 
+def _normalize_symbol_float_map(raw: Optional[Dict[str, float]]) -> Dict[str, float]:
+    if not raw:
+        return {}
+    normalized: Dict[str, float] = {}
+    for symbol, value in raw.items():
+        key = str(symbol).strip().upper()
+        if not key:
+            continue
+        qty = float(value or 0.0)
+        if abs(qty) < 1e-12:
+            continue
+        normalized[key] = qty
+    return normalized
+
+
 def _simulate_symbol(frame: pd.DataFrame, symbol: str, config: SimulationConfig) -> SymbolResult:
+    seeded_inventory = _normalize_symbol_float_map(config.initial_inventory_by_symbol)
+    seeded_cost_basis = _normalize_symbol_float_map(config.initial_cost_basis_by_symbol)
     cash = float(config.initial_cash)
-    inventory = 0.0
-    cost_basis = 0.0
-    open_time: Optional[pd.Timestamp] = None
+    inventory = float(seeded_inventory.get(symbol, 0.0))
+    cost_basis = float(seeded_cost_basis.get(symbol, float(frame["close"].iloc[0]) if inventory > 0 else 0.0))
+    open_time: Optional[pd.Timestamp] = pd.to_datetime(frame["timestamp"].iloc[0], utc=True) if inventory > 0 else None
     probe_mode = False
 
     amount_scale = _resolve_amount_scale(frame)
