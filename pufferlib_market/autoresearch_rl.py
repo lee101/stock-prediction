@@ -1460,12 +1460,36 @@ STOCK_EXPERIMENTS: list[dict] = [
      "seed": 123},
 
     # --- random_mut_2201 seed sweep (2026-03-23: BEST model +11.74% med, 1/50 neg) ---
+    # rmu4424_style: h=256, ent=0.05, slip=12, dp=0.01, sp=0.0 — best-ranked in H100 autoresearch
+    # (autoresearch score=-4.02, 50-win: 3.49% med, 9/50 neg — decent backup)
+    {"description": "rmu4424_style",
+     "hidden_size": 256, "ent_coef": 0.05, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.0, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True},
     # Config: h=256, ent=0.08, slip=12bps, drawdown_pen=0.01, smoothness_pen=0.005
     # All variants use anneal_lr=True, wd=0.0, lr=3e-4 (defaults)
     {"description": "v_rmu2201_style",
      "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
      "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
      "smooth_downside_temperature": 0.01, "anneal_lr": True},
+    # per_env advantage_norm: 33% deployment rate vs 0% for global (discovered 2026-03-23)
+    # random_mut_8597 (seed=1168) used per_env and achieved 50-win 9.38% med, 5/50 neg
+    # Use as --init-best-config to bias mutations toward per_env space
+    {"description": "v_rmu2201_per_env_style",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True,
+     "advantage_norm": "per_env"},
+    {"description": "v_rmu2201_per_env_slip8",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 8.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True,
+     "advantage_norm": "per_env"},
+    {"description": "v_rmu2201_per_env_ent06",
+     "hidden_size": 256, "ent_coef": 0.06, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True,
+     "advantage_norm": "per_env"},
     {"description": "v_rmu2201_s123",
      "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
      "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
