@@ -174,6 +174,7 @@ class TrainingConfig:
     amp_dtype: str = "bfloat16"
     split_amp: bool = False
     use_vectorized_sim: bool = False
+    use_compiled_sim_loss: bool = True
     use_tf32: bool = True
     use_flash_attention: bool = True
     accumulation_steps: int = 1
