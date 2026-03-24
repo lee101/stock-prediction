@@ -1,0 +1,10 @@
+config,symbol,robust_score,mean_return,mean_sortino,worst_return,p25_return,p25_sortino,profitable_pct,best_intensity,train_seconds,eval_seconds,checkpoint,arch,dim,layers,heads
+proven_classic,BTCUSD,-0.040920,-0.0690,-4.71,-0.2013,-0.1697,-10.18,50.0,0.8,1078,5,binanceneural/checkpoints/archsweep_proven_classic_BTCUSD_20260323_232047/epoch_003.pt,classic,256,4,8
+proven_classic,ETHUSD,-0.043768,-0.0729,-4.36,-0.2157,-0.1773,-9.46,50.0,1.0,1062,5,binanceneural/checkpoints/archsweep_proven_classic_ETHUSD_20260323_233849/epoch_002.pt,classic,256,4,8
+proven_classic,SOLUSD,0.052824,0.1294,-0.89,-0.1602,-0.1110,-5.53,50.0,1.2,840,6,binanceneural/checkpoints/archsweep_proven_classic_SOLUSD_20260323_235635/epoch_004.pt,classic,256,4,8
+proven_nano,BTCUSD,-0.020047,-0.0483,-3.57,-0.1621,-0.1334,-8.33,50.0,0.8,1070,7,binanceneural/checkpoints/archsweep_proven_nano_BTCUSD_20260324_001042/epoch_001.pt,nano,256,4,8
+proven_nano,ETHUSD,-0.023267,-0.0540,-3.14,-0.1836,-0.1332,-7.22,50.0,0.8,1067,7,binanceneural/checkpoints/archsweep_proven_nano_ETHUSD_20260324_002838/epoch_004.pt,nano,256,4,8
+proven_nano,SOLUSD,0.026123,0.0092,-0.90,-0.0949,-0.0737,-3.67,50.0,1.0,840,8,binanceneural/checkpoints/archsweep_proven_nano_SOLUSD_20260324_004633/epoch_001.pt,nano,256,4,8
+proven_nano_deep,BTCUSD,-0.020810,-0.0526,-3.69,-0.1587,-0.1320,-8.03,50.0,0.8,1142,11,binanceneural/checkpoints/archsweep_proven_nano_deep_BTCUSD_20260324_010040/epoch_001.pt,nano,256,8,8
+proven_nano_deep,ETHUSD,-0.033679,-0.0623,-3.66,-0.2083,-0.1523,-8.09,50.0,0.8,1145,11,binanceneural/checkpoints/archsweep_proven_nano_deep_ETHUSD_20260324_011953/epoch_002.pt,nano,256,8,8
+proven_nano_deep,SOLUSD,0.024277,0.0145,-1.10,-0.1064,-0.0843,-4.20,50.0,1.2,901,12,binanceneural/checkpoints/archsweep_proven_nano_deep_SOLUSD_20260324_013908/epoch_001.pt,nano,256,8,8

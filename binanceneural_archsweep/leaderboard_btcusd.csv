@@ -1,0 +1,3 @@
+config,symbol,robust_score,mean_return,mean_sortino,worst_return,p25_return,p25_sortino,profitable_pct,best_intensity,train_seconds,eval_seconds,checkpoint,arch,dim,layers,heads
+nano_tiny,BTCUSD,0.003232,-0.0252,-2.40,-0.1193,-0.0920,-6.05,50.0,0.8,4532,7,binanceneural/checkpoints/archsweep_nano_tiny_BTCUSD_20260323_231258/epoch_008.pt,nano,128,4,4
+nano_small,BTCUSD,-0.001667,-0.0303,-2.62,-0.1281,-0.1008,-6.53,50.0,0.8,4723,11,binanceneural/checkpoints/archsweep_nano_small_BTCUSD_20260324_002837/epoch_010.pt,nano,192,6,6

@@ -43,7 +43,7 @@ HOLDOUT_EVAL_STEPS = 90  # fits in 201-day val set
 HOLDOUT_N_WINDOWS = 20
 MAX_STEPS_OVERRIDE = 252  # daily steps per year
 PERIODS_PER_YEAR = 252.0
-LEADERBOARD_NAME = "autoresearch_stock_daily_leaderboard.csv"
+LEADERBOARD_NAME = "autoresearch_stocks11_2012_leaderboard.csv"
 CHECKPOINT_ROOT = "pufferlib_market/checkpoints/autoresearch_stock"
 
 
@@ -188,10 +188,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--holdout-fill-buffer-bps", type=float, default=5.0)
     parser.add_argument("--holdout-fee-rate", type=float, default=FEE_OVERRIDE)
     parser.add_argument("--fee-rate-override", type=float, default=FEE_OVERRIDE)
-    parser.add_argument("--max-timesteps-per-sample", type=int, default=700,
-                        help="Step cap per sample. 700 × 53,240 samples = 37.27M steps for stocks11_2012 (optimal). "
-                             "H100 at 400k sps hits this in ~93s; RTX 5090 at 92k sps hits it in ~405s. "
-                             "Use 700 for stocks11_2012 (confirmed optimal step count).")
+    parser.add_argument("--max-timesteps-per-sample", type=int, default=200,
+                        help="Step cap per sample. 200 × 53,240 samples = 10.65M steps for stocks11_2012 (optimal). "
+                             "H100 at 400k sps hits this in ~26.5s per trial. "
+                             "CRITICAL: 700x (37M steps) causes catastrophic overfitting at lr=3e-4 (robust=-74). "
+                             "200x is optimal: clean s123 → -9.30. "
+                             "Q-block -4.05 was due to GPU noise acting as implicit regularization.")
     parser.add_argument("--start-from", type=int, default=233,
                         help="Start index in STOCK_EXPERIMENTS pool. Default 233 = Q-block start. "
                              "Q-block (233-265) finds s123 (-4.05) → best_config updated. "
