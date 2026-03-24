@@ -228,10 +228,11 @@ class RunPodClient:
         ssh_port = 0
         public_ip = ""
         for port in ports:
-            if port.get("privatePort") == 22 and port.get("isIpPublic"):
+            if port.get("privatePort") == 22:
                 ssh_host = port.get("ip", "")
                 ssh_port = int(port.get("publicPort", 0) or 0)
-                public_ip = port.get("ip", "")
+                if port.get("isIpPublic"):
+                    public_ip = port.get("ip", "")
                 break
         gpu_type = ""
         if gpus:
