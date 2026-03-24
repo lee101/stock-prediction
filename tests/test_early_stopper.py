@@ -10,6 +10,7 @@ import pytest
 
 from pufferlib_market.early_stopper import (
     BestKnownTracker,
+    HoldCashDetector,
     PolynomialEarlyStopper,
     combined_score,
 )
@@ -266,3 +267,59 @@ class TestBestKnownTracker:
         assert abs(tracker.get_best("binance_crypto") - 2.0) < 1e-9
         assert abs(tracker.get_best("hourly_crypto") - 0.5) < 1e-9
         assert abs(tracker.get_best("stocks_daily") - 1.5) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# HoldCashDetector
+# ---------------------------------------------------------------------------
+
+_TRADE_LINE = (
+    "[{n:4d}/1000] step={s:8,d}  sps=120000  ret=+0.0010  ann_ret=+0.01%  "
+    "sortino=0.01  trades={t}  wr=0.52  pg=0.001  vl=0.500  ent=0.693  n=64"
+)
+
+
+class TestHoldCashDetector:
+    def _line(self, trades: int, n: int = 1) -> str:
+        return _TRADE_LINE.format(n=n, s=n * 2048, t=trades)
+
+    def test_triggers_after_patience(self):
+        det = HoldCashDetector(patience=6)
+        for i in range(5):
+            assert not det.update(self._line(0, i + 1)), f"should not fire at step {i+1}"
+        assert det.update(self._line(0, 6)), "should fire at 6th consecutive zero-trade line"
+
+    def test_counter_resets_on_nonzero_trades(self):
+        det = HoldCashDetector(patience=6)
+        for i in range(4):
+            det.update(self._line(0, i + 1))
+        assert det.consecutive_zero_trades == 4
+        det.update(self._line(5, 5))
+        assert det.consecutive_zero_trades == 0, "counter must reset on nonzero trades"
+
+    def test_no_false_positive_on_active_trading(self):
+        det = HoldCashDetector(patience=6)
+        for i in range(20):
+            assert not det.update(self._line(i % 3 + 1, i + 1))
+
+    def test_ignores_lines_without_trades_field(self):
+        det = HoldCashDetector(patience=6)
+        for _ in range(10):
+            assert not det.update("Loading market data...")
+        assert det.consecutive_zero_trades == 0
+
+    def test_patience_one(self):
+        det = HoldCashDetector(patience=1)
+        assert det.update(self._line(0, 1)), "patience=1 should fire on first zero-trade line"
+
+    def test_partial_zero_then_recover_then_fail(self):
+        det = HoldCashDetector(patience=3)
+        det.update(self._line(0, 1))
+        det.update(self._line(0, 2))
+        det.update(self._line(3, 3))   # nonzero trade resets counter
+        assert det.consecutive_zero_trades == 0
+        # After reset: 3 more zeros → triggers at exactly the 3rd
+        det.update(self._line(0, 4))   # consecutive=1
+        det.update(self._line(0, 5))   # consecutive=2
+        fired = det.update(self._line(0, 6))  # consecutive=3 → should fire
+        assert fired, "should fire at 3rd consecutive zero after reset"

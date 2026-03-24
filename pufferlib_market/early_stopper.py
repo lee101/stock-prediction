@@ -98,6 +98,43 @@ class PolynomialEarlyStopper:
         return False, proj
 
 
+class HoldCashDetector:
+    """Detects hold-cash (no-trade) policy from training stdout lines.
+
+    Parses lines like:
+        [  42/1000] step=   32,768  sps=250000  ret=+0.0000  ...  trades=0  wr=0.50  ...
+
+    If ``trades=0`` appears for ``patience`` consecutive log lines the
+    policy is almost certainly stuck in the hold-cash attractor and the
+    trial should be killed immediately to save GPU time.
+    """
+
+    def __init__(self, patience: int = 6) -> None:
+        self.patience = patience
+        self._consecutive_zero_trades: int = 0
+        self._total_lines_seen: int = 0
+
+    def update(self, line: str) -> bool:
+        """Feed one stdout line.  Returns True if hold-cash is detected."""
+        if "trades=" not in line:
+            return False
+        self._total_lines_seen += 1
+        try:
+            trades_str = line.split("trades=")[1].split()[0]
+            trades = float(trades_str)
+        except (IndexError, ValueError):
+            return False
+        if trades == 0.0:
+            self._consecutive_zero_trades += 1
+        else:
+            self._consecutive_zero_trades = 0
+        return self._consecutive_zero_trades >= self.patience
+
+    @property
+    def consecutive_zero_trades(self) -> int:
+        return self._consecutive_zero_trades
+
+
 class BestKnownTracker:
     """Persists per-track best combined scores to a JSON file."""
 

@@ -30,7 +30,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from src.robust_trading_metrics import summarize_scenario_results
-from pufferlib_market.early_stopper import combined_score as _combined_score, PolynomialEarlyStopper, BestKnownTracker
+from pufferlib_market.early_stopper import combined_score as _combined_score, PolynomialEarlyStopper, BestKnownTracker, HoldCashDetector
 
 try:
     import wandb as _wandb_module
@@ -89,6 +89,7 @@ class TrialConfig:
     smoothness_penalty: float = 0.0
     arch: str = "mlp"
     optimizer: str = "adamw"  # "adamw" or "muon"
+    muon_norm_update: bool = False  # NorMuon: scale update norm to match param norm
     max_steps: int = 720
     periods_per_year: float = 8760.0
     seed: int = 42
@@ -462,6 +463,14 @@ EXPERIMENTS: list[dict] = [
      "optimizer": "muon", "lr": 0.01, "trade_penalty": 0.05},
     {"description": "muon_relu_sq",
      "optimizer": "muon", "lr": 0.02, "arch": "mlp_relu_sq", "trade_penalty": 0.05},
+
+    # NorMuon — scales update Frobenius norm to match param norm (from modded-nanogpt speedrun)
+    {"description": "normuon_tp05",
+     "optimizer": "muon", "lr": 0.02, "trade_penalty": 0.05,
+     "muon_norm_update": True},
+    {"description": "normuon_tp05_slip5",
+     "optimizer": "muon", "lr": 0.02, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+     "muon_norm_update": True},
 ]
 
 # Alias used by sweep scripts and verification commands.
@@ -2265,6 +2274,8 @@ def run_trial(
         ])
     if config.optimizer != "adamw":
         cmd.extend(["--optimizer", config.optimizer])
+    if getattr(config, "muon_norm_update", False):
+        cmd.append("--muon-norm-update")
     if config.minibatch_size != 2048:
         cmd.extend(["--minibatch-size", str(config.minibatch_size)])
     if config.vf_coef != 0.5:
@@ -2344,6 +2355,7 @@ def run_trial(
         stdout_lines = []
         _checks_done: set[float] = set()
         _poly_stopper = PolynomialEarlyStopper()
+        _hold_cash_detector = HoldCashDetector(patience=6)
         # (progress_threshold, poly_tolerance): 25% only collects; 50%/75% may prune
         _check_schedule = [(0.25, None), (0.50, 0.70), (0.75, 0.80)]
         try:
@@ -2353,7 +2365,16 @@ def run_trial(
                 try:
                     line = proc.stdout.readline()
                     if line:
-                        stdout_lines.append(line.decode("utf-8", errors="replace").strip())
+                        decoded = line.decode("utf-8", errors="replace").strip()
+                        stdout_lines.append(decoded)
+                        if _hold_cash_detector.update(decoded):
+                            print(
+                                f"  HOLD-CASH KILL: trades=0 for "
+                                f"{_hold_cash_detector.consecutive_zero_trades} consecutive "
+                                f"log lines — policy stuck in no-trade attractor"
+                            )
+                            early_rejected = True
+                            break
                 except Exception:
                     pass
 
