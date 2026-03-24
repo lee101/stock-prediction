@@ -141,7 +141,18 @@
 - **Caution**: Single val period only (Sep2025-Mar2026 = crypto bull run). No sliding-window eval.
 
 **Checkpoints**: `pufferlib_market/checkpoints/crypto70_autoresearch/c70_tp05_slip5_lr3e-04_s{7,123}/best.pt`
+**Seed sweep honest eval (2026-03-24)**: Top genuine models (100-episode, no early stop):
+| Seed | Honest ret | Ann% | Binary-fill @5bps p50 | Notes |
+|------|-----------|------|----------------------|-------|
+| **s19** | **+4.39x** | **+2941%** | **+667%/180d, Sortino=5.77, 73% WR, 50 trades** | **CHAMPION** |
+| s123 | +1.93x | +786% | +514%/180d, sortino=5.19, 62% WR | |
+| s17 | +1.08x | +339% | — | |
+| s7 | +0.97x | +294% | +503%/180d, sortino=5.63, 63% WR | |
+| s4, s5 | +0.87x each | ~+258% | — | |
+| s8 | +0.50x | +127% | +432%/180d, sortino=6.24, 67% WR | High quality, fewer trades |
+40% of seeds are "genuine" (positive honest eval)
 **Leaderboard**: `sweepresults/crypto70_daily_leaderboard.csv`
+**Honest eval CSV**: `/tmp/crypto70_honest_eval.csv` (monitor running)
 
 **Eval command:**
 ```bash
@@ -158,6 +169,8 @@ python -m pufferlib_market.evaluate \
 **NOTE**: Eval at fill_slippage_bps=0 gives only +101% (s7) / +40% (s123) — mismatch from training env (model was trained with 5bps fill model). Always eval at 5bps to match training.
 **NOTE**: 5-minute training runs (~5M steps on 677 daily bars). 300s is very short — longer training likely improves further.
 **DEPLOYMENT BLOCKER**: No sliding-window eval (val only has 205 bars / max_steps=180). Need more OOS data or rolling-origin eval before deploying.
+**s19 checkpoint**: `pufferlib_market/checkpoints/crypto70_autoresearch/c70_tp05_slip5_s19/best.pt`
+**IMPORTANT**: Pool val_return is unreliable — always use honest 100-episode eval for final ranking. s19 pool=6.6 ≠ honest=4.39 (both big, but different). s4 pool=-0.05 but honest=+87% (rank inversion!)
 
 ---
 
