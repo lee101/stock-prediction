@@ -212,7 +212,11 @@ def run_sweep(
         val_return = result.get("val_return", None)
         val_sortino = result.get("val_sortino", None)
         val_wr = result.get("val_wr", None)
-        holdout = result.get("holdout_metrics", {}) or {}
+        # run_trial returns holdout metrics as top-level keys (not nested under "holdout_metrics")
+        hmed = result.get("holdout_median_return_pct", "")
+        hp10 = result.get("holdout_p10_return_pct", "")
+        hneg = result.get("holdout_negative_return_rate", "")
+        hwst = result.get("holdout_return_worst_pct", "")
 
         row = {
             "description": config.description,
@@ -221,10 +225,10 @@ def run_sweep(
             "val_return": f"{val_return:.4f}" if val_return is not None else "",
             "val_sortino": f"{val_sortino:.2f}" if val_sortino is not None else "",
             "val_wr": f"{val_wr:.4f}" if val_wr is not None else "",
-            "holdout_median_return_pct": holdout.get("holdout_median_return_pct", ""),
-            "holdout_p10_return_pct": holdout.get("holdout_p10_return_pct", ""),
-            "holdout_negative_rate": holdout.get("holdout_negative_return_rate", ""),
-            "holdout_worst_return_pct": holdout.get("holdout_return_worst_pct", ""),
+            "holdout_median_return_pct": hmed,
+            "holdout_p10_return_pct": hp10,
+            "holdout_negative_rate": hneg,
+            "holdout_worst_return_pct": hwst,
             "elapsed_s": f"{elapsed:.1f}",
             "checkpoint_dir": ckpt_dir,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -233,7 +237,7 @@ def run_sweep(
 
         status = "OK" if result.get("error") is None else "ERR"
         print(f"  [{status}] val_ret={val_return}  val_sort={val_sortino}  "
-              f"holdout_med={holdout.get('holdout_median_return_pct','?')}  "
+              f"holdout_med={hmed or '?'}  "
               f"elapsed={elapsed:.0f}s", flush=True)
 
     print(f"\nSweep complete. Results in {leaderboard}", flush=True)
