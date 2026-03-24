@@ -74,6 +74,7 @@ class TradingPolicy(nn.Module):
             nn.Linear(hidden, hidden),
             _act_holdout(activation),
         )
+        self.encoder_norm = nn.LayerNorm(hidden)
         self.actor = nn.Sequential(
             nn.Linear(hidden, hidden // 2),
             _act_holdout(activation),
@@ -87,6 +88,8 @@ class TradingPolicy(nn.Module):
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         h = self.encoder(x)
+        if hasattr(self, 'encoder_norm'):
+            h = self.encoder_norm(h)
         return self.actor(h), self.critic(h).squeeze(-1)
 
 
@@ -349,7 +352,7 @@ def main() -> None:
         policy = TradingPolicy(obs_size, num_actions, hidden=int(hidden), activation="relu_sq").to(device)
     else:
         policy = TradingPolicy(obs_size, num_actions, hidden=int(hidden)).to(device)
-    policy.load_state_dict(state_dict)
+    policy.load_state_dict(state_dict, strict=False)
     policy.eval()
 
     shortable_mask = _build_shortable_mask(list(data.symbols), args.shortable_symbols)

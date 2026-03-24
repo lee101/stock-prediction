@@ -95,9 +95,6 @@ def load_policy(
         raise ValueError(f"Unsupported arch: {arch}")
 
     missing, unexpected = policy.load_state_dict(state_dict, strict=False)
-    # encoder_norm: added to train.py to prevent BF16 precision collapse.
-    #   Old ckpts lack it → _use_encoder_norm=False (do NOT apply norm; LayerNorm would corrupt).
-    #   New ckpts have it → _use_encoder_norm=True (apply norm as trained).
     if hasattr(policy, '_use_encoder_norm'):
         policy._use_encoder_norm = "encoder_norm.weight" not in missing
     ignored = {"obs_mean", "obs_std", "encoder_norm.weight", "encoder_norm.bias"}
