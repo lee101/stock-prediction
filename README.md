@@ -11,7 +11,7 @@ forecasting + live execution on Binance (FDUSD/USDT) and Alpaca (US stocks).
 ## Architecture
 
 ```
-Raw OHLCV data (Binance / Alpaca / yfinance)
+Raw OHLCV data (Binance / Alpaca)
         |
         v
   Binary export (export_data_*.py)
