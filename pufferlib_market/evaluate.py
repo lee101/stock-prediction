@@ -64,6 +64,10 @@ class TradingPolicy(nn.Module):
             nn.Linear(hidden, hidden),
             _act(activation),
         )
+        # LayerNorm added in train.py to prevent BF16 precision collapse.
+        # _use_encoder_norm set by load_policy: True only for new ckpts that have this layer.
+        self.encoder_norm = nn.LayerNorm(hidden)
+        self._use_encoder_norm = False
         self.actor = nn.Sequential(
             nn.Linear(hidden, hidden // 2),
             _act(activation),
@@ -79,6 +83,8 @@ class TradingPolicy(nn.Module):
         if self.obs_mean is not None and self.obs_std is not None:
             x = (x - self.obs_mean) / (self.obs_std + 1e-8)
         h = self.encoder(x)
+        if getattr(self, '_use_encoder_norm', False):
+            h = self.encoder_norm(h)
         logits = self.actor(h)
         value = self.critic(h).squeeze(-1)
         return logits, value
@@ -153,9 +159,13 @@ def load_policy(ckpt: dict, obs_size: int, num_actions: int, hidden: int, arch: 
         policy = TradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
     state_dict = ckpt["model"]
     missing, unexpected = policy.load_state_dict(state_dict, strict=False)
-    # obs_mean/obs_std may be absent (old ckpt) or present (obs_norm training); both OK.
-    # Any other missing/unexpected keys indicate a real mismatch.
-    ignored = {"obs_mean", "obs_std"}
+    # obs_mean/obs_std: optional obs-norm buffers (old ckpts lack them).
+    # encoder_norm: added to train.py to prevent BF16 precision collapse.
+    #   Old ckpts lack it → _use_encoder_norm=False (do NOT apply norm; LayerNorm would corrupt).
+    #   New ckpts have it → _use_encoder_norm=True (apply norm as trained).
+    if hasattr(policy, '_use_encoder_norm'):
+        policy._use_encoder_norm = "encoder_norm.weight" not in missing
+    ignored = {"obs_mean", "obs_std", "encoder_norm.weight", "encoder_norm.bias"}
     bad_missing = [k for k in missing if k not in ignored]
     bad_unexpected = [k for k in unexpected if k not in ignored]
     if bad_missing or bad_unexpected:
