@@ -232,6 +232,55 @@ def _stocks12_seedsweep_ext(seeds: range = range(37, 51)) -> list[dict]:
     return [{**base, "seed": s, "description": f"tp05_seed_{s}"} for s in seeds]
 
 
+def _crypto70_daily_long_sweep(seeds: range | list[int] = range(1, 101)) -> list[dict]:
+    """Seed sweep of proven tp05_slip5 config on crypto70 daily, 30-min per seed on H100.
+
+    crypto70 = 48 Binance USDT pairs, daily bars, train 2019-2025, val 2025-09-01 to 2026-03-31.
+    Best OOS result (5-min runs): s19=+439%/180d ann, 28/60 seeds genuine.
+    Longer training (30 min on H100 ≈ 100-200M steps) should improve further.
+    """
+    base = {
+        "hidden_size": 1024,
+        "lr": 3e-4,
+        "anneal_lr": True,
+        "ent_coef": 0.05,
+        "trade_penalty": 0.05,
+        "fill_slippage_bps": 5.0,
+        "num_envs": 128,
+        "use_bf16": True,
+        "no_cuda_graph": True,
+        "periods_per_year": 365.0,
+        "max_steps": 180,
+        "time_budget_override": 1800,  # 30 min per seed
+    }
+    return [{**base, "seed": s, "description": f"c70_long_tp05_s{s}"} for s in seeds]
+
+
+def _crypto40_hourly_tp05_sweep(seeds: range | list[int] = range(1, 61)) -> list[dict]:
+    """Seed sweep of tp05_slip5 on crypto40 hourly dataset.
+
+    crypto40 = 25 Binance USDT pairs, hourly bars.
+    train: 18448 steps (~2.1 years), val: 4901 steps (~204 days).
+    Val gives 6+ non-overlapping 30-day windows → better OOS eval than daily.
+    Max steps = 720 hours = 30 days per episode.
+    """
+    base = {
+        "hidden_size": 1024,
+        "lr": 3e-4,
+        "anneal_lr": True,
+        "ent_coef": 0.05,
+        "trade_penalty": 0.05,
+        "fill_slippage_bps": 5.0,
+        "num_envs": 128,
+        "use_bf16": True,
+        "no_cuda_graph": True,
+        "periods_per_year": 8760.0,
+        "max_steps": 720,
+        "time_budget_override": 1800,  # 30 min per seed
+    }
+    return [{**base, "seed": s, "description": f"c40h_tp05_s{s}"} for s in seeds]
+
+
 def _stocks15_tp05_sweep(seeds: list[int] = [123, 15, 36, 42, 7, 1, 2, 3, 5, 10]) -> list[dict]:
     """tp05 seed sweep for stocks15 (15 symbols with 2012 data, 4840 bars).
 
@@ -263,6 +312,8 @@ PRESETS: dict[str, list[dict]] = {
     "crypto_seedsweep": _crypto_seedsweep(),
     "crypto70_autoresearch": _crypto70_autoresearch(),
     "crypto15_robust_champion": _crypto15_robust_champion(),
+    "crypto70_daily_long_sweep": _crypto70_daily_long_sweep(),
+    "crypto40_hourly_tp05_sweep": _crypto40_hourly_tp05_sweep(),
 }
 
 
