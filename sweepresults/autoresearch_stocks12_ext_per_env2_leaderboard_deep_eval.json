@@ -1,0 +1,254 @@
+{
+  "random_mut_8697": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": -1.1023962792275872,
+      "p10": -6.791462969116037,
+      "worst": -9.122001988987995,
+      "neg": 27,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": -5.038667124567827,
+      "p10": -11.945437959912768,
+      "worst": -13.3249134282008,
+      "neg": 41,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_per_env2/random_mut_8697/best.pt",
+    "raw_score_20win": -53.68499324734352
+  },
+  "trade_pen_high": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_per_env2/trade_pen_high/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "trade_pen_vhigh": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_per_env2/trade_pen_vhigh/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "combined_smooth": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_per_env2/combined_smooth/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "sortino_top1_tp": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": -0.19980019980018365,
+      "p10": -0.752799540644919,
+      "worst": -2.571304944131116,
+      "neg": 26,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_per_env2/sortino_top1_tp/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "sortino_low_ent_tp": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_per_env2/sortino_low_ent_tp/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "sortino_rc3_tp08": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": -0.2551001338846652,
+      "worst": -0.752799540644919,
+      "neg": 7,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_per_env2/sortino_rc3_tp08/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "sortino_cosine_slip": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_per_env2/sortino_cosine_slip/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "sortino_smooth_combo": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 9.126655572923319,
+      "p10": 3.135019653029758,
+      "worst": 0.23817562549524157,
+      "neg": 0,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_per_env2/sortino_smooth_combo/best.pt",
+    "raw_score_20win": -50.0
+  }
+}

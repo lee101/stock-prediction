@@ -1,0 +1,254 @@
+{
+  "random_mut_7332": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.6782304620073409,
+      "p10": 0.0,
+      "worst": -0.19980019980019278,
+      "neg": 2,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_seedonly1/random_mut_7332/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_1523": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.30191909230854436,
+      "p10": -1.1237620592772328,
+      "worst": -1.1237620592772328,
+      "neg": 24,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_seedonly1/random_mut_1523/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_1654": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_seedonly1/random_mut_1654/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_1161": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": -0.19980019980019278,
+      "neg": 2,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_seedonly1/random_mut_1161/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_432": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_seedonly1/random_mut_432/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_637": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": -0.19980019980019278,
+      "neg": 2,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_seedonly1/random_mut_637/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_2679": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": -0.19980019980019278,
+      "neg": 2,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_seedonly1/random_mut_2679/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_5153": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_seedonly1/random_mut_5153/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_4790": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": -0.19980019980019278,
+      "neg": 2,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_seedonly1/random_mut_4790/best.pt",
+    "raw_score_20win": -50.0
+  }
+}

@@ -101,6 +101,8 @@ class TrialConfig:
     use_bf16: bool = True   # BF16 safe for PPO; ~20-30% speedup on RTX 5090/A40/H100
     cuda_graph_ppo: bool = True  # Static shapes work for PPO; ~10-20% extra speedup
     time_budget_override: int = 0  # Override global time_budget for this config (0 = use global)
+    vf_coef: float = 0.5   # Value function loss coefficient (default 0.5)
+    max_grad_norm: float = 0.5  # Gradient clipping norm (default 0.5)
 
 
 # Define experiment configurations to test
@@ -1033,8 +1035,500 @@ STOCK_EXPERIMENTS: list[dict] = [
     {"description": "h256_lr3e4_s1137", "hidden_size": 256, "lr": 3e-4,
      "seed": 1137, "anneal_lr": True},
 
+
+    # -----------------------------------------------------------------------
+    # P-block: unexplored PPO infrastructure + value/gradient tuning (added 2026-03-22)
+    #
+    # Context: s1137 (h=1024, lr=1e-4, anneal_lr=True, ent=0.05) gives robust=-21.38.
+    # All prior sweeps: reward shaping, architecture, data friction, seeds.
+    # NOT yet tested: vf_coef, max_grad_norm, clip_eps, reward_clip, cash_penalty
+    # sweep, gae_lambda, minibatch size below default (256/512), mid-LR variants.
+    #
+    # Key design choices:
+    #   - All use s1137 (best seed) + lr=1e-4 + anneal_lr=True as base
+    #   - mb256/mb512: smaller batches = noisier but more frequent updates
+    #   - vf_coef: 0.25 reduces value pressure (more PG), 1.0 increases
+    #   - max_grad_norm: 0.3 tighter, 1.0/2.0 looser (helps sparse rewards)
+    #   - clip_eps: 0.1 conservative updates, 0.3 aggressive
+    #   - reward_clip: 2.0 tighter, 10.0 looser (default 5.0)
+    #   - cash_penalty: 0 removes hold-cash penalty, 0.005 halves it
+    #   - gae_lambda: 0.9 shorter credit, 0.99 longer (daily trends last weeks)
+    #   - num_envs=32: fewer envs, more on-policy, may help escape degenerate attractor
+    #   - lr=5e-5: very slow LR, ultra-stable convergence
+    # -----------------------------------------------------------------------
+
+    # --- P1: Value function coefficient sweep ---
+    {"description": "p_vfcoef_025", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "vf_coef": 0.25},
+    {"description": "p_vfcoef_10", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "vf_coef": 1.0},
+    {"description": "p_vfcoef_075", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "vf_coef": 0.75},
+
+    # --- P2: Gradient clipping norm sweep ---
+    {"description": "p_gradnorm_03", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "max_grad_norm": 0.3},
+    {"description": "p_gradnorm_10", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "max_grad_norm": 1.0},
+    {"description": "p_gradnorm_20", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "max_grad_norm": 2.0},
+
+    # --- P3: PPO clip epsilon sweep ---
+    {"description": "p_clipeps_01", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "clip_eps": 0.1},
+    {"description": "p_clipeps_03", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "clip_eps": 0.3},
+    {"description": "p_clipeps_015", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "clip_eps": 0.15},
+
+    # --- P4: Reward clip sweep ---
+    {"description": "p_rwclip_20", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "reward_clip": 2.0},
+    {"description": "p_rwclip_10", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "reward_clip": 10.0},
+
+    # --- P5: Cash penalty sweep ---
+    {"description": "p_cashpen_0", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "cash_penalty": 0.0},
+    {"description": "p_cashpen_005", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "cash_penalty": 0.005},
+    {"description": "p_cashpen_02", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "cash_penalty": 0.02},
+
+    # --- P6: GAE lambda sweep ---
+    {"description": "p_gae_09", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "gae_lambda": 0.9},
+    {"description": "p_gae_099", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "gae_lambda": 0.99},
+
+    # --- P7: Small minibatch (below default 2048) ---
+    {"description": "p_mb512", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "minibatch_size": 512},
+    {"description": "p_mb1024", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "minibatch_size": 1024},
+
+    # --- P8: Very low LR (ultra-stable convergence) ---
+    {"description": "p_lr5e5_s1137", "lr": 5e-5, "anneal_lr": True, "seed": 1137},
+    {"description": "p_lr5e5_s5678", "lr": 5e-5, "anneal_lr": True, "seed": 5678},
+
+    # --- P9: num_envs=32 (fewer, more on-policy) ---
+    {"description": "p_envs32", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "num_envs": 32},
+    {"description": "p_envs32_s5678", "lr": 1e-4, "anneal_lr": True, "seed": 5678,
+     "num_envs": 32},
+
+    # --- P10: Combos of promising P-block dims ---
+    {"description": "p_clip01_gn10", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "clip_eps": 0.1, "max_grad_norm": 1.0},
+    {"description": "p_vf025_clip01", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "vf_coef": 0.25, "clip_eps": 0.1},
+    {"description": "p_nocp_gae99", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "cash_penalty": 0.0, "gae_lambda": 0.99},
+    {"description": "p_mb512_gn10", "lr": 1e-4, "anneal_lr": True, "seed": 1137,
+     "minibatch_size": 512, "max_grad_norm": 1.0},
+
+    # --- P11: P-block dims with s5678 (2nd best seed) ---
+    {"description": "p_vfcoef_025_s5678", "lr": 1e-4, "anneal_lr": True, "seed": 5678,
+     "vf_coef": 0.25},
+    {"description": "p_gradnorm_10_s5678", "lr": 1e-4, "anneal_lr": True, "seed": 5678,
+     "max_grad_norm": 1.0},
+    {"description": "p_clipeps_01_s5678", "lr": 1e-4, "anneal_lr": True, "seed": 5678,
+     "clip_eps": 0.1},
+
+    # -----------------------------------------------------------------------
+    # Q-block: h100_combo_wd01 winner sweep (added 2026-03-23)
+    #
+    # BEST KNOWN: h100_combo_wd01 at holdout_robust_score=-16.41
+    # Config: lr=3e-4, wd=0.01, tp=0.05, slip=5.0bps, anneal_lr=True (default)
+    # Trained 90s / 13.8M steps on RTX 5090. Short training = better OOS.
+    # Key insight: 37M steps overfits; 13M steps generalizes better.
+    #
+    # Strategy:
+    #  (A) Seed sweep — is wd=0.01+tp=0.05+slip=5 consistently good?
+    #  (B) Slippage cross — more friction forces wider edges
+    #  (C) WD cross — wd=0.005/0.02 brackets wd=0.01
+    #  (D) LR cross — does lr=1e-4 help when combined with wd=0.01?
+    #  (E) TP cross — tp=0.03/0.08 brackets tp=0.05
+    #  (F) Combo: wd=0.01 + slip=10 + tp=0.05 (more total friction)
+    #  (G) Combo: wd=0.01 + anneal_ent (entropy decay for later exploitation)
+    #  (H) Combo: wd=0.01 + obs_norm (normalise heterogeneous stock features)
+    #  (I) lr=3e-4 + wd=0.01 + tp=0.05 + slip=5 + h256 (smaller=more regularised)
+    #  (J) lr=3e-4 + wd=0.01 + tp=0.05 + slip=5 + cosine LR
+    # -----------------------------------------------------------------------
+
+    # (A) Seed sweep of exact winning formula
+    {"description": "q_wd01_tp05_slip5_s42",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0, "seed": 42},
+    {"description": "q_wd01_tp05_slip5_s123",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0, "seed": 123},
+    {"description": "q_wd01_tp05_slip5_s777",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0, "seed": 777},
+    {"description": "q_wd01_tp05_slip5_s1137",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0, "seed": 1137},
+    {"description": "q_wd01_tp05_slip5_s5678",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0, "seed": 5678},
+    {"description": "q_wd01_tp05_slip5_s9621",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0, "seed": 9621},
+
+    # (B) Slippage cross
+    {"description": "q_wd01_tp05_slip8",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 8.0},
+    {"description": "q_wd01_tp05_slip10",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 10.0},
+    {"description": "q_wd01_tp05_slip12",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 12.0},
+    {"description": "q_wd01_tp05_slip15",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 15.0},
+
+    # (C) WD cross
+    {"description": "q_wd005_tp05_slip5",
+     "weight_decay": 0.005, "trade_penalty": 0.05, "fill_slippage_bps": 5.0},
+    {"description": "q_wd02_tp05_slip5",
+     "weight_decay": 0.02, "trade_penalty": 0.05, "fill_slippage_bps": 5.0},
+    {"description": "q_wd05_tp05_slip5",
+     "weight_decay": 0.05, "trade_penalty": 0.05, "fill_slippage_bps": 5.0},
+
+    # (D) LR=1e-4 + anneal combined with wd=0.01 winner formula
+    {"description": "q_lr1e4_wd01_tp05_slip5_s777",
+     "lr": 1e-4, "anneal_lr": True, "weight_decay": 0.01,
+     "trade_penalty": 0.05, "fill_slippage_bps": 5.0, "seed": 777},
+    {"description": "q_lr1e4_wd01_tp05_slip5_s1137",
+     "lr": 1e-4, "anneal_lr": True, "weight_decay": 0.01,
+     "trade_penalty": 0.05, "fill_slippage_bps": 5.0, "seed": 1137},
+    {"description": "q_lr1e4_wd01_tp05_slip5_s42",
+     "lr": 1e-4, "anneal_lr": True, "weight_decay": 0.01,
+     "trade_penalty": 0.05, "fill_slippage_bps": 5.0, "seed": 42},
+    {"description": "q_lr2e4_wd01_tp05_slip5_s777",
+     "lr": 2e-4, "anneal_lr": True, "weight_decay": 0.01,
+     "trade_penalty": 0.05, "fill_slippage_bps": 5.0, "seed": 777},
+
+    # (E) Trade penalty cross
+    {"description": "q_wd01_tp03_slip5",
+     "weight_decay": 0.01, "trade_penalty": 0.03, "fill_slippage_bps": 5.0},
+    {"description": "q_wd01_tp08_slip5",
+     "weight_decay": 0.01, "trade_penalty": 0.08, "fill_slippage_bps": 5.0},
+    {"description": "q_wd01_tp10_slip5",
+     "weight_decay": 0.01, "trade_penalty": 0.10, "fill_slippage_bps": 5.0},
+
+    # (F) More total friction
+    {"description": "q_wd01_tp05_slip10",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 10.0},
+    {"description": "q_wd02_tp05_slip10",
+     "weight_decay": 0.02, "trade_penalty": 0.05, "fill_slippage_bps": 10.0},
+    {"description": "q_wd01_tp08_slip10",
+     "weight_decay": 0.01, "trade_penalty": 0.08, "fill_slippage_bps": 10.0},
+
+    # (G) Entropy annealing added
+    {"description": "q_wd01_tp05_slip5_annent",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+     "anneal_ent": True, "ent_coef": 0.08, "ent_coef_end": 0.02},
+    {"description": "q_wd01_tp05_slip5_ent03",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+     "ent_coef": 0.03},
+    {"description": "q_wd01_tp05_slip5_ent08",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+     "ent_coef": 0.08},
+
+    # (H) Obs norm
+    {"description": "q_wd01_tp05_slip5_obsn",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+     "obs_norm": True},
+    {"description": "q_wd01_tp05_slip10_obsn",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 10.0,
+     "obs_norm": True},
+
+    # (I) h256 — smaller net = more regularised (random_mut_4424 was h256+slip12, 0% neg windows)
+    {"description": "q_h256_wd01_tp05_slip5",
+     "hidden_size": 256, "weight_decay": 0.01, "trade_penalty": 0.05,
+     "fill_slippage_bps": 5.0},
+    {"description": "q_h256_wd01_tp05_slip10",
+     "hidden_size": 256, "weight_decay": 0.01, "trade_penalty": 0.05,
+     "fill_slippage_bps": 10.0},
+    {"description": "q_h512_wd01_tp05_slip5",
+     "hidden_size": 512, "weight_decay": 0.01, "trade_penalty": 0.05,
+     "fill_slippage_bps": 5.0},
+
+    # (J) Cosine LR with winning wd/tp/slip formula
+    {"description": "q_cosine_wd01_tp05_slip5",
+     "lr_schedule": "cosine", "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05,
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0},
+    {"description": "q_cosine_wd01_tp05_slip10",
+     "lr_schedule": "cosine", "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05,
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 10.0},
+
+    # -----------------------------------------------------------------------
+    # R-block: reward shaping novelties + multi-objective (added 2026-03-23)
+    #
+    # Try per-env advantage norm (GRPO/GSPO-style) combined with q-block winner
+    # -----------------------------------------------------------------------
+    {"description": "r_perenv_wd01_tp05_slip5",
+     "advantage_norm": "per_env", "weight_decay": 0.01,
+     "trade_penalty": 0.05, "fill_slippage_bps": 5.0},
+    {"description": "r_grpo_wd01_tp05_slip5",
+     "advantage_norm": "group_relative", "group_relative_size": 8,
+     "group_relative_mix": 0.25, "group_relative_clip": 1.5,
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0},
+
+    # Calmar-proxy with wd=0.01 combo
+    {"description": "r_calmar_wd01_slip5",
+     "weight_decay": 0.01, "drawdown_penalty": 0.1,
+     "smooth_downside_penalty": 0.2, "trade_penalty": 0.05,
+     "fill_slippage_bps": 5.0},
+
+    # -----------------------------------------------------------------------
+    # S-block: q_wd01_tp05_slip5 winner seed sweep + Q+P combos (added 2026-03-23)
+    #
+    # q_wd01_tp05_slip5_s123 scored -4.05 (NEW BEST, beating -16.41).
+    # Strategy:
+    #  (A) More seeds for the winning formula — find stable seeds for ensemble
+    #  (B) Q winner + P-block tuning: smaller clip_eps, lower vf_coef
+    #  (C) Q winner + P-block tuning: tighter grad norm (0.5), cosine anneal
+    #  (D) Q winner + slightly more trade friction (tp=0.07) or wd=0.015
+    #  (E) Q winner s123 + varied slippage to understand friction sensitivity
+    # -----------------------------------------------------------------------
+
+    # (A) Extra seed sweep — is -4.05 a fluke or robust?
+    {"description": "s_wd01_tp05_slip5_s200",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0, "seed": 200},
+    {"description": "s_wd01_tp05_slip5_s314",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0, "seed": 314},
+    {"description": "s_wd01_tp05_slip5_s2024",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0, "seed": 2024},
+    {"description": "s_wd01_tp05_slip5_s3141",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0, "seed": 3141},
+    {"description": "s_wd01_tp05_slip5_s4242",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0, "seed": 4242},
+    {"description": "s_wd01_tp05_slip5_s7777",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0, "seed": 7777},
+    {"description": "s_wd01_tp05_slip5_s8192",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0, "seed": 8192},
+    {"description": "s_wd01_tp05_slip5_s9999",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0, "seed": 9999},
+
+    # (B) Q winner + small clip_eps (conservative updates = less overfit)
+    {"description": "s_clip01_wd01_tp05_slip5_s123",
+     "clip_eps": 0.1, "weight_decay": 0.01, "trade_penalty": 0.05,
+     "fill_slippage_bps": 5.0, "seed": 123},
+    {"description": "s_vf025_wd01_tp05_slip5_s123",
+     "vf_coef": 0.25, "weight_decay": 0.01, "trade_penalty": 0.05,
+     "fill_slippage_bps": 5.0, "seed": 123},
+
+    # (C) Q winner + tighter grad norm / cosine LR
+    {"description": "s_gn03_wd01_tp05_slip5_s123",
+     "max_grad_norm": 0.3, "weight_decay": 0.01, "trade_penalty": 0.05,
+     "fill_slippage_bps": 5.0, "seed": 123},
+    {"description": "s_cosine_wd01_tp05_slip5_s123",
+     "lr_schedule": "cosine", "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05,
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0, "seed": 123},
+
+    # (D) Q winner + varied friction levels
+    {"description": "s_wd015_tp05_slip5_s123",
+     "weight_decay": 0.015, "trade_penalty": 0.05, "fill_slippage_bps": 5.0, "seed": 123},
+    {"description": "s_wd01_tp07_slip5_s123",
+     "weight_decay": 0.01, "trade_penalty": 0.07, "fill_slippage_bps": 5.0, "seed": 123},
+    {"description": "s_wd01_tp05_slip7_s123",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 7.0, "seed": 123},
+
+    # (D2) WD cross with seed=123 — Q-block WD cross used seed=42 (bad seed); need proper test
+    {"description": "s_wd005_tp05_slip5_s123",
+     "weight_decay": 0.005, "trade_penalty": 0.05, "fill_slippage_bps": 5.0, "seed": 123},
+    {"description": "s_wd02_tp05_slip5_s123",
+     "weight_decay": 0.02, "trade_penalty": 0.05, "fill_slippage_bps": 5.0, "seed": 123},
+
+    # (D3) h256 + drawdown_penalty + no slippage with seed=123 (inspired by h256_lr3e4_slip0_dp01_s1137 at -37.05)
+    {"description": "s_h256_dp01_slip0_s123",
+     "hidden_size": 256, "drawdown_penalty": 0.01, "fill_slippage_bps": 0.0, "seed": 123},
+
+    # (E) Q winner s123 with varied slippage (confirm 5bps is optimal)
+    {"description": "s_wd01_tp05_slip3_s123",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 3.0, "seed": 123},
+    {"description": "s_wd01_tp05_slip0_s123",
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 0.0, "seed": 123},
+
+    # (F) s123 with PPO infra tweaks (clip, GAE, entropy)
+    {"description": "s_gae99_wd01_tp05_slip5_s123",
+     "gae_lambda": 0.99, "weight_decay": 0.01, "trade_penalty": 0.05,
+     "fill_slippage_bps": 5.0, "seed": 123},
+    {"description": "s_ppo4_wd01_tp05_slip5_s123",
+     "ppo_epochs": 4, "weight_decay": 0.01, "trade_penalty": 0.05,
+     "fill_slippage_bps": 5.0, "seed": 123},
+    {"description": "s_envs256_wd01_tp05_slip5_s123",
+     "num_envs": 256, "weight_decay": 0.01, "trade_penalty": 0.05,
+     "fill_slippage_bps": 5.0, "seed": 123},
+
+    # -----------------------------------------------------------------------
+    # T-block: h100_robust_champion formula on stocks11_2012 (added 2026-03-23)
+    #
+    # h100_robust_champion scored +26.33 on stocks20 with:
+    #   lr=3e-4, wd=0.005, slip=5bps, tp=0.05, obs_norm=True, lr_schedule=cosine,
+    #   anneal_lr=True, ent=0.05, h=1024. val_return=-0.17 (negative!) but OOS +47%.
+    #
+    # Test if this formula transfers to stocks11_2012 (different symbols, longer history).
+    # Strategy:
+    #  (A) Exact formula with seed sweep
+    #  (B) s123 (our best seed) + champion formula
+    #  (C) Champion + wd=0.01 (our best wd)
+    #  (D) Champion formula without obs_norm (is that the key?)
+    # -----------------------------------------------------------------------
+
+    # (A) Champion formula seed sweep
+    {"description": "t_champ_s42",
+     "lr": 3e-4, "weight_decay": 0.005, "fill_slippage_bps": 5.0,
+     "trade_penalty": 0.05, "obs_norm": True, "lr_schedule": "cosine",
+     "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05, "anneal_lr": True, "seed": 42},
+    {"description": "t_champ_s123",
+     "lr": 3e-4, "weight_decay": 0.005, "fill_slippage_bps": 5.0,
+     "trade_penalty": 0.05, "obs_norm": True, "lr_schedule": "cosine",
+     "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05, "anneal_lr": True, "seed": 123},
+    {"description": "t_champ_s777",
+     "lr": 3e-4, "weight_decay": 0.005, "fill_slippage_bps": 5.0,
+     "trade_penalty": 0.05, "obs_norm": True, "lr_schedule": "cosine",
+     "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05, "anneal_lr": True, "seed": 777},
+    {"description": "t_champ_s1137",
+     "lr": 3e-4, "weight_decay": 0.005, "fill_slippage_bps": 5.0,
+     "trade_penalty": 0.05, "obs_norm": True, "lr_schedule": "cosine",
+     "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05, "anneal_lr": True, "seed": 1137},
+    {"description": "t_champ_s5678",
+     "lr": 3e-4, "weight_decay": 0.005, "fill_slippage_bps": 5.0,
+     "trade_penalty": 0.05, "obs_norm": True, "lr_schedule": "cosine",
+     "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05, "anneal_lr": True, "seed": 5678},
+
+    # (B) s123 + champion formula variants
+    {"description": "t_wd01_obsn_cosine_s123",
+     "lr": 3e-4, "weight_decay": 0.01, "fill_slippage_bps": 5.0,
+     "trade_penalty": 0.05, "obs_norm": True, "lr_schedule": "cosine",
+     "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05, "anneal_lr": True, "seed": 123},
+    {"description": "t_wd005_obsn_s123",
+     "lr": 3e-4, "weight_decay": 0.005, "fill_slippage_bps": 5.0,
+     "trade_penalty": 0.05, "obs_norm": True, "anneal_lr": True, "seed": 123},
+
+    # (C) Champion formula without obs_norm (isolate its contribution)
+    {"description": "t_champ_noobsn_s123",
+     "lr": 3e-4, "weight_decay": 0.005, "fill_slippage_bps": 5.0,
+     "trade_penalty": 0.05, "obs_norm": False, "lr_schedule": "cosine",
+     "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05, "anneal_lr": True, "seed": 123},
+    {"description": "t_champ_noobsn_s42",
+     "lr": 3e-4, "weight_decay": 0.005, "fill_slippage_bps": 5.0,
+     "trade_penalty": 0.05, "obs_norm": False, "lr_schedule": "cosine",
+     "lr_warmup_frac": 0.02, "lr_min_ratio": 0.05, "anneal_lr": True, "seed": 42},
+
+    # -----------------------------------------------------------------------
+    # U-block: GRPO + winning formula seed sweep (added 2026-03-23)
+    #
+    # r_grpo_wd01_tp05_slip5 scored -5.81 (val_ret=0.1693, val_sort=1.59) —
+    # almost as good as s123 (-4.05) at 90s budget. GRPO advantage norm with
+    # group_size=8, mix=0.25, clip=1.5 is a strong combination.
+    # Strategy: sweep 20 seeds of GRPO+winning formula to find best GRPO seed.
+    # Plus: GRPO+s123 with different mix ratios and group sizes.
+    # -----------------------------------------------------------------------
+    # (A) GRPO seed sweep with winning formula
+    *[{"description": f"u_grpo_s{s}",
+       "advantage_norm": "group_relative", "group_relative_size": 8,
+       "group_relative_mix": 0.25, "group_relative_clip": 1.5,
+       "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+       "seed": s}
+      for s in [123, 5678, 314, 200, 400, 500, 600, 700, 800, 900,
+                1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 9999]],
+
+    # (B) GRPO mix ratio variations with s123 (best seed so far)
+    {"description": "u_grpo_mix0_s123",
+     "advantage_norm": "group_relative", "group_relative_size": 8,
+     "group_relative_mix": 0.0, "group_relative_clip": 1.5,
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+     "seed": 123},
+    {"description": "u_grpo_mix15_s123",
+     "advantage_norm": "group_relative", "group_relative_size": 8,
+     "group_relative_mix": 0.15, "group_relative_clip": 1.5,
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+     "seed": 123},
+    {"description": "u_grpo_mix50_s123",
+     "advantage_norm": "group_relative", "group_relative_size": 8,
+     "group_relative_mix": 0.5, "group_relative_clip": 1.5,
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+     "seed": 123},
+
+    # (C) GRPO group size variations with s123
+    {"description": "u_grpo_gs4_s123",
+     "advantage_norm": "group_relative", "group_relative_size": 4,
+     "group_relative_mix": 0.25, "group_relative_clip": 1.5,
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+     "seed": 123},
+    {"description": "u_grpo_gs16_s123",
+     "advantage_norm": "group_relative", "group_relative_size": 16,
+     "group_relative_mix": 0.25, "group_relative_clip": 1.5,
+     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+     "seed": 123},
+
+    # --- random_mut_2201 seed sweep (2026-03-23: BEST model +11.74% med, 1/50 neg) ---
+    # rmu4424_style: h=256, ent=0.05, slip=12, dp=0.01, sp=0.0 — best-ranked in H100 autoresearch
+    # (autoresearch score=-4.02, 50-win: 3.49% med, 9/50 neg — decent backup)
+    {"description": "rmu4424_style",
+     "hidden_size": 256, "ent_coef": 0.05, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.0, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True},
+    # Config: h=256, ent=0.08, slip=12bps, drawdown_pen=0.01, smoothness_pen=0.005
+    # All variants use anneal_lr=True, wd=0.0, lr=3e-4 (defaults)
+    {"description": "v_rmu2201_style",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True},
+    # per_env advantage_norm: 33% deployment rate vs 0% for global (discovered 2026-03-23)
+    # random_mut_8597 (seed=1168) used per_env and achieved 50-win 9.38% med, 5/50 neg
+    # Use as --init-best-config to bias mutations toward per_env space
+    {"description": "v_rmu2201_per_env_style",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True,
+     "advantage_norm": "per_env"},
+    {"description": "v_rmu2201_per_env_slip8",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 8.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True,
+     "advantage_norm": "per_env"},
+    {"description": "v_rmu2201_per_env_ent06",
+     "hidden_size": 256, "ent_coef": 0.06, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True,
+     "advantage_norm": "per_env"},
+    {"description": "v_rmu2201_s123",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True, "seed": 123},
+    {"description": "v_rmu2201_s42",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True, "seed": 42},
+    {"description": "v_rmu2201_s777",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True, "seed": 777},
+    {"description": "v_rmu2201_s2272",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True, "seed": 2272},
+    {"description": "v_rmu2201_s9999",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True, "seed": 9999},
+    {"description": "v_rmu2201_sp01",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.01, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True},
+    {"description": "v_rmu2201_sp02",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.02, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True},
+    {"description": "v_rmu2201_ent06",
+     "hidden_size": 256, "ent_coef": 0.06, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True},
+    {"description": "v_rmu2201_slip15",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 15.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True},
+
     # Random mutations — slots so H100 1000-trial runs get ~800+ random trials.
-    # H100 uses --start-from 187 --seed-only (O-block first, then random seeds).
+    # best_config is pre-seeded with winning formula when stocks_mode+seed_only.
     # Each slot calls mutate_config(best_config) at runtime.
     *[{"description": f"random_{i}"} for i in range(1, 1001)],
 ]
@@ -1227,6 +1721,54 @@ H100_STOCK_EXPERIMENTS: list[dict] = [
     {"description": "h100_drawpen_slip5",
      "drawdown_penalty": 0.05, "trade_penalty": 0.03, "fill_slippage_bps": 5.0},
 
+    # --- random_mut_2201 seed sweep (2026-03-23 BEST model: +11.74% med, 1/50 neg) ---
+    # random_mut_2201: h=256, ent=0.08, slip=12bps, dp=0.01, sp=0.005, wd=0.0, anneal_lr=True
+    # This config is UNIQUELY good in deterministic eval (stochastic eval was wrong/misleading)
+    # Sweep many seeds — escape rate unknown, need many trials to find similar models
+    {"description": "rmu2201_style",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True},
+    {"description": "rmu2201_s123",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True, "seed": 123},
+    {"description": "rmu2201_s42",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True, "seed": 42},
+    {"description": "rmu2201_s777",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True, "seed": 777},
+    {"description": "rmu2201_s2272",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True, "seed": 2272},
+    {"description": "rmu2201_s9999",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True, "seed": 9999},
+    # Variants: try smoothness_penalty = 0.01 (2x) and 0.02 (4x)
+    {"description": "rmu2201_sp01",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.01, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True},
+    {"description": "rmu2201_sp02",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.02, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True},
+    # Variant: ent=0.06 (between 0.05 and 0.08)
+    {"description": "rmu2201_ent06",
+     "hidden_size": 256, "ent_coef": 0.06, "fill_slippage_bps": 12.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True},
+    # Variant: slip=15bps (even more friction)
+    {"description": "rmu2201_slip15",
+     "hidden_size": 256, "ent_coef": 0.08, "fill_slippage_bps": 15.0,
+     "drawdown_penalty": 0.01, "smoothness_penalty": 0.005, "weight_decay": 0.0,
+     "smooth_downside_temperature": 0.01, "anneal_lr": True},
+
     # --- Cross seeds for best configs ---
     {"description": "h100_slip_10bps_s123",
      "fill_slippage_bps": 10.0, "seed": 123},
@@ -1359,45 +1901,66 @@ def build_config(overrides: dict) -> TrialConfig:
     return cfg
 
 
-def mutate_config(base: TrialConfig, *, stocks_mode: bool = False, seed_only: bool = False) -> TrialConfig:
+def mutate_config(base: TrialConfig, *, stocks_mode: bool = False, seed_only: bool = False,
+                  per_env_focused: bool = False) -> TrialConfig:
     """Randomly mutate a config for exploration.
 
-    stocks_mode=True: forces lr=1e-4 (other lrs hit -64.87 degenerate on stocks11_2012).
+    stocks_mode=True: restricts to lr in [1e-4, 3e-4] and slip in [0, 5bps] (safe for stocks11_2012).
+      - lr=3e-4 + wd=0.01 + tp=0.05 + slip=5bps + anneal_lr is the best known formula (-4.05).
+      - slip>5bps (8/10/12/15bps) all cause hold-cash on stocks11_2012.
     seed_only=True: only mutates the seed (for pure seed sweeps around a known-good config).
+    per_env_focused=True: tight mutation space around proven per_env stocks12 config.
+      - Locks anneal_lr=True always (False causes degenerate hold-cash on stocks12).
+      - Locks advantage_norm in [per_env, group_relative] (global collapses to NVDA-only).
+      - Locks hidden_size in [256, 512] (proven range; 1024 rarely escapes per_env).
+      - Only varies: ent_coef, fill_slippage_bps, drawdown_penalty, smoothness_penalty, gamma.
     """
     d = asdict(base)
     if not seed_only:
-        # Pick 2-3 params to mutate
-        # stocks_mode/stocks11_2012: lr=1e-4 ONLY — lr=2e-4/3e-4 ALL hit -64.87 degenerate minimum.
-        # random_mut_4424 (lr=3e-4) worked on stocks12 but stocks11_2012 data is fundamentally harder.
-        mutable_params = {
-            # stocks_mode: h=256 catastrophically bad (-121 to -146) on stocks11_2012. Only 512/1024 viable.
-            "hidden_size": [512, 1024] if stocks_mode else [256, 512, 1024],
-            "lr": [1e-4] if stocks_mode else [1e-4, 2e-4, 3e-4, 5e-4],
-            "ent_coef": [0.01, 0.03, 0.05, 0.08, 0.1],
-            "weight_decay": [0.0, 0.001, 0.005, 0.01, 0.05],
-            "fill_slippage_bps": [0.0, 5.0, 8.0, 12.0],
-            "gamma": [0.98, 0.99, 0.995],
-            "advantage_norm": ["global", "per_env", "group_relative"],
-            "group_relative_mix": [0.0, 0.15, 0.25, 0.4],
-            "reward_scale": [5.0, 10.0, 20.0],
-            "cash_penalty": [0.0, 0.005, 0.01, 0.02],
-            "trade_penalty": [0.0, 0.01, 0.02, 0.03, 0.05],
-            "drawdown_penalty": [0.0, 0.01, 0.02, 0.05],
-            "smooth_downside_penalty": [0.0, 0.1, 0.2, 0.5],
-            "smooth_downside_temperature": [0.01, 0.02, 0.05],
-            "smoothness_penalty": [0.0, 0.005, 0.01, 0.02],
-            "obs_norm": [True, False],
-            # stocks_mode: anneal_lr=True is critical; False collapses. Don't mutate away from it.
-            "anneal_lr": [True] if stocks_mode else [True, False],
-            "anneal_ent": [True, False],
-        }
+        if per_env_focused:
+            # Tight per_env mutation space based on rmu8597 (seed=1168, stocks12 daily)
+            mutable_params = {
+                "hidden_size": [256, 512],
+                "ent_coef": [0.05, 0.08, 0.1],
+                "fill_slippage_bps": [8.0, 12.0],
+                "drawdown_penalty": [0.0, 0.01, 0.02],
+                "smoothness_penalty": [0.0, 0.005, 0.01],
+                "gamma": [0.99, 0.995],
+                "weight_decay": [0.0, 0.001],
+                "advantage_norm": ["per_env", "group_relative"],
+                "anneal_lr": [True],  # never mutate away from True
+            }
+        else:
+            # Pick 2-3 params to mutate
+            mutable_params = {
+                # stocks_mode: h=256 catastrophically bad (-121 to -146) on stocks11_2012. Only 512/1024 viable.
+                "hidden_size": [512, 1024] if stocks_mode else [256, 512, 1024],
+                # stocks_mode: lr=3e-4 + wd=0.01 + tp=0.05 + slip=5bps is BEST (-4.05).
+                # lr=1e-4 P-block did not beat q-block winner. Allow both 1e-4 and 3e-4.
+                # Exclude 2e-4/5e-4: no evidence of benefit yet.
+                "lr": [1e-4, 3e-4] if stocks_mode else [1e-4, 2e-4, 3e-4, 5e-4],
+                "ent_coef": [0.01, 0.03, 0.05, 0.08, 0.1],
+                "weight_decay": [0.0, 0.001, 0.005, 0.01, 0.05],
+                # stocks_mode: slip>5bps destroys training (slip10/12/15 all hold-cash). Keep 0 or 5.
+                "fill_slippage_bps": [0.0, 5.0] if stocks_mode else [0.0, 5.0, 8.0, 12.0],
+                "gamma": [0.98, 0.99, 0.995],
+                "advantage_norm": ["global", "per_env", "group_relative"],
+                "group_relative_mix": [0.0, 0.15, 0.25, 0.4],
+                "reward_scale": [5.0, 10.0, 20.0],
+                "cash_penalty": [0.0, 0.005, 0.01, 0.02],
+                "trade_penalty": [0.0, 0.01, 0.02, 0.03, 0.05],
+                "drawdown_penalty": [0.0, 0.01, 0.02, 0.05],
+                "smooth_downside_penalty": [0.0, 0.1, 0.2, 0.5],
+                "smooth_downside_temperature": [0.01, 0.02, 0.05],
+                "smoothness_penalty": [0.0, 0.005, 0.01, 0.02],
+                "obs_norm": [True, False],
+                # stocks_mode: anneal_lr=True is critical; False collapses. Don't mutate away from it.
+                "anneal_lr": [True] if stocks_mode else [True, False],
+                "anneal_ent": [True, False],
+            }
         keys = random.sample(list(mutable_params.keys()), min(3, len(mutable_params)))
         for k in keys:
             d[k] = random.choice(mutable_params[k])
-    # stocks_mode: force lr=1e-4 always — other lrs hit -64.87 degenerate minimum on stocks11_2012
-    if stocks_mode:
-        d["lr"] = 1e-4
     # h2048 needs 256 envs + 4096 minibatch for adequate step throughput on H100
     if d.get("hidden_size") == 2048:
         d["num_envs"] = 256
@@ -1704,6 +2267,10 @@ def run_trial(
         cmd.extend(["--optimizer", config.optimizer])
     if config.minibatch_size != 2048:
         cmd.extend(["--minibatch-size", str(config.minibatch_size)])
+    if config.vf_coef != 0.5:
+        cmd.extend(["--vf-coef", str(config.vf_coef)])
+    if config.max_grad_norm != 0.5:
+        cmd.extend(["--max-grad-norm", str(config.max_grad_norm)])
     if config.use_bf16:
         cmd.append("--use-bf16")
     if config.cuda_graph_ppo:
@@ -1995,6 +2562,7 @@ def run_trial(
             "--short-borrow-apr", str(holdout_short_borrow_apr),
             "--periods-per-year", str(config.periods_per_year),
             "--deterministic",
+            "--no-early-stop",
             "--out", str(holdout_json_path),
         ]
         if holdout_end_within_steps > 0:
@@ -2239,6 +2807,12 @@ def main():
                         help="Random mutations only change seed (not other hyperparams). "
                              "Used for pure seed sweeps around a known-good config. "
                              "Best with --stocks and --start-from 172.")
+    parser.add_argument("--per-env-focused", action="store_true",
+                        help="Restrict random mutations to safe per_env stocks12 combinations: "
+                             "locks anneal_lr=True, advantage_norm in [per_env, group_relative], "
+                             "h in [256, 512]. Use with --init-best-config v_rmu2201_per_env_style "
+                             "to focus search around proven per_env config. "
+                             "Increases per_env escape rate by avoiding known-bad mutations.")
     parser.add_argument("--stocks", action="store_true",
                         help="Use stock-specific configs and Alpaca daily defaults "
                              "(fee_rate=0.001, periods_per_year=252, "
@@ -2358,6 +2932,13 @@ def main():
                         help="Use polynomial curve fitting for early stopping (default: True). "
                              "Pass --no-poly-prune to revert to fixed-threshold early rejection.")
     parser.add_argument("--no-poly-prune", dest="poly_prune", action="store_false")
+    parser.add_argument("--init-best-config", type=str, default="",
+                        help="Pre-seed best_config from a named experiment (e.g. 'v_rmu2201_style'). "
+                             "Subsequent random mutations start from this config instead of TrialConfig() defaults.")
+    parser.add_argument("--lock-best-config", action="store_true", default=False,
+                        help="Never update best_config from trial results. All mutations always come from the "
+                             "init config (set via --init-best-config or defaults). Useful for broad random "
+                             "search around a known-good config without drift into bad regions.")
     parser.add_argument("--local", action="store_true",
                         help="Preset for local RTX GPU: sets --time-budget 60 if not overridden")
     parser.add_argument("--a40", action="store_true",
@@ -2556,7 +3137,42 @@ def main():
     best_rank_score = -float("inf")
     best_val_return = -float("inf")  # tracked separately — same scale as _quick_val_eval
     best_combined_score = _best_tracker.get_best(_track)
-    best_config = TrialConfig()
+
+    # In stocks_mode + seed_only: pre-seed best_config with the confirmed winning formula
+    # (lr=3e-4, wd=0.01, tp=0.05, slip=5bps, h=1024, anneal_lr=True) so that all random
+    # seed_only mutations use this formula from trial 1, even with --start-from 301.
+    # Without this, seed_only mutations of the default TrialConfig() have wd=0/tp=0/slip=0
+    # which ALL collapse to hold-cash on stocks11_2012.
+    _seed_only = getattr(args, "seed_only", False)
+    _init_desc = getattr(args, "init_best_config", "")
+    if _init_desc:
+        # Load a named config as the starting best_config for mutations.
+        _init_pool = experiments if experiments else (pool if "pool" in dir() else [])
+        _found = next((e for e in _init_pool if e.get("description") == _init_desc), None)
+        if _found is None:
+            # Also search the full STOCK_EXPERIMENTS and H100_STOCK_EXPERIMENTS pools
+            for _p in [STOCK_EXPERIMENTS, H100_STOCK_EXPERIMENTS]:
+                _found = next((e for e in _p if e.get("description") == _init_desc), None)
+                if _found:
+                    break
+        if _found:
+            best_config = build_config(_found)
+            print(f"  [init-best-config] Pre-seeding best_config from '{_init_desc}': {_found}")
+        else:
+            print(f"  [init-best-config] WARNING: '{_init_desc}' not found, using TrialConfig() defaults")
+            best_config = TrialConfig()
+    elif getattr(args, "stocks", False) and _seed_only:
+        best_config = TrialConfig(
+            weight_decay=0.01,
+            trade_penalty=0.05,
+            fill_slippage_bps=5.0,
+            lr=3e-4,
+            anneal_lr=True,
+            hidden_size=1024,
+            ent_coef=0.05,
+        )
+    else:
+        best_config = TrialConfig()
 
     trial_num = len(existing_trials)
 
@@ -2573,7 +3189,9 @@ def main():
         # Handle random mutations
         if desc.startswith("random_"):
             seed_only = getattr(args, "seed_only", False)
-            config = mutate_config(best_config, stocks_mode=args.stocks, seed_only=seed_only)
+            per_env_focused = getattr(args, "per_env_focused", False)
+            config = mutate_config(best_config, stocks_mode=args.stocks, seed_only=seed_only,
+                                   per_env_focused=per_env_focused)
             desc = config.description
         else:
             config = build_config(exp_overrides)
@@ -2759,9 +3377,11 @@ def main():
 
         # Track best
         rank_score = _safe_float(result.get("rank_score"))
+        _lock = getattr(args, "lock_best_config", False)
         if rank_score is not None and rank_score > best_rank_score:
             best_rank_score = rank_score
-            best_config = config
+            if not _lock:
+                best_config = config
             metric_name = str(result.get("rank_metric", "rank_score"))
             print(f"  *** NEW BEST {metric_name}={rank_score:.4f} ***")
         # Track best val_return separately (same scale as early-reject _quick_val_eval)

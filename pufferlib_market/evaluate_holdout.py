@@ -297,6 +297,7 @@ def main() -> None:
     parser.add_argument("--shortable-symbols", type=str, default=None)
     parser.add_argument("--decision-lag", type=int, default=0)
     parser.add_argument("--deterministic", action="store_true", help="Argmax actions (recommended)")
+    parser.add_argument("--no-early-stop", action="store_true", help="Disable drawdown-vs-profit early exit (run full window)")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--out", type=str, default=None, help="Optional JSON output path")
     args = parser.parse_args()
@@ -424,6 +425,7 @@ def main() -> None:
             action_allocation_bins=int(alloc_bins),
             action_level_bins=int(level_bins),
             action_max_offset_bps=float(max_offset_bps),
+            enable_drawdown_profit_early_exit=not args.no_early_stop,
         )
         annualized_return = annualize_total_return(
             float(result.total_return),

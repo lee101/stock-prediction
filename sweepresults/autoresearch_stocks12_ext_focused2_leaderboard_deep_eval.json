@@ -1,0 +1,170 @@
+{
+  "random_mut_7224": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 1.7055836690902741,
+      "p10": -8.172679660684857,
+      "worst": -14.280585778152819,
+      "neg": 19,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": -14.311547896302773,
+      "p10": -27.157718424221628,
+      "worst": -33.283196025715974,
+      "neg": 40,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_focused2/random_mut_7224/best.pt",
+    "raw_score_20win": -55.9170778716404
+  },
+  "random_mut_6558": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": -1.1023962792275872,
+      "p10": -6.791462969116037,
+      "worst": -9.122001988987995,
+      "neg": 27,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": -16.82851863893531,
+      "p10": -29.23751761644646,
+      "worst": -31.96976905937182,
+      "neg": 49,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_focused2/random_mut_6558/best.pt",
+    "raw_score_20win": -53.68499324734352
+  },
+  "trade_pen_high": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_focused2/trade_pen_high/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "trade_pen_vhigh": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_focused2/trade_pen_vhigh/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "combined_smooth": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_focused2/combined_smooth/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "sortino_top1_tp": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 1.756712387489579,
+      "p10": -1.9979516949734168,
+      "worst": -2.41818567323995,
+      "neg": 23,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_ext_focused2/sortino_top1_tp/best.pt",
+    "raw_score_20win": -50.0
+  }
+}
