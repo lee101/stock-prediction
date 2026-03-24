@@ -147,10 +147,41 @@ def _crypto_seedsweep(seeds: range = range(1, 21)) -> list[dict]:
     return [{**base, "seed": s, "description": f"crypto_slip5_seed_{s}"} for s in seeds]
 
 
+def _crypto70_autoresearch(seeds: list[int] = [42, 123, 7]) -> list[dict]:
+    """Autoresearch configs for crypto70 daily dataset — sweeps trade_penalty, LR, slippage."""
+    base = {
+        "hidden_size": 1024,
+        "anneal_lr": True,
+        "ent_coef": 0.05,
+        "num_envs": 128,
+        "use_bf16": True,
+        "cuda_graph_ppo": True,
+    }
+    configs = []
+    for seed in seeds:
+        for tp in [0.03, 0.05, 0.08]:
+            for slip in [0.0, 5.0]:
+                for lr in [3e-4]:
+                    desc = f"c70_tp{int(tp*100):02d}_slip{int(slip)}_lr{lr:.0e}_s{seed}"
+                    configs.append({**base,
+                        "seed": seed, "lr": lr,
+                        "trade_penalty": tp, "fill_slippage_bps": slip,
+                        "description": desc,
+                    })
+        # muon optimizer variant at best config
+        configs.append({**base, "seed": seed, "lr": 0.02,
+            "trade_penalty": 0.05, "fill_slippage_bps": 5.0,
+            "optimizer": "muon",
+            "description": f"c70_tp05_slip5_muon_s{seed}",
+        })
+    return configs
+
+
 PRESETS: dict[str, list[dict]] = {
     "stocks12_seedsweep": _stocks12_seedsweep(),
     "stocks12_tp05_family": _stocks12_tp05_family(),
     "crypto_seedsweep": _crypto_seedsweep(),
+    "crypto70_autoresearch": _crypto70_autoresearch(),
 }
 
 
