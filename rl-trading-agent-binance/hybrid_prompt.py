@@ -41,10 +41,18 @@ SYMBOL_BINANCE_MAP = {
     "BTCUSD": ("BTCFDUSD", "BTC", "FDUSD"),
     "ETHUSD": ("ETHFDUSD", "ETH", "FDUSD"),
     "SOLUSD": ("SOLUSDT", "SOL", "USDT"),
+    "LTCUSD": ("LTCUSDT", "LTC", "USDT"),
+    "AVAXUSD": ("AVAXUSDT", "AVAX", "USDT"),
     "DOGEUSD": ("DOGEUSDT", "DOGE", "USDT"),
-    "AAVEUSD": ("AAVEUSDT", "AAVE", "USDT"),
     "LINKUSD": ("LINKUSDT", "LINK", "USDT"),
+    "ADAUSD": ("ADAUSDT", "ADA", "USDT"),
+    "UNIUSD": ("UNIUSDT", "UNI", "USDT"),
+    "AAVEUSD": ("AAVEUSDT", "AAVE", "USDT"),
+    "ALGOUSD": ("ALGOUSDT", "ALGO", "USDT"),
+    "DOTUSD": ("DOTUSDT", "DOT", "USDT"),
+    "SHIBUSD": ("SHIBUSDT", "SHIB", "USDT"),
     "XRPUSD": ("XRPUSDT", "XRP", "USDT"),
+    "MATICUSD": ("MATICUSDT", "MATIC", "USDT"),
 }
 
 
@@ -426,15 +434,18 @@ ALLOC_FIELDS = {
     "BTCUSD": ("btc_pct", "btc_entry", "btc_exit"),
     "ETHUSD": ("eth_pct", "eth_entry", "eth_exit"),
     "SOLUSD": ("sol_pct", "sol_entry", "sol_exit"),
-    "DOGEUSD": ("doge_pct", "doge_entry", "doge_exit"),
-    "AAVEUSD": ("aave_pct", "aave_entry", "aave_exit"),
-    "LINKUSD": ("link_pct", "link_entry", "link_exit"),
-    "XRPUSD": ("xrp_pct", "xrp_entry", "xrp_exit"),
     "LTCUSD": ("ltc_pct", "ltc_entry", "ltc_exit"),
     "AVAXUSD": ("avax_pct", "avax_entry", "avax_exit"),
+    "DOGEUSD": ("doge_pct", "doge_entry", "doge_exit"),
+    "LINKUSD": ("link_pct", "link_entry", "link_exit"),
+    "ADAUSD": ("ada_pct", "ada_entry", "ada_exit"),
     "UNIUSD": ("uni_pct", "uni_entry", "uni_exit"),
+    "AAVEUSD": ("aave_pct", "aave_entry", "aave_exit"),
+    "ALGOUSD": ("algo_pct", "algo_entry", "algo_exit"),
     "DOTUSD": ("dot_pct", "dot_entry", "dot_exit"),
     "SHIBUSD": ("shib_pct", "shib_entry", "shib_exit"),
+    "XRPUSD": ("xrp_pct", "xrp_entry", "xrp_exit"),
+    "MATICUSD": ("matic_pct", "matic_entry", "matic_exit"),
 }
 
 

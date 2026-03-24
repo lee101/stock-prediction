@@ -59,11 +59,21 @@ SYMBOL_TO_BINANCE_PAIR = {
     "UNIUSD": "UNIUSDT",
     "DOTUSD": "DOTUSDT",
     "SHIBUSD": "SHIBUSDT",
+    "ADAUSD": "ADAUSDT",
+    "ALGOUSD": "ALGOUSDT",
+    "MATICUSD": "MATICUSDT",
 }
+
+CRYPTO15_SYMBOLS = (
+    "BTCUSD", "ETHUSD", "SOLUSD", "LTCUSD", "AVAXUSD", "DOGEUSD",
+    "LINKUSD", "ADAUSD", "UNIUSD", "AAVEUSD", "ALGOUSD", "DOTUSD",
+    "SHIBUSD", "XRPUSD", "MATICUSD",
+)
 
 # Known obs_size -> symbol tuple mapping for auto-detection
 _OBS_SIZE_TO_SYMBOLS = {
     73: ("BTCUSD", "ETHUSD", "DOGEUSD", "AAVEUSD"),
+    260: CRYPTO15_SYMBOLS,
     396: MIXED23_SYMBOLS,
 }
 
