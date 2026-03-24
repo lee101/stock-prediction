@@ -336,6 +336,8 @@ def build_autoresearch_cmd(
     start_from: int = 0,
     seed_only: bool = False,
     poly_prune: bool = True,
+    init_best_config: str = "",
+    lock_best_config: bool = False,
 ) -> list[str]:
     cmd = [
         "python",
@@ -369,6 +371,10 @@ def build_autoresearch_cmd(
         cmd.append("--seed-only")
     if not poly_prune:
         cmd.append("--no-poly-prune")
+    if init_best_config:
+        cmd.extend(["--init-best-config", str(init_best_config)])
+    if lock_best_config:
+        cmd.append("--lock-best-config")
     return cmd
 
 
@@ -454,6 +460,8 @@ def build_remote_autoresearch_plan(
     post_eval_cache_path: str | None = None,
     post_eval_use_compile: bool = False,
     post_eval_parallel: bool = False,
+    init_best_config: str = "",
+    lock_best_config: bool = False,
 ) -> RemoteAutoresearchPlan:
     run_dir = f"{remote_run_root.rstrip('/')}/{run_id}"
     leaderboard = leaderboard_path or f"pufferlib_market/{run_id}_leaderboard.csv"
@@ -480,6 +488,8 @@ def build_remote_autoresearch_plan(
         start_from=start_from,
         seed_only=seed_only,
         poly_prune=not stocks_mode,
+        init_best_config=init_best_config,
+        lock_best_config=lock_best_config,
     )
     _append_optional_cli_arg(cmd, "--periods-per-year", periods_per_year)
     if max_steps_override > 0:

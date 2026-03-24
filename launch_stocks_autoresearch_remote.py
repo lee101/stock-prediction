@@ -218,13 +218,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 _GPU_TYPE_TIME_BUDGETS: dict[str, int] = {
-    # estimated sps × 37M step cap / sps = seconds; add ~30% headroom
-    "h100": 120,    # ~400k sps → 93s; 120s cap
-    "a100": 135,    # ~350k sps → 106s; 135s cap
-    "a40":  155,    # ~300k sps → 124s; 155s cap
-    "rtx5090": 450,  # ~92k sps → 405s; 450s cap
-    "rtx4090": 500,
-    "default": 300,
+    # Budget for --max-timesteps-per-sample=200 (10.65M steps for stocks11_2012).
+    # Formula: steps / sps + 50% headroom.
+    "h100":    175,  # ~400k sps →  26s per trial; 175s cap (includes eval overhead)
+    "a100":    200,  # ~350k sps →  30s per trial; 200s cap
+    "a40":     225,  # ~300k sps →  35s per trial; 225s cap
+    "rtx5090": 175,  # ~92k sps  → 115s per trial; 175s cap
+    "rtx4090": 175,  # ~92k sps  → 115s per trial; 175s cap
+    "default": 200,
 }
 
 
