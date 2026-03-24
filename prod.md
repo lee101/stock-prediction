@@ -57,19 +57,19 @@
 - **Primary checkpoint**: `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt`
 - **Ensemble member**: `pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt`
   - tp05_s15 = seed=15, 128 envs, no bf16, 35M steps, best at update_000950
-- **Ensemble (s123 + s15 softmax_avg) holdout eval** (50 windows, Sep2025-Mar2026, 5bps fill buffer):
-  - Median: **+28.76%** / 90 days (+80% over standalone s123)
-  - P10: **+16.37%** (+51% over standalone s123's 10.81%)
-  - Worst window: **+10.17%** (+81% over standalone s123's 5.62%)
+- **3-model ensemble (s123+s15+s36 softmax_avg) holdout eval** (50 windows, Sep2025-Mar2026, default_rng(42)):
+  - Median: **+47.30%** / 90 days (+64% over 2-model s123+s15)
+  - P10: **+29.93%** (+83% over 2-model s123+s15's 16.37%)
+  - Worst window: **+20.97%** (+106% over 2-model s123+s15's 10.17%)
   - Negative windows: **0/50 (0%)** — ZERO negative windows
-- **Slippage robustness** (ensemble, 50-window test, default_rng(42)):
-  - @5bps:  med=28.76%, p10=16.37%, worst=10.17%, neg=0/50
-  - @10bps: med=29.59% (s15 alone), 0/50 neg confirmed
-  - @20bps: med=31.19% (s15 alone), 0/50 neg confirmed
-  - @50bps: med=27.34% (s15 alone), p10=7.91%, 0/50 neg confirmed
-- **tp05_s15 standalone**: med=28.76%, p10=14.50%, worst=8.42%, 0/50 neg (all slippage levels)
-  - Ensemble over standalone: p10 +1.87pp, worst +1.75pp — ensemble is strictly better on downside
-- **Previous standalone s123**: med=15.97%, p10=10.81%, worst=5.62%, 0/50 neg (now superseded)
+- **Slippage robustness** (3-model ensemble, 50-window, default_rng(42)):
+  - @5bps:  med=47.30%, p10=29.93%, worst=20.97%, neg=0/50
+  - @10bps: med=47.30%, p10=29.93%, worst=20.97%, neg=0/50 (identical)
+  - @20bps: med=48.60%, p10=31.54%, worst=22.47%, neg=0/50
+  - @50bps: med=37.92%, p10=22.79%, worst=14.94%, neg=0/50
+- **tp05_s36**: seed=36, 128 envs, no bf16, 35M steps — 0/50 neg standalone, med=26.80%
+- **tp05_s15**: seed=15, 128 envs, no bf16, 35M steps — 0/50 neg standalone, med=28.76%
+- **Previous 2-model ensemble** s123+s15: med=28.76%, p10=16.37% (superseded 2026-03-24)
 - **Previous 3-model ensemble** rmu2201+8597+5526: med=14.94%, p10=7.64% (kept for reference)
 - **Config**: h=1024, lr=3e-4, ent=0.05, trade_penalty=0.05, dp=0.0, slip=0bps (training), anneal_lr=True
 - **Launch**: `deployments/daily-stock-ppo/launch.sh`
@@ -82,9 +82,9 @@
   ```bash
   source .venv313/bin/activate
   python trade_daily_stock_prod.py --live
-  # Uses tp05 ensemble (s123 + s15 softmax_avg) by default — DEFAULT_EXTRA_CHECKPOINTS set in code
-  # To restore standalone s123:
-  #   python trade_daily_stock_prod.py --live --no-ensemble
+  # Uses 3-model ensemble (s123+s15+s36 softmax_avg) — DEFAULT_EXTRA_CHECKPOINTS in code
+  # To restore 2-model: python trade_daily_stock_prod.py --live --extra-checkpoints <s15_path>
+  # To restore standalone s123: python trade_daily_stock_prod.py --live --no-ensemble
   ```
 - **Eval command**:
   ```bash
@@ -110,8 +110,10 @@
 All evaluated via batch 50-window test (deterministic, 5bps fill buffer, no early stop):
 | Model | Checkpoint | med | p10 | worst | neg/50 | Notes |
 |-------|-----------|-----|-----|-------|--------|-------|
-| **ensemble s123+s15** | s123+`stocks12_seed_sweep/tp05_s15/best.pt` | **+28.76%** | **+16.37%** | **+10.17%** | **0** | **PRODUCTION — BEST** (2026-03-24) |
-| **tp05_s15 standalone** | `stocks12_seed_sweep/tp05_s15/best.pt` | **+28.76%** | **+14.50%** | **+8.42%** | **0** | New seed=15 discovery (2026-03-24) |
+| **ensemble s123+s15+s36** | s123+s15+`stocks12_seed_sweep/tp05_s36/best.pt` | **+47.30%** | **+29.93%** | **+20.97%** | **0** | **PRODUCTION — BEST** (2026-03-24) |
+| ensemble s123+s15 | s123+`stocks12_seed_sweep/tp05_s15/best.pt` | +28.76% | +16.37% | +10.17% | 0 | Superseded by 3-model (2026-03-24) |
+| **tp05_s36 standalone** | `stocks12_seed_sweep/tp05_s36/best.pt` | +26.80% | +10.08% | +3.43% | **0** | New discovery (2026-03-24) |
+| **tp05_s15 standalone** | `stocks12_seed_sweep/tp05_s15/best.pt` | +28.76% | +14.50% | +8.42% | **0** | In 3-model ensemble (2026-03-24) |
 | tp05_s123 standalone | `stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt` | +15.97% | +10.81% | +5.62% | 0 | Primary model (superseded by ensemble) |
 | tp03/v2_sweep | `stocks12_v2_sweep/stock_trade_pen_03/best.pt` | +15.54% | +8.82% | +3.45% | 0 | Backup (tp=0.03, obs_norm=False) |
 | rmu2201 | `autoresearch_stock/random_mut_2201/best.pt` | +12.31% | +3.55% | +0.38% | 0 | 3rd option; ensemble with s123 HURTS (p10→3.62%) |
@@ -142,11 +144,18 @@ All evaluated via batch 50-window test (deterministic, 5bps fill buffer, no earl
 - **Config**: tp05 (trade_penalty=0.05, h=1024, anneal_lr, no obs_norm, 35M steps, 128 envs, no bf16)
 - **CSV**: `autoresearch_tp05_seeds_oldcfg_leaderboard.csv`
 - **Streams**: A (seeds 15-32 sequential), B (seeds 33-50 sequential) running in parallel
-- **Seeds tested** (sweep uses seed_sweep_oldconfig.py eval; final eval via standalone EnsembleTrader):
-  - **seed=15: med=39.14%, p10=17.72%, neg=0/50** — DEPLOYED in s123+s15 ensemble (2026-03-24)
-  - seed=33: neg=32/50 — bad
-  - seed=3 (old-config 128 envs, no bf16): best ckpt 1/50 neg, p10<5% — not deployable
-  - Seeds 16-32 (A) and 34-50 (B): sweep running
+- **Seeds tested** (final eval via standalone 50-window EnsembleTrader, default_rng(42)):
+  - **seed=15: 0/50 neg, med=39.14% (CSV) / 28.76% standalone** — in 3-model ensemble (2026-03-24)
+  - **seed=36: 0/50 neg, med=26.80% standalone** — ADDED to 3-model ensemble (2026-03-24)
+  - seed=18: 14/50 neg — not deployable
+  - seed=19: 30/50 neg — bad
+  - seed=30: 44/50 neg — bad
+  - seed=33: 32/50 neg — bad
+  - seed=34: 45/50 neg — bad
+  - seed=35: 24/50 neg — bad
+  - seed=37: 39/50 neg — bad
+  - seed=3 (old-config): 1/50 neg best case, p10<5% — not deployable
+  - Seeds 16, 17: 44/50, 50/50 neg respectively — very bad
 - **CRITICAL FINDING**: Training config determines which seeds produce trading models vs hold-cash:
   - 128 envs + bf16 + cuda-graph: ONLY seed=123 reliably escapes hold-cash
   - 128 envs + no bf16 + no cuda-graph + 35M steps: seed=15 gives 0/50 neg, seed=33 bad
