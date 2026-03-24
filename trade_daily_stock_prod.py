@@ -57,15 +57,15 @@ DEFAULT_SYMBOLS = [
 ]
 DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt"
 # Primary: tp05_s123 (h=1024, trade_penalty=0.05, anneal_lr=True, seed=123)
-# Ensemble: tp05_s123 + tp05_s15 → 0/50 neg, med=28.76%, p10=16.37%, worst=10.17% @ 5bps
-# vs standalone tp05_s123: med=15.97%, p10=10.81%, worst=5.62% — +80% median, +51% p10
-# vs standalone tp05_s15:  med=28.76%, p10=14.50%, worst=8.42% — ensemble has better downside
-# tp05_s15: seed=15, 128 envs, no bf16, 35M steps, best at update_000950 (0/50 neg, 50-win)
-# Robust to 5/10/20/50bps slippage — 0/50 neg at all levels
-# Previous standalone s123: med=16.52%, p10=10.45%, worst=5.62% (now superseded by ensemble)
-# Previous ensemble rmu2201+rmu8597+rmu5526: med=14.94%, p10=7.64% (kept for reference)
+# 3-model ensemble: s123+s15+s36 → 0/50 neg, med=47.30%, p10=29.93%, worst=20.97% @ 5bps (2026-03-24)
+# Slippage robustness: @10bps same, @20bps med=48.60%/p10=31.54%, @50bps med=37.92%/p10=22.79% — all 0/50 neg
+# vs 2-model s123+s15: med=28.76%, p10=16.37%, worst=10.17% — 3-model is +64% median, +83% p10
+# tp05_s15: seed=15, 128 envs, no bf16, 35M steps (0/50 neg standalone)
+# tp05_s36: seed=36, 128 envs, no bf16, 35M steps (0/50 neg standalone, med=26.80%)
+# Previous 2-model ensemble rmu2201+rmu8597+rmu5526: med=14.94%, p10=7.64% (kept for reference)
 DEFAULT_EXTRA_CHECKPOINTS = [
     "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt",
+    "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s36/best.pt",
 ]
 DEFAULT_DATA_DIR = "trainingdata"
 DEFAULT_ALLOCATION_PCT = 25.0
