@@ -233,6 +233,7 @@ class TradingPolicy(nn.Module):
 
         # Shared feature extractor -- kept as Sequential for checkpoint compatibility.
         # encoder[0,2,4] are the Linear layers; encoder[1,3,5] are activations.
+        # LayerNorm after encoder stabilizes activations and prevents BF16 precision collapse.
         self.encoder = nn.Sequential(
             nn.Linear(obs_size, hidden),
             get_activation(activation),
@@ -241,6 +242,7 @@ class TradingPolicy(nn.Module):
             nn.Linear(hidden, hidden),
             get_activation(activation),
         )
+        self.encoder_norm = nn.LayerNorm(hidden)
 
         # Policy head (actor)
         self.actor = nn.Sequential(
@@ -338,6 +340,8 @@ class TradingPolicy(nn.Module):
             if self.obs_mean is not None and self.obs_std is not None:
                 x = (x - self.obs_mean) / (self.obs_std + 1e-8)
             h = self.encoder(x)
+        if hasattr(self, 'encoder_norm'):
+            h = self.encoder_norm(h)
         return h
 
     def _fused_heads(self, h: torch.Tensor):
@@ -1139,19 +1143,29 @@ def train(args):
 
     def _ppo_loss_fn(policy, obs, act, old_logprob, advantages, returns, old_values,
                      clip_eps_t, vf_coef_t, ent_coef_t, clip_vloss):
-        """PPO loss computation (compilable, optionally BF16)."""
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=_use_bf16):
+        """PPO loss computation (compilable, optionally BF16).
+
+        BF16 is ONLY used for the forward pass; all loss numerics (log_softmax,
+        ratio, entropy, value loss) are computed in FP32 to prevent precision
+        collapse that causes mode collapse in CUDA graph replay.
+        """
+        # BF16 autocast for forward pass only -- saves memory + speeds up matmuls
+        _bf16_forward = _use_bf16 and not _use_cuda_graph_ppo
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=_bf16_forward):
             logits, new_value = policy(obs)
-        # Cast back to float32 for loss numerics
+        # ALL loss numerics in FP32 -- critical for log_softmax/exp stability
         logits = logits.float()
         new_value = new_value.float()
+        # Clamp logits to prevent numerical explosion in softmax/log_softmax
+        logits = logits.clamp(-20.0, 20.0)
         # Manual log_prob and entropy (avoids Categorical Python control flow for fullgraph)
         log_probs_all = torch.log_softmax(logits, dim=-1)
         new_logprob = log_probs_all.gather(1, act.unsqueeze(1)).squeeze(1)
         probs = torch.softmax(logits, dim=-1)
         entropy = -(probs * log_probs_all).sum(-1)
 
-        log_ratio = new_logprob - old_logprob
+        # Clamp log_ratio to prevent exp() overflow/underflow
+        log_ratio = (new_logprob - old_logprob).clamp(-10.0, 10.0)
         ratio = log_ratio.exp()
 
         pg_loss1 = -advantages * ratio
@@ -1315,6 +1329,14 @@ def train(args):
     _es_patience = getattr(args, "early_stop_patience", 0)
     _es_best = -float("inf")
     _es_no_improve = 0
+    # Entropy collapse detection: if entropy drops below threshold for N updates,
+    # reset optimizer momentum to break out of degenerate attractor
+    _max_entropy = np.log(num_actions)  # uniform distribution entropy
+    _ent_collapse_threshold = _max_entropy * 0.05  # 5% of max = near-deterministic
+    _ent_collapse_count = 0
+    _ent_collapse_patience = 3  # consecutive low-entropy updates before reset
+    _num_resets = 0
+    _max_resets = 2  # don't reset more than twice
     periodic_ckpt_mgr = TopKCheckpointManager(
         Path(args.checkpoint_dir), max_keep=args.max_periodic_checkpoints, mode="max",
         r2_prefix=args.r2_prefix,
@@ -1606,6 +1628,31 @@ def train(args):
                 f"step={global_step:8,d}  sps={sps:.0f}  "
                 f"pg={avg_pg:.4f}  vl={avg_vl:.4f}  ent={avg_ent:.3f}"
             )
+
+        # Entropy collapse detection + optimizer momentum reset
+        if avg_ent < _ent_collapse_threshold and _num_resets < _max_resets:
+            _ent_collapse_count += 1
+            if _ent_collapse_count >= _ent_collapse_patience:
+                _num_resets += 1
+                _ent_collapse_count = 0
+                print(f"  ENTROPY COLLAPSE (ent={avg_ent:.4f} < {_ent_collapse_threshold:.4f}): "
+                      f"resetting optimizer state + adding param noise (reset #{_num_resets})")
+                optimizer.zero_grad(set_to_none=True)
+                # Reset optimizer momentum buffers
+                for group in optimizer.param_groups:
+                    for p in group["params"]:
+                        state = optimizer.state.get(p)
+                        if state:
+                            for k in list(state.keys()):
+                                if isinstance(state[k], torch.Tensor) and state[k].shape == p.shape:
+                                    state[k].zero_()
+                # Add small noise to policy params to escape attractor
+                with torch.no_grad():
+                    for p in policy.parameters():
+                        if p.requires_grad:
+                            p.add_(torch.randn_like(p) * 0.01)
+        else:
+            _ent_collapse_count = max(0, _ent_collapse_count - 1)
 
         # ── W&B logging (single path for both branches) ──
         if wandb_run is not None:
