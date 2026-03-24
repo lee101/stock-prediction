@@ -100,11 +100,19 @@ TRADING_SYMBOLS = {
     "BTCUSD": BinanceSymbolConfig("BTCUSD", "BTCFDUSD", "FDUSD", "BTC", 0.0, 0.25),
     "ETHUSD": BinanceSymbolConfig("ETHUSD", "ETHFDUSD", "FDUSD", "ETH", 0.0, 0.20),
     "SOLUSD": BinanceSymbolConfig("SOLUSD", "SOLUSDT", "USDT", "SOL", 0.001, 0.15),
+    "LTCUSD": BinanceSymbolConfig("LTCUSD", "LTCUSDT", "USDT", "LTC", 0.001, 0.10),
+    "AVAXUSD": BinanceSymbolConfig("AVAXUSD", "AVAXUSDT", "USDT", "AVAX", 0.001, 0.10),
     "DOGEUSD": BinanceSymbolConfig("DOGEUSD", "DOGEUSDT", "USDT", "DOGE", 0.001, 0.10),
+    "LINKUSD": BinanceSymbolConfig("LINKUSD", "LINKUSDT", "USDT", "LINK", 0.001, 0.10),
+    "ADAUSD": BinanceSymbolConfig("ADAUSD", "ADAUSDT", "USDT", "ADA", 0.001, 0.10),
+    "UNIUSD": BinanceSymbolConfig("UNIUSD", "UNIUSDT", "USDT", "UNI", 0.001, 0.10),
     "SUIUSD": BinanceSymbolConfig("SUIUSD", "SUIUSDT", "USDT", "SUI", 0.001, 0.15),
     "AAVEUSD": BinanceSymbolConfig("AAVEUSD", "AAVEUSDT", "USDT", "AAVE", 0.001, 0.15),
-    "LINKUSD": BinanceSymbolConfig("LINKUSD", "LINKUSDT", "USDT", "LINK", 0.001, 0.10),
+    "ALGOUSD": BinanceSymbolConfig("ALGOUSD", "ALGOUSDT", "USDT", "ALGO", 0.001, 0.10),
+    "DOTUSD": BinanceSymbolConfig("DOTUSD", "DOTUSDT", "USDT", "DOT", 0.001, 0.10),
+    "SHIBUSD": BinanceSymbolConfig("SHIBUSD", "SHIBUSDT", "USDT", "SHIB", 0.001, 0.10),
     "XRPUSD": BinanceSymbolConfig("XRPUSD", "XRPUSDT", "USDT", "XRP", 0.001, 0.10),
+    "MATICUSD": BinanceSymbolConfig("MATICUSD", "MATICUSDT", "USDT", "MATIC", 0.001, 0.10),
 }
 
 MIN_TRADE_USD = 12.0
@@ -115,11 +123,19 @@ ACCOUNT_TRANSFER_RESERVES = {
     "BTC": 1e-8,
     "ETH": 1e-8,
     "SOL": 1e-8,
+    "LTC": 1e-8,
+    "AVAX": 1e-8,
     "DOGE": 1e-5,
+    "LINK": 1e-8,
+    "ADA": 1e-5,
+    "UNI": 1e-8,
     "SUI": 1e-5,
     "AAVE": 1e-8,
-    "LINK": 1e-8,
+    "ALGO": 1e-5,
+    "DOT": 1e-8,
+    "SHIB": 1e-2,
     "XRP": 1e-5,
+    "MATIC": 1e-5,
 }
 
 
