@@ -1061,7 +1061,8 @@ def train(args):
     print(f"  Estimated rollout buffer: {rollout_mem:.1f} MB")
 
     # ── CUDA graph for rollout inference ──
-    use_cuda_graph = device.type == "cuda"
+    _no_cuda_graph = getattr(args, "no_cuda_graph", False)
+    use_cuda_graph = device.type == "cuda" and not _no_cuda_graph
     if use_cuda_graph:
         # Static GPU buffers (required for CUDA graph capture)
         _static_obs = torch.zeros(num_envs, obs_size, device=device)
@@ -1153,8 +1154,8 @@ def train(args):
     # conflicts with manual CUDAGraph capture used by --cuda-graph-ppo.  Skip
     # compilation when the PPO CUDA graph is requested; the graph replay provides
     # equivalent Python-overhead reduction.
-    _use_cuda_graph_ppo = getattr(args, "cuda_graph_ppo", False) and device.type == "cuda"
-    if device.type == "cuda" and not _use_cuda_graph_ppo:
+    _use_cuda_graph_ppo = getattr(args, "cuda_graph_ppo", False) and device.type == "cuda" and not _no_cuda_graph
+    if device.type == "cuda" and not _use_cuda_graph_ppo and not _no_cuda_graph:
         try:
             _compiled_ppo_loss = torch.compile(_ppo_loss_fn, mode="reduce-overhead", fullgraph=True)
             # Warmup compile with dummy data of the same shape as the real minibatches.
@@ -1847,6 +1848,15 @@ def main():
             "Capture PPO forward+backward in a CUDA graph for reduced Python overhead. "
             "Requires fixed minibatch_size that evenly divides batch_size. "
             "Off by default; explicitly opt-in."
+        ),
+    )
+    parser.add_argument(
+        "--no-cuda-graph",
+        action="store_true",
+        help=(
+            "Disable ALL CUDA graph capture (rollout inference + PPO) and torch.compile. "
+            "Use when CUDA graph capture hangs due to concurrent GPU processes. "
+            "Slower but more compatible."
         ),
     )
     parser.add_argument(

@@ -158,7 +158,8 @@ def _crypto70_autoresearch(seeds: list[int] = [42, 123, 7]) -> list[dict]:
         "ent_coef": 0.05,
         "num_envs": 128,
         "use_bf16": True,
-        "cuda_graph_ppo": True,
+        "cuda_graph_ppo": False,
+        "no_cuda_graph": True,  # more robust when GPU is shared with other processes
         # Daily crypto settings
         "periods_per_year": 365.0,
         "max_steps": 180,
