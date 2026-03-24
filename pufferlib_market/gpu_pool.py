@@ -63,35 +63,50 @@ REPO = Path(__file__).resolve().parent.parent
 # ---------------------------------------------------------------------------
 
 def _stocks12_seedsweep(seeds: range = range(1, 51)) -> list[dict]:
-    """50-seed sweep over the proven tp05_s123 config."""
+    """50-seed sweep over the EXACT tp05_s123 config (v2cfg).
+
+    CRITICAL: s123 config is slip=0, wd=0, bf16=True, cuda_graph=True, periods=252.
+    Adding slip=5 or wd=0.01 models to the ensemble HURTS (47.30%→28.15%),
+    because slip-trained models trade differently (wider edges, incompatible timing).
+    DO NOT add fill_slippage_bps or weight_decay here.
+    """
     base = {
         "hidden_size": 1024,
         "lr": 3e-4,
         "anneal_lr": True,
         "ent_coef": 0.05,
         "trade_penalty": 0.05,
-        "weight_decay": 0.01,
-        "fill_slippage_bps": 5.0,
+        "weight_decay": 0.0,       # MUST be 0 — matches s123
+        "fill_slippage_bps": 0.0,  # MUST be 0 — matches s123
         "num_envs": 128,
         "use_bf16": True,
         "cuda_graph_ppo": True,
+        "no_cuda_graph": False,
+        "periods_per_year": 252.0,
+        "max_steps": 720,
     }
-    return [{**base, "seed": s, "description": f"tp05_seed_{s}"} for s in seeds]
+    return [{**base, "seed": s, "description": f"v2cfg_s{s}"} for s in seeds]
 
 
 def _stocks12_tp05_family() -> list[dict]:
-    """Mutations around the tp05_s123 best config for stocks12."""
+    """Mutations around the EXACT tp05_s123 best config for stocks12 (v2cfg).
+
+    Base uses s123 config: slip=0, wd=0, bf16=True, cuda_graph=True, periods=252.
+    """
     base = {
         "hidden_size": 1024,
         "lr": 3e-4,
         "anneal_lr": True,
         "ent_coef": 0.05,
         "trade_penalty": 0.05,
-        "weight_decay": 0.01,
-        "fill_slippage_bps": 5.0,
+        "weight_decay": 0.0,       # MUST be 0 — matches s123
+        "fill_slippage_bps": 0.0,  # MUST be 0 — matches s123
         "seed": 123,
         "use_bf16": True,
         "cuda_graph_ppo": True,
+        "no_cuda_graph": False,
+        "periods_per_year": 252.0,
+        "max_steps": 720,
     }
     mutations = [
         # lr variants
