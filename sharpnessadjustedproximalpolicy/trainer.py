@@ -32,7 +32,9 @@ from src.serialization_utils import serialize_for_checkpoint
 from .config import SAPConfig
 from .sam_optimizer import (
     FullSAMOptimizer,
+    GradientNoiseInjector,
     LookSAMOptimizer,
+    SWAWrapper,
     SharpnessAdjustedOptimizer,
     SharpnessState,
 )
@@ -127,6 +129,23 @@ class SAPTrainer:
         sam_optimizer = self._wrap_with_sam(base_optimizer)
         self._warmup_base_lrs = [g["lr"] for g in base_optimizer.param_groups]
 
+        # SWA
+        swa = None
+        if self.sc.use_swa:
+            swa = SWAWrapper(model, swa_start_frac=self.sc.swa_start_frac)
+
+        # Gradient noise
+        grad_noise = None
+        if self.sc.use_grad_noise:
+            target_sharp = self.sc.target_sharpness
+            if hasattr(sam_optimizer, 'target_sharpness'):
+                target_sharp = sam_optimizer.target_sharpness
+            grad_noise = GradientNoiseInjector(
+                base_sigma=self.sc.grad_noise_sigma,
+                gamma=self.sc.grad_noise_gamma,
+                target_sharpness=max(target_sharp, 1e-8),
+            )
+
         train_loader, val_loader = self._build_loaders()
         self._total_train_steps = max(1, len(train_loader) * self.tc.epochs)
 
@@ -137,14 +156,25 @@ class SAPTrainer:
         epochs_without_improvement = 0
 
         global_step = 0
-        print(f"Training: {len(train_loader)} train, {len(val_loader)} val batches, mode={self.sc.sam_mode}", flush=True)
+        extras = []
+        if swa: extras.append("swa")
+        if grad_noise: extras.append("gradnoise")
+        if self.sc.use_adaptive_feature_noise: extras.append("afn")
+        extra_str = f" +{','.join(extras)}" if extras else ""
+        print(f"Training: {len(train_loader)} train, {len(val_loader)} val batches, mode={self.sc.sam_mode}{extra_str}", flush=True)
 
         for epoch in range(1, self.tc.epochs + 1):
             t0 = time.time()
 
             train_metrics, global_step = self._train_epoch(
-                model, train_loader, sam_optimizer, base_optimizer, global_step, epoch
+                model, train_loader, sam_optimizer, base_optimizer, global_step, epoch,
+                grad_noise=grad_noise,
             )
+
+            # SWA: update weight average after each epoch
+            if swa:
+                swa.update(epoch, self.tc.epochs)
+
             val_metrics = self._val_epoch(model, val_loader, epoch)
 
             wall_time = time.time() - t0
@@ -193,6 +223,26 @@ class SAPTrainer:
                 print(f"Early stop at epoch {epoch} (no improvement for {self.sc.early_stop_patience} epochs)")
                 break
 
+        # SWA: evaluate with averaged weights
+        if swa and swa.n_averaged > 1:
+            print(f"SWA: applying averaged weights ({swa.n_averaged} snapshots)", flush=True)
+            swa.apply_swa_weights()
+            swa_metrics = self._val_epoch(model, val_loader, epoch=0)
+            swa_entry = SAPHistoryEntry(
+                epoch=self.tc.epochs + 1,
+                train_loss=0, train_score=0, train_sortino=0, train_return=0,
+                val_loss=swa_metrics["loss"], val_score=swa_metrics["score"],
+                val_sortino=swa_metrics["sortino"], val_return=swa_metrics["return"],
+                sharpness_raw=0, sharpness_ema=0, lr_scale=1, wall_time_s=0,
+            )
+            history.append(swa_entry)
+            ckpt_path = self._save_checkpoint(model, self.tc.epochs + 1, swa_metrics, SharpnessState())
+            ckpt_mgr.register(ckpt_path, swa_metrics["score"], epoch=self.tc.epochs + 1)
+            if swa_metrics["score"] > best_score:
+                best_score = swa_metrics["score"]
+                best_checkpoint = ckpt_path
+            print(f"SWA val: Sort={swa_metrics['sortino']:.3f} Ret={swa_metrics['return']:.4f}", flush=True)
+
         self._save_history(history)
 
         artifacts = TrainingArtifacts(
@@ -219,6 +269,7 @@ class SAPTrainer:
         base_opt,
         global_step: int,
         epoch: int,
+        grad_noise: GradientNoiseInjector | None = None,
     ) -> tuple[dict[str, float], int]:
         model.train()
         dev = self.device
@@ -235,10 +286,18 @@ class SAPTrainer:
         if self.tc.fill_buffer_warmup_epochs > 0 and epoch <= self.tc.fill_buffer_warmup_epochs:
             fill_buf = fill_buf * epoch / self.tc.fill_buffer_warmup_epochs
 
+        sharp_state = self._get_sharpness_state(sam_opt)
+
         for batch_idx, batch in enumerate(loader):
             features = batch["features"].to(dev, non_blocking=nb)
+            # static feature noise
             if self.tc.feature_noise_std > 0:
                 features = features + self.tc.feature_noise_std * torch.randn_like(features)
+            # adaptive feature noise: scale by sharpness
+            if self.sc.use_adaptive_feature_noise and sharp_state.ema > 0:
+                ratio = min(sharp_state.ema / max(sharp_state.raw, 1e-8), 3.0) if sharp_state.raw > 0 else 1.0
+                afn_std = min(self.sc.adaptive_fn_base * max(ratio, 0.1), self.sc.adaptive_fn_max)
+                features = features + afn_std * torch.randn_like(features)
             highs = batch["high"].to(dev, non_blocking=nb)
             lows = batch["low"].to(dev, non_blocking=nb)
             closes = batch["close"].to(dev, non_blocking=nb)
