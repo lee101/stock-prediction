@@ -5,11 +5,12 @@
 ### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- BROKEN -- Gemini key revoked
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`
 - **Launch**: `deployments/binance-hybrid-spot/launch.sh`
-- **PENDING DEPLOY (when key restored)**: `c15_tp03_slip5_s33` (2026-03-24 NEW CHAMPION)
-  - Checkpoint: `pufferlib_market/checkpoints/crypto15_v2/gpu0/c15_tp03_slip5_s33/best.pt`
-  - 100/100 positive episodes, p05=+116.2%, median=+118.5%, p95=+120.4%, WR=65.5%, Sortino=2.85
-  - Annualized: **+388%** (vs BTC -18% baseline) — beats prev best s7 (+69%) by 49pp
-  - eval: `python -m pufferlib_market.evaluate --checkpoint pufferlib_market/checkpoints/crypto15_v2/gpu0/c15_tp03_slip5_s33/best.pt --data-path pufferlib_market/data/crypto15_daily_val.bin --deterministic --no-drawdown-profit-early-exit --hidden-size 1024 --max-steps 180 --num-episodes 100 --periods-per-year 365.0 --fill-slippage-bps 8`
+- **PENDING DEPLOY (when key restored)**: `c15_tp03_s78` (2026-03-24 NEW CHAMPION)
+  - Checkpoint: `pufferlib_market/checkpoints/crypto15_tp03_s50_200/gpu0/c15_tp03_s78/best.pt`
+  - **100/100 positive, p05=+139.8%, median=+141.4%, p95=+142.8%, WR=63.3%, Sortino=4.52**
+  - Annualized: **+497%** (vs BTC -18% baseline) — beats prev champion s33 (+118.5%) by 23pp
+  - eval: `python -m pufferlib_market.evaluate --checkpoint pufferlib_market/checkpoints/crypto15_tp03_s50_200/gpu0/c15_tp03_s78/best.pt --data-path pufferlib_market/data/crypto15_daily_val.bin --deterministic --no-drawdown-profit-early-exit --hidden-size 1024 --max-steps 180 --num-episodes 100 --periods-per-year 365.0 --fill-slippage-bps 8`
+  - Previous champion: c15_tp03_slip5_s33 (+118.5%/180d, +388% ann, Sortino=2.85)
   - Previous best: c15_tp03_s19 (+75.1%/180d, +211% ann), c15_tp03_s7 (+69%/180d, +190% ann)
 - **Previous model**: Pufferlib robust_champion (h1024 MLP, PPO) — obs mismatch fixed but not yet swapped
 - **RL Checkpoint (old)**: `pufferlib_market/checkpoints/a100_scaleup/robust_champion/best.pt`
