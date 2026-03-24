@@ -333,7 +333,9 @@ class TradingPolicy(nn.Module):
             h = h.to(self.encoder[4].weight.dtype)
             h = self.encoder[5](self.encoder[4](h))
         else:
-            # Path 3: standard sequential
+            # Path 3: standard sequential (CPU or no Triton)
+            if self.obs_mean is not None and self.obs_std is not None:
+                x = (x - self.obs_mean) / (self.obs_std + 1e-8)
             h = self.encoder(x)
         return h
 

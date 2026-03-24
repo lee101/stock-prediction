@@ -190,20 +190,15 @@ def _crypto15_robust_champion(seeds: list[int] = [42, 123, 7, 1, 2, 3, 5, 10]) -
     crypto15 has 15 live Binance symbols (BTC/ETH/SOL/LTC/AVAX/DOGE/LINK/ADA+more)
     and 1375 bars (~3.8 years). Matches live Binance deployment symbols.
 
-    Configs tested:
-    - rc15 (tp=0.05): robust_champion config — proven on mixed23
-    - tp03 (tp=0.03): crypto70 results show tp03_slip5 is best for crypto (3.12x vs 1.89x for tp05)
-    - tp08 (tp=0.08): more conservative, fewer trades
+    Uses the simple crypto70 winning config (no obs_norm) — obs_norm breaks evaluate.py
+    because it adds obs_mean/obs_std buffers the evaluator doesn't handle.
+    Crypto70 results: tp05+slip5+s123=4.96x, tp03+slip5+s123=3.92x, tp08+slip5+s42=2.99x.
     """
     daily_base = {
         "hidden_size": 1024,
+        "lr": 3e-4,
         "fill_slippage_bps": 5.0,
-        "obs_norm": True,
         "anneal_lr": True,
-        "lr_schedule": "cosine",
-        "lr_warmup_frac": 0.02,
-        "lr_min_ratio": 0.05,
-        "weight_decay": 0.005,
         "ent_coef": 0.05,
         "num_envs": 128,
         "use_bf16": True,
@@ -212,18 +207,11 @@ def _crypto15_robust_champion(seeds: list[int] = [42, 123, 7, 1, 2, 3, 5, 10]) -
         "max_steps": 180,
     }
     configs = []
-    # robust_champion tp=0.05 (proven on mixed23)
-    for s in seeds:
-        configs.append({**daily_base, "trade_penalty": 0.05, "seed": s,
-                        "description": f"rc15_tp05_s{s}"})
-    # tp=0.03: best performing on crypto70 (3.12x vs 1.89x for tp=0.05)
-    for s in seeds:
-        configs.append({**daily_base, "trade_penalty": 0.03, "seed": s,
-                        "description": f"rc15_tp03_s{s}"})
-    # tp=0.08: more conservative, fewer false trades
-    for s in seeds[:4]:
-        configs.append({**daily_base, "trade_penalty": 0.08, "seed": s,
-                        "description": f"rc15_tp08_s{s}"})
+    for tp in [0.05, 0.03, 0.08]:
+        for s in seeds:
+            desc = f"c15_tp{int(tp*100):02d}_slip5_s{s}"
+            configs.append({**daily_base, "trade_penalty": tp, "seed": s,
+                            "description": desc})
     return configs
 
 
