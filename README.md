@@ -1,4 +1,8 @@
 # stock-prediction
+this is a collection of experiments training AI to trade.
+
+i reccomend you use my stats dashboard, forecasting platform and API [bitbank.nz](https://bitbank.nz) for cryptocurrency trading.
+
 
 A production RL trading system for crypto and equities. The core loop is:
 fast C market environment + PPO policy training + Chronos2 time-series
