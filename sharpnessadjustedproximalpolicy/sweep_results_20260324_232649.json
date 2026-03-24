@@ -1,0 +1,50 @@
+[
+  {
+    "name": "periodic_rho005",
+    "symbol": "DOGEUSD",
+    "best_epoch": 4,
+    "best_val_sortino": 107.70950332283974,
+    "best_val_return": 2.3720840227961504,
+    "best_val_score": 107.89926925048513,
+    "final_sharpness_ema": 829.166246471846,
+    "final_lr_scale": 2.0,
+    "total_epochs": 5,
+    "wall_time_s": 2217.1882412433624,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_rho005_DOGEUSD_20260324_232649",
+    "sam_mode": "periodic",
+    "rho": 0.05,
+    "error": null
+  },
+  {
+    "name": "periodic_rho01",
+    "symbol": "DOGEUSD",
+    "best_epoch": 4,
+    "best_val_sortino": 91.73620543544585,
+    "best_val_return": 1.871432953392252,
+    "best_val_score": 91.88591924734976,
+    "final_sharpness_ema": 496.358863293697,
+    "final_lr_scale": 2.0,
+    "total_epochs": 5,
+    "wall_time_s": 2147.357330083847,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_rho01_DOGEUSD_20260325_000348",
+    "sam_mode": "periodic",
+    "rho": 0.1,
+    "error": null
+  },
+  {
+    "name": "looksam_k5",
+    "symbol": "DOGEUSD",
+    "best_epoch": 5,
+    "best_val_sortino": -13.451810547765696,
+    "best_val_return": -6.168751294320485,
+    "best_val_score": -13.945310575782129,
+    "final_sharpness_ema": 0.0,
+    "final_lr_scale": 1.0,
+    "total_epochs": 5,
+    "wall_time_s": 2515.643636226654,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_looksam_k5_DOGEUSD_20260325_003938",
+    "sam_mode": "looksam",
+    "rho": 0.05,
+    "error": null
+  }
+]

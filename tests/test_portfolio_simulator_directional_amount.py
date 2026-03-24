@@ -327,6 +327,60 @@ def test_entry_selection_mode_first_trigger_prefers_smallest_move():
     assert entries[0].symbol == "BBB"
 
 
+def test_concentrated_entry_allocator_reallocates_unused_slot_budget():
+    ts = pd.Timestamp("2026-03-03T15:00:00Z")
+    bars = pd.DataFrame(
+        [
+            {"timestamp": ts, "symbol": "AAA", "open": 100.0, "high": 110.0, "low": 99.0, "close": 100.0},
+            {"timestamp": ts, "symbol": "BBB", "open": 100.0, "high": 108.0, "low": 99.0, "close": 100.0},
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {"timestamp": ts, "symbol": "AAA", "buy_price": 100.0, "sell_price": 110.0, "buy_amount": 100.0, "sell_amount": 0.0, "trade_amount": 100.0},
+            {"timestamp": ts, "symbol": "BBB", "buy_price": 100.0, "sell_price": 106.0, "buy_amount": 100.0, "sell_amount": 0.0, "trade_amount": 100.0},
+        ]
+    )
+    base_cfg = dict(
+        initial_cash=10_000.0,
+        max_positions=5,
+        max_leverage=2.0,
+        trade_amount_scale=100.0,
+        fee_by_symbol={"AAA": 0.0, "BBB": 0.0},
+        decision_lag_bars=0,
+        enforce_market_hours=False,
+        close_at_eod=False,
+        max_hold_hours=1000,
+        bar_margin=0.0,
+        int_qty=True,
+    )
+
+    legacy = run_portfolio_simulation(
+        bars,
+        actions,
+        PortfolioConfig(**base_cfg, entry_allocator_mode="legacy"),
+        horizon=1,
+    )
+    concentrated = run_portfolio_simulation(
+        bars,
+        actions,
+        PortfolioConfig(
+            **base_cfg,
+            entry_allocator_mode="concentrated",
+            entry_allocator_edge_power=2.0,
+            entry_allocator_max_single_position_fraction=0.6,
+            entry_allocator_reserve_fraction=0.1,
+        ),
+        horizon=1,
+    )
+
+    legacy_entries = {t.symbol: t.quantity for t in legacy.trades if t.side == "buy"}
+    concentrated_entries = {t.symbol: t.quantity for t in concentrated.trades if t.side == "buy"}
+
+    assert legacy_entries == {"AAA": 40.0, "BBB": 40.0}
+    assert concentrated_entries == {"AAA": 47.0, "BBB": 42.0}
+
+
 def test_pending_entry_ttl_disabled_does_not_fill_on_later_bar_without_signal():
     t0 = pd.Timestamp("2026-03-03T15:00:00Z")
     t1 = pd.Timestamp("2026-03-03T16:00:00Z")

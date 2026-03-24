@@ -125,9 +125,8 @@ def test_sharpness_tracking(tmp_path):
     trainer = SAPTrainer(tc, sc, dm)
     _, history = trainer.train()
 
-    # at least some sharpness should be recorded
+    # sharpness should be measured even during warmup
     assert any(h.sharpness_ema != 0 for h in history)
-    assert any(h.lr_scale != 1.0 for h in history[1:])  # first may be 1.0
 
 
 def test_checkpoint_has_sharpness(tmp_path):
@@ -140,3 +139,20 @@ def test_checkpoint_has_sharpness(tmp_path):
     ckpt = torch.load(artifacts.best_checkpoint, weights_only=False)
     assert "sharpness" in ckpt
     assert "sap_config" in ckpt
+
+
+def test_train_enables_dynamo_suppress_errors(tmp_path, monkeypatch):
+    dynamo = getattr(torch, "_dynamo", None)
+    if dynamo is None or not hasattr(dynamo, "config"):
+        pytest.skip("torch._dynamo.config is unavailable")
+
+    monkeypatch.setattr(dynamo.config, "suppress_errors", False, raising=False)
+    monkeypatch.setattr(torch, "compile", lambda model, mode="reduce-overhead", fullgraph=False: model)
+
+    tc = _make_tc(epochs=1, checkpoint_root=str(tmp_path), use_compile=False)
+    sc = SAPConfig(sam_mode="none", early_stop_patience=0)
+    dm = SyntheticDataModule(n_samples=160, seq_len=48, n_features=22)
+    trainer = SAPTrainer(tc, sc, dm)
+    trainer.train()
+
+    assert dynamo.config.suppress_errors is True

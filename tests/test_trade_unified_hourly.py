@@ -351,8 +351,75 @@ def test_execute_trades_uses_market_entry_reference_price_for_market_orders(monk
     )
 
     assert submitted
-    assert submitted[0].kwargs["qty"] == 19
+    assert submitted[0].kwargs["qty"] == 51
     assert state["positions"]["NVDA"]["entry_price"] == 105.0
+
+
+def test_execute_trades_concentrated_allocator_overweights_stronger_signal(monkeypatch) -> None:
+    submitted: list[object] = []
+    state = {"positions": {}}
+
+    fake_requests = types.ModuleType("alpaca.trading.requests")
+
+    class _LimitOrderRequest:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    fake_requests.LimitOrderRequest = _LimitOrderRequest
+
+    fake_enums = types.ModuleType("alpaca.trading.enums")
+    fake_enums.OrderSide = SimpleNamespace(BUY="buy", SELL="sell")
+    fake_enums.TimeInForce = SimpleNamespace(DAY="day")
+
+    monkeypatch.setitem(sys.modules, "alpaca.trading.requests", fake_requests)
+    monkeypatch.setitem(sys.modules, "alpaca.trading.enums", fake_enums)
+
+    class _DummyAPI:
+        def submit_order(self, order):
+            submitted.append(order)
+            return SimpleNamespace(id=f"entry-{len(submitted)}")
+
+    monkeypatch.setattr(
+        live,
+        "get_account_info",
+        lambda api: {"equity": 10_000.0, "buying_power": 10_000.0, "cash": 5_000.0},
+    )
+    monkeypatch.setattr(live, "get_current_positions", lambda api: {})
+    monkeypatch.setattr(live, "get_open_orders", lambda api: {})
+    monkeypatch.setattr(
+        live,
+        "entry_intensity_fraction",
+        lambda *args, **kwargs: (100.0, 1.0),
+    )
+    monkeypatch.setattr(live, "log_trade", lambda event: None)
+    monkeypatch.setattr(live, "log_event", lambda *args, **kwargs: None)
+
+    live.execute_trades(
+        _DummyAPI(),
+        {
+            "AAA": {
+                "buy_price": 100.0,
+                "sell_price": 110.0,
+                "buy_amount": 100.0,
+                "sell_amount": 0.0,
+                "edge": 0.10,
+                "hold_hours": 4.0,
+            },
+            "BBB": {
+                "buy_price": 100.0,
+                "sell_price": 106.0,
+                "buy_amount": 100.0,
+                "sell_amount": 0.0,
+                "edge": 0.05,
+                "hold_hours": 4.0,
+            },
+        },
+        state,
+        max_positions=5,
+    )
+
+    assert [order.kwargs["symbol"] for order in submitted] == ["AAA", "BBB"]
+    assert [order.kwargs["qty"] for order in submitted] == [48, 42]
 
 
 def test_place_exit_order_supports_fractional_stock_qty(monkeypatch) -> None:
@@ -507,7 +574,7 @@ def test_execute_trades_skips_existing_matching_open_entry_order(monkeypatch) ->
                     id="entry-1",
                     symbol="NVDA",
                     side="buy",
-                    qty="20",
+                    qty="54",
                     limit_price="100.0",
                     created_at=datetime.now(timezone.utc),
                 )

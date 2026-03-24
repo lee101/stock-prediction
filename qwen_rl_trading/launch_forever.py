@@ -13,6 +13,7 @@ import datetime
 import json
 import logging
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -40,7 +41,14 @@ from scripts.binance_autoresearch_forever import (
     _fmt,
 )
 from src.checkpoint_manager import TopKCheckpointManager
-from src.runpod_client import HOURLY_RATES, resolve_gpu_type
+from src.runpod_client import (
+    DEFAULT_GPU_FALLBACKS,
+    GPU_ALIASES,
+    HOURLY_RATES,
+    build_gpu_fallback_types,
+    parse_gpu_fallback_types,
+    resolve_gpu_type,
+)
 
 log = logging.getLogger("qwen_forever")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -111,13 +119,15 @@ def run_qwen_batch_remote(
         "--leaderboard", remote_lb,
         "--checkpoint-root", remote_ckpt,
     ]
+    if model_sizes:
+        cmd_parts += ["--model-sizes", ",".join(model_sizes)]
     if descriptions:
         cmd_parts += ["--descriptions", descriptions]
 
     shell_cmd = (
         f"cd {remote_dir} && source .venv313/bin/activate && "
         f"export PYTHONPATH={remote_dir}:${{PYTHONPATH:-}} && "
-        f"{' '.join(cmd_parts)}"
+        f"{shlex.join(cmd_parts)}"
     )
     log.info("running on pod %s:%d: %s", host, port, run_id)
     _ssh_run(host, port, shell_cmd, check=False)
@@ -144,15 +154,13 @@ def run_qwen_batch_local(
     leaderboard = REPO / "qwen_rl_trading" / f"{run_id}_leaderboard.csv"
     checkpoint_root = REPO / "qwen_rl_trading" / "checkpoints" / run_id
 
-    # filter experiments to requested model sizes
-    exps = [e for e in EXPERIMENTS if e.get("model_size", "0.6B") in model_sizes]
-
     run_autoresearch(
-        exps,
+        EXPERIMENTS,
         time_budget=time_budget,
         max_trials=max_trials,
         checkpoint_root=checkpoint_root,
         leaderboard_path=leaderboard,
+        model_sizes=model_sizes,
         descriptions=descriptions,
     )
     return leaderboard, checkpoint_root
@@ -207,6 +215,7 @@ def read_best_from_qwen_leaderboard(leaderboard: Path) -> TrialResult:
 def run_forever(
     *,
     gpu_type: str = "4090",
+    gpu_fallback_types: list[str] | None = None,
     time_budget: int = 600,
     max_trials_per_round: int = 10,
     model_sizes: list[str] | None = None,
@@ -226,7 +235,7 @@ def run_forever(
 
     pod_mgr: Optional[PodManager] = None
     if not local:
-        pod_mgr = PodManager(gpu_type=gpu_type)
+        pod_mgr = PodManager(gpu_type=gpu_type, gpu_fallback_types=gpu_fallback_types)
 
     round_num = 0
     _shutdown = False
@@ -242,10 +251,13 @@ def run_forever(
     if dry_run:
         resolved = resolve_gpu_type(gpu_type)
         rate = HOURLY_RATES.get(resolved, 0.0)
+        fallback_chain = build_gpu_fallback_types(gpu_type, gpu_fallback_types)
         round_time_min = (max_trials_per_round * time_budget + 1800) / 60
         print("Qwen RL Autoresearch Forever -- Dry Run")
         print(f"  Mode: {'LOCAL' if local else 'RunPod'}")
         print(f"  GPU: {resolved} @ ${rate:.2f}/hr")
+        if not local:
+            print(f"  GPU fallback order: {', '.join(fallback_chain)}")
         print(f"  Time budget: {time_budget}s per trial")
         print(f"  Max trials per round: {max_trials_per_round}")
         print(f"  Model sizes: {model_sizes}")
@@ -282,7 +294,7 @@ def run_forever(
                 training_time = time.time() - t0
                 result = read_best_from_qwen_leaderboard(leaderboard)
                 result.track = "qwen_rl"
-                result.gpu_type = gpu_type if pod_mgr else "local"
+                result.gpu_type = pod_mgr.active_gpu_type if pod_mgr else "local"
                 result.training_time_s = training_time
 
                 # log
@@ -296,6 +308,7 @@ def run_forever(
                     "baseline_combined": baseline.combined_score(),
                     "beats_baseline": result.beats_baseline(baseline),
                     "training_time_s": training_time,
+                    "gpu_type": result.gpu_type,
                     "checkpoint": result.best_checkpoint,
                     "error": result.error,
                 }
@@ -335,7 +348,7 @@ def run_forever(
                     track="qwen_rl",
                     error=str(e),
                     training_time_s=time.time() - t0,
-                    gpu_type=gpu_type if pod_mgr else "local",
+                    gpu_type=pod_mgr.active_gpu_type if pod_mgr else "local",
                 )
                 append_failure_progress(result, baseline, round_num)
 
@@ -355,7 +368,15 @@ def run_forever(
 
 def main():
     p = argparse.ArgumentParser(description="Qwen GRPO autoresearch forever loop")
-    p.add_argument("--gpu-type", default="4090")
+    p.add_argument("--gpu-type", default="4090", choices=[""] + sorted(GPU_ALIASES.keys()))
+    p.add_argument(
+        "--gpu-fallback-types",
+        default="",
+        help=(
+            "comma-separated RunPod fallback GPU aliases "
+            f"(default: {','.join(DEFAULT_GPU_FALLBACKS)}; use 'none' to disable)"
+        ),
+    )
     p.add_argument("--time-budget", type=int, default=600)
     p.add_argument("--max-trials", type=int, default=10)
     p.add_argument("--model-sizes", default="0.6B,1.8B", help="comma-separated model sizes")
@@ -369,6 +390,7 @@ def main():
 
     run_forever(
         gpu_type=args.gpu_type,
+        gpu_fallback_types=parse_gpu_fallback_types(args.gpu_fallback_types),
         time_budget=args.time_budget,
         max_trials_per_round=args.max_trials,
         model_sizes=args.model_sizes.split(","),

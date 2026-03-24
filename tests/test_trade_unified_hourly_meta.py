@@ -19,6 +19,10 @@ def test_apply_live_sizing_overrides_updates_live_globals() -> None:
         "ENTRY_MIN_INTENSITY_FRACTION",
         "LONG_INTENSITY_MULTIPLIER",
         "SHORT_INTENSITY_MULTIPLIER",
+        "ENTRY_ALLOCATOR_MODE",
+        "ENTRY_ALLOCATOR_EDGE_POWER",
+        "ENTRY_ALLOCATOR_MAX_SINGLE_POSITION_FRACTION",
+        "ENTRY_ALLOCATOR_RESERVE_FRACTION",
     )
     old = {name: getattr(live, name, missing) for name in names}
     args = SimpleNamespace(
@@ -28,6 +32,10 @@ def test_apply_live_sizing_overrides_updates_live_globals() -> None:
         entry_min_intensity_fraction=0.2,
         long_intensity_multiplier=1.1,
         short_intensity_multiplier=1.9,
+        entry_allocator_mode="concentrated",
+        entry_allocator_edge_power=1.7,
+        entry_allocator_max_single_position_fraction=0.55,
+        entry_allocator_reserve_fraction=0.15,
     )
     try:
         apply_live_sizing_overrides(args)
@@ -37,6 +45,10 @@ def test_apply_live_sizing_overrides_updates_live_globals() -> None:
         assert live.ENTRY_MIN_INTENSITY_FRACTION == 0.2
         assert live.LONG_INTENSITY_MULTIPLIER == 1.1
         assert live.SHORT_INTENSITY_MULTIPLIER == 1.9
+        assert live.ENTRY_ALLOCATOR_MODE == "concentrated"
+        assert live.ENTRY_ALLOCATOR_EDGE_POWER == 1.7
+        assert live.ENTRY_ALLOCATOR_MAX_SINGLE_POSITION_FRACTION == 0.55
+        assert live.ENTRY_ALLOCATOR_RESERVE_FRACTION == 0.15
     finally:
         for name, value in old.items():
             if value is missing:
@@ -118,7 +130,7 @@ def test_build_meta_signals_passes_side_specific_intensity_settings(
 
 
 def test_simulate_symbol_daily_returns_uses_market_order_entry_flag(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, bool | str] = {}
+    captured: dict[str, bool | str | float] = {}
 
     class _DummySim:
         def __init__(self) -> None:
@@ -130,6 +142,8 @@ def test_simulate_symbol_daily_returns_uses_market_order_entry_flag(monkeypatch:
     def _fake_run_portfolio_simulation(bars, actions, config, horizon=1):
         captured["market_order_entry"] = bool(config.market_order_entry)
         captured["entry_selection_mode"] = str(config.entry_selection_mode)
+        captured["entry_allocator_mode"] = str(config.entry_allocator_mode)
+        captured["entry_allocator_edge_power"] = float(config.entry_allocator_edge_power)
         return _DummySim()
 
     monkeypatch.setattr(meta_mod, "run_portfolio_simulation", _fake_run_portfolio_simulation)
@@ -173,6 +187,10 @@ def test_simulate_symbol_daily_returns_uses_market_order_entry_flag(monkeypatch:
         no_int_qty=False,
         fee_rate=0.001,
         margin_rate=0.0625,
+        entry_allocator_mode="concentrated",
+        entry_allocator_edge_power=1.5,
+        entry_allocator_max_single_position_fraction=0.6,
+        entry_allocator_reserve_fraction=0.1,
     )
 
     out = meta_mod.simulate_symbol_daily_returns(
@@ -183,6 +201,8 @@ def test_simulate_symbol_daily_returns_uses_market_order_entry_flag(monkeypatch:
     )
     assert captured["market_order_entry"] is True
     assert captured["entry_selection_mode"] == "first_trigger"
+    assert captured["entry_allocator_mode"] == "concentrated"
+    assert captured["entry_allocator_edge_power"] == pytest.approx(1.5)
     assert len(out) == 1
 
 

@@ -9,6 +9,7 @@ symbol/day using trailing daily performance (previous-day winner by default).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from collections.abc import Sequence
@@ -28,6 +29,7 @@ from binanceneural.config import DatasetConfig
 from binanceneural.data import BinanceHourlyDataModule, FeatureNormalizer
 from binanceneural.inference import generate_actions_from_frame
 from binanceneural.model import build_policy, policy_config_from_payload
+from src.hourly_trader_utils import normalize_entry_allocator_mode
 from src.trade_directions import DEFAULT_ALPACA_LIVE8_STOCKS
 from src.torch_load_utils import torch_load_compat
 from unified_hourly_experiment.marketsimulator import PortfolioConfig, run_portfolio_simulation
@@ -329,6 +331,105 @@ def build_data_cache(
             )
             cache[key] = BinanceHourlyDataModule(cfg)
     return cache
+
+
+def _file_signature(path: Path) -> dict[str, int | str | None]:
+    if not path.exists():
+        return {"path": str(path), "size": None, "mtime_ns": None}
+    stat = path.stat()
+    return {"path": str(path.resolve()), "size": int(stat.st_size), "mtime_ns": int(stat.st_mtime_ns)}
+
+
+def build_strategy_action_cache_key(
+    *,
+    strategy: StrategyModel,
+    symbols: Sequence[str],
+    data_cache: dict[tuple[str, tuple[int, ...], int], BinanceHourlyDataModule],
+) -> str:
+    horizons_key = tuple(strategy.horizons)
+    checkpoint_path = strategy.checkpoint_dir / strategy.checkpoint_name
+    config_path = strategy.checkpoint_dir / "config.json"
+    meta_path = strategy.checkpoint_dir / "training_meta.json"
+
+    data_signature = []
+    for symbol in symbols:
+        dm = data_cache[(symbol, horizons_key, strategy.sequence_length)]
+        frame = dm.frame
+        timestamps = pd.to_datetime(frame["timestamp"], utc=True)
+        data_signature.append(
+            {
+                "symbol": str(symbol),
+                "rows": int(len(frame)),
+                "columns": [str(col) for col in frame.columns],
+                "first_timestamp": timestamps.iloc[0].isoformat() if not timestamps.empty else None,
+                "last_timestamp": timestamps.iloc[-1].isoformat() if not timestamps.empty else None,
+            }
+        )
+
+    payload = {
+        "checkpoint": _file_signature(checkpoint_path),
+        "config": _file_signature(config_path),
+        "meta": _file_signature(meta_path),
+        "feature_columns": [str(col) for col in strategy.feature_columns],
+        "sequence_length": int(strategy.sequence_length),
+        "horizons": [int(h) for h in strategy.horizons],
+        "symbols": [str(symbol) for symbol in symbols],
+        "data_signature": data_signature,
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def load_or_generate_strategy_frames(
+    *,
+    strategy: StrategyModel,
+    symbols: Sequence[str],
+    data_cache: dict[tuple[str, tuple[int, ...], int], BinanceHourlyDataModule],
+    device: torch.device,
+    action_cache_dir: Path | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    cache_path: Path | None = None
+    if action_cache_dir is not None:
+        action_cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_key = build_strategy_action_cache_key(strategy=strategy, symbols=symbols, data_cache=data_cache)
+        cache_path = action_cache_dir / f"strategy_actions_{cache_key}.pkl"
+        if cache_path.exists():
+            cached = pd.read_pickle(cache_path)
+            logger.info("Loaded action cache for {} -> {}", strategy.name, cache_path)
+            return cached["actions"], cached["bars"]
+
+    action_parts = []
+    bar_parts = []
+    horizons_key = tuple(strategy.horizons)
+    for symbol in symbols:
+        dm = data_cache[(symbol, horizons_key, strategy.sequence_length)]
+        frame = dm.frame.copy()
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
+        frame["symbol"] = symbol
+        bar_parts.append(frame)
+
+        normalizer = strategy.normalizer if strategy.normalizer is not None else dm.normalizer
+        actions = generate_actions_from_frame(
+            model=strategy.model,
+            frame=frame,
+            feature_columns=strategy.feature_columns,
+            normalizer=normalizer,
+            sequence_length=int(strategy.sequence_length),
+            horizon=1,
+            device=device,
+        )
+        actions["timestamp"] = pd.to_datetime(actions["timestamp"], utc=True)
+        actions["symbol"] = actions["symbol"].astype(str).str.upper()
+        action_parts.append(actions)
+
+    actions_df = pd.concat(action_parts, ignore_index=True)
+    bars_df = pd.concat(bar_parts, ignore_index=True)
+
+    if cache_path is not None:
+        pd.to_pickle({"actions": actions_df, "bars": bars_df}, cache_path)
+        logger.info("Saved action cache for {} -> {}", strategy.name, cache_path)
+
+    return actions_df, bars_df
 
 
 def join_common_keys(actions_by_strategy: dict[str, pd.DataFrame]) -> pd.DataFrame:
@@ -704,6 +805,12 @@ def main() -> None:
     parser.add_argument("--symbols", default=",".join(DEFAULT_ALPACA_LIVE8_STOCKS))
     parser.add_argument("--data-root", type=Path, default=Path("trainingdatahourly/stocks"))
     parser.add_argument("--cache-root", type=Path, default=Path("unified_hourly_experiment/forecast_cache"))
+    parser.add_argument(
+        "--action-cache-dir",
+        type=Path,
+        default=None,
+        help="Optional on-disk cache for generated per-strategy action frames across repeated sweeps.",
+    )
     parser.add_argument("--metrics", default="return,sortino,calmar,sharpe")
     parser.add_argument("--selection-modes", default="winner")
     parser.add_argument("--switch-margins", default="0.0")
@@ -724,6 +831,16 @@ def main() -> None:
     parser.add_argument("--entry-min-intensity-fraction", type=float, default=0.0)
     parser.add_argument("--long-intensity-multiplier", type=float, default=1.0)
     parser.add_argument("--short-intensity-multiplier", type=float, default=1.0)
+    parser.add_argument(
+        "--entry-allocator-mode",
+        type=str,
+        default="legacy",
+        choices=["legacy", "concentrated"],
+        help="How to allocate capital across selected entries during portfolio simulation.",
+    )
+    parser.add_argument("--entry-allocator-edge-power", type=float, default=2.0)
+    parser.add_argument("--entry-allocator-max-single-position-fraction", type=float, default=0.6)
+    parser.add_argument("--entry-allocator-reserve-fraction", type=float, default=0.1)
     parser.add_argument("--min-buy-amount", type=float, default=0.0)
     parser.add_argument("--decision-lag-bars", type=int, default=1)
     parser.add_argument(
@@ -857,6 +974,12 @@ def main() -> None:
         raise ValueError("--long-intensity-multiplier must be >= 0")
     if args.short_intensity_multiplier < 0:
         raise ValueError("--short-intensity-multiplier must be >= 0")
+    if args.entry_allocator_edge_power < 0:
+        raise ValueError("--entry-allocator-edge-power must be >= 0")
+    if not 0 <= float(args.entry_allocator_max_single_position_fraction) <= 1:
+        raise ValueError("--entry-allocator-max-single-position-fraction must be in [0, 1]")
+    if not 0 <= float(args.entry_allocator_reserve_fraction) <= 1:
+        raise ValueError("--entry-allocator-reserve-fraction must be in [0, 1]")
     if args.min_buy_amount < 0:
         raise ValueError("--min-buy-amount must be >= 0")
 
@@ -897,32 +1020,15 @@ def main() -> None:
     actions_by_strategy: dict[str, pd.DataFrame] = {}
     bars_by_strategy: dict[str, pd.DataFrame] = {}
     for strategy in strategies:
-        action_parts = []
-        bar_parts = []
-        horizons_key = tuple(strategy.horizons)
-        for symbol in symbols:
-            dm = data_cache[(symbol, horizons_key, strategy.sequence_length)]
-            frame = dm.frame.copy()
-            frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
-            frame["symbol"] = symbol
-            bar_parts.append(frame)
-
-            normalizer = strategy.normalizer if strategy.normalizer is not None else dm.normalizer
-            actions = generate_actions_from_frame(
-                model=strategy.model,
-                frame=frame,
-                feature_columns=strategy.feature_columns,
-                normalizer=normalizer,
-                sequence_length=int(strategy.sequence_length),
-                horizon=1,
-                device=device,
-            )
-            actions["timestamp"] = pd.to_datetime(actions["timestamp"], utc=True)
-            actions["symbol"] = actions["symbol"].astype(str).str.upper()
-            action_parts.append(actions)
-
-        actions_by_strategy[strategy.name] = pd.concat(action_parts, ignore_index=True)
-        bars_by_strategy[strategy.name] = pd.concat(bar_parts, ignore_index=True)
+        actions_df, bars_df = load_or_generate_strategy_frames(
+            strategy=strategy,
+            symbols=symbols,
+            data_cache=data_cache,
+            device=device,
+            action_cache_dir=args.action_cache_dir,
+        )
+        actions_by_strategy[strategy.name] = actions_df
+        bars_by_strategy[strategy.name] = bars_df
 
     common_keys = join_common_keys(actions_by_strategy)
     actions_by_strategy = {
@@ -951,6 +1057,10 @@ def main() -> None:
         entry_min_intensity_fraction=args.entry_min_intensity_fraction,
         long_intensity_multiplier=args.long_intensity_multiplier,
         short_intensity_multiplier=args.short_intensity_multiplier,
+        entry_allocator_mode=normalize_entry_allocator_mode(args.entry_allocator_mode),
+        entry_allocator_edge_power=args.entry_allocator_edge_power,
+        entry_allocator_max_single_position_fraction=args.entry_allocator_max_single_position_fraction,
+        entry_allocator_reserve_fraction=args.entry_allocator_reserve_fraction,
         min_buy_amount=args.min_buy_amount,
         decision_lag_bars=args.decision_lag_bars,
         entry_selection_mode=str(args.entry_selection_mode),
@@ -1106,6 +1216,7 @@ def main() -> None:
         ],
         "symbols": symbols,
         "config": {
+            "action_cache_dir": (str(args.action_cache_dir) if args.action_cache_dir is not None else None),
             "metrics": metrics,
             "selection_modes": selection_modes,
             "switch_margins": switch_margins,
@@ -1131,6 +1242,10 @@ def main() -> None:
                 "entry_min_intensity_fraction": args.entry_min_intensity_fraction,
                 "long_intensity_multiplier": args.long_intensity_multiplier,
                 "short_intensity_multiplier": args.short_intensity_multiplier,
+                "entry_allocator_mode": normalize_entry_allocator_mode(args.entry_allocator_mode),
+                "entry_allocator_edge_power": args.entry_allocator_edge_power,
+                "entry_allocator_max_single_position_fraction": args.entry_allocator_max_single_position_fraction,
+                "entry_allocator_reserve_fraction": args.entry_allocator_reserve_fraction,
                 "min_buy_amount": args.min_buy_amount,
                 "decision_lag_bars": args.decision_lag_bars,
                 "entry_selection_mode": str(args.entry_selection_mode),

@@ -22,7 +22,7 @@ import unified_hourly_experiment.trade_unified_hourly as live
 from binanceneural.config import DatasetConfig
 from binanceneural.data import BinanceHourlyDataModule
 from binanceneural.inference import generate_actions_from_frame, generate_latest_action
-from src.hourly_trader_utils import entry_intensity_fraction
+from src.hourly_trader_utils import entry_intensity_fraction, normalize_entry_allocator_mode
 from src.trade_directions import DEFAULT_ALPACA_LIVE8_STOCKS
 from unified_hourly_experiment.marketsimulator import PortfolioConfig, run_portfolio_simulation
 from unified_hourly_experiment.meta_live_runtime import choose_latest_winner, compute_symbol_edge
@@ -54,6 +54,10 @@ def apply_live_sizing_overrides(args: argparse.Namespace) -> None:
     live.ENTRY_MIN_INTENSITY_FRACTION = float(args.entry_min_intensity_fraction)
     live.LONG_INTENSITY_MULTIPLIER = float(args.long_intensity_multiplier)
     live.SHORT_INTENSITY_MULTIPLIER = float(args.short_intensity_multiplier)
+    live.ENTRY_ALLOCATOR_MODE = normalize_entry_allocator_mode(args.entry_allocator_mode)
+    live.ENTRY_ALLOCATOR_EDGE_POWER = float(args.entry_allocator_edge_power)
+    live.ENTRY_ALLOCATOR_MAX_SINGLE_POSITION_FRACTION = float(args.entry_allocator_max_single_position_fraction)
+    live.ENTRY_ALLOCATOR_RESERVE_FRACTION = float(args.entry_allocator_reserve_fraction)
 
 
 def _load_symbol_frame(
@@ -218,6 +222,10 @@ def simulate_symbol_daily_returns(
         int_qty=not bool(args.no_int_qty),
         fee_by_symbol={symbol: float(args.fee_rate)},
         margin_annual_rate=float(args.margin_rate),
+        entry_allocator_mode=normalize_entry_allocator_mode(args.entry_allocator_mode),
+        entry_allocator_edge_power=float(args.entry_allocator_edge_power),
+        entry_allocator_max_single_position_fraction=float(args.entry_allocator_max_single_position_fraction),
+        entry_allocator_reserve_fraction=float(args.entry_allocator_reserve_fraction),
     )
     sim = run_portfolio_simulation(bars, actions, cfg, horizon=1)
     return daily_returns_from_equity(sim.equity_curve)
@@ -573,6 +581,26 @@ def main() -> None:
     parser.add_argument("--long-intensity-multiplier", type=float, default=1.0)
     parser.add_argument("--short-intensity-multiplier", type=float, default=1.0)
     parser.add_argument(
+        "--entry-allocator-mode",
+        default=live.ENTRY_ALLOCATOR_MODE,
+        choices=["legacy", "concentrated"],
+    )
+    parser.add_argument(
+        "--entry-allocator-edge-power",
+        type=float,
+        default=live.ENTRY_ALLOCATOR_EDGE_POWER,
+    )
+    parser.add_argument(
+        "--entry-allocator-max-single-position-fraction",
+        type=float,
+        default=live.ENTRY_ALLOCATOR_MAX_SINGLE_POSITION_FRACTION,
+    )
+    parser.add_argument(
+        "--entry-allocator-reserve-fraction",
+        type=float,
+        default=live.ENTRY_ALLOCATOR_RESERVE_FRACTION,
+    )
+    parser.add_argument(
         "--meta-metric",
         default="sharpe",
         choices=["return", "sortino", "sharpe", "calmar", "omega", "gain_pain", "p10", "median", "goodness"],
@@ -643,6 +671,12 @@ def main() -> None:
         raise ValueError("--long-intensity-multiplier must be >= 0")
     if args.short_intensity_multiplier < 0:
         raise ValueError("--short-intensity-multiplier must be >= 0")
+    if args.entry_allocator_edge_power < 0:
+        raise ValueError("--entry-allocator-edge-power must be >= 0")
+    if not 0 <= float(args.entry_allocator_max_single_position_fraction) <= 1:
+        raise ValueError("--entry-allocator-max-single-position-fraction must be in [0, 1]")
+    if not 0 <= float(args.entry_allocator_reserve_fraction) <= 1:
+        raise ValueError("--entry-allocator-reserve-fraction must be in [0, 1]")
 
     if args.device == "cpu":
         device = torch.device("cpu")
@@ -692,13 +726,17 @@ def main() -> None:
     )
     logger.info("Max positions: {}, Hold limit: {}h", args.max_positions, args.max_hold_hours)
     logger.info(
-        "Sizing: scale={} min_buy={} power={} min_intensity={} long_mult={} short_mult={}",
+        "Sizing: scale={} min_buy={} power={} min_intensity={} long_mult={} short_mult={} allocator={} edge_power={} max_single_frac={} reserve_frac={}",
         float(args.trade_amount_scale),
         float(args.min_buy_amount),
         float(args.entry_intensity_power),
         float(args.entry_min_intensity_fraction),
         float(args.long_intensity_multiplier),
         float(args.short_intensity_multiplier),
+        normalize_entry_allocator_mode(args.entry_allocator_mode),
+        float(args.entry_allocator_edge_power),
+        float(args.entry_allocator_max_single_position_fraction),
+        float(args.entry_allocator_reserve_fraction),
     )
     logger.info("Selector sim market-order-entry: {}", bool(args.market_order_entry))
     logger.info("Mode: {}", "DRY-RUN" if args.dry_run else ("LIVE" if not paper else "PAPER"))

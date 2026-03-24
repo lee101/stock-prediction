@@ -7,6 +7,7 @@ import argparse
 import json
 import subprocess
 import sys
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,6 +28,10 @@ class MetaRun:
     entry_min_intensity_fraction: float
     long_intensity_multiplier: float
     short_intensity_multiplier: float
+    entry_allocator_mode: str
+    entry_allocator_edge_power: float
+    entry_allocator_max_single_position_fraction: float
+    entry_allocator_reserve_fraction: float
     output_path: Path
 
 
@@ -54,6 +59,81 @@ def rank_key(summary: dict) -> tuple[float, float, float, float, float]:
 
 def eligible_summary(summary: dict, *, min_num_buys: int) -> bool:
     return int(summary.get("min_num_buys", 0)) >= int(min_num_buys)
+
+
+def build_entry_allocator_mode_summary(ranked_rows: list[dict]) -> list[dict]:
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for row in ranked_rows:
+        grouped[str(row.get("entry_allocator_mode", "unknown"))].append(row)
+
+    summaries: list[dict] = []
+    for mode, rows in grouped.items():
+        ordered_rows = sorted(rows, key=rank_key, reverse=True)
+        best = ordered_rows[0]
+        count = len(ordered_rows)
+        summaries.append(
+            {
+                "entry_allocator_mode": mode,
+                "count": count,
+                "best": {
+                    "metric": best["metric"],
+                    "lookback_days": best["lookback_days"],
+                    "selection_mode": best["selection_mode"],
+                    "switch_margin": best["switch_margin"],
+                    "min_score_gap": best["min_score_gap"],
+                    "recency_halflife_days": best["recency_halflife_days"],
+                    "sit_out_threshold": best["sit_out_threshold"],
+                    "trade_amount_scale": best["trade_amount_scale"],
+                    "min_buy_amount": best["min_buy_amount"],
+                    "entry_intensity_power": best["entry_intensity_power"],
+                    "entry_min_intensity_fraction": best["entry_min_intensity_fraction"],
+                    "long_intensity_multiplier": best["long_intensity_multiplier"],
+                    "short_intensity_multiplier": best["short_intensity_multiplier"],
+                    "entry_allocator_edge_power": best["entry_allocator_edge_power"],
+                    "entry_allocator_max_single_position_fraction": best[
+                        "entry_allocator_max_single_position_fraction"
+                    ],
+                    "entry_allocator_reserve_fraction": best["entry_allocator_reserve_fraction"],
+                    "min_sortino": best["min_sortino"],
+                    "mean_sortino": best["mean_sortino"],
+                    "min_return_pct": best["min_return_pct"],
+                    "mean_return_pct": best["mean_return_pct"],
+                    "min_num_buys": best.get("min_num_buys", 0),
+                    "output": best["output"],
+                },
+                "mean_min_sortino": float(sum(float(row["min_sortino"]) for row in ordered_rows) / count),
+                "mean_mean_sortino": float(sum(float(row["mean_sortino"]) for row in ordered_rows) / count),
+                "mean_min_return_pct": float(sum(float(row["min_return_pct"]) for row in ordered_rows) / count),
+                "mean_mean_return_pct": float(sum(float(row["mean_return_pct"]) for row in ordered_rows) / count),
+                "mean_min_num_buys": float(sum(float(row.get("min_num_buys", 0)) for row in ordered_rows) / count),
+            }
+        )
+
+    summaries.sort(key=lambda row: rank_key(row["best"]), reverse=True)
+    return summaries
+
+
+def iter_entry_allocator_grid(
+    *,
+    mode: str,
+    edge_powers: list[float],
+    max_single_position_fractions: list[float],
+    reserve_fractions: list[float],
+) -> list[tuple[float, float, float]]:
+    if mode == "legacy":
+        return [
+            (
+                float(edge_powers[0]),
+                float(max_single_position_fractions[0]),
+                float(reserve_fractions[0]),
+            )
+        ]
+    return [
+        (float(edge_power), float(max_single_position_fraction), float(reserve_fraction))
+        for edge_power in edge_powers
+        for max_single_position_fraction in max_single_position_fractions
+        for reserve_fraction in reserve_fractions
+    ]
 
 
 def _float_token(value: float) -> str:
@@ -97,6 +177,10 @@ def build_deploy_command(
         + f" --entry-min-intensity-fraction {best['entry_min_intensity_fraction']}"
         + f" --long-intensity-multiplier {best['long_intensity_multiplier']}"
         + f" --short-intensity-multiplier {best['short_intensity_multiplier']}"
+        + f" --entry-allocator-mode {best['entry_allocator_mode']}"
+        + f" --entry-allocator-edge-power {best['entry_allocator_edge_power']}"
+        + f" --entry-allocator-max-single-position-fraction {best['entry_allocator_max_single_position_fraction']}"
+        + f" --entry-allocator-reserve-fraction {best['entry_allocator_reserve_fraction']}"
         + f" --meta-metric {best['metric']}"
         + f" --meta-lookback-days {best['lookback_days']}"
         + f" --meta-selection-mode {best['selection_mode']}"
@@ -122,6 +206,8 @@ def run_once(args: argparse.Namespace) -> dict:
     stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     out_dir = args.output_dir or (Path("experiments") / f"auto_meta_opt_{stamp}")
     out_dir.mkdir(parents=True, exist_ok=True)
+    action_cache_dir = args.action_cache_dir or (out_dir / "action_cache")
+    action_cache_dir.mkdir(parents=True, exist_ok=True)
 
     metrics = parse_csv_list(args.metrics)
     lookbacks = parse_csv_list(args.lookback_days)
@@ -138,9 +224,29 @@ def run_once(args: argparse.Namespace) -> dict:
     entry_min_intensity_fractions = parse_float_list(args.entry_min_intensity_fractions)
     long_intensity_multipliers = parse_float_list(args.long_intensity_multipliers)
     short_intensity_multipliers = parse_float_list(args.short_intensity_multipliers)
+    entry_allocator_modes = [x.lower() for x in parse_csv_list(args.entry_allocator_modes)]
+    entry_allocator_edge_powers = parse_float_list(args.entry_allocator_edge_powers)
+    entry_allocator_max_single_position_fractions = parse_float_list(
+        args.entry_allocator_max_single_position_fractions
+    )
+    entry_allocator_reserve_fractions = parse_float_list(args.entry_allocator_reserve_fractions)
 
     if any(x < 0 for x in recency_halflife_days):
         raise ValueError(f"recency-halflife-days must all be >= 0, got {recency_halflife_days}")
+    invalid_allocator_modes = [x for x in entry_allocator_modes if x not in {"legacy", "concentrated"}]
+    if invalid_allocator_modes:
+        raise ValueError(f"entry-allocator-modes must be legacy/concentrated, got {invalid_allocator_modes}")
+    if any(x < 0 for x in entry_allocator_edge_powers):
+        raise ValueError(f"entry-allocator-edge-powers must all be >= 0, got {entry_allocator_edge_powers}")
+    if any(x < 0 or x > 1 for x in entry_allocator_max_single_position_fractions):
+        raise ValueError(
+            "entry-allocator-max-single-position-fractions must all be in [0, 1], "
+            f"got {entry_allocator_max_single_position_fractions}"
+        )
+    if any(x < 0 or x > 1 for x in entry_allocator_reserve_fractions):
+        raise ValueError(
+            f"entry-allocator-reserve-fractions must all be in [0, 1], got {entry_allocator_reserve_fractions}"
+        )
 
     runs: list[MetaRun] = []
     for edge in edges:
@@ -154,41 +260,63 @@ def run_once(args: argparse.Namespace) -> dict:
                                     for entry_min_intensity_fraction in entry_min_intensity_fractions:
                                         for long_intensity_multiplier in long_intensity_multipliers:
                                             for short_intensity_multiplier in short_intensity_multipliers:
-                                                edge_token = _float_token(edge)
-                                                th_token = _threshold_token(thresholds)
-                                                sm_token = _float_token(switch_margin)
-                                                mg_token = _float_token(min_score_gap)
-                                                hl_token = _float_token(recency_halflife)
-                                                tas_token = _float_token(trade_amount_scale)
-                                                mba_token = _float_token(min_buy_amount)
-                                                eip_token = _float_token(entry_intensity_power)
-                                                emif_token = _float_token(entry_min_intensity_fraction)
-                                                lim_token = _float_token(long_intensity_multiplier)
-                                                sim_token = _float_token(short_intensity_multiplier)
-                                                output_path = out_dir / (
-                                                    "meta_edge"
-                                                    f"{edge_token}_{th_token}_m{mode}"
-                                                    f"_sm{sm_token}_mg{mg_token}_hl{hl_token}"
-                                                    f"_tas{tas_token}_mba{mba_token}"
-                                                    f"_pow{eip_token}_minf{emif_token}"
-                                                    f"_lm{lim_token}_smul{sim_token}.json"
-                                                )
-                                                runs.append(
-                                                    MetaRun(
-                                                        edge=edge,
-                                                        selection_mode=mode,
-                                                        switch_margin=switch_margin,
-                                                        min_score_gap=min_score_gap,
-                                                        recency_halflife_days=recency_halflife,
-                                                        trade_amount_scale=trade_amount_scale,
-                                                        min_buy_amount=min_buy_amount,
-                                                        entry_intensity_power=entry_intensity_power,
-                                                        entry_min_intensity_fraction=entry_min_intensity_fraction,
-                                                        long_intensity_multiplier=long_intensity_multiplier,
-                                                        short_intensity_multiplier=short_intensity_multiplier,
-                                                        output_path=output_path,
+                                                for entry_allocator_mode in entry_allocator_modes:
+                                                    allocator_grid = iter_entry_allocator_grid(
+                                                        mode=entry_allocator_mode,
+                                                        edge_powers=entry_allocator_edge_powers,
+                                                        max_single_position_fractions=entry_allocator_max_single_position_fractions,
+                                                        reserve_fractions=entry_allocator_reserve_fractions,
                                                     )
-                                                )
+                                                    for (
+                                                        entry_allocator_edge_power,
+                                                        entry_allocator_max_single_position_fraction,
+                                                        entry_allocator_reserve_fraction,
+                                                    ) in allocator_grid:
+                                                                edge_token = _float_token(edge)
+                                                                th_token = _threshold_token(thresholds)
+                                                                sm_token = _float_token(switch_margin)
+                                                                mg_token = _float_token(min_score_gap)
+                                                                hl_token = _float_token(recency_halflife)
+                                                                tas_token = _float_token(trade_amount_scale)
+                                                                mba_token = _float_token(min_buy_amount)
+                                                                eip_token = _float_token(entry_intensity_power)
+                                                                emif_token = _float_token(entry_min_intensity_fraction)
+                                                                lim_token = _float_token(long_intensity_multiplier)
+                                                                sim_token = _float_token(short_intensity_multiplier)
+                                                                eam_token = str(entry_allocator_mode)
+                                                                eaep_token = _float_token(entry_allocator_edge_power)
+                                                                easp_token = _float_token(entry_allocator_max_single_position_fraction)
+                                                                earm_token = _float_token(entry_allocator_reserve_fraction)
+                                                                output_path = out_dir / (
+                                                                    "meta_edge"
+                                                                    f"{edge_token}_{th_token}_m{mode}"
+                                                                    f"_sm{sm_token}_mg{mg_token}_hl{hl_token}"
+                                                                    f"_tas{tas_token}_mba{mba_token}"
+                                                                    f"_pow{eip_token}_minf{emif_token}"
+                                                                    f"_lm{lim_token}_smul{sim_token}"
+                                                                    f"_eam{eam_token}_eaep{eaep_token}"
+                                                                    f"_easp{easp_token}_earm{earm_token}.json"
+                                                                )
+                                                                runs.append(
+                                                                    MetaRun(
+                                                                        edge=edge,
+                                                                        selection_mode=mode,
+                                                                        switch_margin=switch_margin,
+                                                                        min_score_gap=min_score_gap,
+                                                                        recency_halflife_days=recency_halflife,
+                                                                        trade_amount_scale=trade_amount_scale,
+                                                                        min_buy_amount=min_buy_amount,
+                                                                        entry_intensity_power=entry_intensity_power,
+                                                                        entry_min_intensity_fraction=entry_min_intensity_fraction,
+                                                                        long_intensity_multiplier=long_intensity_multiplier,
+                                                                        short_intensity_multiplier=short_intensity_multiplier,
+                                                                        entry_allocator_mode=entry_allocator_mode,
+                                                                        entry_allocator_edge_power=entry_allocator_edge_power,
+                                                                        entry_allocator_max_single_position_fraction=entry_allocator_max_single_position_fraction,
+                                                                        entry_allocator_reserve_fraction=entry_allocator_reserve_fraction,
+                                                                        output_path=output_path,
+                                                                    )
+                                                                )
 
     for idx, run in enumerate(runs, start=1):
         if args.skip_existing and run.output_path.exists():
@@ -201,6 +329,8 @@ def run_once(args: argparse.Namespace) -> dict:
             *strategy_args,
             "--symbols",
             args.symbols,
+            "--action-cache-dir",
+            str(action_cache_dir),
             "--metrics",
             ",".join(metrics),
             "--selection-modes",
@@ -233,6 +363,14 @@ def run_once(args: argparse.Namespace) -> dict:
             str(run.long_intensity_multiplier),
             "--short-intensity-multiplier",
             str(run.short_intensity_multiplier),
+            "--entry-allocator-mode",
+            str(run.entry_allocator_mode),
+            "--entry-allocator-edge-power",
+            str(run.entry_allocator_edge_power),
+            "--entry-allocator-max-single-position-fraction",
+            str(run.entry_allocator_max_single_position_fraction),
+            "--entry-allocator-reserve-fraction",
+            str(run.entry_allocator_reserve_fraction),
             "--decision-lag-bars",
             str(args.decision_lag_bars),
             "--entry-selection-mode",
@@ -266,6 +404,8 @@ def run_once(args: argparse.Namespace) -> dict:
             f"hl={run.recency_halflife_days} "
             f"scale={run.trade_amount_scale} power={run.entry_intensity_power} "
             f"short_mult={run.short_intensity_multiplier} minf={run.entry_min_intensity_fraction} "
+            f"allocator={run.entry_allocator_mode} aedge={run.entry_allocator_edge_power} "
+            f"amax={run.entry_allocator_max_single_position_fraction} areserve={run.entry_allocator_reserve_fraction} "
             f"-> {run.output_path}"
         )
         subprocess.run(cmd, check=True)
@@ -296,6 +436,10 @@ def run_once(args: argparse.Namespace) -> dict:
                     "entry_min_intensity_fraction": run.entry_min_intensity_fraction,
                     "long_intensity_multiplier": run.long_intensity_multiplier,
                     "short_intensity_multiplier": run.short_intensity_multiplier,
+                    "entry_allocator_mode": run.entry_allocator_mode,
+                    "entry_allocator_edge_power": run.entry_allocator_edge_power,
+                    "entry_allocator_max_single_position_fraction": run.entry_allocator_max_single_position_fraction,
+                    "entry_allocator_reserve_fraction": run.entry_allocator_reserve_fraction,
                     "market_order_entry": bool(args.market_order_entry),
                     "entry_selection_mode": str(args.entry_selection_mode),
                     "output": str(run.output_path),
@@ -332,6 +476,10 @@ def run_once(args: argparse.Namespace) -> dict:
             "entry_min_intensity_fractions": entry_min_intensity_fractions,
             "long_intensity_multipliers": long_intensity_multipliers,
             "short_intensity_multipliers": short_intensity_multipliers,
+            "entry_allocator_modes": entry_allocator_modes,
+            "entry_allocator_edge_powers": entry_allocator_edge_powers,
+            "entry_allocator_max_single_position_fractions": entry_allocator_max_single_position_fractions,
+            "entry_allocator_reserve_fractions": entry_allocator_reserve_fractions,
             "min_num_buys": int(args.min_num_buys),
             "entry_order_ttl_hours": int(args.entry_order_ttl_hours),
             "execution_bar_margins": parse_float_list(args.execution_bar_margins)
@@ -340,6 +488,7 @@ def run_once(args: argparse.Namespace) -> dict:
             "execution_entry_order_ttl_hours": parse_int_list(args.execution_entry_order_ttls)
             if str(args.execution_entry_order_ttls).strip()
             else [int(args.entry_order_ttl_hours)],
+            "action_cache_dir": str(action_cache_dir),
             "market_order_entry": bool(args.market_order_entry),
             "entry_selection_mode": str(args.entry_selection_mode),
             "decision_lag_bars": int(args.decision_lag_bars),
@@ -347,6 +496,7 @@ def run_once(args: argparse.Namespace) -> dict:
         "skipped_for_activity": int(skipped_for_activity),
         "best": best,
         "top5": ranked_rows[:5],
+        "entry_allocator_mode_summary": build_entry_allocator_mode_summary(ranked_rows),
         "deploy_command": build_deploy_command(
             strategy_specs=list(args.strategy),
             symbols=args.symbols,
@@ -397,6 +547,10 @@ def main() -> None:
     parser.add_argument("--entry-min-intensity-fractions", default="0.0")
     parser.add_argument("--long-intensity-multipliers", default="1.0")
     parser.add_argument("--short-intensity-multipliers", default="1.0")
+    parser.add_argument("--entry-allocator-modes", default="legacy")
+    parser.add_argument("--entry-allocator-edge-powers", default="2.0")
+    parser.add_argument("--entry-allocator-max-single-position-fractions", default="0.6")
+    parser.add_argument("--entry-allocator-reserve-fractions", default="0.1")
     parser.add_argument("--decision-lag-bars", type=int, default=1)
     parser.add_argument(
         "--entry-selection-mode",
@@ -435,6 +589,12 @@ def main() -> None:
         default="auto",
         choices=["python", "native", "auto"],
         help="Portfolio simulator backend for sweep_meta_portfolio calls.",
+    )
+    parser.add_argument(
+        "--action-cache-dir",
+        type=Path,
+        default=None,
+        help="Optional shared on-disk cache for generated per-strategy action frames across sweep runs.",
     )
     parser.add_argument(
         "--skip-existing",
@@ -480,6 +640,16 @@ def main() -> None:
         raise ValueError("--long-intensity-multipliers values must all be >= 0")
     if any(x < 0 for x in parse_float_list(args.short_intensity_multipliers)):
         raise ValueError("--short-intensity-multipliers values must all be >= 0")
+    allocator_modes = [x.lower() for x in parse_csv_list(args.entry_allocator_modes)]
+    invalid_allocator_modes = [x for x in allocator_modes if x not in ("legacy", "concentrated")]
+    if invalid_allocator_modes:
+        raise ValueError(f"--entry-allocator-modes values must be legacy/concentrated, got {invalid_allocator_modes}")
+    if any(x < 0 for x in parse_float_list(args.entry_allocator_edge_powers)):
+        raise ValueError("--entry-allocator-edge-powers values must all be >= 0")
+    if any(x < 0 or x > 1 for x in parse_float_list(args.entry_allocator_max_single_position_fractions)):
+        raise ValueError("--entry-allocator-max-single-position-fractions values must all be in [0, 1]")
+    if any(x < 0 or x > 1 for x in parse_float_list(args.entry_allocator_reserve_fractions)):
+        raise ValueError("--entry-allocator-reserve-fractions values must all be in [0, 1]")
 
     run_once(args)
 

@@ -372,3 +372,58 @@ def test_native_backend_matches_python_for_drawdown_profit_early_exit() -> None:
     assert len(native_result.equity_curve) == len(python_result.equity_curve)
     assert native_result.metrics["final_equity"] == pytest.approx(python_result.metrics["final_equity"])
     assert native_result.metrics["max_drawdown"] == pytest.approx(python_result.metrics["max_drawdown"])
+
+
+def test_native_backend_matches_python_for_concentrated_entry_allocator() -> None:
+    _require_native()
+
+    t0 = pd.Timestamp("2026-03-03T15:00:00Z")
+    bars = pd.DataFrame(
+        [
+            {"timestamp": t0, "symbol": "AAA", "open": 100.0, "high": 110.0, "low": 99.0, "close": 100.0},
+            {"timestamp": t0, "symbol": "BBB", "open": 100.0, "high": 108.0, "low": 99.0, "close": 100.0},
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {"timestamp": t0, "symbol": "AAA", "buy_price": 100.0, "sell_price": 110.0, "buy_amount": 100.0, "sell_amount": 0.0, "trade_amount": 100.0},
+            {"timestamp": t0, "symbol": "BBB", "buy_price": 100.0, "sell_price": 106.0, "buy_amount": 100.0, "sell_amount": 0.0, "trade_amount": 100.0},
+        ]
+    )
+    cfg = dict(
+        initial_cash=10_000.0,
+        max_positions=5,
+        max_leverage=2.0,
+        trade_amount_scale=100.0,
+        fee_by_symbol={"AAA": 0.0, "BBB": 0.0},
+        decision_lag_bars=0,
+        enforce_market_hours=False,
+        close_at_eod=False,
+        max_hold_hours=1000,
+        bar_margin=0.0,
+        int_qty=True,
+        entry_allocator_mode="concentrated",
+        entry_allocator_edge_power=2.0,
+        entry_allocator_max_single_position_fraction=0.6,
+        entry_allocator_reserve_fraction=0.1,
+    )
+
+    python_result = run_portfolio_simulation(
+        bars,
+        actions,
+        PortfolioConfig(**cfg, sim_backend="python"),
+        horizon=1,
+    )
+    native_result = run_portfolio_simulation(
+        bars,
+        actions,
+        PortfolioConfig(**cfg, sim_backend="native"),
+        horizon=1,
+    )
+
+    python_entries = {(trade.symbol, trade.side): trade.quantity for trade in python_result.trades}
+    native_entries = {(trade.symbol, trade.side): trade.quantity for trade in native_result.trades}
+
+    assert python_entries == {("AAA", "buy"): 47.0, ("BBB", "buy"): 42.0}
+    assert native_entries == python_entries
+    assert native_result.metrics["final_equity"] == pytest.approx(python_result.metrics["final_equity"])

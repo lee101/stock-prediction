@@ -91,6 +91,9 @@ class SAPTrainer:
 
     def train(self) -> tuple[TrainingArtifacts, list[SAPHistoryEntry]]:
         torch.manual_seed(self.tc.seed)
+        # The differentiable Sortino helper is compile-wrapped independently of model compilation.
+        if hasattr(torch, "_dynamo") and hasattr(torch._dynamo, "config"):
+            torch._dynamo.config.suppress_errors = True
         if self.tc.use_tf32 and hasattr(torch, "set_float32_matmul_precision"):
             torch.set_float32_matmul_precision("high")
 
@@ -115,7 +118,7 @@ class SAPTrainer:
         )
         model = build_policy(policy_cfg).to(self.device)
         param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        print(f"Model params: {param_count:,}")
+        print(f"Model params: {param_count:,}", flush=True)
 
         if self.tc.use_compile and hasattr(torch, "compile"):
             model = torch.compile(model, mode="reduce-overhead", fullgraph=False)
@@ -134,7 +137,7 @@ class SAPTrainer:
         epochs_without_improvement = 0
 
         global_step = 0
-        print(f"Training: {len(train_loader)} train, {len(val_loader)} val batches, mode={self.sc.sam_mode}")
+        print(f"Training: {len(train_loader)} train, {len(val_loader)} val batches, mode={self.sc.sam_mode}", flush=True)
 
         for epoch in range(1, self.tc.epochs + 1):
             t0 = time.time()
@@ -178,7 +181,8 @@ class SAPTrainer:
                 f"T {train_metrics['sortino']:.3f}/{train_metrics['return']:.4f} | "
                 f"V {val_metrics['sortino']:.3f}/{val_metrics['return']:.4f} | "
                 f"Sharp {sharp_state.ema:.3f} Scale {sharp_state.lr_scale:.2f} | "
-                f"{wall_time:.1f}s"
+                f"{wall_time:.1f}s",
+                flush=True,
             )
 
             if (

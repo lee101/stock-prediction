@@ -1,0 +1,5 @@
+symbol,config,best_epoch,val_sortino,val_return,val_score,sharpness_ema,wd_scale,error
+AVAXUSD,baseline_wd01,6,5.014,-0.5422,4.971,0.0,1.00,
+AVAXUSD,periodic_wd01,4,4.258,-0.6099,4.209,473.6,1.00,
+AAVEUSD,baseline_wd01,,,,,,,"Insufficient hourly history (394 rows, minimum 720)."
+AAVEUSD,periodic_wd01,,,,,,,"Insufficient hourly history (394 rows, minimum 720)."

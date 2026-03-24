@@ -34,7 +34,13 @@ from src.trade_directions import (
 from src.hourly_order_reconcile import order_created_at, orders_to_cancel_for_live_symbol
 from src.torch_load_utils import torch_load_compat
 from src.symbol_utils import is_crypto_symbol
-from src.hourly_trader_utils import OrderIntent, entry_intensity_fraction
+from src.hourly_trader_utils import (
+    EntryAllocationCandidate,
+    OrderIntent,
+    allocate_concentrated_entry_budget,
+    entry_intensity_fraction,
+    normalize_entry_allocator_mode,
+)
 
 LONG_ONLY = set(DEFAULT_LONG_ONLY_STOCKS)
 SHORT_ONLY = set(DEFAULT_SHORT_ONLY_STOCKS)
@@ -50,6 +56,10 @@ ENTRY_INTENSITY_POWER = 1.0
 ENTRY_MIN_INTENSITY_FRACTION = 0.0
 LONG_INTENSITY_MULTIPLIER = 1.0
 SHORT_INTENSITY_MULTIPLIER = 1.0
+ENTRY_ALLOCATOR_MODE = "concentrated"
+ENTRY_ALLOCATOR_EDGE_POWER = 2.0
+ENTRY_ALLOCATOR_MAX_SINGLE_POSITION_FRACTION = 0.6
+ENTRY_ALLOCATOR_RESERVE_FRACTION = 0.1
 BROKER_EVENT_LOOKBACK_HOURS = 48.0
 BROKER_EVENT_KEY_LIMIT = 512
 
@@ -1322,7 +1332,8 @@ def execute_trades(
     initial_slots_available = max_positions - current_count
     slots_available = max(initial_slots_available, 0)
     planning_buying_power = float(buying_power)
-    planned_slots_remaining = int(slots_available)
+    allocator_mode = normalize_entry_allocator_mode(ENTRY_ALLOCATOR_MODE)
+    allocator_reserve_fraction = min(max(float(ENTRY_ALLOCATOR_RESERVE_FRACTION), 0.0), 1.0)
 
     stock_leverage = 2.0
     per_position_stock = (equity * stock_leverage) / max_positions
@@ -1396,56 +1407,96 @@ def execute_trades(
         if entry_price <= 0:
             log_event("entry_skipped", symbol=symbol, reason="invalid_entry_price", entry_price=entry_price)
             continue
-        if planned_slots_remaining <= 0:
+        if len(entry_candidates) >= slots_available:
             log_event("entry_skipped", symbol=symbol, reason="no_slots_remaining")
             continue
 
         per_position = per_position_stock if not crypto else (equity / max_positions)
-        position_alloc = per_position * intensity_frac
-        target_value = min(position_alloc, planning_buying_power * 0.9)
-        target_qty = int(target_value / entry_price)
-        if target_qty <= 0:
-            log_event(
-                "entry_skipped",
-                symbol=symbol,
-                reason="target_qty_below_one",
-                target_value=float(target_value),
-                entry_price=float(entry_price),
-            )
-            continue
-        if target_value > planning_buying_power:
-            logger.warning("{}: insufficient buying power (${:.0f} needed, ${:.0f} avail)", symbol, target_value, planning_buying_power)
-            log_event(
-                "entry_skipped",
-                symbol=symbol,
-                reason="insufficient_buying_power",
-                target_value=float(target_value),
-                buying_power=float(planning_buying_power),
-            )
-            continue
+        candidate = {
+            "symbol": symbol,
+            "action": action,
+            "entry_side": entry_side,
+            "entry_side_norm": "sell" if is_short else "buy",
+            "entry_price": float(entry_price),
+            "exit_price": float(exit_price),
+            "hold_hours": float(hold_hours),
+            "signal_amount": float(signal_amount),
+            "intensity_fraction": float(intensity_frac),
+            "side_str": "short" if is_short else "long",
+            "order_type": "market" if use_market_orders else "limit",
+            "entry_reference_source": entry_reference_source,
+            "fee_rate": float(fee_rate),
+            "slot_budget": float(per_position),
+        }
 
-        entry_candidates.append(
-            {
-                "symbol": symbol,
-                "action": action,
-                "entry_side": entry_side,
-                "entry_side_norm": "sell" if is_short else "buy",
-                "entry_price": float(entry_price),
-                "exit_price": float(exit_price),
-                "hold_hours": float(hold_hours),
-                "signal_amount": float(signal_amount),
-                "intensity_fraction": float(intensity_frac),
-                "position_alloc": float(position_alloc),
-                "target_value": float(target_value),
-                "target_qty": int(target_qty),
-                "side_str": "short" if is_short else "long",
-                "order_type": "market" if use_market_orders else "limit",
-                "entry_reference_source": entry_reference_source,
-                "fee_rate": float(fee_rate),
-            }
+        if allocator_mode == "legacy":
+            position_alloc = per_position * intensity_frac
+            target_value = min(position_alloc, planning_buying_power * 0.9)
+            target_qty = int(target_value / entry_price)
+            if target_qty <= 0:
+                log_event(
+                    "entry_skipped",
+                    symbol=symbol,
+                    reason="target_qty_below_one",
+                    target_value=float(target_value),
+                    entry_price=float(entry_price),
+                )
+                continue
+            if target_value > planning_buying_power:
+                logger.warning(
+                    "{}: insufficient buying power (${:.0f} needed, ${:.0f} avail)",
+                    symbol,
+                    target_value,
+                    planning_buying_power,
+                )
+                log_event(
+                    "entry_skipped",
+                    symbol=symbol,
+                    reason="insufficient_buying_power",
+                    target_value=float(target_value),
+                    buying_power=float(planning_buying_power),
+                )
+                continue
+            candidate["position_alloc"] = float(position_alloc)
+            candidate["target_value"] = float(target_value)
+            candidate["target_qty"] = int(target_qty)
+            planning_buying_power = max(0.0, planning_buying_power - float(target_value))
+        entry_candidates.append(candidate)
+
+    if allocator_mode == "concentrated" and entry_candidates:
+        deployable_budget = max(0.0, planning_buying_power) * (1.0 - allocator_reserve_fraction)
+        target_values = allocate_concentrated_entry_budget(
+            [
+                EntryAllocationCandidate(
+                    symbol=str(candidate["symbol"]),
+                    edge=float(candidate["action"].get("edge", 0.0) or 0.0),
+                    intensity_fraction=float(candidate["intensity_fraction"]),
+                    slot_budget=float(candidate["slot_budget"]),
+                )
+                for candidate in entry_candidates
+            ],
+            max_positions=max_positions,
+            deployable_budget=deployable_budget,
+            edge_power=float(ENTRY_ALLOCATOR_EDGE_POWER),
+            max_single_position_fraction=float(ENTRY_ALLOCATOR_MAX_SINGLE_POSITION_FRACTION),
         )
-        planning_buying_power = max(0.0, planning_buying_power - float(target_value))
-        planned_slots_remaining -= 1
+        concentrated_candidates: list[dict[str, Any]] = []
+        for candidate, target_value in zip(entry_candidates, target_values, strict=False):
+            candidate["position_alloc"] = float(target_value)
+            candidate["target_value"] = float(target_value)
+            target_qty = int(float(target_value) / float(candidate["entry_price"]))
+            if target_qty <= 0:
+                log_event(
+                    "entry_skipped",
+                    symbol=candidate["symbol"],
+                    reason="target_qty_below_one",
+                    target_value=float(target_value),
+                    entry_price=float(candidate["entry_price"]),
+                )
+                continue
+            candidate["target_qty"] = int(target_qty)
+            concentrated_candidates.append(candidate)
+        entry_candidates = concentrated_candidates
 
     if initial_slots_available <= 0:
         logger.info("Max positions reached ({}/{})", current_count, max_positions)
@@ -1748,6 +1799,8 @@ def main():
     global TRADE_AMOUNT_SCALE, MIN_BUY_AMOUNT
     global ENTRY_INTENSITY_POWER, ENTRY_MIN_INTENSITY_FRACTION
     global LONG_INTENSITY_MULTIPLIER, SHORT_INTENSITY_MULTIPLIER
+    global ENTRY_ALLOCATOR_MODE, ENTRY_ALLOCATOR_EDGE_POWER
+    global ENTRY_ALLOCATOR_MAX_SINGLE_POSITION_FRACTION, ENTRY_ALLOCATOR_RESERVE_FRACTION
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint-dir", type=Path, required=True)
     parser.add_argument("--stock-symbols", default=",".join(DEFAULT_ALPACA_LIVE8_STOCKS))
@@ -1799,13 +1852,60 @@ def main():
         default=SHORT_INTENSITY_MULTIPLIER,
         help="Multiply short-side signal intensity (post power transform).",
     )
+    parser.add_argument(
+        "--entry-allocator-mode",
+        type=str,
+        default=ENTRY_ALLOCATOR_MODE,
+        choices=["legacy", "concentrated"],
+        help="How to allocate budget across selected entries.",
+    )
+    parser.add_argument(
+        "--entry-allocator-edge-power",
+        type=float,
+        default=ENTRY_ALLOCATOR_EDGE_POWER,
+        help="Exponent applied to edge when concentrating spare entry budget.",
+    )
+    parser.add_argument(
+        "--entry-allocator-max-single-position-fraction",
+        type=float,
+        default=ENTRY_ALLOCATOR_MAX_SINGLE_POSITION_FRACTION,
+        help="Cap concentrated sizing as a fraction of deployable budget per symbol.",
+    )
+    parser.add_argument(
+        "--entry-allocator-reserve-fraction",
+        type=float,
+        default=ENTRY_ALLOCATOR_RESERVE_FRACTION,
+        help="Fraction of buying power held back from new entries.",
+    )
     args = parser.parse_args()
+    if args.trade_amount_scale <= 0:
+        raise ValueError("--trade-amount-scale must be > 0")
+    if args.min_buy_amount < 0:
+        raise ValueError("--min-buy-amount must be >= 0")
+    if args.entry_intensity_power < 0:
+        raise ValueError("--entry-intensity-power must be >= 0")
+    if args.entry_min_intensity_fraction < 0:
+        raise ValueError("--entry-min-intensity-fraction must be >= 0")
+    if args.long_intensity_multiplier < 0:
+        raise ValueError("--long-intensity-multiplier must be >= 0")
+    if args.short_intensity_multiplier < 0:
+        raise ValueError("--short-intensity-multiplier must be >= 0")
+    if args.entry_allocator_edge_power < 0:
+        raise ValueError("--entry-allocator-edge-power must be >= 0")
+    if not 0 <= float(args.entry_allocator_max_single_position_fraction) <= 1:
+        raise ValueError("--entry-allocator-max-single-position-fraction must be in [0, 1]")
+    if not 0 <= float(args.entry_allocator_reserve_fraction) <= 1:
+        raise ValueError("--entry-allocator-reserve-fraction must be in [0, 1]")
     TRADE_AMOUNT_SCALE = float(args.trade_amount_scale)
     MIN_BUY_AMOUNT = float(args.min_buy_amount)
     ENTRY_INTENSITY_POWER = float(args.entry_intensity_power)
     ENTRY_MIN_INTENSITY_FRACTION = float(args.entry_min_intensity_fraction)
     LONG_INTENSITY_MULTIPLIER = float(args.long_intensity_multiplier)
     SHORT_INTENSITY_MULTIPLIER = float(args.short_intensity_multiplier)
+    ENTRY_ALLOCATOR_MODE = normalize_entry_allocator_mode(args.entry_allocator_mode)
+    ENTRY_ALLOCATOR_EDGE_POWER = float(args.entry_allocator_edge_power)
+    ENTRY_ALLOCATOR_MAX_SINGLE_POSITION_FRACTION = float(args.entry_allocator_max_single_position_fraction)
+    ENTRY_ALLOCATOR_RESERVE_FRACTION = float(args.entry_allocator_reserve_fraction)
 
     max_pos = args.max_positions
     max_hold = args.max_hold_hours
@@ -1827,6 +1927,13 @@ def main():
     logger.info("Max positions: {}, Hold limit: {}h", max_pos, max_hold)
     logger.info("Live entry order type: {}", "MARKET" if args.market_order_entry else "LIMIT")
     logger.info("Live entry order TTL: {}h", float(args.entry_order_ttl_hours))
+    logger.info(
+        "Entry allocator: mode={} edge_power={} max_single_frac={} reserve_frac={}",
+        ENTRY_ALLOCATOR_MODE,
+        float(ENTRY_ALLOCATOR_EDGE_POWER),
+        float(ENTRY_ALLOCATOR_MAX_SINGLE_POSITION_FRACTION),
+        float(ENTRY_ALLOCATOR_RESERVE_FRACTION),
+    )
     logger.info("Mode: {}", "LIVE" if not paper else "PAPER")
     log_event(
         "trader_started",

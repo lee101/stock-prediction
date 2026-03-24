@@ -14,12 +14,15 @@ from newnanoalpacahourlyexp.trade_alpaca_hourly import (
     _reconcile_live_symbol_orders,
 )
 from src.hourly_trader_utils import (
+    EntryAllocationCandidate,
     OrderIntent,
     TradingPlan,
+    allocate_concentrated_entry_budget,
     build_order_intents,
     directional_entry_amount,
     entry_intensity_fraction,
     ensure_valid_levels,
+    normalize_entry_allocator_mode,
 )
 
 
@@ -129,6 +132,43 @@ def test_entry_intensity_fraction_applies_floor_and_multiplier():
     )
     assert amount == pytest.approx(2.0)
     assert intensity == pytest.approx(0.10)
+
+
+def test_normalize_entry_allocator_mode_defaults_to_legacy():
+    assert normalize_entry_allocator_mode(None) == "legacy"
+    assert normalize_entry_allocator_mode("CONCENTRATED") == "concentrated"
+    assert normalize_entry_allocator_mode("weird") == "legacy"
+
+
+def test_concentrated_entry_budget_redistributes_spare_capacity_to_stronger_edge():
+    allocs = allocate_concentrated_entry_budget(
+        [
+            EntryAllocationCandidate(symbol="AAA", edge=0.10, intensity_fraction=1.0, slot_budget=2000.0),
+            EntryAllocationCandidate(symbol="BBB", edge=0.05, intensity_fraction=1.0, slot_budget=2000.0),
+        ],
+        max_positions=5,
+        deployable_budget=9000.0,
+        edge_power=2.0,
+        max_single_position_fraction=0.6,
+    )
+
+    assert allocs[0] == pytest.approx(5400.0)
+    assert allocs[1] == pytest.approx(3600.0)
+    assert sum(allocs) == pytest.approx(9000.0)
+
+
+def test_concentrated_entry_budget_caps_single_name_even_with_one_candidate():
+    allocs = allocate_concentrated_entry_budget(
+        [
+            EntryAllocationCandidate(symbol="AAA", edge=0.08, intensity_fraction=1.0, slot_budget=2000.0),
+        ],
+        max_positions=5,
+        deployable_budget=9000.0,
+        edge_power=2.0,
+        max_single_position_fraction=0.6,
+    )
+
+    assert allocs == pytest.approx([5400.0])
 
 
 def test_allocation_usd_prefers_fixed():

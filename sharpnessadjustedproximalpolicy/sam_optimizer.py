@@ -1,9 +1,11 @@
 """Sharpness-Adjusted Proximal optimizer.
 
 Core idea: measure loss-landscape sharpness periodically via random weight
-perturbation.  When the current minimum is *sharp* (likely overfit), allow
-large parameter updates to escape.  When it is *flat* (good generalisation),
-constrain updates to stay in the basin.
+perturbation.  Use sharpness signal to modulate weight decay (not lr):
+- Sharp minimum (likely overfit) -> increase weight decay to escape
+- Flat minimum (good generalization) -> decrease weight decay to stay
+
+This avoids the numerical instability of lr scaling with Sortino loss.
 
 Speed: sharpness is measured every ``probe_every`` optimiser steps using a
 single random perturbation direction -- amortised overhead is ~1/probe_every
@@ -23,33 +25,17 @@ import torch
 class SharpnessState:
     raw: float = 0.0      # latest |L(theta+eps) - L(theta)| / rho
     ema: float = 0.0       # exponential moving average
-    lr_scale: float = 1.0  # multiplier applied to base lr
+    lr_scale: float = 1.0  # kept for backwards compat / logging
+    wd_scale: float = 1.0  # weight decay multiplier
     step: int = 0
 
 
 class SharpnessAdjustedOptimizer:
-    """Wraps a base optimizer with periodic sharpness probing and lr scaling.
+    """Wraps a base optimizer with periodic sharpness probing.
 
-    Parameters
-    ----------
-    base_optimizer : torch.optim.Optimizer
-        Any PyTorch optimizer (AdamW, SGD, ...).
-    rho : float
-        Perturbation radius (L2 norm) for sharpness probe.  Default 0.05.
-    probe_every : int
-        Compute sharpness every N optimizer steps.  Higher = faster but less
-        responsive.  Default 10.
-    ema_beta : float
-        EMA decay for smoothing sharpness signal.  Default 0.9.
-    target_sharpness : float
-        Sharpness value at which lr_scale == 1.0.  Below target => scale < 1
-        (stay); above target => scale > 1 (escape).
-    min_scale : float
-        Minimum lr multiplier (when very flat).  Default 0.3.
-    max_scale : float
-        Maximum lr multiplier (when very sharp).  Default 3.0.
-    scale_mode : str
-        "linear" or "log".  How sharpness maps to lr_scale.
+    Instead of scaling lr (which causes NaN with Sortino loss), we scale
+    weight decay: high sharpness -> higher wd (push toward flatter minima),
+    low sharpness -> lower wd (stay in flat basin).
     """
 
     def __init__(
@@ -60,9 +46,12 @@ class SharpnessAdjustedOptimizer:
         probe_every: int = 10,
         ema_beta: float = 0.9,
         target_sharpness: float = 1.0,
-        min_scale: float = 0.3,
-        max_scale: float = 3.0,
+        min_scale: float = 0.5,
+        max_scale: float = 1.5,
         scale_mode: str = "linear",
+        warmup_probes: int = 50,
+        wd_min_scale: float = 0.5,
+        wd_max_scale: float = 2.0,
     ):
         self.base = base_optimizer
         self.rho = rho
@@ -71,9 +60,14 @@ class SharpnessAdjustedOptimizer:
         self.target_sharpness = max(target_sharpness, 1e-8)
         self.min_scale = min_scale
         self.max_scale = max_scale
+        self.wd_min_scale = wd_min_scale
+        self.wd_max_scale = wd_max_scale
         self.scale_mode = scale_mode
+        self.warmup_probes = warmup_probes
+        self._probe_count = 0
         self.state = SharpnessState()
         self._base_lrs = [g["lr"] for g in self.param_groups]
+        self._base_wds = [g.get("weight_decay", 0.0) for g in self.param_groups]
         self._saved_params: list[torch.Tensor] = []
 
     @property
@@ -86,20 +80,10 @@ class SharpnessAdjustedOptimizer:
     def step(self, closure: Callable | None = None):
         self.base.step(closure=closure)
         self.state.step += 1
-        self._apply_lr_scale()
-
-    def _apply_lr_scale(self):
-        s = self.state.lr_scale
-        for group, base_lr in zip(self.param_groups, self._base_lrs):
-            group["lr"] = base_lr * s
 
     def update_base_lrs(self):
         """Sync base_lrs from current param_groups (call after external lr schedule)."""
         self._base_lrs = [g["lr"] for g in self.param_groups]
-
-    # ------------------------------------------------------------------
-    # Sharpness probing
-    # ------------------------------------------------------------------
 
     def should_probe(self) -> bool:
         return self.state.step % self.probe_every == 0
@@ -122,7 +106,7 @@ class SharpnessAdjustedOptimizer:
 
     @torch.no_grad()
     def _perturb_params(self) -> float:
-        """Add random perturbation of norm rho. Returns actual norm."""
+        """Add random perturbation of norm rho."""
         total_norm_sq = 0.0
         perturbations = []
         for group in self.param_groups:
@@ -140,35 +124,139 @@ class SharpnessAdjustedOptimizer:
         return self.rho
 
     def probe_sharpness(self, loss_fn: Callable[[], torch.Tensor], base_loss: float) -> float:
-        """Measure sharpness: |L(theta+eps) - L(theta)| / rho.
+        """Measure sharpness and adjust weight decay accordingly."""
+        if math.isnan(base_loss) or math.isinf(base_loss):
+            return self.state.raw
 
-        Call this with a closure that computes loss at current params.
-        ``base_loss`` is L(theta) already computed in the training step.
-        """
         self._save_params()
-        actual_rho = self._perturb_params()
+        self._perturb_params()
         with torch.no_grad():
             perturbed_loss = loss_fn().item()
         self._restore_params()
 
-        sharpness = abs(perturbed_loss - base_loss) / max(actual_rho, 1e-12)
+        if math.isnan(perturbed_loss) or math.isinf(perturbed_loss):
+            return self.state.raw
+
+        sharpness = abs(perturbed_loss - base_loss) / max(self.rho, 1e-12)
+        if math.isnan(sharpness) or math.isinf(sharpness):
+            return self.state.raw
+
+        self._probe_count += 1
         self.state.raw = sharpness
         self.state.ema = self.ema_beta * self.state.ema + (1 - self.ema_beta) * sharpness
-        self.state.lr_scale = self._compute_scale(self.state.ema)
-        self._apply_lr_scale()
+
+        if self._probe_count <= self.warmup_probes:
+            if self._probe_count == self.warmup_probes:
+                self.target_sharpness = max(self.state.ema, 1e-8)
+        else:
+            self._apply_wd_scaling()
         return sharpness
 
+    def _apply_wd_scaling(self):
+        """Scale weight decay based on sharpness: sharp -> more wd, flat -> less wd."""
+        if self.state.ema <= 0 or math.isnan(self.state.ema):
+            return
+        ratio = self.state.ema / self.target_sharpness
+        # sharp (ratio>1) -> higher wd to regularize, flat (ratio<1) -> lower wd to stay
+        wd_scale = max(self.wd_min_scale, min(self.wd_max_scale, ratio))
+        # smooth adjustment
+        prev = self.state.wd_scale
+        delta = wd_scale - prev
+        max_delta = 0.05 * prev  # max 5% change per probe
+        delta = max(-max_delta, min(max_delta, delta))
+        self.state.wd_scale = prev + delta
+        self.state.lr_scale = self.state.wd_scale  # for logging compat
+
+        for group, base_wd in zip(self.param_groups, self._base_wds):
+            if base_wd > 0:
+                group["weight_decay"] = base_wd * self.state.wd_scale
+
     def _compute_scale(self, sharpness: float) -> float:
+        """Compute raw scale ratio (used by wd scaling internally)."""
+        if math.isnan(sharpness) or sharpness <= 0:
+            return 1.0
         ratio = sharpness / self.target_sharpness
         if self.scale_mode == "log":
-            scale = 1.0 + math.log(max(ratio, 1e-8))
-        else:
-            scale = ratio
-        return max(self.min_scale, min(self.max_scale, scale))
+            return 1.0 + math.log(max(ratio, 1e-8))
+        return ratio
+
+
+class SWAWrapper:
+    """Stochastic Weight Averaging: maintain EMA of weights during training.
+
+    After warmup_steps, begins averaging weights. Call get_swa_model() at end
+    to get the averaged weights for evaluation. Zero overhead except memory.
+    """
+
+    def __init__(self, model: torch.nn.Module, *, swa_start_frac: float = 0.5, swa_lr: float | None = None):
+        self.model = model
+        self.swa_start_frac = swa_start_frac
+        self.swa_lr = swa_lr
+        self._avg_params: dict[str, torch.Tensor] = {}
+        self._n_averaged = 0
+        self._started = False
+
+    @torch.no_grad()
+    def update(self, step: int, total_steps: int):
+        if step < int(total_steps * self.swa_start_frac):
+            return
+        if not self._started:
+            self._started = True
+            for name, p in self.model.named_parameters():
+                if p.requires_grad:
+                    self._avg_params[name] = p.data.clone()
+            self._n_averaged = 1
+            return
+
+        self._n_averaged += 1
+        alpha = 1.0 / self._n_averaged
+        for name, p in self.model.named_parameters():
+            if name in self._avg_params:
+                self._avg_params[name].lerp_(p.data, alpha)
+
+    @torch.no_grad()
+    def apply_swa_weights(self):
+        """Replace model weights with SWA-averaged weights."""
+        if not self._avg_params:
+            return
+        for name, p in self.model.named_parameters():
+            if name in self._avg_params:
+                p.data.copy_(self._avg_params[name])
+
+    @property
+    def n_averaged(self) -> int:
+        return self._n_averaged
+
+
+class GradientNoiseInjector:
+    """Add gradient noise scaled by sharpness.
+
+    When landscape is sharp (overfit), inject more noise into gradients to
+    help escape. When flat, inject less. Based on the observation that
+    gradient noise is equivalent to implicit regularization.
+
+    sigma = base_sigma * (sharpness / target_sharpness)
+    """
+
+    def __init__(self, *, base_sigma: float = 0.01, gamma: float = 0.55, target_sharpness: float = 1.0):
+        self.base_sigma = base_sigma
+        self.gamma = gamma  # noise decay exponent (Neelakantan et al. 2015)
+        self.target_sharpness = max(target_sharpness, 1e-8)
+
+    @torch.no_grad()
+    def inject(self, model: torch.nn.Module, step: int, sharpness_ema: float):
+        if sharpness_ema <= 0 or math.isnan(sharpness_ema):
+            return
+        ratio = sharpness_ema / self.target_sharpness
+        # anneal noise over training, scale by sharpness
+        sigma = self.base_sigma * ratio / (1 + step) ** self.gamma
+        for p in model.parameters():
+            if p.grad is not None:
+                p.grad.add_(torch.randn_like(p.grad), alpha=sigma)
 
 
 class FullSAMOptimizer:
-    """Full SAM (Foret et al. 2020) with asymmetric clipping.
+    """Full SAM (Foret et al. 2020) with asymmetric rho.
 
     Every step:
     1) Compute grad at theta
@@ -176,11 +264,10 @@ class FullSAMOptimizer:
     3) Compute grad at theta' (the SAM gradient)
     4) Descend using SAM gradient with base optimizer
 
-    Asymmetric twist: the ascent step rho is modulated by tracked sharpness.
-    When flat, rho shrinks (less aggressive perturbation).
-    When sharp, rho grows (explore harder to find escape direction).
+    rho adapts based on sharpness: sharper = larger perturbation to find
+    better escape directions.
 
-    This is 2x compute per step. Use ``probe_every`` variant above for speed.
+    2x compute per step.
     """
 
     def __init__(
@@ -214,7 +301,6 @@ class FullSAMOptimizer:
 
     @torch.no_grad()
     def _ascend(self):
-        """Perturb params in gradient direction by adaptive rho."""
         self._saved_params = []
         grad_norm_sq = 0.0
         for group in self.param_groups:
@@ -228,7 +314,6 @@ class FullSAMOptimizer:
 
         eff_rho = self._effective_rho()
         scale = eff_rho / max(math.sqrt(grad_norm_sq), 1e-12)
-
         for group in self.param_groups:
             for p in group["params"]:
                 if p.grad is None:
@@ -241,7 +326,6 @@ class FullSAMOptimizer:
 
     @torch.no_grad()
     def _descend(self):
-        """Restore original params."""
         idx = 0
         for group in self.param_groups:
             for p in group["params"]:
@@ -257,36 +341,21 @@ class FullSAMOptimizer:
         return max(self.rho_min, min(self.rho_max, eff))
 
     def step_with_sam(self, loss_fn: Callable[[], torch.Tensor]) -> tuple[float, float]:
-        """Full SAM step. Returns (loss, sharpness).
-
-        Usage:
-            optimizer.zero_grad()
-            loss = loss_fn()  # forward + compute loss
-            loss.backward()
-            sam_loss, sharpness = optimizer.step_with_sam(loss_fn)
-        """
-        base_loss = None
-        # first backward already done by caller
+        """Full SAM step. Returns (loss, sharpness)."""
         self._ascend()
-
-        # second forward + backward at perturbed point
         self.base.zero_grad(set_to_none=True)
         perturbed_loss = loss_fn()
         perturbed_loss.backward()
-
-        base_loss_val = 0.0  # caller should track
         perturbed_val = perturbed_loss.item()
-
         self._descend()
-        # now apply the SAM gradient (computed at theta') to original theta
         self.base.step()
 
-        # track sharpness
-        sharpness = abs(perturbed_val - base_loss_val) / max(self._effective_rho(), 1e-12)
-        self.state.raw = sharpness
-        self.state.ema = self.ema_beta * self.state.ema + (1 - self.ema_beta) * sharpness
+        sharpness = abs(perturbed_val) / max(self._effective_rho(), 1e-12)
+        if not (math.isnan(sharpness) or math.isinf(sharpness)):
+            self.state.raw = sharpness
+            self.state.ema = self.ema_beta * self.state.ema + (1 - self.ema_beta) * sharpness
         self.state.step += 1
-        return perturbed_val, sharpness
+        return perturbed_val, self.state.raw
 
     def update_base_lrs(self):
         self._base_lrs = [g["lr"] for g in self.param_groups]
@@ -314,7 +383,6 @@ class LookSAMOptimizer:
         self.alpha = alpha
         self.state = SharpnessState()
         self._sam_direction: dict[int, torch.Tensor] = {}
-        self._saved_params: list[torch.Tensor] = []
 
     @property
     def param_groups(self):
@@ -333,7 +401,6 @@ class LookSAMOptimizer:
 
     @torch.no_grad()
     def _full_sam_step(self, loss_fn: Callable[[], torch.Tensor]):
-        # save params & current grad
         saved = []
         grad_norm_sq = 0.0
         for group in self.param_groups:
@@ -348,17 +415,15 @@ class LookSAMOptimizer:
                 if p.grad is not None:
                     p.data.add_(p.grad, alpha=scale)
 
-        # enable grads for perturbed forward+backward
         with torch.enable_grad():
             self.base.zero_grad(set_to_none=True)
             loss_p = loss_fn()
             loss_p.backward()
 
-        # compute sam direction = grad_perturbed - grad_original (approximation)
         idx = 0
         self._sam_direction = {}
-        for gidx, group in enumerate(self.param_groups):
-            for pidx, p in enumerate(group["params"]):
+        for group in self.param_groups:
+            for p in group["params"]:
                 p.data.copy_(saved[idx])
                 if p.grad is not None:
                     self._sam_direction[id(p)] = p.grad.clone()
@@ -378,7 +443,6 @@ class LookSAMOptimizer:
                 sam_d = self._sam_direction.get(id(p))
                 if sam_d is None:
                     continue
-                g = p.grad
-                proj = (g * sam_d).sum() / max(sam_d.norm().item() ** 2, 1e-12)
+                proj = (p.grad * sam_d).sum() / max(sam_d.norm().item() ** 2, 1e-12)
                 p.grad.add_(sam_d, alpha=self.alpha * proj.item())
         self.base.step()

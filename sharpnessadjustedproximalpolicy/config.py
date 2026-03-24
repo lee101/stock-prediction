@@ -25,9 +25,9 @@ class SAPConfig:
     # Target sharpness (scale=1.0 at this value)
     target_sharpness: float = 1.0
 
-    # LR scale bounds
-    min_lr_scale: float = 0.3
-    max_lr_scale: float = 3.0
+    # WD scale bounds (weight decay modulation)
+    min_lr_scale: float = 0.5
+    max_lr_scale: float = 2.0
     scale_mode: str = "linear"  # "linear" or "log"
 
     # Full SAM specific
@@ -66,8 +66,8 @@ EXPERIMENTS = [
     {"name": "periodic_cosine_rho01", "sam_mode": "periodic", "rho": 0.1, "probe_every": 10, "lr_schedule": "cosine"},
 
     # Asymmetric scaling ranges
-    {"name": "periodic_wide_scale", "sam_mode": "periodic", "rho": 0.05, "min_lr_scale": 0.1, "max_lr_scale": 5.0},
-    {"name": "periodic_narrow_scale", "sam_mode": "periodic", "rho": 0.05, "min_lr_scale": 0.5, "max_lr_scale": 2.0},
+    {"name": "periodic_wide_scale", "sam_mode": "periodic", "rho": 0.05, "min_lr_scale": 0.3, "max_lr_scale": 2.0},
+    {"name": "periodic_narrow_scale", "sam_mode": "periodic", "rho": 0.05, "min_lr_scale": 0.7, "max_lr_scale": 1.3},
     {"name": "periodic_log_scale", "sam_mode": "periodic", "rho": 0.05, "scale_mode": "log"},
 
     # Different target sharpness
@@ -103,6 +103,24 @@ EXPERIMENTS = [
     # Multi-lag + SAM
     {"name": "periodic_multilag", "sam_mode": "periodic", "rho": 0.05, "decision_lag_range": "0,1,2"},
     {"name": "periodic_lag2", "sam_mode": "periodic", "rho": 0.05, "decision_lag_bars": 2},
+
+    # --- Round 2: informed by initial results ---
+    # Higher wd baselines (to compare with SAM wd scaling)
+    {"name": "baseline_wd01", "sam_mode": "none", "weight_decay": 0.1},
+    {"name": "baseline_wd02", "sam_mode": "none", "weight_decay": 0.2},
+
+    # SAM + higher wd with wider scale cap
+    {"name": "periodic_wd01_wide", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1, "max_lr_scale": 3.0},
+    {"name": "periodic_wd015", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.15},
+    {"name": "periodic_wd02", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.2},
+
+    # Cosine LR + high wd (combine best regularization strategies)
+    {"name": "periodic_wd01_cosine", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1, "lr_schedule": "cosine"},
+    {"name": "periodic_wd005_cosine", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.05, "lr_schedule": "cosine"},
+
+    # h512 with higher lr (fix dead model)
+    {"name": "h512_lr1e3_periodic", "sam_mode": "periodic", "rho": 0.05, "transformer_dim": 512, "transformer_layers": 6, "learning_rate": 1e-3},
+    {"name": "h512_lr1e3_baseline", "sam_mode": "none", "transformer_dim": 512, "transformer_layers": 6, "learning_rate": 1e-3},
 ]
 
 
@@ -130,7 +148,7 @@ DEFAULT_TRAINING_OVERRIDES = {
     "loss_type": "sortino",
     "return_weight": 0.08,
     "validation_use_binary_fills": True,
-    "use_compile": True,
+    "use_compile": False,
     "use_tf32": True,
     "transformer_dim": 256,
     "transformer_layers": 4,

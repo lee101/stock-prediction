@@ -14,7 +14,12 @@ import pandas as pd
 
 from src.date_utils import is_nyse_open_on_date
 from src.fees import get_fee_for_symbol
-from src.hourly_trader_utils import entry_intensity_fraction
+from src.hourly_trader_utils import (
+    EntryAllocationCandidate,
+    allocate_concentrated_entry_budget,
+    entry_intensity_fraction,
+    normalize_entry_allocator_mode,
+)
 from src.market_sim_early_exit import evaluate_drawdown_vs_profit_early_exit, print_early_exit
 from src.metrics_utils import annualized_sortino
 from src.robust_trading_metrics import (
@@ -69,6 +74,10 @@ class PortfolioConfig:
     force_close_slippage: float = 0.003
     int_qty: bool = True
     margin_annual_rate: float = 0.0
+    entry_allocator_mode: str = "legacy"  # legacy | concentrated
+    entry_allocator_edge_power: float = 2.0
+    entry_allocator_max_single_position_fraction: float = 0.6
+    entry_allocator_reserve_fraction: float = 0.1
     sim_backend: str = "auto"  # auto prefers native when safe, else falls back to python
 
 
@@ -362,6 +371,10 @@ def _run_portfolio_simulation_native(
         float(cfg.force_close_slippage),
         bool(cfg.int_qty),
         float(cfg.margin_annual_rate),
+        str(cfg.entry_allocator_mode),
+        float(cfg.entry_allocator_edge_power),
+        float(cfg.entry_allocator_max_single_position_fraction),
+        float(cfg.entry_allocator_reserve_fraction),
     )
 
     trade_t_idx = np.asarray(out["trade_t_idx"], dtype=np.int64)
@@ -797,34 +810,77 @@ def run_portfolio_simulation(
                     entry_price=actual_entry_price,
                     is_long=is_long,
                 ),
+                "slot_budget": (equity_for_entries * (1.0 if is_crypto_symbol(sym) else cfg.max_leverage)) / cfg.max_positions,
+                "fee_rate": fee,
             })
 
         if cfg.entry_selection_mode == "first_trigger":
             candidates.sort(key=lambda x: (x["required_move_frac"], -x["edge"]))
         else:
             candidates.sort(key=lambda x: x["edge"], reverse=True)
+        selected_candidates = candidates[:open_slots]
+        allocator_mode = normalize_entry_allocator_mode(cfg.entry_allocator_mode)
+        ready_candidates: list[dict[str, Any]] = []
 
-        for cand in candidates[:open_slots]:
+        if allocator_mode == "concentrated" and selected_candidates:
+            reserve_fraction = min(max(float(cfg.entry_allocator_reserve_fraction), 0.0), 1.0)
+            deployable_budget = max(0.0, equity_for_entries) * (1.0 - reserve_fraction)
+            target_values = allocate_concentrated_entry_budget(
+                [
+                    EntryAllocationCandidate(
+                        symbol=str(cand["symbol"]),
+                        edge=float(cand["edge"]),
+                        intensity_fraction=float(cand["intensity_fraction"]),
+                        slot_budget=float(cand["slot_budget"]),
+                    )
+                    for cand in selected_candidates
+                ],
+                max_positions=int(cfg.max_positions),
+                deployable_budget=deployable_budget,
+                edge_power=float(cfg.entry_allocator_edge_power),
+                max_single_position_fraction=float(cfg.entry_allocator_max_single_position_fraction),
+            )
+            for cand, target_value in zip(selected_candidates, target_values, strict=False):
+                fee = float(cand["fee_rate"])
+                entry_price = float(cand["entry_price"])
+                qty = float(target_value) / (entry_price * (1 + fee))
+                if cfg.int_qty:
+                    qty = float(int(qty))
+                if qty <= 0:
+                    continue
+                cand["alloc"] = float(target_value)
+                cand["qty"] = float(qty)
+                ready_candidates.append(cand)
+        else:
+            for cand in selected_candidates:
+                fee = float(cand["fee_rate"])
+                entry_price = float(cand["entry_price"])
+                intensity_frac = float(cand["intensity_fraction"])
+                alloc = float(cand["slot_budget"]) * intensity_frac
+                qty = alloc / (entry_price * (1 + fee))
+                if cfg.int_qty:
+                    qty = float(int(qty))
+                if qty <= 0:
+                    continue
+                cand["alloc"] = float(alloc)
+                cand["qty"] = float(qty)
+                ready_candidates.append(cand)
+
+        for cand in ready_candidates:
             sym = cand["symbol"]
-            sym_leverage = 1.0 if is_crypto_symbol(sym) else cfg.max_leverage
-            per_position_alloc = (equity_for_entries * sym_leverage) / cfg.max_positions
-            fee = symbol_fee.get(sym, 0.001)
-            entry_price = cand["entry_price"]
-            direction = cand["direction"]
-            intensity_frac = float(cand["intensity_fraction"])
-            alloc = per_position_alloc * intensity_frac
-            qty = alloc / (entry_price * (1 + fee))
-            if cfg.int_qty:
-                qty = float(int(qty))
-            if qty <= 0:
-                continue
-
+            fee = float(cand["fee_rate"])
+            entry_price = float(cand["entry_price"])
+            direction = str(cand["direction"])
+            qty = float(cand["qty"])
             if cand["fillable_now"]:
                 cost = qty * entry_price * (1 + fee)
                 cash -= cost
                 positions[sym] = Position(
-                    symbol=sym, qty=qty, entry_price=entry_price,
-                    entry_ts=ts, sell_target=cand["exit_price"],
+                    symbol=sym,
+                    qty=qty,
+                    entry_price=entry_price,
+                    entry_ts=ts,
+                    sell_target=cand["exit_price"],
                     direction=direction,
                 )
                 side = "short_sell" if direction == "short" else "buy"

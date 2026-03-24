@@ -444,6 +444,21 @@ def test_create_pod_resolves_5090_alias():
     assert inp["gpuTypeId"] == "NVIDIA_GEFORCE_RTX_5090"
 
 
+def test_find_gpu_type_id_normalizes_runpod_display_variants():
+    client, mock_session = _make_client()
+
+    gpu_list_resp = _json_response({
+        "data": {"gpuTypes": [
+            {"id": "NVIDIA RTX PRO 4500 Blackwell", "displayName": "RTX PRO 4500", "memoryInGb": 24},
+            {"id": "NVIDIA H100 80GB HBM3", "displayName": "H100 SXM", "memoryInGb": 80},
+        ]}
+    })
+    mock_session.post.return_value = gpu_list_resp
+
+    assert client.find_gpu_type_id("NVIDIA RTX PRO 4500 Ada Generation") == "NVIDIA RTX PRO 4500 Blackwell"
+    assert client.find_gpu_type_id("NVIDIA H100 SXM") == "NVIDIA H100 80GB HBM3"
+
+
 # ---------------------------------------------------------------------------
 # list_gpu_types — health-check / pricing query
 # ---------------------------------------------------------------------------
