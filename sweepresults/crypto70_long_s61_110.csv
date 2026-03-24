@@ -1,0 +1,5 @@
+description,dataset,seed,val_return,val_sortino,val_wr,holdout_median_return_pct,holdout_p10_return_pct,holdout_negative_rate,holdout_worst_return_pct,elapsed_s,checkpoint_dir,timestamp
+crypto70_daily_tp05_s61,crypto70_daily,61,0.5434,1.45,0.5898,,,,,1293.7,pufferlib_market/checkpoints/crypto70_long_sweep/crypto70_daily_tp05_s61,2026-03-24T20:25:32
+crypto70_daily_tp05_s62,crypto70_daily,62,0.0606,1.27,0.5408,,,,,1272.6,pufferlib_market/checkpoints/crypto70_long_sweep/crypto70_daily_tp05_s62,2026-03-24T20:46:45
+crypto70_daily_tp05_s63,crypto70_daily,63,2.8024,4.95,0.6537,,,,,1298.1,pufferlib_market/checkpoints/crypto70_long_sweep/crypto70_daily_tp05_s63,2026-03-24T21:08:23
+crypto70_daily_tp05_s64,crypto70_daily,64,0.4118,1.89,0.4036,,,,,1295.6,pufferlib_market/checkpoints/crypto70_long_sweep/crypto70_daily_tp05_s64,2026-03-24T21:29:58
