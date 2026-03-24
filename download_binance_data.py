@@ -35,7 +35,9 @@ SYMBOLS = ORIGINAL_30 + EXPANDED_40
 DAILY_DIR = _REPO_ROOT / "trainingdata" / "train"
 HOURLY_DIR = _REPO_ROOT / "trainingdatahourlybinance"
 
-KLINES_URL = "https://api.binance.com/api/v3/klines"
+# Binance.com is geo-restricted in some regions (HTTP 451).
+# Binance.US works from US-based servers and has the same API.
+KLINES_URL = "https://api.binance.us/api/v3/klines"
 MAX_LIMIT = 1000
 
 
