@@ -11,7 +11,7 @@ import pandas as pd
 import requests
 from loguru import logger
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parent
 
 ORIGINAL_30 = [
     "BTC", "ETH", "SOL", "DOGE", "AVAX", "LINK", "AAVE", "LTC", "XRP", "DOT",
@@ -65,6 +65,9 @@ def _fetch_klines(symbol: str, interval: str, start_ms: int, end_ms: int) -> lis
                     logger.warning("{} rate limited, sleeping {}s", symbol, retry_after)
                     time.sleep(retry_after)
                     continue
+                if resp.status_code == 400:
+                    logger.warning("{} invalid symbol (400), skipping", symbol)
+                    return []
                 resp.raise_for_status()
                 break
             except requests.RequestException:
