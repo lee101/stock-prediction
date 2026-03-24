@@ -327,9 +327,8 @@ def main() -> None:
             name=pod_name,
             gpu_type=gpu_type,
             gpu_count=1,
-            image="runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04",
-            volume_in_gb=50,
-            container_disk_in_gb=50,
+            volume_size=80,
+            container_disk=50,
         )
         print(f"  Provisioning {pod_name} ({gpu_type})...", flush=True)
         try:
