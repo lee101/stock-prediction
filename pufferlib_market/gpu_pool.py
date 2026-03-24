@@ -148,7 +148,10 @@ def _crypto_seedsweep(seeds: range = range(1, 21)) -> list[dict]:
 
 
 def _crypto70_autoresearch(seeds: list[int] = [42, 123, 7]) -> list[dict]:
-    """Autoresearch configs for crypto70 daily dataset — sweeps trade_penalty, LR, slippage."""
+    """Autoresearch configs for crypto70 daily dataset — sweeps trade_penalty, LR, slippage.
+
+    Uses daily-appropriate settings: periods_per_year=365, max_steps=180 (6mo episodes).
+    """
     base = {
         "hidden_size": 1024,
         "anneal_lr": True,
@@ -156,6 +159,9 @@ def _crypto70_autoresearch(seeds: list[int] = [42, 123, 7]) -> list[dict]:
         "num_envs": 128,
         "use_bf16": True,
         "cuda_graph_ppo": True,
+        # Daily crypto settings
+        "periods_per_year": 365.0,
+        "max_steps": 180,
     }
     configs = []
     for seed in seeds:
