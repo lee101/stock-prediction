@@ -337,8 +337,29 @@ class TradingPolicy(nn.Module):
             h = self.encoder(x)
         return h
 
+    def _fused_heads(self, h: torch.Tensor):
+        """Fuse actor and critic heads via fused_mlp_relu (Linear→ReLU→Linear).
+
+        Saves two [B, H//2] intermediate allocations vs the unfused Sequential
+        path.  Returns (logits_fp32, value_fp32) regardless of h's dtype since
+        fused_mlp_relu always outputs BF16 on the Triton path.
+        """
+        logits = fused_mlp_relu(
+            h,
+            self.actor[0].weight, self.actor[0].bias,
+            self.actor[2].weight, self.actor[2].bias,
+        ).float()
+        value = fused_mlp_relu(
+            h,
+            self.critic[0].weight, self.critic[0].bias,
+            self.critic[2].weight, self.critic[2].bias,
+        ).float().squeeze(-1)
+        return logits, value
+
     def forward(self, x):
         h = self._encode(x)
+        if self._can_fuse and h.is_cuda:
+            return self._fused_heads(h)
         logits = self.actor(h)
         value = self.critic(h).squeeze(-1)
         return logits, value
@@ -356,6 +377,12 @@ class TradingPolicy(nn.Module):
 
     def get_value(self, x):
         h = self._encode(x)
+        if self._can_fuse and h.is_cuda:
+            return fused_mlp_relu(
+                h,
+                self.critic[0].weight, self.critic[0].bias,
+                self.critic[2].weight, self.critic[2].bias,
+            ).float().squeeze(-1)
         return self.critic(h).squeeze(-1)
 
 
@@ -718,8 +745,20 @@ class DepthRecurrenceTradingPolicy(nn.Module):
                 h = self._apply_block(h, block)
         h = self.out_norm(h)
 
-        logits = self.actor(h)
-        value = self.critic(h).squeeze(-1)
+        if self._can_fuse and h.is_cuda:
+            logits = fused_mlp_relu(
+                h,
+                self.actor[0].weight, self.actor[0].bias,
+                self.actor[2].weight, self.actor[2].bias,
+            ).float()
+            value = fused_mlp_relu(
+                h,
+                self.critic[0].weight, self.critic[0].bias,
+                self.critic[2].weight, self.critic[2].bias,
+            ).float().squeeze(-1)
+        else:
+            logits = self.actor(h)
+            value = self.critic(h).squeeze(-1)
         return logits, value
 
     def get_action_and_value(self, x: torch.Tensor, action=None, *, disable_shorts: bool = False):
