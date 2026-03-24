@@ -1,0 +1,4 @@
+description,val_return,val_sortino,val_wr,robust_score,gpu_id,elapsed_s,job_id,timestamp
+rc15_tp05_s42,,,,,0,305,719bf9cf,2026-03-24T09:09:36
+rc15_tp05_s123,,,,,0,306,28777523,2026-03-24T09:14:42
+rc15_tp05_s7,,,,,0,305,3db5a37d,2026-03-24T09:19:47
