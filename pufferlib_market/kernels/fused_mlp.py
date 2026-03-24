@@ -294,14 +294,16 @@ def fused_mlp_relu(
     orig_shape = x.shape
     x_2d = x.reshape(-1, x.shape[-1])
 
-    if HAS_TRITON and x.is_cuda:
-        # Cast to BF16/FP32 as required by the kernel; skip if already correct.
+    if HAS_TRITON and x.is_cuda and not torch.is_grad_enabled():
+        # Triton path: fast inference-only kernel (no autograd support).
+        # Only used when gradients are not needed (rollout inference).
         def _to_bf16(t): return t if t.dtype == torch.bfloat16 and t.is_contiguous() else t.to(torch.bfloat16).contiguous()
         def _to_fp32(t): return t if t.dtype == torch.float32 and t.is_contiguous() else t.to(torch.float32).contiguous()
         out = _fused_mlp_relu_triton(
             _to_bf16(x_2d), _to_bf16(W1), _to_fp32(b1), _to_bf16(W2), _to_fp32(b2),
         )
     else:
+        # PyTorch fallback: supports autograd, used during PPO update.
         out = _fused_mlp_relu_fallback(x_2d, W1, b1, W2, b2)
 
     out_shape = orig_shape[:-1] + (out.shape[-1],)

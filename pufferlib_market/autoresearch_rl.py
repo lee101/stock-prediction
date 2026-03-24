@@ -101,6 +101,7 @@ class TrialConfig:
     minibatch_size: int = 2048
     use_bf16: bool = True   # BF16 safe for PPO; ~20-30% speedup on RTX 5090/A40/H100
     cuda_graph_ppo: bool = True  # Static shapes work for PPO; ~10-20% extra speedup
+    no_cuda_graph: bool = False  # Disable ALL CUDA graphs + torch.compile (for shared-GPU compat)
     time_budget_override: int = 0  # Override global time_budget for this config (0 = use global)
     vf_coef: float = 0.5   # Value function loss coefficient (default 0.5)
     max_grad_norm: float = 0.5  # Gradient clipping norm (default 0.5)
@@ -2284,7 +2285,9 @@ def run_trial(
         cmd.extend(["--max-grad-norm", str(config.max_grad_norm)])
     if config.use_bf16:
         cmd.append("--use-bf16")
-    if config.cuda_graph_ppo:
+    if config.no_cuda_graph:
+        cmd.append("--no-cuda-graph")
+    elif config.cuda_graph_ppo:
         cmd.append("--cuda-graph-ppo")
     if wandb_project:
         cmd.extend([
