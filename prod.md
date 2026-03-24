@@ -111,6 +111,50 @@
   - seed=3 (old-config): 1/50 neg best case, p10<5% — not deployable
   - Sweep continuing: seeds 16-32 (stream A), 34-50 (stream B)
 
+## Crypto70 Daily RL Autoresearch (2026-03-24) — COMPLETED
+
+**Dataset**: 48 Binance USDT pairs (crypto70, filtered), daily bars, train 2019-2025, val 2025-09-01 to 2026-03-31 (205 days)
+**Config**: h=1024 MLP PPO, anneal_lr, ent=0.05, 128 envs, bf16, no-cuda-graph, periods_per_year=365, max_steps=180 (6mo episodes)
+**Sweep**: 3 seeds × (3 trade_penalties × 2 slippages + 1 muon) = 21 jobs, 5min/job
+
+### Top Results (full val period, binary fills at 5bps = training match):
+| Model | Val Return | Sortino | WR | Binary-fill @5bps (6-mo window) |
+|-------|-----------|---------|-----|----------------------------------|
+| **tp05_slip5_s7** | 4.965x | 5.63 | 63.4% | **+503% median, p05=+497%** |
+| **tp05_slip5_s123** | 4.956x | 5.19 | 61.6% | **+514% median, p05=+505%** |
+| tp03_slip5_s123 | 3.918x | 4.88 | 56.9% | — |
+| tp03_slip5_s42 | 3.123x | 4.43 | 57.4% | — |
+| tp08_slip5_s42 | 2.991x | 4.37 | 59.7% | — |
+| tp05_slip5_muon_s123 | 2.969x | 4.26 | 70.8% | muon: high WR but lower return |
+
+**Key findings:**
+- `tp05_slip5` = optimal config (trade_penalty=0.05, fill_slippage_bps=5.0 training)
+- Training slippage (5bps) is critical — all slip=0 configs massively underperform
+- Muon optimizer inconsistent (good s123, bad s42/s7)
+- Degenerate: `tp03_slip0` consistently hangs/fails across all seeds
+- **Caution**: Single val period only (Sep2025-Mar2026 = crypto bull run). No sliding-window eval.
+
+**Checkpoints**: `pufferlib_market/checkpoints/crypto70_autoresearch/c70_tp05_slip5_lr3e-04_s{7,123}/best.pt`
+**Leaderboard**: `sweepresults/crypto70_daily_leaderboard.csv`
+
+**Eval command:**
+```bash
+source .venv313/bin/activate
+python -m pufferlib_market.evaluate \
+  --checkpoint pufferlib_market/checkpoints/crypto70_autoresearch/c70_tp05_slip5_lr3e-04_s7/best.pt \
+  --data-path pufferlib_market/data/crypto70_daily_val.bin \
+  --deterministic --hidden-size 1024 --periods-per-year 365.0 --max-steps 180 \
+  --fill-slippage-bps 5.0
+# s7:   p50=+503% (60285 from 10k), 100% profitable
+# s123: p50=+514% (61379 from 10k), 100% profitable
+```
+
+**NOTE**: Eval at fill_slippage_bps=0 gives only +101% (s7) / +40% (s123) — mismatch from training env (model was trained with 5bps fill model). Always eval at 5bps to match training.
+**NOTE**: 5-minute training runs (~5M steps on 677 daily bars). 300s is very short — longer training likely improves further.
+**DEPLOYMENT BLOCKER**: No sliding-window eval (val only has 205 bars / max_steps=180). Need more OOS data or rolling-origin eval before deploying.
+
+---
+
 ## Confirmed 0/50-neg Models (50-window EnsembleTrader, default_rng(42))
 All evaluated via batch 50-window test (deterministic, 5bps fill buffer, no early stop):
 | Model | Checkpoint | med | p10 | worst | neg/50 | Notes |
