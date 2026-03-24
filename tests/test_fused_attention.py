@@ -351,28 +351,55 @@ class TestFlashAttnMqa:
 
 
 # ---------------------------------------------------------------------------
-# H100 / SM90 detection test
+# Flash Attention hardware detection tests (SM 8.0+ including SM 12.0)
 # ---------------------------------------------------------------------------
 
-class TestSM90Detection:
-    """Verify HAS_FLASH_ATTN flag reflects hardware capability correctly."""
+class TestFlashAttnDetection:
+    """Verify HAS_FLASH_ATTN flag and version string reflect hardware capability."""
 
     def test_has_flash_attn_is_bool(self):
         """HAS_FLASH_ATTN must always be a bool (import probe must not raise)."""
         from binanceneural.kernels.attention import HAS_FLASH_ATTN
         assert isinstance(HAS_FLASH_ATTN, bool)
 
-    def test_sm90_flash_attn_mqa_correctness(self):
-        """On SM90+ with flash_attn installed, flash_attn_mqa must match reference."""
+    def test_flash_attn_version_is_string(self):
+        """_flash_attn_version is a string when flash_attn is available, else empty."""
+        from binanceneural.kernels.attention import HAS_FLASH_ATTN, _flash_attn_version
+        assert isinstance(_flash_attn_version, str)
+        if HAS_FLASH_ATTN:
+            assert len(_flash_attn_version) > 0
+
+    def test_flash_attn_mqa_correctness_sm80plus(self):
+        """On SM8.0+ with flash_attn installed, flash_attn_mqa must match reference.
+
+        FA2 2.8.3 ships native cubins for SM 8.0, 9.0, 10.0, and 12.0 so this
+        test covers A100 (SM 8.0), H100 (SM 9.0), B100 (SM 10.0), and RTX 5090
+        (SM 12.0) without modification.
+        """
         if not torch.cuda.is_available():
             pytest.skip("CUDA required")
         major, _ = torch.cuda.get_device_capability()
-        if major < 9:
-            pytest.skip("SM90 (H100) required for this test")
-        from binanceneural.kernels.attention import HAS_FLASH_ATTN, flash_attn_mqa
+        if major < 8:
+            pytest.skip("SM80+ required for flash_attn")
+        from binanceneural.kernels.attention import HAS_FLASH_ATTN, flash_attn_mqa, _flash_attn_version
         if not HAS_FLASH_ATTN:
-            pytest.skip("flash_attn not installed on this H100")
+            pytest.skip("flash_attn not installed on this GPU")
         Q, K, V = _make_qkv(4, 8, 48, 64, kv_heads=1)
         ref = _sdpa_reference(Q, K, V)
         got = flash_attn_mqa(Q, K, V)
+        torch.testing.assert_close(got.float(), ref.float(), atol=1e-2, rtol=1e-2)
+
+    def test_flash_attn_mqa_causal_sm80plus(self):
+        """flash_attn_mqa causal=True matches reference on SM8.0+."""
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA required")
+        major, _ = torch.cuda.get_device_capability()
+        if major < 8:
+            pytest.skip("SM80+ required for flash_attn")
+        from binanceneural.kernels.attention import HAS_FLASH_ATTN, flash_attn_mqa
+        if not HAS_FLASH_ATTN:
+            pytest.skip("flash_attn not installed on this GPU")
+        Q, K, V = _make_qkv(4, 8, 48, 64, kv_heads=1)
+        ref = _sdpa_reference(Q, K, V, causal=True)
+        got = flash_attn_mqa(Q, K, V, causal=True)
         torch.testing.assert_close(got.float(), ref.float(), atol=1e-2, rtol=1e-2)

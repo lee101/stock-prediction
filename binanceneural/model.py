@@ -10,7 +10,12 @@ from torch import nn
 import torch.nn.functional as F
 
 from .config import PolicyConfig
-from .kernels.attention import HAS_TRITON, multi_query_attention as _triton_mqa
+from .kernels.attention import (
+    HAS_TRITON,
+    HAS_FLASH_ATTN,
+    multi_query_attention as _triton_mqa,
+    flash_attn_mqa as _flash_attn_mqa,
+)
 
 try:
     from torch.nn.attention.flex_attention import flex_attention, create_block_mask
@@ -482,29 +487,44 @@ class MultiQueryAttention(nn.Module):
         attn_mask = self._build_attention_mask(T, x.device)
         dropout_p = self.dropout.p if self.training else 0.0
 
-        # Use the Triton fused MQA kernel when:
-        #   1. Triton is available
-        #   2. Not training (kernel has no backward pass)
-        #   3. Inputs are on CUDA
-        #   4. No dropout (kernel doesn't support dropout)
-        #   5. head_dim is in supported set {16, 32, 64, 128}
+        # Attention kernel selection (highest-priority first):
+        #
+        # 1. flash_attn_mqa (FA2/FA4): fastest path for simple causal/non-causal
+        #    attention without a custom mask.  FA2 2.8.3 supports gradients so
+        #    this path is valid during training too.  Requires CUDA + no mask +
+        #    no dropout (FA2 dropout is not used here).
+        use_flash = (
+            HAS_FLASH_ATTN
+            and q.is_cuda
+            and attn_mask is None
+            and dropout_p == 0.0
+        )
+
+        # 2. Triton fused MQA kernel: custom online-softmax, supports arbitrary
+        #    additive masks but has no backward pass — inference only.
         use_triton = (
-            HAS_TRITON
+            not use_flash
+            and HAS_TRITON
             and not self.training
             and q.is_cuda
             and dropout_p == 0.0
             and self.head_dim in (16, 32, 64, 128)
         )
 
+        # 3. FlexAttention: efficient causal attention via block masks.
         use_flex = (
-            self.use_flex_attention
+            not use_flash
+            and not use_triton
+            and self.use_flex_attention
             and q.is_cuda
             and attn_mask is None
             and self.causal
             and dropout_p == 0.0
         )
 
-        if use_triton:
+        if use_flash:
+            y = _flash_attn_mqa(q, k, v, causal=self.causal)
+        elif use_triton:
             triton_mask: torch.Tensor | None = None
             if attn_mask is not None:
                 if attn_mask.dtype == torch.bool:

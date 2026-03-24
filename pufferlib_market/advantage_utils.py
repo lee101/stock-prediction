@@ -22,10 +22,13 @@ def normalize_advantages(
     4. normalize the full batch again before PPO updates.
     """
     mode = str(mode or "global").strip().lower()
-    adv = advantages.clone()
 
     if mode == "global":
-        return (adv - adv.mean()) / (adv.std(unbiased=False) + eps)
+        # No clone needed: arithmetic ops produce new tensors without mutating input.
+        return (advantages - advantages.mean()) / (advantages.std(unbiased=False) + eps)
+
+    # Non-global modes operate on a private copy to avoid mutating the caller's tensor.
+    adv = advantages.clone()
 
     if adv.ndim != 2:
         raise ValueError(f"normalize_advantages expects [T, N] tensor, got shape={tuple(adv.shape)}")
@@ -46,6 +49,10 @@ def normalize_advantages(
     group_size = max(2, min(int(group_relative_size), num_envs))
     mix = max(0.0, float(group_relative_mix))
     rel_clip = max(0.0, float(group_relative_clip))
+
+    if mix <= 0.0:
+        # No group rescaling needed — skip permutation, cloning, and the loop.
+        return (per_env - per_env.mean()) / (per_env.std(unbiased=False) + eps)
 
     perm = torch.randperm(num_envs, device=per_env.device)
     inv_perm = torch.argsort(perm)
