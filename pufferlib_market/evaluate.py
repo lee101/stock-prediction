@@ -200,6 +200,29 @@ def _wrap_train_policy(base_policy: nn.Module, num_actions: int) -> nn.Module:
     return _Wrapped(base_policy)
 
 
+class EnsemblePolicy(nn.Module):
+    """Softmax-average ensemble of N policies. Compatible with evaluate.py's policy interface."""
+
+    def __init__(self, policies: list):
+        super().__init__()
+        self.policies = nn.ModuleList(policies)
+
+    def get_action(self, obs, deterministic=False, disable_shorts=False):
+        import torch.nn.functional as F
+        probs_list = []
+        for p in self.policies:
+            logits, _ = p.forward(obs)
+            if disable_shorts:
+                K = (logits.shape[-1] - 1) // 2
+                logits = logits.clone()
+                logits[:, 1 + K:] = float("-inf")
+            probs_list.append(F.softmax(logits, dim=-1))
+        avg_probs = torch.stack(probs_list).mean(0)
+        if deterministic:
+            return avg_probs.argmax(dim=-1)
+        return Categorical(probs=avg_probs).sample()
+
+
 def evaluate_random(args, policy, binding, obs_buf, act_buf, rew_buf, term_buf,
                     trunc_buf, num_envs, obs_size, num_actions, device):
     """Run random-start episodes and collect stats."""
@@ -372,6 +395,8 @@ def main():
     parser.add_argument("--deterministic", action="store_true",
                         help="Use argmax actions instead of sampling")
     parser.add_argument("--mode", choices=["random", "sequential"], default="random")
+    parser.add_argument("--extra-checkpoints", nargs="*", default=[],
+                        help="Additional checkpoint paths for softmax-avg ensemble (optional)")
     parser.add_argument("--hidden-size", type=int, default=256)
     parser.add_argument("--arch", choices=["mlp", "resmlp", "transformer", "gru", "depth_recurrence", "mlp_relu_sq"], default="mlp")
     parser.add_argument("--cpu", action="store_true")
@@ -473,6 +498,17 @@ def main():
     arch_used = ckpt.get("arch", args.arch)
     print(f"Loaded checkpoint: update={ckpt.get('update', '?')}, "
           f"train_best_return={ckpt.get('best_return', '?'):.4f}, arch={arch_used}")
+
+    if args.extra_checkpoints:
+        extra_policies = []
+        for epath in args.extra_checkpoints:
+            eckpt = torch.load(epath, map_location=device, weights_only=False)
+            ep = load_policy(eckpt, obs_size, num_actions, args.hidden_size, args.arch, device, features_per_sym=features_per_sym)
+            ep_arch = eckpt.get("arch", args.arch)
+            print(f"  + ensemble member: update={eckpt.get('update','?')} ret={eckpt.get('best_return','?'):.4f} arch={ep_arch}")
+            extra_policies.append(ep)
+        policy = EnsemblePolicy([policy] + extra_policies)
+        print(f"Ensemble: softmax_avg of {1 + len(extra_policies)} policies")
 
     # Load shared data
     import pufferlib_market.binding as binding
