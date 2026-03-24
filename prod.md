@@ -50,7 +50,12 @@
 - **Bot**: `unified_hourly_experiment/trade_unified_hourly_meta.py`
 - **Architecture**: Chronos2 hourly, multiple models + meta-selector
 - **Symbols**: NVDA, PLTR, GOOG, DBX, TRIP, MTCH, NYT, AAPL, MSFT, META, TSLA, NET, BKNG, EBAY, EXPE, ITUB, BTG, ABEV
-- **Equity**: ~$46,467
+- **Equity**: ~$41,145 (2026-03-24; was $46,467 — dropped during crash-loop outage)
+- **Strategies**: wd_0.06_s42:8 + wd_0.06_s1337:8 (2-strategy meta-selector)
+- **NOTE (2026-03-24)**: Was crash-looping since ~Mar 19 — supervisor config referenced 5 missing checkpoints
+  (wd_0.04, wd_0.05_s42, wd_0.08_s42, wd_0.03_s42, stock_sortino_robust_20260219b/c).
+  Fixed by replacing with wd_0.06_s42:8 + wd_0.06_s1337:8 (only 2 strategies remain locally).
+  Previous equity loss (~$5k) likely from pre-existing positions before outage, not model error.
 
 ### 4. Alpaca Daily PPO Trader (`trade_daily_stock_prod.py`) -- READY TO DEPLOY (tp05 ensemble)
 - **Architecture**: h=1024 MLP PPO, stocks12 (AAPL,MSFT,NVDA,GOOG,META,TSLA,SPY,QQQ,JPM,V,AMZN,PLTR)
