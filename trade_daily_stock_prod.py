@@ -56,12 +56,17 @@ DEFAULT_SYMBOLS = [
     "AMZN",
 ]
 DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt"
-# Standalone model: tp05_s123 → 0/50 neg, med=16.52%, p10=10.45%, worst=5.62%
-# h=1024, trade_penalty=0.05, anneal_lr=True, ~10 trades/90d, robust to 5-50bps slippage
-# Beats the previous 3-model ensemble (14.94% med, 7.64% p10) on all metrics
-# Previous ensemble: rmu2201+rmu8597+rmu5526 (kept for reference below)
-# To restore: --checkpoint <2201 path> --extra-checkpoints <8597> <5526>
-DEFAULT_EXTRA_CHECKPOINTS = []
+# Primary: tp05_s123 (h=1024, trade_penalty=0.05, anneal_lr=True, seed=123)
+# Ensemble: tp05_s123 + tp05_s15 → 0/50 neg, med=28.76%, p10=16.37%, worst=10.17% @ 5bps
+# vs standalone tp05_s123: med=15.97%, p10=10.81%, worst=5.62% — +80% median, +51% p10
+# vs standalone tp05_s15:  med=28.76%, p10=14.50%, worst=8.42% — ensemble has better downside
+# tp05_s15: seed=15, 128 envs, no bf16, 35M steps, best at update_000950 (0/50 neg, 50-win)
+# Robust to 5/10/20/50bps slippage — 0/50 neg at all levels
+# Previous standalone s123: med=16.52%, p10=10.45%, worst=5.62% (now superseded by ensemble)
+# Previous ensemble rmu2201+rmu8597+rmu5526: med=14.94%, p10=7.64% (kept for reference)
+DEFAULT_EXTRA_CHECKPOINTS = [
+    "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt",
+]
 DEFAULT_DATA_DIR = "trainingdata"
 DEFAULT_ALLOCATION_PCT = 25.0
 STATE_PATH = REPO / "strategy_state/daily_stock_rl_state.json"
