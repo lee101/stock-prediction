@@ -184,11 +184,97 @@ def _crypto70_autoresearch(seeds: list[int] = [42, 123, 7]) -> list[dict]:
     return configs
 
 
+def _crypto15_robust_champion(seeds: list[int] = [42, 123, 7, 1, 2, 3, 5, 10]) -> list[dict]:
+    """Multi-config seed sweep on crypto15 daily data.
+
+    crypto15 has 15 live Binance symbols (BTC/ETH/SOL/LTC/AVAX/DOGE/LINK/ADA+more)
+    and 1375 bars (~3.8 years). Matches live Binance deployment symbols.
+
+    Configs tested:
+    - rc15 (tp=0.05): robust_champion config — proven on mixed23
+    - tp03 (tp=0.03): crypto70 results show tp03_slip5 is best for crypto (3.12x vs 1.89x for tp05)
+    - tp08 (tp=0.08): more conservative, fewer trades
+    """
+    daily_base = {
+        "hidden_size": 1024,
+        "fill_slippage_bps": 5.0,
+        "obs_norm": True,
+        "anneal_lr": True,
+        "lr_schedule": "cosine",
+        "lr_warmup_frac": 0.02,
+        "lr_min_ratio": 0.05,
+        "weight_decay": 0.005,
+        "ent_coef": 0.05,
+        "num_envs": 128,
+        "use_bf16": True,
+        "no_cuda_graph": True,
+        "periods_per_year": 365.0,
+        "max_steps": 180,
+    }
+    configs = []
+    # robust_champion tp=0.05 (proven on mixed23)
+    for s in seeds:
+        configs.append({**daily_base, "trade_penalty": 0.05, "seed": s,
+                        "description": f"rc15_tp05_s{s}"})
+    # tp=0.03: best performing on crypto70 (3.12x vs 1.89x for tp=0.05)
+    for s in seeds:
+        configs.append({**daily_base, "trade_penalty": 0.03, "seed": s,
+                        "description": f"rc15_tp03_s{s}"})
+    # tp=0.08: more conservative, fewer false trades
+    for s in seeds[:4]:
+        configs.append({**daily_base, "trade_penalty": 0.08, "seed": s,
+                        "description": f"rc15_tp08_s{s}"})
+    return configs
+
+
+def _stocks12_seedsweep_ext(seeds: range = range(37, 51)) -> list[dict]:
+    """Continue the tp05 seed sweep for stocks12, seeds 37-50."""
+    base = {
+        "hidden_size": 1024,
+        "lr": 3e-4,
+        "anneal_lr": True,
+        "ent_coef": 0.05,
+        "trade_penalty": 0.05,
+        "weight_decay": 0.01,
+        "fill_slippage_bps": 5.0,
+        "num_envs": 128,
+        "use_bf16": True,
+        "no_cuda_graph": True,
+    }
+    return [{**base, "seed": s, "description": f"tp05_seed_{s}"} for s in seeds]
+
+
+def _stocks15_tp05_sweep(seeds: list[int] = [123, 15, 36, 42, 7, 1, 2, 3, 5, 10]) -> list[dict]:
+    """tp05 seed sweep for stocks15 (15 symbols with 2012 data, 4840 bars).
+
+    stocks15 = AAPL, MSFT, NVDA, GOOG, META, TSLA, SPY, QQQ, JPM, V, AMZN, COST, WMT, HD, BRK-B
+    Starting with seeds that worked well for stocks12 (123, 15, 36) plus broader search.
+    """
+    base = {
+        "hidden_size": 1024,
+        "lr": 3e-4,
+        "anneal_lr": True,
+        "ent_coef": 0.05,
+        "trade_penalty": 0.05,
+        "weight_decay": 0.01,
+        "fill_slippage_bps": 5.0,
+        "num_envs": 128,
+        "use_bf16": True,
+        "no_cuda_graph": True,
+        "periods_per_year": 252.0,
+        "max_steps": 252,
+    }
+    return [{**base, "seed": s, "description": f"s15_tp05_s{s}"} for s in seeds]
+
+
 PRESETS: dict[str, list[dict]] = {
     "stocks12_seedsweep": _stocks12_seedsweep(),
+    "stocks12_seedsweep_ext": _stocks12_seedsweep_ext(),
     "stocks12_tp05_family": _stocks12_tp05_family(),
+    "stocks15_tp05_sweep": _stocks15_tp05_sweep(),
     "crypto_seedsweep": _crypto_seedsweep(),
     "crypto70_autoresearch": _crypto70_autoresearch(),
+    "crypto15_robust_champion": _crypto15_robust_champion(),
 }
 
 
