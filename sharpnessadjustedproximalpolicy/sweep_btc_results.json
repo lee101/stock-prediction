@@ -1,0 +1,17 @@
+[
+  {
+    "name": "baseline_adamw",
+    "symbol": "BTCUSD",
+    "error": "['chronos_close_delta_h12', 'chronos_high_delta_h12', 'chronos_low_delta_h12']"
+  },
+  {
+    "name": "periodic_wd005",
+    "symbol": "BTCUSD",
+    "error": "['chronos_close_delta_h12', 'chronos_high_delta_h12', 'chronos_low_delta_h12']"
+  },
+  {
+    "name": "periodic_wd01",
+    "symbol": "BTCUSD",
+    "error": "['chronos_close_delta_h12', 'chronos_high_delta_h12', 'chronos_low_delta_h12']"
+  }
+]

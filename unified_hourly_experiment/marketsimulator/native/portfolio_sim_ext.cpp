@@ -2,6 +2,7 @@
 #include <pybind11/pybind11.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -146,6 +147,133 @@ double required_move_to_fill(double open_px, double entry_price, bool is_long, d
     return std::max(0.0, (trigger - open_px) / open_px);
 }
 
+std::string normalize_entry_allocator_mode(const std::string& value) {
+    std::string raw = value;
+    std::transform(raw.begin(), raw.end(), raw.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    if (raw == "concentrated") {
+        return raw;
+    }
+    return "legacy";
+}
+
+double entry_allocator_score(const Candidate& candidate, double edge_power) {
+    const double intensity = std::min(std::max(candidate.intensity_fraction, 0.0), 1.0);
+    if (intensity <= 0.0) {
+        return 0.0;
+    }
+    if (edge_power <= 0.0) {
+        return intensity;
+    }
+    const double edge = std::max(candidate.edge, 1e-9);
+    if (edge_power == 1.0) {
+        return intensity * edge;
+    }
+    return intensity * std::pow(edge, edge_power);
+}
+
+std::vector<double> allocate_concentrated_entry_budget(
+    const std::vector<Candidate>& candidates,
+    const std::vector<double>& slot_budgets,
+    int max_positions,
+    double deployable_budget,
+    double edge_power,
+    double max_single_position_fraction) {
+    const size_t count = candidates.size();
+    std::vector<double> allocations(count, 0.0);
+    if (count == 0) {
+        return allocations;
+    }
+
+    const int position_count = std::max(max_positions, 1);
+    double budget_cap = std::max(deployable_budget, 0.0);
+    if (budget_cap <= 0.0) {
+        return allocations;
+    }
+
+    double slot_budget_sum = 0.0;
+    for (double slot_budget : slot_budgets) {
+        slot_budget_sum += std::max(slot_budget, 0.0);
+    }
+    const double theoretical_budget =
+        slot_budget_sum * (static_cast<double>(position_count) / static_cast<double>(count));
+    if (theoretical_budget <= 0.0) {
+        return allocations;
+    }
+    budget_cap = std::min(budget_cap, theoretical_budget);
+
+    const double single_fraction =
+        std::min(std::max(max_single_position_fraction, 0.0), 1.0);
+    if (single_fraction <= 0.0) {
+        return allocations;
+    }
+
+    std::vector<double> max_caps(count, 0.0);
+    std::vector<double> scores(count, 0.0);
+    double total_alloc = 0.0;
+
+    for (size_t idx = 0; idx < count; ++idx) {
+        const double slot_budget = std::max(slot_budgets[idx], 0.0);
+        const double intensity =
+            std::min(std::max(candidates[idx].intensity_fraction, 0.0), 1.0);
+        const double base_alloc = slot_budget * intensity;
+        const double max_cap = std::min(
+            slot_budget * static_cast<double>(position_count),
+            budget_cap * single_fraction);
+        allocations[idx] = std::min(base_alloc, max_cap);
+        max_caps[idx] = max_cap;
+        scores[idx] = entry_allocator_score(candidates[idx], edge_power);
+        total_alloc += allocations[idx];
+    }
+
+    if (total_alloc > budget_cap && total_alloc > 0.0) {
+        const double scale = budget_cap / total_alloc;
+        for (double& allocation : allocations) {
+            allocation *= scale;
+        }
+        return allocations;
+    }
+
+    double remaining = budget_cap - total_alloc;
+    while (remaining > 1e-9) {
+        std::vector<size_t> active;
+        active.reserve(count);
+        double weight_sum = 0.0;
+        for (size_t idx = 0; idx < count; ++idx) {
+            if (max_caps[idx] - allocations[idx] > 1e-9) {
+                active.push_back(idx);
+                weight_sum += scores[idx];
+            }
+        }
+        if (active.empty()) {
+            break;
+        }
+
+        double distributed = 0.0;
+        for (size_t idx : active) {
+            const double headroom = max_caps[idx] - allocations[idx];
+            if (headroom <= 0.0) {
+                continue;
+            }
+            const double weight =
+                weight_sum > 0.0 ? scores[idx] / weight_sum : 1.0 / static_cast<double>(active.size());
+            const double add = std::min(remaining * weight, headroom);
+            if (add <= 0.0) {
+                continue;
+            }
+            allocations[idx] += add;
+            distributed += add;
+        }
+        if (distributed <= 1e-9) {
+            break;
+        }
+        remaining -= distributed;
+    }
+
+    return allocations;
+}
+
 }  // namespace
 
 py::dict simulate_portfolio_dense(
@@ -187,7 +315,11 @@ py::dict simulate_portfolio_dense(
     const std::string& entry_selection_mode,
     double force_close_slippage,
     bool int_qty,
-    double margin_annual_rate) {
+    double margin_annual_rate,
+    const std::string& entry_allocator_mode,
+    double entry_allocator_edge_power,
+    double entry_allocator_max_single_position_fraction,
+    double entry_allocator_reserve_fraction) {
     if (open_arr.ndim() != 2) {
         throw std::invalid_argument("open array must be rank-2");
     }
@@ -295,6 +427,7 @@ py::dict simulate_portfolio_dense(
 
     const bool use_close_edge = !(edge_mode == "high_low" || edge_mode == "high");
     const bool first_trigger_mode = (entry_selection_mode == "first_trigger");
+    const std::string allocator_mode = normalize_entry_allocator_mode(entry_allocator_mode);
     double cash = initial_cash;
 
     auto remove_closed_positions = [&](const std::vector<int32_t>& closed_syms) {
@@ -621,14 +754,45 @@ py::dict simulate_portfolio_dense(
 
         const int32_t fill_limit =
             std::min<int32_t>(open_slots, static_cast<int32_t>(candidates.size()));
+        std::vector<double> allocs(static_cast<size_t>(fill_limit), 0.0);
+        if (fill_limit > 0) {
+            if (allocator_mode == "concentrated") {
+                std::vector<double> slot_budgets(static_cast<size_t>(fill_limit), 0.0);
+                for (int32_t idx = 0; idx < fill_limit; ++idx) {
+                    const Candidate& cand = candidates[static_cast<size_t>(idx)];
+                    const int32_t s = cand.sym;
+                    const double sym_leverage = is_crypto(s) ? 1.0 : max_leverage;
+                    slot_budgets[static_cast<size_t>(idx)] =
+                        (equity_for_entries * sym_leverage) / static_cast<double>(max_positions);
+                }
+                const double reserve_fraction =
+                    std::min(std::max(entry_allocator_reserve_fraction, 0.0), 1.0);
+                const double deployable_budget =
+                    std::max(equity_for_entries, 0.0) * (1.0 - reserve_fraction);
+                allocs = allocate_concentrated_entry_budget(
+                    std::vector<Candidate>(candidates.begin(), candidates.begin() + fill_limit),
+                    slot_budgets,
+                    max_positions,
+                    deployable_budget,
+                    entry_allocator_edge_power,
+                    entry_allocator_max_single_position_fraction);
+            } else {
+                for (int32_t idx = 0; idx < fill_limit; ++idx) {
+                    const Candidate& cand = candidates[static_cast<size_t>(idx)];
+                    const int32_t s = cand.sym;
+                    const double sym_leverage = is_crypto(s) ? 1.0 : max_leverage;
+                    const double per_position_alloc =
+                        (equity_for_entries * sym_leverage) / static_cast<double>(max_positions);
+                    allocs[static_cast<size_t>(idx)] =
+                        per_position_alloc * cand.intensity_fraction;
+                }
+            }
+        }
         for (int32_t idx = 0; idx < fill_limit; ++idx) {
             const Candidate& cand = candidates[static_cast<size_t>(idx)];
             const int32_t s = cand.sym;
             const double fee_rate = fee(s);
-            const double sym_leverage = is_crypto(s) ? 1.0 : max_leverage;
-            const double per_position_alloc =
-                (equity_for_entries * sym_leverage) / static_cast<double>(max_positions);
-            const double alloc = per_position_alloc * cand.intensity_fraction;
+            const double alloc = allocs[static_cast<size_t>(idx)];
             double qty = alloc / (cand.entry_price * (1.0 + fee_rate));
             if (!std::isfinite(qty)) {
                 continue;

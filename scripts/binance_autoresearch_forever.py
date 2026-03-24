@@ -40,7 +40,17 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from src.runpod_client import RunPodClient, PodConfig, resolve_gpu_type, HOURLY_RATES, GPU_ALIASES
+from src.runpod_client import (
+    DEFAULT_GPU_FALLBACKS,
+    GPU_ALIASES,
+    HOURLY_RATES,
+    PodConfig,
+    RunPodClient,
+    build_gpu_fallback_types,
+    is_capacity_error,
+    parse_gpu_fallback_types,
+    resolve_gpu_type,
+)
 from src.checkpoint_manager import TopKCheckpointManager
 
 log = logging.getLogger("binance_forever")
@@ -485,13 +495,15 @@ def _safe_float(v) -> Optional[float]:
 # ---------------------------------------------------------------------------
 
 class PodManager:
-    def __init__(self, gpu_type: str = "4090"):
+    def __init__(self, gpu_type: str = "4090", gpu_fallback_types: list[str] | None = None):
         self.gpu_type = gpu_type
+        self.gpu_fallback_types = None if gpu_fallback_types is None else list(gpu_fallback_types)
         self.client: Optional[RunPodClient] = None
         self.pod_id: Optional[str] = None
         self.ssh_host: str = ""
         self.ssh_port: int = 0
         self._bootstrapped: bool = False
+        self.active_gpu_type: str = resolve_gpu_type(gpu_type)
 
     def ensure_ready(self) -> tuple[str, int]:
         if self.ssh_host and self.ssh_port:
@@ -511,18 +523,44 @@ class PodManager:
             except Exception:
                 pass
 
-        resolved = resolve_gpu_type(self.gpu_type)
-        name = f"binance-forever-{time.strftime('%H%M%S')}"
-        log.info("provisioning pod: %s (%s)", name, resolved)
-        config = PodConfig(name=name, gpu_type=resolved)
-        pod = self.client.create_pod(config)
-        self.pod_id = pod.id
+        candidates = build_gpu_fallback_types(self.gpu_type, self.gpu_fallback_types)
+        last_error: Exception | None = None
+        for idx, candidate in enumerate(candidates):
+            name = f"binance-forever-{time.strftime('%H%M%S')}"
+            log.info("provisioning pod: %s (%s)", name, candidate)
+            try:
+                config = PodConfig(name=name, gpu_type=candidate)
+                pod = self.client.create_pod(config)
+                self.pod_id = pod.id
 
-        pod = self.client.wait_for_pod(pod.id)
-        self.ssh_host = pod.ssh_host
-        self.ssh_port = pod.ssh_port
-        log.info("pod ready: %s:%d", self.ssh_host, self.ssh_port)
-        return self.ssh_host, self.ssh_port
+                pod = self.client.wait_for_pod(pod.id)
+                self.ssh_host = pod.ssh_host
+                self.ssh_port = pod.ssh_port
+                self.active_gpu_type = pod.gpu_type or candidate
+                if idx > 0:
+                    log.warning(
+                        "requested %s unavailable, fell back to %s",
+                        resolve_gpu_type(self.gpu_type),
+                        self.active_gpu_type,
+                    )
+                log.info("pod ready: %s:%d", self.ssh_host, self.ssh_port)
+                return self.ssh_host, self.ssh_port
+            except Exception as e:
+                last_error = e
+                if self.pod_id:
+                    try:
+                        self.client.terminate_pod(self.pod_id)
+                    except Exception:
+                        pass
+                    self.pod_id = None
+                if is_capacity_error(e) and idx < len(candidates) - 1:
+                    log.warning("pod provisioning failed for %s: %s", candidate, e)
+                    continue
+                raise
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("RunPod provisioning failed without an exception")
 
     def bootstrap(self, remote_dir: str = "/workspace/stock-prediction") -> None:
         if self._bootstrapped:
@@ -555,7 +593,7 @@ class PodManager:
             self._bootstrapped = False
 
     def hourly_rate(self) -> float:
-        resolved = resolve_gpu_type(self.gpu_type)
+        resolved = self.active_gpu_type or resolve_gpu_type(self.gpu_type)
         return HOURLY_RATES.get(resolved, 0.0)
 
 # ---------------------------------------------------------------------------
@@ -565,6 +603,7 @@ class PodManager:
 def run_forever(
     *,
     gpu_type: str = "4090",
+    gpu_fallback_types: list[str] | None = None,
     time_budget: int = 300,
     max_trials_per_round: int = 15,
     tracks: list[DataTrack] | None = None,
@@ -584,7 +623,7 @@ def run_forever(
 
     pod_mgr: Optional[PodManager] = None
     if not local:
-        pod_mgr = PodManager(gpu_type=gpu_type)
+        pod_mgr = PodManager(gpu_type=gpu_type, gpu_fallback_types=gpu_fallback_types)
 
     round_num = 0
     track_idx = 0
@@ -599,7 +638,7 @@ def run_forever(
     signal.signal(signal.SIGTERM, _handle_signal)
 
     if dry_run:
-        _print_plan(gpu_type, time_budget, max_trials_per_round, tracks, local)
+        _print_plan(gpu_type, gpu_fallback_types, time_budget, max_trials_per_round, tracks, local)
         return
 
     try:
@@ -625,7 +664,7 @@ def run_forever(
                     time_budget=time_budget,
                     max_trials=max_trials_per_round,
                     run_id=run_id,
-                    gpu_type=gpu_type if pod_mgr else "local",
+                    gpu_type=pod_mgr.active_gpu_type if pod_mgr else "local",
                     ssh_host=ssh_host,
                     ssh_port=ssh_port,
                     remote_dir=remote_dir,
@@ -636,7 +675,7 @@ def run_forever(
                 training_time = time.time() - t0
                 result = read_best_from_leaderboard(leaderboard, checkpoint_dir)
                 result.track = track.name
-                result.gpu_type = gpu_type if pod_mgr else "local"
+                result.gpu_type = pod_mgr.active_gpu_type if pod_mgr else "local"
                 result.training_time_s = training_time
 
                 # log result
@@ -697,7 +736,7 @@ def run_forever(
                     track=track.name,
                     error=str(e),
                     training_time_s=time.time() - t0,
-                    gpu_type=gpu_type if pod_mgr else "local",
+                    gpu_type=pod_mgr.active_gpu_type if pod_mgr else "local",
                 )
                 append_failure_progress(result, baseline, round_num)
 
@@ -718,14 +757,24 @@ def run_forever(
         log.info("forever loop stopped after %d rounds", round_num)
 
 
-def _print_plan(gpu_type: str, time_budget: int, max_trials: int, tracks: list[DataTrack], local: bool):
+def _print_plan(
+    gpu_type: str,
+    gpu_fallback_types: list[str] | None,
+    time_budget: int,
+    max_trials: int,
+    tracks: list[DataTrack],
+    local: bool,
+):
     resolved = resolve_gpu_type(gpu_type)
     rate = HOURLY_RATES.get(resolved, 0.0)
+    fallback_chain = build_gpu_fallback_types(gpu_type, gpu_fallback_types)
     round_time_min = (max_trials * time_budget + 1800) / 60  # +30min overhead
 
     print("Binance Autoresearch Forever -- Dry Run Plan")
     print(f"  Mode: {'LOCAL' if local else 'RunPod'}")
     print(f"  GPU: {resolved} @ ${rate:.2f}/hr")
+    if not local:
+        print(f"  GPU fallback order: {', '.join(fallback_chain)}")
     print(f"  Time budget: {time_budget}s per trial")
     print(f"  Max trials per round: {max_trials}")
     print(f"  Est. round time: {round_time_min:.0f} min")
@@ -758,6 +807,14 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Binance crypto autoresearch forever loop")
     p.add_argument("--gpu-type", default="4090", choices=[""] + sorted(GPU_ALIASES.keys()),
                    help="RunPod GPU type (default: 4090)")
+    p.add_argument(
+        "--gpu-fallback-types",
+        default="",
+        help=(
+            "comma-separated RunPod fallback GPU aliases "
+            f"(default: {','.join(DEFAULT_GPU_FALLBACKS)}; use 'none' to disable)"
+        ),
+    )
     p.add_argument("--time-budget", type=int, default=300, help="seconds per trial")
     p.add_argument("--max-trials", type=int, default=15, help="trials per round")
     p.add_argument("--local", action="store_true", help="run on local GPU")
@@ -786,6 +843,7 @@ def main():
 
     run_forever(
         gpu_type=args.gpu_type,
+        gpu_fallback_types=parse_gpu_fallback_types(args.gpu_fallback_types),
         time_budget=args.time_budget,
         max_trials_per_round=args.max_trials,
         tracks=tracks,

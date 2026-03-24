@@ -1,0 +1,44 @@
+[
+  {
+    "name": "baseline_wd01",
+    "symbol": "AAVEUSD",
+    "error": "Insufficient hourly history (394 rows, minimum 720)."
+  },
+  {
+    "name": "periodic_wd01",
+    "symbol": "AAVEUSD",
+    "error": "Insufficient hourly history (394 rows, minimum 720)."
+  },
+  {
+    "name": "baseline_wd01",
+    "symbol": "AVAXUSD",
+    "best_epoch": 6,
+    "best_val_sortino": 5.014269583067804,
+    "best_val_return": -0.5421997591993719,
+    "best_val_score": 4.970893632128553,
+    "final_sharpness_ema": 0.0,
+    "final_lr_scale": 1.0,
+    "total_epochs": 10,
+    "wall_time_s": 110.11066818237305,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_AVAXUSD_20260325_073130",
+    "sam_mode": "none",
+    "rho": 0.05,
+    "error": null
+  },
+  {
+    "name": "periodic_wd01",
+    "symbol": "AVAXUSD",
+    "best_epoch": 4,
+    "best_val_sortino": 4.257521136470561,
+    "best_val_return": -0.6099264346774808,
+    "best_val_score": 4.208727239718977,
+    "final_sharpness_ema": 473.5717789319738,
+    "final_lr_scale": 1.0,
+    "total_epochs": 10,
+    "wall_time_s": 107.95973181724548,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_AVAXUSD_20260325_073320",
+    "sam_mode": "periodic",
+    "rho": 0.05,
+    "error": null
+  }
+]

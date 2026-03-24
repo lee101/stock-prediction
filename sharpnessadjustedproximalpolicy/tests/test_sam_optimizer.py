@@ -118,6 +118,46 @@ class TestSharpnessAdjustedOptimizer:
         assert sam._base_lrs[0] == pytest.approx(5e-4)
 
 
+    def test_nan_handling(self):
+        model = _simple_model()
+        opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        sam = SharpnessAdjustedOptimizer(opt, rho=0.05, probe_every=1, warmup_probes=0)
+
+        # probe with NaN base loss should be a no-op
+        def probe_fn():
+            return torch.tensor(1.0)
+        result = sam.probe_sharpness(probe_fn, float("nan"))
+        assert sam.state.lr_scale == 1.0  # unchanged
+
+        # probe returning NaN should be a no-op
+        def nan_probe():
+            return torch.tensor(float("nan"))
+        result = sam.probe_sharpness(nan_probe, 1.0)
+        assert sam.state.lr_scale == 1.0
+
+    def test_warmup_autocalibrate(self):
+        model = _simple_model()
+        opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        sam = SharpnessAdjustedOptimizer(opt, rho=0.05, probe_every=1, warmup_probes=3)
+
+        x = torch.randn(8, 10)
+        y = torch.randn(8, 1)
+
+        for i in range(5):
+            sam.zero_grad()
+            loss = _loss_fn(model, x, y)
+            loss.backward()
+            sam.step()
+            def probe_fn():
+                return _loss_fn(model, x, y)
+            sam.probe_sharpness(probe_fn, loss.item())
+
+        # after 3 warmup probes, target_sharpness should be calibrated
+        assert sam.target_sharpness > 0
+        # after warmup, lr_scale should be active
+        assert sam._probe_count >= 3
+
+
 class TestFullSAMOptimizer:
     def test_basic(self):
         model = _simple_model()

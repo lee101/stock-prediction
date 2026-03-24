@@ -1,0 +1,22 @@
+[
+  {
+    "name": "periodic_wd01",
+    "symbol": "AAVEUSD",
+    "error": "Insufficient hourly history (394 rows, minimum 720)."
+  },
+  {
+    "name": "baseline_wd01",
+    "symbol": "AAVEUSD",
+    "error": "Insufficient hourly history (394 rows, minimum 720)."
+  },
+  {
+    "name": "periodic_wd01",
+    "symbol": "AAVEUSD",
+    "error": "Insufficient hourly history (394 rows, minimum 720)."
+  },
+  {
+    "name": "baseline_wd01",
+    "symbol": "AAVEUSD",
+    "error": "Insufficient hourly history (394 rows, minimum 720)."
+  }
+]

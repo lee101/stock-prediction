@@ -8,6 +8,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import logging
 import os
@@ -250,7 +251,7 @@ def run_validation(model, tokenizer, val_snapshots, config: QwenGRPOConfig) -> d
                 pad_token_id=tokenizer.pad_token_id,
             )
         completion = tokenizer.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
-        metrics = compute_reward_detailed(completion, snapshot)
+        metrics = compute_reward_detailed(completion, snapshot, reward_type=config.reward_type)
         results.append(metrics)
 
     model.train()
@@ -270,6 +271,7 @@ def run_validation(model, tokenizer, val_snapshots, config: QwenGRPOConfig) -> d
 
 def train(config: QwenGRPOConfig) -> dict:
     """Main GRPO training loop with early stopping."""
+    from datasets import Dataset
     from trl import GRPOConfig, GRPOTrainer
     from .reward import GRPORewardFn
 
@@ -296,36 +298,42 @@ def train(config: QwenGRPOConfig) -> dict:
         log.error("no training data found")
         return {"error": "no_data"}
 
-    reward_fn = GRPORewardFn(snapshot_map)
+    reward_fn = GRPORewardFn(snapshot_map, reward_type=config.reward_type)
+    train_dataset = Dataset.from_list(train_prompts)
 
     output_dir = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    grpo_config = GRPOConfig(
-        output_dir=str(output_dir),
-        num_train_epochs=config.num_train_epochs,
-        per_device_train_batch_size=config.per_device_batch_size,
-        gradient_accumulation_steps=config.gradient_accumulation_steps,
-        learning_rate=config.lr,
-        num_generations=config.group_size,
-        max_completion_length=config.max_completion_length,
-        max_prompt_length=config.max_prompt_length,
-        beta=config.kl_coef,
-        seed=config.seed,
-        logging_steps=10,
-        save_steps=config.eval_every_steps,
-        save_total_limit=config.top_k_checkpoints,
-        bf16=True,
-        report_to="none",
-        log_level="warning",
-    )
+    grpo_kwargs = {
+        "output_dir": str(output_dir),
+        "num_train_epochs": config.num_train_epochs,
+        "per_device_train_batch_size": config.per_device_batch_size,
+        "gradient_accumulation_steps": config.gradient_accumulation_steps,
+        "learning_rate": config.lr,
+        "num_generations": config.group_size,
+        "max_completion_length": config.max_completion_length,
+        "max_prompt_length": config.max_prompt_length,
+        "beta": config.kl_coef,
+        "seed": config.seed,
+        "logging_steps": 10,
+        "save_steps": config.eval_every_steps,
+        "save_total_limit": config.top_k_checkpoints,
+        "bf16": True,
+        "report_to": "none",
+        "log_level": "warning",
+    }
+    supported_grpo_args = inspect.signature(GRPOConfig.__init__).parameters
+    if "max_prompt_length" not in supported_grpo_args:
+        grpo_kwargs.pop("max_prompt_length", None)
+        log.info("installed TRL GRPOConfig does not expose max_prompt_length; using trainer defaults for prompt tokenization")
+    grpo_config = GRPOConfig(**{k: v for k, v in grpo_kwargs.items() if k in supported_grpo_args})
 
     peft_config_arg = lora_config  # None if SFT warmstart already applied it
     trainer = GRPOTrainer(
         model=model,
         reward_funcs=reward_fn,
         args=grpo_config,
-        train_dataset=train_prompts,
+        train_dataset=train_dataset,
         peft_config=peft_config_arg,
         processing_class=tokenizer,
     )
@@ -369,7 +377,7 @@ def train(config: QwenGRPOConfig) -> dict:
 
     from transformers import TrainerCallback
 
-    class _CB(TrainerCallback, EarlyStopCallback):
+    class _CB(EarlyStopCallback, TrainerCallback):
         pass
 
     trainer.add_callback(_CB())
@@ -405,6 +413,8 @@ def train(config: QwenGRPOConfig) -> dict:
 
 
 def main():
+    from .reward import SUPPORTED_REWARD_TYPES
+
     p = argparse.ArgumentParser(description="Qwen GRPO trading plan trainer")
     p.add_argument("--model-size", default="0.6B", choices=list(QWEN_MODELS))
     p.add_argument("--lora-r", type=int, default=16)
@@ -414,7 +424,7 @@ def main():
     p.add_argument("--max-completion-length", type=int, default=512)
     p.add_argument("--n-symbols", type=int, default=10)
     p.add_argument("--eval-horizon", type=int, default=24)
-    p.add_argument("--reward-type", default="sortino_only")
+    p.add_argument("--reward-type", default="sortino_only", choices=sorted(SUPPORTED_REWARD_TYPES))
     p.add_argument("--prompt-variant", default="detailed")
     p.add_argument("--time-budget", type=int, default=0)
     p.add_argument("--sft-warmstart", action="store_true")

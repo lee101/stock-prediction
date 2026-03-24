@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Sequence
 
 import requests
 
@@ -22,12 +23,23 @@ GPU_ALIASES: dict[str, str] = {
     "h100-sxm": "NVIDIA H100 SXM",
     "4090": "NVIDIA GeForce RTX 4090",
     "5090": "NVIDIA GeForce RTX 5090",
+    "rtx-pro-4500": "NVIDIA RTX PRO 4500 Ada Generation",
+    "4500-ada": "NVIDIA RTX PRO 4500 Ada Generation",
     "l40s": "NVIDIA L40S",
     "l40": "NVIDIA L40",
+    "l4": "NVIDIA L4",
     "a40": "NVIDIA A40",
     "6000-ada": "NVIDIA RTX 6000 Ada Generation",
     "rtx6000": "NVIDIA RTX 6000 Ada Generation",
 }
+
+DEFAULT_GPU_FALLBACKS: tuple[str, ...] = (
+    "rtx-pro-4500",
+    "6000-ada",
+    "5090",
+    "h100-sxm",
+    "l4",
+)
 
 # Backwards-compatible alias
 TRAINING_GPU_TYPES = GPU_ALIASES
@@ -58,6 +70,66 @@ def resolve_gpu_type(alias: str) -> str:
 def get_supported_gpu_types() -> list[str]:
     """Return the list of supported GPU alias keys."""
     return list(GPU_ALIASES.keys())
+
+
+def build_gpu_fallback_types(primary: str, fallbacks: Optional[Sequence[str]] = None) -> list[str]:
+    """Return a de-duplicated, resolved GPU preference chain."""
+    resolved: list[str] = []
+    seen: set[str] = set()
+    fallback_candidates = DEFAULT_GPU_FALLBACKS if fallbacks is None else fallbacks
+    for candidate in [primary, *fallback_candidates]:
+        if not candidate:
+            continue
+        name = resolve_gpu_type(str(candidate).strip())
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        resolved.append(name)
+    return resolved
+
+
+def parse_gpu_fallback_types(value: Optional[str]) -> Optional[list[str]]:
+    """Parse a comma-separated fallback GPU list.
+
+    Returns ``None`` when the default fallback chain should be used and
+    ``[]`` when fallbacks are explicitly disabled via ``none``.
+    """
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.lower() == "none":
+        return []
+    return [part.strip() for part in text.split(",") if part.strip()]
+
+
+def _gpu_match_key(text: str) -> str:
+    normalized = text.lower()
+    for token in (
+        "nvidia",
+        "geforce",
+        "generation",
+        "workstation",
+        "server",
+        "edition",
+        "blackwell",
+        "ada",
+        "max-q",
+        "maxq",
+    ):
+        normalized = normalized.replace(token, " ")
+    normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+    return " ".join(normalized.split())
+
+
+def is_capacity_error(exc: BaseException) -> bool:
+    text = str(exc).lower()
+    return (
+        "does not have the resources to deploy your pod" in text
+        or "insufficient resources" in text
+        or ("capacity" in text and "runpod" in text)
+    )
 
 
 def get_hourly_rate(gpu_full_name: str) -> float:
@@ -155,11 +227,22 @@ class RunPodClient:
 
     def find_gpu_type_id(self, name_substr: str) -> str:
         needle = name_substr.lower()
+        needle_key = _gpu_match_key(name_substr)
+        normalized_matches: list[str] = []
         for gpu in self.list_gpu_types(include_pricing=False):
             display_name = gpu.get("displayName", "")
             gpu_id = gpu.get("id", "")
             if needle in display_name.lower() or needle in gpu_id.lower():
                 return gpu_id
+            if not needle_key:
+                continue
+            candidate_keys = (_gpu_match_key(display_name), _gpu_match_key(gpu_id))
+            if needle_key in candidate_keys:
+                return gpu_id
+            if any(needle_key and needle_key in key for key in candidate_keys):
+                normalized_matches.append(gpu_id)
+        if normalized_matches:
+            return normalized_matches[0]
         raise ValueError(f"No GPU type matching {name_substr!r}")
 
     def create_pod(self, config: PodConfig) -> Pod:

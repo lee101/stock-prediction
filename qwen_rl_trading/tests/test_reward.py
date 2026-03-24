@@ -7,12 +7,14 @@ import pytest
 
 from qwen_rl_trading.data_prompt import MarketSnapshot
 from qwen_rl_trading.reward import (
+    DEFAULT_REWARD_TYPE,
     PENALTY_FLAT,
     PENALTY_INVALID,
     REWARD_SIM_CONFIG,
     GRPORewardFn,
     compute_reward,
     compute_sortino,
+    score_reward_metrics,
 )
 
 
@@ -114,6 +116,43 @@ class TestComputeReward:
     def test_max_hold_6h(self):
         assert REWARD_SIM_CONFIG.max_hold_hours == 6
 
+    def test_reward_type_variants_change_score(self):
+        base_reward = score_reward_metrics(
+            sortino=2.0,
+            total_return=0.05,
+            max_drawdown=-0.20,
+            pnl_smoothness=0.01,
+            reward_type=DEFAULT_REWARD_TYPE,
+        )
+        drawdown_reward = score_reward_metrics(
+            sortino=2.0,
+            total_return=0.05,
+            max_drawdown=-0.20,
+            pnl_smoothness=0.01,
+            reward_type="sortino_drawdown",
+        )
+        smoothness_reward = score_reward_metrics(
+            sortino=2.0,
+            total_return=0.05,
+            max_drawdown=-0.20,
+            pnl_smoothness=0.01,
+            reward_type="sortino_smoothness",
+        )
+
+        assert drawdown_reward < base_reward
+        assert smoothness_reward < base_reward
+        assert drawdown_reward != smoothness_reward
+
+    def test_unknown_reward_type_raises(self):
+        with pytest.raises(ValueError, match="unsupported reward_type"):
+            score_reward_metrics(
+                sortino=1.0,
+                total_return=0.01,
+                max_drawdown=-0.05,
+                pnl_smoothness=0.001,
+                reward_type="does_not_exist",
+            )
+
 
 class TestGRPORewardFn:
     def test_callable(self):
@@ -137,6 +176,16 @@ class TestGRPORewardFn:
         result = fn._find_snapshot("[window:abc123] some data")
         assert result is snap
 
+    def test_window_id_extraction_from_chat_prompt(self):
+        snap = _make_snapshot()
+        fn = GRPORewardFn({"abc123": snap})
+        prompt = [
+            {"role": "system", "content": "rules"},
+            {"role": "user", "content": "[window:abc123] some data"},
+        ]
+        result = fn._find_snapshot(prompt)
+        assert result is snap
+
     def test_batch_multiple(self):
         snap = _make_snapshot()
         fn = GRPORewardFn({"test123": snap})
@@ -147,3 +196,14 @@ class TestGRPORewardFn:
         assert len(rewards) == 3
         assert rewards[1] == PENALTY_INVALID  # invalid json
         assert rewards[2] == PENALTY_INVALID  # missing snapshot
+
+    def test_conversational_completion_payload(self):
+        snap = _make_snapshot()
+        snap.window_id = "abc123"
+        fn = GRPORewardFn({"abc123": snap})
+        rewards = fn(
+            completions=[[{"role": "assistant", "content": _valid_plan_json()}]],
+            prompts=["[window:abc123] market data"],
+        )
+        assert len(rewards) == 1
+        assert rewards[0] != PENALTY_INVALID

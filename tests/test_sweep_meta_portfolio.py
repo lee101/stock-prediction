@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
 import pytest
+import torch
 
 from unified_hourly_experiment.marketsimulator.portfolio_simulator import PortfolioConfig
 from unified_hourly_experiment.sweep_meta_portfolio import (
+    StrategyModel,
+    build_strategy_action_cache_key,
     evaluate_strategy_baselines,
+    load_or_generate_strategy_frames,
     rank_key,
     resolve_execution_scenarios,
 )
@@ -225,3 +230,78 @@ def test_evaluate_strategy_baselines_uses_worst_case_execution_scenario(monkeypa
     assert summaries[0]["mean_goodness_score"] == 0.8
     assert summaries[0]["min_annualized_return_pct"] == 8.0
     assert summaries[0]["mean_scenario_mean_goodness_score"] == 1.6
+
+
+def test_load_or_generate_strategy_frames_reuses_action_cache(monkeypatch, tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "ckpt"
+    checkpoint_dir.mkdir()
+    (checkpoint_dir / "epoch_001.pt").write_bytes(b"weights")
+    (checkpoint_dir / "config.json").write_text("{}")
+    (checkpoint_dir / "training_meta.json").write_text("{}")
+
+    strategy = StrategyModel(
+        name="s1",
+        checkpoint_dir=checkpoint_dir,
+        checkpoint_name="epoch_001.pt",
+        model=object(),
+        feature_columns=["return_1h"],
+        sequence_length=2,
+        normalizer=None,
+        horizons=[1],
+    )
+    frame = pd.DataFrame(
+        [
+            {"timestamp": pd.Timestamp("2026-03-01T15:00:00Z"), "symbol": "NVDA", "close": 100.0},
+            {"timestamp": pd.Timestamp("2026-03-02T15:00:00Z"), "symbol": "NVDA", "close": 101.0},
+        ]
+    )
+    data_cache = {("NVDA", (1,), 2): SimpleNamespace(frame=frame, normalizer=None)}
+    action_cache_dir = tmp_path / "action_cache"
+
+    calls = {"count": 0}
+
+    def fake_generate_actions_from_frame(**_: object) -> pd.DataFrame:
+        calls["count"] += 1
+        return pd.DataFrame(
+            [
+                {"timestamp": pd.Timestamp("2026-03-01T15:00:00Z"), "symbol": "NVDA", "action": 1},
+                {"timestamp": pd.Timestamp("2026-03-02T15:00:00Z"), "symbol": "NVDA", "action": -1},
+            ]
+        )
+
+    monkeypatch.setattr(
+        "unified_hourly_experiment.sweep_meta_portfolio.generate_actions_from_frame",
+        fake_generate_actions_from_frame,
+    )
+
+    expected_key = build_strategy_action_cache_key(strategy=strategy, symbols=["NVDA"], data_cache=data_cache)
+    expected_cache_path = action_cache_dir / f"strategy_actions_{expected_key}.pkl"
+
+    actions_a, bars_a = load_or_generate_strategy_frames(
+        strategy=strategy,
+        symbols=["NVDA"],
+        data_cache=data_cache,
+        device=torch.device("cpu"),
+        action_cache_dir=action_cache_dir,
+    )
+    assert calls["count"] == 1
+    assert expected_cache_path.exists()
+
+    def fail_generate_actions_from_frame(**_: object) -> pd.DataFrame:
+        raise AssertionError("cache should have been reused instead of regenerating actions")
+
+    monkeypatch.setattr(
+        "unified_hourly_experiment.sweep_meta_portfolio.generate_actions_from_frame",
+        fail_generate_actions_from_frame,
+    )
+
+    actions_b, bars_b = load_or_generate_strategy_frames(
+        strategy=strategy,
+        symbols=["NVDA"],
+        data_cache=data_cache,
+        device=torch.device("cpu"),
+        action_cache_dir=action_cache_dir,
+    )
+
+    pd.testing.assert_frame_equal(actions_a, actions_b)
+    pd.testing.assert_frame_equal(bars_a, bars_b)

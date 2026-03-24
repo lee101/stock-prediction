@@ -49,12 +49,22 @@ def build_configs(exp: dict, symbol: str, base_overrides: dict | None = None) ->
     tc_kwargs["run_name"] = f"sap_{exp['name']}_{symbol}_{time.strftime('%Y%m%d_%H%M%S')}"
     tc_kwargs["checkpoint_root"] = Path("sharpnessadjustedproximalpolicy") / "checkpoints"
 
+    cache_root = Path("binanceneural") / "forecast_cache"
+    available_horizons = []
+    for h in (1, 4, 12, 24):
+        if (cache_root / f"h{h}" / f"{symbol}.parquet").exists():
+            available_horizons.append(h)
+    if not available_horizons:
+        available_horizons = [1, 4, 24]
+
     ds = DatasetConfig(
         symbol=symbol,
         data_root=Path("trainingdatahourly") / "crypto",
-        forecast_cache_root=Path("binanceneural") / "forecast_cache",
+        forecast_cache_root=cache_root,
+        forecast_horizons=tuple(available_horizons),
         sequence_length=tc_kwargs.get("sequence_length", 72),
         validation_days=70,
+        cache_only=True,
     )
     tc_kwargs["dataset"] = ds
 

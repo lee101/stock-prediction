@@ -36,6 +36,22 @@ LEADERBOARD_COLUMNS = [
 ]
 
 
+def _filter_experiments(
+    experiments: list[dict],
+    *,
+    model_sizes: list[str] | None = None,
+    descriptions: str = "",
+) -> list[dict]:
+    filtered = list(experiments)
+    if model_sizes:
+        allowed = {size.strip() for size in model_sizes if size.strip()}
+        filtered = [e for e in filtered if e.get("model_size", "0.6B") in allowed]
+    if descriptions:
+        desc_set = {d.strip() for d in descriptions.split(",") if d.strip()}
+        filtered = [e for e in filtered if e.get("description") in desc_set]
+    return filtered
+
+
 def _trial_config_to_grpo_config(tc: QwenTrialConfig, time_budget: int, output_dir: str) -> QwenGRPOConfig:
     return QwenGRPOConfig(
         model_size=tc.model_size,
@@ -120,6 +136,7 @@ def run_autoresearch(
     max_trials: int = 30,
     checkpoint_root: Optional[Path] = None,
     leaderboard_path: Optional[Path] = None,
+    model_sizes: list[str] | None = None,
     descriptions: str = "",
 ):
     """Iterate through experiments, run trials, update leaderboard."""
@@ -131,10 +148,10 @@ def run_autoresearch(
     checkpoint_root.mkdir(parents=True, exist_ok=True)
     leaderboard_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # filter experiments by description if specified
-    if descriptions:
-        desc_set = set(d.strip() for d in descriptions.split(","))
-        experiments = [e for e in experiments if e.get("description") in desc_set]
+    experiments = _filter_experiments(experiments, model_sizes=model_sizes, descriptions=descriptions)
+    if not experiments:
+        log.warning("no experiments matched model_sizes=%s descriptions=%s", model_sizes, descriptions)
+        return {"best_description": None, "best_reward": -float("inf")}
 
     best_reward = -float("inf")
     best_description = None
@@ -166,6 +183,7 @@ def main():
     p.add_argument("--max-trials", type=int, default=30)
     p.add_argument("--checkpoint-root", default="qwen_rl_trading/checkpoints")
     p.add_argument("--leaderboard", default="qwen_rl_trading/leaderboard.csv")
+    p.add_argument("--model-sizes", default="", help="comma-separated model sizes to run")
     p.add_argument("--descriptions", default="", help="comma-separated experiment names to run")
     args = p.parse_args()
 
@@ -175,6 +193,7 @@ def main():
         max_trials=args.max_trials,
         checkpoint_root=Path(args.checkpoint_root),
         leaderboard_path=Path(args.leaderboard),
+        model_sizes=args.model_sizes.split(",") if args.model_sizes else None,
         descriptions=args.descriptions,
     )
 
