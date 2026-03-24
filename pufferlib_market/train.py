@@ -302,6 +302,7 @@ class TradingPolicy(nn.Module):
         use_fused_obs = (
             self._can_fuse
             and x.is_cuda
+            and not self.training
             and self.obs_mean is not None
             and self.obs_std is not None
             and hidden >= 256
@@ -322,7 +323,7 @@ class TradingPolicy(nn.Module):
             # fused_mlp_relu returns BF16; cast to match actor/critic weight dtype
             # (actor/critic are typically FP32)
             h = h.to(self.actor[0].weight.dtype)
-        elif self._can_fuse and x.is_cuda:
+        elif self._can_fuse and x.is_cuda and not self.training:
             # Path 2: fused first two linear+relu layers, no obs-norm
             h = fused_mlp_relu(
                 x,
@@ -360,8 +361,10 @@ class TradingPolicy(nn.Module):
 
     def forward(self, x):
         h = self._encode(x)
-        if self._can_fuse and h.is_cuda:
+        if self._can_fuse and h.is_cuda and not self.training:
             return self._fused_heads(h)
+        if self.training or not (self._can_fuse and h.is_cuda):
+            h = h.float() if h.dtype != torch.float32 else h
         logits = self.actor(h)
         value = self.critic(h).squeeze(-1)
         return logits, value
@@ -379,12 +382,13 @@ class TradingPolicy(nn.Module):
 
     def get_value(self, x):
         h = self._encode(x)
-        if self._can_fuse and h.is_cuda:
+        if self._can_fuse and h.is_cuda and not self.training:
             return fused_mlp_relu(
                 h,
                 self.critic[0].weight, self.critic[0].bias,
                 self.critic[2].weight, self.critic[2].bias,
             ).float().squeeze(-1)
+        h = h.float() if h.dtype != torch.float32 else h
         return self.critic(h).squeeze(-1)
 
 
@@ -1065,6 +1069,7 @@ def train(args):
     # ── CUDA graph for rollout inference ──
     _no_cuda_graph = getattr(args, "no_cuda_graph", False)
     use_cuda_graph = device.type == "cuda" and not _no_cuda_graph
+    _inference_graph = None
     if use_cuda_graph:
         # Static GPU buffers (required for CUDA graph capture)
         _static_obs = torch.zeros(num_envs, obs_size, device=device)
@@ -1102,12 +1107,26 @@ def train(args):
         # inference_mode as outer context marks policy parameters as inference
         # tensors, causing "inplace update outside InferenceMode" errors when the
         # PPO update graph later tries to update those same parameters.
-        _inference_graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(_inference_graph):
-            with torch.no_grad():
-                _graph_forward()
-        torch.cuda.synchronize()
-        print("  CUDA graph captured for rollout inference")
+        try:
+            _inference_graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(_inference_graph):
+                with torch.no_grad():
+                    _graph_forward()
+            torch.cuda.synchronize()
+            # Verify autograd still works after graph capture by doing
+            # a full forward+backward through the policy
+            policy.train()
+            _test_obs = torch.randn(2, obs_size, device=device)
+            _test_logits, _test_val = policy(_test_obs)
+            _test_loss = _test_logits.sum() + _test_val.sum()
+            _test_loss.backward()
+            policy.zero_grad()
+            del _test_obs, _test_logits, _test_val, _test_loss
+            print("  CUDA graph captured for rollout inference")
+        except Exception as e:
+            print(f"  CUDA graph broke autograd ({e}), disabling -- will use eager inference")
+            _inference_graph = None
+            use_cuda_graph = False
 
     # Pinned memory for fast CPU↔GPU transfers
     _pinned_obs = torch.zeros(num_envs, obs_size, dtype=torch.float32, pin_memory=True) if use_cuda_graph else None
