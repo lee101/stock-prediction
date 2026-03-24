@@ -5,12 +5,14 @@
 ### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- BROKEN -- Gemini key revoked + RL obs mismatch
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`
 - **Launch**: `deployments/binance-hybrid-spot/launch.sh`
-- **Model**: Pufferlib robust_reg_tp005_ent (h1024 MLP, PPO) + RL-only fallback when Gemini unavailable
-- **RL Checkpoint**: `pufferlib_market/checkpoints/mixed23_a40_sweep/robust_reg_tp005_ent/best.pt`
-- **RL Marketsim**: +191.4% return, Sort=23.94, 59% WR, 80 trades/30d (C sim, binary fills, 5bps slippage)
-- **Slippage robustness**: +181.6% @0bps, +191.4% @5bps, +252.8% @10bps, +194.3% @20bps, +168.1% @30bps
-- **Config**: obs_norm, wd=0.05, slip=8bps, tp=0.005, ent_anneal 0.08->0.02
-- **A40 sweep cost**: $0.53 for 50 trials
+- **Model**: Pufferlib robust_champion (h1024 MLP, PPO) + RL-only fallback when Gemini unavailable
+- **RL Checkpoint**: `pufferlib_market/checkpoints/a100_scaleup/robust_champion/best.pt`
+- **50-window holdout** (seed=42, 30-bar windows, deterministic, no early stop):
+  - Median return: +10.80%, Positive windows: 76%, Median Sortino: 3.28
+  - 60-bar windows: 100% positive, full-span: +58.22% return, 26.58% max DD
+  - Cross-seed (250 windows across 5 seeds): 76% positive, p5=-10.80%
+- **Config**: obs_norm=True, wd=0.005, cosine LR, slip=5bps, tp=0.05, anneal_lr+ent
+- **Previous**: robust_reg_tp005_ent had +191.4% single-window but only +3.03% median across 50 windows
 - **Symbols**: BTCUSD, ETHUSD, SOLUSD, DOGEUSD, AAVEUSD, LINKUSD
 - **Mode**: Cross-margin, leverage reduced from 5x to 0.5x
 - **Max hold**: 6h forced exit
