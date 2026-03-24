@@ -44,6 +44,20 @@ class SAPConfig:
     # Min epochs before early stopping kicks in
     early_stop_min_epochs: int = 3
 
+    # SWA (Stochastic Weight Averaging)
+    use_swa: bool = False
+    swa_start_frac: float = 0.5  # start averaging after 50% of training
+
+    # Gradient noise injection
+    use_grad_noise: bool = False
+    grad_noise_sigma: float = 0.01
+    grad_noise_gamma: float = 0.55  # decay exponent
+
+    # Sharpness-adaptive feature noise (scale input noise by sharpness)
+    use_adaptive_feature_noise: bool = False
+    adaptive_fn_base: float = 0.005
+    adaptive_fn_max: float = 0.05
+
     # Sharpness logging
     log_sharpness: bool = True
 
@@ -121,6 +135,30 @@ EXPERIMENTS = [
     # h512 with higher lr (fix dead model)
     {"name": "h512_lr1e3_periodic", "sam_mode": "periodic", "rho": 0.05, "transformer_dim": 512, "transformer_layers": 6, "learning_rate": 1e-3},
     {"name": "h512_lr1e3_baseline", "sam_mode": "none", "transformer_dim": 512, "transformer_layers": 6, "learning_rate": 1e-3},
+
+    # --- Round 3: new approaches ---
+    # SWA (average weights over second half of training)
+    {"name": "swa_wd01", "sam_mode": "none", "weight_decay": 0.1, "use_swa": True, "swa_start_frac": 0.5},
+    {"name": "swa_wd004", "sam_mode": "none", "weight_decay": 0.04, "use_swa": True, "swa_start_frac": 0.5},
+    {"name": "swa_periodic_wd01", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1, "use_swa": True},
+
+    # Gradient noise injection (Neelakantan et al.)
+    {"name": "gradnoise_s001", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1, "use_grad_noise": True, "grad_noise_sigma": 0.01},
+    {"name": "gradnoise_s005", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1, "use_grad_noise": True, "grad_noise_sigma": 0.05},
+    {"name": "gradnoise_baseline", "sam_mode": "none", "weight_decay": 0.1, "use_grad_noise": True, "grad_noise_sigma": 0.01},
+
+    # Adaptive feature noise (scale input noise by sharpness)
+    {"name": "afn_periodic", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1, "use_adaptive_feature_noise": True},
+    {"name": "afn_baseline", "sam_mode": "none", "weight_decay": 0.1, "use_adaptive_feature_noise": True},
+
+    # Kitchen sink: SAM + SWA + grad noise + high wd
+    {"name": "kitchen_sink", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1, "use_swa": True, "use_grad_noise": True, "grad_noise_sigma": 0.01},
+
+    # Higher lr sweep (SAM may stabilize higher lr)
+    {"name": "lr5e4_periodic", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1, "learning_rate": 5e-4},
+    {"name": "lr5e4_baseline", "sam_mode": "none", "weight_decay": 0.1, "learning_rate": 5e-4},
+    {"name": "lr1e3_periodic", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1, "learning_rate": 1e-3},
+    {"name": "lr1e3_baseline", "sam_mode": "none", "weight_decay": 0.1, "learning_rate": 1e-3},
 ]
 
 
