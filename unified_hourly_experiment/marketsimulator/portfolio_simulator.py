@@ -69,7 +69,7 @@ class PortfolioConfig:
     force_close_slippage: float = 0.003
     int_qty: bool = True
     margin_annual_rate: float = 0.0
-    sim_backend: str = "python"  # python | native | auto
+    sim_backend: str = "auto"  # auto prefers native when safe, else falls back to python
 
 
 @dataclass
@@ -188,6 +188,25 @@ def _get_numeric_column(frame: pd.DataFrame, name: str, *, default: float) -> np
     return np.full(len(frame), default, dtype=np.float64)
 
 
+def _first_drawdown_profit_early_exit_index(
+    equity_values: np.ndarray,
+    *,
+    total_steps: int,
+    label: str,
+) -> int | None:
+    values = np.asarray(equity_values, dtype=np.float64)
+    for idx in range(len(values)):
+        decision = evaluate_drawdown_vs_profit_early_exit(
+            values[: idx + 1],
+            total_steps=total_steps,
+            label=label,
+        )
+        if decision.should_stop:
+            print_early_exit(decision)
+            return idx
+    return None
+
+
 def _lag_actions_to_bar_schedule(
     *,
     bars: pd.DataFrame,
@@ -238,7 +257,8 @@ def _run_portfolio_simulation_native(
     if merged.empty or not symbols:
         return None
 
-    timestamps = pd.DatetimeIndex(pd.to_datetime(merged["timestamp"], utc=True)).unique().sort_values()
+    normalized_timestamps = pd.DatetimeIndex(pd.to_datetime(merged["timestamp"], utc=True))
+    timestamps = normalized_timestamps.unique().sort_values()
     t_count = len(timestamps)
     s_count = len(symbols)
     if t_count == 0 or s_count == 0:
@@ -247,7 +267,10 @@ def _run_portfolio_simulation_native(
     sym_to_idx = {sym: i for i, sym in enumerate(symbols)}
     ts_to_idx = {ts: i for i, ts in enumerate(timestamps)}
 
-    row_t_idx = merged["timestamp"].map(ts_to_idx).to_numpy(dtype=np.int64, copy=False)
+    row_t_idx = pd.Series(normalized_timestamps, index=merged.index).map(ts_to_idx).to_numpy(
+        dtype=np.int64,
+        copy=False,
+    )
     row_s_idx = merged["symbol"].map(sym_to_idx).to_numpy(dtype=np.int64, copy=False)
 
     dense_shape = (t_count, s_count)
@@ -349,6 +372,25 @@ def _run_portfolio_simulation_native(
     trade_cash_after = np.asarray(out["trade_cash_after"], dtype=np.float64)
     trade_inventory_after = np.asarray(out["trade_inventory_after"], dtype=np.float64)
     trade_reason = np.asarray(out["trade_reason"], dtype=np.int8)
+    equity_values = np.asarray(out["equity_values"], dtype=np.float64)
+
+    stop_idx = _first_drawdown_profit_early_exit_index(
+        equity_values,
+        total_steps=t_count,
+        label="unified_hourly_experiment.run_portfolio_simulation",
+    )
+    if stop_idx is not None:
+        keep = trade_t_idx <= int(stop_idx)
+        trade_t_idx = trade_t_idx[keep]
+        trade_sym_idx = trade_sym_idx[keep]
+        trade_side = trade_side[keep]
+        trade_price = trade_price[keep]
+        trade_qty = trade_qty[keep]
+        trade_cash_after = trade_cash_after[keep]
+        trade_inventory_after = trade_inventory_after[keep]
+        trade_reason = trade_reason[keep]
+        equity_values = equity_values[: stop_idx + 1]
+        timestamps = timestamps[: stop_idx + 1]
 
     trades: list[UnifiedTradeRecord] = []
     for i in range(len(trade_t_idx)):
@@ -369,8 +411,7 @@ def _run_portfolio_simulation_native(
             )
         )
 
-    equity_values = np.asarray(out["equity_values"], dtype=np.float64)
-    final_equity = float(out["final_equity"])
+    final_equity = float(equity_values[-1]) if len(equity_values) else float(cfg.initial_cash)
     return _build_portfolio_result(
         equity_index=timestamps,
         equity_values=equity_values,

@@ -14,5 +14,5 @@ exec /home/lee/code/stock/.venv313/bin/python -u \
   --leverage 0.5 \
   --interval 3600 \
   --fallback-mode chronos2 \
-  --rl-checkpoint /home/lee/code/stock/pufferlib_market/checkpoints/mixed23_a40_sweep/robust_reg_tp005_ent/best.pt \
+  --rl-checkpoint /home/lee/code/stock/pufferlib_market/checkpoints/a100_scaleup/robust_champion/best.pt \
   "$@"

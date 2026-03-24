@@ -143,6 +143,13 @@ boosting = [
     "xgboost>=2.1.1",
 ]
 
+qwen_rl = [
+    "trl>=0.15",
+    "outlines>=0.1",
+    "peft>=0.14",
+    "bitsandbytes>=0.45",
+]
+
 sp500 = [
     "yfinance>=0.2.0",
     "pandas>=2.0.0",

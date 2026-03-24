@@ -27,6 +27,12 @@ try:
 except ImportError:
     simulate_hourly_trades_triton = None
     HAS_TRITON_SIM = False
+try:
+    from trainingefficiency.compiled_sim_loss import compiled_sim_and_loss
+    HAS_COMPILED_SIM_LOSS = True
+except ImportError:
+    compiled_sim_and_loss = None
+    HAS_COMPILED_SIM_LOSS = False
 from torch.nn.utils import clip_grad_norm_  # type: ignore
 from traininglib.optim_factory import MultiOptim
 
@@ -348,6 +354,12 @@ class BinanceHourlyTrainer:
 
         split_amp = bool(self.config.split_amp) and self._amp_context is not None
         use_vsim = bool(self.config.use_vectorized_sim) and simulate_hourly_trades_fast is not None
+        use_compiled_fused = (
+            bool(self.config.use_compiled_sim_loss)
+            and HAS_COMPILED_SIM_LOSS
+            and device.type == "cuda"
+            and train
+        )
         sim_context = nullcontext() if split_amp else self._amp_context
         scale = float(self.config.trade_amount_scale)
         base_lag = int(self.config.decision_lag_bars)
