@@ -7,6 +7,11 @@ For 2D+ weight matrices: applies Newton-Schulz orthogonalization to the
 momentum buffer before applying the SGD update.
 For 1D parameters (biases, layer-norm scales): falls back to AdamW.
 
+NorMuon variant (norm_update=True): after Newton-Schulz, scales each
+update so its Frobenius norm equals the parameter's Frobenius norm,
+keeping parameter norms stable throughout training.  From the modded-nanogpt
+speedrun (https://github.com/KellerJordan/modded-nanogpt).
+
 Background: https://kellerjordan.github.io/posts/muon/
 """
 
@@ -67,6 +72,8 @@ class Muon(torch.optim.Optimizer):
         momentum: SGD momentum (default 0.95).
         nesterov: use Nesterov momentum (default True).
         ns_steps: Newton-Schulz iterations (default 5).
+        norm_update: NorMuon — scale update so its Frobenius norm equals the
+            parameter's Frobenius norm (×lr).  Keeps param norms stable.
         adamw_params: iterable of 1D parameters for AdamW fallback.
         adamw_lr: learning rate for the AdamW fallback (default 3e-4).
         adamw_betas: AdamW betas (default (0.9, 0.999)).
@@ -80,12 +87,14 @@ class Muon(torch.optim.Optimizer):
         momentum: float = 0.95,
         nesterov: bool = True,
         ns_steps: int = 5,
+        norm_update: bool = False,
         adamw_params=None,
         adamw_lr: float = 3e-4,
         adamw_betas: tuple[float, float] = (0.9, 0.999),
         adamw_wd: float = 0.0,
     ):
-        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps)
+        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps,
+                        norm_update=norm_update)
         super().__init__(params, defaults)
 
         self._adamw: optim.AdamW | None = None
@@ -116,6 +125,8 @@ class Muon(torch.optim.Optimizer):
             nesterov = group["nesterov"]
             ns_steps = group["ns_steps"]
 
+            norm_update = group["norm_update"]
+
             for p in params:
                 if p.grad is None:
                     continue
@@ -133,6 +144,12 @@ class Muon(torch.optim.Optimizer):
                     update = zeropower_via_newtonschulz5(g_eff, steps=ns_steps)
                     # Scale correction: preserves RMS magnitude across non-square shapes
                     update = update * max(1, update.size(0) / update.size(1)) ** 0.5
+                    if norm_update:
+                        # NorMuon: match update Frobenius norm to parameter norm so
+                        # that param norms stay stable over training.
+                        param_norm = p.norm(dtype=torch.float32)
+                        update_norm = update.norm(dtype=torch.float32)
+                        update = update * (param_norm / (update_norm + 1e-8)).to(update.dtype)
                 else:
                     update = g_eff
 
@@ -156,6 +173,7 @@ def make_muon_optimizer(
     adamw_lr: float = 3e-4,
     adamw_wd: float = 0.0,
     ns_steps: int = 5,
+    norm_update: bool = False,
 ) -> Muon:
     """
     Convenience factory: splits policy parameters into 2D (Muon) and 1D (AdamW).
@@ -178,7 +196,31 @@ def make_muon_optimizer(
         lr=muon_lr,
         momentum=muon_momentum,
         ns_steps=ns_steps,
+        norm_update=norm_update,
         adamw_params=scalar_params,
         adamw_lr=adamw_lr,
         adamw_wd=adamw_wd,
+    )
+
+
+def make_normuon_optimizer(
+    policy: torch.nn.Module,
+    muon_lr: float = 0.02,
+    muon_momentum: float = 0.95,
+    adamw_lr: float = 3e-4,
+    adamw_wd: float = 0.0,
+    ns_steps: int = 5,
+) -> Muon:
+    """NorMuon variant: Muon with parameter-norm-matched updates.
+
+    Convenience wrapper for make_muon_optimizer(norm_update=True).
+    """
+    return make_muon_optimizer(
+        policy,
+        muon_lr=muon_lr,
+        muon_momentum=muon_momentum,
+        adamw_lr=adamw_lr,
+        adamw_wd=adamw_wd,
+        ns_steps=ns_steps,
+        norm_update=True,
     )

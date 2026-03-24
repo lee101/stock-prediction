@@ -935,6 +935,7 @@ def train(args):
 
     if args.optimizer == "muon":
         from pufferlib_market.muon import make_muon_optimizer
+        _norm_update = getattr(args, "muon_norm_update", False)
         optimizer = make_muon_optimizer(
             policy,
             muon_lr=args.lr,
@@ -942,10 +943,13 @@ def train(args):
             adamw_lr=args.muon_adamw_lr,
             adamw_wd=args.weight_decay,
             ns_steps=args.muon_ns_steps,
+            norm_update=_norm_update,
         )
+        _variant = "NorMuon" if _norm_update else "Muon"
         print(
-            f"  Optimizer: Muon (lr={args.lr}, momentum={args.muon_momentum},"
-            f" ns_steps={args.muon_ns_steps}, adamw_lr={args.muon_adamw_lr})"
+            f"  Optimizer: {_variant} (lr={args.lr}, momentum={args.muon_momentum},"
+            f" ns_steps={args.muon_ns_steps}, adamw_lr={args.muon_adamw_lr},"
+            f" norm_update={_norm_update})"
         )
     else:
         _adamw_kwargs: dict = dict(lr=args.lr, eps=1e-5, weight_decay=args.weight_decay)
@@ -1787,6 +1791,8 @@ def main():
     )
     parser.add_argument("--muon-momentum", type=float, default=0.95, help="SGD momentum for Muon (default 0.95)")
     parser.add_argument("--muon-ns-steps", type=int, default=5, help="Newton-Schulz iterations for Muon (default 5)")
+    parser.add_argument("--muon-norm-update", action="store_true",
+                        help="NorMuon: scale update so its Frobenius norm matches the param norm (stable norms)")
     parser.add_argument("--muon-adamw-lr", type=float, default=3e-4, help="AdamW lr for 1D params when using Muon (default 3e-4)")
     parser.add_argument("--anneal-ent", action="store_true", help="Anneal entropy coefficient over training")
     parser.add_argument("--ent-coef-end", type=float, default=0.02, help="Final entropy coef (with --anneal-ent)")
