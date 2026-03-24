@@ -69,6 +69,10 @@ class TradingPolicy(nn.Module):
             nn.Linear(hidden, hidden),
             nn.ReLU(),
         )
+        # encoder_norm added to train.py to prevent BF16 precision collapse.
+        # _use_encoder_norm set by load_policy: True only for new ckpts that have this layer.
+        self.encoder_norm = nn.LayerNorm(hidden)
+        self._use_encoder_norm = False
         self.actor = nn.Sequential(
             nn.Linear(hidden, hidden // 2),
             nn.ReLU(),
@@ -82,6 +86,8 @@ class TradingPolicy(nn.Module):
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         h = self.encoder(x)
+        if getattr(self, '_use_encoder_norm', False):
+            h = self.encoder_norm(h)
         logits = self.actor(h)
         value = self.critic(h).squeeze(-1)
         return logits, value
