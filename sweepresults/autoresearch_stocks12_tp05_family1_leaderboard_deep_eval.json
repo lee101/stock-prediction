@@ -1,0 +1,842 @@
+{
+  "random_mut_9089": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": -0.752799540644919,
+      "worst": -0.752799540644919,
+      "neg": 14,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_9089/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_1984": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 4.8737596404336365,
+      "p10": -2.2937469155885246,
+      "worst": -2.782923373122867,
+      "neg": 12,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_1984/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_6097": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_6097/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_8903": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_8903/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_832": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": -0.19980019980019278,
+      "neg": 2,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_832/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_9657": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_9657/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_60": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": -0.19980019980019278,
+      "neg": 2,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_60/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_8077": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": -0.752799540644919,
+      "worst": -0.752799540644919,
+      "neg": 11,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_8077/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_5823": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": -0.19980019980019278,
+      "neg": 2,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_5823/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_6861": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_6861/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_1718": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": -0.7652183689753274,
+      "worst": -1.9979516949734168,
+      "neg": 18,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_1718/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_7762": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": -1.78274377732474,
+      "neg": 1,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 8.007368369051065,
+      "p10": 4.713319490614256,
+      "worst": -2.6091505155125017,
+      "neg": 1,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_7762/best.pt",
+    "raw_score_20win": -47.50128434847616
+  },
+  "random_mut_7574": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": -0.19980019980019278,
+      "neg": 2,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_7574/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_1442": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_1442/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_4383": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 3.7657882519424493,
+      "p10": -1.45896356647743,
+      "worst": -2.481145056828354,
+      "neg": 10,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_4383/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_5717": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_5717/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_3622": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": -0.752799540644919,
+      "worst": -2.4504041311358926,
+      "neg": 10,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_3622/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_7952": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": -0.19980019980019278,
+      "neg": 2,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_7952/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_3820": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": -0.19980019980019278,
+      "neg": 2,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_3820/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_5115": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_5115/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_6945": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 3.474478970723685,
+      "p10": -1.0162307129298005,
+      "worst": -3.070663799856393,
+      "neg": 11,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_6945/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_2664": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_2664/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_4507": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_4507/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_4775": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": -0.19980019980019278,
+      "neg": 2,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_4775/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_8093": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": -0.5017356006533915,
+      "worst": -1.5447413793622582,
+      "neg": 10,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_8093/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_3906": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 2.2509550476808364,
+      "p10": -1.0017317986945091,
+      "worst": -2.2437608569965413,
+      "neg": 17,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_3906/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_878": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": -0.19980019980019278,
+      "neg": 2,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_878/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_6649": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_6649/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_8831": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_8831/best.pt",
+    "raw_score_20win": -50.0
+  },
+  "random_mut_2320": {
+    "current_ensemble": {
+      "label": "tp05_s123",
+      "med": 15.969976689678077,
+      "p10": 10.805030440425881,
+      "worst": 5.6154353508308485,
+      "neg": 0,
+      "n": 50
+    },
+    "candidate": {
+      "label": "new_candidate",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": 0.0,
+      "neg": 0,
+      "n": 50
+    },
+    "ensemble4": {
+      "label": "tp05_s123+new",
+      "med": 0.0,
+      "p10": 0.0,
+      "worst": -0.19980019980019278,
+      "neg": 2,
+      "n": 50
+    },
+    "checkpoint": "pufferlib_market/checkpoints/autoresearch_stocks12_tp05_family1/random_mut_2320/best.pt",
+    "raw_score_20win": -50.0
+  }
+}
