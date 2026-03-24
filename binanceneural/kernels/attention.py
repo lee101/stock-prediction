@@ -8,6 +8,17 @@ the full S x S attention matrix.  Handles:
   - Optional additive float mask (sliding-window, dilated, etc.)
   - FP32 accumulation with BF16/FP16/FP32 output
 
+Flash Attention integration (flash_attn_mqa):
+  Priority 1 — flash-attn 2.x (flash_attn.flash_attn_interface): pre-compiled
+    CUDA cubins for SM 8.0/9.0/10.0/12.0.  Install via:
+      uv pip install flash-attn --no-build-isolation
+    or build from source for torch 2.9+:
+      MAX_JOBS=32 uv pip install flash-attn==2.8.3 --no-build-isolation
+  Priority 2 — flash-attn 4.x (flash_attn.cute): CuTe DSL path, supports
+    SM 9.0/10.x/11.x.  Installed at external/flash-attention.
+  Priority 3 — Triton kernel (this file).
+  Priority 4 — PyTorch SDPA fallback.
+
 Input shapes:
   Q : [batch, num_heads,    seq, head_dim]
   K : [batch, num_kv_heads, seq, head_dim]   num_kv_heads == 1 for MQA
@@ -31,17 +42,49 @@ try:
 except Exception:
     HAS_TRITON = False
 
+def _probe_flash_attn(fn):
+    """Return True iff fn can run a tiny forward pass on the current GPU."""
+    if not torch.cuda.is_available():
+        return False
+    try:
+        probe = torch.zeros(1, 4, 1, 64, dtype=torch.bfloat16, device="cuda")
+        fn(probe, probe, probe, causal=False)
+        return True
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Flash Attention import: prefer FA2 (flash_attn.flash_attn_interface) which
+# has native SM 8.0/9.0/10.0/12.0 cubins; fall back to FA4 (flash_attn.cute)
+# for Hopper/Blackwell datacenter GPUs.  A live forward-pass probe guards
+# against ABI mismatches or SM architectures not covered by the binary.
+# ---------------------------------------------------------------------------
+_flash_attn_func_inner = None
+_flash_attn_version: str = ""
+HAS_FLASH_ATTN: bool = False
+
+# Path 1: FA2 standard C++ extension (flash_attn_2_cuda .so)
 try:
-    from flash_attn.cute import flash_attn_func as _flash_attn_func_inner
-    # Quick probe: attempt a tiny call to verify the kernel actually works on
-    # this GPU.  flash-attn-4 raises AssertionError for unsupported SM versions.
-    _probe = torch.zeros(1, 4, 1, 64, dtype=torch.bfloat16, device="cuda") if torch.cuda.is_available() else None
-    if _probe is not None:
-        _flash_attn_func_inner(_probe, _probe, _probe, causal=False)
-    HAS_FLASH_ATTN = True
-    del _probe
+    from flash_attn.flash_attn_interface import flash_attn_func as _fa2_func  # type: ignore[import]
+    if _probe_flash_attn(_fa2_func):
+        _flash_attn_func_inner = _fa2_func
+        import flash_attn as _fa_mod
+        _flash_attn_version = getattr(_fa_mod, "__version__", "2.x")
+        HAS_FLASH_ATTN = True
 except Exception:
-    HAS_FLASH_ATTN = False
+    pass
+
+# Path 2: FA4 CuTe DSL (flash_attn.cute) — requires SM 9.0/10.x/11.x/12.x
+if not HAS_FLASH_ATTN:
+    try:
+        from flash_attn.cute import flash_attn_func as _fa4_func  # type: ignore[import]
+        if _probe_flash_attn(_fa4_func):
+            _flash_attn_func_inner = _fa4_func
+            _flash_attn_version = "4.x"
+            HAS_FLASH_ATTN = True
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -355,8 +398,14 @@ def flash_attn_mqa(
 ) -> torch.Tensor:
     """Flash Attention wrapper for multi-query/grouped-query attention.
 
-    Uses flash-attn when available; falls back to the Triton MQA kernel, then
-    SDPA.  All inputs must be on CUDA.
+    Priority order:
+      1. flash-attn 2.x (flash_attn.flash_attn_interface) — fastest, native
+         SM 8.0/9.0/10.0/12.0 cubins compiled into the .so.
+      2. flash-attn 4.x (flash_attn.cute) — CuTe DSL path for SM 9.0/10.x/11.x.
+      3. Custom Triton online-softmax kernel (HAS_TRITON=True).
+      4. PyTorch SDPA (always available).
+
+    All inputs must be on CUDA.
 
     Parameters
     ----------
@@ -371,7 +420,7 @@ def flash_attn_mqa(
     [batch, num_heads, seq, head_dim] same dtype as Q
     """
     if HAS_FLASH_ATTN:
-        # flash_attn_func expects contiguous (B, T, H, D) layout.
+        # Both FA2 and FA4 expect contiguous (B, T, H, D) layout.
         # Transpose produces non-contiguous strides, so make contiguous explicitly.
         q_bthd = Q.transpose(1, 2).contiguous()  # (B, H, T, D) -> (B, T, H, D)
         k_bthd = K.transpose(1, 2).contiguous()

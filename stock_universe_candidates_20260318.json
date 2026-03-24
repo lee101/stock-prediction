@@ -1,0 +1,394 @@
+{
+  "requested_at": "2026-03-18T00:00:00Z",
+  "paper": false,
+  "source": "user_requested_live_stock_expansion_batch",
+  "raw_snapshot_file": "docs/stock_universe_market_snapshot_20260318.json",
+  "side_policy": {
+    "note": "Evaluate some non-tech names as long-or-short candidates, but keep tech names like NVDA out of the short bucket in the initial rollout.",
+    "long_only_symbols": [
+      "NVDA",
+      "SOFI",
+      "INTC",
+      "TSLA",
+      "MU",
+      "TTD",
+      "NBIS",
+      "TME",
+      "PATH"
+    ],
+    "evaluate_both_sides_symbols": [
+      "PLUG",
+      "ONDS",
+      "AAL",
+      "NOK",
+      "F",
+      "BMNR",
+      "MARA",
+      "BTG",
+      "PFE",
+      "OWL",
+      "RIG",
+      "ABEV",
+      "ITUB",
+      "HIMS",
+      "RCAT",
+      "RKLB"
+    ],
+    "already_live_long_only_symbols": [
+      "NVDA",
+      "TSLA"
+    ]
+  },
+  "current_live_supervisor_symbols": [
+    "NVDA",
+    "PLTR",
+    "GOOG",
+    "DBX",
+    "TRIP",
+    "MTCH",
+    "NYT",
+    "AAPL",
+    "MSFT",
+    "META",
+    "TSLA",
+    "NET",
+    "BKNG",
+    "EBAY",
+    "EXPE",
+    "ITUB",
+    "BTG",
+    "ABEV"
+  ],
+  "next_trial_order": [
+    "PLUG"
+  ],
+  "covariate_seed_groups": {
+    "semis_and_ai": [
+      "NVDA",
+      "MU",
+      "INTC",
+      "AAPL",
+      "MSFT",
+      "GOOG"
+    ],
+    "growth_platforms": [
+      "SOFI",
+      "TTD",
+      "TSLA",
+      "META",
+      "PLTR",
+      "GOOG"
+    ],
+    "travel_and_consumer": [
+      "AAL",
+      "BKNG",
+      "EXPE",
+      "TRIP",
+      "MTCH"
+    ],
+    "value_and_defensive": [
+      "F",
+      "PFE",
+      "NOK"
+    ],
+    "international_adrs": [
+      "TME",
+      "ABEV",
+      "ITUB"
+    ],
+    "speculative_small_cap": [
+      "ONDS",
+      "BMNR",
+      "NBIS",
+      "MARA",
+      "HIMS",
+      "PATH",
+      "RCAT",
+      "RKLB"
+    ]
+  },
+  "short_candidate_seed_groups": {
+    "cyclicals_and_transport": [
+      "AAL",
+      "F",
+      "RIG"
+    ],
+    "defensive_and_value": [
+      "PFE",
+      "BTG",
+      "ABEV",
+      "ITUB",
+      "NOK"
+    ],
+    "speculative_non_tech": [
+      "PLUG",
+      "ONDS",
+      "BMNR",
+      "MARA",
+      "OWL",
+      "HIMS",
+      "RCAT",
+      "RKLB"
+    ]
+  },
+  "candidates": [
+    {
+      "symbol": "NVDA",
+      "company": "NVIDIA Corporation",
+      "priority": 100,
+      "currently_live": true,
+      "history_rows": 2281,
+      "forecast_cache_horizons": [
+        "h1",
+        "h6",
+        "h24"
+      ],
+      "status": "already_live",
+      "thesis": "Keep as the semiconductor and AI anchor; use as a covariate seed for related names."
+    },
+    {
+      "symbol": "PLUG",
+      "company": "Plug Power Inc.",
+      "priority": 30,
+      "currently_live": false,
+      "history_rows": 1256,
+      "forecast_cache_horizons": [],
+      "status": "rejected_first_pass_cache_gate",
+      "thesis": "Speculative clean-energy exposure; only worth simming after hourly history quality is confirmed."
+    },
+    {
+      "symbol": "ONDS",
+      "company": "Ondas Inc.",
+      "priority": 20,
+      "currently_live": false,
+      "history_rows": 1085,
+      "forecast_cache_horizons": [],
+      "status": "rejected_first_pass_cache_gate",
+      "thesis": "Small-cap aerospace and drone-adjacent name; high-volatility tail candidate."
+    },
+    {
+      "symbol": "SOFI",
+      "company": "SoFi Technologies, Inc.",
+      "priority": 95,
+      "currently_live": false,
+      "history_rows": 9369,
+      "forecast_cache_horizons": [],
+      "status": "rejected_retrain_sortino_regression",
+      "thesis": "Liquid high-beta fintech with enough history for immediate cache build and Chronos2 retraining."
+    },
+    {
+      "symbol": "INTC",
+      "company": "Intel Corporation",
+      "priority": 90,
+      "currently_live": false,
+      "history_rows": 10185,
+      "forecast_cache_horizons": [],
+      "status": "rejected_retrain_sortino_regression",
+      "thesis": "Large-cap semiconductor diversification against NVDA and MU."
+    },
+    {
+      "symbol": "AAL",
+      "company": "American Airlines Group Inc.",
+      "priority": 35,
+      "currently_live": false,
+      "history_rows": 1051,
+      "forecast_cache_horizons": [],
+      "status": "rejected_first_pass_worse_than_baseline",
+      "thesis": "Travel cyclicals can diversify the tech-heavy basket once data is in place."
+    },
+    {
+      "symbol": "TSLA",
+      "company": "Tesla, Inc.",
+      "priority": 100,
+      "currently_live": true,
+      "history_rows": 3641,
+      "forecast_cache_horizons": [
+        "h1",
+        "h6",
+        "h24"
+      ],
+      "status": "already_live",
+      "thesis": "Already cache-ready and live; keep as the highest-beta large-cap growth component."
+    },
+    {
+      "symbol": "NOK",
+      "company": "Nokia Oyj",
+      "priority": 25,
+      "currently_live": false,
+      "history_rows": 1142,
+      "forecast_cache_horizons": [],
+      "status": "rejected_retrain_softgate_sim",
+      "thesis": "Telecom and infrastructure factor candidate with lower growth beta."
+    },
+    {
+      "symbol": "MU",
+      "company": "Micron Technology, Inc.",
+      "priority": 88,
+      "currently_live": false,
+      "history_rows": 9914,
+      "forecast_cache_horizons": [],
+      "status": "rejected_retrain_cache_gate",
+      "thesis": "Semiconductor memory-cycle name with strong covariance utility versus NVDA and INTC."
+    },
+    {
+      "symbol": "F",
+      "company": "Ford Motor Company",
+      "priority": 72,
+      "currently_live": false,
+      "history_rows": 10030,
+      "forecast_cache_horizons": [],
+      "status": "rejected_retrain_sortino_regression",
+      "thesis": "Cheap, liquid industrial and consumer cyclical exposure for regime diversification."
+    },
+    {
+      "symbol": "BMNR",
+      "company": "Bitmine Immersion Technologies, Inc.",
+      "priority": 15,
+      "currently_live": false,
+      "history_rows": 1140,
+      "forecast_cache_horizons": [],
+      "status": "rejected_first_pass_cache_gate",
+      "thesis": "Very high-volatility small-cap crypto-adjacent name; only after data and liquidity checks."
+    },
+    {
+      "symbol": "NBIS",
+      "company": "Nebius Group N.V.",
+      "priority": 18,
+      "currently_live": false,
+      "history_rows": 1092,
+      "forecast_cache_horizons": [],
+      "status": "rejected_retrain_cache_gate",
+      "thesis": "Speculative AI infrastructure candidate that may behave differently from US megacap tech."
+    },
+    {
+      "symbol": "TME",
+      "company": "Tencent Music Entertainment Group",
+      "priority": 24,
+      "currently_live": false,
+      "history_rows": 989,
+      "forecast_cache_horizons": [],
+      "status": "rejected_retrain_cache_gate",
+      "thesis": "International internet and ADR exposure for geographic diversification."
+    },
+    {
+      "symbol": "MARA",
+      "company": "MARA Holdings, Inc.",
+      "priority": 28,
+      "currently_live": false,
+      "history_rows": 1181,
+      "forecast_cache_horizons": [],
+      "status": "rejected_first_pass_cache_gate",
+      "thesis": "Crypto beta proxy with different event sensitivity from pure equities."
+    },
+    {
+      "symbol": "TTD",
+      "company": "The Trade Desk, Inc.",
+      "priority": 68,
+      "currently_live": false,
+      "history_rows": 1747,
+      "forecast_cache_horizons": [],
+      "status": "rejected_retrain_cache_gate",
+      "thesis": "Ad-tech growth name; enough history to test but shorter than the larger-cap candidates."
+    },
+    {
+      "symbol": "BTG",
+      "company": "B2Gold Corp.",
+      "priority": 18,
+      "currently_live": true,
+      "history_rows": 1006,
+      "forecast_cache_horizons": [],
+      "status": "promoted_live_20260319",
+      "thesis": "Gold miner hedge candidate that could offset tech-led drawdowns."
+    },
+    {
+      "symbol": "PFE",
+      "company": "Pfizer Inc.",
+      "priority": 78,
+      "currently_live": false,
+      "history_rows": 10052,
+      "forecast_cache_horizons": [],
+      "status": "rejected_retrain_sortino_regression",
+      "thesis": "Large-cap defensive healthcare name with low measured correlation against the tech-heavy core."
+    },
+    {
+      "symbol": "OWL",
+      "company": "Blue Owl Capital Inc.",
+      "priority": 20,
+      "currently_live": false,
+      "history_rows": 992,
+      "forecast_cache_horizons": [],
+      "status": "rejected_retrain_cache_gate",
+      "thesis": "Alternative asset management factor candidate after data coverage is added."
+    },
+    {
+      "symbol": "RIG",
+      "company": "Transocean Ltd.",
+      "priority": 16,
+      "currently_live": false,
+      "history_rows": 1005,
+      "forecast_cache_horizons": [],
+      "status": "rejected_retrain_cache_gate",
+      "thesis": "Energy and offshore drilling cyclicality candidate."
+    },
+    {
+      "symbol": "ABEV",
+      "company": "Ambev S.A.",
+      "priority": 14,
+      "currently_live": true,
+      "history_rows": 1000,
+      "forecast_cache_horizons": [],
+      "status": "promoted_live_20260319",
+      "thesis": "Lower-volatility international consumer staple ADR."
+    },
+    {
+      "symbol": "ITUB",
+      "company": "Itaú Unibanco Holding S.A.",
+      "priority": 22,
+      "currently_live": true,
+      "history_rows": 995,
+      "forecast_cache_horizons": [],
+      "status": "promoted_live_20260319",
+      "thesis": "International financials exposure that may diversify US growth risk."
+    },
+    {
+      "symbol": "HIMS",
+      "company": "Hims & Hers Health, Inc.",
+      "priority": 22,
+      "currently_live": false,
+      "history_rows": 1089,
+      "forecast_cache_horizons": [],
+      "status": "rejected_first_pass_cache_gate",
+      "thesis": "Consumer digital health growth name for later high-beta expansion."
+    },
+    {
+      "symbol": "PATH",
+      "company": "UiPath, Inc.",
+      "priority": 26,
+      "currently_live": false,
+      "history_rows": 1019,
+      "forecast_cache_horizons": [],
+      "status": "rejected_retrain_cache_gate",
+      "thesis": "Automation and software factor candidate for a later enterprise-tech batch."
+    },
+    {
+      "symbol": "RCAT",
+      "company": "Red Cat Holdings, Inc.",
+      "priority": 12,
+      "currently_live": false,
+      "history_rows": 1012,
+      "forecast_cache_horizons": [],
+      "status": "rejected_first_pass_cache_gate",
+      "thesis": "Micro-cap drone and defense-adjacent candidate, high-risk and data-sensitive."
+    },
+    {
+      "symbol": "RKLB",
+      "company": "Rocket Lab Corporation",
+      "priority": 27,
+      "currently_live": false,
+      "history_rows": 1012,
+      "forecast_cache_horizons": [],
+      "status": "rejected_retrain_cache_gate",
+      "thesis": "Space and defense-adjacent growth name with potential regime diversification."
+    }
+  ]
+}

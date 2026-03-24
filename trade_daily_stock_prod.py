@@ -22,6 +22,8 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
+import torch
+import torch.nn.functional as F
 
 REPO = Path(__file__).resolve().parent
 if str(REPO) not in sys.path:
@@ -53,7 +55,18 @@ DEFAULT_SYMBOLS = [
     "V",
     "AMZN",
 ]
-DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/stocks12_daily_tp05_longonly/best.pt"
+DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt"
+# Primary: tp05_s123 (h=1024, trade_penalty=0.05, anneal_lr=True, seed=123)
+# Ensemble: tp05_s123 + tp05_s15 → 0/50 neg, med=28.76%, p10=16.37%, worst=10.17% @ 5bps
+# vs standalone tp05_s123: med=15.97%, p10=10.81%, worst=5.62% — +80% median, +51% p10
+# vs standalone tp05_s15:  med=28.76%, p10=14.50%, worst=8.42% — ensemble has better downside
+# tp05_s15: seed=15, 128 envs, no bf16, 35M steps, best at update_000950 (0/50 neg, 50-win)
+# Robust to 5/10/20/50bps slippage — 0/50 neg at all levels
+# Previous standalone s123: med=16.52%, p10=10.45%, worst=5.62% (now superseded by ensemble)
+# Previous ensemble rmu2201+rmu8597+rmu5526: med=14.94%, p10=7.64% (kept for reference)
+DEFAULT_EXTRA_CHECKPOINTS = [
+    "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt",
+]
 DEFAULT_DATA_DIR = "trainingdata"
 DEFAULT_ALLOCATION_PCT = 25.0
 STATE_PATH = REPO / "strategy_state/daily_stock_rl_state.json"
@@ -417,12 +430,63 @@ def load_inference_frames(
         return frames, "local_fallback"
 
 
+def _load_bare_policy(checkpoint_path: str, obs_size: int, num_actions: int, device: str):
+    """Load a policy nn.Module from a checkpoint without full PPOTrader overhead."""
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    # Support multiple checkpoint formats: direct state_dict, {"model": sd}, {"model_state_dict": sd}
+    if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
+        state_dict = ckpt["model_state_dict"]
+    elif isinstance(ckpt, dict) and "model" in ckpt and isinstance(ckpt["model"], dict):
+        state_dict = ckpt["model"]
+    else:
+        state_dict = ckpt
+    encoder_key = [k for k in state_dict if "encoder" in k and "weight" in k]
+    if encoder_key:
+        hidden = state_dict[encoder_key[0]].shape[0]
+        from pufferlib_market.train import TradingPolicy
+        policy = TradingPolicy(obs_size, num_actions, hidden)
+    else:
+        input_proj_key = [k for k in state_dict if "input_proj" in k and "weight" in k]
+        hidden = state_dict[input_proj_key[0]].shape[0] if input_proj_key else 256
+        from pufferlib_market.inference import Policy
+        policy = Policy(obs_size, num_actions, hidden, 3)
+    policy.load_state_dict(state_dict)
+    policy.to(torch.device(device))
+    policy.eval()
+    return policy
+
+
+def _ensemble_softmax_signal(
+    primary: DailyPPOTrader,
+    extra_policies: list,
+    features: np.ndarray,
+    prices: dict,
+):
+    """Softmax-average probabilities across primary + extra policies, return TradingSignal."""
+    obs = primary.build_observation(features, prices)
+    obs_t = torch.from_numpy(obs).unsqueeze(0).to(primary.device)
+    all_probs = []
+    value_est = 0.0
+    with torch.inference_mode():
+        logits, value = primary.policy(obs_t)
+        all_probs.append(F.softmax(logits, dim=-1))
+        value_est = float(value.item())
+        for pol in extra_policies:
+            logits_i, _ = pol(obs_t)
+            all_probs.append(F.softmax(logits_i, dim=-1))
+    avg_probs = torch.stack(all_probs, dim=0).mean(dim=0)
+    action = int(avg_probs.argmax(dim=-1).item())
+    confidence = float(avg_probs[0, action].item())
+    return primary._decode_action(action, confidence, value_est)
+
+
 def build_signal(
     checkpoint: str,
     frames: dict[str, pd.DataFrame],
     *,
     device: str = "cpu",
     portfolio: PortfolioContext = PortfolioContext(),
+    extra_checkpoints: Optional[list] = None,
 ):
     aligned = _align_frames(frames)
     indexed = {
@@ -442,7 +506,26 @@ def build_signal(
         symbol_upper = portfolio.current_symbol.upper()
         if symbol_upper in trader.SYMBOLS and trader.position_qty > 0:
             trader.current_position = trader.SYMBOLS.index(symbol_upper)
-    signal = trader.get_daily_signal(indexed, prices)
+
+    if extra_checkpoints:
+        features = np.zeros((trader.num_symbols, 16), dtype=np.float32)
+        for i, sym in enumerate(trader.SYMBOLS):
+            if sym in indexed:
+                features[i] = compute_daily_features(indexed[sym])
+        extra_policies = [
+            _load_bare_policy(
+                str((REPO / p).resolve()) if not Path(p).is_absolute() else p,
+                trader.obs_size,
+                trader.num_actions,
+                device,
+            )
+            for p in extra_checkpoints
+        ]
+        signal = _ensemble_softmax_signal(trader, extra_policies, features, prices)
+        logger.info("Ensemble signal (%d policies, softmax_avg)", 1 + len(extra_policies))
+    else:
+        signal = trader.get_daily_signal(indexed, prices)
+
     if signal.direction == "short":
         logger.warning("Checkpoint produced short signal on long-only path; flattening")
         signal = signal.__class__(
@@ -792,6 +875,7 @@ def run_once(
     data_source: str,
     data_dir: str,
     state_path: Path = STATE_PATH,
+    extra_checkpoints: Optional[list] = None,
 ) -> dict:
     now = datetime.now(timezone.utc)
     state = load_state(state_path)
@@ -838,7 +922,7 @@ def run_once(
         bar_data_source = "local"
         latest_bar = latest_bar_timestamp(frames)
 
-    signal, close_prices = build_signal(checkpoint, frames, portfolio=portfolio)
+    signal, close_prices = build_signal(checkpoint, frames, portfolio=portfolio, extra_checkpoints=extra_checkpoints)
     bars_fresh = bars_are_fresh(latest_bar=latest_bar, now=now) if latest_bar is not None else False
 
     payload = _signal_payload(signal, checkpoint=checkpoint, quotes=quotes)
@@ -912,6 +996,7 @@ def run_daemon(
     allocation_pct: float,
     dry_run: bool,
     data_dir: str,
+    extra_checkpoints: Optional[list] = None,
 ) -> None:
     logger.info("Starting daily stock RL daemon")
     while True:
@@ -933,6 +1018,7 @@ def run_daemon(
                     dry_run=dry_run,
                     data_source="alpaca",
                     data_dir=data_dir,
+                    extra_checkpoints=extra_checkpoints,
                 )
             except Exception as exc:
                 logger.exception("Daily stock RL cycle failed: %s", exc)
@@ -951,6 +1037,10 @@ def run_daemon(
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Production daily stock RL trader")
     parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT)
+    parser.add_argument("--extra-checkpoints", nargs="*", default=None,
+                        help="Additional checkpoints for ensemble (default: DEFAULT_EXTRA_CHECKPOINTS)")
+    parser.add_argument("--no-ensemble", action="store_true",
+                        help="Disable ensemble, use --checkpoint alone")
     parser.add_argument("--data-dir", default=DEFAULT_DATA_DIR)
     parser.add_argument("--data-source", choices=["alpaca", "local"], default="alpaca")
     parser.add_argument("--allocation-pct", type=float, default=DEFAULT_ALLOCATION_PCT)
@@ -971,6 +1061,16 @@ def main(argv: Optional[list[str]] = None) -> None:
     symbols = [str(symbol).upper() for symbol in (args.symbols or DEFAULT_SYMBOLS)]
     checkpoint = str((REPO / args.checkpoint).resolve()) if not Path(args.checkpoint).is_absolute() else args.checkpoint
 
+    def _resolve(p: str) -> str:
+        return str((REPO / p).resolve()) if not Path(p).is_absolute() else p
+
+    if args.no_ensemble:
+        extra_checkpoints: Optional[list] = None
+    elif args.extra_checkpoints is not None:
+        extra_checkpoints = [_resolve(p) for p in args.extra_checkpoints]
+    else:
+        extra_checkpoints = [_resolve(p) for p in DEFAULT_EXTRA_CHECKPOINTS]
+
     if args.backtest:
         run_backtest(
             checkpoint=checkpoint,
@@ -988,6 +1088,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             allocation_pct=args.allocation_pct,
             dry_run=args.dry_run,
             data_dir=args.data_dir,
+            extra_checkpoints=extra_checkpoints,
         )
         return
 
@@ -999,6 +1100,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         dry_run=args.dry_run,
         data_source=args.data_source,
         data_dir=args.data_dir,
+        extra_checkpoints=extra_checkpoints,
     )
 
 

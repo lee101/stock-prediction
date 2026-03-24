@@ -286,6 +286,7 @@ hourlycryptotraining/checkpoints/
 hourlycryptotraining/checkpoints_*
 hourlycryptotraining/forecast_cache_hourly/
 hourlycryptomarketsimulator/*.csv
+binanceneural_archsweep/*.csv
 
 # Neural daily training artifacts
 neuraldailytraining/checkpoints/
