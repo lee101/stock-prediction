@@ -380,6 +380,7 @@ def worker_loop(
     time_budget: int,
     holdout_data: Optional[str],
     holdout_n_windows: int,
+    holdout_eval_steps: int,
     holdout_fill_buffer_bps: float,
     stocks_mode: bool,
 ) -> None:
@@ -430,6 +431,7 @@ def worker_loop(
                 checkpoint_dir=job_ckpt_dir,
                 holdout_data=holdout_data,
                 holdout_n_windows=holdout_n_windows,
+                holdout_eval_steps=holdout_eval_steps,
                 holdout_fill_buffer_bps=holdout_fill_buffer_bps,
                 best_trial_val_return=-float("inf"),
                 best_trial_combined_score=-float("inf"),
@@ -533,6 +535,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         time_budget=args.time_budget,
         holdout_data=args.holdout_data or None,
         holdout_n_windows=args.holdout_n_windows,
+        holdout_eval_steps=args.holdout_eval_steps,
         holdout_fill_buffer_bps=args.holdout_fill_buffer_bps,
         stocks_mode=args.stocks,
     )
@@ -591,6 +594,8 @@ def main() -> None:
     p_run.add_argument("--time-budget", type=int, default=300, help="Seconds per trial (default 300)")
     p_run.add_argument("--holdout-data", default="", help="Holdout data for multi-window eval")
     p_run.add_argument("--holdout-n-windows", type=int, default=50)
+    p_run.add_argument("--holdout-eval-steps", type=int, default=0,
+                       help="Window length in steps for holdout eval (0=disabled, e.g. 90 for daily stocks)")
     p_run.add_argument("--holdout-fill-buffer-bps", type=float, default=5.0)
     p_run.add_argument("--stocks", action="store_true", help="Use stocks mode (disables shorts)")
 
