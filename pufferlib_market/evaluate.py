@@ -51,6 +51,11 @@ class TradingPolicy(nn.Module):
         self.obs_size = obs_size
         self.num_actions = num_actions
 
+        # obs_norm buffers — populated by train.py when --obs-norm is used.
+        # Registered as None so checkpoints with/without obs_norm load correctly.
+        self.register_buffer("obs_mean", None)
+        self.register_buffer("obs_std", None)
+
         self.encoder = nn.Sequential(
             nn.Linear(obs_size, hidden),
             _act(activation),
@@ -71,6 +76,8 @@ class TradingPolicy(nn.Module):
         )
 
     def forward(self, x):
+        if self.obs_mean is not None and self.obs_std is not None:
+            x = (x - self.obs_mean) / (self.obs_std + 1e-8)
         h = self.encoder(x)
         logits = self.actor(h)
         value = self.critic(h).squeeze(-1)
@@ -144,7 +151,21 @@ def load_policy(ckpt: dict, obs_size: int, num_actions: int, hidden: int, arch: 
         policy = TradingPolicy(obs_size, num_actions, hidden=hidden, activation="relu_sq").to(device)
     else:
         policy = TradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
-    policy.load_state_dict(ckpt["model"])
+    state_dict = ckpt["model"]
+    missing, unexpected = policy.load_state_dict(state_dict, strict=False)
+    # obs_mean/obs_std may be absent (old ckpt) or present (obs_norm training); both OK.
+    # Any other missing/unexpected keys indicate a real mismatch.
+    ignored = {"obs_mean", "obs_std"}
+    bad_missing = [k for k in missing if k not in ignored]
+    bad_unexpected = [k for k in unexpected if k not in ignored]
+    if bad_missing or bad_unexpected:
+        raise RuntimeError(
+            f"Checkpoint architecture mismatch — missing: {bad_missing}, unexpected: {bad_unexpected}"
+        )
+    # Populate obs buffers from state_dict so normalization is applied at inference
+    for buf in ("obs_mean", "obs_std"):
+        if buf in state_dict and state_dict[buf] is not None:
+            setattr(policy, buf, state_dict[buf].to(device))
     policy.eval()
     return policy
 
