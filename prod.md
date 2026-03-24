@@ -2,11 +2,17 @@
 
 ## Active Deployments
 
-### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- BROKEN -- Gemini key revoked + RL obs mismatch
+### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- BROKEN -- Gemini key revoked
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`
 - **Launch**: `deployments/binance-hybrid-spot/launch.sh`
-- **Model**: Pufferlib robust_champion (h1024 MLP, PPO) + RL-only fallback when Gemini unavailable
-- **RL Checkpoint**: `pufferlib_market/checkpoints/a100_scaleup/robust_champion/best.pt`
+- **PENDING DEPLOY (when key restored)**: `c15_tp03_slip5_s7` (2026-03-24 sweep winner)
+  - Checkpoint: `pufferlib_market/checkpoints/crypto15_v2/gpu0/c15_tp03_slip5_s7/best.pt`
+  - 100/100 positive episodes, median=+68.98%, min=+65.44%, p05=+67.1%
+  - Annualized: **+189.6%** (vs BTC -18% baseline), Sortino=2.33, WR=59.2%
+  - Slippage robust: 5bps=+74%, 8bps=+69%, 16bps=+56% (all excellent)
+  - eval: `python -m pufferlib_market.evaluate --checkpoint pufferlib_market/checkpoints/crypto15_v2/gpu0/c15_tp03_slip5_s7/best.pt --data-path pufferlib_market/data/crypto15_daily_val.bin --deterministic --no-drawdown-profit-early-exit --hidden-size 1024 --max-steps 180 --num-episodes 100 --periods-per-year 365.0 --fill-slippage-bps 8`
+- **Previous model**: Pufferlib robust_champion (h1024 MLP, PPO) — obs mismatch fixed but not yet swapped
+- **RL Checkpoint (old)**: `pufferlib_market/checkpoints/a100_scaleup/robust_champion/best.pt`
 - **50-window holdout** (seed=42, 30-bar windows, deterministic, no early stop):
   - Median return: +10.80%, Positive windows: 76%, Median Sortino: 3.28
   - 60-bar windows: 100% positive, full-span: +58.22% return, 26.58% max DD
