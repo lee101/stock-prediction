@@ -1,0 +1,4 @@
+description,val_return,val_sortino,val_wr,robust_score,gpu_id,elapsed_s,job_id,timestamp
+v2cfg_s1,0.0239,0.26,1.0,-136.2632484794079,0,208,0386d75b,2026-03-24T19:44:53
+v2cfg_s2,0.0,0.0,0.0,-50.0,0,131,97ee9b5f,2026-03-24T19:47:05
+v2cfg_s3,0.0,0.0,0.0,-50.0,0,67,f003d201,2026-03-24T19:48:12
