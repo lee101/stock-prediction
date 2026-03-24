@@ -255,8 +255,9 @@ def main() -> None:
                         help="Training budget per seed in seconds (default 1800=30min)")
     parser.add_argument("--n-pods", type=int, default=4,
                         help="Number of parallel RunPod pods (default 4)")
-    parser.add_argument("--gpu", type=str, default="h100",
-                        help="GPU type: h100, a100, 4090 (default h100)")
+    parser.add_argument("--gpu", type=str, default="a100",
+                        help="GPU type: a100, 4090, a40, h100 (default a100; community cloud GPUs "
+                             "support direct SSH; H100 secure cloud may not)")
     parser.add_argument("--local", action="store_true",
                         help="Run locally instead of RunPod (single GPU, sequential)")
     parser.add_argument("--dry-run", action="store_true",
@@ -353,19 +354,28 @@ def main() -> None:
                 sys.exit(1)
             break
 
-    # Wait for pods to be ready
-    print(f"\nWaiting for {len(pods)} pods to start...", flush=True)
+    # Wait for pods to be ready IN PARALLEL (each pod gets up to 1800s)
+    print(f"\nWaiting for {len(pods)} pods to start (parallel, 30-min timeout)...", flush=True)
     ready_pods: list[PoolPod] = []
-    for pod in pods:
+    ready_lock = threading.Lock()
+
+    def _wait_pod(pod: PoolPod) -> None:
         try:
-            raw = client.wait_for_pod(pod.pod_id, timeout=600)
+            raw = client.wait_for_pod(pod.pod_id, timeout=1800)
             pod.ssh_host = raw.ssh_host or pod.ssh_host
             pod.ssh_port = raw.ssh_port or pod.ssh_port
             pod.status = "ready"
-            ready_pods.append(pod)
+            with ready_lock:
+                ready_pods.append(pod)
             print(f"  {pod.name} ready at {pod.ssh_host}:{pod.ssh_port}", flush=True)
         except Exception as exc:
             print(f"  {pod.name} failed to start: {exc}", flush=True)
+
+    wait_threads = [threading.Thread(target=_wait_pod, args=(p,), daemon=True) for p in pods]
+    for t in wait_threads:
+        t.start()
+    for t in wait_threads:
+        t.join()
 
     if not ready_pods:
         print("No pods ready. Aborting.")
