@@ -94,7 +94,19 @@ def load_policy(
     else:
         raise ValueError(f"Unsupported arch: {arch}")
 
-    policy.load_state_dict(state_dict)
+    missing, unexpected = policy.load_state_dict(state_dict, strict=False)
+    # encoder_norm: added to train.py to prevent BF16 precision collapse.
+    #   Old ckpts lack it → _use_encoder_norm=False (do NOT apply norm; LayerNorm would corrupt).
+    #   New ckpts have it → _use_encoder_norm=True (apply norm as trained).
+    if hasattr(policy, '_use_encoder_norm'):
+        policy._use_encoder_norm = "encoder_norm.weight" not in missing
+    ignored = {"obs_mean", "obs_std", "encoder_norm.weight", "encoder_norm.bias"}
+    bad_missing = [k for k in missing if k not in ignored]
+    bad_unexpected = [k for k in unexpected if k not in ignored]
+    if bad_missing or bad_unexpected:
+        raise RuntimeError(
+            f"Checkpoint architecture mismatch — missing: {bad_missing}, unexpected: {bad_unexpected}"
+        )
     policy.eval()
     return policy, state_dict, num_actions
 
