@@ -145,6 +145,7 @@ class PodConfig:
     image: str = TRAINING_DOCKER_IMAGE
     volume_size: int = 120
     container_disk: int = 40
+    cloud_type: str = "COMMUNITY"  # COMMUNITY for direct SSH; SECURE for H100/datacenter
     template_id: Optional[str] = None
     env_vars: dict[str, str] = field(default_factory=dict)
 
@@ -265,7 +266,7 @@ class RunPodClient:
             "name": config.name,
             "gpuTypeId": gpu_type_id,
             "gpuCount": config.gpu_count,
-            "cloudType": "ALL",
+            "cloudType": config.cloud_type,
             "volumeInGb": config.volume_size,
             "containerDiskInGb": config.container_disk,
             "startSsh": True,
