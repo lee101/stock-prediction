@@ -247,6 +247,19 @@ sudo tail -20 /var/log/supervisor/binance-hybrid-spot-error.log
 - **Root cause**: 20-window test with seed=1337 samples ~30% of all possible start windows. Models with sparse trading can be lucky/unlucky in which windows are sampled.
 - **Fix**: Use 50-window EnsembleTrader with default_rng(42) as the ONLY reliable deployment metric. The 20-window holdout_robust_score is only a coarse filter (keep score > -40 for follow-up, but false negatives exist).
 
+### 2026-03-24 -- Triton fused kernels broke training on PyTorch 2.9
+- **What**: `fused_mlp_relu` Triton kernels in `TradingPolicy` don't support autograd backward pass. Training crashed with "element 0 of tensors does not require grad".
+- **Root cause**: Triton fused kernels were used in both train and eval mode. They're inference-only optimizations (no custom backward).
+- **Fix**: Guard all fused paths behind `not self.training` check. Also wrapped CUDA graph capture in try/except with autograd validation.
+- **Impact**: All local training was broken. Fixed in commit `4e05306f`.
+
+### 2026-03-24 -- Crypto29 daily autoresearch (local 3090 Ti)
+- **Best**: `robust_reg_tp005_sds02` (holdout=-231.5, val_ret=-0.076)
+- Config: wd=0.05, obs_norm, 8bps slip, tp=0.005, smooth_downside_penalty=0.2
+- **Findings**: Smooth downside penalty helps. Trade penalty 0.005 > 0.01. h512 hurts. Entropy annealing bad on daily crypto.
+- Holdout scores all negative (-231 to -283): 29-sym daily at 90 steps has limited edge
+- **Next**: Need hourly data (34-sym, 720 steps) on larger GPU for meaningful differentiation
+
 ### 2026-03-23 -- Daily stock PPO: autoresearch leaderboard metric was wrong
 - **What**: The autoresearch leaderboard ranked random_mut_2272 as best (robust_score=-5.15) and random_mut_2201 as worst (-110.76) on the holdout set. In reality the ranking is inverted.
 - **Root cause**: Autoresearch used stochastic policy + `enable_drawdown_profit_early_exit=True` for holdout eval. Both inflate results for mediocre models. Deterministic + no-early-stop is the correct production proxy.
