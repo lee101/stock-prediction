@@ -212,10 +212,13 @@ def main() -> None:
         device=device,
     )
 
+    # Cap max_steps at num_timesteps-1 so short val datasets (e.g. stocks12 201-step val)
+    # don't raise ValueError when config.max_steps (720) exceeds the data length.
+    effective_max_steps = min(args.max_steps, max(1, daily_data.num_timesteps - 1))
     daily = simulate_daily_policy(
         daily_data,
         policy_fn,
-        max_steps=args.max_steps,
+        max_steps=effective_max_steps,
         fee_rate=args.fee_rate,
         fill_buffer_bps=args.fill_buffer_bps,
         max_leverage=args.max_leverage,
@@ -236,7 +239,7 @@ def main() -> None:
         market=market,
         start_date=args.start_date,
         end_date=args.end_date,
-        max_steps=args.max_steps,
+        max_steps=effective_max_steps,
         fee_rate=args.fee_rate,
         max_leverage=args.max_leverage,
         short_borrow_apr=args.short_borrow_apr,
@@ -245,12 +248,12 @@ def main() -> None:
 
     daily_ann = annualize_total_return(
         daily.total_return,
-        periods=args.max_steps,
+        periods=effective_max_steps,
         periods_per_year=args.daily_periods_per_year,
     )
     hourly_ann = annualize_total_return(
         hourly.total_return,
-        periods=args.max_steps,
+        periods=effective_max_steps,
         periods_per_year=args.daily_periods_per_year,
     )
 
@@ -262,7 +265,7 @@ def main() -> None:
             market=market,
             start_date=args.start_date,
             end_date=args.end_date,
-            max_steps_days=args.max_steps,
+            max_steps_days=effective_max_steps,
             fee_rate=args.fee_rate,
             max_leverage=args.max_leverage,
             short_borrow_apr=args.short_borrow_apr,
