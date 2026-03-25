@@ -403,6 +403,19 @@ def market_hours_between(start_utc: datetime, end_utc: datetime) -> float:
     return total_minutes / 60.0
 
 
+def calendar_hours_between(start_utc: datetime, end_utc: datetime) -> float:
+    """Count wall-clock hours between two datetimes, inclusive of weekends/holidays."""
+    if start_utc.tzinfo is None:
+        start_utc = start_utc.replace(tzinfo=timezone.utc)
+    else:
+        start_utc = start_utc.astimezone(timezone.utc)
+    if end_utc.tzinfo is None:
+        end_utc = end_utc.replace(tzinfo=timezone.utc)
+    else:
+        end_utc = end_utc.astimezone(timezone.utc)
+    return max((end_utc - start_utc).total_seconds(), 0.0) / 3600.0
+
+
 def get_alpaca_client(paper: bool = True):
     from alpaca.trading.client import TradingClient
     key_id = ALP_KEY_ID if paper else ALP_KEY_ID_PROD
@@ -1133,11 +1146,23 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
         entry_time = datetime.fromisoformat(info["entry_time"])
         if entry_time.tzinfo is None:
             entry_time = entry_time.replace(tzinfo=timezone.utc)
-        hours_held = market_hours_between(entry_time, now)
+        use_calendar_hours = is_crypto_symbol(symbol)
+        hours_held = (
+            calendar_hours_between(entry_time, now)
+            if use_calendar_hours
+            else market_hours_between(entry_time, now)
+        )
         pos_hold_limit = info.get("hold_hours", max_hold_hours)
 
         if hours_held >= pos_hold_limit:
-            logger.info("{}: hold timeout ({:.1f} market hrs >= {:.1f}h), force closing", symbol, hours_held, pos_hold_limit)
+            hours_label = "calendar" if use_calendar_hours else "market"
+            logger.info(
+                "{}: hold timeout ({:.1f} {} hrs >= {:.1f}h), force closing",
+                symbol,
+                hours_held,
+                hours_label,
+                pos_hold_limit,
+            )
             log_event(
                 "manage_position_action",
                 symbol=symbol,
@@ -1145,6 +1170,7 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
                 reason="hold_timeout",
                 hours_held=float(hours_held),
                 hold_limit=float(pos_hold_limit),
+                hold_clock=hours_label,
             )
             cancel_symbol_orders(api, symbol, orders_by_symbol)
             time.sleep(0.75)  # Wait for cancel to propagate before submitting new order
@@ -1210,8 +1236,10 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
         tracked.pop(s, None)
 
     pending_close = set(state.get("pending_close", []))
+    newly_pending_close: set[str] = set()
     for s in removed:
         pending_close.add(s)
+        newly_pending_close.add(s)
     state["pending_close"] = list(pending_close)
 
     for symbol, pos_data in positions.items():
@@ -1227,11 +1255,13 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
                 log_event("manage_position_action", symbol=symbol, action="force_close_untracked", reason="untracked_not_active", qty=float(qty))
                 force_close_position(api, symbol, qty, cur_price)
                 pending_close.add(symbol)
+                newly_pending_close.add(symbol)
                 continue
             logger.info("{}: untracked position found ({} shares), force closing (no exit price)", symbol, qty)
             log_event("manage_position_action", symbol=symbol, action="force_close_untracked", reason="untracked_position", qty=float(qty))
             force_close_position(api, symbol, qty, cur_price)
             pending_close.add(symbol)
+            newly_pending_close.add(symbol)
 
     still_pending = []
     for s in pending_close:
@@ -1244,7 +1274,7 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
                 still_pending.append(s)
                 # If untracked and no exit order exists, the previous close attempt expired or failed.
                 # Retry force_close so the position doesn't sit abandoned indefinitely.
-                if s not in tracked:
+                if s not in tracked and s not in newly_pending_close:
                     existing_orders = orders_by_symbol.get(s, [])
                     exit_side_retry = "sell" if float(pq) > 0 else "buy"
                     has_any_close_order = any(
