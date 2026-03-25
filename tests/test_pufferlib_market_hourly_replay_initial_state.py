@@ -6,8 +6,10 @@ import pytest
 
 from pufferlib_market.hourly_replay import (
     HourlyMarket,
+    HourlyReplayResult,
     InitialPositionSpec,
     MktdData,
+    replay_hourly_frozen_daily_actions,
     simulate_daily_policy,
     simulate_hourly_policy,
 )
@@ -107,3 +109,59 @@ def test_simulate_daily_policy_initial_long_position_carries_pnl() -> None:
 
     assert result.total_return > 0.0
     assert result.num_trades == 1
+
+
+def test_replay_hourly_initial_position_uses_first_positive_tradable_price() -> None:
+    data = _make_daily_data()
+    index = pd.date_range("2026-01-01T00:00:00Z", "2026-01-03T23:00:00Z", freq="h", tz="UTC")
+    close = np.zeros((len(index),), dtype=np.float64)
+    tradable = np.zeros((len(index),), dtype=bool)
+    close[10:] = 100.0
+    tradable[10:] = True
+    market = HourlyMarket(
+        index=index,
+        close={"AAA": close},
+        tradable={"AAA": tradable},
+    )
+
+    result = replay_hourly_frozen_daily_actions(
+        data=data,
+        actions=np.asarray([0], dtype=np.int32),
+        market=market,
+        start_date="2026-01-01",
+        end_date="2026-01-03",
+        max_steps=1,
+        fee_rate=0.0,
+        initial_cash=10_000.0,
+        initial_position=InitialPositionSpec(symbol="AAA", side="long", allocation_pct=0.5),
+    )
+
+    assert isinstance(result, HourlyReplayResult)
+    assert np.isfinite(result.total_return)
+
+
+
+def test_replay_hourly_initial_position_falls_back_to_daily_price_when_hourly_mark_missing() -> None:
+    data = _make_daily_data()
+    index = pd.date_range("2026-01-01T00:00:00Z", "2026-01-03T23:00:00Z", freq="h", tz="UTC")
+    market = HourlyMarket(
+        index=index,
+        close={"AAA": np.zeros((len(index),), dtype=np.float64)},
+        tradable={"AAA": np.zeros((len(index),), dtype=bool)},
+    )
+
+    result = replay_hourly_frozen_daily_actions(
+        data=data,
+        actions=np.asarray([0], dtype=np.int32),
+        market=market,
+        start_date="2026-01-01",
+        end_date="2026-01-03",
+        max_steps=1,
+        fee_rate=0.0,
+        initial_cash=10_000.0,
+        initial_position=InitialPositionSpec(symbol="AAA", side="long", allocation_pct=0.5),
+    )
+
+    assert isinstance(result, HourlyReplayResult)
+    assert np.isfinite(result.total_return)
+
