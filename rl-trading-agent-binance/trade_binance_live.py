@@ -2027,19 +2027,19 @@ def run_hybrid_trading_cycle(
                 cycle_snapshot["allocation_source"] = "rl_flat_no_action"
                 return []
 
-        if not use_rl_only and not plan.allocations and not plan.reasoning:
+        if not use_rl_only and not plan.allocations:
             rl_plan = _rl_signal_to_allocation_plan(
                 rl_signal, contexts, rl_gen, effective_leverage,
             )
             if rl_plan is not None:
-                logger.info("Empty Gemini plan, using RL-only fallback for execution")
+                logger.info("Gemini returned 100%% cash but RL has signal, using RL-only")
                 plan = rl_plan
                 use_rl_only = True
                 cycle_snapshot["allocation_plan"] = _serialize_allocation_plan(plan)
-                cycle_snapshot["allocation_source"] = "rl_only_fallback"
+                cycle_snapshot["allocation_source"] = "rl_override_gemini_cash"
             else:
-                logger.warning("Empty allocation plan and RL is FLAT, skipping execution")
-                cycle_snapshot["status"] = "empty_allocation_plan_rl_flat"
+                logger.info("Both Gemini and RL agree: stay in cash")
+                cycle_snapshot["status"] = "gemini_cash_rl_flat"
                 return []
 
         target_values = {

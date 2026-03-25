@@ -432,12 +432,22 @@ class RLSignalGenerator:
                 masked[i] = -np.inf
         return masked
 
+    def _mask_shorts(self, logits: np.ndarray) -> np.ndarray:
+        """Mask all SHORT actions to -inf for spot-only trading."""
+        masked = logits.copy()
+        S = self.num_symbols
+        psa = self.per_symbol_actions
+        short_start = 1 + S * psa
+        masked[short_start:] = -np.inf
+        return masked
+
     def get_signal(
         self,
         portfolio: PortfolioSnapshot,
         klines_map: Optional[dict[str, pd.DataFrame]] = None,
         binance_pairs: Optional[dict[str, str]] = None,
         tradable_symbols: Optional[list[str]] = None,
+        spot_only: bool = True,
     ) -> RLSignal:
         if klines_map is None:
             if binance_pairs is None:
@@ -463,21 +473,18 @@ class RLSignalGenerator:
         logits_np = logits[0].cpu().numpy()
         if tradable_symbols is not None:
             logits_np = self._mask_logits(logits_np, tradable_symbols)
+        if spot_only:
+            logits_np = self._mask_shorts(logits_np)
         action = int(logits_np.argmax())
         value_f = float(value[0].cpu())
 
         target_symbol, direction = self._decode_action(action)
 
-        # For spot trading: shorts map to flat
-        if direction == "short":
-            action = 0
-            target_symbol = None
-            direction = "flat"
-
         action_name = "FLAT"
         if target_symbol is not None:
             short_name = target_symbol.replace("USD", "")
-            action_name = f"LONG_{short_name}"
+            prefix = "SHORT" if direction == "short" else "LONG"
+            action_name = f"{prefix}_{short_name}"
 
         sig = RLSignal(
             action=action,

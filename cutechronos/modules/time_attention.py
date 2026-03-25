@@ -153,8 +153,6 @@ class FusedTimeSelfAttention(nn.Module):
         # 5. Unscaled attention (SDPA preferred: auto-selects FlashAttn2/cuDNN)
         if on_cuda:
             attn_output = _sdpa_attn(query_states, key_states, value_states, attention_mask)
-        elif _has_triton_attn:
-            attn_output = _unscaled_attention_triton(query_states, key_states, value_states, attention_mask)
         else:
             attn_output = _unscaled_attention_fallback(query_states, key_states, value_states, attention_mask)
 

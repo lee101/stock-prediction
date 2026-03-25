@@ -144,3 +144,52 @@ class TestMaskLogits:
                 assert np.isfinite(masked[i]), f"action {i} should be finite"
             else:
                 assert masked[i] == -np.inf, f"action {i} should be -inf"
+
+
+class TestMaskShorts:
+    def test_shorts_masked(self):
+        gen = _make_generator_stub()
+        logits = np.ones(47, dtype=np.float32)
+        masked = gen._mask_shorts(logits)
+        S = gen.num_symbols
+        assert np.isfinite(masked[0])
+        for i in range(1, 1 + S):
+            assert np.isfinite(masked[i]), f"long action {i} should be finite"
+        for i in range(1 + S, 47):
+            assert masked[i] == -np.inf, f"short action {i} should be -inf"
+
+    def test_does_not_mutate_input(self):
+        gen = _make_generator_stub()
+        logits = np.ones(47, dtype=np.float32)
+        original = logits.copy()
+        gen._mask_shorts(logits)
+        np.testing.assert_array_equal(logits, original)
+
+    def test_flat_stays(self):
+        gen = _make_generator_stub()
+        logits = np.zeros(47, dtype=np.float32)
+        logits[0] = 5.0
+        masked = gen._mask_shorts(logits)
+        assert masked.argmax() == 0
+
+    def test_short_highest_becomes_long(self):
+        gen = _make_generator_stub()
+        logits = np.zeros(47, dtype=np.float32)
+        logits[30] = 10.0  # SHORT action
+        logits[5] = 3.0    # LONG action
+        masked = gen._mask_shorts(logits)
+        assert masked.argmax() == 5
+
+    def test_per_symbol_actions_gt_1(self):
+        gen = _make_generator_stub()
+        gen.per_symbol_actions = 2
+        gen.num_actions = 1 + 2 * gen.num_symbols * 2
+        logits = np.ones(gen.num_actions, dtype=np.float32)
+        masked = gen._mask_shorts(logits)
+        S = gen.num_symbols
+        psa = gen.per_symbol_actions
+        short_start = 1 + S * psa
+        for i in range(short_start):
+            assert np.isfinite(masked[i])
+        for i in range(short_start, gen.num_actions):
+            assert masked[i] == -np.inf
