@@ -1028,7 +1028,14 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
             open_orders=[_serialize_order(order) for order in orders_by_symbol.get(symbol, [])],
         )
 
-        if abs(qty) < 1:
+        # For crypto, fractional qty < 1 can still be a real position (e.g. 0.5 ETH = $1000).
+        # Use notional check for crypto the same way we do for stocks.
+        abs_qty_check = abs(float(qty))
+        if is_crypto_symbol(symbol):
+            position_is_zero = abs_qty_check < 1e-8 or (float(cur_price) > 0 and _equity_notional(abs_qty_check, float(cur_price)) < 1.0)
+        else:
+            position_is_zero = abs_qty_check < 1
+        if position_is_zero:
             pending_entry_qty = abs(float(info.get("qty", 0.0) or 0.0))
             pending_entry_price = info.get("entry_price")
             pending_entry_side = "sell" if str(info.get("side", "")).lower() == "short" else "buy"
@@ -1131,6 +1138,7 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
                 hold_limit=float(pos_hold_limit),
             )
             cancel_symbol_orders(api, symbol, orders_by_symbol)
+            time.sleep(0.75)  # Wait for cancel to propagate before submitting new order
             force_close_position(api, symbol, qty, cur_price)
             removed.append(symbol)
             continue
@@ -1139,6 +1147,7 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
             logger.info("{}: no exit price set, force closing {} shares", symbol, qty)
             log_event("manage_position_action", symbol=symbol, action="force_close", reason="missing_exit_price", qty=float(qty))
             cancel_symbol_orders(api, symbol, orders_by_symbol)
+            time.sleep(0.75)  # Wait for cancel to propagate
             force_close_position(api, symbol, qty, cur_price)
             removed.append(symbol)
             continue
@@ -1166,6 +1175,7 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
                     open_order_count=len(symbol_orders),
                 )
                 cancel_symbol_orders(api, symbol, orders_by_symbol)
+                time.sleep(0.75)  # Wait for cancel to propagate before placing exit
             exit_side = "sell" if qty > 0 else "buy"
             oid = place_exit_order(api, symbol, qty, info["exit_price"], side=exit_side)
             if oid:
@@ -1218,9 +1228,33 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
     for s in pending_close:
         if s in positions:
             pq = positions[s].get("qty", 0) if isinstance(positions[s], dict) else float(positions[s])
-            cur_price = positions[s].get("price", 0) if isinstance(positions[s], dict) else 0
-            if abs(pq) >= 1 or (not is_crypto_symbol(s) and _equity_notional(pq, cur_price) >= 1.0):
+            pq_cur_price = positions[s].get("price", 0) if isinstance(positions[s], dict) else 0
+            abs_pq = abs(float(pq))
+            is_substantial = abs_pq >= 1 or (not is_crypto_symbol(s) and _equity_notional(abs_pq, float(pq_cur_price)) >= 1.0)
+            if is_substantial:
                 still_pending.append(s)
+                # If untracked and no exit order exists, the previous close attempt expired or failed.
+                # Retry force_close so the position doesn't sit abandoned indefinitely.
+                if s not in tracked:
+                    existing_orders = orders_by_symbol.get(s, [])
+                    exit_side_retry = "sell" if float(pq) > 0 else "buy"
+                    has_any_close_order = any(
+                        _normalize_order_side(getattr(o, "side", None)) == exit_side_retry
+                        for o in existing_orders
+                    )
+                    if not has_any_close_order:
+                        logger.warning(
+                            "{}: pending_close has no exit order (qty={:.4f}, val=${:.2f}), retrying force close",
+                            s, float(pq), _equity_notional(abs_pq, float(pq_cur_price)),
+                        )
+                        log_event(
+                            "manage_position_action",
+                            symbol=s,
+                            action="force_close",
+                            reason="pending_close_retry",
+                            qty=float(pq),
+                        )
+                        force_close_position(api, s, float(pq), float(pq_cur_price))
     state["pending_close"] = still_pending
 
     state["positions"] = tracked
