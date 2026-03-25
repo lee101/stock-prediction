@@ -85,9 +85,17 @@ def ensure_cache(symbol: str, horizons: tuple[int, ...] = (1, 24)) -> tuple[int,
 
 
 TOP_CONFIGS = [
+    # Current best baselines
     {"name": "periodic_wd01", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1},
     {"name": "baseline_wd01", "sam_mode": "none", "weight_decay": 0.1},
-    {"name": "periodic_wd005", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.05},
+    # Round 4: bar-shift temporal augmentation
+    {"name": "barshift_5_baseline", "sam_mode": "none", "weight_decay": 0.1, "bar_shift_range": 5},
+    {"name": "barshift_5_periodic", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1, "bar_shift_range": 5},
+    # Round 4b: sparse MoE FFN (same params as dense, learned specialisation)
+    {"name": "moe8_baseline", "sam_mode": "none", "weight_decay": 0.1,
+     "model_arch": "moe", "moe_num_experts": 8},
+    {"name": "moe8_barshift5_baseline", "sam_mode": "none", "weight_decay": 0.1,
+     "model_arch": "moe", "moe_num_experts": 8, "bar_shift_range": 5},
 ]
 
 
@@ -165,6 +173,7 @@ def run_local(args):
                 sequence_length=tc_kwargs.get("sequence_length", 72),
                 validation_days=70,
                 cache_only=True,
+                bar_shift_range=tc_kwargs.get("bar_shift_range", 0),
             )
 
             tc = TrainingConfig(**tc_kwargs)

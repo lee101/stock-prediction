@@ -159,6 +159,43 @@ EXPERIMENTS = [
     {"name": "lr5e4_baseline", "sam_mode": "none", "weight_decay": 0.1, "learning_rate": 5e-4},
     {"name": "lr1e3_periodic", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1, "learning_rate": 1e-3},
     {"name": "lr1e3_baseline", "sam_mode": "none", "weight_decay": 0.1, "learning_rate": 1e-3},
+
+    # --- Round 4: temporal bar-shift augmentation (user insight: jitter start index ±N bars) ---
+    # Cheap augmentation: each training window starts at idx + Uniform(-N, N) — more diverse views
+    {"name": "barshift_1_baseline", "sam_mode": "none", "weight_decay": 0.1, "bar_shift_range": 1},
+    {"name": "barshift_2_baseline", "sam_mode": "none", "weight_decay": 0.1, "bar_shift_range": 2},
+    {"name": "barshift_5_baseline", "sam_mode": "none", "weight_decay": 0.1, "bar_shift_range": 5},
+    {"name": "barshift_12_baseline", "sam_mode": "none", "weight_decay": 0.1, "bar_shift_range": 12},
+    {"name": "barshift_2_periodic", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1, "bar_shift_range": 2},
+    {"name": "barshift_5_periodic", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1, "bar_shift_range": 5},
+    {"name": "barshift_12_periodic", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1, "bar_shift_range": 12},
+    # Bar shift + cosine LR + SAM (should regularize from multiple angles)
+    {"name": "barshift_5_cosine_periodic", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1,
+     "bar_shift_range": 5, "lr_schedule": "cosine"},
+    # Bar shift + SWA (weight averaging smooths out shift-induced variance)
+    {"name": "barshift_5_swa", "sam_mode": "none", "weight_decay": 0.1, "bar_shift_range": 5, "use_swa": True},
+
+    # --- Round 4b: Sparse MoE FFN (fine-grained experts, soft routing, same param count) ---
+    # model_arch="moe" uses BinanceHourlyPolicyNano with SparseMoEFeedForward (n_experts=8)
+    # Each expert inner_dim = hidden_dim * mlp_ratio / n_experts — same total params as dense FFN
+    {"name": "moe8_baseline", "sam_mode": "none", "weight_decay": 0.1,
+     "model_arch": "moe", "moe_num_experts": 8},
+    {"name": "moe8_periodic", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1,
+     "model_arch": "moe", "moe_num_experts": 8},
+    {"name": "moe4_baseline", "sam_mode": "none", "weight_decay": 0.1,
+     "model_arch": "moe", "moe_num_experts": 4},
+    {"name": "moe16_baseline", "sam_mode": "none", "weight_decay": 0.1,
+     "model_arch": "moe", "moe_num_experts": 16},
+    # MoE + bar shift (should compound: more diverse data + more specialized capacity)
+    {"name": "moe8_barshift5_baseline", "sam_mode": "none", "weight_decay": 0.1,
+     "model_arch": "moe", "moe_num_experts": 8, "bar_shift_range": 5},
+    {"name": "moe8_barshift5_periodic", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1,
+     "model_arch": "moe", "moe_num_experts": 8, "bar_shift_range": 5},
+    # Larger MoE model (h512, 6L, 8 experts) — more capacity
+    {"name": "moe8_h512_baseline", "sam_mode": "none", "weight_decay": 0.1,
+     "model_arch": "moe", "moe_num_experts": 8, "transformer_dim": 512, "transformer_layers": 6},
+    {"name": "moe8_h512_periodic", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1,
+     "model_arch": "moe", "moe_num_experts": 8, "transformer_dim": 512, "transformer_layers": 6},
 ]
 
 

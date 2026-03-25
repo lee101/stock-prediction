@@ -65,6 +65,7 @@ def build_configs(exp: dict, symbol: str, base_overrides: dict | None = None) ->
         sequence_length=tc_kwargs.get("sequence_length", 72),
         validation_days=70,
         cache_only=True,
+        bar_shift_range=tc_kwargs.get("bar_shift_range", 0),
     )
     tc_kwargs["dataset"] = ds
 

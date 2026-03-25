@@ -91,8 +91,16 @@ class SAPTrainer:
         self._total_train_steps = 0
         self._warmup_base_lrs: list[float] = []
 
+    def _seed_everything(self, seed: int) -> None:
+        import random
+        import numpy as np
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
     def train(self) -> tuple[TrainingArtifacts, list[SAPHistoryEntry]]:
-        torch.manual_seed(self.tc.seed)
+        self._seed_everything(self.tc.seed)
         # The differentiable Sortino helper is compile-wrapped independently of model compilation.
         if hasattr(torch, "_dynamo") and hasattr(torch._dynamo, "config"):
             torch._dynamo.config.suppress_errors = True
@@ -117,6 +125,7 @@ class SAPTrainer:
             num_outputs=self.tc.num_outputs,
             max_hold_hours=self.tc.max_hold_hours,
             use_flex_attention=self.tc.use_flex_attention,
+            moe_num_experts=getattr(self.tc, "moe_num_experts", 0),
         )
         model = build_policy(policy_cfg).to(self.device)
         param_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -356,6 +365,10 @@ class SAPTrainer:
                 loss.backward()
                 if self.tc.grad_clip:
                     clip_grad_norm_(model.parameters(), self.tc.grad_clip)
+                if grad_noise:
+                    grad_noise.inject(model, global_step, sharp_state.ema)
+                self._apply_lr_schedule(base_opt, global_step)
+                sam_opt.update_base_lrs()
                 _, _ = sam_opt.step_with_sam(forward_and_loss)
             elif isinstance(sam_opt, LookSAMOptimizer):
                 sam_opt.zero_grad(set_to_none=True)
@@ -363,6 +376,9 @@ class SAPTrainer:
                 loss.backward()
                 if self.tc.grad_clip:
                     clip_grad_norm_(model.parameters(), self.tc.grad_clip)
+                if grad_noise:
+                    grad_noise.inject(model, global_step, sharp_state.ema)
+                self._apply_lr_schedule(base_opt, global_step)
                 sam_opt.step(loss_fn=forward_and_loss)
             elif isinstance(sam_opt, SharpnessAdjustedOptimizer):
                 sam_opt.zero_grad(set_to_none=True)
@@ -370,6 +386,8 @@ class SAPTrainer:
                 loss.backward()
                 if self.tc.grad_clip:
                     clip_grad_norm_(model.parameters(), self.tc.grad_clip)
+                if grad_noise:
+                    grad_noise.inject(model, global_step, sharp_state.ema)
 
                 # Apply LR schedule before step
                 self._apply_lr_schedule(base_opt, global_step)
@@ -378,10 +396,8 @@ class SAPTrainer:
                 sam_opt.step()
 
                 if sam_opt.should_probe():
-                    def probe_fn():
-                        with torch.no_grad():
-                            return forward_and_loss()
-                    sam_opt.probe_sharpness(probe_fn, loss.item())
+                    # probe_sharpness already wraps the call in inference_mode internally
+                    sam_opt.probe_sharpness(forward_and_loss, loss.item())
             else:
                 # Baseline: no SAM
                 base_opt.zero_grad(set_to_none=True)
@@ -389,10 +405,13 @@ class SAPTrainer:
                 loss.backward()
                 if self.tc.grad_clip:
                     clip_grad_norm_(model.parameters(), self.tc.grad_clip)
+                if grad_noise:
+                    grad_noise.inject(model, global_step, sharp_state.ema)
                 self._apply_lr_schedule(base_opt, global_step)
                 base_opt.step()
 
-            # Compute full metrics for logging (detached)
+            # Compute full metrics for logging (detached, no dropout)
+            model.eval()
             with torch.no_grad():
                 outputs = model(features)
                 actions = model.decode_actions(outputs, reference_close=ref_close, chronos_high=ch_high, chronos_low=ch_low)
@@ -423,6 +442,7 @@ class SAPTrainer:
                 score_sum += sc.detach().mean().item()
                 sortino_sum += so.detach().mean().item()
                 return_sum += ar.detach().mean().item()
+            model.train()
 
             steps += 1
             global_step += 1

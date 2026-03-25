@@ -130,7 +130,7 @@ class SharpnessAdjustedOptimizer:
 
         self._save_params()
         self._perturb_params()
-        with torch.no_grad():
+        with torch.inference_mode():
             perturbed_loss = loss_fn().item()
         self._restore_params()
 

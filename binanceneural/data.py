@@ -62,6 +62,8 @@ class BinanceHourlyDataset(Dataset):
         primary_horizon: int,
         can_long: float = 1.0,
         can_short: float = 0.0,
+        augment: bool = False,
+        bar_shift_range: int = 0,
     ) -> None:
         if len(frame) != len(features):
             raise ValueError("Feature matrix must align with base frame")
@@ -81,13 +83,20 @@ class BinanceHourlyDataset(Dataset):
         self.all_horizons = self._extract_horizon_columns(frame)
         self._can_long = float(can_long)
         self._can_short = float(can_short)
+        self._augment = bool(augment)
+        self._bar_shift_range = max(0, int(bar_shift_range))
 
     def __len__(self) -> int:
         return len(self.frame) - self.seq_len + 1
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         start = idx
-        end = idx + self.seq_len
+        if self._augment and self._bar_shift_range > 0:
+            import random
+            shift = random.randint(-self._bar_shift_range, self._bar_shift_range)
+            n_valid = len(self.frame) - self.seq_len
+            start = max(0, min(start + shift, n_valid))
+        end = start + self.seq_len
         payload = {
             "features": torch.from_numpy(self.features[start:end]),
             "open": torch.from_numpy(self.opens[start:end]),
@@ -154,6 +163,8 @@ class BinanceHourlyDataModule:
             norm_train,
             config.sequence_length,
             primary_horizon=self.primary_horizon,
+            augment=True,
+            bar_shift_range=getattr(config, "bar_shift_range", 0),
         )
         self.val_dataset = BinanceHourlyDataset(
             val_frame,
@@ -344,6 +355,7 @@ class MultiSymbolDataModule:
                 refresh_hours=config.refresh_hours,
                 validation_days=config.validation_days,
                 cache_only=config.cache_only,
+                bar_shift_range=getattr(config, "bar_shift_range", 0),
             )
             module = BinanceHourlyDataModule(symbol_config)
             self.modules[symbol] = module
