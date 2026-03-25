@@ -1,0 +1,5 @@
+description,val_return,val_sortino,val_wr,robust_score,gpu_id,elapsed_s,job_id,timestamp
+c70_tp05_slip5_long_s92,9.0972,6.96,0.6825,9.0972,0,1667,5df812d0,2026-03-25T06:14:13
+c70_tp05_slip5_long_s71,8.7686,8.36,0.5421,8.7686,0,1619,9521c3e5,2026-03-25T06:41:12
+c70_tp05_slip5_long_s118,7.7885,6.92,0.702,7.7885,0,1641,4914b3eb,2026-03-25T07:08:33
+c70_tp05_slip5_long_s123,6.6551,5.95,0.6725,6.6551,0,1633,228af251,2026-03-25T07:35:47
