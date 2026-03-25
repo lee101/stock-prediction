@@ -1,0 +1,17 @@
+{
+  "APTUSD": [
+    {
+      "run": "periodic_wd01",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_APTUSD_20260325_153718/epoch_009.pt",
+      "n_windows": 10,
+      "median_return": 22.61,
+      "mean_return": 22.12,
+      "p10_return": 11.57,
+      "positive_pct": 100.0,
+      "median_sortino": 3.6,
+      "median_dd": -1.38,
+      "worst_dd": -2.96,
+      "median_trades": 6
+    }
+  ]
+}

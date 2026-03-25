@@ -1,0 +1,17 @@
+{
+  "BCHUSD": [
+    {
+      "run": "periodic_wd01",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_BCHUSD_20260325_153718/epoch_005.pt",
+      "n_windows": 10,
+      "median_return": 6.16,
+      "mean_return": 7.78,
+      "p10_return": 2.18,
+      "positive_pct": 90.0,
+      "median_sortino": 1.92,
+      "median_dd": -1.12,
+      "worst_dd": -2.11,
+      "median_trades": 31
+    }
+  ]
+}

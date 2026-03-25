@@ -22,16 +22,16 @@ exec /home/lee/code/stock/.venv313/bin/python -u \
   binance_worksteal/trade_live.py \
   --live \
   --daemon \
-  --dip-pct 0.20 \
-  --profit-target 0.15 \
-  --stop-loss 0.10 \
+  --dip-pct 0.18 \
+  --profit-target 0.20 \
+  --stop-loss 0.15 \
   --max-positions 5 \
   --sma-filter 20 \
   --trailing-stop 0.03 \
   --entry-proximity-bps 3000 \
   --entry-poll-hours 4 \
   --health-report-hours 6 \
-  --dip-pct-fallback 0.20 0.15 0.12 \
+  --dip-pct-fallback 0.18 0.15 0.12 \
   --max-symbols 100 \
   $UNIVERSE_ARG \
   $SYMBOLS_ARG \

@@ -1,0 +1,17 @@
+{
+  "ADAUSD": [
+    {
+      "run": "periodic_wd01",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_ADAUSD_20260325_153718/epoch_010.pt",
+      "n_windows": 10,
+      "median_return": 12.3,
+      "mean_return": 11.84,
+      "p10_return": 5.96,
+      "positive_pct": 100.0,
+      "median_sortino": 1.72,
+      "median_dd": -1.33,
+      "worst_dd": -4.25,
+      "median_trades": 6
+    }
+  ]
+}

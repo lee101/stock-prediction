@@ -1,0 +1,17 @@
+{
+  "DOGEUSD": [
+    {
+      "run": "swa_wd01",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_swa_wd01_DOGEUSD_20260325_075912/epoch_008.pt",
+      "n_windows": 10,
+      "median_return": 13.32,
+      "mean_return": 12.19,
+      "p10_return": 4.49,
+      "positive_pct": 100.0,
+      "median_sortino": 1.95,
+      "median_dd": -1.59,
+      "worst_dd": -5.41,
+      "median_trades": 20
+    }
+  ]
+}

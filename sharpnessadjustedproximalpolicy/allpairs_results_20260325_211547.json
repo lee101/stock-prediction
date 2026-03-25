@@ -1,0 +1,7 @@
+[
+  {
+    "name": "baseline_wd01",
+    "symbol": "AAVEUSD",
+    "error": "Insufficient hourly history (408 rows, minimum 720)."
+  }
+]

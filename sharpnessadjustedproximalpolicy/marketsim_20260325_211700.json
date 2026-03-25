@@ -1,0 +1,17 @@
+{
+  "ALGOUSD": [
+    {
+      "run": "periodic_wd01",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_ALGOUSD_20260325_153718/epoch_005.pt",
+      "n_windows": 10,
+      "median_return": 21.18,
+      "mean_return": 19.55,
+      "p10_return": 10.92,
+      "positive_pct": 100.0,
+      "median_sortino": 2.73,
+      "median_dd": -1.51,
+      "worst_dd": -6.09,
+      "median_trades": 3
+    }
+  ]
+}
