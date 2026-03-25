@@ -395,6 +395,8 @@ class TestBackendAPI:
             v = torch.randn(B, H, S, D)
 
             for name in list_backends():
+                if name == "triton":
+                    continue  # Triton requires CUDA tensors
                 fn = get_attention_backend(name)
                 out = fn(q, k, v)
                 assert out.shape == (B, H, S, D), (
@@ -410,6 +412,8 @@ class TestBackendAPI:
         v = torch.randn(B, H, S, D)
 
         for name in list_backends():
+            if name == "triton":
+                continue  # Triton requires CUDA tensors
             fn = get_attention_backend(name)
             out1 = fn(q, k, v)
             out2 = fn(q, k, v)

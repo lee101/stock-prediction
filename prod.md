@@ -2,31 +2,26 @@
 
 ## Active Deployments
 
-### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- BROKEN -- Gemini key revoked
+### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- FIXED (pending restart)
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`
 - **Launch**: `deployments/binance-hybrid-spot/launch.sh`
-- **PENDING DEPLOY (when key restored)**: `c15_tp03_s78` (2026-03-24 NEW CHAMPION)
+- **Active RL model**: `c15_tp03_s78` (2026-03-24 CHAMPION, copied from remote 5090)
   - Checkpoint: `pufferlib_market/checkpoints/crypto15_tp03_s50_200/gpu0/c15_tp03_s78/best.pt`
   - **100/100 positive, p05=+139.8%, median=+141.4%, p95=+142.8%, WR=63.3%, Sortino=4.52**
-  - Annualized: **+497%** (vs BTC -18% baseline) — beats prev champion s33 (+118.5%) by 23pp
+  - Annualized: **+497%** (vs BTC -18% baseline) -- beats prev champion s33 (+118.5%) by 23pp
   - eval: `python -m pufferlib_market.evaluate --checkpoint pufferlib_market/checkpoints/crypto15_tp03_s50_200/gpu0/c15_tp03_s78/best.pt --data-path pufferlib_market/data/crypto15_daily_val.bin --deterministic --no-drawdown-profit-early-exit --hidden-size 1024 --max-steps 180 --num-episodes 100 --periods-per-year 365.0 --fill-slippage-bps 8`
   - Previous champion: c15_tp03_slip5_s33 (+118.5%/180d, +388% ann, Sortino=2.85)
   - Previous best: c15_tp03_s19 (+75.1%/180d, +211% ann), c15_tp03_s7 (+69%/180d, +190% ann)
-- **Previous model**: Pufferlib robust_champion (h1024 MLP, PPO) — obs mismatch fixed but not yet swapped
-- **RL Checkpoint (old)**: `pufferlib_market/checkpoints/a100_scaleup/robust_champion/best.pt`
-- **50-window holdout** (seed=42, 30-bar windows, deterministic, no early stop):
-  - Median return: +10.80%, Positive windows: 76%, Median Sortino: 3.28
-  - 60-bar windows: 100% positive, full-span: +58.22% return, 26.58% max DD
-  - Cross-seed (250 windows across 5 seeds): 76% positive, p5=-10.80%
-- **Config**: obs_norm=True, wd=0.005, cosine LR, slip=5bps, tp=0.05, anneal_lr+ent
-- **Previous**: robust_reg_tp005_ent had +191.4% single-window but only +3.03% median across 50 windows
-- **Symbols**: BTCUSD, ETHUSD, SOLUSD, DOGEUSD, AAVEUSD, LINKUSD
-- **Mode**: Cross-margin, leverage reduced from 5x to 0.5x
+- **Symbols**: BTCUSD, ETHUSD, SOLUSD, LTCUSD, AVAXUSD, DOGEUSD, LINKUSD, ADAUSD, UNIUSD, AAVEUSD, ALGOUSD, DOTUSD, SHIBUSD, XRPUSD, MATICUSD
+- **Mode**: Cross-margin, 0.5x leverage
 - **Max hold**: 6h forced exit
 - **Fees**: 10bps maker
-- **Equity**: ~$3,056 (down from ~$3,333 on Mar 21)
-- **Marketsim (30d Feb-Mar)**: +10.0%, Sort=8.74, 293 entries, 2.94% MaxDD
-- **RL signal broken**: Always outputs LONG_UNI due to 23-sym model fed 6-sym obs. Fix: action masking for tradable symbols.
+- **Equity**: ~$3,044 (was $3,333 on Mar 21)
+- **Fixes applied (2026-03-25)**:
+  - Short-masking bug: RL model's top actions were SHORTs which mapped to FLAT post-argmax. Now shorts masked BEFORE argmax so best LONG action is selected.
+  - RL override when Gemini returns 100% cash: Previously Gemini's empty allocation with reasoning was treated as valid. Now when Gemini returns {} and RL has a signal, RL takes over.
+  - Upgraded checkpoint: s7 (median -2%, 50% negative) -> s78 champion (median +141%, 100/100 positive)
+- **RL signal broken (FIXED)**: Was always FLAT because shorts dominated logits. `_mask_shorts()` added to mask all short actions before argmax in spot mode.
 - **Eval command**:
   ```bash
   # Backtest is built into the bot's Chronos2 fallback path
