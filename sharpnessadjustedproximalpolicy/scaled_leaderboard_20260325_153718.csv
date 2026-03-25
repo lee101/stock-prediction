@@ -1,0 +1,21 @@
+symbol,config,best_epoch,val_sortino,val_return,sharpness,wd_scale,wall_s,error
+APTUSD,periodic_wd01,9,210.780,4.4907,1063.1,2.00,839,
+ARBUSD,periodic_wd01,9,204.734,4.6933,1445.3,2.00,2301,
+ARBUSD,baseline_wd01,9,202.422,5.0305,0.0,1.00,2255,
+APTUSD,baseline_wd01,6,184.856,4.1015,0.0,1.00,837,
+ALGOUSD,baseline_wd01,9,166.933,4.7390,0.0,1.00,830,
+ALGOUSD,periodic_wd01,5,160.209,4.7173,968.3,2.00,830,
+ADAUSD,periodic_wd01,10,151.462,3.1786,1301.6,2.00,853,
+ATOMUSD,periodic_wd01,6,132.677,2.5983,1142.2,2.00,833,
+ADAUSD,baseline_wd01,3,128.959,2.6033,0.0,1.00,840,
+ATOMUSD,baseline_wd01,8,123.882,2.4547,0.0,1.00,827,
+BCHUSD,baseline_wd01,9,101.604,1.5751,0.0,1.00,828,
+BCHUSD,periodic_wd01,5,92.270,1.5928,557.6,1.86,840,
+BTCFDUSD,periodic_wd01,6,53.013,1.4924,444.0,2.00,846,
+BTCFDUSD,baseline_wd01,9,52.189,1.4054,0.0,1.00,831,
+BNBUSD,baseline_wd01,9,50.533,1.8528,0.0,1.00,823,
+BNBUSD,periodic_wd01,3,37.302,1.7287,834.4,1.64,854,
+AVAXUSD,baseline_wd01,6,5.014,-0.5422,0.0,1.00,108,
+AVAXUSD,periodic_wd01,4,4.258,-0.6099,473.6,1.00,108,
+AAVEUSD,periodic_wd01,,,,,,,"Insufficient hourly history (402 rows, minimum 720)."
+AAVEUSD,baseline_wd01,,,,,,,"Insufficient hourly history (402 rows, minimum 720)."
