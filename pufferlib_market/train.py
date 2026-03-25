@@ -50,6 +50,7 @@ from pufferlib_market.advantage_utils import normalize_advantages
 from src.checkpoint_manager import TopKCheckpointManager, prune_periodic_checkpoints
 from pufferlib_market.kernels.fused_mlp import fused_mlp_relu, HAS_TRITON
 from pufferlib_market.kernels.fused_obs_encode import fused_obs_norm_linear_relu
+from pufferlib_market.gae_cuda import compute_gae_gpu, HAS_TRITON as HAS_TRITON_GAE
 
 
 # ─── Running Observation Normalizer ──────────────────────────────────
@@ -807,6 +808,20 @@ def compute_gae(rewards, values, dones, gamma=0.99, gae_lambda=0.95):
     return advantages, returns
 
 
+def _compute_gae_cpu_inline(rewards, values, dones, next_value, gamma, gae_lambda, adv_buf, gae_buf):
+    """CPU GAE using pre-allocated buffers (zero-alloc fallback for train loop)."""
+    T = rewards.shape[0]
+    adv_buf.zero_()
+    gae_buf.zero_()
+    for t in reversed(range(T)):
+        next_val = next_value if t == T - 1 else values[t + 1]
+        not_done = 1.0 - dones[t]
+        delta = rewards[t] + gamma * next_val * not_done - values[t]
+        gae_buf.copy_(delta + gamma * gae_lambda * not_done * gae_buf)
+        adv_buf[t] = gae_buf
+    return adv_buf, adv_buf + values
+
+
 def train(args):
     # Lazy pufferlib imports — only needed at training time, not import time.
     try:
@@ -1440,20 +1455,25 @@ def train(args):
             next_obs = torch.from_numpy(raw_next).to(device, non_blocking=True)
             next_value = policy.get_value(next_obs).cpu()
 
-        # GAE on CPU (sequential loop, small cost)
-        values_cpu = buf_value.cpu() if buf_value.is_cuda else buf_value
-        advantages = _advantages
-        advantages.zero_()
-        _last_gae.zero_()
-
-        for t in reversed(range(T)):
-            next_val = next_value if t == T - 1 else values_cpu[t + 1]
-            not_done = 1.0 - buf_done[t]
-            delta = buf_reward[t] + args.gamma * next_val * not_done - values_cpu[t]
-            _last_gae.copy_(delta + args.gamma * args.gae_lambda * not_done * _last_gae)
-            advantages[t] = _last_gae
-
-        returns = advantages + values_cpu
+        # GAE -- GPU Triton kernel when available, CPU fallback otherwise
+        if HAS_TRITON_GAE and device.type == "cuda":
+            gae_rewards = buf_reward.to(device, non_blocking=True)
+            gae_values = buf_value if buf_value.is_cuda else buf_value.to(device, non_blocking=True)
+            gae_dones = buf_done.to(device, non_blocking=True)
+            gae_next_val = next_value.to(device, non_blocking=True) if not next_value.is_cuda else next_value
+            advantages_gpu, returns_gpu = compute_gae_gpu(
+                gae_rewards, gae_values, gae_dones, gae_next_val,
+                gamma=args.gamma, gae_lambda=args.gae_lambda,
+            )
+            advantages = advantages_gpu.cpu()
+            returns = returns_gpu.cpu()
+            values_cpu = buf_value.cpu() if buf_value.is_cuda else buf_value
+        else:
+            values_cpu = buf_value.cpu() if buf_value.is_cuda else buf_value
+            advantages, returns = _compute_gae_cpu_inline(
+                buf_reward, values_cpu, buf_done, next_value,
+                args.gamma, args.gae_lambda, _advantages, _last_gae,
+            )
 
         # ── PPO update ──
         policy.train()
