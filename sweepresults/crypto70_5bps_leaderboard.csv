@@ -1,0 +1,5 @@
+description,honest_8bps,honest_5bps,ann_5bps_pct,sortino_5bps,robust_5gt8
+c70_tp05_slip5_s61,2.3815,2.4958,+1165.3,,True
+c70_tp05_slip5_s64,2.9103,3.1020,+1649.9,,True
+c70_tp05_slip5_s65,6.2101,4.6561,+3256.9,,False
+c70_tp05_slip5_s66,2.8678,3.2733,+1801.3,,True
