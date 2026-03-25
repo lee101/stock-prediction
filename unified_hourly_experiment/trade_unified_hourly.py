@@ -360,6 +360,15 @@ def load_model(checkpoint_dir: Path, epoch: int = None):
 
 
 def is_market_open_now() -> bool:
+    """Return True if NYSE is currently open, using Alpaca clock API (handles holidays).
+    Falls back to manual time check if Alpaca is unreachable."""
+    try:
+        import alpaca_wrapper
+        clock = alpaca_wrapper.get_clock()
+        return bool(clock.is_open)
+    except Exception:
+        pass
+    # Fallback: manual check (no holiday awareness)
     from zoneinfo import ZoneInfo
     ny = datetime.now(ZoneInfo("America/New_York"))
     if ny.weekday() >= 5:

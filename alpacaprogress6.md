@@ -130,8 +130,61 @@ When `hourlyv5-stocks.service` was switched to `--asset-class stocks`, orphaned 
 4. **Add crypto symbols to supervisor command** — add `--crypto-symbols BTCUSD,ETHUSD,SOLUSD` to `unified-stock-trader` once above are done
 
 ### Stopping redundant services
-- `hourlyv5-stocks.service`: consider disabling (paper only, older model, duplicates unified meta for stocks)
-- `daily-rl-trader.service`: keep as paper test harness but monitor in paper mode
+- `hourlyv5-stocks.service`: **STOPPED AND DISABLED** 2026-03-25 (paper only, older model, no stop-loss — see analysis below)
+- `daily-rl-trader.service`: **STOPPED AND DISABLED** 2026-03-25 (was using wrong checkpoint; see bug 3 above)
+
+---
+
+## Paper Bot Analysis (2026-03-25)
+
+Both paper bots stopped and `strategy_state/trade_outcomes.json` analyzed (30 completed trades).
+
+### Overall results
+| Metric | Value |
+|--------|-------|
+| Completed trades | 30 |
+| Total realized PnL | **-$3,781** |
+| Win rate | 33% (10/30) |
+| Top winner | QUBT:sell +$5,548 |
+| Top loser | ADSK:sell -$5,079 |
+
+### Active paper positions at shutdown
+| Symbol | Qty | Value | Unrealized | Opened |
+|--------|-----|-------|------------|--------|
+| UNIUSD | 10,943 | $39,496 | +$536 | Nov 2025 |
+| ETHUSD | 1.58 | $3,424 | +$2,155 | Nov 2025 |
+| BTCUSD | 0.079 | $5,576 | -$592 | Nov 2025 |
+| SOLUSD | 35.4 | $3,232 | -$14 | Nov 2025 |
+Total unrealized: **+$2,092**
+
+### Key findings
+
+**1. Long-only crypto without stop-loss is catastrophic during downtrends**
+- UNIUSD, ETHUSD, BTCUSD, SOLUSD all entered Nov 2025. Crypto market dropped 30–45% through Feb-Mar 2026.
+- Positions remained open for 4+ months accumulating unrealized losses before partial recovery.
+- Without stop-loss or max-hold, a buy signal → indefinite hold through the drawdown.
+- **Lesson**: Do NOT add crypto to unified-meta without stop-loss / max-hold. The 5h max_hold in unified-meta is critical protective guard.
+
+**2. "not_in_portfolio" close reason means positions held with no exit management**
+- 21 of 30 completed trades (70%) closed via `not_in_portfolio` — model rotation removed the symbol, triggering exit.
+- These exits are delayed by days/weeks until the model rotates again. In that window: no TP, no stop.
+- **Lesson**: All open positions need an active exit order at all times (unified-meta does this; hourlyv5 did not).
+
+**3. Short signals outperformed long signals dramatically**
+- QUBT:sell +$5,548, INTC:sell +$3,561 — the two biggest winners were short/sell entries.
+- Long crypto entries (UNIUSD -$4,912, BTCUSD -$1,109, ETHUSD -$1,910) were large losers.
+- ADSK:sell -$5,079 was a failed short (stock rallied against position).
+- **Lesson**: Market direction matters. The model's short calls were better than long crypto in this period.
+
+**4. The unified-meta architecture is far superior**
+- Explicit TP order + 5h max_hold + force_close retry = clean exits with bounded exposure.
+- hourlyv5 had none of this: open-ended holds, no stop, model-rotation-only exits.
+- **Conclusion**: hourlyv5 was running a worse algorithm with worse checkpoints. Stopping it was correct.
+
+### What to carry forward
+- Cryptos on unified-meta ONLY after: (a) `calendar_hours_between` fix for 24/7 hold timing, (b) paper test ≥2 weeks
+- The 5h max_hold + explicit TP + force_close retry pattern is validated as essential
+- Short signals from the Chronos2 model appear accurate; don't suppress them for crypto
 
 ---
 

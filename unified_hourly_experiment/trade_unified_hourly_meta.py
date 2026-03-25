@@ -523,19 +523,31 @@ def run_cycle(
         device=device,
     )
 
-    if market_open and not args.dry_run and signals:
+    # Filter signals: stocks require NYSE open; crypto can trade 24/7.
+    tradeable_signals = {
+        sym: sig for sym, sig in signals.items()
+        if market_open or live.is_crypto_symbol(sym)
+    }
+    stock_signals_blocked = len(signals) - len(tradeable_signals)
+    if stock_signals_blocked:
+        logger.info(
+            "Market closed — {} stock signal(s) held, {} crypto signal(s) tradeable",
+            stock_signals_blocked, len(tradeable_signals),
+        )
+
+    if tradeable_signals and not args.dry_run:
         live.execute_trades(
             api,
-            signals,
+            tradeable_signals,
             state,
             max_positions=int(args.max_positions),
             market_order_entry=bool(args.market_order_entry),
             entry_order_ttl_hours=float(args.entry_order_ttl_hours),
             fee_rate=float(args.fee_rate),
         )
-        execution_mode = "live_execute"
-    elif not market_open and signals:
-        logger.info("Market closed - {} signals ready, will trade when open", len(signals))
+        execution_mode = "live_execute" if market_open else "crypto_only_execute"
+    elif not market_open and signals and not tradeable_signals:
+        logger.info("Market closed - {} stock signals ready, will trade when open", len(signals))
         execution_mode = "market_closed"
     elif not signals:
         logger.info("No meta signals above threshold")
