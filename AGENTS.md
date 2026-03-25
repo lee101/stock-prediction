@@ -68,3 +68,10 @@ remote training on the 5090 server is expected when local runs are too slow or G
 - `scripts/deploy_crypto_model.sh <checkpoint> [symbols...]` -- updates binance-hybrid-spot launch, restarts supervisor
 - RunPod API key in env_real.py for A100 scaling
 - Remote 5090 autoresearch: `python -m pufferlib_market.autoresearch_rl --train-data <.bin> --val-data <.bin> --time-budget 7200`
+
+## Production Documentation
+- `prod.md` is the canonical source of truth for what is currently running in production, how it is launched, and the latest timestamped results/PnL.
+- Every production-facing update must refresh `prod.md` with the exact service/supervisor name, launch command, checkpoint(s), mode (live/paper), and a timestamped performance snapshot.
+- Before replacing an older production snapshot in `prod.md`, archive that prior state into `old_prod/` using a dated filename like `YYYY-MM-DD[-HHMM]-<slug>.md`.
+- `AlpacaProgress*.md`, `binanceprogress*.md`, and other progress notes are working logs; they do not replace `prod.md` as the current-production ledger.
+- `PROD.md` is legacy/reference material; keep `prod.md` as the actively maintained current-production file.

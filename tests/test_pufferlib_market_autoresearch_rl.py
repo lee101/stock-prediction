@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ import pytest
 from pufferlib_market.autoresearch_rl import (
     TrialConfig,
     _read_mktd_header,
+    main,
     run_trial,
     summarize_replay_eval_payload,
     select_experiments,
@@ -159,6 +161,48 @@ def test_summarize_replay_eval_payload_extracts_sections() -> None:
     }
 
 
+def test_summarize_replay_eval_payload_extracts_robust_sections() -> None:
+    payload = {
+        "robust_start_summary": {
+            "daily": {
+                "median_total_return": 0.01,
+                "worst_total_return": -0.02,
+                "worst_sortino": -0.4,
+                "worst_max_drawdown": 0.15,
+            },
+            "hourly_replay": {
+                "median_total_return": 0.03,
+                "worst_total_return": -0.04,
+                "worst_sortino": -0.7,
+                "worst_max_drawdown": 0.22,
+            },
+            "hourly_policy": {
+                "median_total_return": -0.01,
+                "worst_total_return": -0.08,
+                "worst_sortino": -1.2,
+                "worst_max_drawdown": 0.35,
+            },
+        }
+    }
+
+    summary = summarize_replay_eval_payload(payload)
+
+    assert summary == {
+        "replay_daily_robust_median_return_pct": 1.0,
+        "replay_daily_robust_worst_return_pct": -2.0,
+        "replay_daily_robust_worst_sortino": -0.4,
+        "replay_daily_robust_worst_max_drawdown_pct": 15.0,
+        "replay_hourly_robust_median_return_pct": 3.0,
+        "replay_hourly_robust_worst_return_pct": -4.0,
+        "replay_hourly_robust_worst_sortino": -0.7,
+        "replay_hourly_robust_worst_max_drawdown_pct": 22.0,
+        "replay_hourly_policy_robust_median_return_pct": -1.0,
+        "replay_hourly_policy_robust_worst_return_pct": -8.0,
+        "replay_hourly_policy_robust_worst_sortino": -1.2,
+        "replay_hourly_policy_robust_worst_max_drawdown_pct": 35.0,
+    }
+
+
 def test_select_rank_score_uses_expected_fallback_order() -> None:
     metrics = {
         "val_return": 0.04,
@@ -169,11 +213,27 @@ def test_select_rank_score_uses_expected_fallback_order() -> None:
     assert select_rank_score(metrics, rank_metric="auto") == ("market_goodness_score", 2.75)
     assert select_rank_score(metrics, rank_metric="holdout_robust_score") == ("holdout_robust_score", 1.5)
     assert select_rank_score(metrics, rank_metric="val_return") == ("val_return", 0.04)
-    assert select_rank_score({"replay_hourly_return_pct": 3.0}, rank_metric="auto") == ("replay_hourly_return_pct", 3.0)
-    assert select_rank_score({"replay_hourly_policy_return_pct": -6.0}, rank_metric="replay_hourly_policy_return_pct") == (
+    assert select_rank_score(
+        {
+            "replay_hourly_policy_robust_worst_return_pct": -1.0,
+            "replay_hourly_robust_worst_return_pct": -2.0,
+            "replay_hourly_return_pct": 3.0,
+        },
+        rank_metric="auto",
+    ) == ("replay_hourly_policy_robust_worst_return_pct", -1.0)
+    assert select_rank_score(
+        {"replay_hourly_robust_worst_return_pct": -2.0, "replay_hourly_return_pct": 3.0},
+        rank_metric="auto",
+    ) == ("replay_hourly_robust_worst_return_pct", -2.0)
+    assert select_rank_score({"replay_hourly_policy_return_pct": -6.0}, rank_metric="auto") == (
         "replay_hourly_policy_return_pct",
         -6.0,
     )
+    assert select_rank_score({"replay_hourly_return_pct": 3.0}, rank_metric="auto") == ("replay_hourly_return_pct", 3.0)
+    assert select_rank_score(
+        {"replay_hourly_policy_robust_worst_return_pct": -8.0},
+        rank_metric="replay_hourly_policy_robust_worst_return_pct",
+    ) == ("replay_hourly_policy_robust_worst_return_pct", -8.0)
     assert select_rank_score({"val_return": 0.01}, rank_metric="auto") == ("val_return", 0.01)
     assert select_rank_score({}, rank_metric="auto") == ("none", None)
 
@@ -321,6 +381,20 @@ def test_run_trial_collects_replay_eval_metrics(monkeypatch, tmp_path: Path) -> 
                             "num_trades": 8,
                             "num_orders": 32,
                         },
+                        "robust_start_summary": {
+                            "hourly_replay": {
+                                "median_total_return": 0.01,
+                                "worst_total_return": -0.04,
+                                "worst_sortino": -0.7,
+                                "worst_max_drawdown": 0.22,
+                            },
+                            "hourly_policy": {
+                                "median_total_return": -0.02,
+                                "worst_total_return": -0.08,
+                                "worst_sortino": -1.1,
+                                "worst_max_drawdown": 0.31,
+                            },
+                        },
                     }
                 )
             )
@@ -340,17 +414,128 @@ def test_run_trial_collects_replay_eval_metrics(monkeypatch, tmp_path: Path) -> 
         replay_eval_start_date="2025-06-01",
         replay_eval_end_date="2026-02-05",
         replay_eval_run_hourly_policy=True,
-        rank_metric="replay_hourly_return_pct",
+        replay_eval_robust_start_states="flat,long:AAA:0.25",
+        rank_metric="replay_hourly_policy_robust_worst_return_pct",
     )
 
     replay_cmd = next(cmd for cmd in commands if "pufferlib_market.replay_eval" in cmd)
     assert replay_cmd[replay_cmd.index("--hourly-data-root") + 1] == "trainingdatahourly"
     assert replay_cmd[replay_cmd.index("--fill-buffer-bps") + 1] == "5.0"
+    assert replay_cmd[replay_cmd.index("--robust-start-states") + 1] == "flat,long:AAA:0.25"
     assert "--run-hourly-policy" in replay_cmd
     assert result["replay_hourly_return_pct"] == pytest.approx(3.0)
+    assert result["replay_hourly_robust_worst_return_pct"] == pytest.approx(-4.0)
+    assert result["replay_hourly_policy_robust_worst_return_pct"] == pytest.approx(-8.0)
     assert result["replay_hourly_policy_order_count"] == pytest.approx(32.0)
-    assert result["rank_metric"] == "replay_hourly_return_pct"
-    assert result["rank_score"] == pytest.approx(3.0)
+    assert result["rank_metric"] == "replay_hourly_policy_robust_worst_return_pct"
+    assert result["rank_score"] == pytest.approx(-8.0)
+
+
+def test_run_trial_caps_replay_eval_max_steps_to_data_length(monkeypatch, tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "trial"
+    checkpoint_dir.mkdir()
+    (checkpoint_dir / "best.pt").write_bytes(b"checkpoint")
+
+    class _FakeStdout:
+        def readline(self) -> bytes:
+            return b""
+
+    class _FakePopen:
+        def __init__(self, *args, **kwargs) -> None:
+            self.stdout = _FakeStdout()
+            self.pid = 12345
+
+        def poll(self) -> int:
+            return 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    commands: list[list[str]] = []
+
+    def _fake_run_capture(cmd: list[str], *, cwd: Path, timeout_s: int = 0) -> subprocess.CompletedProcess[str]:
+        commands.append(cmd)
+        if "pufferlib_market.evaluate" in cmd:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=(
+                    "Return: mean=0.10\n"
+                    "Win rate: mean=0.55\n"
+                    "Sortino: mean=1.20\n"
+                    ">0: 10/10 (100.0%)\n"
+                ),
+                stderr="",
+            )
+        if "pufferlib_market.replay_eval" in cmd:
+            out_idx = cmd.index("--output-json") + 1
+            Path(cmd[out_idx]).write_text(json.dumps({"hourly_replay": {"total_return": 0.01, "sortino": 0.2, "max_drawdown": 0.03}}))
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    def _fake_read_mktd_header(path: str) -> tuple[int, int]:
+        if path == "train.bin":
+            return (12, 1000)
+        if path == "val.bin":
+            return (12, 21)
+        return (12, 1000)
+
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl.subprocess.Popen", _FakePopen)
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl._run_capture", _fake_run_capture)
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl._read_mktd_header", _fake_read_mktd_header)
+
+    run_trial(
+        TrialConfig(description="test", max_steps=90),
+        "train.bin",
+        "val.bin",
+        1,
+        str(checkpoint_dir),
+        replay_eval_hourly_root="trainingdatahourly",
+        replay_eval_start_date="2025-06-01",
+        replay_eval_end_date="2025-06-21",
+    )
+
+    replay_cmd = next(cmd for cmd in commands if "pufferlib_market.replay_eval" in cmd)
+    assert replay_cmd[replay_cmd.index("--max-steps") + 1] == "20"
+
+
+def test_main_creates_leaderboard_parent_directory(monkeypatch, tmp_path: Path) -> None:
+    leaderboard = tmp_path / "nested" / "leaderboard.csv"
+    checkpoint_root = tmp_path / "checkpoints"
+
+    def _fake_run_trial(*args, **kwargs) -> dict[str, object]:
+        return {
+            "rank_metric": "val_return",
+            "rank_score": 1.0,
+            "val_return": 1.0,
+            "replay_hourly_robust_worst_return_pct": -2.0,
+        }
+
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl.run_trial", _fake_run_trial)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "autoresearch_rl.py",
+            "--stocks12",
+            "--time-budget",
+            "1",
+            "--max-trials",
+            "1",
+            "--leaderboard",
+            str(leaderboard),
+            "--checkpoint-root",
+            str(checkpoint_root),
+            "--descriptions",
+            "stock_trade_pen_05",
+        ],
+    )
+
+    main()
+
+    assert leaderboard.exists()
+    payload = leaderboard.read_text()
+    assert "replay_hourly_robust_worst_return_pct" in payload
 
 
 def test_run_trial_surfaces_train_failure_when_no_checkpoint(monkeypatch, tmp_path: Path) -> None:

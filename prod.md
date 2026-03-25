@@ -2,6 +2,16 @@
 
 ## Active Deployments
 
+### Production bookkeeping
+- `prod.md` is the current-production ledger. Keep it updated with what is live, how it is launched, and the latest timestamped results.
+- Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
+- `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
+
+### Current Alpaca snapshot (2026-03-25 08:20 UTC)
+- **LIVE account**: supervisor `unified-stock-trader` is active; equity **$41,048.99**, last_equity **$41,077.99**, day change **-$29.00 (-0.07%)**, total unrealized **+$284.20**.
+- **LIVE positions/orders**: `ABEV` 4459 shares (**+$222.95**) with DAY sell `4459 @ $2.77`; `ETHUSD` `4.748306908` (**+$61.25**) with GTC sell `4.748306908 @ $2178.32`; `AVAXUSD`, `BTCUSD`, `LTCUSD`, `SOLUSD` are dust.
+- **PAPER account**: `daily-rl-trader.service` is installed but currently `inactive (dead)`; paper equity **$54,691.94**, last_equity **$53,487.18**, day change **+$1,204.76**, total unrealized **+$2,693.25**.
+
 ### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- FIXED (pending restart)
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`
 - **Launch**: `deployments/binance-hybrid-spot/launch.sh`
@@ -53,11 +63,17 @@
   ```
 - **Diagnostics**: `python binance_worksteal/trade_live.py --diagnose --symbols BTCUSD ETHUSD`
 
-### 3. Alpaca Stock Trader (`unified-stock-trader`) -- RUNNING (hourly meta-selector)
+### 3. Alpaca Stock Trader (`unified-stock-trader`) -- RUNNING (LIVE via supervisor)
 - **Bot**: `unified_hourly_experiment/trade_unified_hourly_meta.py`
+- **Service manager**: supervisor program `unified-stock-trader`
+- **Installed config**: `/etc/supervisor/conf.d/unified-stock-trader.conf`
+- **Exact launch**: `.venv313/bin/python -u /nvme0n1-disk/code/stock-prediction/unified_hourly_experiment/trade_unified_hourly_meta.py --strategy wd06=/nvme0n1-disk/code/stock-prediction/unified_hourly_experiment/checkpoints/wd_0.06_s42:8 --strategy wd06b=/nvme0n1-disk/code/stock-prediction/unified_hourly_experiment/checkpoints/wd_0.06_s1337:8 --stock-symbols NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT,AAPL,MSFT,META,TSLA,NET,BKNG,EBAY,EXPE,ITUB,BTG,ABEV --min-edge 0.001 --fee-rate 0.001 --max-positions 5 --max-hold-hours 5 --trade-amount-scale 100.0 --min-buy-amount 2.0 --entry-intensity-power 1.0 --entry-min-intensity-fraction 0.0 --long-intensity-multiplier 1.0 --short-intensity-multiplier 1.5 --meta-metric p10 --meta-lookback-days 14 --meta-selection-mode sticky --meta-switch-margin 0.005 --meta-min-score-gap 0.0 --meta-recency-halflife-days 0.0 --meta-history-days 120 --sit-out-if-negative --sit-out-threshold -0.001 --market-order-entry --bar-margin 0.0005 --entry-order-ttl-hours 6 --margin-rate 0.0625 --live --loop`
+- **Environment**: `PYTHONPATH=/nvme0n1-disk/code/stock-prediction`, `PYTHONUNBUFFERED=1`, `CHRONOS2_FREQUENCY=hourly`, `PAPER=0`
 - **Architecture**: Chronos2 hourly, multiple models + meta-selector
 - **Symbols**: NVDA, PLTR, GOOG, DBX, TRIP, MTCH, NYT, AAPL, MSFT, META, TSLA, NET, BKNG, EBAY, EXPE, ITUB, BTG, ABEV
-- **Equity**: ~$41,145 (2026-03-24; was $46,467 — dropped during crash-loop outage)
+- **Live snapshot (2026-03-25 08:20 UTC)**: equity **$41,048.99**, cash **$18,352.47**, long market value **$22,696.52**, buying power **$49,100.96**, unrealized **+$284.20**
+- **Open positions (2026-03-25 08:20 UTC)**: `ABEV` `4459` shares (**+$222.95**), `ETHUSD` `4.748306908` (**+$61.25**), plus dust in `AVAXUSD`, `BTCUSD`, `LTCUSD`, `SOLUSD`
+- **Open exit orders (2026-03-25 08:20 UTC)**: `ABEV` sell `4459 @ $2.77` (`DAY`), `ETH/USD` sell `4.748306908 @ $2178.32` (`GTC`)
 - **Strategies**: wd_0.06_s42:8 + wd_0.06_s1337:8 (2-strategy meta-selector)
 - **NOTE (2026-03-24)**: Was crash-looping since ~Mar 19 — supervisor config referenced 5 missing checkpoints
   (wd_0.04, wd_0.05_s42, wd_0.08_s42, wd_0.03_s42, stock_sortino_robust_20260219b/c).
@@ -71,7 +87,13 @@
   2026-03-24 when force_close failed due to race condition. Fixed — retry fired at 01:42 UTC.
   Force_close limit order ~$2.77 queued for market open (2026-03-25 13:30 UTC).
 
-### 4. Alpaca Daily PPO Trader (`trade_daily_stock_prod.py`) -- READY TO DEPLOY (tp05 ensemble)
+### 4. Alpaca Daily PPO Trader (`trade_daily_stock_prod.py`) -- INSTALLED, CURRENTLY INACTIVE (paper systemd)
+- **Service manager**: systemd unit `daily-rl-trader.service`
+- **Installed unit**: `/etc/systemd/system/daily-rl-trader.service`
+- **Installed ExecStart**: `.venv313/bin/python -u trade_daily_stock_prod.py --daemon --paper --allocation-pct 25`
+- **Runtime status (2026-03-25 08:20 UTC)**: `inactive (dead)`; latest journal restart was `2026-03-25 01:42 UTC`
+- **Paper snapshot (2026-03-25 08:20 UTC)**: equity **$54,691.94**, cash **$2,235.61**, long market value **$52,496.44**, total unrealized **+$2,693.25**
+- **Paper positions (2026-03-25 08:20 UTC)**: `AAPL`, `BTCUSD`, `COUR`, `ETHUSD`, `SOLUSD`, `U`, `UNIUSD`
 - **Architecture**: h=1024 MLP PPO, stocks12 (AAPL,MSFT,NVDA,GOOG,META,TSLA,SPY,QQQ,JPM,V,AMZN,PLTR)
 - **Primary checkpoint**: `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt`
 - **Ensemble member**: `pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt`

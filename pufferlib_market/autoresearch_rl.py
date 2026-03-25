@@ -2132,6 +2132,25 @@ def summarize_replay_eval_payload(payload: object) -> dict[str, float]:
             summary[f"{prefix}_trade_count"] = float(row.get("num_trades", 0.0) or 0.0)
         if "num_orders" in row:
             summary[f"{prefix}_order_count"] = float(row.get("num_orders", 0.0) or 0.0)
+
+    robust = payload.get("robust_start_summary")
+    if isinstance(robust, dict):
+        for section, prefix in (
+            ("daily", "replay_daily_robust"),
+            ("hourly_replay", "replay_hourly_robust"),
+            ("hourly_policy", "replay_hourly_policy_robust"),
+        ):
+            row = robust.get(section)
+            if not isinstance(row, dict):
+                continue
+            if "median_total_return" in row:
+                summary[f"{prefix}_median_return_pct"] = 100.0 * float(row.get("median_total_return", 0.0) or 0.0)
+            if "worst_total_return" in row:
+                summary[f"{prefix}_worst_return_pct"] = 100.0 * float(row.get("worst_total_return", 0.0) or 0.0)
+            if "worst_sortino" in row:
+                summary[f"{prefix}_worst_sortino"] = float(row.get("worst_sortino", 0.0) or 0.0)
+            if "worst_max_drawdown" in row:
+                summary[f"{prefix}_worst_max_drawdown_pct"] = 100.0 * float(row.get("worst_max_drawdown", 0.0) or 0.0)
     return summary
 
 
@@ -2145,8 +2164,10 @@ def select_rank_score(
         "smooth_score": _safe_float(metrics.get("smooth_score")),
         "market_goodness_score": _safe_float(metrics.get("market_goodness_score")),
         "holdout_robust_score": _safe_float(metrics.get("holdout_robust_score")),
-        "replay_hourly_return_pct": _safe_float(metrics.get("replay_hourly_return_pct")),
+        "replay_hourly_policy_robust_worst_return_pct": _safe_float(metrics.get("replay_hourly_policy_robust_worst_return_pct")),
         "replay_hourly_policy_return_pct": _safe_float(metrics.get("replay_hourly_policy_return_pct")),
+        "replay_hourly_robust_worst_return_pct": _safe_float(metrics.get("replay_hourly_robust_worst_return_pct")),
+        "replay_hourly_return_pct": _safe_float(metrics.get("replay_hourly_return_pct")),
         "val_return": _safe_float(metrics.get("val_return")),
     }
     if rank_metric == "auto":
@@ -2154,6 +2175,9 @@ def select_rank_score(
             "smooth_score",
             "market_goodness_score",
             "holdout_robust_score",
+            "replay_hourly_policy_robust_worst_return_pct",
+            "replay_hourly_policy_return_pct",
+            "replay_hourly_robust_worst_return_pct",
             "replay_hourly_return_pct",
             "val_return",
         ):
@@ -2235,6 +2259,7 @@ def run_trial(
     replay_eval_start_date: str = "",
     replay_eval_end_date: str = "",
     replay_eval_run_hourly_policy: bool = False,
+    replay_eval_robust_start_states: str = "",
     replay_eval_fill_buffer_bps: float = 5.0,
     replay_eval_hourly_periods_per_year: float = 8760.0,
     replay_eval_timeout_s: int = 0,
@@ -2712,6 +2737,12 @@ def run_trial(
             f"hourly_root={replay_eval_hourly_root}, "
             f"dates={replay_eval_start_date}..{replay_eval_end_date}"
         )
+        replay_max_steps = int(config.max_steps)
+        try:
+            _, replay_timesteps = _read_mktd_header(str(effective_replay_data))
+            replay_max_steps = min(replay_max_steps, max(1, int(replay_timesteps) - 1))
+        except Exception:
+            replay_max_steps = int(config.max_steps)
         replay_json_path = Path(checkpoint_dir) / "replay_eval.json"
         replay_cmd = [
             sys.executable, "-u", "-m", "pufferlib_market.replay_eval",
@@ -2720,7 +2751,7 @@ def run_trial(
             "--hourly-data-root", str(replay_eval_hourly_root),
             "--start-date", str(replay_eval_start_date),
             "--end-date", str(replay_eval_end_date),
-            "--max-steps", str(config.max_steps),
+            "--max-steps", str(replay_max_steps),
             "--fee-rate", str(config.fee_rate),
             "--fill-buffer-bps", str(replay_eval_fill_buffer_bps),
             "--max-leverage", str(holdout_max_leverage),
@@ -2732,6 +2763,8 @@ def run_trial(
             "--deterministic",
             "--output-json", str(replay_json_path),
         ]
+        if replay_eval_robust_start_states:
+            replay_cmd.extend(["--robust-start-states", str(replay_eval_robust_start_states)])
         if replay_eval_run_hourly_policy:
             replay_cmd.append("--run-hourly-policy")
         try:
@@ -2938,8 +2971,10 @@ def main():
                             "holdout_robust_score",
                             "smooth_score",
                             "market_goodness_score",
-                            "replay_hourly_return_pct",
+                            "replay_hourly_policy_robust_worst_return_pct",
                             "replay_hourly_policy_return_pct",
+                            "replay_hourly_robust_worst_return_pct",
+                            "replay_hourly_return_pct",
                         ],
                         default="auto")
     parser.add_argument("--multi-period-eval", action="store_true",
@@ -2978,6 +3013,8 @@ def main():
                         help="Inclusive UTC end date used for the replay_eval daily MKTD export")
     parser.add_argument("--replay-eval-run-hourly-policy", action="store_true",
                         help="Also run the hourly-policy stress mode inside replay_eval")
+    parser.add_argument("--replay-eval-robust-start-states", default="",
+                        help="Optional replay_eval start states like 'flat,long:AAPL:0.25,short:MSFT:0.25'")
     parser.add_argument("--replay-eval-fill-buffer-bps", type=float, default=5.0,
                         help="Require replay_eval daily bars to trade through each limit by this many bps")
     parser.add_argument("--replay-eval-hourly-periods-per-year", type=float, default=8760.0)
@@ -3118,6 +3155,7 @@ def main():
 
     leaderboard_path = Path(args.leaderboard)
     ckpt_root = Path(args.checkpoint_root)
+    leaderboard_path.parent.mkdir(parents=True, exist_ok=True)
     ckpt_root.mkdir(parents=True, exist_ok=True)
 
     # W&B group ties all trials in this autoresearch run together on the dashboard
@@ -3136,11 +3174,17 @@ def main():
         "market_trade_count", "market_goodness_score",
         "replay_daily_return_pct", "replay_daily_sortino", "replay_daily_max_drawdown_pct",
         "replay_daily_trade_count",
+        "replay_daily_robust_median_return_pct", "replay_daily_robust_worst_return_pct",
+        "replay_daily_robust_worst_sortino", "replay_daily_robust_worst_max_drawdown_pct",
         "replay_hourly_return_pct", "replay_hourly_sortino", "replay_hourly_max_drawdown_pct",
         "replay_hourly_trade_count", "replay_hourly_order_count",
+        "replay_hourly_robust_median_return_pct", "replay_hourly_robust_worst_return_pct",
+        "replay_hourly_robust_worst_sortino", "replay_hourly_robust_worst_max_drawdown_pct",
         "replay_hourly_policy_return_pct", "replay_hourly_policy_sortino",
         "replay_hourly_policy_max_drawdown_pct", "replay_hourly_policy_trade_count",
         "replay_hourly_policy_order_count",
+        "replay_hourly_policy_robust_median_return_pct", "replay_hourly_policy_robust_worst_return_pct",
+        "replay_hourly_policy_robust_worst_sortino", "replay_hourly_policy_robust_worst_max_drawdown_pct",
         "smooth_score", "smooth_error",
         "smooth_5d_p10_sortino", "smooth_15d_p10_sortino", "smooth_30d_p10_sortino",
         "smooth_60d_p10_sortino", "smooth_90d_p10_sortino",
@@ -3337,6 +3381,7 @@ def main():
             replay_eval_start_date=args.replay_eval_start_date,
             replay_eval_end_date=args.replay_eval_end_date,
             replay_eval_run_hourly_policy=args.replay_eval_run_hourly_policy,
+            replay_eval_robust_start_states=args.replay_eval_robust_start_states,
             replay_eval_fill_buffer_bps=args.replay_eval_fill_buffer_bps,
             replay_eval_hourly_periods_per_year=args.replay_eval_hourly_periods_per_year,
             replay_eval_timeout_s=args.replay_eval_timeout_seconds,
@@ -3395,16 +3440,28 @@ def main():
             "replay_daily_sortino": result.get("replay_daily_sortino"),
             "replay_daily_max_drawdown_pct": result.get("replay_daily_max_drawdown_pct"),
             "replay_daily_trade_count": result.get("replay_daily_trade_count"),
+            "replay_daily_robust_median_return_pct": result.get("replay_daily_robust_median_return_pct"),
+            "replay_daily_robust_worst_return_pct": result.get("replay_daily_robust_worst_return_pct"),
+            "replay_daily_robust_worst_sortino": result.get("replay_daily_robust_worst_sortino"),
+            "replay_daily_robust_worst_max_drawdown_pct": result.get("replay_daily_robust_worst_max_drawdown_pct"),
             "replay_hourly_return_pct": result.get("replay_hourly_return_pct"),
             "replay_hourly_sortino": result.get("replay_hourly_sortino"),
             "replay_hourly_max_drawdown_pct": result.get("replay_hourly_max_drawdown_pct"),
             "replay_hourly_trade_count": result.get("replay_hourly_trade_count"),
             "replay_hourly_order_count": result.get("replay_hourly_order_count"),
+            "replay_hourly_robust_median_return_pct": result.get("replay_hourly_robust_median_return_pct"),
+            "replay_hourly_robust_worst_return_pct": result.get("replay_hourly_robust_worst_return_pct"),
+            "replay_hourly_robust_worst_sortino": result.get("replay_hourly_robust_worst_sortino"),
+            "replay_hourly_robust_worst_max_drawdown_pct": result.get("replay_hourly_robust_worst_max_drawdown_pct"),
             "replay_hourly_policy_return_pct": result.get("replay_hourly_policy_return_pct"),
             "replay_hourly_policy_sortino": result.get("replay_hourly_policy_sortino"),
             "replay_hourly_policy_max_drawdown_pct": result.get("replay_hourly_policy_max_drawdown_pct"),
             "replay_hourly_policy_trade_count": result.get("replay_hourly_policy_trade_count"),
             "replay_hourly_policy_order_count": result.get("replay_hourly_policy_order_count"),
+            "replay_hourly_policy_robust_median_return_pct": result.get("replay_hourly_policy_robust_median_return_pct"),
+            "replay_hourly_policy_robust_worst_return_pct": result.get("replay_hourly_policy_robust_worst_return_pct"),
+            "replay_hourly_policy_robust_worst_sortino": result.get("replay_hourly_policy_robust_worst_sortino"),
+            "replay_hourly_policy_robust_worst_max_drawdown_pct": result.get("replay_hourly_policy_robust_worst_max_drawdown_pct"),
             "smooth_score": result.get("smooth_score"),
             "smooth_error": result.get("smooth_error", ""),
             "smooth_5d_p10_sortino": result.get("smooth_5d_p10_sortino"),
