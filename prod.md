@@ -63,6 +63,13 @@
   (wd_0.04, wd_0.05_s42, wd_0.08_s42, wd_0.03_s42, stock_sortino_robust_20260219b/c).
   Fixed by replacing with wd_0.06_s42:8 + wd_0.06_s1337:8 (only 2 strategies remain locally).
   Previous equity loss (~$5k) likely from pre-existing positions before outage, not model error.
+- **NOTE (2026-03-25)**: 3 bugs fixed in `trade_unified_hourly.py` — see `alpacaprogress6.md`:
+  1. pending_close_retry: positions stuck in pending_close with no exit order now retry force_close
+  2. cancel race condition: sleep(0.75) after cancel before new order (prevents "qty held for orders")
+  3. crypto qty: abs(qty)<1 wrongly treated fractional crypto as closed — fixed with notional check
+- **ABEV incident (2026-03-25)**: ABEV position ($12k, entered 2026-03-20 @ $2.73) had no exit order since
+  2026-03-24 when force_close failed due to race condition. Fixed — retry fired at 01:42 UTC.
+  Force_close limit order ~$2.77 queued for market open (2026-03-25 13:30 UTC).
 
 ### 4. Alpaca Daily PPO Trader (`trade_daily_stock_prod.py`) -- READY TO DEPLOY (tp05 ensemble)
 - **Architecture**: h=1024 MLP PPO, stocks12 (AAPL,MSFT,NVDA,GOOG,META,TSLA,SPY,QQQ,JPM,V,AMZN,PLTR)
@@ -142,18 +149,30 @@
 - **Caution**: Single val period only (Sep2025-Mar2026 = crypto bull run). No sliding-window eval.
 
 **Checkpoints**: `pufferlib_market/checkpoints/crypto70_autoresearch/c70_tp05_slip5_lr3e-04_s{7,123}/best.pt`
-**Seed sweep honest eval (2026-03-24)**: Top genuine models (100-episode, no early stop):
-| Seed | Honest ret | Ann% | Binary-fill @5bps p50 | Notes |
-|------|-----------|------|----------------------|-------|
-| **s19** | **+4.39x** | **+2941%** | **+667%/180d, Sortino=5.77, 73% WR, 50 trades** | **CHAMPION** |
-| s123 | +1.93x | +786% | +514%/180d, sortino=5.19, 62% WR | |
-| s17 | +1.08x | +339% | — | |
-| s7 | +0.97x | +294% | +503%/180d, sortino=5.63, 63% WR | |
-| s4, s5 | +0.87x each | ~+258% | — | |
-| s8 | +0.50x | +127% | +432%/180d, sortino=6.24, 67% WR | High quality, fewer trades |
-40% of seeds are "genuine" (positive honest eval)
+**Seed sweep honest eval (s1-60, 300s budget, 2026-03-24)**: Top genuine (100-ep, no early stop):
+| Seed | Honest ret | Ann% | Notes |
+|------|-----------|------|-------|
+| **s19** | **+4.39x** | **+2941%** | **CHAMPION (300s)** |
+| s47 | +2.38x | +1083% | |
+| s33 | +2.29x | +1019% | |
+| s32 | +1.94x | +791% | |
+| s123 | +1.93x | +786% | autoresearch ckpt: `crypto70_autoresearch/c70_tp05_slip5_lr3e-04_s123/best.pt` |
+| s37 | +1.85x | +736% | |
+28/61 genuine (45% hit rate)
+
+**Long sweep (s61-s115, 1800s budget, 2026-03-24)**: 300s vs 1800s comparison:
+| Seed | 300s honest | 1800s honest | Ann% (1800s) | Notes |
+|------|------------|--------------|--------------|-------|
+| s63 | +0.197 (+44%) | +1.87 | **+749%** | 1800s finds 17x better model! |
+| s112 | N/A yet | +0.193 | +43% | High pool val (6.3x) but modest honest |
+- **KEY**: For crypto70, 1800s budget produces substantially better models than 300s for most seeds
+- Checkpoint s63 (long): `pufferlib_market/checkpoints/crypto70_long_sweep/crypto70_daily_tp05_s63/best.pt`
+- Checkpoint s112 (long): `pufferlib_market/checkpoints/crypto70_long_sweep/crypto70_daily_tp05_s112/best.pt`
+
+**Active sweeps (2026-03-25)**:
+- s61-120 (300s budget): running, will chain to s121-200; honest eval: `sweepresults/crypto70_s61_120_honest_eval.csv`
 **Leaderboard**: `sweepresults/crypto70_daily_leaderboard.csv`
-**Honest eval CSV**: `/tmp/crypto70_honest_eval.csv` (monitor running)
+**Honest eval CSV (s1-60)**: `/tmp/crypto70_honest_eval.csv`
 
 **Eval command:**
 ```bash
