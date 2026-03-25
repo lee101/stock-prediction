@@ -149,48 +149,56 @@
 - **Caution**: Single val period only (Sep2025-Mar2026 = crypto bull run). No sliding-window eval.
 
 **Checkpoints**: `pufferlib_market/checkpoints/crypto70_autoresearch/c70_tp05_slip5_lr3e-04_s{7,123}/best.pt`
-**Seed sweep honest eval (s1-60, 300s budget, 2026-03-24)**: Top genuine (100-ep, no early stop):
-| Seed | Honest ret | Ann% | Notes |
-|------|-----------|------|-------|
-| **s19** | **+4.39x** | **+2941%** | **CHAMPION (300s)** |
-| s47 | +2.38x | +1083% | |
-| s33 | +2.29x | +1019% | |
-| s32 | +1.94x | +791% | |
-| s123 | +1.93x | +786% | autoresearch ckpt: `crypto70_autoresearch/c70_tp05_slip5_lr3e-04_s123/best.pt` |
-| s37 | +1.85x | +736% | |
-28/61 genuine (45% hit rate)
+**CRITICAL (2026-03-25)**: All prior "honest eval" at 0bps was wrong. Models trained with 5bps fill slippage REQUIRE ≥5bps eval slippage to show true performance. At 0bps, bad trades fill (model expects them not to fill) → losses. At 5-8bps, only quality trades fill → extraordinary returns. ALWAYS use `--fill-slippage-bps 8` for crypto70 evals.
 
-**Long sweep (s61-s115, 1800s budget, 2026-03-24)**: 300s vs 1800s comparison:
-| Seed | 300s honest | 1800s honest | Ann% (1800s) | Notes |
-|------|------------|--------------|--------------|-------|
-| s63 | +0.197 (+44%) | +1.87 | **+749%** | 1800s finds 17x better model! |
-| s112 | N/A yet | +0.193 | +43% | High pool val (6.3x) but modest honest |
-- **KEY**: For crypto70, 1800s budget produces substantially better models than 300s for most seeds
-- Checkpoint s63 (long): `pufferlib_market/checkpoints/crypto70_long_sweep/crypto70_daily_tp05_s63/best.pt`
-- Checkpoint s112 (long): `pufferlib_market/checkpoints/crypto70_long_sweep/crypto70_daily_tp05_s112/best.pt`
+**Mechanism**: C env uses fill_slippage to filter fills (buys fill at +slip%, sells at -slip%). Higher slippage = fewer trades but higher win rate. S71 at 8bps: 114 trades WR=54% vs 0bps: 172 trades WR=44%.
+
+**Top seeds (ALL at 8bps eval, 300s budget unless noted)**:
+| Seed | Return/180d | Ann% | Sortino | Checkpoint | Notes |
+|------|------------|------|---------|------------|-------|
+| **s71** | **+8.65x** | **+9926%** | **8.35** | `crypto70_champions/c70_tp05_slip5_s71/best.pt` | **CHAMPION** |
+| s65 | +6.21x | +5392% | — | `crypto70_champions/c70_tp05_slip5_s65/best.pt` | s61-120 sweep |
+| s19 | +6.64x | +6055% | 5.76 | `crypto70_autoresearch/c70_tp05_slip5_s19/best.pt` | s1-60 sweep |
+| s112 (1800s) | +6.31x | +5566% | 7.10 | `crypto70_long_sweep/crypto70_daily_tp05_s112/best.pt` | best 1800s |
+| s70 | +4.69x | +3303% | — | `crypto70_champions/c70_tp05_slip5_s70/best.pt` | s61-120 sweep |
+| s78 | +3.51x | +2016% | — | `crypto70_champions/c70_tp05_slip5_s78/best.pt` | s61-120 sweep |
+| s80 | +3.32x | +1847% | — | `crypto70_champions/c70_tp05_slip5_s80/best.pt` | s61-120 sweep |
+| s37 | +3.43x | +3435% | — | `/tmp/crypto70_seedsweep_checkpoints/gpu0/` | s1-60 sweep (tmp) |
+| s64 | +2.91x | +1488% | — | `crypto70_champions/c70_tp05_slip5_s64/best.pt` | s61-120 sweep |
+| s66 | +2.87x | +1453% | — | `crypto70_champions/c70_tp05_slip5_s66/best.pt` | s61-120 sweep |
+| s77 | +2.13x | +914% | — | `crypto70_champions/c70_tp05_slip5_s77/best.pt` | s61-120 sweep |
+
+**Long sweep findings (s61-65, s111-115 at 1800s, 8bps eval)**:
+| Seed | 300s ann (8bps) | 1800s ann (8bps) | Notes |
+|------|----------------|-----------------|-------|
+| s63 | +235% | +1394% | improves at 1800s |
+| s112 | unknown | +5566% | best 1800s result |
+| s65 | +5392% | -35% | DEGRADES at 1800s |
+| s64 | +1488% | -33% | DEGRADES at 1800s |
+- **KEY**: 1800s budget can HURT good 300s seeds. s65/s64 degrade. s63/s112 improve. Not predictable from 300s results.
+- Active long sweep (s66-120): s71, s70, s78, s80 are first to be tested at 1800s in queue order
 
 **Active sweeps (2026-03-25)**:
-- s61-120 (300s budget): running, will chain to s121-200; honest eval: `sweepresults/crypto70_s61_120_honest_eval.csv`
-**Leaderboard**: `sweepresults/crypto70_daily_leaderboard.csv`
-**Honest eval CSV (s1-60)**: `/tmp/crypto70_honest_eval.csv`
+- s61-120 (300s, ~22/60 done at 02:30 → auto-chains to s121-200 + long sweep s61-120 at 1800s)
+- Long queue priority order: s71, s70, s78, s80, s66, s77, s74, s73...
+- Monitor: `sweepresults/crypto70_s61_120_honest_eval.csv` (8bps, 19 seeds evaluated)
 
-**Eval command:**
+**Eval command (canonical):**
 ```bash
 source .venv313/bin/activate
 python -m pufferlib_market.evaluate \
-  --checkpoint pufferlib_market/checkpoints/crypto70_autoresearch/c70_tp05_slip5_lr3e-04_s7/best.pt \
+  --checkpoint pufferlib_market/checkpoints/crypto70_champions/c70_tp05_slip5_s71/best.pt \
   --data-path pufferlib_market/data/crypto70_daily_val.bin \
   --deterministic --hidden-size 1024 --periods-per-year 365.0 --max-steps 180 \
-  --fill-slippage-bps 5.0
-# s7:   p50=+503% (60285 from 10k), 100% profitable
-# s123: p50=+514% (61379 from 10k), 100% profitable
+  --fill-slippage-bps 8 --num-episodes 100 --no-drawdown-profit-early-exit
+# s71: median=+8.65x (+865%/180d), ann=+9926%, Sortino=8.35, p05=+815%/180d
 ```
 
-**NOTE**: Eval at fill_slippage_bps=0 gives only +101% (s7) / +40% (s123) — mismatch from training env (model was trained with 5bps fill model). Always eval at 5bps to match training.
-**NOTE**: 5-minute training runs (~5M steps on 677 daily bars). 300s is very short — longer training likely improves further.
-**DEPLOYMENT BLOCKER**: No sliding-window eval (val only has 205 bars / max_steps=180). Need more OOS data or rolling-origin eval before deploying.
+**Slippage robustness (s71)**:
+- 5bps: +9229% ann | 8bps: +9926% ann | 12bps: +14911% ann | 20bps: +18215% ann
+
+**DEPLOYMENT BLOCKER**: No sliding-window eval (val only has 205 bars / max_steps=180). Need rolling-origin eval before deploying. Also need 8bps fill slippage in production (limit orders at ±5bps from OPEN).
 **s19 checkpoint**: `pufferlib_market/checkpoints/crypto70_autoresearch/c70_tp05_slip5_s19/best.pt`
-**IMPORTANT**: Pool val_return is unreliable — always use honest 100-episode eval for final ranking. s19 pool=6.6 ≠ honest=4.39 (both big, but different). s4 pool=-0.05 but honest=+87% (rank inversion!)
 
 ---
 
