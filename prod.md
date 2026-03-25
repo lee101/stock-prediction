@@ -7,10 +7,10 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
-### Current Alpaca snapshot (2026-03-25 08:20 UTC)
-- **LIVE account**: supervisor `unified-stock-trader` is active; equity **$41,048.99**, last_equity **$41,077.99**, day change **-$29.00 (-0.07%)**, total unrealized **+$284.20**.
-- **LIVE positions/orders**: `ABEV` 4459 shares (**+$222.95**) with DAY sell `4459 @ $2.77`; `ETHUSD` `4.748306908` (**+$61.25**) with GTC sell `4.748306908 @ $2178.32`; `AVAXUSD`, `BTCUSD`, `LTCUSD`, `SOLUSD` are dust.
-- **PAPER account**: `daily-rl-trader.service` is installed but currently `inactive (dead)`; paper equity **$54,691.94**, last_equity **$53,487.18**, day change **+$1,204.76**, total unrealized **+$2,693.25**.
+### Current Alpaca snapshot (2026-03-25 08:56 UTC)
+- **LIVE account**: supervisor `unified-stock-trader` is active; equity **$41,081.47**, last_equity **$41,077.99**, day change **+$3.48 (+0.01%)**, total unrealized **+$222.95**.
+- **LIVE positions/orders**: `ABEV` 4459 shares (**+$222.95**) with DAY sell `4459 @ $2.77`; `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD` remain only as dust.
+- **PAPER account**: `daily-rl-trader.service` is installed but currently `inactive (dead)`; paper equity **$55,268.15**, last_equity **$54,078.69**, day change **+$1,189.46 (+2.20%)**, total unrealized **+$3,269.46**.
 
 ### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- FIXED (pending restart)
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`
@@ -71,9 +71,9 @@
 - **Environment**: `PYTHONPATH=/nvme0n1-disk/code/stock-prediction`, `PYTHONUNBUFFERED=1`, `CHRONOS2_FREQUENCY=hourly`, `PAPER=0`
 - **Architecture**: Chronos2 hourly, multiple models + meta-selector
 - **Symbols**: NVDA, PLTR, GOOG, DBX, TRIP, MTCH, NYT, AAPL, MSFT, META, TSLA, NET, BKNG, EBAY, EXPE, ITUB, BTG, ABEV
-- **Live snapshot (2026-03-25 08:20 UTC)**: equity **$41,048.99**, cash **$18,352.47**, long market value **$22,696.52**, buying power **$49,100.96**, unrealized **+$284.20**
-- **Open positions (2026-03-25 08:20 UTC)**: `ABEV` `4459` shares (**+$222.95**), `ETHUSD` `4.748306908` (**+$61.25**), plus dust in `AVAXUSD`, `BTCUSD`, `LTCUSD`, `SOLUSD`
-- **Open exit orders (2026-03-25 08:20 UTC)**: `ABEV` sell `4459 @ $2.77` (`DAY`), `ETH/USD` sell `4.748306908 @ $2178.32` (`GTC`)
+- **Live snapshot (2026-03-25 08:56 UTC)**: equity **$41,081.47**, cash **$28,685.45**, long market value **$12,396.02**, buying power **$69,766.92**, unrealized **+$222.95**
+- **Open positions (2026-03-25 08:56 UTC)**: `ABEV` `4459` shares (**+$222.95**), plus dust in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD`
+- **Open exit orders (2026-03-25 08:56 UTC)**: `ABEV` sell `4459 @ $2.77` (`DAY`)
 - **Strategies**: wd_0.06_s42:8 + wd_0.06_s1337:8 (2-strategy meta-selector)
 - **NOTE (2026-03-24)**: Was crash-looping since ~Mar 19 — supervisor config referenced 5 missing checkpoints
   (wd_0.04, wd_0.05_s42, wd_0.08_s42, wd_0.03_s42, stock_sortino_robust_20260219b/c).
@@ -91,9 +91,9 @@
 - **Service manager**: systemd unit `daily-rl-trader.service`
 - **Installed unit**: `/etc/systemd/system/daily-rl-trader.service`
 - **Installed ExecStart**: `.venv313/bin/python -u trade_daily_stock_prod.py --daemon --paper --allocation-pct 25`
-- **Runtime status (2026-03-25 08:20 UTC)**: `inactive (dead)`; latest journal restart was `2026-03-25 01:42 UTC`
-- **Paper snapshot (2026-03-25 08:20 UTC)**: equity **$54,691.94**, cash **$2,235.61**, long market value **$52,496.44**, total unrealized **+$2,693.25**
-- **Paper positions (2026-03-25 08:20 UTC)**: `AAPL`, `BTCUSD`, `COUR`, `ETHUSD`, `SOLUSD`, `U`, `UNIUSD`
+- **Runtime status (2026-03-25 08:56 UTC)**: `inactive (dead)`; latest journal restart was `2026-03-25 01:42 UTC`
+- **Paper snapshot (2026-03-25 08:56 UTC)**: equity **$55,268.15**, cash **$2,235.60**, long market value **$53,072.66**, total unrealized **+$3,269.46**
+- **Paper positions (2026-03-25 08:56 UTC)**: `AAPL`, `BTCUSD`, `COUR`, `ETHUSD`, `SOLUSD`, `U`, `UNIUSD`
 - **Architecture**: h=1024 MLP PPO, stocks12 (AAPL,MSFT,NVDA,GOOG,META,TSLA,SPY,QQQ,JPM,V,AMZN,PLTR)
 - **Primary checkpoint**: `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt`
 - **Ensemble member**: `pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt`
