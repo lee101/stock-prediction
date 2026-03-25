@@ -39,6 +39,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", help="Checkpoint path for --mode plan.")
     parser.add_argument("--run-name", help="Optional run name override.")
     parser.add_argument("--dry-train-steps", type=int, help="Optional early stop after N optimizer steps.")
+    parser.add_argument("--max-train-batches", type=int, default=0, help="Optional cap on train dataloader batches per epoch.")
+    parser.add_argument("--max-val-batches", type=int, default=0, help="Optional cap on validation dataloader batches per epoch.")
     parser.add_argument("--device", help="Torch device override (cpu, cuda, cuda:0, ...).")
     parser.add_argument("--val-fraction", type=float, default=0.2, help="Validation fraction for training splits.")
     parser.add_argument("--validation-days", type=int, default=90, help="Minimum validation tail length.")
@@ -122,6 +124,8 @@ def run_training(args: argparse.Namespace) -> None:
         run_name=args.run_name,
         device=args.device,
         dry_train_steps=args.dry_train_steps,
+        max_train_batches=args.max_train_batches,
+        max_val_batches=args.max_val_batches,
         use_amp=args.use_amp,
         use_compile=args.use_compile,
         compile_mode=args.compile_mode,

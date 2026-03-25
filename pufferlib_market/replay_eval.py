@@ -197,12 +197,14 @@ def main() -> None:
 
     daily_data = read_mktd(args.daily_data_path)
     S = daily_data.num_symbols
+    features_per_sym = int(daily_data.features.shape[2])
     policy, _, _ = load_policy(
         args.checkpoint,
         S,
         arch=args.arch,
         hidden_size=args.hidden_size,
         device=device,
+        features_per_sym=features_per_sym,
     )
 
     policy_fn = make_policy_fn(
@@ -283,19 +285,19 @@ def main() -> None:
         "hourly_replay": _serialize_hourly_result(
             hourly,
             annualized_return=hourly_ann,
-            num_days=args.max_steps + 1,
+            num_days=effective_max_steps + 1,
         ),
     }
     if hourly_policy is not None:
         hourly_policy_ann = annualize_total_return(
             hourly_policy.total_return,
-            periods=args.max_steps,
+            periods=effective_max_steps,
             periods_per_year=args.daily_periods_per_year,
         )
         report["hourly_policy"] = _serialize_hourly_result(
             hourly_policy,
             annualized_return=hourly_policy_ann,
-            num_days=args.max_steps + 1,
+            num_days=effective_max_steps + 1,
         )
 
     robust_start_states = _parse_robust_start_states(args.robust_start_states)
@@ -305,7 +307,7 @@ def main() -> None:
             scenario_daily = simulate_daily_policy(
                 daily_data,
                 policy_fn,
-                max_steps=args.max_steps,
+                max_steps=effective_max_steps,
                 fee_rate=args.fee_rate,
                 fill_buffer_bps=args.fill_buffer_bps,
                 max_leverage=args.max_leverage,
@@ -315,7 +317,7 @@ def main() -> None:
             )
             scenario_daily_ann = annualize_total_return(
                 scenario_daily.total_return,
-                periods=args.max_steps,
+                periods=effective_max_steps,
                 periods_per_year=args.daily_periods_per_year,
             )
             scenario_hourly = replay_hourly_frozen_daily_actions(
@@ -324,7 +326,7 @@ def main() -> None:
                 market=market,
                 start_date=args.start_date,
                 end_date=args.end_date,
-                max_steps=args.max_steps,
+                max_steps=effective_max_steps,
                 fee_rate=args.fee_rate,
                 max_leverage=args.max_leverage,
                 short_borrow_apr=args.short_borrow_apr,
@@ -333,7 +335,7 @@ def main() -> None:
             )
             scenario_hourly_ann = annualize_total_return(
                 scenario_hourly.total_return,
-                periods=args.max_steps,
+                periods=effective_max_steps,
                 periods_per_year=args.daily_periods_per_year,
             )
             scenario_report: dict[str, object] = {
@@ -343,7 +345,7 @@ def main() -> None:
                 "hourly_replay": _serialize_hourly_result(
                     scenario_hourly,
                     annualized_return=scenario_hourly_ann,
-                    num_days=args.max_steps + 1,
+                    num_days=effective_max_steps + 1,
                 ),
             }
             if args.run_hourly_policy:
@@ -353,7 +355,7 @@ def main() -> None:
                     market=market,
                     start_date=args.start_date,
                     end_date=args.end_date,
-                    max_steps_days=args.max_steps,
+                    max_steps_days=effective_max_steps,
                     fee_rate=args.fee_rate,
                     max_leverage=args.max_leverage,
                     short_borrow_apr=args.short_borrow_apr,
@@ -362,13 +364,13 @@ def main() -> None:
                 )
                 scenario_hourly_policy_ann = annualize_total_return(
                     scenario_hourly_policy.total_return,
-                    periods=args.max_steps,
+                    periods=effective_max_steps,
                     periods_per_year=args.daily_periods_per_year,
                 )
                 scenario_report["hourly_policy"] = _serialize_hourly_result(
                     scenario_hourly_policy,
                     annualized_return=scenario_hourly_policy_ann,
-                    num_days=args.max_steps + 1,
+                    num_days=effective_max_steps + 1,
                 )
             scenarios.append(scenario_report)
 

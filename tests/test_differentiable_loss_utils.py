@@ -179,3 +179,38 @@ def test_binary_simulation_supports_short_only_mode() -> None:
     assert result.executed_buys[..., 1] > 0
     assert result.inventory.abs() < 1e-4
     assert result.cash > 1.0
+
+
+
+def test_decision_lag_handles_per_batch_max_leverage_tensor() -> None:
+    highs = torch.tensor([[1.20, 1.15]])
+    lows = torch.tensor([[0.95, 0.90]])
+    closes = torch.tensor([[1.00, 1.05]])
+    buy_prices = torch.tensor([[0.98, 1.00]])
+    sell_prices = torch.tensor([[1.10, 1.12]])
+    trade_intensity = torch.tensor([[0.5, 0.5]])
+    max_leverage = torch.tensor([[1.0]])
+
+    sim = simulate_hourly_trades(
+        highs=highs,
+        lows=lows,
+        closes=closes,
+        buy_prices=buy_prices,
+        sell_prices=sell_prices,
+        trade_intensity=trade_intensity,
+        max_leverage=max_leverage,
+        decision_lag_bars=1,
+    )
+    binary = simulate_hourly_trades_binary(
+        highs=highs,
+        lows=lows,
+        closes=closes,
+        buy_prices=buy_prices,
+        sell_prices=sell_prices,
+        trade_intensity=trade_intensity,
+        max_leverage=max_leverage,
+        decision_lag_bars=1,
+    )
+
+    assert sim.returns.shape[-1] == 1
+    assert binary.returns.shape[-1] == 1

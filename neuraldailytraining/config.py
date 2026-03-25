@@ -83,6 +83,8 @@ class DailyTrainingConfig:
     warmup_steps: int = 100
     ema_decay: float = 0.0
     dry_train_steps: Optional[int] = None
+    max_train_batches: int = 0
+    max_val_batches: int = 0
     device: Optional[str] = None
     run_name: Optional[str] = None
     wandb_project: Optional[str] = "neuraldailytraining"

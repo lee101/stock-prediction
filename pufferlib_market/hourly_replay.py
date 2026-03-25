@@ -460,6 +460,28 @@ def _normalize_initial_position_spec(
     return InitialPositionSpec(symbol=symbol, side=side, allocation_pct=allocation_pct)
 
 
+def _first_positive_market_close(
+    prices: np.ndarray,
+    tradable: np.ndarray | None = None,
+) -> float:
+    values = np.asarray(prices, dtype=np.float64)
+    mask = np.isfinite(values) & (values > 0.0)
+    if tradable is not None:
+        mask &= np.asarray(tradable, dtype=bool)
+    idx = np.flatnonzero(mask)
+    if len(idx) <= 0:
+        return float(values[0]) if values.size > 0 else 0.0
+    return float(values[int(idx[0])])
+
+
+def _positive_price_or_fallback(primary: float, fallback: float) -> float:
+    if np.isfinite(primary) and primary > 0.0:
+        return float(primary)
+    if np.isfinite(fallback) and fallback > 0.0:
+        return float(fallback)
+    return float(primary)
+
+
 def _build_initial_portfolio_state(
     *,
     symbols: list[str],
@@ -1037,7 +1059,13 @@ def replay_hourly_frozen_daily_actions(
         initial_position=initial_position,
         fee_rate=fee_rate,
         max_leverage=max_leverage,
-        price_by_sym=lambda sym_idx: float(market.close[symbols[sym_idx]][0]),
+        price_by_sym=lambda sym_idx: _positive_price_or_fallback(
+            _first_positive_market_close(
+                market.close[symbols[sym_idx]],
+                market.tradable.get(symbols[sym_idx]),
+            ),
+            float(data.prices[0, sym_idx, P_CLOSE]),
+        ),
     )
 
     cash = float(init_state.cash)
@@ -1327,7 +1355,13 @@ def simulate_hourly_policy(
         initial_position=initial_position,
         fee_rate=fee_rate,
         max_leverage=max_leverage,
-        price_by_sym=lambda sym_idx: float(market.close[symbols[sym_idx]][0]),
+        price_by_sym=lambda sym_idx: _positive_price_or_fallback(
+            _first_positive_market_close(
+                market.close[symbols[sym_idx]],
+                market.tradable.get(symbols[sym_idx]),
+            ),
+            float(data.prices[0, sym_idx, P_CLOSE]),
+        ),
     )
 
     cash = float(init_state.cash)

@@ -168,6 +168,7 @@ def simulate_hourly_trades(
     if opens is not None:
         _check_shapes(highs, opens)
 
+    original_steps = closes.shape[-1]
     if decision_lag_bars > 0:
         lag = decision_lag_bars
         highs = highs[..., lag:]
@@ -180,7 +181,7 @@ def simulate_hourly_trades(
         trade_intensity = trade_intensity[..., :-lag]
         buy_intensity = buy_intensity[..., :-lag]
         sell_intensity = sell_intensity[..., :-lag]
-        if torch.is_tensor(max_leverage) and max_leverage.ndim > 0:
+        if torch.is_tensor(max_leverage) and max_leverage.ndim > 0 and max_leverage.shape[-1] == original_steps:
             max_leverage = max_leverage[..., lag:]
 
     margin_cost_per_step = margin_annual_rate / HOURLY_PERIODS_PER_YEAR
@@ -350,6 +351,7 @@ def simulate_hourly_trades_binary(
     if opens is not None:
         _check_shapes(highs, opens)
 
+    original_steps = closes.shape[-1]
     if decision_lag_bars > 0:
         lag = decision_lag_bars
         highs = highs[..., lag:]
@@ -362,7 +364,7 @@ def simulate_hourly_trades_binary(
         trade_intensity = trade_intensity[..., :-lag]
         buy_intensity = buy_intensity[..., :-lag]
         sell_intensity = sell_intensity[..., :-lag]
-        if torch.is_tensor(max_leverage) and max_leverage.ndim > 0:
+        if torch.is_tensor(max_leverage) and max_leverage.ndim > 0 and max_leverage.shape[-1] == original_steps:
             max_leverage = max_leverage[..., lag:]
 
     margin_cost_per_step = margin_annual_rate / HOURLY_PERIODS_PER_YEAR
