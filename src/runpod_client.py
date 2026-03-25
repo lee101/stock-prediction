@@ -128,6 +128,8 @@ def is_capacity_error(exc: BaseException) -> bool:
     return (
         "does not have the resources to deploy your pod" in text
         or "insufficient resources" in text
+        or "no longer any instances available" in text
+        or "supply_constraint" in text
         or ("capacity" in text and "runpod" in text)
     )
 

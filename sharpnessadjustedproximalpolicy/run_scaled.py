@@ -225,22 +225,33 @@ def run_local(args):
 
 def run_remote(args):
     """Provision RunPod GPU, sync code+data, run training remotely."""
-    from src.runpod_client import RunPodClient, PodConfig, GPU_ALIASES
+    from src.runpod_client import RunPodClient, PodConfig, GPU_ALIASES, build_gpu_fallback_types, is_capacity_error
 
     gpu = args.gpu
-    full_gpu = GPU_ALIASES.get(gpu, gpu)
-    print(f"Provisioning RunPod {gpu} ({full_gpu})...", flush=True)
+    gpu_chain = build_gpu_fallback_types(gpu)
+    print(f"Provisioning RunPod — preference chain: {gpu_chain}", flush=True)
 
     client = RunPodClient()
-    config = PodConfig(
-        name=f"sap-sweep-{gpu}-{time.strftime('%m%d%H%M')}",
-        gpu_type=full_gpu,
-        gpu_count=1,
-        image="runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04",
-        volume_size=50,
-    )
-
-    pod = client.create_pod(config)
+    pod = None
+    for full_gpu in gpu_chain:
+        try:
+            config = PodConfig(
+                name=f"sap-sweep-{time.strftime('%m%d%H%M')}",
+                gpu_type=full_gpu,
+                gpu_count=1,
+                image="runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04",
+                volume_size=50,
+            )
+            pod = client.create_pod(config)
+            print(f"Pod {pod.id} created on {full_gpu}", flush=True)
+            break
+        except Exception as exc:
+            if is_capacity_error(exc):
+                print(f"  {full_gpu}: no capacity, trying next...", flush=True)
+                continue
+            raise
+    if pod is None:
+        raise RuntimeError("No GPU available in fallback chain. Try again later.")
     print(f"Pod {pod.id} created, waiting for SSH...", flush=True)
     pod = client.wait_for_pod(pod.id, timeout=600)
     host, port = pod.ssh_host, pod.ssh_port

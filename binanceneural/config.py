@@ -36,6 +36,7 @@ class DatasetConfig:
     feature_columns: Sequence[str] | None = None
     refresh_hours: int = 0
     validation_days: int = 70
+    max_train_days: int = 0   # 0 = use all; >0 = cap training to most-recent N days (before val split)
     cache_only: bool = False
     bar_shift_range: int = 0  # random ±N bar temporal jitter augmentation (train only)
 
