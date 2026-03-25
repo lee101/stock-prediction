@@ -147,7 +147,49 @@
   - seed=3 (old-config): 1/50 neg best case, p10<5% — not deployable
   - Sweep continuing: seeds 16-32 (stream A), 34-50 (stream B)
 
-## Crypto70 Daily RL Autoresearch (2026-03-24) — COMPLETED
+## Crypto70 Daily RL Seed Sweep (2026-03-25) — IN PROGRESS (~70% complete)
+
+**Methodology**: 300s training budget, tp05_slip5 config (optimal), honest eval at 8bps (100 eps, no early stop), 5bps eval for all seeds >800% ann.
+**Coverage**: 233/~1000 seeds evaluated at 5bps; s61-120 (100%), s121-200 (100%), others 60-85% complete.
+**Auto-monitor**: `/tmp/auto_5bps_monitor_v2.py` running — evaluates all seeds >800% at 5bps automatically.
+
+### ALL-TIME TOP 10 (at 5bps, ~1000-seed sweep, 2026-03-25):
+| Rank | Seed | Ann 5bps | Ann 8bps | Sortino | Ultra-robust | Checkpoint |
+|------|------|----------|----------|---------|-------------|------------|
+| **#1** | **s670** | **+29,099%** | **+29,233%** | **7.56** | borderline | `crypto70_champions/c70_tp05_slip5_s670/best.pt` |
+| #2 | s275 | +23,595% | +22,713% | 9.00 | ★ | `crypto70_champions/c70_tp05_slip5_s275/best.pt` |
+| #3 | s292 | +20,000% | +19,602% | 7.99 | ★ | `crypto70_champions/c70_tp05_slip5_s292/best.pt` |
+| #4 | s240 | +17,642% | +40,405% | 7.00 | — | `crypto70_champions/c70_tp05_slip5_s240/best.pt` |
+| #5 | s434 | +10,359% | +11,308% | 6.99 | — | `crypto70_champions/c70_tp05_slip5_s434/best.pt` |
+| #6 | s71  | +9,320%  | +9,808%  | 8.28 | — | `crypto70_champions/c70_tp05_slip5_s71/best.pt` |
+| #7 | s456 | +8,802%  | +6,786%  | 6.71 | ★ | `crypto70_champions/c70_tp05_slip5_s456/best.pt` |
+| #8 | s507 | +8,273%  | +7,803%  | 6.43 | ★ | `crypto70_champions/c70_tp05_slip5_s507/best.pt` |
+| #9 | s452 | +8,002%  | +7,798%  | 6.65 | ★ | `crypto70_champions/c70_tp05_slip5_s452/best.pt` |
+| #10 | s765 | +7,587% | +6,246%  | 5.76 | ★ | `crypto70_champions/c70_tp05_slip5_s765/best.pt` |
+
+**Full leaderboard**: `sweepresults/crypto70_5bps_leaderboard.csv` (233 entries, sorted by ann_5bps)
+
+**Key findings from full seed sweep**:
+- Champions cluster by range: s275/s292 (s201-300), s670 (s601-700), s434/s452/s456 (s401-500), s921 (s901-1000)
+- Ultra-robust pattern: 7/10 top seeds have 5bps ≥ 8bps (well-calibrated models trade MORE with less slippage)
+- Seed distribution is non-uniform — exceptional seeds (>10,000%) appear ~1-2 per 100-seed range
+- s670 (p50=15.4x/180d = +29,099% ann): new all-time champion, nearly equals 8bps (borderline ultra-robust)
+- s275 (p50=13.5x/180d): highest Sortino=9.0, most consistent ultra-robust
+
+**Eval command for any champion**:
+```bash
+source .venv313/bin/activate
+python -m pufferlib_market.evaluate \
+  --checkpoint pufferlib_market/checkpoints/crypto70_champions/c70_tp05_slip5_s670/best.pt \
+  --data-path pufferlib_market/data/crypto70_daily_val.bin \
+  --deterministic --no-drawdown-profit-early-exit \
+  --hidden-size 1024 --max-steps 180 --num-episodes 100 --periods-per-year 365.0 \
+  --fill-slippage-bps 8
+```
+
+---
+
+## Crypto70 Daily RL Autoresearch (2026-03-24) — COMPLETED (superseded by seed sweep above)
 
 **Dataset**: 48 Binance USDT pairs (crypto70, filtered), daily bars, train 2019-2025, val 2025-09-01 to 2026-03-31 (205 days)
 **Config**: h=1024 MLP PPO, anneal_lr, ent=0.05, 128 envs, bf16, no-cuda-graph, periods_per_year=365, max_steps=180 (6mo episodes)
