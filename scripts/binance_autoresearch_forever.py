@@ -69,6 +69,7 @@ class DataTrack:
     max_steps: int
     fee_rate: float = 0.001
     description: str = ""
+    focused_descriptions: str = ""  # comma-separated descriptions for focused sweeps
 
 CRYPTO_DAILY = DataTrack(
     name="crypto_daily",
@@ -86,6 +87,15 @@ CRYPTO_HOURLY = DataTrack(
     periods_per_year=8760.0,
     max_steps=720,
     description="34-symbol Binance hourly bars",
+    focused_descriptions=",".join(
+        f"c34h_{v}_s{s}"
+        for v in [
+            "tp01_slip5_wd01", "tp01_slip5_wd05",
+            "tp03_slip5_wd01", "tp03_slip5_wd05",
+            "tp05_slip8_wd01", "tp05_slip8_wd05",
+        ]
+        for s in [7, 19, 33, 42, 80, 99]
+    ),
 )
 
 MIXED_DAILY = DataTrack(
@@ -659,6 +669,7 @@ def run_forever(
                     pod_mgr.bootstrap(remote_dir)
                     pod_mgr.upload_data(track, remote_dir)
 
+                round_descriptions = descriptions or track.focused_descriptions
                 leaderboard, checkpoint_dir = run_autoresearch_batch(
                     track,
                     time_budget=time_budget,
@@ -669,7 +680,7 @@ def run_forever(
                     ssh_port=ssh_port,
                     remote_dir=remote_dir,
                     local=local,
-                    descriptions=descriptions,
+                    descriptions=round_descriptions,
                 )
 
                 training_time = time.time() - t0
