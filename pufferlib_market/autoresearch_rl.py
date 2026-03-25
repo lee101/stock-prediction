@@ -477,6 +477,46 @@ EXPERIMENTS: list[dict] = [
 # Alias used by sweep scripts and verification commands.
 TRIAL_CONFIGS = EXPERIMENTS
 
+# ---------------------------------------------------------------------------
+# Crypto34 hourly focused experiments -- 34-symbol Binance hourly bars.
+#
+# Based on champion findings: h1024, mlp, obs_norm, anneal_lr, entropy
+# annealing 0.05->0.02. Systematic sweep of trade_penalty, fill_slippage,
+# weight_decay across 6 seeds.
+#
+# 6 base configs x 6 seeds = 36 experiments.
+# ---------------------------------------------------------------------------
+
+_C34H_BASE = {
+    "hidden_size": 1024,
+    "arch": "mlp",
+    "obs_norm": True,
+    "anneal_lr": True,
+    "anneal_ent": True,
+    "ent_coef": 0.05,
+    "ent_coef_end": 0.02,
+}
+_C34H_SEEDS = [7, 19, 33, 42, 80, 99]
+
+_C34H_VARIANTS = [
+    ("c34h_tp01_slip5_wd01", {"trade_penalty": 0.01, "fill_slippage_bps": 5.0, "weight_decay": 0.01}),
+    ("c34h_tp01_slip5_wd05", {"trade_penalty": 0.01, "fill_slippage_bps": 5.0, "weight_decay": 0.05}),
+    ("c34h_tp03_slip5_wd01", {"trade_penalty": 0.03, "fill_slippage_bps": 5.0, "weight_decay": 0.01}),
+    ("c34h_tp03_slip5_wd05", {"trade_penalty": 0.03, "fill_slippage_bps": 5.0, "weight_decay": 0.05}),
+    ("c34h_tp05_slip8_wd01", {"trade_penalty": 0.05, "fill_slippage_bps": 8.0, "weight_decay": 0.01}),
+    ("c34h_tp05_slip8_wd05", {"trade_penalty": 0.05, "fill_slippage_bps": 8.0, "weight_decay": 0.05}),
+]
+
+CRYPTO34_HOURLY_EXPERIMENTS: list[dict] = []
+for _prefix, _overrides in _C34H_VARIANTS:
+    for _seed in _C34H_SEEDS:
+        CRYPTO34_HOURLY_EXPERIMENTS.append({
+            **_C34H_BASE,
+            **_overrides,
+            "seed": _seed,
+            "description": f"{_prefix}_s{_seed}",
+        })
+
 
 # ---------------------------------------------------------------------------
 # Stock-specific experiment configurations for Alpaca US equity daily trading.
@@ -2160,7 +2200,8 @@ def select_experiments(
     start_from: int = 0,
     descriptions: str = "",
 ) -> list[dict]:
-    return _select_from_pool(EXPERIMENTS, start_from=start_from, descriptions=descriptions)
+    pool = EXPERIMENTS + CRYPTO34_HOURLY_EXPERIMENTS
+    return _select_from_pool(pool, start_from=start_from, descriptions=descriptions)
 
 
 def run_trial(
@@ -3067,7 +3108,7 @@ def main():
         elif args.stocks:
             experiment_pool = STOCK_EXPERIMENTS
         else:
-            experiment_pool = EXPERIMENTS
+            experiment_pool = EXPERIMENTS + CRYPTO34_HOURLY_EXPERIMENTS
         for cfg_dict in experiment_pool:
             desc = cfg_dict.get("description", "")
             gpu = cfg_dict.get("requires_gpu", "")
