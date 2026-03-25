@@ -1,0 +1,17 @@
+{
+  "BNBUSD": [
+    {
+      "run": "periodic_wd01",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_BNBUSD_20260325_153718/epoch_003.pt",
+      "n_windows": 10,
+      "median_return": 5.71,
+      "mean_return": 8.63,
+      "p10_return": -0.2,
+      "positive_pct": 80.0,
+      "median_sortino": 1.2,
+      "median_dd": -3.01,
+      "worst_dd": -8.63,
+      "median_trades": 9
+    }
+  ]
+}

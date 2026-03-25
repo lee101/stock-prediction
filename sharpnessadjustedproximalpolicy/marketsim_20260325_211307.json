@@ -1,0 +1,310 @@
+{
+  "DOGEUSD": [
+    {
+      "symbol": "DOGEUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_adamw_DOGEUSD_20260324_211113/epoch_001.pt",
+      "epoch": 1,
+      "total_hours": 1728,
+      "total_return_pct": 3.1063,
+      "sortino": 0.0298,
+      "max_drawdown_pct": -15.0222,
+      "num_trades": 109,
+      "win_rate": 0.6881,
+      "time_in_position_pct": 72.8,
+      "sharpe": 0.0193
+    },
+    {
+      "symbol": "DOGEUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_adamw_DOGEUSD_20260324_213357/epoch_001.pt",
+      "epoch": 1,
+      "total_hours": 1728,
+      "total_return_pct": 13.377,
+      "sortino": 0.1296,
+      "max_drawdown_pct": -8.7183,
+      "num_trades": 96,
+      "win_rate": 0.6458,
+      "time_in_position_pct": 76.9,
+      "sharpe": 0.0955
+    }
+  ],
+  "BTCUSD": [
+    {
+      "symbol": "BTCUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_BTCUSD_20260325_073508/epoch_001.pt",
+      "epoch": 1,
+      "total_hours": 1728,
+      "total_return_pct": 14.1078,
+      "sortino": 0.5318,
+      "max_drawdown_pct": -0.8003,
+      "num_trades": 114,
+      "win_rate": 0.6053,
+      "time_in_position_pct": 24.8,
+      "sharpe": 0.2238
+    },
+    {
+      "symbol": "BTCUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_BTCUSD_20260325_153718/epoch_001.pt",
+      "epoch": 1,
+      "total_hours": 1728,
+      "total_return_pct": 15.9454,
+      "sortino": 0.876,
+      "max_drawdown_pct": -0.4952,
+      "num_trades": 122,
+      "win_rate": 0.623,
+      "time_in_position_pct": 29.7,
+      "sharpe": 0.245
+    }
+  ],
+  "APTUSD": [
+    {
+      "symbol": "APTUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_APTUSD_20260325_153718/epoch_006.pt",
+      "epoch": 6,
+      "total_hours": 1728,
+      "total_return_pct": 126.0227,
+      "sortino": 1.1863,
+      "max_drawdown_pct": -4.4669,
+      "num_trades": 37,
+      "win_rate": 0.8649,
+      "time_in_position_pct": 67.8,
+      "sharpe": 0.4006
+    },
+    {
+      "symbol": "APTUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_APTUSD_20260325_153718/epoch_009.pt",
+      "epoch": 9,
+      "total_hours": 1728,
+      "total_return_pct": 152.0201,
+      "sortino": 1.4292,
+      "max_drawdown_pct": -2.9581,
+      "num_trades": 31,
+      "win_rate": 0.871,
+      "time_in_position_pct": 67.8,
+      "sharpe": 0.4303
+    }
+  ],
+  "ARBUSD": [
+    {
+      "symbol": "ARBUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_ARBUSD_20260325_153718/epoch_009.pt",
+      "epoch": 9,
+      "total_hours": 1728,
+      "total_return_pct": 111.3687,
+      "sortino": 0.5732,
+      "max_drawdown_pct": -9.2224,
+      "num_trades": 44,
+      "win_rate": 0.7727,
+      "time_in_position_pct": 72.0,
+      "sharpe": 0.306
+    },
+    {
+      "symbol": "ARBUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_ARBUSD_20260325_153718/epoch_009.pt",
+      "epoch": 9,
+      "total_hours": 1728,
+      "total_return_pct": 111.0346,
+      "sortino": 0.5952,
+      "max_drawdown_pct": -8.9153,
+      "num_trades": 37,
+      "win_rate": 0.8378,
+      "time_in_position_pct": 72.1,
+      "sharpe": 0.3175
+    }
+  ],
+  "ALGOUSD": [
+    {
+      "symbol": "ALGOUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_ALGOUSD_20260325_153718/epoch_009.pt",
+      "epoch": 9,
+      "total_hours": 1728,
+      "total_return_pct": 124.1789,
+      "sortino": 0.5866,
+      "max_drawdown_pct": -8.2729,
+      "num_trades": 28,
+      "win_rate": 0.6786,
+      "time_in_position_pct": 77.0,
+      "sharpe": 0.2919
+    },
+    {
+      "symbol": "ALGOUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_ALGOUSD_20260325_153718/epoch_005.pt",
+      "epoch": 5,
+      "total_hours": 1728,
+      "total_return_pct": 127.5695,
+      "sortino": 0.9084,
+      "max_drawdown_pct": -6.0899,
+      "num_trades": 23,
+      "win_rate": 0.913,
+      "time_in_position_pct": 73.7,
+      "sharpe": 0.3465
+    }
+  ],
+  "ADAUSD": [
+    {
+      "symbol": "ADAUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_ADAUSD_20260325_153718/epoch_003.pt",
+      "epoch": 3,
+      "total_hours": 1728,
+      "total_return_pct": 55.4341,
+      "sortino": 0.605,
+      "max_drawdown_pct": -4.5494,
+      "num_trades": 32,
+      "win_rate": 0.9062,
+      "time_in_position_pct": 65.6,
+      "sharpe": 0.2572
+    },
+    {
+      "symbol": "ADAUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_ADAUSD_20260325_153718/epoch_010.pt",
+      "epoch": 10,
+      "total_hours": 1728,
+      "total_return_pct": 73.2592,
+      "sortino": 0.7519,
+      "max_drawdown_pct": -4.2462,
+      "num_trades": 28,
+      "win_rate": 0.8929,
+      "time_in_position_pct": 67.1,
+      "sharpe": 0.2931
+    }
+  ],
+  "ATOMUSD": [
+    {
+      "symbol": "ATOMUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_ATOMUSD_20260325_153718/epoch_008.pt",
+      "epoch": 8,
+      "total_hours": 1728,
+      "total_return_pct": 44.3397,
+      "sortino": 0.3763,
+      "max_drawdown_pct": -6.5098,
+      "num_trades": 35,
+      "win_rate": 0.7714,
+      "time_in_position_pct": 56.8,
+      "sharpe": 0.2115
+    },
+    {
+      "symbol": "ATOMUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_ATOMUSD_20260325_153718/epoch_006.pt",
+      "epoch": 6,
+      "total_hours": 1728,
+      "total_return_pct": 57.1121,
+      "sortino": 0.4674,
+      "max_drawdown_pct": -6.3883,
+      "num_trades": 31,
+      "win_rate": 0.7742,
+      "time_in_position_pct": 57.0,
+      "sharpe": 0.2406
+    }
+  ],
+  "BCHUSD": [
+    {
+      "symbol": "BCHUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_BCHUSD_20260325_153718/epoch_009.pt",
+      "epoch": 9,
+      "total_hours": 1728,
+      "total_return_pct": 30.8438,
+      "sortino": 0.4514,
+      "max_drawdown_pct": -5.9517,
+      "num_trades": 155,
+      "win_rate": 0.7097,
+      "time_in_position_pct": 62.4,
+      "sharpe": 0.213
+    },
+    {
+      "symbol": "BCHUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_BCHUSD_20260325_153718/epoch_005.pt",
+      "epoch": 5,
+      "total_hours": 1728,
+      "total_return_pct": 38.4728,
+      "sortino": 0.8124,
+      "max_drawdown_pct": -2.1112,
+      "num_trades": 152,
+      "win_rate": 0.75,
+      "time_in_position_pct": 63.9,
+      "sharpe": 0.2732
+    }
+  ],
+  "BNBUSD": [
+    {
+      "symbol": "BNBUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_BNBUSD_20260325_153718/epoch_009.pt",
+      "epoch": 9,
+      "total_hours": 1728,
+      "total_return_pct": 37.6967,
+      "sortino": 0.4158,
+      "max_drawdown_pct": -3.8498,
+      "num_trades": 49,
+      "win_rate": 0.6531,
+      "time_in_position_pct": 49.6,
+      "sharpe": 0.2165
+    },
+    {
+      "symbol": "BNBUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_BNBUSD_20260325_153718/epoch_003.pt",
+      "epoch": 3,
+      "total_hours": 1728,
+      "total_return_pct": 39.2345,
+      "sortino": 0.323,
+      "max_drawdown_pct": -8.6308,
+      "num_trades": 35,
+      "win_rate": 0.7143,
+      "time_in_position_pct": 50.2,
+      "sharpe": 0.1871
+    }
+  ],
+  "BTCFDUSD": [
+    {
+      "symbol": "BTCFDUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_BTCFDUSD_20260325_153718/epoch_009.pt",
+      "epoch": 9,
+      "total_hours": 1728,
+      "total_return_pct": 20.0457,
+      "sortino": 0.1952,
+      "max_drawdown_pct": -5.0001,
+      "num_trades": 90,
+      "win_rate": 0.6556,
+      "time_in_position_pct": 19.7,
+      "sharpe": 0.1287
+    },
+    {
+      "symbol": "BTCFDUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_BTCFDUSD_20260325_153718/epoch_006.pt",
+      "epoch": 6,
+      "total_hours": 1728,
+      "total_return_pct": 18.8163,
+      "sortino": 0.1794,
+      "max_drawdown_pct": -4.5223,
+      "num_trades": 105,
+      "win_rate": 0.6667,
+      "time_in_position_pct": 25.3,
+      "sharpe": 0.1201
+    }
+  ],
+  "AVAXUSD": [
+    {
+      "symbol": "AVAXUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_AVAXUSD_20260325_073130/epoch_006.pt",
+      "epoch": 6,
+      "total_hours": 1728,
+      "total_return_pct": -9.8242,
+      "sortino": -0.1037,
+      "max_drawdown_pct": -9.9226,
+      "num_trades": 123,
+      "win_rate": 0.4553,
+      "time_in_position_pct": 70.3,
+      "sharpe": -0.0834
+    },
+    {
+      "symbol": "AVAXUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_AVAXUSD_20260325_153718/epoch_006.pt",
+      "epoch": 6,
+      "total_hours": 1728,
+      "total_return_pct": -9.8242,
+      "sortino": -0.1037,
+      "max_drawdown_pct": -9.9226,
+      "num_trades": 123,
+      "win_rate": 0.4553,
+      "time_in_position_pct": 70.3,
+      "sharpe": -0.0834
+    }
+  ]
+}

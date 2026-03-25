@@ -1,0 +1,17 @@
+{
+  "DOGEUSD": [
+    {
+      "symbol": "DOGEUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_swa_wd01_DOGEUSD_20260325_075912/epoch_008.pt",
+      "epoch": 8,
+      "total_hours": 1728,
+      "total_return_pct": 70.3588,
+      "sortino": 0.7576,
+      "max_drawdown_pct": -5.4132,
+      "num_trades": 102,
+      "win_rate": 0.6667,
+      "time_in_position_pct": 82.3,
+      "sharpe": 0.3175
+    }
+  ]
+}

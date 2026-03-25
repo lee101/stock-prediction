@@ -14,3 +14,17 @@
 {"timestamp": "2026-03-25T08:06:43.306483+00:00", "symbol": "ZECUSD", "side": "staged_buy", "price": 235.85, "quantity": 10.589368231937664, "reason": "dip_buy(rule)", "dry_run": true}
 {"timestamp": "2026-03-25T08:06:43.306483+00:00", "symbol": "DOTUSD", "side": "staged_buy", "price": 1.4126999999999998, "quantity": 1767.8930399253188, "reason": "dip_buy(rule)", "dry_run": true}
 {"timestamp": "2026-03-25T08:06:43.306483+00:00", "symbol": "AXSUSD", "side": "staged_buy", "price": 1.1424, "quantity": 2186.1891609790773, "reason": "dip_buy(rule)", "dry_run": true}
+{"timestamp": "2026-03-25T08:27:05.166699+00:00", "symbol": "ENJUSD", "side": "staged_buy", "price": 0.025830000000000002, "quantity": 96689.99216037543, "reason": "dip_buy(rule)", "dry_run": true}
+{"timestamp": "2026-03-25T08:27:05.166699+00:00", "symbol": "OPUSD", "side": "staged_buy", "price": 0.11439000000000002, "quantity": 21833.224036213807, "reason": "dip_buy(rule)", "dry_run": true}
+{"timestamp": "2026-03-25T08:27:05.166699+00:00", "symbol": "ZECUSD", "side": "staged_buy", "price": 238.0542, "quantity": 10.491318773214243, "reason": "dip_buy(rule)", "dry_run": true}
+{"timestamp": "2026-03-25T08:27:05.166699+00:00", "symbol": "AXSUSD", "side": "staged_buy", "price": 1.104, "quantity": 2262.2305231000887, "reason": "dip_buy(rule)", "dry_run": true}
+{"timestamp": "2026-03-25T08:27:05.166699+00:00", "symbol": "DOTUSD", "side": "staged_buy", "price": 1.379, "quantity": 1811.096807470992, "reason": "dip_buy(rule)", "dry_run": true}
+{"timestamp": "2026-03-25T12:02:06.810142+00:00", "symbol": "ENJUSD", "side": "staged_buy", "price": 0.025830000000000002, "quantity": 29436.117438345627, "reason": "dip_buy(rule)", "dry_run": false}
+{"timestamp": "2026-03-25T12:02:06.810142+00:00", "symbol": "ZECUSD", "side": "staged_buy", "price": 238.0542, "quantity": 3.193957146870199, "reason": "dip_buy(rule)", "dry_run": false}
+{"timestamp": "2026-03-25T12:02:06.810142+00:00", "symbol": "OPUSD", "side": "staged_buy", "price": 0.11439000000000002, "quantity": 6646.865228013528, "reason": "dip_buy(rule)", "dry_run": false}
+{"timestamp": "2026-03-25T12:02:06.810142+00:00", "symbol": "AXSUSD", "side": "staged_buy", "price": 1.104, "quantity": 688.7091607178149, "reason": "dip_buy(rule)", "dry_run": false}
+{"timestamp": "2026-03-25T12:02:06.810142+00:00", "symbol": "DOTUSD", "side": "staged_buy", "price": 1.376, "quantity": 552.5689777852236, "reason": "dip_buy(rule)", "dry_run": false}
+{"timestamp": "2026-03-25T12:17:12.655204+00:00", "symbol": "ZECUSD", "side": "buy", "price": 238.05, "quantity": 3.194, "pnl": 0.0, "reason": "pending_fill(rule)"}
+{"timestamp": "2026-03-25T19:27:25.302607+00:00", "symbol": "ZECUSD", "side": "sell", "price": 240.2496, "quantity": 3.194, "reason": "trailing_stop", "pnl": 7.025522399999921, "dry_run": true}
+{"timestamp": "2026-03-25T19:27:25.302607+00:00", "symbol": "NEARUSD", "side": "staged_buy", "price": 1.2834999999999999, "quantity": 1945.8531340105167, "reason": "dip_buy(rule)", "dry_run": true}
+{"timestamp": "2026-03-25T20:02:26.873296+00:00", "symbol": "GRTUSD", "side": "staged_buy", "price": 0.0255, "quantity": 29653.53006793501, "reason": "dip_buy(rule)", "dry_run": false}

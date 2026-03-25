@@ -1,25 +1,22 @@
 #!/usr/bin/env python3
 """Realistic marketsim evaluation for SAP checkpoints.
 
-Runs continuous binary-fill simulation over the FULL validation period
-(not 72-bar chunks). This gives comparable numbers to pufferlib holdout eval.
+Uses chunk-based inference (non-overlapping seq_len windows) with continuous
+carry-over simulation. This matches how the model was trained and produces
+realistic P&L numbers comparable to pufferlib holdout eval.
 
 Usage:
     python -m sharpnessadjustedproximalpolicy.evaluate_marketsim \
-        --checkpoint path/to/epoch_005.pt --symbol DOGEUSD
+        --symbol DOGEUSD
 
     python -m sharpnessadjustedproximalpolicy.evaluate_marketsim \
-        --checkpoint-dir path/to/run/ --symbol DOGEUSD --top-k 3
-
-    # Multi-symbol portfolio eval
-    python -m sharpnessadjustedproximalpolicy.evaluate_marketsim \
-        --checkpoint-dir sharpnessadjustedproximalpolicy/checkpoints \
-        --symbols DOGEUSD BTCUSD ETHUSD --portfolio
+        --symbols DOGEUSD BTCUSD ARBUSD --top-k 1
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -27,6 +24,9 @@ from pathlib import Path
 
 import numpy as np
 import torch
+
+# Disable triton compilation errors
+os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -48,22 +48,33 @@ class MarketsimResult:
     max_drawdown_pct: float
     num_trades: int
     win_rate: float
-    avg_hold_hours: float
+    time_in_position_pct: float
     sharpe: float
-    calmar: float
-    final_equity: float
 
 
-def load_model_from_checkpoint(ckpt_path: Path):
+def load_model(ckpt_path: Path):
     ckpt = torch_load_compat(ckpt_path, map_location="cpu", weights_only=False)
     config = ckpt.get("config", {})
     state_dict = ckpt.get("state_dict", {})
-    # Infer input_dim from embed weight shape
+    feature_cols = ckpt.get("feature_columns", [])
+
+    # Infer input_dim from embed weight
     input_dim = 0
     for key in ("embed.weight", "_orig_mod.embed.weight"):
         if key in state_dict:
             input_dim = state_dict[key].shape[1]
             break
+
+    # Infer horizons from feature columns
+    horizons = set()
+    for col in feature_cols:
+        if col.startswith("chronos_") and "_h" in col:
+            try:
+                horizons.add(int(col.split("_h")[-1]))
+            except ValueError:
+                pass
+    horizons = tuple(sorted(horizons)) if horizons else (1, 24)
+
     pc = PolicyConfig(
         input_dim=input_dim,
         hidden_dim=config.get("transformer_dim", 256),
@@ -73,41 +84,29 @@ def load_model_from_checkpoint(ckpt_path: Path):
         max_len=max(config.get("sequence_length", 72), 32),
         use_flex_attention=False,
     )
-    return ckpt, config, pc
+
+    model = build_policy(pc)
+    sd = {k.replace("_orig_mod.", "", 1): v for k, v in state_dict.items()}
+    model.load_state_dict(sd, strict=False)
+    model.eval()
+
+    return model, config, feature_cols, horizons
 
 
-def continuous_eval(
+def chunk_based_eval(
     ckpt_path: Path,
     symbol: str,
     lag: int = 2,
     n_windows: int = 0,
     window_hours: int = 720,
 ) -> list[MarketsimResult]:
-    """Run continuous binary-fill sim over full val period.
+    """Chunk-based inference with continuous carry-over simulation.
 
-    If n_windows > 0, splits val into sliding windows and reports per-window.
-    Otherwise reports single result over entire val period.
+    The model processes non-overlapping seq_len chunks (matching training),
+    then all actions are concatenated and run through a single binary-fill sim.
     """
-    ckpt, config, pc = load_model_from_checkpoint(ckpt_path)
-
+    model, config, feature_cols, horizons = load_model(ckpt_path)
     seq_len = config.get("sequence_length", 72)
-
-    # Infer forecast horizons from checkpoint feature_columns
-    feature_cols = ckpt.get("feature_columns", [])
-    inferred_horizons = set()
-    for col in feature_cols:
-        if col.startswith("chronos_") and "_h" in col:
-            h = col.split("_h")[-1]
-            try:
-                inferred_horizons.add(int(h))
-            except ValueError:
-                pass
-    if inferred_horizons:
-        horizons = tuple(sorted(inferred_horizons))
-    else:
-        horizons = tuple(config.get("forecast_horizons", [1, 24]))
-        if isinstance(horizons[0], list):
-            horizons = tuple(horizons[0])
 
     ds_cfg = DatasetConfig(
         symbol=symbol,
@@ -120,374 +119,226 @@ def continuous_eval(
         cache_only=True,
     )
     dm = BinanceHourlyDataModule(ds_cfg)
-
-    # Verify feature dim matches checkpoint
-    actual_dim = len(dm.feature_columns)
-    if pc.input_dim > 0 and actual_dim != pc.input_dim:
-        print(f"    WARN: feature dim mismatch: checkpoint={pc.input_dim} data={actual_dim}", flush=True)
-        pc = PolicyConfig(
-            input_dim=actual_dim,
-            hidden_dim=pc.hidden_dim,
-            num_heads=pc.num_heads,
-            num_layers=pc.num_layers,
-            model_arch=pc.model_arch,
-            max_len=pc.max_len,
-            use_flex_attention=False,
-        )
-    elif pc.input_dim == 0:
-        pc = PolicyConfig(
-            input_dim=actual_dim,
-            hidden_dim=pc.hidden_dim,
-            num_heads=pc.num_heads,
-            num_layers=pc.num_layers,
-            model_arch=pc.model_arch,
-            max_len=pc.max_len,
-            use_flex_attention=False,
-        )
-
-    model = build_policy(pc)
-    state_dict = ckpt.get("state_dict", ckpt)
-    if any(k.startswith("_orig_mod.") for k in state_dict):
-        state_dict = {k.replace("_orig_mod.", "", 1): v for k, v in state_dict.items()}
-    model.load_state_dict(state_dict, strict=False)
-    model.eval()
+    vds = dm.val_dataset
+    T = len(vds.frame)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
-
-    # Get full val data as continuous arrays
-    vds = dm.val_dataset
-    T = len(vds.frame)
-    features_all = torch.from_numpy(vds.features).to(device)
-    opens_all = torch.from_numpy(vds.opens).to(device)
-    highs_all = torch.from_numpy(vds.highs).to(device)
-    lows_all = torch.from_numpy(vds.lows).to(device)
-    closes_all = torch.from_numpy(vds.closes).to(device)
-    ref_close_all = torch.from_numpy(vds.reference_close).to(device)
-    ch_high_all = torch.from_numpy(vds.chronos_high).to(device)
-    ch_low_all = torch.from_numpy(vds.chronos_low).to(device)
-
-    fee = config.get("maker_fee", 0.001)
     scale = config.get("trade_amount_scale", 100.0)
+    fee = config.get("maker_fee", 0.001)
     max_lev = config.get("max_leverage", 1.0)
     fill_buf = config.get("fill_buffer_pct", 0.0005)
     margin_rate = config.get("margin_annual_rate", 0.0625)
 
-    # Rolling inference: for each hour, use last seq_len hours of data
-    # Collect actions hour-by-hour
-    all_buy_prices = []
-    all_sell_prices = []
-    all_trade_intensity = []
-    all_buy_intensity = []
-    all_sell_intensity = []
-
+    # Collect actions from non-overlapping chunks
+    all_bp, all_sp, all_ti, all_bi, all_si = [], [], [], [], []
     with torch.inference_mode():
-        # Process in chunks for efficiency
-        # For hours < seq_len, pad with first available data
-        for t in range(T):
-            start = max(0, t - seq_len + 1)
-            end = t + 1
-            pad_len = seq_len - (end - start)
+        for start in range(0, T - seq_len + 1, seq_len):
+            batch = vds[start]
+            feat = batch["features"].unsqueeze(0).to(device)
+            ref = batch["reference_close"].unsqueeze(0).to(device)
+            ch_h = batch["chronos_high"].unsqueeze(0).to(device)
+            ch_l = batch["chronos_low"].unsqueeze(0).to(device)
+            outputs = model(feat)
+            actions = model.decode_actions(outputs, reference_close=ref, chronos_high=ch_h, chronos_low=ch_l)
+            all_bp.append(actions["buy_price"].squeeze(0))
+            all_sp.append(actions["sell_price"].squeeze(0))
+            all_ti.append(actions["trade_amount"].squeeze(0) / scale)
+            all_bi.append(actions["buy_amount"].squeeze(0) / scale)
+            all_si.append(actions["sell_amount"].squeeze(0) / scale)
 
-            feat_window = features_all[start:end]
-            if pad_len > 0:
-                feat_window = torch.cat([feat_window[:1].expand(pad_len, -1), feat_window], dim=0)
+    bp = torch.cat(all_bp).unsqueeze(0)
+    sp = torch.cat(all_sp).unsqueeze(0)
+    ti = torch.cat(all_ti).unsqueeze(0)
+    bi = torch.cat(all_bi).unsqueeze(0)
+    si = torch.cat(all_si).unsqueeze(0)
+    total_bars = bp.shape[1]
 
-            ref_window = ref_close_all[start:end]
-            ch_h_window = ch_high_all[start:end]
-            ch_l_window = ch_low_all[start:end]
-            if pad_len > 0:
-                ref_window = torch.cat([ref_window[:1].expand(pad_len), ref_window], dim=0)
-                ch_h_window = torch.cat([ch_h_window[:1].expand(pad_len), ch_h_window], dim=0)
-                ch_l_window = torch.cat([ch_l_window[:1].expand(pad_len), ch_l_window], dim=0)
+    highs = torch.from_numpy(vds.highs[:total_bars]).unsqueeze(0).to(device)
+    lows = torch.from_numpy(vds.lows[:total_bars]).unsqueeze(0).to(device)
+    closes = torch.from_numpy(vds.closes[:total_bars]).unsqueeze(0).to(device)
+    opens = torch.from_numpy(vds.opens[:total_bars]).unsqueeze(0).to(device)
 
-            feat_batch = feat_window.unsqueeze(0)
-            ref_batch = ref_window.unsqueeze(0)
-            ch_h_batch = ch_h_window.unsqueeze(0)
-            ch_l_batch = ch_l_window.unsqueeze(0)
-
-            outputs = model(feat_batch)
-            actions = model.decode_actions(
-                outputs,
-                reference_close=ref_batch,
-                chronos_high=ch_h_batch,
-                chronos_low=ch_l_batch,
-            )
-
-            # Use LAST position's action (the current hour prediction)
-            all_buy_prices.append(actions["buy_price"][0, -1])
-            all_sell_prices.append(actions["sell_price"][0, -1])
-            all_trade_intensity.append(actions["trade_amount"][0, -1] / scale)
-            all_buy_intensity.append(actions["buy_amount"][0, -1] / scale)
-            all_sell_intensity.append(actions["sell_amount"][0, -1] / scale)
-
-    buy_prices = torch.stack(all_buy_prices).unsqueeze(0)
-    sell_prices = torch.stack(all_sell_prices).unsqueeze(0)
-    trade_int = torch.stack(all_trade_intensity).unsqueeze(0)
-    buy_int = torch.stack(all_buy_intensity).unsqueeze(0)
-    sell_int = torch.stack(all_sell_intensity).unsqueeze(0)
-
-    highs_sim = highs_all.unsqueeze(0)
-    lows_sim = lows_all.unsqueeze(0)
-    closes_sim = closes_all.unsqueeze(0)
-    opens_sim = opens_all.unsqueeze(0)
-
-    def run_sim_window(start_idx: int, end_idx: int) -> MarketsimResult:
-        s, e = start_idx, end_idx
+    def run_window(s: int, e: int) -> MarketsimResult:
         sim = simulate_hourly_trades_binary(
-            highs=highs_sim[:, s:e],
-            lows=lows_sim[:, s:e],
-            closes=closes_sim[:, s:e],
-            opens=opens_sim[:, s:e],
-            buy_prices=buy_prices[:, s:e],
-            sell_prices=sell_prices[:, s:e],
-            trade_intensity=trade_int[:, s:e],
-            buy_trade_intensity=buy_int[:, s:e],
-            sell_trade_intensity=sell_int[:, s:e],
-            maker_fee=fee,
-            initial_cash=1.0,
-            can_short=False,
-            can_long=True,
-            max_leverage=max_lev,
-            fill_buffer_pct=fill_buf,
-            margin_annual_rate=margin_rate,
-            decision_lag_bars=lag,
+            highs=highs[:, s:e], lows=lows[:, s:e], closes=closes[:, s:e], opens=opens[:, s:e],
+            buy_prices=bp[:, s:e], sell_prices=sp[:, s:e],
+            trade_intensity=ti[:, s:e], buy_trade_intensity=bi[:, s:e], sell_trade_intensity=si[:, s:e],
+            maker_fee=fee, initial_cash=1.0, can_short=False, can_long=True,
+            max_leverage=max_lev, fill_buffer_pct=fill_buf,
+            margin_annual_rate=margin_rate, decision_lag_bars=lag,
         )
-        returns = sim.returns.float().cpu().squeeze(0)
-        pv = sim.portfolio_values.float().cpu().squeeze(0)
-        inv = sim.inventory.float().cpu().squeeze(0) if hasattr(sim, "inventory") else None
+        pv = sim.portfolio_values.float().cpu().squeeze()
+        rets = sim.returns.float().cpu().squeeze()
+        inv = sim.inventory_path.float().cpu().squeeze()
+        n = e - s
 
         total_ret = (pv[-1] / pv[0] - 1).item() * 100
-        final_eq = pv[-1].item()
-
-        # Sortino (not annualized -- raw period sortino for comparison)
-        mean_r = returns.mean().item()
-        downside = returns.clamp(max=0.0)
-        down_std = (downside.square().mean() + 1e-10).sqrt().item()
-        n_hours = e - s
-        # Annualize properly based on actual window length
-        ann_factor = 8760.0 / max(n_hours, 1)
-        sortino_ann = (mean_r / max(down_std, 1e-10)) * (ann_factor ** 0.5)
-
-        # Sharpe
-        total_std = (returns.var() + 1e-10).sqrt().item()
-        sharpe_ann = (mean_r / max(total_std, 1e-10)) * (ann_factor ** 0.5)
-
-        # Max drawdown
+        mean_r = rets.mean().item()
+        down_std = (rets.clamp(max=0.0).square().mean() + 1e-10).sqrt().item()
+        total_std = (rets.var() + 1e-10).sqrt().item()
+        ann = 8760.0 / max(n, 1)
+        sortino = (mean_r / max(down_std, 1e-10)) * (ann ** 0.5)
+        sharpe = (mean_r / max(total_std, 1e-10)) * (ann ** 0.5)
         cummax = pv.cummax(dim=0).values
-        dd = (pv - cummax) / cummax.clamp(min=1e-10)
-        max_dd = dd.min().item() * 100
+        max_dd = ((pv - cummax) / cummax.clamp(min=1e-10)).min().item() * 100
 
-        # Trade counting from inventory_path
-        num_trades = 0
-        win_trades = 0
-        total_hold = 0
-        inv_path = sim.inventory_path.float().cpu().squeeze(0) if hasattr(sim, "inventory_path") else None
-        if inv_path is not None and inv_path.ndim >= 1 and inv_path.shape[0] > 1:
-            was_flat = True
-            entry_val = 0.0
-            entry_t = 0
-            for t_i in range(inv_path.shape[0]):
-                is_flat = abs(inv_path[t_i].item()) < 1e-8
-                if was_flat and not is_flat:
-                    entry_val = pv[min(t_i, len(pv)-1)].item()
-                    entry_t = t_i
-                elif not was_flat and is_flat:
-                    num_trades += 1
-                    total_hold += t_i - entry_t
-                    if pv[min(t_i, len(pv)-1)].item() > entry_val:
-                        win_trades += 1
-                was_flat = is_flat
+        # Trade counting
+        n_trades = 0
+        wins = 0
+        was_flat = True
+        entry_val = 0.0
+        for t_i in range(len(inv)):
+            is_flat = abs(inv[t_i].item()) < 1e-8
+            if was_flat and not is_flat:
+                entry_val = pv[min(t_i, len(pv) - 1)].item()
+            elif not was_flat and is_flat:
+                n_trades += 1
+                if pv[min(t_i, len(pv) - 1)].item() > entry_val:
+                    wins += 1
+            was_flat = is_flat
 
-        wr = win_trades / max(num_trades, 1)
-        avg_hold = total_hold / max(num_trades, 1)
-        calmar = (total_ret / 100 * ann_factor) / max(abs(max_dd / 100), 1e-10) if max_dd != 0 else 0
+        tip = (inv.abs() > 1e-8).float().mean().item() * 100
 
         return MarketsimResult(
-            symbol=symbol,
-            checkpoint=str(ckpt_path),
-            epoch=ckpt.get("epoch", 0),
-            total_hours=n_hours,
-            total_return_pct=round(total_ret, 4),
-            sortino=round(sortino_ann, 4),
-            max_drawdown_pct=round(max_dd, 4),
-            num_trades=num_trades,
-            win_rate=round(wr, 4),
-            avg_hold_hours=round(avg_hold, 1),
-            sharpe=round(sharpe_ann, 4),
-            calmar=round(calmar, 4),
-            final_equity=round(final_eq, 6),
+            symbol=symbol, checkpoint=str(ckpt_path), epoch=ckpt.get("epoch", 0),
+            total_hours=n, total_return_pct=round(total_ret, 4),
+            sortino=round(sortino, 4), max_drawdown_pct=round(max_dd, 4),
+            num_trades=n_trades, win_rate=round(wins / max(n_trades, 1), 4),
+            time_in_position_pct=round(tip, 1), sharpe=round(sharpe, 4),
         )
 
-    if n_windows <= 0:
-        return [run_sim_window(0, T)]
+    ckpt = torch_load_compat(ckpt_path, map_location="cpu", weights_only=False)
 
-    # Sliding windows
+    if n_windows <= 0:
+        return [run_window(0, total_bars)]
+
     results = []
-    if T <= window_hours:
-        return [run_sim_window(0, T)]
-    stride = max(1, (T - window_hours) // max(n_windows - 1, 1))
+    if total_bars <= window_hours:
+        return [run_window(0, total_bars)]
+    stride = max(1, (total_bars - window_hours) // max(n_windows - 1, 1))
     for i in range(n_windows):
-        start = i * stride
-        end = min(start + window_hours, T)
-        if start >= T:
+        s = i * stride
+        e = min(s + window_hours, total_bars)
+        if s >= total_bars:
             break
-        results.append(run_sim_window(start, end))
+        results.append(run_window(s, e))
     return results
 
 
-def find_best_checkpoints(ckpt_dir: Path, symbol: str, top_k: int = 3) -> list[Path]:
-    """Find top-k checkpoints by val sortino from sap_history.json."""
+def find_best_checkpoints(ckpt_dir: Path, top_k: int = 1) -> list[Path]:
     history_path = ckpt_dir / "sap_history.json"
     if history_path.exists():
         history = json.loads(history_path.read_text())
         ranked = sorted(history, key=lambda h: h.get("val_sortino", -999), reverse=True)
-        best_epochs = [h["epoch"] for h in ranked[:top_k]]
-        return [ckpt_dir / f"epoch_{ep:03d}.pt" for ep in best_epochs if (ckpt_dir / f"epoch_{ep:03d}.pt").exists()]
-    # Fallback: use all checkpoints
+        best = [h["epoch"] for h in ranked[:top_k]]
+        return [ckpt_dir / f"epoch_{ep:03d}.pt" for ep in best if (ckpt_dir / f"epoch_{ep:03d}.pt").exists()]
     return sorted(ckpt_dir.glob("epoch_*.pt"))[:top_k]
 
 
 def summarize_windows(results: list[MarketsimResult]) -> dict:
-    """Compute aggregate stats across sliding windows."""
     if not results:
         return {}
     rets = [r.total_return_pct for r in results]
-    sorts = [r.sortino for r in results]
-    dds = [r.max_drawdown_pct for r in results]
     return {
         "n_windows": len(results),
-        "median_return": round(float(np.median(rets)), 4),
-        "mean_return": round(float(np.mean(rets)), 4),
-        "p10_return": round(float(np.percentile(rets, 10)), 4),
-        "p90_return": round(float(np.percentile(rets, 90)), 4),
+        "median_return": round(float(np.median(rets)), 2),
+        "mean_return": round(float(np.mean(rets)), 2),
+        "p10_return": round(float(np.percentile(rets, 10)), 2),
         "positive_pct": round(sum(1 for r in rets if r > 0) / len(rets) * 100, 1),
-        "median_sortino": round(float(np.median(sorts)), 4),
-        "median_max_dd": round(float(np.median(dds)), 4),
-        "worst_dd": round(float(min(dds)), 4),
+        "median_sortino": round(float(np.median([r.sortino for r in results])), 2),
+        "median_dd": round(float(np.median([r.max_drawdown_pct for r in results])), 2),
+        "worst_dd": round(float(min(r.max_drawdown_pct for r in results)), 2),
         "median_trades": int(np.median([r.num_trades for r in results])),
-        "median_wr": round(float(np.median([r.win_rate for r in results])), 4),
     }
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=str, default=None)
-    parser.add_argument("--checkpoint-dir", type=str, default=None)
     parser.add_argument("--symbol", default="DOGEUSD")
     parser.add_argument("--symbols", nargs="+", default=None)
     parser.add_argument("--lag", type=int, default=2)
-    parser.add_argument("--n-windows", type=int, default=10, help="0=full period, >0=sliding windows")
-    parser.add_argument("--window-hours", type=int, default=720, help="hours per window (720=30d)")
-    parser.add_argument("--top-k", type=int, default=3)
-    parser.add_argument("--portfolio", action="store_true")
+    parser.add_argument("--n-windows", type=int, default=10)
+    parser.add_argument("--window-hours", type=int, default=720)
+    parser.add_argument("--top-k", type=int, default=1)
     args = parser.parse_args()
 
     symbols = args.symbols or [args.symbol]
+    ckpt_root = Path("sharpnessadjustedproximalpolicy/checkpoints")
 
     all_results = {}
     for sym in symbols:
-        print(f"\n{'='*60}", flush=True)
-        print(f"Evaluating {sym}", flush=True)
-        print(f"{'='*60}", flush=True)
+        print(f"\n{'='*60}\n{sym}\n{'='*60}", flush=True)
 
         if args.checkpoint:
             paths = [Path(args.checkpoint)]
-        elif args.checkpoint_dir:
-            ckpt_dir = Path(args.checkpoint_dir)
-            if ckpt_dir.is_dir() and any(ckpt_dir.glob("epoch_*.pt")):
-                paths = find_best_checkpoints(ckpt_dir, sym, args.top_k)
-            else:
-                # Search for this symbol's best run
-                pattern = f"*{sym}*"
-                run_dirs = sorted(ckpt_dir.glob(pattern))
-                paths = []
-                for rd in run_dirs:
-                    if rd.is_dir():
-                        paths.extend(find_best_checkpoints(rd, sym, 1))
-                paths = paths[:args.top_k]
         else:
-            ckpt_root = Path("sharpnessadjustedproximalpolicy/checkpoints")
-            pattern = f"*{sym}*"
-            run_dirs = sorted(ckpt_root.glob(pattern))
+            run_dirs = sorted(ckpt_root.glob(f"*{sym}*"))
             paths = []
             for rd in run_dirs:
                 if rd.is_dir():
-                    paths.extend(find_best_checkpoints(rd, sym, 1))
-            paths = paths[:args.top_k]
+                    paths.extend(find_best_checkpoints(rd, 1))
+            # Deduplicate and keep top-k by epoch number variety
+            seen = set()
+            unique = []
+            for p in paths:
+                key = p.parent.name
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(p)
+            paths = unique[:args.top_k]
 
         if not paths:
-            print(f"  No checkpoints found for {sym}", flush=True)
+            print(f"  No checkpoints found", flush=True)
             continue
 
         sym_results = []
         for p in paths:
             if not p.exists():
                 continue
-            print(f"\n  {p.parent.name}/{p.name}...", flush=True)
+            run_name = p.parent.name.replace(f"_{sym}_", " ").split("sap_")[-1].split(" ")[0]
+            print(f"\n  {run_name} / {p.name}...", flush=True)
             t0 = time.time()
             try:
-                results = continuous_eval(
-                    p, sym, lag=args.lag,
-                    n_windows=args.n_windows,
-                    window_hours=args.window_hours,
-                )
+                results = chunk_based_eval(p, sym, lag=args.lag, n_windows=args.n_windows, window_hours=args.window_hours)
             except Exception as e:
                 print(f"    ERROR: {e}", flush=True)
+                import traceback; traceback.print_exc()
                 continue
             wall = time.time() - t0
 
             if args.n_windows > 0 and len(results) > 1:
-                summary = summarize_windows(results)
+                s = summarize_windows(results)
                 print(
-                    f"    ep{results[0].epoch}: "
-                    f"med_ret={summary['median_return']:.2f}% "
-                    f"pos={summary['positive_pct']:.0f}% "
-                    f"med_sort={summary['median_sortino']:.2f} "
-                    f"med_dd={summary['median_max_dd']:.2f}% "
-                    f"trades={summary['median_trades']} "
-                    f"({wall:.1f}s)",
-                    flush=True,
-                )
-                sym_results.append({
-                    "checkpoint": str(p),
-                    "epoch": results[0].epoch,
-                    "summary": summary,
-                    "windows": [vars(r) for r in results],
-                })
+                    f"    med_ret={s['median_return']:.1f}% pos={s['positive_pct']:.0f}% "
+                    f"sort={s['median_sortino']:.2f} dd={s['median_dd']:.1f}% "
+                    f"trades={s['median_trades']} ({wall:.0f}s)", flush=True)
+                sym_results.append({"run": run_name, "checkpoint": str(p), **s})
             else:
                 r = results[0]
                 print(
-                    f"    ep{r.epoch}: "
-                    f"ret={r.total_return_pct:.2f}% "
-                    f"sort={r.sortino:.2f} "
-                    f"dd={r.max_drawdown_pct:.2f}% "
-                    f"trades={r.num_trades} "
-                    f"wr={r.win_rate:.0%} "
-                    f"({wall:.1f}s)",
-                    flush=True,
-                )
+                    f"    ret={r.total_return_pct:.1f}% sort={r.sortino:.2f} "
+                    f"dd={r.max_drawdown_pct:.1f}% trades={r.num_trades} "
+                    f"wr={r.win_rate:.0%} tip={r.time_in_position_pct:.0f}% ({wall:.0f}s)", flush=True)
                 sym_results.append(vars(r))
 
         all_results[sym] = sym_results
 
-    # Save results
-    out = Path("sharpnessadjustedproximalpolicy") / f"marketsim_results_{time.strftime('%Y%m%d_%H%M%S')}.json"
+    out = Path("sharpnessadjustedproximalpolicy") / f"marketsim_{time.strftime('%Y%m%d_%H%M%S')}.json"
     out.write_text(json.dumps(all_results, indent=2, default=str))
-    print(f"\nResults saved to {out}", flush=True)
+    print(f"\nSaved: {out}", flush=True)
 
-    # Summary table
-    print(f"\n{'Symbol':<12} {'Checkpoint':<50} {'Return':>8} {'Sortino':>8} {'MaxDD':>8} {'Trades':>7}")
-    print("-" * 100)
-    for sym, sym_res in all_results.items():
-        for r in sym_res:
-            if "summary" in r:
-                s = r["summary"]
-                ckpt = Path(r["checkpoint"]).parent.name[:45]
-                print(f"{sym:<12} {ckpt:<50} {s['median_return']:>7.2f}% {s['median_sortino']:>8.2f} {s['median_max_dd']:>7.2f}% {s['median_trades']:>7}")
+    # Summary
+    print(f"\n{'Symbol':<10} {'Config':<35} {'Return':>8} {'Sortino':>8} {'MaxDD':>8} {'Trades':>7}")
+    print("-" * 85)
+    for sym, res_list in all_results.items():
+        for r in res_list:
+            name = r.get("run", Path(r.get("checkpoint", "")).parent.name[:30])
+            if "median_return" in r:
+                print(f"{sym:<10} {name:<35} {r['median_return']:>7.1f}% {r['median_sortino']:>8.2f} {r['median_dd']:>7.1f}% {r['median_trades']:>7}")
             else:
-                ckpt = Path(r["checkpoint"]).parent.name[:45]
-                print(f"{sym:<12} {ckpt:<50} {r['total_return_pct']:>7.2f}% {r['sortino']:>8.2f} {r['max_drawdown_pct']:>7.2f}% {r['num_trades']:>7}")
+                print(f"{sym:<10} {name:<35} {r['total_return_pct']:>7.1f}% {r['sortino']:>8.2f} {r['max_drawdown_pct']:>7.1f}% {r['num_trades']:>7}")
 
 
 if __name__ == "__main__":

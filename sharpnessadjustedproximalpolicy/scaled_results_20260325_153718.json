@@ -386,5 +386,368 @@
       24
     ],
     "error": null
+  },
+  {
+    "name": "periodic_wd01",
+    "symbol": "BTCUSD",
+    "best_epoch": 7,
+    "best_val_sortino": 85.91684932191417,
+    "best_val_return": 2.0298132731948257,
+    "best_val_score": 86.07923486435189,
+    "final_sharpness_ema": 360.0800646732561,
+    "final_lr_scale": 1.5730820415475595,
+    "total_epochs": 10,
+    "wall_time_s": 3928.3711471557617,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_BTCUSD_20260325_153718",
+    "sam_mode": "periodic",
+    "rho": 0.05,
+    "weight_decay": 0.1,
+    "horizons": [
+      1,
+      4,
+      24
+    ],
+    "error": null
+  },
+  {
+    "name": "baseline_wd01",
+    "symbol": "BTCUSD",
+    "best_epoch": 6,
+    "best_val_sortino": 78.13887788214774,
+    "best_val_return": 1.5748776139621183,
+    "best_val_score": 78.26486754192496,
+    "final_sharpness_ema": 0.0,
+    "final_lr_scale": 1.0,
+    "total_epochs": 10,
+    "wall_time_s": 3899.266417503357,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_BTCUSD_20260325_153718",
+    "sam_mode": "none",
+    "rho": 0.05,
+    "weight_decay": 0.1,
+    "horizons": [
+      1,
+      4,
+      24
+    ],
+    "error": null
+  },
+  {
+    "name": "periodic_wd01",
+    "symbol": "DOGEUSD",
+    "best_epoch": 9,
+    "best_val_sortino": 153.80716594660058,
+    "best_val_return": 2.972289640034707,
+    "best_val_score": 154.0449486588532,
+    "final_sharpness_ema": 868.7026718069659,
+    "final_lr_scale": 2.0,
+    "total_epochs": 10,
+    "wall_time_s": 3948.6429872512817,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_DOGEUSD_20260325_153718",
+    "sam_mode": "periodic",
+    "rho": 0.05,
+    "weight_decay": 0.1,
+    "horizons": [
+      1,
+      4,
+      12,
+      24
+    ],
+    "error": null
+  },
+  {
+    "name": "baseline_wd01",
+    "symbol": "DOGEUSD",
+    "best_epoch": 8,
+    "best_val_sortino": 149.02172632824698,
+    "best_val_return": 3.6848279984738186,
+    "best_val_score": 149.31651416814552,
+    "final_sharpness_ema": 0.0,
+    "final_lr_scale": 1.0,
+    "total_epochs": 10,
+    "wall_time_s": 3870.290942430496,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_DOGEUSD_20260325_153718",
+    "sam_mode": "none",
+    "rho": 0.05,
+    "weight_decay": 0.1,
+    "horizons": [
+      1,
+      4,
+      12,
+      24
+    ],
+    "error": null
+  },
+  {
+    "name": "periodic_wd01",
+    "symbol": "DOTUSD",
+    "best_epoch": 10,
+    "best_val_sortino": 199.8398825181121,
+    "best_val_return": 7.561177570838481,
+    "best_val_score": 200.44477862056414,
+    "final_sharpness_ema": 1291.1003774903156,
+    "final_lr_scale": 1.6927212284919062,
+    "total_epochs": 10,
+    "wall_time_s": 1945.1243703365326,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_DOTUSD_20260325_153718",
+    "sam_mode": "periodic",
+    "rho": 0.05,
+    "weight_decay": 0.1,
+    "horizons": [
+      1,
+      24
+    ],
+    "error": null
+  },
+  {
+    "name": "baseline_wd01",
+    "symbol": "DOTUSD",
+    "best_epoch": 10,
+    "best_val_sortino": 240.8039273917675,
+    "best_val_return": 7.101954673698066,
+    "best_val_score": 241.37208115604687,
+    "final_sharpness_ema": 0.0,
+    "final_lr_scale": 1.0,
+    "total_epochs": 10,
+    "wall_time_s": 1900.7285940647125,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_DOTUSD_20260325_153718",
+    "sam_mode": "none",
+    "rho": 0.05,
+    "weight_decay": 0.1,
+    "horizons": [
+      1,
+      24
+    ],
+    "error": null
+  },
+  {
+    "name": "periodic_wd01",
+    "symbol": "ETHFDUSD",
+    "best_epoch": 10,
+    "best_val_sortino": 90.20522754878368,
+    "best_val_return": 1.6871438585924652,
+    "best_val_score": 90.34019859331958,
+    "final_sharpness_ema": 992.7612315256522,
+    "final_lr_scale": 1.9846289014016394,
+    "total_epochs": 10,
+    "wall_time_s": 845.3216698169708,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_ETHFDUSD_20260325_153718",
+    "sam_mode": "periodic",
+    "rho": 0.05,
+    "weight_decay": 0.1,
+    "horizons": [
+      1,
+      24
+    ],
+    "error": null
+  },
+  {
+    "name": "baseline_wd01",
+    "symbol": "ETHFDUSD",
+    "best_epoch": 5,
+    "best_val_sortino": 69.41372887593396,
+    "best_val_return": 1.7408968213734761,
+    "best_val_score": 69.55300140043475,
+    "final_sharpness_ema": 0.0,
+    "final_lr_scale": 1.0,
+    "total_epochs": 10,
+    "wall_time_s": 831.6268911361694,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_ETHFDUSD_20260325_153718",
+    "sam_mode": "none",
+    "rho": 0.05,
+    "weight_decay": 0.1,
+    "horizons": [
+      1,
+      24
+    ],
+    "error": null
+  },
+  {
+    "name": "periodic_wd01",
+    "symbol": "ETHUSD",
+    "best_epoch": 9,
+    "best_val_sortino": 72.95459255702653,
+    "best_val_return": 3.1655230934161667,
+    "best_val_score": 73.20783442083113,
+    "final_sharpness_ema": 832.113558323293,
+    "final_lr_scale": 2.0,
+    "total_epochs": 10,
+    "wall_time_s": 3931.737758874893,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_ETHUSD_20260325_153718",
+    "sam_mode": "periodic",
+    "rho": 0.05,
+    "weight_decay": 0.1,
+    "horizons": [
+      1,
+      24
+    ],
+    "error": null
+  },
+  {
+    "name": "baseline_wd01",
+    "symbol": "ETHUSD",
+    "best_epoch": 9,
+    "best_val_sortino": 91.74028972986171,
+    "best_val_return": 2.974456027046918,
+    "best_val_score": 91.97824629220479,
+    "final_sharpness_ema": 0.0,
+    "final_lr_scale": 1.0,
+    "total_epochs": 10,
+    "wall_time_s": 3898.2568638324738,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_ETHUSD_20260325_153718",
+    "sam_mode": "none",
+    "rho": 0.05,
+    "weight_decay": 0.1,
+    "horizons": [
+      1,
+      24
+    ],
+    "error": null
+  },
+  {
+    "name": "periodic_wd01",
+    "symbol": "FILUSD",
+    "best_epoch": 9,
+    "best_val_sortino": 143.78114905130153,
+    "best_val_return": 4.374195094146345,
+    "best_val_score": 144.13108507649235,
+    "final_sharpness_ema": 1114.085834456155,
+    "final_lr_scale": 2.0,
+    "total_epochs": 10,
+    "wall_time_s": 3285.0476257801056,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_FILUSD_20260325_153718",
+    "sam_mode": "periodic",
+    "rho": 0.05,
+    "weight_decay": 0.1,
+    "horizons": [
+      1,
+      24
+    ],
+    "error": null
+  },
+  {
+    "name": "baseline_wd01",
+    "symbol": "FILUSD",
+    "best_epoch": 10,
+    "best_val_sortino": 131.22883765719487,
+    "best_val_return": 4.5937001631389665,
+    "best_val_score": 131.5963342746869,
+    "final_sharpness_ema": 0.0,
+    "final_lr_scale": 1.0,
+    "total_epochs": 10,
+    "wall_time_s": 3211.2423660755157,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_FILUSD_20260325_153718",
+    "sam_mode": "none",
+    "rho": 0.05,
+    "weight_decay": 0.1,
+    "horizons": [
+      1,
+      24
+    ],
+    "error": null
+  },
+  {
+    "name": "periodic_wd01",
+    "symbol": "ICPUSD",
+    "best_epoch": 9,
+    "best_val_sortino": 164.01270466522348,
+    "best_val_return": 3.7034041530661064,
+    "best_val_score": 164.3089741895608,
+    "final_sharpness_ema": 1423.9085400839467,
+    "final_lr_scale": 2.0,
+    "total_epochs": 10,
+    "wall_time_s": 839.9032292366028,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_ICPUSD_20260325_153718",
+    "sam_mode": "periodic",
+    "rho": 0.05,
+    "weight_decay": 0.1,
+    "horizons": [
+      1,
+      24
+    ],
+    "error": null
+  },
+  {
+    "name": "baseline_wd01",
+    "symbol": "ICPUSD",
+    "best_epoch": 5,
+    "best_val_sortino": 142.2555000181859,
+    "best_val_return": 3.1968992619482757,
+    "best_val_score": 142.51125232038035,
+    "final_sharpness_ema": 0.0,
+    "final_lr_scale": 1.0,
+    "total_epochs": 10,
+    "wall_time_s": 823.6530680656433,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_ICPUSD_20260325_153718",
+    "sam_mode": "none",
+    "rho": 0.05,
+    "weight_decay": 0.1,
+    "horizons": [
+      1,
+      24
+    ],
+    "error": null
+  },
+  {
+    "name": "periodic_wd01",
+    "symbol": "INJUSD",
+    "best_epoch": 9,
+    "best_val_sortino": 174.1212188655833,
+    "best_val_return": 3.6797061384320044,
+    "best_val_score": 174.41559776588454,
+    "final_sharpness_ema": 1253.3215461807458,
+    "final_lr_scale": 2.0,
+    "total_epochs": 10,
+    "wall_time_s": 835.420104265213,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_INJUSD_20260325_153718",
+    "sam_mode": "periodic",
+    "rho": 0.05,
+    "weight_decay": 0.1,
+    "horizons": [
+      1,
+      24
+    ],
+    "error": null
+  },
+  {
+    "name": "baseline_wd01",
+    "symbol": "INJUSD",
+    "best_epoch": 6,
+    "best_val_sortino": 156.0561685701305,
+    "best_val_return": 3.2791753527730316,
+    "best_val_score": 156.3185036369371,
+    "final_sharpness_ema": 0.0,
+    "final_lr_scale": 1.0,
+    "total_epochs": 10,
+    "wall_time_s": 822.9237906932831,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_INJUSD_20260325_153718",
+    "sam_mode": "none",
+    "rho": 0.05,
+    "weight_decay": 0.1,
+    "horizons": [
+      1,
+      24
+    ],
+    "error": null
+  },
+  {
+    "name": "periodic_wd01",
+    "symbol": "LINKUSD",
+    "best_epoch": 10,
+    "best_val_sortino": 108.96275855910103,
+    "best_val_return": 1.441585030195848,
+    "best_val_score": 109.07808697617278,
+    "final_sharpness_ema": 1318.7699059667734,
+    "final_lr_scale": 2.0,
+    "total_epochs": 10,
+    "wall_time_s": 3984.503590106964,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_LINKUSD_20260325_153718",
+    "sam_mode": "periodic",
+    "rho": 0.05,
+    "weight_decay": 0.1,
+    "horizons": [
+      1,
+      24
+    ],
+    "error": null
   }
 ]

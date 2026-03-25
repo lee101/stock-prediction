@@ -1,0 +1,2 @@
+symbol,config,best_epoch,val_sortino,val_return,val_score,sharpness_ema,wd_scale,error
+AAVEUSD,baseline_wd01,,,,,,,"Insufficient hourly history (408 rows, minimum 720)."

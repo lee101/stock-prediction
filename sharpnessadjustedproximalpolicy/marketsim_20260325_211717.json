@@ -1,0 +1,17 @@
+{
+  "ATOMUSD": [
+    {
+      "run": "periodic_wd01",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_periodic_wd01_ATOMUSD_20260325_153718/epoch_006.pt",
+      "n_windows": 10,
+      "median_return": 7.96,
+      "mean_return": 9.9,
+      "p10_return": 6.48,
+      "positive_pct": 100.0,
+      "median_sortino": 0.94,
+      "median_dd": -2.82,
+      "worst_dd": -6.39,
+      "median_trades": 7
+    }
+  ]
+}
