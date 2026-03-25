@@ -1,0 +1,6 @@
+description,pool_val_return,honest_val_return,annualized_pct,genuine
+c70_tp05_slip5_s301,1.5388,1.5444,+564.4,True
+c70_tp05_slip5_s302,1.0585,-1.0789,-99.4+0.1j,False
+c70_tp05_slip5_s303,0.3990,0.2346,+53.3,True
+c70_tp05_slip5_s304,0.5112,0.5229,+134.6,True
+c70_tp05_slip5_s305,-0.4862,-0.3863,-62.8,False
