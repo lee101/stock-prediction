@@ -573,15 +573,37 @@ def swap_usdt_to_fdusd(client, amount: float):
         logger.warning(f"USDT->FDUSD swap failed: {e}")
 
 
+def _format_price(price: float) -> str:
+    if price >= 1.0:
+        return f"{price:.2f}"
+    elif price >= 0.01:
+        return f"{price:.4f}"
+    elif price >= 0.0001:
+        return f"{price:.6f}"
+    else:
+        return f"{price:.8f}"
+
+
+def _format_quantity(qty: float) -> str:
+    if qty >= 1.0:
+        return f"{qty:.4f}"
+    elif qty >= 0.01:
+        return f"{qty:.6f}"
+    else:
+        return f"{qty:.8f}"
+
+
 def place_limit_buy(client, symbol: str, price: float, quantity: float, config: WorkStealConfig):
     pair = get_binance_pair(symbol, prefer_fdusd=True)
-    logger.info(f"Placing limit buy: {pair} qty={quantity:.6f} price={price:.2f}")
+    price_str = _format_price(price)
+    qty_str = _format_quantity(quantity)
+    logger.info(f"Placing limit buy: {pair} qty={qty_str} price={price_str}")
     try:
         order = client.create_margin_order(
             symbol=pair, side="BUY", type="LIMIT",
             timeInForce="GTC",
-            quantity=f"{quantity:.6f}",
-            price=f"{price:.2f}",
+            quantity=qty_str,
+            price=price_str,
         )
         return order
     except Exception as e:
@@ -591,13 +613,15 @@ def place_limit_buy(client, symbol: str, price: float, quantity: float, config: 
 
 def place_limit_sell(client, symbol: str, price: float, quantity: float):
     pair = get_binance_pair(symbol, prefer_fdusd=True)
-    logger.info(f"Placing limit sell: {pair} qty={quantity:.6f} price={price:.2f}")
+    price_str = _format_price(price)
+    qty_str = _format_quantity(quantity)
+    logger.info(f"Placing limit sell: {pair} qty={qty_str} price={price_str}")
     try:
         order = client.create_margin_order(
             symbol=pair, side="SELL", type="LIMIT",
             timeInForce="GTC",
-            quantity=f"{quantity:.6f}",
-            price=f"{price:.2f}",
+            quantity=qty_str,
+            price=price_str,
         )
         return order
     except Exception as e:
@@ -648,6 +672,11 @@ def reconcile_pending_entries(
             expires_at = expires_at.tz_convert("UTC")
         if pd.Timestamp(now) >= expires_at:
             _cancel_pending_entry(client, sym, entry)
+            del pending_entries[sym]
+            continue
+
+        if entry.get("status") == "preview" and not dry_run:
+            logger.info(f"Cleaning up preview entry {sym} (no order placed)")
             del pending_entries[sym]
             continue
 
@@ -1309,8 +1338,8 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
         "equity": equity,
         **counts,
     }
-    if dip_tiers and len(dip_tiers) > 1:
-        event_data["dip_tiers"] = dip_tiers
+    if dip_pct_fallback and len(dip_pct_fallback) > 1:
+        event_data["dip_tiers"] = dip_pct_fallback
         event_data["tier_map"] = {sym: idx for sym, idx in tier_map.items()} if tier_map else {}
     log_event(event_data)
 
@@ -1523,6 +1552,8 @@ def main():
         _dip_fallback = args.dip_pct_fallback
         if _dip_fallback:
             logger.info(f"Tiered dip fallback enabled: {_dip_fallback}")
+        last_heartbeat_hour = None
+        heartbeat_interval_h = 1
         if args.run_on_start:
             startup_dry_run = args.dry_run or args.startup_preview_only
             run_daily_cycle(
@@ -1609,7 +1640,17 @@ def main():
                     last_health_hour = current_hour
 
             sleep_secs = (next_run - datetime.now(timezone.utc)).total_seconds()
-            logger.info(f"Next run in {sleep_secs/3600:.1f}h at {next_run}")
+            now_hb = datetime.now(timezone.utc)
+            hb_hour = now_hb.strftime("%Y-%m-%dT%H")
+            if hb_hour != last_heartbeat_hour:
+                state_hb = load_state()
+                n_pos = len(normalize_live_positions(state_hb.get("positions", {}), config))
+                n_pend = len(_normalize_pending_entries(state_hb.get("pending_entries", {})))
+                logger.info(
+                    f"HEARTBEAT {now_hb.isoformat()} | positions={n_pos} pending={n_pend} "
+                    f"next_daily={sleep_secs/3600:.1f}h poll={args.poll_seconds}s"
+                )
+                last_heartbeat_hour = hb_hour
             time.sleep(max(60, min(float(args.poll_seconds), sleep_secs)))
     else:
         run_daily_cycle(client, symbols, config, dry_run=args.dry_run,
