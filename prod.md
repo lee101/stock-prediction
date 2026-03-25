@@ -34,13 +34,18 @@
     --num-episodes 20 --hidden-size 1024 --arch mlp --deterministic
   ```
 
-### 2. Binance Worksteal Daily (`binance-worksteal-daily`) -- RUNNING
+### 2. Binance Worksteal Daily (`binance-worksteal-daily`) -- RUNNING (updated 2026-03-25)
 - **Bot**: `binance_worksteal/trade_live.py`
 - **Launch**: `deployments/binance-worksteal-daily/launch.sh`
-- **Strategy**: Rule-based dip-buying, SMA-20 filter, 30-symbol universe
-- **Config**: dip=20%, tp=15%, sl=10%, trail=3%, max_positions=5, max_hold=14d
-- **Equity**: ~$3,300
-- **Marketsim (30d Feb-Mar)**: +9.13%, Sort=23.03, -1.5% MaxDD, 73% WR
+- **Strategy**: Rule-based dip-buying, SMA-20 filter, 75-symbol universe (universe_v2.yaml)
+- **Config**: dip=18%, tp=20%, sl=15%, trail=3%, max_positions=5, max_hold=14d, tiered dips (18%/15%/12%)
+- **Previous config**: dip=20%, tp=15%, sl=10% (deployed until 2026-03-25)
+- **Equity**: ~$3,045
+- **C-sim sweep (2026-03-25)**: 16,848 configs across 7 windows, new champion:
+  - 90d: +39.87% ret, Sort=18.41, -1.39% DD (vs old: +1.40%, Sort=0.73)
+  - 365d: +84.62% ret, Sort=1.95 (vs old: +47.43%, Sort=1.50)
+  - Crash (Dec-Jan): +24.02% (vs +1.40%), Bull (Jun-Sep): +47.89% (vs +24.26%)
+- **Fixes (2026-03-25)**: dip_tiers NameError, preview entry cleanup, micro-cap price formatting, hourly heartbeat
 - **Eval command**:
   ```bash
   source .venv313/bin/activate
