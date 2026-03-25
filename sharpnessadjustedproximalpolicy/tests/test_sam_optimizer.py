@@ -72,18 +72,20 @@ class TestSharpnessAdjustedOptimizer:
         assert sharpness >= 0
         assert sam.state.ema > 0
 
-    def test_lr_scaling(self):
+    def test_wd_scaling(self):
+        """Sharpness should scale weight_decay (not lr) after warmup."""
         model = _simple_model()
-        opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        base_wd = 1e-2
+        opt = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=base_wd)
         sam = SharpnessAdjustedOptimizer(
-            opt, rho=0.05, probe_every=1, target_sharpness=1.0,
-            min_scale=0.1, max_scale=5.0,
+            opt, rho=0.05, probe_every=1, target_sharpness=0.01,
+            wd_min_scale=0.5, wd_max_scale=2.0, warmup_probes=2,
         )
 
         x = torch.randn(16, 10)
         y = torch.randn(16, 1)
 
-        for _ in range(5):
+        for _ in range(10):
             sam.zero_grad()
             loss = _loss_fn(model, x, y)
             loss.backward()
@@ -92,11 +94,13 @@ class TestSharpnessAdjustedOptimizer:
                 return _loss_fn(model, x, y)
             sam.probe_sharpness(probe_fn, loss.item())
 
-        scale = sam.state.lr_scale
-        assert 0.1 <= scale <= 5.0
-        actual_lr = sam.param_groups[0]["lr"]
-        expected_lr = 1e-3 * scale
-        assert abs(actual_lr - expected_lr) < 1e-8
+        # lr must NOT be changed by sharpness
+        assert sam.param_groups[0]["lr"] == pytest.approx(1e-3)
+        # wd_scale should be in valid range; actual wd is base_wd * wd_scale
+        wd_scale = sam.state.wd_scale
+        assert 0.5 <= wd_scale <= 2.0
+        actual_wd = sam.param_groups[0]["weight_decay"]
+        assert actual_wd == pytest.approx(base_wd * wd_scale, rel=1e-5)
 
     def test_log_scale_mode(self):
         model = _simple_model()

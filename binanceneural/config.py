@@ -37,6 +37,7 @@ class DatasetConfig:
     refresh_hours: int = 0
     validation_days: int = 70
     cache_only: bool = False
+    bar_shift_range: int = 0  # random ±N bar temporal jitter augmentation (train only)
 
 
 @dataclass
@@ -71,6 +72,8 @@ class PolicyConfig:
     value_embedding_scale: float = 1.0
     # Memory tokens: learnable global slots that attend to full sequence
     num_memory_tokens: int = 0  # 0=disabled, e.g. 4-16 for global memory
+    # Sparse MoE FFN: replace dense FFN with N fine-grained experts (0 = disabled)
+    moe_num_experts: int = 0  # e.g. 8 — same param budget, learned routing
     # Dilated attention: different head groups attend at different strides
     dilated_strides: str = ""  # e.g. "1,4,24" - one stride per head group
     use_flex_attention: bool = True  # use FlexAttention when available (PyTorch 2.4+, CUDA)
@@ -169,6 +172,8 @@ class TrainingConfig:
     num_outputs: int = 4
     max_hold_hours: float = 24.0
     feature_noise_std: float = 0.0
+    bar_shift_range: int = 0  # propagated to DatasetConfig at training time
+    moe_num_experts: int = 0  # propagated to PolicyConfig
     use_compile: bool = True
     use_amp: bool = False
     amp_dtype: str = "bfloat16"

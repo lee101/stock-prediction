@@ -671,11 +671,52 @@ class FeedForward(nn.Module):
         return self.fc2(x)
 
 
+class _MoEExpert(nn.Module):
+    """Single small expert for SparseMoEFeedForward."""
+    def __init__(self, hidden_dim: int, inner_dim: int) -> None:
+        super().__init__()
+        self.fc1 = nn.Linear(hidden_dim, inner_dim, bias=False)
+        self.fc2 = nn.Linear(inner_dim, hidden_dim, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fc2(F.relu(self.fc1(x)).square())
+
+
+class SparseMoEFeedForward(nn.Module):
+    """Fine-grained sparse MoE FFN with soft routing.
+
+    n_experts fine-grained specialists replace one large dense FFN.
+    Each expert has inner_dim = hidden_dim * mlp_ratio / n_experts, so the
+    total parameter count is the same as a standard FeedForward.
+    During training all experts contribute (weighted by softmax routing),
+    which is fully differentiable and requires no auxiliary load-balancing loss.
+    """
+
+    def __init__(self, config: PolicyConfig, n_experts: int = 8) -> None:
+        super().__init__()
+        inner_dim = max(1, int(config.hidden_dim * config.mlp_ratio // n_experts))
+        self.experts = nn.ModuleList(
+            [_MoEExpert(config.hidden_dim, inner_dim) for _ in range(n_experts)]
+        )
+        self.router = nn.Linear(config.hidden_dim, n_experts, bias=False)
+        self.dropout = nn.Dropout(config.dropout)
+        self.n_experts = n_experts
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [B, T, D]
+        routing = F.softmax(self.router(x), dim=-1)  # [B, T, n_experts]
+        # Compute all expert outputs in parallel then weighted-sum
+        outs = torch.stack([e(x) for e in self.experts], dim=-1)  # [B, T, D, n_experts]
+        out = (outs * routing.unsqueeze(-2)).sum(dim=-1)  # [B, T, D]
+        return self.dropout(out)
+
+
 class NanoTransformerBlock(nn.Module):
     def __init__(self, config: PolicyConfig, layer_idx: int) -> None:
         super().__init__()
         self.attn = MultiQueryAttention(config, layer_idx)
-        self.mlp = FeedForward(config)
+        n_experts = getattr(config, "moe_num_experts", 0)
+        self.mlp = SparseMoEFeedForward(config, n_experts) if n_experts > 0 else FeedForward(config)
         self.dropout = nn.Dropout(config.dropout)
         self.rms_eps = config.rms_norm_eps
         self.use_residual_scalars = bool(config.use_residual_scalars)
@@ -754,7 +795,11 @@ class BinanceHourlyPolicyNano(BinancePolicyBase):
         nn.init.zeros_(self.head.weight)
         for block in self.blocks:
             nn.init.zeros_(block.attn.out_proj.weight)
-            nn.init.zeros_(block.mlp.fc2.weight)
+            if isinstance(block.mlp, SparseMoEFeedForward):
+                for expert in block.mlp.experts:
+                    nn.init.zeros_(expert.fc2.weight)
+            else:
+                nn.init.zeros_(block.mlp.fc2.weight)
 
     def forward(self, features: torch.Tensor) -> Dict[str, torch.Tensor]:
         B, seq_len, _ = features.shape
@@ -966,7 +1011,7 @@ class BinanceHourlyPolicyMamba(BinancePolicyBase):
 
 def build_policy(policy_cfg: PolicyConfig) -> BinancePolicyBase:
     arch = (policy_cfg.model_arch or "classic").lower()
-    if arch in {"nano", "nanochat", "modern"}:
+    if arch in {"nano", "nanochat", "modern", "moe", "nano_moe"}:
         return BinanceHourlyPolicyNano(policy_cfg)
     if arch in {"mamba", "mamba2", "mamba3", "ssm"}:
         return BinanceHourlyPolicyMamba(policy_cfg)
