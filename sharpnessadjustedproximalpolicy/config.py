@@ -61,6 +61,14 @@ class SAPConfig:
     # Sharpness logging
     log_sharpness: bool = True
 
+    # Continuous val eval: run full-period simulation after each epoch as val metric
+    # This is ~10s/epoch but gives the REAL marketsim metric, not batched window average
+    continuous_val_eval: bool = False
+
+    # Allow short positions (sell when inventory=0 opens a short)
+    # Critical for bear-market val periods where long-only cannot profit
+    can_short: bool = False
+
 
 # Experiment sweep configurations
 EXPERIMENTS = [
@@ -196,6 +204,77 @@ EXPERIMENTS = [
      "model_arch": "moe", "moe_num_experts": 8, "transformer_dim": 512, "transformer_layers": 6},
     {"name": "moe8_h512_periodic", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1,
      "model_arch": "moe", "moe_num_experts": 8, "transformer_dim": 512, "transformer_layers": 6},
+
+    # --- Round 5: fix training/eval gap ---
+    # Key finding: batched val_sortino is NOT predictive of marketsim (baseline_wd01 ep6:
+    # val_sort=34.9 BUT marketsim=-51%). Root cause: window-based training ignores fee
+    # accumulation. Fixes: (1) smoothness_penalty to penalise reversal frequency,
+    # (2) lower/zero fee (FDUSD 0-fee pairs), (3) continuous val eval = actual metric.
+
+    # Smoothness penalty: discourages volatile return sequences (proxy for over-trading)
+    {"name": "smooth01_baseline", "sam_mode": "none", "weight_decay": 0.1, "smoothness_penalty": 0.1},
+    {"name": "smooth02_baseline", "sam_mode": "none", "weight_decay": 0.1, "smoothness_penalty": 0.2},
+    {"name": "smooth05_baseline", "sam_mode": "none", "weight_decay": 0.1, "smoothness_penalty": 0.5},
+    {"name": "smooth01_periodic", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1, "smoothness_penalty": 0.1},
+    {"name": "smooth02_periodic", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1, "smoothness_penalty": 0.2},
+
+    # Zero-fee training (FDUSD pairs on Binance have 0% fee — training at true cost)
+    {"name": "zerofee_baseline", "sam_mode": "none", "weight_decay": 0.1, "maker_fee": 0.0},
+    {"name": "zerofee_smooth01", "sam_mode": "none", "weight_decay": 0.1, "maker_fee": 0.0, "smoothness_penalty": 0.1},
+    {"name": "zerofee_periodic", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1, "maker_fee": 0.0},
+
+    # Continuous val eval: select checkpoints by full-period simulation Sortino
+    # (not batch-average) — directly optimises for what marketsim measures
+    {"name": "contval_baseline", "sam_mode": "none", "weight_decay": 0.1, "continuous_val_eval": True},
+    {"name": "contval_smooth01", "sam_mode": "none", "weight_decay": 0.1, "continuous_val_eval": True, "smoothness_penalty": 0.1},
+    {"name": "contval_periodic", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1, "continuous_val_eval": True},
+    {"name": "contval_zerofee", "sam_mode": "none", "weight_decay": 0.1, "continuous_val_eval": True,
+     "maker_fee": 0.0, "smoothness_penalty": 0.1},
+
+    # MoE + smoothness (best round4 arch + round5 regularisation)
+    {"name": "moe8_smooth01", "sam_mode": "none", "weight_decay": 0.1,
+     "model_arch": "moe", "moe_num_experts": 8, "smoothness_penalty": 0.1},
+    {"name": "moe8_contval", "sam_mode": "none", "weight_decay": 0.1,
+     "model_arch": "moe", "moe_num_experts": 8, "continuous_val_eval": True, "smoothness_penalty": 0.1},
+
+    # --- Round 6: short-selling enabled ---
+    # Key finding: val period Jan-Mar 2026 is full bear market (BTC -21%, altcoins -33..52%).
+    # Long-only models see -47% to -58% marketsim on ALL configs due to:
+    #   (a) sustained price decline, (b) 130-150 trades * 10bps = ~13-15% fee drag.
+    # Fix: enable can_short=True so model can profit from downtrends.
+    # Combined with smoothness_penalty to prevent over-trading and contval for proper eval.
+
+    # Short-only baselines (can_short=True, no other changes)
+    {"name": "short_baseline", "sam_mode": "none", "weight_decay": 0.1, "can_short": True},
+    {"name": "short_periodic", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1, "can_short": True},
+
+    # Short + smoothness (reduce fee drag, allow cleaner short signals)
+    {"name": "short_smooth01", "sam_mode": "none", "weight_decay": 0.1, "can_short": True, "smoothness_penalty": 0.1},
+    {"name": "short_smooth02", "sam_mode": "none", "weight_decay": 0.1, "can_short": True, "smoothness_penalty": 0.2},
+    {"name": "short_smooth01_periodic", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1,
+     "can_short": True, "smoothness_penalty": 0.1},
+
+    # Short + contval (select checkpoints by actual marketsim sortino, not batch average)
+    {"name": "short_contval", "sam_mode": "none", "weight_decay": 0.1, "can_short": True,
+     "continuous_val_eval": True},
+    {"name": "short_contval_smooth01", "sam_mode": "none", "weight_decay": 0.1, "can_short": True,
+     "continuous_val_eval": True, "smoothness_penalty": 0.1},
+    {"name": "short_contval_periodic", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1,
+     "can_short": True, "continuous_val_eval": True},
+    {"name": "short_contval_smooth01_periodic", "sam_mode": "periodic", "rho": 0.05, "weight_decay": 0.1,
+     "can_short": True, "continuous_val_eval": True, "smoothness_penalty": 0.1},
+
+    # Short + zero-fee (FDUSD: BTC/ETH/SOL on Binance) — no fee drag, pure alpha
+    {"name": "short_zerofee", "sam_mode": "none", "weight_decay": 0.1, "can_short": True,
+     "maker_fee": 0.0, "smoothness_penalty": 0.1},
+    {"name": "short_zerofee_contval", "sam_mode": "none", "weight_decay": 0.1, "can_short": True,
+     "maker_fee": 0.0, "continuous_val_eval": True, "smoothness_penalty": 0.1},
+
+    # Short + MoE (best arch with short capability)
+    {"name": "short_moe8", "sam_mode": "none", "weight_decay": 0.1, "can_short": True,
+     "model_arch": "moe", "moe_num_experts": 8, "smoothness_penalty": 0.1},
+    {"name": "short_moe8_contval", "sam_mode": "none", "weight_decay": 0.1, "can_short": True,
+     "model_arch": "moe", "moe_num_experts": 8, "continuous_val_eval": True, "smoothness_penalty": 0.1},
 ]
 
 
