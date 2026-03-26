@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import json
+import shutil
 import time
 from contextlib import nullcontext
 from dataclasses import dataclass, field
@@ -232,7 +234,12 @@ class BinanceHourlyTrainer:
         history: list[TrainingHistoryEntry] = []
         best_score = float("-inf")
         best_checkpoint: Path | None = None
-        ckpt_mgr = TopKCheckpointManager(self.checkpoint_dir, max_keep=10, mode="max")
+        best_metric = float("-inf")
+        ckpt_mgr = TopKCheckpointManager(
+            self.checkpoint_dir,
+            max_keep=max(1, int(self.config.top_k_checkpoints)),
+            mode="max",
+        )
 
         global_step = 0
         print(f"Training: {len(train_loader)} train batches, {len(val_loader)} val batches", flush=True)
@@ -267,18 +274,34 @@ class BinanceHourlyTrainer:
             )
             history.append(entry)
 
+            checkpoint_metric, checkpoint_metric_name, generalization_gap = self._checkpoint_metric(train_metrics, val_metrics)
             ckpt_path = self._save_checkpoint(model, epoch, val_metrics)
-            ckpt_mgr.register(ckpt_path, val_metrics["score"], epoch=epoch)
+            ckpt_mgr.register(ckpt_path, checkpoint_metric, epoch=epoch)
             if val_metrics["score"] > best_score:
                 best_score = val_metrics["score"]
+            if checkpoint_metric > best_metric:
+                best_metric = checkpoint_metric
                 best_checkpoint = ckpt_path
+                self._refresh_best_checkpoint_alias(ckpt_path)
+
+            self._write_progress(
+                epoch=epoch,
+                train_metrics=train_metrics,
+                val_metrics=val_metrics,
+                checkpoint_metric=checkpoint_metric,
+                checkpoint_metric_name=checkpoint_metric_name,
+                generalization_gap=generalization_gap,
+                best_metric=best_metric,
+                best_checkpoint=best_checkpoint,
+            )
 
             print(
                 f"Epoch {epoch}/{self.config.epochs} | "
                 f"Train Loss: {train_metrics['loss']:.4f} Score: {train_metrics['score']:.4f} "
                 f"Sortino: {train_metrics['sortino']:.4f} Return: {train_metrics['return']:.4f} | "
                 f"Val Loss: {val_metrics['loss']:.4f} Score: {val_metrics['score']:.4f} "
-                f"Sortino: {val_metrics['sortino']:.4f} Return: {val_metrics['return']:.4f}"
+                f"Sortino: {val_metrics['sortino']:.4f} Return: {val_metrics['return']:.4f} | "
+                f"Gap: {generalization_gap:.4f} {checkpoint_metric_name}: {checkpoint_metric:.4f}"
             )
 
             if wandb_run is not None:
@@ -293,6 +316,8 @@ class BinanceHourlyTrainer:
                     "val/sortino": val_metrics["sortino"],
                     "val/return": val_metrics["return"],
                     "val/score": val_metrics["score"],
+                    "val/generalization_gap": generalization_gap,
+                    f"val/{checkpoint_metric_name}": checkpoint_metric,
                     "learning_rate": lr_now,
                 }, step=epoch)
 
@@ -308,6 +333,65 @@ class BinanceHourlyTrainer:
             checkpoint_paths=list(self.checkpoint_dir.glob("*.pt")),
             best_checkpoint=best_checkpoint,
         )
+
+    def _checkpoint_metric(
+        self,
+        train_metrics: dict[str, float],
+        val_metrics: dict[str, float],
+    ) -> tuple[float, str, float]:
+        metric_name = str(self.config.checkpoint_metric or "robust_score").strip().lower()
+        gap_penalty = float(self.config.checkpoint_gap_penalty)
+        score_gap = max(float(train_metrics["score"]) - float(val_metrics["score"]), 0.0)
+        sortino_gap = max(float(train_metrics["sortino"]) - float(val_metrics["sortino"]), 0.0)
+        if metric_name == "val_score":
+            return float(val_metrics["score"]), metric_name, score_gap
+        if metric_name == "val_sortino":
+            return float(val_metrics["sortino"]), metric_name, sortino_gap
+        if metric_name == "val_return":
+            return float(val_metrics["return"]), metric_name, score_gap
+        if metric_name == "robust_sortino":
+            metric = float(val_metrics["sortino"]) - gap_penalty * sortino_gap
+            return metric, metric_name, sortino_gap
+        metric = float(val_metrics["score"]) - gap_penalty * score_gap
+        return metric, "robust_score", score_gap
+
+    def _refresh_best_checkpoint_alias(self, checkpoint_path: Path) -> None:
+        alias_path = self.checkpoint_dir / "best.pt"
+        try:
+            if alias_path.exists() or alias_path.is_symlink():
+                alias_path.unlink()
+            alias_path.symlink_to(checkpoint_path.name)
+        except OSError:
+            shutil.copy2(checkpoint_path, alias_path)
+
+    def _write_progress(
+        self,
+        *,
+        epoch: int,
+        train_metrics: dict[str, float],
+        val_metrics: dict[str, float],
+        checkpoint_metric: float,
+        checkpoint_metric_name: str,
+        generalization_gap: float,
+        best_metric: float,
+        best_checkpoint: Path | None,
+    ) -> None:
+        progress_payload = {
+            "updated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "run_name": self.config.run_name,
+            "epoch": int(epoch),
+            "epochs": int(self.config.epochs),
+            "checkpoint_metric_name": checkpoint_metric_name,
+            "checkpoint_metric": float(checkpoint_metric),
+            "checkpoint_gap_penalty": float(self.config.checkpoint_gap_penalty),
+            "generalization_gap": float(generalization_gap),
+            "train_metrics": {key: float(value) for key, value in train_metrics.items()},
+            "val_metrics": {key: float(value) for key, value in val_metrics.items()},
+            "best_metric": float(best_metric),
+            "best_checkpoint": str(best_checkpoint) if best_checkpoint else None,
+        }
+        path = self.checkpoint_dir / "training_progress.json"
+        path.write_text(json.dumps(progress_payload, indent=2))
 
     def _init_wandb(self):
         if _wandb is None or not self.config.wandb_project:
