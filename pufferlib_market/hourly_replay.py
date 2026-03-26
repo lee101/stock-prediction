@@ -921,6 +921,15 @@ def _load_hourly_bars(symbol: str, hourly_data_root: Path) -> pd.DataFrame:
     df = df.set_index("timestamp")
     if "close" not in df.columns:
         raise ValueError(f"{path} missing 'close' column")
+
+    aligned_index = df.index.floor("h")
+    if not aligned_index.equals(df.index):
+        df = (
+            df.assign(_aligned_timestamp=aligned_index)
+            .groupby("_aligned_timestamp", sort=True)
+            .last()
+        )
+        df.index.name = "timestamp"
     return df
 
 
@@ -988,6 +997,26 @@ def _compute_sortino(returns: np.ndarray, periods_per_year: float) -> float:
     return float(mean_ret / downside_dev * np.sqrt(ppy))
 
 
+def _build_hourly_day_coverage(
+    market: HourlyMarket,
+    symbols: list[str],
+    *,
+    start_day: pd.Timestamp,
+    num_days: int,
+) -> dict[str, np.ndarray]:
+    coverage: dict[str, np.ndarray] = {}
+    market_days = market.index.floor("D")
+    for sym in symbols:
+        covered = np.zeros((num_days,), dtype=bool)
+        tradable = np.asarray(market.tradable.get(sym.upper(), np.zeros((len(market.index),), dtype=bool)), dtype=bool)
+        for hi in np.flatnonzero(tradable):
+            day_idx = int((market_days[hi] - start_day).days)
+            if 0 <= day_idx < num_days:
+                covered[day_idx] = True
+        coverage[sym.upper()] = covered
+    return coverage
+
+
 def replay_hourly_frozen_daily_actions(
     *,
     data: MktdData,
@@ -1052,6 +1081,24 @@ def replay_hourly_frozen_daily_actions(
         trade_ts.append(ts)
 
     trade_ts_set = {t for t in trade_ts}
+    hourly_day_coverage = _build_hourly_day_coverage(
+        market,
+        symbols,
+        start_day=start_day,
+        num_days=len(daily_days),
+    )
+
+    def _hour_price_at(sym_i: int, *, hi: int, day_idx: int) -> float:
+        market_price = float(market.close[symbols[sym_i]][hi])
+        daily_price = float(data.prices[min(max(day_idx, 0), data.num_timesteps - 1), sym_i, P_CLOSE])
+        return _positive_price_or_fallback(market_price, daily_price)
+
+    def _hour_tradable_at(sym_i: int, *, hi: int, day_idx: int, ts: pd.Timestamp) -> bool:
+        if 0 <= day_idx < len(daily_days) and hourly_day_coverage[symbols[sym_i]][day_idx]:
+            return bool(market.tradable[symbols[sym_i]][hi])
+        if 0 <= day_idx < len(daily_days):
+            return bool(_is_tradable(data, day_idx, sym_i) and ts == trade_ts[day_idx])
+        return False
 
     init_state = _build_initial_portfolio_state(
         symbols=symbols,
@@ -1090,7 +1137,7 @@ def replay_hourly_frozen_daily_actions(
         day_idx = int((day - start_day).days)
 
         if hi > 0 and pos is not None:
-            px_carry = float(market.close[symbols[pos.sym]][hi])
+            px_carry = _hour_price_at(pos.sym, hi=hi, day_idx=day_idx)
             cash, _ = _apply_short_borrow_cost(
                 cash=cash,
                 pos=pos,
@@ -1107,12 +1154,12 @@ def replay_hourly_frozen_daily_actions(
 
             cur_sym = pos.sym if pos is not None else -1
             cur_day_tr = _is_tradable(data, day_idx, cur_sym) if cur_sym >= 0 else True
-            cur_hr_tr = bool(market.tradable[symbols[cur_sym]][hi]) if cur_sym >= 0 else True
+            cur_hr_tr = _hour_tradable_at(cur_sym, hi=hi, day_idx=day_idx, ts=ts) if cur_sym >= 0 else True
             cur_tradable = bool(cur_day_tr and cur_hr_tr)
 
             # Convenience for trade prices
             def _hour_price(sym_i: int) -> float:
-                return float(market.close[symbols[sym_i]][hi])
+                return _hour_price_at(sym_i, hi=hi, day_idx=day_idx)
 
             def _count_order() -> None:
                 nonlocal num_orders
@@ -1130,7 +1177,7 @@ def replay_hourly_frozen_daily_actions(
             elif 1 <= action <= S:
                 target = action - 1
                 target_day_tr = _is_tradable(data, day_idx, target)
-                target_hr_tr = bool(market.tradable[symbols[target]][hi])
+                target_hr_tr = _hour_tradable_at(target, hi=hi, day_idx=day_idx, ts=ts)
                 target_tradable = bool(target_day_tr and target_hr_tr)
                 if pos is not None and (not pos.is_short) and pos.sym == target:
                     pass
@@ -1174,7 +1221,7 @@ def replay_hourly_frozen_daily_actions(
         if pos is None:
             equity = float(cash)
         else:
-            px = float(market.close[symbols[pos.sym]][hi])
+            px = _hour_price_at(pos.sym, hi=hi, day_idx=day_idx)
             equity = _compute_equity(cash, pos, px)
         equity_curve[hi] = equity
         last_hi = hi
@@ -1196,7 +1243,7 @@ def replay_hourly_frozen_daily_actions(
 
     if stopped_early:
         if pos is not None and last_hi >= 0 and last_ts is not None:
-            px_end = float(market.close[symbols[pos.sym]][last_hi])
+            px_end = _hour_price_at(pos.sym, hi=last_hi, day_idx=int((last_ts.floor("D") - start_day).days))
             cash, win = _close_position(cash, pos, px_end, fee_rate)
             num_trades += 1
             winning_trades += int(win)
@@ -1211,7 +1258,7 @@ def replay_hourly_frozen_daily_actions(
         final_close_ts = trade_ts[final_day_idx]
         if final_close_ts in market.index and pos is not None:
             hi_end = int(market.index.get_loc(final_close_ts))
-            px_end = float(market.close[symbols[pos.sym]][hi_end])
+            px_end = _hour_price_at(pos.sym, hi=hi_end, day_idx=final_day_idx)
             cash, win = _close_position(cash, pos, px_end, fee_rate)
             num_trades += 1
             winning_trades += int(win)
@@ -1348,6 +1395,24 @@ def simulate_hourly_policy(
         trade_ts.append(ts)
 
     final_close_ts = trade_ts[final_day_idx]
+    hourly_day_coverage = _build_hourly_day_coverage(
+        market,
+        symbols,
+        start_day=start_day,
+        num_days=len(daily_days),
+    )
+
+    def _hour_price_at(sym_i: int, *, hi: int, day_idx: int) -> float:
+        market_price = float(market.close[symbols[sym_i]][hi])
+        daily_price = float(data.prices[min(max(day_idx, 0), data.num_timesteps - 1), sym_i, P_CLOSE])
+        return _positive_price_or_fallback(market_price, daily_price)
+
+    def _hour_tradable_at(sym_i: int, *, hi: int, day_idx: int, ts: pd.Timestamp) -> bool:
+        if 0 <= day_idx < len(daily_days) and hourly_day_coverage[symbols[sym_i]][day_idx]:
+            return bool(market.tradable[symbols[sym_i]][hi])
+        if 0 <= day_idx < len(daily_days):
+            return bool(_is_tradable(data, day_idx, sym_i) and ts == trade_ts[day_idx])
+        return False
 
     init_state = _build_initial_portfolio_state(
         symbols=symbols,
@@ -1395,7 +1460,7 @@ def simulate_hourly_policy(
             if pos is None:
                 equity = float(cash)
             else:
-                px = float(market.close[symbols[pos.sym]][hi])
+                px = _hour_price_at(pos.sym, hi=hi, day_idx=day_idx)
                 equity = _compute_equity(cash, pos, px)
             equity_curve[hi] = equity
             if equity > peak_equity:
@@ -1406,7 +1471,7 @@ def simulate_hourly_policy(
             continue
 
         if hi > 0 and pos is not None:
-            px_carry = float(market.close[symbols[pos.sym]][hi])
+            px_carry = _hour_price_at(pos.sym, hi=hi, day_idx=day_idx)
             cash, _ = _apply_short_borrow_cost(
                 cash=cash,
                 pos=pos,
@@ -1426,10 +1491,10 @@ def simulate_hourly_policy(
         # Stop issuing policy actions on the terminal day (we'll close at final_close_ts).
         if day_idx < max_steps_days:
             def _hour_price(sym_i: int) -> float:
-                return float(market.close[symbols[sym_i]][hi])
+                return _hour_price_at(sym_i, hi=hi, day_idx=day_idx)
 
             def _hour_tradable(sym_i: int) -> bool:
-                return bool(market.tradable[symbols[sym_i]][hi])
+                return _hour_tradable_at(sym_i, hi=hi, day_idx=day_idx, ts=ts)
 
             obs = _build_obs_hourly_price(
                 data,
@@ -1508,7 +1573,7 @@ def simulate_hourly_policy(
         if pos is None:
             equity = float(cash)
         else:
-            px = float(market.close[symbols[pos.sym]][hi])
+            px = _hour_price_at(pos.sym, hi=hi, day_idx=day_idx)
             equity = _compute_equity(cash, pos, px)
         equity_curve[hi] = equity
         last_hi = hi
@@ -1530,7 +1595,7 @@ def simulate_hourly_policy(
 
     if stopped_early:
         if pos is not None and last_hi >= 0 and last_ts is not None:
-            px_end = float(market.close[symbols[pos.sym]][last_hi])
+            px_end = _hour_price_at(pos.sym, hi=last_hi, day_idx=int((last_ts.floor("D") - start_day).days))
             cash, win = _close_position(cash, pos, px_end, fee_rate)
             _count_order(last_ts)
             num_trades += 1
@@ -1542,7 +1607,7 @@ def simulate_hourly_policy(
         # Terminal close for total_return only.
         if final_close_ts in market.index and pos is not None:
             hi_end = int(market.index.get_loc(final_close_ts))
-            px_end = float(market.close[symbols[pos.sym]][hi_end])
+            px_end = _hour_price_at(pos.sym, hi=hi_end, day_idx=final_day_idx)
             cash, win = _close_position(cash, pos, px_end, fee_rate)
             _count_order(final_close_ts)
             num_trades += 1

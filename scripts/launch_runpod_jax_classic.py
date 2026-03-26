@@ -143,6 +143,30 @@ def run_rsync(
     _run(cmd, cwd=REPO)
 
 
+def ensure_remote_rsync(
+    *,
+    key_path: Path,
+    ssh_port: int,
+    ssh_host: str,
+) -> None:
+    run_ssh(
+        key_path,
+        ssh_port,
+        ssh_host,
+        "bash -lc " + shlex.quote(
+            "\n".join(
+                [
+                    "set -euo pipefail",
+                    "if ! command -v rsync >/dev/null 2>&1; then",
+                    "  apt-get update >/dev/null",
+                    "  apt-get install -y --no-install-recommends rsync >/dev/null",
+                    "fi",
+                ]
+            )
+        ),
+    )
+
+
 def rest_headers(api_key: str) -> dict[str, str]:
     return {
         "Authorization": f"Bearer {api_key}",
@@ -543,6 +567,11 @@ def main() -> int:
             },
         )
 
+        ensure_remote_rsync(
+            key_path=args.key_path,
+            ssh_host=pod["public_ip"],
+            ssh_port=pod["ssh_port"],
+        )
         run_ssh(args.key_path, pod["ssh_port"], pod["public_ip"], f"mkdir -p {shlex.quote(REMOTE_DIR)}")
 
         code_sources = [str(REPO / rel) for rel in manifest["code_paths"]]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import time
 from dataclasses import dataclass
@@ -33,6 +34,7 @@ except ImportError:
 from src.checkpoint_manager import TopKCheckpointManager
 from src.serialization_utils import serialize_for_checkpoint
 from src.torch_load_utils import torch_load_compat
+from wandboard import WandBoardLogger
 
 from .config import TrainingConfig
 from .data import MultiSymbolDataModule
@@ -314,6 +316,14 @@ class UnifiedPolicyHFTrainer(Trainer):
         self._train_metric_sums = torch.zeros(4, dtype=torch.float64)
         self._train_metric_steps = 0
         self.model_accepts_loss_kwargs = False
+        self.metrics_logger: WandBoardLogger | None = None
+
+    def _wandb_enabled(self) -> bool:
+        return bool(self.training_config.wandb_project or os.getenv("WANDB_PROJECT"))
+
+    def _wandb_tags(self) -> tuple[str, ...]:
+        raw = str(getattr(self.training_config, "wandb_tags", "") or "")
+        return tuple(token.strip() for token in raw.split(",") if token.strip())
 
     def reset_train_epoch_metrics(self) -> None:
         self._train_metric_sums.zero_()
@@ -453,7 +463,77 @@ class UnifiedPolicyHFTrainer(Trainer):
             checkpoint_metric_name=checkpoint_metric_name,
             generalization_gap=generalization_gap,
         )
+        if self.metrics_logger is not None:
+            self.metrics_logger.log(
+                {
+                    "epoch": epoch,
+                    "train/loss": train_metrics["loss"],
+                    "train/score": train_metrics["score"],
+                    "train/sortino": train_metrics["sortino"],
+                    "train/return": train_metrics["return"],
+                    "val/loss": val_metrics["loss"],
+                    "val/score": val_metrics["score"],
+                    "val/sortino": val_metrics["sortino"],
+                    "val/return": val_metrics["return"],
+                    "val/generalization_gap": generalization_gap,
+                    f"val/{checkpoint_metric_name}": checkpoint_metric,
+                },
+                step=epoch,
+            )
         return metrics
+
+    def train(self, *args: Any, **kwargs: Any):
+        with WandBoardLogger(
+            run_name=self.training_config.run_name,
+            project=self.training_config.wandb_project,
+            entity=self.training_config.wandb_entity,
+            group=self.training_config.wandb_group,
+            tags=self._wandb_tags(),
+            notes=self.training_config.wandb_notes,
+            mode=self.training_config.wandb_mode,
+            enable_wandb=self._wandb_enabled(),
+            log_dir=self.training_config.log_dir,
+            tensorboard_subdir=self.training_config.run_name,
+            config=serialize_for_checkpoint(self.training_config),
+            log_metrics=self.training_config.wandb_log_metrics,
+        ) as metrics_logger:
+            self.metrics_logger = metrics_logger
+            metrics_logger.log_text(
+                "train/feature_columns",
+                json.dumps(list(self.data_module.feature_columns)),
+                step=0,
+            )
+            result = super().train(*args, **kwargs)
+            if self.best_checkpoint is not None:
+                best_progress = json.loads((self.checkpoint_dir / "training_progress.json").read_text())
+                best_payload = torch_load_compat(self.best_checkpoint, map_location="cpu", weights_only=False)
+                best_metrics = best_payload.get("metrics", {})
+                metrics_logger.log_hparams(
+                    {
+                        "run_name": self.training_config.run_name,
+                        "epochs": int(self.training_config.epochs),
+                        "batch_size": int(self.training_config.batch_size),
+                        "sequence_length": int(self.training_config.sequence_length),
+                        "transformer_dim": int(self.training_config.transformer_dim),
+                        "transformer_heads": int(self.training_config.transformer_heads),
+                        "transformer_layers": int(self.training_config.transformer_layers),
+                        "learning_rate": float(self.training_config.learning_rate),
+                        "weight_decay": float(self.training_config.weight_decay),
+                        "fill_temperature": float(self.training_config.fill_temperature),
+                        "return_weight": float(self.training_config.return_weight),
+                        "checkpoint_metric": str(self.training_config.checkpoint_metric),
+                    },
+                    {
+                        "best/metric": float(best_progress["best_metric"]),
+                        "best/val_score": float(best_metrics.get("score", best_progress["val_metrics"]["score"])),
+                        "best/val_sortino": float(best_metrics.get("sortino", best_progress["val_metrics"]["sortino"])),
+                        "best/val_return": float(best_metrics.get("return", best_progress["val_metrics"]["return"])),
+                    },
+                    step=int(best_progress["epoch"]),
+                    table_name="hf_train_summary",
+                )
+            self.metrics_logger = None
+            return result
 
 
 def make_training_arguments(
