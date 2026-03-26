@@ -24,7 +24,26 @@ DAILY_PERIODS_PER_YEAR_CRYPTO = 365  # Crypto trades 24/7
 DAILY_PERIODS_PER_YEAR_STOCK = 252   # ~252 trading days/year for stocks
 _EPS = 1e-8
 
-_COMPILE_ENABLED = not os.environ.get("TORCH_NO_COMPILE", "")
+def _compile_enabled() -> bool:
+    if os.environ.get("TORCH_FORCE_COMPILE", ""):
+        return True
+    if os.environ.get("TORCH_NO_COMPILE", ""):
+        return False
+    if not hasattr(torch, "compile"):
+        return False
+    try:
+        if torch.cuda.is_available():
+            major, _minor = torch.cuda.get_device_capability(0)
+            # Blackwell / sm120 currently trips Triton/Inductor on these tiny
+            # reduction kernels, so prefer the stable eager path there.
+            if int(major) >= 12:
+                return False
+    except Exception:
+        pass
+    return True
+
+
+_COMPILE_ENABLED = _compile_enabled()
 
 
 def _maybe_compile(fn=None, **kwargs):

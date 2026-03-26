@@ -30,6 +30,14 @@ def main():
     parser.add_argument("--sequence-length", type=int, default=32)
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument("--checkpoint-root", type=Path, default=Path("unified_hourly_experiment/checkpoints"))
+    parser.add_argument("--top-k-checkpoints", type=int, default=10)
+    parser.add_argument(
+        "--checkpoint-metric",
+        type=str,
+        default="robust_score",
+        choices=["val_score", "val_sortino", "val_return", "robust_score", "robust_sortino"],
+    )
+    parser.add_argument("--checkpoint-gap-penalty", type=float, default=0.25)
     parser.add_argument("--preload", type=Path, default=None, help="Preload checkpoint")
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--num-layers", type=int, default=3)
@@ -139,6 +147,9 @@ def main():
         learning_rate=args.lr,
         sequence_length=args.sequence_length,
         checkpoint_root=args.checkpoint_root,
+        top_k_checkpoints=args.top_k_checkpoints,
+        checkpoint_metric=args.checkpoint_metric,
+        checkpoint_gap_penalty=args.checkpoint_gap_penalty,
         run_name=args.checkpoint_name or args.run_name,
         warmup_steps=args.warmup_steps,
         weight_decay=args.weight_decay,

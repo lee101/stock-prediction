@@ -171,6 +171,8 @@ class TrainingConfig:
     log_dir: Path = Path("tensorboard_logs") / "binanceneural"
     checkpoint_root: Path = Path("binanceneural") / "checkpoints"
     top_k_checkpoints: int = 10
+    checkpoint_metric: str = "robust_score"  # val_score, val_sortino, val_return, robust_score, robust_sortino
+    checkpoint_gap_penalty: float = 0.25
     preload_checkpoint_path: Path | None = None
     force_retrain: bool = False
     seed: int = 1337
