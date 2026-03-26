@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -9,6 +11,7 @@ from pufferlib_market.hourly_replay import (
     HourlyReplayResult,
     InitialPositionSpec,
     MktdData,
+    load_hourly_market,
     replay_hourly_frozen_daily_actions,
     simulate_daily_policy,
     simulate_hourly_policy,
@@ -163,5 +166,66 @@ def test_replay_hourly_initial_position_falls_back_to_daily_price_when_hourly_ma
     )
 
     assert isinstance(result, HourlyReplayResult)
-    assert np.isfinite(result.total_return)
+    assert result.total_return == pytest.approx(0.0)
+    assert result.num_orders == 1
+    assert result.num_trades == 1
 
+
+
+def test_simulate_hourly_policy_missing_hourly_bars_uses_daily_fallback_for_price_and_tradability() -> None:
+    data = _make_daily_data()
+    index = pd.date_range("2026-01-01T00:00:00Z", "2026-01-03T23:00:00Z", freq="h", tz="UTC")
+    market = HourlyMarket(
+        index=index,
+        close={"AAA": np.zeros((len(index),), dtype=np.float64)},
+        tradable={"AAA": np.zeros((len(index),), dtype=bool)},
+    )
+
+    result = simulate_hourly_policy(
+        data=data,
+        policy_fn=lambda obs: 0,
+        market=market,
+        start_date="2026-01-01",
+        end_date="2026-01-03",
+        max_steps_days=1,
+        fee_rate=0.0,
+        initial_cash=10_000.0,
+        initial_position=InitialPositionSpec(symbol="AAA", side="long", allocation_pct=0.5),
+    )
+
+    assert result.total_return == pytest.approx(0.0)
+    assert result.num_orders == 1
+    assert result.num_trades == 1
+
+
+
+def test_load_hourly_market_aligns_half_hour_bars_to_hour_grid(tmp_path: Path) -> None:
+    root = tmp_path / "stocks"
+    root.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "timestamp": [
+                "2026-01-01T13:30:00Z",
+                "2026-01-01T14:30:00Z",
+            ],
+            "open": [100.0, 101.0],
+            "high": [101.0, 102.0],
+            "low": [99.0, 100.0],
+            "close": [100.5, 101.5],
+            "volume": [1_000.0, 1_200.0],
+        }
+    ).to_csv(root / "AAA.csv", index=False)
+
+    market = load_hourly_market(
+        ["AAA"],
+        tmp_path,
+        start="2026-01-01T13:00:00Z",
+        end="2026-01-01T15:00:00Z",
+    )
+
+    tradable_idx = np.flatnonzero(market.tradable["AAA"])
+    assert tradable_idx.tolist() == [0, 1]
+    assert market.index[tradable_idx[0]] == pd.Timestamp("2026-01-01T13:00:00Z")
+    assert market.index[tradable_idx[1]] == pd.Timestamp("2026-01-01T14:00:00Z")
+    assert market.close["AAA"][tradable_idx[0]] == pytest.approx(100.5)
+    assert market.close["AAA"][tradable_idx[1]] == pytest.approx(101.5)

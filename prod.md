@@ -7,9 +7,9 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
-### Current Alpaca snapshot (2026-03-25 08:56 UTC)
-- **LIVE account**: supervisor `unified-stock-trader` is active; equity **$41,081.47**, last_equity **$41,077.99**, day change **+$3.48 (+0.01%)**, total unrealized **+$222.95**.
-- **LIVE positions/orders**: `ABEV` 4459 shares (**+$222.95**) with DAY sell `4459 @ $2.77`; `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD` remain only as dust.
+### Current Alpaca snapshot (2026-03-26 04:22 UTC)
+- **LIVE account**: supervisor `unified-stock-trader` is active; equity **$41,315.42**, cash **$10,298.17**, buying power **$20,596.34**, last_equity **$41,077.99**.
+- **LIVE positions/orders**: no stock positions are open; only dust in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD` remains. Open orders are 3 `ETH/USD` GTC buy limits.
 - **PAPER account**: `daily-rl-trader.service` is installed but currently `inactive (dead)`; paper equity **$55,268.15**, last_equity **$54,078.69**, day change **+$1,189.46 (+2.20%)**, total unrealized **+$3,269.46**.
 
 ### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- FIXED (pending restart)
@@ -71,10 +71,16 @@
 - **Environment**: `PYTHONPATH=/nvme0n1-disk/code/stock-prediction`, `PYTHONUNBUFFERED=1`, `CHRONOS2_FREQUENCY=hourly`, `PAPER=0`
 - **Architecture**: Chronos2 hourly, multiple models + meta-selector
 - **Symbols**: NVDA, PLTR, GOOG, DBX, TRIP, MTCH, NYT, AAPL, MSFT, META, TSLA, NET, BKNG, EBAY, EXPE, ITUB, BTG, ABEV
-- **Live snapshot (2026-03-25 08:56 UTC)**: equity **$41,081.47**, cash **$28,685.45**, long market value **$12,396.02**, buying power **$69,766.92**, unrealized **+$222.95**
-- **Open positions (2026-03-25 08:56 UTC)**: `ABEV` `4459` shares (**+$222.95**), plus dust in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD`
-- **Open exit orders (2026-03-25 08:56 UTC)**: `ABEV` sell `4459 @ $2.77` (`DAY`)
+- **Live snapshot (2026-03-26 04:22 UTC)**: equity **$41,315.42**, cash **$10,298.17**, long market value **$0.00**, buying power **$20,596.34**
+- **Open positions (2026-03-26 04:22 UTC)**: no stock positions; dust only in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD`
+- **Open orders (2026-03-26 04:22 UTC)**: only 3 crypto `ETH/USD` GTC buy limits remain; no stock orders are open
 - **Strategies**: wd_0.06_s42:8 + wd_0.06_s1337:8 (2-strategy meta-selector)
+- **Recent stock exits**:
+  - `TSLA` sell `33 @ $379.22` filled `2026-03-23 13:38 UTC`
+  - `ABEV` sell `4459 @ $2.83` filled `2026-03-25 13:30 UTC`
+- **Marketsim status (2026-03-26)**:
+  - recent `5d/14d/30d` holdout sweep for the live pair is negative in simulator; best config collapses to the `wd06` baseline with `min_sortino=-11.15`, `mean_sortino=-6.28`, `min_return=-18.09%`, `mean_return=-7.38%`
+  - trade-log replay on the recent `TSLA` + `ABEV` slice matches `TSLA` but misses `ABEV` entirely (`exact_row_ratio=0.5`), so execution parity still needs work before simulator PnL is trusted as production-equivalent
 - **NOTE (2026-03-24)**: Was crash-looping since ~Mar 19 — supervisor config referenced 5 missing checkpoints
   (wd_0.04, wd_0.05_s42, wd_0.08_s42, wd_0.03_s42, stock_sortino_robust_20260219b/c).
   Fixed by replacing with wd_0.06_s42:8 + wd_0.06_s1337:8 (only 2 strategies remain locally).
@@ -86,6 +92,10 @@
 - **ABEV incident (2026-03-25)**: ABEV position ($12k, entered 2026-03-20 @ $2.73) had no exit order since
   2026-03-24 when force_close failed due to race condition. Fixed — retry fired at 01:42 UTC.
   Force_close limit order ~$2.77 queued for market open (2026-03-25 13:30 UTC).
+- **JAX retrain status (2026-03-26)**:
+  - JAX/Flax port of the classic hourly stock policy now exists in `binanceneural/jax_policy.py`, `binanceneural/jax_losses.py`, `binanceneural/jax_trainer.py`, and `unified_hourly_experiment/train_jax_classic.py`
+  - local parity tests pass and a one-step smoke train wrote `unified_hourly_experiment/checkpoints/alpaca_progress7_jax_smoke_20260326/epoch_001.flax`
+  - RunPod `RTX 4090` bootstrap is in progress for a longer detached retrain; see `alpacaprogress7.md`
 
 ### 4. Alpaca Daily PPO Trader (`trade_daily_stock_prod.py`) -- INSTALLED, CURRENTLY INACTIVE (paper systemd)
 - **Service manager**: systemd unit `daily-rl-trader.service`

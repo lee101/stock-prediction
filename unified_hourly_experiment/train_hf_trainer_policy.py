@@ -40,6 +40,7 @@ def main() -> None:
     parser.add_argument("--validation-days", type=int, default=30)
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument("--checkpoint-root", type=Path, default=Path("unified_hourly_experiment/checkpoints"))
+    parser.add_argument("--log-dir", type=Path, default=Path("tensorboard_logs") / "binanceneural")
     parser.add_argument("--top-k-checkpoints", type=int, default=5)
     parser.add_argument(
         "--checkpoint-metric",
@@ -83,6 +84,13 @@ def main() -> None:
     parser.add_argument("--optim", type=str, default="adamw_torch_fused")
     parser.add_argument("--torch-compile", action="store_true")
     parser.add_argument("--no-amp", action="store_true")
+    parser.add_argument("--wandb-project", type=str, default=None)
+    parser.add_argument("--wandb-entity", type=str, default=None)
+    parser.add_argument("--wandb-group", type=str, default=None)
+    parser.add_argument("--wandb-tags", type=str, default="")
+    parser.add_argument("--wandb-notes", type=str, default=None)
+    parser.add_argument("--wandb-mode", type=str, default="auto")
+    parser.add_argument("--wandb-log-metrics", action="store_true")
     args = parser.parse_args()
 
     symbols = [token.strip().upper() for token in args.symbols.split(",") if token.strip()]
@@ -140,11 +148,19 @@ def main() -> None:
         preload_checkpoint_path=args.preload,
         run_name=run_name,
         checkpoint_root=args.checkpoint_root,
+        log_dir=args.log_dir,
         seed=args.seed,
         num_workers=args.num_workers,
         use_compile=args.torch_compile,
         use_amp=not args.no_amp,
         accumulation_steps=args.accumulation_steps,
+        wandb_project=args.wandb_project,
+        wandb_entity=args.wandb_entity,
+        wandb_group=args.wandb_group,
+        wandb_tags=args.wandb_tags,
+        wandb_notes=args.wandb_notes,
+        wandb_mode=args.wandb_mode,
+        wandb_log_metrics=args.wandb_log_metrics,
     )
 
     report_to = ["none"]
