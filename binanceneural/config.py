@@ -163,6 +163,11 @@ class TrainingConfig:
     run_name: str | None = None
     wandb_project: str | None = None
     wandb_entity: str | None = None
+    wandb_group: str | None = None
+    wandb_tags: str = ""
+    wandb_notes: str | None = None
+    wandb_mode: str = "auto"
+    wandb_log_metrics: bool = False
     log_dir: Path = Path("tensorboard_logs") / "binanceneural"
     checkpoint_root: Path = Path("binanceneural") / "checkpoints"
     top_k_checkpoints: int = 10

@@ -1,0 +1,17 @@
+[
+  {
+    "path": "stocks12_s200_350_sweep/gpu0/tp05_s209/update_000100.pt",
+    "metric": 0.757064938545227,
+    "epoch": null
+  },
+  {
+    "path": "stocks12_s200_350_sweep/gpu0/tp05_s209/update_000250.pt",
+    "metric": 0.757064938545227,
+    "epoch": null
+  },
+  {
+    "path": "stocks12_s200_350_sweep/gpu0/tp05_s209/update_000300.pt",
+    "metric": 0.757064938545227,
+    "epoch": null
+  }
+]

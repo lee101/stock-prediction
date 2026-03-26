@@ -54,6 +54,21 @@ remote training on the 5090 server is expected when local runs are too slow or G
   - existing binance chronos/neural sweep helpers like `scripts/run_sweeps_remote.sh` when working in those experiment trees
 - whenever you launch remote training, record the exact remote command, env, log path, and output artifact path in the relevant progress markdown so the run is reproducible
 
+RunPod / gpu_pool operating rules:
+- prefer a local proof batch first, then a Docker validation pass, then the real remote launch; do not spin up a paid pod until the local dry run is clean
+- for JAX stock training use `scripts/launch_runpod_jax_classic.py`; run `--dry-run` first, then `--docker-validate`, then the real launch
+- the safe default is non-detached execution so the launcher waits, syncs back artifacts, and terminates the pod automatically when training finishes
+- only use `--detach` when you intentionally want the pod to stay up for a long run; detached runs must be paired with an explicit later sync-back and explicit pod deletion
+- do not rely on `uv pip install -e .` on RunPod for this repo; use a venv plus direct runtime deps and `PYTHONPATH=$PWD:$PYTHONPATH`
+- preferred RunPod bootstrap pattern:
+  - `uv venv .venv311jax --python python3.11`
+  - `source .venv311jax/bin/activate`
+  - `uv pip install numpy setuptools wheel torch pandas pyarrow loguru exchange-calendars tensorboard wandb "jax[cuda12]==0.9.2" "flax>=0.12.6" "optax>=0.2.8"`
+  - `export PYTHONPATH=$PWD:$PYTHONPATH`
+- every RunPod launch should capture `nvidia-smi`, `torch.cuda.is_available()`, and `jax.devices()` into the run directory before training starts
+- if a pod is idle or bootstrap failed, delete it immediately; do not leave paid pods running while debugging locally
+- before relying on local Docker GPU validation, ensure NVIDIA Container Toolkit is configured and `docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi` works on the host
+
 ## Deployment
 - `scripts/deploy_crypto_model.sh <checkpoint> [symbols...]` -- updates binance-hybrid-spot launch, restarts supervisor
 - Remote 5090 autoresearch: `python -m pufferlib_market.autoresearch_rl --train-data <.bin> --val-data <.bin> --time-budget 7200`

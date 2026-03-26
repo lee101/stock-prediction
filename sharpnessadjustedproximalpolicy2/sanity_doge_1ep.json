@@ -1,0 +1,17 @@
+[
+  {
+    "name": "baseline_adamw",
+    "symbol": "DOGEUSD",
+    "error": "Insufficient hourly history (140 rows, minimum 720)."
+  },
+  {
+    "name": "proximal_rho005",
+    "symbol": "DOGEUSD",
+    "error": "Insufficient hourly history (140 rows, minimum 720)."
+  },
+  {
+    "name": "proximal_escape",
+    "symbol": "DOGEUSD",
+    "error": "Insufficient hourly history (140 rows, minimum 720)."
+  }
+]

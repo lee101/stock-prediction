@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69.0", "wheel"]
+requires = ["setuptools>=69.0", "wheel", "numpy>=1.26"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -133,6 +133,12 @@ serving = [
     "uvicorn>=0.30",
     "gunicorn>=23.0",
     "runpod>=1.7.9",
+]
+
+jax = [
+    "jax>=0.9.2",
+    "flax>=0.12.6",
+    "optax>=0.2.8",
 ]
 
 automation = [
