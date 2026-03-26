@@ -129,6 +129,8 @@ def run_rsync(
     key_path: Path,
     ssh_port: int,
     delete: bool = False,
+    excludes: list[str] | None = None,
+    relative: bool = False,
 ) -> None:
     cmd = [
         "rsync",
@@ -136,8 +138,12 @@ def run_rsync(
         "-e",
         f"ssh -i {shlex.quote(str(key_path))} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p {ssh_port}",
     ]
+    if relative:
+        cmd.append("-R")
     if delete:
         cmd.append("--delete")
+    for pattern in excludes or []:
+        cmd.extend(["--exclude", pattern])
     cmd.extend(sources)
     cmd.append(destination)
     _run(cmd, cwd=REPO)
@@ -223,6 +229,67 @@ def wait_for_public_ssh(api_key: str, pod_id: str, *, timeout_sec: int = 900) ->
             }
         time.sleep(10)
     raise TimeoutError(f"Pod {pod_id} did not expose SSH within {timeout_sec}s")
+
+
+def build_docker_validate_command(args: argparse.Namespace) -> list[str]:
+    symbols = parse_symbols(args.symbols)
+    validation_symbols = symbols[: min(3, len(symbols))]
+    run_name = f"{args.run_name}_docker"
+    inner_steps = [
+        "python -m pip install -q uv",
+        "uv venv /tmp/jax-smoke --python python3.11",
+        "source /tmp/jax-smoke/bin/activate",
+        f"uv pip install {' '.join(shlex.quote(pkg) for pkg in BOOTSTRAP_PACKAGES)}",
+        'export PYTHONPATH="$PWD:${PYTHONPATH:-}"',
+        (
+            "python unified_hourly_experiment/train_jax_classic.py "
+            f"--symbols {shlex.quote(','.join(validation_symbols))} "
+            f"--run-name {shlex.quote(run_name)} "
+            f"--checkpoint-root {shlex.quote('unified_hourly_experiment/checkpoints')} "
+            f"--log-dir {shlex.quote(f'tensorboard_logs/binanceneural/{run_name}')} "
+            "--epochs 1 --batch-size 2 "
+            f"--sequence-length {args.sequence_length} "
+            "--validation-days 7 "
+            f"--preload {shlex.quote(args.preload)} "
+            f"--wandb-mode {shlex.quote(args.wandb_mode)} "
+            "--dry-train-steps 1 --market-order-entry"
+        ),
+    ]
+    if args.wandb_project:
+        inner_steps[-1] += f" --wandb-project {shlex.quote(args.wandb_project)}"
+    if args.wandb_entity:
+        inner_steps[-1] += f" --wandb-entity {shlex.quote(args.wandb_entity)}"
+    if args.wandb_group:
+        inner_steps[-1] += f" --wandb-group {shlex.quote(args.wandb_group)}"
+    if args.wandb_tags:
+        inner_steps[-1] += f" --wandb-tags {shlex.quote(args.wandb_tags)}"
+    if args.wandb_notes:
+        inner_steps[-1] += f" --wandb-notes {shlex.quote(args.wandb_notes)}"
+
+    cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        f"{REPO}:/workspace",
+        "-w",
+        "/workspace",
+    ]
+    if os.environ.get("WANDB_API_KEY"):
+        cmd.extend(["-e", f"WANDB_API_KEY={os.environ['WANDB_API_KEY']}"])
+    if args.wandb_project:
+        cmd.extend(["-e", f"WANDB_PROJECT={args.wandb_project}"])
+    if args.wandb_entity:
+        cmd.extend(["-e", f"WANDB_ENTITY={args.wandb_entity}"])
+    cmd.extend(
+        [
+            DOCKER_VALIDATE_IMAGE,
+            "bash",
+            "-lc",
+            " && ".join(inner_steps),
+        ]
+    )
+    return cmd
 
 
 def build_sync_manifest(
@@ -447,40 +514,7 @@ def write_manifest(path: Path, payload: dict[str, Any]) -> None:
 
 
 def docker_validate(args: argparse.Namespace) -> None:
-    symbols = parse_symbols(args.symbols)
-    validation_symbols = symbols[: min(3, len(symbols))]
-    run_name = f"{args.run_name}_docker"
-    cmd = [
-        "docker",
-        "run",
-        "--rm",
-        "-v",
-        f"{REPO}:/workspace",
-        "-w",
-        "/workspace",
-        DOCKER_VALIDATE_IMAGE,
-        "bash",
-        "-lc",
-        " && ".join(
-            [
-                "python -m pip install -q uv",
-                "uv venv /tmp/jax-smoke --python python3.11",
-                "source /tmp/jax-smoke/bin/activate",
-                f"uv pip install {' '.join(shlex.quote(pkg) for pkg in BOOTSTRAP_PACKAGES)}",
-                'export PYTHONPATH="$PWD:${PYTHONPATH:-}"',
-                (
-                    "python unified_hourly_experiment/train_jax_classic.py "
-                    f"--symbols {shlex.quote(','.join(validation_symbols))} "
-                    f"--run-name {shlex.quote(run_name)} "
-                    "--epochs 1 --batch-size 2 "
-                    f"--sequence-length {args.sequence_length} "
-                    "--validation-days 7 "
-                    f"--preload {shlex.quote(args.preload)} "
-                    "--dry-train-steps 1 --market-order-entry"
-                ),
-            ]
-        ),
-    ]
+    cmd = build_docker_validate_command(args)
     _run(cmd, cwd=REPO)
 
 
@@ -504,6 +538,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb-notes", default=None)
     parser.add_argument("--wandb-mode", default=os.environ.get("WANDB_MODE", "online"))
     parser.add_argument("--key-path", type=Path, default=Path.home() / ".ssh" / "id_ed25519")
+    parser.add_argument("--startup-timeout-sec", type=int, default=300)
     parser.add_argument("--poll-interval-sec", type=int, default=60)
     parser.add_argument("--output-root", type=Path, default=Path("analysis") / "remote_runs")
     parser.add_argument("--docker-validate", action="store_true")
@@ -520,9 +555,6 @@ def main() -> int:
     manifest = build_sync_manifest(symbols=symbols, horizons=horizons, preload_path=args.preload)
     local_run_dir = args.output_root / args.run_name
     local_run_dir.mkdir(parents=True, exist_ok=True)
-
-    if args.docker_validate:
-        docker_validate(args)
 
     payload = {
         "generated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -545,6 +577,9 @@ def main() -> int:
         print(json.dumps(payload, indent=2))
         return 0
 
+    if args.docker_validate:
+        docker_validate(args)
+
     api_key = os.environ.get("RUNPOD_API_KEY", "")
     if not api_key:
         raise RuntimeError("RUNPOD_API_KEY is required")
@@ -552,10 +587,9 @@ def main() -> int:
     pod_id = create_pod(api_key, gpu_type=args.gpu_type, name=args.run_name, image=args.image)
     pod = None
     start = time.monotonic()
-    should_delete_pod = False
+    delete_pod_on_exit = True
     try:
-        pod = wait_for_public_ssh(api_key, pod_id)
-        should_delete_pod = not args.keep_pod and not args.detach
+        pod = wait_for_public_ssh(api_key, pod_id, timeout_sec=args.startup_timeout_sec)
         write_manifest(
             local_run_dir / "pod_manifest.json",
             {
@@ -574,8 +608,24 @@ def main() -> int:
         )
         run_ssh(args.key_path, pod["ssh_port"], pod["public_ip"], f"mkdir -p {shlex.quote(REMOTE_DIR)}")
 
-        code_sources = [str(REPO / rel) for rel in manifest["code_paths"]]
-        run_rsync(code_sources, f"root@{pod['public_ip']}:{REMOTE_DIR}/", key_path=args.key_path, ssh_port=pod["ssh_port"])
+        code_sources = [f"./{rel}" for rel in manifest["code_paths"]]
+        run_rsync(
+            code_sources,
+            f"root@{pod['public_ip']}:{REMOTE_DIR}/",
+            key_path=args.key_path,
+            ssh_port=pod["ssh_port"],
+            excludes=[
+                "__pycache__",
+                "*.pyc",
+                ".pytest_cache",
+                ".mypy_cache",
+                "forecast_cache",
+                "checkpoints",
+                "tensorboard_logs",
+                "wandb",
+            ],
+            relative=True,
+        )
 
         if manifest["data_files"]:
             run_ssh(args.key_path, pod["ssh_port"], pod["public_ip"], f"mkdir -p {shlex.quote(f'{REMOTE_DIR}/trainingdatahourly/stocks')}")
@@ -591,10 +641,11 @@ def main() -> int:
             run_ssh(args.key_path, pod["ssh_port"], pod["public_ip"], f"mkdir -p {shlex.quote(cache_root)}")
         if manifest["cache_files"]:
             run_rsync(
-                [str(REPO / rel) for rel in manifest["cache_files"]],
+                [f"./{rel}" for rel in manifest["cache_files"]],
                 f"root@{pod['public_ip']}:{REMOTE_DIR}/",
                 key_path=args.key_path,
                 ssh_port=pod["ssh_port"],
+                relative=True,
             )
 
         if manifest["checkpoint_files"]:
@@ -605,10 +656,11 @@ def main() -> int:
                 f"mkdir -p {shlex.quote(f'{REMOTE_DIR}/{Path(args.preload).parent}')}",
             )
             run_rsync(
-                [str(REPO / rel) for rel in manifest["checkpoint_files"]],
-                f"root@{pod['public_ip']}:{REMOTE_DIR}/{Path(args.preload).parent}/",
+                [f"./{rel}" for rel in manifest["checkpoint_files"]],
+                f"root@{pod['public_ip']}:{REMOTE_DIR}/",
                 key_path=args.key_path,
                 ssh_port=pod["ssh_port"],
+                relative=True,
             )
 
         remote_run_dir = f"{REMOTE_DIR}/analysis/remote_runs/{args.run_name}"
@@ -707,12 +759,17 @@ def main() -> int:
         if args.detach and not args.keep_pod:
             payload["pod_retained"] = True
             payload["pod_retained_reason"] = "detach requested; pod left running for remote training completion"
+            delete_pod_on_exit = False
+        elif args.keep_pod:
+            payload["pod_retained"] = True
+            payload["pod_retained_reason"] = "keep-pod requested"
+            delete_pod_on_exit = False
         payload["elapsed_hours"] = round((time.monotonic() - start) / 3600.0, 4)
         write_manifest(local_run_dir / "completion_manifest.json", payload)
         return 0
     finally:
-        if pod is not None and should_delete_pod:
-            delete_pod(api_key, pod["pod_id"])
+        if pod_id and delete_pod_on_exit:
+            delete_pod(api_key, pod_id)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import logging
 import os
 import shutil
@@ -434,7 +435,7 @@ class UnifiedPolicyHFTrainer(Trainer):
 
     def evaluate(self, *args: Any, **kwargs: Any):
         metrics = super().evaluate(*args, **kwargs)
-        epoch = int(round(float(self.state.epoch or 0.0)))
+        epoch = max(1, int(math.ceil(float(self.state.epoch or 0.0))))
         if epoch <= 0:
             return metrics
         train_metrics = (
