@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import statistics
 import sys
 from collections import Counter, defaultdict
@@ -68,6 +67,13 @@ def _is_number(value: Any) -> bool:
     return _coerce_float(value) is not None
 
 
+def _contains_token(text: Any, needles: list[str]) -> bool:
+    if not needles:
+        return True
+    haystack = str(text or "").lower()
+    return any(needle.lower() in haystack for needle in needles)
+
+
 def _fetch_runs(
     *,
     wandb,
@@ -77,6 +83,13 @@ def _fetch_runs(
     last_n_runs: int,
     metric_keys: list[str],
     extra_metric_keys: list[str],
+    states: list[str],
+    name_contains: list[str],
+    group_contains: list[str],
+    exclude_name_contains: list[str],
+    exclude_group_contains: list[str],
+    min_runtime_sec: float,
+    min_steps: int,
 ) -> list[dict[str, Any]]:
     api = wandb.Api()
     project_path = f"{entity}/{project}" if entity else project
@@ -90,6 +103,24 @@ def _fetch_runs(
         summary = dict(run.summary) if run.summary else {}
         config_raw = dict(run.config) if run.config else {}
         config = {key: _unwrap_config_value(value) for key, value in config_raw.items()}
+        state = str(getattr(run, "state", None) or "")
+        group = getattr(run, "group", None)
+        runtime_sec = _coerce_float(summary.get("_runtime")) or 0.0
+        steps = int(_coerce_float(summary.get("_step")) or _coerce_float(summary.get("global_step")) or 0)
+        if states and state.lower() not in states:
+            continue
+        if name_contains and not _contains_token(run.name, name_contains):
+            continue
+        if group_contains and not _contains_token(group, group_contains):
+            continue
+        if exclude_name_contains and _contains_token(run.name, exclude_name_contains):
+            continue
+        if exclude_group_contains and _contains_token(group, exclude_group_contains):
+            continue
+        if runtime_sec < min_runtime_sec:
+            continue
+        if steps < min_steps:
+            continue
         primary_metric = _coerce_float(_first_present(summary, metric_keys))
         metrics: dict[str, float] = {}
         for key in extra_metric_keys:
@@ -100,10 +131,12 @@ def _fetch_runs(
             {
                 "id": run.id,
                 "name": run.name,
-                "group": getattr(run, "group", None),
-                "state": getattr(run, "state", None),
+                "group": group,
+                "state": state,
                 "created_at": getattr(run, "created_at", None),
                 "url": getattr(run, "url", None),
+                "runtime_sec": runtime_sec,
+                "steps": steps,
                 "primary_metric": primary_metric,
                 "summary": summary,
                 "config": config,
@@ -177,6 +210,8 @@ def build_scout_report(
                 "group": row["group"],
                 "state": row["state"],
                 "primary_metric": row["primary_metric"],
+                "runtime_sec": row["runtime_sec"],
+                "steps": row["steps"],
                 "sortino": _coerce_float(_first_present(row["summary"], ["val/sortino", "val_sortino", "eval_sortino"])),
                 "return": _coerce_float(_first_present(row["summary"], ["val/return", "val_return", "eval_return", "best_val_return"])),
                 "url": row["url"],
@@ -210,8 +245,8 @@ def format_markdown(report: dict[str, Any]) -> str:
         [
             "### Top Runs",
             "",
-            "| Run | Metric | Return | Sortino | Group | Key Config |",
-            "|-----|--------|--------|---------|-------|------------|",
+            "| Run | Metric | Return | Sortino | Runtime | Steps | Group | Key Config |",
+            "|-----|--------|--------|---------|---------|-------|-------|------------|",
         ]
     )
     for row in top_runs:
@@ -220,7 +255,9 @@ def format_markdown(report: dict[str, Any]) -> str:
         ret = f"{row['return']:.4f}" if row["return"] is not None else "—"
         sortino = f"{row['sortino']:.4f}" if row["sortino"] is not None else "—"
         group = row["group"] or "—"
-        lines.append(f"| {row['name']} | {metric} | {ret} | {sortino} | {group} | {cfg} |")
+        runtime = f"{row['runtime_sec']:.0f}s" if row["runtime_sec"] else "—"
+        steps = str(row["steps"]) if row["steps"] else "—"
+        lines.append(f"| {row['name']} | {metric} | {ret} | {sortino} | {runtime} | {steps} | {group} | {cfg} |")
 
     lines.extend(["", "### Common Winning Pattern", ""])
     if report["common_config"]:
@@ -249,6 +286,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--group", default=None)
     parser.add_argument("--last-n-runs", type=int, default=50)
     parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument("--states", default="")
+    parser.add_argument("--name-contains", default="")
+    parser.add_argument("--group-contains", default="")
+    parser.add_argument("--exclude-name-contains", default="")
+    parser.add_argument("--exclude-group-contains", default="")
+    parser.add_argument("--min-runtime-sec", type=float, default=0.0)
+    parser.add_argument("--min-steps", type=int, default=0)
     parser.add_argument(
         "--metric-keys",
         default=",".join(DEFAULT_METRIC_KEYS),
@@ -271,6 +315,11 @@ def main(argv: list[str] | None = None) -> int:
 
     metric_keys = [token.strip() for token in args.metric_keys.split(",") if token.strip()]
     params = [token.strip() for token in args.params.split(",") if token.strip()]
+    states = [token.strip().lower() for token in args.states.split(",") if token.strip()]
+    name_contains = [token.strip() for token in args.name_contains.split(",") if token.strip()]
+    group_contains = [token.strip() for token in args.group_contains.split(",") if token.strip()]
+    exclude_name_contains = [token.strip() for token in args.exclude_name_contains.split(",") if token.strip()]
+    exclude_group_contains = [token.strip() for token in args.exclude_group_contains.split(",") if token.strip()]
     runs = _fetch_runs(
         wandb=wandb,
         project=args.project,
@@ -279,6 +328,13 @@ def main(argv: list[str] | None = None) -> int:
         last_n_runs=args.last_n_runs,
         metric_keys=metric_keys,
         extra_metric_keys=metric_keys,
+        states=states,
+        name_contains=name_contains,
+        group_contains=group_contains,
+        exclude_name_contains=exclude_name_contains,
+        exclude_group_contains=exclude_group_contains,
+        min_runtime_sec=args.min_runtime_sec,
+        min_steps=args.min_steps,
     )
     report = build_scout_report(
         runs=runs,
