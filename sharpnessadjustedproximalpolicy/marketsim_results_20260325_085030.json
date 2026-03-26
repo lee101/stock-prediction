@@ -1,0 +1,79 @@
+{
+  "BTCUSD": [
+    {
+      "symbol": "BTCUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_BTCUSD_20260325_082936/epoch_001.pt",
+      "epoch": 1,
+      "total_hours": 1752,
+      "total_return_pct": -50.9893,
+      "sortino": -0.2807,
+      "max_drawdown_pct": -51.2669,
+      "num_trades": 145,
+      "win_rate": 0.4621,
+      "avg_hold_hours": 7.0,
+      "sharpe": -0.2308,
+      "calmar": -4.9729,
+      "final_equity": 0.490107
+    },
+    {
+      "symbol": "BTCUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_BTCUSD_20260325_082936/epoch_002.pt",
+      "epoch": 2,
+      "total_hours": 1752,
+      "total_return_pct": -57.6519,
+      "sortino": -0.3186,
+      "max_drawdown_pct": -57.937,
+      "num_trades": 142,
+      "win_rate": 0.4648,
+      "avg_hold_hours": 7.4,
+      "sharpe": -0.267,
+      "calmar": -4.9754,
+      "final_equity": 0.423481
+    },
+    {
+      "symbol": "BTCUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_BTCUSD_20260325_082936/epoch_003.pt",
+      "epoch": 3,
+      "total_hours": 1752,
+      "total_return_pct": -47.1446,
+      "sortino": -0.27,
+      "max_drawdown_pct": -47.5303,
+      "num_trades": 148,
+      "win_rate": 0.473,
+      "avg_hold_hours": 6.4,
+      "sharpe": -0.2288,
+      "calmar": -4.9594,
+      "final_equity": 0.528554
+    },
+    {
+      "symbol": "BTCUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_BTCUSD_20260325_082936/epoch_004.pt",
+      "epoch": 4,
+      "total_hours": 1752,
+      "total_return_pct": -52.2096,
+      "sortino": -0.2775,
+      "max_drawdown_pct": -53.2923,
+      "num_trades": 112,
+      "win_rate": 0.4821,
+      "avg_hold_hours": 9.8,
+      "sharpe": -0.2301,
+      "calmar": -4.8984,
+      "final_equity": 0.477904
+    },
+    {
+      "symbol": "BTCUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_BTCUSD_20260325_082936/epoch_005.pt",
+      "epoch": 5,
+      "total_hours": 1752,
+      "total_return_pct": -55.1428,
+      "sortino": -0.2865,
+      "max_drawdown_pct": -56.696,
+      "num_trades": 107,
+      "win_rate": 0.4673,
+      "avg_hold_hours": 11.1,
+      "sharpe": -0.2376,
+      "calmar": -4.863,
+      "final_equity": 0.448572
+    }
+  ]
+}

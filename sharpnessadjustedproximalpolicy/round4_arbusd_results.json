@@ -1,0 +1,52 @@
+[
+  {
+    "name": "barshift_2_baseline",
+    "symbol": "ARBUSD",
+    "error": "No Chronos forecasts available for ARBUSD. Generate caches first or disable cache_only."
+  },
+  {
+    "name": "barshift_5_baseline",
+    "symbol": "ARBUSD",
+    "error": "No Chronos forecasts available for ARBUSD. Generate caches first or disable cache_only."
+  },
+  {
+    "name": "barshift_5_periodic",
+    "symbol": "ARBUSD",
+    "error": "No Chronos forecasts available for ARBUSD. Generate caches first or disable cache_only."
+  },
+  {
+    "name": "barshift_5_cosine_periodic",
+    "symbol": "ARBUSD",
+    "error": "No Chronos forecasts available for ARBUSD. Generate caches first or disable cache_only."
+  },
+  {
+    "name": "moe8_baseline",
+    "symbol": "ARBUSD",
+    "error": "No Chronos forecasts available for ARBUSD. Generate caches first or disable cache_only."
+  },
+  {
+    "name": "moe8_periodic",
+    "symbol": "ARBUSD",
+    "error": "No Chronos forecasts available for ARBUSD. Generate caches first or disable cache_only."
+  },
+  {
+    "name": "moe16_baseline",
+    "symbol": "ARBUSD",
+    "error": "No Chronos forecasts available for ARBUSD. Generate caches first or disable cache_only."
+  },
+  {
+    "name": "moe8_barshift5_baseline",
+    "symbol": "ARBUSD",
+    "error": "No Chronos forecasts available for ARBUSD. Generate caches first or disable cache_only."
+  },
+  {
+    "name": "moe8_barshift5_periodic",
+    "symbol": "ARBUSD",
+    "error": "No Chronos forecasts available for ARBUSD. Generate caches first or disable cache_only."
+  },
+  {
+    "name": "moe8_h512_baseline",
+    "symbol": "ARBUSD",
+    "error": "No Chronos forecasts available for ARBUSD. Generate caches first or disable cache_only."
+  }
+]
