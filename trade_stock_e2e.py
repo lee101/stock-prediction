@@ -1212,6 +1212,9 @@ def analyze_symbols(symbols: List[str]) -> Dict:
     skip_closed_equity = _should_skip_closed_equity()
     skipped_equity_symbols: List[str] = []
 
+    # FAST_SIMULATE mode: reduce simulations for faster execution
+    fast_simulate = os.getenv("FAST_SIMULATE", "").strip().lower() in TRUTHY_ENV_VALUES
+
     env_simulations_raw = os.getenv("MARKETSIM_BACKTEST_SIMULATIONS")
     env_simulations: Optional[int]
     if env_simulations_raw:
@@ -1225,6 +1228,9 @@ def analyze_symbols(symbols: List[str]) -> Dict:
             env_simulations = None
         else:
             logger.info(f"Using MARKETSIM_BACKTEST_SIMULATIONS override of {env_simulations} for backtest iterations.")
+    elif fast_simulate:
+        env_simulations = 20
+        logger.info("FAST_SIMULATE mode enabled: using 20 simulations instead of 70 for faster execution.")
     else:
         env_simulations = None
 

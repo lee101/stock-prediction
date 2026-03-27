@@ -23,7 +23,21 @@ logger = setup_logging("backtest_test3_inline.log")
 ensure_huggingface_cache_dir(logger=logger)
 
 _BOOL_FALSE = {"0", "false", "no", "off"}
+_BOOL_TRUE = {"1", "true", "yes", "on"}
 _FAST_TORCH_SETTINGS_CONFIGURED = False
+
+# Entry/exit optimizer backend configuration
+_OPTIMIZER_BACKEND = os.getenv("ENTRY_EXIT_OPTIMIZER_BACKEND", "grid-100").strip().lower()
+_OPTIMIZER_GRID_POINTS = {
+    "grid-500": 500,
+    "grid-100": 100,
+    "grid-50": 50,
+}
+if _OPTIMIZER_BACKEND in _OPTIMIZER_GRID_POINTS:
+    logger.info(f"Entry/exit optimizer backend: {_OPTIMIZER_BACKEND} ({_OPTIMIZER_GRID_POINTS[_OPTIMIZER_BACKEND]} points)")
+else:
+    logger.warning(f"Unknown optimizer backend '{_OPTIMIZER_BACKEND}', defaulting to grid-100")
+    _OPTIMIZER_BACKEND = "grid-100"
 
 _GPU_METRICS_MODE = os.getenv("MARKETSIM_GPU_METRICS_MODE", "summary").strip().lower()
 if _GPU_METRICS_MODE not in {"off", "summary", "verbose"}:
@@ -244,6 +258,27 @@ class StrategyEvaluation:
     annualized_return: float
     sharpe_ratio: float
     returns: ReturnSeries
+
+
+def _final_day_return_from_series(returns: ReturnSeries) -> float:
+    """
+    Return the most recent realized return, coercing to float and treating
+    missing/empty sequences as flat performance.
+    """
+    if returns is None:
+        return 0.0
+    if isinstance(returns, pd.Series):
+        if returns.empty:
+            return 0.0
+        value = returns.iloc[-1]
+    else:
+        values = _to_numpy_array(returns)
+        if values.size == 0:
+            return 0.0
+        value = values[-1]
+    if not np.isfinite(value):
+        return 0.0
+    return float(value)
 
 
 def _mean_if_exists(df: pd.DataFrame, column: Optional[str]) -> Optional[float]:
@@ -479,7 +514,9 @@ def evaluate_maxdiff_strategy(
         best_high_multiplier = 0.0
         best_high_profit = float(base_profit_values.sum().item())
 
-        for multiplier in np.linspace(-0.03, 0.03, 500):
+        # Use configured optimizer backend grid points
+        n_points = _OPTIMIZER_GRID_POINTS.get(_OPTIMIZER_BACKEND, 100)
+        for multiplier in np.linspace(-0.03, 0.03, n_points):
             profit = calculate_trading_profit_torch_with_entry_buysell(
                 None,
                 None,
@@ -498,7 +535,7 @@ def evaluate_maxdiff_strategy(
 
         best_low_multiplier = 0.0
         best_low_profit = best_high_profit
-        for multiplier in np.linspace(-0.03, 0.03, 500):
+        for multiplier in np.linspace(-0.03, 0.03, n_points):
             profit = calculate_trading_profit_torch_with_entry_buysell(
                 None,
                 None,
@@ -2338,10 +2375,7 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
     simple_returns = simple_eval.returns
     simple_avg_daily = simple_eval.avg_daily_return
     simple_annual = simple_eval.annualized_return
-    if actual_returns.empty:
-        simple_finalday_return = 0.0
-    else:
-        simple_finalday_return = (simple_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
+    simple_finalday_return = _final_day_return_from_series(simple_returns)
 
     # All signals strategy
     all_signals = all_signals_strategy(
@@ -2356,10 +2390,7 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
     all_signals_returns = all_signals_eval.returns
     all_signals_avg_daily = all_signals_eval.avg_daily_return
     all_signals_annual = all_signals_eval.annualized_return
-    if actual_returns.empty:
-        all_signals_finalday_return = 0.0
-    else:
-        all_signals_finalday_return = (all_signals[-1].item() * actual_returns.iloc[-1]) - (2 * trading_fee * SPREAD)
+    all_signals_finalday_return = _final_day_return_from_series(all_signals_returns)
 
     # Buy and hold strategy
     buy_hold_signals = buy_hold_strategy(last_preds["close_predictions"])
@@ -2370,11 +2401,10 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
     buy_hold_annual = buy_hold_eval.annualized_return
     if actual_returns.empty:
         buy_hold_return_expected = -trading_fee
-        buy_hold_finalday_return = -trading_fee
     else:
         buy_hold_return_expected = (1 + actual_returns).prod() - 1 - trading_fee
-        buy_hold_finalday_return = actual_returns.iloc[-1] - trading_fee
     buy_hold_return = buy_hold_return_expected
+    buy_hold_finalday_return = _final_day_return_from_series(buy_hold_returns)
 
     # Unprofit shutdown buy and hold strategy
     unprofit_shutdown_signals = unprofit_shutdown_buy_hold(last_preds["close_predictions"], actual_returns, is_crypto=is_crypto)
@@ -2384,12 +2414,7 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
     unprofit_shutdown_returns = unprofit_shutdown_eval.returns
     unprofit_shutdown_avg_daily = unprofit_shutdown_eval.avg_daily_return
     unprofit_shutdown_annual = unprofit_shutdown_eval.annualized_return
-    if actual_returns.empty:
-        unprofit_shutdown_finalday_return = -2 * trading_fee * SPREAD
-    else:
-        unprofit_shutdown_finalday_return = (
-            unprofit_shutdown_signals[-1].item() * actual_returns.iloc[-1]
-        ) - (2 * trading_fee * SPREAD)
+    unprofit_shutdown_finalday_return = _final_day_return_from_series(unprofit_shutdown_returns)
 
     # Entry + takeprofit strategy
     entry_takeprofit_eval = evaluate_entry_takeprofit_strategy(
@@ -2452,11 +2477,7 @@ def run_single_simulation(simulation_data, symbol, trading_fee, is_crypto, sim_i
             ci_guard_returns = ci_eval.returns
             ci_guard_avg_daily = ci_eval.avg_daily_return
             ci_guard_annual = ci_eval.annualized_return
-            if ci_signals.numel() > 0:
-                ci_guard_finalday_return = (
-                    ci_signals[-1].item() * actual_returns.iloc[-1]
-                    - (2 * trading_fee * SPREAD)
-                )
+            ci_guard_finalday_return = _final_day_return_from_series(ci_guard_returns)
 
     # Log strategy metrics to tensorboard
     tb_writer.add_scalar(f'{symbol}/strategies/simple/total_return', simple_total_return, sim_idx)
