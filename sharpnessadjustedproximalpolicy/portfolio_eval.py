@@ -234,10 +234,13 @@ def run_symbol_inference(
 def run_sim_window(
     highs, lows, closes, opens, bp, sp, ti, bi, si,
     s: int, e: int, config: dict, device: torch.device,
+    leverage_override: float = 0.0,
+    fee_override: float = -1.0,
+    can_short: bool = False,
 ) -> tuple[np.ndarray, float, float, float, int, float]:
     """Run binary-fill sim on a window, return PV curve and metrics."""
-    fee = config.get("maker_fee", 0.001)
-    max_lev = config.get("max_leverage", 1.0)
+    fee = fee_override if fee_override >= 0 else config.get("maker_fee", 0.001)
+    max_lev = leverage_override if leverage_override > 0 else config.get("max_leverage", 1.0)
     fill_buf = config.get("fill_buffer_pct", 0.0005)
     margin_rate = config.get("margin_annual_rate", 0.0625)
     lag = 2
@@ -252,7 +255,7 @@ def run_sim_window(
         trade_intensity=torch.from_numpy(ti[s:e]).unsqueeze(0).to(device),
         buy_trade_intensity=torch.from_numpy(bi[s:e]).unsqueeze(0).to(device),
         sell_trade_intensity=torch.from_numpy(si[s:e]).unsqueeze(0).to(device),
-        maker_fee=fee, initial_cash=1.0, can_short=False, can_long=True,
+        maker_fee=fee, initial_cash=1.0, can_short=can_short, can_long=True,
         max_leverage=max_lev, fill_buffer_pct=fill_buf,
         margin_annual_rate=margin_rate, decision_lag_bars=lag,
     )
@@ -421,6 +424,11 @@ def main():
     parser.add_argument("--min-sortino", type=float, default=50.0, help="Min val sortino to include symbol")
     parser.add_argument("--leaderboard", default=None)
     parser.add_argument("--symbols", nargs="+", default=None)
+    # Risk tuning
+    parser.add_argument("--leverage", type=float, nargs="+", default=[1.0], help="Leverage levels to sweep")
+    parser.add_argument("--fee", type=float, default=-1.0, help="Override fee rate (-1 = use checkpoint)")
+    parser.add_argument("--can-short", action="store_true", help="Allow short positions")
+    parser.add_argument("--top-n", type=int, default=0, help="Only use top N symbols by sortino")
     args = parser.parse_args()
 
     # Find best leaderboard
@@ -510,67 +518,75 @@ def main():
 
     # Run per-symbol sims and combine into portfolio for each window
     alloc_methods = [args.alloc] if args.alloc != "equal" else ["equal", "inverse_vol", "sqrt_sortino"]
+    leverage_levels = args.leverage
 
     all_results = {}
-    for method in alloc_methods:
-        window_results = []
-        for wi, (s, e) in enumerate(windows):
-            pv_curves = {}
-            sym_metrics = {}
-            for sym, data in sym_data.items():
-                pv_norm, ret, sort, dd, trades, tip = run_sim_window(
-                    data["highs"], data["lows"], data["closes"], data["opens"],
-                    data["bp"], data["sp"], data["ti"], data["bi"], data["si"],
-                    s, e, data["config"], device,
-                )
-                pv_curves[sym] = pv_norm
-                sym_metrics[sym] = {"return": round(ret, 2), "sortino": round(sort, 2), "dd": round(dd, 2), "trades": trades}
+    for lev in leverage_levels:
+        for method in alloc_methods:
+            label = f"{method}_lev{lev:.0f}x" if lev != 1.0 else method
+            window_results = []
+            for wi, (s, e) in enumerate(windows):
+                pv_curves = {}
+                sym_metrics = {}
+                for sym, data in sym_data.items():
+                    pv_norm, ret, sort, dd, trades, tip = run_sim_window(
+                        data["highs"], data["lows"], data["closes"], data["opens"],
+                        data["bp"], data["sp"], data["ti"], data["bi"], data["si"],
+                        s, e, data["config"], device,
+                        leverage_override=lev,
+                        fee_override=args.fee,
+                        can_short=args.can_short,
+                    )
+                    pv_curves[sym] = pv_norm
+                    sym_metrics[sym] = {"return": round(ret, 2), "sortino": round(sort, 2), "dd": round(dd, 2), "trades": trades}
 
-            # Combine into portfolio
-            portfolio_pv = combine_portfolio(pv_curves, method=method)
-            pm = compute_portfolio_metrics(portfolio_pv)
+                # Combine into portfolio
+                portfolio_pv = combine_portfolio(pv_curves, method=method)
+                pm = compute_portfolio_metrics(portfolio_pv)
             pm["per_symbol"] = sym_metrics
             pm["window"] = (s, e)
             window_results.append(pm)
 
-        # Aggregate
-        rets = [w["total_return_pct"] for w in window_results]
-        sorts = [w["sortino"] for w in window_results]
-        dds = [w["max_drawdown_pct"] for w in window_results]
+            # Aggregate
+            rets = [w["total_return_pct"] for w in window_results]
+            sorts = [w["sortino"] for w in window_results]
+            dds = [w["max_drawdown_pct"] for w in window_results]
 
-        result = PortfolioResult(
-            alloc_method=method,
-            symbols=list(sym_data.keys()),
-            n_windows=len(windows),
-            window_hours=window_h,
-            per_window=window_results,
-            median_return=round(float(np.median(rets)), 2),
-            mean_return=round(float(np.mean(rets)), 2),
-            p10_return=round(float(np.percentile(rets, 10)), 2),
-            p05_return=round(float(np.percentile(rets, 5)), 2),
-            worst_return=round(float(min(rets)), 2),
-            positive_pct=round(sum(1 for r in rets if r > 0) / len(rets) * 100, 1),
-            median_sortino=round(float(np.median(sorts)), 2),
-            mean_sortino=round(float(np.mean(sorts)), 2),
-            median_dd=round(float(np.median(dds)), 2),
-            worst_dd=round(float(min(dds)), 2),
-            median_trades=int(np.median([sum(w["per_symbol"][s]["trades"] for s in w["per_symbol"]) for w in window_results])),
-        )
-        all_results[method] = result
+            result = PortfolioResult(
+                alloc_method=label,
+                symbols=list(sym_data.keys()),
+                n_windows=len(windows),
+                window_hours=window_h,
+                per_window=window_results,
+                median_return=round(float(np.median(rets)), 2),
+                mean_return=round(float(np.mean(rets)), 2),
+                p10_return=round(float(np.percentile(rets, 10)), 2),
+                p05_return=round(float(np.percentile(rets, 5)), 2),
+                worst_return=round(float(min(rets)), 2),
+                positive_pct=round(sum(1 for r in rets if r > 0) / len(rets) * 100, 1),
+                median_sortino=round(float(np.median(sorts)), 2),
+                mean_sortino=round(float(np.mean(sorts)), 2),
+                median_dd=round(float(np.median(dds)), 2),
+                worst_dd=round(float(min(dds)), 2),
+                median_trades=int(np.median([sum(w["per_symbol"][s]["trades"] for s in w["per_symbol"]) for w in window_results])),
+            )
+            all_results[label] = result
 
-        print(f"\n{'='*70}", flush=True)
-        print(f"PORTFOLIO [{method.upper()}] - {len(sym_data)} symbols, {len(windows)} windows x {window_h}h", flush=True)
-        print(f"{'='*70}", flush=True)
-        print(f"  Median return: {result.median_return:>7.2f}%", flush=True)
-        print(f"  Mean return:   {result.mean_return:>7.2f}%", flush=True)
-        print(f"  P10 return:    {result.p10_return:>7.2f}%", flush=True)
-        print(f"  Worst return:  {result.worst_return:>7.2f}%", flush=True)
-        print(f"  Positive:      {result.positive_pct:>7.1f}%", flush=True)
-        print(f"  Median Sortino:{result.median_sortino:>7.2f}", flush=True)
-        print(f"  Mean Sortino:  {result.mean_sortino:>7.2f}", flush=True)
-        print(f"  Median DD:     {result.median_dd:>7.2f}%", flush=True)
-        print(f"  Worst DD:      {result.worst_dd:>7.2f}%", flush=True)
-        print(f"  Median trades: {result.median_trades:>7d}", flush=True)
+            print(f"\n{'='*70}", flush=True)
+            lev_str = f" @ {lev:.0f}x" if lev != 1.0 else ""
+            short_str = " +SHORT" if args.can_short else ""
+            print(f"PORTFOLIO [{method.upper()}{lev_str}{short_str}] - {len(sym_data)} symbols, {len(windows)} windows x {window_h}h", flush=True)
+            print(f"{'='*70}", flush=True)
+            print(f"  Median return: {result.median_return:>7.2f}%", flush=True)
+            print(f"  Mean return:   {result.mean_return:>7.2f}%", flush=True)
+            print(f"  P10 return:    {result.p10_return:>7.2f}%", flush=True)
+            print(f"  Worst return:  {result.worst_return:>7.2f}%", flush=True)
+            print(f"  Positive:      {result.positive_pct:>7.1f}%", flush=True)
+            print(f"  Median Sortino:{result.median_sortino:>7.2f}", flush=True)
+            print(f"  Mean Sortino:  {result.mean_sortino:>7.2f}", flush=True)
+            print(f"  Median DD:     {result.median_dd:>7.2f}%", flush=True)
+            print(f"  Worst DD:      {result.worst_dd:>7.2f}%", flush=True)
+            print(f"  Median trades: {result.median_trades:>7d}", flush=True)
 
     # Save results
     ts = time.strftime("%Y%m%d_%H%M%S")
