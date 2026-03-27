@@ -483,8 +483,7 @@ class NeuralDailyTrainer:
                 slot[name] = slot.get(name, 0.0) + float(val)
                 slot["count"] += 1
 
-        for batch_data in loader:
-            processed_batches += 1
+        for processed_batches, batch_data in enumerate(loader, start=1):
             batch = {k: v.to(self.device, non_blocking=True) for k, v in batch_data.items()}
 
             # Apply augmentations during training
