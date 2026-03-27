@@ -121,8 +121,12 @@ def test_build_train_cmd(tmp_path: Path):
     )
     assert cmd[:2] == [sys.executable, "scripts/train_crypto_lora_sweep.py"]
     assert "--run-prefix" in cmd
-    assert cmd[cmd.index("--run-prefix") + 1] == "test_run"
+    assert cmd[cmd.index("--run-prefix") + 1] == "test_run_wide"
     assert cmd[cmd.index("--lora-r") + 1] == "16"
+    assert cmd[cmd.index("--lora-alpha") + 1] == "32"
+    assert cmd[cmd.index("--lora-targets") + 1] == ",".join(WIDE_LORA_TARGETS)
+    assert cmd[cmd.index("--lr-scheduler-type") + 1] == "cosine"
+    assert cmd[cmd.index("--warmup-ratio") + 1] == "0.1"
     assert cmd[cmd.index("--context-length") + 1] == "256"
 
 
@@ -154,11 +158,11 @@ def test_run_sweep_with_mock(monkeypatch, tmp_path: Path):
     output_root = tmp_path / "out"
 
     def _fake_run(cmd, cwd, capture_output, text):
-        rp = results_dir / "sweep_AAVEUSD_lora_baseline_ctx128_lr1e-04_r8_20260319.json"
+        rp = results_dir / "sweep_narrow_AAVEUSD_lora_baseline_ctx128_lr1e-04_r8_20260319.json"
         rp.parent.mkdir(parents=True, exist_ok=True)
         rp.write_text(json.dumps({
-            "run_name": "sweep_AAVEUSD_lora_baseline_ctx128_lr1e-04_r8_20260319",
-            "output_dir": str(output_root / "sweep_AAVEUSD"),
+            "run_name": "sweep_narrow_AAVEUSD_lora_baseline_ctx128_lr1e-04_r8_20260319",
+            "output_dir": str(output_root / "sweep_narrow_AAVEUSD"),
             "val": {"mae_percent_mean": 3.50},
             "test": {"mae_percent_mean": 3.80},
         }))
@@ -195,11 +199,11 @@ def test_run_sweep_not_promoted(monkeypatch, tmp_path: Path):
     output_root = tmp_path / "out"
 
     def _fake_run(cmd, cwd, capture_output, text):
-        rp = results_dir / "sweep_GOOG_lora_baseline_ctx128_lr1e-05_r8_20260319.json"
+        rp = results_dir / "sweep_narrow_GOOG_lora_baseline_ctx128_lr1e-05_r8_20260319.json"
         rp.parent.mkdir(parents=True, exist_ok=True)
         rp.write_text(json.dumps({
-            "run_name": "sweep_GOOG_lora_baseline_ctx128_lr1e-05_r8_20260319",
-            "output_dir": str(output_root / "sweep_GOOG"),
+            "run_name": "sweep_narrow_GOOG_lora_baseline_ctx128_lr1e-05_r8_20260319",
+            "output_dir": str(output_root / "sweep_narrow_GOOG"),
             "val": {"mae_percent_mean": 1.80},
             "test": {"mae_percent_mean": 1.90},
         }))
@@ -218,6 +222,57 @@ def test_run_sweep_not_promoted(monkeypatch, tmp_path: Path):
     assert results[0].status == "ok"
     # (1.87 - 1.80) / 1.87 * 100 = 3.74% < 5%
     assert results[0].promoted is False
+
+
+@pytest.mark.unit
+def test_run_sweep_missing_report_does_not_reuse_previous_target_set(monkeypatch, tmp_path: Path):
+    narrow_cfg = ImprovementSweepConfig(
+        symbol="QUBT", preaug="baseline", context_length=128,
+        batch_size=32, learning_rate=1e-4, num_steps=100,
+        prediction_length=24, lora_r=8, lora_alpha=16,
+        lora_targets=NARROW_LORA_TARGETS, lr_scheduler="cosine",
+        warmup_ratio=0.1,
+    )
+    wide_cfg = ImprovementSweepConfig(
+        symbol="QUBT", preaug="baseline", context_length=128,
+        batch_size=32, learning_rate=1e-4, num_steps=100,
+        prediction_length=24, lora_r=8, lora_alpha=16,
+        lora_targets=WIDE_LORA_TARGETS, lr_scheduler="cosine",
+        warmup_ratio=0.1,
+    )
+    results_dir = tmp_path / "results"
+    output_root = tmp_path / "out"
+    call_count = {"value": 0}
+
+    def _fake_run(cmd, cwd, capture_output, text):
+        call_count["value"] += 1
+        if call_count["value"] == 1:
+            rp = results_dir / "sweep_narrow_QUBT_lora_baseline_ctx128_lr1e-04_r8_20260319.json"
+            rp.parent.mkdir(parents=True, exist_ok=True)
+            rp.write_text(json.dumps({
+                "run_name": "sweep_narrow_QUBT_lora_baseline_ctx128_lr1e-04_r8_20260319",
+                "output_dir": str(output_root / "sweep_narrow_QUBT"),
+                "val": {"mae_percent_mean": 3.50},
+                "test": {"mae_percent_mean": 3.80},
+            }))
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("scripts.chronos2_lora_improvement_sweep.subprocess.run", _fake_run)
+
+    baselines = {"QUBT": 4.49}
+    results = run_sweep(
+        run_id="sweep",
+        configs=[narrow_cfg, wide_cfg],
+        baselines=baselines,
+        data_root=tmp_path / "data",
+        output_root=output_root,
+        results_dir=results_dir,
+        improvement_threshold=5.0,
+    )
+
+    assert len(results) == 2
+    assert results[0].status == "ok"
+    assert results[1].status == "missing_report"
 
 
 @pytest.mark.unit

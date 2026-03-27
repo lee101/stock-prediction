@@ -18,7 +18,7 @@ from pufferlib_market.autoresearch_rl import (
     summarize_holdout_payload,
     summarize_market_validation_payload,
 )
-from src.robust_trading_metrics import summarize_scenario_results
+from src.robust_trading_metrics import compute_replay_composite_score, summarize_scenario_results
 
 
 def test_summarize_holdout_payload_computes_robust_metrics() -> None:
@@ -143,21 +143,37 @@ def test_summarize_replay_eval_payload_extracts_sections() -> None:
 
     summary = summarize_replay_eval_payload(payload)
 
+    assert summary["replay_daily_return_pct"] == 4.0
+    assert summary["replay_daily_sortino"] == 1.1
+    assert summary["replay_daily_max_drawdown_pct"] == 8.0
+    assert summary["replay_daily_trade_count"] == 5.0
+    assert summary["replay_hourly_return_pct"] == 3.0
+    assert summary["replay_hourly_sortino"] == 0.9
+    assert summary["replay_hourly_max_drawdown_pct"] == 12.0
+    assert summary["replay_hourly_trade_count"] == 4.0
+    assert summary["replay_hourly_order_count"] == 9.0
+    assert summary["replay_hourly_policy_return_pct"] == -6.0
+    assert summary["replay_hourly_policy_sortino"] == -0.4
+    assert summary["replay_hourly_policy_max_drawdown_pct"] == 20.0
+    assert summary["replay_hourly_policy_trade_count"] == 8.0
+    assert summary["replay_hourly_policy_order_count"] == 32.0
+
     assert summary == {
-        "replay_daily_return_pct": 4.0,
-        "replay_daily_sortino": 1.1,
-        "replay_daily_max_drawdown_pct": 8.0,
-        "replay_daily_trade_count": 5.0,
-        "replay_hourly_return_pct": 3.0,
-        "replay_hourly_sortino": 0.9,
-        "replay_hourly_max_drawdown_pct": 12.0,
-        "replay_hourly_trade_count": 4.0,
-        "replay_hourly_order_count": 9.0,
-        "replay_hourly_policy_return_pct": -6.0,
-        "replay_hourly_policy_sortino": -0.4,
-        "replay_hourly_policy_max_drawdown_pct": 20.0,
-        "replay_hourly_policy_trade_count": 8.0,
-        "replay_hourly_policy_order_count": 32.0,
+        **summary,
+        **compute_replay_composite_score(
+            daily_return_pct=4.0,
+            daily_sortino=1.1,
+            daily_max_drawdown_pct=8.0,
+            daily_trade_count=5.0,
+            hourly_return_pct=3.0,
+            hourly_sortino=0.9,
+            hourly_max_drawdown_pct=12.0,
+            hourly_trade_count=4.0,
+            hourly_policy_return_pct=-6.0,
+            hourly_policy_sortino=-0.4,
+            hourly_policy_max_drawdown_pct=20.0,
+            hourly_policy_trade_count=8.0,
+        ),
     }
 
 

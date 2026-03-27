@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -62,6 +63,12 @@ ENTRY_ALLOCATOR_MAX_SINGLE_POSITION_FRACTION = 0.6
 ENTRY_ALLOCATOR_RESERVE_FRACTION = 0.1
 BROKER_EVENT_LOOKBACK_HOURS = 48.0
 BROKER_EVENT_KEY_LIMIT = 512
+
+
+@dataclass(frozen=True)
+class EntryOrderReconcileResult:
+    matching_order: Optional[object]
+    replacement_blocked: bool = False
 
 
 def _json_safe(value: Any) -> Any:
@@ -657,10 +664,10 @@ def _reconcile_entry_orders(
     desired_qty: float,
     desired_limit_price: Optional[float],
     entry_order_ttl_hours: float,
-) -> Optional[object]:
+) -> EntryOrderReconcileResult:
     symbol_orders = list(orders_by_symbol.get(symbol, []))
     if not symbol_orders:
-        return None
+        return EntryOrderReconcileResult(matching_order=None, replacement_blocked=False)
 
     desired_side_norm = _normalize_order_side(desired_side)
     now = datetime.now(timezone.utc)
@@ -718,12 +725,21 @@ def _reconcile_entry_orders(
     )
 
     if kept_order is None:
-        return None
+        return EntryOrderReconcileResult(
+            matching_order=None,
+            replacement_blocked=bool(orders_to_cancel),
+        )
     kept_id = str(getattr(kept_order, "id", ""))
     for order in orders_by_symbol.get(symbol, []):
         if str(getattr(order, "id", "")) == kept_id:
-            return order
-    return None
+            return EntryOrderReconcileResult(
+                matching_order=order,
+                replacement_blocked=bool(orders_to_cancel),
+            )
+    return EntryOrderReconcileResult(
+        matching_order=None,
+        replacement_blocked=bool(orders_to_cancel),
+    )
 
 
 def poll_broker_events(
@@ -1062,7 +1078,7 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
             pending_entry_price = info.get("entry_price")
             pending_entry_side = "sell" if str(info.get("side", "")).lower() == "short" else "buy"
             if pending_entry_qty >= 1.0 and pending_entry_price and orders_by_symbol.get(symbol):
-                matching_entry_order = _reconcile_entry_orders(
+                reconcile_result = _reconcile_entry_orders(
                     api,
                     symbol=symbol,
                     orders_by_symbol=orders_by_symbol,
@@ -1071,6 +1087,7 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
                     desired_limit_price=round(float(pending_entry_price), 2),
                     entry_order_ttl_hours=0.0,
                 )
+                matching_entry_order = reconcile_result.matching_order
                 if matching_entry_order is not None:
                     info["entry_order_id"] = str(getattr(matching_entry_order, "id", info.get("entry_order_id") or ""))
                     log_event(
@@ -1601,7 +1618,7 @@ def execute_trades(
             )
             continue
 
-        candidate["matching_order"] = _reconcile_entry_orders(
+        reconcile_result = _reconcile_entry_orders(
             api,
             symbol=symbol,
             orders_by_symbol=open_orders_by_symbol,
@@ -1610,6 +1627,8 @@ def execute_trades(
             desired_limit_price=None if candidate["order_type"] == "market" else round(float(candidate["entry_price"]), 2),
             entry_order_ttl_hours=float(entry_order_ttl_hours),
         )
+        candidate["matching_order"] = reconcile_result.matching_order
+        candidate["entry_replacement_blocked"] = bool(reconcile_result.replacement_blocked)
 
     for candidate in entry_candidates:
         symbol = candidate["symbol"]
@@ -1630,6 +1649,13 @@ def execute_trades(
             }
             log_event("position_tracking_created", symbol=symbol, tracked_position=tracked[symbol])
             log_event("entry_skipped", symbol=symbol, reason="existing_open_entry_order", existing_order=_serialize_order(matching_order))
+            continue
+        if bool(candidate.get("entry_replacement_blocked")):
+            log_event(
+                "entry_skipped",
+                symbol=symbol,
+                reason="waiting_for_entry_order_cancel",
+            )
             continue
 
         try:

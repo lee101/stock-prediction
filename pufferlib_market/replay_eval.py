@@ -6,8 +6,8 @@ This tool:
    risk metrics (hourly Sortino, intraday max drawdown) and order counts.
 
 It is meant to catch "looks good on daily close-to-close" artifacts where the
- equity path is much rougher intraday or where the policy flips too frequently
- if executed more often.
+equity path is much rougher intraday or where the policy flips too frequently
+if executed more often.
 """
 
 from __future__ import annotations
@@ -29,6 +29,11 @@ from pufferlib_market.hourly_replay import (
     simulate_daily_policy,
 )
 from pufferlib_market.metrics import annualize_total_return
+from src.robust_trading_metrics import (
+    compute_market_sim_goodness_score,
+    compute_pnl_smoothness_from_equity,
+    compute_ulcer_index,
+)
 
 
 def _order_day_stats(orders_by_day: dict[str, int], num_days: int) -> dict[str, object]:
@@ -47,29 +52,55 @@ def _order_day_stats(orders_by_day: dict[str, int], num_days: int) -> dict[str, 
     }
 
 
-def _serialize_daily_result(result, *, annualized_return: float) -> dict[str, object]:
-    return {
-        "total_return": result.total_return,
-        "annualized_return": annualized_return,
-        "sortino": result.sortino,
-        "max_drawdown": result.max_drawdown,
-        "num_trades": result.num_trades,
-        "win_rate": result.win_rate,
-        "avg_hold_steps": result.avg_hold_steps,
+def _section_metrics(
+    *,
+    total_return: float,
+    sortino: float,
+    max_drawdown: float,
+    num_trades: int,
+    win_rate: float,
+    equity_curve: np.ndarray | None,
+    periods_per_year: float,
+    num_orders: int | None = None,
+    avg_hold_steps: float | None = None,
+    extra: dict[str, object] | None = None,
+) -> dict[str, object]:
+    equity = np.asarray(equity_curve if equity_curve is not None else [], dtype=np.float64)
+    pnl_smoothness = compute_pnl_smoothness_from_equity(equity) if equity.size >= 2 else 0.0
+    ulcer_index = compute_ulcer_index(equity) if equity.size >= 1 else 0.0
+    period_count = max(int(equity.size) - 1, 0)
+    section = {
+        "total_return": float(total_return),
+        "annualized_return": annualize_total_return(
+            total_return,
+            periods=max(period_count, 1),
+            periods_per_year=periods_per_year,
+        ),
+        "sortino": float(sortino),
+        "max_drawdown": float(max_drawdown),
+        "num_trades": int(num_trades),
+        "win_rate": float(win_rate),
+        "pnl_smoothness": float(pnl_smoothness),
+        "ulcer_index": float(ulcer_index),
+        "goodness_score": float(
+            compute_market_sim_goodness_score(
+                total_return=float(total_return),
+                sortino=float(sortino),
+                max_drawdown=float(max_drawdown),
+                pnl_smoothness=float(pnl_smoothness),
+                ulcer_index=float(ulcer_index),
+                trade_count=int(num_trades),
+                period_count=max(period_count, 1),
+            )
+        ),
     }
-
-
-def _serialize_hourly_result(result, *, annualized_return: float, num_days: int) -> dict[str, object]:
-    return {
-        "total_return": result.total_return,
-        "annualized_return": annualized_return,
-        "sortino": result.sortino,
-        "max_drawdown": result.max_drawdown,
-        "num_trades": result.num_trades,
-        "num_orders": result.num_orders,
-        "win_rate": result.win_rate,
-        **_order_day_stats(result.orders_by_day, num_days=num_days),
-    }
+    if num_orders is not None:
+        section["num_orders"] = int(num_orders)
+    if avg_hold_steps is not None:
+        section["avg_hold_steps"] = float(avg_hold_steps)
+    if extra:
+        section.update(extra)
+    return section
 
 
 def _serialize_initial_position(spec: InitialPositionSpec | None) -> dict[str, object] | None:
@@ -107,7 +138,6 @@ def _parse_robust_start_states(raw: str) -> list[tuple[str, InitialPositionSpec 
         allocation_pct = float(alloc_text)
         spec = InitialPositionSpec(symbol=symbol.upper(), side=side, allocation_pct=allocation_pct)
         scenarios.append((f"{side}:{symbol.upper()}:{allocation_pct:g}", spec))
-
     return scenarios
 
 
@@ -131,7 +161,6 @@ def _summarize_robust_section(
     worst_return_idx = int(np.argmin(returns))
     worst_sortino_idx = int(np.argmin(sortinos))
     worst_drawdown_idx = int(np.argmax(drawdowns))
-
     return {
         "scenario_count": len(rows),
         "median_total_return": float(np.median(returns)),
@@ -214,8 +243,6 @@ def main() -> None:
         device=device,
     )
 
-    # Cap max_steps at num_timesteps-1 so short val datasets (e.g. stocks12 201-step val)
-    # don't raise ValueError when config.max_steps (720) exceeds the data length.
     effective_max_steps = min(args.max_steps, max(1, daily_data.num_timesteps - 1))
     daily = simulate_daily_policy(
         daily_data,
@@ -248,17 +275,6 @@ def main() -> None:
         periods_per_year=args.hourly_periods_per_year,
     )
 
-    daily_ann = annualize_total_return(
-        daily.total_return,
-        periods=effective_max_steps,
-        periods_per_year=args.daily_periods_per_year,
-    )
-    hourly_ann = annualize_total_return(
-        hourly.total_return,
-        periods=effective_max_steps,
-        periods_per_year=args.daily_periods_per_year,
-    )
-
     hourly_policy = None
     if args.run_hourly_policy:
         hourly_policy = simulate_hourly_policy(
@@ -274,30 +290,46 @@ def main() -> None:
             periods_per_year=args.hourly_periods_per_year,
         )
 
-    report: dict[str, object] = {
+    report = {
         "checkpoint": str(args.checkpoint),
         "daily_data_path": str(args.daily_data_path),
         "hourly_data_root": str(args.hourly_data_root),
         "date_range": {"start": args.start_date, "end": args.end_date},
         "symbols": list(daily_data.symbols),
         "fill_buffer_bps": float(args.fill_buffer_bps),
-        "daily": _serialize_daily_result(daily, annualized_return=daily_ann),
-        "hourly_replay": _serialize_hourly_result(
-            hourly,
-            annualized_return=hourly_ann,
-            num_days=effective_max_steps + 1,
+        "daily": _section_metrics(
+            total_return=daily.total_return,
+            sortino=daily.sortino,
+            max_drawdown=daily.max_drawdown,
+            num_trades=daily.num_trades,
+            win_rate=daily.win_rate,
+            equity_curve=daily.equity_curve,
+            periods_per_year=args.daily_periods_per_year,
+            avg_hold_steps=daily.avg_hold_steps,
+        ),
+        "hourly_replay": _section_metrics(
+            total_return=hourly.total_return,
+            sortino=hourly.sortino,
+            max_drawdown=hourly.max_drawdown,
+            num_trades=hourly.num_trades,
+            num_orders=hourly.num_orders,
+            win_rate=hourly.win_rate,
+            equity_curve=hourly.equity_curve,
+            periods_per_year=args.hourly_periods_per_year,
+            extra=_order_day_stats(hourly.orders_by_day, num_days=effective_max_steps + 1),
         ),
     }
     if hourly_policy is not None:
-        hourly_policy_ann = annualize_total_return(
-            hourly_policy.total_return,
-            periods=effective_max_steps,
-            periods_per_year=args.daily_periods_per_year,
-        )
-        report["hourly_policy"] = _serialize_hourly_result(
-            hourly_policy,
-            annualized_return=hourly_policy_ann,
-            num_days=effective_max_steps + 1,
+        report["hourly_policy"] = _section_metrics(
+            total_return=hourly_policy.total_return,
+            sortino=hourly_policy.sortino,
+            max_drawdown=hourly_policy.max_drawdown,
+            num_trades=hourly_policy.num_trades,
+            num_orders=hourly_policy.num_orders,
+            win_rate=hourly_policy.win_rate,
+            equity_curve=hourly_policy.equity_curve,
+            periods_per_year=args.hourly_periods_per_year,
+            extra=_order_day_stats(hourly_policy.orders_by_day, num_days=effective_max_steps + 1),
         )
 
     robust_start_states = _parse_robust_start_states(args.robust_start_states)
@@ -315,11 +347,20 @@ def main() -> None:
                 periods_per_year=args.daily_periods_per_year,
                 initial_position=initial_position,
             )
-            scenario_daily_ann = annualize_total_return(
-                scenario_daily.total_return,
-                periods=effective_max_steps,
-                periods_per_year=args.daily_periods_per_year,
-            )
+            scenario: dict[str, object] = {
+                "name": name,
+                "initial_position": _serialize_initial_position(initial_position),
+                "daily": _section_metrics(
+                    total_return=scenario_daily.total_return,
+                    sortino=scenario_daily.sortino,
+                    max_drawdown=scenario_daily.max_drawdown,
+                    num_trades=scenario_daily.num_trades,
+                    win_rate=scenario_daily.win_rate,
+                    equity_curve=scenario_daily.equity_curve,
+                    periods_per_year=args.daily_periods_per_year,
+                    avg_hold_steps=scenario_daily.avg_hold_steps,
+                ),
+            }
             scenario_hourly = replay_hourly_frozen_daily_actions(
                 data=daily_data,
                 actions=scenario_daily.actions,
@@ -333,21 +374,17 @@ def main() -> None:
                 periods_per_year=args.hourly_periods_per_year,
                 initial_position=initial_position,
             )
-            scenario_hourly_ann = annualize_total_return(
-                scenario_hourly.total_return,
-                periods=effective_max_steps,
-                periods_per_year=args.daily_periods_per_year,
+            scenario["hourly_replay"] = _section_metrics(
+                total_return=scenario_hourly.total_return,
+                sortino=scenario_hourly.sortino,
+                max_drawdown=scenario_hourly.max_drawdown,
+                num_trades=scenario_hourly.num_trades,
+                num_orders=scenario_hourly.num_orders,
+                win_rate=scenario_hourly.win_rate,
+                equity_curve=scenario_hourly.equity_curve,
+                periods_per_year=args.hourly_periods_per_year,
+                extra=_order_day_stats(scenario_hourly.orders_by_day, num_days=effective_max_steps + 1),
             )
-            scenario_report: dict[str, object] = {
-                "name": name,
-                "initial_position": _serialize_initial_position(initial_position),
-                "daily": _serialize_daily_result(scenario_daily, annualized_return=scenario_daily_ann),
-                "hourly_replay": _serialize_hourly_result(
-                    scenario_hourly,
-                    annualized_return=scenario_hourly_ann,
-                    num_days=effective_max_steps + 1,
-                ),
-            }
             if args.run_hourly_policy:
                 scenario_hourly_policy = simulate_hourly_policy(
                     data=daily_data,
@@ -362,18 +399,24 @@ def main() -> None:
                     periods_per_year=args.hourly_periods_per_year,
                     initial_position=initial_position,
                 )
-                scenario_hourly_policy_ann = annualize_total_return(
-                    scenario_hourly_policy.total_return,
-                    periods=effective_max_steps,
-                    periods_per_year=args.daily_periods_per_year,
+                scenario["hourly_policy"] = _section_metrics(
+                    total_return=scenario_hourly_policy.total_return,
+                    sortino=scenario_hourly_policy.sortino,
+                    max_drawdown=scenario_hourly_policy.max_drawdown,
+                    num_trades=scenario_hourly_policy.num_trades,
+                    num_orders=scenario_hourly_policy.num_orders,
+                    win_rate=scenario_hourly_policy.win_rate,
+                    equity_curve=scenario_hourly_policy.equity_curve,
+                    periods_per_year=args.hourly_periods_per_year,
+                    extra=_order_day_stats(
+                        scenario_hourly_policy.orders_by_day,
+                        num_days=effective_max_steps + 1,
+                    ),
                 )
-                scenario_report["hourly_policy"] = _serialize_hourly_result(
-                    scenario_hourly_policy,
-                    annualized_return=scenario_hourly_policy_ann,
-                    num_days=effective_max_steps + 1,
-                )
-            scenarios.append(scenario_report)
-
+            scenarios.append(scenario)
+        # Keep the legacy key for downstream tooling while exposing the
+        # clearer name used by the newer replay/autoresearch pipeline.
+        report["robust_start_states"] = scenarios
         report["robust_start_scenarios"] = scenarios
         report["robust_start_summary"] = _summarize_robust_scenarios(scenarios)
 

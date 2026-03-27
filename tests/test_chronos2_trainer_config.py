@@ -6,9 +6,10 @@ import pytest
 
 @pytest.mark.unit
 def test_training_kwargs_defaults():
-    """_fit_pipeline builds training_kwargs with cosine scheduler, warmup, and tf32."""
+    """_fit_pipeline wires scheduler/warmup from TrainerConfig defaults."""
     import ast
     from pathlib import Path
+    from chronos2_trainer import TrainerConfig
 
     source = Path("chronos2_trainer.py").read_text()
     tree = ast.parse(source)
@@ -27,9 +28,16 @@ def test_training_kwargs_defaults():
     assert isinstance(value, ast.Call)
     kw_map = {}
     for kw in value.keywords:
-        if isinstance(kw.value, ast.Constant):
-            kw_map[kw.arg] = kw.value.value
-    assert kw_map["lr_scheduler_type"] == "cosine", "scheduler should be cosine"
-    assert kw_map["warmup_ratio"] == 0.05, "warmup_ratio should be 0.05"
-    assert kw_map["tf32"] is True, "tf32 should be True"
-    assert kw_map["bf16"] is False, "bf16 should remain False"
+        kw_map[kw.arg] = kw.value
+    assert isinstance(kw_map["lr_scheduler_type"], ast.Call)
+    assert isinstance(kw_map["lr_scheduler_type"].args[0], ast.Attribute)
+    assert kw_map["lr_scheduler_type"].args[0].attr == "lr_scheduler_type"
+    assert isinstance(kw_map["warmup_ratio"], ast.Call)
+    assert isinstance(kw_map["warmup_ratio"].args[0], ast.Attribute)
+    assert kw_map["warmup_ratio"].args[0].attr == "warmup_ratio"
+    assert TrainerConfig.__dataclass_fields__["lr_scheduler_type"].default == "cosine"
+    assert TrainerConfig.__dataclass_fields__["warmup_ratio"].default == 0.05
+    assert isinstance(kw_map["tf32"], ast.Constant)
+    assert isinstance(kw_map["bf16"], ast.Constant)
+    assert kw_map["tf32"].value is True, "tf32 should be True"
+    assert kw_map["bf16"].value is False, "bf16 should remain False"

@@ -175,6 +175,7 @@ class DailySimResult:
     stopped_early: bool = False
     stop_reason: str = ""
     evaluated_steps: int = 0
+    equity_curve: np.ndarray | None = None
 
 
 def _is_tradable(data: MktdData, t: int, sym: int) -> bool:
@@ -603,9 +604,8 @@ def simulate_daily_policy(
     _max_hold = max(0, int(max_hold_bars))
     _min_notional = max(0.0, float(min_notional_usd))
 
-    symbols = [str(sym).upper() for sym in data.symbols]
     init_state = _build_initial_portfolio_state(
-        symbols=symbols,
+        symbols=[s.upper() for s in data.symbols],
         initial_cash=initial_cash,
         initial_position=initial_position,
         fee_rate=effective_fee,
@@ -615,7 +615,9 @@ def simulate_daily_policy(
 
     cash = float(init_state.cash)
     pos: Optional[Position] = init_state.position
-    pos_peak_price: float = float(init_state.mark_price) if pos is not None and not pos.is_short else 0.0
+    pos_peak_price: float = 0.0   # peak close price since entry (for trailing stop)
+    if pos is not None and not pos.is_short:
+        pos_peak_price = float(pos.entry_price)
     hold_steps = 0
     step = 0
     peak_equity = float(init_state.initial_equity)
@@ -889,6 +891,7 @@ def simulate_daily_policy(
                 stopped_early=bool(early_exit is not None and early_exit.should_stop),
                 stop_reason=early_exit.reason if early_exit is not None else "",
                 evaluated_steps=int(step),
+                equity_curve=np.asarray(equity_history, dtype=np.float64),
             )
 
 
@@ -921,7 +924,6 @@ def _load_hourly_bars(symbol: str, hourly_data_root: Path) -> pd.DataFrame:
     df = df.set_index("timestamp")
     if "close" not in df.columns:
         raise ValueError(f"{path} missing 'close' column")
-
     aligned_index = df.index.floor("h")
     if not aligned_index.equals(df.index):
         df = (
@@ -1008,7 +1010,10 @@ def _build_hourly_day_coverage(
     market_days = market.index.floor("D")
     for sym in symbols:
         covered = np.zeros((num_days,), dtype=bool)
-        tradable = np.asarray(market.tradable.get(sym.upper(), np.zeros((len(market.index),), dtype=bool)), dtype=bool)
+        tradable = np.asarray(
+            market.tradable.get(sym.upper(), np.zeros((len(market.index),), dtype=bool)),
+            dtype=bool,
+        )
         for hi in np.flatnonzero(tradable):
             day_idx = int((market_days[hi] - start_day).days)
             if 0 <= day_idx < num_days:
@@ -1198,7 +1203,7 @@ def replay_hourly_frozen_daily_actions(
             else:
                 target = action - S - 1
                 target_day_tr = _is_tradable(data, day_idx, target)
-                target_hr_tr = bool(market.tradable[symbols[target]][hi])
+                target_hr_tr = _hour_tradable_at(target, hi=hi, day_idx=day_idx, ts=ts)
                 target_tradable = bool(target_day_tr and target_hr_tr)
                 if pos is not None and pos.is_short and pos.sym == target:
                     pass

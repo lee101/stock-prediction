@@ -1,20 +1,17 @@
-"""
-Build script for the C trading environment PufferLib binding.
+"""Root build script for editable installs that need the C trading binding.
 
-Usage:
-    cd pufferlib_market && python setup.py build_ext --inplace
-    # or from repo root:
-    python pufferlib_market/setup.py build_ext --inplace
+This mirrors `pufferlib_market/setup.py`, but resolves paths from the repo
+root so `uv pip install -e .` can build `pufferlib_market.binding`.
 """
 
-import os
-import sys
 from pathlib import Path
 from setuptools import setup, Extension
 
-# Paths
-ROOT = Path(__file__).resolve().parent
-REPO = ROOT.parent
+# Paths.
+REPO = Path(__file__).resolve().parent
+ROOT = REPO / "pufferlib_market"
+ROOT_REL = Path("pufferlib_market")
+
 # Try system PufferLib first, fall back to local checkout
 _local_ocean = REPO / "PufferLib" / "pufferlib" / "ocean"
 try:
@@ -39,16 +36,19 @@ import numpy as np
 ext = Extension(
     "pufferlib_market.binding",
     sources=[
-        str(ROOT / "src" / "binding.c"),
-        str(ROOT / "src" / "trading_env.c"),
+        str(ROOT_REL / "src" / "binding.c"),
+        str(ROOT_REL / "src" / "trading_env.c"),
     ],
     include_dirs=[
-        str(ROOT / "include"),
+        str(ROOT_REL / "include"),
         str(PUFFERLIB_OCEAN),
         np.get_include(),
     ],
     extra_compile_args=[
-        "-O3", "-march=native", "-ffast-math",
+        "-O3", "-march=native", "-mavx2", "-ffast-math",
+        "-funroll-loops",
+        "-fomit-frame-pointer",
+        "-DNDEBUG",
         "-std=c11",
         "-Wno-unused-function",
     ],
