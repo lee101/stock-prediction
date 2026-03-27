@@ -11,7 +11,7 @@
 - **LIVE account**: supervisor `unified-stock-trader` is active; equity **$41,315.42**, cash **$10,298.17**, buying power **$20,596.34**, last_equity **$41,077.99**.
 - **LIVE positions/orders**: no stock positions are open; only dust in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD` remains. Open orders are 3 `ETH/USD` GTC buy limits.
 - **LIVE duplicate-order guard (2026-03-27 20:31 UTC)**: systemd unit `alpaca-cancel-multi-orders.service` is installed and enabled with `PAPER=0`; `journalctl` confirms it initialized the **LIVE** Alpaca client and is polling for duplicate flat-position opening orders.
-- **PAPER account**: `daily-rl-trader.service` is installed but currently `inactive (dead)`; paper equity **$55,268.15**, last_equity **$54,078.69**, day change **+$1,189.46 (+2.20%)**, total unrealized **+$3,269.46**.
+- **LIVE daily-rl-trader**: 6-model ensemble, sleeping until Mon 2026-03-30 market open; PID 3621128
 
 ### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- FIXED (pending restart)
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`
@@ -104,10 +104,11 @@
   - local parity tests pass and a one-step smoke train wrote `unified_hourly_experiment/checkpoints/alpaca_progress7_jax_smoke_20260326/epoch_001.flax`
   - RunPod `RTX 4090` bootstrap is in progress for a longer detached retrain; see `alpacaprogress7.md`
 
-### 4. Alpaca Daily PPO Trader (`trade_daily_stock_prod.py`) -- INSTALLED, CURRENTLY INACTIVE (paper systemd)
+### 4. Alpaca Daily PPO Trader (`trade_daily_stock_prod.py`) -- LIVE (systemd, sleeping until Mon 2026-03-30)
 - **Service manager**: systemd unit `daily-rl-trader.service`
 - **Installed unit**: `/etc/systemd/system/daily-rl-trader.service`
-- **Installed ExecStart**: `.venv313/bin/python -u trade_daily_stock_prod.py --daemon --paper --allocation-pct 25`
+- **Installed ExecStart**: `.venv313/bin/python -u trade_daily_stock_prod.py --daemon --live --allocation-pct 25`
+- **Status (2026-03-27 22:00 UTC)**: sleeping 3826.8 min until Mon market open; PID 3621128 via systemd
 - **Architecture**: h=1024 MLP PPO, stocks12 (AAPL,MSFT,NVDA,GOOG,META,TSLA,SPY,QQQ,JPM,V,AMZN,PLTR)
 - **Primary checkpoint**: `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_10/best.pt`
 - **6-model ensemble (tp10+s15+s36+gamma_995+muon_wd005+h1024_a40) exhaustive eval** (111 windows, all possible 90d windows in val, softmax_avg):
@@ -155,12 +156,17 @@
   # NOTE: lag=0 IS correct for daily models (1-bar obs lag built-in to C env)
   # Bot runs at 9:35 AM, drops today's incomplete bar, uses T-1 data → fills at T OPEN
   ```
-- **Phase-transition seeds** (seeds that gain 0 neg after full 35M steps training, rare ~5% hit rate):
-  - seed=15: 0/111 neg standalone, med=30.0% — confirmed phase-transition at ~35M steps
-  - seed=36: 1/111 neg standalone, med=27.9% — confirmed phase-transition
-  - Seeds 16-50: tested, all bad (16-37 tested sequentially)
-  - **Seeds 1-14**: untested — sweep launched 2026-03-27, monitoring for phase-transition candidates
-  - Seeds 300-700+: sweeps running (tp05, tp03, fullrun, GRPO) — no phase transitions found yet
+- **Phase-transition seeds** (seeds that achieve 0/111 neg, exhaustive eval, tp05 h1024 35M config, ~1% hit rate):
+  - seed=15: 0/111 neg standalone, med=30.0% — CONFIRMED phase-transition
+  - seed=36: 1/111 neg standalone, med=27.9% — CONFIRMED phase-transition
+  - Seeds 1-4: TESTED, all bad (s1=21, s2=84, s3=25, s4=81 /111 neg exhaustive)
+  - Seeds 5-14: sweep in progress (s5/s7=NO_CKPT crash, s6/s8 in full training)
+  - Seeds 51-77: all bad (best: s55=13/111 neg exhaustive)
+  - Seeds 300-380 (v3 fully trained): best s301=14/111, s310=6/111 (from 3M screen checkpoint only)
+  - Seeds 600-610 (fullrun): best s604/val_best=19/111 neg
+  - Seeds 700-710 (GRPO): best s702/val_best=28/111 neg
+  - Seeds 300-600 (ongoing tp05 sweep, 15 done, 18 qualified, 202 queued): no phase transitions found
+  - **Conclusion**: 350+ seeds tested, only s15/s36 are genuine phase-transition models. 6-model ensemble is optimal.
 - **Key insight**: softmax_avg lets BAD standalone models (gamma_995: 59/111 neg) help by strongly voting "cash" in windows others falsely want to trade. logit_avg doesn't have this property.
 
 ## Crypto70 Daily RL Seed Sweep (2026-03-25) — IN PROGRESS (~70% complete)
