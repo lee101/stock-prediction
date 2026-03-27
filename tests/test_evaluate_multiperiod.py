@@ -1,9 +1,26 @@
 """Tests for multi-period evaluation."""
 import json
+from pathlib import Path
 import subprocess
 import sys
 
 import pytest
+
+
+REPO = Path(__file__).resolve().parents[1]
+CHECKPOINT_CANDIDATES = [
+    REPO / "pufferlib_market/checkpoints/autoresearch/longonly_forecast/best.pt",
+    REPO / "pufferlib_market/checkpoints/autoresearch/slip_5bps/best.pt",
+    REPO / "pufferlib_market/checkpoints/autoresearch_daily/slip_5bps/best.pt",
+]
+DATA_PATH = REPO / "pufferlib_market/data/crypto6_val.bin"
+
+
+def _checkpoint_for_test() -> str:
+    for candidate in CHECKPOINT_CANDIDATES:
+        if candidate.exists():
+            return str(candidate)
+    pytest.skip("no compatible multiperiod smoke-test checkpoint is present in this workspace")
 
 
 def test_multiperiod_runs_on_deployed_model():
@@ -11,8 +28,8 @@ def test_multiperiod_runs_on_deployed_model():
     result = subprocess.run(
         [
             sys.executable, "-m", "pufferlib_market.evaluate_multiperiod",
-            "--checkpoint", "pufferlib_market/checkpoints/autoresearch/longonly_forecast/best.pt",
-            "--data-path", "pufferlib_market/data/crypto6_val.bin",
+            "--checkpoint", _checkpoint_for_test(),
+            "--data-path", str(DATA_PATH),
             "--deterministic", "--disable-shorts",
             "--periods", "1d,7d",
             "--json",
@@ -35,8 +52,8 @@ def test_multiperiod_table_output():
     result = subprocess.run(
         [
             sys.executable, "-m", "pufferlib_market.evaluate_multiperiod",
-            "--checkpoint", "pufferlib_market/checkpoints/autoresearch/longonly_forecast/best.pt",
-            "--data-path", "pufferlib_market/data/crypto6_val.bin",
+            "--checkpoint", _checkpoint_for_test(),
+            "--data-path", str(DATA_PATH),
             "--deterministic", "--disable-shorts",
             "--periods", "1d",
         ],
@@ -53,8 +70,8 @@ def test_multiperiod_custom_period():
     result = subprocess.run(
         [
             sys.executable, "-m", "pufferlib_market.evaluate_multiperiod",
-            "--checkpoint", "pufferlib_market/checkpoints/autoresearch/longonly_forecast/best.pt",
-            "--data-path", "pufferlib_market/data/crypto6_val.bin",
+            "--checkpoint", _checkpoint_for_test(),
+            "--data-path", str(DATA_PATH),
             "--deterministic", "--disable-shorts",
             "--periods", "48h",
             "--json",

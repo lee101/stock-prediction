@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+from contextlib import redirect_stdout
 import json
 import sys
 from pathlib import Path
@@ -347,21 +348,23 @@ def main() -> None:
     for ckpt in ckpt_paths:
         name = Path(ckpt).parent.name + "/" + Path(ckpt).name
         names.append(name)
-        results = evaluate_checkpoint(
-            ckpt, args.data_path, periods,
-            arch=args.arch,
-            hidden_size=args.hidden_size,
-            fee_rate=args.fee_rate,
-            fill_buffer_bps=args.fill_buffer_bps,
-            max_leverage=args.max_leverage,
-            periods_per_year=args.periods_per_year,
-            short_borrow_apr=args.short_borrow_apr,
-            disable_shorts=args.disable_shorts,
-            shortable_symbols=args.shortable_symbols,
-            deterministic=args.deterministic,
-            decision_lag=args.decision_lag,
-            device_str=args.device,
-        )
+        eval_stdout = sys.stderr if args.json else sys.stdout
+        with redirect_stdout(eval_stdout):
+            results = evaluate_checkpoint(
+                ckpt, args.data_path, periods,
+                arch=args.arch,
+                hidden_size=args.hidden_size,
+                fee_rate=args.fee_rate,
+                fill_buffer_bps=args.fill_buffer_bps,
+                max_leverage=args.max_leverage,
+                periods_per_year=args.periods_per_year,
+                short_borrow_apr=args.short_borrow_apr,
+                disable_shorts=args.disable_shorts,
+                shortable_symbols=args.shortable_symbols,
+                deterministic=args.deterministic,
+                decision_lag=args.decision_lag,
+                device_str=args.device,
+            )
         all_results.append(results)
 
     if args.json:

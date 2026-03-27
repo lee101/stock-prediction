@@ -56,20 +56,22 @@ DEFAULT_SYMBOLS = [
     "AMZN",
 ]
 DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_10/best.pt"
-# 6-model ensemble: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40 (2026-03-27)
-# → exhaustive 0/111 neg, med=58.0%, p10=45.4%, worst=36.6% @5bps
-# @0bps: med=54.5%, p10=42.6%, worst=30.6%
-# @10bps: med=61.5%, p10=45.5%, worst=36.6%
-# @20bps: med=64.0%, p10=47.3%, worst=38.3%
-# Progression: s123+s15+s36 → tp10+s15+s36 → tp10+s15+s36+gamma → 6-model
-#   46.3% / 28.6%     50.9% / 36.6%      55.9% / 42.9%          58.0% / 45.4%  (med/p10 @5bps)
+# 7-model ensemble: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+resmlp_a40 (2026-03-27)
+# → exhaustive 0/111 neg, med=60.3%, p10=45.8%, worst=34.9% @5bps
+# @0bps: med=55.3%, p10=41.2%, 0/111 neg
+# @10bps: med=62.5%, p10=46.6%, 0/111 neg
+# @20bps: med=64.6%, p10=48.4%, 0/111 neg
+# Progression: s123+s15+s36 → tp10+s15+s36 → 6-model → 7-model (resmlp_a40)
+#   46.3% / 28.6%     50.9% / 36.6%      58.0% / 45.4%   60.3% / 45.8%  (med/p10 @5bps)
 # stock_ent_05 is BAD (52/111 neg exhaustive) — do NOT use as ensemble member.
+# tp03 HURTS ensemble (correlated with s15/s36) — do NOT add.
 DEFAULT_EXTRA_CHECKPOINTS = [
     "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt",
     "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s36/best.pt",
     "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_gamma_995/best.pt",
     "pufferlib_market/checkpoints/stocks12_v2_sweep/muon_wd_005/best.pt",
     "pufferlib_market/checkpoints/stocks12_v2_sweep/h1024_a40/best.pt",
+    "pufferlib_market/checkpoints/stocks12_v2_sweep/resmlp_a40/best.pt",
 ]
 DEFAULT_DATA_DIR = "trainingdata"
 DEFAULT_ALLOCATION_PCT = 25.0
