@@ -217,7 +217,8 @@ class TradingPolicy(nn.Module):
     ~500K params to stay well under 8GB GPU.
     """
 
-    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256, activation: str = "relu"):
+    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256, activation: str = "relu",
+                 use_encoder_norm: bool = True):
         super().__init__()
         self.obs_size = obs_size
         self.num_actions = num_actions
@@ -243,7 +244,8 @@ class TradingPolicy(nn.Module):
             nn.Linear(hidden, hidden),
             get_activation(activation),
         )
-        self.encoder_norm = nn.LayerNorm(hidden)
+        if use_encoder_norm:
+            self.encoder_norm = nn.LayerNorm(hidden)
 
         # Policy head (actor)
         self.actor = nn.Sequential(
@@ -975,9 +977,11 @@ def train(args):
             activation=args.activation,
         ).to(device)
     elif args.arch == "mlp_relu_sq":
-        policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size, activation="relu_sq").to(device)
+        policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size, activation="relu_sq",
+                               use_encoder_norm=not args.no_encoder_norm).to(device)
     else:
-        policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
+        policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size,
+                               use_encoder_norm=not args.no_encoder_norm).to(device)
 
     # Enable fused GPU obs-normalize + first-linear + ReLU when:
     #   - TradingPolicy (has set_obs_norm_stats / obs_mean buffer)
@@ -1851,6 +1855,8 @@ def main():
 
     # Policy
     parser.add_argument("--hidden-size", type=int, default=256)
+    parser.add_argument("--no-encoder-norm", action="store_true",
+                        help="Disable LayerNorm after encoder (reproduces pre-2026-03-25 behavior without encoder_norm)")
     parser.add_argument(
         "--arch",
         choices=["mlp", "resmlp", "transformer", "gru", "depth_recurrence"],
