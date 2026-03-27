@@ -141,8 +141,7 @@ def _checkpoint_payload(
         "disable_shorts": bool(disable_shorts),
         "arch": arch,
         # Whether encoder_norm was applied during training — needed for consistent inference.
-        # train.py applies it via hasattr(policy, 'encoder_norm'); inference code uses this flag.
-        "use_encoder_norm": hasattr(policy, "encoder_norm"),
+        "use_encoder_norm": bool(getattr(policy, "_use_encoder_norm", False)),
         **action_meta,
     }
 
@@ -263,6 +262,9 @@ class TradingPolicy(nn.Module):
         )
         if use_encoder_norm:
             self.encoder_norm = nn.LayerNorm(hidden)
+        # _use_encoder_norm controls whether encoder_norm is applied at forward time.
+        # Set to False by _load_resume_checkpoint when resuming old checkpoints (no encoder_norm).
+        self._use_encoder_norm = use_encoder_norm
 
         # Policy head (actor)
         self.actor = nn.Sequential(
@@ -360,7 +362,7 @@ class TradingPolicy(nn.Module):
             if self.obs_mean is not None and self.obs_std is not None:
                 x = (x - self.obs_mean) / (self.obs_std + 1e-8)
             h = self.encoder(x)
-        if hasattr(self, 'encoder_norm'):
+        if getattr(self, '_use_encoder_norm', False) and hasattr(self, 'encoder_norm'):
             h = self.encoder_norm(h)
         return h
 
