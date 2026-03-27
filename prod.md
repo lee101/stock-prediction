@@ -94,7 +94,7 @@
   2. cancel race condition: sleep(0.75) after cancel before new order (prevents "qty held for orders")
   3. crypto qty: abs(qty)<1 wrongly treated fractional crypto as closed — fixed with notional check
 - **NOTE (2026-03-27)**: duplicate-entry hardening is now live in two layers:
-  1. `trade_unified_hourly.py` blocks same-cycle entry replacement after requesting cancel of a stale open entry order (`waiting_for_entry_order_cancel`)
+  1. `trade_unified_hourly.py` allows same-hour entry replacement only after a short broker recheck confirms the stale entry order is actually gone; otherwise it skips with `waiting_for_entry_order_cancel`
   2. `alpaca-cancel-multi-orders.service` cancels duplicate flat-position opening orders at the broker level without touching protective exits
 - **ABEV incident (2026-03-25)**: ABEV position ($12k, entered 2026-03-20 @ $2.73) had no exit order since
   2026-03-24 when force_close failed due to race condition. Fixed — retry fired at 01:42 UTC.
@@ -121,6 +121,8 @@
   - 3-model tp10+s15+s36:        med=50.9%, p10=36.6%  (2026-03-27)
   - 4-model +gamma_995:          med=55.9%, p10=42.9%  (2026-03-27)
   - **6-model +muon_wd005+h1024_a40: med=58.0%, p10=45.4%, worst=36.6%  (2026-03-27) CURRENT**
+  - 7-model +resmlp_a40: med=57.2%, p10=42.1% — REJECTED (hurts p10 -3.3%)
+  - 8-model +s28_scan: med=55.9%, p10=41.3% — REJECTED (hurts p10 -4.1%)
 - **DEFAULT_EXTRA_CHECKPOINTS** (in `trade_daily_stock_prod.py`):
   - `stocks12_seed_sweep/tp05_s15/best.pt`
   - `stocks12_seed_sweep/tp05_s36/best.pt`
