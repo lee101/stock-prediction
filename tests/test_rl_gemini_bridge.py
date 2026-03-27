@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from pufferlib_market.inference import Policy
+from pufferlib_market.train import TradingPolicy
 
 from llm_hourly_trader.gemini_wrapper import TradePlan
 
@@ -200,6 +201,30 @@ def test_bridge_infers_checkpoint_spec_from_residual_policy(tmp_path: Path):
     assert spec.level_bins == 3
     assert spec.max_offset_bps == pytest.approx(25.0)
     assert spec.disable_shorts is True
+
+
+def test_bridge_loads_mlp_checkpoint_without_encoder_norm(tmp_path: Path):
+    ckpt = tmp_path / "bridge_mlp.pt"
+    model = TradingPolicy(obs_size=39, num_actions=5, hidden=32, use_encoder_norm=False)
+    payload = {
+        "model": model.state_dict(),
+        "action_allocation_bins": 1,
+        "action_level_bins": 1,
+        "action_max_offset_bps": 0.0,
+        "disable_shorts": False,
+    }
+    torch.save(payload, ckpt)
+
+    bridge = RLGeminiBridge(checkpoint_path=str(ckpt))
+    signals = bridge.get_rl_signals(
+        np.zeros(39, dtype=np.float32),
+        num_symbols=2,
+        symbol_names=["BTCUSD", "ETHUSD"],
+        top_k=2,
+    )
+
+    assert len(signals) == 2
+    assert getattr(bridge._policy, "_use_encoder_norm", True) is False
 
 
 # ─── New reliability & fallback tests ────────────────────────────────
