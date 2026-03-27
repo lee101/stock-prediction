@@ -17,13 +17,16 @@ import pytest
 import torch
 import torch.nn as nn
 
-from pufferlib_market.train import (
-    TradingPolicy,
-    relu_sq,
-    TransformerTradingPolicy,
-    GRUTradingPolicy,
-    DepthRecurrenceTradingPolicy,
-)
+try:
+    from pufferlib_market.train import (
+        TradingPolicy,
+        relu_sq,
+        TransformerTradingPolicy,
+        GRUTradingPolicy,
+        DepthRecurrenceTradingPolicy,
+    )
+except (ImportError, ModuleNotFoundError):
+    pytest.skip("pufferlib_market or pufferlib not installed", allow_module_level=True)
 
 
 # Canonical obs_sizes used in production
