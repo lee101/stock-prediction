@@ -55,17 +55,21 @@ DEFAULT_SYMBOLS = [
     "V",
     "AMZN",
 ]
-DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt"
-# Primary: tp05_s123 (h=1024, trade_penalty=0.05, anneal_lr=True, seed=123)
-# 3-model ensemble: s123+s15+s36 → 0/50 neg, med=47.30%, p10=29.93%, worst=20.97% @ 5bps (2026-03-24)
-# Slippage robustness: @10bps same, @20bps med=48.60%/p10=31.54%, @50bps med=37.92%/p10=22.79% — all 0/50 neg
-# vs 2-model s123+s15: med=28.76%, p10=16.37%, worst=10.17% — 3-model is +64% median, +83% p10
-# tp05_s15: seed=15, 128 envs, no bf16, 35M steps (0/50 neg standalone)
-# tp05_s36: seed=36, 128 envs, no bf16, 35M steps (0/50 neg standalone, med=26.80%)
-# Previous 2-model ensemble rmu2201+rmu8597+rmu5526: med=14.94%, p10=7.64% (kept for reference)
+DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_10/best.pt"
+# 6-model ensemble: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40 (2026-03-27)
+# → exhaustive 0/111 neg, med=58.0%, p10=45.4%, worst=36.6% @5bps
+# @0bps: med=54.5%, p10=42.6%, worst=30.6%
+# @10bps: med=61.5%, p10=45.5%, worst=36.6%
+# @20bps: med=64.0%, p10=47.3%, worst=38.3%
+# Progression: s123+s15+s36 → tp10+s15+s36 → tp10+s15+s36+gamma → 6-model
+#   46.3% / 28.6%     50.9% / 36.6%      55.9% / 42.9%          58.0% / 45.4%  (med/p10 @5bps)
+# stock_ent_05 is BAD (52/111 neg exhaustive) — do NOT use as ensemble member.
 DEFAULT_EXTRA_CHECKPOINTS = [
     "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt",
     "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s36/best.pt",
+    "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_gamma_995/best.pt",
+    "pufferlib_market/checkpoints/stocks12_v2_sweep/muon_wd_005/best.pt",
+    "pufferlib_market/checkpoints/stocks12_v2_sweep/h1024_a40/best.pt",
 ]
 DEFAULT_DATA_DIR = "trainingdata"
 DEFAULT_ALLOCATION_PCT = 25.0
@@ -443,14 +447,15 @@ def _load_bare_policy(checkpoint_path: str, obs_size: int, num_actions: int, dev
     encoder_key = [k for k in state_dict if "encoder" in k and "weight" in k]
     if encoder_key:
         hidden = state_dict[encoder_key[0]].shape[0]
+        has_encoder_norm = any("encoder_norm" in k for k in state_dict)
         from pufferlib_market.train import TradingPolicy
-        policy = TradingPolicy(obs_size, num_actions, hidden)
+        policy = TradingPolicy(obs_size, num_actions, hidden, use_encoder_norm=has_encoder_norm)
     else:
         input_proj_key = [k for k in state_dict if "input_proj" in k and "weight" in k]
         hidden = state_dict[input_proj_key[0]].shape[0] if input_proj_key else 256
         from pufferlib_market.inference import Policy
         policy = Policy(obs_size, num_actions, hidden, 3)
-    policy.load_state_dict(state_dict)
+    policy.load_state_dict(state_dict, strict=False)
     policy.to(torch.device(device))
     policy.eval()
     return policy

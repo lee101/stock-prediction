@@ -96,7 +96,12 @@ def load_policy(
 
     missing, unexpected = policy.load_state_dict(state_dict, strict=False)
     if hasattr(policy, '_use_encoder_norm'):
-        policy._use_encoder_norm = "encoder_norm.weight" not in missing
+        # Prefer the stored flag (from _checkpoint_payload "use_encoder_norm" key).
+        # Fall back to inferring from missing keys for old checkpoints that don't store it.
+        if isinstance(payload, dict) and "use_encoder_norm" in payload:
+            policy._use_encoder_norm = bool(payload["use_encoder_norm"])
+        else:
+            policy._use_encoder_norm = "encoder_norm.weight" not in missing
     ignored = {"obs_mean", "obs_std", "encoder_norm.weight", "encoder_norm.bias"}
     bad_missing = [k for k in missing if k not in ignored]
     bad_unexpected = [k for k in unexpected if k not in ignored]

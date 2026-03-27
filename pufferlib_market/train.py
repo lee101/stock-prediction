@@ -140,6 +140,8 @@ def _checkpoint_payload(
         "best_return": float(best_return),
         "disable_shorts": bool(disable_shorts),
         "arch": arch,
+        # Whether encoder_norm was applied during training — needed for consistent inference.
+        "use_encoder_norm": bool(getattr(policy, "_use_encoder_norm", False)),
         **action_meta,
     }
 
@@ -189,11 +191,25 @@ def _load_resume_checkpoint(
 
     _validate_resume_payload(payload, disable_shorts=disable_shorts, action_meta=action_meta)
 
-    policy.load_state_dict(payload["model"])
+    missing_keys, unexpected_keys = policy.load_state_dict(payload["model"], strict=False)
+    # Allow encoder_norm to be missing (old checkpoints trained without it)
+    unexpected_encoder_keys = [k for k in unexpected_keys if "encoder_norm" not in k]
+    if unexpected_encoder_keys:
+        raise RuntimeError(f"Unexpected keys loading resume checkpoint: {unexpected_encoder_keys}")
+    structural_missing = [k for k in missing_keys if "encoder_norm" not in k]
+    if structural_missing:
+        raise RuntimeError(f"Missing keys in resume checkpoint (structural mismatch): {structural_missing}")
+    # If encoder_norm is missing from checkpoint, disable it
+    if hasattr(policy, "_use_encoder_norm"):
+        policy._use_encoder_norm = "encoder_norm.weight" not in missing_keys
     optimizer_state = payload.get("optimizer")
     if optimizer_state is not None:
-        optimizer.load_state_dict(optimizer_state)
-        _optimizer_state_to_device(optimizer, device)
+        try:
+            optimizer.load_state_dict(optimizer_state)
+            _optimizer_state_to_device(optimizer, device)
+        except (ValueError, KeyError) as e:
+            print(f"  WARNING: Could not load optimizer state ({e}); starting with fresh optimizer (model weights loaded OK)")
+
 
     return ResumeState(
         update=max(int(payload.get("update", 0)), 0),
@@ -217,7 +233,8 @@ class TradingPolicy(nn.Module):
     ~500K params to stay well under 8GB GPU.
     """
 
-    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256, activation: str = "relu"):
+    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256, activation: str = "relu",
+                 use_encoder_norm: bool = True):
         super().__init__()
         self.obs_size = obs_size
         self.num_actions = num_actions
@@ -243,7 +260,11 @@ class TradingPolicy(nn.Module):
             nn.Linear(hidden, hidden),
             get_activation(activation),
         )
-        self.encoder_norm = nn.LayerNorm(hidden)
+        if use_encoder_norm:
+            self.encoder_norm = nn.LayerNorm(hidden)
+        # _use_encoder_norm controls whether encoder_norm is applied at forward time.
+        # Set to False by _load_resume_checkpoint when resuming old checkpoints (no encoder_norm).
+        self._use_encoder_norm = use_encoder_norm
 
         # Policy head (actor)
         self.actor = nn.Sequential(
@@ -341,7 +362,7 @@ class TradingPolicy(nn.Module):
             if self.obs_mean is not None and self.obs_std is not None:
                 x = (x - self.obs_mean) / (self.obs_std + 1e-8)
             h = self.encoder(x)
-        if hasattr(self, 'encoder_norm'):
+        if getattr(self, '_use_encoder_norm', False) and hasattr(self, 'encoder_norm'):
             h = self.encoder_norm(h)
         return h
 
@@ -975,9 +996,11 @@ def train(args):
             activation=args.activation,
         ).to(device)
     elif args.arch == "mlp_relu_sq":
-        policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size, activation="relu_sq").to(device)
+        policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size, activation="relu_sq",
+                               use_encoder_norm=not args.no_encoder_norm).to(device)
     else:
-        policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
+        policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size,
+                               use_encoder_norm=not args.no_encoder_norm).to(device)
 
     # Enable fused GPU obs-normalize + first-linear + ReLU when:
     #   - TradingPolicy (has set_obs_norm_stats / obs_mean buffer)
@@ -1361,6 +1384,27 @@ def train(args):
         max_keep_latest=args.max_periodic_checkpoints,
     )
 
+    # ── Val-based checkpointing setup ──
+    _val_data = None
+    _val_eval_starts = []
+    _val_best_score = -float("inf")
+    _val_best_neg = 999
+    _VAL_WINDOW_STEPS = 90  # Always evaluate on 90-day windows regardless of training episode length
+    if getattr(args, "val_data_path", None):
+        try:
+            from pufferlib_market.hourly_replay import read_mktd, simulate_daily_policy
+            from pufferlib_market.evaluate_holdout import _slice_window
+            _val_data = read_mktd(args.val_data_path)
+            _all_starts = list(range(_val_data.num_timesteps - _VAL_WINDOW_STEPS))
+            # Use a fixed random subset of windows for fast periodic eval
+            rng_val = np.random.default_rng(42)
+            n_val_windows = min(getattr(args, "val_eval_windows", 20), len(_all_starts))
+            _val_eval_starts = sorted(rng_val.choice(_all_starts, size=n_val_windows, replace=False).tolist())
+            print(f"  Val eval: {n_val_windows}/{len(_all_starts)} windows from {args.val_data_path}, every {args.val_eval_interval} updates")
+        except Exception as e:
+            print(f"  WARNING: Could not set up val eval: {e}")
+            _val_data = None
+
     _profile_steps = args.profile_steps
     if _profile_steps > 0:
         Path("profile_output").mkdir(exist_ok=True)
@@ -1632,6 +1676,47 @@ def train(args):
                 f"n={n:.0f}"
             )
 
+            # ── Val-based checkpointing ──
+            if (
+                _val_data is not None
+                and getattr(args, "val_eval_interval", 0) > 0
+                and (update - start_update) % args.val_eval_interval == 0
+            ):
+                policy.eval()
+                _use_enorm = getattr(policy, "_use_encoder_norm", False)
+                def _val_policy_fn(obs_np: np.ndarray) -> int:
+                    obs_t = torch.from_numpy(obs_np.astype(np.float32, copy=False)).to(device).view(1, -1)
+                    with torch.inference_mode():
+                        logits, _ = policy(obs_t)
+                    return int(torch.argmax(logits, dim=-1).item())
+                val_rets = []
+                for _vs in _val_eval_starts:
+                    _w = _slice_window(_val_data, start=int(_vs), steps=_VAL_WINDOW_STEPS)
+                    _r = simulate_daily_policy(_w, _val_policy_fn, max_steps=_VAL_WINDOW_STEPS,
+                                               fill_buffer_bps=5.0, periods_per_year=float(args.periods_per_year),
+                                               enable_drawdown_profit_early_exit=False)
+                    val_rets.append(_r.total_return)
+                policy.train()
+                val_neg = sum(1 for r in val_rets if r < 0)
+                val_med = float(np.median(val_rets)) * 100
+                # Score: high median minus 2% penalty per negative window
+                val_score = val_med - 2.0 * val_neg
+                if val_score > _val_best_score:
+                    _val_best_score = val_score
+                    _val_best_neg = val_neg
+                    val_ckpt_path = Path(args.checkpoint_dir) / "val_best.pt"
+                    val_ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+                    torch.save(
+                        _checkpoint_payload(
+                            policy, optimizer, update=update, global_step=global_step,
+                            best_return=float(val_score), disable_shorts=bool(args.disable_shorts),
+                            action_meta=action_meta, arch=args.arch,
+                        ),
+                        val_ckpt_path,
+                    )
+                n_val = len(_val_eval_starts)
+                print(f"  [val] med={val_med:.1f}% neg={val_neg}/{n_val} score={val_score:.1f} best_score={_val_best_score:.1f}")
+
             # Early stopping: track whether ep_return improves
             if _es_patience > 0:
                 if ep_return >= _es_best + 0.001:
@@ -1851,6 +1936,8 @@ def main():
 
     # Policy
     parser.add_argument("--hidden-size", type=int, default=256)
+    parser.add_argument("--no-encoder-norm", action="store_true",
+                        help="Disable LayerNorm after encoder (reproduces pre-2026-03-25 behavior without encoder_norm)")
     parser.add_argument(
         "--arch",
         choices=["mlp", "resmlp", "transformer", "gru", "depth_recurrence"],
@@ -1929,6 +2016,12 @@ def main():
     parser.add_argument("--clip-vloss", action="store_true", help="PPO-style value function clipping")
     parser.add_argument("--obs-norm", action="store_true", help="Running observation normalization")
     parser.add_argument("--resume-from", type=str, default=None, help="Checkpoint to resume from")
+    parser.add_argument("--val-data-path", type=str, default=None,
+                        help="Validation data for val_best.pt checkpointing (saves at peak val performance)")
+    parser.add_argument("--val-eval-interval", type=int, default=50,
+                        help="Run val eval every N updates (default 50)")
+    parser.add_argument("--val-eval-windows", type=int, default=20,
+                        help="Number of val windows for periodic eval (default 20, tradeoff speed vs accuracy)")
     parser.add_argument(
         "--cuda-graph-ppo",
         action="store_true",

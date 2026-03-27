@@ -143,8 +143,10 @@ class PPOTrader:
         if encoder_key and not input_proj_key:
             # train.py TradingPolicy (MLP with encoder)
             hidden = state_dict[encoder_key[0]].shape[0]
+            has_encoder_norm = any("encoder_norm" in k for k in state_dict)
             from pufferlib_market.train import TradingPolicy
-            self.policy = TradingPolicy(self.obs_size, self.num_actions, hidden)
+            self.policy = TradingPolicy(self.obs_size, self.num_actions, hidden,
+                                        use_encoder_norm=has_encoder_norm)
         else:
             # inference.py Policy (ResidualBlock)
             if input_proj_key:
@@ -154,7 +156,7 @@ class PPOTrader:
             blocks = config.get("num_blocks", 3)
             self.policy = Policy(self.obs_size, self.num_actions, hidden, blocks)
 
-        self.policy.load_state_dict(state_dict)
+        self.policy.load_state_dict(state_dict, strict=False)
         self.policy.to(self.device)
         self.policy.eval()
 
