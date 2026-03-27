@@ -66,7 +66,8 @@ def test_long_running_integration():
     # Simulate long-running operation
     import time
 
-    if pytest.ci_mode:  # type: ignore
+    import os
+    if os.getenv("CI"):
         time.sleep(0.1)  # Fast in CI
     else:
         time.sleep(1.0)  # Slower locally for realistic testing

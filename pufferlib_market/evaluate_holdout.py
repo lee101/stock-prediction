@@ -75,6 +75,8 @@ class TradingPolicy(nn.Module):
             _act_holdout(activation),
         )
         self.encoder_norm = nn.LayerNorm(hidden)
+        # Only applied if the checkpoint was trained with encoder_norm (set after load_state_dict).
+        self._use_encoder_norm = False
         self.actor = nn.Sequential(
             nn.Linear(hidden, hidden // 2),
             _act_holdout(activation),
@@ -88,7 +90,7 @@ class TradingPolicy(nn.Module):
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         h = self.encoder(x)
-        if hasattr(self, 'encoder_norm'):
+        if getattr(self, '_use_encoder_norm', False):
             h = self.encoder_norm(h)
         return self.actor(h), self.critic(h).squeeze(-1)
 
@@ -284,6 +286,8 @@ def main() -> None:
     parser.add_argument("--data-path", required=True, help="Path to MKTD .bin")
     parser.add_argument("--eval-hours", type=int, default=720, help="Window length in steps (default: 720h)")
     parser.add_argument("--n-windows", type=int, default=20)
+    parser.add_argument("--exhaustive", action="store_true",
+                        help="Evaluate ALL possible windows instead of sampling (overrides --n-windows)")
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--end-within-hours", type=int, default=None, help="Only sample windows ending within last N hours")
     parser.add_argument("--fee-rate", type=float, default=0.001)
@@ -352,7 +356,10 @@ def main() -> None:
         policy = TradingPolicy(obs_size, num_actions, hidden=int(hidden), activation="relu_sq").to(device)
     else:
         policy = TradingPolicy(obs_size, num_actions, hidden=int(hidden)).to(device)
-    policy.load_state_dict(state_dict, strict=False)
+    missing_keys, _ = policy.load_state_dict(state_dict, strict=False)
+    # Only apply encoder_norm if the checkpoint was trained with it.
+    if hasattr(policy, '_use_encoder_norm'):
+        policy._use_encoder_norm = "encoder_norm.weight" not in missing_keys
     policy.eval()
 
     shortable_mask = _build_shortable_mask(list(data.symbols), args.shortable_symbols)
@@ -409,8 +416,11 @@ def main() -> None:
     if candidate_starts.size <= 0:
         raise ValueError("No candidate windows (check --end-within-hours and --eval-hours)")
 
-    replace = bool(candidate_starts.size < n_windows)
-    starts = rng.choice(candidate_starts, size=n_windows, replace=replace)
+    if args.exhaustive:
+        starts = candidate_starts
+    else:
+        replace = bool(candidate_starts.size < n_windows)
+        starts = rng.choice(candidate_starts, size=n_windows, replace=replace)
 
     metrics: list[WindowMetric] = []
     for start_idx in starts.tolist():
