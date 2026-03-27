@@ -53,6 +53,25 @@ class ConsistencyMetrics:
         return self.mae_percent_mean + 0.5 * self.mae_percent_std + 0.3 * (self.mae_percent_max - self.mae_percent_mean)
 
 
+def resolve_data_path(symbol: str, data_root: Path) -> Path:
+    """Resolve CSV path for *symbol* under *data_root*.
+
+    Checks the following locations in order:
+    1. ``{data_root}/{symbol}.csv``  (flat layout)
+    2. ``{data_root}/stocks/{symbol}.csv``  (stocks sub-directory layout)
+
+    Returns the first existing path, or the flat-layout path if neither exists
+    (the caller is responsible for handling a missing file).
+    """
+    direct = data_root / f"{symbol}.csv"
+    if direct.exists():
+        return direct
+    stocks_sub = data_root / "stocks" / f"{symbol}.csv"
+    if stocks_sub.exists():
+        return stocks_sub
+    return direct
+
+
 def load_hourly_frame(csv_path: Path) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
@@ -241,7 +260,7 @@ def main():
 
     args.results_dir.mkdir(parents=True, exist_ok=True)
 
-    data_path = args.data_root / f"{args.symbol}.csv"
+    data_path = resolve_data_path(args.symbol, args.data_root)
     if not data_path.exists():
         logger.error("Data file not found: {}", data_path)
         return

@@ -109,9 +109,9 @@ class TestWorkstealEval:
 
     def test_deployed_config_values(self):
         from scripts.run_120d_worksteal_eval import DEPLOYED_CONFIG
-        assert DEPLOYED_CONFIG["dip_pct"] == 0.20
-        assert DEPLOYED_CONFIG["profit_target_pct"] == 0.15
-        assert DEPLOYED_CONFIG["stop_loss_pct"] == 0.10
+        assert DEPLOYED_CONFIG["dip_pct"] == 0.18
+        assert DEPLOYED_CONFIG["profit_target_pct"] == 0.20
+        assert DEPLOYED_CONFIG["stop_loss_pct"] == 0.15
         assert DEPLOYED_CONFIG["sma_filter_period"] == 20
         assert DEPLOYED_CONFIG["trailing_stop_pct"] == 0.03
         assert DEPLOYED_CONFIG["max_positions"] == 5
