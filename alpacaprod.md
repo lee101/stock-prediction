@@ -113,11 +113,11 @@ python trade_daily_stock_prod.py --live
 # Uses 3-model ensemble (s123+s15+s36 softmax_avg) by default
 ```
 
-### Paper Snapshot (2026-03-27 11:20 UTC)
-- **REVERTED** to s123+s15+s36 ensemble (stock_ent_05 was bad — see eval notes below)
-- Previous equity 2026-03-25: **$55,268.15**, cash **$2,235.60**
+### Paper Snapshot (2026-03-27 14:00 UTC)
+- **s123+s15+s36 ensemble** — confirmed production, exhaustive 0/111 neg, med=+46.3%
+- Session history: s36 was temporarily thought collapsed (evaluate_holdout bug), then stock_ent_05 tried but found bad via exhaustive eval (52/111 neg), then reverted to s36. s36 is confirmed NOT collapsed.
 
-### Active 3-Model Ensemble (softmax_avg) — RESTORED 2026-03-27
+### Active 3-Model Ensemble (softmax_avg)
 | Checkpoint | Config | Notes |
 |-----------|--------|-------|
 | `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt` | tp05, seed=123, ~1.44M steps | Primary |
@@ -127,36 +127,41 @@ python trade_daily_stock_prod.py --live
 ### Marketsim Status — EXHAUSTIVE EVAL (all 111 possible 90d windows, 5bps, no early stop)
 **2026-03-27 exhaustive eval** (stocks12_daily_val.bin, 111 windows = complete validation set):
 
-| Model | Med | P10 | Neg/111 | Notes |
-|-------|-----|-----|---------|-------|
-| **s123+s15+s36 ensemble** | **+46.3%** | **+28.6%** | **0/111** | ✓ PRODUCTION |
-| s15 standalone | +30.0% | +15.8% | 0/111 | |
-| s36 standalone | +27.9% | +10.1% | 1/111 | NOT collapsed! |
-| s123 standalone | +16.8% | +10.5% | 0/111 | |
-| stock_ent_05 standalone | +6.1% | -18.1% | 52/111 | ✗ BAD — evaluated_holdout was misleading |
+| Model | Med | P10 | P90 | Worst | Neg/111 | Notes |
+|-------|-----|-----|-----|-------|---------|-------|
+| **s123+s15+s36 ensemble** | **+46.3%** | **+28.6%** | **+70.0%** | **+21.0%** | **0/111** | ✓ PRODUCTION |
+| s15 standalone | +30.0% | +15.8% | — | +8.4% | 0/111 | |
+| s36 standalone | +27.9% | +10.1% | — | -1.2% | 1/111 | NOT collapsed! |
+| s123 standalone | +16.7% | +10.5% | — | +5.6% | 0/111 | |
+| tp03 standalone | +14.6% | +8.8% | — | +2.6% | 0/111 | Future candidate |
+| stock_ent_05 standalone | +6.1% | -18.1% | — | -31.1% | 52/111 | ✗ BAD |
+
+**Candidates tested for ensemble improvement (2026-03-27):**
+| Ensemble | Med | P10 | Worst | Notes |
+|----------|-----|-----|-------|-------|
+| s123+s15+s36 (PROD) | +46.3% | +28.6% | +21.0% | baseline |
+| s123+s15+s36+ent005_a40 | +43.7% | +33.2% | +21.6% | best p10 but lower med |
+| s123+s15+s36+cosine_slip | +44.0% | +28.6% | +16.9% | worse worst |
+| s123+s15+tp03 (s36 replaced) | +32.3% | +18.6% | +13.7% | significantly worse |
+- Conclusion: no clear improvement found yet. Current s123+s15+s36 is optimal.
 
 **CRITICAL**: Do NOT use `evaluate_holdout --seed 42` for deployment decisions.
-Use exhaustive eval (all 111 windows) or canonical `default_rng(42)` 50-window eval.
-The `evaluate_holdout` formula selects different windows than canonical and gave wrong results:
+Use exhaustive eval (all 111 windows) via `/tmp/test_current_prod_exhaustive.py` or canonical `default_rng(42)` 50-window eval.
+The `evaluate_holdout` formula selects different windows than canonical:
 - s36 evaluate_holdout: -17.5%, 48/50 neg → WRONG (exhaustive: +27.9%, 1/111 neg)
 - stock_ent_05 evaluate_holdout: +40.7%, 0/50 neg → WRONG (exhaustive: +6.1%, 52/111 neg)
-| tp05_s36 standalone | -17.5% | -26.1% | -4.0% | -32.3% | 48/50 | ✗ COLLAPSED |
 
-### Eval Command (new ensemble)
+### Eval Command (exhaustive ensemble eval)
 ```bash
 source .venv313/bin/activate
-# Individual model eval (use /tmp/eval_new_ensemble.py for full ensemble):
-python -m pufferlib_market.evaluate_holdout \
-  --checkpoint pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt \
-  --data-path pufferlib_market/data/stocks12_daily_val.bin \
-  --eval-hours 90 --n-windows 50 --seed 42 \
-  --fee-rate 0.001 --fill-buffer-bps 5.0 --deterministic --no-early-stop
+python /tmp/test_current_prod_exhaustive.py
+# Or run scripts/eval_stocks12_seeds.py for individual model screening
 ```
 
 ### Config Details
 - s123: h=1024, lr=3e-4, ent=0.05, trade_penalty=0.05, dp=0.0, anneal_lr=True, seed=123, ~1.44M steps
 - tp05_s15: seed=15, 128 envs, no bf16, 35M steps
-- stock_ent_05: baseline (tp=0.0, ent=0.05, h=1024, anneal_lr=True), seed=42, 7.47M steps
+- tp05_s36: seed=36, 128 envs, no bf16, 35M steps
 
 ### WARNING
 Symbol conflict with unified-stock-trader (both trade AAPL/MSFT/NVDA/GOOG/META/TSLA/PLTR). Coordinate before enabling both simultaneously.
@@ -174,33 +179,36 @@ sudo systemctl start daily-rl-trader.service  # starts paper
 ## Active Improvement Experiments (2026-03-27)
 
 ### Goal
-The Chronos2 hourly models are failing (negative on 30d+ recent data). The stocks12 daily PPO ensemble is working (0/50 neg, med=53%). Priority: improve the daily PPO and explore better architectures.
+The daily PPO ensemble (s123+s15+s36) is confirmed optimal at 0/111 neg, med=46.3%. Priority: find seeds that could improve beyond this or replace s36 (need standalone med>27.9%, ≤1/111 neg). The Chronos2 system is a bigger problem (negative live).
 
-### Running Experiments (local GPU, ~15-20 min each)
+### Seed Sweep Results (2026-03-27)
+- Approach: baseline config (tp=0.0, ent=0.05, h=1024, anneal_lr), 10M steps, batch of 12
+- Total tested today: 300-311, 400-411 (OOM on 2), 412-423 (partial OOM), 500-511 (running)
+- **Best found**: s411 (3/50 neg, med=+14.6%) — closest but not qualifying
+- **Key insight**: High in-sample return (trades=1, best_return>0.5) = OVERFITTING. Good seeds have low/modest in-sample (best_return≈0.0085 like s300) but generalize.
+- **Success rate**: ~1/50+ seeds reach ≤5/50 neg; ~1/100+ reach 0/50 neg
+- **Notable v2_sweep find**: `stock_trade_pen_03` (tp=0.03) standalone: 0/111 neg, med=14.6% — below s36 threshold
 
-**Seed sweep (tp05, h=1024, anneal_lr, no bf16, 128 envs, 15M steps):**
-- Seeds 51-59: `pufferlib_market/checkpoints/stocks12_new_seeds/tp05_s{N}/best.pt`
-- Also: s42_35M (35M steps for comparison)
+### Currently Running
+- Batch 5: seeds 500-511, baseline config, 10M steps (started 2026-03-27 ~14:00)
 
-**Architecture sweep (tp05, seed=42, 15M steps):**
-- h2048: `checkpoints/stocks12_arch_experiments/tp05_h2048`
-- h512: `checkpoints/stocks12_arch_experiments/tp05_h512`
-- stocks15: `checkpoints/stocks12_arch_experiments/tp05_stocks15_tp05` (15 symbols)
-- stocks20: `checkpoints/stocks12_arch_experiments/tp05_stocks20` (20 symbols)
-
-**Eval command (once training done):**
+### Eval Pipeline
 ```bash
-source .venv313/bin/activate
-python scripts/eval_stocks12_seeds.py \
-  --checkpoint-root pufferlib_market/checkpoints/stocks12_new_seeds \
-  --data-path pufferlib_market/data/stocks12_daily_val.bin
+# Screen new seeds (50-window):
+source .venv313/bin/activate && python scripts/eval_stocks12_seeds.py \
+  --checkpoint-root pufferlib_market/checkpoints/stocks12_baseline5 \
+  --data-path pufferlib_market/data/stocks12_daily_val.bin --n-windows 50
+
+# Confirm with exhaustive (111-window):
+python /tmp/test_current_prod_exhaustive.py
 ```
 
-### Next Steps
-1. Evaluate all seeds/architectures with 50-window holdout
-2. Any 0/50-neg seeds → add to ensemble
-3. Best architecture → 100M step training on RunPod
-4. Enable stocks12 daily PPO as primary Alpaca trader (disable Chronos2 or reduce weight)
+### Qualification Criteria (to add to ensemble)
+1. Standalone exhaustive: ≤1/111 neg AND med > 27.9% (better than s36)
+2. Or: ensemble test showing med > 46.3% + 0/111 neg (replaces/augments current)
+
+### Priority: Disable Chronos2
+The unified-stock-trader (Chronos2, LIVE) is negative on all periods 7d+. Consider stopping it and enabling daily-rl-trader for live trading once 90-day live performance confirmed on paper.
 
 ---
 
