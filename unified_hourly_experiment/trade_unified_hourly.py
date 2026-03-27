@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -62,6 +63,12 @@ ENTRY_ALLOCATOR_MAX_SINGLE_POSITION_FRACTION = 0.6
 ENTRY_ALLOCATOR_RESERVE_FRACTION = 0.1
 BROKER_EVENT_LOOKBACK_HOURS = 48.0
 BROKER_EVENT_KEY_LIMIT = 512
+
+
+@dataclass(frozen=True)
+class EntryOrderReconcileResult:
+    matching_order: Optional[object]
+    replacement_blocked: bool = False
 
 
 def _json_safe(value: Any) -> Any:
@@ -403,6 +410,19 @@ def market_hours_between(start_utc: datetime, end_utc: datetime) -> float:
     return total_minutes / 60.0
 
 
+def calendar_hours_between(start_utc: datetime, end_utc: datetime) -> float:
+    """Count wall-clock hours between two datetimes, inclusive of weekends/holidays."""
+    if start_utc.tzinfo is None:
+        start_utc = start_utc.replace(tzinfo=timezone.utc)
+    else:
+        start_utc = start_utc.astimezone(timezone.utc)
+    if end_utc.tzinfo is None:
+        end_utc = end_utc.replace(tzinfo=timezone.utc)
+    else:
+        end_utc = end_utc.astimezone(timezone.utc)
+    return max((end_utc - start_utc).total_seconds(), 0.0) / 3600.0
+
+
 def get_alpaca_client(paper: bool = True):
     from alpaca.trading.client import TradingClient
     key_id = ALP_KEY_ID if paper else ALP_KEY_ID_PROD
@@ -644,10 +664,10 @@ def _reconcile_entry_orders(
     desired_qty: float,
     desired_limit_price: Optional[float],
     entry_order_ttl_hours: float,
-) -> Optional[object]:
+) -> EntryOrderReconcileResult:
     symbol_orders = list(orders_by_symbol.get(symbol, []))
     if not symbol_orders:
-        return None
+        return EntryOrderReconcileResult(matching_order=None, replacement_blocked=False)
 
     desired_side_norm = _normalize_order_side(desired_side)
     now = datetime.now(timezone.utc)
@@ -705,12 +725,21 @@ def _reconcile_entry_orders(
     )
 
     if kept_order is None:
-        return None
+        return EntryOrderReconcileResult(
+            matching_order=None,
+            replacement_blocked=bool(orders_to_cancel),
+        )
     kept_id = str(getattr(kept_order, "id", ""))
     for order in orders_by_symbol.get(symbol, []):
         if str(getattr(order, "id", "")) == kept_id:
-            return order
-    return None
+            return EntryOrderReconcileResult(
+                matching_order=order,
+                replacement_blocked=bool(orders_to_cancel),
+            )
+    return EntryOrderReconcileResult(
+        matching_order=None,
+        replacement_blocked=bool(orders_to_cancel),
+    )
 
 
 def poll_broker_events(
@@ -1049,7 +1078,7 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
             pending_entry_price = info.get("entry_price")
             pending_entry_side = "sell" if str(info.get("side", "")).lower() == "short" else "buy"
             if pending_entry_qty >= 1.0 and pending_entry_price and orders_by_symbol.get(symbol):
-                matching_entry_order = _reconcile_entry_orders(
+                reconcile_result = _reconcile_entry_orders(
                     api,
                     symbol=symbol,
                     orders_by_symbol=orders_by_symbol,
@@ -1058,6 +1087,7 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
                     desired_limit_price=round(float(pending_entry_price), 2),
                     entry_order_ttl_hours=0.0,
                 )
+                matching_entry_order = reconcile_result.matching_order
                 if matching_entry_order is not None:
                     info["entry_order_id"] = str(getattr(matching_entry_order, "id", info.get("entry_order_id") or ""))
                     log_event(
@@ -1133,11 +1163,23 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
         entry_time = datetime.fromisoformat(info["entry_time"])
         if entry_time.tzinfo is None:
             entry_time = entry_time.replace(tzinfo=timezone.utc)
-        hours_held = market_hours_between(entry_time, now)
+        use_calendar_hours = is_crypto_symbol(symbol)
+        hours_held = (
+            calendar_hours_between(entry_time, now)
+            if use_calendar_hours
+            else market_hours_between(entry_time, now)
+        )
         pos_hold_limit = info.get("hold_hours", max_hold_hours)
 
         if hours_held >= pos_hold_limit:
-            logger.info("{}: hold timeout ({:.1f} market hrs >= {:.1f}h), force closing", symbol, hours_held, pos_hold_limit)
+            hours_label = "calendar" if use_calendar_hours else "market"
+            logger.info(
+                "{}: hold timeout ({:.1f} {} hrs >= {:.1f}h), force closing",
+                symbol,
+                hours_held,
+                hours_label,
+                pos_hold_limit,
+            )
             log_event(
                 "manage_position_action",
                 symbol=symbol,
@@ -1145,6 +1187,7 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
                 reason="hold_timeout",
                 hours_held=float(hours_held),
                 hold_limit=float(pos_hold_limit),
+                hold_clock=hours_label,
             )
             cancel_symbol_orders(api, symbol, orders_by_symbol)
             time.sleep(0.75)  # Wait for cancel to propagate before submitting new order
@@ -1210,8 +1253,10 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
         tracked.pop(s, None)
 
     pending_close = set(state.get("pending_close", []))
+    newly_pending_close: set[str] = set()
     for s in removed:
         pending_close.add(s)
+        newly_pending_close.add(s)
     state["pending_close"] = list(pending_close)
 
     for symbol, pos_data in positions.items():
@@ -1227,11 +1272,13 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
                 log_event("manage_position_action", symbol=symbol, action="force_close_untracked", reason="untracked_not_active", qty=float(qty))
                 force_close_position(api, symbol, qty, cur_price)
                 pending_close.add(symbol)
+                newly_pending_close.add(symbol)
                 continue
             logger.info("{}: untracked position found ({} shares), force closing (no exit price)", symbol, qty)
             log_event("manage_position_action", symbol=symbol, action="force_close_untracked", reason="untracked_position", qty=float(qty))
             force_close_position(api, symbol, qty, cur_price)
             pending_close.add(symbol)
+            newly_pending_close.add(symbol)
 
     still_pending = []
     for s in pending_close:
@@ -1244,7 +1291,7 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
                 still_pending.append(s)
                 # If untracked and no exit order exists, the previous close attempt expired or failed.
                 # Retry force_close so the position doesn't sit abandoned indefinitely.
-                if s not in tracked:
+                if s not in tracked and s not in newly_pending_close:
                     existing_orders = orders_by_symbol.get(s, [])
                     exit_side_retry = "sell" if float(pq) > 0 else "buy"
                     has_any_close_order = any(
@@ -1571,7 +1618,7 @@ def execute_trades(
             )
             continue
 
-        candidate["matching_order"] = _reconcile_entry_orders(
+        reconcile_result = _reconcile_entry_orders(
             api,
             symbol=symbol,
             orders_by_symbol=open_orders_by_symbol,
@@ -1580,6 +1627,8 @@ def execute_trades(
             desired_limit_price=None if candidate["order_type"] == "market" else round(float(candidate["entry_price"]), 2),
             entry_order_ttl_hours=float(entry_order_ttl_hours),
         )
+        candidate["matching_order"] = reconcile_result.matching_order
+        candidate["entry_replacement_blocked"] = bool(reconcile_result.replacement_blocked)
 
     for candidate in entry_candidates:
         symbol = candidate["symbol"]
@@ -1600,6 +1649,13 @@ def execute_trades(
             }
             log_event("position_tracking_created", symbol=symbol, tracked_position=tracked[symbol])
             log_event("entry_skipped", symbol=symbol, reason="existing_open_entry_order", existing_order=_serialize_order(matching_order))
+            continue
+        if bool(candidate.get("entry_replacement_blocked")):
+            log_event(
+                "entry_skipped",
+                symbol=symbol,
+                reason="waiting_for_entry_order_cancel",
+            )
             continue
 
         try:

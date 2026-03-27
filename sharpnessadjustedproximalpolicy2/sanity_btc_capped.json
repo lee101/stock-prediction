@@ -1,0 +1,53 @@
+[
+  {
+    "name": "baseline_adamw",
+    "symbol": "BTCUSD",
+    "best_epoch": 1,
+    "best_val_sortino": 7.6951378881931305,
+    "best_val_return": -0.26929749571718276,
+    "best_val_score": 7.673594430088997,
+    "final_sharpness_ema": 0.0,
+    "final_step_scale": 1.0,
+    "final_lr_scale": 1.0,
+    "total_epochs": 1,
+    "wall_time_s": 32.503746032714844,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy2/checkpoints/sap_baseline_adamw_BTCUSD_20260325_082957",
+    "sam_mode": "none",
+    "rho": 0.05,
+    "error": null
+  },
+  {
+    "name": "proximal_rho005",
+    "symbol": "BTCUSD",
+    "best_epoch": 1,
+    "best_val_sortino": 7.62876533716917,
+    "best_val_return": -0.13231241470202804,
+    "best_val_score": 7.618180349469185,
+    "final_sharpness_ema": 1036.548234458923,
+    "final_step_scale": 1.0,
+    "final_lr_scale": 1.0,
+    "total_epochs": 1,
+    "wall_time_s": 28.089388370513916,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy2/checkpoints/sap_proximal_rho005_BTCUSD_20260325_083031",
+    "sam_mode": "periodic",
+    "rho": 0.05,
+    "error": null
+  },
+  {
+    "name": "proximal_escape",
+    "symbol": "BTCUSD",
+    "best_epoch": 1,
+    "best_val_sortino": 3.0221771262586117,
+    "best_val_return": -0.09965528387692757,
+    "best_val_score": 3.014204517006874,
+    "final_sharpness_ema": 903.8810600119969,
+    "final_step_scale": 1.0,
+    "final_lr_scale": 1.0,
+    "total_epochs": 1,
+    "wall_time_s": 28.9220027923584,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy2/checkpoints/sap_proximal_escape_BTCUSD_20260325_083101",
+    "sam_mode": "periodic",
+    "rho": 0.05,
+    "error": null
+  }
+]

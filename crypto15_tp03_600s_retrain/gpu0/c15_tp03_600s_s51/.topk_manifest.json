@@ -1,0 +1,17 @@
+[
+  {
+    "path": "crypto15_tp03_600s_retrain/gpu0/c15_tp03_600s_s51/update_000250.pt",
+    "metric": 0.8831297755241394,
+    "epoch": null
+  },
+  {
+    "path": "crypto15_tp03_600s_retrain/gpu0/c15_tp03_600s_s51/update_000150.pt",
+    "metric": 0.8694057464599609,
+    "epoch": null
+  },
+  {
+    "path": "crypto15_tp03_600s_retrain/gpu0/c15_tp03_600s_s51/update_000050.pt",
+    "metric": 0.8256031274795532,
+    "epoch": null
+  }
+]

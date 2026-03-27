@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import types
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -26,6 +26,103 @@ def test_log_event_writes_jsonl(tmp_path: Path, monkeypatch) -> None:
     assert payload["payload"] == {"qty": 5, "side": "buy"}
     assert "logged_at" in payload
     assert payload["pid"] > 0
+
+
+def test_calendar_hours_between_counts_wall_clock_hours() -> None:
+    start = datetime(2026, 3, 7, 23, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 3, 9, 5, 0, tzinfo=timezone.utc)
+
+    assert live.calendar_hours_between(start, end) == pytest.approx(30.0)
+
+
+def test_manage_positions_uses_calendar_hours_for_crypto(monkeypatch) -> None:
+    now = datetime(2026, 3, 8, 12, 0, tzinfo=timezone.utc)
+    entry_time = now - timedelta(hours=7)
+    state = {
+        "positions": {
+            "BTCUSD": {
+                "entry_time": entry_time.isoformat(),
+                "exit_price": 110000.0,
+                "hold_hours": 6.0,
+            }
+        }
+    }
+    forced: list[tuple[str, float, float]] = []
+    events: list[tuple[str, dict]] = []
+
+    class FakeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now if tz is None else now.astimezone(tz)
+
+    monkeypatch.setattr(live, "datetime", FakeDateTime)
+    monkeypatch.setattr(
+        live,
+        "get_current_positions",
+        lambda api: {"BTCUSD": {"qty": 0.5, "price": 95_000.0}},
+    )
+    monkeypatch.setattr(live, "get_open_orders", lambda api: {})
+    monkeypatch.setattr(live, "cancel_symbol_orders", lambda *args, **kwargs: None)
+    monkeypatch.setattr(live.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        live,
+        "force_close_position",
+        lambda api, symbol, qty, current_price=0: forced.append((symbol, qty, current_price)),
+    )
+    monkeypatch.setattr(live, "log_trade", lambda event: None)
+    monkeypatch.setattr(live, "log_event", lambda event_type, **fields: events.append((event_type, fields)))
+
+    live.manage_positions(object(), state, max_hold_hours=6, active_symbols={"BTCUSD"})
+
+    assert forced == [("BTCUSD", 0.5, 95_000.0)]
+    assert any(
+        event_type == "manage_position_action"
+        and fields.get("reason") == "hold_timeout"
+        and fields.get("hold_clock") == "calendar"
+        for event_type, fields in events
+    )
+
+
+def test_manage_positions_keeps_market_hours_for_stocks(monkeypatch) -> None:
+    now = datetime(2026, 3, 8, 12, 0, tzinfo=timezone.utc)
+    entry_time = now - timedelta(hours=7)
+    state = {
+        "positions": {
+            "AAPL": {
+                "entry_time": entry_time.isoformat(),
+                "exit_price": 210.0,
+                "hold_hours": 6.0,
+            }
+        }
+    }
+    forced: list[tuple[str, float, float]] = []
+
+    class FakeDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now if tz is None else now.astimezone(tz)
+
+    monkeypatch.setattr(live, "datetime", FakeDateTime)
+    monkeypatch.setattr(
+        live,
+        "get_current_positions",
+        lambda api: {"AAPL": {"qty": 5.0, "price": 205.0}},
+    )
+    monkeypatch.setattr(
+        live,
+        "get_open_orders",
+        lambda api: {"AAPL": [SimpleNamespace(id="exit-1", side="sell")]},
+    )
+    monkeypatch.setattr(
+        live,
+        "force_close_position",
+        lambda api, symbol, qty, current_price=0: forced.append((symbol, qty, current_price)),
+    )
+    monkeypatch.setattr(live, "cancel_symbol_orders", lambda *args, **kwargs: None)
+
+    live.manage_positions(object(), state, max_hold_hours=6, active_symbols={"AAPL"})
+
+    assert forced == []
 
 
 def test_manage_positions_replaces_open_entry_order_with_protective_exit(monkeypatch) -> None:
@@ -609,6 +706,83 @@ def test_execute_trades_skips_existing_matching_open_entry_order(monkeypatch) ->
     assert submitted == []
     assert state["positions"]["NVDA"]["entry_order_id"] == "entry-1"
     assert any(event_type == "entry_skipped" and fields.get("reason") == "existing_open_entry_order" for event_type, fields in events)
+
+
+def test_execute_trades_waits_for_stale_entry_cancel_before_replacing(monkeypatch) -> None:
+    events: list[tuple[str, dict]] = []
+    submitted: list[object] = []
+    cancelled: list[str] = []
+    state = {"positions": {}}
+
+    fake_requests = types.ModuleType("alpaca.trading.requests")
+
+    class _LimitOrderRequest:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    fake_requests.LimitOrderRequest = _LimitOrderRequest
+
+    fake_enums = types.ModuleType("alpaca.trading.enums")
+    fake_enums.OrderSide = SimpleNamespace(BUY="buy", SELL="sell")
+    fake_enums.TimeInForce = SimpleNamespace(DAY="day")
+
+    monkeypatch.setitem(sys.modules, "alpaca.trading.requests", fake_requests)
+    monkeypatch.setitem(sys.modules, "alpaca.trading.enums", fake_enums)
+
+    class _DummyAPI:
+        def submit_order(self, order):
+            submitted.append(order)
+            return SimpleNamespace(id="should-not-submit")
+
+        def cancel_order_by_id(self, order_id):
+            cancelled.append(str(order_id))
+
+    monkeypatch.setattr(live, "get_current_positions", lambda api: {})
+    monkeypatch.setattr(
+        live,
+        "get_open_orders",
+        lambda api: {
+            "NVDA": [
+                SimpleNamespace(
+                    id="entry-stale-1",
+                    symbol="NVDA",
+                    side="buy",
+                    qty="54",
+                    limit_price="101.0",
+                    created_at=datetime.now(timezone.utc),
+                )
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        live,
+        "get_account_info",
+        lambda api: {"equity": 10_000.0, "buying_power": 10_000.0, "cash": 5_000.0},
+    )
+    monkeypatch.setattr(live, "entry_intensity_fraction", lambda *args, **kwargs: (50.0, 0.5))
+    monkeypatch.setattr(live, "log_trade", lambda event: None)
+    monkeypatch.setattr(live, "log_event", lambda event_type, **fields: events.append((event_type, fields)))
+
+    live.execute_trades(
+        _DummyAPI(),
+        {
+            "NVDA": {
+                "buy_price": 100.0,
+                "sell_price": 110.0,
+                "buy_amount": 50.0,
+                "sell_amount": 0.0,
+                "edge": 0.02,
+                "hold_hours": 4.0,
+            }
+        },
+        state,
+        max_positions=5,
+    )
+
+    assert submitted == []
+    assert cancelled == ["entry-stale-1"]
+    assert state["positions"] == {}
+    assert any(event_type == "entry_skipped" and fields.get("reason") == "waiting_for_entry_order_cancel" for event_type, fields in events)
 
 
 def test_manage_positions_force_closes_untracked_fractional_stock_only(monkeypatch) -> None:

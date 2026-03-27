@@ -636,3 +636,5 @@ chronos2_long
 profile_output/
 deployments/
 binanceneural/profile_trace.json
+AGENTS.md
+.tmp_eval/

@@ -36,6 +36,7 @@ class DatasetConfig:
     feature_columns: Sequence[str] | None = None
     refresh_hours: int = 0
     validation_days: int = 70
+    max_train_days: int = 0   # 0 = use all; >0 = cap training to most-recent N days (before val split)
     cache_only: bool = False
     bar_shift_range: int = 0  # random ±N bar temporal jitter augmentation (train only)
 
@@ -162,9 +163,16 @@ class TrainingConfig:
     run_name: str | None = None
     wandb_project: str | None = None
     wandb_entity: str | None = None
+    wandb_group: str | None = None
+    wandb_tags: str = ""
+    wandb_notes: str | None = None
+    wandb_mode: str = "auto"
+    wandb_log_metrics: bool = False
     log_dir: Path = Path("tensorboard_logs") / "binanceneural"
     checkpoint_root: Path = Path("binanceneural") / "checkpoints"
     top_k_checkpoints: int = 10
+    checkpoint_metric: str = "robust_score"  # val_score, val_sortino, val_return, robust_score, robust_sortino
+    checkpoint_gap_penalty: float = 0.25
     preload_checkpoint_path: Path | None = None
     force_retrain: bool = False
     seed: int = 1337

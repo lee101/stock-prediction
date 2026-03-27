@@ -84,6 +84,10 @@ class SAPHistoryEntry:
     sharpness_ema: float = 0.0
     lr_scale: float = 1.0
     wall_time_s: float = 0.0
+    # Continuous (marketsim-style) val metrics — populated when continuous_val_eval=True
+    ms_sortino: float = 0.0
+    ms_return: float = 0.0
+    ms_num_trades: int = 0
 
 
 class SAPTrainer:
@@ -201,6 +205,12 @@ class SAPTrainer:
 
             val_metrics = self._val_epoch(model, val_loader, epoch)
 
+            # Optionally run full-period continuous simulation as the real val metric
+            ms_metrics: dict[str, float] = {}
+            use_cont = getattr(self.sc, "continuous_val_eval", False)
+            if use_cont:
+                ms_metrics = self._run_continuous_val(model)
+
             wall_time = time.time() - t0
             sharp_state = self._get_sharpness_state(sam_optimizer)
 
@@ -218,24 +228,31 @@ class SAPTrainer:
                 sharpness_ema=sharp_state.ema,
                 lr_scale=sharp_state.lr_scale,
                 wall_time_s=wall_time,
+                ms_sortino=ms_metrics.get("sortino", 0.0),
+                ms_return=ms_metrics.get("return", 0.0),
+                ms_num_trades=ms_metrics.get("num_trades", 0),
             )
             history.append(entry)
 
+            # Checkpoint selection: use continuous val sortino when available, else batch score
+            ckpt_score = ms_metrics.get("sortino", val_metrics["score"]) if use_cont and ms_metrics else val_metrics["score"]
+
             ckpt_path = self._save_checkpoint(model, epoch, val_metrics, sharp_state)
-            ckpt_mgr.register(ckpt_path, val_metrics["score"], epoch=epoch)
-            if val_metrics["score"] > best_score:
-                best_score = val_metrics["score"]
+            ckpt_mgr.register(ckpt_path, ckpt_score, epoch=epoch)
+            if ckpt_score > best_score:
+                best_score = ckpt_score
                 best_checkpoint = ckpt_path
                 epochs_without_improvement = 0
             else:
                 epochs_without_improvement += 1
 
+            ms_str = f" MS Sort={ms_metrics['sortino']:.3f} Ret={ms_metrics['return']:.4f} T={ms_metrics.get('num_trades',0)}" if ms_metrics else ""
             print(
                 f"Ep {epoch}/{self.tc.epochs} | "
                 f"T {train_metrics['sortino']:.3f}/{train_metrics['return']:.4f} | "
                 f"V {val_metrics['sortino']:.3f}/{val_metrics['return']:.4f} | "
-                f"Sharp {sharp_state.ema:.3f} Scale {sharp_state.lr_scale:.2f} | "
-                f"{wall_time:.1f}s",
+                f"Sharp {sharp_state.ema:.3f} Scale {sharp_state.lr_scale:.2f} |"
+                f"{ms_str} {wall_time:.1f}s",
                 flush=True,
             )
 
@@ -276,7 +293,8 @@ class SAPTrainer:
                 epoch=h.epoch, train_loss=h.train_loss, train_score=h.train_score,
                 train_sortino=h.train_sortino, train_return=h.train_return,
                 val_loss=h.val_loss, val_score=h.val_score,
-                val_sortino=h.val_sortino, val_return=h.val_return,
+                val_sortino=h.ms_sortino if h.ms_sortino != 0.0 else h.val_sortino,
+                val_return=h.ms_return if h.ms_return != 0.0 else h.val_return,
             ) for h in history],
             feature_columns=list(self.data.feature_columns),
             config=self.tc,
@@ -342,7 +360,7 @@ class SAPTrainer:
                     trade_intensity=ti, buy_trade_intensity=bi, sell_trade_intensity=si,
                     maker_fee=batch.get("maker_fee", self.tc.maker_fee),
                     initial_cash=self.tc.initial_cash,
-                    can_short=batch.get("can_short", False),
+                    can_short=self.sc.can_short,
                     can_long=batch.get("can_long", True),
                     max_leverage=self.tc.max_leverage,
                     market_order_entry=self.tc.market_order_entry,
@@ -483,7 +501,7 @@ class SAPTrainer:
                     sell_trade_intensity=actions["sell_amount"] / scale,
                     maker_fee=batch.get("maker_fee", self.tc.maker_fee),
                     initial_cash=self.tc.initial_cash,
-                    can_short=batch.get("can_short", False),
+                    can_short=self.sc.can_short,
                     can_long=batch.get("can_long", True),
                     max_leverage=self.tc.max_leverage,
                     market_order_entry=self.tc.market_order_entry,
@@ -549,7 +567,7 @@ class SAPTrainer:
                     sell_trade_intensity=actions["sell_amount"] / scale,
                     maker_fee=batch.get("maker_fee", self.tc.maker_fee),
                     initial_cash=self.tc.initial_cash,
-                    can_short=batch.get("can_short", False),
+                    can_short=self.sc.can_short,
                     can_long=batch.get("can_long", True),
                     max_leverage=self.tc.max_leverage,
                     market_order_entry=self.tc.market_order_entry,
@@ -690,12 +708,141 @@ class SAPTrainer:
                 "train_sortino": h.train_sortino, "train_return": h.train_return,
                 "val_loss": h.val_loss, "val_score": h.val_score,
                 "val_sortino": h.val_sortino, "val_return": h.val_return,
+                "ms_sortino": h.ms_sortino, "ms_return": h.ms_return,
+                "ms_num_trades": h.ms_num_trades,
                 "sharpness_raw": h.sharpness_raw, "sharpness_ema": h.sharpness_ema,
                 "lr_scale": h.lr_scale, "wall_time_s": h.wall_time_s,
             }
             for h in history
         ]
         path.write_text(json.dumps(data, indent=2))
+
+    def _run_continuous_val(self, model) -> dict[str, float]:
+        """Full-period continuous simulation on val dataset (like marketsim).
+
+        Uses rolling window inference (seq_len-bar windows) then runs binary-fill
+        simulation over the entire val sequence in one shot.  ~5-15s per epoch.
+        Returns sortino, return (total), num_trades.  Empty dict on failure.
+        """
+        if not hasattr(self.data, "val_dataset"):
+            return {}
+        vds = self.data.val_dataset
+        T = len(vds.frame)
+        if T < self.tc.sequence_length + 5:
+            return {}
+
+        model.eval()
+        dev = self.device
+        seq_len = self.tc.sequence_length
+        scale = float(self.tc.trade_amount_scale)
+
+        try:
+            with torch.inference_mode():
+                feat_all = torch.from_numpy(vds.features).float().to(dev)  # [T, F]
+                ref_close_all = torch.from_numpy(vds.reference_close).float().to(dev)
+                ch_high_all = torch.from_numpy(vds.chronos_high).float().to(dev)
+                ch_low_all = torch.from_numpy(vds.chronos_low).float().to(dev)
+                opens_all = torch.from_numpy(vds.opens).float().to(dev)
+                highs_all = torch.from_numpy(vds.highs).float().to(dev)
+                lows_all = torch.from_numpy(vds.lows).float().to(dev)
+                closes_all = torch.from_numpy(vds.closes).float().to(dev)
+
+                buy_prices_list: list[torch.Tensor] = []
+                sell_prices_list: list[torch.Tensor] = []
+                trade_int_list: list[torch.Tensor] = []
+                buy_int_list: list[torch.Tensor] = []
+                sell_int_list: list[torch.Tensor] = []
+
+                # Batch the rolling windows for efficiency
+                infer_bs = 128
+                for b_start in range(0, T, infer_bs):
+                    b_end = min(b_start + infer_bs, T)
+                    batch_f, batch_rc, batch_chh, batch_chl = [], [], [], []
+                    for t in range(b_start, b_end):
+                        ws = max(0, t - seq_len + 1)
+                        win = feat_all[ws:t + 1]
+                        if win.shape[0] < seq_len:
+                            win = torch.cat([win[:1].expand(seq_len - win.shape[0], -1), win], dim=0)
+                        batch_f.append(win)
+                        batch_rc.append(ref_close_all[t])
+                        if ch_high_all.dim() == 1:
+                            batch_chh.append(ch_high_all[t].unsqueeze(0))
+                            batch_chl.append(ch_low_all[t].unsqueeze(0))
+                        else:
+                            batch_chh.append(ch_high_all[t])
+                            batch_chl.append(ch_low_all[t])
+
+                    feats_b = torch.stack(batch_f, dim=0)  # [B, seq_len, F]
+                    rc_b = torch.stack(batch_rc, dim=0).unsqueeze(-1)  # [B, 1]
+                    chh_b = torch.stack(batch_chh, dim=0)  # [B, ...]
+                    chl_b = torch.stack(batch_chl, dim=0)
+
+                    outputs = model(feats_b)
+                    actions = model.decode_actions(outputs, reference_close=rc_b, chronos_high=chh_b, chronos_low=chl_b)
+
+                    # Take only last-step action
+                    buy_prices_list.append(actions["buy_price"][:, -1:])
+                    sell_prices_list.append(actions["sell_price"][:, -1:])
+                    trade_int_list.append(actions["trade_amount"][:, -1:] / scale)
+                    buy_int_list.append(actions["buy_amount"][:, -1:] / scale)
+                    sell_int_list.append(actions["sell_amount"][:, -1:] / scale)
+
+                # Assemble full-T arrays [1, T] — each element is [B, 1] so cat → [T, 1] → reshape
+                def _cat_to_1T(lst):
+                    return torch.cat(lst, dim=0).view(1, T)  # [T, 1] → [1, T]
+
+                buy_prices = _cat_to_1T(buy_prices_list)
+                sell_prices = _cat_to_1T(sell_prices_list)
+                trade_int = _cat_to_1T(trade_int_list)
+                buy_int = _cat_to_1T(buy_int_list)
+                sell_int = _cat_to_1T(sell_int_list)
+
+                # Re-shape price arrays to [1, T]
+                h = highs_all.unsqueeze(0)   # [1, T]
+                l = lows_all.unsqueeze(0)
+                c = closes_all.unsqueeze(0)
+                o = opens_all.unsqueeze(0)
+
+                sim = simulate_hourly_trades_binary(
+                    highs=h, lows=l, closes=c, opens=o,
+                    buy_prices=buy_prices, sell_prices=sell_prices,
+                    trade_intensity=trade_int, buy_trade_intensity=buy_int,
+                    sell_trade_intensity=sell_int,
+                    maker_fee=self.tc.maker_fee,
+                    initial_cash=self.tc.initial_cash,
+                    can_short=self.sc.can_short, can_long=True,
+                    max_leverage=self.tc.max_leverage,
+                    fill_buffer_pct=self.tc.fill_buffer_pct,
+                    margin_annual_rate=float(self.tc.margin_annual_rate),
+                    decision_lag_bars=int(self.tc.decision_lag_bars),
+                )
+
+            returns = sim.returns.float().cpu().squeeze(0)
+            pv = sim.portfolio_values.float().cpu().squeeze(0)
+            mean_r = returns.mean().item()
+            downside = returns.clamp(max=0.0)
+            down_std = (downside.square().mean() + 1e-10).sqrt().item()
+            ann_factor = 8760.0 / max(T, 1)
+            ms_sort = (mean_r / max(down_std, 1e-10)) * (ann_factor ** 0.5)
+            ms_ret = (pv[-1] / pv[0] - 1).item()
+
+            # Count trades from inventory_path
+            num_trades = 0
+            inv_path = getattr(sim, "inventory_path", None)
+            if inv_path is not None:
+                inv = inv_path.float().cpu().squeeze(0)
+                was_flat = True
+                for i in range(inv.shape[0]):
+                    is_flat = abs(inv[i].item()) < 1e-8
+                    if was_flat and not is_flat:
+                        num_trades += 1
+                    was_flat = is_flat
+
+            return {"sortino": ms_sort, "return": ms_ret, "num_trades": num_trades}
+
+        except Exception as exc:
+            logger.warning(f"continuous_val failed: {exc}")
+            return {}
 
     def _build_loaders(self):
         if self.device.type == "cuda" and hasattr(self.data, "gpu_cached_dataloader"):

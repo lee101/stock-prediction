@@ -25,11 +25,21 @@ def main():
     parser.add_argument("--stock-cache-root", type=Path, default=Path("unified_hourly_experiment/forecast_cache"))
     parser.add_argument("--crypto-cache-root", type=Path, default=Path("binanceneural/forecast_cache"))
     parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--dry-train-steps", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--sequence-length", type=int, default=32)
     parser.add_argument("--run-name", type=str, default=None)
     parser.add_argument("--checkpoint-root", type=Path, default=Path("unified_hourly_experiment/checkpoints"))
+    parser.add_argument("--log-dir", type=Path, default=Path("tensorboard_logs") / "binanceneural")
+    parser.add_argument("--top-k-checkpoints", type=int, default=10)
+    parser.add_argument(
+        "--checkpoint-metric",
+        type=str,
+        default="robust_score",
+        choices=["val_score", "val_sortino", "val_return", "robust_score", "robust_sortino"],
+    )
+    parser.add_argument("--checkpoint-gap-penalty", type=float, default=0.25)
     parser.add_argument("--preload", type=Path, default=None, help="Preload checkpoint")
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--num-layers", type=int, default=3)
@@ -81,6 +91,13 @@ def main():
     parser.add_argument("--num-memory-tokens", type=int, default=0)
     parser.add_argument("--use-value-embedding", action="store_true")
     parser.add_argument("--value-embedding-every", type=int, default=2)
+    parser.add_argument("--wandb-project", type=str, default=None)
+    parser.add_argument("--wandb-entity", type=str, default=None)
+    parser.add_argument("--wandb-group", type=str, default=None)
+    parser.add_argument("--wandb-tags", type=str, default="")
+    parser.add_argument("--wandb-notes", type=str, default=None)
+    parser.add_argument("--wandb-mode", type=str, default="auto")
+    parser.add_argument("--wandb-log-metrics", action="store_true")
     args = parser.parse_args()
 
     if args.symbols:
@@ -139,6 +156,10 @@ def main():
         learning_rate=args.lr,
         sequence_length=args.sequence_length,
         checkpoint_root=args.checkpoint_root,
+        log_dir=args.log_dir,
+        top_k_checkpoints=args.top_k_checkpoints,
+        checkpoint_metric=args.checkpoint_metric,
+        checkpoint_gap_penalty=args.checkpoint_gap_penalty,
         run_name=args.checkpoint_name or args.run_name,
         warmup_steps=args.warmup_steps,
         weight_decay=args.weight_decay,
@@ -188,6 +209,14 @@ def main():
         preload_checkpoint_path=str(args.preload) if args.preload else None,
         use_compile=not args.no_compile,
         seed=args.seed,
+        dry_train_steps=args.dry_train_steps,
+        wandb_project=args.wandb_project,
+        wandb_entity=args.wandb_entity,
+        wandb_group=args.wandb_group,
+        wandb_tags=args.wandb_tags,
+        wandb_notes=args.wandb_notes,
+        wandb_mode=args.wandb_mode,
+        wandb_log_metrics=args.wandb_log_metrics,
     )
 
     trainer = BinanceHourlyTrainer(train_config, data_module)

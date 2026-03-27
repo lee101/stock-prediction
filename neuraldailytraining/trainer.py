@@ -260,6 +260,7 @@ class NeuralDailyTrainer:
             "run_name": self.config.run_name,
             "project": self.config.wandb_project,
             "entity": self.config.wandb_entity,
+            "enable_wandb": bool(self.config.wandb_project),
             "log_dir": self.config.log_dir,
             "tensorboard_subdir": self.config.run_name or "neuraldaily",
             "log_metrics": True,
@@ -311,6 +312,8 @@ class NeuralDailyTrainer:
                     binary_info = (
                         f" | Binary: Sortino {val_metrics['binary_sortino']:.4f} "
                         f"Return {val_metrics['binary_return']:.4f}"
+                        f" | Lag1: Sortino {val_metrics.get('lag1_binary_sortino', 0.0):.4f} "
+                        f"Return {val_metrics.get('lag1_binary_return', 0.0):.4f}"
                     )
 
                 summary = (
@@ -469,6 +472,8 @@ class NeuralDailyTrainer:
         batches = 0
         amp_dtype = torch.bfloat16 if self.config.amp_dtype == "bfloat16" else torch.float16
         symbol_totals: dict[int, dict[str, float]] = {}
+        max_batches = self.config.max_train_batches if train else self.config.max_val_batches
+        processed_batches = 0
 
         def _accumulate_symbol(metric: torch.Tensor, name: str, symbol_ids: torch.Tensor) -> None:
             flat_ids = symbol_ids.detach().cpu().view(-1).tolist()
@@ -478,7 +483,7 @@ class NeuralDailyTrainer:
                 slot[name] = slot.get(name, 0.0) + float(val)
                 slot["count"] += 1
 
-        for batch_data in loader:
+        for processed_batches, batch_data in enumerate(loader, start=1):
             batch = {k: v.to(self.device, non_blocking=True) for k, v in batch_data.items()}
 
             # Apply augmentations during training
@@ -666,8 +671,26 @@ class NeuralDailyTrainer:
                         maker_fee=self.config.maker_fee,
                         initial_cash=self.config.initial_cash,
                     )
+                    # Lag-1 binary: actions at step t fill at step t+1 (realistic daily lag)
+                    binary_lag1 = simulate_hourly_trades_binary(
+                        highs=batch["high"],
+                        lows=batch["low"],
+                        closes=batch["close"],
+                        buy_prices=actions["buy_price"],
+                        sell_prices=actions["sell_price"],
+                        trade_intensity=actions["trade_amount"],
+                        max_leverage=leverage_limits.unsqueeze(-1),
+                        maker_fee=self.config.maker_fee,
+                        initial_cash=self.config.initial_cash,
+                        decision_lag_bars=1,
+                    )
                 _, b_sortino, b_return = compute_hourly_objective(
                     binary.returns,
+                    return_weight=self.config.return_weight,
+                    periods_per_year=self.periods_per_year,
+                )
+                _, b1_sortino, b1_return = compute_hourly_objective(
+                    binary_lag1.returns,
                     return_weight=self.config.return_weight,
                     periods_per_year=self.periods_per_year,
                 )
@@ -675,6 +698,11 @@ class NeuralDailyTrainer:
                 b_totals["return"] += float(b_return.mean().item()) * batch_size
                 b_totals["buy_fill"] += float(binary.buy_fill_probability.mean().item()) * batch_size
                 b_totals["sell_fill"] += float(binary.sell_fill_probability.mean().item()) * batch_size
+                b_totals["lag1_score"] = b_totals.get("lag1_score", 0.0) + float(b1_sortino.mean().item()) * batch_size
+                b_totals["lag1_return"] = b_totals.get("lag1_return", 0.0) + float(b1_return.mean().item()) * batch_size
+
+            if max_batches and processed_batches >= max_batches:
+                break
 
         metrics = {
             "loss": totals["loss"] / max(1, batches),
@@ -692,6 +720,8 @@ class NeuralDailyTrainer:
             metrics["binary_return"] = b_totals["return"] / max(1, batches)
             metrics["binary_buy_fill"] = b_totals["buy_fill"] / max(1, batches)
             metrics["binary_sell_fill"] = b_totals["sell_fill"] / max(1, batches)
+            metrics["lag1_binary_sortino"] = b_totals.get("lag1_score", 0.0) / max(1, batches)
+            metrics["lag1_binary_return"] = b_totals.get("lag1_return", 0.0) / max(1, batches)
         averaged_symbol_stats: dict[int, dict[str, float]] = {}
         for sid, payload in symbol_totals.items():
             count = max(1, payload.pop("count", 1))

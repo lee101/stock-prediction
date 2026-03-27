@@ -1,0 +1,52 @@
+[
+  {
+    "name": "barshift_1_baseline",
+    "symbol": "DOGEUSD",
+    "error": "Insufficient hourly history (140 rows, minimum 720)."
+  },
+  {
+    "name": "barshift_2_baseline",
+    "symbol": "DOGEUSD",
+    "error": "Insufficient hourly history (140 rows, minimum 720)."
+  },
+  {
+    "name": "barshift_5_baseline",
+    "symbol": "DOGEUSD",
+    "error": "Insufficient hourly history (140 rows, minimum 720)."
+  },
+  {
+    "name": "barshift_12_baseline",
+    "symbol": "DOGEUSD",
+    "error": "Insufficient hourly history (140 rows, minimum 720)."
+  },
+  {
+    "name": "barshift_5_swa",
+    "symbol": "DOGEUSD",
+    "error": "Insufficient hourly history (140 rows, minimum 720)."
+  },
+  {
+    "name": "moe8_baseline",
+    "symbol": "DOGEUSD",
+    "error": "Insufficient hourly history (140 rows, minimum 720)."
+  },
+  {
+    "name": "moe8_periodic",
+    "symbol": "DOGEUSD",
+    "error": "Insufficient hourly history (140 rows, minimum 720)."
+  },
+  {
+    "name": "moe4_baseline",
+    "symbol": "DOGEUSD",
+    "error": "Insufficient hourly history (140 rows, minimum 720)."
+  },
+  {
+    "name": "moe8_barshift5_baseline",
+    "symbol": "DOGEUSD",
+    "error": "Insufficient hourly history (140 rows, minimum 720)."
+  },
+  {
+    "name": "moe8_barshift5_periodic",
+    "symbol": "DOGEUSD",
+    "error": "Insufficient hourly history (140 rows, minimum 720)."
+  }
+]

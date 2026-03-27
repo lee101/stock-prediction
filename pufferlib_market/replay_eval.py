@@ -414,7 +414,10 @@ def main() -> None:
                     ),
                 )
             scenarios.append(scenario)
+        # Keep the legacy key for downstream tooling while exposing the
+        # clearer name used by the newer replay/autoresearch pipeline.
         report["robust_start_states"] = scenarios
+        report["robust_start_scenarios"] = scenarios
         report["robust_start_summary"] = _summarize_robust_scenarios(scenarios)
 
     print(json.dumps(report, indent=2, sort_keys=True))

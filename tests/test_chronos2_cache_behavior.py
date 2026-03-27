@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib
+import sys
+import types
 from pathlib import Path
 from typing import Any, List
 
@@ -15,7 +17,10 @@ from src.models.model_cache import ModelCacheManager
 
 
 def test_load_chronos2_wrapper_reuses_cache_for_equivalent_params(monkeypatch: pytest.MonkeyPatch) -> None:
-    module = importlib.reload(marketsim)
+    try:
+        module = importlib.reload(marketsim)
+    except ModuleNotFoundError:
+        module = importlib.import_module(marketsim.__name__)
     cache = getattr(module, "_chronos2_wrapper_cache", None)
     if cache is None:  # pragma: no cover - defensive guard for partial imports
         pytest.skip("Chronos2 wrapper cache unavailable in module context.")
@@ -104,6 +109,46 @@ def test_chronos2_from_pretrained_uses_model_cache(tmp_path: Path, monkeypatch: 
     Chronos2OHLCWrapper.from_pretrained(**kwargs)
     assert len(_FakePipeline.load_sources) == 2
     assert _FakePipeline.load_sources[-1] == str(weights_dir)
+
+
+def test_chronos2_from_pretrained_supports_cutechronos_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeCutePipeline:
+        load_kwargs: dict[str, Any] | None = None
+
+        def __init__(self) -> None:
+            self.model = object()
+
+        @classmethod
+        def from_pretrained(cls, model_id: str, **kwargs):  # type: ignore[no-untyped-def]
+            cls.load_kwargs = {"model_id": model_id, **kwargs}
+            return cls()
+
+    cute_pkg = types.ModuleType("cutechronos")
+    cute_pipeline_mod = types.ModuleType("cutechronos.pipeline")
+    cute_pipeline_mod.CuteChronos2Pipeline = _FakeCutePipeline
+    cute_pkg.pipeline = cute_pipeline_mod
+    monkeypatch.setitem(sys.modules, "cutechronos", cute_pkg)
+    monkeypatch.setitem(sys.modules, "cutechronos.pipeline", cute_pipeline_mod)
+
+    monkeypatch.setenv("CHRONOS2_PIPELINE_BACKEND", "cutechronos")
+    monkeypatch.setenv("CHRONOS_COMPILE", "1")
+
+    wrapper = Chronos2OHLCWrapper.from_pretrained(
+        model_id="stub/chronos2",
+        device_map="cpu",
+        default_context_length=32,
+        default_batch_size=8,
+        torch_compile=True,
+        compile_mode="reduce-overhead",
+        cache_policy="never",
+    )
+
+    assert _FakeCutePipeline.load_kwargs is not None
+    assert _FakeCutePipeline.load_kwargs["model_id"] == "stub/chronos2"
+    assert _FakeCutePipeline.load_kwargs["device"] == "cpu"
+    assert _FakeCutePipeline.load_kwargs["use_cute"] is True
+    assert _FakeCutePipeline.load_kwargs["compile_mode"] == "reduce-overhead"
+    assert wrapper._torch_compile_enabled is False
 
 
 def _build_context(rows: int = 64) -> pd.DataFrame:
