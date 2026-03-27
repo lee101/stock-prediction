@@ -140,6 +140,9 @@ def _checkpoint_payload(
         "best_return": float(best_return),
         "disable_shorts": bool(disable_shorts),
         "arch": arch,
+        # Whether encoder_norm was applied during training — needed for consistent inference.
+        # train.py applies it via hasattr(policy, 'encoder_norm'); inference code uses this flag.
+        "use_encoder_norm": hasattr(policy, "encoder_norm"),
         **action_meta,
     }
 
