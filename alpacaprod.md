@@ -113,56 +113,47 @@ python trade_daily_stock_prod.py --live
 # Uses 3-model ensemble (s123+s15+s36 softmax_avg) by default
 ```
 
-### Paper Snapshot (2026-03-25 08:56 UTC)
-- Equity: **$55,268.15**, cash **$2,235.60**, long MV **$53,072.66**, unrealized **+$3,269.46**
-- Paper positions: AAPL, BTCUSD, COUR, ETHUSD, SOLUSD, U, UNIUSD
+### Paper Snapshot (2026-03-27 10:48 UTC)
+- Service restarted with new ensemble (s36 removed, stock_ent_05 added)
+- Previous equity 2026-03-25: **$55,268.15**, cash **$2,235.60**
 
-### Active 3-Model Ensemble (softmax_avg)
-| Checkpoint | Seed | Notes |
-|-----------|------|-------|
-| `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt` | 123 | Primary |
-| `pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt` | 15 | Ensemble member |
-| `pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s36/best.pt` | 36 | Ensemble member |
+### Active 3-Model Ensemble (softmax_avg) — UPDATED 2026-03-27
+| Checkpoint | Config | Notes |
+|-----------|--------|-------|
+| `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt` | tp05, seed=123 | Primary |
+| `pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt` | tp05, seed=15, 35M steps | Ensemble member |
+| `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_ent_05/best.pt` | tp=0.0, ent=0.05, 7.47M steps | Ensemble member (NEW) |
+
+**REPLACED s36** (collapsed 2026-03-27: 48/50 neg standalone, 37/50 neg in ensemble)
 
 ### Marketsim Status (50-window, default_rng(42), 90d windows, 5bps, no early stop)
 
-**Fresh eval 2026-03-27** (stocks12_daily_val.bin updated 2026-03-22, 201 timesteps):
+**Fresh eval 2026-03-27** (stocks12_daily_val.bin, 201 timesteps):
 
-| Model | Med | P10 | P90 | Worst | Neg/50 | vs. Historical |
-|-------|-----|-----|-----|-------|--------|---------------|
-| **3-model ensemble (s123+s15+s36)** | **+53.11%** | **+30.28%** | **+72.96%** | **+20.97%** | **0** | **BETTER (+5.8pp med)** |
-| tp05_s15 standalone | +36.31% | +20.13% | +57.10% | ? | 0 | improved |
-| tp05_s123 standalone | +17.45% | +0.14% | +24.00% | ? | 5/50 | ⚠️ degraded (was 0/50) |
-| tp05_s36 standalone | -17.53% | -26.09% | -3.96% | ? | 48/50 | ⚠️ COLLAPSED |
+| Model | Med | P10 | P90 | Worst | Neg/50 | Notes |
+|-------|-----|-----|-----|-------|--------|-------|
+| **NEW ensemble (s123+s15+stock_ent_05)** | **+41.0%** | **+19.4%** | **+56.5%** | **+14.7%** | **0** | ✓ DEPLOYED |
+| OLD ensemble (s123+s15+s36) | -13.6% | -26.9% | +11.4% | -32.3% | 37/50 | ✗ BROKEN (s36 collapse) |
+| stock_ent_05 standalone | +40.7% | +19.2% | +59.9% | +10.1% | 0 | 7.47M steps |
+| tp05_s15 standalone | +36.3% | +20.1% | +57.1% | +12.5% | 0 | 35M steps |
+| tp05_s123 standalone | +17.4% | +0.1% | +24.0% | -12.9% | 5/50 | ⚠️ 5 neg |
+| tp05_s36 standalone | -17.5% | -26.1% | -4.0% | -32.3% | 48/50 | ✗ COLLAPSED |
 
-Note: s36 collapsed standalone (likely recent market conditions), but **ensemble still 0/50 neg** due to diversification.
-Historical figures (for reference): ensemble med=47.30%, p10=29.93%, worst=20.97%, neg=0/50.
-
-**⚠️ s123 now has 5/50 negative windows** — monitor closely. Ensemble is healthy for now.
-
-### Slippage Robustness (3-model ensemble)
-| Slippage | Med | P10 | Worst | Neg |
-|----------|-----|-----|-------|-----|
-| @5bps | +47.30% | +29.93% | +20.97% | 0/50 |
-| @10bps | +47.30% | +29.93% | +20.97% | 0/50 |
-| @20bps | +48.60% | +31.54% | +22.47% | 0/50 |
-| @50bps | +37.92% | +22.79% | +14.94% | 0/50 |
-
-### Eval Command (3-model ensemble, holdout)
+### Eval Command (new ensemble)
 ```bash
 source .venv313/bin/activate
+# Individual model eval (use /tmp/eval_new_ensemble.py for full ensemble):
 python -m pufferlib_market.evaluate_holdout \
   --checkpoint pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt \
   --data-path pufferlib_market/data/stocks12_daily_val.bin \
   --eval-hours 90 --n-windows 50 --seed 42 \
   --fee-rate 0.001 --fill-buffer-bps 5.0 --deterministic --no-early-stop
-# NOTE: This evals the primary model only. For full 3-model ensemble use eval_stocks12_ensemble.py
 ```
 
 ### Config Details
-- h=1024, lr=3e-4, ent=0.05, trade_penalty=0.05, dp=0.0, slip=0bps (training), anneal_lr=True
-- tp05_s15: seed=15, 128 envs, no bf16, 35M steps (update_000950)
-- tp05_s36: seed=36, 128 envs, no bf16, 35M steps
+- s123: h=1024, lr=3e-4, ent=0.05, trade_penalty=0.05, dp=0.0, anneal_lr=True, seed=123, ~1.44M steps
+- tp05_s15: seed=15, 128 envs, no bf16, 35M steps
+- stock_ent_05: baseline (tp=0.0, ent=0.05, h=1024, anneal_lr=True), seed=42, 7.47M steps
 
 ### WARNING
 Symbol conflict with unified-stock-trader (both trade AAPL/MSFT/NVDA/GOOG/META/TSLA/PLTR). Coordinate before enabling both simultaneously.

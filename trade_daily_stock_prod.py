@@ -57,15 +57,14 @@ DEFAULT_SYMBOLS = [
 ]
 DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt"
 # Primary: tp05_s123 (h=1024, trade_penalty=0.05, anneal_lr=True, seed=123)
-# 3-model ensemble: s123+s15+s36 → 0/50 neg, med=47.30%, p10=29.93%, worst=20.97% @ 5bps (2026-03-24)
-# Slippage robustness: @10bps same, @20bps med=48.60%/p10=31.54%, @50bps med=37.92%/p10=22.79% — all 0/50 neg
-# vs 2-model s123+s15: med=28.76%, p10=16.37%, worst=10.17% — 3-model is +64% median, +83% p10
-# tp05_s15: seed=15, 128 envs, no bf16, 35M steps (0/50 neg standalone)
-# tp05_s36: seed=36, 128 envs, no bf16, 35M steps (0/50 neg standalone, med=26.80%)
-# Previous 2-model ensemble rmu2201+rmu8597+rmu5526: med=14.94%, p10=7.64% (kept for reference)
+# 3-model ensemble: s123+s15+stock_ent_05 → 0/50 neg, med=41.0%, p10=19.4%, worst=14.7% @ 5bps (2026-03-27)
+# NOTE: s36 COLLAPSED on 2026-03-27 (48/50 neg standalone, 37/50 neg in old ensemble) — replaced with stock_ent_05
+# stock_ent_05: baseline config (tp=0.0, ent=0.05, h=1024, anneal_lr), 7.47M steps, 0/50 neg standalone med=40.7%
+# tp05_s15: seed=15, 128 envs, no bf16, 35M steps (0/50 neg standalone, med=36.3%)
+# Previous 3-model (s123+s15+s36): med=47.30% at 2026-03-24, degraded to -13.6% by 2026-03-27
 DEFAULT_EXTRA_CHECKPOINTS = [
     "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt",
-    "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s36/best.pt",
+    "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_ent_05/best.pt",
 ]
 DEFAULT_DATA_DIR = "trainingdata"
 DEFAULT_ALLOCATION_PCT = 25.0

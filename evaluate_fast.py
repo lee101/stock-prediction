@@ -120,6 +120,47 @@ def _infer_resmlp_blocks(state_dict: dict) -> int:
     return max(idxs) + 1 if idxs else 3
 
 
+def _load_policy_for_eval(
+    *,
+    payload: dict | nn.Module | dict[str, torch.Tensor],
+    obs_size: int,
+    num_symbols: int,
+    arch: str,
+    hidden_size: Optional[int],
+    device: torch.device,
+) -> tuple[nn.Module, dict[str, torch.Tensor]]:
+    state_dict = payload.get("model") if isinstance(payload, dict) and "model" in payload else payload
+    if not isinstance(state_dict, dict):
+        raise ValueError("Unsupported checkpoint format")
+
+    alloc_bins = int(payload.get("action_allocation_bins", 1)) if isinstance(payload, dict) else 1
+    level_bins = int(payload.get("action_level_bins", 1)) if isinstance(payload, dict) else 1
+    per_sym_actions = max(1, alloc_bins) * max(1, level_bins)
+    num_actions = 1 + 2 * num_symbols * per_sym_actions
+
+    if arch == "auto":
+        arch = _infer_arch(state_dict)
+    hidden = hidden_size if hidden_size is not None else _infer_hidden_size(state_dict, arch)
+
+    if arch == "resmlp":
+        num_blocks = _infer_resmlp_blocks(state_dict)
+        policy = ResidualTradingPolicy(obs_size, num_actions, hidden=hidden, num_blocks=num_blocks).to(device)
+    else:
+        policy = TradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
+
+    missing, unexpected = policy.load_state_dict(state_dict, strict=False)
+    ignored = {"obs_mean", "obs_std", "encoder_norm.weight", "encoder_norm.bias"}
+    bad_missing = [k for k in missing if k not in ignored]
+    bad_unexpected = [k for k in unexpected if k not in ignored]
+    if bad_missing or bad_unexpected:
+        raise RuntimeError(
+            f"Checkpoint architecture mismatch — missing: {bad_missing}, unexpected: {bad_unexpected}"
+        )
+
+    policy.eval()
+    return policy, state_dict
+
+
 # ---------------------------------------------------------------------------
 # Dataclass for per-window results
 # ---------------------------------------------------------------------------
@@ -176,32 +217,26 @@ def fast_holdout_eval(
     # Read data header
     with open(data_path, "rb") as f:
         header = f.read(64)
-    _, _, num_symbols, num_timesteps, _, _ = struct.unpack("<4sIIIII", header[:24])
+    _, _, num_symbols, num_timesteps, features_per_sym, _ = struct.unpack("<4sIIIII", header[:24])
+    if features_per_sym == 0:
+        features_per_sym = 16  # v1/v2 backwards compat
 
-    obs_size = num_symbols * 16 + 5 + num_symbols
+    obs_size = num_symbols * features_per_sym + 5 + num_symbols
 
     # Load checkpoint
     payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    state_dict = payload.get("model") if isinstance(payload, dict) and "model" in payload else payload
+    policy, state_dict = _load_policy_for_eval(
+        payload=payload,
+        obs_size=obs_size,
+        num_symbols=num_symbols,
+        arch=arch,
+        hidden_size=hidden_size,
+        device=device,
+    )
 
-    # Infer action grid
     alloc_bins = int(payload.get("action_allocation_bins", 1)) if isinstance(payload, dict) else 1
     level_bins = int(payload.get("action_level_bins", 1)) if isinstance(payload, dict) else 1
     per_sym_actions = max(1, alloc_bins) * max(1, level_bins)
-    num_actions = 1 + 2 * num_symbols * per_sym_actions
-
-    # Infer architecture
-    if arch == "auto":
-        arch = _infer_arch(state_dict)
-    hidden = hidden_size if hidden_size is not None else _infer_hidden_size(state_dict, arch)
-
-    if arch == "resmlp":
-        num_blocks = _infer_resmlp_blocks(state_dict)
-        policy = ResidualTradingPolicy(obs_size, num_actions, hidden=hidden, num_blocks=num_blocks).to(device)
-    else:
-        policy = TradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
-    policy.load_state_dict(state_dict)
-    policy.eval()
 
     # torch.compile for faster inference
     if use_compile and device.type == "cuda":
@@ -273,15 +308,19 @@ def fast_holdout_eval(
     n_completed = 0
     early_exited = False
 
+    # Static CUDA obs buffer; _obs_cpu is a zero-copy view of the numpy obs_bufs array
+    _obs_cuda = torch.zeros(n_windows, obs_size, dtype=torch.float32, device=device)
+    _obs_cpu = torch.from_numpy(obs_bufs)
+
     # Run episodes - all windows step in lockstep
     for step in range(eval_hours + 10):  # +10 safety margin
         if not active.any():
             break
 
         # Batched GPU inference - THE key speedup
-        obs_tensor = torch.from_numpy(obs_bufs).to(device, non_blocking=True)
+        _obs_cuda.copy_(_obs_cpu, non_blocking=True)
         with torch.inference_mode():
-            logits, _ = compiled_policy(obs_tensor)
+            logits, _ = compiled_policy(_obs_cuda)
 
         # Mask shorts if needed
         if disable_shorts:
@@ -381,6 +420,83 @@ def fast_holdout_eval(
 
 
 # ---------------------------------------------------------------------------
+# Multi-period evaluation
+# ---------------------------------------------------------------------------
+
+# Weights for smoothness_score: shorter windows penalise single-spike wins more.
+_SMOOTHNESS_WEIGHTS: dict[int, int] = {5: 3, 15: 2, 30: 2, 60: 1, 90: 1}
+
+
+def multi_period_eval(
+    checkpoint_path: str,
+    data_path: str,
+    *,
+    window_sizes: tuple[int, ...] = (5, 15, 30, 60, 90),
+    n_windows_per_size: int = 8,
+    fee_rate: float = 0.001,
+    fill_slippage_bps: float = 8.0,
+    periods_per_year: float = 252.0,
+    max_leverage: float = 1.0,
+    short_borrow_apr: float = 0.0,
+    deterministic: bool = True,
+    arch: str = "auto",
+    hidden_size: Optional[int] = None,
+    device_str: str = "auto",
+    seed: int = 1337,
+) -> dict:
+    """Evaluate across multiple horizons. Returns per-size metrics + composite smoothness_score.
+
+    smoothness_score: weighted average of p10_sortino across window sizes.
+    Shorter windows get more weight (penalises single-spike wins).
+    Weights: 5d=3, 15d=2, 30d=2, 60d=1, 90d=1 (total weight=9).
+    """
+
+    per_size: dict[int, dict] = {}
+    for ws in window_sizes:
+        result = fast_holdout_eval(
+            checkpoint_path,
+            data_path,
+            n_windows=n_windows_per_size,
+            eval_hours=ws,
+            seed=seed,
+            fee_rate=fee_rate,
+            fill_slippage_bps=fill_slippage_bps,
+            max_leverage=max_leverage,
+            periods_per_year=periods_per_year,
+            short_borrow_apr=short_borrow_apr,
+            deterministic=deterministic,
+            arch=arch,
+            hidden_size=hidden_size,
+            device_str=device_str,
+            # Disable early exit for multi-period: each window is small, we need all results
+            early_exit_after=0,
+            use_compile=True,
+        )
+        summary = result.get("summary", {})
+        per_size[ws] = {
+            "p10_sortino": float(summary.get("p10_sortino", 0.0)),
+            "median_total_return": float(summary.get("median_total_return", 0.0)),
+            "p10_total_return": float(summary.get("p10_total_return", 0.0)),
+            "median_sortino": float(summary.get("median_sortino", 0.0)),
+        }
+
+    total_weight = sum(_SMOOTHNESS_WEIGHTS.get(d, 1) for d in window_sizes)
+    smoothness_score = sum(
+        _SMOOTHNESS_WEIGHTS.get(d, 1) * max(min(per_size[d]["p10_sortino"], 5.0), -5.0)
+        for d in window_sizes
+    ) / total_weight
+
+    return {
+        "smoothness_score": float(smoothness_score),
+        "per_size": per_size,
+        "checkpoint": str(checkpoint_path),
+        "data_path": str(data_path),
+        "window_sizes": list(window_sizes),
+        "n_windows_per_size": n_windows_per_size,
+    }
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -408,7 +524,36 @@ def main():
                         help="Median return threshold for early-exit (default: -15%%)")
     parser.add_argument("--out", type=str, default=None)
     parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--multi-windows", default=None,
+        help="Comma-separated window sizes in trading days for multi-period eval, e.g. '5,15,30,60,90'")
+    parser.add_argument("--n-windows-per-size", type=int, default=8,
+        help="Number of random windows per size in multi-period eval (default: 8)")
     args = parser.parse_args()
+
+    if args.multi_windows is not None:
+        window_sizes = tuple(int(x.strip()) for x in args.multi_windows.split(",") if x.strip())
+        result = multi_period_eval(
+            args.checkpoint,
+            args.data_path,
+            window_sizes=window_sizes,
+            n_windows_per_size=args.n_windows_per_size,
+            fee_rate=args.fee_rate,
+            fill_slippage_bps=args.fill_slippage_bps,
+            periods_per_year=args.periods_per_year,
+            max_leverage=args.max_leverage,
+            short_borrow_apr=args.short_borrow_apr,
+            deterministic=args.deterministic,
+            arch=args.arch,
+            hidden_size=args.hidden_size,
+            device_str=args.device,
+            seed=args.seed,
+        )
+        if args.out:
+            out_path = Path(args.out)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(json.dumps(result, indent=2))
+        print(json.dumps(result, indent=2))
+        return
 
     result = fast_holdout_eval(
         args.checkpoint,
