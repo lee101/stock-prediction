@@ -466,6 +466,14 @@ def run_rl_experiment_on_pod(
     descriptions: str = "",
     stocks_mode: bool = False,
     rank_metric: str = "",
+    replay_eval_data: str = "",
+    replay_eval_hourly_root: str = "",
+    replay_eval_start_date: str = "",
+    replay_eval_end_date: str = "",
+    replay_eval_run_hourly_policy: bool = False,
+    replay_eval_robust_start_states: str = "",
+    replay_eval_fill_buffer_bps: float = 0.0,
+    replay_eval_hourly_periods_per_year: float = 0.0,
     start_from: int = 0,
     holdout_eval_steps: int = 0,
     holdout_n_windows: int = 0,
@@ -492,6 +500,22 @@ def run_rl_experiment_on_pod(
         extra_args.append("--stocks")
     if rank_metric:
         extra_args.extend(["--rank-metric", shlex.quote(rank_metric)])
+    if replay_eval_data:
+        extra_args.extend(["--replay-eval-data", shlex.quote(replay_eval_data)])
+    if replay_eval_hourly_root:
+        extra_args.extend(["--replay-eval-hourly-root", shlex.quote(replay_eval_hourly_root)])
+    if replay_eval_start_date:
+        extra_args.extend(["--replay-eval-start-date", shlex.quote(replay_eval_start_date)])
+    if replay_eval_end_date:
+        extra_args.extend(["--replay-eval-end-date", shlex.quote(replay_eval_end_date)])
+    if replay_eval_run_hourly_policy:
+        extra_args.append("--replay-eval-run-hourly-policy")
+    if replay_eval_robust_start_states:
+        extra_args.extend(["--replay-eval-robust-start-states", shlex.quote(replay_eval_robust_start_states)])
+    if replay_eval_fill_buffer_bps > 0:
+        extra_args.extend(["--replay-eval-fill-buffer-bps", str(replay_eval_fill_buffer_bps)])
+    if replay_eval_hourly_periods_per_year > 0:
+        extra_args.extend(["--replay-eval-hourly-periods-per-year", str(replay_eval_hourly_periods_per_year)])
     if start_from > 0:
         extra_args.extend(["--start-from", str(start_from)])
     if holdout_eval_steps > 0:
@@ -708,6 +732,14 @@ def cmd_run(args: argparse.Namespace) -> None:
             descriptions=getattr(args, "descriptions", ""),
             stocks_mode=getattr(args, "stocks", False),
             rank_metric=getattr(args, "rank_metric", ""),
+            replay_eval_data=getattr(args, "replay_eval_data", ""),
+            replay_eval_hourly_root=getattr(args, "replay_eval_hourly_root", ""),
+            replay_eval_start_date=getattr(args, "replay_eval_start_date", ""),
+            replay_eval_end_date=getattr(args, "replay_eval_end_date", ""),
+            replay_eval_run_hourly_policy=getattr(args, "replay_eval_run_hourly_policy", False),
+            replay_eval_robust_start_states=getattr(args, "replay_eval_robust_start_states", ""),
+            replay_eval_fill_buffer_bps=getattr(args, "replay_eval_fill_buffer_bps", 0.0),
+            replay_eval_hourly_periods_per_year=getattr(args, "replay_eval_hourly_periods_per_year", 0.0),
             start_from=getattr(args, "start_from", 0),
             holdout_eval_steps=getattr(args, "holdout_eval_steps", 0),
             holdout_n_windows=getattr(args, "holdout_n_windows", 0),
@@ -816,6 +848,38 @@ def main() -> None:
     run_p.add_argument(
         "--rank-metric", default="holdout_robust_score",
         help="Ranking metric for autoresearch leaderboard",
+    )
+    run_p.add_argument(
+        "--replay-eval-data", default="",
+        help="Optional daily MKTD path for replay evaluation on the pod",
+    )
+    run_p.add_argument(
+        "--replay-eval-hourly-root", default="",
+        help="Hourly data root for replay evaluation on the pod",
+    )
+    run_p.add_argument(
+        "--replay-eval-start-date", default="",
+        help="Inclusive UTC start date for replay evaluation",
+    )
+    run_p.add_argument(
+        "--replay-eval-end-date", default="",
+        help="Inclusive UTC end date for replay evaluation",
+    )
+    run_p.add_argument(
+        "--replay-eval-run-hourly-policy", action="store_true",
+        help="Also run replay_eval hourly-policy stress mode",
+    )
+    run_p.add_argument(
+        "--replay-eval-robust-start-states", default="",
+        help="Optional replay robust-start-state list like 'flat,long:BTCUSD:0.25'",
+    )
+    run_p.add_argument(
+        "--replay-eval-fill-buffer-bps", type=float, default=0.0,
+        help="Fill buffer bps for replay evaluation",
+    )
+    run_p.add_argument(
+        "--replay-eval-hourly-periods-per-year", type=float, default=0.0,
+        help="Hourly periods/year override for replay evaluation",
     )
     run_p.add_argument(
         "--start-from", type=int, default=0,

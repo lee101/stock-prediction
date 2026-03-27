@@ -24,6 +24,7 @@ MARGIN_ANNUAL_RATE = 0.0625  # 6.25% per year
 @dataclass
 class WorkStealConfig:
     dip_pct: float = 0.10
+    dip_pct_fallback: Tuple[float, ...] = field(default_factory=tuple)
     proximity_pct: float = 0.03
     profit_target_pct: float = 0.05
     stop_loss_pct: float = 0.08
@@ -413,6 +414,71 @@ def build_entry_candidates(
     return candidates
 
 
+def build_tiered_entry_candidates(
+    *,
+    current_bars: Dict[str, pd.Series],
+    history: Dict[str, pd.DataFrame],
+    positions: Dict[str, object],
+    last_exit: Dict[str, pd.Timestamp],
+    date: pd.Timestamp,
+    config: WorkStealConfig,
+    base_symbol: str | None = None,
+    max_candidates: int | None = None,
+    diagnostics: Optional[List[SymbolDiagnostic]] = None,
+) -> tuple[list, Dict[str, int]]:
+    raw_tiers = list(config.dip_pct_fallback) if config.dip_pct_fallback else [config.dip_pct]
+    tiers: list[float] = []
+    seen_tiers: set[float] = set()
+    for raw_tier in raw_tiers:
+        try:
+            tier = float(raw_tier)
+        except (TypeError, ValueError):
+            continue
+        if tier <= 0.0 or tier in seen_tiers:
+            continue
+        tiers.append(tier)
+        seen_tiers.add(tier)
+    if not tiers:
+        tiers = [float(config.dip_pct)]
+
+    occupied_symbols = set(positions)
+    all_candidates = []
+    tier_map: Dict[str, int] = {}
+    remaining = max_candidates if max_candidates is not None else None
+
+    for tier_idx, dip_pct in enumerate(tiers):
+        if remaining is not None and remaining <= 0:
+            break
+        tier_config = replace(config, dip_pct=dip_pct)
+        tier_diagnostics: Optional[List[SymbolDiagnostic]] = [] if diagnostics is not None and tier_idx == 0 else None
+        candidates = build_entry_candidates(
+            date=date,
+            current_bars=current_bars,
+            history=history,
+            positions={sym: True for sym in occupied_symbols},
+            last_exit=last_exit,
+            config=tier_config,
+            base_symbol=base_symbol,
+            diagnostics=tier_diagnostics,
+        )
+        if diagnostics is not None and tier_diagnostics:
+            diagnostics.extend(tier_diagnostics)
+
+        for candidate in candidates:
+            sym = candidate[0]
+            if sym in occupied_symbols:
+                continue
+            all_candidates.append(candidate)
+            tier_map[sym] = tier_idx
+            occupied_symbols.add(sym)
+            if remaining is not None:
+                remaining -= 1
+                if remaining <= 0:
+                    break
+
+    return all_candidates, tier_map
+
+
 def _normalize_base_asset_symbol(config: WorkStealConfig) -> str | None:
     value = str(config.base_asset_symbol or "").strip().upper()
     return value or None
@@ -727,87 +793,40 @@ def run_worksteal_backtest(
                 fee_rate=base_fee,
             )
 
-        # 2. Market breadth filter
-        if config.market_breadth_filter > 0:
-            n_dipping = 0
-            n_total = 0
-            for sym2 in current_bars:
-                if sym2 not in history or len(history[sym2]) < 5:
-                    continue
-                n_total += 1
-                prev_close = float(history[sym2].iloc[-2]["close"])
-                if float(current_bars[sym2]["close"]) < prev_close:
-                    n_dipping += 1
-            breadth_ratio = n_dipping / max(n_total, 1)
-            skip_entries = breadth_ratio > config.market_breadth_filter
-        else:
-            skip_entries = False
-
-        # 2b. Risk-off filter
+        entry_config = resolve_entry_config(
+            current_bars=current_bars,
+            history=history,
+            config=config,
+        )
+        skip_entries = compute_market_breadth_skip(current_bars, history, entry_config)
         if not skip_entries:
-            skip_entries = _risk_off_triggered(current_bars, history, config)
+            skip_entries = _risk_off_triggered(current_bars, history, entry_config)
 
         # 3. Check entries (work-stealing)
         if len(positions) < config.max_positions and not skip_entries:
-            candidates = []
-
-            for sym, bar in current_bars.items():
-                if base_symbol is not None and sym == base_symbol:
-                    continue
-                if sym in positions:
-                    continue
-                if sym in last_exit:
-                    if (date - last_exit[sym]).days < config.reentry_cooldown_days:
-                        continue
-                if sym not in history or len(history[sym]) < config.lookback_days:
-                    continue
-
-                close = float(bar["close"])
-                low_bar = float(bar["low"])
-                high_bar = float(bar["high"])
-
-                # Momentum filter: skip if recent return too negative
-                if config.momentum_period > 0 and len(history[sym]) > config.momentum_period:
-                    past_close = float(history[sym].iloc[-(config.momentum_period+1)]["close"])
-                    mom_ret = (close - past_close) / past_close
-                    if mom_ret < config.momentum_min:
-                        continue
-
-                if not passes_sma_filter(history[sym], config, close):
-                    continue
-
-                # RSI filter: only buy oversold
-                if config.rsi_filter > 0:
-                    rsi = compute_rsi(history[sym], 14)
-                    if rsi > config.rsi_filter:
-                        continue  # skip: not oversold enough
-
-                # Volume spike filter
-                if config.volume_spike_filter > 0:
-                    vol_ratio = compute_volume_ratio(history[sym], 20)
-                    if vol_ratio < config.volume_spike_filter:
-                        continue  # skip: no volume confirmation
-
-                # Long candidate: dip from recent high
-                ref_high = compute_ref_price(history[sym], config.ref_price_method, config.lookback_days)
-                buy_target = compute_buy_target(history[sym], ref_high, config)
-                dist_long = (close - buy_target) / ref_high
-
-                if dist_long <= config.proximity_pct:
-                    dip_score = -dist_long
-                    fill_price = max(buy_target, low_bar)
-                    candidates.append((sym, "long", dip_score, fill_price, bar))
-
-                # Short candidate: pump from recent low
-                if config.enable_shorts:
-                    ref_low = compute_ref_low(history[sym], config.lookback_days)
-                    short_target = ref_low * (1 + config.short_pump_pct)
-                    dist_short = (short_target - close) / ref_low
-
-                    if dist_short <= config.proximity_pct:
-                        pump_score = -dist_short
-                        fill_price = min(short_target, high_bar)
-                        candidates.append((sym, "short", pump_score, fill_price, bar))
+            slots = config.max_positions - len(positions)
+            last_exit_ts = {sym: pd.Timestamp(ts) for sym, ts in last_exit.items()}
+            if entry_config.dip_pct_fallback:
+                candidates, _tier_map = build_tiered_entry_candidates(
+                    date=date,
+                    current_bars=current_bars,
+                    history=history,
+                    positions=positions,
+                    last_exit=last_exit_ts,
+                    config=entry_config,
+                    base_symbol=base_symbol,
+                    max_candidates=slots,
+                )
+            else:
+                candidates = build_entry_candidates(
+                    date=date,
+                    current_bars=current_bars,
+                    history=history,
+                    positions=positions,
+                    last_exit=last_exit_ts,
+                    config=entry_config,
+                    base_symbol=base_symbol,
+                )
 
             if forecast_data and config.forecast_bias_weight > 0:
                 from binance_worksteal.forecast_integration import get_forecast_multiplier
@@ -820,7 +839,6 @@ def run_worksteal_backtest(
 
             candidates.sort(key=lambda x: x[2], reverse=True)
 
-            slots = config.max_positions - len(positions)
             # Use initial_cash for sizing shorts to prevent compounding spiral
             base_equity = config.initial_cash
             for sym, direction, score, fill_price, bar in candidates[:slots]:

@@ -7,6 +7,8 @@ from scripts.evaluate_binance_lora_candidate import (
     build_eval_command,
     build_remote_cache_command,
     load_candidate_config,
+    parse_args,
+    summarize_eval_windows,
 )
 
 
@@ -129,3 +131,47 @@ def test_build_eval_command_adds_gemini_runtime_args_only_for_gemini() -> None:
     assert "LOW" in cmd
     assert "--rate-limit" in cmd
     assert "0.5" in cmd
+
+
+def test_parse_args_exposes_model_default(tmp_path: Path) -> None:
+    report_path = tmp_path / "candidate.json"
+    report_path.write_text("{}\n")
+
+    args = parse_args(["--report-path", str(report_path)])
+
+    assert args.model == "gemini-3.1-flash-lite-preview"
+
+
+def test_summarize_eval_windows_aggregates_deltas_and_verdicts() -> None:
+    summary = summarize_eval_windows(
+        {
+            "windows": [
+                {
+                    "comparison": {
+                        "return_delta": 2.0,
+                        "sortino_delta": 0.5,
+                        "max_dd_delta": -1.0,
+                        "new_symbol_pnl": 12.0,
+                        "verdict": "ACCEPT",
+                    }
+                },
+                {
+                    "comparison": {
+                        "return_delta": -1.0,
+                        "sortino_delta": -0.2,
+                        "max_dd_delta": 0.5,
+                        "new_symbol_pnl": 4.0,
+                        "verdict": "REJECT",
+                    }
+                },
+            ]
+        }
+    )
+
+    assert summary["window_count"] == 2
+    assert summary["accepted_window_count"] == 1
+    assert summary["rejected_window_count"] == 1
+    assert summary["all_windows_accept"] is False
+    assert summary["mean_return_delta"] == 0.5
+    assert summary["min_sortino_delta"] == -0.2
+    assert summary["mean_new_symbol_pnl"] == 8.0

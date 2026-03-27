@@ -1,6 +1,60 @@
 # Binance Progress Log
 
-Updated: 2026-02-06
+Updated: 2026-03-26
+
+## Worksteal Audit (2026-03-26)
+
+- Aligned the daily simulator/backtest with the live bot’s entry logic:
+  - `binance_worksteal/strategy.py` now reuses the shared entry builder and supports deployed tiered dip fallback (`0.18/0.15/0.12`) in backtests.
+  - `scripts/run_120d_worksteal_eval.py` and `scripts/run_production_audit.py` now default to the live deployment universe (`binance_worksteal/universe_v2.yaml`) and current live-style config (`dip=18%`, `tp=20%`, `sl=15%`, `sma=20`, `trail=3%`).
+- Fixed a live-vs-sim accounting bug in `binance_worksteal/trade_live.py`:
+  - failed live `create_margin_order(...)` attempts were being logged as `staged_buy` and saved into `pending_entries` even when Binance never accepted the order.
+  - the bot now records `entry_order_failed` instead of creating phantom pending entries, so future live audits will stop overstating what was actually placed on Binance.
+- Added recent-day audit entry point:
+  - `scripts/audit_worksteal_recent_day.py`
+  - latest report: `reports/worksteal_recent_day_audit_20260325_212838.json`
+  - 24h finding (UTC window `2026-03-24 21:28` -> `2026-03-25 21:28`):
+    - worksteal-attributed real Binance order: `ZECUSDT BUY 3.194 @ 238.05`, touched by 5m bars at `2026-03-25 12:15 UTC`
+    - non-worksteal / external account orders in the same window: `ADAUSDT` buy/sell activity, plus `DOGEUSDT` sell management
+    - pre-fix logs also showed staged `ENJ/OP/DOT/GRT` entries that touched market data but had **no** matching Binance order, which is why the order-placement fix above matters for sim fidelity.
+- 120-day rule-only eval with corrected config/universe:
+  - command: `python scripts/run_120d_worksteal_eval.py --rule-only`
+  - result on loaded slice (`34/75` symbols with local daily data): `+61.99%` total return, `5.54` Sortino, `3.84` Sharpe, `-4.07%` max drawdown, `90` trades, final equity `~$16.2k`
+  - strongest contributors included `ICPUSD`, `ZECUSD`, `ENJUSD`, `UNIUSD`, `DOTUSD`
+- Production audit with corrected config/universe:
+  - command: `python scripts/run_production_audit.py --window-days 40 --n-windows 3 --recent-days 30 --random-trials 12`
+  - report: `binance_worksteal/production_audit_20260326.txt`
+  - recent 30d entry-filter audit: `33` candidates / `29` strict fills across `939` symbol-days; implied fill rate `87.9%`; expected fills `28.1 / 30d`
+  - 40d windows:
+    - `2026-02-10 -> 2026-03-22`: `+54.63%`, Sortino `59.62`, max DD `-1.25%`
+    - `2026-01-01 -> 2026-02-10`: `+31.25%`, Sortino `8.52`, max DD `-4.07%`
+    - `2025-11-22 -> 2026-01-01`: flat / no trades on the currently loaded local slice
+  - production config scored at the `83rd` percentile vs the random baseline set used in the audit
+  - best simple grid point on the currently loaded local data was `dip=25%`, `proximity=5%`, `sma=0` (better Sortino than the current live config), so that is the next daily-rule candidate worth validating on fresher data before changing production.
+
+## Sharpness-Adjusted Proximal Policy (2026-03-26)
+
+- Latest git history touching this work includes:
+  - `b96b44f4` `SAM config + trainer updates`
+  - `b50f1530` `feat: add RLgpt experiment + SAPP multi-symbol sweep results + tests`
+- Current SAP all-pairs leaderboard (`sharpnessadjustedproximalpolicy/allpairs_leaderboard_20260325_211630.csv`) is mixed rather than universally dominant:
+  - `periodic_wd01` beat `baseline_wd01` on `6` symbols (`APTUSD`, `ARBUSD`, `ALGOUSD`, `ATOMUSD`, `BTCUSD`, `BTCFDUSD`)
+  - `baseline_wd01` still beat `periodic_wd01` on `4` symbols (`ADAUSD`, `BCHUSD`, `BNBUSD`, `AVAXUSD`)
+  - `SWA` was not the top config on any symbol in that latest leaderboard slice
+- Best validation leaders from that file:
+  - `APTUSD periodic_wd01` Sortino `210.78`
+  - `ARBUSD periodic_wd01` Sortino `204.73`
+  - `ALGOUSD periodic_wd01` Sortino `191.03`
+  - `ADAUSD baseline_wd01` Sortino `182.13`
+- Existing realistic marketsim artifacts show solid median returns for some periodic/SWA runs:
+  - `APTUSD periodic_wd01`: median return `22.61%`
+  - `ALGOUSD periodic_wd01`: `21.18%`
+  - `ARBUSD periodic_wd01`: `14.65%`
+  - `DOGEUSD swa_wd01`: `13.32%`
+  - `ADAUSD periodic_wd01`: `12.30%`
+- Takeaway:
+  - the sharpness-aware variants are promising on several Binance symbols, but they are not yet a clean across-the-board winner over simpler baselines.
+  - next comparison to run is direct `baseline_wd01` vs `periodic_wd01` realistic marketsim on the symbols where validation disagrees with the current saved marketsim sample (`ADAUSD`, `BCHUSD`, `BNBUSD`).
 
 ## Notes / Fixes
 - Binance hourly spot datasets are stored in `binance_spot_hourly/`; both `trainingdatahourlybinance/` and `binancetrainingdatahourly/` are symlinks to that directory (safety: avoids overwriting Alpaca CSVs via symlink aliasing).

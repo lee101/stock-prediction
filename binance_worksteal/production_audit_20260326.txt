@@ -1,0 +1,162 @@
+BINANCE WORKSTEAL PRODUCTION AUDIT
+Date: 2026-03-26 10:24:58
+Symbols: 34
+Data through: 2026-03-22
+
+======================================================================
+SECTION 1: ENTRY FILTER BREAKDOWN
+======================================================================
+Period: 2026-02-20 to 2026-03-22
+Config: dip=18% prox=2.0% sma=20 method=pre_dip
+
+Total symbol-day evaluations: 939
+  Blocked by SMA filter:        472 (50.3%)
+  Blocked by proximity:         617 (65.7%)
+  Blocked by momentum:            0 (0.0%)
+  Pass all filters:              33 (3.5%)
+  Would fill (strict):           29 (3.1%)
+
+  Fill rate (strict/candidate): 87.9%
+
+  Expected fills per 30 days: 28.1
+
+Per-symbol candidate counts:
+Symbol       Candidates      Fills FillRate
+------------------------------------------
+ENJUSD                5          5   100.0%
+INJUSD                4          2    50.0%
+PEPEUSD               4          4   100.0%
+TAOUSD                4          4   100.0%
+UNIUSD                4          4   100.0%
+APTUSD                2          2   100.0%
+DOTUSD                2          2   100.0%
+NEARUSD               2          1    50.0%
+ZECUSD                2          2   100.0%
+ATOMUSD               1          0     0.0%
+BCHUSD                1          1   100.0%
+FETUSD                1          1   100.0%
+TIAUSD                1          1   100.0%
+
+======================================================================
+SECTION 2: MULTI-WINDOW BACKTEST (Production Config)
+======================================================================
+Config: dip=18% tp=20% sl=15% trail=3% maxpos=5 maxhold=14d sma=20 prox=2.0%
+
+  W0 (2026-02-10 to 2026-03-22):
+    Return:      54.63%
+    Sortino:     59.62
+    Sharpe:       5.38
+    Max DD:      -1.25%
+    Win Rate:     73.7%
+    Entries:        43
+    Exits:          38
+    Days:           41
+    Trades/30d:   31.5
+
+  W1 (2026-01-01 to 2026-02-10):
+    Return:      31.25%
+    Sortino:      8.52
+    Sharpe:       4.43
+    Max DD:      -4.07%
+    Win Rate:     64.8%
+    Entries:        54
+    Exits:          54
+    Days:           41
+    Trades/30d:   39.5
+
+  W2 (2025-11-22 to 2026-01-01):
+    Return:       0.00%
+    Sortino:      0.00
+    Sharpe:       0.00
+    Max DD:       0.00%
+    Win Rate:      0.0%
+    Entries:         0
+    Exits:           0
+    Days:           41
+    Trades/30d:    0.0
+
+  AGGREGATE:
+    Mean Sortino:    22.71  (min=0.00 max=59.62)
+    Mean Return:     28.63%
+    Worst DD:        -4.07%
+    Mean Entries:     32.3
+    Total Entries:      97
+
+======================================================================
+SECTION 3: PARAMETER SENSITIVITY ANALYSIS
+======================================================================
+Period: 2025-12-22 to 2026-03-22
+
+--- dip_pct sweep ---
+   value  Return%  Sortino   MaxDD%  WinRate  Entries Trades/30d
+--------------------------------------------------------------
+     10%     6.04     1.66   -15.70     26.7       60       39.1
+     15%   -10.56    -2.20   -13.10     42.3       26       17.0
+     20%    12.62     2.31    -3.74     77.8       19        6.3
+     25%     5.19     0.86    -2.58     80.0        6        2.0
+
+--- proximity_pct sweep ---
+   value  Return%  Sortino   MaxDD%  WinRate  Entries Trades/30d
+--------------------------------------------------------------
+    2.0%    61.76     8.02    -4.07     68.8       98       32.3
+    3.0%    78.65    12.97    -2.81     77.8      104       34.3
+    5.0%   103.28    15.95    -2.85     89.4      118       38.9
+
+--- sma_filter_period sweep ---
+   value  Return%  Sortino   MaxDD%  WinRate  Entries Trades/30d
+--------------------------------------------------------------
+       0     9.90     0.93   -17.44     55.7       61       25.1
+      10    12.94     1.68   -15.35     57.8       64       25.9
+      20    61.76     8.02    -4.07     68.8       98       32.3
+
+--- Combined grid: dip x proximity x sma (top 10 by Sortino) ---
+  dip  prox  sma    Ret%    Sort     DD%     WR   Ent  T/30d
+--------------------------------------------------------
+  25%  5.0%    0   42.81    9.02   -2.58   67.9    29    9.6
+  25%  3.0%    0   29.58    7.03   -2.58   60.0    21    6.9
+  20%  5.0%   20   53.34    6.28   -7.83   77.5    44   14.5
+  15%  5.0%   20   52.02    5.13   -8.68   71.0    98   32.3
+  20%  5.0%   10   50.65    5.03  -12.16   62.1    62   20.4
+  15%  3.0%   20   42.46    4.27   -8.31   61.2    72   23.7
+  20%  5.0%    0   53.48    3.61  -10.12   61.3    66   21.8
+  15%  5.0%    0   13.80    3.33  -15.32   64.3    56   36.5
+  20%  2.0%    0    5.54    2.81   -5.96   61.5    13    8.5
+  25%  5.0%   20   14.13    2.36   -2.58   90.9    12    4.0
+
+Worst 5 by Sortino:
+  15%  3.0%   10  -10.56   -2.10  -12.61   51.4    37   24.1
+  15%  3.0%    0  -10.56   -2.12  -12.61   47.4    38   24.8
+  15%  2.0%    0  -10.56   -2.19  -15.83   41.9    31   20.2
+  15%  2.0%   20  -10.56   -2.20  -13.10   42.3    26   17.0
+  15%  2.0%   10  -10.56   -2.40  -12.47   43.3    30   19.6
+
+======================================================================
+SECTION 4: RANDOM BASELINE COMPARISON
+======================================================================
+Comparing production config vs 12 random configs.
+
+Production config:
+  Sortino: 8.02
+  Return:  61.76%
+
+Random baseline (12 trials):
+  Sortino: mean=2.05 median=-0.56 max=16.71 min=-3.92
+  Return:  mean=27.34% median=-1.64% max=197.15% min=-18.21%
+
+  Production Sortino percentile vs random: 83%
+  -> Production config OUTPERFORMS most random configs.
+
+======================================================================
+SECTION 5: RECOMMENDATIONS
+======================================================================
+
+TRADE FREQUENCY OK: 28.1 fills/30d
+
+Best reliable grid config (>=29 entries): dip=25% prox=5.0% sma=0 (Sort=9.02 Ret=42.81% DD=-2.58%)
+  -> Consider updating production to these params.
+
+All 3 windows profitable. Strategy is robust.
+
+======================================================================
+Audit completed in 77.8s
+======================================================================

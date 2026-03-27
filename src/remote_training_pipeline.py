@@ -447,6 +447,7 @@ def build_remote_autoresearch_plan(
     replay_eval_end_date: str = "",
     replay_eval_fill_buffer_bps: float = 5.0,
     replay_eval_run_hourly_policy: bool = False,
+    replay_eval_robust_start_states: str = "",
     replay_eval_hourly_periods_per_year: float = 8760.0,
     market_validation_asset_class: str = "",
     market_validation_days: int = 0,
@@ -533,6 +534,11 @@ def build_remote_autoresearch_plan(
         _append_optional_cli_arg(cmd, "--replay-eval-start-date", replay_eval_start_date)
         _append_optional_cli_arg(cmd, "--replay-eval-end-date", replay_eval_end_date)
         _append_optional_cli_arg(cmd, "--replay-eval-fill-buffer-bps", replay_eval_fill_buffer_bps)
+        _append_optional_cli_arg(
+            cmd,
+            "--replay-eval-robust-start-states",
+            replay_eval_robust_start_states,
+        )
         _append_optional_cli_arg(
             cmd,
             "--replay-eval-hourly-periods-per-year",
@@ -763,6 +769,12 @@ def render_remote_pipeline_script(
         'export PYTHONPATH="$PWD:$PWD/PufferLib:${PYTHONPATH:-}"',
         f"mkdir -p {shlex.quote(plan.remote_run_dir)}",
         "echo \"[$(date -u +%Y-%m-%dT%H:%M:%SZ)] starting remote pipeline\"",
+        'echo "+ rm -rf pufferlib_market/build pufferlib_market/binding*.so"',
+        "rm -rf pufferlib_market/build pufferlib_market/binding*.so",
+        'echo "+ python pufferlib_market/setup.py build_ext --inplace --force"',
+        "python pufferlib_market/setup.py build_ext --inplace --force",
+        'echo "+ python -c \'import pufferlib_market.binding; print(\\\"binding OK\\\")\'"',
+        "python -c 'import pufferlib_market.binding; print(\"binding OK\")'",
     ]
     for command in plan.commands:
         lines.append(f"echo \"+ {shell_join(command)}\"")

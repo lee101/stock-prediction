@@ -4,6 +4,193 @@
 
 Find the **highest Sortino, lowest max-drawdown, best annualized PnL** strategy for pure crypto trading on Binance. This will run live on Binance — every decision here must be validated in a market simulator that closely matches real execution.
 
+## 2026-03-26 Replay-Combo Ranking Pass
+
+This pass tightened the short-budget search loop around the actual decision
+criteria we care about for Binance deployment: daily profitability is not
+enough; the candidate also needs to survive hourly replay with acceptable
+drawdown and a smoother equity path.
+
+### What changed
+
+- `pufferlib_market.replay_eval` now exports per-section:
+  - `pnl_smoothness`
+  - `ulcer_index`
+  - `goodness_score`
+- `pufferlib_market.autoresearch_rl` now derives `replay_combo_score` from:
+  - daily replay return / Sortino / max drawdown / smoothness
+  - hourly replay return / Sortino / max drawdown / smoothness
+  - optional hourly-policy stress metrics when present
+- `--rank-metric replay_combo_score` is now available, and `--rank-metric auto`
+  prefers it whenever replay metrics exist.
+
+### Repro command
+
+```bash
+source .venv313/bin/activate
+export PYTHONPATH=$PWD/PufferLib:$PYTHONPATH
+python -u -m pufferlib_market.autoresearch_rl \
+  --train-data pufferlib_market/data/mixed23_fresh_train.bin \
+  --val-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --time-budget 180 --max-trials 2 \
+  --descriptions reg_combo_2,gspo_like_drawdown_mix15 \
+  --periods-per-year 365 --max-steps-override 90 \
+  --holdout-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --holdout-eval-steps 90 --holdout-n-windows 12 \
+  --holdout-fee-rate 0.001 --holdout-fill-buffer-bps 5 \
+  --replay-eval-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --replay-eval-hourly-root trainingdatahourly \
+  --replay-eval-start-date 2025-06-01 \
+  --replay-eval-end-date 2026-02-05 \
+  --replay-eval-fill-buffer-bps 5 \
+  --rank-metric replay_combo_score \
+  --leaderboard analysis/binance_replay_combo_probe_20260326.csv \
+  --checkpoint-root pufferlib_market/checkpoints/binance_replay_combo_probe_20260326
+```
+
+### Artifacts
+
+- `analysis/binance_replay_combo_probe_20260326.csv`
+- `pufferlib_market/checkpoints/binance_replay_combo_probe_20260326/reg_combo_2/replay_eval.json`
+- `pufferlib_market/checkpoints/binance_replay_combo_probe_20260326/gspo_like_drawdown_mix15/replay_eval.json`
+- `pufferlib_market/checkpoints/binance_replay_combo_probe_20260326/*/holdout_summary.json`
+
+### Results
+
+| Config | Replay Combo Score | Holdout Robust | Daily Replay Return | Hourly Replay Return | Daily MaxDD | Hourly MaxDD |
+|--------|-------------------:|---------------:|--------------------:|---------------------:|------------:|-------------:|
+| `gspo_like_drawdown_mix15` | `-130.97` | `-126.29` | `-14.69%` | `-15.21%` | `29.82%` | `33.14%` |
+| `reg_combo_2` | `-201.97` | `-213.00` | `-37.07%` | `-32.23%` | `41.47%` | `43.54%` |
+
+### Current read
+
+- The new replay-combo metric did its job: it ranked the GSPO-style drawdown
+  branch above `reg_combo_2` because it was materially less bad on both replay
+  horizons and drawdown.
+- Neither candidate is promotable:
+  - both remained negative on daily replay
+  - both remained negative on hourly replay
+  - both posted large replay drawdowns
+- Practical takeaway: keep using **short 3-minute bounded runs**, but rank by
+  `replay_combo_score` instead of raw hourly return so the search loop stops
+  over-favoring strategies that only look good on one horizon.
+- Immediate next branch to test:
+  - keep the GSPO family
+  - push more friction / downside control
+  - only continue candidates that improve the replay-combo score while getting
+    hourly replay return back toward non-negative territory
+
+## 2026-03-26 GSPO Follow-Up Sweep
+
+The next pass stayed inside the same GSPO drawdown family and changed one knob
+at a time, so the failures would be interpretable.
+
+### Repro command
+
+```bash
+source .venv313/bin/activate
+export PYTHONPATH=$PWD/PufferLib:$PYTHONPATH
+python -u -m pufferlib_market.autoresearch_rl \
+  --train-data pufferlib_market/data/mixed23_fresh_train.bin \
+  --val-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --time-budget 180 --max-trials 5 \
+  --descriptions gspo_like_drawdown_mix15_slip12,gspo_like_drawdown_mix15_tp01,gspo_like_drawdown_mix15_dd03,gspo_like_drawdown_mix15_sds03,gspo_like_drawdown_mix15_h512 \
+  --periods-per-year 365 --max-steps-override 90 \
+  --holdout-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --holdout-eval-steps 90 --holdout-n-windows 12 \
+  --holdout-fee-rate 0.001 --holdout-fill-buffer-bps 5 \
+  --replay-eval-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --replay-eval-hourly-root trainingdatahourly \
+  --replay-eval-start-date 2025-06-01 \
+  --replay-eval-end-date 2026-02-05 \
+  --replay-eval-fill-buffer-bps 5 \
+  --rank-metric replay_combo_score \
+  --leaderboard analysis/binance_replay_combo_followup_20260326.csv \
+  --checkpoint-root pufferlib_market/checkpoints/binance_replay_combo_followup_20260326
+```
+
+### Artifacts
+
+- `analysis/binance_replay_combo_followup_20260326.csv`
+- `pufferlib_market/checkpoints/binance_replay_combo_followup_20260326/*/replay_eval.json`
+- `pufferlib_market/checkpoints/binance_replay_combo_followup_20260326/*/holdout_summary.json`
+
+### Results
+
+| Config | Replay Combo Score | Val Return | Holdout Robust | Daily Replay Return | Hourly Replay Return | Daily MaxDD | Hourly MaxDD |
+|--------|-------------------:|-----------:|---------------:|--------------------:|---------------------:|------------:|-------------:|
+| `gspo_like_drawdown_mix15_dd03` | `+7.94` | `-7.96%` | `-172.59` | `+8.05%` | `+20.32%` | `15.21%` | `17.53%` |
+| `gspo_like_drawdown_mix15_tp01` | `-14.37` | `+11.22%` | `-146.12` | `+6.51%` | `+8.85%` | `23.59%` | `28.59%` |
+| `gspo_like_drawdown_mix15_slip12` | `-89.39` | `-1.41%` | `-222.13` | `-23.69%` | `+41.08%` | `44.84%` | `22.50%` |
+| `gspo_like_drawdown_mix15_h512` | `-126.64` | `-0.65%` | `-77.77` | `-15.18%` | `-11.45%` | `28.58%` | `31.54%` |
+| `gspo_like_drawdown_mix15_sds03` | `-151.73` | `+12.00%` | `-179.49` | `-20.96%` | `-21.23%` | `32.76%` | `36.37%` |
+
+### Read
+
+- Two branches are worth keeping:
+  - `gspo_like_drawdown_mix15_dd03`: best deployment-shaped replay score so far
+  - `gspo_like_drawdown_mix15_tp01`: cleaner balanced branch with positive val and positive replay on both horizons
+- `slip12` improved hourly replay aggressively but broke the daily replay and
+  holdout shape too much to stand alone.
+- `sds03` and `h512` should not be prioritized further.
+
+## 2026-03-26 GSPO Combo Sweep
+
+After the follow-up pass, the only justified combo was to merge the two knobs
+that had actually helped: `tp01` and `dd03`, then test a slightly higher
+friction version.
+
+### Repro command
+
+```bash
+source .venv313/bin/activate
+export PYTHONPATH=$PWD/PufferLib:$PYTHONPATH
+python -u -m pufferlib_market.autoresearch_rl \
+  --train-data pufferlib_market/data/mixed23_fresh_train.bin \
+  --val-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --time-budget 180 --max-trials 2 \
+  --descriptions gspo_like_drawdown_mix15_tp01_dd03,gspo_like_drawdown_mix15_tp01_dd03_slip10 \
+  --periods-per-year 365 --max-steps-override 90 \
+  --holdout-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --holdout-eval-steps 90 --holdout-n-windows 12 \
+  --holdout-fee-rate 0.001 --holdout-fill-buffer-bps 5 \
+  --replay-eval-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --replay-eval-hourly-root trainingdatahourly \
+  --replay-eval-start-date 2025-06-01 \
+  --replay-eval-end-date 2026-02-05 \
+  --replay-eval-fill-buffer-bps 5 \
+  --rank-metric replay_combo_score \
+  --leaderboard analysis/binance_replay_combo_combo_20260326.csv \
+  --checkpoint-root pufferlib_market/checkpoints/binance_replay_combo_combo_20260326
+```
+
+### Artifacts
+
+- `analysis/binance_replay_combo_combo_20260326.csv`
+- `pufferlib_market/checkpoints/binance_replay_combo_combo_20260326/*/replay_eval.json`
+- `pufferlib_market/checkpoints/binance_replay_combo_combo_20260326/*/holdout_summary.json`
+
+### Results
+
+| Config | Replay Combo Score | Val Return | Holdout Robust | Daily Replay Return | Hourly Replay Return | Daily MaxDD | Hourly MaxDD |
+|--------|-------------------:|-----------:|---------------:|--------------------:|---------------------:|------------:|-------------:|
+| `gspo_like_drawdown_mix15_tp01_dd03_slip10` | `+19.91` | `+10.06%` | `-183.88` | `+26.66%` | `+19.98%` | `29.83%` | `28.48%` |
+| `gspo_like_drawdown_mix15_tp01_dd03` | `-165.43` | `+3.66%` | `-243.32` | `-26.33%` | `-26.20%` | `31.47%` | `34.33%` |
+
+### Current read
+
+- Best new branch so far: `gspo_like_drawdown_mix15_tp01_dd03_slip10`
+  - first positive replay-combo score with both replay horizons strongly positive
+  - also keeps validation positive
+- Key lesson: `tp01` + `dd03` **needs extra friction**. The plain combo failed
+  badly, while `slip10` turned it into the best replay-ranked candidate of the
+  day.
+- Remaining weakness:
+  - holdout robustness is still too negative for promotion
+- Next sensible direction:
+  - keep the `tp01_dd03_slip10` branch
+  - test nearby friction / holdout stabilizers rather than broad random search
+
 ## 2026-03-16 Mixed23 Daily Robustness Pass
 
 This pass focused on the **daily mixed23 RL stack** under more realistic replay
@@ -66,6 +253,123 @@ PYTHONPATH=$PWD/PufferLib:$PYTHONPATH python -m pufferlib_market.meta_replay_eva
   --deterministic --cpu \
   --output-json pufferlib_market/meta_replay_5bp_60d/sticky_return_lb14_hl5_sm001.json
 ```
+
+## 2026-03-26 Replay Robust-Start + GPU Pool Batch Wiring
+
+This pass tightened the infrastructure around the actual Binance decision loop:
+the replay scorer can now stress a candidate from non-flat starting inventory,
+and the GPU-pool launcher can submit train-then-replay batches on the same
+entrypoint instead of forcing a separate manual replay step.
+
+### What changed
+
+- `pufferlib_market.hourly_replay` now supports explicit initial portfolio
+  states for:
+  - `simulate_daily_policy`
+  - `replay_hourly_frozen_daily_actions`
+  - `simulate_hourly_policy`
+- `pufferlib_market.replay_eval` now supports:
+  - `--robust-start-states`
+  - automatic `max_steps` clamp to dataset length
+  - `robust_start_summary` output covering worst/median replay behavior
+- `pufferlib_market.autoresearch_rl` now:
+  - parses robust replay summary fields into leaderboard metrics
+  - can rank on worst robust replay returns when requested
+  - clamps replay-eval `--max-steps` to the replay dataset length
+  - creates nested leaderboard parent directories automatically
+- `pufferlib_market.gpu_pool_rl` now forwards replay-eval settings directly to
+  autoresearch runs, including:
+  - replay data path
+  - hourly root
+  - replay date range
+  - hourly-policy replay stress mode
+  - robust start states
+  - replay fill buffer and periods/year
+
+### Why this matters
+
+- The current replay path previously assumed a flat start, which can overstate
+  deployment quality for a live bot that often begins the next cycle already
+  holding risk.
+- The GPU-pool launcher previously only handled training-side search knobs.
+  That was not enough for the intended workflow of:
+  - short train
+  - replay/market-sim rank
+  - multi-seed compare
+  - longer follow-up only for the strongest branch
+- The local `hftraining/` stack is still a custom “HF-style” trainer rather
+  than a real `transformers.Trainer` entrypoint. I checked the current official
+  Hugging Face Trainer/examples path and the right next step is to add a clean
+  compare harness instead of mutating the wrong legacy script in place.
+
+### Verified locally
+
+```bash
+source .venv313/bin/activate
+export PYTHONPATH=$PWD:$PWD/PufferLib:$PYTHONPATH
+pytest -q \
+  tests/test_pufferlib_market_replay_eval.py \
+  tests/test_pufferlib_market_hourly_replay_initial_state.py \
+  tests/test_pufferlib_market_autoresearch_rl.py \
+  tests/test_gpu_pool_rl.py
+```
+
+Result:
+
+- `65 passed`
+
+### GPU pool dry-run repro
+
+```bash
+source .venv313/bin/activate
+export PYTHONPATH=$PWD:$PWD/PufferLib:$PYTHONPATH
+python -m pufferlib_market.gpu_pool_rl run \
+  --dry-run \
+  --experiment binance_batch_probe \
+  --gpu a100 \
+  --train-data pufferlib_market/data/mixed23_fresh_train.bin \
+  --val-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --time-budget 300 \
+  --max-trials 4 \
+  --rank-metric replay_combo_score \
+  --replay-eval-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --replay-eval-hourly-root trainingdatahourly \
+  --replay-eval-start-date 2025-06-01 \
+  --replay-eval-end-date 2026-02-05 \
+  --replay-eval-run-hourly-policy \
+  --replay-eval-robust-start-states flat,long:BTCUSD:0.25 \
+  --replay-eval-fill-buffer-bps 5 \
+  --replay-eval-hourly-periods-per-year 8760
+```
+
+Dry-run result:
+
+- accepted all new replay arguments
+- estimated A100 spend for one 5-minute proof batch: about `$0.69`
+
+### Safe git-sync status
+
+- `git fetch --all --prune` completed
+- local branch state after fetch:
+  - `main` is `ahead 1, behind 49`
+- a plain `git pull` is not safe in this checkout because the worktree already
+  has active Binance/RL modifications plus untracked audit/test files
+- practical takeaway:
+  - use this checkout for the current work
+  - integrate `origin/main` as a deliberate merge/rebase task after these local
+    Binance changes are either committed or split into a worktree
+
+### Next concrete batch
+
+- Use the updated GPU-pool entrypoint for a short replay-ranked proof batch.
+- Run 3 seeds around the current best replay branch plus 1 conservative branch.
+- Prefer robust replay ranking for live-shape filtering:
+  - `replay_combo_score` for general compare
+  - `replay_hourly_policy_robust_worst_return_pct` when inventory stress should
+    dominate the shortlist
+- Only after one branch survives robust replay plus holdout should we spend
+  time wiring the true latest Hugging Face Trainer compare path into the same
+  experiment table.
 
 #### 4. Re-test that same selector on earlier 60-day windows
 
@@ -1603,3 +1907,121 @@ Current status:
 - first active trial: `ent_anneal`
 - observed live child process:
   - `314144 /nvme0n1-disk/code/stock-prediction/.venv313/bin/python -u -m pufferlib_market.train --data-path pufferlib_market/data/mixed23_latest_train_20260320.bin ... --checkpoint-dir pufferlib_market/checkpoints/mixed23_latest_champions_20260321_001/ent_anneal`
+
+## 2026-03-26 Robust Replay Remote Batch + Bootstrap Fixes
+
+Goal of this pass:
+
+- move the mixed23 remote launcher onto the new robust-start replay ranking path
+- make the 5-minute batch actually reproducible on the remote 5090/A40 box instead of failing on environment drift
+- keep progress and failure modes written down instead of losing them in shell history
+
+Launcher / infra changes completed locally:
+
+- `pufferlib_market.autoresearch_rl` already had robust-start replay metrics wired; I extended the remote wrappers to expose them end-to-end:
+  - `src/remote_training_pipeline.py`
+  - `scripts/launch_mixed23_retrain.py`
+- new launcher flags now supported:
+  - `--replay-eval-run-hourly-policy`
+  - `--replay-eval-robust-start-states`
+  - `--replay-eval-hourly-periods-per-year`
+  - robust replay rank metrics including `replay_combo_score`, `replay_hourly_robust_worst_return_pct`, `replay_hourly_policy_robust_worst_return_pct`
+- remote sync was tightened to avoid re-rsyncing bulky `pufferlib_market/checkpoints/` and `pufferlib_market/data/`
+- remote pipeline bootstrap now:
+  - removes stale `pufferlib_market/build` and existing binding `.so`
+  - rebuilds `pufferlib_market.binding` in place with `python pufferlib_market/setup.py build_ext --inplace --force`
+  - verifies the rebuilt extension with `python -c 'import pufferlib_market.binding; print("binding OK")'`
+
+Validation:
+
+```bash
+source .venv313/bin/activate
+export PYTHONPATH=$PWD:$PWD/PufferLib:$PYTHONPATH
+pytest -q \
+  tests/test_pufferlib_market_replay_eval.py \
+  tests/test_pufferlib_market_hourly_replay_initial_state.py \
+  tests/test_pufferlib_market_autoresearch_rl.py \
+  tests/test_gpu_pool_rl.py \
+  tests/test_remote_training_pipeline.py \
+  tests/test_launch_mixed23_retrain.py
+```
+
+- result: `78 passed in 0.95s`
+
+Remote failures found and fixed before the live run:
+
+1. first detached launch failed because only `src/remote_training_pipeline.py` was synced, while remote `autoresearch_rl` also needed updated `src/robust_trading_metrics.py`
+2. second launch failed because the old remote `.venv313` had `numpy==2.4.3` while `pufferlib_market.binding` was still compiled against NumPy 1.x
+3. attempted editable bootstrap `uv pip install -e .` failed due a broken setuptools package-discovery path on the remote checkout
+4. attempted `cd pufferlib_market && python setup.py build_ext --inplace` wrote to the wrong target path for this repo layout
+5. final fix was to rebuild from repo root with a clean `build/` and `--force`
+
+Current live proof batch:
+
+```bash
+source .venv313/bin/activate
+export PYTHONPATH=$PWD:$PWD/PufferLib:$PYTHONPATH
+python scripts/launch_mixed23_retrain.py \
+  --run-id mixed23_robust_probe_20260326_2215 \
+  --descriptions reg_combo_2,gspo_like_drawdown_mix15,per_env_adv_smooth,robust_reg_tp005_ent_seed42,robust_reg_tp005_ent_seed7,robust_reg_tp005_ent_seed123 \
+  --time-budget 300 \
+  --rank-metric replay_hourly_policy_robust_worst_return_pct \
+  --replay-eval-run-hourly-policy \
+  --replay-eval-robust-start-states flat,long:BTCUSD:0.25,long:ETHUSD:0.25,short:BTCUSD:0.25,short:ETHUSD:0.25 \
+  --replay-eval-fill-buffer-bps 5 \
+  --replay-eval-hourly-periods-per-year 8760 \
+  --post-eval-periods 30,60
+```
+
+Remote metadata:
+
+- host: `administrator@93.127.141.100`
+- repo: `/nvme0n1-disk/code/stock-prediction`
+- env: `.venv313`
+- remote PID: `3078275`
+- remote log: `analysis/remote_runs/mixed23_robust_probe_20260326_2215/pipeline.log`
+- local manifest: `analysis/remote_runs/mixed23_robust_probe_20260326_2215/launch_manifest.json`
+- leaderboard target:
+  - `pufferlib_market/mixed23_robust_probe_20260326_2215_leaderboard.csv`
+- checkpoint root:
+  - `pufferlib_market/checkpoints/mixed23_robust_probe_20260326_2215`
+- post-train marketsim output:
+  - `analysis/remote_runs/mixed23_robust_probe_20260326_2215/marketsim_30_60.csv`
+
+Current live status:
+
+- remote bootstrap completed successfully
+- `binding OK` confirmed on the server after a clean rebuild
+- `pufferlib_market.autoresearch_rl` has entered trial `[0] reg_combo_2`
+- latest observed log line still shows the first 300s training block in progress
+- observed live child process:
+  - `3079101 /nvme0n1-disk/code/stock-prediction/.venv313/bin/python -u -m pufferlib_market.train --data-path pufferlib_market/data/mixed23_fresh_train.bin ... --checkpoint-dir pufferlib_market/checkpoints/mixed23_robust_probe_20260326_2215/reg_combo_2`
+
+Git sync note:
+
+- I fetched remote refs but did not run a plain `git pull`
+- current state remains `main...origin/main [ahead 1, behind 49]` with a dirty worktree
+- pulling or rebasing blindly here is unsafe because there are many unrelated local modifications already present
+
+Follow-up repo-hardening fixes after the live batch started:
+
+- `pyproject.toml`
+  - added `namespaces = false` under `[tool.setuptools.packages.find]`
+  - added NumPy to `[build-system].requires`
+- this fixes two separate editable-install bugs:
+  - implicit namespace discovery was treating data directories like `forecast_cache/h6` as packages
+  - `uv pip install -e .` could fail in build isolation because NumPy headers were not declared as build requirements
+- `setup.py`
+  - fixed the root build script to compile `pufferlib_market.binding` from repo-relative paths under `pufferlib_market/src/` instead of the broken old `src/` absolute-path assumptions
+- `launch_mixed23_retrain.py`
+  - replaced the stale top-level copy with a thin wrapper around `scripts.launch_mixed23_retrain.main`
+  - this removes the drift that caused me to patch the wrong launcher copy at the start of this pass
+
+Local validation for the packaging/install fixes:
+
+```bash
+source .venv313/bin/activate
+uv pip install -e . --no-deps
+```
+
+- result: editable install now succeeds locally under `.venv313`

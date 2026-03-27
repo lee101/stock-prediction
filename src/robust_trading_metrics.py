@@ -124,6 +124,102 @@ def compute_market_sim_goodness_score(
     return float(raw_score * coverage)
 
 
+def compute_replay_composite_score(
+    *,
+    daily_return_pct: float | None,
+    daily_sortino: float | None,
+    daily_max_drawdown_pct: float | None,
+    daily_pnl_smoothness: float = 0.0,
+    daily_trade_count: float = 0.0,
+    hourly_return_pct: float | None,
+    hourly_sortino: float | None,
+    hourly_max_drawdown_pct: float | None,
+    hourly_pnl_smoothness: float = 0.0,
+    hourly_trade_count: float = 0.0,
+    hourly_weight: int = 2,
+    hourly_policy_return_pct: float | None = None,
+    hourly_policy_sortino: float | None = None,
+    hourly_policy_max_drawdown_pct: float | None = None,
+    hourly_policy_pnl_smoothness: float = 0.0,
+    hourly_policy_trade_count: float = 0.0,
+    hourly_policy_weight: int = 1,
+) -> dict[str, float]:
+    """Build a replay ranking score that rewards daily/hourly agreement.
+
+    The score is based on ``summarize_scenario_results`` so it naturally prefers
+    positive returns, good downside-adjusted performance, low drawdown, and
+    smoother PnL. Hourly replay is intentionally weighted more heavily because
+    that is closer to the executable path than daily close-to-close metrics.
+    """
+
+    def _to_row(
+        *,
+        return_pct: float | None,
+        sortino: float | None,
+        max_drawdown_pct: float | None,
+        pnl_smoothness: float = 0.0,
+        trade_count: float = 0.0,
+    ) -> dict[str, float] | None:
+        if return_pct is None or sortino is None or max_drawdown_pct is None:
+            return None
+        return {
+            "return_pct": float(return_pct),
+            "annualized_return_pct": float(return_pct),
+            "sortino": float(sortino),
+            "max_drawdown_pct": float(max_drawdown_pct),
+            "pnl_smoothness": max(float(pnl_smoothness), 0.0),
+            "trade_count": max(float(trade_count), 0.0),
+        }
+
+    scenario_results: list[dict[str, float]] = []
+
+    daily_row = _to_row(
+        return_pct=daily_return_pct,
+        sortino=daily_sortino,
+        max_drawdown_pct=daily_max_drawdown_pct,
+        pnl_smoothness=daily_pnl_smoothness,
+        trade_count=daily_trade_count,
+    )
+    if daily_row is not None:
+        scenario_results.append(daily_row)
+
+    hourly_row = _to_row(
+        return_pct=hourly_return_pct,
+        sortino=hourly_sortino,
+        max_drawdown_pct=hourly_max_drawdown_pct,
+        pnl_smoothness=hourly_pnl_smoothness,
+        trade_count=hourly_trade_count,
+    )
+    if hourly_row is not None:
+        for _ in range(max(1, int(hourly_weight))):
+            scenario_results.append(dict(hourly_row))
+
+    hourly_policy_row = _to_row(
+        return_pct=hourly_policy_return_pct,
+        sortino=hourly_policy_sortino,
+        max_drawdown_pct=hourly_policy_max_drawdown_pct,
+        pnl_smoothness=hourly_policy_pnl_smoothness,
+        trade_count=hourly_policy_trade_count,
+    )
+    if hourly_policy_row is not None:
+        for _ in range(max(1, int(hourly_policy_weight))):
+            scenario_results.append(dict(hourly_policy_row))
+
+    if not scenario_results:
+        return {}
+
+    summary = summarize_scenario_results(scenario_results)
+    return {
+        "replay_combo_score": float(summary["robust_score"]),
+        "replay_combo_return_mean_pct": float(summary["return_mean_pct"]),
+        "replay_combo_return_worst_pct": float(summary["return_worst_pct"]),
+        "replay_combo_sortino_p25": float(summary["sortino_p25"]),
+        "replay_combo_max_drawdown_worst_pct": float(summary["max_drawdown_worst_pct"]),
+        "replay_combo_negative_return_rate": float(summary["negative_return_rate"]),
+        "replay_combo_scenario_count": float(summary["scenario_count"]),
+    }
+
+
 def summarize_lag_results(
     lag_results: Sequence[Mapping[str, Any]],
     *,
