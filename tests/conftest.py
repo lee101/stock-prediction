@@ -382,6 +382,13 @@ def pytest_ignore_collect(collection_path, config):
     if rel.startswith("tests/pufferlibtraining2/") and not _module_available("pufferlib.pufferl"):
         return True
 
+    if rel in {
+        "tests/test_jax_losses.py",
+        "tests/test_jax_policy.py",
+        "tests/test_jax_trainer_wandboard.py",
+    } and not _module_available("jax"):
+        return True
+
     return False
 
 if "backtest_test3_inline" not in sys.modules:
