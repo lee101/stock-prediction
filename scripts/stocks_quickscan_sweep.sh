@@ -162,3 +162,91 @@ done
 
 log "=== Stage 2 done. 0/50-neg champions: ==="
 awk -F, '$6=="0"' "$CSV_RETRAIN" | sort -t, -k3 -rn
+
+# === Stage 3: Canonical eval on 0/50-neg Stage 2 seeds ===
+log ""
+log "=== Stage 3: Canonical eval (default_rng 42) on 0/50-neg seeds ==="
+CSV_CANONICAL="${LOG_ROOT}/stocks12_quickscan_canonical_leaderboard.csv"
+[ ! -f "$CSV_CANONICAL" ] && echo "timestamp,label,canon_med_90d,canon_p10_90d,canon_worst_90d,canon_neg_of_50,checkpoint" > "$CSV_CANONICAL"
+
+python3 - << 'PYEOF'
+import sys, numpy as np
+sys.path.insert(0, '.')
+from pufferlib_market.hourly_replay import read_mktd, simulate_daily_policy
+from pufferlib_market.evaluate_holdout import _slice_window
+from pufferlib_market.ensemble_inference import EnsembleTrader
+import csv, json, os
+from datetime import datetime
+
+val_data = read_mktd('pufferlib_market/data/stocks12_daily_val.bin')
+rng = np.random.default_rng(42)
+starts = sorted(rng.choice(val_data.num_timesteps - 90 + 1, size=50, replace=False).tolist())
+
+# Read Stage 2 leaderboard for 0/50-neg seeds
+retrain_csv = 'pufferlib_market/stocks12_quickscan_retrain_leaderboard.csv'
+canonical_csv = 'pufferlib_market/stocks12_quickscan_canonical_leaderboard.csv'
+
+# Get already-done canonical evals
+done = set()
+if os.path.exists(canonical_csv):
+    with open(canonical_csv) as f:
+        for row in csv.DictReader(f):
+            done.add(row['label'])
+
+if not os.path.exists(retrain_csv):
+    print('No Stage 2 retrain results yet.')
+    sys.exit(0)
+
+prod_paths = [
+    'pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt',
+    'pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt',
+    'pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s36/best.pt',
+]
+
+with open(retrain_csv) as f:
+    rows = list(csv.DictReader(f))
+
+candidates = [r for r in rows if int(r['neg_of_50']) == 0]
+print(f'Canonical eval for {len(candidates)} 0/50-neg Stage 2 seeds...')
+
+for row in candidates:
+    label = row['label']
+    ckpt = row['checkpoint']
+    if label in done:
+        print(f'  {label}: already done, skip')
+        continue
+    if not os.path.exists(ckpt):
+        print(f'  {label}: checkpoint missing')
+        continue
+    ens = EnsembleTrader([ckpt], num_symbols=val_data.num_symbols, device='cpu', mode='softmax_avg')
+    fn = ens.get_policy_fn(deterministic=True)
+    rets = []
+    for start in starts:
+        w = _slice_window(val_data, start=int(start), steps=90)
+        r = simulate_daily_policy(w, fn, max_steps=90, fill_buffer_bps=5.0, periods_per_year=252.0,
+                                  enable_drawdown_profit_early_exit=False)
+        rets.append(r.total_return)
+    neg = sum(1 for r in rets if r < 0)
+    med = np.median(rets) * 100
+    p10 = np.percentile(rets, 10) * 100
+    worst = min(rets) * 100
+    ts = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+    with open(canonical_csv, 'a') as f:
+        f.write(f'{ts},{label},{med:.2f},{p10:.2f},{worst:.2f},{neg},{ckpt}\n')
+    print(f'  {label}: canonical med={med:.2f}% p10={p10:.2f}% neg={neg}/50')
+
+    # If canonical 0/50 neg, test in 4-model ensemble
+    if neg == 0:
+        ens4 = EnsembleTrader(prod_paths + [ckpt], num_symbols=val_data.num_symbols, device='cpu', mode='softmax_avg')
+        fn4 = ens4.get_policy_fn(deterministic=True)
+        rets4 = []
+        for start in starts:
+            w = _slice_window(val_data, start=int(start), steps=90)
+            r = simulate_daily_policy(w, fn4, max_steps=90, fill_buffer_bps=5.0, periods_per_year=252.0,
+                                      enable_drawdown_profit_early_exit=False)
+            rets4.append(r.total_return)
+        neg4 = sum(1 for r in rets4 if r < 0)
+        med4 = np.median(rets4) * 100
+        p10_4 = np.percentile(rets4, 10) * 100
+        print(f'  → 4-model ensemble: med={med4:.2f}% p10={p10_4:.2f}% neg={neg4}/50')
+PYEOF

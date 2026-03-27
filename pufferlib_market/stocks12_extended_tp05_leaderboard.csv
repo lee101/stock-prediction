@@ -1,0 +1,5 @@
+timestamp,label,med_90d,p10_90d,worst_90d,neg_of_50,med_sortino,checkpoint
+2026-03-27T11:04:19Z,stocks12_ext_tp05_s1,-4.13,-17.95,-32.47,31,-1.10,pufferlib_market/checkpoints/stocks12_extended_tp05/s1/best.pt
+2026-03-27T11:05:20Z,stocks12_ext_tp05_s3,-13.66,-24.03,-29.32,43,-10.45,pufferlib_market/checkpoints/stocks12_extended_tp05/s3/best.pt
+2026-03-27T11:06:22Z,stocks12_ext_tp05_s5,0.24,-7.36,-14.97,23,1.48,pufferlib_market/checkpoints/stocks12_extended_tp05/s5/best.pt
+2026-03-27T11:28:03Z,stocks12_ext_tp05_s7,-12.03,-20.43,-24.67,47,-10.53,pufferlib_market/checkpoints/stocks12_extended_tp05/s7/best.pt
