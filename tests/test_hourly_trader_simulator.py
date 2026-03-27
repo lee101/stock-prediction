@@ -379,6 +379,68 @@ def test_hourly_trader_simulator_supports_seeded_positions_and_open_orders() -> 
     assert result.final_cash == 720.0
 
 
+def test_hourly_trader_simulator_seeded_duplicate_entry_orders_accumulate_exposure() -> None:
+    ts0 = pd.Timestamp("2026-01-05T15:00:00Z")
+
+    bars = pd.DataFrame(
+        [
+            {"timestamp": ts0, "symbol": "ETHUSD", "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0},
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {"timestamp": ts0, "symbol": "ETHUSD", "buy_price": 100.0, "sell_price": 110.0, "buy_amount": 0.0, "sell_amount": 0.0},
+        ]
+    )
+
+    sim = HourlyTraderMarketSimulator(
+        HourlyTraderSimulationConfig(
+            initial_cash=1000.0,
+            initial_open_orders=[
+                OpenOrder(
+                    symbol="ETH/USD",
+                    side="buy",
+                    qty=2.0,
+                    limit_price=100.0,
+                    kind="entry",
+                    placed_at=ts0 - pd.Timedelta(hours=2),
+                    reserved_cash=200.0,
+                ),
+                OpenOrder(
+                    symbol="ETHUSD",
+                    side="buy",
+                    qty=2.0,
+                    limit_price=100.0,
+                    kind="entry",
+                    placed_at=ts0 - pd.Timedelta(hours=2),
+                    reserved_cash=200.0,
+                ),
+                OpenOrder(
+                    symbol="ETHUSD",
+                    side="buy",
+                    qty=2.0,
+                    limit_price=100.0,
+                    kind="entry",
+                    placed_at=ts0 - pd.Timedelta(hours=2),
+                    reserved_cash=200.0,
+                ),
+            ],
+            allocation_pct=None,
+            decision_lag_bars=1,
+            fee_by_symbol={"ETHUSD": 0.0},
+            enforce_market_hours=False,
+        )
+    )
+    result = sim.run(bars, actions)
+
+    assert len(result.fills) == 1
+    assert result.fills[0].side == "buy"
+    assert result.fills[0].quantity == 6.0
+    assert result.final_positions == {"ETHUSD": 6.0}
+    assert result.final_cash == 400.0
+    assert result.final_reserved_cash == 0.0
+
+
 def test_hourly_trader_simulator_max_hold_places_forced_exit_order() -> None:
     ts0 = pd.Timestamp("2026-01-01T00:00:00Z")
     ts1 = ts0 + pd.Timedelta(hours=1)

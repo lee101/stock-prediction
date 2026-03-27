@@ -78,7 +78,9 @@ def resolve_descriptions(*, preset: str, descriptions: str = "") -> list[str]:
 def _build_rsync_cmd(remote_host: str, remote_dir: str, *, extra_paths: Sequence[str] = ()) -> list[str]:
     paths = [
         "scripts/launch_mixed23_retrain.py",
+        "src/",
         "src/remote_training_pipeline.py",
+        "pufferlib_market/fast_marketsim_eval.py",
         "pufferlib_market/",
         "AGENTS.md",
         "docs/REMOTE_TRAINING_RUNBOOK.md",
@@ -90,6 +92,12 @@ def _build_rsync_cmd(remote_host: str, remote_dir: str, *, extra_paths: Sequence
     return [
         "rsync",
         "-azR",
+        "--exclude",
+        "pufferlib_market/checkpoints/",
+        "--exclude",
+        "pufferlib_market/data/",
+        "--exclude",
+        "**/__pycache__/",
         "-e",
         "ssh -o StrictHostKeyChecking=no",
         *paths,
@@ -132,6 +140,7 @@ def _write_local_manifest(
 ) -> Path:
     manifest_dir.mkdir(parents=True, exist_ok=True)
     (manifest_dir / "pipeline.sh").write_text(pipeline_script)
+    checkpoint_run_id = str(plan_payload.get("run_id") or args.run_id)
     manifest = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "args": {key: str(value) for key, value in vars(args).items()},
@@ -158,7 +167,7 @@ def _write_local_manifest(
                 "-az",
                 "-e",
                 "ssh -o StrictHostKeyChecking=no",
-                f"{args.remote_host}:{args.remote_dir}/pufferlib_market/checkpoints/{plan_payload['run_id']}/",
+                f"{args.remote_host}:{args.remote_dir}/pufferlib_market/checkpoints/{checkpoint_run_id}/",
                 str(manifest_dir) + "/checkpoints/",
             ],
             "pull_leaderboard": [
@@ -200,8 +209,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "val_return",
             "holdout_robust_score",
             "market_goodness_score",
+            "replay_combo_score",
             "replay_hourly_return_pct",
             "replay_hourly_policy_return_pct",
+            "replay_hourly_robust_worst_return_pct",
+            "replay_hourly_policy_robust_worst_return_pct",
         ],
         default="replay_hourly_return_pct",
     )
@@ -215,6 +227,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--replay-eval-start-date", default=REPLAY_EVAL_START_DATE)
     parser.add_argument("--replay-eval-end-date", default=REPLAY_EVAL_END_DATE)
     parser.add_argument("--replay-eval-fill-buffer-bps", type=float, default=5.0)
+    parser.add_argument("--replay-eval-run-hourly-policy", action="store_true")
+    parser.add_argument("--replay-eval-robust-start-states", default="")
+    parser.add_argument("--replay-eval-hourly-periods-per-year", type=float, default=8760.0)
     parser.add_argument("--post-eval-periods", default="30,60,90,120")
     parser.add_argument("--post-eval-sort-period", type=int, default=120)
     parser.add_argument("--post-eval-max-workers", type=int, default=2)
@@ -254,6 +269,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         replay_eval_start_date=str(args.replay_eval_start_date),
         replay_eval_end_date=str(args.replay_eval_end_date),
         replay_eval_fill_buffer_bps=float(args.replay_eval_fill_buffer_bps),
+        replay_eval_run_hourly_policy=bool(args.replay_eval_run_hourly_policy),
+        replay_eval_robust_start_states=str(args.replay_eval_robust_start_states),
+        replay_eval_hourly_periods_per_year=float(args.replay_eval_hourly_periods_per_year),
         post_eval_periods=post_eval_periods,
         post_eval_sort_period=int(args.post_eval_sort_period),
         post_eval_max_workers=int(args.post_eval_max_workers),

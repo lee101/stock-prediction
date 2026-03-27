@@ -432,8 +432,3 @@ sudo tail -20 /var/log/supervisor/binance-hybrid-spot-error.log
 - **Fix**: Added `--no-early-stop` flag to `evaluate_holdout.py`. Updated DEFAULT_CHECKPOINT to random_mut_2201. Always use `--deterministic --no-early-stop` for final candidate selection.
 - **Note**: random_mut_2201 uses h=256 (NOT h=1024) — shows smaller networks with right config can outperform.
 
-### 2026-03-22 18:54 UTC -- Gemini API key revoked
-- **What**: Gemini API key revoked/leaked. Bot received 403 PERMISSION_DENIED for 13+ hours. RL fallback also broken due to obs mismatch (always outputs LONG_UNI for non-configured symbol). Both primary and fallback signals broken simultaneously. No trades executed.
-- **Impact**: Portfolio dropped from $3,333 (Mar 21) to $3,056 (Mar 23). Still holding 107.78 LINK (~$980).
-- **Root cause**: API key was hardcoded in supervisor.conf and committed to git. Google detected it as leaked.
-- **Remediation**: Move API key to gitignored `.env.binance-hybrid`, reduce leverage 5x->0.5x, add action masking to RL signal.

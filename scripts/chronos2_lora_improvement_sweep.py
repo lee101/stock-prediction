@@ -140,6 +140,7 @@ def build_train_cmd(
     output_root: Path,
     results_dir: Path,
 ) -> list[str]:
+    run_prefix = _config_run_prefix(run_id, cfg)
     cmd = [
         sys.executable,
         "scripts/train_crypto_lora_sweep.py",
@@ -153,15 +154,25 @@ def build_train_cmd(
         "--learning-rate", str(cfg.learning_rate),
         "--num-steps", str(cfg.num_steps),
         "--lora-r", str(cfg.lora_r),
+        "--lora-alpha", str(cfg.lora_alpha),
+        "--lora-targets", ",".join(cfg.lora_targets),
+        "--lr-scheduler-type", cfg.lr_scheduler,
+        "--warmup-ratio", str(cfg.warmup_ratio),
         "--preaug", cfg.preaug,
-        "--run-prefix", run_id,
+        "--run-prefix", run_prefix,
     ]
     return cmd
 
 
+def _config_run_prefix(run_id: str, cfg: ImprovementSweepConfig) -> str:
+    targets_label = "wide" if len(cfg.lora_targets) > 4 else "narrow"
+    return f"{run_id}_{targets_label}"
+
+
 def _newest_matching_result(results_dir: Path, run_id: str, cfg: ImprovementSweepConfig) -> Path | None:
+    run_prefix = _config_run_prefix(run_id, cfg)
     pattern = (
-        f"{run_id}_{cfg.symbol}_lora_{cfg.preaug}_ctx{cfg.context_length}_"
+        f"{run_prefix}_{cfg.symbol}_lora_{cfg.preaug}_ctx{cfg.context_length}_"
         f"lr*_r{cfg.lora_r}_*.json"
     )
     matches = sorted(results_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -318,7 +329,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     p.add_argument("--mae-threshold", type=float, default=DEFAULT_MAE_THRESHOLD)
     p.add_argument("--improvement-threshold", type=float, default=DEFAULT_IMPROVEMENT_THRESHOLD)
     p.add_argument("--dashboard-csv", type=Path, default=DASHBOARD_CSV)
-    p.add_argument("--data-root", type=Path, default=Path("trainingdatahourly/crypto"))
+    p.add_argument("--data-root", type=Path, default=Path("trainingdatahourly"))
     p.add_argument("--output-root", type=Path, default=Path("chronos2_finetuned"))
     p.add_argument("--results-dir", type=Path, default=Path("hyperparams/lora_improvement_sweep"))
     p.add_argument("--lora-rs", default="8,16")
