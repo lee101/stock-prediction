@@ -61,6 +61,13 @@ class SAPConfig:
     # Sharpness logging
     log_sharpness: bool = True
 
+    # Round 5: Spectral regularization (penalize max singular value of weight matrices)
+    spectral_reg_weight: float = 0.0
+
+    # Round 5: Multi-period loss (train on sub-windows too)
+    multi_period_windows: list[int] = field(default_factory=list)
+    multi_period_weight: float = 0.0  # weight for sub-window losses vs main loss
+
 
 # Experiment sweep configurations
 EXPERIMENTS = [

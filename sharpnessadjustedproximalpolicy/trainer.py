@@ -54,6 +54,21 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _spectral_reg(model, weight: float) -> torch.Tensor:
+    """Spectral regularization: penalize largest singular value of 2D weight matrices."""
+    reg = torch.tensor(0.0, device=next(model.parameters()).device)
+    for p in model.parameters():
+        if p.ndim == 2 and p.requires_grad:
+            # Power iteration approximation for speed
+            u = torch.randn(p.shape[0], device=p.device)
+            u = u / u.norm()
+            v = p.T @ u
+            v = v / v.norm()
+            sigma = (u @ p @ v).abs()
+            reg = reg + sigma
+    return weight * reg
+
+
 @dataclass
 class SAPHistoryEntry:
     epoch: int
@@ -334,11 +349,11 @@ class SAPTrainer:
                     fill_buffer_pct=fill_buf,
                     margin_annual_rate=float(self.tc.margin_annual_rate),
                 )
+                ppy = float(self.tc.periods_per_year or HOURLY_PERIODS_PER_YEAR)
                 if len(lag_list) > 1:
                     losses = []
                     for lag_i in lag_list:
                         sim_i = sim_fn(**sim_kwargs, temperature=float(self.tc.fill_temperature), decision_lag_bars=lag_i)
-                        ppy = float(self.tc.periods_per_year or HOURLY_PERIODS_PER_YEAR)
                         lo_i, _, _, _ = compute_loss_by_type(
                             sim_i.returns.float(), self.tc.loss_type,
                             target_sign=self.tc.sortino_target_sign, periods_per_year=ppy,
@@ -346,17 +361,62 @@ class SAPTrainer:
                             dd_penalty=self.tc.dd_penalty,
                         )
                         losses.append(lo_i)
-                    return sum(losses) / len(losses)
+                    main_loss = sum(losses) / len(losses)
                 else:
                     sim = sim_fn(**sim_kwargs, temperature=float(self.tc.fill_temperature), decision_lag_bars=base_lag)
-                    ppy = float(self.tc.periods_per_year or HOURLY_PERIODS_PER_YEAR)
-                    lo, _, _, _ = compute_loss_by_type(
+                    main_loss, _, _, _ = compute_loss_by_type(
                         sim.returns.float(), self.tc.loss_type,
                         target_sign=self.tc.sortino_target_sign, periods_per_year=ppy,
                         return_weight=self.tc.return_weight, smoothness_penalty=self.tc.smoothness_penalty,
                         dd_penalty=self.tc.dd_penalty,
                     )
-                    return lo
+
+                total_loss = main_loss
+
+                # Multi-period loss: compute loss on sub-windows for horizon diversity
+                if self.sc.multi_period_windows and self.sc.multi_period_weight > 0:
+                    T_full = features.shape[1]
+                    sub_losses = []
+                    for win_len in self.sc.multi_period_windows:
+                        if win_len >= T_full:
+                            continue
+                        # Compute on last win_len bars of the sequence
+                        sub_sim = sim_fn(
+                            highs=highs[:, -win_len:], lows=lows[:, -win_len:],
+                            closes=closes[:, -win_len:],
+                            opens=opens[:, -win_len:] if opens is not None else None,
+                            buy_prices=actions["buy_price"][:, -win_len:],
+                            sell_prices=actions["sell_price"][:, -win_len:],
+                            trade_intensity=ti[:, -win_len:],
+                            buy_trade_intensity=bi[:, -win_len:],
+                            sell_trade_intensity=si[:, -win_len:],
+                            maker_fee=batch.get("maker_fee", self.tc.maker_fee),
+                            initial_cash=self.tc.initial_cash,
+                            can_short=batch.get("can_short", False),
+                            can_long=batch.get("can_long", True),
+                            max_leverage=self.tc.max_leverage,
+                            market_order_entry=self.tc.market_order_entry,
+                            fill_buffer_pct=fill_buf,
+                            margin_annual_rate=float(self.tc.margin_annual_rate),
+                            temperature=float(self.tc.fill_temperature),
+                            decision_lag_bars=base_lag,
+                        )
+                        sub_lo, _, _, _ = compute_loss_by_type(
+                            sub_sim.returns.float(), self.tc.loss_type,
+                            target_sign=self.tc.sortino_target_sign, periods_per_year=ppy,
+                            return_weight=self.tc.return_weight, smoothness_penalty=self.tc.smoothness_penalty,
+                            dd_penalty=self.tc.dd_penalty,
+                        )
+                        sub_losses.append(sub_lo)
+                    if sub_losses:
+                        sub_avg = sum(sub_losses) / len(sub_losses)
+                        total_loss = (1 - self.sc.multi_period_weight) * main_loss + self.sc.multi_period_weight * sub_avg
+
+                # Spectral regularization
+                if self.sc.spectral_reg_weight > 0:
+                    total_loss = total_loss + _spectral_reg(model, self.sc.spectral_reg_weight)
+
+                return total_loss
 
             # -- Main training step --
             if isinstance(sam_opt, FullSAMOptimizer):
