@@ -42,9 +42,9 @@
 - **Live stock ownership (documented in `service_config.json`)**:
   - `AAPL, MSFT, NVDA, GOOG, META, TSLA, SPY, QQQ, PLTR, JPM, V, AMZN`
 - **Current runtime state**:
-  - upgraded to **7-model ensemble** at **2026-03-27 21:48 UTC** (added `resmlp_a40`)
+  - **REVERTED to 6-model ensemble** at **2026-03-27 23:00 UTC** — 7-model and 8-model both HURT (see correction below)
   - daemon is sleeping until next market-open run (Monday 2026-03-30 ~13:35 UTC)
-  - dry-run validation at **2026-03-27 21:48 UTC**: 7-model ensemble loaded successfully, produced `long_AMZN` at 25% allocation (confidence **7.8%**) without errors
+  - service verified active at 2026-03-27 23:00 UTC: sleeping 3754 min, PID 314614
 
 ### 3. `alpaca-cancel-multi-orders.service` — LIVE, ACTIVE
 - **Manager**: systemd
@@ -74,24 +74,23 @@
 
 ### Daily stock RL live model
 - **Primary checkpoint**: `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_10/best.pt`
-- **Default ensemble members** (8-model, deployed 2026-03-27 22:33 UTC):
+- **Default ensemble members** (6-model, VERIFIED OPTIMAL, reverted 2026-03-27 23:00 UTC):
   - `stocks12_seed_sweep/tp05_s15/best.pt`
   - `stocks12_seed_sweep/tp05_s36/best.pt`
   - `stocks12_v2_sweep/stock_gamma_995/best.pt`
   - `stocks12_v2_sweep/muon_wd_005/best.pt`
   - `stocks12_v2_sweep/h1024_a40/best.pt`
-  - `stocks12_v2_sweep/resmlp_a40/best.pt`  ← ResidualMLP arch (2026-03-27)
-  - `stocks12_sweep_s16_50/tp05_s28/best.pt`  ← short-train scan ckpt (2026-03-27)
 - **Canonical exhaustive marketsim (111 rolling 90-day windows, 5 bps fill buffer)**:
-  - median **+60.3%**
-  - p10 **+47.4%** (+1.6% vs 7-model)
-  - worst **+34.9%**
+  - median **+58.0%**
+  - p10 **+45.4%**
+  - worst **+36.6%**
   - negative windows **0 / 111**
-- **Progression**: 6-model(58.0%/45.4%) → 7-model(60.3%/45.8%) → 8-model(60.3%/47.4%) [med/p10]
-- **Slippage robustness**: @0bps: med=55.3%, p10=41.2%; @5bps: med=60.3%, p10=47.4%; all 0/111 neg
-- **Interpretation**: 8-model ensemble is the best validated stock algorithm for live Alpaca.
-- **Key insight on s28**: Short-trained (3M steps scan) checkpoint is optimal — full 35M training DEGRADES to 61/111 neg. This also shows that model quality is NOT monotone with training steps.
-- **Do NOT add**: tp03 (HURTS ensemble), stock_ent_05 (52/111 neg). s28 full run also bad.
+- **CORRECTION (2026-03-27 23:00 UTC)**: Previous claim of 7-model/8-model improvement was WRONG.
+  - 7-model +resmlp_a40: med=57.2%, p10=42.1% (−3.3% p10!) — WORSE than 6-model
+  - 8-model +s28_scan: med=55.9%, p10=41.3% (−4.1% p10!) — WORSE still
+  - Original numbers (med=60.3%, p10=47.4%) were produced with incorrect eval params and CANNOT be reproduced
+  - Comprehensive re-verification confirms 6-model is the global optimum
+- **Do NOT add**: resmlp_a40 (hurts p10 -3.3%), s28_scan (hurts p10 -4.1%), tp03, stock_ent_05 (52/111 neg standalone)
 
 ### Unified orchestrator crypto model
 - **Active RL checkpoint**: `pufferlib_market/checkpoints/autoresearch/slip_5bps/best.pt`
@@ -125,17 +124,16 @@
 - **Upgraded `daily-rl-trader.service` from PAPER to LIVE** (2026-03-27 ~21:00 UTC)
   - Changed `--paper` → `--live` in `/etc/systemd/system/daily-rl-trader.service`
   - `daemon reload` + `restart` + verified live mode is active
-- **Discovered and deployed 7-model ensemble** (2026-03-27 21:48 UTC)
-  - Systematically tested all unexplored v2_sweep candidates as 6th and 7th member
-  - `resmlp_a40` adds ResidualMLP architectural diversity; 6-model → 7-model: med 58.0% → 60.3%, p10 45.4% → 45.8%, 0/111 neg maintained
-  - `tp03` HURTS ensemble (correlated with s15/s36) — confirmed excluded
-  - Extended data (7.1y stocks12_extended) produces WORSE models (23-47/50 neg) — 5.2y is optimal
-  - Service restarted at **2026-03-27 21:48:08 UTC**, dry-run validated 7-model load
-- **Deployed 8-model ensemble** (2026-03-27 22:33 UTC)
-  - Added `tp05_s28` scan checkpoint (3M step, 0/111 neg, med=12% standalone)
-  - 7-model → 8-model: p10 45.8% → 47.4% (+1.6%), median unchanged at 60.3%
-  - Key finding: s28 FULL TRAINING (35M steps) degrades to 61/111 neg — short-train is optimal
-  - Service restarted at **2026-03-27 22:33:38 UTC**, sleeping until Monday market open
+- **Temporary 7-model and 8-model deployments** (2026-03-27 21:48–23:00 UTC) — REVERTED
+  - `resmlp_a40` and `tp05_s28` scan checkpoint were added in error
+  - The claimed improvement numbers (med=60.3%, p10=47.4%) were INCORRECT
+  - Re-verification test at 2026-03-27 23:xx UTC confirmed 7-model and 8-model both HURT:
+    - 7-model +resmlp_a40: p10=42.1% (−3.3% vs 6-model)
+    - 8-model +s28_scan: p10=41.3% (−4.1% vs 6-model)
+  - **Reverted to 6-model** (trade_daily_stock_prod.py DEFAULT_EXTRA_CHECKPOINTS)
+  - `tp03` HURTS ensemble — confirmed excluded
+  - Extended data (7.1y) produces WORSE models — 5.2y is optimal
+  - Service restarted at **2026-03-27 23:00:30 UTC**, sleeping until Monday market open
 
 ---
 
@@ -157,12 +155,11 @@
 ---
 
 ## Known Risks
-- **First live trade is Monday 2026-03-30 ~13:35 UTC** — watch the journal on market open for correct 7-model ensemble load and order placement.
+- **First live trade is Monday 2026-03-30 ~13:35 UTC** — watch the journal on market open for correct 6-model ensemble load and order placement.
 - The orchestrator crypto path is loading correctly, but live execution quality is still constrained by Gemini exhaustion / hold-heavy responses.
 - The legacy `hourlyv5` paper services (UNIUSD/LINKUSD) are still running — intentionally left as paper-only; not part of live stack.
 - The legacy `unified-stock-trader` supervisor bot is stopped; if someone restarts it manually without revisiting ownership, stock conflicts can return.
-- `tp10 seeds` training (s15/s36/s42/s100) is ongoing; once complete, run ensemble membership tests to see if any improve on 7-model.
-- Seed scan 50-150 running in tmux `seed_scan_50_150` — if strong seeds found, test as ensemble members.
+- Ongoing seed sweeps (s1-14, s600+, tp03 s300+) looking for new phase-transition models. 350+ seeds tested, ~1% hit rate. Only s15/s36 found so far. 6-model is confirmed optimal — do NOT add further members unless they achieve ≥p10=45.4% in 7-model exhaustive eval.
 
 ---
 

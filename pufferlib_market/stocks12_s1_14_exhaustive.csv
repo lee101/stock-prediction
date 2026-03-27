@@ -1,0 +1,4 @@
+timestamp,seed_dir,ckpt_type,n_windows,med,p10,p90,worst,neg,checkpoint
+2026-03-27T20:46:31Z,tp05_s1,best.pt,111,-0.15,-7.90,13.01,-14.75,56,pufferlib_market/checkpoints/stocks12_sweep_s1_14/tp05_s1/best.pt
+2026-03-27T21:38:40Z,tp05_s1,val_best.pt,111,21.68,-3.67,34.85,-8.66,24,pufferlib_market/checkpoints/stocks12_sweep_s1_14/tp05_s1/val_best.pt
+2026-03-27T22:50:33Z,tp05_s1,best_neg.pt,111,21.68,-3.67,34.85,-8.66,24,pufferlib_market/checkpoints/stocks12_sweep_s1_14/tp05_s1/best_neg.pt
