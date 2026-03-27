@@ -17,3 +17,12 @@ timestamp,seed,med_90d,p10_90d,worst_90d,neg_of_50,med_sortino,checkpoint
 2026-03-27T10:08:41Z,75,-6.42,-18.25,-25.78,36,-5.02,pufferlib_market/checkpoints/stocks12_new_seeds/tp05_s75/best.pt
 2026-03-27T10:08:48Z,76,5.22,-25.31,-37.13,24,6.46,pufferlib_market/checkpoints/stocks12_new_seeds/tp05_s76/best.pt
 2026-03-27T10:08:55Z,77,-19.86,-41.83,-52.76,50,-13.39,pufferlib_market/checkpoints/stocks12_new_seeds/tp05_s77/best.pt
+2026-03-27T10:53:33Z,bigseed_tp05_s100,-2.86,-5.94,-11.88,40,-7.28,pufferlib_market/checkpoints/stocks12_tp05_bigseed/s100/best.pt
+2026-03-27T10:54:00Z,bigseed_tp05_s101,-2.48,-11.12,-14.25,31,-2.90,pufferlib_market/checkpoints/stocks12_tp05_bigseed/s101/best.pt
+2026-03-27T10:54:18Z,bigseed_tp05_s102,-7.05,-22.88,-27.17,33,-6.29,pufferlib_market/checkpoints/stocks12_tp05_bigseed/s102/best.pt
+2026-03-27T10:54:44Z,bigseed_tp05_s103,-0.54,-16.42,-27.90,26,0.52,pufferlib_market/checkpoints/stocks12_tp05_bigseed/s103/best.pt
+2026-03-27T10:55:18Z,bigseed_tp05_s104,-6.46,-14.87,-20.16,44,-7.61,pufferlib_market/checkpoints/stocks12_tp05_bigseed/s104/best.pt
+2026-03-27T10:56:01Z,bigseed_tp05_s105,-17.66,-30.73,-36.52,40,-8.62,pufferlib_market/checkpoints/stocks12_tp05_bigseed/s105/best.pt
+2026-03-27T10:56:37Z,retrain35m_tp05_s55,-14.11,-28.25,-36.19,38,-8.86,pufferlib_market/checkpoints/stocks12_35m_retrain/tp05_s55/best.pt
+2026-03-27T10:57:54Z,retrain35m_tp05_s70,-5.78,-19.07,-24.92,38,-6.29,pufferlib_market/checkpoints/stocks12_35m_retrain/tp05_s70/best.pt
+2026-03-27T10:59:04Z,retrain35m_tp05_s76,-15.70,-26.36,-30.59,50,-13.53,pufferlib_market/checkpoints/stocks12_35m_retrain/tp05_s76/best.pt
