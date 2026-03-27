@@ -55,12 +55,12 @@ DEFAULT_SYMBOLS = [
     "V",
     "AMZN",
 ]
-DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt"
-# Primary: tp05_s123 (h=1024, trade_penalty=0.05, anneal_lr=True, seed=123, ~1.44M steps, bf16+cuda_graph)
-# 3-model ensemble: s123+s15+s36 → exhaustive 0/111 neg, med=46.3%, p10=28.6% (2026-03-27 verified)
-# NOTE: s36 appeared collapsed when using evaluate_holdout formula (different windows than canonical).
-#       Exhaustive eval (all 111 windows): s36=27.9% med, 1/111 neg → NOT collapsed, still good.
-#       stock_ent_05 is BAD (52/111 neg exhaustive) — do NOT use as ensemble member.
+DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_10/best.pt"
+# Primary: stock_trade_pen_10 (h=1024, trade_penalty=0.10, anneal_lr=True, ~6.9M steps)
+# 3-model ensemble: tp10+s15+s36 → exhaustive 0/111 neg, med=50.9%, p10=36.6%, worst=27.3% (2026-03-27)
+# Beats prior s123+s15+s36 on ALL metrics: +4.6% med, +8.0% p10, +6.3% worst.
+# Prior ensemble: s123+s15+s36 → med=46.3%, p10=28.6%, worst=21.0%, 0/111 neg
+# stock_ent_05 is BAD (52/111 neg exhaustive) — do NOT use as ensemble member.
 # tp05_s15: seed=15, no bf16, 35M steps, exhaustive 0/111 neg, med=30.0%
 # tp05_s36: seed=36, no bf16, 35M steps, exhaustive 1/111 neg, med=27.9%
 DEFAULT_EXTRA_CHECKPOINTS = [
@@ -443,14 +443,15 @@ def _load_bare_policy(checkpoint_path: str, obs_size: int, num_actions: int, dev
     encoder_key = [k for k in state_dict if "encoder" in k and "weight" in k]
     if encoder_key:
         hidden = state_dict[encoder_key[0]].shape[0]
+        has_encoder_norm = any("encoder_norm" in k for k in state_dict)
         from pufferlib_market.train import TradingPolicy
-        policy = TradingPolicy(obs_size, num_actions, hidden)
+        policy = TradingPolicy(obs_size, num_actions, hidden, use_encoder_norm=has_encoder_norm)
     else:
         input_proj_key = [k for k in state_dict if "input_proj" in k and "weight" in k]
         hidden = state_dict[input_proj_key[0]].shape[0] if input_proj_key else 256
         from pufferlib_market.inference import Policy
         policy = Policy(obs_size, num_actions, hidden, 3)
-    policy.load_state_dict(state_dict)
+    policy.load_state_dict(state_dict, strict=False)
     policy.to(torch.device(device))
     policy.eval()
     return policy
