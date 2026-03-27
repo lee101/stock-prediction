@@ -24,7 +24,26 @@ DAILY_PERIODS_PER_YEAR_CRYPTO = 365  # Crypto trades 24/7
 DAILY_PERIODS_PER_YEAR_STOCK = 252   # ~252 trading days/year for stocks
 _EPS = 1e-8
 
-_COMPILE_ENABLED = not os.environ.get("TORCH_NO_COMPILE", "")
+def _compile_enabled() -> bool:
+    if os.environ.get("TORCH_FORCE_COMPILE", ""):
+        return True
+    if os.environ.get("TORCH_NO_COMPILE", ""):
+        return False
+    if not hasattr(torch, "compile"):
+        return False
+    try:
+        if torch.cuda.is_available():
+            major, _minor = torch.cuda.get_device_capability(0)
+            # Blackwell / sm120 currently trips Triton/Inductor on these tiny
+            # reduction kernels, so prefer the stable eager path there.
+            if int(major) >= 12:
+                return False
+    except Exception:
+        pass
+    return True
+
+
+_COMPILE_ENABLED = _compile_enabled()
 
 
 def _maybe_compile(fn=None, **kwargs):
@@ -168,6 +187,7 @@ def simulate_hourly_trades(
     if opens is not None:
         _check_shapes(highs, opens)
 
+    original_steps = closes.shape[-1]
     if decision_lag_bars > 0:
         lag = decision_lag_bars
         highs = highs[..., lag:]
@@ -180,7 +200,7 @@ def simulate_hourly_trades(
         trade_intensity = trade_intensity[..., :-lag]
         buy_intensity = buy_intensity[..., :-lag]
         sell_intensity = sell_intensity[..., :-lag]
-        if torch.is_tensor(max_leverage) and max_leverage.ndim > 0:
+        if torch.is_tensor(max_leverage) and max_leverage.ndim > 0 and max_leverage.shape[-1] == original_steps:
             max_leverage = max_leverage[..., lag:]
 
     margin_cost_per_step = margin_annual_rate / HOURLY_PERIODS_PER_YEAR
@@ -350,6 +370,7 @@ def simulate_hourly_trades_binary(
     if opens is not None:
         _check_shapes(highs, opens)
 
+    original_steps = closes.shape[-1]
     if decision_lag_bars > 0:
         lag = decision_lag_bars
         highs = highs[..., lag:]
@@ -362,7 +383,7 @@ def simulate_hourly_trades_binary(
         trade_intensity = trade_intensity[..., :-lag]
         buy_intensity = buy_intensity[..., :-lag]
         sell_intensity = sell_intensity[..., :-lag]
-        if torch.is_tensor(max_leverage) and max_leverage.ndim > 0:
+        if torch.is_tensor(max_leverage) and max_leverage.ndim > 0 and max_leverage.shape[-1] == original_steps:
             max_leverage = max_leverage[..., lag:]
 
     margin_cost_per_step = margin_annual_rate / HOURLY_PERIODS_PER_YEAR

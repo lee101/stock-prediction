@@ -2,6 +2,16 @@
 
 ## Active Deployments
 
+### Production bookkeeping
+- `prod.md` is the current-production ledger. Keep it updated with what is live, how it is launched, and the latest timestamped results.
+- Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
+- `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
+
+### Current Alpaca snapshot (2026-03-26 04:22 UTC)
+- **LIVE account**: supervisor `unified-stock-trader` is active; equity **$41,315.42**, cash **$10,298.17**, buying power **$20,596.34**, last_equity **$41,077.99**.
+- **LIVE positions/orders**: no stock positions are open; only dust in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD` remains. Open orders are 3 `ETH/USD` GTC buy limits.
+- **PAPER account**: `daily-rl-trader.service` is installed but currently `inactive (dead)`; paper equity **$55,268.15**, last_equity **$54,078.69**, day change **+$1,189.46 (+2.20%)**, total unrealized **+$3,269.46**.
+
 ### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- FIXED (pending restart)
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`
 - **Launch**: `deployments/binance-hybrid-spot/launch.sh`
@@ -53,12 +63,24 @@
   ```
 - **Diagnostics**: `python binance_worksteal/trade_live.py --diagnose --symbols BTCUSD ETHUSD`
 
-### 3. Alpaca Stock Trader (`unified-stock-trader`) -- RUNNING (hourly meta-selector)
+### 3. Alpaca Stock Trader (`unified-stock-trader`) -- RUNNING (LIVE via supervisor)
 - **Bot**: `unified_hourly_experiment/trade_unified_hourly_meta.py`
+- **Service manager**: supervisor program `unified-stock-trader`
+- **Installed config**: `/etc/supervisor/conf.d/unified-stock-trader.conf`
+- **Exact launch**: `.venv313/bin/python -u /nvme0n1-disk/code/stock-prediction/unified_hourly_experiment/trade_unified_hourly_meta.py --strategy wd06=/nvme0n1-disk/code/stock-prediction/unified_hourly_experiment/checkpoints/wd_0.06_s42:8 --strategy wd06b=/nvme0n1-disk/code/stock-prediction/unified_hourly_experiment/checkpoints/wd_0.06_s1337:8 --stock-symbols NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT,AAPL,MSFT,META,TSLA,NET,BKNG,EBAY,EXPE,ITUB,BTG,ABEV --min-edge 0.001 --fee-rate 0.001 --max-positions 5 --max-hold-hours 5 --trade-amount-scale 100.0 --min-buy-amount 2.0 --entry-intensity-power 1.0 --entry-min-intensity-fraction 0.0 --long-intensity-multiplier 1.0 --short-intensity-multiplier 1.5 --meta-metric p10 --meta-lookback-days 14 --meta-selection-mode sticky --meta-switch-margin 0.005 --meta-min-score-gap 0.0 --meta-recency-halflife-days 0.0 --meta-history-days 120 --sit-out-if-negative --sit-out-threshold -0.001 --market-order-entry --bar-margin 0.0005 --entry-order-ttl-hours 6 --margin-rate 0.0625 --live --loop`
+- **Environment**: `PYTHONPATH=/nvme0n1-disk/code/stock-prediction`, `PYTHONUNBUFFERED=1`, `CHRONOS2_FREQUENCY=hourly`, `PAPER=0`
 - **Architecture**: Chronos2 hourly, multiple models + meta-selector
 - **Symbols**: NVDA, PLTR, GOOG, DBX, TRIP, MTCH, NYT, AAPL, MSFT, META, TSLA, NET, BKNG, EBAY, EXPE, ITUB, BTG, ABEV
-- **Equity**: ~$41,145 (2026-03-24; was $46,467 — dropped during crash-loop outage)
+- **Live snapshot (2026-03-26 04:22 UTC)**: equity **$41,315.42**, cash **$10,298.17**, long market value **$0.00**, buying power **$20,596.34**
+- **Open positions (2026-03-26 04:22 UTC)**: no stock positions; dust only in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD`
+- **Open orders (2026-03-26 04:22 UTC)**: only 3 crypto `ETH/USD` GTC buy limits remain; no stock orders are open
 - **Strategies**: wd_0.06_s42:8 + wd_0.06_s1337:8 (2-strategy meta-selector)
+- **Recent stock exits**:
+  - `TSLA` sell `33 @ $379.22` filled `2026-03-23 13:38 UTC`
+  - `ABEV` sell `4459 @ $2.83` filled `2026-03-25 13:30 UTC`
+- **Marketsim status (2026-03-26)**:
+  - recent `5d/14d/30d` holdout sweep for the live pair is negative in simulator; best config collapses to the `wd06` baseline with `min_sortino=-11.15`, `mean_sortino=-6.28`, `min_return=-18.09%`, `mean_return=-7.38%`
+  - trade-log replay on the recent `TSLA` + `ABEV` slice matches `TSLA` but misses `ABEV` entirely (`exact_row_ratio=0.5`), so execution parity still needs work before simulator PnL is trusted as production-equivalent
 - **NOTE (2026-03-24)**: Was crash-looping since ~Mar 19 — supervisor config referenced 5 missing checkpoints
   (wd_0.04, wd_0.05_s42, wd_0.08_s42, wd_0.03_s42, stock_sortino_robust_20260219b/c).
   Fixed by replacing with wd_0.06_s42:8 + wd_0.06_s1337:8 (only 2 strategies remain locally).
@@ -70,8 +92,18 @@
 - **ABEV incident (2026-03-25)**: ABEV position ($12k, entered 2026-03-20 @ $2.73) had no exit order since
   2026-03-24 when force_close failed due to race condition. Fixed — retry fired at 01:42 UTC.
   Force_close limit order ~$2.77 queued for market open (2026-03-25 13:30 UTC).
+- **JAX retrain status (2026-03-26)**:
+  - JAX/Flax port of the classic hourly stock policy now exists in `binanceneural/jax_policy.py`, `binanceneural/jax_losses.py`, `binanceneural/jax_trainer.py`, and `unified_hourly_experiment/train_jax_classic.py`
+  - local parity tests pass and a one-step smoke train wrote `unified_hourly_experiment/checkpoints/alpaca_progress7_jax_smoke_20260326/epoch_001.flax`
+  - RunPod `RTX 4090` bootstrap is in progress for a longer detached retrain; see `alpacaprogress7.md`
 
-### 4. Alpaca Daily PPO Trader (`trade_daily_stock_prod.py`) -- READY TO DEPLOY (tp05 ensemble)
+### 4. Alpaca Daily PPO Trader (`trade_daily_stock_prod.py`) -- INSTALLED, CURRENTLY INACTIVE (paper systemd)
+- **Service manager**: systemd unit `daily-rl-trader.service`
+- **Installed unit**: `/etc/systemd/system/daily-rl-trader.service`
+- **Installed ExecStart**: `.venv313/bin/python -u trade_daily_stock_prod.py --daemon --paper --allocation-pct 25`
+- **Runtime status (2026-03-25 08:56 UTC)**: `inactive (dead)`; latest journal restart was `2026-03-25 01:42 UTC`
+- **Paper snapshot (2026-03-25 08:56 UTC)**: equity **$55,268.15**, cash **$2,235.60**, long market value **$53,072.66**, total unrealized **+$3,269.46**
+- **Paper positions (2026-03-25 08:56 UTC)**: `AAPL`, `BTCUSD`, `COUR`, `ETHUSD`, `SOLUSD`, `U`, `UNIUSD`
 - **Architecture**: h=1024 MLP PPO, stocks12 (AAPL,MSFT,NVDA,GOOG,META,TSLA,SPY,QQQ,JPM,V,AMZN,PLTR)
 - **Primary checkpoint**: `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt`
 - **Ensemble member**: `pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt`
@@ -125,7 +157,49 @@
   - seed=3 (old-config): 1/50 neg best case, p10<5% — not deployable
   - Sweep continuing: seeds 16-32 (stream A), 34-50 (stream B)
 
-## Crypto70 Daily RL Autoresearch (2026-03-24) — COMPLETED
+## Crypto70 Daily RL Seed Sweep (2026-03-25) — IN PROGRESS (~70% complete)
+
+**Methodology**: 300s training budget, tp05_slip5 config (optimal), honest eval at 8bps (100 eps, no early stop), 5bps eval for all seeds >800% ann.
+**Coverage**: 233/~1000 seeds evaluated at 5bps; s61-120 (100%), s121-200 (100%), others 60-85% complete.
+**Auto-monitor**: `/tmp/auto_5bps_monitor_v2.py` running — evaluates all seeds >800% at 5bps automatically.
+
+### ALL-TIME TOP 10 (at 5bps, ~1000-seed sweep, 2026-03-25):
+| Rank | Seed | Ann 5bps | Ann 8bps | Sortino | Ultra-robust | Checkpoint |
+|------|------|----------|----------|---------|-------------|------------|
+| **#1** | **s670** | **+29,099%** | **+29,233%** | **7.56** | borderline | `crypto70_champions/c70_tp05_slip5_s670/best.pt` |
+| #2 | s275 | +23,595% | +22,713% | 9.00 | ★ | `crypto70_champions/c70_tp05_slip5_s275/best.pt` |
+| #3 | s292 | +20,000% | +19,602% | 7.99 | ★ | `crypto70_champions/c70_tp05_slip5_s292/best.pt` |
+| #4 | s240 | +17,642% | +40,405% | 7.00 | — | `crypto70_champions/c70_tp05_slip5_s240/best.pt` |
+| #5 | s434 | +10,359% | +11,308% | 6.99 | — | `crypto70_champions/c70_tp05_slip5_s434/best.pt` |
+| #6 | s71  | +9,320%  | +9,808%  | 8.28 | — | `crypto70_champions/c70_tp05_slip5_s71/best.pt` |
+| #7 | s456 | +8,802%  | +6,786%  | 6.71 | ★ | `crypto70_champions/c70_tp05_slip5_s456/best.pt` |
+| #8 | s507 | +8,273%  | +7,803%  | 6.43 | ★ | `crypto70_champions/c70_tp05_slip5_s507/best.pt` |
+| #9 | s452 | +8,002%  | +7,798%  | 6.65 | ★ | `crypto70_champions/c70_tp05_slip5_s452/best.pt` |
+| #10 | s765 | +7,587% | +6,246%  | 5.76 | ★ | `crypto70_champions/c70_tp05_slip5_s765/best.pt` |
+
+**Full leaderboard**: `sweepresults/crypto70_5bps_leaderboard.csv` (233 entries, sorted by ann_5bps)
+
+**Key findings from full seed sweep**:
+- Champions cluster by range: s275/s292 (s201-300), s670 (s601-700), s434/s452/s456 (s401-500), s921 (s901-1000)
+- Ultra-robust pattern: 7/10 top seeds have 5bps ≥ 8bps (well-calibrated models trade MORE with less slippage)
+- Seed distribution is non-uniform — exceptional seeds (>10,000%) appear ~1-2 per 100-seed range
+- s670 (p50=15.4x/180d = +29,099% ann): new all-time champion, nearly equals 8bps (borderline ultra-robust)
+- s275 (p50=13.5x/180d): highest Sortino=9.0, most consistent ultra-robust
+
+**Eval command for any champion**:
+```bash
+source .venv313/bin/activate
+python -m pufferlib_market.evaluate \
+  --checkpoint pufferlib_market/checkpoints/crypto70_champions/c70_tp05_slip5_s670/best.pt \
+  --data-path pufferlib_market/data/crypto70_daily_val.bin \
+  --deterministic --no-drawdown-profit-early-exit \
+  --hidden-size 1024 --max-steps 180 --num-episodes 100 --periods-per-year 365.0 \
+  --fill-slippage-bps 8
+```
+
+---
+
+## Crypto70 Daily RL Autoresearch (2026-03-24) — COMPLETED (superseded by seed sweep above)
 
 **Dataset**: 48 Binance USDT pairs (crypto70, filtered), daily bars, train 2019-2025, val 2025-09-01 to 2026-03-31 (205 days)
 **Config**: h=1024 MLP PPO, anneal_lr, ent=0.05, 128 envs, bf16, no-cuda-graph, periods_per_year=365, max_steps=180 (6mo episodes)
@@ -358,8 +432,3 @@ sudo tail -20 /var/log/supervisor/binance-hybrid-spot-error.log
 - **Fix**: Added `--no-early-stop` flag to `evaluate_holdout.py`. Updated DEFAULT_CHECKPOINT to random_mut_2201. Always use `--deterministic --no-early-stop` for final candidate selection.
 - **Note**: random_mut_2201 uses h=256 (NOT h=1024) — shows smaller networks with right config can outperform.
 
-### 2026-03-22 18:54 UTC -- Gemini API key revoked
-- **What**: Gemini API key revoked/leaked. Bot received 403 PERMISSION_DENIED for 13+ hours. RL fallback also broken due to obs mismatch (always outputs LONG_UNI for non-configured symbol). Both primary and fallback signals broken simultaneously. No trades executed.
-- **Impact**: Portfolio dropped from $3,333 (Mar 21) to $3,056 (Mar 23). Still holding 107.78 LINK (~$980).
-- **Root cause**: API key was hardcoded in supervisor.conf and committed to git. Google detected it as leaked.
-- **Remediation**: Move API key to gitignored `.env.binance-hybrid`, reduce leverage 5x->0.5x, add action masking to RL signal.

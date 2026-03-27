@@ -1,0 +1,3 @@
+description,val_return,val_sortino,val_wr,robust_score,gpu_id,elapsed_s,job_id,timestamp
+c15_long_78,-0.1707,0.24,0.5116,-0.1707,0,991,c15_long_78,2026-03-25T01:34:12
+c15_long_51,0.2211,2.04,0.5813,0.2211,0,1027,c15_long_51,2026-03-25T01:51:19

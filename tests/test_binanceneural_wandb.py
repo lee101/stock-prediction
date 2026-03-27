@@ -1,85 +1,94 @@
-"""Tests for WandB integration in binanceneural trainer."""
 from __future__ import annotations
 
-import os
-import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import numpy as np
-import pytest
 import torch
 from torch.utils.data import DataLoader, Dataset
-
-REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO))
 
 from binanceneural.config import TrainingConfig
 from binanceneural.data import FeatureNormalizer
 from binanceneural.trainer import BinanceHourlyTrainer
 
 
-class SyntheticDataset(Dataset):
-    """Minimal dataset matching BinanceHourlyDataset interface."""
-
-    def __init__(self, n_features: int, seq_len: int, n_samples: int = 20):
+class _SyntheticDataset(Dataset):
+    def __init__(self, n_features: int, seq_len: int, n_samples: int = 20) -> None:
         self.n_features = n_features
         self.seq_len = seq_len
         self.n_samples = n_samples
         base_price = 100.0
-        self.prices = base_price + np.cumsum(np.random.randn(n_samples + seq_len) * 0.5)
-        self.prices = np.maximum(self.prices, 1.0).astype(np.float32)
+        prices = base_price + np.cumsum(np.random.randn(n_samples + seq_len) * 0.5)
+        self.prices = np.maximum(prices, 1.0).astype(np.float32)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.n_samples
 
-    def __getitem__(self, idx):
-        s = idx
-        e = idx + self.seq_len
-        p = self.prices[s:e]
-        closes = torch.from_numpy(p.copy())
+    def __getitem__(self, idx: int):
+        start = idx
+        end = idx + self.seq_len
+        closes = torch.from_numpy(self.prices[start:end].copy())
         highs = closes * 1.01
         lows = closes * 0.99
         opens = closes * (1.0 + 0.002 * torch.randn(self.seq_len))
-        ref = closes.clone()
-        ch = highs * 1.005
-        cl = lows * 0.995
-        features = torch.randn(self.seq_len, self.n_features)
         return {
-            "features": features,
+            "features": torch.randn(self.seq_len, self.n_features),
             "open": opens,
             "high": highs,
             "low": lows,
             "close": closes,
-            "reference_close": ref,
-            "chronos_high": ch,
-            "chronos_low": cl,
+            "reference_close": closes.clone(),
+            "chronos_high": highs * 1.005,
+            "chronos_low": lows * 0.995,
             "can_long": torch.tensor(1.0),
             "can_short": torch.tensor(0.0),
         }
 
 
-class SyntheticDataModule:
-    """Minimal data module matching BinanceHourlyDataModule interface."""
-
-    def __init__(self, n_features: int = 16, seq_len: int = 32, n_samples: int = 20):
-        self.feature_columns = [f"feat_{i}" for i in range(n_features)]
+class _SyntheticDataModule:
+    def __init__(self, n_features: int = 16, seq_len: int = 32, n_samples: int = 20) -> None:
+        self.feature_columns = [f"feat_{idx}" for idx in range(n_features)]
         self.normalizer = FeatureNormalizer(
             mean=np.zeros(n_features, dtype=np.float32),
             std=np.ones(n_features, dtype=np.float32),
         )
-        self._train = SyntheticDataset(n_features, seq_len, n_samples)
-        self._val = SyntheticDataset(n_features, seq_len, n_samples)
+        self._train = _SyntheticDataset(n_features, seq_len, n_samples)
+        self._val = _SyntheticDataset(n_features, seq_len, n_samples)
 
-    def train_dataloader(self, batch_size, num_workers=0):
+    def train_dataloader(self, batch_size: int, num_workers: int = 0):
         return DataLoader(self._train, batch_size=batch_size, drop_last=True)
 
-    def val_dataloader(self, batch_size, num_workers=0):
+    def val_dataloader(self, batch_size: int, num_workers: int = 0):
         return DataLoader(self._val, batch_size=batch_size, drop_last=False)
 
 
-def _make_config(tmpdir, **overrides):
+class _DummyWandBoardLogger:
+    instances: list["_DummyWandBoardLogger"] = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.logs: list[tuple[dict[str, float], int | None]] = []
+        self.texts: list[tuple[str, str, int | None]] = []
+        self.hparams: list[tuple[dict[str, object], dict[str, float], int | None, str]] = []
+        _DummyWandBoardLogger.instances.append(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return None
+
+    def log(self, metrics, *, step=None, commit=None):
+        self.logs.append((dict(metrics), step))
+
+    def log_text(self, name, text, *, step=None):
+        self.texts.append((name, text, step))
+
+    def log_hparams(self, hparams, metrics, *, step=None, table_name="hparams"):
+        self.hparams.append((dict(hparams), dict(metrics), step, table_name))
+
+
+def _make_config(tmpdir: str, **overrides) -> TrainingConfig:
     defaults = dict(
         epochs=2,
         batch_size=4,
@@ -94,89 +103,59 @@ def _make_config(tmpdir, **overrides):
         use_tf32=False,
         use_flash_attention=False,
         checkpoint_root=Path(tmpdir) / "ckpts",
+        log_dir=Path(tmpdir) / "tb",
         seed=42,
     )
     defaults.update(overrides)
     return TrainingConfig(**defaults)
 
 
-def test_train_no_wandb_when_project_none():
-    """wandb_project=None should not attempt wandb.init."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        cfg = _make_config(tmpdir, wandb_project=None)
-        dm = SyntheticDataModule(n_features=16, seq_len=32)
-        trainer = BinanceHourlyTrainer(cfg, dm)
-        with patch("binanceneural.trainer._wandb", None):
-            artifacts = trainer.train()
-        assert len(artifacts.history) == 2
-
-
-def test_train_wandb_offline_mode():
-    """Training with wandb in offline mode completes without error."""
-    try:
-        import wandb
-    except ImportError:
-        pytest.skip("wandb not installed")
+def test_train_disables_wandb_when_project_missing(monkeypatch) -> None:
+    monkeypatch.setattr("binanceneural.trainer.WandBoardLogger", _DummyWandBoardLogger)
+    _DummyWandBoardLogger.instances.clear()
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        os.environ["WANDB_MODE"] = "offline"
-        os.environ["WANDB_DIR"] = tmpdir
-        os.environ["WANDB_SILENT"] = "true"
-        try:
-            cfg = _make_config(tmpdir, wandb_project="test-project", wandb_entity=None)
-            dm = SyntheticDataModule(n_features=16, seq_len=32)
-            trainer = BinanceHourlyTrainer(cfg, dm)
-            artifacts = trainer.train()
-            assert len(artifacts.history) == 2
-            assert artifacts.history[0].val_sortino is not None
-        finally:
-            os.environ.pop("WANDB_MODE", None)
-            os.environ.pop("WANDB_DIR", None)
-            os.environ.pop("WANDB_SILENT", None)
+        cfg = _make_config(tmpdir, wandb_project=None, run_name="torch_no_wandb")
+        trainer = BinanceHourlyTrainer(cfg, _SyntheticDataModule())
+        artifacts = trainer.train()
+
+    assert artifacts.best_checkpoint is not None
+    logger = _DummyWandBoardLogger.instances[-1]
+    assert logger.kwargs["enable_wandb"] is False
+    assert logger.logs
+    assert logger.texts
 
 
-def test_train_wandb_init_failure_graceful():
-    """If wandb.init raises, training continues without wandb."""
-    mock_wandb = MagicMock()
-    mock_wandb.init.side_effect = RuntimeError("mock wandb failure")
+def test_train_logs_metrics_via_wandboard(monkeypatch) -> None:
+    monkeypatch.setattr("binanceneural.trainer.WandBoardLogger", _DummyWandBoardLogger)
+    _DummyWandBoardLogger.instances.clear()
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        cfg = _make_config(tmpdir, wandb_project="test-project")
-        dm = SyntheticDataModule(n_features=16, seq_len=32)
-        trainer = BinanceHourlyTrainer(cfg, dm)
-        with patch("binanceneural.trainer._wandb", mock_wandb):
-            artifacts = trainer.train()
-        assert len(artifacts.history) == 2
-        mock_wandb.init.assert_called_once()
+        cfg = _make_config(
+            tmpdir,
+            wandb_project="test-project",
+            wandb_group="torch-group",
+            wandb_tags="torch,smoke",
+            run_name="torch_wandboard_test",
+            epochs=3,
+        )
+        trainer = BinanceHourlyTrainer(cfg, _SyntheticDataModule())
+        artifacts = trainer.train()
+
+    assert len(artifacts.history) == 3
+    logger = _DummyWandBoardLogger.instances[-1]
+    assert logger.kwargs["project"] == "test-project"
+    assert logger.kwargs["group"] == "torch-group"
+    assert logger.kwargs["tags"] == ("torch", "smoke")
+    assert any("val/score" in payload and "learning_rate" in payload for payload, _step in logger.logs)
+    assert any(name == "train/feature_columns" for name, _text, _step in logger.texts)
+    assert any(table_name == "torch_train_summary" for _hp, _metrics, _step, table_name in logger.hparams)
 
 
-def test_train_wandb_log_called_per_epoch():
-    """wandb.log is called once per epoch with correct keys."""
-    mock_run = MagicMock()
-    mock_wandb = MagicMock()
-    mock_wandb.init.return_value = mock_run
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        cfg = _make_config(tmpdir, wandb_project="test-project", epochs=3)
-        dm = SyntheticDataModule(n_features=16, seq_len=32)
-        trainer = BinanceHourlyTrainer(cfg, dm)
-        with patch("binanceneural.trainer._wandb", mock_wandb):
-            artifacts = trainer.train()
-
-        assert mock_run.log.call_count == 3
-        assert mock_run.finish.call_count == 1
-        first_call_kwargs = mock_run.log.call_args_list[0]
-        logged = first_call_kwargs[0][0]
-        for key in ("epoch", "train/loss", "train/sortino", "val/loss", "val/sortino", "learning_rate"):
-            assert key in logged, f"Missing key: {key}"
-
-
-def test_dry_train_completes():
-    """dry_train_steps=2 with 2 epochs completes."""
+def test_dry_train_completes() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         cfg = _make_config(tmpdir, dry_train_steps=2, epochs=2, wandb_project=None)
-        dm = SyntheticDataModule(n_features=16, seq_len=32)
-        trainer = BinanceHourlyTrainer(cfg, dm)
+        trainer = BinanceHourlyTrainer(cfg, _SyntheticDataModule())
         artifacts = trainer.train()
-        assert len(artifacts.history) == 2
-        assert artifacts.best_checkpoint is not None
+    assert len(artifacts.history) == 2
+    assert artifacts.best_checkpoint is not None

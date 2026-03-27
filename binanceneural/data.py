@@ -150,7 +150,14 @@ class BinanceHourlyDataModule:
         else:
             split_idx = int(len(self.frame) * (1 - config.val_fraction))
         split_idx = max(split_idx, config.sequence_length + 1)
-        train_frame = self.frame.iloc[:split_idx].reset_index(drop=True)
+        max_train_days = getattr(config, "max_train_days", 0)
+        if max_train_days > 0:
+            # Cap to most-recent N days before the val split (not the oldest N days)
+            max_train_rows = int(max_train_days * 24)
+            train_start = max(0, split_idx - max_train_rows)
+        else:
+            train_start = 0
+        train_frame = self.frame.iloc[train_start:split_idx].reset_index(drop=True)
         val_frame = self.frame.iloc[split_idx - config.sequence_length :].reset_index(drop=True)
         feature_cols = list(self.feature_columns)
         train_features = train_frame[feature_cols].to_numpy(dtype=np.float32)

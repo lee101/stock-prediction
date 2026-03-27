@@ -157,6 +157,8 @@ def _find_local_model_fallback(candidate_path: Path) -> Optional[Path]:
 
     if candidate_path.name != "finetuned-ckpt":
         return None
+    if not _safe_bool(os.getenv("CHRONOS2_ALLOW_SYMBOL_FAMILY_FALLBACK"), default=False):
+        return None
 
     requested_parent = candidate_path.parent.name.strip().lower()
     if not requested_parent:
@@ -178,6 +180,11 @@ def _find_local_model_fallback(candidate_path: Path) -> Optional[Path]:
                 matches.append(path)
     if not matches:
         return None
+    logger.warning(
+        "Chronos2 model_id '%s' was missing; falling back to symbol-family checkpoint '%s'.",
+        candidate_path,
+        matches[-1],
+    )
     return matches[-1]
 
 
@@ -240,6 +247,74 @@ def _normalize_frequency(value: Optional[str]) -> Optional[str]:
     if normalized in {"daily", "hourly"}:
         return normalized
     return None
+
+
+def _resolve_pipeline_backend(value: Optional[str]) -> str:
+    raw = (value or os.getenv("CHRONOS2_PIPELINE_BACKEND") or "chronos").strip().lower()
+    aliases = {
+        "chronos": "chronos",
+        "default": "chronos",
+        "hf": "chronos",
+        "cute": "cutechronos",
+        "cutedsl": "cutechronos",
+        "cutechronos": "cutechronos",
+        "auto": "auto",
+    }
+    backend = aliases.get(raw)
+    if backend is None:
+        raise ValueError(
+            "Chronos2 pipeline backend must be one of "
+            "'chronos', 'cutechronos', or 'auto'."
+        )
+    return backend
+
+
+def _device_map_to_device(device_map: str | Mapping[str, str] | None) -> str:
+    if isinstance(device_map, str):
+        text = device_map.strip().lower()
+        if not text:
+            return "cuda" if torch is not None and torch.cuda.is_available() else "cpu"
+        if text.startswith("cpu"):
+            return "cpu"
+        if text.startswith("cuda"):
+            return str(device_map)
+        if text in {"auto", "balanced", "balanced_low_0", "sequential"}:
+            return "cuda" if torch is not None and torch.cuda.is_available() else "cpu"
+    return "cuda" if torch is not None and torch.cuda.is_available() else "cpu"
+
+
+def _default_backend_torch_dtype(
+    device_map: str | Mapping[str, str] | None,
+    torch_dtype: Optional[Any],
+) -> Optional["torch.dtype"]:
+    dtype_obj = _parse_torch_dtype(torch_dtype)
+    if dtype_obj is not None or torch is None:
+        return dtype_obj
+    device = _device_map_to_device(device_map)
+    return torch.float32 if device == "cpu" else torch.bfloat16
+
+
+def _load_cutechronos_pipeline(
+    *,
+    model_id: str,
+    device_map: str | Mapping[str, str] | None,
+    torch_dtype: Optional[Any],
+    torch_compile: Optional[bool],
+    compile_mode: Optional[str],
+) -> object:
+    if torch is None:
+        raise RuntimeError("PyTorch is required to use the cutechronos backend.")
+    from cutechronos.pipeline import CuteChronos2Pipeline
+
+    backend_device = _device_map_to_device(device_map)
+    backend_dtype = _default_backend_torch_dtype(device_map, torch_dtype)
+    return CuteChronos2Pipeline.from_pretrained(
+        model_id,
+        device=backend_device,
+        dtype=backend_dtype if backend_dtype is not None else torch.float32,
+        use_cute=True,
+        compile_mode=compile_mode if torch_compile else None,
+    )
 
 
 def _infer_prediction_step(
@@ -554,6 +629,7 @@ class Chronos2OHLCWrapper:
         prediction_cache_decimals: Optional[int] = None,
         multiscale_enabled: Optional[bool] = None,
         multiscale_config_paths: Optional[Sequence[str | Path]] = None,
+        pipeline_backend: Optional[str] = None,
         cache_policy: str = "prefer",
         force_refresh: bool = False,
         cache_manager: Optional[ModelCacheManager] = None,
@@ -567,11 +643,59 @@ class Chronos2OHLCWrapper:
         if policy not in {"prefer", "never", "only"}:
             raise ValueError("Chronos2 cache_policy must be 'prefer', 'never', or 'only'.")
 
-        pipeline_cls = _require_chronos_pipeline()
         resolved_model_id = _resolve_model_source(model_id)
         if resolved_model_id != model_id:
             logger.info("Resolved Chronos2 model_id '%s' to '%s'", model_id, resolved_model_id)
+        backend = _resolve_pipeline_backend(pipeline_backend)
 
+        if backend != "chronos":
+            cute_compile = bool(torch_compile)
+            try:
+                pipeline = _load_cutechronos_pipeline(
+                    model_id=resolved_model_id,
+                    device_map=device_map,
+                    torch_dtype=torch_dtype,
+                    torch_compile=cute_compile,
+                    compile_mode=compile_mode,
+                )
+                logger.info(
+                    "Loaded Chronos2 model '%s' with cutechronos backend (compile=%s).",
+                    resolved_model_id,
+                    cute_compile,
+                )
+                device_hint = _device_map_to_device(device_map)
+                return cls(
+                    pipeline,
+                    device_hint=device_hint,
+                    id_column=id_column,
+                    timestamp_column=timestamp_column,
+                    target_columns=target_columns,
+                    default_context_length=default_context_length,
+                    default_batch_size=default_batch_size,
+                    quantile_levels=quantile_levels,
+                    torch_compile=False,
+                    compile_mode=compile_mode,
+                    compile_backend=compile_backend,
+                    torch_dtype=torch_dtype,
+                    preaugmentation_dirs=preaugmentation_dirs,
+                    prediction_cache_enabled=prediction_cache_enabled,
+                    prediction_cache_size=prediction_cache_size,
+                    prediction_cache_decimals=prediction_cache_decimals,
+                    multiscale_enabled=multiscale_enabled,
+                    multiscale_config_paths=multiscale_config_paths,
+                )
+            except Exception as exc:
+                if backend == "cutechronos":
+                    raise RuntimeError(
+                        f"Failed to load Chronos2 model '{resolved_model_id}' with cutechronos backend"
+                    ) from exc
+                logger.warning(
+                    "Cutechronos backend unavailable for '%s'; falling back to chronos backend: %s",
+                    resolved_model_id,
+                    exc,
+                )
+
+        pipeline_cls = _require_chronos_pipeline()
         manager = cache_manager or ModelCacheManager("chronos2")
         dtype_token = dtype_to_token(torch_dtype if torch_dtype is not None else None)
         torch_version = getattr(torch, "__version__", "unknown") if torch is not None else "unknown"

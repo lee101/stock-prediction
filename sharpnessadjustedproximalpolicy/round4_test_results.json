@@ -1,0 +1,18 @@
+[
+  {
+    "name": "baseline_wd01",
+    "symbol": "BTCUSD",
+    "best_epoch": 8,
+    "best_val_sortino": 42.39681624266196,
+    "best_val_return": 0.6745164905296406,
+    "best_val_score": 42.450777917081176,
+    "final_sharpness_ema": 0.0,
+    "final_lr_scale": 1.0,
+    "total_epochs": 10,
+    "wall_time_s": 2144.669722557068,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_BTCUSD_20260325_082936",
+    "sam_mode": "none",
+    "rho": 0.05,
+    "error": null
+  }
+]

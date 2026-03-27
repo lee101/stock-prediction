@@ -86,6 +86,8 @@ class TrainerConfig:
     lora_alpha: int = 32
     lora_dropout: float = 0.05
     lora_targets: Tuple[str, ...] = ("q", "k", "v", "o")
+    lr_scheduler_type: str = "cosine"
+    warmup_ratio: float = 0.05
     merge_lora: bool = True
     seed: int = 1337
     save_name: Optional[str] = None
@@ -345,8 +347,8 @@ def _fit_pipeline(
         per_device_train_batch_size=config.batch_size,
         per_device_eval_batch_size=config.batch_size,
         learning_rate=config.learning_rate,
-        lr_scheduler_type="cosine",
-        warmup_ratio=0.05,
+        lr_scheduler_type=str(config.lr_scheduler_type),
+        warmup_ratio=float(config.warmup_ratio),
         optim="adamw_torch_fused",
         logging_strategy="steps",
         logging_steps=100,
@@ -596,6 +598,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--lora-alpha", type=int, default=32)
     parser.add_argument("--lora-dropout", type=float, default=0.05)
     parser.add_argument("--lora-targets", type=str, default="q,k,v,o")
+    parser.add_argument("--lr-scheduler-type", type=str, default="cosine")
+    parser.add_argument("--warmup-ratio", type=float, default=0.05)
     parser.add_argument("--merge-lora", action="store_true", default=True)
     parser.add_argument("--no-merge-lora", action="store_false", dest="merge_lora")
     parser.add_argument("--sweep-config", type=Path, default=None)
@@ -631,6 +635,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
         lora_targets=tuple(t.strip() for t in args.lora_targets.split(",") if t.strip()),
+        lr_scheduler_type=args.lr_scheduler_type,
+        warmup_ratio=args.warmup_ratio,
         merge_lora=args.merge_lora,
         save_name=args.save_name,
     )

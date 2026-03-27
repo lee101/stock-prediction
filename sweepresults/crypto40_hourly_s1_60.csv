@@ -1,0 +1,4 @@
+description,dataset,seed,val_return,val_sortino,val_wr,holdout_median_return_pct,holdout_p10_return_pct,holdout_negative_rate,holdout_worst_return_pct,elapsed_s,checkpoint_dir,timestamp
+crypto40_hourly_tp05_s1,crypto40_hourly,1,0.6765,13.88,0.7134,,,,,1913.1,pufferlib_market/checkpoints/crypto40_hourly_sweep/crypto40_hourly_tp05_s1,2026-03-24T20:36:16
+crypto40_hourly_tp05_s2,crypto40_hourly,2,0.1857,5.01,0.7101,,,,,1914.4,pufferlib_market/checkpoints/crypto40_hourly_sweep/crypto40_hourly_tp05_s2,2026-03-24T21:08:10
+crypto40_hourly_tp05_s3,crypto40_hourly,3,0.2836,4.87,0.6121,,,,,1910.2,pufferlib_market/checkpoints/crypto40_hourly_sweep/crypto40_hourly_tp05_s3,2026-03-24T21:40:01

@@ -1,0 +1,19 @@
+{
+  "BTCUSD": [
+    {
+      "symbol": "BTCUSD",
+      "checkpoint": "sharpnessadjustedproximalpolicy/checkpoints/sap_baseline_wd01_BTCUSD_20260325_082936/epoch_008.pt",
+      "epoch": 8,
+      "total_hours": 1752,
+      "total_return_pct": -56.9889,
+      "sortino": -0.3031,
+      "max_drawdown_pct": -57.6236,
+      "num_trades": 129,
+      "win_rate": 0.5116,
+      "avg_hold_hours": 8.0,
+      "sharpe": -0.2525,
+      "calmar": -4.9449,
+      "final_equity": 0.430111
+    }
+  ]
+}

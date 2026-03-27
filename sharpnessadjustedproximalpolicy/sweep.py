@@ -64,6 +64,7 @@ def build_configs(exp: dict, symbol: str, base_overrides: dict | None = None) ->
         forecast_horizons=tuple(available_horizons),
         sequence_length=tc_kwargs.get("sequence_length", 72),
         validation_days=70,
+        max_train_days=tc_kwargs.pop("max_train_days", 0),
         cache_only=True,
         bar_shift_range=tc_kwargs.get("bar_shift_range", 0),
     )
@@ -131,6 +132,8 @@ def main():
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--max-train-days", type=int, default=None,
+                        help="Cap training data to most-recent N days (0=all). Default 365 for fast sweeps.")
     parser.add_argument("--output", type=str, default=None)
     args = parser.parse_args()
 
@@ -150,6 +153,8 @@ def main():
         overrides["batch_size"] = args.batch_size
     if args.lr:
         overrides["learning_rate"] = args.lr
+    # Default to 365 days of training data for fast sweeps; override with --max-train-days 0 for full data
+    overrides["max_train_days"] = args.max_train_days if args.max_train_days is not None else 365
 
     timestamp = time.strftime("%Y%m%d_%H%M%S")
     output_path = Path(args.output or f"sharpnessadjustedproximalpolicy/sweep_results_{timestamp}.json")

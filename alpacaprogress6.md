@@ -215,6 +215,85 @@ Worth checking: what `meta_winner_selected` shows — which strategy is winning 
 
 ---
 
+## Chronos2 Stock MAE Work — 2026-03-27
+
+### Trainer / sweep fixes landed locally
+- `scripts/chronos2_lora_improvement_sweep.py` now passes `lora_alpha`, `lora_targets`, `lr_scheduler_type`, and `warmup_ratio` through to training, and writes config-specific report prefixes so wide-target runs cannot accidentally reuse narrow-target reports.
+- `scripts/train_crypto_lora_sweep.py` now resolves symbols from the mixed hourly root (`trainingdatahourly/`, `trainingdatahourly/stocks/`, `trainingdatahourly/crypto/`) and preserves the requested LoRA target set / scheduler / warmup settings.
+- `chronos2_trainer.py` now reads scheduler + warmup from config instead of hardcoding them.
+- Focused tests passed locally:
+  - `python -m pytest tests/test_chronos2_lora_improvement_sweep.py tests/test_chronos2_trainer_config.py tests/test_train_crypto_lora_sweep.py tests/test_run_crypto_lora_batch.py -q`
+  - Result: `20 passed`
+
+### Smoke finetune (local RTX 5090)
+- Exact command:
+```bash
+source .venv313/bin/activate
+python -u scripts/train_crypto_lora_sweep.py \
+  --symbol QUBT \
+  --data-root trainingdatahourly \
+  --output-root chronos2_finetuned \
+  --results-dir analysis/local_training_logs/chronos2_mae_proof_results \
+  --context-length 256 \
+  --prediction-length 24 \
+  --batch-size 16 \
+  --learning-rate 1e-4 \
+  --num-steps 20 \
+  --lora-r 8 \
+  --lora-alpha 16 \
+  --lora-targets q,k,v,o,gate_proj,up_proj,down_proj \
+  --lr-scheduler-type cosine \
+  --warmup-ratio 0.1 \
+  --preaug baseline \
+  --run-prefix smoke_q
+```
+- Artifact: `analysis/local_training_logs/chronos2_mae_proof_results/smoke_q_QUBT_lora_baseline_ctx256_lr1e-04_r8_20260327_031529.json`
+- Output dir: `chronos2_finetuned/smoke_q_QUBT_lora_baseline_ctx256_lr1e-04_r8_20260327_031529`
+- Result: val MAE% `21.1742`, test MAE% `19.9160`
+
+### Proof sweep (local RTX 5090, completed)
+- Remote 5090 SSH was attempted first but blocked from this shell with `Permission denied (publickey)`, so the run was started on the local RTX 5090 instead.
+- tmux session: `stock_mae_probe_20260327_0320`
+- Exact launch command:
+```bash
+tmux new-session -d -s stock_mae_probe_20260327_0320 "bash -lc 'cd /nvme0n1-disk/code/stock-prediction && source .venv313/bin/activate && python -u scripts/chronos2_lora_improvement_sweep.py --run-id stock_mae_probe_20260327_0320 --symbols QUBT,NET,GOOG --data-root trainingdatahourly --output-root chronos2_finetuned --results-dir analysis/local_training_logs/stock_mae_probe_20260327_0320/results --lora-rs 8 --learning-rates 5e-5,1e-4 --preaugs baseline,percent_change,differencing --context-lengths 256,512 --batch-size 16 --num-steps 300 --prediction-length 24 --improvement-threshold 5 2>&1 | tee -a analysis/local_training_logs/stock_mae_probe_20260327_0320.log'"
+```
+- Log path: `analysis/local_training_logs/stock_mae_probe_20260327_0320.log`
+- Result dir: `analysis/local_training_logs/stock_mae_probe_20260327_0320/results`
+- Model output root: `chronos2_finetuned/`
+- Search space: 72 configs
+  - symbols: `QUBT, NET, GOOG`
+  - preaugs: `baseline, percent_change, differencing`
+  - contexts: `256, 512`
+  - learning rates: `5e-5, 1e-4`
+  - LoRA rank: `8`
+  - target sets: narrow (`q,k,v,o`) and wide (`q,k,v,o,gate_proj,up_proj,down_proj`)
+- Final summary:
+  - `72/72` runs completed successfully
+  - `8` configs beat the baseline by more than `5%`
+  - every promoted config was for `QUBT` with `preaug=differencing`
+  - `NET` and `GOOG` did not clear the promotion threshold, so they were not promoted into hourly configs
+- Best promoted run:
+  - `analysis/local_training_logs/stock_mae_probe_20260327_0320/results/stock_mae_probe_20260327_0320_narrow_QUBT_lora_differencing_ctx512_lr5e-05_r8_20260327_033903.json`
+  - val MAE% `4.5773`, test MAE% `3.4374`
+  - baseline from dashboard: `6.9022%`
+  - improvement vs baseline: `+33.7%`
+- Local promotion applied:
+  - command:
+```bash
+source .venv313/bin/activate
+python scripts/promote_chronos2_lora_reports.py \
+  --report-dir analysis/local_training_logs/stock_mae_probe_20260327_0320/results \
+  --output-dir hyperparams/chronos2/hourly \
+  --symbols QUBT \
+  --run-id stock_mae_probe_20260327_0320 \
+  --metric val_mae_percent
+```
+  - wrote `hyperparams/chronos2/hourly/QUBT.json`
+  - promoted model_id: `chronos2_finetuned/stock_mae_probe_20260327_0320_narrow_QUBT_lora_differencing_ctx512_lr5e-05_r8_20260327_033903/finetuned-ckpt`
+
+---
+
 ## Monitor Commands
 
 ```bash

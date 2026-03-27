@@ -7,8 +7,6 @@ policies, and training utilities for reinforcement learning based trading.
 
 from .config import DataConfig, EnvironmentConfig, TrainingConfig, EvaluationConfig
 from .policy import DirichletGRUPolicy
-from .trainer import DifferentiableMarketTrainer
-from .env import DifferentiableMarketEnv
 from .optim import CombinedOptimizer, MuonConfig, build_muon_optimizer
 from .differentiable_utils import (
     TradeMemoryState,
@@ -18,6 +16,16 @@ from .differentiable_utils import (
     taylor_time_encoding,
     trade_memory_update,
 )
+
+try:
+    from .trainer import DifferentiableMarketTrainer
+except ModuleNotFoundError:  # pragma: no cover - optional trainer dependencies
+    DifferentiableMarketTrainer = None
+
+try:
+    from .env import DifferentiableMarketEnv
+except ModuleNotFoundError:  # pragma: no cover - env module is optional in some installs
+    DifferentiableMarketEnv = None
 
 __all__ = [
     "DataConfig",
