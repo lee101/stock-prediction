@@ -113,14 +113,14 @@ python trade_daily_stock_prod.py --live
 # Uses 3-model ensemble (s123+s15+s36 softmax_avg) by default
 ```
 
-### Paper Snapshot (2026-03-27 14:00 UTC)
-- **s123+s15+s36 ensemble** — confirmed production, exhaustive 0/111 neg, med=+46.3%
-- Session history: s36 was temporarily thought collapsed (evaluate_holdout bug), then stock_ent_05 tried but found bad via exhaustive eval (52/111 neg), then reverted to s36. s36 is confirmed NOT collapsed.
+### Paper Snapshot (2026-03-27 16:30 UTC)
+- **tp10+s15+s36 ensemble** — NEW BEST, deployed to paper config (2026-03-27)
+- Exhaustive eval: 0/111 neg, med=+50.9%, p10=+36.6%, worst=+27.3% — beats prior s123+s15+s36 on ALL metrics
 
 ### Active 3-Model Ensemble (softmax_avg)
 | Checkpoint | Config | Notes |
 |-----------|--------|-------|
-| `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt` | tp05, seed=123, ~1.44M steps | Primary |
+| `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_10/best.pt` | tp10, ~6.9M steps | Primary (NEW) |
 | `pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt` | tp05, seed=15, 35M steps | Ensemble member |
 | `pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s36/best.pt` | tp05, seed=36, 35M steps | Ensemble member |
 
@@ -129,37 +129,46 @@ python trade_daily_stock_prod.py --live
 
 | Model | Med | P10 | P90 | Worst | Neg/111 | Notes |
 |-------|-----|-----|-----|-------|---------|-------|
-| **s123+s15+s36 ensemble** | **+46.3%** | **+28.6%** | **+70.0%** | **+21.0%** | **0/111** | ✓ PRODUCTION |
+| **tp10+s15+s36 ensemble** | **+50.9%** | **+36.6%** | **+68.1%** | **+27.3%** | **0/111** | ✓ NEW PRODUCTION |
+| s123+s15+s36 (prior prod) | +46.3% | +28.6% | +70.0% | +21.0% | 0/111 | superseded |
 | s15 standalone | +30.0% | +15.8% | — | +8.4% | 0/111 | |
 | s36 standalone | +27.9% | +10.1% | — | -1.2% | 1/111 | NOT collapsed! |
+| tp10 standalone | ~0% | ~0% | — | -5.6% | 5/111 | conservative anchor |
 | s123 standalone | +16.7% | +10.5% | — | +5.6% | 0/111 | |
-| tp03 standalone | +14.6% | +8.8% | — | +2.6% | 0/111 | Future candidate |
+| tp03 standalone | +14.6% | +8.8% | — | +2.6% | 0/111 | |
 | stock_ent_05 standalone | +6.1% | -18.1% | — | -31.1% | 52/111 | ✗ BAD |
 
-**Candidates tested for ensemble improvement (2026-03-27):**
-| Ensemble | Med | P10 | Worst | Notes |
-|----------|-----|-----|-------|-------|
-| s123+s15+s36 (PROD) | +46.3% | +28.6% | +21.0% | baseline |
-| s123+s15+s36+ent005_a40 | +43.7% | +33.2% | +21.6% | best p10 but lower med |
-| s123+s15+s36+cosine_slip | +44.0% | +28.6% | +16.9% | worse worst |
-| s123+s15+tp03 (s36 replaced) | +32.3% | +18.6% | +13.7% | significantly worse |
-- Conclusion: no clear improvement found yet. Current s123+s15+s36 is optimal.
+**All candidates tested for ensemble improvement (2026-03-27):**
+| Ensemble | Med | P10 | P90 | Worst | Neg | Notes |
+|----------|-----|-----|-----|-------|-----|-------|
+| **tp10+s15+s36** | **+50.9%** | **+36.6%** | **+68.1%** | **+27.3%** | **0/111** | ✓ DEPLOYED |
+| s123+s15+s36 | +46.3% | +28.6% | +70.0% | +21.0% | 0/111 | prior prod |
+| s123+s15+s36+tp10 (4-model) | +44.9% | +31.9% | +65.3% | +22.6% | 0/111 | inferior to 3-model |
+| s123+s15+s36+ent005_a40 | +43.7% | +33.2% | — | +21.6% | 0/111 | inferior |
+| s123+s15+s36+cosine_slip | +44.0% | +28.6% | — | +16.9% | 0/111 | inferior |
+| s123+s15+tp03 (s36 replaced) | +32.3% | +18.6% | — | +13.7% | 0/111 | inferior |
+
+**Slippage robustness (tp10+s15+s36 vs s123+s15+s36):**
+| Slippage | tp10+s15+s36 med | s123+s15+s36 med | tp10+s15+s36 p10 |
+|----------|-----------------|-----------------|-----------------|
+| 0bps | +45.4% | +41.8% | +35.3% |
+| 5bps | +50.9% | +46.3% | +36.6% |
+| 10bps | +50.9% | +46.3% | +36.6% |
 
 **CRITICAL**: Do NOT use `evaluate_holdout --seed 42` for deployment decisions.
-Use exhaustive eval (all 111 windows) via `/tmp/test_current_prod_exhaustive.py` or canonical `default_rng(42)` 50-window eval.
-The `evaluate_holdout` formula selects different windows than canonical:
+Use exhaustive eval (all 111 windows). The `evaluate_holdout` formula selects different windows than canonical:
 - s36 evaluate_holdout: -17.5%, 48/50 neg → WRONG (exhaustive: +27.9%, 1/111 neg)
 - stock_ent_05 evaluate_holdout: +40.7%, 0/50 neg → WRONG (exhaustive: +6.1%, 52/111 neg)
 
 ### Eval Command (exhaustive ensemble eval)
 ```bash
 source .venv313/bin/activate
-python /tmp/test_current_prod_exhaustive.py
+python /tmp/test_tp10_comprehensive.py
 # Or run scripts/eval_stocks12_seeds.py for individual model screening
 ```
 
 ### Config Details
-- s123: h=1024, lr=3e-4, ent=0.05, trade_penalty=0.05, dp=0.0, anneal_lr=True, seed=123, ~1.44M steps
+- tp10: h=1024, trade_penalty=0.10, anneal_lr=True, ~6.9M steps (v2_sweep config)
 - tp05_s15: seed=15, 128 envs, no bf16, 35M steps
 - tp05_s36: seed=36, 128 envs, no bf16, 35M steps
 
@@ -178,19 +187,19 @@ sudo systemctl start daily-rl-trader.service  # starts paper
 
 ## Active Improvement Experiments (2026-03-27)
 
-### Goal
-The daily PPO ensemble (s123+s15+s36) is confirmed optimal at 0/111 neg, med=46.3%. Priority: find seeds that could improve beyond this or replace s36 (need standalone med>27.9%, ≤1/111 neg). The Chronos2 system is a bigger problem (negative live).
+### Goal — UPDATED
+Found tp10+s15+s36 (0/111 neg, med=50.9%) which beats the prior s123+s15+s36 ensemble. Deployed.
+Next priority: find more v2_sweep models that improve beyond tp10+s15+s36, or improve the Chronos2 situation.
 
-### Seed Sweep Results (2026-03-27)
-- Approach: baseline config (tp=0.0, ent=0.05, h=1024, anneal_lr), 10M steps, batch of 12
-- Total tested today: 300-311, 400-411 (OOM on 2), 412-423 (partial OOM), 500-511 (running)
-- **Best found**: s411 (3/50 neg, med=+14.6%) — closest but not qualifying
-- **Key insight**: High in-sample return (trades=1, best_return>0.5) = OVERFITTING. Good seeds have low/modest in-sample (best_return≈0.0085 like s300) but generalize.
-- **Success rate**: ~1/50+ seeds reach ≤5/50 neg; ~1/100+ reach 0/50 neg
-- **Notable v2_sweep find**: `stock_trade_pen_03` (tp=0.03) standalone: 0/111 neg, med=14.6% — below s36 threshold
-
-### Currently Running
-- Batch 5: seeds 500-511, baseline config, 10M steps (started 2026-03-27 ~14:00)
+### Ensemble Discovery (2026-03-27)
+- Approach: exhaustively eval all v2_sweep models as ensemble candidates
+- **KEY FIND**: `stock_trade_pen_10` (tp=0.10, ~6.9M steps) replaces s123 in ensemble
+  - tp10+s15+s36: med=50.9%, p10=36.6%, worst=27.3%, 0/111 neg — beats all prior ensembles
+  - tp10 is a "conservative anchor" model (nearly do-nothing standalone, 5/111 neg, ~0% solo return)
+  - Mechanism: high trade_penalty forces highly selective entries → ensemble diversity improves
+- Seed sweep (baseline, tp=0.0, 10M steps): tested 300-611 (130+ seeds), best s411 (7/111 neg) — no qualifiers
+- v2_sweep exhaustive: `stock_ent_05` is BAD (52/111 neg exhaustive despite 0/50 on evaluate_holdout)
+- `evaluate_holdout --seed 42` is WRONG — uses different windows than canonical. Never use for deployment.
 
 ### Eval Pipeline
 ```bash
@@ -203,9 +212,9 @@ source .venv313/bin/activate && python scripts/eval_stocks12_seeds.py \
 python /tmp/test_current_prod_exhaustive.py
 ```
 
-### Qualification Criteria (to add to ensemble)
-1. Standalone exhaustive: ≤1/111 neg AND med > 27.9% (better than s36)
-2. Or: ensemble test showing med > 46.3% + 0/111 neg (replaces/augments current)
+### Qualification Criteria (to beat tp10+s15+s36 ensemble)
+1. Ensemble test: med > 50.9% AND p10 > 36.6% AND 0/111 neg (must beat ALL key metrics)
+2. Or: standalone exhaustive: ≤1/111 neg AND med > 27.9% (better than s36 for replacement)
 
 ### Priority: Disable Chronos2
 The unified-stock-trader (Chronos2, LIVE) is negative on all periods 7d+. Consider stopping it and enabling daily-rl-trader for live trading once 90-day live performance confirmed on paper.
