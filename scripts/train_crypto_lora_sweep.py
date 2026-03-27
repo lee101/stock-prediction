@@ -53,6 +53,18 @@ class ConsistencyMetrics:
         return self.mae_percent_mean + 0.5 * self.mae_percent_std + 0.3 * (self.mae_percent_max - self.mae_percent_mean)
 
 
+def resolve_data_path(symbol: str, data_root: Path) -> Path:
+    """Resolve the CSV data path for *symbol* within *data_root*.
+
+    Checks ``data_root/stocks/symbol.csv`` first (common mixed-hourly layout),
+    then falls back to ``data_root/symbol.csv``.
+    """
+    stocks_candidate = data_root / "stocks" / f"{symbol}.csv"
+    if stocks_candidate.exists():
+        return stocks_candidate
+    return data_root / f"{symbol}.csv"
+
+
 def load_hourly_frame(csv_path: Path) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
