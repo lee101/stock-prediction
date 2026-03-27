@@ -1,0 +1,7 @@
+timestamp,label,neg_of_111,med_90d,p10_90d,worst_90d,checkpoint
+2026-03-27T12:59:31Z,s24,89,-3.04,-18.05,-25.65,pufferlib_market/checkpoints/stocks12_sweep_s16_50/tp05_s24/best.pt
+2026-03-27T12:59:39Z,s27,54,0.11,-14.58,-24.09,pufferlib_market/checkpoints/stocks12_sweep_s16_50/tp05_s27/best.pt
+2026-03-27T12:59:48Z,s28,0,11.97,4.10,1.10,pufferlib_market/checkpoints/stocks12_sweep_s16_50/tp05_s28/best.pt
+2026-03-27T12:59:56Z,s31,102,-20.72,-37.40,-42.49,pufferlib_market/checkpoints/stocks12_sweep_s16_50/tp05_s31/best.pt
+2026-03-27T13:09:16Z,s32,8,0.00,0.00,-1.84,pufferlib_market/checkpoints/stocks12_sweep_s16_50/tp05_s32/best.pt
+2026-03-27T13:09:25Z,s33,63,-2.97,-6.79,-9.50,pufferlib_market/checkpoints/stocks12_sweep_s16_50/tp05_s33/best.pt
