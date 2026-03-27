@@ -21,6 +21,26 @@ DEFAULT_OUTPUT_ROOT = Path("chronos2_finetuned")
 DEFAULT_RESULTS_DIR = Path("hyperparams/crypto_lora_sweep")
 
 
+def resolve_data_path(symbol: str, data_root: Path) -> Path:
+    """Resolve the CSV data file path for a given symbol.
+
+    Searches for the symbol's CSV file in subdirectories (e.g. stocks/, crypto/)
+    before falling back to the root directory.
+
+    Args:
+        symbol: Asset symbol, e.g. "GOOG" or "SOLUSD".
+        data_root: Root directory to search under.
+
+    Returns:
+        Path to the symbol's CSV file (may not exist if not found in any subdir).
+    """
+    for subdir in ("stocks", "crypto"):
+        candidate = data_root / subdir / f"{symbol}.csv"
+        if candidate.exists():
+            return candidate
+    return data_root / f"{symbol}.csv"
+
+
 @dataclass
 class TrainConfig:
     symbol: str = "SOLUSD"
