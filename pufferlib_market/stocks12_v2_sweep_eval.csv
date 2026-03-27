@@ -33,3 +33,16 @@ timestamp,name,med_90d,p10_90d,worst_90d,neg_of_50,med_sortino,checkpoint
 2026-03-27T10:57:17Z,stock_robust_champion,-20.17,-29.07,-35.82,40,-9.76,pufferlib_market/checkpoints/stocks12_v2_sweep/stock_robust_champion/best.pt
 2026-03-27T10:58:28Z,stock_slip_10bps,-14.30,-29.85,-35.97,38,-6.59,pufferlib_market/checkpoints/stocks12_v2_sweep/stock_slip_10bps/best.pt
 2026-03-27T10:59:38Z,stock_slip_15bps,7.01,-5.67,-8.27,11,5.53,pufferlib_market/checkpoints/stocks12_v2_sweep/stock_slip_15bps/best.pt
+2026-03-27T11:00:47Z,stock_slip_5bps,-9.60,-16.18,-20.35,42,-4.01,pufferlib_market/checkpoints/stocks12_v2_sweep/stock_slip_5bps/best.pt
+2026-03-27T11:01:55Z,stock_smooth_pen,-20.91,-27.46,-34.81,39,-9.70,pufferlib_market/checkpoints/stocks12_v2_sweep/stock_smooth_pen/best.pt
+2026-03-27T11:02:57Z,stock_sortino_low_ent_tp,0.00,0.00,-0.65,1,0.00,pufferlib_market/checkpoints/stocks12_v2_sweep/stock_sortino_low_ent_tp/best.pt
+2026-03-27T11:03:55Z,stock_trade_pen_01,-1.16,-12.74,-19.03,30,0.52,pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_01/best.pt
+2026-03-27T11:04:54Z,stock_trade_pen_02,-16.10,-28.20,-32.60,39,-7.18,pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_02/best.pt
+2026-03-27T11:05:55Z,stock_trade_pen_03,9.15,-0.63,-11.29,7,6.76,pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_03/best.pt
+2026-03-27T11:06:50Z,stock_trade_pen_05,3.56,-4.53,-11.41,17,4.37,pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05/best.pt
+2026-03-27T11:07:43Z,stock_trade_pen_05_s123,17.45,0.14,-12.92,5,37.52,pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt
+2026-03-27T11:08:40Z,stock_trade_pen_05_s7,-13.32,-24.49,-29.95,39,-5.46,pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s7/best.pt
+2026-03-27T11:09:33Z,stock_trade_pen_08,4.57,0.00,-7.02,3,319.59,pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_08/best.pt
+2026-03-27T11:10:25Z,stock_trade_pen_10,0.00,0.00,-3.76,2,0.00,pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_10/best.pt
+2026-03-27T11:11:20Z,stock_wd_05,-4.90,-18.41,-21.61,35,-0.95,pufferlib_market/checkpoints/stocks12_v2_sweep/stock_wd_05/best.pt
+2026-03-27T11:12:07Z,transformer_h100,-13.32,-24.43,-29.39,39,-5.46,pufferlib_market/checkpoints/stocks12_v2_sweep/transformer_h100/best.pt
