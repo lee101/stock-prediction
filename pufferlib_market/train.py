@@ -1388,7 +1388,8 @@ def train(args):
     _val_data = None
     _val_eval_starts = []
     _val_best_score = -float("inf")
-    _val_best_neg = 999
+    _val_best_neg = 999  # tracks best val_neg seen (for best_neg.pt)
+    _val_best_neg_track = 999  # separate tracker for best_neg.pt (requires active trading)
     _VAL_WINDOW_STEPS = 90  # Always evaluate on 90-day windows regardless of training episode length
     if getattr(args, "val_data_path", None):
         try:
@@ -1690,17 +1691,23 @@ def train(args):
                         logits, _ = policy(obs_t)
                     return int(torch.argmax(logits, dim=-1).item())
                 val_rets = []
+                val_trades = []
                 for _vs in _val_eval_starts:
                     _w = _slice_window(_val_data, start=int(_vs), steps=_VAL_WINDOW_STEPS)
                     _r = simulate_daily_policy(_w, _val_policy_fn, max_steps=_VAL_WINDOW_STEPS,
                                                fill_buffer_bps=5.0, periods_per_year=float(args.periods_per_year),
                                                enable_drawdown_profit_early_exit=False)
                     val_rets.append(_r.total_return)
+                    val_trades.append(_r.num_trades)
                 policy.train()
                 val_neg = sum(1 for r in val_rets if r < 0)
                 val_med = float(np.median(val_rets)) * 100
+                val_avg_trades = float(np.mean(val_trades))
                 # Score: high median minus 2% penalty per negative window
+                # Penalize "do nothing" policies: require avg_trades >= 1 per 90-day window
                 val_score = val_med - 2.0 * val_neg
+                if val_avg_trades < 1.0:
+                    val_score = min(val_score, -100.0)  # penalize near-zero trading
                 if val_score > _val_best_score:
                     _val_best_score = val_score
                     _val_best_neg = val_neg
@@ -1714,8 +1721,21 @@ def train(args):
                         ),
                         val_ckpt_path,
                     )
+                # Save best_neg.pt: checkpoint with fewest negative windows (requires active trading)
+                if val_avg_trades >= 1.0 and val_neg < _val_best_neg_track:
+                    _val_best_neg_track = val_neg
+                    neg_ckpt_path = Path(args.checkpoint_dir) / "best_neg.pt"
+                    neg_ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+                    torch.save(
+                        _checkpoint_payload(
+                            policy, optimizer, update=update, global_step=global_step,
+                            best_return=float(val_med), disable_shorts=bool(args.disable_shorts),
+                            action_meta=action_meta, arch=args.arch,
+                        ),
+                        neg_ckpt_path,
+                    )
                 n_val = len(_val_eval_starts)
-                print(f"  [val] med={val_med:.1f}% neg={val_neg}/{n_val} score={val_score:.1f} best_score={_val_best_score:.1f}")
+                print(f"  [val] med={val_med:.1f}% neg={val_neg}/{n_val} trades_avg={val_avg_trades:.1f} score={val_score:.1f} best_score={_val_best_score:.1f} best_neg={_val_best_neg_track}")
 
             # Early stopping: track whether ep_return improves
             if _es_patience > 0:
