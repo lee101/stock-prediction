@@ -56,15 +56,16 @@ DEFAULT_SYMBOLS = [
     "AMZN",
 ]
 DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt"
-# Primary: tp05_s123 (h=1024, trade_penalty=0.05, anneal_lr=True, seed=123)
-# 3-model ensemble: s123+s15+stock_ent_05 → 0/50 neg, med=41.0%, p10=19.4%, worst=14.7% @ 5bps (2026-03-27)
-# NOTE: s36 COLLAPSED on 2026-03-27 (48/50 neg standalone, 37/50 neg in old ensemble) — replaced with stock_ent_05
-# stock_ent_05: baseline config (tp=0.0, ent=0.05, h=1024, anneal_lr), 7.47M steps, 0/50 neg standalone med=40.7%
-# tp05_s15: seed=15, 128 envs, no bf16, 35M steps (0/50 neg standalone, med=36.3%)
-# Previous 3-model (s123+s15+s36): med=47.30% at 2026-03-24, degraded to -13.6% by 2026-03-27
+# Primary: tp05_s123 (h=1024, trade_penalty=0.05, anneal_lr=True, seed=123, ~1.44M steps, bf16+cuda_graph)
+# 3-model ensemble: s123+s15+s36 → exhaustive 0/111 neg, med=46.3%, p10=28.6% (2026-03-27 verified)
+# NOTE: s36 appeared collapsed when using evaluate_holdout formula (different windows than canonical).
+#       Exhaustive eval (all 111 windows): s36=27.9% med, 1/111 neg → NOT collapsed, still good.
+#       stock_ent_05 is BAD (52/111 neg exhaustive) — do NOT use as ensemble member.
+# tp05_s15: seed=15, no bf16, 35M steps, exhaustive 0/111 neg, med=30.0%
+# tp05_s36: seed=36, no bf16, 35M steps, exhaustive 1/111 neg, med=27.9%
 DEFAULT_EXTRA_CHECKPOINTS = [
     "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt",
-    "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_ent_05/best.pt",
+    "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s36/best.pt",
 ]
 DEFAULT_DATA_DIR = "trainingdata"
 DEFAULT_ALLOCATION_PCT = 25.0

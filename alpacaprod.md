@@ -113,30 +113,33 @@ python trade_daily_stock_prod.py --live
 # Uses 3-model ensemble (s123+s15+s36 softmax_avg) by default
 ```
 
-### Paper Snapshot (2026-03-27 10:48 UTC)
-- Service restarted with new ensemble (s36 removed, stock_ent_05 added)
+### Paper Snapshot (2026-03-27 11:20 UTC)
+- **REVERTED** to s123+s15+s36 ensemble (stock_ent_05 was bad — see eval notes below)
 - Previous equity 2026-03-25: **$55,268.15**, cash **$2,235.60**
 
-### Active 3-Model Ensemble (softmax_avg) — UPDATED 2026-03-27
+### Active 3-Model Ensemble (softmax_avg) — RESTORED 2026-03-27
 | Checkpoint | Config | Notes |
 |-----------|--------|-------|
-| `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt` | tp05, seed=123 | Primary |
+| `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt` | tp05, seed=123, ~1.44M steps | Primary |
 | `pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt` | tp05, seed=15, 35M steps | Ensemble member |
-| `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_ent_05/best.pt` | tp=0.0, ent=0.05, 7.47M steps | Ensemble member (NEW) |
+| `pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s36/best.pt` | tp05, seed=36, 35M steps | Ensemble member |
 
-**REPLACED s36** (collapsed 2026-03-27: 48/50 neg standalone, 37/50 neg in ensemble)
+### Marketsim Status — EXHAUSTIVE EVAL (all 111 possible 90d windows, 5bps, no early stop)
+**2026-03-27 exhaustive eval** (stocks12_daily_val.bin, 111 windows = complete validation set):
 
-### Marketsim Status (50-window, default_rng(42), 90d windows, 5bps, no early stop)
+| Model | Med | P10 | Neg/111 | Notes |
+|-------|-----|-----|---------|-------|
+| **s123+s15+s36 ensemble** | **+46.3%** | **+28.6%** | **0/111** | ✓ PRODUCTION |
+| s15 standalone | +30.0% | +15.8% | 0/111 | |
+| s36 standalone | +27.9% | +10.1% | 1/111 | NOT collapsed! |
+| s123 standalone | +16.8% | +10.5% | 0/111 | |
+| stock_ent_05 standalone | +6.1% | -18.1% | 52/111 | ✗ BAD — evaluated_holdout was misleading |
 
-**Fresh eval 2026-03-27** (stocks12_daily_val.bin, 201 timesteps):
-
-| Model | Med | P10 | P90 | Worst | Neg/50 | Notes |
-|-------|-----|-----|-----|-------|--------|-------|
-| **NEW ensemble (s123+s15+stock_ent_05)** | **+41.0%** | **+19.4%** | **+56.5%** | **+14.7%** | **0** | ✓ DEPLOYED |
-| OLD ensemble (s123+s15+s36) | -13.6% | -26.9% | +11.4% | -32.3% | 37/50 | ✗ BROKEN (s36 collapse) |
-| stock_ent_05 standalone | +40.7% | +19.2% | +59.9% | +10.1% | 0 | 7.47M steps |
-| tp05_s15 standalone | +36.3% | +20.1% | +57.1% | +12.5% | 0 | 35M steps |
-| tp05_s123 standalone | +17.4% | +0.1% | +24.0% | -12.9% | 5/50 | ⚠️ 5 neg |
+**CRITICAL**: Do NOT use `evaluate_holdout --seed 42` for deployment decisions.
+Use exhaustive eval (all 111 windows) or canonical `default_rng(42)` 50-window eval.
+The `evaluate_holdout` formula selects different windows than canonical and gave wrong results:
+- s36 evaluate_holdout: -17.5%, 48/50 neg → WRONG (exhaustive: +27.9%, 1/111 neg)
+- stock_ent_05 evaluate_holdout: +40.7%, 0/50 neg → WRONG (exhaustive: +6.1%, 52/111 neg)
 | tp05_s36 standalone | -17.5% | -26.1% | -4.0% | -32.3% | 48/50 | ✗ COLLAPSED |
 
 ### Eval Command (new ensemble)
