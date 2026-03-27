@@ -110,50 +110,49 @@ sudo tail -50 /var/log/supervisor/unified-stock-trader.log
 # Live:
 source .venv313/bin/activate
 python trade_daily_stock_prod.py --live
-# Uses 3-model ensemble (s123+s15+s36 softmax_avg) by default
+# Uses 6-model ensemble (tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40 softmax_avg) by default
 ```
 
-### Paper Snapshot (2026-03-27 16:30 UTC)
-- **tp10+s15+s36 ensemble** — NEW BEST, deployed to paper config (2026-03-27)
-- Exhaustive eval: 0/111 neg, med=+50.9%, p10=+36.6%, worst=+27.3% — beats prior s123+s15+s36 on ALL metrics
+### Paper Snapshot (2026-03-27 17:55 UTC)
+- **6-model ensemble** — NEW BEST, deployed to paper config (2026-03-27)
+- @5bps: 0/111 neg, med=+58.0%, p10=+45.4%, worst=+36.6%
 
-### Active 3-Model Ensemble (softmax_avg)
+### Active 6-Model Ensemble (softmax_avg)
 | Checkpoint | Config | Notes |
 |-----------|--------|-------|
-| `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_10/best.pt` | tp10, ~6.9M steps | Primary (NEW) |
+| `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_10/best.pt` | tp10, ~6.9M steps | Conservative anchor |
 | `pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt` | tp05, seed=15, 35M steps | Ensemble member |
 | `pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s36/best.pt` | tp05, seed=36, 35M steps | Ensemble member |
+| `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_gamma_995/best.pt` | gamma=0.995, tp05, h=1024 | 4th member |
+| `pufferlib_market/checkpoints/stocks12_v2_sweep/muon_wd_005/best.pt` | muon optimizer, wd=0.005 | 5th member |
+| `pufferlib_market/checkpoints/stocks12_v2_sweep/h1024_a40/best.pt` | h=1024, trained on A40 | 6th member |
 
-### Marketsim Status — EXHAUSTIVE EVAL (all 111 possible 90d windows, 5bps, no early stop)
+### Marketsim Status — EXHAUSTIVE EVAL (all 111 possible 90d windows, no early stop)
 **2026-03-27 exhaustive eval** (stocks12_daily_val.bin, 111 windows = complete validation set):
 
-| Model | Med | P10 | P90 | Worst | Neg/111 | Notes |
-|-------|-----|-----|-----|-------|---------|-------|
-| **tp10+s15+s36 ensemble** | **+50.9%** | **+36.6%** | **+68.1%** | **+27.3%** | **0/111** | ✓ NEW PRODUCTION |
-| s123+s15+s36 (prior prod) | +46.3% | +28.6% | +70.0% | +21.0% | 0/111 | superseded |
-| s15 standalone | +30.0% | +15.8% | — | +8.4% | 0/111 | |
-| s36 standalone | +27.9% | +10.1% | — | -1.2% | 1/111 | NOT collapsed! |
-| tp10 standalone | ~0% | ~0% | — | -5.6% | 5/111 | conservative anchor |
-| s123 standalone | +16.7% | +10.5% | — | +5.6% | 0/111 | |
-| tp03 standalone | +14.6% | +8.8% | — | +2.6% | 0/111 | |
-| stock_ent_05 standalone | +6.1% | -18.1% | — | -31.1% | 52/111 | ✗ BAD |
+**Production progression:**
+| Ensemble | Med@5bps | P10@5bps | Worst@5bps | Neg/111 | Status |
+|----------|----------|----------|------------|---------|--------|
+| **6-model (tp10+s15+s36+gamma+muon+h1024)** | **+58.0%** | **+45.4%** | **+36.6%** | **0/111** | ✓ CURRENT |
+| 5-model (+muon_wd_005) | +58.4% | +43.4% | +35.2% | 0/111 | best median |
+| 4-model (+gamma_995) | +55.9% | +42.9% | +29.7% | 0/111 | superseded |
+| 3-model (tp10+s15+s36) | +50.9% | +36.6% | +27.3% | 0/111 | superseded |
+| 3-model (s123+s15+s36) | +46.3% | +28.6% | +21.0% | 0/111 | superseded |
 
-**All candidates tested for ensemble improvement (2026-03-27):**
-| Ensemble | Med | P10 | P90 | Worst | Neg | Notes |
-|----------|-----|-----|-----|-------|-----|-------|
-| **tp10+s15+s36** | **+50.9%** | **+36.6%** | **+68.1%** | **+27.3%** | **0/111** | ✓ DEPLOYED |
-| s123+s15+s36 | +46.3% | +28.6% | +70.0% | +21.0% | 0/111 | prior prod |
-| s123+s15+s36+tp10 (4-model) | +44.9% | +31.9% | +65.3% | +22.6% | 0/111 | inferior to 3-model |
-| s123+s15+s36+ent005_a40 | +43.7% | +33.2% | — | +21.6% | 0/111 | inferior |
-| s123+s15+s36+cosine_slip | +44.0% | +28.6% | — | +16.9% | 0/111 | inferior |
-| s123+s15+tp03 (s36 replaced) | +32.3% | +18.6% | — | +13.7% | 0/111 | inferior |
+**Slippage robustness (6-model):**
+| Slippage | Med | P10 | Worst | Neg/111 |
+|----------|-----|-----|-------|---------|
+| 0bps | +54.5% | +42.6% | +30.6% | 0/111 |
+| 5bps | +58.0% | +45.4% | +36.6% | 0/111 |
+| 10bps | +61.5% | +45.5% | +36.6% | 0/111 |
+| 20bps | +64.0% | +47.3% | +38.3% | 0/111 |
 
-**Slippage robustness (tp10+s15+s36 vs s123+s15+s36):**
-| Slippage | tp10+s15+s36 med | s123+s15+s36 med | tp10+s15+s36 p10 |
-|----------|-----------------|-----------------|-----------------|
-| 0bps | +45.4% | +41.8% | +35.3% |
-| 5bps | +50.9% | +46.3% | +36.6% |
-| 10bps | +50.9% | +46.3% | +36.6% |
+**Key v2_sweep candidates tested (exhaustive, as 5th/6th member of 4-model base):**
+- `muon_wd_005` standalone 5th: med=58.4%, p10=43.4%, worst=35.2% ✓
+- `h1024_a40` standalone 5th: med=55.9%, p10=44.1%, worst=34.1% (ties median)
+- `stock_drawdown_pen` 5th: med=57.1%, p10=43.2%, worst=31.5% ✓
+- `slip_5bps` 5th: med=54.9%, p10=44.4%, worst=32.8% (median drops)
+- `stock_ent_05` standalone: +6.1%, 52/111 neg ✗ BAD
 
 **CRITICAL**: Do NOT use `evaluate_holdout --seed 42` for deployment decisions.
 Use exhaustive eval (all 111 windows). The `evaluate_holdout` formula selects different windows than canonical:
@@ -188,8 +187,9 @@ sudo systemctl start daily-rl-trader.service  # starts paper
 ## Active Improvement Experiments (2026-03-27)
 
 ### Goal — UPDATED
-Found tp10+s15+s36 (0/111 neg, med=50.9%) which beats the prior s123+s15+s36 ensemble. Deployed.
-Next priority: find more v2_sweep models that improve beyond tp10+s15+s36, or improve the Chronos2 situation.
+Found 6-model (tp10+s15+s36+gamma+muon_wd005+h1024_a40), med=58.0%, p10=45.4%, 0/111 neg. Deployed.
+Full v2_sweep 5th-member search complete. muon_wd005 best 5th, h1024_a40 best 6th.
+Next: explore whether further ensemble expansion is possible, or pivot to live deployment.
 
 ### Ensemble Discovery (2026-03-27)
 - Approach: exhaustively eval all v2_sweep models as ensemble candidates
@@ -212,8 +212,8 @@ source .venv313/bin/activate && python scripts/eval_stocks12_seeds.py \
 python /tmp/test_current_prod_exhaustive.py
 ```
 
-### Qualification Criteria (to beat tp10+s15+s36 ensemble)
-1. Ensemble test: med > 50.9% AND p10 > 36.6% AND 0/111 neg (must beat ALL key metrics)
+### Qualification Criteria (to beat 6-model ensemble)
+1. Ensemble test: med > 58.0% AND p10 > 45.4% AND 0/111 neg (must beat ALL key metrics at 5bps)
 2. Or: standalone exhaustive: ≤1/111 neg AND med > 27.9% (better than s36 for replacement)
 
 ### Priority: Disable Chronos2

@@ -56,16 +56,20 @@ DEFAULT_SYMBOLS = [
     "AMZN",
 ]
 DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_10/best.pt"
-# Primary: stock_trade_pen_10 (h=1024, trade_penalty=0.10, anneal_lr=True, ~6.9M steps)
-# 3-model ensemble: tp10+s15+s36 → exhaustive 0/111 neg, med=50.9%, p10=36.6%, worst=27.3% (2026-03-27)
-# Beats prior s123+s15+s36 on ALL metrics: +4.6% med, +8.0% p10, +6.3% worst.
-# Prior ensemble: s123+s15+s36 → med=46.3%, p10=28.6%, worst=21.0%, 0/111 neg
+# 6-model ensemble: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40 (2026-03-27)
+# → exhaustive 0/111 neg, med=58.0%, p10=45.4%, worst=36.6% @5bps
+# @0bps: med=54.5%, p10=42.6%, worst=30.6%
+# @10bps: med=61.5%, p10=45.5%, worst=36.6%
+# @20bps: med=64.0%, p10=47.3%, worst=38.3%
+# Progression: s123+s15+s36 → tp10+s15+s36 → tp10+s15+s36+gamma → 6-model
+#   46.3% / 28.6%     50.9% / 36.6%      55.9% / 42.9%          58.0% / 45.4%  (med/p10 @5bps)
 # stock_ent_05 is BAD (52/111 neg exhaustive) — do NOT use as ensemble member.
-# tp05_s15: seed=15, no bf16, 35M steps, exhaustive 0/111 neg, med=30.0%
-# tp05_s36: seed=36, no bf16, 35M steps, exhaustive 1/111 neg, med=27.9%
 DEFAULT_EXTRA_CHECKPOINTS = [
     "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt",
     "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s36/best.pt",
+    "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_gamma_995/best.pt",
+    "pufferlib_market/checkpoints/stocks12_v2_sweep/muon_wd_005/best.pt",
+    "pufferlib_market/checkpoints/stocks12_v2_sweep/h1024_a40/best.pt",
 ]
 DEFAULT_DATA_DIR = "trainingdata"
 DEFAULT_ALLOCATION_PCT = 25.0
