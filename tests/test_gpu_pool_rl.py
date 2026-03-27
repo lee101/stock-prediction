@@ -615,6 +615,61 @@ def test_cmd_run_no_limit_when_budget_zero(tmp_path: Path) -> None:
         cmd_run(args)
 
 
+def test_cmd_run_forwards_replay_eval_arguments(tmp_path: Path) -> None:
+    pool_file = tmp_path / "pool.json"
+    mock_client = MagicMock()
+    mock_client.list_pods.return_value = []
+    ready_pod = _make_pod(status="ready")
+    captured: dict[str, object] = {}
+
+    args = SimpleNamespace(
+        gpu="a100",
+        gpu_count=1,
+        time_budget=300,
+        max_trials=10,
+        experiment="test_exp",
+        wandb_project="stock",
+        remote_dir="/workspace/stock-prediction",
+        stop_after=False,
+        budget_limit=100.0,
+        train_data="pufferlib_market/data/train.bin",
+        val_data="pufferlib_market/data/val.bin",
+        dry_run=False,
+        descriptions="baseline_anneal_lr",
+        replay_eval_data="pufferlib_market/data/replay.bin",
+        replay_eval_hourly_root="trainingdatahourly",
+        replay_eval_start_date="2025-06-01",
+        replay_eval_end_date="2026-02-05",
+        replay_eval_run_hourly_policy=True,
+        replay_eval_robust_start_states="flat,long:BTCUSD:0.25",
+        replay_eval_fill_buffer_bps=5.0,
+        replay_eval_hourly_periods_per_year=8760.0,
+    )
+
+    def _fake_run_rl_experiment_on_pod(*args, **kwargs):
+        captured.update(kwargs)
+        return {"status": "completed"}
+
+    with (
+        patch("pufferlib_market.gpu_pool_rl.POOL_STATE_FILE", pool_file),
+        patch("pufferlib_market.gpu_pool_rl._require_client", return_value=mock_client),
+        patch("pufferlib_market.gpu_pool_rl.get_or_create_pod", return_value=ready_pod),
+        patch("pufferlib_market.gpu_pool_rl.bootstrap_pod"),
+        patch("pufferlib_market.gpu_pool_rl.sync_data_files"),
+        patch("pufferlib_market.gpu_pool_rl.run_rl_experiment_on_pod", side_effect=_fake_run_rl_experiment_on_pod),
+    ):
+        cmd_run(args)
+
+    assert captured["replay_eval_data"] == "pufferlib_market/data/replay.bin"
+    assert captured["replay_eval_hourly_root"] == "trainingdatahourly"
+    assert captured["replay_eval_start_date"] == "2025-06-01"
+    assert captured["replay_eval_end_date"] == "2026-02-05"
+    assert captured["replay_eval_run_hourly_policy"] is True
+    assert captured["replay_eval_robust_start_states"] == "flat,long:BTCUSD:0.25"
+    assert captured["replay_eval_fill_buffer_bps"] == 5.0
+    assert captured["replay_eval_hourly_periods_per_year"] == 8760.0
+
+
 # ---------------------------------------------------------------------------
 # cmd_status — no network when no state file
 # ---------------------------------------------------------------------------

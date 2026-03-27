@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import shutil
 import json
+import math
 import shlex
 import subprocess
 import sys
@@ -37,6 +38,86 @@ def _load_json(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"Expected JSON object in {path}")
     return payload
+
+
+def _coerce_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric):
+        return None
+    return numeric
+
+
+def summarize_eval_windows(payload: dict[str, Any]) -> dict[str, Any]:
+    windows = payload.get("windows")
+    if not isinstance(windows, list):
+        return {
+            "window_count": 0,
+            "accepted_window_count": 0,
+            "rejected_window_count": 0,
+            "all_windows_accept": False,
+            "mean_return_delta": None,
+            "min_return_delta": None,
+            "mean_sortino_delta": None,
+            "min_sortino_delta": None,
+            "mean_max_dd_delta": None,
+            "max_max_dd_delta": None,
+            "mean_new_symbol_pnl": None,
+            "min_new_symbol_pnl": None,
+        }
+
+    return_deltas: list[float] = []
+    sortino_deltas: list[float] = []
+    max_dd_deltas: list[float] = []
+    new_symbol_pnls: list[float] = []
+    accepted = 0
+    rejected = 0
+
+    for window in windows:
+        if not isinstance(window, dict):
+            continue
+        comparison = window.get("comparison")
+        if not isinstance(comparison, dict):
+            continue
+        verdict = str(comparison.get("verdict") or "").upper()
+        if verdict == "ACCEPT":
+            accepted += 1
+        elif verdict == "REJECT":
+            rejected += 1
+        return_delta = _coerce_float(comparison.get("return_delta"))
+        sortino_delta = _coerce_float(comparison.get("sortino_delta"))
+        max_dd_delta = _coerce_float(comparison.get("max_dd_delta"))
+        new_symbol_pnl = _coerce_float(comparison.get("new_symbol_pnl"))
+        if return_delta is not None:
+            return_deltas.append(return_delta)
+        if sortino_delta is not None:
+            sortino_deltas.append(sortino_delta)
+        if max_dd_delta is not None:
+            max_dd_deltas.append(max_dd_delta)
+        if new_symbol_pnl is not None:
+            new_symbol_pnls.append(new_symbol_pnl)
+
+    def _mean(values: list[float]) -> float | None:
+        return sum(values) / len(values) if values else None
+
+    return {
+        "window_count": len(windows),
+        "accepted_window_count": accepted,
+        "rejected_window_count": rejected,
+        "all_windows_accept": bool(windows) and accepted == len(windows),
+        "mean_return_delta": _mean(return_deltas),
+        "min_return_delta": min(return_deltas) if return_deltas else None,
+        "mean_sortino_delta": _mean(sortino_deltas),
+        "min_sortino_delta": min(sortino_deltas) if sortino_deltas else None,
+        "mean_max_dd_delta": _mean(max_dd_deltas),
+        "max_max_dd_delta": max(max_dd_deltas) if max_dd_deltas else None,
+        "mean_new_symbol_pnl": _mean(new_symbol_pnls),
+        "min_new_symbol_pnl": min(new_symbol_pnls) if new_symbol_pnls else None,
+    }
 
 
 def load_candidate_config(report_path: Path) -> CandidateConfig:
@@ -190,6 +271,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--windows", default="120,60,30,7,1")
     parser.add_argument("--end", default="2026-03-18")
     parser.add_argument("--signal-mode", choices=("forecast_rule", "gemini"), default="forecast_rule")
+    parser.add_argument("--model", default="gemini-3.1-flash-lite-preview")
     parser.add_argument("--rate-limit", type=float, default=0.2)
     parser.add_argument("--thinking", default="HIGH")
     parser.add_argument("--data-root", default="trainingdatahourly/crypto")
@@ -266,6 +348,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     local_eval_result = local_eval_root / eval_result_path.name
     local_eval_root.mkdir(parents=True, exist_ok=True)
     shutil.copy2(eval_result_path, local_eval_result)
+    eval_payload = _load_json(local_eval_result)
+    eval_summary = summarize_eval_windows(eval_payload)
 
     summary = {
         "candidate_report": str(candidate.report_path),
@@ -278,6 +362,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "local_remote_root": str(local_remote_root),
         "forecast_mae_path": str(local_remote_root / "forecast_mae.json"),
         "eval_result_path": str(local_eval_result),
+        "eval_summary": eval_summary,
     }
     (local_eval_root / "candidate_summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary, indent=2))

@@ -22,11 +22,13 @@ from binance_worksteal.trade_live import (
     normalize_live_positions,
     plan_legacy_rebalance_exits,
     prepare_neural_features,
+    reconcile_exit_orders,
     reconcile_pending_entries,
     run_daily_cycle,
     run_entry_scan,
     run_health_report,
     run_neural_inference,
+    synchronize_positions_from_exchange,
 )
 from binance_worksteal.model import PerSymbolWorkStealPolicy
 from binance_worksteal.data import FEATURE_NAMES
@@ -147,6 +149,33 @@ def test_normalize_live_positions_defaults_legacy_metadata():
     assert position["target_sell"] == 2000.0 * (1.0 + config.profit_target_pct)
     assert position["stop_price"] == 2000.0 * (1.0 - config.stop_loss_pct)
     assert position["source"] == "legacy"
+
+
+def test_normalize_live_positions_preserves_exit_order_metadata():
+    positions = normalize_live_positions(
+        {
+            "adausd": {
+                "entry_price": "0.2726",
+                "entry_date": "2026-03-25T10:12:00+00:00",
+                "quantity": "837.4",
+                "target_sell": "0.278",
+                "stop_price": "0.2453",
+                "exit_order_id": 8538428237,
+                "exit_order_symbol": "ADAUSDT",
+                "exit_order_status": "NEW",
+                "exit_price": "0.278",
+                "exit_reason": "profit_target",
+            }
+        },
+        DEFAULT_CONFIG,
+    )
+
+    position = positions["ADAUSD"]
+    assert position["exit_order_id"] == 8538428237
+    assert position["exit_order_symbol"] == "ADAUSDT"
+    assert position["exit_order_status"] == "NEW"
+    assert position["exit_price"] == 0.278
+    assert position["exit_reason"] == "profit_target"
 
 
 def test_plan_legacy_rebalance_exits_only_non_candidates():
@@ -276,6 +305,227 @@ def test_reconcile_pending_entries_promotes_filled_orders(monkeypatch, tmp_path)
     ]
 
 
+def test_reconcile_exit_orders_removes_position_when_order_fills(monkeypatch, tmp_path):
+    monkeypatch.setattr("binance_worksteal.trade_live.LOG_FILE", tmp_path / "trade_log.jsonl")
+
+    class DummyClient:
+        def get_margin_order(self, symbol, orderId):
+            assert symbol == "ADAUSDT"
+            assert orderId == 987
+            return {
+                "status": "FILLED",
+                "executedQty": "837.4",
+                "price": "0.278",
+                "time": int(pd.Timestamp("2026-03-25T19:27:00Z").timestamp() * 1000),
+            }
+
+    positions = {
+        "ADAUSD": {
+            "entry_price": 0.2726,
+            "entry_date": "2026-03-25T10:12:00+00:00",
+            "quantity": 837.4,
+            "peak_price": 0.285,
+            "target_sell": 0.278,
+            "stop_price": 0.2453,
+            "source": "exchange_sync",
+            "exit_order_id": 987,
+            "exit_order_symbol": "ADAUSDT",
+            "exit_order_status": "NEW",
+            "exit_price": 0.278,
+            "exit_reason": "profit_target",
+        }
+    }
+    last_exit = {}
+
+    recent = reconcile_exit_orders(
+        client=DummyClient(),
+        positions=positions,
+        last_exit=last_exit,
+        now=datetime(2026, 3, 25, 20, tzinfo=timezone.utc),
+    )
+
+    assert positions == {}
+    assert last_exit["ADAUSD"] == "2026-03-25T19:27:00+00:00"
+    assert recent == [
+        {
+            "timestamp": "2026-03-25T19:27:00+00:00",
+            "symbol": "ADAUSD",
+            "side": "sell",
+            "price": 0.278,
+            "quantity": 837.4,
+            "reason": "profit_target",
+            "pnl": (0.278 - 0.2726) * 837.4,
+            "dry_run": False,
+        }
+    ]
+
+
+def test_synchronize_positions_from_exchange_rebuilds_missing_positions(monkeypatch, tmp_path):
+    monkeypatch.setattr("binance_worksteal.trade_live.EVENTS_FILE", tmp_path / "events.jsonl")
+
+    class DummyClient:
+        def get_margin_account(self):
+            return {
+                "userAssets": [
+                    {"asset": "ADA", "free": "419.8626", "netAsset": "836.5626", "borrowed": "0"},
+                    {"asset": "ZEC", "free": "3.190806", "netAsset": "3.190806", "borrowed": "0"},
+                    {"asset": "DOGE", "free": "0", "netAsset": "0.69314091", "borrowed": "1253.29493773"},
+                ]
+            }
+
+        def get_open_margin_orders(self, **kwargs):
+            return [
+                {
+                    "symbol": "ADAUSDT",
+                    "orderId": 8538428237,
+                    "status": "NEW",
+                    "side": "SELL",
+                    "price": "0.278",
+                    "updateTime": 1774466874374,
+                }
+            ]
+
+        def get_all_margin_orders(self, symbol, **kwargs):
+            if symbol == "ADAUSDT":
+                return [
+                    {
+                        "symbol": "ADAUSDT",
+                        "status": "FILLED",
+                        "side": "BUY",
+                        "price": "0.2726",
+                        "executedQty": "837.4",
+                        "time": 1774433541859,
+                        "updateTime": 1774433718086,
+                    }
+                ]
+            if symbol == "ZECUSDT":
+                return [
+                    {
+                        "symbol": "ZECUSDT",
+                        "status": "FILLED",
+                        "side": "BUY",
+                        "price": "238.05",
+                        "executedQty": "3.194",
+                        "time": 1774440129390,
+                        "updateTime": 1774440959689,
+                    }
+                ]
+            return []
+
+    positions = {}
+    current_bars = {
+        "ADAUSD": pd.Series({"close": 0.2694, "high": 0.2710}),
+        "ZECUSD": pd.Series({"close": 230.87, "high": 241.00}),
+        "DOGEUSD": pd.Series({"close": 0.095, "high": 0.096}),
+    }
+
+    events = synchronize_positions_from_exchange(
+        client=DummyClient(),
+        symbols=["ADAUSD", "ZECUSD", "DOGEUSD"],
+        positions=positions,
+        current_bars=current_bars,
+        config=DEFAULT_CONFIG,
+        now=datetime(2026, 3, 25, 21, tzinfo=timezone.utc),
+    )
+
+    assert set(positions) == {"ADAUSD", "ZECUSD"}
+    assert positions["ADAUSD"]["entry_price"] == 0.2726
+    assert positions["ADAUSD"]["quantity"] == 836.5626
+    assert positions["ADAUSD"]["exit_order_id"] == 8538428237
+    assert positions["ADAUSD"]["exit_order_symbol"] == "ADAUSDT"
+    assert positions["ADAUSD"]["target_sell"] == 0.278
+    assert positions["ZECUSD"]["entry_price"] == 238.05
+    assert positions["ZECUSD"]["quantity"] == 3.190806
+    assert "exit_order_id" not in positions["ZECUSD"]
+    assert "DOGEUSD" not in positions
+    assert [event["symbol"] for event in events] == ["ADAUSD", "ZECUSD"]
+
+
+def test_run_daily_cycle_keeps_position_until_live_exit_fills(monkeypatch, tmp_path):
+    monkeypatch.setattr("binance_worksteal.trade_live.STATE_FILE", tmp_path / "live_state.json")
+    monkeypatch.setattr("binance_worksteal.trade_live.LOG_FILE", tmp_path / "trade_log.jsonl")
+    monkeypatch.setattr("binance_worksteal.trade_live.EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr("binance_worksteal.trade_live.get_account_equity", lambda client: 10000.0)
+
+    bars = make_bars_ohlc(
+        [{"close": 100.0}] * 29 + [{"open": 100.0, "high": 120.0, "low": 99.0, "close": 110.0}],
+        "DIPUSD",
+    )
+    monkeypatch.setattr("binance_worksteal.trade_live._fetch_all_bars", lambda client, symbols, lookback_days: {"DIPUSD": bars})
+
+    state = {
+        "positions": {
+            "DIPUSD": {
+                "entry_price": 100.0,
+                "entry_date": "2026-01-20T00:00:00+00:00",
+                "quantity": 5.0,
+                "peak_price": 100.0,
+                "target_sell": 115.0,
+                "stop_price": 90.0,
+                "source": "strategy",
+            }
+        },
+        "pending_entries": {},
+        "last_exit": {},
+        "recent_trades": [],
+        "peak_equity": 0.0,
+    }
+    (tmp_path / "live_state.json").write_text(json.dumps(state))
+
+    class DummyClient:
+        def get_margin_account(self):
+            return {
+                "userAssets": [
+                    {"asset": "DIP", "free": "5.0", "netAsset": "5.0", "borrowed": "0"},
+                ]
+            }
+
+        def get_open_margin_orders(self, **kwargs):
+            return []
+
+        def get_all_margin_orders(self, symbol, **kwargs):
+            return []
+
+        def create_margin_order(self, symbol, side, type, timeInForce, quantity, price):
+            assert symbol == "DIPUSDT"
+            assert side == "SELL"
+            return {
+                "symbol": symbol,
+                "orderId": 4321,
+                "status": "NEW",
+            }
+
+    config = build_runtime_config(
+        build_arg_parser().parse_args(
+            [
+                "--dip-pct", "0.10",
+                "--lookback-days", "20",
+                "--profit-target", "0.15",
+                "--stop-loss", "0.10",
+                "--sma-filter", "0",
+                "--risk-off-trigger-sma-period", "0",
+                "--risk-off-trigger-momentum-period", "0",
+                "--risk-off-market-breadth-filter", "0",
+            ]
+        )
+    )
+
+    run_daily_cycle(client=DummyClient(), symbols=["DIPUSD"], config=config, dry_run=False)
+
+    payload = json.loads((tmp_path / "live_state.json").read_text())
+    assert "DIPUSD" in payload["positions"]
+    position = payload["positions"]["DIPUSD"]
+    assert position["exit_order_id"] == 4321
+    assert position["exit_order_symbol"] == "DIPUSDT"
+    assert position["exit_order_status"] == "NEW"
+    assert position["exit_reason"] == "profit_target"
+    assert payload["last_exit"] == {}
+
+    trades = [json.loads(line) for line in (tmp_path / "trade_log.jsonl").read_text().strip().split("\n")]
+    assert any(trade["side"] == "staged_sell" for trade in trades)
+    assert not any(trade["side"] == "sell" and trade.get("dry_run") is False for trade in trades)
+
+
 def test_run_daily_cycle_stages_pending_entries_without_open_position(monkeypatch, tmp_path):
     monkeypatch.setattr("binance_worksteal.trade_live.STATE_FILE", tmp_path / "live_state.json")
     monkeypatch.setattr("binance_worksteal.trade_live.LOG_FILE", tmp_path / "trade_log.jsonl")
@@ -323,6 +573,57 @@ def test_run_daily_cycle_stages_pending_entries_without_open_position(monkeypatc
     entry_events = [e for e in events if e.get("type") == "entry_scan"]
     assert len(entry_events) >= 1
     assert entry_events[0]["n_checked"] >= 1
+
+
+def test_run_daily_cycle_does_not_stage_failed_live_entry_orders(monkeypatch, tmp_path):
+    monkeypatch.setattr("binance_worksteal.trade_live.STATE_FILE", tmp_path / "live_state.json")
+    monkeypatch.setattr("binance_worksteal.trade_live.LOG_FILE", tmp_path / "trade_log.jsonl")
+    monkeypatch.setattr("binance_worksteal.trade_live.EVENTS_FILE", tmp_path / "events.jsonl")
+
+    bars = make_bars([100.0] * 29 + [90.0], "DIPUSD")
+    monkeypatch.setattr("binance_worksteal.trade_live.fetch_daily_bars", lambda client, symbol, lookback_days=30: bars)
+    monkeypatch.setattr("binance_worksteal.trade_live.place_limit_buy", lambda *args, **kwargs: None)
+    monkeypatch.setattr("binance_worksteal.trade_live.get_account_equity", lambda client: 10_000.0)
+
+    config = build_runtime_config(
+        build_arg_parser().parse_args(
+            [
+                "--dip-pct",
+                "0.10",
+                "--proximity-pct",
+                "0.02",
+                "--lookback-days",
+                "20",
+                "--profit-target",
+                "0.03",
+                "--stop-loss",
+                "0.08",
+                "--sma-filter",
+                "0",
+                "--risk-off-trigger-sma-period",
+                "0",
+                "--risk-off-trigger-momentum-period",
+                "0",
+                "--risk-off-market-breadth-filter",
+                "0",
+            ]
+        )
+    )
+
+    run_daily_cycle(client=None, symbols=["DIPUSD"], config=config, dry_run=False)
+
+    payload = json.loads((tmp_path / "live_state.json").read_text())
+    assert payload["positions"] == {}
+    assert payload["pending_entries"] == {}
+
+    events = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().strip().split("\n")]
+    assert any(event.get("type") == "entry_order_failed" and event.get("symbol") == "DIPUSD" for event in events)
+    entry_scan = [event for event in events if event.get("type") == "entry_scan"][-1]
+    assert entry_scan["n_staged"] == 0
+    assert entry_scan["n_order_fail"] == 1
+
+    log_path = tmp_path / "trade_log.jsonl"
+    assert not log_path.exists() or not log_path.read_text().strip()
 
 
 def test_default_entry_proximity_bps_is_3000():

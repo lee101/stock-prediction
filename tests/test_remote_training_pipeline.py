@@ -164,6 +164,7 @@ def test_render_remote_pipeline_script_activates_env_and_runs_commands(tmp_path:
 
     assert "source .venv313/bin/activate" in script
     assert 'export PYTHONPATH="$PWD:$PWD/PufferLib:${PYTHONPATH:-}"' in script
+    assert "python pufferlib_market/setup.py build_ext --inplace" in script
     assert "scripts/run_crypto_lora_batch.py" in script
     assert "pufferlib_market.autoresearch_rl" in script
 
@@ -186,6 +187,8 @@ def test_build_remote_autoresearch_plan_includes_replay_and_post_eval() -> None:
         replay_eval_hourly_root="trainingdatahourly",
         replay_eval_start_date="2025-06-01",
         replay_eval_end_date="2026-02-05",
+        replay_eval_run_hourly_policy=True,
+        replay_eval_robust_start_states="flat,long:BTCUSD:0.25",
         post_eval_periods=[30, 60, 90, 120],
         post_eval_sort_period=120,
     )
@@ -196,6 +199,8 @@ def test_build_remote_autoresearch_plan_includes_replay_and_post_eval() -> None:
     autoresearch_cmd = list(plan.commands[0])
     assert "--holdout-data" in autoresearch_cmd
     assert "--replay-eval-hourly-root" in autoresearch_cmd
+    assert "--replay-eval-run-hourly-policy" in autoresearch_cmd
+    assert "--replay-eval-robust-start-states" in autoresearch_cmd
     assert "--rank-metric" in autoresearch_cmd
     assert autoresearch_cmd[0:4] == ["python", "-u", "-m", "pufferlib_market.autoresearch_rl"]
     post_eval_cmd = list(plan.commands[1])
@@ -228,5 +233,6 @@ def test_render_remote_pipeline_script_supports_autoresearch_plan() -> None:
     )
 
     assert "source .venv313/bin/activate" in script
+    assert "python pufferlib_market/setup.py build_ext --inplace" in script
     assert "pufferlib_market.autoresearch_rl" in script
     assert "pufferlib_market/fast_marketsim_eval.py" in script

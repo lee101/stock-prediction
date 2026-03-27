@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from src.robust_trading_metrics import (
+    compute_replay_composite_score,
     compute_max_drawdown,
     compute_pnl_smoothness,
     compute_pnl_smoothness_from_equity,
@@ -50,6 +51,37 @@ def test_compute_market_sim_goodness_score_accepts_trade_count() -> None:
     )
 
     assert trade_count_score == pytest.approx(trade_rate_score)
+
+
+def test_compute_replay_composite_score_prefers_stable_positive_hourly_replay() -> None:
+    robust = compute_replay_composite_score(
+        daily_return_pct=4.0,
+        daily_sortino=1.2,
+        daily_max_drawdown_pct=6.0,
+        daily_pnl_smoothness=0.001,
+        daily_trade_count=5.0,
+        hourly_return_pct=7.0,
+        hourly_sortino=1.5,
+        hourly_max_drawdown_pct=7.0,
+        hourly_pnl_smoothness=0.0015,
+        hourly_trade_count=9.0,
+    )
+    fragile = compute_replay_composite_score(
+        daily_return_pct=4.0,
+        daily_sortino=1.2,
+        daily_max_drawdown_pct=6.0,
+        daily_pnl_smoothness=0.001,
+        daily_trade_count=5.0,
+        hourly_return_pct=-3.0,
+        hourly_sortino=-0.4,
+        hourly_max_drawdown_pct=18.0,
+        hourly_pnl_smoothness=0.006,
+        hourly_trade_count=9.0,
+    )
+
+    assert robust["replay_combo_negative_return_rate"] == pytest.approx(0.0)
+    assert fragile["replay_combo_negative_return_rate"] > robust["replay_combo_negative_return_rate"]
+    assert fragile["replay_combo_score"] < robust["replay_combo_score"]
 
 
 def test_summarize_lag_results_outputs_expected_fields() -> None:

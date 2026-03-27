@@ -79,9 +79,10 @@ def test_autoresearch_multi_period_eval_flag_in_help():
 
 
 def test_smooth_score_in_rank_metric_choices():
-    """Verify smooth_score is a valid --rank-metric choice."""
+    """Verify replay- and smoothness-based metrics are valid --rank-metric choices."""
     result = subprocess.run(
         [sys.executable, "-m", "pufferlib_market.autoresearch_rl", "--help"],
         capture_output=True, text=True, timeout=30,
     )
     assert "smooth_score" in result.stdout, "smooth_score not in rank-metric choices"
+    assert "replay_combo_score" in result.stdout, "replay_combo_score not in rank-metric choices"
