@@ -189,11 +189,25 @@ def _load_resume_checkpoint(
 
     _validate_resume_payload(payload, disable_shorts=disable_shorts, action_meta=action_meta)
 
-    policy.load_state_dict(payload["model"])
+    missing_keys, unexpected_keys = policy.load_state_dict(payload["model"], strict=False)
+    # Allow encoder_norm to be missing (old checkpoints trained without it)
+    unexpected_encoder_keys = [k for k in unexpected_keys if "encoder_norm" not in k]
+    if unexpected_encoder_keys:
+        raise RuntimeError(f"Unexpected keys loading resume checkpoint: {unexpected_encoder_keys}")
+    structural_missing = [k for k in missing_keys if "encoder_norm" not in k]
+    if structural_missing:
+        raise RuntimeError(f"Missing keys in resume checkpoint (structural mismatch): {structural_missing}")
+    # If encoder_norm is missing from checkpoint, disable it
+    if hasattr(policy, "_use_encoder_norm"):
+        policy._use_encoder_norm = "encoder_norm.weight" not in missing_keys
     optimizer_state = payload.get("optimizer")
     if optimizer_state is not None:
-        optimizer.load_state_dict(optimizer_state)
-        _optimizer_state_to_device(optimizer, device)
+        try:
+            optimizer.load_state_dict(optimizer_state)
+            _optimizer_state_to_device(optimizer, device)
+        except (ValueError, KeyError) as e:
+            print(f"  WARNING: Could not load optimizer state ({e}); starting with fresh optimizer (model weights loaded OK)")
+
 
     return ResumeState(
         update=max(int(payload.get("update", 0)), 0),
@@ -1365,6 +1379,27 @@ def train(args):
         max_keep_latest=args.max_periodic_checkpoints,
     )
 
+    # ── Val-based checkpointing setup ──
+    _val_data = None
+    _val_eval_starts = []
+    _val_best_score = -float("inf")
+    _val_best_neg = 999
+    _VAL_WINDOW_STEPS = 90  # Always evaluate on 90-day windows regardless of training episode length
+    if getattr(args, "val_data_path", None):
+        try:
+            from pufferlib_market.hourly_replay import read_mktd, simulate_daily_policy
+            from pufferlib_market.evaluate_holdout import _slice_window
+            _val_data = read_mktd(args.val_data_path)
+            _all_starts = list(range(_val_data.num_timesteps - _VAL_WINDOW_STEPS))
+            # Use a fixed random subset of windows for fast periodic eval
+            rng_val = np.random.default_rng(42)
+            n_val_windows = min(getattr(args, "val_eval_windows", 20), len(_all_starts))
+            _val_eval_starts = sorted(rng_val.choice(_all_starts, size=n_val_windows, replace=False).tolist())
+            print(f"  Val eval: {n_val_windows}/{len(_all_starts)} windows from {args.val_data_path}, every {args.val_eval_interval} updates")
+        except Exception as e:
+            print(f"  WARNING: Could not set up val eval: {e}")
+            _val_data = None
+
     _profile_steps = args.profile_steps
     if _profile_steps > 0:
         Path("profile_output").mkdir(exist_ok=True)
@@ -1635,6 +1670,47 @@ def train(args):
                 f"pg={avg_pg:.4f}  vl={avg_vl:.4f}  ent={avg_ent:.3f}  "
                 f"n={n:.0f}"
             )
+
+            # ── Val-based checkpointing ──
+            if (
+                _val_data is not None
+                and getattr(args, "val_eval_interval", 0) > 0
+                and (update - start_update) % args.val_eval_interval == 0
+            ):
+                policy.eval()
+                _use_enorm = getattr(policy, "_use_encoder_norm", False)
+                def _val_policy_fn(obs_np: np.ndarray) -> int:
+                    obs_t = torch.from_numpy(obs_np.astype(np.float32, copy=False)).to(device).view(1, -1)
+                    with torch.inference_mode():
+                        logits, _ = policy(obs_t)
+                    return int(torch.argmax(logits, dim=-1).item())
+                val_rets = []
+                for _vs in _val_eval_starts:
+                    _w = _slice_window(_val_data, start=int(_vs), steps=_VAL_WINDOW_STEPS)
+                    _r = simulate_daily_policy(_w, _val_policy_fn, max_steps=_VAL_WINDOW_STEPS,
+                                               fill_buffer_bps=5.0, periods_per_year=float(args.periods_per_year),
+                                               enable_drawdown_profit_early_exit=False)
+                    val_rets.append(_r.total_return)
+                policy.train()
+                val_neg = sum(1 for r in val_rets if r < 0)
+                val_med = float(np.median(val_rets)) * 100
+                # Score: high median minus 2% penalty per negative window
+                val_score = val_med - 2.0 * val_neg
+                if val_score > _val_best_score:
+                    _val_best_score = val_score
+                    _val_best_neg = val_neg
+                    val_ckpt_path = Path(args.checkpoint_dir) / "val_best.pt"
+                    val_ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+                    torch.save(
+                        _checkpoint_payload(
+                            policy, optimizer, update=update, global_step=global_step,
+                            best_return=float(val_score), disable_shorts=bool(args.disable_shorts),
+                            action_meta=action_meta, arch=args.arch,
+                        ),
+                        val_ckpt_path,
+                    )
+                n_val = len(_val_eval_starts)
+                print(f"  [val] med={val_med:.1f}% neg={val_neg}/{n_val} score={val_score:.1f} best_score={_val_best_score:.1f}")
 
             # Early stopping: track whether ep_return improves
             if _es_patience > 0:
@@ -1935,6 +2011,12 @@ def main():
     parser.add_argument("--clip-vloss", action="store_true", help="PPO-style value function clipping")
     parser.add_argument("--obs-norm", action="store_true", help="Running observation normalization")
     parser.add_argument("--resume-from", type=str, default=None, help="Checkpoint to resume from")
+    parser.add_argument("--val-data-path", type=str, default=None,
+                        help="Validation data for val_best.pt checkpointing (saves at peak val performance)")
+    parser.add_argument("--val-eval-interval", type=int, default=50,
+                        help="Run val eval every N updates (default 50)")
+    parser.add_argument("--val-eval-windows", type=int, default=20,
+                        help="Number of val windows for periodic eval (default 20, tradeoff speed vs accuracy)")
     parser.add_argument(
         "--cuda-graph-ppo",
         action="store_true",
