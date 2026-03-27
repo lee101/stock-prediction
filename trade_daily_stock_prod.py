@@ -56,15 +56,13 @@ DEFAULT_SYMBOLS = [
     "AMZN",
 ]
 DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_10/best.pt"
-# 7-model ensemble: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+resmlp_a40 (2026-03-27)
-# → exhaustive 0/111 neg, med=60.3%, p10=45.8%, worst=34.9% @5bps
-# @0bps: med=55.3%, p10=41.2%, 0/111 neg
-# @10bps: med=62.5%, p10=46.6%, 0/111 neg
-# @20bps: med=64.6%, p10=48.4%, 0/111 neg
-# Progression: s123+s15+s36 → tp10+s15+s36 → 6-model → 7-model (resmlp_a40)
-#   46.3% / 28.6%     50.9% / 36.6%      58.0% / 45.4%   60.3% / 45.8%  (med/p10 @5bps)
-# stock_ent_05 is BAD (52/111 neg exhaustive) — do NOT use as ensemble member.
-# tp03 HURTS ensemble (correlated with s15/s36) — do NOT add.
+# 8-model ensemble: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+resmlp_a40+s28 (2026-03-27)
+# → exhaustive 0/111 neg, med=60.3%, p10=47.4%, worst=34.9% @5bps
+# vs 7-model: p10 improved 45.8%→47.4% (+1.6%), median/worst unchanged
+# Progression: s123+s15+s36 → tp10+s15+s36 → 6-model → 7-model → 8-model
+#   46.3%/28.6%  50.9%/36.6%  58.0%/45.4%  60.3%/45.8%  60.3%/47.4%  (med/p10 @5bps)
+# stock_ent_05 BAD (52/111 neg standalone), tp03 HURTS (correlated with s15/s36)
+# s28: short-trained (3M steps) scan ckpt — 0/111 neg, med=12%, full training degrades to 61/111 neg!
 DEFAULT_EXTRA_CHECKPOINTS = [
     "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt",
     "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s36/best.pt",
@@ -72,6 +70,7 @@ DEFAULT_EXTRA_CHECKPOINTS = [
     "pufferlib_market/checkpoints/stocks12_v2_sweep/muon_wd_005/best.pt",
     "pufferlib_market/checkpoints/stocks12_v2_sweep/h1024_a40/best.pt",
     "pufferlib_market/checkpoints/stocks12_v2_sweep/resmlp_a40/best.pt",
+    "pufferlib_market/checkpoints/stocks12_sweep_s16_50/tp05_s28/best.pt",  # short-train scan ckpt
 ]
 DEFAULT_DATA_DIR = "trainingdata"
 DEFAULT_ALLOCATION_PCT = 25.0

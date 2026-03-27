@@ -74,22 +74,24 @@
 
 ### Daily stock RL live model
 - **Primary checkpoint**: `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_10/best.pt`
-- **Default ensemble members** (7-model, deployed 2026-03-27 21:48 UTC):
+- **Default ensemble members** (8-model, deployed 2026-03-27 22:33 UTC):
   - `stocks12_seed_sweep/tp05_s15/best.pt`
   - `stocks12_seed_sweep/tp05_s36/best.pt`
   - `stocks12_v2_sweep/stock_gamma_995/best.pt`
   - `stocks12_v2_sweep/muon_wd_005/best.pt`
   - `stocks12_v2_sweep/h1024_a40/best.pt`
-  - `stocks12_v2_sweep/resmlp_a40/best.pt`  ← NEW (2026-03-27)
+  - `stocks12_v2_sweep/resmlp_a40/best.pt`  ← ResidualMLP arch (2026-03-27)
+  - `stocks12_sweep_s16_50/tp05_s28/best.pt`  ← short-train scan ckpt (2026-03-27)
 - **Canonical exhaustive marketsim (111 rolling 90-day windows, 5 bps fill buffer)**:
-  - median **+60.3%** (+2.3% vs 6-model)
-  - p10 **+45.8%** (+0.4% vs 6-model)
+  - median **+60.3%**
+  - p10 **+47.4%** (+1.6% vs 7-model)
   - worst **+34.9%**
   - negative windows **0 / 111**
-- **Slippage robustness**: @0bps: med=55.3%, p10=41.2%; @5bps: med=60.3%, p10=45.8%; @10bps: med=62.5%, p10=46.6%; @20bps: med=64.6%, p10=48.4% — all 0/111 neg
-- **Interpretation**: 7-model ensemble is the new best validated stock algorithm for live Alpaca.
-- **Why resmlp_a40 helps**: ResidualMLP architecture adds diversity uncorrelated with MLP ensemble members.
-- **Do NOT add**: tp03 (correlated with s15/s36, HURTS ensemble), stock_ent_05 (52/111 neg standalone).
+- **Progression**: 6-model(58.0%/45.4%) → 7-model(60.3%/45.8%) → 8-model(60.3%/47.4%) [med/p10]
+- **Slippage robustness**: @0bps: med=55.3%, p10=41.2%; @5bps: med=60.3%, p10=47.4%; all 0/111 neg
+- **Interpretation**: 8-model ensemble is the best validated stock algorithm for live Alpaca.
+- **Key insight on s28**: Short-trained (3M steps scan) checkpoint is optimal — full 35M training DEGRADES to 61/111 neg. This also shows that model quality is NOT monotone with training steps.
+- **Do NOT add**: tp03 (HURTS ensemble), stock_ent_05 (52/111 neg). s28 full run also bad.
 
 ### Unified orchestrator crypto model
 - **Active RL checkpoint**: `pufferlib_market/checkpoints/autoresearch/slip_5bps/best.pt`
@@ -128,8 +130,12 @@
   - `resmlp_a40` adds ResidualMLP architectural diversity; 6-model → 7-model: med 58.0% → 60.3%, p10 45.4% → 45.8%, 0/111 neg maintained
   - `tp03` HURTS ensemble (correlated with s15/s36) — confirmed excluded
   - Extended data (7.1y stocks12_extended) produces WORSE models (23-47/50 neg) — 5.2y is optimal
-  - `trade_daily_stock_prod.py` `DEFAULT_EXTRA_CHECKPOINTS` updated to include `resmlp_a40/best.pt`
   - Service restarted at **2026-03-27 21:48:08 UTC**, dry-run validated 7-model load
+- **Deployed 8-model ensemble** (2026-03-27 22:33 UTC)
+  - Added `tp05_s28` scan checkpoint (3M step, 0/111 neg, med=12% standalone)
+  - 7-model → 8-model: p10 45.8% → 47.4% (+1.6%), median unchanged at 60.3%
+  - Key finding: s28 FULL TRAINING (35M steps) degrades to 61/111 neg — short-train is optimal
+  - Service restarted at **2026-03-27 22:33:38 UTC**, sleeping until Monday market open
 
 ---
 
