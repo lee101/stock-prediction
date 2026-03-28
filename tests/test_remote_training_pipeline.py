@@ -6,8 +6,11 @@ import pandas as pd
 import pytest
 
 from src.remote_training_pipeline import (
+    build_export_daily_fused_cmd,
+    build_remote_chronos_compare_plan,
     build_remote_autoresearch_plan,
     build_remote_hourly_chronos_rl_plan,
+    compute_daily_overlap_bounds,
     compute_hourly_train_val_window,
     render_remote_pipeline_script,
 )
@@ -64,6 +67,36 @@ def test_compute_hourly_train_val_window_rejects_insufficient_shared_history(tmp
         )
 
 
+def test_compute_daily_overlap_bounds_uses_shared_days(tmp_path: Path) -> None:
+    root = tmp_path / "daily"
+    root.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01", periods=10, freq="D", tz="UTC"),
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 1_000.0,
+        }
+    ).to_csv(root / "AAA.csv", index=False)
+    pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-03", periods=8, freq="D", tz="UTC"),
+            "open": 200.0,
+            "high": 201.0,
+            "low": 199.0,
+            "close": 200.5,
+            "volume": 2_000.0,
+        }
+    ).to_csv(root / "BBB.csv", index=False)
+
+    earliest, latest = compute_daily_overlap_bounds(symbols=["AAA", "BBB"], data_root=root)
+
+    assert earliest == "2026-01-03T00:00:00+00:00"
+    assert latest == "2026-01-10T00:00:00+00:00"
+
+
 def test_build_remote_hourly_chronos_rl_plan_generates_expected_paths(tmp_path: Path) -> None:
     root = tmp_path / "data"
     _write_hourly_csv(root / "AAA.csv", "2026-01-01 00:00:00+00:00", 600)
@@ -99,6 +132,27 @@ def test_build_remote_hourly_chronos_rl_plan_generates_expected_paths(tmp_path: 
     assert "--descriptions" in plan.commands[-1]
 
 
+def test_build_export_daily_fused_cmd_uses_single_output_and_roots() -> None:
+    cmd = build_export_daily_fused_cmd(
+        symbols=["AAA", "BBB"],
+        data_root="trainingdatadaily",
+        hourly_root="trainingdatahourly",
+        daily_forecast_root="strategytraining/forecast_cache",
+        hourly_forecast_root="analysis/remote_runs/probe/forecast_cache",
+        output_path="pufferlib_market/data/probe_daily_train.bin",
+        start_date="2026-01-01",
+        end_date="2026-03-01",
+        min_days=30,
+        zscore_window=45,
+    )
+
+    assert cmd[:4] == ["python", "-u", "-m", "pufferlib_market.export_data_daily_v4"]
+    assert "--single-output" in cmd
+    assert "--hourly-forecast-root" in cmd
+    assert "--daily-forecast-root" in cmd
+    assert "pufferlib_market/data/probe_daily_train.bin" in cmd
+
+
 def test_build_remote_hourly_chronos_rl_plan_honors_overlap_override(tmp_path: Path) -> None:
     root = tmp_path / "data"
     _write_hourly_csv(root / "AAA.csv", "2026-01-01 00:00:00+00:00", 600)
@@ -129,6 +183,70 @@ def test_build_remote_hourly_chronos_rl_plan_honors_overlap_override(tmp_path: P
     assert plan.window.earliest_common == "2026-01-05T00:00:00+00:00"
     assert plan.window.latest_common == "2026-01-08T23:00:00+00:00"
     assert plan.window.val_end == "2026-01-08T23:00:00+00:00"
+
+
+def test_build_remote_chronos_compare_plan_generates_dual_branch_paths(tmp_path: Path) -> None:
+    hourly_root = tmp_path / "hourly"
+    daily_root = tmp_path / "daily"
+    _write_hourly_csv(hourly_root / "AAA.csv", "2026-01-01 00:00:00+00:00", 600)
+    _write_hourly_csv(hourly_root / "BBB.csv", "2026-01-01 00:00:00+00:00", 600)
+    daily_root.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01", periods=40, freq="D", tz="UTC"),
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 1_000.0,
+        }
+    ).to_csv(daily_root / "AAA.csv", index=False)
+    pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01", periods=40, freq="D", tz="UTC"),
+            "open": 200.0,
+            "high": 201.0,
+            "low": 199.0,
+            "close": 200.5,
+            "volume": 2_000.0,
+        }
+    ).to_csv(daily_root / "BBB.csv", index=False)
+
+    plan = build_remote_chronos_compare_plan(
+        run_id="compare123",
+        symbols=["AAA", "BBB"],
+        local_hourly_data_root=hourly_root,
+        remote_hourly_data_root="trainingdatahourly",
+        local_daily_data_root=daily_root,
+        remote_daily_data_root="trainingdatadaily",
+        train_hours=24 * 20,
+        val_hours=24 * 10,
+        gap_hours=0,
+        preaugs=["baseline"],
+        context_lengths=[128],
+        learning_rates=[5e-5],
+        num_steps=100,
+        prediction_length=24,
+        lora_r=16,
+        feature_lag=1,
+        min_coverage=0.95,
+        time_budget=300,
+        max_trials=2,
+        descriptions=["sortino_rc3_tp08", "robust_reg_tp01"],
+        earliest_common_override="2026-01-01T00:00:00+00:00",
+        latest_common_override="2026-02-09T23:00:00+00:00",
+    )
+
+    assert plan.remote_run_dir == "analysis/remote_runs/compare123"
+    assert plan.hourly_train_data_path == "pufferlib_market/data/compare123_hourly_train.bin"
+    assert plan.daily_train_data_path == "pufferlib_market/data/compare123_daily_train.bin"
+    assert plan.hourly_leaderboard_path == "analysis/remote_runs/compare123/hourly_leaderboard.csv"
+    assert plan.daily_leaderboard_path == "analysis/remote_runs/compare123/daily_leaderboard.csv"
+    assert len(plan.commands) == 9
+    assert list(plan.commands[0][:4]) == ["python", "-u", "scripts/run_crypto_lora_batch.py", "--run-id"]
+    assert list(plan.commands[5][:4]) == ["python", "-u", "-m", "pufferlib_market.export_data_daily_v4"]
+    assert "compare123_hourly" in " ".join(plan.commands[7])
+    assert "compare123_daily" in " ".join(plan.commands[8])
 
 
 def test_render_remote_pipeline_script_activates_env_and_runs_commands(tmp_path: Path) -> None:
