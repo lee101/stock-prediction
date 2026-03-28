@@ -56,17 +56,18 @@ DEFAULT_SYMBOLS = [
     "AMZN",
 ]
 DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_10/best.pt"
-# 9-model ensemble: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s735+gamma995_s2006+s1401 (2026-03-28)
-# Exhaustive 111-window @fee=10bps,fill=5bps: 0/111 neg, med=68.3%, p10=55.1%, worst=43.3%
-# Previous 8-model (2026-03-28): 0/111 neg, med=63.1%, p10=52.3%, worst=36.8%
-# s1401 screen_best adds: +2.9% p10, +5.2% med, +6.5% worst (seed=1401, 3M-step screen ckpt)
+# 10-model ensemble: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s735+gamma995_s2006+s1401+s1726 (2026-03-28)
+# Exhaustive 111-window @fee=10bps,fill=5bps: 0/111 neg, med=65.8%, p10=55.6%, worst=44.8%
+# Previous 9-model (2026-03-28): 0/111 neg, med=68.3%, p10=55.1%, worst=43.3%
+# s1726 screen_best adds: +0.4% p10, +1.5% worst (seed=1726, 3M-step screen ckpt update=65)
+# s1401 screen_best adds: +2.9% p10, +5.2% med (seed=1401, 3M-step screen ckpt)
 # gamma995_s2006 screen_best adds: +1.1% p10 (gamma=0.995, seed=2006, 3M-step screen ckpt)
 # REVERT NOTE (2026-03-27): 7-model (+resmlp_a40) → med=57.2%, p10=42.1% (-3.3% p10!)
 #                           7-model (+s28 scan)   → med=55.9%, p10=41.3% (-4.1% p10!)
 #   HURT: resmlp_a40, s28, tp03, s241, s541, s310, stock_ent_05
-# Progression: s123+s15+s36 → tp10+s15+s36 → 6-model → 7-model → 8-model → 9-model (+s1401)
-#   med/p10:  46.3%/28.6%     50.9%/36.6%     58.0%/45.4%  61.4%/51.2%  63.1%/52.3%  68.3%/55.1%
-# 10-model bar: 10-model exhaustive p10 >= 55.1% @fill_bps=5
+# Progression: s123+s15+s36 → tp10+s15+s36 → 6-model → 7-model → 8-model → 9-model → 10-model (+s1726)
+#   med/p10:  46.3%/28.6%     50.9%/36.6%     58.0%/45.4%  61.4%/51.2%  63.1%/52.3%  68.3%/55.1%  65.8%/55.6%
+# 11-model bar: 11-model exhaustive p10 >= 55.6% @fill_bps=5
 DEFAULT_EXTRA_CHECKPOINTS = [
     "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt",
     "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s36/best.pt",
@@ -76,6 +77,7 @@ DEFAULT_EXTRA_CHECKPOINTS = [
     "pufferlib_market/checkpoints/stocks12_sweep_s735_837/tp05_s735/best.pt",
     "pufferlib_market/checkpoints/stocks12_gamma995_s2006/screen_best.pt",
     "pufferlib_market/checkpoints/stocks12_s1401_screen/screen_best.pt",
+    "pufferlib_market/checkpoints/stocks12_s1726_screen/screen_best.pt",
 ]
 DEFAULT_DATA_DIR = "trainingdata"
 DEFAULT_ALLOCATION_PCT = 25.0
