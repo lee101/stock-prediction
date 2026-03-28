@@ -11,7 +11,7 @@
 - **LIVE account**: supervisor `unified-stock-trader` is active; equity **$38,954.44**, cash **$38,954.44**, buying power **$77,908.88**, last_equity **$39,090.40**.
 - **LIVE positions/orders**: no stock positions are open; only dust in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD` remains. There are currently **no open orders**.
 - **LIVE duplicate-order guard (2026-03-27 20:31 UTC)**: systemd unit `alpaca-cancel-multi-orders.service` is installed and enabled with `PAPER=0`; `journalctl` confirms it initialized the **LIVE** Alpaca client and is polling for duplicate flat-position opening orders.
-- **LIVE daily-rl-trader**: 8-model ensemble (upgraded 2026-03-28 13:33 UTC), sleeping until Mon 2026-03-30 market open; PID 3781473
+- **LIVE daily-rl-trader**: 9-model ensemble (upgraded 2026-03-28 13:52 UTC), sleeping until Mon 2026-03-30 market open; PID 4031664
 
 ### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- FIXED (pending restart)
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`
@@ -131,13 +131,13 @@
 - **Service manager**: systemd unit `daily-rl-trader.service`
 - **Installed unit**: `/etc/systemd/system/daily-rl-trader.service`
 - **Installed ExecStart**: `.venv313/bin/python -u trade_daily_stock_prod.py --daemon --live --allocation-pct 25`
-- **Status (2026-03-28 13:33 UTC)**: sleeping until Mon market open; PID 3781473 via systemd
+- **Status (2026-03-28 13:52 UTC)**: sleeping until Mon market open; PID 4031664 via systemd
 - **Architecture**: h=1024 MLP PPO, stocks12 (AAPL,MSFT,NVDA,GOOG,META,TSLA,SPY,QQQ,JPM,V,AMZN,PLTR)
 - **Primary checkpoint**: `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_10/best.pt`
-- **8-model ensemble (tp10+s15+s36+gamma_995+muon_wd005+h1024_a40+s735+gamma995_s2006) exhaustive eval** (111 windows, all possible 90d windows in val, softmax_avg):
-  - Median: **+63.1%** / 90 days
-  - P10: **+52.3%**
-  - Worst window: **+36.8%**
+- **9-model ensemble (tp10+s15+s36+gamma_995+muon_wd005+h1024_a40+s735+gamma995_s2006+s1401) exhaustive eval** (111 windows, all possible 90d windows in val, softmax_avg):
+  - Median: **+68.3%** / 90 days
+  - P10: **+55.1%**
+  - Worst window: **+43.3%**
   - Negative windows: **0/111 (0%)** — ZERO negative windows in EXHAUSTIVE eval
 - **Ensemble progression** (all exhaustive 111-window, softmax_avg method):
   - 3-model s123+s15+s36:        med=46.3%, p10=28.6%  (2026-03-24)
@@ -145,7 +145,8 @@
   - 4-model +gamma_995:          med=55.9%, p10=42.9%  (2026-03-27)
   - 6-model +muon_wd005+h1024_a40: med=58.0%, p10=45.4%, worst=36.6%  (2026-03-27)
   - 7-model +s735:               med=61.4%, p10=51.2%, worst=43.9%  (2026-03-28)
-  - **8-model +gamma995_s2006:   med=63.1%, p10=52.3%, worst=36.8%  (2026-03-28) CURRENT**
+  - 8-model +gamma995_s2006:     med=63.1%, p10=52.3%, worst=36.8%  (2026-03-28)
+  - **9-model +s1401:            med=68.3%, p10=55.1%, worst=43.3%  (2026-03-28) CURRENT**
   - [REJECTED] 7-model +resmlp_a40: med=57.2%, p10=42.1% (-3.3% p10)
   - [REJECTED] 7-model +s28_scan: med=55.9%, p10=41.3% (-4.1% p10)
 - **DEFAULT_EXTRA_CHECKPOINTS** (in `trade_daily_stock_prod.py`):
@@ -156,6 +157,7 @@
   - `stocks12_v2_sweep/h1024_a40/best.pt`
   - `stocks12_sweep_s735_837/tp05_s735/best.pt`
   - `stocks12_gamma995_s2006/screen_best.pt`
+  - `stocks12_s1401_screen/screen_best.pt`
 - **Standalone performance of ensemble members**:
   - tp10: 5/111 neg, med=0.0% (conservative anchor — votes cash)
   - s15: 0/111 neg, med=+30.0% (phase-transition model, seed=15)
@@ -164,10 +166,11 @@
   - muon_wd005: 72/111 neg standalone but IMPROVES ensemble (probability dilution)
   - h1024_a40: 16/111 neg, med=+6.7% (decent standalone, adds mild positive alpha)
   - s735 (tp05): screen_best.pt; REJECTED_LOW_TRADES at screen; improves ensemble +5.9% p10
-  - gamma995_s2006: screen_best.pt (update=89, gamma=0.995, seed=2006); REJECTED_LOW_TRADES; improves ensemble +1.1% p10
-- **KEY DISCOVERY**: Screen-phase checkpoints (3M steps) are better ensemble members than fully-trained (32M+ steps) ones. Full training often collapses diversity. Screen_best.pt at ~update 89 is the sweet spot.
+  - gamma995_s2006: screen_best.pt (update=89, gamma=0.995, seed=2006); REJECTED_LOW_TRADES; +1.1% p10
+  - s1401 (tp05): screen_best.pt (update=86, seed=1401, neg=9/20 screen); QUALIFIED; +2.9% p10 to 8-model
+- **KEY DISCOVERY**: Screen-phase checkpoints (3M steps) are better ensemble members than fully-trained (32M+ steps) ones. Full training often collapses diversity. Screen_best.pt at ~update 86-91 is the sweet spot.
 - **Ensemble method**: softmax_avg (NOT logit_avg). Each model outputs softmax probabilities, average them, take argmax.
-- **9-model bar**: 9-model exhaustive p10 >= 52.3% @fill_bps=5 (delta >= 0%)
+- **10-model bar**: 10-model exhaustive p10 >= 55.1% @fill_bps=5 (delta >= 0%)
 - **Config**: h=1024, lr=3e-4, ent=0.05, trade_penalty=0.10 (primary), anneal_lr=True
 - **Launch**: `deployments/daily-stock-ppo/launch.sh`
 - **Supervisor**: `deployments/daily-stock-ppo/supervisor.conf` (autostart=false — enable manually)
