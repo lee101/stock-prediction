@@ -7,7 +7,7 @@
 
 ---
 
-## Current Live Snapshot (2026-03-27 21:48 UTC)
+## Current Live Snapshot (2026-03-28 01:40 UTC)
 - **LIVE account**: equity **$39,010.40**, cash **$39,010.40**, buying power **$78,020.80**, last_equity **$40,483.64**
 - **LIVE positions**: no actionable open positions. Only dust remains in `AVAXUSD`, `BTCUSD`, `LTCUSD`, `SOLUSD`.
 - **ETH incident status**: the stale live `ETHUSD` position is **closed**. Alpaca order history shows:
@@ -91,6 +91,8 @@
   - Original numbers (med=60.3%, p10=47.4%) were produced with incorrect eval params and CANNOT be reproduced
   - Comprehensive re-verification confirms 6-model is the global optimum
 - **Do NOT add**: resmlp_a40 (hurts p10 -3.3%), s28_scan (hurts p10 -4.1%), tp03, stock_ent_05 (52/111 neg standalone)
+- **Do NOT add**: s310 (2026-03-28): 6/111 neg standalone but hurts 7-model ensemble (Δmed=-1.3%, Δp10=-4.5%)
+- **Exhaustive 7-model bar**: only add new member if 7-model exhaustive p10 ≥ +45.4% at fill_bps=5.0
 
 ### Unified orchestrator crypto model
 - **Active RL checkpoint**: `pufferlib_market/checkpoints/autoresearch/slip_5bps/best.pt`
