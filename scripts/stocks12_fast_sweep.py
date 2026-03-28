@@ -37,6 +37,7 @@ def val_eval_quick(ckpt_path: Path, val_data_path: str, n_windows: int = 20) -> 
     )
     from pufferlib_market.hourly_replay import read_mktd, simulate_daily_policy
 
+    torch.set_num_threads(1)  # prevent PyTorch CPU thread pool deadlock in main process
     device = torch.device("cpu")
     payload = torch.load(str(ckpt_path), map_location=device, weights_only=False)
     state_dict = payload.get("model", payload)
@@ -206,6 +207,7 @@ def main():
                     if ev["neg"] <= screen_threshold and ev["best_return"] <= args.max_best_return:
                         qualified.add(seed)
                         log(seed, "screen", "QUALIFIED", ev["neg"], ev["med"], ev["best_return"], ev["global_step"])
+                        continue  # already screened + qualified → go to full training, no re-screening
                     else:
                         rejected.add(seed)
                         log(seed, "screen", "REJECTED", ev["neg"], ev["med"], ev["best_return"], ev["global_step"])
