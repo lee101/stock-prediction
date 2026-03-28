@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+import pytest
+
+try:
+    import jax  # noqa: F401
+    import flax  # noqa: F401
+except ImportError:
+    pytest.skip("jax/flax not installed", allow_module_level=True)
+
 import numpy as np
 import torch
 

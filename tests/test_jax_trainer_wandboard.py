@@ -3,6 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 
+import pytest
+
+try:
+    import flax  # noqa: F401
+except ImportError:
+    pytest.skip("flax not installed", allow_module_level=True)
+
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
