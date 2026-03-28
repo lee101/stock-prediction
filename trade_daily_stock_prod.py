@@ -56,21 +56,24 @@ DEFAULT_SYMBOLS = [
     "AMZN",
 ]
 DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_10/best.pt"
-# 6-model ensemble: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40 (2026-03-27, VERIFIED OPTIMAL)
-# Exhaustive 111-window @fee=10bps,fill=5bps: 0/111 neg, med=58.0%, p10=45.4%, worst=36.6%
+# 8-model ensemble: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s735+gamma995_s2006 (2026-03-28)
+# Exhaustive 111-window @fee=10bps,fill=5bps: 0/111 neg, med=63.1%, p10=52.3%, worst=36.8%
+# Previous 7-model (2026-03-28): 0/111 neg, med=61.4%, p10=51.2%, worst=43.9%
+# gamma995_s2006 screen_best adds: +1.1% p10, +1.7% med (gamma=0.995, seed=2006, 3M-step screen ckpt)
 # REVERT NOTE (2026-03-27): 7-model (+resmlp_a40) → med=57.2%, p10=42.1% (-3.3% p10!)
-#                           8-model (+s28 scan)   → med=55.9%, p10=41.3% (-4.1% p10!)
-#   Adding resmlp_a40 or s28 both HURT the ensemble. 6-model is confirmed optimal.
-# Progression: s123+s15+s36 → tp10+s15+s36 → 6-model (FINAL)
-#   med/p10:  46.3%/28.6%     50.9%/36.6%     58.0%/45.4%
-# stock_ent_05 BAD (52/111 neg standalone); tp03 HURTS (correlated with s15/s36)
-# resmlp_a40 BAD (hurts p10 by 3.3%); s28 scan ckpt BAD (hurts p10 by 4.1%)
+#                           7-model (+s28 scan)   → med=55.9%, p10=41.3% (-4.1% p10!)
+#   HURT: resmlp_a40, s28, tp03, s241, s541, s310, stock_ent_05
+# Progression: s123+s15+s36 → tp10+s15+s36 → 6-model → 7-model (+s735) → 8-model (+gamma995_s2006)
+#   med/p10:  46.3%/28.6%     50.9%/36.6%     58.0%/45.4%  61.4%/51.2%            63.1%/52.3%
+# 9-model bar: 9-model exhaustive p10 >= 52.3% @fill_bps=5
 DEFAULT_EXTRA_CHECKPOINTS = [
     "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt",
     "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s36/best.pt",
     "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_gamma_995/best.pt",
     "pufferlib_market/checkpoints/stocks12_v2_sweep/muon_wd_005/best.pt",
     "pufferlib_market/checkpoints/stocks12_v2_sweep/h1024_a40/best.pt",
+    "pufferlib_market/checkpoints/stocks12_sweep_s735_837/tp05_s735/best.pt",
+    "pufferlib_market/checkpoints/stocks12_gamma995_s2006/screen_best.pt",
 ]
 DEFAULT_DATA_DIR = "trainingdata"
 DEFAULT_ALLOCATION_PCT = 25.0
