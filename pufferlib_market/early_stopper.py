@@ -135,6 +135,91 @@ class HoldCashDetector:
         return self._consecutive_zero_trades
 
 
+class OverfitDetector:
+    """Detect obvious train/validation divergence from existing probe metrics.
+
+    This is intentionally cheap: it only uses the latest in-training log line and the
+    quick validation probe already run by autoresearch.
+    """
+
+    def __init__(
+        self,
+        *,
+        min_progress: float = 0.5,
+        min_train_combined: float = 1.0,
+        max_val_combined: float = 0.25,
+        min_gap: float = 1.0,
+    ) -> None:
+        self.min_progress = float(min_progress)
+        self.min_train_combined = float(min_train_combined)
+        self.max_val_combined = float(max_val_combined)
+        self.min_gap = float(min_gap)
+        self.latest_train_return: float | None = None
+        self.latest_train_sortino: float | None = None
+        self.latest_train_wr: float | None = None
+
+    def update(self, line: str) -> bool:
+        if "ret=" not in line:
+            return False
+
+        updated = False
+        try:
+            for part in line.split():
+                if part.startswith("ret="):
+                    self.latest_train_return = float(part.split("=")[1])
+                    updated = True
+                elif part.startswith("sortino="):
+                    self.latest_train_sortino = float(part.split("=")[1])
+                    updated = True
+                elif part.startswith("wr="):
+                    self.latest_train_wr = float(part.split("=")[1])
+                    updated = True
+        except Exception:
+            return False
+        return updated
+
+    def latest_train_combined(self) -> float | None:
+        return combined_score(
+            self.latest_train_return,
+            self.latest_train_sortino,
+            self.latest_train_wr,
+        )
+
+    def should_prune(
+        self,
+        *,
+        progress: float,
+        val_return: float | None,
+        val_sortino: float | None,
+        val_wr: float | None = None,
+    ) -> tuple[bool, dict[str, float | None]]:
+        train_combined = self.latest_train_combined()
+        val_combined = combined_score(val_return, val_sortino, val_wr)
+        gap = None
+        if train_combined is not None and val_combined is not None:
+            gap = train_combined - val_combined
+
+        metrics = {
+            "train_combined": train_combined,
+            "val_combined": val_combined,
+            "gap": gap,
+            "train_return": self.latest_train_return,
+            "val_return": val_return,
+        }
+
+        if progress < self.min_progress:
+            return False, metrics
+        if train_combined is None or val_combined is None or gap is None:
+            return False, metrics
+        if train_combined < self.min_train_combined:
+            return False, metrics
+        if val_combined > self.max_val_combined:
+            return False, metrics
+        if gap < self.min_gap:
+            return False, metrics
+        return True, metrics
+
+
 class BestKnownTracker:
     """Persists per-track best combined scores to a JSON file."""
 

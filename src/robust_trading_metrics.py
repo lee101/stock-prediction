@@ -127,17 +127,20 @@ def compute_market_sim_goodness_score(
 def compute_replay_composite_score(
     *,
     daily_return_pct: float | None,
+    daily_annualized_return_pct: float | None = None,
     daily_sortino: float | None,
     daily_max_drawdown_pct: float | None,
     daily_pnl_smoothness: float = 0.0,
     daily_trade_count: float = 0.0,
     hourly_return_pct: float | None,
+    hourly_annualized_return_pct: float | None = None,
     hourly_sortino: float | None,
     hourly_max_drawdown_pct: float | None,
     hourly_pnl_smoothness: float = 0.0,
     hourly_trade_count: float = 0.0,
     hourly_weight: int = 2,
     hourly_policy_return_pct: float | None = None,
+    hourly_policy_annualized_return_pct: float | None = None,
     hourly_policy_sortino: float | None = None,
     hourly_policy_max_drawdown_pct: float | None = None,
     hourly_policy_pnl_smoothness: float = 0.0,
@@ -155,6 +158,7 @@ def compute_replay_composite_score(
     def _to_row(
         *,
         return_pct: float | None,
+        annualized_return_pct: float | None,
         sortino: float | None,
         max_drawdown_pct: float | None,
         pnl_smoothness: float = 0.0,
@@ -164,7 +168,9 @@ def compute_replay_composite_score(
             return None
         return {
             "return_pct": float(return_pct),
-            "annualized_return_pct": float(return_pct),
+            "annualized_return_pct": float(
+                annualized_return_pct if annualized_return_pct is not None else return_pct
+            ),
             "sortino": float(sortino),
             "max_drawdown_pct": float(max_drawdown_pct),
             "pnl_smoothness": max(float(pnl_smoothness), 0.0),
@@ -175,6 +181,7 @@ def compute_replay_composite_score(
 
     daily_row = _to_row(
         return_pct=daily_return_pct,
+        annualized_return_pct=daily_annualized_return_pct,
         sortino=daily_sortino,
         max_drawdown_pct=daily_max_drawdown_pct,
         pnl_smoothness=daily_pnl_smoothness,
@@ -185,6 +192,7 @@ def compute_replay_composite_score(
 
     hourly_row = _to_row(
         return_pct=hourly_return_pct,
+        annualized_return_pct=hourly_annualized_return_pct,
         sortino=hourly_sortino,
         max_drawdown_pct=hourly_max_drawdown_pct,
         pnl_smoothness=hourly_pnl_smoothness,
@@ -196,6 +204,7 @@ def compute_replay_composite_score(
 
     hourly_policy_row = _to_row(
         return_pct=hourly_policy_return_pct,
+        annualized_return_pct=hourly_policy_annualized_return_pct,
         sortino=hourly_policy_sortino,
         max_drawdown_pct=hourly_policy_max_drawdown_pct,
         pnl_smoothness=hourly_policy_pnl_smoothness,
@@ -213,6 +222,8 @@ def compute_replay_composite_score(
         "replay_combo_score": float(summary["robust_score"]),
         "replay_combo_return_mean_pct": float(summary["return_mean_pct"]),
         "replay_combo_return_worst_pct": float(summary["return_worst_pct"]),
+        "replay_combo_annualized_return_mean_pct": float(summary["annualized_return_mean_pct"]),
+        "replay_combo_annualized_return_worst_pct": float(summary["annualized_return_worst_pct"]),
         "replay_combo_sortino_p25": float(summary["sortino_p25"]),
         "replay_combo_max_drawdown_worst_pct": float(summary["max_drawdown_worst_pct"]),
         "replay_combo_negative_return_rate": float(summary["negative_return_rate"]),
