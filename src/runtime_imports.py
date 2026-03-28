@@ -24,6 +24,13 @@ def _iter_setup_functions() -> Iterable:
             yield setup_fn
 
 
+def _optional_import(module_name: str) -> Optional[ModuleType]:
+    try:
+        return import_module(module_name)
+    except Exception:
+        return None
+
+
 def setup_src_imports(
     torch_module: Optional[ModuleType],
     numpy_module: Optional[ModuleType],
@@ -59,3 +66,8 @@ def _reset_for_tests() -> None:
     """
     Test helper preserved for backward compatibility.
     """
+    setup_src_imports(
+        torch_module=_optional_import("torch"),
+        numpy_module=_optional_import("numpy"),
+        pandas_module=_optional_import("pandas"),
+    )

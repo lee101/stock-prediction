@@ -1,0 +1,15 @@
+timestamp,seed_dir,ckpt_type,n_windows,med,p10,p90,worst,neg,checkpoint
+2026-03-28T09:21:21Z,tp05_s735,best.pt,111,14.04,-1.78,31.22,-9.77,13,pufferlib_market/checkpoints/stocks12_sweep_s735_837/tp05_s735/best.pt
+2026-03-28T09:32:59Z,tp05_s741,best.pt,111,-0.01,-15.90,26.48,-22.42,56,pufferlib_market/checkpoints/stocks12_sweep_s735_837/tp05_s741/best.pt
+2026-03-28T09:47:40Z,tp05_s749,best.pt,111,-7.09,-14.01,4.56,-18.16,93,pufferlib_market/checkpoints/stocks12_sweep_s735_837/tp05_s749/best.pt
+2026-03-28T10:05:14Z,tp05_s770,val_best.pt,111,-23.15,-28.77,-15.79,-34.67,109,pufferlib_market/checkpoints/stocks12_sweep_s735_837/tp05_s770/val_best.pt
+2026-03-28T10:33:39Z,tp05_s780,val_best.pt,111,12.21,-6.64,27.67,-12.11,33,pufferlib_market/checkpoints/stocks12_sweep_s735_837/tp05_s780/val_best.pt
+2026-03-28T11:19:25Z,tp05_s790,val_best.pt,111,-19.87,-26.12,-1.40,-28.38,103,pufferlib_market/checkpoints/stocks12_sweep_s735_837/tp05_s790/val_best.pt
+2026-03-28T11:46:16Z,tp05_s799,val_best.pt,111,-8.37,-17.87,3.59,-23.37,91,pufferlib_market/checkpoints/stocks12_sweep_s735_837/tp05_s799/val_best.pt
+2026-03-28T12:39:16Z,tp05_s799,best_neg.pt,111,-8.37,-17.87,3.59,-23.37,91,pufferlib_market/checkpoints/stocks12_sweep_s735_837/tp05_s799/best_neg.pt
+2026-03-28T13:05:18Z,tp05_s800,val_best.pt,111,1.11,-5.93,7.41,-10.69,42,pufferlib_market/checkpoints/stocks12_sweep_s735_837/tp05_s800/val_best.pt
+2026-03-28T13:31:11Z,tp05_s800,best_neg.pt,111,1.11,-5.93,7.41,-10.69,42,pufferlib_market/checkpoints/stocks12_sweep_s735_837/tp05_s800/best_neg.pt
+2026-03-28T13:50:13Z,tp05_s801,val_best.pt,111,-2.90,-8.19,0.60,-15.04,92,pufferlib_market/checkpoints/stocks12_sweep_s735_837/tp05_s801/val_best.pt
+2026-03-28T14:14:52Z,tp05_s801,best_neg.pt,111,-2.90,-8.19,0.60,-15.04,92,pufferlib_market/checkpoints/stocks12_sweep_s735_837/tp05_s801/best_neg.pt
+2026-03-28T14:33:52Z,tp05_s802,val_best.pt,111,-5.46,-24.03,17.53,-35.90,75,pufferlib_market/checkpoints/stocks12_sweep_s735_837/tp05_s802/val_best.pt
+2026-03-28T14:59:03Z,tp05_s803,val_best.pt,111,-1.08,-7.33,6.47,-9.10,65,pufferlib_market/checkpoints/stocks12_sweep_s735_837/tp05_s803/val_best.pt

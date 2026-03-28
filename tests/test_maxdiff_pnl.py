@@ -37,6 +37,7 @@ If high_pred < low_pred:
 
 import torch
 import pytest
+import pandas as pd
 from loss_utils import calculate_profit_torch_with_entry_buysell_profit_values, TRADING_FEE
 
 
@@ -237,7 +238,35 @@ def test_run_7_simulations():
     print(f"70-day historical: 19.26% (26.32 Sharpe)")
     print(f"Difference: {(avg_return - 0.1926)*100:.2f}%")
 
-    return result
+
+def test_root_backtest_adds_legacy_maxdiffalwayson_columns(monkeypatch):
+    import backtest_test3_inline as module
+
+    base = pd.DataFrame(
+        {
+            "maxdiff_return": [0.01, -0.02],
+            "maxdiff_sharpe": [1.2, 1.2],
+            "maxdiff_turnover": [0.3, 0.4],
+            "maxdiffprofit_high_price": [1.12, 1.15],
+            "maxdiffprofit_low_price": [0.88, 0.85],
+            "close": [1.0, 1.0],
+        }
+    )
+
+    monkeypatch.setattr(
+        module._marketsim_backtest,
+        "backtest_forecasts",
+        lambda *args, **kwargs: base.copy(),
+    )
+
+    result = module.backtest_forecasts("UNIUSD", num_simulations=2)
+
+    assert "maxdiffalwayson_avg_daily_return" in result.columns
+    assert "maxdiffalwayson_high_price" in result.columns
+    assert "maxdiffalwayson_low_price" in result.columns
+    assert "walk_forward_maxdiffalwayson_sharpe" in result.columns
+    assert result["maxdiffalwayson_avg_daily_return"].tolist() == pytest.approx([0.01, -0.02])
+    assert result["maxdiffalwayson_high_price"].tolist() == pytest.approx([1.12, 1.15])
 
 
 if __name__ == "__main__":
