@@ -335,7 +335,7 @@ def test_run_once_falls_back_to_local_daily_frames(monkeypatch, tmp_path: Path) 
     monkeypatch.setattr(
         daily_stock,
         "build_signal",
-        lambda checkpoint, frames, portfolio=daily_stock.PortfolioContext(), device="cpu": (
+        lambda checkpoint, frames, portfolio=daily_stock.PortfolioContext(), device="cpu", extra_checkpoints=None: (
             SimpleNamespace(
                 action="long_AAPL",
                 symbol="AAPL",
@@ -383,7 +383,7 @@ def test_run_once_dry_run_does_not_advance_state(monkeypatch, tmp_path: Path) ->
     monkeypatch.setattr(
         daily_stock,
         "build_signal",
-        lambda checkpoint, frames, portfolio=daily_stock.PortfolioContext(), device="cpu": (
+        lambda checkpoint, frames, portfolio=daily_stock.PortfolioContext(), device="cpu", extra_checkpoints=None: (
             SimpleNamespace(
                 action="flat",
                 symbol=None,
@@ -494,7 +494,7 @@ def test_run_once_market_closed_does_not_advance_state(monkeypatch, tmp_path: Pa
     monkeypatch.setattr(
         daily_stock,
         "build_signal",
-        lambda checkpoint, frames, portfolio=daily_stock.PortfolioContext(), device="cpu": (
+        lambda checkpoint, frames, portfolio=daily_stock.PortfolioContext(), device="cpu", extra_checkpoints=None: (
             SimpleNamespace(
                 action="long_AAPL",
                 symbol="AAPL",

@@ -1,14 +1,18 @@
 {
   "unified-orchestrator": {
-    "crypto_symbols": ["SOLUSD", "LTCUSD", "AVAXUSD"],
-    "stock_symbols": ["NVDA", "PLTR", "META", "MSFT", "NET"]
+    "crypto_symbols": ["BTCUSD", "ETHUSD", "SOLUSD", "LTCUSD", "AVAXUSD"],
+    "stock_symbols": []
+  },
+  "daily-rl-trader": {
+    "crypto_symbols": [],
+    "stock_symbols": ["AAPL", "MSFT", "NVDA", "GOOG", "META", "TSLA", "SPY", "QQQ", "PLTR", "JPM", "V", "AMZN"]
   },
   "alpaca-hourly-trader": {
-    "crypto_symbols": ["BTCUSD", "ETHUSD"],
+    "crypto_symbols": [],
     "stock_symbols": []
   },
   "trade-unified-hourly-meta": {
     "crypto_symbols": [],
-    "stock_symbols": ["GOOG", "DBX", "TRIP", "MTCH", "NYT", "AAPL", "TSLA", "BKNG", "EBAY", "EXPE", "ITUB", "BTG", "ABEV"]
+    "stock_symbols": ["DBX", "TRIP", "MTCH", "NYT", "NET", "BKNG", "EBAY", "EXPE", "ITUB", "BTG", "ABEV"]
   }
 }

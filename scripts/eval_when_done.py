@@ -115,8 +115,8 @@ def main():
         for seed_dir in seed_dirs:
             if not seed_dir.is_dir():
                 continue
-            # Check both best.pt and val_best.pt
-            for ckpt_name in ["best.pt", "val_best.pt"]:
+            # Check best.pt, val_best.pt, and best_neg.pt
+            for ckpt_name in ["best.pt", "val_best.pt", "best_neg.pt"]:
                 ckpt = seed_dir / ckpt_name
                 if not ckpt.exists():
                     continue

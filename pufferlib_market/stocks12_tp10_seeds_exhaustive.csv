@@ -1,0 +1,17 @@
+timestamp,seed_dir,ckpt_type,n_windows,med,p10,p90,worst,neg,checkpoint
+2026-03-27T20:57:35Z,tp08_s15,best.pt,111,0.00,0.00,0.00,0.00,0,pufferlib_market/checkpoints/stocks12_tp10_seeds/tp08_s15/best.pt
+2026-03-27T21:05:20Z,tp08_s15,val_best.pt,111,0.00,0.00,0.00,0.00,0,pufferlib_market/checkpoints/stocks12_tp10_seeds/tp08_s15/val_best.pt
+2026-03-27T21:15:31Z,tp10_s100,best.pt,111,0.00,0.00,0.00,0.00,0,pufferlib_market/checkpoints/stocks12_tp10_seeds/tp10_s100/best.pt
+2026-03-27T21:23:03Z,tp10_s100,val_best.pt,111,2.16,-1.42,5.01,-5.23,17,pufferlib_market/checkpoints/stocks12_tp10_seeds/tp10_s100/val_best.pt
+2026-03-27T21:31:23Z,tp10_s100,best_neg.pt,111,2.16,-1.42,5.01,-5.23,17,pufferlib_market/checkpoints/stocks12_tp10_seeds/tp10_s100/best_neg.pt
+2026-03-27T21:38:07Z,tp10_s15,best.pt,111,-10.53,-23.42,8.84,-29.95,80,pufferlib_market/checkpoints/stocks12_tp10_seeds/tp10_s15/best.pt
+2026-03-27T21:46:14Z,tp10_s15,val_best.pt,111,0.00,0.00,0.00,0.00,0,pufferlib_market/checkpoints/stocks12_tp10_seeds/tp10_s15/val_best.pt
+2026-03-27T21:53:34Z,tp10_s15,best_neg.pt,111,0.00,0.00,0.00,0.00,0,pufferlib_market/checkpoints/stocks12_tp10_seeds/tp10_s15/best_neg.pt
+2026-03-27T22:02:44Z,tp10_s36,best.pt,111,0.00,0.00,0.00,0.00,0,pufferlib_market/checkpoints/stocks12_tp10_seeds/tp10_s36/best.pt
+2026-03-27T22:14:26Z,tp10_s36,val_best.pt,111,0.77,-2.82,6.54,-6.19,47,pufferlib_market/checkpoints/stocks12_tp10_seeds/tp10_s36/val_best.pt
+2026-03-27T22:25:07Z,tp10_s36,best_neg.pt,111,0.77,-2.82,6.54,-6.19,47,pufferlib_market/checkpoints/stocks12_tp10_seeds/tp10_s36/best_neg.pt
+2026-03-27T22:35:47Z,tp10_s42,best.pt,111,-10.53,-23.42,8.84,-29.95,80,pufferlib_market/checkpoints/stocks12_tp10_seeds/tp10_s42/best.pt
+2026-03-27T22:46:42Z,tp10_s42,val_best.pt,111,-0.34,-7.60,17.07,-9.13,58,pufferlib_market/checkpoints/stocks12_tp10_seeds/tp10_s42/val_best.pt
+2026-03-27T22:56:35Z,tp10_s42,best_neg.pt,111,-0.34,-7.60,17.07,-9.13,58,pufferlib_market/checkpoints/stocks12_tp10_seeds/tp10_s42/best_neg.pt
+2026-03-27T23:12:02Z,tp08_s15,best.pt,111,0.00,0.00,0.00,0.00,0,pufferlib_market/checkpoints/stocks12_tp10_seeds/tp08_s15/best.pt
+2026-03-27T23:22:21Z,tp10_s100,best.pt,111,0.00,0.00,0.00,0.00,0,pufferlib_market/checkpoints/stocks12_tp10_seeds/tp10_s100/best.pt
