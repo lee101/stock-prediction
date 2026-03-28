@@ -1,0 +1,93 @@
+[
+  {
+    "name": "fullstack_spec_multi",
+    "symbol": "DOTUSD",
+    "best_epoch": 10,
+    "best_val_sortino": 191.68,
+    "best_val_return": 6.5061,
+    "best_val_score": 192.201,
+    "sharpness_ema": 1856.2,
+    "wd_scale": 2.0,
+    "wall_s": 4255.0,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_fullstack_spec_multi_DOTUSD_20260328_151837",
+    "error": null
+  },
+  {
+    "name": "fullstack_spec_multi",
+    "symbol": "APTUSD",
+    "best_epoch": 11,
+    "best_val_sortino": 199.718,
+    "best_val_return": 4.4457,
+    "best_val_score": 200.074,
+    "sharpness_ema": 1520.4,
+    "wd_scale": 2.0,
+    "wall_s": 1756.0,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_fullstack_spec_multi_APTUSD_20260328_162932",
+    "error": null
+  },
+  {
+    "name": "fullstack_spec_multi",
+    "symbol": "ARBUSD",
+    "best_epoch": 13,
+    "best_val_sortino": 190.978,
+    "best_val_return": 4.8271,
+    "best_val_score": 191.364,
+    "sharpness_ema": 1325.9,
+    "wd_scale": 2.0,
+    "wall_s": 4771.0,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_fullstack_spec_multi_ARBUSD_20260328_165848",
+    "error": null
+  },
+  {
+    "name": "fullstack_spec_multi",
+    "symbol": "INJUSD",
+    "best_epoch": 9,
+    "best_val_sortino": 181.913,
+    "best_val_return": 3.772,
+    "best_val_score": 182.215,
+    "sharpness_ema": 1336.7,
+    "wd_scale": 2.0,
+    "wall_s": 1737.0,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_fullstack_spec_multi_INJUSD_20260328_181820",
+    "error": null
+  },
+  {
+    "name": "fullstack_spec_multi",
+    "symbol": "ALGOUSD",
+    "best_epoch": 3,
+    "best_val_sortino": 189.253,
+    "best_val_return": 3.511,
+    "best_val_score": 189.534,
+    "sharpness_ema": 1478.7,
+    "wd_scale": 2.0,
+    "wall_s": 1276.0,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_fullstack_spec_multi_ALGOUSD_20260328_184717",
+    "error": null
+  },
+  {
+    "name": "fullstack_spec_multi",
+    "symbol": "ICPUSD",
+    "best_epoch": 9,
+    "best_val_sortino": 159.759,
+    "best_val_return": 3.2673,
+    "best_val_score": 160.02,
+    "sharpness_ema": 909.5,
+    "wd_scale": 2.0,
+    "wall_s": 1794.0,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_fullstack_spec_multi_ICPUSD_20260328_190833",
+    "error": null
+  },
+  {
+    "name": "fullstack_spec_multi",
+    "symbol": "DOGEUSD",
+    "best_epoch": 15,
+    "best_val_sortino": 146.769,
+    "best_val_return": 3.5726,
+    "best_val_score": 147.055,
+    "sharpness_ema": 1275.5,
+    "wd_scale": 2.0,
+    "wall_s": 8330.0,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_fullstack_spec_multi_DOGEUSD_20260328_193828",
+    "error": null
+  }
+]

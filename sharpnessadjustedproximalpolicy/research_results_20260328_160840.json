@@ -1,0 +1,80 @@
+[
+  {
+    "name": "lr5e4_sam_cosine_wd01",
+    "symbol": "ADAUSD",
+    "best_epoch": 7,
+    "best_val_sortino": 149.921,
+    "best_val_return": 2.8895,
+    "best_val_score": 150.152,
+    "sharpness_ema": 893.3,
+    "wd_scale": 2.0,
+    "wall_s": 1383.0,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_lr5e4_sam_cosine_wd01_ADAUSD_20260328_160840",
+    "error": null
+  },
+  {
+    "name": "lr5e4_sam_cosine_wd01",
+    "symbol": "FILUSD",
+    "best_epoch": 5,
+    "best_val_sortino": 149.541,
+    "best_val_return": 3.4653,
+    "best_val_score": 149.818,
+    "sharpness_ema": 1232.5,
+    "wd_scale": 2.0,
+    "wall_s": 4566.0,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_lr5e4_sam_cosine_wd01_FILUSD_20260328_163144",
+    "error": null
+  },
+  {
+    "name": "lr5e4_sam_cosine_wd01",
+    "symbol": "ATOMUSD",
+    "best_epoch": 9,
+    "best_val_sortino": 142.84,
+    "best_val_return": 3.3012,
+    "best_val_score": 143.104,
+    "sharpness_ema": 821.7,
+    "wd_scale": 2.0,
+    "wall_s": 1350.0,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_lr5e4_sam_cosine_wd01_ATOMUSD_20260328_174750",
+    "error": null
+  },
+  {
+    "name": "lr5e4_sam_cosine_wd01",
+    "symbol": "LINKUSD",
+    "best_epoch": 14,
+    "best_val_sortino": 118.256,
+    "best_val_return": 1.535,
+    "best_val_score": 118.379,
+    "sharpness_ema": 863.0,
+    "wd_scale": 2.0,
+    "wall_s": 6506.0,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_lr5e4_sam_cosine_wd01_LINKUSD_20260328_181020",
+    "error": null
+  },
+  {
+    "name": "lr5e4_sam_cosine_wd01",
+    "symbol": "BCHUSD",
+    "best_epoch": 15,
+    "best_val_sortino": 106.147,
+    "best_val_return": 2.2987,
+    "best_val_score": 106.331,
+    "sharpness_ema": 469.1,
+    "wd_scale": 1.5,
+    "wall_s": 1339.0,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_lr5e4_sam_cosine_wd01_BCHUSD_20260328_195848",
+    "error": null
+  },
+  {
+    "name": "lr5e4_sam_cosine_wd01",
+    "symbol": "ETHUSD",
+    "best_epoch": 7,
+    "best_val_sortino": 80.91,
+    "best_val_return": 1.8724,
+    "best_val_score": 81.06,
+    "sharpness_ema": 683.2,
+    "wd_scale": 2.0,
+    "wall_s": 4335.0,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_lr5e4_sam_cosine_wd01_ETHUSD_20260328_202107",
+    "error": null
+  }
+]

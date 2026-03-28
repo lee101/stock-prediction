@@ -111,6 +111,58 @@ def linear_anneal(update: int, num_updates: int, start: float, end: float) -> fl
     return start + (end - start) * frac
 
 
+def _max_abs_grad(parameters) -> float:
+    max_abs = 0.0
+    for param in parameters:
+        grad = getattr(param, "grad", None)
+        if grad is None:
+            continue
+        grad_detached = grad.detach()
+        if grad_detached.numel() == 0:
+            continue
+        value = float(grad_detached.abs().max().item())
+        if value > max_abs:
+            max_abs = value
+    return max_abs
+
+
+def _backoff_optimizer_lr(
+    optimizer: optim.Optimizer,
+    *,
+    factor: float,
+    min_lr: float,
+) -> tuple[float, float]:
+    old_lr = min(float(group.get("lr", 0.0)) for group in optimizer.param_groups)
+    new_lr = old_lr
+    for group in optimizer.param_groups:
+        current_lr = float(group.get("lr", 0.0))
+        updated_lr = max(current_lr * float(factor), float(min_lr))
+        group["lr"] = updated_lr
+        new_lr = min(new_lr, updated_lr)
+    return old_lr, new_lr
+
+
+def _classify_update_stability(
+    *,
+    loss_value: float,
+    grad_norm_value: float,
+    max_abs_grad_value: float,
+    grad_norm_skip_threshold: float,
+) -> str | None:
+    if not math.isfinite(float(loss_value)):
+        return f"nonfinite_loss={loss_value}"
+    if not math.isfinite(float(grad_norm_value)):
+        return f"nonfinite_grad_norm={grad_norm_value}"
+    if not math.isfinite(float(max_abs_grad_value)):
+        return f"nonfinite_grad_abs={max_abs_grad_value}"
+    if grad_norm_skip_threshold > 0.0 and float(grad_norm_value) > float(grad_norm_skip_threshold):
+        return (
+            f"grad_norm={grad_norm_value:.4f} exceeds "
+            f"grad_norm_skip_threshold={grad_norm_skip_threshold:.4f}"
+        )
+    return None
+
+
 # ─── Policy Network ───────────────────────────────────────────────────
 
 
@@ -1379,6 +1431,9 @@ def train(args):
     _ent_collapse_patience = 3  # consecutive low-entropy updates before reset
     _num_resets = 0
     _max_resets = 2  # don't reset more than twice
+    _consecutive_unstable_updates = 0
+    _skipped_unstable_updates = 0
+    _lr_backoff_count = 0
     periodic_ckpt_mgr = TopKCheckpointManager(
         Path(args.checkpoint_dir), max_keep=args.max_periodic_checkpoints, mode="max",
         r2_prefix=args.r2_prefix,
@@ -1544,6 +1599,10 @@ def train(args):
         total_v_loss = 0
         total_entropy = 0
         num_mb = 0
+        total_grad_norm = 0.0
+        peak_grad_norm = 0.0
+        peak_grad_abs = 0.0
+        update_skips = 0
 
         batch_size = T * N
         mb_size = args.minibatch_size
@@ -1571,6 +1630,8 @@ def train(args):
         )
 
         with (_prof_ctx if _prof_ctx is not None else contextlib.nullcontext()):
+            abort_for_instability = False
+            abort_reason = ""
             for epoch in range(args.ppo_epochs):
                 indices = torch.randperm(batch_size, device=device)
                 for start in range(0, batch_size, mb_size):
@@ -1591,7 +1652,61 @@ def train(args):
                             _ppo_graph.replay()
                         # Make default stream wait for PPO graph without blocking CPU
                         torch.cuda.current_stream().wait_stream(_ppo_stream)
-                        nn.utils.clip_grad_norm_(policy.parameters(), args.max_grad_norm)
+                        loss_value = float(_ppo_static["loss"].item())
+                        grad_norm = nn.utils.clip_grad_norm_(
+                            policy.parameters(),
+                            args.max_grad_norm,
+                            error_if_nonfinite=False,
+                        )
+                        grad_norm_value = float(grad_norm)
+                        max_abs_grad_value = _max_abs_grad(policy.parameters())
+                        instability_reason = _classify_update_stability(
+                            loss_value=loss_value,
+                            grad_norm_value=grad_norm_value,
+                            max_abs_grad_value=max_abs_grad_value,
+                            grad_norm_skip_threshold=float(args.grad_norm_skip_threshold),
+                        )
+                        total_grad_norm += grad_norm_value if math.isfinite(grad_norm_value) else 0.0
+                        peak_grad_norm = max(peak_grad_norm, grad_norm_value if math.isfinite(grad_norm_value) else 0.0)
+                        peak_grad_abs = max(
+                            peak_grad_abs,
+                            max_abs_grad_value if math.isfinite(max_abs_grad_value) else 0.0,
+                        )
+                        if args.grad_norm_warn_threshold > 0.0 and grad_norm_value > args.grad_norm_warn_threshold:
+                            print(
+                                f"  [stability] large_grad_norm={grad_norm_value:.4f} "
+                                f"loss={loss_value:.4f} max_abs_grad={max_abs_grad_value:.4f}"
+                            )
+                        if instability_reason is not None:
+                            optimizer.zero_grad(set_to_none=True)
+                            update_skips += 1
+                            _skipped_unstable_updates += 1
+                            _consecutive_unstable_updates += 1
+                            if 0.0 < args.lr_backoff_factor < 1.0:
+                                old_lr, new_lr = _backoff_optimizer_lr(
+                                    optimizer,
+                                    factor=float(args.lr_backoff_factor),
+                                    min_lr=float(args.min_lr),
+                                )
+                                _lr_backoff_count += 1
+                                print(
+                                    f"  [stability] skipped CUDA-graph minibatch: {instability_reason}; "
+                                    f"lr {old_lr:.2e}->{new_lr:.2e}"
+                                )
+                            else:
+                                print(f"  [stability] skipped CUDA-graph minibatch: {instability_reason}")
+                            if (
+                                args.unstable_update_patience > 0
+                                and _consecutive_unstable_updates >= args.unstable_update_patience
+                            ):
+                                abort_for_instability = True
+                                abort_reason = (
+                                    "Aborting due to repeated unstable PPO minibatches: "
+                                    f"{_consecutive_unstable_updates} consecutive"
+                                )
+                                break
+                            continue
+                        _consecutive_unstable_updates = 0
                         optimizer.step()
                         total_pg_loss += _ppo_static["pg_loss"].item()
                         total_v_loss += _ppo_static["v_loss"].item()
@@ -1605,13 +1720,71 @@ def train(args):
                         )
                         optimizer.zero_grad()
                         loss.backward()
-                        nn.utils.clip_grad_norm_(policy.parameters(), args.max_grad_norm)
+                        loss_value = float(loss.detach().item())
+                        grad_norm = nn.utils.clip_grad_norm_(
+                            policy.parameters(),
+                            args.max_grad_norm,
+                            error_if_nonfinite=False,
+                        )
+                        grad_norm_value = float(grad_norm)
+                        max_abs_grad_value = _max_abs_grad(policy.parameters())
+                        instability_reason = _classify_update_stability(
+                            loss_value=loss_value,
+                            grad_norm_value=grad_norm_value,
+                            max_abs_grad_value=max_abs_grad_value,
+                            grad_norm_skip_threshold=float(args.grad_norm_skip_threshold),
+                        )
+                        total_grad_norm += grad_norm_value if math.isfinite(grad_norm_value) else 0.0
+                        peak_grad_norm = max(peak_grad_norm, grad_norm_value if math.isfinite(grad_norm_value) else 0.0)
+                        peak_grad_abs = max(
+                            peak_grad_abs,
+                            max_abs_grad_value if math.isfinite(max_abs_grad_value) else 0.0,
+                        )
+                        if args.grad_norm_warn_threshold > 0.0 and grad_norm_value > args.grad_norm_warn_threshold:
+                            print(
+                                f"  [stability] large_grad_norm={grad_norm_value:.4f} "
+                                f"loss={loss_value:.4f} max_abs_grad={max_abs_grad_value:.4f}"
+                            )
+                        if instability_reason is not None:
+                            optimizer.zero_grad(set_to_none=True)
+                            update_skips += 1
+                            _skipped_unstable_updates += 1
+                            _consecutive_unstable_updates += 1
+                            if 0.0 < args.lr_backoff_factor < 1.0:
+                                old_lr, new_lr = _backoff_optimizer_lr(
+                                    optimizer,
+                                    factor=float(args.lr_backoff_factor),
+                                    min_lr=float(args.min_lr),
+                                )
+                                _lr_backoff_count += 1
+                                print(
+                                    f"  [stability] skipped eager minibatch: {instability_reason}; "
+                                    f"lr {old_lr:.2e}->{new_lr:.2e}"
+                                )
+                            else:
+                                print(f"  [stability] skipped eager minibatch: {instability_reason}")
+                            if (
+                                args.unstable_update_patience > 0
+                                and _consecutive_unstable_updates >= args.unstable_update_patience
+                            ):
+                                abort_for_instability = True
+                                abort_reason = (
+                                    "Aborting due to repeated unstable PPO minibatches: "
+                                    f"{_consecutive_unstable_updates} consecutive"
+                                )
+                                break
+                            continue
+                        _consecutive_unstable_updates = 0
                         optimizer.step()
                         total_pg_loss += pg_loss.item()
                         total_v_loss += v_loss.item()
                         total_entropy += ent_loss.item()
 
                     num_mb += 1
+                if abort_for_instability:
+                    break
+            if abort_for_instability:
+                raise RuntimeError(abort_reason)
 
         if _prof_ctx is not None:
             _trace_path = Path("profile_output") / f"trace_update_{local_update:04d}.json"
@@ -1628,6 +1801,7 @@ def train(args):
         avg_pg = total_pg_loss / max(num_mb, 1)
         avg_vl = total_v_loss / max(num_mb, 1)
         avg_ent = total_entropy / max(num_mb, 1)
+        avg_grad_norm = total_grad_norm / max(num_mb, 1)
 
         if log_info and "total_return" in log_info:
             ep_return = log_info["total_return"]
@@ -1678,6 +1852,8 @@ def train(args):
                 f"ret={ep_return:+.4f}  ann_ret={ep_annualized:+.2%}  sortino={ep_sortino:.2f}  "
                 f"trades={ep_trades:.0f}  wr={ep_wr:.2f}  "
                 f"pg={avg_pg:.4f}  vl={avg_vl:.4f}  ent={avg_ent:.3f}  "
+                f"gn={avg_grad_norm:.3f}  gmax={peak_grad_norm:.3f}  "
+                f"gabs={peak_grad_abs:.3f}  skip={update_skips}  "
                 f"n={n:.0f}"
             )
 
@@ -1695,7 +1871,9 @@ def train(args):
             print(
                 f"[{local_update:4d}/{num_updates}] "
                 f"step={global_step:8,d}  sps={sps:.0f}  "
-                f"pg={avg_pg:.4f}  vl={avg_vl:.4f}  ent={avg_ent:.3f}"
+                f"pg={avg_pg:.4f}  vl={avg_vl:.4f}  ent={avg_ent:.3f}  "
+                f"gn={avg_grad_norm:.3f}  gmax={peak_grad_norm:.3f}  "
+                f"gabs={peak_grad_abs:.3f}  skip={update_skips}"
             )
 
         # ── Val-based checkpointing (runs every val_eval_interval updates regardless of episode data) ──
@@ -2026,6 +2204,36 @@ def main():
     parser.add_argument("--vf-coef", type=float, default=0.5)
     parser.add_argument("--ent-coef", type=float, default=0.01)
     parser.add_argument("--max-grad-norm", type=float, default=0.5)
+    parser.add_argument(
+        "--grad-norm-warn-threshold",
+        type=float,
+        default=50.0,
+        help="Warn when unclipped global grad norm exceeds this value (0 disables warning).",
+    )
+    parser.add_argument(
+        "--grad-norm-skip-threshold",
+        type=float,
+        default=1_000.0,
+        help="Skip a minibatch update when global grad norm exceeds this value (0 disables).",
+    )
+    parser.add_argument(
+        "--unstable-update-patience",
+        type=int,
+        default=3,
+        help="Abort training after this many consecutive skipped/unstable PPO minibatches.",
+    )
+    parser.add_argument(
+        "--lr-backoff-factor",
+        type=float,
+        default=0.5,
+        help="Multiply LR by this factor after an unstable minibatch update.",
+    )
+    parser.add_argument(
+        "--min-lr",
+        type=float,
+        default=1e-6,
+        help="Lower floor for LR after stability backoff.",
+    )
     parser.add_argument("--anneal-lr", action="store_true", help="Linear LR annealing (legacy)")
     parser.add_argument("--lr-schedule", choices=["none", "cosine", "linear"], default="none",
                         help="LR schedule: cosine (warmup+cosine+floor) or linear (legacy anneal)")

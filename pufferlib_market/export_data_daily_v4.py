@@ -175,8 +175,8 @@ def compute_hourly_forecast_context_features(
             deltas = ((deltas - base_close) / base_close).replace([np.inf, -np.inf], np.nan).dropna().clip(-1.0, 1.0)
             if deltas.empty:
                 continue
-            result.iat[pos, 0] = float(deltas.mean())
-            result.iat[pos, 1] = float(deltas.iloc[-1] - deltas.iloc[0]) if len(deltas) >= 2 else 0.0
+            result.iat[pos, 0] = np.float32(deltas.mean())
+            result.iat[pos, 1] = np.float32(deltas.iloc[-1] - deltas.iloc[0]) if len(deltas) >= 2 else np.float32(0.0)
 
     if forecast_h24 is not None and not forecast_h24.empty and "predicted_close_p50" in forecast_h24.columns:
         for date_key, day_fc in forecast_h24.groupby(forecast_h24.index.date):
@@ -187,7 +187,7 @@ def compute_hourly_forecast_context_features(
             deltas = pd.to_numeric(day_fc["predicted_close_p50"], errors="coerce")
             deltas = ((deltas - base_close) / base_close).replace([np.inf, -np.inf], np.nan).dropna().clip(-1.0, 1.0)
             if not deltas.empty:
-                result.iat[pos, 2] = float(deltas.mean())
+                result.iat[pos, 2] = np.float32(deltas.mean())
 
             spread = None
             if "predicted_close_p90" in day_fc.columns and "predicted_close_p10" in day_fc.columns:
@@ -198,7 +198,7 @@ def compute_hourly_forecast_context_features(
             if spread is not None:
                 conf = (1.0 / (1.0 + spread / base_close)).replace([np.inf, -np.inf], np.nan).dropna().clip(0.0, 1.0)
                 if not conf.empty:
-                    result.iat[pos, 3] = float(conf.mean())
+                    result.iat[pos, 3] = np.float32(conf.mean())
 
     return result.astype(np.float32)
 

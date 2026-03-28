@@ -11,6 +11,7 @@ import pytest
 from pufferlib_market.early_stopper import (
     BestKnownTracker,
     HoldCashDetector,
+    OverfitDetector,
     PolynomialEarlyStopper,
     combined_score,
 )
@@ -323,3 +324,26 @@ class TestHoldCashDetector:
         det.update(self._line(0, 5))   # consecutive=2
         fired = det.update(self._line(0, 6))  # consecutive=3 → should fire
         assert fired, "should fire at 3rd consecutive zero after reset"
+
+
+class TestOverfitDetector:
+    def test_does_not_prune_before_min_progress(self):
+        det = OverfitDetector()
+        det.update("[  1/10] step=2048 ret=+1.20 sortino=2.10 trades=8 wr=0.70")
+        prune, metrics = det.should_prune(progress=0.25, val_return=-0.1, val_sortino=0.0, val_wr=0.5)
+        assert prune is False
+        assert metrics["train_combined"] is not None
+
+    def test_prunes_clear_train_val_divergence(self):
+        det = OverfitDetector()
+        det.update("[  5/10] step=10240 ret=+1.40 sortino=2.60 trades=12 wr=0.75")
+        prune, metrics = det.should_prune(progress=0.75, val_return=-0.15, val_sortino=0.05, val_wr=0.5)
+        assert prune is True
+        assert metrics["gap"] is not None and metrics["gap"] > 1.0
+
+    def test_does_not_prune_when_validation_is_still_good(self):
+        det = OverfitDetector()
+        det.update("[  5/10] step=10240 ret=+1.20 sortino=2.20 trades=10 wr=0.70")
+        prune, metrics = det.should_prune(progress=0.75, val_return=0.35, val_sortino=0.90, val_wr=0.6)
+        assert prune is False
+        assert metrics["val_combined"] is not None and metrics["val_combined"] > 0.25

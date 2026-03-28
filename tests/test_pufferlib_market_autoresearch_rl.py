@@ -8,8 +8,11 @@ from pathlib import Path
 import pytest
 
 from pufferlib_market.autoresearch_rl import (
+    EXPERIMENTS,
     TrialConfig,
     _read_mktd_header,
+    annualize_total_return_pct,
+    compute_eval_window_years,
     main,
     run_trial,
     summarize_replay_eval_payload,
@@ -150,9 +153,10 @@ def test_summarize_replay_eval_payload_extracts_sections() -> None:
         },
     }
 
-    summary = summarize_replay_eval_payload(payload)
+    summary = summarize_replay_eval_payload(payload, replay_eval_years=1.0)
 
     assert summary["replay_daily_return_pct"] == pytest.approx(4.0)
+    assert summary["replay_daily_annualized_return_pct"] == pytest.approx(4.0)
     assert summary["replay_daily_sortino"] == pytest.approx(1.1)
     assert summary["replay_daily_max_drawdown_pct"] == pytest.approx(8.0)
     assert summary["replay_daily_trade_count"] == pytest.approx(5.0)
@@ -160,6 +164,7 @@ def test_summarize_replay_eval_payload_extracts_sections() -> None:
     assert summary["replay_daily_ulcer_index"] == pytest.approx(0.2)
     assert summary["replay_daily_goodness_score"] == pytest.approx(4.25)
     assert summary["replay_hourly_return_pct"] == pytest.approx(3.0)
+    assert summary["replay_hourly_annualized_return_pct"] == pytest.approx(3.0)
     assert summary["replay_hourly_sortino"] == pytest.approx(0.9)
     assert summary["replay_hourly_max_drawdown_pct"] == pytest.approx(12.0)
     assert summary["replay_hourly_trade_count"] == pytest.approx(4.0)
@@ -168,6 +173,7 @@ def test_summarize_replay_eval_payload_extracts_sections() -> None:
     assert summary["replay_hourly_ulcer_index"] == pytest.approx(0.35)
     assert summary["replay_hourly_goodness_score"] == pytest.approx(3.75)
     assert summary["replay_hourly_policy_return_pct"] == pytest.approx(-6.0)
+    assert summary["replay_hourly_policy_annualized_return_pct"] == pytest.approx(-6.0)
     assert summary["replay_hourly_policy_sortino"] == pytest.approx(-0.4)
     assert summary["replay_hourly_policy_max_drawdown_pct"] == pytest.approx(20.0)
     assert summary["replay_hourly_policy_trade_count"] == pytest.approx(8.0)
@@ -178,23 +184,28 @@ def test_summarize_replay_eval_payload_extracts_sections() -> None:
     assert summary["replay_combo_scenario_count"] == pytest.approx(4.0)
     assert "replay_combo_score" in summary
 
-    assert summary == {
-        **summary,
-        **compute_replay_composite_score(
-            daily_return_pct=4.0,
-            daily_sortino=1.1,
-            daily_max_drawdown_pct=8.0,
-            daily_trade_count=5.0,
-            hourly_return_pct=3.0,
-            hourly_sortino=0.9,
-            hourly_max_drawdown_pct=12.0,
-            hourly_trade_count=4.0,
-            hourly_policy_return_pct=-6.0,
-            hourly_policy_sortino=-0.4,
-            hourly_policy_max_drawdown_pct=20.0,
-            hourly_policy_trade_count=8.0,
-        ),
-    }
+    expected_combo = compute_replay_composite_score(
+        daily_return_pct=4.0,
+        daily_annualized_return_pct=4.0,
+        daily_sortino=1.1,
+        daily_max_drawdown_pct=8.0,
+        daily_pnl_smoothness=0.001,
+        daily_trade_count=5.0,
+        hourly_return_pct=3.0,
+        hourly_annualized_return_pct=3.0,
+        hourly_sortino=0.9,
+        hourly_max_drawdown_pct=12.0,
+        hourly_pnl_smoothness=0.002,
+        hourly_trade_count=4.0,
+        hourly_policy_return_pct=-6.0,
+        hourly_policy_annualized_return_pct=-6.0,
+        hourly_policy_sortino=-0.4,
+        hourly_policy_max_drawdown_pct=20.0,
+        hourly_policy_pnl_smoothness=0.004,
+        hourly_policy_trade_count=8.0,
+    )
+    for key, value in expected_combo.items():
+        assert summary[key] == pytest.approx(value)
 
 
 def test_summarize_replay_eval_payload_extracts_robust_sections() -> None:
@@ -221,12 +232,28 @@ def test_summarize_replay_eval_payload_extracts_robust_sections() -> None:
         }
     }
 
-    summary = summarize_replay_eval_payload(payload)
+    summary = summarize_replay_eval_payload(payload, replay_eval_years=0.5)
 
     assert summary["replay_daily_robust_median_return_pct"] == pytest.approx(1.0)
+    assert summary["replay_daily_robust_median_annualized_return_pct"] == pytest.approx(2.01, abs=0.01)
     assert summary["replay_daily_robust_worst_return_pct"] == pytest.approx(-2.0)
+    assert summary["replay_daily_robust_worst_annualized_return_pct"] == pytest.approx(-3.96, abs=0.01)
     assert summary["replay_hourly_robust_worst_sortino"] == pytest.approx(-0.7)
     assert summary["replay_hourly_policy_robust_worst_max_drawdown_pct"] == pytest.approx(35.0)
+    assert summary["replay_hourly_policy_robust_worst_annualized_return_pct"] == pytest.approx(-15.36, abs=0.01)
+
+
+def test_compute_eval_window_years_handles_date_and_datetime_inputs() -> None:
+    assert compute_eval_window_years("2025-06-01", "2026-02-05") == pytest.approx(250.0 / 365.0)
+    assert compute_eval_window_years("2025-06-01T00:00:00+00:00", "2025-12-01T00:00:00+00:00") == pytest.approx(
+        183.0 / 365.0
+    )
+
+
+def test_annualize_total_return_pct_handles_edge_cases() -> None:
+    assert annualize_total_return_pct(25.0, 1.0) == pytest.approx(25.0)
+    assert annualize_total_return_pct(-100.0, 0.5) is None
+    assert annualize_total_return_pct(5.0, 0.0) is None
 
 
 def test_select_rank_score_uses_expected_fallback_order() -> None:
@@ -263,9 +290,17 @@ def test_select_rank_score_uses_expected_fallback_order() -> None:
         -6.0,
     )
     assert select_rank_score(
+        {"replay_daily_annualized_return_pct": 21.5},
+        rank_metric="replay_daily_annualized_return_pct",
+    ) == ("replay_daily_annualized_return_pct", 21.5)
+    assert select_rank_score(
         {"replay_hourly_policy_robust_worst_return_pct": -8.0},
         rank_metric="replay_hourly_policy_robust_worst_return_pct",
     ) == ("replay_hourly_policy_robust_worst_return_pct", -8.0)
+    assert select_rank_score(
+        {"replay_hourly_policy_robust_worst_annualized_return_pct": 88.0},
+        rank_metric="replay_hourly_policy_robust_worst_annualized_return_pct",
+    ) == ("replay_hourly_policy_robust_worst_annualized_return_pct", 88.0)
     assert select_rank_score({"val_return": 0.01}, rank_metric="auto") == ("val_return", 0.01)
     assert select_rank_score({}, rank_metric="auto") == ("none", None)
 
@@ -283,6 +318,51 @@ def test_select_experiments_honors_start_offset_before_filter() -> None:
 def test_select_experiments_rejects_unknown_description() -> None:
     with pytest.raises(ValueError, match="Unknown experiment description"):
         select_experiments(descriptions="missing_trial")
+
+
+def test_experiments_have_unique_descriptions() -> None:
+    descriptions = [cfg["description"] for cfg in EXPERIMENTS if not cfg["description"].startswith("random_")]
+    assert len(descriptions) == len(set(descriptions))
+
+
+def test_sortino_rc3_followup_variants_are_registered() -> None:
+    exps = select_experiments(
+        descriptions=",".join(
+            [
+                "sortino_rc3_tp08",
+                "sortino_rc3_tp07",
+                "sortino_rc3_tp09",
+                "sortino_rc3_tp08_slip8",
+                "sortino_rc3_tp08_wd01",
+                "sortino_rc3_tp08_sm001",
+                "sortino_rc3_tp08_dd002",
+            ]
+        )
+    )
+
+    got = {exp["description"] for exp in exps}
+    assert got == {
+        "sortino_rc3_tp08",
+        "sortino_rc3_tp07",
+        "sortino_rc3_tp09",
+        "sortino_rc3_tp08_slip8",
+        "sortino_rc3_tp08_wd01",
+        "sortino_rc3_tp08_sm001",
+        "sortino_rc3_tp08_dd002",
+    }
+
+
+def test_stability_long_run_variants_are_registered() -> None:
+    exps = select_experiments(
+        descriptions="stable_long_tp005_sds02,stable_long_tp005_sds02_bf16,stable_long_reg_combo_2"
+    )
+
+    got = {exp["description"] for exp in exps}
+    assert got == {
+        "stable_long_tp005_sds02",
+        "stable_long_tp005_sds02_bf16",
+        "stable_long_reg_combo_2",
+    }
 
 
 def test_run_trial_passes_market_validation_decision_cadence(monkeypatch, tmp_path: Path) -> None:
