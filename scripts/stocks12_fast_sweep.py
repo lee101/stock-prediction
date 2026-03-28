@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 def val_eval_quick(ckpt_path: Path, val_data_path: str, n_windows: int = 20) -> dict:
-    """Run quick val eval on a checkpoint. Returns dict with neg, med."""
+    """Run quick val eval on a checkpoint. Returns dict with neg, med, trades_avg."""
     from pufferlib_market.evaluate_holdout import (
         _infer_arch, _infer_hidden_size, _infer_num_actions, _slice_window, TradingPolicy
     )
@@ -66,6 +66,7 @@ def val_eval_quick(ckpt_path: Path, val_data_path: str, n_windows: int = 20) -> 
     starts = sorted(rng.choice(all_starts, size=min(n_windows, len(all_starts)), replace=False).tolist())
 
     returns = []
+    trades = []
     for start in starts:
         w = _slice_window(val_data, start=start, steps=eval_steps)
         r = simulate_daily_policy(
@@ -73,14 +74,17 @@ def val_eval_quick(ckpt_path: Path, val_data_path: str, n_windows: int = 20) -> 
             enable_drawdown_profit_early_exit=False,
         )
         returns.append(r.total_return)
+        trades.append(r.num_trades)
 
     returns = np.array(returns)
+    trades_avg = float(np.mean(trades))
     best_return = float(payload.get("best_return", 0.0)) if isinstance(payload, dict) else 0.0
     return {
         "med": float(np.median(returns) * 100),
         "p10": float(np.percentile(returns, 10) * 100),
         "neg": int((returns < 0).sum()),
         "n": len(returns),
+        "trades_avg": trades_avg,
         "best_return": best_return,
         "global_step": int(payload.get("global_step", 0)) if isinstance(payload, dict) else 0,
     }
@@ -155,6 +159,12 @@ def main():
                              "Default 30 (out of 50 val windows). 0 disables.")
     parser.add_argument("--val-neg-patience", type=int, default=5,
                         help="Consecutive val evals above threshold before early stopping (default 5).")
+    parser.add_argument("--min-screen-med", type=float, default=1.0,
+                        help="Min median val return %% at screen to qualify (default 1.0%%). "
+                             "Filters do-nothing models with 0%% median.")
+    parser.add_argument("--min-screen-trades", type=float, default=3.0,
+                        help="Min avg trades per 90d window at screen to qualify (default 3.0). "
+                             "Filters collapsed/degenerate models.")
     args = parser.parse_args()
 
     # Auto-generate run tag if not specified
@@ -171,7 +181,7 @@ def main():
 
     print(f"Sweep: seeds {args.seed_start}-{args.seed_end} ({len(seeds)} total) tag={args.run_tag}")
     print(f"HParams: trade_penalty={args.trade_penalty} ent_coef={args.ent_coef} extra={args.extra_train_args!r}")
-    print(f"Screen: {args.screen_steps/1e6:.1f}M steps, val_neg<={screen_threshold}/{args.screen_val_windows}")
+    print(f"Screen: {args.screen_steps/1e6:.1f}M steps, val_neg<={screen_threshold}/{args.screen_val_windows} min_med={args.min_screen_med:.1f}% min_trades={args.min_screen_trades:.1f}")
     print(f"Full: {args.full_steps/1e6:.1f}M steps for qualified seeds (early-stop val_neg>{args.val_neg_threshold}/{50} for {args.val_neg_patience} evals)")
     print(f"GPU slots: {args.gpu_slots}")
 
@@ -188,60 +198,59 @@ def main():
     with open(log_path, "w") as f:
         f.write("timestamp,seed,phase,result,neg,med,best_return,global_step\n")
 
-    def log(seed, phase, result, neg=-1, med=0.0, best_return=0.0, global_step=0):
+    def log(seed, phase, result, neg=-1, med=0.0, best_return=0.0, global_step=0, trades_avg=0.0):
         ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         with open(log_path, "a") as f:
             f.write(f"{ts},{seed},{phase},{result},{neg},{med:.2f},{best_return:.4f},{global_step}\n")
-        print(f"  [{ts}] seed={seed} {phase}={result} neg={neg} med={med:.1f}% best_ret={best_return:.3f}", flush=True)
+        print(f"  [{ts}] seed={seed} {phase}={result} neg={neg} med={med:.1f}% trades={trades_avg:.1f} best_ret={best_return:.3f}", flush=True)
+
+    # max_full_concurrent: full training takes priority but leaves 1 slot for screening
+    max_full_concurrent = max(1, args.gpu_slots - 1)
 
     while seed_queue or running or running_full:
-        # Launch new screening jobs up to gpu_slots
-        total_active = len(running) + len(running_full)
-        while seed_queue and total_active < args.gpu_slots:
-            seed = seed_queue.pop(0)
+        # --- Step 1: pre-process queue (CPU-only: skip done seeds, eval already-screened) ---
+        i = 0
+        while i < len(seed_queue):
+            seed = seed_queue[i]
             ckpt_dir = ckpt_root / f"{args.run_tag}_s{seed}"
             ckpt_dir.mkdir(parents=True, exist_ok=True)
-
-            # Check if already screened (resume support)
             final = ckpt_dir / "final.pt"
             if final.exists():
-                print(f"  seed={seed}: already has final.pt, skipping")
+                seed_queue.pop(i)
                 done.add(seed)
+                print(f"  seed={seed}: already has final.pt, skipping")
                 continue
-            screen_ckpt = ckpt_dir / "screen_best.pt"
+            screen_best_neg = ckpt_dir / "screen_best_neg.pt"
+            using_best_neg = screen_best_neg.exists()
+            screen_ckpt = screen_best_neg if using_best_neg else ckpt_dir / "screen_best.pt"
             if screen_ckpt.exists() and seed not in screened:
-                # Already screened, evaluate and decide
                 try:
                     ev = val_eval_quick(screen_ckpt, args.val_data, args.screen_val_windows)
                     screened.add(seed)
-                    if ev["neg"] <= screen_threshold and ev["best_return"] <= args.max_best_return:
+                    pass_val = ev["neg"] <= screen_threshold
+                    # max_best_return only applies to screen_best.pt (in-sample return as fraction).
+                    # For screen_best_neg.pt, best_return stores val_med (pct) — skip this filter.
+                    pass_ret = True if using_best_neg else (ev["best_return"] <= args.max_best_return)
+                    pass_med = ev["med"] >= args.min_screen_med
+                    pass_trades = ev["trades_avg"] >= args.min_screen_trades
+                    if pass_val and pass_ret and pass_med and pass_trades:
                         qualified.add(seed)
-                        log(seed, "screen", "QUALIFIED", ev["neg"], ev["med"], ev["best_return"], ev["global_step"])
-                        continue  # already screened + qualified → go to full training, no re-screening
+                        log(seed, "screen", "QUALIFIED", ev["neg"], ev["med"], ev["best_return"], ev["global_step"], ev["trades_avg"])
                     else:
                         rejected.add(seed)
-                        log(seed, "screen", "REJECTED", ev["neg"], ev["med"], ev["best_return"], ev["global_step"])
-                        continue
+                        reasons = []
+                        if not pass_val: reasons.append("HIGH_NEG")
+                        if not pass_ret: reasons.append("HIGH_RET")
+                        if not pass_med: reasons.append("LOW_MED")
+                        if not pass_trades: reasons.append("LOW_TRADES")
+                        log(seed, "screen", f"REJECTED_{'_'.join(reasons)}", ev["neg"], ev["med"], ev["best_return"], ev["global_step"], ev["trades_avg"])
+                    seed_queue.pop(i)
+                    continue
                 except Exception as e:
                     print(f"  seed={seed}: error evaluating screen_ckpt: {e}")
+            i += 1
 
-            # Start screening process (use a looser threshold for screens: 18/20 = 90%)
-            extra = args.extra_train_args.split() if args.extra_train_args.strip() else None
-            screen_neg_thresh = int(0.9 * args.screen_val_windows)  # stop screen if >90% neg
-            cmd = build_train_cmd(
-                seed, ckpt_dir, args.data, args.val_data, args.screen_steps,
-                trade_penalty=args.trade_penalty, ent_coef=args.ent_coef,
-                val_neg_threshold=screen_neg_thresh,
-                val_neg_patience=3,
-                extra_args=extra,
-            )
-            logfile = open(ckpt_dir / "screen.log", "w")
-            proc = subprocess.Popen(cmd, stdout=logfile, stderr=subprocess.STDOUT, cwd=str(Path(__file__).parent.parent))
-            running[seed] = proc
-            total_active += 1
-            print(f"  Launched screening seed={seed} (PID {proc.pid})", flush=True)
-
-        # Check screening processes
+        # --- Step 2: check completed screenings ---
         finished_screen = []
         for seed, proc in list(running.items()):
             ret = proc.poll()
@@ -251,27 +260,43 @@ def main():
                 screened.add(seed)
 
                 # Rename best.pt → screen_best.pt (preserve for analysis)
+                # Also copy best_neg.pt → screen_best_neg.pt so full training doesn't overwrite it
                 best_pt = ckpt_dir / "best.pt"
                 if best_pt.exists():
                     best_pt.rename(ckpt_dir / "screen_best.pt")
-                    best_pt_to_eval = ckpt_dir / "screen_best.pt"
                 else:
                     log(seed, "screen", "NO_CKPT")
                     rejected.add(seed)
                     continue
+                best_neg_pt = ckpt_dir / "best_neg.pt"
+                if best_neg_pt.exists():
+                    shutil.copy2(best_neg_pt, ckpt_dir / "screen_best_neg.pt")
+
+                # Use screen_best_neg.pt (lowest OOS-neg during screen) for qualification.
+                # Falls back to screen_best.pt if not available.
+                screen_best_neg = ckpt_dir / "screen_best_neg.pt"
+                using_best_neg = screen_best_neg.exists()
+                best_pt_to_eval = screen_best_neg if using_best_neg else ckpt_dir / "screen_best.pt"
 
                 try:
                     ev = val_eval_quick(best_pt_to_eval, args.val_data, args.screen_val_windows)
-                    neg_pct = ev["neg"] / ev["n"]
                     pass_val = ev["neg"] <= screen_threshold
-                    pass_ret = ev["best_return"] <= args.max_best_return
-                    if pass_val and pass_ret:
+                    # max_best_return only applies to screen_best.pt (in-sample return as fraction).
+                    # For screen_best_neg.pt, best_return stores val_med (pct) — skip this filter.
+                    pass_ret = True if using_best_neg else (ev["best_return"] <= args.max_best_return)
+                    pass_med = ev["med"] >= args.min_screen_med
+                    pass_trades = ev["trades_avg"] >= args.min_screen_trades
+                    if pass_val and pass_ret and pass_med and pass_trades:
                         qualified.add(seed)
-                        log(seed, "screen", "QUALIFIED", ev["neg"], ev["med"], ev["best_return"], ev["global_step"])
+                        log(seed, "screen", "QUALIFIED", ev["neg"], ev["med"], ev["best_return"], ev["global_step"], ev["trades_avg"])
                     else:
                         rejected.add(seed)
-                        reason = f"{'HIGH_RET' if not pass_ret else 'HIGH_NEG'}"
-                        log(seed, "screen", f"REJECTED_{reason}", ev["neg"], ev["med"], ev["best_return"], ev["global_step"])
+                        reasons = []
+                        if not pass_val: reasons.append("HIGH_NEG")
+                        if not pass_ret: reasons.append("HIGH_RET")
+                        if not pass_med: reasons.append("LOW_MED")
+                        if not pass_trades: reasons.append("LOW_TRADES")
+                        log(seed, "screen", f"REJECTED_{'_'.join(reasons)}", ev["neg"], ev["med"], ev["best_return"], ev["global_step"], ev["trades_avg"])
                 except Exception as e:
                     print(f"  seed={seed}: error evaluating: {e}")
                     rejected.add(seed)
@@ -279,10 +304,32 @@ def main():
         for seed in finished_screen:
             del running[seed]
 
-        # Launch full training for qualified seeds
-        for seed in list(qualified):
+        # --- Step 3: check completed full trainings ---
+        for seed, proc in list(running_full.items()):
+            ret = proc.poll()
+            if ret is not None:
+                del running_full[seed]
+                done.add(seed)
+                ckpt_dir = ckpt_root / f"{args.run_tag}_s{seed}"
+                try:
+                    best_pt = ckpt_dir / "best.pt"
+                    if best_pt.exists():
+                        ev = val_eval_quick(best_pt, args.val_data, args.screen_val_windows)
+                        log(seed, "full", "DONE", ev["neg"], ev["med"], ev["best_return"], ev["global_step"], ev["trades_avg"])
+                except Exception as e:
+                    print(f"  seed={seed}: error evaluating final: {e}")
+                    log(seed, "full", "DONE_NO_EVAL")
+
+        # --- Step 4: launch full training for qualified seeds (priority over screening) ---
+        # Caps at max_full_concurrent to leave ≥1 slot for screening
+        for seed in sorted(qualified):
             if seed in done or seed in running_full:
                 continue
+            if len(running_full) >= max_full_concurrent:
+                break
+            total_active = len(running) + len(running_full)
+            if total_active >= args.gpu_slots:
+                break
             ckpt_dir = ckpt_root / f"{args.run_tag}_s{seed}"
             screen_best = ckpt_dir / "screen_best.pt"
             remaining_steps = args.full_steps - args.screen_steps
@@ -306,21 +353,28 @@ def main():
             running_full[seed] = proc
             print(f"  Launched FULL training seed={seed} (PID {proc.pid})", flush=True)
 
-        # Check full training processes
-        for seed, proc in list(running_full.items()):
-            ret = proc.poll()
-            if ret is not None:
-                del running_full[seed]
-                done.add(seed)
-                ckpt_dir = ckpt_root / f"{args.run_tag}_s{seed}"
-                try:
-                    best_pt = ckpt_dir / "best.pt"
-                    if best_pt.exists():
-                        ev = val_eval_quick(best_pt, args.val_data, args.screen_val_windows)
-                        log(seed, "full", "DONE", ev["neg"], ev["med"], ev["best_return"], ev["global_step"])
-                except Exception as e:
-                    print(f"  seed={seed}: error evaluating final: {e}")
-                    log(seed, "full", "DONE_NO_EVAL")
+        # --- Step 5: launch new screening jobs (fill remaining slots) ---
+        total_active = len(running) + len(running_full)
+        while seed_queue and total_active < args.gpu_slots:
+            seed = seed_queue[0]
+            ckpt_dir = ckpt_root / f"{args.run_tag}_s{seed}"
+            ckpt_dir.mkdir(parents=True, exist_ok=True)
+            # (Already-done/already-screened seeds were removed in step 1 — launch screen directly)
+            seed_queue.pop(0)
+            extra = args.extra_train_args.split() if args.extra_train_args.strip() else None
+            screen_neg_thresh = int(0.9 * args.screen_val_windows)  # stop screen if >90% neg
+            cmd = build_train_cmd(
+                seed, ckpt_dir, args.data, args.val_data, args.screen_steps,
+                trade_penalty=args.trade_penalty, ent_coef=args.ent_coef,
+                val_neg_threshold=screen_neg_thresh,
+                val_neg_patience=3,
+                extra_args=extra,
+            )
+            logfile = open(ckpt_dir / "screen.log", "w")
+            proc = subprocess.Popen(cmd, stdout=logfile, stderr=subprocess.STDOUT, cwd=str(Path(__file__).parent.parent))
+            running[seed] = proc
+            total_active += 1
+            print(f"  Launched screening seed={seed} (PID {proc.pid})", flush=True)
 
         total_active = len(running) + len(running_full)
         print(f"  Status: {len(seed_queue)} queued, {len(running)} screening, {len(running_full)} full-training, "

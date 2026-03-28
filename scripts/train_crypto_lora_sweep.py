@@ -53,6 +53,24 @@ class ConsistencyMetrics:
         return self.mae_percent_mean + 0.5 * self.mae_percent_std + 0.3 * (self.mae_percent_max - self.mae_percent_mean)
 
 
+def resolve_data_path(symbol: str, data_root: Path) -> Path:
+    """Resolve the CSV data path for a symbol, supporting mixed directory layouts.
+
+    Checks for the file in a ``stocks/`` subdirectory first (mixed-asset
+    roots that co-locate crypto and equity data), then falls back to the
+    root directory directly.
+    """
+    candidates = [
+        data_root / "stocks" / f"{symbol}.csv",
+        data_root / f"{symbol}.csv",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    # Return the flat path as the default even if it doesn't exist yet
+    return data_root / f"{symbol}.csv"
+
+
 def load_hourly_frame(csv_path: Path) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
