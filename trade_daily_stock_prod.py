@@ -62,7 +62,8 @@ DEFAULT_CHECKPOINT = "pufferlib_market/prod_ensemble/tp10.pt"
 # Baseline exhaustive (encoder_norm correct): 0/111 neg, med=50.9%, p10=19.2%, worst=7.9%
 # ENCODER_NORM NOTE: 10/15 models use encoder_norm; production inference.py applies it correctly
 # 16-model bar: 16-model exhaustive p10 >= 19.2% @fill_bps=5 (encoder_norm-correct methodology)
-# REJECTED: s2655 (p10 drops), s2206 (delta=-0.9%), resmlp_a40, s28, tp03, s241, s541, s310, stock_ent_05
+# REJECTED: s2655 (p10 drops), s2206 (-0.9%), resmlp_a40, s28, tp03, s241, s541, s310, stock_ent_05
+# REJECTED (high in-sample return = aggressive overfit): s2793 (-42.2%), s2815 (-43.5%), s2099 (-29.1%), s2118 (-27.1%), s2247 (-20.9%), s2695 (-24.7%)
 DEFAULT_EXTRA_CHECKPOINTS = [
     "pufferlib_market/prod_ensemble/s15.pt",
     "pufferlib_market/prod_ensemble/s36.pt",
