@@ -11,12 +11,11 @@
 - **LIVE account**: supervisor `unified-stock-trader` is active; equity **$38,954.44**, cash **$38,954.44**, buying power **$77,908.88**, last_equity **$39,090.40**.
 - **LIVE positions/orders**: no stock positions are open; only dust in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD` remains. There are currently **no open orders**.
 - **LIVE duplicate-order guard (2026-03-27 20:31 UTC)**: systemd unit `alpaca-cancel-multi-orders.service` is installed and enabled with `PAPER=0`; `journalctl` confirms it initialized the **LIVE** Alpaca client and is polling for duplicate flat-position opening orders.
-- **LIVE daily-rl-trader**: 12-model ensemble (s2617 added 2026-03-28 19:16 UTC), sleeping until Mon 2026-03-30 market open; PID 105225
+- **LIVE daily-rl-trader**: 13-model ensemble (s2033 added 2026-03-28 19:26 UTC), sleeping until Mon 2026-03-30 market open; PID 238654
   - s735 screen_best was deleted from disk (2026-03-28); replaced with s1731 screen_best (neg=7, update=61)
-  - s1523 screen_best: 11th member (+4.6% p10, seed=1523 retrain)
-  - s2617 screen_best: 12th member (+2.0% p10, seed=2617, neg=2, med=16.95%)
-  - **12-model exhaustive (111 windows): 0/111 neg, med=51.3%, p10=43.3%** @fee=10bps,fill=5bps
-  - 13-model bar: p10 ≥ 43.3% @fill_bps=5
+  - s1523: 11th member (+4.6%), s2617: 12th member (+2.0%), s2033: 13th member (+2.6%)
+  - **13-model exhaustive (111 windows): 0/111 neg, med=55.1%, p10=45.9%** @fee=10bps,fill=5bps
+  - 14-model bar: p10 ≥ 45.9% @fill_bps=5
 
 ### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- FIXED (pending restart)
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`
@@ -156,7 +155,8 @@
   - 9-model (s735 lost, +s1726):  med=60.7%, p10=41.1%  (2026-03-28) — after s735 deletion
   - 10-model +s1731 (replaces s735): med=59.1%, p10=45.1%  (2026-03-28)
   - 11-model +s1523:             med=50.7%, p10=41.4%  (2026-03-28)
-  - **12-model +s2617:           med=51.3%, p10=43.3%  (2026-03-28) CURRENT**
+  - 12-model +s2617:             med=51.3%, p10=43.3%  (2026-03-28)
+  - **13-model +s2033:           med=55.1%, p10=45.9%  (2026-03-28) CURRENT**
   - [REJECTED] 7-model +resmlp_a40: med=57.2%, p10=42.1% (-3.3% p10)
   - [REJECTED] 7-model +s28_scan: med=55.9%, p10=41.3% (-4.1% p10)
 - **DEFAULT_EXTRA_CHECKPOINTS** (in `trade_daily_stock_prod.py`):
@@ -171,6 +171,7 @@
   - `stocks12_s1726_screen/screen_best.pt`
   - `stocks12_s1523_screen/screen_best.pt` (11th member, +4.6% p10)
   - `stocks12_s2617_screen/screen_best.pt` (12th member, +2.0% p10, seed=2617 neg=2)
+  - `stocks12_s2033_screen/screen_best.pt` (13th member, +2.6% p10, seed=2033 neg=5)
 - **Standalone performance of ensemble members**:
   - tp10: 5/111 neg, med=0.0% (conservative anchor — votes cash)
   - s15: 0/111 neg, med=+30.0% (phase-transition model, seed=15)
