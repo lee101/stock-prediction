@@ -220,14 +220,17 @@ def main():
                 continue
             # Use screen_best_neg.pt (OOS-optimal screen checkpoint) if available, else screen_best.pt
             screen_best_neg = ckpt_dir / "screen_best_neg.pt"
-            screen_ckpt = screen_best_neg if screen_best_neg.exists() else ckpt_dir / "screen_best.pt"
+            using_best_neg = screen_best_neg.exists()
+            screen_ckpt = screen_best_neg if using_best_neg else ckpt_dir / "screen_best.pt"
             if screen_ckpt.exists() and seed not in screened:
                 # Already screened, evaluate and decide
                 try:
                     ev = val_eval_quick(screen_ckpt, args.val_data, args.screen_val_windows)
                     screened.add(seed)
                     pass_val = ev["neg"] <= screen_threshold
-                    pass_ret = ev["best_return"] <= args.max_best_return
+                    # max_best_return only applies to screen_best.pt (in-sample return as fraction).
+                    # For screen_best_neg.pt, best_return stores val_med (pct) — skip this filter.
+                    pass_ret = True if using_best_neg else (ev["best_return"] <= args.max_best_return)
                     pass_med = ev["med"] >= args.min_screen_med
                     pass_trades = ev["trades_avg"] >= args.min_screen_trades
                     if pass_val and pass_ret and pass_med and pass_trades:
@@ -287,12 +290,15 @@ def main():
                 # Use screen_best_neg.pt (lowest OOS-neg during screen) for qualification.
                 # Falls back to screen_best.pt if not available.
                 screen_best_neg = ckpt_dir / "screen_best_neg.pt"
-                best_pt_to_eval = screen_best_neg if screen_best_neg.exists() else ckpt_dir / "screen_best.pt"
+                using_best_neg = screen_best_neg.exists()
+                best_pt_to_eval = screen_best_neg if using_best_neg else ckpt_dir / "screen_best.pt"
 
                 try:
                     ev = val_eval_quick(best_pt_to_eval, args.val_data, args.screen_val_windows)
                     pass_val = ev["neg"] <= screen_threshold
-                    pass_ret = ev["best_return"] <= args.max_best_return
+                    # max_best_return only applies to screen_best.pt (in-sample return as fraction).
+                    # For screen_best_neg.pt, best_return stores val_med (pct) — skip this filter.
+                    pass_ret = True if using_best_neg else (ev["best_return"] <= args.max_best_return)
                     pass_med = ev["med"] >= args.min_screen_med
                     pass_trades = ev["trades_avg"] >= args.min_screen_trades
                     if pass_val and pass_ret and pass_med and pass_trades:
