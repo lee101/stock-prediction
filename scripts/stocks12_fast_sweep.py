@@ -218,7 +218,9 @@ def main():
                 print(f"  seed={seed}: already has final.pt, skipping")
                 done.add(seed)
                 continue
-            screen_ckpt = ckpt_dir / "screen_best.pt"
+            # Use screen_best_neg.pt (OOS-optimal screen checkpoint) if available, else screen_best.pt
+            screen_best_neg = ckpt_dir / "screen_best_neg.pt"
+            screen_ckpt = screen_best_neg if screen_best_neg.exists() else ckpt_dir / "screen_best.pt"
             if screen_ckpt.exists() and seed not in screened:
                 # Already screened, evaluate and decide
                 try:
@@ -270,14 +272,22 @@ def main():
                 screened.add(seed)
 
                 # Rename best.pt → screen_best.pt (preserve for analysis)
+                # Also rename best_neg.pt → screen_best_neg.pt so full training doesn't overwrite it
                 best_pt = ckpt_dir / "best.pt"
                 if best_pt.exists():
                     best_pt.rename(ckpt_dir / "screen_best.pt")
-                    best_pt_to_eval = ckpt_dir / "screen_best.pt"
                 else:
                     log(seed, "screen", "NO_CKPT")
                     rejected.add(seed)
                     continue
+                best_neg_pt = ckpt_dir / "best_neg.pt"
+                if best_neg_pt.exists():
+                    shutil.copy2(best_neg_pt, ckpt_dir / "screen_best_neg.pt")
+
+                # Use screen_best_neg.pt (lowest OOS-neg during screen) for qualification.
+                # Falls back to screen_best.pt if not available.
+                screen_best_neg = ckpt_dir / "screen_best_neg.pt"
+                best_pt_to_eval = screen_best_neg if screen_best_neg.exists() else ckpt_dir / "screen_best.pt"
 
                 try:
                     ev = val_eval_quick(best_pt_to_eval, args.val_data, args.screen_val_windows)
