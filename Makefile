@@ -1,23 +1,6 @@
-.PHONY: build clean test export train setup setup-cutedsl build-c
+.PHONY: build clean test export train
 
 PYTHON ?= python
-
-setup: setup-cutedsl
-	source .venv313/bin/activate && uv pip install -e ".[dev]"
-
-setup-cutedsl:
-	@if [ ! -L cutedsl ]; then \
-		if [ -d ../cutedsl ]; then \
-			ln -s ../cutedsl cutedsl && echo "Created cutedsl symlink"; \
-		else \
-			echo "WARNING: ../cutedsl not found. Clone it: git clone https://github.com/lee101/cutedsl ../cutedsl"; \
-		fi \
-	else \
-		echo "cutedsl symlink already exists"; \
-	fi
-
-build-c:
-	cd pufferlib_market && source ../.venv313/bin/activate && python setup.py build_ext --inplace
 
 build:
 	cd .. && $(PYTHON) pufferlib_market/setup.py build_ext --inplace

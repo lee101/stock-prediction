@@ -183,6 +183,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--num-steps", type=int, default=800)
     parser.add_argument("--prediction-length", type=int, default=24)
     parser.add_argument("--lora-r", type=int, default=16)
+    parser.add_argument("--lora-seeds", default="1337")
+    parser.add_argument("--promote-selection-strategy", default="stable_family", choices=("best_single", "stable_family"))
+    parser.add_argument("--promote-stability-penalty", type=float, default=0.25)
+    parser.add_argument("--promote-min-family-size", type=int, default=2)
     parser.add_argument("--train-hours", type=int, default=24 * 180)
     parser.add_argument("--val-hours", type=int, default=24 * 60)
     parser.add_argument("--gap-hours", type=int, default=0)
@@ -207,6 +211,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     preaugs = [str(item).strip() for item in parse_csv_tokens(args.preaugs)]
     context_lengths = [int(item) for item in parse_csv_tokens(args.context_lengths, cast=int)]
     learning_rates = [float(item) for item in parse_csv_tokens(args.learning_rates, cast=float)]
+    lora_seeds = [int(item) for item in parse_csv_tokens(args.lora_seeds, cast=int)]
     descriptions = [str(item).strip() for item in parse_csv_tokens(args.descriptions)]
 
     local_earliest, local_latest = compute_hourly_overlap_bounds(
@@ -240,6 +245,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         num_steps=int(args.num_steps),
         prediction_length=int(args.prediction_length),
         lora_r=int(args.lora_r),
+        lora_seeds=lora_seeds,
         feature_lag=int(args.feature_lag),
         min_coverage=float(args.min_coverage),
         time_budget=int(args.time_budget),
@@ -248,6 +254,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         forecast_lookback_hours=args.forecast_lookback_hours,
         earliest_common_override=effective_earliest,
         latest_common_override=effective_latest,
+        promote_selection_strategy=str(args.promote_selection_strategy),
+        promote_stability_penalty=float(args.promote_stability_penalty),
+        promote_min_family_size=int(args.promote_min_family_size),
     )
     pipeline_script = render_remote_pipeline_script(
         remote_dir=str(args.remote_dir),

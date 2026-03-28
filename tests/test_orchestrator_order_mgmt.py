@@ -11,9 +11,13 @@ All Alpaca API calls are mocked so these tests run without credentials.
 
 from __future__ import annotations
 
+import importlib
 import json
+import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional
 from unittest.mock import MagicMock, patch
 
@@ -73,6 +77,35 @@ def _fake_trade_plan(direction="long", buy_price=100.0, sell_price=101.0,
     plan.confidence = confidence
     plan.allocation_pct = allocation_pct
     return plan
+
+
+@pytest.fixture(autouse=True)
+def _patch_alpaca_order_types(monkeypatch):
+    import alpaca.trading.enums as enums
+    import alpaca.trading.requests as requests
+
+    class _OrderSide:
+        BUY = "buy"
+        SELL = "sell"
+
+    class _TimeInForce:
+        GTC = "gtc"
+        IOC = "ioc"
+
+    class _QueryOrderStatus:
+        OPEN = "open"
+
+    def _limit_order_request(**kwargs):
+        return SimpleNamespace(**kwargs)
+
+    def _get_orders_request(**kwargs):
+        return SimpleNamespace(**kwargs)
+
+    monkeypatch.setattr(enums, "OrderSide", _OrderSide, raising=False)
+    monkeypatch.setattr(enums, "TimeInForce", _TimeInForce, raising=False)
+    monkeypatch.setattr(enums, "QueryOrderStatus", _QueryOrderStatus, raising=False)
+    monkeypatch.setattr(requests, "LimitOrderRequest", _limit_order_request, raising=False)
+    monkeypatch.setattr(requests, "GetOrdersRequest", _get_orders_request, raising=False)
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +336,60 @@ class TestWatcherPositionCheckLogging:
         watcher = self._make_watcher(alpaca)
         assert watcher._check_position_exists("BTCUSD") is True
 
+    def test_buy_resolution_uses_actual_partial_fill_qty(self):
+        """Watcher must size the TP sell to the actual filled qty, not the target qty."""
+        from unified_orchestrator.alpaca_watcher import AlpacaCryptoWatcher, OrderPair
+
+        alpaca = MagicMock()
+        alpaca.get_orders.return_value = []
+        partial = MagicMock()
+        partial.symbol = "BTC/USD"
+        partial.qty = 0.0004
+        alpaca.get_all_positions.return_value = [partial]
+        alpaca.submit_order.return_value = MagicMock(id="sell-001")
+
+        pair = OrderPair(
+            symbol="BTCUSD",
+            buy_price=50_000.0,
+            sell_price=51_000.0,
+            target_qty=0.001,
+            buy_order_id="buy-001",
+        )
+        watcher = AlpacaCryptoWatcher(alpaca_client=alpaca, pairs=[pair], dry_run=False)
+
+        watcher._poll_orders()
+
+        assert pair.buy_order_id is None
+        assert pair.sell_order_id == "sell-001"
+        assert pair.current_qty == pytest.approx(0.0004)
+        submit_req = alpaca.submit_order.call_args.args[0]
+        assert submit_req.qty == pytest.approx(0.00039999)
+        assert watcher.fill_log[0]["qty"] == pytest.approx(0.0004)
+
+    def test_sell_resolution_defers_when_position_state_unknown(self):
+        """Watcher must not clear sell tracking when the position API errored."""
+        from unified_orchestrator.alpaca_watcher import AlpacaCryptoWatcher, OrderPair
+
+        alpaca = MagicMock()
+        alpaca.get_orders.return_value = []
+        alpaca.get_all_positions.side_effect = RuntimeError("position api unavailable")
+
+        pair = OrderPair(
+            symbol="BTCUSD",
+            buy_price=50_000.0,
+            sell_price=51_000.0,
+            target_qty=0.001,
+            current_qty=0.001,
+            sell_order_id="sell-001",
+        )
+        watcher = AlpacaCryptoWatcher(alpaca_client=alpaca, pairs=[pair], dry_run=True)
+
+        watcher._poll_orders()
+
+        assert pair.sell_order_id == "sell-001"
+        assert pair.oscillations == 0
+        assert watcher.fill_log == []
+
 
 # ---------------------------------------------------------------------------
 # (d) Trailing stop persistence — stale peaks reset on restart
@@ -499,12 +586,28 @@ class TestValidatePlanSafety:
 class TestReadPendingFills:
     """Malformed lines in fill_events.jsonl must be skipped, not crash."""
 
+    def test_fill_events_path_follows_state_dir_env(self, monkeypatch, tmp_path):
+        package = sys.modules.get("unified_orchestrator")
+        original = sys.modules.get("unified_orchestrator.conditional_orders")
+
+        monkeypatch.setenv("STATE_DIR", str(tmp_path))
+        sys.modules.pop("unified_orchestrator.conditional_orders", None)
+        reloaded = importlib.import_module("unified_orchestrator.conditional_orders")
+
+        try:
+            assert reloaded.FILL_EVENTS_FILE == tmp_path / "fill_events.jsonl"
+        finally:
+            if original is not None:
+                sys.modules["unified_orchestrator.conditional_orders"] = original
+                if package is not None:
+                    setattr(package, "conditional_orders", original)
+
     def test_malformed_line_skipped(self, tmp_path):
         from unified_orchestrator import conditional_orders as co
 
         fill_file = tmp_path / "fill_events.jsonl"
         good = json.dumps({
-            "timestamp": "2026-03-20T10:00:00+00:00",
+            "timestamp": "2026-03-28T10:00:00+00:00",
             "plan_id": "p1",
             "step_id": "s1",
             "broker": "alpaca",
@@ -525,3 +628,98 @@ class TestReadPendingFills:
 
         assert len(events) == 1, "Only the valid line should be returned"
         assert events[0]["symbol"] == "BTCUSD"
+
+    def test_malformed_timestamp_skipped(self, tmp_path):
+        from unified_orchestrator import conditional_orders as co
+
+        fill_file = tmp_path / "fill_events.jsonl"
+        good = json.dumps({
+            "timestamp": "2026-03-28T10:00:00+00:00",
+            "plan_id": "p1",
+            "step_id": "s1",
+            "broker": "alpaca",
+            "action": "buy",
+            "symbol": "BTCUSD",
+            "fill_price": 50000,
+            "fill_qty": 0.001,
+            "status": "filled",
+        })
+        bad_ts = json.dumps({
+            "timestamp": "not-a-real-time",
+            "plan_id": "p2",
+            "step_id": "s2",
+            "broker": "alpaca",
+            "action": "sell",
+            "symbol": "ETHUSD",
+            "fill_price": 2000,
+            "fill_qty": 0.5,
+            "status": "filled",
+        })
+        fill_file.write_text(good + "\n" + bad_ts + "\n")
+
+        original = co.FILL_EVENTS_FILE
+        co.FILL_EVENTS_FILE = fill_file
+        try:
+            events = co.read_pending_fills(since_minutes=9999)
+        finally:
+            co.FILL_EVENTS_FILE = original
+
+        assert len(events) == 1
+        assert events[0]["step_id"] == "s1"
+
+    def test_recent_fills_only_return_tail_window_in_chronological_order(self, tmp_path, monkeypatch):
+        from unified_orchestrator import conditional_orders as co
+
+        fill_file = tmp_path / "fill_events.jsonl"
+        rows = [
+            {
+                "timestamp": "2026-03-28T09:30:00+00:00",
+                "plan_id": "p-old",
+                "step_id": "s-old",
+                "broker": "alpaca",
+                "action": "sell",
+                "symbol": "ETHUSD",
+                "fill_price": 2000.0,
+                "fill_qty": 0.5,
+                "status": "filled",
+            },
+            {
+                "timestamp": "2026-03-28T11:10:00+00:00",
+                "plan_id": "p-new-1",
+                "step_id": "s-new-1",
+                "broker": "alpaca",
+                "action": "buy",
+                "symbol": "BTCUSD",
+                "fill_price": 50000.0,
+                "fill_qty": 0.001,
+                "status": "filled",
+            },
+            {
+                "timestamp": "2026-03-28T11:45:00+00:00",
+                "plan_id": "p-new-2",
+                "step_id": "s-new-2",
+                "broker": "binance",
+                "action": "sell",
+                "symbol": "SOLUSD",
+                "fill_price": 150.0,
+                "fill_qty": 3.0,
+                "status": "filled",
+            },
+        ]
+        fill_file.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+
+        class _FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                current = cls(2026, 3, 28, 12, 0, tzinfo=timezone.utc)
+                return current if tz is not None else current.replace(tzinfo=None)
+
+        original = co.FILL_EVENTS_FILE
+        monkeypatch.setattr(co, "datetime", _FrozenDatetime)
+        co.FILL_EVENTS_FILE = fill_file
+        try:
+            events = co.read_pending_fills(since_minutes=60)
+        finally:
+            co.FILL_EVENTS_FILE = original
+
+        assert [event["step_id"] for event in events] == ["s-new-1", "s-new-2"]

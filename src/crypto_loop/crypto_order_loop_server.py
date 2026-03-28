@@ -9,10 +9,10 @@ getting the current orders
 
 """
 import csv
-import time
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from threading import Thread
+from threading import Event, Lock, Thread
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from fastapi import FastAPI, Query
@@ -32,8 +32,6 @@ dynamic_config_ = data_dir / "dynamic_config"
 dynamic_config_.mkdir(exist_ok=True, parents=True)
 
 crypto_symbol_to_order = FlatShelf(str(dynamic_config_ / "crypto_symbol_to_order.db.json"))
-
-app = FastAPI()
 
 symbols = [
     "BTCUSD",
@@ -241,7 +239,7 @@ def _build_recommendations(
 
 
 def crypto_order_loop():
-    while True:
+    while not _thread_stop_event.is_set():
         try:
             # get all data for symbols
             for symbol in symbols:
@@ -266,11 +264,48 @@ def crypto_order_loop():
                         logger.error(f"order {order}")
         except Exception as e:
             logger.error(e)
-        time.sleep(10)
+        _thread_stop_event.wait(10)
 
 
-thread_loop = Thread(target=crypto_order_loop, daemon=True)
-thread_loop.start()
+_thread_lock = Lock()
+_thread_stop_event = Event()
+thread_loop: Optional[Thread] = None
+
+
+def ensure_crypto_order_loop_started() -> Optional[Thread]:
+    global thread_loop
+    with _thread_lock:
+        if thread_loop is not None and thread_loop.is_alive():
+            return thread_loop
+        _thread_stop_event.clear()
+        thread_loop = Thread(target=crypto_order_loop, daemon=True, name="crypto-order-loop")
+        thread_loop.start()
+        return thread_loop
+
+
+def stop_crypto_order_loop(timeout: float = 1.0) -> None:
+    global thread_loop
+    with _thread_lock:
+        running_thread = thread_loop
+        if running_thread is None:
+            return
+        _thread_stop_event.set()
+    running_thread.join(timeout=timeout)
+    with _thread_lock:
+        if thread_loop is running_thread and not running_thread.is_alive():
+            thread_loop = None
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    ensure_crypto_order_loop_started()
+    try:
+        yield
+    finally:
+        stop_crypto_order_loop()
+
+
+app = FastAPI(lifespan=_lifespan)
 
 
 class OrderRequest(BaseModel):

@@ -1,129 +1,116 @@
 from __future__ import annotations
 
+import os
+import time
 from collections import defaultdict
-from pathlib import Path
-import sys
-from time import sleep
-from typing import Iterable, Sequence
-
-ROOT = Path(__file__).resolve().parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+from datetime import datetime, timezone
+from typing import Callable, Iterable, Sequence
 
 from loguru import logger
 
-from src.hourly_trader_utils import infer_working_order_kind
+import alpaca_wrapper
 from src.symbol_utils import is_crypto_symbol
 
-
-def _normalize_symbol(value: object) -> str:
-    return str(value or "").replace("/", "").replace("-", "").upper()
+POLL_SECONDS = max(float(os.getenv("CANCEL_MULTI_ORDERS_POLL_SECONDS", "30")), 1.0)
 
 
-def _float_attr(value: object, *names: str) -> float:
-    for name in names:
-        raw = getattr(value, name, None)
-        if raw in (None, ""):
+def _normalize_symbol(symbol: object) -> str:
+    return str(symbol or "").replace("/", "").replace("-", "").upper()
+
+
+def _normalize_side(side: object) -> str:
+    raw = getattr(side, "value", side)
+    return str(raw or "").strip().lower()
+
+
+def _coerce_float(value: object) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _order_created_at(order: object) -> datetime:
+    for field in ("created_at", "submitted_at", "updated_at"):
+        value = getattr(order, field, None)
+        if value is None:
             continue
+        if isinstance(value, datetime):
+            return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
         try:
-            return float(raw)
-        except (TypeError, ValueError):
+            parsed = datetime.fromisoformat(str(value))
+        except ValueError:
             continue
-    return 0.0
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+    return datetime.min.replace(tzinfo=timezone.utc)
 
 
-def _position_is_flat(position: object | None) -> bool:
-    if position is None:
-        return True
-
-    symbol = _normalize_symbol(getattr(position, "symbol", None))
-    qty = abs(_float_attr(position, "qty"))
+def _position_is_flat(position: object) -> bool:
+    symbol = _normalize_symbol(getattr(position, "symbol", ""))
+    qty = abs(_coerce_float(getattr(position, "qty", 0.0)))
+    price = _coerce_float(getattr(position, "current_price", 0.0))
+    notional = qty * price
     if is_crypto_symbol(symbol):
-        market_value = abs(_float_attr(position, "market_value", "usd"))
-        current_price = abs(_float_attr(position, "current_price", "avg_entry_price"))
-        if market_value > 0.0:
-            return market_value < 1.0
-        if current_price > 0.0:
-            return qty * current_price < 1.0
-        return qty < 1e-8
-    return qty < 1.0
-
-
-def _entry_duplicate_groups(
-    orders: Sequence[object],
-    positions: Iterable[object],
-) -> dict[tuple[str, str], list[object]]:
-    positions_by_symbol = {
-        _normalize_symbol(getattr(position, "symbol", None)): position
-        for position in positions
-        if _normalize_symbol(getattr(position, "symbol", None))
-    }
-    duplicates: dict[tuple[str, str], list[object]] = defaultdict(list)
-    for order in orders:
-        symbol = _normalize_symbol(getattr(order, "symbol", None))
-        side = str(getattr(order, "side", "") or "").strip().lower()
-        if not symbol or side not in {"buy", "sell"}:
-            continue
-        position = positions_by_symbol.get(symbol)
-        if not _position_is_flat(position):
-            continue
-        position_qty = _float_attr(position, "qty")
-        kind = infer_working_order_kind(side=side, position_qty=position_qty)
-        if kind != "entry":
-            continue
-        duplicates[(symbol, side)].append(order)
-    return {
-        key: value
-        for key, value in duplicates.items()
-        if len(value) > 1
-    }
-
-
-def _order_sort_key(order: object) -> tuple[int, str]:
-    created_at = getattr(order, "created_at", None)
-    if created_at is None:
-        return (0, "")
-    return (1, str(created_at))
+        return qty < 1e-8 or notional < 1.0
+    return qty < 1.0 and notional < 1.0
 
 
 def cancel_duplicate_opening_orders(
     orders: Sequence[object],
-    positions: Iterable[object],
+    positions: Sequence[object],
     *,
-    cancel_order_fn,
+    cancel_order_fn: Callable[[object], object],
 ) -> list[str]:
+    positions_by_symbol = {
+        _normalize_symbol(getattr(position, "symbol", "")): position
+        for position in positions
+    }
+    duplicate_groups: dict[tuple[str, str], list[object]] = defaultdict(list)
+
+    for order in orders:
+        symbol = _normalize_symbol(getattr(order, "symbol", ""))
+        if not symbol:
+            continue
+        position = positions_by_symbol.get(symbol)
+        if position is not None and not _position_is_flat(position):
+            continue
+        side = _normalize_side(getattr(order, "side", ""))
+        if side not in {"buy", "sell"}:
+            continue
+        duplicate_groups[(symbol, side)].append(order)
+
     cancelled_ids: list[str] = []
-    for (symbol, side), symbol_orders in sorted(_entry_duplicate_groups(orders, positions).items()):
-        symbol_orders = sorted(symbol_orders, key=_order_sort_key)
-        for order in symbol_orders[:-1]:
-            order_id = str(getattr(order, "id", ""))
-            logger.info("canceling duplicate opening order {} for {} {}", order_id, symbol, side)
+    for (_symbol, _side), grouped_orders in duplicate_groups.items():
+        if len(grouped_orders) <= 1:
+            continue
+        grouped_orders = sorted(grouped_orders, key=_order_created_at)
+        for order in grouped_orders[:-1]:
             cancel_order_fn(order)
-            cancelled_ids.append(order_id)
+            cancelled_ids.append(str(getattr(order, "id", "")))
+
     return cancelled_ids
 
 
-def _load_broker_functions():
-    from alpaca_wrapper import cancel_order, get_all_positions, get_open_orders
-
-    return get_open_orders, get_all_positions, cancel_order
-
-
-def run_loop(*, poll_seconds: int = 5 * 60) -> None:
-    get_open_orders, get_all_positions, cancel_order_fn = _load_broker_functions()
-    while True:
-        orders = list(get_open_orders())
-        positions = list(get_all_positions())
-        cancel_duplicate_opening_orders(
-            orders,
-            positions,
-            cancel_order_fn=cancel_order_fn,
-        )
-        sleep(poll_seconds)
+def run_once() -> list[str]:
+    orders = list(alpaca_wrapper.get_orders())
+    positions = list(alpaca_wrapper.get_all_positions())
+    return cancel_duplicate_opening_orders(
+        orders,
+        positions,
+        cancel_order_fn=alpaca_wrapper.cancel_order,
+    )
 
 
 def main() -> None:
-    run_loop()
+    logger.info("Starting duplicate opening-order guard loop (poll={}s)", POLL_SECONDS)
+    while True:
+        try:
+            cancelled = run_once()
+            if cancelled:
+                logger.info("Cancelled duplicate opening orders: {}", cancelled)
+        except Exception as exc:
+            logger.exception("Duplicate opening-order guard failed: {}", exc)
+        time.sleep(POLL_SECONDS)
 
 
 if __name__ == "__main__":

@@ -66,6 +66,17 @@ else:
     ENTRY_EXIT_OPTIMIZER_BACKEND = "nevergrad" if HAS_NEVERGRAD else "scipy-direct"
 
 
+def _budget_aware_steps(default_steps: Tuple[int, ...], *, maxiter: int, popsize: int) -> Tuple[int, ...]:
+    budget = max(1, int(maxiter) * int(popsize))
+    if budget <= 96:
+        return (15, 7, 5)
+    if budget <= 160:
+        return (21, 11, 5)
+    if budget <= 240:
+        return (25, 13, 7)
+    return default_steps
+
+
 def optimize_entry_exit_multipliers(
     close_actual: torch.Tensor,
     positions: torch.Tensor,
@@ -100,6 +111,7 @@ def optimize_entry_exit_multipliers(
                 close_at_eod=close_at_eod,
                 trading_fee=trading_fee,
                 bounds=bounds,
+                steps=_budget_aware_steps(_ENTRY_EXIT_GRID_STEPS, maxiter=maxiter, popsize=popsize),
             )
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Torch grid search failed, falling back to Nevergrad/scipy: %s", exc)
@@ -201,6 +213,7 @@ def optimize_always_on_multipliers(
                 trading_fee=trading_fee,
                 is_crypto=is_crypto,
                 bounds=bounds,
+                steps=_budget_aware_steps(_ALWAYSON_GRID_STEPS, maxiter=maxiter, popsize=popsize),
             )
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("Torch grid search (always-on) failed, falling back: %s", exc)
@@ -322,6 +335,7 @@ def _grid_search_entry_exit_multipliers(
     close_at_eod: bool,
     trading_fee: Optional[float],
     bounds: Tuple[Tuple[float, float], Tuple[float, float]],
+    steps: Tuple[int, ...],
 ):
     if close_actual.numel() == 0:
         return 0.0, 0.0, 0.0
@@ -343,7 +357,7 @@ def _grid_search_entry_exit_multipliers(
             trading_fee=trading_fee,
         )
 
-    result = _multi_stage_grid_search(bounds, _ENTRY_EXIT_GRID_STEPS, evaluator, device=device, dtype=dtype)
+    result = _multi_stage_grid_search(bounds, steps, evaluator, device=device, dtype=dtype)
     if result is None:
         return None
 
@@ -376,6 +390,7 @@ def _grid_search_always_on_multipliers(
     trading_fee: Optional[float],
     is_crypto: bool,
     bounds: Tuple[Tuple[float, float], Tuple[float, float]],
+    steps: Tuple[int, ...],
 ):
     if close_actual.numel() == 0:
         return 0.0, 0.0, 0.0
@@ -412,7 +427,7 @@ def _grid_search_always_on_multipliers(
         )
         return buy_profit + sell_profit
 
-    result = _multi_stage_grid_search(bounds, _ALWAYSON_GRID_STEPS, evaluator, device=device, dtype=dtype)
+    result = _multi_stage_grid_search(bounds, steps, evaluator, device=device, dtype=dtype)
     if result is None:
         return None
 

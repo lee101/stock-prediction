@@ -11,7 +11,7 @@ import pandas as pd
 import requests
 from loguru import logger
 
-_REPO_ROOT = Path(__file__).resolve().parent
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 ORIGINAL_30 = [
     "BTC", "ETH", "SOL", "DOGE", "AVAX", "LINK", "AAVE", "LTC", "XRP", "DOT",
@@ -35,9 +35,7 @@ SYMBOLS = ORIGINAL_30 + EXPANDED_40
 DAILY_DIR = _REPO_ROOT / "trainingdata" / "train"
 HOURLY_DIR = _REPO_ROOT / "trainingdatahourlybinance"
 
-# Binance.com is geo-restricted in some regions (HTTP 451).
-# Binance.US works from US-based servers and has the same API.
-KLINES_URL = "https://api.binance.us/api/v3/klines"
+KLINES_URL = "https://api.binance.com/api/v3/klines"
 MAX_LIMIT = 1000
 
 
@@ -65,9 +63,6 @@ def _fetch_klines(symbol: str, interval: str, start_ms: int, end_ms: int) -> lis
                     logger.warning("{} rate limited, sleeping {}s", symbol, retry_after)
                     time.sleep(retry_after)
                     continue
-                if resp.status_code == 400:
-                    logger.warning("{} invalid symbol (400), skipping", symbol)
-                    return []
                 resp.raise_for_status()
                 break
             except requests.RequestException:

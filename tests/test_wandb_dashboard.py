@@ -48,11 +48,14 @@ def _make_run_dict(
     win_rate: float | None = 0.67,
     max_drawdown: float | None = -0.05,
     num_trades: float | None = 12.0,
+    train_return: float | None = None,
+    smooth_score: float | None = None,
     arch: str = "mlp",
     optimizer: str = "adamw",
     dataset: str = "crypto6",
     loss_curve: list[float] | None = None,
     val_return_curve: list[float] | None = None,
+    val_sortino_curve: list[float] | None = None,
     group: str | None = None,
     state: str = "finished",
 ) -> dict:
@@ -68,15 +71,18 @@ def _make_run_dict(
         },
         "config_raw": {},
         "val_return": val_return,
+        "train_return": train_return,
         "final_loss": final_loss,
         "steps": steps,
         "duration": duration,
         "loss_curve": loss_curve or [0.18, 0.12, 0.08, 0.05, 0.041],
         "val_return_curve": val_return_curve or [0.01, 0.03, 0.05, 0.08],
+        "val_sortino_curve": val_sortino_curve or [0.20, 0.55, 0.90, 1.42],
         "sortino": sortino,
         "win_rate": win_rate,
         "max_drawdown": max_drawdown,
         "num_trades": num_trades,
+        "smooth_score": smooth_score,
         "arch": arch,
         "optimizer": optimizer,
         "dataset": dataset,
@@ -93,6 +99,9 @@ def _make_wandb_run(
     config: dict | None = None,
     sortino: float | None = 1.42,
     win_rate: float | None = 0.67,
+    train_return: float | None = None,
+    max_drawdown: float | None = None,
+    smooth_score: float | None = None,
     group: str | None = None,
 ) -> MagicMock:
     run = MagicMock()
@@ -109,15 +118,21 @@ def _make_wandb_run(
         summary_data["val/sortino"] = sortino
     if win_rate is not None:
         summary_data["val/win_rate"] = win_rate
+    if train_return is not None:
+        summary_data["train/final_return"] = train_return
+    if max_drawdown is not None:
+        summary_data["val/max_drawdown"] = max_drawdown
+    if smooth_score is not None:
+        summary_data["smooth_score"] = smooth_score
     run.summary = summary_data
     run.config = config or {
         "hidden_size": 1024, "lr": 3e-4, "anneal_lr": True,
         "ent_coef": 0.05, "seed": 42,
     }
     run.history.return_value = [
-        {"train/policy_loss": 0.18, "train/return": 0.01},
-        {"train/policy_loss": 0.10, "train/return": 0.04},
-        {"train/policy_loss": 0.05, "train/return": 0.08},
+        {"train/policy_loss": 0.18, "train/return": 0.01, "val/return": 0.01, "val/sortino": 0.20},
+        {"train/policy_loss": 0.10, "train/return": 0.04, "val/return": 0.04, "val/sortino": 0.70},
+        {"train/policy_loss": 0.05, "train/return": 0.08, "val/return": val_return or 0.08, "val/sortino": sortino or 0.80},
     ]
     return run
 
@@ -409,6 +424,65 @@ class TestFetchRuns:
         assert result[0]["name"] == "high"
         assert result[1]["name"] == "low"
 
+    def test_fetch_can_sort_by_stability_score(self):
+        mod = _load_dashboard()
+        runs = [
+            _make_wandb_run(
+                run_id="r1",
+                name="overfit_run",
+                val_return=0.18,
+                train_return=0.90,
+                max_drawdown=-0.30,
+                smooth_score=-0.5,
+            ),
+            _make_wandb_run(
+                run_id="r2",
+                name="stable_run",
+                val_return=0.12,
+                train_return=0.16,
+                max_drawdown=-0.04,
+                smooth_score=0.8,
+            ),
+        ]
+        wandb_mock = _make_api_mock(runs)
+        result = mod.fetch_runs(
+            wandb=wandb_mock, project="stock", entity=None,
+            run_id=None, group=None, last_n=10, sort_by="stability_score",
+        )
+        assert result[0]["name"] == "stable_run"
+
+    def test_fetch_uses_local_summary_when_api_summary_blank(self, tmp_path, monkeypatch):
+        mod = _load_dashboard()
+        run = _make_wandb_run(
+            run_id="abc123",
+            name="local_fallback",
+            val_return=None,
+            policy_loss=None,
+            sortino=None,
+            win_rate=None,
+        )
+        run.summary = {"_runtime": 12.0, "_step": 321}
+
+        summary_dir = tmp_path / "wandb" / "run-20260328_000000-abc123" / "files"
+        summary_dir.mkdir(parents=True)
+        (summary_dir / "wandb-summary.json").write_text(
+            '{"val/return": 0.11, "val/sortino": 1.5, "train/final_return": 0.14}'
+        )
+        monkeypatch.setattr(mod._reader, "REPO", tmp_path)
+
+        result = mod.fetch_runs(
+            wandb=_make_api_mock([run]),
+            project="stock",
+            entity=None,
+            run_id=None,
+            group=None,
+            last_n=1,
+        )
+
+        assert result[0]["val_return"] == pytest.approx(0.11)
+        assert result[0]["sortino"] == pytest.approx(1.5)
+        assert result[0]["train_return"] == pytest.approx(0.14)
+
     def test_fetch_last_n_limits(self):
         mod = _load_dashboard()
         runs = [_make_wandb_run(run_id=f"r{i}", name=f"run{i}") for i in range(10)]
@@ -557,6 +631,17 @@ class TestFormattingHelpers:
         mod = _load_dashboard()
         assert mod._fmt_config({}) == "—"
 
+    def test_format_dashboard_shows_stability_and_gap(self):
+        mod = _load_dashboard()
+        runs = [
+            _make_run_dict(name="stableish", val_return=0.10, train_return=0.14, smooth_score=0.5),
+        ]
+        for run in runs:
+            run.update(mod.compute_stability_metrics(run))
+        out = mod.format_dashboard(runs, project="stock", entity=None)
+        assert "Stability" in out
+        assert "Train/val gap" in out
+
 
 # ---------------------------------------------------------------------------
 # Tests: _group_runs and _best_in_group
@@ -625,6 +710,7 @@ class TestCLIArgs:
         assert not args.compare_archs
         assert not args.compare_optimizers
         assert not args.compare_datasets
+        assert args.sort_by == "val_return"
 
     def test_parse_all_flags(self):
         mod = _load_dashboard()
@@ -636,6 +722,7 @@ class TestCLIArgs:
             "--compare-archs",
             "--compare-optimizers",
             "--compare-datasets",
+            "--sort-by", "stability_score",
         ])
         assert args.project == "myproj"
         assert args.entity == "myorg"
@@ -644,6 +731,7 @@ class TestCLIArgs:
         assert args.compare_archs
         assert args.compare_optimizers
         assert args.compare_datasets
+        assert args.sort_by == "stability_score"
 
     def test_parse_no_project_exits(self):
         mod = _load_dashboard()

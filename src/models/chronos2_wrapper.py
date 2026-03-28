@@ -11,6 +11,7 @@ the pandas-first API that ships with Chronos 2. The wrapper focuses on:
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -531,6 +532,10 @@ class Chronos2OHLCWrapper:
         self._torch_compile_success = False
         self._compile_mode = compile_mode
         self._compile_backend = compile_backend
+        self._torch_dtype = torch_dtype
+        self._resolved_model_id: Optional[str] = None
+        self._pipeline_backend_name = "chronos"
+        self._safe_prediction_pipeline: Optional[object] = None
 
         if preaugmentation_dirs is None:
             freq = _normalize_frequency(os.getenv("CHRONOS2_FREQUENCY"))
@@ -664,7 +669,7 @@ class Chronos2OHLCWrapper:
                     cute_compile,
                 )
                 device_hint = _device_map_to_device(device_map)
-                return cls(
+                wrapper = cls(
                     pipeline,
                     device_hint=device_hint,
                     id_column=id_column,
@@ -684,6 +689,9 @@ class Chronos2OHLCWrapper:
                     multiscale_enabled=multiscale_enabled,
                     multiscale_config_paths=multiscale_config_paths,
                 )
+                wrapper._resolved_model_id = resolved_model_id
+                wrapper._pipeline_backend_name = "cutechronos"
+                return wrapper
             except Exception as exc:
                 if backend == "cutechronos":
                     raise RuntimeError(
@@ -755,18 +763,20 @@ class Chronos2OHLCWrapper:
                 target_columns=target_columns,
                 default_context_length=default_context_length,
                 default_batch_size=default_batch_size,
-            quantile_levels=quantile_levels,
-            torch_compile=torch_compile,
-            compile_mode=compile_mode,
-            compile_backend=compile_backend,
-            torch_dtype=torch_dtype,
-            preaugmentation_dirs=preaugmentation_dirs,
-            prediction_cache_enabled=prediction_cache_enabled,
-            prediction_cache_size=prediction_cache_size,
-            prediction_cache_decimals=prediction_cache_decimals,
-            multiscale_enabled=multiscale_enabled,
-            multiscale_config_paths=multiscale_config_paths,
-        )
+                quantile_levels=quantile_levels,
+                torch_compile=torch_compile,
+                compile_mode=compile_mode,
+                compile_backend=compile_backend,
+                torch_dtype=torch_dtype,
+                preaugmentation_dirs=preaugmentation_dirs,
+                prediction_cache_enabled=prediction_cache_enabled,
+                prediction_cache_size=prediction_cache_size,
+                prediction_cache_decimals=prediction_cache_decimals,
+                multiscale_enabled=multiscale_enabled,
+                multiscale_config_paths=multiscale_config_paths,
+            )
+            wrapper._resolved_model_id = resolved_model_id
+            wrapper._pipeline_backend_name = backend
 
             if use_cache and (force_refresh or not loaded_from_cache):
                 model_obj = getattr(wrapper, "pipeline", None)
@@ -816,7 +826,149 @@ class Chronos2OHLCWrapper:
                 except Exception as exc:  # pragma: no cover - best-effort cleanup
                     logger.debug("Chronos2 model offload failed: %s", exc)
 
+        safe_pipeline = self._safe_prediction_pipeline
+        if safe_pipeline is not None:
+            model = getattr(safe_pipeline, "model", None)
+            move_to = getattr(model, "to", None)
+            if callable(move_to):
+                try:
+                    move_to("cpu")
+                except Exception as exc:  # pragma: no cover - best-effort cleanup
+                    logger.debug("Chronos2 safe pipeline offload failed: %s", exc)
+
         self.pipeline = None
+        self._safe_prediction_pipeline = None
+
+    @staticmethod
+    def _prediction_values_are_finite(
+        raw_predictions: pd.DataFrame,
+        value_columns: Sequence[str],
+    ) -> bool:
+        present = [column for column in value_columns if column in raw_predictions.columns]
+        if not present:
+            return True
+        numeric = raw_predictions[present].apply(pd.to_numeric, errors="coerce")
+        return bool(np.isfinite(numeric.to_numpy(dtype="float64")).all())
+
+    def _ensure_safe_prediction_pipeline(self) -> object:
+        if self._safe_prediction_pipeline is not None:
+            return self._safe_prediction_pipeline
+        if not self._resolved_model_id:
+            raise RuntimeError("Chronos2 safe prediction fallback is unavailable without a resolved model id.")
+        self._safe_prediction_pipeline = _load_cutechronos_pipeline(
+            model_id=self._resolved_model_id,
+            device_map=self._device_hint,
+            torch_dtype=self._torch_dtype,
+            torch_compile=False,
+            compile_mode=None,
+        )
+        return self._safe_prediction_pipeline
+
+    def _predict_via_tensor_api(
+        self,
+        *,
+        pipeline: object,
+        panel: Chronos2PreparedPanel,
+        quantiles: Sequence[float],
+        batch_size: int,
+    ) -> pd.DataFrame:
+        predict_quantiles = getattr(pipeline, "predict_quantiles", None)
+        if not callable(predict_quantiles):
+            raise RuntimeError(
+                f"Chronos2 fallback pipeline {type(pipeline).__name__} does not implement predict_quantiles."
+            )
+
+        ignored_covariates = [
+            column
+            for column in panel.context_df.columns
+            if column not in {self.id_column, self.timestamp_column, *self.target_columns}
+        ]
+        if ignored_covariates:
+            logger.warning(
+                "Chronos2 tensor fallback ignores covariates for %s: %s",
+                panel.symbol,
+                ignored_covariates,
+            )
+        if panel.future_df is not None and not panel.future_df.empty:
+            logger.warning("Chronos2 tensor fallback ignores future covariates for %s.", panel.symbol)
+
+        inputs: List[Any] = []
+        for column in self.target_columns:
+            series = pd.to_numeric(panel.context_df[column], errors="coerce")
+            values = series.to_numpy(dtype=np.float32, copy=False)
+            if torch is not None:
+                inputs.append(torch.tensor(values, dtype=torch.float32))
+            else:  # pragma: no cover - torch is required in production/test environments here
+                inputs.append(values)
+
+        predict_kwargs: Dict[str, Any] = {
+            "prediction_length": panel.prediction_length,
+            "quantile_levels": list(quantiles),
+        }
+        try:
+            signature = inspect.signature(predict_quantiles)
+        except (TypeError, ValueError):  # pragma: no cover - defensive around C-ext / mocks
+            signature = None
+        if signature is None or "batch_size" in signature.parameters:
+            predict_kwargs["batch_size"] = batch_size
+        if signature is None or "limit_prediction_length" in signature.parameters:
+            predict_kwargs["limit_prediction_length"] = False
+
+        quantile_tensors, mean_tensors = predict_quantiles(inputs, **predict_kwargs)
+        if len(quantile_tensors) != len(self.target_columns) or len(mean_tensors) != len(self.target_columns):
+            raise RuntimeError(
+                "Chronos2 tensor fallback returned an unexpected number of target forecasts: "
+                f"quantiles={len(quantile_tensors)} means={len(mean_tensors)} expected={len(self.target_columns)}"
+            )
+
+        last_timestamp = pd.to_datetime(panel.context_df[self.timestamp_column].iloc[-1], utc=True, errors="coerce")
+        if pd.isna(last_timestamp):
+            last_timestamp = pd.Timestamp.now(tz="UTC")
+        delta = _infer_prediction_step(panel.context_df[self.timestamp_column])
+        future_index = pd.DatetimeIndex(
+            [last_timestamp + delta * (step + 1) for step in range(panel.prediction_length)],
+            name=self.timestamp_column,
+        )
+
+        rows: List[Dict[str, Any]] = []
+        for target_name, quantile_tensor, mean_tensor in zip(self.target_columns, quantile_tensors, mean_tensors):
+            quantile_array = np.asarray(quantile_tensor, dtype=np.float32)
+            mean_array = np.asarray(mean_tensor, dtype=np.float32)
+
+            if quantile_array.ndim == 3 and quantile_array.shape[0] == 1:
+                quantile_array = quantile_array[0]
+            if mean_array.ndim == 2 and mean_array.shape[0] == 1:
+                mean_array = mean_array[0]
+
+            if quantile_array.ndim != 2 or mean_array.ndim != 1:
+                raise RuntimeError(
+                    "Chronos2 tensor fallback produced unsupported forecast shapes: "
+                    f"quantiles={quantile_array.shape} means={mean_array.shape}"
+                )
+            if quantile_array.shape[0] != panel.prediction_length or mean_array.shape[0] != panel.prediction_length:
+                raise RuntimeError(
+                    "Chronos2 tensor fallback returned an unexpected horizon length: "
+                    f"quantiles={quantile_array.shape} means={mean_array.shape} "
+                    f"expected={panel.prediction_length}"
+                )
+            if quantile_array.shape[1] != len(quantiles):
+                raise RuntimeError(
+                    "Chronos2 tensor fallback returned an unexpected number of quantiles: "
+                    f"{quantile_array.shape[1]} expected={len(quantiles)}"
+                )
+
+            for step, timestamp in enumerate(future_index):
+                row: Dict[str, Any] = {
+                    self.id_column: panel.symbol,
+                    self.timestamp_column: timestamp,
+                    "target_name": target_name,
+                    "predictions": float(mean_array[step]),
+                }
+                for idx, level in enumerate(quantiles):
+                    row[_quantile_column(level)] = float(quantile_array[step, idx])
+                rows.append(row)
+
+        return pd.DataFrame(rows)
 
     def _disable_torch_compile(self, reason: str, error: Optional[BaseException] = None) -> None:
         if not self._torch_compile_success:
@@ -1307,7 +1459,52 @@ class Chronos2OHLCWrapper:
                 **predict_options,
             )
 
-        raw_predictions = self._call_with_compile_fallback(_predict_call, "predict_df")
+        if callable(getattr(self.pipeline, "predict_df", None)):
+            raw_predictions = self._call_with_compile_fallback(_predict_call, "predict_df")
+        else:
+            raw_predictions = self._predict_via_tensor_api(
+                pipeline=self.pipeline,
+                panel=panel,
+                quantiles=quantiles,
+                batch_size=effective_batch_size,
+            )
+
+        value_columns = ("predictions", *quantile_columns)
+        predictions_finite = self._prediction_values_are_finite(raw_predictions, value_columns)
+        if (
+            not predictions_finite
+            and self._torch_compile_success
+            and callable(getattr(self.pipeline, "predict_df", None))
+        ):
+            logger.warning(
+                "Chronos2 compiled predict_df returned non-finite forecasts for %s; retrying eager Chronos2 model.",
+                panel.symbol,
+            )
+            self._disable_torch_compile("non-finite predictions from compiled predict_df")
+            raw_predictions = _predict_call()
+            predictions_finite = self._prediction_values_are_finite(raw_predictions, value_columns)
+
+        if not predictions_finite:
+            fallback_pipeline = self.pipeline
+            if self._pipeline_backend_name != "cutechronos" and _device_map_to_device(self._device_hint) == "cpu":
+                logger.warning(
+                    "Chronos2 predict_df returned non-finite CPU forecasts for %s; falling back to cutechronos.",
+                    panel.symbol,
+                )
+                fallback_pipeline = self._ensure_safe_prediction_pipeline()
+            else:
+                logger.warning(
+                    "Chronos2 predict_df returned non-finite forecasts for %s; retrying with tensor fallback.",
+                    panel.symbol,
+                )
+            raw_predictions = self._predict_via_tensor_api(
+                pipeline=fallback_pipeline,
+                panel=panel,
+                quantiles=quantiles,
+                batch_size=effective_batch_size,
+            )
+            if not self._prediction_values_are_finite(raw_predictions, value_columns):
+                raise RuntimeError(f"Chronos2 produced non-finite forecasts for {panel.symbol}.")
 
         batch_result = self._build_prediction_batch_from_df(
             panel=panel,

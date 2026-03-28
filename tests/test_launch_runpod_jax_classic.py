@@ -29,6 +29,13 @@ def test_build_sync_manifest_contains_expected_stock_files() -> None:
     assert "binanceneural" in manifest["code_paths"]
 
 
+def test_code_sync_excludes_skip_large_training_artifacts() -> None:
+    mod = _load_module()
+    assert "binanceneural/chronos2_finetuned" in mod.CODE_SYNC_EXCLUDES
+    assert "binanceneural/chronos2_finetuned/***" in mod.CODE_SYNC_EXCLUDES
+    assert "*.safetensors" in mod.CODE_SYNC_EXCLUDES
+
+
 def test_build_bootstrap_command_installs_cuda_jax() -> None:
     mod = _load_module()
     command = mod.build_bootstrap_command(remote_run_dir="/workspace/stock-prediction/analysis/remote_runs/test")
@@ -187,3 +194,80 @@ def test_main_dry_run_skips_docker_validate(tmp_path, monkeypatch) -> None:
 
     assert rc == 0
     assert called["docker"] is False
+
+
+def test_main_uses_code_sync_excludes_for_code_rsync(tmp_path, monkeypatch) -> None:
+    mod = _load_module()
+    rsync_calls: list[dict[str, object]] = []
+
+    args = SimpleNamespace(
+        run_name="detach_case",
+        symbols="AAPL,TSLA",
+        forecast_horizons="1",
+        preload="unified_hourly_experiment/checkpoints/wd_0.06_s42/epoch_020.pt",
+        gpu_type=mod.DEFAULT_GPU_TYPE,
+        image=mod.DEFAULT_DOCKER_IMAGE,
+        validation_days=7,
+        epochs=1,
+        batch_size=2,
+        sequence_length=48,
+        dry_train_steps=1,
+        wandb_project="stock",
+        wandb_entity=None,
+        wandb_group="detach_case",
+        wandb_tags="runpod,jax",
+        wandb_notes=None,
+        wandb_mode="offline",
+        key_path=tmp_path / "id_ed25519",
+        startup_timeout_sec=1,
+        poll_interval_sec=15,
+        output_root=tmp_path / "runs",
+        docker_validate=False,
+        dry_run=False,
+        detach=True,
+        keep_pod=False,
+    )
+
+    monkeypatch.setenv("RUNPOD_API_KEY", "test-key")
+    monkeypatch.setattr(mod, "parse_args", lambda: args)
+    monkeypatch.setattr(
+        mod,
+        "build_sync_manifest",
+        lambda **kwargs: {
+            "code_paths": ["binanceneural", "src"],
+            "data_files": [],
+            "cache_files": [],
+            "checkpoint_files": [],
+        },
+    )
+    monkeypatch.setattr(mod, "create_pod", lambda api_key, **kwargs: "pod-123")
+    monkeypatch.setattr(
+        mod,
+        "wait_for_public_ssh",
+        lambda api_key, pod_id, timeout_sec: {
+            "pod_id": "pod-123",
+            "public_ip": "1.2.3.4",
+            "ssh_port": 22,
+            "cost_per_hr": 0.5,
+            "gpu_type": "GPU",
+        },
+    )
+    monkeypatch.setattr(mod, "ensure_remote_rsync", lambda **kwargs: None)
+    monkeypatch.setattr(mod, "run_ssh", lambda *args, **kwargs: SimpleNamespace(stdout="123\n", returncode=0))
+    monkeypatch.setattr(mod, "write_remote_script", lambda **kwargs: None)
+    monkeypatch.setattr(mod, "launch_remote_script", lambda **kwargs: "123")
+    monkeypatch.setattr(mod, "remote_path_exists", lambda *args, **kwargs: False)
+    monkeypatch.setattr(mod, "delete_pod", lambda *args, **kwargs: None)
+
+    def _fake_run_rsync(sources, destination, **kwargs):
+        rsync_calls.append({"sources": sources, "destination": destination, **kwargs})
+
+    monkeypatch.setattr(mod, "run_rsync", _fake_run_rsync)
+
+    rc = mod.main()
+
+    assert rc == 0
+    assert rsync_calls
+    first_call = rsync_calls[0]
+    assert first_call["relative"] is True
+    assert set(mod.CODE_SYNC_EXCLUDES).issubset(set(first_call["excludes"]))

@@ -11,7 +11,10 @@
 - **LIVE account**: supervisor `unified-stock-trader` is active; equity **$38,954.44**, cash **$38,954.44**, buying power **$77,908.88**, last_equity **$39,090.40**.
 - **LIVE positions/orders**: no stock positions are open; only dust in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD` remains. There are currently **no open orders**.
 - **LIVE duplicate-order guard (2026-03-27 20:31 UTC)**: systemd unit `alpaca-cancel-multi-orders.service` is installed and enabled with `PAPER=0`; `journalctl` confirms it initialized the **LIVE** Alpaca client and is polling for duplicate flat-position opening orders.
-- **LIVE daily-rl-trader**: 10-model ensemble (upgraded 2026-03-28 14:59 UTC), sleeping until Mon 2026-03-30 market open; PID 745559
+- **LIVE daily-rl-trader**: 10-model ensemble (s735→s1731 fix 2026-03-28 17:29 UTC), sleeping until Mon 2026-03-30 market open; PID 2893948
+  - s735 screen_best was deleted from disk; replaced with s1731 screen_best (neg=7, med=11%, update=61)
+  - New 10-model exhaustive (111 windows): **0/111 neg, med=59.1%, p10=45.1%** (was 55.6% with original s735)
+  - 11-model bar: p10 ≥ 45.1% @fill_bps=5
 
 ### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- FIXED (pending restart)
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`

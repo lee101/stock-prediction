@@ -31,6 +31,7 @@ from binance_worksteal.strategy import (
 from binance_worksteal.sim_vs_live_audit import audit_entries
 from binance_worksteal.sweep import build_windows
 from binance_worksteal.backtest import FULL_UNIVERSE
+from binance_worksteal.universe import get_symbols, load_universe
 
 
 def _clamp_sortino(val, limit=999.0):
@@ -38,10 +39,11 @@ def _clamp_sortino(val, limit=999.0):
 
 
 PRODUCTION_CONFIG = WorkStealConfig(
-    dip_pct=0.20,
+    dip_pct=0.18,
+    dip_pct_fallback=(0.18, 0.15, 0.12),
     proximity_pct=0.02,
-    profit_target_pct=0.15,
-    stop_loss_pct=0.10,
+    profit_target_pct=0.20,
+    stop_loss_pct=0.15,
     max_positions=5,
     max_hold_days=14,
     lookback_days=20,
@@ -63,6 +65,12 @@ def run_single_backtest(all_bars, config, start_date, end_date):
     except Exception as e:
         return None, None, {"error": str(e)}
     return eq, trades, metrics
+
+
+def _replace_eval_config(base_config, **changes):
+    if "dip_pct" in changes and "dip_pct_fallback" not in changes and base_config.dip_pct_fallback:
+        changes["dip_pct_fallback"] = (changes["dip_pct"],)
+    return replace(base_config, **changes)
 
 
 def run_filter_breakdown(all_bars, config, start_date, end_date, out):
@@ -190,7 +198,7 @@ def _sweep_param(all_bars, base_config, start_date, end_date, param_name, values
     out.write("-" * 62 + "\n")
     results = []
     for val in values:
-        cfg = replace(base_config, **{param_name: val})
+        cfg = _replace_eval_config(base_config, **{param_name: val})
         _, trades, m = run_single_backtest(all_bars, cfg, start_date, end_date)
         if not m or m.get("error"):
             continue
@@ -227,7 +235,7 @@ def run_sensitivity_analysis(all_bars, base_config, start_date, end_date, out):
     out.write(f"\n--- Combined grid: dip x proximity x sma (top 10 by Sortino) ---\n")
     grid_results = []
     for dip, prox, sma in itertools.product(dip_values, prox_values, sma_values):
-        cfg = replace(base_config, dip_pct=dip, proximity_pct=prox, sma_filter_period=sma)
+        cfg = _replace_eval_config(base_config, dip_pct=dip, proximity_pct=prox, sma_filter_period=sma)
         _, trades, m = run_single_backtest(all_bars, cfg, start_date, end_date)
         if not m or m.get("error"):
             continue
@@ -275,7 +283,7 @@ def run_random_baseline(all_bars, config, start_date, end_date, out, n_trials=20
     random_returns = []
 
     for trial in range(n_trials):
-        rand_cfg = replace(
+        rand_cfg = _replace_eval_config(
             config,
             dip_pct=rng.choice([0.05, 0.10, 0.15, 0.20, 0.25, 0.30]),
             proximity_pct=rng.choice([0.01, 0.02, 0.03, 0.05, 0.08]),
@@ -381,6 +389,7 @@ def generate_recommendations(audit_df, window_results, sensitivity_results, grid
 def main():
     parser = argparse.ArgumentParser(description="Production audit for binance_worksteal")
     parser.add_argument("--data-dir", default="trainingdata/train")
+    parser.add_argument("--universe-file", default="binance_worksteal/universe_v2.yaml")
     parser.add_argument("--symbols", nargs="+", default=None)
     parser.add_argument("--output", default=None)
     parser.add_argument("--window-days", type=int, default=60)
@@ -393,7 +402,12 @@ def main():
         tag = datetime.now().strftime("%Y%m%d")
         args.output = f"binance_worksteal/production_audit_{tag}.txt"
 
-    symbols = args.symbols or FULL_UNIVERSE
+    if args.symbols:
+        symbols = args.symbols
+    elif args.universe_file:
+        symbols = get_symbols(load_universe(args.universe_file))
+    else:
+        symbols = FULL_UNIVERSE
     print(f"Loading {len(symbols)} symbols from {args.data_dir}")
     all_bars = load_daily_bars(args.data_dir, symbols)
     print(f"Loaded {len(all_bars)} symbols")

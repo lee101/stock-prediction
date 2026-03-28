@@ -369,14 +369,23 @@ class StockTradingEnv(gym.Env):
         for symbol, frame in asset_frames.items():
             prepared[symbol] = self._standardise_frame(symbol, frame)
 
-        date_sets = [set(df["date"].values) for df in prepared.values()]
-        common_dates = sorted(set.intersection(*date_sets))
-        if not common_dates:
+        date_indexes = [pd.Index(df["date"]) for df in prepared.values()]
+        common_dates = date_indexes[0]
+        for date_index in date_indexes[1:]:
+            common_dates = common_dates.intersection(date_index)
+        common_dates = common_dates.sort_values()
+        if common_dates.empty:
             raise ValueError("No overlapping dates across provided asset dataframes.")
 
         aligned: Dict[str, pd.DataFrame] = {}
         for symbol, df in prepared.items():
-            aligned_df = df[df["date"].isin(common_dates)].sort_values("date").reset_index(drop=True)
+            aligned_df = (
+                df.set_index("date")
+                .loc[common_dates]
+                .reset_index()
+                .sort_values("date")
+                .reset_index(drop=True)
+            )
             aligned[symbol] = aligned_df
 
         numeric_maps: Dict[str, Dict[str, str]] = {}
@@ -425,7 +434,7 @@ class StockTradingEnv(gym.Env):
         feature_tensor = torch.from_numpy(feature_array).to(self.device)
         open_tensor = torch.from_numpy(open_array).to(self.device)
         close_tensor = torch.from_numpy(close_array).to(self.device)
-        date_array = np.array(common_dates)
+        date_array = common_dates.to_numpy()
 
         return feature_tensor, open_tensor, close_tensor, feature_names, date_array
 

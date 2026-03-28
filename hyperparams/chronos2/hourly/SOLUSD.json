@@ -2,26 +2,35 @@
   "symbol": "SOLUSD",
   "model": "chronos2",
   "config": {
-    "name": "finetuned_sol_lora_ctx128_percent_change",
-    "model_id": "chronos2_finetuned/SOLUSD_lora_percent_change_ctx128_lr5e-05_r16_20260212_224521/finetuned-ckpt",
+    "name": "finetuned_btc_lora_ctx128_percent_change",
+    "model_id": "chronos2_finetuned/binance_chronos_compare_20260328b_SOLUSD_lora_percent_change_ctx128_lr5e-05_r16_20260328_090451/finetuned-ckpt",
     "device_map": "cuda",
     "context_length": 128,
-    "batch_size": 128,
-    "quantile_levels": [0.1, 0.5, 0.9],
+    "batch_size": 32,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
     "aggregation": "median",
     "sample_count": 0,
     "scaler": "none",
     "predict_kwargs": {},
-    "skip_rates": [1],
+    "skip_rates": [
+      1
+    ],
     "aggregation_method": "single",
     "use_multivariate": false
   },
   "validation": {
-    "val_mae_percent": 3.58,
-    "val_mae_std": 1.83,
-    "val_mae_max": 7.46,
-    "val_consistency_score": 6.048,
-    "test_mae_percent": 3.49
+    "price_mae": null,
+    "pct_return_mae": null,
+    "mae_percent": 4.012042611837387
+  },
+  "test": {
+    "price_mae": null,
+    "pct_return_mae": null,
+    "mae_percent": 2.893217702706655
   },
   "windows": {
     "val_window": 168,
@@ -29,12 +38,17 @@
     "forecast_horizon": 24
   },
   "metadata": {
-    "source": "train_crypto_lora_sweep.py",
-    "generated_at": "2026-02-12T22:48:51Z",
-    "selection_metric": "val_mae_percent",
-    "selection_value": 3.58,
-    "frequency": "hourly",
-    "preaug": "percent_change",
-    "notes": "Best SOL LoRA - ctx128 slightly better than ctx256"
+    "source": "promote_chronos2_lora_reports",
+    "generated_at": "2026-03-28T09:38:48Z",
+    "report_path": "analysis/remote_runs/binance_chronos_compare_20260328b/lora_results/binance_chronos_compare_20260328b_SOLUSD_lora_percent_change_ctx128_lr5e-05_r16_20260328_090451.json",
+    "output_dir": "chronos2_finetuned/binance_chronos_compare_20260328b_SOLUSD_lora_percent_change_ctx128_lr5e-05_r16_20260328_090451",
+    "preaug_strategy": "percent_change",
+    "preaug_source": null,
+    "selection_strategy": "best_single",
+    "selection_score": 4.012042611837387,
+    "selection_family_size": 1,
+    "selection_family_score_mean": null,
+    "selection_family_score_std": null,
+    "selection_family_key": null
   }
 }

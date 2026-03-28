@@ -6,7 +6,11 @@ from types import SimpleNamespace
 import pytest
 
 from llm_hourly_trader.gemini_wrapper import TradePlan
-from unified_orchestrator.orchestrator import execute_crypto_signals, _place_crypto_tp_sell
+from unified_orchestrator.orchestrator import (
+    execute_crypto_signals,
+    _place_crypto_force_exit_sell,
+    _place_crypto_tp_sell,
+)
 from unified_orchestrator.state import Position, UnifiedPortfolioSnapshot
 
 
@@ -64,6 +68,7 @@ def _patch_alpaca_order_types(monkeypatch):
 
     class _TimeInForce:
         GTC = "gtc"
+        IOC = "ioc"
 
     class _QueryOrderStatus:
         OPEN = "open"
@@ -349,3 +354,39 @@ def test_tp_sell_qty_avoids_insufficient_balance():
     # Should be very close but strictly less
     assert pos_qty - sell_qty < 1e-7
     assert pos_qty - sell_qty > 0
+
+
+def test_force_exit_sell_cancels_all_orders_and_uses_ioc_limit():
+    client = _FakeAlpacaClient(
+        cash=500.0,
+        buying_power=1_000.0,
+        positions=[],
+        open_orders=[
+            _FakeOrder(
+                symbol="ETH/USD",
+                side=SimpleNamespace(value="sell"),
+                qty=1.2,
+                limit_price=2050.0,
+                id="old-sell",
+            ),
+            _FakeOrder(
+                symbol="ETH/USD",
+                side=SimpleNamespace(value="buy"),
+                qty=1.2,
+                limit_price=1980.0,
+                id="old-buy",
+            ),
+        ],
+    )
+    pos = SimpleNamespace(qty=1.234567891, current_price=2_000.0)
+    orders: list[dict] = []
+
+    _place_crypto_force_exit_sell(client, "ETHUSD", pos, dry_run=False, orders=orders)
+
+    assert client.canceled_ids == ["old-sell", "old-buy"]
+    assert len(client.submitted_orders) == 1
+    submitted = client.submitted_orders[0]
+    assert submitted.side == "sell"
+    assert submitted.time_in_force == "ioc"
+    assert submitted.limit_price == pytest.approx(1998.0)
+    assert orders[0]["action"] == "force_exit"

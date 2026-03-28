@@ -13,6 +13,7 @@ from unified_hourly_experiment.replay_stock_trade_log_sim import (
     load_live_entries,
     parse_bool_list,
     run_replay,
+    split_live_entries_by_bar_coverage,
 )
 
 
@@ -240,6 +241,84 @@ def test_compare_entries_tracks_qty_and_price_error() -> None:
     assert out["matched_price_mae"] == 0.625
 
 
+def test_split_live_entries_by_bar_coverage_flags_unreplayable_live_rows() -> None:
+    live_entries = pd.DataFrame(
+        [
+            {
+                "timestamp": pd.Timestamp("2026-03-20T15:00:00Z"),
+                "symbol": "TSLA",
+                "side": "long",
+                "qty": 10.0,
+                "entry_price": 100.0,
+            },
+            {
+                "timestamp": pd.Timestamp("2026-03-20T15:00:00Z"),
+                "symbol": "ABEV",
+                "side": "long",
+                "qty": 4459.0,
+                "entry_price": 2.73,
+            },
+        ]
+    )
+    bars = pd.DataFrame(
+        [
+            {
+                "timestamp": pd.Timestamp("2026-03-20T15:00:00Z"),
+                "symbol": "TSLA",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+            },
+            {
+                "timestamp": pd.Timestamp("2026-03-18T19:00:00Z"),
+                "symbol": "ABEV",
+                "open": 2.70,
+                "high": 2.71,
+                "low": 2.69,
+                "close": 2.70,
+            },
+        ]
+    )
+
+    covered, uncovered, summary = split_live_entries_by_bar_coverage(live_entries, bars)
+
+    assert covered["symbol"].tolist() == ["TSLA"]
+    assert uncovered["symbol"].tolist() == ["ABEV"]
+    assert summary["covered_live_entry_count"] == 1
+    assert summary["uncovered_live_entry_count"] == 1
+    assert summary["covered_live_entry_ratio"] == 0.5
+    assert summary["uncovered_rows"] == [
+        {
+            "timestamp": "2026-03-20 15:00:00+00:00",
+            "symbol": "ABEV",
+            "side": "long",
+            "qty": 4459.0,
+            "entry_price": 2.73,
+        }
+    ]
+    assert summary["bar_data_last_timestamp_by_symbol"] == [
+        {"symbol": "ABEV", "last_bar_timestamp_utc": "2026-03-18 19:00:00+00:00"},
+        {"symbol": "TSLA", "last_bar_timestamp_utc": "2026-03-20 15:00:00+00:00"},
+    ]
+
+
+def test_split_live_entries_by_bar_coverage_handles_empty_live_entries() -> None:
+    live_entries = pd.DataFrame(columns=["timestamp", "symbol", "side", "qty", "entry_price"])
+    bars = pd.DataFrame(columns=["timestamp", "symbol", "open", "high", "low", "close"])
+
+    covered, uncovered, summary = split_live_entries_by_bar_coverage(live_entries, bars)
+
+    assert covered.empty
+    assert uncovered.empty
+    assert summary["covered_live_entry_count"] == 0
+    assert summary["uncovered_live_entry_count"] == 0
+    assert summary["covered_live_entry_ratio"] == 1.0
+    assert summary["per_symbol"] == []
+    assert summary["uncovered_rows"] == []
+    assert summary["bar_data_last_timestamp_by_symbol"] == []
+
+
 def test_run_replay_passes_market_order_entry(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
@@ -371,3 +450,122 @@ def test_run_replay_hourly_trader_backend_generates_entry_rows() -> None:
     assert entry["side"] == "long"
     assert entry["qty"] == 20.0
     assert entry["entry_price"] == 100.0
+
+
+def test_infer_live_replay_context_reads_nearest_execute_trades_start(tmp_path: Path) -> None:
+    event_log = tmp_path / "stock_event_log.jsonl"
+    _write_log(
+        event_log,
+        [
+            {
+                "event_type": "execute_trades_start",
+                "logged_at": "2026-03-20T14:01:00Z",
+                "max_positions": 7,
+                "signal_symbols": ["NVDA"],
+                "account": {"equity": 50_000.0},
+            },
+            {
+                "event_type": "execute_trades_start",
+                "logged_at": "2026-03-20T15:01:02Z",
+                "max_positions": 5,
+                "market_order_entry": True,
+                "effective_market_order_entry": True,
+                "signal_symbols": ["ABEV", "TSLA"],
+                "account": {"equity": 40_219.2},
+            },
+        ],
+    )
+
+    out = replay_mod.infer_live_replay_context(
+        event_log=event_log,
+        symbols={"ABEV", "TSLA"},
+        anchor_ts=pd.Timestamp("2026-03-20T15:01:03Z"),
+    )
+
+    assert out is not None
+    assert out.logged_at == "2026-03-20T15:01:02Z"
+    assert out.initial_cash == 40_219.2
+    assert out.max_positions == 5
+    assert out.market_order_entry is True
+    assert out.effective_market_order_entry is True
+
+
+def test_resolve_replay_runtime_config_prefers_inferred_live_values(tmp_path: Path) -> None:
+    event_log = tmp_path / "stock_event_log.jsonl"
+    _write_log(
+        event_log,
+        [
+            {
+                "event_type": "execute_trades_start",
+                "logged_at": "2026-03-20T15:01:02Z",
+                "max_positions": 5,
+                "signal_symbols": ["ABEV", "TSLA"],
+                "account": {"equity": 40_219.2},
+            }
+        ],
+    )
+
+    initial_cash, max_positions, inferred = replay_mod.resolve_replay_runtime_config(
+        event_log=event_log,
+        symbols={"ABEV", "TSLA"},
+        anchor_ts=pd.Timestamp("2026-03-20T15:01:03Z"),
+        initial_cash=None,
+        max_positions=None,
+    )
+
+    assert initial_cash == 40_219.2
+    assert max_positions == 5
+    assert inferred is not None
+
+
+def test_run_replay_live_like_sizing_matches_live_market_order_qty() -> None:
+    ts = pd.Timestamp("2026-03-20T15:00:00Z")
+    bars = pd.DataFrame(
+        [
+            {
+                "timestamp": ts,
+                "symbol": "ABEV",
+                "open": 2.73,
+                "high": 2.90,
+                "low": 2.70,
+                "close": 2.73,
+            }
+        ]
+    )
+    actions = pd.DataFrame(
+        [
+            {
+                "timestamp": ts,
+                "symbol": "ABEV",
+                "side": "long",
+                "qty": 4459.0,
+                "entry_price": 2.73,
+                "buy_price": 2.73,
+                "sell_price": 2.83,
+                "buy_amount": 75.67660522460938,
+                "sell_amount": 0.0,
+                "trade_amount": 75.67660522460938,
+            }
+        ]
+    )
+
+    out = run_replay(
+        bars=bars,
+        actions=actions,
+        symbols=["ABEV"],
+        initial_cash=40_219.2,
+        max_positions=5,
+        max_hold_hours=6,
+        min_edge=-1.0,
+        fee_rate=0.001,
+        leverage=2.0,
+        decision_lag_bars=0,
+        bar_margin=0.0,
+        entry_order_ttl_hours=6,
+        market_order_entry=True,
+        sim_backend="python",
+        live_like_sizing=True,
+    )
+
+    entry = out["sim_entries"].iloc[0]
+    assert entry["qty"] == 4459.0

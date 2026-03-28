@@ -183,3 +183,157 @@ def test_promote_chronos2_lora_reports_accepts_crypto_sweep_schema(tmp_path: Pat
     assert written["config"]["batch_size"] == 32
     assert written["metadata"]["preaug_strategy"] == "percent_change"
     assert written["validation"]["mae_percent"] == 2.8
+
+
+def test_promote_chronos2_lora_reports_can_prefer_stable_family_across_seeds(tmp_path: Path) -> None:
+    report_dir = tmp_path / "reports"
+    report_dir.mkdir()
+    out_dir = tmp_path / "hourly"
+    out_dir.mkdir()
+
+    template = tmp_path / "template.json"
+    template.write_text(
+        json.dumps(
+            {
+                "symbol": "BTCUSD",
+                "model": "chronos2",
+                "config": {
+                    "name": "hourly_ctx512_skip1_single",
+                    "device_map": "cuda",
+                    "context_length": 512,
+                    "batch_size": 32,
+                    "quantile_levels": [0.1, 0.5, 0.9],
+                    "aggregation": "median",
+                    "sample_count": 0,
+                    "scaler": "none",
+                    "predict_kwargs": {},
+                    "skip_rates": [1],
+                    "aggregation_method": "single",
+                    "use_multivariate": False,
+                },
+                "validation": {},
+                "test": {},
+                "windows": {},
+            }
+        )
+        + "\n"
+    )
+
+    stable_run_a = tmp_path / "stable_a"
+    stable_run_b = tmp_path / "stable_b"
+    noisy_run_a = tmp_path / "noisy_a"
+    noisy_run_b = tmp_path / "noisy_b"
+    for run_dir in (stable_run_a, stable_run_b, noisy_run_a, noisy_run_b):
+        (run_dir / "finetuned-ckpt").mkdir(parents=True)
+
+    payloads = [
+        (
+            report_dir / "ETHUSD_lora_stable_seed1.json",
+            {
+                "symbol": "ETHUSD",
+                "output_dir": str(stable_run_a),
+                "config": {
+                    "device_map": "cuda",
+                    "context_length": 512,
+                    "batch_size": 32,
+                    "learning_rate": 5e-5,
+                    "prediction_length": 24,
+                    "lora_r": 16,
+                    "seed": 1337,
+                    "preaug": "baseline",
+                },
+                "val_metrics": {"mae_percent": 0.55},
+                "test_metrics": {"mae_percent": 0.60},
+                "preaug_strategy": "baseline",
+            },
+        ),
+        (
+            report_dir / "ETHUSD_lora_stable_seed2.json",
+            {
+                "symbol": "ETHUSD",
+                "output_dir": str(stable_run_b),
+                "config": {
+                    "device_map": "cuda",
+                    "context_length": 512,
+                    "batch_size": 32,
+                    "learning_rate": 5e-5,
+                    "prediction_length": 24,
+                    "lora_r": 16,
+                    "seed": 2027,
+                    "preaug": "baseline",
+                },
+                "val_metrics": {"mae_percent": 0.57},
+                "test_metrics": {"mae_percent": 0.62},
+                "preaug_strategy": "baseline",
+            },
+        ),
+        (
+            report_dir / "ETHUSD_lora_noisy_seed1.json",
+            {
+                "symbol": "ETHUSD",
+                "output_dir": str(noisy_run_a),
+                "config": {
+                    "device_map": "cuda",
+                    "context_length": 512,
+                    "batch_size": 32,
+                    "learning_rate": 1e-4,
+                    "prediction_length": 24,
+                    "lora_r": 16,
+                    "seed": 1337,
+                    "preaug": "percent_change",
+                },
+                "val_metrics": {"mae_percent": 0.35},
+                "test_metrics": {"mae_percent": 0.45},
+                "preaug_strategy": "percent_change",
+            },
+        ),
+        (
+            report_dir / "ETHUSD_lora_noisy_seed2.json",
+            {
+                "symbol": "ETHUSD",
+                "output_dir": str(noisy_run_b),
+                "config": {
+                    "device_map": "cuda",
+                    "context_length": 512,
+                    "batch_size": 32,
+                    "learning_rate": 1e-4,
+                    "prediction_length": 24,
+                    "lora_r": 16,
+                    "seed": 2027,
+                    "preaug": "percent_change",
+                },
+                "val_metrics": {"mae_percent": 1.05},
+                "test_metrics": {"mae_percent": 1.10},
+                "preaug_strategy": "percent_change",
+            },
+        ),
+    ]
+    for path, payload in payloads:
+        path.write_text(json.dumps(payload, indent=2) + "\n")
+
+    rc = main(
+        [
+            "--report-dir",
+            str(report_dir),
+            "--output-dir",
+            str(out_dir),
+            "--template",
+            str(template),
+            "--symbols",
+            "ETHUSD",
+            "--selection-strategy",
+            "stable_family",
+            "--stability-penalty",
+            "0.25",
+            "--min-family-size",
+            "2",
+        ]
+    )
+    assert rc == 0
+
+    written = json.loads((out_dir / "ETHUSD.json").read_text())
+    assert written["config"]["model_id"] == str(stable_run_a / "finetuned-ckpt")
+    assert written["metadata"]["selection_strategy"] == "stable_family"
+    assert written["metadata"]["selection_family_size"] == 2
+    assert written["metadata"]["selection_family_key"] is not None
+    assert written["validation"]["mae_percent"] == 0.55

@@ -10,7 +10,7 @@ Binary format (v2):
     version:          uint32   (2)
     num_symbols:      uint32
     num_timesteps:    uint32   (calendar days)
-    features_per_sym: uint32   (always 16)
+    features_per_sym: uint32   (16 normally; 20 when --cross-features is set)
     price_features:   uint32   (always 5: OHLCV)
     padding:          40 bytes
 
@@ -18,6 +18,8 @@ Binary format (v2):
 
   Feature data: float32[num_timesteps][num_symbols][features_per_sym]
     (Price-only features, no Chronos cache required.)
+    When --cross-features is set, 4 extra cross-symbol features are appended
+    per symbol: rolling_corr_anchor, rolling_beta, relative_return, breadth_rank.
 
   Price data:   float32[num_timesteps][num_symbols][5]  (open, high, low, close, volume)
 
@@ -25,6 +27,12 @@ Binary format (v2):
     1 when the asset has an actual bar for that calendar day; 0 when the day is
     market-closed (e.g. weekends/holidays for stocks). The simulator will refuse
     to open/close positions in symbols with tradable=0 at that timestep.
+
+Backwards compatibility:
+  Without --cross-features the output is byte-for-byte identical to previous
+  versions.  Files written with --cross-features have features_per_sym=20 in
+  the header and require the C extension to be compiled with
+  FEATURES_PER_SYM=20.
 """
 
 from __future__ import annotations
@@ -36,6 +44,11 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+from pufferlib_market.cross_symbol_features import (
+    CROSS_FEATURES,
+    compute_cross_features,
+)
 
 FEATURES_PER_SYM = 16
 PRICE_FEATURES = 5
@@ -194,6 +207,9 @@ def export_binary(
     start_date: str | None = None,
     end_date: str | None = None,
     min_days: int = 200,
+    cross_features: bool = False,
+    cross_anchor: str = "BTC",
+    cross_window: int = 20,
 ) -> None:
     symbols = [s.strip().upper() for s in symbols if s.strip()]
     if not symbols:
@@ -241,16 +257,32 @@ def export_binary(
     num_timesteps = len(full_index)
     num_symbols = len(symbols)
 
-    feature_arr = np.zeros((num_timesteps, num_symbols, FEATURES_PER_SYM), dtype=np.float32)
+    base_feature_arr = np.zeros((num_timesteps, num_symbols, FEATURES_PER_SYM), dtype=np.float32)
     price_arr = np.zeros((num_timesteps, num_symbols, PRICE_FEATURES), dtype=np.float32)
     mask_arr = np.zeros((num_timesteps, num_symbols), dtype=np.uint8)
 
     for si, sym in enumerate(symbols):
         f = aligned_feats[sym].reindex(full_index).fillna(0.0)
         p = aligned_prices[sym].reindex(full_index).ffill().bfill().fillna(0.0)
-        feature_arr[:, si, :] = f.values.astype(np.float32, copy=False)
+        base_feature_arr[:, si, :] = f.values.astype(np.float32, copy=False)
         price_arr[:, si, :] = p[["open", "high", "low", "close", "volume"]].values.astype(np.float32, copy=False)
         mask_arr[:, si] = tradable[sym]
+
+    # Optionally append 4 cross-symbol features per symbol.
+    # Without cross_features the output is byte-for-byte identical to previous.
+    if cross_features:
+        close_prices = price_arr[:, :, 3]  # [T, S] close prices
+        extra = compute_cross_features(
+            close_prices,
+            symbols,
+            window=cross_window,
+            anchor_symbol=cross_anchor,
+        )  # [T, S, 4]
+        feature_arr = np.concatenate([base_feature_arr, extra], axis=2)  # [T, S, 20]
+        features_per_sym_out = FEATURES_PER_SYM + CROSS_FEATURES
+    else:
+        feature_arr = base_feature_arr
+        features_per_sym_out = FEATURES_PER_SYM
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "wb") as f:
@@ -260,7 +292,7 @@ def export_binary(
             VERSION,
             num_symbols,
             num_timesteps,
-            FEATURES_PER_SYM,
+            features_per_sym_out,
             PRICE_FEATURES,
             b"\x00" * 40,
         )
@@ -272,7 +304,7 @@ def export_binary(
         f.write(price_arr.tobytes(order="C"))
         f.write(mask_arr.tobytes(order="C"))
 
-    print(f"Wrote {output_path} ({num_symbols} symbols, {num_timesteps} days)")
+    print(f"Wrote {output_path} ({num_symbols} symbols, {num_timesteps} days, features_per_sym={features_per_sym_out})")
     print(f"Date range: {full_index[0]} to {full_index[-1]}")
 
 
@@ -284,6 +316,18 @@ def main() -> None:
     parser.add_argument("--start-date", default=None, help="Optional ISO start date")
     parser.add_argument("--end-date", default=None, help="Optional ISO end date")
     parser.add_argument("--min-days", type=int, default=200, help="Minimum aligned calendar days required")
+    parser.add_argument(
+        "--cross-features",
+        action="store_true",
+        default=False,
+        help=(
+            "Append 4 cross-symbol features per symbol (rolling_corr_anchor, "
+            "rolling_beta, relative_return, breadth_rank), bumping features_per_sym "
+            "from 16 to 20.  Requires C env recompiled with FEATURES_PER_SYM=20."
+        ),
+    )
+    parser.add_argument("--cross-anchor", default="BTC", help="Anchor symbol name for cross features (default: BTC)")
+    parser.add_argument("--cross-window", type=int, default=20, help="Rolling window in days for cross features (default: 20)")
     args = parser.parse_args()
 
     try:
@@ -294,6 +338,9 @@ def main() -> None:
             start_date=args.start_date,
             end_date=args.end_date,
             min_days=args.min_days,
+            cross_features=args.cross_features,
+            cross_anchor=args.cross_anchor,
+            cross_window=args.cross_window,
         )
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)

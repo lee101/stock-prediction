@@ -28,6 +28,20 @@ logger = logging.getLogger(__name__)
 _flex_block_mask_cache: dict[tuple[int, str], object] = {}
 
 
+def _maybe_bool(value: object, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
+
+
 def _get_flex_causal_mask(seq_len: int, device: torch.device) -> object:
     key = (seq_len, str(device))
     if key not in _flex_block_mask_cache:
@@ -397,6 +411,7 @@ class MultiQueryAttention(nn.Module):
             every = int(config.value_embedding_every)
             self.use_value_embedding = (self.layer_idx % every == 0)
         self.value_embedding_scale = float(config.value_embedding_scale)
+        self.attention_backend = str(getattr(config, "attention_backend", "auto") or "auto").lower()
         if self.use_value_embedding:
             ve_len = config.max_len + (int(config.num_memory_tokens) if config.num_memory_tokens else 0)
             self.value_embedding = nn.Parameter(torch.zeros(ve_len, config.hidden_dim))
@@ -486,6 +501,7 @@ class MultiQueryAttention(nn.Module):
 
         attn_mask = self._build_attention_mask(T, x.device)
         dropout_p = self.dropout.p if self.training else 0.0
+        forced_backend = self.attention_backend
 
         # Attention kernel selection (highest-priority first):
         #
@@ -494,6 +510,8 @@ class MultiQueryAttention(nn.Module):
         #    this path is valid during training too.  Requires CUDA + no mask +
         #    no dropout (FA2 dropout is not used here).
         use_flash = (
+            forced_backend in {"auto", "flash4"}
+            and
             HAS_FLASH_ATTN
             and q.is_cuda
             and attn_mask is None
@@ -503,6 +521,8 @@ class MultiQueryAttention(nn.Module):
         # 2. Triton fused MQA kernel: custom online-softmax, supports arbitrary
         #    additive masks but has no backward pass — inference only.
         use_triton = (
+            forced_backend == "auto"
+            and
             not use_flash
             and HAS_TRITON
             and not self.training
@@ -513,6 +533,8 @@ class MultiQueryAttention(nn.Module):
 
         # 3. FlexAttention: efficient causal attention via block masks.
         use_flex = (
+            forced_backend in {"auto", "flex"}
+            and
             not use_flash
             and not use_triton
             and self.use_flex_attention
@@ -521,6 +543,12 @@ class MultiQueryAttention(nn.Module):
             and self.causal
             and dropout_p == 0.0
         )
+
+        if forced_backend == "flash4":
+            if not q.is_cuda:
+                raise RuntimeError("flash-attn-4 requires CUDA tensors")
+            if not use_flash:
+                raise RuntimeError("flash-attn-4 backend requested but the current attention configuration is unsupported")
 
         if use_flash:
             y = _flash_attn_mqa(q, k, v, causal=self.causal)
@@ -1011,6 +1039,9 @@ class BinanceHourlyPolicyMamba(BinancePolicyBase):
 
 def build_policy(policy_cfg: PolicyConfig) -> BinancePolicyBase:
     arch = (policy_cfg.model_arch or "classic").lower()
+    backend = str(getattr(policy_cfg, "attention_backend", "auto") or "auto").lower()
+    if arch not in {"nano", "nanochat", "modern", "moe", "nano_moe"} and backend in {"flex", "flash4"}:
+        raise ValueError(f"attention_backend={backend!r} requires model_arch='nano'")
     if arch in {"nano", "nanochat", "modern", "moe", "nano_moe"}:
         return BinanceHourlyPolicyNano(policy_cfg)
     if arch in {"mamba", "mamba2", "mamba3", "ssm"}:
@@ -1031,6 +1062,14 @@ def policy_config_from_payload(
             return cast_fn(value)
         except (TypeError, ValueError):
             return default
+
+    def _attention_backend_from_payload() -> str:
+        raw_backend = payload.get("attention_backend")
+        if raw_backend is not None:
+            return str(raw_backend)
+        if "use_flex_attention" in payload:
+            return "flex" if _maybe_bool(payload.get("use_flex_attention"), True) else "sdpa"
+        return "auto"
 
     max_len = _maybe(payload.get("max_len"), int, None)
     if max_len is None:
@@ -1075,6 +1114,8 @@ def policy_config_from_payload(
         use_causal_attention=bool(payload.get("use_causal_attention", True)),
         rms_norm_eps=_maybe(payload.get("rms_norm_eps"), float, 1e-5),
         attention_window=_maybe(payload.get("attention_window"), int, None),
+        attention_backend=_attention_backend_from_payload(),
+        flex_block_size=_maybe(payload.get("flex_block_size"), int, 128),
         use_residual_scalars=bool(payload.get("use_residual_scalars", False)),
         residual_scale_init=_maybe(payload.get("residual_scale_init"), float, 1.0),
         skip_scale_init=_maybe(payload.get("skip_scale_init"), float, 0.0),
@@ -1083,7 +1124,7 @@ def policy_config_from_payload(
         value_embedding_scale=_maybe(payload.get("value_embedding_scale"), float, 1.0),
         num_memory_tokens=_maybe(payload.get("num_memory_tokens"), int, 0),
         dilated_strides=str(payload.get("dilated_strides", "")),
-        use_flex_attention=bool(payload.get("use_flex_attention", True)),
+        use_flex_attention=_maybe_bool(payload.get("use_flex_attention"), True),
         num_outputs=_maybe(payload.get("num_outputs"), int, 4),
         max_hold_hours=_maybe(payload.get("max_hold_hours"), float, 24.0),
     )

@@ -26,12 +26,11 @@ from pathlib import Path
 from typing import Any
 
 REPO = Path(__file__).resolve().parents[1]
-if str(REPO) not in sys.path:
-    sys.path.insert(0, str(REPO))
-
 _scripts_dir = str(REPO / "scripts")
 if _scripts_dir not in sys.path:
     sys.path.insert(0, _scripts_dir)
+if str(REPO) not in sys.path:
+    sys.path.insert(1, str(REPO))
 
 # Re-use shared helpers from wandb_metrics_reader to avoid duplication
 import wandb_metrics_reader as _reader  # noqa: E402
@@ -39,10 +38,18 @@ import wandb_metrics_reader as _reader  # noqa: E402
 _import_wandb = _reader._import_wandb
 _check_api_key = _reader._check_api_key
 _pick = _reader._pick
+_coerce_float = _reader._coerce_float
+_object_to_dict = _reader._object_to_dict
 _sample_history = _reader._sample_history
+_sample_history_any = _reader._sample_history_any
 _fmt_duration = _reader._fmt_duration
 _fmt_curve = _reader._fmt_curve
+_fmt_metric_value = _reader._fmt_metric_value
 _pct = _reader._pct
+_resolve_metric_value = _reader._resolve_metric_value
+_metric_sorts_desc = _reader._metric_sorts_desc
+_merge_local_summary = _reader._merge_local_summary
+compute_stability_metrics = _reader.compute_stability_metrics
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +143,7 @@ def fetch_runs(
     run_id: str | None,
     group: str | None,
     last_n: int,
+    sort_by: str = "val_return",
 ) -> list[dict[str, Any]]:
     """Fetch run metadata from WandB, extended with arch/optimizer/dataset tags."""
     api = wandb.Api()
@@ -163,8 +171,9 @@ def fetch_runs(
 
     result = []
     for r in runs_raw:
-        summary = dict(r.summary) if r.summary else {}
-        config_raw = dict(r.config) if r.config else {}
+        summary = _object_to_dict(getattr(r, "summary", None))
+        summary = _merge_local_summary(getattr(r, "id", None), summary)
+        config_raw = _object_to_dict(getattr(r, "config", None))
         config = _extract_config(config_raw)
 
         val_return_raw = _pick(summary, "val/return", "val_return", "best_val_return")
@@ -175,19 +184,33 @@ def fetch_runs(
 
         steps_raw = _pick(summary, "global_step", "_step", "train/global_step", "step")
         steps = int(steps_raw) if steps_raw is not None else None
+        train_return = _pick(summary, "train/final_return", "train_return", "train/return")
+        smooth_score = _pick(summary, "smooth_score", "trial/smooth_score", "val/smooth_score")
 
         loss_curve: list[float] = []
         val_return_curve: list[float] = []
+        val_sortino_curve: list[float] = []
         try:
             history = list(r.history(
-                keys=["train/policy_loss", "train/return", "train/episode_return_mean"],
+                keys=[
+                    "train/policy_loss",
+                    "train/return",
+                    "train/episode_return_mean",
+                    "val/return",
+                    "val_return",
+                    "eval_return",
+                    "val/sortino",
+                    "val_sortino",
+                    "eval_sortino",
+                ],
                 samples=200,
             ))
             loss_curve = _sample_history(history, "train/policy_loss")
-            val_return_curve = (
-                _sample_history(history, "train/episode_return_mean")
-                or _sample_history(history, "train/return")
+            val_return_curve = _sample_history_any(
+                history,
+                ["val/return", "val_return", "eval_return", "train/episode_return_mean", "train/return"],
             )
+            val_sortino_curve = _sample_history_any(history, ["val/sortino", "val_sortino", "eval_sortino"])
         except Exception:
             pass
 
@@ -202,21 +225,26 @@ def fetch_runs(
             "final_loss": final_loss,
             "steps": steps,
             "duration": summary.get("_runtime") or None,
+            "train_return": _coerce_float(train_return),
             "loss_curve": loss_curve,
             "val_return_curve": val_return_curve,
+            "val_sortino_curve": val_sortino_curve,
             "sortino": _pick(summary, "val/sortino", "sortino"),
             "win_rate": _pick(summary, "val/win_rate", "win_rate"),
             "max_drawdown": _pick(summary, "val/max_drawdown", "max_drawdown"),
             "num_trades": _pick(summary, "val/num_trades", "num_trades"),
+            "smooth_score": _coerce_float(smooth_score),
         }
         run_dict["arch"] = _detect_arch(run_dict)
         run_dict["optimizer"] = _detect_optimizer(run_dict)
         run_dict["dataset"] = _detect_dataset(run_dict)
+        run_dict.update(compute_stability_metrics(run_dict))
         result.append(run_dict)
 
+    sort_desc = _metric_sorts_desc(sort_by)
     result.sort(
-        key=lambda r: r["val_return"] if r["val_return"] is not None else float("-inf"),
-        reverse=True,
+        key=lambda r: _resolve_metric_value(r, sort_by) if _resolve_metric_value(r, sort_by) is not None else (float("-inf") if sort_desc else float("inf")),
+        reverse=sort_desc,
     )
     return result
 
@@ -247,13 +275,15 @@ def _best_in_group(group_runs: list[dict]) -> dict | None:
 
 def format_summary_table(runs: list[dict]) -> str:
     header = ("| Run | Arch | Dataset | Config | Best Val Return"
-              " | Sortino | Win Rate | Final Loss | Steps | Duration |")
+              " | Sortino | Stability | Gap | Win Rate | Final Loss | Steps | Duration |")
     sep = ("|-----|------|---------|--------|----------------|"
-           "---------|----------|------------|-------|----------|")
+           "---------|-----------|-----|----------|------------|-------|----------|")
     lines = [header, sep]
     for r in runs:
         vr = _pct(r["val_return"])
         sr = f"{r['sortino']:.2f}" if r.get("sortino") is not None else "—"
+        stability = _fmt_metric_value("stability_score", _coerce_float(r.get("stability_score")))
+        gap = _fmt_metric_value("generalization_gap", _coerce_float(r.get("generalization_gap")))
         wr = f"{r['win_rate'] * 100:.0f}%" if r.get("win_rate") is not None else "—"
         loss = f"{r['final_loss']:.3f}" if r.get("final_loss") is not None else "—"
         steps = f"{r['steps'] / 1e6:.1f}M" if r.get("steps") is not None else "—"
@@ -261,7 +291,7 @@ def format_summary_table(runs: list[dict]) -> str:
         cfg = _fmt_config(r["config"], keys=["hidden_size", "lr", "ent_coef", "fill_slippage_bps"])
         lines.append(
             f"| {r['name']} | {r.get('arch', '—')} | {r.get('dataset', '—')} "
-            f"| {cfg} | {vr} | {sr} | {wr} | {loss} | {steps} | {dur} |"
+            f"| {cfg} | {vr} | {sr} | {stability} | {gap} | {wr} | {loss} | {steps} | {dur} |"
         )
     return "\n".join(lines)
 
@@ -273,9 +303,9 @@ def format_group_comparison(runs: list[dict], group_key: str, group_label: str) 
 
     lines = [f"### Comparison by {group_label}", ""]
     header = (f"| {group_label} | Best Run | Val Return | Sortino"
-              " | Win Rate | Convergence (train return curve) |")
+              " | Stability | Win Rate | Convergence (return curve) |")
     sep = (f"|{'-' * (len(group_label) + 2)}|----------|------------|---------|"
-           "----------|----------------------------------|")
+           "-----------|----------|----------------------------|")
     lines += [header, sep]
 
     sorted_groups = sorted(
@@ -290,9 +320,10 @@ def format_group_comparison(runs: list[dict], group_key: str, group_label: str) 
             continue
         vr = _pct(best["val_return"])
         sr = f"{best['sortino']:.2f}" if best.get("sortino") is not None else "—"
+        stability = _fmt_metric_value("stability_score", _coerce_float(best.get("stability_score")))
         wr = f"{best['win_rate'] * 100:.0f}%" if best.get("win_rate") is not None else "—"
         curve = _fmt_curve(best.get("val_return_curve") or [])
-        lines.append(f"| {group_name} | {best['name']} | {vr} | {sr} | {wr} | {curve} |")
+        lines.append(f"| {group_name} | {best['name']} | {vr} | {sr} | {stability} | {wr} | {curve} |")
 
     lines.append("")
     lines.append(f"*{len(groups)} group(s), {len(runs)} total run(s)*")
@@ -304,6 +335,12 @@ def format_best_run_detail(best: dict) -> str:
     lines.append(f"- **Val return**: {_pct(best['val_return'])}")
     if best.get("sortino") is not None:
         lines.append(f"- **Sortino**: {best['sortino']:.2f}")
+    if best.get("stability_score") is not None:
+        lines.append(f"- **Stability score**: {best['stability_score']:.3f}")
+    if best.get("generalization_gap") is not None:
+        lines.append(f"- **Train/val gap**: {_pct(best['generalization_gap'])}")
+    if best.get("smooth_score") is not None:
+        lines.append(f"- **Market smooth score**: {best['smooth_score']:.3f}")
     if best.get("win_rate") is not None:
         lines.append(f"- **Win rate**: {best['win_rate'] * 100:.0f}%")
     if best.get("max_drawdown") is not None:
@@ -313,7 +350,9 @@ def format_best_run_detail(best: dict) -> str:
     if best.get("loss_curve"):
         lines.append(f"- **Train loss curve** (sampled): {_fmt_curve(best['loss_curve'])}")
     if best.get("val_return_curve"):
-        lines.append(f"- **Train return curve** (sampled): {_fmt_curve(best['val_return_curve'])}")
+        lines.append(f"- **Return curve** (sampled): {_fmt_curve(best['val_return_curve'])}")
+    if best.get("val_sortino_curve"):
+        lines.append(f"- **Sortino curve** (sampled): {_fmt_curve(best['val_sortino_curve'])}")
     cfg = best.get("config", {})
     if cfg:
         lines.append(f"- **Config**: {_fmt_config(cfg)}")
@@ -335,6 +374,7 @@ def format_dashboard(
     compare_archs: bool = False,
     compare_optimizers: bool = False,
     compare_datasets: bool = False,
+    sort_by: str = "val_return",
 ) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     proj_label = f"{entity}/{project}" if entity else project
@@ -349,13 +389,14 @@ def format_dashboard(
         lines.append("*No runs found.*")
         return "\n".join(lines)
 
+    sort_desc = _metric_sorts_desc(sort_by)
     runs = sorted(
         runs,
-        key=lambda r: r["val_return"] if r.get("val_return") is not None else float("-inf"),
-        reverse=True,
+        key=lambda r: _resolve_metric_value(r, sort_by) if _resolve_metric_value(r, sort_by) is not None else (float("-inf") if sort_desc else float("inf")),
+        reverse=sort_desc,
     )
 
-    lines.append("### All Runs")
+    lines.append(f"### All Runs (sorted by {sort_by})")
     lines.append("")
     lines.append(format_summary_table(runs))
     lines.append("")
@@ -404,6 +445,8 @@ def parse_args(argv=None) -> argparse.Namespace:
                         help="Add optimizer comparison section")
     parser.add_argument("--compare-datasets", action="store_true",
                         help="Add dataset/data-split comparison section")
+    parser.add_argument("--sort-by", default="val_return",
+                        help="Metric to sort by, e.g. val_return, sortino, stability_score")
     return parser.parse_args(argv)
 
 
@@ -419,6 +462,7 @@ def main(argv=None) -> int:
         run_id=args.run_id,
         group=args.group,
         last_n=args.last_n_runs,
+        sort_by=args.sort_by,
     )
 
     print(format_dashboard(
@@ -428,6 +472,7 @@ def main(argv=None) -> int:
         compare_archs=args.compare_archs,
         compare_optimizers=args.compare_optimizers,
         compare_datasets=args.compare_datasets,
+        sort_by=args.sort_by,
     ))
     return 0
 

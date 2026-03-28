@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+from contextlib import redirect_stdout
 import json
 import sys
 from pathlib import Path
@@ -60,6 +61,7 @@ def load_policy(
     arch: str = "auto",
     hidden_size: Optional[int] = None,
     device: torch.device = torch.device("cpu"),
+    features_per_sym: int = 16,
 ) -> tuple[nn.Module, dict, int]:
     """Load a checkpoint and build the policy network.
 
@@ -77,7 +79,7 @@ def load_policy(
             f"Only supports alloc_bins=1 level_bins=1 (got {action_allocation_bins}, {action_level_bins})"
         )
 
-    obs_size = num_symbols * 16 + 5 + num_symbols
+    obs_size = num_symbols * features_per_sym + 5 + num_symbols
     fallback_actions = 1 + 2 * num_symbols
     num_actions = _infer_num_actions(state_dict, fallback=fallback_actions)
 
@@ -93,7 +95,21 @@ def load_policy(
     else:
         raise ValueError(f"Unsupported arch: {arch}")
 
-    policy.load_state_dict(state_dict)
+    missing, unexpected = policy.load_state_dict(state_dict, strict=False)
+    if hasattr(policy, '_use_encoder_norm'):
+        # Prefer the stored flag (from _checkpoint_payload "use_encoder_norm" key).
+        # Fall back to inferring from missing keys for old checkpoints that don't store it.
+        if isinstance(payload, dict) and "use_encoder_norm" in payload:
+            policy._use_encoder_norm = bool(payload["use_encoder_norm"])
+        else:
+            policy._use_encoder_norm = "encoder_norm.weight" not in missing
+    ignored = {"obs_mean", "obs_std", "encoder_norm.weight", "encoder_norm.bias"}
+    bad_missing = [k for k in missing if k not in ignored]
+    bad_unexpected = [k for k in unexpected if k not in ignored]
+    if bad_missing or bad_unexpected:
+        raise RuntimeError(
+            f"Checkpoint architecture mismatch — missing: {bad_missing}, unexpected: {bad_unexpected}"
+        )
     policy.eval()
     return policy, state_dict, num_actions
 
@@ -220,9 +236,11 @@ def evaluate_checkpoint(
     device = torch.device(device_str)
     data = read_mktd(Path(data_path))
     num_symbols = data.num_symbols
+    features_per_sym = data.features.shape[2]
 
     policy, _, num_actions = load_policy(
         checkpoint_path, num_symbols, arch=arch, hidden_size=hidden_size, device=device,
+        features_per_sym=features_per_sym,
     )
 
     shortable_mask = _build_shortable_mask(data.symbols, shortable_symbols)
@@ -330,21 +348,23 @@ def main() -> None:
     for ckpt in ckpt_paths:
         name = Path(ckpt).parent.name + "/" + Path(ckpt).name
         names.append(name)
-        results = evaluate_checkpoint(
-            ckpt, args.data_path, periods,
-            arch=args.arch,
-            hidden_size=args.hidden_size,
-            fee_rate=args.fee_rate,
-            fill_buffer_bps=args.fill_buffer_bps,
-            max_leverage=args.max_leverage,
-            periods_per_year=args.periods_per_year,
-            short_borrow_apr=args.short_borrow_apr,
-            disable_shorts=args.disable_shorts,
-            shortable_symbols=args.shortable_symbols,
-            deterministic=args.deterministic,
-            decision_lag=args.decision_lag,
-            device_str=args.device,
-        )
+        eval_stdout = sys.stderr if args.json else sys.stdout
+        with redirect_stdout(eval_stdout):
+            results = evaluate_checkpoint(
+                ckpt, args.data_path, periods,
+                arch=args.arch,
+                hidden_size=args.hidden_size,
+                fee_rate=args.fee_rate,
+                fill_buffer_bps=args.fill_buffer_bps,
+                max_leverage=args.max_leverage,
+                periods_per_year=args.periods_per_year,
+                short_borrow_apr=args.short_borrow_apr,
+                disable_shorts=args.disable_shorts,
+                shortable_symbols=args.shortable_symbols,
+                deterministic=args.deterministic,
+                decision_lag=args.decision_lag,
+                device_str=args.device,
+            )
         all_results.append(results)
 
     if args.json:

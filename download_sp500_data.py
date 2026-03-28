@@ -1,158 +1,198 @@
 #!/usr/bin/env python3
+"""Download S&P500 OHLCV data for RL training.
+
+Usage:
+  python scripts/download_sp500_data.py --dry-run --limit 5
+  python scripts/download_sp500_data.py --output-dir trainingdatadaily/stocks/
+  python scripts/download_sp500_data.py --symbols-file my_symbols.txt
 """
-Download historical data for S&P 500 stocks for simulation testing.
-Downloads both hourly (trainingdatahourly) and daily (trainingdata) data.
-"""
+
+from __future__ import annotations
+
 import argparse
 import sys
+import time
+from datetime import date
 from pathlib import Path
 
-# S&P 500 constituents as of January 2025
-SP500_SYMBOLS = [
-    "MMM", "AOS", "ABT", "ABBV", "ACN", "ADBE", "AMD", "AES", "AFL", "A", "APD", "ABNB",
-    "AKAM", "ALB", "ARE", "ALGN", "ALLE", "LNT", "ALL", "GOOGL", "GOOG", "MO", "AMZN",
-    "AMCR", "AEE", "AEP", "AXP", "AIG", "AMT", "AWK", "AMP", "AME", "AMGN", "APH", "ADI",
-    "AON", "APA", "APO", "AAPL", "AMAT", "APTV", "ACGL", "ADM", "ANET", "AJG", "AIZ", "T",
-    "ATO", "ADSK", "ADP", "AZO", "AVB", "AVY", "AXON", "BKR", "BALL", "BAC", "BAX", "BDX",
-    "BBY", "TECH", "BIIB", "BLK", "BX", "BK", "BA", "BKNG", "BSX", "BMY", "AVGO", "BR",
-    "BRO", "BLDR", "BG", "BXP", "CHRW", "CDNS", "CZR", "CPT", "CPB", "COF", "CAH", "KMX",
-    "CCL", "CARR", "CAT", "CBOE", "CBRE", "CDW", "COR", "CNC", "CNP", "CF", "CRL", "SCHW",
-    "CHTR", "CVX", "CMG", "CB", "CHD", "CI", "CINF", "CTAS", "CSCO", "C", "CFG", "CLX",
-    "CME", "CMS", "KO", "CTSH", "COIN", "CL", "CMCSA", "CAG", "COP", "ED", "STZ", "CEG",
-    "COO", "CPRT", "GLW", "CPAY", "CTVA", "CSGP", "COST", "CTRA", "CRWD", "CCI", "CSX",
-    "CMI", "CVS", "DHR", "DRI", "DDOG", "DVA", "DAY", "DECK", "DE", "DELL", "DAL", "DVN",
-    "DXCM", "FANG", "DLR", "DG", "DLTR", "D", "DPZ", "DASH", "DOV", "DOW", "DHI", "DTE",
-    "DUK", "DD", "EMN", "ETN", "EBAY", "ECL", "EIX", "EW", "EA", "ELV", "EMR", "ENPH",
-    "ETR", "EOG", "EPAM", "EQT", "EFX", "EQIX", "EQR", "ERIE", "ESS", "EL", "EG", "EVRG",
-    "ES", "EXC", "EXE", "EXPE", "EXPD", "EXR", "XOM", "FFIV", "FDS", "FICO", "FAST", "FRT",
-    "FDX", "FIS", "FITB", "FSLR", "FE", "FI", "F", "FTNT", "FTV", "FOXA", "FOX", "BEN",
-    "FCX", "GRMN", "IT", "GE", "GEHC", "GEV", "GEN", "GNRC", "GD", "GIS", "GM", "GPC",
-    "GILD", "GPN", "GL", "GDDY", "GS", "HAL", "HIG", "HAS", "HCA", "DOC", "HSIC", "HSY",
-    "HPE", "HLT", "HOLX", "HD", "HON", "HRL", "HST", "HWM", "HPQ", "HUBB", "HUM", "HBAN",
-    "HII", "IBM", "IEX", "IDXX", "ITW", "INCY", "IR", "PODD", "INTC", "ICE", "IFF", "IP",
-    "IPG", "INTU", "ISRG", "IVZ", "INVH", "IQV", "IRM", "JBHT", "JBL", "JKHY", "J", "JNJ",
-    "JCI", "JPM", "K", "KVUE", "KDP", "KEY", "KEYS", "KMB", "KIM", "KMI", "KKR", "KLAC",
-    "KHC", "KR", "LHX", "LH", "LRCX", "LW", "LVS", "LDOS", "LEN", "LII", "LLY", "LIN",
-    "LYV", "LKQ", "LMT", "L", "LOW", "LULU", "LYB", "MTB", "MPC", "MKTX", "MAR", "MMC",
-    "MLM", "MAS", "MA", "MTCH", "MKC", "MCD", "MCK", "MDT", "MRK", "META", "MET", "MTD",
-    "MGM", "MCHP", "MU", "MSFT", "MAA", "MRNA", "MHK", "MOH", "TAP", "MDLZ", "MPWR",
-    "MNST", "MCO", "MS", "MOS", "MSI", "MSCI", "NDAQ", "NTAP", "NFLX", "NEM", "NWSA",
-    "NWS", "NEE", "NKE", "NI", "NDSN", "NSC", "NTRS", "NOC", "NCLH", "NRG", "NUE", "NVDA",
-    "NVR", "NXPI", "ORLY", "OXY", "ODFL", "OMC", "ON", "OKE", "ORCL", "OTIS", "PCAR",
-    "PKG", "PLTR", "PANW", "PSKY", "PH", "PAYX", "PAYC", "PYPL", "PNR", "PEP", "PFE",
-    "PCG", "PM", "PSX", "PNW", "PNC", "POOL", "PPG", "PPL", "PFG", "PG", "PGR", "PLD",
-    "PRU", "PEG", "PTC", "PSA", "PHM", "PWR", "QCOM", "DGX", "RL", "RJF", "RTX", "O",
-    "REG", "REGN", "RF", "RSG", "RMD", "RVTY", "ROK", "ROL", "ROP", "ROST", "RCL", "SPGI",
-    "CRM", "SBAC", "SLB", "STX", "SRE", "NOW", "SHW", "SPG", "SWKS", "SJM", "SW", "SNA",
-    "SOLV", "SO", "LUV", "SWK", "SBUX", "STT", "STLD", "STE", "SYK", "SMCI", "SYF", "SNPS",
-    "SYY", "TMUS", "TROW", "TTWO", "TPR", "TRGP", "TGT", "TEL", "TDY", "TER", "TSLA",
-    "TXN", "TPL", "TXT", "TMO", "TJX", "TKO", "TTD", "TSCO", "TT", "TDG", "TRV", "TRMB",
-    "TFC", "TYL", "TSN", "USB", "UBER", "UDR", "ULTA", "UNP", "UAL", "UPS", "URI", "UNH",
-    "UHS", "VLO", "VTR", "VLTO", "VRSN", "VRSK", "VZ", "VRTX", "VTRS", "VICI", "V", "VST",
-    "VMC", "WRB", "GWW", "WAB", "WBA", "WMT", "DIS", "WBD", "WM", "WAT", "WEC", "WFC",
-    "WELL", "WST", "WDC", "WY", "WSM", "WMB", "WTW", "WDAY", "WYNN", "XEL", "XYL", "YUM",
-    "ZBRA", "ZBH", "ZTS"
-]
-
-def get_existing_symbols(data_dir: Path) -> set:
-    """Get set of symbols that already have data files."""
-    if not data_dir.exists():
-        return set()
-    return {f.stem for f in data_dir.glob("*.csv") if not f.stem.startswith(".")}
+import pandas as pd
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Download S&P 500 historical data for simulation")
-    parser.add_argument("--hourly-only", action="store_true", help="Download only hourly data")
-    parser.add_argument("--daily-only", action="store_true", help="Download only daily data")
-    parser.add_argument("--force", action="store_true", help="Re-download even if data exists")
-    parser.add_argument("--limit", type=int, default=0, help="Limit number of new symbols to download (0=all)")
-    parser.add_argument("--sleep", type=float, default=0.3, help="Sleep between downloads to avoid rate limits")
-    args = parser.parse_args()
+SP500_WIKIPEDIA_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+DEFAULT_OUTPUT_DIR = "trainingdatadaily/stocks"
+DEFAULT_START_DATE = "2020-01-01"
+BATCH_SIZE = 50
+BATCH_DELAY_SECONDS = 1.0
 
-    base_path = Path(__file__).parent
 
-    # Check existing data
-    hourly_dir = base_path / "trainingdatahourly" / "stocks"
-    daily_train_dir = base_path / "trainingdata" / "train"
+def fetch_sp500_symbols_from_wikipedia() -> list[str]:
+    """Fetch current S&P 500 constituent symbols from Wikipedia."""
+    tables = pd.read_html(SP500_WIKIPEDIA_URL)
+    df = tables[0]
+    col = next((c for c in df.columns if str(c).strip().lower() in ("symbol", "ticker")), df.columns[0])
+    symbols = [str(s).strip().replace(".", "-") for s in df[col].tolist() if str(s).strip()]
+    return symbols
 
-    existing_hourly = get_existing_symbols(hourly_dir) if not args.force else set()
-    existing_daily = get_existing_symbols(daily_train_dir) if not args.force else set()
 
-    # Find new symbols
-    sp500_set = set(SP500_SYMBOLS)
-    new_for_hourly = sp500_set - existing_hourly
-    new_for_daily = sp500_set - existing_daily
+def load_symbols_from_file(path: str) -> list[str]:
+    """Load one symbol per line from a text file."""
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    return [line.strip().upper() for line in lines if line.strip() and not line.startswith("#")]
 
-    print(f"S&P 500 symbols: {len(SP500_SYMBOLS)}")
-    print(f"Existing hourly data: {len(existing_hourly)}")
-    print(f"Existing daily data: {len(existing_daily)}")
-    print(f"New for hourly: {len(new_for_hourly)}")
-    print(f"New for daily: {len(new_for_daily)}")
-    print()
 
-    # Import download functions
-    sys.path.insert(0, str(base_path))
+def save_symbol_list(symbols: list[str], output_dir: Path) -> None:
+    """Save the symbol list to {output_dir}/sp500_symbols.txt."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    dest = output_dir / "sp500_symbols.txt"
+    dest.write_text("\n".join(symbols) + "\n", encoding="utf-8")
+    print(f"Saved symbol list ({len(symbols)} symbols) → {dest}")
 
-    if not args.daily_only:
-        print("=" * 60)
-        print("DOWNLOADING HOURLY DATA")
-        print("=" * 60)
 
-        from download_hourly_data import download_all_symbols
+def download_symbols(
+    symbols: list[str],
+    output_dir: Path,
+    *,
+    start_date: str,
+    end_date: str,
+    force: bool = False,
+    dry_run: bool = False,
+) -> tuple[int, int]:
+    """Download OHLCV data for each symbol via yfinance.
 
-        symbols_to_download = sorted(new_for_hourly)
-        if args.limit > 0:
-            symbols_to_download = symbols_to_download[:args.limit]
+    Returns (downloaded_count, skipped_count).
+    """
+    import yfinance as yf  # noqa: PLC0415  (lazy import — optional dep)
 
-        if symbols_to_download:
-            print(f"Downloading hourly data for {len(symbols_to_download)} symbols...")
-            print(f"Symbols: {', '.join(symbols_to_download[:20])}{'...' if len(symbols_to_download) > 20 else ''}")
+    downloaded = 0
+    skipped = 0
+    total = len(symbols)
 
-            download_all_symbols(
-                symbols=symbols_to_download,
-                include_stocks=True,
-                include_crypto=False,
-                output_dir=base_path / "trainingdatahourly",
-                stock_years=1,  # 1 year of hourly data for simulation
-                sleep_seconds=args.sleep,
-                skip_if_exists=not args.force,
-            )
-        else:
-            print("No new hourly data to download.")
-        print()
+    for batch_start in range(0, total, BATCH_SIZE):
+        batch = symbols[batch_start : batch_start + BATCH_SIZE]
 
-    if not args.hourly_only:
-        print("=" * 60)
-        print("DOWNLOADING DAILY DATA")
-        print("=" * 60)
+        for symbol in batch:
+            dest = output_dir / f"{symbol}.csv"
+            if dest.exists() and not force:
+                skipped += 1
+                continue
 
-        from alpaca_wrapper import download_training_pairs
+            if dry_run:
+                print(f"  [dry-run] Would download {symbol} → {dest}")
+                downloaded += 1
+                continue
 
-        symbols_to_download = sorted(new_for_daily)
-        if args.limit > 0:
-            symbols_to_download = symbols_to_download[:args.limit]
+            output_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                df = yf.download(
+                    symbol,
+                    start=start_date,
+                    end=end_date,
+                    auto_adjust=True,
+                    progress=False,
+                )
+                if df.empty:
+                    print(f"  WARNING: No data for {symbol}", file=sys.stderr)
+                    skipped += 1
+                    continue
 
-        if symbols_to_download:
-            print(f"Downloading daily data for {len(symbols_to_download)} symbols...")
-            print(f"Symbols: {', '.join(symbols_to_download[:20])}{'...' if len(symbols_to_download) > 20 else ''}")
+                # Flatten multi-level columns (yfinance can produce them)
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = [str(col[0]).lower() for col in df.columns]
+                else:
+                    df.columns = [str(c).lower() for c in df.columns]
 
-            download_training_pairs(
-                symbols=symbols_to_download,
-                output_dir=base_path / "trainingdata",
-                history_days=365 * 2,  # 2 years of daily data
-                test_days=30,
-                skip_if_recent_days=0 if args.force else 7,
-                sleep_seconds=args.sleep,
-            )
-        else:
-            print("No new daily data to download.")
+                df.index.name = "date"
+                df = df.reset_index()
+                df.to_csv(dest, index=False)
+                downloaded += 1
+            except Exception as exc:
+                print(f"  ERROR downloading {symbol}: {exc}", file=sys.stderr)
+                skipped += 1
+                continue
 
-    print()
-    print("=" * 60)
-    print("DOWNLOAD COMPLETE")
-    print("=" * 60)
+        done = min(batch_start + BATCH_SIZE, total)
+        print(f"Downloaded {done}/{total} symbols...")
+
+        # Throttle between batches (not after the last one)
+        if batch_start + BATCH_SIZE < total and not dry_run:
+            time.sleep(BATCH_DELAY_SECONDS)
+
+    return downloaded, skipped
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Download S&P500 OHLCV data for RL training.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=DEFAULT_OUTPUT_DIR,
+        help="Directory to save CSV files",
+    )
+    parser.add_argument(
+        "--symbols-file",
+        default=None,
+        help="Path to a text file with one symbol per line (skips Wikipedia fetch)",
+    )
+    parser.add_argument(
+        "--start-date",
+        default=DEFAULT_START_DATE,
+        help="Start date for OHLCV download (ISO format)",
+    )
+    parser.add_argument(
+        "--end-date",
+        default=str(date.today()),
+        help="End date for OHLCV download (ISO format)",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Only process first N symbols (useful for testing)",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-download even if the CSV already exists",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what would be downloaded without downloading",
+    )
+    args = parser.parse_args(argv)
+
+    output_dir = Path(args.output_dir)
+
+    if args.symbols_file:
+        print(f"Loading symbols from {args.symbols_file}...")
+        symbols = load_symbols_from_file(args.symbols_file)
+    else:
+        print("Fetching S&P 500 constituent list from Wikipedia...")
+        symbols = fetch_sp500_symbols_from_wikipedia()
+
+    print(f"Found {len(symbols)} symbols total")
+
+    if args.limit is not None:
+        symbols = symbols[: args.limit]
+        print(f"Limiting to first {len(symbols)} symbols (--limit {args.limit})")
+
+    if not args.dry_run:
+        save_symbol_list(symbols, output_dir)
+
+    downloaded, skipped = download_symbols(
+        symbols,
+        output_dir,
+        start_date=args.start_date,
+        end_date=args.end_date,
+        force=args.force,
+        dry_run=args.dry_run,
+    )
+
+    print(f"Done: {downloaded} downloaded, {skipped} skipped")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

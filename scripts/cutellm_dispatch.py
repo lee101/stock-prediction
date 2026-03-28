@@ -77,10 +77,26 @@ CUTELLM_REMOTE_DIR = "/workspace/cutellm"
 
 _SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes"]
 
+DISPATCH_HOURLY_RATES: dict[str, float] = {
+    "NVIDIA A100 80GB PCIe": 1.64,
+    "NVIDIA A100-SXM4-80GB": 1.64,
+    "NVIDIA H100 80GB HBM3": 3.89,
+    "NVIDIA H100 SXM": 3.89,
+    "NVIDIA GeForce RTX 5090": 1.25,
+}
+
 
 # ---------------------------------------------------------------------------
 # Shared cost helpers
 # ---------------------------------------------------------------------------
+
+
+def _resolve_hourly_rate(gpu_type: str) -> tuple[str, float]:
+    resolved = GPU_ALIASES.get(gpu_type.lower(), gpu_type)
+    rate = DISPATCH_HOURLY_RATES.get(resolved)
+    if rate is None:
+        rate = HOURLY_RATES.get(resolved, HOURLY_RATES.get(gpu_type, 0.0))
+    return resolved, rate
 
 
 def estimate_cost(gpu_type: str, total_secs: int, gpu_count: int = 1) -> float:
@@ -94,15 +110,13 @@ def estimate_cost(gpu_type: str, total_secs: int, gpu_count: int = 1) -> float:
     Returns:
         Estimated cost in USD.
     """
-    resolved = GPU_ALIASES.get(gpu_type.lower(), gpu_type)
-    rate = HOURLY_RATES.get(resolved, HOURLY_RATES.get(gpu_type, 0.0))
+    _resolved, rate = _resolve_hourly_rate(gpu_type)
     wall_secs = SETUP_OVERHEAD_SECS + total_secs
     return rate * gpu_count * (wall_secs / 3600)
 
 
 def _print_cost_line(gpu_type: str, total_secs: int, gpu_count: int = 1) -> float:
-    resolved = GPU_ALIASES.get(gpu_type.lower(), gpu_type)
-    rate = HOURLY_RATES.get(resolved, 0.0)
+    resolved, rate = _resolve_hourly_rate(gpu_type)
     est = rate * gpu_count * ((SETUP_OVERHEAD_SECS + total_secs) / 3600)
     total_min = (SETUP_OVERHEAD_SECS + total_secs) // 60
     gpu_str = f"{gpu_count}x " if gpu_count > 1 else ""
@@ -563,11 +577,11 @@ def cmd_cost(args: argparse.Namespace) -> int:
                              ("Other", other_pods)]:
         if not pod_list:
             continue
-        pod_rate = sum(HOURLY_RATES.get(p.gpu_type, 0.0) for p in pod_list)
+        pod_rate = sum(_resolve_hourly_rate(p.gpu_type)[1] for p in pod_list)
         total_rate += pod_rate
         print(f"  {label}: {len(pod_list)} pod(s), ${pod_rate:.2f}/hr")
         for pod in pod_list:
-            rate = HOURLY_RATES.get(pod.gpu_type, 0.0)
+            rate = _resolve_hourly_rate(pod.gpu_type)[1]
             gpu = pod.gpu_type or "unknown GPU"
             print(f"    {pod.name:<35} {pod.id:<20} {pod.status:<10} ${rate:.2f}/hr  {gpu}")
         print()

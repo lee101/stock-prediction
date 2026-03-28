@@ -44,6 +44,54 @@ def test_require_cuda_logs_once_with_fallback(monkeypatch, backtest_module):
     assert backtest_module._cpu_fallback_log_state == {("analytics", "XYZ")}
 
 
+def test_load_chronos2_wrapper_uses_cpu_fallback(monkeypatch, backtest_module):
+    calls = []
+
+    def _fake_loader(cls, **kwargs):
+        calls.append(dict(kwargs))
+        return object()
+
+    monkeypatch.setattr(backtest_module.torch.cuda, "is_available", lambda: False)
+    monkeypatch.setenv(backtest_module._GPU_FALLBACK_ENV, "1")
+    monkeypatch.setattr(backtest_module, "_cpu_fallback_log_state", set())
+    monkeypatch.setattr(backtest_module, "_chronos2_wrapper_cache", {})
+    monkeypatch.setattr(backtest_module.Chronos2OHLCWrapper, "from_pretrained", classmethod(_fake_loader))
+
+    params = {
+        "model_id": "stub/chronos2",
+        "device_map": "cuda",
+        "context_length": 32,
+        "batch_size": 8,
+        "quantile_levels": (0.1, 0.5, 0.9),
+        "symbol": "BTCUSD",
+    }
+
+    wrapper = backtest_module.load_chronos2_wrapper(params)
+
+    assert wrapper is not None
+    assert len(calls) == 1
+    assert calls[0]["device_map"] == "cpu"
+    assert ("Chronos2 forecasting", "BTCUSD") in backtest_module._cpu_fallback_log_state
+
+
+def test_load_chronos2_wrapper_raises_without_cpu_fallback(monkeypatch, backtest_module):
+    monkeypatch.setattr(backtest_module.torch.cuda, "is_available", lambda: False)
+    monkeypatch.delenv(backtest_module._GPU_FALLBACK_ENV, raising=False)
+    monkeypatch.setattr(backtest_module, "_chronos2_wrapper_cache", {})
+
+    params = {
+        "model_id": "stub/chronos2",
+        "device_map": "cuda",
+        "context_length": 32,
+        "batch_size": 8,
+        "quantile_levels": (0.1, 0.5, 0.9),
+        "symbol": "BTCUSD",
+    }
+
+    with pytest.raises(RuntimeError, match="CUDA-capable GPU"):
+        backtest_module.load_chronos2_wrapper(params)
+
+
 def test_compute_walk_forward_stats(monkeypatch, backtest_module):
     df = pd.DataFrame(
         {

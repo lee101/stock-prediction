@@ -29,6 +29,9 @@ def _make_wandb_run(
     config: dict | None = None,
     sortino: float | None = 1.42,
     win_rate: float | None = 0.67,
+    train_return: float | None = None,
+    max_drawdown: float | None = None,
+    smooth_score: float | None = None,
     group: str | None = None,
     history_rows: list[dict] | None = None,
 ) -> MagicMock:
@@ -48,6 +51,12 @@ def _make_wandb_run(
         summary_data["val/sortino"] = sortino
     if win_rate is not None:
         summary_data["val/win_rate"] = win_rate
+    if train_return is not None:
+        summary_data["train/final_return"] = train_return
+    if max_drawdown is not None:
+        summary_data["val/max_drawdown"] = max_drawdown
+    if smooth_score is not None:
+        summary_data["smooth_score"] = smooth_score
 
     run.summary = summary_data
     run.config = config or {
@@ -55,11 +64,11 @@ def _make_wandb_run(
     }
 
     rows = history_rows or [
-        {"train/policy_loss": 0.18, "train/entropy": 2.1},
-        {"train/policy_loss": 0.12, "train/entropy": 1.8},
-        {"train/policy_loss": 0.08, "train/entropy": 1.4},
-        {"train/policy_loss": 0.05, "train/entropy": 1.1},
-        {"train/policy_loss": 0.041, "train/entropy": 0.9},
+        {"train/policy_loss": 0.18, "train/entropy": 2.1, "val/return": 0.01, "val/sortino": 0.20},
+        {"train/policy_loss": 0.12, "train/entropy": 1.8, "val/return": 0.03, "val/sortino": 0.55},
+        {"train/policy_loss": 0.08, "train/entropy": 1.4, "val/return": 0.05, "val/sortino": 0.90},
+        {"train/policy_loss": 0.05, "train/entropy": 1.1, "val/return": 0.07, "val/sortino": 1.15},
+        {"train/policy_loss": 0.041, "train/entropy": 0.9, "val/return": 0.083, "val/sortino": 1.42},
     ]
     run.history.return_value = rows
     return run
@@ -94,7 +103,12 @@ def _make_run_dict(
     config: dict | None = None,
     sortino: float | None = 1.42,
     win_rate: float | None = 0.67,
+    train_return: float | None = None,
+    max_drawdown: float | None = None,
+    smooth_score: float | None = None,
     loss_curve: list[float] | None = None,
+    val_return_curve: list[float] | None = None,
+    val_sortino_curve: list[float] | None = None,
     entropy_curve: list[float] | None = None,
     state: str = "finished",
 ) -> dict:
@@ -104,10 +118,15 @@ def _make_run_dict(
         "state": state,
         "config": config or {"hidden_size": 1024, "lr": 3e-4, "anneal_lr": True, "ent_coef": 0.05, "seed": 42},
         "val_return": val_return,
+        "train_return": train_return,
+        "max_drawdown": max_drawdown,
+        "smooth_score": smooth_score,
         "final_loss": final_loss,
         "steps": steps,
         "duration": duration,
         "loss_curve": loss_curve or [0.18, 0.12, 0.08, 0.05, 0.041],
+        "val_return_curve": val_return_curve or [0.01, 0.03, 0.05, 0.08],
+        "val_sortino_curve": val_sortino_curve or [0.20, 0.55, 0.90, 1.42],
         "entropy_curve": entropy_curve or [2.1, 1.8, 1.4, 1.1, 0.9],
         "sortino": sortino,
         "win_rate": win_rate,
@@ -339,11 +358,14 @@ class TestRunId:
 class TestWandbNotInstalled:
     def test_exit_1_when_wandb_missing(self):
         mod = _load_reader()
+        import builtins
+
+        original_import = builtins.__import__
 
         def mock_import(name, *args, **kwargs):
             if name == "wandb":
                 raise ImportError("No module named 'wandb'")
-            return __import__(name, *args, **kwargs)
+            return original_import(name, *args, **kwargs)
 
         with patch("builtins.__import__", side_effect=mock_import):
             with pytest.raises(SystemExit) as exc_info:
@@ -437,6 +459,44 @@ class TestSorting:
         )
         assert result[0]["name"] == "has_metric"
         assert result[1]["name"] == "no_metric"
+
+    def test_blank_api_summary_uses_local_wandb_summary(self, tmp_path, monkeypatch):
+        mod = _load_reader()
+        run = _make_wandb_run(
+            run_id="abc123",
+            name="local_fallback",
+            val_return=None,
+            policy_loss=None,
+            sortino=None,
+            win_rate=None,
+        )
+        run.summary = {"_runtime": 12.0, "_step": 321}
+
+        summary_dir = tmp_path / "wandb" / "run-20260328_000000-abc123" / "files"
+        summary_dir.mkdir(parents=True)
+        (summary_dir / "wandb-summary.json").write_text(
+            json.dumps(
+                {
+                    "val/return": 0.12,
+                    "val/sortino": 1.7,
+                    "train/final_return": 0.18,
+                }
+            )
+        )
+        monkeypatch.setattr(mod, "REPO", tmp_path)
+
+        result = mod.fetch_runs(
+            wandb=_make_api_mock([run]),
+            project="stock",
+            entity=None,
+            run_id=None,
+            group=None,
+            last_n=1,
+        )
+
+        assert result[0]["val_return"] == pytest.approx(0.12)
+        assert result[0]["sortino"] == pytest.approx(1.7)
+        assert result[0]["train_return"] == pytest.approx(0.18)
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +631,27 @@ class TestHelpers:
         out = mod._fmt_curve([0.18, 0.10, 0.05])
         assert "0.180 → 0.100 → 0.050" == out
 
+    def test_compute_stability_metrics(self):
+        mod = _load_reader()
+        run = _make_run_dict(
+            train_return=0.24,
+            val_return=0.12,
+            max_drawdown=-0.05,
+            smooth_score=0.8,
+        )
+        metrics = mod.compute_stability_metrics(run)
+        assert metrics["loss_downhill_pct"] == pytest.approx(1.0)
+        assert metrics["return_uphill_pct"] == pytest.approx(1.0)
+        assert metrics["generalization_gap"] == pytest.approx(0.12)
+        assert metrics["stability_score"] is not None
+        assert 0.0 < metrics["stability_score"] <= 1.0
+
+    def test_resolve_metric_value_uses_stability_metrics(self):
+        mod = _load_reader()
+        run = _make_run_dict()
+        run.update(mod.compute_stability_metrics(run))
+        assert mod._resolve_metric_value(run, "stability_score") is not None
+
 
 # ---------------------------------------------------------------------------
 # Tests: CLI argument parsing
@@ -612,3 +693,35 @@ class TestCLIArgs:
         mod = _load_reader()
         with pytest.raises(SystemExit):
             mod.parse_args(["--project", "stock", "--format", "yaml"])
+
+
+class TestStabilityOutput:
+    def test_markdown_shows_stability_and_gap(self):
+        mod = _load_reader()
+        run = _make_run_dict(
+            train_return=0.18,
+            val_return=0.09,
+            smooth_score=0.5,
+        )
+        run.update(mod.compute_stability_metrics(run))
+        out = mod.format_markdown([run], project="stock", entity=None, primary_metric="val/return")
+        assert "Stability score" in out
+        assert "Train/val gap" in out
+
+    def test_fetch_runs_sorts_by_sortino_when_requested(self):
+        mod = _load_reader()
+        wandb_runs = [
+            _make_wandb_run(run_id="r1", name="high_return_low_sortino", val_return=0.12, sortino=0.4),
+            _make_wandb_run(run_id="r2", name="lower_return_high_sortino", val_return=0.08, sortino=1.8),
+        ]
+        wandb_mock = _make_api_mock(wandb_runs)
+        result = mod.fetch_runs(
+            wandb=wandb_mock,
+            project="stock",
+            entity=None,
+            run_id=None,
+            group=None,
+            last_n=10,
+            primary_metric="val/sortino",
+        )
+        assert result[0]["name"] == "lower_return_high_sortino"

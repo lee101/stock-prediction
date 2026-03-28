@@ -1,7 +1,8 @@
 """Dataset for daily crypto bars with technical indicators.
 
-Loads OHLCV from trainingdata/train/{SYM}USDT.csv, computes features,
-and creates sequences for the neural work-steal policy.
+Loads OHLCV from trainingdata/train/{SYM}USDT.csv, with a compatibility
+fallback for legacy {SYM}USD.csv files, computes features, and creates
+sequences for the neural work-steal policy.
 """
 from __future__ import annotations
 
@@ -70,9 +71,27 @@ def compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
     return 100.0 - 100.0 / (1.0 + rs)
 
 
+def _symbol_path_candidates(data_dir: str, symbol: str) -> List[Path]:
+    data_path = Path(data_dir)
+    candidates = [data_path / f"{symbol}.csv"]
+    if symbol.endswith("USDT"):
+        candidates.append(data_path / f"{symbol[:-1]}.csv")
+    elif symbol.endswith("USD"):
+        candidates.append(data_path / f"{symbol}T.csv")
+    return candidates
+
+
+def _normalize_symbol_name(symbol: str) -> str:
+    if symbol.endswith("USDT"):
+        return symbol
+    if symbol.endswith("USD"):
+        return f"{symbol}T"
+    return symbol
+
+
 def load_symbol_data(data_dir: str, symbol: str) -> Optional[pd.DataFrame]:
-    path = Path(data_dir) / f"{symbol}.csv"
-    if not path.exists():
+    path = next((candidate for candidate in _symbol_path_candidates(data_dir, symbol) if candidate.exists()), None)
+    if path is None:
         return None
     df = pd.read_csv(path)
     if "timestamp" not in df.columns or len(df) < 30:
@@ -147,8 +166,13 @@ def discover_symbols(
     if not data_path.exists():
         return []
     valid = []
-    for csv_file in sorted(data_path.glob("*USDT.csv")):
-        sym = csv_file.stem
+    seen = set()
+    csv_files = sorted(data_path.glob("*USDT.csv")) + sorted(data_path.glob("*USD.csv"))
+    for csv_file in csv_files:
+        sym = _normalize_symbol_name(csv_file.stem)
+        if sym in seen:
+            continue
+        seen.add(sym)
         df = load_symbol_data(data_dir, sym)
         if df is None:
             continue
