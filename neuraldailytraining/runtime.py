@@ -155,6 +155,7 @@ class DailyTradingRuntime:
                 actions["trade_amount"] = actions["trade_amount"] * confidence
 
         plans: list[TradingPlan] = []
+        confidence_threshold = getattr(self, "confidence_threshold", None)
         for idx, item in enumerate(prepared):
             trade_amount = float(actions["trade_amount"][idx, -1].item())
             trade_amount = min(trade_amount, self.risk_threshold)
@@ -185,12 +186,12 @@ class DailyTradingRuntime:
             confidence_score = 1.0
             if confidence is not None:
                 confidence_score = float(confidence[idx, -1].item())
-                if self.confidence_threshold is not None and confidence_score < self.confidence_threshold:
+                if confidence_threshold is not None and confidence_score < confidence_threshold:
                     LOGGER.info(
                         "Skipping %s due to low confidence %.3f < %.3f",
                         item["symbol"],
                         confidence_score,
-                        self.confidence_threshold,
+                        confidence_threshold,
                     )
                     trade_amount = 0.0
 

@@ -92,6 +92,16 @@ def test_plan_batch_applies_confidence_gate_and_risk_clamp():
     assert plans[0].sell_price > plans[0].buy_price
 
 
+def test_plan_batch_applies_explicit_confidence_threshold():
+    runtime = _build_runtime_for_confidence(trade=0.8, confidence=0.25, risk_threshold=0.5)
+    runtime.confidence_threshold = 0.3
+
+    plans = runtime.plan_batch(["AAPL"])
+
+    assert len(plans) == 1
+    assert plans[0].trade_amount == 0.0
+
+
 @dataclass
 class _FixedPlan:
     symbol: str
