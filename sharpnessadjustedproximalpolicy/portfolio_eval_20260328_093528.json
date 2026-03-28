@@ -1,0 +1,416 @@
+{
+  "sqrt_sortino": {
+    "alloc_method": "sqrt_sortino",
+    "symbols": [
+      "DOTUSD",
+      "APTUSD",
+      "ARBUSD",
+      "INJUSD",
+      "ALGOUSD",
+      "ICPUSD",
+      "DOGEUSD",
+      "ADAUSD",
+      "FILUSD",
+      "ATOMUSD",
+      "LINKUSD",
+      "BCHUSD",
+      "ETHUSD",
+      "BTCUSD",
+      "BNBUSD"
+    ],
+    "n_windows": 10,
+    "window_hours": 720,
+    "median_return": 34.06,
+    "mean_return": 34.06,
+    "p10_return": 34.06,
+    "p05_return": 34.06,
+    "worst_return": 34.06,
+    "positive_pct": 100.0,
+    "median_sortino": 5.45,
+    "mean_sortino": 5.45,
+    "median_dd": -0.74,
+    "worst_dd": -0.74,
+    "median_trades": 435,
+    "per_window": [
+      {
+        "total_return_pct": 34.06,
+        "sortino": 5.4545,
+        "sharpe": 1.5592,
+        "max_drawdown_pct": -0.744,
+        "hours": 718,
+        "per_symbol": {
+          "DOTUSD": {
+            "return": 42.19,
+            "sortino": 4.81,
+            "dd": -1.08,
+            "trades": 15
+          },
+          "APTUSD": {
+            "return": 50.64,
+            "sortino": 2.11,
+            "dd": -2.96,
+            "trades": 13
+          },
+          "ARBUSD": {
+            "return": 56.98,
+            "sortino": 2.98,
+            "dd": -1.76,
+            "trades": 18
+          },
+          "INJUSD": {
+            "return": 37.72,
+            "sortino": 0.98,
+            "dd": -4.96,
+            "trades": 29
+          },
+          "ALGOUSD": {
+            "return": 49.39,
+            "sortino": 1.06,
+            "dd": -5.48,
+            "trades": 14
+          },
+          "ICPUSD": {
+            "return": 34.07,
+            "sortino": 1.16,
+            "dd": -4.26,
+            "trades": 21
+          },
+          "DOGEUSD": {
+            "return": 25.16,
+            "sortino": 1.3,
+            "dd": -3.32,
+            "trades": 38
+          },
+          "ADAUSD": {
+            "return": 30.65,
+            "sortino": 1.24,
+            "dd": -3.58,
+            "trades": 15
+          },
+          "FILUSD": {
+            "return": 40.44,
+            "sortino": 1.85,
+            "dd": -3.22,
+            "trades": 18
+          },
+          "ATOMUSD": {
+            "return": 16.56,
+            "sortino": 0.69,
+            "dd": -5.68,
+            "trades": 8
+          },
+          "LINKUSD": {
+            "return": 25.58,
+            "sortino": 2.71,
+            "dd": -1.11,
+            "trades": 53
+          },
+          "BCHUSD": {
+            "return": 15.37,
+            "sortino": 1.3,
+            "dd": -1.45,
+            "trades": 70
+          },
+          "ETHUSD": {
+            "return": 17.13,
+            "sortino": 0.37,
+            "dd": -9.65,
+            "trades": 64
+          },
+          "BTCUSD": {
+            "return": 18.46,
+            "sortino": 2.34,
+            "dd": -0.55,
+            "trades": 41
+          },
+          "BNBUSD": {
+            "return": 22.17,
+            "sortino": 0.93,
+            "dd": -3.84,
+            "trades": 18
+          }
+        },
+        "window": [
+          1008,
+          1728
+        ]
+      }
+    ]
+  },
+  "sqrt_sortino_lev2x": {
+    "alloc_method": "sqrt_sortino_lev2x",
+    "symbols": [
+      "DOTUSD",
+      "APTUSD",
+      "ARBUSD",
+      "INJUSD",
+      "ALGOUSD",
+      "ICPUSD",
+      "DOGEUSD",
+      "ADAUSD",
+      "FILUSD",
+      "ATOMUSD",
+      "LINKUSD",
+      "BCHUSD",
+      "ETHUSD",
+      "BTCUSD",
+      "BNBUSD"
+    ],
+    "n_windows": 10,
+    "window_hours": 720,
+    "median_return": 47.74,
+    "mean_return": 47.74,
+    "p10_return": 47.74,
+    "p05_return": 47.74,
+    "worst_return": 47.74,
+    "positive_pct": 100.0,
+    "median_sortino": 4.01,
+    "mean_sortino": 4.01,
+    "median_dd": -1.34,
+    "worst_dd": -1.34,
+    "median_trades": 33,
+    "per_window": [
+      {
+        "total_return_pct": 47.745,
+        "sortino": 4.0093,
+        "sharpe": 1.3193,
+        "max_drawdown_pct": -1.337,
+        "hours": 718,
+        "per_symbol": {
+          "DOTUSD": {
+            "return": 68.39,
+            "sortino": 3.4,
+            "dd": -1.7,
+            "trades": 2
+          },
+          "APTUSD": {
+            "return": 62.42,
+            "sortino": 1.49,
+            "dd": -3.08,
+            "trades": 4
+          },
+          "ARBUSD": {
+            "return": 83.37,
+            "sortino": 3.08,
+            "dd": -1.77,
+            "trades": 1
+          },
+          "INJUSD": {
+            "return": 40.75,
+            "sortino": 0.73,
+            "dd": -7.26,
+            "trades": 1
+          },
+          "ALGOUSD": {
+            "return": 66.8,
+            "sortino": 0.72,
+            "dd": -13.39,
+            "trades": 1
+          },
+          "ICPUSD": {
+            "return": 50.48,
+            "sortino": 0.99,
+            "dd": -6.86,
+            "trades": 4
+          },
+          "DOGEUSD": {
+            "return": 26.11,
+            "sortino": 0.95,
+            "dd": -5.79,
+            "trades": 0
+          },
+          "ADAUSD": {
+            "return": 39.98,
+            "sortino": 0.97,
+            "dd": -5.44,
+            "trades": 1
+          },
+          "FILUSD": {
+            "return": 69.32,
+            "sortino": 1.82,
+            "dd": -4.44,
+            "trades": 2
+          },
+          "ATOMUSD": {
+            "return": 20.5,
+            "sortino": 0.56,
+            "dd": -7.33,
+            "trades": 1
+          },
+          "LINKUSD": {
+            "return": 32.38,
+            "sortino": 1.72,
+            "dd": -1.38,
+            "trades": 0
+          },
+          "BCHUSD": {
+            "return": 18.35,
+            "sortino": 1.11,
+            "dd": -1.59,
+            "trades": 2
+          },
+          "ETHUSD": {
+            "return": 21.0,
+            "sortino": 0.27,
+            "dd": -16.05,
+            "trades": 1
+          },
+          "BTCUSD": {
+            "return": 23.91,
+            "sortino": 1.94,
+            "dd": -0.84,
+            "trades": 9
+          },
+          "BNBUSD": {
+            "return": 33.06,
+            "sortino": 0.76,
+            "dd": -7.11,
+            "trades": 4
+          }
+        },
+        "window": [
+          1008,
+          1728
+        ]
+      }
+    ]
+  },
+  "sqrt_sortino_lev3x": {
+    "alloc_method": "sqrt_sortino_lev3x",
+    "symbols": [
+      "DOTUSD",
+      "APTUSD",
+      "ARBUSD",
+      "INJUSD",
+      "ALGOUSD",
+      "ICPUSD",
+      "DOGEUSD",
+      "ADAUSD",
+      "FILUSD",
+      "ATOMUSD",
+      "LINKUSD",
+      "BCHUSD",
+      "ETHUSD",
+      "BTCUSD",
+      "BNBUSD"
+    ],
+    "n_windows": 10,
+    "window_hours": 720,
+    "median_return": 57.17,
+    "mean_return": 57.17,
+    "p10_return": 57.17,
+    "p05_return": 57.17,
+    "worst_return": 57.17,
+    "positive_pct": 100.0,
+    "median_sortino": 3.07,
+    "mean_sortino": 3.07,
+    "median_dd": -1.85,
+    "worst_dd": -1.85,
+    "median_trades": 12,
+    "per_window": [
+      {
+        "total_return_pct": 57.172,
+        "sortino": 3.0657,
+        "sharpe": 1.1129,
+        "max_drawdown_pct": -1.851,
+        "hours": 718,
+        "per_symbol": {
+          "DOTUSD": {
+            "return": 93.69,
+            "sortino": 2.68,
+            "dd": -2.42,
+            "trades": 1
+          },
+          "APTUSD": {
+            "return": 67.93,
+            "sortino": 1.08,
+            "dd": -3.54,
+            "trades": 1
+          },
+          "ARBUSD": {
+            "return": 92.76,
+            "sortino": 2.14,
+            "dd": -1.82,
+            "trades": 0
+          },
+          "INJUSD": {
+            "return": 42.38,
+            "sortino": 0.61,
+            "dd": -8.16,
+            "trades": 1
+          },
+          "ALGOUSD": {
+            "return": 73.7,
+            "sortino": 0.53,
+            "dd": -20.99,
+            "trades": 0
+          },
+          "ICPUSD": {
+            "return": 64.61,
+            "sortino": 0.92,
+            "dd": -8.28,
+            "trades": 3
+          },
+          "DOGEUSD": {
+            "return": 26.91,
+            "sortino": 0.76,
+            "dd": -7.54,
+            "trades": 0
+          },
+          "ADAUSD": {
+            "return": 51.29,
+            "sortino": 0.91,
+            "dd": -6.15,
+            "trades": 0
+          },
+          "FILUSD": {
+            "return": 95.14,
+            "sortino": 1.64,
+            "dd": -5.23,
+            "trades": 0
+          },
+          "ATOMUSD": {
+            "return": 19.93,
+            "sortino": 0.41,
+            "dd": -8.59,
+            "trades": 1
+          },
+          "LINKUSD": {
+            "return": 32.11,
+            "sortino": 1.08,
+            "dd": -2.81,
+            "trades": 0
+          },
+          "BCHUSD": {
+            "return": 18.79,
+            "sortino": 0.79,
+            "dd": -2.91,
+            "trades": 0
+          },
+          "ETHUSD": {
+            "return": 24.6,
+            "sortino": 0.24,
+            "dd": -21.45,
+            "trades": 0
+          },
+          "BTCUSD": {
+            "return": 26.56,
+            "sortino": 1.25,
+            "dd": -2.3,
+            "trades": 3
+          },
+          "BNBUSD": {
+            "return": 41.36,
+            "sortino": 0.66,
+            "dd": -9.91,
+            "trades": 2
+          }
+        },
+        "window": [
+          1008,
+          1728
+        ]
+      }
+    ]
+  }
+}

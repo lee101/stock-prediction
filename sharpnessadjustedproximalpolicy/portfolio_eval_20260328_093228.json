@@ -1,0 +1,91 @@
+{
+  "sqrt_sortino": {
+    "alloc_method": "sqrt_sortino",
+    "symbols": [
+      "DOTUSD",
+      "APTUSD",
+      "ARBUSD",
+      "INJUSD",
+      "ALGOUSD",
+      "ICPUSD",
+      "DOGEUSD",
+      "ADAUSD"
+    ],
+    "n_windows": 10,
+    "window_hours": 720,
+    "median_return": 42.16,
+    "mean_return": 42.16,
+    "p10_return": 42.16,
+    "p05_return": 42.16,
+    "worst_return": 42.16,
+    "positive_pct": 100.0,
+    "median_sortino": 4.86,
+    "mean_sortino": 4.86,
+    "median_dd": -0.83,
+    "worst_dd": -0.83,
+    "median_trades": 163,
+    "per_window": [
+      {
+        "total_return_pct": 42.161,
+        "sortino": 4.8568,
+        "sharpe": 1.3498,
+        "max_drawdown_pct": -0.833,
+        "hours": 718,
+        "per_symbol": {
+          "DOTUSD": {
+            "return": 42.19,
+            "sortino": 4.81,
+            "dd": -1.08,
+            "trades": 15
+          },
+          "APTUSD": {
+            "return": 50.64,
+            "sortino": 2.11,
+            "dd": -2.96,
+            "trades": 13
+          },
+          "ARBUSD": {
+            "return": 56.98,
+            "sortino": 2.98,
+            "dd": -1.76,
+            "trades": 18
+          },
+          "INJUSD": {
+            "return": 37.72,
+            "sortino": 0.98,
+            "dd": -4.96,
+            "trades": 29
+          },
+          "ALGOUSD": {
+            "return": 49.39,
+            "sortino": 1.06,
+            "dd": -5.48,
+            "trades": 14
+          },
+          "ICPUSD": {
+            "return": 34.07,
+            "sortino": 1.16,
+            "dd": -4.26,
+            "trades": 21
+          },
+          "DOGEUSD": {
+            "return": 25.16,
+            "sortino": 1.3,
+            "dd": -3.32,
+            "trades": 38
+          },
+          "ADAUSD": {
+            "return": 30.65,
+            "sortino": 1.24,
+            "dd": -3.58,
+            "trades": 15
+          }
+        },
+        "window": [
+          1008,
+          1728
+        ]
+      }
+    ]
+  }
+}
