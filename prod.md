@@ -11,11 +11,12 @@
 - **LIVE account**: supervisor `unified-stock-trader` is active; equity **$38,954.44**, cash **$38,954.44**, buying power **$77,908.88**, last_equity **$39,090.40**.
 - **LIVE positions/orders**: no stock positions are open; only dust in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD` remains. There are currently **no open orders**.
 - **LIVE duplicate-order guard (2026-03-27 20:31 UTC)**: systemd unit `alpaca-cancel-multi-orders.service` is installed and enabled with `PAPER=0`; `journalctl` confirms it initialized the **LIVE** Alpaca client and is polling for duplicate flat-position opening orders.
-- **LIVE daily-rl-trader**: 11-model ensemble (s1523 added 2026-03-28 18:10 UTC), sleeping until Mon 2026-03-30 market open; PID 3435810
+- **LIVE daily-rl-trader**: 12-model ensemble (s2617 added 2026-03-28 19:16 UTC), sleeping until Mon 2026-03-30 market open; PID 105225
   - s735 screen_best was deleted from disk (2026-03-28); replaced with s1731 screen_best (neg=7, update=61)
-  - s1523 screen_best added as 11th member (+4.6% p10, seed=1523 retrain)
-  - **11-model exhaustive (111 windows): 0/111 neg, med=50.7%, p10=41.4%** @fee=10bps,fill=5bps
-  - 12-model bar: p10 ≥ 41.4% @fill_bps=5
+  - s1523 screen_best: 11th member (+4.6% p10, seed=1523 retrain)
+  - s2617 screen_best: 12th member (+2.0% p10, seed=2617, neg=2, med=16.95%)
+  - **12-model exhaustive (111 windows): 0/111 neg, med=51.3%, p10=43.3%** @fee=10bps,fill=5bps
+  - 13-model bar: p10 ≥ 43.3% @fill_bps=5
 
 ### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- FIXED (pending restart)
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`
@@ -154,7 +155,8 @@
   - 10-model +s1726:             med=65.8%, p10=55.6%, worst=44.8%  (2026-03-28) — peak, s735 still present
   - 9-model (s735 lost, +s1726):  med=60.7%, p10=41.1%  (2026-03-28) — after s735 deletion
   - 10-model +s1731 (replaces s735): med=59.1%, p10=45.1%  (2026-03-28)
-  - **11-model +s1523:           med=50.7%, p10=41.4%  (2026-03-28) CURRENT**
+  - 11-model +s1523:             med=50.7%, p10=41.4%  (2026-03-28)
+  - **12-model +s2617:           med=51.3%, p10=43.3%  (2026-03-28) CURRENT**
   - [REJECTED] 7-model +resmlp_a40: med=57.2%, p10=42.1% (-3.3% p10)
   - [REJECTED] 7-model +s28_scan: med=55.9%, p10=41.3% (-4.1% p10)
 - **DEFAULT_EXTRA_CHECKPOINTS** (in `trade_daily_stock_prod.py`):
@@ -168,6 +170,7 @@
   - `stocks12_s1401_screen/screen_best.pt`
   - `stocks12_s1726_screen/screen_best.pt`
   - `stocks12_s1523_screen/screen_best.pt` (11th member, +4.6% p10)
+  - `stocks12_s2617_screen/screen_best.pt` (12th member, +2.0% p10, seed=2617 neg=2)
 - **Standalone performance of ensemble members**:
   - tp10: 5/111 neg, med=0.0% (conservative anchor — votes cash)
   - s15: 0/111 neg, med=+30.0% (phase-transition model, seed=15)
@@ -180,9 +183,10 @@
   - s1401 (tp05): screen_best.pt (update=86, seed=1401, QUALIFIED); +2.9% p10 to 8-model
   - s1726 (tp05): screen_best.pt (update=65, seed=1726, QUALIFIED, neg=3, med=5.14%); +0.4% p10
   - s1523 (tp05): screen_best.pt (retrain, seed=1523); +4.6% p10 to 10-model
+  - s2617 (tp05): screen_best.pt (seed=2617, QUALIFIED, neg=2, med=16.95%); +2.0% p10 to 11-model
 - **KEY DISCOVERY**: Screen-phase checkpoints (3M steps) are better ensemble members than fully-trained (32M+ steps) ones. Full training often collapses diversity. Screen_best.pt at ~update 60-91 is the sweet spot.
 - **Ensemble method**: softmax_avg (NOT logit_avg). Each model outputs softmax probabilities, average them, take argmax.
-- **12-model bar**: 12-model exhaustive p10 >= 41.4% @fill_bps=5 (delta >= 0%)
+- **13-model bar**: 13-model exhaustive p10 >= 43.3% @fill_bps=5 (delta >= 0%)
 - **Config**: h=1024, lr=3e-4, ent=0.05, trade_penalty=0.10 (primary), anneal_lr=True
 - **Launch**: `deployments/daily-stock-ppo/launch.sh`
 - **Supervisor**: `deployments/daily-stock-ppo/supervisor.conf` (autostart=false — enable manually)
