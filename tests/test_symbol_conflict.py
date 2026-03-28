@@ -35,16 +35,21 @@ def config_path(tmp_path: Path) -> Path:
     """Write a minimal valid service_config.json and return its path."""
     cfg = {
         "unified-orchestrator": {
-            "crypto_symbols": ["SOLUSD", "LTCUSD", "AVAXUSD"],
-            "stock_symbols": ["NVDA", "PLTR", "META", "MSFT", "NET"],
+            "crypto_symbols": ["BTCUSD", "ETHUSD", "SOLUSD", "LTCUSD", "AVAXUSD"],
+            "stock_symbols": [],
+        },
+        "daily-rl-trader": {
+            "crypto_symbols": [],
+            "stock_symbols": ["AAPL", "MSFT", "NVDA", "GOOG", "META", "TSLA",
+                              "SPY", "QQQ", "PLTR", "JPM", "V", "AMZN"],
         },
         "alpaca-hourly-trader": {
-            "crypto_symbols": ["BTCUSD", "ETHUSD"],
+            "crypto_symbols": [],
             "stock_symbols": [],
         },
         "trade-unified-hourly-meta": {
             "crypto_symbols": [],
-            "stock_symbols": ["GOOG", "DBX", "TRIP", "MTCH", "NYT", "AAPL", "TSLA",
+            "stock_symbols": ["DBX", "TRIP", "MTCH", "NYT", "NET",
                               "BKNG", "EBAY", "EXPE", "ITUB", "BTG", "ABEV"],
         },
     }
@@ -99,27 +104,36 @@ def test_load_config_invalid_json(tmp_path: Path) -> None:
 
 def test_load_service_symbols_orchestrator(config_path: Path) -> None:
     crypto, stocks = load_service_symbols("unified-orchestrator", config_path)
-    assert set(crypto) == {"SOLUSD", "LTCUSD", "AVAXUSD"}
-    assert set(stocks) == {"NVDA", "PLTR", "META", "MSFT", "NET"}
+    assert set(crypto) == {"BTCUSD", "ETHUSD", "SOLUSD", "LTCUSD", "AVAXUSD"}
+    assert stocks == []
+
+
+def test_load_service_symbols_daily_rl(config_path: Path) -> None:
+    crypto, stocks = load_service_symbols("daily-rl-trader", config_path)
+    assert crypto == []
+    assert set(stocks) == {"AAPL", "MSFT", "NVDA", "GOOG", "META", "TSLA",
+                           "SPY", "QQQ", "PLTR", "JPM", "V", "AMZN"}
 
 
 def test_load_service_symbols_alpaca_hourly(config_path: Path) -> None:
     crypto, stocks = load_service_symbols("alpaca-hourly-trader", config_path)
-    assert set(crypto) == {"BTCUSD", "ETHUSD"}
+    assert crypto == []
     assert stocks == []
 
 
 def test_load_service_symbols_meta(config_path: Path) -> None:
     crypto, stocks = load_service_symbols("trade-unified-hourly-meta", config_path)
     assert crypto == []
-    assert "GOOG" in stocks
     assert "DBX" in stocks
-    # Confirm none of the orchestrator's stocks leak in
+    assert "NET" in stocks
+    # Confirm none of the daily RL stocks leak in
+    assert "AAPL" not in stocks
+    assert "GOOG" not in stocks
     assert "NVDA" not in stocks
     assert "META" not in stocks
     assert "MSFT" not in stocks
-    assert "NET" not in stocks
     assert "PLTR" not in stocks
+    assert "TSLA" not in stocks
 
 
 def test_load_service_symbols_unknown_service(config_path: Path) -> None:
@@ -187,21 +201,27 @@ def test_production_config_no_overlaps() -> None:
     assert_no_overlaps(prod_config)
 
 
-def test_production_config_orchestrator_crypto_excludes_btc_eth() -> None:
-    """unified-orchestrator should NOT own BTCUSD/ETHUSD (those belong to alpaca-hourly-trader)."""
+def test_production_config_orchestrator_is_crypto_only() -> None:
     prod_config = Path(__file__).resolve().parent.parent / "unified_orchestrator" / "service_config.json"
-    crypto, _ = load_service_symbols("unified-orchestrator", prod_config)
-    assert "BTCUSD" not in crypto, "BTCUSD must be owned by alpaca-hourly-trader, not unified-orchestrator"
-    assert "ETHUSD" not in crypto, "ETHUSD must be owned by alpaca-hourly-trader, not unified-orchestrator"
+    crypto, stocks = load_service_symbols("unified-orchestrator", prod_config)
+    assert {"BTCUSD", "ETHUSD", "SOLUSD", "LTCUSD", "AVAXUSD"} <= set(crypto)
+    assert stocks == []
 
 
-def test_production_config_meta_excludes_orchestrator_stocks() -> None:
-    """trade-unified-hourly-meta must not trade NVDA/PLTR/META/MSFT/NET (orchestrator owns them)."""
+def test_production_config_daily_rl_owns_stocks12_live_universe() -> None:
+    prod_config = Path(__file__).resolve().parent.parent / "unified_orchestrator" / "service_config.json"
+    _, daily_stocks = load_service_symbols("daily-rl-trader", prod_config)
+    assert set(daily_stocks) == {"AAPL", "MSFT", "NVDA", "GOOG", "META", "TSLA",
+                                 "SPY", "QQQ", "PLTR", "JPM", "V", "AMZN"}
+
+
+def test_production_config_meta_excludes_daily_rl_stocks() -> None:
+    """trade-unified-hourly-meta must not overlap the live daily RL stock universe."""
     prod_config = Path(__file__).resolve().parent.parent / "unified_orchestrator" / "service_config.json"
     _, meta_stocks = load_service_symbols("trade-unified-hourly-meta", prod_config)
-    orchestrator_stocks = {"NVDA", "PLTR", "META", "MSFT", "NET"}
-    conflicts = orchestrator_stocks & set(meta_stocks)
-    assert not conflicts, f"Meta service must not trade orchestrator stocks: {conflicts}"
+    daily_stocks = {"AAPL", "MSFT", "NVDA", "GOOG", "META", "TSLA", "SPY", "QQQ", "PLTR", "JPM", "V", "AMZN"}
+    conflicts = daily_stocks & set(meta_stocks)
+    assert not conflicts, f"Meta service must not trade daily RL stocks: {conflicts}"
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +241,7 @@ def test_warn_position_conflicts_no_conflict(config_path: Path, caplog) -> None:
     api = MagicMock()
     api.get_all_positions.return_value = [
         _make_position("SOLUSD"),
-        _make_position("NVDA"),
+        _make_position("BTCUSD"),
     ]
     with patch("unified_orchestrator.symbol_lock.logger") as mock_log:
         warn_position_conflicts("unified-orchestrator", api, config_path)
@@ -232,15 +252,15 @@ def test_warn_position_conflicts_no_conflict(config_path: Path, caplog) -> None:
 
 
 def test_warn_position_conflicts_detects_overlap(config_path: Path) -> None:
-    """Warns when orchestrator holds a position that belongs to alpaca-hourly-trader."""
+    """Warns when orchestrator holds a position that belongs to another service."""
     api = MagicMock()
-    # BTCUSD belongs to alpaca-hourly-trader, not unified-orchestrator
-    api.get_all_positions.return_value = [_make_position("BTCUSD")]
+    # AAPL belongs to daily-rl-trader, not unified-orchestrator
+    api.get_all_positions.return_value = [_make_position("AAPL")]
     with patch("unified_orchestrator.symbol_lock.logger") as mock_log:
         warn_position_conflicts("unified-orchestrator", api, config_path)
         warning_msgs = [str(c) for c in mock_log.warning.call_args_list]
-        assert any("CONFLICT" in m and "BTCUSD" in m for m in warning_msgs), (
-            f"Expected CONFLICT warning for BTCUSD, got: {warning_msgs}"
+        assert any("CONFLICT" in m and "AAPL" in m for m in warning_msgs), (
+            f"Expected CONFLICT warning for AAPL, got: {warning_msgs}"
         )
 
 
@@ -255,11 +275,11 @@ def test_warn_position_conflicts_api_error(config_path: Path) -> None:
 def test_warn_position_conflicts_uses_list_positions_fallback(config_path: Path) -> None:
     """Falls back to list_positions() when get_all_positions() is absent."""
     api = MagicMock(spec=["list_positions"])
-    api.list_positions.return_value = [_make_position("ETHUSD")]
+    api.list_positions.return_value = [_make_position("NET")]
     with patch("unified_orchestrator.symbol_lock.logger") as mock_log:
         warn_position_conflicts("unified-orchestrator", api, config_path)
         warning_msgs = [str(c) for c in mock_log.warning.call_args_list]
-        assert any("CONFLICT" in m and "ETHUSD" in m for m in warning_msgs)
+        assert any("CONFLICT" in m and "NET" in m for m in warning_msgs)
 
 
 # ---------------------------------------------------------------------------
@@ -269,15 +289,18 @@ def test_warn_position_conflicts_uses_list_positions_fallback(config_path: Path)
 def test_get_all_symbols_by_service(config_path: Path) -> None:
     by_svc = get_all_symbols_by_service(config_path)
     assert "unified-orchestrator" in by_svc
+    assert "daily-rl-trader" in by_svc
     assert "alpaca-hourly-trader" in by_svc
     assert "trade-unified-hourly-meta" in by_svc
 
     orch = by_svc["unified-orchestrator"]
     assert "SOLUSD" in orch
-    assert "NVDA" in orch
-    # BTCUSD is NOT in the orchestrator's set (per config)
-    assert "BTCUSD" not in orch
+    assert "BTCUSD" in orch
+    assert "NVDA" not in orch
+
+    daily = by_svc["daily-rl-trader"]
+    assert "NVDA" in daily
+    assert "AAPL" in daily
 
     hourly = by_svc["alpaca-hourly-trader"]
-    assert "BTCUSD" in hourly
-    assert "ETHUSD" in hourly
+    assert hourly == set()

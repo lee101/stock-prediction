@@ -1,0 +1,19 @@
+[Unit]
+Description=Alpaca duplicate opening order guard (live)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=administrator
+WorkingDirectory=/nvme0n1-disk/code/stock-prediction
+Environment=PYTHONPATH=/nvme0n1-disk/code/stock-prediction
+Environment=PYTHONUNBUFFERED=1
+Environment=PAPER=0
+ExecStart=/nvme0n1-disk/code/stock-prediction/.venv313/bin/python -u /nvme0n1-disk/code/stock-prediction/scripts/cancel_multi_orders.py
+Restart=always
+RestartSec=10
+SyslogIdentifier=alpaca-cancel-multi-orders
+
+[Install]
+WantedBy=multi-user.target

@@ -120,6 +120,47 @@ def _infer_resmlp_blocks(state_dict: dict) -> int:
     return max(idxs) + 1 if idxs else 3
 
 
+def _load_policy_for_eval(
+    *,
+    payload: dict | dict[str, torch.Tensor],
+    obs_size: int,
+    num_symbols: int,
+    arch: str,
+    hidden_size: Optional[int],
+    device: torch.device,
+) -> tuple[nn.Module, dict[str, torch.Tensor]]:
+    state_dict = payload.get("model") if isinstance(payload, dict) and "model" in payload else payload
+    if not isinstance(state_dict, dict):
+        raise ValueError("Unsupported checkpoint format")
+
+    alloc_bins = int(payload.get("action_allocation_bins", 1)) if isinstance(payload, dict) else 1
+    level_bins = int(payload.get("action_level_bins", 1)) if isinstance(payload, dict) else 1
+    per_sym_actions = max(1, alloc_bins) * max(1, level_bins)
+    num_actions = 1 + 2 * num_symbols * per_sym_actions
+
+    if arch == "auto":
+        arch = _infer_arch(state_dict)
+    hidden = hidden_size if hidden_size is not None else _infer_hidden_size(state_dict, arch)
+
+    if arch == "resmlp":
+        num_blocks = _infer_resmlp_blocks(state_dict)
+        policy = ResidualTradingPolicy(obs_size, num_actions, hidden=hidden, num_blocks=num_blocks).to(device)
+    else:
+        policy = TradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
+
+    missing, unexpected = policy.load_state_dict(state_dict, strict=False)
+    ignored = {"obs_mean", "obs_std", "encoder_norm.weight", "encoder_norm.bias"}
+    bad_missing = [k for k in missing if k not in ignored]
+    bad_unexpected = [k for k in unexpected if k not in ignored]
+    if bad_missing or bad_unexpected:
+        raise RuntimeError(
+            f"Checkpoint architecture mismatch — missing: {bad_missing}, unexpected: {bad_unexpected}"
+        )
+
+    policy.eval()
+    return policy, state_dict
+
+
 # ---------------------------------------------------------------------------
 # Dataclass for per-window results
 # ---------------------------------------------------------------------------
@@ -184,26 +225,18 @@ def fast_holdout_eval(
 
     # Load checkpoint
     payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    state_dict = payload.get("model") if isinstance(payload, dict) and "model" in payload else payload
+    policy, state_dict = _load_policy_for_eval(
+        payload=payload,
+        obs_size=obs_size,
+        num_symbols=num_symbols,
+        arch=arch,
+        hidden_size=hidden_size,
+        device=device,
+    )
 
-    # Infer action grid
     alloc_bins = int(payload.get("action_allocation_bins", 1)) if isinstance(payload, dict) else 1
     level_bins = int(payload.get("action_level_bins", 1)) if isinstance(payload, dict) else 1
     per_sym_actions = max(1, alloc_bins) * max(1, level_bins)
-    num_actions = 1 + 2 * num_symbols * per_sym_actions
-
-    # Infer architecture
-    if arch == "auto":
-        arch = _infer_arch(state_dict)
-    hidden = hidden_size if hidden_size is not None else _infer_hidden_size(state_dict, arch)
-
-    if arch == "resmlp":
-        num_blocks = _infer_resmlp_blocks(state_dict)
-        policy = ResidualTradingPolicy(obs_size, num_actions, hidden=hidden, num_blocks=num_blocks).to(device)
-    else:
-        policy = TradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
-    policy.load_state_dict(state_dict)
-    policy.eval()
 
     # torch.compile for faster inference
     if use_compile and device.type == "cuda":

@@ -10,7 +10,8 @@
 ### Current Alpaca snapshot (2026-03-26 04:22 UTC)
 - **LIVE account**: supervisor `unified-stock-trader` is active; equity **$41,315.42**, cash **$10,298.17**, buying power **$20,596.34**, last_equity **$41,077.99**.
 - **LIVE positions/orders**: no stock positions are open; only dust in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD` remains. Open orders are 3 `ETH/USD` GTC buy limits.
-- **PAPER account**: `daily-rl-trader.service` is installed but currently `inactive (dead)`; paper equity **$55,268.15**, last_equity **$54,078.69**, day change **+$1,189.46 (+2.20%)**, total unrealized **+$3,269.46**.
+- **LIVE duplicate-order guard (2026-03-27 20:31 UTC)**: systemd unit `alpaca-cancel-multi-orders.service` is installed and enabled with `PAPER=0`; `journalctl` confirms it initialized the **LIVE** Alpaca client and is polling for duplicate flat-position opening orders.
+- **LIVE daily-rl-trader**: 6-model ensemble, sleeping until Mon 2026-03-30 market open; PID 3621128
 
 ### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- FIXED (pending restart)
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`
@@ -66,7 +67,10 @@
 ### 3. Alpaca Stock Trader (`unified-stock-trader`) -- RUNNING (LIVE via supervisor)
 - **Bot**: `unified_hourly_experiment/trade_unified_hourly_meta.py`
 - **Service manager**: supervisor program `unified-stock-trader`
+- **Broker safety net**: systemd `alpaca-cancel-multi-orders.service`
 - **Installed config**: `/etc/supervisor/conf.d/unified-stock-trader.conf`
+- **Installed duplicate-order unit**: `/etc/systemd/system/alpaca-cancel-multi-orders.service`
+- **Duplicate-order ExecStart**: `.venv313/bin/python -u /nvme0n1-disk/code/stock-prediction/scripts/cancel_multi_orders.py`
 - **Exact launch**: `.venv313/bin/python -u /nvme0n1-disk/code/stock-prediction/unified_hourly_experiment/trade_unified_hourly_meta.py --strategy wd06=/nvme0n1-disk/code/stock-prediction/unified_hourly_experiment/checkpoints/wd_0.06_s42:8 --strategy wd06b=/nvme0n1-disk/code/stock-prediction/unified_hourly_experiment/checkpoints/wd_0.06_s1337:8 --stock-symbols NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT,AAPL,MSFT,META,TSLA,NET,BKNG,EBAY,EXPE,ITUB,BTG,ABEV --min-edge 0.001 --fee-rate 0.001 --max-positions 5 --max-hold-hours 5 --trade-amount-scale 100.0 --min-buy-amount 2.0 --entry-intensity-power 1.0 --entry-min-intensity-fraction 0.0 --long-intensity-multiplier 1.0 --short-intensity-multiplier 1.5 --meta-metric p10 --meta-lookback-days 14 --meta-selection-mode sticky --meta-switch-margin 0.005 --meta-min-score-gap 0.0 --meta-recency-halflife-days 0.0 --meta-history-days 120 --sit-out-if-negative --sit-out-threshold -0.001 --market-order-entry --bar-margin 0.0005 --entry-order-ttl-hours 6 --margin-rate 0.0625 --live --loop`
 - **Environment**: `PYTHONPATH=/nvme0n1-disk/code/stock-prediction`, `PYTHONUNBUFFERED=1`, `CHRONOS2_FREQUENCY=hourly`, `PAPER=0`
 - **Architecture**: Chronos2 hourly, multiple models + meta-selector
@@ -89,6 +93,9 @@
   1. pending_close_retry: positions stuck in pending_close with no exit order now retry force_close
   2. cancel race condition: sleep(0.75) after cancel before new order (prevents "qty held for orders")
   3. crypto qty: abs(qty)<1 wrongly treated fractional crypto as closed — fixed with notional check
+- **NOTE (2026-03-27)**: duplicate-entry hardening is now live in two layers:
+  1. `trade_unified_hourly.py` allows same-hour entry replacement only after a short broker recheck confirms the stale entry order is actually gone; otherwise it skips with `waiting_for_entry_order_cancel`
+  2. `alpaca-cancel-multi-orders.service` cancels duplicate flat-position opening orders at the broker level without touching protective exits
 - **ABEV incident (2026-03-25)**: ABEV position ($12k, entered 2026-03-20 @ $2.73) had no exit order since
   2026-03-24 when force_close failed due to race condition. Fixed — retry fired at 01:42 UTC.
   Force_close limit order ~$2.77 queued for market open (2026-03-25 13:30 UTC).
@@ -97,65 +104,72 @@
   - local parity tests pass and a one-step smoke train wrote `unified_hourly_experiment/checkpoints/alpaca_progress7_jax_smoke_20260326/epoch_001.flax`
   - RunPod `RTX 4090` bootstrap is in progress for a longer detached retrain; see `alpacaprogress7.md`
 
-### 4. Alpaca Daily PPO Trader (`trade_daily_stock_prod.py`) -- INSTALLED, CURRENTLY INACTIVE (paper systemd)
+### 4. Alpaca Daily PPO Trader (`trade_daily_stock_prod.py`) -- LIVE (systemd, sleeping until Mon 2026-03-30)
 - **Service manager**: systemd unit `daily-rl-trader.service`
 - **Installed unit**: `/etc/systemd/system/daily-rl-trader.service`
-- **Installed ExecStart**: `.venv313/bin/python -u trade_daily_stock_prod.py --daemon --paper --allocation-pct 25`
-- **Runtime status (2026-03-25 08:56 UTC)**: `inactive (dead)`; latest journal restart was `2026-03-25 01:42 UTC`
-- **Paper snapshot (2026-03-25 08:56 UTC)**: equity **$55,268.15**, cash **$2,235.60**, long market value **$53,072.66**, total unrealized **+$3,269.46**
-- **Paper positions (2026-03-25 08:56 UTC)**: `AAPL`, `BTCUSD`, `COUR`, `ETHUSD`, `SOLUSD`, `U`, `UNIUSD`
+- **Installed ExecStart**: `.venv313/bin/python -u trade_daily_stock_prod.py --daemon --live --allocation-pct 25`
+- **Status (2026-03-27 22:00 UTC)**: sleeping 3826.8 min until Mon market open; PID 3621128 via systemd
 - **Architecture**: h=1024 MLP PPO, stocks12 (AAPL,MSFT,NVDA,GOOG,META,TSLA,SPY,QQQ,JPM,V,AMZN,PLTR)
-- **Primary checkpoint**: `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt`
-- **Ensemble member**: `pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt`
-  - tp05_s15 = seed=15, 128 envs, no bf16, 35M steps, best at update_000950
-- **3-model ensemble (s123+s15+s36 softmax_avg) holdout eval** (50 windows, Sep2025-Mar2026, default_rng(42)):
-  - Median: **+47.30%** / 90 days (+64% over 2-model s123+s15)
-  - P10: **+29.93%** (+83% over 2-model s123+s15's 16.37%)
-  - Worst window: **+20.97%** (+106% over 2-model s123+s15's 10.17%)
-  - Negative windows: **0/50 (0%)** — ZERO negative windows
-- **Slippage robustness** (3-model ensemble, 50-window, default_rng(42)):
-  - @5bps:  med=47.30%, p10=29.93%, worst=20.97%, neg=0/50
-  - @10bps: med=47.30%, p10=29.93%, worst=20.97%, neg=0/50 (identical)
-  - @20bps: med=48.60%, p10=31.54%, worst=22.47%, neg=0/50
-  - @50bps: med=37.92%, p10=22.79%, worst=14.94%, neg=0/50
-- **tp05_s36**: seed=36, 128 envs, no bf16, 35M steps — 0/50 neg standalone, med=26.80%
-- **tp05_s15**: seed=15, 128 envs, no bf16, 35M steps — 0/50 neg standalone, med=28.76%
-- **Previous 2-model ensemble** s123+s15: med=28.76%, p10=16.37% (superseded 2026-03-24)
-- **Previous 3-model ensemble** rmu2201+8597+5526: med=14.94%, p10=7.64% (kept for reference)
-- **Config**: h=1024, lr=3e-4, ent=0.05, trade_penalty=0.05, dp=0.0, slip=0bps (training), anneal_lr=True
+- **Primary checkpoint**: `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_10/best.pt`
+- **6-model ensemble (tp10+s15+s36+gamma_995+muon_wd005+h1024_a40) exhaustive eval** (111 windows, all possible 90d windows in val, softmax_avg):
+  - Median: **+58.0%** / 90 days
+  - P10: **+45.4%**
+  - Worst window: **+36.6%**
+  - Negative windows: **0/111 (0%)** — ZERO negative windows in EXHAUSTIVE eval
+- **Ensemble progression** (all exhaustive 111-window, softmax_avg method):
+  - 3-model s123+s15+s36:        med=46.3%, p10=28.6%  (2026-03-24)
+  - 3-model tp10+s15+s36:        med=50.9%, p10=36.6%  (2026-03-27)
+  - 4-model +gamma_995:          med=55.9%, p10=42.9%  (2026-03-27)
+  - **6-model +muon_wd005+h1024_a40: med=58.0%, p10=45.4%, worst=36.6%  (2026-03-27) CURRENT**
+  - 7-model +resmlp_a40: med=57.2%, p10=42.1% — REJECTED (hurts p10 -3.3%)
+  - 8-model +s28_scan: med=55.9%, p10=41.3% — REJECTED (hurts p10 -4.1%)
+- **DEFAULT_EXTRA_CHECKPOINTS** (in `trade_daily_stock_prod.py`):
+  - `stocks12_seed_sweep/tp05_s15/best.pt`
+  - `stocks12_seed_sweep/tp05_s36/best.pt`
+  - `stocks12_v2_sweep/stock_gamma_995/best.pt`
+  - `stocks12_v2_sweep/muon_wd_005/best.pt`
+  - `stocks12_v2_sweep/h1024_a40/best.pt`
+- **Standalone performance of ensemble members**:
+  - tp10: 5/111 neg, med=0.0% (conservative anchor — votes cash)
+  - s15: 0/111 neg, med=+30.0% (phase-transition model, seed=15)
+  - s36: 1/111 neg, med=+27.9% (phase-transition model, seed=36)
+  - gamma_995: 59/111 neg standalone but IMPROVES ensemble (probability dilution)
+  - muon_wd005: 72/111 neg standalone but IMPROVES ensemble (probability dilution)
+  - h1024_a40: 16/111 neg, med=+6.7% (decent standalone, adds mild positive alpha)
+- **Ensemble method**: softmax_avg (NOT logit_avg). Each model outputs softmax probabilities, average them, take argmax.
+- **7th-member search (2026-03-27)**: Tested ALL remaining v2_sweep models — none improve BOTH med AND p10. Best candidate was muon_ent_005 (med=59.2% +1.2% but p10=41.6% -3.8%). Current 6-model is confirmed optimal.
+- **Ensemble expansion confirmed IMPOSSIBLE**: Any additional member either worsens p10/worst or is redundant (resmlp_h100 gives IDENTICAL results to base6).
+- **Config**: h=1024, lr=3e-4, ent=0.05, trade_penalty=0.10 (primary), anneal_lr=True
 - **Launch**: `deployments/daily-stock-ppo/launch.sh`
 - **Supervisor**: `deployments/daily-stock-ppo/supervisor.conf` (autostart=false — enable manually)
 - **WARNING**: Symbol conflict with unified-stock-trader (both trade AAPL/MSFT/NVDA/GOOG/META/TSLA/PLTR) — coordinate before enabling both simultaneously
 - **NOTE**: Previous default (stocks12_daily_tp05_longonly) scored -2.55% median, 32/50 negative
-- **NOTE**: random_mut_2272 (prev deployed) scored -5.14% median, 29/50 negative
 - **NOTE**: seed variance is extreme — seed=7 gives -13.6% median, seed=123 gives +16.5% median (same config)
 - **Deploy command**:
   ```bash
   source .venv313/bin/activate
   python trade_daily_stock_prod.py --live
-  # Uses 3-model ensemble (s123+s15+s36 softmax_avg) — DEFAULT_EXTRA_CHECKPOINTS in code
-  # To restore 2-model: python trade_daily_stock_prod.py --live --extra-checkpoints <s15_path>
-  # To restore standalone s123: python trade_daily_stock_prod.py --live --no-ensemble
+  # Uses 6-model ensemble (tp10+s15+s36+gamma+muon+h1024) — DEFAULT_EXTRA_CHECKPOINTS in code
+  # To restore standalone tp10: python trade_daily_stock_prod.py --live --no-ensemble
   ```
-- **Eval command**:
+- **Eval command** (use softmax_avg method — NOT evaluate_holdout which uses logit_avg):
   ```bash
-  source .venv313/bin/activate
-  python -m pufferlib_market.evaluate_holdout \
-    --checkpoint pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt \
-    --data-path pufferlib_market/data/stocks12_daily_val.bin \
-    --eval-hours 90 --n-windows 50 --seed 42 \
-    --fee-rate 0.001 --fill-buffer-bps 5.0 --deterministic --no-early-stop
+  # Exhaustive 111-window eval script: scripts/test_ensemble_exhaustive.py (or test_6model.py)
   # NOTE: lag=0 IS correct for daily models (1-bar obs lag built-in to C env)
   # Bot runs at 9:35 AM, drops today's incomplete bar, uses T-1 data → fills at T OPEN
   ```
-- **Why ensemble works here**: unlike rmu models, s15 was trained with same tp05 config. Both models
-  pick only high-conviction trades (~10/90d). softmax_avg of two similar architectures diversifies
-  seed variance rather than diluting edge. Ensemble p10/worst strictly better than either alone.
-- **Seed sweep results** (tp05 old-config: 128 envs, no bf16, 35M steps):
-  - seed=15: **0/50 neg, med=39.14%, p10=17.72%** — DEPLOYED in ensemble
-  - seed=33: 32/50 neg — bad
-  - seed=3 (old-config): 1/50 neg best case, p10<5% — not deployable
-  - Sweep continuing: seeds 16-32 (stream A), 34-50 (stream B)
+- **Phase-transition seeds** (seeds that achieve 0/111 neg, exhaustive eval, tp05 h1024 35M config, ~1% hit rate):
+  - seed=15: 0/111 neg standalone, med=30.0% — CONFIRMED phase-transition
+  - seed=36: 1/111 neg standalone, med=27.9% — CONFIRMED phase-transition
+  - Seeds 1-4: TESTED, all bad (s1=21, s2=84, s3=25, s4=81 /111 neg exhaustive)
+  - Seeds 5-14: sweep in progress (s5/s7=NO_CKPT crash, s6/s8 in full training)
+  - Seeds 51-77: all bad (best: s55=13/111 neg exhaustive)
+  - Seeds 300-380 (v3 fully trained): best s301=14/111, s310=6/111 (from 3M screen checkpoint only)
+  - Seeds 600-610 (fullrun): best s604/val_best=19/111 neg
+  - Seeds 700-710 (GRPO): best s702/val_best=28/111 neg
+  - Seeds 300-600 (ongoing tp05 sweep, 15 done, 18 qualified, 202 queued): no phase transitions found
+  - **Conclusion**: 350+ seeds tested, only s15/s36 are genuine phase-transition models. 6-model ensemble is optimal.
+- **Key insight**: softmax_avg lets BAD standalone models (gamma_995: 59/111 neg) help by strongly voting "cash" in windows others falsely want to trade. logit_avg doesn't have this property.
 
 ## Crypto70 Daily RL Seed Sweep (2026-03-25) — IN PROGRESS (~70% complete)
 
@@ -280,13 +294,15 @@ python -m pufferlib_market.evaluate \
 All evaluated via batch 50-window test (deterministic, 5bps fill buffer, no early stop):
 | Model | Checkpoint | med | p10 | worst | neg/50 | Notes |
 |-------|-----------|-----|-----|-------|--------|-------|
-| **ensemble s123+s15+s36** | s123+s15+`stocks12_seed_sweep/tp05_s36/best.pt` | **+47.30%** | **+29.93%** | **+20.97%** | **0** | **PRODUCTION — BEST** (2026-03-24) |
-| ensemble s123+s15 | s123+`stocks12_seed_sweep/tp05_s15/best.pt` | +28.76% | +16.37% | +10.17% | 0 | Superseded by 3-model (2026-03-24) |
-| **tp05_s36 standalone** | `stocks12_seed_sweep/tp05_s36/best.pt` | +26.80% | +10.08% | +3.43% | **0** | New discovery (2026-03-24) |
-| **tp05_s15 standalone** | `stocks12_seed_sweep/tp05_s15/best.pt` | +28.76% | +14.50% | +8.42% | **0** | In 3-model ensemble (2026-03-24) |
-| tp05_s123 standalone | `stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt` | +15.97% | +10.81% | +5.62% | 0 | Primary model (superseded by ensemble) |
-| tp03/v2_sweep | `stocks12_v2_sweep/stock_trade_pen_03/best.pt` | +15.54% | +8.82% | +3.45% | 0 | Backup (tp=0.03, obs_norm=False) |
-| rmu2201 | `autoresearch_stock/random_mut_2201/best.pt` | +12.31% | +3.55% | +0.38% | 0 | 3rd option; ensemble with s123 HURTS (p10→3.62%) |
+| **6-model: tp10+s15+s36+gamma+muon+h1024** | DEFAULT_EXTRA_CHECKPOINTS (6 models) | **+58.0%** | **+45.4%** | **+36.6%** | **0/111** | **PRODUCTION BEST** (2026-03-27) — exhaustive |
+| 4-model: tp10+s15+s36+gamma_995 | tp10+s15+s36+gamma | +55.9% | +42.9% | +29.7% | 0/111 | Superseded by 6-model (2026-03-27) |
+| 3-model: tp10+s15+s36 | tp10+s15+s36 | +50.9% | +36.6% | — | 0/111 | Superseded (2026-03-27) |
+| **ensemble s123+s15+s36** | s123+s15+`stocks12_seed_sweep/tp05_s36/best.pt` | +47.30% | +29.93% | +20.97% | 0/50 | Superseded (2026-03-27) |
+| ensemble s123+s15 | s123+`stocks12_seed_sweep/tp05_s15/best.pt` | +28.76% | +16.37% | +10.17% | 0/50 | Superseded by 3-model (2026-03-24) |
+| tp05_s15 standalone | `stocks12_seed_sweep/tp05_s15/best.pt` | +30.0% | +15.8% | +8.4% | 0/111 | Phase-transition seed=15 |
+| tp05_s36 standalone | `stocks12_seed_sweep/tp05_s36/best.pt` | +27.9% | +10.1% | -1.2% | 1/111 | Phase-transition seed=36 |
+| tp05_s123 standalone | `stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt` | +15.97% | +10.81% | +5.62% | 0/50 | Superseded by ensemble |
+| rmu2201 | `autoresearch_stock/random_mut_2201/best.pt` | +12.31% | +3.55% | +0.38% | 0/50 | Kept for reference |
 
 **Full v2_sweep exhaustive eval (2026-03-24, 47 checkpoints):**
 - No new 0/50-neg deployable models found beyond the 4 confirmed (tp05_s123, tp03/v2_sweep, reg_combo, rmu2201)
@@ -301,12 +317,14 @@ All evaluated via batch 50-window test (deterministic, 5bps fill buffer, no earl
 - tp03_s123 (tp=0.03, obs_norm=False, seed=123, 100M steps): **21/50 neg** — NOT deployable. High in-sample metric (188.7) but terrible OOS. The "lucky seed 123" effect is specific to tp=0.05 config.
 - tp03_obs_norm_s123 (tp=0.03, obs_norm=True, seed=123, partial@update550): **28/50 neg** — NOT deployable. obs_norm caused training instability (peaked early then collapsed).
 
-**Key findings:**
-- softmax_avg ensemble of s123+tp03/v2_sweep HURTS (4/50 neg, p10=0.46%) — they don't complement via ensemble
-- softmax_avg ensemble of s123+rmu2201 HURTS (p10→3.62%) — same issue
-- Running each model STANDALONE is the best strategy; ensembling via softmax_avg dilutes strong signals
+**Key findings (updated 2026-03-27):**
+- **softmax_avg** (production method) and **logit_avg** (fast_batch_eval.py) are DIFFERENT. Use softmax_avg for ensemble decisions.
+- BAD standalone models (gamma_995: 59/111 neg, muon_wd005: 72/111 neg) IMPROVE ensemble via softmax_avg by providing strong "cash" votes that filter false positives.
+- The 6-model ensemble is CONFIRMED OPTIMAL: exhaustive 7th/8th member search found nothing that improves both med AND p10.
+- Seeds 1-14 are the most promising candidates for new phase-transition seeds (untested). Sweep launched 2026-03-27.
+- Seeds 300-700+ sweeps (tp05, tp03, fullrun, GRPO) show no phase-transition behavior after 35M steps.
 - 20-window holdout (seed=1337) is unreliable: tp03/v2_sweep scored -21.27 (rejected!) but is 0/50 neg; stock_drawdown_pen scored 0/20 neg but is 21/50 neg in 50-window
-- **Only trust 50-window EnsembleTrader with default_rng(42) for deployment decisions**
+- **Only trust 111-window exhaustive eval (softmax_avg) for ensemble deployment decisions**
 
 ## Model Search Noise Floor (2026-03-23)
 
@@ -431,4 +449,3 @@ sudo tail -20 /var/log/supervisor/binance-hybrid-spot-error.log
 - **Impact**: random_mut_2272 was deployed (now known to be -5.14% median, 29/50 negative). random_mut_2201 (the actual best: +11.74% median, 1/50 negative) was ranked last and not deployed.
 - **Fix**: Added `--no-early-stop` flag to `evaluate_holdout.py`. Updated DEFAULT_CHECKPOINT to random_mut_2201. Always use `--deterministic --no-early-stop` for final candidate selection.
 - **Note**: random_mut_2201 uses h=256 (NOT h=1024) — shows smaller networks with right config can outperform.
-

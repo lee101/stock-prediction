@@ -578,6 +578,7 @@ class RLGeminiBridge:
             _logger.error(msg)
             raise ValueError(msg)
 
+        checkpoint_has_encoder_norm = False
         if spec.arch == "resmlp":
             policy = ResidualTradingPolicy(
                 spec.obs_size,
@@ -586,11 +587,31 @@ class RLGeminiBridge:
                 num_blocks=max(1, spec.num_blocks),
             )
         else:
-            policy = TradingPolicy(spec.obs_size, spec.num_actions, hidden=spec.hidden_size)
+            payload = self._load_checkpoint_payload()
+            state_dict = payload.get("model", payload)
+            checkpoint_has_encoder_norm = any("encoder_norm" in key for key in state_dict)
+            policy = TradingPolicy(
+                spec.obs_size,
+                spec.num_actions,
+                hidden=spec.hidden_size,
+                use_encoder_norm=checkpoint_has_encoder_norm,
+            )
 
         payload = self._load_checkpoint_payload()
         state_dict = payload.get("model", payload)
-        policy.load_state_dict(state_dict)
+        missing_keys, unexpected_keys = policy.load_state_dict(state_dict, strict=False)
+        unexpected_encoder_keys = [key for key in unexpected_keys if "encoder_norm" not in key]
+        if unexpected_encoder_keys:
+            raise RuntimeError(
+                f"Unexpected keys loading checkpoint {self.checkpoint_path}: {unexpected_encoder_keys}"
+            )
+        structural_missing = [key for key in missing_keys if "encoder_norm" not in key]
+        if structural_missing:
+            raise RuntimeError(
+                f"Missing keys loading checkpoint {self.checkpoint_path}: {structural_missing}"
+            )
+        if hasattr(policy, "_use_encoder_norm"):
+            policy._use_encoder_norm = checkpoint_has_encoder_norm and hasattr(policy, "encoder_norm")
 
         policy.to(self.device)
         policy.eval()

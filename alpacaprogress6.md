@@ -1,5 +1,45 @@
 # Alpaca Progress 6 — 2026-03-25
 
+## 2026-03-27 Audit Update
+
+### What changed in production
+- `main` was already up to date; no remote git delta.
+- The live `ETHUSD` orphan seen during the audit is now closed in Alpaca broker history:
+  - stale GTC sell canceled at **2026-03-27 20:35:55 UTC**
+  - market sell for **14.537579265 ETH** filled at **2026-03-27 20:35:56 UTC**
+- `unified-stock-trader` is no longer running in supervisor.
+- `daily-rl-trader.service` is now configured for **live** (`trade_daily_stock_prod.py --daemon --live --allocation-pct 25`) and was restarted at **2026-03-27 20:59 UTC**.
+- `unified-orchestrator.service` was restarted at **2026-03-27 20:59 UTC** and now loads symbol ownership as:
+  - crypto: `BTCUSD, ETHUSD, SOLUSD, LTCUSD, AVAXUSD`
+  - stocks: none
+
+### Bugs fixed during the 2026-03-27 audit
+- **Unified orchestrator RL bridge loader**: fixed backward compatibility with checkpoints that do not contain `encoder_norm`.
+- **Ownership drift / double-trading risk**: added `daily-rl-trader` to `unified_orchestrator/service_config.json` and moved live stock ownership out of `unified-orchestrator`.
+- **`evaluate_multiperiod --json` output corruption**: simulator chatter now stays off stdout in JSON mode.
+- **Stale smoke tests**: updated to skip cleanly when optional checkpoint artifacts are not present.
+
+### Verification
+- Re-ran production-relevant suites after the fixes.
+- Result: **99 tests passed** across symbol-conflict, daily-prod, RL bridge, cancel guard, unified-hourly, simulator-math, sim-fidelity, and evaluate-multiperiod coverage.
+- Ran `trade_daily_stock_prod.py --once --dry-run --live` at **2026-03-27 21:04 UTC**:
+  - full 6-model ensemble loaded successfully
+  - produced `long_AMZN` with **7.8%** confidence and 25% target allocation
+  - no `encoder_norm` loader failure
+
+### Current interpretation
+- Best validated live stock system remains the daily stocks12 PPO ensemble.
+- Best validated live crypto system remains the orchestrator crypto path using `autoresearch/slip_5bps`, but actual trading is still bottlenecked by Gemini returning frequent `API exhausted` / `hold`.
+- `alpacaprod.md` was rewritten on **2026-03-27 21:00 UTC** because the previous version was materially stale about service status, ETH exposure, and symbol ownership.
+
+### Focused ensemble check (2026-03-27 21:12 UTC)
+- Tested the conservative standalone candidate `stocks12_35m_v2/tp05_s212/val_best.pt` against the deployed 6-model stock ensemble on the canonical exhaustive 111-window evaluation.
+- Results:
+  - current base6: **0/111 neg, med=58.0%, p10=45.4%, worst=36.6%**
+  - base6 + `s212_val`: **0/111 neg, med=56.3%, p10=45.4%, worst=34.3%** → reject
+  - replace `tp10` with `s212_val`: **0/111 neg, med=59.5%, p10=36.6%, worst=13.6%** → reject
+- Conclusion: `s212_val` is not a deployable improvement. It either dilutes the existing ensemble or collapses downside robustness.
+
 ## Current Production State
 
 ### Running processes (GPU)
@@ -76,6 +116,24 @@ else:
 
 Service was running with stale process using `stocks12_daily_tp05_longonly/best.pt` (old bad model, -2.55% median OOS). Code already had `DEFAULT_CHECKPOINT = stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt` (3-model ensemble, 0/50 neg).
 Fix: restarted service. Now uses correct 3-model ensemble (s123+s15+s36, med=+47.30%).
+
+### Bug 4: duplicate entry cancel/replace could over-open ETH (2026-03-27, FIXED)
+
+**Root cause**: when a flat symbol already had a stale/mismatched open entry order, `execute_trades()` could request a cancel and still submit a replacement in the same cycle. If the broker had not yet acknowledged the cancel, both orders could remain live and both could fill.
+
+**Fix 4a**: `_reconcile_entry_orders()` now returns whether replacement must be blocked. `execute_trades()` skips submission with `waiting_for_entry_order_cancel` whenever any stale entry order had to be canceled, even if that cancel later fails.
+
+**Fix 4b**: added a broker-side safety net: `alpaca-cancel-multi-orders.service` runs `scripts/cancel_multi_orders.py` with `PAPER=0` under systemd. It only cancels duplicate **opening** orders for flat symbols, and leaves protective exit orders alone.
+
+**Prod verification (2026-03-27 20:31 UTC)**:
+- `systemctl status alpaca-cancel-multi-orders` shows `active (running)`
+- `journalctl -u alpaca-cancel-multi-orders` shows `Initialized Alpaca Trading Client: LIVE account`
+
+**Coverage added**:
+- stale entry cancel blocks replacement
+- cancel failure still blocks replacement
+- duplicate opening-order watcher ignores duplicate exits for live positions
+- simulator can represent duplicate seeded ETH entry exposure at the PnL/exposure level
 
 ---
 

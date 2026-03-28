@@ -19,7 +19,7 @@ from pufferlib_market.autoresearch_rl import (
     summarize_holdout_payload,
     summarize_market_validation_payload,
 )
-from src.robust_trading_metrics import summarize_scenario_results
+from src.robust_trading_metrics import compute_replay_composite_score, summarize_scenario_results
 
 
 def test_summarize_holdout_payload_computes_robust_metrics() -> None:
@@ -179,6 +179,27 @@ def test_summarize_replay_eval_payload_extracts_sections() -> None:
     assert summary["replay_combo_scenario_count"] == pytest.approx(4.0)
     assert "replay_combo_score" in summary
 
+    assert summary == {
+        **summary,
+        **compute_replay_composite_score(
+            daily_return_pct=4.0,
+            daily_sortino=1.1,
+            daily_max_drawdown_pct=8.0,
+            daily_pnl_smoothness=0.001,
+            daily_trade_count=5.0,
+            hourly_return_pct=3.0,
+            hourly_sortino=0.9,
+            hourly_max_drawdown_pct=12.0,
+            hourly_pnl_smoothness=0.002,
+            hourly_trade_count=4.0,
+            hourly_policy_return_pct=-6.0,
+            hourly_policy_sortino=-0.4,
+            hourly_policy_max_drawdown_pct=20.0,
+            hourly_policy_pnl_smoothness=0.004,
+            hourly_policy_trade_count=8.0,
+        ),
+    }
+
 
 def test_summarize_replay_eval_payload_extracts_robust_sections() -> None:
     payload = {
@@ -236,6 +257,10 @@ def test_select_rank_score_uses_expected_fallback_order() -> None:
         {"replay_hourly_robust_worst_return_pct": -2.0, "replay_hourly_return_pct": 3.0},
         rank_metric="auto",
     ) == ("replay_hourly_robust_worst_return_pct", -2.0)
+    assert select_rank_score({"replay_hourly_policy_return_pct": -6.0}, rank_metric="auto") == (
+        "replay_hourly_policy_return_pct",
+        -6.0,
+    )
     assert select_rank_score({"replay_hourly_return_pct": 3.0}, rank_metric="auto") == ("replay_hourly_return_pct", 3.0)
     assert select_rank_score({"replay_hourly_policy_return_pct": -6.0}, rank_metric="replay_hourly_policy_return_pct") == (
         "replay_hourly_policy_return_pct",
@@ -269,32 +294,30 @@ def test_experiments_have_unique_descriptions() -> None:
     assert len(descriptions) == len(set(descriptions))
 
 
-def test_gspo_binance_replay_stabilizer_variants_are_registered() -> None:
+def test_sortino_rc3_followup_variants_are_registered() -> None:
     exps = select_experiments(
         descriptions=",".join(
             [
-                "gspo_like_drawdown_mix15_tp01_dd03_slip10",
-                "gspo_like_drawdown_mix15_tp01_dd03_slip10_h512",
-                "gspo_like_drawdown_mix15_tp01_dd03_slip10_dd025",
-                "gspo_like_drawdown_mix15_tp01_dd03_slip10_mix10",
-                "gspo_like_drawdown_mix15_tp01_dd03_slip10_clip08",
-                "gspo_like_drawdown_mix15_tp01_dd03_slip10_sm001",
-                "gspo_like_drawdown_mix15_tp01_dd03_slip10_sds03",
-                "gspo_like_drawdown_mix15_tp01_dd03_slip10_tp008",
+                "sortino_rc3_tp08",
+                "sortino_rc3_tp07",
+                "sortino_rc3_tp09",
+                "sortino_rc3_tp08_slip8",
+                "sortino_rc3_tp08_wd01",
+                "sortino_rc3_tp08_sm001",
+                "sortino_rc3_tp08_dd002",
             ]
         )
     )
 
     got = {exp["description"] for exp in exps}
     assert got == {
-        "gspo_like_drawdown_mix15_tp01_dd03_slip10",
-        "gspo_like_drawdown_mix15_tp01_dd03_slip10_h512",
-        "gspo_like_drawdown_mix15_tp01_dd03_slip10_dd025",
-        "gspo_like_drawdown_mix15_tp01_dd03_slip10_mix10",
-        "gspo_like_drawdown_mix15_tp01_dd03_slip10_clip08",
-        "gspo_like_drawdown_mix15_tp01_dd03_slip10_sm001",
-        "gspo_like_drawdown_mix15_tp01_dd03_slip10_sds03",
-        "gspo_like_drawdown_mix15_tp01_dd03_slip10_tp008",
+        "sortino_rc3_tp08",
+        "sortino_rc3_tp07",
+        "sortino_rc3_tp09",
+        "sortino_rc3_tp08_slip8",
+        "sortino_rc3_tp08_wd01",
+        "sortino_rc3_tp08_sm001",
+        "sortino_rc3_tp08_dd002",
     }
 
 
