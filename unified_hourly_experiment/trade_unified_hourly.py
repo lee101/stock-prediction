@@ -63,6 +63,8 @@ ENTRY_ALLOCATOR_MAX_SINGLE_POSITION_FRACTION = 0.6
 ENTRY_ALLOCATOR_RESERVE_FRACTION = 0.1
 BROKER_EVENT_LOOKBACK_HOURS = 48.0
 BROKER_EVENT_KEY_LIMIT = 512
+ENTRY_REPLACE_CANCEL_WAIT_SECONDS = 0.75
+ENTRY_REPLACE_CANCEL_POLL_SECONDS = 0.25
 
 
 @dataclass(frozen=True)
@@ -624,6 +626,37 @@ def _cancel_specific_orders(
         orders_by_symbol.pop(symbol, None)
 
 
+def _wait_for_entry_order_cancel_ack(
+    api,
+    *,
+    symbol: str,
+    wait_seconds: float = ENTRY_REPLACE_CANCEL_WAIT_SECONDS,
+    poll_seconds: float = ENTRY_REPLACE_CANCEL_POLL_SECONDS,
+) -> bool:
+    wait_seconds = max(float(wait_seconds), 0.0)
+    poll_seconds = max(float(poll_seconds), 0.05)
+    if wait_seconds <= 0.0:
+        return False
+
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        refreshed_orders = get_open_orders(api).get(symbol, [])
+        if not refreshed_orders:
+            log_event("entry_cancel_wait_cleared", symbol=symbol, wait_seconds=float(wait_seconds))
+            return True
+
+        if time.monotonic() >= deadline:
+            log_event(
+                "entry_cancel_wait_timeout",
+                symbol=symbol,
+                wait_seconds=float(wait_seconds),
+                open_orders=[_serialize_order(order) for order in refreshed_orders],
+            )
+            return False
+
+        time.sleep(min(poll_seconds, max(0.0, deadline - time.monotonic())))
+
+
 def _reconcile_position_orders(
     api,
     *,
@@ -725,6 +758,11 @@ def _reconcile_entry_orders(
     )
 
     if kept_order is None:
+        if orders_to_cancel and _wait_for_entry_order_cancel_ack(api, symbol=symbol):
+            return EntryOrderReconcileResult(
+                matching_order=None,
+                replacement_blocked=False,
+            )
         return EntryOrderReconcileResult(
             matching_order=None,
             replacement_blocked=bool(orders_to_cancel),
