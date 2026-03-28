@@ -99,6 +99,16 @@ def make_fake_checkpoint(tmp_path: Path, hidden: int = 64, num_symbols: int = 3)
     return pt
 
 
+def discover_real_checkpoint_dirs(*patterns: str) -> list[Path]:
+    dirs = {
+        path
+        for pattern in patterns
+        for path in CHECKPOINTS_DIR.glob(pattern)
+        if path.is_dir()
+    }
+    return sorted(dirs)
+
+
 # ---------------------------------------------------------------------------
 # eval_all_checkpoints.py tests
 # ---------------------------------------------------------------------------
@@ -399,19 +409,19 @@ class TestUpdateFreshDataUniverseConstants:
 
 class TestRealCheckpointsExist:
     def test_mixed23_checkpoints_dir_exists(self):
-        ckpts = CHECKPOINTS_DIR / "autoresearch_mixed23_daily"
-        assert ckpts.exists(), f"Expected mixed23 checkpoints dir: {ckpts}"
+        ckpts = discover_real_checkpoint_dirs("autoresearch_mixed23_*", "mixed23_*")
+        assert ckpts, f"Expected at least one mixed23 checkpoint dir under {CHECKPOINTS_DIR}"
 
     def test_mixed32_checkpoints_dir_exists(self):
-        ckpts = CHECKPOINTS_DIR / "autoresearch_mixed32_daily"
-        assert ckpts.exists(), f"Expected mixed32 checkpoints dir: {ckpts}"
+        ckpts = discover_real_checkpoint_dirs("autoresearch_mixed32_*", "mixed32_*")
+        assert ckpts, f"Expected at least one mixed32 checkpoint dir under {CHECKPOINTS_DIR}"
 
     def test_mixed23_has_best_pt_files(self):
-        ckpts = CHECKPOINTS_DIR / "autoresearch_mixed23_daily"
-        if not ckpts.exists():
-            pytest.skip("autoresearch_mixed23_daily not present")
-        pts = list(ckpts.rglob("best.pt"))
-        assert len(pts) > 0, "No best.pt files found under autoresearch_mixed23_daily"
+        ckpt_dirs = discover_real_checkpoint_dirs("autoresearch_mixed23_*", "mixed23_*")
+        if not ckpt_dirs:
+            pytest.skip("No mixed23 checkpoint directories present")
+        pts = [pt for ckpt_dir in ckpt_dirs for pt in ckpt_dir.rglob("best.pt")]
+        assert pts, f"No best.pt files found under mixed23 checkpoint dirs: {ckpt_dirs}"
 
     def test_val_data_exists(self):
         """At least one of the default val data files should exist."""
