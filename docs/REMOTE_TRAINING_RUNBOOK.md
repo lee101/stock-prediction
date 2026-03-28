@@ -136,7 +136,62 @@ rsync -az -e "ssh -o StrictHostKeyChecking=no" \
   analysis/remote_runs/<run-id>/remote_run/
 ```
 
-## 4. ETH risk-aware PPO on remote
+## 4. Shared Chronos2 -> hourly-vs-daily RL comparison
+
+Use this when the goal is a fair downstream comparison from the same Chronos2
+upstream forecasts:
+
+- branch A: hourly forecast-cache RL
+- branch B: daily RL with causal hourly forecast-context features from `export_data_daily_v4`
+
+```bash
+source .venv313/bin/activate
+python scripts/launch_remote_chronos_compare_rl.py \
+  --run-id chronos_compare_rl_$(date -u +%Y%m%d_%H%M%S) \
+  --symbols BTCUSD,ETHUSD,SOLUSD,AVAXUSD,LINKUSD,UNIUSD,XRPUSD,DOGEUSD \
+  --local-hourly-data-root trainingdatahourly \
+  --remote-hourly-data-root trainingdatahourly \
+  --local-daily-data-root trainingdatadaily \
+  --remote-daily-data-root trainingdatadaily \
+  --context-lengths 128 \
+  --learning-rates 5e-5 \
+  --num-steps 400 \
+  --train-hours 4320 \
+  --val-hours 1440 \
+  --time-budget 1800 \
+  --max-trials 4 \
+  --descriptions sortino_rc3_tp08,sortino_rc3_tp09,robust_reg_tp01,sortino_top1_tp
+```
+
+The launcher:
+
+- computes a shared time window that fits both hourly and daily data
+- fine-tunes / promotes Chronos2 once
+- builds one shared hourly forecast cache
+- exports both:
+  - hourly MKTD forecast features
+  - daily fused MKTD with hourly Chronos context
+- runs separate `pufferlib_market.autoresearch_rl` sweeps for hourly and daily branches
+
+Monitor the run:
+
+```bash
+ssh -o StrictHostKeyChecking=no administrator@93.127.141.100 \
+  'cd /nvme0n1-disk/code/stock-prediction && tail -n 80 analysis/remote_runs/<run-id>/pipeline.log'
+```
+
+Pull the leaderboards:
+
+```bash
+scp -o StrictHostKeyChecking=no \
+  administrator@93.127.141.100:/nvme0n1-disk/code/stock-prediction/analysis/remote_runs/<run-id>/hourly_leaderboard.csv \
+  analysis/remote_runs/<run-id>/hourly_leaderboard.csv
+scp -o StrictHostKeyChecking=no \
+  administrator@93.127.141.100:/nvme0n1-disk/code/stock-prediction/analysis/remote_runs/<run-id>/daily_leaderboard.csv \
+  analysis/remote_runs/<run-id>/daily_leaderboard.csv
+```
+
+## 5. ETH risk-aware PPO on remote
 
 Existing helper:
 
@@ -152,7 +207,7 @@ That helper already:
 - activates `.venv312` or `.venv313`
 - launches detached training under `fastalgorithms/eth_risk_ppo/logs/`
 
-## 5. Kronos fine-tuning on remote
+## 6. Kronos fine-tuning on remote
 
 Full-model or LoRA Kronos runs should be launched directly on the remote GPU box:
 
@@ -189,7 +244,7 @@ python -m kronostraining.run_training \
   --adapter-dropout 0.05
 ```
 
-## 6. Existing remote sweep helpers
+## 7. Existing remote sweep helpers
 
 These already target the same host/path conventions and are safe starting points:
 

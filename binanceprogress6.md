@@ -4,6 +4,305 @@
 
 Find the **highest Sortino, lowest max-drawdown, best annualized PnL** strategy for pure crypto trading on Binance. This will run live on Binance — every decision here must be validated in a market simulator that closely matches real execution.
 
+## 2026-03-28 Conservative Pivot
+
+The GSPO branch stopped looking trustworthy once it was re-run. The search
+budget has now shifted to the conservative sortino/regularized family, which
+is the first place this week that produced a replay-combo winner with a
+survivable holdout profile.
+
+### Finished remote conservative sweep
+
+Artifacts:
+
+- Remote leaderboard:
+  - `/nvme0n1-disk/code/stock-prediction/analysis/binance_conservative_replay_combo_20260327.csv`
+- Remote log:
+  - `/nvme0n1-disk/code/stock-prediction/analysis/remote_logs/binance_conservative_replay_combo_20260327.log`
+
+Key results:
+
+| Config | Replay Combo Score | Holdout Robust | Val Return | Daily Replay Return | Hourly Replay Return |
+|--------|-------------------:|---------------:|-----------:|--------------------:|---------------------:|
+| `sortino_rc3_tp08` | `+31.75` | `-86.47` | `+0.50%` | `+13.20%` | `+13.16%` |
+| `sortino_top1_tp` | `+19.81` | `-211.58` | `-0.44%` | `+16.18%` | `+17.35%` |
+| `robust_reg_tp01` | `-3.81` | `-202.60` | `-6.92%` | `+10.09%` | `+12.05%` |
+| `robust_reg_tp005_dd002` | `-27.64` | `-195.79` | `+17.36%` | `+9.62%` | `+3.80%` |
+
+Read:
+
+- `sortino_rc3_tp08` is the correct refinement anchor.
+- `sortino_top1_tp` had decent replay, but the holdout profile was much worse.
+- The older robust-reg branches still did not solve the deployment problem.
+
+## 2026-03-28 Chronos2 Daily-vs-Hourly Comparison
+
+The next robustness pass adds a fair Chronos2-fed comparison instead of
+another single-branch sweep:
+
+- branch A:
+  - hourly forecast-cache RL on `trainingdatahourly/crypto`
+- branch B:
+  - daily RL on `trainingdatadaily` enriched with causal hourly Chronos context
+    from `pufferlib_market.export_data_daily_v4`
+
+### Code changes
+
+- Added first-class comparison planning in `src/remote_training_pipeline.py`
+  - shared Chronos2 upstream
+  - shared hourly forecast cache
+  - dual downstream RL branches
+  - holdout-aware leaderboard config for both branches
+- Added launcher:
+  - `scripts/launch_remote_chronos_compare_rl.py`
+- Hardened launchers to disable SSH multiplexing and avoid hardcoding a missing
+  repo-root `AGENTS.md` in the sync list
+- Cleaned `pufferlib_market.export_data_daily_v4` so the hourly-context feature
+  assignments stay dtype-stable under newer pandas
+- Updated remote runbook:
+  - `docs/REMOTE_TRAINING_RUNBOOK.md`
+
+### Verification
+
+- Command:
+  - `source .venv313/bin/activate && pytest -q tests/test_remote_training_pipeline.py tests/test_mktd_v4.py`
+- Result:
+  - `14 passed`
+
+### Remote data-path finding
+
+Initial assumption was wrong on the 5090 box:
+
+- wrong roots:
+  - daily: `trainingdatadaily`
+  - hourly: `trainingdatahourly`
+- actual usable roots for this Binance comparison:
+  - daily: `trainingdata`
+  - hourly: `trainingdatahourly/crypto`
+
+Confirmed symbols present on remote for:
+
+- `BTCUSD`
+- `ETHUSD`
+- `SOLUSD`
+- `AVAXUSD`
+- `LINKUSD`
+- `UNIUSD`
+- `XRPUSD`
+- `DOGEUSD`
+
+### Remote launch
+
+- Manifest:
+  - `analysis/remote_runs/binance_chronos_compare_20260328b/launch_manifest.json`
+- Remote PID:
+  - `4075080`
+- Remote run dir:
+  - `/nvme0n1-disk/code/stock-prediction/analysis/remote_runs/binance_chronos_compare_20260328b`
+- Remote log:
+  - `/nvme0n1-disk/code/stock-prediction/analysis/remote_runs/binance_chronos_compare_20260328b/pipeline.log`
+- Hourly leaderboard:
+  - `/nvme0n1-disk/code/stock-prediction/analysis/remote_runs/binance_chronos_compare_20260328b/hourly_leaderboard.csv`
+- Daily leaderboard:
+  - `/nvme0n1-disk/code/stock-prediction/analysis/remote_runs/binance_chronos_compare_20260328b/daily_leaderboard.csv`
+- Hourly checkpoints:
+  - `/nvme0n1-disk/code/stock-prediction/pufferlib_market/checkpoints/binance_chronos_compare_20260328b_hourly`
+- Daily checkpoints:
+  - `/nvme0n1-disk/code/stock-prediction/pufferlib_market/checkpoints/binance_chronos_compare_20260328b_daily`
+
+### Exact launcher command
+
+```bash
+source .venv313/bin/activate
+python scripts/launch_remote_chronos_compare_rl.py \
+  --no-sync \
+  --run-id binance_chronos_compare_20260328b \
+  --symbols BTCUSD,ETHUSD,SOLUSD,AVAXUSD,LINKUSD,UNIUSD,XRPUSD,DOGEUSD \
+  --local-hourly-data-root trainingdatahourly \
+  --remote-hourly-data-root trainingdatahourly/crypto \
+  --local-daily-data-root trainingdatadaily \
+  --remote-daily-data-root trainingdata \
+  --context-lengths 128 \
+  --learning-rates 5e-5 \
+  --num-steps 400 \
+  --train-hours 4320 \
+  --val-hours 1440 \
+  --time-budget 1800 \
+  --max-trials 4 \
+  --descriptions sortino_rc3_tp08,sortino_rc3_tp09,robust_reg_tp01,sortino_top1_tp \
+  --hourly-max-steps-override 720 \
+  --daily-max-steps-override 90 \
+  --hourly-holdout-eval-steps 168 \
+  --daily-holdout-eval-steps 30
+```
+
+Before that launch, a surgical sync pushed only the needed updated files:
+
+```bash
+cd /home/lee/code/stock
+rsync -azR -e "ssh -S none -o ControlMaster=no -o StrictHostKeyChecking=no" \
+  ./scripts/run_crypto_lora_batch.py \
+  ./scripts/promote_chronos2_lora_reports.py \
+  ./scripts/build_hourly_forecast_caches.py \
+  ./scripts/launch_remote_chronos_compare_rl.py \
+  ./scripts/launch_remote_hourly_chronos_rl.py \
+  ./src/remote_training_pipeline.py \
+  ./src/robust_trading_metrics.py \
+  ./pufferlib_market/autoresearch_rl.py \
+  ./pufferlib_market/export_data_daily_v4.py \
+  ./pufferlib_market/setup.py \
+  administrator@93.127.141.100:/nvme0n1-disk/code/stock-prediction/
+```
+
+### Current status
+
+Current remote log confirms:
+
+- C extension rebuilt successfully
+- `pufferlib_market.binding` imports cleanly
+- Chronos batch started
+- first live task:
+  - `[1/24] BTCUSD preaug=baseline ctx=128 lr=5e-05`
+
+Read:
+
+- this is the cleanest direct test yet of whether the daily trader or the
+  hourly trainer benefits more from Chronos-led features under the same
+  upstream forecasts
+- if the daily fused branch wins, it strengthens the “small daily RL +
+  compact trajectory embedding” path
+- if the hourly branch wins, the next move is to tighten hourly regularization
+  rather than keep adding daily context
+
+## 2026-03-28 Local sortino_rc3 Follow-Up Proof
+
+After the remote conservative sweep, a short local proof checked whether small
+knob changes around `sortino_rc3_tp08` improved the same deployment-shaped
+metric.
+
+### Code change
+
+- Added focused follow-up configs in `pufferlib_market.autoresearch_rl`:
+  - `sortino_rc3_tp07`
+  - `sortino_rc3_tp09`
+  - `sortino_rc3_tp08_slip8`
+  - `sortino_rc3_tp08_wd01`
+  - `sortino_rc3_tp08_sm001`
+  - `sortino_rc3_tp08_dd002`
+- Re-verified:
+  - `source .venv313/bin/activate && pytest -q tests/test_pufferlib_market_autoresearch_rl.py`
+  - Result: `20 passed`
+
+### Local proof command
+
+```bash
+source .venv313/bin/activate
+export PYTHONPATH=$PWD:$PWD/PufferLib:$PYTHONPATH
+python -u -m pufferlib_market.autoresearch_rl \
+  --train-data pufferlib_market/data/mixed23_fresh_train.bin \
+  --val-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --time-budget 120 --max-trials 4 \
+  --descriptions sortino_rc3_tp07,sortino_rc3_tp08,sortino_rc3_tp09,sortino_rc3_tp08_slip8 \
+  --periods-per-year 365 --max-steps-override 90 \
+  --holdout-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --holdout-eval-steps 90 --holdout-n-windows 12 \
+  --holdout-fee-rate 0.001 --holdout-fill-buffer-bps 5 \
+  --replay-eval-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --replay-eval-hourly-root trainingdatahourly \
+  --replay-eval-start-date 2025-06-01 \
+  --replay-eval-end-date 2026-02-05 \
+  --replay-eval-fill-buffer-bps 5 \
+  --rank-metric replay_combo_score \
+  --leaderboard analysis/binance_sortino_rc3_followup_proof4_20260328.csv \
+  --checkpoint-root pufferlib_market/checkpoints/binance_sortino_rc3_followup_proof4_20260328
+```
+
+### Local proof artifacts
+
+- `analysis/binance_sortino_rc3_followup_proof4_20260328.csv`
+- `pufferlib_market/checkpoints/binance_sortino_rc3_followup_proof4_20260328/`
+
+### Local proof results
+
+| Config | Replay Combo Score | Holdout Robust | Val Return | Hourly Replay Return |
+|--------|-------------------:|---------------:|-----------:|---------------------:|
+| `sortino_rc3_tp08` | `+12.86` | `-39.42` | `-1.54%` | `+6.67%` |
+| `sortino_rc3_tp09` | `-0.15` | `-81.82` | `+1.03%` | `+2.11%` |
+| `sortino_rc3_tp08_slip8` | `-50.00` | `-50.00` | `0.00%` | `0.00%` |
+| `sortino_rc3_tp07` | `-50.40` | `-199.51` | `-1.91%` | `+1.66%` |
+
+Read:
+
+- `tp08` remained the best trade-penalty setting.
+- `tp09` was directionally okay but weaker.
+- `slip8` became too sparse / near no-op and is not worth more budget.
+- The best new signal is the local `tp08` holdout profile: `-39.42`, which is
+  materially better than the remote conservative batch and strong enough to
+  justify a deeper follow-up.
+
+## 2026-03-28 Remote sortino_rc3 Follow-Up Sweep
+
+This batch is now running on the 5090 box and focuses only on the `tp08`
+family plus hardening knobs.
+
+### Remote launch
+
+- Host: `administrator@93.127.141.100`
+- Repo root: `/nvme0n1-disk/code/stock-prediction`
+- Env:
+  - `source .venv313/bin/activate`
+  - `export PYTHONPATH=$PWD:$PWD/PufferLib:${PYTHONPATH:-}`
+- Remote PID: `2702950`
+- Remote log:
+  - `/nvme0n1-disk/code/stock-prediction/analysis/remote_logs/binance_sortino_rc3_followup_remote_20260328.log`
+- Remote leaderboard:
+  - `/nvme0n1-disk/code/stock-prediction/analysis/binance_sortino_rc3_followup_remote_20260328.csv`
+- Remote checkpoints:
+  - `/nvme0n1-disk/code/stock-prediction/pufferlib_market/checkpoints/binance_sortino_rc3_followup_remote_20260328`
+
+### Exact remote command
+
+```bash
+ssh -S none -o ControlMaster=no -o StrictHostKeyChecking=no administrator@93.127.141.100 "
+bash -lc 'cd /nvme0n1-disk/code/stock-prediction; \
+source .venv313/bin/activate; \
+export PYTHONPATH=\$PWD:\$PWD/PufferLib:\${PYTHONPATH:-}; \
+mkdir -p analysis/remote_logs; \
+nohup python -u -m pufferlib_market.autoresearch_rl \
+  --train-data pufferlib_market/data/mixed23_fresh_train.bin \
+  --val-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --time-budget 180 --max-trials 6 \
+  --descriptions sortino_rc3_tp08,sortino_rc3_tp09,sortino_rc3_tp08_wd01,sortino_rc3_tp08_sm001,sortino_rc3_tp08_dd002,sortino_rc3_tp08_slip8 \
+  --periods-per-year 365 --max-steps-override 90 \
+  --holdout-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --holdout-eval-steps 90 --holdout-n-windows 12 \
+  --holdout-fee-rate 0.001 --holdout-fill-buffer-bps 5 \
+  --replay-eval-data pufferlib_market/data/mixed23_fresh_val.bin \
+  --replay-eval-hourly-root trainingdatahourly \
+  --replay-eval-start-date 2025-06-01 \
+  --replay-eval-end-date 2026-02-05 \
+  --replay-eval-fill-buffer-bps 5 \
+  --rank-metric replay_combo_score \
+  --leaderboard analysis/binance_sortino_rc3_followup_remote_20260328.csv \
+  --checkpoint-root pufferlib_market/checkpoints/binance_sortino_rc3_followup_remote_20260328 \
+  > analysis/remote_logs/binance_sortino_rc3_followup_remote_20260328.log 2>&1 & \
+echo \$! > analysis/remote_logs/binance_sortino_rc3_followup_remote_20260328.pid'"
+```
+
+### Current status
+
+- Confirmed running remotely and entered trial `[0] sortino_rc3_tp08`.
+- Next keep criterion:
+  - beat local `tp08` holdout (`-39.42`) or materially improve replay-combo
+    without collapsing into the GSPO-style instability we already ruled out
+- First remote datapoint on this batch:
+  - `sortino_rc3_tp08` came back weaker than the local proof
+  - replay-combo `-0.32`
+  - holdout robust `-192.34`
+  - hourly replay return `+10.28%`
+  - practical read: even this family is still path-sensitive, so the remaining
+    hardening variants matter before treating `rc3_tp08` as a deployable winner
+
 ## 2026-03-26 Replay-Combo Ranking Pass
 
 This pass tightened the short-budget search loop around the actual decision

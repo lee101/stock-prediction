@@ -169,7 +169,7 @@ def compute_consistency_metrics(
 
 
 def train_and_evaluate(cfg: TrainConfig, data_path: Path, output_root: Path) -> Dict[str, Any]:
-    from chronos2_trainer import _load_pipeline, _fit_pipeline, _save_pipeline
+    from chronos2_trainer import TrainerConfig, _load_pipeline, _fit_pipeline, _save_pipeline
 
     df = load_hourly_frame(data_path)
     logger.info("Loaded {} rows for {}", len(df), cfg.symbol)
@@ -199,21 +199,24 @@ def train_and_evaluate(cfg: TrainConfig, data_path: Path, output_root: Path) -> 
         )
     output_dir = output_root / run_name
 
-    class FakeConfig:
-        def __init__(self, c):
-            self.context_length = c.context_length
-            self.prediction_length = c.prediction_length
-            self.batch_size = c.batch_size
-            self.learning_rate = c.learning_rate
-            self.num_steps = c.num_steps
-            self.finetune_mode = "lora"
-            self.lora_r = c.lora_r
-            self.lora_alpha = c.lora_alpha
-            self.lora_dropout = c.lora_dropout
-            self.lora_targets = ("q", "k", "v", "o")
-            self.merge_lora = True
+    trainer_cfg = TrainerConfig(
+        symbol=cfg.symbol,
+        data_root=data_path.parent,
+        output_root=output_root,
+        prediction_length=cfg.prediction_length,
+        context_length=cfg.context_length,
+        batch_size=cfg.batch_size,
+        learning_rate=cfg.learning_rate,
+        num_steps=cfg.num_steps,
+        finetune_mode="lora",
+        lora_r=cfg.lora_r,
+        lora_alpha=cfg.lora_alpha,
+        lora_dropout=cfg.lora_dropout,
+        lora_targets=("q", "k", "v", "o"),
+        merge_lora=True,
+    )
 
-    finetuned = _fit_pipeline(pipeline, train_inputs, val_inputs, FakeConfig(cfg), output_dir)
+    finetuned = _fit_pipeline(pipeline, train_inputs, val_inputs, trainer_cfg, output_dir)
     _save_pipeline(finetuned, output_dir, "finetuned-ckpt")
 
     full_df = pd.concat([train_df, val_df, test_df], ignore_index=True)
