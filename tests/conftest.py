@@ -343,6 +343,10 @@ def pytest_ignore_collect(collection_path, config):
             "tests/test_worksteal_gemini_intraday_eval.py",
             "tests/test_worksteal_sweep.py",
             "tests/test_worksteal_trade_live.py",
+            # JAX/Flax tests require optional jax/flax packages not in CI deps
+            "tests/test_jax_losses.py",
+            "tests/test_jax_policy.py",
+            "tests/test_jax_trainer_wandboard.py",
         }
         if rel in _FAST_CI_SKIP:
             return True
