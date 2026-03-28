@@ -55,38 +55,29 @@ DEFAULT_SYMBOLS = [
     "V",
     "AMZN",
 ]
-DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_10/best.pt"
-# 15-model ensemble: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835 (2026-03-28)
-# NOTE: Original s735 (screen_best) was deleted from disk (2026-03-28). Replaced with s1731 (screen_best).
-# Exhaustive 111-window @fee=10bps,fill=5bps: 0/111 neg, med=58.8%, p10=48.6%
-# (Original 10-model with s735 was: 0/111 neg, med=65.8%, p10=55.6% — s735 provided unique diversity)
-# s1835 screen_best adds: +0.6% p10 (seed=1835, neg=1 screen, med=7.87%)
-# s2495 screen_best adds: +2.0% p10 (seed=2495, QUALIFIED, neg=5, med=21.13%)
-# s2033 screen_best adds: +2.6% p10 (seed=2033, QUALIFIED, neg=5, med=19.23%)
-# s2617 screen_best adds: +2.0% p10 (seed=2617, QUALIFIED, neg=2, med=16.95%)
-# s1523 screen_best adds: +4.6% p10 (seed=1523 retrain, 3M-step screen ckpt)
-# s1731 screen_best adds: +4.1% p10 (seed=1731, 3M-step screen ckpt update=61)
-# s1401 screen_best adds: +2.9% p10 (seed=1401, 3M-step screen ckpt)
-# s1726 screen_best adds: +0.4% p10 (seed=1726, 3M-step screen ckpt update=65)
-# gamma995_s2006 screen_best: (gamma=0.995, seed=2006, 3M-step screen ckpt)
-# REVERT NOTE (2026-03-27): 7-model (+resmlp_a40) → med=57.2%, p10=42.1% (-3.3% p10!)
-#   HURT: resmlp_a40, s28, tp03, s241, s541, s310, stock_ent_05
-# 16-model bar: 16-model exhaustive p10 >= 48.6% @fill_bps=5
+DEFAULT_CHECKPOINT = "pufferlib_market/prod_ensemble/tp10.pt"
+# 15-model ensemble stored in prod_ensemble/ (protected from *_screen/ deletion pattern)
+# Members: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835
+# Populated 2026-03-28 — all checkpoints are screen-phase (≤3M steps) or exact-match recoveries
+# Baseline exhaustive (encoder_norm correct): 0/111 neg, med=50.9%, p10=19.2%, worst=7.9%
+# ENCODER_NORM NOTE: 10/15 models use encoder_norm; production inference.py applies it correctly
+# 16-model bar: 16-model exhaustive p10 >= 19.2% @fill_bps=5 (encoder_norm-correct methodology)
+# REJECTED: s2655 (p10 drops), s2206 (delta=-0.9%), resmlp_a40, s28, tp03, s241, s541, s310, stock_ent_05
 DEFAULT_EXTRA_CHECKPOINTS = [
-    "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt",
-    "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s36/best.pt",
-    "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_gamma_995/best.pt",
-    "pufferlib_market/checkpoints/stocks12_v2_sweep/muon_wd_005/best.pt",
-    "pufferlib_market/checkpoints/stocks12_v2_sweep/h1024_a40/best.pt",
-    "pufferlib_market/checkpoints/stocks12_s1731_screen/screen_best.pt",
-    "pufferlib_market/checkpoints/stocks12_gamma995_s2006/screen_best.pt",
-    "pufferlib_market/checkpoints/stocks12_s1401_screen/screen_best.pt",
-    "pufferlib_market/checkpoints/stocks12_s1726_screen/screen_best.pt",
-    "pufferlib_market/checkpoints/stocks12_s1523_screen/screen_best.pt",
-    "pufferlib_market/checkpoints/stocks12_s2617_screen/screen_best.pt",
-    "pufferlib_market/checkpoints/stocks12_s2033_screen/screen_best.pt",
-    "pufferlib_market/checkpoints/stocks12_s2495_screen/screen_best.pt",
-    "pufferlib_market/checkpoints/stocks12_s1835_screen/screen_best.pt",
+    "pufferlib_market/prod_ensemble/s15.pt",
+    "pufferlib_market/prod_ensemble/s36.pt",
+    "pufferlib_market/prod_ensemble/gamma_995.pt",
+    "pufferlib_market/prod_ensemble/muon_wd_005.pt",
+    "pufferlib_market/prod_ensemble/h1024_a40.pt",
+    "pufferlib_market/prod_ensemble/s1731.pt",
+    "pufferlib_market/prod_ensemble/gamma995_s2006.pt",
+    "pufferlib_market/prod_ensemble/s1401.pt",
+    "pufferlib_market/prod_ensemble/s1726.pt",
+    "pufferlib_market/prod_ensemble/s1523.pt",
+    "pufferlib_market/prod_ensemble/s2617.pt",
+    "pufferlib_market/prod_ensemble/s2033.pt",
+    "pufferlib_market/prod_ensemble/s2495.pt",
+    "pufferlib_market/prod_ensemble/s1835.pt",
 ]
 DEFAULT_DATA_DIR = "trainingdata"
 DEFAULT_ALLOCATION_PCT = 25.0
