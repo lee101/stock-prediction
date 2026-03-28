@@ -11,11 +11,11 @@
 - **LIVE account**: supervisor `unified-stock-trader` is active; equity **$38,954.44**, cash **$38,954.44**, buying power **$77,908.88**, last_equity **$39,090.40**.
 - **LIVE positions/orders**: no stock positions are open; only dust in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD` remains. There are currently **no open orders**.
 - **LIVE duplicate-order guard (2026-03-27 20:31 UTC)**: systemd unit `alpaca-cancel-multi-orders.service` is installed and enabled with `PAPER=0`; `journalctl` confirms it initialized the **LIVE** Alpaca client and is polling for duplicate flat-position opening orders.
-- **LIVE daily-rl-trader**: 13-model ensemble (s2033 added 2026-03-28 19:26 UTC), sleeping until Mon 2026-03-30 market open; PID 238654
+- **LIVE daily-rl-trader**: 14-model ensemble (s2495 added 2026-03-28 19:56 UTC), sleeping until Mon 2026-03-30 market open; PID 621224
   - s735 screen_best was deleted from disk (2026-03-28); replaced with s1731 screen_best (neg=7, update=61)
-  - s1523: 11th member (+4.6%), s2617: 12th member (+2.0%), s2033: 13th member (+2.6%)
-  - **13-model exhaustive (111 windows): 0/111 neg, med=55.1%, p10=45.9%** @fee=10bps,fill=5bps
-  - 14-model bar: p10 ≥ 45.9% @fill_bps=5
+  - s1523: 11th member (+4.6%), s2617: 12th member (+2.0%), s2033: 13th member (+2.6%), s2495: 14th member (+2.0%)
+  - **14-model exhaustive (111 windows): 0/111 neg, med=57.5%, p10=48.0%** @fee=10bps,fill=5bps
+  - 15-model bar: p10 ≥ 48.0% @fill_bps=5
 
 ### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- FIXED (pending restart)
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`
@@ -142,7 +142,7 @@
   - Median: **+50.7%** / 90 days
   - P10: **+41.4%**
   - Negative windows: **0/111 (0%)** — ZERO negative windows in EXHAUSTIVE eval
-  - NOTE: p10 lower than original 10-model (55.6%) due to s735 being lost and replaced with weaker alternatives
+  - NOTE: p10 lower than original 10-model (55.6%) due to s735 being lost; rebuilt from 45.9% (13-model) to 48.0% (14-model)
 - **Ensemble progression** (all exhaustive 111-window, softmax_avg method):
   - 3-model s123+s15+s36:        med=46.3%, p10=28.6%  (2026-03-24)
   - 3-model tp10+s15+s36:        med=50.9%, p10=36.6%  (2026-03-27)
@@ -156,7 +156,8 @@
   - 10-model +s1731 (replaces s735): med=59.1%, p10=45.1%  (2026-03-28)
   - 11-model +s1523:             med=50.7%, p10=41.4%  (2026-03-28)
   - 12-model +s2617:             med=51.3%, p10=43.3%  (2026-03-28)
-  - **13-model +s2033:           med=55.1%, p10=45.9%  (2026-03-28) CURRENT**
+  - 13-model +s2033:             med=55.1%, p10=45.9%  (2026-03-28)
+  - **14-model +s2495:           med=57.5%, p10=48.0%  (2026-03-28) CURRENT**
   - [REJECTED] 7-model +resmlp_a40: med=57.2%, p10=42.1% (-3.3% p10)
   - [REJECTED] 7-model +s28_scan: med=55.9%, p10=41.3% (-4.1% p10)
 - **DEFAULT_EXTRA_CHECKPOINTS** (in `trade_daily_stock_prod.py`):
@@ -172,6 +173,7 @@
   - `stocks12_s1523_screen/screen_best.pt` (11th member, +4.6% p10)
   - `stocks12_s2617_screen/screen_best.pt` (12th member, +2.0% p10, seed=2617 neg=2)
   - `stocks12_s2033_screen/screen_best.pt` (13th member, +2.6% p10, seed=2033 neg=5)
+  - `stocks12_s2495_screen/screen_best.pt` (14th member, +2.0% p10, seed=2495 neg=5)
 - **Standalone performance of ensemble members**:
   - tp10: 5/111 neg, med=0.0% (conservative anchor — votes cash)
   - s15: 0/111 neg, med=+30.0% (phase-transition model, seed=15)
@@ -187,7 +189,7 @@
   - s2617 (tp05): screen_best.pt (seed=2617, QUALIFIED, neg=2, med=16.95%); +2.0% p10 to 11-model
 - **KEY DISCOVERY**: Screen-phase checkpoints (3M steps) are better ensemble members than fully-trained (32M+ steps) ones. Full training often collapses diversity. Screen_best.pt at ~update 60-91 is the sweet spot.
 - **Ensemble method**: softmax_avg (NOT logit_avg). Each model outputs softmax probabilities, average them, take argmax.
-- **13-model bar**: 13-model exhaustive p10 >= 43.3% @fill_bps=5 (delta >= 0%)
+- **15-model bar**: 15-model exhaustive p10 >= 48.0% @fill_bps=5 (delta >= 0%)
 - **Config**: h=1024, lr=3e-4, ent=0.05, trade_penalty=0.10 (primary), anneal_lr=True
 - **Launch**: `deployments/daily-stock-ppo/launch.sh`
 - **Supervisor**: `deployments/daily-stock-ppo/supervisor.conf` (autostart=false — enable manually)
