@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 def val_eval_quick(ckpt_path: Path, val_data_path: str, n_windows: int = 20) -> dict:
-    """Run quick val eval on a checkpoint. Returns dict with neg, med."""
+    """Run quick val eval on a checkpoint. Returns dict with neg, med, trades_avg."""
     from pufferlib_market.evaluate_holdout import (
         _infer_arch, _infer_hidden_size, _infer_num_actions, _slice_window, TradingPolicy
     )
@@ -66,6 +66,7 @@ def val_eval_quick(ckpt_path: Path, val_data_path: str, n_windows: int = 20) -> 
     starts = sorted(rng.choice(all_starts, size=min(n_windows, len(all_starts)), replace=False).tolist())
 
     returns = []
+    trades = []
     for start in starts:
         w = _slice_window(val_data, start=start, steps=eval_steps)
         r = simulate_daily_policy(
@@ -73,14 +74,17 @@ def val_eval_quick(ckpt_path: Path, val_data_path: str, n_windows: int = 20) -> 
             enable_drawdown_profit_early_exit=False,
         )
         returns.append(r.total_return)
+        trades.append(r.num_trades)
 
     returns = np.array(returns)
+    trades_avg = float(np.mean(trades))
     best_return = float(payload.get("best_return", 0.0)) if isinstance(payload, dict) else 0.0
     return {
         "med": float(np.median(returns) * 100),
         "p10": float(np.percentile(returns, 10) * 100),
         "neg": int((returns < 0).sum()),
         "n": len(returns),
+        "trades_avg": trades_avg,
         "best_return": best_return,
         "global_step": int(payload.get("global_step", 0)) if isinstance(payload, dict) else 0,
     }
@@ -155,6 +159,12 @@ def main():
                              "Default 30 (out of 50 val windows). 0 disables.")
     parser.add_argument("--val-neg-patience", type=int, default=5,
                         help="Consecutive val evals above threshold before early stopping (default 5).")
+    parser.add_argument("--min-screen-med", type=float, default=1.0,
+                        help="Min median val return %% at screen to qualify (default 1.0%%). "
+                             "Filters do-nothing models with 0%% median.")
+    parser.add_argument("--min-screen-trades", type=float, default=3.0,
+                        help="Min avg trades per 90d window at screen to qualify (default 3.0). "
+                             "Filters collapsed/degenerate models.")
     args = parser.parse_args()
 
     # Auto-generate run tag if not specified
@@ -171,7 +181,7 @@ def main():
 
     print(f"Sweep: seeds {args.seed_start}-{args.seed_end} ({len(seeds)} total) tag={args.run_tag}")
     print(f"HParams: trade_penalty={args.trade_penalty} ent_coef={args.ent_coef} extra={args.extra_train_args!r}")
-    print(f"Screen: {args.screen_steps/1e6:.1f}M steps, val_neg<={screen_threshold}/{args.screen_val_windows}")
+    print(f"Screen: {args.screen_steps/1e6:.1f}M steps, val_neg<={screen_threshold}/{args.screen_val_windows} min_med={args.min_screen_med:.1f}% min_trades={args.min_screen_trades:.1f}")
     print(f"Full: {args.full_steps/1e6:.1f}M steps for qualified seeds (early-stop val_neg>{args.val_neg_threshold}/{50} for {args.val_neg_patience} evals)")
     print(f"GPU slots: {args.gpu_slots}")
 
@@ -188,11 +198,11 @@ def main():
     with open(log_path, "w") as f:
         f.write("timestamp,seed,phase,result,neg,med,best_return,global_step\n")
 
-    def log(seed, phase, result, neg=-1, med=0.0, best_return=0.0, global_step=0):
+    def log(seed, phase, result, neg=-1, med=0.0, best_return=0.0, global_step=0, trades_avg=0.0):
         ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         with open(log_path, "a") as f:
             f.write(f"{ts},{seed},{phase},{result},{neg},{med:.2f},{best_return:.4f},{global_step}\n")
-        print(f"  [{ts}] seed={seed} {phase}={result} neg={neg} med={med:.1f}% best_ret={best_return:.3f}", flush=True)
+        print(f"  [{ts}] seed={seed} {phase}={result} neg={neg} med={med:.1f}% trades={trades_avg:.1f} best_ret={best_return:.3f}", flush=True)
 
     while seed_queue or running or running_full:
         # Launch new screening jobs up to gpu_slots
@@ -214,13 +224,22 @@ def main():
                 try:
                     ev = val_eval_quick(screen_ckpt, args.val_data, args.screen_val_windows)
                     screened.add(seed)
-                    if ev["neg"] <= screen_threshold and ev["best_return"] <= args.max_best_return:
+                    pass_val = ev["neg"] <= screen_threshold
+                    pass_ret = ev["best_return"] <= args.max_best_return
+                    pass_med = ev["med"] >= args.min_screen_med
+                    pass_trades = ev["trades_avg"] >= args.min_screen_trades
+                    if pass_val and pass_ret and pass_med and pass_trades:
                         qualified.add(seed)
-                        log(seed, "screen", "QUALIFIED", ev["neg"], ev["med"], ev["best_return"], ev["global_step"])
+                        log(seed, "screen", "QUALIFIED", ev["neg"], ev["med"], ev["best_return"], ev["global_step"], ev["trades_avg"])
                         continue  # already screened + qualified → go to full training, no re-screening
                     else:
                         rejected.add(seed)
-                        log(seed, "screen", "REJECTED", ev["neg"], ev["med"], ev["best_return"], ev["global_step"])
+                        reasons = []
+                        if not pass_val: reasons.append("HIGH_NEG")
+                        if not pass_ret: reasons.append("HIGH_RET")
+                        if not pass_med: reasons.append("LOW_MED")
+                        if not pass_trades: reasons.append("LOW_TRADES")
+                        log(seed, "screen", f"REJECTED_{'_'.join(reasons)}", ev["neg"], ev["med"], ev["best_return"], ev["global_step"], ev["trades_avg"])
                         continue
                 except Exception as e:
                     print(f"  seed={seed}: error evaluating screen_ckpt: {e}")
@@ -262,16 +281,21 @@ def main():
 
                 try:
                     ev = val_eval_quick(best_pt_to_eval, args.val_data, args.screen_val_windows)
-                    neg_pct = ev["neg"] / ev["n"]
                     pass_val = ev["neg"] <= screen_threshold
                     pass_ret = ev["best_return"] <= args.max_best_return
-                    if pass_val and pass_ret:
+                    pass_med = ev["med"] >= args.min_screen_med
+                    pass_trades = ev["trades_avg"] >= args.min_screen_trades
+                    if pass_val and pass_ret and pass_med and pass_trades:
                         qualified.add(seed)
-                        log(seed, "screen", "QUALIFIED", ev["neg"], ev["med"], ev["best_return"], ev["global_step"])
+                        log(seed, "screen", "QUALIFIED", ev["neg"], ev["med"], ev["best_return"], ev["global_step"], ev["trades_avg"])
                     else:
                         rejected.add(seed)
-                        reason = f"{'HIGH_RET' if not pass_ret else 'HIGH_NEG'}"
-                        log(seed, "screen", f"REJECTED_{reason}", ev["neg"], ev["med"], ev["best_return"], ev["global_step"])
+                        reasons = []
+                        if not pass_val: reasons.append("HIGH_NEG")
+                        if not pass_ret: reasons.append("HIGH_RET")
+                        if not pass_med: reasons.append("LOW_MED")
+                        if not pass_trades: reasons.append("LOW_TRADES")
+                        log(seed, "screen", f"REJECTED_{'_'.join(reasons)}", ev["neg"], ev["med"], ev["best_return"], ev["global_step"], ev["trades_avg"])
                 except Exception as e:
                     print(f"  seed={seed}: error evaluating: {e}")
                     rejected.add(seed)
@@ -317,7 +341,7 @@ def main():
                     best_pt = ckpt_dir / "best.pt"
                     if best_pt.exists():
                         ev = val_eval_quick(best_pt, args.val_data, args.screen_val_windows)
-                        log(seed, "full", "DONE", ev["neg"], ev["med"], ev["best_return"], ev["global_step"])
+                        log(seed, "full", "DONE", ev["neg"], ev["med"], ev["best_return"], ev["global_step"], ev["trades_avg"])
                 except Exception as e:
                     print(f"  seed={seed}: error evaluating final: {e}")
                     log(seed, "full", "DONE_NO_EVAL")
