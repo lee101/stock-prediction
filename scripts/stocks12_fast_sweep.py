@@ -96,6 +96,8 @@ def build_train_cmd(
     extra_args: list[str] | None = None,
     trade_penalty: float = 0.05,
     ent_coef: float = 0.05,
+    val_neg_threshold: int = 0,
+    val_neg_patience: int = 5,
 ) -> list[str]:
     cmd = [
         sys.executable, "-u", "-m", "pufferlib_market.train",
@@ -116,6 +118,9 @@ def build_train_cmd(
     ]
     if resume_from:
         cmd += ["--resume-from", resume_from]
+    if val_neg_threshold > 0:
+        cmd += ["--early-stop-val-neg-threshold", str(val_neg_threshold),
+                "--early-stop-val-neg-patience", str(val_neg_patience)]
     if extra_args:
         cmd += extra_args
     return cmd
@@ -145,6 +150,11 @@ def main():
                         help="Tag for checkpoint subdirs, e.g. 'tp03' (default: auto from trade-penalty)")
     parser.add_argument("--extra-train-args", type=str, default="",
                         help="Extra space-separated args to pass to pufferlib_market.train, e.g. '--advantage-norm group_relative --group-relative-mix 1.0'")
+    parser.add_argument("--val-neg-threshold", type=int, default=30,
+                        help="Early-stop full training if val_neg > this for --val-neg-patience consecutive evals. "
+                             "Default 30 (out of 50 val windows). 0 disables.")
+    parser.add_argument("--val-neg-patience", type=int, default=5,
+                        help="Consecutive val evals above threshold before early stopping (default 5).")
     args = parser.parse_args()
 
     # Auto-generate run tag if not specified
@@ -162,7 +172,7 @@ def main():
     print(f"Sweep: seeds {args.seed_start}-{args.seed_end} ({len(seeds)} total) tag={args.run_tag}")
     print(f"HParams: trade_penalty={args.trade_penalty} ent_coef={args.ent_coef} extra={args.extra_train_args!r}")
     print(f"Screen: {args.screen_steps/1e6:.1f}M steps, val_neg<={screen_threshold}/{args.screen_val_windows}")
-    print(f"Full: {args.full_steps/1e6:.1f}M steps for qualified seeds")
+    print(f"Full: {args.full_steps/1e6:.1f}M steps for qualified seeds (early-stop val_neg>{args.val_neg_threshold}/{50} for {args.val_neg_patience} evals)")
     print(f"GPU slots: {args.gpu_slots}")
 
     # Track state
@@ -215,11 +225,14 @@ def main():
                 except Exception as e:
                     print(f"  seed={seed}: error evaluating screen_ckpt: {e}")
 
-            # Start screening process
+            # Start screening process (use a looser threshold for screens: 18/20 = 90%)
             extra = args.extra_train_args.split() if args.extra_train_args.strip() else None
+            screen_neg_thresh = int(0.9 * args.screen_val_windows)  # stop screen if >90% neg
             cmd = build_train_cmd(
                 seed, ckpt_dir, args.data, args.val_data, args.screen_steps,
                 trade_penalty=args.trade_penalty, ent_coef=args.ent_coef,
+                val_neg_threshold=screen_neg_thresh,
+                val_neg_patience=3,
                 extra_args=extra,
             )
             logfile = open(ckpt_dir / "screen.log", "w")
@@ -284,6 +297,8 @@ def main():
                 seed, ckpt_dir, args.data, args.val_data, remaining_steps,
                 resume_from=str(ckpt_dir / "best.pt"),
                 trade_penalty=args.trade_penalty, ent_coef=args.ent_coef,
+                val_neg_threshold=getattr(args, "val_neg_threshold", 30),
+                val_neg_patience=getattr(args, "val_neg_patience", 5),
                 extra_args=extra,
             )
             logfile = open(ckpt_dir / "full.log", "w")
