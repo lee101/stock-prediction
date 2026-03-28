@@ -2,26 +2,35 @@
   "symbol": "LINKUSD",
   "model": "chronos2",
   "config": {
-    "name": "finetuned_link_lora_ctx128_percent_change",
-    "model_id": "chronos2_finetuned/LINKUSD_lora_percent_change_ctx128_lr5e-05_r16_20260212_224553/finetuned-ckpt",
+    "name": "finetuned_btc_lora_ctx128_percent_change",
+    "model_id": "chronos2_finetuned/binance_chronos_compare_20260328b_LINKUSD_lora_log_returns_ctx128_lr5e-05_r16_20260328_091713/finetuned-ckpt",
     "device_map": "cuda",
     "context_length": 128,
-    "batch_size": 128,
-    "quantile_levels": [0.1, 0.5, 0.9],
+    "batch_size": 32,
+    "quantile_levels": [
+      0.1,
+      0.5,
+      0.9
+    ],
     "aggregation": "median",
     "sample_count": 0,
     "scaler": "none",
     "predict_kwargs": {},
-    "skip_rates": [1],
+    "skip_rates": [
+      1
+    ],
     "aggregation_method": "single",
     "use_multivariate": false
   },
   "validation": {
-    "val_mae_percent": 1.26,
-    "val_mae_std": 0.98,
-    "val_mae_max": 3.61,
-    "val_consistency_score": 2.457,
-    "test_mae_percent": 2.98
+    "price_mae": null,
+    "pct_return_mae": null,
+    "mae_percent": 4.013366182645162
+  },
+  "test": {
+    "price_mae": null,
+    "pct_return_mae": null,
+    "mae_percent": 3.09995170434316
   },
   "windows": {
     "val_window": 168,
@@ -29,12 +38,17 @@
     "forecast_horizon": 24
   },
   "metadata": {
-    "source": "train_crypto_lora_sweep.py",
-    "generated_at": "2026-02-12T22:49:26Z",
-    "selection_metric": "val_mae_percent",
-    "selection_value": 1.26,
-    "frequency": "hourly",
-    "preaug": "percent_change",
-    "notes": "Best LINK LoRA - lowest val MAE"
+    "source": "promote_chronos2_lora_reports",
+    "generated_at": "2026-03-28T09:38:48Z",
+    "report_path": "analysis/remote_runs/binance_chronos_compare_20260328b/lora_results/binance_chronos_compare_20260328b_LINKUSD_lora_log_returns_ctx128_lr5e-05_r16_20260328_091713.json",
+    "output_dir": "chronos2_finetuned/binance_chronos_compare_20260328b_LINKUSD_lora_log_returns_ctx128_lr5e-05_r16_20260328_091713",
+    "preaug_strategy": "log_returns",
+    "preaug_source": null,
+    "selection_strategy": "best_single",
+    "selection_score": 4.013366182645162,
+    "selection_family_size": 1,
+    "selection_family_score_mean": null,
+    "selection_family_score_std": null,
+    "selection_family_key": null
   }
 }

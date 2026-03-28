@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import os
+import os as _os
 import struct
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -59,6 +62,7 @@ from llm_hourly_trader.gemini_wrapper import TradePlan
 from unified_orchestrator.rl_gemini_bridge import (
     RLGeminiBridge,
     RLSignal,
+    _rl_only_plan,
     build_portfolio_observation,
 )
 
@@ -174,6 +178,11 @@ CRYPTO_FORECAST_CACHE_CANDIDATES = [
     REPO / "binanceneural/forecast_cache",
     REPO / "alpacanewccrosslearning/forecast_cache",
 ]
+_STATE_DIR = Path(os.environ.get("STATE_DIR", "strategy_state")).expanduser()
+if not _STATE_DIR.is_absolute():
+    _STATE_DIR = REPO / _STATE_DIR
+STOCK_EVENT_LOG_PATH = _STATE_DIR / "stock_event_log.jsonl"
+STOCK_EDGE_SIGNAL_MAX_AGE = timedelta(hours=18)
 
 
 def get_rl_bridge(checkpoint_path: str = "", hidden_size: int = 1024) -> RLGeminiBridge | None:
@@ -234,6 +243,113 @@ def _has_actionable_crypto_position(pos: Position | None) -> bool:
     return market_value >= MIN_ACTIONABLE_CRYPTO_NOTIONAL
 
 
+def _iter_jsonl_lines_reverse(path: Path, *, chunk_size: int = 65_536):
+    """Yield non-empty JSONL lines from the end of a file backwards."""
+
+    with path.open("rb") as handle:
+        handle.seek(0, _os.SEEK_END)
+        position = handle.tell()
+        remainder = b""
+
+        while position > 0:
+            read_size = min(int(chunk_size), position)
+            position -= read_size
+            handle.seek(position)
+            chunk = handle.read(read_size)
+            buffer = chunk + remainder
+            lines = buffer.split(b"\n")
+            remainder = lines[0]
+            for raw_line in reversed(lines[1:]):
+                line = raw_line.strip()
+                if line:
+                    yield line.decode("utf-8", errors="replace")
+
+        final_line = remainder.strip()
+        if final_line:
+            yield final_line.decode("utf-8", errors="replace")
+
+
+def _load_recent_stock_edges_from_meta_log(
+    stock_symbols: list[str] | None,
+    *,
+    as_of: datetime | None = None,
+    event_log: Path = STOCK_EVENT_LOG_PATH,
+    max_age: timedelta = STOCK_EDGE_SIGNAL_MAX_AGE,
+) -> dict[str, float]:
+    """Read recent actionable stock edges emitted by the live meta trader."""
+
+    if not event_log.exists():
+        return {}
+
+    target_symbols = {str(symbol).upper() for symbol in stock_symbols or [] if str(symbol).strip()}
+    now = as_of if as_of is not None else datetime.now(timezone.utc)
+    latest_by_symbol: dict[str, tuple[datetime, float]] = {}
+    latest_cycle_start: tuple[datetime, int] | None = None
+    recent_signal_rows: list[tuple[datetime, int, str, float]] = []
+
+    for line in _iter_jsonl_lines_reverse(event_log):
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        event_type = str(payload.get("event_type", "")).strip().lower()
+        if event_type not in {"meta_cycle_start", "meta_signal_ready"}:
+            continue
+
+        try:
+            pid = int(payload.get("pid", 0) or 0)
+        except (TypeError, ValueError):
+            pid = 0
+
+        try:
+            logged_at = datetime.fromisoformat(str(payload.get("logged_at", "")).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if logged_at.tzinfo is None:
+            logged_at = logged_at.replace(tzinfo=timezone.utc)
+        else:
+            logged_at = logged_at.astimezone(timezone.utc)
+        if logged_at > now or (now - logged_at) > max_age:
+            continue
+        if event_type == "meta_cycle_start":
+            if pid > 0:
+                latest_cycle_start = (logged_at, pid)
+                break
+            continue
+
+        symbol = str(payload.get("symbol", "")).strip().upper()
+        if not symbol:
+            continue
+        if target_symbols and symbol not in target_symbols:
+            continue
+
+        try:
+            edge = float(payload.get("edge", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(edge) or edge <= 0.0:
+            continue
+
+        recent_signal_rows.append((logged_at, pid, symbol, edge))
+
+    if latest_cycle_start is not None:
+        cycle_start_ts, cycle_pid = latest_cycle_start
+        for logged_at, pid, symbol, edge in recent_signal_rows:
+            if pid != cycle_pid or logged_at < cycle_start_ts:
+                continue
+            previous = latest_by_symbol.get(symbol)
+            if previous is None or logged_at > previous[0]:
+                latest_by_symbol[symbol] = (logged_at, edge)
+        return {symbol: latest_by_symbol[symbol][1] for symbol in sorted(latest_by_symbol)}
+
+    for logged_at, _pid, symbol, edge in recent_signal_rows:
+        previous = latest_by_symbol.get(symbol)
+        if previous is None or logged_at > previous[0]:
+            latest_by_symbol[symbol] = (logged_at, edge)
+
+    return {symbol: latest_by_symbol[symbol][1] for symbol in sorted(latest_by_symbol)}
+
+
 def _with_fallback_crypto_exit_target(
     sym: str,
     plan: TradePlan,
@@ -271,6 +387,51 @@ def _with_fallback_crypto_exit_target(
         ),
         allocation_pct=float(getattr(plan, "allocation_pct", 0.0) or 0.0),
     )
+
+
+def _reason_indicates_llm_unavailable(reason: object) -> bool:
+    raw = str(reason or "").strip().lower()
+    if not raw:
+        return False
+    markers = (
+        "api exhausted",
+        "exhausted",
+        "rate limit",
+        "quota",
+        "429",
+        "resource_exhausted",
+    )
+    return any(marker in raw for marker in markers)
+
+
+def _maybe_use_rl_only_fallback_plan(
+    sym: str,
+    plan: TradePlan,
+    rl_signal: RLSignal | None,
+    current_price: float,
+) -> TradePlan:
+    if rl_signal is None or rl_signal.direction not in {"long", "short"}:
+        return plan
+    if str(plan.direction).lower().strip() != "hold":
+        return plan
+
+    reasoning = str(getattr(plan, "reasoning", "") or "")
+    if not _reason_indicates_llm_unavailable(reasoning):
+        return plan
+
+    fallback = _rl_only_plan(
+        rl_signal,
+        float(current_price),
+        reason=f"llm_unavailable: {reasoning[:80]}",
+    )
+    logger.warning(
+        "[CRYPTO_SIGNAL] {}: LLM unavailable ({}); using RL-only fallback dir={} conf={:.2f}",
+        sym,
+        reasoning,
+        fallback.direction,
+        fallback.confidence,
+    )
+    return fallback
 
 
 def _get_crypto_rl_trader():
@@ -846,6 +1007,12 @@ def get_crypto_signals(
                 review_max_confidence=review_max_confidence,
                 review_model=review_model,
             )
+            plan = _maybe_use_rl_only_fallback_plan(
+                sym,
+                plan,
+                rl_signal_map.get(sym),
+                current_price,
+            )
             plan = _with_fallback_crypto_exit_target(sym, plan, actionable_held_pos, current_price)
             signals[sym] = plan
             alloc_str = f", alloc={plan.allocation_pct:.0f}%" if plan.allocation_pct > 0 else ""
@@ -1017,8 +1184,8 @@ def _place_crypto_force_exit_sell(alpaca, sym: str, pos, dry_run: bool,
                                    orders: list[dict]) -> None:
     """Force-exit a position that has exceeded MAX_HOLD_HOURS.
 
-    Places an aggressive limit sell 0.1% below current price so it fills
-    quickly — mirrors the backtest simulator's 'exit at close' after max_hold.
+    Places an aggressive IOC limit sell 0.1% below current price so it either
+    executes immediately or fails fast and is retried on the next cycle.
     Cancels any open orders for this symbol first.
     """
     import math
@@ -1030,6 +1197,7 @@ def _place_crypto_force_exit_sell(alpaca, sym: str, pos, dry_run: bool,
         return
 
     # Cancel all open orders for this symbol (buy AND sell)
+    canceled_any = False
     try:
         open_orders = alpaca.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN))
         for order in open_orders:
@@ -1037,9 +1205,13 @@ def _place_crypto_force_exit_sell(alpaca, sym: str, pos, dry_run: bool,
             if sym_norm == sym:
                 if not dry_run:
                     alpaca.cancel_order_by_id(str(order.id))
+                    canceled_any = True
                 logger.info(f"  {sym}: [FORCE EXIT] canceled order {order.id}")
     except Exception as e:
         logger.debug(f"  {sym}: error canceling orders for force exit: {e}")
+
+    if canceled_any:
+        time.sleep(0.5)
 
     # Sell at 0.1% below current — fills quickly on liquid crypto
     exit_price = round(pos.current_price * 0.999, 2)
@@ -1047,12 +1219,13 @@ def _place_crypto_force_exit_sell(alpaca, sym: str, pos, dry_run: bool,
                 f"(held > {MAX_HOLD_HOURS}h, current ${pos.current_price:.2f})")
     if not dry_run:
         try:
+            tif_ioc = getattr(TimeInForce, "IOC", "ioc")
             req = LimitOrderRequest(
                 symbol=sym,
                 qty=round(sell_qty, 8),
                 side=OrderSide.SELL,
                 type="limit",
-                time_in_force=TimeInForce.GTC,
+                time_in_force=tif_ioc,
                 limit_price=exit_price,
             )
             result = alpaca.submit_order(req)
@@ -1882,8 +2055,22 @@ def run_cycle(
     # 2. Handle regime-specific logic
     if snapshot.regime == "PRE_MARKET":
         logger.info("\n--- PRE-MARKET: Checking crypto backout opportunities ---")
-        # TODO: Load best stock edges from meta-selector
-        best_stock_edges = {}  # Will integrate with meta_live_runtime
+        syms = stock_symbols or STOCK_SYMBOLS
+        best_stock_edges = _load_recent_stock_edges_from_meta_log(
+            syms,
+            as_of=now,
+        )
+        if best_stock_edges:
+            best_sym = max(best_stock_edges, key=best_stock_edges.get)
+            logger.info(
+                "Loaded {} recent stock edges from meta log (best: {} {:.2%})",
+                len(best_stock_edges),
+                best_sym,
+                best_stock_edges[best_sym],
+            )
+            results["best_stock_edges"] = best_stock_edges
+        else:
+            logger.info("  No recent actionable stock edges found in {}", STOCK_EVENT_LOG_PATH)
         candidates = select_backout_candidates(snapshot, best_stock_edges)
         if candidates:
             backout_results = execute_backout(candidates, dry_run=dry_run)

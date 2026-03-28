@@ -24,37 +24,67 @@ import torch.nn as nn
 from torch.distributions import Categorical
 
 from pufferlib_market.metrics import annualize_total_return
+from pufferlib_market.evaluate_sliding import (
+    compute_calmar,
+    sliding_window_eval,
+    aggregate_sliding_results,
+    print_sliding_results,
+    _build_policy_fn,
+)
+from pufferlib_market.hourly_replay import read_mktd
+
+
+def _act(name: str) -> nn.Module:
+    if name == "relu_sq":
+        from pufferlib_market.train import _ReLUSq
+        return _ReLUSq()
+    if name == "gelu":
+        return nn.GELU()
+    return nn.ReLU()
 
 
 class TradingPolicy(nn.Module):
     """Must match the architecture in train.py exactly."""
 
-    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256):
+    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256, activation: str = "relu"):
         super().__init__()
         self.obs_size = obs_size
         self.num_actions = num_actions
 
+        # obs_norm buffers — populated by train.py when --obs-norm is used.
+        # Registered as None so checkpoints with/without obs_norm load correctly.
+        self.register_buffer("obs_mean", None)
+        self.register_buffer("obs_std", None)
+
         self.encoder = nn.Sequential(
             nn.Linear(obs_size, hidden),
-            nn.ReLU(),
+            _act(activation),
             nn.Linear(hidden, hidden),
-            nn.ReLU(),
+            _act(activation),
             nn.Linear(hidden, hidden),
-            nn.ReLU(),
+            _act(activation),
         )
+        # LayerNorm added in train.py to prevent BF16 precision collapse.
+        # _use_encoder_norm set by load_policy: True only for new ckpts that have this layer.
+        self.encoder_norm = nn.LayerNorm(hidden)
+        self._use_encoder_norm = False
         self.actor = nn.Sequential(
             nn.Linear(hidden, hidden // 2),
-            nn.ReLU(),
+            _act(activation),
             nn.Linear(hidden // 2, num_actions),
         )
         self.critic = nn.Sequential(
             nn.Linear(hidden, hidden // 2),
-            nn.ReLU(),
+            _act(activation),
             nn.Linear(hidden // 2, 1),
         )
 
     def forward(self, x):
+        if self.obs_mean is not None and self.obs_std is not None:
+            x = (x - self.obs_mean) / (self.obs_std + 1e-8)
         h = self.encoder(x)
+        if getattr(self, '_use_encoder_norm', False):
+            h = self.encoder_norm(h)
         logits = self.actor(h)
         value = self.critic(h).squeeze(-1)
         return logits, value
@@ -105,6 +135,104 @@ class ResidualTradingPolicy(nn.Module):
         return Categorical(logits=logits).sample()
 
 
+def load_policy(ckpt: dict, obs_size: int, num_actions: int, hidden: int, arch: str, device, features_per_sym: int = 16) -> nn.Module:
+    """Create and load the right policy class based on arch (from checkpoint or CLI arg)."""
+    # Prefer arch stored in checkpoint over CLI arg (backwards compat: older ckpts have no 'arch')
+    ckpt_arch = ckpt.get("arch", arch)
+    if ckpt_arch in ("resmlp",):
+        policy = ResidualTradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
+    elif ckpt_arch in ("transformer",):
+        from pufferlib_market.train import TransformerTradingPolicy
+        _base = TransformerTradingPolicy(obs_size, num_actions, hidden=hidden, features_per_sym=features_per_sym).to(device)
+        policy = _wrap_train_policy(_base, num_actions)
+    elif ckpt_arch in ("gru",):
+        from pufferlib_market.train import GRUTradingPolicy
+        _base = GRUTradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
+        policy = _wrap_train_policy(_base, num_actions)
+    elif ckpt_arch in ("depth_recurrence",):
+        from pufferlib_market.train import DepthRecurrenceTradingPolicy
+        _base = DepthRecurrenceTradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
+        policy = _wrap_train_policy(_base, num_actions)
+    elif ckpt_arch in ("mlp_relu_sq",):
+        policy = TradingPolicy(obs_size, num_actions, hidden=hidden, activation="relu_sq").to(device)
+    else:
+        policy = TradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
+    state_dict = ckpt["model"]
+    missing, unexpected = policy.load_state_dict(state_dict, strict=False)
+    # obs_mean/obs_std: optional obs-norm buffers (old ckpts lack them).
+    # encoder_norm: added to train.py to prevent BF16 precision collapse.
+    #   Old ckpts lack it → _use_encoder_norm=False (do NOT apply norm; LayerNorm would corrupt).
+    #   New ckpts have it → _use_encoder_norm=True (apply norm as trained).
+    if hasattr(policy, '_use_encoder_norm'):
+        policy._use_encoder_norm = "encoder_norm.weight" not in missing
+    ignored = {"obs_mean", "obs_std", "encoder_norm.weight", "encoder_norm.bias"}
+    bad_missing = [k for k in missing if k not in ignored]
+    bad_unexpected = [k for k in unexpected if k not in ignored]
+    if bad_missing or bad_unexpected:
+        raise RuntimeError(
+            f"Checkpoint architecture mismatch — missing: {bad_missing}, unexpected: {bad_unexpected}"
+        )
+    # Populate obs buffers from state_dict so normalization is applied at inference
+    for buf in ("obs_mean", "obs_std"):
+        if buf in state_dict and state_dict[buf] is not None:
+            setattr(policy, buf, state_dict[buf].to(device))
+    policy.eval()
+    return policy
+
+
+def _wrap_train_policy(base_policy: nn.Module, num_actions: int) -> nn.Module:
+    """Wrap a train.py policy (with get_action_and_value) so it has get_action for evaluate.py."""
+    class _Wrapped(nn.Module):
+        def __init__(self, inner):
+            super().__init__()
+            self.inner = inner
+            self.obs_size = inner.obs_size
+            self.num_actions = inner.num_actions
+
+        def forward(self, x):
+            return self.inner.forward(x)
+
+        def get_action(self, x, deterministic=False, disable_shorts=False):
+            logits, _ = self.inner.forward(x)
+            if disable_shorts:
+                K = (num_actions - 1) // 2
+                logits[:, 1 + K:] = float("-inf")
+            if deterministic:
+                return logits.argmax(dim=-1)
+            return Categorical(logits=logits).sample()
+
+        def load_state_dict(self, state_dict, **kw):
+            return self.inner.load_state_dict(state_dict, **kw)
+
+        def state_dict(self, **kw):
+            return self.inner.state_dict(**kw)
+
+    return _Wrapped(base_policy)
+
+
+class EnsemblePolicy(nn.Module):
+    """Softmax-average ensemble of N policies. Compatible with evaluate.py's policy interface."""
+
+    def __init__(self, policies: list):
+        super().__init__()
+        self.policies = nn.ModuleList(policies)
+
+    def get_action(self, obs, deterministic=False, disable_shorts=False):
+        import torch.nn.functional as F
+        probs_list = []
+        for p in self.policies:
+            logits, _ = p.forward(obs)
+            if disable_shorts:
+                K = (logits.shape[-1] - 1) // 2
+                logits = logits.clone()
+                logits[:, 1 + K:] = float("-inf")
+            probs_list.append(F.softmax(logits, dim=-1))
+        avg_probs = torch.stack(probs_list).mean(0)
+        if deterministic:
+            return avg_probs.argmax(dim=-1)
+        return Categorical(probs=avg_probs).sample()
+
+
 def evaluate_random(args, policy, binding, obs_buf, act_buf, rew_buf, term_buf,
                     trunc_buf, num_envs, obs_size, num_actions, device):
     """Run random-start episodes and collect stats."""
@@ -137,7 +265,7 @@ def evaluate_random(args, policy, binding, obs_buf, act_buf, rew_buf, term_buf,
 
     while len(all_returns) < target_episodes:
         obs_tensor = torch.from_numpy(obs_buf.copy()).to(device)
-        with torch.no_grad():
+        with torch.inference_mode():
             actions = policy.get_action(obs_tensor, deterministic=args.deterministic,
                                         disable_shorts=args.disable_shorts)
         act_buf[:] = actions.cpu().numpy().astype(np.int32)
@@ -233,7 +361,7 @@ def evaluate_sequential(args, policy, binding, obs_size, num_actions, device):
 
     while len(all_returns) < target_episodes:
         obs_tensor = torch.from_numpy(obs_buf_m.copy()).to(device)
-        with torch.no_grad():
+        with torch.inference_mode():
             actions = policy.get_action(obs_tensor, deterministic=args.deterministic,
                                         disable_shorts=args.disable_shorts)
         act_buf_m[:] = actions.cpu().numpy().astype(np.int32)
@@ -277,8 +405,10 @@ def main():
     parser.add_argument("--deterministic", action="store_true",
                         help="Use argmax actions instead of sampling")
     parser.add_argument("--mode", choices=["random", "sequential"], default="random")
+    parser.add_argument("--extra-checkpoints", nargs="*", default=[],
+                        help="Additional checkpoint paths for softmax-avg ensemble (optional)")
     parser.add_argument("--hidden-size", type=int, default=256)
-    parser.add_argument("--arch", choices=["mlp", "resmlp"], default="mlp")
+    parser.add_argument("--arch", choices=["mlp", "resmlp", "transformer", "gru", "depth_recurrence", "mlp_relu_sq"], default="mlp")
     parser.add_argument("--cpu", action="store_true")
     parser.add_argument("--max-hold-hours", type=int, default=0,
                         help="Force close position after N hours (0=disabled)")
@@ -321,6 +451,22 @@ def main():
         default=0.5,
         help="Episode progress threshold for drawdown-vs-profit early exit.",
     )
+    parser.add_argument(
+        "--calmar",
+        action="store_true",
+        help="Compute and print Calmar ratio (annualized_return / max_drawdown).",
+    )
+    parser.add_argument(
+        "--sliding",
+        action="store_true",
+        help="Use sliding window evaluation instead of random episodes.",
+    )
+    parser.add_argument(
+        "--stride",
+        type=int,
+        default=168,
+        help="Stride (bars) between sliding window starts (default: 168 = 1 week hourly).",
+    )
 
     args = parser.parse_args()
 
@@ -329,9 +475,11 @@ def main():
     # Read binary header
     with open(args.data_path, "rb") as f:
         header = f.read(64)
-    _, _, num_symbols, num_timesteps, _, _ = struct.unpack("<4sIIIII", header[:24])
+    _, _, num_symbols, num_timesteps, features_per_sym, _ = struct.unpack("<4sIIIII", header[:24])
+    if features_per_sym == 0:
+        features_per_sym = 16  # v1/v2 backwards compat
 
-    obs_size = num_symbols * 16 + 5 + num_symbols
+    obs_size = num_symbols * features_per_sym + 5 + num_symbols
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
     if "action_allocation_bins" in ckpt:
         args.action_allocation_bins = max(1, int(ckpt["action_allocation_bins"]))
@@ -355,15 +503,22 @@ def main():
     )
     print(f"Device: {device}, deterministic: {args.deterministic}, arch: {args.arch}")
 
-    # Load policy
-    if args.arch == "resmlp":
-        policy = ResidualTradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
-    else:
-        policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
-    policy.load_state_dict(ckpt["model"])
-    policy.eval()
+    # Load policy — arch is read from checkpoint if present, else falls back to --arch CLI arg
+    policy = load_policy(ckpt, obs_size, num_actions, args.hidden_size, args.arch, device, features_per_sym=features_per_sym)
+    arch_used = ckpt.get("arch", args.arch)
     print(f"Loaded checkpoint: update={ckpt.get('update', '?')}, "
-          f"train_best_return={ckpt.get('best_return', '?'):.4f}")
+          f"train_best_return={ckpt.get('best_return', '?'):.4f}, arch={arch_used}")
+
+    if args.extra_checkpoints:
+        extra_policies = []
+        for epath in args.extra_checkpoints:
+            eckpt = torch.load(epath, map_location=device, weights_only=False)
+            ep = load_policy(eckpt, obs_size, num_actions, args.hidden_size, args.arch, device, features_per_sym=features_per_sym)
+            ep_arch = eckpt.get("arch", args.arch)
+            print(f"  + ensemble member: update={eckpt.get('update','?')} ret={eckpt.get('best_return','?'):.4f} arch={ep_arch}")
+            extra_policies.append(ep)
+        policy = EnsemblePolicy([policy] + extra_policies)
+        print(f"Ensemble: softmax_avg of {1 + len(extra_policies)} policies")
 
     # Load shared data
     import pufferlib_market.binding as binding
@@ -377,6 +532,43 @@ def main():
     rew_buf = np.zeros((num_envs,), dtype=np.float32)
     term_buf = np.zeros((num_envs,), dtype=np.uint8)
     trunc_buf = np.zeros((num_envs,), dtype=np.uint8)
+
+    # --- Sliding window evaluation path ---
+    if args.sliding:
+        data = read_mktd(args.data_path)
+        policy_fn = _build_policy_fn(
+            policy, device,
+            deterministic=args.deterministic,
+            disable_shorts=args.disable_shorts,
+        )
+        sliding_results = sliding_window_eval(
+            policy_fn,
+            data,
+            episode_len=args.max_steps,
+            stride=args.stride,
+            fee_rate=args.fee_rate,
+            max_leverage=args.max_leverage,
+            periods_per_year=args.periods_per_year,
+            short_borrow_apr=args.short_borrow_apr,
+            action_allocation_bins=args.action_allocation_bins,
+            action_level_bins=args.action_level_bins,
+            action_max_offset_bps=args.action_max_offset_bps,
+            enable_drawdown_profit_early_exit=args.drawdown_profit_early_exit,
+            drawdown_profit_early_exit_verbose=args.drawdown_profit_early_exit_verbose,
+            drawdown_profit_early_exit_min_steps=args.drawdown_profit_early_exit_min_steps,
+            drawdown_profit_early_exit_progress_fraction=args.drawdown_profit_early_exit_progress_fraction,
+        )
+        stats = aggregate_sliding_results(
+            sliding_results,
+            episode_len=args.max_steps,
+            periods_per_year=args.periods_per_year,
+        )
+        print_sliding_results(sliding_results, stats)
+        if args.calmar:
+            print(f"\nCalmar ratio: {stats['calmar']:.4f}  "
+                  f"(annualized_return={stats['annualized_return']*100:+.2f}% / "
+                  f"worst_max_drawdown={stats['worst_max_drawdown']:.4f})")
+        return
 
     if args.mode == "random":
         returns, trades, win_rates, sortinos = evaluate_random(
@@ -419,6 +611,7 @@ def main():
     total_steps = steps_per_episode * len(returns)
     periods_per_year = args.periods_per_year if args.periods_per_year > 0 else 8760.0
     years = total_steps / periods_per_year
+    annualized = None
     if years > 0 and cum_mult > 0:
         annualized = annualize_total_return(
             float(cum_mult - 1.0),
@@ -426,6 +619,13 @@ def main():
             periods_per_year=float(periods_per_year),
         )
         print(f"Estimated annualized return: {annualized*100:+.1f}% ({years:.1f} years of data)")
+
+    # Calmar ratio
+    if args.calmar and annualized is not None:
+        worst_dd = float(np.max(np.abs(returns[returns < 0]))) if np.any(returns < 0) else 0.0
+        calmar = compute_calmar(annualized, worst_dd)
+        print(f"Calmar ratio:               {calmar:.4f}  "
+              f"(annualized={annualized*100:+.2f}% / worst_loss={worst_dd:.4f})")
 
     # Distribution of returns
     percentiles = [5, 25, 50, 75, 95]

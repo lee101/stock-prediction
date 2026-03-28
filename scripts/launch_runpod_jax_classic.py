@@ -40,6 +40,19 @@ SYNC_CODE_PATHS = (
     "uv.lock",
     "unified_hourly_experiment/train_jax_classic.py",
 )
+CODE_SYNC_EXCLUDES = (
+    "__pycache__",
+    "*.pyc",
+    ".pytest_cache",
+    ".mypy_cache",
+    "forecast_cache",
+    "checkpoints",
+    "tensorboard_logs",
+    "wandb",
+    "binanceneural/chronos2_finetuned",
+    "binanceneural/chronos2_finetuned/***",
+    "*.safetensors",
+)
 BOOTSTRAP_PACKAGES = (
     "numpy",
     "setuptools",
@@ -614,16 +627,7 @@ def main() -> int:
             f"root@{pod['public_ip']}:{REMOTE_DIR}/",
             key_path=args.key_path,
             ssh_port=pod["ssh_port"],
-            excludes=[
-                "__pycache__",
-                "*.pyc",
-                ".pytest_cache",
-                ".mypy_cache",
-                "forecast_cache",
-                "checkpoints",
-                "tensorboard_logs",
-                "wandb",
-            ],
+            excludes=list(CODE_SYNC_EXCLUDES),
             relative=True,
         )
 

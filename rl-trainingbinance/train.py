@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import random
 import sys
@@ -16,23 +17,70 @@ CURRENT_DIR = Path(__file__).resolve().parent
 if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
-from data import (
-    FeatureNormalizer,
-    HourlyMarketData,
-    apply_feature_normalizer,
-    fit_feature_normalizer,
-    load_hourly_market_data,
-)
-from env import BinanceHourlyEnv, EnvConfig
-from model import PolicyConfig, RiskAwareActorCritic
-from presets import DEFAULT_BINANCE_HOURLY_SYMBOLS, DEFAULT_SHORTABLE_SYMBOLS, parse_symbols
-from validate import (
-    evaluate_validation_plan,
-    flatten_window_summaries,
-    parse_csv_ints,
-    resolve_stride_hours,
-    resolve_window_weights,
-)
+
+def _load_local_module(module_name: str, filename: str):
+    spec = importlib.util.spec_from_file_location(module_name, CURRENT_DIR / filename)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load local module {filename}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules.setdefault(module_name, module)
+    spec.loader.exec_module(module)
+    return module
+
+
+try:
+    from data import (
+        FeatureNormalizer,
+        HourlyMarketData,
+        apply_feature_normalizer,
+        fit_feature_normalizer,
+        load_hourly_market_data,
+    )
+except Exception:
+    _data_mod = _load_local_module("rl_trainingbinance_train_data", "data.py")
+    FeatureNormalizer = _data_mod.FeatureNormalizer
+    HourlyMarketData = _data_mod.HourlyMarketData
+    apply_feature_normalizer = _data_mod.apply_feature_normalizer
+    fit_feature_normalizer = _data_mod.fit_feature_normalizer
+    load_hourly_market_data = _data_mod.load_hourly_market_data
+
+try:
+    from env import BinanceHourlyEnv, EnvConfig
+except Exception:
+    _env_mod = _load_local_module("rl_trainingbinance_train_env", "env.py")
+    BinanceHourlyEnv = _env_mod.BinanceHourlyEnv
+    EnvConfig = _env_mod.EnvConfig
+
+try:
+    from model import PolicyConfig, RiskAwareActorCritic
+except Exception:
+    _model_mod = _load_local_module("rl_trainingbinance_train_model", "model.py")
+    PolicyConfig = _model_mod.PolicyConfig
+    RiskAwareActorCritic = _model_mod.RiskAwareActorCritic
+
+try:
+    from presets import DEFAULT_BINANCE_HOURLY_SYMBOLS, DEFAULT_SHORTABLE_SYMBOLS, parse_symbols
+except Exception:
+    _presets_mod = _load_local_module("rl_trainingbinance_train_presets", "presets.py")
+    DEFAULT_BINANCE_HOURLY_SYMBOLS = _presets_mod.DEFAULT_BINANCE_HOURLY_SYMBOLS
+    DEFAULT_SHORTABLE_SYMBOLS = _presets_mod.DEFAULT_SHORTABLE_SYMBOLS
+    parse_symbols = _presets_mod.parse_symbols
+
+try:
+    from validate import (
+        evaluate_validation_plan,
+        flatten_window_summaries,
+        parse_csv_ints,
+        resolve_stride_hours,
+        resolve_window_weights,
+    )
+except Exception:
+    _validate_mod = _load_local_module("rl_trainingbinance_train_validate", "validate.py")
+    evaluate_validation_plan = _validate_mod.evaluate_validation_plan
+    flatten_window_summaries = _validate_mod.flatten_window_summaries
+    parse_csv_ints = _validate_mod.parse_csv_ints
+    resolve_stride_hours = _validate_mod.resolve_stride_hours
+    resolve_window_weights = _validate_mod.resolve_window_weights
 
 
 def _set_seed(seed: int) -> None:

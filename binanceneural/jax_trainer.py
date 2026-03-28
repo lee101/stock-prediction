@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from dataclasses import dataclass, field
@@ -57,6 +58,7 @@ class JaxTrainingArtifacts:
     config: TrainingConfig | None = None
     checkpoint_paths: list[Path] = field(default_factory=list)
     best_checkpoint: Path | None = None
+    stop_reason: str | None = None
 
 
 def _tensor_to_jax(value: Any) -> jax.Array:
@@ -113,10 +115,18 @@ class JaxClassicTrainer:
                 sequence_length=int(self.config.sequence_length),
             )
 
-        self.optimizer = optax.adamw(
+        base_optimizer = optax.adamw(
             learning_rate=float(self.config.learning_rate),
             weight_decay=float(self.config.weight_decay),
         )
+        grad_clip = float(self.config.grad_clip)
+        if grad_clip > 0.0:
+            self.optimizer = optax.chain(
+                optax.clip_by_global_norm(grad_clip),
+                base_optimizer,
+            )
+        else:
+            self.optimizer = base_optimizer
         self.opt_state = self.optimizer.init(self.params)
         self._train_step = self._build_train_step()
         self._eval_step = self._build_eval_step()
@@ -269,11 +279,25 @@ class JaxClassicTrainer:
         path.write_bytes(serialization.to_bytes(payload))
         return path
 
+    def _first_non_finite_metric(
+        self,
+        metrics: dict[str, float],
+        *,
+        stage: str,
+        epoch: int,
+    ) -> tuple[str, float] | None:
+        for key, value in metrics.items():
+            numeric = float(value)
+            if not math.isfinite(numeric):
+                return (f"{stage}/{key}", numeric)
+        return None
+
     def train(self) -> JaxTrainingArtifacts:
         history: list[JaxTrainingHistoryEntry] = []
         best_score = float("-inf")
         best_checkpoint: Path | None = None
         checkpoint_paths: list[Path] = []
+        stop_reason: str | None = None
         with WandBoardLogger(
             run_name=self.config.run_name,
             project=self.config.wandb_project,
@@ -295,7 +319,21 @@ class JaxClassicTrainer:
             )
             for epoch in range(1, int(self.config.epochs) + 1):
                 train_metrics = self._run_epoch(train=True)
+                bad_metric = self._first_non_finite_metric(train_metrics, stage="train", epoch=epoch)
+                if bad_metric is not None:
+                    metric_name, metric_value = bad_metric
+                    stop_reason = (
+                        f"Stopping at epoch {epoch}: non-finite {metric_name}={metric_value!r}"
+                    )
+                    break
                 val_metrics = self._run_epoch(train=False)
+                bad_metric = self._first_non_finite_metric(val_metrics, stage="val", epoch=epoch)
+                if bad_metric is not None:
+                    metric_name, metric_value = bad_metric
+                    stop_reason = (
+                        f"Stopping at epoch {epoch}: non-finite {metric_name}={metric_value!r}"
+                    )
+                    break
                 history.append(
                     JaxTrainingHistoryEntry(
                         epoch=epoch,
@@ -351,6 +389,8 @@ class JaxClassicTrainer:
                     step=best_entry.epoch,
                     table_name="jax_train_summary",
                 )
+            if stop_reason:
+                metrics_logger.log_text("jax/stop_reason", stop_reason, step=len(history))
 
         config_path = self.checkpoint_dir / "config.json"
         config_path.write_text(
@@ -385,6 +425,7 @@ class JaxClassicTrainer:
                     "fill_temperature": float(self.config.fill_temperature),
                     "history": [entry.__dict__ for entry in history],
                     "best_checkpoint": str(best_checkpoint) if best_checkpoint else None,
+                    "stop_reason": stop_reason,
                 },
                 indent=2,
             )
@@ -398,4 +439,5 @@ class JaxClassicTrainer:
             config=self.config,
             checkpoint_paths=checkpoint_paths,
             best_checkpoint=best_checkpoint,
+            stop_reason=stop_reason,
         )

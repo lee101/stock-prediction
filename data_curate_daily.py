@@ -9,7 +9,10 @@ import pytz
 from alpaca.common.exceptions import APIError
 from alpaca.data import CryptoBarsRequest, TimeFrame, StockBarsRequest, TimeFrameUnit, CryptoHistoricalDataClient
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.trading import TradingClient
+try:
+    from alpaca.trading.client import TradingClient
+except ImportError:  # pragma: no cover - older alpaca-py layout
+    from alpaca.trading import TradingClient  # type: ignore
 from cachetools import TTLCache
 from loguru import logger
 from pandas import DataFrame
@@ -39,6 +42,31 @@ MRNA
 """
 # Use explicit credentials so crypto endpoints behave consistently across environments.
 crypto_client = CryptoHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
+
+
+def _normalize_price_frame(frame, symbol: str) -> DataFrame:
+    if not isinstance(frame, pd.DataFrame):
+        logger.warning(f"Malformed price frame for {symbol}: expected DataFrame, got {type(frame).__name__}")
+        return DataFrame()
+
+    normalized = frame.copy()
+    normalized.columns = [str(col).strip().lower() for col in normalized.columns]
+
+    if "close" not in normalized.columns:
+        logger.warning(f"Price frame for {symbol} is missing required 'close' column")
+        return DataFrame()
+
+    normalized["close"] = pd.to_numeric(normalized["close"], errors="coerce")
+    normalized = normalized.dropna(subset=["close"])
+
+    if "timestamp" in normalized.columns and not isinstance(normalized.index, pd.DatetimeIndex):
+        timestamps = pd.to_datetime(normalized["timestamp"], utc=True, errors="coerce")
+        valid = timestamps.notna()
+        normalized = normalized.loc[valid].copy()
+        if not normalized.empty:
+            normalized.index = timestamps.loc[valid]
+
+    return normalized
 
 
 def _load_cached_symbol(save_path: Path, symbol: str) -> DataFrame:
@@ -208,7 +236,7 @@ def download_exchange_historical_data(api, symbol):
     # end = (datetime.datetime.now() - datetime.timedelta(days=2)).strftime('%Y-%m-%d') # todo recent data
     end = (datetime.datetime.now(tz=pytz.utc) - datetime.timedelta(minutes=16))  # todo recent data
     ## logger.info(api.get_barset(['AAPL', 'GOOG'], 'minute', start=start, end=end).df)
-    results = download_stock_data_between_times(api, end, start, symbol)
+    results = _normalize_price_frame(download_stock_data_between_times(api, end, start, symbol), symbol)
     if not results.empty:
         data_cache[symbol] = results
     return results
@@ -220,7 +248,7 @@ def download_exchange_latest_data(api, symbol):
     # end = (datetime.datetime.now() - datetime.timedelta(days=2)).strftime('%Y-%m-%d') # todo recent data
     end = (datetime.datetime.now(tz=pytz.utc)) - datetime.timedelta(minutes=16)  # todo recent data
     ## logger.info(api.get_barset(['AAPL', 'GOOG'], 'minute', start=start, end=end).df)
-    latest_data_dl = download_stock_data_between_times(api, end, start, symbol)
+    latest_data_dl = _normalize_price_frame(download_stock_data_between_times(api, end, start, symbol), symbol)
 
     if ADD_LATEST:  # collect very latest close times, todo extend bars?
         # Try up to 3 times to get valid bid/ask data

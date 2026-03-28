@@ -17,6 +17,7 @@ def test_build_train_cmd_passes_batch_size() -> None:
             num_steps=2400,
             prediction_length=24,
             lora_r=16,
+            seed=2027,
         ),
         data_root=Path("trainingdatahourlybinance"),
         output_root=Path("chronos2_finetuned"),
@@ -25,6 +26,8 @@ def test_build_train_cmd_passes_batch_size() -> None:
     assert "--batch-size" in cmd
     batch_idx = cmd.index("--batch-size")
     assert cmd[batch_idx + 1] == "16"
+    seed_idx = cmd.index("--seed")
+    assert cmd[seed_idx + 1] == "2027"
 
 
 def test_iter_sweep_configs_propagates_batch_size() -> None:
@@ -37,6 +40,8 @@ def test_iter_sweep_configs_propagates_batch_size() -> None:
         num_steps=2400,
         prediction_length=24,
         lora_r=16,
+        seeds=[1337, 2027],
     )
-    assert len(configs) == 4
+    assert len(configs) == 8
     assert {cfg.batch_size for cfg in configs} == {12}
+    assert {cfg.seed for cfg in configs} == {1337, 2027}

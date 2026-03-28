@@ -456,6 +456,24 @@ def _alloc_fields_for_symbol(sym: str) -> tuple[str, str, str]:
     return (f"{short}_pct", f"{short}_entry", f"{short}_exit")
 
 
+def _coerce_allocation_number(value: object) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return 0.0
+    lowered = text.lower()
+    if lowered in {"n/a", "na", "none", "null"}:
+        return 0.0
+    cleaned = text.replace("$", "").replace("%", "").replace(",", "").strip()
+    try:
+        return float(cleaned)
+    except ValueError:
+        return 0.0
+
+
 def parse_allocation_response(text: str) -> AllocationPlan:
     """Parse Gemini's JSON response into an AllocationPlan."""
     try:
@@ -479,11 +497,11 @@ def parse_allocation_response(text: str) -> AllocationPlan:
 
     for sym in ALLOC_FIELDS:
         pct_key, entry_key, exit_key = _alloc_fields_for_symbol(sym)
-        pct = float(data.get(pct_key, 0) or 0)
+        pct = _coerce_allocation_number(data.get(pct_key, 0))
         if pct > 0:
             plan.allocations[sym] = min(pct, 100.0)
-            plan.entry_prices[sym] = float(data.get(entry_key, 0) or 0)
-            plan.exit_prices[sym] = float(data.get(exit_key, 0) or 0)
+            plan.entry_prices[sym] = _coerce_allocation_number(data.get(entry_key, 0))
+            plan.exit_prices[sym] = _coerce_allocation_number(data.get(exit_key, 0))
 
     # Also parse any _pct keys not in ALLOC_FIELDS
     for key, val in data.items():
@@ -491,11 +509,11 @@ def parse_allocation_response(text: str) -> AllocationPlan:
             short = key.replace("_pct", "")
             sym = f"{short.upper()}USD"
             if sym not in plan.allocations:
-                pct = float(val or 0)
+                pct = _coerce_allocation_number(val)
                 if pct > 0:
                     plan.allocations[sym] = min(pct, 100.0)
-                    plan.entry_prices[sym] = float(data.get(f"{short}_entry", 0) or 0)
-                    plan.exit_prices[sym] = float(data.get(f"{short}_exit", 0) or 0)
+                    plan.entry_prices[sym] = _coerce_allocation_number(data.get(f"{short}_entry", 0))
+                    plan.exit_prices[sym] = _coerce_allocation_number(data.get(f"{short}_exit", 0))
 
     total = sum(plan.allocations.values())
     if total > 100:

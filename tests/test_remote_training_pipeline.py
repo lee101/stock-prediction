@@ -116,6 +116,7 @@ def test_build_remote_hourly_chronos_rl_plan_generates_expected_paths(tmp_path: 
         num_steps=100,
         prediction_length=24,
         lora_r=16,
+        lora_seeds=[1337, 2027],
         feature_lag=1,
         min_coverage=0.95,
         time_budget=300,
@@ -129,6 +130,15 @@ def test_build_remote_hourly_chronos_rl_plan_generates_expected_paths(tmp_path: 
     assert plan.leaderboard_path == "pufferlib_market/probe123_leaderboard.csv"
     assert len(plan.commands) == 6
     assert list(plan.commands[0][:4]) == ["python", "-u", "scripts/run_crypto_lora_batch.py", "--run-id"]
+    assert "--seeds" in plan.commands[0]
+    seeds_idx = list(plan.commands[0]).index("--seeds")
+    assert plan.commands[0][seeds_idx + 1] == "1337,2027"
+    promote_cmd = list(plan.commands[1])
+    assert "--selection-strategy" in promote_cmd
+    strategy_idx = promote_cmd.index("--selection-strategy")
+    assert promote_cmd[strategy_idx + 1] == "stable_family"
+    assert "--stability-penalty" in promote_cmd
+    assert "--min-family-size" in promote_cmd
     assert "--descriptions" in plan.commands[-1]
 
 
@@ -171,6 +181,7 @@ def test_build_remote_hourly_chronos_rl_plan_honors_overlap_override(tmp_path: P
         num_steps=100,
         prediction_length=24,
         lora_r=16,
+        lora_seeds=[1337],
         feature_lag=1,
         min_coverage=0.95,
         time_budget=60,
@@ -267,6 +278,7 @@ def test_render_remote_pipeline_script_activates_env_and_runs_commands(tmp_path:
         num_steps=50,
         prediction_length=24,
         lora_r=8,
+        lora_seeds=[1337],
         feature_lag=1,
         min_coverage=0.95,
         time_budget=120,

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
 import shlex
 import statistics
@@ -459,6 +460,16 @@ def _upload_to_r2(local_path: Path, run_id: str, r2_endpoint: str) -> None:
 
 # Default seed pool — first N entries are used when --num-seeds is given.
 DEFAULT_SEEDS = [42, 123, 7, 99, 17]
+_MULTISEED_METRIC_DISPLAY = (
+    ("rank_score", "rank_score", True, "{:+.3f}"),
+    ("generalization_score", "generalization", True, "{:+.3f}"),
+    ("smooth_score", "smooth", True, "{:+.3f}"),
+    ("holdout_robust_score", "holdout_robust", True, "{:+.3f}"),
+    ("replay_combo_score", "replay_combo", True, "{:+.3f}"),
+    ("val_return", "val_return", True, "{:+.1%}"),
+    ("val_sortino", "val_sortino", True, "{:+.2f}"),
+    ("overfit_gap_score", "overfit_gap", False, "{:+.3f}"),
+)
 
 
 def _resolve_seeds(args: argparse.Namespace) -> list[int]:
@@ -469,16 +480,36 @@ def _resolve_seeds(args: argparse.Namespace) -> list[int]:
     return DEFAULT_SEEDS[:num]
 
 
-def _read_leaderboard_metrics(path: Path) -> dict[str, float | None]:
-    """Return the best val_return and val_sortino from a leaderboard CSV."""
+def _read_leaderboard_metrics(path: Path) -> dict[str, str | float | None]:
+    """Return the best row's core validation and robustness metrics."""
     if not path.exists():
-        return {"val_return": None, "val_sortino": None}
+        return {
+            "rank_metric": None,
+            "rank_score": None,
+            "val_return": None,
+            "val_sortino": None,
+            "generalization_score": None,
+            "smooth_score": None,
+            "holdout_robust_score": None,
+            "replay_combo_score": None,
+            "overfit_gap_score": None,
+        }
     try:
         with open(path) as f:
             reader = csv.DictReader(f)
             rows = list(reader)
         if not rows:
-            return {"val_return": None, "val_sortino": None}
+            return {
+                "rank_metric": None,
+                "rank_score": None,
+                "val_return": None,
+                "val_sortino": None,
+                "generalization_score": None,
+                "smooth_score": None,
+                "holdout_robust_score": None,
+                "replay_combo_score": None,
+                "overfit_gap_score": None,
+            }
 
         def _sort_key(r: dict) -> float:
             for col in ("rank_score", "val_return"):
@@ -502,11 +533,60 @@ def _read_leaderboard_metrics(path: Path) -> dict[str, float | None]:
                 return None
 
         return {
+            "rank_metric": best.get("rank_metric") or None,
+            "rank_score": _maybe_float(best.get("rank_score")),
             "val_return": _maybe_float(best.get("val_return")),
             "val_sortino": _maybe_float(best.get("val_sortino")),
+            "generalization_score": _maybe_float(best.get("generalization_score")),
+            "smooth_score": _maybe_float(best.get("smooth_score")),
+            "holdout_robust_score": _maybe_float(best.get("holdout_robust_score")),
+            "replay_combo_score": _maybe_float(best.get("replay_combo_score")),
+            "overfit_gap_score": _maybe_float(best.get("overfit_gap_score")),
         }
     except Exception:
-        return {"val_return": None, "val_sortino": None}
+        return {
+            "rank_metric": None,
+            "rank_score": None,
+            "val_return": None,
+            "val_sortino": None,
+            "generalization_score": None,
+            "smooth_score": None,
+            "holdout_robust_score": None,
+            "replay_combo_score": None,
+            "overfit_gap_score": None,
+        }
+
+
+def _format_metric(value: float | None, template: str) -> str:
+    if value is None:
+        return "n/a"
+    return template.format(value)
+
+
+def _metric_summary(values: list[float]) -> dict[str, float | None]:
+    if not values:
+        return {
+            "count": 0.0,
+            "mean": None,
+            "median": None,
+            "std": None,
+            "p10": None,
+            "min": None,
+            "max": None,
+            "negative_rate": None,
+        }
+    ordered = sorted(values)
+    p10_index = max(0, int(round((len(ordered) - 1) * 0.10)))
+    return {
+        "count": float(len(ordered)),
+        "mean": float(statistics.mean(ordered)),
+        "median": float(statistics.median(ordered)),
+        "std": float(statistics.stdev(ordered)) if len(ordered) > 1 else 0.0,
+        "p10": float(ordered[p10_index]),
+        "min": float(ordered[0]),
+        "max": float(ordered[-1]),
+        "negative_rate": float(sum(value < 0.0 for value in ordered) / len(ordered)),
+    }
 
 
 def _print_variance_report(
@@ -518,28 +598,50 @@ def _print_variance_report(
     print("====================")
     for entry in seed_results:
         seed = entry["seed"]
-        vr = entry["val_return"]
-        vs = entry["val_sortino"]
-        vr_str = f"{vr:+.1%}" if vr is not None else "n/a"
-        vs_str = f"{vs:.2f}" if vs is not None else "n/a"
-        print(f"Seed {seed:<6d}: val_return={vr_str}  sortino={vs_str}")
+        rank_metric = entry.get("rank_metric") or "rank"
+        print(
+            f"Seed {seed:<6d}: "
+            f"{rank_metric}={_format_metric(entry.get('rank_score'), '{:+.3f}')}  "
+            f"val_return={_format_metric(entry.get('val_return'), '{:+.1%}')}  "
+            f"sortino={_format_metric(entry.get('val_sortino'), '{:+.2f}')}  "
+            f"smooth={_format_metric(entry.get('smooth_score'), '{:+.3f}')}  "
+            f"gen={_format_metric(entry.get('generalization_score'), '{:+.3f}')}"
+        )
 
-    returns = [e["val_return"] for e in seed_results if e["val_return"] is not None]
-    sortinos = [e["val_sortino"] for e in seed_results if e["val_sortino"] is not None]
+    metric_summaries: dict[str, dict[str, float | None]] = {}
+    for key, _, _, _ in _MULTISEED_METRIC_DISPLAY:
+        values = [float(e[key]) for e in seed_results if e.get(key) is not None]
+        metric_summaries[key] = _metric_summary(values)
+    failed: list[dict] = []
+    for entry in seed_results:
+        exit_code = entry.get("exit_code", 1)
+        try:
+            normalized_exit = int(1 if exit_code is None else exit_code)
+        except (TypeError, ValueError):
+            normalized_exit = 1
+        if normalized_exit != 0:
+            failed.append(entry)
+    rank_metrics = sorted({str(e.get("rank_metric")) for e in seed_results if e.get("rank_metric")})
 
     print()
-    if returns:
-        mean_r = statistics.mean(returns)
-        std_r = statistics.stdev(returns) if len(returns) > 1 else 0.0
-        print(f"Mean val_return: {mean_r:+.1%} +/- {std_r:.1%}")
-    else:
-        print("Mean val_return: n/a")
-    if sortinos:
-        mean_s = statistics.mean(sortinos)
-        std_s = statistics.stdev(sortinos) if len(sortinos) > 1 else 0.0
-        print(f"Mean sortino:    {mean_s:.2f} +/- {std_s:.2f}")
-    else:
-        print("Mean sortino:    n/a")
+    for key, label, higher_is_better, template in _MULTISEED_METRIC_DISPLAY:
+        stats = metric_summaries[key]
+        mean_value = stats["mean"]
+        std_value = stats["std"]
+        p10_value = stats["p10"]
+        neg_rate = stats["negative_rate"]
+        std_template = template.replace("{:+", "{:")
+        mean_str = _format_metric(mean_value, template)
+        std_str = _format_metric(std_value, std_template)
+        p10_str = _format_metric(p10_value, template)
+        direction = "higher better" if higher_is_better else "lower better"
+        line = f"{label}: mean={mean_str} +/- {std_str}  p10={p10_str}  ({direction})"
+        if neg_rate is not None:
+            line += f"  neg={neg_rate:.0%}"
+        print(line)
+    print(f"Failed seeds: {len(failed)}/{len(seed_results)} ({(len(failed) / max(len(seed_results), 1)):.0%})")
+    if rank_metrics:
+        print(f"Rank metric(s): {', '.join(rank_metrics)}")
     print()
     print("Note: RL training is non-deterministic even with the same seed due to")
     print("GPU parallelism. The seed controls init and data shuffling only.")
@@ -547,13 +649,36 @@ def _print_variance_report(
     # Save aggregated leaderboard CSV.
     try:
         multiseed_leaderboard.parent.mkdir(parents=True, exist_ok=True)
-        fieldnames = ["seed", "val_return", "val_sortino", "leaderboard_path", "exit_code"]
+        fieldnames = [
+            "seed",
+            "rank_metric",
+            "rank_score",
+            "generalization_score",
+            "smooth_score",
+            "holdout_robust_score",
+            "replay_combo_score",
+            "overfit_gap_score",
+            "val_return",
+            "val_sortino",
+            "leaderboard_path",
+            "exit_code",
+        ]
         with open(multiseed_leaderboard, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             for entry in seed_results:
                 writer.writerow(entry)
         print(f"Aggregated leaderboard saved to: {multiseed_leaderboard}")
+        summary_path = multiseed_leaderboard.with_suffix(".summary.json")
+        summary_payload = {
+            "seed_count": len(seed_results),
+            "failed_seed_count": len(failed),
+            "failed_seed_rate": len(failed) / max(len(seed_results), 1),
+            "rank_metrics": rank_metrics,
+            "metrics": metric_summaries,
+        }
+        summary_path.write_text(json.dumps(summary_payload, indent=2, sort_keys=True) + "\n")
+        print(f"Aggregated summary saved to: {summary_path}")
     except Exception as exc:
         print(f"[warning] Could not save multiseed leaderboard: {exc}")
 

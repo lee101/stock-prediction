@@ -17,7 +17,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from binanceneural.forecasts import ChronosForecastManager, ForecastConfig
 from src.chronos2_params import resolve_chronos2_params
-from src.forecast_cache_metrics import ForecastMAE, compute_forecast_cache_mae_for_paths
 from src.hourly_data_utils import discover_hourly_symbols, resolve_hourly_symbol_path
 from src.models.chronos2_wrapper import Chronos2OHLCWrapper
 from src.torch_device_utils import require_cuda as require_cuda_device
@@ -206,6 +205,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 continue
 
             try:
+                from src.forecast_cache_metrics import compute_forecast_cache_mae_for_paths
+
                 mae = compute_forecast_cache_mae_for_paths(
                     symbol=symbol,
                     horizon_hours=int(horizon),

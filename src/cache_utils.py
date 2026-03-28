@@ -132,7 +132,21 @@ def find_hf_snapshot_dir(
     """
 
     repo_fragment = repo_id.replace("/", "--")
-    candidates = _candidate_paths(extra_candidates=extra_candidates)
+    if extra_candidates:
+        candidates: List[Path] = []
+        for env_key in _HF_ENV_VARS:
+            env_value = os.getenv(env_key)
+            if not env_value:
+                continue
+            expanded = _expand_path(env_value)
+            if expanded not in candidates:
+                candidates.append(expanded)
+        for path in extra_candidates:
+            candidate = Path(path)
+            if candidate not in candidates:
+                candidates.append(candidate)
+    else:
+        candidates = _candidate_paths()
 
     for cache_root in candidates:
         hub_dir = cache_root / "hub" / f"models--{repo_fragment}" / "snapshots"

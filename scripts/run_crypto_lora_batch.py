@@ -28,6 +28,7 @@ class SweepConfig:
     num_steps: int
     prediction_length: int
     lora_r: int
+    seed: int
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,8 @@ def build_train_cmd(
         str(int(cfg.num_steps)),
         "--lora-r",
         str(int(cfg.lora_r)),
+        "--seed",
+        str(int(cfg.seed)),
         "--preaug",
         cfg.preaug,
         "--run-prefix",
@@ -93,31 +96,34 @@ def iter_sweep_configs(
     num_steps: int,
     prediction_length: int,
     lora_r: int,
+    seeds: Sequence[int],
 ) -> list[SweepConfig]:
     configs: list[SweepConfig] = []
     for symbol in normalize_symbols(symbols):
         for preaug in [str(item).strip() for item in preaugs if str(item).strip()]:
             for context_length in context_lengths:
                 for learning_rate in learning_rates:
-                    configs.append(
-                        SweepConfig(
-                            symbol=symbol,
-                            preaug=preaug,
-                            context_length=int(context_length),
-                            batch_size=int(batch_size),
-                            learning_rate=float(learning_rate),
-                            num_steps=int(num_steps),
-                            prediction_length=int(prediction_length),
-                            lora_r=int(lora_r),
+                    for seed in seeds:
+                        configs.append(
+                            SweepConfig(
+                                symbol=symbol,
+                                preaug=preaug,
+                                context_length=int(context_length),
+                                batch_size=int(batch_size),
+                                learning_rate=float(learning_rate),
+                                num_steps=int(num_steps),
+                                prediction_length=int(prediction_length),
+                                lora_r=int(lora_r),
+                                seed=int(seed),
+                            )
                         )
-                    )
     return configs
 
 
 def _newest_matching_result(results_dir: Path, run_id: str, cfg: SweepConfig) -> Path | None:
     pattern = (
         f"{run_id}_{cfg.symbol}_lora_{cfg.preaug}_ctx{int(cfg.context_length)}_"
-        f"lr*_r{int(cfg.lora_r)}_*.json"
+        f"lr*_r{int(cfg.lora_r)}_s{int(cfg.seed)}_*.json"
     )
     matches = sorted(results_dir.glob(pattern), key=lambda path: path.stat().st_mtime, reverse=True)
     return matches[0] if matches else None
@@ -171,6 +177,7 @@ def _write_summary_csv(path: Path, results: Sequence[SweepResult]) -> None:
         "num_steps",
         "prediction_length",
         "lora_r",
+        "seed",
         "status",
         "run_name",
         "result_path",
@@ -196,6 +203,7 @@ def _write_summary_csv(path: Path, results: Sequence[SweepResult]) -> None:
                     "num_steps": result.config.num_steps,
                     "prediction_length": result.config.prediction_length,
                     "lora_r": result.config.lora_r,
+                    "seed": result.config.seed,
                     "status": result.status,
                     "run_name": result.run_name or "",
                     "result_path": result.result_path or "",
@@ -266,7 +274,7 @@ def run_batch(
     for idx, cfg in enumerate(configs, 1):
         print(
             f"[{idx}/{len(configs)}] {cfg.symbol} preaug={cfg.preaug} "
-            f"ctx={cfg.context_length} lr={cfg.learning_rate:.0e}",
+            f"ctx={cfg.context_length} lr={cfg.learning_rate:.0e} seed={cfg.seed}",
             flush=True,
         )
         cmd = build_train_cmd(
@@ -335,6 +343,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--num-steps", type=int, default=1000)
     parser.add_argument("--prediction-length", type=int, default=24)
     parser.add_argument("--lora-r", type=int, default=16)
+    parser.add_argument("--seeds", default="1337")
     parser.add_argument("--stop-on-error", action="store_true")
     return parser.parse_args(argv)
 
@@ -345,6 +354,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     preaugs = [str(item).strip() for item in parse_csv_tokens(args.preaugs)]
     context_lengths = [int(item) for item in parse_csv_tokens(args.context_lengths, cast=int)]
     learning_rates = [float(item) for item in parse_csv_tokens(args.learning_rates, cast=float)]
+    seeds = [int(item) for item in parse_csv_tokens(args.seeds, cast=int)]
     configs = iter_sweep_configs(
         symbols=symbols,
         preaugs=preaugs,
@@ -354,6 +364,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         num_steps=int(args.num_steps),
         prediction_length=int(args.prediction_length),
         lora_r=int(args.lora_r),
+        seeds=seeds,
     )
     if not configs:
         raise SystemExit("No sweep configurations generated.")

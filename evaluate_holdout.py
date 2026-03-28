@@ -54,30 +54,44 @@ def _mask_disallowed_shorts(
     return masked
 
 
+def _act_holdout(name: str) -> nn.Module:
+    if name == "relu_sq":
+        from pufferlib_market.train import _ReLUSq
+        return _ReLUSq()
+    if name == "gelu":
+        return nn.GELU()
+    return nn.ReLU()
+
+
 class TradingPolicy(nn.Module):
-    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256):
+    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256, activation: str = "relu"):
         super().__init__()
         self.encoder = nn.Sequential(
             nn.Linear(obs_size, hidden),
-            nn.ReLU(),
+            _act_holdout(activation),
             nn.Linear(hidden, hidden),
-            nn.ReLU(),
+            _act_holdout(activation),
             nn.Linear(hidden, hidden),
-            nn.ReLU(),
+            _act_holdout(activation),
         )
+        self.encoder_norm = nn.LayerNorm(hidden)
+        # Only applied if the checkpoint was trained with encoder_norm (set after load_state_dict).
+        self._use_encoder_norm = False
         self.actor = nn.Sequential(
             nn.Linear(hidden, hidden // 2),
-            nn.ReLU(),
+            _act_holdout(activation),
             nn.Linear(hidden // 2, num_actions),
         )
         self.critic = nn.Sequential(
             nn.Linear(hidden, hidden // 2),
-            nn.ReLU(),
+            _act_holdout(activation),
             nn.Linear(hidden // 2, 1),
         )
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         h = self.encoder(x)
+        if getattr(self, '_use_encoder_norm', False):
+            h = self.encoder_norm(h)
         return self.actor(h), self.critic(h).squeeze(-1)
 
 
@@ -163,13 +177,21 @@ def _infer_action_grid(
 
 
 def _infer_arch(state_dict: dict[str, torch.Tensor]) -> str:
-    if "input_proj.weight" in state_dict:
+    keys = set(state_dict.keys())
+    # GRU must come before resmlp: GRUTradingPolicy also has input_proj.weight
+    if any("gru." in k for k in keys):
+        return "gru"
+    # Transformer: has attn.in_proj_weight or sym_embed (symbol_proj also present)
+    if any(k.startswith("attn.") or k.startswith("sym_embed") or k.startswith("symbol_proj") for k in keys):
+        return "transformer"
+    if "input_proj.weight" in keys:
         return "resmlp"
-    if "encoder.0.weight" in state_dict:
+    if "encoder.0.weight" in keys:
         return "mlp"
+    # DepthRecurrence: has blocks.0.net.0.weight and shares block weights
+    if any(k.startswith("blocks.") for k in keys):
+        return "depth_recurrence"
     for key in state_dict:
-        if key.startswith(("input_proj.", "blocks.")):
-            return "resmlp"
         if key.startswith("encoder."):
             return "mlp"
     raise ValueError("Could not infer policy arch from checkpoint state_dict keys")
@@ -181,9 +203,19 @@ def _infer_hidden_size(state_dict: dict[str, torch.Tensor], *, arch: str) -> int
         if w is None or w.ndim != 2:
             raise ValueError("Checkpoint missing input_proj.weight for resmlp")
         return int(w.shape[0])
+    if arch == "transformer":
+        # TransformerTradingPolicy: mlp.0.weight shape is (hidden, attn_out_size)
+        w = state_dict.get("mlp.0.weight")
+        if w is not None and w.ndim == 2:
+            return int(w.shape[0])
+    if arch == "gru":
+        # GRUTradingPolicy: input_proj.weight shape is (hidden, obs_size)
+        w = state_dict.get("input_proj.weight")
+        if w is not None and w.ndim == 2:
+            return int(w.shape[0])
     w = state_dict.get("encoder.0.weight")
     if w is None or w.ndim != 2:
-        raise ValueError("Checkpoint missing encoder.0.weight for mlp")
+        raise ValueError(f"Checkpoint missing weight key for arch={arch}")
     return int(w.shape[0])
 
 
@@ -254,6 +286,8 @@ def main() -> None:
     parser.add_argument("--data-path", required=True, help="Path to MKTD .bin")
     parser.add_argument("--eval-hours", type=int, default=720, help="Window length in steps (default: 720h)")
     parser.add_argument("--n-windows", type=int, default=20)
+    parser.add_argument("--exhaustive", action="store_true",
+                        help="Evaluate ALL possible windows instead of sampling (overrides --n-windows)")
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--end-within-hours", type=int, default=None, help="Only sample windows ending within last N hours")
     parser.add_argument("--fee-rate", type=float, default=0.001)
@@ -270,6 +304,7 @@ def main() -> None:
     parser.add_argument("--shortable-symbols", type=str, default=None)
     parser.add_argument("--decision-lag", type=int, default=0)
     parser.add_argument("--deterministic", action="store_true", help="Argmax actions (recommended)")
+    parser.add_argument("--no-early-stop", action="store_true", help="Disable drawdown-vs-profit early exit (run full window)")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--out", type=str, default=None, help="Optional JSON output path")
     args = parser.parse_args()
@@ -292,7 +327,8 @@ def main() -> None:
 
     data = read_mktd(Path(args.data_path))
     num_symbols = data.num_symbols
-    obs_size = int(num_symbols) * 16 + 5 + int(num_symbols)
+    features_per_sym = int(data.features.shape[2])
+    obs_size = int(num_symbols) * features_per_sym + 5 + int(num_symbols)
     num_actions, alloc_bins, level_bins, max_offset_bps = _infer_action_grid(
         payload=payload,
         state_dict=state_dict,
@@ -300,14 +336,30 @@ def main() -> None:
     )
     per_symbol_actions = int(alloc_bins) * int(level_bins)
 
-    arch = _infer_arch(state_dict)
+    # Use arch stored in checkpoint (added in newer checkpoints) or infer from state_dict
+    stored_arch = payload.get("arch", "") if isinstance(payload, dict) else ""
+    arch = stored_arch if stored_arch else _infer_arch(state_dict)
     hidden = _infer_hidden_size(state_dict, arch=arch)
     if arch == "resmlp":
         num_blocks = _infer_resmlp_blocks(state_dict)
         policy = ResidualTradingPolicy(obs_size, num_actions, hidden=int(hidden), num_blocks=int(num_blocks)).to(device)
+    elif arch == "transformer":
+        from pufferlib_market.train import TransformerTradingPolicy
+        policy = TransformerTradingPolicy(obs_size, num_actions, hidden=int(hidden)).to(device)
+    elif arch == "gru":
+        from pufferlib_market.train import GRUTradingPolicy
+        policy = GRUTradingPolicy(obs_size, num_actions, hidden=int(hidden)).to(device)
+    elif arch == "depth_recurrence":
+        from pufferlib_market.train import DepthRecurrenceTradingPolicy
+        policy = DepthRecurrenceTradingPolicy(obs_size, num_actions, hidden=int(hidden)).to(device)
+    elif arch == "mlp_relu_sq":
+        policy = TradingPolicy(obs_size, num_actions, hidden=int(hidden), activation="relu_sq").to(device)
     else:
         policy = TradingPolicy(obs_size, num_actions, hidden=int(hidden)).to(device)
-    policy.load_state_dict(state_dict)
+    missing_keys, _ = policy.load_state_dict(state_dict, strict=False)
+    # Only apply encoder_norm if the checkpoint was trained with it.
+    if hasattr(policy, '_use_encoder_norm'):
+        policy._use_encoder_norm = "encoder_norm.weight" not in missing_keys
     policy.eval()
 
     shortable_mask = _build_shortable_mask(list(data.symbols), args.shortable_symbols)
@@ -364,8 +416,11 @@ def main() -> None:
     if candidate_starts.size <= 0:
         raise ValueError("No candidate windows (check --end-within-hours and --eval-hours)")
 
-    replace = bool(candidate_starts.size < n_windows)
-    starts = rng.choice(candidate_starts, size=n_windows, replace=replace)
+    if args.exhaustive:
+        starts = candidate_starts
+    else:
+        replace = bool(candidate_starts.size < n_windows)
+        starts = rng.choice(candidate_starts, size=n_windows, replace=replace)
 
     metrics: list[WindowMetric] = []
     for start_idx in starts.tolist():
@@ -383,6 +438,7 @@ def main() -> None:
             action_allocation_bins=int(alloc_bins),
             action_level_bins=int(level_bins),
             action_max_offset_bps=float(max_offset_bps),
+            enable_drawdown_profit_early_exit=not args.no_early_stop,
         )
         annualized_return = annualize_total_return(
             float(result.total_return),

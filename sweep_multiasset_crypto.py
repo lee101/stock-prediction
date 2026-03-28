@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
+import pandas as pd
 import torch
 
 from binancechronossolexperiment.data import ChronosSolDataModule, SplitConfig
@@ -17,8 +18,8 @@ from binanceneural.data import FeatureNormalizer
 from src.forecast_horizon_utils import resolve_required_forecast_horizons
 from unified_hourly_experiment.multiasset_policy import (
     MultiAssetConfig,
-    MultiAssetPolicy,
     DifferentiablePortfolioSim,
+    build_multiasset_policy,
 )
 
 REPO = Path(__file__).resolve().parents[1]
@@ -45,6 +46,7 @@ def load_checkpoint(ckpt_path: str, device: str = "cuda"):
         dropout=cfg.get("dropout", 0.3),
     )
     include_cash = cfg.get("include_cash", False)
+    from unified_hourly_experiment.multiasset_policy import MultiAssetPolicy
     model = MultiAssetPolicy(config, include_cash=include_cash)
     model.load_state_dict(ckpt["state_dict"])
     model = model.to(device).eval()

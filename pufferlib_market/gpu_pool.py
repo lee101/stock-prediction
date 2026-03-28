@@ -319,10 +319,39 @@ def _stocks15_tp05_sweep(seeds: list[int] = [123, 15, 36, 42, 7, 1, 2, 3, 5, 10]
     return [{**base, "seed": s, "description": f"s15_tp05_s{s}"} for s in seeds]
 
 
+def _stocks12_fidelity_longrun() -> list[dict]:
+    """Longer, higher-fidelity stocks12 runs around the current best seeds."""
+    base = {
+        "hidden_size": 1024,
+        "lr": 3e-4,
+        "anneal_lr": True,
+        "ent_coef": 0.05,
+        "weight_decay": 0.0,
+        "fill_slippage_bps": 0.0,
+        "num_envs": 128,
+        "use_bf16": False,
+        "no_tf32": True,
+        "no_cuda_graph": True,
+        "periods_per_year": 252.0,
+        "max_steps": 252,
+        "time_budget_override": 1800,
+    }
+    candidates = [
+        {"seed": 123, "trade_penalty": 0.05, "description": "stocks12_fidelity_tp05_s123"},
+        {"seed": 15, "trade_penalty": 0.05, "description": "stocks12_fidelity_tp05_s15"},
+        {"seed": 36, "trade_penalty": 0.05, "description": "stocks12_fidelity_tp05_s36"},
+        {"seed": 123, "trade_penalty": 0.10, "description": "stocks12_fidelity_tp10_s123"},
+        {"seed": 15, "trade_penalty": 0.10, "description": "stocks12_fidelity_tp10_s15"},
+        {"seed": 36, "trade_penalty": 0.10, "description": "stocks12_fidelity_tp10_s36"},
+    ]
+    return [{**base, **cfg} for cfg in candidates]
+
+
 PRESETS: dict[str, list[dict]] = {
     "stocks12_seedsweep": _stocks12_seedsweep(),
     "stocks12_seedsweep_ext": _stocks12_seedsweep_ext(),
     "stocks12_tp05_family": _stocks12_tp05_family(),
+    "stocks12_fidelity_longrun": _stocks12_fidelity_longrun(),
     "stocks15_tp05_sweep": _stocks15_tp05_sweep(),
     "crypto_seedsweep": _crypto_seedsweep(),
     "crypto70_autoresearch": _crypto70_autoresearch(),

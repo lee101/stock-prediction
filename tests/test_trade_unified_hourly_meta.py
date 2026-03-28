@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import types
 from types import SimpleNamespace
 
 import pytest
@@ -56,6 +57,39 @@ def test_apply_live_sizing_overrides_updates_live_globals() -> None:
                     delattr(live, name)
             else:
                 setattr(live, name, value)
+
+
+def test_resolve_owned_stock_symbols_filters_unowned_symbols_in_live_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_symbol_lock = types.ModuleType("unified_orchestrator.symbol_lock")
+    fake_symbol_lock.load_service_symbols = lambda service_name: ([], ["DBX", "ABEV"])
+    monkeypatch.setitem(sys.modules, "unified_orchestrator.symbol_lock", fake_symbol_lock)
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(live, "log_event", lambda event_type, **fields: events.append((event_type, fields)))
+
+    out = meta_mod.resolve_owned_stock_symbols(
+        ["DBX", "NVDA", "ABEV", "dbx"],
+        enforce_service_lock=True,
+    )
+
+    assert out == ["DBX", "ABEV"]
+    assert any(
+        event_type == "meta_symbol_ownership_filtered"
+        and fields.get("dropped_symbols") == ["NVDA"]
+        for event_type, fields in events
+    )
+
+
+def test_resolve_owned_stock_symbols_raises_when_live_symbols_unowned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_symbol_lock = types.ModuleType("unified_orchestrator.symbol_lock")
+    fake_symbol_lock.load_service_symbols = lambda service_name: ([], ["DBX"])
+    monkeypatch.setitem(sys.modules, "unified_orchestrator.symbol_lock", fake_symbol_lock)
+
+    with pytest.raises(ValueError, match="None of the requested stock symbols"):
+        meta_mod.resolve_owned_stock_symbols(["NVDA", "PLTR"], enforce_service_lock=True)
 
 
 @pytest.mark.parametrize(

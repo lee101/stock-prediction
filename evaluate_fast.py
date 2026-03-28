@@ -122,7 +122,7 @@ def _infer_resmlp_blocks(state_dict: dict) -> int:
 
 def _load_policy_for_eval(
     *,
-    payload: dict | nn.Module | dict[str, torch.Tensor],
+    payload: dict | dict[str, torch.Tensor],
     obs_size: int,
     num_symbols: int,
     arch: str,

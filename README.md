@@ -1,118 +1,81 @@
-# stock-prediction
-this is a collection of experiments training AI to trade.
+# Metrics Tooling Overview
 
-i reccomend you use my stats dashboard, forecasting platform and API [bitbank.nz](https://bitbank.nz) for cryptocurrency trading.
+This folder collects everything needed to capture, validate, and analyse
+metrics produced by the trading simulator.
 
+## Quick Start
 
-A production RL trading system for crypto and equities. The core loop is:
-fast C market environment + PPO policy training + Chronos2 time-series
-forecasting + live execution on Binance (FDUSD/USDT) and Alpaca (US stocks).
+Follow `docs/metrics_quickstart.md` for the full command-by-command
+walkthrough. The highlights:
 
-## Architecture
+1. Generate a stub or real run (`tools/mock_stub_run.py` or
+   `tools/run_with_metrics.py`).
+2. Summarise logs into `marketsimulatorresults.md`
+   (`tools/summarize_results.py`).
+3. Export the summaries to CSV (`tools/metrics_to_csv.py`).
 
-```
-Raw OHLCV data (Binance / Alpaca)
-        |
-        v
-  Binary export (export_data_*.py)
-        |
-        v
-  C market environment (pufferlib_market/market_env.c)
-        |
-        v
-  PPO training (pufferlib_market/train.py)
-        |
-        v
-  Evaluate OOS (pufferlib_market/evaluate.py)
-        |
-        v
-  Deploy (trade_execution_listener.py / binan/)
-```
-
-Chronos2 LoRA forecasts feed in as additional features at inference time
-(see `forecast_cache_lookup.py`, `retrain_chronos2_hourly_loras.py`).
-
-Remote GPU training dispatches to RunPod pods and stores checkpoints in
-Cloudflare R2 (see `src/remote_training_pipeline.py`,
-`scripts/dispatch_rl_training.py`).
-
-## Quick start
-
-```bash
-git clone <repo>
-cd stock-prediction
-source .venv313/bin/activate
-python -m pytest tests/ -x -q
-```
-
-Python 3.13 is the primary version. The `.venv313` environment should be
-pre-populated. To rebuild it:
-
-```bash
-uv venv .venv313 --python 3.13
-source .venv313/bin/activate
-uv pip install -e ".[dev]"
-```
-
-GPU (CUDA 12.8) is required for training. CPU-only runs work for unit tests
-and backtests.
-
-## Key scripts
+## Core Utilities
 
 | Script | Purpose |
-|--------|---------|
-| `export_data_hourly_price.py` | Export hourly OHLCV to `.bin` for RL training |
-| `export_data_daily.py` | Export daily OHLCV to `.bin` |
-| `pufferlib_market/train.py` | Train PPO policy on the C market env |
-| `pufferlib_market/evaluate.py` | Evaluate a checkpoint OOS |
-| `pufferlib_market/autoresearch_rl.py` | Automated hyperparameter sweep with OOS eval |
-| `retrain_chronos2_hourly_loras.py` | Retrain Chronos2 LoRA adapters per symbol |
-| `run_crypto_lora_batch.py` | Batch LoRA evaluation across symbols |
-| `forecast_cache_lookup.py` | Disk-cached Chronos2 inference |
-| `trade_execution_listener.py` | Live trade execution loop |
-| `binan/binance_wrapper.py` | Binance API wrapper (FDUSD + USDT pairs) |
-| `scripts/dispatch_rl_training.py` | Dispatch training jobs to RunPod |
-| `src/remote_training_pipeline.py` | Remote training pipeline (R2 storage) |
-| `smart_test_runner.py` | Change-aware test runner |
+| --- | --- |
+| `tools/mock_stub_run.py` | Creates synthetic log/summary pairs for fast smoke tests. |
+| `tools/run_with_metrics.py` | Wraps `python -m marketsimulator.run_trade_loop …` and captures both log and summary JSON. |
+| `tools/summarize_results.py` | Sweeps matching logs and regenerates `marketsimulatorresults.md`. |
+| `tools/metrics_to_csv.py` | Builds a CSV table from JSON summaries for downstream analysis. |
+| `tools/check_metrics.py` | Validates summaries against `schema/metrics_summary.schema.json`. |
+| `scripts/metrics_smoke.sh` | End-to-end CI smoke test (mock → summary → CSV). |
 
-## C environment
+## Validation
 
-The market simulator is written in C for speed:
+To ensure every summary file is well-formed:
 
 ```bash
-cd pufferlib_market
-python setup.py build_ext --inplace
+python tools/check_metrics.py --glob 'runs/*_summary.json'
 ```
 
-This must be compiled with `.venv313` active.
+The underlying schema lives at `schema/metrics_summary.schema.json`.
 
-## Remote training
+## Troubleshooting
 
-Training jobs can be dispatched to RunPod GPU pods:
+- **No logs found** – Verify the run wrote `*.log` files to the directory
+  you pass to the summariser. For mock runs, re-run
+  `tools/mock_stub_run.py`.
+- **Invalid JSON** – Run `tools/check_metrics.py` to pinpoint the field.
+  Regenerate the summary with `run_with_metrics.py` if necessary.
+- **CSV missing fields** – Ensure the summaries include the metrics you
+  expect (`return`, `sharpe`, `pnl`, `balance`). The validator will warn
+  if any required fields are absent.
+- **CI smoke test failures** – Run
+  `scripts/metrics_smoke.sh runs/local-smoke` locally to reproduce.
+
+## Simulator Stub Status
+
+The in-process stub mode inside `marketsimulator/run_trade_loop.py` is
+still pending until we can safely short-circuit the simulator’s
+configuration loading. All tooling above will continue to work with the
+stub generator or with real simulator runs once available.
+
+## Make targets
+
+The repository now provides convenience targets:
 
 ```bash
-python scripts/dispatch_rl_training.py --config <config>
+make stub-run           # generate a stub log/summary
+make summarize          # rebuild marketsimulatorresults.md
+make metrics-csv        # export CSV from summaries
+make metrics-check      # validate summaries
+make smoke              # run the mock-based smoke test
 ```
 
-Checkpoints are synced to Cloudflare R2. See `CONTRIBUTING.md` for the
-SSH `StrictHostKeyChecking=no` rationale.
+Use the `RUN_DIR`/`SUMMARY_GLOB`/`LOG_GLOB` variables to customise locations, e.g. `make RUN_DIR=runs/experiment summarize`.
 
-## Testing
+### Environment overrides
+
+Most scripts honour the Make variables below. Override them on demand:
 
 ```bash
-# Unit tests (fast, no GPU needed)
-python -m pytest tests/ -x -q -k "not slow" --ignore=tests/integration
-
-# Full suite (requires self-hosted GPU runner)
-python -m pytest tests/ -x -q
+make RUN_DIR=runs/my-test summarize
+make SUMMARY_GLOB='runs/my-test/*_summary.json' metrics-check
 ```
 
-## Requirements
-
-- Python 3.13 (`.venv313`)
-- CUDA 12.8 for GPU training
-- `uv` for package management (`uv pip install`, never plain `pip`)
-
-## License
-
-MIT. See [LICENSE](LICENSE).
+For more detailed failure scenarios, see `docs/metrics_troubleshooting.md`.
