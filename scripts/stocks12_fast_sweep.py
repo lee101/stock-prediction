@@ -319,10 +319,13 @@ def main():
         for seed in finished_screen:
             del running[seed]
 
-        # Launch full training for qualified seeds
-        for seed in list(qualified):
+        # Launch full training for qualified seeds (respecting gpu_slots to avoid OOM)
+        for seed in sorted(qualified):
             if seed in done or seed in running_full:
                 continue
+            total_active = len(running) + len(running_full)
+            if total_active >= args.gpu_slots:
+                break  # Wait for a slot to open before launching more full training
             ckpt_dir = ckpt_root / f"{args.run_tag}_s{seed}"
             screen_best = ckpt_dir / "screen_best.pt"
             remaining_steps = args.full_steps - args.screen_steps
