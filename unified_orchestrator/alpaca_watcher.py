@@ -125,14 +125,21 @@ class AlpacaCryptoWatcher(threading.Thread):
 
             # Check if buy order filled (was submitted but no longer open)
             if pair.buy_order_id and pair.buy_order_id not in open_ids:
-                # Verify it actually filled by checking positions
-                if self._check_position_exists(sym):
-                    logger.info(f"Watcher: {sym} buy filled @ ${pair.buy_price:.2f}")
+                position_qty = self._get_position_qty(sym)
+                if position_qty is None:
+                    logger.warning(
+                        f"Watcher: {sym} buy order {pair.buy_order_id} disappeared, "
+                        "but position state is unavailable; deferring resolution"
+                    )
+                    continue
+                if position_qty > 0.0:
+                    fill_qty = float(position_qty)
+                    logger.info(f"Watcher: {sym} buy filled @ ${pair.buy_price:.2f} qty={fill_qty:.8f}")
                     self.fill_log.append({
                         "symbol": sym, "side": "buy", "price": pair.buy_price,
-                        "qty": pair.target_qty, "oscillation": pair.oscillations,
+                        "qty": fill_qty, "oscillation": pair.oscillations,
                     })
-                    pair.current_qty = pair.target_qty
+                    pair.current_qty = fill_qty
                     pair.buy_order_id = None
                     self._on_buy_fill(pair)
                 else:
@@ -141,7 +148,14 @@ class AlpacaCryptoWatcher(threading.Thread):
 
             # Check if sell order filled (skip if just placed by _on_buy_fill above)
             elif pair.sell_order_id and pair.sell_order_id not in open_ids:
-                if not self._check_position_exists(sym):
+                position_qty = self._get_position_qty(sym)
+                if position_qty is None:
+                    logger.warning(
+                        f"Watcher: {sym} sell order {pair.sell_order_id} disappeared, "
+                        "but position state is unavailable; deferring resolution"
+                    )
+                    continue
+                if position_qty <= 0.0:
                     logger.info(f"Watcher: {sym} sell filled @ ${pair.sell_price:.2f}")
                     self.fill_log.append({
                         "symbol": sym, "side": "sell", "price": pair.sell_price,
@@ -152,7 +166,12 @@ class AlpacaCryptoWatcher(threading.Thread):
                     pair.oscillations += 1
                     self._on_sell_fill(pair)
                 else:
-                    # Still has position — sell not filled yet, might have been canceled
+                    # Still has position — sell not fully filled, or it was canceled externally.
+                    if pair.current_qty > 0.0 and position_qty < pair.current_qty:
+                        logger.info(
+                            f"Watcher: {sym} partial sell detected, remaining qty={position_qty:.8f}"
+                        )
+                        pair.current_qty = float(position_qty)
                     pair.sell_order_id = None
 
     def _check_position_exists(self, symbol: str) -> bool:
@@ -162,16 +181,27 @@ class AlpacaCryptoWatcher(threading.Thread):
         False conservatively (do not assume a position exists) and logs the
         error so it is visible in production logs.
         """
+        qty = self._get_position_qty(symbol)
+        return bool(qty and qty > 0.0)
+
+    def _get_position_qty(self, symbol: str) -> float | None:
+        """Return current held quantity for a symbol.
+
+        Returns:
+            float: Current quantity, or ``0.0`` when no position exists.
+            None: Position state could not be determined due to an API error.
+        """
         try:
             positions = self.alpaca.get_all_positions()
             for pos in positions:
                 sym_norm = str(pos.symbol).replace("/", "")
-                if sym_norm == symbol and float(pos.qty) > 0:
-                    return True
+                if sym_norm == symbol:
+                    qty = float(pos.qty)
+                    return qty if qty > 0.0 else 0.0
         except Exception as e:
-            # FIX: was silently swallowed — log so errors surface in production
-            logger.warning(f"Watcher: _check_position_exists({symbol}) API error: {e}")
-        return False
+            logger.warning(f"Watcher: _get_position_qty({symbol}) API error: {e}")
+            return None
+        return 0.0
 
     def _on_buy_fill(self, pair: OrderPair) -> None:
         """React to a buy fill: place the TP sell order."""

@@ -12,11 +12,12 @@ from typing import Dict, List, Tuple
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Dataset
 
 from binancechronossolexperiment.data import ChronosSolDataModule, SplitConfig
-from binanceneural.data import FeatureNormalizer
+from binanceneural.data import FeatureNormalizer, build_default_feature_columns
 from src.forecast_horizon_utils import resolve_required_forecast_horizons
 from unified_hourly_experiment.multiasset_policy import (
     MultiAssetConfig,
@@ -69,6 +70,7 @@ def load_crypto_data(
 ) -> Tuple[Dict, Dict, List[str], FeatureNormalizer]:
     """Load multiple crypto symbols, align timestamps, return train/val splits."""
     forecast_horizons = (1,)
+    feature_columns = None
     frames = {}
 
     for sym in symbols:
@@ -89,6 +91,11 @@ def load_crypto_data(
                 max_history_days=max_history_days,
             )
             frames[sym] = dm.full_frame
+            if feature_columns is None:
+                feature_columns = list(dm.normalizer.mean.shape[0] * [None])
+                feature_columns = [c for c in dm.train_frame.columns
+                                   if c not in ("timestamp", "symbol", "open", "high", "low", "close",
+                                                "volume", "reference_close") and not c.startswith("predicted_")]
             print(f"loaded {sym}: {len(dm.full_frame)} rows")
         except Exception as e:
             print(f"SKIP {sym}: {e}")
@@ -105,6 +112,7 @@ def load_crypto_data(
     all_symbols = list(frames.keys())
     # fit normalizer on first 85% of common timestamps
     split_idx = int(len(common_ts) * 0.85)
+    train_ts = set(common_ts[:split_idx])
 
     # collect feature columns from first symbol
     first_sym = all_symbols[0]
@@ -223,6 +231,8 @@ class MultiAssetCryptoTrainer:
         for t in range(horizon):
             alloc_raw, _ = model(features, portfolio_state)
             allocations_full.append(alloc_raw)
+            # strip cash slot for portfolio state update
+            alloc_assets = alloc_raw[:, :num_assets] if include_cash else alloc_raw
             portfolio_state = portfolio_state * (1 + returns[:, t])
             portfolio_state = portfolio_state / (portfolio_state.sum(dim=-1, keepdim=True) + 1e-8)
 

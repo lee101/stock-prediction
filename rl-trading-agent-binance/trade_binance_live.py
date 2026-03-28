@@ -789,8 +789,12 @@ def _matching_open_orders(open_orders: list[dict], symbol: str, side: str) -> li
 
 
 def _binance_error_code(exc: Exception) -> int | None:
-    if hasattr(exc, "code"):
-        return int(exc.code)
+    code = getattr(exc, "code", None)
+    if code is not None:
+        try:
+            return int(code)
+        except (TypeError, ValueError):
+            pass
     m = re.search(r"APIError\(code=(-?\d+)\)", str(exc))
     return int(m.group(1)) if m else None
 
@@ -833,6 +837,7 @@ def _dedupe_side_orders(
             continue
         if dry_run:
             logger.info(f"    [DRY RUN] Would cancel order {order_id}")
+            cancelled.append(order)
             continue
         try:
             _cancel_open_order(execution_mode, symbol, int(order_id))

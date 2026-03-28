@@ -31,19 +31,23 @@ def _default_run_id() -> str:
 
 
 def _build_rsync_cmd(remote_host: str, remote_dir: str) -> list[str]:
-    cmd = [
-        "rsync",
-        "-az",
-        "-e",
-        "ssh -o StrictHostKeyChecking=no",
+    sync_items = [
         "scripts/",
         "src/",
         "pufferlib_market/",
         "binanceneural/",
         "preaug/",
         "chronos2_trainer.py",
-        "AGENTS.md",
         "docs/",
+    ]
+    if (REPO / "AGENTS.md").exists():
+        sync_items.append("AGENTS.md")
+    cmd = [
+        "rsync",
+        "-az",
+        "-e",
+        "ssh -S none -o ControlMaster=no -o StrictHostKeyChecking=no",
+        *sync_items,
         f"{remote_host}:{remote_dir}/",
     ]
     return cmd
@@ -155,7 +159,7 @@ print(json.dumps({{"earliest_common": earliest, "latest_common": latest}}))
 PY
 """
     result = subprocess.run(
-        ["ssh", "-o", "StrictHostKeyChecking=no", remote_host, snippet],
+        ["ssh", "-S", "none", "-o", "ControlMaster=no", "-o", "StrictHostKeyChecking=no", remote_host, snippet],
         text=True,
         capture_output=True,
         check=True,
@@ -278,7 +282,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         pipeline_script=pipeline_script,
     )
     launch = subprocess.run(
-        ["ssh", "-o", "StrictHostKeyChecking=no", str(args.remote_host)],
+        ["ssh", "-S", "none", "-o", "ControlMaster=no", "-o", "StrictHostKeyChecking=no", str(args.remote_host)],
         input=bootstrap,
         text=True,
         capture_output=True,

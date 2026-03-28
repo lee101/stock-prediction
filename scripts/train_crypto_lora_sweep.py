@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import time
 from dataclasses import dataclass, asdict
@@ -35,6 +36,7 @@ class TrainConfig:
     preaug: str = "percent_change"
     val_hours: int = 168
     test_hours: int = 168
+    seed: int = 1337
     run_name_prefix: str | None = None
 
 
@@ -51,6 +53,32 @@ class ConsistencyMetrics:
 
     def consistency_score(self) -> float:
         return self.mae_percent_mean + 0.5 * self.mae_percent_std + 0.3 * (self.mae_percent_max - self.mae_percent_mean)
+
+
+def _make_trainer_config(trainer_config_cls: type[Any], **kwargs: Any) -> Any:
+    """Instantiate TrainerConfig while tolerating older compatibility shims.
+
+    Some tests and legacy adapters inject a reduced TrainerConfig dataclass that
+    intentionally omits newer fields like ``seed``. Filter unsupported keyword
+    arguments when the constructor has an explicit signature, but still pass
+    everything through for implementations that already accept ``**kwargs``.
+    """
+    try:
+        parameters = inspect.signature(trainer_config_cls).parameters
+    except (TypeError, ValueError):
+        return trainer_config_cls(**kwargs)
+
+    if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values()):
+        return trainer_config_cls(**kwargs)
+
+    accepted = {
+        name
+        for name, param in parameters.items()
+        if name != "self"
+        and param.kind in {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+    }
+    filtered_kwargs = {key: value for key, value in kwargs.items() if key in accepted}
+    return trainer_config_cls(**filtered_kwargs)
 
 
 def resolve_data_path(symbol: str, data_root: Path) -> Path:
@@ -190,16 +218,17 @@ def train_and_evaluate(cfg: TrainConfig, data_path: Path, output_root: Path) -> 
     if cfg.run_name_prefix:
         run_name = (
             f"{cfg.run_name_prefix}_{cfg.symbol}_lora_{cfg.preaug}_ctx{cfg.context_length}_"
-            f"lr{cfg.learning_rate:.0e}_r{cfg.lora_r}_{time.strftime('%Y%m%d_%H%M%S')}"
+            f"lr{cfg.learning_rate:.0e}_r{cfg.lora_r}_s{cfg.seed}_{time.strftime('%Y%m%d_%H%M%S')}"
         )
     else:
         run_name = (
             f"{cfg.symbol}_lora_{cfg.preaug}_ctx{cfg.context_length}_"
-            f"lr{cfg.learning_rate:.0e}_r{cfg.lora_r}_{time.strftime('%Y%m%d_%H%M%S')}"
+            f"lr{cfg.learning_rate:.0e}_r{cfg.lora_r}_s{cfg.seed}_{time.strftime('%Y%m%d_%H%M%S')}"
         )
     output_dir = output_root / run_name
 
-    trainer_cfg = TrainerConfig(
+    trainer_cfg = _make_trainer_config(
+        TrainerConfig,
         symbol=cfg.symbol,
         data_root=data_path.parent,
         output_root=output_root,
@@ -214,6 +243,7 @@ def train_and_evaluate(cfg: TrainConfig, data_path: Path, output_root: Path) -> 
         lora_dropout=cfg.lora_dropout,
         lora_targets=("q", "k", "v", "o"),
         merge_lora=True,
+        seed=cfg.seed,
     )
 
     finetuned = _fit_pipeline(pipeline, train_inputs, val_inputs, trainer_cfg, output_dir)
@@ -252,6 +282,7 @@ def main():
     parser.add_argument("--num-steps", type=int, default=1000)
     parser.add_argument("--lora-r", type=int, default=16)
     parser.add_argument("--preaug", type=str, default="percent_change")
+    parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument(
         "--run-prefix",
         type=str,
@@ -276,6 +307,7 @@ def main():
         num_steps=args.num_steps,
         lora_r=args.lora_r,
         preaug=args.preaug,
+        seed=int(args.seed),
         run_name_prefix=(str(args.run_prefix).strip() or None) if args.run_prefix else None,
     )
 

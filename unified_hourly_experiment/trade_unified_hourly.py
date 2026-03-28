@@ -46,9 +46,10 @@ from src.hourly_trader_utils import (
 LONG_ONLY = set(DEFAULT_LONG_ONLY_STOCKS)
 SHORT_ONLY = set(DEFAULT_SHORT_ONLY_STOCKS)
 
-STATE_FILE = Path("strategy_state/stock_portfolio_state.json")
-TRADE_LOG = Path("strategy_state/stock_trade_log.jsonl")
-EVENT_LOG = Path("strategy_state/stock_event_log.jsonl")
+STATE_DIR = Path(os.environ.get("STATE_DIR", "strategy_state")).expanduser()
+STATE_FILE = STATE_DIR / "stock_portfolio_state.json"
+TRADE_LOG = STATE_DIR / "stock_trade_log.jsonl"
+EVENT_LOG = STATE_DIR / "stock_event_log.jsonl"
 MAX_HOLD_HOURS = 6
 MAX_POSITIONS = 10
 TRADE_AMOUNT_SCALE = 100.0
@@ -251,6 +252,10 @@ def _serialize_orders_by_symbol(orders_by_symbol: dict[str, list]) -> dict[str, 
     }
 
 
+def _normalize_live_symbol(symbol: object) -> str:
+    return str(symbol or "").replace("/", "").replace("-", "").replace("_", "").strip().upper()
+
+
 def _tracked_state_summary(state: dict[str, Any]) -> dict[str, Any]:
     tracked = state.get("positions", {})
     broker_cursor = state.get("broker_event_cursor", {})
@@ -436,8 +441,11 @@ def get_current_positions(api) -> Dict[str, dict]:
     positions = {}
     try:
         for pos in api.get_all_positions():
+            symbol = _normalize_live_symbol(getattr(pos, "symbol", ""))
+            if not symbol:
+                continue
             avg_entry_price = _positive_float(getattr(pos, "avg_entry_price", None))
-            positions[pos.symbol] = {
+            positions[symbol] = {
                 "qty": float(pos.qty),
                 "price": float(pos.current_price),
                 "avg_entry_price": float(avg_entry_price) if avg_entry_price is not None else None,
@@ -478,7 +486,9 @@ def get_open_orders(api) -> Dict[str, list]:
         request = GetOrdersRequest(status=QueryOrderStatus.OPEN)
         orders = api.get_orders(request)
         for o in orders:
-            sym = o.symbol
+            sym = _normalize_live_symbol(getattr(o, "symbol", ""))
+            if not sym:
+                continue
             if sym not in orders_by_symbol:
                 orders_by_symbol[sym] = []
             orders_by_symbol[sym].append(o)
@@ -931,6 +941,21 @@ def _equity_notional(qty: float, price: float) -> float:
         return 0.0
 
 
+def _order_time_in_force_for_qty(symbol: str, qty: float, TimeInForce):
+    if is_crypto_symbol(symbol):
+        return TimeInForce.GTC
+    return TimeInForce.DAY if _is_fractional_quantity(qty) else TimeInForce.GTC
+
+
+def _is_substantial_live_position(symbol: str, qty: float, current_price: float) -> bool:
+    abs_qty = abs(float(qty))
+    if abs_qty <= 0:
+        return False
+    if is_crypto_symbol(symbol):
+        return abs_qty >= 1e-8 and _equity_notional(abs_qty, float(current_price)) >= 1.0
+    return abs_qty >= 1.0 or _equity_notional(abs_qty, float(current_price)) >= 1.0
+
+
 def cancel_symbol_orders(api, symbol: str, orders_by_symbol: Dict):
     for order in orders_by_symbol.get(symbol, []):
         try:
@@ -963,7 +988,7 @@ def place_exit_order(api, symbol: str, qty: float, sell_price: float, side: str 
         )
         return None
     order_qty = float(abs_qty) if _is_fractional_quantity(abs_qty) else int(abs_qty)
-    time_in_force = TimeInForce.DAY if isinstance(order_qty, float) else TimeInForce.GTC
+    time_in_force = _order_time_in_force_for_qty(symbol, order_qty, TimeInForce)
 
     try:
         order = LimitOrderRequest(
@@ -1034,12 +1059,13 @@ def force_close_position(api, symbol: str, qty: float, current_price: float = 0)
         else:
             price = round(current_price * 1.003, 2)
         order_qty = float(abs_qty) if _is_fractional_quantity(abs_qty) else int(abs_qty)
+        time_in_force = _order_time_in_force_for_qty(symbol, order_qty, TimeInForce)
         order = LimitOrderRequest(
             symbol=symbol,
             qty=order_qty,
             side=side,
             limit_price=price,
-            time_in_force=TimeInForce.DAY,
+            time_in_force=time_in_force,
         )
         log_event(
             "force_close_submit_requested",
@@ -1048,6 +1074,7 @@ def force_close_position(api, symbol: str, qty: float, current_price: float = 0)
             side=_normalize_order_side(side),
             limit_price=price,
             current_price=float(current_price),
+            time_in_force="day" if time_in_force == TimeInForce.DAY else "gtc",
         )
         result = api.submit_order(order)
         logger.info("{}: force-close limit {} shares @ ${:.2f} (cur=${:.2f})", symbol, order_qty, price, current_price)
@@ -1115,7 +1142,11 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
             pending_entry_qty = abs(float(info.get("qty", 0.0) or 0.0))
             pending_entry_price = info.get("entry_price")
             pending_entry_side = "sell" if str(info.get("side", "")).lower() == "short" else "buy"
-            if pending_entry_qty >= 1.0 and pending_entry_price and orders_by_symbol.get(symbol):
+            if (
+                pending_entry_price
+                and _is_substantial_live_position(symbol, pending_entry_qty, float(pending_entry_price))
+                and orders_by_symbol.get(symbol)
+            ):
                 reconcile_result = _reconcile_entry_orders(
                     api,
                     symbol=symbol,
@@ -1301,9 +1332,7 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
         qty = pos_data.get("qty", 0) if isinstance(pos_data, dict) else 0
         cur_price = pos_data.get("price", 0) if isinstance(pos_data, dict) else 0
         abs_qty = abs(float(qty))
-        should_force_close_untracked = abs_qty >= 1
-        if not should_force_close_untracked and not is_crypto_symbol(symbol):
-            should_force_close_untracked = _equity_notional(abs_qty, cur_price) >= 1.0
+        should_force_close_untracked = _is_substantial_live_position(symbol, abs_qty, cur_price)
         if symbol not in tracked and should_force_close_untracked and symbol not in pending_close:
             if active_symbols and symbol not in active_symbols:
                 logger.info("{}: untracked position not in active set ({} shares), force closing", symbol, qty)
@@ -1324,7 +1353,7 @@ def manage_positions(api, state: dict, max_hold_hours: int = MAX_HOLD_HOURS,
             pq = positions[s].get("qty", 0) if isinstance(positions[s], dict) else float(positions[s])
             pq_cur_price = positions[s].get("price", 0) if isinstance(positions[s], dict) else 0
             abs_pq = abs(float(pq))
-            is_substantial = abs_pq >= 1 or (not is_crypto_symbol(s) and _equity_notional(abs_pq, float(pq_cur_price)) >= 1.0)
+            is_substantial = _is_substantial_live_position(s, abs_pq, float(pq_cur_price))
             if is_substantial:
                 still_pending.append(s)
                 # If untracked and no exit order exists, the previous close attempt expired or failed.
@@ -1473,9 +1502,17 @@ def execute_trades(
             log_event("entry_skipped", symbol=symbol, reason="already_tracked")
             continue
 
-        live_qty = float(positions.get(symbol, {}).get("qty", 0.0) or 0.0)
-        if abs(live_qty) >= 1.0:
-            log_event("entry_skipped", symbol=symbol, reason="live_position_already_open", live_qty=float(live_qty))
+        live_pos = positions.get(symbol, {})
+        live_qty = float(live_pos.get("qty", 0.0) or 0.0)
+        live_price = float(live_pos.get("price", 0.0) or 0.0)
+        if _is_substantial_live_position(symbol, abs(live_qty), live_price):
+            log_event(
+                "entry_skipped",
+                symbol=symbol,
+                reason="live_position_already_open",
+                live_qty=float(live_qty),
+                live_price=float(live_price),
+            )
             continue
 
         buy_price = action.get("buy_price", 0)
@@ -1633,8 +1670,10 @@ def execute_trades(
     selected_by_symbol = {candidate["symbol"]: candidate for candidate in entry_candidates}
     reconcile_symbols = set(open_orders_by_symbol) | set(selected_by_symbol) | set(tracked)
     for symbol in sorted(reconcile_symbols):
-        live_qty = float(positions.get(symbol, {}).get("qty", 0.0) or 0.0)
-        if abs(live_qty) >= 1.0:
+        live_pos = positions.get(symbol, {})
+        live_qty = float(live_pos.get("qty", 0.0) or 0.0)
+        live_price = float(live_pos.get("price", 0.0) or 0.0)
+        if _is_substantial_live_position(symbol, abs(live_qty), live_price):
             if symbol in tracked:
                 _reconcile_position_orders(
                     api,

@@ -47,6 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-outputs", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=0.06)
+    parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--return-weight", type=float, default=0.15)
     parser.add_argument("--smoothness-penalty", type=float, default=0.0)
     parser.add_argument("--maker-fee", type=float, default=0.001)
@@ -96,6 +97,7 @@ def main() -> None:
         sequence_length=args.sequence_length,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
+        grad_clip=args.grad_clip,
         transformer_dim=args.hidden_dim,
         transformer_layers=args.num_layers,
         transformer_heads=args.num_heads,
@@ -128,6 +130,8 @@ def main() -> None:
     trainer = JaxClassicTrainer(train_cfg, data_module)
     artifacts = trainer.train()
     print(f"Best checkpoint: {artifacts.best_checkpoint}")
+    if artifacts.stop_reason:
+        print(artifacts.stop_reason)
     if artifacts.history:
         best = max(artifacts.history, key=lambda item: item.val_score or float('-inf'))
         print(

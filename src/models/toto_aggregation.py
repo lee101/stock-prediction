@@ -54,6 +54,10 @@ _DEFAULT_METHODS = {
 }
 
 
+def _float64_dtype(numpy_mod: ModuleType) -> Any:
+    return getattr(numpy_mod, "float64", float)
+
+
 def aggregate_with_spec(samples: Iterable[float] | NDArray, method: str) -> NDArray:
     """
     Aggregate Toto sample trajectories according to ``method``.
@@ -87,7 +91,7 @@ def aggregate_with_spec(samples: Iterable[float] | NDArray, method: str) -> NDAr
 
     if method in _DEFAULT_METHODS:
         if method == "mean":
-            return matrix.mean(axis=0, dtype=numpy_mod.float64)
+            return matrix.mean(axis=0, dtype=_float64_dtype(numpy_mod))
         if method == "median":
             return numpy_mod.median(matrix, axis=0)
         if method == "p10":
@@ -104,14 +108,14 @@ def aggregate_with_spec(samples: Iterable[float] | NDArray, method: str) -> NDAr
         sorted_matrix = numpy_mod.sort(matrix, axis=0)
         total = sorted_matrix.shape[0]
         cutoff = max(1, int(total * (1.0 - fraction)))
-        return sorted_matrix[:cutoff].mean(axis=0, dtype=numpy_mod.float64)
+        return sorted_matrix[:cutoff].mean(axis=0, dtype=_float64_dtype(numpy_mod))
 
     if method.startswith("upper_trimmed_mean_"):
         fraction = _parse_fraction(method.split("_")[-1])
         sorted_matrix = numpy_mod.sort(matrix, axis=0)
         total = sorted_matrix.shape[0]
         start = min(total - 1, int(total * fraction))
-        return sorted_matrix[start:].mean(axis=0, dtype=numpy_mod.float64)
+        return sorted_matrix[start:].mean(axis=0, dtype=_float64_dtype(numpy_mod))
 
     if method.startswith("quantile_"):
         quantile = _parse_fraction(method.split("_")[-1])
@@ -119,14 +123,14 @@ def aggregate_with_spec(samples: Iterable[float] | NDArray, method: str) -> NDAr
 
     if method.startswith("mean_minus_std_"):
         factor = _parse_float(method.split("_")[-1], "mean_minus_std")
-        mean = matrix.mean(axis=0, dtype=numpy_mod.float64)
-        std = matrix.std(axis=0, dtype=numpy_mod.float64)
+        mean = matrix.mean(axis=0, dtype=_float64_dtype(numpy_mod))
+        std = matrix.std(axis=0, dtype=_float64_dtype(numpy_mod))
         return mean - factor * std
 
     if method.startswith("mean_plus_std_"):
         factor = _parse_float(method.split("_")[-1], "mean_plus_std")
-        mean = matrix.mean(axis=0, dtype=numpy_mod.float64)
-        std = matrix.std(axis=0, dtype=numpy_mod.float64)
+        mean = matrix.mean(axis=0, dtype=_float64_dtype(numpy_mod))
+        std = matrix.std(axis=0, dtype=_float64_dtype(numpy_mod))
         return mean + factor * std
 
     if method.startswith("mean_quantile_mix_"):
@@ -135,7 +139,7 @@ def aggregate_with_spec(samples: Iterable[float] | NDArray, method: str) -> NDAr
             raise ValueError(f"Invalid mean_quantile_mix specifier: '{method}'")
         quantile = _parse_fraction(parts[-2])
         mean_weight = numpy_mod.clip(_parse_float(parts[-1], "mean_quantile_mix"), 0.0, 1.0)
-        mean_val = matrix.mean(axis=0, dtype=numpy_mod.float64)
+        mean_val = matrix.mean(axis=0, dtype=_float64_dtype(numpy_mod))
         quant_val = numpy_mod.quantile(matrix, quantile, axis=0)
         return mean_weight * mean_val + (1.0 - mean_weight) * quant_val
 
@@ -163,7 +167,7 @@ def aggregate_quantile_plus_std(
     quantile = _validate_fraction(quantile, "quantile")
     std_scale = float(std_scale)
     quant_val = numpy_mod.quantile(matrix, quantile, axis=0)
-    std = matrix.std(axis=0, dtype=numpy_mod.float64)
+    std = matrix.std(axis=0, dtype=_float64_dtype(numpy_mod))
     return quant_val + std_scale * std
 
 
@@ -174,7 +178,7 @@ def aggregate_quantile_plus_std(
 
 def _ensure_matrix(samples: Iterable[float] | NDArray) -> NDArray:
     numpy_mod = _require_numpy()
-    arr = numpy_mod.asarray(samples, dtype=numpy_mod.float64)
+    arr = numpy_mod.asarray(samples, dtype=_float64_dtype(numpy_mod))
     if arr.ndim == 0:
         raise ValueError("Samples must contain at least one element.")
 
@@ -209,9 +213,9 @@ def _trimmed_mean(matrix: NDArray, fraction: float) -> NDArray:
     trim = int(total * fraction)
 
     if trim == 0 or trim * 2 >= total:
-        return sorted_matrix.mean(axis=0, dtype=numpy_mod.float64)
+        return sorted_matrix.mean(axis=0, dtype=_float64_dtype(numpy_mod))
 
-    return sorted_matrix[trim : total - trim].mean(axis=0, dtype=numpy_mod.float64)
+    return sorted_matrix[trim : total - trim].mean(axis=0, dtype=_float64_dtype(numpy_mod))
 
 
 def _parse_fraction(token: str) -> float:

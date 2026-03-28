@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from pufferlibtraining.envs.stock_env import StockTradingEnv
 from pufferlibtraining2.config import load_plan
 from pufferlibtraining2.data.loader import load_asset_frames
 from pufferlibtraining2.envs.trading_env import make_vecenv
@@ -64,3 +65,29 @@ def test_make_vecenv_serial(tmp_path: Path) -> None:
     assert observations.shape[2] == len(plan.data.symbols)
     assert rewards.shape[0] == vecenv.num_agents
     assert not np.any(terminals)
+
+
+def test_stock_env_aligns_timezone_aware_dates() -> None:
+    dates = pd.date_range("2024-01-01", periods=40, freq="D", tz="UTC")
+    base = np.linspace(100, 120, len(dates), dtype=np.float32)
+    asset_frames = {
+        symbol: pd.DataFrame(
+            {
+                "date": dates,
+                "open": base,
+                "high": base + 1.0,
+                "low": base - 1.0,
+                "close": base + 0.25,
+                "volume": np.full(len(dates), 1_000_000, dtype=np.float32),
+            }
+        )
+        for symbol in ("AAPL", "MSFT")
+    }
+
+    env = StockTradingEnv(asset_frames=asset_frames, window_size=8)
+    observation, info = env.reset()
+
+    assert env.n_steps == len(dates)
+    assert observation.shape[0] == 8
+    assert observation.shape[1] == 2
+    assert info == {}

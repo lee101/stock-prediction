@@ -101,6 +101,28 @@ class TradeLog:
     direction: str = "long"
 
 
+@dataclass
+class EntrySizingContext:
+    timestamp: pd.Timestamp
+    signal_timestamp: pd.Timestamp
+    symbol: str
+    direction: str
+    score: float
+    fill_price: float
+    candidate_rank: int
+    candidate_count: int
+    slots_remaining: int
+    current_position_count: int
+    cash: float
+    base_equity: float
+    current_equity: float
+    market_breadth: float
+    hold_base_asset: bool
+    signal_bar: pd.Series
+    history: pd.DataFrame
+    execution_bar: Optional[pd.Series] = None
+
+
 def get_fee(symbol: str, config: WorkStealConfig) -> float:
     if symbol in FDUSD_SYMBOLS:
         return config.fdusd_fee
@@ -578,12 +600,145 @@ def _sell_all_base_asset(
     return float(cash + proceeds), 0.0
 
 
+def _compute_starting_equity(
+    config: WorkStealConfig,
+    current_bars: Dict[str, pd.Series],
+) -> float:
+    equity = float(config.initial_cash)
+    for symbol, quantity in (config.initial_holdings or {}).items():
+        if float(quantity) <= 0.0 or symbol not in current_bars:
+            continue
+        equity += float(quantity) * float(current_bars[symbol]["close"])
+    return equity
+
+
+def _seed_initial_holdings(
+    *,
+    date: pd.Timestamp,
+    current_bars: Dict[str, pd.Series],
+    config: WorkStealConfig,
+    positions: Dict[str, Position],
+    base_symbol: str | None,
+) -> float:
+    base_qty = 0.0
+    for symbol, quantity in (config.initial_holdings or {}).items():
+        qty = float(quantity)
+        if qty <= 0.0 or symbol not in current_bars:
+            continue
+        bar = current_bars[symbol]
+        price = float(bar["close"])
+        if price <= 0.0:
+            continue
+        if base_symbol is not None and symbol == base_symbol:
+            base_qty += qty
+            continue
+        positions[symbol] = Position(
+            symbol=symbol,
+            direction="long",
+            entry_price=price,
+            entry_date=date,
+            quantity=qty,
+            cost_basis=qty * price,
+            peak_price=float(bar["high"]),
+            target_exit_price=price * (1.0 + config.profit_target_pct),
+            stop_price=price * (1.0 - config.stop_loss_pct),
+            margin_borrowed=0.0,
+        )
+    return float(base_qty)
+
+
+def _compute_rebalance_keep_symbols(
+    *,
+    date: pd.Timestamp,
+    current_bars: Dict[str, pd.Series],
+    history: Dict[str, pd.DataFrame],
+    last_exit: Dict[str, pd.Timestamp],
+    config: WorkStealConfig,
+    base_symbol: str | None,
+) -> set[str]:
+    del date, history, last_exit
+    keep_symbols = {
+        str(symbol).upper()
+        for symbol, quantity in (config.initial_holdings or {}).items()
+        if float(quantity) > 0.0 and symbol in current_bars and symbol != base_symbol
+    }
+    return keep_symbols
+
+
+def _apply_seeded_rebalance(
+    *,
+    timestamp: pd.Timestamp,
+    current_prices: Dict[str, float],
+    positions: Dict[str, Position],
+    trades: List[TradeLog],
+    last_exit: Dict[str, pd.Timestamp],
+    cash: float,
+    config: WorkStealConfig,
+    keep_symbols: set[str],
+) -> float:
+    if not config.rebalance_seeded_positions:
+        return float(cash)
+    updated_cash = float(cash)
+    for symbol in list(positions):
+        if symbol in keep_symbols:
+            continue
+        position = positions.pop(symbol)
+        price = float(current_prices.get(symbol, position.entry_price))
+        fee_rate = get_fee(symbol, config)
+        proceeds = position.quantity * price * (1.0 - fee_rate)
+        pnl = proceeds - position.cost_basis
+        updated_cash += proceeds
+        trades.append(
+            TradeLog(
+                timestamp=timestamp,
+                symbol=symbol,
+                side="sell" if position.direction == "long" else "cover",
+                price=price,
+                quantity=position.quantity,
+                notional=position.quantity * price,
+                fee=position.quantity * price * fee_rate,
+                pnl=pnl,
+                reason="seeded_rebalance",
+                direction=position.direction,
+            )
+        )
+        last_exit[symbol] = timestamp
+    return float(updated_cash)
+
+
+def _execution_bar_for_signal(
+    intraday_bars: Optional[Dict[str, pd.DataFrame]],
+    symbol: str,
+    signal_timestamp: pd.Timestamp,
+) -> Optional[pd.Series]:
+    if not intraday_bars:
+        return None
+    frame = intraday_bars.get(symbol)
+    if frame is None or frame.empty or "timestamp" not in frame.columns:
+        return None
+    ts = pd.Timestamp(signal_timestamp)
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    else:
+        ts = ts.tz_convert("UTC")
+    next_ts = ts + pd.Timedelta(days=1)
+    hourly = frame.copy()
+    hourly["timestamp"] = pd.to_datetime(hourly["timestamp"], utc=True, errors="coerce")
+    hourly = hourly.dropna(subset=["timestamp"])
+    hourly = hourly[(hourly["timestamp"] >= ts) & (hourly["timestamp"] < next_ts)]
+    if hourly.empty:
+        return None
+    return hourly.sort_values("timestamp").iloc[0]
+
+
 def run_worksteal_backtest(
     all_bars: Dict[str, pd.DataFrame],
     config: WorkStealConfig,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     forecast_data: Optional[Dict] = None,
+    intraday_bars: Optional[Dict[str, pd.DataFrame]] = None,
+    allocation_scale_fn=None,
 ) -> Tuple[pd.DataFrame, List[TradeLog], Dict[str, float]]:
     for sym in list(all_bars.keys()):
         df = all_bars[sym].copy()
@@ -784,6 +939,7 @@ def run_worksteal_backtest(
             history=history,
             config=config,
         )
+        market_breadth, _, _ = compute_breadth_ratio(current_bars, history)
         if base_symbol is not None and base_symbol in current_bars and not hold_base_asset:
             base_fee = get_fee(base_symbol, config)
             cash, base_qty = _sell_all_base_asset(
@@ -841,7 +997,8 @@ def run_worksteal_backtest(
 
             # Use initial_cash for sizing shorts to prevent compounding spiral
             base_equity = config.initial_cash
-            for sym, direction, score, fill_price, bar in candidates[:slots]:
+            visible_candidates = candidates[:slots]
+            for rank, (sym, direction, score, fill_price, bar) in enumerate(visible_candidates, start=1):
                 if sym in positions:
                     continue
                 if cash <= 0 and direction == "long" and config.max_leverage <= 1.0 and base_qty <= 0:
@@ -850,6 +1007,35 @@ def run_worksteal_backtest(
                 fee_rate = get_fee(sym, config)
                 # Size based on initial equity, not current (prevents leverage spiral)
                 max_alloc = base_equity * config.max_position_pct * config.max_leverage
+                allocation_scale = 1.0
+                if allocation_scale_fn is not None:
+                    context = EntrySizingContext(
+                        timestamp=date,
+                        signal_timestamp=date,
+                        symbol=sym,
+                        direction=direction,
+                        score=float(score),
+                        fill_price=float(fill_price),
+                        candidate_rank=rank,
+                        candidate_count=len(visible_candidates),
+                        slots_remaining=max(0, slots - rank + 1),
+                        current_position_count=len(positions),
+                        cash=float(cash),
+                        base_equity=float(base_equity),
+                        current_equity=float(current_equity),
+                        market_breadth=float(market_breadth),
+                        hold_base_asset=bool(hold_base_asset),
+                        signal_bar=bar,
+                        history=history.get(sym, pd.DataFrame()).copy(),
+                        execution_bar=_execution_bar_for_signal(intraday_bars, sym, date),
+                    )
+                    allocation_scale = float(allocation_scale_fn(context))
+                    if not np.isfinite(allocation_scale):
+                        allocation_scale = 0.0
+                    allocation_scale = max(0.0, allocation_scale)
+                scaled_alloc = max_alloc * allocation_scale
+                if scaled_alloc <= 0.0:
+                    continue
 
                 if direction == "long":
                     if base_symbol is not None and hold_base_asset and base_symbol in current_bars:
@@ -859,9 +1045,9 @@ def run_worksteal_backtest(
                             base_qty=base_qty,
                             price=float(current_bars[base_symbol]["close"]),
                             fee_rate=base_fee,
-                            required_cash=max_alloc,
+                            required_cash=scaled_alloc,
                         )
-                    alloc = max_alloc
+                    alloc = scaled_alloc
                     quantity = alloc / (fill_price * (1 + fee_rate))
                     if quantity <= 0:
                         continue
@@ -888,7 +1074,7 @@ def run_worksteal_backtest(
                         direction="long",
                     ))
                 else:  # short
-                    alloc = min(max_alloc, base_equity * config.max_position_pct)
+                    alloc = min(scaled_alloc, base_equity * config.max_position_pct * allocation_scale)
                     quantity = alloc / fill_price
                     if quantity <= 0:
                         continue
@@ -1107,6 +1293,32 @@ def load_daily_bars(data_dir: str, symbols: List[str]) -> Dict[str, pd.DataFrame
                     df["symbol"] = f"{base}USD"
                     result[f"{base}USD"] = df
                     break
+    return result
+
+
+def load_hourly_bars(data_dir: str, symbols: List[str]) -> Dict[str, pd.DataFrame]:
+    from pathlib import Path
+
+    result = {}
+    data_path = Path(data_dir)
+    for sym in symbols:
+        candidates = [
+            data_path / "crypto" / f"{sym}.csv",
+            data_path / "stocks" / f"{sym}.csv",
+            data_path / f"{sym}.csv",
+        ]
+        for path in candidates:
+            if not path.exists():
+                continue
+            frame = pd.read_csv(path)
+            if "timestamp" not in frame.columns or len(frame) <= 1:
+                continue
+            frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce")
+            frame = frame.dropna(subset=["timestamp"]).sort_values("timestamp").drop_duplicates("timestamp", keep="last")
+            if frame.empty:
+                continue
+            result[sym] = frame[["timestamp", "open", "high", "low", "close", "volume"]].reset_index(drop=True)
+            break
     return result
 
 

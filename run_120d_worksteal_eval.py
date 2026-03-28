@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Run 120-day backtest of the deployed work-steal dip-buying strategy.
+"""Run 120-day backtest of the deployed work-steal strategy.
 
-Wraps binance_worksteal/backtest_gemini.py with deployed config:
-  - 30-symbol universe
-  - dip=20% tp=15% sl=10% sma=20 trail=3% maxpos=5 maxhold=14d
+Wraps the rule/Gemini backtest using the live deployment defaults:
+  - universe_v2.yaml
+  - dip=18% with fallback tiers 18/15/12
+  - tp=20% sl=15% sma=20 trail=3% maxpos=5 maxhold=14d
   - ~120 days: 2025-11-15 to 2026-03-19
 """
 from __future__ import annotations
@@ -20,12 +21,14 @@ DEFAULT_END = "2026-03-19"
 DEFAULT_DATA_DIR = "trainingdata/train"
 DEFAULT_MODEL = "gemini-2.5-flash"
 DEFAULT_REPORT = "reports/120d_worksteal_eval.json"
+DEFAULT_UNIVERSE_FILE = "binance_worksteal/universe_v2.yaml"
 
 DEPLOYED_CONFIG = {
-    "dip_pct": 0.20,
+    "dip_pct": 0.18,
+    "dip_pct_fallback": (0.18, 0.15, 0.12),
     "proximity_pct": 0.02,
-    "profit_target_pct": 0.15,
-    "stop_loss_pct": 0.10,
+    "profit_target_pct": 0.20,
+    "stop_loss_pct": 0.15,
     "max_positions": 5,
     "max_hold_days": 14,
     "lookback_days": 20,
@@ -41,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--start-date", default=DEFAULT_START)
     p.add_argument("--end-date", default=DEFAULT_END)
     p.add_argument("--data-dir", default=DEFAULT_DATA_DIR)
+    p.add_argument("--universe-file", default=DEFAULT_UNIVERSE_FILE)
     p.add_argument("--model", default=DEFAULT_MODEL)
     p.add_argument("--report", default=DEFAULT_REPORT)
     p.add_argument("--rule-only", action="store_true", help="Skip Gemini, rule-only backtest")
@@ -61,6 +65,7 @@ def run_eval(args):
     print(f"Work-steal 120d eval")
     print(f"  period:    {args.start_date} -> {args.end_date}")
     print(f"  data:      {args.data_dir}")
+    print(f"  universe:  {args.universe_file}")
     print(f"  rule-only: {args.rule_only}")
     print(f"  model:     {args.model}")
     print(f"  report:    {report_path}")
@@ -73,14 +78,16 @@ def run_eval(args):
 
     sys.path.insert(0, str(REPO))
 
-    from binance_worksteal.backtest import FULL_UNIVERSE
+    from binance_worksteal.universe import load_universe, get_symbols
     from binance_worksteal.strategy import (
         WorkStealConfig, load_daily_bars, run_worksteal_backtest,
     )
 
     data_dir = REPO / args.data_dir
-    all_bars = load_daily_bars(str(data_dir), FULL_UNIVERSE)
-    print(f"Loaded {len(all_bars)} symbols")
+    universe = load_universe(REPO / args.universe_file)
+    symbols = get_symbols(universe)
+    all_bars = load_daily_bars(str(data_dir), symbols)
+    print(f"Loaded {len(all_bars)} symbols (requested {len(symbols)})")
 
     config = WorkStealConfig(**DEPLOYED_CONFIG)
 
@@ -112,8 +119,13 @@ def run_eval(args):
             "end_date": args.end_date,
             "mode": "rule_only" if args.rule_only else "gemini",
             "model": args.model if not args.rule_only else None,
-            "universe_size": len(FULL_UNIVERSE),
-            **DEPLOYED_CONFIG,
+            "universe_file": args.universe_file,
+            "requested_universe_size": len(symbols),
+            "loaded_symbol_count": len(all_bars),
+            **{
+                key: list(value) if key == "dip_pct_fallback" else value
+                for key, value in DEPLOYED_CONFIG.items()
+            },
         },
         "metrics": metrics,
         "per_symbol_pnl": per_sym,

@@ -121,7 +121,7 @@ Fix: restarted service. Now uses correct 3-model ensemble (s123+s15+s36, med=+47
 
 **Root cause**: when a flat symbol already had a stale/mismatched open entry order, `execute_trades()` could request a cancel and still submit a replacement in the same cycle. If the broker had not yet acknowledged the cancel, both orders could remain live and both could fill.
 
-**Fix 4a**: `_reconcile_entry_orders()` now returns whether replacement must be blocked. `execute_trades()` skips submission with `waiting_for_entry_order_cancel` whenever any stale entry order had to be canceled, even if that cancel later fails.
+**Fix 4a**: `_reconcile_entry_orders()` now does broker-confirmed replace. `execute_trades()` can replace an entry in the same hourly cycle after a short recheck confirms the stale order is gone. If the old order is still open, it skips with `waiting_for_entry_order_cancel`. If cancel fails, replacement still stays blocked.
 
 **Fix 4b**: added a broker-side safety net: `alpaca-cancel-multi-orders.service` runs `scripts/cancel_multi_orders.py` with `PAPER=0` under systemd. It only cancels duplicate **opening** orders for flat symbols, and leaves protective exit orders alone.
 

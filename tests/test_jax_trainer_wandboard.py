@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 
 import numpy as np
+import optax
 import torch
 from torch.utils.data import DataLoader, Dataset
 
@@ -124,3 +125,82 @@ def test_jax_trainer_logs_with_wandboard(monkeypatch) -> None:
     assert any("val/score" in payload for payload, _step in logger.logs)
     assert logger.texts
     assert logger.hparams
+
+
+def test_jax_trainer_applies_grad_clip(monkeypatch) -> None:
+    clip_calls: list[float] = []
+
+    real_clip = optax.clip_by_global_norm
+
+    def _record_clip(value: float):
+        clip_calls.append(float(value))
+        return real_clip(value)
+
+    monkeypatch.setattr("binanceneural.jax_trainer.optax.clip_by_global_norm", _record_clip)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cfg = TrainingConfig(
+            epochs=1,
+            batch_size=2,
+            sequence_length=8,
+            learning_rate=1e-3,
+            weight_decay=1e-4,
+            grad_clip=0.25,
+            transformer_dim=16,
+            transformer_layers=1,
+            transformer_heads=4,
+            transformer_dropout=0.0,
+            checkpoint_root=Path(tmpdir) / "ckpts",
+            log_dir=Path(tmpdir) / "tb",
+            run_name="jax_grad_clip_test",
+        )
+        JaxClassicTrainer(cfg, _SyntheticDataModule())
+
+    assert clip_calls == [0.25]
+
+
+def test_jax_trainer_stops_early_on_non_finite_metrics(monkeypatch) -> None:
+    monkeypatch.setattr("binanceneural.jax_trainer.WandBoardLogger", _DummyWandBoardLogger)
+    _DummyWandBoardLogger.instances.clear()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cfg = TrainingConfig(
+            epochs=3,
+            batch_size=2,
+            sequence_length=8,
+            learning_rate=1e-3,
+            weight_decay=1e-4,
+            transformer_dim=16,
+            transformer_layers=1,
+            transformer_heads=4,
+            transformer_dropout=0.0,
+            use_compile=False,
+            checkpoint_root=Path(tmpdir) / "ckpts",
+            log_dir=Path(tmpdir) / "tb",
+            run_name="jax_non_finite_stop_test",
+        )
+        trainer = JaxClassicTrainer(cfg, _SyntheticDataModule())
+
+        calls = iter(
+            [
+                {"loss": 1.0, "score": 2.0, "sortino": 3.0, "return": 4.0},
+                {"loss": 1.5, "score": 2.5, "sortino": 3.5, "return": 4.5},
+                {"loss": float("nan"), "score": 5.0, "sortino": 6.0, "return": 7.0},
+            ]
+        )
+
+        def _fake_run_epoch(*, train: bool) -> dict[str, float]:
+            return next(calls)
+
+        monkeypatch.setattr(trainer, "_run_epoch", _fake_run_epoch)
+        artifacts = trainer.train()
+
+        logger = _DummyWandBoardLogger.instances[-1]
+        meta = (Path(tmpdir) / "ckpts" / "jax_non_finite_stop_test" / "training_meta.json").read_text()
+
+    assert artifacts.best_checkpoint is not None
+    assert len(artifacts.history) == 1
+    assert artifacts.stop_reason is not None
+    assert "non-finite train/loss" in artifacts.stop_reason
+    assert "jax/stop_reason" in {name for name, _text, _step in logger.texts}
+    assert '"stop_reason": "Stopping at epoch 2: non-finite train/loss=nan"' in meta

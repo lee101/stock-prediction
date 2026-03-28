@@ -3,7 +3,7 @@ from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from time import sleep
 import traceback
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Annotated, Dict, Iterable, List, Optional, Tuple
 
 import alpaca_trade_api as tradeapi
 import math
@@ -97,7 +97,7 @@ def _calculate_total_exposure_value(positions) -> float:
 
 def main(
     command: str,
-    pair: Optional[str] = typer.Argument(None, help="Target symbol for single-symbol commands"),
+    pair: Annotated[Optional[str], typer.Argument(help="Target symbol for single-symbol commands")] = None,
     side: Optional[str] = typer.Option("buy", "--side", help="Order side for ramp/entry commands."),
     target_qty: Optional[float] = typer.Option(
         None, "--target-qty", help="Target quantity for ramp_into_position."

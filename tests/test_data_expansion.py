@@ -29,6 +29,20 @@ from binance_worksteal.backtest import (
 )
 
 
+def _write_symbol_csv(path: Path, n_days: int = 400) -> None:
+    dates = pd.date_range("2023-01-01", periods=n_days, freq="D", tz="UTC")
+    close = np.linspace(100.0, 200.0, n_days)
+    df = pd.DataFrame({
+        "timestamp": dates,
+        "open": close - 1.0,
+        "high": close + 1.0,
+        "low": close - 2.0,
+        "close": close,
+        "volume": np.full(n_days, 10_000.0),
+    })
+    df.to_csv(path, index=False)
+
+
 class TestSymbolLists:
     def test_original_30_preserved(self):
         assert len(ORIGINAL_30_SYMBOLS) == 30
@@ -139,6 +153,13 @@ class TestValidateSymbolData:
 
 
 class TestFilterSymbolsByVolume:
+    def test_filter_supports_legacy_usd_filename(self, tmp_path):
+        _write_symbol_csv(tmp_path / "INJUSD.csv")
+        passed = filter_symbols_by_volume(
+            str(tmp_path), symbols=["INJUSDT"], min_avg_daily_volume_usd=0.0,
+        )
+        assert passed == ["INJUSDT"]
+
     def test_filter_with_real_data(self):
         data_dir = "trainingdata/train"
         p = Path(data_dir)
@@ -181,6 +202,11 @@ class TestFilterSymbolsByVolume:
 
 
 class TestDiscoverSymbols:
+    def test_discover_normalizes_legacy_usd_filename(self, tmp_path):
+        _write_symbol_csv(tmp_path / "INJUSD.csv")
+        found = discover_symbols(str(tmp_path), min_bars=100, min_avg_daily_volume_usd=0.0)
+        assert found == ["INJUSDT"]
+
     def test_discover_returns_list(self):
         data_dir = "trainingdata/train"
         p = Path(data_dir)
@@ -207,6 +233,19 @@ class TestDiscoverSymbols:
 
 
 class TestGenerateSymbolsArg:
+    def test_generate_supports_legacy_usd_filename(self, tmp_path):
+        _write_symbol_csv(tmp_path / "INJUSD.csv")
+        assert generate_symbols_arg(str(tmp_path), min_bars=100, min_avg_daily_volume_usd=0.0) == "INJUSD"
+        assert (
+            generate_symbols_arg(
+                str(tmp_path),
+                min_bars=100,
+                min_avg_daily_volume_usd=0.0,
+                use_usd_suffix=False,
+            )
+            == "INJUSDT"
+        )
+
     def test_generate_returns_string(self):
         data_dir = "trainingdata/train"
         p = Path(data_dir)
@@ -271,6 +310,13 @@ class TestBackwardsCompatibility:
         assert "timestamp" in df.columns
         assert "close" in df.columns
         assert len(df) > 30
+
+    def test_load_symbol_data_supports_legacy_usd_filename(self, tmp_path):
+        _write_symbol_csv(tmp_path / "INJUSD.csv")
+        df = load_symbol_data(str(tmp_path), "INJUSDT")
+        assert df is not None
+        assert "timestamp" in df.columns
+        assert len(df) == 400
 
     def test_compute_features_unchanged(self):
         dates = pd.date_range("2024-01-01", periods=50, freq="D", tz="UTC")

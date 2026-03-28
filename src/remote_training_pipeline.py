@@ -247,6 +247,7 @@ def build_run_crypto_lora_batch_cmd(
     num_steps: int,
     prediction_length: int,
     lora_r: int,
+    seeds: Sequence[int],
 ) -> list[str]:
     cmd = [
         "python",
@@ -274,6 +275,8 @@ def build_run_crypto_lora_batch_cmd(
         str(int(prediction_length)),
         "--lora-r",
         str(int(lora_r)),
+        "--seeds",
+        ",".join(str(int(value)) for value in seeds),
     ]
     return cmd
 
@@ -285,6 +288,9 @@ def build_promote_lora_cmd(
     symbols: Sequence[str],
     run_id: str,
     metric: str = "val_mae_percent",
+    selection_strategy: str = "best_single",
+    stability_penalty: float = 0.25,
+    min_family_size: int = 2,
 ) -> list[str]:
     cmd = [
         "python",
@@ -298,6 +304,12 @@ def build_promote_lora_cmd(
         str(run_id),
         "--metric",
         str(metric),
+        "--selection-strategy",
+        str(selection_strategy),
+        "--stability-penalty",
+        str(float(stability_penalty)),
+        "--min-family-size",
+        str(int(min_family_size)),
     ]
     if symbols:
         cmd.extend(["--symbols", *normalize_symbols(symbols)])
@@ -753,6 +765,7 @@ def build_remote_hourly_chronos_rl_plan(
     num_steps: int,
     prediction_length: int,
     lora_r: int,
+    lora_seeds: Sequence[int],
     feature_lag: int,
     min_coverage: float,
     time_budget: int,
@@ -762,6 +775,9 @@ def build_remote_hourly_chronos_rl_plan(
     forecast_lookback_hours: float | None = None,
     earliest_common_override: str | None = None,
     latest_common_override: str | None = None,
+    promote_selection_strategy: str = "stable_family",
+    promote_stability_penalty: float = 0.25,
+    promote_min_family_size: int = 2,
 ) -> RemotePipelinePlan:
     if earliest_common_override is not None and latest_common_override is not None:
         window = build_hourly_train_val_window_from_bounds(
@@ -806,12 +822,16 @@ def build_remote_hourly_chronos_rl_plan(
             num_steps=num_steps,
             prediction_length=prediction_length,
             lora_r=lora_r,
+            seeds=lora_seeds,
         ),
         build_promote_lora_cmd(
             report_dir=lora_results_dir,
             output_dir="hyperparams/chronos2/hourly",
             symbols=normalized,
             run_id=run_id,
+            selection_strategy=promote_selection_strategy,
+            stability_penalty=promote_stability_penalty,
+            min_family_size=promote_min_family_size,
         ),
         build_forecast_cache_cmd(
             symbols=normalized,
@@ -889,6 +909,7 @@ def build_remote_chronos_compare_plan(
     num_steps: int,
     prediction_length: int,
     lora_r: int,
+    lora_seeds: Sequence[int] = (1337,),
     feature_lag: int,
     min_coverage: float,
     time_budget: int,
@@ -1014,6 +1035,7 @@ def build_remote_chronos_compare_plan(
                 num_steps=num_steps,
                 prediction_length=prediction_length,
                 lora_r=lora_r,
+                seeds=lora_seeds,
             )
         ),
         tuple(
@@ -1113,8 +1135,6 @@ def build_remote_chronos_compare_plan(
         daily_checkpoint_root=daily_plan.checkpoint_root,
         commands=tuple(commands),
     )
-
-
 def shell_join(cmd: Sequence[str]) -> str:
     return shlex.join([str(token) for token in cmd])
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import sys
 import types
@@ -26,6 +27,23 @@ def test_log_event_writes_jsonl(tmp_path: Path, monkeypatch) -> None:
     assert payload["payload"] == {"qty": 5, "side": "buy"}
     assert "logged_at" in payload
     assert payload["pid"] > 0
+
+
+def test_state_paths_follow_state_dir_env(monkeypatch, tmp_path: Path) -> None:
+    package = sys.modules.get("unified_hourly_experiment")
+    monkeypatch.setenv("STATE_DIR", str(tmp_path))
+    sys.modules.pop("unified_hourly_experiment.trade_unified_hourly", None)
+    reloaded = importlib.import_module("unified_hourly_experiment.trade_unified_hourly")
+
+    try:
+        assert reloaded.STATE_DIR == tmp_path
+        assert reloaded.STATE_FILE == tmp_path / "stock_portfolio_state.json"
+        assert reloaded.TRADE_LOG == tmp_path / "stock_trade_log.jsonl"
+        assert reloaded.EVENT_LOG == tmp_path / "stock_event_log.jsonl"
+    finally:
+        sys.modules["unified_hourly_experiment.trade_unified_hourly"] = live
+        if package is not None:
+            setattr(package, "trade_unified_hourly", live)
 
 
 def test_calendar_hours_between_counts_wall_clock_hours() -> None:
@@ -553,6 +571,40 @@ def test_place_exit_order_supports_fractional_stock_qty(monkeypatch) -> None:
     assert any(event_type == "exit_order_submit_succeeded" for event_type, _ in events)
 
 
+def test_place_exit_order_uses_gtc_for_fractional_crypto_qty(monkeypatch) -> None:
+    submitted: list[object] = []
+    events: list[tuple[str, dict]] = []
+
+    fake_requests = types.ModuleType("alpaca.trading.requests")
+
+    class _LimitOrderRequest:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    fake_requests.LimitOrderRequest = _LimitOrderRequest
+
+    fake_enums = types.ModuleType("alpaca.trading.enums")
+    fake_enums.OrderSide = SimpleNamespace(BUY="buy", SELL="sell")
+    fake_enums.TimeInForce = SimpleNamespace(DAY="day", GTC="gtc")
+
+    monkeypatch.setitem(sys.modules, "alpaca.trading.requests", fake_requests)
+    monkeypatch.setitem(sys.modules, "alpaca.trading.enums", fake_enums)
+    monkeypatch.setattr(live, "log_event", lambda event_type, **fields: events.append((event_type, fields)))
+
+    class _DummyAPI:
+        def submit_order(self, order):
+            submitted.append(order)
+            return SimpleNamespace(id="exit-crypto-frac-1")
+
+    order_id = live.place_exit_order(_DummyAPI(), "ETHUSD", 0.5, 1990.2, side="sell")
+
+    assert order_id == "exit-crypto-frac-1"
+    assert submitted
+    assert submitted[0].kwargs["qty"] == pytest.approx(0.5)
+    assert submitted[0].kwargs["time_in_force"] == "gtc"
+    assert any(event_type == "exit_order_submit_succeeded" for event_type, _ in events)
+
+
 def test_force_close_position_supports_fractional_stock_qty(monkeypatch) -> None:
     submitted: list[object] = []
     events: list[tuple[str, dict]] = []
@@ -586,6 +638,44 @@ def test_force_close_position_supports_fractional_stock_qty(monkeypatch) -> None
     assert submitted[0].kwargs["time_in_force"] == "day"
     assert submitted[0].kwargs["limit_price"] == pytest.approx(round(397.1146 * 0.997, 2))
     assert any(event_type == "force_close_submit_succeeded" for event_type, _ in events)
+
+
+def test_force_close_position_uses_gtc_for_fractional_crypto_qty(monkeypatch) -> None:
+    submitted: list[object] = []
+    events: list[tuple[str, dict]] = []
+
+    fake_requests = types.ModuleType("alpaca.trading.requests")
+
+    class _LimitOrderRequest:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    fake_requests.LimitOrderRequest = _LimitOrderRequest
+
+    fake_enums = types.ModuleType("alpaca.trading.enums")
+    fake_enums.OrderSide = SimpleNamespace(BUY="buy", SELL="sell")
+    fake_enums.TimeInForce = SimpleNamespace(DAY="day", GTC="gtc")
+
+    monkeypatch.setitem(sys.modules, "alpaca.trading.requests", fake_requests)
+    monkeypatch.setitem(sys.modules, "alpaca.trading.enums", fake_enums)
+    monkeypatch.setattr(live, "log_event", lambda event_type, **fields: events.append((event_type, fields)))
+    monkeypatch.setattr(live, "log_trade", lambda payload: None)
+
+    class _DummyAPI:
+        def submit_order(self, order):
+            submitted.append(order)
+            return SimpleNamespace(id="force-close-crypto-frac-1")
+
+    live.force_close_position(_DummyAPI(), "ETHUSD", 0.5, 1990.2)
+
+    assert submitted
+    assert submitted[0].kwargs["qty"] == pytest.approx(0.5)
+    assert submitted[0].kwargs["time_in_force"] == "gtc"
+    assert submitted[0].kwargs["limit_price"] == pytest.approx(round(1990.2 * 0.997, 2))
+    assert any(
+        event_type == "force_close_submit_requested" and fields.get("time_in_force") == "gtc"
+        for event_type, fields in events
+    )
 
 
 def test_manage_positions_keeps_pending_entry_order(monkeypatch) -> None:
@@ -941,6 +1031,104 @@ def test_execute_trades_blocks_replacement_when_entry_cancel_fails(monkeypatch) 
     assert any(event_type == "entry_skipped" and fields.get("reason") == "waiting_for_entry_order_cancel" for event_type, fields in events)
 
 
+def test_get_open_orders_normalizes_crypto_symbol_keys(monkeypatch) -> None:
+    fake_requests = types.ModuleType("alpaca.trading.requests")
+
+    class _GetOrdersRequest:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    fake_requests.GetOrdersRequest = _GetOrdersRequest
+
+    fake_enums = types.ModuleType("alpaca.trading.enums")
+    fake_enums.QueryOrderStatus = SimpleNamespace(OPEN="open")
+
+    monkeypatch.setitem(sys.modules, "alpaca.trading.requests", fake_requests)
+    monkeypatch.setitem(sys.modules, "alpaca.trading.enums", fake_enums)
+    monkeypatch.setattr(live, "log_event", lambda *args, **kwargs: None)
+
+    class _DummyAPI:
+        def get_orders(self, request):
+            assert request.kwargs["status"] == "open"
+            return [
+                SimpleNamespace(id="eth-order-1", symbol="ETH/USD", side="buy"),
+                SimpleNamespace(id="nvda-order-1", symbol="NVDA", side="buy"),
+            ]
+
+    orders = live.get_open_orders(_DummyAPI())
+
+    assert set(orders) == {"ETHUSD", "NVDA"}
+    assert [order.id for order in orders["ETHUSD"]] == ["eth-order-1"]
+    assert [order.id for order in orders["NVDA"]] == ["nvda-order-1"]
+
+
+def test_execute_trades_skips_fractional_crypto_live_position(monkeypatch) -> None:
+    events: list[tuple[str, dict]] = []
+    submitted: list[object] = []
+    state = {"positions": {}}
+
+    fake_requests = types.ModuleType("alpaca.trading.requests")
+
+    class _LimitOrderRequest:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    fake_requests.LimitOrderRequest = _LimitOrderRequest
+
+    fake_enums = types.ModuleType("alpaca.trading.enums")
+    fake_enums.OrderSide = SimpleNamespace(BUY="buy", SELL="sell")
+    fake_enums.TimeInForce = SimpleNamespace(DAY="day")
+
+    monkeypatch.setitem(sys.modules, "alpaca.trading.requests", fake_requests)
+    monkeypatch.setitem(sys.modules, "alpaca.trading.enums", fake_enums)
+
+    class _DummyAPI:
+        def submit_order(self, order):
+            submitted.append(order)
+            return SimpleNamespace(id="should-not-submit")
+
+    monkeypatch.setattr(
+        live,
+        "get_current_positions",
+        lambda api: {"ETHUSD": {"qty": 0.5, "price": 1990.2}},
+    )
+    monkeypatch.setattr(live, "get_open_orders", lambda api: {})
+    monkeypatch.setattr(
+        live,
+        "get_account_info",
+        lambda api: {"equity": 10_000.0, "buying_power": 10_000.0, "cash": 5_000.0},
+    )
+    monkeypatch.setattr(live, "entry_intensity_fraction", lambda *args, **kwargs: (5000.0, 0.5))
+    monkeypatch.setattr(live, "log_trade", lambda event: None)
+    monkeypatch.setattr(live, "log_event", lambda event_type, **fields: events.append((event_type, fields)))
+
+    live.execute_trades(
+        _DummyAPI(),
+        {
+            "ETHUSD": {
+                "buy_price": 1990.2,
+                "sell_price": 2050.0,
+                "buy_amount": 5000.0,
+                "sell_amount": 0.0,
+                "edge": 0.02,
+                "hold_hours": 4.0,
+            }
+        },
+        state,
+        max_positions=5,
+    )
+
+    assert submitted == []
+    assert state["positions"] == {}
+    assert any(
+        event_type == "entry_skipped"
+        and fields.get("reason") == "live_position_already_open"
+        and fields.get("symbol") == "ETHUSD"
+        and fields.get("live_qty") == pytest.approx(0.5)
+        for event_type, fields in events
+    )
+
+
 def test_manage_positions_force_closes_untracked_fractional_stock_only(monkeypatch) -> None:
     state = {"positions": {}, "pending_close": []}
     forced: list[tuple[str, float, float]] = []
@@ -965,6 +1153,32 @@ def test_manage_positions_force_closes_untracked_fractional_stock_only(monkeypat
 
     assert forced == [("MSFT", 0.94, 397.1146)]
     assert state["pending_close"] == ["MSFT"]
+
+
+def test_manage_positions_force_closes_untracked_fractional_crypto_by_notional(monkeypatch) -> None:
+    state = {"positions": {}, "pending_close": []}
+    forced: list[tuple[str, float, float]] = []
+
+    monkeypatch.setattr(
+        live,
+        "get_current_positions",
+        lambda api: {
+            "ETHUSD": {"qty": 0.5, "price": 1990.2},
+            "BTCUSD": {"qty": 1.0e-9, "price": 66299.0},
+        },
+    )
+    monkeypatch.setattr(live, "get_open_orders", lambda api: {})
+    monkeypatch.setattr(
+        live,
+        "force_close_position",
+        lambda api, symbol, qty, current_price=0: forced.append((symbol, qty, current_price)),
+    )
+    monkeypatch.setattr(live, "log_event", lambda *args, **kwargs: None)
+
+    live.manage_positions(object(), state, max_hold_hours=6, active_symbols={"NVDA", "PLTR"})
+
+    assert forced == [("ETHUSD", 0.5, 1990.2)]
+    assert state["pending_close"] == ["ETHUSD"]
 
 
 def test_poll_broker_events_logs_and_dedupes(monkeypatch) -> None:

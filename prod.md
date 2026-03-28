@@ -7,11 +7,14 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
-### Current Alpaca snapshot (2026-03-26 04:22 UTC)
-- **LIVE account**: supervisor `unified-stock-trader` is active; equity **$41,315.42**, cash **$10,298.17**, buying power **$20,596.34**, last_equity **$41,077.99**.
-- **LIVE positions/orders**: no stock positions are open; only dust in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD` remains. Open orders are 3 `ETH/USD` GTC buy limits.
+### Current Alpaca snapshot (2026-03-28 09:29 UTC)
+- **LIVE account**: supervisor `unified-stock-trader` is active; equity **$38,954.44**, cash **$38,954.44**, buying power **$77,908.88**, last_equity **$39,090.40**.
+- **LIVE positions/orders**: no stock positions are open; only dust in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD` remains. There are currently **no open orders**.
 - **LIVE duplicate-order guard (2026-03-27 20:31 UTC)**: systemd unit `alpaca-cancel-multi-orders.service` is installed and enabled with `PAPER=0`; `journalctl` confirms it initialized the **LIVE** Alpaca client and is polling for duplicate flat-position opening orders.
-- **LIVE daily-rl-trader**: 6-model ensemble, sleeping until Mon 2026-03-30 market open; PID 3621128
+- **LIVE daily-rl-trader**: 10-model ensemble (s735→s1731 fix 2026-03-28 17:29 UTC), sleeping until Mon 2026-03-30 market open; PID 2893948
+  - s735 screen_best was deleted from disk; replaced with s1731 screen_best (neg=7, med=11%, update=61)
+  - New 10-model exhaustive (111 windows): **0/111 neg, med=59.1%, p10=45.1%** (was 55.6% with original s735)
+  - 11-model bar: p10 ≥ 45.1% @fill_bps=5
 
 ### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- FIXED (pending restart)
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`
@@ -71,20 +74,24 @@
 - **Installed config**: `/etc/supervisor/conf.d/unified-stock-trader.conf`
 - **Installed duplicate-order unit**: `/etc/systemd/system/alpaca-cancel-multi-orders.service`
 - **Duplicate-order ExecStart**: `.venv313/bin/python -u /nvme0n1-disk/code/stock-prediction/scripts/cancel_multi_orders.py`
-- **Exact launch**: `.venv313/bin/python -u /nvme0n1-disk/code/stock-prediction/unified_hourly_experiment/trade_unified_hourly_meta.py --strategy wd06=/nvme0n1-disk/code/stock-prediction/unified_hourly_experiment/checkpoints/wd_0.06_s42:8 --strategy wd06b=/nvme0n1-disk/code/stock-prediction/unified_hourly_experiment/checkpoints/wd_0.06_s1337:8 --stock-symbols NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT,AAPL,MSFT,META,TSLA,NET,BKNG,EBAY,EXPE,ITUB,BTG,ABEV --min-edge 0.001 --fee-rate 0.001 --max-positions 5 --max-hold-hours 5 --trade-amount-scale 100.0 --min-buy-amount 2.0 --entry-intensity-power 1.0 --entry-min-intensity-fraction 0.0 --long-intensity-multiplier 1.0 --short-intensity-multiplier 1.5 --meta-metric p10 --meta-lookback-days 14 --meta-selection-mode sticky --meta-switch-margin 0.005 --meta-min-score-gap 0.0 --meta-recency-halflife-days 0.0 --meta-history-days 120 --sit-out-if-negative --sit-out-threshold -0.001 --market-order-entry --bar-margin 0.0005 --entry-order-ttl-hours 6 --margin-rate 0.0625 --live --loop`
+- **Current runtime launch**: `.venv313/bin/python -u /nvme0n1-disk/code/stock-prediction/unified_hourly_experiment/trade_unified_hourly_meta.py --strategy wd06=/nvme0n1-disk/code/stock-prediction/unified_hourly_experiment/checkpoints/wd_0.06_s42:8 --strategy wd06b=/nvme0n1-disk/code/stock-prediction/unified_hourly_experiment/checkpoints/wd_0.06_s1337:8 --stock-symbols NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT,AAPL,MSFT,META,TSLA,NET,BKNG,EBAY,EXPE,ITUB,BTG,ABEV --min-edge 0.001 --fee-rate 0.001 --max-positions 5 --max-hold-hours 5 --trade-amount-scale 100.0 --min-buy-amount 2.0 --entry-intensity-power 1.0 --entry-min-intensity-fraction 0.0 --long-intensity-multiplier 1.0 --short-intensity-multiplier 1.5 --meta-metric p10 --meta-lookback-days 14 --meta-selection-mode sticky --meta-switch-margin 0.005 --meta-min-score-gap 0.0 --meta-recency-halflife-days 0.0 --meta-history-days 120 --sit-out-if-negative --sit-out-threshold -0.001 --market-order-entry --bar-margin 0.0005 --entry-order-ttl-hours 6 --margin-rate 0.0625 --live --loop`
+- **Installed supervisor command (2026-03-28 09:29 UTC)**: reduced to the owned stock list `DBX,TRIP,MTCH,NYT,NET,BKNG,EBAY,EXPE,ITUB,BTG,ABEV` to match `unified_orchestrator/service_config.json`; supervisor has not been reloaded/restarted yet, so the running PID still has the wider overlapping list.
 - **Environment**: `PYTHONPATH=/nvme0n1-disk/code/stock-prediction`, `PYTHONUNBUFFERED=1`, `CHRONOS2_FREQUENCY=hourly`, `PAPER=0`
 - **Architecture**: Chronos2 hourly, multiple models + meta-selector
-- **Symbols**: NVDA, PLTR, GOOG, DBX, TRIP, MTCH, NYT, AAPL, MSFT, META, TSLA, NET, BKNG, EBAY, EXPE, ITUB, BTG, ABEV
-- **Live snapshot (2026-03-26 04:22 UTC)**: equity **$41,315.42**, cash **$10,298.17**, long market value **$0.00**, buying power **$20,596.34**
-- **Open positions (2026-03-26 04:22 UTC)**: no stock positions; dust only in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD`
-- **Open orders (2026-03-26 04:22 UTC)**: only 3 crypto `ETH/USD` GTC buy limits remain; no stock orders are open
+- **Current runtime symbols**: NVDA, PLTR, GOOG, DBX, TRIP, MTCH, NYT, AAPL, MSFT, META, TSLA, NET, BKNG, EBAY, EXPE, ITUB, BTG, ABEV
+- **Owned symbols (`service_config.json`)**: DBX, TRIP, MTCH, NYT, NET, BKNG, EBAY, EXPE, ITUB, BTG, ABEV
+- **Live snapshot (2026-03-28 09:29 UTC)**: equity **$38,954.44**, cash **$38,954.44**, long market value **$0.00**, buying power **$77,908.88**
+- **Open positions (2026-03-28 09:29 UTC)**: no stock positions; dust only in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD`
+- **Open orders (2026-03-28 09:29 UTC)**: none
+- **Ownership drift risk (2026-03-28 audit)**: the still-running supervisor process overlaps `daily-rl-trader.service` on `AAPL,MSFT,NVDA,GOOG,META,TSLA,PLTR`. The on-disk config is now corrected, but a controlled supervisor reload/restart is still required before live matches the intended split.
 - **Strategies**: wd_0.06_s42:8 + wd_0.06_s1337:8 (2-strategy meta-selector)
 - **Recent stock exits**:
   - `TSLA` sell `33 @ $379.22` filled `2026-03-23 13:38 UTC`
   - `ABEV` sell `4459 @ $2.83` filled `2026-03-25 13:30 UTC`
 - **Marketsim status (2026-03-26)**:
   - recent `5d/14d/30d` holdout sweep for the live pair is negative in simulator; best config collapses to the `wd06` baseline with `min_sortino=-11.15`, `mean_sortino=-6.28`, `min_return=-18.09%`, `mean_return=-7.38%`
-  - trade-log replay on the recent `TSLA` + `ABEV` slice matches `TSLA` but misses `ABEV` entirely (`exact_row_ratio=0.5`), so execution parity still needs work before simulator PnL is trusted as production-equivalent
+  - updated replay on `2026-03-28 09:52 UTC` now matches both recent `TSLA` + `ABEV` broker-confirmed entries on count and quantity (`exact_row_ratio=1.0`, `hourly_abs_count_delta_total=0.0`, `hourly_abs_qty_delta_total=0.0`, matched price MAE `0.3265`). Root cause of the old `507`-share drift was replay config mismatch, not missing trades: the harness was using default `initial_cash=50000` and `max_positions=7` instead of the live `execute_trades_start` context (`equity=40219.2`, `max_positions=5`), and its market-order qty sizing was fee-inclusive instead of live-like.
+- **Observed live stock flow**: only two stock entries have occurred since `2026-03-20` (`TSLA` and `ABEV`), so this path remains thinly validated compared with the daily PPO trader.
 - **NOTE (2026-03-24)**: Was crash-looping since ~Mar 19 — supervisor config referenced 5 missing checkpoints
   (wd_0.04, wd_0.05_s42, wd_0.08_s42, wd_0.03_s42, stock_sortino_robust_20260219b/c).
   Fixed by replacing with wd_0.06_s42:8 + wd_0.06_s1337:8 (only 2 strategies remain locally).
@@ -96,6 +103,10 @@
 - **NOTE (2026-03-27)**: duplicate-entry hardening is now live in two layers:
   1. `trade_unified_hourly.py` allows same-hour entry replacement only after a short broker recheck confirms the stale entry order is actually gone; otherwise it skips with `waiting_for_entry_order_cancel`
   2. `alpaca-cancel-multi-orders.service` cancels duplicate flat-position opening orders at the broker level without touching protective exits
+- **NOTE (2026-03-28)**: additional ETH/crypto hardening is live in `trade_unified_hourly.py`:
+  1. Alpaca symbols are normalized at the broker boundary (`ETH/USD` -> `ETHUSD`) before open-order/position reconciliation, so crypto orders cannot bypass the tracked-state checks due to slash-format mismatches
+  2. entry suppression now uses a substantial-position check instead of `abs(qty) >= 1`, so fractional-but-large crypto positions like `0.5 ETH` are treated as already open and cannot trigger duplicate entry submits
+  3. pending-close state is now clear again (`strategy_state/stock_portfolio_state.json` shows `pending_close=[]`) after the invalid-crypto-TIF close bug was fixed and the supervisor service was restarted on the patched code
 - **ABEV incident (2026-03-25)**: ABEV position ($12k, entered 2026-03-20 @ $2.73) had no exit order since
   2026-03-24 when force_close failed due to race condition. Fixed — retry fired at 01:42 UTC.
   Force_close limit order ~$2.77 queued for market open (2026-03-25 13:30 UTC).
@@ -103,32 +114,55 @@
   - JAX/Flax port of the classic hourly stock policy now exists in `binanceneural/jax_policy.py`, `binanceneural/jax_losses.py`, `binanceneural/jax_trainer.py`, and `unified_hourly_experiment/train_jax_classic.py`
   - local parity tests pass and a one-step smoke train wrote `unified_hourly_experiment/checkpoints/alpaca_progress7_jax_smoke_20260326/epoch_001.flax`
   - RunPod `RTX 4090` bootstrap is in progress for a longer detached retrain; see `alpacaprogress7.md`
+- **JAX retrain status (2026-03-28 09:10 UTC)**:
+  - current detached RunPod relaunch is `alpaca_progress8_jax_fullhist_20260328_fastsync_v27`
+  - pod id `bu9pqbct6ppjhu`, public IP `103.196.86.109`, SSH port `15784`, cost `$0.59/hr`
+  - exact launcher command is recorded in `alpacaprogress8.md`
+  - bootstrap completed and the run finished; it is not a promotion candidate
+  - best checkpoint was `epoch_003.flax` with `val_score=2.3372`, `val_sortino=2.4546`, `val_return=-0.7832`
+  - final `wandb` summary values were `nan`, so the JAX trainer now has an explicit non-finite metric stop guard instead of silently running through that state
+  - remote run dir: `/workspace/stock-prediction/analysis/remote_runs/alpaca_progress8_jax_fullhist_20260328_fastsync_v27`
+  - remote checkpoint dir: `/workspace/stock-prediction/unified_hourly_experiment/checkpoints/alpaca_progress8_jax_fullhist_20260328_fastsync_v27`
+- **Chronos hourly forecast cache status (2026-03-28)**:
+  - post-refresh audit in `analysis/alpaca_progress8_stock_cache_audit_20260328_postrefresh.json` is clean for all `18` tracked stock symbols
+  - `ITUB`, `BTG`, and `ABEV` were the only stale caches; they were rebuilt and now show `latest_gap_hours=0` with no missing timestamps in cache range
+- **Chronos promotion robustness (2026-03-28)**:
+  - the remote hourly Chronos2 -> forecast-cache -> RL pipeline now promotes a stable hyperparameter family across seeds by default instead of the single best seed
+  - selection is `mean(metric) + 0.25 * std(metric)` with minimum family size `2`; details are recorded in promoted config metadata and in `alpacaprogress8.md`
 
 ### 4. Alpaca Daily PPO Trader (`trade_daily_stock_prod.py`) -- LIVE (systemd, sleeping until Mon 2026-03-30)
 - **Service manager**: systemd unit `daily-rl-trader.service`
 - **Installed unit**: `/etc/systemd/system/daily-rl-trader.service`
 - **Installed ExecStart**: `.venv313/bin/python -u trade_daily_stock_prod.py --daemon --live --allocation-pct 25`
-- **Status (2026-03-27 22:00 UTC)**: sleeping 3826.8 min until Mon market open; PID 3621128 via systemd
+- **Status (2026-03-28 14:59 UTC)**: sleeping until Mon market open; PID 745559 via systemd
 - **Architecture**: h=1024 MLP PPO, stocks12 (AAPL,MSFT,NVDA,GOOG,META,TSLA,SPY,QQQ,JPM,V,AMZN,PLTR)
 - **Primary checkpoint**: `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_10/best.pt`
-- **6-model ensemble (tp10+s15+s36+gamma_995+muon_wd005+h1024_a40) exhaustive eval** (111 windows, all possible 90d windows in val, softmax_avg):
-  - Median: **+58.0%** / 90 days
-  - P10: **+45.4%**
-  - Worst window: **+36.6%**
+- **10-model ensemble (tp10+s15+s36+gamma_995+muon_wd005+h1024_a40+s735+gamma995_s2006+s1401+s1726) exhaustive eval** (111 windows, all possible 90d windows in val, softmax_avg):
+  - Median: **+65.8%** / 90 days
+  - P10: **+55.6%**
+  - Worst window: **+44.8%**
   - Negative windows: **0/111 (0%)** — ZERO negative windows in EXHAUSTIVE eval
 - **Ensemble progression** (all exhaustive 111-window, softmax_avg method):
   - 3-model s123+s15+s36:        med=46.3%, p10=28.6%  (2026-03-24)
   - 3-model tp10+s15+s36:        med=50.9%, p10=36.6%  (2026-03-27)
   - 4-model +gamma_995:          med=55.9%, p10=42.9%  (2026-03-27)
-  - **6-model +muon_wd005+h1024_a40: med=58.0%, p10=45.4%, worst=36.6%  (2026-03-27) CURRENT**
-  - 7-model +resmlp_a40: med=57.2%, p10=42.1% — REJECTED (hurts p10 -3.3%)
-  - 8-model +s28_scan: med=55.9%, p10=41.3% — REJECTED (hurts p10 -4.1%)
+  - 6-model +muon_wd005+h1024_a40: med=58.0%, p10=45.4%, worst=36.6%  (2026-03-27)
+  - 7-model +s735:               med=61.4%, p10=51.2%, worst=43.9%  (2026-03-28)
+  - 8-model +gamma995_s2006:     med=63.1%, p10=52.3%, worst=36.8%  (2026-03-28)
+  - 9-model +s1401:              med=68.3%, p10=55.1%, worst=43.3%  (2026-03-28)
+  - **10-model +s1726:           med=65.8%, p10=55.6%, worst=44.8%  (2026-03-28) CURRENT**
+  - [REJECTED] 7-model +resmlp_a40: med=57.2%, p10=42.1% (-3.3% p10)
+  - [REJECTED] 7-model +s28_scan: med=55.9%, p10=41.3% (-4.1% p10)
 - **DEFAULT_EXTRA_CHECKPOINTS** (in `trade_daily_stock_prod.py`):
   - `stocks12_seed_sweep/tp05_s15/best.pt`
   - `stocks12_seed_sweep/tp05_s36/best.pt`
   - `stocks12_v2_sweep/stock_gamma_995/best.pt`
   - `stocks12_v2_sweep/muon_wd_005/best.pt`
   - `stocks12_v2_sweep/h1024_a40/best.pt`
+  - `stocks12_sweep_s735_837/tp05_s735/best.pt`
+  - `stocks12_gamma995_s2006/screen_best.pt`
+  - `stocks12_s1401_screen/screen_best.pt`
+  - `stocks12_s1726_screen/screen_best.pt`
 - **Standalone performance of ensemble members**:
   - tp10: 5/111 neg, med=0.0% (conservative anchor — votes cash)
   - s15: 0/111 neg, med=+30.0% (phase-transition model, seed=15)
@@ -136,20 +170,24 @@
   - gamma_995: 59/111 neg standalone but IMPROVES ensemble (probability dilution)
   - muon_wd005: 72/111 neg standalone but IMPROVES ensemble (probability dilution)
   - h1024_a40: 16/111 neg, med=+6.7% (decent standalone, adds mild positive alpha)
+  - s735 (tp05): screen_best.pt; REJECTED_LOW_TRADES at screen; improves ensemble +5.9% p10
+  - gamma995_s2006: screen_best.pt (update=89, gamma=0.995, seed=2006); REJECTED_LOW_TRADES; +1.1% p10
+  - s1401 (tp05): screen_best.pt (update=86, seed=1401, QUALIFIED); +2.9% p10 to 8-model
+  - s1726 (tp05): screen_best.pt (update=65, seed=1726, QUALIFIED, neg=3, med=5.14%); +0.4% p10, +1.5% worst to 9-model
+- **KEY DISCOVERY**: Screen-phase checkpoints (3M steps) are better ensemble members than fully-trained (32M+ steps) ones. Full training often collapses diversity. Screen_best.pt at ~update 60-91 is the sweet spot.
 - **Ensemble method**: softmax_avg (NOT logit_avg). Each model outputs softmax probabilities, average them, take argmax.
-- **7th-member search (2026-03-27)**: Tested ALL remaining v2_sweep models — none improve BOTH med AND p10. Best candidate was muon_ent_005 (med=59.2% +1.2% but p10=41.6% -3.8%). Current 6-model is confirmed optimal.
-- **Ensemble expansion confirmed IMPOSSIBLE**: Any additional member either worsens p10/worst or is redundant (resmlp_h100 gives IDENTICAL results to base6).
+- **11-model bar**: 11-model exhaustive p10 >= 55.6% @fill_bps=5 (delta >= 0%)
 - **Config**: h=1024, lr=3e-4, ent=0.05, trade_penalty=0.10 (primary), anneal_lr=True
 - **Launch**: `deployments/daily-stock-ppo/launch.sh`
 - **Supervisor**: `deployments/daily-stock-ppo/supervisor.conf` (autostart=false — enable manually)
-- **WARNING**: Symbol conflict with unified-stock-trader (both trade AAPL/MSFT/NVDA/GOOG/META/TSLA/PLTR) — coordinate before enabling both simultaneously
+- **WARNING**: Symbol conflict is still live until the supervisor `unified-stock-trader` process is restarted on the corrected 11-symbol config. The running supervisor process still includes `AAPL/MSFT/NVDA/GOOG/META/TSLA/PLTR`.
 - **NOTE**: Previous default (stocks12_daily_tp05_longonly) scored -2.55% median, 32/50 negative
 - **NOTE**: seed variance is extreme — seed=7 gives -13.6% median, seed=123 gives +16.5% median (same config)
 - **Deploy command**:
   ```bash
   source .venv313/bin/activate
   python trade_daily_stock_prod.py --live
-  # Uses 6-model ensemble (tp10+s15+s36+gamma+muon+h1024) — DEFAULT_EXTRA_CHECKPOINTS in code
+  # Uses 10-model ensemble — DEFAULT_EXTRA_CHECKPOINTS in code
   # To restore standalone tp10: python trade_daily_stock_prod.py --live --no-ensemble
   ```
 - **Eval command** (use softmax_avg method — NOT evaluate_holdout which uses logit_avg):
@@ -168,7 +206,7 @@
   - Seeds 600-610 (fullrun): best s604/val_best=19/111 neg
   - Seeds 700-710 (GRPO): best s702/val_best=28/111 neg
   - Seeds 300-600 (ongoing tp05 sweep, 15 done, 18 qualified, 202 queued): no phase transitions found
-  - **Conclusion**: 350+ seeds tested, only s15/s36 are genuine phase-transition models. 6-model ensemble is optimal.
+  - **Conclusion**: 350+ seeds tested, only s15/s36 are genuine phase-transition models
 - **Key insight**: softmax_avg lets BAD standalone models (gamma_995: 59/111 neg) help by strongly voting "cash" in windows others falsely want to trade. logit_avg doesn't have this property.
 
 ## Crypto70 Daily RL Seed Sweep (2026-03-25) — IN PROGRESS (~70% complete)

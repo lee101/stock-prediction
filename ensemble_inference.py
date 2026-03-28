@@ -37,7 +37,7 @@ def _collect_logits(
 ) -> torch.Tensor:
     """Run obs through all policies, return stacked logits [N, 1, A]."""
     all_logits = []
-    with torch.no_grad():
+    with torch.inference_mode():
         for policy in policies:
             logits, _ = policy(obs_t)
             all_logits.append(logits)

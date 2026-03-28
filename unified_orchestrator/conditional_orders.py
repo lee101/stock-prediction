@@ -7,15 +7,20 @@ Uses fill events file for cross-broker coordination.
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
 from loguru import logger
 
-FILL_EVENTS_FILE = Path("strategy_state/fill_events.jsonl")
+REPO = Path(__file__).resolve().parent.parent
+_STATE_DIR = Path(os.environ.get("STATE_DIR", "strategy_state")).expanduser()
+if not _STATE_DIR.is_absolute():
+    _STATE_DIR = REPO / _STATE_DIR
+FILL_EVENTS_FILE = _STATE_DIR / "fill_events.jsonl"
 
 
 @dataclass
@@ -54,6 +59,32 @@ class TradingPlan:
 # Fill event tracking
 # ---------------------------------------------------------------------------
 
+
+def _iter_jsonl_lines_reverse(path: Path, *, chunk_size: int = 65_536):
+    """Yield non-empty JSONL lines from the end of a file backwards."""
+
+    with path.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        position = handle.tell()
+        remainder = b""
+
+        while position > 0:
+            read_size = min(int(chunk_size), position)
+            position -= read_size
+            handle.seek(position)
+            chunk = handle.read(read_size)
+            buffer = chunk + remainder
+            lines = buffer.split(b"\n")
+            remainder = lines[0]
+            for raw_line in reversed(lines[1:]):
+                line = raw_line.strip()
+                if line:
+                    yield line.decode("utf-8", errors="replace")
+
+        final_line = remainder.strip()
+        if final_line:
+            yield final_line.decode("utf-8", errors="replace")
+
 def record_fill_event(
     step: TradingStep,
     fill_price: float,
@@ -82,21 +113,25 @@ def read_pending_fills(since_minutes: int = 60) -> list[dict]:
     """Read recent fill events for conditional order triggering."""
     if not FILL_EVENTS_FILE.exists():
         return []
-    cutoff = datetime.now(timezone.utc).timestamp() - since_minutes * 60
-    events = []
-    for line in FILL_EVENTS_FILE.read_text().strip().split("\n"):
-        if not line:
-            continue
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=max(int(since_minutes), 0))
+    recent_events: list[dict] = []
+    for line in _iter_jsonl_lines_reverse(FILL_EVENTS_FILE):
         try:
             event = json.loads(line)
-            event_ts = datetime.fromisoformat(event["timestamp"]).timestamp()
-            if event_ts > cutoff:
-                events.append(event)
-        except (json.JSONDecodeError, KeyError) as e:
+            event_ts = datetime.fromisoformat(str(event["timestamp"]).replace("Z", "+00:00"))
+            if event_ts.tzinfo is None:
+                event_ts = event_ts.replace(tzinfo=timezone.utc)
+            else:
+                event_ts = event_ts.astimezone(timezone.utc)
+            if event_ts <= cutoff:
+                break
+            recent_events.append(event)
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
             # FIX: log malformed lines so corrupt fill_events.jsonl is visible
             logger.debug(f"read_pending_fills: skipping malformed line: {e!r} | {line[:80]!r}")
             continue
-    return events
+    recent_events.reverse()
+    return recent_events
 
 
 # ---------------------------------------------------------------------------

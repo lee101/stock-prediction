@@ -163,6 +163,102 @@ def _classify_update_stability(
     return None
 
 
+def _wandb_summary_update(
+    wandb_run,
+    values: dict[str, object],
+) -> None:
+    """Best-effort summary update that never crashes training."""
+    if wandb_run is None or not values:
+        return
+
+    cleaned: dict[str, object] = {}
+    for key, value in values.items():
+        if value is None:
+            continue
+        if isinstance(value, np.generic):
+            value = value.item()
+        if isinstance(value, float) and not math.isfinite(value):
+            continue
+        cleaned[str(key)] = value
+
+    if not cleaned:
+        return
+
+    summary = getattr(wandb_run, "summary", None)
+    if summary is None:
+        return
+
+    try:
+        update_fn = getattr(summary, "update", None)
+        if callable(update_fn):
+            update_fn(cleaned)
+    except Exception:
+        pass
+
+    for key, value in cleaned.items():
+        try:
+            summary[key] = value
+        except Exception:
+            continue
+
+
+def _validation_smooth_score(val_returns: list[float]) -> float:
+    """Score cross-window validation stability on a 0..1 scale."""
+    if not val_returns:
+        return 0.0
+    if len(val_returns) == 1:
+        return 1.0 if val_returns[0] >= 0.0 else 0.0
+    returns = np.asarray(val_returns, dtype=np.float64)
+    dispersion = float(np.std(returns))
+    downside = float(np.mean(np.clip(-returns, a_min=0.0, a_max=None)))
+    return float(1.0 / (1.0 + 4.0 * dispersion + 8.0 * downside))
+
+
+def _summarize_validation_results(
+    *,
+    val_returns: list[float],
+    val_sortinos: list[float],
+    val_max_drawdowns: list[float],
+    val_trades: list[float],
+) -> dict[str, float]:
+    """Aggregate periodic validation windows into stable summary metrics."""
+    if not val_returns:
+        return {
+            "val/return": 0.0,
+            "val/sortino": 0.0,
+            "val/max_drawdown": 0.0,
+            "val/negative_windows": 0.0,
+            "val/negative_rate": 0.0,
+            "val/avg_trades": 0.0,
+            "val/score": -100.0,
+            "val/return_std": 0.0,
+            "smooth_score": 0.0,
+        }
+
+    val_neg = float(sum(1 for ret in val_returns if ret < 0.0))
+    n_windows = float(len(val_returns))
+    val_med = float(np.median(np.asarray(val_returns, dtype=np.float64)))
+    val_sortino_med = float(np.median(np.asarray(val_sortinos or [0.0], dtype=np.float64)))
+    val_max_drawdown_worst = float(np.max(np.asarray(val_max_drawdowns or [0.0], dtype=np.float64)))
+    val_avg_trades = float(np.mean(np.asarray(val_trades or [0.0], dtype=np.float64)))
+    val_return_std = float(np.std(np.asarray(val_returns, dtype=np.float64))) if len(val_returns) > 1 else 0.0
+    val_score = val_med * 100.0 - 2.0 * val_neg
+    if val_avg_trades < 1.0:
+        val_score = min(val_score, -100.0)
+
+    return {
+        "val/return": val_med,
+        "val/sortino": val_sortino_med,
+        "val/max_drawdown": val_max_drawdown_worst,
+        "val/negative_windows": val_neg,
+        "val/negative_rate": val_neg / max(n_windows, 1.0),
+        "val/avg_trades": val_avg_trades,
+        "val/score": val_score,
+        "val/return_std": val_return_std,
+        "smooth_score": _validation_smooth_score(val_returns),
+    }
+
+
 # ─── Policy Network ───────────────────────────────────────────────────
 
 
@@ -920,12 +1016,13 @@ def train(args):
     _random.seed(args.seed)
     _np.random.seed(args.seed)
 
-    # Enable TF32 for faster matmuls on Ampere+ GPUs
+    # Enable TF32 for faster matmuls on Ampere+ GPUs unless explicitly disabled.
     if device.type == "cuda":
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
+        use_tf32 = not getattr(args, "no_tf32", False)
+        torch.backends.cuda.matmul.allow_tf32 = use_tf32
+        torch.backends.cudnn.allow_tf32 = use_tf32
         torch.backends.cudnn.benchmark = False  # required for reproducibility
-        print("  TF32 enabled")
+        print(f"  TF32 {'enabled' if use_tf32 else 'disabled'}")
 
     # ── Load shared data ──
     data_path = str(Path(args.data_path).resolve())
@@ -1145,6 +1242,8 @@ def train(args):
                 entity=args.wandb_entity,
                 name=args.wandb_run_name or None,
                 group=args.wandb_group or None,
+                id=args.wandb_run_id or None,
+                resume=args.wandb_resume or None,
                 config=vars(args),
                 mode=args.wandb_mode,
             )
@@ -1434,6 +1533,8 @@ def train(args):
     _consecutive_unstable_updates = 0
     _skipped_unstable_updates = 0
     _lr_backoff_count = 0
+    latest_train_summary: dict[str, object] = {}
+    latest_val_summary: dict[str, object] = {}
     periodic_ckpt_mgr = TopKCheckpointManager(
         Path(args.checkpoint_dir), max_keep=args.max_periodic_checkpoints, mode="max",
         r2_prefix=args.r2_prefix,
@@ -1890,6 +1991,8 @@ def train(args):
                     logits, _ = policy(obs_t)
                 return int(torch.argmax(logits, dim=-1).item())
             val_rets = []
+            val_sortinos = []
+            val_max_drawdowns = []
             val_trades = []
             for _vs in _val_eval_starts:
                 _w = _slice_window(_val_data, start=int(_vs), steps=_VAL_WINDOW_STEPS)
@@ -1897,16 +2000,20 @@ def train(args):
                                            fill_buffer_bps=5.0, periods_per_year=float(args.periods_per_year),
                                            enable_drawdown_profit_early_exit=False)
                 val_rets.append(_r.total_return)
+                val_sortinos.append(_r.sortino)
+                val_max_drawdowns.append(_r.max_drawdown)
                 val_trades.append(_r.num_trades)
             policy.train()
-            val_neg = sum(1 for r in val_rets if r < 0)
-            val_med = float(np.median(val_rets)) * 100
-            val_avg_trades = float(np.mean(val_trades))
-            # Score: high median minus 2% penalty per negative window
-            # Penalize "do nothing" policies: require avg_trades >= 1 per 90-day window
-            val_score = val_med - 2.0 * val_neg
-            if val_avg_trades < 1.0:
-                val_score = min(val_score, -100.0)  # penalize near-zero trading
+            val_summary = _summarize_validation_results(
+                val_returns=val_rets,
+                val_sortinos=val_sortinos,
+                val_max_drawdowns=val_max_drawdowns,
+                val_trades=val_trades,
+            )
+            val_neg = int(val_summary["val/negative_windows"])
+            val_med = float(val_summary["val/return"]) * 100.0
+            val_avg_trades = float(val_summary["val/avg_trades"])
+            val_score = float(val_summary["val/score"])
             if val_score > _val_best_score:
                 _val_best_score = val_score
                 _val_best_neg = val_neg
@@ -1935,6 +2042,27 @@ def train(args):
                 )
             n_val = len(_val_eval_starts)
             print(f"  [val] med={val_med:.1f}% neg={val_neg}/{n_val} trades_avg={val_avg_trades:.1f} score={val_score:.1f} best_score={_val_best_score:.1f} best_neg={_val_best_neg_track}")
+
+            latest_val_summary = {
+                **val_summary,
+                "val/best_score": float(_val_best_score),
+                "val/best_negative_windows": float(_val_best_neg_track),
+            }
+            if wandb_run is not None:
+                wandb_run.log(
+                    {
+                        **latest_val_summary,
+                        "global_step": global_step,
+                    },
+                    step=global_step,
+                )
+                _wandb_summary_update(
+                    wandb_run,
+                    {
+                        **latest_val_summary,
+                        "global_step": global_step,
+                    },
+                )
 
             # Val-neg early stopping: stop if val_neg consistently too high
             if _es_val_neg_threshold > 0:
@@ -1981,6 +2109,12 @@ def train(args):
                 "train/lr": optimizer.param_groups[0]["lr"],
                 "train/ent_coef": ent_coef,
                 "train/clip_eps": clip_eps,
+                "train/avg_grad_norm": avg_grad_norm,
+                "train/peak_grad_norm": peak_grad_norm,
+                "train/peak_grad_abs": peak_grad_abs,
+                "train/update_skips": float(update_skips),
+                "train/skipped_unstable_updates_total": float(_skipped_unstable_updates),
+                "train/lr_backoff_count": float(_lr_backoff_count),
                 "perf/steps_per_sec": sps,
                 "global_step": global_step,
             }
@@ -1995,7 +2129,37 @@ def train(args):
                     "train/episode_return_std": float(log_info.get("return_std", 0.0)),
                     "train/episode_length_mean": float(args.max_steps),
                 })
+                latest_train_summary = {
+                    "train/final_return": float(ep_return),
+                    "train/final_sortino": float(ep_sortino),
+                    "train/final_win_rate": float(ep_wr),
+                    "train/final_num_trades": float(ep_trades),
+                    "train/final_annualized_return": float(ep_annualized),
+                    "train/avg_grad_norm": float(avg_grad_norm),
+                    "train/peak_grad_norm": float(peak_grad_norm),
+                    "train/peak_grad_abs": float(peak_grad_abs),
+                    "train/update_skips": float(update_skips),
+                    "train/skipped_unstable_updates_total": float(_skipped_unstable_updates),
+                    "train/lr_backoff_count": float(_lr_backoff_count),
+                }
+            else:
+                latest_train_summary = {
+                    "train/avg_grad_norm": float(avg_grad_norm),
+                    "train/peak_grad_norm": float(peak_grad_norm),
+                    "train/peak_grad_abs": float(peak_grad_abs),
+                    "train/update_skips": float(update_skips),
+                    "train/skipped_unstable_updates_total": float(_skipped_unstable_updates),
+                    "train/lr_backoff_count": float(_lr_backoff_count),
+                }
             wandb_run.log(wb_metrics, step=global_step)
+            _wandb_summary_update(
+                wandb_run,
+                {
+                    **latest_train_summary,
+                    **latest_val_summary,
+                    "global_step": global_step,
+                },
+            )
 
         # ── Periodic checkpoint ──
         if update % args.save_every == 0:
@@ -2041,6 +2205,20 @@ def train(args):
             print(f"  [warn] Failed to upload final checkpoint to R2: {e}", file=sys.stderr)
 
     binding.vec_close(vec_handle)
+    if wandb_run is not None:
+        _wandb_summary_update(
+            wandb_run,
+            {
+                **latest_train_summary,
+                **latest_val_summary,
+                "global_step": global_step,
+                "train/best_return": float(best_return),
+            },
+        )
+        try:
+            wandb_run.finish()
+        except Exception:
+            pass
     print(f"\nTraining complete. Best return: {best_return:.4f}")
     print(f"Checkpoints saved to {args.checkpoint_dir}")
 
@@ -2290,6 +2468,11 @@ def main():
             "Loss is computed in FP32 for numerical stability."
         ),
     )
+    parser.add_argument(
+        "--no-tf32",
+        action="store_true",
+        help="Disable TF32 matmuls on CUDA for maximum numerical fidelity.",
+    )
 
     # Output
     parser.add_argument("--checkpoint-dir", default="pufferlib_market/checkpoints")
@@ -2341,6 +2524,10 @@ def main():
                         help="W&B run name (defaults to auto-generated)")
     parser.add_argument("--wandb-group", type=str, default=None,
                         help="W&B run group (useful for grouping autoresearch trials)")
+    parser.add_argument("--wandb-run-id", type=str, default=None,
+                        help="Optional W&B run id so a later process can resume/update the same run summary")
+    parser.add_argument("--wandb-resume", type=str, default=None,
+                        help="Optional W&B resume mode passed through to wandb.init (for example: allow)")
     parser.add_argument("--wandb-mode", type=str, default="online",
                         choices=["online", "offline", "disabled"],
                         help="W&B run mode")
