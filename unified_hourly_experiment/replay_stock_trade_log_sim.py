@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from newnanoalpacahourlyexp.marketsimulator import HourlyTraderMarketSimulator, HourlyTraderSimulationConfig
 from unified_hourly_experiment.marketsimulator import PortfolioConfig, run_portfolio_simulation
+
+
+DEFAULT_REPLAY_INITIAL_CASH = 50_000.0
+DEFAULT_REPLAY_MAX_POSITIONS = 7
+_REPLAY_CONTEXT_MAX_GAP = pd.Timedelta(hours=48)
+
+
+@dataclass(frozen=True)
+class ReplayLiveContext:
+    logged_at: str
+    initial_cash: float | None
+    max_positions: int | None
+    market_order_entry: bool | None
+    effective_market_order_entry: bool | None
 
 
 def parse_csv_list(value: str) -> list[str]:
@@ -50,6 +65,116 @@ def parse_bool_list(value: str) -> list[bool]:
 
 def _as_utc(ts_value: Any) -> pd.Timestamp:
     return pd.to_datetime(ts_value, utc=True)
+
+
+def _as_positive_float(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
+
+
+def _as_positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
+
+
+def infer_live_replay_context(
+    *,
+    event_log: Path,
+    symbols: set[str] | None,
+    anchor_ts: pd.Timestamp | None,
+) -> ReplayLiveContext | None:
+    if anchor_ts is None or not event_log.exists():
+        return None
+
+    normalized_symbols = {str(symbol).upper() for symbol in symbols} if symbols else None
+    best_key: tuple[int, pd.Timedelta, int] | None = None
+    best_payload: dict[str, Any] | None = None
+
+    with event_log.open() as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if str(payload.get("event_type", "")).strip().lower() != "execute_trades_start":
+                continue
+
+            logged_at = _as_utc(payload.get("logged_at"))
+            if pd.isna(logged_at):
+                continue
+            time_delta = logged_at - anchor_ts
+            gap = abs(time_delta)
+            if gap > _REPLAY_CONTEXT_MAX_GAP:
+                continue
+
+            signal_symbols = {
+                str(symbol).upper()
+                for symbol in payload.get("signal_symbols", [])
+                if str(symbol).strip()
+            }
+            overlap = len(signal_symbols & normalized_symbols) if normalized_symbols and signal_symbols else 0
+            if normalized_symbols and signal_symbols and overlap <= 0:
+                continue
+
+            key = (0 if logged_at <= anchor_ts else 1, gap, -overlap)
+            if best_key is None or key < best_key:
+                best_key = key
+                best_payload = payload
+
+    if best_payload is None:
+        return None
+
+    account = best_payload.get("account") or {}
+    return ReplayLiveContext(
+        logged_at=str(best_payload.get("logged_at", "")),
+        initial_cash=_as_positive_float(account.get("equity")),
+        max_positions=_as_positive_int(best_payload.get("max_positions")),
+        market_order_entry=bool(best_payload.get("market_order_entry")) if "market_order_entry" in best_payload else None,
+        effective_market_order_entry=(
+            bool(best_payload.get("effective_market_order_entry"))
+            if "effective_market_order_entry" in best_payload
+            else None
+        ),
+    )
+
+
+def resolve_replay_runtime_config(
+    *,
+    event_log: Path,
+    symbols: set[str] | None,
+    anchor_ts: pd.Timestamp | None,
+    initial_cash: float | None,
+    max_positions: int | None,
+) -> tuple[float, int, ReplayLiveContext | None]:
+    inferred = infer_live_replay_context(
+        event_log=event_log,
+        symbols=symbols,
+        anchor_ts=anchor_ts,
+    )
+    resolved_initial_cash = (
+        float(initial_cash)
+        if initial_cash is not None
+        else (float(inferred.initial_cash) if inferred and inferred.initial_cash is not None else DEFAULT_REPLAY_INITIAL_CASH)
+    )
+    resolved_max_positions = (
+        int(max_positions)
+        if max_positions is not None
+        else (int(inferred.max_positions) if inferred and inferred.max_positions is not None else DEFAULT_REPLAY_MAX_POSITIONS)
+    )
+    return resolved_initial_cash, resolved_max_positions, inferred
 
 
 def load_live_entries(
@@ -332,6 +457,91 @@ def _entry_summary(
     return grouped[["hour", "symbol", "side", "count", "qty_total", "avg_price"]]
 
 
+def split_live_entries_by_bar_coverage(
+    live_entries: pd.DataFrame,
+    bars: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
+    live_columns = list(live_entries.columns)
+    if live_entries.empty:
+        return (
+            live_entries.copy(),
+            live_entries.copy(),
+            {
+                "covered_live_entry_count": 0,
+                "uncovered_live_entry_count": 0,
+                "covered_live_entry_ratio": 1.0,
+                "per_symbol": [],
+                "uncovered_rows": [],
+                "bar_data_last_timestamp_by_symbol": [],
+            },
+        )
+
+    live = live_entries.copy()
+    live["timestamp"] = pd.to_datetime(live["timestamp"], utc=True, errors="coerce").dt.floor("h")
+    live["symbol"] = live["symbol"].astype(str).str.upper()
+
+    bar_keys = bars[["timestamp", "symbol"]].copy()
+    bar_keys["timestamp"] = pd.to_datetime(bar_keys["timestamp"], utc=True, errors="coerce").dt.floor("h")
+    bar_keys["symbol"] = bar_keys["symbol"].astype(str).str.upper()
+    bar_keys = bar_keys.dropna(subset=["timestamp"]).drop_duplicates(subset=["timestamp", "symbol"])
+    bar_keys["has_bar"] = True
+
+    merged = live.merge(bar_keys, on=["timestamp", "symbol"], how="left")
+    merged["has_bar"] = merged["has_bar"].eq(True)
+
+    covered = merged.loc[merged["has_bar"], live_columns].reset_index(drop=True)
+    uncovered = merged.loc[~merged["has_bar"], live_columns].reset_index(drop=True)
+
+    per_symbol = (
+        merged.groupby("symbol", as_index=False)
+        .agg(
+            covered_live_entry_count=("has_bar", "sum"),
+            total_live_entry_count=("has_bar", "size"),
+        )
+        .sort_values(["covered_live_entry_count", "total_live_entry_count", "symbol"], ascending=[True, False, True])
+        .reset_index(drop=True)
+    )
+    per_symbol["uncovered_live_entry_count"] = (
+        per_symbol["total_live_entry_count"] - per_symbol["covered_live_entry_count"]
+    )
+
+    uncovered_rows = uncovered.copy()
+    if "timestamp" in uncovered_rows.columns:
+        uncovered_rows["timestamp"] = pd.to_datetime(uncovered_rows["timestamp"], utc=True, errors="coerce").astype(str)
+    uncovered_rows = uncovered_rows.sort_values(["timestamp", "symbol"]).reset_index(drop=True)
+
+    freshness = (
+        bars.assign(
+            timestamp=pd.to_datetime(bars["timestamp"], utc=True, errors="coerce").dt.floor("h"),
+            symbol=bars["symbol"].astype(str).str.upper(),
+        )
+        .dropna(subset=["timestamp"])
+        .groupby("symbol", as_index=False)
+        .agg(last_bar_timestamp_utc=("timestamp", "max"))
+        .sort_values("symbol")
+        .reset_index(drop=True)
+    )
+    freshness["last_bar_timestamp_utc"] = freshness["last_bar_timestamp_utc"].astype(str)
+
+    covered_count = int(len(covered))
+    uncovered_count = int(len(uncovered))
+    total_count = covered_count + uncovered_count
+    return (
+        covered,
+        uncovered,
+        {
+            "covered_live_entry_count": covered_count,
+            "uncovered_live_entry_count": uncovered_count,
+            "covered_live_entry_ratio": (float(covered_count) / float(total_count)) if total_count else 1.0,
+            "per_symbol": per_symbol[
+                ["symbol", "covered_live_entry_count", "uncovered_live_entry_count", "total_live_entry_count"]
+            ].to_dict(orient="records"),
+            "uncovered_rows": uncovered_rows.to_dict(orient="records"),
+            "bar_data_last_timestamp_by_symbol": freshness.to_dict(orient="records"),
+        },
+    )
+
+
 def run_replay(
     *,
     bars: pd.DataFrame,
@@ -350,6 +560,7 @@ def run_replay(
     sim_backend: str,
     cancel_ack_delay_bars: int = 1,
     partial_fill_on_touch: bool = False,
+    live_like_sizing: bool = True,
 ) -> dict[str, Any]:
     if str(sim_backend).strip().lower() == "hourly_trader":
         short_symbols = set()
@@ -415,6 +626,8 @@ def run_replay(
         max_leverage=float(leverage),
         force_close_slippage=0.003,
         int_qty=True,
+        entry_fee_inclusive_sizing=not bool(live_like_sizing),
+        market_order_entry_uses_signal_price_for_qty=bool(live_like_sizing and market_order_entry),
         fee_by_symbol={s: float(fee_rate) for s in symbols},
         sim_backend=sim_backend,
     )
@@ -514,8 +727,18 @@ def main() -> None:
     parser.add_argument("--symbols", default="")
     parser.add_argument("--start", default="")
     parser.add_argument("--end", default="")
-    parser.add_argument("--initial-cash", type=float, default=50_000.0)
-    parser.add_argument("--max-positions", type=int, default=7)
+    parser.add_argument(
+        "--initial-cash",
+        type=float,
+        default=None,
+        help="Starting equity. Defaults to the nearest execute_trades_start account.equity from the event log, else 50000.",
+    )
+    parser.add_argument(
+        "--max-positions",
+        type=int,
+        default=None,
+        help="Position cap. Defaults to the nearest execute_trades_start max_positions from the event log, else 7.",
+    )
     parser.add_argument("--max-hold-hours", type=int, default=6)
     parser.add_argument("--min-edge", type=float, default=-1.0)
     parser.add_argument("--fee-rate", type=float, default=0.001)
@@ -574,6 +797,29 @@ def main() -> None:
         compare_live_entries = actions[["timestamp", "symbol", "side", "qty", "entry_price"]].copy()
         compare_source = "trade_log"
     live_counts = _entry_counts(compare_live_entries, side_col="side")
+    covered_live_entries, uncovered_live_entries, coverage_summary = split_live_entries_by_bar_coverage(
+        compare_live_entries,
+        bars,
+    )
+    anchor_ts = None
+    if not compare_live_entries.empty and "logged_at" in compare_live_entries.columns:
+        anchor_ts = pd.to_datetime(compare_live_entries["logged_at"], utc=True, errors="coerce").min()
+    if (anchor_ts is None or pd.isna(anchor_ts)) and "logged_at" in actions.columns:
+        anchor_ts = pd.to_datetime(actions["logged_at"], utc=True, errors="coerce").min()
+    resolved_initial_cash, resolved_max_positions, inferred_context = resolve_replay_runtime_config(
+        event_log=args.event_log,
+        symbols=set(symbols),
+        anchor_ts=None if anchor_ts is None or pd.isna(anchor_ts) else pd.Timestamp(anchor_ts),
+        initial_cash=args.initial_cash,
+        max_positions=args.max_positions,
+    )
+    if inferred_context is not None:
+        logger.info(
+            "Using live replay context from {}: initial_cash=${:.2f} max_positions={}",
+            inferred_context.logged_at,
+            resolved_initial_cash,
+            resolved_max_positions,
+        )
 
     is_hourly_trader_backend = str(args.sim_backend).strip().lower() == "hourly_trader"
     market_order_values = [False] if is_hourly_trader_backend else parse_bool_list(args.market_order_entries)
@@ -591,8 +837,8 @@ def main() -> None:
                             bars=bars,
                             actions=actions,
                             symbols=symbols,
-                            initial_cash=args.initial_cash,
-                            max_positions=args.max_positions,
+                            initial_cash=resolved_initial_cash,
+                            max_positions=resolved_max_positions,
                             max_hold_hours=args.max_hold_hours,
                             min_edge=args.min_edge,
                             fee_rate=args.fee_rate,
@@ -604,8 +850,10 @@ def main() -> None:
                             sim_backend=args.sim_backend,
                             cancel_ack_delay_bars=cancel_ack_delay,
                             partial_fill_on_touch=partial_fill_on_touch,
+                            live_like_sizing=True,
                         )
                         compare = compare_entries(compare_live_entries, replay["sim_entries"])
+                        covered_compare = compare_entries(covered_live_entries, replay["sim_entries"])
                         row = {
                             "market_order_entry": bool(market_order_entry),
                             "entry_order_ttl_hours": int(ttl),
@@ -614,6 +862,14 @@ def main() -> None:
                             "cancel_ack_delay_bars": int(cancel_ack_delay),
                             "partial_fill_on_touch": bool(partial_fill_on_touch),
                             **compare,
+                            "covered_live_entries": covered_compare["live_entries"],
+                            "covered_sim_entries": covered_compare["sim_entries"],
+                            "covered_rows_compared": covered_compare["rows_compared"],
+                            "covered_hourly_abs_count_delta_total": covered_compare["hourly_abs_count_delta_total"],
+                            "covered_hourly_abs_qty_delta_total": covered_compare["hourly_abs_qty_delta_total"],
+                            "covered_matched_price_mae": covered_compare["matched_price_mae"],
+                            "covered_exact_row_ratio": covered_compare["exact_row_ratio"],
+                            "covered_per_symbol": covered_compare["per_symbol"],
                             "sim_metrics": replay["sim"].metrics,
                         }
                         rows.append(row)
@@ -646,7 +902,16 @@ def main() -> None:
         "window_end_utc": str(end),
         "symbols": symbols,
         "compare_source": compare_source,
+        "resolved_replay_config": {
+            "initial_cash": float(resolved_initial_cash),
+            "max_positions": int(resolved_max_positions),
+            "inferred_live_context": asdict(inferred_context) if inferred_context is not None else None,
+            "live_like_sizing": True,
+        },
         "live_entry_count": int(live_counts["count"].sum()) if len(live_counts) else 0,
+        "live_entry_bar_coverage": coverage_summary,
+        "covered_live_entry_count": int(len(covered_live_entries)),
+        "uncovered_live_entry_count": int(len(uncovered_live_entries)),
         "top": rows[:10],
         "all": rows,
     }

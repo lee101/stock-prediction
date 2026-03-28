@@ -253,3 +253,163 @@ def test_chronos2_prediction_cache_tolerates_small_float_drift(monkeypatch: pyte
     shifted.loc[shifted.index[-1], "close"] += 1e-2
     wrapper.predict_ohlc(shifted, symbol="TEST", prediction_length=3)
     assert _CountingPipeline.call_count == 2
+
+
+class _NaNPredictDfPipeline:
+    def __init__(self) -> None:
+        self.model = object()
+
+    @classmethod
+    def from_pretrained(cls, *_args, **_kwargs):  # pragma: no cover - simple stub
+        return cls()
+
+    def predict_df(self, context_df, **kwargs):  # type: ignore[override]
+        prediction_length = int(kwargs.get("prediction_length", 1))
+        quantiles = kwargs.get("quantile_levels", [0.5])
+        target_cols = kwargs.get("target", ["close"])
+        start = pd.to_datetime(context_df["timestamp"].iloc[-1], utc=True)
+        timestamps = pd.date_range(start + pd.Timedelta(days=1), periods=prediction_length, freq="D", tz="UTC")
+        rows = []
+        for ts in timestamps:
+            for target in target_cols:
+                payload = {
+                    "timestamp": ts,
+                    "target_name": target,
+                    "predictions": np.nan,
+                }
+                for level in quantiles:
+                    payload[format(level, "g")] = np.nan
+                rows.append(payload)
+        return pd.DataFrame(rows)
+
+
+class _TensorOnlyPipeline:
+    def __init__(self) -> None:
+        self.model = object()
+
+    @classmethod
+    def from_pretrained(cls, *_args, **_kwargs):  # pragma: no cover - simple stub
+        return cls()
+
+    def predict_quantiles(self, inputs, prediction_length=None, quantile_levels=None, limit_prediction_length=False):
+        horizon = int(prediction_length or 1)
+        levels = list(quantile_levels or [0.5])
+        quantiles = []
+        means = []
+        for idx, _series in enumerate(inputs):
+            base = 100.0 + idx
+            q = np.zeros((1, horizon, len(levels)), dtype=np.float32)
+            for step in range(horizon):
+                for q_idx, level in enumerate(levels):
+                    q[0, step, q_idx] = base + step + float(level)
+            m = np.array([[base + step + 0.5 for step in range(horizon)]], dtype=np.float32)
+            quantiles.append(q)
+            means.append(m)
+        return quantiles, means
+
+
+class _CompileOnlyNaNPipeline:
+    def __init__(self) -> None:
+        self.eager_model = object()
+        self.compiled_model = object()
+        self.model = self.eager_model
+
+    def predict_df(self, context_df, **kwargs):  # type: ignore[override]
+        prediction_length = int(kwargs.get("prediction_length", 1))
+        quantiles = kwargs.get("quantile_levels", [0.5])
+        target_cols = kwargs.get("target", ["close"])
+        start = pd.to_datetime(context_df["timestamp"].iloc[-1], utc=True)
+        timestamps = pd.date_range(start + pd.Timedelta(days=1), periods=prediction_length, freq="D", tz="UTC")
+        rows = []
+        emit_nan = self.model is self.compiled_model
+        for ts in timestamps:
+            for target in target_cols:
+                payload = {
+                    "timestamp": ts,
+                    "target_name": target,
+                    "predictions": np.nan if emit_nan else 101.5,
+                }
+                for level in quantiles:
+                    payload[format(level, "g")] = np.nan if emit_nan else 100.0 + float(level)
+                rows.append(payload)
+        return pd.DataFrame(rows)
+
+
+def test_chronos2_prediction_falls_back_from_nonfinite_cpu_predictions(monkeypatch: pytest.MonkeyPatch) -> None:
+    fallback_loads: List[dict[str, Any]] = []
+
+    def _fake_cute_loader(**kwargs):  # type: ignore[no-untyped-def]
+        fallback_loads.append(dict(kwargs))
+        return _TensorOnlyPipeline()
+
+    monkeypatch.setenv("CHRONOS_COMPILE", "0")
+    monkeypatch.setattr(chronos2_wrapper, "_ChronosBasePipeline", _NaNPredictDfPipeline)
+    monkeypatch.setattr(chronos2_wrapper, "_load_cutechronos_pipeline", _fake_cute_loader)
+
+    wrapper = Chronos2OHLCWrapper.from_pretrained(
+        model_id="stub/chronos2",
+        device_map="cpu",
+        default_context_length=32,
+        default_batch_size=8,
+        torch_compile=False,
+        cache_policy="never",
+    )
+
+    result = wrapper.predict_ohlc(_build_context(40), symbol="TEST", prediction_length=3, batch_size=16)
+
+    assert len(fallback_loads) == 1
+    assert fallback_loads[0]["model_id"] == "stub/chronos2"
+    assert fallback_loads[0]["torch_compile"] is False
+    assert fallback_loads[0]["compile_mode"] is None
+    assert np.isfinite(result.median.to_numpy()).all()
+    assert result.median["close"].tolist() == pytest.approx([103.5, 104.5, 105.5])
+
+
+def test_chronos2_prediction_supports_tensor_only_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CHRONOS_COMPILE", "0")
+    monkeypatch.setattr(chronos2_wrapper, "_load_cutechronos_pipeline", lambda **_kwargs: _TensorOnlyPipeline())
+
+    wrapper = Chronos2OHLCWrapper.from_pretrained(
+        model_id="stub/chronos2",
+        device_map="cpu",
+        default_context_length=32,
+        default_batch_size=8,
+        torch_compile=False,
+        pipeline_backend="cutechronos",
+        cache_policy="never",
+    )
+
+    result = wrapper.predict_ohlc(_build_context(40), symbol="TEST", prediction_length=2)
+
+    assert np.isfinite(result.median.to_numpy()).all()
+    assert result.median["open"].tolist() == pytest.approx([100.5, 101.5])
+    assert result.median["close"].tolist() == pytest.approx([103.5, 104.5])
+
+
+def test_chronos2_prediction_retries_eager_before_safe_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    pipeline = _CompileOnlyNaNPipeline()
+    wrapper = Chronos2OHLCWrapper(
+        pipeline,
+        device_hint="cpu",
+        default_context_length=32,
+        default_batch_size=8,
+        torch_compile=False,
+    )
+    wrapper._torch_compile_enabled = True
+    wrapper._torch_compile_success = True
+    wrapper._eager_model = pipeline.eager_model
+    wrapper._resolved_model_id = "stub/chronos2"
+    pipeline.model = pipeline.compiled_model
+
+    monkeypatch.setattr(
+        chronos2_wrapper,
+        "_load_cutechronos_pipeline",
+        lambda **_kwargs: pytest.fail("safe fallback should not be used when eager retry succeeds"),
+    )
+
+    result = wrapper.predict_ohlc(_build_context(40), symbol="TEST", prediction_length=2)
+
+    assert wrapper._torch_compile_success is False
+    assert pipeline.model is pipeline.eager_model
+    assert np.isfinite(result.median.to_numpy()).all()
+    assert result.median["close"].tolist() == pytest.approx([100.5, 100.5])

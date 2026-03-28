@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pandas as pd
 
 from ensemblemodel.aggregator import ClippedMeanAggregator, PairwiseHMMVotingAggregator
 from ensemblemodel.backends import BackendResult, EnsembleBackend, EnsembleRequest
 from ensemblemodel.pipeline import EnsembleForecastPipeline
+from src.models import toto_aggregation
 
 
 class _FakeBackend(EnsembleBackend):
@@ -40,6 +43,37 @@ def test_clipped_mean_aggregator_downweights_outliers():
     forecast = agg.combine([base, outlier], ["close"])
     value = float(forecast.columns["close"].prediction[0])
     assert value < 4.5  # trimmed aggregation dampens extreme outlier
+
+
+def test_clipped_mean_aggregator_tolerates_numpy_module_without_float64():
+    numpy_lite = SimpleNamespace(
+        asarray=np.asarray,
+        quantile=np.quantile,
+        sort=np.sort,
+        median=np.median,
+        clip=np.clip,
+        squeeze=np.squeeze,
+    )
+    toto_aggregation.setup_toto_aggregation_imports(numpy_module=numpy_lite)
+    try:
+        agg = ClippedMeanAggregator(method="trimmed_mean_10", clip_percentile=0.10, clip_std=1.0, weight_resolution=4)
+        base = BackendResult(
+            name="stable",
+            weight=1.0,
+            latency_s=0.001,
+            samples={"close": np.array([[1.0], [1.1], [0.9]])},
+        )
+        outlier = BackendResult(
+            name="noisy",
+            weight=1.0,
+            latency_s=0.001,
+            samples={"close": np.array([[15.0]])},
+        )
+        forecast = agg.combine([base, outlier], ["close"])
+        value = float(forecast.columns["close"].prediction[0])
+        assert value < 4.5
+    finally:
+        toto_aggregation.setup_toto_aggregation_imports(numpy_module=np)
 
 
 def test_aggregator_respects_weights():

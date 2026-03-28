@@ -86,6 +86,27 @@ def test_bid_ask_populated_when_add_latest_false(mock_client, mock_stock_data, m
     assert bid == ask, "Bid and ask should be equal (0 spread)"
 
 
+def test_malformed_price_frame_falls_back_to_synthetic_bid_ask(mock_client, monkeypatch):
+    """Test that a non-DataFrame upstream result cannot leak mock values into bid/ask state."""
+    import data_curate_daily
+    from data_curate_daily import download_exchange_latest_data, get_bid, get_ask
+    import sys
+    sys.modules['data_curate_daily'].ADD_LATEST = False
+
+    monkeypatch.setattr(
+        data_curate_daily,
+        'download_stock_data_between_times',
+        lambda api, end, start, symbol: mock.MagicMock(),
+    )
+
+    result = download_exchange_latest_data(mock_client, 'ETHUSD')
+
+    assert isinstance(result, pd.DataFrame)
+    assert result.empty
+    assert get_bid('ETHUSD') == 100.0
+    assert get_ask('ETHUSD') == 100.0
+
+
 def test_bid_ask_populated_when_api_returns_none(mock_client, mock_stock_data, monkeypatch):
     """Test that synthetic values are used when API returns None for bid/ask."""
     # Import modules and patch

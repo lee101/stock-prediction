@@ -9,6 +9,8 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "rl-trading-agent-binance"))
 
+import trade_binance_live as trade_binance_live_module
+
 from trade_binance_live import (
     _binance_error_code,
     _dedupe_side_orders,
@@ -56,14 +58,17 @@ def test_error_code_none_for_generic():
     assert _binance_error_code(exc) is None
 
 
+def test_error_code_none_attribute():
+    exc = FakeBinanceAPIException(None, "No message available")
+    assert _binance_error_code(exc) is None
+
+
 def test_gone_codes():
     assert -2011 in _BINANCE_ORDER_GONE_CODES
     assert -2013 in _BINANCE_ORDER_GONE_CODES
 
 
 # --- _dedupe_side_orders tests ---
-
-CANCEL_PATH = "trade_binance_live._cancel_open_order"
 
 
 def test_no_matching_orders():
@@ -94,7 +99,7 @@ def test_existing_order_covers_notional():
     assert skip is True
 
 
-@patch(CANCEL_PATH)
+@patch.object(trade_binance_live_module, "_cancel_open_order")
 def test_cancel_succeeds(mock_cancel):
     order = _make_order(order_id=101, qty=0.3)
     other = _make_order(symbol="ETHUSDT", order_id=200)
@@ -108,7 +113,7 @@ def test_cancel_succeeds(mock_cancel):
     assert result[0]["orderId"] == 200
 
 
-@patch(CANCEL_PATH, side_effect=FakeBinanceAPIException(-2011, "Unknown order sent."))
+@patch.object(trade_binance_live_module, "_cancel_open_order", side_effect=FakeBinanceAPIException(-2011, "Unknown order sent."))
 def test_cancel_fails_2011_order_gone(mock_cancel):
     order = _make_order(order_id=555, qty=0.3)
     result, skip = _dedupe_side_orders(
@@ -119,7 +124,7 @@ def test_cancel_fails_2011_order_gone(mock_cancel):
     assert order not in result
 
 
-@patch(CANCEL_PATH, side_effect=FakeBinanceAPIException(-2013, "Order does not exist."))
+@patch.object(trade_binance_live_module, "_cancel_open_order", side_effect=FakeBinanceAPIException(-2013, "Order does not exist."))
 def test_cancel_fails_2013_order_gone(mock_cancel):
     order = _make_order(order_id=556, qty=0.3)
     result, skip = _dedupe_side_orders(
@@ -130,7 +135,7 @@ def test_cancel_fails_2013_order_gone(mock_cancel):
     assert order not in result
 
 
-@patch(CANCEL_PATH, side_effect=Exception("APIError(code=-2011): Unknown order sent."))
+@patch.object(trade_binance_live_module, "_cancel_open_order", side_effect=Exception("APIError(code=-2011): Unknown order sent."))
 def test_cancel_fails_2011_from_string(mock_cancel):
     order = _make_order(order_id=557, qty=0.3)
     result, skip = _dedupe_side_orders(
@@ -140,7 +145,7 @@ def test_cancel_fails_2011_from_string(mock_cancel):
     assert skip is False
 
 
-@patch(CANCEL_PATH, side_effect=Exception("Connection timeout"))
+@patch.object(trade_binance_live_module, "_cancel_open_order", side_effect=Exception("Connection timeout"))
 def test_cancel_fails_transient_error(mock_cancel):
     order = _make_order(order_id=558, qty=0.3)
     result, skip = _dedupe_side_orders(
@@ -150,7 +155,18 @@ def test_cancel_fails_transient_error(mock_cancel):
     assert skip is False, "transient error should not prevent placing new order"
 
 
-@patch(CANCEL_PATH, side_effect=ConnectionError("Network unreachable"))
+@patch.object(trade_binance_live_module, "_cancel_open_order", side_effect=FakeBinanceAPIException(None, "No message available"))
+def test_cancel_fails_without_binance_code(mock_cancel):
+    order = _make_order(order_id=560, qty=0.3)
+    result, skip = _dedupe_side_orders(
+        [order], symbol="BTCUSDT", side="SELL", execution_mode="margin",
+        dry_run=False, desired_qty=0.5,
+    )
+    assert skip is False
+    assert order not in result
+
+
+@patch.object(trade_binance_live_module, "_cancel_open_order", side_effect=ConnectionError("Network unreachable"))
 def test_cancel_fails_network_error(mock_cancel):
     order = _make_order(order_id=559, qty=0.3)
     result, skip = _dedupe_side_orders(
@@ -177,9 +193,10 @@ def test_dry_run_skips_cancel():
         dry_run=True, desired_qty=0.5,
     )
     assert skip is False
+    assert result == []
 
 
-@patch(CANCEL_PATH)
+@patch.object(trade_binance_live_module, "_cancel_open_order")
 def test_multiple_orders_all_cancelled(mock_cancel):
     o1 = _make_order(order_id=701, qty=0.2)
     o2 = _make_order(order_id=702, qty=0.2)
@@ -194,7 +211,7 @@ def test_multiple_orders_all_cancelled(mock_cancel):
     assert result[0]["orderId"] == 800
 
 
-@patch(CANCEL_PATH)
+@patch.object(trade_binance_live_module, "_cancel_open_order")
 def test_multiple_orders_second_fails_2011(mock_cancel):
     mock_cancel.side_effect = [None, FakeBinanceAPIException(-2011, "Unknown order")]
     o1 = _make_order(order_id=901, qty=0.2)

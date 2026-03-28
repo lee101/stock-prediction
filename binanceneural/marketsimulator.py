@@ -22,6 +22,7 @@ class SimulationConfig:
     enable_probe_mode: bool = False
     probe_notional: float = 1.0
     max_hold_hours: Optional[int] = None
+    force_close_on_max_hold: bool = True
     fill_buffer_bps: float = 0.0  # require price to penetrate limit by N bps to fill
     decision_lag_bars: int = 0  # shift actions forward by N bars (0 = same-bar, 1 = realistic)
     one_side_per_bar: bool = False  # only allow buy OR sell per bar, not both
@@ -234,7 +235,7 @@ def run_shared_cash_simulation(
             )
 
         # Max hold enforcement per symbol (at close).
-        if sim_config.max_hold_hours is not None:
+        if sim_config.force_close_on_max_hold and sim_config.max_hold_hours is not None:
             for row in chunk.itertuples(index=False):
                 symbol = str(getattr(row, "symbol")).upper()
                 inv = float(inventory.get(symbol, 0.0))
@@ -517,7 +518,7 @@ def _simulate_symbol(frame: pd.DataFrame, symbol: str, config: SimulationConfig)
                 )
             )
 
-        if config.max_hold_hours is not None and inventory > 0 and open_time is not None:
+        if config.force_close_on_max_hold and config.max_hold_hours is not None and inventory > 0 and open_time is not None:
             held_hours = (ts - open_time).total_seconds() / 3600.0
             if held_hours >= config.max_hold_hours:
                 forced_qty = inventory

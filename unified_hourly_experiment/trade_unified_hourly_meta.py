@@ -47,6 +47,69 @@ def parse_csv_list(value: str) -> list[str]:
     return [x.strip() for x in value.split(",") if x.strip()]
 
 
+def _normalize_symbol_list(symbols: Sequence[str]) -> list[str]:
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for symbol in symbols:
+        sym = str(symbol).strip().upper()
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        normalized.append(sym)
+    return normalized
+
+
+def resolve_owned_stock_symbols(
+    requested_symbols: Sequence[str],
+    *,
+    enforce_service_lock: bool,
+) -> list[str]:
+    normalized = _normalize_symbol_list(requested_symbols)
+    if not enforce_service_lock:
+        return normalized
+
+    try:
+        from unified_orchestrator.symbol_lock import load_service_symbols
+
+        _, owned_stocks = load_service_symbols("trade-unified-hourly-meta")
+    except Exception as exc:
+        logger.warning(
+            "Failed to load trade-unified-hourly-meta symbol ownership; continuing with requested symbols ({})",
+            exc,
+        )
+        live.log_event(
+            "meta_symbol_ownership_load_failed",
+            requested_symbols=normalized,
+            error=str(exc),
+        )
+        return normalized
+
+    owned = set(_normalize_symbol_list(owned_stocks))
+    if not owned:
+        raise ValueError(
+            "No owned stock symbols configured for trade-unified-hourly-meta in service_config.json"
+        )
+
+    filtered = [symbol for symbol in normalized if symbol in owned]
+    dropped = [symbol for symbol in normalized if symbol not in owned]
+    if dropped:
+        logger.warning(
+            "Filtered symbols not owned by trade-unified-hourly-meta: {}",
+            ", ".join(dropped),
+        )
+        live.log_event(
+            "meta_symbol_ownership_filtered",
+            requested_symbols=normalized,
+            allowed_symbols=filtered,
+            dropped_symbols=dropped,
+        )
+    if not filtered:
+        raise ValueError(
+            "None of the requested stock symbols are owned by trade-unified-hourly-meta"
+        )
+    return filtered
+
+
 def apply_live_sizing_overrides(args: argparse.Namespace) -> None:
     live.TRADE_AMOUNT_SCALE = float(args.trade_amount_scale)
     live.MIN_BUY_AMOUNT = float(args.min_buy_amount)
@@ -708,7 +771,10 @@ def main() -> None:
     if len(names) != len(set(names)):
         raise ValueError(f"Strategy names must be unique. Got {names}")
 
-    stocks = [s.strip().upper() for s in args.stock_symbols.split(",") if s.strip()]
+    stocks = resolve_owned_stock_symbols(
+        [s.strip().upper() for s in args.stock_symbols.split(",") if s.strip()],
+        enforce_service_lock=bool(args.live),
+    )
     if not stocks:
         raise ValueError("No stock symbols were provided.")
 

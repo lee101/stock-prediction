@@ -1,17 +1,20 @@
-"""Root build script for editable installs that need the C trading binding.
+"""
+Build script for the C trading environment PufferLib binding.
 
-This mirrors `pufferlib_market/setup.py`, but resolves paths from the repo
-root so `uv pip install -e .` can build `pufferlib_market.binding`.
+Usage:
+    cd pufferlib_market && python setup.py build_ext --inplace
+    # or from repo root:
+    python pufferlib_market/setup.py build_ext --inplace
 """
 
+import os
+import sys
 from pathlib import Path
 from setuptools import setup, Extension
 
-# Paths.
-REPO = Path(__file__).resolve().parent
-ROOT = REPO / "pufferlib_market"
-ROOT_REL = Path("pufferlib_market")
-
+# Paths
+ROOT = Path(__file__).resolve().parent
+REPO = ROOT.parent
 # Try system PufferLib first, fall back to local checkout
 _local_ocean = REPO / "PufferLib" / "pufferlib" / "ocean"
 try:
@@ -36,11 +39,11 @@ import numpy as np
 ext = Extension(
     "pufferlib_market.binding",
     sources=[
-        str(ROOT_REL / "src" / "binding.c"),
-        str(ROOT_REL / "src" / "trading_env.c"),
+        str(ROOT / "src" / "binding.c"),
+        str(ROOT / "src" / "trading_env.c"),
     ],
     include_dirs=[
-        str(ROOT_REL / "include"),
+        str(ROOT / "include"),
         str(PUFFERLIB_OCEAN),
         np.get_include(),
     ],

@@ -82,20 +82,69 @@ def test_resolve_seeds_clamps_to_pool() -> None:
 
 def test_read_leaderboard_metrics_returns_none_when_missing(tmp_path: Path) -> None:
     metrics = dispatch._read_leaderboard_metrics(tmp_path / "nonexistent.csv")
-    assert metrics == {"val_return": None, "val_sortino": None}
+    assert metrics == {
+        "rank_metric": None,
+        "rank_score": None,
+        "val_return": None,
+        "val_sortino": None,
+        "generalization_score": None,
+        "smooth_score": None,
+        "holdout_robust_score": None,
+        "replay_combo_score": None,
+        "overfit_gap_score": None,
+    }
 
 
 def test_read_leaderboard_metrics_picks_best_row(tmp_path: Path) -> None:
     path = tmp_path / "lb.csv"
     with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["description", "rank_score", "val_return", "val_sortino"])
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "description",
+                "rank_metric",
+                "rank_score",
+                "val_return",
+                "val_sortino",
+                "generalization_score",
+                "smooth_score",
+            ],
+        )
         writer.writeheader()
-        writer.writerow({"description": "a", "rank_score": "1.0", "val_return": "0.05", "val_sortino": "1.2"})
-        writer.writerow({"description": "b", "rank_score": "3.0", "val_return": "0.10", "val_sortino": "2.1"})
-        writer.writerow({"description": "c", "rank_score": "0.5", "val_return": "0.01", "val_sortino": "0.8"})
+        writer.writerow({
+            "description": "a",
+            "rank_metric": "generalization_score",
+            "rank_score": "1.0",
+            "val_return": "0.05",
+            "val_sortino": "1.2",
+            "generalization_score": "0.8",
+            "smooth_score": "0.4",
+        })
+        writer.writerow({
+            "description": "b",
+            "rank_metric": "generalization_score",
+            "rank_score": "3.0",
+            "val_return": "0.10",
+            "val_sortino": "2.1",
+            "generalization_score": "2.5",
+            "smooth_score": "0.7",
+        })
+        writer.writerow({
+            "description": "c",
+            "rank_metric": "generalization_score",
+            "rank_score": "0.5",
+            "val_return": "0.01",
+            "val_sortino": "0.8",
+            "generalization_score": "0.1",
+            "smooth_score": "0.2",
+        })
     metrics = dispatch._read_leaderboard_metrics(path)
+    assert metrics["rank_metric"] == "generalization_score"
+    assert metrics["rank_score"] == pytest.approx(3.0)
     assert metrics["val_return"] == pytest.approx(0.10)
     assert metrics["val_sortino"] == pytest.approx(2.1)
+    assert metrics["generalization_score"] == pytest.approx(2.5)
+    assert metrics["smooth_score"] == pytest.approx(0.7)
 
 
 def test_read_leaderboard_metrics_falls_back_to_val_return(tmp_path: Path) -> None:
@@ -114,7 +163,9 @@ def test_read_leaderboard_metrics_empty_file(tmp_path: Path) -> None:
     path = tmp_path / "empty.csv"
     path.write_text("description,val_return,val_sortino\n")
     metrics = dispatch._read_leaderboard_metrics(path)
-    assert metrics == {"val_return": None, "val_sortino": None}
+    assert metrics["val_return"] is None
+    assert metrics["val_sortino"] is None
+    assert metrics["rank_score"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -124,17 +175,57 @@ def test_read_leaderboard_metrics_empty_file(tmp_path: Path) -> None:
 
 def test_print_variance_report_creates_csv(tmp_path: Path, capsys) -> None:
     seed_results = [
-        {"seed": 42, "val_return": 0.083, "val_sortino": 1.42, "leaderboard_path": "a.csv", "exit_code": 0},
-        {"seed": 123, "val_return": 0.061, "val_sortino": 1.18, "leaderboard_path": "b.csv", "exit_code": 0},
-        {"seed": 7, "val_return": 0.092, "val_sortino": 1.61, "leaderboard_path": "c.csv", "exit_code": 0},
+        {
+            "seed": 42,
+            "rank_metric": "generalization_score",
+            "rank_score": 1.8,
+            "generalization_score": 1.8,
+            "smooth_score": 0.62,
+            "holdout_robust_score": 3.1,
+            "replay_combo_score": 2.4,
+            "overfit_gap_score": 0.4,
+            "val_return": 0.083,
+            "val_sortino": 1.42,
+            "leaderboard_path": "a.csv",
+            "exit_code": 0,
+        },
+        {
+            "seed": 123,
+            "rank_metric": "generalization_score",
+            "rank_score": 1.4,
+            "generalization_score": 1.4,
+            "smooth_score": 0.58,
+            "holdout_robust_score": 2.9,
+            "replay_combo_score": 2.0,
+            "overfit_gap_score": 0.7,
+            "val_return": 0.061,
+            "val_sortino": 1.18,
+            "leaderboard_path": "b.csv",
+            "exit_code": 0,
+        },
+        {
+            "seed": 7,
+            "rank_metric": "generalization_score",
+            "rank_score": 2.1,
+            "generalization_score": 2.1,
+            "smooth_score": 0.71,
+            "holdout_robust_score": 3.7,
+            "replay_combo_score": 2.8,
+            "overfit_gap_score": 0.3,
+            "val_return": 0.092,
+            "val_sortino": 1.61,
+            "leaderboard_path": "c.csv",
+            "exit_code": 0,
+        },
     ]
     out_path = tmp_path / "pufferlib_market" / "test_multiseed.csv"
     dispatch._print_variance_report(seed_results, out_path)
 
     captured = capsys.readouterr()
     assert "Seed Results Summary" in captured.out
-    assert "Mean val_return" in captured.out
-    assert "Mean sortino" in captured.out
+    assert "rank_score:" in captured.out
+    assert "generalization:" in captured.out
+    assert "Failed seeds: 0/3" in captured.out
     assert "non-deterministic" in captured.out
 
     assert out_path.exists()
@@ -142,14 +233,32 @@ def test_print_variance_report_creates_csv(tmp_path: Path, capsys) -> None:
         rows = list(csv.DictReader(f))
     assert len(rows) == 3
     assert {int(r["seed"]) for r in rows} == {42, 123, 7}
+    summary_path = out_path.with_suffix(".summary.json")
+    assert summary_path.exists()
+    summary = summary_path.read_text()
+    assert '"failed_seed_count": 0' in summary
+    assert '"rank_metrics": [' in summary
 
 
 def test_print_variance_report_computes_correct_stats(tmp_path: Path, capsys) -> None:
     returns = [0.083, 0.061, 0.092]
     sortinos = [1.42, 1.18, 1.61]
     seed_results = [
-        {"seed": 42, "val_return": r, "val_sortino": s, "leaderboard_path": "", "exit_code": 0}
-        for r, s in zip(returns, sortinos)
+        {
+            "seed": idx,
+            "rank_metric": "rank_score",
+            "rank_score": r * 10.0,
+            "generalization_score": r * 10.0,
+            "smooth_score": 0.5,
+            "holdout_robust_score": r * 20.0,
+            "replay_combo_score": r * 15.0,
+            "overfit_gap_score": 0.2,
+            "val_return": r,
+            "val_sortino": s,
+            "leaderboard_path": "",
+            "exit_code": 0,
+        }
+        for idx, (r, s) in enumerate(zip(returns, sortinos), start=1)
     ]
     dispatch._print_variance_report(seed_results, tmp_path / "ms.csv")
     captured = capsys.readouterr()
@@ -159,21 +268,34 @@ def test_print_variance_report_computes_correct_stats(tmp_path: Path, capsys) ->
     mean_s = statistics.mean(sortinos)
     std_s = statistics.stdev(sortinos)
 
-    # The format is e.g. "+7.9% +/- 1.3%"
     assert f"{mean_r:+.1%}" in captured.out
     assert f"{std_r:.1%}" in captured.out
-    assert f"{mean_s:.2f}" in captured.out
+    assert f"{mean_s:+.2f}" in captured.out
+    assert f"{std_s:+.2f}" not in captured.out
     assert f"{std_s:.2f}" in captured.out
 
 
 def test_print_variance_report_handles_none_metrics(tmp_path: Path, capsys) -> None:
     seed_results = [
-        {"seed": 42, "val_return": None, "val_sortino": None, "leaderboard_path": "", "exit_code": 1},
+        {
+            "seed": 42,
+            "rank_metric": None,
+            "rank_score": None,
+            "generalization_score": None,
+            "smooth_score": None,
+            "holdout_robust_score": None,
+            "replay_combo_score": None,
+            "overfit_gap_score": None,
+            "val_return": None,
+            "val_sortino": None,
+            "leaderboard_path": "",
+            "exit_code": 1,
+        },
     ]
     dispatch._print_variance_report(seed_results, tmp_path / "ms.csv")
     captured = capsys.readouterr()
     assert "n/a" in captured.out
-    assert "Mean val_return: n/a" in captured.out
+    assert "Failed seeds: 1/1" in captured.out
 
 
 # ---------------------------------------------------------------------------

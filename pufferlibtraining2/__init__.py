@@ -10,6 +10,18 @@ and Biases).
 """
 
 from .config import TrainingPlan, load_plan
-from .trainer import train, run_with_config
+
+
+def train(*args, **kwargs):
+    from .trainer import train as _train
+
+    return _train(*args, **kwargs)
+
+
+def run_with_config(*args, **kwargs):
+    from .trainer import run_with_config as _run_with_config
+
+    return _run_with_config(*args, **kwargs)
+
 
 __all__ = ["TrainingPlan", "load_plan", "train", "run_with_config"]

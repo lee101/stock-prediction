@@ -7,7 +7,15 @@ from typing import Optional, Sequence
 import numpy as np
 import pandas as pd
 
-from kronostraining.metrics_utils import compute_mae_percent
+try:
+    from kronostraining.metrics_utils import compute_mae_percent
+except ImportError:
+    def compute_mae_percent(mae: float, actuals) -> float:
+        actual = np.asarray(actuals, dtype=np.float64)
+        scale = float(np.mean(np.abs(actual))) if actual.size else 0.0
+        if scale <= 0.0:
+            return 0.0
+        return float((float(mae) / scale) * 100.0)
 
 
 @dataclass(frozen=True)

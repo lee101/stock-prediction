@@ -47,6 +47,18 @@ except ImportError:
 REPO = Path(__file__).resolve().parent.parent
 
 
+def _make_wandb_run_id() -> str:
+    if _wandb_module is not None:
+        util = getattr(_wandb_module, "util", None)
+        generate_id = getattr(util, "generate_id", None)
+        if callable(generate_id):
+            try:
+                return str(generate_id())
+            except Exception:
+                pass
+    return f"ar_{int(time.time())}_{random.randint(0, 999999):06d}"
+
+
 def _read_mktd_header(path: str | Path) -> tuple[int, int]:
     """Read num_symbols and num_timesteps from an MKTD .bin header."""
     import struct
@@ -109,6 +121,7 @@ class TrialConfig:
     use_bf16: bool = True   # BF16 safe for PPO; ~20-30% speedup on RTX 5090/A40/H100
     cuda_graph_ppo: bool = True  # Static shapes work for PPO; ~10-20% extra speedup
     no_cuda_graph: bool = False  # Disable ALL CUDA graphs + torch.compile (for shared-GPU compat)
+    no_tf32: bool = False  # Disable TF32 matmuls for maximum numerical fidelity.
     time_budget_override: int = 0  # Override global time_budget for this config (0 = use global)
     vf_coef: float = 0.5   # Value function loss coefficient (default 0.5)
     max_grad_norm: float = 0.5  # Gradient clipping norm (default 0.5)
@@ -1344,8 +1357,6 @@ STOCK_EXPERIMENTS: list[dict] = [
      "weight_decay": 0.01, "trade_penalty": 0.10, "fill_slippage_bps": 5.0},
 
     # (F) More total friction
-    {"description": "q_wd01_tp05_slip10",
-     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 10.0},
     {"description": "q_wd02_tp05_slip10",
      "weight_decay": 0.02, "trade_penalty": 0.05, "fill_slippage_bps": 10.0},
     {"description": "q_wd01_tp08_slip10",
@@ -2480,6 +2491,59 @@ def _select_from_pool(
     return selected
 
 
+def _resolve_experiment_pool(
+    *,
+    stocks: bool,
+    h100_mode: bool,
+    stocks12: bool,
+) -> tuple[list[dict], str]:
+    if h100_mode:
+        return H100_STOCK_EXPERIMENTS, "h100 stocks mode"
+    if stocks12:
+        return (
+            STOCK_EXPERIMENTS + [
+                e for e in H100_STOCK_EXPERIMENTS
+                if e.get("requires_gpu") != "h100"
+            ],
+            "stocks12 mode",
+        )
+    if stocks:
+        return STOCK_EXPERIMENTS, "stocks mode"
+    return EXPERIMENTS + CRYPTO34_HOURLY_EXPERIMENTS, "crypto mode"
+
+
+def _resolved_experiment_overrides(experiment: dict) -> dict[str, object]:
+    base_defaults = asdict(TrialConfig())
+    resolved = asdict(build_config(experiment))
+    return {
+        key: value
+        for key, value in resolved.items()
+        if key != "description" and value != base_defaults.get(key)
+    }
+
+
+def _print_experiment_selection(
+    experiments: list[dict],
+    *,
+    describe: bool,
+) -> None:
+    for index, cfg_dict in enumerate(experiments):
+        desc = str(cfg_dict.get("description", ""))
+        gpu = str(cfg_dict.get("requires_gpu", "") or "")
+        gpu_note = f" [requires_gpu={gpu}]" if gpu else ""
+        print(f"{desc}{gpu_note}")
+        if not describe:
+            continue
+        overrides = _resolved_experiment_overrides(cfg_dict)
+        if overrides:
+            for key in sorted(overrides):
+                print(f"  {key}={overrides[key]!r}")
+        else:
+            print("  (default config)")
+        if index != len(experiments) - 1:
+            print()
+
+
 def select_experiments(
     *,
     start_from: int = 0,
@@ -2536,6 +2600,8 @@ def run_trial(
     multi_period_fill_slippage_bps: float = 8.0,
 ) -> dict:
     """Run a single training trial with time budget, then evaluate on val."""
+    wandb_run_id = _make_wandb_run_id() if wandb_project else None
+
     # Cap total_timesteps based on dataset size to prevent overfitting
     try:
         num_symbols, num_timesteps = _read_mktd_header(train_data)
@@ -2612,6 +2678,8 @@ def run_trial(
         cmd.extend(["--max-grad-norm", str(config.max_grad_norm)])
     if config.use_bf16:
         cmd.append("--use-bf16")
+    if config.no_tf32:
+        cmd.append("--no-tf32")
     if config.no_cuda_graph:
         cmd.append("--no-cuda-graph")
     elif config.cuda_graph_ppo:
@@ -2623,6 +2691,8 @@ def run_trial(
         ])
         if wandb_group:
             cmd.extend(["--wandb-group", wandb_group])
+        if wandb_run_id:
+            cmd.extend(["--wandb-run-id", wandb_run_id, "--wandb-resume", "allow"])
 
     # Allow per-config time budget override (e.g. h2048 needs more steps than h1024)
     if config.time_budget_override > 0:
@@ -3151,6 +3221,8 @@ def run_trial(
                 project=wandb_project,
                 name=config.description,
                 group=wandb_group or None,
+                id=wandb_run_id,
+                resume="allow" if wandb_run_id else None,
                 config=asdict(config),
                 reinit=True,
             )
@@ -3162,6 +3234,7 @@ def run_trial(
             }
             if val_return is not None:
                 summary_updates["best_val_return"] = val_return
+                summary_updates["val/return"] = val_return
             if val_sortino is not None:
                 summary_updates["val/sortino"] = val_sortino
             if val_wr is not None:
@@ -3176,6 +3249,20 @@ def run_trial(
                 summary_updates[f"holdout/{k}"] = v
             for k, v in market_metrics.items():
                 summary_updates[f"market/{k}"] = v
+            for k, v in replay_metrics.items():
+                summary_updates[f"replay/{k}"] = v
+                summary_updates.setdefault(k, v)
+            for key in (
+                "smooth_score",
+                "generalization_score",
+                "overfit_gap_score",
+                "val_replay_gap_pct",
+                "rank_score",
+            ):
+                value = result_payload.get(key)
+                if value is not None:
+                    summary_updates[key] = value
+                    summary_updates[f"trial/{key}"] = value
             summary_run.summary.update(summary_updates)
             summary_run.finish()
         except Exception:
@@ -3186,7 +3273,7 @@ def run_trial(
 
 def main():
     parser = argparse.ArgumentParser(description="Auto-research RL trading configs")
-    listing_only = "--list-experiments" in sys.argv
+    listing_only = "--list-experiments" in sys.argv or "--describe-experiments" in sys.argv
     stocks_mode = "--stocks" in sys.argv or "--h100-mode" in sys.argv or "--stocks12" in sys.argv
     # In stocks mode the data paths default to stocks12/stocks20 daily bins so they are
     # optional even if not listing.
@@ -3323,6 +3410,8 @@ def main():
                         help="Kill trial if val_ret < best_so_far * this at 25%%/50%% budget")
     parser.add_argument("--list-experiments", action="store_true",
                         help="Print all experiment names and exit")
+    parser.add_argument("--describe-experiments", action="store_true",
+                        help="Print selected experiments with resolved non-default config fields and exit")
     parser.add_argument("--seed", type=int, default=None,
                         help="Override random seed for all trials (default: use each trial config's seed field)")
     parser.add_argument("--wandb-project", type=str, default=None,
@@ -3431,23 +3520,18 @@ def main():
                     f"at {train_abs} — falling back to stocks12"
                 )
 
-    if args.list_experiments:
-        if args.h100_mode:
-            experiment_pool = H100_STOCK_EXPERIMENTS
-        elif args.stocks12:
-            experiment_pool = STOCK_EXPERIMENTS + [
-                e for e in H100_STOCK_EXPERIMENTS
-                if e.get("requires_gpu") != "h100"
-            ]
-        elif args.stocks:
-            experiment_pool = STOCK_EXPERIMENTS
-        else:
-            experiment_pool = EXPERIMENTS + CRYPTO34_HOURLY_EXPERIMENTS
-        for cfg_dict in experiment_pool:
-            desc = cfg_dict.get("description", "")
-            gpu = cfg_dict.get("requires_gpu", "")
-            gpu_note = f" [requires_gpu={gpu}]" if gpu else ""
-            print(f"{desc}{gpu_note}")
+    if args.list_experiments or args.describe_experiments:
+        experiment_pool, _ = _resolve_experiment_pool(
+            stocks=args.stocks,
+            h100_mode=args.h100_mode,
+            stocks12=args.stocks12,
+        )
+        experiments = _select_from_pool(
+            experiment_pool,
+            start_from=args.start_from,
+            descriptions=args.descriptions,
+        )
+        _print_experiment_selection(experiments, describe=bool(args.describe_experiments))
         sys.exit(0)
 
     leaderboard_path = Path(args.leaderboard)
@@ -3515,18 +3599,11 @@ def main():
                 existing_trials.add(row.get("description", ""))
 
     if args.stocks:
-        if args.h100_mode:
-            pool = H100_STOCK_EXPERIMENTS
-            mode_label = "h100 stocks mode"
-        elif args.stocks12:
-            pool = STOCK_EXPERIMENTS + [
-                e for e in H100_STOCK_EXPERIMENTS
-                if e.get("requires_gpu") != "h100"
-            ]
-            mode_label = "stocks12 mode"
-        else:
-            pool = STOCK_EXPERIMENTS
-            mode_label = "stocks mode"
+        pool, mode_label = _resolve_experiment_pool(
+            stocks=args.stocks,
+            h100_mode=args.h100_mode,
+            stocks12=args.stocks12,
+        )
         experiments = _select_from_pool(
             pool,
             start_from=args.start_from,

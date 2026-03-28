@@ -84,6 +84,8 @@ class UnifiedPolicyHFModel(nn.Module):
                 use_causal_attention=config.use_causal_attention,
                 rms_norm_eps=config.rms_norm_eps,
                 attention_window=config.attention_window,
+                attention_backend=config.attention_backend,
+                flex_block_size=config.flex_block_size,
                 use_residual_scalars=config.use_residual_scalars,
                 residual_scale_init=config.residual_scale_init,
                 skip_scale_init=config.skip_scale_init,

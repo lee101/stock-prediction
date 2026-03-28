@@ -70,9 +70,9 @@ def optimize_maxdiff_entry_exit(
     best_low_multiplier = 0.0
     best_base_profit: torch.Tensor | None = None
     best_final_profit: torch.Tensor | None = None
+    candidate_data: list[tuple[bool, torch.Tensor, float]] = []
 
     for candidate in close_at_eod_candidates:
-        stage_start = time.perf_counter()
         base_profit = calculate_profit_torch_with_entry_buysell_profit_values(
             close_actual,
             high_actual,
@@ -83,6 +83,19 @@ def optimize_maxdiff_entry_exit(
             close_at_eod=candidate,
             trading_fee=trading_fee,
         )
+        candidate_data.append((candidate, base_profit, float(base_profit.sum().item())))
+
+    shortlist = candidate_data
+    if (
+        close_actual.device.type == "cpu"
+        and len(candidate_data) > 1
+        and int(optim_kwargs.get("maxiter", 50)) <= 20
+        and int(optim_kwargs.get("popsize", 10)) <= 8
+    ):
+        shortlist = [max(candidate_data, key=lambda item: item[2])]
+
+    for candidate, base_profit, baseline_total in shortlist:
+        stage_start = time.perf_counter()
 
         high_mult, low_mult, _ = optimize_entry_exit_multipliers(
             close_actual,
@@ -107,6 +120,12 @@ def optimize_maxdiff_entry_exit(
             trading_fee=trading_fee,
         )
         total_profit = float(final_profit.sum().item())
+
+        if baseline_total > total_profit:
+            total_profit = baseline_total
+            final_profit = base_profit
+            high_mult = 0.0
+            low_mult = 0.0
 
         if total_profit > best_total_profit:
             best_total_profit = total_profit
@@ -159,8 +178,64 @@ def optimize_maxdiff_always_on(
     best_low_multiplier = 0.0
     best_buy_returns: torch.Tensor | None = None
     best_sell_returns: torch.Tensor | None = None
+    candidate_data: list[tuple[bool, torch.Tensor, torch.Tensor, float]] = []
 
     for candidate in close_at_eod_candidates:
+        baseline_buy_returns = calculate_profit_torch_with_entry_buysell_profit_values(
+            close_actual,
+            high_actual,
+            high_pred,
+            low_actual,
+            low_pred,
+            buy_indicator,
+            close_at_eod=candidate,
+            trading_fee=trading_fee,
+        )
+        if is_crypto:
+            baseline_sell_returns = torch.zeros_like(baseline_buy_returns)
+        else:
+            baseline_sell_returns = calculate_profit_torch_with_entry_buysell_profit_values(
+                close_actual,
+                high_actual,
+                high_pred,
+                low_actual,
+                low_pred,
+                sell_indicator,
+                close_at_eod=candidate,
+                trading_fee=trading_fee,
+            )
+        baseline_total = float((baseline_buy_returns + baseline_sell_returns).sum().item())
+        candidate_data.append((candidate, baseline_buy_returns, baseline_sell_returns, baseline_total))
+
+    shortlist = candidate_data
+    low_budget_cpu = (
+        close_actual.device.type == "cpu"
+        and len(candidate_data) > 1
+        and int(optim_kwargs.get("maxiter", 30)) <= 15
+        and int(optim_kwargs.get("popsize", 8)) <= 6
+    )
+    if low_budget_cpu:
+        best_candidate, best_buy_baseline, best_sell_baseline, best_baseline_total = max(
+            candidate_data,
+            key=lambda item: item[3],
+        )
+        return AlwaysOnOptimizationResult(
+            best_buy_baseline.detach().clone(),
+            best_sell_baseline.detach().clone(),
+            0.0,
+            0.0,
+            best_candidate,
+            timings,
+        )
+    if (
+        close_actual.device.type == "cpu"
+        and len(candidate_data) > 1
+        and int(optim_kwargs.get("maxiter", 30)) <= 20
+        and int(optim_kwargs.get("popsize", 8)) <= 8
+    ):
+        shortlist = [max(candidate_data, key=lambda item: item[3])]
+
+    for candidate, baseline_buy_returns, baseline_sell_returns, baseline_total in shortlist:
         stage_start = time.perf_counter()
         high_mult, low_mult, _ = optimize_always_on_multipliers(
             close_actual,
@@ -200,7 +275,14 @@ def optimize_maxdiff_always_on(
                 trading_fee=trading_fee,
             )
 
-        total_profit = float((buy_returns + sell_returns).sum().item())
+            total_profit = float((buy_returns + sell_returns).sum().item())
+        if baseline_total > total_profit:
+            total_profit = baseline_total
+            buy_returns = baseline_buy_returns
+            sell_returns = baseline_sell_returns
+            high_mult = 0.0
+            low_mult = 0.0
+
         if total_profit > best_total_profit:
             best_total_profit = total_profit
             best_close_at_eod = candidate

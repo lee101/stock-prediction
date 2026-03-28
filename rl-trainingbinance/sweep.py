@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib.util
 import itertools
 import json
 import sys
@@ -13,7 +14,23 @@ CURRENT_DIR = Path(__file__).resolve().parent
 if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
-from train import build_arg_parser, train
+
+def _load_local_module(module_name: str, filename: str):
+    spec = importlib.util.spec_from_file_location(module_name, CURRENT_DIR / filename)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load local module {filename}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules.setdefault(module_name, module)
+    spec.loader.exec_module(module)
+    return module
+
+
+try:
+    from train import build_arg_parser, train
+except Exception:
+    _train_mod = _load_local_module("rl_trainingbinance_sweep_train", "train.py")
+    build_arg_parser = _train_mod.build_arg_parser
+    train = _train_mod.train
 
 TUNABLE_FIELDS = (
     "max_gross_leverage",

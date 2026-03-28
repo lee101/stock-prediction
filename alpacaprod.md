@@ -7,17 +7,18 @@
 
 ---
 
-## Current Live Snapshot (2026-03-28 01:40 UTC)
-- **LIVE account**: equity **$39,010.40**, cash **$39,010.40**, buying power **$78,020.80**, last_equity **$40,483.64**
-- **LIVE positions**: no actionable open positions. Only dust remains in `AVAXUSD`, `BTCUSD`, `LTCUSD`, `SOLUSD`.
+## Current Live Snapshot (2026-03-28 09:29 UTC)
+- **LIVE account**: equity **$38,954.44**, cash **$38,954.44**, buying power **$77,908.88**, last_equity **$39,090.40**
+- **LIVE positions**: no actionable open positions. Only dust remains in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD`.
+- **LIVE open orders**: none
 - **ETH incident status**: the stale live `ETHUSD` position is **closed**. Alpaca order history shows:
   - old GTC exit order canceled at **2026-03-27 20:35:55 UTC**
   - market sell for **14.537579265 ETH** filled at **2026-03-27 20:35:56 UTC**
-- **Legacy hourly stock bot**: supervisor `unified-stock-trader` is **STOPPED** as of **2026-03-27 20:46 UTC**
+- **Legacy hourly stock bot**: supervisor `unified-stock-trader` is actually **ACTIVE** again; current PID is `153050`, and its runtime command still includes overlapping stock symbols that conflict with `daily-rl-trader.service`
 
 ---
 
-## Active Alpaca Services (2026-03-27 21:00 UTC)
+## Active Alpaca Services (2026-03-28 09:29 UTC)
 
 ### 1. `unified-orchestrator.service` — LIVE, ACTIVE
 - **Manager**: systemd
@@ -32,6 +33,7 @@
   - loader fix for old checkpoints without `encoder_norm` is deployed
   - latest journal shows `Checkpoint loaded: best.pt arch=mlp obs=90 actions=11 hidden=1024`
   - no crypto orders placed in the latest cycles because Gemini is mostly returning `API exhausted` / `hold`
+  - a local patch now exists to fall back to RL-only plans when Gemini is exhausted, but that patch is **not live** until `unified-orchestrator.service` is restarted
 
 ### 2. `daily-rl-trader.service` — LIVE, ACTIVE
 - **Manager**: systemd
@@ -60,13 +62,17 @@
 - **Mode**: `trade_hourlyv5.py` defaults to `PAPER=1`, and these units do not override it
 - **Status**: still running; not part of the preferred live stack
 
-### 5. `unified-stock-trader` — LEGACY, STOPPED
+### 5. `unified-stock-trader` — LIVE, ACTIVE, CONFIG-DRIFTED
 - **Manager**: supervisor
 - **Bot**: `unified_hourly_experiment/trade_unified_hourly_meta.py`
-- **Status**: `STOPPED` at **2026-03-27 20:46 UTC**
-- **Reason to keep stopped**:
-  - latest marketsim remained negative on 7d+ windows
-  - allowing it to run alongside `daily-rl-trader.service` would reintroduce stock-universe conflicts
+- **Status**: running as PID `153050`
+- **Current runtime symbol list**: `NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT,AAPL,MSFT,META,TSLA,NET,BKNG,EBAY,EXPE,ITUB,BTG,ABEV`
+- **Owned symbol list (`service_config.json`)**: `DBX,TRIP,MTCH,NYT,NET,BKNG,EBAY,EXPE,ITUB,BTG,ABEV`
+- **Installed supervisor config (2026-03-28 09:29 UTC)**: updated to the owned 11-symbol list above, but supervisor has **not** been reloaded/restarted yet, so the live process still carries the old overlapping 18-symbol command
+- **Why this is still a problem**:
+  - latest marketsim remains negative on 7d+ windows
+  - replay parity on the recent live `TSLA` + `ABEV` entries is now exact on count and quantity after fixing the replay harness to infer live `execute_trades_start` sizing context; remaining mismatch is price MAE (`0.3265`), not missing or mis-sized entries
+  - allowing the current process to persist into Monday open would overlap `daily-rl-trader.service` on `AAPL/MSFT/NVDA/GOOG/META/TSLA/PLTR`
 
 ---
 
@@ -159,8 +165,9 @@
 ## Known Risks
 - **First live trade is Monday 2026-03-30 ~13:35 UTC** — watch the journal on market open for correct 6-model ensemble load and order placement.
 - The orchestrator crypto path is loading correctly, but live execution quality is still constrained by Gemini exhaustion / hold-heavy responses.
+- The local fix for Gemini exhaustion -> RL-only fallback has passed targeted tests, but it is not live until the orchestrator is restarted.
 - The legacy `hourlyv5` paper services (UNIUSD/LINKUSD) are still running — intentionally left as paper-only; not part of live stack.
-- The legacy `unified-stock-trader` supervisor bot is stopped; if someone restarts it manually without revisiting ownership, stock conflicts can return.
+- The live `unified-stock-trader` supervisor bot is running on an old overlapping symbol list. The on-disk supervisor config is corrected, but a controlled reload/restart is still required before Monday open.
 - Ongoing seed sweeps (s1-14, s600+, tp03 s300+) looking for new phase-transition models. 350+ seeds tested, ~1% hit rate. Only s15/s36 found so far. 6-model is confirmed optimal — do NOT add further members unless they achieve ≥p10=45.4% in 7-model exhaustive eval.
 
 ---

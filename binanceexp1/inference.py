@@ -38,44 +38,38 @@ def aggregate_actions(
     *,
     trim_ratio: float = 0.2,
 ) -> pd.DataFrame:
-    if not actions_list:
+    frames = [frame for frame in actions_list if frame is not None and not frame.empty]
+    if not frames:
         return pd.DataFrame()
+    value_keys: list[str] = []
+    for frame in frames:
+        for column in frame.columns:
+            if column in {"timestamp", "symbol"} or column in value_keys:
+                continue
+            value_keys.append(column)
+
     merged = None
-    for idx, frame in enumerate(actions_list):
-        if frame.empty:
-            continue
+    value_cols = {key: [] for key in value_keys}
+    for idx, frame in enumerate(frames):
         suffix = f"_c{idx}"
-        rename_cols = {
-            "buy_price": f"buy_price{suffix}",
-            "sell_price": f"sell_price{suffix}",
-            "buy_amount": f"buy_amount{suffix}",
-            "sell_amount": f"sell_amount{suffix}",
-            "trade_amount": f"trade_amount{suffix}",
-        }
-        subset = frame[["timestamp", "symbol", *rename_cols.keys()]].rename(columns=rename_cols)
+        present_keys = [key for key in value_keys if key in frame.columns]
+        rename_cols = {key: f"{key}{suffix}" for key in present_keys}
+        subset = frame[["timestamp", "symbol", *present_keys]].rename(columns=rename_cols)
         if merged is None:
             merged = subset
         else:
             merged = merged.merge(subset, on=["timestamp", "symbol"], how="inner")
+        for key, renamed in rename_cols.items():
+            value_cols[key].append(renamed)
     if merged is None or merged.empty:
         return pd.DataFrame()
 
     out_rows = []
-    value_cols = {
-        "buy_price": [],
-        "sell_price": [],
-        "buy_amount": [],
-        "sell_amount": [],
-        "trade_amount": [],
-    }
-    for col in merged.columns:
-        for key in value_cols:
-            if col.startswith(key):
-                value_cols[key].append(col)
-
     for row in merged.itertuples(index=False):
         row_dict = {"timestamp": getattr(row, "timestamp"), "symbol": getattr(row, "symbol")}
         for key, cols in value_cols.items():
+            if not cols:
+                continue
             values = np.array([float(getattr(row, col)) for col in cols], dtype=np.float64)
             row_dict[key] = _trimmed_mean(values, trim_ratio)
         out_rows.append(row_dict)
@@ -105,41 +99,38 @@ def blend_actions(
     weight_array = np.asarray(weight_values, dtype=np.float64)
     if np.allclose(weight_array, 0.0):
         raise ValueError("At least one blend weight must be non-zero.")
+    value_keys: list[str] = []
+    for frame in frames:
+        for column in frame.columns:
+            if column in {"timestamp", "symbol"} or column in value_keys:
+                continue
+            value_keys.append(column)
 
     merged = None
-    suffixes: List[str] = []
-    for idx, frame in enumerate(frames):
+    value_cols: dict[str, list[tuple[str, float]]] = {key: [] for key in value_keys}
+    for idx, (frame, weight) in enumerate(zip(frames, weight_array)):
         suffix = f"_b{idx}"
-        suffixes.append(suffix)
-        rename_cols = {
-            "buy_price": f"buy_price{suffix}",
-            "sell_price": f"sell_price{suffix}",
-            "buy_amount": f"buy_amount{suffix}",
-            "sell_amount": f"sell_amount{suffix}",
-            "trade_amount": f"trade_amount{suffix}",
-        }
-        subset = frame[["timestamp", "symbol", *rename_cols.keys()]].rename(columns=rename_cols)
+        present_keys = [key for key in value_keys if key in frame.columns]
+        rename_cols = {key: f"{key}{suffix}" for key in present_keys}
+        subset = frame[["timestamp", "symbol", *present_keys]].rename(columns=rename_cols)
         if merged is None:
             merged = subset
         else:
             merged = merged.merge(subset, on=["timestamp", "symbol"], how="inner")
+        for key, renamed in rename_cols.items():
+            value_cols[key].append((renamed, float(weight)))
     if merged is None or merged.empty:
         return pd.DataFrame()
-
-    value_cols = {
-        "buy_price": [f"buy_price{s}" for s in suffixes],
-        "sell_price": [f"sell_price{s}" for s in suffixes],
-        "buy_amount": [f"buy_amount{s}" for s in suffixes],
-        "sell_amount": [f"sell_amount{s}" for s in suffixes],
-        "trade_amount": [f"trade_amount{s}" for s in suffixes],
-    }
 
     out_rows = []
     for row in merged.itertuples(index=False):
         row_dict = {"timestamp": getattr(row, "timestamp"), "symbol": getattr(row, "symbol")}
-        for key, cols in value_cols.items():
-            values = np.array([float(getattr(row, col)) for col in cols], dtype=np.float64)
-            row_dict[key] = _weighted_mean(values, weight_array)
+        for key, specs in value_cols.items():
+            if not specs:
+                continue
+            values = np.array([float(getattr(row, col)) for col, _ in specs], dtype=np.float64)
+            weights = np.array([weight for _, weight in specs], dtype=np.float64)
+            row_dict[key] = _weighted_mean(values, weights)
         out_rows.append(row_dict)
     return pd.DataFrame(out_rows)
 

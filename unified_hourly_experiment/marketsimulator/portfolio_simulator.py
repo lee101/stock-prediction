@@ -73,6 +73,8 @@ class PortfolioConfig:
     short_only_symbols: Optional[set] = None
     force_close_slippage: float = 0.003
     int_qty: bool = True
+    entry_fee_inclusive_sizing: bool = True
+    market_order_entry_uses_signal_price_for_qty: bool = False
     margin_annual_rate: float = 0.0
     entry_allocator_mode: str = "legacy"  # legacy | concentrated
     entry_allocator_edge_power: float = 2.0
@@ -487,7 +489,11 @@ def run_portfolio_simulation(
 
     backend = _normalize_backend(cfg.sim_backend)
     # Python-only feature: pending entry order lifecycle.
-    native_allowed = int(cfg.entry_order_ttl_hours) <= 0
+    native_allowed = (
+        int(cfg.entry_order_ttl_hours) <= 0
+        and bool(cfg.entry_fee_inclusive_sizing)
+        and not bool(cfg.market_order_entry_uses_signal_price_for_qty)
+    )
     if backend in {"native", "auto"} and native_allowed:
         native_result = _run_portfolio_simulation_native(
             merged=merged,
@@ -785,6 +791,7 @@ def run_portfolio_simulation(
             if cfg.market_order_entry:
                 fillable = True
                 actual_entry_price = row.open if hasattr(row, "open") else row.close
+                sizing_entry_price = entry_price if cfg.market_order_entry_uses_signal_price_for_qty else actual_entry_price
             else:
                 bar_margin = _bar_margin_for_symbol(sym)
                 if is_long:
@@ -792,6 +799,7 @@ def run_portfolio_simulation(
                 else:
                     fillable = row.high >= entry_price * (1 + bar_margin) if hasattr(row, "high") else True
                 actual_entry_price = entry_price
+                sizing_entry_price = entry_price
             if not fillable:
                 if int(cfg.entry_order_ttl_hours) <= 0:
                     continue
@@ -800,6 +808,7 @@ def run_portfolio_simulation(
                 "symbol": sym,
                 "edge": edge,
                 "entry_price": actual_entry_price,
+                "sizing_price": sizing_entry_price,
                 "exit_price": exit_price,
                 "signal_amount": signal_amount,
                 "intensity_fraction": intensity_fraction,
@@ -843,7 +852,11 @@ def run_portfolio_simulation(
             for cand, target_value in zip(selected_candidates, target_values, strict=False):
                 fee = float(cand["fee_rate"])
                 entry_price = float(cand["entry_price"])
-                qty = float(target_value) / (entry_price * (1 + fee))
+                sizing_price = float(cand.get("sizing_price", entry_price))
+                qty_denominator = sizing_price * (1.0 + fee if cfg.entry_fee_inclusive_sizing else 1.0)
+                if qty_denominator <= 0:
+                    continue
+                qty = float(target_value) / qty_denominator
                 if cfg.int_qty:
                     qty = float(int(qty))
                 if qty <= 0:
@@ -855,9 +868,13 @@ def run_portfolio_simulation(
             for cand in selected_candidates:
                 fee = float(cand["fee_rate"])
                 entry_price = float(cand["entry_price"])
+                sizing_price = float(cand.get("sizing_price", entry_price))
                 intensity_frac = float(cand["intensity_fraction"])
                 alloc = float(cand["slot_budget"]) * intensity_frac
-                qty = alloc / (entry_price * (1 + fee))
+                qty_denominator = sizing_price * (1.0 + fee if cfg.entry_fee_inclusive_sizing else 1.0)
+                if qty_denominator <= 0:
+                    continue
+                qty = alloc / qty_denominator
                 if cfg.int_qty:
                     qty = float(int(qty))
                 if qty <= 0:

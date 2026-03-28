@@ -363,8 +363,35 @@ def test_stability_long_run_variants_are_registered() -> None:
         "stable_long_tp005_sds02_bf16",
         "stable_long_reg_combo_2",
     }
+def test_main_list_experiments_respects_description_filter(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["autoresearch_rl", "--list-experiments", "--descriptions", "ent_anneal,clip_vloss"],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 0
+    assert capsys.readouterr().out.strip().splitlines() == ["ent_anneal", "clip_vloss"]
 
 
+def test_main_describe_experiments_prints_non_default_overrides(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["autoresearch_rl", "--describe-experiments", "--descriptions", "clip_vloss"],
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "clip_vloss\n" in out
+    assert "  clip_vloss=True" in out
+    assert "  lr=" not in out
 def test_run_trial_passes_market_validation_decision_cadence(monkeypatch, tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "trial"
     checkpoint_dir.mkdir()
@@ -925,6 +952,143 @@ def test_run_trial_result_includes_early_rejected(monkeypatch, tmp_path: Path) -
 
     assert "early_rejected" in result
     assert result["early_rejected"] is False
+
+
+def test_run_trial_passes_no_tf32_flag(monkeypatch, tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "trial"
+    checkpoint_dir.mkdir()
+    (checkpoint_dir / "best.pt").write_bytes(b"checkpoint")
+
+    class _FakeStdout:
+        def readline(self) -> bytes:
+            return b""
+
+    train_commands: list[list[str]] = []
+
+    class _FakePopen:
+        def __init__(self, cmd, *args, **kwargs) -> None:
+            train_commands.append(list(cmd))
+            self.stdout = _FakeStdout()
+            self.pid = 12345
+
+        def poll(self) -> int:
+            return 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    def _fake_run_capture(cmd: list[str], *, cwd: Path, timeout_s: int = 0) -> subprocess.CompletedProcess[str]:
+        if "pufferlib_market.evaluate" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0,
+                stdout="Return: mean=0.10\nWin rate: mean=0.55\nSortino: mean=1.20\n>0: 10/10 (100.0%)\n",
+                stderr="",
+            )
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl.subprocess.Popen", _FakePopen)
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl._run_capture", _fake_run_capture)
+
+    run_trial(
+        TrialConfig(description="fidelity", no_tf32=True, use_bf16=False, no_cuda_graph=True),
+        "train.bin",
+        "val.bin",
+        1,
+        str(checkpoint_dir),
+    )
+
+    assert train_commands
+    train_cmd = train_commands[0]
+    assert "--no-tf32" in train_cmd
+    assert "--use-bf16" not in train_cmd
+    assert "--no-cuda-graph" in train_cmd
+
+
+def test_run_trial_reuses_same_wandb_run_for_post_eval_summary(monkeypatch, tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "trial"
+    checkpoint_dir.mkdir()
+    (checkpoint_dir / "best.pt").write_bytes(b"checkpoint")
+
+    class _FakeStdout:
+        def readline(self) -> bytes:
+            return b""
+
+    train_commands: list[list[str]] = []
+
+    class _FakePopen:
+        def __init__(self, cmd, *args, **kwargs) -> None:
+            train_commands.append(list(cmd))
+            self.stdout = _FakeStdout()
+            self.pid = 12345
+
+        def poll(self) -> int:
+            return 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    def _fake_run_capture(cmd: list[str], *, cwd: Path, timeout_s: int = 0) -> subprocess.CompletedProcess[str]:
+        if "pufferlib_market.evaluate" in cmd:
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="Return: mean=0.10\nWin rate: mean=0.55\nSortino: mean=1.20\n>0: 10/10 (100.0%)\n",
+                stderr="",
+            )
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    class _FakeSummaryRun:
+        def __init__(self) -> None:
+            self.summary: dict[str, object] = {}
+            self.finished = False
+
+        def finish(self) -> None:
+            self.finished = True
+
+    class _FakeWandbModule:
+        def __init__(self) -> None:
+            self.init_calls: list[dict[str, object]] = []
+            self.runs: list[_FakeSummaryRun] = []
+
+        def init(self, **kwargs):
+            self.init_calls.append(dict(kwargs))
+            run = _FakeSummaryRun()
+            self.runs.append(run)
+            return run
+
+    fake_wandb = _FakeWandbModule()
+
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl.subprocess.Popen", _FakePopen)
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl._run_capture", _fake_run_capture)
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl._wandb_module", fake_wandb)
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl._make_wandb_run_id", lambda: "shared-run-123")
+
+    result = run_trial(
+        TrialConfig(description="wandb_shared_summary"),
+        "train.bin",
+        "val.bin",
+        1,
+        str(checkpoint_dir),
+        wandb_project="stock",
+        wandb_group="autoresearch_group",
+    )
+
+    assert train_commands
+    train_cmd = train_commands[0]
+    assert "--wandb-run-id" in train_cmd
+    assert train_cmd[train_cmd.index("--wandb-run-id") + 1] == "shared-run-123"
+    assert "--wandb-resume" in train_cmd
+    assert train_cmd[train_cmd.index("--wandb-resume") + 1] == "allow"
+
+    assert len(fake_wandb.init_calls) == 1
+    init_kwargs = fake_wandb.init_calls[0]
+    assert init_kwargs["id"] == "shared-run-123"
+    assert init_kwargs["resume"] == "allow"
+    assert init_kwargs["project"] == "stock"
+    assert init_kwargs["group"] == "autoresearch_group"
+    assert fake_wandb.runs[0].summary["val/return"] == pytest.approx(0.10)
+    assert fake_wandb.runs[0].summary["trial/rank_score"] == pytest.approx(result["rank_score"])
+    assert fake_wandb.runs[0].finished is True
 
 
 def test_read_mktd_header_parses_real_file() -> None:

@@ -5,6 +5,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+def _coerce_bool(value: object, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
+
+
 @dataclass
 class ForecastConfig:
     """Configuration for Chronos2 OHLC forecasts."""
@@ -65,6 +79,8 @@ class PolicyConfig:
     use_causal_attention: bool = True
     rms_norm_eps: float = 1e-5
     attention_window: int | None = None
+    attention_backend: str = "auto"  # auto, sdpa, flex, flash4
+    flex_block_size: int = 128
     use_residual_scalars: bool = False
     residual_scale_init: float = 1.0
     skip_scale_init: float = 0.0
@@ -80,6 +96,35 @@ class PolicyConfig:
     use_flex_attention: bool = True  # use FlexAttention when available (PyTorch 2.4+, CUDA)
     num_outputs: int = 4
     max_hold_hours: float = 24.0
+
+    def __post_init__(self) -> None:
+        self.model_arch = str(self.model_arch or "classic")
+        backend = str(self.attention_backend or "auto").strip().lower()
+        backend_aliases = {
+            "default": "auto",
+            "none": "auto",
+            "flash": "flash4",
+            "flash-attn-4": "flash4",
+            "flash_attn_4": "flash4",
+            "flash_attn4": "flash4",
+        }
+        backend = backend_aliases.get(backend, backend)
+        if backend not in {"auto", "sdpa", "flex", "flash4"}:
+            backend = "auto"
+        self.attention_backend = backend
+
+        try:
+            self.flex_block_size = max(1, int(self.flex_block_size))
+        except (TypeError, ValueError):
+            self.flex_block_size = 128
+
+        use_flex = _coerce_bool(self.use_flex_attention, True)
+        if backend == "flex":
+            self.use_flex_attention = True
+        elif backend in {"sdpa", "flash4"}:
+            self.use_flex_attention = False
+        else:
+            self.use_flex_attention = use_flex
 
 
 @dataclass
@@ -129,6 +174,8 @@ class TrainingConfig:
     use_causal_attention: bool = True
     rms_norm_eps: float = 1e-5
     attention_window: int | None = None
+    attention_backend: str = "auto"
+    flex_block_size: int = 128
     use_residual_scalars: bool = False
     residual_scale_init: float = 1.0
     skip_scale_init: float = 0.0

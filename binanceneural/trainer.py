@@ -158,6 +158,8 @@ class BinanceHourlyTrainer:
             use_causal_attention=self.config.use_causal_attention,
             rms_norm_eps=self.config.rms_norm_eps,
             attention_window=self.config.attention_window,
+            attention_backend=self.config.attention_backend,
+            flex_block_size=self.config.flex_block_size,
             use_residual_scalars=self.config.use_residual_scalars,
             residual_scale_init=self.config.residual_scale_init,
             skip_scale_init=self.config.skip_scale_init,

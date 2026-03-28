@@ -27,10 +27,17 @@ import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from src.robust_trading_metrics import compute_replay_composite_score, summarize_scenario_results
-from pufferlib_market.early_stopper import combined_score as _combined_score, PolynomialEarlyStopper, BestKnownTracker, HoldCashDetector
+from pufferlib_market.early_stopper import (
+    combined_score as _combined_score,
+    PolynomialEarlyStopper,
+    BestKnownTracker,
+    HoldCashDetector,
+    OverfitDetector,
+)
 
 try:
     import wandb as _wandb_module
@@ -174,6 +181,21 @@ EXPERIMENTS: list[dict] = [
      "trade_penalty": 0.005, "anneal_ent": True, "ent_coef": 0.08, "ent_coef_end": 0.02},
     {"description": "robust_reg_h512_tp005", "hidden_size": 512, "weight_decay": 0.05, "fill_slippage_bps": 8.0,
      "obs_norm": True, "trade_penalty": 0.005},
+
+    # Stability-first long-run variants for longer wall-clock training on the 5090.
+    # Intent: reduce update shock, disable fragile graph capture, and leave room for
+    # slower but more trustworthy convergence when the short sweeps find a plausible edge.
+    {"description": "stable_long_tp005_sds02", "weight_decay": 0.05, "fill_slippage_bps": 8.0, "obs_norm": True,
+     "trade_penalty": 0.005, "smooth_downside_penalty": 0.2, "lr": 2e-4, "max_grad_norm": 0.3,
+     "minibatch_size": 1024, "ppo_epochs": 3, "no_cuda_graph": True, "use_bf16": False,
+     "time_budget_override": 1200},
+    {"description": "stable_long_tp005_sds02_bf16", "weight_decay": 0.05, "fill_slippage_bps": 8.0, "obs_norm": True,
+     "trade_penalty": 0.005, "smooth_downside_penalty": 0.2, "lr": 2e-4, "max_grad_norm": 0.3,
+     "minibatch_size": 1024, "ppo_epochs": 3, "no_cuda_graph": True, "use_bf16": True,
+     "time_budget_override": 1200},
+    {"description": "stable_long_reg_combo_2", "weight_decay": 0.05, "fill_slippage_bps": 8.0, "obs_norm": True,
+     "lr": 2e-4, "max_grad_norm": 0.3, "minibatch_size": 1024, "ppo_epochs": 3,
+     "no_cuda_graph": True, "use_bf16": False, "time_budget_override": 1200},
 
     # Multi-seed validation of champion (robust_reg_tp005_ent)
     {"description": "robust_reg_tp005_ent_seed42", "weight_decay": 0.05, "fill_slippage_bps": 8.0, "obs_norm": True,
@@ -1322,8 +1344,6 @@ STOCK_EXPERIMENTS: list[dict] = [
      "weight_decay": 0.01, "trade_penalty": 0.10, "fill_slippage_bps": 5.0},
 
     # (F) More total friction
-    {"description": "q_wd01_tp05_slip10",
-     "weight_decay": 0.01, "trade_penalty": 0.05, "fill_slippage_bps": 10.0},
     {"description": "q_wd02_tp05_slip10",
      "weight_decay": 0.02, "trade_penalty": 0.05, "fill_slippage_bps": 10.0},
     {"description": "q_wd01_tp08_slip10",
@@ -2090,6 +2110,129 @@ def _safe_float(value: object) -> float | None:
         return None
 
 
+def _parse_iso_datetime(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def compute_eval_window_years(start_date: str, end_date: str) -> float | None:
+    start = _parse_iso_datetime(start_date)
+    end = _parse_iso_datetime(end_date)
+    if start is None or end is None:
+        return None
+
+    start_text = str(start_date or "")
+    end_text = str(end_date or "")
+    if "T" not in start_text and "T" not in end_text:
+        inclusive_days = (end.date() - start.date()).days + 1
+        if inclusive_days <= 0:
+            return None
+        return float(inclusive_days / 365.0)
+
+    elapsed_seconds = (end - start).total_seconds()
+    if elapsed_seconds <= 0.0:
+        return None
+    return float(elapsed_seconds / (365.0 * 24.0 * 3600.0))
+
+
+def annualize_total_return_pct(total_return_pct: float | None, years: float | None) -> float | None:
+    if total_return_pct is None or years is None or years <= 0.0:
+        return None
+    total_return = float(total_return_pct) / 100.0
+    if total_return <= -1.0:
+        return None
+    return float((((1.0 + total_return) ** (1.0 / years)) - 1.0) * 100.0)
+
+
+def _append_annualized_return_metrics(summary: dict[str, float], *, years: float | None) -> None:
+    if years is None or years <= 0.0:
+        return
+
+    for source_key, target_key in (
+        ("replay_daily_return_pct", "replay_daily_annualized_return_pct"),
+        ("replay_hourly_return_pct", "replay_hourly_annualized_return_pct"),
+        ("replay_hourly_policy_return_pct", "replay_hourly_policy_annualized_return_pct"),
+        ("replay_daily_robust_median_return_pct", "replay_daily_robust_median_annualized_return_pct"),
+        ("replay_daily_robust_worst_return_pct", "replay_daily_robust_worst_annualized_return_pct"),
+        ("replay_hourly_robust_median_return_pct", "replay_hourly_robust_median_annualized_return_pct"),
+        ("replay_hourly_robust_worst_return_pct", "replay_hourly_robust_worst_annualized_return_pct"),
+        (
+            "replay_hourly_policy_robust_median_return_pct",
+            "replay_hourly_policy_robust_median_annualized_return_pct",
+        ),
+        (
+            "replay_hourly_policy_robust_worst_return_pct",
+            "replay_hourly_policy_robust_worst_annualized_return_pct",
+        ),
+    ):
+        annualized = annualize_total_return_pct(_safe_float(summary.get(source_key)), years)
+        if annualized is not None:
+            summary[target_key] = annualized
+
+
+def compute_generalization_metrics(metrics: dict[str, object]) -> dict[str, float]:
+    """Summarize post-train generalization quality from replay/holdout signals.
+
+    This is intentionally conservative: replay-combo wins should not dominate
+    the leaderboard when holdout robustness is materially negative.
+    """
+    replay_combo_score = _safe_float(metrics.get("replay_combo_score"))
+    holdout_robust_score = _safe_float(metrics.get("holdout_robust_score"))
+    holdout_negative_return_rate = _safe_float(metrics.get("holdout_negative_return_rate"))
+    train_return = _safe_float(metrics.get("train_return"))
+    val_return = _safe_float(metrics.get("val_return"))
+    replay_hourly_return_pct = _safe_float(metrics.get("replay_hourly_return_pct"))
+
+    train_val_gap_pct = None
+    if train_return is not None and val_return is not None:
+        train_val_gap_pct = max(0.0, 100.0 * (float(train_return) - float(val_return)))
+
+    val_replay_gap_pct = None
+    if val_return is not None and replay_hourly_return_pct is not None:
+        val_replay_gap_pct = max(0.0, 100.0 * float(val_return) - float(replay_hourly_return_pct))
+
+    base_terms = [
+        value for value in (replay_combo_score, holdout_robust_score)
+        if value is not None
+    ]
+    generalization_score = None
+    if base_terms:
+        generalization_score = float(sum(base_terms) / len(base_terms))
+        if train_val_gap_pct is not None:
+            generalization_score -= 0.5 * float(train_val_gap_pct)
+        if val_replay_gap_pct is not None:
+            generalization_score -= 0.25 * float(val_replay_gap_pct)
+        if holdout_negative_return_rate is not None:
+            generalization_score -= 25.0 * max(0.0, float(holdout_negative_return_rate))
+
+    overfit_gap_score = None
+    if replay_combo_score is not None and generalization_score is not None:
+        overfit_gap_score = float(replay_combo_score - generalization_score)
+    elif train_val_gap_pct is not None:
+        overfit_gap_score = float(train_val_gap_pct)
+
+    result: dict[str, float] = {}
+    if generalization_score is not None:
+        result["generalization_score"] = float(generalization_score)
+    if overfit_gap_score is not None:
+        result["overfit_gap_score"] = float(overfit_gap_score)
+    if train_val_gap_pct is not None:
+        result["train_val_gap_pct"] = float(train_val_gap_pct)
+    if val_replay_gap_pct is not None:
+        result["val_replay_gap_pct"] = float(val_replay_gap_pct)
+    return result
+
+
 def _trim_error(text: str, *, limit: int = 400) -> str:
     cleaned = " ".join(str(text).split())
     if len(cleaned) <= limit:
@@ -2172,7 +2315,11 @@ def summarize_market_validation_payload(payload: object) -> dict[str, float]:
     }
 
 
-def summarize_replay_eval_payload(payload: object) -> dict[str, float]:
+def summarize_replay_eval_payload(
+    payload: object,
+    *,
+    replay_eval_years: float | None = None,
+) -> dict[str, float]:
     """Convert replay_eval JSON into leaderboard-friendly metrics."""
     if not isinstance(payload, dict):
         return {}
@@ -2219,19 +2366,24 @@ def summarize_replay_eval_payload(payload: object) -> dict[str, float]:
             if "worst_max_drawdown" in row:
                 summary[f"{prefix}_worst_max_drawdown_pct"] = 100.0 * float(row.get("worst_max_drawdown", 0.0) or 0.0)
 
+    _append_annualized_return_metrics(summary, years=replay_eval_years)
+
     summary.update(
         compute_replay_composite_score(
             daily_return_pct=summary.get("replay_daily_return_pct"),
+            daily_annualized_return_pct=summary.get("replay_daily_annualized_return_pct"),
             daily_sortino=summary.get("replay_daily_sortino"),
             daily_max_drawdown_pct=summary.get("replay_daily_max_drawdown_pct"),
             daily_pnl_smoothness=summary.get("replay_daily_pnl_smoothness", 0.0),
             daily_trade_count=summary.get("replay_daily_trade_count", 0.0),
             hourly_return_pct=summary.get("replay_hourly_return_pct"),
+            hourly_annualized_return_pct=summary.get("replay_hourly_annualized_return_pct"),
             hourly_sortino=summary.get("replay_hourly_sortino"),
             hourly_max_drawdown_pct=summary.get("replay_hourly_max_drawdown_pct"),
             hourly_pnl_smoothness=summary.get("replay_hourly_pnl_smoothness", 0.0),
             hourly_trade_count=summary.get("replay_hourly_trade_count", 0.0),
             hourly_policy_return_pct=summary.get("replay_hourly_policy_return_pct"),
+            hourly_policy_annualized_return_pct=summary.get("replay_hourly_policy_annualized_return_pct"),
             hourly_policy_sortino=summary.get("replay_hourly_policy_sortino"),
             hourly_policy_max_drawdown_pct=summary.get("replay_hourly_policy_max_drawdown_pct"),
             hourly_policy_pnl_smoothness=summary.get("replay_hourly_policy_pnl_smoothness", 0.0),
@@ -2248,10 +2400,22 @@ def select_rank_score(
 ) -> tuple[str, float | None]:
     """Choose the leaderboard ranking signal with sensible fallbacks."""
     candidates = {
+        "generalization_score": _safe_float(metrics.get("generalization_score")),
         "smooth_score": _safe_float(metrics.get("smooth_score")),
         "replay_combo_score": _safe_float(metrics.get("replay_combo_score")),
         "market_goodness_score": _safe_float(metrics.get("market_goodness_score")),
         "holdout_robust_score": _safe_float(metrics.get("holdout_robust_score")),
+        "replay_daily_annualized_return_pct": _safe_float(metrics.get("replay_daily_annualized_return_pct")),
+        "replay_hourly_annualized_return_pct": _safe_float(metrics.get("replay_hourly_annualized_return_pct")),
+        "replay_hourly_policy_annualized_return_pct": _safe_float(
+            metrics.get("replay_hourly_policy_annualized_return_pct")
+        ),
+        "replay_hourly_policy_robust_worst_annualized_return_pct": _safe_float(
+            metrics.get("replay_hourly_policy_robust_worst_annualized_return_pct")
+        ),
+        "replay_hourly_robust_worst_annualized_return_pct": _safe_float(
+            metrics.get("replay_hourly_robust_worst_annualized_return_pct")
+        ),
         "replay_hourly_policy_robust_worst_return_pct": _safe_float(metrics.get("replay_hourly_policy_robust_worst_return_pct")),
         "replay_hourly_return_pct": _safe_float(metrics.get("replay_hourly_return_pct")),
         "replay_hourly_policy_return_pct": _safe_float(metrics.get("replay_hourly_policy_return_pct")),
@@ -2260,10 +2424,16 @@ def select_rank_score(
     }
     if rank_metric == "auto":
         for name in (
+            "generalization_score",
             "smooth_score",
             "replay_combo_score",
             "market_goodness_score",
             "holdout_robust_score",
+            "replay_hourly_policy_robust_worst_annualized_return_pct",
+            "replay_hourly_policy_annualized_return_pct",
+            "replay_hourly_robust_worst_annualized_return_pct",
+            "replay_hourly_annualized_return_pct",
+            "replay_daily_annualized_return_pct",
             "replay_hourly_policy_robust_worst_return_pct",
             "replay_hourly_policy_return_pct",
             "replay_hourly_robust_worst_return_pct",
@@ -2306,6 +2476,59 @@ def _select_from_pool(
     if missing:
         raise ValueError(f"Unknown experiment description(s): {', '.join(missing)}")
     return selected
+
+
+def _resolve_experiment_pool(
+    *,
+    stocks: bool,
+    h100_mode: bool,
+    stocks12: bool,
+) -> tuple[list[dict], str]:
+    if h100_mode:
+        return H100_STOCK_EXPERIMENTS, "h100 stocks mode"
+    if stocks12:
+        return (
+            STOCK_EXPERIMENTS + [
+                e for e in H100_STOCK_EXPERIMENTS
+                if e.get("requires_gpu") != "h100"
+            ],
+            "stocks12 mode",
+        )
+    if stocks:
+        return STOCK_EXPERIMENTS, "stocks mode"
+    return EXPERIMENTS + CRYPTO34_HOURLY_EXPERIMENTS, "crypto mode"
+
+
+def _resolved_experiment_overrides(experiment: dict) -> dict[str, object]:
+    base_defaults = asdict(TrialConfig())
+    resolved = asdict(build_config(experiment))
+    return {
+        key: value
+        for key, value in resolved.items()
+        if key != "description" and value != base_defaults.get(key)
+    }
+
+
+def _print_experiment_selection(
+    experiments: list[dict],
+    *,
+    describe: bool,
+) -> None:
+    for index, cfg_dict in enumerate(experiments):
+        desc = str(cfg_dict.get("description", ""))
+        gpu = str(cfg_dict.get("requires_gpu", "") or "")
+        gpu_note = f" [requires_gpu={gpu}]" if gpu else ""
+        print(f"{desc}{gpu_note}")
+        if not describe:
+            continue
+        overrides = _resolved_experiment_overrides(cfg_dict)
+        if overrides:
+            for key in sorted(overrides):
+                print(f"  {key}={overrides[key]!r}")
+        else:
+            print("  (default config)")
+        if index != len(experiments) - 1:
+            print()
 
 
 def select_experiments(
@@ -2514,6 +2737,7 @@ def run_trial(
         _checks_done: set[float] = set()
         _poly_stopper = PolynomialEarlyStopper()
         _hold_cash_detector = HoldCashDetector(patience=6)
+        _overfit_detector = OverfitDetector()
         # (progress_threshold, poly_tolerance): 25% only collects; 50%/75% may prune
         _check_schedule = [(0.25, None), (0.50, 0.70), (0.75, 0.80)]
         try:
@@ -2533,6 +2757,7 @@ def run_trial(
                             )
                             early_rejected = True
                             break
+                        _overfit_detector.update(decoded)
                 except Exception:
                     pass
 
@@ -2550,6 +2775,25 @@ def run_trial(
                         pct = f"{int(_threshold * 100)}%"
                         if mid_comb is not None:
                             _poly_stopper.add_observation(_threshold, mid_comb)
+                        overfit_prune, overfit_metrics = _overfit_detector.should_prune(
+                            progress=_threshold,
+                            val_return=mid_ret,
+                            val_sortino=mid_sort,
+                            val_wr=mid_wr,
+                        )
+                        if overfit_prune:
+                            train_combined = overfit_metrics.get("train_combined")
+                            val_combined = overfit_metrics.get("val_combined")
+                            gap = overfit_metrics.get("gap")
+                            train_comb_str = f"{train_combined:+.4f}" if train_combined is not None else "None"
+                            val_comb_str = f"{val_combined:+.4f}" if val_combined is not None else "None"
+                            gap_str = f"{gap:+.4f}" if gap is not None else "None"
+                            print(
+                                f"  OVERFIT PRUNE at {pct}: train_comb={train_comb_str} "
+                                f"quick_comb={val_comb_str} gap={gap_str}"
+                            )
+                            early_rejected = True
+                            break
                         if _poly_tol is None:
                             # collect-only check (25%)
                             if not use_poly_prune and mid_ret is not None and best_trial_val_return > -float("inf"):
@@ -2867,7 +3111,13 @@ def run_trial(
                 replay_eval_error = "replay eval output missing"
             else:
                 replay_payload = json.loads(replay_json_path.read_text())
-                replay_metrics = summarize_replay_eval_payload(replay_payload)
+                replay_metrics = summarize_replay_eval_payload(
+                    replay_payload,
+                    replay_eval_years=compute_eval_window_years(
+                        replay_eval_start_date,
+                        replay_eval_end_date,
+                    ),
+                )
         except subprocess.TimeoutExpired:
             replay_eval_error = "replay eval timeout"
         except Exception as e:
@@ -2941,6 +3191,7 @@ def run_trial(
     result_payload.update(market_metrics)
     result_payload.update(replay_metrics)
     result_payload.update(smooth_metrics)
+    result_payload.update(compute_generalization_metrics(result_payload))
     selected_metric, rank_score = select_rank_score(result_payload, rank_metric=rank_metric)
     result_payload["rank_metric"] = selected_metric
     result_payload["rank_score"] = rank_score
@@ -2986,7 +3237,7 @@ def run_trial(
 
 def main():
     parser = argparse.ArgumentParser(description="Auto-research RL trading configs")
-    listing_only = "--list-experiments" in sys.argv
+    listing_only = "--list-experiments" in sys.argv or "--describe-experiments" in sys.argv
     stocks_mode = "--stocks" in sys.argv or "--h100-mode" in sys.argv or "--stocks12" in sys.argv
     # In stocks mode the data paths default to stocks12/stocks20 daily bins so they are
     # optional even if not listing.
@@ -3059,9 +3310,15 @@ def main():
                             "auto",
                             "val_return",
                             "holdout_robust_score",
+                            "generalization_score",
                             "smooth_score",
                             "replay_combo_score",
                             "market_goodness_score",
+                            "replay_daily_annualized_return_pct",
+                            "replay_hourly_annualized_return_pct",
+                            "replay_hourly_policy_annualized_return_pct",
+                            "replay_hourly_policy_robust_worst_annualized_return_pct",
+                            "replay_hourly_robust_worst_annualized_return_pct",
                             "replay_hourly_policy_robust_worst_return_pct",
                             "replay_hourly_return_pct",
                             "replay_hourly_policy_return_pct",
@@ -3117,6 +3374,8 @@ def main():
                         help="Kill trial if val_ret < best_so_far * this at 25%%/50%% budget")
     parser.add_argument("--list-experiments", action="store_true",
                         help="Print all experiment names and exit")
+    parser.add_argument("--describe-experiments", action="store_true",
+                        help="Print selected experiments with resolved non-default config fields and exit")
     parser.add_argument("--seed", type=int, default=None,
                         help="Override random seed for all trials (default: use each trial config's seed field)")
     parser.add_argument("--wandb-project", type=str, default=None,
@@ -3225,23 +3484,18 @@ def main():
                     f"at {train_abs} — falling back to stocks12"
                 )
 
-    if args.list_experiments:
-        if args.h100_mode:
-            experiment_pool = H100_STOCK_EXPERIMENTS
-        elif args.stocks12:
-            experiment_pool = STOCK_EXPERIMENTS + [
-                e for e in H100_STOCK_EXPERIMENTS
-                if e.get("requires_gpu") != "h100"
-            ]
-        elif args.stocks:
-            experiment_pool = STOCK_EXPERIMENTS
-        else:
-            experiment_pool = EXPERIMENTS + CRYPTO34_HOURLY_EXPERIMENTS
-        for cfg_dict in experiment_pool:
-            desc = cfg_dict.get("description", "")
-            gpu = cfg_dict.get("requires_gpu", "")
-            gpu_note = f" [requires_gpu={gpu}]" if gpu else ""
-            print(f"{desc}{gpu_note}")
+    if args.list_experiments or args.describe_experiments:
+        experiment_pool, _ = _resolve_experiment_pool(
+            stocks=args.stocks,
+            h100_mode=args.h100_mode,
+            stocks12=args.stocks12,
+        )
+        experiments = _select_from_pool(
+            experiment_pool,
+            start_from=args.start_from,
+            descriptions=args.descriptions,
+        )
+        _print_experiment_selection(experiments, describe=bool(args.describe_experiments))
         sys.exit(0)
 
     leaderboard_path = Path(args.leaderboard)
@@ -3257,29 +3511,39 @@ def main():
         "trial", "description", "gpu_type", "rank_metric", "rank_score", "val_return", "val_sortino", "val_wr",
         "val_profitable_pct", "train_return", "train_sortino", "train_wr",
         "train_steps", "elapsed_s", "error", "holdout_error", "market_validation_error", "replay_eval_error",
+        "generalization_score", "overfit_gap_score", "train_val_gap_pct", "val_replay_gap_pct",
         "holdout_robust_score", "holdout_return_mean_pct", "holdout_return_p25_pct",
         "holdout_return_worst_pct", "holdout_sortino_p25", "holdout_max_drawdown_worst_pct",
         "holdout_negative_return_rate", "holdout_median_return_pct", "holdout_p10_return_pct",
         "holdout_median_sortino", "holdout_p90_max_drawdown_pct",
         "market_return_pct", "market_sortino", "market_max_drawdown_pct",
         "market_trade_count", "market_goodness_score",
-        "replay_daily_return_pct", "replay_daily_sortino", "replay_daily_max_drawdown_pct",
+        "replay_daily_return_pct", "replay_daily_annualized_return_pct",
+        "replay_daily_sortino", "replay_daily_max_drawdown_pct",
         "replay_daily_trade_count", "replay_daily_pnl_smoothness", "replay_daily_ulcer_index",
         "replay_daily_goodness_score",
-        "replay_hourly_return_pct", "replay_hourly_sortino", "replay_hourly_max_drawdown_pct",
+        "replay_hourly_return_pct", "replay_hourly_annualized_return_pct",
+        "replay_hourly_sortino", "replay_hourly_max_drawdown_pct",
         "replay_hourly_trade_count", "replay_hourly_order_count", "replay_hourly_pnl_smoothness",
         "replay_hourly_ulcer_index", "replay_hourly_goodness_score",
-        "replay_hourly_policy_return_pct", "replay_hourly_policy_sortino",
+        "replay_hourly_policy_return_pct", "replay_hourly_policy_annualized_return_pct",
+        "replay_hourly_policy_sortino",
         "replay_hourly_policy_max_drawdown_pct", "replay_hourly_policy_trade_count",
         "replay_hourly_policy_order_count", "replay_hourly_policy_pnl_smoothness",
         "replay_hourly_policy_ulcer_index", "replay_hourly_policy_goodness_score",
-        "replay_daily_robust_median_return_pct", "replay_daily_robust_worst_return_pct",
+        "replay_daily_robust_median_return_pct", "replay_daily_robust_median_annualized_return_pct",
+        "replay_daily_robust_worst_return_pct", "replay_daily_robust_worst_annualized_return_pct",
         "replay_daily_robust_worst_sortino", "replay_daily_robust_worst_max_drawdown_pct",
-        "replay_hourly_robust_median_return_pct", "replay_hourly_robust_worst_return_pct",
+        "replay_hourly_robust_median_return_pct", "replay_hourly_robust_median_annualized_return_pct",
+        "replay_hourly_robust_worst_return_pct", "replay_hourly_robust_worst_annualized_return_pct",
         "replay_hourly_robust_worst_sortino", "replay_hourly_robust_worst_max_drawdown_pct",
-        "replay_hourly_policy_robust_median_return_pct", "replay_hourly_policy_robust_worst_return_pct",
+        "replay_hourly_policy_robust_median_return_pct",
+        "replay_hourly_policy_robust_median_annualized_return_pct",
+        "replay_hourly_policy_robust_worst_return_pct",
+        "replay_hourly_policy_robust_worst_annualized_return_pct",
         "replay_hourly_policy_robust_worst_sortino", "replay_hourly_policy_robust_worst_max_drawdown_pct",
         "replay_combo_score", "replay_combo_return_mean_pct", "replay_combo_return_worst_pct",
+        "replay_combo_annualized_return_mean_pct", "replay_combo_annualized_return_worst_pct",
         "replay_combo_sortino_p25", "replay_combo_max_drawdown_worst_pct",
         "replay_combo_negative_return_rate", "replay_combo_scenario_count",
         "smooth_score", "smooth_error",
@@ -3299,18 +3563,11 @@ def main():
                 existing_trials.add(row.get("description", ""))
 
     if args.stocks:
-        if args.h100_mode:
-            pool = H100_STOCK_EXPERIMENTS
-            mode_label = "h100 stocks mode"
-        elif args.stocks12:
-            pool = STOCK_EXPERIMENTS + [
-                e for e in H100_STOCK_EXPERIMENTS
-                if e.get("requires_gpu") != "h100"
-            ]
-            mode_label = "stocks12 mode"
-        else:
-            pool = STOCK_EXPERIMENTS
-            mode_label = "stocks mode"
+        pool, mode_label = _resolve_experiment_pool(
+            stocks=args.stocks,
+            h100_mode=args.h100_mode,
+            stocks12=args.stocks12,
+        )
         experiments = _select_from_pool(
             pool,
             start_from=args.start_from,
@@ -3517,6 +3774,10 @@ def main():
             "holdout_error": result.get("holdout_error", ""),
             "market_validation_error": result.get("market_validation_error", ""),
             "replay_eval_error": result.get("replay_eval_error", ""),
+            "generalization_score": result.get("generalization_score"),
+            "overfit_gap_score": result.get("overfit_gap_score"),
+            "train_val_gap_pct": result.get("train_val_gap_pct"),
+            "val_replay_gap_pct": result.get("val_replay_gap_pct"),
             "holdout_robust_score": result.get("holdout_robust_score"),
             "holdout_return_mean_pct": result.get("holdout_return_mean_pct"),
             "holdout_return_p25_pct": result.get("holdout_return_p25_pct"),
@@ -3534,6 +3795,7 @@ def main():
             "market_trade_count": result.get("market_trade_count"),
             "market_goodness_score": result.get("market_goodness_score"),
             "replay_daily_return_pct": result.get("replay_daily_return_pct"),
+            "replay_daily_annualized_return_pct": result.get("replay_daily_annualized_return_pct"),
             "replay_daily_sortino": result.get("replay_daily_sortino"),
             "replay_daily_max_drawdown_pct": result.get("replay_daily_max_drawdown_pct"),
             "replay_daily_trade_count": result.get("replay_daily_trade_count"),
@@ -3541,6 +3803,7 @@ def main():
             "replay_daily_ulcer_index": result.get("replay_daily_ulcer_index"),
             "replay_daily_goodness_score": result.get("replay_daily_goodness_score"),
             "replay_hourly_return_pct": result.get("replay_hourly_return_pct"),
+            "replay_hourly_annualized_return_pct": result.get("replay_hourly_annualized_return_pct"),
             "replay_hourly_sortino": result.get("replay_hourly_sortino"),
             "replay_hourly_max_drawdown_pct": result.get("replay_hourly_max_drawdown_pct"),
             "replay_hourly_trade_count": result.get("replay_hourly_trade_count"),
@@ -3549,6 +3812,7 @@ def main():
             "replay_hourly_ulcer_index": result.get("replay_hourly_ulcer_index"),
             "replay_hourly_goodness_score": result.get("replay_hourly_goodness_score"),
             "replay_hourly_policy_return_pct": result.get("replay_hourly_policy_return_pct"),
+            "replay_hourly_policy_annualized_return_pct": result.get("replay_hourly_policy_annualized_return_pct"),
             "replay_hourly_policy_sortino": result.get("replay_hourly_policy_sortino"),
             "replay_hourly_policy_max_drawdown_pct": result.get("replay_hourly_policy_max_drawdown_pct"),
             "replay_hourly_policy_trade_count": result.get("replay_hourly_policy_trade_count"),
@@ -3557,20 +3821,40 @@ def main():
             "replay_hourly_policy_ulcer_index": result.get("replay_hourly_policy_ulcer_index"),
             "replay_hourly_policy_goodness_score": result.get("replay_hourly_policy_goodness_score"),
             "replay_daily_robust_median_return_pct": result.get("replay_daily_robust_median_return_pct"),
+            "replay_daily_robust_median_annualized_return_pct": result.get(
+                "replay_daily_robust_median_annualized_return_pct"
+            ),
             "replay_daily_robust_worst_return_pct": result.get("replay_daily_robust_worst_return_pct"),
+            "replay_daily_robust_worst_annualized_return_pct": result.get(
+                "replay_daily_robust_worst_annualized_return_pct"
+            ),
             "replay_daily_robust_worst_sortino": result.get("replay_daily_robust_worst_sortino"),
             "replay_daily_robust_worst_max_drawdown_pct": result.get("replay_daily_robust_worst_max_drawdown_pct"),
             "replay_hourly_robust_median_return_pct": result.get("replay_hourly_robust_median_return_pct"),
+            "replay_hourly_robust_median_annualized_return_pct": result.get(
+                "replay_hourly_robust_median_annualized_return_pct"
+            ),
             "replay_hourly_robust_worst_return_pct": result.get("replay_hourly_robust_worst_return_pct"),
+            "replay_hourly_robust_worst_annualized_return_pct": result.get(
+                "replay_hourly_robust_worst_annualized_return_pct"
+            ),
             "replay_hourly_robust_worst_sortino": result.get("replay_hourly_robust_worst_sortino"),
             "replay_hourly_robust_worst_max_drawdown_pct": result.get("replay_hourly_robust_worst_max_drawdown_pct"),
             "replay_hourly_policy_robust_median_return_pct": result.get("replay_hourly_policy_robust_median_return_pct"),
+            "replay_hourly_policy_robust_median_annualized_return_pct": result.get(
+                "replay_hourly_policy_robust_median_annualized_return_pct"
+            ),
             "replay_hourly_policy_robust_worst_return_pct": result.get("replay_hourly_policy_robust_worst_return_pct"),
+            "replay_hourly_policy_robust_worst_annualized_return_pct": result.get(
+                "replay_hourly_policy_robust_worst_annualized_return_pct"
+            ),
             "replay_hourly_policy_robust_worst_sortino": result.get("replay_hourly_policy_robust_worst_sortino"),
             "replay_hourly_policy_robust_worst_max_drawdown_pct": result.get("replay_hourly_policy_robust_worst_max_drawdown_pct"),
             "replay_combo_score": result.get("replay_combo_score"),
             "replay_combo_return_mean_pct": result.get("replay_combo_return_mean_pct"),
             "replay_combo_return_worst_pct": result.get("replay_combo_return_worst_pct"),
+            "replay_combo_annualized_return_mean_pct": result.get("replay_combo_annualized_return_mean_pct"),
+            "replay_combo_annualized_return_worst_pct": result.get("replay_combo_annualized_return_worst_pct"),
             "replay_combo_sortino_p25": result.get("replay_combo_sortino_p25"),
             "replay_combo_max_drawdown_worst_pct": result.get("replay_combo_max_drawdown_worst_pct"),
             "replay_combo_negative_return_rate": result.get("replay_combo_negative_return_rate"),
