@@ -29,3 +29,4 @@ timestamp,seed_dir,ckpt_type,n_windows,med,p10,p90,worst,neg,checkpoint
 2026-03-28T18:29:34Z,tp05_s2115,best_neg.pt,111,2.43,-1.43,11.21,-5.76,28,pufferlib_market/checkpoints/stocks12_sweep_muon_s2100_2200/tp05_s2115/best_neg.pt
 2026-03-28T18:37:57Z,tp05_s2122,best.pt,111,-6.76,-29.62,5.60,-37.15,72,pufferlib_market/checkpoints/stocks12_sweep_muon_s2100_2200/tp05_s2122/best.pt
 2026-03-28T18:52:35Z,tp05_s2122,val_best.pt,111,2.84,-6.13,8.02,-17.30,40,pufferlib_market/checkpoints/stocks12_sweep_muon_s2100_2200/tp05_s2122/val_best.pt
+2026-03-28T19:05:32Z,tp05_s2122,best_neg.pt,111,2.84,-6.13,8.02,-17.30,40,pufferlib_market/checkpoints/stocks12_sweep_muon_s2100_2200/tp05_s2122/best_neg.pt
