@@ -354,8 +354,12 @@ def main():
             print(f"  Launched FULL training seed={seed} (PID {proc.pid})", flush=True)
 
         # --- Step 5: launch new screening jobs (fill remaining slots) ---
+        # Reserve GPU slots for any qualified seeds waiting for full training
+        full_waiting_count = sum(1 for s in qualified if s not in done and s not in running_full)
+        full_slots_needed = max(0, min(max_full_concurrent, full_waiting_count) - len(running_full))
+        screen_cap = args.gpu_slots - full_slots_needed
         total_active = len(running) + len(running_full)
-        while seed_queue and total_active < args.gpu_slots:
+        while seed_queue and total_active < screen_cap:
             seed = seed_queue[0]
             ckpt_dir = ckpt_root / f"{args.run_tag}_s{seed}"
             ckpt_dir.mkdir(parents=True, exist_ok=True)
