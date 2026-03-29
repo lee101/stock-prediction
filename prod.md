@@ -11,17 +11,14 @@
 - **LIVE account**: supervisor `unified-stock-trader` is active; equity **$38,954.44**, cash **$38,954.44**, buying power **$77,908.88**, last_equity **$39,090.40**.
 - **LIVE positions/orders**: no stock positions are open; only dust in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD` remains. There are currently **no open orders**.
 - **LIVE duplicate-order guard (2026-03-27 20:31 UTC)**: systemd unit `alpaca-cancel-multi-orders.service` is installed and enabled with `PAPER=0`; `journalctl` confirms it initialized the **LIVE** Alpaca client and is polling for duplicate flat-position opening orders.
-- **LIVE daily-rl-trader**: 18-model ensemble, sleeping until Mon 2026-03-30 market open (systemd service)
-  - **Ensemble members**: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835+**s2827**+**s2722**+**s3668**
+- **LIVE daily-rl-trader**: 19-model ensemble, sleeping until Mon 2026-03-30 market open (systemd service)
+  - **Ensemble members**: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835+**s2827**+**s2722**+**s3668**+**s3411**
   - **FULLY RESOLVED**: All checkpoints in `pufferlib_market/prod_ensemble/` (protected from sweep deletion)
-  - **TRUE performance (encoder_norm-correct)**: 0/111 neg, med=57.2%, p10=42.3%
-  - Updated 2026-03-29: s2827 (+16% vs 15), s2722 (+6% vs 16), s3668 (+1.1% vs 17)
-  - 19-model bar: p10 ≥ 42.3% @fill_bps=5 (encoder_norm-correct)
+  - **TRUE performance (encoder_norm-correct)**: 0/111 neg, p10=44.1%
+  - Updated 2026-03-29: s2827 (+16% vs 15), s2722 (+6% vs 16), s3668 (+1.1% vs 17), s3411 (+1.8% vs 18)
+  - 20-model bar: p10 ≥ 44.1% @fill_bps=5 (encoder_norm-correct)
   - 15-model baseline was: 0/111 neg, med=50.9%, p10=19.2%
-  - REJECTED against 15-model: s2655, s2206; high-in-sample: s2793, s2815, s2099, s2118, s2247, s2695
-  - REJECTED against 16-model: s2433, s2831, s2275 (correlated with s2827), s2137, s2276, s2279, s2435, s2575, s2935, s3069
-  - REJECTED against 17-model: 35+ seeds (see comment block in trade_daily_stock_prod.py)
-  - REJECTED against 18-model: s3086 (correlated with s3668, delta=-6.5%)
+  - REJECTED 80+ seeds across 15→16→17→18→19 model bars (see trade_daily_stock_prod.py comments)
 
 ### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- FIXED (pending restart)
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`
