@@ -92,6 +92,16 @@ def test_plan_batch_applies_confidence_gate_and_risk_clamp():
     assert plans[0].sell_price > plans[0].buy_price
 
 
+def test_plan_batch_applies_explicit_confidence_threshold():
+    runtime = _build_runtime_for_confidence(trade=0.8, confidence=0.25, risk_threshold=0.5)
+    runtime.confidence_threshold = 0.3
+
+    plans = runtime.plan_batch(["AAPL"])
+
+    assert len(plans) == 1
+    assert plans[0].trade_amount == 0.0
+
+
 @dataclass
 class _FixedPlan:
     symbol: str
@@ -150,3 +160,27 @@ def test_market_simulator_uses_crypto_fee_default():
     cash_after_sell = cash_after_buy + qty * plan.sell_price * (1.0 - fee)
     assert summary["final_equity"] == pytest.approx(cash_after_sell, rel=1e-6)
     assert summary["pnl"] > 0
+
+
+def test_market_simulator_accepts_legacy_maker_fee_alias():
+    date = pd.to_datetime("2025-11-19", utc=True)
+    frame = pd.DataFrame(
+        {
+            "date": [date],
+            "high": [12.0],
+            "low": [10.0],
+            "close": [11.0],
+        }
+    )
+    plan = _FixedPlan(symbol="AAPL", buy_price=10.0, sell_price=12.0, trade_amount=0.5)
+    runtime = _StubRuntime(frame, plan)
+
+    simulator = NeuralDailyMarketSimulator(runtime, symbols=["AAPL"], maker_fee=0.0015)
+    _results, summary = simulator.run(days=1)
+
+    fee = 0.0015
+    initial_cash = 1.0
+    qty = min(plan.trade_amount, initial_cash / (plan.buy_price * (1.0 + fee)))
+    cash_after_buy = initial_cash - qty * plan.buy_price * (1.0 + fee)
+    cash_after_sell = cash_after_buy + qty * plan.sell_price * (1.0 - fee)
+    assert summary["final_equity"] == pytest.approx(cash_after_sell, rel=1e-6)

@@ -162,11 +162,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         help="Use cross-feature bins (20 feat/sym). Overrides --train-data/--val-data "
                              "to use stocks11_daily_{train,val}_2012_cross.bin. "
                              "Add these bins to rsync before launching.")
-    parser.add_argument("--time-budget", type=int, default=0,
-                        help="Seconds per trial safety timeout. 0 = auto-select from --gpu-type. "
+    parser.add_argument("--time-budget", type=int, default=300,
+                        help="Seconds per trial safety timeout. Default: 300. "
+                             "Set to 0 to auto-select from --gpu-type. "
                              "H100 ~400k sps → 120s cap. A40 ~300k sps → 155s cap. A100 ~350k sps → 135s cap.")
-    parser.add_argument("--max-trials", type=int, default=1000,
-                        help="1000 trials: ~8% escape rate → ~80 good models. "
+    parser.add_argument("--max-trials", type=int, default=200,
+                        help="Default: 200 trials. "
+                             "1000 trials: ~8%% escape rate → ~80 good models. "
                              "Early rejection (25%% checkpoint) cuts degenerate trials to ~28s each, "
                              "so 1000 trials ≈ 80 × 93s + 920 × 28s = 33,000s ≈ 9 hours on H100.")
     parser.add_argument(

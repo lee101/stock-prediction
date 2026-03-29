@@ -1,0 +1,2 @@
+timestamp,seed_dir,ckpt_type,n_windows,med,p10,p90,worst,neg,checkpoint
+2026-03-28T01:34:21Z,tp05_s21,best.pt,111,1.82,-9.09,5.63,-12.48,41,pufferlib_market/checkpoints/stocks12_sweep_s21_50/tp05_s21/best.pt

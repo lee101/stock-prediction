@@ -33,6 +33,7 @@ class NeuralDailyMarketSimulator:
         *,
         stock_fee: float = 0.0008,  # Match training default (8 bps)
         crypto_fee: float = 0.0008,  # Match training default (8 bps)
+        maker_fee: float | None = None,  # legacy alias: apply same fee to all assets
         initial_cash: float = 1.0,
         leverage_fee_rate: float = 0.065,
         equity_max_leverage: float = 2.0,
@@ -40,6 +41,9 @@ class NeuralDailyMarketSimulator:
         stocks_closed: bool = False,
         auto_weekend_hold: bool = True,
     ) -> None:
+        if maker_fee is not None:
+            stock_fee = float(maker_fee)
+            crypto_fee = float(maker_fee)
         self.runtime = runtime
         self.symbols = [symbol.upper() for symbol in symbols]
         self.stock_fee = stock_fee

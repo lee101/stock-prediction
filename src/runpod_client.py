@@ -49,8 +49,8 @@ HOURLY_RATES: dict[str, float] = {
     "NVIDIA A100-SXM4-80GB": 1.39,
     "NVIDIA H100 80GB HBM3": 1.99,
     "NVIDIA H100 SXM": 2.69,
-    "NVIDIA GeForce RTX 4090": 0.34,
-    "NVIDIA GeForce RTX 5090": 0.69,
+    "NVIDIA GeForce RTX 4090": 0.69,
+    "NVIDIA GeForce RTX 5090": 1.25,
     "NVIDIA L40S": 0.79,
     "NVIDIA L40": 0.69,
     "NVIDIA A40": 0.35,
@@ -312,12 +312,12 @@ class RunPodClient:
         ssh_port = 0
         public_ip = ""
         for port in ports:
-            if port.get("privatePort") == 22:
-                ssh_host = port.get("ip", "")
-                ssh_port = int(port.get("publicPort", 0) or 0)
-                if port.get("isIpPublic"):
-                    public_ip = port.get("ip", "")
-                break
+            if port.get("privatePort") != 22 or not port.get("isIpPublic"):
+                continue
+            ssh_host = port.get("ip", "")
+            ssh_port = int(port.get("publicPort", 0) or 0)
+            public_ip = port.get("ip", "")
+            break
         gpu_type = ""
         if gpus:
             gpu_type = str(gpus[0].get("id", "") or "")

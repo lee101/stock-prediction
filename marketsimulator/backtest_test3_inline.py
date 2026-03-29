@@ -22,6 +22,12 @@ _DEFAULT_NUM_SIMULATIONS = int(os.getenv("MARKETSIM_NUM_SIMULATIONS", "20"))
 _PCTDIFF_MAX_RETURN = float(os.getenv("PCTDIFF_MAX_DAILY_RETURN", "0.10"))
 _SKIP_REAL_IMPORT = os.getenv("MARKETSIM_SKIP_REAL_IMPORT", "0").lower() in {"1", "true", "yes", "on"}
 _LOOKAHEAD_ENV_KEY = "MARKETSIM_FORECAST_LOOKAHEAD"
+_LOCAL_PRICE_HISTORY_DIRS: Tuple[Path, ...] = (
+    Path("trainingdatahourly/crypto"),
+    Path("trainingdatahourly/stocks"),
+    Path("tradingdata/train"),
+    Path("tradingdata/test"),
+)
 
 _PREAUG_SELECTOR: Optional[PreAugmentationSelector] = None
 _PREAUG_DIRS: Tuple[Path, ...] = ()
@@ -291,11 +297,65 @@ def _load_live_price_history(symbol: str, num_simulations: int) -> Optional[pd.D
     return window
 
 
+def _load_local_price_history(symbol: str, num_simulations: int) -> Optional[pd.DataFrame]:
+    repo_root = Path(__file__).resolve().parent.parent
+    for rel_dir in _LOCAL_PRICE_HISTORY_DIRS:
+        candidate = repo_root / rel_dir / f"{symbol}.csv"
+        if not candidate.exists():
+            continue
+        try:
+            frame = pd.read_csv(candidate)
+        except Exception as exc:
+            logger.debug("[sim] Failed reading local price history %s: %s", candidate, exc)
+            continue
+        if frame.empty:
+            continue
+
+        if "symbol" in frame.columns:
+            frame = frame.drop(columns=["symbol"])
+
+        rename_map = {}
+        for column in frame.columns:
+            lowered = str(column).strip().lower()
+            if lowered in {"open", "high", "low", "close"}:
+                rename_map[column] = lowered.capitalize()
+            elif lowered == "volume":
+                rename_map[column] = "Volume"
+            elif lowered == "timestamp":
+                rename_map[column] = "timestamp"
+        frame = frame.rename(columns=rename_map)
+
+        if "timestamp" not in frame.columns:
+            if str(frame.index.name).strip().lower() == "timestamp":
+                frame = frame.reset_index()
+            else:
+                logger.debug("[sim] Local price history %s missing timestamp column", candidate)
+                continue
+
+        frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce")
+        required_cols = ["timestamp", "Open", "High", "Low", "Close"]
+        frame = frame.dropna(subset=required_cols)
+        if frame.empty:
+            continue
+
+        frame = frame.sort_values("timestamp")
+        frame = frame.drop_duplicates(subset=["timestamp"], keep="last")
+        window = frame.tail(num_simulations).copy()
+        if window.empty:
+            continue
+        window.reset_index(drop=True, inplace=True)
+        logger.debug("[sim] Using local archived price history %s for %s", candidate, symbol)
+        return window
+    return None
+
+
 def _fallback_backtest(symbol: str, num_simulations: int | None = None) -> pd.DataFrame:
     num_simulations = num_simulations or _DEFAULT_NUM_SIMULATIONS
     window = _window_from_state(symbol, num_simulations)
     if window is None:
         window = _load_live_price_history(symbol, num_simulations)
+    if window is None:
+        window = _load_local_price_history(symbol, num_simulations)
 
     if window is None or window.empty:
         raise ValueError(f"No data available for fallback analytics on {symbol}")
