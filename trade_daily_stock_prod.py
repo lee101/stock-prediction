@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -869,6 +870,8 @@ def execute_signal_with_trading_server(
                 qty=qty,
                 side="sell",
                 limit_price=_marketable_limit_price(float(quotes[managed_symbol]), "sell"),
+                allow_loss_exit=True,
+                force_exit_reason="daily strategy rotation",
                 metadata={"strategy": "daily_stock_rl", "intent": "close_managed"},
             )
             state.last_order_id = str(order.get("order", {}).get("id", ""))
@@ -1104,6 +1107,7 @@ def run_backtest(
     symbols: Iterable[str],
     data_dir: str,
     days: int,
+    allocation_pct: float = 100.0,
 ) -> dict[str, float]:
     frames = load_local_daily_frames(symbols, data_dir=data_dir, min_days=days + 120)
     indexed = {
@@ -1151,7 +1155,15 @@ def run_backtest(
             trader.update_state(0, 0.0, "")
 
         if position is None and signal.symbol and signal.direction == "long":
-            qty = cash / prices[signal.symbol]
+            qty = compute_target_qty_from_values(
+                portfolio_value=cash,
+                buying_power=cash,
+                price=prices[signal.symbol],
+                allocation_pct=allocation_pct,
+            )
+            if qty <= 0:
+                trader.step_day()
+                continue
             cash -= qty * prices[signal.symbol]
             position = (signal.symbol, qty, prices[signal.symbol])
             trader.update_state(trader.SYMBOLS.index(signal.symbol) + 1, prices[signal.symbol], signal.symbol)
@@ -1367,8 +1379,24 @@ def run_daemon(
     server_session_id = f"daily-rl-trader-{execution_backend}-{os.getpid()}"
     while True:
         state = load_state()
+        # Use paper API for clock check (market hours same regardless of paper/live).
+        # Fall back to paper=True if live keys are invalid (401) — service stays alive.
         clock_client = build_trading_client(paper=paper)
-        clock = clock_client.get_clock()
+        try:
+            clock = clock_client.get_clock()
+        except Exception as _clock_err:
+            if not paper:
+                logger.warning("Live clock check failed (%s); retrying with paper API", _clock_err)
+                try:
+                    clock = build_trading_client(paper=True).get_clock()
+                except Exception as _paper_err:
+                    logger.warning("Paper clock check also failed (%s); sleeping 5min", _paper_err)
+                    time.sleep(300.0)
+                    continue
+            else:
+                logger.warning("Clock check failed (%s); sleeping 5min", _clock_err)
+                time.sleep(300.0)
+                continue
         now = datetime.now(timezone.utc)
         if should_run_today(
             now=now,
@@ -1632,6 +1660,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             symbols=symbols,
             data_dir=args.data_dir,
             days=args.backtest_days,
+            allocation_pct=args.allocation_pct,
         )
         return
 
