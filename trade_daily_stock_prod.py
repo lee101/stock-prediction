@@ -56,14 +56,17 @@ DEFAULT_SYMBOLS = [
     "AMZN",
 ]
 DEFAULT_CHECKPOINT = "pufferlib_market/prod_ensemble/tp10.pt"
-# 15-model ensemble stored in prod_ensemble/ (protected from *_screen/ deletion pattern)
-# Members: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835
-# Populated 2026-03-28 — all checkpoints are screen-phase (≤3M steps) or exact-match recoveries
-# Baseline exhaustive (encoder_norm correct): 0/111 neg, med=50.9%, p10=19.2%, worst=7.9%
-# ENCODER_NORM NOTE: 10/15 models use encoder_norm; production inference.py applies it correctly
-# 16-model bar: 16-model exhaustive p10 >= 19.2% @fill_bps=5 (encoder_norm-correct methodology)
-# REJECTED: s2655 (p10 drops), s2206 (-0.9%), resmlp_a40, s28, tp03, s241, s541, s310, stock_ent_05
-# REJECTED (high in-sample return = aggressive overfit): s2793 (-42.2%), s2815 (-43.5%), s2099 (-29.1%), s2118 (-27.1%), s2247 (-20.9%), s2695 (-24.7%)
+# 17-model ensemble stored in prod_ensemble/ (protected from *_screen/ deletion pattern)
+# Members: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835+s2827+s2722
+# Updated 2026-03-29 — all checkpoints are screen-phase (≤3M steps) or exact-match recoveries
+# s2827 added 2026-03-28: best single addition (+16% delta vs 15-model)
+# s2722 added 2026-03-29: +6% delta vs 16-model — 17-model: 0/111 neg, med=55.6%, p10=41.2%, worst=22.5%
+# (15-model was: 0/111 neg, med=50.9%, p10=19.2%, worst=7.9%)
+# ENCODER_NORM NOTE: models use encoder_norm; production inference.py applies it correctly
+# 18-model bar: 18-model exhaustive p10 >= 41.2% @fill_bps=5 (encoder_norm-correct methodology)
+# REJECTED: s2655, s2206, resmlp_a40, s28, tp03, s241, s541, s310, stock_ent_05
+# REJECTED (high in-sample return = aggressive overfit): s2793, s2815, s2099, s2118, s2247, s2695
+# REJECTED against 16-model: s2433/s2831/s2275 (correlated w/ s2827), s2137, s2276, s2279, s2435, s2575, s2935, s3069
 DEFAULT_EXTRA_CHECKPOINTS = [
     "pufferlib_market/prod_ensemble/s15.pt",
     "pufferlib_market/prod_ensemble/s36.pt",
@@ -79,6 +82,8 @@ DEFAULT_EXTRA_CHECKPOINTS = [
     "pufferlib_market/prod_ensemble/s2033.pt",
     "pufferlib_market/prod_ensemble/s2495.pt",
     "pufferlib_market/prod_ensemble/s1835.pt",
+    "pufferlib_market/prod_ensemble/s2827.pt",
+    "pufferlib_market/prod_ensemble/s2722.pt",
 ]
 DEFAULT_DATA_DIR = "trainingdata"
 DEFAULT_ALLOCATION_PCT = 25.0
