@@ -17,6 +17,8 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from typing import Iterable, Optional, Sequence
 from zoneinfo import ZoneInfo
 
@@ -30,6 +32,8 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from pufferlib_market.inference_daily import DailyPPOTrader, compute_daily_features
+from src.alpaca_account_lock import acquire_alpaca_account_lock, require_explicit_live_trading_enable
+from src.trading_server.client import TradingServerClient
 from unified_orchestrator.jsonl_utils import append_jsonl_row
 
 logging.basicConfig(
@@ -57,22 +61,20 @@ DEFAULT_SYMBOLS = [
     "AMZN",
 ]
 DEFAULT_CHECKPOINT = "pufferlib_market/prod_ensemble/tp10.pt"
-# 18-model ensemble stored in prod_ensemble/ (protected from *_screen/ deletion pattern)
-# Members: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835+s2827+s2722+s3668
+# 19-model ensemble stored in prod_ensemble/ (protected from *_screen/ deletion pattern)
+# Members: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835+s2827+s2722+s3668+s3411
 # Updated 2026-03-29 — all checkpoints are screen-phase (≤3M steps) or exact-match recoveries
 # s2827 added 2026-03-28: +16% delta vs 15-model
 # s2722 added 2026-03-29: +6% delta vs 16-model
-# s3668 added 2026-03-29: +1.1% delta vs 17-model — 18-model: 0/111 neg, med=57.2%, p10=42.3%
-# (15-model was: 0/111 neg, med=50.9%, p10=19.2%, worst=7.9%)
+# s3668 added 2026-03-29: +1.1% delta vs 17-model
+# s3411 added 2026-03-29: +1.8% delta vs 18-model — 19-model: 0/111 neg, p10=44.1%
+# (15-model was: 0/111 neg, med=50.9%, p10=19.2%; 18-model was p10=42.3%)
 # ENCODER_NORM NOTE: models use encoder_norm; production inference.py applies it correctly
-# 19-model bar: 19-model exhaustive p10 >= 42.3% @fill_bps=5 (encoder_norm-correct methodology)
+# 20-model bar: 20-model exhaustive p10 >= 44.1% @fill_bps=5 (encoder_norm-correct methodology)
 # REJECTED: s2655, s2206, resmlp_a40, s28, tp03, s241, s541, s310, stock_ent_05
 # REJECTED (high in-sample return = aggressive overfit): s2793, s2815, s2099, s2118, s2247, s2695
-# REJECTED against 16-model: s2433/s2831/s2275 (correlated w/ s2827), s2137, s2276, s2279, s2435, s2575, s2935, s3069
-# REJECTED against 17-model: s3670/s3227/s3518/s3085/s3229/s3230/s3517/s2943/s3519/s3373/s2879/s3520
-#   s3372/s3671/s2877/s3667/s2878/s3083/s2944/s3228/s3542/s3247/s3246/s3248/s3106/s3104/s3390/s3391
-#   s2954/s3802/s3691/s3692/s3265/s3126/s3408/s3410 (+s3086 close at +0.5%, s3371 close at -0.5%)
-# REJECTED against 18-model: s3086 (correlated with s3668, delta=-6.5%)
+# REJECTED against 16-model: s2433/s2831/s2275 (correlated w/ s2827), s2137, s2276, s2279, s2435, s2575
+# REJECTED against 17/18-model: 80+ seeds (see batch_new_*.log for details)
 DEFAULT_EXTRA_CHECKPOINTS = [
     "pufferlib_market/prod_ensemble/s15.pt",
     "pufferlib_market/prod_ensemble/s36.pt",
@@ -91,9 +93,14 @@ DEFAULT_EXTRA_CHECKPOINTS = [
     "pufferlib_market/prod_ensemble/s2827.pt",
     "pufferlib_market/prod_ensemble/s2722.pt",
     "pufferlib_market/prod_ensemble/s3668.pt",
+    "pufferlib_market/prod_ensemble/s3411.pt",
 ]
 DEFAULT_DATA_DIR = "trainingdata"
 DEFAULT_ALLOCATION_PCT = 25.0
+DEFAULT_SORTINO_SERVER_CHECKPOINT = "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt"
+DEFAULT_SERVER_PAPER_ACCOUNT = "paper_sortino_daily"
+DEFAULT_SERVER_PAPER_BOT_ID = "daily_stock_sortino_v1"
+SERVER_MARKETABLE_LIMIT_BUFFER_BPS = 100.0
 STATE_PATH = REPO / "strategy_state/daily_stock_rl_state.json"
 SIGNAL_LOG_PATH = REPO / "strategy_state/daily_stock_rl_signals.jsonl"
 
@@ -117,6 +124,70 @@ class PortfolioContext:
     position_qty: float = 0.0
     entry_price: float = 0.0
     hold_days: int = 0
+
+
+class InMemoryTradingServerClient:
+    """Adapter used for deterministic backtests against the trading server engine."""
+
+    def __init__(
+        self,
+        *,
+        engine,
+        account: str,
+        bot_id: str,
+        execution_mode: str = "paper",
+        session_id: str = "daily-stock-backtest",
+    ) -> None:
+        self.engine = engine
+        self.account = account
+        self.bot_id = bot_id
+        self.execution_mode = execution_mode
+        self.session_id = session_id
+
+    def claim_writer(self, *, ttl_seconds: int = 120) -> dict[str, object]:
+        return self.engine.claim_writer(
+            SimpleNamespace(
+                account=self.account,
+                bot_id=self.bot_id,
+                session_id=self.session_id,
+                ttl_seconds=ttl_seconds,
+            )
+        )
+
+    def refresh_prices(self, *, symbols: Iterable[str] | None = None) -> dict[str, object]:
+        return self.engine.refresh_prices(account=self.account, symbols=list(symbols or []))
+
+    def get_account(self) -> dict[str, object]:
+        return self.engine.get_account_snapshot(self.account)
+
+    def submit_limit_order(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        qty: float,
+        limit_price: float,
+        allow_loss_exit: bool = False,
+        force_exit_reason: str | None = None,
+        live_ack: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        return self.engine.submit_order(
+            SimpleNamespace(
+                account=self.account,
+                bot_id=self.bot_id,
+                session_id=self.session_id,
+                symbol=symbol,
+                side=side,
+                qty=qty,
+                limit_price=limit_price,
+                execution_mode=self.execution_mode,
+                allow_loss_exit=allow_loss_exit,
+                force_exit_reason=force_exit_reason,
+                live_ack=live_ack,
+                metadata=metadata or {},
+            )
+        )
 
 
 def _normalize_daily_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -620,6 +691,21 @@ def submit_market_order(client, *, symbol: str, qty: float, side: str):
 def compute_target_qty(*, account, price: float, allocation_pct: float) -> float:
     portfolio_value = float(getattr(account, "portfolio_value", 0.0) or 0.0)
     buying_power = float(getattr(account, "buying_power", 0.0) or 0.0)
+    return compute_target_qty_from_values(
+        portfolio_value=portfolio_value,
+        buying_power=buying_power,
+        price=price,
+        allocation_pct=allocation_pct,
+    )
+
+
+def compute_target_qty_from_values(
+    *,
+    portfolio_value: float,
+    buying_power: float,
+    price: float,
+    allocation_pct: float,
+) -> float:
     if price <= 0 or portfolio_value <= 0 or buying_power <= 0:
         return 0.0
     target_notional = portfolio_value * max(0.0, allocation_pct) / 100.0
@@ -627,6 +713,212 @@ def compute_target_qty(*, account, price: float, allocation_pct: float) -> float
     if target_notional <= 0:
         return 0.0
     return round(target_notional / price, 4)
+
+
+def build_server_client(
+    *,
+    account: str,
+    bot_id: str,
+    paper: bool,
+    base_url: str | None = None,
+    session_id: str | None = None,
+):
+    return TradingServerClient(
+        base_url=base_url,
+        account=account,
+        bot_id=bot_id,
+        session_id=session_id,
+        execution_mode="paper" if paper else "live",
+    )
+
+
+def _server_position_to_object(symbol: str, payload: dict[str, object]) -> SimpleNamespace:
+    return SimpleNamespace(
+        symbol=symbol,
+        qty=float(payload.get("qty", 0.0) or 0.0),
+        side="long",
+        avg_entry_price=float(payload.get("avg_entry_price", 0.0) or 0.0),
+        current_price=float(payload.get("current_price", 0.0) or 0.0),
+    )
+
+
+def server_positions_by_symbol(snapshot: dict[str, object], symbols: Iterable[str]) -> dict[str, object]:
+    target = {str(symbol).upper() for symbol in symbols}
+    positions = snapshot.get("positions", {})
+    if not isinstance(positions, dict):
+        return {}
+    out: dict[str, object] = {}
+    for symbol, payload in positions.items():
+        if str(symbol).upper() not in target or not isinstance(payload, dict):
+            continue
+        out[str(symbol).upper()] = _server_position_to_object(str(symbol).upper(), payload)
+    return out
+
+
+def server_portfolio_context(
+    *,
+    snapshot: dict[str, object],
+    state: StrategyState,
+    quotes: dict[str, float],
+    now: Optional[datetime] = None,
+) -> PortfolioContext:
+    now = now or datetime.now(timezone.utc)
+    cash = float(snapshot.get("cash", 0.0) or 0.0)
+    positions = snapshot.get("positions", {})
+    if not isinstance(positions, dict):
+        return PortfolioContext(cash=cash)
+    symbol = (state.active_symbol or "").upper()
+    payload = positions.get(symbol)
+    if not symbol or not isinstance(payload, dict):
+        return PortfolioContext(cash=cash)
+
+    hold_days = 0
+    opened_at = payload.get("opened_at")
+    try:
+        opened_date = datetime.fromisoformat(str(opened_at)).astimezone(EASTERN).date() if opened_at else None
+    except Exception:
+        opened_date = None
+    if opened_date is not None:
+        hold_days = max(0, (now.astimezone(EASTERN).date() - opened_date).days)
+
+    entry_price = float(payload.get("avg_entry_price", 0.0) or 0.0)
+    return PortfolioContext(
+        cash=cash,
+        current_symbol=symbol,
+        position_qty=float(payload.get("qty", 0.0) or 0.0),
+        entry_price=entry_price,
+        hold_days=hold_days,
+    )
+
+
+def server_equity(snapshot: dict[str, object], quotes: dict[str, float]) -> float:
+    cash = float(snapshot.get("cash", 0.0) or 0.0)
+    positions = snapshot.get("positions", {})
+    if not isinstance(positions, dict):
+        return cash
+    equity = cash
+    for symbol, payload in positions.items():
+        if not isinstance(payload, dict):
+            continue
+        equity += float(payload.get("qty", 0.0) or 0.0) * float(quotes.get(str(symbol).upper(), 0.0) or 0.0)
+    return equity
+
+
+def compute_target_qty_from_server_snapshot(
+    *,
+    snapshot: dict[str, object],
+    quotes: dict[str, float],
+    price: float,
+    allocation_pct: float,
+) -> float:
+    return compute_target_qty_from_values(
+        portfolio_value=server_equity(snapshot, quotes),
+        buying_power=float(snapshot.get("cash", 0.0) or 0.0),
+        price=price,
+        allocation_pct=allocation_pct,
+    )
+
+
+def _marketable_limit_price(price: float, side: str, *, buffer_bps: float = SERVER_MARKETABLE_LIMIT_BUFFER_BPS) -> float:
+    side = str(side).strip().lower()
+    scale = 1.0 + (float(buffer_bps) / 10_000.0)
+    if side == "buy":
+        return round(float(price) * scale, 4)
+    return round(float(price) / scale, 4)
+
+
+def execute_signal_with_trading_server(
+    signal,
+    *,
+    server_client,
+    quotes: dict[str, float],
+    state: StrategyState,
+    symbols: Iterable[str],
+    allocation_pct: float,
+    dry_run: bool,
+    now: Optional[datetime] = None,
+    allow_open: bool = True,
+) -> bool:
+    now = now or datetime.now(timezone.utc)
+    symbol_set = [str(symbol).upper() for symbol in symbols]
+    snapshot = server_client.get_account()
+    live_positions = server_positions_by_symbol(snapshot, symbol_set)
+    managed_symbol = state.active_symbol.upper() if state.active_symbol else None
+    desired_symbol = signal.symbol.upper() if signal.symbol and signal.direction == "long" else None
+
+    unmanaged = sorted(symbol for symbol in live_positions if symbol != managed_symbol)
+    if unmanaged:
+        logger.warning(
+            "Found unmanaged server position(s) in the strategy universe: %s. Refusing to place new orders.",
+            ", ".join(unmanaged),
+        )
+        return False
+
+    managed_position = live_positions.get(managed_symbol) if managed_symbol else None
+    if desired_symbol and managed_symbol == desired_symbol and managed_position is not None:
+        logger.info("Holding existing managed server position in %s", desired_symbol)
+        return False
+
+    if managed_position is not None and managed_symbol is not None:
+        qty = abs(_signed_position_qty(managed_position))
+        logger.info("Closing managed server position: %s qty=%.4f", managed_symbol, qty)
+        if not dry_run:
+            server_client.refresh_prices(symbols=[managed_symbol])
+            order = server_client.submit_limit_order(
+                symbol=managed_symbol,
+                qty=qty,
+                side="sell",
+                limit_price=_marketable_limit_price(float(quotes[managed_symbol]), "sell"),
+                metadata={"strategy": "daily_stock_rl", "intent": "close_managed"},
+            )
+            state.last_order_id = str(order.get("order", {}).get("id", ""))
+            state.active_symbol = None
+            state.active_qty = 0.0
+            state.entry_price = 0.0
+            state.entry_date = None
+            snapshot = server_client.get_account()
+
+    if desired_symbol is None:
+        logger.info("Signal is flat; no new server position opened")
+        return managed_position is not None
+
+    if not allow_open:
+        logger.warning("Skipping new server position open for %s because execution safety gate is active", desired_symbol)
+        return managed_position is not None
+
+    price = float(quotes.get(desired_symbol, 0.0) or 0.0)
+    qty = compute_target_qty_from_server_snapshot(
+        snapshot=snapshot,
+        quotes=quotes,
+        price=price,
+        allocation_pct=allocation_pct,
+    )
+    if qty <= 0:
+        logger.warning("Computed zero-sized server order for %s at %.4f", desired_symbol, price)
+        return False
+
+    logger.info(
+        "Opening managed server position: %s qty=%.4f @ %.4f (alloc=%.1f%%)",
+        desired_symbol,
+        qty,
+        price,
+        allocation_pct,
+    )
+    if not dry_run:
+        server_client.refresh_prices(symbols=[desired_symbol])
+        order = server_client.submit_limit_order(
+            symbol=desired_symbol,
+            qty=qty,
+            side="buy",
+            limit_price=_marketable_limit_price(price, "buy"),
+            metadata={"strategy": "daily_stock_rl", "intent": "open_managed"},
+        )
+        state.last_order_id = str(order.get("order", {}).get("id", ""))
+        state.active_symbol = desired_symbol
+        state.active_qty = qty
+        state.entry_price = price
+        state.entry_date = now.astimezone(EASTERN).date().isoformat()
+    return True
 
 
 def execute_signal(
@@ -902,6 +1194,11 @@ def run_once(
     data_dir: str,
     state_path: Path = STATE_PATH,
     extra_checkpoints: Optional[list] = None,
+    execution_backend: str = "alpaca",
+    server_account: str = DEFAULT_SERVER_PAPER_ACCOUNT,
+    server_bot_id: str = DEFAULT_SERVER_PAPER_BOT_ID,
+    server_url: str | None = None,
+    server_session_id: str | None = None,
 ) -> dict:
     now = datetime.now(timezone.utc)
     state = load_state(state_path)
@@ -910,8 +1207,8 @@ def run_once(
     latest_bar = None
     market_open = None
     if data_source == "alpaca":
-        client = build_trading_client(paper=paper)
         data_client = build_data_client(paper=paper)
+        clock_client = build_trading_client(paper=paper)
         frames, bar_data_source = load_inference_frames(
             symbols,
             paper=paper,
@@ -927,17 +1224,39 @@ def run_once(
             fallback_prices=close_prices,
             data_client=data_client,
         )
-        live_positions = positions_by_symbol(client, symbols)
-        if not dry_run:
-            adopt_existing_position(state=state, live_positions=live_positions, now=now)
-        portfolio = build_portfolio_context(
-            state=state,
-            live_positions=live_positions,
-            account=client.get_account(),
-            now=now,
-        )
+        if execution_backend == "trading_server":
+            client = build_server_client(
+                account=server_account,
+                bot_id=server_bot_id,
+                paper=paper,
+                base_url=server_url,
+                session_id=server_session_id,
+            )
+            if not dry_run:
+                client.claim_writer()
+            snapshot = client.get_account()
+            live_positions = server_positions_by_symbol(snapshot, symbols)
+            if not dry_run:
+                adopt_existing_position(state=state, live_positions=live_positions, now=now)
+            portfolio = server_portfolio_context(
+                snapshot=snapshot,
+                state=state,
+                quotes=quotes,
+                now=now,
+            )
+        else:
+            client = build_trading_client(paper=paper)
+            live_positions = positions_by_symbol(client, symbols)
+            if not dry_run:
+                adopt_existing_position(state=state, live_positions=live_positions, now=now)
+            portfolio = build_portfolio_context(
+                state=state,
+                live_positions=live_positions,
+                account=client.get_account(),
+                now=now,
+            )
         try:
-            market_open = bool(getattr(client.get_clock(), "is_open", False))
+            market_open = bool(getattr(clock_client.get_clock(), "is_open", False))
         except Exception as exc:
             logger.warning("Could not read Alpaca market clock: %s", exc)
             market_open = False
@@ -986,17 +1305,33 @@ def run_once(
         elif not dry_run and not bars_fresh:
             logger.warning("Latest inference bar is stale; skipping order placement")
         else:
-            executed = execute_signal(
-                signal,
-                client=client,
-                quotes=quotes,
-                state=state,
-                symbols=symbols,
-                allocation_pct=allocation_pct,
-                dry_run=dry_run,
-                now=now,
-                allow_open=allow_open,
-            )
+            if execution_backend == "trading_server":
+                executed = execute_signal_with_trading_server(
+                    signal,
+                    server_client=client,
+                    quotes=quotes,
+                    state=state,
+                    symbols=symbols,
+                    allocation_pct=allocation_pct,
+                    dry_run=dry_run,
+                    now=now,
+                    allow_open=allow_open,
+                )
+                payload["server_account"] = server_account
+                payload["server_bot_id"] = server_bot_id
+                payload["server_snapshot"] = client.get_account()
+            else:
+                executed = execute_signal(
+                    signal,
+                    client=client,
+                    quotes=quotes,
+                    state=state,
+                    symbols=symbols,
+                    allocation_pct=allocation_pct,
+                    dry_run=dry_run,
+                    now=now,
+                    allow_open=allow_open,
+                )
     else:
         logger.info("Local data mode selected; skipping execution")
 
@@ -1023,12 +1358,17 @@ def run_daemon(
     dry_run: bool,
     data_dir: str,
     extra_checkpoints: Optional[list] = None,
+    execution_backend: str = "alpaca",
+    server_account: str = DEFAULT_SERVER_PAPER_ACCOUNT,
+    server_bot_id: str = DEFAULT_SERVER_PAPER_BOT_ID,
+    server_url: str | None = None,
 ) -> None:
     logger.info("Starting daily stock RL daemon")
+    server_session_id = f"daily-rl-trader-{execution_backend}-{os.getpid()}"
     while True:
         state = load_state()
-        client = build_trading_client(paper=paper)
-        clock = client.get_clock()
+        clock_client = build_trading_client(paper=paper)
+        clock = clock_client.get_clock()
         now = datetime.now(timezone.utc)
         if should_run_today(
             now=now,
@@ -1045,6 +1385,11 @@ def run_daemon(
                     data_source="alpaca",
                     data_dir=data_dir,
                     extra_checkpoints=extra_checkpoints,
+                    execution_backend=execution_backend,
+                    server_account=server_account,
+                    server_bot_id=server_bot_id,
+                    server_url=server_url,
+                    server_session_id=server_session_id,
                 )
             except Exception as exc:
                 logger.exception("Daily stock RL cycle failed: %s", exc)
@@ -1077,13 +1422,188 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--live", action="store_true", help="Use the Alpaca live account")
     parser.add_argument("--backtest", action="store_true", help="Run a local historical backtest")
     parser.add_argument("--backtest-days", type=int, default=60)
+    parser.add_argument("--compare-server-parity", action="store_true",
+                        help="Compare the legacy daily backtest against the trading-server paper replay")
+    parser.add_argument("--execution-backend", choices=["alpaca", "trading_server"], default="alpaca")
+    parser.add_argument("--server-account", default=DEFAULT_SERVER_PAPER_ACCOUNT)
+    parser.add_argument("--server-bot-id", default=DEFAULT_SERVER_PAPER_BOT_ID)
+    parser.add_argument("--server-url", default=None)
     parser.add_argument("--symbols", nargs="+", default=None)
     return parser.parse_args(argv)
+
+
+def run_backtest_via_trading_server(
+    *,
+    checkpoint: str,
+    symbols: Iterable[str],
+    data_dir: str,
+    days: int,
+    allocation_pct: float = 100.0,
+    account: str = "paper_backtest_daily_sortino",
+    bot_id: str = "daily_stock_backtest_v1",
+) -> dict[str, float]:
+    from src.trading_server.server import TradingServerEngine
+
+    frames = load_local_daily_frames(symbols, data_dir=data_dir, min_days=days + 120)
+    indexed = {
+        symbol: frame.set_index("timestamp")[["open", "high", "low", "close", "volume"]].copy()
+        for symbol, frame in frames.items()
+    }
+    min_len = min(len(frame) for frame in indexed.values())
+    start = min_len - days
+    if start < 1:
+        raise ValueError(f"Need at least {days + 1} aligned days for backtest")
+
+    trader = DailyPPOTrader(checkpoint, device="cpu", long_only=True, symbols=list(indexed.keys()))
+    current_state = StrategyState()
+    current_quotes: dict[str, dict[str, object]] = {}
+    current_now = datetime.now(timezone.utc)
+
+    def _quote_provider(symbol: str) -> dict[str, object] | None:
+        return current_quotes.get(str(symbol).upper())
+
+    with TemporaryDirectory(prefix="daily_stock_server_bt_") as tmpdir:
+        tmp_root = Path(tmpdir)
+        registry_path = tmp_root / "registry.json"
+        registry_path.write_text(
+            json.dumps(
+                {
+                    "accounts": {
+                        account: {
+                            "mode": "paper",
+                            "allowed_bot_id": bot_id,
+                            "starting_cash": 10_000.0,
+                            "symbols": [str(symbol).upper() for symbol in symbols],
+                            "sell_loss_cooldown_seconds": 0,
+                            "min_sell_markup_pct": 0.0,
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        engine = TradingServerEngine(
+            registry_path=registry_path,
+            state_dir=tmp_root / "state",
+            quote_provider=_quote_provider,
+            now_fn=lambda: current_now,
+        )
+        server_client = InMemoryTradingServerClient(
+            engine=engine,
+            account=account,
+            bot_id=bot_id,
+            execution_mode="paper",
+            session_id="daily-stock-backtest",
+        )
+        server_client.claim_writer(ttl_seconds=3600)
+
+        equity_curve: list[float] = []
+        closes_last: dict[str, float] = {}
+        for idx in range(start, min_len):
+            current_now = pd.Timestamp(next(iter(indexed.values())).index[idx]).to_pydatetime()
+            if current_now.tzinfo is None:
+                current_now = current_now.replace(tzinfo=timezone.utc)
+            prices = {symbol: float(frame["close"].iloc[idx]) for symbol, frame in indexed.items()}
+            closes_last = prices
+            current_quotes = {
+                symbol: {
+                    "symbol": symbol,
+                    "bid_price": price,
+                    "ask_price": price,
+                    "last_price": price,
+                    "as_of": current_now.isoformat(),
+                }
+                for symbol, price in prices.items()
+            }
+            server_client.refresh_prices(symbols=prices.keys())
+            snapshot = server_client.get_account()
+            portfolio = server_portfolio_context(
+                snapshot=snapshot,
+                state=current_state,
+                quotes=prices,
+                now=current_now,
+            )
+            signal = build_signal(
+                checkpoint,
+                {symbol: frame.iloc[: idx + 1].reset_index() for symbol, frame in indexed.items()},
+                portfolio=portfolio,
+            )[0]
+            equity_curve.append(server_equity(snapshot, prices))
+            execute_signal_with_trading_server(
+                signal,
+                server_client=server_client,
+                quotes=prices,
+                state=current_state,
+                symbols=symbols,
+                allocation_pct=allocation_pct,
+                dry_run=False,
+                now=current_now,
+            )
+
+        final_snapshot = server_client.get_account()
+        final_equity = server_equity(final_snapshot, closes_last)
+        curve = np.asarray(equity_curve + [final_equity], dtype=np.float64)
+        total_return = float(curve[-1] / curve[0] - 1.0)
+        daily_returns = np.diff(curve) / np.clip(curve[:-1], 1e-8, None)
+        downside = daily_returns[daily_returns < 0.0]
+        downside_dev = float(np.sqrt(np.mean(np.square(downside)))) if len(downside) else 1e-8
+        sortino = float(np.mean(daily_returns) / downside_dev * np.sqrt(252.0)) if len(daily_returns) else 0.0
+        max_dd = float(np.min(curve / np.maximum.accumulate(curve) - 1.0))
+        annualized = float((1.0 + total_return) ** (252.0 / max(1, days)) - 1.0)
+        trade_count = len(final_snapshot.get("order_history", []))
+        results = {
+            "total_return": total_return,
+            "annualized_return": annualized,
+            "sortino": sortino,
+            "max_drawdown": max_dd,
+            "trades": float(trade_count),
+        }
+        logger.info("Trading-server paper backtest: %s", json.dumps(results, sort_keys=True))
+        return results
+
+
+def compare_backtest_to_trading_server(
+    *,
+    checkpoint: str,
+    symbols: Iterable[str],
+    data_dir: str,
+    days: int,
+    allocation_pct: float = 100.0,
+) -> dict[str, object]:
+    legacy = run_backtest(
+        checkpoint=checkpoint,
+        symbols=symbols,
+        data_dir=data_dir,
+        days=days,
+    )
+    server = run_backtest_via_trading_server(
+        checkpoint=checkpoint,
+        symbols=symbols,
+        data_dir=data_dir,
+        days=days,
+        allocation_pct=allocation_pct,
+    )
+    deltas = {
+        key: float(server.get(key, 0.0) - legacy.get(key, 0.0))
+        for key in ("total_return", "annualized_return", "sortino", "max_drawdown", "trades")
+    }
+    result = {"legacy": legacy, "server": server, "delta": deltas}
+    logger.info("Legacy/server parity summary: %s", json.dumps(result, sort_keys=True))
+    return result
 
 
 def main(argv: Optional[list[str]] = None) -> None:
     args = parse_args(argv)
     paper = not args.live
+    account_lock = None
+    if args.live:
+        require_explicit_live_trading_enable("daily-rl-trader")
+    if args.live and not args.dry_run:
+        account_lock = acquire_alpaca_account_lock(
+            "daily-rl-trader",
+            account_name="alpaca_live_writer",
+        )
+        logger.info("Acquired Alpaca live writer lock: %s", account_lock.path)
     symbols = [str(symbol).upper() for symbol in (args.symbols or DEFAULT_SYMBOLS)]
     checkpoint = str((REPO / args.checkpoint).resolve()) if not Path(args.checkpoint).is_absolute() else args.checkpoint
 
@@ -1098,6 +1618,15 @@ def main(argv: Optional[list[str]] = None) -> None:
         extra_checkpoints = [_resolve(p) for p in DEFAULT_EXTRA_CHECKPOINTS]
 
     if args.backtest:
+        if args.compare_server_parity:
+            compare_backtest_to_trading_server(
+                checkpoint=checkpoint,
+                symbols=symbols,
+                data_dir=args.data_dir,
+                days=args.backtest_days,
+                allocation_pct=args.allocation_pct,
+            )
+            return
         run_backtest(
             checkpoint=checkpoint,
             symbols=symbols,
@@ -1115,6 +1644,10 @@ def main(argv: Optional[list[str]] = None) -> None:
             dry_run=args.dry_run,
             data_dir=args.data_dir,
             extra_checkpoints=extra_checkpoints,
+            execution_backend=args.execution_backend,
+            server_account=args.server_account,
+            server_bot_id=args.server_bot_id,
+            server_url=args.server_url,
         )
         return
 
@@ -1127,6 +1660,10 @@ def main(argv: Optional[list[str]] = None) -> None:
         data_source=args.data_source,
         data_dir=args.data_dir,
         extra_checkpoints=extra_checkpoints,
+        execution_backend=args.execution_backend,
+        server_account=args.server_account,
+        server_bot_id=args.server_bot_id,
+        server_url=args.server_url,
     )
 
 
