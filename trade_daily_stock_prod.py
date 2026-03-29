@@ -62,8 +62,8 @@ DEFAULT_SYMBOLS = [
     "AMZN",
 ]
 DEFAULT_CHECKPOINT = "pufferlib_market/prod_ensemble/tp10.pt"
-# 26-model ensemble stored in prod_ensemble/ (protected from *_screen/ deletion pattern)
-# Members: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835+s2827+s2722+s3668+s3411+s4011+s4777+s4080+s4533+s4813+s5045+s5337
+# 27-model ensemble stored in prod_ensemble/ (protected from *_screen/ deletion pattern)
+# Members: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835+s2827+s2722+s3668+s3411+s4011+s4777+s4080+s4533+s4813+s5045+s5337+s5199
 # Updated 2026-03-29 — all checkpoints are screen-phase (≤3M steps) or exact-match recoveries
 # s2827 added 2026-03-28: +16% delta vs 15-model
 # s2722 added 2026-03-29: +6% delta vs 16-model
@@ -76,9 +76,10 @@ DEFAULT_CHECKPOINT = "pufferlib_market/prod_ensemble/tp10.pt"
 # s4813 added 2026-03-29: +4.4% delta vs 23-model — 24-model: 0/111 neg, p10=57.4%
 # s5045 added 2026-03-29: +1.2% delta vs 24-model — 25-model: 0/111 neg, p10=58.6%
 # s5337 added 2026-03-29: +1.8% delta vs 25-model — 26-model: 0/111 neg, p10=60.3%
+# s5199 added 2026-03-29: +2.2% delta vs 26-model — 27-model: 0/111 neg, p10=62.6%
 # (15-model was: 0/111 neg, med=50.9%, p10=19.2%)
 # ENCODER_NORM NOTE: models use encoder_norm; production inference.py applies it correctly
-# 27-model bar: 27-model exhaustive p10 >= 60.3% @fill_bps=5 (encoder_norm-correct methodology)
+# 28-model bar: 28-model exhaustive p10 >= 62.6% @fill_bps=5 (encoder_norm-correct methodology)
 # NOTE: s4009 REJECTED (batch misidentification — actual delta=-25.1%)
 # REJECTED: s2655, s2206, resmlp_a40, s28, tp03, s241, s541, s310, stock_ent_05
 # REJECTED (high in-sample return = aggressive overfit): s2793, s2815, s2099, s2118, s2247, s2695
@@ -110,6 +111,7 @@ DEFAULT_EXTRA_CHECKPOINTS = [
     "pufferlib_market/prod_ensemble/s4813.pt",
     "pufferlib_market/prod_ensemble/s5045.pt",
     "pufferlib_market/prod_ensemble/s5337.pt",
+    "pufferlib_market/prod_ensemble/s5199.pt",
 ]
 DEFAULT_DATA_DIR = "trainingdata"
 DEFAULT_ALLOCATION_PCT = 25.0
