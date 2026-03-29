@@ -12,10 +12,10 @@
 - **LIVE positions/orders**: no stock positions are open; only dust in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD` remains. There are currently **no open orders**.
 - **LIVE duplicate-order guard (2026-03-27 20:31 UTC)**: systemd unit `alpaca-cancel-multi-orders.service` is installed and enabled with `PAPER=0`; `journalctl` confirms it initialized the **LIVE** Alpaca client and is polling for duplicate flat-position opening orders.
 - **LIVE daily-rl-trader**: 20-model ensemble, sleeping until Mon 2026-03-30 market open (systemd service)
-  - **Ensemble members**: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835+**s2827**+**s2722**+**s3668**+**s3411**+**s4009**
+  - **Ensemble members**: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835+**s2827**+**s2722**+**s3668**+**s3411**+**s4011**
   - **FULLY RESOLVED**: All checkpoints in `pufferlib_market/prod_ensemble/` (protected from sweep deletion)
   - **TRUE performance (encoder_norm-correct)**: 0/111 neg, p10=48.5%
-  - Updated 2026-03-29: s2827 (+16% vs 15), s2722 (+6% vs 16), s3668 (+1.1% vs 17), s3411 (+1.8% vs 18), s4009 (+4.4% vs 19)
+  - Updated 2026-03-29: s2827 (+16% vs 15), s2722 (+6% vs 16), s3668 (+1.1% vs 17), s3411 (+1.8% vs 18), s4011 (+4.4% vs 19)
   - 21-model bar: p10 ≥ 48.5% @fill_bps=5 (encoder_norm-correct)
   - 15-model baseline was: 0/111 neg, med=50.9%, p10=19.2%
   - REJECTED 100+ seeds across 15→20 model bars (see trade_daily_stock_prod.py comments)
