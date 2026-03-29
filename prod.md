@@ -11,14 +11,14 @@
 - **LIVE account**: supervisor `unified-stock-trader` is active; equity **$38,954.44**, cash **$38,954.44**, buying power **$77,908.88**, last_equity **$39,090.40**.
 - **LIVE positions/orders**: no stock positions are open; only dust in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD` remains. There are currently **no open orders**.
 - **LIVE duplicate-order guard (2026-03-27 20:31 UTC)**: systemd unit `alpaca-cancel-multi-orders.service` is installed and enabled with `PAPER=0`; `journalctl` confirms it initialized the **LIVE** Alpaca client and is polling for duplicate flat-position opening orders.
-- **LIVE daily-rl-trader**: 25-model ensemble, sleeping until Mon 2026-03-30 market open (systemd service)
-  - **Ensemble members**: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835+**s2827**+**s2722**+**s3668**+**s3411**+**s4011**+**s4777**+**s4080**+**s4533**+**s4813**+**s5045**
+- **LIVE daily-rl-trader**: 26-model ensemble, sleeping until Mon 2026-03-30 market open (systemd service)
+  - **Ensemble members**: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835+**s2827**+**s2722**+**s3668**+**s3411**+**s4011**+**s4777**+**s4080**+**s4533**+**s4813**+**s5045**+**s5337**
   - **FULLY RESOLVED**: All checkpoints in `pufferlib_market/prod_ensemble/` (protected from sweep deletion)
-  - **TRUE performance (encoder_norm-correct)**: 0/111 neg, p10=58.6%
-  - Updated 2026-03-29: ...s4533(+4.2%/22), s4813(+4.4%/23), s5045(+1.2%/24)
-  - 26-model bar: p10 ≥ 58.6% @fill_bps=5 (encoder_norm-correct)
+  - **TRUE performance (encoder_norm-correct)**: 0/111 neg, p10=60.3%
+  - Updated 2026-03-29: ...s4533(+4.2%/22), s4813(+4.4%/23), s5045(+1.2%/24), s5337(+1.8%/25)
+  - 27-model bar: p10 ≥ 60.3% @fill_bps=5 (encoder_norm-correct)
   - 15-model baseline was: 0/111 neg, med=50.9%, p10=19.2%
-  - REJECTED 100+ seeds across 15→25 model bars (see trade_daily_stock_prod.py comments)
+  - REJECTED 100+ seeds across 15→26 model bars (see trade_daily_stock_prod.py comments)
   - ⚠️ PROD Alpaca API keys expired (401); service uses paper API for clock check; UPDATE env_real.py ALP_KEY_ID_PROD/ALP_SECRET_KEY_PROD before Monday live trade
 
 ### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- FIXED (pending restart)
