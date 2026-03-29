@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import signal
 from datetime import datetime, timezone, time as dtime, timedelta
 import sys
@@ -41,6 +42,34 @@ WINDOW_OPEN = (dtime(9, 30), dtime(10, 0))       # US equities open
 WINDOW_CLOSE = (dtime(15, 30), dtime(16, 0))     # US equities close
 # Crypto daily bar alignment (UTC)
 WINDOW_CRYPTO = (dtime(0, 0), dtime(0, 30))      # 00:00–00:30 UTC
+
+
+def _safe_positive_price(*values: float) -> float | None:
+    for value in values:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(numeric) and numeric > 0.0:
+            return numeric
+    return None
+
+
+def _plan_edge_score(plan: TradingPlan) -> float:
+    try:
+        buy_price = float(plan.buy_price)
+        sell_price = float(plan.sell_price)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(buy_price) or not math.isfinite(sell_price):
+        return 0.0
+    spread = sell_price - buy_price
+    if spread <= 0.0:
+        return 0.0
+    reference_price = _safe_positive_price(plan.reference_close, buy_price)
+    if reference_price is None:
+        return 0.0
+    return spread / reference_price
 
 
 def _load_account_equity() -> float:
@@ -271,9 +300,16 @@ class NeuralTradingLoop:
                     priority=0,
                 )
             )
-        # Trust the neural network's trade_amount directly - it has all the data
-        # (prices, Chronos forecasts, features) and was trained to output optimal allocation
-        enriched.sort(key=lambda item: item.plan.trade_amount, reverse=True)
+        # Prioritize the strongest expected edge first, then use trade_amount/confidence
+        # as tie-breakers so max_plans keeps the highest-quality ideas.
+        enriched.sort(
+            key=lambda item: (
+                _plan_edge_score(item.plan),
+                item.plan.trade_amount,
+                getattr(item.plan, "confidence", 1.0),
+            ),
+            reverse=True,
+        )
 
         # Apply max_plans limit if set, otherwise trade all eligible symbols
         if self.max_plans > 0 and len(enriched) > self.max_plans:

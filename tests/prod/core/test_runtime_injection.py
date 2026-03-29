@@ -4,6 +4,8 @@ import importlib
 import sys
 from types import ModuleType
 
+import numpy as np
+
 from src.runtime_imports import _reset_for_tests, setup_src_imports
 
 
@@ -53,3 +55,15 @@ def test_setup_src_imports_updates_conversion_utils():
         sys.modules["src.conversion_utils"] = original_conversion
     else:
         sys.modules.pop("src.conversion_utils", None)
+
+
+def test_reset_for_tests_restores_toto_aggregation_numpy():
+    aggregation = importlib.import_module("src.models.toto_aggregation")
+    numpy_stub = _make_stub_numpy()
+
+    setup_src_imports(torch_module=None, numpy_module=numpy_stub, pandas_module=None)
+    assert aggregation.np is numpy_stub
+
+    _reset_for_tests()
+
+    assert aggregation.np is np

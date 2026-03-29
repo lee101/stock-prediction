@@ -66,6 +66,40 @@ def test_max_plans_uses_edge_priority():
     assert [p.priority for p in selected] == [1, 2]
 
 
+def test_max_plans_handles_missing_reference_close():
+    now = datetime.now(timezone.utc).isoformat()
+    plans = [
+        TradingPlan(
+            symbol="FALLBACK",
+            timestamp=now,
+            buy_price=10.0,
+            sell_price=10.5,
+            trade_amount=1.0,
+            reference_close=0.0,
+        ),
+        TradingPlan(
+            symbol="VALID",
+            timestamp=now,
+            buy_price=100.0,
+            sell_price=101.0,
+            trade_amount=1.0,
+            reference_close=100.0,
+        ),
+    ]
+    loop = NeuralTradingLoop(
+        runtime=DummyRuntime(plans),
+        symbols=["FALLBACK", "VALID"],
+        max_plans=1,
+        min_trade_amount=0.0,
+        skip_equity_weekends=False,
+    )
+
+    selected = loop._generate_plans()
+
+    assert [p.symbol for p in selected] == ["FALLBACK"]
+    assert selected[0].priority == 1
+
+
 def test_weekend_skip_equity(monkeypatch):
     plans = [_make_plan("AAPL", 100.0, 100.5, 0.5)]
     loop = NeuralTradingLoop(
@@ -122,4 +156,3 @@ def test_weekend_allows_crypto(monkeypatch):
 
     assert calls, "Crypto should still dispatch on weekends"
     assert calls[0][0] == "BTC-USD"
-

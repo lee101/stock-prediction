@@ -56,18 +56,22 @@ DEFAULT_SYMBOLS = [
     "AMZN",
 ]
 DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_10/best.pt"
-# 10-model ensemble: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726 (2026-03-28)
+# 15-model ensemble: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835 (2026-03-28)
 # NOTE: Original s735 (screen_best) was deleted from disk (2026-03-28). Replaced with s1731 (screen_best).
-# Exhaustive 111-window @fee=10bps,fill=5bps: 0/111 neg, med=59.1%, p10=45.1%
-# (Original with s735 was: 0/111 neg, med=65.8%, p10=55.6% — s735 provided unique diversity)
-# Previous 9-model without s735 (baseline): 0/111 neg, med=60.7%, p10=41.1%
-# s1731 screen_best adds: +4.1% p10 (seed=1731, 3M-step screen ckpt update=61, neg=7/111 standalone)
-# s1726 screen_best adds: +0.4% p10 (seed=1726, 3M-step screen ckpt update=65)
+# Exhaustive 111-window @fee=10bps,fill=5bps: 0/111 neg, med=58.8%, p10=48.6%
+# (Original 10-model with s735 was: 0/111 neg, med=65.8%, p10=55.6% — s735 provided unique diversity)
+# s1835 screen_best adds: +0.6% p10 (seed=1835, neg=1 screen, med=7.87%)
+# s2495 screen_best adds: +2.0% p10 (seed=2495, QUALIFIED, neg=5, med=21.13%)
+# s2033 screen_best adds: +2.6% p10 (seed=2033, QUALIFIED, neg=5, med=19.23%)
+# s2617 screen_best adds: +2.0% p10 (seed=2617, QUALIFIED, neg=2, med=16.95%)
+# s1523 screen_best adds: +4.6% p10 (seed=1523 retrain, 3M-step screen ckpt)
+# s1731 screen_best adds: +4.1% p10 (seed=1731, 3M-step screen ckpt update=61)
 # s1401 screen_best adds: +2.9% p10 (seed=1401, 3M-step screen ckpt)
+# s1726 screen_best adds: +0.4% p10 (seed=1726, 3M-step screen ckpt update=65)
 # gamma995_s2006 screen_best: (gamma=0.995, seed=2006, 3M-step screen ckpt)
 # REVERT NOTE (2026-03-27): 7-model (+resmlp_a40) → med=57.2%, p10=42.1% (-3.3% p10!)
 #   HURT: resmlp_a40, s28, tp03, s241, s541, s310, stock_ent_05
-# 11-model bar: 11-model exhaustive p10 >= 45.1% @fill_bps=5
+# 16-model bar: 16-model exhaustive p10 >= 48.6% @fill_bps=5
 DEFAULT_EXTRA_CHECKPOINTS = [
     "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s15/best.pt",
     "pufferlib_market/checkpoints/stocks12_seed_sweep/tp05_s36/best.pt",
@@ -78,6 +82,11 @@ DEFAULT_EXTRA_CHECKPOINTS = [
     "pufferlib_market/checkpoints/stocks12_gamma995_s2006/screen_best.pt",
     "pufferlib_market/checkpoints/stocks12_s1401_screen/screen_best.pt",
     "pufferlib_market/checkpoints/stocks12_s1726_screen/screen_best.pt",
+    "pufferlib_market/checkpoints/stocks12_s1523_screen/screen_best.pt",
+    "pufferlib_market/checkpoints/stocks12_s2617_screen/screen_best.pt",
+    "pufferlib_market/checkpoints/stocks12_s2033_screen/screen_best.pt",
+    "pufferlib_market/checkpoints/stocks12_s2495_screen/screen_best.pt",
+    "pufferlib_market/checkpoints/stocks12_s1835_screen/screen_best.pt",
 ]
 DEFAULT_DATA_DIR = "trainingdata"
 DEFAULT_ALLOCATION_PCT = 25.0
