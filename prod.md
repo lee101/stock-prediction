@@ -11,14 +11,15 @@
 - **LIVE account**: supervisor `unified-stock-trader` is active; equity **$38,954.44**, cash **$38,954.44**, buying power **$77,908.88**, last_equity **$39,090.40**.
 - **LIVE positions/orders**: no stock positions are open; only dust in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD` remains. There are currently **no open orders**.
 - **LIVE duplicate-order guard (2026-03-27 20:31 UTC)**: systemd unit `alpaca-cancel-multi-orders.service` is installed and enabled with `PAPER=0`; `journalctl` confirms it initialized the **LIVE** Alpaca client and is polling for duplicate flat-position opening orders.
-- **LIVE daily-rl-trader**: 19-model ensemble, sleeping until Mon 2026-03-30 market open (systemd service)
-  - **Ensemble members**: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835+**s2827**+**s2722**+**s3668**+**s3411**
+- **LIVE daily-rl-trader**: 20-model ensemble, sleeping until Mon 2026-03-30 market open (systemd service)
+  - **Ensemble members**: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835+**s2827**+**s2722**+**s3668**+**s3411**+**s4009**
   - **FULLY RESOLVED**: All checkpoints in `pufferlib_market/prod_ensemble/` (protected from sweep deletion)
-  - **TRUE performance (encoder_norm-correct)**: 0/111 neg, p10=44.1%
-  - Updated 2026-03-29: s2827 (+16% vs 15), s2722 (+6% vs 16), s3668 (+1.1% vs 17), s3411 (+1.8% vs 18)
-  - 20-model bar: p10 ≥ 44.1% @fill_bps=5 (encoder_norm-correct)
+  - **TRUE performance (encoder_norm-correct)**: 0/111 neg, p10=48.5%
+  - Updated 2026-03-29: s2827 (+16% vs 15), s2722 (+6% vs 16), s3668 (+1.1% vs 17), s3411 (+1.8% vs 18), s4009 (+4.4% vs 19)
+  - 21-model bar: p10 ≥ 48.5% @fill_bps=5 (encoder_norm-correct)
   - 15-model baseline was: 0/111 neg, med=50.9%, p10=19.2%
-  - REJECTED 80+ seeds across 15→16→17→18→19 model bars (see trade_daily_stock_prod.py comments)
+  - REJECTED 100+ seeds across 15→20 model bars (see trade_daily_stock_prod.py comments)
+  - ⚠️ PROD Alpaca API keys expired (401); service uses paper API for clock check; UPDATE env_real.py ALP_KEY_ID_PROD/ALP_SECRET_KEY_PROD before Monday live trade
 
 ### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- FIXED (pending restart)
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`
@@ -71,7 +72,24 @@
   ```
 - **Diagnostics**: `python binance_worksteal/trade_live.py --diagnose --symbols BTCUSD ETHUSD`
 
-### 3. Alpaca Stock Trader (`unified-stock-trader`) -- RUNNING (LIVE via supervisor)
+### 3. LLM Stock Trader (`llm-stock-trader`) -- RUNNING (LIVE via supervisor, deployed 2026-03-29)
+- **Bot**: `unified_orchestrator/orchestrator.py --model glm-4-plus`
+- **Service manager**: supervisor program `llm-stock-trader`
+- **Installed config**: `/etc/supervisor/conf.d/llm-stock-trader.conf`
+- **Model**: GLM-4-plus (Zhipu AI via open.bigmodel.cn API)
+- **Symbols**: YELP, NET, DBX (non-overlapping with daily-rl-trader)
+- **Lock**: `llm_stock_writer` (coexists with daily-rl-trader's `alpaca_live_writer`)
+- **Cadence**: hourly (1h interval)
+- **Architecture**: LLM-only, Chronos2 forecasts → GLM-4-plus structured JSON decision
+- **Backtest (30d per-symbol)**: YELP +12.4% (Sortino 6.98), NET +5.8% (Sortino 3.46), DBX +0.8% (Sortino 2.93)
+- **Model comparison (30d stocks)**: GLM-4-plus +3.21% > Gemini +2.43% > Grok-4-1-fast +1.66%
+- **Providers tested**: Gemini-3.1-flash, Grok-4-1-fast, GLM-4-plus (+ Grok-4.20-reasoning, too aggressive)
+- **Also integrated (not deployed)**: Grok 4.20 with web_search+x_search tools, 2-step Grok-context→Gemini pipeline
+- **Key APIs**: XAI_API_KEY (Grok), ZHIPU_API_KEY (GLM), GEMINI_API_KEY (Gemini) — all in env_real.py
+- **Launch**: `deployments/llm-stock-trader/launch.sh`
+- **First live trades expected**: Monday 2026-03-30 ~13:30+ UTC
+
+### 3b. Alpaca Stock Trader (`unified-stock-trader`) -- REPLACED by llm-stock-trader (2026-03-29)
 - **Bot**: `unified_hourly_experiment/trade_unified_hourly_meta.py`
 - **Service manager**: supervisor program `unified-stock-trader`
 - **Broker safety net**: systemd `alpaca-cancel-multi-orders.service`
