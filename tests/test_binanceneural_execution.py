@@ -4,9 +4,13 @@ from binanceneural.execution import (
     SymbolRules,
     available_quote_budget,
     compute_order_quantities,
+    quantize_down,
     quantize_price,
+    quantize_qty,
+    quantize_up,
     quote_asset_for_symbol,
     reserve_quote_budget,
+    split_binance_symbol,
 )
 
 
@@ -46,3 +50,50 @@ def test_quote_budget_is_shared_by_quote_asset():
 
     assert quote_asset_for_symbol("DOGEFDUSD") == "FDUSD"
     assert available_quote_budget(budgets, symbol="DOGEFDUSD", observed_quote_free=25.0) == 25.0
+
+
+def test_quantize_down_basic():
+    assert math.isclose(quantize_down(836.5626, 0.1), 836.5)
+    assert math.isclose(quantize_down(163.9359, 0.1), 163.9)
+    assert math.isclose(quantize_down(3.1908, 0.001), 3.190)
+
+
+def test_quantize_down_step_one():
+    assert quantize_down(836.5626, 1.0) == 836.0
+    assert quantize_down(0.99, 1.0) == 0.0
+
+
+def test_quantize_down_none_step_passthrough():
+    assert quantize_down(12.345, None) == 12.345
+    assert quantize_down(12.345, 0.0) == 12.345
+    assert quantize_down(12.345, -1.0) == 12.345
+
+
+def test_quantize_up_basic():
+    assert math.isclose(quantize_up(100.01, 0.05), 100.05)
+    assert math.isclose(quantize_up(100.00, 0.05), 100.00)
+
+
+def test_quantize_qty_uses_step_size():
+    assert math.isclose(quantize_qty(28530.521935, step_size=1.0), 28530.0)
+    assert math.isclose(quantize_qty(7430.767198, step_size=0.01), 7430.76)
+    assert quantize_qty(0.5, step_size=1.0) == 0.0
+
+
+def test_quantize_price_none_tick_passthrough():
+    assert quantize_price(100.123, tick_size=None, side="buy") == 100.123
+    assert quantize_price(100.123, tick_size=0.0, side="sell") == 100.123
+
+
+def test_split_binance_symbol_common_pairs():
+    assert split_binance_symbol("BTCUSDT") == ("BTC", "USDT")
+    assert split_binance_symbol("ETHFDUSD") == ("ETH", "FDUSD")
+    assert split_binance_symbol("SOLUSDT") == ("SOL", "USDT")
+    assert split_binance_symbol("DOGEUSDT") == ("DOGE", "USDT")
+
+
+def test_quantize_price_buy_rounds_down_sell_rounds_up():
+    assert math.isclose(quantize_price(0.2644, tick_size=0.001, side="buy"), 0.264)
+    assert math.isclose(quantize_price(0.2644, tick_size=0.001, side="sell"), 0.265)
+    assert math.isclose(quantize_price(82000.123, tick_size=0.01, side="buy"), 82000.12)
+    assert math.isclose(quantize_price(82000.123, tick_size=0.01, side="sell"), 82000.13)
