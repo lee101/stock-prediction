@@ -44,7 +44,13 @@ def test_trade_symbols_have_chronos_assets():
 
 
 def test_chronos2_wrapper_prefers_frequency_specific_preaug(monkeypatch: pytest.MonkeyPatch):
-    dummy_pipeline = type("DummyPipeline", (), {"model": object()})()
+    class _DummyPipeline:
+        model = object()
+
+        def predict_quantiles(self, inputs, prediction_length=None, quantile_levels=None, limit_prediction_length=False):
+            return [], []
+
+    dummy_pipeline = _DummyPipeline()
     monkeypatch.setenv("CHRONOS2_FREQUENCY", "hourly")
 
     wrapper = Chronos2OHLCWrapper(dummy_pipeline)

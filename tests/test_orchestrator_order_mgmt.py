@@ -602,6 +602,42 @@ class TestReadPendingFills:
                 if package is not None:
                     setattr(package, "conditional_orders", original)
 
+    def test_record_fill_event_honors_explicit_fill_file(self, tmp_path):
+        from unified_orchestrator import conditional_orders as co
+
+        fill_file = tmp_path / "fill_events.jsonl"
+        step = co.TradingStep(
+            step_id="s1",
+            broker="alpaca",
+            action="buy",
+            symbol="BTCUSD",
+            qty=0.25,
+        )
+
+        co.record_fill_event(
+            step,
+            fill_price=50_000.0,
+            fill_qty=0.25,
+            plan_id="plan-123",
+            fill_events_file=fill_file,
+        )
+
+        rows = [json.loads(line) for line in fill_file.read_text().splitlines()]
+
+        assert rows == [
+            {
+                "timestamp": rows[0]["timestamp"],
+                "plan_id": "plan-123",
+                "step_id": "s1",
+                "broker": "alpaca",
+                "action": "buy",
+                "symbol": "BTCUSD",
+                "fill_price": 50_000.0,
+                "fill_qty": 0.25,
+                "status": "filled",
+            }
+        ]
+
     def test_malformed_line_skipped(self, tmp_path):
         from unified_orchestrator import conditional_orders as co
 
@@ -619,12 +655,7 @@ class TestReadPendingFills:
         })
         fill_file.write_text(good + "\n{BAD JSON}\n")
 
-        original = co.FILL_EVENTS_FILE
-        co.FILL_EVENTS_FILE = fill_file
-        try:
-            events = co.read_pending_fills(since_minutes=9999)
-        finally:
-            co.FILL_EVENTS_FILE = original
+        events = co.read_pending_fills(since_minutes=9999, fill_events_file=fill_file)
 
         assert len(events) == 1, "Only the valid line should be returned"
         assert events[0]["symbol"] == "BTCUSD"
@@ -657,12 +688,7 @@ class TestReadPendingFills:
         })
         fill_file.write_text(good + "\n" + bad_ts + "\n")
 
-        original = co.FILL_EVENTS_FILE
-        co.FILL_EVENTS_FILE = fill_file
-        try:
-            events = co.read_pending_fills(since_minutes=9999)
-        finally:
-            co.FILL_EVENTS_FILE = original
+        events = co.read_pending_fills(since_minutes=9999, fill_events_file=fill_file)
 
         assert len(events) == 1
         assert events[0]["step_id"] == "s1"
@@ -714,12 +740,41 @@ class TestReadPendingFills:
                 current = cls(2026, 3, 28, 12, 0, tzinfo=timezone.utc)
                 return current if tz is not None else current.replace(tzinfo=None)
 
-        original = co.FILL_EVENTS_FILE
         monkeypatch.setattr(co, "datetime", _FrozenDatetime)
-        co.FILL_EVENTS_FILE = fill_file
-        try:
-            events = co.read_pending_fills(since_minutes=60)
-        finally:
-            co.FILL_EVENTS_FILE = original
+        events = co.read_pending_fills(since_minutes=60, fill_events_file=fill_file)
 
         assert [event["step_id"] for event in events] == ["s-new-1", "s-new-2"]
+
+    def test_read_pending_fills_uses_runtime_state_dir_without_reload(self, tmp_path, monkeypatch):
+        from unified_orchestrator import conditional_orders as co
+
+        fill_file = tmp_path / "fill_events.jsonl"
+        fill_file.write_text(
+            json.dumps(
+                {
+                    "timestamp": "2026-03-28T11:45:00+00:00",
+                    "plan_id": "p-new-2",
+                    "step_id": "s-new-2",
+                    "broker": "binance",
+                    "action": "sell",
+                    "symbol": "SOLUSD",
+                    "fill_price": 150.0,
+                    "fill_qty": 3.0,
+                    "status": "filled",
+                }
+            )
+            + "\n"
+        )
+
+        class _FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                current = cls(2026, 3, 28, 12, 0, tzinfo=timezone.utc)
+                return current if tz is not None else current.replace(tzinfo=None)
+
+        monkeypatch.setenv("STATE_DIR", str(tmp_path))
+        monkeypatch.setattr(co, "datetime", _FrozenDatetime)
+
+        events = co.read_pending_fills(since_minutes=60)
+
+        assert [event["step_id"] for event in events] == ["s-new-2"]

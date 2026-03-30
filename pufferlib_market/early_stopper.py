@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+from math import isfinite
 from math import inf
 from pathlib import Path
 from typing import Optional
@@ -44,36 +45,71 @@ def combined_score(
     return sum(c * w for c, w in zip(components, weights)) / total_weight
 
 
+def effective_prune_floor(best_known: float, baseline_floor: float | None = None) -> float:
+    """Return the stronger of best-so-far and an optional hard baseline floor."""
+    reference = float(best_known)
+    if baseline_floor is None:
+        return reference
+
+    try:
+        baseline = float(baseline_floor)
+    except (TypeError, ValueError):
+        return reference
+
+    if not isfinite(baseline):
+        return reference
+    if not isfinite(reference):
+        return baseline
+    return max(reference, baseline)
+
+
 class PolynomialEarlyStopper:
     """Fits a polynomial to (progress, score) observations and prunes."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, clip_abs: float | None = None) -> None:
         self.observations: list[tuple[float, float]] = []
+        self.clip_abs = float(clip_abs) if clip_abs is not None and clip_abs > 0 else None
 
     def add_observation(self, progress: float, score: float) -> None:
         self.observations.append((progress, score))
 
-    def projected_final(self) -> Optional[float]:
+    def _prepared_arrays(self) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
+        if len(self.observations) < 2:
+            return None, None
+        xs = np.array([o[0] for o in self.observations], dtype=float)
+        ys = np.array([o[1] for o in self.observations], dtype=float)
+        if self.clip_abs is not None:
+            ys = np.clip(ys, -self.clip_abs, self.clip_abs)
+        return xs, ys
+
+    def projected_final(self, *, method: str = "poly") -> Optional[float]:
         """Fit polynomial and return projected value at progress=1.0.
 
         Returns None if insufficient data or fitting fails.
         """
-        if len(self.observations) < 2:
+        xs, ys = self._prepared_arrays()
+        if xs is None or ys is None:
             return None
-        xs = np.array([o[0] for o in self.observations], dtype=float)
-        ys = np.array([o[1] for o in self.observations], dtype=float)
-        degree = min(len(self.observations) - 1, 2)
+        if method == "linear":
+            degree = 1
+        else:
+            degree = min(len(self.observations) - 1, 2)
         try:
             coeffs = np.polyfit(xs, ys, degree)
             return float(np.polyval(coeffs, 1.0))
         except Exception:
             return None
 
+    def projected_final_linear(self) -> Optional[float]:
+        """Project with a linear fit for a faster, more robust floor check."""
+        return self.projected_final(method="linear")
+
     def should_prune(
         self,
         best_known: float,
         tolerance: float = 0.75,
         min_obs: int = 2,
+        method: str = "poly",
     ) -> tuple[bool, Optional[float]]:
         """Decide whether to prune this trial.
 
@@ -88,7 +124,7 @@ class PolynomialEarlyStopper:
         if best_known <= -1e6:
             return False, None
 
-        proj = self.projected_final()
+        proj = self.projected_final(method=method)
         if proj is None:
             return False, None
 

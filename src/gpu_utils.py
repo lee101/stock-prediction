@@ -183,6 +183,45 @@ def detect_total_vram_bytes(device: Optional[str] = None) -> Optional[int]:
     return None
 
 
+def detect_free_vram_bytes(device: Optional[str] = None) -> Optional[int]:
+    """Return free VRAM (in bytes) for the current or requested CUDA device."""
+
+    visible_tokens = _split_visible_devices(os.environ.get("CUDA_VISIBLE_DEVICES", ""))
+    torch_device_spec = _normalize_for_torch(device, visible_tokens)
+    nvml_target = _select_nvml_target(device, visible_tokens)
+
+    if pynvml is not None:
+        try:
+            pynvml.nvmlInit()
+            if nvml_target is None:
+                return None
+            handle = _nvml_get_handle(nvml_target)
+            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            return int(info.free)
+        except Exception:
+            pass
+        finally:  # pragma: no branch - NVML always needs shutdown
+            try:
+                pynvml.nvmlShutdown()
+            except Exception:
+                pass
+
+    if torch is not None and torch.cuda.is_available():
+        try:
+            if torch_device_spec is None:
+                return None
+            cuda_device = torch.device(torch_device_spec)
+            props = torch.cuda.get_device_properties(cuda_device)
+            reserved = int(torch.cuda.memory_reserved(cuda_device))
+            allocated = int(torch.cuda.memory_allocated(cuda_device))
+            used = max(reserved, allocated)
+            return max(int(props.total_memory) - used, 0)
+        except Exception:
+            return None
+
+    return None
+
+
 def recommend_batch_size(
     total_vram_bytes: Optional[int],
     default_batch_size: int,

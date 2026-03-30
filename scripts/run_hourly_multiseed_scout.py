@@ -19,6 +19,8 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+from unified_hourly_experiment.jax_classic_defaults import DEFAULT_JAX_CLASSIC_PRELOAD
+
 
 def parse_csv_tokens(raw: str, *, cast=str) -> list[Any]:
     values: list[Any] = []
@@ -386,7 +388,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--hidden-dim", type=int, default=128)
     p.add_argument("--num-layers", type=int, default=3)
     p.add_argument("--num-heads", type=int, default=4)
-    p.add_argument("--preload", type=Path, default=Path("unified_hourly_experiment/checkpoints/wd_0.06_s42/epoch_020.pt"))
+    p.add_argument("--preload", type=Path, default=DEFAULT_JAX_CLASSIC_PRELOAD)
     p.add_argument("--checkpoint-root", type=Path, default=Path("unified_hourly_experiment/checkpoints"))
     p.add_argument("--log-dir", type=Path, default=Path("tensorboard_logs") / "binanceneural")
     p.add_argument("--checkpoint-metric", default="robust_score")

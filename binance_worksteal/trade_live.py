@@ -35,7 +35,6 @@ from binance_worksteal.strategy import (
     compute_breadth_ratio,
     compute_market_breadth_skip,
     compute_ref_price,
-    compute_sma,
     get_fee,
     load_daily_bars,
     passes_sma_filter,
@@ -45,6 +44,7 @@ from binance_worksteal.strategy import (
 )
 from binance_worksteal.data import compute_features, FEATURE_NAMES
 from binance_worksteal.model import DailyWorkStealPolicy, PerSymbolWorkStealPolicy
+from unified_orchestrator.jsonl_utils import append_jsonl_row
 
 # Binance API
 try:
@@ -598,16 +598,12 @@ def save_state(state: dict):
 
 
 def log_trade(trade: dict):
-    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(LOG_FILE, "a") as f:
-        f.write(json.dumps(trade, default=str) + "\n")
+    append_jsonl_row(LOG_FILE, trade, default=str)
 
 
 def log_event(event: dict):
     event.setdefault("ts", datetime.now(timezone.utc).isoformat())
-    EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(EVENTS_FILE, "a") as f:
-        f.write(json.dumps(event, default=str) + "\n")
+    append_jsonl_row(EVENTS_FILE, event, default=str)
 
 
 def load_universe_file(path: str) -> List[str]:

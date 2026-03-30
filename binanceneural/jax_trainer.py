@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from flax import serialization
+from .jax_utils import as_jax_array, configure_default_jax_platforms
+
+configure_default_jax_platforms()
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -60,19 +64,14 @@ class JaxTrainingArtifacts:
     best_checkpoint: Path | None = None
     stop_reason: str | None = None
 
-
-def _tensor_to_jax(value: Any) -> jax.Array:
-    if isinstance(value, torch.Tensor):
-        return jnp.asarray(value.detach().cpu().numpy(), dtype=jnp.float32)
-    return jnp.asarray(value, dtype=jnp.float32)
-
-
 def _batch_to_jax(batch: dict[str, Any]) -> dict[str, jax.Array]:
-    return {key: _tensor_to_jax(value) for key, value in batch.items()}
+    return {key: as_jax_array(value, dtype=np.float32) for key, value in batch.items()}
 
 
 class JaxClassicTrainer:
     def __init__(self, config: TrainingConfig, data_module: BinanceHourlyDataModule | MultiSymbolDataModule) -> None:
+        if str(config.trainer_backend or "torch") != "jax_classic":
+            raise ValueError("JaxClassicTrainer requires trainer_backend='jax_classic'")
         if (config.model_arch or "classic").lower() != "classic":
             raise ValueError("JaxClassicTrainer supports only model_arch=classic")
         self.config = config
@@ -398,6 +397,7 @@ class JaxClassicTrainer:
                 {
                     "feature_columns": list(self.data.feature_columns),
                     "normalizer": self.data.normalizer.to_dict(),
+                    "trainer_backend": str(self.config.trainer_backend),
                     "sequence_length": int(self.config.sequence_length),
                     "transformer_dim": int(self.config.transformer_dim),
                     "transformer_heads": int(self.config.transformer_heads),
@@ -413,6 +413,7 @@ class JaxClassicTrainer:
             json.dumps(
                 {
                     "run_name": self.config.run_name,
+                    "trainer_backend": str(self.config.trainer_backend),
                     "epochs": int(self.config.epochs),
                     "sequence_length": int(self.config.sequence_length),
                     "transformer_dim": int(self.config.transformer_dim),

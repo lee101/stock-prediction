@@ -63,24 +63,24 @@ class TestBuildWindows:
             assert windows[i][0] >= windows[i + 1][1] or windows[i][1] <= windows[i + 1][0]
 
 
-class TestStrictFill:
-    def test_strict_fill_fewer_entries(self):
+class TestEntryProximity:
+    def test_tighter_proximity_yields_fewer_entries(self):
         bars = _make_multi_bars(n_days=120)
-        cfg_normal = WorkStealConfig(
-            dip_pct=0.05, proximity_pct=0.03, strict_fill=False,
+        cfg_loose = WorkStealConfig(
+            dip_pct=0.05, proximity_pct=0.03,
             max_positions=5, lookback_days=10,
         )
-        cfg_strict = WorkStealConfig(
-            dip_pct=0.05, proximity_pct=0.03, strict_fill=True,
+        cfg_tight = WorkStealConfig(
+            dip_pct=0.05, proximity_pct=0.0,
             max_positions=5, lookback_days=10,
         )
-        _, trades_normal, _ = run_worksteal_backtest(
-            {k: v.copy() for k, v in bars.items()}, cfg_normal,
+        _, trades_loose, _ = run_worksteal_backtest(
+            {k: v.copy() for k, v in bars.items()}, cfg_loose,
         )
-        _, trades_strict, _ = run_worksteal_backtest(
-            {k: v.copy() for k, v in bars.items()}, cfg_strict,
+        _, trades_tight, _ = run_worksteal_backtest(
+            {k: v.copy() for k, v in bars.items()}, cfg_tight,
         )
-        assert len(trades_strict) <= len(trades_normal)
+        assert len(trades_tight) <= len(trades_loose)
 
 
 class TestEvalConfigSingleWindow:

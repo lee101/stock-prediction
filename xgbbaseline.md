@@ -1,7 +1,7 @@
 # XGBoost Baseline
 
 ## Date
-- 2026-03-28 UTC
+- 2026-03-29 UTC
 
 ## Goal
 - Build an Alpaca-compatible hourly stock baseline that sits on top of Chronos2 forecasts.
@@ -19,6 +19,7 @@
 - `experiments/xgb_chronos_baseline_20260328_100634`
 - `experiments/xgb_chronos_baseline_20260328_100737`
 - `experiments/xgb_chronos_baseline_20260328_102535`
+- `experiments/xgb_chronos_baseline_20260329_043939`
 - `alpacafailedprogress6.md` was not present in this checkout and was not present on `origin/main`.
 
 ## Production baseline
@@ -151,20 +152,72 @@
 - `30d -7.7979%`, Sortino `-8.2806`
 - Result: full correction is overfitting or destabilizing the trade surface.
 
+### 4. Probability-gated XGB with richer features
+- Output: `experiments/xgb_chronos_baseline_20260329_043939`
+- Changes made for this branch:
+- added richer realized features: `2h/8h/48h` returns, short and long volatility, rolling range means, volume z-scores, and momentum-gap features
+- added richer forecast features: upside/downside asymmetry, close-width, and close-skew features per Chronos horizon
+- swapped the regressors to a more robust XGBoost objective (`pseudohuber`)
+- trained XGB long/short direction classifiers and used them as a trade-probability gate
+- searched `min_trade_probability` and `probability_power` to suppress low-conviction trades
+
+#### Best probability-gated config
+- `label_basis=reference_close`
+- `label_horizon_hours=4`
+- `residual_scale=0.0`
+- `risk_penalty=1.5`
+- `min_trade_probability=0.65`
+- `probability_power=1.5`
+- `edge_threshold=0.008`
+- `market_order_entry=true`
+- `max_hold_hours=1`
+- `close_at_eod=true`
+- Metrics:
+- `7d +0.9559%`, Sortino `4.7354`, max drawdown `2.4435%`
+- `14d -0.5312%`, Sortino `-1.1602`, max drawdown `3.1967%`
+- `30d +2.9218%`, Sortino `5.1936`, max drawdown `3.2486%`
+- trade count `45 buys / 44 sells`
+- selection score `-0.0933`
+- Result: this is the strongest hourly XGB research result so far.
+- It improves materially on the previous residual branch:
+- versus `20260328_102535`, `30d` improved from `-0.8371%` to `+2.9218%`
+- versus `20260328_102535`, `14d` improved from `-2.1887%` to `-0.5312%`
+- It also improves materially on the old pure-Chronos control:
+- versus the old pure-Chronos control in `20260328_102535`, `30d` improved from `+1.7073%` to `+2.9218%`
+- versus the old pure-Chronos control in `20260328_102535`, `14d` improved from `-7.5308%` to `-0.5312%`
+- Important conclusion: the best current use of XGBoost is not price residual correction. It is probability gating and trade selection on top of Chronos prices.
+
 ## Current baseline decision
 - Do not redeploy Alpaca stock production. The live daily PPO ensemble is still far stronger than anything in the hourly XGB path.
-- For future XGB research, use `experiments/xgb_chronos_baseline_20260328_100737` as the baseline guardrail because it is the smoothest result so far.
-- Keep `experiments/xgb_chronos_baseline_20260328_102535` as the main research branch for “XGB on top of Chronos2” because it is architecturally the right direction, but it is not yet a better baseline than `100737`.
+- Keep `experiments/xgb_chronos_baseline_20260328_100737` as the conservative guardrail because it is still the smoothest near-flat baseline.
+- Promote `experiments/xgb_chronos_baseline_20260329_043939` to the leading research candidate because it is the best profitable hourly XGB result so far.
+- Do not deploy `20260329_043939` yet because `14d` is still slightly negative and the live daily PPO stack remains much stronger.
+
+## GPU pool prune baseline
+- Added a hard-baseline early-prune path for RL sweeps in `pufferlib_market.gpu_pool` and `pufferlib_market.autoresearch_rl`.
+- The pool now supports a stock-daily auto baseline profile:
+- `baseline_val_return_floor = 0.35`
+- `baseline_combined_floor = 1.0`
+- `projection_clip_abs = 6.0`
+- This baseline is intentionally below the established daily stock RL quick-eval winners:
+- `stock_ent_03`: `val_return 0.5677`, `val_sortino 2.31`, combined `1.4389`
+- `stock_ent_05`: `val_return 0.4807`, `val_sortino 2.30`, combined `1.3904`
+- That makes it a beatable but still meaningful floor for remote GPU pruning.
+- Important: this prune baseline is expressed in RL quick-validation metrics, not in the hourly XGB replay metrics above.
+- Reason: the mid-training `run_trial()` probes only have fast C-env validation available at 25% / 50% / 75% budget. Copying the hourly XGB replay percentages directly into RL pruning would mix incompatible metric spaces and would prune for the wrong reason.
+- The XGB hourly results still matter here. They are the research justification for demanding a stronger smoothness-and-selection standard, but the actual early-prune numbers must stay in the same scale as the mid-training validation signal.
+- The projection path now also clips extreme combined-score spikes before fitting, so one noisy quick probe is less likely to keep a weak run alive.
 
 ## What this means
 - Current production bar: very high and still not threatened by the hourly XGB path.
 - Current hourly XGB bar for smoothness: nearly flat `30d -0.16%` with very low activity.
-- Residual-on-Chronos path: promising for short windows, but not yet smooth enough across `7d / 14d / 30d`.
-- Best pure-Chronos control can make money over `30d` in this slice, but the path is too volatile and fails the smoothness requirement.
+- Residual-on-Chronos price correction is no longer the leading idea.
+- The better direction is Chronos price targets plus XGB feature engineering and XGB probability gating.
+- The new best hourly candidate is now positive on `7d` and `30d`, with only a small `14d` loss left to solve.
 
 ## Next iterations
-- Add an explicit no-trade / target-hit probability model so XGB decides when to stay flat, not only what prices to target.
+- Refine the probability-gated branch around `min_trade_probability` and `probability_power` to eliminate the remaining `14d` loss.
 - Search per-symbol thresholds and hold times instead of one global threshold for all 11 Alpaca hourly stock symbols.
-- Keep the residual architecture, but regularize it around the pure-Chronos positive-30d regime instead of full correction.
-- Test hybrid promotion rules such as “pure Chronos only when confidence and horizon-gap agreement are both high; otherwise residual-corrected or no-trade.”
-- Only consider deployment if a candidate is non-negative across `7d`, `14d`, and `30d` and improves Sortino versus the `100737` baseline.
+- Keep residual correction as a secondary branch, but treat it as optional. It should only survive if it beats the probability-gated pure-Chronos path.
+- Test hybrid promotion rules such as “Chronos prices + XGB gate by default, residual correction only for symbols or regimes where the classifier shows persistent alpha.”
+- Only consider deployment if a candidate is non-negative across `7d`, `14d`, and `30d` and improves Sortino versus both the `100737` guardrail and the new `20260329_043939` candidate.

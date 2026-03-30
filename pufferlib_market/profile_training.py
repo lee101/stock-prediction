@@ -672,13 +672,13 @@ import pufferlib_market.kernels.fused_mlp as _fused_mlp
 _fused_mlp.HAS_TRITON = False
 
 from pufferlib_market.train import TradingPolicy, get_activation, RunningObsNorm, _checkpoint_payload
+from src.torch_backend import configure_tf32_backends
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Device: {{device}}")
 
 if device.type == "cuda":
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
+    configure_tf32_backends(torch, enabled=True)
 
 data_path = str(Path(DATA_PATH).resolve())
 binding.shared(data_path=data_path)

@@ -13,6 +13,7 @@ import argparse
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -82,6 +83,22 @@ def test_parse_args_stocks_explicit_paths_override_defaults() -> None:
     assert args.data_val == "custom_val.bin"
 
 
+def test_parse_args_holdout_n_windows_passthrough() -> None:
+    args = dispatch.parse_args([
+        "--stocks",
+        "--holdout-n-windows", "0",
+    ])
+    assert args.holdout_n_windows == 0
+
+
+def test_parse_args_eval_num_episodes_passthrough() -> None:
+    args = dispatch.parse_args([
+        "--stocks",
+        "--eval-num-episodes", "12",
+    ])
+    assert args.eval_num_episodes == 12
+
+
 # ---------------------------------------------------------------------------
 # main() — stocks-mode applies default data paths
 # ---------------------------------------------------------------------------
@@ -118,6 +135,7 @@ def test_build_remote_cmd_includes_stocks_flag() -> None:
         max_trials=50,
         wandb_project="stock",
         descriptions="",
+        holdout_n_windows=None,
         stocks=True,
     )
     cmd = dispatch._build_remote_autoresearch_cmd(
@@ -134,12 +152,51 @@ def test_build_remote_cmd_no_stocks_flag_when_absent() -> None:
         max_trials=50,
         wandb_project="stock",
         descriptions="",
+        holdout_n_windows=None,
         stocks=False,
     )
     cmd = dispatch._build_remote_autoresearch_cmd(
         args, "/workspace/stock-prediction", "lb.csv", "checkpoints"
     )
     assert "--stocks" not in cmd
+
+
+def test_build_remote_cmd_passes_holdout_n_windows() -> None:
+    args = argparse.Namespace(
+        data_train="train.bin",
+        data_val="val.bin",
+        time_budget=300,
+        max_trials=50,
+        wandb_project="stock",
+        descriptions="stock_probe_cpu_fast",
+        holdout_n_windows=0,
+        eval_num_episodes=None,
+        stocks=True,
+    )
+    cmd = dispatch._build_remote_autoresearch_cmd(
+        args, "/workspace/stock-prediction", "lb.csv", "checkpoints"
+    )
+    assert "--holdout-n-windows" in cmd
+    assert " 0" in cmd or "'0'" in cmd
+
+
+def test_build_remote_cmd_passes_eval_num_episodes() -> None:
+    args = argparse.Namespace(
+        data_train="train.bin",
+        data_val="val.bin",
+        time_budget=300,
+        max_trials=50,
+        wandb_project="stock",
+        descriptions="stock_trade_pen_05",
+        holdout_n_windows=None,
+        eval_num_episodes=20,
+        stocks=True,
+    )
+    cmd = dispatch._build_remote_autoresearch_cmd(
+        args, "/workspace/stock-prediction", "lb.csv", "checkpoints"
+    )
+    assert "--eval-num-episodes-override" in cmd
+    assert " 20" in cmd or "'20'" in cmd
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +226,7 @@ def test_run_local_passes_stocks_to_subprocess(monkeypatch) -> None:
         checkpoint_dir="",
         wandb_project="stock",
         descriptions="",
+        holdout_n_windows=None,
         stocks=True,
     )
     dispatch.run_local(args)
@@ -199,11 +257,199 @@ def test_run_local_no_stocks_when_not_set(monkeypatch) -> None:
         checkpoint_dir="",
         wandb_project="stock",
         descriptions="",
+        holdout_n_windows=None,
         stocks=False,
     )
     dispatch.run_local(args)
     cmd = captured_cmds[0]
     assert "--stocks" not in cmd
+
+
+def test_run_local_passes_holdout_n_windows(monkeypatch) -> None:
+    captured_cmds: list[list[str]] = []
+
+    class _FakeResult:
+        returncode = 0
+
+    def _fake_run(cmd, *, cwd=None, **kwargs):
+        captured_cmds.append(list(cmd))
+        return _FakeResult()
+
+    monkeypatch.setattr(dispatch.subprocess, "run", _fake_run)
+
+    args = argparse.Namespace(
+        run_id="test_probe",
+        data_train=dispatch._STOCKS_DEFAULT_TRAIN,
+        data_val=dispatch._STOCKS_DEFAULT_VAL,
+        time_budget=300,
+        max_trials=50,
+        leaderboard="",
+        checkpoint_dir="",
+        wandb_project="stock",
+        descriptions="stock_probe_cpu_fast",
+        holdout_n_windows=0,
+        eval_num_episodes=None,
+        stocks=True,
+    )
+
+    dispatch.run_local(args)
+    cmd = captured_cmds[0]
+    idx = cmd.index("--holdout-n-windows")
+    assert cmd[idx + 1] == "0"
+
+
+def test_run_local_passes_eval_num_episodes(monkeypatch) -> None:
+    captured_cmds: list[list[str]] = []
+
+    class _FakeResult:
+        returncode = 0
+
+    def _fake_run(cmd, *, cwd=None, **kwargs):
+        captured_cmds.append(list(cmd))
+        return _FakeResult()
+
+    monkeypatch.setattr(dispatch.subprocess, "run", _fake_run)
+
+    args = argparse.Namespace(
+        run_id="test_probe_eval",
+        data_train=dispatch._STOCKS_DEFAULT_TRAIN,
+        data_val=dispatch._STOCKS_DEFAULT_VAL,
+        time_budget=300,
+        max_trials=50,
+        leaderboard="",
+        checkpoint_dir="",
+        wandb_project="stock",
+        descriptions="stock_trade_pen_05",
+        holdout_n_windows=None,
+        eval_num_episodes=20,
+        stocks=True,
+    )
+
+    dispatch.run_local(args)
+    cmd = captured_cmds[0]
+    idx = cmd.index("--eval-num-episodes-override")
+    assert cmd[idx + 1] == "20"
+
+
+def test_run_remote_retries_with_fallback_gpu_on_capacity_error(monkeypatch, tmp_path: Path) -> None:
+    created_gpu_types: list[str] = []
+    terminated: list[str] = []
+
+    class _FakeClient:
+        def create_pod(self, config):
+            created_gpu_types.append(config.gpu_type)
+            if len(created_gpu_types) == 1:
+                raise RuntimeError("This machine does not have the resources to deploy your pod")
+            return SimpleNamespace(id="pod-ok")
+
+        def wait_for_pod(self, pod_id, timeout=0):
+            return SimpleNamespace(id=pod_id, ssh_host="1.2.3.4", ssh_port=22)
+
+        def terminate_pod(self, pod_id):
+            terminated.append(pod_id)
+
+    def _fake_ssh_run(*args, **kwargs):
+        return SimpleNamespace(returncode=0)
+
+    def _fake_run(*args, **kwargs):
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(dispatch, "RunPodClient", lambda: _FakeClient())
+    monkeypatch.setattr(
+        dispatch,
+        "build_gpu_fallback_types",
+        lambda primary: ["NVIDIA GeForce RTX 4090", "NVIDIA A40"],
+    )
+    monkeypatch.setattr(dispatch, "_rsync_to_pod", lambda *a, **k: None)
+    monkeypatch.setattr(dispatch, "_rsync_data_file", lambda *a, **k: None)
+    monkeypatch.setattr(dispatch, "_ssh_run", _fake_ssh_run)
+    monkeypatch.setattr(dispatch, "_scp_from_pod", lambda *a, **k: True)
+    monkeypatch.setattr(dispatch, "_upload_to_r2", lambda *a, **k: None)
+    monkeypatch.setattr(dispatch.subprocess, "run", _fake_run)
+
+    leaderboard = tmp_path / "leaderboard.csv"
+    checkpoint_dir = tmp_path / "checkpoints"
+    args = argparse.Namespace(
+        run_id="fallback_test",
+        data_train="train.bin",
+        data_val="val.bin",
+        time_budget=60,
+        max_trials=2,
+        gpu_type="4090",
+        wandb_project="stock",
+        checkpoint_dir=str(checkpoint_dir),
+        leaderboard=str(leaderboard),
+        descriptions="",
+        budget_limit=5.0,
+        stocks=True,
+    )
+
+    result = dispatch.run_remote(args)
+
+    assert result == 0
+    assert created_gpu_types == ["NVIDIA GeForce RTX 4090", "NVIDIA A40"]
+    assert terminated == ["pod-ok"]
+
+
+def test_run_remote_terminates_unready_pod_before_retry(monkeypatch, tmp_path: Path) -> None:
+    created_gpu_types: list[str] = []
+    terminated: list[str] = []
+
+    class _FakeClient:
+        def create_pod(self, config):
+            created_gpu_types.append(config.gpu_type)
+            pod_id = "pod-timeout" if len(created_gpu_types) == 1 else "pod-ready"
+            return SimpleNamespace(id=pod_id)
+
+        def wait_for_pod(self, pod_id, timeout=0):
+            if pod_id == "pod-timeout":
+                raise TimeoutError("ssh never appeared")
+            return SimpleNamespace(id=pod_id, ssh_host="1.2.3.4", ssh_port=22)
+
+        def terminate_pod(self, pod_id):
+            terminated.append(pod_id)
+
+    def _fake_ssh_run(*args, **kwargs):
+        return SimpleNamespace(returncode=0)
+
+    def _fake_run(*args, **kwargs):
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(dispatch, "RunPodClient", lambda: _FakeClient())
+    monkeypatch.setattr(
+        dispatch,
+        "build_gpu_fallback_types",
+        lambda primary: ["NVIDIA RTX 6000 Ada Generation", "NVIDIA A40"],
+    )
+    monkeypatch.setattr(dispatch, "_rsync_to_pod", lambda *a, **k: None)
+    monkeypatch.setattr(dispatch, "_rsync_data_file", lambda *a, **k: None)
+    monkeypatch.setattr(dispatch, "_ssh_run", _fake_ssh_run)
+    monkeypatch.setattr(dispatch, "_scp_from_pod", lambda *a, **k: True)
+    monkeypatch.setattr(dispatch, "_upload_to_r2", lambda *a, **k: None)
+    monkeypatch.setattr(dispatch.subprocess, "run", _fake_run)
+
+    leaderboard = tmp_path / "leaderboard.csv"
+    checkpoint_dir = tmp_path / "checkpoints"
+    args = argparse.Namespace(
+        run_id="timeout_retry_test",
+        data_train="train.bin",
+        data_val="val.bin",
+        time_budget=60,
+        max_trials=2,
+        gpu_type="6000-ada",
+        wandb_project="stock",
+        checkpoint_dir=str(checkpoint_dir),
+        leaderboard=str(leaderboard),
+        descriptions="",
+        budget_limit=5.0,
+        stocks=True,
+    )
+
+    result = dispatch.run_remote(args)
+
+    assert result == 0
+    assert created_gpu_types == ["NVIDIA RTX 6000 Ada Generation", "NVIDIA A40"]
+    assert terminated == ["pod-timeout", "pod-ready"]
 
 
 # ---------------------------------------------------------------------------

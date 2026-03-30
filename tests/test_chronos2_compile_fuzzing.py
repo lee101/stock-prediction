@@ -17,9 +17,10 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import tempfile
 import warnings
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -60,6 +61,224 @@ DTYPES = [
     # "float16",  # Half precision - often causes numerical issues
     # "bfloat16",  # Brain float - better range than fp16 but requires specific hardware
 ]
+
+
+def _reset_torch_compile_state() -> None:
+    """Clear process-global torch.compile state between Chronos wrappers.
+
+    Full-suite order can otherwise leak Dynamo/compile caches from earlier
+    compiled tests into this fuzz harness, which makes reduce-overhead CPU
+    accuracy checks flaky even though isolated runs are stable.
+    """
+
+    reset = getattr(getattr(torch, "compiler", None), "reset", None)
+    if callable(reset):
+        try:
+            reset()
+            return
+        except Exception:
+            pass
+    legacy_reset = getattr(getattr(torch, "_dynamo", None), "reset", None)
+    if callable(legacy_reset):
+        try:
+            legacy_reset()
+        except Exception:
+            pass
+
+
+def _snapshot_compile_runtime_state() -> Dict[str, Any]:
+    snapshot: Dict[str, Any] = {
+        "env": {
+            "TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS": os.environ.get("TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS"),
+        }
+    }
+    inductor_config = getattr(getattr(torch, "_inductor", None), "config", None)
+    if inductor_config is not None:
+        snapshot["inductor_config"] = {
+            "max_autotune": getattr(inductor_config, "max_autotune", None),
+            "debug": getattr(inductor_config, "debug", None),
+        }
+        triton_config = getattr(inductor_config, "triton", None)
+        if triton_config is not None:
+            snapshot["inductor_triton_config"] = {
+                "cudagraphs": getattr(triton_config, "cudagraphs", None),
+                "cudagraph_or_error": getattr(triton_config, "cudagraph_or_error", None),
+            }
+    dynamo_config = getattr(getattr(torch, "_dynamo", None), "config", None)
+    if dynamo_config is not None:
+        snapshot["dynamo_config"] = {
+            "automatic_dynamic_shapes": getattr(dynamo_config, "automatic_dynamic_shapes", None),
+            "recompile_limit": getattr(dynamo_config, "recompile_limit", None),
+            "suppress_errors": getattr(dynamo_config, "suppress_errors", None),
+        }
+    return snapshot
+
+
+def _apply_compile_runtime_stability() -> Dict[str, Any]:
+    snapshot = _snapshot_compile_runtime_state()
+    os.environ["TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS"] = "1"
+
+    inductor_config = getattr(getattr(torch, "_inductor", None), "config", None)
+    if inductor_config is not None:
+        if hasattr(inductor_config, "max_autotune"):
+            inductor_config.max_autotune = False
+        if hasattr(inductor_config, "debug"):
+            inductor_config.debug = False
+        triton_config = getattr(inductor_config, "triton", None)
+        if triton_config is not None:
+            if hasattr(triton_config, "cudagraphs"):
+                triton_config.cudagraphs = False
+            if hasattr(triton_config, "cudagraph_or_error"):
+                triton_config.cudagraph_or_error = False
+
+    dynamo_config = getattr(getattr(torch, "_dynamo", None), "config", None)
+    if dynamo_config is not None:
+        if hasattr(dynamo_config, "automatic_dynamic_shapes"):
+            dynamo_config.automatic_dynamic_shapes = False
+        if hasattr(dynamo_config, "recompile_limit"):
+            dynamo_config.recompile_limit = 64
+        if hasattr(dynamo_config, "suppress_errors"):
+            dynamo_config.suppress_errors = False
+    return snapshot
+
+
+def _restore_compile_runtime_state(snapshot: Dict[str, Any]) -> None:
+    env_snapshot = snapshot.get("env", {})
+    capture_scalar_outputs = env_snapshot.get("TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS")
+    if capture_scalar_outputs is None:
+        os.environ.pop("TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS", None)
+    else:
+        os.environ["TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS"] = str(capture_scalar_outputs)
+
+    inductor_config = getattr(getattr(torch, "_inductor", None), "config", None)
+    if inductor_config is not None:
+        for attr, value in snapshot.get("inductor_config", {}).items():
+            if value is not None and hasattr(inductor_config, attr):
+                setattr(inductor_config, attr, value)
+        triton_config = getattr(inductor_config, "triton", None)
+        if triton_config is not None:
+            for attr, value in snapshot.get("inductor_triton_config", {}).items():
+                if value is not None and hasattr(triton_config, attr):
+                    setattr(triton_config, attr, value)
+
+    dynamo_config = getattr(getattr(torch, "_dynamo", None), "config", None)
+    if dynamo_config is not None:
+        for attr, value in snapshot.get("dynamo_config", {}).items():
+            if value is not None and hasattr(dynamo_config, attr):
+                setattr(dynamo_config, attr, value)
+
+
+def _snapshot_torch_backend_state() -> Dict[str, Any]:
+    snapshot: Dict[str, Any] = {}
+
+    get_precision = getattr(torch, "get_float32_matmul_precision", None)
+    if callable(get_precision):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            try:
+                snapshot["float32_matmul_precision"] = get_precision()
+            except Exception:
+                snapshot["float32_matmul_precision"] = None
+
+    cudnn_backend = getattr(torch.backends, "cudnn", None)
+    if cudnn_backend is not None:
+        snapshot["cudnn_benchmark"] = getattr(cudnn_backend, "benchmark", None)
+        snapshot["cudnn_deterministic"] = getattr(cudnn_backend, "deterministic", None)
+        cudnn_conv = getattr(cudnn_backend, "conv", None)
+        if cudnn_conv is not None and hasattr(cudnn_conv, "fp32_precision"):
+            snapshot["cudnn_conv_fp32_precision"] = getattr(cudnn_conv, "fp32_precision", None)
+
+    cuda_backend = getattr(torch.backends, "cuda", None)
+    matmul_backend = getattr(cuda_backend, "matmul", None) if cuda_backend is not None else None
+    if matmul_backend is not None and hasattr(matmul_backend, "fp32_precision"):
+        snapshot["cuda_matmul_fp32_precision"] = getattr(matmul_backend, "fp32_precision", None)
+
+    return snapshot
+
+
+def _apply_torch_backend_stability() -> Dict[str, Any]:
+    snapshot = _snapshot_torch_backend_state()
+
+    set_precision = getattr(torch, "set_float32_matmul_precision", None)
+    if callable(set_precision):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            try:
+                set_precision("highest")
+            except Exception:
+                pass
+
+    cudnn_backend = getattr(torch.backends, "cudnn", None)
+    if cudnn_backend is not None:
+        if hasattr(cudnn_backend, "benchmark"):
+            try:
+                cudnn_backend.benchmark = False
+            except Exception:
+                pass
+        if hasattr(cudnn_backend, "deterministic"):
+            try:
+                cudnn_backend.deterministic = True
+            except Exception:
+                pass
+        cudnn_conv = getattr(cudnn_backend, "conv", None)
+        if cudnn_conv is not None and hasattr(cudnn_conv, "fp32_precision"):
+            try:
+                cudnn_conv.fp32_precision = "ieee"
+            except Exception:
+                pass
+
+    cuda_backend = getattr(torch.backends, "cuda", None)
+    matmul_backend = getattr(cuda_backend, "matmul", None) if cuda_backend is not None else None
+    if matmul_backend is not None and hasattr(matmul_backend, "fp32_precision"):
+        try:
+            matmul_backend.fp32_precision = "ieee"
+        except Exception:
+            pass
+
+    return snapshot
+
+
+def _restore_torch_backend_state(snapshot: Dict[str, Any]) -> None:
+    set_precision = getattr(torch, "set_float32_matmul_precision", None)
+    precision = snapshot.get("float32_matmul_precision")
+    if callable(set_precision) and precision is not None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            try:
+                set_precision(str(precision))
+            except Exception:
+                pass
+
+    cudnn_backend = getattr(torch.backends, "cudnn", None)
+    if cudnn_backend is not None:
+        benchmark = snapshot.get("cudnn_benchmark")
+        if benchmark is not None and hasattr(cudnn_backend, "benchmark"):
+            try:
+                cudnn_backend.benchmark = bool(benchmark)
+            except Exception:
+                pass
+        deterministic = snapshot.get("cudnn_deterministic")
+        if deterministic is not None and hasattr(cudnn_backend, "deterministic"):
+            try:
+                cudnn_backend.deterministic = bool(deterministic)
+            except Exception:
+                pass
+        cudnn_conv = getattr(cudnn_backend, "conv", None)
+        conv_precision = snapshot.get("cudnn_conv_fp32_precision")
+        if conv_precision is not None and cudnn_conv is not None and hasattr(cudnn_conv, "fp32_precision"):
+            try:
+                cudnn_conv.fp32_precision = conv_precision
+            except Exception:
+                pass
+
+    cuda_backend = getattr(torch.backends, "cuda", None)
+    matmul_backend = getattr(cuda_backend, "matmul", None) if cuda_backend is not None else None
+    matmul_precision = snapshot.get("cuda_matmul_fp32_precision")
+    if matmul_precision is not None and matmul_backend is not None and hasattr(matmul_backend, "fp32_precision"):
+        try:
+            matmul_backend.fp32_precision = matmul_precision
+        except Exception:
+            pass
 
 
 def _get_device() -> str:
@@ -162,20 +381,60 @@ def _load_wrapper(
     device: str = "cpu",
 ) -> Chronos2OHLCWrapper:
     """Load Chronos2 wrapper with specified compilation settings."""
-    # Clear any existing environment variables
-    os.environ.pop("CHRONOS_COMPILE", None)
-    os.environ.pop("TORCH_COMPILED", None)
+    # Clear any existing environment variables so earlier tests cannot leak
+    # compile mode/backend/dtype into this harness.
+    for key in (
+        "CHRONOS_COMPILE",
+        "TORCH_COMPILED",
+        "CHRONOS_COMPILE_MODE",
+        "CHRONOS_COMPILE_BACKEND",
+        "CHRONOS_DTYPE",
+        "CHRONOS2_PIPELINE_BACKEND",
+    ):
+        os.environ.pop(key, None)
+    _reset_torch_compile_state()
+    compile_runtime_snapshot = _apply_compile_runtime_stability()
+    backend_snapshot = _apply_torch_backend_stability()
+    cache_snapshot = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+    temp_compile_cache: tempfile.TemporaryDirectory[str] | None = None
+    if compile_enabled:
+        # Keep an isolated inductor cache alive for the entire wrapper lifetime.
+        # The first compiled inference happens after wrapper construction, so
+        # restoring the global cache env here would let surrounding tests leak
+        # state back into this harness.
+        temp_compile_cache = tempfile.TemporaryDirectory(prefix="chronos2_compile_fuzz_")
+        os.environ["TORCHINDUCTOR_CACHE_DIR"] = temp_compile_cache.name
+    else:
+        os.environ.pop("TORCHINDUCTOR_CACHE_DIR", None)
 
-    return Chronos2OHLCWrapper.from_pretrained(
-        model_id="amazon/chronos-2",
-        device_map=device,
-        default_context_length=CONTEXT_LENGTH,
-        default_batch_size=BATCH_SIZE,
-        torch_compile=compile_enabled,
-        compile_mode=compile_mode,
-        compile_backend=compile_backend if compile_enabled else None,
-        torch_dtype=dtype,
-    )
+    try:
+        wrapper = Chronos2OHLCWrapper.from_pretrained(
+            model_id="amazon/chronos-2",
+            device_map=device,
+            default_context_length=CONTEXT_LENGTH,
+            default_batch_size=BATCH_SIZE,
+            torch_compile=compile_enabled,
+            compile_mode=compile_mode,
+            compile_backend=compile_backend if compile_enabled else None,
+            torch_dtype=dtype,
+            cache_policy="never",
+        )
+    except Exception:
+        if temp_compile_cache is not None:
+            temp_compile_cache.cleanup()
+        if cache_snapshot is None:
+            os.environ.pop("TORCHINDUCTOR_CACHE_DIR", None)
+        else:
+            os.environ["TORCHINDUCTOR_CACHE_DIR"] = cache_snapshot
+        _restore_compile_runtime_state(compile_runtime_snapshot)
+        _restore_torch_backend_state(backend_snapshot)
+        raise
+
+    wrapper._test_compile_cache_dir = temp_compile_cache  # type: ignore[attr-defined]
+    wrapper._test_compile_cache_snapshot = cache_snapshot  # type: ignore[attr-defined]
+    wrapper._test_compile_runtime_snapshot = compile_runtime_snapshot  # type: ignore[attr-defined]
+    wrapper._test_backend_snapshot = backend_snapshot  # type: ignore[attr-defined]
+    return wrapper
 
 
 def _run_prediction(
@@ -207,8 +466,104 @@ def _calculate_mae_difference(
 def _cleanup_wrapper(wrapper: Chronos2OHLCWrapper) -> None:
     """Clean up wrapper and free GPU memory."""
     wrapper.unload()
+    _reset_torch_compile_state()
+    compile_cache = getattr(wrapper, "_test_compile_cache_dir", None)
+    cache_snapshot = getattr(wrapper, "_test_compile_cache_snapshot", None)
+    compile_runtime_snapshot = getattr(wrapper, "_test_compile_runtime_snapshot", None)
+    backend_snapshot = getattr(wrapper, "_test_backend_snapshot", None)
+    if compile_cache is not None:
+        compile_cache.cleanup()
+    if cache_snapshot is None:
+        os.environ.pop("TORCHINDUCTOR_CACHE_DIR", None)
+    else:
+        os.environ["TORCHINDUCTOR_CACHE_DIR"] = cache_snapshot
+    if isinstance(compile_runtime_snapshot, dict):
+        _restore_compile_runtime_state(compile_runtime_snapshot)
+    if isinstance(backend_snapshot, dict):
+        _restore_torch_backend_state(backend_snapshot)
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+def test_load_wrapper_keeps_isolated_compile_cache_until_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_cache = "/tmp/original-inductor-cache"
+    monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", original_cache)
+    monkeypatch.setenv("TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS", "0")
+    get_precision = getattr(torch, "get_float32_matmul_precision", None)
+    set_precision = getattr(torch, "set_float32_matmul_precision", None)
+    if callable(set_precision):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            try:
+                set_precision("high")
+            except Exception:
+                pass
+
+    inductor_config = getattr(getattr(torch, "_inductor", None), "config", None)
+    dynamo_config = getattr(getattr(torch, "_dynamo", None), "config", None)
+    cudnn_backend = getattr(torch.backends, "cudnn", None)
+    if cudnn_backend is not None and hasattr(cudnn_backend, "benchmark"):
+        cudnn_backend.benchmark = True
+    if cudnn_backend is not None and hasattr(cudnn_backend, "deterministic"):
+        cudnn_backend.deterministic = False
+    if inductor_config is not None and hasattr(inductor_config, "max_autotune"):
+        inductor_config.max_autotune = True
+    triton_config = getattr(inductor_config, "triton", None) if inductor_config is not None else None
+    if triton_config is not None and hasattr(triton_config, "cudagraphs"):
+        triton_config.cudagraphs = True
+    if dynamo_config is not None and hasattr(dynamo_config, "automatic_dynamic_shapes"):
+        dynamo_config.automatic_dynamic_shapes = True
+
+    class _DummyWrapper:
+        def unload(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        Chronos2OHLCWrapper,
+        "from_pretrained",
+        classmethod(lambda cls, *args, **kwargs: _DummyWrapper()),
+    )
+
+    wrapper = _load_wrapper(compile_enabled=True)
+    isolated_cache = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+
+    assert isolated_cache is not None
+    assert isolated_cache != original_cache
+    assert Path(isolated_cache).name.startswith("chronos2_compile_fuzz_")
+    assert os.environ.get("TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS") == "1"
+    if callable(get_precision):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            assert get_precision() == "highest"
+    if cudnn_backend is not None and hasattr(cudnn_backend, "benchmark"):
+        assert cudnn_backend.benchmark is False
+    if cudnn_backend is not None and hasattr(cudnn_backend, "deterministic"):
+        assert cudnn_backend.deterministic is True
+    if inductor_config is not None and hasattr(inductor_config, "max_autotune"):
+        assert inductor_config.max_autotune is False
+    if triton_config is not None and hasattr(triton_config, "cudagraphs"):
+        assert triton_config.cudagraphs is False
+    if dynamo_config is not None and hasattr(dynamo_config, "automatic_dynamic_shapes"):
+        assert dynamo_config.automatic_dynamic_shapes is False
+
+    _cleanup_wrapper(wrapper)
+
+    assert os.environ.get("TORCHINDUCTOR_CACHE_DIR") == original_cache
+    assert os.environ.get("TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS") == "0"
+    if callable(get_precision):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            assert get_precision() == "high"
+    if cudnn_backend is not None and hasattr(cudnn_backend, "benchmark"):
+        assert cudnn_backend.benchmark is True
+    if cudnn_backend is not None and hasattr(cudnn_backend, "deterministic"):
+        assert cudnn_backend.deterministic is False
+    if inductor_config is not None and hasattr(inductor_config, "max_autotune"):
+        assert inductor_config.max_autotune is True
+    if triton_config is not None and hasattr(triton_config, "cudagraphs"):
+        assert triton_config.cudagraphs is True
+    if dynamo_config is not None and hasattr(dynamo_config, "automatic_dynamic_shapes"):
+        assert dynamo_config.automatic_dynamic_shapes is True
 
 
 # Test fixtures

@@ -7,20 +7,17 @@ Uses fill events file for cross-broker coordination.
 from __future__ import annotations
 
 import json
-import os
-import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
 
 from loguru import logger
 
-REPO = Path(__file__).resolve().parent.parent
-_STATE_DIR = Path(os.environ.get("STATE_DIR", "strategy_state")).expanduser()
-if not _STATE_DIR.is_absolute():
-    _STATE_DIR = REPO / _STATE_DIR
-FILL_EVENTS_FILE = _STATE_DIR / "fill_events.jsonl"
+from unified_orchestrator.jsonl_utils import append_jsonl_row, iter_jsonl_lines_reverse
+from unified_orchestrator.state_paths import fill_events_file_path, resolve_state_dir
+
+_STATE_DIR = resolve_state_dir()
+FILL_EVENTS_FILE = fill_events_file_path(_STATE_DIR)
 
 
 @dataclass
@@ -59,40 +56,16 @@ class TradingPlan:
 # Fill event tracking
 # ---------------------------------------------------------------------------
 
-
-def _iter_jsonl_lines_reverse(path: Path, *, chunk_size: int = 65_536):
-    """Yield non-empty JSONL lines from the end of a file backwards."""
-
-    with path.open("rb") as handle:
-        handle.seek(0, os.SEEK_END)
-        position = handle.tell()
-        remainder = b""
-
-        while position > 0:
-            read_size = min(int(chunk_size), position)
-            position -= read_size
-            handle.seek(position)
-            chunk = handle.read(read_size)
-            buffer = chunk + remainder
-            lines = buffer.split(b"\n")
-            remainder = lines[0]
-            for raw_line in reversed(lines[1:]):
-                line = raw_line.strip()
-                if line:
-                    yield line.decode("utf-8", errors="replace")
-
-        final_line = remainder.strip()
-        if final_line:
-            yield final_line.decode("utf-8", errors="replace")
-
 def record_fill_event(
     step: TradingStep,
     fill_price: float,
     fill_qty: float,
     plan_id: str = "",
+    fill_events_file: Path | None = None,
 ) -> None:
     """Record a fill event for cross-broker chain triggers."""
-    FILL_EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    target_file = fill_events_file or fill_events_file_path()
+    target_file.parent.mkdir(parents=True, exist_ok=True)
     event = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "plan_id": plan_id,
@@ -104,18 +77,18 @@ def record_fill_event(
         "fill_qty": fill_qty,
         "status": "filled",
     }
-    with open(FILL_EVENTS_FILE, "a") as f:
-        f.write(json.dumps(event) + "\n")
+    append_jsonl_row(target_file, event)
     logger.info(f"Fill event recorded: {step.symbol} {step.action} @ {fill_price}")
 
 
-def read_pending_fills(since_minutes: int = 60) -> list[dict]:
+def read_pending_fills(since_minutes: int = 60, *, fill_events_file: Path | None = None) -> list[dict]:
     """Read recent fill events for conditional order triggering."""
-    if not FILL_EVENTS_FILE.exists():
+    target_file = fill_events_file or fill_events_file_path()
+    if not target_file.exists():
         return []
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=max(int(since_minutes), 0))
     recent_events: list[dict] = []
-    for line in _iter_jsonl_lines_reverse(FILL_EVENTS_FILE):
+    for line in iter_jsonl_lines_reverse(target_file):
         try:
             event = json.loads(line)
             event_ts = datetime.fromisoformat(str(event["timestamp"]).replace("Z", "+00:00"))

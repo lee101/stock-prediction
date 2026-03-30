@@ -20,13 +20,17 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from src.runpod_client import TRAINING_DOCKER_IMAGE, RunPodClient, resolve_gpu_type
+from unified_hourly_experiment.jax_classic_defaults import (
+    DEFAULT_JAX_CLASSIC_PRELOAD,
+    DEFAULT_JAX_CLASSIC_SYMBOLS_CSV,
+)
 
 
 RUNPOD_REST_URL = "https://rest.runpod.io/v1"
 REMOTE_DIR = "/workspace/stock-prediction"
 REMOTE_ENV = ".venv311jax"
-DEFAULT_SYMBOLS = "NVDA,PLTR,GOOG,DBX,TRIP,MTCH,NYT,AAPL,MSFT,META,TSLA,NET,BKNG,EBAY,EXPE,ITUB,BTG,ABEV"
-DEFAULT_PRELOAD = "unified_hourly_experiment/checkpoints/wd_0.06_s42/epoch_020.pt"
+DEFAULT_SYMBOLS = DEFAULT_JAX_CLASSIC_SYMBOLS_CSV
+DEFAULT_PRELOAD = str(DEFAULT_JAX_CLASSIC_PRELOAD)
 DEFAULT_GPU_TYPE = "NVIDIA GeForce RTX 4090"
 DEFAULT_DOCKER_IMAGE = TRAINING_DOCKER_IMAGE
 DOCKER_VALIDATE_IMAGE = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"

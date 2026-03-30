@@ -1,0 +1,24 @@
+{
+  "grok-4.20-reasoning": {
+    "api_calls": 12,
+    "decision_cadence": "daily",
+    "display_name": "grok-4.20-reasoning",
+    "elapsed_s": 107.99102687835693,
+    "fills": 3,
+    "final_equity": 9795.183182747318,
+    "logical_calls": 12,
+    "max_drawdown": 2.3467848938609355,
+    "min_plan_confidence": 0.3,
+    "model": "grok-4.20-reasoning",
+    "reprompt_passes": 1,
+    "reprompt_policy": "always",
+    "return_pct": -2.048168172526821,
+    "review_cache_namespace": null,
+    "review_max_confidence": null,
+    "review_model": "grok-4.20-reasoning",
+    "review_thinking_level": "NONE",
+    "sortino": -16.66677822102243,
+    "suppressed_low_conf_entries": 0,
+    "total_elapsed_s": 108.22032856941223
+  }
+}
