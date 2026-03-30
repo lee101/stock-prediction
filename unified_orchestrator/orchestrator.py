@@ -985,9 +985,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.set_defaults(live=False)
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--interval", type=int, default=3600)
-    parser.add_argument("--lock-name", default="alpaca_live_writer",
-                        help="Account lock name. Use a different name to allow concurrent services "
-                             "on non-overlapping symbol sets (e.g. 'llm_stock_writer').")
+    parser.add_argument(
+        "--lock-name",
+        default="alpaca_live_writer",
+        help="Account lock name for non-live workflows. Live Alpaca mode always uses the canonical account lock.",
+    )
     return parser
 
 
@@ -2522,9 +2524,14 @@ def main():
     account_lock = None
     if args.live:
         require_explicit_live_trading_enable("unified-orchestrator")
+        if str(args.lock_name).strip() != "alpaca_live_writer":
+            logger.warning(
+                "Ignoring --lock-name={} in live mode; using canonical Alpaca account lock alpaca_live_writer.",
+                args.lock_name,
+            )
         account_lock = acquire_alpaca_account_lock(
             "unified-orchestrator",
-            account_name=args.lock_name,
+            account_name="alpaca_live_writer",
         )
         logger.info("Acquired Alpaca live writer lock: {}", account_lock.path)
     os.environ["ORCH_BAR_FETCH_WORKERS"] = str(max(1, int(args.bar_fetch_workers)))

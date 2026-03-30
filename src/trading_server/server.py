@@ -1094,7 +1094,7 @@ class TradingServerEngine:
                 "side": _normalize_side(request.side),
                 "qty": float(request.qty),
                 "limit_price": float(request.limit_price),
-                "status": "submitted",
+                "status": "open",
                 "execution_mode": "live",
                 "allow_loss_exit": bool(request.allow_loss_exit),
                 "force_exit_reason": request.force_exit_reason,
@@ -1108,8 +1108,20 @@ class TradingServerEngine:
         if broker_response is None:
             raise HTTPException(status_code=502, detail=f"live broker rejected order for {order['symbol']}")
         order["broker_response"] = broker_response
-        state.setdefault("order_history", []).append(order)
-        return {"order": order, "filled": False, "quote": None}
+        quote = self._refresh_quote_unlocked(state, order["symbol"])
+        if quote is not None:
+            fill_price = self._fill_price_for_order(order, quote)
+            if fill_price is not None:
+                self._record_fill_unlocked(
+                    state=state,
+                    config=config,
+                    order=order,
+                    fill_price=fill_price,
+                    filled_at=self.now_fn(),
+                )
+                return {"order": order, "filled": True, "quote": quote}
+        state.setdefault("open_orders", []).append(order)
+        return {"order": order, "filled": False, "quote": quote}
 
     def submit_order(self, request: OrderRequest) -> SubmitOrderResult:
         config = self._config_for_account(request.account)
@@ -1351,7 +1363,7 @@ def ensure_background_refresh(engine: TradingServerEngine, *, poll_seconds: int 
         stopped_event = threading.Event()
         thread = threading.Thread(
             target=_run_background_refresh,
-            args=(engine, stop_event, stopped_event, max(int(resolved_poll_seconds), 10)),
+            args=(engine, stop_event, stopped_event, max(int(resolved_poll_seconds), 1)),
             name=f"trading-server-refresh-{id(engine):x}",
             daemon=True,
         )

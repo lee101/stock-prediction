@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -87,9 +87,38 @@ def _snapshot_from_positions(
         equity=equity,
         cash=max(nav - sum(abs(qty) * prices.get(symbol, 0.0) for symbol, qty in positions.items()), 0.0),
         buying_power=None,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
         positions=account_positions,
     )
+
+
+def _build_close_price_snapshots(
+    *,
+    bars: Dict[str, pd.DataFrame],
+    symbols: Sequence[str],
+    trading_days: Sequence[pd.Timestamp],
+) -> Dict[pd.Timestamp, Dict[str, float]]:
+    if not trading_days:
+        return {}
+
+    target_index = pd.DatetimeIndex(trading_days)
+    requested_symbols = {str(symbol).upper() for symbol in symbols}
+    snapshots: Dict[pd.Timestamp, Dict[str, float]] = {pd.Timestamp(timestamp): {} for timestamp in target_index}
+
+    for symbol, frame in bars.items():
+        if symbol not in requested_symbols or frame.empty or "close" not in frame.columns:
+            continue
+
+        ordered = frame.sort_index()
+        close_series = pd.to_numeric(ordered["close"], errors="coerce")
+        if not close_series.index.is_unique:
+            close_series = close_series.groupby(level=0).last()
+        aligned = close_series.reindex(target_index, method="ffill").dropna()
+
+        for timestamp, price in aligned.items():
+            snapshots[pd.Timestamp(timestamp)][symbol] = float(price)
+
+    return snapshots
 
 
 def run_pipeline_simulation(
@@ -106,7 +135,7 @@ def run_pipeline_simulation(
     bundle = fetch_latest_ohlc(
         symbols=config.symbols,
         lookback_days=runner_config.lookback_days,
-        as_of=datetime.utcnow(),
+        as_of=datetime.now(timezone.utc),
         local_data_dir=runner_config.local_data_dir,
         allow_remote_download=runner_config.allow_remote_data,
     )
@@ -128,17 +157,18 @@ def run_pipeline_simulation(
         pipeline_config=config,
         pipeline_params=pipeline_config,
     )
+    close_price_snapshots = _build_close_price_snapshots(
+        bars=bundle.bars,
+        symbols=config.symbols,
+        trading_days=trading_days,
+    )
 
     plans: List[TradingPlan] = []
     allocations: List[AllocationResult] = []
     positions: Dict[str, float] = {}
     nav = runner_config.starting_cash
     for timestamp in trading_days:
-        prices = {
-            symbol: float(frame.loc[:timestamp].iloc[-1]["close"])
-            for symbol, frame in bundle.bars.items()
-            if symbol in config.symbols and not frame.empty
-        }
+        prices = close_price_snapshots.get(pd.Timestamp(timestamp), {})
         snapshot = _snapshot_from_positions(positions=positions, prices=prices, nav=nav)
         plan = builder.build_for_day(
             target_timestamp=timestamp,

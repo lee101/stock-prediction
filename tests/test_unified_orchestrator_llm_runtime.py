@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import sys
+
+import pytest
+
 from unified_orchestrator import orchestrator
 from unified_orchestrator.state import UnifiedPortfolioSnapshot
 
@@ -77,3 +81,30 @@ def test_startup_config_summary_includes_effective_runtime_settings(monkeypatch)
     assert summary["bar_fetch_workers"] >= 1
     assert summary["state_dir"] == "/tmp/runtime-state-dir"
     assert summary["cycle_event_log"] == "/tmp/runtime-state-dir/orchestrator_cycle_events.jsonl"
+
+
+def test_main_uses_canonical_live_account_lock_even_with_override(monkeypatch) -> None:
+    lock_calls: list[tuple[str, str]] = []
+
+    class _StopMain(RuntimeError):
+        pass
+
+    monkeypatch.setattr(sys, "argv", ["orchestrator.py", "--live", "--lock-name", "llm_stock_writer", "--once"])
+    monkeypatch.setattr(orchestrator, "require_explicit_live_trading_enable", lambda _service: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "acquire_alpaca_account_lock",
+        lambda owner, *, account_name: lock_calls.append((owner, account_name)) or type("Lock", (), {"path": "/tmp/live.lock"})(),
+    )
+    monkeypatch.setattr(orchestrator, "save_snapshot", lambda snapshot: None)
+    monkeypatch.setattr(orchestrator.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "_run_cycle_with_runtime_logging",
+        lambda **kwargs: (_ for _ in ()).throw(_StopMain()),
+    )
+
+    with pytest.raises(_StopMain):
+        orchestrator.main()
+
+    assert lock_calls == [("unified-orchestrator", "alpaca_live_writer")]

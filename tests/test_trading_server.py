@@ -173,7 +173,7 @@ def test_invalid_runtime_env_values_fall_back_to_safe_defaults(tmp_path, monkeyp
     assert engine.quote_stale_seconds == trading_server_module.DEFAULT_QUOTE_STALE_SECONDS
     assert engine.quote_fetch_workers == 1
     assert request.ttl_seconds == trading_server_module.DEFAULT_WRITER_TTL_SECONDS
-    assert TradingServerSettings.from_env().background_poll_seconds == 10
+    assert TradingServerSettings.from_env().background_poll_seconds == 1
 
 
 def test_writer_lease_request_uses_runtime_env_default_ttl(monkeypatch):
@@ -976,8 +976,135 @@ def test_live_order_requires_ack_and_env_gate(tmp_path, monkeypatch):
     assert len(broker_calls) == 1
     assert broker_calls[0]["symbol"] == "ETHUSD"
     assert accepted.json()["order"]["broker_response"]["broker_order_id"] == "broker-1"
+    assert accepted.json()["filled"] is False
     assert history.status_code == 200
-    assert history.json()["order_history"][0]["broker_response"]["status"] == "accepted"
+    assert len(history.json()["open_orders"]) == 1
+    assert history.json()["open_orders"][0]["broker_response"]["status"] == "accepted"
+    assert history.json()["order_history"] == []
+
+
+def test_live_order_updates_account_state_when_marketable(tmp_path, monkeypatch):
+    now = datetime(2026, 3, 29, 20, 0, 0, tzinfo=timezone.utc)
+    broker_calls: list[dict] = []
+
+    def fake_live_executor(order: dict) -> dict:
+        broker_calls.append(order)
+        return {"broker_order_id": "broker-2", "status": "accepted"}
+
+    engine = _build_engine(
+        tmp_path,
+        now=now,
+        quotes=[
+            {
+                "symbol": "ETHUSD",
+                "bid_price": 1999.5,
+                "ask_price": 2000.0,
+                "last_price": 1999.8,
+                "as_of": now.isoformat(),
+            }
+        ],
+        live_executor=fake_live_executor,
+    )
+    claim = engine.claim_writer(
+        type("Lease", (), {"account": "live_test", "bot_id": "live_test_v1", "session_id": "owner", "ttl_seconds": 120})()
+    )
+    monkeypatch.setenv("ALLOW_ALPACA_LIVE_TRADING", "1")
+
+    result = engine.submit_order(
+        type(
+            "Order",
+            (),
+            {
+                "account": "live_test",
+                "bot_id": "live_test_v1",
+                "session_id": claim["session_id"],
+                "symbol": "ETHUSD",
+                "side": "buy",
+                "qty": 0.1,
+                "limit_price": 2000.0,
+                "execution_mode": "live",
+                "allow_loss_exit": False,
+                "force_exit_reason": None,
+                "live_ack": "LIVE",
+                "metadata": {"source": "unit-test"},
+            },
+        )()
+    )
+
+    snapshot = engine.get_account_snapshot("live_test")
+    orders = engine.get_orders("live_test", include_history=True)
+
+    assert len(broker_calls) == 1
+    assert result["filled"] is True
+    assert result["order"]["status"] == "filled"
+    assert result["order"]["broker_response"]["broker_order_id"] == "broker-2"
+    assert snapshot["positions"]["ETHUSD"]["qty"] == 0.1
+    assert orders["open_orders"] == []
+    assert len(orders["order_history"]) == 1
+    assert orders["order_history"][0]["fill_price"] == 2000.0
+
+
+def test_live_open_order_fills_on_price_refresh(tmp_path, monkeypatch):
+    now = datetime(2026, 3, 29, 20, 0, 0, tzinfo=timezone.utc)
+
+    engine = _build_engine(
+        tmp_path,
+        now=now,
+        quotes=[
+            {
+                "symbol": "ETHUSD",
+                "bid_price": 2004.0,
+                "ask_price": 2006.0,
+                "last_price": 2005.0,
+                "as_of": now.isoformat(),
+            },
+            {
+                "symbol": "ETHUSD",
+                "bid_price": 1999.5,
+                "ask_price": 2000.0,
+                "last_price": 1999.8,
+                "as_of": (now + timedelta(minutes=5)).isoformat(),
+            },
+        ],
+        live_executor=lambda order: {"broker_order_id": "broker-3", "status": "accepted"},
+    )
+    claim = engine.claim_writer(
+        type("Lease", (), {"account": "live_test", "bot_id": "live_test_v1", "session_id": "owner", "ttl_seconds": 120})()
+    )
+    monkeypatch.setenv("ALLOW_ALPACA_LIVE_TRADING", "1")
+
+    submitted = engine.submit_order(
+        type(
+            "Order",
+            (),
+            {
+                "account": "live_test",
+                "bot_id": "live_test_v1",
+                "session_id": claim["session_id"],
+                "symbol": "ETHUSD",
+                "side": "buy",
+                "qty": 0.1,
+                "limit_price": 2000.0,
+                "execution_mode": "live",
+                "allow_loss_exit": False,
+                "force_exit_reason": None,
+                "live_ack": "LIVE",
+                "metadata": {},
+            },
+        )()
+    )
+
+    assert submitted["filled"] is False
+    assert len(engine.get_orders("live_test")["open_orders"]) == 1
+
+    refreshed = engine.refresh_prices(account="live_test")
+    snapshot = engine.get_account_snapshot("live_test")
+    orders = engine.get_orders("live_test", include_history=True)
+
+    assert refreshed["accounts"][0]["filled_orders"]
+    assert snapshot["positions"]["ETHUSD"]["qty"] == 0.1
+    assert orders["open_orders"] == []
+    assert len(orders["order_history"]) == 1
 
 
 def test_background_refresh_is_scoped_per_engine(tmp_path):
@@ -1001,8 +1128,8 @@ def test_background_refresh_is_scoped_per_engine(tmp_path):
     engine_b.refresh_prices = refresh_b
 
     try:
-        thread_a = ensure_background_refresh(engine_a, poll_seconds=10)
-        thread_b = ensure_background_refresh(engine_b, poll_seconds=10)
+        thread_a = ensure_background_refresh(engine_a, poll_seconds=1)
+        thread_b = ensure_background_refresh(engine_b, poll_seconds=1)
         assert thread_a is not thread_b
         assert first_refresh_a.wait(timeout=1.0)
         assert first_refresh_b.wait(timeout=1.0)
@@ -1029,8 +1156,8 @@ def test_background_refresh_uses_reference_count_for_shared_engine(tmp_path):
     engine.refresh_prices = refresh_prices
 
     try:
-        thread_one = ensure_background_refresh(engine, poll_seconds=10)
-        thread_two = ensure_background_refresh(engine, poll_seconds=10)
+        thread_one = ensure_background_refresh(engine, poll_seconds=1)
+        thread_two = ensure_background_refresh(engine, poll_seconds=1)
 
         assert thread_one is thread_two
         assert first_refresh.wait(timeout=1.0)
@@ -1060,13 +1187,13 @@ def test_background_refresh_reuses_stopping_thread_for_same_engine(tmp_path):
     engine.refresh_prices = refresh_prices
 
     try:
-        thread_one = ensure_background_refresh(engine, poll_seconds=10)
+        thread_one = ensure_background_refresh(engine, poll_seconds=1)
         assert entered_refresh.wait(timeout=1.0)
 
         stop_background_refresh(engine, timeout=0.01)
         assert thread_one.is_alive()
 
-        thread_two = ensure_background_refresh(engine, poll_seconds=10)
+        thread_two = ensure_background_refresh(engine, poll_seconds=1)
 
         assert thread_two is thread_one
         assert refresh_calls == 1
@@ -1507,33 +1634,17 @@ def test_account_snapshot_allows_parallel_reads_across_engine_instances(tmp_path
 # ---------------------------------------------------------------------------
 
 
-def test_default_background_poll_is_60_seconds():
-    """Background poll default is 60s (1 minute) for accurate price tracking."""
+def test_default_poll_and_staleness_constants():
+    """Background poll=60s, quote staleness=90s for 1-minute accuracy."""
     assert trading_server_module.DEFAULT_BACKGROUND_POLL_SECONDS == 60
-
-
-def test_default_quote_stale_is_90_seconds():
-    """Quotes older than 90s are considered stale and will be refreshed."""
     assert trading_server_module.DEFAULT_QUOTE_STALE_SECONDS == 90
-
-
-def test_settings_from_env_default_poll_is_60(monkeypatch):
-    monkeypatch.delenv("TRADING_SERVER_BACKGROUND_POLL_SECONDS", raising=False)
-    monkeypatch.delenv("TRADING_SERVER_QUOTE_STALE_SECONDS", raising=False)
     settings = TradingServerSettings.from_env()
     assert settings.background_poll_seconds == 60
     assert settings.quote_stale_seconds == 90
 
 
-def test_engine_default_quote_stale_is_90(tmp_path):
-    engine = _build_engine(tmp_path)
-    # _build_engine overrides quote_stale_seconds=300 for existing tests,
-    # so test the settings constant directly and a fresh engine.
-    assert trading_server_module.DEFAULT_QUOTE_STALE_SECONDS == 90
-
-
-def test_quote_expires_after_90_seconds(tmp_path):
-    """Quote cached at t=0 is stale after 90s, forcing a refresh."""
+def test_quote_expires_after_staleness_window(tmp_path):
+    """Quote cached at t=0 is fresh at t=60s, stale at t=91s."""
     t0 = datetime(2026, 3, 30, 12, 0, 0, tzinfo=timezone.utc)
     current_now = {"value": t0}
     fetch_count = {"n": 0}
@@ -1555,7 +1666,6 @@ def test_quote_expires_after_90_seconds(tmp_path):
         state_dir=tmp_path / "state",
         quote_provider=quote_provider,
         now_fn=lambda: current_now["value"],
-        # Use the new default staleness
         quote_stale_seconds=90,
     )
 
@@ -1563,7 +1673,7 @@ def test_quote_expires_after_90_seconds(tmp_path):
     engine.refresh_prices(account="paper_test")
     assert fetch_count["n"] == 1
 
-    # At t=60s, quote should still be fresh (< 90s)
+    # At t=60s, quote is still fresh — order uses cache, no re-fetch
     current_now["value"] = t0 + timedelta(seconds=60)
     claim = engine.claim_writer(
         type("Lease", (), {"account": "paper_test", "bot_id": "paper_test_v1", "session_id": "owner", "ttl_seconds": 300})()
@@ -1588,7 +1698,6 @@ def test_quote_expires_after_90_seconds(tmp_path):
             },
         )()
     )
-    # Quote was cached, should NOT have fetched again
     assert fetch_count["n"] == 1
     assert result["filled"] is True
 
@@ -1598,31 +1707,8 @@ def test_quote_expires_after_90_seconds(tmp_path):
     assert fetch_count["n"] == 2
 
 
-def test_background_refresh_fires_within_60_seconds(tmp_path):
-    """Background thread fires refresh within ~60s poll interval."""
-    engine = _build_engine(tmp_path)
-    refresh_events: list[float] = []
-    first_refresh = threading.Event()
-
-    def fake_refresh(*args, **kwargs):
-        refresh_events.append(time.perf_counter())
-        first_refresh.set()
-        return {"accounts": []}
-
-    engine.refresh_prices = fake_refresh
-
-    try:
-        # Use poll_seconds=10 for a fast test (don't wait 60s in CI)
-        thread = ensure_background_refresh(engine, poll_seconds=10)
-        assert first_refresh.wait(timeout=2.0)
-        assert len(refresh_events) >= 1
-        assert thread.is_alive()
-    finally:
-        stop_background_refresh(engine, timeout=2.0)
-
-
-def test_background_refresh_multiple_cycles(tmp_path):
-    """Background thread fires multiple refresh cycles at the poll interval."""
+def test_background_refresh_fires_multiple_cycles(tmp_path):
+    """Background thread fires refresh immediately and again after poll interval."""
     engine = _build_engine(tmp_path)
     refresh_count = {"n": 0}
     two_refreshes = threading.Event()
@@ -1636,9 +1722,9 @@ def test_background_refresh_multiple_cycles(tmp_path):
     engine.refresh_prices = fake_refresh
 
     try:
-        # Short interval to test multiple cycles quickly
-        ensure_background_refresh(engine, poll_seconds=10)
-        assert two_refreshes.wait(timeout=12.0), f"only got {refresh_count['n']} refreshes"
+        thread = ensure_background_refresh(engine, poll_seconds=1)
+        assert two_refreshes.wait(timeout=3.0), f"only got {refresh_count['n']} refreshes"
         assert refresh_count["n"] >= 2
+        assert thread.is_alive()
     finally:
         stop_background_refresh(engine, timeout=2.0)

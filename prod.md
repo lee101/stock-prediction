@@ -19,7 +19,7 @@
   - 29-model bar: p10 ≥ 63.5% @fill_bps=5 (encoder_norm-correct)
   - 15-model baseline was: 0/111 neg, med=50.9%, p10=19.2%
   - REJECTED 100+ seeds across 15→28 model bars (see trade_daily_stock_prod.py comments)
-  - ⚠️ PROD Alpaca API keys expired (401); service uses paper API for clock check; UPDATE env_real.py ALP_KEY_ID_PROD/ALP_SECRET_KEY_PROD before Monday live trade
+  - ⚠️ PROD Alpaca API keys STILL EXPIRED (401); AKYKQGKKQYOV5ZZ3ZA3ZP3PXLN also returns 401; USER MUST renew keys at Alpaca dashboard before 13:36 UTC 2026-03-30 and update env_real.py + env_real.py defaults
 
 ### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- FIXED (pending restart)
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`

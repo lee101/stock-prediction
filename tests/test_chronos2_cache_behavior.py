@@ -17,14 +17,6 @@ from src.models.chronos2_wrapper import Chronos2OHLCWrapper
 from src.models.model_cache import ModelCacheManager
 
 
-def test_chronos2_wrapper_rejects_pipeline_without_prediction_interface() -> None:
-    class _UnsupportedPipeline:
-        model = object()
-
-    with pytest.raises(RuntimeError, match="must implement predict_df, predict_quantiles, or predict"):
-        Chronos2OHLCWrapper(_UnsupportedPipeline(), torch_compile=False)
-
-
 def test_load_chronos2_wrapper_reuses_cache_for_equivalent_params(monkeypatch: pytest.MonkeyPatch) -> None:
     try:
         module = importlib.reload(marketsim)

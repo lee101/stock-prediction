@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from datetime import timezone
 from typing import Dict
 from types import SimpleNamespace
 
@@ -19,7 +20,12 @@ from stockagent2 import (
     TickerView,
 )
 from stockagent2.agentsimulator.plan_builder import PipelinePlanBuilder, PipelineSimulationConfig
-from stockagent2.agentsimulator.runner import RunnerConfig, run_pipeline_simulation
+from stockagent2.agentsimulator.runner import (
+    RunnerConfig,
+    _build_close_price_snapshots,
+    _snapshot_from_positions,
+    run_pipeline_simulation,
+)
 from stockagent2.agentsimulator.forecast_adapter import SymbolForecast
 from stockagent2.black_litterman import BlackLittermanFuser
 
@@ -276,9 +282,39 @@ def test_pipeline_plan_builder_generates_instructions() -> None:
     assert len(plan.instructions) > 0
 
 
+def test_snapshot_from_positions_uses_aware_utc_timestamp() -> None:
+    snapshot = _snapshot_from_positions(
+        positions={"AAPL": 10.0},
+        prices={"AAPL": 100.0},
+        nav=2_000.0,
+    )
+
+    assert snapshot.timestamp.tzinfo == timezone.utc
+    assert snapshot.timestamp.utcoffset() is not None
+
+
+def test_build_close_price_snapshots_forward_fills_sparse_history() -> None:
+    trading_days = pd.date_range("2025-01-01", periods=3, freq="B", tz="UTC")
+    sparse_history = pd.DataFrame(
+        {"close": [99.0, 100.0, 105.0]},
+        index=pd.DatetimeIndex([trading_days[0], trading_days[0], trading_days[2]]),
+    )
+
+    snapshots = _build_close_price_snapshots(
+        bars={"MSFT": sparse_history},
+        symbols=("MSFT",),
+        trading_days=trading_days,
+    )
+
+    assert snapshots[trading_days[0]] == {"MSFT": 100.0}
+    assert snapshots[trading_days[1]] == {"MSFT": 100.0}
+    assert snapshots[trading_days[2]] == {"MSFT": 105.0}
+
+
 def test_run_pipeline_simulation_respects_simulation_symbols(monkeypatch: pytest.MonkeyPatch) -> None:
     trading_days = pd.date_range("2025-01-01", periods=2, freq="B", tz="UTC")
     frame = pd.DataFrame({"close": [100.0, 101.0], "open": [100.0, 101.0]}, index=trading_days)
+    record: dict[str, object] = {}
 
     class DummyBundle:
         bars = {"MSFT": frame}
@@ -286,9 +322,13 @@ def test_run_pipeline_simulation_respects_simulation_symbols(monkeypatch: pytest
         def trading_days(self) -> list[pd.Timestamp]:
             return list(trading_days)
 
+    def _fake_fetch_latest_ohlc(**kwargs):
+        record["as_of"] = kwargs["as_of"]
+        return DummyBundle()
+
     monkeypatch.setattr(
         "stockagent2.agentsimulator.runner.fetch_latest_ohlc",
-        lambda **_: DummyBundle(),
+        _fake_fetch_latest_ohlc,
     )
     monkeypatch.setattr(
         "stockagent2.agentsimulator.runner.CostAwareOptimizer",
@@ -303,8 +343,6 @@ def test_run_pipeline_simulation_respects_simulation_symbols(monkeypatch: pytest
         lambda: object(),
     )
 
-    record: dict[str, object] = {}
-
     class DummyBuilder:
         def __init__(self, *, pipeline, forecast_adapter, pipeline_config, pipeline_params):
             self.pipeline_config = pipeline_config
@@ -313,6 +351,7 @@ def test_run_pipeline_simulation_respects_simulation_symbols(monkeypatch: pytest
             self.last_allocation = SimpleNamespace(universe=("MSFT",), weights=np.array([1.0]))
 
         def build_for_day(self, *, target_timestamp, market_frames, account_snapshot):
+            record["snapshot_timestamp"] = account_snapshot.timestamp
             return TradingPlan(target_date=target_timestamp.date(), instructions=[])
 
     monkeypatch.setattr(
@@ -335,3 +374,5 @@ def test_run_pipeline_simulation_respects_simulation_symbols(monkeypatch: pytest
     assert len(result.plans) == 1
     assert result.simulation.starting_cash == RunnerConfig().starting_cash
     assert record["symbols"] == ("MSFT",)
+    assert record["as_of"].tzinfo == timezone.utc
+    assert record["snapshot_timestamp"].tzinfo == timezone.utc

@@ -7,6 +7,15 @@ from pathlib import Path
 import torch
 
 
+def _format_generated_timestamp(now: datetime.datetime | None = None) -> str:
+    current = now or datetime.datetime.now(datetime.UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=datetime.UTC)
+    else:
+        current = current.astimezone(datetime.UTC)
+    return current.strftime("%Y-%m-%d %H:%M UTC")
+
+
 def write_report_markdown(
     out_path: str,
     title: str,
@@ -18,7 +27,7 @@ def write_report_markdown(
     out = Path(out_path)
     if out.parent != Path('.'):
         out.parent.mkdir(parents=True, exist_ok=True)
-    now = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    now = _format_generated_timestamp()
 
     device_info = "CPU"
     if torch.cuda.is_available():
