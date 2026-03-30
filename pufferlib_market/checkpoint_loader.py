@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
 import pickle
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from numbers import Real
 from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn as nn
+from torch import nn
 
 
 def load_checkpoint_payload(
@@ -21,6 +21,24 @@ def load_checkpoint_payload(
         return torch.load(checkpoint_path, map_location=map_location, weights_only=False)
     except (FileNotFoundError, IsADirectoryError, OSError, EOFError, RuntimeError, pickle.UnpicklingError) as exc:
         raise RuntimeError(f"Failed to load checkpoint {checkpoint_path.resolve()}: {exc}") from exc
+
+
+def _looks_like_state_dict(value: object) -> bool:
+    return isinstance(value, Mapping) and bool(value) and all(
+        isinstance(key, str) and isinstance(tensor, torch.Tensor)
+        for key, tensor in value.items()
+    )
+
+
+def extract_checkpoint_state_dict(ckpt: object) -> Mapping[str, object]:
+    if isinstance(ckpt, Mapping) and "model" in ckpt:
+        state_dict = ckpt.get("model")
+        if _looks_like_state_dict(state_dict):
+            return state_dict
+        raise KeyError("Checkpoint is missing a valid 'model' state_dict")
+    if _looks_like_state_dict(ckpt):
+        return ckpt
+    raise ValueError("Unsupported checkpoint format (expected state_dict or dict with 'model')")
 
 
 def _coerce_finite_float(value: object) -> float | None:
@@ -218,10 +236,10 @@ def _format_action_grid_config(
     action_level_bins: int,
     action_max_offset_bps: float,
 ) -> str:
-    return "alloc_bins={} level_bins={} max_offset_bps={}".format(
-        int(action_allocation_bins),
-        int(action_level_bins),
-        _format_action_max_offset_bps(float(action_max_offset_bps)),
+    return (
+        f"alloc_bins={int(action_allocation_bins)} "
+        f"level_bins={int(action_level_bins)} "
+        f"max_offset_bps={_format_action_max_offset_bps(float(action_max_offset_bps))}"
     )
 
 
@@ -298,10 +316,8 @@ def format_action_grid_override_note(
         overrides.append(f"level_bins {int(requested_level_bins)} -> {int(effective_level_bins)}")
     if float(requested_max_offset_bps) != float(effective_max_offset_bps):
         overrides.append(
-            "max_offset_bps {} -> {}".format(
-                _format_action_max_offset_bps(float(requested_max_offset_bps)),
-                _format_action_max_offset_bps(float(effective_max_offset_bps)),
-            )
+            f"max_offset_bps {_format_action_max_offset_bps(float(requested_max_offset_bps))} -> "
+            f"{_format_action_max_offset_bps(float(effective_max_offset_bps))}"
         )
     if not overrides:
         return None

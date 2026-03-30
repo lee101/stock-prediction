@@ -21,31 +21,38 @@ from __future__ import annotations
 
 import argparse
 import collections
-from contextlib import redirect_stdout
 import json
 import sys
+from contextlib import redirect_stdout
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import torch
-import torch.nn as nn
+from torch import nn
 from torch.distributions import Categorical
 
-from pufferlib_market.hourly_replay import MktdData, read_mktd, simulate_daily_policy
-from pufferlib_market.metrics import annualize_total_return
+from pufferlib_market.checkpoint_loader import (
+    build_action_grid_summary_line,
+    extract_checkpoint_state_dict,
+    infer_arch_from_state_dict,
+    infer_hidden_size_from_state_dict,
+    infer_resmlp_blocks_from_state_dict,
+    load_checkpoint_payload,
+    resolve_checkpoint_action_grid_config,
+)
 from pufferlib_market.evaluate_tail import (
-    TradingPolicy,
     ResidualTradingPolicy,
+    TradingPolicy,
+    _build_shortable_mask,
     _infer_num_actions,
-    _infer_arch,
-    _infer_hidden_size,
-    _infer_resmlp_blocks,
     _mask_all_shorts,
     _mask_disallowed_shorts,
-    _build_shortable_mask,
     _slice_tail,
 )
+from pufferlib_market.hourly_replay import MktdData, read_mktd, simulate_daily_policy
+from pufferlib_market.metrics import annualize_total_return
+
 
 PERIODS = {
     "1d": 24,
@@ -54,26 +61,36 @@ PERIODS = {
 }
 
 
+@dataclass(frozen=True)
+class LoadedPolicy:
+    policy: nn.Module
+    arch: str
+    hidden_size: int
+    action_allocation_bins: int
+    action_level_bins: int
+    action_max_offset_bps: float
+    num_actions: int
+
+
 def load_policy(
     checkpoint_path: str,
     num_symbols: int,
     *,
     arch: str = "auto",
-    hidden_size: Optional[int] = None,
+    hidden_size: int | None = None,
     device: torch.device = torch.device("cpu"),
     features_per_sym: int = 16,
-) -> tuple[nn.Module, dict, int]:
-    """Load a checkpoint and build the policy network.
+) -> LoadedPolicy:
+    """Load a checkpoint and build the policy network."""
+    payload = load_checkpoint_payload(checkpoint_path, map_location=device)
+    state_dict = extract_checkpoint_state_dict(payload)
 
-    Returns (policy, state_dict, num_actions).
-    """
-    payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    state_dict = payload.get("model") if isinstance(payload, dict) and "model" in payload else payload
-    if not isinstance(state_dict, dict):
-        raise ValueError("Unsupported checkpoint format")
-
-    action_allocation_bins = int(payload.get("action_allocation_bins", 1)) if isinstance(payload, dict) else 1
-    action_level_bins = int(payload.get("action_level_bins", 1)) if isinstance(payload, dict) else 1
+    action_allocation_bins, action_level_bins, action_max_offset_bps = resolve_checkpoint_action_grid_config(
+        payload,
+        action_allocation_bins=1,
+        action_level_bins=1,
+        action_max_offset_bps=0.0,
+    )
     if action_allocation_bins != 1 or action_level_bins != 1:
         raise ValueError(
             f"Only supports alloc_bins=1 level_bins=1 (got {action_allocation_bins}, {action_level_bins})"
@@ -84,11 +101,11 @@ def load_policy(
     num_actions = _infer_num_actions(state_dict, fallback=fallback_actions)
 
     if arch == "auto":
-        arch = _infer_arch(state_dict)
-    hidden = hidden_size if hidden_size is not None else _infer_hidden_size(state_dict, arch=arch)
+        arch = infer_arch_from_state_dict(state_dict)
+    hidden = hidden_size if hidden_size is not None else infer_hidden_size_from_state_dict(state_dict, arch)
 
     if arch == "resmlp":
-        num_blocks = _infer_resmlp_blocks(state_dict)
+        num_blocks = infer_resmlp_blocks_from_state_dict(state_dict)
         policy = ResidualTradingPolicy(obs_size, num_actions, hidden=hidden, num_blocks=num_blocks).to(device)
     elif arch == "mlp":
         policy = TradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
@@ -96,7 +113,7 @@ def load_policy(
         raise ValueError(f"Unsupported arch: {arch}")
 
     missing, unexpected = policy.load_state_dict(state_dict, strict=False)
-    if hasattr(policy, '_use_encoder_norm'):
+    if hasattr(policy, "_use_encoder_norm"):
         # Prefer the stored flag (from _checkpoint_payload "use_encoder_norm" key).
         # Fall back to inferring from missing keys for old checkpoints that don't store it.
         if isinstance(payload, dict) and "use_encoder_norm" in payload:
@@ -111,7 +128,15 @@ def load_policy(
             f"Checkpoint architecture mismatch — missing: {bad_missing}, unexpected: {bad_unexpected}"
         )
     policy.eval()
-    return policy, state_dict, num_actions
+    return LoadedPolicy(
+        policy=policy,
+        arch=str(arch),
+        hidden_size=int(hidden),
+        action_allocation_bins=int(action_allocation_bins),
+        action_level_bins=int(action_level_bins),
+        action_max_offset_bps=float(action_max_offset_bps),
+        num_actions=int(num_actions),
+    )
 
 
 def make_policy_fn(
@@ -119,7 +144,7 @@ def make_policy_fn(
     *,
     num_symbols: int,
     disable_shorts: bool = False,
-    shortable_mask: Optional[torch.Tensor] = None,
+    shortable_mask: torch.Tensor | None = None,
     deterministic: bool = True,
     decision_lag: int = 0,
     device: torch.device = torch.device("cpu"),
@@ -162,7 +187,7 @@ def evaluate_period(
     periods_per_year: float = 8760.0,
     short_borrow_apr: float = 0.0,
     disable_shorts: bool = False,
-    shortable_mask: Optional[torch.Tensor] = None,
+    shortable_mask: torch.Tensor | None = None,
     deterministic: bool = True,
     decision_lag: int = 0,
     device: torch.device = torch.device("cpu"),
@@ -220,14 +245,14 @@ def evaluate_checkpoint(
     periods: dict[str, int],
     *,
     arch: str = "auto",
-    hidden_size: Optional[int] = None,
+    hidden_size: int | None = None,
     fee_rate: float = 0.001,
     fill_buffer_bps: float = 5.0,
     max_leverage: float = 1.0,
     periods_per_year: float = 8760.0,
     short_borrow_apr: float = 0.0,
     disable_shorts: bool = False,
-    shortable_symbols: Optional[str] = None,
+    shortable_symbols: str | None = None,
     deterministic: bool = True,
     decision_lag: int = 0,
     device_str: str = "cpu",
@@ -238,10 +263,11 @@ def evaluate_checkpoint(
     num_symbols = data.num_symbols
     features_per_sym = data.features.shape[2]
 
-    policy, _, num_actions = load_policy(
+    loaded = load_policy(
         checkpoint_path, num_symbols, arch=arch, hidden_size=hidden_size, device=device,
         features_per_sym=features_per_sym,
     )
+    policy = loaded.policy
 
     shortable_mask = _build_shortable_mask(data.symbols, shortable_symbols)
     if shortable_mask is not None:
@@ -265,6 +291,12 @@ def evaluate_checkpoint(
         )
         r["period"] = period_name
         r["checkpoint"] = checkpoint_path
+        r["data_path"] = data_path
+        r["arch"] = loaded.arch
+        r["hidden_size"] = loaded.hidden_size
+        r["action_allocation_bins"] = loaded.action_allocation_bins
+        r["action_level_bins"] = loaded.action_level_bins
+        r["action_max_offset_bps"] = loaded.action_max_offset_bps
         results.append(r)
 
     return results
@@ -274,17 +306,31 @@ def format_table(all_results: list[list[dict]], checkpoint_names: list[str]) -> 
     """Format results as an aligned text table."""
     lines = []
 
-    for i, (results, name) in enumerate(zip(all_results, checkpoint_names)):
+    for results, name in zip(all_results, checkpoint_names):
         if len(all_results) > 1:
             lines.append(f"\n=== {name} ===")
+        else:
+            lines.append(f"Checkpoint: {name}")
+        if results:
+            config = results[0]
+            lines.append(f"Effective config: arch={config['arch']}, hidden_size={config['hidden_size']}")
+            lines.append(
+                build_action_grid_summary_line(
+                    action_allocation_bins=config["action_allocation_bins"],
+                    action_level_bins=config["action_level_bins"],
+                    action_max_offset_bps=config["action_max_offset_bps"],
+                )
+            )
         lines.append(
             f"{'Period':<8} {'Return%':>9} {'Sortino':>8} {'MaxDD%':>7} {'Trades':>7} {'WinRate':>8} {'AvgHold':>8}"
         )
         lines.append("-" * 62)
+        successful_results = []
         for r in results:
             if "error" in r:
                 lines.append(f"{r['period']:<8} {r['error']}")
                 continue
+            successful_results.append(r)
             ret_pct = r["total_return"] * 100
             dd_pct = r["max_drawdown"] * 100
             wr_pct = r["win_rate"] * 100
@@ -292,6 +338,21 @@ def format_table(all_results: list[list[dict]], checkpoint_names: list[str]) -> 
             lines.append(
                 f"{r['period']:<8} {ret_pct:>+8.2f}% {r['sortino']:>8.2f} {dd_pct:>6.2f}% "
                 f"{r['num_trades']:>7d} {wr_pct:>7.1f}% {hold_h:>7.1f}h"
+            )
+        if successful_results:
+            best_result = max(successful_results, key=lambda result: float(result["total_return"]))
+            worst_result = min(successful_results, key=lambda result: float(result["total_return"]))
+            positive_period_count = sum(float(result["total_return"]) > 0.0 for result in successful_results)
+            lines.append(
+                "Best period: "
+                f"{best_result['period']} ({float(best_result['total_return']) * 100:+.2f}%)"
+            )
+            lines.append(
+                "Worst period: "
+                f"{worst_result['period']} ({float(worst_result['total_return']) * 100:+.2f}%)"
+            )
+            lines.append(
+                f"Positive periods: {positive_period_count}/{len(successful_results)}"
             )
 
     return "\n".join(lines)
@@ -326,22 +387,29 @@ def main() -> None:
 
     # Parse periods
     periods = {}
-    for p in args.periods.split(","):
-        p = p.strip()
-        if p in PERIODS:
-            periods[p] = PERIODS[p]
-        elif p.endswith("d") and p[:-1].isdigit():
-            periods[p] = int(p[:-1]) * 24
-        elif p.endswith("h") and p[:-1].isdigit():
-            periods[p] = int(p[:-1])
+    for period_spec_raw in args.periods.split(","):
+        period_spec = period_spec_raw.strip()
+        if period_spec in PERIODS:
+            period_hours = PERIODS[period_spec]
+        elif period_spec.endswith("d") and period_spec[:-1].isdigit():
+            period_hours = int(period_spec[:-1]) * 24
+        elif period_spec.endswith("h") and period_spec[:-1].isdigit():
+            period_hours = int(period_spec[:-1])
         else:
-            parser.error(f"Unknown period: {p}. Use Nd (days) or Nh (hours), e.g. 1d, 7d, 30d, 168h")
+            parser.error(
+                f"Unknown period: {period_spec}. Use Nd (days) or Nh (hours), e.g. 1d, 7d, 30d, 168h"
+            )
+        if period_hours < 1:
+            parser.error(f"Period must be at least 1 hour: {period_spec}")
+        periods[period_spec] = period_hours
 
     # Get checkpoint list
     if args.checkpoint:
         ckpt_paths = [args.checkpoint]
     else:
         ckpt_paths = [c.strip() for c in args.checkpoints.split(",") if c.strip()]
+        if not ckpt_paths:
+            parser.error("--checkpoints must include at least one checkpoint path")
 
     all_results = []
     names = []

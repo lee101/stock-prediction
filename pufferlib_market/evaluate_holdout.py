@@ -10,15 +10,20 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import torch
-import torch.nn as nn
+from torch import nn
 from torch.distributions import Categorical
 
+from pufferlib_market.checkpoint_loader import (
+    extract_checkpoint_state_dict,
+    load_checkpoint_payload,
+    resolve_checkpoint_action_grid_config,
+)
 from pufferlib_market.hourly_replay import MktdData, read_mktd, simulate_daily_policy
 from pufferlib_market.metrics import annualize_total_return
 
@@ -56,7 +61,7 @@ def _mask_disallowed_shorts(
 
 def _act_holdout(name: str) -> nn.Module:
     if name == "relu_sq":
-        from pufferlib_market.train import _ReLUSq
+        from pufferlib_market.train import _ReLUSq  # noqa: PLC0415
         return _ReLUSq()
     if name == "gelu":
         return nn.GELU()
@@ -90,7 +95,7 @@ class TradingPolicy(nn.Module):
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         h = self.encoder(x)
-        if getattr(self, '_use_encoder_norm', False):
+        if getattr(self, "_use_encoder_norm", False):
             h = self.encoder_norm(h)
         return self.actor(h), self.critic(h).squeeze(-1)
 
@@ -136,22 +141,12 @@ def _infer_action_grid(
     state_dict: dict[str, torch.Tensor],
     num_symbols: int,
 ) -> tuple[int, int, int, float]:
-    alloc_bins = 1
-    level_bins = 1
-    max_offset_bps = 0.0
-    if isinstance(payload, dict):
-        try:
-            alloc_bins = max(1, int(payload.get("action_allocation_bins", 1)))
-        except (TypeError, ValueError):
-            alloc_bins = 1
-        try:
-            level_bins = max(1, int(payload.get("action_level_bins", 1)))
-        except (TypeError, ValueError):
-            level_bins = 1
-        try:
-            max_offset_bps = max(0.0, float(payload.get("action_max_offset_bps", 0.0)))
-        except (TypeError, ValueError):
-            max_offset_bps = 0.0
+    alloc_bins, level_bins, max_offset_bps = resolve_checkpoint_action_grid_config(
+        payload,
+        action_allocation_bins=1,
+        action_level_bins=1,
+        action_max_offset_bps=0.0,
+    )
 
     per_symbol_actions = int(alloc_bins) * int(level_bins)
     expected_actions = 1 + 2 * int(num_symbols) * int(per_symbol_actions)
@@ -182,7 +177,7 @@ def _infer_arch(state_dict: dict[str, torch.Tensor]) -> str:
     if any("gru." in k for k in keys):
         return "gru"
     # Transformer: has attn.in_proj_weight or sym_embed (symbol_proj also present)
-    if any(k.startswith("attn.") or k.startswith("sym_embed") or k.startswith("symbol_proj") for k in keys):
+    if any(k.startswith(("attn.", "sym_embed", "symbol_proj")) for k in keys):
         return "transformer"
     if "input_proj.weight" in keys:
         return "resmlp"
@@ -236,7 +231,7 @@ def _infer_resmlp_blocks(state_dict: dict[str, torch.Tensor]) -> int:
     return int(max(idxs) + 1)
 
 
-def _build_shortable_mask(symbols: list[str], shortable_csv: Optional[str]) -> Optional[torch.Tensor]:
+def _build_shortable_mask(symbols: list[str], shortable_csv: str | None) -> torch.Tensor | None:
     if not shortable_csv:
         return None
     requested = {s.strip().upper() for s in shortable_csv.split(",") if s.strip()}
@@ -273,11 +268,88 @@ class WindowMetric:
     win_rate: float
 
 
+@dataclass(frozen=True)
+class LoadedPolicy:
+    policy: nn.Module
+    arch: str
+    hidden_size: int
+    action_allocation_bins: int
+    action_level_bins: int
+    action_max_offset_bps: float
+
+
 def _percentile(values: list[float], q: float) -> float:
     if not values:
         return 0.0
     arr = np.asarray(values, dtype=np.float64)
     return float(np.percentile(arr, q))
+
+
+def load_policy(
+    checkpoint_path: str | Path,
+    num_symbols: int,
+    *,
+    features_per_sym: int = 16,
+    device: torch.device = torch.device("cpu"),
+) -> LoadedPolicy:
+    payload = load_checkpoint_payload(checkpoint_path, map_location=device)
+    state_dict = extract_checkpoint_state_dict(payload)
+
+    obs_size = int(num_symbols) * int(features_per_sym) + 5 + int(num_symbols)
+    num_actions, alloc_bins, level_bins, max_offset_bps = _infer_action_grid(
+        payload=payload,
+        state_dict=state_dict,
+        num_symbols=int(num_symbols),
+    )
+
+    stored_arch = payload.get("arch", "") if isinstance(payload, Mapping) else ""
+    arch = stored_arch if stored_arch else _infer_arch(state_dict)
+    hidden = _infer_hidden_size(state_dict, arch=arch)
+    if arch == "resmlp":
+        num_blocks = _infer_resmlp_blocks(state_dict)
+        policy = ResidualTradingPolicy(obs_size, num_actions, hidden=int(hidden), num_blocks=int(num_blocks)).to(device)
+    elif arch == "transformer":
+        from pufferlib_market.train import TransformerTradingPolicy  # noqa: PLC0415
+
+        policy = TransformerTradingPolicy(obs_size, num_actions, hidden=int(hidden)).to(device)
+    elif arch == "gru":
+        from pufferlib_market.train import GRUTradingPolicy  # noqa: PLC0415
+
+        policy = GRUTradingPolicy(obs_size, num_actions, hidden=int(hidden)).to(device)
+    elif arch == "depth_recurrence":
+        from pufferlib_market.train import DepthRecurrenceTradingPolicy  # noqa: PLC0415
+
+        policy = DepthRecurrenceTradingPolicy(obs_size, num_actions, hidden=int(hidden)).to(device)
+    elif arch == "mlp_relu_sq":
+        policy = TradingPolicy(obs_size, num_actions, hidden=int(hidden), activation="relu_sq").to(device)
+    elif arch == "mlp":
+        policy = TradingPolicy(obs_size, num_actions, hidden=int(hidden)).to(device)
+    else:
+        raise ValueError(f"Unsupported checkpoint architecture: {arch}")
+
+    missing_keys, unexpected_keys = policy.load_state_dict(state_dict, strict=False)
+    if hasattr(policy, "_use_encoder_norm"):
+        if isinstance(payload, Mapping) and "use_encoder_norm" in payload:
+            policy._use_encoder_norm = bool(payload["use_encoder_norm"])
+        else:
+            policy._use_encoder_norm = "encoder_norm.weight" not in missing_keys
+    ignored = {"obs_mean", "obs_std", "encoder_norm.weight", "encoder_norm.bias"}
+    bad_missing = [key for key in missing_keys if key not in ignored]
+    bad_unexpected = [key for key in unexpected_keys if key not in ignored]
+    if bad_missing or bad_unexpected:
+        raise RuntimeError(
+            f"Checkpoint architecture mismatch — missing: {bad_missing}, unexpected: {bad_unexpected}"
+        )
+    policy.eval()
+
+    return LoadedPolicy(
+        policy=policy,
+        arch=str(arch),
+        hidden_size=int(hidden),
+        action_allocation_bins=int(alloc_bins),
+        action_level_bins=int(level_bins),
+        action_max_offset_bps=float(max_offset_bps),
+    )
 
 
 def main() -> None:
@@ -320,47 +392,22 @@ def main() -> None:
         raise ValueError("--decision-lag must be >= 0")
 
     device = torch.device(args.device)
-    payload = torch.load(str(Path(args.checkpoint)), map_location=device, weights_only=False)
-    state_dict = payload.get("model") if isinstance(payload, dict) and "model" in payload else payload
-    if not isinstance(state_dict, dict):
-        raise ValueError("Unsupported checkpoint format (expected state_dict or dict with 'model')")
-
     data = read_mktd(Path(args.data_path))
     num_symbols = data.num_symbols
     features_per_sym = int(data.features.shape[2])
-    obs_size = int(num_symbols) * features_per_sym + 5 + int(num_symbols)
-    num_actions, alloc_bins, level_bins, max_offset_bps = _infer_action_grid(
-        payload=payload,
-        state_dict=state_dict,
-        num_symbols=int(num_symbols),
+    loaded = load_policy(
+        args.checkpoint,
+        num_symbols,
+        features_per_sym=features_per_sym,
+        device=device,
     )
+    policy = loaded.policy
+    arch = loaded.arch
+    hidden = loaded.hidden_size
+    alloc_bins = loaded.action_allocation_bins
+    level_bins = loaded.action_level_bins
+    max_offset_bps = loaded.action_max_offset_bps
     per_symbol_actions = int(alloc_bins) * int(level_bins)
-
-    # Use arch stored in checkpoint (added in newer checkpoints) or infer from state_dict
-    stored_arch = payload.get("arch", "") if isinstance(payload, dict) else ""
-    arch = stored_arch if stored_arch else _infer_arch(state_dict)
-    hidden = _infer_hidden_size(state_dict, arch=arch)
-    if arch == "resmlp":
-        num_blocks = _infer_resmlp_blocks(state_dict)
-        policy = ResidualTradingPolicy(obs_size, num_actions, hidden=int(hidden), num_blocks=int(num_blocks)).to(device)
-    elif arch == "transformer":
-        from pufferlib_market.train import TransformerTradingPolicy
-        policy = TransformerTradingPolicy(obs_size, num_actions, hidden=int(hidden)).to(device)
-    elif arch == "gru":
-        from pufferlib_market.train import GRUTradingPolicy
-        policy = GRUTradingPolicy(obs_size, num_actions, hidden=int(hidden)).to(device)
-    elif arch == "depth_recurrence":
-        from pufferlib_market.train import DepthRecurrenceTradingPolicy
-        policy = DepthRecurrenceTradingPolicy(obs_size, num_actions, hidden=int(hidden)).to(device)
-    elif arch == "mlp_relu_sq":
-        policy = TradingPolicy(obs_size, num_actions, hidden=int(hidden), activation="relu_sq").to(device)
-    else:
-        policy = TradingPolicy(obs_size, num_actions, hidden=int(hidden)).to(device)
-    missing_keys, _ = policy.load_state_dict(state_dict, strict=False)
-    # Only apply encoder_norm if the checkpoint was trained with it.
-    if hasattr(policy, '_use_encoder_norm'):
-        policy._use_encoder_norm = "encoder_norm.weight" not in missing_keys
-    policy.eval()
 
     shortable_mask = _build_shortable_mask(list(data.symbols), args.shortable_symbols)
     if shortable_mask is not None:
@@ -383,7 +430,7 @@ def main() -> None:
                 logits,
                 num_symbols=int(num_symbols),
                 per_symbol_actions=int(per_symbol_actions),
-                shortable_mask=shortable_mask.to(device=logits.device),
+                shortable_mask=shortable_mask,
             )
         if args.deterministic:
             action_now = int(torch.argmax(logits, dim=-1).item())
@@ -400,7 +447,7 @@ def main() -> None:
     rng = np.random.default_rng(int(args.seed))
     T = int(data.num_timesteps)
     window_len = steps + 1
-    if T < window_len:
+    if window_len > T:
         raise ValueError(f"MKTD too short for eval_hours={steps}: timesteps={T}")
 
     # Candidate end indices (exclusive).
@@ -412,18 +459,43 @@ def main() -> None:
             raise ValueError("--end-within-hours must be >= 1")
         end_min = max(end_min, T - within)
 
-    candidate_starts = np.arange(end_min - window_len, end_max - window_len + 1, dtype=np.int64)
-    if candidate_starts.size <= 0:
+    candidate_start_min = end_min - window_len
+    candidate_window_count = end_max - end_min + 1
+    if candidate_window_count <= 0:
         raise ValueError("No candidate windows (check --end-within-hours and --eval-hours)")
+    candidate_start_max = candidate_start_min + candidate_window_count - 1
 
     if args.exhaustive:
-        starts = candidate_starts
+        selection_mode = "exhaustive"
+        sampled_with_replacement = False
+        sampled_start_indices = list(range(candidate_start_min, candidate_start_max + 1))
     else:
-        replace = bool(candidate_starts.size < n_windows)
-        starts = rng.choice(candidate_starts, size=n_windows, replace=replace)
+        selection_mode = "sampled"
+        sampled_with_replacement = bool(candidate_window_count < n_windows)
+        sampled_offsets = rng.choice(candidate_window_count, size=n_windows, replace=sampled_with_replacement)
+        sampled_start_indices = [
+            candidate_start_min + int(start_offset)
+            for start_offset in np.asarray(sampled_offsets, dtype=np.int64).tolist()
+        ]
+    sampled_window_count = len(sampled_start_indices)
+    unique_sampled_window_count = len(set(sampled_start_indices))
+    duplicate_sample_count = sampled_window_count - unique_sampled_window_count
+    selection_summary = {
+        "candidate_window_count": candidate_window_count,
+        "sampled_window_count": sampled_window_count,
+        "unique_sampled_window_count": int(unique_sampled_window_count),
+        "duplicate_sample_count": int(duplicate_sample_count),
+        "sampled_with_replacement": bool(sampled_with_replacement),
+    }
+    window_selection = {
+        "mode": selection_mode,
+        **selection_summary,
+        "candidate_start_range": [int(candidate_start_min), int(candidate_start_max)],
+        "sampled_start_indices": sampled_start_indices,
+    }
 
     metrics: list[WindowMetric] = []
-    for start_idx in starts.tolist():
+    for start_idx in sampled_start_indices:
         window = _slice_window(data, start=int(start_idx), steps=steps)
         pending_actions.clear()
         result = simulate_daily_policy(
@@ -461,14 +533,23 @@ def main() -> None:
     annualized_returns = [m.annualized_return for m in metrics]
     sortinos = [m.sortino for m in metrics]
     maxdds = [m.max_drawdown for m in metrics]
+    best_window = max(metrics, key=lambda metric: metric.total_return)
+    worst_window = min(metrics, key=lambda metric: metric.total_return)
 
-    out = {
+    resolved_config = {
         "checkpoint": str(Path(args.checkpoint)),
         "data_path": str(Path(args.data_path)),
-        "symbols": list(data.symbols),
         "arch": str(arch),
         "hidden_size": int(hidden),
         "eval_hours": int(steps),
+        "action_allocation_bins": int(alloc_bins),
+        "action_level_bins": int(level_bins),
+        "action_max_offset_bps": float(max_offset_bps),
+    }
+
+    out = {
+        **resolved_config,
+        "symbols": list(data.symbols),
         "n_windows": int(n_windows),
         "seed": int(args.seed),
         "end_within_hours": int(args.end_within_hours) if args.end_within_hours is not None else None,
@@ -477,11 +558,12 @@ def main() -> None:
         "fill_buffer_bps": float(args.fill_buffer_bps),
         "max_leverage": float(args.max_leverage),
         "short_borrow_apr": float(args.short_borrow_apr),
-        "action_allocation_bins": int(alloc_bins),
-        "action_level_bins": int(level_bins),
-        "action_max_offset_bps": float(max_offset_bps),
         "periods_per_year": float(args.periods_per_year),
+        "window_selection": window_selection,
         "summary": {
+            **resolved_config,
+            "window_mode": selection_mode,
+            **selection_summary,
             "median_total_return": float(_percentile(returns, 50)),
             "p10_total_return": float(_percentile(returns, 10)),
             "p90_total_return": float(_percentile(returns, 90)),
@@ -493,6 +575,8 @@ def main() -> None:
             "p90_sortino": float(_percentile(sortinos, 90)),
             "median_max_drawdown": float(_percentile(maxdds, 50)),
             "p90_max_drawdown": float(_percentile(maxdds, 90)),
+            "best_window": asdict(best_window),
+            "worst_window": asdict(worst_window),
         },
         "windows": [asdict(m) for m in metrics],
     }

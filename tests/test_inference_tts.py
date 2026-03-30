@@ -15,7 +15,9 @@ Tests:
 from __future__ import annotations
 
 import struct
+import sys
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import pytest
@@ -26,6 +28,7 @@ import torch.nn as nn
 # ---------------------------------------------------------------------------
 # Helpers: write a minimal MKTD binary
 # ---------------------------------------------------------------------------
+
 
 def _write_mktd(
     path: Path,
@@ -41,7 +44,13 @@ def _write_mktd(
     padding = b"\x00" * 40
     header = struct.pack(
         "<4sIIIII40s",
-        magic, version, num_symbols, num_timesteps, features_per_sym, price_features, padding,
+        magic,
+        version,
+        num_symbols,
+        num_timesteps,
+        features_per_sym,
+        price_features,
+        padding,
     )
     sym_table = b""
     for i in range(num_symbols):
@@ -73,8 +82,10 @@ def _write_mktd(
 # Helpers: create a minimal Policy that biases one action
 # ---------------------------------------------------------------------------
 
+
 class _BiasedPolicy(nn.Module):
     """Trivial policy that always prefers action `hot_action`."""
+
     def __init__(self, obs_size: int, num_actions: int, hot_action: int):
         super().__init__()
         self.fc = nn.Linear(obs_size, num_actions)
@@ -97,25 +108,35 @@ def _write_biased_checkpoint(
     num_symbols: int,
     hot_action: int,
     hidden: int = 32,
+    action_allocation_bins: int = 1,
+    action_level_bins: int = 1,
+    action_max_offset_bps: float = 0.0,
 ) -> None:
     """Save a TradingPolicy checkpoint that always picks hot_action."""
     obs_size = num_symbols * 16 + 5 + num_symbols
-    n_actions = 1 + 2 * num_symbols
+    n_actions = 1 + 2 * num_symbols * action_allocation_bins * action_level_bins
 
     from pufferlib_market.evaluate_fast import TradingPolicy
+
     policy = TradingPolicy(obs_size, n_actions, hidden=hidden)
     with torch.no_grad():
         for p in policy.parameters():
             p.zero_()
         policy.actor[2].bias[hot_action] = 20.0
 
-    payload = {"model": policy.state_dict()}
+    payload = {
+        "model": policy.state_dict(),
+        "action_allocation_bins": action_allocation_bins,
+        "action_level_bins": action_level_bins,
+        "action_max_offset_bps": action_max_offset_bps,
+    }
     torch.save(payload, path)
 
 
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 def test_best_action_tts_k1_returns_valid_action(tmp_path: Path):
     """K=1 fast-path: returns a valid action index without running env rollouts."""
@@ -164,7 +185,8 @@ def test_best_action_tts_k8_picks_biased_action(tmp_path: Path):
     obs_size = num_symbols * 16 + 5 + num_symbols
     device = torch.device("cpu")
     from pufferlib_market.inference_tts import _load_policy, best_action_tts
-    policy = _load_policy(str(ckpt), obs_size, n_actions, device)
+
+    policy = _load_policy(str(ckpt), obs_size, num_symbols, device).policy
 
     binding.shared(data_path=str(data_path.resolve()))
     obs = np.zeros(obs_size, dtype=np.float32)
@@ -202,8 +224,9 @@ def test_best_action_tts_stats_keys(tmp_path: Path):
     _write_biased_checkpoint(ckpt, num_symbols=num_symbols, hot_action=0)
 
     from pufferlib_market.inference_tts import _load_policy, best_action_tts
+
     device = torch.device("cpu")
-    policy = _load_policy(str(ckpt), obs_size, n_actions, device)
+    policy = _load_policy(str(ckpt), obs_size, num_symbols, device).policy
 
     binding.shared(data_path=str(data_path.resolve()))
 
@@ -235,7 +258,6 @@ def test_get_signal_tts_returns_trading_signal(tmp_path: Path):
     _write_mktd(data_path, num_symbols=num_symbols, num_timesteps=60)
 
     symbols = ["AAAA", "BBBB"]
-    n_actions = 1 + 2 * num_symbols
     hot = 1  # long AAAA
 
     ckpt = tmp_path / "trader.pt"
@@ -322,13 +344,15 @@ def test_ppotrader_get_signal_tts_k_gt1_runs(tmp_path: Path):
     prices = {s: 100.0 for s in symbols}
 
     signal = trader.get_signal(
-        features, prices,
+        features,
+        prices,
         tts_k=4,
         tts_data_path=str(data_path),
         tts_timestep=5,
         tts_horizon=5,
     )
     from pufferlib_market.inference import TradingSignal
+
     assert isinstance(signal, TradingSignal)
 
 
@@ -349,7 +373,7 @@ def test_best_action_tts_short_data_does_not_crash(tmp_path: Path):
     _write_biased_checkpoint(ckpt, num_symbols=num_symbols, hot_action=0)
 
     device = torch.device("cpu")
-    policy = _load_policy(str(ckpt), obs_size, n_actions, device)
+    policy = _load_policy(str(ckpt), obs_size, num_symbols, device).policy
     binding.shared(data_path=str(data_path.resolve()))
 
     best_action, expected_return, stats = best_action_tts(
@@ -382,7 +406,7 @@ def test_best_action_tts_deterministic_after_first(tmp_path: Path):
     _write_biased_checkpoint(ckpt, num_symbols=num_symbols, hot_action=2)
 
     device = torch.device("cpu")
-    policy = _load_policy(str(ckpt), obs_size, n_actions, device)
+    policy = _load_policy(str(ckpt), obs_size, num_symbols, device).policy
     binding.shared(data_path=str(data_path.resolve()))
 
     best_action, _, stats = best_action_tts(
@@ -399,3 +423,188 @@ def test_best_action_tts_deterministic_after_first(tmp_path: Path):
 
     assert 0 <= best_action < n_actions
     assert len(stats["action_returns"]) == n_actions
+
+
+def test_best_action_tts_reuses_obs_tensor_view(tmp_path: Path, monkeypatch):
+    import pufferlib_market.binding as binding
+    import pufferlib_market.inference_tts as inference_tts
+
+    num_symbols = 2
+    data_path = tmp_path / "market.bin"
+    _write_mktd(data_path, num_symbols=num_symbols, num_timesteps=60)
+
+    n_actions = 1 + 2 * num_symbols
+    obs_size = num_symbols * 16 + 5 + num_symbols
+
+    ckpt = tmp_path / "ckpt.pt"
+    _write_biased_checkpoint(ckpt, num_symbols=num_symbols, hot_action=1)
+
+    device = torch.device("cpu")
+    policy = inference_tts._load_policy(str(ckpt), obs_size, num_symbols, device).policy
+    binding.shared(data_path=str(data_path.resolve()))
+
+    original_from_numpy = inference_tts.torch.from_numpy
+    call_count = 0
+
+    def counting_from_numpy(array):
+        nonlocal call_count
+        call_count += 1
+        return original_from_numpy(array)
+
+    monkeypatch.setattr(inference_tts.torch, "from_numpy", counting_from_numpy)
+
+    best_action, _, stats = inference_tts.best_action_tts(
+        policy=policy,
+        current_obs=np.zeros(obs_size, dtype=np.float32),
+        data_path=str(data_path),
+        current_timestep=5,
+        n_actions=n_actions,
+        K=4,
+        horizon=8,
+        device="cpu",
+    )
+
+    assert 0 <= best_action < n_actions
+    assert len(stats["action_returns"]) == n_actions
+    assert call_count == 1
+
+
+def test_load_policy_rejects_wrapped_checkpoint_with_invalid_model_payload(tmp_path: Path):
+    from pufferlib_market.inference_tts import _load_policy
+
+    ckpt = tmp_path / "invalid_model_payload.pt"
+    torch.save({"model": {"arch": "mlp"}}, ckpt)
+
+    with pytest.raises(KeyError, match="Checkpoint is missing a valid 'model' state_dict"):
+        _load_policy(str(ckpt), obs_size=21, num_symbols=1, device=torch.device("cpu"))
+
+
+def test_load_policy_uses_checkpoint_action_grid_metadata(tmp_path: Path):
+    from pufferlib_market.inference_tts import _load_policy
+
+    num_symbols = 2
+    obs_size = num_symbols * 16 + 5 + num_symbols
+    ckpt = tmp_path / "action_grid_checkpoint.pt"
+    _write_biased_checkpoint(
+        ckpt,
+        num_symbols=num_symbols,
+        hot_action=7,
+        action_allocation_bins=2,
+        action_level_bins=3,
+        action_max_offset_bps=12.5,
+    )
+
+    loaded = _load_policy(str(ckpt), obs_size=obs_size, num_symbols=num_symbols, device=torch.device("cpu"))
+
+    assert loaded.arch == "mlp"
+    assert loaded.hidden_size == 32
+    assert loaded.action_allocation_bins == 2
+    assert loaded.action_level_bins == 3
+    assert loaded.action_max_offset_bps == pytest.approx(12.5)
+    assert loaded.n_actions == 25
+
+    logits, _ = loaded.policy(torch.zeros(1, obs_size))
+    assert logits.shape == (1, 25)
+
+
+def test_main_prints_effective_config_and_decoded_best_action(tmp_path: Path, monkeypatch, capsys):
+    import pufferlib_market.inference_tts as inference_tts
+
+    ckpt = tmp_path / "fake.pt"
+    data = tmp_path / "fake.mktd"
+    ckpt.write_bytes(b"checkpoint")
+    data.write_bytes(b"market")
+
+    fake_args = SimpleNamespace(
+        checkpoint=str(ckpt),
+        data_path=str(data),
+        tts_k=8,
+        horizon=5,
+        timestep=0,
+        gamma=0.99,
+        fee_rate=0.001,
+        fill_slippage_bps=5.0,
+        max_leverage=1.0,
+        device="cpu",
+        deterministic_after_first=False,
+        dry_run=False,
+        benchmark=False,
+        benchmark_k_values="1,8,32",
+        benchmark_reps=3,
+    )
+    fake_loaded = inference_tts.LoadedPolicy(
+        policy=object(),
+        arch="resmlp",
+        hidden_size=32,
+        action_allocation_bins=2,
+        action_level_bins=3,
+        action_max_offset_bps=12.5,
+        n_actions=25,
+    )
+    fake_binding = ModuleType("pufferlib_market.binding")
+    fake_binding.shared = lambda **_: None
+    action_returns = [0.0] * 25
+    action_returns[7] = 0.25
+
+    monkeypatch.setattr(inference_tts.argparse.ArgumentParser, "parse_args", lambda self: fake_args)
+    monkeypatch.setattr(inference_tts, "_read_data_metadata", lambda _: (["BTCUSD", "ETHUSD"], 60, 16))
+    monkeypatch.setattr(inference_tts, "_load_policy", lambda *args, **kwargs: fake_loaded)
+    monkeypatch.setattr(
+        inference_tts,
+        "best_action_tts",
+        lambda **kwargs: (7, 0.25, {"margin": 0.1, "action_returns": action_returns}),
+    )
+    monkeypatch.setitem(sys.modules, "pufferlib_market.binding", fake_binding)
+
+    inference_tts.main()
+
+    captured = capsys.readouterr()
+    assert "effective_config: arch=resmlp, hidden_size=32" in captured.out
+    assert "action_grid: alloc_bins=2, level_bins=3, max_offset_bps=12.5" in captured.out
+    assert "best_action_label: long_ETHUSD alloc=50% level=-12.5bps" in captured.out
+    assert "long_ETHUSD alloc=50% level=-12.5bps" in captured.out
+
+
+def test_read_data_metadata_returns_symbol_table(tmp_path: Path):
+    from pufferlib_market.inference_tts import _read_data_metadata
+
+    data_path = tmp_path / "market.bin"
+    _write_mktd(data_path, num_symbols=3, num_timesteps=10)
+
+    symbols, num_timesteps, features_per_sym = _read_data_metadata(str(data_path))
+
+    assert symbols == ["SYM0", "SYM1", "SYM2"]
+    assert num_timesteps == 10
+    assert features_per_sym == 16
+
+
+def test_read_data_metadata_rejects_short_header(tmp_path: Path):
+    from pufferlib_market.inference_tts import _read_data_metadata
+
+    data_path = tmp_path / "short.bin"
+    data_path.write_bytes(b"MKTD")
+
+    with pytest.raises(ValueError, match="Short MKTD header"):
+        _read_data_metadata(str(data_path))
+
+
+def test_read_data_metadata_rejects_bad_magic(tmp_path: Path):
+    from pufferlib_market.inference_tts import _read_data_metadata
+
+    data_path = tmp_path / "badmagic.bin"
+    header = struct.pack("<4sIIIII40s", b"BADC", 1, 1, 10, 16, 5, b"\x00" * 40)
+    data_path.write_bytes(header + b"SYM0" + b"\x00" * 12)
+
+    with pytest.raises(ValueError, match="Bad MKTD magic"):
+        _read_data_metadata(str(data_path))
+
+
+def test_read_data_metadata_rejects_short_symbol_table(tmp_path: Path):
+    from pufferlib_market.inference_tts import _read_data_metadata
+
+    data_path = tmp_path / "shortsymbols.bin"
+    header = struct.pack("<4sIIIII40s", b"MKTD", 1, 2, 10, 16, 5, b"\x00" * 40)
+    data_path.write_bytes(header + b"SYM0")
+
+    with pytest.raises(ValueError, match="Short MKTD symbol table"):
+        _read_data_metadata(str(data_path))

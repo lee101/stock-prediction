@@ -7,9 +7,10 @@ Loads checkpoint and generates trading signals for live/paper trading.
 from __future__ import annotations
 
 import argparse
-import struct
+import json
 import sys
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -20,6 +21,15 @@ import torch.nn as nn
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from pufferlib_market.checkpoint_loader import (
+    extract_checkpoint_state_dict,
+    infer_arch_from_state_dict,
+    infer_hidden_size_from_state_dict,
+    infer_resmlp_blocks_from_state_dict,
+    load_checkpoint_payload,
+    resolve_checkpoint_action_grid_config,
+)
 
 
 class ResidualBlock(nn.Module):
@@ -59,6 +69,22 @@ class TradingSignal:
     level_offset_bps: float = 0.0
 
 
+@dataclass(frozen=True)
+class LoadedModelInfo:
+    checkpoint: str
+    device: str
+    arch: str
+    hidden_size: int
+    num_actions: int
+    num_symbols: int
+    long_only: bool
+    action_allocation_bins: int
+    action_level_bins: int
+    action_max_offset_bps: float
+    max_steps: int
+    symbols: list[str]
+
+
 class PPOTrader:
     """Inference wrapper for trained PPO model."""
 
@@ -77,43 +103,36 @@ class PPOTrader:
         if symbols:
             self.SYMBOLS = [str(s).upper() for s in symbols]
 
-        ckpt = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
-
-        if "model" in ckpt:
-            state_dict = ckpt["model"]
-            config = ckpt.get("config", {})
-        else:
-            state_dict = ckpt
-            config = {}
+        ckpt = load_checkpoint_payload(checkpoint_path, map_location=self.device)
+        state_dict = extract_checkpoint_state_dict(ckpt)
+        config = (
+            ckpt.get("config", {}) if isinstance(ckpt, Mapping) and isinstance(ckpt.get("config", {}), Mapping) else {}
+        )
 
         self.num_symbols = len(self.SYMBOLS)
         self.obs_size = self.num_symbols * 16 + 5 + self.num_symbols
 
         # Infer num_actions from checkpoint
-        actor_bias_key = [k for k in state_dict if 'actor' in k and 'bias' in k and '2' in k]
-        if actor_bias_key:
-            self.num_actions = state_dict[actor_bias_key[0]].shape[0]
-        elif long_only:
-            self.num_actions = 1 + self.num_symbols
+        for key in ("actor.2.bias", "actor.2.weight"):
+            if key in state_dict:
+                self.num_actions = int(state_dict[key].shape[0])
+                break
         else:
-            self.num_actions = 1 + 2 * self.num_symbols
+            if long_only:
+                self.num_actions = 1 + self.num_symbols
+            else:
+                self.num_actions = 1 + 2 * self.num_symbols
 
-        self.action_allocation_bins = 1
-        self.action_level_bins = 1
-        self.action_max_offset_bps = 0.0
-        if isinstance(ckpt, dict):
-            try:
-                self.action_allocation_bins = max(1, int(ckpt.get("action_allocation_bins", 1)))
-            except (TypeError, ValueError):
-                self.action_allocation_bins = 1
-            try:
-                self.action_level_bins = max(1, int(ckpt.get("action_level_bins", 1)))
-            except (TypeError, ValueError):
-                self.action_level_bins = 1
-            try:
-                self.action_max_offset_bps = max(0.0, float(ckpt.get("action_max_offset_bps", 0.0)))
-            except (TypeError, ValueError):
-                self.action_max_offset_bps = 0.0
+        (
+            self.action_allocation_bins,
+            self.action_level_bins,
+            self.action_max_offset_bps,
+        ) = resolve_checkpoint_action_grid_config(
+            ckpt,
+            action_allocation_bins=1,
+            action_level_bins=1,
+            action_max_offset_bps=0.0,
+        )
 
         basic_actions = 1 + 2 * self.num_symbols
         if self.num_actions > basic_actions:
@@ -136,27 +155,30 @@ class PPOTrader:
             self.per_symbol_actions = 1
             self.side_block = self.num_symbols
 
-        # Infer hidden size and architecture from state_dict keys
-        input_proj_key = [k for k in state_dict if 'input_proj' in k and 'weight' in k]
-        encoder_key = [k for k in state_dict if 'encoder' in k and 'weight' in k]
+        arch = infer_arch_from_state_dict(state_dict)
+        hidden = infer_hidden_size_from_state_dict(state_dict, arch)
+        self.arch = str(arch)
+        self.hidden_size = int(hidden)
 
-        if encoder_key and not input_proj_key:
-            # train.py TradingPolicy (MLP with encoder)
-            hidden = state_dict[encoder_key[0]].shape[0]
+        if arch == "mlp":
             has_encoder_norm = any("encoder_norm" in k for k in state_dict)
-            from pufferlib_market.train import TradingPolicy
-            self.policy = TradingPolicy(self.obs_size, self.num_actions, hidden,
-                                        use_encoder_norm=has_encoder_norm)
-        else:
-            # inference.py Policy (ResidualBlock)
-            if input_proj_key:
-                hidden = state_dict[input_proj_key[0]].shape[0]
-            else:
-                hidden = config.get("hidden_size", 512)
-            blocks = config.get("num_blocks", 3)
-            self.policy = Policy(self.obs_size, self.num_actions, hidden, blocks)
+            from pufferlib_market.train import TradingPolicy  # noqa: PLC0415
 
-        self.policy.load_state_dict(state_dict, strict=False)
+            self.policy = TradingPolicy(self.obs_size, self.num_actions, hidden, use_encoder_norm=has_encoder_norm)
+        elif arch == "resmlp":
+            blocks = infer_resmlp_blocks_from_state_dict(state_dict)
+            self.policy = Policy(self.obs_size, self.num_actions, hidden, blocks)
+        else:
+            raise ValueError(f"Unsupported checkpoint architecture: {arch}")
+
+        missing, unexpected = self.policy.load_state_dict(state_dict, strict=False)
+        ignored = {"obs_mean", "obs_std", "encoder_norm.weight", "encoder_norm.bias"}
+        bad_missing = [key for key in missing if key not in ignored]
+        bad_unexpected = [key for key in unexpected if key not in ignored]
+        if bad_missing or bad_unexpected:
+            raise RuntimeError(
+                f"Checkpoint architecture mismatch — missing: {bad_missing}, unexpected: {bad_unexpected}"
+            )
         self.policy.to(self.device)
         self.policy.eval()
 
@@ -166,17 +188,26 @@ class PPOTrader:
         self.entry_price = 0.0
         self.hold_hours = 0
         self.step = 0
-        self.max_steps = config.get("max_steps", 720)
+        self.max_steps = int(config.get("max_steps", 720))
 
-        print(
-            "Loaded model from {} (actions={}, alloc_bins={}, level_bins={}, max_offset_bps={:.1f})".format(
-                checkpoint_path,
-                self.num_actions,
-                int(self.action_allocation_bins),
-                int(self.action_level_bins),
-                float(self.action_max_offset_bps),
-            )
+    def loaded_model_info(self) -> LoadedModelInfo:
+        return LoadedModelInfo(
+            checkpoint=str(self.checkpoint_path),
+            device=str(self.device),
+            arch=self.arch,
+            hidden_size=int(self.hidden_size),
+            num_actions=int(self.num_actions),
+            num_symbols=int(self.num_symbols),
+            long_only=bool(self.long_only),
+            action_allocation_bins=int(self.action_allocation_bins),
+            action_level_bins=int(self.action_level_bins),
+            action_max_offset_bps=float(self.action_max_offset_bps),
+            max_steps=int(self.max_steps),
+            symbols=list(self.SYMBOLS),
         )
+
+    def summary_dict(self) -> dict[str, object]:
+        return asdict(self.loaded_model_info())
 
     def _short_action_start(self) -> int:
         """Return the first short-action index, or num_actions when no short block exists."""
@@ -216,7 +247,7 @@ class PPOTrader:
         obs = np.zeros(self.obs_size, dtype=np.float32)
 
         # Per-symbol features
-        obs[:self.num_symbols * 16] = features.flatten()
+        obs[: self.num_symbols * 16] = features.flatten()
 
         # Portfolio state
         base = self.num_symbols * 16
@@ -279,6 +310,7 @@ class PPOTrader:
             if tts_data_path is None:
                 raise ValueError("tts_data_path is required when tts_k > 1")
             from pufferlib_market.inference_tts import get_signal_tts
+
             signal, _stats = get_signal_tts(
                 trader=self,
                 features=features,
@@ -330,7 +362,9 @@ class PPOTrader:
                 return flat_signal
             symbol = self.SYMBOLS[sym_idx]
             direction = "short" if is_short else "long"
-            return TradingSignal(f"{direction}_{symbol}", symbol, direction, confidence, value_est, alloc_pct, level_bps)
+            return TradingSignal(
+                f"{direction}_{symbol}", symbol, direction, confidence, value_est, alloc_pct, level_bps
+            )
         if self.long_only:
             sym_idx = action - 1
             short_start = self._short_action_start()
@@ -411,33 +445,34 @@ def compute_hourly_features(df) -> np.ndarray:
     ma_ratio = close / (ma_24 + 1e-8)
 
     # Momentum
-    rsi_proxy = ret_24h  # simplified
     macd_proxy = ema_24 - ma_72
 
     # Normalize
     def zscore(x, window=72):
         s = pd.Series(x)
-        return ((s - s.rolling(window, min_periods=1).mean()) /
-                (s.rolling(window, min_periods=1).std() + 1e-8)).values
+        return ((s - s.rolling(window, min_periods=1).mean()) / (s.rolling(window, min_periods=1).std() + 1e-8)).values
 
-    features = np.stack([
-        zscore(ret_1h),
-        zscore(ret_4h),
-        zscore(ret_24h),
-        zscore(ma_ratio - 1),
-        zscore(range_pos - 0.5),
-        zscore(vol_ratio - 1),
-        zscore(atr_24 / close),
-        zscore(macd_proxy / close),
-        np.zeros_like(close),  # placeholder
-        np.zeros_like(close),
-        np.zeros_like(close),
-        np.zeros_like(close),
-        np.zeros_like(close),
-        np.zeros_like(close),
-        np.zeros_like(close),
-        np.zeros_like(close),
-    ], axis=-1)
+    features = np.stack(
+        [
+            zscore(ret_1h),
+            zscore(ret_4h),
+            zscore(ret_24h),
+            zscore(ma_ratio - 1),
+            zscore(range_pos - 0.5),
+            zscore(vol_ratio - 1),
+            zscore(atr_24 / close),
+            zscore(macd_proxy / close),
+            np.zeros_like(close),  # placeholder
+            np.zeros_like(close),
+            np.zeros_like(close),
+            np.zeros_like(close),
+            np.zeros_like(close),
+            np.zeros_like(close),
+            np.zeros_like(close),
+            np.zeros_like(close),
+        ],
+        axis=-1,
+    )
 
     return features[-1].astype(np.float32)  # Return latest
 
@@ -450,15 +485,15 @@ def main():
 
     trader = PPOTrader(args.checkpoint, args.device)
 
-    # Example usage
-    print("\nExample signal generation:")
-    dummy_features = np.random.randn(4, 16).astype(np.float32) * 0.1
-    dummy_prices = {"BTCUSD": 45000, "ETHUSD": 2500, "SOLUSD": 100, "LINKUSD": 15}
+    dummy_features = np.random.randn(trader.num_symbols, 16).astype(np.float32) * 0.1
+    dummy_prices = {symbol: float(100.0 + idx * 10.0) for idx, symbol in enumerate(trader.SYMBOLS)}
 
     signal = trader.get_signal(dummy_features, dummy_prices)
-    print(f"  Action: {signal.action}")
-    print(f"  Confidence: {signal.confidence:.2%}")
-    print(f"  Value estimate: {signal.value_estimate:.4f}")
+    payload = {
+        "model": trader.summary_dict(),
+        "signal": asdict(signal),
+    }
+    print(json.dumps(payload, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":
