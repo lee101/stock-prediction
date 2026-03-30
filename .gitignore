@@ -435,6 +435,7 @@ tests/test_binance*.py
 !tests/test_binancechronossolexperiment_forecast_windowing.py
 !tests/test_binance_watcher_cli_fill_details.py
 !tests/test_binanceneural_wandb.py
+!tests/test_binance_trading_server.py
 tests/test_default_strategy_checkpoint.py
 tests/test_download_hourly_update.py
 tests/test_marketsimlong*.py
