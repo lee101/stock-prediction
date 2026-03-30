@@ -1,0 +1,34 @@
+{
+  "accounts": {
+    "hybrid-spot-paper": {
+      "mode": "paper",
+      "allowed_bot_id": "hybrid-spot-v1",
+      "starting_cash": 3000.0,
+      "base_currency": "USDT",
+      "sell_loss_cooldown_seconds": 1800,
+      "min_sell_markup_pct": 0.001,
+      "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "AAVEUSDT", "LINKUSDT"],
+      "margin_enabled": false
+    },
+    "hybrid-spot-live": {
+      "mode": "live",
+      "allowed_bot_id": "hybrid-spot-v1",
+      "starting_cash": 0,
+      "base_currency": "USDT",
+      "sell_loss_cooldown_seconds": 1800,
+      "min_sell_markup_pct": 0.001,
+      "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "AAVEUSDT", "LINKUSDT"],
+      "margin_enabled": true
+    },
+    "worksteal-paper": {
+      "mode": "paper",
+      "allowed_bot_id": "worksteal-daily-v1",
+      "starting_cash": 3000.0,
+      "base_currency": "USDT",
+      "sell_loss_cooldown_seconds": 1800,
+      "min_sell_markup_pct": 0.001,
+      "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "AVAXUSDT", "LINKUSDT"],
+      "margin_enabled": false
+    }
+  }
+}
