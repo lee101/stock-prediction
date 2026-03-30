@@ -1449,4 +1449,8 @@ def create_app(engine: TradingServerEngine | None = None) -> FastAPI:
     return app
 
 
-app = create_app()
+try:
+    app = create_app()
+except RuntimeError:
+    # Registry file may not exist in CI/test environments; tests construct their own engine.
+    app = None  # type: ignore[assignment]
