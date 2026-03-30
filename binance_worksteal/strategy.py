@@ -1453,12 +1453,48 @@ def run_worksteal_backtest(
     candidates_visible = 0
     entries_executed = 0
     peak_equity = config.initial_cash
+    initial_holdings_seeded = False
+    seeded_positions_rebalanced = False
+    starting_equity = float(config.initial_cash)
 
     for date in all_dates:
         current_bars, history = _build_daily_market_context(prepared, next_indices, date)
 
         if not current_bars:
             continue
+
+        if not initial_holdings_seeded:
+            base_qty += _seed_initial_holdings(
+                date=date,
+                current_bars=current_bars,
+                config=config,
+                positions=positions,
+                base_symbol=base_symbol,
+            )
+            starting_equity = _compute_starting_equity(config, current_bars)
+            initial_holdings_seeded = True
+
+        if initial_holdings_seeded and not seeded_positions_rebalanced:
+            current_prices = {sym: float(bar["close"]) for sym, bar in current_bars.items()}
+            keep_symbols = _compute_rebalance_keep_symbols(
+                date=date,
+                current_bars=current_bars,
+                history=history,
+                last_exit=last_exit,
+                config=config,
+                base_symbol=base_symbol,
+            )
+            cash = _apply_seeded_rebalance(
+                timestamp=date,
+                current_prices=current_prices,
+                positions=positions,
+                trades=trades,
+                last_exit=last_exit,
+                cash=cash,
+                config=config,
+                keep_symbols=keep_symbols,
+            )
+            seeded_positions_rebalanced = True
 
         symbol_metrics = _build_symbol_metric_cache(current_bars, history)
 
@@ -1746,8 +1782,9 @@ def run_worksteal_backtest(
                 candidates.sort(key=lambda x: x[2], reverse=True)
             candidates_generated += len(candidates)
 
-            # Use initial_cash for sizing shorts to prevent compounding spiral
-            base_equity = config.initial_cash
+            # Size new entries from starting equity to avoid compounding while
+            # still respecting seeded start-state holdings.
+            base_equity = starting_equity
             visible_candidates = candidates[:slots]
             candidates_visible += len(visible_candidates)
             market_breadth = entry_regime.market_breadth_ratio

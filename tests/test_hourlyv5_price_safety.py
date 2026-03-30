@@ -41,6 +41,12 @@ class TestV5PriceSafetyValidation:
             mock.call_count = 0
             yield mock
 
+    @pytest.fixture(autouse=True)
+    def mock_close_spawn(self):
+        """Prevent tests from launching real exit watchers."""
+        with patch('trade_hourlyv5.spawn_close_position_at_maxdiff_takeprofit') as mock:
+            yield mock
+
     @pytest.fixture
     def mock_price_guard(self):
         """Mock price guard to return adjusted prices."""
@@ -62,7 +68,7 @@ class TestV5PriceSafetyValidation:
         with patch('trade_hourlyv5.record_buy') as mock:
             yield mock
 
-    def test_inverted_prices_blocked(self, mock_alpaca, mock_spawn, mock_price_guard,
+    def test_inverted_prices_blocked(self, mock_alpaca, mock_spawn, mock_close_spawn, mock_price_guard,
                                       mock_min_notional, mock_record_buy):
         """CRITICAL: Inverted prices (buy >= sell) must be blocked."""
         from trade_hourlyv5 import execute_trade
@@ -80,8 +86,9 @@ class TestV5PriceSafetyValidation:
 
         assert result is False, "Inverted prices MUST be blocked!"
         assert mock_spawn.call_count == 0, "No orders should be spawned with inverted prices!"
+        assert mock_close_spawn.call_count == 0, "No exit watchers should be spawned with inverted prices!"
 
-    def test_equal_prices_blocked(self, mock_alpaca, mock_spawn, mock_price_guard,
+    def test_equal_prices_blocked(self, mock_alpaca, mock_spawn, mock_close_spawn, mock_price_guard,
                                    mock_min_notional, mock_record_buy):
         """CRITICAL: Equal prices (buy == sell) must be blocked."""
         from trade_hourlyv5 import execute_trade
@@ -98,8 +105,9 @@ class TestV5PriceSafetyValidation:
 
         assert result is False, "Equal prices MUST be blocked!"
         assert mock_spawn.call_count == 0
+        assert mock_close_spawn.call_count == 0
 
-    def test_spread_below_fee_threshold_blocked(self, mock_alpaca, mock_spawn, mock_price_guard,
+    def test_spread_below_fee_threshold_blocked(self, mock_alpaca, mock_spawn, mock_close_spawn, mock_price_guard,
                                                  mock_min_notional, mock_record_buy):
         """CRITICAL: Spread smaller than 2x maker fee (16bps) must be blocked."""
         from trade_hourlyv5 import execute_trade
@@ -117,8 +125,9 @@ class TestV5PriceSafetyValidation:
 
         assert result is False, "Spread below fee threshold MUST be blocked!"
         assert mock_spawn.call_count == 0
+        assert mock_close_spawn.call_count == 0
 
-    def test_valid_spread_allowed(self, mock_alpaca, mock_spawn, mock_price_guard,
+    def test_valid_spread_allowed(self, mock_alpaca, mock_spawn, mock_close_spawn, mock_price_guard,
                                    mock_min_notional, mock_record_buy):
         """Valid spread (well above fees) should allow trading."""
         from trade_hourlyv5 import execute_trade
@@ -136,8 +145,9 @@ class TestV5PriceSafetyValidation:
 
         assert result is True, "Valid spread should be allowed"
         assert mock_spawn.call_count == 1, "Order should be spawned"
+        assert mock_close_spawn.call_count == 1, "Matching exit watcher should also be spawned"
 
-    def test_price_adjustment_still_validates(self, mock_alpaca, mock_spawn, mock_price_guard,
+    def test_price_adjustment_still_validates(self, mock_alpaca, mock_spawn, mock_close_spawn, mock_price_guard,
                                                mock_min_notional, mock_record_buy):
         """After price adjustment, must re-validate buy < sell."""
         from trade_hourlyv5 import execute_trade
@@ -157,6 +167,7 @@ class TestV5PriceSafetyValidation:
 
         assert result is False, "Must re-validate after price adjustment!"
         assert mock_spawn.call_count == 0
+        assert mock_close_spawn.call_count == 0
 
 
 class TestV5ModelPriceSafety:

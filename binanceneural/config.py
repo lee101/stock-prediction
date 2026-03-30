@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 
 def _coerce_bool(value: object, default: bool) -> bool:
@@ -17,6 +18,22 @@ def _coerce_bool(value: object, default: bool) -> bool:
         if lowered in {"0", "false", "no", "off"}:
             return False
     return bool(value)
+
+
+TRAINER_BACKENDS = ("torch", "jax_classic")
+TrainerBackend = Literal["torch", "jax_classic"]
+
+
+def _normalize_trainer_backend(value: object) -> str:
+    backend = str(value or "torch").strip().lower().replace("-", "_")
+    aliases = {
+        "default": "torch",
+        "pytorch": "torch",
+        "torch_trainer": "torch",
+        "jax": "jax_classic",
+        "jax_classic_trainer": "jax_classic",
+    }
+    return aliases.get(backend, backend)
 
 
 @dataclass
@@ -165,6 +182,7 @@ class TrainingConfig:
     transformer_heads: int = 8
     transformer_dropout: float = 0.1
     optimizer_name: str = "adamw"
+    trainer_backend: TrainerBackend | str = "torch"
     model_arch: str = "classic"
     num_kv_heads: int | None = None
     mlp_ratio: float = 4.0
@@ -242,10 +260,19 @@ class TrainingConfig:
     forecast_config: ForecastConfig = field(default_factory=ForecastConfig)
     dataset: DatasetConfig = field(default_factory=DatasetConfig)
 
+    def __post_init__(self) -> None:
+        backend = _normalize_trainer_backend(self.trainer_backend)
+        if backend not in TRAINER_BACKENDS:
+            allowed = ", ".join(TRAINER_BACKENDS)
+            raise ValueError(f"trainer_backend must be one of {{{allowed}}}, got {self.trainer_backend!r}")
+        self.trainer_backend = backend
+
 
 __all__ = [
     "DatasetConfig",
     "ForecastConfig",
     "PolicyConfig",
+    "TRAINER_BACKENDS",
     "TrainingConfig",
+    "TrainerBackend",
 ]

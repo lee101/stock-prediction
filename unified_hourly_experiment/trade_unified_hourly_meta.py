@@ -23,6 +23,7 @@ from binanceneural.config import DatasetConfig
 from binanceneural.data import BinanceHourlyDataModule
 from binanceneural.inference import generate_actions_from_frame, generate_latest_action
 from src.hourly_trader_utils import entry_intensity_fraction, normalize_entry_allocator_mode
+from src.alpaca_account_lock import acquire_alpaca_account_lock, require_explicit_live_trading_enable
 from src.trade_directions import DEFAULT_ALPACA_LIVE8_STOCKS
 from unified_hourly_experiment.marketsimulator import PortfolioConfig, run_portfolio_simulation
 from unified_hourly_experiment.meta_live_runtime import choose_latest_winner, compute_symbol_edge
@@ -781,6 +782,15 @@ def main() -> None:
     apply_live_sizing_overrides(args)
 
     paper = not args.live
+    account_lock = None
+    if args.live:
+        require_explicit_live_trading_enable("trade-unified-hourly-meta")
+    if args.live and not args.dry_run:
+        account_lock = acquire_alpaca_account_lock(
+            "trade-unified-hourly-meta",
+            account_name="alpaca_live_writer",
+        )
+        logger.info("Acquired Alpaca live writer lock: {}", account_lock.path)
     api = None if args.dry_run else live.get_alpaca_client(paper=paper)
     state = live.load_state()
 

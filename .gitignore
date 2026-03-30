@@ -69,6 +69,7 @@ trainingdata.local_backup_20260204_222309/
 binancetrainingdatahourly
 binance_spot_hourly/
 binance_spot_daily/
+trainingdatadailybinance_data/
 binance_spot_*/
 tradingdata/
 tradingdatahourly/
@@ -641,5 +642,10 @@ deployments/
 binanceneural/profile_trace.json
 AGENTS.md
 .tmp_eval/
-deployments/binance-worksteal-daily/launch.sh
-deployments
+deployments/
+config/trading_server/accounts.json
+pufferlib_market/stability_probe_*.csv
+pufferlib_market/stability_probe_*.json
+pufferlib_market/stocks12_*.csv
+pufferlib_market/stocks12_*.log
+.secretbashrc

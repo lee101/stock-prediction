@@ -131,7 +131,7 @@ def build_unified_prompt(
     """
     asset_label = "cryptocurrency" if asset_class == "crypto" else "stock"
     instrument_style = "long only, spot" if asset_class == "crypto" else "margin equity (up to 4x intraday, 2x overnight, 6.25% margin interest)"
-    fee_str = "0 bps (FDUSD)" if "BTC" in symbol or "ETH" in symbol else "10 bps"
+    fee_str = "10 bps per side (~20 bps round-trip) on Alpaca crypto"
 
     # Recent price history
     recent = history_rows[-12:]

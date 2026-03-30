@@ -178,6 +178,30 @@ class PPOTrader:
             )
         )
 
+    def _short_action_start(self) -> int:
+        """Return the first short-action index, or num_actions when no short block exists."""
+        if self.per_symbol_actions > 1:
+            short_start = 1 + self.side_block
+            return short_start if self.num_actions >= short_start + self.side_block else self.num_actions
+        short_start = 1 + self.num_symbols
+        return short_start if self.num_actions >= short_start + self.num_symbols else self.num_actions
+
+    def apply_action_constraints(self, logits: torch.Tensor) -> torch.Tensor:
+        """
+        Mask infeasible actions at inference time.
+
+        Long-only callers may still load checkpoints with short-capable heads. In that case,
+        disallow the short block before argmax/softmax so inference picks among feasible actions.
+        """
+        if not self.long_only:
+            return logits
+        short_start = self._short_action_start()
+        if short_start >= self.num_actions:
+            return logits
+        constrained = logits.clone()
+        constrained[..., short_start:] = torch.finfo(constrained.dtype).min
+        return constrained
+
     def build_observation(self, features: np.ndarray, prices: dict) -> np.ndarray:
         """
         Build observation vector from current market data.
@@ -274,6 +298,7 @@ class PPOTrader:
 
         with torch.inference_mode():
             logits, value = self.policy(obs_t)
+            logits = self.apply_action_constraints(logits)
             probs = torch.softmax(logits, dim=-1)
             action = logits.argmax(dim=-1).item()
             confidence = probs[0, action].item()
@@ -283,8 +308,9 @@ class PPOTrader:
 
     def _decode_action(self, action: int, confidence: float, value_est: float) -> TradingSignal:
         """Decode a raw action index into a TradingSignal."""
+        flat_signal = TradingSignal("flat", None, None, confidence, value_est, 0.0, 0.0)
         if action == 0:
-            return TradingSignal("flat", None, None, confidence, value_est, 0.0, 0.0)
+            return flat_signal
         if self.per_symbol_actions > 1:
             action_idx = action - 1
             is_short = action_idx >= self.side_block
@@ -300,16 +326,29 @@ class PPOTrader:
                 level_bps = (2.0 * frac - 1.0) * self.action_max_offset_bps
             else:
                 level_bps = 0.0
+            if sym_idx < 0 or sym_idx >= self.num_symbols:
+                return flat_signal
             symbol = self.SYMBOLS[sym_idx]
             direction = "short" if is_short else "long"
             return TradingSignal(f"{direction}_{symbol}", symbol, direction, confidence, value_est, alloc_pct, level_bps)
         if self.long_only:
             sym_idx = action - 1
+            short_start = self._short_action_start()
+            if short_start < self.num_actions and action >= short_start:
+                sym_idx = action - short_start
+                if sym_idx < 0 or sym_idx >= self.num_symbols:
+                    return flat_signal
+                symbol = self.SYMBOLS[sym_idx]
+                return TradingSignal(f"short_{symbol}", symbol, "short", confidence, value_est, 1.0, 0.0)
+            if sym_idx < 0 or sym_idx >= self.num_symbols:
+                return flat_signal
             symbol = self.SYMBOLS[sym_idx]
             return TradingSignal(f"long_{symbol}", symbol, "long", confidence, value_est, 1.0, 0.0)
         action_idx = action - 1
         is_short = action_idx >= self.num_symbols
         sym_idx = action_idx % self.num_symbols
+        if sym_idx < 0 or sym_idx >= self.num_symbols:
+            return flat_signal
         symbol = self.SYMBOLS[sym_idx]
         direction = "short" if is_short else "long"
         return TradingSignal(f"{direction}_{symbol}", symbol, direction, confidence, value_est, 1.0, 0.0)

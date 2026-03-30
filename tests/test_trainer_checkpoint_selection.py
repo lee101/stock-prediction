@@ -83,6 +83,7 @@ def test_trainer_prefers_robust_checkpoint_metric(monkeypatch) -> None:
         assert metrics_by_epoch[2] == 85.0
 
         progress = json.loads((trainer.checkpoint_dir / "training_progress.json").read_text())
+        assert progress["trainer_backend"] == "torch"
         assert progress["checkpoint_metric_name"] == "robust_score"
         assert progress["checkpoint_metric"] == 85.0
         assert progress["generalization_gap"] == 10.0

@@ -92,7 +92,12 @@ class BinanceHourlyTrainer:
             )
         if self.config.use_tf32:
             if hasattr(torch, "set_float32_matmul_precision"):
-                torch.set_float32_matmul_precision("high")
+                try:  # pragma: no cover - compatibility helper handles torch version quirks
+                    from src.torch_backend import maybe_set_float32_precision
+
+                    maybe_set_float32_precision(torch, "high")
+                except Exception:
+                    pass
             try:  # pragma: no cover - best-effort perf toggle
                 from src.torch_backend import configure_tf32_backends
 

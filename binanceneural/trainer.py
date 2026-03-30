@@ -89,6 +89,8 @@ class TrainingArtifacts:
 
 class BinanceHourlyTrainer:
     def __init__(self, config: TrainingConfig, data_module: BinanceHourlyDataModule | MultiSymbolDataModule) -> None:
+        if str(config.trainer_backend or "torch") != "torch":
+            raise ValueError("BinanceHourlyTrainer requires trainer_backend='torch'")
         self.config = config
         self.data = data_module
         self.device = torch.device(config.device or ("cuda" if torch.cuda.is_available() else "cpu"))
@@ -126,7 +128,12 @@ class BinanceHourlyTrainer:
             torch._dynamo.config.suppress_errors = True
         if self.config.use_tf32:
             if hasattr(torch, "set_float32_matmul_precision"):
-                torch.set_float32_matmul_precision("high")
+                try:  # pragma: no cover - compatibility helper handles torch version quirks
+                    from src.torch_backend import maybe_set_float32_precision
+
+                    maybe_set_float32_precision(torch, "high")
+                except Exception:
+                    pass
             try:  # pragma: no cover - best-effort perf toggle
                 from src.torch_backend import configure_tf32_backends
 
@@ -424,6 +431,7 @@ class BinanceHourlyTrainer:
         progress_payload = {
             "updated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "run_name": self.config.run_name,
+            "trainer_backend": str(self.config.trainer_backend),
             "epoch": int(epoch),
             "epochs": int(self.config.epochs),
             "checkpoint_metric_name": checkpoint_metric_name,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -37,6 +38,32 @@ CONTEXT_LENGTH = 1024
 PREDICTION_LENGTH = 32
 MAE_TOLERANCE = 5e-3
 BASELINE_PATH = Path(__file__).parent / "chronos_mae_baseline.txt"
+_CHRONOS_ENV_KEYS: Tuple[str, ...] = (
+    "TORCH_COMPILED",
+    "CHRONOS_COMPILE",
+    "CHRONOS_COMPILE_MODE",
+    "CHRONOS_COMPILE_BACKEND",
+    "CHRONOS_DTYPE",
+)
+
+
+def _reset_torch_compile_state() -> None:
+    """Clear process-global torch.compile state so this test is order-independent."""
+
+    reset = getattr(getattr(torch, "compiler", None), "reset", None)
+    if callable(reset):
+        try:
+            reset()
+            return
+        except Exception:
+            pass
+    legacy_reset = getattr(getattr(torch, "_dynamo", None), "reset", None)
+    if callable(legacy_reset):
+        try:
+            legacy_reset()
+        except Exception:
+            pass
+
 
 @contextmanager
 def _torch_backend_guard() -> None:
@@ -130,47 +157,69 @@ def _load_symbol_frames(symbol: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def _prepare_wrapper(compiled: bool) -> Chronos2OHLCWrapper:
-    if compiled and chronos_compile_config is not None:
-        chronos_compile_config.apply(verbose=False)
-    elif not compiled:
-        os.environ["CHRONOS_COMPILE"] = "0"
+    _reset_torch_compile_state()
+    snapshot = {key: os.environ.get(key) for key in _CHRONOS_ENV_KEYS}
+    try:
+        if compiled and chronos_compile_config is not None:
+            chronos_compile_config.apply(verbose=False)
+        elif not compiled:
+            os.environ["CHRONOS_COMPILE"] = "0"
 
-    return Chronos2OHLCWrapper.from_pretrained(
-        model_id="amazon/chronos-2",
-        torch_compile=compiled,
-        compile_mode="reduce-overhead" if compiled else None,
-        compile_backend="inductor" if compiled else None,
-        default_context_length=CONTEXT_LENGTH,
-        device_map="cuda" if torch.cuda.is_available() else "cpu",
-    )
+        return Chronos2OHLCWrapper.from_pretrained(
+            model_id="amazon/chronos-2",
+            torch_compile=compiled,
+            compile_mode="reduce-overhead" if compiled else None,
+            compile_backend="inductor" if compiled else None,
+            default_context_length=CONTEXT_LENGTH,
+            device_map="cuda" if torch.cuda.is_available() else "cpu",
+            cache_policy="never",
+        )
+    finally:
+        for key, value in snapshot.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def _run_inference(symbol: str, compiled: bool) -> Dict[str, float]:
     context, holdout = _load_symbol_frames(symbol)
     with _torch_backend_guard():
-        wrapper = _prepare_wrapper(compiled)
+        cache_snapshot = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+        with tempfile.TemporaryDirectory(prefix="chronos_compile_accuracy_") as temp_cache_dir:
+            try:
+                if compiled:
+                    os.environ["TORCHINDUCTOR_CACHE_DIR"] = temp_cache_dir
 
-        start = time.perf_counter()
-        batch = wrapper.predict_ohlc(
-            context_df=context,
-            symbol=symbol,
-            prediction_length=PREDICTION_LENGTH,
-            context_length=CONTEXT_LENGTH,
-            evaluation_df=holdout,
-        )
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        latency_ms = (time.perf_counter() - start) * 1000.0
+                wrapper = _prepare_wrapper(compiled)
 
-        median = batch.median
-        target_index = pd.to_datetime(holdout["timestamp"], utc=True)
-        preds = median.loc[target_index, "close"].to_numpy(dtype=np.float64)
-        actual = holdout["close"].to_numpy(dtype=np.float64)
-        mae = float(np.mean(np.abs(preds - actual)))
+                start = time.perf_counter()
+                batch = wrapper.predict_ohlc(
+                    context_df=context,
+                    symbol=symbol,
+                    prediction_length=PREDICTION_LENGTH,
+                    context_length=CONTEXT_LENGTH,
+                    evaluation_df=holdout,
+                )
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                latency_ms = (time.perf_counter() - start) * 1000.0
 
-        wrapper.unload()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+                median = batch.median
+                target_index = pd.to_datetime(holdout["timestamp"], utc=True)
+                preds = median.loc[target_index, "close"].to_numpy(dtype=np.float64)
+                actual = holdout["close"].to_numpy(dtype=np.float64)
+                mae = float(np.mean(np.abs(preds - actual)))
+
+                wrapper.unload()
+                _reset_torch_compile_state()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            finally:
+                if cache_snapshot is None:
+                    os.environ.pop("TORCHINDUCTOR_CACHE_DIR", None)
+                else:
+                    os.environ["TORCHINDUCTOR_CACHE_DIR"] = cache_snapshot
 
     return {"mae": mae, "latency_ms": latency_ms}
 
@@ -188,7 +237,7 @@ def _write_baseline(rows: Tuple[Dict[str, float], ...]) -> None:
             )
 
 
-def test_chronos_compile_matches_baseline() -> bool:
+def test_chronos_compile_matches_baseline() -> None:
     logger.info("Chronos2 compile accuracy test (context=%s, horizon=%s)", CONTEXT_LENGTH, PREDICTION_LENGTH)
 
     summary_rows = []
@@ -220,13 +269,12 @@ def test_chronos_compile_matches_baseline() -> bool:
 
     _write_baseline(tuple(summary_rows))
     logger.info("\nBaseline written to %s", BASELINE_PATH)
-    return True
 
 
 if __name__ == "__main__":
     try:
-        ok = test_chronos_compile_matches_baseline()
-        sys.exit(0 if ok else 1)
+        test_chronos_compile_matches_baseline()
+        sys.exit(0)
     except Exception as exc:  # pragma: no cover - manual runs
         logger.exception("Chronos compile test failed: %s", exc)
         sys.exit(1)

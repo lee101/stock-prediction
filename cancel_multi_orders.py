@@ -9,6 +9,7 @@ from typing import Callable, Iterable, Sequence
 from loguru import logger
 
 import alpaca_wrapper
+from src.alpaca_account_lock import acquire_alpaca_account_lock, require_explicit_live_trading_enable
 from src.symbol_utils import is_crypto_symbol
 
 POLL_SECONDS = max(float(os.getenv("CANCEL_MULTI_ORDERS_POLL_SECONDS", "30")), 1.0)
@@ -102,6 +103,16 @@ def run_once() -> list[str]:
 
 
 def main() -> None:
+    account_lock = None
+    paper_env = str(os.getenv("PAPER", "1")).strip().lower()
+    is_live = paper_env in {"0", "false", "no", "off"}
+    if is_live:
+        require_explicit_live_trading_enable("alpaca-cancel-multi-orders")
+        account_lock = acquire_alpaca_account_lock(
+            "alpaca-cancel-multi-orders",
+            account_name="alpaca_live_writer",
+        )
+        logger.info("Acquired Alpaca live writer lock: {}", account_lock.path)
     logger.info("Starting duplicate opening-order guard loop (poll={}s)", POLL_SECONDS)
     while True:
         try:

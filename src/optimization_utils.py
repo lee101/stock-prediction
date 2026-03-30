@@ -1,14 +1,14 @@
 """
 Optimization utilities for trading strategy parameter tuning.
 
-Uses scipy.optimize.direct (Dividing Rectangles) by default for 1.5x speedup.
+Uses scipy.optimize.direct (Dividing Rectangles) by default for a faster bounded search.
 Falls back to differential_evolution if direct fails or is disabled.
 
 Environment Variables:
     MARKETSIM_USE_DIRECT_OPTIMIZER: Use DIRECT optimizer (default: 1)
     MARKETSIM_FAST_OPTIMIZE: Fast optimize mode for rapid iteration (default: 0)
-        - Fast mode (1): maxfun=100, ~6x speedup, ~28% quality loss
-        - Normal mode (0): maxfun=500, best balance (default)
+        - Fast mode (1): very small DIRECT budget for quick iteration
+        - Normal mode (0): modest DIRECT budget plus breakpoint polish
     MARKETSIM_FAST_SIMULATE: Fast simulate mode for backtesting (default: 0)
         - Reduces num_simulations to 35 for 2x speedup
 
@@ -26,7 +26,9 @@ from typing import Callable, Optional, Sequence, Tuple
 import logging
 import os
 from dataclasses import dataclass
+import math
 
+import numpy as np
 import torch
 from loss_utils import (
     TRADING_FEE,
@@ -39,12 +41,77 @@ from scipy.optimize import direct, differential_evolution
 # Set MARKETSIM_USE_DIRECT_OPTIMIZER=0 to use differential_evolution
 _USE_DIRECT = os.getenv("MARKETSIM_USE_DIRECT_OPTIMIZER", "1") in {"1", "true", "yes", "on"}
 
-# Fast optimize mode: 6x speedup with ~28% quality loss (good for development/testing)
-# Set MARKETSIM_FAST_OPTIMIZE=1 for rapid iteration (maxfun=100 instead of 500)
-# Similar to MARKETSIM_FAST_SIMULATE but for the optimizer itself
+# Fast optimize mode reduces the DIRECT search budget for rapid iteration.
+# Similar to MARKETSIM_FAST_SIMULATE but for the optimizer itself.
 _FAST_MODE = os.getenv("MARKETSIM_FAST_OPTIMIZE", "0") in {"1", "true", "yes", "on"}
 
 logger = logging.getLogger(__name__)
+
+
+def _direct_maxfun(maxiter: int, popsize: int) -> int:
+    """DIRECT uses a light global pass because breakpoint polish handles local refinement."""
+    if _FAST_MODE:
+        return 40
+    return max(60, math.ceil(int(maxiter) * max(int(popsize), 1) * 0.25))
+
+
+def _nearby_breakpoint_candidates(
+    values: torch.Tensor,
+    *,
+    center: float,
+    bounds: Tuple[float, float],
+    neighbors: int = 3,
+    eps: float = 1e-6,
+) -> list[float]:
+    lower, upper = bounds
+    candidates = {float(min(max(center, lower), upper)), float(lower), float(upper)}
+
+    raw = values.detach().cpu().to(torch.float64).numpy()
+    finite = raw[np.isfinite(raw)]
+    if finite.size == 0:
+        return sorted(candidates)
+
+    clipped = finite[(finite >= lower) & (finite <= upper)]
+    if clipped.size == 0:
+        return sorted(candidates)
+
+    count = min(int(neighbors), clipped.size)
+    order = np.argpartition(np.abs(clipped - center), count - 1)[:count]
+    for base in clipped[order]:
+        for candidate in (base - eps, base, base + eps):
+            candidates.add(float(min(max(candidate, lower), upper)))
+    return sorted(candidates)
+
+
+def _polish_direct_result(
+    objective: Callable[[Sequence[float]], float],
+    *,
+    best_params: Sequence[float],
+    best_value: float,
+    bounds: Tuple[Tuple[float, float], Tuple[float, float]],
+    high_breakpoints: torch.Tensor,
+    low_breakpoints: torch.Tensor,
+) -> tuple[tuple[float, float], float]:
+    high_candidates = _nearby_breakpoint_candidates(
+        high_breakpoints,
+        center=float(best_params[0]),
+        bounds=bounds[0],
+    )
+    low_candidates = _nearby_breakpoint_candidates(
+        low_breakpoints,
+        center=float(best_params[1]),
+        bounds=bounds[1],
+    )
+
+    best_pair = (float(best_params[0]), float(best_params[1]))
+    best_score = float(best_value)
+    for high_mult in high_candidates:
+        for low_mult in low_candidates:
+            score = float(objective((high_mult, low_mult)))
+            if score < best_score:
+                best_pair = (high_mult, low_mult)
+                best_score = score
+    return best_pair, best_score
 
 
 @dataclass(frozen=True)
@@ -266,24 +333,7 @@ def optimize_entry_exit_multipliers(
 
     objective = _EntryExitObjective(close_actual, positions, high_actual, high_pred, low_actual, low_pred, close_at_eod, trading_fee)
 
-    if _USE_DIRECT:
-        try:
-            # DIRECT is 1.5x faster and finds better solutions
-            # Fast mode: 100 evals (6x faster), Normal mode: 500 evals (default)
-            maxfun = 100 if _FAST_MODE else (maxiter * popsize)
-            result = direct(
-                objective,
-                bounds=bounds,
-                maxfun=maxfun,
-            )
-            return float(result.x[0]), float(result.x[1]), float(-result.fun)
-        except Exception as e:
-            # Fallback to DE if direct fails
-            import logging
-            logging.getLogger(__name__).debug(f"DIRECT optimizer failed for entry_exit, falling back to DE: {e}")
-
-    # Fallback or explicit DE mode
-    result = differential_evolution(
+    best_params, best_value = run_bounded_optimizer(
         objective,
         bounds=bounds,
         maxiter=maxiter,
@@ -291,10 +341,19 @@ def optimize_entry_exit_multipliers(
         atol=atol,
         seed=seed,
         workers=workers,
-        updating="deferred" if workers != 1 else "immediate",
     )
-
-    return float(result.x[0]), float(result.x[1]), float(-result.fun)
+    if _USE_DIRECT:
+        high_breakpoints = objective.context.high_actual - objective.context.raw_high_pred
+        low_breakpoints = objective.context.low_actual - objective.context.raw_low_pred
+        best_params, best_value = _polish_direct_result(
+            objective,
+            best_params=best_params,
+            best_value=best_value,
+            bounds=bounds,
+            high_breakpoints=high_breakpoints,
+            low_breakpoints=low_breakpoints,
+        )
+    return float(best_params[0]), float(best_params[1]), float(-best_value)
 
 
 def optimize_always_on_multipliers(
@@ -347,24 +406,7 @@ def optimize_always_on_multipliers(
         is_crypto,
     )
 
-    if _USE_DIRECT:
-        try:
-            # DIRECT is 1.5x faster and finds better solutions
-            # Fast mode: 100 evals (6x faster), Normal mode: 240 evals (default)
-            maxfun = 100 if _FAST_MODE else (maxiter * popsize)
-            result = direct(
-                objective,
-                bounds=bounds,
-                maxfun=maxfun,
-            )
-            return float(result.x[0]), float(result.x[1]), float(-result.fun)
-        except Exception as e:
-            # Fallback to DE if direct fails
-            import logging
-            logging.getLogger(__name__).debug(f"DIRECT optimizer failed for always_on, falling back to DE: {e}")
-
-    # Fallback or explicit DE mode
-    result = differential_evolution(
+    best_params, best_value = run_bounded_optimizer(
         objective,
         bounds=bounds,
         maxiter=maxiter,
@@ -372,10 +414,19 @@ def optimize_always_on_multipliers(
         atol=atol,
         seed=seed,
         workers=workers,
-        updating="deferred" if workers != 1 else "immediate",
     )
-
-    return float(result.x[0]), float(result.x[1]), float(-result.fun)
+    if _USE_DIRECT:
+        high_breakpoints = high_actual.view(-1) - high_pred.view(-1)
+        low_breakpoints = low_actual.view(-1) - low_pred.view(-1)
+        best_params, best_value = _polish_direct_result(
+            objective,
+            best_params=best_params,
+            best_value=best_value,
+            bounds=bounds,
+            high_breakpoints=high_breakpoints,
+            low_breakpoints=low_breakpoints,
+        )
+    return float(best_params[0]), float(best_params[1]), float(-best_value)
 
 
 def optimize_entry_exit_multipliers_with_callback(
@@ -483,7 +534,7 @@ def run_bounded_optimizer(
     if not bounds:
         raise ValueError("bounds must be non-empty")
 
-    maxfun = 100 if _FAST_MODE else maxiter * max(popsize, 1)
+    maxfun = _direct_maxfun(maxiter, popsize)
     if _USE_DIRECT:
         try:
             result = direct(
