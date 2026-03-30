@@ -1087,8 +1087,11 @@ def build_entry_candidates(
                 fill_price = short_target if config.realistic_fill else min(short_target, high_bar)
                 candidates.append((sym, "short", pump_score, fill_price, bar))
 
-    unique_symbol_count = len({candidate[0] for candidate in candidates})
     ranked_candidates = _rank_candidates_desc(candidates, max_candidates=max_candidates)
+    if not config.enable_shorts:
+        return ranked_candidates if max_candidates is None else ranked_candidates[:max_candidates]
+
+    unique_symbol_count = len({candidate[0] for candidate in candidates})
     deduped_candidates = _dedupe_ranked_candidates(
         ranked_candidates,
         max_candidates=max_candidates,

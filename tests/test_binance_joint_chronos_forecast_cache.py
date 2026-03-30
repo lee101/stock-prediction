@@ -166,3 +166,51 @@ def test_build_joint_forecast_cache_limits_history_window(tmp_path: Path, monkey
 
     assert summary["h1"]["BTCUSD"] == 32
     assert pd.to_datetime(btc_cache["timestamp"], utc=True).min() == timestamps[-32]
+
+
+def test_build_joint_forecast_cache_can_apply_narrative_overlay(tmp_path: Path, monkeypatch) -> None:
+    data_root = tmp_path / "data"
+    cache_root = tmp_path / "cache"
+    summary_root = tmp_path / "summary_cache"
+    data_root.mkdir()
+    _write_history(data_root / "BTCUSD.csv", "BTCUSD", rows=72)
+
+    wrapper = _RecordingWrapper()
+
+    class _WrapperFactory:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):  # type: ignore[no-untyped-def]
+            del args, kwargs
+            return wrapper
+
+    monkeypatch.setattr(
+        cache_mod,
+        "resolve_chronos2_params",
+        lambda symbol, frequency="hourly": {  # type: ignore[no-untyped-def]
+            "model_id": "amazon/chronos-2",
+            "device_map": "cpu",
+            "quantile_levels": (0.1, 0.5, 0.9),
+        },
+    )
+    monkeypatch.setattr(cache_mod, "Chronos2OHLCWrapper", _WrapperFactory)
+
+    summary = cache_mod.build_joint_forecast_cache(
+        symbols=["BTCUSD"],
+        data_root=data_root,
+        cache_root=cache_root,
+        horizons=(1,),
+        context_hours=24,
+        batch_size=8,
+        use_cross_learning=False,
+        use_time_covariates=False,
+        force_rebuild=True,
+        narrative_backend="heuristic",
+        narrative_summary_cache_root=summary_root,
+        narrative_context_hours=24 * 3,
+    )
+
+    out = pd.read_parquet(cache_root / "h1" / "BTCUSD.parquet")
+    assert summary["h1"]["BTCUSD"] > 0
+    assert "narrative_summary" in out.columns
+    assert "base_predicted_close_p50" in out.columns
+    assert (summary_root / "h1" / "BTCUSD.parquet").exists()

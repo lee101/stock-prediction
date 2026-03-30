@@ -10,6 +10,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from binanceneural.narrative_forecasts import (
+    apply_narrative_overlay,
+    normalize_narrative_backend,
+    resolve_horizon_summary_cache_dir,
+)
 from src.chronos2_params import resolve_chronos2_params
 from src.data_loading_utils import read_csv_tail
 
@@ -291,12 +296,17 @@ def build_joint_forecast_cache(
     use_cross_learning: bool = True,
     use_time_covariates: bool = False,
     force_rebuild: bool = False,
+    narrative_backend: str = "off",
+    narrative_model: str | None = None,
+    narrative_summary_cache_root: Path | None = None,
+    narrative_context_hours: int = 24 * 7,
 ) -> dict[str, dict[str, int]]:
     cleaned_symbols = [str(symbol).upper() for symbol in symbols if str(symbol).strip()]
     if not cleaned_symbols:
         raise ValueError("At least one symbol is required.")
     if not horizons:
         raise ValueError("At least one horizon is required.")
+    resolved_narrative_backend = normalize_narrative_backend(narrative_backend)
 
     histories = {
         symbol: _load_history(Path(data_root), symbol, max_history_hours=max_history_hours)
@@ -405,6 +415,23 @@ def build_joint_forecast_cache(
                     .drop_duplicates(subset=["timestamp", "symbol"], keep="last")
                     .sort_values("timestamp")
                     .reset_index(drop=True)
+                )
+            if resolved_narrative_backend != "off" and not combined.empty:
+                summary_cache_dir = resolve_horizon_summary_cache_dir(
+                    cache_root=cache_root,
+                    horizon=int(horizon),
+                    summary_cache_root=narrative_summary_cache_root,
+                )
+                combined = apply_narrative_overlay(
+                    combined,
+                    symbol=symbol,
+                    history=histories[symbol],
+                    backend=resolved_narrative_backend,
+                    model=narrative_model,
+                    forecast_cache_dir=Path(cache_root) / f"h{int(horizon)}",
+                    summary_cache_dir=summary_cache_dir,
+                    context_hours=int(narrative_context_hours),
+                    force_rebuild=force_rebuild,
                 )
             if not combined.empty:
                 _write_cache(cache_root, horizon, symbol, combined)

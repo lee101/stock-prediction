@@ -50,6 +50,10 @@ class ForecastConfig:
     use_time_covariates: bool | None = None
     force_multivariate: bool | None = None
     force_cross_learning: bool | None = None
+    narrative_backend: str = "off"
+    narrative_model: str | None = None
+    narrative_summary_cache_dir: Path | None = None
+    narrative_context_hours: int = 24 * 7
 
 
 @dataclass

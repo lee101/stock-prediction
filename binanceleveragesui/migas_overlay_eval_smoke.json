@@ -1,0 +1,65 @@
+{
+  "config": {
+    "symbols": [
+      "DOGEUSD",
+      "AAVEUSD"
+    ],
+    "horizons": [
+      1,
+      24
+    ],
+    "data_root": "/home/lee/code/stock/binance_spot_hourly",
+    "raw_cache_root": "/home/lee/code/stock/binanceneural/forecast_cache",
+    "overlay_cache_root": "/home/lee/code/stock/binanceneural/forecast_cache_migas_overlay",
+    "narrative_backend": "heuristic",
+    "narrative_model": null,
+    "narrative_context_hours": 168,
+    "tail_rows": 256
+  },
+  "mae": {
+    "DOGEUSD": {
+      "h1": {
+        "raw_close_mae_pct": 0.39453052085525137,
+        "overlay_close_mae_pct": 0.3950635656422245,
+        "raw_high_mae_pct": 0.39201902274536976,
+        "overlay_high_mae_pct": 0.425630850145461,
+        "raw_low_mae_pct": 0.40320581725302296,
+        "overlay_low_mae_pct": 0.42845693966235077,
+        "count": 256.0,
+        "close_mae_delta_pct": 0.0005330447869731358
+      },
+      "h24": {
+        "raw_close_mae_pct": 2.41658366113452,
+        "overlay_close_mae_pct": 2.4184516447359483,
+        "raw_high_mae_pct": 2.3986700406693204,
+        "overlay_high_mae_pct": 2.409386272583351,
+        "raw_low_mae_pct": 2.231698268567923,
+        "overlay_low_mae_pct": 2.2131669485579413,
+        "count": 233.0,
+        "close_mae_delta_pct": 0.001867983601428147
+      }
+    },
+    "AAVEUSD": {
+      "h1": {
+        "raw_close_mae_pct": 0.4525602068466193,
+        "overlay_close_mae_pct": 0.4493352055960619,
+        "raw_high_mae_pct": 0.4634211081680988,
+        "overlay_high_mae_pct": 0.5011867385458308,
+        "raw_low_mae_pct": 0.45307702012261,
+        "overlay_low_mae_pct": 0.483605421609078,
+        "count": 256.0,
+        "close_mae_delta_pct": -0.0032250012505574133
+      },
+      "h24": {
+        "raw_close_mae_pct": 3.6788046057441757,
+        "overlay_close_mae_pct": 3.646974433851504,
+        "raw_high_mae_pct": 3.4880144312619654,
+        "overlay_high_mae_pct": 3.5580923346287907,
+        "raw_low_mae_pct": 3.649663359923458,
+        "overlay_low_mae_pct": 3.5915414459574087,
+        "count": 233.0,
+        "close_mae_delta_pct": -0.031830171892671455
+      }
+    }
+  }
+}

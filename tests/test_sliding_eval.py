@@ -6,9 +6,13 @@ random/fixed policy function.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import patch
+
 import numpy as np
 import pytest
 
+from pufferlib_market import evaluate_sliding as eval_mod
 from pufferlib_market.evaluate_sliding import (
     WindowResult,
     aggregate_sliding_results,
@@ -309,3 +313,94 @@ def test_fee_reduces_return():
     mean_no_fee = np.mean([r.total_return for r in results_no_fee])
     mean_with_fee = np.mean([r.total_return for r in results_with_fee])
     assert mean_no_fee > mean_with_fee
+
+
+def test_main_tolerates_missing_calmar_flag(capsys):
+    fake_args = SimpleNamespace(
+        checkpoint="checkpoint.pt",
+        data_path="data.mktd",
+        episode_len=50,
+        stride=25,
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        max_leverage=1.0,
+        short_borrow_apr=0.0,
+        periods_per_year=8760.0,
+        action_allocation_bins=1,
+        action_level_bins=1,
+        action_max_offset_bps=0.0,
+        hidden_size=16,
+        arch="mlp",
+        deterministic=False,
+        disable_shorts=False,
+        cpu=True,
+    )
+
+    class DummyPolicy:
+        def to(self, device):
+            return self
+
+        def load_state_dict(self, state_dict, strict=False):
+            return None
+
+        def eval(self):
+            return None
+
+    with patch.object(eval_mod.argparse.ArgumentParser, "parse_args", return_value=fake_args), \
+         patch.object(eval_mod, "read_mktd", return_value=_make_data(60)), \
+         patch.object(eval_mod.torch, "load", return_value={"model": {}, "update": 1, "best_return": 0.0}), \
+         patch.object(eval_mod, "TradingPolicy", return_value=DummyPolicy()), \
+         patch.object(eval_mod, "_build_policy_fn", return_value=lambda obs: 0), \
+         patch.object(eval_mod, "sliding_window_eval", return_value=[]), \
+         patch.object(eval_mod, "aggregate_sliding_results", return_value={"calmar": 1.23}), \
+         patch.object(eval_mod, "print_sliding_results", return_value=None):
+        eval_mod.main()
+
+    captured = capsys.readouterr()
+    assert "Loaded checkpoint: update=1, train_best_return=0.0000" in captured.out
+    assert "Calmar ratio" not in captured.out
+
+
+def test_main_tolerates_checkpoint_without_best_return(capsys):
+    fake_args = SimpleNamespace(
+        checkpoint="checkpoint.pt",
+        data_path="data.mktd",
+        episode_len=50,
+        stride=25,
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        max_leverage=1.0,
+        short_borrow_apr=0.0,
+        periods_per_year=8760.0,
+        action_allocation_bins=1,
+        action_level_bins=1,
+        action_max_offset_bps=0.0,
+        hidden_size=16,
+        arch="mlp",
+        deterministic=False,
+        disable_shorts=False,
+        cpu=True,
+    )
+
+    class DummyPolicy:
+        def to(self, device):
+            return self
+
+        def load_state_dict(self, state_dict, strict=False):
+            return None
+
+        def eval(self):
+            return None
+
+    with patch.object(eval_mod.argparse.ArgumentParser, "parse_args", return_value=fake_args), \
+         patch.object(eval_mod, "read_mktd", return_value=_make_data(60)), \
+         patch.object(eval_mod.torch, "load", return_value={"model": {}, "update": 7}), \
+         patch.object(eval_mod, "TradingPolicy", return_value=DummyPolicy()), \
+         patch.object(eval_mod, "_build_policy_fn", return_value=lambda obs: 0), \
+         patch.object(eval_mod, "sliding_window_eval", return_value=[]), \
+         patch.object(eval_mod, "aggregate_sliding_results", return_value={"calmar": 1.23}), \
+         patch.object(eval_mod, "print_sliding_results", return_value=None):
+        eval_mod.main()
+
+    captured = capsys.readouterr()
+    assert "Loaded checkpoint: update=7, train_best_return=?" in captured.out
