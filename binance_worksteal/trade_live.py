@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import heapq
 import json
 import math
 import sys
@@ -30,8 +31,10 @@ from loguru import logger
 
 from binance_worksteal.cli import (
     add_symbol_selection_args,
+    build_run_warnings,
     print_resolved_symbols,
     resolve_cli_symbols_with_error,
+    summarize_loaded_symbols,
 )
 from binance_worksteal.config_io import (
     add_config_file_arg,
@@ -47,6 +50,7 @@ from binance_worksteal.reporting import (
     build_cli_error_summary,
     build_preview_run_summary,
     build_symbol_listing_summary,
+    print_warning_summary,
     print_run_preview,
     render_command_preview,
     run_with_optional_summary,
@@ -206,14 +210,39 @@ def _coerce_positive_finite_float(value, *, fallback: float = 0.0) -> float:
     return 0.0
 
 
+def _describe_invalid_numeric_value(value) -> str:
+    if hasattr(value, "item"):
+        try:
+            value = value.item()
+        except Exception:
+            pass
+    return repr(value)
+
+
 def _finite_float_or_warn(value, *, context: str) -> float | None:
     try:
         numeric = float(value)
     except (TypeError, ValueError):
-        logger.warning(f"Invalid {context}: expected a finite numeric value, got {value!r}")
+        logger.warning(
+            f"Invalid {context}: expected a finite numeric value, got {_describe_invalid_numeric_value(value)}"
+        )
         return None
     if not math.isfinite(numeric):
-        logger.warning(f"Invalid {context}: expected a finite numeric value, got {value!r}")
+        logger.warning(
+            f"Invalid {context}: expected a finite numeric value, got {_describe_invalid_numeric_value(value)}"
+        )
+        return None
+    return numeric
+
+
+def _positive_finite_float_or_warn(value, *, context: str) -> float | None:
+    numeric = _finite_float_or_warn(value, context=context)
+    if numeric is None:
+        return None
+    if numeric <= 0.0:
+        logger.warning(
+            f"Invalid {context}: expected a positive numeric value, got {_describe_invalid_numeric_value(value)}"
+        )
         return None
     return numeric
 
@@ -815,6 +844,53 @@ def _build_preview_schedule_context(args: argparse.Namespace) -> dict[str, objec
     }
 
 
+def _build_preview_capital_context(
+    config: WorkStealConfig,
+    *,
+    dry_run: bool,
+) -> dict[str, object]:
+    per_position_budget_pct = float(config.max_position_pct)
+    max_full_slots_budget_pct = float(config.max_positions) * per_position_budget_pct
+    overallocation_pct = max(0.0, max_full_slots_budget_pct - 1.0)
+    cash_buffer_pct = max(0.0, 1.0 - max_full_slots_budget_pct)
+    if overallocation_pct > 0.0:
+        capital_note = "full slots exceed 100% of equity; requires margin or staggered fills"
+    elif cash_buffer_pct > 0.0:
+        capital_note = f"full slots leave {cash_buffer_pct:.0%} equity unallocated"
+    else:
+        capital_note = "full slots fully deploy configured equity"
+    context = {
+        "equity_basis": config.initial_cash if dry_run else "live account equity",
+        "per_position_budget_pct": per_position_budget_pct,
+        "max_full_slots_budget_pct": max_full_slots_budget_pct,
+        "overallocated_pct_at_full_slots": overallocation_pct,
+        "cash_buffer_pct_at_full_slots": cash_buffer_pct,
+        "capital_note": capital_note,
+    }
+    if dry_run:
+        context["per_position_budget_amount"] = config.initial_cash * per_position_budget_pct
+        context["max_full_slots_budget_amount"] = config.initial_cash * max_full_slots_budget_pct
+    return context
+
+
+def _build_preview_exit_context(config: WorkStealConfig) -> dict[str, object]:
+    exit_steps: list[str] = ["profit_target", "stop_loss"]
+    if float(config.trailing_stop_pct) > 0.0:
+        exit_steps.append("trailing_stop")
+    if int(config.max_hold_days) > 0:
+        exit_steps.append("max_hold")
+    return {
+        "profit_target_pct": float(config.profit_target_pct),
+        "stop_loss_pct": float(config.stop_loss_pct),
+        "trailing_stop_pct": float(config.trailing_stop_pct),
+        "max_hold_days": int(config.max_hold_days),
+        "seeded_position_policy": (
+            "rebalance legacy positions" if config.rebalance_seeded_positions else "leave legacy positions unchanged"
+        ),
+        "exit_ordering": " -> ".join(exit_steps),
+    }
+
+
 def _build_config_override_context(
     args: argparse.Namespace,
     raw_argv: list[str] | None,
@@ -971,9 +1047,15 @@ def plan_legacy_rebalance_exits(
     history: Dict[str, pd.DataFrame],
     last_exit: dict,
     config: WorkStealConfig,
+    symbol_metrics: Optional[dict] = None,
 ) -> tuple[list[tuple[str, float, str, dict]], set[str]]:
     legacy_config = replace(config, sma_filter_period=0)
-    entry_regime = resolve_entry_regime(current_bars=current_bars, history=history, config=legacy_config)
+    entry_regime = resolve_entry_regime(
+        current_bars=current_bars,
+        history=history,
+        config=legacy_config,
+        symbol_metrics=symbol_metrics,
+    )
     entry_config = entry_regime.config
     if entry_regime.skip_entries:
         return [], set()
@@ -986,6 +1068,7 @@ def plan_legacy_rebalance_exits(
         last_exit=_last_exit_timestamps(last_exit),
         config=entry_config,
         base_symbol=None,
+        symbol_metrics=symbol_metrics,
     )
     rebalance_symbols = {sym for sym, direction, *_rest in candidates if direction == "long"}
     exits = []
@@ -997,7 +1080,10 @@ def plan_legacy_rebalance_exits(
             continue
         if sym not in current_bars:
             continue
-        close_price = float(current_bars[sym]["close"])
+        close_price = _safe_finite_float(current_bars[sym].get("close", 0.0), default=0.0)
+        if close_price <= 0.0:
+            logger.warning(f"Skipping legacy rebalance exit for {sym}: invalid current close {current_bars[sym].get('close')!r}")
+            continue
         exits.append((sym, close_price, "legacy_rebalance", position))
     return exits, {sym for sym, position in positions.items() if position.get("source") == "legacy"}
 
@@ -1061,6 +1147,7 @@ def _build_pair_routing_summary(routes: list[dict[str, str]]) -> dict[str, objec
         "cross_quote_symbols": cross_quote_symbols,
         "data_quote_counts": ordered_data_quote_counts,
         "order_quote_counts": ordered_order_quote_counts,
+        "required_data_quotes": list(ordered_data_quote_counts),
         "required_order_quotes": list(ordered_order_quote_counts),
     }
 
@@ -1086,6 +1173,8 @@ def _print_pair_routing(routes: list[dict[str, str]]) -> None:
             f"{quote}={count}" for quote, count in summary["data_quote_counts"].items()
         )
         print(f"  data quote mix: {mix}")
+    if summary["required_data_quotes"]:
+        print(f"  required data quotes: {', '.join(summary['required_data_quotes'])}")
     if summary["order_quote_counts"]:
         mix = ", ".join(
             f"{quote}={count}" for quote, count in summary["order_quote_counts"].items()
@@ -1093,6 +1182,52 @@ def _print_pair_routing(routes: list[dict[str, str]]) -> None:
         print(f"  order quote mix: {mix}")
     if summary["required_order_quotes"]:
         print(f"  required order quotes: {', '.join(summary['required_order_quotes'])}")
+
+
+def _nearest_proximity_diagnostics(
+    diagnostics: list[SymbolDiagnostic],
+    *,
+    limit: int,
+) -> list[SymbolDiagnostic]:
+    if limit <= 0:
+        return []
+    return heapq.nsmallest(
+        limit,
+        (diagnostic for diagnostic in diagnostics if diagnostic.dist_pct > 0),
+        key=lambda diagnostic: diagnostic.dist_pct,
+    )
+
+
+def _summarize_validated_proximity_rows(
+    rows: list[dict[str, object]],
+    *,
+    limit: int,
+) -> tuple[list[dict[str, object]], dict[str, object] | None, float | None]:
+    if not rows:
+        return [], None, None
+    proximity_rows = heapq.nsmallest(limit, rows, key=lambda row: float(row["dist_pct"])) if limit > 0 else []
+    watchlist = _diagnose_watchlist_rows(rows, limit=1)
+    nearest_blocked = watchlist[0] if watchlist else None
+    min_dist = min(float(row["dist_pct"]) for row in rows)
+    return proximity_rows, nearest_blocked, min_dist
+
+
+def _diagnose_watchlist_rows(
+    rows: list[dict[str, object]],
+    *,
+    limit: int,
+) -> list[dict[str, object]]:
+    if limit <= 0:
+        return []
+    return heapq.nsmallest(
+        limit,
+        (
+            row
+            for row in rows
+            if not row["is_candidate"] and row["filter_reason"]
+        ),
+        key=lambda row: float(row["dist_pct"]),
+    )
 
 
 def _entry_regime_breadth_snapshot(
@@ -1117,6 +1252,114 @@ def _print_omitted_symbols(symbols: list[str]) -> None:
     print("Excluded by --max-symbols:")
     for symbol in symbols:
         print(f"  {symbol}")
+
+
+def _print_inspection_symbol_context(
+    *,
+    omitted_symbols: list[str] | None = None,
+    pair_routing: list[dict[str, str]] | None = None,
+) -> None:
+    _print_omitted_symbols(list(omitted_symbols or []))
+    _print_pair_routing(list(pair_routing or []))
+
+
+def _format_symbol_preview(symbols: list[str], *, max_preview: int = 10) -> str:
+    if not symbols:
+        return ""
+    preview = ", ".join(symbols[:max_preview])
+    remaining = len(symbols) - min(len(symbols), max_preview)
+    suffix = f" (+{remaining} more)" if remaining > 0 else ""
+    return f"{preview}{suffix}"
+
+
+def _print_diagnose_load_context(*, loaded_symbols: list[str], missing_symbols: list[str]) -> None:
+    loaded_preview = _format_symbol_preview(list(loaded_symbols or []))
+    missing_preview = _format_symbol_preview(list(missing_symbols or []))
+    if loaded_preview:
+        print(f"Loaded symbols:    {loaded_preview}")
+    if missing_preview:
+        print(f"Missing symbols:   {missing_preview}")
+
+
+def _print_diagnose_coverage_context(
+    *,
+    loaded_symbol_count: int,
+    total_symbols: int,
+    data_coverage_ratio: float,
+    loaded_symbols: list[str],
+    missing_symbols: list[str],
+    command_preview: str | None = None,
+) -> None:
+    if command_preview:
+        print("Command:")
+        print(f"  {command_preview}")
+    print(f"Symbols with data:  {loaded_symbol_count}/{total_symbols}")
+    print(f"Data coverage:     {loaded_symbol_count}/{total_symbols} loaded ({data_coverage_ratio:.1%})")
+    _print_diagnose_load_context(
+        loaded_symbols=loaded_symbols,
+        missing_symbols=missing_symbols,
+    )
+
+
+def _diagnose_follow_up_base_argv(raw_argv: list[str] | None) -> list[str]:
+    if not raw_argv:
+        return []
+    stripped: list[str] = []
+    value_flags = {"--summary-json", "--max-symbols", "--universe-file"}
+    mode_flags = {"--diagnose", "--preview-run", "--list-symbols"}
+    index = 0
+    while index < len(raw_argv):
+        arg = str(raw_argv[index])
+        if arg in mode_flags:
+            index += 1
+            continue
+        if arg in value_flags:
+            index += 2
+            continue
+        if arg == "--symbols":
+            index += 1
+            while index < len(raw_argv) and not str(raw_argv[index]).startswith("-"):
+                index += 1
+            continue
+        stripped.append(arg)
+        index += 1
+    return stripped
+
+
+def _build_diagnose_follow_up_commands(
+    *,
+    raw_argv: list[str] | None,
+    top_candidate: dict[str, object] | None,
+    watchlist: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    base_argv = _diagnose_follow_up_base_argv(raw_argv)
+    follow_ups: list[dict[str, object]] = []
+
+    if top_candidate is not None:
+        symbol = str(top_candidate["symbol"])
+        preview_argv = [*base_argv, "--symbols", symbol, "--preview-run"]
+        follow_ups.append(
+            {
+                "label": "preview_top_candidate",
+                "summary": f"preview the top setup for {symbol}",
+                "symbols": [symbol],
+                "command": render_command_preview("binance_worksteal.trade_live", preview_argv),
+            }
+        )
+
+    watch_symbols = [str(row["symbol"]) for row in watchlist if row.get("symbol")]
+    if watch_symbols:
+        watch_argv = [*base_argv, "--symbols", *watch_symbols, "--diagnose"]
+        follow_ups.append(
+            {
+                "label": "diagnose_watchlist",
+                "summary": "rerun diagnose on the closest blocked symbols",
+                "symbols": watch_symbols,
+                "command": render_command_preview("binance_worksteal.trade_live", watch_argv),
+            }
+        )
+
+    return follow_ups
 
 
 def _resolve_symbol_selection_context(
@@ -1323,6 +1566,120 @@ def _quarantine_invalid_state_file(path: Path) -> Path | None:
         logger.warning(f"Failed to quarantine invalid live state {path}: {exc}")
         return None
     return backup_path
+
+
+def _build_trade_live_preview_payload(
+    *,
+    args: argparse.Namespace,
+    raw_argv: list[str] | None,
+    config: WorkStealConfig,
+    display_source: str,
+    resolved_symbols: dict[str, object],
+    symbol_summary_context: dict[str, object],
+) -> tuple[list[tuple[str, tuple[tuple[str, object], ...]]], dict[str, object]]:
+    preview_neural_symbols = _normalize_strategy_symbols(args.neural_symbols)
+    preview_override_context = _build_config_override_context(args, raw_argv)
+    preview_mode_context = {
+        "dry_run": args.dry_run,
+        "live_mode": not args.dry_run,
+        "daemon": args.daemon,
+        "diagnose": args.diagnose,
+        "run_on_start": args.run_on_start,
+        "startup_preview_only": args.startup_preview_only,
+    }
+    preview_runtime_context = {
+        "poll_seconds": args.poll_seconds,
+        "entry_poll_hours": args.entry_poll_hours,
+        "health_report_hours": args.health_report_hours,
+        "gemini_enabled": args.gemini,
+        "gemini_model": args.gemini_model if args.gemini else None,
+        "neural_model": args.neural_model,
+        "neural_symbols": preview_neural_symbols,
+    }
+    preview_schedule_context = _build_preview_schedule_context(args)
+    preview_capital_context = _build_preview_capital_context(config, dry_run=args.dry_run)
+    preview_exit_context = _build_preview_exit_context(config)
+    preview_file_context = {
+        "state_file": str(STATE_FILE),
+        "trade_log": str(LOG_FILE),
+        "events_log": str(EVENTS_FILE),
+    }
+    preview_command_context = {
+        "command": render_command_preview("binance_worksteal.trade_live", raw_argv),
+    }
+    inputs_context = {
+        "symbol_source": display_source,
+        "requested_symbol_count": int(resolved_symbols["requested_symbol_count"]),
+        "symbol_count": len(resolved_symbols["symbols"]),
+        "omitted_symbol_count": int(resolved_symbols["omitted_symbol_count"]),
+        "omitted_symbols": list(resolved_symbols["omitted_symbols"]),
+        "symbols": list(resolved_symbols["symbols"]),
+        "max_symbols": args.max_symbols,
+    }
+    config_context = {
+        "dip_pct": config.dip_pct,
+        "proximity_pct": config.proximity_pct,
+        "profit_target_pct": config.profit_target_pct,
+        "stop_loss_pct": config.stop_loss_pct,
+        "max_positions": config.max_positions,
+        "market_breadth_filter": config.market_breadth_filter,
+        "risk_off_market_breadth_filter": config.risk_off_market_breadth_filter,
+        "rebalance_seeded_positions": config.rebalance_seeded_positions,
+    }
+    preview_sections: list[tuple[str, tuple[tuple[str, object], ...]]] = [
+        ("Inputs", tuple(inputs_context.items())),
+        ("Mode", tuple(preview_mode_context.items())),
+        ("Runtime", tuple(preview_runtime_context.items())),
+        ("Capital plan", tuple(preview_capital_context.items())),
+        ("Exit policy", tuple(preview_exit_context.items())),
+        ("Launch behavior", tuple(preview_schedule_context.items())),
+        (
+            "Files",
+            tuple(
+                {
+                    "config_file": args.config_file,
+                    "summary_json": args.summary_json,
+                    **preview_file_context,
+                }.items()
+            ),
+        ),
+        ("Command", tuple(preview_command_context.items())),
+        ("Config", tuple(config_context.items())),
+    ]
+    if preview_override_context["config_override_count"]:
+        preview_sections.append(
+            (
+                "Config overrides",
+                (
+                    ("config_override_count", preview_override_context["config_override_count"]),
+                    ("config_file_override_fields", preview_override_context["config_file_override_fields"]),
+                    ("cli_override_fields", preview_override_context["cli_override_fields"]),
+                    ("effective_overrides", preview_override_context["config_override_preview"]),
+                ),
+            )
+        )
+    preview_summary_extra = {
+        **symbol_summary_context,
+        **preview_mode_context,
+        **preview_runtime_context,
+        **preview_capital_context,
+        **preview_exit_context,
+        **preview_schedule_context,
+        **preview_override_context,
+        **preview_file_context,
+        **preview_command_context,
+    }
+    return preview_sections, preview_summary_extra
+
+
+def _inspection_mode_from_args(args: argparse.Namespace) -> str | None:
+    if args.list_symbols:
+        return "list_symbols"
+    if args.preview_run:
+        return "preview_run"
+    if args.diagnose:
+        return "diagnose"
+    return None
 
 
 def load_state() -> dict:
@@ -1562,18 +1919,59 @@ def _cancel_pending_entry(client, symbol: str, entry: dict) -> bool:
         return False
 
 
-def _pending_entry_to_position(entry: dict, *, entry_time: datetime) -> dict:
-    price = float(entry.get("buy_price", 0.0) or 0.0)
-    quantity = float(entry.get("quantity", 0.0) or 0.0)
+def _pending_entry_to_position(
+    entry: dict,
+    *,
+    entry_time: datetime,
+    config: WorkStealConfig = DEFAULT_CONFIG,
+) -> dict:
+    price = _safe_finite_float(entry.get("buy_price", 0.0), default=0.0)
+    quantity = _safe_finite_float(entry.get("quantity", 0.0), default=0.0)
+    default_target = price * (1.0 + config.profit_target_pct)
+    default_stop = price * (1.0 - config.stop_loss_pct)
+    target_sell = _safe_finite_float(entry.get("target_sell", default_target), default=default_target)
+    stop_price = _safe_finite_float(entry.get("stop_price", default_stop), default=default_stop)
+    if target_sell <= price:
+        target_sell = default_target
+    if stop_price <= 0.0 or stop_price >= price:
+        stop_price = default_stop
     return {
         "entry_price": price,
         "entry_date": entry_time.isoformat(),
         "quantity": quantity,
         "peak_price": price,
-        "target_sell": float(entry.get("target_sell", price)),
-        "stop_price": float(entry.get("stop_price", price)),
+        "target_sell": target_sell,
+        "stop_price": stop_price,
         "source": str(entry.get("source") or "strategy"),
     }
+
+
+def _coerce_candidate_pricing(
+    *,
+    sym: str,
+    close,
+    buy_price,
+    sell_target,
+    stop,
+    context: str,
+) -> tuple[float, float, float, float] | None:
+    close_value = _safe_finite_float(close, default=0.0)
+    buy_value = _safe_finite_float(buy_price, default=0.0)
+    target_value = _safe_finite_float(sell_target, default=0.0)
+    stop_value = _safe_finite_float(stop, default=0.0)
+    if (
+        close_value <= 0.0
+        or buy_value <= 0.0
+        or target_value <= buy_value
+        or stop_value <= 0.0
+        or stop_value >= buy_value
+    ):
+        logger.warning(
+            f"Skipping {sym}: invalid {context} pricing close={close_value!r} buy={buy_value!r} "
+            f"target={target_value!r} stop={stop_value!r}"
+        )
+        return None
+    return close_value, buy_value, target_value, stop_value
 
 
 def reconcile_pending_entries(
@@ -1583,6 +1981,7 @@ def reconcile_pending_entries(
     positions: dict,
     now: datetime,
     dry_run: bool,
+    config: WorkStealConfig = DEFAULT_CONFIG,
 ) -> list[dict]:
     recent_trades: list[dict] = []
     for sym, entry in list(pending_entries.items()):
@@ -1622,7 +2021,7 @@ def reconcile_pending_entries(
                 order.get("executedQty"),
                 fallback=entry.get("quantity") or 0.0,
             )
-            fill_price = _order_avg_price(order, fallback=float(entry.get("buy_price") or 0.0))
+            fill_price = _order_avg_price(order, fallback=_safe_finite_float(entry.get("buy_price", 0.0), default=0.0))
             if fill_qty <= 0.0 or fill_price <= 0.0:
                 logger.warning(
                     f"Pending entry fill for {pair}#{entry['order_id']} missing execution details; keeping pending entry for retry"
@@ -1632,7 +2031,7 @@ def reconcile_pending_entries(
             realized = dict(entry)
             realized["quantity"] = fill_qty
             realized["buy_price"] = fill_price
-            positions[sym] = _pending_entry_to_position(realized, entry_time=now)
+            positions[sym] = _pending_entry_to_position(realized, entry_time=now, config=config)
             trade = {
                 "timestamp": _order_timestamp_iso(order, fallback=now),
                 "symbol": sym,
@@ -1875,10 +2274,17 @@ def _stage_entry_candidates(
         if direction != "long" or sym in staged_symbols:
             n_already_held += 1
             continue
-        close = float(bar["close"])
-        buy_price = fill_price
-        sell_target = fill_price * (1 + entry_config.profit_target_pct)
-        stop = fill_price * (1 - entry_config.stop_loss_pct)
+        pricing = _coerce_candidate_pricing(
+            sym=sym,
+            close=bar.get("close", 0.0),
+            buy_price=fill_price,
+            sell_target=fill_price * (1 + entry_config.profit_target_pct),
+            stop=fill_price * (1 - entry_config.stop_loss_pct),
+            context="candidate",
+        )
+        if pricing is None:
+            continue
+        close, buy_price, sell_target, stop = pricing
         confidence = 1.0
         source = "rule"
         neural_override = None
@@ -1908,6 +2314,18 @@ def _stage_entry_candidates(
                 f"NEURAL {sym}: buy_offset={neural_buy_offset:.4f} sell_offset={neural_sell_offset:.4f} "
                 f"intensity={intensity:.3f} buy=${buy_price:.2f} tp=${sell_target:.2f}"
             )
+            pricing = _coerce_candidate_pricing(
+                sym=sym,
+                close=close,
+                buy_price=buy_price,
+                sell_target=sell_target,
+                stop=stop,
+                context="neural",
+            )
+            if pricing is None:
+                n_neural_skip += 1
+                continue
+            close, buy_price, sell_target, stop = pricing
 
         if gemini_enabled:
             try:
@@ -2110,26 +2528,47 @@ def run_health_report(client, symbols: List[str], config: WorkStealConfig, dry_r
         if sym in positions:
             continue
         metrics = symbol_metrics.get(sym)
-        close = metrics.close if metrics is not None else float(bars.iloc[-1]["close"])
-        ref_high = (
-            metrics.ref_high(entry_config.ref_price_method, config.lookback_days)
-            if metrics is not None
-            else compute_ref_price(bars, entry_config.ref_price_method, config.lookback_days)
+        close = _positive_finite_float_or_warn(
+            metrics.close if metrics is not None else bars.iloc[-1]["close"],
+            context=f"health nearest-dip {sym} close",
         )
-        buy_target = (
-            metrics.buy_target(ref_high, entry_config)
-            if metrics is not None
-            else ref_high * (1 - entry_config.dip_pct)
+        if close is None:
+            continue
+        ref_high = _positive_finite_float_or_warn(
+            (
+                metrics.ref_high(entry_config.ref_price_method, config.lookback_days)
+                if metrics is not None
+                else compute_ref_price(bars, entry_config.ref_price_method, config.lookback_days)
+            ),
+            context=f"health nearest-dip {sym} ref_high",
         )
-        dist_bps = (close - buy_target) / close * 10_000.0 if close > 0 else float("inf")
+        if ref_high is None:
+            continue
+        buy_target = _positive_finite_float_or_warn(
+            (
+                metrics.buy_target(ref_high, entry_config)
+                if metrics is not None
+                else ref_high * (1 - entry_config.dip_pct)
+            ),
+            context=f"health nearest-dip {sym} buy_target",
+        )
+        if buy_target is None:
+            continue
+        dist_bps = (close - buy_target) / close * 10_000.0
         if dist_bps < nearest_dip_bps:
             nearest_dip_bps = dist_bps
             nearest_dip_sym = sym
 
+    nearest_dip_bps_value = nearest_dip_bps if math.isfinite(nearest_dip_bps) else None
+    nearest_dip_label = (
+        f"{nearest_dip_sym}@{nearest_dip_bps_value:.0f}bps"
+        if nearest_dip_sym and nearest_dip_bps_value is not None
+        else "n/a"
+    )
     logger.info(
         f"HEALTH: equity=${equity:.0f} positions={len(positions)} pending={len(pending_entries)} "
         f"regime={'risk-off' if entry_regime.skip_entries else 'risk-on'} "
-        f"nearest_dip={nearest_dip_sym}@{nearest_dip_bps:.0f}bps "
+        f"nearest_dip={nearest_dip_label} "
         f"days_since_trade={days_since_trade}"
     )
     log_event({
@@ -2142,7 +2581,7 @@ def run_health_report(client, symbols: List[str], config: WorkStealConfig, dry_r
         "market_breadth_skip": market_breadth_skip,
         "entry_skip": entry_regime.skip_entries,
         "nearest_dip_sym": nearest_dip_sym,
-        "nearest_dip_bps": nearest_dip_bps,
+        "nearest_dip_bps": nearest_dip_bps_value,
         "days_since_trade": days_since_trade,
         "n_symbols_with_data": len(all_bars),
     })
@@ -2385,6 +2824,7 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
             positions=positions,
             now=now,
             dry_run=dry_run,
+            config=config,
         )
     )
     recent_trades.extend(
@@ -2444,6 +2884,7 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
         history=all_bars,
         last_exit=last_exit,
         config=config,
+        symbol_metrics=symbol_metrics,
     )
     exits_to_process.extend(legacy_exits)
 
@@ -2453,11 +2894,19 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
         if sym not in all_bars:
             continue
         bars = all_bars[sym]
-        close = float(bars.iloc[-1]["close"])
-        high = float(bars.iloc[-1]["high"])
-        low = float(bars.iloc[-1]["low"])
+        current_bar = bars.iloc[-1]
+        close = _safe_finite_float(current_bar.get("close", 0.0), default=0.0)
+        high = _safe_finite_float(current_bar.get("high", 0.0), default=0.0)
+        low = _safe_finite_float(current_bar.get("low", 0.0), default=0.0)
 
-        entry_price = pos["entry_price"]
+        entry_price = _safe_finite_float(pos.get("entry_price", 0.0), default=0.0)
+        if close <= 0.0 or high <= 0.0 or low <= 0.0 or high < low or entry_price <= 0.0:
+            logger.warning(
+                f"Skipping exit evaluation for {sym}: invalid current bar or entry price "
+                f"close={current_bar.get('close')!r} high={current_bar.get('high')!r} "
+                f"low={current_bar.get('low')!r} entry={pos.get('entry_price')!r}"
+            )
+            continue
         entry_date = _safe_utc_timestamp(
             pos.get("entry_date"),
             context=f"positions[{sym}].entry_date",
@@ -2465,7 +2914,11 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
         )
         if entry_date is None:
             entry_date = _coerce_utc_timestamp(now)
-        peak = max(pos.get("peak_price", entry_price), high)
+        peak = max(
+            _safe_finite_float(pos.get("peak_price", entry_price), default=entry_price),
+            high,
+            entry_price,
+        )
         pos["peak_price"] = peak
 
         exit_price = None
@@ -2629,8 +3082,7 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
                 logger.info(f"  {sym}: tier {tier_idx} (dip={tier_dip:.0%})")
 
         # Log top 5 closest to entry
-        prox_diags = [d for d in diagnostics if d.dist_pct > 0]
-        prox_diags.sort(key=lambda d: d.dist_pct)
+        prox_diags = _nearest_proximity_diagnostics(diagnostics, limit=5)
         if prox_diags:
             logger.info("TOP 5 CLOSEST TO ENTRY:")
             for d in prox_diags[:5]:
@@ -2710,17 +3162,24 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
                     f"target={pos['target_sell']:.2f} stop={pos['stop_price']:.2f}")
 
 
-def run_diagnose(client, symbols: List[str], config: WorkStealConfig):
-    """One-shot diagnostic: show exactly why each symbol passes/fails entry filters."""
+def _collect_diagnose_result(
+    client,
+    symbols: List[str],
+    config: WorkStealConfig,
+) -> dict[str, object] | None:
     all_bars = _fetch_all_bars(client, symbols, config.lookback_days)
     if not all_bars:
-        logger.error("No bar data fetched for any symbol")
-        return
+        return None
     current_bars = {sym: bars.iloc[-1] for sym, bars in all_bars.items()}
+    symbol_metrics = _build_symbol_metric_cache(current_bars, all_bars)
     now = datetime.now(timezone.utc)
 
-    # Market breadth
-    entry_regime = resolve_entry_regime(current_bars=current_bars, history=all_bars, config=config)
+    entry_regime = resolve_entry_regime(
+        current_bars=current_bars,
+        history=all_bars,
+        config=config,
+        symbol_metrics=symbol_metrics,
+    )
     breadth_ratio, n_dipping, n_total = _entry_regime_breadth_snapshot(
         current_bars,
         all_bars,
@@ -2729,25 +3188,12 @@ def run_diagnose(client, symbols: List[str], config: WorkStealConfig):
     entry_config = entry_regime.config
     breadth_skip = entry_regime.market_breadth_skip
     risk_off = entry_regime.risk_off
+    sma_pass_count, sma_fail_count = _count_sma_pass_fail(
+        all_bars,
+        config,
+        symbol_metrics=symbol_metrics,
+    )
 
-    print(f"\n{'='*70}")
-    print(f"WORKSTEAL DIAGNOSTIC  {now.isoformat()}")
-    print(f"{'='*70}")
-    print(f"Symbols with data:  {len(all_bars)}/{len(symbols)}")
-    print(f"Market breadth:     {n_dipping}/{n_total} dipping ({breadth_ratio:.1%})")
-    print(f"Breadth threshold:  {entry_config.market_breadth_filter:.0%}")
-    print(f"Breadth skip:       {breadth_skip}")
-    print(f"Risk-off triggered: {risk_off}")
-    print(f"Config dip_pct:     {config.dip_pct:.0%}")
-    print(f"Config proximity:   {config.proximity_pct:.0%}")
-    print(f"SMA filter period:  {config.sma_filter_period}")
-    print(f"SMA check method:   {config.sma_check_method}")
-
-    # SMA pass/fail summary
-    sma_pass_count, sma_fail_count = _count_sma_pass_fail(all_bars, config)
-    print(f"SMA filter:         {sma_pass_count} pass, {sma_fail_count} fail")
-
-    # Run with diagnostics
     diagnostics: List[SymbolDiagnostic] = []
     state = load_state()
     positions = normalize_live_positions(state.get("positions", {}), config)
@@ -2765,44 +3211,337 @@ def run_diagnose(client, symbols: List[str], config: WorkStealConfig):
         config=entry_config,
         base_symbol=None,
         diagnostics=diagnostics,
+        symbol_metrics=symbol_metrics,
     )
 
-    print(f"\nCandidates found:   {len(candidates)}")
-
-    # Show candidates
-    if candidates:
-        print(f"\n--- CANDIDATES (would enter) ---")
-        for sym, direction, score, fill_price, bar in candidates:
-            close = float(bar["close"])
-            print(f"  {sym:12s} dir={direction} score={score:.4f} fill=${fill_price:.4f} close=${close:.4f}")
-
-    # Show filtered symbols sorted by proximity to entry
     filtered = [d for d in diagnostics if not d.is_candidate and d.filter_reason]
     proximity_diags = [d for d in diagnostics if d.dist_pct > 0]
-    proximity_diags.sort(key=lambda d: d.dist_pct)
 
-    print(f"\n--- TOP 10 CLOSEST TO ENTRY (by distance to buy target) ---")
-    for d in proximity_diags[:10]:
-        dip_needed = d.dist_pct * 100
-        print(
-            f"  {d.symbol:12s} close=${d.close:<12.4f} ref_high=${d.ref_high:<12.4f} "
-            f"buy_target=${d.buy_target:<12.4f} dist={d.dist_pct:.4f} ({dip_needed:.1f}% more dip needed) "
-            f"{'** BLOCKED: ' + d.filter_reason if d.filter_reason else 'CANDIDATE'}"
-        )
-
-    # Group filter reasons
     reason_counts: Dict[str, int] = {}
     for d in filtered:
         key = d.filter_reason.split("(")[0]
         reason_counts[key] = reason_counts.get(key, 0) + 1
 
-    print(f"\n--- FILTER SUMMARY ---")
-    for reason, count in sorted(reason_counts.items(), key=lambda x: -x[1]):
-        print(f"  {reason:30s} {count} symbols")
+    candidate_rows: list[dict[str, object]] = []
+    for sym, direction, score, fill_price, bar in candidates:
+        candidate_row = _diagnose_candidate_row_or_warn(
+            sym,
+            direction,
+            score,
+            fill_price,
+            bar.get("close"),
+        )
+        if candidate_row is not None:
+            candidate_rows.append(candidate_row)
 
-    # Show all per-symbol details
-    print(f"\n--- ALL SYMBOL DETAILS ---")
-    for d in sorted(diagnostics, key=lambda x: x.symbol):
+    validated_proximity_rows: list[dict[str, object]] = []
+    for diagnostic in proximity_diags:
+        proximity_row = _diagnose_proximity_row_or_warn(diagnostic)
+        if proximity_row is not None:
+            validated_proximity_rows.append(proximity_row)
+    proximity_rows, nearest_blocked, min_dist = _summarize_validated_proximity_rows(
+        validated_proximity_rows,
+        limit=10,
+    )
+    watchlist = _diagnose_watchlist_rows(validated_proximity_rows, limit=3)
+    top_candidate = candidate_rows[0] if candidate_rows else None
+    load_summary = summarize_loaded_symbols(symbols, all_bars.keys())
+    requested_symbol_count = int(load_summary["requested_symbol_count"])
+    loaded_symbol_count = int(load_summary["loaded_symbol_count"])
+    data_coverage_ratio = (
+        float(loaded_symbol_count) / float(requested_symbol_count)
+        if requested_symbol_count > 0
+        else 0.0
+    )
+    warnings = build_run_warnings(load_summary=load_summary)
+    action_summary = _build_diagnose_action_summary(
+        top_candidate=top_candidate,
+        nearest_blocked=nearest_blocked,
+        min_dist=min_dist,
+        breadth_skip=bool(breadth_skip),
+        risk_off=bool(risk_off),
+    )
+
+    return {
+        "generated_at_utc": now.isoformat(),
+        "loaded_symbol_count": loaded_symbol_count,
+        "loaded_symbols": list(load_summary["loaded_symbols"]),
+        "missing_symbol_count": int(load_summary["missing_symbol_count"]),
+        "missing_symbols": list(load_summary["missing_symbols"]),
+        "universe_complete": bool(load_summary["universe_complete"]),
+        "data_coverage_ratio": data_coverage_ratio,
+        "market_breadth_ratio": float(breadth_ratio),
+        "market_breadth_dipping_count": int(n_dipping),
+        "market_breadth_total_count": int(n_total),
+        "breadth_threshold": float(entry_config.market_breadth_filter),
+        "breadth_skip": bool(breadth_skip),
+        "risk_off_triggered": bool(risk_off),
+        "dip_pct": float(config.dip_pct),
+        "proximity_pct": float(config.proximity_pct),
+        "sma_filter_period": int(config.sma_filter_period),
+        "sma_check_method": str(config.sma_check_method),
+        "sma_pass_count": int(sma_pass_count),
+        "sma_fail_count": int(sma_fail_count),
+        "candidate_count": len(candidate_rows),
+        "candidate_symbols": [row["symbol"] for row in candidate_rows],
+        "top_candidate": top_candidate,
+        "nearest_blocked": nearest_blocked,
+        "watchlist": watchlist,
+        "action_summary": action_summary,
+        "candidates": candidate_rows,
+        "closest_to_entry": proximity_rows,
+        "filter_summary": [
+            {"reason": reason, "count": count}
+            for reason, count in sorted(reason_counts.items(), key=lambda item: (-item[1], item[0]))
+        ],
+        "diagnostics": diagnostics,
+        "min_entry_distance_pct": None if min_dist is None else float(min_dist),
+        "warnings": warnings,
+    }
+
+
+
+def _diagnose_candidate_row_or_warn(
+    sym: str,
+    direction: str,
+    score,
+    fill_price,
+    close,
+) -> dict[str, object] | None:
+    score_value = _finite_float_or_warn(score, context=f"diagnose candidate {sym} score")
+    fill_price_value = _positive_finite_float_or_warn(fill_price, context=f"diagnose candidate {sym} fill_price")
+    close_value = _positive_finite_float_or_warn(close, context=f"diagnose candidate {sym} close")
+    if score_value is None or fill_price_value is None or close_value is None:
+        return None
+    return {
+        "symbol": sym,
+        "direction": direction,
+        "score": float(score_value),
+        "fill_price": float(fill_price_value),
+        "close": float(close_value),
+    }
+
+
+
+def _diagnose_proximity_row_or_warn(diagnostic: SymbolDiagnostic) -> dict[str, object] | None:
+    close_value = _positive_finite_float_or_warn(
+        diagnostic.close,
+        context=f"diagnose proximity {diagnostic.symbol} close",
+    )
+    ref_high_value = _positive_finite_float_or_warn(
+        diagnostic.ref_high,
+        context=f"diagnose proximity {diagnostic.symbol} ref_high",
+    )
+    buy_target_value = _positive_finite_float_or_warn(
+        diagnostic.buy_target,
+        context=f"diagnose proximity {diagnostic.symbol} buy_target",
+    )
+    dist_pct_value = _finite_float_or_warn(
+        diagnostic.dist_pct,
+        context=f"diagnose proximity {diagnostic.symbol} dist_pct",
+    )
+    if (
+        close_value is None
+        or ref_high_value is None
+        or buy_target_value is None
+        or dist_pct_value is None
+    ):
+        return None
+    return {
+        "symbol": diagnostic.symbol,
+        "close": float(close_value),
+        "ref_high": float(ref_high_value),
+        "buy_target": float(buy_target_value),
+        "dist_pct": float(dist_pct_value),
+        "dip_needed_pct": float(dist_pct_value * 100.0),
+        "filter_reason": diagnostic.filter_reason,
+        "is_candidate": bool(diagnostic.is_candidate),
+    }
+
+
+
+def _build_diagnose_action_summary(
+    *,
+    top_candidate: dict[str, object] | None,
+    nearest_blocked: dict[str, object] | None,
+    min_dist: float | None,
+    breadth_skip: bool,
+    risk_off: bool,
+) -> dict[str, object]:
+    if top_candidate is not None:
+        symbol = str(top_candidate["symbol"])
+        fill_price = float(top_candidate["fill_price"])
+        current_price = _safe_finite_float(top_candidate.get("close"), default=None)
+        return {
+            "status": "candidate_available",
+            "symbol": symbol,
+            "reason": None,
+            "fill_price": fill_price,
+            "target_price": fill_price,
+            "current_price": current_price,
+            "distance_pct": 0.0,
+            "summary": f"stage {symbol} near ${fill_price:.4f}",
+        }
+
+    if nearest_blocked is not None:
+        symbol = str(nearest_blocked["symbol"])
+        reason = str(nearest_blocked.get("filter_reason") or "blocked")
+        distance_pct = _safe_finite_float(nearest_blocked.get("dist_pct"), default=0.0)
+        target_price = _safe_finite_float(nearest_blocked.get("buy_target"), default=None)
+        current_price = _safe_finite_float(nearest_blocked.get("close"), default=None)
+        target_hint = f" near ${target_price:.4f}" if target_price is not None else ""
+        if breadth_skip or risk_off:
+            status = "wait_breadth"
+            summary = f"wait for breadth recovery; {symbol}{target_hint} blocked by {reason}"
+        elif distance_pct > 0.0:
+            status = "wait_for_entry"
+            summary = f"watch {symbol}{target_hint}; needs {distance_pct * 100.0:.1f}% more dip ({reason})"
+        else:
+            status = "blocked"
+            summary = f"wait; {symbol}{target_hint} blocked by {reason}"
+        return {
+            "status": status,
+            "symbol": symbol,
+            "reason": reason,
+            "fill_price": None,
+            "target_price": target_price,
+            "current_price": current_price,
+            "distance_pct": None if distance_pct <= 0.0 else float(distance_pct),
+            "summary": summary,
+        }
+
+    if min_dist is not None:
+        return {
+            "status": "wait_for_entry",
+            "symbol": None,
+            "reason": None,
+            "fill_price": None,
+            "target_price": None,
+            "current_price": None,
+            "distance_pct": float(min_dist),
+            "summary": f"wait for setup; nearest valid entry is {float(min_dist) * 100.0:.1f}% away",
+        }
+
+    return {
+        "status": "no_actionable_signal",
+        "symbol": None,
+        "reason": None,
+        "fill_price": None,
+        "target_price": None,
+        "current_price": None,
+        "distance_pct": None,
+        "summary": "no actionable signal from current data",
+    }
+
+
+
+def _print_diagnose_report(
+    result: dict[str, object],
+    *,
+    command_preview: str | None = None,
+) -> None:
+    loaded_symbol_count = int(result["loaded_symbol_count"])
+    missing_symbol_count = int(result["missing_symbol_count"])
+    total_symbols = loaded_symbol_count + missing_symbol_count
+    breadth_ratio = float(result["market_breadth_ratio"])
+    n_dipping = int(result["market_breadth_dipping_count"])
+    n_total = int(result["market_breadth_total_count"])
+    breadth_threshold = float(result["breadth_threshold"])
+    breadth_skip = bool(result["breadth_skip"])
+    risk_off = bool(result["risk_off_triggered"])
+    sma_pass_count = int(result["sma_pass_count"])
+    sma_fail_count = int(result["sma_fail_count"])
+    top_candidate = result.get("top_candidate")
+    nearest_blocked = result.get("nearest_blocked")
+    action_summary = result.get("action_summary") or {}
+    candidates = list(result["candidates"])
+    proximity_rows = list(result["closest_to_entry"])
+    filter_summary = list(result["filter_summary"])
+    diagnostics = list(result["diagnostics"])
+    min_dist = result.get("min_entry_distance_pct")
+    data_coverage_ratio = float(result.get("data_coverage_ratio") or 0.0)
+    warning_lines = list(result.get("warnings") or [])
+    watchlist = list(result.get("watchlist") or [])
+    follow_up_commands = list(result.get("follow_up_commands") or [])
+
+    print(f"\n{'='*70}")
+    print(f"WORKSTEAL DIAGNOSTIC  {result['generated_at_utc']}")
+    print(f"{'='*70}")
+    _print_diagnose_coverage_context(
+        loaded_symbol_count=loaded_symbol_count,
+        total_symbols=total_symbols,
+        data_coverage_ratio=data_coverage_ratio,
+        loaded_symbols=list(result.get("loaded_symbols") or []),
+        missing_symbols=list(result.get("missing_symbols") or []),
+        command_preview=command_preview,
+    )
+    print(f"Market breadth:     {n_dipping}/{n_total} dipping ({breadth_ratio:.1%})")
+    print(f"Breadth threshold:  {breadth_threshold:.0%}")
+    print(f"Breadth skip:       {breadth_skip}")
+    print(f"Risk-off triggered: {risk_off}")
+    print(f"Config dip_pct:     {float(result['dip_pct']):.0%}")
+    print(f"Config proximity:   {float(result['proximity_pct']):.0%}")
+    print(f"SMA filter period:  {int(result['sma_filter_period'])}")
+    print(f"SMA check method:   {result['sma_check_method']}")
+    print(f"SMA filter:         {sma_pass_count} pass, {sma_fail_count} fail")
+    if top_candidate:
+        print(
+            "Top candidate:     "
+            f"{top_candidate['symbol']} score={float(top_candidate['score']):.4f} "
+            f"current=${float(top_candidate['close']):.4f} "
+            f"fill=${float(top_candidate['fill_price']):.4f}"
+        )
+    else:
+        print("Top candidate:     none")
+    if nearest_blocked:
+        print(
+            "Nearest blocked:   "
+            f"{nearest_blocked['symbol']} current=${float(nearest_blocked['close']):.4f} "
+            f"target=${float(nearest_blocked['buy_target']):.4f} "
+            f"dist={float(nearest_blocked['dist_pct']):.4f} "
+            f"reason={nearest_blocked['filter_reason']}"
+        )
+    else:
+        print("Nearest blocked:   none")
+    if action_summary:
+        print(f"Action summary:    {action_summary['summary']}")
+    if watchlist:
+        watch_summary = "; ".join(
+            f"{row['symbol']} near ${float(row['buy_target']):.4f} ({float(row['dist_pct'])*100:.1f}%, {row['filter_reason']})"
+            for row in watchlist
+        )
+        print(f"Watchlist:         {watch_summary}")
+    if follow_up_commands:
+        print("Suggested commands:")
+        for item in follow_up_commands:
+            print(f"  {item['summary']}:")
+            print(f"    {item['command']}")
+    print_warning_summary(warning_lines)
+
+    print(f"\nCandidates found:   {len(candidates)}")
+    if candidates:
+        print("\n--- CANDIDATES (would enter) ---")
+        for row in candidates:
+            print(
+                f"  {row['symbol']:12s} dir={row['direction']} score={float(row['score']):.4f} "
+                f"fill=${float(row['fill_price']):.4f} close=${float(row['close']):.4f}"
+            )
+
+    print("\n--- TOP 10 CLOSEST TO ENTRY (by distance to buy target) ---")
+    for row in proximity_rows:
+        status = f"** BLOCKED: {row['filter_reason']}" if row['filter_reason'] else "CANDIDATE"
+        print(
+            f"  {row['symbol']:12s} close=${float(row['close']):<12.4f} ref_high=${float(row['ref_high']):<12.4f} "
+            f"buy_target=${float(row['buy_target']):<12.4f} dist={float(row['dist_pct']):.4f} "
+            f"({float(row['dip_needed_pct']):.1f}% more dip needed) {status}"
+        )
+
+    print("\n--- FILTER SUMMARY ---")
+    for row in filter_summary:
+        print(f"  {row['reason']:30s} {int(row['count'])} symbols")
+
+    print("\n--- ALL SYMBOL DETAILS ---")
+    for d in sorted(diagnostics, key=lambda item: item.symbol):
         status = "CANDIDATE" if d.is_candidate else f"FILTERED: {d.filter_reason}"
         parts = [f"  {d.symbol:12s}"]
         if d.close > 0:
@@ -2818,14 +3557,145 @@ def run_diagnose(client, symbols: List[str], config: WorkStealConfig):
         parts.append(status)
         print(" ".join(parts))
 
-    # Suggest adaptive thresholds
-    if not candidates:
-        min_dist = min((d.dist_pct for d in proximity_diags), default=999)
-        if min_dist < 999:
-            print(f"\n--- SUGGESTIONS ---")
-            print(f"  Smallest distance to entry: {min_dist:.4f} ({min_dist*100:.1f}%)")
-            print(f"  To capture nearest, increase proximity_pct to ~{min_dist + 0.01:.3f}")
-            print(f"  Or reduce dip_pct to ~{max(0.05, config.dip_pct - min_dist):.3f}")
+    if not candidates and min_dist is not None:
+        print("\n--- SUGGESTIONS ---")
+        print(f"  Smallest distance to entry: {float(min_dist):.4f} ({float(min_dist)*100:.1f}%)")
+        print(f"  To capture nearest, increase proximity_pct to ~{float(min_dist) + 0.01:.3f}")
+        print(f"  Or reduce dip_pct to ~{max(0.05, float(result['dip_pct']) - float(min_dist)):.3f}")
+
+
+
+def _build_diagnose_summary(
+    *,
+    result: dict[str, object],
+    symbol_source: str,
+    symbols: List[str],
+    requested_symbol_count: int,
+    config_file: str | None,
+    extra: dict[str, object] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "tool": "trade_live",
+        "diagnose": True,
+        "symbol_source": symbol_source,
+        "requested_symbol_count": int(requested_symbol_count),
+        "symbol_count": len(symbols),
+        "symbols": list(symbols),
+        "config_file": config_file,
+        **result,
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _build_diagnose_no_data_context(symbols: list[str]) -> dict[str, object]:
+    load_summary = summarize_loaded_symbols(symbols, ())
+    requested_symbol_count = int(load_summary["requested_symbol_count"])
+    loaded_symbol_count = int(load_summary["loaded_symbol_count"])
+    missing_symbol_count = int(load_summary["missing_symbol_count"])
+    data_coverage_ratio = (
+        float(loaded_symbol_count) / float(requested_symbol_count)
+        if requested_symbol_count > 0
+        else 0.0
+    )
+    return {
+        "loaded_symbol_count": loaded_symbol_count,
+        "loaded_symbols": list(load_summary["loaded_symbols"]),
+        "missing_symbol_count": missing_symbol_count,
+        "missing_symbols": list(load_summary["missing_symbols"]),
+        "universe_complete": bool(load_summary["universe_complete"]),
+        "data_coverage_ratio": data_coverage_ratio,
+        "candidate_count": 0,
+        "candidate_symbols": [],
+        "top_candidate": None,
+        "nearest_blocked": None,
+        "watchlist": [],
+        "follow_up_commands": [],
+        "action_summary": {
+            "status": "no_data",
+            "symbol": None,
+            "reason": "no_market_data",
+            "fill_price": None,
+            "target_price": None,
+            "current_price": None,
+            "distance_pct": None,
+            "summary": "no actionable signal; no market data loaded",
+        },
+        "candidates": [],
+        "closest_to_entry": [],
+        "filter_summary": [],
+        "diagnostics": [],
+        "min_entry_distance_pct": None,
+        "warnings": build_run_warnings(load_summary=load_summary),
+    }
+
+
+
+def _run_diagnose_report(
+    client,
+    symbols: List[str],
+    config: WorkStealConfig,
+    *,
+    command_preview: str | None = None,
+    raw_argv: list[str] | None = None,
+    omitted_symbols: list[str] | None = None,
+    pair_routing: list[dict[str, str]] | None = None,
+) -> tuple[int, dict[str, object] | None]:
+    result = _collect_diagnose_result(client, symbols, config)
+    if result is None:
+        no_data_context = _build_diagnose_no_data_context(symbols)
+        _print_inspection_symbol_context(
+            omitted_symbols=omitted_symbols,
+            pair_routing=pair_routing,
+        )
+        _print_diagnose_coverage_context(
+            loaded_symbol_count=int(no_data_context["loaded_symbol_count"]),
+            total_symbols=len(symbols),
+            data_coverage_ratio=float(no_data_context["data_coverage_ratio"]),
+            loaded_symbols=list(no_data_context.get("loaded_symbols") or []),
+            missing_symbols=list(no_data_context.get("missing_symbols") or []),
+            command_preview=command_preview,
+        )
+        print(f"Action summary:    {str(no_data_context['action_summary']['summary'])}")
+        print_warning_summary(no_data_context.get("warnings"))
+        print("ERROR: No bar data fetched for any symbol")
+        return 1, None
+    result["follow_up_commands"] = _build_diagnose_follow_up_commands(
+        raw_argv=raw_argv,
+        top_candidate=result.get("top_candidate"),
+        watchlist=list(result.get("watchlist") or []),
+    )
+    _print_inspection_symbol_context(
+        omitted_symbols=omitted_symbols,
+        pair_routing=pair_routing,
+    )
+    _print_diagnose_report(result, command_preview=command_preview)
+    return 0, result
+
+
+
+def run_diagnose(
+    client,
+    symbols: List[str],
+    config: WorkStealConfig,
+    *,
+    command_preview: str | None = None,
+    raw_argv: list[str] | None = None,
+    omitted_symbols: list[str] | None = None,
+    pair_routing: list[dict[str, str]] | None = None,
+) -> int:
+    """One-shot diagnostic: show exactly why each symbol passes/fails entry filters."""
+    rc, _ = _run_diagnose_report(
+        client,
+        symbols,
+        config,
+        command_preview=command_preview,
+        raw_argv=raw_argv,
+        omitted_symbols=omitted_symbols,
+        pair_routing=pair_routing,
+    )
+    return rc
 
 
 def main(argv: list[str] | None = None):
@@ -2836,6 +3706,8 @@ def main(argv: list[str] | None = None):
     if args.live:
         args.dry_run = False
 
+    command_preview = render_command_preview("binance_worksteal.trade_live", raw_argv)
+    inspection_mode = _inspection_mode_from_args(args)
     resolved_error_context: dict[str, object] = {}
 
     def return_main_error(
@@ -2848,12 +3720,17 @@ def main(argv: list[str] | None = None):
             "max_symbols": args.max_symbols,
             "dry_run": args.dry_run,
             "live_mode": not args.dry_run,
+            "command": command_preview,
         }
+        if inspection_mode is not None:
+            extra["inspection_mode"] = inspection_mode
         extra.update(resolved_error_context)
         if args.list_symbols:
             extra["list_symbols_only"] = True
         if args.preview_run:
             extra["preview_only"] = True
+        if args.diagnose:
+            extra["diagnose"] = True
 
         if args.summary_json:
             def error_run():
@@ -2939,15 +3816,22 @@ def main(argv: list[str] | None = None):
         "omitted_symbols": omitted_symbols,
         "dry_run": args.dry_run,
         "live_mode": not args.dry_run,
+        "command": command_preview,
         "pair_routing": pair_routing,
         "pair_routing_summary": pair_routing_summary,
     }
+    if inspection_mode is not None:
+        symbol_summary_context["inspection_mode"] = inspection_mode
     if args.list_symbols:
 
         def list_symbols_run():
             print_resolved_symbols(symbols, display_source)
-            _print_omitted_symbols(omitted_symbols)
-            _print_pair_routing(pair_routing)
+            _print_inspection_symbol_context(
+                omitted_symbols=omitted_symbols,
+                pair_routing=pair_routing,
+            )
+            print("Command:")
+            print(f"  {command_preview}")
             return 0, build_symbol_listing_summary(
                 tool="trade_live",
                 data_dir=None,
@@ -2966,94 +3850,24 @@ def main(argv: list[str] | None = None):
             announce_artifact_manifest_on_success=bool(args.summary_json),
         )
     if args.preview_run:
-        preview_neural_symbols = _normalize_strategy_symbols(args.neural_symbols)
-        preview_override_context = _build_config_override_context(args, raw_argv)
-        preview_mode_context = {
-            "dry_run": args.dry_run,
-            "live_mode": not args.dry_run,
-            "daemon": args.daemon,
-            "diagnose": args.diagnose,
-            "run_on_start": args.run_on_start,
-            "startup_preview_only": args.startup_preview_only,
-        }
-        preview_runtime_context = {
-            "poll_seconds": args.poll_seconds,
-            "entry_poll_hours": args.entry_poll_hours,
-            "health_report_hours": args.health_report_hours,
-            "gemini_enabled": args.gemini,
-            "gemini_model": args.gemini_model if args.gemini else None,
-            "neural_model": args.neural_model,
-            "neural_symbols": preview_neural_symbols,
-        }
-        preview_schedule_context = _build_preview_schedule_context(args)
-        preview_file_context = {
-            "state_file": str(STATE_FILE),
-            "trade_log": str(LOG_FILE),
-            "events_log": str(EVENTS_FILE),
-        }
-        preview_command_context = {
-            "command": render_command_preview("binance_worksteal.trade_live", raw_argv),
-        }
-        preview_sections = [
-            (
-                "Inputs",
-                (
-                    ("symbol_source", display_source),
-                    ("requested_symbol_count", int(resolved_symbols["requested_symbol_count"])),
-                    ("symbol_count", len(symbols)),
-                    ("omitted_symbol_count", omitted_symbol_count),
-                    ("omitted_symbols", omitted_symbols),
-                    ("symbols", symbols),
-                    ("max_symbols", args.max_symbols),
-                ),
-            ),
-            ("Mode", tuple(preview_mode_context.items())),
-            ("Runtime", tuple(preview_runtime_context.items())),
-            ("Launch behavior", tuple(preview_schedule_context.items())),
-            (
-                "Files",
-                tuple(
-                    {
-                        "config_file": args.config_file,
-                        "summary_json": args.summary_json,
-                        **preview_file_context,
-                    }.items()
-                ),
-            ),
-            ("Command", tuple(preview_command_context.items())),
-            (
-                "Config",
-                (
-                    ("dip_pct", config.dip_pct),
-                    ("proximity_pct", config.proximity_pct),
-                    ("profit_target_pct", config.profit_target_pct),
-                    ("stop_loss_pct", config.stop_loss_pct),
-                    ("max_positions", config.max_positions),
-                    ("market_breadth_filter", config.market_breadth_filter),
-                    ("risk_off_market_breadth_filter", config.risk_off_market_breadth_filter),
-                    ("rebalance_seeded_positions", config.rebalance_seeded_positions),
-                ),
-            ),
-        ]
-        if preview_override_context["config_override_count"]:
-            preview_sections.append(
-                (
-                    "Config overrides",
-                    (
-                        ("config_override_count", preview_override_context["config_override_count"]),
-                        ("config_file_override_fields", preview_override_context["config_file_override_fields"]),
-                        ("cli_override_fields", preview_override_context["cli_override_fields"]),
-                        ("effective_overrides", preview_override_context["config_override_preview"]),
-                    ),
-                )
-            )
+        preview_sections, preview_summary_extra = _build_trade_live_preview_payload(
+            args=args,
+            raw_argv=raw_argv,
+            config=config,
+            display_source=display_source,
+            resolved_symbols=resolved_symbols,
+            symbol_summary_context=symbol_summary_context,
+        )
 
         def preview_run():
             print_run_preview(
                 tool="trade_live",
                 sections=preview_sections,
             )
-            _print_pair_routing(pair_routing)
+            _print_inspection_symbol_context(
+                omitted_symbols=omitted_symbols,
+                pair_routing=pair_routing,
+            )
             if not args.summary_json:
                 return 0, None
             return 0, build_preview_run_summary(
@@ -3064,14 +3878,7 @@ def main(argv: list[str] | None = None):
                 config_file=args.config_file,
                 requested_symbol_count=int(resolved_symbols["requested_symbol_count"]),
                 config=asdict(config),
-                extra={
-                    **symbol_summary_context,
-                    **preview_mode_context,
-                    **preview_runtime_context,
-                    **preview_schedule_context,
-                    **preview_override_context,
-                    **preview_file_context,
-                },
+                extra=preview_summary_extra,
             )
 
         return run_with_optional_summary(
@@ -3081,6 +3888,7 @@ def main(argv: list[str] | None = None):
             argv=raw_argv,
             announce_artifact_manifest_on_success=bool(args.summary_json),
         )
+
     logger.info(f"Using {len(symbols)} symbols from {symbol_source}")
     if args.config_file:
         logger.info(f"Loaded config overrides from {args.config_file}")
@@ -3095,8 +3903,63 @@ def main(argv: list[str] | None = None):
             logger.warning(f"Binance client unavailable: {e}")
 
     if args.diagnose:
-        run_diagnose(client, symbols, config)
-        return 0
+        if args.summary_json:
+            diagnose_context = {
+                **resolved_symbols,
+                **config_override_context,
+                "dry_run": args.dry_run,
+                "live_mode": not args.dry_run,
+                "command": command_preview,
+                "inspection_mode": "diagnose",
+                "diagnose": True,
+            }
+
+            def diagnose_run():
+                rc, result = _run_diagnose_report(
+                    client,
+                    symbols,
+                    config,
+                    command_preview=command_preview,
+                    raw_argv=raw_argv,
+                    omitted_symbols=omitted_symbols,
+                    pair_routing=pair_routing,
+                )
+                if rc != 0 or result is None:
+                    return 1, build_cli_error_summary(
+                        tool="trade_live",
+                        error="ERROR: No bar data fetched for any symbol",
+                        error_type="RuntimeError",
+                        config_file=args.config_file,
+                        extra={
+                            **diagnose_context,
+                            **_build_diagnose_no_data_context(symbols),
+                        },
+                    )
+                return 0, _build_diagnose_summary(
+                    result=result,
+                    symbol_source=display_source,
+                    symbols=symbols,
+                    requested_symbol_count=int(resolved_symbols["requested_symbol_count"]),
+                    config_file=args.config_file,
+                    extra=diagnose_context,
+                )
+
+            return run_with_optional_summary(
+                args.summary_json,
+                diagnose_run,
+                module="binance_worksteal.trade_live",
+                argv=raw_argv,
+                announce_artifact_manifest_on_success=bool(args.summary_json),
+            )
+        return run_diagnose(
+            client,
+            symbols,
+            config,
+            command_preview=command_preview,
+            raw_argv=raw_argv,
+            omitted_symbols=omitted_symbols,
+            pair_routing=pair_routing,
+        )
 
     if client is None and not args.dry_run:
         return return_main_error(
@@ -3202,6 +4065,7 @@ def main(argv: list[str] | None = None):
                     positions=positions,
                     now=now,
                     dry_run=args.dry_run,
+                    config=config,
                 )
                 refreshed.extend(
                     reconcile_exit_orders(

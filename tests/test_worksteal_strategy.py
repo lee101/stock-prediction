@@ -503,6 +503,39 @@ class TestWorkStealBacktest:
         assert [candidate[0] for candidate in limited_candidates] == [candidate[0] for candidate in full_candidates[:2]]
         assert limited_candidates == full_candidates[:2]
 
+    def test_build_entry_candidates_long_only_skips_dedupe_pass(self, monkeypatch):
+        bars = {
+            "SYM0USD": make_bars([100.0] * 20 + [90.0], symbol="SYM0USD"),
+            "SYM1USD": make_bars([100.0] * 20 + [91.0], symbol="SYM1USD"),
+            "SYM2USD": make_bars([100.0] * 20 + [92.0], symbol="SYM2USD"),
+        }
+        history = bars
+        current_bars = {sym: frame.iloc[-1] for sym, frame in bars.items()}
+        config = WorkStealConfig(
+            dip_pct=0.10,
+            proximity_pct=0.05,
+            lookback_days=20,
+            sma_filter_period=0,
+        )
+        date = pd.Timestamp("2026-01-21", tz="UTC")
+
+        def fail_dedupe(*args, **kwargs):
+            raise AssertionError("long-only path should not dedupe uniquely ranked symbols")
+
+        monkeypatch.setattr(strategy_mod, "_dedupe_ranked_candidates", fail_dedupe)
+
+        candidates = strategy_mod.build_entry_candidates(
+            current_bars=current_bars,
+            history=history,
+            positions={},
+            last_exit={},
+            date=date,
+            config=config,
+            max_candidates=2,
+        )
+
+        assert [candidate[0] for candidate in candidates] == ["SYM0USD", "SYM1USD"]
+
     def test_backtest_skips_resorting_common_ranked_candidates(self, monkeypatch):
         bars = {
             "AUSD": make_bars([100.0, 100.0], symbol="AUSD"),

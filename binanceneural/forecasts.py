@@ -4,7 +4,7 @@ import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -13,6 +13,12 @@ import pandas as pd
 from src.chronos2_params import resolve_chronos2_params
 from src.date_utils import is_nyse_open_on_date
 from src.models.chronos2_postprocessing import repair_forecast_ohlc
+from .narrative_forecasts import (
+    apply_narrative_overlay,
+    normalize_narrative_backend,
+    resolve_horizon_summary_cache_dir,
+    resolve_summary_cache_dir,
+)
 
 try:  # pragma: no cover - optional heavy dependency
     from src.models.chronos2_wrapper import Chronos2OHLCWrapper, Chronos2PredictionBatch
@@ -88,6 +94,11 @@ class ChronosForecastManager:
         self._resolved_params: Dict[str, object] = {}
         self._warned_missing = False
         self._load_inference_params()
+        self._narrative_backend = normalize_narrative_backend(getattr(self.config, "narrative_backend", "off"))
+        self._narrative_summary_cache_dir = resolve_summary_cache_dir(
+            forecast_cache_dir=Path(self.config.cache_dir),
+            summary_cache_dir=getattr(self.config, "narrative_summary_cache_dir", None),
+        )
 
     def ensure_latest(
         self,
@@ -163,6 +174,18 @@ class ChronosForecastManager:
             .sort_values("timestamp")
             .reset_index(drop=True)
         )
+        if self._narrative_backend != "off":
+            combined = apply_narrative_overlay(
+                combined,
+                symbol=self.config.symbol,
+                history=history,
+                backend=self._narrative_backend,
+                model=getattr(self.config, "narrative_model", None),
+                forecast_cache_dir=Path(self.config.cache_dir),
+                summary_cache_dir=self._narrative_summary_cache_dir,
+                context_hours=int(getattr(self.config, "narrative_context_hours", 24 * 7)),
+                force_rebuild=force_rebuild,
+            )
         self.cache.write(self.config.symbol, combined)
         logger.info(
             "Chronos cache updated for %s (horizon=%dh): +%d rows (%d total)",
@@ -613,6 +636,10 @@ def build_forecast_bundle(
     end: Optional[pd.Timestamp | str] = None,
     force_multivariate: bool | None = None,
     force_cross_learning: bool | None = None,
+    narrative_backend: str = "off",
+    narrative_model: str | None = None,
+    narrative_summary_cache_root: Path | None = None,
+    narrative_context_hours: int = 24 * 7,
 ) -> pd.DataFrame:
     """Build merged Chronos forecast frame with horizon-specific suffixes."""
 
@@ -629,6 +656,14 @@ def build_forecast_bundle(
             cache_dir=horizon_dir,
             force_multivariate=force_multivariate,
             force_cross_learning=force_cross_learning,
+            narrative_backend=narrative_backend,
+            narrative_model=narrative_model,
+            narrative_summary_cache_dir=resolve_horizon_summary_cache_dir(
+                cache_root=cache_root,
+                horizon=int(horizon),
+                summary_cache_root=narrative_summary_cache_root,
+            ),
+            narrative_context_hours=int(narrative_context_hours),
         )
         manager = ChronosForecastManager(cfg)
         forecast = manager.ensure_latest(start=start, end=end, cache_only=cache_only)

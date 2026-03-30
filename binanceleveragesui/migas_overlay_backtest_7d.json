@@ -1,0 +1,190 @@
+{
+  "window": {
+    "start": "2026-03-22T23:45:00+00:00",
+    "end": "2026-03-29T23:45:00+00:00"
+  },
+  "config": {
+    "models": [
+      {
+        "name": "doge",
+        "symbol": "DOGEUSDT",
+        "data_symbol": "DOGEUSD",
+        "base_asset": "DOGE",
+        "maker_fee": 0.001,
+        "checkpoint": "/home/lee/code/stock/binanceleveragesui/checkpoints/DOGEUSD_r4_R4_h384_cosine/binanceneural_20260301_065549/epoch_008.pt"
+      },
+      {
+        "name": "aave",
+        "symbol": "AAVEUSDT",
+        "data_symbol": "AAVEUSD",
+        "base_asset": "AAVE",
+        "maker_fee": 0.001,
+        "checkpoint": "/home/lee/code/stock/binanceleveragesui/checkpoints/AAVEUSD_sweep_AAVE_h384_cosine/binanceneural_20260302_094405/epoch_002.pt"
+      }
+    ],
+    "initial_cash": 10000.0,
+    "initial_model": "",
+    "initial_inv": 0.0,
+    "initial_entry_ts": null,
+    "max_leverage": 2.3,
+    "long_max_leverage": 2.3,
+    "short_max_leverage": 2.3,
+    "allow_short": false,
+    "lookback": 24,
+    "selection_mode": "winner_cash",
+    "selection_metric": "calmar",
+    "cash_threshold": 0.0,
+    "switch_margin": 0.005,
+    "min_score_gap": 0.0,
+    "profit_gate_mode": "hypothetical",
+    "profit_gate_lookback_hours": 0,
+    "profit_gate_min_return": 0.0,
+    "intensity_scale": 5.0,
+    "max_hold_hours": 6.0,
+    "data_root": "/home/lee/code/stock/binance_spot_hourly",
+    "forecast_cache": "/home/lee/code/stock/binanceneural/forecast_cache_migas_overlay",
+    "resolved_forecast_horizons": {
+      "doge": [
+        1
+      ],
+      "aave": [
+        1
+      ]
+    }
+  },
+  "individual": {
+    "doge": {
+      "final_equity": 8923.620031105884,
+      "return_pct": -10.763799688941166,
+      "max_drawdown_pct": -16.924613883002685,
+      "bars": 2017,
+      "sharpe_ratio": -7.298901953398873,
+      "sortino_ratio": -3.89708369335172,
+      "model": "doge",
+      "cash": -11686.803018894114,
+      "inventory": 227815.0,
+      "initial_inventory": 0.0,
+      "initial_entry_ts": null,
+      "start": "2026-03-22T23:45:00+00:00",
+      "end": "2026-03-29T23:45:00+00:00",
+      "trade_count": 6,
+      "buy_count": 4,
+      "sell_count": 2,
+      "long_entry_count": 3,
+      "long_exit_count": 2,
+      "short_entry_count": 0,
+      "short_exit_count": 0
+    },
+    "aave": {
+      "final_equity": 10000.0,
+      "return_pct": 0.0,
+      "max_drawdown_pct": 0.0,
+      "bars": 2017,
+      "sharpe_ratio": null,
+      "sortino_ratio": null,
+      "model": "aave",
+      "cash": 10000.0,
+      "inventory": 0.0,
+      "initial_inventory": 0.0,
+      "initial_entry_ts": null,
+      "start": "2026-03-22T23:45:00+00:00",
+      "end": "2026-03-29T23:45:00+00:00",
+      "trade_count": 0,
+      "buy_count": 0,
+      "sell_count": 0,
+      "long_entry_count": 0,
+      "long_exit_count": 0,
+      "short_entry_count": 0,
+      "short_exit_count": 0
+    }
+  },
+  "meta": {
+    "final_equity": 8923.620031105884,
+    "return_pct": -10.763799688941166,
+    "max_drawdown_pct": -16.924613883002685,
+    "bars": 2017,
+    "sharpe_ratio": -7.298901953398873,
+    "sortino_ratio": -3.89708369335172,
+    "trade_count": 6,
+    "switch_count": 3,
+    "segments": [
+      {
+        "model": "doge",
+        "start": "2026-03-22T23:45:00+00:00",
+        "end": "2026-03-26T09:30:00+00:00",
+        "final_equity": 8899.0789782747,
+        "initial_inventory": 0.0,
+        "initial_entry_ts": null,
+        "trade_count": 3,
+        "buy_count": 2,
+        "sell_count": 1,
+        "long_entry_count": 1,
+        "long_exit_count": 1,
+        "short_entry_count": 0,
+        "short_exit_count": 0
+      },
+      {
+        "model": "doge",
+        "start": "2026-03-26T17:00:00+00:00",
+        "end": "2026-03-28T13:40:00+00:00",
+        "final_equity": 8989.868768209306,
+        "initial_inventory": 0.0,
+        "initial_entry_ts": null,
+        "trade_count": 2,
+        "buy_count": 1,
+        "sell_count": 1,
+        "long_entry_count": 1,
+        "long_exit_count": 1,
+        "short_entry_count": 0,
+        "short_exit_count": 0
+      },
+      {
+        "model": "doge",
+        "start": "2026-03-28T13:45:00+00:00",
+        "end": "2026-03-29T23:45:00+00:00",
+        "final_equity": 8923.620031105884,
+        "initial_inventory": 0.0,
+        "initial_entry_ts": null,
+        "trade_count": 1,
+        "buy_count": 1,
+        "sell_count": 0,
+        "long_entry_count": 1,
+        "long_exit_count": 0,
+        "short_entry_count": 0,
+        "short_exit_count": 0
+      }
+    ],
+    "switches": [
+      {
+        "ts": "2026-03-22T23:45:00+00:00",
+        "selected": "doge",
+        "selection_cutoff": "2026-03-22T22:00:00+00:00",
+        "scores": {
+          "doge": 61.01329300344053,
+          "aave": -2.3025833666041264
+        },
+        "profit_returns": {}
+      },
+      {
+        "ts": "2026-03-26T17:00:00+00:00",
+        "selected": "doge",
+        "selection_cutoff": "2026-03-26T16:00:00+00:00",
+        "scores": {
+          "doge": 470234762774.0465,
+          "aave": -119373.99532497466
+        },
+        "profit_returns": {}
+      },
+      {
+        "ts": "2026-03-28T13:45:00+00:00",
+        "selected": "doge",
+        "selection_cutoff": "2026-03-28T12:00:00+00:00",
+        "scores": {
+          "doge": 1.5605344358568666e+18,
+          "aave": -20996562.275512908
+        },
+        "profit_returns": {}
+      }
+    ]
+  }
+}

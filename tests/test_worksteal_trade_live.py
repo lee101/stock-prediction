@@ -14,8 +14,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from binance_worksteal.trade_live import (
     DEFAULT_CONFIG,
+    _build_preview_capital_context,
+    _build_preview_exit_context,
     _coerce_order_id,
+    _finite_float_or_warn,
     _merge_peak_equity,
+    _pending_entry_to_position,
     _order_avg_price,
     _relative_bps_distance,
     _resolve_symbol_selection_context,
@@ -46,8 +50,10 @@ from binance_worksteal.trade_live import (
     synchronize_positions_from_exchange,
 )
 from binance_worksteal.data import FEATURE_NAMES
+from binance_worksteal.reporting import render_command_preview
 from binance_worksteal.model import DailyWorkStealPolicy, PerSymbolWorkStealPolicy
 from binance_worksteal.strategy import WorkStealConfig
+from binance_worksteal.strategy import SymbolDiagnostic
 
 
 def make_bars(prices: list[float], symbol: str) -> pd.DataFrame:
@@ -322,6 +328,43 @@ def test_order_id_helpers_only_accept_positive_integer_ids():
     order, order_id = _submitted_margin_order_or_none({"orderId": ""}, context="test order")
     assert order == {"orderId": ""}
     assert order_id is None
+
+
+def test_finite_float_or_warn_normalizes_numpy_scalar_warning_values(monkeypatch):
+    warnings = []
+
+    class DummyLogger:
+        def warning(self, message):
+            warnings.append(message)
+
+    monkeypatch.setattr("binance_worksteal.trade_live.logger", DummyLogger())
+
+    assert _finite_float_or_warn(np.float64("nan"), context="test value") is None
+    assert warnings == [
+        "Invalid test value: expected a finite numeric value, got nan"
+    ]
+
+
+def test_nearest_proximity_diagnostics_limits_without_full_sort():
+    from binance_worksteal.trade_live import _nearest_proximity_diagnostics
+
+    diagnostics = [
+        SymbolDiagnostic(symbol="SKIP0", dist_pct=0.0),
+        SymbolDiagnostic(symbol="SKIPNEG", dist_pct=-0.5),
+        SymbolDiagnostic(symbol="D7", dist_pct=0.07),
+        SymbolDiagnostic(symbol="D3", dist_pct=0.03),
+        SymbolDiagnostic(symbol="D9", dist_pct=0.09),
+        SymbolDiagnostic(symbol="D1", dist_pct=0.01),
+        SymbolDiagnostic(symbol="D6", dist_pct=0.06),
+        SymbolDiagnostic(symbol="D2", dist_pct=0.02),
+        SymbolDiagnostic(symbol="D8", dist_pct=0.08),
+        SymbolDiagnostic(symbol="D4", dist_pct=0.04),
+        SymbolDiagnostic(symbol="D5", dist_pct=0.05),
+    ]
+
+    nearest = _nearest_proximity_diagnostics(diagnostics, limit=5)
+
+    assert [diagnostic.symbol for diagnostic in nearest] == ["D1", "D2", "D3", "D4", "D5"]
 
 
 def test_normalize_live_positions_drops_non_finite_core_values_and_repairs_nested_non_finite_values():
@@ -658,6 +701,117 @@ def test_plan_legacy_rebalance_exits_only_non_candidates():
     assert exits == [("ALTUSD", 100.0, "legacy_rebalance", positions["ALTUSD"])]
     assert positions["DIPUSD"]["source"] == "strategy"
     assert positions["BTCUSD"]["source"] == "strategy"
+
+
+def test_plan_legacy_rebalance_exits_skips_invalid_current_close():
+    history = {
+        "ALTUSD": make_bars([100.0] * 30, "ALTUSD"),
+        "DIPUSD": make_bars([100.0] * 29 + [90.0], "DIPUSD"),
+    }
+    current_bars = {sym: bars.iloc[-1].copy() for sym, bars in history.items()}
+    current_bars["ALTUSD"]["close"] = "nan"
+    positions = {
+        "ALTUSD": {
+            "entry_price": 100.0,
+            "entry_date": "2026-03-01T00:00:00+00:00",
+            "quantity": 1.0,
+            "peak_price": 100.0,
+            "target_sell": 103.0,
+            "stop_price": 92.0,
+            "source": "legacy",
+        },
+        "DIPUSD": {
+            "entry_price": 90.0,
+            "entry_date": "2026-03-01T00:00:00+00:00",
+            "quantity": 1.0,
+            "peak_price": 90.0,
+            "target_sell": 92.7,
+            "stop_price": 82.8,
+            "source": "legacy",
+        },
+    }
+    config = build_runtime_config(
+        build_arg_parser().parse_args(
+            [
+                "--dip-pct", "0.10",
+                "--proximity-pct", "0.02",
+                "--lookback-days", "20",
+                "--profit-target", "0.03",
+                "--stop-loss", "0.08",
+                "--rebalance-seeded-positions",
+            ]
+        )
+    )
+
+    exits, rebalance_symbols = plan_legacy_rebalance_exits(
+        now=datetime(2026, 3, 18, tzinfo=UTC),
+        positions=positions,
+        current_bars=current_bars,
+        history=history,
+        last_exit={},
+        config=config,
+    )
+
+    assert exits == []
+    assert rebalance_symbols == set()
+    assert positions["ALTUSD"]["source"] == "legacy"
+
+
+def test_plan_legacy_rebalance_exits_passes_symbol_metrics_to_strategy_calls(monkeypatch):
+    history = {
+        "ALTUSD": make_bars([100.0] * 30, "ALTUSD"),
+    }
+    current_bars = {sym: bars.iloc[-1] for sym, bars in history.items()}
+    positions = {
+        "ALTUSD": {
+            "entry_price": 100.0,
+            "entry_date": "2026-03-01T00:00:00+00:00",
+            "quantity": 1.0,
+            "peak_price": 100.0,
+            "target_sell": 103.0,
+            "stop_price": 92.0,
+            "source": "legacy",
+        },
+    }
+    sentinel_metrics = {"ALTUSD": object()}
+    calls = {"resolve": 0, "build": 0}
+
+    class FakeRegime:
+        def __init__(self, config):
+            self.config = config
+            self.skip_entries = False
+            self.risk_off = False
+            self.market_breadth_skip = False
+            self.market_breadth_ratio = 0.0
+            self.market_breadth_dipping_count = 0
+            self.market_breadth_total_count = 0
+
+    def fake_resolve_entry_regime(*, current_bars, history, config, symbol_metrics=None):
+        assert symbol_metrics is sentinel_metrics
+        calls["resolve"] += 1
+        return FakeRegime(config)
+
+    def fake_build_entry_candidates(*, symbol_metrics=None, **kwargs):
+        assert symbol_metrics is sentinel_metrics
+        calls["build"] += 1
+        return []
+
+    monkeypatch.setattr("binance_worksteal.trade_live.resolve_entry_regime", fake_resolve_entry_regime)
+    monkeypatch.setattr("binance_worksteal.trade_live.build_entry_candidates", fake_build_entry_candidates)
+
+    exits, rebalance_symbols = plan_legacy_rebalance_exits(
+        now=datetime(2026, 3, 18, tzinfo=UTC),
+        positions=positions,
+        current_bars=current_bars,
+        history=history,
+        last_exit={},
+        config=DEFAULT_CONFIG,
+        symbol_metrics=sentinel_metrics,
+    )
+
+    assert calls == {"resolve": 1, "build": 1}
+    assert exits == [("ALTUSD", 100.0, "legacy_rebalance", positions["ALTUSD"])]
+    assert rebalance_symbols == {"ALTUSD"}
 
 
 def test_plan_legacy_rebalance_exits_skips_rebalance_in_risk_off_regime():
@@ -1049,6 +1203,75 @@ def test_reconcile_pending_entries_uses_stored_quantity_when_fill_qty_is_nan(mon
             "reason": "pending_fill(rule)",
         }
     ]
+
+
+def test_pending_entry_to_position_repairs_invalid_targets_and_defaults_source():
+    config = build_runtime_config(
+        build_arg_parser().parse_args(["--profit-target", "0.05", "--stop-loss", "0.08"])
+    )
+
+    position = _pending_entry_to_position(
+        {
+            "buy_price": "2000",
+            "quantity": "nan",
+            "target_sell": 1900.0,
+            "stop_price": 2100.0,
+            "source": "",
+        },
+        entry_time=datetime(2026, 3, 18, 12, tzinfo=UTC),
+        config=config,
+    )
+
+    assert position == {
+        "entry_price": 2000.0,
+        "entry_date": "2026-03-18T12:00:00+00:00",
+        "quantity": 0.0,
+        "peak_price": 2000.0,
+        "target_sell": pytest.approx(2000.0 * (1.0 + config.profit_target_pct)),
+        "stop_price": pytest.approx(2000.0 * (1.0 - config.stop_loss_pct)),
+        "source": "strategy",
+    }
+
+
+def test_reconcile_pending_entries_repairs_invalid_targets_and_stops_on_fill(monkeypatch, tmp_path):
+    monkeypatch.setattr("binance_worksteal.trade_live.LOG_FILE", tmp_path / "trade_log.jsonl")
+
+    class DummyClient:
+        def get_margin_order(self, symbol, orderId):
+            assert symbol == "ETHFDUSD"
+            assert orderId == 123
+            return {"status": "FILLED", "executedQty": "0.5", "price": "2000"}
+
+    config = build_runtime_config(
+        build_arg_parser().parse_args(["--profit-target", "0.05", "--stop-loss", "0.08"])
+    )
+    pending_entries = {
+        "ETHUSD": {
+            "buy_price": 1995.0,
+            "quantity": 0.5,
+            "target_sell": 1900.0,
+            "stop_price": 2100.0,
+            "placed_at": "2026-03-18T00:00:00+00:00",
+            "expires_at": "2026-03-19T00:00:00+00:00",
+            "order_id": 123,
+            "source": "rule",
+        }
+    }
+    positions = {}
+
+    reconcile_pending_entries(
+        client=DummyClient(),
+        pending_entries=pending_entries,
+        positions=positions,
+        now=datetime(2026, 3, 18, 12, tzinfo=UTC),
+        dry_run=False,
+        config=config,
+    )
+
+    position = positions["ETHUSD"]
+    assert position["entry_price"] == 2000.0
+    assert position["target_sell"] == pytest.approx(2000.0 * (1.0 + config.profit_target_pct))
+    assert position["stop_price"] == pytest.approx(2000.0 * (1.0 - config.stop_loss_pct))
 
 
 def test_reconcile_pending_entries_cancels_expired_orders_using_recorded_order_symbol():
@@ -1545,6 +1768,100 @@ def test_synchronize_positions_from_exchange_rebuilds_missing_positions(monkeypa
     assert "DOGEUSD" not in positions
     assert [event["symbol"] for event in events] == ["ADAUSD", "ZECUSD"]
 
+
+def test_synchronize_positions_from_exchange_rebuilds_position_without_nan_peak_from_live_bars(monkeypatch, tmp_path):
+    monkeypatch.setattr("binance_worksteal.trade_live.EVENTS_FILE", tmp_path / "events.jsonl")
+
+    class DummyClient:
+        def get_margin_account(self):
+            return {
+                "userAssets": [
+                    {"asset": "ADA", "free": "5.0", "netAsset": "5.0", "borrowed": "0"},
+                ]
+            }
+
+        def get_open_margin_orders(self, **kwargs):
+            return [
+                {
+                    "symbol": "ADAUSDT",
+                    "orderId": 42,
+                    "status": "NEW",
+                    "side": "SELL",
+                    "price": "11.5",
+                    "updateTime": 1774466874374,
+                }
+            ]
+
+        def get_all_margin_orders(self, symbol, **kwargs):
+            if symbol == "ADAUSDT":
+                return [
+                    {
+                        "symbol": "ADAUSDT",
+                        "status": "FILLED",
+                        "side": "BUY",
+                        "price": "10.0",
+                        "executedQty": "5.0",
+                        "time": 1774433541859,
+                        "updateTime": 1774433718086,
+                    }
+                ]
+            return []
+
+    positions = {}
+    current_bars = {"ADAUSD": pd.Series({"close": "nan", "high": "nan"})}
+
+    synchronize_positions_from_exchange(
+        client=DummyClient(),
+        symbols=["ADAUSD"],
+        positions=positions,
+        current_bars=current_bars,
+        config=DEFAULT_CONFIG,
+        now=datetime(2026, 3, 25, 21, tzinfo=UTC),
+    )
+
+    assert positions["ADAUSD"]["entry_price"] == 10.0
+    assert positions["ADAUSD"]["peak_price"] == 10.0
+    assert positions["ADAUSD"]["exit_order_id"] == 42
+
+
+def test_synchronize_positions_from_exchange_repairs_non_finite_existing_peak_price(monkeypatch, tmp_path):
+    monkeypatch.setattr("binance_worksteal.trade_live.EVENTS_FILE", tmp_path / "events.jsonl")
+
+    class DummyClient:
+        def get_margin_account(self):
+            return {
+                "userAssets": [
+                    {"asset": "ADA", "free": "5.0", "netAsset": "5.0", "borrowed": "0"},
+                ]
+            }
+
+        def get_open_margin_orders(self, **kwargs):
+            return []
+
+    positions = {
+        "ADAUSD": {
+            "entry_price": 10.0,
+            "entry_date": "2026-03-24T00:00:00+00:00",
+            "quantity": 5.0,
+            "peak_price": float("nan"),
+            "target_sell": 11.5,
+            "stop_price": 9.0,
+            "source": "strategy",
+        }
+    }
+    current_bars = {"ADAUSD": pd.Series({"close": 10.5, "high": 11.0})}
+
+    events = synchronize_positions_from_exchange(
+        client=DummyClient(),
+        symbols=["ADAUSD"],
+        positions=positions,
+        current_bars=current_bars,
+        config=DEFAULT_CONFIG,
+        now=datetime(2026, 3, 25, 21, tzinfo=UTC),
+    )
+
+    assert events == []
+    assert positions["ADAUSD"]["peak_price"] == 11.0
 
 def test_synchronize_positions_from_exchange_skips_positions_with_invalid_borrowed_quantity():
     class DummyClient:
@@ -2165,6 +2482,70 @@ def test_run_daily_cycle_keeps_position_when_live_exit_order_response_is_missing
         if line.strip()
     )
 
+
+def test_run_daily_cycle_keeps_position_when_max_hold_bar_close_is_invalid(monkeypatch, tmp_path):
+    monkeypatch.setattr("binance_worksteal.trade_live.STATE_FILE", tmp_path / "live_state.json")
+    monkeypatch.setattr("binance_worksteal.trade_live.LOG_FILE", tmp_path / "trade_log.jsonl")
+    monkeypatch.setattr("binance_worksteal.trade_live.EVENTS_FILE", tmp_path / "events.jsonl")
+
+    bars = make_bars_ohlc(
+        [{"close": 100.0}] * 29 + [{"open": 100.0, "high": 101.0, "low": 99.0, "close": "nan"}],
+        "DIPUSD",
+    )
+    monkeypatch.setattr(
+        "binance_worksteal.trade_live._fetch_all_bars",
+        lambda client, symbols, lookback_days: {"DIPUSD": bars},
+    )
+
+    state = {
+        "positions": {
+            "DIPUSD": {
+                "entry_price": 100.0,
+                "entry_date": "2026-01-20T00:00:00+00:00",
+                "quantity": 5.0,
+                "peak_price": 100.0,
+                "target_sell": 115.0,
+                "stop_price": 90.0,
+                "source": "strategy",
+            }
+        },
+        "pending_entries": {},
+        "last_exit": {},
+        "recent_trades": [],
+        "peak_equity": 0.0,
+    }
+    (tmp_path / "live_state.json").write_text(json.dumps(state))
+
+    config = build_runtime_config(
+        build_arg_parser().parse_args(
+            [
+                "--dip-pct", "0.10",
+                "--lookback-days", "20",
+                "--profit-target", "0.50",
+                "--stop-loss", "0.20",
+                "--max-hold-days", "1",
+                "--max-positions", "1",
+                "--sma-filter", "0",
+                "--risk-off-trigger-sma-period", "0",
+                "--risk-off-trigger-momentum-period", "0",
+                "--risk-off-market-breadth-filter", "0",
+            ]
+        )
+    )
+
+    run_daily_cycle(client=None, symbols=["DIPUSD"], config=config, dry_run=True)
+
+    payload = json.loads((tmp_path / "live_state.json").read_text())
+    position = payload["positions"]["DIPUSD"]
+    assert position["peak_price"] == 100.0
+    assert payload["last_exit"] == {}
+
+    log_path = tmp_path / "trade_log.jsonl"
+    assert not log_path.exists() or not any(
+        json.loads(line)["side"] == "sell"
+        for line in log_path.read_text().strip().split("\n")
+        if line.strip()
+    )
 
 def test_run_daily_cycle_stages_pending_entries_without_open_position(monkeypatch, tmp_path):
     monkeypatch.setattr("binance_worksteal.trade_live.STATE_FILE", tmp_path / "live_state.json")
@@ -2820,6 +3201,7 @@ def test_resolve_symbol_selection_context_caps_and_summarizes_routes():
             "cross_quote_symbols": ["BTCUSD"],
             "data_quote_counts": {"USDT": 2},
             "order_quote_counts": {"FDUSD": 1, "USDT": 1},
+            "required_data_quotes": ["USDT"],
             "required_order_quotes": ["FDUSD", "USDT"],
         },
     }
@@ -2835,8 +3217,10 @@ def test_trade_live_list_symbols_uses_shared_resolution_and_max_symbols(tmp_path
         encoding="utf-8",
     )
 
-    rc = trade_live_main(["--universe-file", str(universe_path), "--max-symbols", "2", "--list-symbols"])
+    argv = ["--universe-file", str(universe_path), "--max-symbols", "2", "--list-symbols"]
+    rc = trade_live_main(argv)
 
+    expected_command = render_command_preview("binance_worksteal.trade_live", argv)
     out = capsys.readouterr().out.strip().splitlines()
     assert rc == 0
     assert out[0] == (
@@ -2857,8 +3241,11 @@ def test_trade_live_list_symbols_uses_shared_resolution_and_max_symbols(tmp_path
         "  cross-quote routes: 2",
         "  cross-quote symbols: BTCUSD, ETHUSD",
         "  data quote mix: USDT=2",
+        "  required data quotes: USDT",
         "  order quote mix: FDUSD=2",
         "  required order quotes: FDUSD",
+        "Command:",
+        f"  {expected_command}",
     ]
 
 
@@ -2878,7 +3265,7 @@ def test_trade_live_list_symbols_summary_dash_prints_json_to_stdout(tmp_path, ca
         encoding="utf-8",
     )
 
-    rc = trade_live_main([
+    argv = [
         "--universe-file",
         str(universe_path),
         "--config-file",
@@ -2888,13 +3275,16 @@ def test_trade_live_list_symbols_summary_dash_prints_json_to_stdout(tmp_path, ca
         "--list-symbols",
         "--summary-json",
         "-",
-    ])
+    ]
+    rc = trade_live_main(argv)
 
+    expected_command = render_command_preview("binance_worksteal.trade_live", argv)
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
     assert rc == 0
     assert payload["tool"] == "trade_live"
     assert payload["list_symbols_only"] is True
+    assert payload["inspection_mode"] == "list_symbols"
     assert payload["config_file"] == str(config_path)
     assert payload["requested_symbol_count"] == 3
     assert payload["symbol_count"] == 2
@@ -2912,17 +3302,22 @@ def test_trade_live_list_symbols_summary_dash_prints_json_to_stdout(tmp_path, ca
         "cross_quote_symbols": ["BTCUSD", "ETHUSD"],
         "data_quote_counts": {"USDT": 2},
         "order_quote_counts": {"FDUSD": 2},
+        "required_data_quotes": ["USDT"],
         "required_order_quotes": ["FDUSD"],
     }
     assert payload["was_capped"] is True
     assert payload["max_symbols"] == 2
+    assert payload["command"] == expected_command
     assert payload["status"] == "success"
     assert payload["exit_code"] == 0
     assert payload["invocation"]["module"] == "binance_worksteal.trade_live"
     assert payload["invocation"]["argv"][-2:] == ["--summary-json", "-"]
-    assert captured.err.splitlines()[0] == (
+    err_lines = captured.err.splitlines()
+    assert err_lines[0] == (
         f"Resolved 2 symbols from universe file {universe_path} (capped to --max-symbols=2):"
     )
+    assert "Command:" in err_lines
+    assert f"  {expected_command}" in err_lines
 
 
 def test_trade_live_list_symbols_summary_file_prints_artifacts(tmp_path, capsys):
@@ -2942,7 +3337,7 @@ def test_trade_live_list_symbols_summary_file_prints_artifacts(tmp_path, capsys)
     )
     summary_path = tmp_path / "live_symbols_summary.json"
 
-    rc = trade_live_main([
+    argv = [
         "--universe-file",
         str(universe_path),
         "--config-file",
@@ -2952,8 +3347,10 @@ def test_trade_live_list_symbols_summary_file_prints_artifacts(tmp_path, capsys)
         "--list-symbols",
         "--summary-json",
         str(summary_path),
-    ])
+    ]
+    rc = trade_live_main(argv)
 
+    expected_command = render_command_preview("binance_worksteal.trade_live", argv)
     out = capsys.readouterr().out
     payload = json.loads(summary_path.read_text(encoding="utf-8"))
     assert rc == 0
@@ -2966,8 +3363,11 @@ def test_trade_live_list_symbols_summary_file_prints_artifacts(tmp_path, capsys)
     assert "Routing summary:" in out
     assert "  cross-quote symbols: BTCUSD, ETHUSD" in out
     assert "  data quote mix: USDT=2" in out
+    assert "  required data quotes: USDT" in out
     assert "  order quote mix: FDUSD=2" in out
     assert "  required order quotes: FDUSD" in out
+    assert "Command:" in out
+    assert f"  {expected_command}" in out
     assert "Generated artifacts:" in out
     assert f"  summary_json: {summary_path}" in out
     assert "Reproduce:" in out
@@ -2988,8 +3388,10 @@ def test_trade_live_list_symbols_summary_file_prints_artifacts(tmp_path, capsys)
         "cross_quote_symbols": ["BTCUSD", "ETHUSD"],
         "data_quote_counts": {"USDT": 2},
         "order_quote_counts": {"FDUSD": 2},
+        "required_data_quotes": ["USDT"],
         "required_order_quotes": ["FDUSD"],
     }
+    assert payload["command"] == expected_command
     assert payload["summary_json_file"] == str(summary_path)
     assert payload["artifacts"] == [
         {
@@ -3012,9 +3414,11 @@ def test_trade_live_invalid_universe_file_returns_error(tmp_path, capsys):
 
 def test_trade_live_invalid_universe_file_summary_dash_prints_structured_error(tmp_path, capsys):
     missing_path = tmp_path / "missing.yaml"
+    argv = ["--universe-file", str(missing_path), "--list-symbols", "--summary-json", "-"]
 
-    rc = trade_live_main(["--universe-file", str(missing_path), "--list-symbols", "--summary-json", "-"])
+    rc = trade_live_main(argv)
 
+    expected_command = render_command_preview("binance_worksteal.trade_live", argv)
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
     assert rc == 1
@@ -3023,6 +3427,8 @@ def test_trade_live_invalid_universe_file_summary_dash_prints_structured_error(t
     assert payload["error_type"] == "FileNotFoundError"
     assert payload["config_file"] is None
     assert payload["list_symbols_only"] is True
+    assert payload["inspection_mode"] == "list_symbols"
+    assert payload["command"] == expected_command
     assert payload["status"] == "error"
     assert payload["exit_code"] == 1
     assert payload["invocation"]["module"] == "binance_worksteal.trade_live"
@@ -3161,6 +3567,66 @@ def test_trade_live_explain_config_exits_before_symbol_resolution(tmp_path, monk
     assert payload["changed_fields"]["dip_pct"]["config_file_value"] == pytest.approx(0.18)
 
 
+def test_build_preview_capital_context_covers_buffer_and_full_deploy_branches():
+    buffer_config = build_runtime_config(
+        build_arg_parser().parse_args(["--max-positions", "3", "--max-position-pct", "0.20"])
+    )
+    buffer_context = _build_preview_capital_context(buffer_config, dry_run=True)
+    assert buffer_context == {
+        "equity_basis": pytest.approx(10000.0),
+        "per_position_budget_pct": pytest.approx(0.20),
+        "max_full_slots_budget_pct": pytest.approx(0.60),
+        "overallocated_pct_at_full_slots": pytest.approx(0.0),
+        "cash_buffer_pct_at_full_slots": pytest.approx(0.40),
+        "capital_note": "full slots leave 40% equity unallocated",
+        "per_position_budget_amount": pytest.approx(2000.0),
+        "max_full_slots_budget_amount": pytest.approx(6000.0),
+    }
+
+    full_deploy_config = build_runtime_config(
+        build_arg_parser().parse_args(["--max-positions", "4", "--max-position-pct", "0.25"])
+    )
+    full_deploy_context = _build_preview_capital_context(full_deploy_config, dry_run=False)
+    assert full_deploy_context == {
+        "equity_basis": "live account equity",
+        "per_position_budget_pct": pytest.approx(0.25),
+        "max_full_slots_budget_pct": pytest.approx(1.0),
+        "overallocated_pct_at_full_slots": pytest.approx(0.0),
+        "cash_buffer_pct_at_full_slots": pytest.approx(0.0),
+        "capital_note": "full slots fully deploy configured equity",
+    }
+
+
+def test_build_preview_exit_context_covers_trailing_stop_and_seeded_policy_branches():
+    base_config = build_runtime_config(
+        build_arg_parser().parse_args(["--max-hold-days", "7", "--trailing-stop", "0"])
+    )
+    base_context = _build_preview_exit_context(base_config)
+    assert base_context == {
+        "profit_target_pct": pytest.approx(base_config.profit_target_pct),
+        "stop_loss_pct": pytest.approx(base_config.stop_loss_pct),
+        "trailing_stop_pct": pytest.approx(0.0),
+        "max_hold_days": 7,
+        "seeded_position_policy": "rebalance legacy positions",
+        "exit_ordering": "profit_target -> stop_loss -> max_hold",
+    }
+
+    trailing_config = build_runtime_config(
+        build_arg_parser().parse_args(
+            ["--trailing-stop", "0.03", "--max-hold-days", "0", "--no-rebalance-seeded-positions"]
+        )
+    )
+    trailing_context = _build_preview_exit_context(trailing_config)
+    assert trailing_context == {
+        "profit_target_pct": pytest.approx(trailing_config.profit_target_pct),
+        "stop_loss_pct": pytest.approx(trailing_config.stop_loss_pct),
+        "trailing_stop_pct": pytest.approx(0.03),
+        "max_hold_days": 0,
+        "seeded_position_policy": "leave legacy positions unchanged",
+        "exit_ordering": "profit_target -> stop_loss -> trailing_stop",
+    }
+
+
 def test_trade_live_preview_run_exits_before_client_and_model_init(monkeypatch, capsys):
     def fail_client(*args, **kwargs):
         raise AssertionError("Binance client should not initialize for --preview-run")
@@ -3198,11 +3664,14 @@ def test_trade_live_preview_run_exits_before_client_and_model_init(monkeypatch, 
     assert "omitted_symbol_count: 1" in out
     assert "omitted_symbols: ETHUSD" in out
     assert "symbols: BTCUSD" in out
+    assert "Excluded by --max-symbols:" in out
+    assert "  ETHUSD" in out
     assert "Pair routing:" in out
     assert "  BTCUSD: data=BTCUSDT order=BTCFDUSD" in out
     assert "Routing summary:" in out
     assert "  cross-quote routes: 1" in out
     assert "  data quote mix: USDT=1" in out
+    assert "  required data quotes: USDT" in out
     assert "  order quote mix: FDUSD=1" in out
     assert "  required order quotes: FDUSD" in out
     assert "dry_run: no" in out
@@ -3212,6 +3681,14 @@ def test_trade_live_preview_run_exits_before_client_and_model_init(monkeypatch, 
     assert "gemini_model: gemini-2.5-flash" in out
     assert "neural_model: model.pt" in out
     assert "neural_symbols: SOLUSD, ADAUSD" in out
+    assert "Capital plan:" in out
+    assert "equity_basis: live account equity" in out
+    assert "max_full_slots_budget_pct: 1.25" in out
+    assert "overallocated_pct_at_full_slots: 0.25" in out
+    assert "capital_note: full slots exceed 100% of equity; requires margin or staggered fills" in out
+    assert "Exit policy:" in out
+    assert "exit_ordering: profit_target -> stop_loss -> trailing_stop -> max_hold" in out
+    assert "seeded_position_policy: rebalance legacy positions" in out
     assert "Launch behavior:" in out
     assert "startup_action: startup preview cycle" in out
     assert "steady_state_schedule: daily cycle at 00:05 UTC; entry scan every 4h; health every 6h" in out
@@ -3255,6 +3732,8 @@ def test_trade_live_preview_run_summary_dash_redirects_human_output(monkeypatch,
     assert rc == 0
     assert payload["tool"] == "trade_live"
     assert payload["preview_only"] is True
+    assert payload["inspection_mode"] == "preview_run"
+    assert payload["exit_ordering"] == "profit_target -> stop_loss -> trailing_stop -> max_hold"
     assert payload["requested_symbol_count"] == 2
     assert payload["symbol_count"] == 1
     assert payload["omitted_symbol_count"] == 1
@@ -3270,12 +3749,25 @@ def test_trade_live_preview_run_summary_dash_redirects_human_output(monkeypatch,
         "cross_quote_symbols": ["BTCUSD"],
         "data_quote_counts": {"USDT": 1},
         "order_quote_counts": {"FDUSD": 1},
+        "required_data_quotes": ["USDT"],
         "required_order_quotes": ["FDUSD"],
     }
     assert payload["dry_run"] is False
     assert payload["live_mode"] is True
     assert payload["daemon"] is True
     assert payload["neural_symbols"] == ["SOLUSD", "ADAUSD"]
+    assert payload["equity_basis"] == "live account equity"
+    assert payload["per_position_budget_pct"] == pytest.approx(0.25)
+    assert payload["max_full_slots_budget_pct"] == pytest.approx(1.25)
+    assert payload["overallocated_pct_at_full_slots"] == pytest.approx(0.25)
+    assert payload["cash_buffer_pct_at_full_slots"] == pytest.approx(0.0)
+    assert payload["capital_note"] == "full slots exceed 100% of equity; requires margin or staggered fills"
+    assert payload["profit_target_pct"] == pytest.approx(0.15)
+    assert payload["stop_loss_pct"] == pytest.approx(0.10)
+    assert payload["trailing_stop_pct"] == pytest.approx(0.03)
+    assert payload["max_hold_days"] == 14
+    assert payload["seeded_position_policy"] == "rebalance legacy positions"
+    assert payload["exit_ordering"] == "profit_target -> stop_loss -> trailing_stop -> max_hold"
     assert payload["startup_action"] == "startup preview cycle"
     assert payload["steady_state_schedule"] == "daily cycle at 00:05 UTC; entry scan every 4h; health every 6h"
     assert payload["status"] == "success"
@@ -3285,6 +3777,15 @@ def test_trade_live_preview_run_summary_dash_redirects_human_output(monkeypatch,
     assert payload["invocation"]["command"].startswith("python -m binance_worksteal.trade_live ")
     assert "trade_live run preview:" in captured.err
     assert "summary_json: -" in captured.err
+    assert "Capital plan:" in captured.err
+    assert "equity_basis: live account equity" in captured.err
+    assert "max_full_slots_budget_pct: 1.25" in captured.err
+    assert "capital_note: full slots exceed 100% of equity; requires margin or staggered fills" in captured.err
+    assert "Exit policy:" in captured.err
+    assert "exit_ordering: profit_target -> stop_loss -> trailing_stop -> max_hold" in captured.err
+    assert "Excluded by --max-symbols:" in captured.err
+    assert "  ETHUSD" in captured.err
+    assert "  required data quotes: USDT" in captured.err
     assert "Launch behavior:" in captured.err
     assert "startup_action: startup preview cycle" in captured.err
     assert "steady_state_schedule: daily cycle at 00:05 UTC; entry scan every 4h; health every 6h" in captured.err
@@ -3334,6 +3835,11 @@ def test_trade_live_preview_run_surfaces_config_override_sources(monkeypatch, tm
     payload = json.loads(captured.out)
     assert rc == 0
     assert "Config overrides:" in captured.err
+    assert "Capital plan:" in captured.err
+    assert "Exit policy:" in captured.err
+    assert "equity_basis: 10000.0" in captured.err
+    assert "per_position_budget_amount: 2500.0" in captured.err
+    assert "max_full_slots_budget_amount: 12500.0" in captured.err
     assert "config_override_count: 3" in captured.err
     assert "config_file_override_fields: market_breadth_filter, rebalance_seeded_positions" in captured.err
     assert "cli_override_fields: dip_pct" in captured.err
@@ -3341,6 +3847,16 @@ def test_trade_live_preview_run_surfaces_config_override_sources(monkeypatch, tm
     assert "market_breadth_filter=0.55 (config_file)" in captured.err
     assert "rebalance_seeded_positions=no (config_file)" in captured.err
     assert payload["config_override_count"] == 3
+    assert payload["equity_basis"] == pytest.approx(10000.0)
+    assert payload["per_position_budget_pct"] == pytest.approx(0.25)
+    assert payload["per_position_budget_amount"] == pytest.approx(2500.0)
+    assert payload["max_full_slots_budget_pct"] == pytest.approx(1.25)
+    assert payload["max_full_slots_budget_amount"] == pytest.approx(12500.0)
+    assert payload["overallocated_pct_at_full_slots"] == pytest.approx(0.25)
+    assert payload["cash_buffer_pct_at_full_slots"] == pytest.approx(0.0)
+    assert payload["capital_note"] == "full slots exceed 100% of equity; requires margin or staggered fills"
+    assert payload["seeded_position_policy"] == "leave legacy positions unchanged"
+    assert payload["exit_ordering"] == "profit_target -> stop_loss -> trailing_stop -> max_hold"
     assert payload["config_override_fields"] == [
         "dip_pct",
         "market_breadth_filter",
@@ -3396,11 +3912,15 @@ def test_trade_live_preview_run_summary_file_prints_artifacts(monkeypatch, tmp_p
     payload = json.loads(summary_path.read_text(encoding="utf-8"))
     assert rc == 0
     assert "trade_live run preview:" in out
+    assert "Capital plan:" in out
+    assert "Exit policy:" in out
+    assert "equity_basis: live account equity" in out
     assert "Pair routing:" in out
     assert "  BTCUSD: data=BTCUSDT order=BTCFDUSD" in out
     assert "Routing summary:" in out
     assert "  cross-quote symbols: BTCUSD" in out
     assert "  data quote mix: USDT=1" in out
+    assert "  required data quotes: USDT" in out
     assert "  order quote mix: FDUSD=1" in out
     assert "  required order quotes: FDUSD" in out
     assert "Generated artifacts:" in out
@@ -3410,6 +3930,7 @@ def test_trade_live_preview_run_summary_file_prints_artifacts(monkeypatch, tmp_p
     assert "Wrote summary JSON" not in out
     assert payload["tool"] == "trade_live"
     assert payload["preview_only"] is True
+    assert payload["exit_ordering"] == "profit_target -> stop_loss -> trailing_stop -> max_hold"
     assert payload["requested_symbol_count"] == 2
     assert payload["symbol_count"] == 1
     assert payload["pair_routing"] == [
@@ -3422,6 +3943,7 @@ def test_trade_live_preview_run_summary_file_prints_artifacts(monkeypatch, tmp_p
         "cross_quote_symbols": ["BTCUSD"],
         "data_quote_counts": {"USDT": 1},
         "order_quote_counts": {"FDUSD": 1},
+        "required_data_quotes": ["USDT"],
         "required_order_quotes": ["FDUSD"],
     }
     assert payload["summary_json_file"] == str(summary_path)
@@ -3481,6 +4003,7 @@ def test_trade_live_live_mode_client_unavailable_summary_dash_prints_structured_
         "cross_quote_symbols": ["BTCUSD"],
         "data_quote_counts": {"USDT": 1},
         "order_quote_counts": {"FDUSD": 1},
+        "required_data_quotes": ["USDT"],
         "required_order_quotes": ["FDUSD"],
     }
     assert payload["dry_run"] is False
@@ -3644,6 +4167,7 @@ def test_trade_live_neural_model_load_failure_summary_dash_prints_structured_err
         "cross_quote_symbols": ["BTCUSD"],
         "data_quote_counts": {"USDT": 1},
         "order_quote_counts": {"FDUSD": 1},
+        "required_data_quotes": ["USDT"],
         "required_order_quotes": ["FDUSD"],
     }
     assert payload["dry_run"] is True
@@ -3811,15 +4335,19 @@ def test_run_daily_cycle_passes_symbol_metrics_cache_to_strategy_calls(monkeypat
         "BTCUSD": make_bars([100.0] * 29 + [90.0], "BTCUSD"),
     }
     monkeypatch.setattr("binance_worksteal.trade_live._fetch_all_bars", lambda client, symbols, lookback_days: bars)
-    monkeypatch.setattr("binance_worksteal.trade_live.plan_legacy_rebalance_exits", lambda **kwargs: ([], set()))
 
     sentinel_metrics = {"BTCUSD": object()}
-    calls = {"resolve": 0, "build": 0, "sma": 0}
+    calls = {"legacy": 0, "resolve": 0, "build": 0, "sma": 0}
 
     monkeypatch.setattr(
         "binance_worksteal.trade_live._build_symbol_metric_cache",
         lambda current_bars, history: sentinel_metrics,
     )
+
+    def fake_plan_legacy_rebalance_exits(*, symbol_metrics=None, **kwargs):
+        assert symbol_metrics is sentinel_metrics
+        calls["legacy"] += 1
+        return [], set()
 
     class FakeRegime:
         def __init__(self, config):
@@ -3846,6 +4374,7 @@ def test_run_daily_cycle_passes_symbol_metrics_cache_to_strategy_calls(monkeypat
         calls["sma"] += 1
         return 1, 0
 
+    monkeypatch.setattr("binance_worksteal.trade_live.plan_legacy_rebalance_exits", fake_plan_legacy_rebalance_exits)
     monkeypatch.setattr("binance_worksteal.trade_live.resolve_entry_regime", fake_resolve_entry_regime)
     monkeypatch.setattr("binance_worksteal.trade_live.build_entry_candidates", fake_build_entry_candidates)
     monkeypatch.setattr("binance_worksteal.trade_live._count_sma_pass_fail", fake_count_sma_pass_fail)
@@ -3864,7 +4393,7 @@ def test_run_daily_cycle_passes_symbol_metrics_cache_to_strategy_calls(monkeypat
 
     run_daily_cycle(client=None, symbols=["BTCUSD"], config=config, dry_run=True)
 
-    assert calls == {"resolve": 1, "build": 1, "sma": 1}
+    assert calls == {"legacy": 1, "resolve": 1, "build": 1, "sma": 1}
 
 
 
@@ -4059,6 +4588,157 @@ def test_run_health_report_ignores_invalid_recent_trade_timestamps(monkeypatch, 
     assert len(events) == 1
     assert events[0]["type"] == "health_report"
     assert events[0]["days_since_trade"] == -1
+
+
+def test_run_health_report_skips_invalid_nearest_dip_symbol_and_keeps_valid_candidate(monkeypatch, tmp_path):
+    monkeypatch.setattr("binance_worksteal.trade_live.STATE_FILE", tmp_path / "live_state.json")
+    monkeypatch.setattr("binance_worksteal.trade_live.LOG_FILE", tmp_path / "trade_log.jsonl")
+    monkeypatch.setattr("binance_worksteal.trade_live.EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr("binance_worksteal.trade_live.load_state", lambda: {})
+
+    bars = {
+        "BTCUSD": make_bars([100.0] * 29 + [float("nan")], "BTCUSD"),
+        "ETHUSD": make_bars([100.0] * 29 + [90.0], "ETHUSD"),
+    }
+    monkeypatch.setattr("binance_worksteal.trade_live._fetch_all_bars", lambda client, symbols, lookback_days: bars)
+
+    class FakeMetrics:
+        close = 90.0
+
+        def ref_high(self, method, lookback):
+            return 100.0
+
+        def buy_target(self, ref_high, config):
+            return 90.0
+
+    monkeypatch.setattr(
+        "binance_worksteal.trade_live._build_symbol_metric_cache",
+        lambda current_bars, history: {"ETHUSD": FakeMetrics()},
+    )
+
+    class FakeRegime:
+        def __init__(self, config):
+            self.config = config
+            self.skip_entries = False
+            self.risk_off = False
+            self.market_breadth_skip = False
+            self.market_breadth_ratio = 0.0
+            self.market_breadth_dipping_count = 0
+            self.market_breadth_total_count = 0
+
+    monkeypatch.setattr(
+        "binance_worksteal.trade_live.resolve_entry_regime",
+        lambda **kwargs: FakeRegime(kwargs["config"]),
+    )
+
+    warnings = []
+    infos = []
+
+    class DummyLogger:
+        def warning(self, message):
+            warnings.append(message)
+
+        def info(self, message):
+            infos.append(message)
+
+        def error(self, message):
+            raise AssertionError(f"unexpected error log: {message}")
+
+    monkeypatch.setattr("binance_worksteal.trade_live.logger", DummyLogger())
+    events = []
+    monkeypatch.setattr("binance_worksteal.trade_live.log_event", lambda payload: events.append(payload))
+
+    config = WorkStealConfig(
+        dip_pct=0.10,
+        lookback_days=20,
+        sma_filter_period=0,
+        market_breadth_filter=0.0,
+        risk_off_market_breadth_filter=0.0,
+        risk_off_trigger_sma_period=0,
+        risk_off_trigger_momentum_period=0,
+    )
+
+    run_health_report(client=None, symbols=["BTCUSD", "ETHUSD"], config=config, dry_run=True)
+
+    assert warnings == [
+        "Invalid health nearest-dip BTCUSD close: expected a finite numeric value, got nan"
+    ]
+    assert any("nearest_dip=ETHUSD@0bps" in message for message in infos)
+    assert len(events) == 1
+    assert events[0]["type"] == "health_report"
+    assert events[0]["nearest_dip_sym"] == "ETHUSD"
+    assert events[0]["nearest_dip_bps"] == 0.0
+
+
+def test_run_health_report_reports_nearest_dip_na_when_all_candidates_invalid(monkeypatch, tmp_path):
+    monkeypatch.setattr("binance_worksteal.trade_live.STATE_FILE", tmp_path / "live_state.json")
+    monkeypatch.setattr("binance_worksteal.trade_live.LOG_FILE", tmp_path / "trade_log.jsonl")
+    monkeypatch.setattr("binance_worksteal.trade_live.EVENTS_FILE", tmp_path / "events.jsonl")
+    monkeypatch.setattr("binance_worksteal.trade_live.load_state", lambda: {})
+
+    bars = {
+        "BTCUSD": make_bars([100.0] * 29 + [float("nan")], "BTCUSD"),
+        "ETHUSD": make_bars([100.0] * 29 + [float("nan")], "ETHUSD"),
+    }
+    monkeypatch.setattr("binance_worksteal.trade_live._fetch_all_bars", lambda client, symbols, lookback_days: bars)
+    monkeypatch.setattr(
+        "binance_worksteal.trade_live._build_symbol_metric_cache",
+        lambda current_bars, history: {},
+    )
+
+    class FakeRegime:
+        def __init__(self, config):
+            self.config = config
+            self.skip_entries = False
+            self.risk_off = False
+            self.market_breadth_skip = False
+            self.market_breadth_ratio = 0.0
+            self.market_breadth_dipping_count = 0
+            self.market_breadth_total_count = 0
+
+    monkeypatch.setattr(
+        "binance_worksteal.trade_live.resolve_entry_regime",
+        lambda **kwargs: FakeRegime(kwargs["config"]),
+    )
+
+    warnings = []
+    infos = []
+
+    class DummyLogger:
+        def warning(self, message):
+            warnings.append(message)
+
+        def info(self, message):
+            infos.append(message)
+
+        def error(self, message):
+            raise AssertionError(f"unexpected error log: {message}")
+
+    monkeypatch.setattr("binance_worksteal.trade_live.logger", DummyLogger())
+    events = []
+    monkeypatch.setattr("binance_worksteal.trade_live.log_event", lambda payload: events.append(payload))
+
+    config = WorkStealConfig(
+        dip_pct=0.10,
+        lookback_days=20,
+        sma_filter_period=0,
+        market_breadth_filter=0.0,
+        risk_off_market_breadth_filter=0.0,
+        risk_off_trigger_sma_period=0,
+        risk_off_trigger_momentum_period=0,
+    )
+
+    run_health_report(client=None, symbols=["BTCUSD", "ETHUSD"], config=config, dry_run=True)
+
+    assert warnings == [
+        "Invalid health nearest-dip BTCUSD close: expected a finite numeric value, got nan",
+        "Invalid health nearest-dip ETHUSD close: expected a finite numeric value, got nan",
+    ]
+    assert any("nearest_dip=n/a" in message for message in infos)
+    assert len(events) == 1
+    assert events[0]["type"] == "health_report"
+    assert events[0]["nearest_dip_sym"] == ""
+    assert events[0]["nearest_dip_bps"] is None
 
 
 def test_run_entry_scan_passes_symbol_metrics_cache_to_strategy_calls(monkeypatch, tmp_path):
@@ -4472,6 +5152,36 @@ def test_stage_entry_candidates_neural_skip_low_intensity(monkeypatch, tmp_path)
     assert counts["n_staged"] == 0
 
 
+def test_stage_entry_candidates_neural_skip_invalid_pricing(monkeypatch, tmp_path):
+    monkeypatch.setattr("binance_worksteal.trade_live.LOG_FILE", tmp_path / "trade_log.jsonl")
+
+    bars = make_bars([100.0] * 29 + [90.0], "DIPUSD")
+    current_bar = bars.iloc[-1]
+    pending_entries = {}
+
+    neural_predictions = {
+        "DIPUSD": {"buy_offset": 0.05, "sell_offset": float("nan"), "intensity": 0.7},
+    }
+
+    config = build_runtime_config(build_arg_parser().parse_args([
+        "--dip-pct", "0.10", "--sma-filter", "0", "--entry-proximity-bps", "5000",
+        "--risk-off-trigger-sma-period", "0", "--risk-off-trigger-momentum-period", "0",
+        "--risk-off-market-breadth-filter", "0",
+    ]))
+
+    counts = _stage_entry_candidates(
+        client=None, candidates=[("DIPUSD", "long", 0.5, 90.0, current_bar)],
+        all_bars={"DIPUSD": bars}, staged_symbols=set(), pending_entries=pending_entries,
+        recent_trades=[], entry_config=config, config=config,
+        equity=10000.0, now=datetime(2026, 3, 18, tzinfo=UTC),
+        dry_run=True, slots=5, neural_predictions=neural_predictions,
+    )
+
+    assert counts["n_neural_skip"] == 1
+    assert counts["n_staged"] == 0
+    assert pending_entries == {}
+
+
 def test_stage_entry_candidates_no_neural_falls_back_to_rules(monkeypatch, tmp_path):
     monkeypatch.setattr("binance_worksteal.trade_live.LOG_FILE", tmp_path / "trade_log.jsonl")
 
@@ -4494,6 +5204,60 @@ def test_stage_entry_candidates_no_neural_falls_back_to_rules(monkeypatch, tmp_p
 
     assert counts["n_staged"] == 1
     assert counts["n_neural_skip"] == 0
+
+
+def test_stage_entry_candidates_skips_non_finite_current_close(monkeypatch, tmp_path):
+    monkeypatch.setattr("binance_worksteal.trade_live.LOG_FILE", tmp_path / "trade_log.jsonl")
+
+    bars = make_bars([100.0] * 29 + [90.0], "DIPUSD")
+    current_bar = pd.Series({"close": "nan"})
+    pending_entries = {}
+    recent_trades = []
+
+    config = build_runtime_config(build_arg_parser().parse_args([
+        "--dip-pct", "0.10", "--sma-filter", "0", "--entry-proximity-bps", "5000",
+        "--risk-off-trigger-sma-period", "0", "--risk-off-trigger-momentum-period", "0",
+        "--risk-off-market-breadth-filter", "0",
+    ]))
+
+    counts = _stage_entry_candidates(
+        client=None, candidates=[("DIPUSD", "long", 0.5, 90.0, current_bar)],
+        all_bars={"DIPUSD": bars}, staged_symbols=set(), pending_entries=pending_entries,
+        recent_trades=recent_trades, entry_config=config, config=config,
+        equity=10000.0, now=datetime(2026, 3, 18, tzinfo=UTC),
+        dry_run=True, slots=5, neural_predictions=None,
+    )
+
+    assert counts["n_staged"] == 0
+    assert pending_entries == {}
+    assert recent_trades == []
+
+
+def test_stage_entry_candidates_skips_non_finite_fill_price(monkeypatch, tmp_path):
+    monkeypatch.setattr("binance_worksteal.trade_live.LOG_FILE", tmp_path / "trade_log.jsonl")
+
+    bars = make_bars([100.0] * 29 + [90.0], "DIPUSD")
+    current_bar = bars.iloc[-1]
+    pending_entries = {}
+    recent_trades = []
+
+    config = build_runtime_config(build_arg_parser().parse_args([
+        "--dip-pct", "0.10", "--sma-filter", "0", "--entry-proximity-bps", "5000",
+        "--risk-off-trigger-sma-period", "0", "--risk-off-trigger-momentum-period", "0",
+        "--risk-off-market-breadth-filter", "0",
+    ]))
+
+    counts = _stage_entry_candidates(
+        client=None, candidates=[("DIPUSD", "long", 0.5, float("nan"), current_bar)],
+        all_bars={"DIPUSD": bars}, staged_symbols=set(), pending_entries=pending_entries,
+        recent_trades=recent_trades, entry_config=config, config=config,
+        equity=10000.0, now=datetime(2026, 3, 18, tzinfo=UTC),
+        dry_run=True, slots=5, neural_predictions=None,
+    )
+
+    assert counts["n_staged"] == 0
+    assert pending_entries == {}
+    assert recent_trades == []
 
 
 def test_stage_entry_candidates_neural_high_intensity_boosts_confidence(monkeypatch, tmp_path):
