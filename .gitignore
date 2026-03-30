@@ -655,3 +655,4 @@ pufferlib_market/stocks12_*.log
 .secretbashrc
 **/events.jsonl
 **/sapp_events.jsonl
+monitoring/
