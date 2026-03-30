@@ -438,6 +438,19 @@ def _prepare_limit_order(client, pair: str, side: str, price: float, quantity: f
     if min_notional > 0.0 and (adj_price * adj_qty) < min_notional:
         return 0.0, 0.0, "notional_below_min_notional"
 
+    # Binance margin rejects limit orders >15% from index price (code -3064).
+    # Pre-check to avoid spamming the API with guaranteed rejections.
+    try:
+        ticker = client.get_symbol_ticker(symbol=pair) if client else None
+        if isinstance(ticker, dict):
+            index_price = _safe_float(ticker.get("price"), default=0.0)
+            if index_price > 0.0:
+                deviation = abs(adj_price - index_price) / index_price
+                if deviation > 0.14:
+                    return 0.0, 0.0, f"price_{deviation:.0%}_from_index"
+    except Exception:
+        pass
+
     return float(adj_price), float(adj_qty), None
 
 

@@ -634,6 +634,50 @@ def test_place_limit_sell_rejects_when_symbol_rules_unavailable(monkeypatch):
     assert client.called is False
 
 
+def test_prepare_limit_order_rejects_price_far_from_index(monkeypatch):
+    monkeypatch.setattr("binance_worksteal.trade_live._ORDER_RULES_CACHE", {})
+    from binance_worksteal.trade_live import _prepare_limit_order
+
+    class DummyClient:
+        def get_symbol_info(self, symbol):
+            return {
+                "filters": [
+                    {"filterType": "PRICE_FILTER", "tickSize": "0.00001", "minPrice": "0.00001"},
+                    {"filterType": "LOT_SIZE", "stepSize": "0.1", "minQty": "0.1"},
+                    {"filterType": "MIN_NOTIONAL", "minNotional": "5"},
+                ]
+            }
+
+        def get_symbol_ticker(self, symbol):
+            return {"symbol": symbol, "price": "0.02100"}
+
+    _, _, reason = _prepare_limit_order(DummyClient(), "ENJUSDT", "BUY", 0.0258, 28530.0)
+    assert reason is not None
+    assert "from_index" in reason
+
+
+def test_prepare_limit_order_accepts_price_near_index(monkeypatch):
+    monkeypatch.setattr("binance_worksteal.trade_live._ORDER_RULES_CACHE", {})
+    from binance_worksteal.trade_live import _prepare_limit_order
+
+    class DummyClient:
+        def get_symbol_info(self, symbol):
+            return {
+                "filters": [
+                    {"filterType": "PRICE_FILTER", "tickSize": "0.0001", "minPrice": "0.0001"},
+                    {"filterType": "LOT_SIZE", "stepSize": "0.1", "minQty": "0.1"},
+                    {"filterType": "MIN_NOTIONAL", "minNotional": "5"},
+                ]
+            }
+
+        def get_symbol_ticker(self, symbol):
+            return {"symbol": symbol, "price": "0.2700"}
+
+    price, qty, reason = _prepare_limit_order(DummyClient(), "ADAUSDT", "SELL", 0.2644, 836.5)
+    assert reason is None
+    assert qty == 836.5
+
+
 def test_plan_legacy_rebalance_exits_only_non_candidates():
     history = {
         "ALTUSD": make_bars([100.0] * 30, "ALTUSD"),
