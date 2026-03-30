@@ -10,10 +10,9 @@ Supports:
 from __future__ import annotations
 
 import argparse
-import itertools
-import random
 import sys
 import time
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -22,10 +21,50 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import numpy as np
 import pandas as pd
 
+from binance_worksteal.cli import (
+    build_cli_error,
+    add_date_range_args,
+    add_require_full_universe_arg,
+    load_bars_with_summary,
+    build_strict_retry_command,
+    add_symbol_selection_args,
+    print_window_span_coverage_summary,
+    print_resolved_symbols,
+    require_full_universe_or_print_error,
+    resolve_cli_symbols_with_error,
+    resolve_paired_date_range_with_error,
+)
+from binance_worksteal.config_io import (
+    add_config_file_arg,
+    add_explain_config_arg,
+    add_print_config_arg,
+    argv_has_flag,
+    build_worksteal_config_from_args,
+    maybe_handle_worksteal_config_output,
+)
+from binance_worksteal.eval_diagnostics import format_eval_failure
+from binance_worksteal.reporting import (
+    add_preview_run_arg,
+    add_summary_json_arg,
+    announce_sweep_artifacts,
+    build_cli_error_summary,
+    build_empty_sweep_run_summary,
+    build_preview_run_summary,
+    build_sweep_run_summary,
+    empty_sweep_recommendation,
+    build_symbol_listing_summary,
+    default_sidecar_json_path,
+    print_run_preview,
+    prepare_sweep_recommendation_artifacts,
+    run_with_optional_summary,
+)
+from binance_worksteal.grid_sampling import cartesian_product_size, sample_cartesian_product
+from binance_worksteal.windowing import compute_rolling_windows
 from binance_worksteal.strategy import (
-    WorkStealConfig, load_daily_bars, run_worksteal_backtest,
+    WorkStealConfig, count_completed_trades, load_daily_bars, prepare_backtest_bars, run_worksteal_backtest,
 )
 from binance_worksteal.backtest import FULL_UNIVERSE
+from binance_worksteal.csim.compat import config_supports_csim, summarize_csim_incompatibility
 
 
 SWEEP_GRID = {
@@ -44,15 +83,13 @@ SWEEP_GRID = {
     "market_breadth_filter": [0.0, 0.6, 0.7, 0.8],
 }
 
+SWEEP_CONFIG_FLAG_TO_FIELD = {
+    "--cash": ("initial_cash", "cash"),
+}
+
 
 def build_windows(all_bars, window_days=60, n_windows=3):
-    latest = max(df["timestamp"].max() for df in all_bars.values())
-    windows = []
-    for i in range(n_windows):
-        end = latest - pd.Timedelta(days=i * window_days)
-        start = end - pd.Timedelta(days=window_days)
-        windows.append((str(start.date()), str(end.date())))
-    return windows
+    return compute_rolling_windows(all_bars, window_days=window_days, n_windows=n_windows)
 
 
 def _try_load_csim():
@@ -63,31 +100,126 @@ def _try_load_csim():
         return None
 
 
-def eval_config_single_window(all_bars, config, start_date, end_date, use_csim_fn=None):
-    if use_csim_fn is not None:
-        metrics = use_csim_fn(
-            all_bars, config, start_date=start_date, end_date=end_date,
-        )
-        if not metrics:
-            return None
-        metrics["n_trades"] = metrics.get("total_trades", 0)
-        return metrics
+def build_sweep_cli_default_config(args: argparse.Namespace) -> WorkStealConfig:
+    return WorkStealConfig(initial_cash=args.cash)
+
+
+def build_sweep_base_config(args: argparse.Namespace, raw_argv: list[str]) -> WorkStealConfig:
+    config = build_worksteal_config_from_args(
+        base_config=build_sweep_cli_default_config(args),
+        config_file=args.config_file,
+        args=args,
+        raw_argv=raw_argv,
+        flag_to_field=SWEEP_CONFIG_FLAG_TO_FIELD,
+    )
+    if argv_has_flag(raw_argv, "--realistic"):
+        config = replace(config, realistic_fill=True, daily_checkpoint_only=True)
+    return config
+
+
+def summarize_execution_mode(config: WorkStealConfig) -> dict[str, object]:
+    realistic_fill = bool(config.realistic_fill)
+    daily_checkpoint_only = bool(config.daily_checkpoint_only)
+    if realistic_fill and daily_checkpoint_only:
+        label = "REALISTIC (touch-fill + next-bar execution)"
+    elif realistic_fill:
+        label = "TOUCH_FILL_ONLY"
+    elif daily_checkpoint_only:
+        label = "NEXT_BAR_ONLY"
+    else:
+        label = "DEFAULT"
+    return {
+        "label": label,
+        "realistic_fill": realistic_fill,
+        "daily_checkpoint_only": daily_checkpoint_only,
+        "realistic": realistic_fill and daily_checkpoint_only,
+    }
+
+
+def _apply_realistic_flag_explanation(explanation: dict[str, object]) -> None:
+    changed_fields = explanation["changed_fields"]
+    sources = explanation["sources"]
+    cli_overrides = explanation["cli_overrides"]
+    rendered_config = explanation["config"]
+    config_file_overrides = explanation["config_file_overrides"]
+    for field_name in ("realistic_fill", "daily_checkpoint_only"):
+        change = changed_fields.get(field_name, {"default": False})
+        change["source"] = "cli"
+        change["value"] = True
+        change["cli_value"] = True
+        if field_name in config_file_overrides:
+            change["config_file_value"] = config_file_overrides[field_name]
+        changed_fields[field_name] = change
+        sources[field_name] = "cli"
+        cli_overrides[field_name] = True
+        rendered_config[field_name] = True
+
+
+def eval_config_single_window(
+    all_bars,
+    config,
+    start_date,
+    end_date,
+    prepared_bars=None,
+    use_csim_fn=None,
+    warn_csim_failure=None,
+    report_backtest_failure=None,
+):
+    if use_csim_fn is not None and config_supports_csim(config):
+        try:
+            metrics = use_csim_fn(
+                all_bars, config, start_date=start_date, end_date=end_date,
+            )
+        except Exception as exc:
+            if warn_csim_failure is not None:
+                warn_csim_failure(
+                    format_eval_failure("sweep", "C sim", config, start_date, end_date, exc)
+                )
+        else:
+            if not metrics:
+                return None
+            metrics["n_trades"] = metrics.get("total_trades", 0)
+            return metrics
     try:
         equity_df, trades, metrics = run_worksteal_backtest(
-            all_bars, config, start_date=start_date, end_date=end_date,
+            all_bars, config, start_date=start_date, end_date=end_date, prepared_bars=prepared_bars,
         )
-    except Exception:
+    except Exception as exc:
+        if report_backtest_failure is not None:
+            report_backtest_failure(
+                format_eval_failure("sweep", "Python backtest", config, start_date, end_date, exc)
+            )
         return None
     if not metrics:
         return None
-    metrics["n_trades"] = len(trades)
+    metrics["n_trades"] = metrics.get(
+        "n_trades",
+        count_completed_trades(trades),
+    )
     return metrics
 
 
-def eval_config_multi_window(all_bars, config, windows, use_csim_fn=None):
+def eval_config_multi_window(
+    all_bars,
+    config,
+    windows,
+    prepared_bars=None,
+    use_csim_fn=None,
+    warn_csim_failure=None,
+    report_backtest_failure=None,
+):
     window_metrics = []
     for start, end in windows:
-        m = eval_config_single_window(all_bars, config, start, end, use_csim_fn)
+        m = eval_config_single_window(
+            all_bars,
+            config,
+            start,
+            end,
+            prepared_bars,
+            use_csim_fn,
+            warn_csim_failure=warn_csim_failure,
+            report_backtest_failure=report_backtest_failure,
+        )
         if m is None:
             return None
         window_metrics.append(m)
@@ -122,28 +254,66 @@ def eval_config_multi_window(all_bars, config, windows, use_csim_fn=None):
 
 def run_sweep(
     all_bars, windows, output_csv,
-    max_trials=500, cash=10000.0, realistic=False, use_csim=False,
+    max_trials=500,
+    cash: float | None = None,
+    realistic: bool | None = None,
+    use_csim=False,
+    base_config: WorkStealConfig | None = None,
+    return_metadata: bool = False,
 ):
+    template_config = base_config or WorkStealConfig()
+    if cash is not None:
+        template_config = replace(template_config, initial_cash=cash)
+    if realistic is not None:
+        template_config = replace(
+            template_config,
+            realistic_fill=bool(realistic),
+            daily_checkpoint_only=bool(realistic),
+        )
+    mode_summary = summarize_execution_mode(template_config)
     csim_fn = _try_load_csim() if use_csim else None
+    prepared_bars = prepare_backtest_bars(all_bars)
+    warned_incompatible_csim = False
+    warned_runtime_csim_failure = False
+    incompatible_csim_issues = ""
+    skipped_backtest_failures = 0
+    logged_backtest_failures = 0
+    failure_samples: list[str] = []
+    csim_runtime_failure_samples: list[str] = []
+    csim_runtime_failure_count = 0
     if use_csim and csim_fn is None:
         print("WARN: --use-csim requested but C lib not available, falling back to Python")
 
+    def warn_csim_failure(message):
+        nonlocal warned_runtime_csim_failure, csim_runtime_failure_count
+        csim_runtime_failure_count += 1
+        if len(csim_runtime_failure_samples) < 5:
+            csim_runtime_failure_samples.append(message)
+        if warned_runtime_csim_failure:
+            return
+        warned_runtime_csim_failure = True
+        print(f"WARN: {message}; falling back to Python for this window")
+
+    def report_backtest_failure(message):
+        nonlocal skipped_backtest_failures, logged_backtest_failures
+        skipped_backtest_failures += 1
+        if len(failure_samples) < 10:
+            failure_samples.append(message)
+        if logged_backtest_failures >= 3:
+            return
+        logged_backtest_failures += 1
+        print(f"WARN: {message}")
+
     keys = list(SWEEP_GRID.keys())
     values = list(SWEEP_GRID.values())
-    all_combos = list(itertools.product(*values))
+    total_combos, combos = sample_cartesian_product(values, max_trials=max_trials, seed=42)
 
-    random.seed(42)
-    if len(all_combos) > max_trials:
-        combos = random.sample(all_combos, max_trials)
-    else:
-        combos = all_combos
-
-    print(f"Sweep: {len(combos)} configs (from {len(all_combos)} total)")
+    print(f"Sweep: {len(combos)} configs (from {total_combos} total)")
     print(f"Windows: {len(windows)}")
     for i, (s, e) in enumerate(windows):
         print(f"  W{i}: {s} to {e}")
-    if realistic:
-        print("Mode: REALISTIC (strict fill, proximity filter)")
+    if mode_summary["label"] != "DEFAULT":
+        print(f"Mode: {mode_summary['label']}")
 
     results = []
     best_min_sortino = -999
@@ -152,9 +322,23 @@ def run_sweep(
 
     for i, combo in enumerate(combos):
         params = dict(zip(keys, combo))
-        config = WorkStealConfig(initial_cash=cash, **params)
+        config = replace(template_config, **params)
 
-        multi = eval_config_multi_window(all_bars, config, windows, csim_fn)
+        config_csim_fn = csim_fn if config_supports_csim(config) else None
+        if csim_fn is not None and config_csim_fn is None and not warned_incompatible_csim:
+            incompatible_csim_issues = summarize_csim_incompatibility(config)
+            print(f"WARN: falling back to Python backtest for unsupported C sim features: {incompatible_csim_issues}")
+            warned_incompatible_csim = True
+
+        multi = eval_config_multi_window(
+            all_bars,
+            config,
+            windows,
+            prepared_bars,
+            config_csim_fn,
+            warn_csim_failure=warn_csim_failure,
+            report_backtest_failure=report_backtest_failure,
+        )
         if multi is None:
             continue
 
@@ -188,6 +372,15 @@ def run_sweep(
                   f"dip={params['dip_pct']:.0%} tp={params['profit_target_pct']:.0%} "
                   f"sl={params['stop_loss_pct']:.0%} pos={params['max_positions']} "
                   f"lev={lev:.0f}x {sh} sma={sma}{marker}")
+
+    if skipped_backtest_failures:
+        print(
+            "WARN: skipped "
+            f"{skipped_backtest_failures} failed Python window evaluations during sweep"
+        )
+        suppressed = skipped_backtest_failures - logged_backtest_failures
+        if suppressed > 0:
+            print(f"WARN: suppressed {suppressed} additional failure details")
 
     if results:
         df = pd.DataFrame(results)
@@ -223,52 +416,434 @@ def run_sweep(
         print(f"\nRationale: selected by worst-case Sortino across {len(windows)} "
               f"non-overlapping {windows[0][0]}..{windows[-1][1]} windows. "
               f"This minimizes regime-dependent overfitting.")
-
+    metadata = {
+        "skipped_backtest_failure_count": skipped_backtest_failures,
+        "backtest_failure_samples": failure_samples,
+        "suppressed_backtest_failure_count": max(skipped_backtest_failures - len(failure_samples), 0),
+        "c_sim_requested": bool(use_csim),
+        "c_sim_available": csim_fn is not None,
+        "c_sim_incompatibility_detected": bool(warned_incompatible_csim),
+        "c_sim_incompatibility_issues": incompatible_csim_issues or None,
+        "c_sim_runtime_fallback_count": csim_runtime_failure_count,
+        "c_sim_runtime_fallback_samples": csim_runtime_failure_samples,
+    }
+    if return_metadata:
+        return results, metadata
     return results
 
 
-def main():
-    parser = argparse.ArgumentParser()
+def main(argv: list[str] | None = None):
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    parser = argparse.ArgumentParser(description="Hyperparameter sweep for the Binance worksteal strategy.")
     parser.add_argument("--data-dir", default="trainingdata/train")
-    parser.add_argument("--symbols", nargs="+", default=None)
-    parser.add_argument("--start-date", default=None)
-    parser.add_argument("--end-date", default=None)
-    parser.add_argument("--days", type=int, default=60)
-    parser.add_argument("--n-windows", type=int, default=3)
+    add_symbol_selection_args(parser)
+    add_require_full_universe_arg(parser)
+    add_date_range_args(
+        parser,
+        start_dest="start_date",
+        end_dest="end_date",
+        include_days=True,
+        days_default=60,
+    )
+    parser.add_argument("--n-windows", "--windows", dest="n_windows", type=int, default=3)
     parser.add_argument("--n-trials", type=int, default=500)
     parser.add_argument("--cash", type=float, default=10000.0)
     parser.add_argument("--output", default=None)
+    add_config_file_arg(parser)
+    add_print_config_arg(parser)
+    add_explain_config_arg(parser)
+    add_preview_run_arg(parser)
+    add_summary_json_arg(parser, defaults_to_sidecar=True)
     parser.add_argument("--realistic", action="store_true",
                         help="Strict fill model: only fill when low <= buy_target")
     parser.add_argument("--use-csim", action="store_true",
                         help="Use C simulator for ~10x speedup")
-    args = parser.parse_args()
+    args = parser.parse_args(raw_argv)
 
     if args.output is None:
         tag = datetime.now().strftime("%Y%m%d")
         mode = "_realistic" if args.realistic else ""
         args.output = f"binance_worksteal/sweep_results_{tag}{mode}.csv"
 
-    symbols = args.symbols or FULL_UNIVERSE
-    print(f"Loading {len(symbols)} symbols from {args.data_dir}")
-    all_bars = load_daily_bars(args.data_dir, symbols)
-    print(f"Loaded {len(all_bars)} symbols")
-
-    if not all_bars:
-        print("ERROR: No data")
-        return 1
-
-    if args.start_date and args.end_date:
-        windows = [(args.start_date, args.end_date)]
-    else:
-        windows = build_windows(all_bars, window_days=args.days, n_windows=args.n_windows)
-
-    run_sweep(
-        all_bars, windows, args.output,
-        max_trials=args.n_trials, cash=args.cash,
-        realistic=args.realistic, use_csim=args.use_csim,
+    config_output_rc = maybe_handle_worksteal_config_output(
+        args=args,
+        build_config=lambda: build_sweep_base_config(args, raw_argv),
+        base_config=build_sweep_cli_default_config(args),
+        config_file=args.config_file,
+        raw_argv=raw_argv,
+        flag_to_field=SWEEP_CONFIG_FLAG_TO_FIELD,
+        explain_adjuster=_apply_realistic_flag_explanation if argv_has_flag(raw_argv, "--realistic") else None,
     )
-    return 0
+    if config_output_rc is not None:
+        return config_output_rc
+
+    summary_path = args.summary_json
+    if summary_path is None and not args.list_symbols and not args.preview_run:
+        summary_path = str(default_sidecar_json_path(args.output))
+
+    def run():
+        explicit_window, date_error = resolve_paired_date_range_with_error(
+            start_date=args.start_date,
+            end_date=args.end_date,
+        )
+        if date_error is not None:
+            print(date_error["error"])
+            error_extra: dict[str, object] = {"output_csv": args.output}
+            if args.preview_run:
+                error_extra["preview_only"] = True
+            return 1, build_cli_error_summary(
+                tool="sweep",
+                error=date_error["error"],
+                error_type=date_error["error_type"],
+                data_dir=args.data_dir,
+                config_file=args.config_file,
+                extra=error_extra,
+            )
+
+        resolved, symbol_error = resolve_cli_symbols_with_error(
+            symbols_arg=args.symbols,
+            universe_file=args.universe_file,
+            default_symbols=FULL_UNIVERSE,
+        )
+        if symbol_error is not None:
+            print(symbol_error["error"])
+            error_extra: dict[str, object] = {"output_csv": args.output}
+            if args.list_symbols:
+                error_extra["list_symbols_only"] = True
+            if args.preview_run:
+                error_extra["preview_only"] = True
+            return 1, build_cli_error_summary(
+                tool="sweep",
+                error=symbol_error["error"],
+                error_type=symbol_error["error_type"],
+                data_dir=args.data_dir,
+                config_file=args.config_file,
+                extra=error_extra,
+            )
+        symbols, symbol_source = resolved
+        if args.list_symbols:
+            print_resolved_symbols(symbols, symbol_source)
+            return 0, build_symbol_listing_summary(
+                tool="sweep",
+                data_dir=args.data_dir,
+                symbol_source=symbol_source,
+                symbols=symbols,
+                config_file=args.config_file,
+                extra={"output_csv": args.output},
+            )
+
+        try:
+            base_config = build_sweep_base_config(args, raw_argv)
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            config_error = build_cli_error(exc)
+            print(config_error["error"])
+            error_extra: dict[str, object] = {"output_csv": args.output}
+            if args.preview_run:
+                error_extra["preview_only"] = True
+            return 1, build_cli_error_summary(
+                tool="sweep",
+                error=config_error["error"],
+                error_type=config_error["error_type"],
+                data_dir=args.data_dir,
+                config_file=args.config_file,
+                extra=error_extra,
+            )
+        if args.preview_run:
+            mode_summary = summarize_execution_mode(base_config)
+            date_mode = "fixed_range" if explicit_window is not None else "rolling_windows"
+            total_grid_size = cartesian_product_size(list(SWEEP_GRID.values()))
+            extra = {
+                "date_mode": date_mode,
+                "start_date": explicit_window[0] if explicit_window is not None else None,
+                "end_date": explicit_window[1] if explicit_window is not None else None,
+                "days": None if explicit_window is not None else args.days,
+                "requested_window_count": 1 if explicit_window is not None else args.n_windows,
+                "n_trials_requested": args.n_trials,
+                "total_grid_size": total_grid_size,
+                "output_csv": args.output,
+                "summary_json": summary_path,
+                "use_csim_requested": bool(args.use_csim),
+                "require_full_universe": bool(args.require_full_universe),
+                "execution_mode": mode_summary["label"],
+                "realistic_fill": mode_summary["realistic_fill"],
+                "daily_checkpoint_only": mode_summary["daily_checkpoint_only"],
+            }
+            print_run_preview(
+                tool="sweep",
+                sections=[
+                    (
+                        "Inputs",
+                        (
+                            ("data_dir", args.data_dir),
+                            ("symbol_source", symbol_source),
+                            ("symbol_count", len(symbols)),
+                            ("symbols", symbols),
+                        ),
+                    ),
+                    (
+                        "Execution",
+                        (
+                            ("date_mode", date_mode),
+                            ("start_date", extra["start_date"]),
+                            ("end_date", extra["end_date"]),
+                            ("days", extra["days"]),
+                            ("requested_windows", extra["requested_window_count"]),
+                            ("n_trials", args.n_trials),
+                            ("grid_size", total_grid_size),
+                            ("use_csim", args.use_csim),
+                            ("execution_mode", mode_summary["label"]),
+                            ("require_full_universe", args.require_full_universe),
+                        ),
+                    ),
+                    (
+                        "Outputs",
+                        (
+                            ("output_csv", args.output),
+                            ("summary_json", summary_path),
+                            ("config_file", args.config_file),
+                        ),
+                    ),
+                ],
+            )
+            return 0, build_preview_run_summary(
+                tool="sweep",
+                data_dir=args.data_dir,
+                symbol_source=symbol_source,
+                symbols=symbols,
+                config_file=args.config_file,
+                config=base_config,
+                extra=extra,
+            )
+        if args.config_file:
+            print(f"Loaded config overrides from {args.config_file}")
+
+        print(f"Using {len(symbols)} symbols from {symbol_source}")
+        all_bars, load_summary, load_failure = load_bars_with_summary(
+            data_dir=args.data_dir,
+            requested_symbols=symbols,
+            load_bars=load_daily_bars,
+            loading_message=f"Loading {len(symbols)} symbols from {args.data_dir}",
+            no_data_message="ERROR: No data",
+            return_summary_on_empty=True,
+            return_failure_on_error=True,
+            strict_retry_command=build_strict_retry_command(module="binance_worksteal.sweep", argv=raw_argv),
+        )
+        if load_failure is not None:
+            mode_summary = summarize_execution_mode(base_config)
+            return 1, build_empty_sweep_run_summary(
+                tool="sweep",
+                data_dir=args.data_dir,
+                symbol_source=symbol_source,
+                symbols=symbols,
+                load_summary=load_summary,
+                data_coverage=None,
+                config_file=args.config_file,
+                base_config=base_config,
+                output_csv=args.output,
+                swept_fields=sorted(SWEEP_GRID),
+                extra={
+                    "n_trials_requested": args.n_trials,
+                    "execution_mode": mode_summary["label"],
+                    "realistic": mode_summary["realistic"],
+                    "realistic_fill": mode_summary["realistic_fill"],
+                    "daily_checkpoint_only": mode_summary["daily_checkpoint_only"],
+                    "use_csim_requested": bool(args.use_csim),
+                    "error": load_failure["error"],
+                    "load_failure": load_failure,
+                    "require_full_universe": bool(args.require_full_universe),
+                },
+            )
+        if not all_bars:
+            mode_summary = summarize_execution_mode(base_config)
+            return 1, build_empty_sweep_run_summary(
+                tool="sweep",
+                data_dir=args.data_dir,
+                symbol_source=symbol_source,
+                symbols=symbols,
+                load_summary=load_summary,
+                data_coverage=None,
+                config_file=args.config_file,
+                base_config=base_config,
+                output_csv=args.output,
+                swept_fields=sorted(SWEEP_GRID),
+                extra={
+                    "n_trials_requested": args.n_trials,
+                    "execution_mode": mode_summary["label"],
+                    "realistic": mode_summary["realistic"],
+                    "realistic_fill": mode_summary["realistic_fill"],
+                    "daily_checkpoint_only": mode_summary["daily_checkpoint_only"],
+                    "use_csim_requested": bool(args.use_csim),
+                    "error": "ERROR: No data",
+                    "require_full_universe": bool(args.require_full_universe),
+                },
+            )
+
+        missing_data_error = require_full_universe_or_print_error(
+            require_full_universe=args.require_full_universe,
+            load_summary=load_summary,
+        )
+        if missing_data_error is not None:
+            mode_summary = summarize_execution_mode(base_config)
+            return 1, build_empty_sweep_run_summary(
+                tool="sweep",
+                data_dir=args.data_dir,
+                symbol_source=symbol_source,
+                symbols=symbols,
+                load_summary=load_summary,
+                data_coverage=None,
+                config_file=args.config_file,
+                base_config=base_config,
+                output_csv=args.output,
+                swept_fields=sorted(SWEEP_GRID),
+                extra={
+                    "n_trials_requested": args.n_trials,
+                    "execution_mode": mode_summary["label"],
+                    "realistic": mode_summary["realistic"],
+                    "realistic_fill": mode_summary["realistic_fill"],
+                    "daily_checkpoint_only": mode_summary["daily_checkpoint_only"],
+                    "use_csim_requested": bool(args.use_csim),
+                    "error": missing_data_error,
+                    "require_full_universe": bool(args.require_full_universe),
+                },
+            )
+
+        if explicit_window is not None:
+            windows = [explicit_window]
+        else:
+            windows = build_windows(all_bars, window_days=args.days, n_windows=args.n_windows)
+            if not windows:
+                error = "ERROR: Not enough data for rolling windows"
+                print(error)
+                mode_summary = summarize_execution_mode(base_config)
+                return 1, build_empty_sweep_run_summary(
+                    tool="sweep",
+                    data_dir=args.data_dir,
+                    symbol_source=symbol_source,
+                    symbols=symbols,
+                    load_summary=load_summary,
+                    data_coverage=None,
+                    config_file=args.config_file,
+                    base_config=base_config,
+                    output_csv=args.output,
+                    swept_fields=sorted(SWEEP_GRID),
+                    extra={
+                        "n_trials_requested": args.n_trials,
+                        "requested_window_count": args.n_windows,
+                        "window_days": args.days,
+                        "execution_mode": mode_summary["label"],
+                        "realistic": mode_summary["realistic"],
+                        "realistic_fill": mode_summary["realistic_fill"],
+                        "daily_checkpoint_only": mode_summary["daily_checkpoint_only"],
+                        "use_csim_requested": bool(args.use_csim),
+                        "error": error,
+                        "require_full_universe": bool(args.require_full_universe),
+                    },
+                )
+            if len(windows) < args.n_windows:
+                print(
+                    f"WARN: only {len(windows)}/{args.n_windows} rolling windows of {args.days} days "
+                    "fit within loaded data coverage"
+                )
+        data_coverage = print_window_span_coverage_summary(all_bars, windows)
+
+        sweep_output = run_sweep(
+            all_bars, windows, args.output,
+            max_trials=args.n_trials,
+            use_csim=args.use_csim,
+            base_config=base_config,
+            return_metadata=True,
+        )
+        if isinstance(sweep_output, tuple) and len(sweep_output) == 2:
+            results, sweep_metadata = sweep_output
+        else:
+            results = sweep_output
+            sweep_metadata = {
+                "skipped_backtest_failure_count": 0,
+                "backtest_failure_samples": [],
+                "suppressed_backtest_failure_count": 0,
+                "c_sim_requested": bool(args.use_csim),
+                "c_sim_available": False,
+                "c_sim_incompatibility_detected": False,
+                "c_sim_incompatibility_issues": None,
+                "c_sim_runtime_fallback_count": 0,
+                "c_sim_runtime_fallback_samples": [],
+            }
+        mode_summary = summarize_execution_mode(base_config)
+        ranked = sorted(results, key=lambda row: row.get("min_sortino", float("-inf")), reverse=True)
+        if ranked:
+            recommendation = prepare_sweep_recommendation_artifacts(
+                ranked_results=ranked,
+                base_config=base_config,
+                swept_fields=sorted(SWEEP_GRID),
+                output_csv=args.output,
+                data_dir=args.data_dir,
+                symbols_arg=args.symbols,
+                universe_file=args.universe_file,
+                start_date=min(start for start, _end in windows),
+                end_date=max(end for _start, end in windows),
+                eval_days=args.days if explicit_window is None else None,
+                eval_windows=args.n_windows if explicit_window is None else None,
+                eval_start_date=explicit_window[0] if explicit_window is not None else None,
+                eval_end_date=explicit_window[1] if explicit_window is not None else None,
+            )
+        else:
+            print("ERROR: No valid sweep results")
+            recommendation = empty_sweep_recommendation()
+        summary_payload = build_sweep_run_summary(
+            tool="sweep",
+            data_dir=args.data_dir,
+            symbol_source=symbol_source,
+            symbols=symbols,
+            load_summary=load_summary,
+            data_coverage=data_coverage,
+            config_file=args.config_file,
+            base_config=base_config,
+            output_csv=args.output,
+            swept_fields=sorted(SWEEP_GRID),
+            windows=windows,
+            results_count=len(results),
+            recommendation=recommendation,
+            best_result=ranked[0] if ranked else None,
+            top_results=ranked[:5],
+            extra={
+                "n_trials_requested": args.n_trials,
+                "execution_mode": mode_summary["label"],
+                "realistic": mode_summary["realistic"],
+                "realistic_fill": mode_summary["realistic_fill"],
+                "daily_checkpoint_only": mode_summary["daily_checkpoint_only"],
+                "use_csim_requested": bool(args.use_csim),
+                "skipped_backtest_failure_count": sweep_metadata["skipped_backtest_failure_count"],
+                "backtest_failure_samples": sweep_metadata["backtest_failure_samples"],
+                "suppressed_backtest_failure_count": sweep_metadata["suppressed_backtest_failure_count"],
+                "c_sim_available": sweep_metadata["c_sim_available"],
+                "c_sim_incompatibility_detected": sweep_metadata["c_sim_incompatibility_detected"],
+                "c_sim_incompatibility_issues": sweep_metadata["c_sim_incompatibility_issues"],
+                "c_sim_runtime_fallback_count": sweep_metadata["c_sim_runtime_fallback_count"],
+                "c_sim_runtime_fallback_samples": sweep_metadata["c_sim_runtime_fallback_samples"],
+            },
+        )
+        announce_sweep_artifacts(
+            recommendation=recommendation,
+            output_csv=args.output,
+            summary_json_file=summary_path,
+            module="binance_worksteal.sweep",
+            argv=raw_argv,
+            include_output_csv=bool(ranked),
+            warnings=summary_payload.get("warnings"),
+        )
+        return (0 if results else 1), summary_payload
+
+    return run_with_optional_summary(
+        summary_path,
+        run,
+        module="binance_worksteal.sweep",
+        argv=raw_argv,
+        announce_summary_write_on_error=args.summary_json is not None,
+        announce_summary_write_on_success=False,
+        announce_artifact_manifest_on_success=bool(
+            args.summary_json is not None and (args.list_symbols or args.preview_run)
+        ),
+    )
 
 
 if __name__ == "__main__":

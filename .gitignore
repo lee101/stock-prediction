@@ -627,6 +627,9 @@ binanceleveragesui/train_with_buffer.py
 # Live trading
 bagsfm_state.json
 
+# Alpaca trading lockfile (machine-specific safety)
+.no_alpaca_trading
+
 # Runtime caches and state (sensitive/ephemeral)
 **/signal_cache/
 *.prof
@@ -638,3 +641,5 @@ deployments/
 binanceneural/profile_trace.json
 AGENTS.md
 .tmp_eval/
+deployments/binance-worksteal-daily/launch.sh
+deployments

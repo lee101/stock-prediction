@@ -1,0 +1,9 @@
+symbol,name,best_epoch,best_val_sortino,best_val_return,sharpness_ema,wd_scale,wall_s,error
+ADAUSD,lr5e4_sam_cosine_wd01,7,149.921,2.8895,893.3,2.0,1383.0,
+FILUSD,lr5e4_sam_cosine_wd01,5,149.541,3.4653,1232.5,2.0,4566.0,
+ATOMUSD,lr5e4_sam_cosine_wd01,9,142.84,3.3012,821.7,2.0,1350.0,
+LINKUSD,lr5e4_sam_cosine_wd01,14,118.256,1.535,863.0,2.0,6506.0,
+BCHUSD,lr5e4_sam_cosine_wd01,15,106.147,2.2987,469.1,1.5,1339.0,
+ETHUSD,lr5e4_sam_cosine_wd01,7,80.91,1.8724,683.2,2.0,4335.0,
+BTCUSD,lr5e4_sam_cosine_wd01,11,78.95,1.7965,444.9,2.0,3759.0,
+BNBUSD,lr5e4_sam_cosine_wd01,2,39.671,0.7331,722.4,2.0,896.0,

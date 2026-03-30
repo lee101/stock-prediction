@@ -7,7 +7,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pandas as pd
-import numpy as np
 
 from binance_worksteal.forecast_integration import (
     get_forecast_multiplier,
@@ -164,7 +163,6 @@ class TestCandidateReorderingWithForecast:
             "BSYMUSD": _make_bars("BSYMUSD", prices_b),
         }
 
-        dip_date = all_bars["ASYMUSD"]["timestamp"].iloc[25]
         fc_dates = pd.date_range("2025-01-01", periods=40, freq="1D", tz="UTC").tolist()
 
         fc_bullish_a = {

@@ -226,6 +226,75 @@ class TestBacktestLeverage:
         if exits:
             assert len(stop_exits) > 0 or any(t.reason in ("max_hold", "trailing_stop", "max_dd_exit") for t in exits)
 
+    def test_long_margin_does_not_count_borrowed_cash_as_equity(self):
+        bars = {
+            "BTCUSD": _make_bars(
+                "BTCUSD",
+                [100.0, 110.0, 120.0, 108.0, 112.0],
+                start="2026-01-01",
+            )
+        }
+        config = WorkStealConfig(
+            dip_pct=0.10,
+            proximity_pct=0.02,
+            profit_target_pct=0.50,
+            stop_loss_pct=0.50,
+            sma_filter_period=0,
+            trailing_stop_pct=0.0,
+            max_positions=1,
+            max_hold_days=10,
+            lookback_days=3,
+            initial_cash=10000.0,
+            max_leverage=2.0,
+            margin_annual_rate=0.0,
+            max_position_pct=1.0,
+            max_drawdown_exit=0.0,
+            risk_off_trigger_momentum_period=0,
+            risk_off_trigger_sma_period=0,
+        )
+
+        equity_df, trades, metrics = run_worksteal_backtest(bars, config)
+
+        assert [trade.side for trade in trades] == ["buy"]
+        entry_equity = float(equity_df.loc[equity_df["timestamp"] == pd.Timestamp("2026-01-04", tz="UTC"), "equity"].iloc[0])
+        assert 9000.0 < entry_equity < 12000.0
+        assert 10000.0 < metrics["final_equity"] < 12000.0
+
+    def test_short_entry_keeps_collateral_in_equity(self):
+        bars = {
+            "ALTUSD": _make_bars(
+                "ALTUSD",
+                [100.0, 100.0, 100.0, 110.0, 110.0, 110.0],
+                start="2026-01-01",
+            )
+        }
+        config = WorkStealConfig(
+            dip_pct=0.10,
+            proximity_pct=0.02,
+            profit_target_pct=0.50,
+            stop_loss_pct=0.50,
+            sma_filter_period=0,
+            trailing_stop_pct=0.0,
+            max_positions=1,
+            max_hold_days=10,
+            lookback_days=3,
+            initial_cash=10000.0,
+            max_leverage=1.0,
+            enable_shorts=True,
+            short_pump_pct=0.10,
+            margin_annual_rate=0.0,
+            max_position_pct=1.0,
+            max_drawdown_exit=0.0,
+            risk_off_trigger_momentum_period=0,
+            risk_off_trigger_sma_period=0,
+        )
+
+        equity_df, trades, _metrics = run_worksteal_backtest(bars, config)
+
+        assert [trade.side for trade in trades] == ["short"]
+        entry_equity = float(equity_df.loc[equity_df["timestamp"] == pd.Timestamp("2026-01-04", tz="UTC"), "equity"].iloc[0])
+        assert 9500.0 < entry_equity < 10000.0
+
 
 class TestLeverage3x:
     def test_3x_buying_power(self):

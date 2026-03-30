@@ -138,6 +138,13 @@ except ValueError:
 
 _PLACEHOLDER_TOKEN = "placeholder"
 
+_NO_ALPACA_LOCKFILE = Path(__file__).resolve().parent / ".no_alpaca_trading"
+if _NO_ALPACA_LOCKFILE.exists():
+    raise RuntimeError(
+        f"Alpaca trading blocked on this machine ({_NO_ALPACA_LOCKFILE}). "
+        "Remove the file to enable Alpaca trading. This machine should only trade on Binance."
+    )
+
 _TRADING_KEY_ID = ALP_KEY_ID if PAPER else ALP_KEY_ID_PROD
 _TRADING_SECRET_KEY = ALP_SECRET_KEY if PAPER else ALP_SECRET_KEY_PROD
 _IS_PAPER = PAPER

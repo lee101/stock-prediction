@@ -1,0 +1,50 @@
+[
+  {
+    "name": "lr3e-04_wd0.1_peri_ep12",
+    "symbol": "DOTUSD",
+    "best_epoch": 9,
+    "val_sortino": 0.003,
+    "ms_return": 165.41,
+    "ms_sortino": 0.683,
+    "ms_dd": -9.28,
+    "ms_trades": 31,
+    "wall_s": 2330.0,
+    "error": null
+  },
+  {
+    "name": "lr3e-04_wd0.1_peri_spec1e-03_ep12",
+    "symbol": "DOTUSD",
+    "best_epoch": 7,
+    "val_sortino": 0.038,
+    "ms_return": 142.15,
+    "ms_sortino": 0.546,
+    "ms_dd": -9.64,
+    "ms_trades": 32,
+    "wall_s": 2408.0,
+    "error": null
+  },
+  {
+    "name": "lr5e-04_wd0.1_peri_ep12",
+    "symbol": "DOTUSD",
+    "best_epoch": 1,
+    "val_sortino": 0.125,
+    "ms_return": 65.66,
+    "ms_sortino": 0.287,
+    "ms_dd": -8.79,
+    "ms_trades": 23,
+    "wall_s": 1945.0,
+    "error": null
+  },
+  {
+    "name": "lr5e-04_wd0.1_peri_spec1e-03_ep12",
+    "symbol": "DOTUSD",
+    "best_epoch": 1,
+    "val_sortino": 0.07,
+    "ms_return": 84.33,
+    "ms_sortino": 0.442,
+    "ms_dd": -9.17,
+    "ms_trades": 30,
+    "wall_s": 1835.0,
+    "error": null
+  }
+]

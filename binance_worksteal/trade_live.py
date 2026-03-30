@@ -13,9 +13,10 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import math
 import sys
 import time
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -27,24 +28,46 @@ import pandas as pd
 import torch
 from loguru import logger
 
+from binance_worksteal.cli import (
+    add_symbol_selection_args,
+    print_resolved_symbols,
+    resolve_cli_symbols_with_error,
+)
+from binance_worksteal.config_io import (
+    add_config_file_arg,
+    add_explain_config_arg,
+    add_print_config_arg,
+    build_worksteal_config_explanation,
+    build_worksteal_config_from_args,
+    maybe_handle_worksteal_config_output,
+)
+from binance_worksteal.reporting import (
+    add_preview_run_arg,
+    add_summary_json_arg,
+    build_cli_error_summary,
+    build_preview_run_summary,
+    build_symbol_listing_summary,
+    print_run_preview,
+    run_with_optional_summary,
+)
 from binance_worksteal.strategy import (
     WorkStealConfig,
     SymbolDiagnostic,
+    _build_symbol_metric_cache,
     build_entry_candidates,
     build_tiered_entry_candidates,
     compute_breadth_ratio,
-    compute_market_breadth_skip,
     compute_ref_price,
-    compute_sma,
     get_fee,
     load_daily_bars,
     passes_sma_filter,
-    resolve_entry_config,
+    resolve_entry_regime,
     FDUSD_SYMBOLS,
-    _risk_off_triggered,
 )
 from binance_worksteal.data import compute_features, FEATURE_NAMES
 from binance_worksteal.model import DailyWorkStealPolicy, PerSymbolWorkStealPolicy
+from binance_worksteal.io_utils import write_text_atomic
+from binance_worksteal.universe import get_symbols as get_universe_symbols, load_universe
 
 # Binance API
 try:
@@ -97,6 +120,30 @@ DEFAULT_QUOTE = "usdt"
 PENDING_ENTRY_TTL = timedelta(days=1)
 MIN_TRACKED_POSITION_VALUE_USD = 5.0
 TERMINAL_MARGIN_ORDER_STATUSES = {"FILLED", "CANCELED", "EXPIRED", "REJECTED"}
+_ORDER_RULES_CACHE: dict[str, dict] = {}
+
+LIVE_CONFIG_FLAG_TO_FIELD = {
+    "--dip-pct": "dip_pct",
+    "--proximity-pct": "proximity_pct",
+    "--profit-target": "profit_target_pct",
+    "--stop-loss": "stop_loss_pct",
+    "--max-positions": "max_positions",
+    "--max-position-pct": "max_position_pct",
+    "--max-hold-days": "max_hold_days",
+    "--lookback-days": "lookback_days",
+    "--ref-method": ("ref_price_method", "ref_method"),
+    "--sma-filter": "sma_filter_period",
+    "--market-breadth-filter": "market_breadth_filter",
+    "--trailing-stop": "trailing_stop_pct",
+    "--entry-proximity-bps": "entry_proximity_bps",
+    "--risk-off-ref-method": ("risk_off_ref_price_method", "risk_off_ref_method"),
+    "--risk-off-market-breadth-filter": "risk_off_market_breadth_filter",
+    "--risk-off-trigger-sma-period": "risk_off_trigger_sma_period",
+    "--risk-off-trigger-momentum-period": "risk_off_trigger_momentum_period",
+    "--rebalance-seeded-positions": "rebalance_seeded_positions",
+    "--no-rebalance-seeded-positions": "rebalance_seeded_positions",
+    "--dip-pct-fallback": "dip_pct_fallback",
+}
 
 
 def _normalize_strategy_symbol(symbol: str) -> str:
@@ -112,6 +159,18 @@ def _normalize_strategy_symbol(symbol: str) -> str:
     return f"{value}USD"
 
 
+def _normalize_strategy_symbols(symbols: List[str] | None) -> List[str]:
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for raw_symbol in symbols or []:
+        symbol = _normalize_strategy_symbol(raw_symbol)
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        normalized.append(symbol)
+    return normalized
+
+
 def _relative_bps_distance(reference_price: float, candidate_price: float) -> float:
     ref = float(reference_price or 0.0)
     if ref <= 0.0:
@@ -124,6 +183,232 @@ def _safe_float(value, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return float(default)
+
+
+def _safe_finite_float(value, default: float = 0.0) -> float:
+    numeric = _safe_float(value, default=default)
+    if math.isfinite(numeric):
+        return numeric
+    default_numeric = _safe_float(default, default=0.0)
+    if math.isfinite(default_numeric):
+        return default_numeric
+    return 0.0
+
+
+def _coerce_positive_finite_float(value, *, fallback: float = 0.0) -> float:
+    numeric = _safe_float(value, default=fallback)
+    if math.isfinite(numeric) and numeric > 0.0:
+        return numeric
+    fallback_numeric = _safe_float(fallback, default=0.0)
+    if math.isfinite(fallback_numeric) and fallback_numeric > 0.0:
+        return fallback_numeric
+    return 0.0
+
+
+def _finite_float_or_warn(value, *, context: str) -> float | None:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        logger.warning(f"Invalid {context}: expected a finite numeric value, got {value!r}")
+        return None
+    if not math.isfinite(numeric):
+        logger.warning(f"Invalid {context}: expected a finite numeric value, got {value!r}")
+        return None
+    return numeric
+
+
+def _mapping_response_or_warn(response, *, context: str) -> dict | None:
+    if isinstance(response, dict):
+        return response
+    logger.warning(f"Invalid {context}: expected dict, got {type(response).__name__}")
+    return None
+
+
+def _list_response_or_warn(response, *, context: str) -> list | None:
+    if isinstance(response, list):
+        return response
+    logger.warning(f"Invalid {context}: expected a list, got {type(response).__name__}")
+    return None
+
+
+def _submitted_margin_order_or_none(raw_order, *, context: str) -> tuple[dict | None, object | None]:
+    order = None if raw_order is None else _mapping_response_or_warn(raw_order, context=context)
+    if order is None:
+        return None, None
+    order_id = _coerce_order_id(order.get("orderId"))
+    if order_id is None:
+        return order, None
+    return order, order_id
+
+
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _merge_peak_equity(existing, observed) -> float:
+    existing_value = _safe_finite_float(existing, default=0.0)
+    observed_value = _safe_finite_float(observed, default=0.0)
+    return max(existing_value, observed_value, 0.0)
+
+
+def _coerce_order_id(value) -> int | None:
+    if isinstance(value, bool) or value in (None, ""):
+        return None
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            return None
+    try:
+        order_id = int(value)
+    except (TypeError, ValueError):
+        return None
+    if order_id <= 0:
+        return None
+    return order_id
+
+
+def _coerce_utc_timestamp(value) -> pd.Timestamp:
+    ts = pd.Timestamp(value)
+    if pd.isna(ts):
+        raise ValueError("timestamp is NaT")
+    if ts.tzinfo is None:
+        return ts.tz_localize("UTC")
+    return ts.tz_convert("UTC")
+
+
+def _safe_utc_timestamp(value, *, context: str, default: pd.Timestamp | None = None) -> pd.Timestamp | None:
+    if value in (None, ""):
+        return default
+    try:
+        return _coerce_utc_timestamp(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        logger.warning(f"Invalid {context}: {value!r} ({exc})")
+        return default
+
+
+def _safe_utc_timestamp_iso(value, *, context: str, default: datetime) -> str:
+    timestamp = _safe_utc_timestamp(
+        value,
+        context=context,
+        default=_coerce_utc_timestamp(default),
+    )
+    return (timestamp or _coerce_utc_timestamp(default)).isoformat()
+
+
+def _extract_rule_float(filters: dict, filter_type: str, *keys: str) -> float:
+    entry = filters.get(filter_type)
+    if not isinstance(entry, dict):
+        return 0.0
+    for key in keys:
+        value = _safe_float(entry.get(key), default=0.0)
+        if value > 0.0:
+            return value
+    return 0.0
+
+
+def _step_decimals(step: float) -> int:
+    if step <= 0.0 or not math.isfinite(step):
+        return 0
+    text = f"{step:.10f}".rstrip("0")
+    if "." not in text:
+        return 0
+    return len(text.split(".", 1)[1])
+
+
+def _quantize_down(value: float, step: float) -> float:
+    numeric = _safe_float(value, default=0.0)
+    if numeric <= 0.0 or step <= 0.0 or not math.isfinite(step):
+        return max(numeric, 0.0)
+    return round(math.floor(numeric / step) * step, _step_decimals(step))
+
+
+def _quantize_up(value: float, step: float) -> float:
+    numeric = _safe_float(value, default=0.0)
+    if numeric <= 0.0 or step <= 0.0 or not math.isfinite(step):
+        return max(numeric, 0.0)
+    return round(math.ceil(numeric / step) * step, _step_decimals(step))
+
+
+def _format_decimal(value: float) -> str:
+    return f"{float(value):.8f}".rstrip("0").rstrip(".") or "0"
+
+
+def _order_rules_for_pair(client, pair: str) -> dict | None:
+    normalized_pair = str(pair or "").upper().strip()
+    cached = _ORDER_RULES_CACHE.get(normalized_pair)
+    if cached is not None:
+        return cached
+    if client is None or not hasattr(client, "get_symbol_info"):
+        return None
+    try:
+        info = client.get_symbol_info(normalized_pair)
+    except Exception as exc:
+        logger.warning(f"Failed to fetch symbol info for {normalized_pair}: {exc}")
+        return None
+    if not isinstance(info, dict):
+        logger.warning(f"Invalid symbol info for {normalized_pair}: expected dict")
+        return None
+    raw_filters = info.get("filters")
+    if not isinstance(raw_filters, list):
+        logger.warning(f"Missing symbol filters for {normalized_pair}")
+        return None
+    parsed: dict = {}
+    for entry in raw_filters:
+        if not isinstance(entry, dict):
+            continue
+        filter_type = str(entry.get("filterType") or "").strip()
+        if filter_type:
+            parsed[filter_type] = entry
+    if not parsed:
+        logger.warning(f"No usable symbol filters for {normalized_pair}")
+        return None
+    _ORDER_RULES_CACHE[normalized_pair] = parsed
+    return parsed
+
+
+def _prepare_limit_order(client, pair: str, side: str, price: float, quantity: float) -> tuple[float, float, str | None]:
+    adj_price = _safe_float(price, default=0.0)
+    adj_qty = _safe_float(quantity, default=0.0)
+    if adj_price <= 0.0:
+        return 0.0, 0.0, "invalid_price"
+    if adj_qty <= 0.0:
+        return 0.0, 0.0, "invalid_quantity"
+
+    filters = _order_rules_for_pair(client, pair)
+    if filters is None:
+        return 0.0, 0.0, "missing_symbol_rules"
+    tick_size = _extract_rule_float(filters, "PRICE_FILTER", "tickSize")
+    step_size = _extract_rule_float(filters, "LOT_SIZE", "stepSize")
+    min_qty = _extract_rule_float(filters, "LOT_SIZE", "minQty")
+    min_price = _extract_rule_float(filters, "PRICE_FILTER", "minPrice")
+    min_notional = max(
+        _extract_rule_float(filters, "MIN_NOTIONAL", "minNotional"),
+        _extract_rule_float(filters, "NOTIONAL", "minNotional", "notional"),
+    )
+
+    side_norm = str(side or "").upper().strip()
+    if tick_size > 0.0:
+        if side_norm == "BUY":
+            adj_price = _quantize_down(adj_price, tick_size)
+        else:
+            adj_price = _quantize_up(adj_price, tick_size)
+    if step_size > 0.0:
+        adj_qty = _quantize_down(adj_qty, step_size)
+
+    if adj_price <= 0.0:
+        return 0.0, 0.0, "price_quantized_to_zero"
+    if adj_qty <= 0.0:
+        return 0.0, 0.0, "qty_quantized_to_zero"
+    if min_price > 0.0 and adj_price < min_price:
+        return 0.0, 0.0, "price_below_min_price"
+    if min_qty > 0.0 and adj_qty < min_qty:
+        return 0.0, 0.0, "qty_below_min_qty"
+    if min_notional > 0.0 and (adj_price * adj_qty) < min_notional:
+        return 0.0, 0.0, "notional_below_min_notional"
+
+    return float(adj_price), float(adj_qty), None
 
 
 def _candidate_margin_pairs(symbol: str) -> List[str]:
@@ -151,22 +436,31 @@ def _order_pair(order: dict) -> str:
 
 
 def _order_avg_price(order: dict, fallback: float = 0.0) -> float:
-    price = _safe_float(order.get("price"), default=0.0)
-    if price > 0.0:
-        return price
-    executed_qty = _safe_float(order.get("executedQty"), default=0.0)
-    cumulative_quote = _safe_float(order.get("cummulativeQuoteQty"), default=0.0)
+    executed_qty = _coerce_positive_finite_float(order.get("executedQty"), fallback=0.0)
+    cumulative_quote = _coerce_positive_finite_float(order.get("cummulativeQuoteQty"), fallback=0.0)
     if executed_qty > 0.0 and cumulative_quote > 0.0:
         return cumulative_quote / executed_qty
-    return float(fallback or 0.0)
+    avg_price = _coerce_positive_finite_float(order.get("avgPrice"), fallback=0.0)
+    if avg_price > 0.0:
+        return avg_price
+    price = _coerce_positive_finite_float(order.get("price"), fallback=0.0)
+    if price > 0.0:
+        return price
+    return _coerce_positive_finite_float(fallback, fallback=0.0)
 
 
 def _order_timestamp_iso(order: dict, *, fallback: datetime) -> str:
     raw_ts = order.get("updateTime") or order.get("time")
     try:
-        return pd.Timestamp(int(raw_ts), unit="ms", tz="UTC").isoformat()
-    except (TypeError, ValueError):
+        timestamp = pd.Timestamp(int(raw_ts), unit="ms", tz="UTC")
+    except (TypeError, ValueError, OverflowError):
         return fallback.isoformat()
+    return timestamp.isoformat()
+
+
+def _order_update_time_key(order: dict) -> int:
+    return _safe_int(order.get("updateTime") or order.get("time") or 0, default=0)
+
 
 
 def _latest_filled_order(orders: List[dict], *, side: str) -> Optional[dict]:
@@ -179,22 +473,41 @@ def _latest_filled_order(orders: List[dict], *, side: str) -> Optional[dict]:
     ]
     if not filtered:
         return None
-    filtered.sort(key=lambda row: int(row.get("updateTime") or row.get("time") or 0), reverse=True)
+    filtered.sort(key=_order_update_time_key, reverse=True)
     return filtered[0]
 
 
 def _margin_position_quantity(balance_row: dict) -> float:
-    borrowed_qty = _safe_float(balance_row.get("borrowed"), default=0.0)
-    if borrowed_qty > 1e-8:
+    asset = str(balance_row.get("asset") or "?").upper().strip() or "?"
+    borrowed_qty = _finite_float_or_warn(
+        balance_row.get("borrowed"),
+        context=f"margin account borrowed quantity for {asset}",
+    )
+    if borrowed_qty is None or borrowed_qty > 1e-8:
         return 0.0
-    free_qty = _safe_float(balance_row.get("free"), default=0.0)
-    net_qty = _safe_float(balance_row.get("netAsset"), default=0.0)
-    return max(free_qty, net_qty, 0.0)
+    free_qty = _finite_float_or_warn(
+        balance_row.get("free"),
+        context=f"margin account free quantity for {asset}",
+    )
+    net_qty = _finite_float_or_warn(
+        balance_row.get("netAsset"),
+        context=f"margin account netAsset quantity for {asset}",
+    )
+    return max(free_qty or 0.0, net_qty or 0.0, 0.0)
 
 
 def _clear_pending_exit(position: dict) -> None:
     for key in ("exit_order_id", "exit_order_symbol", "exit_order_status", "exit_price", "exit_reason"):
         position.pop(key, None)
+
+
+def _refresh_margin_order(client, *, pair: str, order_id, purpose: str) -> dict | None:
+    try:
+        order = client.get_margin_order(symbol=pair, orderId=order_id)
+    except Exception as exc:
+        logger.warning(f"Failed to refresh {purpose} {pair}#{order_id}: {exc}")
+        return None
+    return _mapping_response_or_warn(order, context=f"margin order response for {pair}#{order_id}")
 
 
 def _fetch_recent_margin_orders(client, symbol: str, *, preferred_pair: str = "", limit: int = 20) -> Tuple[List[dict], str]:
@@ -213,7 +526,8 @@ def _fetch_recent_margin_orders(client, symbol: str, *, preferred_pair: str = ""
         except Exception as exc:
             logger.warning(f"Failed to fetch recent margin orders for {pair}: {exc}")
             continue
-        if isinstance(orders, list) and orders:
+        orders = _list_response_or_warn(orders, context=f"recent margin orders for {pair}")
+        if orders:
             return [order for order in orders if isinstance(order, dict)], pair
     return [], candidates[0] if candidates else ""
 
@@ -347,9 +661,10 @@ def _try_neural_inference(neural_model, all_bars, neural_model_symbols, neural_s
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--symbols", nargs="+", default=None)
-    parser.add_argument("--universe-file", default=None, help="YAML file with symbol universe")
+    parser = argparse.ArgumentParser(
+        description="Live Binance worksteal bot with dry-run, daemon, and diagnostics modes.",
+    )
+    add_symbol_selection_args(parser)
     parser.add_argument("--max-symbols", type=int, default=100, help="Safety cap on number of symbols")
     parser.add_argument("--dry-run", action="store_true", default=True)
     parser.add_argument("--live", action="store_true")
@@ -410,10 +725,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--adaptive-dip-cycles", type=int, default=3, help="Zero-candidate cycles before reducing dip_pct")
     parser.add_argument("--dip-pct-fallback", nargs="+", type=float, default=None,
                         help="Descending dip thresholds for tiered entry (e.g. 0.20 0.15 0.12)")
+    add_config_file_arg(parser)
+    add_print_config_arg(parser)
+    add_explain_config_arg(parser)
+    add_preview_run_arg(parser)
+    add_summary_json_arg(parser)
     return parser
 
 
-def build_runtime_config(args: argparse.Namespace) -> WorkStealConfig:
+def build_runtime_cli_default_config(args: argparse.Namespace) -> WorkStealConfig:
     return WorkStealConfig(
         dip_pct=float(args.dip_pct),
         proximity_pct=float(args.proximity_pct),
@@ -439,61 +759,178 @@ def build_runtime_config(args: argparse.Namespace) -> WorkStealConfig:
         risk_off_trigger_sma_period=int(args.risk_off_trigger_sma_period),
         risk_off_trigger_momentum_period=int(args.risk_off_trigger_momentum_period),
         rebalance_seeded_positions=bool(args.rebalance_seeded_positions),
+        dip_pct_fallback=tuple(float(x) for x in (args.dip_pct_fallback or [])),
     )
+
+
+def build_runtime_config(
+    args: argparse.Namespace,
+    raw_argv: list[str] | None = None,
+) -> WorkStealConfig:
+    return build_worksteal_config_from_args(
+        base_config=build_runtime_cli_default_config(args),
+        config_file=args.config_file,
+        args=args,
+        raw_argv=raw_argv,
+        flag_to_field=LIVE_CONFIG_FLAG_TO_FIELD,
+    )
+
+
+def _format_preview_override_value(value: object) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, (list, tuple, set)):
+        rendered = [str(item) for item in value]
+        return ", ".join(rendered) if rendered else "-"
+    if isinstance(value, dict):
+        return json.dumps(value, sort_keys=True)
+    return str(value)
+
+
+
+def _build_config_override_context(
+    args: argparse.Namespace,
+    raw_argv: list[str] | None,
+) -> dict[str, object]:
+    explanation = build_worksteal_config_explanation(
+        base_config=build_runtime_cli_default_config(args),
+        config_file=args.config_file,
+        args=args,
+        raw_argv=raw_argv,
+        flag_to_field=LIVE_CONFIG_FLAG_TO_FIELD,
+    )
+    changed_fields = explanation.get("changed_fields") or {}
+    config_file_overrides = explanation.get("config_file_overrides") or {}
+    cli_overrides = explanation.get("cli_overrides") or {}
+    override_details = [
+        {
+            "field": field_name,
+            "source": str(change.get("source") or "default"),
+            "value": change.get("value"),
+        }
+        for field_name, change in changed_fields.items()
+    ]
+    return {
+        "config_override_count": len(override_details),
+        "config_override_fields": [item["field"] for item in override_details],
+        "config_file_override_fields": list(config_file_overrides),
+        "cli_override_fields": list(cli_overrides),
+        "config_override_preview": [
+            f"{item['field']}={_format_preview_override_value(item['value'])} ({item['source']})"
+            for item in override_details
+        ],
+        "config_changed_fields": changed_fields,
+    }
 
 
 def normalize_live_positions(raw_positions: dict, config: WorkStealConfig) -> dict:
     normalized = {}
+    now = datetime.now(timezone.utc)
     for raw_symbol, raw_position in (raw_positions or {}).items():
         if not isinstance(raw_position, dict):
             continue
         symbol = _normalize_strategy_symbol(raw_symbol)
-        entry_price = float(raw_position.get("entry_price", 0.0) or 0.0)
-        quantity = float(raw_position.get("quantity", 0.0) or 0.0)
+        entry_price = _safe_finite_float(raw_position.get("entry_price", 0.0), default=0.0)
+        quantity = _safe_finite_float(raw_position.get("quantity", 0.0), default=0.0)
         if not symbol or entry_price <= 0.0 or quantity <= 0.0:
             continue
+        default_target = entry_price * (1.0 + config.profit_target_pct)
+        default_stop = entry_price * (1.0 - config.stop_loss_pct)
+        raw_target = _safe_finite_float(raw_position.get("target_sell", default_target), default=default_target)
+        raw_stop = _safe_finite_float(raw_position.get("stop_price", default_stop), default=default_stop)
+        target_sell = raw_target if raw_target > entry_price else default_target
+        stop_price = raw_stop if 0.0 < raw_stop < entry_price else default_stop
+        peak_price = max(_safe_finite_float(raw_position.get("peak_price", entry_price), default=entry_price), entry_price)
         normalized[symbol] = {
             "entry_price": entry_price,
-            "entry_date": str(raw_position.get("entry_date") or datetime.now(timezone.utc).isoformat()),
+            "entry_date": _safe_utc_timestamp_iso(
+                raw_position.get("entry_date"),
+                context=f"positions[{symbol}].entry_date",
+                default=now,
+            ),
             "quantity": quantity,
-            "peak_price": float(raw_position.get("peak_price", entry_price) or entry_price),
-            "target_sell": float(
-                raw_position.get("target_sell", entry_price * (1.0 + config.profit_target_pct))
-                or entry_price * (1.0 + config.profit_target_pct)
-            ),
-            "stop_price": float(
-                raw_position.get("stop_price", entry_price * (1.0 - config.stop_loss_pct))
-                or entry_price * (1.0 - config.stop_loss_pct)
-            ),
+            "peak_price": peak_price,
+            "target_sell": target_sell,
+            "stop_price": stop_price,
             "source": str(raw_position.get("source") or "legacy"),
         }
-        exit_order_id = raw_position.get("exit_order_id")
+        exit_order_id = _coerce_order_id(raw_position.get("exit_order_id"))
         if exit_order_id is not None:
             normalized[symbol]["exit_order_id"] = exit_order_id
             normalized[symbol]["exit_order_symbol"] = str(raw_position.get("exit_order_symbol") or "")
             normalized[symbol]["exit_order_status"] = str(raw_position.get("exit_order_status") or "")
-            normalized[symbol]["exit_price"] = float(raw_position.get("exit_price", 0.0) or 0.0)
+            exit_price = _safe_finite_float(raw_position.get("exit_price", target_sell), default=target_sell)
+            normalized[symbol]["exit_price"] = exit_price if exit_price > 0.0 else target_sell
             normalized[symbol]["exit_reason"] = str(raw_position.get("exit_reason") or "")
     return normalized
 
 
+def _prune_last_exit_for_open_positions(last_exit: dict, positions: dict) -> dict:
+    held = {_normalize_strategy_symbol(symbol) for symbol in (positions or {})}
+    pruned: dict = {}
+    for raw_symbol, ts in (last_exit or {}).items():
+        symbol = _normalize_strategy_symbol(raw_symbol)
+        if not symbol or symbol in held:
+            continue
+        pruned[symbol] = ts
+    return pruned
+
+
+def _normalize_last_exit_state(raw_last_exit: dict) -> dict:
+    normalized: dict[str, str] = {}
+    for raw_symbol, raw_timestamp in (raw_last_exit or {}).items():
+        symbol = _normalize_strategy_symbol(raw_symbol)
+        if not symbol:
+            continue
+        timestamp = _safe_utc_timestamp(
+            raw_timestamp,
+            context=f"last_exit[{symbol}]",
+            default=None,
+        )
+        if timestamp is None:
+            continue
+        normalized[symbol] = timestamp.isoformat()
+    return normalized
+
+
+def _last_exit_timestamps(last_exit: dict) -> dict[str, pd.Timestamp]:
+    return {
+        symbol: timestamp
+        for symbol, raw_timestamp in (last_exit or {}).items()
+        if (timestamp := _safe_utc_timestamp(raw_timestamp, context=f"last_exit[{symbol}]", default=None)) is not None
+    }
+
+
 def _normalize_pending_entries(raw_pending: dict) -> dict:
     normalized = {}
+    now = datetime.now(timezone.utc)
     for raw_symbol, raw_entry in (raw_pending or {}).items():
         if not isinstance(raw_entry, dict):
             continue
         symbol = _normalize_strategy_symbol(raw_symbol)
         if not symbol:
             continue
+        placed_at_raw = raw_entry.get("placed_at")
+        expires_at_raw = raw_entry.get("expires_at")
         normalized[symbol] = {
-            "buy_price": float(raw_entry.get("buy_price", 0.0) or 0.0),
-            "quantity": float(raw_entry.get("quantity", 0.0) or 0.0),
-            "target_sell": float(raw_entry.get("target_sell", 0.0) or 0.0),
-            "stop_price": float(raw_entry.get("stop_price", 0.0) or 0.0),
-            "placed_at": str(raw_entry.get("placed_at") or datetime.now(timezone.utc).isoformat()),
-            "expires_at": str(raw_entry.get("expires_at") or (datetime.now(timezone.utc) + PENDING_ENTRY_TTL).isoformat()),
-            "order_id": raw_entry.get("order_id"),
-            "confidence": float(raw_entry.get("confidence", 1.0) or 1.0),
+            "buy_price": _safe_finite_float(raw_entry.get("buy_price", 0.0), default=0.0),
+            "quantity": _safe_finite_float(raw_entry.get("quantity", 0.0), default=0.0),
+            "target_sell": _safe_finite_float(raw_entry.get("target_sell", 0.0), default=0.0),
+            "stop_price": _safe_finite_float(raw_entry.get("stop_price", 0.0), default=0.0),
+            "placed_at": _safe_utc_timestamp_iso(
+                placed_at_raw,
+                context=f"pending_entries[{symbol}].placed_at",
+                default=now,
+            ),
+            "expires_at": _safe_utc_timestamp_iso(
+                expires_at_raw,
+                context=f"pending_entries[{symbol}].expires_at",
+                default=now + (PENDING_ENTRY_TTL if expires_at_raw in (None, "") else timedelta(0)),
+            ),
+            "order_id": _coerce_order_id(raw_entry.get("order_id")),
+            "confidence": _safe_finite_float(raw_entry.get("confidence", 1.0), default=1.0),
             "source": str(raw_entry.get("source") or "rule"),
             "status": str(raw_entry.get("status") or "staged"),
             "order_symbol": str(raw_entry.get("order_symbol") or ""),
@@ -511,8 +948,9 @@ def plan_legacy_rebalance_exits(
     config: WorkStealConfig,
 ) -> tuple[list[tuple[str, float, str, dict]], set[str]]:
     legacy_config = replace(config, sma_filter_period=0)
-    entry_config = resolve_entry_config(current_bars=current_bars, history=history, config=legacy_config)
-    if compute_market_breadth_skip(current_bars, history, entry_config):
+    entry_regime = resolve_entry_regime(current_bars=current_bars, history=history, config=legacy_config)
+    entry_config = entry_regime.config
+    if entry_regime.skip_entries:
         return [], set()
 
     candidates = build_entry_candidates(
@@ -520,7 +958,7 @@ def plan_legacy_rebalance_exits(
         current_bars=current_bars,
         history=history,
         positions={},
-        last_exit={_normalize_strategy_symbol(sym): pd.Timestamp(ts) for sym, ts in (last_exit or {}).items()},
+        last_exit=_last_exit_timestamps(last_exit),
         config=entry_config,
         base_symbol=None,
     )
@@ -539,6 +977,153 @@ def plan_legacy_rebalance_exits(
     return exits, {sym for sym, position in positions.items() if position.get("source") == "legacy"}
 
 
+def _build_pair_routing(symbols: List[str]) -> list[dict[str, str]]:
+    routing: list[dict[str, str]] = []
+    for symbol in symbols:
+        routing.append(
+            {
+                "symbol": symbol,
+                "data_pair": get_binance_pair(symbol, prefer_fdusd=False),
+                "order_pair": get_binance_pair(symbol, prefer_fdusd=True),
+            }
+        )
+    return routing
+
+
+
+def _pair_quote_asset(pair: str) -> str:
+    value = str(pair or "").upper().strip()
+    for quote in ("FDUSD", "USDT"):
+        if value.endswith(quote):
+            return quote
+    return ""
+
+
+
+def _build_pair_routing_summary(routes: list[dict[str, str]]) -> dict[str, object]:
+    cross_quote_symbols = [
+        str(route.get("symbol") or "")
+        for route in routes
+        if str(route.get("data_pair") or "") != str(route.get("order_pair") or "")
+    ]
+    data_quote_counts: dict[str, int] = {}
+    order_quote_counts: dict[str, int] = {}
+    for route in routes:
+        data_quote = _pair_quote_asset(str(route.get("data_pair") or ""))
+        if data_quote:
+            data_quote_counts[data_quote] = data_quote_counts.get(data_quote, 0) + 1
+        order_quote = _pair_quote_asset(str(route.get("order_pair") or ""))
+        if order_quote:
+            order_quote_counts[order_quote] = order_quote_counts.get(order_quote, 0) + 1
+
+    def _ordered_quote_counts(counts: dict[str, int]) -> dict[str, int]:
+        ordered = {
+            quote: counts[quote]
+            for quote in ("FDUSD", "USDT")
+            if quote in counts
+        }
+        for quote in sorted(counts):
+            if quote not in ordered:
+                ordered[quote] = counts[quote]
+        return ordered
+
+    ordered_data_quote_counts = _ordered_quote_counts(data_quote_counts)
+    ordered_order_quote_counts = _ordered_quote_counts(order_quote_counts)
+    return {
+        "route_count": len(routes),
+        "same_pair_count": len(routes) - len(cross_quote_symbols),
+        "cross_quote_count": len(cross_quote_symbols),
+        "cross_quote_symbols": cross_quote_symbols,
+        "data_quote_counts": ordered_data_quote_counts,
+        "order_quote_counts": ordered_order_quote_counts,
+        "required_order_quotes": list(ordered_order_quote_counts),
+    }
+
+
+
+def _print_pair_routing(routes: list[dict[str, str]]) -> None:
+    if not routes:
+        return
+    print("Pair routing:")
+    for route in routes:
+        print(
+            f"  {route['symbol']}: data={route['data_pair']} order={route['order_pair']}"
+        )
+    summary = _build_pair_routing_summary(routes)
+    print("Routing summary:")
+    print(f"  total routes: {summary['route_count']}")
+    print(f"  same-pair routes: {summary['same_pair_count']}")
+    print(f"  cross-quote routes: {summary['cross_quote_count']}")
+    if summary["cross_quote_symbols"]:
+        print(f"  cross-quote symbols: {', '.join(summary['cross_quote_symbols'])}")
+    if summary["data_quote_counts"]:
+        mix = ", ".join(
+            f"{quote}={count}" for quote, count in summary["data_quote_counts"].items()
+        )
+        print(f"  data quote mix: {mix}")
+    if summary["order_quote_counts"]:
+        mix = ", ".join(
+            f"{quote}={count}" for quote, count in summary["order_quote_counts"].items()
+        )
+        print(f"  order quote mix: {mix}")
+    if summary["required_order_quotes"]:
+        print(f"  required order quotes: {', '.join(summary['required_order_quotes'])}")
+
+
+def _entry_regime_breadth_snapshot(
+    current_bars: Dict[str, pd.Series],
+    history: Dict[str, pd.DataFrame],
+    entry_regime,
+) -> tuple[float, int, int]:
+    if entry_regime.market_breadth_total_count > 0:
+        return (
+            float(entry_regime.market_breadth_ratio),
+            int(entry_regime.market_breadth_dipping_count),
+            int(entry_regime.market_breadth_total_count),
+        )
+    ratio, dipping, total = compute_breadth_ratio(current_bars, history)
+    return float(ratio), int(dipping), int(total)
+
+
+
+def _print_omitted_symbols(symbols: list[str]) -> None:
+    if not symbols:
+        return
+    print("Excluded by --max-symbols:")
+    for symbol in symbols:
+        print(f"  {symbol}")
+
+
+def _resolve_symbol_selection_context(
+    symbols: List[str],
+    symbol_source: str,
+    *,
+    max_symbols: int,
+) -> dict[str, object]:
+    requested_symbols = list(symbols)
+    resolved_symbols = list(requested_symbols)
+    was_capped = len(resolved_symbols) > max_symbols
+    omitted_symbols: list[str] = []
+    if was_capped:
+        omitted_symbols = resolved_symbols[max_symbols:]
+        resolved_symbols = resolved_symbols[:max_symbols]
+    display_source = symbol_source
+    if was_capped:
+        display_source = f"{symbol_source} (capped to --max-symbols={max_symbols})"
+    pair_routing = _build_pair_routing(resolved_symbols)
+    return {
+        "symbol_source": display_source,
+        "symbols": resolved_symbols,
+        "requested_symbol_count": len(requested_symbols),
+        "symbol_count": len(resolved_symbols),
+        "was_capped": was_capped,
+        "omitted_symbol_count": len(omitted_symbols),
+        "omitted_symbols": omitted_symbols,
+        "pair_routing": pair_routing,
+        "pair_routing_summary": _build_pair_routing_summary(pair_routing),
+    }
+
+
 def get_binance_pair(symbol: str, prefer_fdusd: bool = True) -> str:
     base = symbol.replace("USD", "")
     if prefer_fdusd and symbol in FDUSD_SYMBOLS and symbol in SYMBOL_PAIRS:
@@ -546,13 +1131,51 @@ def get_binance_pair(symbol: str, prefer_fdusd: bool = True) -> str:
     return f"{base}USDT"
 
 
+def _load_local_daily_bars(
+    symbols: List[str],
+    *,
+    min_rows_exclusive: int,
+    tail_rows: int,
+) -> Dict[str, pd.DataFrame]:
+    remaining = list(dict.fromkeys(symbols))
+    all_bars: Dict[str, pd.DataFrame] = {}
+    for data_dir in ("trainingdatadailybinance", "trainingdata/train"):
+        if not remaining:
+            break
+        try:
+            loaded = load_daily_bars(data_dir, remaining)
+        except Exception as e:
+            logger.warning(f"Failed to load local bars from {data_dir}: {e}")
+            loaded = {}
+        if not isinstance(loaded, dict):
+            logger.warning(
+                f"Invalid local bars response from {data_dir}: expected dict, got {type(loaded).__name__}"
+            )
+            loaded = {}
+        next_remaining: List[str] = []
+        for sym in remaining:
+            bars = loaded.get(sym)
+            if bars is not None and not isinstance(bars, pd.DataFrame):
+                logger.warning(
+                    f"Invalid local bars for {sym} from {data_dir}: expected DataFrame, got {type(bars).__name__}"
+                )
+                bars = None
+            if bars is not None and not bars.empty and len(bars) > min_rows_exclusive:
+                all_bars[sym] = bars.tail(tail_rows).copy()
+            else:
+                next_remaining.append(sym)
+        remaining = next_remaining
+    return all_bars
+
+
+
 def fetch_daily_bars(client, symbol: str, lookback_days: int = 30) -> pd.DataFrame:
     if client is None:
-        for data_dir in ("trainingdatadailybinance", "trainingdata/train"):
-            local = load_daily_bars(data_dir, [symbol]).get(symbol)
-            if local is not None and not local.empty:
-                return local.tail(lookback_days + 5).copy()
-        return pd.DataFrame()
+        return _load_local_daily_bars(
+            [symbol],
+            min_rows_exclusive=0,
+            tail_rows=lookback_days + 5,
+        ).get(symbol, pd.DataFrame())
 
     pair = get_binance_pair(symbol, prefer_fdusd=False)  # always use USDT for data
     try:
@@ -565,70 +1188,207 @@ def fetch_daily_bars(client, symbol: str, lookback_days: int = 30) -> pd.DataFra
         logger.error(f"Failed to fetch klines for {pair}: {e}")
         return pd.DataFrame()
 
+    if not isinstance(klines, (list, tuple)):
+        logger.warning(f"Invalid kline response for {pair}: expected a list, got {type(klines).__name__}")
+        return pd.DataFrame()
+
     rows = []
-    for k in klines:
+    for idx, k in enumerate(klines):
+        if not isinstance(k, (list, tuple)) or len(k) < 6:
+            logger.warning(f"Skipping malformed kline row {idx} for {pair}: expected at least 6 fields")
+            continue
+        try:
+            timestamp = pd.Timestamp(k[0], unit="ms", tz="UTC")
+            open_ = float(k[1])
+            high = float(k[2])
+            low = float(k[3])
+            close = float(k[4])
+            volume = float(k[5])
+        except (TypeError, ValueError) as exc:
+            logger.warning(f"Skipping malformed kline row {idx} for {pair}: {exc}")
+            continue
+        if pd.isna(timestamp) or not all(math.isfinite(v) for v in (open_, high, low, close, volume)):
+            logger.warning(f"Skipping malformed kline row {idx} for {pair}: non-finite values")
+            continue
         rows.append({
-            "timestamp": pd.Timestamp(k[0], unit="ms", tz="UTC"),
-            "open": float(k[1]),
-            "high": float(k[2]),
-            "low": float(k[3]),
-            "close": float(k[4]),
-            "volume": float(k[5]),
+            "timestamp": timestamp,
+            "open": open_,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": volume,
             "symbol": symbol,
         })
     return pd.DataFrame(rows)
 
 
-def load_state() -> dict:
-    if STATE_FILE.exists():
-        payload = json.loads(STATE_FILE.read_text())
+def _default_live_state() -> dict:
+    return {
+        "positions": {},
+        "pending_entries": {},
+        "last_exit": {},
+        "recent_trades": [],
+        "peak_equity": 0.0,
+    }
+
+
+def _normalize_live_state_payload(payload: object, path: Path) -> dict:
+    defaults = _default_live_state()
+    state = dict(payload)
+    invalid_fields: List[str] = []
+
+    for key in ("positions", "pending_entries", "last_exit"):
+        value = state.get(key)
+        if value is None and key not in state:
+            state[key] = {}
+            continue
+        if isinstance(value, dict):
+            continue
+        state[key] = {}
+        invalid_fields.append(key)
+
+    recent_trades = state.get("recent_trades", defaults["recent_trades"])
+    if isinstance(recent_trades, list):
+        filtered_recent_trades = [trade for trade in recent_trades if isinstance(trade, dict)]
+        state["recent_trades"] = filtered_recent_trades
+        if len(filtered_recent_trades) != len(recent_trades):
+            invalid_fields.append("recent_trades_items")
     else:
-        payload = {}
-    payload.setdefault("positions", {})
-    payload.setdefault("pending_entries", {})
-    payload.setdefault("last_exit", {})
-    payload.setdefault("recent_trades", [])
-    payload.setdefault("peak_equity", 0.0)
-    return payload
+        state["recent_trades"] = []
+        invalid_fields.append("recent_trades")
+
+    peak_equity = state.get("peak_equity", defaults["peak_equity"])
+    try:
+        normalized_peak_equity = float(peak_equity or 0.0)
+    except (TypeError, ValueError):
+        normalized_peak_equity = float("nan")
+    if math.isfinite(normalized_peak_equity):
+        state["peak_equity"] = normalized_peak_equity
+    else:
+        state["peak_equity"] = 0.0
+        invalid_fields.append("peak_equity")
+
+    if invalid_fields:
+        joined = ", ".join(sorted(set(invalid_fields)))
+        logger.warning(f"Reset invalid live state fields in {path}: {joined}")
+    return state
+
+
+def _write_json_atomic(path: Path, payload: object):
+    serialized = json.dumps(payload, indent=2, default=str)
+    try:
+        write_text_atomic(path, serialized, encoding="utf-8")
+    except OSError as exc:
+        logger.error(f"Failed to write {path}: {exc}")
+        raise
+
+
+def _quarantine_invalid_state_file(path: Path) -> Path | None:
+    if not path.exists():
+        return None
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = path.with_name(f"{path.stem}.corrupt.{stamp}{path.suffix}")
+    counter = 1
+    while backup_path.exists():
+        backup_path = path.with_name(f"{path.stem}.corrupt.{stamp}.{counter}{path.suffix}")
+        counter += 1
+    try:
+        path.replace(backup_path)
+    except OSError as exc:
+        logger.warning(f"Failed to quarantine invalid live state {path}: {exc}")
+        return None
+    return backup_path
+
+
+def load_state() -> dict:
+    if not STATE_FILE.exists():
+        return _default_live_state()
+
+    try:
+        payload = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        backup_path = None
+        if isinstance(exc, (UnicodeDecodeError, json.JSONDecodeError)):
+            backup_path = _quarantine_invalid_state_file(STATE_FILE)
+        if backup_path is not None:
+            logger.warning(
+                f"Failed to load live state from {STATE_FILE}: {exc}. "
+                f"Moved corrupt state to {backup_path} and starting with empty state."
+            )
+        else:
+            logger.warning(
+                f"Failed to load live state from {STATE_FILE}: {exc}. Starting with empty state."
+            )
+        return _default_live_state()
+    if not isinstance(payload, dict):
+        backup_path = _quarantine_invalid_state_file(STATE_FILE)
+        if backup_path is not None:
+            logger.warning(
+                f"Invalid live state in {STATE_FILE}: expected a JSON object, got {type(payload).__name__}. "
+                f"Moved corrupt state to {backup_path} and starting with empty state."
+            )
+        else:
+            logger.warning(
+                f"Invalid live state in {STATE_FILE}: expected a JSON object, got {type(payload).__name__}. "
+                "Starting with empty state."
+            )
+        return _default_live_state()
+    return _normalize_live_state_payload(payload, STATE_FILE)
 
 
 def save_state(state: dict):
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps(state, indent=2, default=str))
+    payload = _normalize_live_state_payload(state, STATE_FILE)
+    _write_json_atomic(STATE_FILE, payload)
+
+
+def _append_jsonl(path: Path, payload: object, *, kind: str):
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, default=str) + "\n")
+    except OSError as exc:
+        logger.warning(f"Failed to append {kind} to {path}: {exc}")
+
+
+def _build_market_data_gap_event(*, event_type: str, symbols: List[str], positions: dict, pending_entries: dict, equity: float) -> dict:
+    return {
+        "type": event_type,
+        "status": "no_market_data",
+        "n_symbols_requested": len(symbols),
+        "n_symbols_with_data": 0,
+        "n_positions": len(positions),
+        "n_pending": len(pending_entries),
+        "equity": equity,
+    }
 
 
 def log_trade(trade: dict):
-    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(LOG_FILE, "a") as f:
-        f.write(json.dumps(trade, default=str) + "\n")
+    _append_jsonl(LOG_FILE, trade, kind="trade log entry")
 
 
 def log_event(event: dict):
     event.setdefault("ts", datetime.now(timezone.utc).isoformat())
-    EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(EVENTS_FILE, "a") as f:
-        f.write(json.dumps(event, default=str) + "\n")
+    _append_jsonl(EVENTS_FILE, event, kind="event log entry")
 
 
 def load_universe_file(path: str) -> List[str]:
-    """Load symbols from a YAML universe file."""
-    import yaml
-    with open(path) as f:
-        data = yaml.safe_load(f)
-    if not isinstance(data, dict) or "symbols" not in data:
-        raise ValueError(f"Universe file must have a 'symbols' key: {path}")
-    symbols = []
-    for entry in data["symbols"]:
-        if isinstance(entry, str):
-            symbols.append(_normalize_strategy_symbol(entry))
-        elif isinstance(entry, dict) and "symbol" in entry:
-            symbols.append(_normalize_strategy_symbol(entry["symbol"]))
-    return symbols
+    """Backward-compatible universe loader used by older tests and scripts."""
+    return get_universe_symbols(load_universe(path))
 
 
 def _fetch_all_bars(client, symbols: List[str], lookback_days: int,
                     max_workers: int = 10) -> Dict[str, pd.DataFrame]:
     t0 = time.monotonic()
+
+    if client is None and fetch_daily_bars is _ORIGINAL_FETCH_DAILY_BARS:
+        all_bars = _load_local_daily_bars(
+            list(symbols),
+            min_rows_exclusive=lookback_days,
+            tail_rows=lookback_days + 15,
+        )
+        elapsed = time.monotonic() - t0
+        logger.info(f"Fetched bars for {len(all_bars)}/{len(symbols)} symbols in {elapsed:.1f}s")
+        return all_bars
 
     def _fetch_one(sym: str) -> Tuple[str, Optional[pd.DataFrame]]:
         try:
@@ -650,15 +1410,51 @@ def _fetch_all_bars(client, symbols: List[str], lookback_days: int,
     return all_bars
 
 
+_ORIGINAL_FETCH_DAILY_BARS = fetch_daily_bars
+
+
 def get_account_equity(client) -> float:
     try:
-        info = client.get_margin_account()
-        return float(info["totalNetAssetOfBtc"]) * float(
-            client.get_symbol_ticker(symbol="BTCUSDT")["price"]
+        info = _mapping_response_or_warn(
+            client.get_margin_account(),
+            context="margin account response for equity",
         )
+        if info is None:
+            return 0.0
+        ticker = _mapping_response_or_warn(
+            client.get_symbol_ticker(symbol="BTCUSDT"),
+            context="symbol ticker response for BTCUSDT",
+        )
+        if ticker is None:
+            return 0.0
+        total_net_asset_btc = _finite_float_or_warn(
+            info.get("totalNetAssetOfBtc"),
+            context="margin account totalNetAssetOfBtc",
+        )
+        if total_net_asset_btc is None:
+            return 0.0
+        btcusdt_price = _finite_float_or_warn(
+            ticker.get("price"),
+            context="BTCUSDT ticker price",
+        )
+        if btcusdt_price is None:
+            return 0.0
+        if btcusdt_price <= 0.0:
+            logger.warning(
+                f"Invalid BTCUSDT ticker price: expected a positive numeric value, got {ticker.get('price')!r}"
+            )
+            return 0.0
+        equity = total_net_asset_btc * btcusdt_price
+        if not math.isfinite(equity):
+            logger.warning(
+                f"Invalid computed equity from totalNetAssetOfBtc={info.get('totalNetAssetOfBtc')!r} "
+                f"and BTCUSDT price={ticker.get('price')!r}"
+            )
+            return 0.0
+        return equity
     except Exception as e:
         logger.error(f"Failed to get equity: {e}")
-        return 0
+        return 0.0
 
 
 def swap_fdusd_to_usdt(client, amount: float):
@@ -686,71 +1482,59 @@ def swap_usdt_to_fdusd(client, amount: float):
 
 
 def _format_price(price: float) -> str:
-    if price >= 1.0:
-        return f"{price:.2f}"
-    elif price >= 0.01:
-        return f"{price:.4f}"
-    elif price >= 0.0001:
-        return f"{price:.6f}"
-    else:
-        return f"{price:.8f}"
+    return _format_decimal(price)
 
 
 def _format_quantity(qty: float) -> str:
-    if qty >= 1.0:
-        return f"{qty:.4f}"
-    elif qty >= 0.01:
-        return f"{qty:.6f}"
-    else:
-        return f"{qty:.8f}"
+    return _format_decimal(qty)
+
+
+def _place_limit_order(client, symbol: str, side: str, price: float, quantity: float):
+    pair = get_binance_pair(symbol, prefer_fdusd=True)
+    adj_price, adj_qty, reason = _prepare_limit_order(client, pair, side, price, quantity)
+    side_lower = side.lower()
+    if reason is not None:
+        logger.warning(
+            f"Rejected limit {side_lower} before submit: {pair} price={price:.8f} qty={quantity:.8f} reason={reason}"
+        )
+        return None
+    price_str = _format_price(adj_price)
+    qty_str = _format_quantity(adj_qty)
+    logger.info(f"Placing limit {side_lower}: {pair} qty={qty_str} price={price_str}")
+    try:
+        return client.create_margin_order(
+            symbol=pair,
+            side=side,
+            type="LIMIT",
+            timeInForce="GTC",
+            quantity=qty_str,
+            price=price_str,
+        )
+    except Exception as e:
+        logger.error(f"Limit {side_lower} failed for {pair}: {e}")
+        return None
 
 
 def place_limit_buy(client, symbol: str, price: float, quantity: float, config: WorkStealConfig):
-    pair = get_binance_pair(symbol, prefer_fdusd=True)
-    price_str = _format_price(price)
-    qty_str = _format_quantity(quantity)
-    logger.info(f"Placing limit buy: {pair} qty={qty_str} price={price_str}")
-    try:
-        order = client.create_margin_order(
-            symbol=pair, side="BUY", type="LIMIT",
-            timeInForce="GTC",
-            quantity=qty_str,
-            price=price_str,
-        )
-        return order
-    except Exception as e:
-        logger.error(f"Limit buy failed for {pair}: {e}")
-        return None
+    return _place_limit_order(client, symbol, "BUY", price, quantity)
 
 
 def place_limit_sell(client, symbol: str, price: float, quantity: float):
-    pair = get_binance_pair(symbol, prefer_fdusd=True)
-    price_str = _format_price(price)
-    qty_str = _format_quantity(quantity)
-    logger.info(f"Placing limit sell: {pair} qty={qty_str} price={price_str}")
-    try:
-        order = client.create_margin_order(
-            symbol=pair, side="SELL", type="LIMIT",
-            timeInForce="GTC",
-            quantity=qty_str,
-            price=price_str,
-        )
-        return order
-    except Exception as e:
-        logger.error(f"Limit sell failed for {pair}: {e}")
-        return None
+    return _place_limit_order(client, symbol, "SELL", price, quantity)
 
 
-def _cancel_pending_entry(client, symbol: str, entry: dict):
+def _cancel_pending_entry(client, symbol: str, entry: dict) -> bool:
     order_id = entry.get("order_id")
     if client is None or order_id is None:
-        return
-    pair = get_binance_pair(symbol, prefer_fdusd=True)
+        return True
+    pair = str(entry.get("order_symbol") or get_binance_pair(symbol, prefer_fdusd=True)).upper().strip()
     try:
         client.cancel_margin_order(symbol=pair, orderId=order_id)
         logger.info(f"Cancelled pending entry: {pair} orderId={order_id}")
+        return True
     except Exception as exc:
         logger.warning(f"Failed to cancel pending entry for {pair}: {exc}")
+        return False
 
 
 def _pending_entry_to_position(entry: dict, *, entry_time: datetime) -> dict:
@@ -777,14 +1561,16 @@ def reconcile_pending_entries(
 ) -> list[dict]:
     recent_trades: list[dict] = []
     for sym, entry in list(pending_entries.items()):
-        expires_at = pd.Timestamp(entry.get("expires_at", now.isoformat()))
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.tz_localize("UTC")
-        else:
-            expires_at = expires_at.tz_convert("UTC")
+        expires_at = _safe_utc_timestamp(
+            entry.get("expires_at", now.isoformat()),
+            context=f"pending_entries[{sym}].expires_at",
+            default=_coerce_utc_timestamp(now),
+        )
+        if expires_at is None:
+            expires_at = _coerce_utc_timestamp(now)
         if pd.Timestamp(now) >= expires_at:
-            _cancel_pending_entry(client, sym, entry)
-            del pending_entries[sym]
+            if _cancel_pending_entry(client, sym, entry):
+                del pending_entries[sym]
             continue
 
         if entry.get("status") == "preview" and not dry_run:
@@ -796,18 +1582,27 @@ def reconcile_pending_entries(
             continue
 
         pair = str(entry.get("order_symbol") or get_binance_pair(sym, prefer_fdusd=True)).upper().strip()
-        try:
-            order = client.get_margin_order(symbol=pair, orderId=entry["order_id"])
-        except Exception as exc:
-            logger.warning(f"Failed to refresh pending entry {pair}: {exc}")
+        order = _refresh_margin_order(
+            client,
+            pair=pair,
+            order_id=entry["order_id"],
+            purpose="pending entry",
+        )
+        if order is None:
             continue
 
         status = _order_status(order)
         if status == "FILLED":
-            fill_qty = float(order.get("executedQty") or entry.get("quantity") or 0.0)
+            fill_qty = _coerce_positive_finite_float(
+                order.get("executedQty"),
+                fallback=entry.get("quantity") or 0.0,
+            )
             fill_price = _order_avg_price(order, fallback=float(entry.get("buy_price") or 0.0))
             if fill_qty <= 0.0 or fill_price <= 0.0:
-                del pending_entries[sym]
+                logger.warning(
+                    f"Pending entry fill for {pair}#{entry['order_id']} missing execution details; keeping pending entry for retry"
+                )
+                entry["status"] = "fill_unconfirmed"
                 continue
             realized = dict(entry)
             realized["quantity"] = fill_qty
@@ -848,16 +1643,22 @@ def reconcile_exit_orders(
             continue
 
         pair = str(position.get("exit_order_symbol") or get_binance_pair(sym, prefer_fdusd=True)).upper().strip()
-        try:
-            order = client.get_margin_order(symbol=pair, orderId=order_id)
-        except Exception as exc:
-            logger.warning(f"Failed to refresh exit order {pair}#{order_id}: {exc}")
+        order = _refresh_margin_order(
+            client,
+            pair=pair,
+            order_id=order_id,
+            purpose="exit order",
+        )
+        if order is None:
             continue
 
         status = _order_status(order)
         position["exit_order_status"] = status
         if status == "FILLED":
-            fill_qty = _safe_float(order.get("executedQty"), default=position.get("quantity", 0.0))
+            fill_qty = _coerce_positive_finite_float(
+                order.get("executedQty"),
+                fallback=position.get("quantity", 0.0),
+            )
             fill_price = _order_avg_price(
                 order,
                 fallback=float(position.get("exit_price") or position.get("target_sell") or position.get("entry_price") or 0.0),
@@ -875,6 +1676,11 @@ def reconcile_exit_orders(
                 }
                 log_trade(trade)
                 recent_trades.append(trade)
+            else:
+                logger.warning(
+                    f"Exit order fill for {pair}#{order_id} missing execution details; keeping position until execution can be confirmed"
+                )
+                continue
             last_exit[sym] = _order_timestamp_iso(order, fallback=now)
             del positions[sym]
         elif status in TERMINAL_MARGIN_ORDER_STATUSES - {"FILLED"}:
@@ -900,16 +1706,21 @@ def synchronize_positions_from_exchange(
     except Exception as exc:
         logger.warning(f"Failed to fetch margin account for position sync: {exc}")
         return []
+    account = _mapping_response_or_warn(account, context="margin account response for position sync")
+    if account is None:
+        return []
 
     try:
         open_orders = client.get_open_margin_orders(isIsolated="FALSE")
     except Exception as exc:
         logger.warning(f"Failed to fetch open margin orders for position sync: {exc}")
         open_orders = []
+    else:
+        open_orders = _list_response_or_warn(open_orders, context="open margin orders response for position sync") or []
 
     tracked_symbols = {_normalize_strategy_symbol(symbol) for symbol in symbols}
     sell_orders_by_symbol: dict[str, dict] = {}
-    for order in open_orders if isinstance(open_orders, list) else []:
+    for order in open_orders:
         if not isinstance(order, dict):
             continue
         symbol = _normalize_strategy_symbol(order.get("symbol", ""))
@@ -918,8 +1729,8 @@ def synchronize_positions_from_exchange(
         if str(order.get("side") or "").upper().strip() != "SELL":
             continue
         existing = sell_orders_by_symbol.get(symbol)
-        existing_ts = int(existing.get("updateTime") or existing.get("time") or 0) if existing else -1
-        candidate_ts = int(order.get("updateTime") or order.get("time") or 0)
+        existing_ts = _order_update_time_key(existing) if existing else -1
+        candidate_ts = _order_update_time_key(order)
         if existing is None or candidate_ts >= existing_ts:
             sell_orders_by_symbol[symbol] = order
 
@@ -983,13 +1794,19 @@ def synchronize_positions_from_exchange(
 
         open_sell = sell_orders_by_symbol.get(symbol)
         if open_sell is not None:
-            position["exit_order_id"] = open_sell.get("orderId")
-            position["exit_order_symbol"] = _order_pair(open_sell)
-            position["exit_order_status"] = _order_status(open_sell)
-            position["exit_price"] = _order_avg_price(open_sell, fallback=float(position.get("target_sell") or 0.0))
-            position["exit_reason"] = str(position.get("exit_reason") or "exchange_open_sell")
-            if position["exit_price"] > 0.0:
-                position["target_sell"] = position["exit_price"]
+            exit_order_id = _coerce_order_id(open_sell.get("orderId"))
+            if exit_order_id is None:
+                logger.warning(
+                    f"Invalid open sell order id for {symbol}: {open_sell.get('orderId')!r}; preserving existing exit state"
+                )
+            else:
+                position["exit_order_id"] = exit_order_id
+                position["exit_order_symbol"] = _order_pair(open_sell)
+                position["exit_order_status"] = _order_status(open_sell)
+                position["exit_price"] = _order_avg_price(open_sell, fallback=float(position.get("target_sell") or 0.0))
+                position["exit_reason"] = str(position.get("exit_reason") or "exchange_open_sell")
+                if position["exit_price"] > 0.0:
+                    position["target_sell"] = position["exit_price"]
 
     for event in sync_events:
         log_event(event)
@@ -1119,9 +1936,13 @@ def _stage_entry_candidates(
         )
 
         order = None
+        order_id = None
         if not dry_run:
-            order = place_limit_buy(client, sym, buy_price, quantity, entry_config)
-            order_id = None if order is None else order.get("orderId")
+            raw_order = place_limit_buy(client, sym, buy_price, quantity, entry_config)
+            order, order_id = _submitted_margin_order_or_none(
+                raw_order,
+                context=f"margin order submit response for entry {sym}",
+            )
             if order_id is None:
                 logger.warning(f"ENTRY ORDER FAILED {sym}: no live order placed at {buy_price:.4f}")
                 log_event({
@@ -1143,7 +1964,7 @@ def _stage_entry_candidates(
             "stop_price": stop,
             "confidence": confidence,
             "source": source,
-            "order_id": None if order is None else order.get("orderId"),
+            "order_id": order_id,
             "order_symbol": "" if order is None else str(order.get("symbol") or ""),
             "status": "preview" if dry_run else "open",
         }
@@ -1173,12 +1994,18 @@ def _stage_entry_candidates(
     }
 
 
-def _count_sma_pass_fail(all_bars: Dict[str, pd.DataFrame], config: WorkStealConfig) -> Tuple[int, int]:
+def _count_sma_pass_fail(
+    all_bars: Dict[str, pd.DataFrame],
+    config: WorkStealConfig,
+    *,
+    symbol_metrics: Optional[dict] = None,
+) -> Tuple[int, int]:
     n_pass = 0
     n_fail = 0
-    for bars in all_bars.values():
-        close = float(bars.iloc[-1]["close"])
-        if passes_sma_filter(bars, config, close):
+    for sym, bars in all_bars.items():
+        metrics = symbol_metrics.get(sym) if symbol_metrics is not None else None
+        close = metrics.close if metrics is not None else float(bars.iloc[-1]["close"])
+        if passes_sma_filter(bars, config, close, metrics=metrics):
             n_pass += 1
         else:
             n_fail += 1
@@ -1194,15 +2021,39 @@ def run_health_report(client, symbols: List[str], config: WorkStealConfig, dry_r
     equity = get_account_equity(client) if not dry_run else config.initial_cash
 
     last_trade_ts = None
-    for t in reversed(recent_trades):
+    for idx, t in enumerate(reversed(recent_trades)):
+        if not isinstance(t, dict):
+            continue
         ts_str = t.get("timestamp")
         if ts_str:
-            last_trade_ts = pd.Timestamp(ts_str)
-            break
+            context = f"recent_trades[{len(recent_trades) - idx - 1}].timestamp"
+            last_trade_ts = _safe_utc_timestamp(ts_str, context=context, default=None)
+            if last_trade_ts is not None:
+                break
     days_since_trade = (now - last_trade_ts).days if last_trade_ts else -1
 
     all_bars = _fetch_all_bars(client, symbols, config.lookback_days)
     current_bars = {sym: bars.iloc[-1] for sym, bars in all_bars.items()}
+    if not all_bars:
+        logger.warning(f"HEALTH: no market data fetched for any of {len(symbols)} symbols")
+        log_event({
+            **_build_market_data_gap_event(
+                event_type="health_report",
+                symbols=symbols,
+                positions=positions,
+                pending_entries=pending_entries,
+                equity=equity,
+            ),
+            "health_status": "no_market_data",
+            "risk_off": False,
+            "risk_off_triggered": False,
+            "market_breadth_skip": False,
+            "entry_skip": False,
+            "nearest_dip_sym": "",
+            "nearest_dip_bps": None,
+            "days_since_trade": days_since_trade,
+        })
+        return
     if not dry_run:
         synchronize_positions_from_exchange(
             client=client,
@@ -1212,17 +2063,34 @@ def run_health_report(client, symbols: List[str], config: WorkStealConfig, dry_r
             config=config,
             now=now,
         )
-    entry_config = resolve_entry_config(current_bars=current_bars, history=all_bars, config=config)
-    risk_off = compute_market_breadth_skip(current_bars, all_bars, entry_config)
+    symbol_metrics = _build_symbol_metric_cache(current_bars, all_bars)
+    entry_regime = resolve_entry_regime(
+        current_bars=current_bars,
+        history=all_bars,
+        config=config,
+        symbol_metrics=symbol_metrics,
+    )
+    entry_config = entry_regime.config
+    risk_off = entry_regime.risk_off
+    market_breadth_skip = entry_regime.market_breadth_skip
 
     nearest_dip_bps = float("inf")
     nearest_dip_sym = ""
     for sym, bars in all_bars.items():
         if sym in positions:
             continue
-        close = float(bars.iloc[-1]["close"])
-        ref_high = compute_ref_price(bars, config.ref_price_method, config.lookback_days)
-        buy_target = ref_high * (1 - config.dip_pct)
+        metrics = symbol_metrics.get(sym)
+        close = metrics.close if metrics is not None else float(bars.iloc[-1]["close"])
+        ref_high = (
+            metrics.ref_high(entry_config.ref_price_method, config.lookback_days)
+            if metrics is not None
+            else compute_ref_price(bars, entry_config.ref_price_method, config.lookback_days)
+        )
+        buy_target = (
+            metrics.buy_target(ref_high, entry_config)
+            if metrics is not None
+            else ref_high * (1 - entry_config.dip_pct)
+        )
         dist_bps = (close - buy_target) / close * 10_000.0 if close > 0 else float("inf")
         if dist_bps < nearest_dip_bps:
             nearest_dip_bps = dist_bps
@@ -1230,7 +2098,7 @@ def run_health_report(client, symbols: List[str], config: WorkStealConfig, dry_r
 
     logger.info(
         f"HEALTH: equity=${equity:.0f} positions={len(positions)} pending={len(pending_entries)} "
-        f"regime={'risk-off' if risk_off else 'risk-on'} "
+        f"regime={'risk-off' if entry_regime.skip_entries else 'risk-on'} "
         f"nearest_dip={nearest_dip_sym}@{nearest_dip_bps:.0f}bps "
         f"days_since_trade={days_since_trade}"
     )
@@ -1239,7 +2107,10 @@ def run_health_report(client, symbols: List[str], config: WorkStealConfig, dry_r
         "equity": equity,
         "n_positions": len(positions),
         "n_pending": len(pending_entries),
-        "risk_off": risk_off,
+        "risk_off": entry_regime.skip_entries,
+        "risk_off_triggered": risk_off,
+        "market_breadth_skip": market_breadth_skip,
+        "entry_skip": entry_regime.skip_entries,
         "nearest_dip_sym": nearest_dip_sym,
         "nearest_dip_bps": nearest_dip_bps,
         "days_since_trade": days_since_trade,
@@ -1256,13 +2127,48 @@ def run_entry_scan(client, symbols: List[str], config: WorkStealConfig,
     state = load_state()
     positions = normalize_live_positions(state.get("positions", {}), config)
     pending_entries = _normalize_pending_entries(state.get("pending_entries", {}))
-    last_exit = {_normalize_strategy_symbol(sym): ts for sym, ts in state.get("last_exit", {}).items()}
+    last_exit = _prune_last_exit_for_open_positions(
+        _normalize_last_exit_state(state.get("last_exit", {})),
+        positions,
+    )
     recent_trades = list(state.get("recent_trades", []))
     now = datetime.now(timezone.utc)
 
     all_bars = _fetch_all_bars(client, symbols, config.lookback_days)
     equity = get_account_equity(client) if not dry_run else config.initial_cash
     current_bars = {sym: bars.iloc[-1] for sym, bars in all_bars.items()}
+
+    slots = config.max_positions - len(positions) - len(pending_entries)
+    if slots <= 0:
+        logger.info(f"ENTRY SCAN: skipped, {len(positions)} positions + {len(pending_entries)} pending >= {config.max_positions} max")
+        return
+
+    if not all_bars:
+        logger.warning(f"ENTRY SCAN: skipped, no market data fetched for any of {len(symbols)} symbols")
+        log_event({
+            **_build_market_data_gap_event(
+                event_type="entry_scan",
+                symbols=symbols,
+                positions=positions,
+                pending_entries=pending_entries,
+                equity=equity,
+            ),
+            "n_checked": 0,
+            "n_candidates": 0,
+            "n_staged": 0,
+            "n_proximity_skip": 0,
+            "n_gemini_skip": 0,
+            "n_already_held": 0,
+            "n_neural_skip": 0,
+            "n_order_fail": 0,
+            "slots_available": slots,
+            "risk_off": False,
+            "risk_off_triggered": False,
+            "market_breadth_skip": False,
+            "skip_reason": "no_market_data",
+        })
+        return
+
     if not dry_run:
         synchronize_positions_from_exchange(
             client=client,
@@ -1273,18 +2179,31 @@ def run_entry_scan(client, symbols: List[str], config: WorkStealConfig,
             now=now,
         )
         state["positions"] = positions
+        state["last_exit"] = last_exit
         save_state(state)
 
-    slots = config.max_positions - len(positions) - len(pending_entries)
-    if slots <= 0:
-        logger.info(f"ENTRY SCAN: skipped, {len(positions)} positions + {len(pending_entries)} pending >= {config.max_positions} max")
-        return
+    symbol_metrics = _build_symbol_metric_cache(current_bars, all_bars)
+    entry_regime = resolve_entry_regime(
+        current_bars=current_bars,
+        history=all_bars,
+        config=config,
+        symbol_metrics=symbol_metrics,
+    )
+    entry_config = entry_regime.config
 
-    entry_config = resolve_entry_config(current_bars=current_bars, history=all_bars, config=config)
-
-    if compute_market_breadth_skip(current_bars, all_bars, entry_config):
-        logger.info("ENTRY SCAN: market breadth risk-off, no entries")
-        log_event({"type": "entry_scan", "n_checked": len(all_bars), "n_candidates": 0, "n_staged": 0, "skip_reason": "market_breadth_risk_off"})
+    if entry_regime.skip_entries:
+        skip_reason = "risk_off" if entry_regime.risk_off and not entry_regime.market_breadth_skip else "market_breadth_risk_off"
+        logger.info(f"ENTRY SCAN: skipped, {skip_reason}")
+        log_event({
+            "type": "entry_scan",
+            "n_checked": len(all_bars),
+            "n_candidates": 0,
+            "n_staged": 0,
+            "risk_off": entry_regime.skip_entries,
+            "risk_off_triggered": entry_regime.risk_off,
+            "market_breadth_skip": entry_regime.market_breadth_skip,
+            "skip_reason": skip_reason,
+        })
         return
 
     neural_predictions = None
@@ -1295,7 +2214,7 @@ def run_entry_scan(client, symbols: List[str], config: WorkStealConfig,
 
     staged_symbols = set(positions) | set(pending_entries)
     dip_tiers = dip_pct_fallback if dip_pct_fallback else None
-    last_exit_ts = {sym: pd.Timestamp(ts) for sym, ts in last_exit.items()}
+    last_exit_ts = _last_exit_timestamps(last_exit)
 
     if dip_tiers and len(dip_tiers) > 1:
         logger.info(f"TIERED DIP (entry_scan): tiers {[f'{t:.0%}' for t in dip_tiers]}")
@@ -1309,6 +2228,7 @@ def run_entry_scan(client, symbols: List[str], config: WorkStealConfig,
             entry_config=entry_config,
             max_positions=config.max_positions,
             pending_entries=pending_entries,
+            symbol_metrics=symbol_metrics,
         )
     else:
         candidates = build_entry_candidates(
@@ -1319,6 +2239,7 @@ def run_entry_scan(client, symbols: List[str], config: WorkStealConfig,
             last_exit=last_exit_ts,
             config=entry_config,
             base_symbol=None,
+            symbol_metrics=symbol_metrics,
         )
     logger.info(f"ENTRY SCAN: {len(all_bars)} symbols checked, {len(candidates)} candidates found")
 
@@ -1341,6 +2262,9 @@ def run_entry_scan(client, symbols: List[str], config: WorkStealConfig,
         "n_checked": len(all_bars),
         "n_candidates": len(candidates),
         "slots_available": slots,
+        "risk_off": entry_regime.skip_entries,
+        "risk_off_triggered": entry_regime.risk_off,
+        "market_breadth_skip": entry_regime.market_breadth_skip,
         **counts,
     })
 
@@ -1362,6 +2286,7 @@ def _build_tiered_candidates(
     max_positions: int,
     pending_entries: dict,
     diagnostics: Optional[List[SymbolDiagnostic]] = None,
+    symbol_metrics: Optional[dict] = None,
 ) -> Tuple[list, Dict[str, int]]:
     """Run tiered dip passes, filling slots from deepest dip to shallowest."""
     slots = max(0, max_positions - len(set(positions) | set(pending_entries)))
@@ -1375,6 +2300,7 @@ def _build_tiered_candidates(
         base_symbol=None,
         max_candidates=slots,
         diagnostics=diagnostics,
+        symbol_metrics=symbol_metrics,
     )
     for sym, tier_idx in tier_map.items():
         tier_dip = dip_tiers[tier_idx]
@@ -1393,11 +2319,14 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
     state = load_state()
     positions = normalize_live_positions(state.get("positions", {}), config)
     pending_entries = _normalize_pending_entries(state.get("pending_entries", {}))
-    last_exit = {_normalize_strategy_symbol(sym): ts for sym, ts in state.get("last_exit", {}).items()}
+    last_exit = _prune_last_exit_for_open_positions(
+        _normalize_last_exit_state(state.get("last_exit", {})),
+        positions,
+    )
     recent_trades = list(state.get("recent_trades", []))
 
     # Adaptive dip: track consecutive zero-candidate cycles
-    zero_candidate_cycles = int(state.get("zero_candidate_cycles", 0))
+    zero_candidate_cycles = _safe_int(state.get("zero_candidate_cycles", 0), default=0)
     original_dip_pct = config.dip_pct
     if adaptive_dip_cycles > 0 and zero_candidate_cycles >= adaptive_dip_cycles and config.dip_pct > min_dip_pct:
         steps = (zero_candidate_cycles - adaptive_dip_cycles) + 1
@@ -1436,6 +2365,34 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
             now=now,
         )
     )
+
+    if len(positions) >= config.max_positions and pending_entries:
+        for sym, entry in list(pending_entries.items()):
+            if _cancel_pending_entry(client, sym, entry):
+                del pending_entries[sym]
+
+    if not all_bars:
+        logger.warning(f"Daily cycle: no market data fetched for any of {len(symbols)} symbols; skipping exits and entries")
+        log_event({
+            **_build_market_data_gap_event(
+                event_type="daily_cycle",
+                symbols=symbols,
+                positions=positions,
+                pending_entries=pending_entries,
+                equity=equity,
+            ),
+            "cycle_status": "no_market_data",
+        })
+        state["positions"] = positions
+        state["pending_entries"] = pending_entries
+        state["last_exit"] = last_exit
+        state["recent_trades"] = recent_trades[-50:]
+        state["peak_equity"] = _merge_peak_equity(state.get("peak_equity", 0), equity)
+        if config.dip_pct != original_dip_pct:
+            state["effective_dip_pct"] = config.dip_pct
+        save_state(state)
+        return
+
     if not dry_run:
         synchronize_positions_from_exchange(
             client=client,
@@ -1446,10 +2403,7 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
             now=now,
         )
 
-    if len(positions) >= config.max_positions and pending_entries:
-        for sym, entry in list(pending_entries.items()):
-            _cancel_pending_entry(client, sym, entry)
-            del pending_entries[sym]
+    symbol_metrics = _build_symbol_metric_cache(current_bars, all_bars)
 
     # Check exits
     exits_to_process = []
@@ -1474,7 +2428,13 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
         low = float(bars.iloc[-1]["low"])
 
         entry_price = pos["entry_price"]
-        entry_date = pd.Timestamp(pos["entry_date"])
+        entry_date = _safe_utc_timestamp(
+            pos.get("entry_date"),
+            context=f"positions[{sym}].entry_date",
+            default=_coerce_utc_timestamp(now),
+        )
+        if entry_date is None:
+            entry_date = _coerce_utc_timestamp(now)
         peak = max(pos.get("peak_price", entry_price), high)
         pos["peak_price"] = peak
 
@@ -1525,11 +2485,18 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
             del positions[sym]
             continue
 
-        order = place_limit_sell(client, sym, exit_price, pos["quantity"])
+        raw_order = place_limit_sell(client, sym, exit_price, pos["quantity"])
+        order, order_id = _submitted_margin_order_or_none(
+            raw_order,
+            context=f"margin order submit response for exit {sym}",
+        )
         if order is None:
             continue
+        if order_id is None:
+            logger.warning(f"EXIT ORDER FAILED {sym}: no live order placed at {exit_price:.4f}")
+            continue
 
-        pos["exit_order_id"] = order.get("orderId")
+        pos["exit_order_id"] = order_id
         pos["exit_order_symbol"] = str(order.get("symbol") or get_binance_pair(sym, prefer_fdusd=True))
         pos["exit_order_status"] = _order_status(order) or "NEW"
         pos["exit_price"] = exit_price
@@ -1540,27 +2507,38 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
             "price": exit_price, "quantity": pos["quantity"],
             "reason": reason, "pnl": (exit_price - pos["entry_price"]) * pos["quantity"],
             "dry_run": False,
-            "order_id": order.get("orderId"),
+            "order_id": order_id,
         }
         log_trade(trade)
         recent_trades.append(trade)
 
     # Stage new entries
-    entry_config = resolve_entry_config(current_bars=current_bars, history=all_bars, config=config)
-    skip_entries = compute_market_breadth_skip(current_bars, all_bars, entry_config)
-    risk_off = _risk_off_triggered(current_bars, all_bars, entry_config)
+    entry_regime = resolve_entry_regime(
+        current_bars=current_bars,
+        history=all_bars,
+        config=config,
+        symbol_metrics=symbol_metrics,
+    )
+    entry_config = entry_regime.config
+    skip_entries = entry_regime.skip_entries
+    risk_off = entry_regime.risk_off
     counts = {"n_staged": 0, "n_proximity_skip": 0, "n_gemini_skip": 0, "n_already_held": 0, "n_neural_skip": 0}
     n_candidates = 0
 
     # Log market breadth details
-    breadth_ratio, n_breadth_dipping, n_breadth_total = compute_breadth_ratio(current_bars, all_bars)
+    breadth_ratio, n_breadth_dipping, n_breadth_total = _entry_regime_breadth_snapshot(
+        current_bars,
+        all_bars,
+        entry_regime,
+    )
     logger.info(
         f"MARKET STATE: breadth={n_breadth_dipping}/{n_breadth_total} dipping ({breadth_ratio:.1%}) "
-        f"threshold={entry_config.market_breadth_filter:.0%} breadth_skip={skip_entries} risk_off={risk_off}"
+        f"threshold={entry_config.market_breadth_filter:.0%} breadth_skip={entry_regime.market_breadth_skip} "
+        f"risk_off={risk_off} entry_skip={skip_entries}"
     )
 
     # Log SMA pass/fail
-    sma_pass, sma_fail = _count_sma_pass_fail(all_bars, config)
+    sma_pass, sma_fail = _count_sma_pass_fail(all_bars, config, symbol_metrics=symbol_metrics)
     logger.info(f"SMA FILTER: {sma_pass} pass, {sma_fail} fail (period={config.sma_filter_period}, method={config.sma_check_method})")
 
     neural_predictions = None
@@ -1574,11 +2552,14 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
     if len(positions) >= config.max_positions:
         logger.info(f"ENTRY SCAN: skipped, max positions ({config.max_positions}) reached")
     elif skip_entries:
-        logger.info("ENTRY SCAN: skipped, market breadth risk-off")
+        logger.info(
+            "ENTRY SCAN: skipped, "
+            + ("risk_off" if risk_off and not entry_regime.market_breadth_skip else "market_breadth_risk_off")
+        )
     else:
         staged_symbols = set(positions) | set(pending_entries)
         diagnostics: List[SymbolDiagnostic] = []
-        last_exit_ts = {sym: pd.Timestamp(ts) for sym, ts in last_exit.items()}
+        last_exit_ts = _last_exit_timestamps(last_exit)
 
         if dip_pct_fallback and len(dip_pct_fallback) > 1:
             logger.info(f"TIERED DIP: using tiers {[f'{t:.0%}' for t in dip_pct_fallback]}")
@@ -1593,6 +2574,7 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
                 max_positions=config.max_positions,
                 pending_entries=pending_entries,
                 diagnostics=diagnostics,
+                symbol_metrics=symbol_metrics,
             )
         else:
             candidates = build_entry_candidates(
@@ -1604,6 +2586,7 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
                 config=entry_config,
                 base_symbol=None,
                 diagnostics=diagnostics,
+                symbol_metrics=symbol_metrics,
             )
 
         n_candidates = len(candidates)
@@ -1657,6 +2640,8 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
         "n_checked": len(all_bars),
         "n_candidates": n_candidates,
         "risk_off": skip_entries,
+        "risk_off_triggered": risk_off,
+        "market_breadth_skip": entry_regime.market_breadth_skip,
         "n_positions": len(positions),
         "n_pending": len(pending_entries),
         "equity": equity,
@@ -1682,7 +2667,7 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
     state["pending_entries"] = pending_entries
     state["last_exit"] = last_exit
     state["recent_trades"] = recent_trades[-50:]
-    state["peak_equity"] = max(state.get("peak_equity", 0), equity)
+    state["peak_equity"] = _merge_peak_equity(state.get("peak_equity", 0), equity)
     if config.dip_pct != original_dip_pct:
         state["effective_dip_pct"] = config.dip_pct
     save_state(state)
@@ -1705,10 +2690,15 @@ def run_diagnose(client, symbols: List[str], config: WorkStealConfig):
     now = datetime.now(timezone.utc)
 
     # Market breadth
-    breadth_ratio, n_dipping, n_total = compute_breadth_ratio(current_bars, all_bars)
-    entry_config = resolve_entry_config(current_bars=current_bars, history=all_bars, config=config)
-    breadth_skip = compute_market_breadth_skip(current_bars, all_bars, entry_config)
-    risk_off = _risk_off_triggered(current_bars, all_bars, entry_config)
+    entry_regime = resolve_entry_regime(current_bars=current_bars, history=all_bars, config=config)
+    breadth_ratio, n_dipping, n_total = _entry_regime_breadth_snapshot(
+        current_bars,
+        all_bars,
+        entry_regime,
+    )
+    entry_config = entry_regime.config
+    breadth_skip = entry_regime.market_breadth_skip
+    risk_off = entry_regime.risk_off
 
     print(f"\n{'='*70}")
     print(f"WORKSTEAL DIAGNOSTIC  {now.isoformat()}")
@@ -1731,14 +2721,17 @@ def run_diagnose(client, symbols: List[str], config: WorkStealConfig):
     diagnostics: List[SymbolDiagnostic] = []
     state = load_state()
     positions = normalize_live_positions(state.get("positions", {}), config)
-    last_exit = {_normalize_strategy_symbol(sym): ts for sym, ts in state.get("last_exit", {}).items()}
+    last_exit = _prune_last_exit_for_open_positions(
+        _normalize_last_exit_state(state.get("last_exit", {})),
+        positions,
+    )
 
     candidates = build_entry_candidates(
         date=pd.Timestamp(now),
         current_bars=current_bars,
         history=all_bars,
         positions={},
-        last_exit={sym: pd.Timestamp(ts) for sym, ts in last_exit.items()} if last_exit else {},
+        last_exit=_last_exit_timestamps(last_exit),
         config=entry_config,
         base_symbol=None,
         diagnostics=diagnostics,
@@ -1805,24 +2798,255 @@ def run_diagnose(client, symbols: List[str], config: WorkStealConfig):
             print(f"  Or reduce dip_pct to ~{max(0.05, config.dip_pct - min_dist):.3f}")
 
 
-def main():
+def main(argv: list[str] | None = None):
     parser = build_arg_parser()
-    args = parser.parse_args()
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(raw_argv)
 
     if args.live:
         args.dry_run = False
 
-    from binance_worksteal.backtest import FULL_UNIVERSE
-    if args.symbols:
-        symbols = args.symbols
-    elif args.universe_file:
-        symbols = load_universe_file(args.universe_file)
-        logger.info(f"Loaded {len(symbols)} symbols from {args.universe_file}")
-    else:
-        symbols = FULL_UNIVERSE
-    symbols = symbols[:args.max_symbols]
+    resolved_error_context: dict[str, object] = {}
 
-    config = build_runtime_config(args)
+    def return_main_error(
+        *,
+        error: str,
+        error_type: str | None = None,
+        logger_message: str | None = None,
+    ) -> int:
+        extra: dict[str, object] = {
+            "max_symbols": args.max_symbols,
+            "dry_run": args.dry_run,
+            "live_mode": not args.dry_run,
+        }
+        extra.update(resolved_error_context)
+        if args.list_symbols:
+            extra["list_symbols_only"] = True
+        if args.preview_run:
+            extra["preview_only"] = True
+
+        if args.summary_json:
+            def error_run():
+                print(error)
+                return 1, build_cli_error_summary(
+                    tool="trade_live",
+                    error=error,
+                    error_type=error_type,
+                    config_file=args.config_file,
+                    extra=extra,
+                )
+
+            return run_with_optional_summary(
+                args.summary_json,
+                error_run,
+                module="binance_worksteal.trade_live",
+                argv=raw_argv,
+            )
+        if logger_message is not None:
+            logger.error(logger_message)
+        else:
+            print(error)
+        return 1
+
+    config_output_rc = maybe_handle_worksteal_config_output(
+        args=args,
+        build_config=lambda: build_runtime_config(args, raw_argv),
+        base_config=build_runtime_cli_default_config(args),
+        config_file=args.config_file,
+        raw_argv=raw_argv,
+        flag_to_field=LIVE_CONFIG_FLAG_TO_FIELD,
+    )
+    if config_output_rc is not None:
+        return config_output_rc
+
+    try:
+        config = build_runtime_config(args, raw_argv)
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        return return_main_error(
+            error=f"ERROR: {exc}",
+            error_type=exc.__class__.__name__,
+            logger_message=f"Invalid config: {exc}",
+        )
+
+    config_override_context = _build_config_override_context(args, raw_argv)
+    if int(config_override_context.get("config_override_count", 0)) > 0:
+        resolved_error_context.update(config_override_context)
+
+    from binance_worksteal.backtest import FULL_UNIVERSE
+    resolved, symbol_error = resolve_cli_symbols_with_error(
+        symbols_arg=args.symbols,
+        universe_file=args.universe_file,
+        default_symbols=FULL_UNIVERSE,
+    )
+    if symbol_error is not None:
+        return return_main_error(
+            error=symbol_error["error"],
+            error_type=symbol_error["error_type"],
+        )
+    symbols, symbol_source = resolved
+    raw_symbol_count = len(symbols)
+    resolved_symbols = _resolve_symbol_selection_context(
+        symbols,
+        symbol_source,
+        max_symbols=args.max_symbols,
+    )
+    if resolved_symbols["was_capped"]:
+        logger.info(
+            f"Truncated symbol universe from {raw_symbol_count} to {args.max_symbols} via --max-symbols"
+        )
+    symbols = resolved_symbols["symbols"]
+    display_source = str(resolved_symbols["symbol_source"])
+    was_capped = bool(resolved_symbols["was_capped"])
+    omitted_symbol_count = int(resolved_symbols["omitted_symbol_count"])
+    omitted_symbols = list(resolved_symbols["omitted_symbols"])
+    pair_routing = resolved_symbols["pair_routing"]
+    pair_routing_summary = resolved_symbols["pair_routing_summary"]
+    resolved_error_context.update(resolved_symbols)
+    symbol_summary_context = {
+        "max_symbols": args.max_symbols,
+        "was_capped": was_capped,
+        "omitted_symbol_count": omitted_symbol_count,
+        "omitted_symbols": omitted_symbols,
+        "dry_run": args.dry_run,
+        "live_mode": not args.dry_run,
+        "pair_routing": pair_routing,
+        "pair_routing_summary": pair_routing_summary,
+    }
+    if args.list_symbols:
+
+        def list_symbols_run():
+            print_resolved_symbols(symbols, display_source)
+            _print_omitted_symbols(omitted_symbols)
+            _print_pair_routing(pair_routing)
+            return 0, build_symbol_listing_summary(
+                tool="trade_live",
+                data_dir=None,
+                symbol_source=display_source,
+                symbols=symbols,
+                config_file=args.config_file,
+                requested_symbol_count=int(resolved_symbols["requested_symbol_count"]),
+                extra=symbol_summary_context,
+            )
+
+        return run_with_optional_summary(
+            args.summary_json,
+            list_symbols_run,
+            module="binance_worksteal.trade_live",
+            argv=raw_argv,
+            announce_artifact_manifest_on_success=bool(args.summary_json),
+        )
+    if args.preview_run:
+        preview_neural_symbols = _normalize_strategy_symbols(args.neural_symbols)
+        preview_override_context = _build_config_override_context(args, raw_argv)
+        preview_mode_context = {
+            "dry_run": args.dry_run,
+            "live_mode": not args.dry_run,
+            "daemon": args.daemon,
+            "diagnose": args.diagnose,
+            "run_on_start": args.run_on_start,
+            "startup_preview_only": args.startup_preview_only,
+        }
+        preview_runtime_context = {
+            "poll_seconds": args.poll_seconds,
+            "entry_poll_hours": args.entry_poll_hours,
+            "health_report_hours": args.health_report_hours,
+            "gemini_enabled": args.gemini,
+            "gemini_model": args.gemini_model if args.gemini else None,
+            "neural_model": args.neural_model,
+            "neural_symbols": preview_neural_symbols,
+        }
+        preview_file_context = {
+            "state_file": str(STATE_FILE),
+            "trade_log": str(LOG_FILE),
+            "events_log": str(EVENTS_FILE),
+        }
+        preview_sections = [
+            (
+                "Inputs",
+                (
+                    ("symbol_source", display_source),
+                    ("requested_symbol_count", int(resolved_symbols["requested_symbol_count"])),
+                    ("symbol_count", len(symbols)),
+                    ("omitted_symbol_count", omitted_symbol_count),
+                    ("omitted_symbols", omitted_symbols),
+                    ("symbols", symbols),
+                    ("max_symbols", args.max_symbols),
+                ),
+            ),
+            ("Mode", tuple(preview_mode_context.items())),
+            ("Runtime", tuple(preview_runtime_context.items())),
+            (
+                "Files",
+                tuple(
+                    {
+                        "config_file": args.config_file,
+                        "summary_json": args.summary_json,
+                        **preview_file_context,
+                    }.items()
+                ),
+            ),
+            (
+                "Config",
+                (
+                    ("dip_pct", config.dip_pct),
+                    ("proximity_pct", config.proximity_pct),
+                    ("profit_target_pct", config.profit_target_pct),
+                    ("stop_loss_pct", config.stop_loss_pct),
+                    ("max_positions", config.max_positions),
+                    ("market_breadth_filter", config.market_breadth_filter),
+                    ("risk_off_market_breadth_filter", config.risk_off_market_breadth_filter),
+                    ("rebalance_seeded_positions", config.rebalance_seeded_positions),
+                ),
+            ),
+        ]
+        if preview_override_context["config_override_count"]:
+            preview_sections.append(
+                (
+                    "Config overrides",
+                    (
+                        ("config_override_count", preview_override_context["config_override_count"]),
+                        ("config_file_override_fields", preview_override_context["config_file_override_fields"]),
+                        ("cli_override_fields", preview_override_context["cli_override_fields"]),
+                        ("effective_overrides", preview_override_context["config_override_preview"]),
+                    ),
+                )
+            )
+
+        def preview_run():
+            print_run_preview(
+                tool="trade_live",
+                sections=preview_sections,
+            )
+            _print_pair_routing(pair_routing)
+            if not args.summary_json:
+                return 0, None
+            return 0, build_preview_run_summary(
+                tool="trade_live",
+                data_dir=None,
+                symbol_source=display_source,
+                symbols=symbols,
+                config_file=args.config_file,
+                requested_symbol_count=int(resolved_symbols["requested_symbol_count"]),
+                config=asdict(config),
+                extra={
+                    **symbol_summary_context,
+                    **preview_mode_context,
+                    **preview_runtime_context,
+                    **preview_override_context,
+                    **preview_file_context,
+                },
+            )
+
+        return run_with_optional_summary(
+            args.summary_json,
+            preview_run,
+            module="binance_worksteal.trade_live",
+            argv=raw_argv,
+            announce_artifact_manifest_on_success=bool(args.summary_json),
+        )
+    logger.info(f"Using {len(symbols)} symbols from {symbol_source}")
+    if args.config_file:
+        logger.info(f"Loaded config overrides from {args.config_file}")
 
     # Initialize Binance client
     client = None
@@ -1838,8 +3062,11 @@ def main():
         return 0
 
     if client is None and not args.dry_run:
-        logger.error("Binance client required for live mode but unavailable")
-        return 1
+        return return_main_error(
+            error="ERROR: Binance client required for live mode but unavailable",
+            error_type="RuntimeError",
+            logger_message="Binance client required for live mode but unavailable",
+        )
     elif client is None:
         logger.info("Running in DRY RUN mode")
 
@@ -1856,13 +3083,15 @@ def main():
             nn_model, nn_symbols_loaded, nn_cfg = load_neural_model(args.neural_model)
             nn_seq_len = nn_cfg.get("seq_len", 30)
             if args.neural_symbols:
-                nn_symbols = args.neural_symbols
+                nn_symbols = _normalize_strategy_symbols(args.neural_symbols)
             else:
-                nn_symbols = nn_symbols_loaded
+                nn_symbols = _normalize_strategy_symbols(nn_symbols_loaded)
             logger.info(f"Neural model loaded: {args.neural_model} ({len(nn_symbols)} symbols, seq_len={nn_seq_len})")
         except Exception as e:
-            logger.error(f"Failed to load neural model: {e}")
-            nn_model = None
+            return return_main_error(
+                error=f"ERROR: Failed to load neural model: {e}",
+                error_type=e.__class__.__name__,
+            )
 
     if args.daemon:
         entry_poll_h = int(args.entry_poll_hours)
@@ -1877,7 +3106,6 @@ def main():
         if _dip_fallback:
             logger.info(f"Tiered dip fallback enabled: {_dip_fallback}")
         last_heartbeat_hour = None
-        heartbeat_interval_h = 1
         if args.run_on_start:
             startup_dry_run = args.dry_run or args.startup_preview_only
             run_daily_cycle(
@@ -1925,6 +3153,10 @@ def main():
                 state = load_state()
                 positions = normalize_live_positions(state.get("positions", {}), config)
                 pending_entries = _normalize_pending_entries(state.get("pending_entries", {}))
+                last_exit = _prune_last_exit_for_open_positions(
+                    _normalize_last_exit_state(state.get("last_exit", {})),
+                    positions,
+                )
                 before_positions = len(positions)
                 before_pending = len(pending_entries)
                 refreshed = reconcile_pending_entries(
@@ -1938,7 +3170,7 @@ def main():
                     reconcile_exit_orders(
                         client=client,
                         positions=positions,
-                        last_exit=state.get("last_exit", {}),
+                        last_exit=last_exit,
                         now=now,
                     )
                 )
@@ -1949,6 +3181,7 @@ def main():
                 ):
                     state["positions"] = positions
                     state["pending_entries"] = pending_entries
+                    state["last_exit"] = last_exit
                     state["recent_trades"] = list(state.get("recent_trades", []))[-50:] + refreshed
                     save_state(state)
 

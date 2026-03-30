@@ -7,7 +7,7 @@ import json
 from collections import defaultdict, deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Optional, Sequence
+from typing import Callable, Sequence
 
 import numpy as np
 import pandas as pd

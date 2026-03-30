@@ -1,7 +1,6 @@
 """Tests for edge cases in binance_worksteal pipeline."""
 import json
 import sys
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -234,6 +233,34 @@ class TestBuildEntryCandidatesEdgeCases:
         )
         assert candidates == []
 
+    def test_zero_ref_price_symbol_is_skipped(self):
+        bars = make_bars([0.0] * 30)
+        current_bars = {"BTCUSD": bars.iloc[-1]}
+        history = {"BTCUSD": bars}
+        candidates = build_entry_candidates(
+            current_bars=current_bars,
+            history=history,
+            positions={},
+            last_exit={},
+            date=pd.Timestamp("2026-01-30", tz="UTC"),
+            config=WorkStealConfig(lookback_days=20),
+        )
+        assert candidates == []
+
+    def test_zero_ref_low_symbol_is_skipped_for_shorts(self):
+        bars = make_bars([0.0] * 30)
+        current_bars = {"BTCUSD": bars.iloc[-1]}
+        history = {"BTCUSD": bars}
+        candidates = build_entry_candidates(
+            current_bars=current_bars,
+            history=history,
+            positions={},
+            last_exit={},
+            date=pd.Timestamp("2026-01-30", tz="UTC"),
+            config=WorkStealConfig(lookback_days=20, enable_shorts=True),
+        )
+        assert candidates == []
+
 
 class TestBacktestEdgeCases:
     def test_no_data_returns_empty(self):
@@ -438,7 +465,6 @@ class TestSweepNoStrictFill:
         except TypeError:
             pytest.fail("WorkStealConfig should not have strict_fill")
 
-        import inspect
         fields = {f.name for f in __import__("dataclasses").fields(WorkStealConfig)}
         assert "strict_fill" not in fields
 

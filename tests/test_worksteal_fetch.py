@@ -1,7 +1,7 @@
 """Tests for binance_worksteal/fetch_data.py"""
 import csv
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -119,7 +119,6 @@ def test_write_csv_creates_dirs():
 def test_incremental_update_deduplicates():
     """Existing rows should not be duplicated when fetching overlapping data."""
     row1 = kline_to_row(SAMPLE_KLINE, "TESTUSDT")
-    row2 = kline_to_row(SAMPLE_KLINE_2, "TESTUSDT")
 
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "TESTUSDT.csv"

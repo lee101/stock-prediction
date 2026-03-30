@@ -1,0 +1,11 @@
+symbol,name,best_epoch,best_val_sortino,best_val_return,sharpness_ema,wd_scale,wall_s,error
+NEARUSD,fullstack_spec_multi,13,222.147,4.5251,1327.9,2.0,6806.0,
+APTUSD,fullstack_spec_multi,11,199.718,4.4457,1520.4,2.0,1637.0,
+DOTUSD,fullstack_spec_multi,10,191.68,6.5061,1856.2,2.0,3802.0,
+ARBUSD,fullstack_spec_multi,13,190.978,4.8271,1325.9,2.0,4545.0,
+ALGOUSD,fullstack_spec_multi,3,189.253,3.511,1478.7,2.0,1222.0,
+INJUSD,fullstack_spec_multi,9,181.913,3.772,1336.7,2.0,1676.0,
+OPUSD,fullstack_spec_multi,14,175.575,3.119,1272.6,2.0,1638.0,
+SEIUSD,fullstack_spec_multi,5,168.412,3.5171,1180.5,2.0,1423.0,
+ICPUSD,fullstack_spec_multi,9,159.759,3.2673,909.5,2.0,1639.0,
+ADAUSD,fullstack_spec_multi,10,140.571,3.1472,1373.3,2.0,1649.0,

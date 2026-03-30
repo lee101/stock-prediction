@@ -158,3 +158,75 @@ def test_case_insensitive_fee_tier(tmp_path):
     uni = load_universe(p)
     assert uni[0].fee_tier == "fdusd"
     assert get_fee("BTCUSD", uni) == 0.0
+
+
+def test_string_format_symbol_entries_are_supported(tmp_path):
+    data = {"symbols": ["btcusdt", "solusd"]}
+    p = _write_yaml(tmp_path, data)
+    uni = load_universe(p)
+    assert get_symbols(uni) == ["BTCUSD", "SOLUSD"]
+
+
+def test_non_string_symbol_value_raises(tmp_path):
+    data = {"symbols": [{"symbol": None}]}
+    p = _write_yaml(tmp_path, data)
+    with pytest.raises(ValueError, match="string symbol value"):
+        load_universe(p)
+
+
+def test_invalid_usdt_pair_value_raises(tmp_path):
+    data = {"symbols": [{"symbol": "BTCUSD", "usdt_pair": None}]}
+    p = _write_yaml(tmp_path, data)
+    with pytest.raises(ValueError, match="Invalid usdt_pair"):
+        load_universe(p)
+
+
+def test_invalid_min_notional_bool_raises(tmp_path):
+    data = {"symbols": [{"symbol": "BTCUSD", "min_notional": True}]}
+    p = _write_yaml(tmp_path, data)
+    with pytest.raises(ValueError, match="Invalid min_notional"):
+        load_universe(p)
+
+
+def test_string_boolean_fields_are_coerced(tmp_path):
+    data = {
+        "symbols": [
+            {
+                "symbol": "BTCUSD",
+                "margin_eligible": "false",
+                "has_lora": "yes",
+            }
+        ]
+    }
+    p = _write_yaml(tmp_path, data)
+    uni = load_universe(p)
+    assert uni[0].margin_eligible is False
+    assert uni[0].has_lora is True
+
+
+def test_invalid_boolean_fields_raise(tmp_path):
+    data = {"symbols": [{"symbol": "BTCUSD", "margin_eligible": "maybe"}]}
+    p = _write_yaml(tmp_path, data)
+    with pytest.raises(ValueError, match="Invalid margin_eligible"):
+        load_universe(p)
+
+    data = {"symbols": [{"symbol": "BTCUSD", "has_lora": None}]}
+    p = _write_yaml(tmp_path, data)
+    with pytest.raises(ValueError, match="Invalid has_lora"):
+        load_universe(p)
+
+
+def test_integer_boolean_fields_are_coerced(tmp_path):
+    data = {
+        "symbols": [
+            {
+                "symbol": "BTCUSD",
+                "margin_eligible": 0,
+                "has_lora": 1,
+            }
+        ]
+    }
+    p = _write_yaml(tmp_path, data)
+    uni = load_universe(p)
+    assert uni[0].margin_eligible is False
+    assert uni[0].has_lora is True

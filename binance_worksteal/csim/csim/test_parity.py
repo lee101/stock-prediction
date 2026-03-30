@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import numpy as np
 import pandas as pd
 
-from binance_worksteal.strategy import WorkStealConfig, run_worksteal_backtest, compute_metrics
+from binance_worksteal.strategy import WorkStealConfig, run_worksteal_backtest
 from binance_worksteal.csim.fast_worksteal import run_worksteal_backtest_fast, run_worksteal_batch_fast
 
 

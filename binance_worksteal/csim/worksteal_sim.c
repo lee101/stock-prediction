@@ -84,6 +84,52 @@ static double compute_margin_interest(double margin_borrowed, int entry_day, int
     return margin_borrowed * daily * days;
 }
 
+static double position_entry_fee(const CPosition *pos, double fee_rate) {
+    return pos->quantity * pos->entry_price * fee_rate;
+}
+
+static double mark_to_market_position_value(
+    const CPosition *pos,
+    double price,
+    int current_day,
+    double annual_rate,
+    double fee_rate
+) {
+    double interest = compute_margin_interest(pos->margin_borrowed, pos->entry_day, current_day, annual_rate);
+    if (pos->direction == 0) {
+        return pos->quantity * price - pos->margin_borrowed - interest;
+    }
+    return pos->cost_basis
+        + pos->quantity * (pos->entry_price - price)
+        - position_entry_fee(pos, fee_rate)
+        - interest;
+}
+
+static void close_position_accounting(
+    const CPosition *pos,
+    double exit_price,
+    int current_day,
+    double annual_rate,
+    double fee_rate,
+    double *cash_delta,
+    double *pnl
+) {
+    double interest = compute_margin_interest(pos->margin_borrowed, pos->entry_day, current_day, annual_rate);
+    double exit_fee = pos->quantity * exit_price * fee_rate;
+    if (pos->direction == 0) {
+        double proceeds = pos->quantity * exit_price * (1.0 - fee_rate);
+        *cash_delta = proceeds - pos->margin_borrowed - interest;
+        *pnl = *cash_delta - pos->cost_basis;
+        return;
+    }
+    *cash_delta = pos->cost_basis
+        + pos->quantity * (pos->entry_price - exit_price)
+        - position_entry_fee(pos, fee_rate)
+        - exit_fee
+        - interest;
+    *pnl = *cash_delta - pos->cost_basis;
+}
+
 static int cmp_candidates(const void *a, const void *b) {
     const Candidate *ca = (const Candidate *)a;
     const Candidate *cb = (const Candidate *)b;
@@ -134,11 +180,7 @@ void worksteal_simulate(
             if (!positions[s].active) continue;
             if (!valid_mask[IDX(s, d)]) continue;
             double c = closes[IDX(s, d)];
-            if (positions[s].direction == 0) {
-                inv_value += positions[s].quantity * c;
-            } else {
-                inv_value += positions[s].quantity * (2.0 * positions[s].entry_price - c);
-            }
+            inv_value += mark_to_market_position_value(&positions[s], c, d, cfg->margin_annual_rate, fee_rates[s]);
         }
         (void)(cash + inv_value);
 
@@ -209,19 +251,17 @@ void worksteal_simulate(
 
             if (do_exit) {
                 double fee_rate = fee_rates[s];
-                double interest = compute_margin_interest(pos->margin_borrowed, pos->entry_day, d, cfg->margin_annual_rate);
-
-                if (pos->direction == 0) {
-                    double proceeds = pos->quantity * exit_price * (1.0 - fee_rate);
-                    pnl = proceeds - pos->cost_basis - interest;
-                    cash += proceeds;
-                } else {
-                    pnl = pos->quantity * (pos->entry_price - exit_price)
-                        - pos->quantity * exit_price * fee_rate
-                        - pos->quantity * pos->entry_price * fee_rate
-                        - interest;
-                    cash += pos->cost_basis + pnl;
-                }
+                double cash_delta = 0.0;
+                close_position_accounting(
+                    pos,
+                    exit_price,
+                    d,
+                    cfg->margin_annual_rate,
+                    fee_rate,
+                    &cash_delta,
+                    &pnl
+                );
+                cash += cash_delta;
 
                 total_trades++;
                 n_exits++;
@@ -329,17 +369,18 @@ void worksteal_simulate(
                     if (qty <= 0) continue;
 
                     double actual_cost = qty * fill * (1.0 + fee_rate);
-                    double borrowed = actual_cost - cash;
+                    double available_cash = cash;
+                    double borrowed = actual_cost - available_cash;
                     if (borrowed < 0) borrowed = 0;
-                    double deduct = actual_cost < cash ? actual_cost : cash;
-                    cash -= deduct;
+                    double equity_used = actual_cost - borrowed;
+                    cash -= equity_used;
 
                     positions[s].active = 1;
                     positions[s].direction = 0;
                     positions[s].entry_price = fill;
                     positions[s].entry_day = d;
                     positions[s].quantity = qty;
-                    positions[s].cost_basis = actual_cost;
+                    positions[s].cost_basis = equity_used;
                     positions[s].peak_price = cands[k].bar_high;
                     positions[s].target_exit = fill * (1.0 + cfg->profit_target_pct);
                     positions[s].stop_price = fill * (1.0 - cfg->stop_loss_pct);
@@ -380,19 +421,23 @@ void worksteal_simulate(
         for (int s = 0; s < n_symbols; s++) {
             if (!positions[s].active) continue;
             if (!valid_mask[IDX(s, d)]) {
-                if (positions[s].direction == 0)
-                    inv += positions[s].quantity * positions[s].entry_price;
+                inv += mark_to_market_position_value(
+                    &positions[s],
+                    positions[s].entry_price,
+                    d,
+                    cfg->margin_annual_rate,
+                    fee_rates[s]
+                );
                 continue;
             }
             double c = closes[IDX(s, d)];
-            double interest = compute_margin_interest(positions[s].margin_borrowed,
-                positions[s].entry_day, d, cfg->margin_annual_rate);
-            if (positions[s].direction == 0) {
-                inv += positions[s].quantity * c - interest;
-            } else {
-                double unrealized = positions[s].quantity * (positions[s].entry_price - c) - interest;
-                inv += unrealized;
-            }
+            inv += mark_to_market_position_value(
+                &positions[s],
+                c,
+                d,
+                cfg->margin_annual_rate,
+                fee_rates[s]
+            );
         }
         double equity = cash + inv;
         equity_curve[eq_len++] = equity;
@@ -420,15 +465,18 @@ void worksteal_simulate(
                         else
                             cp = positions[s].entry_price;
                         double fr = fee_rates[s];
-                        double pnl;
-                        if (positions[s].direction == 0) {
-                            double proceeds = positions[s].quantity * cp * (1.0 - fr);
-                            pnl = proceeds - positions[s].cost_basis;
-                            cash += proceeds;
-                        } else {
-                            pnl = positions[s].quantity * (positions[s].entry_price - cp);
-                            cash += positions[s].cost_basis + pnl;
-                        }
+                        double cash_delta = 0.0;
+                        double pnl = 0.0;
+                        close_position_accounting(
+                            &positions[s],
+                            cp,
+                            d,
+                            cfg->margin_annual_rate,
+                            fr,
+                            &cash_delta,
+                            &pnl
+                        );
+                        cash += cash_delta;
                         total_trades++;
                         n_exits++;
                         if (pnl > 0) n_wins++;
@@ -454,15 +502,18 @@ void worksteal_simulate(
                     else
                         cp = positions[s].entry_price;
                     double fr = fee_rates[s];
-                    double pnl;
-                    if (positions[s].direction == 0) {
-                        double proceeds = positions[s].quantity * cp * (1.0 - fr);
-                        pnl = proceeds - positions[s].cost_basis;
-                        cash += proceeds;
-                    } else {
-                        pnl = positions[s].quantity * (positions[s].entry_price - cp);
-                        cash += positions[s].cost_basis + pnl;
-                    }
+                    double cash_delta = 0.0;
+                    double pnl = 0.0;
+                    close_position_accounting(
+                        &positions[s],
+                        cp,
+                        d,
+                        cfg->margin_annual_rate,
+                        fr,
+                        &cash_delta,
+                        &pnl
+                    );
+                    cash += cash_delta;
                     total_trades++;
                     n_exits++;
                     if (pnl > 0) n_wins++;
