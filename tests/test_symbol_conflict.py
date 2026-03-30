@@ -224,6 +224,19 @@ def test_production_config_meta_excludes_daily_rl_stocks() -> None:
     assert not conflicts, f"Meta service must not trade daily RL stocks: {conflicts}"
 
 
+def test_retired_meta_trader_is_not_configured_to_autostart_without_owned_symbols() -> None:
+    prod_config = Path(__file__).resolve().parent.parent / "unified_orchestrator" / "service_config.json"
+    supervisor_conf = Path(__file__).resolve().parent.parent / "deployments" / "unified-stock-trader" / "supervisor.conf"
+    _, meta_stocks = load_service_symbols("trade-unified-hourly-meta", prod_config)
+    config_text = supervisor_conf.read_text(encoding="utf-8")
+
+    if meta_stocks:
+        assert "autostart=true" in config_text
+    else:
+        assert "autostart=false" in config_text
+        assert "autorestart=false" in config_text
+
+
 # ---------------------------------------------------------------------------
 # warn_position_conflicts
 # ---------------------------------------------------------------------------
