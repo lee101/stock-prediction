@@ -390,7 +390,7 @@ def main():
         policy = ResidualTradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
     else:
         policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
-    policy.load_state_dict(ckpt["model"])
+    policy.load_state_dict(ckpt["model"], strict=False)
     policy.eval()
     print(f"Loaded checkpoint: update={ckpt.get('update', '?')}, "
           f"train_best_return={ckpt.get('best_return', '?'):.4f}")
