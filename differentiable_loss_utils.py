@@ -9,9 +9,9 @@ time steps (hours).
 
 from __future__ import annotations
 
-import math
 import os
 from dataclasses import dataclass
+from functools import wraps
 from typing import Iterable, Tuple
 
 import torch
@@ -32,14 +32,15 @@ def _compile_enabled() -> bool:
     if not hasattr(torch, "compile"):
         return False
     try:
-        if torch.cuda.is_available():
-            major, _minor = torch.cuda.get_device_capability(0)
-            # Blackwell / sm120 currently trips Triton/Inductor on these tiny
-            # reduction kernels, so prefer the stable eager path there.
-            if int(major) >= 12:
-                return False
+        if not torch.cuda.is_available():
+            return False
+        major, _minor = torch.cuda.get_device_capability(0)
+        # Blackwell / sm120 currently trips Triton/Inductor on these tiny
+        # reduction kernels, so prefer the stable eager path there.
+        if int(major) >= 12:
+            return False
     except Exception:
-        pass
+        return False
     return True
 
 
@@ -47,12 +48,27 @@ _COMPILE_ENABLED = _compile_enabled()
 
 
 def _maybe_compile(fn=None, **kwargs):
-    """Conditionally apply torch.compile; respects TORCH_NO_COMPILE env var."""
+    """Conditionally apply torch.compile with a one-way eager fallback."""
     if fn is None:
         return lambda f: _maybe_compile(f, **kwargs)
-    if _COMPILE_ENABLED and hasattr(torch, "compile"):
-        return torch.compile(fn, **kwargs)
-    return fn
+    if not _COMPILE_ENABLED or not hasattr(torch, "compile"):
+        return fn
+
+    compiled_fn = torch.compile(fn, **kwargs)
+    compile_failed = False
+
+    @wraps(fn)
+    def _wrapped(*args, **inner_kwargs):
+        nonlocal compile_failed
+        if compile_failed or os.environ.get("TORCH_NO_COMPILE", ""):
+            return fn(*args, **inner_kwargs)
+        try:
+            return compiled_fn(*args, **inner_kwargs)
+        except Exception:
+            compile_failed = True
+            return fn(*args, **inner_kwargs)
+
+    return _wrapped
 
 
 def get_periods_per_year(frequency: str = "hourly", symbol: str = "") -> float:

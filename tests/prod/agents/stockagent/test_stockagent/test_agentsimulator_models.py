@@ -56,6 +56,16 @@ def test_trading_instruction_round_trip_serialization() -> None:
 
     with pytest.raises(ValueError):
         TradingInstruction.from_dict({"action": "buy", "quantity": 1})
+    with pytest.raises(ValueError, match="Unsupported symbol"):
+        TradingInstruction.from_dict({"symbol": "../secrets", "action": "buy", "quantity": 1})
+
+
+def test_trading_instruction_direct_construction_validates_symbol() -> None:
+    instruction = TradingInstruction(symbol="msft", action=PlanActionType.BUY, quantity=1.0)
+    assert instruction.symbol == "MSFT"
+
+    with pytest.raises(ValueError, match="Unsupported symbol"):
+        TradingInstruction(symbol="../secrets", action=PlanActionType.BUY, quantity=1.0)
 
 
 def test_trading_plan_parsing_and_envelope_round_trip() -> None:
@@ -93,9 +103,16 @@ def test_trading_plan_parsing_and_envelope_round_trip() -> None:
     legacy_round_trip = TradingPlanEnvelope.from_json(json.dumps(legacy_payload))
     assert legacy_round_trip.plan.to_dict() == serialized_plan
 
+    single_focus = TradingPlan.from_dict(
+        {"target_date": "2025-02-05", "instructions": [], "focus_symbols": "msft"}
+    )
+    assert single_focus.focus_symbols == ["MSFT"]
+
     with pytest.raises(ValueError):
         TradingPlan.from_dict({"target_date": "bad-date", "instructions": []})
     with pytest.raises(ValueError):
         TradingPlan.from_dict({"target_date": "2025-01-01", "instructions": 42})
+    with pytest.raises(ValueError, match="Unsupported symbol"):
+        TradingPlan.from_dict({"target_date": "2025-01-01", "instructions": [], "stop_trading_symbols": ["../btc"]})
     with pytest.raises(ValueError):
         TradingPlanEnvelope.from_json(json.dumps({"commentary": "missing plan"}))

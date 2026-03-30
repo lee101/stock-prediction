@@ -8,6 +8,8 @@ from datetime import date, datetime
 from enum import Enum
 from collections.abc import Mapping, Sequence
 
+from stockagent.agentsimulator.local_market_data import normalize_market_symbol
+
 
 class ExecutionSession(str, Enum):
     MARKET_OPEN = "market_open"
@@ -48,6 +50,9 @@ class TradingInstruction:
     exit_reason: str | None = None
     notes: str | None = None
 
+    def __post_init__(self) -> None:
+        self.symbol = normalize_market_symbol(self.symbol)
+
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = asdict(self)
         payload["action"] = self.action.value
@@ -57,9 +62,7 @@ class TradingInstruction:
     @classmethod
     def from_dict(cls, data: Mapping[str, object]) -> "TradingInstruction":
         symbol_raw = data.get("symbol", "")
-        symbol = str(symbol_raw).upper()
-        if not symbol:
-            raise ValueError("Instruction missing symbol")
+        symbol = normalize_market_symbol(symbol_raw)
         action_raw = str(data.get("action", ""))
         action = PlanActionType.from_value(action_raw)
         execution_session_raw = str(data.get("execution_session", ""))
@@ -113,6 +116,10 @@ class TradingPlan:
     metadata: dict[str, object] = field(default_factory=dict)
     execution_window: ExecutionSession = ExecutionSession.MARKET_OPEN
 
+    def __post_init__(self) -> None:
+        self.focus_symbols = _normalise_symbol_sequence(self.focus_symbols)
+        self.stop_trading_symbols = _normalise_symbol_sequence(self.stop_trading_symbols)
+
     def to_dict(self) -> dict[str, object]:
         return {
             "target_date": self.target_date.isoformat(),
@@ -152,15 +159,8 @@ class TradingPlan:
         risk_notes_raw = data.get("risk_notes")
         risk_notes = risk_notes_raw if isinstance(risk_notes_raw, str) else None
 
-        focus_symbols_raw = data.get("focus_symbols", [])
-        focus_symbols = [
-            sym.upper() for sym in focus_symbols_raw if isinstance(sym, str)
-        ] if isinstance(focus_symbols_raw, Sequence) else []
-
-        stop_trading_symbols_raw = data.get("stop_trading_symbols", [])
-        stop_trading_symbols = [
-            sym.upper() for sym in stop_trading_symbols_raw if isinstance(sym, str)
-        ] if isinstance(stop_trading_symbols_raw, Sequence) else []
+        focus_symbols = _normalise_symbol_sequence(data.get("focus_symbols", []))
+        stop_trading_symbols = _normalise_symbol_sequence(data.get("stop_trading_symbols", []))
 
         metadata_obj = data.get("metadata")
         metadata: dict[str, object] = {}
@@ -266,3 +266,17 @@ class AccountSnapshot:
     def has_position(self, symbol: str) -> bool:
         symbol = symbol.upper()
         return any(position.symbol == symbol for position in self.positions)
+
+
+def _normalise_symbol_sequence(raw: object) -> list[str]:
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [normalize_market_symbol(raw)]
+    if not isinstance(raw, Sequence):
+        return []
+    normalised: list[str] = []
+    for value in raw:
+        if isinstance(value, str):
+            normalised.append(normalize_market_symbol(value))
+    return normalised

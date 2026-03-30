@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shlex
 import sys
+import tempfile
 from dataclasses import fields
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple, Union, cast
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple, cast
+
+from stockagent.agentsimulator import normalize_market_symbol, resolve_local_data_dirs
 
 tomllib: ModuleType | None = None
 
@@ -16,15 +21,39 @@ except ModuleNotFoundError:  # pragma: no cover - Python <3.11 fallback
     tomllib = None
 
 from stockagent2.agentsimulator.runner import (
+    PipelinePlanBuildDiagnostics,
     PipelineSimulationConfig,
     PipelineSimulationResult,
     RunnerConfig,
-    run_pipeline_simulation,
+    run_pipeline_simulation_with_diagnostics,
 )
 from stockagent2.config import OptimizationConfig, PipelineConfig
 
 
 JSONLike = Mapping[str, Any]
+EFFECTIVE_ARGS_JSON_SUFFIX = ".effective_args.json"
+EFFECTIVE_ARGS_TXT_SUFFIX = ".effective_args.txt"
+PLANS_JSON_SUFFIX = ".plans.json"
+TRADES_JSON_SUFFIX = ".trades.json"
+
+
+class ArgsFileParser(argparse.ArgumentParser):
+    """ArgumentParser with shell-style @args file support."""
+
+    def convert_arg_line_to_args(self, arg_line: str) -> Iterable[str]:
+        line = arg_line.strip()
+        if not line or line.startswith("#"):
+            return []
+        return shlex.split(line)
+
+
+def _preferred_option_string(action: argparse.Action) -> str | None:
+    long_options = [option for option in action.option_strings if option.startswith("--")]
+    if long_options:
+        return max(long_options, key=len)
+    if action.option_strings:
+        return action.option_strings[-1]
+    return None
 
 
 def _load_overrides(path: Optional[Path]) -> Dict[str, Any]:
@@ -51,13 +80,27 @@ def _symbol_tuple(value: Any) -> Tuple[str, ...]:
     if value is None:
         return ()
     if isinstance(value, (list, tuple, set)):
-        return tuple(str(item).upper() for item in value)
+        return tuple(normalize_market_symbol(str(item)) for item in value)
     if isinstance(value, str):
         if not value.strip():
             return ()
         parts = [part.strip() for part in value.replace(",", " ").split() if part.strip()]
-        return tuple(part.upper() for part in parts)
+        return tuple(normalize_market_symbol(part) for part in parts)
     raise ValueError(f"Unsupported symbols payload: {value!r}")
+
+
+def _parse_bool_like(value: Any, *, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalised = value.strip().lower()
+        if normalised in {"1", "true", "yes", "on"}:
+            return True
+        if normalised in {"0", "false", "no", "off"}:
+            return False
+    raise ValueError(f"{field_name} must be a boolean-compatible value, got {value!r}")
 
 
 def _normalise_runner_field(name: str, value: Any) -> Any:
@@ -72,7 +115,9 @@ def _normalise_runner_field(name: str, value: Any) -> Any:
     if name == "local_data_dir":
         return Path(value)
     if name == "allow_remote_data":
-        return bool(value)
+        return _parse_bool_like(value, field_name=name)
+    if name == "use_fallback_data_dirs":
+        return _parse_bool_like(value, field_name=name)
     return value
 
 
@@ -92,7 +137,7 @@ def _normalise_pipeline_field(name: str, value: Any) -> Any:
     if name == "annualisation_periods":
         return int(value)
     if name == "apply_confidence_to_mu":
-        return bool(value)
+        return _parse_bool_like(value, field_name=name)
     if name == "default_market_caps":
         if value is None:
             return None
@@ -107,7 +152,15 @@ def _normalise_simulation_field(name: str, value: Any) -> Any:
         return None
     if name == "symbols":
         return _symbol_tuple(value)
-    if name in {"lookback_days", "sample_count", "llm_horizon_days"}:
+    if name in {
+        "lookback_days",
+        "sample_count",
+        "llm_horizon_days",
+        "history_min_period_divisor",
+        "min_view_half_life_days",
+        "max_view_half_life_days",
+        "rng_seed",
+    }:
         return int(value)
     return float(value)
 
@@ -156,6 +209,22 @@ def _serialise_dataclass(instance) -> Dict[str, Any]:
     return payload
 
 
+def _build_data_setup_summary(runner: RunnerConfig) -> Dict[str, Any]:
+    search_dirs = [
+        str(path)
+        for path in resolve_local_data_dirs(
+            local_data_dir=runner.local_data_dir,
+            use_fallback_data_dirs=runner.use_fallback_data_dirs,
+        )
+    ]
+    return {
+        "local_data_dir": str(runner.local_data_dir) if runner.local_data_dir is not None else None,
+        "use_fallback_data_dirs": runner.use_fallback_data_dirs,
+        "allow_remote_data": runner.allow_remote_data,
+        "data_search_dirs": search_dirs,
+    }
+
+
 def _parse_kv_pairs(items: Optional[Sequence[str]]) -> Dict[str, float]:
     result: Dict[str, float] = {}
     if not items:
@@ -187,6 +256,7 @@ def _summarise_result(
     optimisation: OptimizationConfig,
     pipeline: PipelineConfig,
     simulation_cfg: PipelineSimulationConfig,
+    build_diagnostics: Sequence[PipelinePlanBuildDiagnostics] = (),
 ) -> Dict[str, Any]:
     simulation = result.simulation
     allocations = [
@@ -201,6 +271,7 @@ def _summarise_result(
         "paper": paper,
         "plans_generated": len(result.plans),
         "trades_executed": len(result.simulator.trade_log),
+        "data_setup": _build_data_setup_summary(runner),
         "runner": _serialise_dataclass(runner),
         "optimisation": _serialise_dataclass(optimisation),
         "pipeline": _serialise_dataclass(pipeline),
@@ -213,6 +284,8 @@ def _summarise_result(
             "unrealized_pnl": simulation.unrealized_pnl,
             "total_fees": simulation.total_fees,
         },
+        "market_data": _serialise_dataclass(result.market_data_summary),
+        "plan_build_diagnostics": [_serialise_dataclass(item) for item in build_diagnostics],
         "allocation_count": len(result.allocations),
         "last_allocation": allocations[-1] if allocations else None,
     }
@@ -220,20 +293,29 @@ def _summarise_result(
 
 
 def _emit_text_summary(summary: Mapping[str, Any]) -> str:
+    data_setup = cast(Mapping[str, Any], summary["data_setup"])
     runner = summary["runner"]
     simulation_cfg = summary["simulation_config"]
     simulation = summary["simulation"]
+    market_data = summary.get("market_data", {})
+    build_diagnostics = cast(Sequence[Mapping[str, Any]], summary.get("plan_build_diagnostics", []))
     symbols = runner.get("symbols", [])
     if isinstance(symbols, tuple):
         symbols = list(symbols)
     lines = [
         f"Trading mode: {summary['trading_mode']}",
         f"Symbols: {', '.join(symbols) if symbols else 'n/a'}",
+        f"Local data dir: {data_setup.get('local_data_dir') or 'n/a'}",
+        f"Fallback data dirs: {'enabled' if data_setup.get('use_fallback_data_dirs') else 'disabled'}",
+        f"Remote fetch on miss: {'enabled' if data_setup.get('allow_remote_data') else 'disabled'}",
         f"Lookback days: {runner.get('lookback_days')}",
         f"Simulation days: {runner.get('simulation_days')}",
         f"Plans generated: {summary['plans_generated']}",
         f"Trades executed: {summary['trades_executed']}",
     ]
+    search_dirs = data_setup.get("data_search_dirs", [])
+    if search_dirs:
+        lines.append(f"Data search order: {', '.join(search_dirs)}")
 
     starting_cash = float(simulation["starting_cash"])
     ending_cash = float(simulation["ending_cash"])
@@ -255,8 +337,31 @@ def _emit_text_summary(summary: Mapping[str, Any]) -> str:
             ),
             f"Sample count: {simulation_cfg.get('sample_count')}",
             f"LLM horizon days: {simulation_cfg.get('llm_horizon_days')}",
+            f"History divisor: {simulation_cfg.get('history_min_period_divisor')}",
+            f"Secondary sample scale: {simulation_cfg.get('secondary_sample_scale')}",
+            f"Sample return clip: {simulation_cfg.get('sample_return_clip')}",
         ]
     )
+    if market_data:
+        loaded_symbols = market_data.get("loaded_symbols", [])
+        requested_symbols = market_data.get("symbols_requested", [])
+        first_day = market_data.get("first_trading_day")
+        last_day = market_data.get("last_trading_day")
+        if first_day and last_day:
+            lines.append(
+                "Data coverage: "
+                f"{first_day} to {last_day} across {len(loaded_symbols)}/{len(requested_symbols)} loaded symbols"
+            )
+        empty_symbols = market_data.get("empty_symbols", [])
+        if empty_symbols:
+            lines.append(f"Empty symbols: {', '.join(empty_symbols)}")
+    if build_diagnostics:
+        status_counts: Dict[str, int] = {}
+        for item in build_diagnostics:
+            status = str(item.get("status", "unknown"))
+            status_counts[status] = status_counts.get(status, 0) + 1
+        rendered = ", ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
+        lines.append(f"Plan build statuses: {rendered}")
 
     last_allocation = summary.get("last_allocation")
     if last_allocation:
@@ -265,17 +370,290 @@ def _emit_text_summary(summary: Mapping[str, Any]) -> str:
         universe = last_allocation.get("universe", [])
         lines.append(f"Last allocation universe: {universe}")
 
+    if summary.get("effective_args_path"):
+        lines.append(f"Effective args JSON: {summary['effective_args_path']}")
+    if summary.get("effective_args_cli_path"):
+        lines.append(f"Effective args file: {summary['effective_args_cli_path']}")
+    if summary.get("effective_args_warning"):
+        lines.append(f"Effective args warning: {summary['effective_args_warning']}")
+    if summary.get("plans_output_path"):
+        lines.append(f"Plans JSON: {summary['plans_output_path']}")
+    if summary.get("trades_output_path"):
+        lines.append(f"Trades JSON: {summary['trades_output_path']}")
+    if summary.get("plans_output_warning"):
+        lines.append(f"Plans output warning: {summary['plans_output_warning']}")
+    if summary.get("trades_output_warning"):
+        lines.append(f"Trades output warning: {summary['trades_output_warning']}")
+
+    return "\n".join(lines)
+
+
+def _summarise_run_plan(
+    *,
+    paper: bool,
+    runner: RunnerConfig,
+    optimisation: OptimizationConfig,
+    pipeline: PipelineConfig,
+    simulation_cfg: PipelineSimulationConfig,
+) -> Dict[str, Any]:
+    return {
+        "mode": "describe-run",
+        "trading_mode": "paper" if paper else "live",
+        "paper": paper,
+        "data_setup": _build_data_setup_summary(runner),
+        "runner": _serialise_dataclass(runner),
+        "optimisation": _serialise_dataclass(optimisation),
+        "pipeline": _serialise_dataclass(pipeline),
+        "simulation_config": _serialise_dataclass(simulation_cfg),
+    }
+
+
+def _summarise_no_plan_result(
+    *,
+    paper: bool,
+    runner: RunnerConfig,
+    optimisation: OptimizationConfig,
+    pipeline: PipelineConfig,
+    simulation_cfg: PipelineSimulationConfig,
+    market_data_summary: Mapping[str, Any] | None = None,
+    build_diagnostics: Sequence[PipelinePlanBuildDiagnostics] = (),
+    failure_reason: str | None = None,
+) -> Dict[str, Any]:
+    summary = _summarise_run_plan(
+        paper=paper,
+        runner=runner,
+        optimisation=optimisation,
+        pipeline=pipeline,
+        simulation_cfg=simulation_cfg,
+    )
+    summary["mode"] = "no-plans"
+    summary["failure_reason"] = failure_reason or "Pipeline simulation produced no trading plans."
+    if market_data_summary is not None:
+        summary["market_data"] = market_data_summary
+    if build_diagnostics:
+        summary["plan_build_diagnostics"] = [_serialise_dataclass(item) for item in build_diagnostics]
+    summary["next_steps"] = [
+        "Check local market data coverage and empty symbols with --describe-run.",
+        "Relax trade filters or minimum trade value if the pipeline is too selective.",
+        "Enable --allow-remote-data if local caches are incomplete.",
+    ]
+    return summary
+
+
+def _emit_text_run_plan(summary: Mapping[str, Any]) -> str:
+    data_setup = cast(Mapping[str, Any], summary["data_setup"])
+    runner = cast(Mapping[str, Any], summary["runner"])
+    simulation_cfg = cast(Mapping[str, Any], summary["simulation_config"])
+    optimisation = cast(Mapping[str, Any], summary["optimisation"])
+    pipeline = cast(Mapping[str, Any], summary["pipeline"])
+    symbols = runner.get("symbols", [])
+    if isinstance(symbols, tuple):
+        symbols = list(symbols)
+    sim_symbols = simulation_cfg.get("symbols", [])
+    if isinstance(sim_symbols, tuple):
+        sim_symbols = list(sim_symbols)
+    lines = [
+        f"Mode: {summary['mode']}",
+        f"Trading mode: {summary['trading_mode']}",
+        f"Runner symbols: {', '.join(symbols) if symbols else 'n/a'}",
+        f"Simulation symbols: {', '.join(sim_symbols) if sim_symbols else 'n/a'}",
+        f"Local data dir: {data_setup.get('local_data_dir') or 'n/a'}",
+        f"Fallback data dirs: {'enabled' if data_setup.get('use_fallback_data_dirs') else 'disabled'}",
+        f"Remote fetch on miss: {'enabled' if data_setup.get('allow_remote_data') else 'disabled'}",
+        f"Lookback days: {runner.get('lookback_days')}",
+        f"Simulation days: {runner.get('simulation_days')}",
+        f"Starting cash: {_format_currency(float(runner.get('starting_cash', 0.0)))}",
+        f"Sample count: {simulation_cfg.get('sample_count')}",
+        f"LLM horizon days: {simulation_cfg.get('llm_horizon_days')}",
+        f"History divisor: {simulation_cfg.get('history_min_period_divisor')}",
+        f"Secondary sample scale: {simulation_cfg.get('secondary_sample_scale')}",
+        f"Sample return clip: {simulation_cfg.get('sample_return_clip')}",
+        f"Net exposure target: {optimisation.get('net_exposure_target')}",
+        f"Gross exposure limit: {optimisation.get('gross_exposure_limit')}",
+        f"Chronos / TimesFM weights: {pipeline.get('chronos_weight')} / {pipeline.get('timesfm_weight')}",
+    ]
+    search_dirs = data_setup.get("data_search_dirs", [])
+    if search_dirs:
+        lines.append(f"Data search order: {', '.join(search_dirs)}")
+    if summary.get("effective_args_path"):
+        lines.append(f"Effective args JSON: {summary['effective_args_path']}")
+    if summary.get("effective_args_cli_path"):
+        lines.append(f"Effective args file: {summary['effective_args_cli_path']}")
+    if summary.get("effective_args_warning"):
+        lines.append(f"Effective args warning: {summary['effective_args_warning']}")
+    return "\n".join(lines)
+
+
+def _emit_text_no_plan_summary(summary: Mapping[str, Any]) -> str:
+    lines = _emit_text_run_plan(summary).splitlines()
+    lines.append(f"Failure: {summary['failure_reason']}")
+    market_data = cast(Mapping[str, Any], summary.get("market_data", {}))
+    if market_data:
+        loaded_symbols = market_data.get("loaded_symbols", [])
+        requested_symbols = market_data.get("symbols_requested", [])
+        first_day = market_data.get("first_trading_day")
+        last_day = market_data.get("last_trading_day")
+        if first_day and last_day:
+            lines.append(
+                "Data coverage: "
+                f"{first_day} to {last_day} across {len(loaded_symbols)}/{len(requested_symbols)} loaded symbols"
+            )
+        empty_symbols = market_data.get("empty_symbols", [])
+        if empty_symbols:
+            lines.append(f"Empty symbols: {', '.join(empty_symbols)}")
+    build_diagnostics = cast(Sequence[Mapping[str, Any]], summary.get("plan_build_diagnostics", []))
+    if build_diagnostics:
+        lines.append("Plan build diagnostics:")
+        for item in build_diagnostics:
+            lines.append(
+                f"- {item.get('target_date')}: {item.get('status')} "
+                f"(history {len(item.get('symbols_with_history', []))}/{len(item.get('symbols_considered', []))}, "
+                f"forecasts {len(item.get('forecasted_symbols', []))}, "
+                f"instructions {item.get('generated_instruction_count', 0)})"
+            )
+            failures = cast(Mapping[str, str], item.get("forecast_failure_reasons", {}))
+            if failures:
+                rendered = ", ".join(f"{symbol}={reason}" for symbol, reason in sorted(failures.items()))
+                lines.append(f"  Forecast failures: {rendered}")
+            skipped = item.get("skipped_min_trade_symbols", [])
+            if skipped:
+                lines.append(f"  Below min trade value: {', '.join(skipped)}")
+            missing_prices = item.get("missing_price_symbols", [])
+            if missing_prices:
+                lines.append(f"  Missing price inputs: {', '.join(missing_prices)}")
+    next_steps = summary.get("next_steps", [])
+    if next_steps:
+        lines.append("Next steps:")
+        for step in next_steps:
+            lines.append(f"- {step}")
     return "\n".join(lines)
 
 
 def _write_output(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    preserved_mode: int | None = None
+    try:
+        preserved_mode = path.stat().st_mode & 0o777
+    except FileNotFoundError:
+        preserved_mode = None
+
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.tmp.", dir=str(path.parent))
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if preserved_mode is not None:
+            os.chmod(tmp_path, preserved_mode)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def _write_json_output(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    _write_output(path, json.dumps(payload, indent=2, sort_keys=True))
+
+
+def _render_effective_args_file(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str:
+    actions_by_dest: dict[str, list[argparse.Action]] = {}
+    for action in parser._actions:
+        if not action.option_strings or action.dest in {"help", "_parser_ref"}:
+            continue
+        actions_by_dest.setdefault(action.dest, []).append(action)
+
+    lines = [
+        f"# Re-run with: python -m stockagent2.cli @{Path('run').with_suffix(EFFECTIVE_ARGS_TXT_SUFFIX).name}",
+    ]
+    for dest, actions in actions_by_dest.items():
+        if not hasattr(args, dest):
+            continue
+        value = getattr(args, dest)
+        if value is None:
+            continue
+
+        bool_actions = [
+            action for action in actions if isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction))
+        ]
+        if bool_actions:
+            chosen = next((action for action in bool_actions if getattr(action, "const", None) == value), None)
+            if chosen is None:
+                continue
+            option = _preferred_option_string(chosen)
+            if option is not None:
+                lines.append(option)
+            continue
+
+        action = actions[-1]
+        option = _preferred_option_string(action)
+        if option is None:
+            continue
+        if isinstance(value, Path):
+            rendered_value = str(value)
+        elif isinstance(value, (list, tuple)):
+            rendered_value = " ".join(shlex.quote(str(item)) for item in value)
+            lines.append(f"{option} {rendered_value}")
+            continue
+        else:
+            rendered_value = shlex.quote(str(value))
+        lines.append(f"{option} {rendered_value}")
+    return "\n".join(lines) + "\n"
+
+
+def _effective_args_paths(summary_output: Path) -> tuple[Path, Path]:
+    base = summary_output.with_suffix("")
+    return (
+        base.with_name(base.name + EFFECTIVE_ARGS_JSON_SUFFIX),
+        base.with_name(base.name + EFFECTIVE_ARGS_TXT_SUFFIX),
+    )
+
+
+def _sidecar_output_path(summary_output: Path, suffix: str) -> Path:
+    base = summary_output.with_suffix("")
+    return base.with_name(base.name + suffix)
+
+
+def _maybe_write_effective_args_artifacts(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    *,
+    summary_output: Path | None,
+) -> tuple[Path | None, Path | None, str | None]:
+    if summary_output is None:
+        return None, None, None
+    json_path, txt_path = _effective_args_paths(summary_output)
+    try:
+        effective_args = {
+            key: (str(value) if isinstance(value, Path) else value)
+            for key, value in vars(args).items()
+            if key not in {"_parser_ref", "handler"} and not callable(value)
+        }
+        _write_json_output(json_path, effective_args)
+        _write_output(txt_path, _render_effective_args_file(parser, args))
+        return json_path, txt_path, None
+    except Exception as exc:  # pragma: no cover - defensive
+        return None, None, f"Failed to write effective args artifacts: {exc}"
+
+
+def _write_json_artifact(
+    *,
+    path: Path | None,
+    payload: Any,
+    best_effort: bool,
+) -> str | None:
+    if path is None:
+        return None
+    try:
+        _write_json_output(path, payload)
+        return None
+    except Exception as exc:
+        if not best_effort:
+            raise
+        return f"Failed to write {path.name}: {exc}"
 
 
 def _handle_pipeline_simulation(args: argparse.Namespace) -> int:
@@ -292,6 +670,8 @@ def _handle_pipeline_simulation(args: argparse.Namespace) -> int:
         runner_cli["local_data_dir"] = args.local_data_dir
     if args.allow_remote_data is not None:
         runner_cli["allow_remote_data"] = args.allow_remote_data
+    if args.use_fallback_data_dirs is not None:
+        runner_cli["use_fallback_data_dirs"] = args.use_fallback_data_dirs
 
     optimisation_cli: Dict[str, Any] = {}
     if args.net_exposure_target is not None:
@@ -381,17 +761,89 @@ def _handle_pipeline_simulation(args: argparse.Namespace) -> int:
     )
     if not simulation_cfg.symbols:
         simulation_cfg.symbols = runner.symbols
+    parser = cast(argparse.ArgumentParser, args._parser_ref)
 
-    result = run_pipeline_simulation(
+    if args.describe_run:
+        summary = _summarise_run_plan(
+            paper=args.paper,
+            runner=runner,
+            optimisation=optimisation,
+            pipeline=pipeline_cfg,
+            simulation_cfg=simulation_cfg,
+        )
+        effective_args_path, effective_args_cli_path, effective_args_warning = _maybe_write_effective_args_artifacts(
+            parser,
+            args,
+            summary_output=args.summary_output,
+        )
+        if effective_args_path is not None:
+            summary["effective_args_path"] = str(effective_args_path)
+        if effective_args_cli_path is not None:
+            summary["effective_args_cli_path"] = str(effective_args_cli_path)
+        if effective_args_warning is not None:
+            summary["effective_args_warning"] = effective_args_warning
+        if args.summary_format == "json":
+            output_payload = summary
+            text_output = json.dumps(summary, indent=2, sort_keys=True)
+        else:
+            output_payload = summary
+            text_output = _emit_text_run_plan(summary)
+        if not args.quiet:
+            print(text_output)
+        if args.summary_output is not None:
+            if args.summary_format == "json":
+                _write_json_output(args.summary_output, output_payload)
+            else:
+                _write_output(args.summary_output, text_output)
+        return 0
+
+    attempt = run_pipeline_simulation_with_diagnostics(
         runner_config=runner,
         optimisation_config=optimisation,
         pipeline_config=pipeline_cfg,
         simulation_config=simulation_cfg,
     )
-    if result is None:
-        print("Pipeline simulation produced no trading plans (check data availability and configuration).", file=sys.stderr)
+    if attempt.result is None:
+        summary = _summarise_no_plan_result(
+            paper=args.paper,
+            runner=runner,
+            optimisation=optimisation,
+            pipeline=pipeline_cfg,
+            simulation_cfg=simulation_cfg,
+            market_data_summary=_serialise_dataclass(attempt.market_data_summary),
+            build_diagnostics=attempt.build_diagnostics,
+            failure_reason=attempt.failure_reason,
+        )
+        effective_args_path, effective_args_cli_path, effective_args_warning = _maybe_write_effective_args_artifacts(
+            parser,
+            args,
+            summary_output=args.summary_output,
+        )
+        if effective_args_path is not None:
+            summary["effective_args_path"] = str(effective_args_path)
+        if effective_args_cli_path is not None:
+            summary["effective_args_cli_path"] = str(effective_args_cli_path)
+        if effective_args_warning is not None:
+            summary["effective_args_warning"] = effective_args_warning
+
+        if args.summary_format == "json":
+            output_payload = summary
+            text_output = json.dumps(summary, indent=2, sort_keys=True)
+        else:
+            output_payload = summary
+            text_output = _emit_text_no_plan_summary(summary)
+
+        if args.summary_output is not None:
+            if args.summary_format == "json":
+                _write_json_output(args.summary_output, output_payload)
+            else:
+                _write_output(args.summary_output, text_output)
+
+        if not args.quiet:
+            print(text_output, file=sys.stderr)
         return 1
 
+    result = attempt.result
     summary = _summarise_result(
         result,
         paper=args.paper,
@@ -399,7 +851,52 @@ def _handle_pipeline_simulation(args: argparse.Namespace) -> int:
         optimisation=optimisation,
         pipeline=pipeline_cfg,
         simulation_cfg=simulation_cfg,
+        build_diagnostics=attempt.build_diagnostics,
     )
+    plan_payload = [plan.to_dict() for plan in result.plans]
+    trades_payload = result.simulation.trades
+
+    derived_plans_output = None
+    derived_trades_output = None
+    if args.summary_output is not None:
+        if args.plans_output is None:
+            derived_plans_output = _sidecar_output_path(args.summary_output, PLANS_JSON_SUFFIX)
+        if args.trades_output is None:
+            derived_trades_output = _sidecar_output_path(args.summary_output, TRADES_JSON_SUFFIX)
+
+    plans_output_path = args.plans_output or derived_plans_output
+    trades_output_path = args.trades_output or derived_trades_output
+
+    plans_output_warning = _write_json_artifact(
+        path=plans_output_path,
+        payload=plan_payload,
+        best_effort=args.plans_output is None,
+    )
+    trades_output_warning = _write_json_artifact(
+        path=trades_output_path,
+        payload=trades_payload,
+        best_effort=args.trades_output is None,
+    )
+    if plans_output_path is not None:
+        summary["plans_output_path"] = str(plans_output_path)
+    if trades_output_path is not None:
+        summary["trades_output_path"] = str(trades_output_path)
+    if plans_output_warning is not None:
+        summary["plans_output_warning"] = plans_output_warning
+    if trades_output_warning is not None:
+        summary["trades_output_warning"] = trades_output_warning
+
+    effective_args_path, effective_args_cli_path, effective_args_warning = _maybe_write_effective_args_artifacts(
+        parser,
+        args,
+        summary_output=args.summary_output,
+    )
+    if effective_args_path is not None:
+        summary["effective_args_path"] = str(effective_args_path)
+    if effective_args_cli_path is not None:
+        summary["effective_args_cli_path"] = str(effective_args_cli_path)
+    if effective_args_warning is not None:
+        summary["effective_args_warning"] = effective_args_warning
 
     if args.summary_format == "json":
         output_payload = summary
@@ -417,18 +914,16 @@ def _handle_pipeline_simulation(args: argparse.Namespace) -> int:
         else:
             _write_output(args.summary_output, text_output)
 
-    if args.plans_output is not None:
-        plan_payload = [plan.to_dict() for plan in result.plans]
-        _write_json_output(args.plans_output, plan_payload)
-
-    if args.trades_output is not None:
-        _write_json_output(args.trades_output, result.simulation.trades)
-
     return 0
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="stockagent2 command suite")
+    parser = ArgsFileParser(
+        description="stockagent2 command suite",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        fromfile_prefix_chars="@",
+        epilog="Long commands can be stored in an @args.txt file; lines support shell-style quoting and # comments.",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     pipeline_parser = subparsers.add_parser(
@@ -446,6 +941,13 @@ def _build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Permit remote OHLC fetch when local cache misses occur.",
+    )
+    pipeline_parser.add_argument(
+        "--fallback-data-dirs",
+        dest="use_fallback_data_dirs",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Search built-in fallback OHLC directories after the primary local data dir.",
     )
     pipeline_parser.add_argument("--runner-config", type=Path, help="Path to JSON/TOML file with RunnerConfig overrides.")
     pipeline_parser.add_argument("--optimisation-config", type=Path, help="Path to JSON/TOML file with OptimizationConfig overrides.")
@@ -510,9 +1012,14 @@ def _build_parser() -> argparse.ArgumentParser:
     pipeline_parser.add_argument("--summary-output", type=Path, help="Optional path to write summary output.")
     pipeline_parser.add_argument("--plans-output", type=Path, help="Optional path to write generated trading plans (JSON).")
     pipeline_parser.add_argument("--trades-output", type=Path, help="Optional path to write executed trade log (JSON).")
+    pipeline_parser.add_argument(
+        "--describe-run",
+        action="store_true",
+        help="Print the resolved run plan and exit without loading data or simulating trades.",
+    )
     pipeline_parser.add_argument("--quiet", action="store_true", help="Suppress stdout summary (use with --summary-output).")
 
-    pipeline_parser.set_defaults(handler=_handle_pipeline_simulation)
+    pipeline_parser.set_defaults(handler=_handle_pipeline_simulation, _parser_ref=pipeline_parser)
 
     return parser
 

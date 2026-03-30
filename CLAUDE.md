@@ -42,8 +42,8 @@ we control everything here so forking projects and C cuda kernels etc is fine we
 we have a few projects like nanochat autoresearch modded-nanogpt etc that are here as examples of code and the chronos2 project is important as we train loras and fit hyperparameters/preaugmentations of that too
 
 ## Production
-see prod.md for whats running, marketsim scores, deploy commands, and monitoring
-always update prod.md when deploying or changing production systems
+see alpacaprod.md for whats running, marketsim scores, deploy commands, and monitoring
+always update alpacaprod.md when deploying or changing production systems
 validate with binary-fill marketsim at lag>=2 before deploying any neural model
 soft sigmoid fills have lookahead bias -- never trust training sortino alone
 

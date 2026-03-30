@@ -10,7 +10,7 @@ import pytest
 import numpy as np
 import pandas as pd
 
-from stockagent.agentsimulator import AccountPosition, AccountSnapshot, TradingPlan
+from stockagent.agentsimulator import AccountSnapshot, TradingPlan
 from stockagent2 import (
     AllocationPipeline,
     ForecastReturnSet,
@@ -20,11 +20,14 @@ from stockagent2 import (
     TickerView,
 )
 from stockagent2.agentsimulator.plan_builder import PipelinePlanBuilder, PipelineSimulationConfig
+from stockagent2.agentsimulator.plan_builder import _extract_history
 from stockagent2.agentsimulator.runner import (
     RunnerConfig,
+    _BarsMarketDataAdapter,
     _build_close_price_snapshots,
     _snapshot_from_positions,
     run_pipeline_simulation,
+    run_pipeline_simulation_with_diagnostics,
 )
 from stockagent2.agentsimulator.forecast_adapter import SymbolForecast
 from stockagent2.black_litterman import BlackLittermanFuser
@@ -282,6 +285,264 @@ def test_pipeline_plan_builder_generates_instructions() -> None:
     assert len(plan.instructions) > 0
 
 
+def test_pipeline_plan_builder_records_no_instruction_diagnostics() -> None:
+    universe = ("AAPL",)
+    optimisation_config = OptimizationConfig(
+        net_exposure_target=1.0,
+        gross_exposure_limit=1.2,
+        long_cap=1.0,
+        short_cap=0.0,
+        min_weight=0.0,
+        max_weight=1.0,
+    )
+    pipeline_config = PipelineConfig(
+        tau=0.05,
+        shrinkage=0.1,
+        chronos_weight=0.6,
+        timesfm_weight=0.4,
+        market_prior_weight=0.4,
+        annualisation_periods=40,
+    )
+    pipeline = AllocationPipeline(
+        optimisation_config=optimisation_config,
+        pipeline_config=pipeline_config,
+    )
+    adapter = DummyForecastAdapter(
+        {
+            "AAPL": SymbolForecast(
+                symbol="AAPL",
+                last_close=100.0,
+                predicted_close=101.0,
+                entry_price=100.5,
+                average_price_mae=0.5,
+            )
+        }
+    )
+    builder = PipelinePlanBuilder(
+        pipeline=pipeline,
+        forecast_adapter=adapter,
+        pipeline_config=PipelineSimulationConfig(
+            symbols=universe,
+            sample_count=64,
+            min_trade_value=1_000_000.0,
+            min_volatility=0.001,
+            llm_horizon_days=3,
+        ),
+        pipeline_params=pipeline_config,
+    )
+    market_frames = {"AAPL": _make_history(np.linspace(90, 100, 15))}
+    target_timestamp = market_frames["AAPL"].index[-1] + pd.Timedelta(days=1)
+    snapshot = AccountSnapshot(
+        equity=10_000.0,
+        cash=10_000.0,
+        buying_power=None,
+        timestamp=pd.Timestamp.utcnow().to_pydatetime(),
+        positions=[],
+    )
+
+    plan = builder.build_for_day(
+        target_timestamp=target_timestamp,
+        market_frames=market_frames,
+        account_snapshot=snapshot,
+    )
+
+    assert plan is None
+    assert builder.last_build_diagnostics is not None
+    assert builder.last_build_diagnostics.status == "no_instructions"
+    assert builder.last_build_diagnostics.skipped_min_trade_symbols == ("AAPL",)
+    assert builder.last_build_diagnostics.forecasted_symbols == ("AAPL",)
+
+
+def test_pipeline_plan_builder_respects_configured_history_requirement() -> None:
+    pipeline = AllocationPipeline(
+        optimisation_config=OptimizationConfig(),
+        pipeline_config=PipelineConfig(annualisation_periods=40),
+    )
+    adapter = DummyForecastAdapter(
+        {
+            "AAPL": SymbolForecast(
+                symbol="AAPL",
+                last_close=100.0,
+                predicted_close=101.0,
+                entry_price=100.5,
+                average_price_mae=0.5,
+            )
+        }
+    )
+    builder = PipelinePlanBuilder(
+        pipeline=pipeline,
+        forecast_adapter=adapter,
+        pipeline_config=PipelineSimulationConfig(
+            symbols=("AAPL",),
+            history_min_period_divisor=2,
+        ),
+        pipeline_params=PipelineConfig(annualisation_periods=40),
+    )
+
+    plan = builder.build_for_day(
+        target_timestamp=pd.Timestamp("2025-01-31", tz="UTC"),
+        market_frames={"AAPL": _make_history(np.linspace(90, 100, 15))},
+        account_snapshot=AccountSnapshot(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=None,
+            timestamp=pd.Timestamp.utcnow().to_pydatetime(),
+            positions=[],
+        ),
+    )
+
+    assert plan is None
+    assert builder.last_build_diagnostics is not None
+    assert builder.last_build_diagnostics.status == "no_history"
+    assert builder.last_build_diagnostics.insufficient_history_symbols == ("AAPL",)
+
+
+def test_pipeline_plan_builder_respects_configured_sampling_and_half_life_heuristics() -> None:
+    captured: dict[str, object] = {}
+
+    class CapturingPipeline:
+        def run(self, *, chronos, timesfm, llm_views, previous_weights, **kwargs):
+            captured["chronos"] = chronos
+            captured["timesfm"] = timesfm
+            captured["llm_views"] = llm_views
+            return SimpleNamespace(weights=np.array([0.5]), diagnostics={})
+
+    builder = PipelinePlanBuilder(
+        pipeline=CapturingPipeline(),
+        forecast_adapter=DummyForecastAdapter(
+            {
+                "AAPL": SymbolForecast(
+                    symbol="AAPL",
+                    last_close=100.0,
+                    predicted_close=103.0,
+                    entry_price=101.0,
+                    average_price_mae=2.0,
+                )
+            }
+        ),
+        pipeline_config=PipelineSimulationConfig(
+            symbols=("AAPL",),
+            sample_count=512,
+            min_trade_value=10.0,
+            min_volatility=0.001,
+            llm_horizon_days=40,
+            secondary_sample_scale=2.0,
+            sample_return_clip=0.5,
+            min_view_half_life_days=7,
+            max_view_half_life_days=9,
+            rng_seed=7,
+        ),
+        pipeline_params=PipelineConfig(annualisation_periods=40),
+    )
+
+    plan = builder.build_for_day(
+        target_timestamp=pd.Timestamp("2025-02-28", tz="UTC"),
+        market_frames={"AAPL": _make_history(np.linspace(90, 100, 40))},
+        account_snapshot=AccountSnapshot(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=None,
+            timestamp=pd.Timestamp.utcnow().to_pydatetime(),
+            positions=[],
+        ),
+    )
+
+    assert plan is not None
+    chronos = captured["chronos"]
+    timesfm = captured["timesfm"]
+    llm_views = captured["llm_views"]
+    assert np.std(timesfm.samples[:, 0]) > np.std(chronos.samples[:, 0]) * 1.5
+    assert llm_views.views[0].half_life_days == 9
+
+
+def test_pipeline_plan_builder_uses_stable_sampling_for_same_day_retries() -> None:
+    captured_runs: list[tuple[np.ndarray, np.ndarray]] = []
+
+    class CapturingPipeline:
+        def run(self, *, chronos, timesfm, llm_views, previous_weights, **kwargs):
+            captured_runs.append((chronos.samples.copy(), timesfm.samples.copy()))
+            return SimpleNamespace(weights=np.array([0.5]), diagnostics={})
+
+    builder = PipelinePlanBuilder(
+        pipeline=CapturingPipeline(),
+        forecast_adapter=DummyForecastAdapter(
+            {
+                "AAPL": SymbolForecast(
+                    symbol="AAPL",
+                    last_close=100.0,
+                    predicted_close=103.0,
+                    entry_price=101.0,
+                    average_price_mae=2.0,
+                )
+            }
+        ),
+        pipeline_config=PipelineSimulationConfig(
+            symbols=("AAPL",),
+            sample_count=64,
+            min_trade_value=10.0,
+            rng_seed=11,
+        ),
+        pipeline_params=PipelineConfig(annualisation_periods=40),
+    )
+
+    common_kwargs = dict(
+        target_timestamp=pd.Timestamp("2025-02-28", tz="UTC"),
+        market_frames={"AAPL": _make_history(np.linspace(90, 100, 40))},
+        account_snapshot=AccountSnapshot(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=None,
+            timestamp=pd.Timestamp.utcnow().to_pydatetime(),
+            positions=[],
+        ),
+    )
+
+    first_plan = builder.build_for_day(**common_kwargs)
+    builder._previous_weights = {}
+    second_plan = builder.build_for_day(**common_kwargs)
+
+    assert first_plan is not None
+    assert second_plan is not None
+    assert len(captured_runs) == 2
+    np.testing.assert_allclose(captured_runs[0][0], captured_runs[1][0])
+    np.testing.assert_allclose(captured_runs[0][1], captured_runs[1][1])
+
+
+def test_pipeline_simulation_config_validates_heuristic_bounds() -> None:
+    with pytest.raises(ValueError, match="history_min_period_divisor"):
+        PipelineSimulationConfig(history_min_period_divisor=0)
+    with pytest.raises(ValueError, match="max_view_half_life_days"):
+        PipelineSimulationConfig(min_view_half_life_days=5, max_view_half_life_days=4)
+
+
+def test_extract_history_uses_strict_pre_target_window() -> None:
+    frame = _make_history([100.0, 101.0, 102.0, 103.0])
+    target_timestamp = frame.index[2]
+
+    histories, latest_prices = _extract_history(
+        market_frames={"AAPL": frame},
+        target_timestamp=target_timestamp,
+        min_length=2,
+    )
+
+    history = histories["AAPL"]
+    assert list(history.index) == list(frame.index[:2])
+    assert latest_prices == {"AAPL": 101.0}
+
+
+def test_extract_history_skips_symbols_without_enough_pre_target_rows() -> None:
+    frame = _make_history([100.0, 101.0, 102.0])
+
+    histories, latest_prices = _extract_history(
+        market_frames={"AAPL": frame},
+        target_timestamp=frame.index[1],
+        min_length=2,
+    )
+
+    assert histories == {}
+    assert latest_prices == {}
+
+
 def test_snapshot_from_positions_uses_aware_utc_timestamp() -> None:
     snapshot = _snapshot_from_positions(
         positions={"AAPL": 10.0},
@@ -309,6 +570,37 @@ def test_build_close_price_snapshots_forward_fills_sparse_history() -> None:
     assert snapshots[trading_days[0]] == {"MSFT": 100.0}
     assert snapshots[trading_days[1]] == {"MSFT": 100.0}
     assert snapshots[trading_days[2]] == {"MSFT": 105.0}
+
+
+def test_build_close_price_snapshots_returns_empty_without_trading_days() -> None:
+    snapshots = _build_close_price_snapshots(
+        bars={
+            "MSFT": pd.DataFrame(
+                {"close": [100.0]},
+                index=pd.DatetimeIndex([pd.Timestamp("2025-01-01", tz="UTC")]),
+            )
+        },
+        symbols=("MSFT",),
+        trading_days=(),
+    )
+
+    assert snapshots == {}
+
+
+def test_bars_market_data_adapter_uppercases_symbols_and_returns_copy() -> None:
+    frame = pd.DataFrame(
+        {"close": [100.0], "open": [99.0]},
+        index=pd.DatetimeIndex([pd.Timestamp("2025-01-01", tz="UTC")]),
+    )
+    adapter = _BarsMarketDataAdapter(bars={"MSFT": frame})
+
+    result = adapter.get_symbol_bars("msft")
+
+    assert result.equals(frame)
+    assert result is not frame
+    result.loc[:, "close"] = [200.0]
+    assert frame["close"].iloc[0] == 100.0
+    assert adapter.get_symbol_bars("AAPL").empty
 
 
 def test_run_pipeline_simulation_respects_simulation_symbols(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -376,3 +668,61 @@ def test_run_pipeline_simulation_respects_simulation_symbols(monkeypatch: pytest
     assert record["symbols"] == ("MSFT",)
     assert record["as_of"].tzinfo == timezone.utc
     assert record["snapshot_timestamp"].tzinfo == timezone.utc
+    assert result.market_data_summary.symbols_requested == ("MSFT",)
+    assert result.market_data_summary.loaded_symbols == ("MSFT",)
+    assert result.market_data_summary.empty_symbols == ()
+    assert result.market_data_summary.first_trading_day == trading_days[-1].date().isoformat()
+    assert result.market_data_summary.last_trading_day == trading_days[-1].date().isoformat()
+    assert isinstance(result.simulator.market_data, _BarsMarketDataAdapter)
+    assert result.simulator.market_data.get_symbol_bars("MSFT").equals(frame)
+
+
+def test_run_pipeline_simulation_returns_none_without_trading_days(monkeypatch: pytest.MonkeyPatch) -> None:
+    class DummyBundle:
+        bars: dict[str, pd.DataFrame] = {}
+
+        def trading_days(self) -> list[pd.Timestamp]:
+            return []
+
+    monkeypatch.setattr(
+        "stockagent2.agentsimulator.runner.fetch_latest_ohlc",
+        lambda **_: DummyBundle(),
+    )
+    monkeypatch.setattr(
+        "stockagent2.agentsimulator.runner.CostAwareOptimizer",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("optimizer should not be constructed")),
+    )
+
+    result = run_pipeline_simulation(
+        runner_config=RunnerConfig(symbols=("MSFT",), lookback_days=20, simulation_days=1),
+        optimisation_config=OptimizationConfig(),
+        pipeline_config=PipelineConfig(),
+    )
+
+    assert result is None
+
+
+def test_run_pipeline_simulation_with_diagnostics_reports_failure_context_without_trading_days(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DummyBundle:
+        bars: dict[str, pd.DataFrame] = {}
+
+        def trading_days(self) -> list[pd.Timestamp]:
+            return []
+
+    monkeypatch.setattr(
+        "stockagent2.agentsimulator.runner.fetch_latest_ohlc",
+        lambda **_: DummyBundle(),
+    )
+
+    attempt = run_pipeline_simulation_with_diagnostics(
+        runner_config=RunnerConfig(symbols=("MSFT",), lookback_days=20, simulation_days=1),
+        optimisation_config=OptimizationConfig(),
+        pipeline_config=PipelineConfig(),
+    )
+
+    assert attempt.result is None
+    assert attempt.failure_reason == "No trading days available for simulation."
+    assert attempt.market_data_summary.symbols_requested == ("MSFT",)
+    assert attempt.build_diagnostics == ()

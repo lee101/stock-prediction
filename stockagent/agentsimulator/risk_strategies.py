@@ -8,6 +8,7 @@ from typing_extensions import override
 
 from loguru import logger
 
+from ..constants import DEFAULT_MIN_PROBE_QUANTITY, DEFAULT_PROBE_TRADE_MULTIPLIER
 from .data_models import PlanActionType, TradingInstruction
 from .interfaces import BaseRiskStrategy, DaySummary
 
@@ -15,7 +16,11 @@ from .interfaces import BaseRiskStrategy, DaySummary
 class ProbeTradeStrategy(BaseRiskStrategy):
     """Uses small probe trades until a symbol-direction proves profitable."""
 
-    def __init__(self, probe_multiplier: float = 0.05, min_quantity: float = 0.01):
+    def __init__(
+        self,
+        probe_multiplier: float = DEFAULT_PROBE_TRADE_MULTIPLIER,
+        min_quantity: float = DEFAULT_MIN_PROBE_QUANTITY,
+    ):
         self.probe_multiplier: float = probe_multiplier
         self.min_quantity: float = min_quantity
         self._status: dict[tuple[str, str], bool] = {}
@@ -59,7 +64,11 @@ class ProbeTradeStrategy(BaseRiskStrategy):
 class ProfitShutdownStrategy(BaseRiskStrategy):
     """After a losing day, turns new trades into small probe positions."""
 
-    def __init__(self, probe_multiplier: float = 0.05, min_quantity: float = 0.01):
+    def __init__(
+        self,
+        probe_multiplier: float = DEFAULT_PROBE_TRADE_MULTIPLIER,
+        min_quantity: float = DEFAULT_MIN_PROBE_QUANTITY,
+    ):
         self.probe_multiplier: float = probe_multiplier
         self.min_quantity: float = min_quantity
         self._probe_mode: bool = False

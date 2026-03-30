@@ -5,12 +5,15 @@ from datetime import date
 import pandas as pd
 import pytest
 
+from stockagent.agentsimulator import MarketDataProvider as StatefulMarketDataProvider
+from stockagentindependant.constants import DEFAULT_MIN_PROBE_QUANTITY, DEFAULT_PROBE_TRADE_MULTIPLIER
 from stockagentindependant.agentsimulator.data_models import (
     ExecutionSession,
     PlanActionType,
     TradingInstruction,
     TradingPlan,
 )
+from stockagentindependant.agentsimulator import MarketDataProvider
 from stockagentindependant.agentsimulator.market_data import MarketDataBundle
 from stockagentindependant.agentsimulator.risk_strategies import (
     ProbeTradeStrategy,
@@ -34,6 +37,23 @@ def _bundle() -> MarketDataBundle:
         lookback_days=3,
         as_of=index[-1].to_pydatetime(),
     )
+
+
+def test_stateless_market_data_provider_reuses_shared_contract() -> None:
+    assert MarketDataProvider is StatefulMarketDataProvider
+
+
+def test_stateless_simulator_accepts_market_data_provider_protocol() -> None:
+    class ProviderAdapter:
+        def __init__(self, bundle: MarketDataBundle) -> None:
+            self._bundle = bundle
+
+        def get_symbol_bars(self, symbol: str) -> pd.DataFrame:
+            return self._bundle.get_symbol_bars(symbol)
+
+    simulator = AgentSimulator(market_data=ProviderAdapter(_bundle()))
+    price = simulator._price_for("MSFT", date(2025, 1, 1), ExecutionSession.MARKET_OPEN)
+    assert price == 50.0
 
 
 def test_stateless_simulator_runs_plans_and_summarizes_trades() -> None:
@@ -127,6 +147,13 @@ def test_stateless_probe_trade_strategy_appends_notes() -> None:
     )
     assert reduced[0].quantity == pytest.approx(3.0)
     assert reduced[0].notes == "|probe_trade"
+
+
+def test_stateless_risk_strategies_use_shared_default_probe_sizing() -> None:
+    assert ProbeTradeStrategy().probe_multiplier == pytest.approx(DEFAULT_PROBE_TRADE_MULTIPLIER)
+    assert ProbeTradeStrategy().min_quantity == pytest.approx(DEFAULT_MIN_PROBE_QUANTITY)
+    assert ProfitShutdownStrategy().probe_multiplier == pytest.approx(DEFAULT_PROBE_TRADE_MULTIPLIER)
+    assert ProfitShutdownStrategy().min_quantity == pytest.approx(DEFAULT_MIN_PROBE_QUANTITY)
 
 
 def test_stateless_profit_shutdown_strategy_marks_probe_mode() -> None:
