@@ -165,6 +165,9 @@ def main():
     parser.add_argument("--min-screen-trades", type=float, default=3.0,
                         help="Min avg trades per 90d window at screen to qualify (default 3.0). "
                              "Filters collapsed/degenerate models.")
+    parser.add_argument("--candidates-dir", type=str, default=None,
+                        help="If set, copy screen_best_neg.pt (or screen_best.pt) to this dir on qualification. "
+                             "Filename: s{seed}_screen_best.pt")
     args = parser.parse_args()
 
     # Auto-generate run tag if not specified
@@ -236,6 +239,14 @@ def main():
                     if pass_val and pass_ret and pass_med and pass_trades:
                         qualified.add(seed)
                         log(seed, "screen", "QUALIFIED", ev["neg"], ev["med"], ev["best_return"], ev["global_step"], ev["trades_avg"])
+                        if args.candidates_dir:
+                            cands_path = Path(args.candidates_dir)
+                            cands_path.mkdir(parents=True, exist_ok=True)
+                            src = screen_best_neg if using_best_neg else ckpt_dir / "screen_best.pt"
+                            dst = cands_path / f"s{seed}_screen_best.pt"
+                            if src.exists() and not dst.exists():
+                                shutil.copy2(src, dst)
+                                print(f"  Copied s{seed} to candidates: {dst}", flush=True)
                     else:
                         rejected.add(seed)
                         reasons = []
@@ -289,6 +300,14 @@ def main():
                     if pass_val and pass_ret and pass_med and pass_trades:
                         qualified.add(seed)
                         log(seed, "screen", "QUALIFIED", ev["neg"], ev["med"], ev["best_return"], ev["global_step"], ev["trades_avg"])
+                        if args.candidates_dir:
+                            cands_path = Path(args.candidates_dir)
+                            cands_path.mkdir(parents=True, exist_ok=True)
+                            src = screen_best_neg if using_best_neg else ckpt_dir / "screen_best.pt"
+                            dst = cands_path / f"s{seed}_screen_best.pt"
+                            if src.exists() and not dst.exists():
+                                shutil.copy2(src, dst)
+                                print(f"  Copied s{seed} to candidates: {dst}", flush=True)
                     else:
                         rejected.add(seed)
                         reasons = []
