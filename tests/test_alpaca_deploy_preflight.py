@@ -31,7 +31,7 @@ def test_parse_git_status_porcelain_extracts_dirty_paths_and_ahead_behind() -> N
     text = "\n".join(
         [
             "## main...origin/main [ahead 2, behind 4]",
-            " M prod.md",
+            " M alpacaprod.md",
             "M  unified_orchestrator/orchestrator.py",
             "R  old.py -> new.py",
         ]
@@ -40,14 +40,14 @@ def test_parse_git_status_porcelain_extracts_dirty_paths_and_ahead_behind() -> N
     assert out.branch_line == "main...origin/main [ahead 2, behind 4]"
     assert out.ahead == 2
     assert out.behind == 4
-    assert out.dirty_paths == ["prod.md", "unified_orchestrator/orchestrator.py", "new.py"]
+    assert out.dirty_paths == ["alpacaprod.md", "unified_orchestrator/orchestrator.py", "new.py"]
 
 
 def test_repo_relative_dirty_paths_outside_watchlist_filters_expected_paths() -> None:
     mod = _load_module()
-    dirty = ["prod.md", "unified_orchestrator/orchestrator.py", "README.md"]
+    dirty = ["alpacaprod.md", "unified_orchestrator/orchestrator.py", "README.md"]
     watched = ("unified_orchestrator/orchestrator.py",)
-    assert mod.repo_relative_dirty_paths_outside_watchlist(dirty, watched) == ["README.md", "prod.md"]
+    assert mod.repo_relative_dirty_paths_outside_watchlist(dirty, watched) == ["README.md", "alpacaprod.md"]
 
 
 def test_parse_supervisor_pid_extracts_running_pid() -> None:

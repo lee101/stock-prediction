@@ -5,6 +5,7 @@ from datetime import date, datetime, timezone
 import pandas as pd
 import pytest
 
+from stockagent.constants import DEFAULT_MIN_PROBE_QUANTITY, DEFAULT_PROBE_TRADE_MULTIPLIER
 from stockagent.agentsimulator.data_models import (
     AccountPosition,
     AccountSnapshot,
@@ -210,6 +211,13 @@ def test_probe_trade_strategy_toggles_quantities() -> None:
         simulator=None,
     )
     assert third[0].quantity == 10.0
+
+
+def test_risk_strategies_use_shared_default_probe_sizing() -> None:
+    assert ProbeTradeStrategy().probe_multiplier == pytest.approx(DEFAULT_PROBE_TRADE_MULTIPLIER)
+    assert ProbeTradeStrategy().min_quantity == pytest.approx(DEFAULT_MIN_PROBE_QUANTITY)
+    assert ProfitShutdownStrategy().probe_multiplier == pytest.approx(DEFAULT_PROBE_TRADE_MULTIPLIER)
+    assert ProfitShutdownStrategy().min_quantity == pytest.approx(DEFAULT_MIN_PROBE_QUANTITY)
 
 
 def test_profit_shutdown_strategy_reduces_after_losses() -> None:

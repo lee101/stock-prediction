@@ -9,7 +9,13 @@ from .data_models import (
     TradingPlan,
     TradingPlanEnvelope,
 )
-from .market_data import MarketDataBundle, fetch_latest_ohlc
+from .local_market_data import (
+    default_local_data_dir,
+    default_use_fallback_data_dirs,
+    normalize_market_symbol,
+)
+from .market_data import MarketDataBundle, fetch_latest_ohlc, resolve_local_data_dirs
+from .market_data_provider import MarketDataProvider
 from .account_state import get_account_snapshot
 from .prompt_builder import (
     build_daily_plan_prompt,
@@ -30,6 +36,11 @@ __all__ = [
     "TradingPlan",
     "TradingPlanEnvelope",
     "MarketDataBundle",
+    "MarketDataProvider",
+    "normalize_market_symbol",
+    "resolve_local_data_dirs",
+    "default_local_data_dir",
+    "default_use_fallback_data_dirs",
     "fetch_latest_ohlc",
     "get_account_snapshot",
     "build_daily_plan_prompt",

@@ -11,7 +11,17 @@ from loguru import logger
 
 from .account_state import get_account_snapshot
 from .market_data import MarketDataBundle
-from ..constants import DEFAULT_SYMBOLS, SIMULATION_DAYS, TRADING_FEE, CRYPTO_TRADING_FEE
+from .prompt_schema import plan_response_schema as _shared_plan_response_schema
+from ..constants import (
+    CRYPTO_TRADING_FEE,
+    DEFAULT_MAX_NEW_POSITION_EQUITY_FRACTION,
+    DEFAULT_MAX_NEW_POSITION_NOTIONAL_FLOOR,
+    DEFAULT_RISK_HIGHLIGHT_SYMBOL_LIMIT,
+    DEFAULT_SYMBOLS,
+    DEFAULT_RECENT_LOSS_LOOKBACK_DAYS,
+    SIMULATION_DAYS,
+    TRADING_FEE,
+)
 from stock.state import resolve_state_suffix
 from stock.state_utils import StateLoadError, load_all_state
 
@@ -22,44 +32,7 @@ SYSTEM_PROMPT = (
 
 
 def plan_response_schema() -> dict[str, Any]:
-    instruction_schema: dict[str, Any] = {
-        "type": "object",
-        "properties": {
-            "symbol": {"type": "string"},
-            "action": {"type": "string", "enum": ["buy", "sell", "exit", "hold"]},
-            "quantity": {"type": "number", "minimum": 0},
-            "execution_session": {"type": "string", "enum": ["market_open", "market_close"]},
-            "entry_price": {"type": ["number", "null"]},
-            "exit_price": {"type": ["number", "null"]},
-            "exit_reason": {"type": ["string", "null"]},
-            "notes": {"type": ["string", "null"]},
-        },
-        "required": [
-            "symbol",
-            "action",
-            "quantity",
-            "execution_session",
-            "entry_price",
-            "exit_price",
-            "exit_reason",
-            "notes",
-        ],
-        "additionalProperties": False,
-    }
-    return {
-        "type": "object",
-        "properties": {
-            "target_date": {"type": "string", "format": "date"},
-            "instructions": {"type": "array", "items": instruction_schema},
-            "risk_notes": {"type": ["string", "null"]},
-            "focus_symbols": {"type": "array", "items": {"type": "string"}},
-            "stop_trading_symbols": {"type": "array", "items": {"type": "string"}},
-            "execution_window": {"type": "string", "enum": ["market_open", "market_close"]},
-            "metadata": {"type": "object"},
-        },
-        "required": ["target_date", "instructions"],
-        "additionalProperties": False,
-    }
+    return _shared_plan_response_schema()
 
 
 def _parse_timestamp(raw: str | None) -> datetime | None:
@@ -96,7 +69,7 @@ def _summarize_recent_losses(
     *,
     state_suffix: str,
     window: timedelta,
-    limit: int = 4,
+    limit: int = DEFAULT_RISK_HIGHLIGHT_SYMBOL_LIMIT,
 ) -> list[str]:
     try:
         state = load_all_state(state_suffix)
@@ -147,7 +120,7 @@ def _summarize_active_exposure(
     state_suffix: str,
     market_data: MarketDataBundle,
     notional_cap: float,
-    limit: int = 4,
+    limit: int = DEFAULT_RISK_HIGHLIGHT_SYMBOL_LIMIT,
 ) -> list[str]:
     try:
         state = load_all_state(state_suffix)
@@ -193,9 +166,15 @@ def build_daily_plan_prompt(
     market_payload = market_data.to_payload() if include_market_history else {"symbols": list(symbols)}
 
     equity = float(account_payload.get("equity") or 0.0)
-    max_notional = max(25_000.0, equity * 0.05)
+    max_notional = max(
+        DEFAULT_MAX_NEW_POSITION_NOTIONAL_FLOOR,
+        equity * DEFAULT_MAX_NEW_POSITION_EQUITY_FRACTION,
+    )
     state_suffix = resolve_state_suffix()
-    loss_lines = _summarize_recent_losses(state_suffix=state_suffix, window=timedelta(days=2))
+    loss_lines = _summarize_recent_losses(
+        state_suffix=state_suffix,
+        window=timedelta(days=DEFAULT_RECENT_LOSS_LOOKBACK_DAYS),
+    )
     exposure_lines = _summarize_active_exposure(
         state_suffix=state_suffix,
         market_data=market_data,
@@ -206,7 +185,8 @@ def build_daily_plan_prompt(
     if loss_lines:
         loss_blob = "\n  * ".join(loss_lines)
         risk_highlights += (
-            "\n- Recent realized losses demand caution; stay on HOLD or use <=5% probe sizing until the symbol turns profitable:"
+            "\n- Recent realized losses demand caution; stay on HOLD or use "
+            f"<={DEFAULT_MAX_NEW_POSITION_EQUITY_FRACTION:.0%} probe sizing until the symbol turns profitable:"
             f"\n  * {loss_blob}"
         )
     if exposure_lines:

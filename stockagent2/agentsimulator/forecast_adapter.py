@@ -58,13 +58,13 @@ class CombinedForecastAdapter:
     def __init__(self, generator: CombinedForecastGenerator) -> None:
         self.generator = generator
 
-    def forecast(
+    def forecast_with_reason(
         self,
         symbol: str,
         history: pd.DataFrame,
-    ) -> Optional[SymbolForecast]:
+    ) -> tuple[Optional[SymbolForecast], Optional[str]]:
         if history.empty:
-            return None
+            return None, "empty_history"
         try:
             payload = history.reset_index().rename(columns={"index": "timestamp"})
             if "timestamp" not in payload.columns:
@@ -76,20 +76,33 @@ class CombinedForecastAdapter:
             )
         except Exception as exc:
             logger.warning("Combined forecast failed for %s: %s", symbol, exc)
-            return None
+            return None, f"generator_error: {exc}"
 
         last_row = history.iloc[-1]
         last_close = float(last_row.get("close", np.nan))
         if not np.isfinite(last_close) or last_close <= 0:
-            return None
+            return None, "invalid_last_close"
 
         predicted_close = float(forecast.combined.get("close", last_close))
+        if not np.isfinite(predicted_close) or predicted_close <= 0:
+            return None, "invalid_predicted_close"
         entry_price = float(forecast.combined.get("open", last_row.get("open", predicted_close)))
         mae = _weighted_mae(forecast)
-        return SymbolForecast(
-            symbol=symbol,
-            last_close=last_close,
-            predicted_close=predicted_close,
-            entry_price=entry_price if np.isfinite(entry_price) else last_close,
-            average_price_mae=mae,
+        return (
+            SymbolForecast(
+                symbol=symbol,
+                last_close=last_close,
+                predicted_close=predicted_close,
+                entry_price=entry_price if np.isfinite(entry_price) else last_close,
+                average_price_mae=mae,
+            ),
+            None,
         )
+
+    def forecast(
+        self,
+        symbol: str,
+        history: pd.DataFrame,
+    ) -> Optional[SymbolForecast]:
+        forecast, _reason = self.forecast_with_reason(symbol, history)
+        return forecast

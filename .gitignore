@@ -375,6 +375,10 @@ githubagent/actions-runner/externals/
 githubagent/actions-runner/externals/bin
 githubagent/actions-runner/bin
 
+# Production docs (contain sensitive account/API info)
+prod.md
+alpacaprod.md
+
 # Progress/tracking docs
 currentlyrunning.md
 *progress*.md
@@ -610,6 +614,7 @@ src/models/__pycache__/**
 /run_all_remote.sh
 
 # Root-level result/artifact files
+/backtest_multiwindow_results.json
 /best_models_sweep.json
 /experiment_results.json
 /hparam_sweep_results.json

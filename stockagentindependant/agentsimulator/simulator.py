@@ -11,8 +11,9 @@ from typing import cast
 import pandas as pd
 from loguru import logger
 
+from stockagent.agentsimulator.market_data_provider import MarketDataProvider
+
 from .data_models import ExecutionSession, PlanActionType, TradingInstruction, TradingPlan
-from .market_data import MarketDataBundle
 from ..constants import SIMULATION_DAYS, TRADING_FEE, CRYPTO_TRADING_FEE
 from src.fixtures import crypto_symbols
 
@@ -61,8 +62,8 @@ class SimulationResult:
 class AgentSimulator:
     """Simple simulator that assumes starting from cash each day."""
 
-    def __init__(self, market_data: MarketDataBundle):
-        self.market_data: MarketDataBundle = market_data
+    def __init__(self, market_data: MarketDataProvider):
+        self.market_data: MarketDataProvider = market_data
         self.trade_log: list[TradeExecution] = []
         self.realized_pnl: float = 0.0
         self.total_fees: float = 0.0

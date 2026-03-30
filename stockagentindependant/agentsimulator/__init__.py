@@ -10,6 +10,7 @@ from .data_models import (
     TradingPlanEnvelope,
 )
 from .market_data import MarketDataBundle, fetch_latest_ohlc
+from stockagent.agentsimulator.market_data_provider import MarketDataProvider
 from .account_state import get_account_snapshot
 from .interfaces import BaseRiskStrategy, DaySummary
 from .prompt_builder import (
@@ -30,6 +31,7 @@ __all__ = [
     "TradingPlan",
     "TradingPlanEnvelope",
     "MarketDataBundle",
+    "MarketDataProvider",
     "fetch_latest_ohlc",
     "get_account_snapshot",
     "BaseRiskStrategy",

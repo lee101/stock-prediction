@@ -18,7 +18,7 @@ from .data_models import (
     TradingPlan,
 )
 from .interfaces import BaseRiskStrategy, DaySummary
-from .market_data import MarketDataBundle
+from .market_data_provider import MarketDataProvider
 from ..constants import SIMULATION_DAYS, TRADING_FEE, CRYPTO_TRADING_FEE
 from src.fixtures import crypto_symbols
 
@@ -95,11 +95,11 @@ class SimulationResult:
 class AgentSimulator:
     def __init__(
         self,
-        market_data: MarketDataBundle,
+        market_data: MarketDataProvider,
         account_snapshot: Optional[AccountSnapshot] = None,
         starting_cash: Optional[float] = None,
     ):
-        self.market_data = market_data
+        self.market_data: MarketDataProvider = market_data
         self.trade_log: List[TradeExecution] = []
         self.equity_curve: List[Dict[str, float | str]] = []
         self.positions: Dict[str, PositionState] = {}

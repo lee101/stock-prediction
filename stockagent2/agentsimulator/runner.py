@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -15,6 +15,8 @@ from stockagent.agentsimulator import (
     AgentSimulator,
     SimulationResult,
     TradingPlan,
+    default_local_data_dir,
+    default_use_fallback_data_dirs,
     fetch_latest_ohlc,
 )
 from stockagent.constants import DEFAULT_SYMBOLS
@@ -24,7 +26,11 @@ from ..optimizer import CostAwareOptimizer
 from ..pipeline import AllocationPipeline, AllocationResult
 from stockagentcombined.forecaster import CombinedForecastGenerator
 from .forecast_adapter import CombinedForecastAdapter
-from .plan_builder import PipelinePlanBuilder, PipelineSimulationConfig
+from .plan_builder import (
+    PipelinePlanBuildDiagnostics,
+    PipelinePlanBuilder,
+    PipelineSimulationConfig,
+)
 
 
 @dataclass
@@ -33,8 +39,21 @@ class RunnerConfig:
     lookback_days: int = 252
     simulation_days: int = 10
     starting_cash: float = 1_000_000.0
-    local_data_dir: Path | None = Path("trainingdata")
+    local_data_dir: Path | None = field(default_factory=default_local_data_dir)
     allow_remote_data: bool = False
+    use_fallback_data_dirs: bool = field(default_factory=default_use_fallback_data_dirs)
+
+
+@dataclass(frozen=True)
+class PipelineMarketDataSummary:
+    symbols_requested: Tuple[str, ...]
+    loaded_symbols: Tuple[str, ...]
+    empty_symbols: Tuple[str, ...]
+    bars_per_symbol: Dict[str, int]
+    latest_bar_dates: Dict[str, str]
+    trading_day_count: int
+    first_trading_day: str | None
+    last_trading_day: str | None
 
 
 @dataclass(frozen=True)
@@ -43,6 +62,23 @@ class PipelineSimulationResult:
     simulation: SimulationResult
     plans: Tuple[TradingPlan, ...]
     allocations: Tuple[AllocationResult, ...]
+    market_data_summary: PipelineMarketDataSummary
+
+
+@dataclass(frozen=True)
+class PipelineSimulationAttempt:
+    result: Optional[PipelineSimulationResult]
+    market_data_summary: PipelineMarketDataSummary
+    build_diagnostics: Tuple[PipelinePlanBuildDiagnostics, ...]
+    failure_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class _BarsMarketDataAdapter:
+    bars: Mapping[str, pd.DataFrame]
+
+    def get_symbol_bars(self, symbol: str) -> pd.DataFrame:
+        return self.bars.get(symbol.upper(), pd.DataFrame()).copy()
 
 
 def _positions_from_weights(
@@ -98,7 +134,7 @@ def _build_close_price_snapshots(
     symbols: Sequence[str],
     trading_days: Sequence[pd.Timestamp],
 ) -> Dict[pd.Timestamp, Dict[str, float]]:
-    if not trading_days:
+    if len(trading_days) == 0:
         return {}
 
     target_index = pd.DatetimeIndex(trading_days)
@@ -121,13 +157,49 @@ def _build_close_price_snapshots(
     return snapshots
 
 
-def run_pipeline_simulation(
+def _summarise_market_data(
+    *,
+    bars: Dict[str, pd.DataFrame],
+    symbols: Sequence[str],
+    trading_days: Sequence[pd.Timestamp],
+) -> PipelineMarketDataSummary:
+    requested_symbols = tuple(str(symbol).upper() for symbol in symbols)
+    loaded_symbols = tuple(
+        symbol
+        for symbol in requested_symbols
+        if symbol in bars and not bars[symbol].empty
+    )
+    empty_symbols = tuple(symbol for symbol in requested_symbols if symbol not in loaded_symbols)
+    bars_per_symbol = {
+        symbol: int(len(bars.get(symbol, pd.DataFrame())))
+        for symbol in requested_symbols
+    }
+    latest_bar_dates = {
+        symbol: pd.Timestamp(bars[symbol].index[-1]).date().isoformat()
+        for symbol in loaded_symbols
+        if not bars[symbol].empty and len(bars[symbol].index) > 0
+    }
+    first_trading_day = pd.Timestamp(trading_days[0]).date().isoformat() if trading_days else None
+    last_trading_day = pd.Timestamp(trading_days[-1]).date().isoformat() if trading_days else None
+    return PipelineMarketDataSummary(
+        symbols_requested=requested_symbols,
+        loaded_symbols=loaded_symbols,
+        empty_symbols=empty_symbols,
+        bars_per_symbol=bars_per_symbol,
+        latest_bar_dates=latest_bar_dates,
+        trading_day_count=len(trading_days),
+        first_trading_day=first_trading_day,
+        last_trading_day=last_trading_day,
+    )
+
+
+def run_pipeline_simulation_with_diagnostics(
     *,
     runner_config: RunnerConfig,
     optimisation_config: OptimizationConfig,
     pipeline_config: PipelineConfig,
     simulation_config: PipelineSimulationConfig | None = None,
-) -> Optional[PipelineSimulationResult]:
+) -> PipelineSimulationAttempt:
     config = replace(simulation_config) if simulation_config is not None else PipelineSimulationConfig()
     symbols = config.symbols if config.symbols is not None else runner_config.symbols
     config.symbols = tuple(str(symbol).upper() for symbol in symbols)
@@ -138,11 +210,33 @@ def run_pipeline_simulation(
         as_of=datetime.now(timezone.utc),
         local_data_dir=runner_config.local_data_dir,
         allow_remote_download=runner_config.allow_remote_data,
+        use_fallback_data_dirs=runner_config.use_fallback_data_dirs,
     )
     trading_days = list(bundle.trading_days())[-runner_config.simulation_days :]
+    market_data_summary = _summarise_market_data(
+        bars=bundle.bars,
+        symbols=config.symbols,
+        trading_days=trading_days,
+    )
+    logger.info(
+        "Pipeline market data coverage: {} to {} across {}/{} loaded symbols; empty_symbols={}",
+        market_data_summary.first_trading_day or "n/a",
+        market_data_summary.last_trading_day or "n/a",
+        len(market_data_summary.loaded_symbols),
+        len(market_data_summary.symbols_requested),
+        list(market_data_summary.empty_symbols),
+    )
     if not trading_days:
-        logger.warning("No trading days available for simulation")
-        return None
+        logger.warning(
+            "No trading days available for simulation; latest_bar_dates={}",
+            market_data_summary.latest_bar_dates,
+        )
+        return PipelineSimulationAttempt(
+            result=None,
+            market_data_summary=market_data_summary,
+            build_diagnostics=(),
+            failure_reason="No trading days available for simulation.",
+        )
 
     optimizer = CostAwareOptimizer(optimisation_config)
     pipeline = AllocationPipeline(
@@ -165,6 +259,7 @@ def run_pipeline_simulation(
 
     plans: List[TradingPlan] = []
     allocations: List[AllocationResult] = []
+    build_diagnostics: List[PipelinePlanBuildDiagnostics] = []
     positions: Dict[str, float] = {}
     nav = runner_config.starting_cash
     for timestamp in trading_days:
@@ -175,6 +270,9 @@ def run_pipeline_simulation(
             market_frames=bundle.bars,
             account_snapshot=snapshot,
         )
+        last_build_diagnostics = getattr(builder, "last_build_diagnostics", None)
+        if last_build_diagnostics is not None:
+            build_diagnostics.append(last_build_diagnostics)
         if plan is None or builder.last_allocation is None:
             continue
         plans.append(plan)
@@ -186,18 +284,46 @@ def run_pipeline_simulation(
         )
 
     if not plans:
-        logger.warning("Pipeline simulation produced no plans")
-        return None
+        logger.warning(
+            "Pipeline simulation produced no plans; statuses={}",
+            [diagnostic.status for diagnostic in build_diagnostics],
+        )
+        return PipelineSimulationAttempt(
+            result=None,
+            market_data_summary=market_data_summary,
+            build_diagnostics=tuple(build_diagnostics),
+            failure_reason="Pipeline simulation produced no trading plans.",
+        )
 
     simulator = AgentSimulator(
-        market_data=type("Bundle", (), {"get_symbol_bars": bundle.bars.get})(),
+        market_data=_BarsMarketDataAdapter(bars=bundle.bars),
         starting_cash=runner_config.starting_cash,
         account_snapshot=_snapshot_from_positions(positions={}, prices={}, nav=runner_config.starting_cash),
     )
     simulation_result = simulator.simulate(plans)
-    return PipelineSimulationResult(
-        simulator=simulator,
-        simulation=simulation_result,
-        plans=tuple(plans),
-        allocations=tuple(allocations),
+    return PipelineSimulationAttempt(
+        result=PipelineSimulationResult(
+            simulator=simulator,
+            simulation=simulation_result,
+            plans=tuple(plans),
+            allocations=tuple(allocations),
+            market_data_summary=market_data_summary,
+        ),
+        market_data_summary=market_data_summary,
+        build_diagnostics=tuple(build_diagnostics),
     )
+
+
+def run_pipeline_simulation(
+    *,
+    runner_config: RunnerConfig,
+    optimisation_config: OptimizationConfig,
+    pipeline_config: PipelineConfig,
+    simulation_config: PipelineSimulationConfig | None = None,
+) -> Optional[PipelineSimulationResult]:
+    return run_pipeline_simulation_with_diagnostics(
+        runner_config=runner_config,
+        optimisation_config=optimisation_config,
+        pipeline_config=pipeline_config,
+        simulation_config=simulation_config,
+    ).result
