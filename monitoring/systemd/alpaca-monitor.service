@@ -1,0 +1,14 @@
+[Unit]
+Description=Alpaca Trading Health Monitor Agent
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=administrator
+WorkingDirectory=/nvme0n1-disk/code/stock-prediction
+ExecStart=/nvme0n1-disk/code/stock-prediction/monitoring/monitor_agent.sh
+StandardOutput=append:/nvme0n1-disk/code/stock-prediction/monitoring/logs/systemd_monitor.log
+StandardError=append:/nvme0n1-disk/code/stock-prediction/monitoring/logs/systemd_monitor.log
+TimeoutStartSec=2400
+Environment=HOME=/home/administrator
+Environment=PATH=/home/administrator/.local/bin:/usr/local/bin:/usr/bin:/bin

@@ -1,0 +1,15 @@
+[Unit]
+Description=Run Alpaca trading monitor every 6 hours during market hours
+
+[Timer]
+# US market hours roughly 13:30-21:00 UTC (9:30-4pm ET)
+# Run at 13:30, 16:00, 19:30, 22:00 UTC to cover open, midday, close, post-close
+OnCalendar=*-*-* 13:30:00
+OnCalendar=*-*-* 16:00:00
+OnCalendar=*-*-* 19:30:00
+OnCalendar=*-*-* 22:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
