@@ -361,6 +361,7 @@ def fast_holdout_eval(
 
             # Mask shorts if needed
             if disable_shorts:
+                logits = logits.clone()
                 logits[:, 1 + side_block:] = torch.finfo(logits.dtype).min
 
             # Deterministic or sampled actions
