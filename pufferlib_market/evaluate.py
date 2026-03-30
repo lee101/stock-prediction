@@ -15,7 +15,6 @@ Usage:
 
 import argparse
 import struct
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -24,6 +23,19 @@ import torch.nn as nn
 from torch.distributions import Categorical
 
 from pufferlib_market.metrics import annualize_total_return
+from pufferlib_market.checkpoint_loader import (
+    build_action_grid_summary_line,
+    format_action_grid_override_note,
+    build_checkpoint_summary_lines,
+    build_cli_policy_config_line,
+    build_ensemble_member_summary_lines,
+    ensure_checkpoint_action_grid_compatible,
+    build_runtime_summary_line,
+    load_policy_from_resolved_metadata,
+    load_checkpoint_payload,
+    resolve_checkpoint_action_grid_config,
+    resolve_checkpoint_policy_details,
+)
 from pufferlib_market.evaluate_sliding import (
     compute_calmar,
     sliding_window_eval,
@@ -135,29 +147,58 @@ class ResidualTradingPolicy(nn.Module):
         return Categorical(logits=logits).sample()
 
 
-def load_policy(ckpt: dict, obs_size: int, num_actions: int, hidden: int, arch: str, device, features_per_sym: int = 16) -> nn.Module:
-    """Create and load the right policy class based on arch (from checkpoint or CLI arg)."""
-    # Prefer arch stored in checkpoint over CLI arg (backwards compat: older ckpts have no 'arch')
-    ckpt_arch = ckpt.get("arch", arch)
-    if ckpt_arch in ("resmlp",):
-        policy = ResidualTradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
-    elif ckpt_arch in ("transformer",):
+def _load_policy_with_metadata(
+    ckpt: dict,
+    obs_size: int,
+    num_actions: int,
+    hidden: int,
+    arch: str,
+    device,
+    features_per_sym: int = 16,
+) -> tuple[nn.Module, str, int]:
+    """Create and load the right policy class based on checkpoint/CLI metadata."""
+    resolved = resolve_checkpoint_policy_details(
+        ckpt,
+        arch=arch,
+        hidden_size=hidden,
+    )
+    state_dict = resolved.state_dict
+    ckpt_arch = resolved.effective_arch
+    effective_hidden = resolved.effective_hidden_size
+
+    if ckpt_arch not in {"transformer", "gru", "depth_recurrence", "mlp_relu_sq"}:
+        policy = load_policy_from_resolved_metadata(
+            state_dict=state_dict,
+            effective_arch=ckpt_arch,
+            effective_hidden_size=effective_hidden,
+            effective_resmlp_blocks=resolved.effective_resmlp_blocks,
+            obs_size=obs_size,
+            num_actions=num_actions,
+            device=device,
+            mlp_factory=lambda obs, acts, hidden_size: TradingPolicy(obs, acts, hidden=hidden_size),
+            resmlp_factory=lambda obs, acts, hidden_size, num_blocks: ResidualTradingPolicy(
+                obs, acts, hidden=hidden_size, num_blocks=num_blocks
+            ),
+        )
+        return policy, ckpt_arch, effective_hidden
+
+    if ckpt_arch in ("transformer",):
         from pufferlib_market.train import TransformerTradingPolicy
-        _base = TransformerTradingPolicy(obs_size, num_actions, hidden=hidden, features_per_sym=features_per_sym).to(device)
+        _base = TransformerTradingPolicy(
+            obs_size, num_actions, hidden=effective_hidden, features_per_sym=features_per_sym
+        ).to(device)
         policy = _wrap_train_policy(_base, num_actions)
     elif ckpt_arch in ("gru",):
         from pufferlib_market.train import GRUTradingPolicy
-        _base = GRUTradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
+        _base = GRUTradingPolicy(obs_size, num_actions, hidden=effective_hidden).to(device)
         policy = _wrap_train_policy(_base, num_actions)
     elif ckpt_arch in ("depth_recurrence",):
         from pufferlib_market.train import DepthRecurrenceTradingPolicy
-        _base = DepthRecurrenceTradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
+        _base = DepthRecurrenceTradingPolicy(obs_size, num_actions, hidden=effective_hidden).to(device)
         policy = _wrap_train_policy(_base, num_actions)
     elif ckpt_arch in ("mlp_relu_sq",):
-        policy = TradingPolicy(obs_size, num_actions, hidden=hidden, activation="relu_sq").to(device)
-    else:
-        policy = TradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
-    state_dict = ckpt["model"]
+        policy = TradingPolicy(obs_size, num_actions, hidden=effective_hidden, activation="relu_sq").to(device)
+
     missing, unexpected = policy.load_state_dict(state_dict, strict=False)
     # obs_mean/obs_std: optional obs-norm buffers (old ckpts lack them).
     # encoder_norm: added to train.py to prevent BF16 precision collapse.
@@ -177,6 +218,19 @@ def load_policy(ckpt: dict, obs_size: int, num_actions: int, hidden: int, arch: 
         if buf in state_dict and state_dict[buf] is not None:
             setattr(policy, buf, state_dict[buf].to(device))
     policy.eval()
+    return policy, ckpt_arch, effective_hidden
+
+
+def load_policy(ckpt: dict, obs_size: int, num_actions: int, hidden: int, arch: str, device, features_per_sym: int = 16) -> nn.Module:
+    policy, _, _ = _load_policy_with_metadata(
+        ckpt,
+        obs_size,
+        num_actions,
+        hidden,
+        arch,
+        device,
+        features_per_sym=features_per_sym,
+    )
     return policy
 
 
@@ -275,7 +329,6 @@ def evaluate_random(args, policy, binding, obs_buf, act_buf, rew_buf, term_buf,
         # Check for completed episodes
         log_info = binding.vec_log(vec_handle)
         if log_info and "total_return" in log_info:
-            n = int(log_info.get("n", 1))
             all_returns.append(log_info["total_return"])
             all_trades.append(log_info.get("num_trades", 0))
             all_win_rates.append(log_info.get("win_rate", 0))
@@ -305,17 +358,10 @@ def evaluate_sequential(args, policy, binding, obs_size, num_actions, device):
           f"({num_timesteps} timesteps)")
 
     # Use single env for deterministic sequential evaluation
-    obs_buf = np.zeros((1, obs_size), dtype=np.float32)
-    act_buf = np.zeros((1,), dtype=np.int32)
-    rew_buf = np.zeros((1,), dtype=np.float32)
-    term_buf = np.zeros((1,), dtype=np.uint8)
-    trunc_buf = np.zeros((1,), dtype=np.uint8)
-
     all_returns = []
     all_trades = []
     all_win_rates = []
     all_sortinos = []
-    cumulative_equity = 1.0  # Track cumulative multiplier
 
     for ep_idx in range(num_episodes):
         # We can't easily set the offset from Python since it's randomized in c_reset.
@@ -480,13 +526,20 @@ def main():
         features_per_sym = 16  # v1/v2 backwards compat
 
     obs_size = num_symbols * features_per_sym + 5 + num_symbols
-    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
-    if "action_allocation_bins" in ckpt:
-        args.action_allocation_bins = max(1, int(ckpt["action_allocation_bins"]))
-    if "action_level_bins" in ckpt:
-        args.action_level_bins = max(1, int(ckpt["action_level_bins"]))
-    if "action_max_offset_bps" in ckpt:
-        args.action_max_offset_bps = max(0.0, float(ckpt["action_max_offset_bps"]))
+    ckpt = load_checkpoint_payload(args.checkpoint, map_location=device)
+    requested_action_allocation_bins = args.action_allocation_bins
+    requested_action_level_bins = args.action_level_bins
+    requested_action_max_offset_bps = args.action_max_offset_bps
+    (
+        args.action_allocation_bins,
+        args.action_level_bins,
+        args.action_max_offset_bps,
+    ) = resolve_checkpoint_action_grid_config(
+        ckpt,
+        action_allocation_bins=requested_action_allocation_bins,
+        action_level_bins=requested_action_level_bins,
+        action_max_offset_bps=requested_action_max_offset_bps,
+    )
 
     per_symbol_actions = max(1, int(args.action_allocation_bins)) * max(1, int(args.action_level_bins))
     num_actions = 1 + 2 * num_symbols * per_symbol_actions
@@ -494,28 +547,75 @@ def main():
     print(f"Data: {num_symbols} symbols, {num_timesteps} timesteps")
     print(f"obs_size={obs_size}, num_actions={num_actions}")
     print(f"Episode length: {args.max_steps}h, leverage: {args.max_leverage}x")
+    print(build_cli_policy_config_line(arch=args.arch, hidden_size=args.hidden_size))
     print(
-        "Action grid: alloc_bins={} level_bins={} max_offset_bps={:.1f}".format(
-            int(args.action_allocation_bins),
-            int(args.action_level_bins),
-            float(args.action_max_offset_bps),
+        build_action_grid_summary_line(
+            action_allocation_bins=args.action_allocation_bins,
+            action_level_bins=args.action_level_bins,
+            action_max_offset_bps=args.action_max_offset_bps,
         )
     )
-    print(f"Device: {device}, deterministic: {args.deterministic}, arch: {args.arch}")
+    action_grid_override_note = format_action_grid_override_note(
+        requested_allocation_bins=requested_action_allocation_bins,
+        requested_level_bins=requested_action_level_bins,
+        requested_max_offset_bps=requested_action_max_offset_bps,
+        effective_allocation_bins=args.action_allocation_bins,
+        effective_level_bins=args.action_level_bins,
+        effective_max_offset_bps=args.action_max_offset_bps,
+    )
+    if action_grid_override_note is not None:
+        print(action_grid_override_note)
+    print(build_runtime_summary_line(device=device, deterministic=args.deterministic))
 
     # Load policy — arch is read from checkpoint if present, else falls back to --arch CLI arg
-    policy = load_policy(ckpt, obs_size, num_actions, args.hidden_size, args.arch, device, features_per_sym=features_per_sym)
-    arch_used = ckpt.get("arch", args.arch)
-    print(f"Loaded checkpoint: update={ckpt.get('update', '?')}, "
-          f"train_best_return={ckpt.get('best_return', '?'):.4f}, arch={arch_used}")
+    policy, arch_used, hidden_used = _load_policy_with_metadata(
+        ckpt,
+        obs_size,
+        num_actions,
+        args.hidden_size,
+        args.arch,
+        device,
+        features_per_sym=features_per_sym,
+    )
+    for line in build_checkpoint_summary_lines(
+        ckpt=ckpt,
+        requested_arch=args.arch,
+        requested_hidden_size=args.hidden_size,
+        effective_arch=arch_used,
+        effective_hidden_size=hidden_used,
+        checkpoint_path=args.checkpoint,
+    ):
+        print(line)
 
     if args.extra_checkpoints:
         extra_policies = []
         for epath in args.extra_checkpoints:
-            eckpt = torch.load(epath, map_location=device, weights_only=False)
-            ep = load_policy(eckpt, obs_size, num_actions, args.hidden_size, args.arch, device, features_per_sym=features_per_sym)
-            ep_arch = eckpt.get("arch", args.arch)
-            print(f"  + ensemble member: update={eckpt.get('update','?')} ret={eckpt.get('best_return','?'):.4f} arch={ep_arch}")
+            eckpt = load_checkpoint_payload(epath, map_location=device)
+            ensure_checkpoint_action_grid_compatible(
+                eckpt,
+                checkpoint_path=epath,
+                expected_action_allocation_bins=args.action_allocation_bins,
+                expected_action_level_bins=args.action_level_bins,
+                expected_action_max_offset_bps=args.action_max_offset_bps,
+            )
+            ep, ep_arch, ep_hidden = _load_policy_with_metadata(
+                eckpt,
+                obs_size,
+                num_actions,
+                args.hidden_size,
+                args.arch,
+                device,
+                features_per_sym=features_per_sym,
+            )
+            for line in build_ensemble_member_summary_lines(
+                ckpt=eckpt,
+                requested_arch=args.arch,
+                requested_hidden_size=args.hidden_size,
+                effective_arch=ep_arch,
+                effective_hidden_size=ep_hidden,
+                checkpoint_path=epath,
+            ):
+                print(line)
             extra_policies.append(ep)
         policy = EnsemblePolicy([policy] + extra_policies)
         print(f"Ensemble: softmax_avg of {1 + len(extra_policies)} policies")

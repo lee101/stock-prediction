@@ -29,6 +29,16 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from pufferlib_market.checkpoint_loader import (
+    build_action_grid_summary_line,
+    format_action_grid_override_note,
+    build_checkpoint_summary_lines,
+    build_cli_policy_config_line,
+    build_runtime_summary_line,
+    load_checkpoint_payload,
+    load_policy_from_checkpoint as _load_base_policy_from_checkpoint_impl,
+    resolve_checkpoint_action_grid_config,
+)
 from pufferlib_market.train import TradingPolicy, ResidualTradingPolicy
 from pufferlib_market.lora import LoRAPolicy, reset_adam_state
 from pufferlib_market.metrics import annualize_total_return
@@ -310,6 +320,29 @@ def _print_stats(label: str, returns: np.ndarray, trades: np.ndarray,
     print(f"  Cum mult: {cum_mult:.4f}x   Est. annualized: {ann*100:+.1f}%")
 
 
+def _load_base_policy_from_checkpoint(
+    *,
+    ckpt,
+    obs_size: int,
+    num_actions: int,
+    arch: str,
+    hidden_size: int,
+    device: torch.device,
+) -> tuple[torch.nn.Module, str, int]:
+    return _load_base_policy_from_checkpoint_impl(
+        ckpt=ckpt,
+        obs_size=obs_size,
+        num_actions=num_actions,
+        arch=arch,
+        hidden_size=hidden_size,
+        device=device,
+        mlp_factory=lambda obs, acts, hidden: TradingPolicy(obs, acts, hidden=hidden),
+        resmlp_factory=lambda obs, acts, hidden, num_blocks: ResidualTradingPolicy(
+            obs, acts, hidden=hidden, num_blocks=num_blocks
+        ),
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Test-time LoRA adaptation evaluation")
     parser.add_argument("--checkpoint", required=True, help="Path to .pt checkpoint")
@@ -356,31 +389,63 @@ def main():
 
     obs_size = num_symbols * features_per_sym + 5 + num_symbols
 
-    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
-    if "action_allocation_bins" in ckpt:
-        args.action_allocation_bins = max(1, int(ckpt["action_allocation_bins"]))
-    if "action_level_bins" in ckpt:
-        args.action_level_bins = max(1, int(ckpt["action_level_bins"]))
-    if "action_max_offset_bps" in ckpt:
-        args.action_max_offset_bps = max(0.0, float(ckpt["action_max_offset_bps"]))
+    ckpt = load_checkpoint_payload(args.checkpoint, map_location=device)
+    requested_action_allocation_bins = args.action_allocation_bins
+    requested_action_level_bins = args.action_level_bins
+    requested_action_max_offset_bps = args.action_max_offset_bps
+    (
+        args.action_allocation_bins,
+        args.action_level_bins,
+        args.action_max_offset_bps,
+    ) = resolve_checkpoint_action_grid_config(
+        ckpt,
+        action_allocation_bins=requested_action_allocation_bins,
+        action_level_bins=requested_action_level_bins,
+        action_max_offset_bps=requested_action_max_offset_bps,
+    )
 
     per_symbol_actions = max(1, int(args.action_allocation_bins)) * max(1, int(args.action_level_bins))
     num_actions = 1 + 2 * num_symbols * per_symbol_actions
 
+    base_policy, effective_arch, effective_hidden_size = _load_base_policy_from_checkpoint(
+        ckpt=ckpt,
+        obs_size=obs_size,
+        num_actions=num_actions,
+        arch=args.arch,
+        hidden_size=args.hidden_size,
+        device=device,
+    )
+
     print(f"Data: {num_symbols} symbols, {num_timesteps} timesteps")
     print(f"obs_size={obs_size}, num_actions={num_actions}")
-    print(f"Device: {device}, deterministic: {args.deterministic}")
-
-    # Build base policy
-    if args.arch == "resmlp":
-        base_policy = ResidualTradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
-    else:
-        base_policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
-    base_policy.load_state_dict(ckpt["model"])
-    base_policy.eval()
-    print(f"Loaded checkpoint: update={ckpt.get('update', '?')}, "
-          f"best_return={ckpt.get('best_return', '?'):.4f}")
-
+    print(build_cli_policy_config_line(arch=args.arch, hidden_size=args.hidden_size))
+    print(
+        build_action_grid_summary_line(
+            action_allocation_bins=args.action_allocation_bins,
+            action_level_bins=args.action_level_bins,
+            action_max_offset_bps=args.action_max_offset_bps,
+        )
+    )
+    action_grid_override_note = format_action_grid_override_note(
+        requested_allocation_bins=requested_action_allocation_bins,
+        requested_level_bins=requested_action_level_bins,
+        requested_max_offset_bps=requested_action_max_offset_bps,
+        effective_allocation_bins=args.action_allocation_bins,
+        effective_level_bins=args.action_level_bins,
+        effective_max_offset_bps=args.action_max_offset_bps,
+    )
+    if action_grid_override_note is not None:
+        print(action_grid_override_note)
+    print(build_runtime_summary_line(device=device, deterministic=args.deterministic))
+    for line in build_checkpoint_summary_lines(
+        ckpt=ckpt,
+        requested_arch=args.arch,
+        requested_hidden_size=args.hidden_size,
+        effective_arch=effective_arch,
+        effective_hidden_size=effective_hidden_size,
+        checkpoint_path=args.checkpoint,
+    ):
+        print(line)
     # Wrap with LoRA for TTT
     lora_policy = LoRAPolicy(base_policy, rank=args.lora_rank, num_layers=args.lora_num_layers).to(device)
     lora_policy.eval()

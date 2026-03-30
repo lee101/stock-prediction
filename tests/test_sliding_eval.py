@@ -6,11 +6,13 @@ random/fixed policy function.
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
 import pytest
+import torch
 
 from pufferlib_market import evaluate_sliding as eval_mod
 from pufferlib_market.evaluate_sliding import (
@@ -357,7 +359,13 @@ def test_main_tolerates_missing_calmar_flag(capsys):
         eval_mod.main()
 
     captured = capsys.readouterr()
-    assert "Loaded checkpoint: update=1, train_best_return=0.0000" in captured.out
+    assert "Window config: episode_len=50, stride=25" in captured.out
+    assert "CLI policy config: arch=mlp, hidden_size=16" in captured.out
+    assert "Action grid: alloc_bins=1 level_bins=1 max_offset_bps=0.0" in captured.out
+    assert "Runtime: device=cpu, deterministic=False" in captured.out
+    assert f"Checkpoint file: {Path(fake_args.checkpoint).resolve()}" in captured.out
+    assert "Effective checkpoint config: arch=mlp, hidden_size=16" in captured.out
+    assert "Loaded checkpoint: update=1, train_best_return=0.0000, arch=mlp" in captured.out
     assert "Calmar ratio" not in captured.out
 
 
@@ -403,4 +411,244 @@ def test_main_tolerates_checkpoint_without_best_return(capsys):
         eval_mod.main()
 
     captured = capsys.readouterr()
-    assert "Loaded checkpoint: update=7, train_best_return=?" in captured.out
+    assert "Window config: episode_len=50, stride=25" in captured.out
+    assert "CLI policy config: arch=mlp, hidden_size=16" in captured.out
+    assert "Action grid: alloc_bins=1 level_bins=1 max_offset_bps=0.0" in captured.out
+    assert "Runtime: device=cpu, deterministic=False" in captured.out
+    assert f"Checkpoint file: {Path(fake_args.checkpoint).resolve()}" in captured.out
+    assert "Effective checkpoint config: arch=mlp, hidden_size=16" in captured.out
+    assert "Loaded checkpoint: update=7, train_best_return=?, arch=mlp" in captured.out
+
+
+def test_main_rejects_checkpoint_without_model_state():
+    fake_args = SimpleNamespace(
+        checkpoint="checkpoint.pt",
+        data_path="data.mktd",
+        episode_len=50,
+        stride=25,
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        max_leverage=1.0,
+        short_borrow_apr=0.0,
+        periods_per_year=8760.0,
+        action_allocation_bins=1,
+        action_level_bins=1,
+        action_max_offset_bps=0.0,
+        hidden_size=16,
+        arch="mlp",
+        deterministic=False,
+        disable_shorts=False,
+        cpu=True,
+    )
+
+    with patch.object(eval_mod.argparse.ArgumentParser, "parse_args", return_value=fake_args), \
+         patch.object(eval_mod, "read_mktd", return_value=_make_data(60)), \
+         patch.object(eval_mod.torch, "load", return_value={"update": 7}):
+        with pytest.raises(KeyError, match="missing a valid 'model' state_dict"):
+            eval_mod.main()
+
+
+def test_main_rejects_non_mapping_checkpoint_payload():
+    fake_args = SimpleNamespace(
+        checkpoint="checkpoint.pt",
+        data_path="data.mktd",
+        episode_len=50,
+        stride=25,
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        max_leverage=1.0,
+        short_borrow_apr=0.0,
+        periods_per_year=8760.0,
+        action_allocation_bins=1,
+        action_level_bins=1,
+        action_max_offset_bps=0.0,
+        hidden_size=16,
+        arch="mlp",
+        deterministic=False,
+        disable_shorts=False,
+        cpu=True,
+    )
+
+    with patch.object(eval_mod.argparse.ArgumentParser, "parse_args", return_value=fake_args), \
+         patch.object(eval_mod, "read_mktd", return_value=_make_data(60)), \
+         patch.object(eval_mod.torch, "load", return_value=[]):
+        with pytest.raises(TypeError, match="must load to a mapping"):
+            eval_mod.main()
+
+
+def test_main_reports_checkpoint_action_grid_override(capsys):
+    fake_args = SimpleNamespace(
+        checkpoint="checkpoint.pt",
+        data_path="data.mktd",
+        episode_len=50,
+        stride=25,
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        max_leverage=1.0,
+        short_borrow_apr=0.0,
+        periods_per_year=8760.0,
+        action_allocation_bins=1,
+        action_level_bins=1,
+        action_max_offset_bps=0.0,
+        hidden_size=16,
+        arch="mlp",
+        deterministic=False,
+        disable_shorts=False,
+        cpu=True,
+    )
+
+    class DummyPolicy:
+        def to(self, device):
+            return self
+
+        def load_state_dict(self, state_dict, strict=False):
+            return None
+
+        def eval(self):
+            return None
+
+    with patch.object(eval_mod.argparse.ArgumentParser, "parse_args", return_value=fake_args),          patch.object(eval_mod, "read_mktd", return_value=_make_data(60)),          patch.object(
+             eval_mod.torch,
+             "load",
+             return_value={
+                 "model": {},
+                 "update": 7,
+                 "action_allocation_bins": 2,
+                 "action_level_bins": 3,
+                 "action_max_offset_bps": 12.5,
+             },
+         ),          patch.object(eval_mod, "TradingPolicy", return_value=DummyPolicy()),          patch.object(eval_mod, "_build_policy_fn", return_value=lambda obs: 0),          patch.object(eval_mod, "sliding_window_eval", return_value=[]),          patch.object(eval_mod, "aggregate_sliding_results", return_value={"calmar": 1.23}),          patch.object(eval_mod, "print_sliding_results", return_value=None):
+        eval_mod.main()
+
+    captured = capsys.readouterr()
+    assert "Action grid: alloc_bins=2 level_bins=3 max_offset_bps=12.5" in captured.out
+    assert (
+        "Checkpoint overrides CLI action grid: alloc_bins 1 -> 2, level_bins 1 -> 3, max_offset_bps 0.0 -> 12.5"
+        in captured.out
+    )
+
+
+def test_main_ignores_invalid_checkpoint_action_grid_metadata(capsys):
+    fake_args = SimpleNamespace(
+        checkpoint="checkpoint.pt",
+        data_path="data.mktd",
+        episode_len=50,
+        stride=25,
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        max_leverage=1.0,
+        short_borrow_apr=0.0,
+        periods_per_year=8760.0,
+        action_allocation_bins=2,
+        action_level_bins=3,
+        action_max_offset_bps=5.0,
+        hidden_size=16,
+        arch="mlp",
+        deterministic=False,
+        disable_shorts=False,
+        cpu=True,
+    )
+
+    class DummyPolicy:
+        def to(self, device):
+            return self
+
+        def load_state_dict(self, state_dict, strict=False):
+            return None
+
+        def eval(self):
+            return None
+
+    with patch.object(eval_mod.argparse.ArgumentParser, "parse_args", return_value=fake_args), \
+         patch.object(eval_mod, "read_mktd", return_value=_make_data(60)), \
+         patch.object(
+             eval_mod.torch,
+             "load",
+             return_value={
+                 "model": {},
+                 "update": 7,
+                 "action_allocation_bins": np.float64(np.nan),
+                 "action_level_bins": -2,
+                 "action_max_offset_bps": "oops",
+             },
+         ), \
+         patch.object(eval_mod, "TradingPolicy", return_value=DummyPolicy()), \
+         patch.object(eval_mod, "_build_policy_fn", return_value=lambda obs: 0), \
+         patch.object(eval_mod, "sliding_window_eval", return_value=[]), \
+         patch.object(eval_mod, "aggregate_sliding_results", return_value={"calmar": 1.23}), \
+         patch.object(eval_mod, "print_sliding_results", return_value=None):
+        eval_mod.main()
+
+    captured = capsys.readouterr()
+    assert "Action grid: alloc_bins=2 level_bins=3 max_offset_bps=5.0" in captured.out
+
+
+def test_load_policy_from_checkpoint_infers_effective_arch_and_hidden_size():
+    obs_size = 21
+    num_actions = 9
+    source_policy = eval_mod.ResidualTradingPolicy(obs_size, num_actions, hidden=32, num_blocks=4)
+    ckpt = {
+        "model": source_policy.state_dict(),
+        "arch": "resmlp",
+        "hidden_size": 32,
+    }
+
+    loaded_policy, effective_arch, effective_hidden_size = eval_mod._load_policy_from_checkpoint(
+        ckpt=ckpt,
+        obs_size=obs_size,
+        num_actions=num_actions,
+        arch="mlp",
+        hidden_size=16,
+        device=torch.device("cpu"),
+    )
+
+    assert isinstance(loaded_policy, eval_mod.ResidualTradingPolicy)
+    assert effective_arch == "resmlp"
+    assert effective_hidden_size == 32
+    assert len(loaded_policy.blocks) == 4
+
+
+def test_main_reports_effective_checkpoint_arch_and_hidden_size(capsys):
+    fake_args = SimpleNamespace(
+        checkpoint="checkpoint.pt",
+        data_path="data.mktd",
+        episode_len=50,
+        stride=25,
+        fee_rate=0.0,
+        slippage_bps=0.0,
+        max_leverage=1.0,
+        short_borrow_apr=0.0,
+        periods_per_year=8760.0,
+        action_allocation_bins=1,
+        action_level_bins=1,
+        action_max_offset_bps=0.0,
+        hidden_size=16,
+        arch="mlp",
+        deterministic=False,
+        disable_shorts=False,
+        cpu=True,
+    )
+
+    obs_size = _make_data(60).num_symbols * _make_data(60).features.shape[2] + 5 + _make_data(60).num_symbols
+    num_actions = 1 + 2 * _make_data(60).num_symbols
+    source_policy = eval_mod.ResidualTradingPolicy(obs_size, num_actions, hidden=32, num_blocks=4)
+
+    with patch.object(eval_mod.argparse.ArgumentParser, "parse_args", return_value=fake_args), \
+         patch.object(eval_mod, "read_mktd", return_value=_make_data(60)), \
+         patch.object(eval_mod.torch, "load", return_value={"model": source_policy.state_dict(), "update": 9}), \
+         patch.object(eval_mod, "_build_policy_fn", return_value=lambda obs: 0), \
+         patch.object(eval_mod, "sliding_window_eval", return_value=[]), \
+         patch.object(eval_mod, "aggregate_sliding_results", return_value={"calmar": 1.23}), \
+         patch.object(eval_mod, "print_sliding_results", return_value=None):
+        eval_mod.main()
+
+    captured = capsys.readouterr()
+    assert "obs_size=22, num_actions=3" in captured.out
+    assert "Window config: episode_len=50, stride=25" in captured.out
+    assert "CLI policy config: arch=mlp, hidden_size=16" in captured.out
+    assert "Action grid: alloc_bins=1 level_bins=1 max_offset_bps=0.0" in captured.out
+    assert "Runtime: device=cpu, deterministic=False" in captured.out
+    assert f"Checkpoint file: {Path(fake_args.checkpoint).resolve()}" in captured.out
+    assert "Effective checkpoint config: arch=resmlp, hidden_size=32" in captured.out
+    assert "Checkpoint overrides CLI policy config: arch mlp -> resmlp, hidden_size 16 -> 32" in captured.out
+    assert "Loaded checkpoint: update=9, train_best_return=?, arch=resmlp" in captured.out

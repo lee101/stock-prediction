@@ -729,6 +729,41 @@ class TestDiagnoseFunction:
 
         assert [row["symbol"] for row in watchlist] == ["R2", "R7"]
 
+    def test_build_diagnose_follow_up_commands_reuses_relevant_flags(self):
+        from binance_worksteal.trade_live import _build_diagnose_follow_up_commands
+
+        commands = _build_diagnose_follow_up_commands(
+            raw_argv=[
+                "--config-file",
+                "live.yaml",
+                "--max-symbols",
+                "5",
+                "--symbols",
+                "OLD1",
+                "OLD2",
+                "--diagnose",
+                "--summary-json",
+                "-",
+            ],
+            top_candidate={"symbol": "SYM1"},
+            watchlist=[{"symbol": "SYM2"}, {"symbol": "SYM3"}],
+        )
+
+        assert commands == [
+            {
+                "label": "preview_top_candidate",
+                "summary": "preview the top setup for SYM1",
+                "symbols": ["SYM1"],
+                "command": "python -m binance_worksteal.trade_live --config-file live.yaml --symbols SYM1 --preview-run",
+            },
+            {
+                "label": "diagnose_watchlist",
+                "summary": "rerun diagnose on the closest blocked symbols",
+                "symbols": ["SYM2", "SYM3"],
+                "command": "python -m binance_worksteal.trade_live --config-file live.yaml --symbols SYM2 SYM3 --diagnose",
+            },
+        ]
+
     def test_main_diagnose_summary_dash_prints_json_to_stdout(self, tmp_path, capsys):
         from types import SimpleNamespace
 
@@ -780,6 +815,26 @@ class TestDiagnoseFunction:
 
         argv = ["--symbols", "SYM1", "SYM2", "--diagnose", "--summary-json", "-"]
         expected_command = render_command_preview("binance_worksteal.trade_live", argv)
+        expected_follow_up_commands = [
+            {
+                "label": "preview_top_candidate",
+                "summary": "preview the top setup for SYM1",
+                "symbols": ["SYM1"],
+                "command": render_command_preview(
+                    "binance_worksteal.trade_live",
+                    ["--symbols", "SYM1", "--preview-run"],
+                ),
+            },
+            {
+                "label": "diagnose_watchlist",
+                "summary": "rerun diagnose on the closest blocked symbols",
+                "symbols": ["SYM2"],
+                "command": render_command_preview(
+                    "binance_worksteal.trade_live",
+                    ["--symbols", "SYM2", "--diagnose"],
+                ),
+            },
+        ]
 
         with patch("binance_worksteal.trade_live.STATE_FILE", state_file),              patch("binance_worksteal.trade_live.BinanceClient", None),              patch("binance_worksteal.trade_live._fetch_all_bars", return_value={"SYM1": bars1, "SYM2": bars2}),              patch(
                  "binance_worksteal.trade_live.resolve_entry_regime",
@@ -822,6 +877,7 @@ class TestDiagnoseFunction:
             "is_candidate": False,
         }
         assert payload["watchlist"] == [payload["nearest_blocked"]]
+        assert payload["follow_up_commands"] == expected_follow_up_commands
         assert payload["action_summary"] == {
             "status": "candidate_available",
             "symbol": "SYM1",
@@ -859,6 +915,11 @@ class TestDiagnoseFunction:
         )
         assert "Action summary:    stage SYM1 near $95.0000" in captured.err
         assert "Watchlist:         SYM2 near $180.0000 (5.0%, sma filter blocked)" in captured.err
+        assert "Suggested commands:" in captured.err
+        assert "  preview the top setup for SYM1:" in captured.err
+        assert f"    {expected_follow_up_commands[0]['command']}" in captured.err
+        assert "  rerun diagnose on the closest blocked symbols:" in captured.err
+        assert f"    {expected_follow_up_commands[1]['command']}" in captured.err
         assert "Command:" in captured.err
         assert f"  {expected_command}" in captured.err
 
@@ -1027,6 +1088,7 @@ class TestDiagnoseFunction:
         assert payload["candidate_symbols"] == []
         assert payload["top_candidate"] is None
         assert payload["nearest_blocked"] is None
+        assert payload["follow_up_commands"] == []
         assert payload["watchlist"] == []
         assert payload["action_summary"] == {
             "status": "no_data",
@@ -1175,6 +1237,7 @@ class TestDiagnoseFunction:
         assert payload["candidate_symbols"] == []
         assert payload["top_candidate"] is None
         assert payload["nearest_blocked"] is None
+        assert payload["follow_up_commands"] == []
         assert payload["watchlist"] == []
         assert payload["action_summary"] == {
             "status": "no_data",
