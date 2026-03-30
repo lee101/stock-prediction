@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 import pandas as pd
+import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -16,9 +17,19 @@ MAX_END_LAG = pd.Timedelta(days=14)
 
 def _extract_live_symbols() -> list[str]:
     text = LAUNCH_SCRIPT.read_text()
-    match = re.search(r"--symbols(?P<body>.*?)\"\$@\"", text, re.S)
+    universe_match = re.search(r'UNIVERSE_FILE="(?P<path>[^"]+)"', text)
+    if universe_match is not None:
+        universe_path = REPO_ROOT / universe_match.group("path")
+        if universe_path.exists():
+            payload = yaml.safe_load(universe_path.read_text(encoding="utf-8")) or {}
+            symbols = [str(item.get("symbol", "")).strip() for item in payload.get("symbols", []) if item]
+            symbols = [symbol for symbol in symbols if symbol]
+            if symbols:
+                return symbols
+
+    match = re.search(r'SYMBOLS_ARG="--symbols(?P<body>.*?)"', text, re.S)
     if match is None:
-        raise AssertionError(f"Unable to extract --symbols block from {LAUNCH_SCRIPT}.")
+        raise AssertionError(f"Unable to extract live symbol source from {LAUNCH_SCRIPT}.")
     symbols = [token for token in match.group("body").replace("\\", " ").split() if token]
     if not symbols:
         raise AssertionError(f"No live symbols found in {LAUNCH_SCRIPT}.")

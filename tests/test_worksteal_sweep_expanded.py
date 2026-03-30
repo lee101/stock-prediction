@@ -12,17 +12,19 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import binance_worksteal.sweep_expanded as sweep_expanded_module
 from binance_worksteal.sweep_expanded import (
     SWEEP_GRID,
     generate_grid,
     combo_to_config,
     compute_safety_score,
     build_windows,
+    eval_config_single_window_python,
     eval_config_multi_window_python,
     _aggregate_window_metrics,
     run_sweep,
 )
-from binance_worksteal.strategy import WorkStealConfig
+from binance_worksteal.strategy import TradeLog, WorkStealConfig
 
 
 def _make_bars(symbols, n_days=120, base_price=100.0, seed=42):
@@ -71,6 +73,10 @@ class TestGridGeneration:
         keys, combos = generate_grid(max_trials=99999)
         assert len(combos) == 2160
 
+    def test_zero_max_trials_preserves_full_grid(self):
+        keys, combos = generate_grid(max_trials=0)
+        assert len(combos) == 2160
+
     def test_seed_reproducibility(self):
         _, c1 = generate_grid(max_trials=20, seed=42)
         _, c2 = generate_grid(max_trials=20, seed=42)
@@ -103,6 +109,25 @@ class TestComboToConfig:
         assert config.stop_loss_pct == 0.10
         assert config.initial_cash == 5000.0
 
+    def test_base_config_preserves_non_swept_fields_and_grid_overrides(self):
+        keys = list(SWEEP_GRID.keys())
+        combo = (0.12, 3.0, 10, 0.05, 0.15, 0.10)
+        config = combo_to_config(
+            keys,
+            combo,
+            base_config=WorkStealConfig(
+                dip_pct=0.25,
+                base_asset_symbol="ETHUSD",
+                sma_check_method="current",
+                max_hold_days=30,
+            ),
+        )
+
+        assert config.dip_pct == 0.12
+        assert config.base_asset_symbol == "ETHUSD"
+        assert config.sma_check_method == "current"
+        assert config.max_hold_days == 30
+
 
 class TestSafetyScore:
     def test_positive_sortino_negative_dd(self):
@@ -134,6 +159,11 @@ class TestBuildWindows:
         for start, end in windows:
             assert isinstance(start, str)
             assert isinstance(end, str)
+
+    def test_short_data_truncates_requested_windows(self):
+        bars = _make_bars(["BTCUSD"], n_days=100)
+        windows = build_windows(bars, window_days=60, n_windows=3)
+        assert len(windows) == 1
 
     def test_windows_non_overlapping(self):
         bars = _make_bars(["BTCUSD"], n_days=250)
@@ -176,11 +206,73 @@ class TestEvalMultiWindow:
         )
         windows = build_windows(bars, window_days=60, n_windows=2)
         result = eval_config_multi_window_python(bars, config, windows)
-        # May return None if no trades, or a dict with metrics
         if result is not None:
             assert "mean_sortino" in result
             assert "safety_score" in result
             assert "max_drawdown_pct" in result
+
+    def test_single_window_python_uses_shared_trade_metrics_helpers(self, monkeypatch):
+        bars = _make_bars(["BTCUSD"], n_days=120)
+        config = WorkStealConfig(dip_pct=0.10, profit_target_pct=0.15, stop_loss_pct=0.10)
+
+        trades = [
+            TradeLog(
+                timestamp=pd.Timestamp("2025-11-01 00:00:00", tz="UTC"),
+                symbol="BTCUSD",
+                side="buy",
+                price=100.0,
+                quantity=1.0,
+                notional=100.0,
+                fee=0.1,
+            ),
+            TradeLog(
+                timestamp=pd.Timestamp("2025-11-01 12:00:00", tz="UTC"),
+                symbol="BTCUSD",
+                side="sell",
+                price=105.0,
+                quantity=1.0,
+                notional=105.0,
+                fee=0.1,
+            ),
+        ]
+
+        def fake_backtest(*args, **kwargs):
+            return pd.DataFrame(), trades, {"sortino": 1.0, "total_return_pct": 2.0, "max_drawdown_pct": -1.0}
+
+        monkeypatch.setattr("binance_worksteal.sweep_expanded.run_worksteal_backtest", fake_backtest)
+
+        result = eval_config_single_window_python(
+            bars,
+            config,
+            "2025-11-01",
+            "2025-12-01",
+        )
+
+        assert result["n_trades"] == 1
+        assert result["avg_hold_days"] == pytest.approx(1.0)
+
+    def test_single_window_python_reuses_prepared_bars(self, monkeypatch):
+        bars = _make_bars(["BTCUSD"], n_days=120)
+        config = WorkStealConfig(dip_pct=0.10, profit_target_pct=0.15, stop_loss_pct=0.10)
+        prepared = sweep_expanded_module.prepare_backtest_bars(bars)
+        seen = {}
+
+        def fake_backtest(*args, **kwargs):
+            seen["prepared_is_forwarded"] = kwargs["prepared_bars"] is prepared
+            return pd.DataFrame(), [], {"sortino": 1.0, "total_return_pct": 2.0, "max_drawdown_pct": -1.0}
+
+        monkeypatch.setattr("binance_worksteal.sweep_expanded.run_worksteal_backtest", fake_backtest)
+
+        result = eval_config_single_window_python(
+            bars,
+            config,
+            "2025-11-01",
+            "2025-12-01",
+            prepared_bars=prepared,
+        )
+
+        assert result["n_trades"] == 0
+        assert seen == {"prepared_is_forwarded": True}
 
 
 class TestCSVOutput:
@@ -215,3 +307,188 @@ class TestCSVOutput:
                 assert all(safety[i] >= safety[i + 1] for i in range(len(safety) - 1))
         finally:
             os.unlink(out_path)
+
+
+class TestDispatch:
+    def test_run_sweep_forwards_prepared_bars_to_python_eval(self, tmp_path, monkeypatch):
+        bars = _make_bars(["BTCUSD"], n_days=120)
+        windows = [("2025-11-01", "2025-12-01")]
+        output_csv = str(tmp_path / "expanded_prepared.csv")
+        keys = list(SWEEP_GRID.keys())
+        combo = tuple(values[0] for values in SWEEP_GRID.values())
+
+        monkeypatch.setattr(
+            "binance_worksteal.sweep_expanded.generate_grid",
+            lambda max_trials=None: (keys, [combo]),
+        )
+        monkeypatch.setattr("binance_worksteal.sweep_expanded._try_load_csim_batch", lambda: None)
+        seen = {}
+
+        def fake_eval(all_bars, config, windows, prepared_bars=None, report_backtest_failure=None):
+            seen["prepared_matches_bars"] = (
+                prepared_bars is not None
+                and set(prepared_bars) == set(all_bars)
+                and all(prepared_bars[sym].bars is bars[sym] for sym in all_bars)
+            )
+            return {
+                "mean_sortino": 1.0,
+                "min_sortino": 1.0,
+                "mean_return_pct": 1.0,
+                "max_drawdown_pct": -1.0,
+                "mean_win_rate": 50.0,
+                "total_n_trades": 2,
+                "mean_n_trades": 2.0,
+                "avg_hold_days": 3.0,
+                "safety_score": 1.0,
+                "n_windows": 1,
+                "w0_sortino": 1.0,
+                "w0_return_pct": 1.0,
+                "w0_drawdown_pct": -1.0,
+                "w0_n_trades": 2,
+            }
+
+        monkeypatch.setattr("binance_worksteal.sweep_expanded.eval_config_multi_window_python", fake_eval)
+
+        results = run_sweep(bars, windows, output_csv, max_trials=1, cash=10000.0, n_workers=1)
+
+        assert len(results) == 1
+        assert seen == {"prepared_matches_bars": True}
+
+    def test_run_sweep_disables_csim_for_incompatible_configs(self, tmp_path, monkeypatch):
+        bars = _make_bars(["BTCUSD"], n_days=120)
+        windows = [("2025-11-01", "2025-12-01")]
+        output_csv = str(tmp_path / "expanded.csv")
+        keys = list(SWEEP_GRID.keys())
+        combo = tuple(values[0] for values in SWEEP_GRID.values())
+
+        def fake_batch(*args, **kwargs):
+            raise AssertionError("C batch path should not be used for incompatible configs")
+
+        def fake_eval(*args, **kwargs):
+            return {
+                "mean_sortino": 1.0,
+                "min_sortino": 1.0,
+                "mean_return_pct": 1.0,
+                "max_drawdown_pct": -1.0,
+                "mean_win_rate": 50.0,
+                "total_n_trades": 2,
+                "mean_n_trades": 2.0,
+                "avg_hold_days": 3.0,
+                "safety_score": 1.0,
+                "n_windows": 1,
+                "w0_sortino": 1.0,
+                "w0_return_pct": 1.0,
+                "w0_drawdown_pct": -1.0,
+                "w0_n_trades": 2,
+            }
+
+        monkeypatch.setattr("binance_worksteal.sweep_expanded._try_load_csim_batch", lambda: fake_batch)
+        monkeypatch.setattr(
+            "binance_worksteal.sweep_expanded.generate_grid",
+            lambda max_trials=None: (keys, [combo]),
+        )
+        monkeypatch.setattr("binance_worksteal.sweep_expanded.eval_config_multi_window_python", fake_eval)
+
+        results = run_sweep(bars, windows, output_csv, max_trials=1, cash=10000.0, n_workers=1)
+
+        assert len(results) == 1
+        assert pd.read_csv(output_csv).shape[0] == 1
+
+    def test_run_sweep_falls_back_to_python_when_c_batch_raises(self, tmp_path, monkeypatch, capsys):
+        bars = _make_bars(["BTCUSD"], n_days=120)
+        windows = [("2025-11-01", "2025-12-01")]
+        output_csv = str(tmp_path / "expanded_fallback.csv")
+        keys = list(SWEEP_GRID.keys())
+        combo = tuple(values[0] for values in SWEEP_GRID.values())
+        seen = {"python": 0}
+
+        def fake_batch(*args, **kwargs):
+            raise RuntimeError("batch boom")
+
+        def fake_eval(*args, **kwargs):
+            seen["python"] += 1
+            return {
+                "mean_sortino": 1.0,
+                "min_sortino": 1.0,
+                "mean_return_pct": 1.0,
+                "max_drawdown_pct": -1.0,
+                "mean_win_rate": 50.0,
+                "total_n_trades": 2,
+                "mean_n_trades": 2.0,
+                "avg_hold_days": 3.0,
+                "safety_score": 1.0,
+                "n_windows": 1,
+                "w0_sortino": 1.0,
+                "w0_return_pct": 1.0,
+                "w0_drawdown_pct": -1.0,
+                "w0_n_trades": 2,
+            }
+
+        monkeypatch.setattr("binance_worksteal.sweep_expanded._try_load_csim_batch", lambda: fake_batch)
+        monkeypatch.setattr(
+            "binance_worksteal.sweep_expanded.generate_grid",
+            lambda max_trials=None: (keys, [combo]),
+        )
+        monkeypatch.setattr(
+            "binance_worksteal.sweep_expanded.assert_csim_compatible_configs",
+            lambda configs, context: None,
+        )
+        monkeypatch.setattr("binance_worksteal.sweep_expanded.eval_config_multi_window_python", fake_eval)
+
+        results = run_sweep(bars, windows, output_csv, max_trials=1, cash=10000.0)
+
+        output = capsys.readouterr().out
+        assert len(results) == 1
+        assert seen["python"] == 1
+        assert "WARN: sweep_expanded C batch evaluation failed" in output
+        assert "falling back to Python for remaining configs" in output
+
+    def test_run_sweep_reports_python_failures(self, tmp_path, monkeypatch, capsys):
+        bars = _make_bars(["BTCUSD"], n_days=120)
+        windows = [("2025-11-01", "2025-12-01")]
+        output_csv = str(tmp_path / "expanded_failures.csv")
+
+        monkeypatch.setattr("binance_worksteal.sweep_expanded.generate_grid", lambda max_trials=None: (["dip_pct"], [(0.1,)]))
+        monkeypatch.setattr("binance_worksteal.sweep_expanded._try_load_csim_batch", lambda: None)
+
+        def fake_python(*args, **kwargs):
+            raise RuntimeError("python boom")
+
+        monkeypatch.setattr("binance_worksteal.sweep_expanded.run_worksteal_backtest", fake_python)
+
+        results = run_sweep(bars, windows, output_csv, max_trials=1, cash=10000.0, n_workers=1)
+
+        output = capsys.readouterr().out
+        assert results == []
+        assert "WARN: sweep_expanded Python backtest evaluation failed" in output
+        assert "python boom" in output
+        assert "WARN: skipped 1 failed Python window evaluations during expanded sweep" in output
+
+    def test_run_sweep_return_metadata_reports_failures(self, tmp_path, monkeypatch):
+        bars = _make_bars(["BTCUSD"], n_days=120)
+        windows = [("2025-11-01", "2025-12-01")]
+        output_csv = str(tmp_path / "expanded_failures_meta.csv")
+
+        monkeypatch.setattr("binance_worksteal.sweep_expanded.generate_grid", lambda max_trials=None: (["dip_pct"], [(0.1,)]))
+        monkeypatch.setattr("binance_worksteal.sweep_expanded._try_load_csim_batch", lambda: None)
+
+        def fake_python(*args, **kwargs):
+            raise RuntimeError("python boom")
+
+        monkeypatch.setattr("binance_worksteal.sweep_expanded.run_worksteal_backtest", fake_python)
+
+        results, metadata = run_sweep(
+            bars,
+            windows,
+            output_csv,
+            max_trials=1,
+            cash=10000.0,
+            n_workers=1,
+            return_metadata=True,
+        )
+
+        assert results == []
+        assert metadata["skipped_backtest_failure_count"] == 1
+        assert metadata["backtest_failure_samples"]
+        assert "python boom" in metadata["backtest_failure_samples"][0]
+        assert metadata["suppressed_backtest_failure_count"] == 0

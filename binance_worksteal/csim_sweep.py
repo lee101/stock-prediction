@@ -9,12 +9,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import numpy as np
 import pandas as pd
 from dataclasses import replace
 
 from binance_worksteal.strategy import WorkStealConfig, load_daily_bars
-from binance_worksteal.csim.fast_worksteal import run_worksteal_batch_fast
+from binance_worksteal.csim.compat import assert_csim_compatible_configs
 from binance_worksteal.backtest import FULL_UNIVERSE
 
 
@@ -44,14 +43,25 @@ BASE_CONFIG = WorkStealConfig(
     reentry_cooldown_days=1,
     max_leverage=1.0,
     sma_filter_period=20,
+    sma_check_method="current",
     margin_annual_rate=0.0625,
     max_drawdown_exit=0.25,
+    risk_off_trigger_sma_period=0,
+    risk_off_trigger_momentum_period=0,
 )
 
 MIN_TRADES_30D = 5
 MIN_TRADES_60D = 8
 MIN_TRADES_90D = 10
 SORTINO_CAP = 50.0  # cap to avoid degenerate high values from low-trade configs
+
+
+def _get_csim_batch_fn():
+    try:
+        from binance_worksteal.csim.fast_worksteal import run_worksteal_batch_fast
+    except Exception as exc:
+        raise RuntimeError("C simulator batch backend is unavailable for csim_sweep.") from exc
+    return run_worksteal_batch_fast
 
 
 def generate_configs():
@@ -65,6 +75,7 @@ def generate_configs():
         if kwargs["trailing_stop_pct"] >= kwargs["profit_target_pct"]:
             continue
         configs.append(replace(BASE_CONFIG, **kwargs))
+    assert_csim_compatible_configs(configs, context="csim_sweep")
     return configs
 
 
@@ -84,6 +95,7 @@ def clip_sortino(s):
 
 def run_sweep():
     t0 = time.time()
+    run_worksteal_batch_fast = _get_csim_batch_fn()
 
     print("Loading data...")
     all_bars = load_daily_bars("trainingdata/train", FULL_UNIVERSE)
@@ -118,7 +130,6 @@ def run_sweep():
         print(f"  {wname} done in {time.time()-tw0:.1f}s")
 
     # Build per-config summary
-    min_trades = {"30d": MIN_TRADES_30D, "60d": MIN_TRADES_60D, "90d": MIN_TRADES_90D}
     rows = []
 
     for ci in range(n_configs):
@@ -140,8 +151,6 @@ def run_sweep():
         s90 = clip_sortino(r90["sortino"])
         mean_sort = (s30 + s60 + s90) / 3.0
 
-        # All windows must be positive sortino for "robust" configs
-        all_positive = s30 > 0 and s60 > 0 and s90 > 0
         n_positive_windows = sum(1 for s in [s30, s60, s90] if s > 0)
 
         mean_ret = (r30["total_return_pct"] + r60["total_return_pct"] + r90["total_return_pct"]) / 3.0

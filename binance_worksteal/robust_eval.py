@@ -149,22 +149,18 @@ def evaluate_config_scenarios(
                 end_date=window.end_date,
                 intraday_bars=intraday_bars,
             )
-            if not metrics:
-                raise ValueError(
-                    f"No metrics returned for {window.label} start={start_label}."
-                )
 
-            total_return = float(metrics.get("total_return", 0.0))
-            n_days = float(metrics.get("n_days", 0.0) or 0.0)
+            total_return = float(metrics.get("total_return", 0.0)) if metrics else 0.0
+            n_days = float(metrics.get("n_days", 0.0) or 0.0) if metrics else float(len(equity_df))
             equity_values = equity_df["equity"].astype(float).to_numpy(copy=False) if not equity_df.empty else np.asarray([], dtype=np.float64)
             scenario_rows.append(
                 {
                     "window_label": window.label,
                     "start_state": start_label,
-                    "return_pct": float(metrics.get("total_return_pct", 0.0)),
+                    "return_pct": float(metrics.get("total_return_pct", 0.0)) if metrics else 0.0,
                     "annualized_return_pct": _compute_annualized_return_pct(total_return, n_days),
-                    "sortino": float(metrics.get("sortino", 0.0)),
-                    "max_drawdown_pct": abs(float(metrics.get("max_drawdown_pct", 0.0))),
+                    "sortino": float(metrics.get("sortino", 0.0)) if metrics else 0.0,
+                    "max_drawdown_pct": abs(float(metrics.get("max_drawdown_pct", 0.0))) if metrics else 0.0,
                     "pnl_smoothness": float(compute_pnl_smoothness_from_equity(equity_values)),
                     "trade_count": float(len(trades)),
                     "n_days": n_days,

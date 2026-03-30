@@ -76,5 +76,31 @@
     "wall_s": 4335.0,
     "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_lr5e4_sam_cosine_wd01_ETHUSD_20260328_202107",
     "error": null
+  },
+  {
+    "name": "lr5e4_sam_cosine_wd01",
+    "symbol": "BTCUSD",
+    "best_epoch": 11,
+    "best_val_sortino": 78.95,
+    "best_val_return": 1.7965,
+    "best_val_score": 79.094,
+    "sharpness_ema": 444.9,
+    "wd_scale": 2.0,
+    "wall_s": 3759.0,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_lr5e4_sam_cosine_wd01_BTCUSD_20260328_213323",
+    "error": null
+  },
+  {
+    "name": "lr5e4_sam_cosine_wd01",
+    "symbol": "BNBUSD",
+    "best_epoch": 2,
+    "best_val_sortino": 39.671,
+    "best_val_return": 0.7331,
+    "best_val_score": 39.729,
+    "sharpness_ema": 722.4,
+    "wd_scale": 2.0,
+    "wall_s": 896.0,
+    "checkpoint_dir": "sharpnessadjustedproximalpolicy/checkpoints/sap_lr5e4_sam_cosine_wd01_BNBUSD_20260328_223603",
+    "error": null
   }
 ]

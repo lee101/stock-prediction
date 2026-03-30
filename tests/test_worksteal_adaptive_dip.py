@@ -7,8 +7,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pandas as pd
-import pytest
-from dataclasses import replace
 
 from binance_worksteal.strategy import WorkStealConfig, build_entry_candidates
 from binance_worksteal.trade_live import _build_tiered_candidates
@@ -289,7 +287,6 @@ class TestTieredDipDiagnostics:
         current_bars = {sym: df.iloc[-1] for sym, df in all_bars.items()}
         date = pd.Timestamp("2025-01-26", tz="UTC")
 
-        from binance_worksteal.strategy import SymbolDiagnostic
         diagnostics = []
         candidates, tier_map = _build_tiered_candidates(
             dip_tiers=[0.20, 0.15, 0.12],

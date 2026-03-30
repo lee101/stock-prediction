@@ -1,0 +1,95 @@
+# Live/replayable worksteal universe.
+# This is the subset of universe_v2.yaml that currently has both local daily and
+# hourly coverage with fresh enough timestamps for replay/audit workflows.
+
+symbols:
+  - symbol: BTCUSD
+    usdt_pair: BTCUSDT
+    fee_tier: fdusd
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+  - symbol: ETHUSD
+    usdt_pair: ETHUSDT
+    fee_tier: fdusd
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+  - symbol: DOGEUSD
+    usdt_pair: DOGEUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: true
+    min_notional: 10.0
+  - symbol: AVAXUSD
+    usdt_pair: AVAXUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: true
+    min_notional: 10.0
+  - symbol: LINKUSD
+    usdt_pair: LINKUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: true
+    min_notional: 10.0
+  - symbol: AAVEUSD
+    usdt_pair: AAVEUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: true
+    min_notional: 10.0
+  - symbol: LTCUSD
+    usdt_pair: LTCUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: true
+    min_notional: 10.0
+  - symbol: XRPUSD
+    usdt_pair: XRPUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: true
+    min_notional: 10.0
+  - symbol: DOTUSD
+    usdt_pair: DOTUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: true
+    min_notional: 10.0
+  - symbol: UNIUSD
+    usdt_pair: UNIUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+  - symbol: SHIBUSD
+    usdt_pair: SHIBUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+  - symbol: ADAUSD
+    usdt_pair: ADAUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+  - symbol: SUIUSD
+    usdt_pair: SUIUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+  - symbol: ATOMUSD
+    usdt_pair: ATOMUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0
+  - symbol: TAOUSD
+    usdt_pair: TAOUSDT
+    fee_tier: usdt
+    margin_eligible: true
+    has_lora: false
+    min_notional: 10.0

@@ -1,0 +1,2 @@
+symbol,name,best_epoch,val_sortino,ms_return,ms_sortino,ms_dd,ms_trades,wall_s
+DOTUSD,lr3e-04_wd0.1_peri_ep12,9,0.003,165.41,0.683,-9.28,31,2330.0

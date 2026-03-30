@@ -7,7 +7,7 @@ import hashlib
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional
 
 import pandas as pd
 
@@ -24,12 +24,11 @@ from binance_worksteal.strategy import (
     _normalize_base_asset_symbol,
     _seed_initial_holdings,
     build_entry_candidates,
-    compute_market_breadth_skip,
     compute_metrics,
     get_fee,
     load_daily_bars,
     load_hourly_bars,
-    resolve_entry_config,
+    resolve_entry_regime,
     run_worksteal_backtest,
 )
 from binance_worksteal.trade_live import DEFAULT_CONFIG, _relative_bps_distance
@@ -177,7 +176,6 @@ def run_gemini_intraday_backtest(
     starting_equity = float(config.initial_cash)
     llm_calls = 0
     llm_overrides = 0
-    total_steps = max(1, len(all_dates) * 24)
     base_symbol = _normalize_base_asset_symbol(config)
     base_qty = 0.0
 
@@ -229,8 +227,9 @@ def run_gemini_intraday_backtest(
             )
             seeded_positions_rebalanced = True
 
-        entry_config = resolve_entry_config(current_bars=current_bars, history=history, config=config)
-        skip_entries = compute_market_breadth_skip(current_bars, history, entry_config)
+        entry_regime = resolve_entry_regime(current_bars=current_bars, history=history, config=config)
+        entry_config = entry_regime.config
+        skip_entries = entry_regime.skip_entries
         daily_candidates = (
             build_entry_candidates(
                 date=date,

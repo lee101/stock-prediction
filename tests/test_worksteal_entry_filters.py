@@ -13,6 +13,7 @@ from binance_worksteal.strategy import (
     compute_market_breadth_skip,
     _risk_off_triggered,
     resolve_entry_config,
+    resolve_entry_regime,
     run_worksteal_backtest,
 )
 from binance_worksteal.trade_live import _relative_bps_distance
@@ -144,7 +145,7 @@ class TestSmaDipContradiction:
             lookback_days=20,
         )
         date = pd.Timestamp("2026-01-21", tz="UTC")
-        candidates = build_entry_candidates(
+        build_entry_candidates(
             date=date,
             current_bars=current_bars,
             history=history,
@@ -493,6 +494,61 @@ class TestResolveEntryConfig:
             current_bars=current_bars, history=history, config=config,
         )
         assert entry_config is config
+
+    def test_resolve_entry_regime_reports_risk_off_without_breadth_skip(self):
+        history = {}
+        current_bars = {}
+        for i in range(10):
+            sym = f"R{i}USD"
+            prices = [100.0] * 20 + [90.0] * 7
+            bars = make_bars(prices, symbol=sym)
+            history[sym] = bars
+            current_bars[sym] = bars.iloc[-1]
+        config = WorkStealConfig(
+            ref_price_method="high",
+            risk_off_ref_price_method="sma",
+            market_breadth_filter=0.0,
+            risk_off_market_breadth_filter=0.70,
+            risk_off_trigger_momentum_period=7,
+            risk_off_trigger_sma_period=0,
+        )
+
+        regime = resolve_entry_regime(
+            current_bars=current_bars,
+            history=history,
+            config=config,
+        )
+
+        assert regime.risk_off is True
+        assert regime.market_breadth_skip is False
+        assert regime.skip_entries is True
+        assert regime.config.ref_price_method == "sma"
+
+    def test_resolve_entry_regime_reports_breadth_skip_without_risk_off(self):
+        history = {}
+        current_bars = {}
+        for i in range(5):
+            sym = f"B{i}USD"
+            prices = [100.0] * 20 + [95.0, 90.0]
+            bars = make_bars(prices, symbol=sym)
+            history[sym] = bars
+            current_bars[sym] = bars.iloc[-1]
+        config = WorkStealConfig(
+            market_breadth_filter=0.5,
+            risk_off_trigger_momentum_period=0,
+            risk_off_trigger_sma_period=0,
+        )
+
+        regime = resolve_entry_regime(
+            current_bars=current_bars,
+            history=history,
+            config=config,
+        )
+
+        assert regime.risk_off is False
+        assert regime.market_breadth_skip is True
+        assert regime.skip_entries is True
+        assert regime.config is config
 
 
 if __name__ == "__main__":

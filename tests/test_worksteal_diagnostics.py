@@ -6,20 +6,9 @@ import sys
 from pathlib import Path
 import pandas as pd
 import numpy as np
-import pytest
 from unittest.mock import patch
-from dataclasses import replace
 
-from binance_worksteal.strategy import (
-    WorkStealConfig,
-    SymbolDiagnostic,
-    build_entry_candidates,
-    compute_market_breadth_skip,
-    passes_sma_filter,
-    compute_ref_price,
-    compute_buy_target,
-    _risk_off_triggered,
-)
+from binance_worksteal.strategy import WorkStealConfig, SymbolDiagnostic, build_entry_candidates
 
 
 def _make_bars(n=30, base_price=100.0, trend=0.0):
@@ -183,7 +172,7 @@ class TestBuildEntryCandidatesWithDiagnostics:
         current = {"SYM1": bars.iloc[-1]}
         history = {"SYM1": bars}
         diags = []
-        candidates = build_entry_candidates(
+        build_entry_candidates(
             current_bars=current, history=history, positions={},
             last_exit={}, date=dates[-1], config=config, diagnostics=diags,
         )
@@ -231,9 +220,8 @@ class TestBuildEntryCandidatesWithDiagnostics:
 
 class TestAdaptiveDip:
     def test_adaptive_dip_reduces_after_threshold(self):
-        from binance_worksteal.trade_live import run_daily_cycle, load_state, save_state, STATE_FILE
+        from binance_worksteal.trade_live import run_daily_cycle
         import tempfile
-        import os
 
         config = WorkStealConfig(dip_pct=0.20, proximity_pct=0.02, lookback_days=5)
 
@@ -253,7 +241,6 @@ class TestAdaptiveDip:
             assert result.get("zero_candidate_cycles", 0) >= 5
 
     def test_zero_candidate_counter_increments(self):
-        from binance_worksteal.trade_live import STATE_FILE
         import tempfile
 
         config = WorkStealConfig(dip_pct=0.20, proximity_pct=0.02, lookback_days=5)
@@ -277,7 +264,6 @@ class TestAdaptiveDip:
             assert result["zero_candidate_cycles"] == 1
 
     def test_zero_candidate_counter_resets_on_staged(self):
-        from binance_worksteal.trade_live import STATE_FILE
         import tempfile
 
         # Use market_breadth_filter=0 and risk-off disabled to avoid blocking
@@ -318,7 +304,6 @@ class TestAdaptiveDip:
 
     def test_zero_candidate_counter_skips_on_insufficient_data(self):
         """Fix 1: counter should NOT increment when data is insufficient (API outage)."""
-        from binance_worksteal.trade_live import STATE_FILE
         import tempfile
 
         config = WorkStealConfig(dip_pct=0.20, proximity_pct=0.02, lookback_days=5)
@@ -345,7 +330,6 @@ class TestAdaptiveDip:
 
     def test_zero_candidate_counter_resets_on_candidates_without_staging(self):
         """Fix 2: counter resets when candidates exist even if none were staged."""
-        from binance_worksteal.trade_live import STATE_FILE
         import tempfile
 
         # max_positions=2 with 1 position + 1 pending = 0 slots, but scan still runs
@@ -395,7 +379,7 @@ class TestAdaptiveDip:
 
 class TestDiagnoseFunction:
     def test_diagnose_with_data(self, capsys):
-        from binance_worksteal.trade_live import run_diagnose, STATE_FILE
+        from binance_worksteal.trade_live import run_diagnose
         import tempfile
 
         config = WorkStealConfig(dip_pct=0.20, proximity_pct=0.02, lookback_days=5,
