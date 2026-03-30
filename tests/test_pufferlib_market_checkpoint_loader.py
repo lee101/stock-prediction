@@ -1,27 +1,28 @@
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import numpy as np
 import pytest
 import torch
-import torch.nn as nn
-from unittest.mock import patch
-
 from pufferlib_market.checkpoint_loader import (
     build_action_grid_summary_line,
+    build_checkpoint_summary_lines,
     build_cli_policy_config_line,
     build_ensemble_member_summary_lines,
-    build_checkpoint_summary_lines,
-    ensure_checkpoint_action_grid_compatible,
     build_runtime_summary_line,
+    ensure_checkpoint_action_grid_compatible,
+    extract_checkpoint_state_dict,
     format_action_grid_override_note,
-    format_checkpoint_override_note,
     format_best_return_label,
+    format_checkpoint_override_note,
     load_checkpoint_payload,
     load_policy_from_checkpoint,
     resolve_checkpoint_action_grid_config,
     resolve_checkpoint_policy_details,
     resolve_checkpoint_policy_metadata,
 )
+from torch import nn
 
 
 class _FakeLoadResult:
@@ -173,11 +174,27 @@ def test_build_ensemble_member_summary_lines_keeps_consistent_cli_contract(tmp_p
 def test_load_checkpoint_payload_wraps_path_and_original_error(tmp_path):
     checkpoint_path = tmp_path / "missing.pt"
 
-    with patch("pufferlib_market.checkpoint_loader.torch.load", side_effect=FileNotFoundError("no such file")):
-        with pytest.raises(RuntimeError, match=f"Failed to load checkpoint {checkpoint_path.resolve()}") as excinfo:
-            load_checkpoint_payload(checkpoint_path, map_location="cpu")
+    with (
+        patch("pufferlib_market.checkpoint_loader.torch.load", side_effect=FileNotFoundError("no such file")),
+        pytest.raises(RuntimeError, match=f"Failed to load checkpoint {checkpoint_path.resolve()}") as excinfo,
+    ):
+        load_checkpoint_payload(checkpoint_path, map_location="cpu")
 
     assert isinstance(excinfo.value.__cause__, FileNotFoundError)
+
+
+def test_extract_checkpoint_state_dict_accepts_bare_state_dict_and_rejects_metadata_only_mapping():
+    state_dict = {"encoder.0.weight": torch.zeros(16, 21)}
+
+    assert extract_checkpoint_state_dict(state_dict) is state_dict
+
+    with pytest.raises(ValueError, match="Unsupported checkpoint format"):
+        extract_checkpoint_state_dict({"arch": "mlp", "hidden_size": 16})
+
+
+def test_extract_checkpoint_state_dict_rejects_wrapped_checkpoint_with_invalid_model_payload():
+    with pytest.raises(KeyError, match="Checkpoint is missing a valid 'model' state_dict"):
+        extract_checkpoint_state_dict({"model": {"arch": "mlp"}})
 
 
 def test_ensure_checkpoint_action_grid_compatible_rejects_mismatched_values(tmp_path):

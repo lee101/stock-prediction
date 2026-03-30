@@ -28,11 +28,19 @@ import struct
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import torch
-import torch.nn as nn
+from torch import nn
+
+from pufferlib_market.checkpoint_loader import (
+    extract_checkpoint_state_dict,
+    infer_arch_from_state_dict,
+    infer_hidden_size_from_state_dict,
+    infer_resmlp_blocks_from_state_dict,
+    load_checkpoint_payload,
+    resolve_checkpoint_action_grid_config,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -96,54 +104,42 @@ def _infer_num_actions(state_dict: dict, fallback: int) -> int:
     return int(fallback)
 
 
-def _infer_arch(state_dict: dict) -> str:
-    if "input_proj.weight" in state_dict:
-        return "resmlp"
-    if "encoder.0.weight" in state_dict:
-        return "mlp"
-    for key in state_dict:
-        if key.startswith(("input_proj.", "blocks.")):
-            return "resmlp"
-        if key.startswith("encoder."):
-            return "mlp"
-    raise ValueError("Could not infer arch from state_dict")
-
-
-def _infer_hidden_size(state_dict: dict, arch: str) -> int:
-    if arch == "resmlp":
-        return int(state_dict["input_proj.weight"].shape[0])
-    return int(state_dict["encoder.0.weight"].shape[0])
-
-
-def _infer_resmlp_blocks(state_dict: dict) -> int:
-    idxs = [int(k.split(".")[1]) for k in state_dict if k.startswith("blocks.") and k.split(".")[1].isdigit()]
-    return max(idxs) + 1 if idxs else 3
+@dataclass(frozen=True)
+class LoadedPolicy:
+    policy: nn.Module
+    arch: str
+    hidden_size: int
+    action_allocation_bins: int
+    action_level_bins: int
+    action_max_offset_bps: float
 
 
 def _load_policy_for_eval(
     *,
-    payload: dict | dict[str, torch.Tensor],
+    payload: object,
     obs_size: int,
     num_symbols: int,
     arch: str,
-    hidden_size: Optional[int],
+    hidden_size: int | None,
     device: torch.device,
-) -> tuple[nn.Module, dict[str, torch.Tensor]]:
-    state_dict = payload.get("model") if isinstance(payload, dict) and "model" in payload else payload
-    if not isinstance(state_dict, dict):
-        raise ValueError("Unsupported checkpoint format")
+) -> tuple[LoadedPolicy, dict[str, torch.Tensor]]:
+    state_dict = extract_checkpoint_state_dict(payload)
 
-    alloc_bins = int(payload.get("action_allocation_bins", 1)) if isinstance(payload, dict) else 1
-    level_bins = int(payload.get("action_level_bins", 1)) if isinstance(payload, dict) else 1
+    alloc_bins, level_bins, max_offset_bps = resolve_checkpoint_action_grid_config(
+        payload,
+        action_allocation_bins=1,
+        action_level_bins=1,
+        action_max_offset_bps=0.0,
+    )
     per_sym_actions = max(1, alloc_bins) * max(1, level_bins)
     num_actions = 1 + 2 * num_symbols * per_sym_actions
 
     if arch == "auto":
-        arch = _infer_arch(state_dict)
-    hidden = hidden_size if hidden_size is not None else _infer_hidden_size(state_dict, arch)
+        arch = infer_arch_from_state_dict(state_dict)
+    hidden = hidden_size if hidden_size is not None else infer_hidden_size_from_state_dict(state_dict, arch)
 
     if arch == "resmlp":
-        num_blocks = _infer_resmlp_blocks(state_dict)
+        num_blocks = infer_resmlp_blocks_from_state_dict(state_dict)
         policy = ResidualTradingPolicy(obs_size, num_actions, hidden=hidden, num_blocks=num_blocks).to(device)
     else:
         policy = TradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
@@ -158,7 +154,17 @@ def _load_policy_for_eval(
         )
 
     policy.eval()
-    return policy, state_dict
+    return (
+        LoadedPolicy(
+            policy=policy,
+            arch=str(arch),
+            hidden_size=int(hidden),
+            action_allocation_bins=int(alloc_bins),
+            action_level_bins=int(level_bins),
+            action_max_offset_bps=float(max_offset_bps),
+        ),
+        state_dict,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +180,34 @@ class WindowResult:
     num_trades: int
     win_rate: float
     avg_hold_hours: float
+
+
+def _summarize_window_results(valid_results: list[WindowResult]) -> dict[str, object]:
+    returns = [r.total_return for r in valid_results]
+    sortinos = [r.sortino for r in valid_results]
+    maxdds = [r.max_drawdown for r in valid_results]
+
+    def _pct(vals: list[float], q: int) -> float:
+        return float(np.percentile(vals, q)) if vals else 0.0
+
+    best_window = max(valid_results, key=lambda r: r.total_return)
+    worst_window = min(valid_results, key=lambda r: r.total_return)
+    positive_window_count = sum(r.total_return > 0.0 for r in valid_results)
+
+    return {
+        "median_total_return": _pct(returns, 50),
+        "p10_total_return": _pct(returns, 10),
+        "p90_total_return": _pct(returns, 90),
+        "median_sortino": _pct(sortinos, 50),
+        "p10_sortino": _pct(sortinos, 10),
+        "p90_sortino": _pct(sortinos, 90),
+        "median_max_drawdown": _pct(maxdds, 50),
+        "p90_max_drawdown": _pct(maxdds, 90),
+        "positive_window_count": positive_window_count,
+        "positive_window_ratio": positive_window_count / len(valid_results),
+        "best_window": asdict(best_window),
+        "worst_window": asdict(worst_window),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +229,7 @@ def fast_holdout_eval(
     deterministic: bool = True,
     disable_shorts: bool = False,
     arch: str = "auto",
-    hidden_size: Optional[int] = None,
+    hidden_size: int | None = None,
     device_str: str = "auto",
     use_compile: bool = True,
     early_exit_after: int = 5,
@@ -224,8 +258,8 @@ def fast_holdout_eval(
     obs_size = num_symbols * features_per_sym + 5 + num_symbols
 
     # Load checkpoint
-    payload = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    policy, state_dict = _load_policy_for_eval(
+    payload = load_checkpoint_payload(checkpoint_path, map_location=device)
+    loaded, _state_dict = _load_policy_for_eval(
         payload=payload,
         obs_size=obs_size,
         num_symbols=num_symbols,
@@ -233,9 +267,10 @@ def fast_holdout_eval(
         hidden_size=hidden_size,
         device=device,
     )
+    policy = loaded.policy
 
-    alloc_bins = int(payload.get("action_allocation_bins", 1)) if isinstance(payload, dict) else 1
-    level_bins = int(payload.get("action_level_bins", 1)) if isinstance(payload, dict) else 1
+    alloc_bins = loaded.action_allocation_bins
+    level_bins = loaded.action_level_bins
     per_sym_actions = max(1, alloc_bins) * max(1, level_bins)
 
     # torch.compile for faster inference
@@ -248,7 +283,7 @@ def fast_holdout_eval(
                 compiled_policy(dummy)
                 compiled_policy(dummy)
             if verbose:
-                print(f"  torch.compile: OK (reduce-overhead)")
+                print("  torch.compile: OK (reduce-overhead)")
         except Exception as e:
             if verbose:
                 print(f"  torch.compile: failed ({e}), using eager mode")
@@ -260,7 +295,8 @@ def fast_holdout_eval(
     side_block = num_symbols * per_sym_actions
 
     # Load shared market data
-    import pufferlib_market.binding as binding
+    from pufferlib_market import binding  # noqa: PLC0415
+
     binding.shared(data_path=str(Path(data_path).resolve()))
 
     # Generate window start indices (reproducible with seed)
@@ -269,7 +305,7 @@ def fast_holdout_eval(
     max_offset = num_timesteps - window_len
     if max_offset < 0:
         raise ValueError(f"Data too short: {num_timesteps} timesteps, need {window_len}")
-    starts = rng.choice(np.arange(max_offset + 1), size=n_windows, replace=(max_offset + 1 < n_windows))
+    starts = rng.choice(max_offset + 1, size=n_windows, replace=(max_offset + 1 < n_windows))
 
     # Allocate shared buffers
     obs_bufs = np.zeros((n_windows, obs_size), dtype=np.float32)
@@ -296,84 +332,85 @@ def fast_holdout_eval(
         drawdown_profit_early_exit_progress_fraction=0.5,
     )
 
-    # Set per-env forced offsets using vec_set_offsets
-    binding.vec_set_offsets(vec_handle, starts.astype(np.int32))
+    try:
+        # Set per-env forced offsets using vec_set_offsets
+        binding.vec_set_offsets(vec_handle, starts.astype(np.int32))
 
-    # Reset with forced offsets in place
-    binding.vec_reset(vec_handle, seed)
+        # Reset with forced offsets in place
+        binding.vec_reset(vec_handle, seed)
 
-    # Track per-window results
-    completed = [None] * n_windows  # type: list[Optional[WindowResult]]
-    active = np.ones(n_windows, dtype=bool)
-    n_completed = 0
-    early_exited = False
+        # Track per-window results
+        completed = [None] * n_windows  # type: list[Optional[WindowResult]]
+        active = np.ones(n_windows, dtype=bool)
+        n_completed = 0
+        early_exited = False
 
-    # Static CUDA obs buffer; _obs_cpu is a zero-copy view of the numpy obs_bufs array
-    _obs_cuda = torch.zeros(n_windows, obs_size, dtype=torch.float32, device=device)
-    _obs_cpu = torch.from_numpy(obs_bufs)
+        # Static CUDA obs buffer; _obs_cpu is a zero-copy view of the numpy obs_bufs array
+        _obs_cuda = torch.zeros(n_windows, obs_size, dtype=torch.float32, device=device)
+        _obs_cpu = torch.from_numpy(obs_bufs)
 
-    # Run episodes - all windows step in lockstep
-    for step in range(eval_hours + 10):  # +10 safety margin
-        if not active.any():
-            break
-
-        # Batched GPU inference - THE key speedup
-        _obs_cuda.copy_(_obs_cpu, non_blocking=True)
-        with torch.inference_mode():
-            logits, _ = compiled_policy(_obs_cuda)
-
-        # Mask shorts if needed
-        if disable_shorts:
-            logits[:, 1 + side_block:] = torch.finfo(logits.dtype).min
-
-        # Deterministic or sampled actions
-        if deterministic:
-            actions = logits.argmax(dim=-1)
-        else:
-            actions = torch.distributions.Categorical(logits=logits).sample()
-
-        act_bufs[:] = actions.cpu().numpy().astype(np.int32)
-
-        # Step all envs
-        binding.vec_step(vec_handle)
-
-        # Check for completed episodes via terminal flag
-        for i in range(n_windows):
-            if not active[i]:
-                continue
-            if term_bufs[i]:
-                # Read per-env log data before vec_log zeros it
-                env_handle = binding.vec_env_at(vec_handle, i)
-                env_data = binding.env_get(env_handle)
-                completed[i] = WindowResult(
-                    start_idx=int(starts[i]),
-                    total_return=float(env_data.get("total_return", 0.0)),
-                    sortino=float(env_data.get("sortino", 0.0)),
-                    max_drawdown=float(env_data.get("max_drawdown", 0.0)),
-                    num_trades=int(env_data.get("num_trades", 0)),
-                    win_rate=float(env_data.get("win_rate", 0.0)),
-                    avg_hold_hours=float(env_data.get("avg_hold_hours", 0.0)),
-                )
-                active[i] = False
-                n_completed += 1
-
-                if verbose:
-                    r = completed[i]
-                    print(f"  Window {i}: ret={r.total_return:+.4f} sortino={r.sortino:.2f} "
-                          f"dd={r.max_drawdown:.4f} trades={r.num_trades}")
-
-        # Aggressive early-exit: skip clearly bad checkpoints
-        if early_exit_after > 0 and n_completed >= early_exit_after and not early_exited:
-            done_returns = [c.total_return for c in completed if c is not None]
-            median_ret = float(np.median(done_returns))
-            if median_ret < early_exit_threshold:
-                if verbose:
-                    print(f"  EARLY EXIT: median return {median_ret:+.4f} < {early_exit_threshold} "
-                          f"after {n_completed}/{n_windows} windows")
-                early_exited = True
+        # Run episodes - all windows step in lockstep
+        for _step in range(eval_hours + 10):  # +10 safety margin
+            if not active.any():
                 break
 
-    binding.vec_close(vec_handle)
+            # Batched GPU inference - THE key speedup
+            _obs_cuda.copy_(_obs_cpu, non_blocking=True)
+            with torch.inference_mode():
+                logits, _ = compiled_policy(_obs_cuda)
+
+            # Mask shorts if needed
+            if disable_shorts:
+                logits[:, 1 + side_block:] = torch.finfo(logits.dtype).min
+
+            # Deterministic or sampled actions
+            if deterministic:
+                actions = logits.argmax(dim=-1)
+            else:
+                actions = torch.distributions.Categorical(logits=logits).sample()
+
+            act_bufs[:] = actions.cpu().numpy().astype(np.int32)
+
+            # Step all envs
+            binding.vec_step(vec_handle)
+
+            # Check for completed episodes via terminal flag
+            for i in range(n_windows):
+                if not active[i]:
+                    continue
+                if term_bufs[i]:
+                    # Read per-env log data before vec_log zeros it
+                    env_handle = binding.vec_env_at(vec_handle, i)
+                    env_data = binding.env_get(env_handle)
+                    completed[i] = WindowResult(
+                        start_idx=int(starts[i]),
+                        total_return=float(env_data.get("total_return", 0.0)),
+                        sortino=float(env_data.get("sortino", 0.0)),
+                        max_drawdown=float(env_data.get("max_drawdown", 0.0)),
+                        num_trades=int(env_data.get("num_trades", 0)),
+                        win_rate=float(env_data.get("win_rate", 0.0)),
+                        avg_hold_hours=float(env_data.get("avg_hold_hours", 0.0)),
+                    )
+                    active[i] = False
+                    n_completed += 1
+
+                    if verbose:
+                        r = completed[i]
+                        print(f"  Window {i}: ret={r.total_return:+.4f} sortino={r.sortino:.2f} "
+                              f"dd={r.max_drawdown:.4f} trades={r.num_trades}")
+
+            # Aggressive early-exit: skip clearly bad checkpoints
+            if early_exit_after > 0 and n_completed >= early_exit_after and not early_exited:
+                done_returns = [c.total_return for c in completed if c is not None]
+                median_ret = float(np.median(done_returns))
+                if median_ret < early_exit_threshold:
+                    if verbose:
+                        print(f"  EARLY EXIT: median return {median_ret:+.4f} < {early_exit_threshold} "
+                              f"after {n_completed}/{n_windows} windows")
+                    early_exited = True
+                    break
+    finally:
+        binding.vec_close(vec_handle)
 
     elapsed = time.monotonic() - t0
 
@@ -382,27 +419,13 @@ def fast_holdout_eval(
     if not valid_results:
         return {"error": "no windows completed", "elapsed_s": elapsed}
 
-    returns = [r.total_return for r in valid_results]
-    sortinos = [r.sortino for r in valid_results]
-    maxdds = [r.max_drawdown for r in valid_results]
-
-    def _pct(vals, q):
-        return float(np.percentile(vals, q)) if vals else 0.0
-
-    summary = {
-        "median_total_return": _pct(returns, 50),
-        "p10_total_return": _pct(returns, 10),
-        "p90_total_return": _pct(returns, 90),
-        "median_sortino": _pct(sortinos, 50),
-        "p10_sortino": _pct(sortinos, 10),
-        "p90_sortino": _pct(sortinos, 90),
-        "median_max_drawdown": _pct(maxdds, 50),
-        "p90_max_drawdown": _pct(maxdds, 90),
-    }
+    summary = _summarize_window_results(valid_results)
 
     out = {
         "checkpoint": str(checkpoint_path),
         "data_path": str(data_path),
+        "arch": loaded.arch,
+        "hidden_size": loaded.hidden_size,
         "eval_hours": eval_hours,
         "n_windows": n_windows,
         "n_completed": len(valid_results),
@@ -410,6 +433,9 @@ def fast_holdout_eval(
         "fee_rate": fee_rate,
         "fill_slippage_bps": fill_slippage_bps,
         "max_leverage": max_leverage,
+        "action_allocation_bins": loaded.action_allocation_bins,
+        "action_level_bins": loaded.action_level_bins,
+        "action_max_offset_bps": loaded.action_max_offset_bps,
         "periods_per_year": periods_per_year,
         "elapsed_s": elapsed,
         "early_exit": early_exited,
@@ -440,7 +466,7 @@ def multi_period_eval(
     short_borrow_apr: float = 0.0,
     deterministic: bool = True,
     arch: str = "auto",
-    hidden_size: Optional[int] = None,
+    hidden_size: int | None = None,
     device_str: str = "auto",
     seed: int = 1337,
 ) -> dict:
@@ -499,6 +525,31 @@ def multi_period_eval(
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+def _build_cli_summary_payload(result: dict[str, object]) -> dict[str, object]:
+    summary = result.get("summary")
+    if not isinstance(summary, dict):
+        return result
+
+    summary_context = {
+        key: result[key]
+        for key in (
+            "checkpoint",
+            "data_path",
+            "arch",
+            "hidden_size",
+            "action_allocation_bins",
+            "action_level_bins",
+            "action_max_offset_bps",
+            "eval_hours",
+            "n_windows",
+            "n_completed",
+            "early_exit",
+        )
+        if key in result
+    }
+    return {**summary_context, **summary}
+
 
 def main():
     parser = argparse.ArgumentParser(description="Fast vectorized holdout evaluation (C env + batched GPU)")
@@ -582,7 +633,7 @@ def main():
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(result, indent=2))
 
-    print(json.dumps(result.get("summary", result), indent=2))
+    print(json.dumps(_build_cli_summary_payload(result), indent=2))
     if "elapsed_s" in result:
         print(f"\nElapsed: {result['elapsed_s']:.2f}s ({result.get('n_completed', 0)}/{result.get('n_windows', 0)} windows)")
 
