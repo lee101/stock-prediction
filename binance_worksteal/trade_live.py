@@ -48,6 +48,7 @@ from binance_worksteal.reporting import (
     build_preview_run_summary,
     build_symbol_listing_summary,
     print_run_preview,
+    render_command_preview,
     run_with_optional_summary,
 )
 from binance_worksteal.strategy import (
@@ -788,6 +789,30 @@ def _format_preview_override_value(value: object) -> str:
         return json.dumps(value, sort_keys=True)
     return str(value)
 
+
+
+def _build_preview_schedule_context(args: argparse.Namespace) -> dict[str, object]:
+    if args.daemon:
+        if args.run_on_start:
+            if args.startup_preview_only:
+                startup_action = "startup preview cycle"
+            elif args.dry_run:
+                startup_action = "startup dry-run cycle"
+            else:
+                startup_action = "startup live cycle"
+        else:
+            startup_action = "no startup cycle"
+        steady_state_schedule = (
+            f"daily cycle at 00:05 UTC; entry scan every {int(args.entry_poll_hours)}h; "
+            f"health every {int(args.health_report_hours)}h"
+        )
+    else:
+        startup_action = "single immediate cycle"
+        steady_state_schedule = "one-shot run"
+    return {
+        "startup_action": startup_action,
+        "steady_state_schedule": steady_state_schedule,
+    }
 
 
 def _build_config_override_context(
@@ -1748,7 +1773,10 @@ def synchronize_positions_from_exchange(
         if quantity <= 0.0:
             continue
 
-        close_price = _safe_float(current_bars.get(symbol, {}).get("close") if symbol in current_bars else 0.0, default=0.0)
+        close_price = _safe_finite_float(
+            current_bars.get(symbol, {}).get("close") if symbol in current_bars else 0.0,
+            default=0.0,
+        )
         est_value = quantity * close_price
         if est_value < MIN_TRACKED_POSITION_VALUE_USD and symbol not in positions and symbol not in sell_orders_by_symbol:
             continue
@@ -1787,10 +1815,12 @@ def synchronize_positions_from_exchange(
 
         position["quantity"] = quantity
         if symbol in current_bars:
-            position["peak_price"] = max(
-                float(position.get("peak_price", position.get("entry_price", 0.0)) or 0.0),
-                _safe_float(current_bars[symbol].get("high"), default=0.0),
+            current_peak = _safe_finite_float(
+                position.get("peak_price", position.get("entry_price", 0.0)),
+                default=_safe_finite_float(position.get("entry_price", 0.0), default=0.0),
             )
+            current_high = _safe_finite_float(current_bars[symbol].get("high"), default=0.0)
+            position["peak_price"] = max(current_peak, current_high)
 
         open_sell = sell_orders_by_symbol.get(symbol)
         if open_sell is not None:
@@ -2955,10 +2985,14 @@ def main(argv: list[str] | None = None):
             "neural_model": args.neural_model,
             "neural_symbols": preview_neural_symbols,
         }
+        preview_schedule_context = _build_preview_schedule_context(args)
         preview_file_context = {
             "state_file": str(STATE_FILE),
             "trade_log": str(LOG_FILE),
             "events_log": str(EVENTS_FILE),
+        }
+        preview_command_context = {
+            "command": render_command_preview("binance_worksteal.trade_live", raw_argv),
         }
         preview_sections = [
             (
@@ -2975,6 +3009,7 @@ def main(argv: list[str] | None = None):
             ),
             ("Mode", tuple(preview_mode_context.items())),
             ("Runtime", tuple(preview_runtime_context.items())),
+            ("Launch behavior", tuple(preview_schedule_context.items())),
             (
                 "Files",
                 tuple(
@@ -2985,6 +3020,7 @@ def main(argv: list[str] | None = None):
                     }.items()
                 ),
             ),
+            ("Command", tuple(preview_command_context.items())),
             (
                 "Config",
                 (
@@ -3032,6 +3068,7 @@ def main(argv: list[str] | None = None):
                     **symbol_summary_context,
                     **preview_mode_context,
                     **preview_runtime_context,
+                    **preview_schedule_context,
                     **preview_override_context,
                     **preview_file_context,
                 },
