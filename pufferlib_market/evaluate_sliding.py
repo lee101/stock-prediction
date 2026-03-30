@@ -15,8 +15,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 
 import numpy as np
 import torch
@@ -392,8 +391,13 @@ def main():
         policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
     policy.load_state_dict(ckpt["model"], strict=False)
     policy.eval()
+    best_return = ckpt.get("best_return")
+    if isinstance(best_return, (int, float, np.floating)):
+        best_return_label = f"{float(best_return):.4f}"
+    else:
+        best_return_label = "?"
     print(f"Loaded checkpoint: update={ckpt.get('update', '?')}, "
-          f"train_best_return={ckpt.get('best_return', '?'):.4f}")
+          f"train_best_return={best_return_label}")
 
     policy_fn = _build_policy_fn(
         policy, device,
@@ -423,7 +427,7 @@ def main():
     )
     print_sliding_results(results, stats)
 
-    if args.calmar:
+    if getattr(args, "calmar", False):
         print(f"\nCalmar ratio (annualized_return / worst_max_drawdown): {stats['calmar']:.4f}")
 
 
