@@ -7,14 +7,14 @@
 
 ---
 
-## Current Live Snapshot (2026-03-28 09:29 UTC)
-- **LIVE account**: equity **$38,954.44**, cash **$38,954.44**, buying power **$77,908.88**, last_equity **$39,090.40**
-- **LIVE positions**: no actionable open positions. Only dust remains in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD`.
+## Current Live Snapshot (2026-03-29 05:22 UTC)
+- **LIVE account**: equity **$38,719.38**, cash **$38,719.38**, buying power **$77,438.76**, last_equity **$39,090.40**
+- **LIVE positions**: no actionable open positions. Only dust remains in `AVAXUSD`, `BTCUSD`, `LTCUSD`, `SOLUSD`.
 - **LIVE open orders**: none
-- **ETH incident status**: the stale live `ETHUSD` position is **closed**. Alpaca order history shows:
-  - old GTC exit order canceled at **2026-03-27 20:35:55 UTC**
-  - market sell for **14.537579265 ETH** filled at **2026-03-27 20:35:56 UTC**
-- **Legacy hourly stock bot**: supervisor `unified-stock-trader` is actually **ACTIVE** again; current PID is `153050`, and its runtime command still includes overlapping stock symbols that conflict with `daily-rl-trader.service`
+- **Crypto status**: no stranded `ETHUSD` position remains; latest orchestrator journal at **2026-03-29 05:01 UTC** shows all crypto symbols on `hold`.
+- **Daily stock live path**: exact prod dry-run `trade_daily_stock_prod.py --once --dry-run --live` completed successfully at **2026-03-29 04:50 UTC** and produced `long_GOOG` at **14.4%** confidence.
+- **Daily stock restart status**: the long-only action-decode fix is on disk, but `daily-rl-trader.service` has **not** been restarted since the fix; `systemctl restart daily-rl-trader.service` still requires interactive authentication from this shell.
+- **Legacy hourly stock bot**: supervisor `unified-stock-trader` is still **ACTIVE** as PID `153050`, and its runtime command still includes overlapping stock symbols that conflict with `daily-rl-trader.service`
 
 ---
 
@@ -44,9 +44,10 @@
 - **Live stock ownership (documented in `service_config.json`)**:
   - `AAPL, MSFT, NVDA, GOOG, META, TSLA, SPY, QQQ, PLTR, JPM, V, AMZN`
 - **Current runtime state**:
-  - **REVERTED to 6-model ensemble** at **2026-03-27 23:00 UTC** — 7-model and 8-model both HURT (see correction below)
   - daemon is sleeping until next market-open run (Monday 2026-03-30 ~13:35 UTC)
-  - service verified active at 2026-03-27 23:00 UTC: sleeping 3754 min, PID 314614
+  - current process has been active since **2026-03-29 02:14:48 UTC**
+  - on-disk live path now verifies cleanly on the full 17-model `prod_ensemble` stack; exact dry-run passed at **2026-03-29 04:50 UTC**
+  - current in-memory daemon still needs a restart before Monday open to pick up the 2026-03-29 long-only decode fix
 
 ### 3. `alpaca-cancel-multi-orders.service` — LIVE, ACTIVE
 - **Manager**: systemd
@@ -79,26 +80,19 @@
 ## Current Production Models
 
 ### Daily stock RL live model
-- **Primary checkpoint**: `pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_10/best.pt`
-- **Default ensemble members** (6-model, VERIFIED OPTIMAL, reverted 2026-03-27 23:00 UTC):
-  - `stocks12_seed_sweep/tp05_s15/best.pt`
-  - `stocks12_seed_sweep/tp05_s36/best.pt`
-  - `stocks12_v2_sweep/stock_gamma_995/best.pt`
-  - `stocks12_v2_sweep/muon_wd_005/best.pt`
-  - `stocks12_v2_sweep/h1024_a40/best.pt`
-- **Canonical exhaustive marketsim (111 rolling 90-day windows, 5 bps fill buffer)**:
-  - median **+58.0%**
-  - p10 **+45.4%**
-  - worst **+36.6%**
-  - negative windows **0 / 111**
-- **CORRECTION (2026-03-27 23:00 UTC)**: Previous claim of 7-model/8-model improvement was WRONG.
-  - 7-model +resmlp_a40: med=57.2%, p10=42.1% (−3.3% p10!) — WORSE than 6-model
-  - 8-model +s28_scan: med=55.9%, p10=41.3% (−4.1% p10!) — WORSE still
-  - Original numbers (med=60.3%, p10=47.4%) were produced with incorrect eval params and CANNOT be reproduced
-  - Comprehensive re-verification confirms 6-model is the global optimum
-- **Do NOT add**: resmlp_a40 (hurts p10 -3.3%), s28_scan (hurts p10 -4.1%), tp03, stock_ent_05 (52/111 neg standalone)
-- **Do NOT add**: s310 (2026-03-28): 6/111 neg standalone but hurts 7-model ensemble (Δmed=-1.3%, Δp10=-4.5%)
-- **Exhaustive 7-model bar**: only add new member if 7-model exhaustive p10 ≥ +45.4% at fill_bps=5.0
+- **Primary checkpoint**: `pufferlib_market/prod_ensemble/tp10.pt`
+- **Default ensemble members**: `tp10 + s15 + s36 + gamma_995 + muon_wd_005 + h1024_a40 + s1731 + gamma995_s2006 + s1401 + s1726 + s1523 + s2617 + s2033 + s2495 + s1835 + s2827 + s2722`
+- **Documented prod selection note in `trade_daily_stock_prod.py` (current on-disk truth)**:
+  - 17-model screen-phase ensemble
+  - **0 / 111** negative windows
+  - median **+55.6%**
+  - p10 **+41.2%**
+  - worst **+22.5%**
+- **Live-path fix applied 2026-03-29**:
+  - stock checkpoints are still 25-action short-capable heads
+  - long-only inference now masks the short action block before argmax / softmax
+  - the exact prod dry-run no longer crashes on out-of-range action decode
+- **Operational note**: the fix is verified on disk and in dry-run, but not yet loaded by the sleeping `daily-rl-trader.service` process because restart requires interactive auth
 
 ### Unified orchestrator crypto model
 - **Active RL checkpoint**: `pufferlib_market/checkpoints/autoresearch/slip_5bps/best.pt`
@@ -146,29 +140,31 @@
 ---
 
 ## Verification Status
-- **Symbol ownership regression tests**: passed
-- **Daily stock prod tests**: passed
-- **Live/simulator/regression suite**: passed
-  - combined result on 2026-03-27 after fixes: **99 passed**
-- **Key suites exercised**:
-  - `tests/test_symbol_conflict.py`
+- **Daily stock live-path dry-run**: passed
+  - `trade_daily_stock_prod.py --once --dry-run --live` completed successfully at **2026-03-29 04:50 UTC**
+- **Inference + daily stock targeted tests**: passed
+  - `tests/test_pufferlib_market_inference.py`
   - `tests/test_trade_daily_stock_prod.py`
-  - `tests/test_rl_gemini_bridge.py`
-  - `tests/test_cancel_multi_orders.py`
-  - `tests/test_trade_unified_hourly.py`
-  - `tests/test_sim_fidelity.py`
-  - `tests/test_simulator_math.py`
-  - `tests/test_evaluate_multiperiod.py`
+  - result: **20 passed**
+- **Broader training / dispatch / WandB regression slice**: passed
+  - `tests/test_pufferlib_market_inference.py`
+  - `tests/test_trade_daily_stock_prod.py`
+  - `tests/test_pufferlib_market_train_logging.py`
+  - `tests/test_dispatch_rl.py`
+  - `tests/test_dispatch_multiseed.py`
+  - `tests/test_pufferlib_market_autoresearch_rl.py`
+  - `tests/test_autoresearch_stock.py`
+  - result: **144 passed**
 
 ---
 
 ## Known Risks
-- **First live trade is Monday 2026-03-30 ~13:35 UTC** — watch the journal on market open for correct 6-model ensemble load and order placement.
+- **First live stock trade is Monday 2026-03-30 ~13:35 UTC** — restart `daily-rl-trader.service` before then so the daemon loads the 2026-03-29 stock decode fix.
 - The orchestrator crypto path is loading correctly, but live execution quality is still constrained by Gemini exhaustion / hold-heavy responses.
 - The local fix for Gemini exhaustion -> RL-only fallback has passed targeted tests, but it is not live until the orchestrator is restarted.
 - The legacy `hourlyv5` paper services (UNIUSD/LINKUSD) are still running — intentionally left as paper-only; not part of live stack.
 - The live `unified-stock-trader` supervisor bot is running on an old overlapping symbol list. The on-disk supervisor config is corrected, but a controlled reload/restart is still required before Monday open.
-- Ongoing seed sweeps (s1-14, s600+, tp03 s300+) looking for new phase-transition models. 350+ seeds tested, ~1% hit rate. Only s15/s36 found so far. 6-model is confirmed optimal — do NOT add further members unless they achieve ≥p10=45.4% in 7-model exhaustive eval.
+- Current quick probes still show seed sensitivity. The latest 3-seed screen on 2026-03-29 found no new config with `0%` negative-seed rate; best partial candidates were `stock_obs_norm_tp05` and `stock_wd_05`, both still at **33%** negative-seed rate.
 
 ---
 

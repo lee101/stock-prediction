@@ -23,6 +23,7 @@ import atexit
 import contextlib
 import math
 import os
+import signal
 import sys
 import time
 from dataclasses import dataclass
@@ -48,6 +49,7 @@ except ImportError:
 from pufferlib_market.metrics import annualize_total_return
 from pufferlib_market.advantage_utils import normalize_advantages
 from src.checkpoint_manager import TopKCheckpointManager, prune_periodic_checkpoints
+from src.torch_backend import configure_tf32_backends
 from pufferlib_market.kernels.fused_mlp import fused_mlp_relu, HAS_TRITON
 from pufferlib_market.kernels.fused_obs_encode import fused_obs_norm_linear_relu
 from pufferlib_market.gae_cuda import compute_gae_gpu, HAS_TRITON as HAS_TRITON_GAE
@@ -267,6 +269,10 @@ class ResumeState:
     update: int = 0
     global_step: int = 0
     best_return: float = -float("inf")
+
+
+class _TrainingStopRequested(Exception):
+    """Raised internally when the trainer should stop at a safe boundary."""
 
 
 def _checkpoint_payload(
@@ -1019,8 +1025,7 @@ def train(args):
     # Enable TF32 for faster matmuls on Ampere+ GPUs unless explicitly disabled.
     if device.type == "cuda":
         use_tf32 = not getattr(args, "no_tf32", False)
-        torch.backends.cuda.matmul.allow_tf32 = use_tf32
-        torch.backends.cudnn.allow_tf32 = use_tf32
+        configure_tf32_backends(torch, enabled=use_tf32)
         torch.backends.cudnn.benchmark = False  # required for reproducibility
         print(f"  TF32 {'enabled' if use_tf32 else 'disabled'}")
 
@@ -1576,7 +1581,36 @@ def train(args):
     print(f"  PPO epochs={args.ppo_epochs}, minibatch_size={args.minibatch_size}")
     print()
 
+    _stop_requested = False
+    _stop_reason: str | None = None
+    _last_update = start_update
+
+    def _request_stop(signum, _frame) -> None:
+        nonlocal _stop_requested, _stop_reason
+        _stop_requested = True
+        if _stop_reason is None:
+            try:
+                _stop_reason = signal.Signals(signum).name
+            except Exception:
+                _stop_reason = f"signal_{signum}"
+            print(
+                f"\nReceived {_stop_reason}; stopping after the current update and saving final checkpoint.",
+                flush=True,
+            )
+
+    for _sig in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGINT", None)):
+        if _sig is None:
+            continue
+        try:
+            signal.signal(_sig, _request_stop)
+        except Exception:
+            pass
+
     for update in range(start_update + 1, start_update + num_updates + 1):
+        if _stop_requested:
+            print(f"  Stop requested via {_stop_reason or 'signal'} before update {update}; ending training loop")
+            break
+        _last_update = update
         local_update = update - start_update
         # ── Learning rate schedule ──
         if args.lr_schedule == "cosine":
@@ -2074,6 +2108,10 @@ def train(args):
                 else:
                     _es_val_neg_consec = 0
 
+        if _stop_requested:
+            print(f"  Stop requested via {_stop_reason or 'signal'} after update {update}; ending training loop")
+            break
+
         # Entropy collapse detection + optimizer momentum reset
         if avg_ent < _ent_collapse_threshold and _num_resets < _max_resets:
             _ent_collapse_count += 1
@@ -2187,7 +2225,7 @@ def train(args):
         _checkpoint_payload(
             policy,
             optimizer,
-            update=start_update + num_updates,
+            update=_last_update,
             global_step=global_step,
             best_return=best_return,
             disable_shorts=bool(args.disable_shorts),
@@ -2213,13 +2251,17 @@ def train(args):
                 **latest_val_summary,
                 "global_step": global_step,
                 "train/best_return": float(best_return),
+                "train/terminated_early": 1.0 if _stop_requested else 0.0,
             },
         )
         try:
             wandb_run.finish()
         except Exception:
             pass
-    print(f"\nTraining complete. Best return: {best_return:.4f}")
+    if _stop_requested:
+        print(f"\nTraining stopped early due to {_stop_reason or 'signal'}. Best return: {best_return:.4f}")
+    else:
+        print(f"\nTraining complete. Best return: {best_return:.4f}")
     print(f"Checkpoints saved to {args.checkpoint_dir}")
 
 

@@ -11,6 +11,7 @@ from unified_orchestrator.orchestrator import (
     _place_crypto_force_exit_sell,
     _place_crypto_tp_sell,
 )
+import unified_orchestrator.orchestrator as orchestrator
 from unified_orchestrator.state import Position, UnifiedPortfolioSnapshot
 
 
@@ -390,3 +391,115 @@ def test_force_exit_sell_cancels_all_orders_and_uses_ioc_limit():
     assert submitted.time_in_force == "ioc"
     assert submitted.limit_price == pytest.approx(1998.0)
     assert orders[0]["action"] == "force_exit"
+
+
+def test_tp_sell_is_raised_to_fee_aware_profit_floor():
+    client = _FakeAlpacaClient(
+        cash=500.0,
+        buying_power=1_000.0,
+        positions=[],
+        open_orders=[],
+    )
+    pos = SimpleNamespace(qty=4.81267536, avg_price=2004.40, current_price=2002.60)
+    orders: list[dict] = []
+
+    _place_crypto_tp_sell(client, "ETHUSD", pos, 2005.0, dry_run=False, orders=orders)
+
+    assert len(client.submitted_orders) == 1
+    submitted = client.submitted_orders[0]
+    expected_floor = round(2004.40 * (1.0 + (2 * 16.0 + 5.0) / 10_000.0), 2)
+    assert submitted.limit_price == pytest.approx(expected_floor)
+    assert orders[0]["price"] == pytest.approx(expected_floor)
+
+
+def test_execute_crypto_signals_disarms_trailing_stop_before_profit(monkeypatch):
+    snapshot = UnifiedPortfolioSnapshot(
+        alpaca_cash=1_000.0,
+        alpaca_buying_power=2_000.0,
+        alpaca_positions={
+            "ETHUSD": Position(
+                symbol="ETHUSD",
+                qty=4.81267536,
+                avg_price=2004.40,
+                current_price=2002.60,
+                unrealized_pnl=-8.66,
+                broker="alpaca",
+            )
+        },
+    )
+    client = _FakeAlpacaClient(
+        cash=1_000.0,
+        buying_power=2_000.0,
+        positions=[
+            SimpleNamespace(
+                symbol="ETH/USD",
+                qty=4.81267536,
+                avg_entry_price=2004.40,
+                current_price=2002.60,
+                unrealized_pl=-8.66,
+            )
+        ],
+        open_orders=[],
+    )
+
+    monkeypatch.setattr(orchestrator, "load_entry_times", lambda: {})
+    monkeypatch.setattr(orchestrator, "update_entry_times", lambda entry_times, crypto_pos: entry_times)
+    monkeypatch.setattr(orchestrator, "get_force_exit_symbols", lambda entry_times, max_hold_hours: [])
+    monkeypatch.setattr(orchestrator, "save_entry_times", lambda entry_times: None)
+    monkeypatch.setattr(orchestrator, "load_peak_prices", lambda: {"ETHUSD": 2006.0})
+    monkeypatch.setattr(orchestrator, "update_peak_prices", lambda peaks, crypto_pos: peaks)
+    monkeypatch.setattr(orchestrator, "get_trailing_stop_symbols", lambda peaks, crypto_pos, trail_pct: ["ETHUSD"])
+    monkeypatch.setattr(orchestrator, "save_peak_prices", lambda peaks: None)
+
+    orders = execute_crypto_signals({}, snapshot, dry_run=False, alpaca_client=client)
+
+    assert orders == []
+    assert client.submitted_orders == []
+
+
+def test_execute_crypto_signals_trailing_stop_clamps_exit_to_profit_floor(monkeypatch):
+    snapshot = UnifiedPortfolioSnapshot(
+        alpaca_cash=1_000.0,
+        alpaca_buying_power=2_000.0,
+        alpaca_positions={
+            "ETHUSD": Position(
+                symbol="ETHUSD",
+                qty=4.81267536,
+                avg_price=2004.40,
+                current_price=2002.60,
+                unrealized_pnl=-8.66,
+                broker="alpaca",
+            )
+        },
+    )
+    client = _FakeAlpacaClient(
+        cash=1_000.0,
+        buying_power=2_000.0,
+        positions=[
+            SimpleNamespace(
+                symbol="ETH/USD",
+                qty=4.81267536,
+                avg_entry_price=2004.40,
+                current_price=2002.60,
+                unrealized_pl=-8.66,
+            )
+        ],
+        open_orders=[],
+    )
+
+    monkeypatch.setattr(orchestrator, "load_entry_times", lambda: {})
+    monkeypatch.setattr(orchestrator, "update_entry_times", lambda entry_times, crypto_pos: entry_times)
+    monkeypatch.setattr(orchestrator, "get_force_exit_symbols", lambda entry_times, max_hold_hours: [])
+    monkeypatch.setattr(orchestrator, "save_entry_times", lambda entry_times: None)
+    monkeypatch.setattr(orchestrator, "load_peak_prices", lambda: {"ETHUSD": 2020.0})
+    monkeypatch.setattr(orchestrator, "update_peak_prices", lambda peaks, crypto_pos: peaks)
+    monkeypatch.setattr(orchestrator, "get_trailing_stop_symbols", lambda peaks, crypto_pos, trail_pct: ["ETHUSD"])
+    monkeypatch.setattr(orchestrator, "save_peak_prices", lambda peaks: None)
+
+    orders = execute_crypto_signals({}, snapshot, dry_run=False, alpaca_client=client)
+
+    assert len(client.submitted_orders) == 1
+    submitted = client.submitted_orders[0]
+    expected_floor = round(2004.40 * (1.0 + (2 * 16.0 + 5.0) / 10_000.0), 2)
+    assert submitted.limit_price == pytest.approx(expected_floor)
+    assert orders[0]["action"] == "trailing_stop"

@@ -110,6 +110,18 @@ def test_stock_h1024_hidden_size():
     assert config.hidden_size == 1024
 
 
+def test_stock_probe_cpu_fast_uses_small_probe_shape():
+    cfg = next(c for c in STOCK_EXPERIMENTS if c["description"] == "stock_probe_cpu_fast")
+    config = build_config(cfg)
+    assert config.hidden_size == 256
+    assert config.trade_penalty == pytest.approx(0.05)
+    assert config.num_envs == 16
+    assert config.rollout_len == 64
+    assert config.minibatch_size == 256
+    assert config.ppo_epochs == 2
+    assert config.eval_num_episodes == 20
+
+
 def test_stock_slippage_configs():
     expected = {"stock_slip_5bps": 5.0, "stock_slip_10bps": 10.0, "stock_slip_15bps": 15.0}
     for desc, bps in expected.items():
@@ -118,6 +130,20 @@ def test_stock_slippage_configs():
         assert config.fill_slippage_bps == bps, (
             f"{desc}: expected {bps} bps, got {config.fill_slippage_bps}"
         )
+
+
+def test_stock_obs_norm_trade_pen_weight_decay_hybrids():
+    cfg005 = next(c for c in STOCK_EXPERIMENTS if c["description"] == "stock_obs_norm_tp05_wd005")
+    config005 = build_config(cfg005)
+    assert config005.obs_norm is True
+    assert config005.trade_penalty == pytest.approx(0.05)
+    assert config005.weight_decay == pytest.approx(0.005)
+
+    cfg01 = next(c for c in STOCK_EXPERIMENTS if c["description"] == "stock_obs_norm_tp05_wd01")
+    config01 = build_config(cfg01)
+    assert config01.obs_norm is True
+    assert config01.trade_penalty == pytest.approx(0.05)
+    assert config01.weight_decay == pytest.approx(0.01)
 
 
 def test_stock_gamma_configs():

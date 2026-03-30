@@ -5,6 +5,8 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 
+from unified_hourly_experiment.jax_classic_defaults import DEFAULT_JAX_CLASSIC_PRELOAD
+
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO / "scripts" / "run_hourly_multiseed_scout.py"
@@ -110,3 +112,9 @@ def test_summarize_config_runs_adds_baseline_comparison() -> None:
     assert summary["market_robust_score"] > 0
     assert summary["market_avg_sortino"]["mean"] == 21.0
     assert summary["baseline_comparison"]["sortino"]["significant"] is True
+
+
+def test_parse_args_uses_shared_default_preload() -> None:
+    mod = _load_module()
+    args = mod.parse_args([])
+    assert args.preload == DEFAULT_JAX_CLASSIC_PRELOAD

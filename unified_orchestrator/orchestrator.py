@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import math
 import os
@@ -18,6 +19,7 @@ import os as _os
 import struct
 import sys
 import time
+import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -48,13 +50,11 @@ from unified_orchestrator.position_tracker import (
 )
 from unified_orchestrator.backout import select_backout_candidates, execute_backout
 from unified_orchestrator.conditional_orders import (
-    execute_plan,
     read_pending_fills,
-    TradingPlan,
-    TradingStep,
 )
 
 from src.split_monitor import check_recent_splits, log_split_event
+from src.alpaca_account_lock import acquire_alpaca_account_lock, require_explicit_live_trading_enable
 
 from llm_hourly_trader.providers import call_llm
 from llm_hourly_trader.gemini_wrapper import TradePlan
@@ -65,6 +65,8 @@ from unified_orchestrator.rl_gemini_bridge import (
     _rl_only_plan,
     build_portfolio_observation,
 )
+from unified_orchestrator.jsonl_utils import append_jsonl_row, iter_jsonl_lines_reverse
+from unified_orchestrator.state_paths import cycle_event_log_path, resolve_state_dir, stock_event_log_path
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +143,9 @@ MIN_CONFIDENCE_CRYPTO = 0.25
 # Trailing stop: exit if price drops this % from peak since entry.
 # Exp06 result: 0.3% trail → Sortino=76.5, MaxDD=4.7% (vs 30.9/28.3% baseline).
 TRAILING_STOP_PCT = 0.3
+CRYPTO_MAKER_FEE_BPS = 10.0
+CRYPTO_SAFETY_FEE_BPS = 16.0
+CRYPTO_EXIT_BUFFER_BPS = 5.0
 
 # Leverage settings for stocks
 MAX_INTRADAY_LEVERAGE = 4.0   # Alpaca PDT 4x intraday
@@ -178,11 +183,15 @@ CRYPTO_FORECAST_CACHE_CANDIDATES = [
     REPO / "binanceneural/forecast_cache",
     REPO / "alpacanewccrosslearning/forecast_cache",
 ]
-_STATE_DIR = Path(os.environ.get("STATE_DIR", "strategy_state")).expanduser()
-if not _STATE_DIR.is_absolute():
-    _STATE_DIR = REPO / _STATE_DIR
-STOCK_EVENT_LOG_PATH = _STATE_DIR / "stock_event_log.jsonl"
+_STATE_DIR = resolve_state_dir()
+STOCK_EVENT_LOG_PATH = stock_event_log_path(_STATE_DIR)
+CYCLE_EVENT_LOG_PATH = cycle_event_log_path(_STATE_DIR)
 STOCK_EDGE_SIGNAL_MAX_AGE = timedelta(hours=18)
+DEFAULT_BAR_FETCH_WORKERS = 4
+CRYPTO_TREND_SMA_WINDOW_BARS = 24
+CRYPTO_TREND_SOFT_REDUCE_DISCOUNT_PCT = 0.02
+CRYPTO_TREND_HARD_BLOCK_DISCOUNT_PCT = 0.05
+CRYPTO_TREND_SOFT_REDUCTION_FACTOR = 0.5
 
 
 def get_rl_bridge(checkpoint_path: str = "", hidden_size: int = 1024) -> RLGeminiBridge | None:
@@ -243,41 +252,16 @@ def _has_actionable_crypto_position(pos: Position | None) -> bool:
     return market_value >= MIN_ACTIONABLE_CRYPTO_NOTIONAL
 
 
-def _iter_jsonl_lines_reverse(path: Path, *, chunk_size: int = 65_536):
-    """Yield non-empty JSONL lines from the end of a file backwards."""
-
-    with path.open("rb") as handle:
-        handle.seek(0, _os.SEEK_END)
-        position = handle.tell()
-        remainder = b""
-
-        while position > 0:
-            read_size = min(int(chunk_size), position)
-            position -= read_size
-            handle.seek(position)
-            chunk = handle.read(read_size)
-            buffer = chunk + remainder
-            lines = buffer.split(b"\n")
-            remainder = lines[0]
-            for raw_line in reversed(lines[1:]):
-                line = raw_line.strip()
-                if line:
-                    yield line.decode("utf-8", errors="replace")
-
-        final_line = remainder.strip()
-        if final_line:
-            yield final_line.decode("utf-8", errors="replace")
-
-
 def _load_recent_stock_edges_from_meta_log(
     stock_symbols: list[str] | None,
     *,
     as_of: datetime | None = None,
-    event_log: Path = STOCK_EVENT_LOG_PATH,
+    event_log: Path | None = None,
     max_age: timedelta = STOCK_EDGE_SIGNAL_MAX_AGE,
 ) -> dict[str, float]:
     """Read recent actionable stock edges emitted by the live meta trader."""
 
+    event_log = event_log or stock_event_log_path()
     if not event_log.exists():
         return {}
 
@@ -287,7 +271,7 @@ def _load_recent_stock_edges_from_meta_log(
     latest_cycle_start: tuple[datetime, int] | None = None
     recent_signal_rows: list[tuple[datetime, int, str, float]] = []
 
-    for line in _iter_jsonl_lines_reverse(event_log):
+    for line in iter_jsonl_lines_reverse(event_log):
         try:
             payload = json.loads(line)
         except json.JSONDecodeError:
@@ -350,12 +334,137 @@ def _load_recent_stock_edges_from_meta_log(
     return {symbol: latest_by_symbol[symbol][1] for symbol in sorted(latest_by_symbol)}
 
 
+def _utc_isoformat(ts: datetime) -> str:
+    """Render a timezone-aware timestamp as canonical UTC ISO-8601."""
+
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    else:
+        ts = ts.astimezone(timezone.utc)
+    return ts.isoformat().replace("+00:00", "Z")
+
+
+def _append_cycle_event(
+    event_type: str,
+    *,
+    event_log: Path | None = None,
+    logged_at: datetime | None = None,
+    **fields,
+) -> None:
+    """Append a structured orchestrator runtime event for production debugging."""
+
+    event_log = event_log or cycle_event_log_path()
+    payload = {
+        "event_type": str(event_type),
+        "logged_at": _utc_isoformat(logged_at or datetime.now(timezone.utc)),
+        **fields,
+    }
+    try:
+        append_jsonl_row(event_log, payload, sort_keys=True, default=str)
+    except Exception as exc:  # pragma: no cover - best-effort observability
+        logger.warning("Failed to append cycle event to {}: {}", event_log, exc)
+
+
+def _run_cycle_with_runtime_logging(
+    *,
+    crypto_symbols: list[str],
+    stock_symbols: list[str],
+    model: str,
+    thinking_level: str,
+    review_thinking_level: str | None,
+    reprompt_passes: int,
+    reprompt_policy: str,
+    review_max_confidence: float | None,
+    review_model: str | None,
+    dry_run: bool,
+    event_log: Path | None = None,
+) -> bool:
+    """Run one orchestrator cycle and persist structured start/end/error diagnostics."""
+
+    event_log = event_log or cycle_event_log_path()
+    started_at = datetime.now(timezone.utc)
+    cycle_id = f"{_os.getpid()}:{int(started_at.timestamp() * 1000)}"
+    shared_fields = {
+        "cycle_id": cycle_id,
+        "cycle_started_at": _utc_isoformat(started_at),
+        "pid": int(_os.getpid()),
+        "dry_run": bool(dry_run),
+        "model": str(model),
+        "thinking_level": str(thinking_level),
+        "review_thinking_level": review_thinking_level,
+        "reprompt_passes": int(reprompt_passes),
+        "reprompt_policy": str(reprompt_policy),
+        "review_max_confidence": review_max_confidence,
+        "review_model": review_model,
+        "crypto_symbol_count": len(crypto_symbols),
+        "stock_symbol_count": len(stock_symbols),
+        "crypto_symbols": list(crypto_symbols),
+        "stock_symbols": list(stock_symbols),
+    }
+    _append_cycle_event("cycle_start", event_log=event_log, **shared_fields)
+
+    try:
+        run_cycle(
+            crypto_symbols=crypto_symbols,
+            stock_symbols=stock_symbols,
+            model=model,
+            thinking_level=thinking_level,
+            review_thinking_level=review_thinking_level,
+            reprompt_passes=reprompt_passes,
+            reprompt_policy=reprompt_policy,
+            review_max_confidence=review_max_confidence,
+            review_model=review_model,
+            dry_run=dry_run,
+        )
+    except Exception as exc:
+        finished_at = datetime.now(timezone.utc)
+        duration_seconds = max(0.0, (finished_at - started_at).total_seconds())
+        _append_cycle_event(
+            "cycle_error",
+            event_log=event_log,
+            cycle_completed_at=_utc_isoformat(finished_at),
+            duration_seconds=round(duration_seconds, 6),
+            error_type=type(exc).__name__,
+            error=str(exc),
+            traceback=traceback.format_exc(),
+            **shared_fields,
+        )
+        logger.exception(
+            "Cycle error [cycle_id={}] model={} dry_run={} crypto={} stock={}",
+            cycle_id,
+            model,
+            dry_run,
+            len(crypto_symbols),
+            len(stock_symbols),
+        )
+        return False
+
+    finished_at = datetime.now(timezone.utc)
+    duration_seconds = max(0.0, (finished_at - started_at).total_seconds())
+    _append_cycle_event(
+        "cycle_success",
+        event_log=event_log,
+        cycle_completed_at=_utc_isoformat(finished_at),
+        duration_seconds=round(duration_seconds, 6),
+        **shared_fields,
+    )
+    logger.info(
+        "Cycle completed [cycle_id={}] in {:.2f}s (crypto={} stock={} dry_run={})",
+        cycle_id,
+        duration_seconds,
+        len(crypto_symbols),
+        len(stock_symbols),
+        dry_run,
+    )
+    return True
+
+
 def _with_fallback_crypto_exit_target(
     sym: str,
     plan: TradePlan,
     held_position: Position | None,
     current_price: float,
-    fee_bps: float = 16.0,
+    fee_bps: float = CRYPTO_SAFETY_FEE_BPS,
 ) -> TradePlan:
     """Ensure live held crypto positions always retain a take-profit target."""
 
@@ -366,10 +475,10 @@ def _with_fallback_crypto_exit_target(
     if sell_price > float(current_price):
         return plan
 
-    fee_floor = 1.0 + max(float(fee_bps), 0.0) / 10_000.0 + 0.0005
     avg_price = float(getattr(held_position, "avg_price", 0.0) or 0.0)
+    profit_floor = _crypto_round_trip_profit_floor(avg_price, fee_bps=fee_bps)
     current_floor = float(current_price) * 1.008
-    target_floor = max(current_floor, avg_price * fee_floor if avg_price > 0.0 else 0.0)
+    target_floor = max(current_floor, profit_floor)
     fallback_sell = max(float(current_price) * 1.001, target_floor)
     logger.warning(
         f"  {sym}: held crypto position missing actionable exit target "
@@ -402,6 +511,56 @@ def _reason_indicates_llm_unavailable(reason: object) -> bool:
         "resource_exhausted",
     )
     return any(marker in raw for marker in markers)
+
+
+def _crypto_round_trip_profit_floor(
+    entry_price: float,
+    *,
+    fee_bps: float = CRYPTO_SAFETY_FEE_BPS,
+    extra_buffer_bps: float = CRYPTO_EXIT_BUFFER_BPS,
+) -> float:
+    """Return the minimum sell price that preserves fee-aware profitability."""
+
+    entry = float(entry_price or 0.0)
+    if entry <= 0.0:
+        return 0.0
+    total_bps = max(float(fee_bps), 0.0) * 2.0 + max(float(extra_buffer_bps), 0.0)
+    return entry * (1.0 + total_bps / 10_000.0)
+
+
+def _crypto_position_profit_floor(
+    pos: Position | None,
+    *,
+    fee_bps: float = CRYPTO_SAFETY_FEE_BPS,
+    extra_buffer_bps: float = CRYPTO_EXIT_BUFFER_BPS,
+) -> float:
+    """Return the fee-aware profit floor for a held crypto position."""
+
+    if pos is None:
+        return 0.0
+    return _crypto_round_trip_profit_floor(
+        float(getattr(pos, "avg_price", 0.0) or 0.0),
+        fee_bps=fee_bps,
+        extra_buffer_bps=extra_buffer_bps,
+    )
+
+
+def _crypto_trailing_stop_is_armed(
+    pos: Position | None,
+    peak_price: float,
+    *,
+    fee_bps: float = CRYPTO_SAFETY_FEE_BPS,
+    extra_buffer_bps: float = CRYPTO_EXIT_BUFFER_BPS,
+) -> bool:
+    """Arm trailing stops only after the trade has reached fee-aware profit."""
+
+    if pos is None:
+        return False
+    return float(peak_price or 0.0) >= _crypto_position_profit_floor(
+        pos,
+        fee_bps=fee_bps,
+        extra_buffer_bps=extra_buffer_bps,
+    )
 
 
 def _maybe_use_rl_only_fallback_plan(
@@ -759,6 +918,137 @@ def _format_rl_hint(signal: RLSignal | None, source: str) -> str:
     )
 
 
+def _crypto_sma_discount_context(
+    frame,
+    *,
+    sma_window_bars: int = CRYPTO_TREND_SMA_WINDOW_BARS,
+) -> tuple[float, float, float] | None:
+    """Return (current_price, sma_value, discount_pct) when price is below SMA."""
+
+    if frame is None or len(frame) < sma_window_bars:
+        return None
+    sma_value = float(frame["close"].iloc[-sma_window_bars:].mean())
+    current_price = float(frame["close"].iloc[-1])
+    if not math.isfinite(sma_value) or sma_value <= 0.0 or not math.isfinite(current_price):
+        return None
+    if current_price >= sma_value:
+        return None
+    return current_price, sma_value, (sma_value - current_price) / sma_value
+
+
+def _classify_crypto_sma_discount(discount_pct: float) -> str:
+    """Map a below-SMA discount to the guard action tier."""
+
+    if discount_pct > CRYPTO_TREND_HARD_BLOCK_DISCOUNT_PCT:
+        return "hard_block"
+    if discount_pct > CRYPTO_TREND_SOFT_REDUCE_DISCOUNT_PCT:
+        return "soft_reduce"
+    return "mild_caution"
+
+
+def _configured_bar_fetch_workers() -> int:
+    raw_value = os.environ.get("ORCH_BAR_FETCH_WORKERS", str(DEFAULT_BAR_FETCH_WORKERS))
+    try:
+        parsed = int(raw_value)
+    except (TypeError, ValueError):
+        parsed = DEFAULT_BAR_FETCH_WORKERS
+    return max(1, parsed)
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Unified Stock+Crypto Trading Orchestrator")
+    parser.add_argument("--crypto-symbols", nargs="+", default=CRYPTO_SYMBOLS)
+    parser.add_argument("--stock-symbols", nargs="+", default=STOCK_SYMBOLS)
+    parser.add_argument("--model", default="gemini-3.1-flash-lite-preview")
+    parser.add_argument("--thinking-level", default="HIGH")
+    parser.add_argument("--review-thinking-level", default=None,
+                        help="Optional thinking level for pass 2+. Defaults to --thinking-level.")
+    parser.add_argument("--reprompt-passes", type=int, default=1,
+                        help="Total Gemini plan passes per symbol. 1 = current behavior, 2 = review once.")
+    parser.add_argument("--reprompt-policy", choices=["always", "actionable", "entry_only"], default="always",
+                        help="When to run pass 2+. 'actionable' reviews any order-managing plan; 'entry_only' only reviews plans with a buy target.")
+    parser.add_argument("--review-max-confidence", type=float, default=None,
+                        help="Optional cap on first-pass confidence for running pass 2+. Example: 0.60 only reviews plans at 60% confidence or below.")
+    parser.add_argument("--review-model", default=None,
+                        help="Optional alternate model for review pass 2+. Defaults to the primary model.")
+    parser.add_argument(
+        "--bar-fetch-workers",
+        type=int,
+        default=_configured_bar_fetch_workers(),
+        help="Bounded per-cycle parallelism for Alpaca bar fetches. Defaults to ORCH_BAR_FETCH_WORKERS or 4.",
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", dest="live", action="store_false",
+                      help="Run without submitting live orders (default).")
+    mode.add_argument("--live", dest="live", action="store_true",
+                      help="Submit live orders.")
+    parser.set_defaults(live=False)
+    parser.add_argument("--once", action="store_true")
+    parser.add_argument("--interval", type=int, default=3600)
+    parser.add_argument("--lock-name", default="alpaca_live_writer",
+                        help="Account lock name. Use a different name to allow concurrent services "
+                             "on non-overlapping symbol sets (e.g. 'llm_stock_writer').")
+    return parser
+
+
+def _startup_config_summary(args: argparse.Namespace, *, dry_run: bool) -> dict[str, object]:
+    state_dir = resolve_state_dir()
+    return {
+        "mode": "DRY_RUN" if dry_run else "LIVE",
+        "crypto_symbols": list(args.crypto_symbols),
+        "stock_symbols": list(args.stock_symbols),
+        "model": args.model,
+        "thinking_level": args.thinking_level,
+        "review_thinking_level": args.review_thinking_level,
+        "reprompt_passes": int(args.reprompt_passes),
+        "reprompt_policy": args.reprompt_policy,
+        "review_max_confidence": args.review_max_confidence,
+        "review_model": args.review_model,
+        "bar_fetch_workers": int(args.bar_fetch_workers),
+        "state_dir": str(state_dir),
+        "cycle_event_log": str(cycle_event_log_path(state_dir)),
+    }
+
+
+def _fetch_history_frames_parallel(
+    symbols: list[str],
+    fetch_one,
+    *,
+    max_workers: int | None = None,
+) -> dict[str, object]:
+    ordered_symbols = [str(sym) for sym in symbols if str(sym).strip()]
+    if not ordered_symbols:
+        return {}
+
+    workers = max_workers if max_workers is not None else _configured_bar_fetch_workers()
+    workers = max(1, min(int(workers), len(ordered_symbols)))
+
+    def _safe_fetch(sym: str):
+        try:
+            return fetch_one(sym)
+        except Exception as exc:
+            logger.debug("  {}: parallel fetch worker error: {}", sym, exc)
+            return None
+
+    if workers == 1 or len(ordered_symbols) == 1:
+        results = {sym: _safe_fetch(sym) for sym in ordered_symbols}
+        return {sym: frame for sym, frame in results.items() if frame is not None}
+
+    resolved_frames: dict[str, object] = {}
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="orch-bars") as executor:
+        future_to_symbol = {
+            executor.submit(_safe_fetch, sym): sym
+            for sym in ordered_symbols
+        }
+        for future in as_completed(future_to_symbol):
+            sym = future_to_symbol[future]
+            frame = future.result()
+            if frame is not None:
+                resolved_frames[sym] = frame
+
+    return {sym: resolved_frames[sym] for sym in ordered_symbols if sym in resolved_frames}
+
+
 def _fetch_crypto_bars(data_client, symbols: list[str], now, *, timeframe, lookback, limit: int):
     """Fetch crypto bars for each symbol individually at the given timeframe.
 
@@ -768,8 +1058,7 @@ def _fetch_crypto_bars(data_client, symbols: list[str], now, *, timeframe, lookb
     """
     from alpaca.data.requests import CryptoBarsRequest
 
-    frames = {}
-    for sym in symbols:
+    def _fetch_one(sym: str):
         request_sym = sym[:-3] + "/USD" if "/" not in sym and sym.endswith("USD") else sym
         try:
             req = CryptoBarsRequest(
@@ -781,12 +1070,12 @@ def _fetch_crypto_bars(data_client, symbols: list[str], now, *, timeframe, lookb
             )
             bars = data_client.get_crypto_bars(req)
             raw_df = getattr(bars, "df", None)
-            frame = _select_symbol_frame(raw_df, request_sym)
-            if frame is not None:
-                frames[sym] = frame
+            return _select_symbol_frame(raw_df, request_sym)
         except Exception as e:
             logger.debug(f"  {sym}: bars fetch error: {e}")
-    return frames
+            return None
+
+    return _fetch_history_frames_parallel(symbols, _fetch_one)
 
 
 def _fetch_crypto_history_frames(data_client, symbols: list[str], now, *, lookback_hours: int = 78):
@@ -818,9 +1107,9 @@ def _fetch_stock_history_frames(data_client, symbols: list[str], now, *, lookbac
     from alpaca.data.timeframe import TimeFrame
 
     # Fetch per-symbol individually — batch requests return unreliable multi-index
-    # structures (only one symbol's data often appears).
-    frames = {}
-    for sym in symbols:
+    # structures (only one symbol's data often appears). Use a small bounded
+    # thread pool so larger universes do not serialize on network latency.
+    def _fetch_one(sym: str):
         try:
             req = StockBarsRequest(
                 symbol_or_symbols=sym,
@@ -832,12 +1121,12 @@ def _fetch_stock_history_frames(data_client, symbols: list[str], now, *, lookbac
             )
             bars = data_client.get_stock_bars(req)
             raw_df = getattr(bars, "df", None)
-            frame = _select_symbol_frame(raw_df, sym)
-            if frame is not None:
-                frames[sym] = frame
+            return _select_symbol_frame(raw_df, sym)
         except Exception as e:
             logger.debug(f"  {sym}: stock bars fetch error: {e}")
-    return frames
+            return None
+
+    return _fetch_history_frames_parallel(symbols, _fetch_one)
 
 
 def get_crypto_signals(
@@ -901,43 +1190,42 @@ def get_crypto_signals(
     for sym, sig in list(rl_signal_map.items()):
         if sig.direction != "long":
             continue
-        frame = history_frames.get(sym)
-        if frame is None or len(frame) < 24:
+        trend_context = _crypto_sma_discount_context(history_frames.get(sym))
+        if trend_context is None:
             continue
-        sma24 = float(frame["close"].iloc[-24:].mean())
-        current = float(frame["close"].iloc[-1])
-        if current < sma24:
-            discount_pct = (sma24 - current) / sma24  # positive when below SMA
-            if discount_pct > 0.05:
-                # More than 5% below SMA — hard suppress (strong downtrend)
-                logger.warning(
-                    f"[CRYPTO_SIGNAL] {sym}: SMA-24 HARD SUPPRESS RL LONG hint "
-                    f"(price={current:.4f} < sma24={sma24:.4f}, discount={discount_pct:.1%} >5%)"
-                )
-                rl_signal_map[sym] = RLSignal(
-                    symbol_idx=sig.symbol_idx,
-                    symbol_name=sig.symbol_name,
-                    direction="flat",
-                    confidence=0.0,
-                    logit_gap=0.0,
-                    allocation_pct=0.0,
-                )
-            else:
-                # Mild discount (<5%) — reduce allocation by 50%, keep signal alive
-                old_alloc = sig.allocation_pct
-                new_alloc = old_alloc * 0.5
-                logger.warning(
-                    f"[CRYPTO_SIGNAL] {sym}: SMA-24 soft filter — price={current:.4f} < sma24={sma24:.4f} "
-                    f"(discount={discount_pct:.1%}), reducing allocation {old_alloc:.0%} -> {new_alloc:.0%}"
-                )
-                rl_signal_map[sym] = RLSignal(
-                    symbol_idx=sig.symbol_idx,
-                    symbol_name=sig.symbol_name,
-                    direction=sig.direction,
-                    confidence=sig.confidence,
-                    logit_gap=sig.logit_gap,
-                    allocation_pct=new_alloc,
-                )
+        current, sma24, discount_pct = trend_context
+        if _classify_crypto_sma_discount(discount_pct) == "hard_block":
+            # More than 5% below SMA — hard suppress (strong downtrend)
+            logger.warning(
+                f"[CRYPTO_SIGNAL] {sym}: SMA-24 HARD SUPPRESS RL LONG hint "
+                f"(price={current:.4f} < sma24={sma24:.4f}, discount={discount_pct:.1%} "
+                f">{CRYPTO_TREND_HARD_BLOCK_DISCOUNT_PCT:.0%})"
+            )
+            rl_signal_map[sym] = RLSignal(
+                symbol_idx=sig.symbol_idx,
+                symbol_name=sig.symbol_name,
+                direction="flat",
+                confidence=0.0,
+                logit_gap=0.0,
+                allocation_pct=0.0,
+            )
+        else:
+            # Any below-SMA discount that is not extreme remains actionable, but
+            # the RL hint is softened before it reaches the LLM.
+            old_alloc = sig.allocation_pct
+            new_alloc = old_alloc * CRYPTO_TREND_SOFT_REDUCTION_FACTOR
+            logger.warning(
+                f"[CRYPTO_SIGNAL] {sym}: SMA-24 soft filter — price={current:.4f} < sma24={sma24:.4f} "
+                f"(discount={discount_pct:.1%}), reducing allocation {old_alloc:.0%} -> {new_alloc:.0%}"
+            )
+            rl_signal_map[sym] = RLSignal(
+                symbol_idx=sig.symbol_idx,
+                symbol_name=sig.symbol_name,
+                direction=sig.direction,
+                confidence=sig.confidence,
+                logit_gap=sig.logit_gap,
+                allocation_pct=new_alloc,
+            )
 
     forecast_root = _choose_forecast_cache_root(fetch_symbols, CRYPTO_FORECAST_CACHE_CANDIDATES)
     forecast_frames_1h, forecast_frames_24h = _load_forecast_frames(fetch_symbols, forecast_root)
@@ -964,14 +1252,14 @@ def get_crypto_signals(
 
         # Inject bearish context into prompt when price is below 24h SMA
         trend_warning = ""
-        if frame is not None and len(frame) >= 24:
-            _sma24 = float(frame["close"].iloc[-24:].mean())
-            if current_price < _sma24:
-                trend_warning = (
-                    f"\nTREND CAUTION: {sym} price (${current_price:.4f}) is BELOW its 24h SMA "
-                    f"(${_sma24:.4f}). Market is in a SHORT-TERM DOWNTREND. "
-                    f"Strongly prefer HOLD/FLAT unless there is very clear reversal evidence."
-                )
+        trend_context = _crypto_sma_discount_context(frame)
+        if trend_context is not None:
+            _, sma24, _ = trend_context
+            trend_warning = (
+                f"\nTREND CAUTION: {sym} price (${current_price:.4f}) is BELOW its "
+                f"{CRYPTO_TREND_SMA_WINDOW_BARS}h SMA (${sma24:.4f}). Market is in a SHORT-TERM DOWNTREND. "
+                f"Strongly prefer HOLD/FLAT unless there is very clear reversal evidence."
+            )
 
         held_pos = snapshot.alpaca_positions.get(sym)
         actionable_held_pos = held_pos if _has_actionable_crypto_position(held_pos) else None
@@ -1035,19 +1323,17 @@ def get_crypto_signals(
     for sym, plan in list(signals.items()):
         if plan.direction != "long":
             continue
-        frame = history_frames.get(sym)
-        if frame is None or len(frame) < 24:
+        trend_context = _crypto_sma_discount_context(history_frames.get(sym))
+        if trend_context is None:
             continue
-        _sma24g = float(frame["close"].iloc[-24:].mean())
-        _price_g = float(frame["close"].iloc[-1])
-        if _price_g >= _sma24g:
-            continue
-        discount_pct = (_sma24g - _price_g) / _sma24g
-        if discount_pct > 0.05:
+        price_g, sma24g, discount_pct = trend_context
+        severity = _classify_crypto_sma_discount(discount_pct)
+        if severity == "hard_block":
             # Extreme discount — hard block
             logger.warning(
                 f"[CRYPTO_SIGNAL] {sym}: SMA-24 HARD BLOCK LONG→HOLD "
-                f"(price={_price_g:.4f} < sma24={_sma24g:.4f}, discount={discount_pct:.1%} >5%)"
+                f"(price={price_g:.4f} < sma24={sma24g:.4f}, discount={discount_pct:.1%} "
+                f">{CRYPTO_TREND_HARD_BLOCK_DISCOUNT_PCT:.0%})"
             )
             signals[sym] = _TradePlan(
                 direction="hold",
@@ -1057,12 +1343,12 @@ def get_crypto_signals(
                 reasoning=f"SMA-24 hard block (>{discount_pct:.1%} below); {plan.reasoning[:60]}",
                 allocation_pct=0,
             )
-        elif discount_pct > 0.02:
+        elif severity == "soft_reduce":
             # Moderate discount — reduce allocation by 50%
             old_alloc = plan.allocation_pct
-            new_alloc = old_alloc * 0.5
+            new_alloc = old_alloc * CRYPTO_TREND_SOFT_REDUCTION_FACTOR
             logger.warning(
-                f"[CRYPTO_SIGNAL] {sym}: SMA-24 soft filter: price {_price_g:.2f} < SMA24 {_sma24g:.2f}, "
+                f"[CRYPTO_SIGNAL] {sym}: SMA-24 soft filter: price {price_g:.2f} < SMA24 {sma24g:.2f}, "
                 f"reducing allocation {old_alloc:.0%} -> {new_alloc:.0%} (discount={discount_pct:.1%})"
             )
             signals[sym] = _TradePlan(
@@ -1076,8 +1362,9 @@ def get_crypto_signals(
         else:
             # Mild discount (<2%) — just log, don't modify
             logger.info(
-                f"[CRYPTO_SIGNAL] {sym}: SMA-24 mild caution (price={_price_g:.4f} < sma24={_sma24g:.4f}, "
-                f"discount={discount_pct:.1%} <2%) — passing through unchanged"
+                f"[CRYPTO_SIGNAL] {sym}: SMA-24 mild caution (price={price_g:.4f} < sma24={sma24g:.4f}, "
+                f"discount={discount_pct:.1%} <{CRYPTO_TREND_SOFT_REDUCE_DISCOUNT_PCT:.0%}) "
+                f"— passing through unchanged"
             )
 
     return signals
@@ -1159,7 +1446,16 @@ def _place_crypto_tp_sell(alpaca, sym: str, pos, sell_price: float,
     if canceled_any:
         time.sleep(0.5)
 
-    logger.info(f"  {sym}: placing TP sell {sell_qty:.8f} @ ${sell_price:.2f}")
+    profit_floor = _crypto_position_profit_floor(pos)
+    safe_sell_price = max(float(sell_price), profit_floor)
+    safe_sell_limit = round(safe_sell_price, 2)
+    if safe_sell_price > float(sell_price):
+        logger.warning(
+            f"  {sym}: raised TP sell from ${float(sell_price):.2f} to "
+            f"fee-aware floor ${safe_sell_price:.2f}"
+        )
+
+    logger.info(f"  {sym}: placing TP sell {sell_qty:.8f} @ ${safe_sell_limit:.2f}")
     if not dry_run:
         try:
             req = LimitOrderRequest(
@@ -1168,20 +1464,23 @@ def _place_crypto_tp_sell(alpaca, sym: str, pos, sell_price: float,
                 side=OrderSide.SELL,
                 type="limit",
                 time_in_force=TimeInForce.GTC,
-                limit_price=round(sell_price, 2),
+                limit_price=safe_sell_limit,
             )
             result = alpaca.submit_order(req)
-            orders.append({"symbol": sym, "action": "sell_tp", "price": sell_price,
+            orders.append({"symbol": sym, "action": "sell_tp", "price": safe_sell_limit,
                            "qty": sell_qty, "order_id": str(result.id)})
         except Exception as e:
             logger.error(f"  {sym}: TP sell error: {e}")
     else:
-        orders.append({"symbol": sym, "action": "sell_tp", "price": sell_price,
+        orders.append({"symbol": sym, "action": "sell_tp", "price": safe_sell_limit,
                        "qty": sell_qty, "dry_run": True})
 
 
 def _place_crypto_force_exit_sell(alpaca, sym: str, pos, dry_run: bool,
-                                   orders: list[dict]) -> None:
+                                   orders: list[dict], *,
+                                   min_limit_price: float = 0.0,
+                                   action: str = "force_exit",
+                                   reason_label: str = "FORCE EXIT") -> None:
     """Force-exit a position that has exceeded MAX_HOLD_HOURS.
 
     Places an aggressive IOC limit sell 0.1% below current price so it either
@@ -1215,8 +1514,15 @@ def _place_crypto_force_exit_sell(alpaca, sym: str, pos, dry_run: bool,
 
     # Sell at 0.1% below current — fills quickly on liquid crypto
     exit_price = round(pos.current_price * 0.999, 2)
-    logger.info(f"  {sym}: FORCE EXIT {sell_qty:.8f} @ ${exit_price:.2f} "
-                f"(held > {MAX_HOLD_HOURS}h, current ${pos.current_price:.2f})")
+    min_limit_price = float(min_limit_price or 0.0)
+    if min_limit_price > exit_price:
+        logger.warning(
+            f"  {sym}: {reason_label} blocked below profit floor "
+            f"(${exit_price:.2f} -> ${min_limit_price:.2f})"
+        )
+        exit_price = round(min_limit_price, 2)
+    logger.info(f"  {sym}: {reason_label} {sell_qty:.8f} @ ${exit_price:.2f} "
+                f"(current ${pos.current_price:.2f})")
     if not dry_run:
         try:
             tif_ioc = getattr(TimeInForce, "IOC", "ioc")
@@ -1229,12 +1535,12 @@ def _place_crypto_force_exit_sell(alpaca, sym: str, pos, dry_run: bool,
                 limit_price=exit_price,
             )
             result = alpaca.submit_order(req)
-            orders.append({"symbol": sym, "action": "force_exit", "price": exit_price,
+            orders.append({"symbol": sym, "action": action, "price": exit_price,
                            "qty": sell_qty, "order_id": str(result.id)})
         except Exception as e:
             logger.error(f"  {sym}: force exit order error: {e}")
     else:
-        orders.append({"symbol": sym, "action": "force_exit", "price": exit_price,
+        orders.append({"symbol": sym, "action": action, "price": exit_price,
                        "qty": sell_qty, "dry_run": True})
 
 
@@ -1375,9 +1681,21 @@ def execute_crypto_signals(
     # Sortino=76.5, MaxDD=4.7% (vs 30.9/28.3% with LLM TP alone).
     peak_prices = load_peak_prices()
     peak_prices = update_peak_prices(peak_prices, crypto_pos)
-    trailing_stop_syms = set(get_trailing_stop_symbols(
+    raw_trailing_stop_syms = set(get_trailing_stop_symbols(
         peak_prices, crypto_pos, trail_pct=TRAILING_STOP_PCT,
     ))
+    trailing_stop_syms: set[str] = set()
+    for sym in raw_trailing_stop_syms:
+        pos = snapshot.alpaca_positions.get(sym)
+        peak_price = float(peak_prices.get(sym, 0.0) or 0.0)
+        profit_floor = _crypto_position_profit_floor(pos)
+        if not _crypto_trailing_stop_is_armed(pos, peak_price):
+            logger.warning(
+                f"  PeakTracker: {sym} trailing stop disarmed — peak ${peak_price:.2f} "
+                f"never cleared fee-aware floor ${profit_floor:.2f}"
+            )
+            continue
+        trailing_stop_syms.add(sym)
     # Don't double-exit symbols already force-exiting
     trailing_stop_syms -= force_exit_syms
     save_peak_prices(peak_prices)
@@ -1385,7 +1703,16 @@ def execute_crypto_signals(
     for sym in trailing_stop_syms:
         pos = snapshot.alpaca_positions.get(sym)
         if pos and pos.qty > 0:
-            _place_crypto_force_exit_sell(alpaca, sym, pos, dry_run, orders)
+            _place_crypto_force_exit_sell(
+                alpaca,
+                sym,
+                pos,
+                dry_run,
+                orders,
+                min_limit_price=_crypto_position_profit_floor(pos),
+                action="trailing_stop",
+                reason_label="TRAILING STOP",
+            )
 
     # Place take-profit sells on all other existing crypto positions
     exit_syms = force_exit_syms | trailing_stop_syms
@@ -1488,7 +1815,7 @@ def execute_crypto_signals(
                 orders.append({"symbol": sym, "action": "buy", "price": buy_price,
                                 "qty": qty, "order_id": str(result.id)})
             else:
-                logger.info(f"    [DRY RUN]")
+                logger.info("    [DRY RUN]")
                 cash_reserved_this_cycle += trade_size
                 orders.append({"symbol": sym, "action": "buy", "price": buy_price,
                                 "qty": qty, "dry_run": True})
@@ -1894,7 +2221,7 @@ def execute_stock_signals(
                 orders.append({"symbol": sym, "action": "buy", "price": plan.buy_price,
                                 "qty": qty, "order_id": str(result.id)})
             else:
-                logger.info(f"    [DRY RUN]")
+                logger.info("    [DRY RUN]")
                 orders.append({"symbol": sym, "action": "buy", "price": plan.buy_price,
                                 "qty": qty, "dry_run": True})
 
@@ -2070,7 +2397,7 @@ def run_cycle(
             )
             results["best_stock_edges"] = best_stock_edges
         else:
-            logger.info("  No recent actionable stock edges found in {}", STOCK_EVENT_LOG_PATH)
+            logger.info("  No recent actionable stock edges found in {}", stock_event_log_path())
         candidates = select_backout_candidates(snapshot, best_stock_edges)
         if candidates:
             backout_results = execute_backout(candidates, dry_run=dry_run)
@@ -2107,7 +2434,10 @@ def run_cycle(
                         watcher_pairs.append(OrderPair(
                             symbol=sym,
                             buy_price=order["price"],
-                            sell_price=plan.sell_price,
+                            sell_price=max(
+                                float(plan.sell_price),
+                                _crypto_round_trip_profit_floor(float(order["price"])),
+                            ),
                             target_qty=order["qty"],
                         ))
             if watcher_pairs:
@@ -2185,28 +2515,22 @@ def run_cycle(
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Unified Stock+Crypto Trading Orchestrator")
-    parser.add_argument("--crypto-symbols", nargs="+", default=CRYPTO_SYMBOLS)
-    parser.add_argument("--stock-symbols", nargs="+", default=STOCK_SYMBOLS)
-    parser.add_argument("--model", default="gemini-3.1-flash-lite-preview")
-    parser.add_argument("--thinking-level", default="HIGH")
-    parser.add_argument("--review-thinking-level", default=None,
-                        help="Optional thinking level for pass 2+. Defaults to --thinking-level.")
-    parser.add_argument("--reprompt-passes", type=int, default=1,
-                        help="Total Gemini plan passes per symbol. 1 = current behavior, 2 = review once.")
-    parser.add_argument("--reprompt-policy", choices=["always", "actionable", "entry_only"], default="always",
-                        help="When to run pass 2+. 'actionable' reviews any order-managing plan; 'entry_only' only reviews plans with a buy target.")
-    parser.add_argument("--review-max-confidence", type=float, default=None,
-                        help="Optional cap on first-pass confidence for running pass 2+. Example: 0.60 only reviews plans at 60% confidence or below.")
-    parser.add_argument("--review-model", default=None,
-                        help="Optional alternate model for review pass 2+. Defaults to the primary model.")
-    parser.add_argument("--dry-run", action="store_true", default=True)
-    parser.add_argument("--live", action="store_true")
-    parser.add_argument("--once", action="store_true")
-    parser.add_argument("--interval", type=int, default=3600)
+    parser = _build_arg_parser()
     args = parser.parse_args()
 
     dry_run = not args.live
+    account_lock = None
+    if args.live:
+        require_explicit_live_trading_enable("unified-orchestrator")
+        account_lock = acquire_alpaca_account_lock(
+            "unified-orchestrator",
+            account_name=args.lock_name,
+        )
+        logger.info("Acquired Alpaca live writer lock: {}", account_lock.path)
+    os.environ["ORCH_BAR_FETCH_WORKERS"] = str(max(1, int(args.bar_fetch_workers)))
+    startup_summary = _startup_config_summary(args, dry_run=dry_run)
+    logger.info("Startup config: {}", startup_summary)
+
     if args.live:
         logger.warning("LIVE TRADING MODE")
         time.sleep(3)
@@ -2224,23 +2548,18 @@ def main():
         logger.warning("Startup conflict check failed (non-fatal): {}", _conflict_exc)
 
     while True:
-        try:
-            run_cycle(
-                crypto_symbols=args.crypto_symbols,
-                stock_symbols=args.stock_symbols,
-                model=args.model,
-                thinking_level=args.thinking_level,
-                review_thinking_level=args.review_thinking_level,
-                reprompt_passes=args.reprompt_passes,
-                reprompt_policy=args.reprompt_policy,
-                review_max_confidence=args.review_max_confidence,
-                review_model=args.review_model,
-                dry_run=dry_run,
-            )
-        except Exception as e:
-            logger.error(f"Cycle error: {e}")
-            import traceback
-            traceback.print_exc()
+        _run_cycle_with_runtime_logging(
+            crypto_symbols=args.crypto_symbols,
+            stock_symbols=args.stock_symbols,
+            model=args.model,
+            thinking_level=args.thinking_level,
+            review_thinking_level=args.review_thinking_level,
+            reprompt_passes=args.reprompt_passes,
+            reprompt_policy=args.reprompt_policy,
+            review_max_confidence=args.review_max_confidence,
+            review_model=args.review_model,
+            dry_run=dry_run,
+        )
 
         if args.once:
             break

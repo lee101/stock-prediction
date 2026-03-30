@@ -33,6 +33,7 @@ from pathlib import Path
 from src.robust_trading_metrics import compute_replay_composite_score, summarize_scenario_results
 from pufferlib_market.early_stopper import (
     combined_score as _combined_score,
+    effective_prune_floor,
     PolynomialEarlyStopper,
     BestKnownTracker,
     HoldCashDetector,
@@ -59,6 +60,11 @@ def _make_wandb_run_id() -> str:
     return f"ar_{int(time.time())}_{random.randint(0, 999999):06d}"
 
 
+def _termination_grace_timeout_s(time_budget: int) -> int:
+    """Grace period after SIGTERM before forcible kill."""
+    return max(30, min(180, int(max(time_budget, 1) * 1.5)))
+
+
 def _read_mktd_header(path: str | Path) -> tuple[int, int]:
     """Read num_symbols and num_timesteps from an MKTD .bin header."""
     import struct
@@ -66,6 +72,21 @@ def _read_mktd_header(path: str | Path) -> tuple[int, int]:
         header = f.read(64)
     _, _, num_symbols, num_timesteps, _, _ = struct.unpack("<4sIIIII", header[:24])
     return int(num_symbols), int(num_timesteps)
+
+
+def _read_checkpoint_global_step(path: str | Path) -> int:
+    """Best-effort read of global_step from a saved checkpoint."""
+    try:
+        import torch
+
+        payload = torch.load(str(path), map_location="cpu")
+        if isinstance(payload, dict):
+            value = payload.get("global_step")
+            if value is not None:
+                return int(value)
+    except Exception:
+        pass
+    return 0
 
 
 @dataclass
@@ -123,6 +144,7 @@ class TrialConfig:
     no_cuda_graph: bool = False  # Disable ALL CUDA graphs + torch.compile (for shared-GPU compat)
     no_tf32: bool = False  # Disable TF32 matmuls for maximum numerical fidelity.
     time_budget_override: int = 0  # Override global time_budget for this config (0 = use global)
+    eval_num_episodes: int = 100  # Final validation episodes after training.
     vf_coef: float = 0.5   # Value function loss coefficient (default 0.5)
     max_grad_norm: float = 0.5  # Gradient clipping norm (default 0.5)
 
@@ -679,6 +701,8 @@ STOCK_EXPERIMENTS: list[dict] = [
     # --- Observation normalisation (often helps with heterogeneous stock features) ---
     {"description": "stock_obs_norm",       "obs_norm": True},
     {"description": "stock_obs_norm_tp05",  "obs_norm": True, "trade_penalty": 0.05},
+    {"description": "stock_obs_norm_tp05_wd005", "obs_norm": True, "trade_penalty": 0.05, "weight_decay": 0.005},
+    {"description": "stock_obs_norm_tp05_wd01",  "obs_norm": True, "trade_penalty": 0.05, "weight_decay": 0.01},
 
     # --- Weight decay for generalisation ---
     {"description": "stock_wd_01",   "weight_decay": 0.01},
@@ -715,6 +739,12 @@ STOCK_EXPERIMENTS: list[dict] = [
     {"description": "stock_h512_reg",
      "hidden_size": 512, "obs_norm": True, "weight_decay": 0.05,
      "fill_slippage_bps": 10.0, "trade_penalty": 0.05},
+
+    # --- CPU-friendly probe config for fast multiseed sanity checks ---
+    {"description": "stock_probe_cpu_fast",
+     "hidden_size": 256, "trade_penalty": 0.05,
+     "num_envs": 16, "rollout_len": 64, "minibatch_size": 256, "ppo_epochs": 2,
+     "eval_num_episodes": 20},
 
     # -----------------------------------------------------------------------
     # H100-scale configs: 256 parallel envs, minibatch 4096, BF16, CUDA graph
@@ -2595,6 +2625,9 @@ def run_trial(
     best_trial_combined_score: float = -float("inf"),
     early_reject_threshold: float = 0.8,
     use_poly_prune: bool = True,
+    baseline_val_return_floor: float = -float("inf"),
+    baseline_combined_floor: float = -float("inf"),
+    projection_clip_abs: float = 6.0,
     multi_period_eval_windows: tuple[int, ...] | None = None,
     multi_period_n_windows_per_size: int = 8,
     multi_period_fill_slippage_bps: float = 8.0,
@@ -2698,6 +2731,22 @@ def run_trial(
     if config.time_budget_override > 0:
         time_budget = config.time_budget_override
 
+    effective_best_val_return = effective_prune_floor(
+        best_trial_val_return,
+        baseline_val_return_floor,
+    )
+    effective_best_combined_score = effective_prune_floor(
+        best_trial_combined_score,
+        baseline_combined_floor,
+    )
+    if effective_best_val_return > -float("inf") or effective_best_combined_score > -float("inf"):
+        print(
+            "  Prune references: "
+            f"val_return={effective_best_val_return if effective_best_val_return > -float('inf') else None}, "
+            f"combined={effective_best_combined_score if effective_best_combined_score > -float('inf') else None}, "
+            f"clip_abs={projection_clip_abs}"
+        )
+
     # Run training with time budget
     print(f"\n  Training for {time_budget}s...")
     t0 = time.time()
@@ -2754,7 +2803,7 @@ def run_trial(
         )
         stdout_lines = []
         _checks_done: set[float] = set()
-        _poly_stopper = PolynomialEarlyStopper()
+        _poly_stopper = PolynomialEarlyStopper(clip_abs=projection_clip_abs)
         _hold_cash_detector = HoldCashDetector(patience=6)
         _overfit_detector = OverfitDetector()
         # (progress_threshold, poly_tolerance): 25% only collects; 50%/75% may prune
@@ -2815,11 +2864,11 @@ def run_trial(
                             break
                         if _poly_tol is None:
                             # collect-only check (25%)
-                            if not use_poly_prune and mid_ret is not None and best_trial_val_return > -float("inf"):
-                                threshold_val = best_trial_val_return * early_reject_threshold
+                            if not use_poly_prune and mid_ret is not None and effective_best_val_return > -float("inf"):
+                                threshold_val = effective_best_val_return * early_reject_threshold
                                 if mid_ret < threshold_val:
                                     print(f"  EARLY REJECT at {pct}: val_ret={mid_ret:+.4f} "
-                                          f"< {threshold_val:+.4f} (best_val*{early_reject_threshold})")
+                                          f"< {threshold_val:+.4f} (reference_val*{early_reject_threshold})")
                                     early_rejected = True
                                     break
                                 else:
@@ -2828,21 +2877,45 @@ def run_trial(
                                 comb_str = f"{mid_comb:+.4f}" if mid_comb is not None else "None"
                                 print(f"  {pct} check: val_ret={mid_ret} sortino={mid_sort} comb={comb_str} (collecting)")
                         elif use_poly_prune:
-                            prune, proj = _poly_stopper.should_prune(best_trial_combined_score, tolerance=_poly_tol)
+                            prune, proj = _poly_stopper.should_prune(
+                                effective_best_combined_score,
+                                tolerance=_poly_tol,
+                            )
                             proj_str = f"{proj:+.4f}" if proj is not None else "None"
                             if prune:
                                 print(f"  POLY PRUNE at {pct}: projected={proj_str} "
-                                      f"< best_combined*{_poly_tol}={best_trial_combined_score * _poly_tol:+.4f}")
+                                      f"< reference_combined*{_poly_tol}={effective_best_combined_score * _poly_tol:+.4f}")
+                                early_rejected = True
+                                break
+                            baseline_linear_prune = False
+                            baseline_linear_proj = None
+                            if baseline_combined_floor > -float("inf"):
+                                baseline_linear_prune, baseline_linear_proj = _poly_stopper.should_prune(
+                                    baseline_combined_floor,
+                                    tolerance=_poly_tol,
+                                    method="linear",
+                                )
+                            baseline_proj_str = (
+                                f"{baseline_linear_proj:+.4f}" if baseline_linear_proj is not None else "None"
+                            )
+                            if baseline_linear_prune:
+                                print(
+                                    f"  BASELINE PRUNE at {pct}: linear_projected={baseline_proj_str} "
+                                    f"< baseline_combined*{_poly_tol}={baseline_combined_floor * _poly_tol:+.4f}"
+                                )
                                 early_rejected = True
                                 break
                             else:
-                                print(f"  {pct} poly check: projected={proj_str} >= threshold, continuing")
+                                print(
+                                    f"  {pct} poly check: projected={proj_str} "
+                                    f"linear={baseline_proj_str} >= threshold, continuing"
+                                )
                         else:
-                            if mid_ret is not None and best_trial_val_return > -float("inf"):
-                                threshold_val = best_trial_val_return * early_reject_threshold
+                            if mid_ret is not None and effective_best_val_return > -float("inf"):
+                                threshold_val = effective_best_val_return * early_reject_threshold
                                 if mid_ret < threshold_val:
                                     print(f"  EARLY REJECT at {pct}: val_ret={mid_ret:+.4f} "
-                                          f"< {threshold_val:+.4f} (best_val*{early_reject_threshold})")
+                                          f"< {threshold_val:+.4f} (reference_val*{early_reject_threshold})")
                                     early_rejected = True
                                     break
                                 else:
@@ -2853,7 +2926,7 @@ def run_trial(
             # Kill if still running
             if proc.poll() is None:
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                proc.wait(timeout=10)
+                proc.wait(timeout=_termination_grace_timeout_s(time_budget))
             try:
                 if proc.stdout is not None:
                     remainder = proc.stdout.read()
@@ -2924,6 +2997,8 @@ def run_trial(
                 "train_steps": total_steps,
                 "early_rejected": early_rejected,
             }
+    if total_steps <= 0:
+        total_steps = _read_checkpoint_global_step(ckpt_path)
 
     # Evaluate on validation data
     print(f"  Evaluating on validation data...")
@@ -2934,7 +3009,7 @@ def run_trial(
         "--deterministic",
         "--hidden-size", str(config.hidden_size),
         "--max-steps", str(config.max_steps),
-        "--num-episodes", "100",
+        "--num-episodes", str(max(1, int(getattr(config, "eval_num_episodes", 100)))),
         "--seed", "42",
         "--fill-slippage-bps", "8",  # always eval with realistic slippage
         "--periods-per-year", str(config.periods_per_year),
@@ -3205,6 +3280,19 @@ def run_trial(
         "early_rejected": early_rejected,
         "smooth_error": smooth_error,
         "poly_projected_final": _poly_stopper.projected_final(),
+        "linear_projected_final": _poly_stopper.projected_final_linear(),
+        "prune_reference_val_return": (
+            effective_best_val_return if effective_best_val_return > -float("inf") else None
+        ),
+        "prune_reference_combined": (
+            effective_best_combined_score if effective_best_combined_score > -float("inf") else None
+        ),
+        "baseline_val_return_floor": (
+            baseline_val_return_floor if baseline_val_return_floor > -float("inf") else None
+        ),
+        "baseline_combined_floor": (
+            baseline_combined_floor if baseline_combined_floor > -float("inf") else None
+        ),
     }
     result_payload.update(holdout_metrics)
     result_payload.update(market_metrics)
@@ -3314,6 +3402,12 @@ def main():
     parser.add_argument("--time-budget", type=int, default=300,
                         help="Training time budget per trial in seconds")
     parser.add_argument("--max-trials", type=int, default=50)
+    parser.add_argument(
+        "--eval-num-episodes-override",
+        type=int,
+        default=0,
+        help="Override final validation episode count for all experiments; 0 keeps each config default.",
+    )
     parser.add_argument("--leaderboard", default="pufferlib_market/autoresearch_leaderboard.csv")
     parser.add_argument("--checkpoint-root", default="pufferlib_market/checkpoints/autoresearch")
     parser.add_argument("--start-from", type=int, default=0,
@@ -3408,6 +3502,12 @@ def main():
                         help="Cap total_timesteps at num_samples * this value (prevents overfitting)")
     parser.add_argument("--early-reject-threshold", type=float, default=0.8,
                         help="Kill trial if val_ret < best_so_far * this at 25%%/50%% budget")
+    parser.add_argument("--baseline-val-return-floor", type=float, default=-float("inf"),
+                        help="Hard minimum quick-eval val_return reference for early pruning")
+    parser.add_argument("--baseline-combined-floor", type=float, default=-float("inf"),
+                        help="Hard minimum quick-eval combined-score reference for early pruning")
+    parser.add_argument("--projection-clip-abs", type=float, default=6.0,
+                        help="Clip absolute combined scores before projection to reduce outlier spikes")
     parser.add_argument("--list-experiments", action="store_true",
                         help="Print all experiment names and exit")
     parser.add_argument("--describe-experiments", action="store_true",
@@ -3704,6 +3804,8 @@ def main():
             config.fee_rate = args.fee_rate_override
         if args.seed is not None:
             config.seed = args.seed
+        if args.eval_num_episodes_override > 0:
+            config.eval_num_episodes = args.eval_num_episodes_override
 
         # --h100-mode: force H100 hardware settings on every trial
         if args.h100_mode:
@@ -3782,6 +3884,9 @@ def main():
             best_trial_combined_score=best_combined_score,
             early_reject_threshold=args.early_reject_threshold,
             use_poly_prune=args.poly_prune,
+            baseline_val_return_floor=args.baseline_val_return_floor,
+            baseline_combined_floor=args.baseline_combined_floor,
+            projection_clip_abs=args.projection_clip_abs,
             multi_period_eval_windows=(
                 tuple(int(x.strip()) for x in args.multi_period_windows.split(",") if x.strip())
                 if args.multi_period_eval else None

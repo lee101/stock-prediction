@@ -22,6 +22,8 @@ import pstats
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Sequence
 
 import torch
 from torch.profiler import ProfilerActivity, profile, schedule
@@ -32,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from binanceneural.config import DatasetConfig
 from binanceneural.data import BinanceHourlyDataModule, build_default_feature_columns
 from binanceneural.model import PolicyConfig, build_policy
+from src.symbol_utils import is_crypto_symbol
 
 try:
     from trainingefficiency.fast_differentiable_sim import simulate_hourly_trades_fast
@@ -47,6 +50,127 @@ from differentiable_loss_utils import (
 
 TIMING_KEYS = ["data_loading", "data_transfer", "forward", "simulation", "loss_compute", "backward", "optimizer_step", "total"]
 DEFAULT_HORIZONS = (1, 4, 12, 24)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROFILES_DIR = PROJECT_ROOT / "profiles"
+DEFAULT_SYMBOLS = ("BTCUSD", "ETHUSD", "SOLUSD", "DOGEUSD", "AAVEUSD", "LINKUSD", "UNIUSD")
+
+
+def _normalize_symbol_list(symbols: Sequence[str] | str | None) -> list[str]:
+    if symbols is None:
+        return []
+    if isinstance(symbols, str):
+        raw_items = symbols.split(",")
+    else:
+        raw_items = list(symbols)
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for raw in raw_items:
+        symbol = str(raw).strip().upper()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        normalized.append(symbol)
+    return normalized
+
+
+def _candidate_symbol_aliases(symbol: str) -> tuple[str, ...]:
+    normalized = str(symbol).strip().upper()
+    if not normalized:
+        return tuple()
+
+    aliases: list[str] = [normalized]
+    if normalized.endswith("FDUSD"):
+        aliases.append(normalized[:-5] + "USD")
+        aliases.append(normalized[:-5] + "USDT")
+    elif normalized.endswith("USDT"):
+        aliases.append(normalized[:-4] + "USD")
+        aliases.append(normalized[:-4] + "FDUSD")
+    elif normalized.endswith("USD"):
+        aliases.append(normalized[:-3] + "USDT")
+        aliases.append(normalized[:-3] + "FDUSD")
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for alias in aliases:
+        if alias and alias not in seen:
+            seen.add(alias)
+            deduped.append(alias)
+    return tuple(deduped)
+
+
+def _candidate_price_roots(symbol: str, project_root: Path = PROJECT_ROOT) -> tuple[Path, ...]:
+    crypto_root = project_root / "trainingdatahourly" / "crypto"
+    stock_root = project_root / "trainingdatahourly" / "stocks"
+    if symbol.endswith(("USD", "USDT", "FDUSD")) or is_crypto_symbol(symbol):
+        return (crypto_root, stock_root)
+    return (stock_root, crypto_root)
+
+
+def _candidate_forecast_roots(project_root: Path = PROJECT_ROOT) -> tuple[Path, ...]:
+    return (
+        project_root / "binanceneural" / "forecast_cache",
+        project_root / "binanceneural" / "forecast_cache_shortable_stocks",
+    )
+
+
+def _resolve_symbol_dataset(
+    symbol: str,
+    *,
+    project_root: Path = PROJECT_ROOT,
+    preferred_horizons: Sequence[int] = DEFAULT_HORIZONS,
+) -> tuple[str, Path, Path, tuple[int, ...]]:
+    requested = str(symbol).strip().upper()
+    if not requested:
+        raise FileNotFoundError("Symbol is empty")
+
+    for alias in _candidate_symbol_aliases(requested):
+        for data_root in _candidate_price_roots(alias, project_root):
+            price_path = data_root / f"{alias}.csv"
+            if not price_path.exists():
+                continue
+            for forecast_root in _candidate_forecast_roots(project_root):
+                available_horizons = tuple(
+                    int(h)
+                    for h in preferred_horizons
+                    if (forecast_root / f"h{int(h)}" / f"{alias}.parquet").exists()
+                )
+                if available_horizons:
+                    return alias, data_root, forecast_root, available_horizons
+    raise FileNotFoundError(
+        f"No compatible price CSV + forecast cache found for {requested} "
+        f"under {project_root / 'trainingdatahourly'} and {project_root / 'binanceneural'}."
+    )
+
+
+def _check_symbol_data(symbol: str, project_root: Path = PROJECT_ROOT) -> bool:
+    try:
+        _resolve_symbol_dataset(symbol, project_root=project_root, preferred_horizons=(1,))
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _select_symbols(symbols: Sequence[str] | str, project_root: Path = PROJECT_ROOT) -> list[str]:
+    selected: list[str] = []
+    seen: set[str] = set()
+    for symbol in _normalize_symbol_list(symbols):
+        try:
+            resolved, _data_root, _forecast_root, _horizons = _resolve_symbol_dataset(
+                symbol,
+                project_root=project_root,
+                preferred_horizons=(1,),
+            )
+        except FileNotFoundError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        selected.append(resolved)
+    if not selected:
+        raise FileNotFoundError(
+            f"No symbols with both hourly price history and h1 forecast cache found in {project_root}."
+        )
+    return selected
 
 
 def _empty_timings():
@@ -90,16 +214,18 @@ def build_components(args):
     use_real = getattr(args, "real_data", False)
 
     if use_real:
+        resolved_symbol, data_root, forecast_cache_root, horizons = _resolve_symbol_dataset(args.symbol)
         ds_cfg = DatasetConfig(
-            symbol=args.symbol,
-            data_root=Path("trainingdatahourly") / "crypto",
-            forecast_cache_root=Path("binanceneural") / "forecast_cache",
-            forecast_horizons=DEFAULT_HORIZONS,
+            symbol=resolved_symbol,
+            data_root=data_root,
+            forecast_cache_root=forecast_cache_root,
+            forecast_horizons=horizons,
             sequence_length=args.seq_len,
             validation_days=70,
             cache_only=True,
         )
         data_module = BinanceHourlyDataModule(ds_cfg)
+        args.symbol = resolved_symbol
         input_dim = len(data_module.feature_columns)
         loader = data_module.train_dataloader(args.batch_size, num_workers=0)
         loader_is_dict = True
@@ -262,7 +388,7 @@ def _sync(device):
         torch.cuda.synchronize()
 
 
-def run_pytorch_profiler(model, optimizer, loader, device, sim_fn, num_steps, loader_is_dict):
+def run_pytorch_profiler(model, optimizer, loader, device, sim_fn, num_steps, loader_is_dict, output_dir: Path = PROFILES_DIR):
     activities = [ProfilerActivity.CPU]
     if device.type == "cuda":
         activities.append(ProfilerActivity.CUDA)
@@ -288,7 +414,9 @@ def run_pytorch_profiler(model, optimizer, loader, device, sim_fn, num_steps, lo
             run_one_step(model, optimizer, batch, device, sim_fn, step_timings)
             prof.step()
 
-    trace_path = Path("binanceneural") / "profile_trace.json"
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    trace_path = output_dir / "neural_cuda_trace.json"
     prof.export_chrome_trace(str(trace_path))
     print(f"\nChrome trace saved to: {trace_path}")
 
@@ -311,7 +439,7 @@ def run_pytorch_profiler(model, optimizer, loader, device, sim_fn, num_steps, lo
     return prof
 
 
-def run_cprofile(model, optimizer, loader, device, sim_fn, num_steps, loader_is_dict):
+def run_cprofile(model, optimizer, loader, device, sim_fn, num_steps, loader_is_dict, output_dir: Path = PROFILES_DIR):
     batch_iter = iter(loader)
     step_timings = _empty_timings()
 
@@ -329,7 +457,9 @@ def run_cprofile(model, optimizer, loader, device, sim_fn, num_steps, loader_is_
 
     pr.disable()
 
-    prof_path = Path("binanceneural") / "profile_cprofile.prof"
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    prof_path = output_dir / "neural_cprofile.prof"
     pr.dump_stats(str(prof_path))
     print(f"\ncProfile data saved to: {prof_path}")
 
@@ -344,35 +474,94 @@ def run_cprofile(model, optimizer, loader, device, sim_fn, num_steps, loader_is_
     return step_timings
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Profile crypto RL training pipeline")
-    parser.add_argument("--steps", type=int, default=5)
-    parser.add_argument("--symbol", default="DOGEUSD")
-    parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--seq-len", type=int, default=48)
-    parser.add_argument("--dim", type=int, default=512)
-    parser.add_argument("--heads", type=int, default=8)
-    parser.add_argument("--layers", type=int, default=6)
-    parser.add_argument("--arch", default="classic")
-    parser.add_argument("--use-fast-sim", action="store_true")
-    parser.add_argument("--skip-pytorch-profiler", action="store_true")
-    parser.add_argument("--real-data", action="store_true",
-                        help="Use real BinanceHourlyDataModule instead of synthetic data")
-    args = parser.parse_args()
+def _write_neural_report(
+    report_path: Path,
+    *,
+    symbol: str,
+    step_timings: dict[str, list[float]],
+    device: torch.device,
+    trace_path: Path,
+    profile_path: Path,
+) -> Path:
+    total_time = sum(step_timings.get("total", []))
+    steps = len(step_timings.get("total", []))
 
-    print(f"Profiling {args.steps} training steps")
-    print(f"Symbol: {args.symbol}, Arch: {args.arch}, Dim: {args.dim}, Layers: {args.layers}")
-    print(f"Batch: {args.batch_size}, Seq: {args.seq_len}")
-    print(f"Data: {'real' if args.real_data else 'synthetic'}")
+    lines = [
+        "# Neural Training Profiling Report",
+        "",
+        f"Symbol: {symbol}",
+        f"Device: {device.type}",
+        f"Steps: {steps}",
+        f"Total time: {total_time:.3f}s",
+        "",
+        "| Component | Total (s) | Per-step (ms) | Pct |",
+        "|-----------|-----------|---------------|-----|",
+    ]
+    for key in TIMING_KEYS[:-1]:
+        vals = list(step_timings.get(key, []))
+        total = sum(vals)
+        per_step_ms = (total / len(vals) * 1000.0) if vals else 0.0
+        pct = (total / total_time * 100.0) if total_time > 0.0 else 0.0
+        lines.append(f"| {key} | {total:.4f} | {per_step_ms:.2f} | {pct:.1f}% |")
+    lines.extend(
+        [
+            "",
+            f"Chrome trace: `{trace_path.name}`{' (missing)' if not trace_path.exists() else ''}",
+            f"cProfile: `{profile_path.name}`{' (missing)' if not profile_path.exists() else ''}",
+            "",
+        ]
+    )
+    report_path.write_text("\n".join(lines))
+    return report_path
 
-    if args.use_fast_sim and simulate_hourly_trades_fast is not None:
+
+def run_neural_profiling(
+    symbols: Sequence[str] | str,
+    steps: int,
+    profiles_dir: Path,
+    *,
+    batch_size: int = 16,
+    seq_len: int = 48,
+    dim: int = 512,
+    heads: int = 8,
+    layers: int = 6,
+    arch: str = "classic",
+    use_fast_sim: bool = False,
+    real_data: bool = True,
+    quick: bool = False,
+) -> dict[str, object]:
+    profiles_dir = Path(profiles_dir)
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+
+    selected_symbols = _select_symbols(symbols) if real_data else (_normalize_symbol_list(symbols) or [DEFAULT_SYMBOLS[0]])
+    symbol = selected_symbols[0]
+    num_steps = max(1, int(steps))
+
+    args = SimpleNamespace(
+        steps=num_steps,
+        symbol=symbol,
+        batch_size=batch_size,
+        seq_len=seq_len,
+        dim=dim,
+        heads=heads,
+        layers=layers,
+        arch=arch,
+        use_fast_sim=use_fast_sim,
+        real_data=real_data,
+    )
+
+    if use_fast_sim and simulate_hourly_trades_fast is not None:
         sim_fn = simulate_hourly_trades_fast
         print("Sim: fast_differentiable_sim")
     else:
         sim_fn = simulate_hourly_trades
         print("Sim: differentiable_loss_utils (baseline)")
 
-    print("\nBuilding model...")
+    print(f"Profiling {num_steps} training steps")
+    print(f"Symbol: {symbol}, Arch: {arch}, Dim: {dim}, Layers: {layers}")
+    print(f"Batch: {batch_size}, Seq: {seq_len}")
+    print(f"Data: {'real' if real_data else 'synthetic'}")
+
     model, optimizer, loader, device, loader_is_dict = build_components(args)
 
     param_count = sum(p.numel() for p in model.parameters())
@@ -390,26 +579,92 @@ def main():
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats()
 
-    print(f"\nRunning {args.steps} steps with cProfile...")
-    step_timings = run_cprofile(model, optimizer, loader, device, sim_fn, args.steps, loader_is_dict)
+    print(f"\nRunning {num_steps} steps with cProfile...")
+    step_timings = run_cprofile(
+        model,
+        optimizer,
+        loader,
+        device,
+        sim_fn,
+        num_steps,
+        loader_is_dict,
+        output_dir=profiles_dir,
+    )
     print_timing_breakdown(step_timings, len(step_timings["total"]))
 
-    if not args.skip_pytorch_profiler:
-        print(f"\nRunning {args.steps} steps with PyTorch profiler...")
-        run_pytorch_profiler(model, optimizer, loader, device, sim_fn, args.steps, loader_is_dict)
+    trace_path = profiles_dir / "neural_cuda_trace.json"
+    profile_path = profiles_dir / "neural_cprofile.prof"
+    if not quick:
+        print(f"\nRunning {num_steps} steps with PyTorch profiler...")
+        run_pytorch_profiler(
+            model,
+            optimizer,
+            loader,
+            device,
+            sim_fn,
+            num_steps,
+            loader_is_dict,
+            output_dir=profiles_dir,
+        )
 
     print_gpu_info(device)
 
-    total_time = sum(step_timings["total"])
-    actual_steps = len(step_timings["total"])
-    print(f"\n{'='*60}")
-    print("SUMMARY")
-    print(f"{'='*60}")
-    print(f"Steps completed: {actual_steps}")
-    print(f"Total time: {total_time:.3f}s")
-    print(f"Steps/sec: {actual_steps / total_time:.2f}")
-    if device.type == "cuda":
-        print(f"Peak GPU memory: {torch.cuda.max_memory_allocated() / 1024**2:.1f} MB")
+    report_path = _write_neural_report(
+        profiles_dir / "neural_report.md",
+        symbol=symbol,
+        step_timings=step_timings,
+        device=device,
+        trace_path=trace_path,
+        profile_path=profile_path,
+    )
+    print(f"Report written to: {report_path}")
+
+    return {
+        "symbol": symbol,
+        "steps": num_steps,
+        "profiles_dir": profiles_dir,
+        "report_path": report_path,
+        "trace_path": trace_path,
+        "profile_path": profile_path,
+    }
+
+
+def main(argv: Sequence[str] | None = None):
+    parser = argparse.ArgumentParser(description="Profile crypto RL training pipeline")
+    parser.add_argument("--steps", type=int, default=None)
+    parser.add_argument("--epochs", type=int, default=None, help="Legacy alias for profiling iterations.")
+    parser.add_argument("--symbol", default="DOGEUSD")
+    parser.add_argument("--symbols", default="", help="Comma-separated symbol candidates; first compatible symbol is used.")
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--seq-len", type=int, default=48)
+    parser.add_argument("--dim", type=int, default=512)
+    parser.add_argument("--heads", type=int, default=8)
+    parser.add_argument("--layers", type=int, default=6)
+    parser.add_argument("--arch", default="classic")
+    parser.add_argument("--use-fast-sim", action="store_true")
+    parser.add_argument("--skip-pytorch-profiler", action="store_true")
+    parser.add_argument("--quick", action="store_true", help="Skip PyTorch profiler trace generation.")
+    parser.add_argument("--output-dir", type=Path, default=PROFILES_DIR)
+    parser.add_argument("--real-data", action="store_true",
+                        help="Use real BinanceHourlyDataModule instead of synthetic data")
+    args = parser.parse_args(argv)
+
+    symbol_list = _normalize_symbol_list(args.symbols) or [str(args.symbol).strip().upper()]
+    steps = args.steps if args.steps is not None else (args.epochs if args.epochs is not None else 5)
+    run_neural_profiling(
+        symbol_list,
+        steps,
+        args.output_dir,
+        batch_size=args.batch_size,
+        seq_len=args.seq_len,
+        dim=args.dim,
+        heads=args.heads,
+        layers=args.layers,
+        arch=args.arch,
+        use_fast_sim=args.use_fast_sim,
+        real_data=(args.real_data or bool(args.symbols)),
+        quick=(args.quick or args.skip_pytorch_profiler),
+    )
 
 
 if __name__ == "__main__":

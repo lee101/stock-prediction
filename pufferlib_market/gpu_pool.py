@@ -361,6 +361,55 @@ PRESETS: dict[str, list[dict]] = {
 }
 
 
+BASELINE_PROFILES: dict[str, dict[str, float | str]] = {
+    "none": {
+        "baseline_val_return_floor": -float("inf"),
+        "baseline_combined_floor": -float("inf"),
+        "projection_clip_abs": 6.0,
+        "description": "Disable hard baseline pruning.",
+    },
+    "stocks_daily_candidate": {
+        "baseline_val_return_floor": 0.35,
+        "baseline_combined_floor": 1.0,
+        "projection_clip_abs": 6.0,
+        "description": (
+            "Conservative daily-stock quick-eval floor derived from the canonical "
+            "stocks leaderboard, intentionally below the 0.48-0.57 val_return and "
+            "1.39-1.44 combined scores of the established winners."
+        ),
+    },
+}
+
+
+def resolve_baseline_prune_settings(
+    *,
+    baseline_profile: str,
+    stocks_mode: bool,
+    baseline_val_return_floor: float | None,
+    baseline_combined_floor: float | None,
+    projection_clip_abs: float | None,
+) -> dict[str, float | str]:
+    """Resolve pool-level hard-prune settings, with stock defaults in auto mode."""
+    selected_profile = baseline_profile or "auto"
+    if selected_profile == "auto":
+        selected_profile = "stocks_daily_candidate" if stocks_mode else "none"
+    if selected_profile not in BASELINE_PROFILES:
+        raise ValueError(
+            f"Unknown baseline profile '{selected_profile}'. "
+            f"Available: auto, {', '.join(sorted(BASELINE_PROFILES))}"
+        )
+
+    settings = dict(BASELINE_PROFILES[selected_profile])
+    if baseline_val_return_floor is not None:
+        settings["baseline_val_return_floor"] = float(baseline_val_return_floor)
+    if baseline_combined_floor is not None:
+        settings["baseline_combined_floor"] = float(baseline_combined_floor)
+    if projection_clip_abs is not None:
+        settings["projection_clip_abs"] = float(projection_clip_abs)
+    settings["profile_name"] = selected_profile
+    return settings
+
+
 # ---------------------------------------------------------------------------
 # Queue file helpers (JSONL, one job per line)
 # ---------------------------------------------------------------------------
@@ -552,6 +601,10 @@ def worker_loop(
     holdout_eval_steps: int,
     holdout_fill_buffer_bps: float,
     stocks_mode: bool,
+    baseline_profile: str,
+    baseline_val_return_floor: float | None,
+    baseline_combined_floor: float | None,
+    projection_clip_abs: float | None,
 ) -> None:
     """Worker process: polls the queue and runs one trial at a time on gpu_id."""
     worker_id = f"gpu{gpu_id}_{os.getpid()}"
@@ -561,6 +614,19 @@ def worker_loop(
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
 
     print(f"[worker gpu={gpu_id}] started, pid={os.getpid()}")
+    baseline_settings = resolve_baseline_prune_settings(
+        baseline_profile=baseline_profile,
+        stocks_mode=stocks_mode,
+        baseline_val_return_floor=baseline_val_return_floor,
+        baseline_combined_floor=baseline_combined_floor,
+        projection_clip_abs=projection_clip_abs,
+    )
+    print(
+        f"[worker gpu={gpu_id}] prune baseline={baseline_settings['profile_name']} "
+        f"val_floor={baseline_settings['baseline_val_return_floor']} "
+        f"combined_floor={baseline_settings['baseline_combined_floor']} "
+        f"clip_abs={baseline_settings['projection_clip_abs']}"
+    )
 
     ckpt_base = Path(checkpoint_dir) / f"gpu{gpu_id}"
     ckpt_base.mkdir(parents=True, exist_ok=True)
@@ -605,6 +671,9 @@ def worker_loop(
                 best_trial_val_return=-float("inf"),
                 best_trial_combined_score=-float("inf"),
                 best_trial_rank_score=-float("inf"),
+                baseline_val_return_floor=float(baseline_settings["baseline_val_return_floor"]),
+                baseline_combined_floor=float(baseline_settings["baseline_combined_floor"]),
+                projection_clip_abs=float(baseline_settings["projection_clip_abs"]),
             )
             elapsed = time.time() - t0
             row = {
@@ -707,6 +776,10 @@ def cmd_run(args: argparse.Namespace) -> None:
         holdout_eval_steps=args.holdout_eval_steps,
         holdout_fill_buffer_bps=args.holdout_fill_buffer_bps,
         stocks_mode=args.stocks,
+        baseline_profile=args.baseline_profile,
+        baseline_val_return_floor=args.baseline_val_return_floor,
+        baseline_combined_floor=args.baseline_combined_floor,
+        projection_clip_abs=args.projection_clip_abs,
     )
 
     if len(gpu_ids) == 1:
@@ -767,6 +840,30 @@ def main() -> None:
                        help="Window length in steps for holdout eval (0=disabled, e.g. 90 for daily stocks)")
     p_run.add_argument("--holdout-fill-buffer-bps", type=float, default=5.0)
     p_run.add_argument("--stocks", action="store_true", help="Use stocks mode (disables shorts)")
+    p_run.add_argument(
+        "--baseline-profile",
+        choices=["auto", *sorted(BASELINE_PROFILES)],
+        default="auto",
+        help="Hard early-prune floor profile. 'auto' enables the stock daily floor only in --stocks mode.",
+    )
+    p_run.add_argument(
+        "--baseline-val-return-floor",
+        type=float,
+        default=None,
+        help="Override the hard val_return floor used for early pruning.",
+    )
+    p_run.add_argument(
+        "--baseline-combined-floor",
+        type=float,
+        default=None,
+        help="Override the hard combined-score floor used for early pruning.",
+    )
+    p_run.add_argument(
+        "--projection-clip-abs",
+        type=float,
+        default=None,
+        help="Clip absolute combined scores before line/polynomial projection.",
+    )
 
     args = parser.parse_args()
 

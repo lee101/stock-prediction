@@ -6,11 +6,14 @@ import sys
 from pathlib import Path
 
 import pytest
+import torch
 
 from pufferlib_market.autoresearch_rl import (
     EXPERIMENTS,
     TrialConfig,
+    _read_checkpoint_global_step,
     _read_mktd_header,
+    _termination_grace_timeout_s,
     annualize_total_return_pct,
     compute_eval_window_years,
     main,
@@ -254,6 +257,12 @@ def test_annualize_total_return_pct_handles_edge_cases() -> None:
     assert annualize_total_return_pct(25.0, 1.0) == pytest.approx(25.0)
     assert annualize_total_return_pct(-100.0, 0.5) is None
     assert annualize_total_return_pct(5.0, 0.0) is None
+
+
+def test_termination_grace_timeout_scales_with_budget() -> None:
+    assert _termination_grace_timeout_s(1) == 30
+    assert _termination_grace_timeout_s(60) == 90
+    assert _termination_grace_timeout_s(300) == 180
 
 
 def test_select_rank_score_uses_expected_fallback_order() -> None:
@@ -610,6 +619,113 @@ def test_run_trial_surfaces_train_failure_when_no_checkpoint(monkeypatch, tmp_pa
     assert "Failed to load market data" in result["error"]
 
 
+def test_run_trial_falls_back_to_final_checkpoint(monkeypatch, tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "trial"
+    checkpoint_dir.mkdir()
+    (checkpoint_dir / "final.pt").write_bytes(b"checkpoint")
+
+    class _FakeStdout:
+        def readline(self) -> bytes:
+            return b""
+
+    class _FakePopen:
+        def __init__(self, *args, **kwargs) -> None:
+            self.stdout = _FakeStdout()
+            self.pid = 12345
+
+        def poll(self) -> int:
+            return 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    eval_commands: list[list[str]] = []
+
+    def _fake_run_capture(cmd: list[str], *, cwd: Path, timeout_s: int = 0) -> subprocess.CompletedProcess[str]:
+        if "pufferlib_market.evaluate" in cmd:
+            eval_commands.append(cmd)
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="Return: mean=0.10\nWin rate: mean=0.55\nSortino: mean=1.20\n>0: 10/10 (100.0%)\n",
+                stderr="",
+            )
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl.subprocess.Popen", _FakePopen)
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl._run_capture", _fake_run_capture)
+
+    result = run_trial(
+        TrialConfig(description="final_only"),
+        "train.bin",
+        "val.bin",
+        1,
+        str(checkpoint_dir),
+    )
+
+    assert eval_commands, "expected validation eval to run from final.pt"
+    eval_cmd = eval_commands[0]
+    assert eval_cmd[eval_cmd.index("--checkpoint") + 1] == str(checkpoint_dir / "final.pt")
+    assert result["val_return"] == pytest.approx(0.10)
+    assert result["val_sortino"] == pytest.approx(1.20)
+
+
+def test_run_trial_respects_eval_num_episodes(monkeypatch, tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "trial"
+    checkpoint_dir.mkdir()
+    (checkpoint_dir / "best.pt").write_bytes(b"checkpoint")
+
+    class _FakeStdout:
+        def readline(self) -> bytes:
+            return b""
+
+    class _FakePopen:
+        def __init__(self, *args, **kwargs) -> None:
+            self.stdout = _FakeStdout()
+            self.pid = 12345
+
+        def poll(self) -> int:
+            return 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    eval_commands: list[list[str]] = []
+
+    def _fake_run_capture(cmd: list[str], *, cwd: Path, timeout_s: int = 0) -> subprocess.CompletedProcess[str]:
+        if "pufferlib_market.evaluate" in cmd:
+            eval_commands.append(cmd)
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="Return: mean=0.10\nWin rate: mean=0.55\nSortino: mean=1.20\n>0: 10/10 (100.0%)\n",
+                stderr="",
+            )
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl.subprocess.Popen", _FakePopen)
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl._run_capture", _fake_run_capture)
+
+    run_trial(
+        TrialConfig(description="eval_episodes", eval_num_episodes=7),
+        "train.bin",
+        "val.bin",
+        1,
+        str(checkpoint_dir),
+    )
+
+    assert eval_commands
+    eval_cmd = eval_commands[0]
+    assert eval_cmd[eval_cmd.index("--num-episodes") + 1] == "7"
+
+
+def test_read_checkpoint_global_step_reads_saved_value(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "checkpoint.pt"
+    torch.save({"global_step": 12345}, checkpoint_path)
+
+    assert _read_checkpoint_global_step(checkpoint_path) == 12345
+
+
 def test_run_trial_caps_replay_eval_max_steps_to_data_length(monkeypatch, tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "trial"
     checkpoint_dir.mkdir()
@@ -952,6 +1068,144 @@ def test_run_trial_result_includes_early_rejected(monkeypatch, tmp_path: Path) -
 
     assert "early_rejected" in result
     assert result["early_rejected"] is False
+
+
+def test_run_trial_uses_baseline_val_return_floor_for_early_reject(monkeypatch, tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "trial"
+    checkpoint_dir.mkdir()
+    (checkpoint_dir / "best.pt").write_bytes(b"checkpoint")
+
+    class _FakeStdout:
+        def readline(self) -> bytes:
+            return b""
+
+        def read(self) -> bytes:
+            return b""
+
+    class _FakePopen:
+        def __init__(self, *args, **kwargs) -> None:
+            self.stdout = _FakeStdout()
+            self.pid = 12345
+
+        def poll(self) -> int | None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    eval_calls: list[list[str]] = []
+
+    def _fake_run_capture(cmd: list[str], *, cwd: Path, timeout_s: int = 0) -> subprocess.CompletedProcess[str]:
+        if "pufferlib_market.evaluate" in cmd:
+            eval_calls.append(cmd)
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="Return: mean=0.10\nWin rate: mean=0.55\nSortino: mean=0.40\n>0: 10/10 (100.0%)\n",
+                stderr="",
+            )
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    time_values = iter([0.0, 30.0, 30.0, 31.0])
+
+    def _fake_time() -> float:
+        try:
+            return next(time_values)
+        except StopIteration:
+            return 31.0
+
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl.subprocess.Popen", _FakePopen)
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl._run_capture", _fake_run_capture)
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl.time.time", _fake_time)
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl.os.getpgid", lambda pid: pid)
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl.os.killpg", lambda pgid, sig: None)
+
+    result = run_trial(
+        TrialConfig(description="baseline_floor_val"),
+        "train.bin",
+        "val.bin",
+        100,
+        str(checkpoint_dir),
+        use_poly_prune=False,
+        baseline_val_return_floor=0.50,
+    )
+
+    assert result["early_rejected"] is True
+    assert result["prune_reference_val_return"] == pytest.approx(0.50)
+    assert len(eval_calls) >= 2
+
+
+def test_run_trial_uses_baseline_combined_floor_for_poly_prune(monkeypatch, tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "trial"
+    checkpoint_dir.mkdir()
+    (checkpoint_dir / "best.pt").write_bytes(b"checkpoint")
+
+    class _FakeStdout:
+        def readline(self) -> bytes:
+            return b""
+
+        def read(self) -> bytes:
+            return b""
+
+    class _FakePopen:
+        def __init__(self, *args, **kwargs) -> None:
+            self.stdout = _FakeStdout()
+            self.pid = 12345
+
+        def poll(self) -> int | None:
+            return None
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    quick_results = iter([(0.10, 0.10), (0.20, 0.20)])
+
+    def _fake_run_capture(cmd: list[str], *, cwd: Path, timeout_s: int = 0) -> subprocess.CompletedProcess[str]:
+        if "pufferlib_market.evaluate" in cmd:
+            num_episodes = cmd[cmd.index("--num-episodes") + 1]
+            if num_episodes == "30":
+                ret, sortino = next(quick_results)
+            else:
+                ret, sortino = (0.10, 0.10)
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=(
+                    f"Return: mean={ret:.2f}\n"
+                    "Win rate: mean=0.55\n"
+                    f"Sortino: mean={sortino:.2f}\n"
+                    ">0: 10/10 (100.0%)\n"
+                ),
+                stderr="",
+            )
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    time_values = iter([0.0, 30.0, 30.0, 60.0, 60.0, 61.0])
+
+    def _fake_time() -> float:
+        try:
+            return next(time_values)
+        except StopIteration:
+            return 61.0
+
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl.subprocess.Popen", _FakePopen)
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl._run_capture", _fake_run_capture)
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl.time.time", _fake_time)
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl.os.getpgid", lambda pid: pid)
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl.os.killpg", lambda pgid, sig: None)
+
+    result = run_trial(
+        TrialConfig(description="baseline_floor_combined"),
+        "train.bin",
+        "val.bin",
+        100,
+        str(checkpoint_dir),
+        baseline_combined_floor=1.0,
+    )
+
+    assert result["early_rejected"] is True
+    assert result["prune_reference_combined"] == pytest.approx(1.0)
+    assert result["poly_projected_final"] == pytest.approx(0.4)
 
 
 def test_run_trial_passes_no_tf32_flag(monkeypatch, tmp_path: Path) -> None:

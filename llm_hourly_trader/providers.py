@@ -368,6 +368,352 @@ def call_deepseek(prompt: str, model: str = "deepseek-chat", max_retries: int = 
 
 
 # ---------------------------------------------------------------------------
+# xAI Grok (grok-4-1-fast, grok-4.20-multi-agent-0309, etc.)
+# ---------------------------------------------------------------------------
+
+def call_xai(prompt: str, model: str = "grok-4-1-fast", max_retries: int = 5,
+             thinking: bool = False,
+             cache_model: str | None = None,
+             provider_call_models: list[str] | None = None) -> TradePlan:
+    """Call xAI Grok API with structured outputs via xai_sdk.
+
+    Uses Pydantic-based structured output for guaranteed schema compliance.
+    Supports reasoning models (grok-4.20-*) and fast models (grok-4-1-fast).
+    """
+    cache_key = cache_model or (model + ("_think" if thinking else ""))
+    cached = get_cached(cache_key, prompt)
+    if cached is not None:
+        return TradePlan(**cached)
+    if provider_call_models is not None:
+        provider_call_models.append(model)
+
+    from pydantic import BaseModel, Field
+
+    class GrokTradePlan(BaseModel):
+        direction: str = Field(description="One of: long, short, hold")
+        buy_price: float = Field(description="Limit entry price, 0 if no entry")
+        sell_price: float = Field(description="Take-profit/exit price, 0 if no exit")
+        confidence: float = Field(description="Confidence 0.0-1.0 (NOT 0-100)")
+        reasoning: str = Field(description="Brief explanation of the decision")
+        allocation_pct: float = Field(default=0.0, description="Capital allocation 0-100%")
+
+    for attempt in range(max_retries):
+        try:
+            from xai_sdk import Client
+            from xai_sdk.chat import system, user
+
+            api_key = os.environ.get("XAI_API_KEY", "")
+            if not api_key:
+                return TradePlan("hold", 0, 0, 0, "XAI_API_KEY not set")
+
+            client = Client(api_key=api_key)
+            chat = client.chat.create(model=model)
+            chat.append(system(
+                "You are an expert trader. Analyze the market data and produce a structured "
+                "trading decision. confidence MUST be a decimal between 0.0 and 1.0 (NOT 0-100). "
+                "buy_price and sell_price must match the asset's price scale."
+            ))
+            chat.append(user(prompt))
+
+            response, parsed = chat.parse(GrokTradePlan)
+
+            plan = TradePlan(
+                direction=parsed.direction.lower().strip(),
+                buy_price=float(parsed.buy_price),
+                sell_price=float(parsed.sell_price),
+                confidence=_normalize_confidence(parsed.confidence),
+                reasoning=parsed.reasoning,
+                allocation_pct=float(parsed.allocation_pct),
+            )
+            set_cached(cache_key, prompt, plan.__dict__)
+            return plan
+        except Exception as e:
+            _handle_retry(e, attempt, max_retries)
+    return TradePlan("hold", 0, 0, 0, "xAI API exhausted")
+
+
+# ---------------------------------------------------------------------------
+# xAI Grok with tools (web_search, x_search for market intel)
+# ---------------------------------------------------------------------------
+
+def call_xai_with_tools(prompt: str, model: str = "grok-4.20-multi-agent-0309",
+                        max_retries: int = 3,
+                        use_web_search: bool = True,
+                        use_x_search: bool = True,
+                        cache_model: str | None = None,
+                        provider_call_models: list[str] | None = None) -> TradePlan:
+    """Call Grok with web/X search tools for real-time market intelligence.
+
+    The model can search the web and X (Twitter) for recent news, sentiment,
+    and market-moving events before making a trading decision.
+    """
+    cache_key = cache_model or f"{model}_tools"
+    cached = get_cached(cache_key, prompt)
+    if cached is not None:
+        return TradePlan(**cached)
+    if provider_call_models is not None:
+        provider_call_models.append(model)
+
+    from pydantic import BaseModel, Field
+
+    class GrokTradePlanWithContext(BaseModel):
+        direction: str = Field(description="One of: long, short, hold")
+        buy_price: float = Field(description="Limit entry price, 0 if no entry")
+        sell_price: float = Field(description="Take-profit/exit price, 0 if no exit")
+        confidence: float = Field(description="Confidence 0.0-1.0")
+        reasoning: str = Field(description="Brief explanation including any web/X insights")
+        allocation_pct: float = Field(default=0.0, description="Capital allocation 0-100%")
+
+    for attempt in range(max_retries):
+        try:
+            from xai_sdk import Client
+            from xai_sdk.chat import system, user
+            from xai_sdk.tools import web_search, x_search
+
+            api_key = os.environ.get("XAI_API_KEY", "")
+            if not api_key:
+                return TradePlan("hold", 0, 0, 0, "XAI_API_KEY not set")
+
+            client = Client(api_key=api_key)
+
+            tools = []
+            if use_web_search:
+                tools.append(web_search())
+            if use_x_search:
+                tools.append(x_search())
+
+            chat = client.chat.create(model=model, tools=tools)
+            chat.append(system(
+                "You are an expert trader with access to real-time web and X (Twitter) search. "
+                "BEFORE making your trading decision, search for recent news and sentiment about "
+                "the assets mentioned. Look for: earnings, macro events, whale movements, "
+                "regulatory news, and social sentiment. "
+                "Then produce a structured trading decision. "
+                "Be AGGRESSIVE — optimize for maximum PnL. Enter trades boldly when you see edge. "
+                "confidence MUST be a decimal between 0.0 and 1.0."
+            ))
+            chat.append(user(prompt))
+
+            response, parsed = chat.parse(GrokTradePlanWithContext)
+
+            plan = TradePlan(
+                direction=parsed.direction.lower().strip(),
+                buy_price=float(parsed.buy_price),
+                sell_price=float(parsed.sell_price),
+                confidence=_normalize_confidence(parsed.confidence),
+                reasoning=parsed.reasoning,
+                allocation_pct=float(parsed.allocation_pct),
+            )
+            set_cached(cache_key, prompt, plan.__dict__)
+            return plan
+        except Exception as e:
+            _handle_retry(e, attempt, max_retries)
+    return TradePlan("hold", 0, 0, 0, "xAI tools API exhausted")
+
+
+# ---------------------------------------------------------------------------
+# Two-step pipeline: Grok X-search → Gemini decision
+# ---------------------------------------------------------------------------
+
+def call_grok_context_gemini(prompt: str, model: str = "gemini-3.1-flash-lite-preview",
+                             context_model: str = "grok-4.20-multi-agent-0309",
+                             max_retries: int = 3,
+                             thinking_level: str | None = "HIGH",
+                             cache_model: str | None = None,
+                             provider_call_models: list[str] | None = None) -> TradePlan:
+    """Two-step pipeline: Grok searches web/X for market context, Gemini trades.
+
+    Step 1: Grok 4.2 with web_search + x_search gathers real-time market intel
+    Step 2: That context is prepended to the trading prompt, then Gemini decides
+    """
+    cache_key = cache_model or f"grok_ctx_gemini_{model}"
+    cached = get_cached(cache_key, prompt)
+    if cached is not None:
+        return TradePlan(**cached)
+
+    # Step 1: Get market context from Grok with tools
+    context = ""
+    try:
+        from xai_sdk import Client
+        from xai_sdk.chat import system, user
+        from xai_sdk.tools import web_search, x_search
+
+        api_key = os.environ.get("XAI_API_KEY", "")
+        if api_key:
+            # Extract symbol from prompt for targeted search
+            import re as _re
+            symbol_match = _re.search(r'SYMBOL:\s*(\S+)', prompt)
+            symbol = symbol_match.group(1) if symbol_match else "the asset"
+
+            client = Client(api_key=api_key)
+            chat = client.chat.create(model=context_model, tools=[web_search(), x_search()])
+            chat.append(system(
+                "You are a financial research assistant. Search for the most recent and "
+                "relevant market information. Focus on: breaking news, earnings, analyst "
+                "upgrades/downgrades, macro events, whale movements, and social sentiment. "
+                "Return a brief summary (3-5 bullet points) of what you found."
+            ))
+            chat.append(user(
+                f"Search for the latest news and X/Twitter sentiment about {symbol}. "
+                f"What are the key market-moving factors right now?"
+            ))
+            response = chat.send()
+            context = response.content or ""
+            if provider_call_models is not None:
+                provider_call_models.append(context_model)
+    except Exception as e:
+        context = f"(context search failed: {e})"
+
+    # Step 2: Prepend context to prompt, call Gemini
+    if context:
+        enhanced_prompt = (
+            f"## REAL-TIME MARKET INTELLIGENCE (from web/X search):\n"
+            f"{context}\n\n"
+            f"Use the above intelligence to inform your trading decision.\n\n"
+            f"{prompt}"
+        )
+    else:
+        enhanced_prompt = prompt
+
+    return call_gemini(
+        enhanced_prompt,
+        model=model,
+        thinking_level=thinking_level,
+        cache_model=cache_key,
+        provider_call_models=provider_call_models,
+    )
+
+
+# ---------------------------------------------------------------------------
+# xAI Grok via OpenAI-compatible API (fallback / simpler path)
+# ---------------------------------------------------------------------------
+
+def call_xai_openai(prompt: str, model: str = "grok-4-1-fast", max_retries: int = 5,
+                    cache_model: str | None = None,
+                    provider_call_models: list[str] | None = None) -> TradePlan:
+    """Call xAI Grok via OpenAI-compatible API at api.x.ai/v1."""
+    cache_key = cache_model or model
+    cached = get_cached(cache_key, prompt)
+    if cached is not None:
+        return TradePlan(**cached)
+    if provider_call_models is not None:
+        provider_call_models.append(model)
+
+    from openai import OpenAI
+
+    api_key = os.environ.get("XAI_API_KEY", "")
+    if not api_key:
+        return TradePlan("hold", 0, 0, 0, "XAI_API_KEY not set")
+
+    client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
+
+    json_schema = {
+        "name": "trade_plan",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "required": ["direction", "buy_price", "sell_price", "confidence", "reasoning"],
+            "additionalProperties": False,
+            "properties": {
+                "direction": {"type": "string", "description": "long, short, or hold"},
+                "buy_price": {"type": "number", "description": "Limit entry price, 0 if no entry"},
+                "sell_price": {"type": "number", "description": "Take-profit price, 0 if no exit"},
+                "confidence": {"type": "number", "description": "Confidence 0.0-1.0"},
+                "reasoning": {"type": "string", "description": "Brief explanation"},
+            },
+        },
+    }
+
+    for attempt in range(max_retries):
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You are an expert trader. Produce a structured trading decision. confidence MUST be a decimal 0.0-1.0."},
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_schema", "json_schema": json_schema},
+                max_tokens=2048,
+                temperature=0.3,
+            )
+            data = json.loads(resp.choices[0].message.content)
+            plan = TradePlan(
+                direction=str(data.get("direction", "hold")).lower().strip(),
+                buy_price=float(data.get("buy_price", 0) or 0),
+                sell_price=float(data.get("sell_price", 0) or 0),
+                confidence=_normalize_confidence(data.get("confidence", 0)),
+                reasoning=str(data.get("reasoning", "")),
+            )
+            set_cached(cache_key, prompt, plan.__dict__)
+            return plan
+        except Exception as e:
+            _handle_retry(e, attempt, max_retries)
+    return TradePlan("hold", 0, 0, 0, "xAI API exhausted")
+
+
+# ---------------------------------------------------------------------------
+# Zhipu GLM (glm-5.1, etc.) — OpenAI-compatible API
+# ---------------------------------------------------------------------------
+
+def call_zhipu(prompt: str, model: str = "glm-5.1", max_retries: int = 5,
+               cache_model: str | None = None,
+               provider_call_models: list[str] | None = None) -> TradePlan:
+    """Call Zhipu GLM via OpenAI-compatible API at api.z.ai."""
+    cache_key = cache_model or model
+    cached = get_cached(cache_key, prompt)
+    if cached is not None:
+        return TradePlan(**cached)
+    if provider_call_models is not None:
+        provider_call_models.append(model)
+
+    api_key = os.environ.get("ZHIPU_API_KEY", "")
+    if not api_key:
+        return TradePlan("hold", 0, 0, 0, "ZHIPU_API_KEY not set")
+
+    from openai import OpenAI
+
+    # Try api.z.ai first, fallback to open.bigmodel.cn
+    client = OpenAI(
+        api_key=api_key,
+        base_url="https://open.bigmodel.cn/api/paas/v4",
+    )
+
+    for attempt in range(max_retries):
+        try:
+            json_instruction = (
+                "\n\nRespond with ONLY a JSON object (no markdown, no explanation): "
+                '{"direction": "long"|"short"|"hold", "buy_price": <number>, '
+                '"sell_price": <number>, "confidence": <0.0-1.0>, "reasoning": "<brief>"}'
+            )
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You are an expert trader. Return ONLY valid JSON."},
+                    {"role": "user", "content": prompt + json_instruction},
+                ],
+                max_tokens=1024,
+                temperature=0.3,
+            )
+            text = resp.choices[0].message.content.strip()
+            # Strip markdown fences if present
+            text = re.sub(r"^```(?:json)?\n?", "", text)
+            text = re.sub(r"\n?```$", "", text)
+            data = json.loads(text)
+            plan = TradePlan(
+                direction=str(data.get("direction", "hold")).lower().strip(),
+                buy_price=float(data.get("buy_price", 0) or 0),
+                sell_price=float(data.get("sell_price", 0) or 0),
+                confidence=_normalize_confidence(data.get("confidence", 0)),
+                reasoning=str(data.get("reasoning", "")),
+            )
+            set_cached(cache_key, prompt, plan.__dict__)
+            return plan
+        except Exception as e:
+            _handle_retry(e, attempt, max_retries)
+    return TradePlan("hold", 0, 0, 0, "Zhipu API exhausted")
+
+
+# ---------------------------------------------------------------------------
 # Codex CLI (GPT-5.x via ChatGPT Pro plan)
 # ---------------------------------------------------------------------------
 
@@ -624,6 +970,11 @@ PROVIDER_FNS = {
     "openai_responses": call_openai_responses,
     "anthropic": call_anthropic,
     "deepseek": call_deepseek,
+    "xai": call_xai,
+    "xai_tools": call_xai_with_tools,
+    "grok_ctx_gemini": call_grok_context_gemini,
+    "xai_openai": call_xai_openai,
+    "zhipu": call_zhipu,
     "codex": call_codex,
     "openrouter": call_openrouter,
 }
@@ -655,6 +1006,14 @@ MODEL_PROVIDERS = {
     # DeepSeek
     "deepseek-chat": "deepseek",
     "deepseek-reasoner": "deepseek",
+    # xAI Grok (via xai_sdk with structured Pydantic outputs)
+    "grok-4-1-fast": "xai",
+    "grok-4.20-reasoning": "xai",
+    "grok-4.20-multi-agent-0309": "xai",
+    "grok-4.20-0309-reasoning": "xai",
+    # Zhipu GLM
+    "glm-5.1": "zhipu",
+    "glm-4-plus": "zhipu",
 }
 
 
@@ -758,6 +1117,10 @@ def _resolve_provider_and_model(
                 resolved_provider = "anthropic"
         elif "deepseek" in resolved_model:
             resolved_provider = "deepseek"
+        elif "grok" in resolved_model:
+            resolved_provider = "xai"
+        elif "glm" in resolved_model:
+            resolved_provider = "zhipu"
         else:
             resolved_provider = "openai"
     return resolved_provider, resolved_model
@@ -832,6 +1195,14 @@ def call_llm(prompt: str, model: str, provider: Optional[str] = None,
                 model=resolved_model,
                 thinking=anthropic_thinking,
                 effort=reasoning_effort,
+                cache_model=cache_key_model,
+                provider_call_models=provider_models,
+            )
+        if provider_name == "xai":
+            return fn(
+                prompt_text,
+                model=resolved_model,
+                thinking=bool(thinking),
                 cache_model=cache_key_model,
                 provider_call_models=provider_models,
             )

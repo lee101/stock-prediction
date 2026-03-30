@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import struct
-from datetime import datetime, timezone
+import sys
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -46,6 +48,21 @@ def _make_forecast_frame(frame: pd.DataFrame, *, offset: float) -> pd.DataFrame:
     )
 
 
+def _make_close_frame(symbol: str, closes: list[float], *, freq: str = "h") -> pd.DataFrame:
+    index = pd.date_range("2026-03-10 00:00:00+00:00", periods=len(closes), freq=freq, tz="UTC")
+    return pd.DataFrame(
+        {
+            "timestamp": index,
+            "symbol": symbol,
+            "open": closes,
+            "high": closes,
+            "low": closes,
+            "close": closes,
+            "volume": [1_000] * len(closes),
+        }
+    )
+
+
 class _FakeBridge:
     def __init__(self, *, checkpoint_path: str, obs_size: int):
         self.checkpoint_path = Path(checkpoint_path)
@@ -82,6 +99,11 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
     with path.open("w") as handle:
         for row in rows:
             handle.write(json.dumps(row) + "\n")
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    with path.open() as handle:
+        return [json.loads(line) for line in handle if line.strip()]
 
 
 def test_build_crypto_rl_signal_map_uses_full_trained_universe(monkeypatch):
@@ -201,6 +223,276 @@ def test_load_recent_stock_edges_from_meta_log_prefers_latest_fresh_positive_edg
     )
 
     assert out == {"AAPL": 0.03, "NVDA": 0.025}
+
+
+@pytest.mark.parametrize(
+    ("discount_pct", "expected"),
+    [
+        (0.01, "mild_caution"),
+        (0.02, "mild_caution"),
+        (0.03, "soft_reduce"),
+        (0.05, "soft_reduce"),
+        (0.06, "hard_block"),
+    ],
+)
+def test_classify_crypto_sma_discount_respects_named_thresholds(discount_pct: float, expected: str):
+    assert orchestrator._classify_crypto_sma_discount(discount_pct) == expected
+
+
+def test_crypto_sma_discount_context_returns_none_without_valid_below_sma_signal():
+    assert orchestrator._crypto_sma_discount_context(_make_close_frame("BTCUSD", [100.0] * 23)) is None
+    assert orchestrator._crypto_sma_discount_context(_make_close_frame("BTCUSD", [100.0] * 24)) is None
+    assert orchestrator._crypto_sma_discount_context(_make_close_frame("BTCUSD", [0.0] * 24)) is None
+
+
+def test_crypto_sma_discount_context_returns_price_sma_and_discount():
+    frame = _make_close_frame("BTCUSD", [100.0] * 23 + [94.0])
+
+    current_price, sma_value, discount_pct = orchestrator._crypto_sma_discount_context(frame)
+
+    expected_sma = ((23 * 100.0) + 94.0) / 24.0
+    assert current_price == pytest.approx(94.0)
+    assert sma_value == pytest.approx(expected_sma)
+    assert discount_pct == pytest.approx((expected_sma - 94.0) / expected_sma)
+
+
+def test_fetch_history_frames_parallel_preserves_input_order_and_skips_missing():
+    delays = {"BTCUSD": 0.03, "ETHUSD": 0.0, "SOLUSD": 0.01}
+
+    def _fetch_one(symbol: str):
+        time.sleep(delays[symbol])
+        if symbol == "ETHUSD":
+            return None
+        return {"symbol": symbol}
+
+    out = orchestrator._fetch_history_frames_parallel(
+        ["BTCUSD", "ETHUSD", "SOLUSD"],
+        _fetch_one,
+        max_workers=3,
+    )
+
+    assert list(out) == ["BTCUSD", "SOLUSD"]
+    assert out["BTCUSD"] == {"symbol": "BTCUSD"}
+    assert out["SOLUSD"] == {"symbol": "SOLUSD"}
+
+
+def test_fetch_history_frames_parallel_skips_worker_exceptions_without_aborting_batch():
+    delays = {"BTCUSD": 0.03, "ETHUSD": 0.0, "SOLUSD": 0.01}
+
+    def _fetch_one(symbol: str):
+        time.sleep(delays[symbol])
+        if symbol == "ETHUSD":
+            raise RuntimeError("unexpected provider failure")
+        return {"symbol": symbol}
+
+    out = orchestrator._fetch_history_frames_parallel(
+        ["BTCUSD", "ETHUSD", "SOLUSD"],
+        _fetch_one,
+        max_workers=3,
+    )
+
+    assert list(out) == ["BTCUSD", "SOLUSD"]
+    assert out["BTCUSD"] == {"symbol": "BTCUSD"}
+    assert out["SOLUSD"] == {"symbol": "SOLUSD"}
+
+
+def test_fetch_history_frames_parallel_serial_mode_still_isolates_worker_exceptions():
+    def _fetch_one(symbol: str):
+        if symbol == "ETHUSD":
+            raise RuntimeError("unexpected provider failure")
+        return {"symbol": symbol}
+
+    out = orchestrator._fetch_history_frames_parallel(
+        ["BTCUSD", "ETHUSD", "SOLUSD"],
+        _fetch_one,
+        max_workers=1,
+    )
+
+    assert list(out) == ["BTCUSD", "SOLUSD"]
+    assert out["BTCUSD"] == {"symbol": "BTCUSD"}
+    assert out["SOLUSD"] == {"symbol": "SOLUSD"}
+
+
+def test_fetch_crypto_bars_preserves_symbol_order_when_requests_complete_out_of_order(monkeypatch):
+    class _FakeCryptoBarsRequest:
+        def __init__(self, **kwargs):
+            self.symbol_or_symbols = kwargs["symbol_or_symbols"]
+
+    class _FakeClient:
+        _delays = {"BTC/USD": 0.03, "ETH/USD": 0.0, "SOL/USD": 0.01}
+
+        def get_crypto_bars(self, request):
+            time.sleep(self._delays[request.symbol_or_symbols])
+            return SimpleNamespace(df={"request_symbol": request.symbol_or_symbols})
+
+    fake_alpaca = ModuleType("alpaca")
+    fake_data = ModuleType("alpaca.data")
+    fake_requests = ModuleType("alpaca.data.requests")
+    fake_requests.CryptoBarsRequest = _FakeCryptoBarsRequest
+    fake_data.requests = fake_requests
+    fake_alpaca.data = fake_data
+    monkeypatch.setitem(sys.modules, "alpaca", fake_alpaca)
+    monkeypatch.setitem(sys.modules, "alpaca.data", fake_data)
+    monkeypatch.setitem(sys.modules, "alpaca.data.requests", fake_requests)
+    monkeypatch.setattr(orchestrator, "_select_symbol_frame", lambda raw_df, request_sym: raw_df)
+
+    out = orchestrator._fetch_crypto_bars(
+        _FakeClient(),
+        ["BTCUSD", "ETHUSD", "SOLUSD"],
+        datetime(2026, 3, 29, 0, 0, tzinfo=timezone.utc),
+        timeframe="1H",
+        lookback=timedelta(hours=4),
+        limit=4,
+    )
+
+    assert list(out) == ["BTCUSD", "ETHUSD", "SOLUSD"]
+    assert out["BTCUSD"] == {"request_symbol": "BTC/USD"}
+    assert out["ETHUSD"] == {"request_symbol": "ETH/USD"}
+    assert out["SOLUSD"] == {"request_symbol": "SOL/USD"}
+
+
+def test_fetch_stock_history_frames_skips_failed_symbol_without_losing_others(monkeypatch):
+    class _FakeStockBarsRequest:
+        def __init__(self, **kwargs):
+            self.symbol_or_symbols = kwargs["symbol_or_symbols"]
+            self.feed = kwargs["feed"]
+            self.timeframe = kwargs["timeframe"]
+
+    class _FakeClient:
+        def get_stock_bars(self, request):
+            if request.symbol_or_symbols == "NVDA":
+                raise RuntimeError("rate limit")
+            return SimpleNamespace(df={"request_symbol": request.symbol_or_symbols})
+
+    fake_alpaca = ModuleType("alpaca")
+    fake_data = ModuleType("alpaca.data")
+    fake_requests = ModuleType("alpaca.data.requests")
+    fake_requests.StockBarsRequest = _FakeStockBarsRequest
+    fake_enums = ModuleType("alpaca.data.enums")
+    fake_enums.DataFeed = SimpleNamespace(IEX="IEX")
+    fake_timeframe = ModuleType("alpaca.data.timeframe")
+    fake_timeframe.TimeFrame = SimpleNamespace(Hour="1H")
+    fake_data.requests = fake_requests
+    fake_data.enums = fake_enums
+    fake_data.timeframe = fake_timeframe
+    fake_alpaca.data = fake_data
+    monkeypatch.setitem(sys.modules, "alpaca", fake_alpaca)
+    monkeypatch.setitem(sys.modules, "alpaca.data", fake_data)
+    monkeypatch.setitem(sys.modules, "alpaca.data.requests", fake_requests)
+    monkeypatch.setitem(sys.modules, "alpaca.data.enums", fake_enums)
+    monkeypatch.setitem(sys.modules, "alpaca.data.timeframe", fake_timeframe)
+    monkeypatch.setattr(orchestrator, "_select_symbol_frame", lambda raw_df, symbol: raw_df)
+
+    out = orchestrator._fetch_stock_history_frames(
+        _FakeClient(),
+        ["AAPL", "NVDA", "MSFT"],
+        datetime(2026, 3, 29, 0, 0, tzinfo=timezone.utc),
+        lookback_hours=4,
+    )
+
+    assert list(out) == ["AAPL", "MSFT"]
+    assert out["AAPL"] == {"request_symbol": "AAPL"}
+    assert out["MSFT"] == {"request_symbol": "MSFT"}
+
+
+def test_append_cycle_event_writes_structured_jsonl(tmp_path: Path):
+    event_log = tmp_path / "orchestrator_cycle_events.jsonl"
+
+    orchestrator._append_cycle_event(
+        "cycle_start",
+        event_log=event_log,
+        logged_at=datetime(2026, 3, 29, 1, 2, 3, tzinfo=timezone.utc),
+        cycle_id="cycle-123",
+        dry_run=True,
+        crypto_symbols=["BTCUSD"],
+    )
+
+    rows = _read_jsonl(event_log)
+
+    assert rows == [
+        {
+            "event_type": "cycle_start",
+            "logged_at": "2026-03-29T01:02:03Z",
+            "cycle_id": "cycle-123",
+            "dry_run": True,
+            "crypto_symbols": ["BTCUSD"],
+        }
+    ]
+
+
+def test_run_cycle_with_runtime_logging_writes_error_event(tmp_path: Path, monkeypatch):
+    event_log = tmp_path / "orchestrator_cycle_events.jsonl"
+
+    def _boom(**kwargs):
+        raise RuntimeError(f"boom for {kwargs['crypto_symbols'][0]}")
+
+    monkeypatch.setattr(orchestrator, "run_cycle", _boom)
+
+    ok = orchestrator._run_cycle_with_runtime_logging(
+        crypto_symbols=["BTCUSD"],
+        stock_symbols=["NVDA", "MSFT"],
+        model="gemini-3.1-flash-lite-preview",
+        thinking_level="HIGH",
+        review_thinking_level="LOW",
+        reprompt_passes=2,
+        reprompt_policy="actionable",
+        review_max_confidence=0.6,
+        review_model="gemini-3.1-pro-preview",
+        dry_run=True,
+        event_log=event_log,
+    )
+
+    rows = _read_jsonl(event_log)
+
+    assert ok is False
+    assert [row["event_type"] for row in rows] == ["cycle_start", "cycle_error"]
+    start_row, error_row = rows
+    assert start_row["cycle_id"] == error_row["cycle_id"]
+    assert error_row["dry_run"] is True
+    assert error_row["crypto_symbol_count"] == 1
+    assert error_row["stock_symbol_count"] == 2
+    assert error_row["review_thinking_level"] == "LOW"
+    assert error_row["error_type"] == "RuntimeError"
+    assert error_row["error"] == "boom for BTCUSD"
+    assert "RuntimeError: boom for BTCUSD" in error_row["traceback"]
+    assert float(error_row["duration_seconds"]) >= 0.0
+
+
+def test_run_cycle_with_runtime_logging_writes_success_event(tmp_path: Path, monkeypatch):
+    event_log = tmp_path / "orchestrator_cycle_events.jsonl"
+    captured: dict[str, object] = {}
+
+    def _ok(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(orchestrator, "run_cycle", _ok)
+
+    ok = orchestrator._run_cycle_with_runtime_logging(
+        crypto_symbols=["BTCUSD", "ETHUSD"],
+        stock_symbols=["NVDA"],
+        model="gemini-3.1-flash-lite-preview",
+        thinking_level="HIGH",
+        review_thinking_level=None,
+        reprompt_passes=1,
+        reprompt_policy="always",
+        review_max_confidence=None,
+        review_model=None,
+        dry_run=False,
+        event_log=event_log,
+    )
+
+    rows = _read_jsonl(event_log)
+
+    assert ok is True
+    assert captured["crypto_symbols"] == ["BTCUSD", "ETHUSD"]
+    assert captured["stock_symbols"] == ["NVDA"]
+    assert [row["event_type"] for row in rows] == ["cycle_start", "cycle_success"]
+    start_row, success_row = rows
+    assert start_row["cycle_id"] == success_row["cycle_id"]
+    assert success_row["dry_run"] is False
+    assert success_row["crypto_symbol_count"] == 2
+    assert success_row["stock_symbol_count"] == 1
+    assert float(success_row["duration_seconds"]) >= 0.0
 
 
 def test_load_recent_stock_edges_from_meta_log_prefers_latest_real_cycle_over_isolated_signal_rows(tmp_path: Path):

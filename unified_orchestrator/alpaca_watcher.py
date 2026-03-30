@@ -22,6 +22,22 @@ from typing import Optional
 
 from loguru import logger
 
+CRYPTO_SAFETY_FEE_BPS = 16.0
+CRYPTO_EXIT_BUFFER_BPS = 5.0
+
+
+def _round_trip_profit_floor(
+    entry_price: float,
+    *,
+    fee_bps: float = CRYPTO_SAFETY_FEE_BPS,
+    extra_buffer_bps: float = CRYPTO_EXIT_BUFFER_BPS,
+) -> float:
+    entry = float(entry_price or 0.0)
+    if entry <= 0.0:
+        return 0.0
+    total_bps = max(float(fee_bps), 0.0) * 2.0 + max(float(extra_buffer_bps), 0.0)
+    return entry * (1.0 + total_bps / 10_000.0)
+
 
 @dataclass
 class OrderPair:
@@ -208,6 +224,14 @@ class AlpacaCryptoWatcher(threading.Thread):
         sell_qty = math.floor(pair.current_qty * 1e8 - 1) / 1e8
         if sell_qty <= 0:
             return
+
+        safe_sell_price = max(pair.sell_price, _round_trip_profit_floor(pair.buy_price))
+        if safe_sell_price > pair.sell_price:
+            logger.warning(
+                f"Watcher: {pair.symbol} raised TP sell from ${pair.sell_price:.2f} "
+                f"to fee-aware floor ${safe_sell_price:.2f}"
+            )
+            pair.sell_price = safe_sell_price
 
         logger.info(f"Watcher: {pair.symbol} placing TP sell {sell_qty:.8f} @ ${pair.sell_price:.2f}")
         if self.dry_run:

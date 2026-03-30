@@ -14,6 +14,7 @@ from pufferlib_market.early_stopper import (
     OverfitDetector,
     PolynomialEarlyStopper,
     combined_score,
+    effective_prune_floor,
 )
 
 
@@ -57,6 +58,17 @@ class TestCombinedScore:
     def test_negative_values(self):
         result = combined_score(-1.0, -2.0, 0.5)
         assert abs(result - (-1.5)) < 1e-9
+
+
+class TestEffectivePruneFloor:
+    def test_uses_baseline_when_best_unknown(self):
+        assert effective_prune_floor(-math.inf, 1.25) == pytest.approx(1.25)
+
+    def test_prefers_stronger_best_known(self):
+        assert effective_prune_floor(1.5, 1.0) == pytest.approx(1.5)
+
+    def test_ignores_non_finite_baseline(self):
+        assert effective_prune_floor(0.8, math.inf) == pytest.approx(0.8)
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +179,26 @@ class TestPolynomialEarlyStopper:
             s.add_observation(i * 0.1, float(i))
         proj = s.projected_final()
         assert proj is not None
+
+    def test_linear_projection_can_be_more_robust(self):
+        raw = PolynomialEarlyStopper()
+        clipped = PolynomialEarlyStopper(clip_abs=6.0)
+        for stopper in (raw, clipped):
+            stopper.add_observation(0.25, 0.1)
+            stopper.add_observation(0.50, 40.0)
+        raw_proj = raw.projected_final_linear()
+        clipped_proj = clipped.projected_final_linear()
+        assert raw_proj is not None
+        assert clipped_proj is not None
+        assert clipped_proj < raw_proj
+
+    def test_should_prune_supports_linear_projection(self):
+        s = PolynomialEarlyStopper()
+        s.add_observation(0.25, 0.1)
+        s.add_observation(0.50, 0.2)
+        prune, proj = s.should_prune(best_known=1.0, tolerance=0.7, method="linear")
+        assert prune is True
+        assert proj == pytest.approx(0.4)
 
     def test_prune_borderline_at_tolerance(self):
         # projected = best_known * tolerance exactly → no prune (strict <)

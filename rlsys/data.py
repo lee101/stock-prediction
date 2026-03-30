@@ -50,7 +50,7 @@ def prepare_features(df: pd.DataFrame, config: DataConfig) -> PreparedData:
         features["ema_ratio"] = features["ema_fast"] / (features["ema_slow"] + 1e-12)
         features["volatility"] = returns.rolling(window=config.window_size).std().fillna(0.0)
 
-    features = features.fillna(method="ffill").fillna(method="bfill")
+    features = features.ffill().bfill()
     tensor_features = torch.tensor(features.values, dtype=torch.float32)
     tensor_targets = torch.tensor(target.values, dtype=torch.float32)
     return PreparedData(features=tensor_features, targets=tensor_targets, index=df.index)

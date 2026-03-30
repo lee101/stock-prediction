@@ -761,6 +761,9 @@ def run_worksteal_backtest(
     trades: List[TradeLog] = []
     equity_rows: List[Dict] = []
     last_exit: Dict[str, pd.Timestamp] = {}
+    initial_holdings_seeded = False
+    seeded_positions_rebalanced = False
+    starting_equity = float(config.initial_cash)
 
     for i, date in enumerate(all_dates):
         current_bars: Dict[str, pd.Series] = {}
@@ -778,6 +781,39 @@ def run_worksteal_backtest(
 
         if not current_bars:
             continue
+
+        if not initial_holdings_seeded:
+            base_qty += _seed_initial_holdings(
+                date=date,
+                current_bars=current_bars,
+                config=config,
+                positions=positions,
+                base_symbol=base_symbol,
+            )
+            starting_equity = _compute_starting_equity(config, current_bars)
+            initial_holdings_seeded = True
+
+        if initial_holdings_seeded and not seeded_positions_rebalanced:
+            current_prices = {sym: float(bar["close"]) for sym, bar in current_bars.items()}
+            keep_symbols = _compute_rebalance_keep_symbols(
+                date=date,
+                current_bars=current_bars,
+                history=history,
+                last_exit=last_exit,
+                config=config,
+                base_symbol=base_symbol,
+            )
+            cash = _apply_seeded_rebalance(
+                timestamp=date,
+                current_prices=current_prices,
+                positions=positions,
+                trades=trades,
+                last_exit=last_exit,
+                cash=cash,
+                config=config,
+                keep_symbols=keep_symbols,
+            )
+            seeded_positions_rebalanced = True
 
         # Compute current equity for position sizing
         inv_value = 0.0
@@ -995,8 +1031,9 @@ def run_worksteal_backtest(
 
             candidates.sort(key=lambda x: x[2], reverse=True)
 
-            # Use initial_cash for sizing shorts to prevent compounding spiral
-            base_equity = config.initial_cash
+            # Size new entries from starting equity to avoid compounding while
+            # still respecting seeded start-state holdings.
+            base_equity = starting_equity
             visible_candidates = candidates[:slots]
             for rank, (sym, direction, score, fill_price, bar) in enumerate(visible_candidates, start=1):
                 if sym in positions:

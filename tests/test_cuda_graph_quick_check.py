@@ -10,6 +10,7 @@ import sys
 import io
 from pathlib import Path
 
+import pytest
 import torch
 
 # Ensure TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS is set before any torch imports
@@ -31,7 +32,7 @@ def test_cuda_graph_warnings():
 
     if not torch.cuda.is_available():
         print("⚠️  CUDA not available - test not applicable")
-        return True
+        pytest.skip("CUDA not available")
 
     print(f"\nDevice: {torch.cuda.get_device_name(0)}")
     print(f"TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS: {os.environ.get('TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS')}")
@@ -113,18 +114,18 @@ def test_cuda_graph_warnings():
     if not issues:
         print("✅ SUCCESS: No CUDA graph issues detected!")
         print("\nCUDA graphs should be fully enabled for Toto inference.")
-        return True
-    else:
-        print("Issues detected:\n")
-        for issue in issues:
-            print(issue)
+        return
 
-        print("\n" + "="*80)
-        print("FULL COMPILATION LOG:")
-        print("="*80)
-        print(compile_logs)
+    print("Issues detected:\n")
+    for issue in issues:
+        print(issue)
 
-        return False
+    print("\n" + "="*80)
+    print("FULL COMPILATION LOG:")
+    print("="*80)
+    print(compile_logs)
+
+    pytest.fail("CUDA graph warnings detected")
 
 
 if __name__ == "__main__":

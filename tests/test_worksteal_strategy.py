@@ -75,6 +75,52 @@ class TestWorkStealBacktest:
         buys = [t for t in trades if t.side == "buy"]
         assert len(buys) == 0
 
+    def test_initial_holdings_seed_start_contributes_equity_and_metrics(self):
+        bars = {"BTCUSD": make_bars([100 + i for i in range(30)], symbol="BTCUSD")}
+        config = WorkStealConfig(
+            initial_cash=0.0,
+            initial_holdings={"BTCUSD": 1.0},
+            profit_target_pct=10.0,
+            stop_loss_pct=0.50,
+            max_hold_days=0,
+            lookback_days=10,
+        )
+
+        eq, trades, metrics = run_worksteal_backtest(bars, config)
+
+        assert trades == []
+        assert eq["equity"].iloc[0] == pytest.approx(100.0)
+        assert eq["equity"].iloc[-1] == pytest.approx(129.0)
+        assert metrics["final_equity"] == pytest.approx(129.0)
+        assert metrics["total_return_pct"] > 0.0
+
+    def test_seeded_base_asset_can_fund_alt_entry(self):
+        eth_prices = [100 + i for i in range(25)] + [125 + i for i in range(15)]
+        alt_prices = [100] * 25 + [88, 85, 84, 86, 90, 95, 100, 105, 108, 110, 112, 114, 116, 118, 120]
+        bars = {
+            "ETHUSD": make_bars(eth_prices, symbol="ETHUSD"),
+            "ALTUSD": make_bars(alt_prices, symbol="ALTUSD"),
+        }
+        config = WorkStealConfig(
+            initial_cash=0.0,
+            initial_holdings={"ETHUSD": 1.0},
+            dip_pct=0.10,
+            proximity_pct=0.02,
+            lookback_days=20,
+            profit_target_pct=0.10,
+            stop_loss_pct=0.08,
+            max_hold_days=30,
+            base_asset_symbol="ETHUSD",
+            base_asset_rebalance_min_cash=0.0,
+        )
+
+        eq, trades, metrics = run_worksteal_backtest(bars, config)
+
+        assert any(t.symbol == "ALTUSD" and t.side == "buy" for t in trades)
+        assert eq["base_asset_qty"].max() == pytest.approx(1.0)
+        assert eq["base_asset_qty"].min() < 1.0
+        assert metrics["final_equity"] > 0.0
+
     def test_dip_triggers_buy(self):
         prices = list(range(100, 130))
         prices += [120, 118, 117, 116]

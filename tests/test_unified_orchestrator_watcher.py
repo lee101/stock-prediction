@@ -113,6 +113,35 @@ def test_watcher_places_sell_on_buy_fill():
     assert watcher.fill_log[0]["side"] == "buy"
 
 
+def test_watcher_raises_sell_to_fee_aware_floor_on_buy_fill():
+    client = _FakeAlpacaClient()
+    pair = OrderPair(
+        symbol="ETHUSD",
+        buy_price=2004.72,
+        sell_price=2005.00,
+        target_qty=4.82232,
+        buy_order_id="buy-eth-1",
+    )
+
+    watcher = AlpacaCryptoWatcher(
+        alpaca_client=client,
+        pairs=[pair],
+        expiry_minutes=55,
+        poll_interval=1,
+    )
+
+    client._open_orders = []
+    client.positions = [SimpleNamespace(symbol="ETH/USD", qty=4.82232)]
+
+    watcher._start_time = time.time()
+    watcher._poll_orders()
+
+    assert len(client.submitted_orders) == 1
+    sell = client.submitted_orders[0]
+    expected_floor = round(2004.72 * (1.0 + (2 * 16.0 + 5.0) / 10_000.0), 2)
+    assert sell.limit_price == pytest.approx(expected_floor)
+
+
 def test_watcher_oscillates_buy_sell():
     """After sell fills, watcher re-enters buy if time remains."""
     client = _FakeAlpacaClient()

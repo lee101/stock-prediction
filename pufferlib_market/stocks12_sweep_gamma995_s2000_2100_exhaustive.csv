@@ -67,3 +67,12 @@ timestamp,seed_dir,ckpt_type,n_windows,med,p10,p90,worst,neg,checkpoint
 2026-03-28T22:56:06Z,tp05_s2054,best_neg.pt,111,-10.53,-23.42,8.84,-29.95,80,pufferlib_market/checkpoints/stocks12_sweep_gamma995_s2000_2100/tp05_s2054/best_neg.pt
 2026-03-28T23:05:10Z,tp05_s2055,best_neg.pt,111,-1.22,-16.73,8.24,-35.66,60,pufferlib_market/checkpoints/stocks12_sweep_gamma995_s2000_2100/tp05_s2055/best_neg.pt
 2026-03-28T23:14:25Z,tp05_s2056,best_neg.pt,111,-0.31,-9.65,4.18,-12.90,57,pufferlib_market/checkpoints/stocks12_sweep_gamma995_s2000_2100/tp05_s2056/best_neg.pt
+2026-03-28T23:30:01Z,tp05_s2057,best_neg.pt,111,-10.88,-28.18,-0.50,-38.17,102,pufferlib_market/checkpoints/stocks12_sweep_gamma995_s2000_2100/tp05_s2057/best_neg.pt
+2026-03-28T23:49:44Z,tp05_s2058,best_neg.pt,111,-4.43,-7.42,-1.13,-11.53,106,pufferlib_market/checkpoints/stocks12_sweep_gamma995_s2000_2100/tp05_s2058/best_neg.pt
+2026-03-29T00:02:38Z,tp05_s2059,best_neg.pt,111,-9.19,-18.45,-1.63,-21.97,106,pufferlib_market/checkpoints/stocks12_sweep_gamma995_s2000_2100/tp05_s2059/best_neg.pt
+2026-03-29T00:12:02Z,tp05_s2060,best_neg.pt,111,-5.13,-14.86,8.06,-16.65,67,pufferlib_market/checkpoints/stocks12_sweep_gamma995_s2000_2100/tp05_s2060/best_neg.pt
+2026-03-29T00:23:48Z,tp05_s2061,best_neg.pt,111,-11.64,-19.85,-1.53,-26.46,103,pufferlib_market/checkpoints/stocks12_sweep_gamma995_s2000_2100/tp05_s2061/best_neg.pt
+2026-03-29T00:37:00Z,tp05_s2062,best_neg.pt,111,-15.85,-31.40,2.79,-37.20,91,pufferlib_market/checkpoints/stocks12_sweep_gamma995_s2000_2100/tp05_s2062/best_neg.pt
+2026-03-29T00:44:54Z,tp05_s2063,best.pt,111,-8.77,-21.34,4.25,-27.65,83,pufferlib_market/checkpoints/stocks12_sweep_gamma995_s2000_2100/tp05_s2063/best.pt
+2026-03-29T00:45:01Z,tp05_s2063,best_neg.pt,111,-17.01,-24.80,6.80,-30.86,89,pufferlib_market/checkpoints/stocks12_sweep_gamma995_s2000_2100/tp05_s2063/best_neg.pt
+2026-03-29T00:47:26Z,tp05_s2002,best.pt,111,-2.31,-21.96,12.23,-28.69,62,pufferlib_market/checkpoints/stocks12_sweep_gamma995_s2000_2100/tp05_s2002/best.pt

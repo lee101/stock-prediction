@@ -193,7 +193,7 @@ class SymbolFrameBuilder:
         work["range_pct"] = ((work["high"] - work["low"]) / work["close"].clip(lower=1e-6)).shift(1)
         work["volume_z"] = self._zscore(work["volume"], window=60).shift(1)
         work["day_sin"], work["day_cos"] = self._cycle_features(work["date"].dt.dayofweek, period=7)
-        base = work["close"].shift(1).fillna(method="ffill").clip(lower=1e-6)
+        base = work["close"].shift(1).ffill().clip(lower=1e-6)
         work["chronos_close_delta"] = (work["predicted_close"] - base) / base
         work["chronos_high_delta"] = (work["predicted_high"] - base) / base
         work["chronos_low_delta"] = (base - work["predicted_low"]) / base

@@ -19,6 +19,7 @@ from binance_worksteal.trade_live import (
     build_runtime_config,
     load_neural_model,
     log_event,
+    log_trade,
     normalize_live_positions,
     plan_legacy_rebalance_exits,
     prepare_neural_features,
@@ -720,6 +721,15 @@ def test_log_event_writes_jsonl(monkeypatch, tmp_path):
     assert json.loads(lines[0])["value"] == 42
     assert json.loads(lines[1])["value"] == 99
     assert "ts" in json.loads(lines[0])
+
+
+def test_log_trade_writes_jsonl(monkeypatch, tmp_path):
+    monkeypatch.setattr("binance_worksteal.trade_live.LOG_FILE", tmp_path / "trade_log.jsonl")
+    log_trade({"symbol": "BTCFDUSD", "side": "buy"})
+
+    lines = (tmp_path / "trade_log.jsonl").read_text().strip().split("\n")
+    assert len(lines) == 1
+    assert json.loads(lines[0]) == {"symbol": "BTCFDUSD", "side": "buy"}
 
 
 def test_parser_entry_poll_and_health_report_args():

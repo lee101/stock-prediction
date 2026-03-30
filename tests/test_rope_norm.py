@@ -136,6 +136,20 @@ class TestApplyRope:
             assert q_out.dtype == dtype
             assert k_out.dtype == dtype
 
+    def test_output_dtype_preserved_in_pytorch_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        B, T, H, D = 2, 8, 4, 32
+        inv_freq = _make_inv_freq(D)
+        cos, sin = _make_cos_sin(inv_freq, T)
+        q = torch.randn(B, T, H, D, device=DEVICE, dtype=torch.bfloat16)
+        k = torch.randn(B, T, H, D, device=DEVICE, dtype=torch.bfloat16)
+
+        monkeypatch.setattr("binanceneural.kernels.rope.HAS_TRITON", False)
+
+        q_out, k_out = apply_rope(q, k, cos, sin)
+
+        assert q_out.dtype == torch.bfloat16
+        assert k_out.dtype == torch.bfloat16
+
 
 class TestApplyRopeFused:
     """Tests for apply_rope_fused (computes cos/sin internally from inv_freq)."""
@@ -176,6 +190,19 @@ class TestApplyRopeFused:
             f"Q max_diff={(q_out.float()-q_ref.float()).abs().max()}"
         assert torch.allclose(k_out.float(), k_ref.float(), atol=1e-4), \
             f"K max_diff={(k_out.float()-k_ref.float()).abs().max()}"
+
+    def test_fallback_preserves_bf16_dtype(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        B, T, H, D = 2, 8, 4, 32
+        inv_freq = _make_inv_freq(D)
+        q = torch.randn(B, T, H, D, device=DEVICE, dtype=torch.bfloat16)
+        k = torch.randn(B, T, H, D, device=DEVICE, dtype=torch.bfloat16)
+
+        monkeypatch.setattr("binanceneural.kernels.rope.HAS_TRITON", False)
+
+        q_out, k_out = apply_rope_fused(q, k, inv_freq)
+
+        assert q_out.dtype == torch.bfloat16
+        assert k_out.dtype == torch.bfloat16
 
 
 # ---------------------------------------------------------------------------
