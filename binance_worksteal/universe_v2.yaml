@@ -230,12 +230,7 @@ symbols:
     has_lora: false
     min_notional: 10.0
 
-  - symbol: HYPEUSD
-    usdt_pair: HYPEUSDT
-    fee_tier: usdt
-    margin_eligible: true
-    has_lora: false
-    min_notional: 10.0
+  # HYPEUSD removed: HYPEUSDT not a valid Binance margin symbol (2026-03-31)
 
   - symbol: FETUSD
     usdt_pair: FETUSDT
@@ -504,12 +499,7 @@ symbols:
     has_lora: false
     min_notional: 10.0
 
-  - symbol: KASUSD
-    usdt_pair: KASUSDT
-    fee_tier: usdt
-    margin_eligible: true
-    has_lora: false
-    min_notional: 10.0
+  # KASUSD removed: KASUSDT not a valid Binance margin symbol (2026-03-31)
 
   - symbol: ONDOUSD
     usdt_pair: ONDOUSDT
