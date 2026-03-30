@@ -22,6 +22,16 @@ import torch
 import torch.nn as nn
 
 from pufferlib_market.hourly_replay import MktdData, read_mktd, simulate_daily_policy
+from pufferlib_market.checkpoint_loader import (
+    build_action_grid_summary_line,
+    format_action_grid_override_note,
+    build_checkpoint_summary_lines,
+    build_cli_policy_config_line,
+    build_runtime_summary_line,
+    load_checkpoint_payload,
+    load_policy_from_checkpoint,
+    resolve_checkpoint_action_grid_config,
+)
 from pufferlib_market.metrics import annualize_total_return
 
 
@@ -118,6 +128,29 @@ class ResidualTradingPolicy(nn.Module):
             return logits.argmax(dim=-1)
         from torch.distributions import Categorical
         return Categorical(logits=logits).sample()
+
+
+def _load_policy_from_checkpoint(
+    *,
+    ckpt,
+    obs_size: int,
+    num_actions: int,
+    arch: str,
+    hidden_size: int,
+    device: torch.device,
+) -> tuple[nn.Module, str, int]:
+    return load_policy_from_checkpoint(
+        ckpt=ckpt,
+        obs_size=obs_size,
+        num_actions=num_actions,
+        arch=arch,
+        hidden_size=hidden_size,
+        device=device,
+        mlp_factory=lambda obs, acts, hidden: TradingPolicy(obs, acts, hidden=hidden),
+        resmlp_factory=lambda obs, acts, hidden, num_blocks: ResidualTradingPolicy(
+            obs, acts, hidden=hidden, num_blocks=num_blocks
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -369,35 +402,66 @@ def main():
     num_symbols = data.num_symbols
     print(f"Data: {num_symbols} symbols, {data.num_timesteps} timesteps")
 
-    ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
-    if "action_allocation_bins" in ckpt:
-        args.action_allocation_bins = max(1, int(ckpt["action_allocation_bins"]))
-    if "action_level_bins" in ckpt:
-        args.action_level_bins = max(1, int(ckpt["action_level_bins"]))
-    if "action_max_offset_bps" in ckpt:
-        args.action_max_offset_bps = max(0.0, float(ckpt["action_max_offset_bps"]))
+    ckpt = load_checkpoint_payload(args.checkpoint, map_location=device)
+    requested_action_allocation_bins = args.action_allocation_bins
+    requested_action_level_bins = args.action_level_bins
+    requested_action_max_offset_bps = args.action_max_offset_bps
+    (
+        args.action_allocation_bins,
+        args.action_level_bins,
+        args.action_max_offset_bps,
+    ) = resolve_checkpoint_action_grid_config(
+        ckpt,
+        action_allocation_bins=requested_action_allocation_bins,
+        action_level_bins=requested_action_level_bins,
+        action_max_offset_bps=requested_action_max_offset_bps,
+    )
 
     features_per_sym = data.features.shape[2]
     obs_size = num_symbols * features_per_sym + 5 + num_symbols
     per_symbol_actions = max(1, int(args.action_allocation_bins)) * max(1, int(args.action_level_bins))
     num_actions = 1 + 2 * num_symbols * per_symbol_actions
 
-    print(f"obs_size={obs_size}, num_actions={num_actions}, arch={args.arch}")
-    print(f"episode_len={args.episode_len}, stride={args.stride}, deterministic={args.deterministic}")
+    policy, effective_arch, effective_hidden_size = _load_policy_from_checkpoint(
+        ckpt=ckpt,
+        obs_size=obs_size,
+        num_actions=num_actions,
+        arch=args.arch,
+        hidden_size=args.hidden_size,
+        device=device,
+    )
 
-    if args.arch == "resmlp":
-        policy = ResidualTradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
-    else:
-        policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size).to(device)
-    policy.load_state_dict(ckpt["model"], strict=False)
+    print(f"obs_size={obs_size}, num_actions={num_actions}")
+    print(f"Window config: episode_len={args.episode_len}, stride={args.stride}")
+    print(build_cli_policy_config_line(arch=args.arch, hidden_size=args.hidden_size))
+    print(
+        build_action_grid_summary_line(
+            action_allocation_bins=args.action_allocation_bins,
+            action_level_bins=args.action_level_bins,
+            action_max_offset_bps=args.action_max_offset_bps,
+        )
+    )
+    action_grid_override_note = format_action_grid_override_note(
+        requested_allocation_bins=requested_action_allocation_bins,
+        requested_level_bins=requested_action_level_bins,
+        requested_max_offset_bps=requested_action_max_offset_bps,
+        effective_allocation_bins=args.action_allocation_bins,
+        effective_level_bins=args.action_level_bins,
+        effective_max_offset_bps=args.action_max_offset_bps,
+    )
+    if action_grid_override_note is not None:
+        print(action_grid_override_note)
+    print(build_runtime_summary_line(device=device, deterministic=args.deterministic))
+    for line in build_checkpoint_summary_lines(
+        ckpt=ckpt,
+        requested_arch=args.arch,
+        requested_hidden_size=args.hidden_size,
+        effective_arch=effective_arch,
+        effective_hidden_size=effective_hidden_size,
+        checkpoint_path=args.checkpoint,
+    ):
+        print(line)
     policy.eval()
-    best_return = ckpt.get("best_return")
-    if isinstance(best_return, (int, float, np.floating)):
-        best_return_label = f"{float(best_return):.4f}"
-    else:
-        best_return_label = "?"
-    print(f"Loaded checkpoint: update={ckpt.get('update', '?')}, "
-          f"train_best_return={best_return_label}")
 
     policy_fn = _build_policy_fn(
         policy, device,
