@@ -279,9 +279,9 @@ class StockDataProcessor:
         width = frame["bb_width"].replace(0.0, np.nan)
         frame["bb_position"] = (close - frame["bb_lower"]) / width.replace(np.nan, 1.0)
 
-        frame["price_change"] = close.pct_change().fillna(0.0)
-        frame["price_change_2"] = close.pct_change(periods=2).fillna(0.0)
-        frame["price_change_5"] = close.pct_change(periods=5).fillna(0.0)
+        frame["price_change"] = close.pct_change(fill_method=None).fillna(0.0)
+        frame["price_change_2"] = close.pct_change(periods=2, fill_method=None).fillna(0.0)
+        frame["price_change_5"] = close.pct_change(periods=5, fill_method=None).fillna(0.0)
 
         frame["high_low_ratio"] = (high / low.replace(0.0, np.nan)).fillna(1.0)
         frame["close_open_ratio"] = (close / frame['open'].replace(0.0, np.nan)).fillna(1.0)
@@ -289,7 +289,7 @@ class StockDataProcessor:
         frame["volume_ma"] = _rolling(volume, 20).mean()
         frame["volume_ratio"] = (volume / frame["volume_ma"].replace(0.0, np.nan)).fillna(0.0)
 
-        returns = close.pct_change().fillna(0.0)
+        returns = close.pct_change(fill_method=None).fillna(0.0)
         frame["volatility"] = _rolling(returns, 20).std(ddof=0).fillna(0.0)
         mean_vol = _rolling(frame["volatility"], 20).mean().replace(0.0, np.nan)
         frame["volatility_ratio"] = (frame["volatility"] / mean_vol).fillna(0.0)

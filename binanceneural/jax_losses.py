@@ -3,6 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 from flax import struct
+from .jax_utils import as_jax_array, configure_default_jax_platforms
+
+configure_default_jax_platforms()
 import jax
 import jax.numpy as jnp
 
@@ -27,7 +30,7 @@ class HourlySimulationResult:
 
 
 def _to_array(value: jax.Array | float, reference: jax.Array) -> jax.Array:
-    return jnp.asarray(value, dtype=reference.dtype)
+    return as_jax_array(value, dtype=reference.dtype)
 
 
 def _broadcast_batch_control(
@@ -175,6 +178,18 @@ def _simulate_core(
         _check_shapes(highs, opens)
     if closes.ndim == 0:
         raise ValueError("Input tensors must include a time dimension")
+
+    closes = as_jax_array(closes)
+    sim_dtype = closes.dtype
+    highs = as_jax_array(highs, dtype=sim_dtype)
+    lows = as_jax_array(lows, dtype=sim_dtype)
+    buy_prices = as_jax_array(buy_prices, dtype=sim_dtype)
+    sell_prices = as_jax_array(sell_prices, dtype=sim_dtype)
+    trade_intensity = as_jax_array(trade_intensity, dtype=sim_dtype)
+    buy_trade_intensity = as_jax_array(buy_trade_intensity, dtype=sim_dtype)
+    sell_trade_intensity = as_jax_array(sell_trade_intensity, dtype=sim_dtype)
+    if opens is not None:
+        opens = as_jax_array(opens, dtype=sim_dtype)
 
     (
         highs,
@@ -443,7 +458,7 @@ def compute_hourly_objective(
     return_weight: float = 0.05,
     smoothness_penalty: float | jax.Array = 0.0,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
-    hourly_returns = jnp.asarray(hourly_returns)
+    hourly_returns = as_jax_array(hourly_returns)
     mean_return = hourly_returns.mean(axis=-1)
     downside_sq = jnp.square(jnp.clip(-hourly_returns, min=0.0))
     downside_std = jnp.sqrt(downside_sq.mean(axis=-1) + _EPS)

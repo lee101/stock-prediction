@@ -90,3 +90,45 @@ def test_ppotrader_decodes_level_bins_offset(tmp_path: Path):
     assert signal.direction == "long"
     assert signal.allocation_pct == 1.0
     assert signal.level_offset_bps == 50.0
+
+
+def test_ppotrader_long_only_masks_short_actions(tmp_path: Path):
+    ckpt = tmp_path / "short_capable.pt"
+    symbols = ["AAA", "BBB"]
+    _write_checkpoint(
+        ckpt,
+        num_symbols=2,
+        num_actions=5,
+        hidden=32,
+        num_blocks=1,
+        hot_action=4,  # short BBB
+    )
+
+    trader = PPOTrader(str(ckpt), device="cpu", symbols=symbols, long_only=True)
+    features = np.zeros((2, 16), dtype=np.float32)
+    prices = {"AAA": 10.0, "BBB": 11.0}
+    signal = trader.get_signal(features, prices)
+
+    assert signal.action == "flat"
+    assert signal.symbol is None
+    assert signal.direction is None
+
+
+def test_ppotrader_long_only_decode_handles_short_side_without_crash(tmp_path: Path):
+    ckpt = tmp_path / "decode_short.pt"
+    symbols = ["AAA", "BBB"]
+    _write_checkpoint(
+        ckpt,
+        num_symbols=2,
+        num_actions=5,
+        hidden=32,
+        num_blocks=1,
+        hot_action=4,
+    )
+
+    trader = PPOTrader(str(ckpt), device="cpu", symbols=symbols, long_only=True)
+    signal = trader._decode_action(4, 0.9, 1.2)
+
+    assert signal.action == "short_BBB"
+    assert signal.symbol == "BBB"
+    assert signal.direction == "short"

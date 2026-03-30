@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -7,12 +8,40 @@ from types import SimpleNamespace
 from types import ModuleType
 
 import pandas as pd
+import torch
 
 import trade_daily_stock_prod as daily_stock
+from pufferlib_market.inference import Policy
+from src.trading_server.server import TradingServerEngine
 
 
 def _write_daily_csv(path: Path, rows: list[dict[str, object]]) -> None:
     pd.DataFrame(rows).to_csv(path, index=False)
+
+
+def _write_policy_checkpoint(
+    path: Path,
+    *,
+    num_symbols: int,
+    num_actions: int,
+    hot_action: int,
+) -> None:
+    obs_size = num_symbols * 16 + 5 + num_symbols
+    model = Policy(obs_size, num_actions, hidden=32, num_blocks=1)
+    with torch.no_grad():
+        for param in model.parameters():
+            param.zero_()
+        model.actor[2].bias[hot_action] = 10.0
+    torch.save(
+        {
+            "model": model.state_dict(),
+            "config": {"hidden_size": 32, "num_blocks": 1},
+            "action_allocation_bins": 1,
+            "action_level_bins": 1,
+            "action_max_offset_bps": 0.0,
+        },
+        path,
+    )
 
 
 def test_load_local_daily_frames_aligns_common_dates(tmp_path: Path) -> None:
@@ -123,6 +152,63 @@ def test_compute_target_qty_respects_buying_power_cap() -> None:
     assert qty == 19.0
 
 
+def test_build_signal_long_only_ensemble_masks_short_actions(tmp_path: Path) -> None:
+    rows_aapl = []
+    rows_msft = []
+    base = pd.Timestamp("2025-09-01T00:00:00Z")
+    for idx in range(130):
+        ts = base + pd.Timedelta(days=idx)
+        rows_aapl.append(
+            {
+                "timestamp": ts.isoformat(),
+                "open": 100 + idx,
+                "high": 101 + idx,
+                "low": 99 + idx,
+                "close": 100.5 + idx,
+                "volume": 1_000 + idx,
+            }
+        )
+        rows_msft.append(
+            {
+                "timestamp": ts.isoformat(),
+                "open": 200 + idx,
+                "high": 201 + idx,
+                "low": 199 + idx,
+                "close": 200.5 + idx,
+                "volume": 2_000 + idx,
+            }
+        )
+
+    frames = {
+        "AAPL": pd.DataFrame(rows_aapl),
+        "MSFT": pd.DataFrame(rows_msft),
+    }
+    primary_ckpt = tmp_path / "primary.pt"
+    extra_ckpt = tmp_path / "extra.pt"
+    _write_policy_checkpoint(primary_ckpt, num_symbols=2, num_actions=5, hot_action=4)
+    _write_policy_checkpoint(extra_ckpt, num_symbols=2, num_actions=5, hot_action=4)
+
+    signal, prices = daily_stock.build_signal(
+        str(primary_ckpt),
+        frames,
+        extra_checkpoints=[str(extra_ckpt)],
+    )
+
+    assert signal.action == "flat"
+    assert signal.symbol is None
+    assert signal.direction is None
+    assert prices == {"AAPL": 229.5, "MSFT": 329.5}
+
+
+def test_append_signal_log_writes_jsonl(tmp_path: Path) -> None:
+    log_path = tmp_path / "daily_stock_rl_signals.jsonl"
+
+    daily_stock.append_signal_log({"symbol": "AAPL", "signal": "flat"}, path=log_path)
+
+    rows = [json.loads(line) for line in log_path.read_text().splitlines()]
+    assert rows == [{"signal": "flat", "symbol": "AAPL"}]
+
+
 class _FakeClient:
     def __init__(self, positions: list[object], *, portfolio_value: float = 10_000.0, buying_power: float = 10_000.0):
         self._positions = positions
@@ -133,6 +219,26 @@ class _FakeClient:
 
     def get_account(self):
         return self._account
+
+
+def _write_server_registry(path: Path, *, account: str, bot_id: str, symbols: list[str], starting_cash: float = 10_000.0) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "accounts": {
+                    account: {
+                        "mode": "paper",
+                        "allowed_bot_id": bot_id,
+                        "starting_cash": starting_cash,
+                        "sell_loss_cooldown_seconds": 0,
+                        "min_sell_markup_pct": 0.0,
+                        "symbols": symbols,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_execute_signal_closes_managed_position_then_opens_new_one(monkeypatch) -> None:
@@ -221,6 +327,76 @@ def test_execute_signal_with_open_gate_only_closes_existing_position(monkeypatch
     assert orders == [("AAPL", 10.0, "sell")]
     assert state.active_symbol is None
     assert state.active_qty == 0.0
+
+
+def test_execute_signal_with_trading_server_closes_managed_then_opens_new(tmp_path: Path) -> None:
+    current_now = datetime(2026, 3, 16, 14, 0, tzinfo=timezone.utc)
+    quotes = {
+        "AAPL": {"symbol": "AAPL", "bid_price": 100.0, "ask_price": 100.0, "last_price": 100.0, "as_of": current_now.isoformat()},
+        "MSFT": {"symbol": "MSFT", "bid_price": 50.0, "ask_price": 50.0, "last_price": 50.0, "as_of": current_now.isoformat()},
+    }
+    registry = tmp_path / "registry.json"
+    _write_server_registry(registry, account="paper_sortino_daily", bot_id="daily_stock_sortino_v1", symbols=["AAPL", "MSFT"])
+    engine = TradingServerEngine(
+        registry_path=registry,
+        state_dir=tmp_path / "state",
+        quote_provider=lambda symbol: quotes[str(symbol).upper()],
+        now_fn=lambda: current_now,
+    )
+    client = daily_stock.InMemoryTradingServerClient(
+        engine=engine,
+        account="paper_sortino_daily",
+        bot_id="daily_stock_sortino_v1",
+        execution_mode="paper",
+        session_id="test-session",
+    )
+    client.claim_writer()
+    client.refresh_prices(symbols=["AAPL", "MSFT"])
+    client.submit_limit_order(symbol="AAPL", side="buy", qty=10.0, limit_price=100.0)
+
+    state = daily_stock.StrategyState(active_symbol="AAPL", active_qty=10.0, entry_price=100.0, entry_date="2026-03-16")
+    signal = SimpleNamespace(symbol="MSFT", direction="long", action="long_MSFT")
+
+    changed = daily_stock.execute_signal_with_trading_server(
+        signal,
+        server_client=client,
+        quotes={"AAPL": 100.0, "MSFT": 50.0},
+        state=state,
+        symbols=["AAPL", "MSFT"],
+        allocation_pct=25.0,
+        dry_run=False,
+        now=current_now,
+    )
+
+    assert changed is True
+    snapshot = client.get_account()
+    assert "AAPL" not in snapshot["positions"]
+    assert snapshot["positions"]["MSFT"]["qty"] == 50.0
+    assert state.active_symbol == "MSFT"
+    assert state.active_qty == 50.0
+
+
+def test_inmemory_trading_server_client_uses_shared_writer_ttl_default(monkeypatch) -> None:
+    monkeypatch.setenv("TRADING_SERVER_WRITER_TTL_SECONDS", "333")
+    captured: dict[str, object] = {}
+
+    class _Engine:
+        def claim_writer(self, request):
+            captured["ttl_seconds"] = request.ttl_seconds
+            return {"ok": True}
+
+    client = daily_stock.InMemoryTradingServerClient(
+        engine=_Engine(),
+        account="paper_sortino_daily",
+        bot_id="daily_stock_sortino_v1",
+        execution_mode="paper",
+        session_id="test-session",
+    )
+
+    result = client.claim_writer()
+
+    assert result == {"ok": True}
+    assert captured["ttl_seconds"] == 333
 
 
 def test_adopt_existing_position_populates_state() -> None:
@@ -527,3 +703,43 @@ def test_run_once_market_closed_does_not_advance_state(monkeypatch, tmp_path: Pa
 
     assert execute_calls == []
     assert after == before
+
+
+def test_run_backtest_via_trading_server_matches_legacy_single_symbol(tmp_path: Path) -> None:
+    rows = []
+    base = pd.Timestamp("2025-09-01T00:00:00Z")
+    for idx in range(140):
+        ts = base + pd.Timedelta(days=idx)
+        rows.append(
+            {
+                "timestamp": ts.isoformat(),
+                "open": 100 + idx,
+                "high": 101 + idx,
+                "low": 99 + idx,
+                "close": 100.5 + idx,
+                "volume": 1_000 + idx,
+            }
+        )
+    _write_daily_csv(tmp_path / "AAPL.csv", rows)
+
+    checkpoint = tmp_path / "always_long.pt"
+    _write_policy_checkpoint(checkpoint, num_symbols=1, num_actions=2, hot_action=1)
+
+    legacy = daily_stock.run_backtest(
+        checkpoint=str(checkpoint),
+        symbols=["AAPL"],
+        data_dir=str(tmp_path),
+        days=20,
+    )
+    server = daily_stock.run_backtest_via_trading_server(
+        checkpoint=str(checkpoint),
+        symbols=["AAPL"],
+        data_dir=str(tmp_path),
+        days=20,
+        allocation_pct=100.0,
+    )
+
+    assert server["total_return"] == legacy["total_return"]
+    assert server["annualized_return"] == legacy["annualized_return"]
+    assert server["sortino"] == legacy["sortino"]
+    assert server["max_drawdown"] == legacy["max_drawdown"]

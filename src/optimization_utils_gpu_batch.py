@@ -21,7 +21,6 @@ Usage:
 
 from typing import List, Tuple, Optional
 import torch
-import numpy as np
 from scipy.optimize import direct
 
 
@@ -80,7 +79,6 @@ def optimize_batch_entry_exit(
     # Process in batches
     for batch_start in range(0, n_sims, batch_size):
         batch_end = min(batch_start + batch_size, n_sims)
-        batch_indices = range(batch_start, batch_end)
 
         # Extract batch data
         batch_data = {
@@ -140,6 +138,88 @@ def _prepare_batched_data(
     }
 
 
+def _sum_masked_profit_values(
+    profit_values: torch.Tensor,
+    mask: torch.Tensor,
+    shape: torch.Size,
+) -> torch.Tensor:
+    profit_matrix = profit_values.reshape(shape)
+    return (profit_matrix * mask.to(dtype=profit_matrix.dtype)).sum(dim=1)
+
+
+def _calculate_batch_entry_exit_profit(
+    batch_data: dict,
+    high_mult: float,
+    low_mult: float,
+    *,
+    close_at_eod: bool,
+    trading_fee: Optional[float],
+) -> torch.Tensor:
+    from loss_utils import calculate_profit_torch_with_entry_buysell_profit_values
+
+    profit_values = calculate_profit_torch_with_entry_buysell_profit_values(
+        batch_data['close'],
+        batch_data['high_actual'],
+        batch_data['high_pred'] + high_mult,
+        batch_data['low_actual'],
+        batch_data['low_pred'] + low_mult,
+        batch_data['positions'],
+        close_at_eod=close_at_eod,
+        trading_fee=trading_fee,
+    )
+    return _sum_masked_profit_values(
+        profit_values,
+        batch_data['mask'],
+        batch_data['close'].shape,
+    )
+
+
+def _calculate_batch_always_on_profit(
+    batch_data: dict,
+    high_mult: float,
+    low_mult: float,
+    *,
+    close_at_eod: bool,
+    trading_fee: Optional[float],
+    is_crypto: bool,
+) -> torch.Tensor:
+    from loss_utils import calculate_profit_torch_with_entry_buysell_profit_values
+
+    buy_values = calculate_profit_torch_with_entry_buysell_profit_values(
+        batch_data['close'],
+        batch_data['high_actual'],
+        batch_data['high_pred'] + high_mult,
+        batch_data['low_actual'],
+        batch_data['low_pred'] + low_mult,
+        batch_data['buy'],
+        close_at_eod=close_at_eod,
+        trading_fee=trading_fee,
+    )
+    profits = _sum_masked_profit_values(
+        buy_values,
+        batch_data['mask'],
+        batch_data['close'].shape,
+    )
+    if is_crypto:
+        return profits
+
+    sell_values = calculate_profit_torch_with_entry_buysell_profit_values(
+        batch_data['close'],
+        batch_data['high_actual'],
+        batch_data['high_pred'] + high_mult,
+        batch_data['low_actual'],
+        batch_data['low_pred'] + low_mult,
+        batch_data['sell'],
+        close_at_eod=close_at_eod,
+        trading_fee=trading_fee,
+    )
+    return profits + _sum_masked_profit_values(
+        sell_values,
+        batch_data['mask'],
+        batch_data['close'].shape,
+    )
+
+
 def _optimize_batch_direct(
     batch_data: dict,
     bounds: Tuple[Tuple[float, float], Tuple[float, float]],
@@ -160,8 +240,7 @@ def _optimize_batch_direct(
     def batch_objective(multipliers):
         h_mult, l_mult = multipliers
 
-        # Apply to all simulations in batch
-        total_profit = _calculate_batch_profit(
+        total_profit = _calculate_batch_entry_exit_profit(
             batch_data, h_mult, l_mult,
             close_at_eod=close_at_eod,
             trading_fee=trading_fee
@@ -186,56 +265,13 @@ def _optimize_batch_direct(
     # return results
 
     # For maximum speed, return shared multipliers
-    individual_profits = _calculate_batch_profit(
+    individual_profits = _calculate_batch_entry_exit_profit(
         batch_data, best_h, best_l,
         close_at_eod=close_at_eod,
         trading_fee=trading_fee
     )
 
     return [(best_h, best_l, float(p.item())) for p in individual_profits]
-
-
-def _calculate_batch_profit(
-    batch_data: dict,
-    high_mult: float,
-    low_mult: float,
-    close_at_eod: bool,
-    trading_fee: Optional[float]
-) -> torch.Tensor:
-    """
-    Vectorized profit calculation for entire batch.
-
-    This is the key performance optimization - all simulations
-    evaluated in a single GPU kernel call.
-    """
-
-    from loss_utils import calculate_trading_profit_torch_with_entry_buysell
-
-    batch_size = batch_data['close'].shape[0]
-    profits = torch.zeros(batch_size, device=batch_data['close'].device)
-
-    # Calculate profit for each simulation (still sequential, but fast)
-    # TODO: Further vectorize calculate_trading_profit_torch_with_entry_buysell
-    # to accept batched inputs
-    for i in range(batch_size):
-        mask = batch_data['mask'][i]
-        length = mask.sum().item()
-
-        if length > 0:
-            profit = calculate_trading_profit_torch_with_entry_buysell(
-                None, None,
-                batch_data['close'][i, :length],
-                batch_data['positions'][i, :length],
-                batch_data['high_actual'][i, :length],
-                batch_data['high_pred'][i, :length] + high_mult,
-                batch_data['low_actual'][i, :length],
-                batch_data['low_pred'][i, :length] + low_mult,
-                close_at_eod=close_at_eod,
-                trading_fee=trading_fee
-            )
-            profits[i] = profit
-
-    return profits
 
 
 def optimize_batch_always_on(
@@ -328,82 +364,29 @@ def _optimize_batch_always_on_direct(
 ) -> List[Tuple[float, float, float]]:
     """Optimize AlwaysOn batch"""
 
-    from loss_utils import calculate_profit_torch_with_entry_buysell_profit_values
-
     def batch_objective(multipliers):
         h_mult, l_mult = multipliers
-        batch_size = batch_data['close'].shape[0]
-        profits = torch.zeros(batch_size, device=batch_data['close'].device)
-
-        for i in range(batch_size):
-            mask = batch_data['mask'][i]
-            length = mask.sum().item()
-
-            if length > 0:
-                buy_returns = calculate_profit_torch_with_entry_buysell_profit_values(
-                    batch_data['close'][i, :length],
-                    batch_data['high_actual'][i, :length],
-                    batch_data['high_pred'][i, :length] + h_mult,
-                    batch_data['low_actual'][i, :length],
-                    batch_data['low_pred'][i, :length] + l_mult,
-                    batch_data['buy'][i, :length],
-                    close_at_eod=close_at_eod,
-                    trading_fee=trading_fee
-                )
-
-                if is_crypto:
-                    profits[i] = buy_returns.sum()
-                else:
-                    sell_returns = calculate_profit_torch_with_entry_buysell_profit_values(
-                        batch_data['close'][i, :length],
-                        batch_data['high_actual'][i, :length],
-                        batch_data['high_pred'][i, :length] + h_mult,
-                        batch_data['low_actual'][i, :length],
-                        batch_data['low_pred'][i, :length] + l_mult,
-                        batch_data['sell'][i, :length],
-                        close_at_eod=close_at_eod,
-                        trading_fee=trading_fee
-                    )
-                    profits[i] = buy_returns.sum() + sell_returns.sum()
-
+        profits = _calculate_batch_always_on_profit(
+            batch_data,
+            h_mult,
+            l_mult,
+            close_at_eod=close_at_eod,
+            trading_fee=trading_fee,
+            is_crypto=is_crypto,
+        )
         return -profits.mean().item()
 
     result = direct(batch_objective, bounds=bounds, maxfun=maxfun)
     best_h, best_l = result.x
 
     # Get individual profits
-    batch_size = batch_data['close'].shape[0]
-    individual_profits = torch.zeros(batch_size, device=batch_data['close'].device)
-
-    for i in range(batch_size):
-        mask = batch_data['mask'][i]
-        length = mask.sum().item()
-
-        if length > 0:
-            buy_returns = calculate_profit_torch_with_entry_buysell_profit_values(
-                batch_data['close'][i, :length],
-                batch_data['high_actual'][i, :length],
-                batch_data['high_pred'][i, :length] + best_h,
-                batch_data['low_actual'][i, :length],
-                batch_data['low_pred'][i, :length] + best_l,
-                batch_data['buy'][i, :length],
-                close_at_eod=close_at_eod,
-                trading_fee=trading_fee
-            )
-
-            if is_crypto:
-                individual_profits[i] = buy_returns.sum()
-            else:
-                sell_returns = calculate_profit_torch_with_entry_buysell_profit_values(
-                    batch_data['close'][i, :length],
-                    batch_data['high_actual'][i, :length],
-                    batch_data['high_pred'][i, :length] + best_h,
-                    batch_data['low_actual'][i, :length],
-                    batch_data['low_pred'][i, :length] + best_l,
-                    batch_data['sell'][i, :length],
-                    close_at_eod=close_at_eod,
-                    trading_fee=trading_fee
-                )
-                individual_profits[i] = buy_returns.sum() + sell_returns.sum()
+    individual_profits = _calculate_batch_always_on_profit(
+        batch_data,
+        best_h,
+        best_l,
+        close_at_eod=close_at_eod,
+        trading_fee=trading_fee,
+        is_crypto=is_crypto,
+    )
 
     return [(best_h, best_l, float(p.item())) for p in individual_profits]

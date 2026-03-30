@@ -29,13 +29,15 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from gpu_utils import detect_total_vram_bytes, get_gpu_name  # noqa: E402
+from gpu_utils import detect_free_vram_bytes, detect_total_vram_bytes, get_gpu_name  # noqa: E402
 from src.runpod_client import (  # noqa: E402
     GPU_ALIASES,
     HOURLY_RATES,
     TRAINING_GPU_TYPES,
     PodConfig,
     RunPodClient,
+    build_gpu_fallback_types,
+    is_capacity_error,
     resolve_gpu_type,
 )
 from src.remote_training_pipeline import DEFAULT_REMOTE_ENV  # noqa: E402
@@ -62,6 +64,7 @@ _STOCKS_HOLDOUT_EVAL_STEPS = 90
 _SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes"]
 
 _SETUP_OVERHEAD_SECS = 1800  # code sync + bootstrap + teardown
+_REMOTE_READY_TIMEOUT_SECS = 180
 
 
 # ---------------------------------------------------------------------------
@@ -114,10 +117,14 @@ def should_run_remote(args: argparse.Namespace) -> bool:
     """Return True when the experiment should be dispatched to RunPod."""
     if args.force_remote:
         return True
-    if args.gpu_type and args.gpu_type != "local":
+    if args.gpu_type == "local":
+        return False
+    if args.gpu_type:
         return True
     try:
-        vram_bytes = detect_total_vram_bytes()
+        vram_bytes = detect_free_vram_bytes()
+        if vram_bytes is None:
+            vram_bytes = detect_total_vram_bytes()
         if vram_bytes is None:
             return False
         vram_gb = vram_bytes / 1e9
@@ -129,7 +136,9 @@ def should_run_remote(args: argparse.Namespace) -> bool:
 def _detect_vram_gb() -> float | None:
     """Return local VRAM in GB, or None if unavailable."""
     try:
-        vram_bytes = detect_total_vram_bytes()
+        vram_bytes = detect_free_vram_bytes()
+        if vram_bytes is None:
+            vram_bytes = detect_total_vram_bytes()
         if vram_bytes is None:
             return None
         return vram_bytes / 1e9
@@ -250,6 +259,10 @@ def run_local(args: argparse.Namespace, *, seed: int | None = None) -> int:
         cmd += ["--stocks"]
     if args.descriptions:
         cmd += ["--descriptions", args.descriptions]
+    if getattr(args, "holdout_n_windows", None) is not None:
+        cmd += ["--holdout-n-windows", str(args.holdout_n_windows)]
+    if getattr(args, "eval_num_episodes", None) is not None:
+        cmd += ["--eval-num-episodes-override", str(args.eval_num_episodes)]
     if seed is not None:
         cmd += ["--seed", str(seed)]
 
@@ -298,6 +311,10 @@ def _build_remote_autoresearch_cmd(
         parts += ["--stocks"]
     if args.descriptions:
         parts += ["--descriptions", args.descriptions]
+    if getattr(args, "holdout_n_windows", None) is not None:
+        parts += ["--holdout-n-windows", str(args.holdout_n_windows)]
+    if getattr(args, "eval_num_episodes", None) is not None:
+        parts += ["--eval-num-episodes-override", str(args.eval_num_episodes)]
     if seed is not None:
         parts += ["--seed", str(seed)]
     return " ".join(shlex.quote(str(p)) for p in parts)
@@ -305,16 +322,26 @@ def _build_remote_autoresearch_cmd(
 
 def run_remote(args: argparse.Namespace, *, seed: int | None = None) -> int:
     """Provision a RunPod pod and execute autoresearch_rl on it."""
-    gpu_type = _select_gpu_type(args)
     remote_dir = DEFAULT_REMOTE_WORKSPACE
     remote_env = DEFAULT_REMOTE_ENV
     remote_leaderboard = f"pufferlib_market/{args.run_id}_leaderboard.csv"
     remote_checkpoints = f"pufferlib_market/checkpoints/{args.run_id}"
-
-    # Budget check before provisioning.
     budget_limit: float = getattr(args, "budget_limit", 5.0)
-    est_cost = _print_cost_estimate(gpu_type, num_seeds=1, time_budget_secs=args.time_budget)
-    if budget_limit > 0 and est_cost > budget_limit:
+    ready_timeout = int(getattr(args, "remote_ready_timeout_seconds", _REMOTE_READY_TIMEOUT_SECS))
+    primary_gpu_type = _select_gpu_type(args)
+    gpu_candidates = build_gpu_fallback_types(primary_gpu_type)
+    candidate_costs = {
+        gpu_type: estimate_cost(gpu_type, num_seeds=1, time_budget_secs=args.time_budget)
+        for gpu_type in gpu_candidates
+    }
+
+    affordable_budget_candidates = [
+        gpu_type
+        for gpu_type, cost in candidate_costs.items()
+        if cost > 0.0 and cost <= budget_limit
+    ]
+    if budget_limit > 0 and not affordable_budget_candidates:
+        est_cost = candidate_costs[primary_gpu_type]
         print(f"Estimated cost: ${est_cost:.2f} exceeds budget limit ${budget_limit:.2f}")
         print(
             f"Use --budget-limit {est_cost + 0.5:.1f} to allow this, "
@@ -331,14 +358,77 @@ def run_remote(args: argparse.Namespace, *, seed: int | None = None) -> int:
         return 1
 
     pod_name = f"rl-dispatch-{args.run_id}"
-    print(f"[remote] Provisioning pod name={pod_name!r} gpu={gpu_type!r}")
-    config = PodConfig(name=pod_name, gpu_type=gpu_type)
-    pod = client.create_pod(config)
-    print(f"[remote] Created pod id={pod.id}")
 
-    # 2. Wait for SSH.
-    print("[remote] Waiting for pod to become ready ...")
-    pod = client.wait_for_pod(pod.id)
+    def _terminate_pod_quietly(pod_id: str) -> None:
+        try:
+            client.terminate_pod(pod_id)
+        except Exception as exc:
+            print(f"[warning] Failed to terminate pod {pod_id}: {exc}")
+
+    pod = None
+    gpu_type = primary_gpu_type
+    last_error: Exception | None = None
+    budget_exceeded = False
+
+    for index, candidate_gpu_type in enumerate(gpu_candidates, start=1):
+        est_cost = _print_cost_estimate(candidate_gpu_type, num_seeds=1, time_budget_secs=args.time_budget)
+        if budget_limit > 0 and (est_cost <= 0.0 or est_cost > budget_limit):
+            budget_exceeded = True
+            print(
+                f"[remote] Skipping {candidate_gpu_type}: estimated cost ${est_cost:.2f} "
+                f"exceeds budget limit ${budget_limit:.2f}"
+            )
+            continue
+
+        print(
+            f"[remote] Provisioning pod name={pod_name!r} gpu={candidate_gpu_type!r} "
+            f"(candidate {index}/{len(gpu_candidates)})"
+        )
+        try:
+            trial_pod = client.create_pod(PodConfig(name=pod_name, gpu_type=candidate_gpu_type))
+            print(f"[remote] Created pod id={trial_pod.id}")
+        except Exception as exc:
+            last_error = exc
+            text = str(exc)
+            retryable = is_capacity_error(exc) or "supply_constraint" in text.lower() or "no longer any instances available" in text.lower()
+            if retryable and index < len(gpu_candidates):
+                print(f"[remote] Candidate {candidate_gpu_type} unavailable, trying next GPU fallback")
+                continue
+            if retryable:
+                break
+            raise
+
+        try:
+            print("[remote] Waiting for pod to become ready ...")
+            trial_pod = client.wait_for_pod(trial_pod.id, timeout=ready_timeout)
+            pod = trial_pod
+            gpu_type = candidate_gpu_type
+            break
+        except TimeoutError as exc:
+            last_error = exc
+            print(
+                f"[remote] Pod {trial_pod.id} never exposed SSH within {ready_timeout}s; "
+                "terminating and trying next GPU fallback"
+            )
+            _terminate_pod_quietly(trial_pod.id)
+            if index >= len(gpu_candidates):
+                break
+
+    if pod is None:
+        if budget_exceeded and last_error is None:
+            est_cost = estimate_cost(primary_gpu_type, num_seeds=1, time_budget_secs=args.time_budget)
+            print(f"Estimated cost: ${est_cost:.2f} exceeds budget limit ${budget_limit:.2f}")
+            print(
+                f"Use --budget-limit {est_cost + 0.5:.1f} to allow this, "
+                f"or --budget-limit 0 to disable limit."
+            )
+            raise SystemExit(1)
+        if last_error is not None:
+            print(f"[error] Unable to provision a usable remote pod: {last_error}")
+            return 1
+        print("[error] Unable to provision a usable remote pod")
+        return 1
+
     ssh_host = pod.ssh_host
     ssh_port = pod.ssh_port
     print(f"[remote] Pod ready: {ssh_host}:{ssh_port}")
@@ -427,11 +517,12 @@ def run_remote(args: argparse.Namespace, *, seed: int | None = None) -> int:
         return exit_code
 
     finally:
-        print(f"[remote] Terminating pod {pod.id} ...")
-        try:
-            client.terminate_pod(pod.id)
-        except Exception as exc:
-            print(f"[warning] Failed to terminate pod {pod.id}: {exc}")
+        if pod is not None:
+            print(f"[remote] Terminating pod {pod.id} ...")
+            try:
+                client.terminate_pod(pod.id)
+            except Exception as exc:
+                print(f"[warning] Failed to terminate pod {pod.id}: {exc}")
 
 
 def _upload_to_r2(local_path: Path, run_id: str, r2_endpoint: str) -> None:
@@ -705,12 +796,12 @@ def print_dry_run_plan(
         elif args.gpu_type and args.gpu_type != "local":
             routing_reason = f" (--gpu-type {args.gpu_type})"
         elif vram_gb is not None:
-            routing_reason = f" (local VRAM: {vram_gb:.1f} GB < threshold {args.vram_threshold_gb:.1f} GB)"
+            routing_reason = f" (local free VRAM: {vram_gb:.1f} GB < threshold {args.vram_threshold_gb:.1f} GB)"
         else:
             routing_reason = " (no local GPU detected)"
         routing_str = f"REMOTE{routing_reason}"
     else:
-        routing_str = f"LOCAL (VRAM: {vram_gb:.1f} GB)" if vram_gb is not None else "LOCAL"
+        routing_str = f"LOCAL (free VRAM: {vram_gb:.1f} GB)" if vram_gb is not None else "LOCAL"
 
     leaderboard = args.leaderboard or f"analysis/{args.run_id}_leaderboard.csv"
     checkpoint_dir = args.checkpoint_dir or f"pufferlib_market/checkpoints/{args.run_id}"
@@ -831,6 +922,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
                      help="Skip local GPU check, always use RunPod")
     opt.add_argument("--wandb-project", default=DEFAULT_WANDB_PROJECT,
                      help="W&B project name")
+    opt.add_argument(
+        "--holdout-n-windows",
+        type=int,
+        default=None,
+        help="Optional pass-through to autoresearch_rl; 0 disables holdout robustness scoring for quick probes.",
+    )
+    opt.add_argument(
+        "--eval-num-episodes",
+        type=int,
+        default=None,
+        help="Optional pass-through to autoresearch_rl; overrides final validation episode count for quick probes.",
+    )
     opt.add_argument("--checkpoint-dir", default="", metavar="PATH",
                      help="Local checkpoint output directory")
     opt.add_argument("--leaderboard", default="", metavar="PATH",
@@ -925,6 +1028,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         metrics = _read_leaderboard_metrics(leaderboard_path)
         seed_results.append({
             "seed": seed,
+            "rank_metric": metrics["rank_metric"],
+            "rank_score": metrics["rank_score"],
+            "generalization_score": metrics["generalization_score"],
+            "smooth_score": metrics["smooth_score"],
+            "holdout_robust_score": metrics["holdout_robust_score"],
+            "replay_combo_score": metrics["replay_combo_score"],
+            "overfit_gap_score": metrics["overfit_gap_score"],
             "val_return": metrics["val_return"],
             "val_sortino": metrics["val_sortino"],
             "leaderboard_path": str(leaderboard_path),

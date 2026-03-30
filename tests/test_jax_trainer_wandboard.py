@@ -103,6 +103,7 @@ def test_jax_trainer_logs_with_wandboard(monkeypatch) -> None:
             transformer_layers=1,
             transformer_heads=4,
             transformer_dropout=0.0,
+            trainer_backend="jax_classic",
             use_compile=False,
             dry_train_steps=1,
             checkpoint_root=Path(tmpdir) / "ckpts",
@@ -150,6 +151,7 @@ def test_jax_trainer_applies_grad_clip(monkeypatch) -> None:
             transformer_layers=1,
             transformer_heads=4,
             transformer_dropout=0.0,
+            trainer_backend="jax_classic",
             checkpoint_root=Path(tmpdir) / "ckpts",
             log_dir=Path(tmpdir) / "tb",
             run_name="jax_grad_clip_test",
@@ -174,6 +176,7 @@ def test_jax_trainer_stops_early_on_non_finite_metrics(monkeypatch) -> None:
             transformer_layers=1,
             transformer_heads=4,
             transformer_dropout=0.0,
+            trainer_backend="jax_classic",
             use_compile=False,
             checkpoint_root=Path(tmpdir) / "ckpts",
             log_dir=Path(tmpdir) / "tb",
@@ -203,4 +206,5 @@ def test_jax_trainer_stops_early_on_non_finite_metrics(monkeypatch) -> None:
     assert artifacts.stop_reason is not None
     assert "non-finite train/loss" in artifacts.stop_reason
     assert "jax/stop_reason" in {name for name, _text, _step in logger.texts}
+    assert '"trainer_backend": "jax_classic"' in meta
     assert '"stop_reason": "Stopping at epoch 2: non-finite train/loss=nan"' in meta

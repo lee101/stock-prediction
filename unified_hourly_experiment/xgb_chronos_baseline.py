@@ -19,11 +19,15 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import os
+import shlex
 import sys
+import time
+import traceback
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, Protocol, TypedDict, cast
 
 import numpy as np
 import pandas as pd
@@ -43,19 +47,78 @@ from binanceneural.config import DatasetConfig
 from binanceneural.data import BinanceHourlyDataModule, build_default_feature_columns
 from src.trade_directions import resolve_trade_directions
 from unified_hourly_experiment.marketsimulator import PortfolioConfig, run_portfolio_simulation
+from unified_orchestrator.jsonl_utils import append_jsonl_row
 
 
 DEFAULT_SYMBOLS = (
     "DBX,TRIP,MTCH,NYT,NET,BKNG,EBAY,EXPE,ITUB,BTG,ABEV"
 )
+DEFAULT_MAX_SEARCH_CONFIGS = 512
+EFFECTIVE_ARGS_FILENAME = "effective_args.json"
+RUN_EVENTS_FILENAME = "run_events.jsonl"
+
+LabelBasis = Literal["reference_close", "next_open"]
+EntrySelectionMode = Literal["edge_rank", "first_trigger"]
+EntryAllocatorMode = Literal["legacy", "concentrated"]
+
+_VALID_LABEL_BASES = frozenset({"reference_close", "next_open"})
+_VALID_ENTRY_SELECTION_MODES = frozenset({"edge_rank", "first_trigger"})
+_VALID_ENTRY_ALLOCATOR_MODES = frozenset({"legacy", "concentrated"})
+_ACTION_COLUMNS = [
+    "timestamp",
+    "symbol",
+    "buy_price",
+    "sell_price",
+    "buy_amount",
+    "sell_amount",
+    "trade_amount",
+    "xgb_long_edge",
+    "xgb_short_edge",
+    "xgb_long_edge_raw",
+    "xgb_short_edge_raw",
+    "pred_long_prob_xgb",
+    "pred_short_prob_xgb",
+    "predicted_high_p50_h1",
+    "predicted_low_p50_h1",
+    "predicted_close_p50_h1",
+]
+_BAR_COLUMNS = [
+    "timestamp",
+    "symbol",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+]
+
+
+class RegressorLike(Protocol):
+    def predict(self, X: pd.DataFrame) -> np.ndarray: ...
+    def save_model(self, path: str) -> None: ...
+
+
+class ClassifierLike(Protocol):
+    def predict_proba(self, X: pd.DataFrame) -> np.ndarray: ...
+    def save_model(self, path: str) -> None: ...
+
+
+class ModelBundle(TypedDict):
+    high: RegressorLike
+    low: RegressorLike
+    close: RegressorLike
+    long_cls: ClassifierLike
+    short_cls: ClassifierLike
 
 
 @dataclass(frozen=True)
 class SearchConfig:
     label_horizon_hours: int
-    label_basis: str
+    label_basis: LabelBasis
     residual_scale: float
     risk_penalty: float
+    min_trade_probability: float
+    probability_power: float
     entry_alpha: float
     exit_alpha: float
     edge_threshold: float
@@ -64,9 +127,23 @@ class SearchConfig:
     max_hold_hours: int
     close_at_eod: bool
     market_order_entry: bool
-    entry_selection_mode: str
-    entry_allocator_mode: str
+    entry_selection_mode: EntrySelectionMode
+    entry_allocator_mode: EntryAllocatorMode
     entry_allocator_edge_power: float
+
+    def __post_init__(self) -> None:
+        if int(self.label_horizon_hours) <= 0:
+            raise ValueError("label_horizon_hours must be positive")
+        if str(self.label_basis) not in _VALID_LABEL_BASES:
+            raise ValueError(f"Unsupported label_basis={self.label_basis!r}")
+        if not np.isfinite(float(self.min_trade_probability)) or not (0.0 <= float(self.min_trade_probability) <= 1.0):
+            raise ValueError("min_trade_probability must be finite and in [0, 1]")
+        if not np.isfinite(float(self.probability_power)) or float(self.probability_power) <= 0.0:
+            raise ValueError("probability_power must be finite and positive")
+        if str(self.entry_selection_mode) not in _VALID_ENTRY_SELECTION_MODES:
+            raise ValueError(f"Unsupported entry_selection_mode={self.entry_selection_mode!r}")
+        if str(self.entry_allocator_mode) not in _VALID_ENTRY_ALLOCATOR_MODES:
+            raise ValueError(f"Unsupported entry_allocator_mode={self.entry_allocator_mode!r}")
 
 
 @dataclass
@@ -82,12 +159,65 @@ class WindowMetrics:
     num_sells: int
 
 
+@dataclass
+class ConstantProbabilityModel:
+    probability: float
+
+    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
+        prob = float(np.clip(self.probability, 0.0, 1.0))
+        values = np.full(len(X), prob, dtype=np.float64)
+        return np.column_stack([1.0 - values, values])
+
+    def save_model(self, path: str) -> None:
+        Path(path).write_text(json.dumps({"constant_probability": float(self.probability)}, indent=2, sort_keys=True))
+
+
+class ArgsFileParser(argparse.ArgumentParser):
+    def convert_arg_line_to_args(self, arg_line: str) -> list[str]:
+        return shlex.split(arg_line, comments=True, posix=True)
+
+
 def parse_csv_list(value: str) -> list[str]:
     return [token.strip().upper() for token in value.split(",") if token.strip()]
 
 
 def parse_token_list(value: str) -> list[str]:
     return [token.strip() for token in value.split(",") if token.strip()]
+
+
+def _parse_choice_list(value: str, *, field_name: str, valid: frozenset[str]) -> list[str]:
+    tokens = parse_token_list(value)
+    invalid = [token for token in tokens if token not in valid]
+    if invalid:
+        choices = ", ".join(sorted(valid))
+        raise ValueError(f"Unsupported {field_name}: {invalid[0]!r}. Expected one of: {choices}")
+    return tokens
+
+
+def parse_label_basis_list(value: str) -> list[LabelBasis]:
+    return [cast(LabelBasis, token) for token in _parse_choice_list(value, field_name="label_basis", valid=_VALID_LABEL_BASES)]
+
+
+def parse_entry_selection_mode_list(value: str) -> list[EntrySelectionMode]:
+    return [
+        cast(EntrySelectionMode, token)
+        for token in _parse_choice_list(
+            value,
+            field_name="entry_selection_mode",
+            valid=_VALID_ENTRY_SELECTION_MODES,
+        )
+    ]
+
+
+def parse_entry_allocator_mode_list(value: str) -> list[EntryAllocatorMode]:
+    return [
+        cast(EntryAllocatorMode, token)
+        for token in _parse_choice_list(
+            value,
+            field_name="entry_allocator_mode",
+            valid=_VALID_ENTRY_ALLOCATOR_MODES,
+        )
+    ]
 
 
 def parse_int_list(value: str) -> list[int]:
@@ -185,6 +315,12 @@ def _holdout_cutoff(frame: pd.DataFrame, validation_days: int) -> pd.Timestamp:
     return latest - pd.Timedelta(days=int(validation_days))
 
 
+def _rolling_zscore(series: pd.Series, window: int) -> pd.Series:
+    rolling_mean = series.rolling(window).mean()
+    rolling_std = series.rolling(window).std().replace(0.0, np.nan)
+    return (series - rolling_mean) / rolling_std
+
+
 def load_symbol_frame(
     *,
     symbol: str,
@@ -223,6 +359,17 @@ def load_symbol_frame(
             frame[conf_col] = 0.5
 
     ref = frame["reference_close"].replace(0.0, np.nan)
+    frame["return_2h"] = frame["close"].pct_change(2)
+    frame["return_8h"] = frame["close"].pct_change(8)
+    frame["return_48h"] = frame["close"].pct_change(48)
+    frame["volatility_8h"] = frame["return_1h"].rolling(8).std()
+    frame["volatility_48h"] = frame["return_1h"].rolling(48).std()
+    frame["range_mean_8h"] = frame["range_pct"].rolling(8).mean()
+    frame["range_mean_24h"] = frame["range_pct"].rolling(24).mean()
+    frame["volume_z_8h"] = _rolling_zscore(frame["volume"].astype(float), window=8)
+    frame["volume_z_48h"] = _rolling_zscore(frame["volume"].astype(float), window=48)
+    frame["momentum_gap_8h_48h"] = frame["return_8h"] - frame["return_48h"]
+
     for horizon in forecast_horizons:
         close_col = _forecast_price_col("close", horizon)
         high_col = _forecast_price_col("high", horizon)
@@ -236,10 +383,25 @@ def load_symbol_frame(
             )
             frame[f"forecast_mid_delta_h{int(horizon)}"] = (midpoint - ref) / ref
             frame[f"forecast_close_minus_mid_h{int(horizon)}"] = (frame[close_col] - midpoint) / ref
+            frame[f"forecast_upside_h{int(horizon)}"] = (frame[high_col] - frame[close_col]) / ref
+            frame[f"forecast_downside_h{int(horizon)}"] = (frame[close_col] - frame[low_col]) / ref
         else:
             frame[f"forecast_range_pct_h{int(horizon)}"] = 0.0
             frame[f"forecast_mid_delta_h{int(horizon)}"] = 0.0
             frame[f"forecast_close_minus_mid_h{int(horizon)}"] = 0.0
+            frame[f"forecast_upside_h{int(horizon)}"] = 0.0
+            frame[f"forecast_downside_h{int(horizon)}"] = 0.0
+
+        p90_col = f"predicted_close_p90_h{int(horizon)}"
+        p10_col = f"predicted_close_p10_h{int(horizon)}"
+        if p90_col in frame.columns and p10_col in frame.columns:
+            frame[f"forecast_close_width_h{int(horizon)}"] = (frame[p90_col] - frame[p10_col]).abs() / ref
+            frame[f"forecast_close_skew_h{int(horizon)}"] = (
+                frame[close_col] - ((frame[p90_col] + frame[p10_col]) / 2.0)
+            ) / ref
+        else:
+            frame[f"forecast_close_width_h{int(horizon)}"] = 0.0
+            frame[f"forecast_close_skew_h{int(horizon)}"] = 0.0
 
     sorted_horizons = sorted({int(token) for token in forecast_horizons})
     for lower, upper in zip(sorted_horizons[:-1], sorted_horizons[1:], strict=False):
@@ -257,7 +419,7 @@ def build_labeled_rows(
     *,
     label_horizon_hours: int,
     forecast_horizons: tuple[int, ...],
-    label_basis: str,
+    label_basis: LabelBasis,
 ) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     total = len(frame)
@@ -341,6 +503,15 @@ def build_labeled_rows(
         record["prior_close_minus_mid_ret"] = float(
             (prior_close_price - ((prior_high_price + prior_low_price) / 2.0)) / target_anchor
         )
+        fee_drag = 0.0015
+        upside_mag = max(0.0, record["target_high_ret"])
+        downside_mag = max(0.0, -record["target_low_ret"])
+        long_quality = upside_mag - 1.25 * downside_mag - fee_drag
+        short_quality = downside_mag - 1.25 * upside_mag - fee_drag
+        record["target_long_quality"] = float(long_quality)
+        record["target_short_quality"] = float(short_quality)
+        record["target_long_label"] = float(long_quality > 0.002)
+        record["target_short_label"] = float(short_quality > 0.002)
         rows.append(record)
     return pd.DataFrame(rows)
 
@@ -394,6 +565,16 @@ def resolve_feature_columns(
     feature_columns = list(build_default_feature_columns(forecast_horizons))
     feature_columns.extend(
         [
+            "return_2h",
+            "return_8h",
+            "return_48h",
+            "volatility_8h",
+            "volatility_48h",
+            "range_mean_8h",
+            "range_mean_24h",
+            "volume_z_8h",
+            "volume_z_48h",
+            "momentum_gap_8h_48h",
             "prior_high_ret",
             "prior_low_ret",
             "prior_close_ret",
@@ -409,6 +590,10 @@ def resolve_feature_columns(
             "forecast_range_pct_h",
             "forecast_mid_delta_h",
             "forecast_close_minus_mid_h",
+            "forecast_upside_h",
+            "forecast_downside_h",
+            "forecast_close_width_h",
+            "forecast_close_skew_h",
         ):
             candidate = f"{prefix}{int(horizon)}"
             if candidate in data.columns:
@@ -438,15 +623,17 @@ def encode_features(
 
 def train_regressor(X: pd.DataFrame, y: pd.Series, *, seed: int) -> xgb.XGBRegressor:
     model = xgb.XGBRegressor(
-        objective="reg:squarederror",
-        n_estimators=300,
-        learning_rate=0.05,
-        max_depth=5,
-        min_child_weight=4,
-        subsample=0.9,
-        colsample_bytree=0.9,
-        reg_lambda=1.0,
-        reg_alpha=0.0,
+        objective="reg:pseudohubererror",
+        n_estimators=500,
+        learning_rate=0.03,
+        max_depth=4,
+        min_child_weight=6,
+        gamma=0.05,
+        subsample=0.85,
+        colsample_bytree=0.85,
+        reg_lambda=2.0,
+        reg_alpha=0.05,
+        max_bin=256,
         tree_method="hist",
         random_state=int(seed),
         n_jobs=4,
@@ -455,20 +642,70 @@ def train_regressor(X: pd.DataFrame, y: pd.Series, *, seed: int) -> xgb.XGBRegre
     return model
 
 
+def train_classifier(
+    X: pd.DataFrame,
+    y: pd.Series,
+    *,
+    sample_weight: np.ndarray,
+    seed: int,
+) -> ClassifierLike:
+    labels = y.astype(int)
+    positive_count = int(labels.sum())
+    negative_count = int(len(labels) - positive_count)
+    if positive_count == 0 or negative_count == 0:
+        return ConstantProbabilityModel(probability=float(labels.mean()))
+
+    scale_pos_weight = float(max(1.0, negative_count / max(positive_count, 1)))
+    model = xgb.XGBClassifier(
+        objective="binary:logistic",
+        eval_metric="logloss",
+        n_estimators=400,
+        learning_rate=0.03,
+        max_depth=4,
+        min_child_weight=6,
+        gamma=0.05,
+        subsample=0.85,
+        colsample_bytree=0.85,
+        reg_lambda=2.0,
+        reg_alpha=0.05,
+        max_bin=256,
+        scale_pos_weight=scale_pos_weight,
+        tree_method="hist",
+        random_state=int(seed),
+        n_jobs=4,
+    )
+    model.fit(X, labels, sample_weight=sample_weight)
+    return model
+
+
 def train_models(
     train_df: pd.DataFrame,
     *,
     feature_columns: list[str],
     seed: int,
-) -> tuple[dict[str, xgb.XGBRegressor], pd.DataFrame, list[str]]:
+) -> tuple[ModelBundle, pd.DataFrame, list[str]]:
     X_train, _, encoded_columns = encode_features(train_df, train_df.iloc[:0], feature_columns=feature_columns)
-    models = {
+    long_weights = np.clip(1.0 + 40.0 * np.maximum(train_df["target_long_quality"].to_numpy(), 0.0), 1.0, 12.0)
+    short_weights = np.clip(1.0 + 40.0 * np.maximum(train_df["target_short_quality"].to_numpy(), 0.0), 1.0, 12.0)
+    models: ModelBundle = {
         "high": train_regressor(X_train, train_df["target_high_ret"] - train_df["prior_high_ret"], seed=seed),
         "low": train_regressor(X_train, train_df["target_low_ret"] - train_df["prior_low_ret"], seed=seed + 1),
         "close": train_regressor(
             X_train,
             train_df["target_close_ret"] - train_df["prior_close_ret"],
             seed=seed + 2,
+        ),
+        "long_cls": train_classifier(
+            X_train,
+            train_df["target_long_label"],
+            sample_weight=long_weights,
+            seed=seed + 3,
+        ),
+        "short_cls": train_classifier(
+            X_train,
+            train_df["target_short_label"],
+            sample_weight=short_weights,
+            seed=seed + 4,
         ),
     }
     return models, X_train, encoded_columns
@@ -479,7 +716,7 @@ def score_rows(
     train_df: pd.DataFrame,
     *,
     feature_columns: list[str],
-    models: dict[str, xgb.XGBRegressor],
+    models: ModelBundle,
     residual_scale: float,
 ) -> pd.DataFrame:
     _, X_holdout, _ = encode_features(train_df, holdout_df, feature_columns=feature_columns)
@@ -491,6 +728,8 @@ def score_rows(
     scored["pred_high_ret_xgb"] = scored["prior_high_ret"] + scale * high_residual
     scored["pred_low_ret_xgb"] = scored["prior_low_ret"] + scale * low_residual
     scored["pred_close_ret_xgb"] = scored["prior_close_ret"] + scale * close_residual
+    scored["pred_long_prob_xgb"] = models["long_cls"].predict_proba(X_holdout)[:, 1]
+    scored["pred_short_prob_xgb"] = models["short_cls"].predict_proba(X_holdout)[:, 1]
 
     repaired_high: list[float] = []
     repaired_low: list[float] = []
@@ -512,6 +751,15 @@ def score_rows(
     return scored
 
 
+def _scored_holdout_cache_key(
+    *,
+    label_horizon_hours: int,
+    label_basis: str,
+    residual_scale: float,
+) -> tuple[int, str, float]:
+    return (int(label_horizon_hours), str(label_basis), float(residual_scale))
+
+
 def _clip_price(value: float, reference: float) -> float:
     price = float(value)
     if not np.isfinite(price) or price <= 0:
@@ -519,25 +767,58 @@ def _clip_price(value: float, reference: float) -> float:
     return float(max(price, 0.01))
 
 
+_MISSING = object()
+
+
+def _row_value(row: Any, field: str, default: Any = _MISSING) -> Any:
+    getter = getattr(row, "get", None)
+    if callable(getter):
+        value = getter(field, _MISSING)
+        if value is not _MISSING:
+            return value
+    if hasattr(row, field):
+        return getattr(row, field)
+    try:
+        return row[field]
+    except Exception:
+        if default is not _MISSING:
+            return default
+        raise KeyError(field) from None
+
+
 def build_action_row(
-    row: pd.Series,
+    row: Any,
     cfg: SearchConfig,
 ) -> dict[str, Any]:
-    symbol = str(row["symbol"]).upper()
-    ref = float(row["reference_close"])
-    pred_high = float(row["pred_high_ret_xgb"])
-    pred_low = float(row["pred_low_ret_xgb"])
-    pred_close = float(row["pred_close_ret_xgb"])
+    symbol = str(_row_value(row, "symbol")).upper()
+    ref = float(_row_value(row, "reference_close"))
+    pred_high = float(_row_value(row, "pred_high_ret_xgb"))
+    pred_low = float(_row_value(row, "pred_low_ret_xgb"))
+    pred_close = float(_row_value(row, "pred_close_ret_xgb"))
+    long_prob = float(_row_value(row, "pred_long_prob_xgb", 1.0))
+    short_prob = float(_row_value(row, "pred_short_prob_xgb", 1.0))
 
     directions = resolve_trade_directions(symbol, allow_short=True)
     fee_drag = 0.0015
     downside_mag = max(0.0, -pred_low)
     upside_mag = max(0.0, pred_high)
-    long_edge = upside_mag - cfg.risk_penalty * downside_mag - fee_drag
-    short_edge = downside_mag - cfg.risk_penalty * upside_mag - fee_drag
+    raw_long_edge = upside_mag - cfg.risk_penalty * downside_mag - fee_drag
+    raw_short_edge = downside_mag - cfg.risk_penalty * upside_mag - fee_drag
+    long_prob_scale = long_prob ** max(cfg.probability_power, 1e-6)
+    short_prob_scale = short_prob ** max(cfg.probability_power, 1e-6)
+    long_edge = raw_long_edge * long_prob_scale
+    short_edge = raw_short_edge * short_prob_scale
 
-    choose_long = directions.can_long and long_edge >= max(short_edge, cfg.edge_threshold)
-    choose_short = directions.can_short and short_edge > max(long_edge, cfg.edge_threshold)
+    choose_long = (
+        directions.can_long
+        and long_prob >= cfg.min_trade_probability
+        and long_edge >= max(short_edge, cfg.edge_threshold)
+    )
+    choose_short = (
+        directions.can_short
+        and short_prob >= cfg.min_trade_probability
+        and short_edge > max(long_edge, cfg.edge_threshold)
+    )
 
     buy_amount = 0.0
     sell_amount = 0.0
@@ -561,7 +842,7 @@ def build_action_row(
 
     trade_amount = max(buy_amount, sell_amount)
     return {
-        "timestamp": pd.Timestamp(row["timestamp"]),
+        "timestamp": pd.Timestamp(_row_value(row, "timestamp")),
         "symbol": symbol,
         "buy_price": float(buy_price),
         "sell_price": float(sell_price),
@@ -570,6 +851,10 @@ def build_action_row(
         "trade_amount": float(trade_amount),
         "xgb_long_edge": float(long_edge),
         "xgb_short_edge": float(short_edge),
+        "xgb_long_edge_raw": float(raw_long_edge),
+        "xgb_short_edge_raw": float(raw_short_edge),
+        "pred_long_prob_xgb": float(long_prob),
+        "pred_short_prob_xgb": float(short_prob),
         "predicted_high_p50_h1": float(ref * (1.0 + pred_high)),
         "predicted_low_p50_h1": float(ref * (1.0 + pred_low)),
         "predicted_close_p50_h1": float(ref * (1.0 + pred_close)),
@@ -580,34 +865,17 @@ def build_actions_and_bars(
     scored_df: pd.DataFrame,
     cfg: SearchConfig,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    action_rows = [build_action_row(row, cfg) for _, row in scored_df.iterrows()]
-    actions = pd.DataFrame(action_rows)
+    action_rows = [build_action_row(row, cfg) for row in scored_df.itertuples(index=False, name="ScoredActionRow")]
+    actions = pd.DataFrame.from_records(action_rows, columns=_ACTION_COLUMNS)
 
-    bars = scored_df[
-        [
-            "timestamp",
-            "symbol",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-        ]
-    ].copy()
-
-    pred = actions[
-        [
-            "timestamp",
-            "symbol",
-            "predicted_high_p50_h1",
-            "predicted_low_p50_h1",
-            "predicted_close_p50_h1",
-        ]
-    ].copy()
-    pred["predicted_high_p50_h24"] = pred["predicted_high_p50_h1"]
-    pred["predicted_low_p50_h24"] = pred["predicted_low_p50_h1"]
-    pred["predicted_close_p50_h24"] = pred["predicted_close_p50_h1"]
-    bars = bars.merge(pred, on=["timestamp", "symbol"], how="left")
+    bars = scored_df[_BAR_COLUMNS].copy()
+    bars["symbol"] = bars["symbol"].astype(str).str.upper()
+    bars["predicted_high_p50_h1"] = actions["predicted_high_p50_h1"].to_numpy(copy=False)
+    bars["predicted_low_p50_h1"] = actions["predicted_low_p50_h1"].to_numpy(copy=False)
+    bars["predicted_close_p50_h1"] = actions["predicted_close_p50_h1"].to_numpy(copy=False)
+    bars["predicted_high_p50_h24"] = bars["predicted_high_p50_h1"]
+    bars["predicted_low_p50_h24"] = bars["predicted_low_p50_h1"]
+    bars["predicted_close_p50_h24"] = bars["predicted_close_p50_h1"]
     return bars.sort_values(["timestamp", "symbol"]).reset_index(drop=True), actions.sort_values(
         ["timestamp", "symbol"]
     ).reset_index(drop=True)
@@ -676,9 +944,11 @@ def iter_search_configs(args: argparse.Namespace) -> list[SearchConfig]:
     configs: list[SearchConfig] = []
     for values in itertools.product(
         parse_int_list(args.label_horizon_grid),
-        parse_token_list(args.label_basis_grid),
+        parse_label_basis_list(args.label_basis_grid),
         parse_float_list(args.residual_scale_grid),
         parse_float_list(args.risk_penalty_grid),
+        parse_float_list(args.min_trade_probability_grid),
+        parse_float_list(args.probability_power_grid),
         parse_float_list(args.entry_alpha_grid),
         parse_float_list(args.exit_alpha_grid),
         parse_float_list(args.edge_threshold_grid),
@@ -687,16 +957,238 @@ def iter_search_configs(args: argparse.Namespace) -> list[SearchConfig]:
         parse_int_list(args.max_hold_hours_grid),
         parse_bool_list(args.close_at_eod_grid),
         parse_bool_list(args.market_order_entry_grid),
-        parse_token_list(args.entry_selection_mode_grid),
-        parse_token_list(args.entry_allocator_mode_grid),
+        parse_entry_selection_mode_list(args.entry_selection_mode_grid),
+        parse_entry_allocator_mode_list(args.entry_allocator_mode_grid),
         parse_float_list(args.entry_allocator_edge_power_grid),
     ):
         configs.append(SearchConfig(*values))
     return configs
 
 
+def build_search_space_report(
+    args: argparse.Namespace,
+    *,
+    symbols: list[str],
+    forecast_horizons: tuple[int, ...],
+    eval_windows: list[int],
+    search_configs: list[SearchConfig],
+    describe_limit: int,
+) -> dict[str, Any]:
+    dataset_keys = sorted({(int(cfg.label_horizon_hours), str(cfg.label_basis)) for cfg in search_configs})
+    preview_configs = [asdict(cfg) for cfg in search_configs[: max(0, int(describe_limit))]]
+    config_count = int(len(search_configs))
+    max_configs = int(max(1, int(args.max_configs)))
+    allow_large_search = bool(args.allow_large_search)
+    return {
+        "symbols": list(symbols),
+        "symbol_count": int(len(symbols)),
+        "forecast_horizons": list(forecast_horizons),
+        "sequence_length": int(args.sequence_length),
+        "validation_days": int(args.validation_days),
+        "eval_windows": list(eval_windows),
+        "config_count": config_count,
+        "dataset_count": int(len(dataset_keys)),
+        "datasets": [
+            {
+                "label_horizon_hours": int(label_horizon),
+                "label_basis": str(label_basis),
+            }
+            for label_horizon, label_basis in dataset_keys
+        ],
+        "max_configs": max_configs,
+        "allow_large_search": allow_large_search,
+        "over_budget": bool(config_count > max_configs and not allow_large_search),
+        "describe_limit": int(max(0, int(describe_limit))),
+        "config_preview": preview_configs,
+    }
+
+
+def validate_search_space_budget(report: dict[str, Any]) -> None:
+    config_count = int(report.get("config_count", 0))
+    max_configs = int(report.get("max_configs", DEFAULT_MAX_SEARCH_CONFIGS))
+    if bool(report.get("allow_large_search")) or config_count <= max_configs:
+        return
+    raise ValueError(
+        "Resolved "
+        f"{config_count} search configs, which exceeds --max-configs={max_configs}. "
+        "Use --describe-search-space to inspect the plan first, narrow the grid, "
+        "raise --max-configs, or pass --allow-large-search to override."
+    )
+
+
+def build_results_leaderboard(results: list[dict[str, Any]]) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for result in sorted(results, key=lambda item: float(item["selection_score"]), reverse=True):
+        row: dict[str, Any] = {
+            "selection_score": float(result["selection_score"]),
+            "train_rows": int(result["train_rows"]),
+            "holdout_rows": int(result["holdout_rows"]),
+            "encoded_feature_count": int(result["encoded_feature_count"]),
+        }
+        row.update(dict(result["config"]))
+        for metric in result["window_metrics"]:
+            prefix = f"w{int(metric['window_days'])}d"
+            row[f"{prefix}_return_pct"] = float(metric["total_return_pct"])
+            row[f"{prefix}_sortino"] = float(metric["sortino"])
+            row[f"{prefix}_max_drawdown_pct"] = float(metric["max_drawdown_pct"])
+            row[f"{prefix}_smoothness_score"] = float(metric["pnl_smoothness_score"])
+            row[f"{prefix}_goodness_score"] = float(metric["goodness_score"])
+            row[f"{prefix}_num_buys"] = int(metric["num_buys"])
+            row[f"{prefix}_num_sells"] = int(metric["num_sells"])
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _markdown_table(headers: list[str], rows: list[list[str]]) -> str:
+    if not rows:
+        return "_None_\n"
+    header_row = "| " + " | ".join(headers) + " |"
+    separator_row = "| " + " | ".join(["---"] * len(headers)) + " |"
+    body_rows = ["| " + " | ".join(row) + " |" for row in rows]
+    return "\n".join([header_row, separator_row, *body_rows]) + "\n"
+
+
+def build_markdown_report(
+    report: dict[str, Any],
+    leaderboard: pd.DataFrame,
+    *,
+    top_n: int = 5,
+) -> str:
+    search_space = dict(report.get("search_space", {}))
+    best = dict(report["best"])
+    best_config = dict(best["config"])
+    best_windows = list(best["window_metrics"])
+    top_rows = leaderboard.head(max(0, int(top_n)))
+
+    window_headers = [
+        "Window",
+        "Return %",
+        "Sortino",
+        "Max DD %",
+        "Smoothness",
+        "Goodness",
+        "Buys",
+        "Sells",
+    ]
+    window_rows = [
+        [
+            f"{int(metric['window_days'])}d",
+            f"{float(metric['total_return_pct']):.3f}",
+            f"{float(metric['sortino']):.3f}",
+            f"{float(metric['max_drawdown_pct']):.3f}",
+            f"{float(metric['pnl_smoothness_score']):.3f}",
+            f"{float(metric['goodness_score']):.3f}",
+            str(int(metric["num_buys"])),
+            str(int(metric["num_sells"])),
+        ]
+        for metric in best_windows
+    ]
+
+    top_headers = [
+        "Rank",
+        "Score",
+        "Horizon",
+        "Basis",
+        "Residual",
+        "Risk",
+        "Min Prob",
+        "Edge",
+        "Max Hold",
+    ]
+    top_rows_md = [
+        [
+            str(idx + 1),
+            f"{float(row.selection_score):.3f}",
+            str(int(row.label_horizon_hours)),
+            str(row.label_basis),
+            f"{float(row.residual_scale):.3f}",
+            f"{float(row.risk_penalty):.3f}",
+            f"{float(row.min_trade_probability):.3f}",
+            f"{float(row.edge_threshold):.4f}",
+            str(int(row.max_hold_hours)),
+        ]
+        for idx, row in enumerate(top_rows.itertuples(index=False))
+    ]
+
+    best_config_lines = [f"- `{key}`: `{value}`" for key, value in best_config.items()]
+    output_dir = report.get("output_dir", "")
+    created_at = report.get("created_at_utc", "")
+    symbols = ", ".join(report.get("symbols", []))
+
+    lines = [
+        "# XGB Chronos Baseline Report",
+        "",
+        f"- Created: `{created_at}`",
+        f"- Output Dir: `{output_dir}`",
+        f"- Symbols: `{symbols}`",
+        f"- Forecast Horizons: `{', '.join(str(item) for item in report.get('forecast_horizons', []))}`",
+        f"- Validation Days: `{report.get('validation_days')}`",
+        f"- Eval Windows: `{', '.join(str(item) for item in report.get('eval_windows', []))}`",
+        f"- Search Configs: `{search_space.get('config_count', len(leaderboard))}`",
+        f"- Reused Datasets: `{search_space.get('dataset_count', 'n/a')}`",
+        "",
+        "## Best Config",
+        *best_config_lines,
+        "",
+        f"- Selection Score: `{float(best['selection_score']):.3f}`",
+        "",
+        "## Best Window Metrics",
+        _markdown_table(window_headers, window_rows).rstrip(),
+        "",
+        f"## Top {min(len(leaderboard), max(0, int(top_n)))} Configs",
+        _markdown_table(top_headers, top_rows_md).rstrip(),
+    ]
+    return "\n".join(lines).strip() + "\n"
+
+
+def _json_ready(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_ready(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_ready(item) for item in value]
+    return value
+
+
+def build_effective_args_manifest(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "argv": list(sys.argv[1:]),
+        "resolved_args": {
+            key: _json_ready(value)
+            for key, value in sorted(vars(args).items())
+        },
+    }
+
+
+def _append_run_event(
+    events_path: Path,
+    *,
+    event_type: str,
+    run_id: str,
+    output_dir: Path,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    event: dict[str, Any] = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "event_type": str(event_type),
+        "run_id": str(run_id),
+        "output_dir": str(output_dir),
+        "pid": int(os.getpid()),
+    }
+    if payload:
+        event.update(payload)
+    try:
+        append_jsonl_row(events_path, event, sort_keys=True, default=str)
+    except Exception as exc:
+        print(
+            f"[xgb_chronos_baseline] failed to append {event_type!r} event to {events_path}: {exc}",
+            file=sys.stderr,
+        )
+
+
 def save_models(
-    models: dict[str, xgb.XGBRegressor],
+    models: ModelBundle,
     output_dir: Path,
 ) -> None:
     model_dir = output_dir / "models"
@@ -706,7 +1198,12 @@ def save_models(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Chronos2 + XGBoost hourly Alpaca stock baseline")
+    parser = ArgsFileParser(
+        description="Chronos2 + XGBoost hourly Alpaca stock baseline",
+        epilog="Long runs can be stored in an @args.txt file; lines support shell-style quoting and # comments.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        fromfile_prefix_chars="@",
+    )
     parser.add_argument("--symbols", default=DEFAULT_SYMBOLS)
     parser.add_argument("--data-root", type=Path, default=Path("trainingdatahourly/stocks"))
     parser.add_argument("--cache-root", type=Path, default=Path("unified_hourly_experiment/forecast_cache"))
@@ -717,11 +1214,35 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--initial-cash", type=float, default=10_000.0)
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument(
+        "--max-configs",
+        type=int,
+        default=DEFAULT_MAX_SEARCH_CONFIGS,
+        help="Refuse to launch if the resolved grid exceeds this many configs unless --allow-large-search is set.",
+    )
+    parser.add_argument(
+        "--allow-large-search",
+        action="store_true",
+        help="Override the search-size guard and allow very large grids to run.",
+    )
+    parser.add_argument(
+        "--describe-search-space",
+        action="store_true",
+        help="Print the resolved grid size, dataset reuse plan, and example configs, then exit.",
+    )
+    parser.add_argument(
+        "--describe-limit",
+        type=int,
+        default=5,
+        help="Maximum number of resolved configs to include in --describe-search-space output.",
+    )
 
     parser.add_argument("--label-horizon-grid", default="2,4")
     parser.add_argument("--label-basis-grid", default="reference_close")
     parser.add_argument("--residual-scale-grid", default="0.0,0.5,1.0")
     parser.add_argument("--risk-penalty-grid", default="0.75,1.0")
+    parser.add_argument("--min-trade-probability-grid", default="0.45,0.55")
+    parser.add_argument("--probability-power-grid", default="1.0,1.5")
     parser.add_argument("--entry-alpha-grid", default="0.25,0.5")
     parser.add_argument("--exit-alpha-grid", default="0.75")
     parser.add_argument("--edge-threshold-grid", default="0.002,0.004")
@@ -744,10 +1265,46 @@ def main() -> None:
     search_configs = iter_search_configs(args)
     if not search_configs:
         raise ValueError("No search configs generated")
+    search_space_report = build_search_space_report(
+        args,
+        symbols=symbols,
+        forecast_horizons=forecast_horizons,
+        eval_windows=eval_windows,
+        search_configs=search_configs,
+        describe_limit=int(args.describe_limit),
+    )
+    if args.describe_search_space:
+        print(json.dumps(search_space_report, indent=2, sort_keys=True))
+        return
+    validate_search_space_budget(search_space_report)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     output_dir = args.output_dir or (Path("experiments") / f"xgb_chronos_baseline_{timestamp}")
     output_dir.mkdir(parents=True, exist_ok=True)
+    run_id = output_dir.name
+    run_events_path = output_dir / RUN_EVENTS_FILENAME
+    effective_args_path = output_dir / EFFECTIVE_ARGS_FILENAME
+    run_started = time.perf_counter()
+    effective_args_manifest = build_effective_args_manifest(args)
+    effective_args_path.write_text(json.dumps(effective_args_manifest, indent=2, sort_keys=True))
+
+    _append_run_event(
+        run_events_path,
+        event_type="run_start",
+        run_id=run_id,
+        output_dir=output_dir,
+        payload={
+            "symbols": symbols,
+            "forecast_horizons": list(forecast_horizons),
+            "validation_days": int(args.validation_days),
+            "eval_windows": eval_windows,
+            "search_space": search_space_report,
+            "search_config_count": int(len(search_configs)),
+            "seed": int(args.seed),
+            "argv": list(effective_args_manifest["argv"]),
+            "effective_args_path": str(effective_args_path),
+        },
+    )
 
     all_results: list[dict[str, Any]] = []
     best_result: dict[str, Any] | None = None
@@ -757,96 +1314,269 @@ def main() -> None:
         tuple[int, str],
         tuple[pd.DataFrame, pd.DataFrame, list[str], dict[str, xgb.XGBRegressor], list[str]],
     ] = {}
+    scored_holdout_cache: dict[tuple[int, str, float], pd.DataFrame] = {}
+    score_cache_hits = 0
+    score_cache_misses = 0
+    try:
+        for dataset_index, (label_horizon, label_basis) in enumerate(dataset_keys, start=1):
+            dataset_started = time.perf_counter()
+            _append_run_event(
+                run_events_path,
+                event_type="dataset_prepare_start",
+                run_id=run_id,
+                output_dir=output_dir,
+                payload={
+                    "dataset_index": int(dataset_index),
+                    "dataset_count": int(len(dataset_keys)),
+                    "label_horizon_hours": int(label_horizon),
+                    "label_basis": str(label_basis),
+                },
+            )
+            try:
+                train_df, holdout_df = prepare_dataset(
+                    symbols=symbols,
+                    data_root=args.data_root,
+                    cache_root=args.cache_root,
+                    sequence_length=int(args.sequence_length),
+                    forecast_horizons=forecast_horizons,
+                    label_horizon_hours=int(label_horizon),
+                    label_basis=str(label_basis),
+                    validation_days=int(args.validation_days),
+                )
+                feature_columns = resolve_feature_columns(forecast_horizons, train_df)
+                models, _, encoded_columns = train_models(
+                    train_df,
+                    feature_columns=feature_columns,
+                    seed=int(args.seed) + int(label_horizon) * 10,
+                )
+            except Exception as exc:
+                _append_run_event(
+                    run_events_path,
+                    event_type="dataset_error",
+                    run_id=run_id,
+                    output_dir=output_dir,
+                    payload={
+                        "dataset_index": int(dataset_index),
+                        "dataset_count": int(len(dataset_keys)),
+                        "label_horizon_hours": int(label_horizon),
+                        "label_basis": str(label_basis),
+                        "duration_seconds": round(time.perf_counter() - dataset_started, 6),
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                        "traceback": traceback.format_exc(),
+                    },
+                )
+                raise
+            dataset_cache[(int(label_horizon), str(label_basis))] = (
+                train_df,
+                holdout_df,
+                feature_columns,
+                models,
+                encoded_columns,
+            )
+            _append_run_event(
+                run_events_path,
+                event_type="dataset_prepared",
+                run_id=run_id,
+                output_dir=output_dir,
+                payload={
+                    "dataset_index": int(dataset_index),
+                    "dataset_count": int(len(dataset_keys)),
+                    "label_horizon_hours": int(label_horizon),
+                    "label_basis": str(label_basis),
+                    "duration_seconds": round(time.perf_counter() - dataset_started, 6),
+                    "feature_count": int(len(feature_columns)),
+                    "encoded_feature_count": int(len(encoded_columns)),
+                    "train_rows": int(len(train_df)),
+                    "holdout_rows": int(len(holdout_df)),
+                },
+            )
 
-    for label_horizon, label_basis in dataset_keys:
-        train_df, holdout_df = prepare_dataset(
-            symbols=symbols,
-            data_root=args.data_root,
-            cache_root=args.cache_root,
-            sequence_length=int(args.sequence_length),
-            forecast_horizons=forecast_horizons,
-            label_horizon_hours=int(label_horizon),
-            label_basis=str(label_basis),
-            validation_days=int(args.validation_days),
-        )
-        feature_columns = resolve_feature_columns(forecast_horizons, train_df)
-        models, _, encoded_columns = train_models(train_df, feature_columns=feature_columns, seed=int(args.seed) + int(label_horizon) * 10)
-        dataset_cache[(int(label_horizon), str(label_basis))] = (
-            train_df,
-            holdout_df,
-            feature_columns,
-            models,
-            encoded_columns,
-        )
+        for config_index, cfg in enumerate(search_configs, start=1):
+            config_started = time.perf_counter()
+            cfg_payload = asdict(cfg)
+            _append_run_event(
+                run_events_path,
+                event_type="config_start",
+                run_id=run_id,
+                output_dir=output_dir,
+                payload={
+                    "config_index": int(config_index),
+                    "config_count": int(len(search_configs)),
+                    "config": cfg_payload,
+                },
+            )
+            try:
+                train_df, holdout_df, feature_columns, models, encoded_columns = dataset_cache[
+                    (int(cfg.label_horizon_hours), str(cfg.label_basis))
+                ]
+                score_cache_key = _scored_holdout_cache_key(
+                    label_horizon_hours=int(cfg.label_horizon_hours),
+                    label_basis=str(cfg.label_basis),
+                    residual_scale=float(cfg.residual_scale),
+                )
+                score_cache_hit = score_cache_key in scored_holdout_cache
+                if score_cache_hit:
+                    score_cache_hits += 1
+                    scored_holdout = scored_holdout_cache[score_cache_key]
+                else:
+                    score_cache_misses += 1
+                    scored_holdout = score_rows(
+                        holdout_df,
+                        train_df,
+                        feature_columns=feature_columns,
+                        models=models,
+                        residual_scale=float(cfg.residual_scale),
+                    )
+                    scored_holdout_cache[score_cache_key] = scored_holdout
+                bars, actions = build_actions_and_bars(scored_holdout, cfg)
+                window_metrics = evaluate_windows(
+                    bars,
+                    actions,
+                    symbols=symbols,
+                    eval_windows=eval_windows,
+                    cfg=cfg,
+                    initial_cash=float(args.initial_cash),
+                )
+                selection_score = compute_selection_score(window_metrics)
+                result = {
+                    "config": cfg_payload,
+                    "selection_score": float(selection_score),
+                    "window_metrics": [asdict(metric) for metric in window_metrics],
+                    "feature_columns": feature_columns,
+                    "encoded_feature_count": int(len(encoded_columns)),
+                    "train_rows": int(len(train_df)),
+                    "holdout_rows": int(len(scored_holdout)),
+                }
+            except Exception as exc:
+                _append_run_event(
+                    run_events_path,
+                    event_type="config_error",
+                    run_id=run_id,
+                    output_dir=output_dir,
+                    payload={
+                        "config_index": int(config_index),
+                        "config_count": int(len(search_configs)),
+                        "config": cfg_payload,
+                        "duration_seconds": round(time.perf_counter() - config_started, 6),
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                        "traceback": traceback.format_exc(),
+                    },
+                )
+                raise
 
-    for cfg in search_configs:
-        train_df, holdout_df, feature_columns, models, encoded_columns = dataset_cache[
-            (int(cfg.label_horizon_hours), str(cfg.label_basis))
+            all_results.append(result)
+            is_new_best = best_result is None or float(result["selection_score"]) > float(best_result["selection_score"])
+            if is_new_best:
+                best_result = result
+            _append_run_event(
+                run_events_path,
+                event_type="config_complete",
+                run_id=run_id,
+                output_dir=output_dir,
+                payload={
+                    "config_index": int(config_index),
+                    "config_count": int(len(search_configs)),
+                    "config": cfg_payload,
+                    "duration_seconds": round(time.perf_counter() - config_started, 6),
+                    "selection_score": float(selection_score),
+                    "best_selection_score_so_far": float(best_result["selection_score"]),
+                    "is_new_best": bool(is_new_best),
+                    "score_cache_hit": bool(score_cache_hit),
+                    "train_rows": int(result["train_rows"]),
+                    "holdout_rows": int(result["holdout_rows"]),
+                    "window_metrics": result["window_metrics"],
+                },
+            )
+
+        if best_result is None:
+            raise RuntimeError("No baseline result was produced")
+
+        best_cfg = SearchConfig(**best_result["config"])
+        train_df, holdout_df, feature_columns, models, _ = dataset_cache[
+            (int(best_cfg.label_horizon_hours), str(best_cfg.label_basis))
         ]
-        scored_holdout = score_rows(
-            holdout_df,
-            train_df,
-            feature_columns=feature_columns,
-            models=models,
-            residual_scale=float(cfg.residual_scale),
+        best_score_cache_key = _scored_holdout_cache_key(
+            label_horizon_hours=int(best_cfg.label_horizon_hours),
+            label_basis=str(best_cfg.label_basis),
+            residual_scale=float(best_cfg.residual_scale),
         )
-        bars, actions = build_actions_and_bars(scored_holdout, cfg)
-        window_metrics = evaluate_windows(
-            bars,
-            actions,
-            symbols=symbols,
-            eval_windows=eval_windows,
-            cfg=cfg,
-            initial_cash=float(args.initial_cash),
-        )
-        selection_score = compute_selection_score(window_metrics)
-        result = {
-            "config": asdict(cfg),
-            "selection_score": float(selection_score),
-            "window_metrics": [asdict(metric) for metric in window_metrics],
-            "feature_columns": feature_columns,
-            "encoded_feature_count": int(len(encoded_columns)),
-            "train_rows": int(len(train_df)),
-            "holdout_rows": int(len(scored_holdout)),
+        if best_score_cache_key in scored_holdout_cache:
+            score_cache_hits += 1
+            scored_holdout = scored_holdout_cache[best_score_cache_key]
+        else:
+            score_cache_misses += 1
+            scored_holdout = score_rows(
+                holdout_df,
+                train_df,
+                feature_columns=feature_columns,
+                models=models,
+                residual_scale=float(best_cfg.residual_scale),
+            )
+            scored_holdout_cache[best_score_cache_key] = scored_holdout
+        best_bars, best_actions = build_actions_and_bars(scored_holdout, best_cfg)
+
+        save_models(models, output_dir)
+        best_actions.to_parquet(output_dir / "best_actions.parquet", index=False)
+        best_bars.to_parquet(output_dir / "best_bars.parquet", index=False)
+        (output_dir / "summary.json").write_text(json.dumps(best_result, indent=2, sort_keys=True))
+        (output_dir / "results.json").write_text(json.dumps(all_results, indent=2, sort_keys=True))
+        leaderboard = build_results_leaderboard(all_results)
+        leaderboard_path = output_dir / "leaderboard.csv"
+        leaderboard.to_csv(leaderboard_path, index=False)
+
+        report = {
+            "created_at_utc": datetime.now(timezone.utc).isoformat(),
+            "symbols": symbols,
+            "forecast_horizons": list(forecast_horizons),
+            "validation_days": int(args.validation_days),
+            "eval_windows": eval_windows,
+            "search_space": search_space_report,
+            "best": best_result,
+            "output_dir": str(output_dir),
+            "leaderboard_path": str(leaderboard_path),
+            "markdown_report_path": str(output_dir / "report.md"),
+            "run_events_path": str(run_events_path),
+            "effective_args_path": str(effective_args_path),
+            "score_cache_entries": int(len(scored_holdout_cache)),
+            "score_cache_hits": int(score_cache_hits),
+            "score_cache_misses": int(score_cache_misses),
         }
-        all_results.append(result)
-        if best_result is None or float(result["selection_score"]) > float(best_result["selection_score"]):
-            best_result = result
-
-    if best_result is None:
-        raise RuntimeError("No baseline result was produced")
-
-    best_cfg = SearchConfig(**best_result["config"])
-    train_df, holdout_df, feature_columns, models, _ = dataset_cache[
-        (int(best_cfg.label_horizon_hours), str(best_cfg.label_basis))
-    ]
-    scored_holdout = score_rows(
-        holdout_df,
-        train_df,
-        feature_columns=feature_columns,
-        models=models,
-        residual_scale=float(best_cfg.residual_scale),
-    )
-    best_bars, best_actions = build_actions_and_bars(scored_holdout, best_cfg)
-
-    save_models(models, output_dir)
-    best_actions.to_parquet(output_dir / "best_actions.parquet", index=False)
-    best_bars.to_parquet(output_dir / "best_bars.parquet", index=False)
-    (output_dir / "summary.json").write_text(json.dumps(best_result, indent=2, sort_keys=True))
-    (output_dir / "results.json").write_text(json.dumps(all_results, indent=2, sort_keys=True))
-
-    report = {
-        "created_at_utc": datetime.now(timezone.utc).isoformat(),
-        "symbols": symbols,
-        "forecast_horizons": list(forecast_horizons),
-        "validation_days": int(args.validation_days),
-        "eval_windows": eval_windows,
-        "best": best_result,
-        "output_dir": str(output_dir),
-    }
-    (output_dir / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True))
-
-    print(json.dumps(report, indent=2, sort_keys=True))
+        (output_dir / "report.json").write_text(json.dumps(report, indent=2, sort_keys=True))
+        (output_dir / "report.md").write_text(build_markdown_report(report, leaderboard))
+        _append_run_event(
+            run_events_path,
+            event_type="run_complete",
+            run_id=run_id,
+            output_dir=output_dir,
+            payload={
+                "best_config": dict(best_result["config"]),
+                "best_selection_score": float(best_result["selection_score"]),
+                "result_count": int(len(all_results)),
+                "duration_seconds": round(time.perf_counter() - run_started, 6),
+                "score_cache_entries": int(len(scored_holdout_cache)),
+                "score_cache_hits": int(score_cache_hits),
+                "score_cache_misses": int(score_cache_misses),
+                "leaderboard_path": str(leaderboard_path),
+                "report_path": str(output_dir / "report.json"),
+            },
+        )
+        print(json.dumps(report, indent=2, sort_keys=True))
+    except Exception as exc:
+        _append_run_event(
+            run_events_path,
+            event_type="run_error",
+            run_id=run_id,
+            output_dir=output_dir,
+            payload={
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+                "duration_seconds": round(time.perf_counter() - run_started, 6),
+                "traceback": traceback.format_exc(),
+            },
+        )
+        raise
 
 
 if __name__ == "__main__":

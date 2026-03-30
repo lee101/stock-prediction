@@ -112,6 +112,39 @@ def test_detect_total_vram_bytes_respects_cuda_visible_devices_for_nvml(monkeypa
     assert fake_pynvml.handles == [1]
 
 
+def test_detect_free_vram_bytes_respects_cuda_visible_devices_for_nvml(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,3")
+    monkeypatch.setattr(gpu_utils, "torch", None)
+
+    class FakePynvml:
+        def __init__(self) -> None:
+            self.handles: List[int] = []
+
+        def nvmlInit(self) -> None:
+            pass
+
+        def nvmlShutdown(self) -> None:
+            pass
+
+        def nvmlDeviceGetHandleByIndex(self, index: int) -> str:
+            self.handles.append(index)
+            return f"handle-{index}"
+
+        def nvmlDeviceGetHandleByPciBusId(self, bus_id: str) -> str:
+            raise AssertionError(f"Unexpected PCI bus id lookup: {bus_id}")
+
+        def nvmlDeviceGetMemoryInfo(self, handle: str) -> SimpleNamespace:
+            assert handle == "handle-1"
+            return SimpleNamespace(free=6 * 1024 ** 3)
+
+    fake_pynvml = FakePynvml()
+    monkeypatch.setattr(gpu_utils, "pynvml", fake_pynvml)
+
+    free_bytes = gpu_utils.detect_free_vram_bytes()
+    assert free_bytes == 6 * 1024 ** 3
+    assert fake_pynvml.handles == [1]
+
+
 # ------------------------------------------------------------------ #
 # Tests for GPU detection and offloading logic
 # ------------------------------------------------------------------ #

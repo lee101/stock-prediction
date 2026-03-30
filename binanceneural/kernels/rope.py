@@ -221,9 +221,16 @@ def _launch_fused(x, x_out, inv_freq_c, BLOCK_S, is_bf16, half_dim_pow2):
 def _rope_pytorch(q, k, cos, sin):
     """Interleaved RoPE fallback. cos/sin: (1, T, 1, half_dim)."""
     def _rot(x):
-        xr = x[..., ::2]
-        xi = x[..., 1::2]
-        return torch.stack([xr * cos - xi * sin, xr * sin + xi * cos], dim=-1).flatten(-2)
+        work_dtype = torch.float32 if x.dtype in (torch.float16, torch.bfloat16) else x.dtype
+        xr = x[..., ::2].to(work_dtype)
+        xi = x[..., 1::2].to(work_dtype)
+        cos_work = cos.to(work_dtype)
+        sin_work = sin.to(work_dtype)
+        out = torch.stack(
+            [xr * cos_work - xi * sin_work, xr * sin_work + xi * cos_work],
+            dim=-1,
+        ).flatten(-2)
+        return out.to(x.dtype)
     return _rot(q), _rot(k)
 
 

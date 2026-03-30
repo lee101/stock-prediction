@@ -71,9 +71,10 @@ def compute_training_style_features(df: pd.DataFrame) -> pd.DataFrame:
     df['bb_position'] = (df['close'] - df['bb_lower']) / df['bb_width']
 
     # Price-based features
-    df['price_change'] = df['close'].pct_change()
-    df['price_change_2'] = df['close'].pct_change(periods=2)
-    df['price_change_5'] = df['close'].pct_change(periods=5)
+    # Match StockDataProcessor semantics: missing prices do not create synthetic returns.
+    df['price_change'] = df['close'].pct_change(fill_method=None).fillna(0.0)
+    df['price_change_2'] = df['close'].pct_change(periods=2, fill_method=None).fillna(0.0)
+    df['price_change_5'] = df['close'].pct_change(periods=5, fill_method=None).fillna(0.0)
 
     df['high_low_ratio'] = df['high'] / df['low']
     df['close_open_ratio'] = df['close'] / df['open']
@@ -92,7 +93,11 @@ def compute_training_style_features(df: pd.DataFrame) -> pd.DataFrame:
 
     cols = training_feature_columns_list()
     sel = [c for c in cols if c in df.columns]
-    return df[sel].ffill().bfill().fillna(0.0)
+    out = df[sel].copy()
+    out.bfill(inplace=True)
+    out.ffill(inplace=True)
+    out.fillna(0.0, inplace=True)
+    return out
 
 
 def compute_compact_features(data: pd.DataFrame, feature_mode: str = 'auto', use_pct_change: bool = False) -> np.ndarray:
@@ -119,7 +124,7 @@ def compute_compact_features(data: pd.DataFrame, feature_mode: str = 'auto', use
 
     out = out.ffill().bfill().fillna(0.0)
     if use_pct_change:
-        out = out.pct_change().replace([np.inf, -np.inf], 0.0).fillna(0.0)
+        out = out.pct_change(fill_method=None).replace([np.inf, -np.inf], 0.0).fillna(0.0)
     return out.values.astype(np.float32)
 
 
@@ -164,4 +169,3 @@ def denormalize_with_scaler(
         return float(value) * std + mu
     except Exception:
         return float(value)
-

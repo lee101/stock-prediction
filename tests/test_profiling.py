@@ -6,6 +6,7 @@ is callable without actually running training.
 from __future__ import annotations
 
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 import importlib
 
@@ -72,6 +73,87 @@ def test_select_symbols_raises_on_all_missing() -> None:
     from binanceneural.profile_training import _select_symbols
     with pytest.raises(FileNotFoundError):
         _select_symbols(["FAKESYMBOL_DOES_NOT_EXIST_XYZ"])
+
+
+def test_check_symbol_data_accepts_stable_quote_aliases(tmp_path: Path) -> None:
+    """USD requests should accept matching USDT forecast/data files."""
+    from binanceneural.profile_training import _check_symbol_data
+
+    price_dir = tmp_path / "trainingdatahourly" / "crypto"
+    forecast_dir = tmp_path / "binanceneural" / "forecast_cache" / "h1"
+    price_dir.mkdir(parents=True)
+    forecast_dir.mkdir(parents=True)
+    (price_dir / "BTCUSDT.csv").write_text("timestamp,open,high,low,close,volume\n")
+    (forecast_dir / "BTCUSDT.parquet").touch()
+
+    assert _check_symbol_data("BTCUSD", project_root=tmp_path)
+
+
+def test_run_neural_profiling_writes_outputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """run_neural_profiling should honor output-dir and emit the report files."""
+    import binanceneural.profile_training as mod
+
+    class _FakeParam:
+        requires_grad = True
+
+        def numel(self) -> int:
+            return 1
+
+    class _FakeModel:
+        def parameters(self):
+            return [_FakeParam()]
+
+    monkeypatch.setattr(mod, "_select_symbols", lambda symbols: ["BTCUSD"])
+    monkeypatch.setattr(
+        mod,
+        "build_components",
+        lambda args: (_FakeModel(), object(), [object()], SimpleNamespace(type="cpu"), True),
+    )
+    monkeypatch.setattr(mod, "_next_batch", lambda batch_iter, loader, loader_is_dict: ({}, batch_iter))
+    monkeypatch.setattr(mod, "run_one_step", lambda *args, **kwargs: 0.0)
+
+    def _fake_cprofile(*args, output_dir: Path, **kwargs):
+        (Path(output_dir) / "neural_cprofile.prof").write_text("profile")
+        return {key: ([0.01] if key == "total" else [0.001]) for key in mod.TIMING_KEYS}
+
+    def _fake_torch_profiler(*args, output_dir: Path, **kwargs):
+        (Path(output_dir) / "neural_cuda_trace.json").write_text("{}")
+        return None
+
+    monkeypatch.setattr(mod, "run_cprofile", _fake_cprofile)
+    monkeypatch.setattr(mod, "run_pytorch_profiler", _fake_torch_profiler)
+    monkeypatch.setattr(mod, "print_gpu_info", lambda device: None)
+
+    result = mod.run_neural_profiling(["BTCUSD", "ETHUSD"], 2, tmp_path, quick=False)
+
+    assert result["symbol"] == "BTCUSD"
+    assert (tmp_path / "neural_report.md").exists()
+    assert (tmp_path / "neural_cuda_trace.json").exists()
+    assert (tmp_path / "neural_cprofile.prof").exists()
+
+
+def test_neural_profile_main_accepts_legacy_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """main() should keep supporting --symbols/--epochs/--output-dir."""
+    import binanceneural.profile_training as mod
+
+    calls: dict[str, object] = {}
+
+    def _fake_run_neural_profiling(symbols, steps, profiles_dir, **kwargs):
+        calls["symbols"] = symbols
+        calls["steps"] = steps
+        calls["profiles_dir"] = profiles_dir
+        calls["kwargs"] = kwargs
+        return {}
+
+    monkeypatch.setattr(mod, "run_neural_profiling", _fake_run_neural_profiling)
+
+    mod.main(["--symbols", "AAPL,NVDA,DBX", "--epochs", "2", "--output-dir", str(tmp_path), "--quick"])
+
+    assert calls["symbols"] == ["AAPL", "NVDA", "DBX"]
+    assert calls["steps"] == 2
+    assert calls["profiles_dir"] == tmp_path
+    assert calls["kwargs"]["real_data"] is True
+    assert calls["kwargs"]["quick"] is True
 
 
 def test_pyspy_finder_returns_none_or_str() -> None:

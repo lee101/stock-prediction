@@ -75,6 +75,22 @@ def test_resolve_seeds_clamps_to_pool() -> None:
     assert result == dispatch.DEFAULT_SEEDS
 
 
+def test_should_run_remote_prefers_free_vram(monkeypatch) -> None:
+    args = argparse.Namespace(force_remote=False, gpu_type="", vram_threshold_gb=16.0)
+    monkeypatch.setattr(dispatch, "detect_free_vram_bytes", lambda: int(4 * 1e9))
+    monkeypatch.setattr(dispatch, "detect_total_vram_bytes", lambda: int(32 * 1e9))
+
+    assert dispatch.should_run_remote(args) is True
+
+
+def test_should_run_remote_honors_explicit_local_gpu_type(monkeypatch) -> None:
+    args = argparse.Namespace(force_remote=False, gpu_type="local", vram_threshold_gb=16.0)
+    monkeypatch.setattr(dispatch, "detect_free_vram_bytes", lambda: int(4 * 1e9))
+    monkeypatch.setattr(dispatch, "detect_total_vram_bytes", lambda: int(32 * 1e9))
+
+    assert dispatch.should_run_remote(args) is False
+
+
 # ---------------------------------------------------------------------------
 # _read_leaderboard_metrics
 # ---------------------------------------------------------------------------
@@ -399,6 +415,47 @@ def test_build_remote_autoresearch_cmd_no_seed_when_none() -> None:
         args, "/workspace", "lb.csv", "checkpoints", seed=None
     )
     assert "--seed" not in cmd
+
+
+def test_main_multiseed_preserves_rank_metrics(monkeypatch, tmp_path: Path) -> None:
+    captured: list[dict[str, object]] = []
+
+    monkeypatch.setattr(dispatch, "should_run_remote", lambda args: False)
+    monkeypatch.setattr(dispatch, "run_local", lambda args, seed=None: 0)
+    monkeypatch.setattr(
+        dispatch,
+        "_read_leaderboard_metrics",
+        lambda path: {
+            "rank_metric": "val_return",
+            "rank_score": 0.12,
+            "val_return": 0.12,
+            "val_sortino": 1.5,
+            "generalization_score": 0.8,
+            "smooth_score": 0.6,
+            "holdout_robust_score": None,
+            "replay_combo_score": None,
+            "overfit_gap_score": 0.2,
+        },
+    )
+    monkeypatch.setattr(
+        dispatch,
+        "_print_variance_report",
+        lambda seed_results, multiseed_leaderboard: captured.extend(seed_results),
+    )
+
+    dispatch.main([
+        "--data-train", "train.bin",
+        "--data-val", "val.bin",
+        "--run-id", "multiseed_rank_capture",
+        "--num-seeds", "2",
+    ])
+
+    assert len(captured) == 2
+    assert captured[0]["rank_metric"] == "val_return"
+    assert captured[0]["rank_score"] == pytest.approx(0.12)
+    assert captured[0]["generalization_score"] == pytest.approx(0.8)
+    assert captured[0]["smooth_score"] == pytest.approx(0.6)
+    assert captured[0]["overfit_gap_score"] == pytest.approx(0.2)
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 import torch
+from types import SimpleNamespace
 from loss_utils import (
     calculate_trading_profit_torch_with_entry_buysell,
 )
@@ -408,6 +409,35 @@ def test_run_bounded_optimizer_on_quadratic():
     assert pytest.approx(best_x, abs=5e-3) == 0.01
     assert pytest.approx(best_y, abs=5e-3) == -0.02
     assert value < 1e-4
+
+
+def test_run_bounded_optimizer_direct_uses_minimum_budget(monkeypatch):
+    """DIRECT should keep a minimum evaluation budget in normal mode."""
+    import src.optimization_utils as opt_utils
+
+    captured = {}
+
+    def fake_direct(objective, bounds, maxfun):
+        captured["bounds"] = bounds
+        captured["maxfun"] = maxfun
+        return SimpleNamespace(x=np.array([0.0, 0.0]), fun=0.0)
+
+    monkeypatch.setattr(opt_utils, "_USE_DIRECT", True)
+    monkeypatch.setattr(opt_utils, "_FAST_MODE", False)
+    monkeypatch.setattr(opt_utils, "direct", fake_direct)
+
+    (best_x, best_y), value = opt_utils.run_bounded_optimizer(
+        lambda params: float(params[0] ** 2 + params[1] ** 2),
+        bounds=((-1.0, 1.0), (-1.0, 1.0)),
+        maxiter=10,
+        popsize=6,
+    )
+
+    assert captured["bounds"] == ((-1.0, 1.0), (-1.0, 1.0))
+    assert captured["maxfun"] == 60
+    assert best_x == pytest.approx(0.0)
+    assert best_y == pytest.approx(0.0)
+    assert value == pytest.approx(0.0)
 
 
 if __name__ == "__main__":
