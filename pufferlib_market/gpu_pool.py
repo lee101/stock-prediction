@@ -347,11 +347,55 @@ def _stocks12_fidelity_longrun() -> list[dict]:
     return [{**base, **cfg} for cfg in candidates]
 
 
+def _stocks12_sortino_sweep(seeds: range = range(1, 31)) -> list[dict]:
+    """Sortino-optimized sweep: penalize downside volatility during training.
+
+    Uses smooth_downside_penalty to shape rewards toward Sortino-optimal policies.
+    Hypothesis: downside penalty during training should produce smoother PnL curves
+    that improve the ensemble's worst-case (p10) performance.
+
+    Also tests smoothness_penalty which penalizes return volatility directly.
+    """
+    base = {
+        "hidden_size": 1024,
+        "lr": 3e-4,
+        "anneal_lr": True,
+        "ent_coef": 0.05,
+        "trade_penalty": 0.05,
+        "weight_decay": 0.0,
+        "fill_slippage_bps": 0.0,
+        "num_envs": 128,
+        "use_bf16": True,
+        "cuda_graph_ppo": True,
+        "no_cuda_graph": False,
+        "periods_per_year": 252.0,
+        "max_steps": 720,
+    }
+    configs = []
+    for s in seeds:
+        # Variant 1: smooth downside penalty (penalizes negative returns)
+        configs.append({**base, "seed": s,
+            "smooth_downside_penalty": 0.5,
+            "smooth_downside_temperature": 0.02,
+            "description": f"sortino_sdp05_s{s}"})
+        # Variant 2: stronger downside penalty
+        configs.append({**base, "seed": s,
+            "smooth_downside_penalty": 1.0,
+            "smooth_downside_temperature": 0.02,
+            "description": f"sortino_sdp10_s{s}"})
+        # Variant 3: smoothness penalty (penalizes volatile returns)
+        configs.append({**base, "seed": s,
+            "smoothness_penalty": 0.3,
+            "description": f"sortino_smooth03_s{s}"})
+    return configs
+
+
 PRESETS: dict[str, list[dict]] = {
     "stocks12_seedsweep": _stocks12_seedsweep(),
     "stocks12_seedsweep_ext": _stocks12_seedsweep_ext(),
     "stocks12_tp05_family": _stocks12_tp05_family(),
     "stocks12_fidelity_longrun": _stocks12_fidelity_longrun(),
+    "stocks12_sortino_sweep": _stocks12_sortino_sweep(),
     "stocks15_tp05_sweep": _stocks15_tp05_sweep(),
     "crypto_seedsweep": _crypto_seedsweep(),
     "crypto70_autoresearch": _crypto70_autoresearch(),
