@@ -69,6 +69,7 @@ from llm_hourly_trader.providers import call_llm
 from llm_hourly_trader.gemini_wrapper import TradePlan
 
 from rl_signal import RLSignalGenerator, PortfolioSnapshot, SYMBOLS as RL_SYMBOLS, SYMBOL_TO_BINANCE_PAIR
+from signal_calibrator import SignalCalibrator, load_calibrator, CalibrationConfig
 from hybrid_prompt import (
     gather_symbol_contexts,
     build_allocation_prompt,
@@ -117,6 +118,96 @@ TRADING_SYMBOLS = {
 
 MIN_TRADE_USD = 12.0
 SUPPORTED_EXECUTION_MODES = {"auto", "spot", "margin"}
+
+# Per-symbol signal calibrators (loaded once at startup)
+_calibrators: dict[str, SignalCalibrator] = {}
+
+
+def _load_calibrators(calibrator_dir: str | Path) -> dict[str, SignalCalibrator]:
+    """Load per-symbol calibrator checkpoints from directory."""
+    cdir = Path(calibrator_dir)
+    loaded = {}
+    if not cdir.exists():
+        return loaded
+    for pt_file in cdir.glob("*_calibrator.pt"):
+        sym = pt_file.stem.replace("_calibrator", "").upper()
+        try:
+            model, cfg = load_calibrator(pt_file, device="cpu")
+            loaded[sym] = model
+            logger.info(f"Loaded calibrator for {sym}: max_adj={cfg.max_price_adj_bps}bps")
+        except Exception as e:
+            logger.warning(f"Failed to load calibrator {pt_file}: {e}")
+    return loaded
+
+
+def _apply_calibration(
+    plan: AllocationPlan,
+    contexts: list,
+    calibrators: dict[str, SignalCalibrator],
+) -> AllocationPlan:
+    """Adjust entry/exit prices using per-symbol calibrators."""
+    if not calibrators:
+        return plan
+    import torch as _torch
+    from rl_signal import compute_symbol_features, _load_forecast_parquet
+    forecast_root = Path("binanceneural/forecast_cache")
+
+    new_entry = dict(plan.entry_prices)
+    new_exit = dict(plan.exit_prices)
+    new_alloc = dict(plan.allocations)
+    adjustments = []
+
+    for sym in plan.allocations:
+        cal = calibrators.get(sym)
+        if cal is None:
+            continue
+        ctx = next((c for c in contexts if c.symbol == sym), None)
+        if ctx is None or ctx.klines is None or ctx.klines.empty:
+            continue
+        try:
+            fc_h1 = _load_forecast_parquet(forecast_root, 1, sym)
+            fc_h24 = _load_forecast_parquet(forecast_root, 24, sym)
+            feat_arr = compute_symbol_features(ctx.klines, fc_h1, fc_h24)
+            if len(feat_arr) == 0:
+                continue
+            feat = _torch.tensor(feat_arr[-1:], dtype=_torch.float32)
+            close = _torch.tensor([ctx.price], dtype=_torch.float32)
+            price = ctx.price
+
+            entry = new_entry.get(sym, price * 0.999)
+            exit_p = new_exit.get(sym, price * 1.008)
+            base_buy_off = _torch.tensor([(entry / price) - 1.0])
+            base_sell_off = _torch.tensor([(exit_p / price) - 1.0])
+            base_int = _torch.tensor([min(new_alloc.get(sym, 25.0) / 100.0, 1.0)])
+
+            with _torch.no_grad():
+                cal_buy, cal_sell, cal_int = cal(feat, base_buy_off, base_sell_off, base_int)
+
+            cal_entry = price * (1.0 + cal_buy.item())
+            cal_exit = price * (1.0 + cal_sell.item())
+            cal_alloc = cal_int.item() * 100.0
+
+            new_entry[sym] = cal_entry
+            new_exit[sym] = cal_exit
+            new_alloc[sym] = cal_alloc
+            adjustments.append(
+                f"{sym}: entry {entry:.2f}->{cal_entry:.2f} "
+                f"exit {exit_p:.2f}->{cal_exit:.2f} "
+                f"alloc {plan.allocations.get(sym, 0):.0f}%->{cal_alloc:.0f}%"
+            )
+        except Exception as e:
+            logger.warning(f"Calibration failed for {sym}: {e}")
+
+    if adjustments:
+        logger.info("Calibrated: " + " | ".join(adjustments))
+
+    return AllocationPlan(
+        allocations=new_alloc,
+        entry_prices=new_entry,
+        exit_prices=new_exit,
+        reasoning=plan.reasoning + " [calibrated]" if adjustments else plan.reasoning,
+        timestamp=plan.timestamp,
+    )
 ACCOUNT_TRANSFER_RESERVES = {
     "USDT": 1e-6,
     "FDUSD": 1e-6,
@@ -2047,6 +2138,10 @@ def run_hybrid_trading_cycle(
                 cycle_snapshot["status"] = "gemini_cash_rl_flat"
                 return []
 
+        if _calibrators:
+            plan = _apply_calibration(plan, contexts, _calibrators)
+            cycle_snapshot["calibrated"] = True
+
         target_values = {
             sym: state.total_value_usd * pct / 100.0 * effective_leverage
             for sym, pct in plan.allocations.items()
@@ -2321,6 +2416,8 @@ def main():
     parser.add_argument("--fallback-mode", type=str, default=None,
                         choices=["chronos2"],
                         help="Fallback signal mode when LLM is unavailable. chronos2=use Chronos2 forecasts directly.")
+    parser.add_argument("--calibrator-dir", type=str, default=None,
+                        help="Directory with per-symbol calibrator checkpoints (*_calibrator.pt)")
     args = parser.parse_args()
 
     dry_run = not args.live
@@ -2340,6 +2437,11 @@ def main():
         )
         logger.info(f"Hybrid mode: RL={rl_checkpoint} + Gemini={args.model}")
         logger.info(f"RL symbols ({rl_gen.num_symbols}): {', '.join(rl_gen.symbols)}")
+
+    global _calibrators
+    if args.calibrator_dir:
+        _calibrators = _load_calibrators(args.calibrator_dir)
+        logger.info(f"Signal calibrators loaded for: {list(_calibrators.keys())}")
 
     while True:
         try:
