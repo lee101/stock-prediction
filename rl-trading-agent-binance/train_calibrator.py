@@ -17,6 +17,7 @@ import json
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -106,7 +107,12 @@ def run_sim(
     decision_lag: int = 2,
     binary: bool = False,
 ) -> tuple[torch.Tensor, dict]:
-    buy_price, sell_price, intensity = calibrator.to_prices(features, closes)
+    result_tuple = calibrator.to_prices(features, closes)
+    directional = len(result_tuple) == 4
+    if directional:
+        buy_price, sell_price, buy_int, sell_int = result_tuple
+    else:
+        buy_price, sell_price, intensity = result_tuple
     sim_fn = simulate_hourly_trades_binary if binary else simulate_hourly_trades
     kwargs = dict(
         highs=highs.unsqueeze(0),
@@ -115,13 +121,18 @@ def run_sim(
         opens=opens.unsqueeze(0),
         buy_prices=buy_price.unsqueeze(0),
         sell_prices=sell_price.unsqueeze(0),
-        trade_intensity=intensity.unsqueeze(0),
         maker_fee=maker_fee,
         initial_cash=1.0,
         decision_lag_bars=decision_lag,
         fill_buffer_pct=fill_buffer_pct,
         can_short=False,
     )
+    if directional:
+        kwargs["trade_intensity"] = buy_int.unsqueeze(0)
+        kwargs["buy_trade_intensity"] = buy_int.unsqueeze(0)
+        kwargs["sell_trade_intensity"] = sell_int.unsqueeze(0)
+    else:
+        kwargs["trade_intensity"] = intensity.unsqueeze(0)
     if not binary:
         kwargs["temperature"] = temperature
     result = sim_fn(**kwargs)
@@ -285,9 +296,10 @@ def compute_baseline(
     maker_fee: float = DEFAULT_MAKER_FEE_RATE,
     fill_buffer_pct: float = 0.0005,
     decision_lag: int = 2,
+    device: str = "cpu",
 ) -> dict:
     """Evaluate uncalibrated baseline (identity calibrator, zero-init)."""
-    calibrator = SignalCalibrator(config)
+    calibrator = SignalCalibrator(config).to(device)
     calibrator.eval()
     n = data["n_bars"]
     _, _, test_sl = time_split(n)
@@ -328,6 +340,8 @@ def main():
     parser.add_argument("--save-dir", type=str, default="rl-trading-agent-binance/calibrator_checkpoints")
     parser.add_argument("--data-root", type=str, default=str(DATA_ROOT))
     parser.add_argument("--forecast-root", type=str, default=str(FORECAST_ROOT))
+    parser.add_argument("--directional", action="store_true", help="Use separate buy/sell intensities")
+    parser.add_argument("--window-hours", type=int, default=0, help="Train on last N hours only (0=full split)")
     args = parser.parse_args()
 
     symbols = [s.strip() for s in args.symbols.split(",")]
@@ -338,6 +352,7 @@ def main():
         base_buy_offset=args.base_buy_offset,
         base_sell_offset=args.base_sell_offset,
         base_intensity=args.base_intensity,
+        directional=args.directional,
     )
     save_dir = Path(args.save_dir)
 
@@ -365,6 +380,7 @@ def main():
                 maker_fee=args.maker_fee,
                 fill_buffer_pct=args.fill_buffer_pct,
                 decision_lag=args.decision_lag,
+                device=args.device,
             )
             print(f"  baseline sort={baseline['sortino']:+.2f} ret={baseline['return']:+.4f}")
 
