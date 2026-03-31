@@ -124,14 +124,18 @@ jobs:
         run: |
           # Install all dependencies from CPU-only requirements
           uv pip install --system --requirement requirements-ci.txt
+          uv pip install --system pytest-cov
 
-      - name: Run fast unit tests
+      - name: Run fast unit tests with coverage
         run: |
           python -m pytest \
             -v \
             -m "unit and not slow and not model_required and not cuda_required" \
             --tb=short \
             --maxfail=10 \
+            --cov=scripts --cov=src --cov=trade_daily_stock_prod \
+            --cov-report=term-missing \
+            --cov-report=html:htmlcov \
             tests/
 
       - name: Run smoke tests (minimal model tests)

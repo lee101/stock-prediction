@@ -123,11 +123,15 @@ DEFAULT_EXTRA_CHECKPOINTS = [
     "pufferlib_market/prod_ensemble/s7159.pt",
 ]
 DEFAULT_DATA_DIR = "trainingdata"
-DEFAULT_ALLOCATION_PCT = 25.0
+DEFAULT_ALLOCATION_PCT = 12.5  # Calibrated 2026-03-31: was 25%, 0.5x scale improves val_p10 by +1.9%
 DEFAULT_SORTINO_SERVER_CHECKPOINT = "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt"
 DEFAULT_SERVER_PAPER_ACCOUNT = "paper_sortino_daily"
 DEFAULT_SERVER_PAPER_BOT_ID = "daily_stock_sortino_v1"
 SERVER_MARKETABLE_LIMIT_BUFFER_BPS = 100.0
+# Calibrated execution offsets (2026-03-31 sweep over 726 combos, 788 windows)
+# Best: entry=+5bps, exit=+25bps, scale=0.5x → val_p10=-0.4% vs baseline -2.3%
+CALIBRATED_ENTRY_OFFSET_BPS = 5.0   # Buy limit at open * 1.0005
+CALIBRATED_EXIT_OFFSET_BPS = 25.0   # Sell limit at open * 1.0025
 STATE_PATH = REPO / "strategy_state/daily_stock_rl_state.json"
 SIGNAL_LOG_PATH = REPO / "strategy_state/daily_stock_rl_signals.jsonl"
 
@@ -720,6 +724,31 @@ def submit_market_order(client, *, symbol: str, qty: float, side: str):
     return client.submit_order(request)
 
 
+def submit_limit_order(
+    client,
+    *,
+    symbol: str,
+    qty: float,
+    side: str,
+    limit_price: float,
+) -> object:
+    """Submit a DAY limit order via Alpaca."""
+    from alpaca.trading.enums import OrderSide, TimeInForce
+    from alpaca.trading.requests import LimitOrderRequest
+
+    if qty <= 0:
+        raise ValueError("qty must be positive")
+    side_value = OrderSide.BUY if side == "buy" else OrderSide.SELL
+    request = LimitOrderRequest(
+        symbol=symbol,
+        qty=round(float(qty), 4),
+        side=side_value,
+        time_in_force=TimeInForce.DAY,
+        limit_price=round(float(limit_price), 2),
+    )
+    return client.submit_order(request)
+
+
 def compute_target_qty(*, account, price: float, allocation_pct: float) -> float:
     portfolio_value = float(getattr(account, "portfolio_value", 0.0) or 0.0)
     buying_power = float(getattr(account, "buying_power", 0.0) or 0.0)
@@ -989,9 +1018,21 @@ def execute_signal(
     if managed_position is not None and managed_symbol is not None:
         qty = _signed_position_qty(managed_position)
         close_side = _market_order_side_for_qty(qty)
-        logger.info("Closing managed position: %s qty=%.4f side=%s", managed_symbol, abs(qty), close_side)
+        sell_price = float(quotes.get(managed_symbol, 0.0) or 0.0)
+        # Calibrated: sell with +25bps limit offset for better fills
+        limit_sell_price = sell_price * (1.0 + CALIBRATED_EXIT_OFFSET_BPS / 10_000.0) if sell_price > 0 else 0
+        logger.info(
+            "Closing managed position: %s qty=%.4f side=%s limit=%.2f (exit_offset=+%.0fbps)",
+            managed_symbol, abs(qty), close_side, limit_sell_price, CALIBRATED_EXIT_OFFSET_BPS,
+        )
         if not dry_run:
-            order = submit_market_order(client, symbol=managed_symbol, qty=abs(qty), side=close_side)
+            if limit_sell_price > 0:
+                order = submit_limit_order(
+                    client, symbol=managed_symbol, qty=abs(qty),
+                    side=close_side, limit_price=limit_sell_price,
+                )
+            else:
+                order = submit_market_order(client, symbol=managed_symbol, qty=abs(qty), side=close_side)
             state.last_order_id = str(getattr(order, "id", ""))
             state.active_symbol = None
             state.active_qty = 0.0
@@ -1008,20 +1049,27 @@ def execute_signal(
 
     account = client.get_account()
     price = float(quotes.get(desired_symbol, 0.0) or 0.0)
-    qty = compute_target_qty(account=account, price=price, allocation_pct=allocation_pct)
+    # Calibrated: buy with +5bps limit offset (slightly above market for reliable fill)
+    limit_buy_price = price * (1.0 + CALIBRATED_ENTRY_OFFSET_BPS / 10_000.0) if price > 0 else 0
+    qty = compute_target_qty(account=account, price=limit_buy_price or price, allocation_pct=allocation_pct)
     if qty <= 0:
         logger.warning("Computed zero-sized order for %s at %.4f", desired_symbol, price)
         return False
 
     logger.info(
-        "Opening managed position: %s qty=%.4f @ %.4f (alloc=%.1f%%)",
+        "Opening managed position: %s qty=%.4f @ %.4f limit=%.2f (alloc=%.1f%%, entry_offset=+%.0fbps)",
         desired_symbol,
         qty,
         price,
+        limit_buy_price,
         allocation_pct,
+        CALIBRATED_ENTRY_OFFSET_BPS,
     )
     if not dry_run:
-        order = submit_market_order(client, symbol=desired_symbol, qty=qty, side="buy")
+        if limit_buy_price > 0:
+            order = submit_limit_order(client, symbol=desired_symbol, qty=qty, side="buy", limit_price=limit_buy_price)
+        else:
+            order = submit_market_order(client, symbol=desired_symbol, qty=qty, side="buy")
         state.last_order_id = str(getattr(order, "id", ""))
         state.active_symbol = desired_symbol
         state.active_qty = qty
