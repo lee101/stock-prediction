@@ -373,20 +373,24 @@ def _stocks12_sortino_sweep(seeds: range = range(1, 31)) -> list[dict]:
     }
     configs = []
     for s in seeds:
-        # Variant 1: mild downside penalty (0.5/1.0 too strong — model just holds cash)
+        # Variant 1: downside penalty REPLACES trade penalty (both penalize trading)
+        # trade_penalty=0 lets the downside penalty be the only constraint
         configs.append({**base, "seed": s,
+            "trade_penalty": 0.0,
             "smooth_downside_penalty": 0.05,
             "smooth_downside_temperature": 0.02,
-            "description": f"sortino_sdp005_s{s}"})
-        # Variant 2: moderate downside penalty
+            "description": f"sortino_notp_sdp005_s{s}"})
+        # Variant 2: tiny downside + normal trade penalty
         configs.append({**base, "seed": s,
+            "smooth_downside_penalty": 0.01,
+            "smooth_downside_temperature": 0.02,
+            "description": f"sortino_sdp001_s{s}"})
+        # Variant 3: downside penalty only, stronger
+        configs.append({**base, "seed": s,
+            "trade_penalty": 0.0,
             "smooth_downside_penalty": 0.1,
             "smooth_downside_temperature": 0.02,
-            "description": f"sortino_sdp01_s{s}"})
-        # Variant 3: mild smoothness penalty
-        configs.append({**base, "seed": s,
-            "smoothness_penalty": 0.05,
-            "description": f"sortino_smooth005_s{s}"})
+            "description": f"sortino_notp_sdp01_s{s}"})
     return configs
 
 
