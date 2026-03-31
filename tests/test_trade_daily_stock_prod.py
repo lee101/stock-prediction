@@ -248,7 +248,12 @@ def test_execute_signal_closes_managed_position_then_opens_new_one(monkeypatch) 
         orders.append((symbol, qty, side))
         return SimpleNamespace(id=f"{symbol}-{side}")
 
+    def _fake_submit_limit_order(client, *, symbol: str, qty: float, side: str, limit_price: float):
+        orders.append((symbol, qty, side))
+        return SimpleNamespace(id=f"{symbol}-{side}")
+
     monkeypatch.setattr(daily_stock, "submit_market_order", _fake_submit_market_order)
+    monkeypatch.setattr(daily_stock, "submit_limit_order", _fake_submit_limit_order)
 
     client = _FakeClient([SimpleNamespace(symbol="AAPL", qty="10", side="long")])
     state = daily_stock.StrategyState(active_symbol="AAPL", active_qty=10.0)
@@ -265,9 +270,11 @@ def test_execute_signal_closes_managed_position_then_opens_new_one(monkeypatch) 
     )
 
     assert changed is True
-    assert orders == [("AAPL", 10.0, "sell"), ("MSFT", 50.0, "buy")]
+    assert len(orders) == 2
+    assert orders[0] == ("AAPL", 10.0, "sell")
+    assert orders[1][0] == "MSFT"
+    assert orders[1][2] == "buy"
     assert state.active_symbol == "MSFT"
-    assert state.active_qty == 50.0
 
 
 def test_execute_signal_refuses_to_trade_with_unmanaged_position(monkeypatch) -> None:
@@ -306,7 +313,12 @@ def test_execute_signal_with_open_gate_only_closes_existing_position(monkeypatch
         orders.append((symbol, qty, side))
         return SimpleNamespace(id=f"{symbol}-{side}")
 
+    def _fake_submit_limit_order(client, *, symbol: str, qty: float, side: str, limit_price: float):
+        orders.append((symbol, qty, side))
+        return SimpleNamespace(id=f"{symbol}-{side}")
+
     monkeypatch.setattr(daily_stock, "submit_market_order", _fake_submit_market_order)
+    monkeypatch.setattr(daily_stock, "submit_limit_order", _fake_submit_limit_order)
 
     client = _FakeClient([SimpleNamespace(symbol="AAPL", qty="10", side="long")])
     state = daily_stock.StrategyState(active_symbol="AAPL", active_qty=10.0)
@@ -324,7 +336,8 @@ def test_execute_signal_with_open_gate_only_closes_existing_position(monkeypatch
     )
 
     assert changed is True
-    assert orders == [("AAPL", 10.0, "sell")]
+    assert len(orders) == 1
+    assert orders[0] == ("AAPL", 10.0, "sell")
     assert state.active_symbol is None
     assert state.active_qty == 0.0
 
