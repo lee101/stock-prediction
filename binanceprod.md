@@ -10,7 +10,8 @@
 - **Python**: `.venv313`
 - **Symbols**: BTCUSD ETHUSD SOLUSD DOGEUSD AAVEUSD LINKUSD + ADA XRP SUI (positions held)
 - **Mode**: Cross-margin, 0.5x leverage, hourly cycles
-- **RL model**: `pufferlib_market/checkpoints/mixed23_a40_sweep/robust_reg_tp005_ent/best.pt`
+- **RL model**: `pufferlib_market/checkpoints/mixed23_a40_sweep/robust_reg_tp005_dd002/best.pt`
+- **Previous model**: `robust_reg_tp005_ent` (switched 2026-03-31, dd002 has better 120d: +54.6% Sort=2.85 vs +42.4% Sort=2.71)
 - **LLM**: Gemini 3.1 Flash Lite (thinking=HIGH)
 - **Equity**: ~$3,025 (2026-03-31)
 - **Logs**: `/var/log/supervisor/binance-hybrid-spot-error.log`
@@ -28,6 +29,10 @@
 - RL consistently signals LONG_XRP and LONG_ADA
 - DOGE position being sold down via existing sell order
 - Stale orders auto-cancelled after 2h
+- **Model switch** (2026-03-31): `robust_reg_tp005_dd002` deployed
+  - 120d backtest: +54.6% ret, Sort=2.85, DD=26.9%, 50 trades, 54% WR
+  - Exec param sweep: slippage insensitive, fill buffer insensitive
+  - Better than ent at all periods except 30d
 
 ### 2. binance-worksteal-daily
 - **Supervisor**: `binance-worksteal-daily` (auto-restart)
