@@ -1,0 +1,80 @@
+{
+  "BTCUSD": {
+    "entry_offset": -0.015,
+    "exit_offset": 0.02,
+    "buy_threshold": 0.001,
+    "sell_threshold": -0.001,
+    "intensity": 1.0,
+    "signal_feature": 14,
+    "sortino": 1.3319021463394165,
+    "return": 0.05834066867828369,
+    "ann_return": 0.29817435145378113,
+    "test_sortino": -4.583081245422363,
+    "test_return": -0.2841164469718933
+  },
+  "ETHUSD": {
+    "entry_offset": -0.015,
+    "exit_offset": 0.015,
+    "buy_threshold": 0.01,
+    "sell_threshold": 0.0,
+    "intensity": 1.0,
+    "signal_feature": 14,
+    "sortino": 1.2539323568344116,
+    "return": 0.06615006923675537,
+    "ann_return": 0.3650842308998108,
+    "test_sortino": -4.302985191345215,
+    "test_return": -0.28325724601745605
+  },
+  "SOLUSD": {
+    "entry_offset": -0.015,
+    "exit_offset": 0.01,
+    "buy_threshold": 0.005,
+    "sell_threshold": 0.0,
+    "intensity": 1.0,
+    "signal_feature": 3,
+    "sortino": 3.798532247543335,
+    "return": 0.0853726863861084,
+    "ann_return": 0.37234780192375183,
+    "test_sortino": 0.8857465982437134,
+    "test_return": 0.018264293670654297
+  },
+  "DOGEUSD": {
+    "entry_offset": -0.015,
+    "exit_offset": 0.003,
+    "buy_threshold": 0.01,
+    "sell_threshold": -0.002,
+    "intensity": 0.2,
+    "signal_feature": 3,
+    "sortino": -0.06531024724245071,
+    "return": -0.051248908042907715,
+    "ann_return": -0.029973207041621208,
+    "test_sortino": -0.7725498676300049,
+    "test_return": -0.08816099166870117
+  },
+  "AAVEUSD": {
+    "entry_offset": -0.001,
+    "exit_offset": 0.003,
+    "buy_threshold": 0.0,
+    "sell_threshold": 0.0,
+    "intensity": 0.2,
+    "signal_feature": 3,
+    "sortino": 0.0,
+    "return": 0.0,
+    "ann_return": 0.0,
+    "test_sortino": -3.1048288345336914,
+    "test_return": -0.11408448219299316
+  },
+  "LINKUSD": {
+    "entry_offset": -0.015,
+    "exit_offset": 0.02,
+    "buy_threshold": 0.005,
+    "sell_threshold": -0.01,
+    "intensity": 1.0,
+    "signal_feature": 14,
+    "sortino": 0.5484738945960999,
+    "return": 0.01456904411315918,
+    "ann_return": 0.19850343465805054,
+    "test_sortino": -5.4615254402160645,
+    "test_return": -0.38519418239593506
+  }
+}

@@ -49,10 +49,12 @@ from pufferlib_market.evaluate_tail import (
     TradingPolicy,
     ResidualTradingPolicy,
     _infer_num_actions,
+    _slice_tail,
+)
+from pufferlib_market.evaluate_holdout import (
     _infer_arch,
     _infer_hidden_size,
     _infer_resmlp_blocks,
-    _slice_tail,
 )
 
 # ---------------------------------------------------------------------------
@@ -232,7 +234,9 @@ def build_policy(info: CheckpointInfo, state_dict: dict, device: torch.device) -
         ).to(device)
     else:
         raise ValueError(f"Unsupported arch: {info.arch}")
-    policy.load_state_dict(state_dict)
+    missing, unexpected = policy.load_state_dict(state_dict, strict=False)
+    if info.arch == "mlp" and "encoder_norm.weight" in state_dict:
+        policy._use_encoder_norm = True
     policy.eval()
     return policy
 

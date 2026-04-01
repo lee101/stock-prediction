@@ -20,26 +20,44 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
-import os
 import re
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
+
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from hybrid_prompt import (
+    AllocationPlan,
+    PlanOutcome,
+    build_allocation_prompt,
+    call_gemini_allocation,
+    gather_symbol_contexts,
+)
+from llm_hourly_trader.gemini_wrapper import TradePlan
+from llm_hourly_trader.providers import call_llm
 from loguru import logger
+from rl_signal import SYMBOL_TO_BINANCE_PAIR, PortfolioSnapshot, RLSignalGenerator
+from signal_calibrator import SignalCalibrator, load_calibrator
 
+from binanceneural.execution import (
+    quantize_price,
+    quantize_qty,
+    resolve_symbol_rules,
+)
 from src.binan import binance_wrapper
+from src.binan.binance_conversion import (
+    build_stable_quote_conversion_plan,
+    execute_stable_quote_conversion,
+)
 from src.binan.binance_margin import (
     cancel_margin_order,
     create_margin_order,
@@ -54,44 +72,23 @@ from src.binan.binance_margin import (
     transfer_margin_to_spot,
     transfer_spot_to_margin,
 )
-from src.binan.binance_conversion import (
-    build_stable_quote_conversion_plan,
-    execute_stable_quote_conversion,
-)
 from src.binan.hybrid_cycle_trace import append_cycle_snapshot
-from binanceneural.execution import (
-    resolve_symbol_rules,
-    quantize_qty,
-    quantize_price,
-    split_binance_symbol,
-)
-from llm_hourly_trader.providers import call_llm
-from llm_hourly_trader.gemini_wrapper import TradePlan
-
-from rl_signal import RLSignalGenerator, PortfolioSnapshot, SYMBOLS as RL_SYMBOLS, SYMBOL_TO_BINANCE_PAIR
-from signal_calibrator import SignalCalibrator, load_calibrator, CalibrationConfig
-from hybrid_prompt import (
-    gather_symbol_contexts,
-    build_allocation_prompt,
-    call_gemini_allocation,
-    AllocationPlan,
-    PlanOutcome,
-    SYMBOL_BINANCE_MAP,
-)
 
 
 # ---------------------------------------------------------------------------
 # Symbol Configuration
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class BinanceSymbolConfig:
     """Config for each tradeable symbol."""
-    symbol: str           # Internal name (e.g. "BTCUSD")
-    binance_pair: str     # Binance trading pair (e.g. "BTCFDUSD")
-    quote_asset: str      # "FDUSD" or "USDT"
-    base_asset: str       # "BTC", "ETH", etc.
-    maker_fee: float      # 0.0 for FDUSD, 0.001 for USDT
+
+    symbol: str  # Internal name (e.g. "BTCUSD")
+    binance_pair: str  # Binance trading pair (e.g. "BTCFDUSD")
+    quote_asset: str  # "FDUSD" or "USDT"
+    base_asset: str  # "BTC", "ETH", etc.
+    maker_fee: float  # 0.0 for FDUSD, 0.001 for USDT
     max_position_pct: float = 0.20  # max % of portfolio in this symbol
 
 
@@ -149,7 +146,8 @@ def _apply_calibration(
     if not calibrators:
         return plan
     import torch as _torch
-    from rl_signal import compute_symbol_features, _load_forecast_parquet
+    from rl_signal import _load_forecast_parquet, compute_symbol_features
+
     forecast_root = Path("binanceneural/forecast_cache")
 
     new_entry = dict(plan.entry_prices)
@@ -208,6 +206,8 @@ def _apply_calibration(
         reasoning=plan.reasoning + " [calibrated]" if adjustments else plan.reasoning,
         timestamp=plan.timestamp,
     )
+
+
 ACCOUNT_TRANSFER_RESERVES = {
     "USDT": 1e-6,
     "FDUSD": 1e-6,
@@ -263,9 +263,11 @@ class OpenOrderCleanupResult:
 # Portfolio State
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class PortfolioState:
     """Track current portfolio state."""
+
     fdusd_balance: float = 0.0
     usdt_balance: float = 0.0
     borrowed_quotes: dict = field(default_factory=dict)  # {quote_asset: borrowed_qty}
@@ -279,7 +281,7 @@ class PortfolioState:
         return self.usdt_balance
 
 
-def _isoformat_utc(value: object) -> Optional[str]:
+def _isoformat_utc(value: object) -> str | None:
     if value is None:
         return None
     if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -314,7 +316,7 @@ def _isoformat_utc(value: object) -> Optional[str]:
     return ts.isoformat()
 
 
-def _safe_float(value: object) -> Optional[float]:
+def _safe_float(value: object) -> float | None:
     try:
         numeric = float(value)
     except (TypeError, ValueError):
@@ -324,7 +326,7 @@ def _safe_float(value: object) -> Optional[float]:
     return numeric
 
 
-def _safe_int(value: object) -> Optional[int]:
+def _safe_int(value: object) -> int | None:
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -358,7 +360,7 @@ def _serialize_portfolio_state(state: PortfolioState) -> dict[str, object]:
     }
 
 
-def _serialize_order(order: Optional[dict]) -> Optional[dict[str, object]]:
+def _serialize_order(order: dict | None) -> dict[str, object] | None:
     if not order:
         return None
     return {
@@ -402,11 +404,11 @@ def _serialize_allocation_plan(plan: AllocationPlan) -> dict[str, object]:
         "cash_pct": float(plan.cash_pct),
         "entry_prices": {str(symbol): float(price) for symbol, price in plan.entry_prices.items()},
         "exit_prices": {str(symbol): float(price) for symbol, price in plan.exit_prices.items()},
-        "reasoning": str(plan.reasoning),
+        # "reasoning": str(plan.reasoning),
     }
 
 
-def _serialize_plan_outcome(outcome: Optional[PlanOutcome]) -> Optional[dict[str, object]]:
+def _serialize_plan_outcome(outcome: PlanOutcome | None) -> dict[str, object] | None:
     if outcome is None:
         return None
     return {
@@ -424,11 +426,7 @@ def _serialize_rl_signal(signal: object) -> dict[str, object]:
         "direction": str(getattr(signal, "direction", "") or ""),
         "confidence": _safe_float(getattr(signal, "confidence", None)),
         "value": _safe_float(getattr(signal, "value", None)),
-        "logits": [
-            float(item)
-            for item in list(getattr(signal, "logits", []) or [])
-            if _safe_float(item) is not None
-        ],
+        "logits": [float(item) for item in list(getattr(signal, "logits", []) or []) if _safe_float(item) is not None],
     }
 
 
@@ -475,14 +473,8 @@ def _build_margin_capital_sync_plan(
 
 def _sync_margin_capital(dry_run: bool) -> MarginCapitalSyncPlan:
     tracked_assets = ("USDT", "FDUSD", *_tracked_base_assets())
-    spot_free = {
-        asset: float(binance_wrapper.get_asset_free_balance(asset) or 0.0)
-        for asset in tracked_assets
-    }
-    margin_free = {
-        asset: float(get_margin_free_balance(asset) or 0.0)
-        for asset in tracked_assets
-    }
+    spot_free = {asset: float(binance_wrapper.get_asset_free_balance(asset) or 0.0) for asset in tracked_assets}
+    margin_free = {asset: float(get_margin_free_balance(asset) or 0.0) for asset in tracked_assets}
     plan = _build_margin_capital_sync_plan(spot_free, margin_free)
     if not plan.has_actions():
         return plan
@@ -549,8 +541,7 @@ def _resolve_execution_mode(execution_mode: str, leverage: float) -> str:
     normalized = str(execution_mode or "auto").strip().lower()
     if normalized not in SUPPORTED_EXECUTION_MODES:
         raise ValueError(
-            f"Unsupported execution mode {execution_mode!r}; "
-            f"expected one of {sorted(SUPPORTED_EXECUTION_MODES)}."
+            f"Unsupported execution mode {execution_mode!r}; expected one of {sorted(SUPPORTED_EXECUTION_MODES)}."
         )
     if normalized == "auto":
         return "margin" if float(leverage) > 1.0 + 1e-9 else "spot"
@@ -595,15 +586,11 @@ _PROVIDER_FAILURE_REASON_PREFIXES = (
 
 def _trade_plan_indicates_provider_failure(plan: TradePlan) -> bool:
     """Return True when a plan is a synthetic hold caused by provider failure."""
-    reasoning = str(getattr(plan, "reasoning", "") or "").strip().lower()
-    if not reasoning:
-        return False
+
     direction = str(getattr(plan, "direction", "") or "").strip().lower()
     if direction and direction != "hold":
         return False
-    return any(
-        reasoning.startswith(prefix) for prefix in _PROVIDER_FAILURE_REASON_PREFIXES
-    )
+    return any(reasoning.startswith(prefix) for prefix in _PROVIDER_FAILURE_REASON_PREFIXES)
 
 
 def _normalize_live_trade_plan(
@@ -696,10 +683,10 @@ def get_portfolio_state(execution_mode: str = "spot") -> PortfolioState:
 
 
 def get_position_entry(
-    sym_cfg: "BinanceSymbolConfig",
+    sym_cfg: BinanceSymbolConfig,
     *,
     execution_mode: str = "spot",
-) -> tuple[float, Optional[datetime]]:
+) -> tuple[float, datetime | None]:
     """Get an approximate entry price/time for the active position from recent fills."""
     market_symbol = _execution_pair(sym_cfg, execution_mode)
     if execution_mode == "margin":
@@ -712,7 +699,7 @@ def get_position_entry(
         if t.get("isBuyer"):
             price = float(t.get("price", 0))
             ts = t.get("time", 0)
-            open_time = datetime.fromtimestamp(ts / 1000, tz=timezone.utc) if ts else None
+            open_time = datetime.fromtimestamp(ts / 1000, tz=UTC) if ts else None
             return price, open_time
     return 0.0, None
 
@@ -720,6 +707,7 @@ def get_position_entry(
 # ---------------------------------------------------------------------------
 # Stablecoin Management
 # ---------------------------------------------------------------------------
+
 
 def ensure_quote_balance(
     needed_quote: str,
@@ -780,7 +768,7 @@ def ensure_quote_balance(
         return False
 
 
-def _estimate_order_notional(order: Optional[dict], fallback: float) -> float:
+def _estimate_order_notional(order: dict | None, fallback: float) -> float:
     """Estimate quote notional reserved by a limit order."""
     if not order:
         return max(0.0, fallback)
@@ -873,9 +861,9 @@ def _order_remaining_notional(order: dict) -> float:
 def _matching_open_orders(open_orders: list[dict], symbol: str, side: str) -> list[dict]:
     side_upper = side.upper()
     return [
-        order for order in open_orders
-        if str(order.get("symbol", "")).upper() == symbol.upper()
-        and str(order.get("side", "")).upper() == side_upper
+        order
+        for order in open_orders
+        if str(order.get("symbol", "")).upper() == symbol.upper() and str(order.get("side", "")).upper() == side_upper
     ]
 
 
@@ -938,7 +926,9 @@ def _dedupe_side_orders(
             if code in _BINANCE_ORDER_GONE_CODES:
                 logger.info(f"  Order {order_id} on {symbol} already gone (code={code}), will replace")
             else:
-                logger.warning(f"  Failed to cancel {side.upper()} order {order_id} on {symbol}: {exc}, placing new order anyway")
+                logger.warning(
+                    f"  Failed to cancel {side.upper()} order {order_id} on {symbol}: {exc}, placing new order anyway"
+                )
             cancelled.append(order)
     remaining = [order for order in open_orders if order not in cancelled]
     return remaining, False
@@ -1033,13 +1023,14 @@ def _resolve_spot_leverage(leverage: float) -> float:
 # Order Execution
 # ---------------------------------------------------------------------------
 
+
 def place_limit_buy(
     sym_cfg: BinanceSymbolConfig,
     price: float,
     amount_usd: float,
     execution_mode: str = "spot",
     dry_run: bool = True,
-) -> Optional[dict]:
+) -> dict | None:
     """Place a limit buy order."""
     if execution_mode == "margin":
         return place_margin_limit_buy(sym_cfg, price, amount_usd, dry_run)
@@ -1080,7 +1071,7 @@ def place_limit_sell(
     qty: float,
     execution_mode: str = "spot",
     dry_run: bool = True,
-) -> Optional[dict]:
+) -> dict | None:
     """Place a limit sell (take-profit) order."""
     if execution_mode == "margin":
         return place_margin_limit_sell(sym_cfg, price, qty, dry_run)
@@ -1115,7 +1106,7 @@ def place_margin_limit_buy(
     price: float,
     amount_usd: float,
     dry_run: bool = True,
-) -> Optional[dict]:
+) -> dict | None:
     """Place a cross-margin limit buy that can borrow quote when needed."""
     market_symbol = _execution_pair(sym_cfg, "margin")
     rules = resolve_symbol_rules(market_symbol)
@@ -1158,7 +1149,7 @@ def place_margin_limit_sell(
     price: float,
     qty: float,
     dry_run: bool = True,
-) -> Optional[dict]:
+) -> dict | None:
     """Place a cross-margin limit sell and auto-repay borrowed quote on fill."""
     market_symbol = _execution_pair(sym_cfg, "margin")
     rules = resolve_symbol_rules(market_symbol)
@@ -1199,14 +1190,15 @@ def place_margin_limit_sell(
 # Chronos2 Forecast Fallback (no LLM needed)
 # ---------------------------------------------------------------------------
 
+
 def _chronos2_fallback_signal(
     sym_cfg: BinanceSymbolConfig,
     current_price: float,
-    fc_1h: Optional[dict],
-    fc_24h: Optional[dict],
+    fc_1h: dict | None,
+    fc_24h: dict | None,
     position_qty: float = 0.0,
     position_entry_price: float = 0.0,
-    position_open_time: Optional[datetime] = None,
+    position_open_time: datetime | None = None,
     execution_mode: str = "spot",
 ) -> TradePlan:
     """Generate a trade signal from Chronos2 forecasts alone when LLM is unavailable.
@@ -1223,7 +1215,7 @@ def _chronos2_fallback_signal(
     if position_qty > 0 and position_entry_price > 0:
         held_hours = 0.0
         if position_open_time:
-            held_hours = (datetime.now(timezone.utc) - position_open_time).total_seconds() / 3600.0
+            held_hours = (datetime.now(UTC) - position_open_time).total_seconds() / 3600.0
 
         # Force exit if approaching max hold (6h)
         if held_hours >= 5.5:  # slightly before the hard 6h cutoff in run_trading_cycle
@@ -1263,7 +1255,10 @@ def _chronos2_fallback_signal(
         predicted_high_1h = fc_1h.get("predicted_high_p50", predicted_close_1h)
         sell_price = max(predicted_high_1h, current_price * (1 + 2 * fee_rate + 0.003))
         return TradePlan(
-            "long", buy_price, sell_price, confidence,
+            "long",
+            buy_price,
+            sell_price,
+            confidence,
             f"chronos2_fallback: 1h={delta_1h:+.3f} 24h={delta_24h:+.3f}",
         )
 
@@ -1274,17 +1269,20 @@ def _chronos2_fallback_signal(
 # Hybrid Signal Generation
 # ---------------------------------------------------------------------------
 
+
 def _klines_to_rows(klines: list) -> list[dict]:
     rows = []
     for k in klines:
-        rows.append({
-            "timestamp": pd.Timestamp(k[0], unit="ms", tz="UTC").isoformat(),
-            "open": float(k[1]),
-            "high": float(k[2]),
-            "low": float(k[3]),
-            "close": float(k[4]),
-            "volume": float(k[5]),
-        })
+        rows.append(
+            {
+                "timestamp": pd.Timestamp(k[0], unit="ms", tz="UTC").isoformat(),
+                "open": float(k[1]),
+                "high": float(k[2]),
+                "low": float(k[3]),
+                "close": float(k[4]),
+                "volume": float(k[5]),
+            }
+        )
     return rows
 
 
@@ -1292,10 +1290,10 @@ def get_hybrid_signal(
     sym_cfg: BinanceSymbolConfig,
     model: str = "gemini-3.1-flash-lite-preview",
     thinking_level: str = "HIGH",
-    rl_checkpoint: Optional[str] = None,
+    rl_checkpoint: str | None = None,
     position_qty: float = 0.0,
     position_entry_price: float = 0.0,
-    position_open_time: Optional[datetime] = None,
+    position_open_time: datetime | None = None,
     execution_mode: str = "spot",
     **kwargs,
 ) -> TradePlan:
@@ -1306,16 +1304,20 @@ def get_hybrid_signal(
         return TradePlan("hold", 0, 0, 0, "no price data")
 
     current_price = float(price)
-    fallback_mode = kwargs.get("fallback_mode", None)
+    fallback_mode = kwargs.get("fallback_mode")
 
     # Load Chronos2 forecasts (needed for both LLM prompt and fallback)
     from rl_trading_agent_binance_prompt import build_live_prompt, load_latest_forecast
+
     fc_1h = load_latest_forecast(sym_cfg.symbol, 1)
     fc_24h = load_latest_forecast(sym_cfg.symbol, 24)
 
     if fallback_mode == "chronos2":
         plan = _chronos2_fallback_signal(
-            sym_cfg, current_price, fc_1h, fc_24h,
+            sym_cfg,
+            current_price,
+            fc_1h,
+            fc_24h,
             position_qty=position_qty,
             position_entry_price=position_entry_price,
             position_open_time=position_open_time,
@@ -1326,6 +1328,7 @@ def get_hybrid_signal(
         history_rows = kwargs.get("prefetched_bars")
         if history_rows is None:
             from src.binan import binance_wrapper as bw
+
             try:
                 pair = market_symbol
                 try:
@@ -1352,7 +1355,7 @@ def get_hybrid_signal(
         if position_qty > 0 and position_entry_price > 0:
             held_hours = 0.0
             if position_open_time:
-                held_hours = (datetime.now(timezone.utc) - position_open_time).total_seconds() / 3600.0
+                held_hours = (datetime.now(UTC) - position_open_time).total_seconds() / 3600.0
             pos_info = {
                 "qty": position_qty,
                 "entry_price": position_entry_price,
@@ -1361,25 +1364,38 @@ def get_hybrid_signal(
 
         fee_bps = _execution_fee_bps(sym_cfg, execution_mode)
         from rl_trading_agent_binance_prompt import build_live_prompt_freeform
+
         prompt_variant = kwargs.get("prompt_variant", "optimization")
         cross_ctx = kwargs.get("cross_asset_context", "")
         if prompt_variant == "freeform":
             prompt = build_live_prompt_freeform(
-                sym_cfg.symbol, history_rows, current_price, fc_1h, fc_24h,
-                position_info=pos_info, fee_bps=fee_bps,
-                fc_4h=fc_4h, fc_12h=fc_12h,
+                sym_cfg.symbol,
+                history_rows,
+                current_price,
+                fc_1h,
+                fc_24h,
+                position_info=pos_info,
+                fee_bps=fee_bps,
+                fc_4h=fc_4h,
+                fc_12h=fc_12h,
                 cross_asset_context=cross_ctx,
             )
         else:
             prompt = build_live_prompt(
-                sym_cfg.symbol, history_rows, current_price, fc_1h, fc_24h,
-                position_info=pos_info, fee_bps=fee_bps,
-                fc_4h=fc_4h, fc_12h=fc_12h,
+                sym_cfg.symbol,
+                history_rows,
+                current_price,
+                fc_1h,
+                fc_24h,
+                position_info=pos_info,
+                fee_bps=fee_bps,
+                fc_4h=fc_4h,
+                fc_12h=fc_12h,
                 cross_asset_context=cross_ctx,
             )
 
         reprompt_passes = kwargs.get("reprompt_passes", 1)
-        review_model = kwargs.get("review_model", None)
+        review_model = kwargs.get("review_model")
         reprompt_policy = kwargs.get("reprompt_policy", "entry_only")
         review_cache_ns = f"review_{review_model}" if review_model else None
         plan = call_llm(
@@ -1399,7 +1415,10 @@ def get_hybrid_signal(
                 plan.reasoning,
             )
             plan = _chronos2_fallback_signal(
-                sym_cfg, current_price, fc_1h, fc_24h,
+                sym_cfg,
+                current_price,
+                fc_1h,
+                fc_24h,
                 position_qty=position_qty,
                 position_entry_price=position_entry_price,
                 position_open_time=position_open_time,
@@ -1420,25 +1439,26 @@ def get_hybrid_signal(
 # Main Trading Loop
 # ---------------------------------------------------------------------------
 
+
 def run_trading_cycle(
     symbols: list[str],
     model: str = "gemini-3.1-flash-lite-preview",
     thinking_level: str = "HIGH",
     max_position_pct: float = 0.20,
     dry_run: bool = True,
-    rl_checkpoint: Optional[str] = None,
+    rl_checkpoint: str | None = None,
     leverage: float = 1.0,
     execution_mode: str = "auto",
     prompt_variant: str = "optimization",
     reprompt_passes: int = 1,
-    review_model: Optional[str] = None,
+    review_model: str | None = None,
     reprompt_policy: str = "entry_only",
-    fallback_mode: Optional[str] = None,
+    fallback_mode: str | None = None,
 ):
     """Run one trading cycle across all symbols."""
     resolved_execution_mode = _resolve_execution_mode(execution_mode, leverage)
     effective_leverage = _effective_leverage(resolved_execution_mode, leverage)
-    cycle_started_at = datetime.now(timezone.utc)
+    cycle_started_at = datetime.now(UTC)
     cycle_snapshot: dict[str, object] = {
         "cycle_id": f"{cycle_started_at.isoformat()}|per_symbol|{resolved_execution_mode}|{'live' if not dry_run else 'dry_run'}",
         "cycle_kind": "per_symbol",
@@ -1468,7 +1488,7 @@ def run_trading_cycle(
     orders_placed: list[dict] = []
 
     try:
-        logger.info(f"\n{'='*60}")
+        logger.info(f"\n{'=' * 60}")
         logger.info(f"Trading Cycle: {cycle_started_at.strftime('%Y-%m-%d %H:%M UTC')}")
         logger.info(
             f"Model: {model} (thinking={thinking_level}) | "
@@ -1476,7 +1496,7 @@ def run_trading_cycle(
             f"Requested leverage: {leverage:.2f}x | Effective leverage: {effective_leverage:.2f}x"
         )
         logger.info(f"Mode: {'DRY RUN' if dry_run else 'LIVE'}")
-        logger.info(f"{'='*60}")
+        logger.info(f"{'=' * 60}")
 
         sync_plan = MarginCapitalSyncPlan()
         if resolved_execution_mode == "margin":
@@ -1520,10 +1540,12 @@ def run_trading_cycle(
             _, open_time = get_position_entry(sym_cfg, execution_mode=resolved_execution_mode)
             if not open_time:
                 continue
-            held_h = (datetime.now(timezone.utc) - open_time).total_seconds() / 3600.0
+            held_h = (datetime.now(UTC) - open_time).total_seconds() / 3600.0
             if held_h < MAX_HOLD_HOURS:
                 continue
-            logger.info(f"  FORCED EXIT {sym_cfg.symbol}: held {held_h:.1f}h > {MAX_HOLD_HOURS}h, market selling {pos_qty}")
+            logger.info(
+                f"  FORCED EXIT {sym_cfg.symbol}: held {held_h:.1f}h > {MAX_HOLD_HOURS}h, market selling {pos_qty}"
+            )
             for oo in list(open_orders):
                 if oo.get("symbol") == market_symbol and oo.get("side") == "SELL":
                     try:
@@ -1532,7 +1554,9 @@ def run_trading_cycle(
                     except Exception:
                         pass
             sell_price = cur_price * 0.995
-            order = place_limit_sell(sym_cfg, sell_price, pos_qty, execution_mode=resolved_execution_mode, dry_run=dry_run)
+            order = place_limit_sell(
+                sym_cfg, sell_price, pos_qty, execution_mode=resolved_execution_mode, dry_run=dry_run
+            )
             if order:
                 orders_placed.append(order)
                 open_orders.append(order)
@@ -1548,6 +1572,7 @@ def run_trading_cycle(
         all_symbol_bars: dict[str, list[dict]] = {}
         try:
             from src.binan import binance_wrapper as bw
+
             for sn in symbols:
                 sc = TRADING_SYMBOLS.get(sn)
                 if not sc:
@@ -1560,6 +1585,7 @@ def run_trading_cycle(
                     pass
             if len(all_symbol_bars) >= 2:
                 from rl_trading_agent_binance_prompt import build_cross_asset_context
+
                 cross_asset_context = build_cross_asset_context(all_symbol_bars)
                 if cross_asset_context:
                     logger.info(f"Cross-asset context:\n{cross_asset_context}")
@@ -1618,7 +1644,10 @@ def run_trading_cycle(
 
             try:
                 plan = get_hybrid_signal(
-                    sym_cfg, model, thinking_level, rl_checkpoint,
+                    sym_cfg,
+                    model,
+                    thinking_level,
+                    rl_checkpoint,
                     position_qty=position_qty,
                     position_entry_price=entry_price,
                     position_open_time=open_time,
@@ -1813,9 +1842,11 @@ def run_trading_cycle(
                     if plan.sell_price > 0 and filled_qty <= 0 and buy_status in ("NEW", ""):
                         # Query order to check if it filled (limit at market fills instantly)
                         import time as _time
+
                         _time.sleep(1)
                         try:
                             from src.binan.binance_margin import get_margin_asset_balance
+
                             bal = get_margin_asset_balance(sym_cfg.base_asset)
                             if bal:
                                 actual_free = float(bal.get("free", 0))
@@ -1823,7 +1854,9 @@ def run_trading_cycle(
                                 if actual_free >= buy_qty * 0.95:
                                     filled_qty = buy_qty
                                     buy_status = "FILLED"
-                                    logger.info(f"  Buy confirmed filled via balance check ({actual_free:.6f} >= {buy_qty:.6f})")
+                                    logger.info(
+                                        f"  Buy confirmed filled via balance check ({actual_free:.6f} >= {buy_qty:.6f})"
+                                    )
                         except Exception:
                             pass
                     if plan.sell_price > 0 and buy_status == "FILLED" and filled_qty > 0:
@@ -1852,16 +1885,16 @@ def run_trading_cycle(
             symbol_detail["status"] = "completed"
 
         cycle_snapshot["status"] = "completed"
-        logger.info(f"\n{'='*60}")
+        logger.info(f"\n{'=' * 60}")
         logger.info(f"Cycle complete: {len(orders_placed)} orders placed")
-        logger.info(f"{'='*60}\n")
+        logger.info(f"{'=' * 60}\n")
         return orders_placed
     except Exception as exc:
         cycle_snapshot["status"] = "failed"
         cycle_snapshot["error"] = str(exc)
         raise
     finally:
-        cycle_snapshot["cycle_finished_at"] = datetime.now(timezone.utc).isoformat()
+        cycle_snapshot["cycle_finished_at"] = datetime.now(UTC).isoformat()
         append_cycle_snapshot(cycle_snapshot)
 
 
@@ -1876,8 +1909,8 @@ RL_BINANCE_PAIRS = {
     "AAVEUSD": "AAVEUSDT",
 }
 
-_prev_plan: Optional[AllocationPlan] = None
-_prev_outcome: Optional[PlanOutcome] = None
+_prev_plan: AllocationPlan | None = None
+_prev_outcome: PlanOutcome | None = None
 _prev_portfolio_value: float = 0.0
 
 
@@ -1885,12 +1918,14 @@ def _allocation_plan_has_error(plan: AllocationPlan) -> bool:
     reasoning = (plan.reasoning or "").strip().lower()
     if not reasoning:
         return False
-    return reasoning.startswith((
-        "failed to parse response",
-        "no json found in response",
-        "api error:",
-        "all retries exhausted",
-    ))
+    return reasoning.startswith(
+        (
+            "failed to parse response",
+            "no json found in response",
+            "api error:",
+            "all retries exhausted",
+        )
+    )
 
 
 def _rl_signal_to_allocation_plan(
@@ -1898,7 +1933,7 @@ def _rl_signal_to_allocation_plan(
     contexts: list,
     rl_gen: RLSignalGenerator,
     effective_leverage: float,
-) -> Optional[AllocationPlan]:
+) -> AllocationPlan | None:
     """Convert an RL signal directly into an AllocationPlan, bypassing Gemini.
 
     Returns None if the RL signal is FLAT (no trade needed).
@@ -1928,7 +1963,7 @@ def _rl_signal_to_allocation_plan(
         entry_prices={sym: entry_price},
         exit_prices={sym: exit_price},
         reasoning=f"rl_only_fallback: {rl_signal.action_name} prob={target_prob:.2%} value={rl_signal.value:.3f}",
-        timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        timestamp=datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
     )
     logger.info(f"RL-only plan: {sym} {alloc_pct:.0f}% entry=${entry_price:.2f} exit=${exit_price:.2f}")
     return plan
@@ -1959,14 +1994,14 @@ def run_hybrid_trading_cycle(
     dry_run: bool = True,
     leverage: float = 1.0,
     execution_mode: str = "auto",
-    tradable_symbols: Optional[list[str]] = None,
+    tradable_symbols: list[str] | None = None,
 ):
     """Hybrid RL+Chronos2+Gemini portfolio allocation cycle."""
     global _prev_plan, _prev_outcome, _prev_portfolio_value
 
     resolved_execution_mode = _resolve_execution_mode(execution_mode, leverage)
     effective_leverage = _effective_leverage(resolved_execution_mode, leverage)
-    cycle_started_at = datetime.now(timezone.utc)
+    cycle_started_at = datetime.now(UTC)
     cycle_snapshot: dict[str, object] = {
         "cycle_id": f"{cycle_started_at.isoformat()}|allocation|{resolved_execution_mode}|{'live' if not dry_run else 'dry_run'}",
         "cycle_kind": "allocation",
@@ -1995,14 +2030,14 @@ def run_hybrid_trading_cycle(
     orders_placed: list[dict] = []
 
     try:
-        logger.info(f"\n{'='*60}")
+        logger.info(f"\n{'=' * 60}")
         logger.info(f"Hybrid Cycle: {cycle_started_at.strftime('%Y-%m-%d %H:%M UTC')}")
         logger.info(
             f"Mode: {'DRY RUN' if dry_run else 'LIVE'} | Gemini: {gemini_model} | "
             f"Execution: {resolved_execution_mode} | Requested leverage: {leverage:.2f}x | "
             f"Effective leverage: {effective_leverage:.2f}x"
         )
-        logger.info(f"{'='*60}")
+        logger.info(f"{'=' * 60}")
 
         sync_plan = MarginCapitalSyncPlan()
         if resolved_execution_mode == "margin":
@@ -2037,9 +2072,7 @@ def run_hybrid_trading_cycle(
         }
 
         cache_root = Path(forecast_cache_root)
-        all_crypto_syms = tuple(
-            s for s in rl_gen.symbols if s in SYMBOL_TO_BINANCE_PAIR
-        )
+        all_crypto_syms = tuple(s for s in rl_gen.symbols if s in SYMBOL_TO_BINANCE_PAIR)
         try:
             contexts = gather_symbol_contexts(cache_root, symbols=all_crypto_syms)
         except Exception as exc:
@@ -2108,7 +2141,10 @@ def run_hybrid_trading_cycle(
         use_rl_only = False
         if gemini_failed or _allocation_plan_has_error(plan):
             rl_plan = _rl_signal_to_allocation_plan(
-                rl_signal, contexts, rl_gen, effective_leverage,
+                rl_signal,
+                contexts,
+                rl_gen,
+                effective_leverage,
             )
             if rl_plan is not None:
                 logger.info("Gemini unavailable, using RL-only fallback for execution")
@@ -2125,7 +2161,10 @@ def run_hybrid_trading_cycle(
 
         if not use_rl_only and not plan.allocations:
             rl_plan = _rl_signal_to_allocation_plan(
-                rl_signal, contexts, rl_gen, effective_leverage,
+                rl_signal,
+                contexts,
+                rl_gen,
+                effective_leverage,
             )
             if rl_plan is not None:
                 logger.info("Gemini returned 100%% cash but RL has signal, using RL-only")
@@ -2143,8 +2182,7 @@ def run_hybrid_trading_cycle(
             cycle_snapshot["calibrated"] = True
 
         target_values = {
-            sym: state.total_value_usd * pct / 100.0 * effective_leverage
-            for sym, pct in plan.allocations.items()
+            sym: state.total_value_usd * pct / 100.0 * effective_leverage for sym, pct in plan.allocations.items()
         }
         logger.info(f"Target allocation: {plan.allocations} | cash={plan.cash_pct:.0f}%")
 
@@ -2182,7 +2220,12 @@ def run_hybrid_trading_cycle(
                 continue
             detail = symbol_details.setdefault(
                 sym,
-                {"symbol": sym, "market_symbol": _execution_pair(cfg, resolved_execution_mode), "quote_asset": _execution_quote_asset(cfg, resolved_execution_mode), "actions": []},
+                {
+                    "symbol": sym,
+                    "market_symbol": _execution_pair(cfg, resolved_execution_mode),
+                    "quote_asset": _execution_quote_asset(cfg, resolved_execution_mode),
+                    "actions": [],
+                },
             )
             actions = detail["actions"]
             assert isinstance(actions, list)
@@ -2310,7 +2353,9 @@ def run_hybrid_trading_cycle(
                 market_symbol = _execution_pair(cfg, resolved_execution_mode)
                 buy_action["desired_price"] = float(entry_price)
                 buy_action["desired_notional"] = float(buy_needed)
-                buy_action["matched_open_orders"] = _serialize_orders(_matching_open_orders(open_orders, market_symbol, "BUY"))
+                buy_action["matched_open_orders"] = _serialize_orders(
+                    _matching_open_orders(open_orders, market_symbol, "BUY")
+                )
                 open_orders, skip_buy = _dedupe_side_orders(
                     open_orders,
                     symbol=market_symbol,
@@ -2362,62 +2407,97 @@ def run_hybrid_trading_cycle(
         _prev_portfolio_value = state.total_value_usd
 
         cycle_snapshot["status"] = "completed"
-        logger.info(f"\n{'='*60}")
+        logger.info(f"\n{'=' * 60}")
         logger.info(f"Hybrid cycle complete: {len(orders_placed)} orders")
-        logger.info(f"{'='*60}\n")
+        logger.info(f"{'=' * 60}\n")
         return orders_placed
     except Exception as exc:
         cycle_snapshot["status"] = "failed"
         cycle_snapshot["error"] = str(exc)
         raise
     finally:
-        cycle_snapshot["cycle_finished_at"] = datetime.now(timezone.utc).isoformat()
+        cycle_snapshot["cycle_finished_at"] = datetime.now(UTC).isoformat()
         append_cycle_snapshot(cycle_snapshot)
 
 
 def main():
     parser = argparse.ArgumentParser(description="RL+LLM Hybrid Binance Trader")
-    parser.add_argument("--symbols", nargs="+",
-                        default=["BTCUSD", "ETHUSD", "SOLUSD"],
-                        help="Symbols to trade")
-    parser.add_argument("--model", type=str, default="gemini-3.1-flash-lite-preview",
-                        help="Gemini model for hybrid mode or LLM-only mode")
-    parser.add_argument("--dry-run", action="store_true", default=True,
-                        help="Dry run mode (no real orders)")
-    parser.add_argument("--live", action="store_true",
-                        help="Live trading mode")
-    parser.add_argument("--once", action="store_true",
-                        help="Run one cycle and exit")
-    parser.add_argument("--interval", type=int, default=3600,
-                        help="Seconds between trading cycles (default: 3600)")
-    parser.add_argument("--checkpoint", type=str, default=None,
-                        help="(deprecated) Use --rl-checkpoint instead")
-    parser.add_argument("--rl-checkpoint", type=str, default=None,
-                        help="Path to RL policy checkpoint. Enables hybrid RL+Gemini allocation mode.")
-    parser.add_argument("--rl-alloc-pct", type=float, default=0.90,
-                        help="Deprecated legacy RL-only allocation cap; ignored in hybrid mode")
-    parser.add_argument("--forecast-cache", type=str,
-                        default="binanceneural/forecast_cache",
-                        help="Forecast cache root for RL features")
-    parser.add_argument("--leverage", type=float, default=1.0,
-                        help="Requested position multiplier. Auto mode switches to margin above 1x.")
-    parser.add_argument("--execution-mode", type=str, default="auto", choices=sorted(SUPPORTED_EXECUTION_MODES),
-                        help="Execution account to use: auto, spot, or margin.")
-    parser.add_argument("--prompt-variant", type=str, default="optimization",
-                        choices=["optimization", "freeform"],
-                        help="Prompt style for LLM signal generation.")
-    parser.add_argument("--reprompt-passes", type=int, default=1,
-                        help="Number of LLM passes (1=single, 2+=review). Default 1.")
-    parser.add_argument("--review-model", type=str, default=None,
-                        help="Stronger model for review passes (e.g. gemini-2.5-pro). Default: same as --model.")
-    parser.add_argument("--reprompt-policy", type=str, default="entry_only",
-                        choices=["always", "entry_only", "actionable"],
-                        help="When to reprompt: always, entry_only (default), actionable.")
-    parser.add_argument("--fallback-mode", type=str, default=None,
-                        choices=["chronos2"],
-                        help="Fallback signal mode when LLM is unavailable. chronos2=use Chronos2 forecasts directly.")
-    parser.add_argument("--calibrator-dir", type=str, default=None,
-                        help="Directory with per-symbol calibrator checkpoints (*_calibrator.pt)")
+    parser.add_argument("--symbols", nargs="+", default=["BTCUSD", "ETHUSD", "SOLUSD"], help="Symbols to trade")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="gemini-3.1-flash-lite-preview",
+        help="Gemini model for hybrid mode or LLM-only mode",
+    )
+    parser.add_argument("--dry-run", action="store_true", default=True, help="Dry run mode (no real orders)")
+    parser.add_argument("--live", action="store_true", help="Live trading mode")
+    parser.add_argument("--once", action="store_true", help="Run one cycle and exit")
+    parser.add_argument("--interval", type=int, default=3600, help="Seconds between trading cycles (default: 3600)")
+    parser.add_argument("--checkpoint", type=str, default=None, help="(deprecated) Use --rl-checkpoint instead")
+    parser.add_argument(
+        "--rl-checkpoint",
+        type=str,
+        default=None,
+        help="Path to RL policy checkpoint. Enables hybrid RL+Gemini allocation mode.",
+    )
+    parser.add_argument(
+        "--rl-alloc-pct",
+        type=float,
+        default=0.90,
+        help="Deprecated legacy RL-only allocation cap; ignored in hybrid mode",
+    )
+    parser.add_argument(
+        "--forecast-cache", type=str, default="binanceneural/forecast_cache", help="Forecast cache root for RL features"
+    )
+    parser.add_argument(
+        "--leverage",
+        type=float,
+        default=1.0,
+        help="Requested position multiplier. Auto mode switches to margin above 1x.",
+    )
+    parser.add_argument(
+        "--execution-mode",
+        type=str,
+        default="auto",
+        choices=sorted(SUPPORTED_EXECUTION_MODES),
+        help="Execution account to use: auto, spot, or margin.",
+    )
+    parser.add_argument(
+        "--prompt-variant",
+        type=str,
+        default="optimization",
+        choices=["optimization", "freeform"],
+        help="Prompt style for LLM signal generation.",
+    )
+    parser.add_argument(
+        "--reprompt-passes", type=int, default=1, help="Number of LLM passes (1=single, 2+=review). Default 1."
+    )
+    parser.add_argument(
+        "--review-model",
+        type=str,
+        default=None,
+        help="Stronger model for review passes (e.g. gemini-2.5-pro). Default: same as --model.",
+    )
+    parser.add_argument(
+        "--reprompt-policy",
+        type=str,
+        default="entry_only",
+        choices=["always", "entry_only", "actionable"],
+        help="When to reprompt: always, entry_only (default), actionable.",
+    )
+    parser.add_argument(
+        "--fallback-mode",
+        type=str,
+        default=None,
+        choices=["chronos2"],
+        help="Fallback signal mode when LLM is unavailable. chronos2=use Chronos2 forecasts directly.",
+    )
+    parser.add_argument(
+        "--calibrator-dir",
+        type=str,
+        default=None,
+        help="Directory with per-symbol calibrator checkpoints (*_calibrator.pt)",
+    )
     args = parser.parse_args()
 
     dry_run = not args.live
