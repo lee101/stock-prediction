@@ -8,6 +8,7 @@ Runs daily at UTC midnight:
 4. Manage exits (profit target, stop loss, trailing stop, max hold)
 5. Handle FDUSD<->USDT swaps for BTC/ETH execution
 """
+
 from __future__ import annotations
 
 import argparse
@@ -18,9 +19,9 @@ import math
 import sys
 import time
 from dataclasses import asdict, replace
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -44,20 +45,24 @@ from binance_worksteal.config_io import (
     build_worksteal_config_from_args,
     maybe_handle_worksteal_config_output,
 )
+from binance_worksteal.data import FEATURE_NAMES, compute_features
+from binance_worksteal.io_utils import write_text_atomic
+from binance_worksteal.model import DailyWorkStealPolicy, PerSymbolWorkStealPolicy
 from binance_worksteal.reporting import (
     add_preview_run_arg,
     add_summary_json_arg,
     build_cli_error_summary,
     build_preview_run_summary,
     build_symbol_listing_summary,
-    print_warning_summary,
     print_run_preview,
+    print_warning_summary,
     render_command_preview,
     run_with_optional_summary,
 )
 from binance_worksteal.strategy import (
-    WorkStealConfig,
+    FDUSD_SYMBOLS,
     SymbolDiagnostic,
+    WorkStealConfig,
     _build_symbol_metric_cache,
     build_entry_candidates,
     build_tiered_entry_candidates,
@@ -67,12 +72,10 @@ from binance_worksteal.strategy import (
     load_daily_bars,
     passes_sma_filter,
     resolve_entry_regime,
-    FDUSD_SYMBOLS,
 )
-from binance_worksteal.data import compute_features, FEATURE_NAMES
-from binance_worksteal.model import DailyWorkStealPolicy, PerSymbolWorkStealPolicy
-from binance_worksteal.io_utils import write_text_atomic
-from binance_worksteal.universe import get_symbols as get_universe_symbols, load_universe
+from binance_worksteal.universe import get_symbols as get_universe_symbols
+from binance_worksteal.universe import load_universe
+
 
 # Binance API
 try:
@@ -164,8 +167,8 @@ def _normalize_strategy_symbol(symbol: str) -> str:
     return f"{value}USD"
 
 
-def _normalize_strategy_symbols(symbols: List[str] | None) -> List[str]:
-    normalized: List[str] = []
+def _normalize_strategy_symbols(symbols: list[str] | None) -> list[str]:
+    normalized: list[str] = []
     seen: set[str] = set()
     for raw_symbol in symbols or []:
         symbol = _normalize_strategy_symbol(raw_symbol)
@@ -398,7 +401,9 @@ def _order_rules_for_pair(client, pair: str) -> dict | None:
     return parsed
 
 
-def _prepare_limit_order(client, pair: str, side: str, price: float, quantity: float) -> tuple[float, float, str | None]:
+def _prepare_limit_order(
+    client, pair: str, side: str, price: float, quantity: float
+) -> tuple[float, float, str | None]:
     adj_price = _safe_float(price, default=0.0)
     adj_qty = _safe_float(quantity, default=0.0)
     if adj_price <= 0.0:
@@ -454,11 +459,11 @@ def _prepare_limit_order(client, pair: str, side: str, price: float, quantity: f
     return float(adj_price), float(adj_qty), None
 
 
-def _candidate_margin_pairs(symbol: str) -> List[str]:
+def _candidate_margin_pairs(symbol: str) -> list[str]:
     normalized = _normalize_strategy_symbol(symbol)
     if not normalized:
         return []
-    pairs: List[str] = []
+    pairs: list[str] = []
     mapping = SYMBOL_PAIRS.get(normalized, {})
     for key in ("fdusd", "usdt"):
         pair = str(mapping.get(key) or "").upper().strip()
@@ -505,8 +510,7 @@ def _order_update_time_key(order: dict) -> int:
     return _safe_int(order.get("updateTime") or order.get("time") or 0, default=0)
 
 
-
-def _latest_filled_order(orders: List[dict], *, side: str) -> Optional[dict]:
+def _latest_filled_order(orders: list[dict], *, side: str) -> dict | None:
     filtered = [
         order
         for order in orders
@@ -553,7 +557,9 @@ def _refresh_margin_order(client, *, pair: str, order_id, purpose: str) -> dict 
     return _mapping_response_or_warn(order, context=f"margin order response for {pair}#{order_id}")
 
 
-def _fetch_recent_margin_orders(client, symbol: str, *, preferred_pair: str = "", limit: int = 20) -> Tuple[List[dict], str]:
+def _fetch_recent_margin_orders(
+    client, symbol: str, *, preferred_pair: str = "", limit: int = 20
+) -> tuple[list[dict], str]:
     candidates = []
     if preferred_pair:
         candidates.append(str(preferred_pair).upper().strip())
@@ -591,16 +597,24 @@ def load_neural_model(checkpoint_path: str, device: str = "cpu"):
         num_temporal = max(1, num_layers // 2)
         num_cross = max(1, num_layers - num_temporal)
         model = PerSymbolWorkStealPolicy(
-            n_features=n_features, n_symbols=n_symbols,
+            n_features=n_features,
+            n_symbols=n_symbols,
             hidden_dim=hidden_dim,
-            num_temporal_layers=num_temporal, num_cross_layers=num_cross,
-            num_heads=num_heads, seq_len=seq_len, dropout=dropout,
+            num_temporal_layers=num_temporal,
+            num_cross_layers=num_cross,
+            num_heads=num_heads,
+            seq_len=seq_len,
+            dropout=dropout,
         )
     else:
         model = DailyWorkStealPolicy(
-            n_features=n_features, n_symbols=n_symbols,
-            hidden_dim=hidden_dim, num_layers=num_layers,
-            num_heads=num_heads, seq_len=seq_len, dropout=dropout,
+            n_features=n_features,
+            n_symbols=n_symbols,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            num_heads=num_heads,
+            seq_len=seq_len,
+            dropout=dropout,
         )
 
     model.load_state_dict(ckpt["state_dict"])
@@ -612,10 +626,10 @@ def load_neural_model(checkpoint_path: str, device: str = "cpu"):
 
 
 def prepare_neural_features(
-    all_bars: Dict[str, pd.DataFrame],
-    model_symbols: List[str],
+    all_bars: dict[str, pd.DataFrame],
+    model_symbols: list[str],
     seq_len: int = 30,
-) -> Optional[torch.Tensor]:
+) -> torch.Tensor | None:
     sym_to_idx = {sym: i for i, sym in enumerate(model_symbols)}
     n_symbols = len(model_symbols)
     n_features = len(FEATURE_NAMES)
@@ -652,7 +666,7 @@ def prepare_neural_features(
             if ts in date_to_idx:
                 di = date_to_idx[ts]
                 vals = feats.iloc[row_idx].values[:n_features]
-                feature_array[di, si, :len(vals)] = vals
+                feature_array[di, si, : len(vals)] = vals
 
     tensor = torch.from_numpy(feature_array).unsqueeze(0)  # [1, seq_len, n_symbols, n_features]
     return tensor
@@ -661,10 +675,10 @@ def prepare_neural_features(
 @torch.no_grad()
 def run_neural_inference(
     model,
-    all_bars: Dict[str, pd.DataFrame],
-    model_symbols: List[str],
+    all_bars: dict[str, pd.DataFrame],
+    model_symbols: list[str],
     seq_len: int = 30,
-) -> Optional[Dict[str, Dict[str, float]]]:
+) -> dict[str, dict[str, float]] | None:
     features = prepare_neural_features(all_bars, model_symbols, seq_len)
     if features is None:
         return None
@@ -692,7 +706,10 @@ def run_neural_inference(
 def _try_neural_inference(neural_model, all_bars, neural_model_symbols, neural_seq_len):
     try:
         predictions = run_neural_inference(
-            neural_model, all_bars, neural_model_symbols, neural_seq_len,
+            neural_model,
+            all_bars,
+            neural_model_symbols,
+            neural_seq_len,
         )
         if predictions:
             log_event({"type": "neural_inference", "predictions": predictions})
@@ -763,11 +780,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--health-report-hours", type=int, default=6)
     parser.add_argument("--neural-model", default=None, help="Path to neural model checkpoint (.pt)")
     parser.add_argument("--neural-symbols", nargs="+", default=None, help="Symbols the model was trained on")
-    parser.add_argument("--diagnose", action="store_true", help="Run one diagnostic cycle showing why each symbol is filtered")
-    parser.add_argument("--min-dip-pct", type=float, default=0.10, help="Floor for adaptive dip reduction (default 0.10)")
-    parser.add_argument("--adaptive-dip-cycles", type=int, default=3, help="Zero-candidate cycles before reducing dip_pct")
-    parser.add_argument("--dip-pct-fallback", nargs="+", type=float, default=None,
-                        help="Descending dip thresholds for tiered entry (e.g. 0.20 0.15 0.12)")
+    parser.add_argument(
+        "--diagnose", action="store_true", help="Run one diagnostic cycle showing why each symbol is filtered"
+    )
+    parser.add_argument(
+        "--min-dip-pct", type=float, default=0.10, help="Floor for adaptive dip reduction (default 0.10)"
+    )
+    parser.add_argument(
+        "--adaptive-dip-cycles", type=int, default=3, help="Zero-candidate cycles before reducing dip_pct"
+    )
+    parser.add_argument(
+        "--dip-pct-fallback",
+        nargs="+",
+        type=float,
+        default=None,
+        help="Descending dip thresholds for tiered entry (e.g. 0.20 0.15 0.12)",
+    )
     add_config_file_arg(parser)
     add_print_config_arg(parser)
     add_explain_config_arg(parser)
@@ -830,7 +858,6 @@ def _format_preview_override_value(value: object) -> str:
     if isinstance(value, dict):
         return json.dumps(value, sort_keys=True)
     return str(value)
-
 
 
 def _build_preview_schedule_context(args: argparse.Namespace) -> dict[str, object]:
@@ -941,7 +968,7 @@ def _build_config_override_context(
 
 def normalize_live_positions(raw_positions: dict, config: WorkStealConfig) -> dict:
     normalized = {}
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for raw_symbol, raw_position in (raw_positions or {}).items():
         if not isinstance(raw_position, dict):
             continue
@@ -956,7 +983,9 @@ def normalize_live_positions(raw_positions: dict, config: WorkStealConfig) -> di
         raw_stop = _safe_finite_float(raw_position.get("stop_price", default_stop), default=default_stop)
         target_sell = raw_target if raw_target > entry_price else default_target
         stop_price = raw_stop if 0.0 < raw_stop < entry_price else default_stop
-        peak_price = max(_safe_finite_float(raw_position.get("peak_price", entry_price), default=entry_price), entry_price)
+        peak_price = max(
+            _safe_finite_float(raw_position.get("peak_price", entry_price), default=entry_price), entry_price
+        )
         normalized[symbol] = {
             "entry_price": entry_price,
             "entry_date": _safe_utc_timestamp_iso(
@@ -1019,7 +1048,7 @@ def _last_exit_timestamps(last_exit: dict) -> dict[str, pd.Timestamp]:
 
 def _normalize_pending_entries(raw_pending: dict) -> dict:
     normalized = {}
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     for raw_symbol, raw_entry in (raw_pending or {}).items():
         if not isinstance(raw_entry, dict):
             continue
@@ -1056,11 +1085,11 @@ def plan_legacy_rebalance_exits(
     *,
     now: datetime,
     positions: dict,
-    current_bars: Dict[str, pd.Series],
-    history: Dict[str, pd.DataFrame],
+    current_bars: dict[str, pd.Series],
+    history: dict[str, pd.DataFrame],
     last_exit: dict,
     config: WorkStealConfig,
-    symbol_metrics: Optional[dict] = None,
+    symbol_metrics: dict | None = None,
 ) -> tuple[list[tuple[str, float, str, dict]], set[str]]:
     legacy_config = replace(config, sma_filter_period=0)
     entry_regime = resolve_entry_regime(
@@ -1095,13 +1124,15 @@ def plan_legacy_rebalance_exits(
             continue
         close_price = _safe_finite_float(current_bars[sym].get("close", 0.0), default=0.0)
         if close_price <= 0.0:
-            logger.warning(f"Skipping legacy rebalance exit for {sym}: invalid current close {current_bars[sym].get('close')!r}")
+            logger.warning(
+                f"Skipping legacy rebalance exit for {sym}: invalid current close {current_bars[sym].get('close')!r}"
+            )
             continue
         exits.append((sym, close_price, "legacy_rebalance", position))
     return exits, {sym for sym, position in positions.items() if position.get("source") == "legacy"}
 
 
-def _build_pair_routing(symbols: List[str]) -> list[dict[str, str]]:
+def _build_pair_routing(symbols: list[str]) -> list[dict[str, str]]:
     routing: list[dict[str, str]] = []
     for symbol in symbols:
         routing.append(
@@ -1114,14 +1145,12 @@ def _build_pair_routing(symbols: List[str]) -> list[dict[str, str]]:
     return routing
 
 
-
 def _pair_quote_asset(pair: str) -> str:
     value = str(pair or "").upper().strip()
     for quote in ("FDUSD", "USDT"):
         if value.endswith(quote):
             return quote
     return ""
-
 
 
 def _build_pair_routing_summary(routes: list[dict[str, str]]) -> dict[str, object]:
@@ -1141,11 +1170,7 @@ def _build_pair_routing_summary(routes: list[dict[str, str]]) -> dict[str, objec
             order_quote_counts[order_quote] = order_quote_counts.get(order_quote, 0) + 1
 
     def _ordered_quote_counts(counts: dict[str, int]) -> dict[str, int]:
-        ordered = {
-            quote: counts[quote]
-            for quote in ("FDUSD", "USDT")
-            if quote in counts
-        }
+        ordered = {quote: counts[quote] for quote in ("FDUSD", "USDT") if quote in counts}
         for quote in sorted(counts):
             if quote not in ordered:
                 ordered[quote] = counts[quote]
@@ -1165,15 +1190,12 @@ def _build_pair_routing_summary(routes: list[dict[str, str]]) -> dict[str, objec
     }
 
 
-
 def _print_pair_routing(routes: list[dict[str, str]]) -> None:
     if not routes:
         return
     print("Pair routing:")
     for route in routes:
-        print(
-            f"  {route['symbol']}: data={route['data_pair']} order={route['order_pair']}"
-        )
+        print(f"  {route['symbol']}: data={route['data_pair']} order={route['order_pair']}")
     summary = _build_pair_routing_summary(routes)
     print("Routing summary:")
     print(f"  total routes: {summary['route_count']}")
@@ -1182,16 +1204,12 @@ def _print_pair_routing(routes: list[dict[str, str]]) -> None:
     if summary["cross_quote_symbols"]:
         print(f"  cross-quote symbols: {', '.join(summary['cross_quote_symbols'])}")
     if summary["data_quote_counts"]:
-        mix = ", ".join(
-            f"{quote}={count}" for quote, count in summary["data_quote_counts"].items()
-        )
+        mix = ", ".join(f"{quote}={count}" for quote, count in summary["data_quote_counts"].items())
         print(f"  data quote mix: {mix}")
     if summary["required_data_quotes"]:
         print(f"  required data quotes: {', '.join(summary['required_data_quotes'])}")
     if summary["order_quote_counts"]:
-        mix = ", ".join(
-            f"{quote}={count}" for quote, count in summary["order_quote_counts"].items()
-        )
+        mix = ", ".join(f"{quote}={count}" for quote, count in summary["order_quote_counts"].items())
         print(f"  order quote mix: {mix}")
     if summary["required_order_quotes"]:
         print(f"  required order quotes: {', '.join(summary['required_order_quotes'])}")
@@ -1234,18 +1252,14 @@ def _diagnose_watchlist_rows(
         return []
     return heapq.nsmallest(
         limit,
-        (
-            row
-            for row in rows
-            if not row["is_candidate"] and row["filter_reason"]
-        ),
+        (row for row in rows if not row["is_candidate"] and row["filter_reason"]),
         key=lambda row: float(row["dist_pct"]),
     )
 
 
 def _entry_regime_breadth_snapshot(
-    current_bars: Dict[str, pd.Series],
-    history: Dict[str, pd.DataFrame],
+    current_bars: dict[str, pd.Series],
+    history: dict[str, pd.DataFrame],
     entry_regime,
 ) -> tuple[float, int, int]:
     if entry_regime.market_breadth_total_count > 0:
@@ -1256,7 +1270,6 @@ def _entry_regime_breadth_snapshot(
         )
     ratio, dipping, total = compute_breadth_ratio(current_bars, history)
     return float(ratio), int(dipping), int(total)
-
 
 
 def _print_omitted_symbols(symbols: list[str]) -> None:
@@ -1376,7 +1389,7 @@ def _build_diagnose_follow_up_commands(
 
 
 def _resolve_symbol_selection_context(
-    symbols: List[str],
+    symbols: list[str],
     symbol_source: str,
     *,
     max_symbols: int,
@@ -1413,13 +1426,13 @@ def get_binance_pair(symbol: str, prefer_fdusd: bool = True) -> str:
 
 
 def _load_local_daily_bars(
-    symbols: List[str],
+    symbols: list[str],
     *,
     min_rows_exclusive: int,
     tail_rows: int,
-) -> Dict[str, pd.DataFrame]:
+) -> dict[str, pd.DataFrame]:
     remaining = list(dict.fromkeys(symbols))
-    all_bars: Dict[str, pd.DataFrame] = {}
+    all_bars: dict[str, pd.DataFrame] = {}
     for data_dir in ("trainingdatadailybinance", "trainingdata/train"):
         if not remaining:
             break
@@ -1429,11 +1442,9 @@ def _load_local_daily_bars(
             logger.warning(f"Failed to load local bars from {data_dir}: {e}")
             loaded = {}
         if not isinstance(loaded, dict):
-            logger.warning(
-                f"Invalid local bars response from {data_dir}: expected dict, got {type(loaded).__name__}"
-            )
+            logger.warning(f"Invalid local bars response from {data_dir}: expected dict, got {type(loaded).__name__}")
             loaded = {}
-        next_remaining: List[str] = []
+        next_remaining: list[str] = []
         for sym in remaining:
             bars = loaded.get(sym)
             if bars is not None and not isinstance(bars, pd.DataFrame):
@@ -1447,7 +1458,6 @@ def _load_local_daily_bars(
                 next_remaining.append(sym)
         remaining = next_remaining
     return all_bars
-
 
 
 def fetch_daily_bars(client, symbol: str, lookback_days: int = 30) -> pd.DataFrame:
@@ -1491,15 +1501,17 @@ def fetch_daily_bars(client, symbol: str, lookback_days: int = 30) -> pd.DataFra
         if pd.isna(timestamp) or not all(math.isfinite(v) for v in (open_, high, low, close, volume)):
             logger.warning(f"Skipping malformed kline row {idx} for {pair}: non-finite values")
             continue
-        rows.append({
-            "timestamp": timestamp,
-            "open": open_,
-            "high": high,
-            "low": low,
-            "close": close,
-            "volume": volume,
-            "symbol": symbol,
-        })
+        rows.append(
+            {
+                "timestamp": timestamp,
+                "open": open_,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume,
+                "symbol": symbol,
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -1516,7 +1528,7 @@ def _default_live_state() -> dict:
 def _normalize_live_state_payload(payload: object, path: Path) -> dict:
     defaults = _default_live_state()
     state = dict(payload)
-    invalid_fields: List[str] = []
+    invalid_fields: list[str] = []
 
     for key in ("positions", "pending_entries", "last_exit"):
         value = state.get(key)
@@ -1567,7 +1579,7 @@ def _write_json_atomic(path: Path, payload: object):
 def _quarantine_invalid_state_file(path: Path) -> Path | None:
     if not path.exists():
         return None
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup_path = path.with_name(f"{path.stem}.corrupt.{stamp}{path.suffix}")
     counter = 1
     while backup_path.exists():
@@ -1711,9 +1723,7 @@ def load_state() -> dict:
                 f"Moved corrupt state to {backup_path} and starting with empty state."
             )
         else:
-            logger.warning(
-                f"Failed to load live state from {STATE_FILE}: {exc}. Starting with empty state."
-            )
+            logger.warning(f"Failed to load live state from {STATE_FILE}: {exc}. Starting with empty state.")
         return _default_live_state()
     if not isinstance(payload, dict):
         backup_path = _quarantine_invalid_state_file(STATE_FILE)
@@ -1745,7 +1755,9 @@ def _append_jsonl(path: Path, payload: object, *, kind: str):
         logger.warning(f"Failed to append {kind} to {path}: {exc}")
 
 
-def _build_market_data_gap_event(*, event_type: str, symbols: List[str], positions: dict, pending_entries: dict, equity: float) -> dict:
+def _build_market_data_gap_event(
+    *, event_type: str, symbols: list[str], positions: dict, pending_entries: dict, equity: float
+) -> dict:
     return {
         "type": event_type,
         "status": "no_market_data",
@@ -1762,17 +1774,16 @@ def log_trade(trade: dict):
 
 
 def log_event(event: dict):
-    event.setdefault("ts", datetime.now(timezone.utc).isoformat())
+    event.setdefault("ts", datetime.now(UTC).isoformat())
     _append_jsonl(EVENTS_FILE, event, kind="event log entry")
 
 
-def load_universe_file(path: str) -> List[str]:
+def load_universe_file(path: str) -> list[str]:
     """Backward-compatible universe loader used by older tests and scripts."""
     return get_universe_symbols(load_universe(path))
 
 
-def _fetch_all_bars(client, symbols: List[str], lookback_days: int,
-                    max_workers: int = 10) -> Dict[str, pd.DataFrame]:
+def _fetch_all_bars(client, symbols: list[str], lookback_days: int, max_workers: int = 10) -> dict[str, pd.DataFrame]:
     t0 = time.monotonic()
 
     if client is None and fetch_daily_bars is _ORIGINAL_FETCH_DAILY_BARS:
@@ -1785,7 +1796,7 @@ def _fetch_all_bars(client, symbols: List[str], lookback_days: int,
         logger.info(f"Fetched bars for {len(all_bars)}/{len(symbols)} symbols in {elapsed:.1f}s")
         return all_bars
 
-    def _fetch_one(sym: str) -> Tuple[str, Optional[pd.DataFrame]]:
+    def _fetch_one(sym: str) -> tuple[str, pd.DataFrame | None]:
         try:
             bars = fetch_daily_bars(client, sym, lookback_days + 10)
             if not bars.empty and len(bars) > lookback_days:
@@ -1856,8 +1867,10 @@ def swap_fdusd_to_usdt(client, amount: float):
     """Swap FDUSD to USDT (1:1) if needed for margin operations."""
     try:
         client.create_order(
-            symbol="FDUSDUSDT", side="SELL",
-            type="MARKET", quantity=f"{amount:.2f}",
+            symbol="FDUSDUSDT",
+            side="SELL",
+            type="MARKET",
+            quantity=f"{amount:.2f}",
         )
         logger.info(f"Swapped {amount:.2f} FDUSD -> USDT")
     except Exception as e:
@@ -1868,8 +1881,10 @@ def swap_usdt_to_fdusd(client, amount: float):
     """Swap USDT to FDUSD (1:1) for 0% fee trading."""
     try:
         client.create_order(
-            symbol="FDUSDUSDT", side="BUY",
-            type="MARKET", quantity=f"{amount:.2f}",
+            symbol="FDUSDUSDT",
+            side="BUY",
+            type="MARKET",
+            quantity=f"{amount:.2f}",
         )
         logger.info(f"Swapped {amount:.2f} USDT -> FDUSD")
     except Exception as e:
@@ -2098,7 +2113,9 @@ def reconcile_exit_orders(
             )
             fill_price = _order_avg_price(
                 order,
-                fallback=float(position.get("exit_price") or position.get("target_sell") or position.get("entry_price") or 0.0),
+                fallback=float(
+                    position.get("exit_price") or position.get("target_sell") or position.get("entry_price") or 0.0
+                ),
             )
             if fill_qty > 0.0 and fill_price > 0.0:
                 trade = {
@@ -2129,9 +2146,9 @@ def reconcile_exit_orders(
 def synchronize_positions_from_exchange(
     *,
     client,
-    symbols: List[str],
+    symbols: list[str],
     positions: dict,
-    current_bars: Dict[str, pd.Series],
+    current_bars: dict[str, pd.Series],
     config: WorkStealConfig,
     now: datetime,
 ) -> list[dict]:
@@ -2190,7 +2207,11 @@ def synchronize_positions_from_exchange(
             default=0.0,
         )
         est_value = quantity * close_price
-        if est_value < MIN_TRACKED_POSITION_VALUE_USD and symbol not in positions and symbol not in sell_orders_by_symbol:
+        if (
+            est_value < MIN_TRACKED_POSITION_VALUE_USD
+            and symbol not in positions
+            and symbol not in sell_orders_by_symbol
+        ):
             continue
 
         position = positions.get(symbol)
@@ -2260,7 +2281,7 @@ def _stage_entry_candidates(
     *,
     client,
     candidates: list,
-    all_bars: Dict[str, pd.DataFrame],
+    all_bars: dict[str, pd.DataFrame],
     staged_symbols: set,
     pending_entries: dict,
     recent_trades: list,
@@ -2272,7 +2293,7 @@ def _stage_entry_candidates(
     slots: int,
     gemini_enabled: bool = False,
     gemini_model: str = "gemini-2.5-flash",
-    neural_predictions: Optional[Dict[str, Dict[str, float]]] = None,
+    neural_predictions: dict[str, dict[str, float]] | None = None,
 ) -> dict:
     n_staged = 0
     n_already_held = 0
@@ -2343,17 +2364,30 @@ def _stage_entry_candidates(
         if gemini_enabled:
             try:
                 from binance_worksteal.gemini_overlay import (
-                    build_daily_prompt, call_gemini_daily, load_forecast_daily,
+                    build_daily_prompt,
+                    call_gemini_daily,
+                    load_forecast_daily,
                 )
+
                 fc = load_forecast_daily(sym)
                 rule_signal = {"buy_target": fill_price, "dip_score": score, "ref_price": 0, "sma_ok": True}
-                recent = [{"timestamp": t.get("timestamp",""), "side": t.get("side",""),
-                           "symbol": t.get("symbol",""), "price": t.get("price",0),
-                           "pnl": t.get("pnl",0), "reason": t.get("reason","")}
-                          for t in recent_trades[-5:]]
+                recent = [
+                    {
+                        "timestamp": t.get("timestamp", ""),
+                        "side": t.get("side", ""),
+                        "symbol": t.get("symbol", ""),
+                        "price": t.get("price", 0),
+                        "pnl": t.get("pnl", 0),
+                        "reason": t.get("reason", ""),
+                    }
+                    for t in recent_trades[-5:]
+                ]
                 prompt = build_daily_prompt(
-                    symbol=sym, bars=all_bars[sym], current_price=close,
-                    rule_signal=rule_signal, recent_trades=recent,
+                    symbol=sym,
+                    bars=all_bars[sym],
+                    current_price=close,
+                    rule_signal=rule_signal,
+                    recent_trades=recent,
                     forecast_24h=fc,
                     fee_bps=0 if sym in FDUSD_SYMBOLS else 10,
                     entry_proximity_bps=entry_config.entry_proximity_bps,
@@ -2373,9 +2407,11 @@ def _stage_entry_candidates(
                             stop = plan.stop_price
                         confidence = plan.confidence
                         source = f"gemini(conf={confidence:.2f})"
-                        logger.info(f"GEMINI {sym}: {plan.action} buy=${buy_price:.2f} "
-                                    f"tp=${sell_target:.2f} sl=${stop:.2f} conf={confidence:.2f} "
-                                    f"reason={plan.reasoning}")
+                        logger.info(
+                            f"GEMINI {sym}: {plan.action} buy=${buy_price:.2f} "
+                            f"tp=${sell_target:.2f} sl=${stop:.2f} conf={confidence:.2f} "
+                            f"reason={plan.reasoning}"
+                        )
             except Exception as e:
                 logger.warning(f"Gemini call failed for {sym}: {e}")
 
@@ -2406,13 +2442,15 @@ def _stage_entry_candidates(
             )
             if order_id is None:
                 logger.warning(f"ENTRY ORDER FAILED {sym}: no live order placed at {buy_price:.4f}")
-                log_event({
-                    "type": "entry_order_failed",
-                    "symbol": sym,
-                    "price": buy_price,
-                    "quantity": quantity,
-                    "reason": source,
-                })
+                log_event(
+                    {
+                        "type": "entry_order_failed",
+                        "symbol": sym,
+                        "price": buy_price,
+                        "quantity": quantity,
+                        "reason": source,
+                    }
+                )
                 n_order_fail += 1
                 continue
 
@@ -2434,8 +2472,11 @@ def _stage_entry_candidates(
         pending_entries[sym] = entry
         staged_symbols.add(sym)
         trade = {
-            "timestamp": now.isoformat(), "symbol": sym, "side": "staged_buy",
-            "price": buy_price, "quantity": quantity,
+            "timestamp": now.isoformat(),
+            "symbol": sym,
+            "side": "staged_buy",
+            "price": buy_price,
+            "quantity": quantity,
             "reason": f"dip_buy({source})",
             "dry_run": dry_run,
         }
@@ -2456,11 +2497,11 @@ def _stage_entry_candidates(
 
 
 def _count_sma_pass_fail(
-    all_bars: Dict[str, pd.DataFrame],
+    all_bars: dict[str, pd.DataFrame],
     config: WorkStealConfig,
     *,
-    symbol_metrics: Optional[dict] = None,
-) -> Tuple[int, int]:
+    symbol_metrics: dict | None = None,
+) -> tuple[int, int]:
     n_pass = 0
     n_fail = 0
     for sym, bars in all_bars.items():
@@ -2473,12 +2514,12 @@ def _count_sma_pass_fail(
     return n_pass, n_fail
 
 
-def run_health_report(client, symbols: List[str], config: WorkStealConfig, dry_run: bool = True):
+def run_health_report(client, symbols: list[str], config: WorkStealConfig, dry_run: bool = True):
     state = load_state()
     positions = normalize_live_positions(state.get("positions", {}), config)
     pending_entries = _normalize_pending_entries(state.get("pending_entries", {}))
     recent_trades = list(state.get("recent_trades", []))
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     equity = get_account_equity(client) if not dry_run else config.initial_cash
 
     last_trade_ts = None
@@ -2497,23 +2538,25 @@ def run_health_report(client, symbols: List[str], config: WorkStealConfig, dry_r
     current_bars = {sym: bars.iloc[-1] for sym, bars in all_bars.items()}
     if not all_bars:
         logger.warning(f"HEALTH: no market data fetched for any of {len(symbols)} symbols")
-        log_event({
-            **_build_market_data_gap_event(
-                event_type="health_report",
-                symbols=symbols,
-                positions=positions,
-                pending_entries=pending_entries,
-                equity=equity,
-            ),
-            "health_status": "no_market_data",
-            "risk_off": False,
-            "risk_off_triggered": False,
-            "market_breadth_skip": False,
-            "entry_skip": False,
-            "nearest_dip_sym": "",
-            "nearest_dip_bps": None,
-            "days_since_trade": days_since_trade,
-        })
+        log_event(
+            {
+                **_build_market_data_gap_event(
+                    event_type="health_report",
+                    symbols=symbols,
+                    positions=positions,
+                    pending_entries=pending_entries,
+                    equity=equity,
+                ),
+                "health_status": "no_market_data",
+                "risk_off": False,
+                "risk_off_triggered": False,
+                "market_breadth_skip": False,
+                "entry_skip": False,
+                "nearest_dip_sym": "",
+                "nearest_dip_bps": None,
+                "days_since_trade": days_since_trade,
+            }
+        )
         return
     if not dry_run:
         synchronize_positions_from_exchange(
@@ -2584,28 +2627,36 @@ def run_health_report(client, symbols: List[str], config: WorkStealConfig, dry_r
         f"nearest_dip={nearest_dip_label} "
         f"days_since_trade={days_since_trade}"
     )
-    log_event({
-        "type": "health_report",
-        "equity": equity,
-        "n_positions": len(positions),
-        "n_pending": len(pending_entries),
-        "risk_off": entry_regime.skip_entries,
-        "risk_off_triggered": risk_off,
-        "market_breadth_skip": market_breadth_skip,
-        "entry_skip": entry_regime.skip_entries,
-        "nearest_dip_sym": nearest_dip_sym,
-        "nearest_dip_bps": nearest_dip_bps_value,
-        "days_since_trade": days_since_trade,
-        "n_symbols_with_data": len(all_bars),
-    })
+    log_event(
+        {
+            "type": "health_report",
+            "equity": equity,
+            "n_positions": len(positions),
+            "n_pending": len(pending_entries),
+            "risk_off": entry_regime.skip_entries,
+            "risk_off_triggered": risk_off,
+            "market_breadth_skip": market_breadth_skip,
+            "entry_skip": entry_regime.skip_entries,
+            "nearest_dip_sym": nearest_dip_sym,
+            "nearest_dip_bps": nearest_dip_bps_value,
+            "days_since_trade": days_since_trade,
+            "n_symbols_with_data": len(all_bars),
+        }
+    )
 
 
-def run_entry_scan(client, symbols: List[str], config: WorkStealConfig,
-                   dry_run: bool = True, gemini_enabled: bool = False,
-                   gemini_model: str = "gemini-2.5-flash",
-                   neural_model=None, neural_model_symbols: Optional[List[str]] = None,
-                   neural_seq_len: int = 30,
-                   dip_pct_fallback: Optional[List[float]] = None):
+def run_entry_scan(
+    client,
+    symbols: list[str],
+    config: WorkStealConfig,
+    dry_run: bool = True,
+    gemini_enabled: bool = False,
+    gemini_model: str = "gemini-2.5-flash",
+    neural_model=None,
+    neural_model_symbols: list[str] | None = None,
+    neural_seq_len: int = 30,
+    dip_pct_fallback: list[float] | None = None,
+):
     state = load_state()
     positions = normalize_live_positions(state.get("positions", {}), config)
     pending_entries = _normalize_pending_entries(state.get("pending_entries", {}))
@@ -2614,7 +2665,7 @@ def run_entry_scan(client, symbols: List[str], config: WorkStealConfig,
         positions,
     )
     recent_trades = list(state.get("recent_trades", []))
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     all_bars = _fetch_all_bars(client, symbols, config.lookback_days)
     equity = get_account_equity(client) if not dry_run else config.initial_cash
@@ -2622,33 +2673,37 @@ def run_entry_scan(client, symbols: List[str], config: WorkStealConfig,
 
     slots = config.max_positions - len(positions) - len(pending_entries)
     if slots <= 0:
-        logger.info(f"ENTRY SCAN: skipped, {len(positions)} positions + {len(pending_entries)} pending >= {config.max_positions} max")
+        logger.info(
+            f"ENTRY SCAN: skipped, {len(positions)} positions + {len(pending_entries)} pending >= {config.max_positions} max"
+        )
         return
 
     if not all_bars:
         logger.warning(f"ENTRY SCAN: skipped, no market data fetched for any of {len(symbols)} symbols")
-        log_event({
-            **_build_market_data_gap_event(
-                event_type="entry_scan",
-                symbols=symbols,
-                positions=positions,
-                pending_entries=pending_entries,
-                equity=equity,
-            ),
-            "n_checked": 0,
-            "n_candidates": 0,
-            "n_staged": 0,
-            "n_proximity_skip": 0,
-            "n_gemini_skip": 0,
-            "n_already_held": 0,
-            "n_neural_skip": 0,
-            "n_order_fail": 0,
-            "slots_available": slots,
-            "risk_off": False,
-            "risk_off_triggered": False,
-            "market_breadth_skip": False,
-            "skip_reason": "no_market_data",
-        })
+        log_event(
+            {
+                **_build_market_data_gap_event(
+                    event_type="entry_scan",
+                    symbols=symbols,
+                    positions=positions,
+                    pending_entries=pending_entries,
+                    equity=equity,
+                ),
+                "n_checked": 0,
+                "n_candidates": 0,
+                "n_staged": 0,
+                "n_proximity_skip": 0,
+                "n_gemini_skip": 0,
+                "n_already_held": 0,
+                "n_neural_skip": 0,
+                "n_order_fail": 0,
+                "slots_available": slots,
+                "risk_off": False,
+                "risk_off_triggered": False,
+                "market_breadth_skip": False,
+                "skip_reason": "no_market_data",
+            }
+        )
         return
 
     if not dry_run:
@@ -2674,24 +2729,31 @@ def run_entry_scan(client, symbols: List[str], config: WorkStealConfig,
     entry_config = entry_regime.config
 
     if entry_regime.skip_entries:
-        skip_reason = "risk_off" if entry_regime.risk_off and not entry_regime.market_breadth_skip else "market_breadth_risk_off"
+        skip_reason = (
+            "risk_off" if entry_regime.risk_off and not entry_regime.market_breadth_skip else "market_breadth_risk_off"
+        )
         logger.info(f"ENTRY SCAN: skipped, {skip_reason}")
-        log_event({
-            "type": "entry_scan",
-            "n_checked": len(all_bars),
-            "n_candidates": 0,
-            "n_staged": 0,
-            "risk_off": entry_regime.skip_entries,
-            "risk_off_triggered": entry_regime.risk_off,
-            "market_breadth_skip": entry_regime.market_breadth_skip,
-            "skip_reason": skip_reason,
-        })
+        log_event(
+            {
+                "type": "entry_scan",
+                "n_checked": len(all_bars),
+                "n_candidates": 0,
+                "n_staged": 0,
+                "risk_off": entry_regime.skip_entries,
+                "risk_off_triggered": entry_regime.risk_off,
+                "market_breadth_skip": entry_regime.market_breadth_skip,
+                "skip_reason": skip_reason,
+            }
+        )
         return
 
     neural_predictions = None
     if neural_model is not None and neural_model_symbols:
         neural_predictions = _try_neural_inference(
-            neural_model, all_bars, neural_model_symbols, neural_seq_len,
+            neural_model,
+            all_bars,
+            neural_model_symbols,
+            neural_seq_len,
         )
 
     staged_symbols = set(positions) | set(pending_entries)
@@ -2726,11 +2788,20 @@ def run_entry_scan(client, symbols: List[str], config: WorkStealConfig,
     logger.info(f"ENTRY SCAN: {len(all_bars)} symbols checked, {len(candidates)} candidates found")
 
     counts = _stage_entry_candidates(
-        client=client, candidates=candidates, all_bars=all_bars,
-        staged_symbols=staged_symbols, pending_entries=pending_entries,
-        recent_trades=recent_trades, entry_config=entry_config, config=config,
-        equity=equity, now=now, dry_run=dry_run, slots=slots,
-        gemini_enabled=gemini_enabled, gemini_model=gemini_model,
+        client=client,
+        candidates=candidates,
+        all_bars=all_bars,
+        staged_symbols=staged_symbols,
+        pending_entries=pending_entries,
+        recent_trades=recent_trades,
+        entry_config=entry_config,
+        config=config,
+        equity=equity,
+        now=now,
+        dry_run=dry_run,
+        slots=slots,
+        gemini_enabled=gemini_enabled,
+        gemini_model=gemini_model,
         neural_predictions=neural_predictions,
     )
 
@@ -2739,16 +2810,18 @@ def run_entry_scan(client, symbols: List[str], config: WorkStealConfig,
         f"already_held={counts['n_already_held']} proximity_skip={counts['n_proximity_skip']} "
         f"gemini_skip={counts['n_gemini_skip']} neural_skip={counts['n_neural_skip']}"
     )
-    log_event({
-        "type": "entry_scan",
-        "n_checked": len(all_bars),
-        "n_candidates": len(candidates),
-        "slots_available": slots,
-        "risk_off": entry_regime.skip_entries,
-        "risk_off_triggered": entry_regime.risk_off,
-        "market_breadth_skip": entry_regime.market_breadth_skip,
-        **counts,
-    })
+    log_event(
+        {
+            "type": "entry_scan",
+            "n_checked": len(all_bars),
+            "n_candidates": len(candidates),
+            "slots_available": slots,
+            "risk_off": entry_regime.skip_entries,
+            "risk_off_triggered": entry_regime.risk_off,
+            "market_breadth_skip": entry_regime.market_breadth_skip,
+            **counts,
+        }
+    )
 
     if counts["n_staged"] > 0:
         state["pending_entries"] = pending_entries
@@ -2758,25 +2831,25 @@ def run_entry_scan(client, symbols: List[str], config: WorkStealConfig,
 
 def _build_tiered_candidates(
     *,
-    dip_tiers: List[float],
-    current_bars: Dict[str, pd.Series],
-    history: Dict[str, pd.DataFrame],
+    dip_tiers: list[float],
+    current_bars: dict[str, pd.Series],
+    history: dict[str, pd.DataFrame],
     positions: dict,
-    last_exit: Dict[str, pd.Timestamp],
+    last_exit: dict[str, pd.Timestamp],
     date: pd.Timestamp,
     entry_config: WorkStealConfig,
     max_positions: int,
     pending_entries: dict,
-    diagnostics: Optional[List[SymbolDiagnostic]] = None,
-    symbol_metrics: Optional[dict] = None,
-) -> Tuple[list, Dict[str, int]]:
+    diagnostics: list[SymbolDiagnostic] | None = None,
+    symbol_metrics: dict | None = None,
+) -> tuple[list, dict[str, int]]:
     """Run tiered dip passes, filling slots from deepest dip to shallowest."""
     slots = max(0, max_positions - len(set(positions) | set(pending_entries)))
     candidates, tier_map = build_tiered_entry_candidates(
         date=date,
         current_bars=current_bars,
         history=history,
-        positions={sym: True for sym in (set(positions) | set(pending_entries))},
+        positions=dict.fromkeys(set(positions) | set(pending_entries), True),
         last_exit=last_exit,
         config=replace(entry_config, dip_pct_fallback=tuple(dip_tiers)),
         base_symbol=None,
@@ -2790,14 +2863,20 @@ def _build_tiered_candidates(
     return candidates, tier_map
 
 
-def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
-                    dry_run: bool = True, gemini_enabled: bool = False,
-                    gemini_model: str = "gemini-2.5-flash",
-                    neural_model=None, neural_model_symbols: Optional[List[str]] = None,
-                    neural_seq_len: int = 30,
-                    min_dip_pct: float = 0.10,
-                    adaptive_dip_cycles: int = 3,
-                    dip_pct_fallback: Optional[List[float]] = None):
+def run_daily_cycle(
+    client,
+    symbols: list[str],
+    config: WorkStealConfig,
+    dry_run: bool = True,
+    gemini_enabled: bool = False,
+    gemini_model: str = "gemini-2.5-flash",
+    neural_model=None,
+    neural_model_symbols: list[str] | None = None,
+    neural_seq_len: int = 30,
+    min_dip_pct: float = 0.10,
+    adaptive_dip_cycles: int = 3,
+    dip_pct_fallback: list[float] | None = None,
+):
     state = load_state()
     positions = normalize_live_positions(state.get("positions", {}), config)
     pending_entries = _normalize_pending_entries(state.get("pending_entries", {}))
@@ -2820,7 +2899,7 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
         )
         config = replace(config, dip_pct=new_dip)
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     logger.info(
         f"Daily cycle at {now.isoformat()}, {len(positions)} open positions, "
         f"{len(pending_entries)} pending entries, dip_pct={config.dip_pct:.2f}"
@@ -2855,17 +2934,21 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
                 del pending_entries[sym]
 
     if not all_bars:
-        logger.warning(f"Daily cycle: no market data fetched for any of {len(symbols)} symbols; skipping exits and entries")
-        log_event({
-            **_build_market_data_gap_event(
-                event_type="daily_cycle",
-                symbols=symbols,
-                positions=positions,
-                pending_entries=pending_entries,
-                equity=equity,
-            ),
-            "cycle_status": "no_market_data",
-        })
+        logger.warning(
+            f"Daily cycle: no market data fetched for any of {len(symbols)} symbols; skipping exits and entries"
+        )
+        log_event(
+            {
+                **_build_market_data_gap_event(
+                    event_type="daily_cycle",
+                    symbols=symbols,
+                    positions=positions,
+                    pending_entries=pending_entries,
+                    equity=equity,
+                ),
+                "cycle_status": "no_market_data",
+            }
+        )
         state["positions"] = positions
         state["pending_entries"] = pending_entries
         state["last_exit"] = last_exit
@@ -2970,9 +3053,13 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
         logger.info(f"EXIT {sym}: {reason} at {exit_price:.2f} (entry {pos['entry_price']:.2f})")
         if dry_run:
             trade = {
-                "timestamp": now.isoformat(), "symbol": sym, "side": "sell",
-                "price": exit_price, "quantity": pos["quantity"],
-                "reason": reason, "pnl": (exit_price - pos["entry_price"]) * pos["quantity"],
+                "timestamp": now.isoformat(),
+                "symbol": sym,
+                "side": "sell",
+                "price": exit_price,
+                "quantity": pos["quantity"],
+                "reason": reason,
+                "pnl": (exit_price - pos["entry_price"]) * pos["quantity"],
                 "dry_run": True,
             }
             log_trade(trade)
@@ -2999,9 +3086,13 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
         pos["exit_reason"] = reason
         pos["target_sell"] = exit_price
         trade = {
-            "timestamp": now.isoformat(), "symbol": sym, "side": "staged_sell",
-            "price": exit_price, "quantity": pos["quantity"],
-            "reason": reason, "pnl": (exit_price - pos["entry_price"]) * pos["quantity"],
+            "timestamp": now.isoformat(),
+            "symbol": sym,
+            "side": "staged_sell",
+            "price": exit_price,
+            "quantity": pos["quantity"],
+            "reason": reason,
+            "pnl": (exit_price - pos["entry_price"]) * pos["quantity"],
             "dry_run": False,
             "order_id": order_id,
         }
@@ -3035,15 +3126,20 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
 
     # Log SMA pass/fail
     sma_pass, sma_fail = _count_sma_pass_fail(all_bars, config, symbol_metrics=symbol_metrics)
-    logger.info(f"SMA FILTER: {sma_pass} pass, {sma_fail} fail (period={config.sma_filter_period}, method={config.sma_check_method})")
+    logger.info(
+        f"SMA FILTER: {sma_pass} pass, {sma_fail} fail (period={config.sma_filter_period}, method={config.sma_check_method})"
+    )
 
     neural_predictions = None
     if neural_model is not None and neural_model_symbols and not skip_entries:
         neural_predictions = _try_neural_inference(
-            neural_model, all_bars, neural_model_symbols, neural_seq_len,
+            neural_model,
+            all_bars,
+            neural_model_symbols,
+            neural_seq_len,
         )
 
-    tier_map: Dict[str, int] = {}
+    tier_map: dict[str, int] = {}
 
     if len(positions) >= config.max_positions:
         logger.info(f"ENTRY SCAN: skipped, max positions ({config.max_positions}) reached")
@@ -3054,7 +3150,7 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
         )
     else:
         staged_symbols = set(positions) | set(pending_entries)
-        diagnostics: List[SymbolDiagnostic] = []
+        diagnostics: list[SymbolDiagnostic] = []
         last_exit_ts = _last_exit_timestamps(last_exit)
 
         if dip_pct_fallback and len(dip_pct_fallback) > 1:
@@ -3101,12 +3197,12 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
             for d in prox_diags[:5]:
                 logger.info(
                     f"  {d.symbol}: close=${d.close:.4f} target=${d.buy_target:.4f} "
-                    f"dist={d.dist_pct:.4f} ({d.dist_pct*100:.1f}% away) "
+                    f"dist={d.dist_pct:.4f} ({d.dist_pct * 100:.1f}% away) "
                     f"{'BLOCKED:' + d.filter_reason if d.filter_reason else 'CANDIDATE'}"
                 )
 
         # Log filter reason summary
-        reason_counts: Dict[str, int] = {}
+        reason_counts: dict[str, int] = {}
         for d in diagnostics:
             if d.filter_reason:
                 key = d.filter_reason.split("(")[0]
@@ -3116,11 +3212,20 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
             logger.info(f"FILTER REASONS: {', '.join(parts)}")
 
         counts = _stage_entry_candidates(
-            client=client, candidates=candidates, all_bars=all_bars,
-            staged_symbols=staged_symbols, pending_entries=pending_entries,
-            recent_trades=recent_trades, entry_config=entry_config, config=config,
-            equity=equity, now=now, dry_run=dry_run, slots=slots,
-            gemini_enabled=gemini_enabled, gemini_model=gemini_model,
+            client=client,
+            candidates=candidates,
+            all_bars=all_bars,
+            staged_symbols=staged_symbols,
+            pending_entries=pending_entries,
+            recent_trades=recent_trades,
+            entry_config=entry_config,
+            config=config,
+            equity=equity,
+            now=now,
+            dry_run=dry_run,
+            slots=slots,
+            gemini_enabled=gemini_enabled,
+            gemini_model=gemini_model,
             neural_predictions=neural_predictions,
         )
 
@@ -3167,17 +3272,16 @@ def run_daily_cycle(client, symbols: List[str], config: WorkStealConfig,
         state["effective_dip_pct"] = config.dip_pct
     save_state(state)
 
-    logger.info(
-        f"Cycle complete: {len(positions)} positions, {len(pending_entries)} pending, equity=${equity:.0f}"
-    )
+    logger.info(f"Cycle complete: {len(positions)} positions, {len(pending_entries)} pending, equity=${equity:.0f}")
     for sym, pos in positions.items():
-        logger.info(f"  {sym}: entry={pos['entry_price']:.2f} "
-                    f"target={pos['target_sell']:.2f} stop={pos['stop_price']:.2f}")
+        logger.info(
+            f"  {sym}: entry={pos['entry_price']:.2f} target={pos['target_sell']:.2f} stop={pos['stop_price']:.2f}"
+        )
 
 
 def _collect_diagnose_result(
     client,
-    symbols: List[str],
+    symbols: list[str],
     config: WorkStealConfig,
 ) -> dict[str, object] | None:
     all_bars = _fetch_all_bars(client, symbols, config.lookback_days)
@@ -3185,7 +3289,7 @@ def _collect_diagnose_result(
         return None
     current_bars = {sym: bars.iloc[-1] for sym, bars in all_bars.items()}
     symbol_metrics = _build_symbol_metric_cache(current_bars, all_bars)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     entry_regime = resolve_entry_regime(
         current_bars=current_bars,
@@ -3207,7 +3311,7 @@ def _collect_diagnose_result(
         symbol_metrics=symbol_metrics,
     )
 
-    diagnostics: List[SymbolDiagnostic] = []
+    diagnostics: list[SymbolDiagnostic] = []
     state = load_state()
     positions = normalize_live_positions(state.get("positions", {}), config)
     last_exit = _prune_last_exit_for_open_positions(
@@ -3230,7 +3334,7 @@ def _collect_diagnose_result(
     filtered = [d for d in diagnostics if not d.is_candidate and d.filter_reason]
     proximity_diags = [d for d in diagnostics if d.dist_pct > 0]
 
-    reason_counts: Dict[str, int] = {}
+    reason_counts: dict[str, int] = {}
     for d in filtered:
         key = d.filter_reason.split("(")[0]
         reason_counts[key] = reason_counts.get(key, 0) + 1
@@ -3262,9 +3366,7 @@ def _collect_diagnose_result(
     requested_symbol_count = int(load_summary["requested_symbol_count"])
     loaded_symbol_count = int(load_summary["loaded_symbol_count"])
     data_coverage_ratio = (
-        float(loaded_symbol_count) / float(requested_symbol_count)
-        if requested_symbol_count > 0
-        else 0.0
+        float(loaded_symbol_count) / float(requested_symbol_count) if requested_symbol_count > 0 else 0.0
     )
     warnings = build_run_warnings(load_summary=load_summary)
     action_summary = _build_diagnose_action_summary(
@@ -3313,7 +3415,6 @@ def _collect_diagnose_result(
     }
 
 
-
 def _diagnose_candidate_row_or_warn(
     sym: str,
     direction: str,
@@ -3335,7 +3436,6 @@ def _diagnose_candidate_row_or_warn(
     }
 
 
-
 def _diagnose_proximity_row_or_warn(diagnostic: SymbolDiagnostic) -> dict[str, object] | None:
     close_value = _positive_finite_float_or_warn(
         diagnostic.close,
@@ -3353,12 +3453,7 @@ def _diagnose_proximity_row_or_warn(diagnostic: SymbolDiagnostic) -> dict[str, o
         diagnostic.dist_pct,
         context=f"diagnose proximity {diagnostic.symbol} dist_pct",
     )
-    if (
-        close_value is None
-        or ref_high_value is None
-        or buy_target_value is None
-        or dist_pct_value is None
-    ):
+    if close_value is None or ref_high_value is None or buy_target_value is None or dist_pct_value is None:
         return None
     return {
         "symbol": diagnostic.symbol,
@@ -3370,7 +3465,6 @@ def _diagnose_proximity_row_or_warn(diagnostic: SymbolDiagnostic) -> dict[str, o
         "filter_reason": diagnostic.filter_reason,
         "is_candidate": bool(diagnostic.is_candidate),
     }
-
 
 
 def _build_diagnose_action_summary(
@@ -3447,7 +3541,6 @@ def _build_diagnose_action_summary(
     }
 
 
-
 def _print_diagnose_report(
     result: dict[str, object],
     *,
@@ -3477,9 +3570,9 @@ def _print_diagnose_report(
     watchlist = list(result.get("watchlist") or [])
     follow_up_commands = list(result.get("follow_up_commands") or [])
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"WORKSTEAL DIAGNOSTIC  {result['generated_at_utc']}")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
     _print_diagnose_coverage_context(
         loaded_symbol_count=loaded_symbol_count,
         total_symbols=total_symbols,
@@ -3520,7 +3613,7 @@ def _print_diagnose_report(
         print(f"Action summary:    {action_summary['summary']}")
     if watchlist:
         watch_summary = "; ".join(
-            f"{row['symbol']} near ${float(row['buy_target']):.4f} ({float(row['dist_pct'])*100:.1f}%, {row['filter_reason']})"
+            f"{row['symbol']} near ${float(row['buy_target']):.4f} ({float(row['dist_pct']) * 100:.1f}%, {row['filter_reason']})"
             for row in watchlist
         )
         print(f"Watchlist:         {watch_summary}")
@@ -3542,7 +3635,7 @@ def _print_diagnose_report(
 
     print("\n--- TOP 10 CLOSEST TO ENTRY (by distance to buy target) ---")
     for row in proximity_rows:
-        status = f"** BLOCKED: {row['filter_reason']}" if row['filter_reason'] else "CANDIDATE"
+        status = f"** BLOCKED: {row['filter_reason']}" if row["filter_reason"] else "CANDIDATE"
         print(
             f"  {row['symbol']:12s} close=${float(row['close']):<12.4f} ref_high=${float(row['ref_high']):<12.4f} "
             f"buy_target=${float(row['buy_target']):<12.4f} dist={float(row['dist_pct']):.4f} "
@@ -3572,17 +3665,16 @@ def _print_diagnose_report(
 
     if not candidates and min_dist is not None:
         print("\n--- SUGGESTIONS ---")
-        print(f"  Smallest distance to entry: {float(min_dist):.4f} ({float(min_dist)*100:.1f}%)")
+        print(f"  Smallest distance to entry: {float(min_dist):.4f} ({float(min_dist) * 100:.1f}%)")
         print(f"  To capture nearest, increase proximity_pct to ~{float(min_dist) + 0.01:.3f}")
         print(f"  Or reduce dip_pct to ~{max(0.05, float(result['dip_pct']) - float(min_dist)):.3f}")
-
 
 
 def _build_diagnose_summary(
     *,
     result: dict[str, object],
     symbol_source: str,
-    symbols: List[str],
+    symbols: list[str],
     requested_symbol_count: int,
     config_file: str | None,
     extra: dict[str, object] | None = None,
@@ -3608,9 +3700,7 @@ def _build_diagnose_no_data_context(symbols: list[str]) -> dict[str, object]:
     loaded_symbol_count = int(load_summary["loaded_symbol_count"])
     missing_symbol_count = int(load_summary["missing_symbol_count"])
     data_coverage_ratio = (
-        float(loaded_symbol_count) / float(requested_symbol_count)
-        if requested_symbol_count > 0
-        else 0.0
+        float(loaded_symbol_count) / float(requested_symbol_count) if requested_symbol_count > 0 else 0.0
     )
     return {
         "loaded_symbol_count": loaded_symbol_count,
@@ -3644,10 +3734,9 @@ def _build_diagnose_no_data_context(symbols: list[str]) -> dict[str, object]:
     }
 
 
-
 def _run_diagnose_report(
     client,
-    symbols: List[str],
+    symbols: list[str],
     config: WorkStealConfig,
     *,
     command_preview: str | None = None,
@@ -3670,7 +3759,7 @@ def _run_diagnose_report(
             missing_symbols=list(no_data_context.get("missing_symbols") or []),
             command_preview=command_preview,
         )
-        print(f"Action summary:    {str(no_data_context['action_summary']['summary'])}")
+        print(f"Action summary:    {no_data_context['action_summary']['summary']!s}")
         print_warning_summary(no_data_context.get("warnings"))
         print("ERROR: No bar data fetched for any symbol")
         return 1, None
@@ -3687,10 +3776,9 @@ def _run_diagnose_report(
     return 0, result
 
 
-
 def run_diagnose(
     client,
-    symbols: List[str],
+    symbols: list[str],
     config: WorkStealConfig,
     *,
     command_preview: str | None = None,
@@ -3746,6 +3834,7 @@ def main(argv: list[str] | None = None):
             extra["diagnose"] = True
 
         if args.summary_json:
+
             def error_run():
                 print(error)
                 return 1, build_cli_error_summary(
@@ -3793,6 +3882,7 @@ def main(argv: list[str] | None = None):
         resolved_error_context.update(config_override_context)
 
     from binance_worksteal.backtest import FULL_UNIVERSE
+
     resolved, symbol_error = resolve_cli_symbols_with_error(
         symbols_arg=args.symbols,
         universe_file=args.universe_file,
@@ -3811,9 +3901,7 @@ def main(argv: list[str] | None = None):
         max_symbols=args.max_symbols,
     )
     if resolved_symbols["was_capped"]:
-        logger.info(
-            f"Truncated symbol universe from {raw_symbol_count} to {args.max_symbols} via --max-symbols"
-        )
+        logger.info(f"Truncated symbol universe from {raw_symbol_count} to {args.max_symbols} via --max-symbols")
     symbols = resolved_symbols["symbols"]
     display_source = str(resolved_symbols["symbol_source"])
     was_capped = bool(resolved_symbols["was_capped"])
@@ -3911,6 +3999,7 @@ def main(argv: list[str] | None = None):
     if BinanceClient:
         try:
             from env_real import BINANCE_API_KEY, BINANCE_SECRET
+
             client = BinanceClient(BINANCE_API_KEY, BINANCE_SECRET)
         except Exception as e:
             logger.warning(f"Binance client unavailable: {e}")
@@ -3984,7 +4073,7 @@ def main(argv: list[str] | None = None):
         logger.info("Running in DRY RUN mode")
 
     gemini_on = getattr(args, "gemini", False)
-    g_model = getattr(args, "gemini_model", "gemini-2.5-flash")
+    g_model = getattr(args, "gemini_model", "gemini-3.1-flash-lite-preview")
     if gemini_on:
         logger.info(f"Gemini overlay enabled (model={g_model})")
 
@@ -4009,7 +4098,9 @@ def main(argv: list[str] | None = None):
     if args.daemon:
         entry_poll_h = int(args.entry_poll_hours)
         health_h = int(args.health_report_hours)
-        logger.info(f"Starting daemon mode: daily cycle at UTC 00:00, entry scan every {entry_poll_h}h, health every {health_h}h")
+        logger.info(
+            f"Starting daemon mode: daily cycle at UTC 00:00, entry scan every {entry_poll_h}h, health every {health_h}h"
+        )
         last_cycle_date = None
         last_entry_scan_hour = None
         last_health_hour = None
@@ -4036,11 +4127,11 @@ def main(argv: list[str] | None = None):
                 dip_pct_fallback=_dip_fallback,
             )
             if not startup_dry_run:
-                last_cycle_date = datetime.now(timezone.utc).date().isoformat()
-            last_entry_scan_hour = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H")
+                last_cycle_date = datetime.now(UTC).date().isoformat()
+            last_entry_scan_hour = datetime.now(UTC).strftime("%Y-%m-%dT%H")
             last_health_hour = last_entry_scan_hour
         while True:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             next_run = (now + timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0)
 
             if now.hour == 0 and now.minute < 10 and last_cycle_date != now.date().isoformat():
@@ -4088,11 +4179,7 @@ def main(argv: list[str] | None = None):
                         now=now,
                     )
                 )
-                if (
-                    refreshed
-                    or len(positions) != before_positions
-                    or len(pending_entries) != before_pending
-                ):
+                if refreshed or len(positions) != before_positions or len(pending_entries) != before_pending:
                     state["positions"] = positions
                     state["pending_entries"] = pending_entries
                     state["last_exit"] = last_exit
@@ -4103,7 +4190,9 @@ def main(argv: list[str] | None = None):
                 if entry_poll_h > 0 and now.hour % entry_poll_h == 0 and current_hour != last_entry_scan_hour:
                     logger.info(f"Intermediate entry scan at {now.isoformat()}")
                     run_entry_scan(
-                        client, symbols, config,
+                        client,
+                        symbols,
+                        config,
                         dry_run=args.dry_run,
                         gemini_enabled=gemini_on,
                         gemini_model=g_model,
@@ -4118,8 +4207,8 @@ def main(argv: list[str] | None = None):
                     run_health_report(client, symbols, config, dry_run=args.dry_run)
                     last_health_hour = current_hour
 
-            sleep_secs = (next_run - datetime.now(timezone.utc)).total_seconds()
-            now_hb = datetime.now(timezone.utc)
+            sleep_secs = (next_run - datetime.now(UTC)).total_seconds()
+            now_hb = datetime.now(UTC)
             hb_hour = now_hb.strftime("%Y-%m-%dT%H")
             if hb_hour != last_heartbeat_hour:
                 state_hb = load_state()
@@ -4127,18 +4216,25 @@ def main(argv: list[str] | None = None):
                 n_pend = len(_normalize_pending_entries(state_hb.get("pending_entries", {})))
                 logger.info(
                     f"HEARTBEAT {now_hb.isoformat()} | positions={n_pos} pending={n_pend} "
-                    f"next_daily={sleep_secs/3600:.1f}h poll={args.poll_seconds}s"
+                    f"next_daily={sleep_secs / 3600:.1f}h poll={args.poll_seconds}s"
                 )
                 last_heartbeat_hour = hb_hour
             time.sleep(max(60, min(float(args.poll_seconds), sleep_secs)))
     else:
-        run_daily_cycle(client, symbols, config, dry_run=args.dry_run,
-                        gemini_enabled=gemini_on, gemini_model=g_model,
-                        neural_model=nn_model, neural_model_symbols=nn_symbols,
-                        neural_seq_len=nn_seq_len,
-                        min_dip_pct=float(args.min_dip_pct),
-                        adaptive_dip_cycles=int(args.adaptive_dip_cycles),
-                        dip_pct_fallback=args.dip_pct_fallback)
+        run_daily_cycle(
+            client,
+            symbols,
+            config,
+            dry_run=args.dry_run,
+            gemini_enabled=gemini_on,
+            gemini_model=g_model,
+            neural_model=nn_model,
+            neural_model_symbols=nn_symbols,
+            neural_seq_len=nn_seq_len,
+            min_dip_pct=float(args.min_dip_pct),
+            adaptive_dip_cycles=int(args.adaptive_dip_cycles),
+            dip_pct_fallback=args.dip_pct_fallback,
+        )
 
 
 if __name__ == "__main__":

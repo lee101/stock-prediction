@@ -347,7 +347,7 @@ class RLSignalGenerator:
         self,
         checkpoint_path: str | Path,
         forecast_cache_root: str | Path = "binanceneural/forecast_cache",
-        device: str = "cpu",
+        device: str = "cuda",
         symbols: tuple[str, ...] | None = None,
     ):
         self.device = torch.device(device)
