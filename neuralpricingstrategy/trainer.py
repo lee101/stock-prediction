@@ -8,7 +8,8 @@ import torch
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
-from .data import PricingDataset, TARGET_HIGH_COLUMN, TARGET_LOW_COLUMN, TARGET_PNL_GAIN_COLUMN
+from .data import PricingDataset, TARGET_PNL_GAIN_COLUMN
+from .device import resolve_device, should_fallback_to_cpu, warn_cuda_fallback
 from .models import PricingAdjustmentModel, PricingModelConfig
 
 
@@ -44,13 +45,6 @@ class PricingTrainingResult:
     model: PricingAdjustmentModel
     history: Sequence[PricingTrainingHistoryEntry] = field(default_factory=list)
     final_metrics: Dict[str, float] = field(default_factory=dict)
-
-
-def _resolve_device(preferred: Optional[str] = None) -> torch.device:
-    if preferred:
-        return torch.device(preferred)
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 
 def _sortino_ratio(returns: Iterable[float]) -> float:
     arr = np.asarray(list(returns), dtype=np.float32)
@@ -94,7 +88,7 @@ def train_pricing_model(
     config: PricingTrainingConfig = PricingTrainingConfig(),
     logger: Optional[MetricLogger] = None,
 ) -> PricingTrainingResult:
-    device = _resolve_device(config.device)
+    device = resolve_device(config.device)
     model_config = PricingModelConfig(
         input_dim=train_dataset.features.shape[1],
         hidden_dim=config.hidden_dim,
@@ -102,7 +96,16 @@ def train_pricing_model(
         dropout=config.dropout,
         max_delta_pct=train_dataset.clamp_pct,
     )
-    model = PricingAdjustmentModel(model_config).to(device)
+    model = PricingAdjustmentModel(model_config)
+    try:
+        model = model.to(device)
+    except Exception as exc:
+        if should_fallback_to_cpu(config.device, device, exc):
+            warn_cuda_fallback("Neural pricing trainer", exc)
+            device = torch.device("cpu")
+            model = model.to(device)
+        else:
+            raise
     optimiser = torch.optim.AdamW(
         model.parameters(),
         lr=config.learning_rate,
@@ -130,7 +133,6 @@ def train_pricing_model(
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
             optimiser.step()
             epoch_loss += float(loss.detach().cpu()) * batch_features.shape[0]
-        avg_train_loss = epoch_loss / len(dataset)
         train_loss, train_mae = _evaluate_model(model, train_dataset, device)
 
         entry = PricingTrainingHistoryEntry(epoch=epoch, train_loss=train_loss, train_mae=train_mae)

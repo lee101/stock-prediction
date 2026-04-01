@@ -152,6 +152,8 @@ SERVER_MARKETABLE_LIMIT_BUFFER_BPS = 100.0
 # Best: entry=+5bps, exit=+25bps, scale=0.5x → val_p10=-0.4% vs baseline -2.3%
 CALIBRATED_ENTRY_OFFSET_BPS = 5.0   # Buy limit at open * 1.0005
 CALIBRATED_EXIT_OFFSET_BPS = 25.0   # Sell limit at open * 1.0025
+DEFAULT_MIN_OPEN_CONFIDENCE = 0.20
+DEFAULT_MIN_OPEN_VALUE_ESTIMATE = 0.0
 STATE_PATH = REPO / "strategy_state/daily_stock_rl_state.json"
 SIGNAL_LOG_PATH = REPO / "strategy_state/daily_stock_rl_signals.jsonl"
 
@@ -205,6 +207,9 @@ class CliRuntimeConfig:
     backtest_starting_cash: float
     daemon: bool
     compare_server_parity: bool
+    min_open_confidence: float = DEFAULT_MIN_OPEN_CONFIDENCE
+    min_open_value_estimate: float = DEFAULT_MIN_OPEN_VALUE_ESTIMATE
+    print_payload: bool = False
     removed_duplicate_symbols: list[str] = field(default_factory=list)
     ignored_symbol_inputs: list[str] = field(default_factory=list)
 
@@ -290,6 +295,10 @@ class CliRuntimeConfig:
         args.extend(["--data-source", self.data_source])
         args.extend(["--data-dir", self.data_dir])
         args.extend(["--allocation-pct", f"{self.allocation_pct:g}"])
+        if self.min_open_confidence != DEFAULT_MIN_OPEN_CONFIDENCE:
+            args.extend(["--min-open-confidence", f"{self.min_open_confidence:g}"])
+        if self.min_open_value_estimate != DEFAULT_MIN_OPEN_VALUE_ESTIMATE:
+            args.extend(["--min-open-value-estimate", f"{self.min_open_value_estimate:g}"])
         args.extend(["--execution-backend", self.execution_backend])
         args.extend(["--server-account", self.server_account])
         args.extend(["--server-bot-id", self.server_bot_id])
@@ -300,6 +309,8 @@ class CliRuntimeConfig:
             args.extend(["--backtest-starting-cash", f"{self.backtest_starting_cash:g}"])
         if self.compare_server_parity:
             args.append("--compare-server-parity")
+        if self.print_payload:
+            args.append("--print-payload")
         if self.symbols:
             args.append("--symbols")
             args.extend(self.symbols)
@@ -743,20 +754,51 @@ def _ensemble_softmax_signal(
     obs = primary.build_observation(features, prices)
     obs_t = torch.from_numpy(obs).unsqueeze(0).to(primary.device)
     all_probs = []
-    value_est = 0.0
+    all_values: list[float] = []
     with torch.inference_mode():
         logits, value = primary.policy(obs_t)
         logits = primary.apply_action_constraints(logits)
         all_probs.append(F.softmax(logits, dim=-1))
-        value_est = float(value.item())
+        all_values.append(float(value.item()))
         for pol in extra_policies:
-            logits_i, _ = pol(obs_t)
+            logits_i, value_i = pol(obs_t)
             logits_i = primary.apply_action_constraints(logits_i)
             all_probs.append(F.softmax(logits_i, dim=-1))
+            all_values.append(float(value_i.item()))
     avg_probs = torch.stack(all_probs, dim=0).mean(dim=0)
     action = int(avg_probs.argmax(dim=-1).item())
     confidence = float(avg_probs[0, action].item())
+    value_est = float(sum(all_values) / max(len(all_values), 1))
     return primary._decode_action(action, confidence, value_est)
+
+
+def _open_gate_reasons(
+    signal,
+    *,
+    signal_quote_source: str,
+    quote_data_source: str,
+    min_open_confidence: float,
+    min_open_value_estimate: float,
+) -> list[str]:
+    reasons: list[str] = []
+    if not signal.symbol or signal.direction != "long":
+        return reasons
+    if signal_quote_source != "alpaca":
+        reasons.append(
+            f"quote_source={signal_quote_source}, overall_quote_source={quote_data_source}"
+        )
+    confidence = float(getattr(signal, "confidence", 0.0) or 0.0)
+    if confidence < float(min_open_confidence):
+        reasons.append(
+            f"confidence={confidence:.4f} < min_open_confidence={float(min_open_confidence):.4f}"
+        )
+    value_estimate = float(getattr(signal, "value_estimate", 0.0) or 0.0)
+    if value_estimate < float(min_open_value_estimate):
+        reasons.append(
+            "value_estimate="
+            f"{value_estimate:.4f} < min_open_value_estimate={float(min_open_value_estimate):.4f}"
+        )
+    return reasons
 
 
 def build_signal(
@@ -1436,6 +1478,8 @@ def run_once(
     server_bot_id: str = DEFAULT_SERVER_PAPER_BOT_ID,
     server_url: str | None = None,
     server_session_id: str | None = None,
+    min_open_confidence: float = DEFAULT_MIN_OPEN_CONFIDENCE,
+    min_open_value_estimate: float = DEFAULT_MIN_OPEN_VALUE_ESTIMATE,
 ) -> dict:
     now = datetime.now(timezone.utc)
     state = load_state(state_path)
@@ -1514,7 +1558,8 @@ def run_once(
     payload["quote_source_by_symbol"] = dict(quote_source_by_symbol)
     payload["latest_bar_timestamp"] = latest_bar.isoformat() if latest_bar is not None else None
     payload["bars_fresh"] = bars_fresh
-    append_signal_log(payload)
+    payload["min_open_confidence"] = float(min_open_confidence)
+    payload["min_open_value_estimate"] = float(min_open_value_estimate)
 
     logger.info("%s", "=" * 60)
     logger.info("DAILY STOCK RL SIGNAL (%s)", now.strftime("%Y-%m-%d %H:%M UTC"))
@@ -1532,17 +1577,21 @@ def run_once(
             logger.info("Quote fallbacks: %s", ", ".join(fallback_symbols))
 
     executed = False
+    allow_open = True
+    allow_open_reason: str | None = None
+    allow_open_reasons: list[str] = []
     if data_source == "alpaca":
-        allow_open_reason: str | None = None
         signal_quote_source = quote_source_by_symbol.get(signal.symbol, quote_data_source) if signal.symbol else quote_data_source
-        allow_open = (
-            not signal.symbol
-            or signal_quote_source == "alpaca"
+        allow_open_reasons = _open_gate_reasons(
+            signal,
+            signal_quote_source=signal_quote_source,
+            quote_data_source=quote_data_source,
+            min_open_confidence=min_open_confidence,
+            min_open_value_estimate=min_open_value_estimate,
         )
+        allow_open = not allow_open_reasons
         if signal.symbol and not allow_open:
-            allow_open_reason = (
-                f"quote_source={signal_quote_source}, overall_quote_source={quote_data_source}"
-            )
+            allow_open_reason = "; ".join(allow_open_reasons)
             logger.warning(
                 "Execution safety gate active for %s: %s",
                 signal.symbol,
@@ -1585,6 +1634,9 @@ def run_once(
     else:
         logger.info("Local data mode selected; skipping execution")
 
+    payload["allow_open"] = allow_open
+    payload["allow_open_reason"] = allow_open_reason
+    payload["allow_open_reasons"] = allow_open_reasons
     should_advance_state = (
         not dry_run
         and (data_source != "alpaca" or bool(market_open))
@@ -1595,6 +1647,7 @@ def run_once(
         state.last_signal_timestamp = now.isoformat()
         save_state(state, path=state_path)
     payload["executed"] = executed
+    append_signal_log(payload)
     logger.info("%s", "=" * 60)
     return payload
 
@@ -1612,6 +1665,8 @@ def run_daemon(
     server_account: str = DEFAULT_SERVER_PAPER_ACCOUNT,
     server_bot_id: str = DEFAULT_SERVER_PAPER_BOT_ID,
     server_url: str | None = None,
+    min_open_confidence: float = DEFAULT_MIN_OPEN_CONFIDENCE,
+    min_open_value_estimate: float = DEFAULT_MIN_OPEN_VALUE_ESTIMATE,
 ) -> None:
     logger.info("Starting daily stock RL daemon")
     server_session_id = f"daily-rl-trader-{execution_backend}-{os.getpid()}"
@@ -1656,6 +1711,8 @@ def run_daemon(
                     server_bot_id=server_bot_id,
                     server_url=server_url,
                     server_session_id=server_session_id,
+                    min_open_confidence=min_open_confidence,
+                    min_open_value_estimate=min_open_value_estimate,
                 )
             except Exception as exc:
                 logger.exception("Daily stock RL cycle failed: %s", exc)
@@ -1702,6 +1759,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                         help="Run a preflight config check, print a readiness report, and exit")
     parser.add_argument("--print-config", action="store_true",
                         help="Print the fully resolved runtime configuration and exit")
+    parser.add_argument("--print-payload", action="store_true",
+                        help="Print the one-shot inference payload as JSON after a successful run")
+    parser.add_argument("--min-open-confidence", type=float, default=DEFAULT_MIN_OPEN_CONFIDENCE,
+                        help="Minimum ensemble confidence required before opening a new position")
+    parser.add_argument("--min-open-value-estimate", type=float, default=DEFAULT_MIN_OPEN_VALUE_ESTIMATE,
+                        help="Minimum critic value estimate required before opening a new position")
     return parser.parse_args(argv)
 
 
@@ -1746,6 +1809,9 @@ def _resolve_runtime_config(args: argparse.Namespace) -> CliRuntimeConfig:
         backtest_starting_cash=float(args.backtest_starting_cash),
         daemon=bool(args.daemon),
         compare_server_parity=bool(args.compare_server_parity),
+        min_open_confidence=float(args.min_open_confidence),
+        min_open_value_estimate=float(args.min_open_value_estimate),
+        print_payload=bool(args.print_payload),
     )
 
 
@@ -1755,6 +1821,45 @@ def _runtime_config_payload(config: CliRuntimeConfig) -> dict[str, object]:
 
 def _missing_checkpoint_paths(config: CliRuntimeConfig) -> list[str]:
     return config.missing_checkpoint_paths
+
+
+def _checkpoint_load_diagnostics(config: CliRuntimeConfig) -> dict[str, object]:
+    if config.missing_checkpoint_paths:
+        return {
+            "ok": False,
+            "error": "checkpoint files are missing",
+            "primary": None,
+            "extras": [],
+        }
+    try:
+        trader = DailyPPOTrader(
+            config.checkpoint,
+            device="cpu",
+            long_only=True,
+            symbols=list(config.symbols),
+        )
+        extras: list[dict[str, object]] = []
+        for path in config.extra_checkpoints or []:
+            policy = _load_bare_policy(path, trader.obs_size, trader.num_actions, "cpu")
+            extras.append(
+                {
+                    "path": path,
+                    "class": type(policy).__name__,
+                }
+            )
+        return {
+            "ok": True,
+            "error": None,
+            "primary": trader.summary_dict(),
+            "extras": extras,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "primary": None,
+            "extras": [],
+        }
 
 
 def _resolve_alpaca_credentials(*, paper: bool) -> tuple[str, str]:
@@ -1812,6 +1917,17 @@ def _preflight_config_payload(config: CliRuntimeConfig) -> dict[str, object]:
             "Missing checkpoint file(s): "
             + ", ".join(str(path) for path in payload["missing_checkpoints"])
         )
+        payload["checkpoint_load"] = {
+            "ok": False,
+            "error": "checkpoint files are missing",
+            "primary": None,
+            "extras": [],
+        }
+    else:
+        checkpoint_load = _checkpoint_load_diagnostics(config)
+        payload["checkpoint_load"] = checkpoint_load
+        if not checkpoint_load["ok"]:
+            errors.append(f"Checkpoint load failed: {checkpoint_load['error']}")
 
     data_dir = Path(config.data_dir).expanduser()
     local_data_required = bool(config.backtest or config.data_source == "local")
@@ -1892,6 +2008,8 @@ def _validate_runtime_config(config: CliRuntimeConfig) -> None:
         raise ValueError("--backtest-days must be at least 1")
     if config.backtest_starting_cash <= 0:
         raise ValueError("--backtest-starting-cash must be positive")
+    if not 0.0 <= float(config.min_open_confidence) <= 1.0:
+        raise ValueError("--min-open-confidence must be between 0 and 1")
     if config.compare_server_parity and not config.backtest:
         raise ValueError("--compare-server-parity requires --backtest")
     if config.backtest and not config.paper:
@@ -1903,6 +2021,9 @@ def _validate_runtime_config(config: CliRuntimeConfig) -> None:
             "Missing checkpoint file(s):\n"
             f"{details}"
         )
+    checkpoint_load = _checkpoint_load_diagnostics(config)
+    if not checkpoint_load["ok"]:
+        raise RuntimeError(f"Checkpoint load failed: {checkpoint_load['error']}")
 
 
 def run_backtest_via_trading_server(
@@ -2129,10 +2250,12 @@ def main(argv: Optional[list[str]] = None) -> None:
             server_account=config.server_account,
             server_bot_id=config.server_bot_id,
             server_url=config.server_url,
+            min_open_confidence=config.min_open_confidence,
+            min_open_value_estimate=config.min_open_value_estimate,
         )
         return
 
-    run_once(
+    payload = run_once(
         checkpoint=config.checkpoint,
         symbols=config.symbols,
         paper=config.paper,
@@ -2145,7 +2268,11 @@ def main(argv: Optional[list[str]] = None) -> None:
         server_account=config.server_account,
         server_bot_id=config.server_bot_id,
         server_url=config.server_url,
+        min_open_confidence=config.min_open_confidence,
+        min_open_value_estimate=config.min_open_value_estimate,
     )
+    if config.print_payload:
+        print(json.dumps(payload, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

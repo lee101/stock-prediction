@@ -8,16 +8,16 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rl-trading-agent-binance"))
 
+import rl_signal as rl_signal_module
+
 from rl_signal import (
     RLSignalGenerator,
     TradingPolicy,
     PortfolioSnapshot,
     RLSignal,
-    RunningObsNorm,
     SYMBOLS,
     ACTION_NAMES,
     MIXED23_SYMBOLS,
-    FEATURES_PER_SYM,
     INITIAL_CASH,
     _infer_obs_size,
     _infer_num_actions,
@@ -26,7 +26,6 @@ from rl_signal import (
     _infer_num_symbols,
     _infer_symbols,
     _build_action_names,
-    compute_symbol_features,
 )
 
 
@@ -137,6 +136,30 @@ def test_generator_load_23sym(tmp_path):
     assert gen.obs_size == 396
     assert gen.num_actions == 47
     assert gen.symbols == MIXED23_SYMBOLS
+
+
+def test_generator_falls_back_to_cpu_on_auto_cuda_oom(tmp_path, monkeypatch):
+    ckpt = _make_checkpoint(73, 9, hidden=256)
+    path = tmp_path / "test_auto_fallback.pt"
+    torch.save(ckpt, str(path))
+
+    original_to = TradingPolicy.to
+    calls: list[str] = []
+
+    def flaky_to(self, device, *args, **kwargs):
+        resolved = torch.device(device)
+        calls.append(resolved.type)
+        if resolved.type == "cuda":
+            raise torch.OutOfMemoryError("CUDA out of memory")
+        return original_to(self, device, *args, **kwargs)
+
+    monkeypatch.setattr(rl_signal_module.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(TradingPolicy, "to", flaky_to)
+
+    gen = RLSignalGenerator(path, forecast_cache_root=str(tmp_path / "fc"))
+
+    assert calls[:2] == ["cuda", "cpu"]
+    assert gen.device.type == "cpu"
 
 
 def test_generator_get_signal_4sym(tmp_path):

@@ -4,7 +4,14 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from RLgpt.config import DailyPlanDataConfig, PlannerConfig, SimulatorConfig, TrainingConfig
-from RLgpt.launch_runpod import build_launch_manifest, build_training_command, create_pod_with_fallbacks
+from RLgpt.config import DEFAULT_RLGPT_DATA_ROOT, DEFAULT_RLGPT_FORECAST_CACHE_ROOT, default_forecast_horizons_csv
+from RLgpt.launch_runpod import (
+    DEFAULT_RUNPOD_EPOCHS,
+    build_launch_manifest,
+    build_training_command,
+    create_pod_with_fallbacks,
+    parse_args,
+)
 from src.runpod_client import Pod
 
 
@@ -98,3 +105,12 @@ def test_create_pod_with_fallbacks_retries_after_capacity_error():
     assert pod.id == "pod-2"
     assert gpu_type != "4090"
     assert client.create_pod.call_count == 2
+
+
+def test_parse_args_defaults_match_shared_rlgpt_defaults():
+    args = parse_args(["--symbols", "BTCUSD", "--run-name", "demo"])
+
+    assert args.data_root == str(DEFAULT_RLGPT_DATA_ROOT)
+    assert args.forecast_cache_root == str(DEFAULT_RLGPT_FORECAST_CACHE_ROOT)
+    assert args.forecast_horizons == default_forecast_horizons_csv()
+    assert args.epochs == DEFAULT_RUNPOD_EPOCHS

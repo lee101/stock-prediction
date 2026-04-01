@@ -15,14 +15,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import shlex
 import subprocess
-import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -101,6 +98,9 @@ SPECS: dict[str, ServiceSpec] = {
         config_path=Path("/etc/systemd/system/daily-rl-trader.service"),
         watched_repo_files=(
             "trade_daily_stock_prod.py",
+            "pufferlib_market/inference.py",
+            "pufferlib_market/inference_daily.py",
+            "pufferlib_market/checkpoint_loader.py",
             "unified_orchestrator/service_config.json",
         ),
         ownership_service_name="daily-rl-trader",

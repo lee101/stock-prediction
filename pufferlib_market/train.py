@@ -2372,7 +2372,7 @@ def main():
                         help="Disable LayerNorm after encoder (reproduces pre-2026-03-25 behavior without encoder_norm)")
     parser.add_argument(
         "--arch",
-        choices=["mlp", "resmlp", "transformer", "gru", "depth_recurrence"],
+        choices=["mlp", "mlp_relu_sq", "resmlp", "transformer", "gru", "depth_recurrence"],
         default="mlp",
         help=(
             "Architecture: mlp (default), resmlp (residual+LayerNorm), "
