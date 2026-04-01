@@ -1,0 +1,267 @@
+{
+ "/home/lee/code/stock/pufferlib_market/checkpoints/mixed23_a40_sweep/gspo_like_smooth_mix15/best.pt": {
+  "mtime": 1774160379.0411944,
+  "results": [
+   {
+    "checkpoint": "mixed23_a40_sweep/gspo_like_smooth_mix15",
+    "universe": "23sym",
+    "period": 30,
+    "return_pct": 11.69,
+    "annualized_pct": 283.68,
+    "sortino": 3.939,
+    "max_dd_pct": 16.62,
+    "num_trades": 21,
+    "win_rate": 52.4,
+    "avg_hold": 1.4
+   },
+   {
+    "checkpoint": "mixed23_a40_sweep/gspo_like_smooth_mix15",
+    "universe": "23sym",
+    "period": 60,
+    "return_pct": 17.46,
+    "annualized_pct": 166.12,
+    "sortino": 2.622,
+    "max_dd_pct": 21.7,
+    "num_trades": 36,
+    "win_rate": 52.8,
+    "avg_hold": 1.7
+   },
+   {
+    "checkpoint": "mixed23_a40_sweep/gspo_like_smooth_mix15",
+    "universe": "23sym",
+    "period": 90,
+    "return_pct": 18.78,
+    "annualized_pct": 100.97,
+    "sortino": 2.089,
+    "max_dd_pct": 21.7,
+    "num_trades": 52,
+    "win_rate": 53.8,
+    "avg_hold": 1.7
+   },
+   {
+    "checkpoint": "mixed23_a40_sweep/gspo_like_smooth_mix15",
+    "universe": "23sym",
+    "period": 120,
+    "return_pct": 28.98,
+    "annualized_pct": 116.86,
+    "sortino": 2.276,
+    "max_dd_pct": 20.36,
+    "num_trades": 70,
+    "win_rate": 55.7,
+    "avg_hold": 1.7
+   }
+  ]
+ },
+ "/home/lee/code/stock/pufferlib_market/checkpoints/mixed23_a40_sweep/reg_combo_2/best.pt": {
+  "mtime": 1774160390.5181715,
+  "results": [
+   {
+    "checkpoint": "mixed23_a40_sweep/reg_combo_2",
+    "universe": "23sym",
+    "period": 30,
+    "return_pct": -1.16,
+    "annualized_pct": -13.19,
+    "sortino": 0.237,
+    "max_dd_pct": 16.94,
+    "num_trades": 22,
+    "win_rate": 31.8,
+    "avg_hold": 1.4
+   },
+   {
+    "checkpoint": "mixed23_a40_sweep/reg_combo_2",
+    "universe": "23sym",
+    "period": 60,
+    "return_pct": 49.36,
+    "annualized_pct": 1048.05,
+    "sortino": 6.483,
+    "max_dd_pct": 16.72,
+    "num_trades": 40,
+    "win_rate": 45.0,
+    "avg_hold": 1.5
+   },
+   {
+    "checkpoint": "mixed23_a40_sweep/reg_combo_2",
+    "universe": "23sym",
+    "period": 90,
+    "return_pct": 39.08,
+    "annualized_pct": 281.08,
+    "sortino": 3.88,
+    "max_dd_pct": 16.72,
+    "num_trades": 65,
+    "win_rate": 46.2,
+    "avg_hold": 1.4
+   },
+   {
+    "checkpoint": "mixed23_a40_sweep/reg_combo_2",
+    "universe": "23sym",
+    "period": 120,
+    "return_pct": 24.23,
+    "annualized_pct": 93.45,
+    "sortino": 1.95,
+    "max_dd_pct": 32.4,
+    "num_trades": 80,
+    "win_rate": 50.0,
+    "avg_hold": 1.5
+   }
+  ]
+ },
+ "/home/lee/code/stock/pufferlib_market/checkpoints/mixed23_a40_sweep/reg_combo_3/best.pt": {
+  "mtime": 1774160385.0311825,
+  "results": [
+   {
+    "checkpoint": "mixed23_a40_sweep/reg_combo_3",
+    "universe": "23sym",
+    "period": 30,
+    "return_pct": -1.1,
+    "annualized_pct": -12.64,
+    "sortino": 0.17,
+    "max_dd_pct": 25.22,
+    "num_trades": 19,
+    "win_rate": 42.1,
+    "avg_hold": 1.6
+   },
+   {
+    "checkpoint": "mixed23_a40_sweep/reg_combo_3",
+    "universe": "23sym",
+    "period": 60,
+    "return_pct": -10.58,
+    "annualized_pct": -49.35,
+    "sortino": -0.57,
+    "max_dd_pct": 29.22,
+    "num_trades": 37,
+    "win_rate": 40.5,
+    "avg_hold": 1.6
+   },
+   {
+    "checkpoint": "mixed23_a40_sweep/reg_combo_3",
+    "universe": "23sym",
+    "period": 90,
+    "return_pct": 20.5,
+    "annualized_pct": 113.06,
+    "sortino": 1.946,
+    "max_dd_pct": 29.22,
+    "num_trades": 56,
+    "win_rate": 51.8,
+    "avg_hold": 1.6
+   },
+   {
+    "checkpoint": "mixed23_a40_sweep/reg_combo_3",
+    "universe": "23sym",
+    "period": 120,
+    "return_pct": 26.16,
+    "annualized_pct": 102.75,
+    "sortino": 1.896,
+    "max_dd_pct": 35.43,
+    "num_trades": 79,
+    "win_rate": 54.4,
+    "avg_hold": 1.5
+   }
+  ]
+ },
+ "/home/lee/code/stock/pufferlib_market/checkpoints/mixed23_a40_sweep/robust_reg_tp005_dd002/best.pt": {
+  "mtime": 1774160395.9871607,
+  "results": [
+   {
+    "checkpoint": "mixed23_a40_sweep/robust_reg_tp005_dd002",
+    "universe": "23sym",
+    "period": 30,
+    "return_pct": -0.13,
+    "annualized_pct": -1.6,
+    "sortino": 0.597,
+    "max_dd_pct": 21.47,
+    "num_trades": 12,
+    "win_rate": 58.3,
+    "avg_hold": 2.5
+   },
+   {
+    "checkpoint": "mixed23_a40_sweep/robust_reg_tp005_dd002",
+    "universe": "23sym",
+    "period": 60,
+    "return_pct": 25.43,
+    "annualized_pct": 296.79,
+    "sortino": 2.893,
+    "max_dd_pct": 25.44,
+    "num_trades": 26,
+    "win_rate": 57.7,
+    "avg_hold": 2.3
+   },
+   {
+    "checkpoint": "mixed23_a40_sweep/robust_reg_tp005_dd002",
+    "universe": "23sym",
+    "period": 90,
+    "return_pct": 32.25,
+    "annualized_pct": 210.69,
+    "sortino": 2.732,
+    "max_dd_pct": 25.44,
+    "num_trades": 38,
+    "win_rate": 50.0,
+    "avg_hold": 2.4
+   },
+   {
+    "checkpoint": "mixed23_a40_sweep/robust_reg_tp005_dd002",
+    "universe": "23sym",
+    "period": 120,
+    "return_pct": 54.59,
+    "annualized_pct": 276.22,
+    "sortino": 2.848,
+    "max_dd_pct": 26.87,
+    "num_trades": 50,
+    "win_rate": 54.0,
+    "avg_hold": 2.4
+   }
+  ]
+ },
+ "/home/lee/code/stock/pufferlib_market/checkpoints/mixed23_a40_sweep/robust_reg_tp005_ent/best.pt": {
+  "mtime": 1774160373.3572059,
+  "results": [
+   {
+    "checkpoint": "mixed23_a40_sweep/robust_reg_tp005_ent",
+    "universe": "23sym",
+    "period": 30,
+    "return_pct": 12.85,
+    "annualized_pct": 335.15,
+    "sortino": 3.678,
+    "max_dd_pct": 13.71,
+    "num_trades": 13,
+    "win_rate": 61.5,
+    "avg_hold": 2.3
+   },
+   {
+    "checkpoint": "mixed23_a40_sweep/robust_reg_tp005_ent",
+    "universe": "23sym",
+    "period": 60,
+    "return_pct": 12.77,
+    "annualized_pct": 107.76,
+    "sortino": 1.994,
+    "max_dd_pct": 34.05,
+    "num_trades": 28,
+    "win_rate": 57.1,
+    "avg_hold": 2.1
+   },
+   {
+    "checkpoint": "mixed23_a40_sweep/robust_reg_tp005_ent",
+    "universe": "23sym",
+    "period": 90,
+    "return_pct": 6.94,
+    "annualized_pct": 31.28,
+    "sortino": 1.096,
+    "max_dd_pct": 34.05,
+    "num_trades": 46,
+    "win_rate": 52.2,
+    "avg_hold": 2.0
+   },
+   {
+    "checkpoint": "mixed23_a40_sweep/robust_reg_tp005_ent",
+    "universe": "23sym",
+    "period": 120,
+    "return_pct": 42.43,
+    "annualized_pct": 193.23,
+    "sortino": 2.709,
+    "max_dd_pct": 34.05,
+    "num_trades": 61,
+    "win_rate": 54.1,
+    "avg_hold": 2.0
+   }
+  ]
+ }
+}
