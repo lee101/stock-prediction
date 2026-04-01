@@ -302,7 +302,7 @@ def test_rl_refine_trade_plan_uses_energy_budget_to_limit_changes() -> None:
         allocation_pct=0.0,
     )
 
-    refined = rl_refine_trade_plan(
+    refined, alpha, distance = rl_refine_trade_plan(
         base_plan,
         rl_signal=signal,
         current_price=100.0,
@@ -321,6 +321,8 @@ def test_rl_refine_trade_plan_uses_energy_budget_to_limit_changes() -> None:
     assert refined.sell_price > refined.buy_price
     assert refined.confidence <= 0.28
     assert refined.allocation_pct <= 10.0
+    assert 0.0 < alpha < 0.2
+    assert distance > 0.0
 
 
 def test_refine_trade_plan_multistage_alternates_rl_and_llm() -> None:
@@ -371,9 +373,16 @@ def test_refine_trade_plan_multistage_alternates_rl_and_llm() -> None:
         return_trace=True,
     )
 
-    assert len(prompts) == 1
-    assert "Pass stage: medium" in prompts[0]
-    assert [entry.driver for entry in trace] == ["seed", "rl", "llm", "rl"]
+    assert len(prompts) == 3
+    assert "Pass stage: sweeping" in prompts[0]
+    assert "Pass stage: medium" in prompts[1]
+    assert "Pass stage: minor" in prompts[2]
+    assert [entry.driver for entry in trace] == ["seed", "rl", "llm", "rl", "llm", "rl", "llm"]
+    assert [entry.stage for entry in trace[1:]] == ["sweeping", "sweeping", "medium", "medium", "minor", "minor"]
+    assert trace[1].energy_budget > trace[3].energy_budget > trace[5].energy_budget
+    assert trace[2].energy_budget > trace[4].energy_budget > trace[6].energy_budget
+    assert trace[1].alpha is not None and trace[1].alpha > trace[5].alpha
+    assert trace[2].alpha is not None and trace[2].alpha > trace[6].alpha
     assert plan.direction == "long"
     assert plan.buy_price <= 100.0
     assert plan.sell_price > plan.buy_price
