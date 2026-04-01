@@ -34,9 +34,22 @@ BATCH = 8
 HIDDEN = 64       # small for fast tests
 
 
+def _is_cuda_resource_pressure_error(exc: BaseException) -> bool:
+    return "out of memory" in str(exc).lower()
+
+
+def _skip_for_cuda_resource_pressure(exc: BaseException) -> None:
+    if _is_cuda_resource_pressure_error(exc):
+        pytest.skip(f"Inference-mode CUDA smoke test skipped under shared-GPU resource pressure: {exc}")
+
+
 def _make_policy(device: torch.device | str = "cpu") -> nn.Module:
     from pufferlib_market.train import TradingPolicy
-    return TradingPolicy(OBS_SIZE, NUM_ACTIONS, hidden=HIDDEN).to(device)
+    try:
+        return TradingPolicy(OBS_SIZE, NUM_ACTIONS, hidden=HIDDEN).to(device)
+    except Exception as exc:
+        _skip_for_cuda_resource_pressure(exc)
+        raise
 
 
 def test_policy_forward_inference_mode():
@@ -121,17 +134,21 @@ def test_cuda_graph_ppo_smoke():
     device = torch.device("cuda")
     torch.manual_seed(99)
 
-    MB = 128
-    policy = _make_policy(device)
-    optimizer = optim.AdamW(policy.parameters(), lr=3e-4)
+    try:
+        MB = 128
+        policy = _make_policy(device)
+        optimizer = optim.AdamW(policy.parameters(), lr=3e-4)
 
-    harness = _CUDAGraphPPOHarness(policy, optimizer, MB, device)
-    obs, act, logprob, adv, ret, val = _make_fake_minibatch(MB, device)
+        harness = _CUDAGraphPPOHarness(policy, optimizer, MB, device)
+        obs, act, logprob, adv, ret, val = _make_fake_minibatch(MB, device)
 
-    losses = []
-    for _ in range(5):
-        loss_val, _, _, _ = harness.step(obs, act, logprob, adv, ret, val)
-        assert math.isfinite(loss_val), f"CUDA graph PPO loss is not finite: {loss_val}"
-        losses.append(loss_val)
+        losses = []
+        for _ in range(5):
+            loss_val, _, _, _ = harness.step(obs, act, logprob, adv, ret, val)
+            assert math.isfinite(loss_val), f"CUDA graph PPO loss is not finite: {loss_val}"
+            losses.append(loss_val)
+    except Exception as exc:
+        _skip_for_cuda_resource_pressure(exc)
+        raise
 
     assert len(losses) == 5

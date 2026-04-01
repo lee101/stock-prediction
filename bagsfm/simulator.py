@@ -14,11 +14,28 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from .config import SimulationConfig, CostConfig, TokenConfig, SOL_MINT
+from .clock import utc_now
+from .config import SimulationConfig, TokenConfig, SOL_MINT
 from .data_collector import OHLCBar
-from .forecaster import TokenForecast, ForecastBatch, TokenForecaster
+from .forecaster import TokenForecast, TokenForecaster
 
 logger = logging.getLogger(__name__)
+
+
+def _build_bar_lookup(
+    bars: Dict[str, List[OHLCBar]],
+) -> tuple[Dict[str, Dict[datetime, OHLCBar]], List[datetime]]:
+    """Index bars by timestamp for repeated aligned iteration."""
+    bar_lookup: Dict[str, Dict[datetime, OHLCBar]] = {}
+    all_timestamps: set[datetime] = set()
+
+    for mint, mint_bars in bars.items():
+        sorted_bars = sorted(mint_bars, key=lambda bar: bar.timestamp)
+        lookup = {bar.timestamp: bar for bar in sorted_bars}
+        bar_lookup[mint] = lookup
+        all_timestamps.update(lookup)
+
+    return bar_lookup, sorted(all_timestamps)
 
 
 @dataclass
@@ -151,7 +168,7 @@ class MarketSimulator:
     def reset(self) -> None:
         """Reset simulator to initial state."""
         self.state = SimulationState(
-            timestamp=datetime.utcnow(),
+            timestamp=utc_now(),
             sol_balance=self.config.initial_sol,
             positions={},
             trades=[],
@@ -589,31 +606,22 @@ class MarketSimulator:
             SimulationResult with backtest metrics
         """
         self.reset()
-
-        # Align bars by timestamp
-        all_timestamps = set()
-        for mint_bars in bars.values():
-            for bar in mint_bars:
-                all_timestamps.add(bar.timestamp)
-
-        timestamps = sorted(all_timestamps)
+        bar_lookup, timestamps = _build_bar_lookup(bars)
 
         logger.info(f"Running backtest over {len(timestamps)} bars")
 
         for ts in timestamps:
-            # Get prices at this timestamp
-            prices = {}
-            current_bars = {}
+            current_bars: Dict[str, OHLCBar] = {}
+            for mint, lookup in bar_lookup.items():
+                bar = lookup.get(ts)
+                if bar is None:
+                    continue
+                current_bars[mint] = bar
 
-            for mint, mint_bars in bars.items():
-                for bar in mint_bars:
-                    if bar.timestamp == ts:
-                        prices[mint] = bar.close
-                        current_bars[mint] = bar
-                        break
-
-            if not prices:
+            if not current_bars:
                 continue
+
+            prices = {mint: bar.close for mint, bar in current_bars.items()}
 
             self.update_prices(prices)
             if self.state is not None:
@@ -662,17 +670,7 @@ class MarketSimulator:
             SimulationResult
         """
         self.reset()
-
-        bar_lookup: Dict[str, Dict[datetime, OHLCBar]] = {}
-        all_timestamps = set()
-
-        for mint, mint_bars in bars.items():
-            sorted_bars = sorted(mint_bars, key=lambda b: b.timestamp)
-            bar_lookup[mint] = {bar.timestamp: bar for bar in sorted_bars}
-            for bar in sorted_bars:
-                all_timestamps.add(bar.timestamp)
-
-        timestamps = sorted(all_timestamps)
+        bar_lookup, timestamps = _build_bar_lookup(bars)
         history: Dict[str, List[OHLCBar]] = {mint: [] for mint in bars.keys()}
 
         for ts in timestamps:
@@ -725,8 +723,8 @@ class MarketSimulator:
         """Compute final simulation results."""
         if self.state is None or not self.state.equity_history:
             return SimulationResult(
-                start_time=datetime.utcnow(),
-                end_time=datetime.utcnow(),
+                start_time=utc_now(),
+                end_time=utc_now(),
                 initial_sol=self.config.initial_sol,
                 final_sol=0.0,
                 final_portfolio_value=0.0,
@@ -797,8 +795,8 @@ class MarketSimulator:
         win_rate = winning / len(sell_trades) if sell_trades else 0
 
         return SimulationResult(
-            start_time=times[0] if times else datetime.utcnow(),
-            end_time=times[-1] if times else datetime.utcnow(),
+            start_time=times[0] if times else utc_now(),
+            end_time=times[-1] if times else utc_now(),
             initial_sol=initial,
             final_sol=self.state.sol_balance,
             final_portfolio_value=final,
@@ -966,16 +964,7 @@ def build_forecast_cache(
     min_context_bars: int = 20,
 ) -> Dict[datetime, Dict[str, TokenForecast]]:
     """Precompute forecasts for each timestamp to reuse across backtests."""
-    bar_lookup: Dict[str, Dict[datetime, OHLCBar]] = {}
-    all_timestamps = set()
-
-    for mint, mint_bars in bars.items():
-        sorted_bars = sorted(mint_bars, key=lambda b: b.timestamp)
-        bar_lookup[mint] = {bar.timestamp: bar for bar in sorted_bars}
-        for bar in sorted_bars:
-            all_timestamps.add(bar.timestamp)
-
-    timestamps = sorted(all_timestamps)
+    bar_lookup, timestamps = _build_bar_lookup(bars)
     history: Dict[str, List[OHLCBar]] = {mint: [] for mint in bars.keys()}
     cache: Dict[datetime, Dict[str, TokenForecast]] = {}
 

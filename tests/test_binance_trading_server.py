@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import json
-import tempfile
-import uuid
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from src.binance_trading_server import server as binance_server_module
 from src.binance_trading_server.server import (
     BinanceTradingServerEngine,
     OrderRequest,
@@ -66,6 +67,12 @@ def _fake_quote(symbol: str, price: float = 100.0) -> QuotePayload:
     }
 
 
+def _read_jsonl(path: Path) -> list[dict[str, object]]:
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
 class FakeClock:
     def __init__(self, start: datetime | None = None):
         self.now = start or datetime(2026, 3, 30, 12, 0, 0, tzinfo=timezone.utc)
@@ -77,7 +84,13 @@ class FakeClock:
         self.now += timedelta(seconds=seconds)
 
 
-def _make_engine(tmp_path: Path, accounts: dict[str, Any] | None = None, clock: FakeClock | None = None) -> BinanceTradingServerEngine:
+def _make_engine(
+    tmp_path: Path,
+    accounts: dict[str, Any] | None = None,
+    clock: FakeClock | None = None,
+    *,
+    max_order_history: int | None = None,
+) -> BinanceTradingServerEngine:
     reg = _make_registry(tmp_path / "config", accounts)
     clock = clock or FakeClock()
     return BinanceTradingServerEngine(
@@ -85,7 +98,52 @@ def _make_engine(tmp_path: Path, accounts: dict[str, Any] | None = None, clock: 
         state_dir=str(tmp_path / "state"),
         quote_provider=lambda sym: _fake_quote(sym, 100.0),
         now_fn=clock,
+        max_order_history=max_order_history,
     )
+
+
+def test_account_state_guard_blocks_new_readers_while_writer_waits() -> None:
+    guard = binance_server_module._AccountStateGuard()
+    writer_acquired = threading.Event()
+    allow_writer_release = threading.Event()
+    second_reader_acquired = threading.Event()
+
+    guard.acquire_read()
+
+    def _writer() -> None:
+        guard.acquire_write()
+        writer_acquired.set()
+        allow_writer_release.wait(timeout=1.0)
+        guard.release_write()
+
+    def _second_reader() -> None:
+        guard.acquire_read()
+        second_reader_acquired.set()
+        guard.release_read()
+
+    writer = threading.Thread(target=_writer)
+    reader = threading.Thread(target=_second_reader)
+    writer.start()
+
+    deadline = time.time() + 1.0
+    while guard._waiting_writers == 0 and time.time() < deadline:
+        time.sleep(0.01)
+    assert guard._waiting_writers == 1
+
+    reader.start()
+    assert not second_reader_acquired.wait(timeout=0.05)
+
+    guard.release_read()
+    assert writer_acquired.wait(timeout=1.0)
+    assert not second_reader_acquired.is_set()
+
+    allow_writer_release.set()
+    writer.join(timeout=1.0)
+    reader.join(timeout=1.0)
+
+    assert not writer.is_alive()
+    assert not reader.is_alive()
+    assert second_reader_acquired.is_set()
 
 
 class TestFeeSchedule:
@@ -177,6 +235,27 @@ class TestSellGuard:
 
 
 class TestWriterLease:
+    def test_registry_rejects_unsafe_allowed_bot_id(self, tmp_path):
+        reg = _make_registry(
+            tmp_path / "config",
+            accounts={
+                "test-paper": {
+                    "mode": "paper",
+                    "allowed_bot_id": "bot 1",
+                    "symbols": ["BTCUSDT"],
+                    "margin_enabled": False,
+                }
+            },
+        )
+
+        with pytest.raises(RuntimeError, match="unsupported bot_id"):
+            BinanceTradingServerEngine(
+                registry_path=reg,
+                state_dir=str(tmp_path / "state"),
+                quote_provider=lambda sym: _fake_quote(sym, 100.0),
+                now_fn=FakeClock(),
+            )
+
     def test_claim_and_heartbeat(self, tmp_path):
         engine = _make_engine(tmp_path)
         result = engine.claim_writer(WriterLeaseRequest(account="test-paper", bot_id="bot-1"))
@@ -218,6 +297,73 @@ class TestWriterLease:
         with pytest.raises(HTTPException) as exc_info:
             engine.claim_writer(WriterLeaseRequest(account="nonexistent", bot_id="bot-1"))
         assert exc_info.value.status_code == 404
+
+    def test_claim_rejects_unsafe_session_id_direct_engine_call(self, tmp_path):
+        engine = _make_engine(tmp_path)
+
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc_info:
+            engine.claim_writer(
+                type(
+                    "Lease",
+                    (),
+                    {
+                        "account": "test-paper",
+                        "bot_id": "bot-1",
+                        "session_id": "bad/session",
+                        "ttl_seconds": 120,
+                    },
+                )()
+            )
+        assert exc_info.value.status_code == 400
+        assert "unsupported session_id" in str(exc_info.value.detail)
+
+    def test_submit_order_rejects_unsafe_session_id_direct_engine_call(self, tmp_path):
+        engine = _make_engine(tmp_path)
+        engine.claim_writer(
+            type("Lease", (), {"account": "test-paper", "bot_id": "bot-1", "session_id": "owner", "ttl_seconds": 120})()
+        )
+
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc_info:
+            engine.submit_order(
+                type(
+                    "Order",
+                    (),
+                    {
+                        "account": "test-paper",
+                        "bot_id": "bot-1",
+                        "session_id": "bad/session",
+                        "symbol": "BTCUSDT",
+                        "side": "buy",
+                        "qty": 1.0,
+                        "limit_price": 100.0,
+                        "execution_mode": "paper",
+                        "allow_loss_exit": False,
+                        "force_exit_reason": None,
+                        "live_ack": None,
+                        "metadata": {},
+                    },
+                )()
+            )
+        assert exc_info.value.status_code == 400
+        assert "unsupported session_id" in str(exc_info.value.detail)
+
+    def test_heartbeat_rejection_is_audited(self, tmp_path):
+        engine = _make_engine(tmp_path)
+        engine.claim_writer(WriterLeaseRequest(account="test-paper", bot_id="bot-1", session_id="owner"))
+
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc_info:
+            engine.heartbeat_writer(
+                WriterLeaseRequest(account="test-paper", bot_id="bot-1", session_id="other")
+            )
+        assert exc_info.value.status_code == 409
+
+        events = _read_jsonl(tmp_path / "state" / "binance_trading_server" / "events" / "test-paper.audit.jsonl")
+        assert [event["event_type"] for event in events][-2:] == ["writer_claimed", "writer_heartbeat_rejected"]
+        assert events[-1]["session_id"] == "other"
+        assert "does not own" in str(events[-1]["detail"])
 
 
 class TestPaperOrders:
@@ -371,6 +517,100 @@ class TestPaperOrders:
         assert "BTCUSDT" in snap["positions"]
         assert len(snap["open_orders"]) == 0
 
+    def test_refresh_prices_reports_unavailable_and_quote_error_symbols(self, tmp_path):
+        clock = FakeClock()
+
+        def quote_provider(symbol: str):
+            if symbol == "BTCUSDT":
+                return None
+            if symbol == "ETHUSDT":
+                raise TimeoutError("upstream timeout")
+            return _fake_quote(symbol, 100.0)
+
+        engine = BinanceTradingServerEngine(
+            registry_path=_make_registry(tmp_path / "config"),
+            state_dir=str(tmp_path / "state"),
+            quote_provider=quote_provider,
+            now_fn=clock,
+        )
+
+        result = engine.refresh_prices(account="test-paper")
+
+        assert result == {
+            "accounts": [
+                {
+                    "account": "test-paper",
+                    "refreshed_symbols": [],
+                    "unavailable_symbols": ["BTCUSDT", "ETHUSDT"],
+                    "quote_error_symbols": ["ETHUSDT"],
+                    "filled_orders": [],
+                }
+            ]
+        }
+
+        events = _read_jsonl(tmp_path / "state" / "binance_trading_server" / "events" / "test-paper.audit.jsonl")
+        assert events[-1]["event_type"] == "prices_refreshed"
+        assert events[-1]["unavailable_symbols"] == ["BTCUSDT", "ETHUSDT"]
+        assert events[-1]["quote_error_symbols"] == ["ETHUSDT"]
+
+    def test_refresh_prices_uses_shared_quote_cache_without_persisting_idle_state(self, tmp_path):
+        clock = FakeClock()
+        quote_sequence = [_fake_quote("BTCUSDT", 100.0)]
+
+        def quote_provider(_symbol: str):
+            if quote_sequence:
+                return quote_sequence.pop(0)
+            return None
+
+        engine = BinanceTradingServerEngine(
+            registry_path=_make_registry(tmp_path / "config"),
+            state_dir=str(tmp_path / "state"),
+            quote_provider=quote_provider,
+            now_fn=clock,
+        )
+        account_path = engine._account_path("test-paper")
+
+        refreshed = engine.refresh_prices(account="test-paper", symbols=["BTCUSDT"])
+
+        assert refreshed["accounts"][0]["refreshed_symbols"] == ["BTCUSDT"]
+        assert not account_path.exists()
+
+        engine.claim_writer(WriterLeaseRequest(account="test-paper", bot_id="bot-1", session_id="s1"))
+        result = engine.submit_order(OrderRequest(
+            account="test-paper", bot_id="bot-1", session_id="s1",
+            symbol="BTCUSDT", side="buy", qty=1.0, limit_price=100.1,
+            execution_mode="paper",
+        ))
+
+        assert result["filled"] is True
+
+    def test_order_history_is_capped_to_max_order_history(self, tmp_path):
+        clock = FakeClock()
+        engine = _make_engine(tmp_path, clock=clock, max_order_history=2)
+        engine.claim_writer(WriterLeaseRequest(account="test-paper", bot_id="bot-1", session_id="s1"))
+
+        for idx in range(3):
+            result = engine.submit_order(
+                OrderRequest(
+                    account="test-paper",
+                    bot_id="bot-1",
+                    session_id="s1",
+                    symbol="BTCUSDT",
+                    side="buy",
+                    qty=1.0,
+                    limit_price=100.5 + idx,
+                    execution_mode="paper",
+                    metadata={"seq": idx},
+                )
+            )
+            assert result["filled"] is True
+
+        orders = engine.get_orders("test-paper", include_history=True)
+        assert [entry["metadata"]["seq"] for entry in orders["order_history"]] == [1, 2]
+
+        persisted = json.loads(engine._account_path("test-paper").read_text(encoding="utf-8"))
+        assert [entry["metadata"]["seq"] for entry in persisted["order_history"]] == [1, 2]
+
 
 class TestPnlTracking:
     def test_realized_pnl_on_sell(self, tmp_path):
@@ -461,6 +701,28 @@ class TestAccountSnapshot:
         names = [a["account"] for a in accounts]
         assert "test-paper" in names
         assert "test-live" in names
+
+    def test_invalid_persisted_mode_is_rejected(self, tmp_path):
+        engine = _make_engine(tmp_path)
+        account_path = engine._account_path("test-paper")
+        account_path.parent.mkdir(parents=True, exist_ok=True)
+        account_path.write_text(
+            json.dumps(
+                {
+                    "account": "test-paper",
+                    "mode": "demo",
+                    "cash": 10000.0,
+                    "positions": {},
+                    "open_orders": [],
+                    "order_history": [],
+                    "price_cache": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(RuntimeError, match="unsupported mode=demo"):
+            engine.get_account_snapshot("test-paper")
 
 
 class TestLiveOrderGate:

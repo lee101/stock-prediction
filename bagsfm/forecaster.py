@@ -7,13 +7,14 @@ from collected OHLC data.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
+from .clock import utc_now
 from .config import ForecastConfig, TokenConfig
 from .data_collector import DataCollector, OHLCBar
 
@@ -260,7 +261,7 @@ class TokenForecaster:
         return TokenForecast(
             token_mint=token.mint,
             token_symbol=token.symbol,
-            forecast_time=datetime.utcnow(),
+            forecast_time=utc_now(),
             current_price=current_price,
             predicted_prices=predicted_prices,
             predicted_prices_p10=predicted_p10,
@@ -338,7 +339,7 @@ class TokenForecaster:
                 return TokenForecast(
                     token_mint=token.mint,
                     token_symbol=token.symbol,
-                    forecast_time=datetime.utcnow(),
+                    forecast_time=utc_now(),
                     current_price=current_price,
                     predicted_prices=predicted_prices,
                     predicted_prices_p10=predicted_p10,
@@ -408,7 +409,7 @@ class TokenForecaster:
         )
 
         return ForecastBatch(
-            forecast_time=datetime.utcnow(),
+            forecast_time=utc_now(),
             forecasts=forecasts,
         )
 

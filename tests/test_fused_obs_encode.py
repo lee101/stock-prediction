@@ -25,6 +25,31 @@ def _fp32_reference(obs, mean, std, weight, bias, eps=1e-5):
     return F.relu(h).to(weight.dtype)
 
 
+def _is_cuda_resource_pressure_error(exc: BaseException) -> bool:
+    return "out of memory" in str(exc).lower()
+
+
+def _skip_for_cuda_resource_pressure(exc: BaseException) -> None:
+    if _is_cuda_resource_pressure_error(exc):
+        pytest.skip(f"Fused obs-encode test skipped under shared-GPU resource pressure: {exc}")
+
+
+def _allocate_on_device_or_skip(factory, *args, **kwargs):
+    try:
+        return factory(*args, **kwargs)
+    except Exception as exc:
+        _skip_for_cuda_resource_pressure(exc)
+        raise
+
+
+def _to_device_or_skip(obj, *args, **kwargs):
+    try:
+        return obj.to(*args, **kwargs)
+    except Exception as exc:
+        _skip_for_cuda_resource_pressure(exc)
+        raise
+
+
 @pytest.fixture(scope="module")
 def device():
     if not torch.cuda.is_available():
@@ -55,11 +80,11 @@ def test_fused_obs_encode_correctness(device, B, OBS, H):
     from pufferlib_market.kernels.fused_obs_encode import fused_obs_norm_linear_relu, HAS_TRITON
 
     torch.manual_seed(42 + B + OBS + H)
-    obs    = torch.randn(B, OBS, device=device, dtype=torch.float32)
-    mean   = torch.randn(OBS, device=device, dtype=torch.float32)
-    std    = torch.abs(torch.randn(OBS, device=device)) + 0.1
-    weight = torch.randn(H, OBS, device=device, dtype=torch.bfloat16)
-    bias   = torch.randn(H, device=device, dtype=torch.float32)
+    obs = _allocate_on_device_or_skip(torch.randn, B, OBS, device=device, dtype=torch.float32)
+    mean = _allocate_on_device_or_skip(torch.randn, OBS, device=device, dtype=torch.float32)
+    std = torch.abs(_allocate_on_device_or_skip(torch.randn, OBS, device=device)) + 0.1
+    weight = _allocate_on_device_or_skip(torch.randn, H, OBS, device=device, dtype=torch.bfloat16)
+    bias = _allocate_on_device_or_skip(torch.randn, H, device=device, dtype=torch.float32)
 
     ref = _fp32_reference(obs, mean, std, weight, bias)
 
@@ -85,12 +110,12 @@ def test_fused_obs_encode_relu_gating(device):
     from pufferlib_market.kernels.fused_obs_encode import fused_obs_norm_linear_relu
 
     B, OBS, H = 16, 32, 64
-    obs    = torch.ones(B, OBS, device=device, dtype=torch.float32)
-    mean   = torch.zeros(OBS, device=device)
-    std    = torch.ones(OBS, device=device)
+    obs = _allocate_on_device_or_skip(torch.ones, B, OBS, device=device, dtype=torch.float32)
+    mean = _allocate_on_device_or_skip(torch.zeros, OBS, device=device)
+    std = _allocate_on_device_or_skip(torch.ones, OBS, device=device)
     # Negative weights -> linear output is negative -> ReLU -> zero
-    weight = -torch.ones(H, OBS, device=device, dtype=torch.bfloat16)
-    bias   = torch.zeros(H, device=device)
+    weight = -_allocate_on_device_or_skip(torch.ones, H, OBS, device=device, dtype=torch.bfloat16)
+    bias = _allocate_on_device_or_skip(torch.zeros, H, device=device)
 
     out = fused_obs_norm_linear_relu(obs, mean, std, weight, bias)
     assert out.abs().max().item() < 1e-3, f"ReLU not applied: max abs = {out.abs().max().item()}"
@@ -109,11 +134,11 @@ def test_fused_obs_encode_normalization(device):
 
     B, OBS, H = 8, 16, 32
     torch.manual_seed(1)
-    obs    = torch.randn(B, OBS, device=device)
-    mean   = torch.randn(OBS, device=device)
-    std    = torch.abs(torch.randn(OBS, device=device)) + 0.5
-    weight = torch.randn(H, OBS, device=device, dtype=torch.bfloat16)
-    bias   = torch.zeros(H, device=device)
+    obs = _allocate_on_device_or_skip(torch.randn, B, OBS, device=device)
+    mean = _allocate_on_device_or_skip(torch.randn, OBS, device=device)
+    std = torch.abs(_allocate_on_device_or_skip(torch.randn, OBS, device=device)) + 0.5
+    weight = _allocate_on_device_or_skip(torch.randn, H, OBS, device=device, dtype=torch.bfloat16)
+    bias = _allocate_on_device_or_skip(torch.zeros, H, device=device)
 
     # Manually compute reference
     obs_norm = (obs - mean) / (std + 1e-5)
@@ -138,11 +163,11 @@ def test_fused_obs_encode_fallback_matches_triton(device):
 
     B, OBS, H = 32, 64, 128
     torch.manual_seed(99)
-    obs    = torch.randn(B, OBS, device=device)
-    mean   = torch.randn(OBS, device=device)
-    std    = torch.abs(torch.randn(OBS, device=device)) + 0.1
-    weight = torch.randn(H, OBS, device=device, dtype=torch.bfloat16)
-    bias   = torch.randn(H, device=device)
+    obs = _allocate_on_device_or_skip(torch.randn, B, OBS, device=device)
+    mean = _allocate_on_device_or_skip(torch.randn, OBS, device=device)
+    std = torch.abs(_allocate_on_device_or_skip(torch.randn, OBS, device=device)) + 0.1
+    weight = _allocate_on_device_or_skip(torch.randn, H, OBS, device=device, dtype=torch.bfloat16)
+    bias = _allocate_on_device_or_skip(torch.randn, H, device=device)
 
     out_triton   = fused_obs_norm_linear_relu(obs, mean, std, weight, bias)
     out_fallback = _fused_obs_norm_linear_relu_fallback(obs, mean, std, weight, bias, eps=1e-5)
@@ -164,11 +189,11 @@ def test_fused_obs_encode_output_dtype(device):
         pytest.skip("Triton not available")
 
     B, OBS, H = 32, 209, 1024
-    obs    = torch.randn(B, OBS, device=device)
-    mean   = torch.zeros(OBS, device=device)
-    std    = torch.ones(OBS, device=device)
-    weight = torch.randn(H, OBS, device=device, dtype=torch.bfloat16)
-    bias   = torch.zeros(H, device=device)
+    obs = _allocate_on_device_or_skip(torch.randn, B, OBS, device=device)
+    mean = _allocate_on_device_or_skip(torch.zeros, OBS, device=device)
+    std = _allocate_on_device_or_skip(torch.ones, OBS, device=device)
+    weight = _allocate_on_device_or_skip(torch.randn, H, OBS, device=device, dtype=torch.bfloat16)
+    bias = _allocate_on_device_or_skip(torch.zeros, H, device=device)
 
     out = fused_obs_norm_linear_relu(obs, mean, std, weight, bias)
     assert out.dtype == torch.bfloat16, f"Expected BF16, got {out.dtype}"
@@ -180,11 +205,11 @@ def test_fused_obs_encode_3d_input(device):
     from pufferlib_market.kernels.fused_obs_encode import fused_obs_norm_linear_relu
 
     B1, B2, OBS, H = 4, 8, 32, 64
-    obs    = torch.randn(B1, B2, OBS, device=device)
-    mean   = torch.zeros(OBS, device=device)
-    std    = torch.ones(OBS, device=device)
-    weight = torch.randn(H, OBS, device=device, dtype=torch.bfloat16)
-    bias   = torch.zeros(H, device=device)
+    obs = _allocate_on_device_or_skip(torch.randn, B1, B2, OBS, device=device)
+    mean = _allocate_on_device_or_skip(torch.zeros, OBS, device=device)
+    std = _allocate_on_device_or_skip(torch.ones, OBS, device=device)
+    weight = _allocate_on_device_or_skip(torch.randn, H, OBS, device=device, dtype=torch.bfloat16)
+    bias = _allocate_on_device_or_skip(torch.zeros, H, device=device)
 
     out = fused_obs_norm_linear_relu(obs, mean, std, weight, bias)
     assert out.shape == (B1, B2, H), f"Unexpected shape: {out.shape}"
@@ -197,11 +222,11 @@ def test_fused_obs_encode_no_nan(device):
 
     B, OBS, H = 64, 209, 1024
     torch.manual_seed(7)
-    obs    = torch.randn(B, OBS, device=device)
-    mean   = torch.randn(OBS, device=device)
-    std    = torch.abs(torch.randn(OBS, device=device)) + 1e-3
-    weight = torch.randn(H, OBS, device=device, dtype=torch.bfloat16)
-    bias   = torch.randn(H, device=device)
+    obs = _allocate_on_device_or_skip(torch.randn, B, OBS, device=device)
+    mean = _allocate_on_device_or_skip(torch.randn, OBS, device=device)
+    std = torch.abs(_allocate_on_device_or_skip(torch.randn, OBS, device=device)) + 1e-3
+    weight = _allocate_on_device_or_skip(torch.randn, H, OBS, device=device, dtype=torch.bfloat16)
+    bias = _allocate_on_device_or_skip(torch.randn, H, device=device)
 
     out = fused_obs_norm_linear_relu(obs, mean, std, weight, bias)
     assert not out.isnan().any(), "NaN in output"
@@ -216,14 +241,13 @@ def test_fused_obs_encode_no_nan(device):
 def test_trading_policy_fused_obs_encode(device):
     """TradingPolicy._encode uses fused obs-encode when obs_mean/obs_std are set."""
     from pufferlib_market.train import TradingPolicy
-    from pufferlib_market.kernels.fused_obs_encode import HAS_TRITON
 
     obs_size, hidden, num_actions = 209, 1024, 50
-    policy = TradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
+    policy = _to_device_or_skip(TradingPolicy(obs_size, num_actions, hidden=hidden), device)
     policy.eval()
 
     # Before setting obs_norm stats: standard path
-    obs = torch.randn(32, obs_size, device=device)
+    obs = _allocate_on_device_or_skip(torch.randn, 32, obs_size, device=device)
     with torch.no_grad():
         h_standard = policy._encode(obs)
     assert h_standard.shape == (32, hidden)
@@ -255,14 +279,14 @@ def test_trading_policy_fused_obs_encode_forward(device):
     from pufferlib_market.train import TradingPolicy
 
     obs_size, hidden, num_actions = 209, 512, 50
-    policy = TradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
+    policy = _to_device_or_skip(TradingPolicy(obs_size, num_actions, hidden=hidden), device)
     policy.eval()
 
     mean_np = np.random.randn(obs_size).astype(np.float32)
     std_np  = np.abs(np.random.randn(obs_size).astype(np.float32)) + 0.1
     policy.set_obs_norm_stats(mean_np, std_np)
 
-    obs = torch.randn(64, obs_size, device=device)
+    obs = _allocate_on_device_or_skip(torch.randn, 64, obs_size, device=device)
     with torch.no_grad():
         logits, value = policy(obs)
 

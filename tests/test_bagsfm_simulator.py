@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from bagsfm.config import SimulationConfig, TokenConfig
 from bagsfm.data_collector import OHLCBar
@@ -88,3 +88,52 @@ def test_simulator_respects_max_position_sol():
 
     assert trade is not None
     assert trade.notional_sol <= sim_config.max_position_sol + 1e-9
+
+
+def test_simulator_reset_uses_timezone_aware_utc():
+    simulator = MarketSimulator(SimulationConfig(initial_sol=1.0))
+
+    simulator.reset()
+
+    assert simulator.state is not None
+    assert simulator.state.timestamp.tzinfo is UTC
+
+
+def test_run_backtest_aligns_sparse_multi_token_bars():
+    t0 = datetime(2026, 1, 1, 0, 0, 0)
+    t1 = t0 + timedelta(minutes=10)
+    t2 = t1 + timedelta(minutes=10)
+
+    bars = {
+        "A": [
+            OHLCBar(t0, "A", "A", 1.0, 1.0, 1.0, 1.0, 0.0, 1),
+            OHLCBar(t2, "A", "A", 1.2, 1.2, 1.2, 1.2, 0.0, 1),
+        ],
+        "B": [
+            OHLCBar(t1, "B", "B", 2.0, 2.0, 2.0, 2.0, 0.0, 1),
+            OHLCBar(t2, "B", "B", 2.2, 2.2, 2.2, 2.2, 0.0, 1),
+        ],
+    }
+    tokens = {
+        "A": TokenConfig(symbol="A", mint="A", decimals=9),
+        "B": TokenConfig(symbol="B", mint="B", decimals=9),
+    }
+    simulator = MarketSimulator(SimulationConfig(initial_sol=1.0))
+    seen_prices: list[dict[str, float]] = []
+
+    def capture_strategy(state, prices, forecasts):
+        seen_prices.append(dict(prices))
+        return {}
+
+    simulator.run_backtest(
+        bars=bars,
+        tokens=tokens,
+        strategy_fn=capture_strategy,
+        forecaster=None,
+    )
+
+    assert seen_prices == [
+        {"A": 1.0},
+        {"B": 2.0},
+        {"A": 1.2, "B": 2.2},
+    ]

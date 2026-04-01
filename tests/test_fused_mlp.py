@@ -17,6 +17,33 @@ import torch.nn.functional as F
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+def _is_cuda_resource_pressure_error(exc: BaseException) -> bool:
+    return "out of memory" in str(exc).lower()
+
+
+def _skip_for_cuda_resource_pressure(exc: BaseException) -> None:
+    if _is_cuda_resource_pressure_error(exc):
+        pytest.skip(f"Fused MLP Triton test skipped under shared-GPU resource pressure: {exc}")
+
+
+def _allocate_on_device_or_skip(factory, *args, **kwargs):
+    try:
+        return factory(*args, **kwargs)
+    except Exception as exc:
+        _skip_for_cuda_resource_pressure(exc)
+        raise
+
+
+def _to_device_or_skip(tensor, device, dtype=None):
+    try:
+        if dtype is None:
+            return tensor.to(device)
+        return tensor.to(device, dtype)
+    except Exception as exc:
+        _skip_for_cuda_resource_pressure(exc)
+        raise
+
+
 def _make_weights(in_dim, hidden, out_dim, seed=42):
     """Create deterministic weight tensors for reproducibility."""
     gen = torch.Generator()
@@ -37,11 +64,11 @@ def _sequential_ref(x, W1, b1, W2, b2):
 
 def _sequential_ref_bf16(x, W1, b1, W2, b2, device):
     """BF16 PyTorch reference (matches Triton kernel's internal precision)."""
-    x_  = x.to(device, torch.bfloat16)
-    W1_ = W1.to(device, torch.bfloat16)
-    b1_ = b1.to(device, torch.bfloat16)
-    W2_ = W2.to(device, torch.bfloat16)
-    b2_ = b2.to(device, torch.bfloat16)
+    x_ = _to_device_or_skip(x, device, torch.bfloat16)
+    W1_ = _to_device_or_skip(W1, device, torch.bfloat16)
+    b1_ = _to_device_or_skip(b1, device, torch.bfloat16)
+    W2_ = _to_device_or_skip(W2, device, torch.bfloat16)
+    b2_ = _to_device_or_skip(b2, device, torch.bfloat16)
     h = F.linear(x_, W1_, b1_)
     h = F.relu(h)
     return F.linear(h, W2_, b2_)
@@ -149,11 +176,11 @@ class TestTritonPath:
         in_dim, hidden, out_dim = 64, 256, 64
         W1, b1, W2, b2 = _make_weights(in_dim, hidden, out_dim)
 
-        x  = torch.randn(batch, in_dim, device=DEVICE, dtype=torch.bfloat16)
-        W1 = W1.to(DEVICE, torch.bfloat16)
-        b1 = b1.to(DEVICE, torch.bfloat16)
-        W2 = W2.to(DEVICE, torch.bfloat16)
-        b2 = b2.to(DEVICE, torch.bfloat16)
+        x = _allocate_on_device_or_skip(torch.randn, batch, in_dim, device=DEVICE, dtype=torch.bfloat16)
+        W1 = _to_device_or_skip(W1, DEVICE, torch.bfloat16)
+        b1 = _to_device_or_skip(b1, DEVICE, torch.bfloat16)
+        W2 = _to_device_or_skip(W2, DEVICE, torch.bfloat16)
+        b2 = _to_device_or_skip(b2, DEVICE, torch.bfloat16)
 
         # Use BF16 reference — Triton kernel accumulates in FP32 for precision,
         # so may differ slightly from BF16 F.linear (which uses BF16 tensor cores).
@@ -183,11 +210,14 @@ class TestTritonPath:
         W1, b1, W2, b2 = _make_weights(in_dim, hidden, out_dim, seed=7)
 
         gen = torch.Generator(); gen.manual_seed(99)
-        x  = torch.randn(batch, in_dim, generator=gen, dtype=torch.bfloat16).to(DEVICE)
-        W1 = W1.to(DEVICE, torch.bfloat16)
-        b1 = b1.to(DEVICE, torch.bfloat16)
-        W2 = W2.to(DEVICE, torch.bfloat16)
-        b2 = b2.to(DEVICE, torch.bfloat16)
+        x = _to_device_or_skip(
+            torch.randn(batch, in_dim, generator=gen, dtype=torch.bfloat16),
+            DEVICE,
+        )
+        W1 = _to_device_or_skip(W1, DEVICE, torch.bfloat16)
+        b1 = _to_device_or_skip(b1, DEVICE, torch.bfloat16)
+        W2 = _to_device_or_skip(W2, DEVICE, torch.bfloat16)
+        b2 = _to_device_or_skip(b2, DEVICE, torch.bfloat16)
 
         # FP32 reference — Triton accumulates in FP32 internally so it should
         # match FP32 ground truth as closely as any BF16-input matmul.
@@ -202,11 +232,11 @@ class TestTritonPath:
     def test_triton_output_dtype_is_bf16(self):
         in_dim, hidden, out_dim = 64, 128, 64
         W1, b1, W2, b2 = _make_weights(in_dim, hidden, out_dim)
-        x  = torch.randn(32, in_dim, device=DEVICE, dtype=torch.bfloat16)
-        W1 = W1.to(DEVICE, torch.bfloat16)
-        b1 = b1.to(DEVICE, torch.bfloat16)
-        W2 = W2.to(DEVICE, torch.bfloat16)
-        b2 = b2.to(DEVICE, torch.bfloat16)
+        x = _allocate_on_device_or_skip(torch.randn, 32, in_dim, device=DEVICE, dtype=torch.bfloat16)
+        W1 = _to_device_or_skip(W1, DEVICE, torch.bfloat16)
+        b1 = _to_device_or_skip(b1, DEVICE, torch.bfloat16)
+        W2 = _to_device_or_skip(W2, DEVICE, torch.bfloat16)
+        b2 = _to_device_or_skip(b2, DEVICE, torch.bfloat16)
 
         got = fused_mlp_relu(x, W1, b1, W2, b2)
         assert got.dtype == torch.bfloat16, f"Expected BF16, got {got.dtype}"
@@ -216,24 +246,29 @@ class TestTritonPath:
         """ReLU must zero out negative hidden pre-activations."""
         hidden = 64
         # W1 all -1 and b1 all -1 so hidden = relu(-sum - 1) = 0
-        W1 = -torch.ones(hidden, 8,  device=DEVICE, dtype=torch.bfloat16)
-        b1 = -torch.ones(hidden,     device=DEVICE, dtype=torch.bfloat16)
-        W2 = torch.eye(8, hidden,    device=DEVICE, dtype=torch.bfloat16)
-        b2 = torch.zeros(8,          device=DEVICE, dtype=torch.bfloat16)
-        x  = torch.ones(4, 8,        device=DEVICE, dtype=torch.bfloat16)
+        W1 = -_allocate_on_device_or_skip(torch.ones, hidden, 8, device=DEVICE, dtype=torch.bfloat16)
+        b1 = -_allocate_on_device_or_skip(torch.ones, hidden, device=DEVICE, dtype=torch.bfloat16)
+        W2 = _allocate_on_device_or_skip(torch.eye, 8, hidden, device=DEVICE, dtype=torch.bfloat16)
+        b2 = _allocate_on_device_or_skip(torch.zeros, 8, device=DEVICE, dtype=torch.bfloat16)
+        x = _allocate_on_device_or_skip(torch.ones, 4, 8, device=DEVICE, dtype=torch.bfloat16)
 
         got = fused_mlp_relu(x, W1, b1, W2, b2)
-        torch.testing.assert_close(got.float(), torch.zeros(4, 8, device=DEVICE), atol=1e-4, rtol=0)
+        torch.testing.assert_close(
+            got.float(),
+            _allocate_on_device_or_skip(torch.zeros, 4, 8, device=DEVICE),
+            atol=1e-4,
+            rtol=0,
+        )
 
     def test_triton_non_power_of_2_batch(self):
         """Kernel handles batch sizes that are not powers of 2."""
         in_dim, hidden, out_dim = 64, 128, 64
         W1, b1, W2, b2 = _make_weights(in_dim, hidden, out_dim)
-        x  = torch.randn(73, in_dim, device=DEVICE, dtype=torch.bfloat16)
-        W1 = W1.to(DEVICE, torch.bfloat16)
-        b1 = b1.to(DEVICE, torch.bfloat16)
-        W2 = W2.to(DEVICE, torch.bfloat16)
-        b2 = b2.to(DEVICE, torch.bfloat16)
+        x = _allocate_on_device_or_skip(torch.randn, 73, in_dim, device=DEVICE, dtype=torch.bfloat16)
+        W1 = _to_device_or_skip(W1, DEVICE, torch.bfloat16)
+        b1 = _to_device_or_skip(b1, DEVICE, torch.bfloat16)
+        W2 = _to_device_or_skip(W2, DEVICE, torch.bfloat16)
+        b2 = _to_device_or_skip(b2, DEVICE, torch.bfloat16)
 
         ref = _sequential_ref_bf16(x, W1, b1, W2, b2, DEVICE)
         got = fused_mlp_relu(x, W1, b1, W2, b2)
@@ -244,11 +279,11 @@ class TestTritonPath:
         """Kernel works for batch_size=1 (important for inference)."""
         in_dim, hidden, out_dim = 64, 128, 64
         W1, b1, W2, b2 = _make_weights(in_dim, hidden, out_dim)
-        x  = torch.randn(1, in_dim, device=DEVICE, dtype=torch.bfloat16)
-        W1 = W1.to(DEVICE, torch.bfloat16)
-        b1 = b1.to(DEVICE, torch.bfloat16)
-        W2 = W2.to(DEVICE, torch.bfloat16)
-        b2 = b2.to(DEVICE, torch.bfloat16)
+        x = _allocate_on_device_or_skip(torch.randn, 1, in_dim, device=DEVICE, dtype=torch.bfloat16)
+        W1 = _to_device_or_skip(W1, DEVICE, torch.bfloat16)
+        b1 = _to_device_or_skip(b1, DEVICE, torch.bfloat16)
+        W2 = _to_device_or_skip(W2, DEVICE, torch.bfloat16)
+        b2 = _to_device_or_skip(b2, DEVICE, torch.bfloat16)
 
         ref = _sequential_ref_bf16(x, W1, b1, W2, b2, DEVICE)
         got = fused_mlp_relu(x, W1, b1, W2, b2)

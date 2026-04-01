@@ -169,6 +169,52 @@ def test_hf_trainer_exports_portable_checkpoints(tmp_path: Path) -> None:
     assert "state_dict" in payload
 
 
+def test_make_training_arguments_falls_back_to_cpu_on_cuda_oom(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    class _FakeTrainingArguments:
+        def __init__(self, **kwargs):
+            calls.append(dict(kwargs))
+            if not kwargs.get("use_cpu"):
+                raise torch.AcceleratorError("CUDA error: out of memory")
+            self.kwargs = kwargs
+
+    monkeypatch.setattr("binanceneural.hf_trainer_bridge.TrainingArguments", _FakeTrainingArguments)
+
+    args = make_training_arguments(
+        output_dir=tmp_path / "hf_cpu_fallback",
+        run_name="hf_cpu_fallback",
+        batch_size=2,
+        epochs=1,
+        max_steps=-1,
+        learning_rate=1e-4,
+        weight_decay=0.0,
+        warmup_steps=0,
+        grad_clip=1.0,
+        accumulation_steps=1,
+        bf16=True,
+        fp16=False,
+        tf32=True,
+        torch_compile=False,
+        num_workers=0,
+        logging_steps=1,
+        optim_name="adamw_torch",
+        report_to=["none"],
+    )
+
+    assert isinstance(args, _FakeTrainingArguments)
+    assert len(calls) == 2
+    assert calls[0]["use_cpu"] is False
+    assert calls[1]["use_cpu"] is True
+    assert calls[1]["dataloader_pin_memory"] is False
+    assert calls[1]["bf16"] is False
+    assert calls[1]["fp16"] is False
+    assert calls[1]["tf32"] is False
+
+
 def test_hf_trainer_logs_metrics_via_wandboard(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("binanceneural.hf_trainer_bridge.WandBoardLogger", _DummyWandBoardLogger)
     _DummyWandBoardLogger.instances.clear()

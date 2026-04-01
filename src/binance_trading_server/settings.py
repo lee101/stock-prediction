@@ -12,6 +12,7 @@ BINANCE_TS_WRITER_TTL_SECONDS_ENV = "BINANCE_TRADING_SERVER_WRITER_TTL_SECONDS"
 BINANCE_TS_BACKGROUND_POLL_SECONDS_ENV = "BINANCE_TRADING_SERVER_BACKGROUND_POLL_SECONDS"
 BINANCE_TS_QUOTE_FETCH_WORKERS_ENV = "BINANCE_TRADING_SERVER_QUOTE_FETCH_WORKERS"
 BINANCE_TS_SIM_POLL_SECONDS_ENV = "BINANCE_TRADING_SERVER_SIM_POLL_SECONDS"
+BINANCE_TS_MAX_ORDER_HISTORY_ENV = "BINANCE_TRADING_SERVER_MAX_ORDER_HISTORY"
 
 DEFAULT_REGISTRY_PATH = REPO / "config" / "binance_trading_server" / "accounts.json"
 DEFAULT_QUOTE_STALE_SECONDS = 30
@@ -19,6 +20,7 @@ DEFAULT_WRITER_TTL_SECONDS = 120
 DEFAULT_BACKGROUND_POLL_SECONDS = 60
 DEFAULT_QUOTE_FETCH_WORKERS = 4
 DEFAULT_SIM_POLL_SECONDS = 60
+DEFAULT_MAX_ORDER_HISTORY = 1000
 DEFAULT_PORT = 8060
 
 MIN_QUOTE_STALE_SECONDS = 1
@@ -27,6 +29,7 @@ MAX_WRITER_TTL_SECONDS = 3600
 MIN_BACKGROUND_POLL_SECONDS = 10
 MIN_SIM_POLL_SECONDS = 10
 MIN_QUOTE_FETCH_WORKERS = 1
+MIN_MAX_ORDER_HISTORY = 1
 MAX_ACCOUNT_NAME_LENGTH = 64
 MAX_SYMBOL_LENGTH = 20
 
@@ -78,6 +81,7 @@ class BinanceTradingServerSettings:
     background_poll_seconds: int
     quote_fetch_workers: int
     sim_poll_seconds: int
+    max_order_history: int
 
     @classmethod
     def from_env(
@@ -89,6 +93,7 @@ class BinanceTradingServerSettings:
         background_poll_seconds: int | None = None,
         quote_fetch_workers: int | None = None,
         sim_poll_seconds: int | None = None,
+        max_order_history: int | None = None,
     ) -> BinanceTradingServerSettings:
         return cls(
             registry_path=resolve_registry_path(registry_path),
@@ -122,5 +127,11 @@ class BinanceTradingServerSettings:
                 env_name=BINANCE_TS_SIM_POLL_SECONDS_ENV,
                 default=DEFAULT_SIM_POLL_SECONDS,
                 minimum=MIN_SIM_POLL_SECONDS,
+            ),
+            max_order_history=resolve_explicit_or_env_int(
+                max_order_history,
+                env_name=BINANCE_TS_MAX_ORDER_HISTORY_ENV,
+                default=DEFAULT_MAX_ORDER_HISTORY,
+                minimum=MIN_MAX_ORDER_HISTORY,
             ),
         )

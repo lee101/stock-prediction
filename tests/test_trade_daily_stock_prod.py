@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 from types import ModuleType
 
 import pandas as pd
+import pytest
 import torch
 
 import trade_daily_stock_prod as daily_stock
@@ -67,6 +69,11 @@ def test_load_local_daily_frames_aligns_common_dates(tmp_path: Path) -> None:
     assert list(frames) == ["AAPL", "MSFT"]
     assert frames["AAPL"]["timestamp"].dt.strftime("%Y-%m-%d").tolist() == ["2026-01-02", "2026-01-03"]
     assert frames["MSFT"]["timestamp"].dt.strftime("%Y-%m-%d").tolist() == ["2026-01-02", "2026-01-03"]
+
+
+def test_load_local_daily_frames_rejects_unsafe_symbol(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match=r"Unsupported symbol: \.\./AAPL"):
+        daily_stock.load_local_daily_frames(["../AAPL"], data_dir=str(tmp_path), min_days=1)
 
 
 def test_frames_from_alpaca_bars_handles_single_symbol_without_multiindex() -> None:
@@ -207,6 +214,734 @@ def test_append_signal_log_writes_jsonl(tmp_path: Path) -> None:
 
     rows = [json.loads(line) for line in log_path.read_text().splitlines()]
     assert rows == [{"signal": "flat", "symbol": "AAPL"}]
+
+
+def test_main_uses_default_resolved_ensemble_checkpoints(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_run_once(**kwargs):
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(daily_stock, "run_once", _fake_run_once)
+
+    daily_stock.main(["--dry-run", "--data-source", "local", "--symbols", "AAPL"])
+
+    resolved_defaults = [
+        str((daily_stock.REPO / checkpoint).resolve())
+        for checkpoint in daily_stock.DEFAULT_EXTRA_CHECKPOINTS
+    ]
+
+    assert captured["checkpoint"] == str((daily_stock.REPO / daily_stock.DEFAULT_CHECKPOINT).resolve())
+    assert captured["extra_checkpoints"] == resolved_defaults
+    assert len(resolved_defaults) == len(set(resolved_defaults))
+    assert resolved_defaults[-1].endswith("s6758.pt")
+
+
+def test_cli_runtime_config_exposes_derived_fields(monkeypatch, tmp_path: Path) -> None:
+    checkpoint = tmp_path / "model.pt"
+    extra = tmp_path / "extra.pt"
+    checkpoint.write_text("stub", encoding="utf-8")
+    monkeypatch.setenv("TRADING_SERVER_URL", "http://server.internal:9000")
+
+    config = daily_stock.CliRuntimeConfig(
+        paper=False,
+        symbols=["AAPL"],
+        checkpoint=str(checkpoint),
+        extra_checkpoints=[str(extra)],
+        data_dir=str(tmp_path),
+        data_source="local",
+        allocation_pct=12.5,
+        execution_backend="trading_server",
+        server_account="acct-live",
+        server_bot_id="bot-live",
+        server_url=None,
+        dry_run=True,
+        backtest=False,
+        backtest_days=60,
+        backtest_starting_cash=25_000.0,
+        daemon=False,
+        compare_server_parity=False,
+    )
+
+    payload = config.to_runtime_payload()
+
+    assert config.ensemble_enabled is True
+    assert config.ensemble_size == 2
+    assert config.account_mode == "live"
+    assert config.run_mode == "once"
+    assert config.checkpoint_paths == [str(checkpoint), str(extra)]
+    assert config.missing_checkpoint_paths == [str(extra)]
+    assert config.checkpoints_exist is False
+    assert config.resolved_server_url == "http://server.internal:9000"
+    assert payload["ensemble_size"] == 2
+    assert payload["backtest_starting_cash"] == 25_000.0
+    assert payload["missing_checkpoints"] == [str(extra)]
+
+
+def test_parse_args_rejects_conflicting_account_mode_flags() -> None:
+    with pytest.raises(SystemExit):
+        daily_stock.parse_args(["--paper", "--live"])
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--once", "--daemon"],
+        ["--once", "--backtest"],
+        ["--daemon", "--backtest"],
+    ],
+)
+def test_parse_args_rejects_conflicting_run_mode_flags(argv: list[str]) -> None:
+    with pytest.raises(SystemExit):
+        daily_stock.parse_args(argv)
+
+
+def test_main_print_config_outputs_resolved_runtime_config(capsys) -> None:
+    checkpoint_path = (daily_stock.REPO / daily_stock.DEFAULT_CHECKPOINT).resolve()
+    daily_stock.main(
+        [
+            "--print-config",
+            "--live",
+            "--no-ensemble",
+            "--symbols",
+            "aapl",
+            "msft",
+            "--checkpoint",
+            daily_stock.DEFAULT_CHECKPOINT,
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["account_mode"] == "live"
+    assert payload["run_mode"] == "once"
+    assert payload["ensemble_enabled"] is False
+    assert payload["ensemble_size"] == 1
+    assert payload["symbol_count"] == 2
+    assert payload["symbols"] == ["AAPL", "MSFT"]
+    assert payload["summary"] == "live once via alpaca using alpaca data on 2 symbols with 1 checkpoint"
+    assert payload["extra_checkpoints"] is None
+    assert payload["backtest_starting_cash"] == daily_stock.DEFAULT_BACKTEST_STARTING_CASH
+    assert payload["checkpoint"] == str(checkpoint_path)
+    assert "--once" in payload["run_command_preview"]
+    assert "--live" in payload["run_command_preview"]
+    assert "--dry-run" in payload["safe_command_preview"]
+    assert payload["checkpoints_exist"] is checkpoint_path.exists()
+    assert payload["missing_checkpoints"] == ([] if checkpoint_path.exists() else [str(checkpoint_path)])
+
+
+def test_main_print_config_normalizes_duplicate_and_blank_symbols(capsys) -> None:
+    daily_stock.main(
+        [
+            "--print-config",
+            "--no-ensemble",
+            "--symbols",
+            "aapl",
+            "AAPL",
+            "   ",
+            "msft",
+            "aapl",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["symbols"] == ["AAPL", "MSFT"]
+    assert payload["symbol_count"] == 2
+    assert payload["removed_duplicate_symbols"] == ["AAPL"]
+    assert payload["ignored_symbol_inputs"] == ["<blank>"]
+    assert "--symbols AAPL MSFT" in payload["run_command_preview"]
+
+
+def test_main_logs_runtime_config(caplog, monkeypatch, tmp_path: Path) -> None:
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_text("stub", encoding="utf-8")
+
+    captured: dict[str, object] = {}
+
+    def _fake_run_once(**kwargs):
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(daily_stock, "run_once", _fake_run_once)
+
+    with caplog.at_level(logging.INFO, logger="daily_stock_rl"):
+        daily_stock.main(
+            [
+                "--dry-run",
+                "--no-ensemble",
+                "--checkpoint",
+                str(checkpoint),
+                "--symbols",
+                "AAPL",
+            ]
+        )
+
+    runtime_records = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "daily_stock_rl" and record.getMessage().startswith("Runtime config: ")
+    ]
+    assert runtime_records
+    assert '"account_mode": "paper"' in runtime_records[-1]
+    assert '"symbols": ["AAPL"]' in runtime_records[-1]
+    assert captured["checkpoint"] == str(checkpoint)
+
+
+def test_main_rejects_all_blank_symbols() -> None:
+    with pytest.raises(ValueError, match="No valid symbols configured after normalization"):
+        daily_stock.main(
+            [
+                "--print-config",
+                "--no-ensemble",
+                "--symbols",
+                " ",
+                "   ",
+            ]
+        )
+
+
+def test_main_rejects_unsafe_symbol_input() -> None:
+    with pytest.raises(ValueError, match=r"Unsupported symbol: \.\./AAPL"):
+        daily_stock.main(
+            [
+                "--print-config",
+                "--no-ensemble",
+                "--symbols",
+                "../AAPL",
+            ]
+        )
+
+
+def test_main_print_config_allows_standard_share_class_symbols(capsys) -> None:
+    daily_stock.main(
+        [
+            "--print-config",
+            "--no-ensemble",
+            "--symbols",
+            "brk.b",
+            "bf-b",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["symbols"] == ["BRK.B", "BF-B"]
+
+
+def test_build_trading_client_uses_explicit_paper_credentials(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    fake_alpaca = ModuleType("alpaca")
+    fake_alpaca_trading = ModuleType("alpaca.trading")
+    fake_alpaca_trading_client = ModuleType("alpaca.trading.client")
+
+    class FakeTradingClient:
+        def __init__(self, key_id, secret, *, paper):
+            captured["key_id"] = key_id
+            captured["secret"] = secret
+            captured["paper"] = paper
+
+    fake_alpaca_trading_client.TradingClient = FakeTradingClient
+    monkeypatch.setitem(sys.modules, "alpaca", fake_alpaca)
+    monkeypatch.setitem(sys.modules, "alpaca.trading", fake_alpaca_trading)
+    monkeypatch.setitem(sys.modules, "alpaca.trading.client", fake_alpaca_trading_client)
+
+    fake_env_real = ModuleType("env_real")
+    fake_env_real.ALP_KEY_ID_PAPER = "paper-key"
+    fake_env_real.ALP_SECRET_KEY_PAPER = "paper-secret"
+    fake_env_real.ALP_KEY_ID_PROD = "live-key"
+    fake_env_real.ALP_SECRET_KEY_PROD = "live-secret"
+    monkeypatch.setitem(sys.modules, "env_real", fake_env_real)
+
+    daily_stock.build_trading_client(paper=True)
+
+    assert captured == {
+        "key_id": "paper-key",
+        "secret": "paper-secret",
+        "paper": True,
+    }
+
+
+def test_build_data_client_uses_explicit_live_credentials(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    fake_alpaca = ModuleType("alpaca")
+    fake_alpaca_data = ModuleType("alpaca.data")
+
+    class FakeStockHistoricalDataClient:
+        def __init__(self, key_id, secret):
+            captured["key_id"] = key_id
+            captured["secret"] = secret
+
+    fake_alpaca_data.StockHistoricalDataClient = FakeStockHistoricalDataClient
+    monkeypatch.setitem(sys.modules, "alpaca", fake_alpaca)
+    monkeypatch.setitem(sys.modules, "alpaca.data", fake_alpaca_data)
+
+    fake_env_real = ModuleType("env_real")
+    fake_env_real.ALP_KEY_ID_PAPER = "paper-key"
+    fake_env_real.ALP_SECRET_KEY_PAPER = "paper-secret"
+    fake_env_real.ALP_KEY_ID_PROD = "live-key"
+    fake_env_real.ALP_SECRET_KEY_PROD = "live-secret"
+    monkeypatch.setitem(sys.modules, "env_real", fake_env_real)
+
+    daily_stock.build_data_client(paper=False)
+
+    assert captured == {
+        "key_id": "live-key",
+        "secret": "live-secret",
+    }
+
+
+def test_build_trading_client_raises_clear_error_when_env_real_is_unavailable(monkeypatch) -> None:
+    import importlib
+
+    real_import_module = importlib.import_module
+
+    def _fake_import_module(name: str):
+        if name == "env_real":
+            raise ModuleNotFoundError("env_real missing")
+        return real_import_module(name)
+
+    monkeypatch.setattr("importlib.import_module", _fake_import_module)
+
+    with pytest.raises(RuntimeError, match="Unable to load env_real for Alpaca credentials"):
+        daily_stock.build_trading_client(paper=True)
+
+
+def test_load_latest_quotes_rejects_unsafe_symbol_before_client_build(monkeypatch) -> None:
+    def _unexpected_client(*, paper: bool):
+        raise AssertionError(f"unexpected client build for paper={paper}")
+
+    monkeypatch.setattr(daily_stock, "build_data_client", _unexpected_client)
+
+    with pytest.raises(ValueError, match=r"Unsupported symbol: \.\./AAPL"):
+        daily_stock.load_latest_quotes_with_source(
+            ["../AAPL"],
+            paper=True,
+            fallback_prices={},
+        )
+
+
+def test_execute_signal_logs_execution_safety_gate_reason(caplog) -> None:
+    class FakeClient:
+        def get_all_positions(self):
+            return []
+
+    signal = SimpleNamespace(symbol="AAPL", direction="long")
+
+    with caplog.at_level(logging.WARNING, logger="daily_stock_rl"):
+        executed = daily_stock.execute_signal(
+            signal,
+            client=FakeClient(),
+            quotes={"AAPL": 100.0},
+            state=daily_stock.StrategyState(),
+            symbols=["AAPL"],
+            allocation_pct=12.5,
+            dry_run=True,
+            allow_open=False,
+            allow_open_reason="quote_source=close_fallback",
+        )
+
+    assert executed is False
+    assert any(
+        "execution safety gate is active (quote_source=close_fallback)" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_execute_signal_with_trading_server_logs_execution_safety_gate_reason(caplog) -> None:
+    class FakeServerClient:
+        def get_account(self):
+            return {"positions": {}, "account": {"cash": 10000.0}}
+
+    signal = SimpleNamespace(symbol="AAPL", direction="long")
+
+    with caplog.at_level(logging.WARNING, logger="daily_stock_rl"):
+        executed = daily_stock.execute_signal_with_trading_server(
+            signal,
+            server_client=FakeServerClient(),
+            quotes={"AAPL": 100.0},
+            state=daily_stock.StrategyState(),
+            symbols=["AAPL"],
+            allocation_pct=12.5,
+            dry_run=True,
+            allow_open=False,
+            allow_open_reason="quote_source=close_fallback",
+        )
+
+    assert executed is False
+    assert any(
+        "execution safety gate is active (quote_source=close_fallback)" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_main_check_config_reports_ready_for_local_setup(tmp_path: Path, capsys) -> None:
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_text("stub", encoding="utf-8")
+    _write_daily_csv(
+        tmp_path / "AAPL.csv",
+        [
+            {
+                "timestamp": "2026-01-01T00:00:00Z",
+                "open": 10,
+                "high": 11,
+                "low": 9,
+                "close": 10.5,
+                "volume": 100,
+            }
+        ],
+    )
+
+    daily_stock.main(
+        [
+            "--check-config",
+            "--dry-run",
+            "--data-source",
+            "local",
+            "--symbols",
+            "AAPL",
+            "--checkpoint",
+            str(checkpoint),
+            "--no-ensemble",
+            "--data-dir",
+            str(tmp_path),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["ready"] is True
+    assert payload["errors"] == []
+    assert payload["warnings"] == []
+    assert payload["local_data_required"] is True
+    assert payload["data_dir_exists"] is True
+    assert payload["missing_local_symbol_files"] == []
+    assert payload["summary"] == "paper once via alpaca using local data on 1 symbol with 1 checkpoint"
+    assert "--dry-run" in payload["run_command_preview"]
+    assert payload["run_command_preview"] == payload["safe_command_preview"]
+
+
+def test_main_check_config_warns_when_symbol_inputs_are_normalized(tmp_path: Path, capsys) -> None:
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_text("stub", encoding="utf-8")
+    _write_daily_csv(
+        tmp_path / "AAPL.csv",
+        [
+            {
+                "timestamp": "2026-01-01T00:00:00Z",
+                "open": 10,
+                "high": 11,
+                "low": 9,
+                "close": 10.5,
+                "volume": 100,
+            }
+        ],
+    )
+
+    daily_stock.main(
+        [
+            "--check-config",
+            "--dry-run",
+            "--data-source",
+            "local",
+            "--symbols",
+            "aapl",
+            "AAPL",
+            " ",
+            "--checkpoint",
+            str(checkpoint),
+            "--no-ensemble",
+            "--data-dir",
+            str(tmp_path),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["symbols"] == ["AAPL"]
+    assert payload["removed_duplicate_symbols"] == ["AAPL"]
+    assert payload["ignored_symbol_inputs"] == ["<blank>"]
+    assert "--symbols AAPL" in payload["run_command_preview"]
+    assert any("Removed duplicate symbol input" in warning for warning in payload["warnings"])
+    assert any("Ignored blank symbol input" in warning for warning in payload["warnings"])
+
+
+def test_main_check_config_reports_missing_live_alpaca_credentials(monkeypatch, tmp_path: Path, capsys) -> None:
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_text("stub", encoding="utf-8")
+
+    fake_env_real = ModuleType("env_real")
+    fake_env_real.ALP_KEY_ID_PAPER = "paper-key"
+    fake_env_real.ALP_SECRET_KEY_PAPER = "paper-secret"
+    fake_env_real.ALP_KEY_ID_PROD = "alpaca-live-key-placeholder"
+    fake_env_real.ALP_SECRET_KEY_PROD = "alpaca-live-secret-placeholder"
+    monkeypatch.setitem(sys.modules, "env_real", fake_env_real)
+
+    with pytest.raises(SystemExit) as exc_info:
+        daily_stock.main(
+            [
+                "--check-config",
+                "--live",
+                "--checkpoint",
+                str(checkpoint),
+                "--no-ensemble",
+            ]
+        )
+
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exc_info.value.code == 1
+    assert payload["ready"] is False
+    assert payload["alpaca_required"] is True
+    assert payload["alpaca_credentials_configured"] is False
+    assert payload["alpaca_missing_env"] == ["ALP_KEY_ID_PROD", "ALP_SECRET_KEY_PROD"]
+    assert any("Missing Alpaca credential env var(s) for live mode" in error for error in payload["errors"])
+
+
+def test_main_check_config_reports_env_real_import_failure(monkeypatch, tmp_path: Path, capsys) -> None:
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_text("stub", encoding="utf-8")
+
+    import importlib
+
+    real_import_module = importlib.import_module
+
+    def _fake_import_module(name: str):
+        if name == "env_real":
+            raise ModuleNotFoundError("env_real missing")
+        return real_import_module(name)
+
+    monkeypatch.setattr("importlib.import_module", _fake_import_module)
+
+    with pytest.raises(SystemExit) as exc_info:
+        daily_stock.main(
+            [
+                "--check-config",
+                "--checkpoint",
+                str(checkpoint),
+                "--no-ensemble",
+            ]
+        )
+
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exc_info.value.code == 1
+    assert payload["ready"] is False
+    assert payload["alpaca_required"] is True
+    assert payload["alpaca_credentials_configured"] is False
+    assert payload["alpaca_missing_env"] == []
+    assert "Unable to load env_real for Alpaca credentials" in payload["alpaca_credentials_error"]
+    assert any("Unable to load env_real for Alpaca credentials" in error for error in payload["errors"])
+
+
+def test_main_check_config_warns_when_live_trading_server_uses_paper_default_account(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_text("stub", encoding="utf-8")
+    _write_daily_csv(
+        tmp_path / "AAPL.csv",
+        [
+            {
+                "timestamp": "2026-01-01T00:00:00Z",
+                "open": 10,
+                "high": 11,
+                "low": 9,
+                "close": 10.5,
+                "volume": 100,
+            }
+        ],
+    )
+
+    daily_stock.main(
+        [
+            "--check-config",
+            "--live",
+            "--execution-backend",
+            "trading_server",
+            "--data-source",
+            "local",
+            "--symbols",
+            "AAPL",
+            "--checkpoint",
+            str(checkpoint),
+            "--no-ensemble",
+            "--data-dir",
+            str(tmp_path),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["ready"] is True
+    assert payload["trading_server_required"] is True
+    assert payload["resolved_server_url"] == "http://127.0.0.1:8050"
+    assert any("paper default server account" in warning for warning in payload["warnings"])
+
+
+def test_main_fails_fast_when_checkpoint_is_missing(monkeypatch, tmp_path: Path) -> None:
+    called = False
+
+    def _fake_run_once(**kwargs):
+        nonlocal called
+        called = True
+        return {}
+
+    monkeypatch.setattr(daily_stock, "run_once", _fake_run_once)
+
+    missing = tmp_path / "missing.pt"
+
+    with pytest.raises(FileNotFoundError, match="Missing checkpoint file"):
+        daily_stock.main(
+            [
+                "--dry-run",
+                "--data-source",
+                "local",
+                "--symbols",
+                "AAPL",
+                "--checkpoint",
+                str(missing),
+                "--no-ensemble",
+            ]
+        )
+
+    assert called is False
+
+
+def test_main_rejects_compare_server_parity_without_backtest(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_text("stub", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="--compare-server-parity requires --backtest"):
+        daily_stock.main(
+            [
+                "--dry-run",
+                "--data-source",
+                "local",
+                "--symbols",
+                "AAPL",
+                "--checkpoint",
+                str(checkpoint),
+                "--no-ensemble",
+                "--compare-server-parity",
+            ]
+        )
+
+
+def test_main_rejects_non_positive_backtest_days(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_text("stub", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="--backtest-days must be at least 1"):
+        daily_stock.main(
+            [
+                "--backtest",
+                "--backtest-days",
+                "0",
+                "--data-source",
+                "local",
+                "--symbols",
+                "AAPL",
+                "--checkpoint",
+                str(checkpoint),
+                "--no-ensemble",
+            ]
+        )
+
+
+def test_main_rejects_non_positive_backtest_starting_cash(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_text("stub", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="--backtest-starting-cash must be positive"):
+        daily_stock.main(
+            [
+                "--backtest",
+                "--backtest-starting-cash",
+                "0",
+                "--data-source",
+                "local",
+                "--symbols",
+                "AAPL",
+                "--checkpoint",
+                str(checkpoint),
+                "--no-ensemble",
+            ]
+        )
+
+
+def test_main_rejects_live_backtest_before_live_safety_checks(monkeypatch, tmp_path: Path) -> None:
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_text("stub", encoding="utf-8")
+
+    def _unexpected_live_guard(*_args, **_kwargs):
+        raise AssertionError("live safety guard should not run for backtests")
+
+    monkeypatch.setattr(daily_stock, "require_explicit_live_trading_enable", _unexpected_live_guard)
+    monkeypatch.setattr(daily_stock, "acquire_alpaca_account_lock", _unexpected_live_guard)
+
+    with pytest.raises(ValueError, match="--backtest is local-only; omit --live"):
+        daily_stock.main(
+            [
+                "--backtest",
+                "--live",
+                "--data-source",
+                "local",
+                "--symbols",
+                "AAPL",
+                "--checkpoint",
+                str(checkpoint),
+                "--no-ensemble",
+            ]
+        )
+
+
+def test_main_passes_backtest_starting_cash_to_run_backtest(monkeypatch, tmp_path: Path) -> None:
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_text("stub", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def _fake_run_backtest(**kwargs):
+        captured.update(kwargs)
+        return {"total_return": 0.0}
+
+    monkeypatch.setattr(daily_stock, "run_backtest", _fake_run_backtest)
+
+    daily_stock.main(
+        [
+            "--backtest",
+            "--backtest-starting-cash",
+            "25000",
+            "--data-source",
+            "local",
+            "--symbols",
+            "AAPL",
+            "--checkpoint",
+            str(checkpoint),
+            "--no-ensemble",
+        ]
+    )
+
+    assert captured["starting_cash"] == 25_000.0
+
+
+@pytest.mark.parametrize(
+    "runner",
+    [daily_stock.run_backtest, daily_stock.run_backtest_via_trading_server],
+)
+def test_backtest_helpers_reject_non_positive_starting_cash(runner) -> None:
+    with pytest.raises(ValueError, match="starting_cash must be positive"):
+        runner(
+            checkpoint="unused.pt",
+            symbols=["AAPL"],
+            data_dir="unused",
+            days=20,
+            starting_cash=0.0,
+        )
 
 
 class _FakeClient:
@@ -387,30 +1122,6 @@ def test_execute_signal_with_trading_server_closes_managed_then_opens_new(tmp_pa
     assert snapshot["positions"]["MSFT"]["qty"] == 50.0
     assert state.active_symbol == "MSFT"
     assert state.active_qty == 50.0
-
-
-def test_inmemory_trading_server_client_uses_shared_writer_ttl_default(monkeypatch) -> None:
-    monkeypatch.setenv("TRADING_SERVER_WRITER_TTL_SECONDS", "333")
-    captured: dict[str, object] = {}
-
-    class _Engine:
-        def claim_writer(self, request):
-            captured["ttl_seconds"] = request.ttl_seconds
-            return {"ok": True}
-
-    client = daily_stock.InMemoryTradingServerClient(
-        engine=_Engine(),
-        account="paper_sortino_daily",
-        bot_id="daily_stock_sortino_v1",
-        execution_mode="paper",
-        session_id="test-session",
-    )
-
-    result = client.claim_writer()
-
-    assert result == {"ok": True}
-    assert captured["ttl_seconds"] == 333
-
 
 def test_adopt_existing_position_populates_state() -> None:
     state = daily_stock.StrategyState()
@@ -743,6 +1454,7 @@ def test_run_backtest_via_trading_server_matches_legacy_single_symbol(tmp_path: 
         symbols=["AAPL"],
         data_dir=str(tmp_path),
         days=20,
+        starting_cash=25_000.0,
     )
     server = daily_stock.run_backtest_via_trading_server(
         checkpoint=str(checkpoint),
@@ -750,6 +1462,7 @@ def test_run_backtest_via_trading_server_matches_legacy_single_symbol(tmp_path: 
         data_dir=str(tmp_path),
         days=20,
         allocation_pct=100.0,
+        starting_cash=25_000.0,
     )
 
     assert server["total_return"] == legacy["total_return"]

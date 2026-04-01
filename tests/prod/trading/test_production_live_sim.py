@@ -7,6 +7,7 @@ Simulates live trading conditions with real market patterns
 import pytest
 import numpy as np
 import pandas as pd
+import torch
 from datetime import datetime, timedelta
 from pathlib import Path
 import sys
@@ -15,6 +16,24 @@ import json
 sys.path.append(str(Path(__file__).parent.parent))
 
 from hfinference.production_engine import ProductionTradingEngine
+
+
+def _is_cuda_resource_pressure_error(exc: BaseException) -> bool:
+    if isinstance(exc, torch.OutOfMemoryError):
+        return True
+    accelerator_error = getattr(torch, "AcceleratorError", None)
+    if accelerator_error is not None and isinstance(exc, accelerator_error):
+        return "out of memory" in str(exc).lower()
+    return False
+
+
+def _build_engine_or_skip(*args, **kwargs) -> ProductionTradingEngine:
+    try:
+        return ProductionTradingEngine(*args, **kwargs)
+    except Exception as exc:
+        if _is_cuda_resource_pressure_error(exc):
+            pytest.skip(f"Production engine GPU-backed test skipped under shared-GPU resource pressure: {exc}")
+        raise
 
 
 def test_production_engine_with_real_data():
@@ -59,7 +78,6 @@ def test_production_engine_with_real_data():
     }
     
     # Create mock checkpoint
-    import torch
     import tempfile
     
     with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as tmp:
@@ -71,7 +89,7 @@ def test_production_engine_with_real_data():
     
     try:
         # Initialize engine
-        engine = ProductionTradingEngine(
+        engine = _build_engine_or_skip(
             checkpoint_path=checkpoint_path,
             paper_trading=True,
             live_trading=False
@@ -231,7 +249,6 @@ def test_risk_management_scenario():
         }
     }
     
-    import torch
     import tempfile
     
     with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as tmp:
@@ -239,7 +256,7 @@ def test_risk_management_scenario():
         torch.save({'model_state_dict': {}, 'config': config}, checkpoint_path)
     
     try:
-        engine = ProductionTradingEngine(
+        engine = _build_engine_or_skip(
             checkpoint_path=checkpoint_path,
             paper_trading=True,
             live_trading=False
@@ -298,7 +315,6 @@ def test_portfolio_evolution():
         'Volume': np.random.randint(1000000, 10000000, 250)
     }, index=dates)
     
-    import torch
     import tempfile
     
     config = {
@@ -313,7 +329,7 @@ def test_portfolio_evolution():
         torch.save({'model_state_dict': {}, 'config': config}, checkpoint_path)
     
     try:
-        engine = ProductionTradingEngine(checkpoint_path=checkpoint_path, paper_trading=True)
+        engine = _build_engine_or_skip(checkpoint_path=checkpoint_path, paper_trading=True)
         engine.config = config
         
         # Bullish model

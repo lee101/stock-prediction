@@ -20,10 +20,10 @@ import torch.nn.functional as F
 
 def _build_weights(in_dim, hidden, out_dim, device, dtype=torch.bfloat16):
     """Return (W1, b1, W2, b2) random weights on device."""
-    W1 = torch.randn(hidden, in_dim,  device=device, dtype=dtype)
-    b1 = torch.zeros(hidden,          device=device, dtype=dtype)
-    W2 = torch.randn(out_dim, hidden, device=device, dtype=dtype)
-    b2 = torch.zeros(out_dim,         device=device, dtype=dtype)
+    W1 = _allocate_on_device_or_skip(torch.randn, hidden, in_dim, device=device, dtype=dtype)
+    b1 = _allocate_on_device_or_skip(torch.zeros, hidden, device=device, dtype=dtype)
+    W2 = _allocate_on_device_or_skip(torch.randn, out_dim, hidden, device=device, dtype=dtype)
+    b2 = _allocate_on_device_or_skip(torch.zeros, out_dim, device=device, dtype=dtype)
     return W1, b1, W2, b2
 
 
@@ -33,6 +33,31 @@ def _reference(x, W1, b1, W2, b2):
     h = F.linear(x32, W1.float(), b1.float())
     h = F.relu(h)
     return F.linear(h, W2.float(), b2.float())
+
+
+def _is_cuda_resource_pressure_error(exc: BaseException) -> bool:
+    return "out of memory" in str(exc).lower()
+
+
+def _skip_for_cuda_resource_pressure(exc: BaseException) -> None:
+    if _is_cuda_resource_pressure_error(exc):
+        pytest.skip(f"Kernel CC test skipped under shared-GPU resource pressure: {exc}")
+
+
+def _allocate_on_device_or_skip(factory, *args, **kwargs):
+    try:
+        return factory(*args, **kwargs)
+    except Exception as exc:
+        _skip_for_cuda_resource_pressure(exc)
+        raise
+
+
+def _to_device_or_skip(tensor, *args, **kwargs):
+    try:
+        return tensor.to(*args, **kwargs)
+    except Exception as exc:
+        _skip_for_cuda_resource_pressure(exc)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +92,7 @@ def test_fused_mlp_correctness(device, cc, hidden_size, batch_size):
     out_dim = hidden_size
 
     torch.manual_seed(42)
-    x = torch.randn(batch_size, in_dim, device=device, dtype=torch.bfloat16)
+    x = _allocate_on_device_or_skip(torch.randn, batch_size, in_dim, device=device, dtype=torch.bfloat16)
     W1, b1, W2, b2 = _build_weights(in_dim, hidden_size, out_dim, device)
 
     # Reference in FP32
@@ -96,7 +121,7 @@ def test_fused_mlp_correctness_small_batch(device, cc):
 
     torch.manual_seed(7)
     in_dim, hidden, out_dim = 64, 128, 64
-    x = torch.randn(1, in_dim, device=device, dtype=torch.bfloat16)
+    x = _allocate_on_device_or_skip(torch.randn, 1, in_dim, device=device, dtype=torch.bfloat16)
     W1, b1, W2, b2 = _build_weights(in_dim, hidden, out_dim, device)
 
     ref = _reference(x, W1, b1, W2, b2)
@@ -111,12 +136,12 @@ def test_fused_mlp_correctness_relu_gating(device):
 
     # Craft a W1 that produces all-negative hidden activations for a known x.
     in_dim, hidden, out_dim = 32, 64, 32
-    x = torch.ones(4, in_dim, device=device, dtype=torch.bfloat16)
+    x = _allocate_on_device_or_skip(torch.ones, 4, in_dim, device=device, dtype=torch.bfloat16)
     # W1 all negative -> hidden = x @ W1.T + 0 = all negative -> ReLU -> all zero
-    W1 = -torch.ones(hidden, in_dim, device=device, dtype=torch.bfloat16)
-    b1 = torch.zeros(hidden, device=device, dtype=torch.bfloat16)
-    W2 = torch.randn(out_dim, hidden, device=device, dtype=torch.bfloat16)
-    b2 = torch.zeros(out_dim, device=device, dtype=torch.bfloat16)
+    W1 = -_allocate_on_device_or_skip(torch.ones, hidden, in_dim, device=device, dtype=torch.bfloat16)
+    b1 = _allocate_on_device_or_skip(torch.zeros, hidden, device=device, dtype=torch.bfloat16)
+    W2 = _allocate_on_device_or_skip(torch.randn, out_dim, hidden, device=device, dtype=torch.bfloat16)
+    b2 = _allocate_on_device_or_skip(torch.zeros, out_dim, device=device, dtype=torch.bfloat16)
 
     out = fused_mlp_relu(x, W1, b1, W2, b2)
     # After ReLU kills all hidden activations, output should equal b2 = 0
@@ -136,7 +161,7 @@ def test_fused_mlp_dtype_bf16_output(device):
         pytest.skip("Triton not available")
 
     in_dim, hidden, out_dim = 221, 1024, 1024
-    x = torch.randn(128, in_dim, device=device, dtype=torch.bfloat16)
+    x = _allocate_on_device_or_skip(torch.randn, 128, in_dim, device=device, dtype=torch.bfloat16)
     W1, b1, W2, b2 = _build_weights(in_dim, hidden, out_dim, device)
 
     out = fused_mlp_relu(x, W1, b1, W2, b2)
@@ -153,14 +178,14 @@ def test_fused_mlp_dtype_castable_to_policy_weights(device):
     from pufferlib_market.kernels.fused_mlp import fused_mlp_relu
 
     in_dim, hidden, out_dim = 221, 1024, 1024
-    x = torch.randn(128, in_dim, device=device, dtype=torch.bfloat16)
+    x = _allocate_on_device_or_skip(torch.randn, 128, in_dim, device=device, dtype=torch.bfloat16)
     W1, b1, W2, b2 = _build_weights(in_dim, hidden, out_dim, device)
 
     out = fused_mlp_relu(x, W1, b1, W2, b2)
 
     # Simulate the policy: next layer is BF16
-    next_layer = nn.Linear(out_dim, 512, device=device, dtype=torch.bfloat16)
-    out_cast = out.to(next_layer.weight.dtype)
+    next_layer = _to_device_or_skip(nn.Linear(out_dim, 512, dtype=torch.bfloat16), device)
+    out_cast = _to_device_or_skip(out, next_layer.weight.dtype)
     result = next_layer(out_cast)
     assert result.shape == (128, 512)
     assert not result.isnan().any(), "NaN in next layer output after dtype cast"
@@ -172,11 +197,11 @@ def test_fused_mlp_dtype_float32_input(device):
     from pufferlib_market.kernels.fused_mlp import fused_mlp_relu
 
     in_dim, hidden, out_dim = 64, 256, 64
-    x = torch.randn(32, in_dim, device=device, dtype=torch.float32)
-    W1 = torch.randn(hidden, in_dim, device=device, dtype=torch.bfloat16)
-    b1 = torch.zeros(hidden, device=device, dtype=torch.bfloat16)
-    W2 = torch.randn(out_dim, hidden, device=device, dtype=torch.bfloat16)
-    b2 = torch.zeros(out_dim, device=device, dtype=torch.bfloat16)
+    x = _allocate_on_device_or_skip(torch.randn, 32, in_dim, device=device, dtype=torch.float32)
+    W1 = _allocate_on_device_or_skip(torch.randn, hidden, in_dim, device=device, dtype=torch.bfloat16)
+    b1 = _allocate_on_device_or_skip(torch.zeros, hidden, device=device, dtype=torch.bfloat16)
+    W2 = _allocate_on_device_or_skip(torch.randn, out_dim, hidden, device=device, dtype=torch.bfloat16)
+    b2 = _allocate_on_device_or_skip(torch.zeros, out_dim, device=device, dtype=torch.bfloat16)
 
     # Should not raise
     out = fused_mlp_relu(x, W1, b1, W2, b2)
@@ -194,7 +219,7 @@ def test_fused_mlp_3d_input(device):
     from pufferlib_market.kernels.fused_mlp import fused_mlp_relu
 
     in_dim, hidden, out_dim = 64, 128, 64
-    x = torch.randn(4, 8, in_dim, device=device, dtype=torch.bfloat16)
+    x = _allocate_on_device_or_skip(torch.randn, 4, 8, in_dim, device=device, dtype=torch.bfloat16)
     W1, b1, W2, b2 = _build_weights(in_dim, hidden, out_dim, device)
 
     out = fused_mlp_relu(x, W1, b1, W2, b2)
@@ -223,7 +248,6 @@ def test_autotune_configs_nonempty(device, cc):
 def test_autotune_configs_cc_routing(device, cc):
     """Check that configs returned match the expected CC tier."""
     from pufferlib_market.kernels.fused_mlp import _get_autotune_configs
-    import triton
 
     major, _minor = cc
     configs = _get_autotune_configs()

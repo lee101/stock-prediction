@@ -15,9 +15,8 @@ import json
 import logging
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from io import StringIO
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -59,7 +58,6 @@ def _log_event_names(caplog_records) -> list[str]:
 import trade_execution_listener as tel  # noqa: E402  (must come after stub)
 from trade_execution_listener import (  # noqa: E402
     EXCLUDED_SYMBOLS,
-    SIGNAL_MAX_AGE_SECONDS,
     _check_config,
     _is_excluded,
     _is_stale,
@@ -123,7 +121,7 @@ class TestStalenessCheck:
 
     def test_naive_timestamp_treated_as_utc(self):
         """A naive timestamp should be handled without raising."""
-        naive_ts = datetime.utcnow()
+        naive_ts = datetime.now(UTC).replace(tzinfo=None)
         event = TradeEvent(symbol="AAPL", side="buy", quantity=1.0, price=100.0, timestamp=naive_ts)
         # Should not raise; stale or not depending on clock skew
         result = _is_stale(event, max_age_seconds=300)

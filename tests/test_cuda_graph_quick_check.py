@@ -22,6 +22,15 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 
+def _is_cuda_resource_pressure_error(exc: BaseException) -> bool:
+    return "out of memory" in str(exc).lower()
+
+
+def _skip_for_cuda_resource_pressure(exc: BaseException) -> None:
+    if _is_cuda_resource_pressure_error(exc):
+        pytest.skip(f"CUDA graph quick check skipped under shared-GPU resource pressure: {exc}")
+
+
 def test_cuda_graph_warnings():
     """
     Quick test that checks for CUDA graph skip warnings.
@@ -38,48 +47,55 @@ def test_cuda_graph_warnings():
     print(f"TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS: {os.environ.get('TORCHDYNAMO_CAPTURE_SCALAR_OUTPUTS')}")
 
     # Import after env vars are set
-    from toto.toto.pipelines.time_series_forecasting import TotoPipeline
+    try:
+        from toto.toto.pipelines.time_series_forecasting import TotoPipeline
+    except ModuleNotFoundError:
+        pytest.skip("Toto pipeline dependency not installed")
     import numpy as np
 
-    # Load pipeline
-    print("\nLoading Toto pipeline...")
-    pipeline = TotoPipeline.from_pretrained(
-        model_id="Datadog/Toto-Open-Base-1.0",
-        device="cuda",
-        torch_dtype=torch.float32,
-    )
-
-    # Capture stderr during compilation
-    print("Applying torch.compile...")
-    stderr_capture = io.StringIO()
-    old_stderr = sys.stderr
-    sys.stderr = stderr_capture
-
     try:
-        pipeline.model = torch.compile(
-            pipeline.model,
-            mode="reduce-overhead",
-            backend="inductor",
+        # Load pipeline
+        print("\nLoading Toto pipeline...")
+        pipeline = TotoPipeline.from_pretrained(
+            model_id="Datadog/Toto-Open-Base-1.0",
+            device="cuda",
+            torch_dtype=torch.float32,
         )
 
-        # Generate minimal test data
-        np.random.seed(42)
-        data = {
-            "target": np.random.randn(5, 64),  # Small data for quick test
-            "freq": "1min",
-        }
+        # Capture stderr during compilation
+        print("Applying torch.compile...")
+        stderr_capture = io.StringIO()
+        old_stderr = sys.stderr
+        sys.stderr = stderr_capture
 
-        # Run one prediction to trigger compilation
-        print("Running test prediction to trigger compilation...")
-        _ = pipeline(
-            target=data["target"],
-            freq=data["freq"],
-            prediction_length=10,
-        )
+        try:
+            pipeline.model = torch.compile(
+                pipeline.model,
+                mode="reduce-overhead",
+                backend="inductor",
+            )
 
-    finally:
-        sys.stderr = old_stderr
-        compile_logs = stderr_capture.getvalue()
+            # Generate minimal test data
+            np.random.seed(42)
+            data = {
+                "target": np.random.randn(5, 64),  # Small data for quick test
+                "freq": "1min",
+            }
+
+            # Run one prediction to trigger compilation
+            print("Running test prediction to trigger compilation...")
+            _ = pipeline(
+                target=data["target"],
+                freq=data["freq"],
+                prediction_length=10,
+            )
+
+        finally:
+            sys.stderr = old_stderr
+            compile_logs = stderr_capture.getvalue()
+    except Exception as exc:
+        _skip_for_cuda_resource_pressure(exc)
+        raise
 
     # Analyze logs
     print("\n" + "="*80)

@@ -104,6 +104,28 @@ class BinanceHourlyTrainer:
         self._total_train_steps = 0
         self._weight_decay_groups: list[tuple[dict, float]] = []
 
+    def _should_fallback_to_cpu(self, exc: BaseException) -> bool:
+        if self.config.device is not None or self.device.type != "cuda":
+            return False
+        if isinstance(exc, torch.OutOfMemoryError):
+            return True
+        accelerator_error = getattr(torch, "AcceleratorError", None)
+        return accelerator_error is not None and isinstance(exc, accelerator_error)
+
+    def _move_model_to_device(self, model: BinancePolicyBase) -> BinancePolicyBase:
+        try:
+            return model.to(self.device)
+        except Exception as exc:
+            if self._should_fallback_to_cpu(exc):
+                logger.warning(
+                    "Falling back to CPU for BinanceHourlyTrainer because %s was unavailable at runtime: %s",
+                    self.device,
+                    exc,
+                )
+                self.device = torch.device("cpu")
+                return model.to(self.device)
+            raise
+
     def _wandb_enabled(self) -> bool:
         return bool(self.config.wandb_project or os.getenv("WANDB_PROJECT"))
 
@@ -180,7 +202,7 @@ class BinanceHourlyTrainer:
             dilated_strides=self.config.dilated_strides,
             use_flex_attention=self.config.use_flex_attention,
         )
-        model = build_policy(policy_cfg).to(self.device)
+        model = self._move_model_to_device(build_policy(policy_cfg))
 
         if self.config.preload_checkpoint_path:
             preload_path = Path(self.config.preload_checkpoint_path)

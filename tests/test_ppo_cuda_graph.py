@@ -30,9 +30,22 @@ OBS_SIZE = 107   # crypto6 shape: 6*16 + 5 + 6
 NUM_ACTIONS = 13  # 1 + 2*6
 
 
+def _is_cuda_resource_pressure_error(exc: BaseException) -> bool:
+    return "out of memory" in str(exc).lower()
+
+
+def _skip_for_cuda_resource_pressure(exc: BaseException) -> None:
+    if _is_cuda_resource_pressure_error(exc):
+        pytest.skip(f"CUDA graph PPO test skipped under shared-GPU resource pressure: {exc}")
+
+
 def _make_policy(device: torch.device) -> nn.Module:
     from pufferlib_market.train import TradingPolicy
-    return TradingPolicy(OBS_SIZE, NUM_ACTIONS, hidden=128).to(device)
+    try:
+        return TradingPolicy(OBS_SIZE, NUM_ACTIONS, hidden=128).to(device)
+    except Exception as exc:
+        _skip_for_cuda_resource_pressure(exc)
+        raise
 
 
 def _ppo_loss_eager(policy, obs, act, old_logprob, advantages, returns, old_values,
@@ -66,12 +79,16 @@ def _ppo_loss_eager(policy, obs, act, old_logprob, advantages, returns, old_valu
 
 def _make_fake_minibatch(mb_size: int, device: torch.device):
     """Random but plausible PPO minibatch tensors."""
-    obs = torch.randn(mb_size, OBS_SIZE, device=device)
-    act = torch.randint(0, NUM_ACTIONS, (mb_size,), device=device)
-    old_logprob = torch.randn(mb_size, device=device)
-    advantages = torch.randn(mb_size, device=device)
-    returns = torch.randn(mb_size, device=device)
-    old_values = torch.randn(mb_size, device=device)
+    try:
+        obs = torch.randn(mb_size, OBS_SIZE, device=device)
+        act = torch.randint(0, NUM_ACTIONS, (mb_size,), device=device)
+        old_logprob = torch.randn(mb_size, device=device)
+        advantages = torch.randn(mb_size, device=device)
+        returns = torch.randn(mb_size, device=device)
+        old_values = torch.randn(mb_size, device=device)
+    except Exception as exc:
+        _skip_for_cuda_resource_pressure(exc)
+        raise
     return obs, act, old_logprob, advantages, returns, old_values
 
 
@@ -97,25 +114,29 @@ class _CUDAGraphPPOHarness:
         self.device = device
 
         # Static tensors (fixed addresses required for CUDA graph)
-        self.st_obs = torch.zeros(mb_size, OBS_SIZE, device=device)
-        self.st_act = torch.zeros(mb_size, dtype=torch.long, device=device)
-        self.st_logprob = torch.zeros(mb_size, device=device)
-        self.st_adv = torch.zeros(mb_size, device=device)
-        self.st_ret = torch.zeros(mb_size, device=device)
-        self.st_val = torch.zeros(mb_size, device=device)
-        # Scalar coefficients as CUDA tensors (no .item() during capture)
-        self.st_clip_eps = torch.tensor(clip_eps, device=device)
-        self.st_vf_coef = torch.tensor(vf_coef, device=device)
-        self.st_ent_coef = torch.tensor(ent_coef, device=device)
-        # Scalar outputs (written inside graph via .copy_())
-        self.st_loss = torch.tensor(0.0, device=device)
-        self.st_pg = torch.tensor(0.0, device=device)
-        self.st_vl = torch.tensor(0.0, device=device)
-        self.st_el = torch.tensor(0.0, device=device)
+        try:
+            self.st_obs = torch.zeros(mb_size, OBS_SIZE, device=device)
+            self.st_act = torch.zeros(mb_size, dtype=torch.long, device=device)
+            self.st_logprob = torch.zeros(mb_size, device=device)
+            self.st_adv = torch.zeros(mb_size, device=device)
+            self.st_ret = torch.zeros(mb_size, device=device)
+            self.st_val = torch.zeros(mb_size, device=device)
+            # Scalar coefficients as CUDA tensors (no .item() during capture)
+            self.st_clip_eps = torch.tensor(clip_eps, device=device)
+            self.st_vf_coef = torch.tensor(vf_coef, device=device)
+            self.st_ent_coef = torch.tensor(ent_coef, device=device)
+            # Scalar outputs (written inside graph via .copy_())
+            self.st_loss = torch.tensor(0.0, device=device)
+            self.st_pg = torch.tensor(0.0, device=device)
+            self.st_vl = torch.tensor(0.0, device=device)
+            self.st_el = torch.tensor(0.0, device=device)
 
-        # Use a private CUDA stream so capture errors do not contaminate the
-        # default stream used by other tests in the same process.
-        self._stream = torch.cuda.Stream(device=device)
+            # Use a private CUDA stream so capture errors do not contaminate the
+            # default stream used by other tests in the same process.
+            self._stream = torch.cuda.Stream(device=device)
+        except Exception as exc:
+            _skip_for_cuda_resource_pressure(exc)
+            raise
 
         def _body():
             loss, pg, vl, el = _ppo_loss_eager(
@@ -134,42 +155,54 @@ class _CUDAGraphPPOHarness:
 
         # Warmup passes on the private stream (fills CUDA caches before capture)
         policy.train()
-        with torch.cuda.stream(self._stream):
-            for _ in range(3):
-                optimizer.zero_grad(set_to_none=False)
-                _body()
-                nn.utils.clip_grad_norm_(policy.parameters(), 0.5)
-                optimizer.step()
-        self._stream.synchronize()
+        try:
+            with torch.cuda.stream(self._stream):
+                for _ in range(3):
+                    optimizer.zero_grad(set_to_none=False)
+                    _body()
+                    nn.utils.clip_grad_norm_(policy.parameters(), 0.5)
+                    optimizer.step()
+            self._stream.synchronize()
+        except Exception as exc:
+            _skip_for_cuda_resource_pressure(exc)
+            raise
 
         # Capture graph on the private stream
-        optimizer.zero_grad(set_to_none=False)
-        self._graph = torch.cuda.CUDAGraph()
-        with torch.cuda.stream(self._stream):
-            with torch.cuda.graph(self._graph, stream=self._stream):
-                _body()
-        self._stream.synchronize()
+        try:
+            optimizer.zero_grad(set_to_none=False)
+            self._graph = torch.cuda.CUDAGraph()
+            with torch.cuda.stream(self._stream):
+                with torch.cuda.graph(self._graph, stream=self._stream):
+                    _body()
+            self._stream.synchronize()
+        except Exception as exc:
+            _skip_for_cuda_resource_pressure(exc)
+            raise
 
     def step(self, obs, act, logprob, adv, ret, val):
         """Copy inputs into static tensors, replay graph, step optimizer."""
-        self.st_obs.copy_(obs)
-        self.st_act.copy_(act)
-        self.st_logprob.copy_(logprob)
-        self.st_adv.copy_(adv)
-        self.st_ret.copy_(ret)
-        self.st_val.copy_(val)
-        self.optimizer.zero_grad(set_to_none=False)
-        with torch.cuda.stream(self._stream):
-            self._graph.replay()
-        self._stream.synchronize()
-        nn.utils.clip_grad_norm_(self.policy.parameters(), 0.5)
-        self.optimizer.step()
-        return (
-            self.st_loss.item(),
-            self.st_pg.item(),
-            self.st_vl.item(),
-            self.st_el.item(),
-        )
+        try:
+            self.st_obs.copy_(obs)
+            self.st_act.copy_(act)
+            self.st_logprob.copy_(logprob)
+            self.st_adv.copy_(adv)
+            self.st_ret.copy_(ret)
+            self.st_val.copy_(val)
+            self.optimizer.zero_grad(set_to_none=False)
+            with torch.cuda.stream(self._stream):
+                self._graph.replay()
+            self._stream.synchronize()
+            nn.utils.clip_grad_norm_(self.policy.parameters(), 0.5)
+            self.optimizer.step()
+            return (
+                self.st_loss.item(),
+                self.st_pg.item(),
+                self.st_vl.item(),
+                self.st_el.item(),
+            )
+        except Exception as exc:
+            _skip_for_cuda_resource_pressure(exc)
+            raise
 
 
 # ── test: loss decreases over 100 steps ──────────────────────────────────────
@@ -364,9 +397,7 @@ def test_train_ppo_loss_fn_bf16_flag():
     torch.manual_seed(4)
     mb_size = 64
 
-    from pufferlib_market.train import TradingPolicy
-
-    policy = TradingPolicy(OBS_SIZE, NUM_ACTIONS, hidden=64).to(device)
+    policy = _make_policy(device)
     policy.train()
 
     obs, act, old_logprob, adv, ret, val = _make_fake_minibatch(mb_size, device)

@@ -159,3 +159,30 @@ def test_dry_train_completes() -> None:
         artifacts = trainer.train()
     assert len(artifacts.history) == 2
     assert artifacts.best_checkpoint is not None
+
+
+def test_trainer_falls_back_to_cpu_when_auto_cuda_is_unavailable() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cfg = _make_config(tmpdir, wandb_project=None)
+        trainer = BinanceHourlyTrainer(cfg, _SyntheticDataModule())
+        trainer.device = torch.device("cuda")
+
+        model = torch.nn.Linear(4, 4)
+        original_to = model.to
+        calls: list[str] = []
+
+        def flaky_to(device, *args, **kwargs):
+            target = torch.device(device)
+            calls.append(target.type)
+            if target.type == "cuda":
+                accelerator_error = getattr(torch, "AcceleratorError", RuntimeError)
+                raise accelerator_error("CUDA error: out of memory")
+            return original_to(target, *args, **kwargs)
+
+        model.to = flaky_to  # type: ignore[assignment]
+
+        moved = trainer._move_model_to_device(model)
+
+    assert moved is model
+    assert trainer.device.type == "cpu"
+    assert calls == ["cuda", "cpu"]

@@ -159,7 +159,6 @@ def _is_data_bar_fresh(symbol: str, current_time: Optional[datetime] = None) -> 
         if now_et.weekday() >= 5:
             return False
 
-        market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
         safe_time = now_et.replace(hour=9, minute=35, second=0, microsecond=0)
         market_close = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
 
@@ -441,27 +440,21 @@ def _get_inherited_env():
 
     # Ensure Alpaca credentials are explicitly passed
     # Import here to get current values loaded in parent process
-    from env_real import (
-        ALP_ENDPOINT,
-        ALP_KEY_ID,
-        ALP_KEY_ID_PROD,
-        ALP_SECRET_KEY,
-        ALP_SECRET_KEY_PROD,
-        PAPER,
-    )
+    import env_real as alpaca_env
 
     # Explicitly set all credentials in child environment
     # This ensures child processes use the same credentials as parent
-    env["ALP_KEY_ID"] = ALP_KEY_ID
-    env["ALP_SECRET_KEY"] = ALP_SECRET_KEY
-    env["ALP_KEY_ID_PROD"] = ALP_KEY_ID_PROD
-    env["ALP_SECRET_KEY_PROD"] = ALP_SECRET_KEY_PROD
-    env["ALP_ENDPOINT"] = ALP_ENDPOINT
-    env["PAPER"] = "1" if PAPER else "0"
+    env["ALP_KEY_ID"] = alpaca_env.ALP_KEY_ID
+    env["ALP_SECRET_KEY"] = alpaca_env.ALP_SECRET_KEY
+    env["ALP_KEY_ID_PROD"] = alpaca_env.ALP_KEY_ID_PROD
+    env["ALP_SECRET_KEY_PROD"] = alpaca_env.ALP_SECRET_KEY_PROD
+    env["ALP_ENDPOINT"] = alpaca_env.ALP_ENDPOINT
+    env["ALP_PAPER"] = "1" if alpaca_env.PAPER else "0"
+    env["PAPER"] = "1" if alpaca_env.PAPER else "0"
 
     # Verify credentials are set (not placeholders)
-    active_key = ALP_KEY_ID if PAPER else ALP_KEY_ID_PROD
-    active_secret = ALP_SECRET_KEY if PAPER else ALP_SECRET_KEY_PROD
+    active_key = getattr(alpaca_env, "ACTIVE_ALP_KEY_ID", alpaca_env.ALP_KEY_ID)
+    active_secret = getattr(alpaca_env, "ACTIVE_ALP_SECRET_KEY", alpaca_env.ALP_SECRET_KEY)
 
     has_valid_credentials = (
         active_key
@@ -478,7 +471,7 @@ def _get_inherited_env():
     else:
         logger.debug(
             f"Spawning subprocess with PAPER={env['PAPER']}, "
-            f"using {'paper' if PAPER else 'prod'} credentials (validated)"
+            f"using {'paper' if alpaca_env.PAPER else 'prod'} credentials (validated)"
         )
 
     return env

@@ -14,11 +14,13 @@ import asyncio
 import logging
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import httpx
+
+from .clock import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +57,7 @@ class CachedBalance:
 
     @property
     def is_expired(self) -> bool:
-        return datetime.utcnow() > self.cached_at + timedelta(seconds=self.ttl_seconds)
+        return utc_now() > self.cached_at + timedelta(seconds=self.ttl_seconds)
 
 
 @dataclass
@@ -260,7 +262,7 @@ class RobustRPCClient:
         # Cache it
         self._balance_cache[pubkey] = CachedBalance(
             balance_lamports=balance,
-            cached_at=datetime.utcnow(),
+            cached_at=utc_now(),
             ttl_seconds=self.config.balance_cache_ttl_seconds,
         )
 

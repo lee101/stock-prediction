@@ -13,7 +13,7 @@ from typing import Any, Callable, Iterable, Iterator, Literal, NotRequired, Type
 import weakref
 
 from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from unified_orchestrator.jsonl_utils import append_jsonl_row
 from unified_orchestrator.state_paths import resolve_state_dir
@@ -27,6 +27,8 @@ MIN_WRITER_TTL_SECONDS = _settings.MIN_WRITER_TTL_SECONDS
 MAX_WRITER_TTL_SECONDS = _settings.MAX_WRITER_TTL_SECONDS
 MAX_ACCOUNT_NAME_LENGTH = _settings.MAX_ACCOUNT_NAME_LENGTH
 MAX_SYMBOL_LENGTH = _settings.MAX_SYMBOL_LENGTH
+DEFAULT_MAX_ORDER_HISTORY = _settings.DEFAULT_MAX_ORDER_HISTORY
+MAX_IDENTIFIER_LENGTH = 128
 
 try:
     import fcntl as _fcntl
@@ -38,6 +40,9 @@ _SAFE_ACCOUNT_NAME_RE = re.compile(
     rf"^[A-Za-z0-9](?:[A-Za-z0-9_.-]{{0,{MAX_ACCOUNT_NAME_LENGTH - 2}}}[A-Za-z0-9])?$"
 )
 _SAFE_SYMBOL_RE = re.compile(rf"^[A-Z0-9.]{{1,{MAX_SYMBOL_LENGTH}}}$")
+_SAFE_IDENTIFIER_RE = re.compile(
+    rf"^[A-Za-z0-9][A-Za-z0-9_.:-]{{0,{MAX_IDENTIFIER_LENGTH - 1}}}$"
+)
 
 TradingMode = Literal["paper", "live"]
 OrderSide = Literal["buy", "sell"]
@@ -127,15 +132,23 @@ class SubmitOrderResult(TypedDict):
     filled: bool
 
 
+class ConfiguredAccountSummary(TypedDict):
+    account: str
+    mode: TradingMode
+    symbols: list[str]
+    margin_enabled: bool
+
+
 class _AccountStateGuard:
     def __init__(self) -> None:
         self._condition = threading.Condition()
         self._readers = 0
         self._writer = False
+        self._waiting_writers = 0
 
     def acquire_read(self) -> None:
         with self._condition:
-            while self._writer:
+            while self._writer or self._waiting_writers > 0:
                 self._condition.wait()
             self._readers += 1
 
@@ -147,9 +160,13 @@ class _AccountStateGuard:
 
     def acquire_write(self) -> None:
         with self._condition:
-            while self._writer or self._readers > 0:
-                self._condition.wait()
-            self._writer = True
+            self._waiting_writers += 1
+            try:
+                while self._writer or self._readers > 0:
+                    self._condition.wait()
+                self._writer = True
+            finally:
+                self._waiting_writers -= 1
 
     def release_write(self) -> None:
         with self._condition:
@@ -215,11 +232,35 @@ def _normalize_symbol(symbol: str) -> str:
     return value
 
 
-def _normalize_side(side: str) -> str:
+def _normalize_trading_mode(mode: object) -> TradingMode:
+    value = str(mode or "").strip().lower()
+    if value not in {"paper", "live"}:
+        raise ValueError(f"unsupported mode={mode}")
+    return cast(TradingMode, value)
+
+
+def _normalize_side(side: object) -> OrderSide:
     value = str(side or "").strip().lower()
     if value not in {"buy", "sell"}:
         raise ValueError(f"unsupported side: {side}")
-    return value
+    return cast(OrderSide, value)
+
+
+def _normalize_identifier(value: object, *, field_name: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{field_name} is required")
+    if not _SAFE_IDENTIFIER_RE.fullmatch(text):
+        raise ValueError(f"unsupported {field_name}: {value}")
+    return text
+
+
+def _normalize_bot_id(bot_id: object) -> str:
+    return _normalize_identifier(bot_id, field_name="bot_id")
+
+
+def _normalize_session_id(session_id: object) -> str:
+    return _normalize_identifier(session_id, field_name="session_id")
 
 
 def _normalize_account_name_or_400(name: str) -> str:
@@ -256,6 +297,18 @@ class WriterLeaseRequest(BaseModel):
         le=MAX_WRITER_TTL_SECONDS,
     )
 
+    @field_validator("bot_id")
+    @classmethod
+    def _validate_bot_id(cls, value: str) -> str:
+        return _normalize_bot_id(value)
+
+    @field_validator("session_id")
+    @classmethod
+    def _validate_session_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _normalize_session_id(value)
+
 
 class OrderRequest(BaseModel):
     account: str
@@ -270,6 +323,16 @@ class OrderRequest(BaseModel):
     force_exit_reason: str | None = None
     live_ack: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("bot_id")
+    @classmethod
+    def _validate_bot_id(cls, value: str) -> str:
+        return _normalize_bot_id(value)
+
+    @field_validator("session_id")
+    @classmethod
+    def _validate_session_id(cls, value: str) -> str:
+        return _normalize_session_id(value)
 
 
 class RefreshPricesRequest(BaseModel):
@@ -288,11 +351,13 @@ class BinanceTradingServerEngine:
         now_fn: Callable[[], datetime] | None = None,
         quote_stale_seconds: int | None = None,
         quote_fetch_workers: int | None = None,
+        max_order_history: int | None = None,
     ) -> None:
         self.settings = BinanceTradingServerSettings.from_env(
             registry_path=registry_path,
             quote_stale_seconds=quote_stale_seconds,
             quote_fetch_workers=quote_fetch_workers,
+            max_order_history=max_order_history,
         )
         self.registry_path = self.settings.registry_path
         self.state_root = resolve_state_dir(state_dir) / "binance_trading_server"
@@ -307,7 +372,9 @@ class BinanceTradingServerEngine:
         self.now_fn = now_fn or _utc_now
         self.quote_stale_seconds = self.settings.quote_stale_seconds
         self.quote_fetch_workers = self.settings.quote_fetch_workers
+        self.max_order_history = self.settings.max_order_history
         self._lock = threading.RLock()
+        self._shared_quote_cache: dict[str, QuotePayload] = {}
         self._registry = self._load_registry()
 
     def _load_registry(self) -> dict[str, AccountConfig]:
@@ -323,12 +390,14 @@ class BinanceTradingServerEngine:
             name = _normalize_account_name(account_name)
             if not isinstance(config, dict):
                 raise RuntimeError(f"Account config for {name} must be an object")
-            mode = str(config.get("mode", "paper")).strip().lower()
-            if mode not in {"paper", "live"}:
-                raise RuntimeError(f"Account {name} has unsupported mode={mode}")
-            bot_id = str(config.get("allowed_bot_id", "")).strip()
-            if not bot_id:
-                raise RuntimeError(f"Account {name} is missing allowed_bot_id")
+            try:
+                mode = _normalize_trading_mode(config.get("mode", "paper"))
+            except ValueError as exc:
+                raise RuntimeError(f"Account {name} has {exc}") from exc
+            try:
+                bot_id = _normalize_bot_id(config.get("allowed_bot_id", ""))
+            except ValueError as exc:
+                raise RuntimeError(f"Account {name} has {exc}") from exc
             accounts[name] = {
                 "name": name,
                 "mode": mode,
@@ -342,9 +411,14 @@ class BinanceTradingServerEngine:
             }
         return accounts
 
-    def configured_accounts(self) -> list[dict[str, Any]]:
+    def configured_accounts(self) -> list[ConfiguredAccountSummary]:
         return [
-            {"account": c["name"], "mode": c["mode"], "symbols": list(c["symbols"]), "margin_enabled": c["margin_enabled"]}
+            {
+                "account": c["name"],
+                "mode": c["mode"],
+                "symbols": list(c["symbols"]),
+                "margin_enabled": c["margin_enabled"],
+            }
             for c in self._registry.values()
         ]
 
@@ -432,7 +506,10 @@ class BinanceTradingServerEngine:
         if not isinstance(payload, dict):
             raise RuntimeError(f"Corrupt account state: {path}")
         payload.setdefault("account", config["name"])
-        payload.setdefault("mode", config["mode"])
+        try:
+            payload["mode"] = _normalize_trading_mode(payload.get("mode", config["mode"]))
+        except ValueError as exc:
+            raise RuntimeError(f"Corrupt account state: {path}: {exc}") from exc
         payload.setdefault("base_currency", config["base_currency"])
         payload.setdefault("cash", float(config["starting_cash"]))
         payload.setdefault("realized_pnl", 0.0)
@@ -442,15 +519,23 @@ class BinanceTradingServerEngine:
         payload.setdefault("order_history", [])
         payload.setdefault("price_cache", {})
         payload.setdefault("writer_claim", None)
+        self._prune_order_history_unlocked(cast(AccountState, payload))
         return cast(AccountState, payload)
 
     def _save_state_unlocked(self, state: AccountState) -> None:
+        self._prune_order_history_unlocked(state)
         state["updated_at"] = _isoformat(self.now_fn())
         path = self._account_path(state["account"])
         path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = path.with_suffix(".tmp")
         temp_path.write_text(json.dumps(state, sort_keys=True, indent=2), encoding="utf-8")
         temp_path.replace(path)
+
+    def _prune_order_history_unlocked(self, state: AccountState) -> None:
+        history = state.setdefault("order_history", [])
+        excess = len(history) - self.max_order_history
+        if excess > 0:
+            del history[:excess]
 
     def _claim_is_active(self, claim: WriterClaim | None, *, now: datetime) -> bool:
         if not claim:
@@ -460,23 +545,32 @@ class BinanceTradingServerEngine:
             return False
         return expires_at > now
 
-    def _require_allowed_bot(self, config: AccountConfig, bot_id: str) -> None:
-        if str(bot_id).strip() != config["allowed_bot_id"]:
+    def _require_allowed_bot(self, config: AccountConfig, bot_id: str) -> str:
+        try:
+            normalized_bot_id = _normalize_bot_id(bot_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if normalized_bot_id != config["allowed_bot_id"]:
             raise HTTPException(
                 status_code=403,
-                detail=f"bot_id {bot_id!r} not allowed for account {config['name']}",
+                detail=f"bot_id {normalized_bot_id!r} not allowed for account {config['name']}",
             )
+        return normalized_bot_id
 
     def claim_writer(self, request: WriterLeaseRequest) -> dict[str, Any]:
         config = self._config_for_account(request.account)
         account = config["name"]
         try:
-            self._require_allowed_bot(config, request.bot_id)
+            normalized_bot_id = self._require_allowed_bot(config, request.bot_id)
         except HTTPException as exc:
             self._append_audit_event(account, "writer_claim_rejected", bot_id=request.bot_id, detail=str(exc.detail))
             raise
         now = self.now_fn()
-        session_id = str(request.session_id or uuid.uuid4())
+        try:
+            session_id = _normalize_session_id(request.session_id or uuid.uuid4())
+        except ValueError as exc:
+            self._append_audit_event(account, "writer_claim_rejected", bot_id=normalized_bot_id, detail=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         with self._account_state_guard(account):
             with self._lock:
@@ -510,22 +604,46 @@ class BinanceTradingServerEngine:
         config = self._config_for_account(request.account)
         account = config["name"]
         try:
-            self._require_allowed_bot(config, request.bot_id)
+            normalized_bot_id = self._require_allowed_bot(config, request.bot_id)
         except HTTPException as exc:
             self._append_audit_event(account, "writer_heartbeat_rejected", bot_id=request.bot_id, detail=str(exc.detail))
             raise
         now = self.now_fn()
-        session_id = str(request.session_id or "").strip()
-        if not session_id:
+        if request.session_id is None:
+            self._append_audit_event(
+                account,
+                "writer_heartbeat_rejected",
+                bot_id=normalized_bot_id,
+                detail="session_id required for heartbeat",
+            )
             raise HTTPException(status_code=400, detail="session_id required for heartbeat")
+        try:
+            session_id = _normalize_session_id(request.session_id)
+        except ValueError as exc:
+            self._append_audit_event(account, "writer_heartbeat_rejected", bot_id=normalized_bot_id, detail=str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         with self._account_state_guard(account):
             with self._lock:
                 state = self._load_state_unlocked(account, config)
                 claim = state.get("writer_claim")
                 if not self._claim_is_active(claim, now=now):
+                    self._append_audit_event(
+                        account,
+                        "writer_heartbeat_rejected",
+                        bot_id=normalized_bot_id,
+                        session_id=session_id,
+                        detail=f"no active writer lease for {account}",
+                    )
                     raise HTTPException(status_code=409, detail=f"no active writer lease for {account}")
                 if str(claim.get("session_id")) != session_id:
+                    self._append_audit_event(
+                        account,
+                        "writer_heartbeat_rejected",
+                        bot_id=normalized_bot_id,
+                        session_id=session_id,
+                        detail=f"session_id does not own {account}",
+                    )
                     raise HTTPException(status_code=409, detail=f"session_id does not own {account}")
                 expires_at = now + timedelta(seconds=int(request.ttl_seconds))
                 claim["expires_at"] = _isoformat(expires_at)
@@ -537,12 +655,16 @@ class BinanceTradingServerEngine:
 
     def _require_writer_claim(self, *, state: AccountState, config: AccountConfig, bot_id: str, session_id: str) -> None:
         self._require_allowed_bot(config, bot_id)
+        try:
+            normalized_session_id = _normalize_session_id(session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         now = self.now_fn()
         claim = state.get("writer_claim")
         if not self._claim_is_active(claim, now=now):
             raise HTTPException(status_code=409, detail=f"no active writer lease for {config['name']}")
-        if str(claim.get("session_id")) != str(session_id):
-            raise HTTPException(status_code=409, detail=f"session_id {session_id!r} does not own {config['name']}")
+        if str(claim.get("session_id")) != normalized_session_id:
+            raise HTTPException(status_code=409, detail=f"session_id {normalized_session_id!r} does not own {config['name']}")
 
     def _write_rejection(self, *, account: str, request: OrderRequest, reason: str, detail: str) -> None:
         try:
@@ -561,16 +683,20 @@ class BinanceTradingServerEngine:
         )
 
     def _quote_from_cache_unlocked(self, state: AccountState, symbol: str) -> QuotePayload | None:
-        quote = state.get("price_cache", {}).get(symbol)
-        if not isinstance(quote, dict):
-            return None
-        as_of = _parse_ts(quote.get("as_of"))
-        if as_of is None:
-            return None
-        age = (self.now_fn() - as_of).total_seconds()
-        if age > self.quote_stale_seconds:
-            return None
-        return quote
+        for quote in (
+            state.get("price_cache", {}).get(symbol),
+            self._shared_quote_cache.get(symbol),
+        ):
+            if not isinstance(quote, dict):
+                continue
+            as_of = _parse_ts(quote.get("as_of"))
+            if as_of is None:
+                continue
+            age = (self.now_fn() - as_of).total_seconds()
+            if age > self.quote_stale_seconds:
+                continue
+            return quote
+        return None
 
     def _default_quote_provider(self, symbol: str) -> QuotePayload | None:
         try:
@@ -611,19 +737,40 @@ class BinanceTradingServerEngine:
             return None
         return self._normalize_quote_payload(quote, symbol)
 
-    def _store_quote_unlocked(self, state: AccountState, symbol: str, quote: dict[str, Any]) -> QuotePayload:
+    def _store_quote_unlocked(
+        self,
+        state: AccountState,
+        symbol: str,
+        quote: dict[str, Any],
+        *,
+        persist: bool = True,
+    ) -> QuotePayload:
         normalized = self._normalize_quote_payload(quote, symbol)
-        state.setdefault("price_cache", {})[symbol] = normalized
+        self._shared_quote_cache[symbol] = normalized
+        if persist:
+            state.setdefault("price_cache", {})[symbol] = normalized
         return normalized
+
+    def _refresh_quote_unlocked(
+        self,
+        state: AccountState,
+        symbol: str,
+        *,
+        persist: bool = True,
+    ) -> QuotePayload | None:
+        refreshed = self._fetch_quote(symbol)
+        if refreshed is None:
+            return None
+        return self._store_quote_unlocked(state, symbol, refreshed, persist=persist)
 
     def _get_or_refresh_quote_unlocked(self, state: AccountState, symbol: str) -> QuotePayload:
         quote = self._quote_from_cache_unlocked(state, symbol)
         if quote is not None:
             return quote
-        refreshed = self._fetch_quote(symbol)
+        refreshed = self._refresh_quote_unlocked(state, symbol)
         if refreshed is None:
             raise HTTPException(status_code=503, detail=f"quote unavailable for {symbol}")
-        return self._store_quote_unlocked(state, symbol, refreshed)
+        return refreshed
 
     def _fill_price_for_order(self, order: OrderRecord, quote: QuotePayload) -> float | None:
         side = _normalize_side(order["side"])
@@ -804,7 +951,9 @@ class BinanceTradingServerEngine:
             "metadata": request.metadata,
             "created_at": _isoformat(self.now_fn()), "filled_at": None, "fill_price": None,
         })
-        quote = self._get_or_refresh_quote_unlocked(state, symbol)
+        quote = self._refresh_quote_unlocked(state, symbol)
+        if quote is None:
+            quote = self._get_or_refresh_quote_unlocked(state, symbol)
         fill_price = self._fill_price_for_order(order, quote)
         if fill_price is None:
             state.setdefault("open_orders", []).append(order)
@@ -873,6 +1022,41 @@ class BinanceTradingServerEngine:
                 )
                 return result
 
+    def _attempt_open_order_fills_unlocked(
+        self,
+        *,
+        state: AccountState,
+        config: AccountConfig,
+        klines: dict[str, dict[str, float]] | None = None,
+    ) -> list[OrderRecord]:
+        open_orders = list(state.get("open_orders", []))
+        if not open_orders:
+            return []
+        remaining: list[OrderRecord] = []
+        filled: list[OrderRecord] = []
+        for order in open_orders:
+            symbol = _normalize_symbol(order["symbol"])
+            fill_price = None
+            if klines and symbol in klines:
+                fill_price = self._fill_price_for_kline(order, klines[symbol])
+            if fill_price is None:
+                quote = self._quote_from_cache_unlocked(state, symbol)
+                if quote is not None:
+                    fill_price = self._fill_price_for_order(order, quote)
+            if fill_price is None:
+                remaining.append(order)
+                continue
+            self._record_fill_unlocked(
+                state=state,
+                config=config,
+                order=order,
+                fill_price=fill_price,
+                filled_at=self.now_fn(),
+            )
+            filled.append(order)
+        state["open_orders"] = remaining
+        return filled
+
     def attempt_open_order_fills(
         self, account: str, *, klines: dict[str, dict[str, float]] | None = None,
     ) -> list[OrderRecord]:
@@ -880,26 +1064,11 @@ class BinanceTradingServerEngine:
         with self._account_state_guard(account):
             with self._lock:
                 state = self._load_state_unlocked(account, config)
-                open_orders = list(state.get("open_orders", []))
-                if not open_orders:
-                    return []
-                remaining: list[OrderRecord] = []
-                filled: list[OrderRecord] = []
-                for order in open_orders:
-                    symbol = _normalize_symbol(order["symbol"])
-                    fill_price = None
-                    if klines and symbol in klines:
-                        fill_price = self._fill_price_for_kline(order, klines[symbol])
-                    if fill_price is None:
-                        quote = self._quote_from_cache_unlocked(state, symbol)
-                        if quote is not None:
-                            fill_price = self._fill_price_for_order(order, quote)
-                    if fill_price is None:
-                        remaining.append(order)
-                        continue
-                    self._record_fill_unlocked(state=state, config=config, order=order, fill_price=fill_price, filled_at=self.now_fn())
-                    filled.append(order)
-                state["open_orders"] = remaining
+                filled = self._attempt_open_order_fills_unlocked(
+                    state=state,
+                    config=config,
+                    klines=klines,
+                )
                 self._save_state_unlocked(state)
                 return filled
 
@@ -921,13 +1090,14 @@ class BinanceTradingServerEngine:
 
         all_syms = {s for ss in account_symbols.values() for s in ss}
         fetched: dict[str, QuotePayload] = {}
+        quote_error_symbols: set[str] = set()
         for sym in sorted(all_syms):
             try:
                 q = self._fetch_quote(sym)
                 if q is not None:
                     fetched[sym] = q
             except Exception:
-                pass
+                quote_error_symbols.add(sym)
 
         results: list[dict[str, Any]] = []
         for acct, syms in account_symbols.items():
@@ -939,11 +1109,34 @@ class BinanceTradingServerEngine:
                     for sym in sorted(syms):
                         q = fetched.get(sym)
                         if q is not None:
-                            self._store_quote_unlocked(st, sym, q)
+                            self._store_quote_unlocked(st, sym, q, persist=False)
                             refreshed.append(sym)
-                    fills = self.attempt_open_order_fills(acct, klines=None)
-                    self._save_state_unlocked(st)
-                    results.append({"account": acct, "refreshed_symbols": refreshed, "filled_orders": [o["id"] for o in fills]})
+                    fills = self._attempt_open_order_fills_unlocked(
+                        state=st,
+                        config=cfg,
+                        klines=None,
+                    )
+                    if fills:
+                        self._save_state_unlocked(st)
+                    unavailable_symbols = sorted(sym for sym in syms if sym not in fetched)
+                    account_quote_error_symbols = sorted(sym for sym in syms if sym in quote_error_symbols)
+                    self._append_audit_event(
+                        acct,
+                        "prices_refreshed",
+                        refreshed_symbols=refreshed,
+                        unavailable_symbols=unavailable_symbols,
+                        quote_error_symbols=account_quote_error_symbols,
+                        filled_orders=[o["id"] for o in fills],
+                    )
+                    results.append(
+                        {
+                            "account": acct,
+                            "refreshed_symbols": refreshed,
+                            "unavailable_symbols": unavailable_symbols,
+                            "quote_error_symbols": account_quote_error_symbols,
+                            "filled_orders": [o["id"] for o in fills],
+                        }
+                    )
         return {"accounts": results}
 
     def get_account_snapshot(self, account: str) -> dict[str, Any]:

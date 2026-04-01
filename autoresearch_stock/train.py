@@ -626,6 +626,16 @@ def select_device(raw: str | None) -> torch.device:
     return torch.device(token)
 
 
+def should_fallback_to_cpu(raw: str | None, device: torch.device, exc: BaseException) -> bool:
+    token = (raw or "auto").strip().lower()
+    if token != "auto" or device.type != "cuda":
+        return False
+    if isinstance(exc, torch.OutOfMemoryError):
+        return True
+    accelerator_error = getattr(torch, "AcceleratorError", None)
+    return accelerator_error is not None and isinstance(exc, accelerator_error)
+
+
 def seed_everything(seed: int) -> None:
     random.seed(int(seed))
     np.random.seed(int(seed))
@@ -692,7 +702,13 @@ def evaluate_validation(
     return planner_mean, selection_mean
 
 
-def build_dataloaders(task, cfg: PlannerConfig, *, ambiguity_floor: float) -> tuple[DataLoader, DataLoader, np.ndarray, np.ndarray]:
+def build_dataloaders(
+    task,
+    cfg: PlannerConfig,
+    *,
+    ambiguity_floor: float,
+    pin_memory: bool | None = None,
+) -> tuple[DataLoader, DataLoader, np.ndarray, np.ndarray]:
     spread_feature_index = task.feature_names.index("spread_bps_norm")
     volatility_feature_index = task.feature_names.index("volatility")
     symbol_fee_rates = np.zeros((len(task.symbol_to_id),), dtype=np.float32)
@@ -808,13 +824,14 @@ def build_dataloaders(task, cfg: PlannerConfig, *, ambiguity_floor: float) -> tu
         val_budget_labels,
     )
     generator = torch.Generator().manual_seed(int(cfg.seed))
+    resolved_pin_memory = bool(torch.cuda.is_available()) if pin_memory is None else bool(pin_memory)
     train_loader = DataLoader(
         train_dataset,
         batch_size=int(cfg.batch_size),
         shuffle=True,
         drop_last=bool(len(train_dataset) >= int(cfg.batch_size)),
         num_workers=0,
-        pin_memory=bool(torch.cuda.is_available()),
+        pin_memory=resolved_pin_memory,
         generator=generator,
     )
     val_loader = DataLoader(
@@ -823,7 +840,7 @@ def build_dataloaders(task, cfg: PlannerConfig, *, ambiguity_floor: float) -> tu
         shuffle=False,
         drop_last=False,
         num_workers=0,
-        pin_memory=bool(torch.cuda.is_available()),
+        pin_memory=resolved_pin_memory,
     )
     return train_loader, val_loader, derive_plan_class_weights(train_plan_labels), budget_class_weights
 
@@ -944,6 +961,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         task,
         planner_cfg,
         ambiguity_floor=ambiguity_floor,
+        pin_memory=(device.type == "cuda"),
     )
     model = PlannerNet(
         feature_dim=int(task.train_features.shape[-1]),
@@ -953,7 +971,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         dropout=planner_cfg.dropout,
         symbol_embedding_dim=planner_cfg.symbol_embedding_dim,
         weak_action_scale=planner_cfg.weak_action_scale,
-    ).to(device)
+    )
+    try:
+        model = model.to(device)
+    except Exception as exc:
+        if should_fallback_to_cpu(args.device, device, exc):
+            print(
+                f"warning: auto-selected CUDA unavailable at runtime, falling back to CPU: {exc}",
+                flush=True,
+            )
+            device = torch.device("cpu")
+            train_loader, val_loader, plan_class_weights_np, budget_class_weights_np = build_dataloaders(
+                task,
+                planner_cfg,
+                ambiguity_floor=ambiguity_floor,
+                pin_memory=False,
+            )
+            model = model.to(device)
+        else:
+            raise
     ema_state = clone_model_state(model)
     plan_class_weights = torch.from_numpy(plan_class_weights_np).to(device=device, dtype=torch.float32)
     budget_class_weights = torch.from_numpy(budget_class_weights_np).to(device=device, dtype=torch.float32)

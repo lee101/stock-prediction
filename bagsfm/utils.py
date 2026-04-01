@@ -5,9 +5,11 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import List, Tuple
 
 import numpy as np
+
+from .clock import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -345,7 +347,7 @@ def is_market_hours() -> bool:
     Returns:
         True if during high-volume hours (roughly US/Asia overlap)
     """
-    now = datetime.utcnow()
+    now = utc_now()
     hour = now.hour
 
     # High volume: 12:00-22:00 UTC (US morning to Asia evening)
@@ -454,7 +456,7 @@ class RateLimiter:
         """Wait until a call can be made."""
         import asyncio
 
-        now = datetime.utcnow()
+        now = utc_now()
         cutoff = now - timedelta(minutes=1)
 
         # Remove old calls
@@ -466,12 +468,12 @@ class RateLimiter:
             if wait_time > 0:
                 await asyncio.sleep(wait_time)
 
-        self._call_times.append(datetime.utcnow())
+        self._call_times.append(utc_now())
 
     @property
     def remaining(self) -> int:
         """Remaining calls in current window."""
-        now = datetime.utcnow()
+        now = utc_now()
         cutoff = now - timedelta(minutes=1)
         recent = len([t for t in self._call_times if t > cutoff])
         return max(0, self.calls_per_minute - recent)

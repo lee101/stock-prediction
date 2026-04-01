@@ -290,6 +290,22 @@ def _resolve_chronos2_device_map(params: dict[str, Any]) -> str:
     return requested
 
 
+def _chronos2_can_fallback_to_cpu(params: dict[str, Any]) -> bool:
+    requested = str(params.get("device_map", "") or "").strip().lower()
+    if requested.startswith("cpu"):
+        return False
+    if not requested:
+        return True
+    return requested.startswith("cuda") or requested in {"auto", "balanced", "balanced_low_0", "sequential"}
+
+
+def _is_cuda_resource_pressure_error(exc: BaseException) -> bool:
+    if isinstance(exc, torch.OutOfMemoryError):
+        return True
+    accelerator_error = getattr(torch, "AcceleratorError", None)
+    return accelerator_error is not None and isinstance(exc, accelerator_error)
+
+
 def _chronos2_cache_key(params: dict[str, Any]) -> tuple[Any, ...]:
     return (
         str(params.get("model_id", "")),
@@ -365,13 +381,34 @@ def load_chronos2_wrapper(params: dict[str, Any]):
     if wrapper is not None:
         return wrapper
     runtime_device_map = _resolve_chronos2_device_map(params)
-    wrapper = Chronos2OHLCWrapper.from_pretrained(
-        model_id=str(params.get("model_id", "amazon/chronos-2")),
-        device_map=runtime_device_map,
-        default_context_length=int(params.get("context_length", params.get("default_context_length", 512)) or 512),
-        default_batch_size=int(params.get("batch_size", params.get("default_batch_size", 128)) or 128),
-        quantile_levels=tuple(params.get("quantile_levels", (0.1, 0.5, 0.9))),
-    )
+    model_id = str(params.get("model_id", "amazon/chronos-2"))
+    default_context_length = int(params.get("context_length", params.get("default_context_length", 512)) or 512)
+    default_batch_size = int(params.get("batch_size", params.get("default_batch_size", 128)) or 128)
+    quantile_levels = tuple(params.get("quantile_levels", (0.1, 0.5, 0.9)))
+    try:
+        wrapper = Chronos2OHLCWrapper.from_pretrained(
+            model_id=model_id,
+            device_map=runtime_device_map,
+            default_context_length=default_context_length,
+            default_batch_size=default_batch_size,
+            quantile_levels=quantile_levels,
+        )
+    except Exception as exc:
+        if runtime_device_map != "cpu" and _chronos2_can_fallback_to_cpu(params) and _is_cuda_resource_pressure_error(exc):
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            cpu_params = dict(params)
+            cpu_params["device_map"] = "cpu"
+            wrapper = Chronos2OHLCWrapper.from_pretrained(
+                model_id=model_id,
+                device_map="cpu",
+                default_context_length=default_context_length,
+                default_batch_size=default_batch_size,
+                quantile_levels=quantile_levels,
+            )
+            _chronos2_wrapper_cache[_chronos2_cache_key(cpu_params)] = wrapper
+        else:
+            raise
     _chronos2_wrapper_cache[key] = wrapper
     return wrapper
 

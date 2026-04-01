@@ -6,14 +6,13 @@ Tests GPU availability and functionality for training and inference.
 
 import torch
 import sys
-import os
 from pathlib import Path
 
 # Add parent directory to path
 sys.path.append(str(Path(__file__).parent.parent))
 
 try:
-    from utils.gpu_utils import GPUManager, GPUMonitor, log_gpu_info, get_device
+    from utils.gpu_utils import GPUManager, log_gpu_info, get_device
 except (ImportError, ModuleNotFoundError):
     import pytest
     pytestmark = pytest.mark.skip(reason="utils.gpu_utils not available")
@@ -65,7 +64,7 @@ def test_gpu_operations():
         
         # Test computation
         print("Testing matrix multiplication...")
-        z = torch.matmul(x, y)
+        torch.matmul(x, y)
         
         # Test memory
         allocated = torch.cuda.memory_allocated() / 1024**2
@@ -76,7 +75,7 @@ def test_gpu_operations():
         # Test mixed precision
         print("\nTesting mixed precision...")
         with torch.cuda.amp.autocast():
-            z_amp = torch.matmul(x, y)
+            torch.matmul(x, y)
         
         print("✓ GPU operations successful!")
         
@@ -198,6 +197,10 @@ def test_model_on_gpu():
     print()
 
 
+def _is_cuda_resource_pressure_error(exc: BaseException) -> bool:
+    return "out of memory" in str(exc).lower()
+
+
 def test_multi_gpu():
     """Test multi-GPU setup if available"""
     print("=" * 60)
@@ -226,6 +229,8 @@ def test_multi_gpu():
         print("✓ Multi-GPU test passed!")
         
     except Exception as e:
+        if _is_cuda_resource_pressure_error(e):
+            pytest.skip(f"Multi-GPU setup test skipped under shared-GPU resource pressure: {e}")
         print(f"✗ Multi-GPU test failed: {e}")
     
     print()

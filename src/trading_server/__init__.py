@@ -1,7 +1,15 @@
-from .client import TradingServerClient
+from .client import InMemoryTradingServerClient, TradingServerClient, TradingServerClientLike
 from .settings import TradingServerSettings
 
-__all__ = ["TradingServerClient", "TradingServerSettings", "TradingServerEngine", "app", "create_app"]
+__all__ = [
+    "InMemoryTradingServerClient",
+    "TradingServerClient",
+    "TradingServerClientLike",
+    "TradingServerSettings",
+    "TradingServerEngine",
+    "app",
+    "create_app",
+]
 
 
 def __getattr__(name: str):
