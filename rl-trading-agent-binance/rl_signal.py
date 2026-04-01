@@ -5,21 +5,23 @@ models (e.g. mixed23 with obs_dim=396, action_dim=47).
 
 Architecture and symbol count are auto-detected from the checkpoint.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 
+
 try:
     from loguru import logger
 except ImportError:
     import logging
+
     logger = logging.getLogger(__name__)
 
 FEATURES_PER_SYM = 16
@@ -33,16 +35,41 @@ NUM_ACTIONS = 1 + 2 * NUM_SYMBOLS  # 9
 
 ACTION_NAMES = [
     "FLAT",
-    "LONG_BTC", "LONG_ETH", "LONG_DOGE", "LONG_AAVE",
-    "SHORT_BTC", "SHORT_ETH", "SHORT_DOGE", "SHORT_AAVE",
+    "LONG_BTC",
+    "LONG_ETH",
+    "LONG_DOGE",
+    "LONG_AAVE",
+    "SHORT_BTC",
+    "SHORT_ETH",
+    "SHORT_DOGE",
+    "SHORT_AAVE",
 ]
 
 # Mixed23 symbol order (must match pufferlib_market/data/mixed23_*.bin)
 MIXED23_SYMBOLS = (
-    "AAPL", "NFLX", "NVDA", "ADBE", "ADSK", "COIN", "GOOG", "MSFT",
-    "PYPL", "SAP", "TSLA",
-    "BTCUSD", "ETHUSD", "SOLUSD", "LTCUSD", "AVAXUSD", "DOGEUSD",
-    "LINKUSD", "AAVEUSD", "UNIUSD", "DOTUSD", "SHIBUSD", "XRPUSD",
+    "AAPL",
+    "NFLX",
+    "NVDA",
+    "ADBE",
+    "ADSK",
+    "COIN",
+    "GOOG",
+    "MSFT",
+    "PYPL",
+    "SAP",
+    "TSLA",
+    "BTCUSD",
+    "ETHUSD",
+    "SOLUSD",
+    "LTCUSD",
+    "AVAXUSD",
+    "DOGEUSD",
+    "LINKUSD",
+    "AAVEUSD",
+    "UNIUSD",
+    "DOTUSD",
+    "SHIBUSD",
+    "XRPUSD",
 )
 
 # Map from symbol name -> Binance trading pair for live kline fetch
@@ -65,9 +92,21 @@ SYMBOL_TO_BINANCE_PAIR = {
 }
 
 CRYPTO15_SYMBOLS = (
-    "BTCUSD", "ETHUSD", "SOLUSD", "LTCUSD", "AVAXUSD", "DOGEUSD",
-    "LINKUSD", "ADAUSD", "UNIUSD", "AAVEUSD", "ALGOUSD", "DOTUSD",
-    "SHIBUSD", "XRPUSD", "MATICUSD",
+    "BTCUSD",
+    "ETHUSD",
+    "SOLUSD",
+    "LTCUSD",
+    "AVAXUSD",
+    "DOGEUSD",
+    "LINKUSD",
+    "ADAUSD",
+    "UNIUSD",
+    "AAVEUSD",
+    "ALGOUSD",
+    "DOTUSD",
+    "SHIBUSD",
+    "XRPUSD",
+    "MATICUSD",
 )
 
 # Known obs_size -> symbol tuple mapping for auto-detection
@@ -93,14 +132,15 @@ def _build_action_names(symbols: tuple[str, ...]) -> list[str]:
 # Policy architecture (must match training exactly)
 # ---------------------------------------------------------------------------
 
+
 class RunningObsNorm(nn.Module):
     def __init__(self, size, eps=1e-5, clip=10.0):
         super().__init__()
         self.eps = eps
         self.clip = clip
-        self.register_buffer('running_mean', torch.zeros(size))
-        self.register_buffer('running_var', torch.ones(size))
-        self.register_buffer('count', torch.tensor(1e-4))
+        self.register_buffer("running_mean", torch.zeros(size))
+        self.register_buffer("running_var", torch.ones(size))
+        self.register_buffer("count", torch.tensor(1e-4))
 
     def forward(self, x):
         return ((x - self.running_mean) / (self.running_var.sqrt() + self.eps)).clamp(-self.clip, self.clip)
@@ -113,16 +153,21 @@ class TradingPolicy(nn.Module):
         if use_obs_norm:
             self.obs_norm = RunningObsNorm(obs_size)
         self.encoder = nn.Sequential(
-            nn.Linear(obs_size, hidden), nn.ReLU(),
-            nn.Linear(hidden, hidden), nn.ReLU(),
-            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(obs_size, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, hidden),
+            nn.ReLU(),
         )
         self.actor = nn.Sequential(
-            nn.Linear(hidden, hidden // 2), nn.ReLU(),
+            nn.Linear(hidden, hidden // 2),
+            nn.ReLU(),
             nn.Linear(hidden // 2, num_actions),
         )
         self.critic = nn.Sequential(
-            nn.Linear(hidden, hidden // 2), nn.ReLU(),
+            nn.Linear(hidden, hidden // 2),
+            nn.ReLU(),
             nn.Linear(hidden // 2, 1),
         )
 
@@ -136,6 +181,7 @@ class TradingPolicy(nn.Module):
 # ---------------------------------------------------------------------------
 # Feature computation (mirrors pufferlib_market/export_data_hourly_forecast.py)
 # ---------------------------------------------------------------------------
+
 
 def _load_forecast_parquet(cache_root: Path, horizon: int, symbol: str) -> pd.DataFrame:
     path = cache_root / f"h{horizon}" / f"{symbol.upper()}.parquet"
@@ -156,8 +202,7 @@ def _load_forecast_parquet(cache_root: Path, horizon: int, symbol: str) -> pd.Da
     return frame
 
 
-def _forecast_delta(forecast: pd.DataFrame, index: pd.DatetimeIndex,
-                    col: str, close: pd.Series) -> pd.Series:
+def _forecast_delta(forecast: pd.DataFrame, index: pd.DatetimeIndex, col: str, close: pd.Series) -> pd.Series:
     if col not in forecast.columns or forecast.empty:
         return pd.Series(0.0, index=index, dtype=np.float32)
     aligned = forecast[col].reindex(index)
@@ -166,8 +211,7 @@ def _forecast_delta(forecast: pd.DataFrame, index: pd.DatetimeIndex,
     return delta.replace([np.inf, -np.inf], np.nan).fillna(0.0).astype(np.float32)
 
 
-def _forecast_confidence(forecast: pd.DataFrame, index: pd.DatetimeIndex,
-                         close: pd.Series) -> pd.Series:
+def _forecast_confidence(forecast: pd.DataFrame, index: pd.DatetimeIndex, close: pd.Series) -> pd.Series:
     p90, p10 = "predicted_close_p90", "predicted_close_p10"
     if p90 not in forecast.columns or p10 not in forecast.columns or forecast.empty:
         return pd.Series(0.5, index=index, dtype=np.float32)
@@ -200,7 +244,9 @@ def compute_symbol_features(
 
     ret_1h = close.pct_change(1).replace([np.inf, -np.inf], np.nan).fillna(0.0)
     feat["return_1h"] = ret_1h.clip(-0.5, 0.5).astype(np.float32)
-    feat["return_24h"] = close.pct_change(24).replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(-1.0, 1.0).astype(np.float32)
+    feat["return_24h"] = (
+        close.pct_change(24).replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(-1.0, 1.0).astype(np.float32)
+    )
     feat["volatility_24h"] = ret_1h.rolling(24, min_periods=1).std(ddof=0).fillna(0.0).clip(0.0, 1.0).astype(np.float32)
 
     ma24 = close.rolling(24, min_periods=1).mean()
@@ -211,10 +257,14 @@ def compute_symbol_features(
     tr = pd.concat([high - low, (high - close.shift(1)).abs(), (low - close.shift(1)).abs()], axis=1).max(axis=1)
     atr24 = tr.rolling(24, min_periods=1).mean()
     feat["atr_pct_24h"] = (atr24 / close.clip(lower=1e-8)).fillna(0.0).clip(0.0, 0.5).astype(np.float32)
-    feat["trend_72h"] = close.pct_change(72).replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(-1.0, 1.0).astype(np.float32)
+    feat["trend_72h"] = (
+        close.pct_change(72).replace([np.inf, -np.inf], np.nan).fillna(0.0).clip(-1.0, 1.0).astype(np.float32)
+    )
 
     roll_max = close.rolling(72, min_periods=1).max()
-    feat["drawdown_72h"] = ((close - roll_max) / roll_max.clip(lower=1e-8)).fillna(0.0).clip(-1.0, 0.0).astype(np.float32)
+    feat["drawdown_72h"] = (
+        ((close - roll_max) / roll_max.clip(lower=1e-8)).fillna(0.0).clip(-1.0, 0.0).astype(np.float32)
+    )
 
     return feat.replace([np.inf, -np.inf], np.nan).fillna(0.0).to_numpy(dtype=np.float32)
 
@@ -223,12 +273,14 @@ def compute_symbol_features(
 # Portfolio state tracker
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class PortfolioSnapshot:
     """Current portfolio state for obs construction."""
+
     cash_usd: float = 0.0
     total_value_usd: float = 0.0
-    position_symbol: Optional[str] = None
+    position_symbol: str | None = None
     position_value_usd: float = 0.0
     unrealized_pnl_usd: float = 0.0
     hold_hours: int = 0
@@ -239,11 +291,12 @@ class PortfolioSnapshot:
 # Main signal generator
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class RLSignal:
     action: int
     action_name: str
-    target_symbol: Optional[str]
+    target_symbol: str | None
     direction: str  # "long", "flat"
     logits: list[float] = field(default_factory=list)
     value: float = 0.0
@@ -294,8 +347,8 @@ class RLSignalGenerator:
         self,
         checkpoint_path: str | Path,
         forecast_cache_root: str | Path = "binanceneural/forecast_cache",
-        device: str = "cpu",
-        symbols: Optional[tuple[str, ...]] = None,
+        device: str = "cuda",
+        symbols: tuple[str, ...] | None = None,
     ):
         self.device = torch.device(device)
         self.forecast_cache_root = Path(forecast_cache_root)
@@ -343,17 +396,21 @@ class RLSignalGenerator:
 
     def _fetch_klines(self, binance_pair: str, limit: int = 96) -> pd.DataFrame:
         from src.binan import binance_wrapper as bw
+
+        # todo optimize to only get latest hour and have already got/cached this in trainingdata/ in daily case or trainingdatahourly/ in this case
         klines = bw.get_client().get_klines(symbol=binance_pair, interval="1h", limit=limit)
         rows = []
         for k in klines:
-            rows.append({
-                "timestamp": pd.Timestamp(k[0], unit="ms", tz="UTC").floor("h"),
-                "open": float(k[1]),
-                "high": float(k[2]),
-                "low": float(k[3]),
-                "close": float(k[4]),
-                "volume": float(k[5]),
-            })
+            rows.append(
+                {
+                    "timestamp": pd.Timestamp(k[0], unit="ms", tz="UTC").floor("h"),
+                    "open": float(k[1]),
+                    "high": float(k[2]),
+                    "low": float(k[3]),
+                    "close": float(k[4]),
+                    "volume": float(k[5]),
+                }
+            )
         df = pd.DataFrame(rows).set_index("timestamp").sort_index()
         df = df[~df.index.duplicated(keep="last")]
         return df
@@ -378,7 +435,7 @@ class RLSignalGenerator:
     ) -> np.ndarray:
         S = self.num_symbols
         obs = np.zeros(self.obs_size, dtype=np.float32)
-        obs[:S * FEATURES_PER_SYM] = market_features.flatten()
+        obs[: S * FEATURES_PER_SYM] = market_features.flatten()
 
         base = S * FEATURES_PER_SYM
         obs[base + 0] = portfolio.cash_usd / INITIAL_CASH
@@ -396,7 +453,7 @@ class RLSignalGenerator:
 
         return obs
 
-    def _decode_action(self, action: int) -> tuple[Optional[str], str]:
+    def _decode_action(self, action: int) -> tuple[str | None, str]:
         """Decode flat action index to (target_symbol, direction).
 
         Action layout: 0=flat, 1..S*psa=long, S*psa+1..2*S*psa=short
@@ -417,7 +474,7 @@ class RLSignalGenerator:
             return self.symbols[sym_idx], "short"
         return None, "flat"
 
-    def _action_to_symbol(self, action: int) -> Optional[str]:
+    def _action_to_symbol(self, action: int) -> str | None:
         """Return the symbol for a given action index, or None for FLAT."""
         sym, _ = self._decode_action(action)
         return sym
@@ -444,17 +501,15 @@ class RLSignalGenerator:
     def get_signal(
         self,
         portfolio: PortfolioSnapshot,
-        klines_map: Optional[dict[str, pd.DataFrame]] = None,
-        binance_pairs: Optional[dict[str, str]] = None,
-        tradable_symbols: Optional[list[str]] = None,
+        klines_map: dict[str, pd.DataFrame] | None = None,
+        binance_pairs: dict[str, str] | None = None,
+        tradable_symbols: list[str] | None = None,
         spot_only: bool = True,
     ) -> RLSignal:
         if klines_map is None:
             if binance_pairs is None:
                 binance_pairs = {
-                    sym: SYMBOL_TO_BINANCE_PAIR[sym]
-                    for sym in self.symbols
-                    if sym in SYMBOL_TO_BINANCE_PAIR
+                    sym: SYMBOL_TO_BINANCE_PAIR[sym] for sym in self.symbols if sym in SYMBOL_TO_BINANCE_PAIR
                 }
             klines_map = {}
             for sym, pair in binance_pairs.items():

@@ -3,6 +3,7 @@
 Assembles rich context from multiple signal sources into a prompt for Gemini
 to produce an optimized multi-asset allocation plan.
 """
+
 from __future__ import annotations
 
 import json
@@ -10,32 +11,27 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
+
 
 try:
     from loguru import logger
 except ImportError:
     import logging
+
     logger = logging.getLogger(__name__)
 
 from rl_signal import (
-    RLSignalGenerator,
-    PortfolioSnapshot,
-    RLSignal,
-    SYMBOLS,
     ACTION_NAMES,
-    SYMBOL_TO_BINANCE_PAIR,
+    SYMBOLS,
+    RLSignal,
     _load_forecast_parquet,
 )
 
-# ---------------------------------------------------------------------------
-# Data structures
-# ---------------------------------------------------------------------------
 
 SYMBOL_BINANCE_MAP = {
     "BTCUSD": ("BTCFDUSD", "BTC", "FDUSD"),
@@ -85,6 +81,7 @@ class SymbolContext:
 @dataclass
 class AllocationPlan:
     """Gemini's output: per-symbol allocation + reasoning."""
+
     allocations: dict[str, float] = field(default_factory=dict)  # symbol -> pct 0-100
     entry_prices: dict[str, float] = field(default_factory=dict)
     exit_prices: dict[str, float] = field(default_factory=dict)
@@ -99,18 +96,16 @@ class AllocationPlan:
 @dataclass
 class PlanOutcome:
     """What happened after executing a plan (for context in next cycle)."""
+
     plan: AllocationPlan
     pnl_usd: float = 0.0
     pnl_pct: float = 0.0
     fills: list[str] = field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
-# Context gathering
-# ---------------------------------------------------------------------------
-
 def _fetch_klines(binance_pair: str, limit: int = 96) -> pd.DataFrame:
     from src.binan import binance_wrapper as bw
+
     try:
         klines = bw.get_client().get_klines(symbol=binance_pair, interval="1h", limit=limit)
     except Exception:
@@ -118,14 +113,16 @@ def _fetch_klines(binance_pair: str, limit: int = 96) -> pd.DataFrame:
         klines = bw.get_client().get_klines(symbol=alt_pair, interval="1h", limit=limit)
     rows = []
     for k in klines:
-        rows.append({
-            "timestamp": pd.Timestamp(k[0], unit="ms", tz="UTC").floor("h"),
-            "open": float(k[1]),
-            "high": float(k[2]),
-            "low": float(k[3]),
-            "close": float(k[4]),
-            "volume": float(k[5]),
-        })
+        rows.append(
+            {
+                "timestamp": pd.Timestamp(k[0], unit="ms", tz="UTC").floor("h"),
+                "open": float(k[1]),
+                "high": float(k[2]),
+                "low": float(k[3]),
+                "close": float(k[4]),
+                "volume": float(k[5]),
+            }
+        )
     df = pd.DataFrame(rows).set_index("timestamp").sort_index()
     return df[~df.index.duplicated(keep="last")]
 
@@ -175,7 +172,7 @@ def _get_forecast_latest(cache_root: Path, symbol: str, horizon: int) -> dict:
 
 def gather_symbol_contexts(
     forecast_cache_root: Path,
-    symbols: Optional[tuple[str, ...]] = None,
+    symbols: tuple[str, ...] | None = None,
 ) -> list[SymbolContext]:
     """Fetch data for all tradable RL symbols."""
     if symbols is None:
@@ -235,10 +232,6 @@ def gather_symbol_contexts(
     return contexts
 
 
-# ---------------------------------------------------------------------------
-# Prompt builder
-# ---------------------------------------------------------------------------
-
 def _fmt_price(v: float) -> str:
     if v < 1:
         return f"{v:.5f}"
@@ -252,7 +245,7 @@ def _format_klines_compact(klines: pd.DataFrame, n: int = 12) -> str:
     lines = []
     for ts, r in rows.iterrows():
         t = str(ts)[:16]
-        o, h, l, c = _fmt_price(r['open']), _fmt_price(r['high']), _fmt_price(r['low']), _fmt_price(r['close'])
+        o, h, l, c = _fmt_price(r["open"]), _fmt_price(r["high"]), _fmt_price(r["low"]), _fmt_price(r["close"])
         lines.append(f"  {t}  O={o:<12s} H={h:<12s} L={l:<12s} C={c:<12s} V={r['volume']:.0f}")
     return "\n".join(lines)
 
@@ -269,12 +262,12 @@ def build_allocation_prompt(
     portfolio_value: float,
     cash_usd: float,
     positions: dict[str, float],  # base_asset -> qty
-    prev_plan: Optional[AllocationPlan] = None,
-    prev_outcome: Optional[PlanOutcome] = None,
-    rl_symbols: Optional[tuple[str, ...]] = None,
-    rl_action_names: Optional[list[str]] = None,
+    prev_plan: AllocationPlan | None = None,
+    prev_outcome: PlanOutcome | None = None,
+    rl_symbols: tuple[str, ...] | None = None,
+    rl_action_names: list[str] | None = None,
 ) -> str:
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     probs = _softmax(rl_signal.logits)
     action_names = rl_action_names if rl_action_names else ACTION_NAMES
     prob_labels = [f"{action_names[i]}={probs[i]:.0%}" for i in range(min(len(probs), len(action_names)))]
@@ -376,15 +369,14 @@ Last 12h:
         if ctx.symbol in SYMBOL_BINANCE_MAP:
             _, _, quote = SYMBOL_BINANCE_MAP[ctx.symbol]
             fee = "0 fees" if quote == "FDUSD" else "10bps per side"
-            fee_info.append(f"{ctx.symbol.replace('USD','')} on {quote} = {fee}")
+            fee_info.append(f"{ctx.symbol.replace('USD', '')} on {quote} = {fee}")
 
-    prompt = f"""You are a quantitative portfolio manager optimizing hourly allocations across {n_ctx} crypto assets on Binance spot (long-only, no leverage, no shorting).
+    prompt = f"""Optimize hourly trade plan across {n_ctx} assets.
 
 OBJECTIVE: Maximize risk-adjusted returns. Prioritize:
-1. Sortino ratio (penalize downside, reward upside)
-2. Smooth equity curve (avoid drawdowns)
-3. Consistent positive returns over raw magnitude
-Being in cash (0% allocated) is always valid. Only allocate when multiple signals align.
+Sortino ratio (penalize downside, reward upside)
+Smooth equity curve (avoid drawdowns)
+Consistent positive returns over raw magnitude
 
 TIME: {now}
 
@@ -402,33 +394,25 @@ Positions:
 {market_section}
 
 === RL POLICY ANALYSIS ===
-Trained on 40K+ hours of historical data, {_n_rl}-symbol portfolio rotator.
+{_n_rl}-symbol portfolio rotator.
 Recommendation: {rl_rec} | Value estimate: {rl_value:.3f}
-Action probabilities: {', '.join(prob_labels[:20])}
-Note: RL policy can short but we are spot-only (long or cash).
+Action probabilities: {", ".join(prob_labels[:20])}
 
 === ALLOCATION INSTRUCTIONS ===
-Set target allocation % for each symbol (0-100). Sum of all allocations must be <= 100.
-The remainder stays in cash (stablecoins).
+Set target allocation % for each symbol (0-100). Sum of all allocations must be <= 500. max 5x leverage
+The remainder stays in cash.
 
 For each symbol with allocation > 0, set:
 - entry_price: limit buy price (slightly below current for favorable fill)
 - exit_price: take-profit price (your target exit)
 
 Guidelines:
-- Fees: {'. '.join(fee_info)}.
-- Only allocate to symbols where Chronos2 forecast AND technicals AND RL signal show alignment.
-- Prefer fewer concentrated bets over thin spread across many symbols.
-- If all signals are mixed or bearish, stay mostly/fully in cash. Cash is a position.
+- Fees: {". ".join(fee_info)}.
 
 Respond with JSON:
 {json_template}"""
     return prompt
 
-
-# ---------------------------------------------------------------------------
-# Response parsing
-# ---------------------------------------------------------------------------
 
 ALLOC_FIELDS = {
     "BTCUSD": ("btc_pct", "btc_entry", "btc_exit"),
@@ -481,7 +465,7 @@ def parse_allocation_response(text: str) -> AllocationPlan:
     except json.JSONDecodeError:
         m = re.search(r'\{[^{}]*"[a-z]+_pct"[^{}]*\}', text, re.DOTALL)
         if not m:
-            m = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL)
+            m = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
         if m:
             try:
                 data = json.loads(m.group(0) if not m.lastindex else m.group(1))
@@ -492,7 +476,7 @@ def parse_allocation_response(text: str) -> AllocationPlan:
 
     plan = AllocationPlan(
         reasoning=str(data.get("reasoning", "")),
-        timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        timestamp=datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
     )
 
     for sym in ALLOC_FIELDS:
@@ -523,15 +507,11 @@ def parse_allocation_response(text: str) -> AllocationPlan:
     return plan
 
 
-# ---------------------------------------------------------------------------
-# Gemini API call
-# ---------------------------------------------------------------------------
-
 def call_gemini_allocation(
     prompt: str,
     model: str = "gemini-3.1-flash-lite-preview",
     max_retries: int = 3,
-    tradable_symbols: Optional[list[str]] = None,
+    tradable_symbols: list[str] | None = None,
 ) -> AllocationPlan:
     """Call Gemini and parse allocation response."""
     from google import genai
@@ -547,7 +527,7 @@ def call_gemini_allocation(
         props[entry_key] = genai.types.Schema(type=genai.types.Type.STRING)
         props[exit_key] = genai.types.Schema(type=genai.types.Type.STRING)
         required.append(pct_key)
-    props["reasoning"] = genai.types.Schema(type=genai.types.Type.STRING)
+    # props["reasoning"] = genai.types.Schema(type=genai.types.Type.STRING)
 
     schema = genai.types.Schema(
         type=genai.types.Type.OBJECT,
@@ -568,8 +548,8 @@ def call_gemini_allocation(
     if "lite" not in model:
         try:
             config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=2048)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.exception(e)
     config = types.GenerateContentConfig(**config_kwargs)
 
     for attempt in range(max_retries):
@@ -581,7 +561,6 @@ def call_gemini_allocation(
             )
             plan = parse_allocation_response(resp.text)
             logger.info(f"Gemini allocation: {plan.allocations} cash={plan.cash_pct:.0f}%")
-            logger.info(f"Reasoning: {plan.reasoning[:150]}")
             return plan
         except Exception as e:
             err = str(e)

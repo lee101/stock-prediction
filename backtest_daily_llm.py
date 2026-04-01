@@ -30,12 +30,12 @@ import json
 import os
 import sys
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
+
 
 # Ensure project imports work
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -44,9 +44,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 @dataclass
 class DailyDecision:
     """LLM decision for one symbol on one day."""
+
     symbol: str
     allocation: float  # -5.0 to +5.0 (leverage × direction)
-    buy_price: float   # limit entry price (0 = no entry)
+    buy_price: float  # limit entry price (0 = no entry)
     sell_price: float  # limit exit price (0 = no exit)
     confidence: float  # 0-1
     reasoning: str = ""
@@ -112,7 +113,7 @@ def load_daily_bars(symbol: str, data_root: str = "trainingdata/train") -> pd.Da
     raise FileNotFoundError(f"No daily data for {symbol}")
 
 
-def load_forecast_h24(symbol: str) -> Optional[pd.DataFrame]:
+def load_forecast_h24(symbol: str) -> pd.DataFrame | None:
     """Load h24 Chronos2 forecasts if available."""
     candidates = [
         Path("alpacanewccrosslearning/forecast_cache/crypto13_novol_20260208_lb4000/h24"),
@@ -131,7 +132,7 @@ def load_forecast_h24(symbol: str) -> Optional[pd.DataFrame]:
     return None
 
 
-def get_forecast_for_date(fc_df: Optional[pd.DataFrame], date: pd.Timestamp) -> dict:
+def get_forecast_for_date(fc_df: pd.DataFrame | None, date: pd.Timestamp) -> dict:
     """Get the most recent h24 forecast on or before this date."""
     if fc_df is None or fc_df.empty:
         return {}
@@ -154,11 +155,11 @@ def compute_market_context(bars: pd.DataFrame, idx: int) -> dict:
     if idx < 5:
         return {"regime": "unknown", "trend": 0, "volatility": 0}
 
-    closes = bars["close"].iloc[max(0, idx-20):idx+1].values
+    closes = bars["close"].iloc[max(0, idx - 20) : idx + 1].values
     returns = np.diff(closes) / closes[:-1]
 
-    sma20 = np.mean(closes[-min(20, len(closes)):])
-    sma5 = np.mean(closes[-min(5, len(closes)):])
+    sma20 = np.mean(closes[-min(20, len(closes)) :])
+    sma5 = np.mean(closes[-min(5, len(closes)) :])
     current = closes[-1]
 
     trend = (current - sma20) / sma20 if sma20 > 0 else 0
@@ -190,7 +191,7 @@ def build_daily_prompt(
     bars_df: pd.DataFrame,
     day_idx: int,
     forecast: dict,
-    position: Optional[Position],
+    position: Position | None,
     state: BacktestState,
     fee_rate: float,
 ) -> str:
@@ -201,7 +202,7 @@ def build_daily_prompt(
 
     # Recent bars (last 14 days)
     start = max(0, day_idx - 13)
-    recent = bars_df.iloc[start:day_idx + 1]
+    recent = bars_df.iloc[start : day_idx + 1]
     bars_text = "Date        | Open      | High      | Low       | Close     | Volume\n"
     for _, row in recent.iterrows():
         bars_text += (
@@ -267,10 +268,10 @@ def build_daily_prompt(
             prev_text += f"  {d['date']}: alloc={d['allocation']:+.1f}x, result={d.get('result', '?')}\n"
 
     # Fee info
-    fee_text = f"TRADING FEES: {fee_rate*100:.2f}% per side (maker)"
+    fee_text = f"TRADING FEES: {fee_rate * 100:.2f}% per side (maker)"
     if fee_rate == 0:
         fee_text = "TRADING FEES: 0% (FDUSD zero-fee pair)"
-    fee_text += f"\nSHORT BORROW: {SHORT_BORROW_APR*100:.2f}% annual ({SHORT_BORROW_APR/365*100:.4f}%/day)"
+    fee_text += f"\nSHORT BORROW: {SHORT_BORROW_APR * 100:.2f}% annual ({SHORT_BORROW_APR / 365 * 100:.4f}%/day)"
 
     prompt = f"""You are an expert crypto trader managing a daily portfolio on Binance.
 
@@ -280,8 +281,8 @@ CURRENT PRICE: ${price:.2f}
 
 {port_text}
 {pos_text}
-MARKET REGIME: {ctx['regime']} (trend: {ctx['trend_pct']:+.1f}%, daily vol: {ctx['volatility_daily']:.1f}%)
-SMA-5: ${ctx['sma5']:.2f} | SMA-20: ${ctx['sma20']:.2f}
+MARKET REGIME: {ctx["regime"]} (trend: {ctx["trend_pct"]:+.1f}%, daily vol: {ctx["volatility_daily"]:.1f}%)
+SMA-5: ${ctx["sma5"]:.2f} | SMA-20: ${ctx["sma20"]:.2f}
 
 RECENT PRICE HISTORY (14 days):
 {bars_text}
@@ -323,7 +324,7 @@ Think about position sizing, trend following, and when to stay flat."""
 
 def call_llm_daily(prompt: str, model: str = "gemini-2.5-flash") -> DailyDecision:
     """Call LLM and parse daily decision."""
-    from llm_hourly_trader.providers import call_gemini, _normalize_confidence
+    from llm_hourly_trader.providers import _normalize_confidence, call_gemini
 
     # Use Gemini with thinking
     try:
@@ -348,8 +349,9 @@ def call_llm_daily(prompt: str, model: str = "gemini-2.5-flash") -> DailyDecisio
         )
     except Exception as e:
         print(f"  LLM error: {e}")
-        return DailyDecision(symbol="", allocation=0.0, buy_price=0, sell_price=0,
-                           confidence=0, reasoning=f"error: {e}")
+        return DailyDecision(
+            symbol="", allocation=0.0, buy_price=0, sell_price=0, confidence=0, reasoning=f"error: {e}"
+        )
 
 
 def call_llm_daily_structured(prompt: str, model: str = "gemini-2.5-flash") -> dict:
@@ -477,11 +479,11 @@ def execute_daily_decision(
     # Close position if direction changed or going flat
     if current_pos:
         should_close = False
-        if target_direction == "flat":
-            should_close = True
-        elif target_direction == "long" and current_pos.is_short:
-            should_close = True
-        elif target_direction == "short" and not current_pos.is_short:
+        if (
+            target_direction == "flat"
+            or (target_direction == "long" and current_pos.is_short)
+            or (target_direction == "short" and not current_pos.is_short)
+        ):
             should_close = True
 
         if should_close:
@@ -504,12 +506,19 @@ def execute_daily_decision(
                 pnl = (fill - current_pos.entry_price) * current_pos.qty
                 side = "sell"
 
-            state.trades.append(TradeRecord(
-                date=date, symbol=symbol, side=side, price=fill,
-                qty=current_pos.qty, notional=current_pos.qty * fill,
-                fee=current_pos.qty * fill * fee_rate,
-                realized_pnl=pnl, reason="direction_change" if target_direction != "flat" else "go_flat",
-            ))
+            state.trades.append(
+                TradeRecord(
+                    date=date,
+                    symbol=symbol,
+                    side=side,
+                    price=fill,
+                    qty=current_pos.qty,
+                    notional=current_pos.qty * fill,
+                    fee=current_pos.qty * fill * fee_rate,
+                    realized_pnl=pnl,
+                    reason="direction_change" if target_direction != "flat" else "go_flat",
+                )
+            )
             del state.positions[symbol]
             current_pos = None
 
@@ -536,14 +545,25 @@ def execute_daily_decision(
                 cost = qty * fill * (1 + fee_rate)
                 state.cash -= cost
                 state.positions[symbol] = Position(
-                    symbol=symbol, qty=qty, entry_price=fill,
-                    entry_date=date, is_short=False,
+                    symbol=symbol,
+                    qty=qty,
+                    entry_price=fill,
+                    entry_date=date,
+                    is_short=False,
                 )
-                state.trades.append(TradeRecord(
-                    date=date, symbol=symbol, side="buy", price=fill,
-                    qty=qty, notional=qty * fill, fee=qty * fill * fee_rate,
-                    realized_pnl=0, reason=f"long_{target_leverage:.1f}x",
-                ))
+                state.trades.append(
+                    TradeRecord(
+                        date=date,
+                        symbol=symbol,
+                        side="buy",
+                        price=fill,
+                        qty=qty,
+                        notional=qty * fill,
+                        fee=qty * fill * fee_rate,
+                        realized_pnl=0,
+                        reason=f"long_{target_leverage:.1f}x",
+                    )
+                )
 
         elif target_direction == "short":
             if sell_price > 0 and low <= sell_price <= high:
@@ -557,14 +577,25 @@ def execute_daily_decision(
                 proceeds = qty * fill * (1 - fee_rate)
                 state.cash += proceeds
                 state.positions[symbol] = Position(
-                    symbol=symbol, qty=qty, entry_price=fill,
-                    entry_date=date, is_short=True,
+                    symbol=symbol,
+                    qty=qty,
+                    entry_price=fill,
+                    entry_date=date,
+                    is_short=True,
                 )
-                state.trades.append(TradeRecord(
-                    date=date, symbol=symbol, side="short", price=fill,
-                    qty=qty, notional=qty * fill, fee=qty * fill * fee_rate,
-                    realized_pnl=0, reason=f"short_{target_leverage:.1f}x",
-                ))
+                state.trades.append(
+                    TradeRecord(
+                        date=date,
+                        symbol=symbol,
+                        side="short",
+                        price=fill,
+                        qty=qty,
+                        notional=qty * fill,
+                        fee=qty * fill * fee_rate,
+                        realized_pnl=0,
+                        reason=f"short_{target_leverage:.1f}x",
+                    )
+                )
 
 
 def compute_equity(state: BacktestState, prices: dict) -> float:
@@ -582,7 +613,7 @@ def compute_equity(state: BacktestState, prices: dict) -> float:
 def run_backtest(
     symbols: list[str],
     start_date: str,
-    end_date: Optional[str],
+    end_date: str | None,
     model: str,
     fee_tier: str,
     initial_cash: float,
@@ -610,13 +641,12 @@ def run_backtest(
     state = BacktestState(cash=initial_cash)
 
     # Get all trading dates
-    dates = sorted(set().union(*(
-        set(df[df["timestamp"].between(start, end)]["timestamp"].values)
-        for df in all_bars.values()
-    )))
+    dates = sorted(
+        set().union(*(set(df[df["timestamp"].between(start, end)]["timestamp"].values) for df in all_bars.values()))
+    )
 
     print(f"\nBacktest: {len(dates)} days from {dates[0]} to {dates[-1]}")
-    print(f"  Model: {model}, Fee: {fee_tier} ({fee_rate*100:.2f}%)")
+    print(f"  Model: {model}, Fee: {fee_tier} ({fee_rate * 100:.2f}%)")
     print(f"  Cash: ${initial_cash:,.0f}, Slippage: {slippage_bps}bps")
     print()
 
@@ -642,26 +672,33 @@ def run_backtest(
             # Build prompt and get LLM decision
             if use_llm:
                 prompt = build_daily_prompt(
-                    symbol=sym, bars_df=df, day_idx=day_idx,
+                    symbol=sym,
+                    bars_df=df,
+                    day_idx=day_idx,
                     forecast=forecast,
                     position=state.positions.get(sym),
-                    state=state, fee_rate=fee_rate,
+                    state=state,
+                    fee_rate=fee_rate,
                 )
 
                 print(f"  [{date.strftime('%Y-%m-%d')}] {sym} @ ${bar['close']:.2f}", end="")
                 decision = call_llm_daily_structured(prompt, model=model)
-                print(f" → alloc={decision['allocation']:+.1f}x, "
-                      f"conf={decision['confidence']:.2f}, "
-                      f"reason={decision['reasoning'][:60]}")
+                print(
+                    f" → alloc={decision['allocation']:+.1f}x, "
+                    f"conf={decision['confidence']:.2f}, "
+                    f"reason={decision['reasoning'][:60]}"
+                )
 
                 # Store for context
                 state.prev_reasoning[sym] = decision["reasoning"]
-                state.prev_decisions.append({
-                    "date": date.strftime("%Y-%m-%d"),
-                    "symbol": sym,
-                    "allocation": decision["allocation"],
-                    "confidence": decision["confidence"],
-                })
+                state.prev_decisions.append(
+                    {
+                        "date": date.strftime("%Y-%m-%d"),
+                        "symbol": sym,
+                        "allocation": decision["allocation"],
+                        "confidence": decision["confidence"],
+                    }
+                )
             else:
                 # Simple buy-and-hold benchmark
                 decision = {
@@ -682,7 +719,7 @@ def run_backtest(
         # Progress every 30 days
         if (i + 1) % 30 == 0:
             ret = (equity - initial_cash) / initial_cash * 100
-            print(f"    Day {i+1}/{len(dates)}: equity=${equity:,.2f} ({ret:+.1f}%)")
+            print(f"    Day {i + 1}/{len(dates)}: equity=${equity:,.2f} ({ret:+.1f}%)")
 
     return state
 
@@ -719,19 +756,19 @@ def print_results(state: BacktestState, initial_cash: float):
     total_pnl = sum(t.realized_pnl for t in state.trades)
     total_fees = sum(t.fee for t in state.trades)
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"BACKTEST RESULTS ({n_days} days)")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"  Final equity:     ${final:,.2f}")
-    print(f"  Total return:     {total_ret*100:+.2f}%")
-    print(f"  Annualized:       {annualized*100:+.1f}%")
+    print(f"  Total return:     {total_ret * 100:+.2f}%")
+    print(f"  Annualized:       {annualized * 100:+.1f}%")
     print(f"  Sortino:          {sortino:.2f}")
-    print(f"  Max drawdown:     {max_dd*100:.2f}%")
+    print(f"  Max drawdown:     {max_dd * 100:.2f}%")
     print(f"  Trades:           {n_trades}")
-    print(f"  Win rate:         {n_winners/max(n_trades,1)*100:.1f}%")
+    print(f"  Win rate:         {n_winners / max(n_trades, 1) * 100:.1f}%")
     print(f"  Total P&L:        ${total_pnl:,.2f}")
     print(f"  Total fees:       ${total_fees:,.2f}")
-    print(f"  Fee drag:         {total_fees/initial_cash*100:.2f}%")
+    print(f"  Fee drag:         {total_fees / initial_cash * 100:.2f}%")
 
 
 def main():
