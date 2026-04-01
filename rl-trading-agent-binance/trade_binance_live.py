@@ -169,7 +169,6 @@ def _apply_calibration(
             if len(feat_arr) == 0:
                 continue
             feat = _torch.tensor(feat_arr[-1:], dtype=_torch.float32)
-            close = _torch.tensor([ctx.price], dtype=_torch.float32)
             price = ctx.price
 
             entry = new_entry.get(sym, price * 0.999)
@@ -590,6 +589,7 @@ def _trade_plan_indicates_provider_failure(plan: TradePlan) -> bool:
     direction = str(getattr(plan, "direction", "") or "").strip().lower()
     if direction and direction != "hold":
         return False
+    reasoning = str(getattr(plan, "reasoning", "") or "").strip().lower()
     return any(reasoning.startswith(prefix) for prefix in _PROVIDER_FAILURE_REASON_PREFIXES)
 
 

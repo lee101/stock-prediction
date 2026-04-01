@@ -2,6 +2,7 @@
 """Pytest configuration for environments with real PyTorch installed."""
 
 import importlib.util
+import gc
 import os
 import sys
 import types
@@ -251,9 +252,9 @@ def pytest_collection_modifyitems(config, items):
     experimental_root = Path(config.rootpath, "tests", "experimental").resolve()
 
     # CI mode detection
-    is_ci = os.getenv("CI", "0") in ("1", "true", "TRUE", "yes", "YES")
-    is_fast_ci = os.getenv("FAST_CI", "0") in ("1", "true", "TRUE", "yes", "YES")
-    cpu_only = os.getenv("CPU_ONLY", "0") in ("1", "true", "TRUE", "yes", "YES")
+    is_ci = _env_flag_enabled("CI")
+    is_fast_ci = _env_flag_enabled("FAST_CI")
+    cpu_only = _cpu_only_mode_enabled()
 
     # Check for CUDA availability
     has_cuda = False
@@ -304,6 +305,18 @@ def _module_available(module: str) -> bool:
         return importlib.util.find_spec(module) is not None
     except (ImportError, ValueError):
         return False
+
+
+def _env_flag_enabled(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default) in ("1", "true", "TRUE", "yes", "YES")
+
+
+def _cpu_only_mode_enabled() -> bool:
+    """Prefer CPU by default and require explicit opt-in for CUDA-heavy pytest runs."""
+    raw_cpu_only = os.getenv("CPU_ONLY")
+    if raw_cpu_only is not None:
+        return raw_cpu_only in ("1", "true", "TRUE", "yes", "YES")
+    return not _env_flag_enabled("PYTEST_USE_CUDA")
 
 
 def pytest_ignore_collect(collection_path, config):
@@ -558,19 +571,19 @@ if "fal" not in sys.modules:
 @pytest.fixture(scope="session")
 def ci_mode():
     """Returns True if running in CI environment."""
-    return os.getenv("CI", "0") in ("1", "true", "TRUE", "yes", "YES")
+    return _env_flag_enabled("CI")
 
 
 @pytest.fixture(scope="session")
 def fast_ci_mode():
     """Returns True if running in fast CI mode (limited test suite)."""
-    return os.getenv("FAST_CI", "0") in ("1", "true", "TRUE", "yes", "YES")
+    return _env_flag_enabled("FAST_CI")
 
 
 @pytest.fixture(scope="session")
 def cpu_only_mode():
-    """Returns True if running on CPU-only (no GPU available)."""
-    return os.getenv("CPU_ONLY", "0") in ("1", "true", "TRUE", "yes", "YES")
+    """Returns True unless CUDA tests were explicitly opted into for pytest."""
+    return _cpu_only_mode_enabled()
 
 
 @pytest.fixture(scope="session")
@@ -634,7 +647,7 @@ def setup_fast_simulate_env(fast_simulate_mode):
 def torch_device(cpu_only_mode):
     """Returns appropriate torch device based on environment.
 
-    Returns 'cpu' in CPU_ONLY mode, otherwise 'cuda' if available.
+    Returns 'cpu' by default. Use PYTEST_USE_CUDA=1 to opt into CUDA fixtures.
     """
     try:
         import torch
@@ -643,3 +656,45 @@ def torch_device(cpu_only_mode):
         return "cuda" if torch.cuda.is_available() else "cpu"
     except ImportError:
         return "cpu"
+
+
+@pytest.fixture(autouse=True, scope="function")
+def cleanup_torch_cuda_state():
+    """Aggressively release CUDA allocations between tests on shared GPUs."""
+    yield
+    try:
+        import torch
+    except ImportError:
+        return
+    try:
+        if not torch.cuda.is_available():
+            return
+        gc.collect()
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+        if hasattr(torch.cuda, "ipc_collect"):
+            torch.cuda.ipc_collect()
+        if hasattr(torch.cuda, "reset_peak_memory_stats"):
+            try:
+                torch.cuda.reset_peak_memory_stats()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Release any lingering CUDA allocations when pytest exits."""
+    try:
+        import torch
+    except ImportError:
+        return
+    try:
+        if not torch.cuda.is_available():
+            return
+        gc.collect()
+        torch.cuda.empty_cache()
+        if hasattr(torch.cuda, "ipc_collect"):
+            torch.cuda.ipc_collect()
+    except Exception:
+        pass

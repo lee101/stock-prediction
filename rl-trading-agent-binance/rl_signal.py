@@ -342,18 +342,42 @@ def _infer_symbols(obs_size: int) -> tuple[str, ...]:
     return tuple(f"SYM{i}" for i in range(n))
 
 
+def _resolve_device(device: str | None = None) -> torch.device:
+    token = (device or "auto").strip().lower()
+    if token == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(token)
+
+
+def _should_fallback_to_cpu(
+    requested_device: str | None,
+    device: torch.device,
+    exc: BaseException,
+) -> bool:
+    token = (requested_device or "auto").strip().lower()
+    if token != "auto" or device.type != "cuda":
+        return False
+    if isinstance(exc, torch.OutOfMemoryError):
+        return True
+    accelerator_error = getattr(torch, "AcceleratorError", None)
+    if accelerator_error is not None and isinstance(exc, accelerator_error):
+        return True
+    return "out of memory" in str(exc).lower()
+
+
 class RLSignalGenerator:
     def __init__(
         self,
         checkpoint_path: str | Path,
         forecast_cache_root: str | Path = "binanceneural/forecast_cache",
-        device: str = "cuda",
+        device: str = "auto",
         symbols: tuple[str, ...] | None = None,
     ):
-        self.device = torch.device(device)
+        self._device_preference = device
+        self.device = _resolve_device(device)
         self.forecast_cache_root = Path(forecast_cache_root)
 
-        ckpt = torch.load(str(checkpoint_path), map_location=self.device, weights_only=False)
+        ckpt = torch.load(str(checkpoint_path), map_location="cpu", weights_only=False)
         state_dict = ckpt["model"]
 
         obs_size = _infer_obs_size(state_dict)
@@ -385,7 +409,18 @@ class RLSignalGenerator:
 
         self.policy = TradingPolicy(obs_size, num_actions, hidden=hidden, use_obs_norm=use_obs_norm)
         self.policy.load_state_dict(state_dict)
-        self.policy.to(self.device).eval()
+        try:
+            self.policy = self.policy.to(self.device)
+        except Exception as exc:
+            if _should_fallback_to_cpu(self._device_preference, self.device, exc):
+                logger.warning(
+                    f"Auto-selected CUDA unavailable for RLSignalGenerator, falling back to CPU: {exc}"
+                )
+                self.device = torch.device("cpu")
+                self.policy = self.policy.to(self.device)
+            else:
+                raise
+        self.policy.eval()
 
         logger.info(
             f"RL policy loaded: obs_size={obs_size}, num_actions={num_actions}, "

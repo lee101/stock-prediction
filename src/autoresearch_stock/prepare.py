@@ -8,7 +8,7 @@ import sqlite3
 from dataclasses import asdict, dataclass
 from datetime import datetime, time, timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -34,10 +34,12 @@ DEFAULT_DAILY_SYMBOLS = ("AAPL", "AMD", "AMZN", "GOOG", "NVDA", "PLTR", "MTCH")
 class TaskConfig:
     frequency: str
     data_root: Path
+    recent_data_root: Path | None
     symbols: tuple[str, ...]
     sequence_length: int
     hold_bars: int
     eval_windows: tuple[int, ...]
+    recent_overlay_bars: int = 0
     initial_cash: float = 10_000.0
     max_positions: int = 5
     max_volume_fraction: float = 0.01
@@ -117,9 +119,11 @@ def resolve_task_config(
     frequency: str,
     symbols: Sequence[str] | None = None,
     data_root: str | Path | None = None,
+    recent_data_root: str | Path | None = None,
     sequence_length: int | None = None,
     hold_bars: int | None = None,
     eval_windows: Sequence[int] | None = None,
+    recent_overlay_bars: int = 0,
     initial_cash: float = 10_000.0,
     max_positions: int = 5,
     max_volume_fraction: float | None = None,
@@ -173,10 +177,12 @@ def resolve_task_config(
     return TaskConfig(
         frequency=mode,
         data_root=root,
+        recent_data_root=Path(recent_data_root) if recent_data_root is not None else None,
         symbols=default_symbols,
         sequence_length=seq_len,
         hold_bars=hold,
         eval_windows=tuple(sorted(set(int(v) for v in windows))),
+        recent_overlay_bars=max(int(recent_overlay_bars), 0),
         initial_cash=float(initial_cash),
         max_positions=int(max_positions),
         max_volume_fraction=max_volume,
@@ -232,11 +238,7 @@ def load_live_spread_profile(
     return profile
 
 
-def _load_symbol_bars(symbol: str, config: TaskConfig) -> pd.DataFrame:
-    path = Path(config.data_root) / f"{symbol.upper()}.csv"
-    if not path.exists():
-        raise FileNotFoundError(f"Missing dataset for {symbol}: {path}")
-
+def _read_symbol_bars_from_path(path: Path, symbol: str) -> pd.DataFrame:
     frame = pd.read_csv(path)
     frame.columns = [str(col).strip().lower() for col in frame.columns]
     required = {"timestamp", "open", "high", "low", "close", "volume"}
@@ -258,6 +260,44 @@ def _load_symbol_bars(symbol: str, config: TaskConfig) -> pd.DataFrame:
         frame["vwap"] = pd.to_numeric(frame["vwap"], errors="coerce").fillna(frame["close"])
     frame = frame.sort_values("timestamp").reset_index(drop=True)
     return frame[["timestamp", "symbol", "open", "high", "low", "close", "volume", "vwap"]]
+
+
+def _overlay_cutoff_timestamp(frame: pd.DataFrame, config: TaskConfig) -> pd.Timestamp | None:
+    if frame.empty or int(config.recent_overlay_bars) <= 0:
+        return None
+    latest_ts = pd.Timestamp(frame["timestamp"].max())
+    if config.frequency == "hourly":
+        return latest_ts - pd.Timedelta(hours=int(config.recent_overlay_bars))
+    return latest_ts - pd.Timedelta(days=int(config.recent_overlay_bars))
+
+
+def _load_symbol_bars(symbol: str, config: TaskConfig) -> pd.DataFrame:
+    symbol_name = symbol.upper()
+    primary_path = Path(config.data_root) / f"{symbol_name}.csv"
+    recent_path = Path(config.recent_data_root) / f"{symbol_name}.csv" if config.recent_data_root is not None else None
+
+    parts: list[pd.DataFrame] = []
+    if primary_path.exists():
+        parts.append(_read_symbol_bars_from_path(primary_path, symbol_name))
+    if recent_path is not None and recent_path.exists():
+        recent = _read_symbol_bars_from_path(recent_path, symbol_name)
+        cutoff = _overlay_cutoff_timestamp(recent, config)
+        if cutoff is not None:
+            recent = recent.loc[pd.to_datetime(recent["timestamp"], utc=True) >= cutoff].copy()
+        if not recent.empty:
+            parts.append(recent)
+
+    if not parts:
+        missing = [str(primary_path)]
+        if recent_path is not None:
+            missing.append(str(recent_path))
+        raise FileNotFoundError(f"Missing dataset for {symbol_name}; checked: {', '.join(missing)}")
+
+    combined = pd.concat(parts, ignore_index=True)
+    combined["timestamp"] = pd.to_datetime(combined["timestamp"], utc=True, errors="coerce")
+    combined = combined.dropna(subset=["timestamp"]).copy()
+    combined = combined.sort_values("timestamp").drop_duplicates(subset=["timestamp"], keep="last").reset_index(drop=True)
+    return combined[["timestamp", "symbol", "open", "high", "low", "close", "volume", "vwap"]]
 
 
 def _rolling_zscore(series: pd.Series, window: int) -> pd.Series:
@@ -777,6 +817,42 @@ def build_action_frame(
     return pd.DataFrame(rows).sort_values(["timestamp", "symbol"]).reset_index(drop=True)
 
 
+def apply_execution_modifiers(
+    actions: pd.DataFrame,
+    *,
+    buy_price_modifier_bps: float = 0.0,
+    sell_price_modifier_bps: float = 0.0,
+    amount_modifier_pct: float = 0.0,
+) -> pd.DataFrame:
+    if actions.empty:
+        return actions.copy()
+
+    adjusted = actions.copy()
+    buy_scale = max(0.01, 1.0 + float(buy_price_modifier_bps) / 1e4)
+    sell_scale = max(0.01, 1.0 + float(sell_price_modifier_bps) / 1e4)
+    amount_scale = max(0.0, 1.0 + float(amount_modifier_pct) / 100.0)
+
+    adjusted["buy_price"] = adjusted["buy_price"].astype(float) * buy_scale
+    adjusted["sell_price"] = adjusted["sell_price"].astype(float) * sell_scale
+    adjusted["buy_amount"] = adjusted["buy_amount"].astype(float) * amount_scale
+    adjusted["sell_amount"] = adjusted["sell_amount"].astype(float) * amount_scale
+    adjusted["trade_amount"] = np.maximum(
+        adjusted["buy_amount"].to_numpy(dtype=np.float64, copy=False),
+        adjusted["sell_amount"].to_numpy(dtype=np.float64, copy=False),
+    )
+    adjusted["strength"] = np.clip(
+        adjusted["strength"].astype(float) * amount_scale,
+        0.0,
+        1.30,
+    )
+
+    long_mask = adjusted["side"].astype(str).str.lower() == "long"
+    short_mask = adjusted["side"].astype(str).str.lower() == "short"
+    adjusted.loc[long_mask, "target_price"] = adjusted.loc[long_mask, "sell_price"]
+    adjusted.loc[short_mask, "target_price"] = adjusted.loc[short_mask, "buy_price"]
+    return adjusted
+
+
 def _entry_price(raw_open: float, *, side: str, spread_bps: float, slippage_bps: float) -> float:
     adverse = (max(spread_bps, 0.0) * 0.5 + max(slippage_bps, 0.0)) / 1e4
     if side == "short":
@@ -897,19 +973,40 @@ def simulate_actions(
                     continue
                 spread_bps = float(getattr(row, "spread_bps", 0.0) or 0.0)
                 fee_rate = float(getattr(row, "fee_rate", 0.0) or 0.0)
+                if side == "long":
+                    requested_entry = float(getattr(row, "buy_price", row.open) or row.open)
+                    if requested_entry <= 0.0:
+                        continue
+                    if float(row.open) > requested_entry and float(row.low) > requested_entry:
+                        continue
+                    entry_base_price = min(float(row.open), requested_entry)
+                    target_price = float(getattr(row, "sell_price", getattr(row, "target_price", row.close)) or row.close)
+                else:
+                    requested_entry = float(getattr(row, "sell_price", row.open) or row.open)
+                    if requested_entry <= 0.0:
+                        continue
+                    if float(row.open) < requested_entry and float(row.high) < requested_entry:
+                        continue
+                    entry_base_price = max(float(row.open), requested_entry)
+                    target_price = float(getattr(row, "buy_price", getattr(row, "target_price", row.close)) or row.close)
+
                 entry_price = _entry_price(
-                    float(row.open),
+                    entry_base_price,
                     side=side,
                     spread_bps=spread_bps,
                     slippage_bps=float(config.entry_slippage_bps),
                 )
-                target_price = float(getattr(row, "target_price", row.close) or row.close)
                 if side == "long" and target_price <= entry_price:
                     continue
                 if side == "short" and target_price >= entry_price:
                     continue
 
-                desired_alloc = max(0.0, equity_now / max(int(config.max_positions), 1)) * strength
+                trade_amount = float(getattr(row, "trade_amount", 0.0) or 0.0)
+                if trade_amount > 0.0:
+                    allocation_fraction = float(np.clip(trade_amount / 100.0, 0.0, 1.30))
+                else:
+                    allocation_fraction = float(np.clip(strength, 0.0, 1.30))
+                desired_alloc = max(0.0, equity_now / max(int(config.max_positions), 1)) * allocation_fraction
                 volume_cap = max(0.0, float(row.volume) * float(row.open) * float(config.max_volume_fraction))
                 allocation = min(desired_alloc, volume_cap)
                 qty = allocation / (entry_price * (1.0 + fee_rate)) if entry_price > 0.0 else 0.0
@@ -1053,10 +1150,12 @@ def evaluate_model(
 
 
 def task_summary(task: PreparedTask) -> dict[str, Any]:
+    recent_data_root = task.config.recent_data_root
     return {
         "config": {
             **asdict(task.config),
             "data_root": str(task.config.data_root),
+            "recent_data_root": None if recent_data_root is None else str(recent_data_root),
             "dashboard_db_path": str(task.config.dashboard_db_path),
         },
         "feature_count": len(task.feature_names),
@@ -1072,9 +1171,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--frequency", choices=("hourly", "daily"), default="hourly")
     parser.add_argument("--symbols", default="")
     parser.add_argument("--data-root", default=None)
+    parser.add_argument("--recent-data-root", default=None)
     parser.add_argument("--sequence-length", type=int, default=None)
     parser.add_argument("--hold-bars", type=int, default=None)
     parser.add_argument("--eval-windows", default="")
+    parser.add_argument("--recent-overlay-bars", type=int, default=0)
     parser.add_argument("--max-positions", type=int, default=5)
     parser.add_argument("--max-volume-fraction", type=float, default=None)
     parser.add_argument("--min-edge-bps", type=float, default=4.0)
@@ -1090,9 +1191,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         frequency=args.frequency,
         symbols=parse_csv_list(args.symbols) or None,
         data_root=args.data_root,
+        recent_data_root=args.recent_data_root,
         sequence_length=args.sequence_length,
         hold_bars=args.hold_bars,
         eval_windows=parse_int_list(args.eval_windows) or None,
+        recent_overlay_bars=args.recent_overlay_bars,
         max_positions=args.max_positions,
         max_volume_fraction=args.max_volume_fraction,
         min_edge_bps=args.min_edge_bps,

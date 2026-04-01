@@ -16,6 +16,8 @@ from src.binance_trading_server.server import (
     QuotePayload,
     WriterLeaseRequest,
     _normalize_symbol,
+    ensure_background_refresh,
+    stop_background_refresh,
 )
 from src.binance_trading_server.fee_schedule import (
     FDUSD_PAIRS,
@@ -140,10 +142,95 @@ def test_account_state_guard_blocks_new_readers_while_writer_waits() -> None:
     allow_writer_release.set()
     writer.join(timeout=1.0)
     reader.join(timeout=1.0)
-
     assert not writer.is_alive()
     assert not reader.is_alive()
     assert second_reader_acquired.is_set()
+
+
+def test_background_refresh_is_scoped_per_engine(tmp_path):
+    engine_a = _make_engine(tmp_path / "a")
+    engine_b = _make_engine(tmp_path / "b")
+    calls = {"a": 0, "b": 0}
+    first_refresh_a = threading.Event()
+    first_refresh_b = threading.Event()
+
+    def refresh_a(*args, **kwargs):
+        calls["a"] += 1
+        first_refresh_a.set()
+        return {"accounts": []}
+
+    def refresh_b(*args, **kwargs):
+        calls["b"] += 1
+        first_refresh_b.set()
+        return {"accounts": []}
+
+    engine_a.refresh_prices = refresh_a
+    engine_b.refresh_prices = refresh_b
+
+    try:
+        thread_a = ensure_background_refresh(engine_a, poll_seconds=1)
+        thread_b = ensure_background_refresh(engine_b, poll_seconds=1)
+        assert thread_a is not thread_b
+        assert first_refresh_a.wait(timeout=1.0)
+        assert first_refresh_b.wait(timeout=1.0)
+
+        stop_background_refresh(engine_a, timeout=1.0)
+
+        assert not thread_a.is_alive()
+        assert thread_b.is_alive()
+        assert calls["a"] >= 1
+        assert calls["b"] >= 1
+    finally:
+        stop_background_refresh(engine_b, timeout=1.0)
+        stop_background_refresh(timeout=1.0)
+
+
+def test_background_refresh_uses_reference_count_for_shared_engine(tmp_path):
+    engine = _make_engine(tmp_path)
+    first_refresh = threading.Event()
+
+    def refresh_prices(*args, **kwargs):
+        first_refresh.set()
+        return {"accounts": []}
+
+    engine.refresh_prices = refresh_prices
+
+    try:
+        thread_one = ensure_background_refresh(engine, poll_seconds=1)
+        thread_two = ensure_background_refresh(engine, poll_seconds=1)
+
+        assert thread_one is thread_two
+        assert first_refresh.wait(timeout=1.0)
+
+        stop_background_refresh(engine, timeout=1.0)
+        assert thread_one.is_alive()
+
+        stop_background_refresh(engine, timeout=1.0)
+        assert not thread_one.is_alive()
+    finally:
+        stop_background_refresh(timeout=1.0)
+
+
+def test_stop_background_refresh_removes_dead_handle(tmp_path):
+    engine = _make_engine(tmp_path)
+    first_refresh = threading.Event()
+
+    def refresh_prices(*args, **kwargs):
+        first_refresh.set()
+        return {"accounts": []}
+
+    engine.refresh_prices = refresh_prices
+
+    try:
+        thread = ensure_background_refresh(engine, poll_seconds=1)
+        assert first_refresh.wait(timeout=1.0)
+        stop_background_refresh(engine, timeout=1.0)
+
+        assert not thread.is_alive()
+        with binance_server_module._background_lock:
+            assert engine not in binance_server_module._background_refreshers
+    finally:
+        stop_background_refresh(timeout=1.0)
 
 
 class TestFeeSchedule:
