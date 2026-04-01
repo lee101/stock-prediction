@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-
-import pytest
+from datetime import UTC, datetime, timedelta
 
 from bagsfm.config import BagsConfig, DataConfig, ForecastConfig, TokenConfig
 from bagsfm.data_collector import DataCollector, OHLCBar
@@ -47,6 +45,7 @@ def test_forecast_from_bars_simple_fallback(tmp_path, monkeypatch):
     assert forecast is not None
     assert len(forecast.predicted_prices) == 3
     assert forecast.predicted_return > -1.0
+    assert forecast.forecast_time.tzinfo is UTC
 
 
 def test_forecast_from_bars_insufficient_data(tmp_path, monkeypatch):

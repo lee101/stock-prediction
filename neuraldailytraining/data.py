@@ -5,6 +5,7 @@ import math
 import sys
 from dataclasses import dataclass
 from datetime import timedelta
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -58,6 +59,29 @@ FORECAST_COLUMNS = (
     "forecast_move_pct",
     "forecast_volatility_pct",
 )
+
+MAX_TRADE_DAY_LOOKAHEAD = 5
+TRADE_DAY_ENCODING_PERIOD = MAX_TRADE_DAY_LOOKAHEAD
+
+
+def _use_pinned_memory(pin_memory: bool | None) -> bool:
+    return bool(pin_memory)
+
+
+@lru_cache(maxsize=4096)
+def _stock_holiday_feature_for_date(date_str: str) -> tuple[float, int]:
+    base_date = pd.Timestamp(date_str, tz="UTC")
+    days_ahead = 1
+    while days_ahead <= MAX_TRADE_DAY_LOOKAHEAD:
+        check_date = base_date + timedelta(days=days_ahead)
+        if is_nyse_open_on_date(check_date.to_pydatetime()):
+            break
+        days_ahead += 1
+
+    return (
+        1.0 if days_ahead == 1 else 0.0,
+        min(days_ahead, MAX_TRADE_DAY_LOOKAHEAD),
+    )
 
 
 @dataclass
@@ -263,33 +287,19 @@ class SymbolFrameBuilder:
             days_until_trade_sin: sin encoding of days until next trading day
             days_until_trade_cos: cos encoding of days until next trading day
         """
-        is_tradable = []
-        days_until = []
+        if is_crypto:
+            is_tradable_series = pd.Series(1.0, index=dates.index)
+            days_until_series = pd.Series(1, index=dates.index)
+        else:
+            date_strings = pd.Series(pd.to_datetime(dates, utc=True).dt.strftime("%Y-%m-%d"), index=dates.index)
+            feature_by_date = {
+                date_str: _stock_holiday_feature_for_date(date_str)
+                for date_str in date_strings.drop_duplicates()
+            }
+            is_tradable_series = date_strings.map(lambda date_str: feature_by_date[date_str][0]).astype(float)
+            days_until_series = date_strings.map(lambda date_str: feature_by_date[date_str][1]).astype(int)
 
-        for date in dates:
-            if is_crypto:
-                # Crypto is always tradable
-                is_tradable.append(1.0)
-                days_until.append(1)
-            else:
-                # Check NYSE calendar for next trading day
-                days_ahead = 1
-                max_lookahead = 5  # Max 5 days (long weekend + holiday)
-                while days_ahead <= max_lookahead:
-                    check_date = date + timedelta(days=days_ahead)
-                    if is_nyse_open_on_date(check_date):
-                        break
-                    days_ahead += 1
-
-                is_tradable.append(1.0 if days_ahead == 1 else 0.0)
-                days_until.append(min(days_ahead, max_lookahead))
-
-        # Convert to pandas series
-        is_tradable_series = pd.Series(is_tradable, index=dates.index)
-        days_until_series = pd.Series(days_until, index=dates.index)
-
-        # Cyclical encoding for days until trade (period = 5 for max lookahead)
-        radians = 2 * math.pi * days_until_series / 5
+        radians = 2 * math.pi * days_until_series / TRADE_DAY_ENCODING_PERIOD
         days_sin = np.sin(radians)
         days_cos = np.cos(radians)
 
@@ -394,7 +404,13 @@ class DailyDataModule:
         self._prepare()
 
     # ------------------------------------------------------------------
-    def train_dataloader(self, batch_size: int, num_workers: int = 0) -> DataLoader:
+    def train_dataloader(
+        self,
+        batch_size: int,
+        num_workers: int = 0,
+        *,
+        pin_memory: bool | None = None,
+    ) -> DataLoader:
         if self.train_dataset is None:
             raise RuntimeError("DailyDataModule not initialised.")
         return DataLoader(
@@ -403,12 +419,18 @@ class DailyDataModule:
             shuffle=True,
             num_workers=num_workers,
             drop_last=True,
-            pin_memory=True,
+            pin_memory=_use_pinned_memory(pin_memory),
             persistent_workers=num_workers > 0,
             prefetch_factor=2 if num_workers > 0 else None,
         )
 
-    def val_dataloader(self, batch_size: int, num_workers: int = 0) -> DataLoader:
+    def val_dataloader(
+        self,
+        batch_size: int,
+        num_workers: int = 0,
+        *,
+        pin_memory: bool | None = None,
+    ) -> DataLoader:
         if self.val_dataset is None:
             raise RuntimeError("DailyDataModule not initialised.")
         return DataLoader(
@@ -417,7 +439,7 @@ class DailyDataModule:
             shuffle=False,
             num_workers=num_workers,
             drop_last=False,
-            pin_memory=True,
+            pin_memory=_use_pinned_memory(pin_memory),
             persistent_workers=num_workers > 0,
             prefetch_factor=2 if num_workers > 0 else None,
         )

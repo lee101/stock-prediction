@@ -14,6 +14,31 @@ from binanceneural.model import (
 )
 
 
+def _is_cuda_resource_pressure_error(exc: BaseException) -> bool:
+    return "out of memory" in str(exc).lower()
+
+
+def _skip_for_cuda_resource_pressure(exc: BaseException) -> None:
+    if _is_cuda_resource_pressure_error(exc):
+        pytest.skip(f"Mamba CUDA test skipped under shared-GPU resource pressure: {exc}")
+
+
+def _cuda_module_or_skip(module):
+    try:
+        return module.cuda()
+    except Exception as exc:
+        _skip_for_cuda_resource_pressure(exc)
+        raise
+
+
+def _cuda_randn_or_skip(*shape, **kwargs):
+    try:
+        return torch.randn(*shape, **kwargs)
+    except Exception as exc:
+        _skip_for_cuda_resource_pressure(exc)
+        raise
+
+
 def _make_config(**overrides):
     defaults = dict(
         input_dim=10,
@@ -126,16 +151,16 @@ class TestBinanceHourlyPolicyMamba:
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
     def test_cuda_forward(self):
         cfg = _make_config(hidden_dim=128, num_layers=2)
-        model = build_policy(cfg).cuda()
-        x = torch.randn(2, 48, 10, device="cuda")
+        model = _cuda_module_or_skip(build_policy(cfg))
+        x = _cuda_randn_or_skip(2, 48, 10, device="cuda")
         out = model(x)
         assert out["buy_price_logits"].device.type == "cuda"
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
     def test_cuda_backward(self):
         cfg = _make_config(hidden_dim=128, num_layers=2)
-        model = build_policy(cfg).cuda()
-        x = torch.randn(2, 48, 10, device="cuda", requires_grad=True)
+        model = _cuda_module_or_skip(build_policy(cfg))
+        x = _cuda_randn_or_skip(2, 48, 10, device="cuda", requires_grad=True)
         out = model(x)
         loss = sum(v.sum() for v in out.values())
         loss.backward()

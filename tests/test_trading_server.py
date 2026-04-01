@@ -56,6 +56,7 @@ def _build_engine(
     now_fn=None,
     quotes: list[dict] | None = None,
     live_executor=None,
+    max_order_history: int | None = None,
 ) -> TradingServerEngine:
     registry = tmp_path / "registry.json"
     _write_registry(registry)
@@ -80,6 +81,7 @@ def _build_engine(
         live_executor=live_executor,
         now_fn=now_fn or (lambda: current_now),
         quote_stale_seconds=300,
+        max_order_history=max_order_history,
     )
 
 
@@ -112,6 +114,50 @@ def test_engine_uses_runtime_env_quote_defaults(tmp_path, monkeypatch):
     assert engine.quote_fetch_workers == 9
 
 
+def test_invalid_persisted_mode_is_rejected(tmp_path):
+    engine = _build_engine(tmp_path)
+    account_path = engine._account_path("paper_test")
+    account_path.parent.mkdir(parents=True, exist_ok=True)
+    account_path.write_text(
+        json.dumps(
+            {
+                "account": "paper_test",
+                "mode": "demo",
+                "cash": 1000.0,
+                "positions": {},
+                "open_orders": [],
+                "order_history": [],
+                "price_cache": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="unsupported mode=demo"):
+        engine.get_account_snapshot("paper_test")
+
+
+def test_registry_rejects_unsafe_allowed_bot_id(tmp_path):
+    registry = tmp_path / "registry.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "accounts": {
+                    "paper_test": {
+                        "mode": "paper",
+                        "allowed_bot_id": "paper test",
+                        "symbols": ["ETHUSD"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="unsupported bot_id"):
+        TradingServerEngine(registry_path=registry, state_dir=tmp_path / "state")
+
+
 def test_trading_server_settings_collect_runtime_defaults(tmp_path, monkeypatch):
     registry = tmp_path / "registry.json"
     _write_registry(registry)
@@ -120,6 +166,7 @@ def test_trading_server_settings_collect_runtime_defaults(tmp_path, monkeypatch)
     monkeypatch.setenv("TRADING_SERVER_WRITER_TTL_SECONDS", "333")
     monkeypatch.setenv("TRADING_SERVER_BACKGROUND_POLL_SECONDS", "42")
     monkeypatch.setenv("TRADING_SERVER_QUOTE_FETCH_WORKERS", "9")
+    monkeypatch.setenv("TRADING_SERVER_MAX_ORDER_HISTORY", "12")
 
     settings = TradingServerSettings.from_env()
 
@@ -128,6 +175,7 @@ def test_trading_server_settings_collect_runtime_defaults(tmp_path, monkeypatch)
     assert settings.writer_ttl_seconds == 333
     assert settings.background_poll_seconds == 42
     assert settings.quote_fetch_workers == 9
+    assert settings.max_order_history == 12
 
 
 def test_engine_explicit_config_overrides_env_defaults(tmp_path, monkeypatch):
@@ -144,14 +192,17 @@ def test_engine_explicit_config_overrides_env_defaults(tmp_path, monkeypatch):
         state_dir=tmp_path / "state",
         quote_stale_seconds=5,
         quote_fetch_workers=2,
+        max_order_history=7,
     )
 
     assert engine.registry_path == explicit_registry
     assert engine.quote_stale_seconds == 5
     assert engine.quote_fetch_workers == 2
+    assert engine.max_order_history == 7
     assert engine.settings.registry_path == explicit_registry
     assert engine.settings.quote_stale_seconds == 5
     assert engine.settings.quote_fetch_workers == 2
+    assert engine.settings.max_order_history == 7
 
 
 def test_invalid_runtime_env_values_fall_back_to_safe_defaults(tmp_path, monkeypatch):
@@ -162,6 +213,7 @@ def test_invalid_runtime_env_values_fall_back_to_safe_defaults(tmp_path, monkeyp
     monkeypatch.setenv("TRADING_SERVER_QUOTE_FETCH_WORKERS", "0")
     monkeypatch.setenv("TRADING_SERVER_WRITER_TTL_SECONDS", "oops")
     monkeypatch.setenv("TRADING_SERVER_BACKGROUND_POLL_SECONDS", "-5")
+    monkeypatch.setenv("TRADING_SERVER_MAX_ORDER_HISTORY", "0")
 
     engine = TradingServerEngine(state_dir=tmp_path / "state")
     request = trading_server_module.WriterLeaseRequest(
@@ -172,8 +224,54 @@ def test_invalid_runtime_env_values_fall_back_to_safe_defaults(tmp_path, monkeyp
 
     assert engine.quote_stale_seconds == trading_server_module.DEFAULT_QUOTE_STALE_SECONDS
     assert engine.quote_fetch_workers == 1
+    assert engine.max_order_history == 1
     assert request.ttl_seconds == trading_server_module.DEFAULT_WRITER_TTL_SECONDS
     assert TradingServerSettings.from_env().background_poll_seconds == 1
+    assert TradingServerSettings.from_env().max_order_history == 1
+
+
+def test_account_state_guard_blocks_new_readers_while_writer_waits() -> None:
+    guard = trading_server_module._AccountStateGuard()
+    writer_acquired = threading.Event()
+    allow_writer_release = threading.Event()
+    second_reader_acquired = threading.Event()
+
+    guard.acquire_read()
+
+    def _writer() -> None:
+        guard.acquire_write()
+        writer_acquired.set()
+        allow_writer_release.wait(timeout=1.0)
+        guard.release_write()
+
+    def _second_reader() -> None:
+        guard.acquire_read()
+        second_reader_acquired.set()
+        guard.release_read()
+
+    writer = threading.Thread(target=_writer)
+    reader = threading.Thread(target=_second_reader)
+    writer.start()
+
+    deadline = time.time() + 1.0
+    while guard._waiting_writers == 0 and time.time() < deadline:
+        time.sleep(0.01)
+    assert guard._waiting_writers == 1
+
+    reader.start()
+    assert not second_reader_acquired.wait(timeout=0.05)
+
+    guard.release_read()
+    assert writer_acquired.wait(timeout=1.0)
+    assert not second_reader_acquired.is_set()
+
+    allow_writer_release.set()
+    writer.join(timeout=1.0)
+    reader.join(timeout=1.0)
+
+    assert not writer.is_alive()
+    assert not reader.is_alive()
+    assert second_reader_acquired.is_set()
 
 
 def test_writer_lease_request_uses_runtime_env_default_ttl(monkeypatch):
@@ -355,6 +453,59 @@ def test_writer_claim_rejects_overlong_account_name(tmp_path):
         )
     assert response.status_code == 400
     assert "unsupported account name" in response.json()["detail"]
+
+
+def test_writer_claim_rejects_unsafe_session_id_direct_engine_call(tmp_path):
+    engine = _build_engine(tmp_path)
+
+    with pytest.raises(HTTPException) as exc_info:
+        engine.claim_writer(
+            type(
+                "Lease",
+                (),
+                {
+                    "account": "paper_test",
+                    "bot_id": "paper_test_v1",
+                    "session_id": "bad/session",
+                    "ttl_seconds": 120,
+                },
+            )()
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "unsupported session_id" in str(exc_info.value.detail)
+
+
+def test_submit_order_rejects_unsafe_session_id_direct_engine_call(tmp_path):
+    engine = _build_engine(tmp_path)
+    engine.claim_writer(
+        type("Lease", (), {"account": "paper_test", "bot_id": "paper_test_v1", "session_id": "owner", "ttl_seconds": 120})()
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        engine.submit_order(
+            type(
+                "Order",
+                (),
+                {
+                    "account": "paper_test",
+                    "bot_id": "paper_test_v1",
+                    "session_id": "bad/session",
+                    "symbol": "ETHUSD",
+                    "side": "buy",
+                    "qty": 1.0,
+                    "limit_price": 100.0,
+                    "execution_mode": "paper",
+                    "allow_loss_exit": False,
+                    "force_exit_reason": None,
+                    "live_ack": None,
+                    "metadata": {},
+                },
+            )()
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "unsupported session_id" in str(exc_info.value.detail)
 
 
 def test_submit_order_rejects_without_active_writer_lease(tmp_path):
@@ -1044,6 +1195,39 @@ def test_live_order_updates_account_state_when_marketable(tmp_path, monkeypatch)
     assert orders["order_history"][0]["fill_price"] == 2000.0
 
 
+def test_order_history_is_capped_to_max_order_history(tmp_path):
+    engine = _build_engine(tmp_path, max_order_history=2)
+    claim = engine.claim_writer(
+        trading_server_module.WriterLeaseRequest(
+            account="paper_test",
+            bot_id="paper_test_v1",
+            session_id="session-a",
+        )
+    )
+
+    for idx in range(3):
+        result = engine.submit_order(
+            trading_server_module.OrderRequest(
+                account="paper_test",
+                bot_id="paper_test_v1",
+                session_id=claim["session_id"],
+                symbol="ETHUSD",
+                side="buy",
+                qty=0.1,
+                limit_price=2001.0 + idx,
+                execution_mode="paper",
+                metadata={"seq": idx},
+            )
+        )
+        assert result["filled"] is True
+
+    orders = engine.get_orders("paper_test", include_history=True)
+    assert [entry["metadata"]["seq"] for entry in orders["order_history"]] == [1, 2]
+
+    persisted = json.loads(engine._account_path("paper_test").read_text(encoding="utf-8"))
+    assert [entry["metadata"]["seq"] for entry in persisted["order_history"]] == [1, 2]
+
+
 def test_live_open_order_fills_on_price_refresh(tmp_path, monkeypatch):
     now = datetime(2026, 3, 29, 20, 0, 0, tzinfo=timezone.utc)
 
@@ -1402,6 +1586,66 @@ def test_refresh_prices_isolates_quote_provider_failures(tmp_path):
 
     assert refreshed["accounts"][0]["refreshed_symbols"] == ["ETHUSD"]
     assert refreshed["accounts"][0]["unavailable_symbols"] == ["BTCUSD"]
+
+
+def test_refresh_prices_uses_shared_quote_cache_without_persisting_idle_state(tmp_path):
+    registry = tmp_path / "registry.json"
+    _write_registry(registry)
+    now = datetime(2026, 3, 29, 20, 0, 0, tzinfo=timezone.utc)
+    quote_sequence = [
+        {
+            "symbol": "ETHUSD",
+            "bid_price": 2000.0,
+            "ask_price": 2001.0,
+            "last_price": 2000.5,
+            "as_of": now.isoformat(),
+        }
+    ]
+
+    def quote_provider(_symbol: str):
+        if quote_sequence:
+            return quote_sequence.pop(0)
+        return None
+
+    engine = TradingServerEngine(
+        registry_path=registry,
+        state_dir=tmp_path / "state",
+        quote_provider=quote_provider,
+        now_fn=lambda: now,
+        quote_stale_seconds=300,
+    )
+    account_path = engine._account_path("paper_test")
+
+    refreshed = engine.refresh_prices(account="paper_test")
+
+    assert refreshed["accounts"][0]["refreshed_symbols"] == ["ETHUSD"]
+    assert not account_path.exists()
+
+    claim = engine.claim_writer(
+        type("Lease", (), {"account": "paper_test", "bot_id": "paper_test_v1", "session_id": "owner", "ttl_seconds": 120})()
+    )
+    result = engine.submit_order(
+        type(
+            "Order",
+            (),
+            {
+                "account": "paper_test",
+                "bot_id": "paper_test_v1",
+                "session_id": claim["session_id"],
+                "symbol": "ETHUSD",
+                "side": "buy",
+                "qty": 0.1,
+                "limit_price": 2001.0,
+                "execution_mode": "paper",
+                "allow_loss_exit": False,
+                "force_exit_reason": None,
+                "live_ack": None,
+                "metadata": {},
+            },
+        )()
+    )
+
+    assert result["filled"] is True
 
 
 def test_claim_writer_serializes_across_engine_instances(tmp_path):

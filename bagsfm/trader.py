@@ -9,18 +9,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from datetime import datetime, timedelta, date
-from pathlib import Path
 from typing import Dict, List, Optional
 
 from .bags_api import BagsAPIClient, SolanaTransactionExecutor, SwapResult, execute_swap
+from .clock import ensure_utc, utc_now, utc_today
 from .config import (
     TradingConfig,
     TokenConfig,
-    BagsConfig,
-    DataConfig,
-    ForecastConfig,
     SOL_MINT,
 )
 from .data_collector import DataCollector, create_collector
@@ -88,9 +85,13 @@ class TradingState:
         )
 
         if data.get("last_price_check"):
-            state.last_price_check = datetime.fromisoformat(data["last_price_check"])
+            state.last_price_check = ensure_utc(
+                datetime.fromisoformat(data["last_price_check"])
+            )
         if data.get("last_trade_time"):
-            state.last_trade_time = datetime.fromisoformat(data["last_trade_time"])
+            state.last_trade_time = ensure_utc(
+                datetime.fromisoformat(data["last_trade_time"])
+            )
 
         return state
 
@@ -247,13 +248,13 @@ class BagsTrader:
             return
 
         prices = await self._collector.collect_all_prices()
-        self.state.last_price_check = datetime.utcnow()
+        self.state.last_price_check = utc_now()
 
         logger.debug(f"Collected {len(prices)} prices")
 
     def _reset_daily_counters_if_needed(self) -> None:
         """Reset daily counters when the UTC day changes."""
-        now = datetime.utcnow()
+        now = utc_now()
         if self.state.last_price_check and self.state.last_price_check.date() == now.date():
             return
 
@@ -266,7 +267,7 @@ class BagsTrader:
         """Generate forecasts for all tracked tokens."""
         if self._forecaster is None:
             return ForecastBatch(
-                forecast_time=datetime.utcnow(),
+                forecast_time=utc_now(),
                 forecasts={},
             )
 
@@ -274,14 +275,14 @@ class BagsTrader:
 
     def _record_daily_action(self, token_mint: str) -> None:
         """Track per-token daily actions for daily-range strategy."""
-        now = datetime.utcnow().date()
+        now = utc_today()
         if self._daily_action_day != now:
             self._daily_action_day = now
             self._daily_actions_by_token = {}
         self._daily_actions_by_token[token_mint] = self._daily_actions_by_token.get(token_mint, 0) + 1
 
     def _daily_actions_used(self, token_mint: str) -> int:
-        now = datetime.utcnow().date()
+        now = utc_today()
         if self._daily_action_day != now:
             return 0
         return self._daily_actions_by_token.get(token_mint, 0)
@@ -318,7 +319,7 @@ class BagsTrader:
 
         levels = compute_daily_high_low(bars)
 
-        today = datetime.utcnow().date()
+        today = utc_today()
         level_day = today - timedelta(days=1) if self.config.daily_range_use_previous_day else today
 
         # Enforce total exposure cap
@@ -554,7 +555,7 @@ class BagsTrader:
             if result.success:
                 self.state.total_trades += 1
                 self.state.trades_today += 1
-                self.state.last_trade_time = datetime.utcnow()
+                self.state.last_trade_time = utc_now()
 
                 if result.fee_lamports:
                     self.state.total_fees_sol += result.fee_lamports / 1e9
@@ -650,7 +651,7 @@ class BagsTrader:
         end_time = None
 
         if duration_hours:
-            end_time = datetime.utcnow() + timedelta(hours=duration_hours)
+            end_time = utc_now() + timedelta(hours=duration_hours)
 
         logger.info(
             f"Starting trading bot (check every {self.config.check_interval_minutes} min, "
@@ -662,7 +663,7 @@ class BagsTrader:
         self.state.trades_today = 0
 
         while True:
-            if end_time and datetime.utcnow() >= end_time:
+            if end_time and utc_now() >= end_time:
                 logger.info("Duration reached, stopping")
                 break
 

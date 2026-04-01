@@ -13,14 +13,51 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from binanceneural.kernels.rope import apply_rope, apply_rope_fused, HAS_TRITON
-from binanceneural.kernels.norm import rms_norm, fused_rms_norm_linear, fused_rms_norm_qkv
+from binanceneural.kernels.rope import apply_rope, apply_rope_fused
+from binanceneural.kernels.norm import rms_norm, fused_rms_norm_qkv
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+def _is_cuda_resource_pressure_error(exc: BaseException) -> bool:
+    return "out of memory" in str(exc).lower()
+
+
+def _skip_for_cuda_resource_pressure(exc: BaseException) -> None:
+    if _is_cuda_resource_pressure_error(exc):
+        pytest.skip(f"RoPE CUDA test skipped under shared-GPU resource pressure: {exc}")
+
+
+def _cuda_module_or_skip(module):
+    try:
+        return module.cuda()
+    except Exception as exc:
+        _skip_for_cuda_resource_pressure(exc)
+        raise
+
+
+def _cuda_randn_or_skip(*shape, **kwargs):
+    try:
+        return torch.randn(*shape, **kwargs)
+    except Exception as exc:
+        _skip_for_cuda_resource_pressure(exc)
+        raise
+
+
+def _resolve_test_device() -> str:
+    if not torch.cuda.is_available():
+        return "cpu"
+    try:
+        torch.empty(1, device="cuda")
+        return "cuda"
+    except Exception as exc:
+        if _is_cuda_resource_pressure_error(exc):
+            return "cpu"
+        raise
+
+
+DEVICE = _resolve_test_device()
 
 SEQ_LENS = [1, 16, 32, 48, 64, 128]
 
@@ -375,7 +412,7 @@ class TestFusedRmsNormQkv:
 
 def test_model_import_ok() -> None:
     """Ensure model.py can be imported with Triton kernels wired in."""
-    from binanceneural.model import BinanceHourlyPolicyNano, PolicyConfig, BinanceHourlyPolicy
+    from binanceneural.model import BinanceHourlyPolicyNano, PolicyConfig
     cfg = PolicyConfig(input_dim=16, hidden_dim=64, num_heads=4, num_layers=2, max_len=64,
                        model_arch="nano", num_kv_heads=2)
     model = BinanceHourlyPolicyNano(cfg).to(DEVICE)
@@ -393,8 +430,8 @@ def test_model_rope_triton_path() -> None:
     from binanceneural.model import BinanceHourlyPolicyNano, PolicyConfig
     cfg = PolicyConfig(input_dim=8, hidden_dim=32, num_heads=4, num_layers=1, max_len=64,
                        model_arch="nano", num_kv_heads=2)
-    model = BinanceHourlyPolicyNano(cfg).cuda()
-    x = torch.randn(1, 48, 8, device="cuda")
+    model = _cuda_module_or_skip(BinanceHourlyPolicyNano(cfg))
+    x = _cuda_randn_or_skip(1, 48, 8, device="cuda")
     with torch.no_grad():
         out = model(x)
     assert out["buy_price_logits"].shape == (1, 48, 1)

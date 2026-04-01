@@ -2,6 +2,7 @@ import math
 
 import numpy as np
 import pandas as pd
+import torch
 
 from rlsys.config import DataConfig, MarketConfig, PolicyConfig, TrainingConfig
 from rlsys.data import prepare_features
@@ -114,3 +115,46 @@ def test_trainer_can_disable_observation_normalization():
     )
     trainer = PPOTrainer(env, policy, training_config)
     assert trainer._normalizer is None
+
+
+def test_trainer_falls_back_to_cpu_when_auto_cuda_is_unavailable(monkeypatch):
+    df = _make_dataframe(80)
+    prepared = prepare_features(df, DataConfig(window_size=8))
+    env = MarketEnvironment(
+        prices=prepared.targets.numpy(),
+        features=prepared.features.numpy(),
+        config=MarketConfig(initial_capital=10_000.0, max_leverage=1.0, risk_aversion=0.0),
+    )
+    policy = ActorCriticPolicy(
+        observation_dim=env.observation_space.shape[0],
+        config=PolicyConfig(hidden_sizes=(16, 16), dropout=0.0),
+    )
+    training_config = TrainingConfig(
+        total_timesteps=32,
+        rollout_steps=16,
+        minibatch_size=8,
+        num_epochs=1,
+        use_amp=False,
+    )
+
+    monkeypatch.setattr("rlsys.training.get_device", lambda preferred=None: torch.device("cuda"))
+
+    original_to = policy.to
+    calls: list[str] = []
+
+    def flaky_to(device, *args, **kwargs):
+        target = torch.device(device)
+        calls.append(target.type)
+        if target.type == "cuda":
+            accelerator_error = getattr(torch, "AcceleratorError", RuntimeError)
+            raise accelerator_error("CUDA error: out of memory")
+        return original_to(target, *args, **kwargs)
+
+    monkeypatch.setattr(policy, "to", flaky_to)
+
+    trainer = PPOTrainer(env, policy, training_config)
+
+    assert trainer.device.type == "cpu"
+    assert trainer._amp_device_type == "cpu"
+    assert trainer.optimizer.defaults.get("fused") in (None, False)
+    assert calls == ["cuda", "cpu"]

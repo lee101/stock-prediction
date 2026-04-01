@@ -11,7 +11,7 @@ import csv
 import io
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
@@ -19,7 +19,8 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 import pandas as pd
 
 from .bags_api import BagsAPIClient
-from .config import DataConfig, TokenConfig, SOL_MINT, BagsConfig
+from .clock import ensure_utc, utc_now
+from .config import BagsConfig, DataConfig, TokenConfig
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,7 @@ class OHLCAggregator:
 
     def _get_bar_start(self, timestamp: datetime) -> datetime:
         """Get the start time of the bar containing timestamp."""
+        timestamp = ensure_utc(timestamp)
         # Round down to interval boundary
         minutes = timestamp.minute - (timestamp.minute % self.interval_minutes)
         return timestamp.replace(minute=minutes, second=0, microsecond=0)
@@ -254,7 +256,7 @@ class DataCollector:
         if token.mint == self.data_config.quote_token.mint:
             # Token is the quote token itself (e.g., SOL)
             return PricePoint(
-                timestamp=datetime.utcnow(),
+                timestamp=utc_now(),
                 token_mint=token.mint,
                 token_symbol=token.symbol,
                 price_sol=1.0,
@@ -284,7 +286,7 @@ class DataCollector:
             price_sol = sol_spent / tokens_received
 
             price = PricePoint(
-                timestamp=datetime.utcnow(),
+                timestamp=utc_now(),
                 token_mint=token.mint,
                 token_symbol=token.symbol,
                 price_sol=price_sol,
@@ -349,14 +351,14 @@ class DataCollector:
         end_time = None
 
         if duration_hours:
-            end_time = datetime.utcnow() + timedelta(hours=duration_hours)
+            end_time = utc_now() + timedelta(hours=duration_hours)
 
         logger.info(
             f"Starting price collection every {self.data_config.collection_interval_minutes} minutes"
         )
 
         while True:
-            if end_time and datetime.utcnow() >= end_time:
+            if end_time and utc_now() >= end_time:
                 logger.info("Collection duration reached, stopping")
                 break
 
@@ -393,7 +395,7 @@ class DataCollector:
 
                 for p in self._price_history:
                     writer.writerow([
-                        p.timestamp.isoformat(),
+                        ensure_utc(p.timestamp).isoformat(),
                         p.token_mint,
                         p.token_symbol,
                         p.price_sol,
@@ -430,7 +432,7 @@ class DataCollector:
                         continue
                     for bar in bars[start_idx:]:
                         writer.writerow([
-                            bar.timestamp.isoformat(),
+                            ensure_utc(bar.timestamp).isoformat(),
                             bar.token_mint,
                             bar.token_symbol,
                             bar.open,
@@ -539,7 +541,7 @@ class DataCollector:
 
                 for _, row in df.iterrows():
                     bar = OHLCBar(
-                        timestamp=row["timestamp"].to_pydatetime(),
+                        timestamp=ensure_utc(row["timestamp"].to_pydatetime()),
                         token_mint=row["token_mint"],
                         token_symbol=row["token_symbol"],
                         open=row["open"],

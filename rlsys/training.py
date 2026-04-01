@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from typing import Dict, Iterable, Optional
 
 import numpy as np
 import torch
-from torch.cuda.amp import GradScaler, autocast
 
 from .buffers import RolloutBuffer
 from .config import MarketConfig, TrainingConfig
@@ -16,6 +16,8 @@ from .llm_guidance import StrategyLLMGuidance
 from .market_environment import MarketEnvironment
 from .policy import ActorCriticPolicy
 from .utils import ObservationNormalizer, EpisodeMetrics, get_device, seed_everything, update_dict
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -40,8 +42,8 @@ class PPOTrainer:
         self.guidance = guidance
 
         seed_everything(self.config.seed)
-        self.device = get_device(self.config.device)
-        self.policy.to(self.device)
+        self.device = self._resolve_training_device()
+        self._amp_device_type = "cuda" if self.device.type == "cuda" else "cpu"
 
         observation_dim = env.observation_space.shape[0]
         self.buffer = RolloutBuffer(self.config.rollout_steps, observation_dim, self.device)
@@ -50,10 +52,13 @@ class PPOTrainer:
             "lr": self.config.learning_rate,
             "weight_decay": self.config.weight_decay,
         }
-        if torch.cuda.is_available():
+        if self.device.type == "cuda":
             adamw_kwargs["fused"] = True
         self.optimizer = torch.optim.AdamW(self.policy.parameters(), **adamw_kwargs)
-        self.scaler = GradScaler(enabled=self.config.use_amp and torch.cuda.is_available())
+        self.scaler = torch.amp.GradScaler(
+            self._amp_device_type,
+            enabled=self.config.use_amp and self.device.type == "cuda",
+        )
         self.state = TrainingState()
         self._last_obs = np.zeros(observation_dim, dtype=np.float32)
         self._last_done = True
@@ -64,6 +69,31 @@ class PPOTrainer:
             if self.config.normalize_observations
             else None
         )
+
+    def _resolve_training_device(self) -> torch.device:
+        device = get_device(self.config.device)
+        try:
+            self.policy.to(device)
+        except Exception as exc:
+            if self._should_fallback_to_cpu(device, exc):
+                logger.warning(
+                    "Falling back to CPU for PPOTrainer because %s was unavailable at runtime: %s",
+                    device,
+                    exc,
+                )
+                device = torch.device("cpu")
+                self.policy.to(device)
+            else:
+                raise
+        return device
+
+    def _should_fallback_to_cpu(self, device: torch.device, exc: BaseException) -> bool:
+        if self.config.device is not None or device.type != "cuda":
+            return False
+        if isinstance(exc, torch.OutOfMemoryError):
+            return True
+        accelerator_error = getattr(torch, "AcceleratorError", None)
+        return accelerator_error is not None and isinstance(exc, accelerator_error)
 
     def collect_rollout(self) -> EpisodeMetrics:
         self.buffer.reset()
@@ -167,7 +197,7 @@ class PPOTrainer:
         returns = batch["returns"]
         old_values = batch["values"]
 
-        with autocast(enabled=self.scaler.is_enabled()):
+        with torch.amp.autocast(device_type=self._amp_device_type, enabled=self.scaler.is_enabled()):
             log_probs, entropy, values = self.policy.evaluate_actions(observations, actions)
             ratio = torch.exp(log_probs - old_log_probs)
             clipped_ratio = torch.clamp(ratio, 1.0 - self.config.clip_range, 1.0 + self.config.clip_range)

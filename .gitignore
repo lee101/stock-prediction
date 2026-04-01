@@ -656,3 +656,5 @@ pufferlib_market/stocks12_*.log
 **/events.jsonl
 **/sapp_events.jsonl
 monitoring/
+chronos2_finetuned
+compiled_models

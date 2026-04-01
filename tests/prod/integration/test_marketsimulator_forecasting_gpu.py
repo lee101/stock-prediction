@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import shutil
 import time
@@ -21,12 +22,19 @@ def _skip_if_no_cuda() -> None:
         pytest.skip("CUDA GPU required for marketsimulator forecasting cache test.")
 
 
+def _import_real_forecasting():
+    try:
+        return importlib.import_module("predict_stock_forecasting")
+    except ModuleNotFoundError as exc:
+        pytest.skip(f"predict_stock_forecasting unavailable: {exc}")
+
+
 @pytest.mark.cuda_required
 @pytest.mark.integration
 def test_marketsimulator_kronos_cache_fp32(monkeypatch):
     _skip_if_no_cuda()
 
-    import predict_stock_forecasting as real_forecasting
+    real_forecasting = _import_real_forecasting()
 
     monkeypatch.setattr(real_forecasting, "KRONOS_SAMPLE_COUNT", 4, raising=False)
     monkeypatch.setattr(real_forecasting, "forecasting_wrapper", None, raising=False)
@@ -111,7 +119,7 @@ def test_marketsimulator_kronos_cache_fp32(monkeypatch):
 def test_marketsimulator_kronos_cache_multi_symbol(monkeypatch):
     _skip_if_no_cuda()
 
-    import predict_stock_forecasting as real_forecasting
+    real_forecasting = _import_real_forecasting()
 
     monkeypatch.setattr(real_forecasting, "KRONOS_SAMPLE_COUNT", 4, raising=False)
     monkeypatch.setattr(real_forecasting, "forecasting_wrapper", None, raising=False)

@@ -4,6 +4,7 @@ This verifies end-to-end that Chronos2 predictions work correctly.
 """
 import os
 import sys
+from types import SimpleNamespace
 from pathlib import Path
 
 import numpy as np
@@ -99,6 +100,31 @@ def test_load_chronos2_wrapper():
     assert wrapper is not None, "Wrapper should not be None"
     assert hasattr(wrapper, "predict_ohlc"), "Wrapper should have predict_ohlc method"
     assert hasattr(wrapper, "pipeline"), "Wrapper should have pipeline attribute"
+
+
+def test_load_chronos2_wrapper_falls_back_to_cpu_on_cuda_oom(monkeypatch):
+    import backtest_test3_inline as backtest_module
+
+    params = resolve_chronos2_params("BTCUSD")
+    params.pop("device_map", None)
+    backtest_module._chronos2_wrapper_cache.clear()
+
+    calls: list[str] = []
+    wrapper = SimpleNamespace(predict_ohlc=lambda *args, **kwargs: None, pipeline=object())
+
+    def fake_from_pretrained(cls, *, device_map, **kwargs):
+        calls.append(str(device_map))
+        if str(device_map).startswith("cuda"):
+            accelerator_error = getattr(torch, "AcceleratorError", RuntimeError)
+            raise accelerator_error("CUDA error: out of memory")
+        return wrapper
+
+    monkeypatch.setattr(backtest_module.Chronos2OHLCWrapper, "from_pretrained", classmethod(fake_from_pretrained))
+
+    loaded = load_chronos2_wrapper(params)
+
+    assert loaded is wrapper
+    assert calls == ["cuda", "cpu"]
 
 
 def test_chronos2_prediction_with_real_btcusd_data(btcusd_data):

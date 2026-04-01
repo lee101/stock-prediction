@@ -56,7 +56,9 @@ class _FakeConfidenceModel:
 
 def _build_runtime_for_confidence(trade: float, confidence: float, *, risk_threshold: float = 0.5):
     runtime = DailyTradingRuntime.__new__(DailyTradingRuntime)
-    runtime.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # This helper only validates planning logic; keep it on CPU so the test is
+    # stable even when a shared GPU is under transient memory pressure.
+    runtime.device = torch.device("cpu")
     runtime.model = _FakeConfidenceModel(trade, confidence)
     runtime.non_tradable = set()
     runtime.risk_threshold = risk_threshold

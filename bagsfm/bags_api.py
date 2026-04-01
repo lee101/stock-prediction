@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from .clock import utc_now
 from .config import BagsConfig, SOL_MINT, is_bagsfm_trading_disabled
 
 logger = logging.getLogger(__name__)
@@ -108,7 +109,7 @@ class SwapResult:
     output_amount: Optional[int] = None
 
     # Timing
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=utc_now)
     confirmation_time_ms: Optional[int] = None
 
 
@@ -404,7 +405,7 @@ class SolanaTransactionExecutor:
                 "Install with: pip install solders"
             )
 
-        start_time = datetime.utcnow()
+        start_time = utc_now()
         payer_index = None
         signature = None
 
@@ -469,7 +470,7 @@ class SolanaTransactionExecutor:
             # Invalidate balance cache after successful transaction
             rpc.invalidate_balance_cache(str(keypair.pubkey()))
 
-            end_time = datetime.utcnow()
+            end_time = utc_now()
             confirmation_ms = int((end_time - start_time).total_seconds() * 1000)
 
             return SwapResult(

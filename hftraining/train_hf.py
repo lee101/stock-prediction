@@ -4,6 +4,7 @@ HuggingFace-style Training Script Entry Point
 """
 
 import os
+import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -11,9 +12,7 @@ import numpy as np
 import pandas as pd
 from typing import Optional, List, Dict, Any
 from pathlib import Path
-import matplotlib.pyplot as plt
 from tqdm import tqdm
-import json
 from datetime import datetime
 import warnings
 import random
@@ -70,6 +69,11 @@ from hftraining.metrics import crps_from_quantiles, dm_test
 
 
 _NATIVE_SCALED_DOT_PRODUCT_ATTENTION = getattr(F, "scaled_dot_product_attention", None)
+logger = logging.getLogger(__name__)
+
+
+def _is_cuda_resource_pressure_error(exc: BaseException) -> bool:
+    return "out of memory" in str(exc).lower()
 
 
 def _scaled_dot_product_attention_reference(
@@ -303,12 +307,24 @@ class HFTrainer:
         
         # Setup device
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.model.to(self.device)
+        try:
+            self.model.to(self.device)
+        except Exception as exc:
+            if self.device.type == 'cuda' and _is_cuda_resource_pressure_error(exc):
+                warnings.warn(
+                    f"CUDA unavailable due to resource pressure; falling back to CPU: {exc}",
+                    RuntimeWarning,
+                )
+                logger.warning("Falling back to CPU for HFTrainer after CUDA resource error: %s", exc)
+                self.device = torch.device('cpu')
+                self.model.to(self.device)
+            else:
+                raise
         self._fast_ctx = contextlib.ExitStack()
         self._fast_ctx.enter_context(fast_context())
         
         # Setup data parallel if available
-        if torch.cuda.device_count() > 1 and config.use_data_parallel:
+        if self._using_cuda() and torch.cuda.device_count() > 1 and config.use_data_parallel:
             self.model = nn.DataParallel(self.model)
         
         compile_requested = bool(getattr(self.config, 'use_compile', False))
@@ -327,7 +343,7 @@ class HFTrainer:
             else:
                 precision_warning = "bf16 requested but not supported on this device; using fp32."
         elif precision == "fp16":
-            if torch.cuda.is_available():
+            if self._using_cuda():
                 mp_dtype = torch.float16
             else:
                 precision_warning = "fp16 requested but CUDA is unavailable; using fp32."
@@ -410,11 +426,14 @@ class HFTrainer:
     def step(self, value: int) -> None:
         self.global_step = int(value)
 
+    def _using_cuda(self) -> bool:
+        return self.device.type == 'cuda'
+
     def _get_gpu_metrics(self):
         """Safely collect GPU metrics if CUDA is available."""
         metrics = {}
         try:
-            if torch.cuda.is_available():
+            if self._using_cuda():
                 device_idx = 0
                 metrics['gpu_memory_allocated_mb'] = torch.cuda.memory_allocated(device_idx) / (1024**2)
                 metrics['gpu_memory_reserved_mb'] = torch.cuda.memory_reserved(device_idx) / (1024**2)
@@ -450,7 +469,7 @@ class HFTrainer:
                 "ns_steps": getattr(self.config, "muon_ns_steps", 5),
             })
 
-        fused_flag = bool(getattr(self.config, "use_fused_optimizer", True) and torch.cuda.is_available())
+        fused_flag = bool(getattr(self.config, "use_fused_optimizer", True) and self._using_cuda())
 
         try:
             return make_optimizer(
@@ -496,7 +515,7 @@ class HFTrainer:
                     betas=(self.config.adam_beta1, self.config.adam_beta2),
                     eps=self.config.adam_epsilon,
                     weight_decay=self.config.weight_decay,
-                    fused=fused_flag and torch.cuda.is_available(),
+                    fused=fused_flag and self._using_cuda(),
                 )
             except TypeError:
                 return torch.optim.AdamW(
@@ -704,7 +723,7 @@ class HFTrainer:
         auto_env = os.environ.get('AUTO_TUNE', '0') == '1'
         if getattr(self.config, 'auto_tune', False) or auto_env:
             try:
-                pin_mem = bool(torch.cuda.is_available())
+                pin_mem = self._using_cuda()
                 tuner = AutoBatchTuner(self.device, steps=int(getattr(self.config, 'tuning_steps', 10)), num_workers=0, pin_memory=pin_mem)
                 best = tuner.tune(self, self.train_dataset, self.config.batch_size)
                 old_bs = self.config.batch_size
@@ -742,7 +761,7 @@ class HFTrainer:
         self.training_logger.log_training_start(config_dict, model_info)
         
         # Create data loaders
-        pin_mem = bool(torch.cuda.is_available())
+        pin_mem = self._using_cuda()
         num_workers = max(0, int(getattr(self.config, 'dataloader_num_workers', 0)))
         persistent_workers = bool(getattr(self.config, 'persistent_workers', True) and num_workers > 0)
         prefetch_factor = int(getattr(self.config, 'prefetch_factor', 2)) if num_workers > 0 else None
@@ -812,13 +831,13 @@ class HFTrainer:
                     break
                 
                 # Move batch to device
-                non_block = bool(torch.cuda.is_available())
+                non_block = self._using_cuda()
                 batch = {k: v.to(self.device, non_blocking=non_block) for k, v in batch.items()}
 
                 # Training step timing (prefer CUDA events to avoid full synchronisation)
                 cuda_timing: Optional[tuple[torch.cuda.Event, torch.cuda.Event]] = None
                 cpu_start: Optional[float] = None
-                if torch.cuda.is_available():
+                if self._using_cuda():
                     try:
                         start_event = torch.cuda.Event(enable_timing=True)
                         end_event = torch.cuda.Event(enable_timing=True)
@@ -850,7 +869,7 @@ class HFTrainer:
                 
                 # Enhanced Logging
                 should_log = (self.global_step % self.config.logging_steps == 0)
-                if should_log and torch.cuda.is_available():
+                if should_log and self._using_cuda():
                     drained = self._drain_step_events(wait_for_one=True)
                     if drained:
                         self.last_step_time = drained[-1]
@@ -980,7 +999,7 @@ class HFTrainer:
                 break
             
             # Log epoch summary
-            if torch.cuda.is_available():
+            if self._using_cuda():
                 drained = self._drain_step_events(wait_for_one=True)
                 if drained:
                     self.last_step_time = drained[-1]
@@ -993,7 +1012,7 @@ class HFTrainer:
         
         pbar.close()
         
-        if torch.cuda.is_available():
+        if self._using_cuda():
             drained = self._drain_step_events(wait_for_one=True)
             if drained:
                 self.last_step_time = drained[-1]
@@ -1004,7 +1023,7 @@ class HFTrainer:
         total_training_time = time.time() - self.start_time
         
         # Save final model
-        final_checkpoint_path = self.save_checkpoint(is_final=True)
+        self.save_checkpoint(is_final=True)
         
         # Get final metrics
         final_metrics = {
@@ -1071,7 +1090,7 @@ class HFTrainer:
             batch_size=self.config.batch_size,
             shuffle=False,
             num_workers=self.config.dataloader_num_workers,
-            pin_memory=torch.cuda.is_available(),
+            pin_memory=self._using_cuda(),
         )
         return self.evaluate(eval_loader)
 
@@ -1326,7 +1345,7 @@ class HFTrainer:
 
         with torch.no_grad():
             for batch in tqdm(eval_loader, desc="Evaluating", leave=False):
-                non_block = bool(torch.cuda.is_available())
+                non_block = self._using_cuda()
                 batch = {k: v.to(self.device, non_blocking=non_block) for k, v in batch.items()}
 
                 outputs = self.model(
@@ -1485,8 +1504,6 @@ def load_data():
                 
                 # Load and combine multiple stock files for better training
                 all_data = []
-                target_columns = 4  # OHLC only, skip volume for consistency
-                
                 for csv_file in csv_files[:50]:  # Load up to 50 stocks for more diverse data
                     try:
                         df = pd.read_csv(csv_file)

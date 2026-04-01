@@ -14,13 +14,13 @@ Usage:
 
 import asyncio
 import sys
-from datetime import datetime
 from pathlib import Path
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from bagsfm import DataCollector, BagsConfig, DataConfig, TokenConfig
+from bagsfm.clock import utc_now
 from bagsfm.config import SOL_MINT, CODEX_MINT
 
 
@@ -67,7 +67,7 @@ async def main():
     print("-" * 60)
 
     for i in range(5):
-        print(f"\n[{datetime.utcnow().strftime('%H:%M:%S')}] Collection {i+1}/5")
+        print(f"\n[{utc_now().strftime('%H:%M:%S')}] Collection {i+1}/5")
 
         prices = await collector.collect_all_prices()
 

@@ -77,6 +77,10 @@ def test_data_module_produces_sequences(tmp_path):
     assert sample["high"].shape == (12,)
     assert module.train_dataset.__len__() > 0
     assert module.val_dataset.__len__() > 0
+    assert module.train_dataloader(batch_size=4).pin_memory is False
+    assert module.val_dataloader(batch_size=4).pin_memory is False
+    assert module.train_dataloader(batch_size=4, pin_memory=True).pin_memory is True
+    assert module.val_dataloader(batch_size=4, pin_memory=True).pin_memory is True
 
 
 def test_multisymbol_module_exposes_hourly_interface(tmp_path):
@@ -106,6 +110,10 @@ def test_multisymbol_module_exposes_hourly_interface(tmp_path):
     batch = next(iter(loader))
     assert batch["features"].shape[1] == config.sequence_length
     assert batch["features"].shape[2] == len(module.feature_columns)
+    assert loader.pin_memory is False
+    assert module.val_dataloader(batch_size=4).pin_memory is False
+    assert module.train_dataloader(batch_size=4, pin_memory=True).pin_memory is True
+    assert module.val_dataloader(batch_size=4, pin_memory=True).pin_memory is True
     expected_len = sum(len(mod.train_dataset) for mod in module.modules.values())
     assert len(module.train_dataset) == expected_len
 

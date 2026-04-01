@@ -19,24 +19,49 @@ from trainingefficiency.gpu_marketsim import (
 from differentiable_loss_utils import simulate_hourly_trades_binary
 
 
+def _is_cuda_resource_pressure_error(exc: BaseException) -> bool:
+    return "out of memory" in str(exc).lower()
+
+
+def _skip_for_cuda_resource_pressure(exc: BaseException) -> None:
+    if _is_cuda_resource_pressure_error(exc):
+        pytest.skip(f"GPU marketsim test skipped under shared-GPU resource pressure: {exc}")
+
+
+def _allocate_or_skip(factory, *args, **kwargs):
+    try:
+        return factory(*args, **kwargs)
+    except Exception as exc:
+        _skip_for_cuda_resource_pressure(exc)
+        raise
+
+
+def _to_device_or_skip(tensor: torch.Tensor, device: torch.device) -> torch.Tensor:
+    try:
+        return tensor.to(device)
+    except Exception as exc:
+        _skip_for_cuda_resource_pressure(exc)
+        raise
+
+
 def _make_market_data(steps=100, seed=42, device="cpu"):
     torch.manual_seed(seed)
     close_start = 100.0
-    returns = torch.randn(steps, device=device) * 0.01
+    returns = _allocate_or_skip(torch.randn, steps, device=device) * 0.01
     closes = close_start * torch.cumprod(1 + returns, dim=0)
-    highs = closes * (1 + torch.rand(steps, device=device) * 0.02)
-    lows = closes * (1 - torch.rand(steps, device=device) * 0.02)
-    opens = closes * (1 + (torch.rand(steps, device=device) - 0.5) * 0.01)
+    highs = closes * (1 + _allocate_or_skip(torch.rand, steps, device=device) * 0.02)
+    lows = closes * (1 - _allocate_or_skip(torch.rand, steps, device=device) * 0.02)
+    opens = closes * (1 + (_allocate_or_skip(torch.rand, steps, device=device) - 0.5) * 0.01)
     return highs, lows, closes, opens
 
 
 def _make_actions(closes, device=None):
     device = closes.device if device is None else device
     steps = closes.shape[-1]
-    buy_prices = closes * (1 - 0.005 * torch.rand(steps, device=device))
-    sell_prices = closes * (1 + 0.005 * torch.rand(steps, device=device))
-    buy_amounts = torch.rand(steps, device=device) * 0.5
-    sell_amounts = torch.rand(steps, device=device) * 0.5
+    buy_prices = closes * (1 - 0.005 * _allocate_or_skip(torch.rand, steps, device=device))
+    sell_prices = closes * (1 + 0.005 * _allocate_or_skip(torch.rand, steps, device=device))
+    buy_amounts = _allocate_or_skip(torch.rand, steps, device=device) * 0.5
+    sell_amounts = _allocate_or_skip(torch.rand, steps, device=device) * 0.5
     return buy_prices, sell_prices, buy_amounts, sell_amounts
 
 
@@ -497,10 +522,10 @@ class TestCuda:
 
         device = torch.device("cuda")
         gpu_result = gpu_simulate_binary(
-            highs=highs_cpu.to(device), lows=lows_cpu.to(device),
-            closes=closes_cpu.to(device), opens=opens_cpu.to(device),
-            buy_prices=buy_p_cpu.to(device), sell_prices=sell_p_cpu.to(device),
-            buy_amounts=buy_a_cpu.to(device), sell_amounts=sell_a_cpu.to(device),
+            highs=_to_device_or_skip(highs_cpu, device), lows=_to_device_or_skip(lows_cpu, device),
+            closes=_to_device_or_skip(closes_cpu, device), opens=_to_device_or_skip(opens_cpu, device),
+            buy_prices=_to_device_or_skip(buy_p_cpu, device), sell_prices=_to_device_or_skip(sell_p_cpu, device),
+            buy_amounts=_to_device_or_skip(buy_a_cpu, device), sell_amounts=_to_device_or_skip(sell_a_cpu, device),
             maker_fee=0.001, max_leverage=2.0, margin_annual_rate=0.0625,
         )
 

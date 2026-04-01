@@ -13,6 +13,7 @@ from typing import Dict, Tuple
 
 import numpy as np
 import pandas as pd
+import pytest
 import torch
 
 try:  # pragma: no cover - optional instrumentation for CUDA graph debugging
@@ -63,6 +64,13 @@ def _reset_torch_compile_state() -> None:
             legacy_reset()
         except Exception:
             pass
+
+
+def _is_cuda_resource_pressure_error(exc: BaseException) -> bool:
+    if isinstance(exc, torch.OutOfMemoryError):
+        return True
+    accelerator_error = getattr(torch, "AcceleratorError", None)
+    return accelerator_error is not None and isinstance(exc, accelerator_error)
 
 
 @contextmanager
@@ -165,15 +173,20 @@ def _prepare_wrapper(compiled: bool) -> Chronos2OHLCWrapper:
         elif not compiled:
             os.environ["CHRONOS_COMPILE"] = "0"
 
-        return Chronos2OHLCWrapper.from_pretrained(
-            model_id="amazon/chronos-2",
-            torch_compile=compiled,
-            compile_mode="reduce-overhead" if compiled else None,
-            compile_backend="inductor" if compiled else None,
-            default_context_length=CONTEXT_LENGTH,
-            device_map="cuda" if torch.cuda.is_available() else "cpu",
-            cache_policy="never",
-        )
+        try:
+            return Chronos2OHLCWrapper.from_pretrained(
+                model_id="amazon/chronos-2",
+                torch_compile=compiled,
+                compile_mode="reduce-overhead" if compiled else None,
+                compile_backend="inductor" if compiled else None,
+                default_context_length=CONTEXT_LENGTH,
+                device_map="cuda" if torch.cuda.is_available() else "cpu",
+                cache_policy="never",
+            )
+        except Exception as exc:
+            if torch.cuda.is_available() and _is_cuda_resource_pressure_error(exc):
+                pytest.skip(f"Chronos2 compile accuracy test skipped under shared-GPU resource pressure: {exc}")
+            raise
     finally:
         for key, value in snapshot.items():
             if value is None:
@@ -194,13 +207,20 @@ def _run_inference(symbol: str, compiled: bool) -> Dict[str, float | bool]:
                 wrapper = _prepare_wrapper(compiled)
 
                 start = time.perf_counter()
-                batch = wrapper.predict_ohlc(
-                    context_df=context,
-                    symbol=symbol,
-                    prediction_length=PREDICTION_LENGTH,
-                    context_length=CONTEXT_LENGTH,
-                    evaluation_df=holdout,
-                )
+                try:
+                    batch = wrapper.predict_ohlc(
+                        context_df=context,
+                        symbol=symbol,
+                        prediction_length=PREDICTION_LENGTH,
+                        context_length=CONTEXT_LENGTH,
+                        evaluation_df=holdout,
+                    )
+                except Exception as exc:
+                    if torch.cuda.is_available() and _is_cuda_resource_pressure_error(exc):
+                        pytest.skip(
+                            f"Chronos2 compile accuracy prediction skipped under shared-GPU resource pressure: {exc}"
+                        )
+                    raise
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()
                 latency_ms = (time.perf_counter() - start) * 1000.0

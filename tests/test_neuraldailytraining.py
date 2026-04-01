@@ -11,6 +11,7 @@ from neuraldailytraining import (
     NeuralDailyTrainer,
 )
 from neuraldailytraining.checkpoints import save_checkpoint
+from neuraldailytraining.data import SymbolFrameBuilder, _stock_holiday_feature_for_date
 
 
 def _write_symbol_data(root, forecast_root, symbol: str, days: int = 360) -> None:
@@ -71,6 +72,38 @@ def test_daily_data_module_builds_sequences(tmp_path):
     batch = next(iter(train_loader))
     assert batch["features"].shape[-1] == len(module.feature_columns)
     assert batch["close"].shape[-1] == cfg.sequence_length
+    assert train_loader.pin_memory is False
+    assert module.val_dataloader(batch_size=4).pin_memory is False
+    assert module.train_dataloader(batch_size=4, pin_memory=True).pin_memory is True
+    assert module.val_dataloader(batch_size=4, pin_memory=True).pin_memory is True
+
+
+def test_holiday_feature_computation_reuses_unique_dates(monkeypatch):
+    _stock_holiday_feature_for_date.cache_clear()
+    call_count = 0
+
+    def fake_is_nyse_open_on_date(dt):
+        nonlocal call_count
+        call_count += 1
+        return dt.weekday() < 5
+
+    monkeypatch.setattr("neuraldailytraining.data.is_nyse_open_on_date", fake_is_nyse_open_on_date)
+
+    repeated_dates = pd.Series(
+        [
+            pd.Timestamp("2024-01-08", tz="UTC"),
+            pd.Timestamp("2024-01-08", tz="UTC"),
+            pd.Timestamp("2024-01-08", tz="UTC"),
+            pd.Timestamp("2024-01-12", tz="UTC"),
+            pd.Timestamp("2024-01-12", tz="UTC"),
+        ]
+    )
+    is_tradable, days_sin, days_cos = SymbolFrameBuilder._compute_holiday_features(repeated_dates, is_crypto=False)
+
+    assert is_tradable.tolist() == [1.0, 1.0, 1.0, 0.0, 0.0]
+    assert call_count == 4
+    assert len(days_sin) == len(repeated_dates)
+    assert len(days_cos) == len(repeated_dates)
 
 
 def test_neural_daily_trainer_overfits_tiny_dataset(tmp_path):

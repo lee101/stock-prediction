@@ -22,6 +22,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import importlib
 import struct
 import time
 from pathlib import Path
@@ -454,8 +455,9 @@ def main():
     print(f"LoRA: rank={args.lora_rank}, layers={args.lora_num_layers}, "
           f"lora_params={n_lora_params:,} ({n_lora_params/n_base_params*100:.2f}% of base)")
 
-    # Load shared data
-    import pufferlib_market.binding as binding
+    # Load shared data via importlib so tests can replace the binding module
+    # through sys.modules without depending on package attribute caching.
+    binding = importlib.import_module("pufferlib_market.binding")
     data_path = str(Path(args.data_path).resolve())
     binding.shared(data_path=data_path)
 

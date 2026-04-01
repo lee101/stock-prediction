@@ -44,6 +44,10 @@ from .model import PolicyConfig, build_policy
 logger = logging.getLogger(__name__)
 
 
+def _is_cuda_resource_pressure_error(exc: BaseException) -> bool:
+    return "out of memory" in str(exc).lower()
+
+
 @dataclass
 class TrainEpochMetrics:
     loss: float
@@ -559,36 +563,63 @@ def make_training_arguments(
     logging_steps: int,
     optim_name: str,
     report_to: list[str] | None = None,
+    use_cpu: bool | None = None,
 ) -> TrainingArguments:
-    return TrainingArguments(
-        output_dir=str(output_dir),
-        run_name=run_name,
-        per_device_train_batch_size=int(batch_size),
-        per_device_eval_batch_size=int(batch_size),
-        num_train_epochs=float(epochs),
-        max_steps=int(max_steps),
-        learning_rate=float(learning_rate),
-        warmup_steps=int(warmup_steps),
-        weight_decay=float(weight_decay),
-        gradient_accumulation_steps=int(accumulation_steps),
-        max_grad_norm=float(grad_clip),
-        bf16=bool(bf16),
-        fp16=bool(fp16),
-        tf32=bool(tf32),
-        torch_compile=bool(torch_compile),
-        optim=optim_name,
-        eval_strategy="epoch",
-        save_strategy="no",
-        logging_strategy="steps",
-        logging_steps=max(1, int(logging_steps)),
-        report_to=report_to or ["none"],
-        remove_unused_columns=False,
-        dataloader_num_workers=int(num_workers),
-        dataloader_pin_memory=torch.cuda.is_available(),
-        dataloader_persistent_workers=bool(num_workers > 0),
-        do_train=True,
-        do_eval=True,
+    def _build_kwargs(*, resolved_use_cpu: bool, resolved_bf16: bool, resolved_fp16: bool, resolved_tf32: bool) -> dict[str, Any]:
+        return {
+            "output_dir": str(output_dir),
+            "run_name": run_name,
+            "per_device_train_batch_size": int(batch_size),
+            "per_device_eval_batch_size": int(batch_size),
+            "num_train_epochs": float(epochs),
+            "max_steps": int(max_steps),
+            "learning_rate": float(learning_rate),
+            "warmup_steps": int(warmup_steps),
+            "weight_decay": float(weight_decay),
+            "gradient_accumulation_steps": int(accumulation_steps),
+            "max_grad_norm": float(grad_clip),
+            "bf16": bool(resolved_bf16),
+            "fp16": bool(resolved_fp16),
+            "tf32": bool(resolved_tf32),
+            "torch_compile": bool(torch_compile),
+            "optim": optim_name,
+            "eval_strategy": "epoch",
+            "save_strategy": "no",
+            "logging_strategy": "steps",
+            "logging_steps": max(1, int(logging_steps)),
+            "report_to": report_to or ["none"],
+            "remove_unused_columns": False,
+            "dataloader_num_workers": int(num_workers),
+            "dataloader_pin_memory": torch.cuda.is_available() and not resolved_use_cpu,
+            "dataloader_persistent_workers": bool(num_workers > 0),
+            "do_train": True,
+            "do_eval": True,
+            "use_cpu": bool(resolved_use_cpu),
+        }
+
+    requested_use_cpu = bool(use_cpu) if use_cpu is not None else False
+    base_kwargs = _build_kwargs(
+        resolved_use_cpu=requested_use_cpu,
+        resolved_bf16=bf16,
+        resolved_fp16=fp16,
+        resolved_tf32=tf32,
     )
+    try:
+        return TrainingArguments(**base_kwargs)
+    except Exception as exc:
+        if use_cpu is None and _is_cuda_resource_pressure_error(exc):
+            logger.warning(
+                "Falling back to CPU for HF trainer arguments after CUDA resource error: %s",
+                exc,
+            )
+            fallback_kwargs = _build_kwargs(
+                resolved_use_cpu=True,
+                resolved_bf16=False,
+                resolved_fp16=False,
+                resolved_tf32=False,
+            )
+            return TrainingArguments(**fallback_kwargs)
+        raise
 
 
 def write_run_metadata(

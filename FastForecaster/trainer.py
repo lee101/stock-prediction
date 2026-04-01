@@ -87,7 +87,8 @@ class FastForecasterTrainer:
             max_symbols=max(1, len(self.data.symbols)),
             qk_norm=config.qk_norm,
             qk_norm_eps=config.qk_norm_eps,
-        ).to(self.device)
+        )
+        self._move_model_to_device()
 
         if config.torch_compile and hasattr(torch, "compile"):
             try:
@@ -121,6 +122,27 @@ class FastForecasterTrainer:
             f"device={self.device} symbols={len(self.data.symbols)} "
             f"train={len(self.data.train_dataset)} val={len(self.data.val_dataset)} test={len(self.data.test_dataset)}"
         )
+
+    def _should_fallback_to_cpu(self, exc: BaseException) -> bool:
+        if self.config.device is not None or self.device.type != "cuda":
+            return False
+        if isinstance(exc, torch.OutOfMemoryError):
+            return True
+        accelerator_error = getattr(torch, "AcceleratorError", None)
+        return accelerator_error is not None and isinstance(exc, accelerator_error)
+
+    def _move_model_to_device(self) -> None:
+        try:
+            self.model = self.model.to(self.device)
+        except Exception as exc:
+            if self._should_fallback_to_cpu(exc):
+                print(f"[fastforecaster] CUDA unavailable at runtime, falling back to CPU: {exc}")
+                self.device = torch.device("cpu")
+                self._amp_enabled = False
+                self.scaler = self._build_scaler()
+                self.model = self.model.to(self.device)
+            else:
+                raise
 
     def _resolve_amp_dtype(self, precision: str) -> torch.dtype | None:
         if precision == "bf16":

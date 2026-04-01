@@ -7,21 +7,20 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
-### Current Alpaca snapshot (2026-03-28 09:29 UTC)
-- **LIVE account**: supervisor `unified-stock-trader` is active; equity **$38,954.44**, cash **$38,954.44**, buying power **$77,908.88**, last_equity **$39,090.40**.
-- **LIVE positions/orders**: no stock positions are open; only dust in `AVAXUSD`, `BTCUSD`, `ETHUSD`, `LTCUSD`, `SOLUSD` remains. There are currently **no open orders**.
-- **LIVE duplicate-order guard (2026-03-27 20:31 UTC)**: systemd unit `alpaca-cancel-multi-orders.service` is installed and enabled with `PAPER=0`; `journalctl` confirms it initialized the **LIVE** Alpaca client and is polling for duplicate flat-position opening orders.
-- **LIVE daily-rl-trader**: 29-model ensemble, sleeping until Mon 2026-03-30 market open (systemd service)
-  - **Ensemble members**: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835+**s2827**+**s2722**+**s3668**+**s3411**+**s4011**+**s4777**+**s4080**+**s4533**+**s4813**+**s5045**+**s5337**+**s5199**+**s5019**+**s6808**
-  - **FULLY RESOLVED**: All checkpoints in `pufferlib_market/prod_ensemble/` (protected from sweep deletion)
-  - **TRUE performance (encoder_norm-correct)**: 0/111 neg, p10=64.1%
-  - Updated 2026-03-30: ...s5019(+0.9%/28), s6808(+0.7%/29) — 29-model p10=64.1%
-  - 30-model bar: p10 ≥ 64.1% @fill_bps=5 (encoder_norm-correct)
+### Current Alpaca snapshot (2026-03-31 12:25 UTC)
+- **LIVE account**: equity ~$38,954 (from 2026-03-28 snapshot, not updated — API key expired)
+- **LIVE daily-rl-trader**: **32-model ensemble** running on PAPER (live API key expired)
+  - **Ensemble members**: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835+s2827+s2722+s3668+s3411+s4011+s4777+s4080+s4533+s4813+s5045+s5337+s5199+s5019+s6808+s3456+s7159+**s6758**
+  - **Performance**: 0/111 neg, med=73.4%, **p10=66.2%** @fill_bps=5
+  - **s6758 added 2026-03-31 12:18 UTC**: +1.0% delta vs 31-model (V4 wave 20 hard pass → full test confirmed)
+  - Updated 2026-03-31: s3456(+0.5%/30), s7159(+0.7%/31), s6758(+1.0%/32) — 32-model p10=66.2%
+  - 33-model bar: p10 ≥ 66.2% @fill_bps=5
   - 15-model baseline was: 0/111 neg, med=50.9%, p10=19.2%
-  - REJECTED 100+ seeds across 15→29 model bars (see trade_daily_stock_prod.py comments)
-  - ⚠️ CRITICAL: Alpaca LIVE API key AKYKQGKKQYOV5ZZ3ZA3ZP3PXLN EXPIRED (401). Service failing every 60s with "unauthorized" on `get_all_positions()`. NO TRADES EXECUTING.
-  - ⚠️ ACTION REQUIRED: Renew live API key at Alpaca dashboard → update env_real.py lines 92-93 (ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD) → `sudo systemctl restart daily-rl-trader.service`
-  - **Batch candidate evaluation (2026-03-30 15:00 UTC)**: 6 concurrent spawn batches running with nohup (B1/B2/B3 near-zero br + wave7 s6649-s6800 range). ~375 candidates to test. Manager script: `/tmp/run_batches_spawn.sh` (nohup, log: `/tmp/spawn_manager.log`). At current load ~200, each batch takes ~3h. Best found so far: s7276 at p10=62.1% (-2.0% from bar)
+  - All checkpoints in `pufferlib_market/prod_ensemble/` (protected from sweep deletion)
+  - trade_daily_stock_prod.py updated with 32-model list
+  - ⚠️ CRITICAL: Alpaca LIVE API key EXPIRED (401). Service on PAPER. NO LIVE TRADES.
+  - ⚠️ ACTION REQUIRED: Renew live API key → update env_real.py lines 54-55 (ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD) → `sudo systemctl restart daily-rl-trader.service`
+- **V4 screening**: 336/737 done (45.6%), wave 22 running, now using 32-model baseline
 
 ### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- FIXED (pending restart)
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`

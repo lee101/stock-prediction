@@ -1,5 +1,7 @@
 import json
+import sys
 from datetime import datetime, timedelta, timezone
+from types import ModuleType
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -12,6 +14,63 @@ from src import process_utils
 def tmp_watchers_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(process_utils, "MAXDIFF_WATCHERS_DIR", tmp_path)
     return tmp_path
+
+
+def test_get_inherited_env_exports_resolved_alpaca_mode(monkeypatch):
+    fake_env_real = ModuleType("env_real")
+    fake_env_real.ALP_KEY_ID = "live-key"
+    fake_env_real.ALP_SECRET_KEY = "live-secret"
+    fake_env_real.ALP_KEY_ID_PROD = "live-key"
+    fake_env_real.ALP_SECRET_KEY_PROD = "live-secret"
+    fake_env_real.ALP_ENDPOINT = "https://api.alpaca.markets"
+    fake_env_real.PAPER = False
+    fake_env_real.ACTIVE_ALP_KEY_ID = "live-key"
+    fake_env_real.ACTIVE_ALP_SECRET_KEY = "live-secret"
+    monkeypatch.setitem(sys.modules, "env_real", fake_env_real)
+
+    debug_messages = []
+    warning_messages = []
+    monkeypatch.setattr(process_utils.logger, "debug", debug_messages.append)
+    monkeypatch.setattr(process_utils.logger, "warning", warning_messages.append)
+
+    env = process_utils._get_inherited_env()
+
+    assert env["PYTHONPATH"] == str(process_utils.cwd)
+    assert env["ALP_KEY_ID"] == "live-key"
+    assert env["ALP_SECRET_KEY"] == "live-secret"
+    assert env["ALP_KEY_ID_PROD"] == "live-key"
+    assert env["ALP_SECRET_KEY_PROD"] == "live-secret"
+    assert env["ALP_ENDPOINT"] == "https://api.alpaca.markets"
+    assert env["ALP_PAPER"] == "0"
+    assert env["PAPER"] == "0"
+    assert warning_messages == []
+    assert debug_messages
+
+
+def test_get_inherited_env_falls_back_when_active_aliases_are_missing(monkeypatch):
+    fake_env_real = ModuleType("env_real")
+    fake_env_real.ALP_KEY_ID = "paper-key"
+    fake_env_real.ALP_SECRET_KEY = "paper-secret"
+    fake_env_real.ALP_KEY_ID_PROD = "live-key"
+    fake_env_real.ALP_SECRET_KEY_PROD = "live-secret"
+    fake_env_real.ALP_ENDPOINT = "https://paper-api.alpaca.markets"
+    fake_env_real.PAPER = True
+    monkeypatch.setitem(sys.modules, "env_real", fake_env_real)
+
+    debug_messages = []
+    warning_messages = []
+    monkeypatch.setattr(process_utils.logger, "debug", debug_messages.append)
+    monkeypatch.setattr(process_utils.logger, "warning", warning_messages.append)
+
+    env = process_utils._get_inherited_env()
+
+    assert env["ALP_KEY_ID"] == "paper-key"
+    assert env["ALP_SECRET_KEY"] == "paper-secret"
+    assert env["ALP_ENDPOINT"] == "https://paper-api.alpaca.markets"
+    assert env["ALP_PAPER"] == "1"
+    assert env["PAPER"] == "1"
+    assert warning_messages == []
+    assert debug_messages
 
 
 def test_spawn_open_replaces_existing_watcher(tmp_watchers_dir, monkeypatch):

@@ -13,14 +13,16 @@ import argparse
 import json
 import logging
 import os
+import re
+import shlex
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from types import SimpleNamespace
 from typing import Iterable, Optional, Sequence
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -34,8 +36,14 @@ if str(REPO) not in sys.path:
 
 from pufferlib_market.inference_daily import DailyPPOTrader, compute_daily_features
 from src.alpaca_account_lock import acquire_alpaca_account_lock, require_explicit_live_trading_enable
-from src.trading_server.client import TradingServerClient
-from src.trading_server.settings import TradingServerSettings
+from src.trading_server.client import (
+    InMemoryTradingServerClient,
+    TradingServerAccountSnapshot,
+    TradingServerClient,
+    TradingServerClientLike,
+    TradingServerPositionPayload,
+    TradingServerQuotePayload,
+)
 from unified_orchestrator.jsonl_utils import append_jsonl_row
 
 logging.basicConfig(
@@ -63,8 +71,8 @@ DEFAULT_SYMBOLS = [
     "AMZN",
 ]
 DEFAULT_CHECKPOINT = "pufferlib_market/prod_ensemble/tp10.pt"
-# 31-model ensemble stored in prod_ensemble/ (protected from *_screen/ deletion pattern)
-# Members: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835+s2827+s2722+s3668+s3411+s4011+s4777+s4080+s4533+s4813+s5045+s5337+s5199+s5019+s6808+s3456+s7159
+# 32-model ensemble stored in prod_ensemble/ (protected from *_screen/ deletion pattern)
+# Members: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835+s2827+s2722+s3668+s3411+s4011+s4777+s4080+s4533+s4813+s5045+s5337+s5199+s5019+s6808+s3456+s7159+s6758
 # Updated 2026-03-31 — all checkpoints are screen-phase (≤3M steps) or exact-match recoveries
 # s2827 added 2026-03-28: +16% delta vs 15-model
 # s2722 added 2026-03-29: +6% delta vs 16-model
@@ -82,9 +90,10 @@ DEFAULT_CHECKPOINT = "pufferlib_market/prod_ensemble/tp10.pt"
 # s6808 added 2026-03-30: +0.7% delta vs 28-model — 29-model: 0/111 neg, p10=64.1%
 # s3456 added 2026-03-31: +0.5% delta vs 29-model — 30-model: 0/111 neg, p10=64.6%
 # s7159 added 2026-03-31: +0.7% delta vs 30-model — 31-model: 0/111 neg, p10=65.3%
+# s6758 added 2026-03-31: +1.0% delta vs 31-model — 32-model: 0/111 neg, med=73.4%, p10=66.2%
 # (15-model was: 0/111 neg, med=50.9%, p10=19.2%)
 # ENCODER_NORM NOTE: models use encoder_norm; production inference.py applies it correctly
-# 32-model bar: 32-model exhaustive p10 >= 65.3% @fill_bps=5 (encoder_norm-correct methodology)
+# 33-model bar: 33-model exhaustive p10 >= 66.2% @fill_bps=5 (encoder_norm-correct methodology)
 # NOTE: s4009 REJECTED (batch misidentification — actual delta=-25.1%)
 # REJECTED: s2655, s2206, resmlp_a40, s28, tp03, s241, s541, s310, stock_ent_05
 # REJECTED (high in-sample return = aggressive overfit): s2793, s2815, s2099, s2118, s2247, s2695
@@ -121,12 +130,23 @@ DEFAULT_EXTRA_CHECKPOINTS = [
     "pufferlib_market/prod_ensemble/s6808.pt",
     "pufferlib_market/prod_ensemble/s3456.pt",
     "pufferlib_market/prod_ensemble/s7159.pt",
+    "pufferlib_market/prod_ensemble/s6758.pt",
 ]
 DEFAULT_DATA_DIR = "trainingdata"
 DEFAULT_ALLOCATION_PCT = 12.5  # Calibrated 2026-03-31: was 25%, 0.5x scale improves val_p10 by +1.9%
 DEFAULT_SORTINO_SERVER_CHECKPOINT = "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt"
 DEFAULT_SERVER_PAPER_ACCOUNT = "paper_sortino_daily"
 DEFAULT_SERVER_PAPER_BOT_ID = "daily_stock_sortino_v1"
+DEFAULT_BACKTEST_SERVER_ACCOUNT = "paper_backtest_daily_sortino"
+DEFAULT_BACKTEST_SERVER_BOT_ID = "daily_stock_backtest_v1"
+DEFAULT_BACKTEST_SERVER_SESSION_ID = "daily-stock-backtest"
+DEFAULT_BACKTEST_WRITER_TTL_SECONDS = 3600
+DEFAULT_BACKTEST_STARTING_CASH = 10_000.0
+BUYING_POWER_USAGE_CAP = 0.95
+MAX_STOCK_SYMBOL_LENGTH = 20
+SAFE_STOCK_SYMBOL_RE = re.compile(
+    rf"^[A-Z0-9](?:[A-Z0-9.-]{{0,{MAX_STOCK_SYMBOL_LENGTH - 2}}}[A-Z0-9])?$"
+)
 SERVER_MARKETABLE_LIMIT_BUFFER_BPS = 100.0
 # Calibrated execution offsets (2026-03-31 sweep over 726 combos, 788 windows)
 # Best: entry=+5bps, exit=+25bps, scale=0.5x → val_p10=-0.4% vs baseline -2.3%
@@ -150,80 +170,209 @@ class StrategyState:
 
 @dataclass(frozen=True)
 class PortfolioContext:
-    cash: float = 10_000.0
+    cash: float = DEFAULT_BACKTEST_STARTING_CASH
     current_symbol: Optional[str] = None
     position_qty: float = 0.0
     entry_price: float = 0.0
     hold_days: int = 0
 
 
-class InMemoryTradingServerClient:
-    """Adapter used for deterministic backtests against the trading server engine."""
+@dataclass(frozen=True)
+class ServerPositionView:
+    symbol: str
+    qty: float
+    side: str = "long"
+    avg_entry_price: float = 0.0
+    current_price: float = 0.0
 
-    def __init__(
-        self,
-        *,
-        engine,
-        account: str,
-        bot_id: str,
-        execution_mode: str = "paper",
-        session_id: str = "daily-stock-backtest",
-    ) -> None:
-        self.engine = engine
-        self.account = account
-        self.bot_id = bot_id
-        self.execution_mode = execution_mode
-        self.session_id = session_id
 
-    def claim_writer(self, *, ttl_seconds: int | None = None) -> dict[str, object]:
-        resolved_ttl_seconds = (
-            TradingServerSettings.from_env().writer_ttl_seconds
-            if ttl_seconds is None
-            else int(ttl_seconds)
+@dataclass(frozen=True)
+class CliRuntimeConfig:
+    paper: bool
+    symbols: list[str]
+    checkpoint: str
+    extra_checkpoints: Optional[list[str]]
+    data_dir: str
+    data_source: str
+    allocation_pct: float
+    execution_backend: str
+    server_account: str
+    server_bot_id: str
+    server_url: Optional[str]
+    dry_run: bool
+    backtest: bool
+    backtest_days: int
+    backtest_starting_cash: float
+    daemon: bool
+    compare_server_parity: bool
+    removed_duplicate_symbols: list[str] = field(default_factory=list)
+    ignored_symbol_inputs: list[str] = field(default_factory=list)
+
+    @property
+    def ensemble_enabled(self) -> bool:
+        return self.extra_checkpoints is not None
+
+    @property
+    def ensemble_size(self) -> int:
+        return 1 + len(self.extra_checkpoints or [])
+
+    @property
+    def account_mode(self) -> str:
+        return "paper" if self.paper else "live"
+
+    @property
+    def run_mode(self) -> str:
+        return "backtest" if self.backtest else ("daemon" if self.daemon else "once")
+
+    @property
+    def checkpoint_paths(self) -> list[str]:
+        return [self.checkpoint, *(self.extra_checkpoints or [])]
+
+    @property
+    def missing_checkpoint_paths(self) -> list[str]:
+        return [path for path in self.checkpoint_paths if not Path(path).exists()]
+
+    @property
+    def checkpoints_exist(self) -> bool:
+        return not self.missing_checkpoint_paths
+
+    @property
+    def resolved_server_url(self) -> str:
+        return (self.server_url or os.getenv("TRADING_SERVER_URL", "http://127.0.0.1:8050")).rstrip("/")
+
+    def to_runtime_payload(self) -> dict[str, object]:
+        payload = asdict(self)
+        payload["symbol_count"] = len(self.symbols)
+        payload["ensemble_enabled"] = self.ensemble_enabled
+        payload["ensemble_size"] = self.ensemble_size
+        payload["account_mode"] = self.account_mode
+        payload["run_mode"] = self.run_mode
+        payload["summary"] = self.summary
+        payload["run_command_preview"] = self.command_preview()
+        payload["safe_command_preview"] = self.command_preview(force_dry_run=True)
+        payload["checkpoints_exist"] = self.checkpoints_exist
+        payload["missing_checkpoints"] = self.missing_checkpoint_paths
+        return payload
+
+    @property
+    def summary(self) -> str:
+        checkpoint_label = "checkpoint" if self.ensemble_size == 1 else "checkpoints"
+        symbol_label = "symbol" if len(self.symbols) == 1 else "symbols"
+        data_label = "local data" if self.data_source == "local" else "alpaca data"
+        return (
+            f"{self.account_mode} {self.run_mode} via {self.execution_backend} "
+            f"using {data_label} on {len(self.symbols)} {symbol_label} "
+            f"with {self.ensemble_size} {checkpoint_label}"
         )
-        return self.engine.claim_writer(
-            SimpleNamespace(
-                account=self.account,
-                bot_id=self.bot_id,
-                session_id=self.session_id,
-                ttl_seconds=resolved_ttl_seconds,
-            )
-        )
 
-    def refresh_prices(self, *, symbols: Iterable[str] | None = None) -> dict[str, object]:
-        return self.engine.refresh_prices(account=self.account, symbols=list(symbols or []))
+    def command_preview(self, *, force_dry_run: bool | None = None) -> str:
+        args = ["python", Path(__file__).name]
 
-    def get_account(self) -> dict[str, object]:
-        return self.engine.get_account_snapshot(self.account)
+        if self.run_mode == "daemon":
+            args.append("--daemon")
+        elif self.run_mode == "backtest":
+            args.append("--backtest")
+        else:
+            args.append("--once")
 
-    def submit_limit_order(
-        self,
-        *,
-        symbol: str,
-        side: str,
-        qty: float,
-        limit_price: float,
-        allow_loss_exit: bool = False,
-        force_exit_reason: str | None = None,
-        live_ack: str | None = None,
-        metadata: dict[str, object] | None = None,
-    ) -> dict[str, object]:
-        return self.engine.submit_order(
-            SimpleNamespace(
-                account=self.account,
-                bot_id=self.bot_id,
-                session_id=self.session_id,
-                symbol=symbol,
-                side=side,
-                qty=qty,
-                limit_price=limit_price,
-                execution_mode=self.execution_mode,
-                allow_loss_exit=allow_loss_exit,
-                force_exit_reason=force_exit_reason,
-                live_ack=live_ack,
-                metadata=metadata or {},
-            )
-        )
+        args.append("--paper" if self.paper else "--live")
+        use_dry_run = force_dry_run if force_dry_run is not None else self.dry_run
+        if use_dry_run and not self.backtest:
+            args.append("--dry-run")
+
+        args.extend(["--checkpoint", self.checkpoint])
+        if self.extra_checkpoints is None:
+            args.append("--no-ensemble")
+        elif self.extra_checkpoints != DEFAULT_EXTRA_CHECKPOINTS:
+            args.append("--extra-checkpoints")
+            args.extend(self.extra_checkpoints)
+
+        args.extend(["--data-source", self.data_source])
+        args.extend(["--data-dir", self.data_dir])
+        args.extend(["--allocation-pct", f"{self.allocation_pct:g}"])
+        args.extend(["--execution-backend", self.execution_backend])
+        args.extend(["--server-account", self.server_account])
+        args.extend(["--server-bot-id", self.server_bot_id])
+        if self.server_url:
+            args.extend(["--server-url", self.server_url])
+        if self.backtest:
+            args.extend(["--backtest-days", str(self.backtest_days)])
+            args.extend(["--backtest-starting-cash", f"{self.backtest_starting_cash:g}"])
+        if self.compare_server_parity:
+            args.append("--compare-server-parity")
+        if self.symbols:
+            args.append("--symbols")
+            args.extend(self.symbols)
+
+        return " ".join(shlex.quote(arg) for arg in args)
+
+
+def _runtime_log_payload(config: CliRuntimeConfig) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "account_mode": config.account_mode,
+        "run_mode": config.run_mode,
+        "dry_run": config.dry_run,
+        "data_source": config.data_source,
+        "execution_backend": config.execution_backend,
+        "symbol_count": len(config.symbols),
+        "symbols": list(config.symbols),
+        "checkpoint": config.checkpoint,
+        "ensemble_size": config.ensemble_size,
+        "command_preview": config.command_preview(),
+    }
+    if config.backtest or config.data_source == "local":
+        payload["data_dir"] = config.data_dir
+    if config.execution_backend == "trading_server":
+        payload["server_account"] = config.server_account
+        payload["server_bot_id"] = config.server_bot_id
+        payload["server_url"] = config.resolved_server_url
+    return payload
+
+
+def _log_runtime_start(config: CliRuntimeConfig) -> None:
+    logger.info("Runtime config: %s", json.dumps(_runtime_log_payload(config), sort_keys=True))
+
+
+def _normalize_symbols(raw_symbols: Sequence[object]) -> tuple[list[str], list[str], list[str]]:
+    normalized: list[str] = []
+    removed_duplicate_symbols: list[str] = []
+    ignored_symbol_inputs: list[str] = []
+    seen: set[str] = set()
+    removed_seen: set[str] = set()
+
+    for raw_symbol in raw_symbols:
+        stripped = str(raw_symbol).strip()
+        if not stripped:
+            ignored_symbol_inputs.append("<blank>")
+            continue
+        symbol = _normalize_stock_symbol(stripped)
+        if symbol in seen:
+            if symbol not in removed_seen:
+                removed_duplicate_symbols.append(symbol)
+                removed_seen.add(symbol)
+            continue
+        normalized.append(symbol)
+        seen.add(symbol)
+
+    if not normalized:
+        raise ValueError("No valid symbols configured after normalization")
+
+    return normalized, removed_duplicate_symbols, ignored_symbol_inputs
+
+
+def _normalize_stock_symbol(raw_symbol: object) -> str:
+    symbol = str(raw_symbol).strip().upper()
+    if not symbol:
+        raise ValueError("symbol is required")
+    if ".." in symbol or "/" in symbol or "\\" in symbol:
+        raise ValueError(f"Unsupported symbol: {raw_symbol}")
+    if not SAFE_STOCK_SYMBOL_RE.fullmatch(symbol):
+        raise ValueError(f"Unsupported symbol: {raw_symbol}")
+    return symbol
+
+
+def _normalize_stock_symbol_list(symbols: Iterable[object]) -> list[str]:
+    return [_normalize_stock_symbol(symbol) for symbol in symbols]
 
 
 def _normalize_daily_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -274,7 +423,7 @@ def load_local_daily_frames(
 ) -> dict[str, pd.DataFrame]:
     frames: dict[str, pd.DataFrame] = {}
     base = REPO / data_dir
-    for symbol in symbols:
+    for symbol in _normalize_stock_symbol_list(symbols):
         path = base / f"{symbol}.csv"
         if not path.exists():
             raise FileNotFoundError(f"Missing local daily data for {symbol}: {path}")
@@ -298,19 +447,15 @@ def _drop_incomplete_session(frame: pd.DataFrame, *, now: datetime) -> pd.DataFr
 
 def build_trading_client(*, paper: bool):
     from alpaca.trading.client import TradingClient
-    from env_real import ALP_KEY_ID, ALP_KEY_ID_PROD, ALP_SECRET_KEY, ALP_SECRET_KEY_PROD
+    key_id, secret = _resolve_alpaca_credentials(paper=paper)
 
-    key_id = ALP_KEY_ID if paper else (ALP_KEY_ID_PROD or ALP_KEY_ID)
-    secret = ALP_SECRET_KEY if paper else (ALP_SECRET_KEY_PROD or ALP_SECRET_KEY)
     return TradingClient(key_id, secret, paper=paper)
 
 
 def build_data_client(*, paper: bool):
     from alpaca.data import StockHistoricalDataClient
-    from env_real import ALP_KEY_ID, ALP_KEY_ID_PROD, ALP_SECRET_KEY, ALP_SECRET_KEY_PROD
+    key_id, secret = _resolve_alpaca_credentials(paper=paper)
 
-    key_id = ALP_KEY_ID if paper else (ALP_KEY_ID_PROD or ALP_KEY_ID)
-    secret = ALP_SECRET_KEY if paper else (ALP_SECRET_KEY_PROD or ALP_SECRET_KEY)
     return StockHistoricalDataClient(key_id, secret)
 
 
@@ -323,7 +468,7 @@ def _frames_from_alpaca_bars(
     if bars_df is None or len(bars_df) == 0:
         return {}
 
-    ordered_symbols = [str(symbol).upper() for symbol in symbols]
+    ordered_symbols = _normalize_stock_symbol_list(symbols)
     frames: dict[str, pd.DataFrame] = {}
     if isinstance(bars_df.index, pd.MultiIndex):
         grouped = bars_df.reset_index().groupby("symbol", sort=False)
@@ -384,7 +529,7 @@ def load_alpaca_daily_frames(
 
     now = now or datetime.now(timezone.utc)
     client = data_client or build_data_client(paper=paper)
-    ordered_symbols = [str(symbol).upper() for symbol in symbols]
+    ordered_symbols = _normalize_stock_symbol_list(symbols)
     start = now - timedelta(days=history_days)
 
     frames: dict[str, pd.DataFrame] = {}
@@ -499,19 +644,20 @@ def load_latest_quotes_with_source(
     from alpaca.data import StockLatestQuoteRequest
     from alpaca.data.enums import DataFeed
 
+    normalized_symbols = _normalize_stock_symbol_list(symbols)
     client = data_client or build_data_client(paper=paper)
-    request = StockLatestQuoteRequest(symbol_or_symbols=list(symbols), feed=DataFeed.IEX)
+    request = StockLatestQuoteRequest(symbol_or_symbols=normalized_symbols, feed=DataFeed.IEX)
     try:
         quotes = client.get_stock_latest_quote(request)
     except Exception as exc:
         logger.warning("Falling back to previous close prices for quotes: %s", exc)
-        prices = {symbol: float(fallback_prices[symbol]) for symbol in symbols}
-        sources = {symbol: "close_fallback" for symbol in symbols}
+        prices = {symbol: float(fallback_prices[symbol]) for symbol in normalized_symbols}
+        sources = {symbol: "close_fallback" for symbol in normalized_symbols}
         return prices, "close_fallback", sources
 
     prices: dict[str, float] = {}
     quote_source_by_symbol: dict[str, str] = {}
-    for symbol in symbols:
+    for symbol in normalized_symbols:
         quote = quotes.get(symbol)
         ask = float(getattr(quote, "ask_price", 0.0) or 0.0) if quote is not None else 0.0
         bid = float(getattr(quote, "bid_price", 0.0) or 0.0) if quote is not None else 0.0
@@ -770,7 +916,7 @@ def compute_target_qty_from_values(
     if price <= 0 or portfolio_value <= 0 or buying_power <= 0:
         return 0.0
     target_notional = portfolio_value * max(0.0, allocation_pct) / 100.0
-    target_notional = min(target_notional, buying_power * 0.95)
+    target_notional = min(target_notional, buying_power * BUYING_POWER_USAGE_CAP)
     if target_notional <= 0:
         return 0.0
     return round(target_notional / price, 4)
@@ -793,24 +939,24 @@ def build_server_client(
     )
 
 
-def _server_position_to_object(symbol: str, payload: dict[str, object]) -> SimpleNamespace:
-    return SimpleNamespace(
+def _server_position_to_object(symbol: str, payload: TradingServerPositionPayload) -> ServerPositionView:
+    return ServerPositionView(
         symbol=symbol,
         qty=float(payload.get("qty", 0.0) or 0.0),
-        side="long",
         avg_entry_price=float(payload.get("avg_entry_price", 0.0) or 0.0),
         current_price=float(payload.get("current_price", 0.0) or 0.0),
     )
 
 
-def server_positions_by_symbol(snapshot: dict[str, object], symbols: Iterable[str]) -> dict[str, object]:
+def server_positions_by_symbol(
+    snapshot: TradingServerAccountSnapshot,
+    symbols: Iterable[str],
+) -> dict[str, ServerPositionView]:
     target = {str(symbol).upper() for symbol in symbols}
-    positions = snapshot.get("positions", {})
-    if not isinstance(positions, dict):
-        return {}
-    out: dict[str, object] = {}
+    positions = snapshot["positions"]
+    out: dict[str, ServerPositionView] = {}
     for symbol, payload in positions.items():
-        if str(symbol).upper() not in target or not isinstance(payload, dict):
+        if str(symbol).upper() not in target:
             continue
         out[str(symbol).upper()] = _server_position_to_object(str(symbol).upper(), payload)
     return out
@@ -818,19 +964,17 @@ def server_positions_by_symbol(snapshot: dict[str, object], symbols: Iterable[st
 
 def server_portfolio_context(
     *,
-    snapshot: dict[str, object],
+    snapshot: TradingServerAccountSnapshot,
     state: StrategyState,
     quotes: dict[str, float],
     now: Optional[datetime] = None,
 ) -> PortfolioContext:
     now = now or datetime.now(timezone.utc)
-    cash = float(snapshot.get("cash", 0.0) or 0.0)
-    positions = snapshot.get("positions", {})
-    if not isinstance(positions, dict):
-        return PortfolioContext(cash=cash)
+    cash = float(snapshot["cash"] or 0.0)
+    positions = snapshot["positions"]
     symbol = (state.active_symbol or "").upper()
     payload = positions.get(symbol)
-    if not symbol or not isinstance(payload, dict):
+    if not symbol or payload is None:
         return PortfolioContext(cash=cash)
 
     hold_days = 0
@@ -851,30 +995,25 @@ def server_portfolio_context(
         hold_days=hold_days,
     )
 
-
-def server_equity(snapshot: dict[str, object], quotes: dict[str, float]) -> float:
-    cash = float(snapshot.get("cash", 0.0) or 0.0)
-    positions = snapshot.get("positions", {})
-    if not isinstance(positions, dict):
-        return cash
+def server_equity(snapshot: TradingServerAccountSnapshot, quotes: dict[str, float]) -> float:
+    cash = float(snapshot["cash"] or 0.0)
+    positions = snapshot["positions"]
     equity = cash
     for symbol, payload in positions.items():
-        if not isinstance(payload, dict):
-            continue
         equity += float(payload.get("qty", 0.0) or 0.0) * float(quotes.get(str(symbol).upper(), 0.0) or 0.0)
     return equity
 
 
 def compute_target_qty_from_server_snapshot(
     *,
-    snapshot: dict[str, object],
+    snapshot: TradingServerAccountSnapshot,
     quotes: dict[str, float],
     price: float,
     allocation_pct: float,
 ) -> float:
     return compute_target_qty_from_values(
         portfolio_value=server_equity(snapshot, quotes),
-        buying_power=float(snapshot.get("cash", 0.0) or 0.0),
+        buying_power=float(snapshot["cash"] or 0.0),
         price=price,
         allocation_pct=allocation_pct,
     )
@@ -891,7 +1030,7 @@ def _marketable_limit_price(price: float, side: str, *, buffer_bps: float = SERV
 def execute_signal_with_trading_server(
     signal,
     *,
-    server_client,
+    server_client: TradingServerClientLike,
     quotes: dict[str, float],
     state: StrategyState,
     symbols: Iterable[str],
@@ -899,6 +1038,7 @@ def execute_signal_with_trading_server(
     dry_run: bool,
     now: Optional[datetime] = None,
     allow_open: bool = True,
+    allow_open_reason: str | None = None,
 ) -> bool:
     now = now or datetime.now(timezone.utc)
     symbol_set = [str(symbol).upper() for symbol in symbols]
@@ -946,7 +1086,8 @@ def execute_signal_with_trading_server(
         return managed_position is not None
 
     if not allow_open:
-        logger.warning("Skipping new server position open for %s because execution safety gate is active", desired_symbol)
+        suffix = f" ({allow_open_reason})" if allow_open_reason else ""
+        logger.warning("Skipping new server position open for %s because execution safety gate is active%s", desired_symbol, suffix)
         return managed_position is not None
 
     price = float(quotes.get(desired_symbol, 0.0) or 0.0)
@@ -995,6 +1136,7 @@ def execute_signal(
     dry_run: bool,
     now: Optional[datetime] = None,
     allow_open: bool = True,
+    allow_open_reason: str | None = None,
 ) -> bool:
     now = now or datetime.now(timezone.utc)
     symbol_set = [str(symbol).upper() for symbol in symbols]
@@ -1044,7 +1186,8 @@ def execute_signal(
         return managed_position is not None
 
     if not allow_open:
-        logger.warning("Skipping new position open for %s because execution safety gate is active", desired_symbol)
+        suffix = f" ({allow_open_reason})" if allow_open_reason else ""
+        logger.warning("Skipping new position open for %s because execution safety gate is active%s", desired_symbol, suffix)
         return managed_position is not None
 
     account = client.get_account()
@@ -1089,8 +1232,8 @@ def build_portfolio_context(
     cash = float(
         getattr(account, "cash", 0.0)
         or getattr(account, "buying_power", 0.0)
-        or getattr(account, "portfolio_value", 10_000.0)
-        or 10_000.0
+        or getattr(account, "portfolio_value", DEFAULT_BACKTEST_STARTING_CASH)
+        or DEFAULT_BACKTEST_STARTING_CASH
     )
     if not state.active_symbol:
         return PortfolioContext(cash=cash)
@@ -1187,7 +1330,10 @@ def run_backtest(
     data_dir: str,
     days: int,
     allocation_pct: float = 100.0,
+    starting_cash: float = DEFAULT_BACKTEST_STARTING_CASH,
 ) -> dict[str, float]:
+    if starting_cash <= 0:
+        raise ValueError("starting_cash must be positive")
     frames = load_local_daily_frames(symbols, data_dir=data_dir, min_days=days + 120)
     indexed = {
         symbol: frame.set_index("timestamp")[["open", "high", "low", "close", "volume"]].copy()
@@ -1199,7 +1345,7 @@ def run_backtest(
         raise ValueError(f"Need at least {days + 1} aligned days for backtest")
 
     trader = DailyPPOTrader(checkpoint, device="cpu", long_only=True, symbols=list(indexed.keys()))
-    cash = 10_000.0
+    cash = float(starting_cash)
     position: Optional[tuple[str, float, float]] = None
     equity_curve: list[float] = []
     trades = 0
@@ -1387,10 +1533,21 @@ def run_once(
 
     executed = False
     if data_source == "alpaca":
+        allow_open_reason: str | None = None
+        signal_quote_source = quote_source_by_symbol.get(signal.symbol, quote_data_source) if signal.symbol else quote_data_source
         allow_open = (
             not signal.symbol
-            or quote_source_by_symbol.get(signal.symbol, quote_data_source) == "alpaca"
+            or signal_quote_source == "alpaca"
         )
+        if signal.symbol and not allow_open:
+            allow_open_reason = (
+                f"quote_source={signal_quote_source}, overall_quote_source={quote_data_source}"
+            )
+            logger.warning(
+                "Execution safety gate active for %s: %s",
+                signal.symbol,
+                allow_open_reason,
+            )
         if not dry_run and not bool(market_open):
             logger.warning("Market is closed; skipping order placement")
         elif not dry_run and not bars_fresh:
@@ -1407,6 +1564,7 @@ def run_once(
                     dry_run=dry_run,
                     now=now,
                     allow_open=allow_open,
+                    allow_open_reason=allow_open_reason,
                 )
                 payload["server_account"] = server_account
                 payload["server_bot_id"] = server_bot_id
@@ -1422,6 +1580,7 @@ def run_once(
                     dry_run=dry_run,
                     now=now,
                     allow_open=allow_open,
+                    allow_open_reason=allow_open_reason,
                 )
     else:
         logger.info("Local data mode selected; skipping execution")
@@ -1522,13 +1681,16 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--data-dir", default=DEFAULT_DATA_DIR)
     parser.add_argument("--data-source", choices=["alpaca", "local"], default="alpaca")
     parser.add_argument("--allocation-pct", type=float, default=DEFAULT_ALLOCATION_PCT)
-    parser.add_argument("--once", action="store_true", help="Run one inference cycle")
-    parser.add_argument("--daemon", action="store_true", help="Run as a daemon around market open")
+    run_mode_group = parser.add_mutually_exclusive_group()
+    run_mode_group.add_argument("--once", action="store_true", help="Run one inference cycle")
+    run_mode_group.add_argument("--daemon", action="store_true", help="Run as a daemon around market open")
     parser.add_argument("--dry-run", action="store_true", help="Print signals without placing orders")
-    parser.add_argument("--paper", action="store_true", default=True, help="Use the Alpaca paper account")
-    parser.add_argument("--live", action="store_true", help="Use the Alpaca live account")
-    parser.add_argument("--backtest", action="store_true", help="Run a local historical backtest")
+    account_group = parser.add_mutually_exclusive_group()
+    account_group.add_argument("--paper", action="store_true", help="Use the Alpaca paper account (default)")
+    account_group.add_argument("--live", action="store_true", help="Use the Alpaca live account")
+    run_mode_group.add_argument("--backtest", action="store_true", help="Run a local historical backtest")
     parser.add_argument("--backtest-days", type=int, default=60)
+    parser.add_argument("--backtest-starting-cash", type=float, default=DEFAULT_BACKTEST_STARTING_CASH)
     parser.add_argument("--compare-server-parity", action="store_true",
                         help="Compare the legacy daily backtest against the trading-server paper replay")
     parser.add_argument("--execution-backend", choices=["alpaca", "trading_server"], default="alpaca")
@@ -1536,7 +1698,211 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--server-bot-id", default=DEFAULT_SERVER_PAPER_BOT_ID)
     parser.add_argument("--server-url", default=None)
     parser.add_argument("--symbols", nargs="+", default=None)
+    parser.add_argument("--check-config", action="store_true",
+                        help="Run a preflight config check, print a readiness report, and exit")
+    parser.add_argument("--print-config", action="store_true",
+                        help="Print the fully resolved runtime configuration and exit")
     return parser.parse_args(argv)
+
+
+def _resolve_runtime_config(args: argparse.Namespace) -> CliRuntimeConfig:
+    paper = not bool(args.live)
+    symbols, removed_duplicate_symbols, ignored_symbol_inputs = _normalize_symbols(
+        args.symbols or DEFAULT_SYMBOLS
+    )
+    checkpoint = (
+        str((REPO / args.checkpoint).resolve())
+        if not Path(args.checkpoint).is_absolute()
+        else args.checkpoint
+    )
+
+    def _resolve(path: str) -> str:
+        return str((REPO / path).resolve()) if not Path(path).is_absolute() else path
+
+    if args.no_ensemble:
+        extra_checkpoints: Optional[list[str]] = None
+    elif args.extra_checkpoints is not None:
+        extra_checkpoints = [_resolve(path) for path in args.extra_checkpoints]
+    else:
+        extra_checkpoints = [_resolve(path) for path in DEFAULT_EXTRA_CHECKPOINTS]
+
+    return CliRuntimeConfig(
+        paper=paper,
+        symbols=symbols,
+        removed_duplicate_symbols=removed_duplicate_symbols,
+        ignored_symbol_inputs=ignored_symbol_inputs,
+        checkpoint=checkpoint,
+        extra_checkpoints=extra_checkpoints,
+        data_dir=args.data_dir,
+        data_source=args.data_source,
+        allocation_pct=float(args.allocation_pct),
+        execution_backend=args.execution_backend,
+        server_account=args.server_account,
+        server_bot_id=args.server_bot_id,
+        server_url=args.server_url,
+        dry_run=bool(args.dry_run),
+        backtest=bool(args.backtest),
+        backtest_days=int(args.backtest_days),
+        backtest_starting_cash=float(args.backtest_starting_cash),
+        daemon=bool(args.daemon),
+        compare_server_parity=bool(args.compare_server_parity),
+    )
+
+
+def _runtime_config_payload(config: CliRuntimeConfig) -> dict[str, object]:
+    return config.to_runtime_payload()
+
+
+def _missing_checkpoint_paths(config: CliRuntimeConfig) -> list[str]:
+    return config.missing_checkpoint_paths
+
+
+def _resolve_alpaca_credentials(*, paper: bool) -> tuple[str, str]:
+    import importlib
+
+    try:
+        env_real = importlib.import_module("env_real")
+    except Exception as exc:
+        raise RuntimeError(f"Unable to load env_real for Alpaca credentials: {exc}") from exc
+    paper_key_id = getattr(env_real, "ALP_KEY_ID_PAPER", getattr(env_real, "ALP_KEY_ID", ""))
+    paper_secret = getattr(env_real, "ALP_SECRET_KEY_PAPER", getattr(env_real, "ALP_SECRET_KEY", ""))
+    live_key_id = getattr(env_real, "ALP_KEY_ID_PROD", "")
+    live_secret = getattr(env_real, "ALP_SECRET_KEY_PROD", "")
+
+    if paper:
+        return str(paper_key_id), str(paper_secret)
+    return str(live_key_id), str(live_secret)
+
+
+def _looks_placeholder(value: str | None) -> bool:
+    normalized = str(value or "").strip()
+    return not normalized or "placeholder" in normalized.lower()
+
+
+def _resolved_trading_server_url(config: CliRuntimeConfig) -> str:
+    return config.resolved_server_url
+
+
+def _preflight_config_payload(config: CliRuntimeConfig) -> dict[str, object]:
+    payload = _runtime_config_payload(config)
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if config.removed_duplicate_symbols:
+        warnings.append(
+            "Removed duplicate symbol input(s): "
+            + ", ".join(config.removed_duplicate_symbols)
+        )
+    if config.ignored_symbol_inputs:
+        warnings.append(
+            "Ignored blank symbol input(s): "
+            + ", ".join(config.ignored_symbol_inputs)
+        )
+
+    if config.backtest_days < 1:
+        errors.append("--backtest-days must be at least 1")
+    if config.backtest_starting_cash <= 0:
+        errors.append("--backtest-starting-cash must be positive")
+    if config.compare_server_parity and not config.backtest:
+        errors.append("--compare-server-parity requires --backtest")
+    if config.backtest and not config.paper:
+        errors.append("--backtest is local-only; omit --live")
+    if payload["missing_checkpoints"]:
+        errors.append(
+            "Missing checkpoint file(s): "
+            + ", ".join(str(path) for path in payload["missing_checkpoints"])
+        )
+
+    data_dir = Path(config.data_dir).expanduser()
+    local_data_required = bool(config.backtest or config.data_source == "local")
+    missing_local_symbol_files: list[str] = []
+    if local_data_required:
+        if not data_dir.exists():
+            errors.append(f"Local data directory does not exist: {data_dir}")
+        else:
+            missing_local_symbol_files = [
+                str((data_dir / f"{symbol}.csv").resolve())
+                for symbol in config.symbols
+                if not (data_dir / f"{symbol}.csv").exists()
+            ]
+            if missing_local_symbol_files:
+                errors.append(
+                    "Missing local daily data file(s): "
+                    + ", ".join(missing_local_symbol_files)
+                )
+    payload["local_data_required"] = local_data_required
+    payload["data_dir_exists"] = data_dir.exists()
+    payload["missing_local_symbol_files"] = missing_local_symbol_files
+
+    alpaca_required = bool(not config.backtest and config.data_source == "alpaca")
+    alpaca_missing_env: list[str] = []
+    alpaca_credentials_error: str | None = None
+    if alpaca_required:
+        mode_label = "paper" if config.paper else "live"
+        try:
+            key_id, secret = _resolve_alpaca_credentials(paper=config.paper)
+        except RuntimeError as exc:
+            alpaca_credentials_error = str(exc)
+            errors.append(alpaca_credentials_error)
+        else:
+            if _looks_placeholder(key_id):
+                alpaca_missing_env.append("ALP_KEY_ID_PAPER" if config.paper else "ALP_KEY_ID_PROD")
+            if _looks_placeholder(secret):
+                alpaca_missing_env.append("ALP_SECRET_KEY_PAPER" if config.paper else "ALP_SECRET_KEY_PROD")
+            if alpaca_missing_env:
+                errors.append(
+                    f"Missing Alpaca credential env var(s) for {mode_label} mode: "
+                    + ", ".join(alpaca_missing_env)
+                )
+    payload["alpaca_required"] = alpaca_required
+    payload["alpaca_missing_env"] = alpaca_missing_env
+    payload["alpaca_credentials_error"] = alpaca_credentials_error
+    payload["alpaca_credentials_configured"] = (
+        not alpaca_required or (not alpaca_missing_env and alpaca_credentials_error is None)
+    )
+
+    trading_server_required = bool(not config.backtest and config.execution_backend == "trading_server")
+    resolved_server_url = _resolved_trading_server_url(config)
+    payload["trading_server_required"] = trading_server_required
+    payload["resolved_server_url"] = resolved_server_url
+    if trading_server_required:
+        parsed = urlparse(resolved_server_url)
+        if not parsed.scheme or not parsed.netloc:
+            errors.append(f"Invalid trading server URL: {resolved_server_url}")
+        if not str(config.server_account).strip():
+            errors.append("--server-account must not be empty when using trading_server")
+        if not str(config.server_bot_id).strip():
+            errors.append("--server-bot-id must not be empty when using trading_server")
+        if not config.paper and config.server_account == DEFAULT_SERVER_PAPER_ACCOUNT:
+            warnings.append(
+                "--live with trading_server is still using the paper default server account; "
+                "pass --server-account explicitly"
+            )
+
+    payload["ready"] = not errors
+    payload["errors"] = errors
+    payload["warnings"] = warnings
+    return payload
+
+
+def _validate_runtime_config(config: CliRuntimeConfig) -> None:
+    if not config.symbols:
+        raise ValueError("At least one valid symbol is required")
+    if config.backtest_days < 1:
+        raise ValueError("--backtest-days must be at least 1")
+    if config.backtest_starting_cash <= 0:
+        raise ValueError("--backtest-starting-cash must be positive")
+    if config.compare_server_parity and not config.backtest:
+        raise ValueError("--compare-server-parity requires --backtest")
+    if config.backtest and not config.paper:
+        raise ValueError("--backtest is local-only; omit --live")
+    missing_checkpoints = _missing_checkpoint_paths(config)
+    if missing_checkpoints:
+        details = "\n".join(f"- {path}" for path in missing_checkpoints)
+        raise FileNotFoundError(
+            "Missing checkpoint file(s):\n"
+            f"{details}"
+        )
 
 
 def run_backtest_via_trading_server(
@@ -1546,9 +1912,12 @@ def run_backtest_via_trading_server(
     data_dir: str,
     days: int,
     allocation_pct: float = 100.0,
-    account: str = "paper_backtest_daily_sortino",
-    bot_id: str = "daily_stock_backtest_v1",
+    starting_cash: float = DEFAULT_BACKTEST_STARTING_CASH,
+    account: str = DEFAULT_BACKTEST_SERVER_ACCOUNT,
+    bot_id: str = DEFAULT_BACKTEST_SERVER_BOT_ID,
 ) -> dict[str, float]:
+    if starting_cash <= 0:
+        raise ValueError("starting_cash must be positive")
     from src.trading_server.server import TradingServerEngine
 
     frames = load_local_daily_frames(symbols, data_dir=data_dir, min_days=days + 120)
@@ -1561,12 +1930,11 @@ def run_backtest_via_trading_server(
     if start < 1:
         raise ValueError(f"Need at least {days + 1} aligned days for backtest")
 
-    trader = DailyPPOTrader(checkpoint, device="cpu", long_only=True, symbols=list(indexed.keys()))
     current_state = StrategyState()
-    current_quotes: dict[str, dict[str, object]] = {}
+    current_quotes: dict[str, TradingServerQuotePayload] = {}
     current_now = datetime.now(timezone.utc)
 
-    def _quote_provider(symbol: str) -> dict[str, object] | None:
+    def _quote_provider(symbol: str) -> TradingServerQuotePayload | None:
         return current_quotes.get(str(symbol).upper())
 
     with TemporaryDirectory(prefix="daily_stock_server_bt_") as tmpdir:
@@ -1579,7 +1947,7 @@ def run_backtest_via_trading_server(
                         account: {
                             "mode": "paper",
                             "allowed_bot_id": bot_id,
-                            "starting_cash": 10_000.0,
+                            "starting_cash": float(starting_cash),
                             "symbols": [str(symbol).upper() for symbol in symbols],
                             "sell_loss_cooldown_seconds": 0,
                             "min_sell_markup_pct": 0.0,
@@ -1600,9 +1968,9 @@ def run_backtest_via_trading_server(
             account=account,
             bot_id=bot_id,
             execution_mode="paper",
-            session_id="daily-stock-backtest",
+            session_id=DEFAULT_BACKTEST_SERVER_SESSION_ID,
         )
-        server_client.claim_writer(ttl_seconds=3600)
+        server_client.claim_writer(ttl_seconds=DEFAULT_BACKTEST_WRITER_TTL_SECONDS)
 
         equity_curve: list[float] = []
         closes_last: dict[str, float] = {}
@@ -1676,12 +2044,14 @@ def compare_backtest_to_trading_server(
     data_dir: str,
     days: int,
     allocation_pct: float = 100.0,
+    starting_cash: float = DEFAULT_BACKTEST_STARTING_CASH,
 ) -> dict[str, object]:
     legacy = run_backtest(
         checkpoint=checkpoint,
         symbols=symbols,
         data_dir=data_dir,
         days=days,
+        starting_cash=starting_cash,
     )
     server = run_backtest_via_trading_server(
         checkpoint=checkpoint,
@@ -1689,6 +2059,7 @@ def compare_backtest_to_trading_server(
         data_dir=data_dir,
         days=days,
         allocation_pct=allocation_pct,
+        starting_cash=starting_cash,
     )
     deltas = {
         key: float(server.get(key, 0.0) - legacy.get(key, 0.0))
@@ -1701,77 +2072,79 @@ def compare_backtest_to_trading_server(
 
 def main(argv: Optional[list[str]] = None) -> None:
     args = parse_args(argv)
-    paper = not args.live
+    config = _resolve_runtime_config(args)
+    if args.check_config:
+        payload = _preflight_config_payload(config)
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        if not payload["ready"]:
+            raise SystemExit(1)
+        return
+    if args.print_config:
+        print(json.dumps(_runtime_config_payload(config), indent=2, sort_keys=True))
+        return
+    _validate_runtime_config(config)
+    _log_runtime_start(config)
+
+    if config.backtest:
+        if config.compare_server_parity:
+            compare_backtest_to_trading_server(
+                checkpoint=config.checkpoint,
+                symbols=config.symbols,
+                data_dir=config.data_dir,
+                days=config.backtest_days,
+                allocation_pct=config.allocation_pct,
+                starting_cash=config.backtest_starting_cash,
+            )
+            return
+        run_backtest(
+            checkpoint=config.checkpoint,
+            symbols=config.symbols,
+            data_dir=config.data_dir,
+            days=config.backtest_days,
+            allocation_pct=config.allocation_pct,
+            starting_cash=config.backtest_starting_cash,
+        )
+        return
+
     account_lock = None
-    if args.live:
+    if not config.paper:
         require_explicit_live_trading_enable("daily-rl-trader")
-    if args.live and not args.dry_run:
+    if not config.paper and not config.dry_run:
         account_lock = acquire_alpaca_account_lock(
             "daily-rl-trader",
             account_name="alpaca_live_writer",
         )
         logger.info("Acquired Alpaca live writer lock: %s", account_lock.path)
-    symbols = [str(symbol).upper() for symbol in (args.symbols or DEFAULT_SYMBOLS)]
-    checkpoint = str((REPO / args.checkpoint).resolve()) if not Path(args.checkpoint).is_absolute() else args.checkpoint
 
-    def _resolve(p: str) -> str:
-        return str((REPO / p).resolve()) if not Path(p).is_absolute() else p
-
-    if args.no_ensemble:
-        extra_checkpoints: Optional[list] = None
-    elif args.extra_checkpoints is not None:
-        extra_checkpoints = [_resolve(p) for p in args.extra_checkpoints]
-    else:
-        extra_checkpoints = [_resolve(p) for p in DEFAULT_EXTRA_CHECKPOINTS]
-
-    if args.backtest:
-        if args.compare_server_parity:
-            compare_backtest_to_trading_server(
-                checkpoint=checkpoint,
-                symbols=symbols,
-                data_dir=args.data_dir,
-                days=args.backtest_days,
-                allocation_pct=args.allocation_pct,
-            )
-            return
-        run_backtest(
-            checkpoint=checkpoint,
-            symbols=symbols,
-            data_dir=args.data_dir,
-            days=args.backtest_days,
-            allocation_pct=args.allocation_pct,
-        )
-        return
-
-    if args.daemon:
+    if config.daemon:
         run_daemon(
-            checkpoint=checkpoint,
-            symbols=symbols,
-            paper=paper,
-            allocation_pct=args.allocation_pct,
-            dry_run=args.dry_run,
-            data_dir=args.data_dir,
-            extra_checkpoints=extra_checkpoints,
-            execution_backend=args.execution_backend,
-            server_account=args.server_account,
-            server_bot_id=args.server_bot_id,
-            server_url=args.server_url,
+            checkpoint=config.checkpoint,
+            symbols=config.symbols,
+            paper=config.paper,
+            allocation_pct=config.allocation_pct,
+            dry_run=config.dry_run,
+            data_dir=config.data_dir,
+            extra_checkpoints=config.extra_checkpoints,
+            execution_backend=config.execution_backend,
+            server_account=config.server_account,
+            server_bot_id=config.server_bot_id,
+            server_url=config.server_url,
         )
         return
 
     run_once(
-        checkpoint=checkpoint,
-        symbols=symbols,
-        paper=paper,
-        allocation_pct=args.allocation_pct,
-        dry_run=args.dry_run,
-        data_source=args.data_source,
-        data_dir=args.data_dir,
-        extra_checkpoints=extra_checkpoints,
-        execution_backend=args.execution_backend,
-        server_account=args.server_account,
-        server_bot_id=args.server_bot_id,
-        server_url=args.server_url,
+        checkpoint=config.checkpoint,
+        symbols=config.symbols,
+        paper=config.paper,
+        allocation_pct=config.allocation_pct,
+        dry_run=config.dry_run,
+        data_source=config.data_source,
+        data_dir=config.data_dir,
+        extra_checkpoints=config.extra_checkpoints,
+        execution_backend=config.execution_backend,
+        server_account=config.server_account,
+        server_bot_id=config.server_bot_id,
+        server_url=config.server_url,
     )
 
 

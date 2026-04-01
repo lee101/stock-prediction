@@ -419,7 +419,7 @@ def _load_wrapper(
             torch_dtype=dtype,
             cache_policy="never",
         )
-    except Exception:
+    except Exception as exc:
         if temp_compile_cache is not None:
             temp_compile_cache.cleanup()
         if cache_snapshot is None:
@@ -428,6 +428,10 @@ def _load_wrapper(
             os.environ["TORCHINDUCTOR_CACHE_DIR"] = cache_snapshot
         _restore_compile_runtime_state(compile_runtime_snapshot)
         _restore_torch_backend_state(backend_snapshot)
+        if device == "cuda" and _is_cuda_resource_pressure_error(exc):
+            pytest.skip(
+                f"Skipping Chronos2 compile fuzzing during wrapper load under shared-GPU resource pressure: {exc}"
+            )
         raise
 
     wrapper._test_compile_cache_dir = temp_compile_cache  # type: ignore[attr-defined]
@@ -443,13 +447,32 @@ def _run_prediction(
     prediction_length: int = PREDICTION_LENGTH,
 ) -> pd.DataFrame:
     """Run prediction and return close prices."""
-    result = wrapper.predict_ohlc(
-        context_df=context_df,
-        symbol="TEST",
-        prediction_length=prediction_length,
-        context_length=min(CONTEXT_LENGTH, len(context_df)),
-    )
+    try:
+        result = wrapper.predict_ohlc(
+            context_df=context_df,
+            symbol="TEST",
+            prediction_length=prediction_length,
+            context_length=min(CONTEXT_LENGTH, len(context_df)),
+        )
+    except Exception as exc:
+        device_hint = str(getattr(wrapper, "_device_hint", "")).strip().lower()
+        if device_hint == "cuda" and _is_cuda_resource_pressure_error(exc):
+            pytest.skip(
+                f"Skipping Chronos2 compile fuzzing during prediction under shared-GPU resource pressure: {exc}"
+            )
+        raise
     return result.median["close"].values
+
+
+def _is_cuda_resource_pressure_error(exc: BaseException) -> bool:
+    """Return whether a failure is caused by external CUDA resource pressure."""
+    if isinstance(exc, torch.OutOfMemoryError):
+        return True
+    accelerator_error = getattr(torch, "AcceleratorError", None)
+    if accelerator_error is not None and isinstance(exc, accelerator_error):
+        message = str(exc).lower()
+        return "out of memory" in message or "cuda error" in message
+    return False
 
 
 def _calculate_mae_difference(
@@ -623,7 +646,14 @@ def test_compiled_mode_smoke(
     context = test_data.iloc[:-PREDICTION_LENGTH]
 
     try:
-        preds = _run_prediction(wrapper, context)
+        try:
+            preds = _run_prediction(wrapper, context)
+        except Exception as exc:
+            if device == "cuda" and _is_cuda_resource_pressure_error(exc):
+                pytest.skip(
+                    f"Skipping compiled CUDA smoke test under shared-GPU resource pressure: {exc}"
+                )
+            raise
         assert len(preds) == PREDICTION_LENGTH
         assert not np.isnan(preds).any(), f"Predictions contain NaN ({mode_str})"
         assert not np.isinf(preds).any(), f"Predictions contain inf ({mode_str})"

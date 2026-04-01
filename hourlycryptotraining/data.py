@@ -4,7 +4,7 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -31,6 +31,10 @@ DEFAULT_FEATURES: Tuple[str, ...] = (
     "chronos_high_delta",
     "chronos_low_delta",
 )
+
+
+def _use_pinned_memory(pin_memory: bool | None) -> bool:
+    return bool(pin_memory)
 
 
 @dataclass
@@ -137,24 +141,36 @@ class HourlyCryptoDataModule:
             chronos_low=val_frame["chronos_low"].to_numpy(dtype=np.float32),
         )
 
-    def train_dataloader(self, batch_size: int, num_workers: int = 0) -> DataLoader:
+    def train_dataloader(
+        self,
+        batch_size: int,
+        num_workers: int = 0,
+        *,
+        pin_memory: bool | None = None,
+    ) -> DataLoader:
         return DataLoader(
             self.train_dataset,
             batch_size=batch_size,
             shuffle=True,
             num_workers=num_workers,
             drop_last=True,
-            pin_memory=True,
+            pin_memory=_use_pinned_memory(pin_memory),
         )
 
-    def val_dataloader(self, batch_size: int, num_workers: int = 0) -> DataLoader:
+    def val_dataloader(
+        self,
+        batch_size: int,
+        num_workers: int = 0,
+        *,
+        pin_memory: bool | None = None,
+    ) -> DataLoader:
         return DataLoader(
             self.val_dataset,
             batch_size=batch_size,
             shuffle=False,
             num_workers=num_workers,
             drop_last=False,
-            pin_memory=True,
+            pin_memory=_use_pinned_memory(pin_memory),
         )
 
     # ------------------------------------------------------------------
@@ -357,22 +373,34 @@ class MultiSymbolDataModule:
         self.feature_columns = target_module.feature_columns
         self.frame = target_module.frame
 
-    def train_dataloader(self, batch_size: int, num_workers: int = 0) -> DataLoader:
+    def train_dataloader(
+        self,
+        batch_size: int,
+        num_workers: int = 0,
+        *,
+        pin_memory: bool | None = None,
+    ) -> DataLoader:
         return DataLoader(
             self.train_dataset,
             batch_size=batch_size,
             shuffle=True,
             num_workers=num_workers,
             drop_last=True,
-            pin_memory=True,
+            pin_memory=_use_pinned_memory(pin_memory),
         )
 
-    def val_dataloader(self, batch_size: int, num_workers: int = 0) -> DataLoader:
+    def val_dataloader(
+        self,
+        batch_size: int,
+        num_workers: int = 0,
+        *,
+        pin_memory: bool | None = None,
+    ) -> DataLoader:
         return DataLoader(
             self.val_dataset,
             batch_size=batch_size,
             shuffle=False,
             num_workers=num_workers,
             drop_last=False,
-            pin_memory=True,
+            pin_memory=_use_pinned_memory(pin_memory),
         )

@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import importlib
 import struct
 from pathlib import Path
 
@@ -620,8 +621,9 @@ def main():
         policy = EnsemblePolicy([policy] + extra_policies)
         print(f"Ensemble: softmax_avg of {1 + len(extra_policies)} policies")
 
-    # Load shared data
-    import pufferlib_market.binding as binding
+    # Load shared data via importlib so tests can replace the binding module
+    # through sys.modules without depending on package attribute caching.
+    binding = importlib.import_module("pufferlib_market.binding")
     data_path = str(Path(args.data_path).resolve())
     binding.shared(data_path=data_path)
 

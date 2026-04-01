@@ -25,6 +25,10 @@ from .data import DailyDataModule, FeatureNormalizer
 from .model import DailyMultiAssetPolicy, DailyPolicyConfig, MultiSymbolDailyPolicy
 
 
+def _amp_device_type(device: torch.device) -> str:
+    return "cuda" if device.type == "cuda" else "cpu"
+
+
 def apply_symbol_dropout(
     features: torch.Tensor,
     group_mask: torch.Tensor | None,
@@ -242,10 +246,23 @@ class NeuralDailyTrainer:
             compile_mode = getattr(self.config, "compile_mode", "max-autotune")
             policy = torch.compile(policy, mode=compile_mode)  # type: ignore[attr-defined]
         optimizer = self._build_optimizer(policy)
-        train_loader = self.data.train_dataloader(self.config.batch_size, self.config.num_workers)
-        val_loader = self.data.val_dataloader(self.config.batch_size, self.config.num_workers)
+        use_pinned_memory = self.device.type == "cuda"
+        train_loader = self.data.train_dataloader(
+            self.config.batch_size,
+            self.config.num_workers,
+            pin_memory=use_pinned_memory,
+        )
+        val_loader = self.data.val_dataloader(
+            self.config.batch_size,
+            self.config.num_workers,
+            pin_memory=use_pinned_memory,
+        )
         scheduler = self._build_scheduler(optimizer, train_loader)
-        scaler = torch.cuda.amp.GradScaler() if (self.config.use_amp and torch.cuda.is_available()) else None
+        scaler = (
+            torch.amp.GradScaler("cuda")
+            if (self.config.use_amp and self.device.type == "cuda")
+            else None
+        )
         ema_state: dict[str, torch.Tensor] | None = None
         if self.config.ema_decay and self.config.ema_decay > 0:
             ema_state = {
@@ -458,7 +475,7 @@ class NeuralDailyTrainer:
         train: bool,
         global_step: int,
         ema_state: dict[str, torch.Tensor] | None = None,
-        scaler: torch.cuda.amp.GradScaler | None = None,
+        scaler: torch.amp.GradScaler | None = None,
     ) -> (dict[str, float], int, dict[int, dict[str, float]]):
         if train:
             model.train()
@@ -501,7 +518,11 @@ class NeuralDailyTrainer:
                 )
 
             use_amp = scaler is not None
-            with torch.cuda.amp.autocast(enabled=use_amp, dtype=amp_dtype):
+            with torch.amp.autocast(
+                device_type=_amp_device_type(self.device),
+                enabled=use_amp,
+                dtype=amp_dtype,
+            ):
                 features = batch["features"]
                 # Create group_mask for cross-symbol attention if group_ids available
                 group_mask = None

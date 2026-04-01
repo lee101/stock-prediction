@@ -102,8 +102,17 @@ class HourlyCryptoTrainer:
         ema_state: Optional[Dict[str, torch.Tensor]] = None
         if use_ema:
             ema_state = {name: param.detach().clone() for name, param in model.named_parameters() if param.requires_grad}
-        train_loader = self.data.train_dataloader(self.config.batch_size, self.config.num_workers)
-        val_loader = self.data.val_dataloader(self.config.batch_size, self.config.num_workers)
+        use_pinned_memory = self.device.type == "cuda"
+        train_loader = self.data.train_dataloader(
+            self.config.batch_size,
+            self.config.num_workers,
+            pin_memory=use_pinned_memory,
+        )
+        val_loader = self.data.val_dataloader(
+            self.config.batch_size,
+            self.config.num_workers,
+            pin_memory=use_pinned_memory,
+        )
         scheduler = self._build_scheduler(optimizer, train_loader)
         # Setup AMP scaler if using mixed precision
         scaler = None
@@ -150,7 +159,9 @@ class HourlyCryptoTrainer:
                 if isinstance(self.data, MultiSymbolDataModule):
                     for symbol in self.data.symbols:
                         symbol_loader = self.data.modules[symbol].val_dataloader(
-                            self.config.batch_size, self.config.num_workers
+                            self.config.batch_size,
+                            self.config.num_workers,
+                            pin_memory=use_pinned_memory,
                         )
                         symbol_metrics, _ = self._run_epoch(
                             model,
