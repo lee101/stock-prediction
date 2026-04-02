@@ -297,7 +297,11 @@ class RLSignal:
     action: int
     action_name: str
     target_symbol: str | None
-    direction: str  # "long", "flat"
+    direction: str  # "long", "short", "flat"
+    confidence: float = 0.0
+    logit_gap: float = 0.0
+    allocation_pct: float = 0.0
+    level_offset_bps: float = 0.0
     logits: list[float] = field(default_factory=list)
     value: float = 0.0
 
@@ -378,7 +382,9 @@ class RLSignalGenerator:
 
         alloc_bins = ckpt.get("action_allocation_bins", 1)
         level_bins = ckpt.get("action_level_bins", 1)
-        self.per_symbol_actions = alloc_bins * level_bins
+        self.action_allocation_bins = max(1, int(alloc_bins))
+        self.action_level_bins = max(1, int(level_bins))
+        self.per_symbol_actions = self.action_allocation_bins * self.action_level_bins
         self.disable_shorts = ckpt.get("disable_shorts", False)
 
         self.action_names = _build_action_names(self.symbols)
@@ -498,6 +504,44 @@ class RLSignalGenerator:
         masked[short_start:] = -np.inf
         return masked
 
+    @staticmethod
+    def _softmax(logits: np.ndarray) -> np.ndarray:
+        finite = np.isfinite(logits)
+        if not finite.any():
+            probs = np.zeros_like(logits, dtype=np.float64)
+            if len(probs) > 0:
+                probs[0] = 1.0
+            return probs
+        shifted = np.full_like(logits, -np.inf, dtype=np.float64)
+        shifted[finite] = logits[finite] - np.max(logits[finite])
+        exp = np.exp(shifted)
+        exp[~finite] = 0.0
+        total = exp.sum()
+        if not np.isfinite(total) or total <= 0.0:
+            probs = np.zeros_like(logits, dtype=np.float64)
+            if len(probs) > 0:
+                probs[0] = 1.0
+            return probs
+        return exp / total
+
+    def _decode_action_metadata(self, action: int, direction: str) -> tuple[float, float]:
+        if action <= 0 or direction == "flat":
+            return 0.0, 0.0
+        side_block = self.num_symbols * self.per_symbol_actions
+        local_idx = action - 1
+        if direction == "short":
+            local_idx -= side_block
+        if local_idx < 0:
+            return 0.0, 0.0
+        rem = local_idx % max(1, self.per_symbol_actions)
+        alloc_idx = rem // max(1, self.action_level_bins)
+        level_idx = rem % max(1, self.action_level_bins)
+        allocation_pct = float(alloc_idx + 1) / float(max(1, self.action_allocation_bins))
+        if self.action_level_bins <= 1:
+            return min(1.0, allocation_pct), 0.0
+        frac = float(level_idx) / float(max(1, self.action_level_bins - 1))
+        return min(1.0, allocation_pct), 2.0 * frac - 1.0
+
     def get_signal(
         self,
         portfolio: PortfolioSnapshot,
@@ -530,10 +574,24 @@ class RLSignalGenerator:
             logits_np = self._mask_logits(logits_np, tradable_symbols)
         if spot_only:
             logits_np = self._mask_shorts(logits_np)
+        probs = self._softmax(logits_np)
         action = int(logits_np.argmax())
         value_f = float(value[0].cpu())
 
         target_symbol, direction = self._decode_action(action)
+        chosen_prob = float(probs[action]) if 0 <= action < len(probs) else 0.0
+        flat_prob = float(probs[0]) if len(probs) > 0 else 1.0
+        chosen_logit = float(logits_np[action]) if 0 <= action < len(logits_np) else float("-inf")
+        flat_logit = float(logits_np[0]) if len(logits_np) > 0 else 0.0
+        if direction == "flat" or target_symbol is None:
+            confidence = flat_prob
+            logit_gap = 0.0
+            allocation_pct = 0.0
+            level_offset_bps = 0.0
+        else:
+            confidence = chosen_prob / max(chosen_prob + flat_prob, 1e-8)
+            logit_gap = chosen_logit - flat_logit if np.isfinite(chosen_logit) and np.isfinite(flat_logit) else 0.0
+            allocation_pct, level_offset_bps = self._decode_action_metadata(action, direction)
 
         action_name = "FLAT"
         if target_symbol is not None:
@@ -546,11 +604,16 @@ class RLSignalGenerator:
             action_name=action_name,
             target_symbol=target_symbol,
             direction=direction,
+            confidence=float(confidence),
+            logit_gap=float(logit_gap),
+            allocation_pct=float(allocation_pct),
+            level_offset_bps=float(level_offset_bps),
             logits=logits_np.tolist(),
             value=value_f,
         )
         logger.info(
-            f"RL signal: {sig.action_name} (value={sig.value:.3f}, "
-            f"top_logits={sorted(enumerate(sig.logits), key=lambda x: -x[1])[:5]})"
+            f"RL signal: {sig.action_name} conf={sig.confidence:.2%} "
+            f"gap={sig.logit_gap:+.3f} alloc={sig.allocation_pct:.2f} "
+            f"(value={sig.value:.3f}, top_logits={sorted(enumerate(sig.logits), key=lambda x: -x[1])[:5]})"
         )
         return sig

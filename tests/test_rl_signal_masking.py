@@ -19,9 +19,12 @@ def _make_generator_stub():
     gen = object.__new__(RLSignalGenerator)
     gen.symbols = MIXED23_SYMBOLS
     gen.num_symbols = len(MIXED23_SYMBOLS)
+    gen.action_allocation_bins = 1
+    gen.action_level_bins = 1
     gen.per_symbol_actions = 1
     gen.disable_shorts = False
     gen.action_names = _build_action_names(MIXED23_SYMBOLS)
+    gen.obs_size = gen.num_symbols * 16 + 5 + gen.num_symbols
     gen.num_actions = 1 + 2 * gen.num_symbols  # 47
     return gen
 
@@ -193,3 +196,71 @@ class TestMaskShorts:
             assert np.isfinite(masked[i])
         for i in range(short_start, gen.num_actions):
             assert masked[i] == -np.inf
+
+
+class TestSignalMetadata:
+    def test_get_signal_populates_confidence_gap_and_alloc_for_long(self):
+        gen = _make_generator_stub()
+        gen.symbols = ("BTCUSD", "ETHUSD")
+        gen.num_symbols = 2
+        gen.action_allocation_bins = 2
+        gen.action_level_bins = 1
+        gen.per_symbol_actions = 2
+        gen.obs_size = gen.num_symbols * 16 + 5 + gen.num_symbols
+        gen.num_actions = 1 + 2 * gen.num_symbols * gen.per_symbol_actions
+
+        logits = np.array([0.0, -2.0, 3.5, -3.0, -4.0, -6.0, -7.0, -8.0, -9.0], dtype=np.float32)
+
+        class _Policy:
+            def __call__(self, obs):
+                import torch
+
+                return torch.tensor([logits], dtype=torch.float32), torch.tensor([1.25], dtype=torch.float32)
+
+        gen.policy = _Policy()
+        gen.device = "cpu"
+        signal = gen.get_signal(
+            portfolio=type("P", (), {"cash_usd": 1.0, "position_value_usd": 0.0, "unrealized_pnl_usd": 0.0, "hold_hours": 0, "is_short": False, "position_symbol": None})(),
+            klines_map={"BTCUSD": None, "ETHUSD": None},
+            tradable_symbols=["BTCUSD", "ETHUSD"],
+            spot_only=False,
+        )
+
+        assert signal.action_name == "LONG_BTC"
+        assert signal.direction == "long"
+        assert signal.confidence > 0.5
+        assert signal.logit_gap > 0.0
+        assert signal.allocation_pct == 1.0
+        assert signal.value == 1.25
+
+    def test_get_signal_masks_shorts_and_returns_flat_when_only_short_was_hot(self):
+        gen = _make_generator_stub()
+        gen.symbols = ("BTCUSD",)
+        gen.num_symbols = 1
+        gen.action_allocation_bins = 1
+        gen.action_level_bins = 1
+        gen.per_symbol_actions = 1
+        gen.obs_size = gen.num_symbols * 16 + 5 + gen.num_symbols
+        gen.num_actions = 3
+
+        logits = np.array([0.0, -1.0, 5.0], dtype=np.float32)
+
+        class _Policy:
+            def __call__(self, obs):
+                import torch
+
+                return torch.tensor([logits], dtype=torch.float32), torch.tensor([0.0], dtype=torch.float32)
+
+        gen.policy = _Policy()
+        gen.device = "cpu"
+        signal = gen.get_signal(
+            portfolio=type("P", (), {"cash_usd": 1.0, "position_value_usd": 0.0, "unrealized_pnl_usd": 0.0, "hold_hours": 0, "is_short": False, "position_symbol": None})(),
+            klines_map={"BTCUSD": None},
+            tradable_symbols=["BTCUSD"],
+            spot_only=True,
+        )
+
+        assert signal.direction == "flat"
+        assert signal.confidence >= 0.5
+        assert signal.logit_gap == 0.0
+        assert signal.allocation_pct == 0.0

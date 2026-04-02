@@ -24,7 +24,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -73,6 +73,8 @@ from src.binan.binance_margin import (
     transfer_spot_to_margin,
 )
 from src.binan.hybrid_cycle_trace import append_cycle_snapshot
+
+UTC = timezone.utc
 
 
 # ---------------------------------------------------------------------------
@@ -590,6 +592,7 @@ def _trade_plan_indicates_provider_failure(plan: TradePlan) -> bool:
     direction = str(getattr(plan, "direction", "") or "").strip().lower()
     if direction and direction != "hold":
         return False
+    reasoning = str(getattr(plan, "reasoning", "") or "").strip().lower()
     return any(reasoning.startswith(prefix) for prefix in _PROVIDER_FAILURE_REASON_PREFIXES)
 
 
