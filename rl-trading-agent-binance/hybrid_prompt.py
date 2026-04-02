@@ -11,7 +11,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -31,6 +31,8 @@ from rl_signal import (
     RLSignal,
     _load_forecast_parquet,
 )
+
+UTC = timezone.utc
 
 
 SYMBOL_BINANCE_MAP = {
