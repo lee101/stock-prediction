@@ -5,6 +5,8 @@ import pandas as pd
 import torch
 
 from neuralpricingstrategy.data import build_pricing_dataset, split_dataset_by_date
+from neuralpricingstrategy.models import PricingAdjustmentModel
+import neuralpricingstrategy.runtime as runtime_module
 from neuralpricingstrategy.runtime import NeuralPricingAdjuster
 from neuralpricingstrategy.trainer import PricingTrainingConfig, train_pricing_model
 
@@ -39,7 +41,7 @@ def _save_run_artifacts(run_dir: Path, dataset, result) -> None:
 def test_neural_pricing_adjuster_infers_prices(tmp_path):
     dataset = build_pricing_dataset(_frame())
     train_ds, val_ds = split_dataset_by_date(dataset, validation_fraction=0.25)
-    config = PricingTrainingConfig(epochs=3, batch_size=2, learning_rate=1e-2)
+    config = PricingTrainingConfig(epochs=3, batch_size=2, learning_rate=1e-2, device="cpu")
     result = train_pricing_model(train_ds, validation_dataset=val_ds, config=config)
     run_dir = tmp_path / "neuralpricing" / "run"
     _save_run_artifacts(run_dir, dataset, result)
@@ -50,3 +52,35 @@ def test_neural_pricing_adjuster_infers_prices(tmp_path):
     assert adjustment is not None
     assert adjustment.low_price > 0
     assert adjustment.high_price > 0
+
+
+def test_neural_pricing_adjuster_falls_back_to_cpu_on_auto_cuda_oom(tmp_path, monkeypatch):
+    dataset = build_pricing_dataset(_frame())
+    train_ds, val_ds = split_dataset_by_date(dataset, validation_fraction=0.25)
+    result = train_pricing_model(
+        train_ds,
+        validation_dataset=val_ds,
+        config=PricingTrainingConfig(epochs=1, batch_size=2, learning_rate=1e-2, device="cpu"),
+    )
+    run_dir = tmp_path / "neuralpricing" / "run"
+    _save_run_artifacts(run_dir, dataset, result)
+
+    original_to = PricingAdjustmentModel.to
+    calls: list[str] = []
+
+    def flaky_to(self, device, *args, **kwargs):
+        resolved = torch.device(device)
+        calls.append(resolved.type)
+        if resolved.type == "cuda":
+            raise torch.OutOfMemoryError("CUDA out of memory")
+        return original_to(self, device, *args, **kwargs)
+
+    monkeypatch.setattr(runtime_module.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(PricingAdjustmentModel, "to", flaky_to)
+
+    adjuster = NeuralPricingAdjuster(run_dir=run_dir)
+    adjustment = adjuster.adjust(dataset.frame.iloc[0].to_dict(), symbol="NNN")
+
+    assert calls[:2] == ["cuda", "cpu"]
+    assert adjuster.device.type == "cpu"
+    assert adjustment is not None

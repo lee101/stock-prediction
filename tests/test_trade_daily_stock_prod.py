@@ -8,12 +8,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from types import ModuleType
 
+import numpy as np
 import pandas as pd
 import pytest
 import torch
 
 import trade_daily_stock_prod as daily_stock
 from pufferlib_market.inference import Policy
+from pufferlib_market.train import TradingPolicy
 from src.trading_server.server import TradingServerEngine
 
 
@@ -38,6 +40,37 @@ def _write_policy_checkpoint(
         {
             "model": model.state_dict(),
             "config": {"hidden_size": 32, "num_blocks": 1},
+            "action_allocation_bins": 1,
+            "action_level_bins": 1,
+            "action_max_offset_bps": 0.0,
+        },
+        path,
+    )
+
+
+def _write_mlp_policy_checkpoint(
+    path: Path,
+    *,
+    num_symbols: int,
+    num_actions: int,
+    hot_action: int,
+    use_encoder_norm: bool,
+) -> None:
+    obs_size = num_symbols * 16 + 5 + num_symbols
+    model = TradingPolicy(
+        obs_size,
+        num_actions,
+        hidden=32,
+        use_encoder_norm=use_encoder_norm,
+    )
+    with torch.no_grad():
+        for param in model.parameters():
+            param.zero_()
+        model.actor[2].bias[hot_action] = 10.0
+    torch.save(
+        {
+            "model": model.state_dict(),
+            "config": {"hidden_size": 32},
             "action_allocation_bins": 1,
             "action_level_bins": 1,
             "action_max_offset_bps": 0.0,
@@ -207,6 +240,107 @@ def test_build_signal_long_only_ensemble_masks_short_actions(tmp_path: Path) -> 
     assert prices == {"AAPL": 229.5, "MSFT": 329.5}
 
 
+def test_build_signal_accepts_mixed_encoder_norm_mlp_ensemble(tmp_path: Path) -> None:
+    rows_aapl = []
+    rows_msft = []
+    base = pd.Timestamp("2025-09-01T00:00:00Z")
+    for idx in range(130):
+        ts = base + pd.Timedelta(days=idx)
+        rows_aapl.append(
+            {
+                "timestamp": ts.isoformat(),
+                "open": 100 + idx,
+                "high": 101 + idx,
+                "low": 99 + idx,
+                "close": 100.5 + idx,
+                "volume": 1_000 + idx,
+            }
+        )
+        rows_msft.append(
+            {
+                "timestamp": ts.isoformat(),
+                "open": 200 + idx,
+                "high": 201 + idx,
+                "low": 199 + idx,
+                "close": 200.5 + idx,
+                "volume": 2_000 + idx,
+            }
+        )
+
+    frames = {
+        "AAPL": pd.DataFrame(rows_aapl),
+        "MSFT": pd.DataFrame(rows_msft),
+    }
+    primary_ckpt = tmp_path / "primary_old.pt"
+    extra_ckpt = tmp_path / "extra_new.pt"
+    _write_mlp_policy_checkpoint(
+        primary_ckpt,
+        num_symbols=2,
+        num_actions=3,
+        hot_action=1,
+        use_encoder_norm=False,
+    )
+    _write_mlp_policy_checkpoint(
+        extra_ckpt,
+        num_symbols=2,
+        num_actions=3,
+        hot_action=2,
+        use_encoder_norm=True,
+    )
+
+    signal, prices = daily_stock.build_signal(
+        str(primary_ckpt),
+        frames,
+        extra_checkpoints=[str(extra_ckpt)],
+    )
+
+    assert signal.action in {"long_AAPL", "long_MSFT"}
+    assert signal.direction == "long"
+    assert prices == {"AAPL": 229.5, "MSFT": 329.5}
+
+
+def test_ensemble_softmax_signal_averages_value_estimates() -> None:
+    class _FakePrimary:
+        device = "cpu"
+
+        @staticmethod
+        def build_observation(_features, _prices):
+            return np.zeros(4, dtype=np.float32)
+
+        @staticmethod
+        def policy(obs_t):
+            return torch.tensor([[0.0, 2.0]]), torch.tensor([[1.5]])
+
+        @staticmethod
+        def apply_action_constraints(logits):
+            return logits
+
+        @staticmethod
+        def _decode_action(action, confidence, value_estimate):
+            return SimpleNamespace(
+                action=f"long_{action}",
+                symbol="AAPL",
+                direction="long",
+                confidence=confidence,
+                value_estimate=value_estimate,
+            )
+
+    extra_policies = [
+        lambda obs_t: (torch.tensor([[0.0, 1.0]]), torch.tensor([[0.0]])),
+        lambda obs_t: (torch.tensor([[0.0, 3.0]]), torch.tensor([[3.0]])),
+    ]
+
+    signal = daily_stock._ensemble_softmax_signal(
+        _FakePrimary(),
+        extra_policies,
+        np.zeros((1, 16), dtype=np.float32),
+        {"AAPL": 100.0},
+    )
+
+    assert signal.direction == "long"
+    assert signal.value_estimate == pytest.approx(1.5)
+
+
 def test_append_signal_log_writes_jsonl(tmp_path: Path) -> None:
     log_path = tmp_path / "daily_stock_rl_signals.jsonl"
 
@@ -224,6 +358,11 @@ def test_main_uses_default_resolved_ensemble_checkpoints(monkeypatch) -> None:
         return {}
 
     monkeypatch.setattr(daily_stock, "run_once", _fake_run_once)
+    monkeypatch.setattr(
+        daily_stock,
+        "_checkpoint_load_diagnostics",
+        lambda _config: {"ok": True, "error": None, "primary": {"arch": "mlp"}, "extras": []},
+    )
 
     daily_stock.main(["--dry-run", "--data-source", "local", "--symbols", "AAPL"])
 
@@ -365,6 +504,11 @@ def test_main_logs_runtime_config(caplog, monkeypatch, tmp_path: Path) -> None:
         return {}
 
     monkeypatch.setattr(daily_stock, "run_once", _fake_run_once)
+    monkeypatch.setattr(
+        daily_stock,
+        "_checkpoint_load_diagnostics",
+        lambda _config: {"ok": True, "error": None, "primary": {"arch": "mlp"}, "extras": []},
+    )
 
     with caplog.at_level(logging.INFO, logger="daily_stock_rl"):
         daily_stock.main(
@@ -578,9 +722,14 @@ def test_execute_signal_with_trading_server_logs_execution_safety_gate_reason(ca
     )
 
 
-def test_main_check_config_reports_ready_for_local_setup(tmp_path: Path, capsys) -> None:
+def test_main_check_config_reports_ready_for_local_setup(monkeypatch, tmp_path: Path, capsys) -> None:
     checkpoint = tmp_path / "model.pt"
     checkpoint.write_text("stub", encoding="utf-8")
+    monkeypatch.setattr(
+        daily_stock,
+        "_checkpoint_load_diagnostics",
+        lambda _config: {"ok": True, "error": None, "primary": {"arch": "mlp"}, "extras": []},
+    )
     _write_daily_csv(
         tmp_path / "AAPL.csv",
         [
@@ -619,14 +768,20 @@ def test_main_check_config_reports_ready_for_local_setup(tmp_path: Path, capsys)
     assert payload["local_data_required"] is True
     assert payload["data_dir_exists"] is True
     assert payload["missing_local_symbol_files"] == []
+    assert payload["checkpoint_load"]["ok"] is True
     assert payload["summary"] == "paper once via alpaca using local data on 1 symbol with 1 checkpoint"
     assert "--dry-run" in payload["run_command_preview"]
     assert payload["run_command_preview"] == payload["safe_command_preview"]
 
 
-def test_main_check_config_warns_when_symbol_inputs_are_normalized(tmp_path: Path, capsys) -> None:
+def test_main_check_config_warns_when_symbol_inputs_are_normalized(monkeypatch, tmp_path: Path, capsys) -> None:
     checkpoint = tmp_path / "model.pt"
     checkpoint.write_text("stub", encoding="utf-8")
+    monkeypatch.setattr(
+        daily_stock,
+        "_checkpoint_load_diagnostics",
+        lambda _config: {"ok": True, "error": None, "primary": {"arch": "mlp"}, "extras": []},
+    )
     _write_daily_csv(
         tmp_path / "AAPL.csv",
         [
@@ -672,6 +827,11 @@ def test_main_check_config_warns_when_symbol_inputs_are_normalized(tmp_path: Pat
 def test_main_check_config_reports_missing_live_alpaca_credentials(monkeypatch, tmp_path: Path, capsys) -> None:
     checkpoint = tmp_path / "model.pt"
     checkpoint.write_text("stub", encoding="utf-8")
+    monkeypatch.setattr(
+        daily_stock,
+        "_checkpoint_load_diagnostics",
+        lambda _config: {"ok": True, "error": None, "primary": {"arch": "mlp"}, "extras": []},
+    )
 
     fake_env_real = ModuleType("env_real")
     fake_env_real.ALP_KEY_ID_PAPER = "paper-key"
@@ -704,6 +864,11 @@ def test_main_check_config_reports_missing_live_alpaca_credentials(monkeypatch, 
 def test_main_check_config_reports_env_real_import_failure(monkeypatch, tmp_path: Path, capsys) -> None:
     checkpoint = tmp_path / "model.pt"
     checkpoint.write_text("stub", encoding="utf-8")
+    monkeypatch.setattr(
+        daily_stock,
+        "_checkpoint_load_diagnostics",
+        lambda _config: {"ok": True, "error": None, "primary": {"arch": "mlp"}, "extras": []},
+    )
 
     import importlib
 
@@ -738,11 +903,17 @@ def test_main_check_config_reports_env_real_import_failure(monkeypatch, tmp_path
 
 
 def test_main_check_config_warns_when_live_trading_server_uses_paper_default_account(
+    monkeypatch,
     tmp_path: Path,
     capsys,
 ) -> None:
     checkpoint = tmp_path / "model.pt"
     checkpoint.write_text("stub", encoding="utf-8")
+    monkeypatch.setattr(
+        daily_stock,
+        "_checkpoint_load_diagnostics",
+        lambda _config: {"ok": True, "error": None, "primary": {"arch": "mlp"}, "extras": []},
+    )
     _write_daily_csv(
         tmp_path / "AAPL.csv",
         [
@@ -781,6 +952,79 @@ def test_main_check_config_warns_when_live_trading_server_uses_paper_default_acc
     assert payload["trading_server_required"] is True
     assert payload["resolved_server_url"] == "http://127.0.0.1:8050"
     assert any("paper default server account" in warning for warning in payload["warnings"])
+
+
+def test_checkpoint_load_diagnostics_accepts_mixed_encoder_norm_ensemble(tmp_path: Path) -> None:
+    primary_ckpt = tmp_path / "primary_old.pt"
+    extra_ckpt = tmp_path / "extra_new.pt"
+    _write_mlp_policy_checkpoint(
+        primary_ckpt,
+        num_symbols=2,
+        num_actions=3,
+        hot_action=1,
+        use_encoder_norm=False,
+    )
+    _write_mlp_policy_checkpoint(
+        extra_ckpt,
+        num_symbols=2,
+        num_actions=3,
+        hot_action=2,
+        use_encoder_norm=True,
+    )
+
+    config = daily_stock.CliRuntimeConfig(
+        paper=True,
+        symbols=["AAPL", "MSFT"],
+        checkpoint=str(primary_ckpt),
+        extra_checkpoints=[str(extra_ckpt)],
+        data_dir=str(tmp_path),
+        data_source="local",
+        allocation_pct=12.5,
+        execution_backend="alpaca",
+        server_account=daily_stock.DEFAULT_SERVER_PAPER_ACCOUNT,
+        server_bot_id=daily_stock.DEFAULT_SERVER_PAPER_BOT_ID,
+        server_url=None,
+        dry_run=True,
+        backtest=False,
+        backtest_days=60,
+        backtest_starting_cash=daily_stock.DEFAULT_BACKTEST_STARTING_CASH,
+        daemon=False,
+        compare_server_parity=False,
+    )
+
+    payload = daily_stock._checkpoint_load_diagnostics(config)
+
+    assert payload["ok"] is True
+    assert payload["error"] is None
+    assert payload["primary"]["arch"] == "mlp"
+    assert len(payload["extras"]) == 1
+
+
+def test_main_check_config_reports_checkpoint_load_failure(monkeypatch, tmp_path: Path, capsys) -> None:
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_text("stub", encoding="utf-8")
+    monkeypatch.setattr(
+        daily_stock,
+        "_checkpoint_load_diagnostics",
+        lambda _config: {"ok": False, "error": "RuntimeError: boom", "primary": None, "extras": []},
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        daily_stock.main(
+            [
+                "--check-config",
+                "--checkpoint",
+                str(checkpoint),
+                "--no-ensemble",
+            ]
+        )
+
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exc_info.value.code == 1
+    assert payload["ready"] is False
+    assert payload["checkpoint_load"]["ok"] is False
+    assert any("Checkpoint load failed: RuntimeError: boom" in error for error in payload["errors"])
 
 
 def test_main_fails_fast_when_checkpoint_is_missing(monkeypatch, tmp_path: Path) -> None:
@@ -910,6 +1154,11 @@ def test_main_passes_backtest_starting_cash_to_run_backtest(monkeypatch, tmp_pat
         return {"total_return": 0.0}
 
     monkeypatch.setattr(daily_stock, "run_backtest", _fake_run_backtest)
+    monkeypatch.setattr(
+        daily_stock,
+        "_checkpoint_load_diagnostics",
+        lambda _config: {"ok": True, "error": None, "primary": {"arch": "mlp"}, "extras": []},
+    )
 
     daily_stock.main(
         [
@@ -1427,6 +1676,124 @@ def test_run_once_market_closed_does_not_advance_state(monkeypatch, tmp_path: Pa
 
     assert execute_calls == []
     assert after == before
+
+
+def test_run_once_blocks_new_entry_when_confidence_or_value_fail_gate(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        daily_stock,
+        "load_inference_frames",
+        lambda symbols, paper, data_dir, now, data_client=None: (
+            {
+                "AAPL": pd.DataFrame(
+                    {
+                        "timestamp": pd.to_datetime(["2026-03-31T00:00:00Z"]),
+                        "open": [100.0],
+                        "high": [101.0],
+                        "low": [99.0],
+                        "close": [100.5],
+                        "volume": [1_000.0],
+                    }
+                )
+            },
+            "alpaca",
+        ),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "build_trading_client",
+        lambda paper: SimpleNamespace(
+            get_all_positions=lambda: [],
+            get_account=lambda: SimpleNamespace(cash=10_000.0, buying_power=10_000.0, portfolio_value=10_000.0),
+            get_clock=lambda: SimpleNamespace(is_open=True),
+        ),
+    )
+    monkeypatch.setattr(daily_stock, "build_data_client", lambda paper: object())
+    monkeypatch.setattr(
+        daily_stock,
+        "load_latest_quotes_with_source",
+        lambda symbols, paper, fallback_prices, data_client=None: (
+            {"AAPL": 100.75},
+            "alpaca",
+            {"AAPL": "alpaca"},
+        ),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "build_signal",
+        lambda checkpoint, frames, portfolio=daily_stock.PortfolioContext(), device="cpu", extra_checkpoints=None: (
+            SimpleNamespace(
+                action="long_AAPL",
+                symbol="AAPL",
+                direction="long",
+                confidence=0.11,
+                value_estimate=-0.9,
+            ),
+            {"AAPL": 100.5},
+        ),
+    )
+    execute_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        daily_stock,
+        "execute_signal",
+        lambda *args, **kwargs: execute_calls.append(kwargs) or False,
+    )
+
+    payload = daily_stock.run_once(
+        checkpoint="dummy.ckpt",
+        symbols=["AAPL"],
+        paper=True,
+        allocation_pct=25.0,
+        dry_run=False,
+        data_source="alpaca",
+        data_dir=str(tmp_path),
+        state_path=tmp_path / "state.json",
+        min_open_confidence=0.2,
+        min_open_value_estimate=0.0,
+    )
+
+    assert execute_calls and execute_calls[0]["allow_open"] is False
+    assert "min_open_confidence" in execute_calls[0]["allow_open_reason"]
+    assert "min_open_value_estimate" in execute_calls[0]["allow_open_reason"]
+    assert payload["allow_open"] is False
+    assert payload["allow_open_reasons"]
+
+
+def test_main_print_payload_outputs_run_once_json(monkeypatch, capsys, tmp_path: Path) -> None:
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_text("stub", encoding="utf-8")
+
+    monkeypatch.setattr(
+        daily_stock,
+        "_checkpoint_load_diagnostics",
+        lambda _config: {"ok": True, "error": None, "primary": {"arch": "mlp"}, "extras": []},
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "run_once",
+        lambda **kwargs: {
+            "action": "long_AAPL",
+            "symbol": "AAPL",
+            "allow_open": True,
+            "min_open_confidence": kwargs["min_open_confidence"],
+        },
+    )
+
+    daily_stock.main(
+        [
+            "--dry-run",
+            "--no-ensemble",
+            "--checkpoint",
+            str(checkpoint),
+            "--symbols",
+            "AAPL",
+            "--print-payload",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["symbol"] == "AAPL"
+    assert payload["allow_open"] is True
+    assert payload["min_open_confidence"] == pytest.approx(daily_stock.DEFAULT_MIN_OPEN_CONFIDENCE)
 
 
 def test_run_backtest_via_trading_server_matches_legacy_single_symbol(tmp_path: Path) -> None:

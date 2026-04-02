@@ -121,3 +121,16 @@ def test_build_service_report_marks_restart_reasons_and_apply_blockers(monkeypat
         "branch_behind_origin:4",
     ]
     assert report.safe_to_apply is False
+
+
+def test_daily_rl_trader_watchlist_includes_inference_loader_files() -> None:
+    mod = _load_module()
+    spec = mod.SPECS["daily-rl-trader"]
+
+    assert spec.watched_repo_files == (
+        "trade_daily_stock_prod.py",
+        "pufferlib_market/inference.py",
+        "pufferlib_market/inference_daily.py",
+        "pufferlib_market/checkpoint_loader.py",
+        "unified_orchestrator/service_config.json",
+    )

@@ -7,11 +7,15 @@ try:
     from llm_hourly_trader.gemini_wrapper import TradePlan
     from src.daily_mixed_hybrid import (
         CandidatePlan,
+        DEFAULT_REFINEMENT_PASSES,
         DailyPosition,
         build_candidate_plan,
         build_daily_hybrid_prompt,
         current_allocation_from_position,
+        get_forecast_at,
         previous_forecast_error_pct,
+        refine_trade_plan_multistage,
+        rl_refine_trade_plan,
         select_best_candidate,
     )
     from unified_orchestrator.rl_gemini_bridge import RLSignal
@@ -278,3 +282,149 @@ def test_build_candidate_plan_attaches_refined_allocation_context() -> None:
     assert candidate.target_allocation > 0.22
     assert candidate.overnight_allocation <= 2.0
     assert "rl=long" in candidate.allocation_reason
+
+
+def test_rl_refine_trade_plan_uses_energy_budget_to_limit_changes() -> None:
+    signal = RLSignal(
+        symbol_idx=0,
+        symbol_name="AAPL",
+        direction="long",
+        confidence=0.92,
+        logit_gap=2.5,
+        allocation_pct=1.0,
+    )
+    base_plan = TradePlan(
+        direction="hold",
+        buy_price=0.0,
+        sell_price=0.0,
+        confidence=0.2,
+        reasoning="seed",
+        allocation_pct=0.0,
+    )
+
+    refined, alpha, distance = rl_refine_trade_plan(
+        base_plan,
+        rl_signal=signal,
+        current_price=100.0,
+        asset_class="stock",
+        history_rows=[
+            {"high": 101.0, "low": 99.0},
+            {"high": 102.0, "low": 99.5},
+            {"high": 103.0, "low": 100.0},
+        ],
+        pass_config=DEFAULT_REFINEMENT_PASSES[2],
+        energy_weight=3.0,
+    )
+
+    assert refined.direction == "long"
+    assert refined.buy_price <= 100.0
+    assert refined.sell_price > refined.buy_price
+    assert refined.confidence <= 0.28
+    assert refined.allocation_pct <= 10.0
+    assert 0.0 < alpha < 0.2
+    assert distance > 0.0
+
+
+def test_refine_trade_plan_multistage_alternates_rl_and_llm() -> None:
+    signal = RLSignal(
+        symbol_idx=0,
+        symbol_name="NVDA",
+        direction="long",
+        confidence=0.86,
+        logit_gap=2.1,
+        allocation_pct=0.8,
+    )
+    base_plan = TradePlan(
+        direction="long",
+        buy_price=99.0,
+        sell_price=106.0,
+        confidence=0.55,
+        reasoning="seed",
+        allocation_pct=40.0,
+    )
+    prompts: list[str] = []
+
+    def _fake_llm(prompt: str) -> TradePlan:
+        prompts.append(prompt)
+        return TradePlan(
+            direction="long",
+            buy_price=98.5,
+            sell_price=107.25,
+            confidence=0.68,
+            reasoning="llm medium refine",
+            allocation_pct=52.0,
+        )
+
+    plan, trace = refine_trade_plan_multistage(
+        base_plan,
+        symbol="NVDA",
+        asset_class="stock",
+        current_price=100.0,
+        rl_signal=signal,
+        history_rows=[
+            {"high": 101.0, "low": 99.0},
+            {"high": 103.0, "low": 100.0},
+            {"high": 104.0, "low": 101.0},
+        ],
+        forecast_1h={"predicted_close_p50": 101.2, "predicted_high_p50": 102.0, "predicted_low_p50": 99.8},
+        forecast_24h={"predicted_close_p50": 106.5, "predicted_high_p50": 108.0, "predicted_low_p50": 99.5},
+        previous_plan={"direction": "long", "buy_price": 98.8, "sell_price": 105.5},
+        llm_refiner=_fake_llm,
+        return_trace=True,
+    )
+
+    assert len(prompts) == 3
+    assert "Pass stage: sweeping" in prompts[0]
+    assert "Pass stage: medium" in prompts[1]
+    assert "Pass stage: minor" in prompts[2]
+    assert [entry.driver for entry in trace] == ["seed", "rl", "llm", "rl", "llm", "rl", "llm"]
+    assert [entry.stage for entry in trace[1:]] == ["sweeping", "sweeping", "medium", "medium", "minor", "minor"]
+    assert trace[1].energy_budget > trace[3].energy_budget > trace[5].energy_budget
+    assert trace[2].energy_budget > trace[4].energy_budget > trace[6].energy_budget
+    assert trace[1].alpha is not None and trace[1].alpha > trace[5].alpha
+    assert trace[2].alpha is not None and trace[2].alpha > trace[6].alpha
+    assert plan.direction == "long"
+    assert plan.buy_price <= 100.0
+    assert plan.sell_price > plan.buy_price
+    assert plan.confidence > 0.55
+
+
+def test_get_forecast_at_uses_cached_indexed_lookup() -> None:
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(
+                [
+                    "2026-03-10T00:00:00Z",
+                    "2026-03-10T02:00:00Z",
+                    "2026-03-10T05:00:00Z",
+                ],
+                utc=True,
+            ),
+            "predicted_close_p50": [101.0, 103.5, 107.0],
+            "predicted_close_p10": [99.0, 101.0, 104.0],
+            "predicted_close_p90": [103.0, 106.0, 110.5],
+            "predicted_high_p50": [102.0, 104.5, 108.0],
+            "predicted_low_p50": [98.5, 100.5, 103.0],
+        }
+    )
+
+    first = get_forecast_at(frame, pd.Timestamp("2026-03-10T03:00:00Z"))
+    cache = frame.attrs.get("_forecast_lookup_cache")
+    second = get_forecast_at(frame, pd.Timestamp("2026-03-10T05:30:00Z"))
+
+    assert first == {
+        "predicted_close_p50": 103.5,
+        "predicted_close_p10": 101.0,
+        "predicted_close_p90": 106.0,
+        "predicted_high_p50": 104.5,
+        "predicted_low_p50": 100.5,
+    }
+    assert second == {
+        "predicted_close_p50": 107.0,
+        "predicted_close_p10": 104.0,
+        "predicted_close_p90": 110.5,
+        "predicted_high_p50": 108.0,
+        "predicted_low_p50": 103.0,
+    }
+    assert cache is not None
+    assert frame.attrs.get("_forecast_lookup_cache") is cache

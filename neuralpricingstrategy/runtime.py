@@ -8,6 +8,7 @@ from typing import Mapping, Optional
 import pandas as pd
 import torch
 
+from .device import resolve_device, should_fallback_to_cpu, warn_cuda_fallback
 from .feature_builder import FeatureBuilder, FeatureSpec
 from .models import PricingAdjustmentModel, PricingModelConfig
 
@@ -33,9 +34,8 @@ class NeuralPricingAdjuster:
         device: Optional[str] = None,
     ) -> None:
         self.run_dir = Path(run_dir)
-        self.device = torch.device(device) if device else torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu"
-        )
+        self._device_preference = device
+        self.device = resolve_device(device)
         self._spec = self._load_spec()
         self._builder = FeatureBuilder(
             numeric_columns=list(self._spec.numeric_stats.keys()),
@@ -69,9 +69,17 @@ class NeuralPricingAdjuster:
             max_delta_pct=self.clamp_pct,
         )
         model = PricingAdjustmentModel(config)
-        state = torch.load(state_path, map_location=self.device)
+        state = torch.load(state_path, map_location="cpu")
         model.load_state_dict(state)
-        model.to(self.device)
+        try:
+            model.to(self.device)
+        except Exception as exc:
+            if should_fallback_to_cpu(self._device_preference, self.device, exc):
+                warn_cuda_fallback("Neural pricing runtime", exc)
+                self.device = torch.device("cpu")
+                model.to(self.device)
+            else:
+                raise
         model.eval()
         return model
 

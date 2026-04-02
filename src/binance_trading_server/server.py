@@ -1236,6 +1236,11 @@ def stop_background_refresh(engine: BinanceTradingServerEngine | None = None, ti
                 to_join.append((e, h))
     for _, h in to_join:
         h.thread.join(timeout=timeout)
+    with _background_lock:
+        for e, h in to_join:
+            current = _background_refreshers.get(e)
+            if current is h and h.owners == 0 and not h.thread.is_alive():
+                _background_refreshers.pop(e, None)
 
 
 def create_app(engine: BinanceTradingServerEngine | None = None) -> FastAPI:
