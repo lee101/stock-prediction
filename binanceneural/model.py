@@ -1013,8 +1013,10 @@ class BinanceHourlyPolicyMamba(BinancePolicyBase):
 
     def forward(self, features: torch.Tensor) -> Dict[str, torch.Tensor]:
         h = self.embed(features)
-        use_cuda_ssm = h.is_cuda and self._backend != "pure_torch"
-        active_layers = self.layers if use_cuda_ssm else self._get_cpu_fallback()
+        if self._backend == "pure_torch":
+            active_layers = self.layers
+        else:
+            active_layers = self.layers if h.is_cuda else self._get_cpu_fallback()
         for norm, layer in zip(self.norms, active_layers):
             residual = h
             h = norm(h)

@@ -95,6 +95,11 @@ class AlpacaBroker:
             
             # Create appropriate order request
             if order_type == 'market':
+                if self.paper:
+                    logger.error(
+                        f"Paper market orders are disabled for {symbol}; submit a limit order instead"
+                    )
+                    return None
                 order_request = MarketOrderRequest(
                     symbol=symbol,
                     qty=qty,

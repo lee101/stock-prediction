@@ -1258,6 +1258,65 @@ def test_run_trial_passes_no_tf32_flag(monkeypatch, tmp_path: Path) -> None:
     assert "--no-cuda-graph" in train_cmd
 
 
+def test_run_trial_passes_stability_guard_flags(monkeypatch, tmp_path: Path) -> None:
+    checkpoint_dir = tmp_path / "trial"
+    checkpoint_dir.mkdir()
+    (checkpoint_dir / "best.pt").write_bytes(b"checkpoint")
+
+    class _FakeStdout:
+        def readline(self) -> bytes:
+            return b""
+
+    train_commands: list[list[str]] = []
+
+    class _FakePopen:
+        def __init__(self, cmd, *args, **kwargs) -> None:
+            train_commands.append(list(cmd))
+            self.stdout = _FakeStdout()
+            self.pid = 12345
+
+        def poll(self) -> int:
+            return 0
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+    def _fake_run_capture(cmd: list[str], *, cwd: Path, timeout_s: int = 0) -> subprocess.CompletedProcess[str]:
+        if "pufferlib_market.evaluate" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 0,
+                stdout="Return: mean=0.10\nWin rate: mean=0.55\nSortino: mean=1.20\n>0: 10/10 (100.0%)\n",
+                stderr="",
+            )
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl.subprocess.Popen", _FakePopen)
+    monkeypatch.setattr("pufferlib_market.autoresearch_rl._run_capture", _fake_run_capture)
+
+    run_trial(
+        TrialConfig(
+            description="stable_guards",
+            grad_norm_warn_threshold=20.0,
+            grad_norm_skip_threshold=200.0,
+            unstable_update_patience=6,
+            lr_backoff_factor=0.25,
+            min_lr=5e-6,
+        ),
+        "train.bin",
+        "val.bin",
+        1,
+        str(checkpoint_dir),
+    )
+
+    assert train_commands
+    train_cmd = train_commands[0]
+    assert train_cmd[train_cmd.index("--grad-norm-warn-threshold") + 1] == "20.0"
+    assert train_cmd[train_cmd.index("--grad-norm-skip-threshold") + 1] == "200.0"
+    assert train_cmd[train_cmd.index("--unstable-update-patience") + 1] == "6"
+    assert train_cmd[train_cmd.index("--lr-backoff-factor") + 1] == "0.25"
+    assert train_cmd[train_cmd.index("--min-lr") + 1] == "5e-06"
+
+
 def test_run_trial_reuses_same_wandb_run_for_post_eval_summary(monkeypatch, tmp_path: Path) -> None:
     checkpoint_dir = tmp_path / "trial"
     checkpoint_dir.mkdir()

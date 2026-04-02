@@ -19,6 +19,7 @@ from binanceneural.forecasts import ChronosForecastManager, ForecastConfig
 from src.chronos2_params import resolve_chronos2_params
 from src.hourly_data_utils import discover_hourly_symbols, resolve_hourly_symbol_path
 from src.models.chronos2_wrapper import Chronos2OHLCWrapper
+from src.symbol_file_utils import load_symbols_from_file
 from src.torch_device_utils import require_cuda as require_cuda_device
 
 
@@ -39,6 +40,10 @@ def _parse_symbols(raw: Optional[str], *, data_root: Path) -> List[str]:
     if raw:
         return [tok.strip().upper() for tok in str(raw).split(",") if tok.strip()]
     return discover_hourly_symbols(Path(data_root))
+
+
+def _load_symbols_from_file(path: Path) -> List[str]:
+    return load_symbols_from_file(path)
 
 
 def _resolve_window(
@@ -112,6 +117,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ),
     )
     parser.add_argument("--symbols", default=DEFAULT_SYMBOLS, help="Comma-separated symbols to process.")
+    parser.add_argument("--symbols-file", type=Path, default=None, help="Optional file with newline/comma separated symbols.")
     parser.add_argument("--data-root", type=Path, default=Path("trainingdatahourlybinance"))
     parser.add_argument("--forecast-cache-root", type=Path, default=Path("binancecrosslearning/forecast_cache_fdusd_pslora"))
     parser.add_argument("--horizons", default="1,4,24", help="Comma-separated forecast horizons (hours).")
@@ -131,7 +137,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     require_cuda_device("chronos2 hourly forecast caching", allow_fallback=False)
 
-    symbols = _parse_symbols(args.symbols, data_root=args.data_root)
+    if args.symbols_file is not None:
+        symbols = _load_symbols_from_file(args.symbols_file)
+    else:
+        symbols = _parse_symbols(args.symbols, data_root=args.data_root)
     if not symbols:
         raise SystemExit("No symbols provided.")
 

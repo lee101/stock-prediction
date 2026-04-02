@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import random
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Sequence
 
 import numpy as np
@@ -55,6 +57,9 @@ from .prepare import (
     resolve_task_config,
     simulate_actions,
 )
+
+DEFAULT_LEARNING_RATE = 3e-4
+DEFAULT_AUTO_LR_CANDIDATES: tuple[float, ...] = (1e-4, 2e-4, 3e-4, 5e-4, 7.5e-4, 1e-3)
 
 
 class SequenceDataset(Dataset):
@@ -929,6 +934,22 @@ def clone_model_state(model: nn.Module) -> dict[str, torch.Tensor]:
     return {name: value.detach().clone() for name, value in model.state_dict().items()}
 
 
+def load_planner_model(
+    *,
+    model_factory,
+    requested_device: str | None,
+    device: torch.device,
+    context: str,
+) -> tuple[PlannerNet, torch.device]:
+    model, resolved_device = move_module_to_runtime_device(
+        model_factory(),
+        requested_device,
+        device,
+        context=context,
+    )
+    return model, resolved_device
+
+
 def update_ema_state(
     ema_state: dict[str, torch.Tensor],
     model: nn.Module,
@@ -1014,6 +1035,256 @@ def parse_float_list(raw: str | None) -> tuple[float, ...]:
     return tuple(values)
 
 
+def resolve_autoresearch_training_device(requested: str | None) -> torch.device:
+    token = (requested or "auto").strip().lower()
+    if token == "cpu":
+        raise RuntimeError("Autoresearch stock trainer requires CUDA and cannot run on CPU.")
+    if not torch.cuda.is_available():
+        raise RuntimeError("Autoresearch stock trainer requires CUDA but no CUDA device is available.")
+    device = resolve_runtime_device(requested)
+    if device.type != "cuda":
+        raise RuntimeError(f"Autoresearch stock trainer requires CUDA, got resolved device {device}.")
+    return device
+
+
+def resolve_execution_modifier_tuning_enabled(*, requested: bool, disabled: bool) -> bool:
+    return bool(requested) and not bool(disabled)
+
+
+def auto_lr_cache_path(cache_path: str | None = None) -> Path:
+    raw_path = cache_path or os.getenv(
+        "AUTORESEARCH_STOCK_AUTO_LR_CACHE_PATH",
+        ".cache/autoresearch_stock/auto_lr_cache.json",
+    )
+    return Path(raw_path)
+
+
+def build_auto_lr_cache_key(
+    *,
+    frequency: str,
+    device: torch.device,
+    feature_dim: int,
+    symbol_count: int,
+    hidden_size: int,
+    num_layers: int,
+    symbol_embedding_dim: int,
+    context_blocks: int,
+    batch_size: int,
+) -> str:
+    if device.type == "cuda":
+        device_name = torch.cuda.get_device_name(device)
+        total_memory_gb = round(_cuda_total_memory_gb(device), 2)
+    else:
+        device_name = str(device)
+        total_memory_gb = 0.0
+    return json.dumps(
+        {
+            "batch_size": int(batch_size),
+            "context_blocks": int(context_blocks),
+            "device_name": str(device_name),
+            "feature_dim": int(feature_dim),
+            "frequency": str(frequency),
+            "hidden_size": int(hidden_size),
+            "num_layers": int(num_layers),
+            "symbol_count": int(symbol_count),
+            "symbol_embedding_dim": int(symbol_embedding_dim),
+            "total_memory_gb": float(total_memory_gb),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def load_auto_lr_cache(path: Path) -> dict[str, float]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    cache: dict[str, float] = {}
+    for key, value in raw.items():
+        try:
+            value_float = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value_float) and value_float > 0.0:
+            cache[str(key)] = value_float
+    return cache
+
+
+def write_auto_lr_cache(path: Path, key: str, learning_rate: float) -> None:
+    cache = load_auto_lr_cache(path)
+    cache[str(key)] = float(learning_rate)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def resolve_learning_rate(
+    *,
+    requested_lr: float | None,
+    disable_auto_lr_find: bool,
+    cache_path: str | None,
+    cache_key: str | None,
+    tuner,
+) -> tuple[float, str]:
+    if requested_lr is not None:
+        return float(requested_lr), "cli"
+    if bool(disable_auto_lr_find) or cache_key is None:
+        return float(DEFAULT_LEARNING_RATE), "default"
+
+    path = auto_lr_cache_path(cache_path)
+    cached_lr = load_auto_lr_cache(path).get(cache_key)
+    if cached_lr is not None:
+        return float(cached_lr), "cache"
+
+    resolved_lr = float(tuner())
+    if math.isfinite(resolved_lr) and resolved_lr > 0.0:
+        write_auto_lr_cache(path, cache_key, resolved_lr)
+        return resolved_lr, "auto"
+    return float(DEFAULT_LEARNING_RATE), "default"
+
+
+def _preview_training_batches(loader: DataLoader, *, max_batches: int) -> list[dict[str, torch.Tensor]]:
+    preview_batches: list[dict[str, torch.Tensor]] = []
+    iterator = iter(loader)
+    for _ in range(max(int(max_batches), 0)):
+        try:
+            batch = next(iterator)
+        except StopIteration:
+            break
+        preview_batches.append(batch)
+    return preview_batches
+
+
+def _planner_objective(
+    model: PlannerNet,
+    batch: dict[str, torch.Tensor],
+    *,
+    device: torch.device,
+    ambiguity_floor: float,
+    plan_loss_weight: float,
+    margin_loss_weight: float,
+    budget_loss_weight: float,
+    plan_class_weights: torch.Tensor,
+    budget_class_weights: torch.Tensor,
+) -> torch.Tensor:
+    non_blocking = device.type == "cuda"
+    features = batch["features"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+    targets = batch["targets"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+    symbol_ids = batch["symbol_ids"].to(device=device, dtype=torch.long, non_blocking=non_blocking)
+    weights = batch["weights"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+    plan_labels = batch["plan_labels"].to(device=device, dtype=torch.long, non_blocking=non_blocking)
+    margin_targets = batch["margin_targets"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+    budget_labels = batch["budget_labels"].to(device=device, dtype=torch.long, non_blocking=non_blocking)
+
+    with torch.amp.autocast(device_type=device.type, enabled=(device.type == "cuda")):
+        predictions, plan_logits, margin_logits, budget_logits = model.predict_with_plan(features, symbol_ids)
+        return decision_aware_loss(
+            predictions,
+            targets,
+            weights,
+            ambiguity_floor=ambiguity_floor,
+        ) + float(plan_loss_weight) * plan_loss(
+            plan_logits,
+            plan_labels,
+            weights,
+            class_weights=plan_class_weights,
+        ) + float(margin_loss_weight) * margin_loss(
+            margin_logits,
+            margin_targets,
+            weights,
+        ) + float(budget_loss_weight) * budget_loss(
+            budget_logits,
+            budget_labels,
+            weights,
+            class_weights=budget_class_weights,
+        )
+
+
+def auto_find_learning_rate(
+    *,
+    model_factory,
+    base_state: dict[str, torch.Tensor],
+    train_loader: DataLoader,
+    requested_device: str | None,
+    device: torch.device,
+    ambiguity_floor: float,
+    plan_loss_weight: float,
+    margin_loss_weight: float,
+    budget_loss_weight: float,
+    plan_class_weights: torch.Tensor,
+    budget_class_weights: torch.Tensor,
+    weight_decay: float,
+    candidate_lrs: Sequence[float] = DEFAULT_AUTO_LR_CANDIDATES,
+    max_batches: int = 3,
+) -> float:
+    preview_batches = _preview_training_batches(train_loader, max_batches=max_batches)
+    if not preview_batches:
+        return float(DEFAULT_LEARNING_RATE)
+
+    best_lr = float(DEFAULT_LEARNING_RATE)
+    best_score = float("inf")
+    for learning_rate in tuple(float(value) for value in candidate_lrs):
+        if learning_rate <= 0.0 or not math.isfinite(learning_rate):
+            continue
+        model, tuner_device = load_planner_model(
+            model_factory=model_factory,
+            requested_device=requested_device,
+            device=device,
+            context="Autoresearch stock auto-lr probe",
+        )
+        model.load_state_dict(base_state, strict=True)
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=float(learning_rate),
+            weight_decay=float(weight_decay),
+        )
+        scaler = torch.amp.GradScaler("cuda", enabled=(tuner_device.type == "cuda"))
+        losses: list[float] = []
+        unstable = False
+
+        for batch in preview_batches:
+            model.train()
+            optimizer.zero_grad(set_to_none=True)
+            loss = _planner_objective(
+                model,
+                batch,
+                device=tuner_device,
+                ambiguity_floor=ambiguity_floor,
+                plan_loss_weight=plan_loss_weight,
+                margin_loss_weight=margin_loss_weight,
+                budget_loss_weight=budget_loss_weight,
+                plan_class_weights=plan_class_weights,
+                budget_class_weights=budget_class_weights,
+            )
+            loss_value = float(loss.detach().item())
+            if not math.isfinite(loss_value):
+                unstable = True
+                break
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+            losses.append(loss_value)
+
+        if not unstable and losses:
+            score = float(sum(losses[-2:]) / min(len(losses), 2))
+            if score < best_score:
+                best_score = score
+                best_lr = float(learning_rate)
+        del model
+        del optimizer
+        del scaler
+        if tuner_device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    return float(best_lr)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Train the autoresearch-style stock planner for a fixed time budget.")
     parser.add_argument("--frequency", choices=("hourly", "daily"), default="hourly")
@@ -1040,12 +1311,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--layers", type=int, default=None)
     parser.add_argument("--dropout", type=float, default=0.10)
     parser.add_argument("--symbol-embedding-dim", type=int, default=None)
-    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--disable-auto-lr-find", action="store_true")
+    parser.add_argument("--auto-lr-cache", default=None)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--seed", type=int, default=20260310)
     parser.add_argument("--num-workers", type=int, default=None)
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--context-blocks", type=int, default=2)
+    parser.add_argument("--execution-modifier-tuning", action="store_true")
     parser.add_argument("--disable-execution-modifier-tuning", action="store_true")
     parser.add_argument("--buy-price-modifier-grid-bps", default="-25,-15,-10,-5,0,5,10,15,25")
     parser.add_argument("--sell-price-modifier-grid-bps", default="-25,-15,-10,-5,0,5,10,15,25")
@@ -1060,7 +1334,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     total_start = time.perf_counter()
-    device = resolve_runtime_device(args.device)
+    device = resolve_autoresearch_training_device(args.device)
     seed_everything(args.seed, deterministic=bool(args.deterministic))
     resolved_hidden_size, resolved_layers, resolved_symbol_embedding_dim, resolved_batch_size, resolved_eval_batch_size = (
         resolve_planner_sizing(
@@ -1101,7 +1375,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         symbol_embedding_dim=int(resolved_symbol_embedding_dim),
         context_blocks=int(args.context_blocks),
         batch_size=int(resolved_batch_size),
-        learning_rate=float(args.lr),
+        learning_rate=float(DEFAULT_LEARNING_RATE if args.lr is None else args.lr),
         weight_decay=float(args.weight_decay),
         eval_batch_size=int(resolved_eval_batch_size),
         use_dynamic_score_floor=bool(args.dynamic_score_floor),
@@ -1130,8 +1404,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     budget_loss_weight = planner_cfg.budget_loss_weight if planner_cfg.use_timestamp_budget_head else 0.0
 
-    model, device = move_module_to_runtime_device(
-        PlannerNet(
+    model_factory = lambda: PlannerNet(
         feature_dim=int(task.train_features.shape[-1]),
         symbol_count=max(len(task.symbol_to_id), 1),
         hidden_size=planner_cfg.hidden_size,
@@ -1140,10 +1413,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         symbol_embedding_dim=planner_cfg.symbol_embedding_dim,
         context_blocks=planner_cfg.context_blocks,
         weak_action_scale=planner_cfg.weak_action_scale,
-        ),
-        args.device,
-        device,
-        context="Autoresearch stock trainer",
+    )
+    model, device = load_planner_model(
+        model_factory=model_factory,
+        requested_device=args.device,
+        device=device,
+        context="Autoresearch stock planner",
     )
     train_loader, val_loader, plan_class_weights_np, budget_class_weights_np = build_dataloaders(
         task,
@@ -1155,6 +1430,37 @@ def main(argv: Sequence[str] | None = None) -> int:
     ema_state = clone_model_state(model)
     plan_class_weights = torch.from_numpy(plan_class_weights_np).to(device=device, dtype=torch.float32)
     budget_class_weights = torch.from_numpy(budget_class_weights_np).to(device=device, dtype=torch.float32)
+    learning_rate, learning_rate_source = resolve_learning_rate(
+        requested_lr=args.lr,
+        disable_auto_lr_find=bool(args.disable_auto_lr_find),
+        cache_path=args.auto_lr_cache,
+        cache_key=build_auto_lr_cache_key(
+            frequency=task.config.frequency,
+            device=device,
+            feature_dim=int(task.train_features.shape[-1]),
+            symbol_count=max(len(task.symbol_to_id), 1),
+            hidden_size=planner_cfg.hidden_size,
+            num_layers=planner_cfg.num_layers,
+            symbol_embedding_dim=planner_cfg.symbol_embedding_dim,
+            context_blocks=planner_cfg.context_blocks,
+            batch_size=planner_cfg.batch_size,
+        ),
+        tuner=lambda: auto_find_learning_rate(
+            model_factory=model_factory,
+            base_state=ema_state,
+            train_loader=train_loader,
+            requested_device=args.device,
+            device=device,
+            ambiguity_floor=ambiguity_floor,
+            plan_loss_weight=planner_cfg.plan_loss_weight,
+            margin_loss_weight=planner_cfg.margin_loss_weight,
+            budget_loss_weight=budget_loss_weight,
+            plan_class_weights=plan_class_weights,
+            budget_class_weights=budget_class_weights,
+            weight_decay=planner_cfg.weight_decay,
+        ),
+    )
+    planner_cfg.learning_rate = float(learning_rate)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -1309,9 +1615,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
 
     best_modifiers = ExecutionModifierSet()
-    if bool(args.disable_execution_modifier_tuning):
-        eval_result = _evaluate_with_modifiers(best_modifiers)
-    else:
+    execution_modifier_tuning_enabled = resolve_execution_modifier_tuning_enabled(
+        requested=bool(args.execution_modifier_tuning),
+        disabled=bool(args.disable_execution_modifier_tuning),
+    )
+    eval_result = _evaluate_with_modifiers(best_modifiers)
+    if execution_modifier_tuning_enabled:
         best_modifiers, eval_result = tune_execution_modifiers(
             _evaluate_with_modifiers,
             buy_grid_bps=parse_float_list(args.buy_price_modifier_grid_bps),
@@ -1338,10 +1647,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"hidden_size:       {planner_cfg.hidden_size}")
     print(f"layers:            {planner_cfg.num_layers}")
     print(f"context_blocks:    {planner_cfg.context_blocks}")
+    print(f"learning_rate:     {planner_cfg.learning_rate:.6g}")
+    print(f"lr_source:         {learning_rate_source}")
     print(f"batch_size:        {planner_cfg.batch_size}")
     print(f"eval_batch_size:   {planner_cfg.eval_batch_size}")
     print(f"num_workers:       {planner_cfg.dataloader_workers}")
     print(f"deterministic:     {planner_cfg.deterministic}")
+    print(f"exec_mod_tuning:   {execution_modifier_tuning_enabled}")
     print(f"buy_mod_bps:       {best_modifiers.buy_price_modifier_bps:.1f}")
     print(f"sell_mod_bps:      {best_modifiers.sell_price_modifier_bps:.1f}")
     print(f"amount_mod_pct:    {best_modifiers.amount_modifier_pct:.1f}")

@@ -13,6 +13,14 @@ DEFAULT_REMOTE_HOST = "administrator@93.127.141.100"
 DEFAULT_REMOTE_DIR = "/nvme0n1-disk/code/stock-prediction"
 DEFAULT_REMOTE_ENV = ".venv313"
 DEFAULT_REMOTE_RUN_ROOT = "analysis/remote_runs"
+LARGE_UNIVERSE_STOCK_A40_DESCRIPTIONS: tuple[str, ...] = (
+    "stock_ent05_tp03_a40_neighbor",
+    "stock_ent05_tp05_s123_a40_neighbor",
+    "stock_h512_reg_a40_neighbor",
+    "stock_obsnorm_ent05_tp03_a40_neighbor",
+    "stock_tp05_seed55_a40_neighbor",
+    "stock_tp05_seed111_a40_neighbor",
+)
 
 
 def parse_csv_tokens(raw: str | Sequence[str] | None, *, cast=str) -> list[Any]:
@@ -1135,6 +1143,62 @@ def build_remote_chronos_compare_plan(
         daily_checkpoint_root=daily_plan.checkpoint_root,
         commands=tuple(commands),
     )
+
+
+def build_remote_large_universe_stock_plan(
+    *,
+    run_id: str,
+    symbols: Sequence[str],
+    local_hourly_data_root: Path,
+    remote_hourly_data_root: str,
+    local_daily_data_root: Path,
+    remote_daily_data_root: str,
+    train_hours: int,
+    val_hours: int,
+    gap_hours: int = 24,
+    time_budget: int = 1800,
+    max_trials: int = 6,
+    remote_run_root: str = DEFAULT_REMOTE_RUN_ROOT,
+    forecast_lookback_hours: float | None = None,
+    earliest_common_override: str | None = None,
+    latest_common_override: str | None = None,
+) -> RemoteChronosComparisonPlan:
+    return build_remote_chronos_compare_plan(
+        run_id=run_id,
+        symbols=symbols,
+        local_hourly_data_root=local_hourly_data_root,
+        remote_hourly_data_root=remote_hourly_data_root,
+        local_daily_data_root=local_daily_data_root,
+        remote_daily_data_root=remote_daily_data_root,
+        train_hours=train_hours,
+        val_hours=val_hours,
+        gap_hours=gap_hours,
+        preaugs=("baseline", "percent_change"),
+        context_lengths=(256,),
+        learning_rates=(5e-5, 1e-4),
+        num_steps=1500,
+        prediction_length=24,
+        lora_r=16,
+        lora_seeds=(1337, 2027, 31415),
+        feature_lag=1,
+        min_coverage=0.95,
+        time_budget=time_budget,
+        max_trials=max_trials,
+        descriptions=LARGE_UNIVERSE_STOCK_A40_DESCRIPTIONS,
+        hourly_rank_metric="generalization_score",
+        daily_rank_metric="holdout_robust_score",
+        daily_max_steps_override=252,
+        daily_holdout_eval_steps=120,
+        holdout_n_windows=24,
+        holdout_fee_rate=0.001,
+        holdout_fill_buffer_bps=5.0,
+        remote_run_root=remote_run_root,
+        forecast_lookback_hours=forecast_lookback_hours,
+        earliest_common_override=earliest_common_override,
+        latest_common_override=latest_common_override,
+    )
+
+
 def shell_join(cmd: Sequence[str]) -> str:
     return shlex.join([str(token) for token in cmd])
 
@@ -1172,11 +1236,13 @@ __all__ = [
     "DEFAULT_REMOTE_DIR",
     "DEFAULT_REMOTE_HOST",
     "DEFAULT_REMOTE_RUN_ROOT",
+    "LARGE_UNIVERSE_STOCK_A40_DESCRIPTIONS",
     "HourlyTrainValWindow",
     "RemoteAutoresearchPlan",
     "RemoteChronosComparisonPlan",
     "RemotePipelinePlan",
     "build_remote_autoresearch_plan",
+    "build_remote_large_universe_stock_plan",
     "build_export_daily_fused_cmd",
     "build_hourly_train_val_window_from_bounds",
     "build_autoresearch_cmd",

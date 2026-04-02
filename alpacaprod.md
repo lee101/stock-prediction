@@ -7,17 +7,20 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
-### Current Alpaca snapshot (2026-03-31 12:25 UTC)
+### Current Alpaca snapshot (2026-04-01 23:57 UTC)
 - **LIVE account**: equity ~$38,954 (from 2026-03-28 snapshot, not updated — API key expired)
 - **LIVE daily-rl-trader**: **32-model ensemble** running on PAPER (live API key expired)
   - **Ensemble members**: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835+s2827+s2722+s3668+s3411+s4011+s4777+s4080+s4533+s4813+s5045+s5337+s5199+s5019+s6808+s3456+s7159+**s6758**
-  - **Performance**: 0/111 neg, med=73.4%, **p10=66.2%** @fill_bps=5
+  - **Best short-list benchmark**: 0/111 neg, med=73.4%, **p10=66.2%** @fill_bps=5
+  - **Latest full-history replay (2026-04-01, refreshed data, 1827 rolling 90d windows)**: 342/1827 neg, med=2.36%, p10=-0.79%, worst=-47.79%, med Sortino=2.92, med MaxDD=-1.28%, med trades=68
+  - **Latest retrain check (2026-04-01)**: `stocks12_latest_retrain_tp05_s123_20260401/best.pt` rejected; holdout50=31/50 neg, med=-3.39%, p10=-9.19%, whole-history=601/1827 neg, med=0.61%, p10=-1.35%, med Sortino=0.73
   - **s6758 added 2026-03-31 12:18 UTC**: +1.0% delta vs 31-model (V4 wave 20 hard pass → full test confirmed)
   - Updated 2026-03-31: s3456(+0.5%/30), s7159(+0.7%/31), s6758(+1.0%/32) — 32-model p10=66.2%
   - 33-model bar: p10 ≥ 66.2% @fill_bps=5
   - 15-model baseline was: 0/111 neg, med=50.9%, p10=19.2%
   - All checkpoints in `pufferlib_market/prod_ensemble/` (protected from sweep deletion)
   - trade_daily_stock_prod.py updated with 32-model list
+  - Refreshed daily data now runs through `2026-04-01`; refresh report: `analysis/stocks12_daily_data_refresh_20260401.json`
   - ⚠️ CRITICAL: Alpaca LIVE API key EXPIRED (401). Service on PAPER. NO LIVE TRADES.
   - ⚠️ ACTION REQUIRED: Renew live API key → update env_real.py lines 54-55 (ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD) → `sudo systemctl restart daily-rl-trader.service`
 - **V4 screening**: 336/737 done (45.6%), wave 22 running, now using 32-model baseline
@@ -153,11 +156,12 @@
   - the remote hourly Chronos2 -> forecast-cache -> RL pipeline now promotes a stable hyperparameter family across seeds by default instead of the single best seed
   - selection is `mean(metric) + 0.25 * std(metric)` with minimum family size `2`; details are recorded in promoted config metadata and in `alpacaprogress8.md`
 
-### 4. Alpaca Daily PPO Trader (`trade_daily_stock_prod.py`) -- LIVE (systemd, CALIBRATED 2026-03-31)
+### 4. Alpaca Daily PPO Trader (`trade_daily_stock_prod.py`) -- LIVE (systemd, CALIBRATED 2026-03-31, VERIFIED 2026-04-01)
 - **Service manager**: systemd unit `daily-rl-trader.service`
 - **Installed unit**: `/etc/systemd/system/daily-rl-trader.service`
 - **Installed ExecStart**: `.venv313/bin/python -u trade_daily_stock_prod.py --daemon --live --allocation-pct 12.5`
 - **Status (2026-03-31)**: CALIBRATED — limit orders at entry+5bps/exit+25bps, allocation reduced 25%→12.5%
+- **Status (2026-04-01)**: VERIFIED on refreshed data; current 32-model prod ensemble stays deployed, latest 3M-step retrain is not promotable
 - **Calibration (2026-03-31)**: 726-combo sweep over 788 windows (90d each), 11 entry x 11 exit x 6 scale
   - **Best**: entry=+5bps, exit=+25bps, scale=0.5x → val_p10=-0.4%, val_sortino=1.75
   - **Baseline**: entry=0, exit=0, scale=1.0 → val_p10=-2.3%, val_sortino=0.98
@@ -165,6 +169,12 @@
   - Sweep results: `sweepresults/daily_stock_calibration.csv`
   - Execution: market orders → limit orders with calibrated offsets
   - Changes: `DEFAULT_ALLOCATION_PCT=12.5`, `CALIBRATED_ENTRY_OFFSET_BPS=5`, `CALIBRATED_EXIT_OFFSET_BPS=25`
+- **Refreshed data + replay verification (2026-04-01)**:
+  - Daily CSV refresh completed through `2026-04-01T04:00:00+00:00` for all 12 prod symbols
+  - Rebuilt bins: `stocks12_daily_train_20260401.bin` (`2020-09-30` → `2025-08-31`, 1797 days), `stocks12_daily_val_20260401.bin` (`2025-09-01` → `2026-04-01`, 213 days)
+  - Current 32-model prod ensemble replay on refreshed history (1827 rolling 90d windows, prod execution params): 342/1827 neg, med=2.36%, p10=-0.79%, worst=-47.79%, med Sortino=2.92, med MaxDD=-1.28%, med trades=68
+  - Candidate retrain `pufferlib_market/checkpoints/stocks12_latest_retrain_tp05_s123_20260401/best.pt` failed promotion: holdout50=31/50 neg, med=-3.39%, p10=-9.19%, worst=-13.11%; full-history=601/1827 neg, med=0.61%, p10=-1.35%, worst=-2.73%, med Sortino=0.73, med trades=2
+  - Analysis artifacts: `analysis/stocks12_daily_data_refresh_20260401.json`, `analysis/stocks12_latest_retrain_tp05_s123_20260401_eval.json`
 - **Architecture**: h=1024 MLP PPO, stocks12 (AAPL,MSFT,NVDA,GOOG,META,TSLA,SPY,QQQ,JPM,V,AMZN,PLTR)
 - **15-model ensemble exhaustive eval** (111 windows, 90d, softmax_avg, encoder_norm-correct):
   - **0/111 neg, med=+50.9%, p10=+19.2%, worst=+7.9%** (2026-03-28, TRUE production-accurate)

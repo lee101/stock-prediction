@@ -54,19 +54,23 @@ def _load_policy(checkpoint_path: str, obs_size: int, num_symbols: int, device: 
     """Load a policy from a checkpoint, auto-detecting architecture and action grid."""
     from pufferlib_market.checkpoint_loader import (
         extract_checkpoint_state_dict,
-        infer_arch_from_state_dict,
-        infer_hidden_size_from_state_dict,
         infer_resmlp_blocks_from_state_dict,
         load_checkpoint_payload,
         resolve_checkpoint_action_grid_config,
+        resolve_checkpoint_policy_details,
     )
     from pufferlib_market.evaluate_fast import ResidualTradingPolicy, TradingPolicy
 
     payload = load_checkpoint_payload(checkpoint_path, map_location=device)
     state_dict = extract_checkpoint_state_dict(payload)
 
-    arch = infer_arch_from_state_dict(state_dict)
-    hidden = infer_hidden_size_from_state_dict(state_dict, arch)
+    resolved = resolve_checkpoint_policy_details(
+        payload if isinstance(payload, dict) and "model" in payload else {"model": state_dict},
+        arch="mlp",
+        hidden_size=256,
+    )
+    arch = resolved.effective_arch
+    hidden = resolved.effective_hidden_size
     alloc_bins, level_bins, max_offset_bps = resolve_checkpoint_action_grid_config(
         payload,
         action_allocation_bins=1,
@@ -84,7 +88,12 @@ def _load_policy(checkpoint_path: str, obs_size: int, num_symbols: int, device: 
             num_blocks=infer_resmlp_blocks_from_state_dict(state_dict),
         )
     else:
-        policy = TradingPolicy(obs_size, n_actions, hidden=hidden)
+        policy = TradingPolicy(
+            obs_size,
+            n_actions,
+            hidden=hidden,
+            activation=resolved.effective_activation,
+        )
 
     missing, unexpected = policy.load_state_dict(state_dict, strict=False)
     ignored = {"obs_mean", "obs_std", "encoder_norm.weight", "encoder_norm.bias"}

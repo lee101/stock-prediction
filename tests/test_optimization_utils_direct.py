@@ -3,10 +3,14 @@ Unit tests for optimization_utils with DIRECT optimizer.
 Tests both DIRECT and differential_evolution modes.
 """
 
+import importlib
+import os
+
+import numpy as np
 import pytest
 import torch
-import numpy as np
-import os
+
+import src.optimization_utils as opt_utils
 from src.optimization_utils import (
     optimize_entry_exit_multipliers,
     optimize_always_on_multipliers,
@@ -27,6 +31,31 @@ def _resolve_test_device() -> str:
             return "cpu"
         raise
     return "cuda"
+
+
+@pytest.fixture(autouse=True)
+def _reset_optimizer_mode_env():
+    """Keep env-driven optimizer mode from leaking across tests."""
+    original_use_direct = os.environ.get("MARKETSIM_USE_DIRECT_OPTIMIZER")
+    original_fast = os.environ.get("MARKETSIM_FAST_OPTIMIZE")
+    os.environ["MARKETSIM_USE_DIRECT_OPTIMIZER"] = "1"
+    if original_fast is None:
+        os.environ.pop("MARKETSIM_FAST_OPTIMIZE", None)
+    else:
+        os.environ["MARKETSIM_FAST_OPTIMIZE"] = original_fast
+    importlib.reload(opt_utils)
+    try:
+        yield
+    finally:
+        if original_use_direct is None:
+            os.environ.pop("MARKETSIM_USE_DIRECT_OPTIMIZER", None)
+        else:
+            os.environ["MARKETSIM_USE_DIRECT_OPTIMIZER"] = original_use_direct
+        if original_fast is None:
+            os.environ.pop("MARKETSIM_FAST_OPTIMIZE", None)
+        else:
+            os.environ["MARKETSIM_FAST_OPTIMIZE"] = original_fast
+        importlib.reload(opt_utils)
 
 
 @pytest.fixture

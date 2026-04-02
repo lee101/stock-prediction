@@ -9,6 +9,8 @@ from pufferlib_market.allocation_refiner import (
     FrozenTrace,
     RefinerConfig,
     compute_refiner_objective,
+    fit_refiner,
+    predict_allocations,
     replay_hourly_actions_with_allocations,
     simulate_daily_actions_with_allocations,
 )
@@ -135,3 +137,39 @@ def test_replay_hourly_actions_with_allocations_matches_daily_scale() -> None:
 
     assert result.total_return == pytest.approx(0.10, rel=0, abs=1e-6)
     assert result.num_orders >= 2
+
+
+def test_fit_refiner_improves_positive_trace_and_respects_inactive_actions() -> None:
+    trace = _dummy_trace(signed_returns=[0.05, 0.04, 0.0], target_ids=[0, 0, -1])
+    config = RefinerConfig(
+        max_leverage=2.0,
+        epochs=80,
+        lr=1e-2,
+        hidden_size=32,
+        sortino_weight=0.0,
+        drawdown_penalty=0.0,
+        drawdown_excess_penalty=0.0,
+        smoothness_penalty=0.0,
+        leverage_penalty=0.0,
+        turnover_penalty=0.0,
+        init_allocation_pct=0.2,
+        seed=7,
+    )
+
+    baseline_alloc = torch.full((trace.max_steps,), config.init_allocation_pct, dtype=torch.float32)
+    _, baseline_summary = compute_refiner_objective(baseline_alloc, trace, config)
+
+    model, metrics = fit_refiner(
+        train_trace=trace,
+        val_trace=trace,
+        config=config,
+        device=torch.device("cpu"),
+    )
+    predicted = predict_allocations(model, trace, device=torch.device("cpu"))
+    _, fitted_summary = compute_refiner_objective(torch.tensor(predicted, dtype=torch.float32), trace, config)
+
+    assert metrics["epoch"] >= 1
+    assert fitted_summary.total_return > baseline_summary.total_return
+    assert predicted[0] > config.init_allocation_pct
+    assert predicted[1] > config.init_allocation_pct
+    assert predicted[2] == pytest.approx(0.0)

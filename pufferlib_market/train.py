@@ -58,6 +58,20 @@ from pufferlib_market.gae_cuda import compute_gae_gpu, HAS_TRITON as HAS_TRITON_
 # ─── Running Observation Normalizer ──────────────────────────────────
 
 
+def _policy_action_stats(
+    logits: torch.Tensor,
+    action: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Sample actions and compute log-prob/entropy directly from logits."""
+    log_probs = torch.log_softmax(logits, dim=-1)
+    probs = log_probs.exp()
+    if action is None:
+        action = torch.multinomial(probs, num_samples=1).squeeze(-1)
+    log_prob = log_probs.gather(-1, action.unsqueeze(-1)).squeeze(-1)
+    entropy = -(probs * log_probs).sum(dim=-1)
+    return action, log_prob, entropy
+
+
 class RunningObsNorm:
     """Online observation normalization using Welford's algorithm."""
 
@@ -286,7 +300,12 @@ def _checkpoint_payload(
     action_meta: dict[str, int | float],
     arch: str = "mlp",
 ) -> dict[str, object]:
-    return {
+    activation_name = getattr(
+        policy,
+        "_activation_name",
+        getattr(policy, "act_name", None),
+    )
+    payload: dict[str, object] = {
         "model": policy.state_dict(),
         "optimizer": optimizer.state_dict(),
         "update": int(update),
@@ -298,6 +317,9 @@ def _checkpoint_payload(
         "use_encoder_norm": bool(getattr(policy, "_use_encoder_norm", False)),
         **action_meta,
     }
+    if activation_name is not None:
+        payload["activation"] = str(activation_name)
+    return payload
 
 
 def _optimizer_state_to_device(optimizer: optim.Optimizer, device: torch.device) -> None:
@@ -553,11 +575,7 @@ class TradingPolicy(nn.Module):
         logits, value = self.forward(x)
         if disable_shorts:
             logits = _mask_short_logits(logits, self.num_actions)
-        dist = Categorical(logits=logits)
-        if action is None:
-            action = dist.sample()
-        log_prob = dist.log_prob(action)
-        entropy = dist.entropy()
+        action, log_prob, entropy = _policy_action_stats(logits, action)
         return action, log_prob, entropy, value
 
     def get_value(self, x):
@@ -630,11 +648,7 @@ class ResidualTradingPolicy(nn.Module):
         logits, value = self.forward(x)
         if disable_shorts:
             logits = _mask_short_logits(logits, self.num_actions)
-        dist = Categorical(logits=logits)
-        if action is None:
-            action = dist.sample()
-        log_prob = dist.log_prob(action)
-        entropy = dist.entropy()
+        action, log_prob, entropy = _policy_action_stats(logits, action)
         return action, log_prob, entropy, value
 
     def get_value(self, x):
@@ -692,6 +706,7 @@ class TransformerTradingPolicy(nn.Module):
         super().__init__()
         self.obs_size = obs_size
         self.num_actions = num_actions
+        self._activation_name = activation
 
         # Infer num_symbols from obs_size and features_per_sym:
         # obs = S*F + 5 + S => S*(F+1) + 5 = obs_size => S = (obs_size - 5) / (F+1)
@@ -766,11 +781,7 @@ class TransformerTradingPolicy(nn.Module):
         logits, value = self.forward(x)
         if disable_shorts:
             logits = _mask_short_logits(logits, self.num_actions)
-        dist = Categorical(logits=logits)
-        if action is None:
-            action = dist.sample()
-        log_prob = dist.log_prob(action)
-        entropy = dist.entropy()
+        action, log_prob, entropy = _policy_action_stats(logits, action)
         return action, log_prob, entropy, value
 
     def get_value(self, x: torch.Tensor):
@@ -795,6 +806,7 @@ class GRUTradingPolicy(nn.Module):
         super().__init__()
         self.obs_size = obs_size
         self.num_actions = num_actions
+        self._activation_name = activation
 
         # Input projection
         self.input_proj = nn.Linear(obs_size, hidden)
@@ -838,11 +850,7 @@ class GRUTradingPolicy(nn.Module):
         logits, value = self.forward(x)
         if disable_shorts:
             logits = _mask_short_logits(logits, self.num_actions)
-        dist = Categorical(logits=logits)
-        if action is None:
-            action = dist.sample()
-        log_prob = dist.log_prob(action)
-        entropy = dist.entropy()
+        action, log_prob, entropy = _policy_action_stats(logits, action)
         return action, log_prob, entropy, value
 
     def get_value(self, x: torch.Tensor):
@@ -869,6 +877,7 @@ class DepthRecurrenceTradingPolicy(nn.Module):
         self.num_actions = num_actions
         self.num_blocks = num_blocks
         self.num_recurrences = num_recurrences
+        self._activation_name = activation
 
         self.input_proj = nn.Linear(obs_size, hidden)
 
@@ -951,11 +960,7 @@ class DepthRecurrenceTradingPolicy(nn.Module):
         logits, value = self.forward(x)
         if disable_shorts:
             logits = _mask_short_logits(logits, self.num_actions)
-        dist = Categorical(logits=logits)
-        if action is None:
-            action = dist.sample()
-        log_prob = dist.log_prob(action)
-        entropy = dist.entropy()
+        action, log_prob, entropy = _policy_action_stats(logits, action)
         return action, log_prob, entropy, value
 
     def get_value(self, x: torch.Tensor):
@@ -1001,13 +1006,12 @@ def train(args):
     # Lazy pufferlib imports — only needed at training time, not import time.
     try:
         import pufferlib  # noqa: F401
-        import pufferlib.vector  # noqa: F401
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
             "pufferlib is required to run pufferlib_market.train.train(). "
-            "Install it with `uv pip install \"pufferlib<4\"` or enable the RL extras."
+            "Install it with `uv pip install -e ./PufferLib` or enable the RL extras."
         ) from exc
-    from pufferlib_market.environment import TradingEnvConfig, TradingEnv  # noqa: F401
+    from pufferlib_market.environment import TradingEnvConfig  # noqa: F401
 
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
     print(f"Device: {device}")
@@ -1401,13 +1405,13 @@ def train(args):
             _vf_t = torch.tensor(0.5, device=device)
             _ent_t = torch.tensor(0.01, device=device)
             for _ in range(3):
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
                 _l, _, _, _ = _compiled_ppo_loss(policy, _dummy_obs, _dummy_act, _dummy_lp,
                                                   _dummy_adv, _dummy_ret, _dummy_val,
                                                   _clip_t, _vf_t, _ent_t, False)
                 _l.backward()
             # Clear gradients left over from the warmup before training starts.
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             torch.cuda.synchronize()
             del _dummy_obs, _dummy_act, _dummy_lp, _dummy_adv, _dummy_ret, _dummy_val, _l
             print("  torch.compile: PPO loss compiled (reduce-overhead, fullgraph=True)")
@@ -1510,6 +1514,7 @@ def train(args):
     _b_returns = torch.zeros(T * N, dtype=torch.float32, device=device)
     _b_values = torch.zeros(T * N, dtype=torch.float32, device=device)
     _b_advantages = torch.zeros(T * N, dtype=torch.float32, device=device)
+    _shuffle_indices = torch.empty(T * N, dtype=torch.long, device=device)
     _clip_eps_t = torch.tensor(args.clip_eps, device=device)
     _vf_coef_t = torch.tensor(args.vf_coef, device=device)
     _ent_coef_t = torch.tensor(args.ent_coef, device=device)
@@ -1649,7 +1654,7 @@ def train(args):
                 buf_logprob[step].copy_(_static_logprob)
                 buf_value[step].copy_(_static_value)
                 # Only action needs CPU for C env
-                act_buf[:] = _static_action.cpu().to(torch.int32).numpy()
+                act_buf[:] = _static_action.to(dtype=torch.int32, device="cpu").numpy()
             else:
                 # Fallback: eager inference (CPU or no CUDA graph)
                 raw_obs = obs_buf.copy()
@@ -1674,7 +1679,8 @@ def train(args):
                 buf_act[step] = action.cpu()
                 buf_logprob[step] = logprob.cpu()
                 buf_value[step] = value.cpu()
-                act_buf[:] = action.cpu().numpy().astype(np.int32)
+                action_i32_cpu = action.to(dtype=torch.int32, device="cpu")
+                act_buf[:] = action_i32_cpu.numpy()
 
             binding.vec_step(vec_handle)
             # from_numpy shares memory with the C buffer; the __setitem__ on
@@ -1768,10 +1774,10 @@ def train(args):
             abort_for_instability = False
             abort_reason = ""
             for epoch in range(args.ppo_epochs):
-                indices = torch.randperm(batch_size, device=device)
+                torch.randperm(batch_size, device=device, out=_shuffle_indices)
                 for start in range(0, batch_size, mb_size):
                     end = min(start + mb_size, batch_size)
-                    mb_idx = indices[start:end]
+                    mb_idx = _shuffle_indices[start:end]
                     is_full_batch = (end - start) == mb_size
 
                     if _use_cuda_graph_ppo and _ppo_graph is not None and is_full_batch:
@@ -1853,7 +1859,7 @@ def train(args):
                             _b_advantages[mb_idx], _b_returns[mb_idx], _b_values[mb_idx],
                             _clip_eps_t, _vf_coef_t, _ent_coef_t, args.clip_vloss,
                         )
-                        optimizer.zero_grad()
+                        optimizer.zero_grad(set_to_none=True)
                         loss.backward()
                         loss_value = float(loss.detach().item())
                         grad_norm = nn.utils.clip_grad_norm_(
@@ -1932,6 +1938,12 @@ def train(args):
         log_info = binding.vec_log(vec_handle)
         elapsed = time.time() - start_time
         sps = global_step / elapsed
+        should_log_update = (
+            args.log_interval <= 1
+            or local_update == 1
+            or local_update == num_updates
+            or (local_update % args.log_interval) == 0
+        )
 
         avg_pg = total_pg_loss / max(num_mb, 1)
         avg_vl = total_v_loss / max(num_mb, 1)
@@ -1981,16 +1993,17 @@ def train(args):
                 if args.r2_prefix:
                     periodic_ckpt_mgr.upload_to_r2(ckpt_path)
 
-            print(
-                f"[{local_update:4d}/{num_updates}] "
-                f"step={global_step:8,d}  sps={sps:.0f}  "
-                f"ret={ep_return:+.4f}  ann_ret={ep_annualized:+.2%}  sortino={ep_sortino:.2f}  "
-                f"trades={ep_trades:.0f}  wr={ep_wr:.2f}  "
-                f"pg={avg_pg:.4f}  vl={avg_vl:.4f}  ent={avg_ent:.3f}  "
-                f"gn={avg_grad_norm:.3f}  gmax={peak_grad_norm:.3f}  "
-                f"gabs={peak_grad_abs:.3f}  skip={update_skips}  "
-                f"n={n:.0f}"
-            )
+            if should_log_update:
+                print(
+                    f"[{local_update:4d}/{num_updates}] "
+                    f"step={global_step:8,d}  sps={sps:.0f}  "
+                    f"ret={ep_return:+.4f}  ann_ret={ep_annualized:+.2%}  sortino={ep_sortino:.2f}  "
+                    f"trades={ep_trades:.0f}  wr={ep_wr:.2f}  "
+                    f"pg={avg_pg:.4f}  vl={avg_vl:.4f}  ent={avg_ent:.3f}  "
+                    f"gn={avg_grad_norm:.3f}  gmax={peak_grad_norm:.3f}  "
+                    f"gabs={peak_grad_abs:.3f}  skip={update_skips}  "
+                    f"n={n:.0f}"
+                )
 
             # Early stopping: track whether ep_return improves
             if _es_patience > 0:
@@ -2003,13 +2016,14 @@ def train(args):
                         print(f"Early stop: ep_return did not improve for {_es_patience} checks")
                         break
         else:
-            print(
-                f"[{local_update:4d}/{num_updates}] "
-                f"step={global_step:8,d}  sps={sps:.0f}  "
-                f"pg={avg_pg:.4f}  vl={avg_vl:.4f}  ent={avg_ent:.3f}  "
-                f"gn={avg_grad_norm:.3f}  gmax={peak_grad_norm:.3f}  "
-                f"gabs={peak_grad_abs:.3f}  skip={update_skips}"
-            )
+            if should_log_update:
+                print(
+                    f"[{local_update:4d}/{num_updates}] "
+                    f"step={global_step:8,d}  sps={sps:.0f}  "
+                    f"pg={avg_pg:.4f}  vl={avg_vl:.4f}  ent={avg_ent:.3f}  "
+                    f"gn={avg_grad_norm:.3f}  gmax={peak_grad_norm:.3f}  "
+                    f"gabs={peak_grad_abs:.3f}  skip={update_skips}"
+                )
 
         # ── Val-based checkpointing (runs every val_eval_interval updates regardless of episode data) ──
         if (
@@ -2519,6 +2533,12 @@ def main():
     # Output
     parser.add_argument("--checkpoint-dir", default="pufferlib_market/checkpoints")
     parser.add_argument("--save-every", type=int, default=50)
+    parser.add_argument(
+        "--log-interval",
+        type=int,
+        default=1,
+        help="Print the compact training summary every N updates (default 1).",
+    )
     parser.add_argument("--r2-prefix", type=str, default=None,
                         help="R2 prefix for checkpoint backup, e.g. 'rl-checkpoints/run-001'")
     parser.add_argument("--r2-pull-checkpoint", type=str, default=None,

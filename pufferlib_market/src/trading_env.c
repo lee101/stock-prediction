@@ -46,6 +46,7 @@ MarketData* market_data_load(const char* path) {
     md->num_timesteps = (int)hdr->num_timesteps;
     md->file_buf      = buf;
     md->file_size     = (size_t)file_size;
+    md->any_tradable  = NULL;
 
     /* Read features_per_sym from header (v3+); fall back to FEATURES_PER_SYM for v1/v2. */
     if (hdr->features_per_sym > 0) {
@@ -94,6 +95,25 @@ MarketData* market_data_load(const char* path) {
         }
     }
 
+    if (md->tradable != NULL) {
+        md->any_tradable = (unsigned char*)malloc((size_t)md->num_timesteps);
+        if (!md->any_tradable) {
+            fprintf(stderr, "market_data_load: failed to allocate any_tradable cache\n");
+            free(buf); free(md); return NULL;
+        }
+        for (int t = 0; t < md->num_timesteps; t++) {
+            const unsigned char* row = md->tradable + ((size_t)t * md->num_symbols);
+            unsigned char any_open = 0;
+            for (int s = 0; s < md->num_symbols; s++) {
+                if (row[s] != 0) {
+                    any_open = 1;
+                    break;
+                }
+            }
+            md->any_tradable[t] = any_open;
+        }
+    }
+
     fprintf(stderr, "market_data_load: %d symbols, %d timesteps from %s\n",
             md->num_symbols, md->num_timesteps, path);
     return md;
@@ -101,6 +121,7 @@ MarketData* market_data_load(const char* path) {
 
 void market_data_free(MarketData* md) {
     if (!md) return;
+    if (md->any_tradable) free(md->any_tradable);
     if (md->file_buf) free(md->file_buf);
     free(md);
 }
@@ -162,10 +183,7 @@ static void fill_observations(TradingEnv* __restrict__ env) {
     obs_dst[base + 4] = (float)ag->step / (float)(env->max_steps > 0 ? env->max_steps : 1);
 
     /* one-hot position encoding — zero then set hot entry */
-#pragma GCC ivdep
-    for (int i = 0; i < S; i++) {
-        obs_dst[base + 5 + i] = 0.0f;
-    }
+    memset(obs_dst + base + 5, 0, (size_t)S * sizeof(float));
     if (ag->position_sym >= 0 && ag->position_sym < S) {
         obs_dst[base + 5 + ag->position_sym] = 1.0f;
     } else if (ag->position_sym >= S && ag->position_sym < 2 * S) {
@@ -494,16 +512,7 @@ __attribute__((hot)) void c_step(TradingEnv* env) {
         cur_sym = ag->position_sym % S;
         cur_tradable = is_tradable(md, t, cur_sym);
     }
-    int any_tradable = 1;
-    if (md->tradable != NULL) {
-        any_tradable = 0;
-        for (int i = 0; i < S; i++) {
-            if (is_tradable(md, t, i)) {
-                any_tradable = 1;
-                break;
-            }
-        }
-    }
+    int any_tradable = (md->any_tradable != NULL) ? (md->any_tradable[t] != 0) : 1;
 
     __builtin_prefetch(&md->prices[t * S * PRICE_FEATS], 0, 1);
 

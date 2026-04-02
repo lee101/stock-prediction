@@ -110,6 +110,7 @@ class AccountConfig(TypedDict):
     mode: TradingMode
     allowed_bot_id: str
     starting_cash: float
+    paper_buying_power_multiplier: float
     base_currency: str
     sell_loss_cooldown_seconds: int
     min_sell_markup_pct: float
@@ -407,6 +408,7 @@ class TradingServerEngine:
                 "mode": mode,
                 "allowed_bot_id": bot_id,
                 "starting_cash": float(config.get("starting_cash", 100_000.0)),
+                "paper_buying_power_multiplier": max(1.0, float(config.get("paper_buying_power_multiplier", 1.0))),
                 "base_currency": str(config.get("base_currency", "USD")).strip().upper() or "USD",
                 "sell_loss_cooldown_seconds": int(config.get("sell_loss_cooldown_seconds", 20 * 60)),
                 "min_sell_markup_pct": float(config.get("min_sell_markup_pct", 0.001)),
@@ -969,6 +971,46 @@ class TradingServerEngine:
             return avg_entry * (1.0 + min_markup_pct)
         return avg_entry
 
+    def _mark_price_for_symbol_unlocked(self, state: AccountState, symbol: str, position: PositionState) -> float:
+        quote = self._quote_from_cache_unlocked(state, symbol)
+        if quote is not None:
+            for key in ("last_price", "bid_price", "ask_price"):
+                price = _coerce_float(quote.get(key))
+                if price > 0.0:
+                    return price
+        avg_entry = _coerce_float(position.get("avg_entry_price"))
+        return max(avg_entry, 0.0)
+
+    def _gross_exposure_unlocked(self, state: AccountState) -> float:
+        gross = 0.0
+        for symbol, position in state.get("positions", {}).items():
+            if not isinstance(position, dict):
+                continue
+            qty = abs(_coerce_float(position.get("qty")))
+            if qty <= 0.0:
+                continue
+            gross += qty * self._mark_price_for_symbol_unlocked(state, str(symbol), position)
+        return gross
+
+    def _account_equity_unlocked(self, state: AccountState) -> float:
+        equity = _coerce_float(state.get("cash"))
+        for symbol, position in state.get("positions", {}).items():
+            if not isinstance(position, dict):
+                continue
+            qty = _coerce_float(position.get("qty"))
+            if abs(qty) <= 0.0:
+                continue
+            equity += qty * self._mark_price_for_symbol_unlocked(state, str(symbol), position)
+        return equity
+
+    def _available_buying_power_unlocked(self, state: AccountState, config: AccountConfig) -> float:
+        multiplier = 1.0
+        if config["mode"] == "paper":
+            multiplier = max(1.0, float(config.get("paper_buying_power_multiplier", 1.0)))
+        equity = self._account_equity_unlocked(state)
+        gross = self._gross_exposure_unlocked(state)
+        return max(0.0, equity * multiplier - gross)
+
     def _validate_order_unlocked(
         self,
         *,
@@ -1006,13 +1048,13 @@ class TradingServerEngine:
                 )
 
         if side == "buy":
-            cash = _coerce_float(state.get("cash"))
+            buying_power = self._available_buying_power_unlocked(state, config)
             notional = qty * limit_price
-            if request.execution_mode == "paper" and cash + 1e-9 < notional:
+            if request.execution_mode == "paper" and buying_power + 1e-9 < notional:
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        f"insufficient paper cash for {symbol}: need {notional:.2f}, have {cash:.2f}"
+                        f"insufficient paper buying power for {symbol}: need {notional:.2f}, have {buying_power:.2f}"
                     ),
                 )
             return
@@ -1404,10 +1446,14 @@ class TradingServerEngine:
         with self._account_state_guard(account, write=False):
             with self._lock:
                 state = self._load_state_unlocked(account, config)
+                equity = self._account_equity_unlocked(state)
+                buying_power = self._available_buying_power_unlocked(state, config)
                 return {
                     "account": account,
                     "mode": config["mode"],
                     "cash": _coerce_float(state.get("cash")),
+                    "equity": equity,
+                    "buying_power": buying_power,
                     "realized_pnl": _coerce_float(state.get("realized_pnl")),
                     "positions": state.get("positions", {}),
                     "open_orders": [self._public_order_payload(order) for order in state.get("open_orders", [])],

@@ -39,6 +39,40 @@ def _write_checkpoint(
     torch.save(payload, path)
 
 
+def _write_mlp_checkpoint(
+    path: Path,
+    *,
+    num_symbols: int,
+    num_actions: int,
+    hidden: int,
+    hot_action: int,
+    activation: str = "relu",
+    use_encoder_norm: bool = False,
+) -> None:
+    from pufferlib_market.train import TradingPolicy
+
+    obs_size = num_symbols * 16 + 5 + num_symbols
+    model = TradingPolicy(
+        obs_size,
+        num_actions,
+        hidden=hidden,
+        activation=activation,
+        use_encoder_norm=use_encoder_norm,
+    )
+    with torch.no_grad():
+        for param in model.parameters():
+            param.zero_()
+        model.actor[2].bias[hot_action] = 10.0
+    payload = {
+        "model": model.state_dict(),
+        "arch": "mlp_relu_sq" if activation == "relu_sq" else "mlp",
+        "activation": activation,
+        "hidden_size": int(hidden),
+        "use_encoder_norm": bool(use_encoder_norm),
+    }
+    torch.save(payload, path)
+
+
 def test_ppotrader_respects_symbol_override_and_decodes_alloc_bins(tmp_path: Path):
     ckpt = tmp_path / "alloc_bins.pt"
     symbols = ["AAA", "BBB"]
@@ -227,6 +261,26 @@ def test_ppotrader_init_is_quiet(tmp_path: Path, capsys):
 
     captured = capsys.readouterr()
     assert captured.out == ""
+
+
+def test_ppotrader_loads_mlp_activation_metadata(tmp_path: Path):
+    ckpt = tmp_path / "mlp_relu_sq.pt"
+    _write_mlp_checkpoint(
+        ckpt,
+        num_symbols=1,
+        num_actions=3,
+        hidden=16,
+        hot_action=1,
+        activation="relu_sq",
+        use_encoder_norm=True,
+    )
+
+    trader = PPOTrader(str(ckpt), device="cpu", symbols=["AAA"])
+
+    assert trader.arch == "mlp_relu_sq"
+    assert trader.hidden_size == 16
+    assert getattr(trader.policy, "_activation_name", None) == "relu_sq"
+    assert getattr(trader.policy, "_use_encoder_norm", False) is True
 
 
 def test_main_prints_self_describing_json(monkeypatch, capsys):

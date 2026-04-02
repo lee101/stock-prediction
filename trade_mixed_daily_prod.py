@@ -328,15 +328,33 @@ def execute_signal(signal: dict, allocation_pct: float = 10.0) -> bool:
             return False
 
     side = aw.OrderSide.BUY if direction == "LONG" else aw.OrderSide.SELL
-    logger.info(f"Placing {side.value} order: {qty} {alpaca_symbol} @ ~${price:.2f} (${trade_value:,.2f})")
+    side_value = side.value.lower()
+    limit_reference = float(price)
+    try:
+        quote = aw.latest_data(symbol)
+        ask_price = float(getattr(quote, "ask_price", 0) or 0)
+        bid_price = float(getattr(quote, "bid_price", 0) or 0)
+        if ask_price > 0 and bid_price > 0:
+            limit_reference = (ask_price + bid_price) / 2.0
+    except Exception as e:
+        logger.warning(f"Quote fetch error for passive limit on {symbol}: {e}")
+
+    limit_price = aw._midpoint_limit_price(symbol, side_value, limit_reference)
+    limit_price = round(limit_price, 6 if is_crypto else 2)
+    tif = aw._get_time_in_force_for_qty(qty, symbol)
+    logger.info(
+        f"Placing {side.value} midpoint limit order: {qty} {alpaca_symbol} @ ${limit_price:.6f} (${trade_value:,.2f})"
+    )
 
     try:
         order = tc.submit_order(
-            aw.MarketOrderRequest(
+            aw.LimitOrderRequest(
                 symbol=alpaca_symbol,
                 qty=qty,
                 side=side,
-                time_in_force="day" if not is_crypto else "gtc",
+                type=aw.OrderType.LIMIT,
+                time_in_force=tif,
+                limit_price=limit_price,
             )
         )
         logger.info(f"Order submitted: {order.id} status={order.status}")

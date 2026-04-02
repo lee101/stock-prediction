@@ -1,6 +1,7 @@
 import pandas as pd
 
 from update_daily_data import (
+    _market_data_symbol,
     _merge_training_frames,
     _prepare_training_frame,
     _sync_symbol,
@@ -38,6 +39,27 @@ def test_prepare_training_frame_populates_optional_columns():
     assert prepared.loc[0, "trade_count"] == 0.0
     assert prepared.loc[0, "vwap"] == 102
     assert prepared.loc[0, "symbol"] == _storage_symbol("BTC/USD")
+
+
+def test_prepare_training_frame_collapses_duplicate_normalized_columns():
+    raw = pd.DataFrame(
+        {
+            "timestamp": ["2025-01-01 00:00:00+00:00"],
+            "open": [100],
+            "Open": [None],
+            "high": [105],
+            "High": [None],
+            "low": [95],
+            "Low": [None],
+            "close": [102],
+            "Close": [None],
+        }
+    )
+    prepared = _prepare_training_frame(raw, "CRWD")
+    assert prepared.loc[0, "open"] == 100
+    assert prepared.loc[0, "high"] == 105
+    assert prepared.loc[0, "low"] == 95
+    assert prepared.loc[0, "close"] == 102
 
 
 def test_merge_training_frames_deduplicates_and_counts_new_rows():
@@ -123,6 +145,53 @@ def test_sync_symbol_appends_snapshots(tmp_path):
     synced = pd.read_csv(existing_path)
     assert len(synced) == 3
     assert synced.iloc[-1]["close"] == 155
+
+
+def test_sync_symbol_accepts_dotted_snapshot_for_hyphenated_symbol(tmp_path):
+    snapshot_dir = tmp_path / "data" / "train"
+    training_dir = tmp_path / "trainingdata" / "train"
+    snapshot_dir.mkdir(parents=True)
+    training_dir.mkdir(parents=True)
+
+    symbol = "BRK-B"
+    snapshot_path = snapshot_dir / "BRK.B-2026-04-01.csv"
+    pd.DataFrame(
+        {
+            "timestamp": ["2026-03-31 00:00:00+00:00", "2026-04-01 00:00:00+00:00"],
+            "Open": [500, 505],
+            "High": [501, 506],
+            "Low": [499, 504],
+            "Close": [500.5, 505.5],
+        }
+    ).to_csv(snapshot_path, index=False)
+
+    existing_path = training_dir / "BRK-B.csv"
+    pd.DataFrame(
+        {
+            "timestamp": ["2026-03-30 00:00:00+00:00"],
+            "open": [499],
+            "high": [500],
+            "low": [498],
+            "close": [499.5],
+            "volume": [0],
+            "trade_count": [0],
+            "vwap": [499.5],
+            "symbol": ["BRK-B"],
+        }
+    ).to_csv(existing_path, index=False)
+
+    appended = _sync_symbol(symbol, snapshot_dir, training_dir)
+    assert appended == 2
+
+    synced = pd.read_csv(existing_path)
+    assert list(synced["symbol"].unique()) == ["BRK-B"]
+    assert float(synced.iloc[-1]["close"]) == 505.5
+
+
+def test_market_data_symbol_maps_share_classes_for_alpaca():
+    assert _market_data_symbol("BRK-B") == "BRK.B"
+    assert _market_data_symbol("BF-B") == "BF.B"
+    assert _market_data_symbol("AAPL") == "AAPL"
 
 
 def test_resolve_symbol_set_stock_expansion_contains_known_names():

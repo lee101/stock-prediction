@@ -462,6 +462,7 @@ def test_execute_trades_uses_market_entry_reference_price_for_market_orders(monk
         },
         state,
         max_positions=5,
+        paper=False,
         market_order_entry=True,
     )
 
@@ -535,6 +536,76 @@ def test_execute_trades_concentrated_allocator_overweights_stronger_signal(monke
 
     assert [order.kwargs["symbol"] for order in submitted] == ["AAA", "BBB"]
     assert [order.kwargs["qty"] for order in submitted] == [48, 42]
+
+
+def test_execute_trades_disables_market_entries_in_paper(monkeypatch) -> None:
+    submitted: list[object] = []
+    state = {"positions": {}}
+
+    fake_requests = types.ModuleType("alpaca.trading.requests")
+
+    class _MarketOrderRequest:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    class _LimitOrderRequest:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    fake_requests.MarketOrderRequest = _MarketOrderRequest
+    fake_requests.LimitOrderRequest = _LimitOrderRequest
+
+    fake_enums = types.ModuleType("alpaca.trading.enums")
+    fake_enums.OrderSide = SimpleNamespace(BUY="buy", SELL="sell")
+    fake_enums.TimeInForce = SimpleNamespace(DAY="day")
+
+    monkeypatch.setitem(sys.modules, "alpaca.trading.requests", fake_requests)
+    monkeypatch.setitem(sys.modules, "alpaca.trading.enums", fake_enums)
+    monkeypatch.setattr(
+        live,
+        "get_account_info",
+        lambda api: {"equity": 10_000.0, "buying_power": 10_000.0, "cash": 5_000.0},
+    )
+    monkeypatch.setattr(live, "get_current_positions", lambda api: {})
+    monkeypatch.setattr(live, "get_open_orders", lambda api: {})
+    monkeypatch.setattr(live, "is_market_open_now", lambda: True)
+    monkeypatch.setattr(
+        live,
+        "entry_intensity_fraction",
+        lambda *args, **kwargs: (50.0, 0.5),
+    )
+    monkeypatch.setattr(live, "log_trade", lambda event: None)
+    monkeypatch.setattr(live, "log_event", lambda *args, **kwargs: None)
+
+    class _DummyAPI:
+        def submit_order(self, order):
+            submitted.append(order)
+            return SimpleNamespace(id="entry-paper-limit-1")
+
+    live.execute_trades(
+        _DummyAPI(),
+        {
+            "NVDA": {
+                "buy_price": 100.0,
+                "sell_price": 110.0,
+                "buy_amount": 50.0,
+                "sell_amount": 0.0,
+                "edge": 0.02,
+                "hold_hours": 4.0,
+                "market_entry_reference_price": 105.0,
+                "market_entry_reference_source": "quote_ask",
+            }
+        },
+        state,
+        max_positions=5,
+        paper=True,
+        market_order_entry=True,
+    )
+
+    assert submitted
+    assert isinstance(submitted[0], _LimitOrderRequest)
+    assert submitted[0].kwargs["limit_price"] == 100.0
+    assert state["positions"]["NVDA"]["entry_price"] == 100.0
 
 
 def test_place_exit_order_supports_fractional_stock_qty(monkeypatch) -> None:

@@ -13,6 +13,8 @@ import pandas as pd
 import pytest
 import torch
 
+pytest.importorskip("fastapi")
+
 import trade_daily_stock_prod as daily_stock
 from pufferlib_market.inference import Policy
 from pufferlib_market.train import TradingPolicy
@@ -55,12 +57,14 @@ def _write_mlp_policy_checkpoint(
     num_actions: int,
     hot_action: int,
     use_encoder_norm: bool,
+    activation: str = "relu",
 ) -> None:
     obs_size = num_symbols * 16 + 5 + num_symbols
     model = TradingPolicy(
         obs_size,
         num_actions,
         hidden=32,
+        activation=activation,
         use_encoder_norm=use_encoder_norm,
     )
     with torch.no_grad():
@@ -71,6 +75,9 @@ def _write_mlp_policy_checkpoint(
         {
             "model": model.state_dict(),
             "config": {"hidden_size": 32},
+            "arch": "mlp_relu_sq" if activation == "relu_sq" else "mlp",
+            "activation": activation,
+            "use_encoder_norm": use_encoder_norm,
             "action_allocation_bins": 1,
             "action_level_bins": 1,
             "action_max_offset_bps": 0.0,
@@ -107,6 +114,28 @@ def test_load_local_daily_frames_aligns_common_dates(tmp_path: Path) -> None:
 def test_load_local_daily_frames_rejects_unsafe_symbol(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match=r"Unsupported symbol: \.\./AAPL"):
         daily_stock.load_local_daily_frames(["../AAPL"], data_dir=str(tmp_path), min_days=1)
+
+
+def test_resolve_runtime_config_uses_symbols_file(tmp_path: Path) -> None:
+    symbols_file = tmp_path / "symbols.txt"
+    symbols_file.write_text("aapl, msft\n# ignore\nnvda\n", encoding="utf-8")
+
+    args = daily_stock.parse_args(
+        [
+            "--checkpoint",
+            str(tmp_path / "checkpoint.pt"),
+            "--symbols",
+            "TSLA",
+            "--symbols-file",
+            str(symbols_file),
+        ]
+    )
+    config = daily_stock._resolve_runtime_config(args)
+
+    assert config.symbols == ["AAPL", "MSFT", "NVDA"]
+    assert config.symbols_file == str(symbols_file)
+    assert "--symbols-file" in config.command_preview()
+    assert "TSLA" not in config.command_preview()
 
 
 def test_frames_from_alpaca_bars_handles_single_symbol_without_multiindex() -> None:
@@ -297,6 +326,40 @@ def test_build_signal_accepts_mixed_encoder_norm_mlp_ensemble(tmp_path: Path) ->
     assert signal.action in {"long_AAPL", "long_MSFT"}
     assert signal.direction == "long"
     assert prices == {"AAPL": 229.5, "MSFT": 329.5}
+
+
+def test_load_bare_policy_preserves_mlp_relu_sq_activation(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "relu_sq.pt"
+    _write_mlp_policy_checkpoint(
+        checkpoint,
+        num_symbols=2,
+        num_actions=3,
+        hot_action=1,
+        use_encoder_norm=True,
+        activation="relu_sq",
+    )
+
+    obs_size = 2 * 16 + 5 + 2
+    source = TradingPolicy(
+        obs_size,
+        3,
+        hidden=32,
+        activation="relu_sq",
+        use_encoder_norm=True,
+    )
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    source.load_state_dict(payload["model"], strict=True)
+    source.eval()
+
+    loaded = daily_stock._load_bare_policy(str(checkpoint), obs_size, 3, "cpu")
+    obs = torch.randn(4, obs_size)
+    with torch.inference_mode():
+        expected_logits, expected_value = source(obs)
+        actual_logits, actual_value = loaded(obs)
+
+    assert getattr(loaded, "_activation_name", None) == "relu_sq"
+    torch.testing.assert_close(actual_logits, expected_logits)
+    torch.testing.assert_close(actual_value, expected_value)
 
 
 def test_ensemble_softmax_signal_averages_value_estimates() -> None:
@@ -1178,6 +1241,123 @@ def test_main_passes_backtest_starting_cash_to_run_backtest(monkeypatch, tmp_pat
     assert captured["starting_cash"] == 25_000.0
 
 
+def test_main_passes_backtest_buying_power_multiplier_to_run_backtest(monkeypatch, tmp_path: Path) -> None:
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_text("stub", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def _fake_run_backtest(**kwargs):
+        captured.update(kwargs)
+        return {"total_return": 0.0}
+
+    monkeypatch.setattr(daily_stock, "run_backtest", _fake_run_backtest)
+    monkeypatch.setattr(
+        daily_stock,
+        "_checkpoint_load_diagnostics",
+        lambda _config: {"ok": True, "error": None, "primary": {"arch": "mlp"}, "extras": []},
+    )
+
+    daily_stock.main(
+        [
+            "--backtest",
+            "--backtest-buying-power-multiplier",
+            "2",
+            "--data-source",
+            "local",
+            "--symbols",
+            "AAPL",
+            "--checkpoint",
+            str(checkpoint),
+            "--no-ensemble",
+        ]
+    )
+
+    assert captured["buying_power_multiplier"] == 2.0
+
+
+def test_compare_backtest_to_trading_server_passes_allocation_pct(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_run_backtest(**kwargs):
+        captured["legacy"] = kwargs
+        return {
+            "total_return": 0.0,
+            "annualized_return": 0.0,
+            "sortino": 0.0,
+            "max_drawdown": 0.0,
+            "trades": 0.0,
+        }
+
+    def _fake_run_backtest_via_trading_server(**kwargs):
+        captured["server"] = kwargs
+        return {
+            "total_return": 0.0,
+            "annualized_return": 0.0,
+            "sortino": 0.0,
+            "max_drawdown": 0.0,
+            "trades": 0.0,
+        }
+
+    monkeypatch.setattr(daily_stock, "run_backtest", _fake_run_backtest)
+    monkeypatch.setattr(daily_stock, "run_backtest_via_trading_server", _fake_run_backtest_via_trading_server)
+
+    daily_stock.compare_backtest_to_trading_server(
+        checkpoint="model.pt",
+        symbols=["AAPL"],
+        data_dir="trainingdata",
+        days=20,
+        allocation_pct=12.5,
+        starting_cash=25_000.0,
+        buying_power_multiplier=2.0,
+    )
+
+    assert captured["legacy"]["allocation_pct"] == 12.5
+    assert captured["server"]["allocation_pct"] == 12.5
+    assert captured["legacy"]["starting_cash"] == 25_000.0
+    assert captured["server"]["starting_cash"] == 25_000.0
+    assert captured["legacy"]["buying_power_multiplier"] == 2.0
+    assert captured["server"]["buying_power_multiplier"] == 2.0
+
+
+def test_compare_backtest_to_trading_server_passes_extra_checkpoints(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_run_backtest(**kwargs):
+        captured["legacy"] = kwargs
+        return {
+            "total_return": 0.0,
+            "annualized_return": 0.0,
+            "sortino": 0.0,
+            "max_drawdown": 0.0,
+            "trades": 0.0,
+        }
+
+    def _fake_run_backtest_via_trading_server(**kwargs):
+        captured["server"] = kwargs
+        return {
+            "total_return": 0.0,
+            "annualized_return": 0.0,
+            "sortino": 0.0,
+            "max_drawdown": 0.0,
+            "trades": 0.0,
+        }
+
+    monkeypatch.setattr(daily_stock, "run_backtest", _fake_run_backtest)
+    monkeypatch.setattr(daily_stock, "run_backtest_via_trading_server", _fake_run_backtest_via_trading_server)
+
+    extras = ["a.pt", "b.pt"]
+    daily_stock.compare_backtest_to_trading_server(
+        checkpoint="model.pt",
+        symbols=["AAPL"],
+        data_dir="trainingdata",
+        days=20,
+        extra_checkpoints=extras,
+    )
+
+    assert captured["legacy"]["extra_checkpoints"] == extras
+    assert captured["server"]["extra_checkpoints"] == extras
+
+
 @pytest.mark.parametrize(
     "runner",
     [daily_stock.run_backtest, daily_stock.run_backtest_via_trading_server],
@@ -1191,6 +1371,178 @@ def test_backtest_helpers_reject_non_positive_starting_cash(runner) -> None:
             days=20,
             starting_cash=0.0,
         )
+
+
+def test_run_backtest_rejects_non_positive_buying_power_multiplier() -> None:
+    with pytest.raises(ValueError, match="buying_power_multiplier must be positive"):
+        daily_stock.run_backtest(
+            checkpoint="unused.pt",
+            symbols=["AAPL"],
+            data_dir="unused",
+            days=20,
+            buying_power_multiplier=0.0,
+        )
+
+
+def test_run_backtest_reports_full_loss_annualized_when_equity_turns_negative(monkeypatch, tmp_path: Path) -> None:
+    rows = []
+    base = pd.Timestamp("2025-09-01T00:00:00Z")
+    for idx in range(140):
+        ts = base + pd.Timedelta(days=idx)
+        close = 100.0 if idx == 120 else 1.0
+        rows.append(
+            {
+                "timestamp": ts.isoformat(),
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "volume": 1_000 + idx,
+            }
+        )
+    _write_daily_csv(tmp_path / "AAPL.csv", rows)
+
+    class _FakeTrader:
+        def __init__(self, checkpoint, device="cpu", long_only=True, symbols=None):
+            self.SYMBOLS = list(symbols or [])
+            self.num_symbols = len(self.SYMBOLS)
+            self.obs_size = 16 * max(1, self.num_symbols)
+            self.num_actions = 1 + self.num_symbols
+            self.cash = 0.0
+            self.current_position = None
+            self.position_qty = 0.0
+            self.entry_price = 0.0
+            self._calls = 0
+
+        def get_daily_signal(self, frames, prices):
+            self._calls += 1
+            if self._calls == 1:
+                return SimpleNamespace(action="buy", symbol="AAPL", direction="long", confidence=1.0, value_estimate=1.0)
+            return SimpleNamespace(action="hold", symbol="AAPL", direction="long", confidence=1.0, value_estimate=1.0)
+
+        def update_state(self, action, price, symbol):
+            return None
+
+        def step_day(self):
+            return None
+
+    monkeypatch.setattr(daily_stock, "DailyPPOTrader", _FakeTrader)
+
+    results = daily_stock.run_backtest(
+        checkpoint="unused.pt",
+        symbols=["AAPL"],
+        data_dir=str(tmp_path),
+        days=20,
+        allocation_pct=190.0,
+        starting_cash=100.0,
+        buying_power_multiplier=2.0,
+    )
+
+    assert results["total_return"] < -1.0
+    assert results["annualized_return"] == -1.0
+
+
+def test_load_local_daily_frames_prefers_nested_train_subdir(tmp_path: Path) -> None:
+    root = tmp_path / "trainingdata"
+    nested = root / "train"
+    root.mkdir(parents=True)
+    nested.mkdir(parents=True)
+    _write_daily_csv(
+        root / "AAPL.csv",
+        [
+            {
+                "timestamp": "2025-01-01T00:00:00Z",
+                "open": 1.0,
+                "high": 1.0,
+                "low": 1.0,
+                "close": 1.0,
+                "volume": 1.0,
+            }
+        ],
+    )
+    _write_daily_csv(
+        nested / "AAPL.csv",
+        [
+            {
+                "timestamp": "2026-01-01T00:00:00Z",
+                "open": 2.0,
+                "high": 2.0,
+                "low": 2.0,
+                "close": 2.0,
+                "volume": 2.0,
+            }
+        ],
+    )
+
+    frames = daily_stock.load_local_daily_frames(["AAPL"], data_dir=str(root), min_days=1)
+    assert float(frames["AAPL"]["close"].iloc[-1]) == 2.0
+
+
+def test_run_backtest_passes_extra_checkpoints_to_preloaded_ensemble(monkeypatch, tmp_path: Path) -> None:
+    rows = []
+    base = pd.Timestamp("2025-09-01T00:00:00Z")
+    for idx in range(140):
+        ts = base + pd.Timedelta(days=idx)
+        rows.append(
+            {
+                "timestamp": ts.isoformat(),
+                "open": 100 + idx,
+                "high": 101 + idx,
+                "low": 99 + idx,
+                "close": 100.5 + idx,
+                "volume": 1_000 + idx,
+            }
+        )
+    _write_daily_csv(tmp_path / "AAPL.csv", rows)
+
+    captured: dict[str, object] = {"policies": []}
+
+    class _FakeTrader:
+        def __init__(self, checkpoint, device="cpu", long_only=True, symbols=None):
+            self.checkpoint = checkpoint
+            self.device = device
+            self.long_only = long_only
+            self.SYMBOLS = list(symbols or [])
+            self.num_symbols = len(self.SYMBOLS)
+            self.obs_size = 16 * max(1, self.num_symbols)
+            self.num_actions = 1 + self.num_symbols
+            self.cash = 0.0
+            self.current_position = None
+            self.position_qty = 0.0
+            self.entry_price = 0.0
+
+        def get_daily_signal(self, frames, prices):
+            return SimpleNamespace(action="flat", symbol=None, direction=None, confidence=0.0, value_estimate=0.0)
+
+        def update_state(self, action, price, symbol):
+            return None
+
+        def step_day(self):
+            return None
+
+    monkeypatch.setattr(daily_stock, "DailyPPOTrader", _FakeTrader)
+    monkeypatch.setattr(
+        daily_stock,
+        "_load_bare_policy",
+        lambda path, obs_size, num_actions, device: captured["policies"].append((path, obs_size, num_actions, device)) or {"path": path},
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "_ensemble_softmax_signal",
+        lambda trader, extra_policies, features, prices: SimpleNamespace(
+            action="flat", symbol=None, direction=None, confidence=0.0, value_estimate=0.0
+        ),
+    )
+
+    daily_stock.run_backtest(
+        checkpoint="unused.pt",
+        symbols=["AAPL"],
+        data_dir=str(tmp_path),
+        days=20,
+        extra_checkpoints=["e1.pt", "e2.pt"],
+    )
+
+    assert [Path(item[0]).name for item in captured["policies"]] == ["e1.pt", "e2.pt"]
 
 
 class _FakeClient:
@@ -1326,6 +1678,36 @@ def test_execute_signal_with_open_gate_only_closes_existing_position(monkeypatch
     assert state.active_qty == 0.0
 
 
+def test_execute_signal_skips_paper_market_fallback_without_quote(monkeypatch) -> None:
+    called_market = False
+
+    def _fake_submit_market_order(client, *, symbol: str, qty: float, side: str):
+        nonlocal called_market
+        called_market = True
+        return SimpleNamespace(id=f"{symbol}-{side}")
+
+    monkeypatch.setattr(daily_stock, "submit_market_order", _fake_submit_market_order)
+
+    client = _FakeClient([])
+    state = daily_stock.StrategyState(active_symbol=None, active_qty=0.0)
+    signal = SimpleNamespace(symbol="MSFT", direction="long", action="long_MSFT")
+
+    changed = daily_stock.execute_signal(
+        signal,
+        client=client,
+        paper=True,
+        quotes={"MSFT": 0.0},
+        state=state,
+        symbols=["MSFT"],
+        allocation_pct=25.0,
+        dry_run=False,
+    )
+
+    assert changed is False
+    assert called_market is False
+    assert state.active_symbol is None
+
+
 def test_execute_signal_with_trading_server_closes_managed_then_opens_new(tmp_path: Path) -> None:
     current_now = datetime(2026, 3, 16, 14, 0, tzinfo=timezone.utc)
     quotes = {
@@ -1429,7 +1811,7 @@ def test_load_latest_quotes_tracks_partial_symbol_fallbacks() -> None:
         data_client=_QuoteClient(),
     )
 
-    assert prices == {"AAPL": 150.0, "MSFT": 202.0}
+    assert prices == {"AAPL": 149.75, "MSFT": 202.0}
     assert source == "mixed_fallback"
     assert source_by_symbol == {"AAPL": "alpaca", "MSFT": "close_fallback"}
 
@@ -1821,18 +2203,23 @@ def test_run_backtest_via_trading_server_matches_legacy_single_symbol(tmp_path: 
         symbols=["AAPL"],
         data_dir=str(tmp_path),
         days=20,
+        allocation_pct=150.0,
         starting_cash=25_000.0,
+        buying_power_multiplier=2.0,
     )
     server = daily_stock.run_backtest_via_trading_server(
         checkpoint=str(checkpoint),
         symbols=["AAPL"],
         data_dir=str(tmp_path),
         days=20,
-        allocation_pct=100.0,
+        allocation_pct=150.0,
         starting_cash=25_000.0,
+        buying_power_multiplier=2.0,
     )
 
     assert server["total_return"] == legacy["total_return"]
     assert server["annualized_return"] == legacy["annualized_return"]
     assert server["sortino"] == legacy["sortino"]
     assert server["max_drawdown"] == legacy["max_drawdown"]
+    assert server["trades"] == legacy["trades"]
+    assert server["orders"] == pytest.approx(1.0)

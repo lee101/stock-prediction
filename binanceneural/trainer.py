@@ -41,6 +41,7 @@ from traininglib.optim_factory import MultiOptim
 
 from src.checkpoint_manager import TopKCheckpointManager
 from src.serialization_utils import serialize_for_checkpoint
+from src.torch_device_utils import should_auto_fallback_to_cpu
 from src.torch_load_utils import torch_load_compat
 from wandboard import WandBoardLogger
 
@@ -105,26 +106,53 @@ class BinanceHourlyTrainer:
         self._weight_decay_groups: list[tuple[dict, float]] = []
 
     def _should_fallback_to_cpu(self, exc: BaseException) -> bool:
-        if self.config.device is not None or self.device.type != "cuda":
-            return False
-        if isinstance(exc, torch.OutOfMemoryError):
-            return True
-        accelerator_error = getattr(torch, "AcceleratorError", None)
-        return accelerator_error is not None and isinstance(exc, accelerator_error)
+        return should_auto_fallback_to_cpu(self.config.device, self.device, exc)
+
+    def _fallback_model_to_cpu(self, model: BinancePolicyBase, *, context: str, exc: BaseException) -> BinancePolicyBase:
+        logger.warning(
+            "Falling back to CPU for BinanceHourlyTrainer because %s was unavailable during %s: %s",
+            self.device,
+            context,
+            exc,
+        )
+        if self.device.type == "cuda":
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+        self.device = torch.device("cpu")
+        return model.to(self.device)
 
     def _move_model_to_device(self, model: BinancePolicyBase) -> BinancePolicyBase:
         try:
             return model.to(self.device)
         except Exception as exc:
             if self._should_fallback_to_cpu(exc):
-                logger.warning(
-                    "Falling back to CPU for BinanceHourlyTrainer because %s was unavailable at runtime: %s",
-                    self.device,
-                    exc,
-                )
-                self.device = torch.device("cpu")
-                return model.to(self.device)
+                return self._fallback_model_to_cpu(model, context="model initialization", exc=exc)
             raise
+
+    def _probe_model_runtime_device(self, model: BinancePolicyBase) -> BinancePolicyBase:
+        if self.config.device is not None or self.device.type != "cuda":
+            return model
+        probe_loader = self.data.train_dataloader(self.config.batch_size, 0)
+        try:
+            probe_batch = next(iter(probe_loader))
+        except StopIteration:
+            return model
+
+        was_training = model.training
+        try:
+            model.eval()
+            with torch.inference_mode():
+                features = probe_batch["features"].to(self.device, non_blocking=False)
+                model(features)
+            return model
+        except Exception as exc:
+            if self._should_fallback_to_cpu(exc):
+                return self._fallback_model_to_cpu(model, context="the initial CUDA forward pass", exc=exc)
+            raise
+        finally:
+            model.train(was_training)
 
     def _wandb_enabled(self) -> bool:
         return bool(self.config.wandb_project or os.getenv("WANDB_PROJECT"))
@@ -230,6 +258,8 @@ class BinanceHourlyTrainer:
                     logger.warning("Unexpected keys during preload: %s", unexpected)
             else:
                 logger.warning("Preload checkpoint not found: %s", preload_path)
+
+        model = self._probe_model_runtime_device(model)
 
         if self.config.use_compile and hasattr(torch, "compile"):
             model = torch.compile(model, mode="reduce-overhead", fullgraph=False)
@@ -496,12 +526,6 @@ class BinanceHourlyTrainer:
 
         split_amp = bool(self.config.split_amp) and self._amp_context is not None
         use_vsim = bool(self.config.use_vectorized_sim) and simulate_hourly_trades_fast is not None
-        use_compiled_fused = (
-            bool(self.config.use_compiled_sim_loss)
-            and HAS_COMPILED_SIM_LOSS
-            and device.type == "cuda"
-            and train
-        )
         sim_context = nullcontext() if split_amp else self._amp_context
         scale = float(self.config.trade_amount_scale)
         base_lag = int(self.config.decision_lag_bars)

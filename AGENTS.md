@@ -42,3 +42,4 @@ uv pip install -e .
 - Exactly one scheduled live writer process may run against a given Alpaca account.
 - Automatic live exits must not realize a loss unless they are an explicit force-exit path.
 - `ALLOW_ALPACA_LIVE_TRADING=1` is required before any live Alpaca writer may place orders.
+env_real.py are our api  keys dont override

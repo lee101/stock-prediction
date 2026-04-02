@@ -317,7 +317,7 @@ def get_forecast_at(frame: pd.DataFrame, ts: pd.Timestamp) -> Optional[dict[str,
     if timestamp.tzinfo is None:
         timestamp = timestamp.tz_localize("UTC")
     cache = _get_forecast_lookup_cache(frame)
-    lookup_value = int(timestamp.asm8.view("i8"))
+    lookup_value = timestamp.value
     row_idx = int(cache.timestamps_ns.searchsorted(lookup_value, side="right") - 1)
     if row_idx < 0:
         return None
@@ -624,6 +624,8 @@ def build_daily_hybrid_prompt(
 
     return f"""You are re-planning a daily multi-asset trading decision with structured output.
 
+Primary objective: maximize expected realized PnL net fees and slippage while respecting position, leverage, and overnight constraints.
+
 ANALYSIS TIME: {asof_ts.isoformat()}
 SYMBOL: {symbol} ({asset_class})
 CURRENT REFERENCE PRICE: {current_price:.2f}
@@ -665,8 +667,10 @@ Other ranked RL signals:
 {_history_block(history_rows)}
 
 ## Decision Rules
+- Optimize for expected realized PnL first, then prefer the smoother/risk-controlled plan when two plans have similar edge.
 - The RL signal is a strong prior, but you may downgrade it if the forecasts or recent trade context conflict.
 - Respect the leverage envelope and use the refined allocation as sizing guidance, not a guarantee.
+- For stocks, it is valid to use sizing above 1.0x and up to the 2.0x stock cap when RL, Chronos2, and portfolio context all align.
 - Use previous positions, previous forecasts, previous plan timing, and current Chronos2 forecasts explicitly in your judgment.
 - If already in a position, focus on whether to keep the position and where to set a realistic exit.
 - If FLAT and there is no clean edge after fees, return HOLD.
@@ -1088,6 +1092,11 @@ def build_refinement_prompt(
     forecast_24h: Optional[dict[str, float]],
     pass_config: RefinementPassConfig,
 ) -> str:
+    turn_label = {
+        "sweeping": "1/3",
+        "medium": "2/3",
+        "minor": "3/3",
+    }.get(pass_config.stage, "unknown")
     change_style = {
         "sweeping": "You may make sweeping changes when the RL prior and forecasts disagree materially.",
         "medium": "Make medium-sized changes only. Keep the core thesis unless there is a clear contradiction.",
@@ -1097,10 +1106,13 @@ def build_refinement_prompt(
     current_position_payload = snapshot_position(current_position)
     return (
         "You are refining an existing daily trading plan.\n"
+        "Primary objective: improve expected realized PnL net fees and slippage while staying inside the leverage envelope.\n"
+        f"Refinement turn: {turn_label}\n"
         f"Pass stage: {pass_config.stage}\n"
         f"Driver prior: {pass_config.driver}\n"
         f"Edit energy budget: {energy_budget:.2f}\n"
         f"{change_style}\n"
+        "For stocks, plans may size up toward 2.0x gross when the RL prior and forecasts align; do not default to timid sizing when the edge is strong.\n"
         "Prompt travel policy:\n"
         "  1. Preserve the previous thesis unless the evidence now clearly rejects it.\n"
         "  2. Spend the available edit energy on the whole plan, not just one field.\n"
