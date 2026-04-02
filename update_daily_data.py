@@ -12,14 +12,17 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
 from loguru import logger
 
 from data_curate_daily import download_daily_stock_data
+from src.alpaca_stock_expansion import default_stock_expansion_candidates
 from src.symbol_utils import is_crypto_symbol
+from src.trade_directions import DEFAULT_ALPACA_LIVE8_STOCKS
 
 TRAINING_DIR = Path("trainingdata/train")
 SNAPSHOT_DIR = Path("data/train")
@@ -35,6 +38,10 @@ BASE_COLUMN_ORDER: Tuple[str, ...] = (
     "symbol",
 )
 ZERO_DEFAULT_COLUMNS = {"volume", "trade_count"}
+SYMBOL_SET_ALIASES = {
+    "stock-expansion": lambda: [candidate.symbol for candidate in default_stock_expansion_candidates()],
+    "alpaca-live8": lambda: list(DEFAULT_ALPACA_LIVE8_STOCKS),
+}
 
 
 def _storage_symbol(symbol: str) -> str:
@@ -53,6 +60,14 @@ def _stem_to_symbol(stem: str) -> str:
 def _canonical_cli_symbol(symbol: str) -> str:
     """Normalize CLI symbols to the canonical storage form (BTC/USD -> BTCUSD)."""
     return symbol.replace("/", "").replace("-", "").upper()
+
+
+def _split_symbol_tokens(raw: str) -> List[str]:
+    return [
+        _canonical_cli_symbol(str(token).strip())
+        for token in str(raw or "").replace("\n", ",").split(",")
+        if str(token).strip()
+    ]
 
 
 def _normalize_columns(frame: pd.DataFrame) -> pd.DataFrame:
@@ -200,6 +215,127 @@ def list_symbols(training_dir: Path = TRAINING_DIR) -> List[str]:
     return unique
 
 
+def resolve_symbol_set(name: str) -> List[str]:
+    normalized = str(name or "").strip().lower()
+    if not normalized:
+        raise ValueError("Symbol set name is required.")
+    loader = SYMBOL_SET_ALIASES.get(normalized)
+    if loader is None:
+        supported = ", ".join(sorted(SYMBOL_SET_ALIASES))
+        raise ValueError(f"Unknown symbol set {name!r}. Supported values: {supported}")
+    return sorted(set(loader()))
+
+
+def load_symbols_file(path: Path) -> List[str]:
+    file_path = Path(path)
+    if not file_path.exists():
+        raise FileNotFoundError(f"Symbols file does not exist: {file_path}")
+    tokens: List[str] = []
+    for raw_line in file_path.read_text().splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        tokens.extend(_split_symbol_tokens(line))
+    unique = sorted(set(tokens))
+    if not unique:
+        raise RuntimeError(f"No symbols found in {file_path}")
+    return unique
+
+
+def resolve_requested_symbols(
+    *,
+    cli_symbols: Optional[Sequence[str]] = None,
+    symbol_set: Optional[str] = None,
+    symbols_file: Optional[Path] = None,
+    training_dir: Path = TRAINING_DIR,
+) -> List[str]:
+    resolved: List[str] = []
+    if cli_symbols:
+        resolved.extend(_canonical_cli_symbol(symbol) for symbol in cli_symbols)
+    if symbol_set:
+        resolved.extend(resolve_symbol_set(symbol_set))
+    if symbols_file is not None:
+        resolved.extend(load_symbols_file(symbols_file))
+    if not resolved:
+        return list_symbols(training_dir)
+    return sorted(set(resolved))
+
+
+def build_sync_report(
+    symbols: Sequence[str],
+    appended: Dict[str, int],
+    *,
+    training_dir: Path = TRAINING_DIR,
+    as_of: Optional[pd.Timestamp] = None,
+) -> List[Dict[str, Any]]:
+    report_time = as_of
+    if report_time is None:
+        report_time = pd.Timestamp(datetime.now(timezone.utc))
+
+    rows: List[Dict[str, Any]] = []
+    for symbol in sorted(set(str(symbol).strip().upper() for symbol in symbols if str(symbol).strip())):
+        path = Path(training_dir) / f"{_storage_symbol(symbol)}.csv"
+        if not path.exists():
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "path": str(path),
+                    "exists": False,
+                    "appended_rows": int(appended.get(symbol, 0) or 0),
+                    "row_count": 0,
+                    "first_timestamp": "",
+                    "last_timestamp": "",
+                    "stale_days": None,
+                }
+            )
+            continue
+
+        frame = pd.read_csv(path, usecols=["timestamp"])
+        timestamps = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce").dropna()
+        if timestamps.empty:
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "path": str(path),
+                    "exists": True,
+                    "appended_rows": int(appended.get(symbol, 0) or 0),
+                    "row_count": 0,
+                    "first_timestamp": "",
+                    "last_timestamp": "",
+                    "stale_days": None,
+                }
+            )
+            continue
+
+        first_timestamp = timestamps.min()
+        last_timestamp = timestamps.max()
+        stale_days = int((report_time.floor("D") - last_timestamp.floor("D")).days)
+        rows.append(
+            {
+                "symbol": symbol,
+                "path": str(path),
+                "exists": True,
+                "appended_rows": int(appended.get(symbol, 0) or 0),
+                "row_count": int(timestamps.shape[0]),
+                "first_timestamp": first_timestamp.isoformat(),
+                "last_timestamp": last_timestamp.isoformat(),
+                "stale_days": stale_days,
+            }
+        )
+    return rows
+
+
+def write_sync_report(path: Path, rows: Sequence[Dict[str, Any]]) -> Path:
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    frame = pd.DataFrame(list(rows))
+    if output_path.suffix.lower() == ".json":
+        output_path.write_text(frame.to_json(orient="records", indent=2) + "\n")
+    else:
+        frame.to_csv(output_path, index=False)
+    return output_path
+
+
 def download_and_sync(symbols: Sequence[str], *, strict: bool = False) -> Dict[str, int]:
     """Download the latest bars and sync them into trainingdata/train."""
     logger.info("Updating {} symbols (strict={})", len(symbols), strict)
@@ -230,12 +366,27 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         nargs="+",
         help="Symbols to refresh (default: discover from existing trainingdata/train/*.csv).",
     )
+    parser.add_argument(
+        "--symbol-set",
+        choices=sorted(SYMBOL_SET_ALIASES),
+        help="Named symbol universe to refresh in addition to any explicit --symbols.",
+    )
+    parser.add_argument(
+        "--symbols-file",
+        type=Path,
+        help="Optional newline/comma separated symbol file to refresh.",
+    )
     parser.add_argument("--only-stocks", action="store_true", help="Only refresh stock symbols.")
     parser.add_argument("--only-crypto", action="store_true", help="Only refresh crypto symbols.")
     parser.add_argument(
         "--strict",
         action="store_true",
         help="Fail the download step if a symbol cannot be downloaded and has no cached dataset.",
+    )
+    parser.add_argument(
+        "--report-path",
+        type=Path,
+        help="Optional CSV/JSON file to write a post-sync freshness report.",
     )
     return parser.parse_args(argv)
 
@@ -248,10 +399,11 @@ def main() -> int:
         return 2
 
     try:
-        if args.symbols:
-            symbols = [_canonical_cli_symbol(s) for s in args.symbols]
-        else:
-            symbols = list_symbols()
+        symbols = resolve_requested_symbols(
+            cli_symbols=args.symbols,
+            symbol_set=args.symbol_set,
+            symbols_file=args.symbols_file,
+        )
     except Exception as exc:
         logger.error("Unable to enumerate symbols: {}", exc)
         return 1
@@ -261,7 +413,23 @@ def main() -> int:
     elif args.only_crypto:
         symbols = [s for s in symbols if is_crypto_symbol(s)]
 
-    download_and_sync(symbols, strict=bool(args.strict))
+    appended = download_and_sync(symbols, strict=bool(args.strict))
+    report_rows = build_sync_report(symbols, appended)
+    if args.report_path is not None:
+        report_path = write_sync_report(args.report_path, report_rows)
+        logger.info("Wrote sync report to {}", report_path)
+
+    stale_rows = [row for row in report_rows if row.get("exists") and isinstance(row.get("stale_days"), int)]
+    if stale_rows:
+        stalest = sorted(stale_rows, key=lambda row: int(row["stale_days"]), reverse=True)[:10]
+        for row in stalest:
+            logger.info(
+                "Freshness {}: last={} stale_days={} appended_rows={}",
+                row["symbol"],
+                row["last_timestamp"],
+                row["stale_days"],
+                row["appended_rows"],
+            )
     return 0
 
 

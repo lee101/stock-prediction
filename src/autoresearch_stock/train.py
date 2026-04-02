@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import random
 import time
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
+from src.torch_device_utils import move_module_to_runtime_device, resolve_runtime_device
 
 from src.fees import get_fee_for_symbol
 from src.robust_trading_metrics import summarize_scenario_results
@@ -45,6 +47,7 @@ from .experiments.timestamp_budget_head import (
 from .prepare import (
     TIME_BUDGET,
     _lag_action_frame,
+    apply_execution_modifiers,
     build_action_frame,
     parse_csv_list,
     parse_int_list,
@@ -102,14 +105,15 @@ class SequenceDataset(Dataset):
 
 @dataclass
 class PlannerConfig:
-    hidden_size: int = 96
+    hidden_size: int = 256
     num_layers: int = 2
     dropout: float = 0.10
-    symbol_embedding_dim: int = 16
-    batch_size: int = 256
+    symbol_embedding_dim: int = 32
+    context_blocks: int = 2
+    batch_size: int = 384
     learning_rate: float = 3e-4
     weight_decay: float = 1e-4
-    eval_batch_size: int = 512
+    eval_batch_size: int = 768
     ema_decay: float = 0.995
     ambiguity_quantile: float = 0.25
     strong_gap_multiplier: float = 2.0
@@ -163,7 +167,33 @@ class PlannerConfig:
     rank_max_keep: int = 4
     rank_reference_quantile: float = 0.25
     rank_gap_scale: float = 0.50
+    dataloader_workers: int = 0
+    deterministic: bool = False
     seed: int = 20260310
+
+
+@dataclass(frozen=True)
+class ExecutionModifierSet:
+    buy_price_modifier_bps: float = 0.0
+    sell_price_modifier_bps: float = 0.0
+    amount_modifier_pct: float = 0.0
+
+
+class ResidualContextBlock(nn.Module):
+    def __init__(self, width: int, *, dropout: float) -> None:
+        super().__init__()
+        inner = max(int(width) * 2, 64)
+        self.norm = nn.LayerNorm(int(width))
+        self.ff = nn.Sequential(
+            nn.Linear(int(width), inner),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(inner, int(width)),
+            nn.Dropout(float(dropout)),
+        )
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        return inputs + self.ff(self.norm(inputs))
 
 
 class PlannerNet(nn.Module):
@@ -176,6 +206,7 @@ class PlannerNet(nn.Module):
         num_layers: int,
         dropout: float,
         symbol_embedding_dim: int,
+        context_blocks: int,
         weak_action_scale: float,
     ) -> None:
         super().__init__()
@@ -192,31 +223,36 @@ class PlannerNet(nn.Module):
             batch_first=True,
         )
         self.symbol_embedding = nn.Embedding(int(symbol_count), int(symbol_embedding_dim))
-        plan_hidden_size = max(int(hidden_size) // 2, 8)
+        context_width = int(hidden_size) + int(symbol_embedding_dim)
+        plan_hidden_size = max(context_width // 2, 16)
+        self.context_blocks = nn.ModuleList(
+            ResidualContextBlock(context_width, dropout=float(dropout))
+            for _ in range(max(int(context_blocks), 0))
+        )
         self.regression_head = nn.Sequential(
-            nn.LayerNorm(hidden_size + symbol_embedding_dim),
-            nn.Linear(hidden_size + symbol_embedding_dim, hidden_size),
+            nn.LayerNorm(context_width),
+            nn.Linear(context_width, hidden_size),
             nn.GELU(),
             nn.Dropout(float(dropout)),
             nn.Linear(hidden_size, 3),
         )
         self.plan_head = nn.Sequential(
-            nn.LayerNorm(hidden_size + symbol_embedding_dim),
-            nn.Linear(hidden_size + symbol_embedding_dim, plan_hidden_size),
+            nn.LayerNorm(context_width),
+            nn.Linear(context_width, plan_hidden_size),
             nn.GELU(),
             nn.Dropout(float(dropout)),
             nn.Linear(plan_hidden_size, 5),
         )
         self.margin_head = nn.Sequential(
-            nn.LayerNorm(hidden_size + symbol_embedding_dim),
-            nn.Linear(hidden_size + symbol_embedding_dim, plan_hidden_size),
+            nn.LayerNorm(context_width),
+            nn.Linear(context_width, plan_hidden_size),
             nn.GELU(),
             nn.Dropout(float(dropout)),
             nn.Linear(plan_hidden_size, 1),
         )
         self.budget_head = nn.Sequential(
-            nn.LayerNorm(hidden_size + symbol_embedding_dim),
-            nn.Linear(hidden_size + symbol_embedding_dim, plan_hidden_size),
+            nn.LayerNorm(context_width),
+            nn.Linear(context_width, plan_hidden_size),
             nn.GELU(),
             nn.Dropout(float(dropout)),
             nn.Linear(plan_hidden_size, 3),
@@ -228,7 +264,10 @@ class PlannerNet(nn.Module):
         _, hidden = self.gru(encoded)
         summary = hidden[-1]
         symbol_context = self.symbol_embedding(symbol_ids)
-        return torch.cat([summary, symbol_context], dim=-1)
+        combined = torch.cat([summary, symbol_context], dim=-1)
+        for block in self.context_blocks:
+            combined = block(combined)
+        return combined
 
     def predict_with_plan(
         self,
@@ -430,6 +469,9 @@ def evaluate_ranked_model(
     rank_max_keep: int,
     rank_reference_quantile: float,
     rank_gap_scale: float,
+    buy_price_modifier_bps: float = 0.0,
+    sell_price_modifier_bps: float = 0.0,
+    amount_modifier_pct: float = 0.0,
 ) -> dict[str, Any]:
     scenario_rows: list[dict[str, float]] = []
     scenario_outputs: list[dict[str, Any]] = []
@@ -586,6 +628,12 @@ def evaluate_ranked_model(
                 rank_power=float(rank_sizing_rank_power),
             )
         actions = build_action_frame(scenario.action_rows, ranked_predictions, task.config)
+        actions = apply_execution_modifiers(
+            actions,
+            buy_price_modifier_bps=float(buy_price_modifier_bps),
+            sell_price_modifier_bps=float(sell_price_modifier_bps),
+            amount_modifier_pct=float(amount_modifier_pct),
+        )
         actions = _lag_action_frame(actions, scenario.bars, int(task.config.decision_lag_bars))
         result = simulate_actions(scenario.bars, actions, task.config)
         total_trade_count += int(result["trade_count"])
@@ -617,24 +665,61 @@ def evaluate_ranked_model(
     }
 
 
-def select_device(raw: str | None) -> torch.device:
-    token = (raw or "auto").strip().lower()
-    if token == "auto":
-        if torch.cuda.is_available():
-            return torch.device("cuda")
-        return torch.device("cpu")
-    return torch.device(token)
+def tune_execution_modifiers(
+    evaluate_fn,
+    *,
+    buy_grid_bps: Sequence[float],
+    sell_grid_bps: Sequence[float],
+    amount_grid_pct: Sequence[float],
+) -> tuple[ExecutionModifierSet, dict[str, Any]]:
+    grids = {
+        "buy_price_modifier_bps": tuple(float(value) for value in buy_grid_bps) or (0.0,),
+        "sell_price_modifier_bps": tuple(float(value) for value in sell_grid_bps) or (0.0,),
+        "amount_modifier_pct": tuple(float(value) for value in amount_grid_pct) or (0.0,),
+    }
+    best = ExecutionModifierSet()
+    best_result = evaluate_fn(best)
+    best_score = float(best_result["summary"]["robust_score"])
 
+    for field_name, candidates in grids.items():
+        for candidate in candidates:
+            payload = dict(best.__dict__)
+            payload[field_name] = float(candidate)
+            proposal = ExecutionModifierSet(**payload)
+            result = evaluate_fn(proposal)
+            score = float(result["summary"]["robust_score"])
+            if score > best_score:
+                best = proposal
+                best_result = result
+                best_score = score
 
-def seed_everything(seed: int) -> None:
+    return best, best_result
+
+def seed_everything(seed: int, *, deterministic: bool) -> None:
     random.seed(int(seed))
     np.random.seed(int(seed))
     torch.manual_seed(int(seed))
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(int(seed))
     if hasattr(torch.backends, "cudnn"):
-        torch.backends.cudnn.benchmark = False
-        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = not bool(deterministic)
+        torch.backends.cudnn.deterministic = bool(deterministic)
+    if hasattr(torch, "set_float32_matmul_precision"):
+        torch.set_float32_matmul_precision("high")
+    if hasattr(torch.backends, "cuda") and hasattr(torch.backends.cuda, "matmul"):
+        try:
+            torch.backends.cuda.matmul.allow_tf32 = not bool(deterministic)
+        except Exception:
+            pass
+
+
+def resolve_dataloader_workers(*, device: torch.device, requested: int) -> int:
+    if int(requested) > 0:
+        return int(requested)
+    if device.type != "cuda":
+        return 0
+    cpu_count = os.cpu_count() or 1
+    return max(1, min(8, cpu_count // 2))
 
 
 def evaluate_validation(
@@ -654,15 +739,16 @@ def evaluate_validation(
     model.eval()
     planner_losses: list[float] = []
     selection_losses: list[float] = []
+    non_blocking = device.type == "cuda"
     with torch.no_grad():
         for batch in loader:
-            features = batch["features"].to(device=device, dtype=torch.float32)
-            targets = batch["targets"].to(device=device, dtype=torch.float32)
-            symbol_ids = batch["symbol_ids"].to(device=device, dtype=torch.long)
-            weights = batch["weights"].to(device=device, dtype=torch.float32)
-            plan_labels = batch["plan_labels"].to(device=device, dtype=torch.long)
-            margin_targets = batch["margin_targets"].to(device=device, dtype=torch.float32)
-            budget_labels = batch["budget_labels"].to(device=device, dtype=torch.long)
+            features = batch["features"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+            targets = batch["targets"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+            symbol_ids = batch["symbol_ids"].to(device=device, dtype=torch.long, non_blocking=non_blocking)
+            weights = batch["weights"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+            plan_labels = batch["plan_labels"].to(device=device, dtype=torch.long, non_blocking=non_blocking)
+            margin_targets = batch["margin_targets"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+            budget_labels = batch["budget_labels"].to(device=device, dtype=torch.long, non_blocking=non_blocking)
             predictions, plan_logits, margin_logits, budget_logits = model.predict_with_plan(features, symbol_ids)
             planner_value = planner_loss(predictions, targets, weights)
             selection_value = decision_aware_loss(
@@ -692,7 +778,13 @@ def evaluate_validation(
     return planner_mean, selection_mean
 
 
-def build_dataloaders(task, cfg: PlannerConfig, *, ambiguity_floor: float) -> tuple[DataLoader, DataLoader, np.ndarray, np.ndarray]:
+def build_dataloaders(
+    task,
+    cfg: PlannerConfig,
+    *,
+    ambiguity_floor: float,
+    pin_memory: bool,
+) -> tuple[DataLoader, DataLoader, np.ndarray, np.ndarray]:
     spread_feature_index = task.feature_names.index("spread_bps_norm")
     volatility_feature_index = task.feature_names.index("volatility")
     symbol_fee_rates = np.zeros((len(task.symbol_to_id),), dtype=np.float32)
@@ -808,22 +900,27 @@ def build_dataloaders(task, cfg: PlannerConfig, *, ambiguity_floor: float) -> tu
         val_budget_labels,
     )
     generator = torch.Generator().manual_seed(int(cfg.seed))
+    dataloader_kwargs: dict[str, Any] = {
+        "num_workers": int(cfg.dataloader_workers),
+        "pin_memory": bool(pin_memory),
+    }
+    if int(cfg.dataloader_workers) > 0:
+        dataloader_kwargs["persistent_workers"] = True
+        dataloader_kwargs["prefetch_factor"] = 4
     train_loader = DataLoader(
         train_dataset,
         batch_size=int(cfg.batch_size),
         shuffle=True,
         drop_last=bool(len(train_dataset) >= int(cfg.batch_size)),
-        num_workers=0,
-        pin_memory=bool(torch.cuda.is_available()),
         generator=generator,
+        **dataloader_kwargs,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=int(cfg.eval_batch_size),
         shuffle=False,
         drop_last=False,
-        num_workers=0,
-        pin_memory=bool(torch.cuda.is_available()),
+        **dataloader_kwargs,
     )
     return train_loader, val_loader, derive_plan_class_weights(train_plan_labels), budget_class_weights
 
@@ -852,14 +949,81 @@ def update_ema_state(
             ema_value.copy_(current)
 
 
+def _cuda_total_memory_gb(device: torch.device) -> float:
+    if device.type != "cuda":
+        return 0.0
+    return float(torch.cuda.get_device_properties(device).total_memory) / (1024.0 ** 3)
+
+
+def resolve_planner_sizing(
+    *,
+    frequency: str,
+    device: torch.device,
+    hidden_size: int | None,
+    num_layers: int | None,
+    symbol_embedding_dim: int | None,
+    batch_size: int | None,
+    eval_batch_size: int | None,
+) -> tuple[int, int, int, int, int]:
+    if device.type != "cuda":
+        default_hidden = 160 if frequency == "hourly" else 128
+        default_layers = 2
+        default_embedding = 16
+        default_batch = 128
+        default_eval_batch = 256
+    else:
+        vram_gb = _cuda_total_memory_gb(device)
+        if vram_gb >= 20.0:
+            default_hidden = 384 if frequency == "hourly" else 320
+            default_layers = 3 if frequency == "hourly" else 2
+            default_embedding = 32
+            default_batch = 512 if frequency == "hourly" else 384
+            default_eval_batch = 1024
+        elif vram_gb >= 10.0:
+            default_hidden = 256 if frequency == "hourly" else 224
+            default_layers = 2
+            default_embedding = 24
+            default_batch = 384 if frequency == "hourly" else 256
+            default_eval_batch = 768
+        else:
+            default_hidden = 192 if frequency == "hourly" else 160
+            default_layers = 2
+            default_embedding = 16
+            default_batch = 192 if frequency == "hourly" else 160
+            default_eval_batch = 512
+
+    return (
+        int(hidden_size if hidden_size is not None else default_hidden),
+        int(num_layers if num_layers is not None else default_layers),
+        int(symbol_embedding_dim if symbol_embedding_dim is not None else default_embedding),
+        int(batch_size if batch_size is not None else default_batch),
+        int(eval_batch_size if eval_batch_size is not None else default_eval_batch),
+    )
+
+
+def count_trainable_parameters(model: nn.Module) -> int:
+    return int(sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad))
+
+
+def parse_float_list(raw: str | None) -> tuple[float, ...]:
+    if raw is None:
+        return ()
+    values: list[float] = []
+    for token in parse_csv_list(raw):
+        values.append(float(token))
+    return tuple(values)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Train the autoresearch-style stock planner for a fixed time budget.")
     parser.add_argument("--frequency", choices=("hourly", "daily"), default="hourly")
     parser.add_argument("--symbols", default="")
     parser.add_argument("--data-root", default=None)
+    parser.add_argument("--recent-data-root", default=None)
     parser.add_argument("--sequence-length", type=int, default=None)
     parser.add_argument("--hold-bars", type=int, default=None)
     parser.add_argument("--eval-windows", default="")
+    parser.add_argument("--recent-overlay-bars", type=int, default=0)
     parser.add_argument("--max-positions", type=int, default=5)
     parser.add_argument("--max-volume-fraction", type=float, default=None)
     parser.add_argument("--min-edge-bps", type=float, default=4.0)
@@ -870,15 +1034,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--dashboard-db", default="dashboards/metrics.db")
     parser.add_argument("--spread-lookback-days", type=int, default=14)
     parser.add_argument("--device", default="auto")
-    parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--eval-batch-size", type=int, default=512)
-    parser.add_argument("--hidden-size", type=int, default=96)
-    parser.add_argument("--layers", type=int, default=2)
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--eval-batch-size", type=int, default=None)
+    parser.add_argument("--hidden-size", type=int, default=None)
+    parser.add_argument("--layers", type=int, default=None)
     parser.add_argument("--dropout", type=float, default=0.10)
-    parser.add_argument("--symbol-embedding-dim", type=int, default=16)
+    parser.add_argument("--symbol-embedding-dim", type=int, default=None)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--seed", type=int, default=20260310)
+    parser.add_argument("--num-workers", type=int, default=None)
+    parser.add_argument("--deterministic", action="store_true")
+    parser.add_argument("--context-blocks", type=int, default=2)
+    parser.add_argument("--disable-execution-modifier-tuning", action="store_true")
+    parser.add_argument("--buy-price-modifier-grid-bps", default="-25,-15,-10,-5,0,5,10,15,25")
+    parser.add_argument("--sell-price-modifier-grid-bps", default="-25,-15,-10,-5,0,5,10,15,25")
+    parser.add_argument("--amount-modifier-grid-pct", default="-30,-20,-10,0,10,20,30")
     parser.add_argument("--dynamic-score-floor", action="store_true")
     parser.add_argument("--soft-rank-sizing", action="store_true")
     parser.add_argument("--timestamp-budget-head", action="store_true")
@@ -889,16 +1060,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     total_start = time.perf_counter()
-    device = select_device(args.device)
-    seed_everything(args.seed)
+    device = resolve_runtime_device(args.device)
+    seed_everything(args.seed, deterministic=bool(args.deterministic))
+    resolved_hidden_size, resolved_layers, resolved_symbol_embedding_dim, resolved_batch_size, resolved_eval_batch_size = (
+        resolve_planner_sizing(
+            frequency=args.frequency,
+            device=device,
+            hidden_size=args.hidden_size,
+            num_layers=args.layers,
+            symbol_embedding_dim=args.symbol_embedding_dim,
+            batch_size=args.batch_size,
+            eval_batch_size=args.eval_batch_size,
+        )
+    )
 
     task_config = resolve_task_config(
         frequency=args.frequency,
         symbols=parse_csv_list(args.symbols) or None,
         data_root=args.data_root,
+        recent_data_root=args.recent_data_root,
         sequence_length=args.sequence_length,
         hold_bars=args.hold_bars,
         eval_windows=parse_int_list(args.eval_windows) or None,
+        recent_overlay_bars=args.recent_overlay_bars,
         max_positions=args.max_positions,
         max_volume_fraction=args.max_volume_fraction,
         min_edge_bps=args.min_edge_bps,
@@ -911,14 +1095,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     task = prepare_task(task_config)
     planner_cfg = PlannerConfig(
-        hidden_size=int(args.hidden_size),
-        num_layers=int(args.layers),
+        hidden_size=int(resolved_hidden_size),
+        num_layers=int(resolved_layers),
         dropout=float(args.dropout),
-        symbol_embedding_dim=int(args.symbol_embedding_dim),
-        batch_size=int(args.batch_size),
+        symbol_embedding_dim=int(resolved_symbol_embedding_dim),
+        context_blocks=int(args.context_blocks),
+        batch_size=int(resolved_batch_size),
         learning_rate=float(args.lr),
         weight_decay=float(args.weight_decay),
-        eval_batch_size=int(args.eval_batch_size),
+        eval_batch_size=int(resolved_eval_batch_size),
         use_dynamic_score_floor=bool(args.dynamic_score_floor),
         use_soft_rank_sizing=bool(args.soft_rank_sizing),
         use_timestamp_budget_head=bool(
@@ -932,6 +1117,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         use_continuous_budget_thresholds=bool(args.continuous_budget_thresholds),
         use_budget_entropy_confidence=bool(args.budget_entropy_confidence),
         use_budget_consensus_dispersion=bool(args.budget_consensus_dispersion),
+        dataloader_workers=resolve_dataloader_workers(
+            device=device,
+            requested=(-1 if args.num_workers is None else int(args.num_workers)),
+        ),
+        deterministic=bool(args.deterministic),
         seed=int(args.seed),
     )
     ambiguity_floor = compute_ambiguity_floor(
@@ -940,20 +1130,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     budget_loss_weight = planner_cfg.budget_loss_weight if planner_cfg.use_timestamp_budget_head else 0.0
 
-    train_loader, val_loader, plan_class_weights_np, budget_class_weights_np = build_dataloaders(
-        task,
-        planner_cfg,
-        ambiguity_floor=ambiguity_floor,
-    )
-    model = PlannerNet(
+    model, device = move_module_to_runtime_device(
+        PlannerNet(
         feature_dim=int(task.train_features.shape[-1]),
         symbol_count=max(len(task.symbol_to_id), 1),
         hidden_size=planner_cfg.hidden_size,
         num_layers=planner_cfg.num_layers,
         dropout=planner_cfg.dropout,
         symbol_embedding_dim=planner_cfg.symbol_embedding_dim,
+        context_blocks=planner_cfg.context_blocks,
         weak_action_scale=planner_cfg.weak_action_scale,
-    ).to(device)
+        ),
+        args.device,
+        device,
+        context="Autoresearch stock trainer",
+    )
+    train_loader, val_loader, plan_class_weights_np, budget_class_weights_np = build_dataloaders(
+        task,
+        planner_cfg,
+        ambiguity_floor=ambiguity_floor,
+        pin_memory=(device.type == "cuda"),
+    )
+    model_parameters = count_trainable_parameters(model)
     ema_state = clone_model_state(model)
     plan_class_weights = torch.from_numpy(plan_class_weights_np).to(device=device, dtype=torch.float32)
     budget_class_weights = torch.from_numpy(budget_class_weights_np).to(device=device, dtype=torch.float32)
@@ -971,6 +1169,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     train_start = time.perf_counter()
     step_count = 0
     data_iter = iter(train_loader)
+    non_blocking = device.type == "cuda"
     while (time.perf_counter() - train_start) < TIME_BUDGET:
         try:
             batch = next(data_iter)
@@ -980,13 +1179,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         model.train()
         optimizer.zero_grad(set_to_none=True)
-        features = batch["features"].to(device=device, dtype=torch.float32)
-        targets = batch["targets"].to(device=device, dtype=torch.float32)
-        symbol_ids = batch["symbol_ids"].to(device=device, dtype=torch.long)
-        weights = batch["weights"].to(device=device, dtype=torch.float32)
-        plan_labels = batch["plan_labels"].to(device=device, dtype=torch.long)
-        margin_targets = batch["margin_targets"].to(device=device, dtype=torch.float32)
-        budget_labels = batch["budget_labels"].to(device=device, dtype=torch.long)
+        features = batch["features"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+        targets = batch["targets"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+        symbol_ids = batch["symbol_ids"].to(device=device, dtype=torch.long, non_blocking=non_blocking)
+        weights = batch["weights"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+        plan_labels = batch["plan_labels"].to(device=device, dtype=torch.long, non_blocking=non_blocking)
+        margin_targets = batch["margin_targets"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
+        budget_labels = batch["budget_labels"].to(device=device, dtype=torch.long, non_blocking=non_blocking)
 
         autocast_enabled = device.type == "cuda"
         with torch.amp.autocast(device_type=device.type, enabled=autocast_enabled):
@@ -1053,53 +1252,72 @@ def main(argv: Sequence[str] | None = None) -> int:
         val_loss = raw_val_loss
     else:
         val_loss = ema_val_loss
-    eval_result = evaluate_ranked_model(
-        model,
-        task,
-        device=device,
-        batch_size=planner_cfg.eval_batch_size,
-        rank_top_k=planner_cfg.rank_top_k,
-        rank_min_score=planner_cfg.rank_min_score,
-        use_dynamic_score_floor=planner_cfg.use_dynamic_score_floor,
-        rank_floor_min_strength=planner_cfg.rank_floor_min_strength,
-        rank_floor_quantile=planner_cfg.rank_floor_quantile,
-        rank_floor_gap_scale=planner_cfg.rank_floor_gap_scale,
-        use_soft_rank_sizing=planner_cfg.use_soft_rank_sizing,
-        use_timestamp_budget_head=planner_cfg.use_timestamp_budget_head,
-        use_budget_guided_keep_count=planner_cfg.use_budget_guided_keep_count,
-        use_continuous_budget_thresholds=planner_cfg.use_continuous_budget_thresholds,
-        use_budget_entropy_confidence=planner_cfg.use_budget_entropy_confidence,
-        use_budget_consensus_dispersion=planner_cfg.use_budget_consensus_dispersion,
-        budget_skip_scale=planner_cfg.budget_skip_scale,
-        budget_selective_scale=planner_cfg.budget_selective_scale,
-        budget_selective_top_k=planner_cfg.budget_selective_top_k,
-        budget_selective_max_keep=planner_cfg.budget_selective_max_keep,
-        budget_broad_top_k=planner_cfg.budget_broad_top_k,
-        budget_broad_max_keep=planner_cfg.budget_broad_max_keep,
-        budget_selective_gap_scale=planner_cfg.budget_selective_gap_scale,
-        budget_broad_gap_scale=planner_cfg.budget_broad_gap_scale,
-        budget_skip_gap_scale=planner_cfg.budget_skip_gap_scale,
-        budget_skip_min_score_scale=planner_cfg.budget_skip_min_score_scale,
-        budget_selective_min_score_scale=planner_cfg.budget_selective_min_score_scale,
-        budget_broad_min_score_scale=planner_cfg.budget_broad_min_score_scale,
-        budget_confidence_power=planner_cfg.budget_confidence_power,
-        budget_selective_prior_skip_weight=planner_cfg.budget_selective_prior_skip_weight,
-        budget_uncertainty_gap_floor=planner_cfg.budget_uncertainty_gap_floor,
-        budget_uncertainty_fractional_floor=planner_cfg.budget_uncertainty_fractional_floor,
-        budget_broad_consensus_power=planner_cfg.budget_broad_consensus_power,
-        budget_consensus_selective_reallocation=planner_cfg.budget_consensus_selective_reallocation,
-        budget_consensus_gap_floor=planner_cfg.budget_consensus_gap_floor,
-        budget_consensus_fractional_floor=planner_cfg.budget_consensus_fractional_floor,
-        rank_sizing_reference_quantile=planner_cfg.rank_sizing_reference_quantile,
-        rank_sizing_regime_floor_scale=planner_cfg.rank_sizing_regime_floor_scale,
-        rank_sizing_name_floor_scale=planner_cfg.rank_sizing_name_floor_scale,
-        rank_sizing_regime_power=planner_cfg.rank_sizing_regime_power,
-        rank_sizing_rank_power=planner_cfg.rank_sizing_rank_power,
-        rank_min_keep=planner_cfg.rank_min_keep,
-        rank_max_keep=planner_cfg.rank_max_keep,
-        rank_reference_quantile=planner_cfg.rank_reference_quantile,
-        rank_gap_scale=planner_cfg.rank_gap_scale,
-    )
+    eval_kwargs = {
+        "device": device,
+        "batch_size": planner_cfg.eval_batch_size,
+        "rank_top_k": planner_cfg.rank_top_k,
+        "rank_min_score": planner_cfg.rank_min_score,
+        "use_dynamic_score_floor": planner_cfg.use_dynamic_score_floor,
+        "rank_floor_min_strength": planner_cfg.rank_floor_min_strength,
+        "rank_floor_quantile": planner_cfg.rank_floor_quantile,
+        "rank_floor_gap_scale": planner_cfg.rank_floor_gap_scale,
+        "use_soft_rank_sizing": planner_cfg.use_soft_rank_sizing,
+        "use_timestamp_budget_head": planner_cfg.use_timestamp_budget_head,
+        "use_budget_guided_keep_count": planner_cfg.use_budget_guided_keep_count,
+        "use_continuous_budget_thresholds": planner_cfg.use_continuous_budget_thresholds,
+        "use_budget_entropy_confidence": planner_cfg.use_budget_entropy_confidence,
+        "use_budget_consensus_dispersion": planner_cfg.use_budget_consensus_dispersion,
+        "budget_skip_scale": planner_cfg.budget_skip_scale,
+        "budget_selective_scale": planner_cfg.budget_selective_scale,
+        "budget_selective_top_k": planner_cfg.budget_selective_top_k,
+        "budget_selective_max_keep": planner_cfg.budget_selective_max_keep,
+        "budget_broad_top_k": planner_cfg.budget_broad_top_k,
+        "budget_broad_max_keep": planner_cfg.budget_broad_max_keep,
+        "budget_selective_gap_scale": planner_cfg.budget_selective_gap_scale,
+        "budget_broad_gap_scale": planner_cfg.budget_broad_gap_scale,
+        "budget_skip_gap_scale": planner_cfg.budget_skip_gap_scale,
+        "budget_skip_min_score_scale": planner_cfg.budget_skip_min_score_scale,
+        "budget_selective_min_score_scale": planner_cfg.budget_selective_min_score_scale,
+        "budget_broad_min_score_scale": planner_cfg.budget_broad_min_score_scale,
+        "budget_confidence_power": planner_cfg.budget_confidence_power,
+        "budget_selective_prior_skip_weight": planner_cfg.budget_selective_prior_skip_weight,
+        "budget_uncertainty_gap_floor": planner_cfg.budget_uncertainty_gap_floor,
+        "budget_uncertainty_fractional_floor": planner_cfg.budget_uncertainty_fractional_floor,
+        "budget_broad_consensus_power": planner_cfg.budget_broad_consensus_power,
+        "budget_consensus_selective_reallocation": planner_cfg.budget_consensus_selective_reallocation,
+        "budget_consensus_gap_floor": planner_cfg.budget_consensus_gap_floor,
+        "budget_consensus_fractional_floor": planner_cfg.budget_consensus_fractional_floor,
+        "rank_sizing_reference_quantile": planner_cfg.rank_sizing_reference_quantile,
+        "rank_sizing_regime_floor_scale": planner_cfg.rank_sizing_regime_floor_scale,
+        "rank_sizing_name_floor_scale": planner_cfg.rank_sizing_name_floor_scale,
+        "rank_sizing_regime_power": planner_cfg.rank_sizing_regime_power,
+        "rank_sizing_rank_power": planner_cfg.rank_sizing_rank_power,
+        "rank_min_keep": planner_cfg.rank_min_keep,
+        "rank_max_keep": planner_cfg.rank_max_keep,
+        "rank_reference_quantile": planner_cfg.rank_reference_quantile,
+        "rank_gap_scale": planner_cfg.rank_gap_scale,
+    }
+
+    def _evaluate_with_modifiers(modifiers: ExecutionModifierSet) -> dict[str, Any]:
+        return evaluate_ranked_model(
+            model,
+            task,
+            buy_price_modifier_bps=modifiers.buy_price_modifier_bps,
+            sell_price_modifier_bps=modifiers.sell_price_modifier_bps,
+            amount_modifier_pct=modifiers.amount_modifier_pct,
+            **eval_kwargs,
+        )
+
+    best_modifiers = ExecutionModifierSet()
+    if bool(args.disable_execution_modifier_tuning):
+        eval_result = _evaluate_with_modifiers(best_modifiers)
+    else:
+        best_modifiers, eval_result = tune_execution_modifiers(
+            _evaluate_with_modifiers,
+            buy_grid_bps=parse_float_list(args.buy_price_modifier_grid_bps),
+            sell_grid_bps=parse_float_list(args.sell_price_modifier_grid_bps),
+            amount_grid_pct=parse_float_list(args.amount_modifier_grid_pct),
+        )
     summary = eval_result["summary"]
     peak_vram_mb = 0.0
     if device.type == "cuda":
@@ -1116,6 +1334,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"total_trade_count: {int(summary['total_trade_count'])}")
     print(f"train_samples:     {len(task.train_features)}")
     print(f"num_steps:         {int(step_count)}")
+    print(f"model_parameters:  {model_parameters}")
+    print(f"hidden_size:       {planner_cfg.hidden_size}")
+    print(f"layers:            {planner_cfg.num_layers}")
+    print(f"context_blocks:    {planner_cfg.context_blocks}")
+    print(f"batch_size:        {planner_cfg.batch_size}")
+    print(f"eval_batch_size:   {planner_cfg.eval_batch_size}")
+    print(f"num_workers:       {planner_cfg.dataloader_workers}")
+    print(f"deterministic:     {planner_cfg.deterministic}")
+    print(f"buy_mod_bps:       {best_modifiers.buy_price_modifier_bps:.1f}")
+    print(f"sell_mod_bps:      {best_modifiers.sell_price_modifier_bps:.1f}")
+    print(f"amount_mod_pct:    {best_modifiers.amount_modifier_pct:.1f}")
     print(f"frequency:         {task.config.frequency}")
     print(f"hold_bars:         {int(task.config.hold_bars)}")
     return 0

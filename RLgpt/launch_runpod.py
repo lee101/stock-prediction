@@ -7,7 +7,32 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from RLgpt.config import DailyPlanDataConfig, PlannerConfig, SimulatorConfig, TrainingConfig
+from RLgpt.config import (
+    DailyPlanDataConfig,
+    PlannerConfig,
+    SimulatorConfig,
+    TrainingConfig,
+    DEFAULT_RLGPT_BATCH_SIZE,
+    DEFAULT_RLGPT_DATA_ROOT,
+    DEFAULT_RLGPT_DEPTH,
+    DEFAULT_RLGPT_DROPOUT,
+    DEFAULT_RLGPT_FILL_BUFFER_BPS,
+    DEFAULT_RLGPT_FILL_TEMPERATURE_BPS,
+    DEFAULT_RLGPT_FORECAST_CACHE_ROOT,
+    DEFAULT_RLGPT_HEADS,
+    DEFAULT_RLGPT_HIDDEN_DIM,
+    DEFAULT_RLGPT_INITIAL_CASH,
+    DEFAULT_RLGPT_LEARNING_RATE,
+    DEFAULT_RLGPT_MAKER_FEE_BPS,
+    DEFAULT_RLGPT_MAX_UNITS_PER_ASSET,
+    DEFAULT_RLGPT_SHARED_UNIT_BUDGET,
+    DEFAULT_RLGPT_SLIPPAGE_BPS,
+    DEFAULT_RLGPT_VALIDATION_DAYS,
+    DEFAULT_RLGPT_WEIGHT_DECAY,
+    default_forecast_horizons_csv,
+    normalize_symbol_list,
+    parse_horizon_list,
+)
 from src.runpod_client import (
     Pod,
     PodConfig,
@@ -166,7 +191,10 @@ def create_pod_with_fallbacks(
     raise RuntimeError("Failed to create a RunPod pod.")
 
 
-def parse_args() -> argparse.Namespace:
+DEFAULT_RUNPOD_EPOCHS = 12
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Create or launch a RunPod RLgpt training run.")
     parser.add_argument("--symbols", required=True, help="Comma-separated symbols")
     parser.add_argument("--run-name", required=True)
@@ -175,25 +203,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu-count", type=int, default=1)
     parser.add_argument("--volume-size", type=int, default=120)
     parser.add_argument("--container-disk", type=int, default=40)
-    parser.add_argument("--data-root", default="trainingdatahourly/crypto")
-    parser.add_argument("--forecast-cache-root", default="binanceneural/forecast_cache")
-    parser.add_argument("--forecast-horizons", default="1,24")
-    parser.add_argument("--validation-days", type=int, default=30)
-    parser.add_argument("--epochs", type=int, default=12)
-    parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--learning-rate", type=float, default=3e-4)
-    parser.add_argument("--weight-decay", type=float, default=1e-4)
-    parser.add_argument("--hidden-dim", type=int, default=128)
-    parser.add_argument("--depth", type=int, default=3)
-    parser.add_argument("--heads", type=int, default=4)
-    parser.add_argument("--dropout", type=float, default=0.1)
-    parser.add_argument("--shared-unit-budget", type=float, default=20.0)
-    parser.add_argument("--max-units-per-asset", type=float, default=10.0)
-    parser.add_argument("--initial-cash", type=float, default=100_000.0)
-    parser.add_argument("--maker-fee-bps", type=float, default=10.0)
-    parser.add_argument("--slippage-bps", type=float, default=5.0)
-    parser.add_argument("--fill-buffer-bps", type=float, default=5.0)
-    parser.add_argument("--fill-temperature-bps", type=float, default=8.0)
+    parser.add_argument("--data-root", default=str(DEFAULT_RLGPT_DATA_ROOT))
+    parser.add_argument("--forecast-cache-root", default=str(DEFAULT_RLGPT_FORECAST_CACHE_ROOT))
+    parser.add_argument("--forecast-horizons", default=default_forecast_horizons_csv())
+    parser.add_argument("--validation-days", type=int, default=DEFAULT_RLGPT_VALIDATION_DAYS)
+    parser.add_argument("--epochs", type=int, default=DEFAULT_RUNPOD_EPOCHS)
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_RLGPT_BATCH_SIZE)
+    parser.add_argument("--learning-rate", type=float, default=DEFAULT_RLGPT_LEARNING_RATE)
+    parser.add_argument("--weight-decay", type=float, default=DEFAULT_RLGPT_WEIGHT_DECAY)
+    parser.add_argument("--hidden-dim", type=int, default=DEFAULT_RLGPT_HIDDEN_DIM)
+    parser.add_argument("--depth", type=int, default=DEFAULT_RLGPT_DEPTH)
+    parser.add_argument("--heads", type=int, default=DEFAULT_RLGPT_HEADS)
+    parser.add_argument("--dropout", type=float, default=DEFAULT_RLGPT_DROPOUT)
+    parser.add_argument("--shared-unit-budget", type=float, default=DEFAULT_RLGPT_SHARED_UNIT_BUDGET)
+    parser.add_argument("--max-units-per-asset", type=float, default=DEFAULT_RLGPT_MAX_UNITS_PER_ASSET)
+    parser.add_argument("--initial-cash", type=float, default=DEFAULT_RLGPT_INITIAL_CASH)
+    parser.add_argument("--maker-fee-bps", type=float, default=DEFAULT_RLGPT_MAKER_FEE_BPS)
+    parser.add_argument("--slippage-bps", type=float, default=DEFAULT_RLGPT_SLIPPAGE_BPS)
+    parser.add_argument("--fill-buffer-bps", type=float, default=DEFAULT_RLGPT_FILL_BUFFER_BPS)
+    parser.add_argument("--fill-temperature-bps", type=float, default=DEFAULT_RLGPT_FILL_TEMPERATURE_BPS)
     parser.add_argument("--output-manifest", default="")
     parser.add_argument("--remote-repo-root", default="/workspace/stock")
     parser.add_argument("--create-pod", action="store_true")
@@ -202,7 +230,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--carry-inventory", action="store_true")
     parser.add_argument("--max-train-days", type=int)
     parser.add_argument("--max-val-days", type=int)
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def main() -> None:
@@ -243,8 +271,8 @@ def main() -> None:
 
 
 def _build_training_config(args: argparse.Namespace) -> TrainingConfig:
-    symbols = tuple(token.strip().upper() for token in args.symbols.split(",") if token.strip())
-    horizons = tuple(int(token.strip()) for token in args.forecast_horizons.split(",") if token.strip())
+    symbols = normalize_symbol_list(args.symbols.split(","))
+    horizons = parse_horizon_list(args.forecast_horizons)
     data = DailyPlanDataConfig(
         symbols=symbols,
         data_root=Path(args.data_root),

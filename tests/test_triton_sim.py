@@ -8,8 +8,25 @@ try:
 except (ImportError, ModuleNotFoundError) as e:
     pytest.skip(f"Required modules not available: {e}", allow_module_level=True)
 
-CUDA = torch.cuda.is_available()
-DEVICE = "cuda" if CUDA else "cpu"
+
+def _is_cuda_resource_pressure_error(exc: BaseException) -> bool:
+    return "out of memory" in str(exc).lower()
+
+
+def _resolve_test_device() -> str:
+    if not torch.cuda.is_available():
+        return "cpu"
+    try:
+        torch.empty(1, device="cuda")
+    except Exception as exc:
+        if _is_cuda_resource_pressure_error(exc):
+            return "cpu"
+        raise
+    return "cuda"
+
+
+DEVICE = _resolve_test_device()
+CUDA = DEVICE == "cuda"
 
 
 def _make_data(batch_shape=(), steps=48, device=DEVICE, seed=42):

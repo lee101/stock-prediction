@@ -9,8 +9,11 @@ from src.torch_device_utils import (
     get_optimal_device_for_size,
     get_strategy_device,
     is_cuda_device,
+    move_module_to_runtime_device,
     move_to_device,
     require_cuda,
+    resolve_runtime_device,
+    should_auto_fallback_to_cpu,
     to_tensor,
 )
 
@@ -166,6 +169,54 @@ class TestMoveToDevice:
         # Should be same tensor or equal
         assert torch.allclose(moved, tensor)
         assert moved.device.type == "cpu"
+
+
+class TestRuntimeDeviceHelpers:
+    def test_resolve_runtime_device_auto_without_cuda(self, monkeypatch):
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+        device = resolve_runtime_device()
+        assert device.type == "cpu"
+
+    def test_resolve_runtime_device_explicit_cpu(self):
+        device = resolve_runtime_device("cpu")
+        assert device.type == "cpu"
+
+    def test_should_auto_fallback_to_cpu_only_for_auto_cuda(self):
+        assert should_auto_fallback_to_cpu(
+            "auto",
+            torch.device("cuda"),
+            torch.OutOfMemoryError("CUDA out of memory"),
+        )
+        assert not should_auto_fallback_to_cpu(
+            "cpu",
+            torch.device("cpu"),
+            torch.OutOfMemoryError("CUDA out of memory"),
+        )
+
+    def test_move_module_to_runtime_device_falls_back_to_cpu(self, recwarn):
+        class FakeModule:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def to(self, device: torch.device) -> "FakeModule":
+                resolved = torch.device(device)
+                self.calls.append(resolved.type)
+                if resolved.type == "cuda":
+                    raise torch.OutOfMemoryError("CUDA out of memory")
+                return self
+
+        module = FakeModule()
+        moved, device = move_module_to_runtime_device(
+            module,  # type: ignore[arg-type]
+            "auto",
+            torch.device("cuda"),
+            context="test module",
+        )
+
+        assert moved is module
+        assert device.type == "cpu"
+        assert module.calls == ["cuda", "cpu"]
+        assert any("falling back to CPU" in str(w.message) for w in recwarn)
 
 
 class TestGetDeviceName:

@@ -10,8 +10,23 @@ import os
 from src.optimization_utils import (
     optimize_entry_exit_multipliers,
     optimize_always_on_multipliers,
-    _USE_DIRECT,
 )
+
+
+def _is_cuda_resource_pressure_error(exc: BaseException) -> bool:
+    return "out of memory" in str(exc).lower()
+
+
+def _resolve_test_device() -> str:
+    if not torch.cuda.is_available():
+        return "cpu"
+    try:
+        torch.empty(1, device="cuda")
+    except Exception as exc:
+        if _is_cuda_resource_pressure_error(exc):
+            return "cpu"
+        raise
+    return "cuda"
 
 
 @pytest.fixture
@@ -19,7 +34,7 @@ def sample_data():
     """Generate sample market data for testing"""
     torch.manual_seed(42)
     n = 100
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = _resolve_test_device()
 
     close_actual = torch.randn(n, device=device) * 0.02
     high_actual = close_actual + torch.abs(torch.randn(n, device=device)) * 0.01
@@ -216,9 +231,6 @@ class TestAlwaysOnOptimizer:
     @pytest.fixture
     def always_on_data(self, sample_data):
         """Add indicators for always-on strategy"""
-        n = len(sample_data['close_actual'])
-        device = sample_data['close_actual'].device
-
         data = sample_data.copy()
         # Buy when predicted high > 0, sell when < 0
         data['buy_indicator'] = (sample_data['high_pred'] > 0).float()
@@ -308,7 +320,7 @@ class TestEdgeCases:
     def test_small_dataset(self):
         """Test with small dataset (10 days)"""
         n = 10
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        device = _resolve_test_device()
 
         close_actual = torch.randn(n, device=device) * 0.02
         high_actual = close_actual + 0.01
@@ -329,7 +341,7 @@ class TestEdgeCases:
     def test_zero_variance_data(self):
         """Test with constant predictions (zero variance)"""
         n = 50
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        device = _resolve_test_device()
 
         close_actual = torch.randn(n, device=device) * 0.02
         high_actual = close_actual + 0.01

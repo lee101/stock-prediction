@@ -171,7 +171,6 @@ def _apply_calibration(
             if len(feat_arr) == 0:
                 continue
             feat = _torch.tensor(feat_arr[-1:], dtype=_torch.float32)
-            close = _torch.tensor([ctx.price], dtype=_torch.float32)
             price = ctx.price
 
             entry = new_entry.get(sym, price * 0.999)

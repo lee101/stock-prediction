@@ -5,6 +5,10 @@ from update_daily_data import (
     _prepare_training_frame,
     _sync_symbol,
     _storage_symbol,
+    build_sync_report,
+    load_symbols_file,
+    resolve_requested_symbols,
+    resolve_symbol_set,
 )
 
 
@@ -119,3 +123,77 @@ def test_sync_symbol_appends_snapshots(tmp_path):
     synced = pd.read_csv(existing_path)
     assert len(synced) == 3
     assert synced.iloc[-1]["close"] == 155
+
+
+def test_resolve_symbol_set_stock_expansion_contains_known_names():
+    symbols = resolve_symbol_set("stock-expansion")
+    assert "PLTR" in symbols
+    assert "JPM" in symbols
+
+
+def test_load_symbols_file_supports_comments_and_commas(tmp_path):
+    path = tmp_path / "symbols.txt"
+    path.write_text("pltr, nflx\n# ignore\njpm\n")
+    assert load_symbols_file(path) == ["JPM", "NFLX", "PLTR"]
+
+
+def test_resolve_requested_symbols_combines_sources(tmp_path):
+    train_dir = tmp_path / "trainingdata" / "train"
+    train_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "timestamp": ["2025-01-01 00:00:00+00:00"],
+            "open": [1],
+            "high": [1],
+            "low": [1],
+            "close": [1],
+            "volume": [0],
+            "trade_count": [0],
+            "vwap": [1],
+            "symbol": ["AAPL"],
+        }
+    ).to_csv(train_dir / "AAPL.csv", index=False)
+    symbols_path = tmp_path / "symbols.txt"
+    symbols_path.write_text("nflx\n")
+
+    resolved = resolve_requested_symbols(
+        cli_symbols=["pltr"],
+        symbol_set="alpaca-live8",
+        symbols_file=symbols_path,
+        training_dir=train_dir,
+    )
+
+    assert "PLTR" in resolved
+    assert "NFLX" in resolved
+    assert "NVDA" in resolved
+
+
+def test_build_sync_report_returns_freshness(tmp_path):
+    train_dir = tmp_path / "trainingdata" / "train"
+    train_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "timestamp": ["2026-03-29 00:00:00+00:00", "2026-03-31 00:00:00+00:00"],
+            "open": [1, 2],
+            "high": [1, 2],
+            "low": [1, 2],
+            "close": [1, 2],
+            "volume": [0, 0],
+            "trade_count": [0, 0],
+            "vwap": [1, 2],
+            "symbol": ["PLTR", "PLTR"],
+        }
+    ).to_csv(train_dir / "PLTR.csv", index=False)
+
+    rows = build_sync_report(
+        ["PLTR", "NFLX"],
+        {"PLTR": 2, "NFLX": 0},
+        training_dir=train_dir,
+        as_of=pd.Timestamp("2026-04-01 00:00:00+00:00"),
+    )
+
+    by_symbol = {row["symbol"]: row for row in rows}
+    assert by_symbol["PLTR"]["exists"] is True
+    assert by_symbol["PLTR"]["stale_days"] == 1
+    assert by_symbol["PLTR"]["appended_rows"] == 2
+    assert by_symbol["NFLX"]["exists"] is False

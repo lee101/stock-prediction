@@ -11,16 +11,54 @@ from typing import Any
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+from src.torch_device_utils import move_module_to_runtime_device, resolve_runtime_device
 
-from RLgpt.config import DailyPlanDataConfig, PlannerConfig, SimulatorConfig, TrainingConfig
+from RLgpt.config import (
+    DailyPlanDataConfig,
+    PlannerConfig,
+    SimulatorConfig,
+    TrainingConfig,
+    DEFAULT_RLGPT_BATCH_SIZE,
+    DEFAULT_RLGPT_DATA_ROOT,
+    DEFAULT_RLGPT_DEPTH,
+    DEFAULT_RLGPT_DROPOUT,
+    DEFAULT_RLGPT_EPOCHS,
+    DEFAULT_RLGPT_FILL_BUFFER_BPS,
+    DEFAULT_RLGPT_FILL_TEMPERATURE_BPS,
+    DEFAULT_RLGPT_FORECAST_CACHE_ROOT,
+    DEFAULT_RLGPT_HEADS,
+    DEFAULT_RLGPT_HIDDEN_DIM,
+    DEFAULT_RLGPT_INITIAL_CASH,
+    DEFAULT_RLGPT_LEARNING_RATE,
+    DEFAULT_RLGPT_MAKER_FEE_BPS,
+    DEFAULT_RLGPT_MAX_FEATURE_LOOKBACK_HOURS,
+    DEFAULT_RLGPT_MAX_UNITS_PER_ASSET,
+    DEFAULT_RLGPT_MIN_BARS_PER_DAY,
+    DEFAULT_RLGPT_MIN_HISTORY_HOURS,
+    DEFAULT_RLGPT_NUM_WORKERS,
+    DEFAULT_RLGPT_OUTPUT_ROOT,
+    DEFAULT_RLGPT_SEED,
+    DEFAULT_RLGPT_SEQUENCE_LENGTH,
+    DEFAULT_RLGPT_SHARED_UNIT_BUDGET,
+    DEFAULT_RLGPT_SLIPPAGE_BPS,
+    DEFAULT_RLGPT_VALIDATION_DAYS,
+    DEFAULT_RLGPT_WEIGHT_DECAY,
+    default_forecast_horizons_csv,
+    normalize_symbol_list,
+    parse_horizon_list,
+    validate_training_config,
+)
 from RLgpt.data import DailyPlanTensorDataset, TensorNormalizer, prepare_daily_plan_tensors
 from RLgpt.model import CrossAssetDailyPlanner
 from RLgpt.simulator import compute_trading_objective, simulate_daily_plans
 
 
 def run_training(config: TrainingConfig) -> dict[str, Any]:
+    config_errors = validate_training_config(config)
+    if config_errors:
+        raise ValueError(f"Invalid RLgpt training config: {'; '.join(config_errors)}")
     _set_seed(config.seed)
-    device = _resolve_device(config.device)
+    device = resolve_runtime_device(config.device)
     bundle = prepare_daily_plan_tensors(config.data)
     train_bundle, val_bundle = bundle.train_val_split(config.data.validation_days)
 
@@ -48,7 +86,12 @@ def run_training(config: TrainingConfig) -> dict[str, Any]:
         drop_last=False,
     )
 
-    model = CrossAssetDailyPlanner(input_dim=train_bundle.feature_dim, config=config.planner).to(device)
+    model, device = move_module_to_runtime_device(
+        CrossAssetDailyPlanner(input_dim=train_bundle.feature_dim, config=config.planner),
+        config.device,
+        device,
+        context="RLgpt",
+    )
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(config.learning_rate),
@@ -171,47 +214,49 @@ def _run_epoch(
     return {key: value / steps for key, value in totals.items()}
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train the RLgpt daily-plan differentiable trader.")
     parser.add_argument("--symbols", required=True, help="Comma-separated symbols, e.g. BTCUSD,ETHUSD,SOLUSD")
-    parser.add_argument("--data-root", default="trainingdatahourly/crypto")
-    parser.add_argument("--forecast-cache-root", default="binanceneural/forecast_cache")
-    parser.add_argument("--forecast-horizons", default="1,24")
-    parser.add_argument("--validation-days", type=int, default=30)
-    parser.add_argument("--epochs", type=int, default=25)
-    parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--learning-rate", type=float, default=3e-4)
-    parser.add_argument("--weight-decay", type=float, default=1e-4)
-    parser.add_argument("--hidden-dim", type=int, default=128)
-    parser.add_argument("--depth", type=int, default=3)
-    parser.add_argument("--heads", type=int, default=4)
-    parser.add_argument("--dropout", type=float, default=0.1)
-    parser.add_argument("--shared-unit-budget", type=float, default=20.0)
-    parser.add_argument("--max-units-per-asset", type=float, default=10.0)
-    parser.add_argument("--initial-cash", type=float, default=100_000.0)
-    parser.add_argument("--maker-fee-bps", type=float, default=10.0)
-    parser.add_argument("--slippage-bps", type=float, default=5.0)
-    parser.add_argument("--fill-buffer-bps", type=float, default=5.0)
-    parser.add_argument("--fill-temperature-bps", type=float, default=8.0)
+    parser.add_argument("--data-root", default=str(DEFAULT_RLGPT_DATA_ROOT))
+    parser.add_argument("--forecast-cache-root", default=str(DEFAULT_RLGPT_FORECAST_CACHE_ROOT))
+    parser.add_argument("--forecast-horizons", default=default_forecast_horizons_csv())
+    parser.add_argument("--validation-days", type=int, default=DEFAULT_RLGPT_VALIDATION_DAYS)
+    parser.add_argument("--epochs", type=int, default=DEFAULT_RLGPT_EPOCHS)
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_RLGPT_BATCH_SIZE)
+    parser.add_argument("--learning-rate", type=float, default=DEFAULT_RLGPT_LEARNING_RATE)
+    parser.add_argument("--weight-decay", type=float, default=DEFAULT_RLGPT_WEIGHT_DECAY)
+    parser.add_argument("--hidden-dim", type=int, default=DEFAULT_RLGPT_HIDDEN_DIM)
+    parser.add_argument("--depth", type=int, default=DEFAULT_RLGPT_DEPTH)
+    parser.add_argument("--heads", type=int, default=DEFAULT_RLGPT_HEADS)
+    parser.add_argument("--dropout", type=float, default=DEFAULT_RLGPT_DROPOUT)
+    parser.add_argument("--shared-unit-budget", type=float, default=DEFAULT_RLGPT_SHARED_UNIT_BUDGET)
+    parser.add_argument("--max-units-per-asset", type=float, default=DEFAULT_RLGPT_MAX_UNITS_PER_ASSET)
+    parser.add_argument("--initial-cash", type=float, default=DEFAULT_RLGPT_INITIAL_CASH)
+    parser.add_argument("--maker-fee-bps", type=float, default=DEFAULT_RLGPT_MAKER_FEE_BPS)
+    parser.add_argument("--slippage-bps", type=float, default=DEFAULT_RLGPT_SLIPPAGE_BPS)
+    parser.add_argument("--fill-buffer-bps", type=float, default=DEFAULT_RLGPT_FILL_BUFFER_BPS)
+    parser.add_argument("--fill-temperature-bps", type=float, default=DEFAULT_RLGPT_FILL_TEMPERATURE_BPS)
     parser.add_argument("--run-name")
-    parser.add_argument("--output-root", default="experiments/RLgpt")
+    parser.add_argument("--output-root", default=str(DEFAULT_RLGPT_OUTPUT_ROOT))
     parser.add_argument("--device")
-    parser.add_argument("--seed", type=int, default=1337)
-    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=DEFAULT_RLGPT_SEED)
+    parser.add_argument("--num-workers", type=int, default=DEFAULT_RLGPT_NUM_WORKERS)
     parser.add_argument("--max-train-days", type=int)
     parser.add_argument("--max-val-days", type=int)
-    parser.add_argument("--min-history-hours", type=int, default=24 * 45)
-    parser.add_argument("--sequence-length", type=int, default=72)
-    parser.add_argument("--max-feature-lookback-hours", type=int, default=24 * 7)
-    parser.add_argument("--min-bars-per-day", type=int, default=1)
+    parser.add_argument("--min-history-hours", type=int, default=DEFAULT_RLGPT_MIN_HISTORY_HOURS)
+    parser.add_argument("--sequence-length", type=int, default=DEFAULT_RLGPT_SEQUENCE_LENGTH)
+    parser.add_argument("--max-feature-lookback-hours", type=int, default=DEFAULT_RLGPT_MAX_FEATURE_LOOKBACK_HOURS)
+    parser.add_argument("--min-bars-per-day", type=int, default=DEFAULT_RLGPT_MIN_BARS_PER_DAY)
     parser.add_argument("--cache-only", action="store_true")
     parser.add_argument("--carry-inventory", action="store_true")
-    return parser.parse_args()
+    parser.add_argument("--check-config", action="store_true", help="Print a setup readiness report and exit.")
+    parser.add_argument("--print-config", action="store_true", help="Print the resolved training config and exit.")
+    return parser.parse_args(argv)
 
 
 def build_training_config(args: argparse.Namespace) -> TrainingConfig:
-    symbols = tuple(token.strip().upper() for token in args.symbols.split(",") if token.strip())
-    horizons = tuple(int(token.strip()) for token in args.forecast_horizons.split(",") if token.strip())
+    symbols = normalize_symbol_list(args.symbols.split(","))
+    horizons = parse_horizon_list(args.forecast_horizons)
     data_config = DailyPlanDataConfig(
         symbols=symbols,
         data_root=Path(args.data_root),
@@ -258,17 +303,20 @@ def build_training_config(args: argparse.Namespace) -> TrainingConfig:
     )
 
 
-def main() -> None:
-    args = parse_args()
-    result = run_training(build_training_config(args))
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    config = build_training_config(args)
+    if args.check_config:
+        payload = _training_preflight_payload(config)
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        if not payload["ready"]:
+            raise SystemExit(1)
+        return
+    if args.print_config:
+        print(json.dumps(_training_config_payload(config), indent=2, sort_keys=True))
+        return
+    result = run_training(config)
     print(json.dumps(result, indent=2))
-
-
-def _resolve_device(device: str | None) -> torch.device:
-    if device:
-        return torch.device(device)
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 
 def _default_run_name(symbols: tuple[str, ...]) -> str:
     suffix = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -290,6 +338,61 @@ def _json_ready(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): _json_ready(item) for key, item in value.items()}
     return value
+
+
+def _training_config_payload(config: TrainingConfig) -> dict[str, Any]:
+    payload = _json_ready(asdict(config))
+    payload["symbol_count"] = len(config.data.symbols)
+    payload["forecast_horizon_count"] = len(config.data.forecast_horizons)
+    payload["resolved_device"] = str(config.device or "auto")
+    return payload
+
+
+def _training_preflight_payload(config: TrainingConfig) -> dict[str, Any]:
+    errors = list(validate_training_config(config))
+    warnings_list: list[str] = []
+    data_root = Path(config.data.data_root)
+    forecast_cache_root = Path(config.data.forecast_cache_root)
+
+    data_root_exists = data_root.exists()
+    forecast_cache_root_exists = forecast_cache_root.exists()
+    missing_price_files: list[str] = []
+
+    if not data_root_exists:
+        errors.append(f"Hourly data root does not exist: {data_root}")
+    else:
+        missing_price_files = [
+            str(data_root / f"{symbol}.csv")
+            for symbol in config.data.symbols
+            if not (data_root / f"{symbol}.csv").exists()
+        ]
+        if missing_price_files:
+            errors.append(
+                "Missing hourly price CSVs for symbols: "
+                + ", ".join(Path(path).name for path in missing_price_files)
+            )
+
+    if config.data.cache_only and not forecast_cache_root_exists:
+        errors.append(
+            f"Forecast cache root does not exist in cache-only mode: {forecast_cache_root}"
+        )
+    elif config.data.cache_only:
+        warnings_list.append(
+            "Cache-only preflight checks the forecast cache root but not per-symbol forecast parquet coverage."
+        )
+
+    payload = _training_config_payload(config)
+    payload.update(
+        {
+            "ready": not errors,
+            "errors": errors,
+            "warnings": warnings_list,
+            "data_root_exists": data_root_exists,
+            "forecast_cache_root_exists": forecast_cache_root_exists,
+            "missing_price_files": missing_price_files,
+        }
+    )
+    return payload
 
 
 def _set_seed(seed: int) -> None:

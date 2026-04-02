@@ -4,7 +4,8 @@ This module standardizes device selection and tensor creation across
 the codebase. Previously duplicated across 30+ files.
 """
 
-from typing import Any
+import warnings
+from typing import Any, Callable
 
 import torch
 from numpy.typing import NDArray
@@ -47,6 +48,63 @@ def get_strategy_device(
             return torch.device("cpu")
 
     return torch.device("cuda")
+
+
+def resolve_runtime_device(requested: str | None = None) -> torch.device:
+    """Resolve a runtime device name, treating ``None`` as ``auto``.
+
+    ``auto`` prefers CUDA when it is currently available, otherwise CPU.
+    Explicit device strings are passed through to ``torch.device``.
+    """
+    token = (requested or "auto").strip().lower()
+    if token == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(token)
+
+
+def should_auto_fallback_to_cpu(
+    requested_device: str | None,
+    device: torch.device,
+    exc: BaseException,
+) -> bool:
+    """Return True when an auto-selected CUDA device should degrade to CPU."""
+    token = (requested_device or "auto").strip().lower()
+    if token != "auto" or device.type != "cuda":
+        return False
+    if isinstance(exc, torch.OutOfMemoryError):
+        return True
+    accelerator_error = getattr(torch, "AcceleratorError", None)
+    if accelerator_error is not None and isinstance(exc, accelerator_error):
+        return True
+    return "out of memory" in str(exc).lower()
+
+
+def move_module_to_runtime_device(
+    module: torch.nn.Module,
+    requested_device: str | None = None,
+    device: torch.device | None = None,
+    *,
+    context: str,
+    on_fallback: Callable[[str], None] | None = None,
+) -> tuple[torch.nn.Module, torch.device]:
+    """Move a module to the resolved runtime device with auto-CPU fallback.
+
+    When ``requested_device`` is ``auto`` and the selected CUDA device fails due
+    to resource pressure, this retries on CPU and emits a warning or callback.
+    """
+    resolved_device = device or resolve_runtime_device(requested_device)
+    try:
+        return module.to(resolved_device), resolved_device
+    except Exception as exc:
+        if not should_auto_fallback_to_cpu(requested_device, resolved_device, exc):
+            raise
+        message = f"{context}: auto-selected CUDA unavailable at runtime, falling back to CPU: {exc}"
+        if on_fallback is None:
+            warnings.warn(message, RuntimeWarning)
+        else:
+            on_fallback(message)
+        fallback_device = torch.device("cpu")
+        return module.to(fallback_device), fallback_device
 
 
 def to_tensor(
