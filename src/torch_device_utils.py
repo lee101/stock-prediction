@@ -76,7 +76,12 @@ def should_auto_fallback_to_cpu(
     accelerator_error = getattr(torch, "AcceleratorError", None)
     if accelerator_error is not None and isinstance(exc, accelerator_error):
         return True
-    return "out of memory" in str(exc).lower()
+    message = str(exc).lower()
+    return (
+        "out of memory" in message
+        or "cublas_status_alloc_failed" in message
+        or "cuda error: cublas_status_alloc_failed" in message
+    )
 
 
 def move_module_to_runtime_device(

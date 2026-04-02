@@ -122,6 +122,51 @@ def test_stock_probe_cpu_fast_uses_small_probe_shape():
     assert config.eval_num_episodes == 20
 
 
+def test_stock_stable_a40_large_universe_profiles_use_two_x_leverage_and_stability_guards():
+    expected = {
+        "stock_stable_2x_a40": "mlp",
+        "stock_stable_2x_a40_gspo": "mlp",
+        "stock_stable_2x_a40_resmlp": "resmlp",
+    }
+    for desc, arch in expected.items():
+        cfg = next(c for c in STOCK_EXPERIMENTS if c["description"] == desc)
+        config = build_config(cfg)
+        assert config.arch == arch
+        assert config.requires_gpu == "a40"
+        assert config.max_leverage == pytest.approx(2.0)
+        assert config.short_borrow_apr == pytest.approx(0.0001712)
+        assert config.no_cuda_graph is True
+        assert config.use_bf16 is False
+        assert config.max_grad_norm == pytest.approx(0.3)
+        assert config.grad_norm_warn_threshold == pytest.approx(20.0)
+        assert config.grad_norm_skip_threshold == pytest.approx(200.0)
+        assert config.unstable_update_patience == 6
+        assert config.min_lr == pytest.approx(5e-6)
+
+
+def test_stock_a40_neighbor_profiles_match_the_best_local_stock_cluster():
+    expected = {
+        "stock_ent05_tp03_a40_neighbor": {"trade_penalty": 0.03, "hidden_size": 1024, "seed": 42},
+        "stock_ent05_tp05_s123_a40_neighbor": {"trade_penalty": 0.05, "hidden_size": 1024, "seed": 123},
+        "stock_h512_reg_a40_neighbor": {"trade_penalty": 0.05, "hidden_size": 512, "seed": 42},
+        "stock_obsnorm_ent05_tp03_a40_neighbor": {"trade_penalty": 0.03, "hidden_size": 1024, "seed": 42},
+        "stock_tp05_seed55_a40_neighbor": {"trade_penalty": 0.05, "hidden_size": 1024, "seed": 55},
+        "stock_tp05_seed111_a40_neighbor": {"trade_penalty": 0.05, "hidden_size": 1024, "seed": 111},
+    }
+    for desc, fields in expected.items():
+        cfg = next(c for c in STOCK_EXPERIMENTS if c["description"] == desc)
+        config = build_config(cfg)
+        assert config.requires_gpu == "a40"
+        assert config.ent_coef == pytest.approx(0.05)
+        assert config.trade_penalty == pytest.approx(fields["trade_penalty"])
+        assert config.hidden_size == fields["hidden_size"]
+        assert config.seed == fields["seed"]
+        assert config.num_envs == 128
+        assert config.minibatch_size == 2048
+        assert config.use_bf16 is True
+        assert config.cuda_graph_ppo is True
+
+
 def test_stock_slippage_configs():
     expected = {"stock_slip_5bps": 5.0, "stock_slip_10bps": 10.0, "stock_slip_15bps": 15.0}
     for desc, bps in expected.items():

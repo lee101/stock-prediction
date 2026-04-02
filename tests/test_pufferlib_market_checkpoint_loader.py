@@ -305,6 +305,22 @@ def test_resolve_checkpoint_policy_details_caches_resmlp_block_count():
     assert resolved.effective_resmlp_blocks == 4
 
 
+def test_resolve_checkpoint_policy_details_keeps_mlp_relu_sq_activation():
+    state_dict = {
+        "encoder.0.weight": torch.zeros(32, 21),
+    }
+
+    resolved = resolve_checkpoint_policy_details(
+        {"model": state_dict, "arch": "mlp_relu_sq", "activation": "relu_sq"},
+        arch="mlp",
+        hidden_size=16,
+    )
+
+    assert resolved.effective_arch == "mlp_relu_sq"
+    assert resolved.effective_hidden_size == 32
+    assert resolved.effective_activation == "relu_sq"
+
+
 def test_load_policy_from_checkpoint_prefers_inferred_resmlp_metadata():
     state_dict = {
         "input_proj.weight": torch.zeros(32, 21),
@@ -359,6 +375,36 @@ def test_load_policy_from_checkpoint_reuses_cached_resmlp_block_count():
     assert isinstance(policy, _FakePolicy)
     assert policy.num_blocks == 4
     assert infer_blocks.call_count == 1
+
+
+def test_load_policy_from_checkpoint_passes_activation_to_mlp_factory():
+    state_dict = {"encoder.0.weight": torch.zeros(16, 21)}
+    captured: dict[str, object] = {}
+
+    policy, effective_arch, effective_hidden_size = load_policy_from_checkpoint(
+        ckpt={"model": state_dict, "arch": "mlp_relu_sq", "activation": "relu_sq"},
+        obs_size=21,
+        num_actions=9,
+        arch="mlp",
+        hidden_size=16,
+        device=torch.device("cpu"),
+        mlp_factory=lambda obs, acts, hidden, activation="relu": captured.update(
+            {
+                "obs": obs,
+                "acts": acts,
+                "hidden": hidden,
+                "activation": activation,
+            }
+        ) or _FakePolicy(obs, acts, hidden),
+        resmlp_factory=lambda obs, acts, hidden, num_blocks: _FakePolicy(
+            obs, acts, hidden, num_blocks=num_blocks
+        ),
+    )
+
+    assert effective_arch == "mlp_relu_sq"
+    assert effective_hidden_size == 16
+    assert isinstance(policy, _FakePolicy)
+    assert captured["activation"] == "relu_sq"
 
 
 def test_load_policy_from_checkpoint_uses_checkpoint_hidden_size_fallback():

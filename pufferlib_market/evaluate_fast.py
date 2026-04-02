@@ -35,11 +35,10 @@ from torch import nn
 
 from pufferlib_market.checkpoint_loader import (
     extract_checkpoint_state_dict,
-    infer_arch_from_state_dict,
-    infer_hidden_size_from_state_dict,
     infer_resmlp_blocks_from_state_dict,
     load_checkpoint_payload,
     resolve_checkpoint_action_grid_config,
+    resolve_checkpoint_policy_details,
 )
 
 
@@ -48,25 +47,39 @@ from pufferlib_market.checkpoint_loader import (
 # ---------------------------------------------------------------------------
 
 class TradingPolicy(nn.Module):
-    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256):
+    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256, activation: str = "relu"):
         super().__init__()
+        act = _get_activation(activation)
         self.encoder = nn.Sequential(
-            nn.Linear(obs_size, hidden), nn.ReLU(),
-            nn.Linear(hidden, hidden), nn.ReLU(),
-            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(obs_size, hidden), act,
+            nn.Linear(hidden, hidden), _get_activation(activation),
+            nn.Linear(hidden, hidden), _get_activation(activation),
         )
         self.actor = nn.Sequential(
-            nn.Linear(hidden, hidden // 2), nn.ReLU(),
+            nn.Linear(hidden, hidden // 2), _get_activation(activation),
             nn.Linear(hidden // 2, num_actions),
         )
         self.critic = nn.Sequential(
-            nn.Linear(hidden, hidden // 2), nn.ReLU(),
+            nn.Linear(hidden, hidden // 2), _get_activation(activation),
             nn.Linear(hidden // 2, 1),
         )
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         h = self.encoder(x)
         return self.actor(h), self.critic(h).squeeze(-1)
+
+
+class _ReLUSq(nn.Module):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.relu(x) ** 2
+
+
+def _get_activation(name: str) -> nn.Module:
+    if name == "relu_sq":
+        return _ReLUSq()
+    if name == "gelu":
+        return nn.GELU()
+    return nn.ReLU()
 
 
 class ResidualBlock(nn.Module):
@@ -123,7 +136,12 @@ def _load_policy_for_eval(
     hidden_size: int | None,
     device: torch.device,
 ) -> tuple[LoadedPolicy, dict[str, torch.Tensor]]:
-    state_dict = extract_checkpoint_state_dict(payload)
+    resolved = resolve_checkpoint_policy_details(
+        payload if isinstance(payload, dict) and "model" in payload else {"model": extract_checkpoint_state_dict(payload)},
+        arch=(arch if arch != "auto" else "mlp"),
+        hidden_size=(hidden_size if hidden_size is not None else 256),
+    )
+    state_dict = resolved.state_dict
 
     alloc_bins, level_bins, max_offset_bps = resolve_checkpoint_action_grid_config(
         payload,
@@ -134,15 +152,19 @@ def _load_policy_for_eval(
     per_sym_actions = max(1, alloc_bins) * max(1, level_bins)
     num_actions = 1 + 2 * num_symbols * per_sym_actions
 
-    if arch == "auto":
-        arch = infer_arch_from_state_dict(state_dict)
-    hidden = hidden_size if hidden_size is not None else infer_hidden_size_from_state_dict(state_dict, arch)
+    arch = resolved.effective_arch
+    hidden = resolved.effective_hidden_size
 
     if arch == "resmlp":
         num_blocks = infer_resmlp_blocks_from_state_dict(state_dict)
         policy = ResidualTradingPolicy(obs_size, num_actions, hidden=hidden, num_blocks=num_blocks).to(device)
     else:
-        policy = TradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
+        policy = TradingPolicy(
+            obs_size,
+            num_actions,
+            hidden=hidden,
+            activation=resolved.effective_activation,
+        ).to(device)
 
     missing, unexpected = policy.load_state_dict(state_dict, strict=False)
     ignored = {"obs_mean", "obs_std", "encoder_norm.weight", "encoder_norm.bias"}

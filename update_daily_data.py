@@ -20,7 +20,7 @@ import pandas as pd
 from loguru import logger
 
 from data_curate_daily import download_daily_stock_data
-from src.alpaca_stock_expansion import default_stock_expansion_candidates
+from src.alpaca_stock_expansion import default_stock_expansion_candidates, get_sp500_symbols
 from src.symbol_utils import is_crypto_symbol
 from src.trade_directions import DEFAULT_ALPACA_LIVE8_STOCKS
 
@@ -41,12 +41,13 @@ ZERO_DEFAULT_COLUMNS = {"volume", "trade_count"}
 SYMBOL_SET_ALIASES = {
     "stock-expansion": lambda: [candidate.symbol for candidate in default_stock_expansion_candidates()],
     "alpaca-live8": lambda: list(DEFAULT_ALPACA_LIVE8_STOCKS),
+    "sp500": lambda: list(get_sp500_symbols(use_cache=True)),
 }
 
 
 def _storage_symbol(symbol: str) -> str:
     """Canonical symbol name we use for filenames and within CSVs."""
-    return symbol.replace("/", "-").upper()
+    return symbol.replace("/", "-").replace(".", "-").upper()
 
 
 def _stem_to_symbol(stem: str) -> str:
@@ -58,8 +59,31 @@ def _stem_to_symbol(stem: str) -> str:
     return stem.upper()
 
 def _canonical_cli_symbol(symbol: str) -> str:
-    """Normalize CLI symbols to the canonical storage form (BTC/USD -> BTCUSD)."""
-    return symbol.replace("/", "").replace("-", "").upper()
+    """Normalize CLI symbols while preserving equity share-class markers."""
+    normalized = str(symbol or "").strip().upper()
+    if not normalized:
+        return ""
+    if normalized.endswith("-USD"):
+        return normalized.replace("-", "")
+    if "/" in normalized:
+        return normalized.replace("/", "")
+    return normalized.replace(".", "-")
+
+
+def _market_data_symbol(symbol: str) -> str:
+    """Translate canonical symbols to the format expected by Alpaca market data."""
+    normalized = str(symbol or "").strip().upper()
+    if not normalized:
+        return ""
+    if "/" in normalized or is_crypto_symbol(normalized):
+        return normalized
+    if "." in normalized:
+        return normalized
+    if "-" in normalized:
+        base, suffix = normalized.rsplit("-", 1)
+        if base and len(suffix) == 1 and suffix.isalnum():
+            return f"{base}.{suffix}"
+    return normalized
 
 
 def _split_symbol_tokens(raw: str) -> List[str]:
@@ -72,11 +96,37 @@ def _split_symbol_tokens(raw: str) -> List[str]:
 
 def _normalize_columns(frame: pd.DataFrame) -> pd.DataFrame:
     """Lowercase + underscore normalize column names for internal processing."""
-    renamed = {
-        col: col.strip().lower().replace(" ", "_")
-        for col in frame.columns
-    }
-    return frame.rename(columns=renamed)
+    normalized = frame.copy()
+    normalized.columns = [
+        str(col).strip().lower().replace(" ", "_")
+        for col in normalized.columns
+    ]
+    if not normalized.columns.has_duplicates:
+        return normalized
+
+    deduped = pd.DataFrame(index=normalized.index)
+    seen: set[str] = set()
+    for column in normalized.columns:
+        if column in seen:
+            continue
+        seen.add(column)
+        subset = normalized.loc[:, normalized.columns == column]
+        if isinstance(subset, pd.Series):
+            deduped[column] = subset
+            continue
+        # Legacy training files can contain both Open/open style columns. Prefer the
+        # first non-null value across duplicate normalized columns.
+        collapsed = subset.iloc[:, 0]
+        for idx in range(1, subset.shape[1]):
+            next_values = subset.iloc[:, idx]
+            if next_values.isna().all():
+                continue
+            if collapsed.isna().all():
+                collapsed = next_values
+                continue
+            collapsed = collapsed.combine_first(next_values)
+        deduped[column] = collapsed
+    return deduped
 
 
 def _prepare_training_frame(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
@@ -136,9 +186,15 @@ def _merge_training_frames(existing: pd.DataFrame, updates: pd.DataFrame) -> Tup
 
 def _find_latest_snapshot(symbol: str, snapshot_dir: Path) -> Optional[Path]:
     """Return the newest timestamped download for a symbol."""
-    safe = _storage_symbol(symbol)
-    pattern = f"{safe}-*.csv"
-    matches = sorted(snapshot_dir.glob(pattern))
+    stems = {
+        _storage_symbol(symbol),
+        _market_data_symbol(symbol).replace("/", "-"),
+    }
+    matches = sorted(
+        path
+        for stem in stems
+        for path in snapshot_dir.glob(f"{stem}-*.csv")
+    )
     if not matches:
         return None
     return matches[-1]
@@ -339,7 +395,13 @@ def write_sync_report(path: Path, rows: Sequence[Dict[str, Any]]) -> Path:
 def download_and_sync(symbols: Sequence[str], *, strict: bool = False) -> Dict[str, int]:
     """Download the latest bars and sync them into trainingdata/train."""
     logger.info("Updating {} symbols (strict={})", len(symbols), strict)
-    download_daily_stock_data(path="train", all_data_force=True, symbols=list(symbols), strict=strict)
+    download_symbols = [_market_data_symbol(symbol) for symbol in symbols]
+    download_daily_stock_data(
+        path="train",
+        all_data_force=True,
+        symbols=download_symbols,
+        strict=strict,
+    )
     snapshot_dir = SNAPSHOT_DIR
     snapshot_dir.mkdir(parents=True, exist_ok=True)
     training_dir = TRAINING_DIR

@@ -7,7 +7,10 @@ import numpy as np
 import gymnasium
 from pathlib import Path
 
-from pufferlib.emulation import GymnasiumPufferEnv
+try:
+    from pufferlib.emulation import GymnasiumPufferEnv
+except ModuleNotFoundError:
+    GymnasiumPufferEnv = None
 
 
 class TradingEnvConfig:
@@ -80,7 +83,7 @@ def _load_binding():
     return importlib.import_module("pufferlib_market.binding")
 
 
-class TradingEnv(GymnasiumPufferEnv):
+class TradingEnv(GymnasiumPufferEnv if GymnasiumPufferEnv is not None else object):
     """
     PufferLib C trading environment.
 
@@ -95,6 +98,11 @@ class TradingEnv(GymnasiumPufferEnv):
     """
 
     def __init__(self, config: TradingEnvConfig = None, buf=None):
+        if GymnasiumPufferEnv is None:
+            raise RuntimeError(
+                "TradingEnv requires pufferlib.emulation.GymnasiumPufferEnv, "
+                "which is not available in this PufferLib install."
+            )
         if config is None:
             config = TradingEnvConfig()
         self.config = config
@@ -130,6 +138,8 @@ class TradingEnv(GymnasiumPufferEnv):
             smooth_downside_temperature=config.smooth_downside_temperature,
             trade_penalty=config.trade_penalty,
             smoothness_penalty=config.smoothness_penalty,
+            fill_slippage_bps=config.fill_slippage_bps,
+            fill_probability=config.fill_probability,
             max_hold_hours=config.max_hold_hours,
             enable_drawdown_profit_early_exit=config.enable_drawdown_profit_early_exit,
             drawdown_profit_early_exit_verbose=config.drawdown_profit_early_exit_verbose,

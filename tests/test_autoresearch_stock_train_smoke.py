@@ -7,6 +7,11 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
+import torch
+
+
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="autoresearch trainer requires CUDA")
 
 
 def _hourly_market_timestamps(count: int) -> list[pd.Timestamp]:
@@ -58,6 +63,7 @@ def test_train_smoke_hourly(tmp_path: Path) -> None:
 
     env = os.environ.copy()
     env["AUTORESEARCH_STOCK_TIME_BUDGET_SECONDS"] = "1"
+    env["AUTORESEARCH_STOCK_CHECKPOINT_ROOT"] = str(tmp_path / "checkpoints")
 
     proc = subprocess.run(
         [
@@ -86,6 +92,7 @@ def test_train_smoke_hourly(tmp_path: Path) -> None:
             "16",
             "--layers",
             "1",
+            "--disable-auto-lr-find",
             "--dashboard-db",
             str(tmp_path / "missing.db"),
         ],
@@ -110,6 +117,7 @@ def test_train_smoke_hourly_timestamp_budget_head(tmp_path: Path) -> None:
 
     env = os.environ.copy()
     env["AUTORESEARCH_STOCK_TIME_BUDGET_SECONDS"] = "1"
+    env["AUTORESEARCH_STOCK_CHECKPOINT_ROOT"] = str(tmp_path / "checkpoints")
 
     proc = subprocess.run(
         [
@@ -138,6 +146,7 @@ def test_train_smoke_hourly_timestamp_budget_head(tmp_path: Path) -> None:
             "16",
             "--layers",
             "1",
+            "--disable-auto-lr-find",
             "--dashboard-db",
             str(tmp_path / "missing.db"),
             "--timestamp-budget-head",
@@ -163,6 +172,7 @@ def test_train_smoke_hourly_budget_guided_keep_count(tmp_path: Path) -> None:
 
     env = os.environ.copy()
     env["AUTORESEARCH_STOCK_TIME_BUDGET_SECONDS"] = "1"
+    env["AUTORESEARCH_STOCK_CHECKPOINT_ROOT"] = str(tmp_path / "checkpoints")
 
     proc = subprocess.run(
         [
@@ -191,6 +201,7 @@ def test_train_smoke_hourly_budget_guided_keep_count(tmp_path: Path) -> None:
             "16",
             "--layers",
             "1",
+            "--disable-auto-lr-find",
             "--dashboard-db",
             str(tmp_path / "missing.db"),
             "--budget-guided-keep-count",
@@ -216,6 +227,7 @@ def test_train_smoke_hourly_continuous_budget_thresholds(tmp_path: Path) -> None
 
     env = os.environ.copy()
     env["AUTORESEARCH_STOCK_TIME_BUDGET_SECONDS"] = "1"
+    env["AUTORESEARCH_STOCK_CHECKPOINT_ROOT"] = str(tmp_path / "checkpoints")
 
     proc = subprocess.run(
         [
@@ -244,6 +256,7 @@ def test_train_smoke_hourly_continuous_budget_thresholds(tmp_path: Path) -> None
             "16",
             "--layers",
             "1",
+            "--disable-auto-lr-find",
             "--dashboard-db",
             str(tmp_path / "missing.db"),
             "--continuous-budget-thresholds",
@@ -269,6 +282,7 @@ def test_train_smoke_hourly_budget_entropy_confidence(tmp_path: Path) -> None:
 
     env = os.environ.copy()
     env["AUTORESEARCH_STOCK_TIME_BUDGET_SECONDS"] = "1"
+    env["AUTORESEARCH_STOCK_CHECKPOINT_ROOT"] = str(tmp_path / "checkpoints")
 
     proc = subprocess.run(
         [
@@ -297,6 +311,7 @@ def test_train_smoke_hourly_budget_entropy_confidence(tmp_path: Path) -> None:
             "16",
             "--layers",
             "1",
+            "--disable-auto-lr-find",
             "--dashboard-db",
             str(tmp_path / "missing.db"),
             "--budget-entropy-confidence",
@@ -322,6 +337,7 @@ def test_train_smoke_hourly_budget_consensus_dispersion(tmp_path: Path) -> None:
 
     env = os.environ.copy()
     env["AUTORESEARCH_STOCK_TIME_BUDGET_SECONDS"] = "1"
+    env["AUTORESEARCH_STOCK_CHECKPOINT_ROOT"] = str(tmp_path / "checkpoints")
 
     proc = subprocess.run(
         [
@@ -350,6 +366,7 @@ def test_train_smoke_hourly_budget_consensus_dispersion(tmp_path: Path) -> None:
             "16",
             "--layers",
             "1",
+            "--disable-auto-lr-find",
             "--dashboard-db",
             str(tmp_path / "missing.db"),
             "--budget-consensus-dispersion",

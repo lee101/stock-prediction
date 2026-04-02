@@ -1456,6 +1456,7 @@ def execute_trades(
     state: dict,
     max_positions: int = MAX_POSITIONS,
     *,
+    paper: bool = True,
     market_order_entry: bool = False,
     entry_order_ttl_hours: float = 0.0,
     fee_rate: float = 0.0,
@@ -1466,7 +1467,7 @@ def execute_trades(
     account = get_account_info(api)
     equity = account["equity"]
     buying_power = account["buying_power"]
-    use_market_orders = bool(market_order_entry) and is_market_open_now()
+    use_market_orders = bool(market_order_entry) and is_market_open_now() and not bool(paper)
     log_event(
         "execute_trades_start",
         signal_symbols=sorted(str(symbol) for symbol in signals.keys()),
@@ -1946,6 +1947,7 @@ def run_cycle(
             signals,
             state,
             max_positions=max_positions,
+            paper=not bool(getattr(args, "live", False)),
             market_order_entry=bool(getattr(args, "market_order_entry", False)),
             entry_order_ttl_hours=float(getattr(args, "entry_order_ttl_hours", 0.0) or 0.0),
             fee_rate=float(getattr(args, "fee_rate", 0.0) or 0.0),

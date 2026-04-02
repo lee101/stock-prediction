@@ -147,6 +147,11 @@ class TrialConfig:
     eval_num_episodes: int = 100  # Final validation episodes after training.
     vf_coef: float = 0.5   # Value function loss coefficient (default 0.5)
     max_grad_norm: float = 0.5  # Gradient clipping norm (default 0.5)
+    grad_norm_warn_threshold: float = 50.0
+    grad_norm_skip_threshold: float = 1_000.0
+    unstable_update_patience: int = 3
+    lr_backoff_factor: float = 0.5
+    min_lr: float = 1e-6
 
 
 # Define experiment configurations to test
@@ -745,6 +750,72 @@ STOCK_EXPERIMENTS: list[dict] = [
      "hidden_size": 256, "trade_penalty": 0.05,
      "num_envs": 16, "rollout_len": 64, "minibatch_size": 256, "ppo_epochs": 2,
      "eval_num_episodes": 20},
+
+    # Near-neighbor stock presets around the best stocks12_v2_sweep_eval cluster:
+    # ent_coef=0.05, trade_penalty≈0.03-0.05, and h512 regularized variants.
+    {"description": "stock_ent05_tp03_a40_neighbor",
+     "ent_coef": 0.05, "trade_penalty": 0.03,
+     "num_envs": 128, "minibatch_size": 2048, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "a40"},
+    {"description": "stock_ent05_tp05_s123_a40_neighbor",
+     "ent_coef": 0.05, "trade_penalty": 0.05, "seed": 123,
+     "num_envs": 128, "minibatch_size": 2048, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "a40"},
+    {"description": "stock_h512_reg_a40_neighbor",
+     "hidden_size": 512, "obs_norm": True, "weight_decay": 0.05,
+     "fill_slippage_bps": 10.0, "trade_penalty": 0.05,
+     "num_envs": 128, "minibatch_size": 2048, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "a40"},
+    {"description": "stock_obsnorm_ent05_tp03_a40_neighbor",
+     "obs_norm": True, "weight_decay": 0.005, "ent_coef": 0.05, "trade_penalty": 0.03,
+     "num_envs": 128, "minibatch_size": 2048, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "a40"},
+    {"description": "stock_tp05_seed55_a40_neighbor",
+     "trade_penalty": 0.05, "seed": 55,
+     "num_envs": 128, "minibatch_size": 2048, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "a40"},
+    {"description": "stock_tp05_seed111_a40_neighbor",
+     "trade_penalty": 0.05, "seed": 111,
+     "num_envs": 128, "minibatch_size": 2048, "cuda_graph_ppo": True, "use_bf16": True,
+     "requires_gpu": "a40"},
+
+    # Large-universe stock profiles: tighter PPO stability guards, 2x leverage,
+    # and safer A40 settings for longer sweeps over broader symbol sets.
+    {"description": "stock_stable_2x_a40",
+     "hidden_size": 1024, "obs_norm": True, "weight_decay": 0.05,
+     "fill_slippage_bps": 8.0, "trade_penalty": 0.03,
+     "drawdown_penalty": 0.02, "smooth_downside_penalty": 0.2,
+     "smooth_downside_temperature": 0.01, "smoothness_penalty": 0.005,
+     "lr": 2e-4, "max_leverage": 2.0, "short_borrow_apr": 0.0001712,
+     "num_envs": 128, "minibatch_size": 2048, "ppo_epochs": 3,
+     "max_grad_norm": 0.3, "grad_norm_warn_threshold": 20.0,
+     "grad_norm_skip_threshold": 200.0, "unstable_update_patience": 6,
+     "lr_backoff_factor": 0.5, "min_lr": 5e-6,
+     "no_cuda_graph": True, "use_bf16": False, "requires_gpu": "a40"},
+    {"description": "stock_stable_2x_a40_gspo",
+     "hidden_size": 1024, "obs_norm": True, "weight_decay": 0.05,
+     "fill_slippage_bps": 8.0, "trade_penalty": 0.03,
+     "drawdown_penalty": 0.02, "smooth_downside_penalty": 0.2,
+     "smooth_downside_temperature": 0.01, "smoothness_penalty": 0.005,
+     "lr": 2e-4, "max_leverage": 2.0, "short_borrow_apr": 0.0001712,
+     "advantage_norm": "group_relative", "group_relative_size": 16,
+     "group_relative_mix": 0.15, "group_relative_clip": 1.0,
+     "num_envs": 128, "minibatch_size": 2048, "ppo_epochs": 3,
+     "max_grad_norm": 0.3, "grad_norm_warn_threshold": 20.0,
+     "grad_norm_skip_threshold": 200.0, "unstable_update_patience": 6,
+     "lr_backoff_factor": 0.5, "min_lr": 5e-6,
+     "no_cuda_graph": True, "use_bf16": False, "requires_gpu": "a40"},
+    {"description": "stock_stable_2x_a40_resmlp",
+     "arch": "resmlp", "hidden_size": 1024, "obs_norm": True, "weight_decay": 0.05,
+     "fill_slippage_bps": 8.0, "trade_penalty": 0.03,
+     "drawdown_penalty": 0.02, "smooth_downside_penalty": 0.2,
+     "smooth_downside_temperature": 0.01, "smoothness_penalty": 0.005,
+     "lr": 2e-4, "max_leverage": 2.0, "short_borrow_apr": 0.0001712,
+     "num_envs": 128, "minibatch_size": 2048, "ppo_epochs": 3,
+     "max_grad_norm": 0.3, "grad_norm_warn_threshold": 20.0,
+     "grad_norm_skip_threshold": 200.0, "unstable_update_patience": 6,
+     "lr_backoff_factor": 0.5, "min_lr": 5e-6,
+     "no_cuda_graph": True, "use_bf16": False, "requires_gpu": "a40"},
 
     # -----------------------------------------------------------------------
     # H100-scale configs: 256 parallel envs, minibatch 4096, BF16, CUDA graph
@@ -2709,6 +2780,16 @@ def run_trial(
         cmd.extend(["--vf-coef", str(config.vf_coef)])
     if config.max_grad_norm != 0.5:
         cmd.extend(["--max-grad-norm", str(config.max_grad_norm)])
+    if config.grad_norm_warn_threshold != 50.0:
+        cmd.extend(["--grad-norm-warn-threshold", str(config.grad_norm_warn_threshold)])
+    if config.grad_norm_skip_threshold != 1_000.0:
+        cmd.extend(["--grad-norm-skip-threshold", str(config.grad_norm_skip_threshold)])
+    if config.unstable_update_patience != 3:
+        cmd.extend(["--unstable-update-patience", str(config.unstable_update_patience)])
+    if config.lr_backoff_factor != 0.5:
+        cmd.extend(["--lr-backoff-factor", str(config.lr_backoff_factor)])
+    if config.min_lr != 1e-6:
+        cmd.extend(["--min-lr", str(config.min_lr)])
     if config.use_bf16:
         cmd.append("--use-bf16")
     if config.no_tf32:

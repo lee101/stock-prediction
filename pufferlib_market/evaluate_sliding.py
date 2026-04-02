@@ -67,17 +67,26 @@ class WindowResult:
 # ---------------------------------------------------------------------------
 
 class TradingPolicy(nn.Module):
-    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256):
+    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256, activation: str = "relu"):
         super().__init__()
         self.obs_size = obs_size
         self.num_actions = num_actions
+        self._activation_name = activation
         self.encoder = nn.Sequential(
-            nn.Linear(obs_size, hidden), nn.ReLU(),
-            nn.Linear(hidden, hidden), nn.ReLU(),
-            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(obs_size, hidden), _get_activation(activation),
+            nn.Linear(hidden, hidden), _get_activation(activation),
+            nn.Linear(hidden, hidden), _get_activation(activation),
         )
-        self.actor = nn.Sequential(nn.Linear(hidden, hidden // 2), nn.ReLU(), nn.Linear(hidden // 2, num_actions))
-        self.critic = nn.Sequential(nn.Linear(hidden, hidden // 2), nn.ReLU(), nn.Linear(hidden // 2, 1))
+        self.actor = nn.Sequential(
+            nn.Linear(hidden, hidden // 2),
+            _get_activation(activation),
+            nn.Linear(hidden // 2, num_actions),
+        )
+        self.critic = nn.Sequential(
+            nn.Linear(hidden, hidden // 2),
+            _get_activation(activation),
+            nn.Linear(hidden // 2, 1),
+        )
 
     def forward(self, x):
         h = self.encoder(x)
@@ -92,6 +101,19 @@ class TradingPolicy(nn.Module):
             return logits.argmax(dim=-1)
         from torch.distributions import Categorical
         return Categorical(logits=logits).sample()
+
+
+class _ReLUSq(nn.Module):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.relu(x) ** 2
+
+
+def _get_activation(name: str) -> nn.Module:
+    if name == "relu_sq":
+        return _ReLUSq()
+    if name == "gelu":
+        return nn.GELU()
+    return nn.ReLU()
 
 
 class _ResidualBlock(nn.Module):
@@ -146,7 +168,12 @@ def _load_policy_from_checkpoint(
         arch=arch,
         hidden_size=hidden_size,
         device=device,
-        mlp_factory=lambda obs, acts, hidden: TradingPolicy(obs, acts, hidden=hidden),
+        mlp_factory=lambda obs, acts, hidden, activation="relu": TradingPolicy(
+            obs,
+            acts,
+            hidden=hidden,
+            activation=activation,
+        ),
         resmlp_factory=lambda obs, acts, hidden, num_blocks: ResidualTradingPolicy(
             obs, acts, hidden=hidden, num_blocks=num_blocks
         ),

@@ -6,6 +6,7 @@ annualization, no-trade policy, and early-exit monkey-patching.
 
 from __future__ import annotations
 
+import math
 from unittest.mock import patch
 
 import numpy as np
@@ -294,6 +295,13 @@ def test_periods_per_year_annualization():
     assert annualize_total_return(0.10, periods=30.0, periods_per_year=0.0) == 0.0
     # Total loss.
     assert annualize_total_return(-1.0, periods=30.0, periods_per_year=252.0) == -1.0
+
+
+def test_annualize_total_return_clamps_extreme_positive_growth() -> None:
+    annualized = annualize_total_return(1e12, periods=1.0, periods_per_year=252.0)
+
+    assert math.isfinite(annualized)
+    assert annualized > 0.0
 
 
 # ---------------------------------------------------------------------------

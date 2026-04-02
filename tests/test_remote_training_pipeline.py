@@ -6,10 +6,12 @@ import pandas as pd
 import pytest
 
 from src.remote_training_pipeline import (
+    LARGE_UNIVERSE_STOCK_A40_DESCRIPTIONS,
     build_export_daily_fused_cmd,
     build_remote_chronos_compare_plan,
     build_remote_autoresearch_plan,
     build_remote_hourly_chronos_rl_plan,
+    build_remote_large_universe_stock_plan,
     compute_daily_overlap_bounds,
     compute_hourly_train_val_window,
     render_remote_pipeline_script,
@@ -258,6 +260,62 @@ def test_build_remote_chronos_compare_plan_generates_dual_branch_paths(tmp_path:
     assert list(plan.commands[5][:4]) == ["python", "-u", "-m", "pufferlib_market.export_data_daily_v4"]
     assert "compare123_hourly" in " ".join(plan.commands[7])
     assert "compare123_daily" in " ".join(plan.commands[8])
+
+
+def test_build_remote_large_universe_stock_plan_uses_ctx256_and_a40_descriptions(tmp_path: Path) -> None:
+    hourly_root = tmp_path / "hourly"
+    daily_root = tmp_path / "daily"
+    _write_hourly_csv(hourly_root / "AAA.csv", "2026-01-01 00:00:00+00:00", 900)
+    _write_hourly_csv(hourly_root / "BBB.csv", "2026-01-01 00:00:00+00:00", 900)
+    daily_root.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01", periods=60, freq="D", tz="UTC"),
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 1_000.0,
+        }
+    ).to_csv(daily_root / "AAA.csv", index=False)
+    pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01", periods=60, freq="D", tz="UTC"),
+            "open": 200.0,
+            "high": 201.0,
+            "low": 199.0,
+            "close": 200.5,
+            "volume": 2_000.0,
+        }
+    ).to_csv(daily_root / "BBB.csv", index=False)
+
+    plan = build_remote_large_universe_stock_plan(
+        run_id="stocks_a40_probe",
+        symbols=["AAA", "BBB"],
+        local_hourly_data_root=hourly_root,
+        remote_hourly_data_root="trainingdatahourly/stocks",
+        local_daily_data_root=daily_root,
+        remote_daily_data_root="trainingdatadaily/stocks",
+        train_hours=24 * 30,
+        val_hours=24 * 15,
+        gap_hours=24,
+        earliest_common_override="2026-01-01T00:00:00+00:00",
+        latest_common_override="2026-03-01T23:00:00+00:00",
+    )
+
+    assert plan.run_id == "stocks_a40_probe"
+    assert plan.symbols == ("AAA", "BBB")
+    lora_cmd = list(plan.commands[0])
+    assert lora_cmd[lora_cmd.index("--context-lengths") + 1] == "256"
+    assert lora_cmd[lora_cmd.index("--learning-rates") + 1] == "5e-05,0.0001"
+    assert lora_cmd[lora_cmd.index("--seeds") + 1] == "1337,2027,31415"
+    hourly_cmd = list(plan.commands[7])
+    daily_cmd = list(plan.commands[8])
+    assert hourly_cmd[hourly_cmd.index("--descriptions") + 1] == ",".join(LARGE_UNIVERSE_STOCK_A40_DESCRIPTIONS)
+    assert daily_cmd[daily_cmd.index("--descriptions") + 1] == ",".join(LARGE_UNIVERSE_STOCK_A40_DESCRIPTIONS)
+    assert daily_cmd[daily_cmd.index("--rank-metric") + 1] == "holdout_robust_score"
+    assert daily_cmd[daily_cmd.index("--max-steps-override") + 1] == "252"
+    assert daily_cmd[daily_cmd.index("--holdout-n-windows") + 1] == "24"
 
 
 def test_render_remote_pipeline_script_activates_env_and_runs_commands(tmp_path: Path) -> None:

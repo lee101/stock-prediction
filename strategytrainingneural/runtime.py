@@ -6,22 +6,18 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import pandas as pd
 import torch
+
+from src.torch_device_utils import move_module_to_runtime_device, resolve_runtime_device, should_auto_fallback_to_cpu
 
 from .data import load_daily_metrics
 from .feature_builder import FeatureBuilder, FeatureSpec
 from .models import PolicyConfig, PortfolioPolicy
 
 LOGGER = logging.getLogger(__name__)
-
-
-def _resolve_device(preferred: Optional[str] = None) -> torch.device:
-    if preferred:
-        return torch.device(preferred)
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 @dataclass
@@ -47,7 +43,8 @@ class NeuralStrategyEvaluator:
     ) -> None:
         self.run_dir = Path(run_dir)
         self.metrics_csv = Path(metrics_csv)
-        self.device = _resolve_device(device)
+        self.requested_device = device
+        self.device = resolve_runtime_device(device)
         self._feature_spec = self._load_spec()
         self._model = self._load_model()
         self._builder = self._init_builder()
@@ -75,9 +72,15 @@ class NeuralStrategyEvaluator:
         input_dim = len(self._feature_spec.feature_names)
         config = PolicyConfig(input_dim=input_dim)
         model = PortfolioPolicy(config)
-        state = torch.load(state_path, map_location=self.device)
+        state = torch.load(state_path, map_location="cpu")
         model.load_state_dict(state)
-        model.to(self.device)
+        model, self.device = move_module_to_runtime_device(
+            model,
+            requested_device=self.requested_device,
+            device=self.device,
+            context="Neural strategy evaluator model load",
+            on_fallback=LOGGER.warning,
+        )
         model.eval()
         return model
 
@@ -98,6 +101,25 @@ class NeuralStrategyEvaluator:
         if subset.empty:
             return None
         return subset.iloc[-1]
+
+    def _predict_weights(self, features) -> torch.Tensor:
+        tensor = torch.from_numpy(features.astype("float32"))
+        try:
+            with torch.inference_mode():
+                return self._model(tensor.to(self.device)).detach().cpu().numpy()
+        except Exception as exc:
+            if not should_auto_fallback_to_cpu(self.requested_device, self.device, exc):
+                raise
+            LOGGER.warning(
+                "Neural strategy evaluator inference auto-selected CUDA unavailable, falling back to CPU: %s",
+                exc,
+            )
+            self.device = torch.device("cpu")
+            self._model.to(self.device)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            with torch.inference_mode():
+                return self._model(tensor.to(self.device)).detach().cpu().numpy()
 
     def score_strategies(
         self,
@@ -122,9 +144,7 @@ class NeuralStrategyEvaluator:
 
         frame = pd.DataFrame(rows).reset_index(drop=True)
         features = self._builder.transform(frame)
-        with torch.inference_mode():
-            tensor = torch.from_numpy(features.astype("float32")).to(self.device)
-            weights = self._model(tensor).detach().cpu().numpy()
+        weights = self._predict_weights(features)
 
         scores: List[StrategyScore] = []
         for name, weight, (_, row) in zip(selected_names, weights, frame.iterrows()):
@@ -156,9 +176,7 @@ class NeuralStrategyEvaluator:
         if latest.empty:
             return {}
         features = self._builder.transform(latest)
-        with torch.inference_mode():
-            tensor = torch.from_numpy(features.astype("float32")).to(self.device)
-            weights = self._model(tensor).detach().cpu().numpy()
+        weights = self._predict_weights(features)
         return {strategy: float(weight) for strategy, weight in zip(latest["strategy"], weights)}
 
 

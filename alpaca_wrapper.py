@@ -321,8 +321,9 @@ def _can_use_market_order(symbol: str, is_closing_position: bool = False) -> Tup
 
     Market orders are only allowed when:
     1. NOT crypto (Alpaca executes crypto market orders at bid/ask midpoint, not market price)
-    2. Market is open (not during pre-market, after-hours, or overnight)
-    3. If closing a position, spread must be <= MARKET_ORDER_MAX_SPREAD_PCT
+    2. NOT paper equity trading (paper fills can be very unfavorable on the spread)
+    3. Market is open (not during pre-market, after-hours, or overnight)
+    4. If closing a position, spread must be <= MARKET_ORDER_MAX_SPREAD_PCT
 
     Args:
         symbol: The trading symbol
@@ -336,6 +337,12 @@ def _can_use_market_order(symbol: str, is_closing_position: bool = False) -> Tup
     # Use is_crypto_symbol for comprehensive coverage (handles both BTC/USD and BTCUSD formats)
     if is_crypto_symbol(symbol):
         return False, f"Crypto {symbol} - market orders execute at bid/ask midpoint, not market price (use limit orders for predictable fills)"
+
+    if _IS_PAPER:
+        return False, (
+            f"Paper trading disables stock market orders for {symbol} to avoid spread-sensitive fills "
+            "(use limit orders)"
+        )
 
     # Check if market is open (regular hours only, not pre-market/after-hours/overnight)
     clock = get_clock()
@@ -375,6 +382,39 @@ def _reference_price_for_notional(symbol: str, fallback_price: float = 0.0) -> f
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning(f"Failed to fetch reference price for {symbol}: {exc}")
         return 0.0
+
+
+def _midpoint_limit_price(symbol: str, side: str, fallback_price: float = 0.0, *, aggressiveness_bps: float = 0.0) -> float:
+    """Return a latest-quote midpoint-derived limit price.
+
+    For paper trading we want a defensible live quote midpoint instead of a market
+    order. An optional aggressiveness bias can nudge the limit slightly toward the
+    touch while still staying within the current spread.
+    """
+    try:
+        fallback_price = float(fallback_price or 0.0)
+    except Exception:
+        fallback_price = 0.0
+
+    try:
+        quote = latest_data(symbol)
+        bid_price = float(getattr(quote, "bid_price", 0) or 0)
+        ask_price = float(getattr(quote, "ask_price", 0) or 0)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug(f"Midpoint lookup skipped for {symbol}: {exc}")
+        return fallback_price
+
+    if bid_price <= 0 or ask_price <= 0:
+        return fallback_price or ask_price or bid_price or 0.0
+
+    midpoint = (ask_price + bid_price) / 2.0
+    bias = max(float(aggressiveness_bps or 0.0), 0.0) / 10_000.0
+    side_norm = str(side).strip().lower()
+    if is_buy_side(side_norm):
+        return min(midpoint * (1.0 + bias), ask_price)
+    if is_sell_side(side_norm):
+        return max(midpoint * (1.0 - bias), bid_price)
+    return midpoint
 
 
 def _passivize_limit_price(symbol: str, side: str, price: float) -> float:
@@ -438,11 +478,11 @@ def cancel_all_orders(retries=3):
 
 
 def open_market_order_violently(symbol, qty, side, retries=3):
-    """Submit a market order, with crypto fallback to midpoint limit.
+    """Submit a market order, with midpoint limit fallback when market orders are blocked.
 
-    Market orders are only allowed when the market is open. For crypto (or other
-    disallowed cases), we fall back to an immediate-or-cancel limit order at the
-    bid/ask midpoint to avoid paying taker fees at the far side of the spread.
+    Market orders are only allowed when policy says they are safe. When they are
+    blocked, we fall back to a latest-quote midpoint limit order instead of
+    crossing the spread with a market order.
 
     Args:
         symbol: Trading symbol
@@ -457,49 +497,43 @@ def open_market_order_violently(symbol, qty, side, retries=3):
     can_use, reason = _can_use_market_order(symbol, is_closing_position=False)
     if not can_use:
         logger.error(f"Market order blocked for {symbol}: {reason}")
-        if is_crypto_symbol(symbol):
-            # Crypto: fall back to midpoint limit IOC to avoid paying taker at worst side
-            try:
-                quote = latest_data(symbol)
-                ask_price = float(getattr(quote, "ask_price", 0) or 0)
-                bid_price = float(getattr(quote, "bid_price", 0) or 0)
-                if ask_price <= 0 or bid_price <= 0:
-                    logger.error(f"Cannot derive midpoint for {symbol}; ask={ask_price} bid={bid_price}")
-                    return None
-                midpoint = (ask_price + bid_price) / 2.0
-                midpoint = _passivize_limit_price(symbol, side, midpoint)
-                price_precision = 6
-                limit_price = round(midpoint, price_precision)
-                logger.info(
-                    "Falling back to crypto midpoint limit order for %s @ %.6f (bid=%.6f ask=%.6f)",
-                    symbol,
-                    limit_price,
-                    bid_price,
-                    ask_price,
-                )
-                # Enforce broker min notional using midpoint as reference
-                qty_for_notional = _enforce_min_notional(symbol, qty, limit_price)
-                result = alpaca_api.submit_order(
-                    order_data=LimitOrderRequest(
-                        symbol=remap_symbols(symbol),
-                        qty=qty_for_notional,
-                        side=side,
-                        type=OrderType.LIMIT,
-                        time_in_force="ioc",
-                        limit_price=str(limit_price),
-                    )
-                )
-                print(result)
-                return result
-            except Exception as exc:
-                logger.error(f"Midpoint limit fallback failed for {symbol}: {exc}")
-                if retries > 0:
-                    logger.info(f"Retrying midpoint limit for {symbol}, {retries} attempts left")
-                    return open_market_order_violently(symbol, qty, side, retries - 1)
+        try:
+            quote = latest_data(symbol)
+            ask_price = float(getattr(quote, "ask_price", 0) or 0)
+            bid_price = float(getattr(quote, "bid_price", 0) or 0)
+            if ask_price <= 0 or bid_price <= 0:
+                logger.error(f"Cannot derive midpoint for {symbol}; ask={ask_price} bid={bid_price}")
                 return None
-
-        logger.error("RETURNING None - Use limit orders instead for out-of-hours trading")
-        return None
+            midpoint = _midpoint_limit_price(symbol, side, (ask_price + bid_price) / 2.0)
+            price_precision = 6 if is_crypto_symbol(symbol) else 2
+            limit_price = round(midpoint, price_precision)
+            logger.info(
+                "Falling back to midpoint limit order for %s @ %s (bid=%.6f ask=%.6f)",
+                symbol,
+                limit_price,
+                bid_price,
+                ask_price,
+            )
+            qty_for_notional = _enforce_min_notional(symbol, qty, limit_price)
+            time_in_force = "ioc" if is_crypto_symbol(symbol) else _get_time_in_force_for_qty(qty_for_notional, symbol)
+            result = alpaca_api.submit_order(
+                order_data=LimitOrderRequest(
+                    symbol=remap_symbols(symbol),
+                    qty=qty_for_notional,
+                    side=side,
+                    type=OrderType.LIMIT,
+                    time_in_force=time_in_force,
+                    limit_price=str(limit_price),
+                )
+            )
+            print(result)
+            return result
+        except Exception as exc:
+            logger.error(f"Midpoint limit fallback failed for {symbol}: {exc}")
+            if retries > 0:
+                logger.info(f"Retrying midpoint limit fallback for {symbol}, {retries} attempts left")
+                return open_market_order_violently(symbol, qty, side, retries - 1)
+            return None
 
     # Enforce broker min notional (~$1) using latest quote as reference
     reference_price = _reference_price_for_notional(symbol)

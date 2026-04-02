@@ -27,12 +27,10 @@ from torch.distributions import Categorical
 
 from pufferlib_market.checkpoint_loader import (
     extract_checkpoint_state_dict,
-    infer_arch_from_state_dict,
-    infer_hidden_size_from_state_dict,
-    infer_resmlp_blocks_from_state_dict,
     load_checkpoint_payload,
     load_policy_from_resolved_metadata,
     resolve_checkpoint_action_grid_config,
+    resolve_checkpoint_policy_details,
 )
 from pufferlib_market.hourly_replay import MktdData, read_mktd, simulate_daily_policy
 from pufferlib_market.metrics import annualize_total_return
@@ -68,15 +66,16 @@ def _mask_disallowed_shorts(
 class TradingPolicy(nn.Module):
     """Must match pufferlib_market.train.TradingPolicy exactly."""
 
-    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256):
+    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256, activation: str = "relu"):
         super().__init__()
+        self._activation_name = activation
         self.encoder = nn.Sequential(
             nn.Linear(obs_size, hidden),
-            nn.ReLU(),
+            _get_activation(activation),
             nn.Linear(hidden, hidden),
-            nn.ReLU(),
+            _get_activation(activation),
             nn.Linear(hidden, hidden),
-            nn.ReLU(),
+            _get_activation(activation),
         )
         # encoder_norm added to train.py to prevent BF16 precision collapse.
         # _use_encoder_norm set by load_policy: True only for new ckpts that have this layer.
@@ -84,12 +83,12 @@ class TradingPolicy(nn.Module):
         self._use_encoder_norm = False
         self.actor = nn.Sequential(
             nn.Linear(hidden, hidden // 2),
-            nn.ReLU(),
+            _get_activation(activation),
             nn.Linear(hidden // 2, num_actions),
         )
         self.critic = nn.Sequential(
             nn.Linear(hidden, hidden // 2),
-            nn.ReLU(),
+            _get_activation(activation),
             nn.Linear(hidden // 2, 1),
         )
 
@@ -100,6 +99,19 @@ class TradingPolicy(nn.Module):
         logits = self.actor(h)
         value = self.critic(h).squeeze(-1)
         return logits, value
+
+
+class _ReLUSq(nn.Module):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.relu(x) ** 2
+
+
+def _get_activation(name: str) -> nn.Module:
+    if name == "relu_sq":
+        return _ReLUSq()
+    if name == "gelu":
+        return nn.GELU()
+    return nn.ReLU()
 
 
 class ResidualBlock(nn.Module):
@@ -206,20 +218,29 @@ def load_policy(
     if num_actions != fallback_actions:
         raise ValueError(f"Checkpoint num_actions={num_actions} does not match expected={fallback_actions}")
 
-    effective_arch = str(arch)
-    if effective_arch == "auto":
-        effective_arch = infer_arch_from_state_dict(state_dict)
-    effective_hidden = int(hidden_size) if hidden_size is not None else infer_hidden_size_from_state_dict(state_dict, effective_arch)
+    resolved = resolve_checkpoint_policy_details(
+        payload if isinstance(payload, dict) and "model" in payload else {"model": state_dict},
+        arch=(arch if arch != "auto" else "mlp"),
+        hidden_size=(hidden_size if hidden_size is not None else 256),
+    )
+    effective_arch = resolved.effective_arch
+    effective_hidden = resolved.effective_hidden_size
 
     policy = load_policy_from_resolved_metadata(
         state_dict=state_dict,
         effective_arch=effective_arch,
         effective_hidden_size=effective_hidden,
-        effective_resmlp_blocks=infer_resmlp_blocks_from_state_dict(state_dict) if effective_arch == "resmlp" else None,
+        effective_activation=resolved.effective_activation,
+        effective_resmlp_blocks=resolved.effective_resmlp_blocks,
         obs_size=obs_size,
         num_actions=num_actions,
         device=device,
-        mlp_factory=lambda obs_size, num_actions, hidden: TradingPolicy(obs_size, num_actions, hidden=hidden),
+        mlp_factory=lambda obs_size, num_actions, hidden, activation="relu": TradingPolicy(
+            obs_size,
+            num_actions,
+            hidden=hidden,
+            activation=activation,
+        ),
         resmlp_factory=(
             lambda obs_size, num_actions, hidden, num_blocks: ResidualTradingPolicy(
                 obs_size,

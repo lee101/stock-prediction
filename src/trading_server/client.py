@@ -85,6 +85,8 @@ class TradingServerAccountSnapshot(TypedDict):
     account: str
     mode: TradingMode
     cash: float
+    equity: NotRequired[float]
+    buying_power: NotRequired[float]
     realized_pnl: float
     positions: dict[str, TradingServerPositionPayload]
     open_orders: list[TradingServerOrderPayload]

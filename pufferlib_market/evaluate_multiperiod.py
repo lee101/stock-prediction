@@ -35,11 +35,10 @@ from torch.distributions import Categorical
 from pufferlib_market.checkpoint_loader import (
     build_action_grid_summary_line,
     extract_checkpoint_state_dict,
-    infer_arch_from_state_dict,
-    infer_hidden_size_from_state_dict,
     infer_resmlp_blocks_from_state_dict,
     load_checkpoint_payload,
     resolve_checkpoint_action_grid_config,
+    resolve_checkpoint_policy_details,
 )
 from pufferlib_market.evaluate_tail import (
     ResidualTradingPolicy,
@@ -100,15 +99,24 @@ def load_policy(
     fallback_actions = 1 + 2 * num_symbols
     num_actions = _infer_num_actions(state_dict, fallback=fallback_actions)
 
-    if arch == "auto":
-        arch = infer_arch_from_state_dict(state_dict)
-    hidden = hidden_size if hidden_size is not None else infer_hidden_size_from_state_dict(state_dict, arch)
+    resolved = resolve_checkpoint_policy_details(
+        payload if isinstance(payload, dict) and "model" in payload else {"model": state_dict},
+        arch=(arch if arch != "auto" else "mlp"),
+        hidden_size=(hidden_size if hidden_size is not None else 256),
+    )
+    arch = resolved.effective_arch
+    hidden = resolved.effective_hidden_size
 
     if arch == "resmlp":
         num_blocks = infer_resmlp_blocks_from_state_dict(state_dict)
         policy = ResidualTradingPolicy(obs_size, num_actions, hidden=hidden, num_blocks=num_blocks).to(device)
-    elif arch == "mlp":
-        policy = TradingPolicy(obs_size, num_actions, hidden=hidden).to(device)
+    elif arch in {"mlp", "mlp_relu_sq"}:
+        policy = TradingPolicy(
+            obs_size,
+            num_actions,
+            hidden=hidden,
+            activation=resolved.effective_activation,
+        ).to(device)
     else:
         raise ValueError(f"Unsupported arch: {arch}")
 

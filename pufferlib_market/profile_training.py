@@ -60,6 +60,13 @@ def run_pufferlib_profiling(
     duration_seconds: int,
     profiles_dir: Path,
     quick: bool = False,
+    *,
+    disable_triton: bool = False,
+    use_bf16: bool = False,
+    hidden_size: int = 1024,
+    num_envs: int = 64,
+    rollout_len: int = 256,
+    minibatch_size: int = 2048,
 ) -> None:
     """Run pufferlib training under torch.profiler and py-spy, write outputs.
 
@@ -74,12 +81,29 @@ def run_pufferlib_profiling(
     report_path = profiles_dir / "pufferlib_report.md"
     flamegraph_path = profiles_dir / "pufferlib_flamegraph.svg"
     timing_path = profiles_dir / "timing.json"
+    run_metrics_path = profiles_dir / "run_metrics.json"
 
     print(f"[pufferlib profiler] data={data_path}")
-    print(f"[pufferlib profiler] duration={duration_seconds}s, quick={quick}, output={profiles_dir}")
+    print(
+        "[pufferlib profiler] "
+        f"duration={duration_seconds}s, quick={quick}, output={profiles_dir}, "
+        f"hidden={hidden_size}, envs={num_envs}, rollout={rollout_len}, "
+        f"minibatch={minibatch_size}, bf16={use_bf16}, disable_triton={disable_triton}"
+    )
 
     # Build the inline training+profiling script
-    profiler_script = _build_pufferlib_profiler_script(data_path, str(trace_path), duration_seconds)
+    profiler_script = _build_pufferlib_profiler_script(
+        data_path=data_path,
+        trace_path=str(trace_path),
+        duration_seconds=duration_seconds,
+        run_metrics_path=str(run_metrics_path),
+        disable_triton=disable_triton,
+        use_bf16=use_bf16,
+        hidden_size=hidden_size,
+        num_envs=num_envs,
+        rollout_len=rollout_len,
+        minibatch_size=minibatch_size,
+    )
 
     # Write script to a temp file
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, dir="/tmp") as f:
@@ -120,22 +144,41 @@ def run_pufferlib_profiling(
 
         print(f"[pufferlib profiler] Training finished in {elapsed:.1f}s (exit={result.returncode})")
 
-        # Capture throughput stats to timing.json
-        num_envs = 64
-        rollout_len = 256
-        # Estimate updates from elapsed time; the profiling script runs until duration_seconds
-        estimated_updates = max(1, int(elapsed))
-        steps_per_update = num_envs * rollout_len
-        steps_per_sec = (estimated_updates * steps_per_update) / max(elapsed, 0.001)
-        updates_per_sec = estimated_updates / max(elapsed, 0.001)
+        # Capture throughput stats to timing.json using metrics emitted by the child run.
+        metrics: dict[str, object] = {}
+        if run_metrics_path.exists():
+            try:
+                metrics = json.loads(run_metrics_path.read_text())
+            except Exception:
+                metrics = {}
+
+        actual_updates = int(metrics.get("n_updates", 0) or 0)
+        train_wall_time = float(
+            metrics.get("train_loop_wall_time_s", metrics.get("wall_time_s", elapsed)) or elapsed
+        )
+        actual_num_envs = int(metrics.get("num_envs", num_envs) or num_envs)
+        actual_rollout_len = int(metrics.get("rollout_len", rollout_len) or rollout_len)
+        steps_per_update = actual_num_envs * actual_rollout_len
+        steps_per_sec = (actual_updates * steps_per_update) / max(train_wall_time, 0.001)
+        updates_per_sec = actual_updates / max(train_wall_time, 0.001)
 
         timing = {
             "steps_per_sec": round(steps_per_sec, 1),
             "updates_per_sec": round(updates_per_sec, 3),
-            "wall_time_s": round(elapsed, 1),
-            "n_updates": estimated_updates,
+            "wall_time_s": round(train_wall_time, 1),
+            "n_updates": actual_updates,
             "gpu_name": "unknown",
             "gpu_vram_gb": 0,
+            "hidden_size": hidden_size,
+            "num_envs": actual_num_envs,
+            "rollout_len": actual_rollout_len,
+            "minibatch_size": int(metrics.get("minibatch_size", minibatch_size) or minibatch_size),
+            "use_bf16": bool(metrics.get("use_bf16", use_bf16)),
+            "disable_triton": bool(metrics.get("disable_triton", disable_triton)),
+            "subprocess_wall_time_s": round(elapsed, 1),
+            "trace_export_wall_time_s": round(
+                float(metrics.get("trace_export_wall_time_s", 0.0) or 0.0), 3
+            ),
         }
         # Try to get GPU info
         try:
@@ -343,6 +386,13 @@ def _build_recommendations(
             "BF16 matmul to improve throughput."
         )
 
+    fused_mlp_ms = sum(ms for name, ms, _ in top_kernels if "_fused_mlp_relu_kernel" in name)
+    if fused_mlp_ms / total_ms > 0.3:
+        recs.append(
+            "[HIGH] Policy encoder/head matmuls dominate GPU time — optimize hidden size, "
+            "batch geometry, or policy architecture before investing in more C env work."
+        )
+
     # Check CPU functions
     func_names_lower = [f[0].lower() for f in top_functions[:5]]
     if any("ppo" in n or "update" in n for n in func_names_lower):
@@ -399,6 +449,12 @@ def generate_markdown_report(profiles_dir: Path) -> Path:
     n_updates = timing.get("n_updates", "N/A")
     gpu_name = timing.get("gpu_name", "unknown")
     gpu_vram = timing.get("gpu_vram_gb", "?")
+    hidden_size = timing.get("hidden_size", "?")
+    num_envs = timing.get("num_envs", "?")
+    rollout_len = timing.get("rollout_len", "?")
+    minibatch_size = timing.get("minibatch_size", "?")
+    use_bf16 = timing.get("use_bf16", False)
+    disable_triton = timing.get("disable_triton", False)
 
     lines = [
         f"# Training Profile Report — {date_str}",
@@ -408,6 +464,10 @@ def generate_markdown_report(profiles_dir: Path) -> Path:
         f"Steps/sec: {steps_per_sec}  |  PPO updates/sec: {updates_per_sec}  |  "
         f"Wall time ({n_updates} updates): {wall_time}s",
         f"GPU: {gpu_name}  |  VRAM used: {gpu_vram}GB",
+        (
+            f"Config: hidden={hidden_size}, envs={num_envs}, rollout={rollout_len}, "
+            f"minibatch={minibatch_size}, bf16={use_bf16}, disable_triton={disable_triton}"
+        ),
         "",
     ]
 
@@ -560,13 +620,26 @@ def _print_summary(trace_path: Path, report_path: Path, flamegraph_path: Path | 
         print(f"  {label}: {path} [{status}]")
 
 
-def _build_pufferlib_profiler_script(data_path: str, trace_path: str, duration_seconds: int) -> str:
+def _build_pufferlib_profiler_script(
+    *,
+    data_path: str,
+    trace_path: str,
+    duration_seconds: int,
+    run_metrics_path: str,
+    disable_triton: bool,
+    use_bf16: bool,
+    hidden_size: int,
+    num_envs: int,
+    rollout_len: int,
+    minibatch_size: int,
+) -> str:
     """Build the Python script that runs pufferlib training under torch.profiler."""
     return f'''#!/usr/bin/env python3
 """Auto-generated pufferlib profiling script."""
 import sys
 import time
 import os
+import json
 from pathlib import Path
 
 PROJECT_ROOT = Path({str(PROJECT_ROOT)!r})
@@ -581,6 +654,13 @@ PROF_SCHEDULE = schedule(skip_first=2, wait=1, warmup=1, active=5, repeat=1)
 TRACE_PATH = {trace_path!r}
 DATA_PATH = {data_path!r}
 DURATION_SECONDS = {duration_seconds}
+RUN_METRICS_PATH = {run_metrics_path!r}
+DISABLE_TRITON = {disable_triton!r}
+USE_BF16 = {use_bf16!r}
+HIDDEN_SIZE = {hidden_size}
+NUM_ENVS = {num_envs}
+ROLLOUT_LEN = {rollout_len}
+MINIBATCH_SIZE = {minibatch_size}
 
 # ── Build pufferlib training args ──
 import argparse
@@ -610,16 +690,16 @@ args = argparse.Namespace(
     drawdown_profit_early_exit_min_steps=20,
     drawdown_profit_early_exit_progress_fraction=0.5,
     short_borrow_apr=0.0,
-    num_envs=64,
+    num_envs=NUM_ENVS,
     seed=42,
-    hidden_size=1024,
+    hidden_size=HIDDEN_SIZE,
     arch="mlp",
     activation="relu",
     disable_shorts=True,
     total_timesteps=999_999_999,  # run until time limit
-    rollout_len=256,
+    rollout_len=ROLLOUT_LEN,
     ppo_epochs=4,
-    minibatch_size=2048,
+    minibatch_size=MINIBATCH_SIZE,
     lr=3e-4,
     gamma=0.99,
     gae_lambda=0.95,
@@ -658,21 +738,25 @@ args = argparse.Namespace(
     wandb_mode="disabled",
 )
 
-from pufferlib_market.environment import TradingEnvConfig, TradingEnv
+from pufferlib_market.environment import TradingEnvConfig
 import pufferlib_market.binding as binding
 import numpy as np
 import struct
+import pufferlib_market.kernels.fused_mlp as _fused_mlp
+if DISABLE_TRITON:
+    _fused_mlp.HAS_TRITON = False
+import pufferlib_market.kernels.fused_obs_encode as _fused_obs_encode
+if DISABLE_TRITON:
+    _fused_obs_encode.HAS_TRITON = False
 import torch.nn as nn
 import torch.optim as optim
-from torch.distributions import Categorical
 
-# Disable Triton fused kernels for profiling: they emit BF16 but the
-# surrounding Linear layers expect Float32, causing a dtype mismatch.
-import pufferlib_market.kernels.fused_mlp as _fused_mlp
-_fused_mlp.HAS_TRITON = False
-
-from pufferlib_market.train import TradingPolicy, get_activation, RunningObsNorm, _checkpoint_payload
+from pufferlib_market.train import (
+    TradingPolicy,
+    _policy_action_stats,
+)
 from src.torch_backend import configure_tf32_backends
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Device: {{device}}")
@@ -743,6 +827,7 @@ rew_store = np.zeros((rollout_len, num_envs), dtype=np.float32)
 done_store = np.zeros((rollout_len, num_envs), dtype=np.float32)
 next_obs = torch.from_numpy(obs_buf).to(device, dtype=torch.float32)
 next_done = torch.zeros(num_envs, device=device)
+shuffle_idx = torch.empty(rollout_len * num_envs, dtype=torch.long, device=device)
 
 activities = [ProfilerActivity.CPU]
 if torch.cuda.is_available():
@@ -752,6 +837,7 @@ print(f"Starting profiled training for {{DURATION_SECONDS}}s ...")
 deadline = time.perf_counter() + DURATION_SECONDS
 update = 0
 profiler_done = False
+train_start = time.perf_counter()
 
 with profile(
     activities=activities,
@@ -768,15 +854,14 @@ with profile(
                 done_store[step] = next_done.cpu().numpy()
 
                 logits, val = policy(next_obs)
-                dist = Categorical(logits=logits)
-                action = dist.sample()
-                logp = dist.log_prob(action)
+                action, logp, _ = _policy_action_stats(logits)
 
-                act_store[step] = action.cpu().numpy()
+                action_cpu = action.to(dtype=torch.int64, device="cpu")
+                act_store[step] = action_cpu.numpy()
                 logp_store[step] = logp.cpu().numpy()
                 val_store[step] = val.cpu().numpy()
 
-                act_buf[:] = action.cpu().numpy().astype(np.int32)
+                act_buf[:] = action_cpu.to(dtype=torch.int32).numpy()
                 binding.vec_step(vec_handle)
                 rew_store[step] = rew_buf.copy()
 
@@ -799,18 +884,19 @@ with profile(
         n_samples = rollout_len * num_envs
         mb_size = args.minibatch_size
         for _ in range(args.ppo_epochs):
-            idx = torch.randperm(n_samples, device=device)
+            torch.randperm(n_samples, device=device, out=shuffle_idx)
             for start in range(0, n_samples, mb_size):
-                mb_idx = idx[start:start + mb_size]
+                mb_idx = shuffle_idx[start:start + mb_size]
                 mb_obs = b_obs[mb_idx]
                 mb_act = b_act[mb_idx]
                 mb_logp_old = b_logp_old[mb_idx]
                 mb_adv = b_adv[mb_idx]
 
-                logits, val = policy(mb_obs)
-                dist = Categorical(logits=logits)
-                logp = dist.log_prob(mb_act)
-                entropy = dist.entropy()
+                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=USE_BF16 and device.type == "cuda"):
+                    logits, val = policy(mb_obs)
+                logits = logits.float()
+                val = val.float()
+                _, logp, entropy = _policy_action_stats(logits, mb_act)
 
                 ratio = torch.exp(logp - mb_logp_old)
                 pg_loss = -torch.min(
@@ -820,7 +906,7 @@ with profile(
                 vf_loss = val.pow(2).mean()
                 loss = pg_loss + args.vf_coef * vf_loss - args.ent_coef * entropy.mean()
 
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 nn.utils.clip_grad_norm_(policy.parameters(), args.max_grad_norm)
                 optimizer.step()
@@ -836,8 +922,21 @@ with profile(
             print(f"  update={{update}}, elapsed={{elapsed:.1f}}s")
 
 print(f"Profiling complete, {{update}} updates total")
+train_loop_wall_time_s = time.perf_counter() - train_start
 print(f"Exporting trace to {{TRACE_PATH}} ...")
+trace_export_start = time.perf_counter()
 prof.export_chrome_trace(TRACE_PATH)
+run_metrics = {{
+    "n_updates": int(update),
+    "train_loop_wall_time_s": round(train_loop_wall_time_s, 4),
+    "trace_export_wall_time_s": round(time.perf_counter() - trace_export_start, 4),
+    "num_envs": int(num_envs),
+    "rollout_len": int(rollout_len),
+    "minibatch_size": int(args.minibatch_size),
+    "use_bf16": bool(USE_BF16),
+    "disable_triton": bool(DISABLE_TRITON),
+}}
+Path(RUN_METRICS_PATH).write_text(json.dumps(run_metrics))
 print("Done.")
 '''
 
@@ -873,6 +972,22 @@ def main() -> None:
         default=False,
         help="Skip profiling, just generate report.md from existing profile files",
     )
+    parser.add_argument(
+        "--disable-triton",
+        action="store_true",
+        default=False,
+        help="Force-disable Triton fused kernels inside the profiling harness.",
+    )
+    parser.add_argument(
+        "--use-bf16",
+        action="store_true",
+        default=False,
+        help="Profile PPO forward under BF16 autocast to mirror train.py --use-bf16.",
+    )
+    parser.add_argument("--hidden-size", type=int, default=1024, help="Policy hidden size for the profiling run.")
+    parser.add_argument("--num-envs", type=int, default=64, help="Vectorized env count for the profiling run.")
+    parser.add_argument("--rollout-len", type=int, default=256, help="Rollout length for the profiling run.")
+    parser.add_argument("--minibatch-size", type=int, default=2048, help="PPO minibatch size for the profiling run.")
     args = parser.parse_args()
 
     if args.report_only:
@@ -886,7 +1001,18 @@ def main() -> None:
         return
 
     data_path = args.data_path or find_data_file(PROJECT_ROOT)
-    run_pufferlib_profiling(data_path, args.duration, args.output_dir, quick=args.quick)
+    run_pufferlib_profiling(
+        data_path,
+        args.duration,
+        args.output_dir,
+        quick=args.quick,
+        disable_triton=args.disable_triton,
+        use_bf16=args.use_bf16,
+        hidden_size=args.hidden_size,
+        num_envs=args.num_envs,
+        rollout_len=args.rollout_len,
+        minibatch_size=args.minibatch_size,
+    )
 
 
 if __name__ == "__main__":

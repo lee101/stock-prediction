@@ -150,6 +150,8 @@ def test_build_daily_hybrid_prompt_includes_previous_state_and_forecasts():
     assert "Current signed allocation: +1.10x" in prompt
     assert "Refined target allocation: +2.75x" in prompt
     assert "Overnight capped allocation: +2.00x" in prompt
+    assert "maximize expected realized PnL net fees and slippage" in prompt
+    assert "up to the 2.0x stock cap" in prompt
     assert "Previous Chronos2 forecast error vs realized move: +1.25%" in prompt
     assert "MSFT: SHORT" in prompt
     assert "Opened prior position" in prompt
@@ -374,6 +376,9 @@ def test_refine_trade_plan_multistage_alternates_rl_and_llm() -> None:
     )
 
     assert len(prompts) == 3
+    assert "Refinement turn: 1/3" in prompts[0]
+    assert "Refinement turn: 2/3" in prompts[1]
+    assert "Refinement turn: 3/3" in prompts[2]
     assert "Pass stage: sweeping" in prompts[0]
     assert "Pass stage: medium" in prompts[1]
     assert "Pass stage: minor" in prompts[2]

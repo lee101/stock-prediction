@@ -172,23 +172,29 @@ def test_open_order_at_price_or_all_adjusts_on_insufficient_balance():
 
 
 def test_market_order_blocked_when_market_closed():
-    """Market orders should be blocked when market is closed."""
+    """Paper stock market orders should fall back to midpoint limits when blocked."""
     # Create a mock clock that says market is closed
     mock_clock = MagicMock()
     mock_clock.is_open = False
 
+    mock_quote = MagicMock()
+    mock_quote.ask_price = 101.0
+    mock_quote.bid_price = 100.0
+
     with patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
-         patch("alpaca_wrapper.alpaca_api.submit_order") as submit:
+         patch("alpaca_wrapper.latest_data", return_value=mock_quote), \
+         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw), \
+         patch("alpaca_wrapper.alpaca_api.submit_order", return_value="limit_ok") as submit:
 
         result = open_market_order_violently("AAPL", 10, "buy")
 
-        # Should return None and not call submit_order
-        assert result is None
-        assert submit.call_count == 0
+        assert result == "limit_ok"
+        assert submit.call_count == 1
+        assert submit.call_args.kwargs["order_data"]["limit_price"] == "100.5"
 
 
-def test_crypto_market_order_falls_back_to_passive_limit():
-    """Crypto market orders should fall back to passive midpoint/bid limit IOC to avoid taker fills."""
+def test_crypto_market_order_falls_back_to_midpoint_limit():
+    """Crypto market orders should fall back to midpoint limit IOC."""
     # Create a mock clock that says market is open
     mock_clock = MagicMock()
     mock_clock.is_open = True
@@ -209,8 +215,7 @@ def test_crypto_market_order_falls_back_to_passive_limit():
         assert submit.call_count == 1
         order_data = submit.call_args.kwargs["order_data"]
         assert order_data["time_in_force"] == "ioc"
-        # Passive clamp should cap buy price at bid (49900)
-        assert order_data["limit_price"] == str(round(49900.0, 6))
+        assert order_data["limit_price"] == str(round(49950.0, 6))
 
 
 def test_passivize_limit_buy_uses_bid():
@@ -259,7 +264,8 @@ def test_market_order_allowed_when_market_open():
     mock_clock = MagicMock()
     mock_clock.is_open = True
 
-    with patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
+    with patch("alpaca_wrapper._IS_PAPER", False), \
+         patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
          patch("alpaca_wrapper.MarketOrderRequest", side_effect=lambda **kw: kw), \
          patch("alpaca_wrapper.alpaca_api.submit_order", return_value="order_ok") as submit:
 
@@ -279,7 +285,8 @@ def test_market_order_qty_bumped_to_min_notional():
     mock_quote.ask_price = 0.20
     mock_quote.bid_price = 0.20
 
-    with patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
+    with patch("alpaca_wrapper._IS_PAPER", False), \
+         patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
          patch("alpaca_wrapper.latest_data", return_value=mock_quote), \
          patch("alpaca_wrapper.MarketOrderRequest", side_effect=lambda **kw: kw), \
          patch("alpaca_wrapper.alpaca_api.submit_order", return_value="order_ok") as submit:
@@ -342,7 +349,8 @@ def test_market_order_allowed_when_spread_acceptable():
     mock_quote.ask_price = 100.5
     mock_quote.bid_price = 100.0  # 0.5% spread
 
-    with patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
+    with patch("alpaca_wrapper._IS_PAPER", False), \
+         patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
          patch("alpaca_wrapper.latest_data", return_value=mock_quote), \
          patch("alpaca_wrapper.MarketOrderRequest", side_effect=lambda **kw: kw), \
          patch("alpaca_wrapper.alpaca_api.submit_order", return_value="order_ok") as submit:
@@ -352,6 +360,29 @@ def test_market_order_allowed_when_spread_acceptable():
         # Should succeed
         assert result == "order_ok"
         assert submit.call_count == 1
+
+
+def test_paper_stock_market_order_falls_back_to_limit():
+    """Paper stock orders should never submit a market request."""
+    mock_clock = MagicMock()
+    mock_clock.is_open = True
+
+    mock_quote = MagicMock()
+    mock_quote.ask_price = 101.0
+    mock_quote.bid_price = 100.0
+
+    with patch("alpaca_wrapper.get_clock", return_value=mock_clock), \
+         patch("alpaca_wrapper.latest_data", return_value=mock_quote), \
+         patch("alpaca_wrapper.LimitOrderRequest", side_effect=lambda **kw: kw), \
+         patch("alpaca_wrapper.alpaca_api.submit_order", return_value="limit_ok") as submit:
+
+        result = open_market_order_violently("AAPL", 10, "buy")
+
+    assert result == "limit_ok"
+    assert submit.call_count == 1
+    order_data = submit.call_args.kwargs["order_data"]
+    assert order_data["limit_price"] == "100.5"
+    assert "limit_price" in order_data
 
 
 def test_limit_order_allowed_when_market_closed():

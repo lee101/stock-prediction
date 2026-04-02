@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from scripts.build_hourly_forecast_caches import _resolve_model_runtime
+from pathlib import Path
+
+from scripts.build_hourly_forecast_caches import _load_symbols_from_file, _resolve_model_runtime
 
 
 def test_resolve_model_runtime_uses_symbol_defaults_without_override() -> None:
@@ -58,3 +60,10 @@ def test_resolve_model_runtime_builds_single_cached_wrapper_for_override(monkeyp
             "quantile_levels": (0.2, 0.5, 0.8),
         }
     ]
+
+
+def test_load_symbols_from_file_supports_comments_commas_and_dedup(tmp_path: Path) -> None:
+    path = tmp_path / "symbols.txt"
+    path.write_text("aapl, msft\n# ignore\nAAPL\nNVDA\n", encoding="utf-8")
+
+    assert _load_symbols_from_file(path) == ["AAPL", "MSFT", "NVDA"]

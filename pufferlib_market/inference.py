@@ -24,11 +24,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from pufferlib_market.checkpoint_loader import (
     extract_checkpoint_state_dict,
-    infer_arch_from_state_dict,
-    infer_hidden_size_from_state_dict,
     infer_resmlp_blocks_from_state_dict,
     load_checkpoint_payload,
     resolve_checkpoint_action_grid_config,
+    resolve_checkpoint_policy_details,
 )
 
 
@@ -155,16 +154,30 @@ class PPOTrader:
             self.per_symbol_actions = 1
             self.side_block = self.num_symbols
 
-        arch = infer_arch_from_state_dict(state_dict)
-        hidden = infer_hidden_size_from_state_dict(state_dict, arch)
+        resolved = resolve_checkpoint_policy_details(
+            ckpt if isinstance(ckpt, Mapping) and "model" in ckpt else {"model": state_dict},
+            arch=(str(ckpt.get("arch", "mlp")) if isinstance(ckpt, Mapping) else "mlp"),
+            hidden_size=(int(ckpt.get("hidden_size", 256)) if isinstance(ckpt, Mapping) else 256),
+        )
+        arch = resolved.effective_arch
+        hidden = resolved.effective_hidden_size
         self.arch = str(arch)
         self.hidden_size = int(hidden)
 
-        if arch == "mlp":
-            has_encoder_norm = any("encoder_norm" in k for k in state_dict)
+        if arch in {"mlp", "mlp_relu_sq"}:
+            if isinstance(ckpt, Mapping) and "use_encoder_norm" in ckpt:
+                has_encoder_norm = bool(ckpt["use_encoder_norm"])
+            else:
+                has_encoder_norm = any("encoder_norm" in k for k in state_dict)
             from pufferlib_market.train import TradingPolicy  # noqa: PLC0415
 
-            self.policy = TradingPolicy(self.obs_size, self.num_actions, hidden, use_encoder_norm=has_encoder_norm)
+            self.policy = TradingPolicy(
+                self.obs_size,
+                self.num_actions,
+                hidden,
+                activation=resolved.effective_activation,
+                use_encoder_norm=has_encoder_norm,
+            )
         elif arch == "resmlp":
             blocks = infer_resmlp_blocks_from_state_dict(state_dict)
             self.policy = Policy(self.obs_size, self.num_actions, hidden, blocks)

@@ -186,3 +186,28 @@ def test_trainer_falls_back_to_cpu_when_auto_cuda_is_unavailable() -> None:
     assert moved is model
     assert trainer.device.type == "cpu"
     assert calls == ["cuda", "cpu"]
+
+
+def test_trainer_falls_back_to_cpu_when_initial_forward_cuda_is_unavailable(monkeypatch) -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cfg = _make_config(tmpdir, wandb_project=None)
+        trainer = BinanceHourlyTrainer(cfg, _SyntheticDataModule())
+        trainer.device = torch.device("cuda")
+
+        model = torch.nn.Linear(16, 32)
+        original_tensor_to = torch.Tensor.to
+
+        def flaky_tensor_to(self, *args, **kwargs):
+            device = kwargs.get("device")
+            if device is None and args:
+                device = args[0]
+            if device is not None and torch.device(device).type == "cuda":
+                raise RuntimeError("CUDA error: CUBLAS_STATUS_ALLOC_FAILED when calling `cublasCreate(handle)`")
+            return original_tensor_to(self, *args, **kwargs)
+
+        monkeypatch.setattr(torch.Tensor, "to", flaky_tensor_to)
+
+        moved = trainer._probe_model_runtime_device(model)
+
+    assert moved is model
+    assert trainer.device.type == "cpu"

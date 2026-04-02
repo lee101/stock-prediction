@@ -35,6 +35,27 @@ def _reference(x, W1, b1, W2, b2):
     return F.linear(h, W2.float(), b2.float())
 
 
+def _reference_bf16(x, W1, b1, W2, b2):
+    """Sequential BF16 reference used by the inference-only Triton public path."""
+    h = F.linear(x, W1, b1)
+    h = F.relu(h)
+    return F.linear(h, W2, b2)
+
+
+def _run_public_fused_mlp(x, W1, b1, W2, b2):
+    """Exercise the public API under the same contract production uses.
+
+    The Triton kernel is inference-only and only selected when gradients are
+    disabled, so CUDA correctness tests should mirror that call pattern.
+    """
+    from pufferlib_market.kernels.fused_mlp import fused_mlp_relu, HAS_TRITON
+
+    if HAS_TRITON and x.is_cuda:
+        with torch.no_grad():
+            return fused_mlp_relu(x, W1, b1, W2, b2)
+    return fused_mlp_relu(x, W1, b1, W2, b2)
+
+
 def _is_cuda_resource_pressure_error(exc: BaseException) -> bool:
     return "out of memory" in str(exc).lower()
 
@@ -95,21 +116,19 @@ def test_fused_mlp_correctness(device, cc, hidden_size, batch_size):
     x = _allocate_on_device_or_skip(torch.randn, batch_size, in_dim, device=device, dtype=torch.bfloat16)
     W1, b1, W2, b2 = _build_weights(in_dim, hidden_size, out_dim, device)
 
-    # Reference in FP32
-    ref = _reference(x, W1, b1, W2, b2)
-
     if HAS_TRITON:
-        out = fused_mlp_relu(x, W1, b1, W2, b2)
+        ref = _reference_bf16(x, W1, b1, W2, b2)
+        out = _run_public_fused_mlp(x, W1, b1, W2, b2)
         assert out.shape == (batch_size, out_dim), f"Shape mismatch: {out.shape}"
-        # BF16 has ~1% relative error; use generous atol since we're checking
-        # accumulated matmul results across large hidden dims.
+        # Triton public path mirrors BF16 PyTorch math for inference.
         torch.testing.assert_close(
             out.float(), ref.float(),
-            atol=1e-1, rtol=1e-1,
+            atol=5e-2, rtol=1e-2,
             msg=f"Fused MLP mismatch at CC {cc[0]}.{cc[1]}, hidden={hidden_size}, batch={batch_size}",
         )
     else:
         # Fallback path: verify PyTorch fallback is correct
+        ref = _reference(x, W1, b1, W2, b2)
         out = fused_mlp_relu(x, W1, b1, W2, b2)
         torch.testing.assert_close(out.float(), ref.float(), atol=1e-1, rtol=1e-1)
 
@@ -117,23 +136,23 @@ def test_fused_mlp_correctness(device, cc, hidden_size, batch_size):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_fused_mlp_correctness_small_batch(device, cc):
     """Edge case: batch size 1."""
-    from pufferlib_market.kernels.fused_mlp import fused_mlp_relu
+    from pufferlib_market.kernels.fused_mlp import HAS_TRITON
 
     torch.manual_seed(7)
     in_dim, hidden, out_dim = 64, 128, 64
     x = _allocate_on_device_or_skip(torch.randn, 1, in_dim, device=device, dtype=torch.bfloat16)
     W1, b1, W2, b2 = _build_weights(in_dim, hidden, out_dim, device)
 
-    ref = _reference(x, W1, b1, W2, b2)
-    out = fused_mlp_relu(x, W1, b1, W2, b2)
-    torch.testing.assert_close(out.float(), ref.float(), atol=1e-1, rtol=1e-1)
+    ref = _reference_bf16(x, W1, b1, W2, b2) if HAS_TRITON else _reference(x, W1, b1, W2, b2)
+    out = _run_public_fused_mlp(x, W1, b1, W2, b2)
+    atol = 5e-2 if HAS_TRITON else 1e-1
+    rtol = 1e-2 if HAS_TRITON else 1e-1
+    torch.testing.assert_close(out.float(), ref.float(), atol=atol, rtol=rtol)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_fused_mlp_correctness_relu_gating(device):
     """Verify ReLU is actually applied: negative pre-activations should be zeroed."""
-    from pufferlib_market.kernels.fused_mlp import fused_mlp_relu
-
     # Craft a W1 that produces all-negative hidden activations for a known x.
     in_dim, hidden, out_dim = 32, 64, 32
     x = _allocate_on_device_or_skip(torch.ones, 4, in_dim, device=device, dtype=torch.bfloat16)
@@ -143,7 +162,7 @@ def test_fused_mlp_correctness_relu_gating(device):
     W2 = _allocate_on_device_or_skip(torch.randn, out_dim, hidden, device=device, dtype=torch.bfloat16)
     b2 = _allocate_on_device_or_skip(torch.zeros, out_dim, device=device, dtype=torch.bfloat16)
 
-    out = fused_mlp_relu(x, W1, b1, W2, b2)
+    out = _run_public_fused_mlp(x, W1, b1, W2, b2)
     # After ReLU kills all hidden activations, output should equal b2 = 0
     assert out.abs().max().item() < 1e-3, f"ReLU not applied correctly; max abs = {out.abs().max().item()}"
 
@@ -155,7 +174,7 @@ def test_fused_mlp_correctness_relu_gating(device):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_fused_mlp_dtype_bf16_output(device):
     """Fused kernel must produce BF16 output when Triton is active."""
-    from pufferlib_market.kernels.fused_mlp import fused_mlp_relu, HAS_TRITON
+    from pufferlib_market.kernels.fused_mlp import HAS_TRITON
 
     if not HAS_TRITON:
         pytest.skip("Triton not available")
@@ -164,7 +183,7 @@ def test_fused_mlp_dtype_bf16_output(device):
     x = _allocate_on_device_or_skip(torch.randn, 128, in_dim, device=device, dtype=torch.bfloat16)
     W1, b1, W2, b2 = _build_weights(in_dim, hidden, out_dim, device)
 
-    out = fused_mlp_relu(x, W1, b1, W2, b2)
+    out = _run_public_fused_mlp(x, W1, b1, W2, b2)
     assert out.dtype == torch.bfloat16, f"Expected BF16 output, got {out.dtype}"
 
 
@@ -175,13 +194,11 @@ def test_fused_mlp_dtype_castable_to_policy_weights(device):
     This exercises the BF16 dtype bug documented in MEMORY.md: fused_mlp output
     must be cast to encoder.weight.dtype before being passed to the next layer.
     """
-    from pufferlib_market.kernels.fused_mlp import fused_mlp_relu
-
     in_dim, hidden, out_dim = 221, 1024, 1024
     x = _allocate_on_device_or_skip(torch.randn, 128, in_dim, device=device, dtype=torch.bfloat16)
     W1, b1, W2, b2 = _build_weights(in_dim, hidden, out_dim, device)
 
-    out = fused_mlp_relu(x, W1, b1, W2, b2)
+    out = _run_public_fused_mlp(x, W1, b1, W2, b2)
 
     # Simulate the policy: next layer is BF16
     next_layer = _to_device_or_skip(nn.Linear(out_dim, 512, dtype=torch.bfloat16), device)
@@ -194,8 +211,6 @@ def test_fused_mlp_dtype_castable_to_policy_weights(device):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_fused_mlp_dtype_float32_input(device):
     """Fused kernel accepts FP32 input (auto-casts to BF16 internally)."""
-    from pufferlib_market.kernels.fused_mlp import fused_mlp_relu
-
     in_dim, hidden, out_dim = 64, 256, 64
     x = _allocate_on_device_or_skip(torch.randn, 32, in_dim, device=device, dtype=torch.float32)
     W1 = _allocate_on_device_or_skip(torch.randn, hidden, in_dim, device=device, dtype=torch.bfloat16)
@@ -204,7 +219,7 @@ def test_fused_mlp_dtype_float32_input(device):
     b2 = _allocate_on_device_or_skip(torch.zeros, out_dim, device=device, dtype=torch.bfloat16)
 
     # Should not raise
-    out = fused_mlp_relu(x, W1, b1, W2, b2)
+    out = _run_public_fused_mlp(x, W1, b1, W2, b2)
     assert out.shape == (32, out_dim)
     assert not out.isnan().any()
 
@@ -216,13 +231,11 @@ def test_fused_mlp_dtype_float32_input(device):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_fused_mlp_3d_input(device):
     """Fused MLP accepts 3-D input (..., in_dim) and restores original shape."""
-    from pufferlib_market.kernels.fused_mlp import fused_mlp_relu
-
     in_dim, hidden, out_dim = 64, 128, 64
     x = _allocate_on_device_or_skip(torch.randn, 4, 8, in_dim, device=device, dtype=torch.bfloat16)
     W1, b1, W2, b2 = _build_weights(in_dim, hidden, out_dim, device)
 
-    out = fused_mlp_relu(x, W1, b1, W2, b2)
+    out = _run_public_fused_mlp(x, W1, b1, W2, b2)
     assert out.shape == (4, 8, out_dim), f"Unexpected shape: {out.shape}"
 
 

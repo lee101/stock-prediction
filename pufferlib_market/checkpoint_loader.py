@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import pickle
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -78,6 +79,7 @@ class ResolvedCheckpointPolicyMetadata:
     state_dict: Mapping[str, object]
     effective_arch: str
     effective_hidden_size: int
+    effective_activation: str = "relu"
     effective_resmlp_blocks: int | None = None
 
 
@@ -146,6 +148,7 @@ def resolve_checkpoint_policy_details(
         state_dict=state_dict,
         effective_arch=effective_arch,
         effective_hidden_size=effective_hidden_size,
+        effective_activation=resolve_checkpoint_activation(ckpt, effective_arch=effective_arch),
         effective_resmlp_blocks=effective_resmlp_blocks,
     )
 
@@ -162,6 +165,19 @@ def resolve_checkpoint_policy_metadata(
         hidden_size=hidden_size,
     )
     return resolved.state_dict, resolved.effective_arch, resolved.effective_hidden_size
+
+
+def resolve_checkpoint_activation(
+    ckpt: Mapping[str, object],
+    *,
+    effective_arch: str,
+) -> str:
+    if effective_arch == "mlp_relu_sq":
+        return "relu_sq"
+    activation = str(ckpt.get("activation") or "").strip().lower()
+    if activation in {"relu", "relu_sq", "gelu"}:
+        return activation
+    return "relu"
 
 
 def infer_arch_from_state_dict(state_dict: Mapping[str, object]) -> str:
@@ -409,6 +425,7 @@ def load_policy_from_checkpoint(
         state_dict=resolved.state_dict,
         effective_arch=resolved.effective_arch,
         effective_hidden_size=resolved.effective_hidden_size,
+        effective_activation=resolved.effective_activation,
         effective_resmlp_blocks=resolved.effective_resmlp_blocks,
         obs_size=obs_size,
         num_actions=num_actions,
@@ -425,6 +442,7 @@ def load_policy_from_resolved_metadata(
     state_dict: Mapping[str, object],
     effective_arch: str,
     effective_hidden_size: int,
+    effective_activation: str = "relu",
     effective_resmlp_blocks: int | None = None,
     obs_size: int,
     num_actions: int,
@@ -443,8 +461,14 @@ def load_policy_from_resolved_metadata(
             if effective_resmlp_blocks is not None
             else infer_resmlp_blocks_from_state_dict(state_dict),
         ).to(device)
-    elif effective_arch == "mlp":
-        policy = mlp_factory(obs_size, num_actions, effective_hidden_size).to(device)
+    elif effective_arch in {"mlp", "mlp_relu_sq"}:
+        policy = _build_mlp_policy(
+            mlp_factory,
+            obs_size=obs_size,
+            num_actions=num_actions,
+            hidden_size=effective_hidden_size,
+            activation=effective_activation,
+        ).to(device)
     else:
         raise ValueError(f"Unsupported checkpoint architecture: {effective_arch}")
 
@@ -473,3 +497,20 @@ def load_policy_from_resolved_metadata(
 
     policy.eval()
     return policy
+
+
+def _build_mlp_policy(
+    mlp_factory: Callable[[int, int, int], nn.Module],
+    *,
+    obs_size: int,
+    num_actions: int,
+    hidden_size: int,
+    activation: str,
+) -> nn.Module:
+    signature = inspect.signature(mlp_factory)
+    if "activation" in signature.parameters or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    ):
+        return mlp_factory(obs_size, num_actions, hidden_size, activation=activation)
+    return mlp_factory(obs_size, num_actions, hidden_size)

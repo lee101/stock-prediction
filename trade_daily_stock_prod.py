@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import re
 import shlex
@@ -35,6 +36,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from pufferlib_market.inference_daily import DailyPPOTrader, compute_daily_features
+from pufferlib_market.export_data_daily import compute_daily_features as compute_daily_feature_history
 from src.alpaca_account_lock import acquire_alpaca_account_lock, require_explicit_live_trading_enable
 from src.trading_server.client import (
     InMemoryTradingServerClient,
@@ -142,6 +144,7 @@ DEFAULT_BACKTEST_SERVER_BOT_ID = "daily_stock_backtest_v1"
 DEFAULT_BACKTEST_SERVER_SESSION_ID = "daily-stock-backtest"
 DEFAULT_BACKTEST_WRITER_TTL_SECONDS = 3600
 DEFAULT_BACKTEST_STARTING_CASH = 10_000.0
+DEFAULT_BACKTEST_BUYING_POWER_MULTIPLIER = 1.0
 BUYING_POWER_USAGE_CAP = 0.95
 MAX_STOCK_SYMBOL_LENGTH = 20
 SAFE_STOCK_SYMBOL_RE = re.compile(
@@ -207,6 +210,8 @@ class CliRuntimeConfig:
     backtest_starting_cash: float
     daemon: bool
     compare_server_parity: bool
+    backtest_buying_power_multiplier: float = DEFAULT_BACKTEST_BUYING_POWER_MULTIPLIER
+    symbols_file: Optional[str] = None
     min_open_confidence: float = DEFAULT_MIN_OPEN_CONFIDENCE
     min_open_value_estimate: float = DEFAULT_MIN_OPEN_VALUE_ESTIMATE
     print_payload: bool = False
@@ -307,13 +312,23 @@ class CliRuntimeConfig:
         if self.backtest:
             args.extend(["--backtest-days", str(self.backtest_days)])
             args.extend(["--backtest-starting-cash", f"{self.backtest_starting_cash:g}"])
+            if self.backtest_buying_power_multiplier != DEFAULT_BACKTEST_BUYING_POWER_MULTIPLIER:
+                args.extend(
+                    [
+                        "--backtest-buying-power-multiplier",
+                        f"{self.backtest_buying_power_multiplier:g}",
+                    ]
+                )
         if self.compare_server_parity:
             args.append("--compare-server-parity")
         if self.print_payload:
             args.append("--print-payload")
         if self.symbols:
-            args.append("--symbols")
-            args.extend(self.symbols)
+            if self.symbols_file:
+                args.extend(["--symbols-file", self.symbols_file])
+            else:
+                args.append("--symbols")
+                args.extend(self.symbols)
 
         return " ".join(shlex.quote(arg) for arg in args)
 
@@ -386,6 +401,30 @@ def _normalize_stock_symbol_list(symbols: Iterable[object]) -> list[str]:
     return [_normalize_stock_symbol(symbol) for symbol in symbols]
 
 
+def _load_symbols_file(path: str | Path) -> list[str]:
+    values: list[str] = []
+    for raw_line in Path(path).read_text().splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        for token in line.replace(",", " ").split():
+            symbol = _normalize_stock_symbol(token)
+            values.append(symbol)
+    if not values:
+        raise ValueError(f"No valid symbols found in {path}")
+    return values
+
+
+def _resolve_local_data_base(data_dir: str | Path, symbols: Iterable[str]) -> Path:
+    base = (REPO / Path(data_dir).expanduser()).resolve()
+    normalized_symbols = _normalize_stock_symbol_list(symbols)
+    nested_train = base / "train"
+    if base.name != "train" and nested_train.exists():
+        if all((nested_train / f"{symbol}.csv").exists() for symbol in normalized_symbols):
+            return nested_train
+    return base
+
+
 def _normalize_daily_frame(frame: pd.DataFrame) -> pd.DataFrame:
     lower_map = {str(col).lower(): col for col in frame.columns}
     ts_col = lower_map.get("timestamp") or lower_map.get("date")
@@ -433,8 +472,9 @@ def load_local_daily_frames(
     min_days: int = 120,
 ) -> dict[str, pd.DataFrame]:
     frames: dict[str, pd.DataFrame] = {}
-    base = REPO / data_dir
-    for symbol in _normalize_stock_symbol_list(symbols):
+    normalized_symbols = _normalize_stock_symbol_list(symbols)
+    base = _resolve_local_data_base(data_dir, normalized_symbols)
+    for symbol in normalized_symbols:
         path = base / f"{symbol}.csv"
         if not path.exists():
             raise FileNotFoundError(f"Missing local daily data for {symbol}: {path}")
@@ -672,8 +712,10 @@ def load_latest_quotes_with_source(
         quote = quotes.get(symbol)
         ask = float(getattr(quote, "ask_price", 0.0) or 0.0) if quote is not None else 0.0
         bid = float(getattr(quote, "bid_price", 0.0) or 0.0) if quote is not None else 0.0
-        last_price = ask or bid or float(fallback_prices[symbol])
-        prices[symbol] = last_price
+        if ask > 0.0 and bid > 0.0:
+            prices[symbol] = (ask + bid) / 2.0
+        else:
+            prices[symbol] = ask or bid or float(fallback_prices[symbol])
         quote_source_by_symbol[symbol] = "alpaca" if (ask > 0.0 or bid > 0.0) else "close_fallback"
 
     overall_source = (
@@ -730,9 +772,24 @@ def _load_bare_policy(checkpoint_path: str, obs_size: int, num_actions: int, dev
     encoder_key = [k for k in state_dict if "encoder" in k and "weight" in k]
     if encoder_key:
         hidden = state_dict[encoder_key[0]].shape[0]
-        has_encoder_norm = any("encoder_norm" in k for k in state_dict)
+        if isinstance(ckpt, dict) and "use_encoder_norm" in ckpt:
+            has_encoder_norm = bool(ckpt["use_encoder_norm"])
+        else:
+            has_encoder_norm = any("encoder_norm" in k for k in state_dict)
+        activation = "relu"
+        if isinstance(ckpt, dict):
+            raw_arch = str(ckpt.get("arch") or "").strip().lower()
+            raw_activation = str(ckpt.get("activation") or "").strip().lower()
+            if raw_arch == "mlp_relu_sq" or raw_activation == "relu_sq":
+                activation = "relu_sq"
         from pufferlib_market.train import TradingPolicy
-        policy = TradingPolicy(obs_size, num_actions, hidden, use_encoder_norm=has_encoder_norm)
+        policy = TradingPolicy(
+            obs_size,
+            num_actions,
+            hidden,
+            activation=activation,
+            use_encoder_norm=has_encoder_norm,
+        )
     else:
         input_proj_key = [k for k in state_dict if "input_proj" in k and "weight" in k]
         hidden = state_dict[input_proj_key[0]].shape[0] if input_proj_key else 256
@@ -964,6 +1021,20 @@ def compute_target_qty_from_values(
     return round(target_notional / price, 4)
 
 
+def effective_signal_allocation_pct(signal, *, base_allocation_pct: float) -> float:
+    effective_pct = max(0.0, float(base_allocation_pct))
+    raw_fraction = getattr(signal, "allocation_pct", None)
+    if raw_fraction is None:
+        return effective_pct
+    try:
+        fraction = float(raw_fraction)
+    except (TypeError, ValueError):
+        return effective_pct
+    if not math.isfinite(fraction):
+        return effective_pct
+    return effective_pct * min(max(fraction, 0.0), 1.0)
+
+
 def build_server_client(
     *,
     account: str,
@@ -1055,7 +1126,7 @@ def compute_target_qty_from_server_snapshot(
 ) -> float:
     return compute_target_qty_from_values(
         portfolio_value=server_equity(snapshot, quotes),
-        buying_power=float(snapshot["cash"] or 0.0),
+        buying_power=float(snapshot.get("buying_power", snapshot["cash"]) or 0.0),
         price=price,
         allocation_pct=allocation_pct,
     )
@@ -1133,22 +1204,24 @@ def execute_signal_with_trading_server(
         return managed_position is not None
 
     price = float(quotes.get(desired_symbol, 0.0) or 0.0)
+    effective_allocation_pct = effective_signal_allocation_pct(signal, base_allocation_pct=allocation_pct)
     qty = compute_target_qty_from_server_snapshot(
         snapshot=snapshot,
         quotes=quotes,
         price=price,
-        allocation_pct=allocation_pct,
+        allocation_pct=effective_allocation_pct,
     )
     if qty <= 0:
         logger.warning("Computed zero-sized server order for %s at %.4f", desired_symbol, price)
         return False
 
     logger.info(
-        "Opening managed server position: %s qty=%.4f @ %.4f (alloc=%.1f%%)",
+        "Opening managed server position: %s qty=%.4f @ %.4f (alloc=%.1f%%, signal_frac=%.2f)",
         desired_symbol,
         qty,
         price,
-        allocation_pct,
+        effective_allocation_pct,
+        float(getattr(signal, "allocation_pct", 1.0) or 0.0),
     )
     if not dry_run:
         server_client.refresh_prices(symbols=[desired_symbol])
@@ -1171,6 +1244,7 @@ def execute_signal(
     signal,
     *,
     client,
+    paper: bool = False,
     quotes: dict[str, float],
     state: StrategyState,
     symbols: Iterable[str],
@@ -1203,11 +1277,18 @@ def execute_signal(
         qty = _signed_position_qty(managed_position)
         close_side = _market_order_side_for_qty(qty)
         sell_price = float(quotes.get(managed_symbol, 0.0) or 0.0)
-        # Calibrated: sell with +25bps limit offset for better fills
-        limit_sell_price = sell_price * (1.0 + CALIBRATED_EXIT_OFFSET_BPS / 10_000.0) if sell_price > 0 else 0
+        limit_sell_price = (
+            sell_price
+            if paper
+            else sell_price * (1.0 + CALIBRATED_EXIT_OFFSET_BPS / 10_000.0)
+        ) if sell_price > 0 else 0
         logger.info(
-            "Closing managed position: %s qty=%.4f side=%s limit=%.2f (exit_offset=+%.0fbps)",
-            managed_symbol, abs(qty), close_side, limit_sell_price, CALIBRATED_EXIT_OFFSET_BPS,
+            "Closing managed position: %s qty=%.4f side=%s limit=%.2f (%s)",
+            managed_symbol,
+            abs(qty),
+            close_side,
+            limit_sell_price,
+            "paper_midpoint" if paper else f"exit_offset=+{CALIBRATED_EXIT_OFFSET_BPS:.0f}bps",
         )
         if not dry_run:
             if limit_sell_price > 0:
@@ -1215,6 +1296,12 @@ def execute_signal(
                     client, symbol=managed_symbol, qty=abs(qty),
                     side=close_side, limit_price=limit_sell_price,
                 )
+            elif paper:
+                logger.warning(
+                    "Skipping paper close for %s because no defensible limit price was available",
+                    managed_symbol,
+                )
+                return False
             else:
                 order = submit_market_order(client, symbol=managed_symbol, qty=abs(qty), side=close_side)
             state.last_order_id = str(getattr(order, "id", ""))
@@ -1234,25 +1321,40 @@ def execute_signal(
 
     account = client.get_account()
     price = float(quotes.get(desired_symbol, 0.0) or 0.0)
-    # Calibrated: buy with +5bps limit offset (slightly above market for reliable fill)
-    limit_buy_price = price * (1.0 + CALIBRATED_ENTRY_OFFSET_BPS / 10_000.0) if price > 0 else 0
-    qty = compute_target_qty(account=account, price=limit_buy_price or price, allocation_pct=allocation_pct)
+    limit_buy_price = (
+        price
+        if paper
+        else price * (1.0 + CALIBRATED_ENTRY_OFFSET_BPS / 10_000.0)
+    ) if price > 0 else 0
+    effective_allocation_pct = effective_signal_allocation_pct(signal, base_allocation_pct=allocation_pct)
+    qty = compute_target_qty(
+        account=account,
+        price=limit_buy_price or price,
+        allocation_pct=effective_allocation_pct,
+    )
     if qty <= 0:
         logger.warning("Computed zero-sized order for %s at %.4f", desired_symbol, price)
         return False
 
     logger.info(
-        "Opening managed position: %s qty=%.4f @ %.4f limit=%.2f (alloc=%.1f%%, entry_offset=+%.0fbps)",
+        "Opening managed position: %s qty=%.4f @ %.4f limit=%.2f (alloc=%.1f%%, signal_frac=%.2f, %s)",
         desired_symbol,
         qty,
         price,
         limit_buy_price,
-        allocation_pct,
-        CALIBRATED_ENTRY_OFFSET_BPS,
+        effective_allocation_pct,
+        float(getattr(signal, "allocation_pct", 1.0) or 0.0),
+        "paper_midpoint" if paper else f"entry_offset=+{CALIBRATED_ENTRY_OFFSET_BPS:.0f}bps",
     )
     if not dry_run:
         if limit_buy_price > 0:
             order = submit_limit_order(client, symbol=desired_symbol, qty=qty, side="buy", limit_price=limit_buy_price)
+        elif paper:
+            logger.warning(
+                "Skipping paper open for %s because no defensible limit price was available",
+                desired_symbol,
+            )
+            return False
         else:
             order = submit_market_order(client, symbol=desired_symbol, qty=qty, side="buy")
         state.last_order_id = str(getattr(order, "id", ""))
@@ -1361,6 +1463,7 @@ def _signal_payload(signal, *, checkpoint: str, quotes: dict[str, float]) -> dic
         "direction": signal.direction,
         "confidence": float(signal.confidence),
         "value_estimate": float(signal.value_estimate),
+        "allocation_fraction": float(getattr(signal, "allocation_pct", 1.0) or 0.0),
         "quotes": {symbol: float(price) for symbol, price in quotes.items()},
     }
 
@@ -1373,9 +1476,13 @@ def run_backtest(
     days: int,
     allocation_pct: float = 100.0,
     starting_cash: float = DEFAULT_BACKTEST_STARTING_CASH,
+    extra_checkpoints: Optional[list[str]] = None,
+    buying_power_multiplier: float = DEFAULT_BACKTEST_BUYING_POWER_MULTIPLIER,
 ) -> dict[str, float]:
     if starting_cash <= 0:
         raise ValueError("starting_cash must be positive")
+    if buying_power_multiplier <= 0:
+        raise ValueError("buying_power_multiplier must be positive")
     frames = load_local_daily_frames(symbols, data_dir=data_dir, min_days=days + 120)
     indexed = {
         symbol: frame.set_index("timestamp")[["open", "high", "low", "close", "volume"]].copy()
@@ -1387,6 +1494,24 @@ def run_backtest(
         raise ValueError(f"Need at least {days + 1} aligned days for backtest")
 
     trader = DailyPPOTrader(checkpoint, device="cpu", long_only=True, symbols=list(indexed.keys()))
+    extra_policies = [
+        _load_bare_policy(
+            str((REPO / path).resolve()) if not Path(path).is_absolute() else path,
+            trader.obs_size,
+            trader.num_actions,
+            "cpu",
+        )
+        for path in (extra_checkpoints or [])
+    ]
+    feature_history = (
+        {
+            symbol: compute_daily_feature_history(frame)
+            for symbol, frame in indexed.items()
+        }
+        if extra_policies
+        else {}
+    )
+
     cash = float(starting_cash)
     position: Optional[tuple[str, float, float]] = None
     equity_curve: list[float] = []
@@ -1403,10 +1528,17 @@ def run_backtest(
             trader.current_position = trader.SYMBOLS.index(pos_symbol)
             trader.position_qty = qty
             trader.entry_price = entry_price
-        signal = trader.get_daily_signal(
-            {symbol: frame.iloc[: idx + 1] for symbol, frame in indexed.items()},
-            prices,
-        )
+
+        if extra_policies:
+            features = np.zeros((trader.num_symbols, 16), dtype=np.float32)
+            for feature_idx, symbol in enumerate(trader.SYMBOLS):
+                features[feature_idx] = feature_history[symbol].iloc[idx].to_numpy(dtype=np.float32, copy=False)
+            signal = _ensemble_softmax_signal(trader, extra_policies, features, prices)
+        else:
+            signal = trader.get_daily_signal(
+                {symbol: frame.iloc[: idx + 1] for symbol, frame in indexed.items()},
+                prices,
+            )
 
         equity = cash
         if position is not None:
@@ -1422,11 +1554,15 @@ def run_backtest(
             trader.update_state(0, 0.0, "")
 
         if position is None and signal.symbol and signal.direction == "long":
+            effective_allocation_pct = effective_signal_allocation_pct(
+                signal,
+                base_allocation_pct=allocation_pct,
+            )
             qty = compute_target_qty_from_values(
-                portfolio_value=cash,
-                buying_power=cash,
+                portfolio_value=equity,
+                buying_power=equity * float(buying_power_multiplier),
                 price=prices[signal.symbol],
-                allocation_pct=allocation_pct,
+                allocation_pct=effective_allocation_pct,
             )
             if qty <= 0:
                 trader.step_day()
@@ -1449,7 +1585,10 @@ def run_backtest(
     downside_dev = float(np.sqrt(np.mean(np.square(downside)))) if len(downside) else 1e-8
     sortino = float(np.mean(daily_returns) / downside_dev * np.sqrt(252.0)) if len(daily_returns) else 0.0
     max_dd = float(np.min(curve / np.maximum.accumulate(curve) - 1.0))
-    annualized = float((1.0 + total_return) ** (252.0 / max(1, days)) - 1.0)
+    if total_return <= -1.0:
+        annualized = -1.0
+    else:
+        annualized = float((1.0 + total_return) ** (252.0 / max(1, days)) - 1.0)
 
     results = {
         "total_return": total_return,
@@ -1622,6 +1761,7 @@ def run_once(
                 executed = execute_signal(
                     signal,
                     client=client,
+                    paper=paper,
                     quotes=quotes,
                     state=state,
                     symbols=symbols,
@@ -1748,6 +1888,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     run_mode_group.add_argument("--backtest", action="store_true", help="Run a local historical backtest")
     parser.add_argument("--backtest-days", type=int, default=60)
     parser.add_argument("--backtest-starting-cash", type=float, default=DEFAULT_BACKTEST_STARTING_CASH)
+    parser.add_argument(
+        "--backtest-buying-power-multiplier",
+        type=float,
+        default=DEFAULT_BACKTEST_BUYING_POWER_MULTIPLIER,
+        help="Sizing-only backtest buying power multiplier (1.0=cash-only, 2.0=2x margin).",
+    )
     parser.add_argument("--compare-server-parity", action="store_true",
                         help="Compare the legacy daily backtest against the trading-server paper replay")
     parser.add_argument("--execution-backend", choices=["alpaca", "trading_server"], default="alpaca")
@@ -1755,6 +1901,8 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--server-bot-id", default=DEFAULT_SERVER_PAPER_BOT_ID)
     parser.add_argument("--server-url", default=None)
     parser.add_argument("--symbols", nargs="+", default=None)
+    parser.add_argument("--symbols-file", default=None,
+                        help="Optional newline/comma separated symbol file. Overrides --symbols.")
     parser.add_argument("--check-config", action="store_true",
                         help="Run a preflight config check, print a readiness report, and exit")
     parser.add_argument("--print-config", action="store_true",
@@ -1770,8 +1918,9 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 
 def _resolve_runtime_config(args: argparse.Namespace) -> CliRuntimeConfig:
     paper = not bool(args.live)
+    symbol_inputs = _load_symbols_file(args.symbols_file) if args.symbols_file else (args.symbols or DEFAULT_SYMBOLS)
     symbols, removed_duplicate_symbols, ignored_symbol_inputs = _normalize_symbols(
-        args.symbols or DEFAULT_SYMBOLS
+        symbol_inputs
     )
     checkpoint = (
         str((REPO / args.checkpoint).resolve())
@@ -1792,6 +1941,7 @@ def _resolve_runtime_config(args: argparse.Namespace) -> CliRuntimeConfig:
     return CliRuntimeConfig(
         paper=paper,
         symbols=symbols,
+        symbols_file=args.symbols_file,
         removed_duplicate_symbols=removed_duplicate_symbols,
         ignored_symbol_inputs=ignored_symbol_inputs,
         checkpoint=checkpoint,
@@ -1807,6 +1957,7 @@ def _resolve_runtime_config(args: argparse.Namespace) -> CliRuntimeConfig:
         backtest=bool(args.backtest),
         backtest_days=int(args.backtest_days),
         backtest_starting_cash=float(args.backtest_starting_cash),
+        backtest_buying_power_multiplier=float(args.backtest_buying_power_multiplier),
         daemon=bool(args.daemon),
         compare_server_parity=bool(args.compare_server_parity),
         min_open_confidence=float(args.min_open_confidence),
@@ -1908,6 +2059,8 @@ def _preflight_config_payload(config: CliRuntimeConfig) -> dict[str, object]:
         errors.append("--backtest-days must be at least 1")
     if config.backtest_starting_cash <= 0:
         errors.append("--backtest-starting-cash must be positive")
+    if config.backtest_buying_power_multiplier <= 0:
+        errors.append("--backtest-buying-power-multiplier must be positive")
     if config.compare_server_parity and not config.backtest:
         errors.append("--compare-server-parity requires --backtest")
     if config.backtest and not config.paper:
@@ -1932,14 +2085,16 @@ def _preflight_config_payload(config: CliRuntimeConfig) -> dict[str, object]:
     data_dir = Path(config.data_dir).expanduser()
     local_data_required = bool(config.backtest or config.data_source == "local")
     missing_local_symbol_files: list[str] = []
+    resolved_local_data_dir: Path | None = None
     if local_data_required:
         if not data_dir.exists():
             errors.append(f"Local data directory does not exist: {data_dir}")
         else:
+            resolved_local_data_dir = _resolve_local_data_base(config.data_dir, config.symbols)
             missing_local_symbol_files = [
-                str((data_dir / f"{symbol}.csv").resolve())
+                str((resolved_local_data_dir / f"{symbol}.csv").resolve())
                 for symbol in config.symbols
-                if not (data_dir / f"{symbol}.csv").exists()
+                if not (resolved_local_data_dir / f"{symbol}.csv").exists()
             ]
             if missing_local_symbol_files:
                 errors.append(
@@ -1948,6 +2103,9 @@ def _preflight_config_payload(config: CliRuntimeConfig) -> dict[str, object]:
                 )
     payload["local_data_required"] = local_data_required
     payload["data_dir_exists"] = data_dir.exists()
+    payload["resolved_local_data_dir"] = (
+        str(resolved_local_data_dir) if resolved_local_data_dir is not None else None
+    )
     payload["missing_local_symbol_files"] = missing_local_symbol_files
 
     alpaca_required = bool(not config.backtest and config.data_source == "alpaca")
@@ -2008,6 +2166,8 @@ def _validate_runtime_config(config: CliRuntimeConfig) -> None:
         raise ValueError("--backtest-days must be at least 1")
     if config.backtest_starting_cash <= 0:
         raise ValueError("--backtest-starting-cash must be positive")
+    if config.backtest_buying_power_multiplier <= 0:
+        raise ValueError("--backtest-buying-power-multiplier must be positive")
     if not 0.0 <= float(config.min_open_confidence) <= 1.0:
         raise ValueError("--min-open-confidence must be between 0 and 1")
     if config.compare_server_parity and not config.backtest:
@@ -2034,11 +2194,15 @@ def run_backtest_via_trading_server(
     days: int,
     allocation_pct: float = 100.0,
     starting_cash: float = DEFAULT_BACKTEST_STARTING_CASH,
+    buying_power_multiplier: float = DEFAULT_BACKTEST_BUYING_POWER_MULTIPLIER,
     account: str = DEFAULT_BACKTEST_SERVER_ACCOUNT,
     bot_id: str = DEFAULT_BACKTEST_SERVER_BOT_ID,
+    extra_checkpoints: Optional[list[str]] = None,
 ) -> dict[str, float]:
     if starting_cash <= 0:
         raise ValueError("starting_cash must be positive")
+    if buying_power_multiplier <= 0:
+        raise ValueError("buying_power_multiplier must be positive")
     from src.trading_server.server import TradingServerEngine
 
     frames = load_local_daily_frames(symbols, data_dir=data_dir, min_days=days + 120)
@@ -2069,6 +2233,7 @@ def run_backtest_via_trading_server(
                             "mode": "paper",
                             "allowed_bot_id": bot_id,
                             "starting_cash": float(starting_cash),
+                            "paper_buying_power_multiplier": float(buying_power_multiplier),
                             "symbols": [str(symbol).upper() for symbol in symbols],
                             "sell_loss_cooldown_seconds": 0,
                             "min_sell_markup_pct": 0.0,
@@ -2123,6 +2288,7 @@ def run_backtest_via_trading_server(
                 checkpoint,
                 {symbol: frame.iloc[: idx + 1].reset_index() for symbol, frame in indexed.items()},
                 portfolio=portfolio,
+                extra_checkpoints=extra_checkpoints,
             )[0]
             equity_curve.append(server_equity(snapshot, prices))
             execute_signal_with_trading_server(
@@ -2137,6 +2303,8 @@ def run_backtest_via_trading_server(
             )
 
         final_snapshot = server_client.get_account()
+        order_payload = server_client.get_orders(include_history=True)
+        order_history = order_payload.get("order_history", [])
         final_equity = server_equity(final_snapshot, closes_last)
         curve = np.asarray(equity_curve + [final_equity], dtype=np.float64)
         total_return = float(curve[-1] / curve[0] - 1.0)
@@ -2146,13 +2314,14 @@ def run_backtest_via_trading_server(
         sortino = float(np.mean(daily_returns) / downside_dev * np.sqrt(252.0)) if len(daily_returns) else 0.0
         max_dd = float(np.min(curve / np.maximum.accumulate(curve) - 1.0))
         annualized = float((1.0 + total_return) ** (252.0 / max(1, days)) - 1.0)
-        trade_count = len(final_snapshot.get("order_history", []))
+        trade_count = sum(1 for order in order_history if str(order.get("side", "")).lower() == "sell")
         results = {
             "total_return": total_return,
             "annualized_return": annualized,
             "sortino": sortino,
             "max_drawdown": max_dd,
             "trades": float(trade_count),
+            "orders": float(len(order_history)),
         }
         logger.info("Trading-server paper backtest: %s", json.dumps(results, sort_keys=True))
         return results
@@ -2166,13 +2335,18 @@ def compare_backtest_to_trading_server(
     days: int,
     allocation_pct: float = 100.0,
     starting_cash: float = DEFAULT_BACKTEST_STARTING_CASH,
+    extra_checkpoints: Optional[list[str]] = None,
+    buying_power_multiplier: float = DEFAULT_BACKTEST_BUYING_POWER_MULTIPLIER,
 ) -> dict[str, object]:
     legacy = run_backtest(
         checkpoint=checkpoint,
         symbols=symbols,
         data_dir=data_dir,
         days=days,
+        allocation_pct=allocation_pct,
         starting_cash=starting_cash,
+        extra_checkpoints=extra_checkpoints,
+        buying_power_multiplier=buying_power_multiplier,
     )
     server = run_backtest_via_trading_server(
         checkpoint=checkpoint,
@@ -2181,6 +2355,8 @@ def compare_backtest_to_trading_server(
         days=days,
         allocation_pct=allocation_pct,
         starting_cash=starting_cash,
+        extra_checkpoints=extra_checkpoints,
+        buying_power_multiplier=buying_power_multiplier,
     )
     deltas = {
         key: float(server.get(key, 0.0) - legacy.get(key, 0.0))
@@ -2215,6 +2391,8 @@ def main(argv: Optional[list[str]] = None) -> None:
                 days=config.backtest_days,
                 allocation_pct=config.allocation_pct,
                 starting_cash=config.backtest_starting_cash,
+                extra_checkpoints=config.extra_checkpoints,
+                buying_power_multiplier=config.backtest_buying_power_multiplier,
             )
             return
         run_backtest(
@@ -2224,6 +2402,8 @@ def main(argv: Optional[list[str]] = None) -> None:
             days=config.backtest_days,
             allocation_pct=config.allocation_pct,
             starting_cash=config.backtest_starting_cash,
+            extra_checkpoints=config.extra_checkpoints,
+            buying_power_multiplier=config.backtest_buying_power_multiplier,
         )
         return
 

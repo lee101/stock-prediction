@@ -9,6 +9,7 @@ from typing import Dict, Iterable, Optional
 
 import numpy as np
 import torch
+from src.torch_device_utils import should_auto_fallback_to_cpu
 
 from .buffers import RolloutBuffer
 from .config import MarketConfig, TrainingConfig
@@ -42,10 +43,9 @@ class PPOTrainer:
         self.guidance = guidance
 
         seed_everything(self.config.seed)
-        self.device = self._resolve_training_device()
-        self._amp_device_type = "cuda" if self.device.type == "cuda" else "cpu"
-
         observation_dim = env.observation_space.shape[0]
+        self.device = self._resolve_training_device(observation_dim)
+        self._amp_device_type = "cuda" if self.device.type == "cuda" else "cpu"
         self.buffer = RolloutBuffer(self.config.rollout_steps, observation_dim, self.device)
 
         adamw_kwargs = {
@@ -70,10 +70,11 @@ class PPOTrainer:
             else None
         )
 
-    def _resolve_training_device(self) -> torch.device:
+    def _resolve_training_device(self, observation_dim: int) -> torch.device:
         device = get_device(self.config.device)
         try:
             self.policy.to(device)
+            self._validate_policy_device(device, observation_dim)
         except Exception as exc:
             if self._should_fallback_to_cpu(device, exc):
                 logger.warning(
@@ -83,17 +84,18 @@ class PPOTrainer:
                 )
                 device = torch.device("cpu")
                 self.policy.to(device)
+                self._validate_policy_device(device, observation_dim)
             else:
                 raise
         return device
 
     def _should_fallback_to_cpu(self, device: torch.device, exc: BaseException) -> bool:
-        if self.config.device is not None or device.type != "cuda":
-            return False
-        if isinstance(exc, torch.OutOfMemoryError):
-            return True
-        accelerator_error = getattr(torch, "AcceleratorError", None)
-        return accelerator_error is not None and isinstance(exc, accelerator_error)
+        return should_auto_fallback_to_cpu(self.config.device, device, exc)
+
+    def _validate_policy_device(self, device: torch.device, observation_dim: int) -> None:
+        with torch.no_grad():
+            dummy = torch.zeros((1, observation_dim), dtype=torch.float32, device=device)
+            self.policy.forward(dummy)
 
     def collect_rollout(self) -> EpisodeMetrics:
         self.buffer.reset()

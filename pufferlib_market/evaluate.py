@@ -172,11 +172,17 @@ def _load_policy_with_metadata(
             state_dict=state_dict,
             effective_arch=ckpt_arch,
             effective_hidden_size=effective_hidden,
+            effective_activation=resolved.effective_activation,
             effective_resmlp_blocks=resolved.effective_resmlp_blocks,
             obs_size=obs_size,
             num_actions=num_actions,
             device=device,
-            mlp_factory=lambda obs, acts, hidden_size: TradingPolicy(obs, acts, hidden=hidden_size),
+            mlp_factory=lambda obs, acts, hidden_size, activation="relu": TradingPolicy(
+                obs,
+                acts,
+                hidden=hidden_size,
+                activation=activation,
+            ),
             resmlp_factory=lambda obs, acts, hidden_size, num_blocks: ResidualTradingPolicy(
                 obs, acts, hidden=hidden_size, num_blocks=num_blocks
             ),
@@ -186,19 +192,38 @@ def _load_policy_with_metadata(
     if ckpt_arch in ("transformer",):
         from pufferlib_market.train import TransformerTradingPolicy
         _base = TransformerTradingPolicy(
-            obs_size, num_actions, hidden=effective_hidden, features_per_sym=features_per_sym
+            obs_size,
+            num_actions,
+            hidden=effective_hidden,
+            activation=resolved.effective_activation,
+            features_per_sym=features_per_sym,
         ).to(device)
         policy = _wrap_train_policy(_base, num_actions)
     elif ckpt_arch in ("gru",):
         from pufferlib_market.train import GRUTradingPolicy
-        _base = GRUTradingPolicy(obs_size, num_actions, hidden=effective_hidden).to(device)
+        _base = GRUTradingPolicy(
+            obs_size,
+            num_actions,
+            hidden=effective_hidden,
+            activation=resolved.effective_activation,
+        ).to(device)
         policy = _wrap_train_policy(_base, num_actions)
     elif ckpt_arch in ("depth_recurrence",):
         from pufferlib_market.train import DepthRecurrenceTradingPolicy
-        _base = DepthRecurrenceTradingPolicy(obs_size, num_actions, hidden=effective_hidden).to(device)
+        _base = DepthRecurrenceTradingPolicy(
+            obs_size,
+            num_actions,
+            hidden=effective_hidden,
+            activation=resolved.effective_activation,
+        ).to(device)
         policy = _wrap_train_policy(_base, num_actions)
     elif ckpt_arch in ("mlp_relu_sq",):
-        policy = TradingPolicy(obs_size, num_actions, hidden=effective_hidden, activation="relu_sq").to(device)
+        policy = TradingPolicy(
+            obs_size,
+            num_actions,
+            hidden=effective_hidden,
+            activation=resolved.effective_activation,
+        ).to(device)
 
     missing, unexpected = policy.load_state_dict(state_dict, strict=False)
     # obs_mean/obs_std: optional obs-norm buffers (old ckpts lack them).

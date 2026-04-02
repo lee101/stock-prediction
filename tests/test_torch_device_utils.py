@@ -187,6 +187,11 @@ class TestRuntimeDeviceHelpers:
             torch.device("cuda"),
             torch.OutOfMemoryError("CUDA out of memory"),
         )
+        assert should_auto_fallback_to_cpu(
+            "auto",
+            torch.device("cuda"),
+            RuntimeError("CUDA error: CUBLAS_STATUS_ALLOC_FAILED when calling `cublasCreate(handle)`"),
+        )
         assert not should_auto_fallback_to_cpu(
             "cpu",
             torch.device("cpu"),

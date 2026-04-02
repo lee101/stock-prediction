@@ -15,23 +15,61 @@ from setuptools import setup, Extension
 # Paths
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent
-# Try system PufferLib first, fall back to local checkout
-_local_ocean = REPO / "PufferLib" / "pufferlib" / "ocean"
-try:
-    import pufferlib
-    _system_ocean = Path(pufferlib.__file__).parent / "ocean"
-except ImportError:
-    _system_ocean = None
+_local_ocean_candidates = [
+    REPO / "PufferLib" / "ocean",
+    REPO / "PufferLib" / "pufferlib" / "ocean",
+]
 
 
 def _has_env_binding_header(path: Path | None) -> bool:
     return path is not None and (path / "env_binding.h").exists()
 
 
-if _has_env_binding_header(_system_ocean):
-    PUFFERLIB_OCEAN = _system_ocean
+def _candidate_ocean_dirs() -> list[Path]:
+    candidates: list[Path] = []
+
+    env_override = os.environ.get("PUFFERLIB_OCEAN_DIR")
+    if env_override:
+        candidates.append(Path(env_override).expanduser())
+
+    candidates.extend(_local_ocean_candidates)
+
+    try:
+        import pufferlib
+        candidates.append(Path(pufferlib.__file__).resolve().parent / "ocean")
+    except ImportError:
+        pass
+
+    for venv_dir in sorted(REPO.glob(".venv*/lib/python*/site-packages/pufferlib/ocean")):
+        candidates.append(venv_dir.resolve())
+
+    try:
+        import site
+        for site_dir in site.getsitepackages():
+            candidates.append(Path(site_dir) / "pufferlib" / "ocean")
+    except Exception:
+        pass
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped
+
+
+for candidate in _candidate_ocean_dirs():
+    if _has_env_binding_header(candidate):
+        PUFFERLIB_OCEAN = candidate
+        break
 else:
-    PUFFERLIB_OCEAN = _local_ocean
+    raise FileNotFoundError(
+        "Could not locate pufferlib/ocean/env_binding.h. "
+        "Set PUFFERLIB_OCEAN_DIR or install pufferlib in an active/local venv."
+    )
 
 # Find numpy include
 import numpy as np

@@ -54,6 +54,7 @@ typedef struct {
     float*    features;         /* [T][S][features_per_sym] */
     float*    prices;           /* [T][S][PRICE_FEATS] */
     unsigned char* tradable;    /* optional [T][S] uint8 mask (1=tradable, 0=market closed) */
+    unsigned char* any_tradable;/* optional [T] uint8 mask for fast "any market open?" checks */
 
     /* owned memory (free on close) */
     void*     file_buf;         /* raw file buffer */

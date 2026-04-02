@@ -162,6 +162,8 @@ class RefinementPassConfig:
     max_confidence_delta: float
     max_allocation_delta_pct: float
     base_alpha: float
+    energy_budget: float
+    min_alpha: float = 0.02
 
 
 @dataclass(frozen=True)
@@ -170,6 +172,9 @@ class RefinementTraceEntry:
     driver: str
     plan: TradePlan
     prompt: Optional[str] = None
+    energy_budget: Optional[float] = None
+    alpha: Optional[float] = None
+    target_distance: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -185,23 +190,53 @@ DEFAULT_REFINEMENT_PASSES: tuple[RefinementPassConfig, ...] = (
         max_price_move_pct=0.05,
         max_confidence_delta=0.30,
         max_allocation_delta_pct=35.0,
-        base_alpha=0.70,
+        base_alpha=0.72,
+        energy_budget=1.00,
+    ),
+    RefinementPassConfig(
+        stage="sweeping",
+        driver="llm",
+        max_price_move_pct=0.04,
+        max_confidence_delta=0.22,
+        max_allocation_delta_pct=28.0,
+        base_alpha=0.56,
+        energy_budget=0.78,
+    ),
+    RefinementPassConfig(
+        stage="medium",
+        driver="rl",
+        max_price_move_pct=0.03,
+        max_confidence_delta=0.18,
+        max_allocation_delta_pct=18.0,
+        base_alpha=0.36,
+        energy_budget=0.56,
     ),
     RefinementPassConfig(
         stage="medium",
         driver="llm",
-        max_price_move_pct=0.03,
-        max_confidence_delta=0.18,
-        max_allocation_delta_pct=20.0,
-        base_alpha=0.45,
+        max_price_move_pct=0.022,
+        max_confidence_delta=0.12,
+        max_allocation_delta_pct=12.0,
+        base_alpha=0.28,
+        energy_budget=0.38,
     ),
     RefinementPassConfig(
         stage="minor",
         driver="rl",
         max_price_move_pct=0.015,
         max_confidence_delta=0.08,
-        max_allocation_delta_pct=10.0,
-        base_alpha=0.20,
+        max_allocation_delta_pct=8.0,
+        base_alpha=0.16,
+        energy_budget=0.22,
+    ),
+    RefinementPassConfig(
+        stage="minor",
+        driver="llm",
+        max_price_move_pct=0.01,
+        max_confidence_delta=0.05,
+        max_allocation_delta_pct=5.0,
+        base_alpha=0.10,
+        energy_budget=0.12,
     ),
 )
 
@@ -253,7 +288,7 @@ def load_forecast_frame(symbol: str, horizon: str) -> pd.DataFrame:
 
 
 def _build_forecast_lookup_cache(frame: pd.DataFrame) -> _ForecastLookupCache:
-    timestamps_ns = pd.Index(pd.DatetimeIndex(frame["timestamp"]).asi8)
+    timestamps_ns = pd.Index(pd.to_datetime(frame["timestamp"], utc=True).astype("int64"))
     value_frame = frame.reindex(columns=FORECAST_VALUE_COLUMNS)
     rows: list[Optional[dict[str, float]]] = []
     for values in value_frame.itertuples(index=False, name=None):
@@ -282,7 +317,8 @@ def get_forecast_at(frame: pd.DataFrame, ts: pd.Timestamp) -> Optional[dict[str,
     if timestamp.tzinfo is None:
         timestamp = timestamp.tz_localize("UTC")
     cache = _get_forecast_lookup_cache(frame)
-    row_idx = int(cache.timestamps_ns.searchsorted(timestamp.value, side="right") - 1)
+    lookup_value = timestamp.value
+    row_idx = int(cache.timestamps_ns.searchsorted(lookup_value, side="right") - 1)
     if row_idx < 0:
         return None
     payload = cache.rows[row_idx]
@@ -588,6 +624,8 @@ def build_daily_hybrid_prompt(
 
     return f"""You are re-planning a daily multi-asset trading decision with structured output.
 
+Primary objective: maximize expected realized PnL net fees and slippage while respecting position, leverage, and overnight constraints.
+
 ANALYSIS TIME: {asof_ts.isoformat()}
 SYMBOL: {symbol} ({asset_class})
 CURRENT REFERENCE PRICE: {current_price:.2f}
@@ -629,8 +667,10 @@ Other ranked RL signals:
 {_history_block(history_rows)}
 
 ## Decision Rules
+- Optimize for expected realized PnL first, then prefer the smoother/risk-controlled plan when two plans have similar edge.
 - The RL signal is a strong prior, but you may downgrade it if the forecasts or recent trade context conflict.
 - Respect the leverage envelope and use the refined allocation as sizing guidance, not a guarantee.
+- For stocks, it is valid to use sizing above 1.0x and up to the 2.0x stock cap when RL, Chronos2, and portfolio context all align.
 - Use previous positions, previous forecasts, previous plan timing, and current Chronos2 forecasts explicitly in your judgment.
 - If already in a position, focus on whether to keep the position and where to set a realistic exit.
 - If FLAT and there is no clean edge after fees, return HOLD.
@@ -906,6 +946,53 @@ def _plan_distance(plan: TradePlan, target: TradePlan, *, current_price: float) 
     return float(buy_gap + sell_gap + confidence_gap + allocation_gap + direction_gap)
 
 
+def _compute_refinement_alpha(
+    *,
+    base_plan: TradePlan,
+    target_plan: TradePlan,
+    current_price: float,
+    pass_config: RefinementPassConfig,
+    energy_weight: float,
+    energy_budget: Optional[float],
+) -> tuple[float, float, float]:
+    distance = _plan_distance(base_plan, target_plan, current_price=current_price)
+    weighted_budget = _clamp(float(energy_budget if energy_budget is not None else pass_config.energy_budget), 0.0, 1.0)
+    distance_penalty = 1.0 / (1.0 + max(0.0, float(energy_weight)) * distance)
+    alpha = _clamp(
+        pass_config.base_alpha * max(weighted_budget, 1e-6) * distance_penalty,
+        pass_config.min_alpha * max(weighted_budget, 0.0),
+        1.0,
+    )
+    return float(alpha), float(distance), float(distance_penalty)
+
+
+def _blend_trade_plan(
+    base_plan: TradePlan,
+    target_plan: TradePlan,
+    *,
+    alpha: float,
+    reason_tag: str,
+) -> TradePlan:
+    direction = base_plan.direction
+    if target_plan.direction == base_plan.direction:
+        direction = target_plan.direction
+    elif base_plan.direction == "hold" and target_plan.direction != "hold":
+        direction = target_plan.direction
+    elif alpha >= 0.25:
+        direction = target_plan.direction
+    return TradePlan(
+        direction=direction,
+        buy_price=float((1.0 - alpha) * float(base_plan.buy_price) + alpha * float(target_plan.buy_price)),
+        sell_price=float((1.0 - alpha) * float(base_plan.sell_price) + alpha * float(target_plan.sell_price)),
+        confidence=float((1.0 - alpha) * float(base_plan.confidence) + alpha * float(target_plan.confidence)),
+        reasoning=f"{base_plan.reasoning} | {reason_tag} alpha={alpha:.3f}".strip(),
+        allocation_pct=float(
+            (1.0 - alpha) * float(getattr(base_plan, "allocation_pct", 0.0))
+            + alpha * float(getattr(target_plan, "allocation_pct", 0.0))
+        ),
+    )
+
+
 def _limit_plan_change(
     proposed: TradePlan,
     reference: TradePlan,
@@ -1005,18 +1092,32 @@ def build_refinement_prompt(
     forecast_24h: Optional[dict[str, float]],
     pass_config: RefinementPassConfig,
 ) -> str:
+    turn_label = {
+        "sweeping": "1/3",
+        "medium": "2/3",
+        "minor": "3/3",
+    }.get(pass_config.stage, "unknown")
     change_style = {
         "sweeping": "You may make sweeping changes when the RL prior and forecasts disagree materially.",
         "medium": "Make medium-sized changes only. Keep the core thesis unless there is a clear contradiction.",
         "minor": "Make only minor adjustments. This pass is for cleanup, not reinvention.",
     }.get(pass_config.stage, "Refine the plan conservatively.")
+    energy_budget = _clamp(float(pass_config.energy_budget), 0.0, 1.0)
     current_position_payload = snapshot_position(current_position)
     return (
         "You are refining an existing daily trading plan.\n"
+        "Primary objective: improve expected realized PnL net fees and slippage while staying inside the leverage envelope.\n"
+        f"Refinement turn: {turn_label}\n"
         f"Pass stage: {pass_config.stage}\n"
         f"Driver prior: {pass_config.driver}\n"
+        f"Edit energy budget: {energy_budget:.2f}\n"
         f"{change_style}\n"
-        "Respect an energy budget: minimize total plan change unless expected edge clearly improves.\n"
+        "For stocks, plans may size up toward 2.0x gross when the RL prior and forecasts align; do not default to timid sizing when the edge is strong.\n"
+        "Prompt travel policy:\n"
+        "  1. Preserve the previous thesis unless the evidence now clearly rejects it.\n"
+        "  2. Spend the available edit energy on the whole plan, not just one field.\n"
+        "  3. Later passes should feel more diffusive and lower-energy than earlier passes.\n"
+        "Respect the energy budget: minimize total plan change unless expected edge clearly improves.\n"
         f"Max price move from prior pass: {pass_config.max_price_move_pct * 100.0:.2f}%\n"
         f"Max confidence delta from prior pass: {pass_config.max_confidence_delta:.2f}\n"
         f"Max allocation delta from prior pass: {pass_config.max_allocation_delta_pct:.1f} pct points\n"
@@ -1052,7 +1153,8 @@ def rl_refine_trade_plan(
     target_allocation: Optional[float] = None,
     pass_config: RefinementPassConfig = DEFAULT_REFINEMENT_PASSES[0],
     energy_weight: float = 1.0,
-) -> TradePlan:
+    energy_budget: Optional[float] = None,
+) -> tuple[TradePlan, float, float]:
     rl_target = build_fallback_trade_plan(
         rl_signal=rl_signal,
         current_price=current_price,
@@ -1076,37 +1178,33 @@ def rl_refine_trade_plan(
         asset_class=asset_class,
         current_position=current_position,
     )
-    distance = _plan_distance(base_plan, rl_target, current_price=current_price)
-    energy_scale = 1.0 / (1.0 + max(0.0, float(energy_weight)) * distance)
-    alpha = _clamp(pass_config.base_alpha * energy_scale, 0.05, 1.0)
-    direction = base_plan.direction
-    if rl_target.direction == base_plan.direction:
-        direction = rl_target.direction
-    elif base_plan.direction == "hold" and rl_target.direction != "hold":
-        direction = rl_target.direction
-    elif alpha >= 0.25:
-        direction = rl_target.direction
-    proposed = TradePlan(
-        direction=direction,
-        buy_price=float((1.0 - alpha) * float(base_plan.buy_price) + alpha * float(rl_target.buy_price)),
-        sell_price=float((1.0 - alpha) * float(base_plan.sell_price) + alpha * float(rl_target.sell_price)),
-        confidence=float((1.0 - alpha) * float(base_plan.confidence) + alpha * float(rl_target.confidence)),
-        reasoning=(
-            f"{base_plan.reasoning} | rl_refine:{pass_config.stage}"
-            f" alpha={alpha:.3f} energy_scale={energy_scale:.3f}"
-        ).strip(),
-        allocation_pct=float(
-            (1.0 - alpha) * float(getattr(base_plan, "allocation_pct", 0.0))
-            + alpha * float(getattr(rl_target, "allocation_pct", 0.0))
+    alpha, distance, distance_penalty = _compute_refinement_alpha(
+        base_plan=base_plan,
+        target_plan=rl_target,
+        current_price=current_price,
+        pass_config=pass_config,
+        energy_weight=energy_weight,
+        energy_budget=energy_budget,
+    )
+    proposed = _blend_trade_plan(
+        base_plan,
+        rl_target,
+        alpha=alpha,
+        reason_tag=(
+            f"rl_refine:{pass_config.stage}"
+            f" budget={float(energy_budget if energy_budget is not None else pass_config.energy_budget):.2f}"
+            f" dist={distance:.3f}"
+            f" penalty={distance_penalty:.3f}"
         ),
     )
     proposed = _limit_plan_change(proposed, base_plan, pass_config=pass_config)
-    return normalize_trade_plan(
+    refined = normalize_trade_plan(
         proposed,
         current_price=current_price,
         asset_class=asset_class,
         current_position=current_position,
     )
+    return refined, float(alpha), float(distance)
 
 
 def llm_refine_trade_plan(
@@ -1125,7 +1223,9 @@ def llm_refine_trade_plan(
     llm_model: Optional[str] = None,
     llm_provider: Optional[str] = None,
     llm_reasoning_effort: str = "high",
-) -> tuple[TradePlan, Optional[str]]:
+    energy_weight: float = 1.0,
+    energy_budget: Optional[float] = None,
+) -> tuple[TradePlan, Optional[str], float, float]:
     prompt = build_refinement_prompt(
         symbol=symbol,
         asset_class=asset_class,
@@ -1165,7 +1265,7 @@ def llm_refine_trade_plan(
             current_price=current_price,
             asset_class=asset_class,
             current_position=current_position,
-        ), prompt
+        ), prompt, 0.0, 0.0
 
     proposed = llm_refiner(prompt)
     if isinstance(proposed, dict):
@@ -1181,13 +1281,31 @@ def llm_refine_trade_plan(
         reasoning=str(proposed.reasoning),
         allocation_pct=float(allocation_pct),
     )
+    alpha, distance, _ = _compute_refinement_alpha(
+        base_plan=base_plan,
+        target_plan=proposed,
+        current_price=current_price,
+        pass_config=pass_config,
+        energy_weight=energy_weight,
+        energy_budget=energy_budget,
+    )
+    proposed = _blend_trade_plan(
+        base_plan,
+        proposed,
+        alpha=alpha,
+        reason_tag=(
+            f"llm_refine:{pass_config.stage}"
+            f" budget={float(energy_budget if energy_budget is not None else pass_config.energy_budget):.2f}"
+            f" dist={distance:.3f}"
+        ),
+    )
     proposed = _limit_plan_change(proposed, base_plan, pass_config=pass_config)
     return normalize_trade_plan(
         proposed,
         current_price=current_price,
         asset_class=asset_class,
         current_position=current_position,
-    ), prompt
+    ), prompt, float(alpha), float(distance)
 
 
 def refine_trade_plan_multistage(
@@ -1220,9 +1338,24 @@ def refine_trade_plan_multistage(
     trace: list[RefinementTraceEntry] = [
         RefinementTraceEntry(stage="initial", driver="seed", plan=current_plan)
     ]
+    remaining_energy = 1.0
     for pass_config in list(passes or DEFAULT_REFINEMENT_PASSES):
+        pass_energy_budget = min(_clamp(float(pass_config.energy_budget), 0.0, 1.0), remaining_energy)
+        if pass_energy_budget <= 0.0:
+            trace.append(
+                RefinementTraceEntry(
+                    stage=pass_config.stage,
+                    driver=pass_config.driver,
+                    plan=current_plan,
+                    energy_budget=0.0,
+                    alpha=0.0,
+                    target_distance=0.0,
+                )
+            )
+            continue
+        prior_plan = current_plan
         if pass_config.driver == "rl":
-            current_plan = rl_refine_trade_plan(
+            current_plan, alpha, distance = rl_refine_trade_plan(
                 current_plan,
                 rl_signal=rl_signal,
                 current_price=current_price,
@@ -1234,40 +1367,50 @@ def refine_trade_plan_multistage(
                 target_allocation=target_allocation,
                 pass_config=pass_config,
                 energy_weight=energy_weight,
+                energy_budget=pass_energy_budget,
             )
             trace.append(
                 RefinementTraceEntry(
                     stage=pass_config.stage,
                     driver=pass_config.driver,
                     plan=current_plan,
+                    energy_budget=pass_energy_budget,
+                    alpha=alpha,
+                    target_distance=distance,
                 )
             )
-            continue
-
-        current_plan, prompt = llm_refine_trade_plan(
-            current_plan,
-            symbol=symbol,
-            asset_class=asset_class,
-            current_price=current_price,
-            rl_signal=rl_signal,
-            current_position=current_position,
-            previous_plan=previous_plan,
-            forecast_1h=forecast_1h,
-            forecast_24h=forecast_24h,
-            pass_config=pass_config,
-            llm_refiner=llm_refiner,
-            llm_model=llm_model,
-            llm_provider=llm_provider,
-            llm_reasoning_effort=llm_reasoning_effort,
-        )
-        trace.append(
-            RefinementTraceEntry(
-                stage=pass_config.stage,
-                driver=pass_config.driver,
-                plan=current_plan,
-                prompt=prompt,
+        else:
+            current_plan, prompt, alpha, distance = llm_refine_trade_plan(
+                current_plan,
+                symbol=symbol,
+                asset_class=asset_class,
+                current_price=current_price,
+                rl_signal=rl_signal,
+                current_position=current_position,
+                previous_plan=previous_plan,
+                forecast_1h=forecast_1h,
+                forecast_24h=forecast_24h,
+                pass_config=pass_config,
+                llm_refiner=llm_refiner,
+                llm_model=llm_model,
+                llm_provider=llm_provider,
+                llm_reasoning_effort=llm_reasoning_effort,
+                energy_weight=energy_weight,
+                energy_budget=pass_energy_budget,
             )
-        )
+            trace.append(
+                RefinementTraceEntry(
+                    stage=pass_config.stage,
+                    driver=pass_config.driver,
+                    plan=current_plan,
+                    prompt=prompt,
+                    energy_budget=pass_energy_budget,
+                    alpha=alpha,
+                    target_distance=distance,
+                )
+            )
+        step_energy = min(remaining_energy, _plan_distance(prior_plan, current_plan, current_price=current_price))
+        remaining_energy = max(0.0, remaining_energy - step_energy)
 
     if return_trace:
         return current_plan, trace

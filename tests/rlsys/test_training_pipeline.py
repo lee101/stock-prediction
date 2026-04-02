@@ -158,3 +158,50 @@ def test_trainer_falls_back_to_cpu_when_auto_cuda_is_unavailable(monkeypatch):
     assert trainer._amp_device_type == "cpu"
     assert trainer.optimizer.defaults.get("fused") in (None, False)
     assert calls == ["cuda", "cpu"]
+
+
+def test_trainer_falls_back_to_cpu_when_cuda_forward_is_unavailable(monkeypatch):
+    df = _make_dataframe(80)
+    prepared = prepare_features(df, DataConfig(window_size=8))
+    env = MarketEnvironment(
+        prices=prepared.targets.numpy(),
+        features=prepared.features.numpy(),
+        config=MarketConfig(initial_capital=10_000.0, max_leverage=1.0, risk_aversion=0.0),
+    )
+    policy = ActorCriticPolicy(
+        observation_dim=env.observation_space.shape[0],
+        config=PolicyConfig(hidden_sizes=(16, 16), dropout=0.0),
+    )
+    training_config = TrainingConfig(
+        total_timesteps=32,
+        rollout_steps=16,
+        minibatch_size=8,
+        num_epochs=1,
+        use_amp=False,
+    )
+
+    monkeypatch.setattr("rlsys.training.get_device", lambda preferred=None: torch.device("cuda"))
+
+    original_to = policy.to
+    original_forward = policy.forward
+    calls: list[str] = []
+
+    def traced_to(device, *args, **kwargs):
+        target = torch.device(device)
+        calls.append(target.type)
+        return original_to(target, *args, **kwargs)
+
+    def flaky_forward(observation):
+        if observation.device.type == "cuda":
+            raise RuntimeError("CUDA error: CUBLAS_STATUS_ALLOC_FAILED when calling `cublasCreate(handle)`")
+        return original_forward(observation)
+
+    monkeypatch.setattr(policy, "to", traced_to)
+    monkeypatch.setattr(policy, "forward", flaky_forward)
+
+    trainer = PPOTrainer(env, policy, training_config)
+
+    assert trainer.device.type == "cpu"
+    assert trainer._amp_device_type == "cpu"
+    assert trainer.optimizer.defaults.get("fused") in (None, False)
+    assert calls == ["cuda", "cpu"]

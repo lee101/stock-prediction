@@ -1,5 +1,44 @@
 # Alpaca Progress 6 — 2026-03-25
 
+## 2026-04-01 Data Refresh + Retrain Update
+
+### Data refresh
+- Refreshed the 12-symbol daily stock production dataset with `update_daily_data.py`.
+- All prod symbols now have daily bars through **2026-04-01T04:00:00+00:00**.
+- Refresh report written to `analysis/stocks12_daily_data_refresh_20260401.json`.
+- Rebuilt canonical bins from the refreshed CSVs:
+  - `pufferlib_market/data/stocks12_daily_train_20260401.bin`: `2020-09-30` → `2025-08-31` (`1797` days)
+  - `pufferlib_market/data/stocks12_daily_val_20260401.bin`: `2025-09-01` → `2026-04-01` (`213` days)
+  - Canonical paths `stocks12_daily_train.bin` / `stocks12_daily_val.bin` were updated to these refreshed exports.
+
+### Market simulation on refreshed history
+- Replayed the current production configuration exactly as deployed: `trade_daily_stock_prod.py` 32-model ensemble, `allocation_pct=12.5`, `entry_offset_bps=+5`, `exit_offset_bps=+25`.
+- Full-history result over **1827 rolling 90-day windows**:
+  - **342/1827 negative**
+  - **median return = +2.36%**
+  - **p10 return = -0.79%**
+  - **worst return = -47.79%**
+  - **median Sortino = 2.92**
+  - **median max drawdown = -1.28%**
+  - **median trades = 68**
+- Interpretation: refreshed full-history replay is weaker than the earlier 111-window promotion slice, but this remains the current production baseline because the new retrain was materially worse.
+
+### Retrain result
+- Ran a fresh seed-123 retrain on the refreshed bins:
+  - checkpoint dir: `pufferlib_market/checkpoints/stocks12_latest_retrain_tp05_s123_20260401`
+  - training budget: `3,000,000` timesteps
+  - config family: `hidden=1024`, `num_envs=128`, `ent_coef=0.05`, `trade_penalty=0.05`, `fee_rate=0.001`, `fill_slippage_bps=5.0`, `max_steps=252`, `disable_shorts`
+- Validation during training was already poor (`med=-0.2%`, `neg=25/50`, `score=-50.2` on the saved eval checkpoints).
+- Final candidate evaluation in `analysis/stocks12_latest_retrain_tp05_s123_20260401_eval.json`:
+  - holdout50 on refreshed val bin: **31/50 negative, med=-3.39%, p10=-9.19%, worst=-13.11%**
+  - full-history replay: **601/1827 negative, med=+0.61%, p10=-1.35%, worst=-2.73%, median Sortino=0.73, median trades=2**
+- Decision: **reject**. No promotion over the current 32-model production ensemble.
+
+### Supporting fix
+- The retrain initially tripped an overflow in `pufferlib_market.metrics.annualize_total_return`.
+- Fixed by switching the annualization computation to a log-space implementation with an upper clamp before `expm1`.
+- Added regression coverage in `tests/test_marketsim_eval.py` for extreme positive-growth inputs.
+
 ## 2026-03-27 Audit Update
 
 ### What changed in production
