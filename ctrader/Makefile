@@ -27,7 +27,7 @@ ALL_OBJS = $(C_OBJS) $(POLICY_OBJ)
 # libcurl + openssl for binance REST API
 LDFLAGS += -lcurl -lssl -lcrypto
 
-.PHONY: all clean test test_parity test_valgrind download_libtorch
+.PHONY: all clean test test_parity test_valgrind test_asan download_libtorch
 
 all: ctrader
 
@@ -71,6 +71,11 @@ else
 test_policy:
 	@echo "TORCH_DIR not set, skipping policy_infer tests"
 endif
+
+test_asan:
+	$(CC) -O1 -g -fsanitize=address,undefined -Wall -Wextra -Wpedantic -std=c11 -o test_market_sim_asan tests/test_market_sim.c market_sim.c -lm
+	./test_market_sim_asan
+	rm -f test_market_sim_asan
 
 test_valgrind: test_market_sim test_binance_rest test_mktd_reader
 	valgrind --leak-check=full --error-exitcode=1 ./test_market_sim

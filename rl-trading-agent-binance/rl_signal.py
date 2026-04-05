@@ -26,6 +26,7 @@ except ImportError:
 
 FEATURES_PER_SYM = 16
 INITIAL_CASH = 10000.0
+DEFAULT_MAX_STEPS = 720  # 30d hourly
 
 # Legacy defaults (backward compat for importers)
 SYMBOLS = ("BTCUSD", "ETHUSD", "DOGEUSD", "AAVEUSD")
@@ -334,9 +335,9 @@ def _has_obs_norm(state_dict: dict) -> bool:
     return "obs_norm.running_mean" in state_dict
 
 
-def _infer_num_symbols(obs_size: int) -> int:
-    # obs = S * 16 + 5 + S = S * 17 + 5
-    return (obs_size - 5) // 17
+def _infer_num_symbols(obs_size: int, features_per_sym: int = FEATURES_PER_SYM) -> int:
+    # obs = S * F + 5 + S = S * (F+1) + 5
+    return (obs_size - 5) // (features_per_sym + 1)
 
 
 def _infer_symbols(obs_size: int) -> tuple[str, ...]:
@@ -389,9 +390,12 @@ class RLSignalGenerator:
         hidden = _infer_hidden_size(state_dict)
         use_obs_norm = _has_obs_norm(state_dict)
 
-        self.num_symbols = _infer_num_symbols(obs_size)
+        self.features_per_sym = int(ckpt.get("features_per_sym", FEATURES_PER_SYM))
+        self.max_steps = int(ckpt.get("max_steps", DEFAULT_MAX_STEPS))
+        self.num_symbols = _infer_num_symbols(obs_size, self.features_per_sym)
         self.obs_size = obs_size
         self.num_actions = num_actions
+        self._episode_step = 0
 
         if symbols is not None:
             self.symbols = symbols
@@ -457,7 +461,7 @@ class RLSignalGenerator:
         return df
 
     def _build_market_features(self, klines_map: dict[str, pd.DataFrame]) -> np.ndarray:
-        features = np.zeros((self.num_symbols, FEATURES_PER_SYM), dtype=np.float32)
+        features = np.zeros((self.num_symbols, self.features_per_sym), dtype=np.float32)
         for i, sym in enumerate(self.symbols):
             klines = klines_map.get(sym)
             if klines is None or klines.empty:
@@ -475,18 +479,20 @@ class RLSignalGenerator:
         portfolio: PortfolioSnapshot,
     ) -> np.ndarray:
         S = self.num_symbols
+        F = self.features_per_sym
         obs = np.zeros(self.obs_size, dtype=np.float32)
-        obs[: S * FEATURES_PER_SYM] = market_features.flatten()
+        obs[: S * F] = market_features.flatten()
 
-        base = S * FEATURES_PER_SYM
+        base = S * F
         obs[base + 0] = portfolio.cash_usd / INITIAL_CASH
         pos_val = portfolio.position_value_usd
         if portfolio.is_short:
             pos_val = -pos_val
         obs[base + 1] = pos_val / INITIAL_CASH
         obs[base + 2] = portfolio.unrealized_pnl_usd / INITIAL_CASH
-        obs[base + 3] = min(portfolio.hold_hours / 720.0, 1.0)
-        obs[base + 4] = 0.25  # episode progress
+        max_steps = self.max_steps if self.max_steps > 0 else DEFAULT_MAX_STEPS
+        obs[base + 3] = portfolio.hold_hours / float(max_steps)
+        obs[base + 4] = self._episode_step / float(max_steps)
 
         if portfolio.position_symbol and portfolio.position_symbol in self.symbols:
             sym_idx = self.symbols.index(portfolio.position_symbol)
@@ -577,6 +583,10 @@ class RLSignalGenerator:
         frac = float(level_idx) / float(max(1, self.action_level_bins - 1))
         return min(1.0, allocation_pct), 2.0 * frac - 1.0
 
+    def reset_episode(self) -> None:
+        """Reset episode step counter (call when position is fully closed)."""
+        self._episode_step = 0
+
     def get_signal(
         self,
         portfolio: PortfolioSnapshot,
@@ -634,6 +644,8 @@ class RLSignalGenerator:
             prefix = "SHORT" if direction == "short" else "LONG"
             action_name = f"{prefix}_{short_name}"
 
+        self._episode_step += 1
+
         sig = RLSignal(
             action=action,
             action_name=action_name,
@@ -649,6 +661,6 @@ class RLSignalGenerator:
         logger.info(
             f"RL signal: {sig.action_name} conf={sig.confidence:.2%} "
             f"gap={sig.logit_gap:+.3f} alloc={sig.allocation_pct:.2f} "
-            f"(value={sig.value:.3f}, top_logits={sorted(enumerate(sig.logits), key=lambda x: -x[1])[:5]})"
+            f"(value={sig.value:.3f}, ep_step={self._episode_step}/{self.max_steps})"
         )
         return sig

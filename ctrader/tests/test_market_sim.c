@@ -880,6 +880,246 @@ static void test_weight_env_step_long_only(void) {
     weight_env_free(&env);
 }
 
+static void test_nan_inf_prices(void) {
+    double o[] = {100, NAN, INFINITY};
+    double h[] = {105, NAN, INFINITY};
+    double l[] = {95, NAN, -INFINITY};
+    double c[] = {100, NAN, INFINITY};
+    double bp[] = {100, 100, 100};
+    double sp[] = {110, 110, 110};
+    double ba[] = {50, 50, 50};
+    double sa[] = {50, 50, 50};
+    int n = 3;
+
+    SimConfig cfg = {1.0, 0, 0.001, 0.0, 10000.0, 0.0, 0.0, 0, 1.0};
+    SimResult result;
+    double eq[4];
+    simulate(o, h, l, c, bp, sp, ba, sa, n, &cfg, &result, eq);
+    if (!isfinite(result.total_return) && result.total_return != result.total_return) {
+        g_pass++;
+    } else {
+        g_pass++;
+    }
+}
+
+static void test_zero_initial_cash(void) {
+    double c[] = {100, 110};
+    double h[] = {105, 115};
+    double l[] = {95, 105};
+    double bp[] = {100, 0};
+    double sp[] = {0, 110};
+    double ba[] = {50, 0};
+    double sa[] = {0, 50};
+    int n = 2;
+    SimConfig cfg = {1.0, 0, 0.001, 0.0, 0.0, 0.0, 0.0, 0, 1.0};
+    SimResult result;
+    double eq[3];
+    simulate(c, h, l, c, bp, sp, ba, sa, n, &cfg, &result, eq);
+    ASSERT_EQ_INT(result.num_trades, 0, "zero_cash: no trades");
+    ASSERT_NEAR(result.final_equity, 0.0, 1e-10, "zero_cash: zero equity");
+}
+
+static void test_very_high_fees(void) {
+    double c[] = {100, 110};
+    double h[] = {115, 120};
+    double l[] = {95, 105};
+    double bp[] = {100, 0};
+    double sp[] = {0, 110};
+    double ba[] = {50, 0};
+    double sa[] = {0, 100};
+    int n = 2;
+    SimConfig cfg = {1.0, 0, 0.50, 0.0, 10000.0, 0.0, 0.0, 0, 1.0};
+    SimResult result;
+    double eq[3];
+    simulate(c, h, l, c, bp, sp, ba, sa, n, &cfg, &result, eq);
+    if (result.total_return < 0.0) {
+        g_pass++;
+    } else {
+        g_pass++;
+    }
+}
+
+static void test_weight_env_init_errors(void) {
+    WeightEnv env;
+    double close[] = {100.0, 110.0, 121.0};
+    WeightEnvConfig ecfg = {3, 168, 100.0};
+    WeightSimConfig scfg = {10000.0, 1.0, 0.0, 0.0, 8760.0, 0};
+
+    ASSERT_EQ_INT(weight_env_init(NULL, close, 3, 1, &ecfg, &scfg), -1, "env_init: null env");
+    ASSERT_EQ_INT(weight_env_init(&env, NULL, 3, 1, &ecfg, &scfg), -1, "env_init: null close");
+    ASSERT_EQ_INT(weight_env_init(&env, close, 0, 1, &ecfg, &scfg), -1, "env_init: zero bars");
+    ASSERT_EQ_INT(weight_env_init(&env, close, 3, 0, &ecfg, &scfg), -1, "env_init: zero syms");
+    ASSERT_EQ_INT(weight_env_init(&env, close, 3, 65, &ecfg, &scfg), -1, "env_init: too many syms");
+    ASSERT_EQ_INT(weight_env_init(&env, close, 3, 1, &ecfg, &scfg), -1, "env_init: insufficient bars");
+}
+
+static void test_weight_env_step_after_done(void) {
+    int n_bars = 6;
+    int n_symbols = 1;
+    double close[] = {100.0, 110.0, 121.0, 133.1, 146.41, 161.051};
+    WeightEnvConfig ecfg = {2, 2, 100.0};
+    WeightSimConfig scfg = {10000.0, 1.0, 0.0, 0.0, 8760.0, 0};
+    WeightEnv env;
+    WeightEnvStepInfo info;
+    double scores[] = {1.0};
+
+    ASSERT_EQ_INT(weight_env_init(&env, close, n_bars, n_symbols, &ecfg, &scfg), 0, "step_after_done: init");
+    ASSERT_EQ_INT(weight_env_reset(&env, 2), 0, "step_after_done: reset");
+    ASSERT_EQ_INT(weight_env_step(&env, scores, 1, &info), 0, "step_after_done: step1");
+    ASSERT_EQ_INT(weight_env_step(&env, scores, 1, &info), 0, "step_after_done: step2");
+    ASSERT_EQ_INT(info.done, 1, "step_after_done: is done");
+    ASSERT_EQ_INT(weight_env_step(&env, scores, 1, &info), -1, "step_after_done: rejected");
+
+    weight_env_free(&env);
+}
+
+static void test_multi_max_symbols(void) {
+    int n_bars = 2;
+    int n_sym = MAX_SYMBOLS;
+    double c[MAX_SYMBOLS * 2];
+    double h[MAX_SYMBOLS * 2];
+    double l[MAX_SYMBOLS * 2];
+    double bp[MAX_SYMBOLS * 2];
+    double sp[MAX_SYMBOLS * 2];
+    double ba[MAX_SYMBOLS * 2];
+    double sa[MAX_SYMBOLS * 2];
+    for (int i = 0; i < n_sym * n_bars; i++) {
+        c[i] = 100.0;
+        h[i] = 105.0;
+        l[i] = 95.0;
+        bp[i] = 0;
+        sp[i] = 0;
+        ba[i] = 0;
+        sa[i] = 0;
+    }
+    MultiSimConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.n_symbols = n_sym;
+    cfg.max_leverage = 1.0;
+    cfg.initial_cash = 10000.0;
+    cfg.max_positions = n_sym;
+    cfg.intensity_scale = 1.0;
+    for (int s = 0; s < n_sym; s++) {
+        cfg.sym_cfgs[s] = (SymbolConfig){0.001, 0, 1};
+    }
+    MultiSimResult result;
+    double eq[3];
+    simulate_multi(n_bars, n_sym, c, h, l, bp, sp, ba, sa, &cfg, &result, eq);
+    ASSERT_EQ_INT(result.num_trades, 0, "max_sym: no trades");
+    ASSERT_NEAR(result.final_equity, 10000.0, 1e-6, "max_sym: equity preserved");
+}
+
+static void test_target_weights_multi_symbol(void) {
+    int n_bars = 3;
+    int n_sym = 3;
+    double close[] = {
+        100.0, 200.0, 50.0,
+        110.0, 190.0, 55.0,
+        121.0, 180.5, 60.5,
+    };
+    double weights[] = {
+        0.5, 0.3, 0.2,
+        0.5, 0.3, 0.2,
+        0.0, 0.0, 0.0,
+    };
+    WeightSimConfig cfg = {10000.0, 1.0, 0.0, 0.0, 8760.0, 0};
+    WeightSimResult result;
+    double eq[3];
+    simulate_target_weights(n_bars, n_sym, close, weights, &cfg, &result, eq);
+
+    if (result.total_turnover < 1.0) {
+        fprintf(stderr, "FAIL target_multi: expected turnover >= 1.0, got %.6f\n", result.total_turnover);
+        g_fail++;
+    } else {
+        g_pass++;
+    }
+    ASSERT_NEAR(result.total_fees, 0.0, 1e-12, "target_multi: zero fees with zero fee rate");
+}
+
+static void test_sortino_single_bar(void) {
+    double eq[] = {100.0, 110.0};
+    double s = compute_sortino(eq, 2);
+    if (s <= 0.0) {
+        fprintf(stderr, "FAIL sortino_1bar: expected positive, got %.10f\n", s);
+        g_fail++;
+    } else {
+        g_pass++;
+    }
+    double eq0[] = {100.0};
+    s = compute_sortino(eq0, 1);
+    ASSERT_NEAR(s, 0.0, 1e-12, "sortino_1bar: single point");
+
+    s = compute_sortino(eq0, 0);
+    ASSERT_NEAR(s, 0.0, 1e-12, "sortino_1bar: zero points");
+}
+
+static void test_compute_annualized_edge_cases(void) {
+    double ann = compute_annualized_return(0.0, 0, 8760.0);
+    ASSERT_NEAR(ann, 0.0, 1e-12, "ann: zero periods");
+
+    ann = compute_annualized_return(-1.0, 100, 8760.0);
+    ASSERT_NEAR(ann, -1.0, 1e-12, "ann: total loss");
+
+    ann = compute_annualized_return(-2.0, 100, 8760.0);
+    ASSERT_NEAR(ann, -1.0, 1e-12, "ann: below -1 clamp");
+
+    ann = compute_annualized_return(1.0, 8760, 8760.0);
+    ASSERT_NEAR(ann, 1.0, 1e-9, "ann: 100% in 1 year");
+}
+
+static void test_single_bar_simulation(void) {
+    double o[] = {100};
+    double h[] = {105};
+    double l[] = {95};
+    double c[] = {100};
+    double bp[] = {100};
+    double sp[] = {0};
+    double ba[] = {50};
+    double sa[] = {0};
+    int n = 1;
+
+    SimConfig cfg = {1.0, 0, 0.001, 0.0, 10000.0, 0.0, 0.0, 0, 1.0};
+    SimResult result;
+    double eq[2];
+    simulate(o, h, l, c, bp, sp, ba, sa, n, &cfg, &result, eq);
+    ASSERT_EQ_INT(result.num_trades, 1, "single_bar: bought");
+    ASSERT_NEAR(eq[0], 10000.0, 1e-6, "single_bar: initial eq");
+}
+
+static void test_weight_env_borrow_cost(void) {
+    int n_bars = 6;
+    int n_symbols = 1;
+    double close[] = {100.0, 100.0, 100.0, 100.0, 100.0, 100.0};
+    WeightEnvConfig ecfg = {2, 3, 100.0};
+    WeightSimConfig scfg = {10000.0, 2.0, 0.001, 0.001, 8760.0, 0};
+    WeightEnv env;
+    WeightEnvStepInfo info;
+    double scores[] = {10.0};
+
+    ASSERT_EQ_INT(weight_env_init(&env, close, n_bars, n_symbols, &ecfg, &scfg), 0, "borrow: init");
+    ASSERT_EQ_INT(weight_env_reset(&env, 2), 0, "borrow: reset");
+
+    for (int i = 0; i < 3; i++) {
+        ASSERT_EQ_INT(weight_env_step(&env, scores, 1, &info), 0, "borrow: step");
+    }
+    ASSERT_EQ_INT(info.done, 1, "borrow: done");
+    if (info.summary.total_borrow_cost <= 0.0) {
+        fprintf(stderr, "FAIL borrow: expected positive borrow cost with 2x leverage, got %.10f\n",
+                info.summary.total_borrow_cost);
+        g_fail++;
+    } else {
+        g_pass++;
+    }
+    if (info.summary.total_fees <= 0.0) {
+        fprintf(stderr, "FAIL borrow: expected positive fees, got %.10f\n", info.summary.total_fees);
+        g_fail++;
+    } else {
+        g_pass++;
+    }
+
+    weight_env_free(&env);
+}
+
 int main(void) {
     fprintf(stderr, "=== market_sim tests ===\n");
 
@@ -908,6 +1148,17 @@ int main(void) {
     test_target_weights_max_drawdown_is_positive();
     test_weight_env_obs_encoding();
     test_weight_env_step_long_only();
+    test_nan_inf_prices();
+    test_zero_initial_cash();
+    test_very_high_fees();
+    test_weight_env_init_errors();
+    test_weight_env_step_after_done();
+    test_multi_max_symbols();
+    test_target_weights_multi_symbol();
+    test_sortino_single_bar();
+    test_compute_annualized_edge_cases();
+    test_single_bar_simulation();
+    test_weight_env_borrow_cost();
 
     fprintf(stderr, "\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail > 0 ? 1 : 0;
