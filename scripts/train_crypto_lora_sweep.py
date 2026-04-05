@@ -55,6 +55,28 @@ class ConsistencyMetrics:
         return self.mae_percent_mean + 0.5 * self.mae_percent_std + 0.3 * (self.mae_percent_max - self.mae_percent_mean)
 
 
+def summarize_stability(val_metrics: ConsistencyMetrics, test_metrics: ConsistencyMetrics) -> dict[str, float]:
+    mae_percent_gap = float(test_metrics.mae_percent_mean - val_metrics.mae_percent_mean)
+    consistency_gap = float(test_metrics.consistency_score() - val_metrics.consistency_score())
+    max_mae_percent_gap = float(test_metrics.mae_percent_max - val_metrics.mae_percent_max)
+    relative_overfit_ratio = 0.0
+    if np.isfinite(val_metrics.mae_percent_mean) and val_metrics.mae_percent_mean > 0:
+        relative_overfit_ratio = float(test_metrics.mae_percent_mean / val_metrics.mae_percent_mean - 1.0)
+
+    stability_score = (
+        max(0.0, mae_percent_gap)
+        + 0.5 * max(0.0, consistency_gap)
+        + 0.25 * max(0.0, max_mae_percent_gap)
+    )
+    return {
+        "mae_percent_gap": mae_percent_gap,
+        "consistency_gap": consistency_gap,
+        "max_mae_percent_gap": max_mae_percent_gap,
+        "relative_overfit_ratio": relative_overfit_ratio,
+        "stability_score": float(stability_score),
+    }
+
+
 def _make_trainer_config(trainer_config_cls: type[Any], **kwargs: Any) -> Any:
     """Instantiate TrainerConfig while tolerating older compatibility shims.
 
@@ -257,6 +279,7 @@ def train_and_evaluate(cfg: TrainConfig, data_path: Path, output_root: Path) -> 
 
     val_metrics = compute_consistency_metrics(finetuned, full_df, cfg.context_length, cfg.prediction_length, val_start, val_end, cfg.preaug)
     test_metrics = compute_consistency_metrics(finetuned, full_df, cfg.context_length, cfg.prediction_length, test_start, test_end, cfg.preaug)
+    stability = summarize_stability(val_metrics, test_metrics)
 
     return {
         "config": asdict(cfg),
@@ -266,6 +289,8 @@ def train_and_evaluate(cfg: TrainConfig, data_path: Path, output_root: Path) -> 
         "test": asdict(test_metrics),
         "val_consistency_score": val_metrics.consistency_score(),
         "test_consistency_score": test_metrics.consistency_score(),
+        "stability": stability,
+        "train_stability_score": float(stability["stability_score"]),
     }
 
 

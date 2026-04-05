@@ -8,6 +8,7 @@ import math
 import shlex
 import subprocess
 import sys
+from datetime import date
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -21,6 +22,7 @@ from src.binance_symbol_utils import proxy_symbol_to_usd
 
 DEFAULT_REMOTE_HOST = "administrator@93.127.141.100"
 DEFAULT_REMOTE_ROOT = Path("/nvme0n1-disk/code/stock-prediction")
+SSH_OPTIONS = ("-o", "StrictHostKeyChecking=no", "-o", "ControlMaster=no", "-o", "ControlPath=none")
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,60 @@ def _coerce_float(value: Any) -> float | None:
     return numeric
 
 
+def _parse_window_days(window: dict[str, Any]) -> float | None:
+    label = str(window.get("window") or "").strip().lower()
+    if label.endswith("d"):
+        try:
+            days = float(label[:-1])
+        except ValueError:
+            days = None
+        else:
+            if days > 0:
+                return days
+
+    start_raw = str(window.get("start") or "").strip()
+    end_raw = str(window.get("end") or "").strip()
+    if start_raw and end_raw:
+        try:
+            start_dt = date.fromisoformat(start_raw)
+            end_dt = date.fromisoformat(end_raw)
+        except ValueError:
+            return None
+        delta_days = (end_dt - start_dt).days
+        if delta_days > 0:
+            return float(delta_days)
+    return None
+
+
+def _annualize_return_pct(return_pct: Any, *, window_days: float | None) -> float | None:
+    numeric = _coerce_float(return_pct)
+    if numeric is None or window_days is None or window_days <= 0:
+        return None
+    gross_return = 1.0 + numeric / 100.0
+    if gross_return <= 0.0:
+        return -100.0
+    annualized = math.pow(gross_return, 365.0 / window_days) - 1.0
+    if not math.isfinite(annualized):
+        return None
+    return annualized * 100.0
+
+
+def _annualize_linear_metric(value: Any, *, window_days: float | None) -> float | None:
+    numeric = _coerce_float(value)
+    if numeric is None or window_days is None or window_days <= 0:
+        return None
+    annualized = numeric * (365.0 / window_days)
+    return annualized if math.isfinite(annualized) else None
+
+
+def build_ssh_command(*parts: str) -> list[str]:
+    return ["ssh", *SSH_OPTIONS, *parts]
+
+
+def build_rsync_remote_shell() -> str:
+    return " ".join(["ssh", *SSH_OPTIONS])
+
+
 def summarize_eval_windows(payload: dict[str, Any]) -> dict[str, Any]:
     windows = payload.get("windows")
     if not isinstance(windows, list):
@@ -74,6 +130,9 @@ def summarize_eval_windows(payload: dict[str, Any]) -> dict[str, Any]:
     sortino_deltas: list[float] = []
     max_dd_deltas: list[float] = []
     new_symbol_pnls: list[float] = []
+    annualized_return_deltas: list[float] = []
+    annualized_new_symbol_pnls: list[float] = []
+    annualized_weights: list[float] = []
     accepted = 0
     rejected = 0
 
@@ -100,9 +159,24 @@ def summarize_eval_windows(payload: dict[str, Any]) -> dict[str, Any]:
             max_dd_deltas.append(max_dd_delta)
         if new_symbol_pnl is not None:
             new_symbol_pnls.append(new_symbol_pnl)
+        window_days = _parse_window_days(window)
+        annualized_return_delta = _annualize_return_pct(return_delta, window_days=window_days)
+        annualized_new_symbol_pnl = _annualize_linear_metric(new_symbol_pnl, window_days=window_days)
+        if annualized_return_delta is not None and annualized_new_symbol_pnl is not None and window_days is not None:
+            annualized_return_deltas.append(annualized_return_delta)
+            annualized_new_symbol_pnls.append(annualized_new_symbol_pnl)
+            annualized_weights.append(window_days)
 
     def _mean(values: list[float]) -> float | None:
         return sum(values) / len(values) if values else None
+
+    def _weighted_mean(values: list[float], weights: list[float]) -> float | None:
+        if not values or not weights or len(values) != len(weights):
+            return None
+        total_weight = sum(weights)
+        if total_weight <= 0:
+            return None
+        return sum(value * weight for value, weight in zip(values, weights)) / total_weight
 
     return {
         "window_count": len(windows),
@@ -117,6 +191,10 @@ def summarize_eval_windows(payload: dict[str, Any]) -> dict[str, Any]:
         "max_max_dd_delta": max(max_dd_deltas) if max_dd_deltas else None,
         "mean_new_symbol_pnl": _mean(new_symbol_pnls),
         "min_new_symbol_pnl": min(new_symbol_pnls) if new_symbol_pnls else None,
+        "mean_annualized_return_delta": _mean(annualized_return_deltas),
+        "weighted_annualized_return_delta": _weighted_mean(annualized_return_deltas, annualized_weights),
+        "mean_annualized_new_symbol_pnl": _mean(annualized_new_symbol_pnls),
+        "weighted_annualized_new_symbol_pnl": _weighted_mean(annualized_new_symbol_pnls, annualized_weights),
     }
 
 
@@ -305,13 +383,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         lookback_hours=float(args.lookback_hours),
     )
     _run(
-        [
-            "ssh",
-            "-o",
-            "StrictHostKeyChecking=no",
-            str(args.remote_host),
-            ssh_cmd,
-        ]
+        build_ssh_command(str(args.remote_host), ssh_cmd)
     )
 
     _run(
@@ -319,7 +391,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "rsync",
             "-az",
             "-e",
-            "ssh -o StrictHostKeyChecking=no",
+            build_rsync_remote_shell(),
             f"{args.remote_host}:{args.remote_root}/{remote_eval_root}/",
             str(local_remote_root) + "/",
         ]

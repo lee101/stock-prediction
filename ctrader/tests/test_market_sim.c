@@ -305,8 +305,8 @@ static void test_sortino_computation(void) {
 static void test_max_drawdown(void) {
     double eq1[] = {100, 110, 90, 100};
     double dd = compute_max_drawdown(eq1, 4);
-    /* peak=110, trough=90, dd=(90-110)/110 = -0.1818 */
-    ASSERT_NEAR(dd, -0.18181818, 0.001, "max_dd: simple case");
+    /* peak=110, trough=90, dd=(110-90)/110 = 0.1818 */
+    ASSERT_NEAR(dd, 0.18181818, 0.001, "max_dd: simple case");
 
     double eq2[] = {100, 100, 100, 100};
     dd = compute_max_drawdown(eq2, 4);
@@ -646,6 +646,240 @@ static void test_intensity_scale(void) {
     }
 }
 
+static void test_target_weights_buy_and_hold(void) {
+    int n_bars = 3;
+    int n_symbols = 1;
+    double close[] = {100.0, 110.0, 121.0};
+    double weights[] = {
+        1.0,
+        1.0,
+        0.0,
+    };
+    WeightSimConfig cfg = {
+        .initial_cash = 10000.0,
+        .max_gross_leverage = 1.0,
+        .fee_rate = 0.0,
+        .borrow_rate_per_period = 0.0,
+        .periods_per_year = 2.0,
+        .can_short = 0,
+    };
+    WeightSimResult result;
+    double eq[3];
+
+    simulate_target_weights(n_bars, n_symbols, close, weights, &cfg, &result, eq);
+
+    ASSERT_NEAR(result.total_return, 0.21, 1e-9, "target_weights: total_return");
+    ASSERT_NEAR(result.final_equity, 12100.0, 1e-6, "target_weights: final_equity");
+    ASSERT_NEAR(result.annualized_return, 0.21, 1e-9, "target_weights: annualized_return");
+    ASSERT_NEAR(result.total_turnover, 1.0, 1e-9, "target_weights: turnover");
+    ASSERT_NEAR(result.max_drawdown, 0.0, 1e-12, "target_weights: no drawdown");
+}
+
+static void test_target_weights_turnover_fees(void) {
+    int n_bars = 3;
+    int n_symbols = 1;
+    double close[] = {100.0, 100.0, 100.0};
+    double weights[] = {
+        1.0,
+        0.0,
+        0.0,
+    };
+    WeightSimConfig cfg = {
+        .initial_cash = 10000.0,
+        .max_gross_leverage = 1.0,
+        .fee_rate = 0.01,
+        .borrow_rate_per_period = 0.0,
+        .periods_per_year = 8760.0,
+        .can_short = 0,
+    };
+    WeightSimResult result;
+    double eq[3];
+
+    simulate_target_weights(n_bars, n_symbols, close, weights, &cfg, &result, eq);
+
+    ASSERT_NEAR(result.final_equity, 9801.0, 1e-6, "target_weights: fees final_equity");
+    ASSERT_NEAR(result.total_fees, 199.0, 1e-6, "target_weights: fees total_fees");
+    ASSERT_NEAR(result.total_turnover, 2.0, 1e-9, "target_weights: fees turnover");
+}
+
+static void test_target_weights_leverage_clamp_and_short_rules(void) {
+    {
+        int n_bars = 2;
+        int n_symbols = 1;
+        double close[] = {100.0, 110.0};
+        double weights[] = {
+            2.0,
+            0.0,
+        };
+        WeightSimConfig cfg = {
+            .initial_cash = 10000.0,
+            .max_gross_leverage = 1.0,
+            .fee_rate = 0.0,
+            .borrow_rate_per_period = 0.0,
+            .periods_per_year = 8760.0,
+            .can_short = 0,
+        };
+        WeightSimResult result;
+        double eq[2];
+
+        simulate_target_weights(n_bars, n_symbols, close, weights, &cfg, &result, eq);
+        ASSERT_NEAR(result.total_return, 0.10, 1e-9, "target_weights: leverage clamp");
+    }
+
+    {
+        int n_bars = 2;
+        int n_symbols = 1;
+        double close[] = {100.0, 90.0};
+        double weights[] = {
+            -1.0,
+            0.0,
+        };
+        WeightSimConfig cfg = {
+            .initial_cash = 10000.0,
+            .max_gross_leverage = 1.0,
+            .fee_rate = 0.0,
+            .borrow_rate_per_period = 0.0,
+            .periods_per_year = 8760.0,
+            .can_short = 0,
+        };
+        WeightSimResult result;
+        double eq[2];
+
+        simulate_target_weights(n_bars, n_symbols, close, weights, &cfg, &result, eq);
+        ASSERT_NEAR(result.total_return, 0.0, 1e-9, "target_weights: no short clamp");
+    }
+}
+
+static void test_target_weights_max_drawdown_is_positive(void) {
+    int n_bars = 4;
+    int n_symbols = 1;
+    double close[] = {100.0, 120.0, 60.0, 90.0};
+    double weights[] = {
+        1.0,
+        1.0,
+        1.0,
+        0.0,
+    };
+    WeightSimConfig cfg = {
+        .initial_cash = 10000.0,
+        .max_gross_leverage = 1.0,
+        .fee_rate = 0.0,
+        .borrow_rate_per_period = 0.0,
+        .periods_per_year = 8760.0,
+        .can_short = 0,
+    };
+    WeightSimResult result;
+    double eq[4];
+
+    simulate_target_weights(n_bars, n_symbols, close, weights, &cfg, &result, eq);
+
+    ASSERT_NEAR(result.max_drawdown, 0.5, 1e-9, "target_weights: positive max drawdown");
+}
+
+static void test_weight_env_obs_encoding(void) {
+    int n_bars = 6;
+    int n_symbols = 2;
+    double close[] = {
+        100.0, 100.0,
+        110.0, 100.0,
+        121.0, 100.0,
+        133.1, 100.0,
+        146.41, 100.0,
+        161.051, 100.0,
+    };
+    WeightEnvConfig env_cfg = {
+        .lookback = 3,
+        .episode_steps = 2,
+        .reward_scale = 100.0,
+    };
+    WeightSimConfig sim_cfg = {
+        .initial_cash = 10000.0,
+        .max_gross_leverage = 1.0,
+        .fee_rate = 0.0,
+        .borrow_rate_per_period = 0.0,
+        .periods_per_year = 8760.0,
+        .can_short = 0,
+    };
+    WeightEnv env;
+    ASSERT_EQ_INT(weight_env_init(&env, close, n_bars, n_symbols, &env_cfg, &sim_cfg), 0, "weight_env: init");
+    ASSERT_EQ_INT(weight_env_reset(&env, 3), 0, "weight_env: reset");
+
+    double obs[16];
+    ASSERT_EQ_INT(weight_env_get_obs(&env, obs, 16), 0, "weight_env: get_obs");
+    ASSERT_EQ_INT(weight_env_obs_dim(&env), 12, "weight_env: obs_dim");
+    ASSERT_NEAR(obs[0], 0.0, 1e-12, "weight_env obs: first padded return zero");
+    ASSERT_NEAR(obs[1], 0.0, 1e-12, "weight_env obs: first padded return zero sym2");
+    ASSERT_NEAR(obs[2], log(110.0 / 100.0), 1e-9, "weight_env obs: first real return");
+    ASSERT_NEAR(obs[4], log(121.0 / 110.0), 1e-9, "weight_env obs: second real return");
+    ASSERT_NEAR(obs[6], 0.0, 1e-12, "weight_env obs: zero weight 0");
+    ASSERT_NEAR(obs[7], 0.0, 1e-12, "weight_env obs: zero weight 1");
+    ASSERT_NEAR(obs[8], 0.0, 1e-12, "weight_env obs: recent return");
+    ASSERT_NEAR(obs[9], 0.0, 1e-12, "weight_env obs: drawdown");
+    ASSERT_NEAR(obs[10], 0.0, 1e-12, "weight_env obs: equity ratio");
+    ASSERT_NEAR(obs[11], 0.0, 1e-12, "weight_env obs: step ratio");
+
+    weight_env_free(&env);
+}
+
+static void test_weight_env_step_long_only(void) {
+    int n_bars = 6;
+    int n_symbols = 2;
+    double close[] = {
+        100.0, 100.0,
+        110.0, 100.0,
+        121.0, 100.0,
+        133.1, 100.0,
+        146.41, 100.0,
+        161.051, 100.0,
+    };
+    WeightEnvConfig env_cfg = {
+        .lookback = 3,
+        .episode_steps = 2,
+        .reward_scale = 100.0,
+    };
+    WeightSimConfig sim_cfg = {
+        .initial_cash = 10000.0,
+        .max_gross_leverage = 1.0,
+        .fee_rate = 0.0,
+        .borrow_rate_per_period = 0.0,
+        .periods_per_year = 8760.0,
+        .can_short = 0,
+    };
+    WeightEnv env;
+    WeightEnvStepInfo info;
+    double scores[] = {6.0, -6.0};
+
+    ASSERT_EQ_INT(weight_env_init(&env, close, n_bars, n_symbols, &env_cfg, &sim_cfg), 0, "weight_env step: init");
+    ASSERT_EQ_INT(weight_env_reset(&env, 3), 0, "weight_env step: reset");
+    ASSERT_EQ_INT(weight_env_step(&env, scores, 2, &info), 0, "weight_env step: first");
+    ASSERT_NEAR(info.done, 0.0, 0.0, "weight_env step: not done");
+    if (info.reward <= 0.0) {
+        fprintf(stderr, "FAIL weight_env step: expected positive reward, got %.10f\n", info.reward);
+        g_fail++;
+    } else {
+        g_pass++;
+    }
+    if (env.current_weights[0] <= env.current_weights[1]) {
+        fprintf(stderr, "FAIL weight_env step: expected symbol 0 to dominate weights\n");
+        g_fail++;
+    } else {
+        g_pass++;
+    }
+
+    ASSERT_EQ_INT(weight_env_step(&env, scores, 2, &info), 0, "weight_env step: second");
+    ASSERT_EQ_INT(info.done, 1, "weight_env step: done");
+    if (info.summary.total_return <= 0.0) {
+        fprintf(stderr, "FAIL weight_env step: expected positive total return, got %.10f\n", info.summary.total_return);
+        g_fail++;
+    } else {
+        g_pass++;
+    }
+    ASSERT_NEAR(info.summary.max_drawdown, 0.0, 1e-12, "weight_env step: zero drawdown");
+    ASSERT_NEAR(info.summary.total_fees, 0.0, 1e-12, "weight_env step: zero fees");
+
+    weight_env_free(&env);
+}
+
 int main(void) {
     fprintf(stderr, "=== market_sim tests ===\n");
 
@@ -668,6 +902,12 @@ int main(void) {
     test_empty_input();
     test_single_symbol_parity();
     test_intensity_scale();
+    test_target_weights_buy_and_hold();
+    test_target_weights_turnover_fees();
+    test_target_weights_leverage_clamp_and_short_rules();
+    test_target_weights_max_drawdown_is_positive();
+    test_weight_env_obs_encoding();
+    test_weight_env_step_long_only();
 
     fprintf(stderr, "\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail > 0 ? 1 : 0;

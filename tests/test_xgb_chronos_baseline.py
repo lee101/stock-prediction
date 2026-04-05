@@ -30,6 +30,7 @@ from unified_hourly_experiment.xgb_chronos_baseline import (
     parse_entry_allocator_mode_list,
     parse_entry_selection_mode_list,
     parse_label_basis_list,
+    save_models,
     train_classifier,
     validate_search_space_budget,
 )
@@ -218,6 +219,36 @@ def test_build_action_row_accepts_itertuples_rows() -> None:
     assert action["symbol"] == "NET"
     assert action["buy_amount"] > 0.0
     assert action["sell_amount"] == 0.0
+
+
+def test_save_models_falls_back_to_booster_on_typeerror(tmp_path: Path) -> None:
+    class _Booster:
+        def save_model(self, path: str) -> None:
+            Path(path).write_text("booster")
+
+    class _Wrapper:
+        def save_model(self, path: str) -> None:
+            raise TypeError("_estimator_type undefined")
+
+        def get_booster(self) -> _Booster:
+            return _Booster()
+
+    wrapper = _Wrapper()
+    const = ConstantProbabilityModel(probability=0.5)
+
+    save_models(
+        {
+            "high": wrapper,
+            "low": wrapper,
+            "close": wrapper,
+            "long_cls": const,
+            "short_cls": const,
+        },
+        tmp_path,
+    )
+
+    assert (tmp_path / "models" / "high.json").read_text() == "booster"
+    assert (tmp_path / "models" / "long_cls.json").exists()
 
 
 def test_build_actions_and_bars_assigns_predictions_without_merge() -> None:

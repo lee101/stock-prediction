@@ -70,6 +70,7 @@ def summarize_result(result: dict[str, Any], *, result_path: Path) -> dict[str, 
     config = result.get("config") if isinstance(result.get("config"), dict) else {}
     val = result.get("val") if isinstance(result.get("val"), dict) else {}
     test = result.get("test") if isinstance(result.get("test"), dict) else {}
+    stability = result.get("stability") if isinstance(result.get("stability"), dict) else {}
     return {
         "symbol": str(config.get("symbol") or "").upper(),
         "preaug": str(config.get("preaug") or ""),
@@ -80,6 +81,9 @@ def summarize_result(result: dict[str, Any], *, result_path: Path) -> dict[str, 
         "test_consistency_score": _coerce_float(result.get("test_consistency_score")),
         "val_mae_percent_mean": _coerce_float(val.get("mae_percent_mean")),
         "test_mae_percent_mean": _coerce_float(test.get("mae_percent_mean")),
+        "train_stability_score": _coerce_float(result.get("train_stability_score") or stability.get("stability_score")),
+        "train_mae_percent_gap": _coerce_float(stability.get("mae_percent_gap")),
+        "train_consistency_gap": _coerce_float(stability.get("consistency_gap")),
     }
 
 
@@ -95,19 +99,27 @@ def _pnl_gate_passed(record: dict[str, Any]) -> bool:
 
 
 def rank_results(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    def _sort_key(record: dict[str, Any]) -> tuple[int, float, float, float, float, float, str, str]:
+    def _sort_key(record: dict[str, Any]) -> tuple[int, int, float, float, float, float, float, float, str, str]:
+        pnl_present = bool(record.get("pnl_eval_present"))
+        accepted = int(record.get("pnl_accepted_window_count") or 0)
+        window_count = int(record.get("pnl_window_count") or 0)
+        accept_ratio = (accepted / window_count) if pnl_present and window_count > 0 else 0.0
         score = _coerce_float(record.get("val_consistency_score"))
         val_mae = _coerce_float(record.get("val_mae_percent_mean"))
+        stability = _coerce_float(record.get("train_stability_score"))
         mean_sortino = _coerce_float(record.get("pnl_mean_sortino_delta"))
-        mean_return = _coerce_float(record.get("pnl_mean_return_delta"))
-        mean_symbol_pnl = _coerce_float(record.get("pnl_mean_new_symbol_pnl"))
+        annualized_return = _coerce_float(record.get("pnl_weighted_annualized_return_delta"))
+        annualized_symbol_pnl = _coerce_float(record.get("pnl_weighted_annualized_new_symbol_pnl"))
         return (
             0 if _pnl_gate_passed(record) else 1,
+            0 if pnl_present else 1,
+            -(accept_ratio if pnl_present else 0.0),
+            -(annualized_return if annualized_return is not None else float("-inf")),
+            -(annualized_symbol_pnl if annualized_symbol_pnl is not None else float("-inf")),
+            -(mean_sortino if mean_sortino is not None else float("-inf")),
+            stability if stability is not None else float("inf"),
             score if score is not None else float("inf"),
             val_mae if val_mae is not None else float("inf"),
-            -(mean_sortino if mean_sortino is not None else float("-inf")),
-            -(mean_return if mean_return is not None else float("-inf")),
-            -(mean_symbol_pnl if mean_symbol_pnl is not None else float("-inf")),
             str(record.get("symbol") or ""),
             str(record.get("preaug") or ""),
         )
@@ -148,6 +160,7 @@ def render_summary_md(records: Iterable[dict[str, Any]]) -> str:
         base = (
             f"- `{symbol}`: `{record.get('preaug')}` "
             f"(val_consistency={_format_metric(record.get('val_consistency_score'))}, "
+            f"stability={_format_metric(record.get('train_stability_score'))}, "
             f"val_mae%={_format_metric(record.get('val_mae_percent_mean'))}, "
             f"test_mae%={_format_metric(record.get('test_mae_percent_mean'))})"
         )
@@ -156,8 +169,9 @@ def render_summary_md(records: Iterable[dict[str, Any]]) -> str:
                 " "
                 f"(pnl_gate={'pass' if _pnl_gate_passed(record) else 'fail'}, "
                 f"accept={int(record.get('pnl_accepted_window_count') or 0)}/{int(record.get('pnl_window_count') or 0)}, "
+                f"ann_return_delta={_format_metric(record.get('pnl_weighted_annualized_return_delta'), signed=True)}%, "
+                f"ann_symbol_pnl={_format_metric(record.get('pnl_weighted_annualized_new_symbol_pnl'), signed=True, digits=2)}, "
                 f"mean_sortino_delta={_format_metric(record.get('pnl_mean_sortino_delta'), signed=True)}, "
-                f"mean_return_delta={_format_metric(record.get('pnl_mean_return_delta'), signed=True)}%, "
                 f"mean_symbol_pnl={_format_metric(record.get('pnl_mean_new_symbol_pnl'), signed=True, digits=2)})"
             )
         lines.append(base)
@@ -165,15 +179,15 @@ def render_summary_md(records: Iterable[dict[str, Any]]) -> str:
     if include_pnl:
         lines.extend(
             [
-                "| Rank | Symbol | Preaug | PnL Gate | PnL Accept | Mean Sortino Δ | Mean Return Δ% | Mean Symbol PnL | Val Consistency | Val MAE% | Test MAE% | Run Name |",
-                "|---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|---|",
+                "| Rank | Symbol | Preaug | PnL Gate | PnL Accept | Ann Return Δ% | Ann Symbol PnL | Mean Sortino Δ | Mean Symbol PnL | Stability | Val Consistency | Val MAE% | Test MAE% | Run Name |",
+                "|---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
             ]
         )
     else:
         lines.extend(
             [
-                "| Rank | Symbol | Preaug | Val Consistency | Val MAE% | Test MAE% | Run Name |",
-                "|---:|---|---|---:|---:|---:|---|",
+                "| Rank | Symbol | Preaug | Stability | Val Consistency | Val MAE% | Test MAE% | Run Name |",
+                "|---:|---|---|---:|---:|---:|---:|---|",
             ]
         )
     for idx, record in enumerate(ranked, start=1):
@@ -187,9 +201,11 @@ def render_summary_md(records: Iterable[dict[str, Any]]) -> str:
                         str(record.get("preaug") or ""),
                         "pass" if _pnl_gate_passed(record) else "fail",
                         f"{int(record.get('pnl_accepted_window_count') or 0)}/{int(record.get('pnl_window_count') or 0)}",
+                        _format_metric(record.get("pnl_weighted_annualized_return_delta"), signed=True),
+                        _format_metric(record.get("pnl_weighted_annualized_new_symbol_pnl"), signed=True, digits=2),
                         _format_metric(record.get("pnl_mean_sortino_delta"), signed=True),
-                        _format_metric(record.get("pnl_mean_return_delta"), signed=True),
                         _format_metric(record.get("pnl_mean_new_symbol_pnl"), signed=True, digits=2),
+                        _format_metric(record.get("train_stability_score")),
                         _format_metric(record.get("val_consistency_score")),
                         _format_metric(record.get("val_mae_percent_mean")),
                         _format_metric(record.get("test_mae_percent_mean")),
@@ -206,6 +222,7 @@ def render_summary_md(records: Iterable[dict[str, Any]]) -> str:
                         str(idx),
                         str(record.get("symbol") or ""),
                         str(record.get("preaug") or ""),
+                        _format_metric(record.get("train_stability_score")),
                         _format_metric(record.get("val_consistency_score")),
                         _format_metric(record.get("val_mae_percent_mean")),
                         _format_metric(record.get("test_mae_percent_mean")),
@@ -245,6 +262,10 @@ def _flatten_pnl_summary(summary: dict[str, Any]) -> dict[str, Any]:
         "pnl_max_max_dd_delta": _coerce_float(summary.get("max_max_dd_delta")),
         "pnl_mean_new_symbol_pnl": _coerce_float(summary.get("mean_new_symbol_pnl")),
         "pnl_min_new_symbol_pnl": _coerce_float(summary.get("min_new_symbol_pnl")),
+        "pnl_mean_annualized_return_delta": _coerce_float(summary.get("mean_annualized_return_delta")),
+        "pnl_weighted_annualized_return_delta": _coerce_float(summary.get("weighted_annualized_return_delta")),
+        "pnl_mean_annualized_new_symbol_pnl": _coerce_float(summary.get("mean_annualized_new_symbol_pnl")),
+        "pnl_weighted_annualized_new_symbol_pnl": _coerce_float(summary.get("weighted_annualized_new_symbol_pnl")),
     }
 
 

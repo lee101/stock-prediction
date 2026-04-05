@@ -3,9 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from scripts.evaluate_binance_lora_candidate import (
     build_eval_command,
     build_remote_cache_command,
+    build_rsync_remote_shell,
+    build_ssh_command,
     load_candidate_config,
     parse_args,
     summarize_eval_windows,
@@ -133,6 +137,23 @@ def test_build_eval_command_adds_gemini_runtime_args_only_for_gemini() -> None:
     assert "0.5" in cmd
 
 
+def test_build_ssh_helpers_disable_muxing() -> None:
+    ssh_cmd = build_ssh_command("administrator@93.127.141.100", "echo ok")
+    rsync_shell = build_rsync_remote_shell()
+
+    assert ssh_cmd[:7] == [
+        "ssh",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "ControlMaster=no",
+        "-o",
+        "ControlPath=none",
+    ]
+    assert ssh_cmd[-2:] == ["administrator@93.127.141.100", "echo ok"]
+    assert rsync_shell == "ssh -o StrictHostKeyChecking=no -o ControlMaster=no -o ControlPath=none"
+
+
 def test_parse_args_exposes_model_default(tmp_path: Path) -> None:
     report_path = tmp_path / "candidate.json"
     report_path.write_text("{}\n")
@@ -147,6 +168,7 @@ def test_summarize_eval_windows_aggregates_deltas_and_verdicts() -> None:
         {
             "windows": [
                 {
+                    "window": "30d",
                     "comparison": {
                         "return_delta": 2.0,
                         "sortino_delta": 0.5,
@@ -156,6 +178,7 @@ def test_summarize_eval_windows_aggregates_deltas_and_verdicts() -> None:
                     }
                 },
                 {
+                    "window": "60d",
                     "comparison": {
                         "return_delta": -1.0,
                         "sortino_delta": -0.2,
@@ -175,3 +198,28 @@ def test_summarize_eval_windows_aggregates_deltas_and_verdicts() -> None:
     assert summary["mean_return_delta"] == 0.5
     assert summary["min_sortino_delta"] == -0.2
     assert summary["mean_new_symbol_pnl"] == 8.0
+    assert summary["weighted_annualized_return_delta"] == pytest.approx(5.127279663740351)
+    assert summary["weighted_annualized_new_symbol_pnl"] == pytest.approx(64.88888888888889)
+
+
+def test_summarize_eval_windows_uses_window_dates_when_label_missing() -> None:
+    summary = summarize_eval_windows(
+        {
+            "windows": [
+                {
+                    "start": "2026-01-01",
+                    "end": "2026-01-31",
+                    "comparison": {
+                        "return_delta": 10.0,
+                        "sortino_delta": 1.0,
+                        "max_dd_delta": -2.0,
+                        "new_symbol_pnl": 100.0,
+                        "verdict": "ACCEPT",
+                    },
+                }
+            ]
+        }
+    )
+
+    assert summary["weighted_annualized_return_delta"] > 100.0
+    assert summary["weighted_annualized_new_symbol_pnl"] == pytest.approx(1216.6666666666665)

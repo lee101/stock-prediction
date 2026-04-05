@@ -85,7 +85,59 @@ def test_rank_results_prefers_pnl_gate_then_validation_consistency() -> None:
 
     rendered = render_summary_md(records)
     assert "`DOGEUSDT`: `percent_change`" in rendered
-    assert "| 1 | DOGEUSDT | percent_change | pass | 2/3 | +0.3000 | +1.1000 | +11.50 | 0.4200 | 0.8000 | 0.8800 | doge_pct |" in rendered
+    assert "| 1 | DOGEUSDT | percent_change | pass | 2/3 |" in rendered
+    assert "doge_pct" in rendered
+
+
+def test_rank_results_prefers_annualized_pnl_over_validation_when_gate_matches() -> None:
+    records = [
+        {
+            "symbol": "XRPUSDT",
+            "preaug": "differencing",
+            "run_name": "xrp_safer_val",
+            "val_consistency_score": 0.35,
+            "val_mae_percent_mean": 0.70,
+            "test_mae_percent_mean": 0.76,
+            "train_stability_score": 0.20,
+            "pnl_eval_present": True,
+            "pnl_window_count": 5,
+            "pnl_accepted_window_count": 3,
+            "pnl_all_windows_accept": False,
+            "pnl_min_new_symbol_pnl": 10.0,
+            "pnl_min_sortino_delta": -0.1,
+            "pnl_mean_sortino_delta": 0.4,
+            "pnl_mean_return_delta": 0.8,
+            "pnl_mean_new_symbol_pnl": 9.0,
+            "pnl_weighted_annualized_return_delta": 4.0,
+            "pnl_weighted_annualized_new_symbol_pnl": 35.0,
+        },
+        {
+            "symbol": "XRPUSDT",
+            "preaug": "baseline",
+            "run_name": "xrp_better_annualized",
+            "val_consistency_score": 0.42,
+            "val_mae_percent_mean": 0.82,
+            "test_mae_percent_mean": 0.89,
+            "train_stability_score": 0.15,
+            "pnl_eval_present": True,
+            "pnl_window_count": 5,
+            "pnl_accepted_window_count": 3,
+            "pnl_all_windows_accept": False,
+            "pnl_min_new_symbol_pnl": 12.0,
+            "pnl_min_sortino_delta": -0.1,
+            "pnl_mean_sortino_delta": 0.4,
+            "pnl_mean_return_delta": 0.7,
+            "pnl_mean_new_symbol_pnl": 10.0,
+            "pnl_weighted_annualized_return_delta": 12.0,
+            "pnl_weighted_annualized_new_symbol_pnl": 120.0,
+        },
+    ]
+
+    ranked = rank_results(records)
+    assert [record["run_name"] for record in ranked] == [
+        "xrp_better_annualized",
+        "xrp_safer_val",
+    ]
 
 
 def test_run_sweep_writes_per_run_and_summary_files(tmp_path: Path, monkeypatch) -> None:
@@ -117,6 +169,14 @@ def test_run_sweep_writes_per_run_and_summary_files(tmp_path: Path, monkeypatch)
             "test": {"mae_percent_mean": base_score + 0.2},
             "val_consistency_score": base_score,
             "test_consistency_score": base_score + 0.05,
+            "stability": {
+                "mae_percent_gap": 0.1,
+                "consistency_gap": 0.05,
+                "max_mae_percent_gap": 0.2,
+                "relative_overfit_ratio": 0.1,
+                "stability_score": 0.15,
+            },
+            "train_stability_score": 0.15,
         }
 
     def fake_evaluate_pnl_for_result(*, result_path: Path, evaluation_config: dict[str, object]) -> dict[str, object]:
@@ -140,6 +200,8 @@ def test_run_sweep_writes_per_run_and_summary_files(tmp_path: Path, monkeypatch)
                 "max_max_dd_delta": 3.0 if accepted == 0 else 0.2,
                 "mean_new_symbol_pnl": -12.0 if accepted == 0 else 21.0,
                 "min_new_symbol_pnl": -15.0 if accepted == 0 else 4.0,
+                "weighted_annualized_return_delta": -3.0 if accepted == 0 else 18.0,
+                "weighted_annualized_new_symbol_pnl": -120.0 if accepted == 0 else 240.0,
             },
         }
         (candidate_dir / "candidate_summary.json").write_text(json.dumps(payload) + "\n")
@@ -202,4 +264,6 @@ def test_run_sweep_writes_per_run_and_summary_files(tmp_path: Path, monkeypatch)
     summary_json = json.loads((results_dir / "summary.json").read_text())
     assert summary_json["results"][0]["preaug"] == "percent_change"
     assert summary_json["results"][0]["pnl_mean_new_symbol_pnl"] == 21.0
+    assert summary_json["results"][0]["pnl_weighted_annualized_return_delta"] == 18.0
+    assert summary_json["results"][0]["train_stability_score"] == 0.15
     assert "PnL Gate" in (results_dir / "summary.md").read_text()

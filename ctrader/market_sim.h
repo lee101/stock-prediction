@@ -63,6 +63,63 @@ typedef struct {
     int trades_per_symbol[MAX_SYMBOLS];
 } MultiSimResult;
 
+typedef struct {
+    double initial_cash;
+    double max_gross_leverage;
+    double fee_rate;
+    double borrow_rate_per_period;
+    double periods_per_year;
+    int can_short;
+} WeightSimConfig;
+
+typedef struct {
+    double total_return;
+    double annualized_return;
+    double sortino;
+    double max_drawdown;
+    double final_equity;
+    double total_turnover;
+    double total_fees;
+    double total_borrow_cost;
+} WeightSimResult;
+
+typedef struct {
+    int lookback;
+    int episode_steps;
+    double reward_scale;
+} WeightEnvConfig;
+
+typedef struct {
+    const double *close;  /* n_bars * n_symbols, row-major */
+    int n_bars;
+    int n_symbols;
+    WeightEnvConfig env_cfg;
+    WeightSimConfig sim_cfg;
+    int start_index;
+    int t;
+    int steps;
+    double equity;
+    double peak_equity;
+    double recent_return;
+    double total_turnover;
+    double total_fees;
+    double total_borrow_cost;
+    double current_weights[MAX_SYMBOLS];
+    double *equity_curve; /* episode_steps + 1 */
+    double *returns;      /* episode_steps */
+} WeightEnv;
+
+typedef struct {
+    double reward;
+    double turnover;
+    double fees;
+    double borrow_cost;
+    double equity;
+    double period_return;
+    int done;
+    WeightSimResult summary;
+} WeightEnvStepInfo;
+
 /* single-symbol sim (ported from csim/market_sim.c) */
 void simulate(
     const double *open, const double *high, const double *low, const double *close,
@@ -103,5 +160,36 @@ void simulate_multi(
 /* metric helpers */
 double compute_sortino(const double *equity_curve, int n_eq);
 double compute_max_drawdown(const double *equity_curve, int n_eq);
+double compute_annualized_return(double total_return, int n_periods, double periods_per_year);
+
+/* continuous target-weight portfolio simulator */
+void simulate_target_weights(
+    int n_bars,
+    int n_symbols,
+    const double *close,          /* n_bars * n_symbols, row-major */
+    const double *target_weights, /* n_bars * n_symbols, row-major; row t applied over t->t+1 */
+    const WeightSimConfig *cfg,
+    WeightSimResult *result,
+    double *equity_curve          /* caller-allocated, n_bars */
+);
+
+int weight_env_obs_dim(const WeightEnv *env);
+int weight_env_init(
+    WeightEnv *env,
+    const double *close,
+    int n_bars,
+    int n_symbols,
+    const WeightEnvConfig *env_cfg,
+    const WeightSimConfig *sim_cfg
+);
+void weight_env_free(WeightEnv *env);
+int weight_env_reset(WeightEnv *env, int start_index);
+int weight_env_get_obs(const WeightEnv *env, double *out_obs, int obs_len);
+int weight_env_step(
+    WeightEnv *env,
+    const double *raw_scores,
+    int raw_len,
+    WeightEnvStepInfo *out_info
+);
 
 #endif
