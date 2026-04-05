@@ -1194,7 +1194,14 @@ def save_models(
     model_dir = output_dir / "models"
     model_dir.mkdir(parents=True, exist_ok=True)
     for name, model in models.items():
-        model.save_model(str(model_dir / f"{name}.json"))
+        path = model_dir / f"{name}.json"
+        try:
+            model.save_model(str(path))
+        except TypeError:
+            booster_getter = getattr(model, "get_booster", None)
+            if not callable(booster_getter):
+                raise
+            booster_getter().save_model(str(path))
 
 
 def build_parser() -> argparse.ArgumentParser:

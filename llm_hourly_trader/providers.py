@@ -387,6 +387,10 @@ def call_xai(prompt: str, model: str = "grok-4-1-fast", max_retries: int = 5,
     if provider_call_models is not None:
         provider_call_models.append(model)
 
+    api_key = os.environ.get("XAI_API_KEY", "")
+    if not api_key:
+        return TradePlan("hold", 0, 0, 0, "XAI_API_KEY not set")
+
     from pydantic import BaseModel, Field
 
     class GrokTradePlan(BaseModel):
@@ -401,10 +405,6 @@ def call_xai(prompt: str, model: str = "grok-4-1-fast", max_retries: int = 5,
         try:
             from xai_sdk import Client
             from xai_sdk.chat import system, user
-
-            api_key = os.environ.get("XAI_API_KEY", "")
-            if not api_key:
-                return TradePlan("hold", 0, 0, 0, "XAI_API_KEY not set")
 
             client = Client(api_key=api_key)
             chat = client.chat.create(model=model)
@@ -599,11 +599,14 @@ def call_xai_openai(prompt: str, model: str = "grok-4-1-fast", max_retries: int 
     if provider_call_models is not None:
         provider_call_models.append(model)
 
-    from openai import OpenAI
-
     api_key = os.environ.get("XAI_API_KEY", "")
     if not api_key:
         return TradePlan("hold", 0, 0, 0, "XAI_API_KEY not set")
+
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return TradePlan("hold", 0, 0, 0, "openai package not installed")
 
     client = OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
 

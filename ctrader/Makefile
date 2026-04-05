@@ -31,6 +31,9 @@ LDFLAGS += -lcurl -lssl -lcrypto
 
 all: ctrader
 
+libmarket_sim.so: market_sim.c market_sim.h
+	$(CC) $(CFLAGS) -shared -fPIC -o $@ market_sim.c -lm
+
 ctrader: $(ALL_OBJS)
 	$(LINK) $(CFLAGS) -o $@ $^ $(LDFLAGS) $(TORCH_LDFLAGS)
 
@@ -80,4 +83,4 @@ download_libtorch:
 	mv /tmp/libtorch .
 
 clean:
-	rm -f ctrader test_market_sim test_binance_rest test_sim_parity test_mktd_reader test_policy $(C_OBJS) $(POLICY_OBJ)
+	rm -f ctrader libmarket_sim.so test_market_sim test_binance_rest test_sim_parity test_mktd_reader test_policy $(C_OBJS) $(POLICY_OBJ)
