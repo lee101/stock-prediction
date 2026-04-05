@@ -275,6 +275,7 @@ class PortfolioState:
     borrowable_quotes: dict = field(default_factory=dict)  # {quote_asset: extra borrow headroom}
     positions: dict = field(default_factory=dict)  # {base_asset: qty}
     total_value_usd: float = 0.0
+    position_entry_hours: dict = field(default_factory=dict)  # {base_asset: hours_held}
 
     def available_quote(self, quote_asset: str) -> float:
         if quote_asset == "FDUSD":
@@ -2092,12 +2093,23 @@ def run_hybrid_trading_cycle(
         largest_pos = max(positions_valued.items(), key=lambda x: x[1][1]) if positions_valued else None
         cur_sym = largest_pos[0] if largest_pos else None
 
+        cur_hold_hours = 0
+        if cur_sym:
+            cur_hold_hours = state.position_entry_hours.get(cur_sym, 0)
+            for asset in list(state.position_entry_hours):
+                if asset in positions_valued:
+                    state.position_entry_hours[asset] = state.position_entry_hours.get(asset, 0) + 1
+                else:
+                    state.position_entry_hours.pop(asset, None)
+            if cur_sym not in state.position_entry_hours:
+                state.position_entry_hours[cur_sym] = 1
+
         portfolio_snap = PortfolioSnapshot(
             cash_usd=cash_usd,
             total_value_usd=state.total_value_usd,
             position_symbol=cur_sym,
             position_value_usd=largest_pos[1][1] if largest_pos else 0.0,
-            hold_hours=0,
+            hold_hours=cur_hold_hours,
             is_short=False,
         )
 
