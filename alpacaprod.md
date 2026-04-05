@@ -25,13 +25,16 @@
   - ⚠️ ACTION REQUIRED: Renew live API key → update env_real.py lines 54-55 (ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD) → `sudo systemctl restart daily-rl-trader.service`
 - **V4 screening**: 336/737 done (45.6%), wave 22 running, now using 32-model baseline
 
-### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- FIXED (pending restart)
+### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- UPDATED (2026-04-06, pending restart)
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`
 - **Launch**: `deployments/binance-hybrid-spot/launch.sh`
-- **Active RL model**: `c15_tp03_s78` (2026-03-24 CHAMPION, copied from remote 5090)
-  - Checkpoint: `pufferlib_market/checkpoints/crypto15_tp03_s50_200/gpu0/c15_tp03_s78/best.pt`
-  - **100/100 positive, p05=+139.8%, median=+141.4%, p95=+142.8%, WR=63.3%, Sortino=4.52**
-  - Annualized: **+497%** (vs BTC -18% baseline) -- beats prev champion s33 (+118.5%) by 23pp
+- **Active RL model**: `robust_reg_tp005_ent` (2026-04-06, upgraded from dd002)
+  - Checkpoint: `pufferlib_market/checkpoints/mixed23_a40_sweep/robust_reg_tp005_ent/best.pt`
+  - **20/20 positive, median=+191.4%, Sortino=19.82, WR=56.7%, 80 trades/30d**
+  - Slippage robust: 0bps=+181.6%, 5bps=+191.4%, 10bps=+252.8%, 20bps=+194.3%
+  - Previous: dd002 (+116.6%, Sort=15.35) -- ent is +75pp better on same val period
+- **Previous champion (not deployed)**: `c15_tp03_s78` (daily model, not applicable to hourly bot)
+  - 100/100 positive, median=+141.4%, Sortino=4.52 -- but this is a DAILY model (180-bar/6mo)
   - eval: `python -m pufferlib_market.evaluate --checkpoint pufferlib_market/checkpoints/crypto15_tp03_s50_200/gpu0/c15_tp03_s78/best.pt --data-path pufferlib_market/data/crypto15_daily_val.bin --deterministic --no-drawdown-profit-early-exit --hidden-size 1024 --max-steps 180 --num-episodes 100 --periods-per-year 365.0 --fill-slippage-bps 8`
   - Previous champion: c15_tp03_slip5_s33 (+118.5%/180d, +388% ann, Sortino=2.85)
   - Previous best: c15_tp03_s19 (+75.1%/180d, +211% ann), c15_tp03_s7 (+69%/180d, +190% ann)
@@ -45,6 +48,7 @@
   - RL override when Gemini returns 100% cash: Previously Gemini's empty allocation with reasoning was treated as valid. Now when Gemini returns {} and RL has a signal, RL takes over.
   - Upgraded checkpoint: s7 (median -2%, 50% negative) -> s78 champion (median +141%, 100/100 positive)
 - **RL signal broken (FIXED)**: Was always FLAT because shorts dominated logits. `_mask_shorts()` added to mask all short actions before argmax in spot mode.
+- **RL obs bugs (FIXED 2026-04-06)**: hold_hours was hardcoded 0 (now tracked), episode_progress was fixed 0.25 (now increments), features_per_sym was hardcoded 16 (now from checkpoint). 14 new tests in test_rl_signal_obs.py.
 - **Eval command**:
   ```bash
   # Backtest is built into the bot's Chronos2 fallback path
