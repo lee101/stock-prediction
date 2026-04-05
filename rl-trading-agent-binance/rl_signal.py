@@ -22,7 +22,7 @@ try:
 except ImportError:
     import logging
 
-    logger = logging.getLogger(__name__)
+    logger = logging.getLogger(__name__)  # type: ignore[assignment]
 
 FEATURES_PER_SYM = 16
 INITIAL_CASH = 10000.0
@@ -143,8 +143,8 @@ class RunningObsNorm(nn.Module):
         self.register_buffer("running_var", torch.ones(size))
         self.register_buffer("count", torch.tensor(1e-4))
 
-    def forward(self, x):
-        return ((x - self.running_mean) / (self.running_var.sqrt() + self.eps)).clamp(-self.clip, self.clip)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return ((x - self.running_mean) / (self.running_var.sqrt() + self.eps)).clamp(-self.clip, self.clip)  # type: ignore[operator,no-any-return]
 
 
 class TradingPolicy(nn.Module):
@@ -267,7 +267,7 @@ def compute_symbol_features(
         ((close - roll_max) / roll_max.clip(lower=1e-8)).fillna(0.0).clip(-1.0, 0.0).astype(np.float32)
     )
 
-    return feat.replace([np.inf, -np.inf], np.nan).fillna(0.0).to_numpy(dtype=np.float32)
+    return feat.replace([np.inf, -np.inf], np.nan).fillna(0.0).to_numpy(dtype=np.float32)  # type: ignore[no-any-return]
 
 
 # ---------------------------------------------------------------------------
@@ -563,7 +563,7 @@ class RLSignalGenerator:
             if len(probs) > 0:
                 probs[0] = 1.0
             return probs
-        return exp / total
+        return exp / total  # type: ignore[no-any-return]
 
     def _decode_action_metadata(self, action: int, direction: str) -> tuple[float, float]:
         if action <= 0 or direction == "flat":

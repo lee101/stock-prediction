@@ -175,7 +175,7 @@ class ContinuousWeightEnv:
             dtype=np.float32,
         )
         obs = np.concatenate([features.reshape(-1), self.weights.astype(np.float32), portfolio_state])
-        return obs.astype(np.float32)
+        return obs.astype(np.float32)  # type: ignore[no-any-return]
 
     def scores_to_weights(self, scores: np.ndarray) -> np.ndarray:
         scores = np.asarray(scores, dtype=np.float64)
@@ -184,7 +184,7 @@ class ContinuousWeightEnv:
             gross = np.sum(np.abs(raw))
             if gross > self.config.max_gross_leverage and gross > 0.0:
                 raw = raw * (self.config.max_gross_leverage / gross)
-            return raw
+            return raw  # type: ignore[no-any-return]
 
         shifted = scores - float(np.max(scores))
         exp_scores = np.exp(np.clip(shifted, -30.0, 30.0))
@@ -221,7 +221,7 @@ class ContinuousWeightEnv:
 
         done = self.steps >= self.config.episode_steps or self.t >= self.close.shape[0] - 1
         reward = float(period_return * self.config.reward_scale)
-        info = {
+        info: dict[str, Any] = {
             "equity": self.equity,
             "period_return": period_return,
             "fees": fees,
