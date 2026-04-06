@@ -3,10 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import NotRequired, Sequence, TypedDict
 
 import numpy as np
 import pandas as pd
@@ -19,7 +18,6 @@ from pufferlib_market.metrics import annualize_total_return
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-CTRADER_DIR = Path(__file__).resolve().parent
 DEFAULT_DATA_ROOT = REPO_ROOT / "trainingdatahourlybinance"
 
 
@@ -52,20 +50,51 @@ class PPOTrainConfig:
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def _ensure_sim_library() -> None:
-    lib_path = CTRADER_DIR / "libmarket_sim.so"
-    source_paths = [CTRADER_DIR / "market_sim.c", CTRADER_DIR / "market_sim.h"]
-    if lib_path.exists() and all(src.stat().st_mtime <= lib_path.stat().st_mtime for src in source_paths):
-        return
-    subprocess.run(
-        ["make", "libmarket_sim.so"],
-        cwd=CTRADER_DIR,
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
+class ContinuousWeightStepInfo(TypedDict):
+    equity: float
+    period_return: float
+    fees: float
+    borrow_cost: float
+    turnover: float
+    total_return: NotRequired[float]
+    annualized_return: NotRequired[float]
+    sortino: NotRequired[float]
+    max_drawdown: NotRequired[float]
+    weights: NotRequired[np.ndarray]
+    equity_curve: NotRequired[np.ndarray]
 
+
+class PPORolloutBatch(TypedDict):
+    obs: np.ndarray
+    actions: np.ndarray
+    log_probs: np.ndarray
+    rewards: np.ndarray
+    values: np.ndarray
+    dones: np.ndarray
+
+
+class PPOUpdateStats(TypedDict):
+    pg_loss: float
+    vf_loss: float
+    entropy: float
+    grad_norm_mean: float
+    grad_norm_max: float
+
+
+class PPOHistoryRow(PPOUpdateStats):
+    update: int
+    eval_total_return: NotRequired[float]
+    eval_annualized_return: NotRequired[float]
+    eval_sortino: NotRequired[float]
+    eval_max_drawdown: NotRequired[float]
+    eval_turnover: NotRequired[float]
+    eval_action_score_std: NotRequired[float]
+
+
+class PPOTrainResult(TypedDict):
+    config: dict[str, float | int | bool | str]
+    best_eval: dict[str, float]
+    history: list[PPOHistoryRow]
 
 def load_close_matrix(
     symbols: Sequence[str],
@@ -195,7 +224,7 @@ class ContinuousWeightEnv:
             weights = exp_scores / total
         return weights * self.config.max_gross_leverage
 
-    def step(self, scores: np.ndarray) -> tuple[np.ndarray, float, bool, dict[str, Any]]:
+    def step(self, scores: np.ndarray) -> tuple[np.ndarray, float, bool, ContinuousWeightStepInfo]:
         weights = self.scores_to_weights(scores)
         prev_prices = self.close[self.t]
         next_prices = self.close[self.t + 1]
@@ -221,7 +250,7 @@ class ContinuousWeightEnv:
 
         done = self.steps >= self.config.episode_steps or self.t >= self.close.shape[0] - 1
         reward = float(period_return * self.config.reward_scale)
-        info: dict[str, Any] = {
+        info: ContinuousWeightStepInfo = {
             "equity": self.equity,
             "period_return": period_return,
             "fees": fees,
@@ -322,7 +351,7 @@ class WeightPPOTrainer:
         self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=config.learning_rate)
         self.rng = np.random.default_rng(config.seed)
 
-    def _collect_rollout(self) -> dict[str, np.ndarray]:
+    def _collect_rollout(self) -> PPORolloutBatch:
         obs = self.env.reset()
         obs_buf, act_buf, logp_buf = [], [], []
         rew_buf, val_buf, done_buf = [], [], []
@@ -364,7 +393,7 @@ class WeightPPOTrainer:
         returns = advantages + values
         return advantages, returns
 
-    def _update(self, rollout: dict[str, np.ndarray]) -> dict[str, float]:
+    def _update(self, rollout: PPORolloutBatch) -> PPOUpdateStats:
         obs = torch.from_numpy(rollout["obs"]).float().to(self.device)
         actions = torch.from_numpy(rollout["actions"]).float().to(self.device)
         old_log_probs = torch.from_numpy(rollout["log_probs"]).float().to(self.device)
@@ -420,7 +449,6 @@ class WeightPPOTrainer:
         }
 
     def evaluate_close(self, close: np.ndarray) -> EvalSummary:
-        _ensure_sim_library()
         close_arr = np.asarray(close, dtype=np.float64)
         env = ContinuousWeightEnv(close_arr, self.config)
         obs = env.reset(start_index=self.config.lookback)
@@ -464,14 +492,21 @@ class WeightPPOTrainer:
             action_score_std=raw_action_std,
         )
 
-    def train(self) -> dict[str, Any]:
+    def train(self) -> PPOTrainResult:
         best_eval: EvalSummary | None = None
-        history: list[dict[str, Any]] = []
+        history: list[PPOHistoryRow] = []
 
         for update_idx in range(1, self.config.total_updates + 1):
             rollout = self._collect_rollout()
             train_stats = self._update(rollout)
-            record: dict[str, Any] = {"update": update_idx, **train_stats}
+            record: PPOHistoryRow = {
+                "update": update_idx,
+                "pg_loss": train_stats["pg_loss"],
+                "vf_loss": train_stats["vf_loss"],
+                "entropy": train_stats["entropy"],
+                "grad_norm_mean": train_stats["grad_norm_mean"],
+                "grad_norm_max": train_stats["grad_norm_max"],
+            }
             if update_idx % self.config.eval_every_updates == 0 or update_idx == self.config.total_updates:
                 eval_summary = self.evaluate_close(self.val_close)
                 record.update(
@@ -503,7 +538,7 @@ def run_training(
     config: PPOTrainConfig,
     *,
     train_fraction: float = 0.7,
-) -> dict[str, Any]:
+) -> PPOTrainResult:
     min_rows = max(config.lookback + 2, config.lookback + config.episode_steps + 2)
     train_close, val_close = split_close_frame(
         close_frame,
@@ -531,6 +566,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fee-rate", type=float, default=0.001)
     parser.add_argument("--max-gross-leverage", type=float, default=1.0)
     parser.add_argument("--borrow-rate-per-period", type=float, default=0.0)
+    parser.add_argument(
+        "--can-short",
+        action="store_true",
+        help="Allow signed target weights instead of long-only normalized weights.",
+    )
     parser.add_argument("--periods-per-year", type=float, default=8760.0)
     parser.add_argument("--max-rows", type=int, default=4000)
     parser.add_argument("--seed", type=int, default=1337)
@@ -539,8 +579,8 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
-    args = _build_parser().parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = _build_parser().parse_args(argv)
     symbols = [part.strip().upper() for part in args.symbols.split(",") if part.strip()]
     close = load_close_matrix(symbols, data_root=args.data_root, max_rows=args.max_rows)
     config = PPOTrainConfig(
@@ -556,6 +596,7 @@ def main() -> None:
         fee_rate=args.fee_rate,
         max_gross_leverage=args.max_gross_leverage,
         borrow_rate_per_period=args.borrow_rate_per_period,
+        can_short=args.can_short,
         periods_per_year=args.periods_per_year,
         seed=args.seed,
         device=args.device,
