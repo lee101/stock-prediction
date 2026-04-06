@@ -12,14 +12,14 @@ Supports two modes:
 Training uses the differentiable sim from differentiable_loss_utils.py
 with Sortino objective. Validation uses binary fills.
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 
 @dataclass
@@ -35,7 +35,7 @@ class CalibrationConfig:
 
 
 class SignalCalibrator(nn.Module):
-    def __init__(self, config: Optional[CalibrationConfig] = None):
+    def __init__(self, config: CalibrationConfig | None = None):
         super().__init__()
         cfg = config or CalibrationConfig()
         self.max_price_adj = cfg.max_price_adj_bps / 10_000.0
@@ -57,10 +57,12 @@ class SignalCalibrator(nn.Module):
     def forward(
         self,
         features: torch.Tensor,
-        base_buy_offset: Optional[torch.Tensor] = None,
-        base_sell_offset: Optional[torch.Tensor] = None,
-        base_intensity: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        base_buy_offset: torch.Tensor | None = None,
+        base_sell_offset: torch.Tensor | None = None,
+        base_intensity: torch.Tensor | None = None,
+    ) -> (
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor] | tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+    ):
         raw = self.net(features)
         buy_adj = torch.tanh(raw[..., 0]) * self.max_price_adj
         sell_adj = torch.tanh(raw[..., 1]) * self.max_price_adj
@@ -90,9 +92,9 @@ class SignalCalibrator(nn.Module):
         self,
         features: torch.Tensor,
         close: torch.Tensor,
-        base_buy_offset: Optional[torch.Tensor] = None,
-        base_sell_offset: Optional[torch.Tensor] = None,
-        base_intensity: Optional[torch.Tensor] = None,
+        base_buy_offset: torch.Tensor | None = None,
+        base_sell_offset: torch.Tensor | None = None,
+        base_intensity: torch.Tensor | None = None,
     ) -> tuple:
         result = self.forward(features, base_buy_offset, base_sell_offset, base_intensity)
         buy_off = result[0]
@@ -105,7 +107,9 @@ class SignalCalibrator(nn.Module):
             return buy_price, sell_price, result[2]
 
 
-def save_calibrator(model: SignalCalibrator, path: str | Path, config: CalibrationConfig, metadata: Optional[dict] = None) -> None:
+def save_calibrator(
+    model: SignalCalibrator, path: str | Path, config: CalibrationConfig, metadata: dict | None = None
+) -> None:
     data = {
         "state_dict": model.state_dict(),
         "config": {

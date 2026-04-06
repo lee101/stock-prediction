@@ -1,4 +1,5 @@
 """Tests for RL-only fallback in hybrid trading when Gemini is unavailable."""
+
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,10 +33,16 @@ class FakeRLGen:
 
 def _make_ctx(symbol: str, price: float) -> SymbolContext:
     idx = pd.date_range("2026-01-01", periods=24, freq="h", tz="UTC")
-    klines = pd.DataFrame({
-        "open": price, "high": price * 1.01, "low": price * 0.99,
-        "close": price, "volume": 1000.0,
-    }, index=idx)
+    klines = pd.DataFrame(
+        {
+            "open": price,
+            "high": price * 1.01,
+            "low": price * 0.99,
+            "close": price,
+            "volume": 1000.0,
+        },
+        index=idx,
+    )
     return SymbolContext(symbol=symbol, price=price, klines=klines)
 
 

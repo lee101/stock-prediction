@@ -30,35 +30,44 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
+import torch
 from llm_hourly_trader.backtest import (
-    load_bars, load_forecasts, get_forecast_at, simulate, _compute_metrics,
     RESULTS_DIR,
+    get_forecast_at,
+    load_bars,
+    load_forecasts,
+    simulate,
 )
+from llm_hourly_trader.cache import get_cached, set_cached
 from llm_hourly_trader.config import SYMBOL_UNIVERSE, BacktestConfig, SymbolConfig
 from llm_hourly_trader.gemini_wrapper import TradePlan
 from llm_hourly_trader.providers import call_llm
-from llm_hourly_trader.cache import get_cached, set_cached
+from pufferlib_market.export_data_hourly_forecast import (
+    _read_forecast,
+    _read_hourly_prices,
+)
 from pufferlib_market.export_data_hourly_forecast import (
     compute_features as compute_mktd_features,
-    _read_hourly_prices,
-    _read_forecast,
 )
-
-import torch
-import torch.nn as nn
+from torch import nn
 
 
 class MLPPolicy(nn.Module):
     """MLP policy matching training checkpoint architecture."""
+
     def __init__(self, obs_size, num_actions, hidden=1024):
         super().__init__()
         self.encoder = nn.Sequential(
-            nn.Linear(obs_size, hidden), nn.ReLU(),
-            nn.Linear(hidden, hidden), nn.ReLU(),
-            nn.Linear(hidden, hidden), nn.ReLU(),
+            nn.Linear(obs_size, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, hidden),
+            nn.ReLU(),
         )
         self.actor = nn.Sequential(nn.Linear(hidden, hidden // 2), nn.ReLU(), nn.Linear(hidden // 2, num_actions))
         self.critic = nn.Sequential(nn.Linear(hidden, hidden // 2), nn.ReLU(), nn.Linear(hidden // 2, 1))
@@ -70,7 +79,12 @@ class MLPPolicy(nn.Module):
 
 # Symbols the RL model was trained on (binance6)
 BINANCE6_SYMBOLS = [
-    "BTCUSD", "ETHUSD", "SUIUSD", "SOLUSD", "AAVEUSD", "DOGEUSD",
+    "BTCUSD",
+    "ETHUSD",
+    "SUIUSD",
+    "SOLUSD",
+    "AAVEUSD",
+    "DOGEUSD",
 ]
 
 # Default backtest symbols (all 6)
@@ -113,7 +127,7 @@ def _compute_trend_context(history_rows: list[dict]) -> dict:
         ctx["range_pct"] = (ctx["high_24h"] - ctx["low_24h"]) / current * 100
 
     if len(closes) >= 13:
-        ups = sum(1 for i in range(-12, 0) if closes[i] > closes[i-1])
+        ups = sum(1 for i in range(-12, 0) if closes[i] > closes[i - 1])
         ctx["up_hours_12"] = ups
 
     return ctx
@@ -133,8 +147,8 @@ def build_hybrid_prompt(
     price_lines = []
     for row in recent:
         ts = str(row.get("timestamp", ""))[-19:-6] if "timestamp" in row else "?"
-        o, h, l, c = float(row["open"]), float(row["high"]), float(row["low"]), float(row["close"])
-        price_lines.append(f"  {ts}: O={o:.2f} H={h:.2f} L={l:.2f} C={c:.2f}")
+        o, h, lo, c = float(row["open"]), float(row["high"]), float(row["low"]), float(row["close"])
+        price_lines.append(f"  {ts}: O={o:.2f} H={h:.2f} L={lo:.2f} C={c:.2f}")
 
     current_price = float(history_rows[-1]["close"])
 
@@ -156,11 +170,11 @@ def build_hybrid_prompt(
 
     fc_text = ""
     if fc_1h:
-        delta_1h = (fc_1h['predicted_close_p50'] - current_price) / current_price * 100
+        delta_1h = (fc_1h["predicted_close_p50"] - current_price) / current_price * 100
         fc_text += f"\n  1h forecast: close={fc_1h['predicted_close_p50']:.2f} ({delta_1h:+.2f}%), "
         fc_text += f"high={fc_1h['predicted_high_p50']:.2f}, low={fc_1h['predicted_low_p50']:.2f}"
     if fc_24h:
-        delta_24h = (fc_24h['predicted_close_p50'] - current_price) / current_price * 100
+        delta_24h = (fc_24h["predicted_close_p50"] - current_price) / current_price * 100
         fc_text += f"\n  24h forecast: close={fc_24h['predicted_close_p50']:.2f} ({delta_24h:+.2f}%), "
         fc_text += f"high={fc_24h['predicted_high_p50']:.2f}, low={fc_24h['predicted_low_p50']:.2f}"
 
@@ -245,13 +259,13 @@ def run_hybrid_backtest(
     else:
         ckpt_path = _find_best_checkpoint()
 
-    print(f"\n{'='*70}")
-    print(f"RL + LLM Hybrid Trading Agent (Binance)")
+    print(f"\n{'=' * 70}")
+    print("RL + LLM Hybrid Trading Agent (Binance)")
     print(f"RL checkpoint: {ckpt_path}")
     print(f"LLM: {model}" + (f" (thinking={thinking_level})" if thinking_level else ""))
     print(f"Symbols: {symbols}")
     print(f"Days: {days} | Parallel: {parallel}")
-    print(f"{'='*70}\n")
+    print(f"{'=' * 70}\n")
 
     # Load RL model
     print("Loading RL model...")
@@ -270,7 +284,7 @@ def run_hybrid_backtest(
     def get_rl_signal(features_all, prices_dict):
         """Get RL signal from features."""
         obs = np.zeros(obs_size, dtype=np.float32)
-        obs[:num_symbols * 16] = features_all.flatten()
+        obs[: num_symbols * 16] = features_all.flatten()
         obs[num_symbols * 16] = 1.0  # cash/10000
         obs[num_symbols * 16 + 4] = 0.5  # episode progress
         obs_t = torch.from_numpy(obs).unsqueeze(0)
@@ -349,7 +363,9 @@ def run_hybrid_backtest(
                 all_b6_features[b6_sym] = feat_df
             except Exception:
                 all_b6_features[b6_sym] = None
-    print(f"  Loaded MKTD features for {sum(1 for v in all_b6_features.values() if v is not None)}/{len(BINANCE6_SYMBOLS)} binance6 symbols")
+    print(
+        f"  Loaded MKTD features for {sum(1 for v in all_b6_features.values() if v is not None)}/{len(BINANCE6_SYMBOLS)} binance6 symbols"
+    )
 
     def get_all_features_at(ts):
         """Get feature vector for ALL 6 symbols at timestamp ts."""
@@ -370,8 +386,8 @@ def run_hybrid_backtest(
     # Build all tasks
     print("\n  Computing RL signals and building prompts...")
     tasks = []
-    prev_signals = {sym: None for sym in symbols}
-    prev_outcomes = {sym: "N/A" for sym in symbols}
+    prev_signals = dict.fromkeys(symbols)
+    prev_outcomes = dict.fromkeys(symbols, "N/A")
 
     for sym in symbols:
         sym_bars = all_bars[sym]
@@ -410,7 +426,7 @@ def run_hybrid_backtest(
             tasks.append((sym, bar.to_dict(), prompt, rl_signal))
             prev_signals[sym] = rl_signal
             if i > 0:
-                prev_close = float(window.iloc[i-1]["close"])
+                prev_close = float(window.iloc[i - 1]["close"])
                 delta_pct = (close - prev_close) / prev_close * 100
                 prev_outcomes[sym] = f"Price moved {delta_pct:+.2f}% (${prev_close:.2f} -> ${close:.2f})"
 
@@ -471,7 +487,7 @@ def run_hybrid_backtest(
         ts = bar["timestamp"] if isinstance(bar["timestamp"], pd.Timestamp) else pd.Timestamp(bar["timestamp"])
 
         if plan.direction not in ["long", "hold"]:
-            plan = TradePlan("hold", 0, 0, 0, "direction not allowed")
+            plan = TradePlan("hold", 0, 0, 0, "direction not allowed")  # noqa: PLW2901
 
         if rl_sig is not None:
             rl_dir = rl_sig.direction or "flat"
@@ -479,16 +495,21 @@ def run_hybrid_backtest(
                 rl_actions[rl_dir] += 1
             else:
                 rl_actions["flat"] += 1
-            if rl_sig.direction == "long" and plan.direction == "hold":
-                llm_overrides += 1
-            elif rl_sig.direction != "long" and plan.direction == "long":
+            if (rl_sig.direction == "long" and plan.direction == "hold") or (
+                rl_sig.direction != "long" and plan.direction == "long"
+            ):
                 llm_overrides += 1
 
-        action_rows.append({
-            "timestamp": ts, "symbol": sym,
-            "buy_price": plan.buy_price, "sell_price": plan.sell_price,
-            "direction": plan.direction, "confidence": plan.confidence,
-        })
+        action_rows.append(
+            {
+                "timestamp": ts,
+                "symbol": sym,
+                "buy_price": plan.buy_price,
+                "sell_price": plan.sell_price,
+                "direction": plan.direction,
+                "confidence": plan.confidence,
+            }
+        )
         bar_rows.append(bar)
 
     config = BacktestConfig(
@@ -526,13 +547,13 @@ def run_hybrid_backtest(
         per_sym[s]["fees"] += t["fee"]
 
     # Also run RL-only simulation for comparison
-    rl_only_long = sum(1 for _, _, _, rl_sig in results if rl_sig and rl_sig.direction == "long")
+    _rl_only_long = sum(1 for _, _, _, rl_sig in results if rl_sig and rl_sig.direction == "long")
     total_long = sum(1 for _, _, p, _ in results if p.direction == "long")
     entry_rate = total_long / len(results) * 100 if results else 0
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"RESULTS: RL+LLM Hybrid Binance ({model})")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
     print(f"  Window: {start_ts} -> {end_ts} ({days}d)")
     print(f"  RL signals: long={rl_actions['long']}, flat={rl_actions['flat']}, short={rl_actions['short']}")
     print(f"  LLM overrides: {llm_overrides}")
@@ -546,9 +567,11 @@ def run_hybrid_backtest(
     print(f"  Final equity: ${metrics['final_equity']:,.2f}")
     print()
     for s, stats in sorted(per_sym.items()):
-        print(f"  {s:10s}: {stats['entries']} entries, {stats['exits']} exits, "
-              f"PnL=${stats['realized_pnl']:+.2f}, fees=${stats['fees']:.2f}")
-    print(f"{'='*70}\n")
+        print(
+            f"  {s:10s}: {stats['entries']} entries, {stats['exits']} exits, "
+            f"PnL=${stats['realized_pnl']:+.2f}, fees=${stats['fees']:.2f}"
+        )
+    print(f"{'=' * 70}\n")
 
     # Save
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -588,12 +611,12 @@ def run_rl_only_backtest(
     else:
         ckpt_path = _find_best_checkpoint()
 
-    print(f"\n{'='*70}")
-    print(f"RL-Only Backtest (Binance) - No LLM")
+    print(f"\n{'=' * 70}")
+    print("RL-Only Backtest (Binance) - No LLM")
     print(f"RL checkpoint: {ckpt_path}")
     print(f"Symbols: {symbols}")
     print(f"Days: {days}")
-    print(f"{'='*70}\n")
+    print(f"{'=' * 70}\n")
 
     # Load RL model
     ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
@@ -674,22 +697,20 @@ def run_rl_only_backtest(
         print(f"  {sym}: {len(window)} bars")
 
     # Get unique sorted timestamps
-    all_ts = sorted(set(
-        ts for sym in symbols for ts in all_windows[sym]["timestamp"].tolist()
-    ))
+    all_ts = sorted({ts for sym in symbols for ts in all_windows[sym]["timestamp"].tolist()})
     print(f"  Total unique timestamps: {len(all_ts)}")
 
     for ts in all_ts:
         features_all = get_all_features_at(ts)
 
         obs = np.zeros(obs_size, dtype=np.float32)
-        obs[:num_symbols * 16] = features_all.flatten()
+        obs[: num_symbols * 16] = features_all.flatten()
         obs[num_symbols * 16] = 1.0
         obs[num_symbols * 16 + 4] = 0.5
         obs_t = torch.from_numpy(obs).unsqueeze(0)
 
         with torch.no_grad():
-            logits, value = rl_policy(obs_t)
+            logits, _value = rl_policy(obs_t)
             action = logits.argmax(dim=-1).item()
             probs = torch.softmax(logits, dim=-1)
             confidence = probs[0, action].item()
@@ -725,11 +746,16 @@ def run_rl_only_backtest(
                 buy_price = 0.0
                 sell_price = 0.0
 
-            action_rows.append({
-                "timestamp": ts, "symbol": sym,
-                "buy_price": buy_price, "sell_price": sell_price,
-                "direction": direction, "confidence": confidence,
-            })
+            action_rows.append(
+                {
+                    "timestamp": ts,
+                    "symbol": sym,
+                    "buy_price": buy_price,
+                    "sell_price": sell_price,
+                    "direction": direction,
+                    "confidence": confidence,
+                }
+            )
             bar_rows.append(bar.to_dict())
 
     config = BacktestConfig(initial_cash=10_000.0, max_hold_hours=6, max_position_pct=0.25, model="rl-only")
@@ -748,9 +774,9 @@ def run_rl_only_backtest(
     total_long = sum(1 for r in action_rows if r["direction"] == "long")
     entry_rate = total_long / len(action_rows) * 100 if action_rows else 0
 
-    print(f"\n{'='*70}")
-    print(f"RESULTS: RL-Only Binance")
-    print(f"{'='*70}")
+    print(f"\n{'=' * 70}")
+    print("RESULTS: RL-Only Binance")
+    print(f"{'=' * 70}")
     print(f"  Window: {start_ts} -> {end_ts} ({days}d)")
     print(f"  RL signals: long={rl_actions['long']}, flat={rl_actions['flat']}, short={rl_actions['short']}")
     print(f"  RL entry rate: {total_long}/{len(action_rows)} ({entry_rate:.1f}%)")
@@ -760,7 +786,7 @@ def run_rl_only_backtest(
     print(f"  Entries: {buys}, Exits: {exits}")
     print(f"  Realized PnL: ${realized_pnl:+.2f}")
     print(f"  Final equity: ${metrics['final_equity']:,.2f}")
-    print(f"{'='*70}\n")
+    print(f"{'=' * 70}\n")
 
     return {
         "experiment": "rl_only_binance",
@@ -779,8 +805,9 @@ def main():
     parser.add_argument("--parallel", type=int, default=5)
     parser.add_argument("--rate-limit", type=float, default=0.0)
     parser.add_argument("--checkpoint", type=str, default=None)
-    parser.add_argument("--thinking-level", type=str, default=None,
-                        help="Thinking level for Gemini models (e.g., HIGH, MINIMAL)")
+    parser.add_argument(
+        "--thinking-level", type=str, default=None, help="Thinking level for Gemini models (e.g., HIGH, MINIMAL)"
+    )
     parser.add_argument("--rl-only", action="store_true", help="Run RL-only backtest for comparison")
     parser.add_argument("--compare", action="store_true", help="Run both RL-only and hybrid, compare")
     args = parser.parse_args()
@@ -788,25 +815,35 @@ def main():
     if args.rl_only:
         run_rl_only_backtest(args.symbols, args.days, args.checkpoint)
     elif args.compare:
-        print("\n" + "="*70)
+        print("\n" + "=" * 70)
         print("COMPARISON: RL-Only vs RL+LLM Hybrid")
-        print("="*70)
+        print("=" * 70)
         rl_result = run_rl_only_backtest(args.symbols, args.days, args.checkpoint)
         hybrid_result = run_hybrid_backtest(
-            args.symbols, args.days, args.model, args.parallel, args.rate_limit, args.checkpoint,
+            args.symbols,
+            args.days,
+            args.model,
+            args.parallel,
+            args.rate_limit,
+            args.checkpoint,
             args.thinking_level,
         )
-        print("\n" + "="*70)
+        print("\n" + "=" * 70)
         print("COMPARISON SUMMARY")
-        print("="*70)
+        print("=" * 70)
         print(f"  RL-Only:  {rl_result['total_return_pct']:+.4f}% return, Sortino={rl_result['sortino']:.2f}")
         print(f"  Hybrid:   {hybrid_result['total_return_pct']:+.4f}% return, Sortino={hybrid_result['sortino']:.2f}")
-        diff = hybrid_result['total_return_pct'] - rl_result['total_return_pct']
+        diff = hybrid_result["total_return_pct"] - rl_result["total_return_pct"]
         print(f"  Delta:    {diff:+.4f}% ({'hybrid wins' if diff > 0 else 'rl wins'})")
-        print("="*70)
+        print("=" * 70)
     else:
         run_hybrid_backtest(
-            args.symbols, args.days, args.model, args.parallel, args.rate_limit, args.checkpoint,
+            args.symbols,
+            args.days,
+            args.model,
+            args.parallel,
+            args.rate_limit,
+            args.checkpoint,
             args.thinking_level,
         )
 

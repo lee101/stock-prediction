@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
-import pandas as pd
+
 from src.forecast_cache_lookup import load_latest_forecast_from_cache
 
 
@@ -186,12 +185,12 @@ def _compute_trend_context(history_rows: list[dict]) -> dict:
     return ctx
 
 
-def load_latest_forecast(symbol: str, horizon: int, cache_root: Optional[Path] = None) -> Optional[dict]:
+def load_latest_forecast(symbol: str, horizon: int, cache_root: Path | None = None) -> dict | None:
     root = cache_root or FORECAST_CACHE
     return load_latest_forecast_from_cache(symbol, int(horizon), root)
 
 
-def _fmt_forecast(fc: Optional[dict], current_price: float, symbol: Optional[str] = None, horizon: Optional[int] = None) -> str:
+def _fmt_forecast(fc: dict | None, current_price: float, symbol: str | None = None, horizon: int | None = None) -> str:
     if not fc:
         return "  No forecast available"
     lines = []
@@ -218,22 +217,22 @@ def build_live_prompt(
     symbol: str,
     history_rows: list[dict],
     current_price: float,
-    fc_1h: Optional[dict] = None,
-    fc_24h: Optional[dict] = None,
-    position_info: Optional[dict] = None,
+    fc_1h: dict | None = None,
+    fc_24h: dict | None = None,
+    position_info: dict | None = None,
     fee_bps: int = 10,
     leverage: float = 1.0,
-    fc_4h: Optional[dict] = None,
-    fc_12h: Optional[dict] = None,
+    fc_4h: dict | None = None,
+    fc_12h: dict | None = None,
     cross_asset_context: str = "",
 ) -> str:
     recent = history_rows[-12:]
     price_lines = []
     for row in recent:
         ts = str(row.get("timestamp", ""))[:16]
-        o, h, l, c = float(row["open"]), float(row["high"]), float(row["low"]), float(row["close"])
+        o, h, lo, c = float(row["open"]), float(row["high"]), float(row["low"]), float(row["close"])
         vol = float(row.get("volume", 0))
-        price_lines.append(f"  {ts}: O={o:.2f} H={h:.2f} L={l:.2f} C={c:.2f} V={vol:.0f}")
+        price_lines.append(f"  {ts}: O={o:.2f} H={h:.2f} L={lo:.2f} C={c:.2f} V={vol:.0f}")
 
     trend = _compute_trend_context(history_rows)
     trend_parts = []
@@ -274,7 +273,7 @@ def build_live_prompt(
         pnl_usd = position_info["qty"] * (current_price - entry)
         pos_section = f"""
 CURRENT POSITION:
-  Holding {position_info['qty']:.6f} {symbol} @ ${entry:.2f} entry
+  Holding {position_info["qty"]:.6f} {symbol} @ ${entry:.2f} entry
   Held {held:.0f}h (auto-close at 6h), P&L: ${pnl_usd:+.2f} ({pnl_pct:+.2f}%)
   EXIT DECISION: If profitable and momentum fading, take profits. If losing, set tight stop.
 """
@@ -325,26 +324,26 @@ def build_live_prompt_freeform(
     symbol: str,
     history_rows: list[dict],
     current_price: float,
-    fc_1h: Optional[dict] = None,
-    fc_24h: Optional[dict] = None,
-    position_info: Optional[dict] = None,
+    fc_1h: dict | None = None,
+    fc_24h: dict | None = None,
+    position_info: dict | None = None,
     fee_bps: int = 10,
     leverage: float = 1.0,
-    forecast_error_1h: Optional[dict] = None,
-    forecast_error_24h: Optional[dict] = None,
-    fc_4h: Optional[dict] = None,
-    fc_12h: Optional[dict] = None,
-    forecast_error_4h: Optional[dict] = None,
-    forecast_error_12h: Optional[dict] = None,
+    forecast_error_1h: dict | None = None,
+    forecast_error_24h: dict | None = None,
+    fc_4h: dict | None = None,
+    fc_12h: dict | None = None,
+    forecast_error_4h: dict | None = None,
+    forecast_error_12h: dict | None = None,
     cross_asset_context: str = "",
 ) -> str:
     recent = history_rows[-24:]
     price_lines = []
     for row in recent:
         ts = str(row.get("timestamp", ""))[:16]
-        o, h, l, c = float(row["open"]), float(row["high"]), float(row["low"]), float(row["close"])
+        o, h, lo, c = float(row["open"]), float(row["high"]), float(row["low"]), float(row["close"])
         vol = float(row.get("volume", 0))
-        price_lines.append(f"  {ts}: O={o:.2f} H={h:.2f} L={l:.2f} C={c:.2f} V={vol:.0f}")
+        price_lines.append(f"  {ts}: O={o:.2f} H={h:.2f} L={lo:.2f} C={c:.2f} V={vol:.0f}")
 
     trend = _compute_trend_context(history_rows)
     trend_parts = []
@@ -388,7 +387,7 @@ def build_live_prompt_freeform(
         pnl_usd = position_info["qty"] * (current_price - entry)
         pos_section = f"""
 ## Current Position:
-  Holding {position_info['qty']:.6f} {symbol} @ ${entry:.2f} entry
+  Holding {position_info["qty"]:.6f} {symbol} @ ${entry:.2f} entry
   Held {held:.0f}h (max hold: 6h), P&L: ${pnl_usd:+.2f} ({pnl_pct:+.2f}%)
 """
 

@@ -1,4 +1,5 @@
 """Tests for signal calibrator module and training pipeline."""
+
 from __future__ import annotations
 
 import sys
@@ -8,11 +9,12 @@ import numpy as np
 import pytest
 import torch
 
+
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "rl_trading_agent_binance"))
 
-from signal_calibrator import SignalCalibrator, CalibrationConfig, save_calibrator, load_calibrator
+from signal_calibrator import CalibrationConfig, SignalCalibrator, load_calibrator, save_calibrator
 
 
 class TestSignalCalibratorModule:
@@ -52,7 +54,7 @@ class TestSignalCalibratorModule:
             model.net[-1].weight.fill_(100.0)
             model.net[-1].bias.fill_(100.0)
         features = torch.randn(200, 16)
-        buy_off, sell_off, intensity = model(features)
+        buy_off, sell_off, _intensity = model(features)
         max_adj = 25.0 / 10_000.0
         assert (buy_off - cfg.base_buy_offset).abs().max().item() <= max_adj + 1e-6
         assert (sell_off - cfg.base_sell_offset).abs().max().item() <= max_adj + 1e-6
@@ -74,7 +76,7 @@ class TestSignalCalibratorModule:
         model.eval()
         close = torch.tensor([100.0, 200.0, 50.0])
         features = torch.randn(3, 16)
-        buy_p, sell_p, inten = model.to_prices(features, close)
+        buy_p, sell_p, _inten = model.to_prices(features, close)
         # zero-init so buy_price = close * (1 + base_buy_offset)
         expected_buy = close * (1.0 + cfg.base_buy_offset)
         expected_sell = close * (1.0 + cfg.base_sell_offset)
@@ -124,8 +126,8 @@ class TestSaveLoad:
         with torch.no_grad():
             orig = model(features)
             loaded = loaded_model(features)
-        for o, l in zip(orig, loaded):
-            torch.testing.assert_close(o, l)
+        for o, lo in zip(orig, loaded):
+            torch.testing.assert_close(o, lo)
 
 
 class TestDifferentiableSimIntegration:
@@ -138,10 +140,10 @@ class TestDifferentiableSimIntegration:
             o = price
             c = price * (1 + ret)
             h = max(o, c) * (1 + abs(np.random.normal(0, 0.005)))
-            l = min(o, c) * (1 - abs(np.random.normal(0, 0.005)))
+            lo = min(o, c) * (1 - abs(np.random.normal(0, 0.005)))
             opens.append(o)
             highs.append(h)
-            lows.append(l)
+            lows.append(lo)
             closes.append(c)
             price = c
         return (
@@ -152,7 +154,7 @@ class TestDifferentiableSimIntegration:
         )
 
     def test_gradient_through_soft_sim(self):
-        from differentiable_loss_utils import simulate_hourly_trades, combined_sortino_pnl_loss
+        from differentiable_loss_utils import combined_sortino_pnl_loss, simulate_hourly_trades
 
         opens, highs, lows, closes = self._make_market_data(200)
         features = torch.randn(200, 16)
@@ -202,7 +204,7 @@ class TestDifferentiableSimIntegration:
         assert result.portfolio_values[0, -1].item() > 0
 
     def test_training_step_reduces_loss(self):
-        from differentiable_loss_utils import simulate_hourly_trades, combined_sortino_pnl_loss
+        from differentiable_loss_utils import combined_sortino_pnl_loss, simulate_hourly_trades
 
         opens, highs, lows, closes = self._make_market_data(300)
         features = torch.randn(300, 16)
@@ -237,6 +239,7 @@ class TestDifferentiableSimIntegration:
 class TestTrainingPipeline:
     def test_time_split(self):
         from train_calibrator import time_split
+
         train_sl, val_sl, test_sl = time_split(1000)
         assert train_sl == slice(0, 700)
         assert val_sl == slice(700, 850)
@@ -247,6 +250,7 @@ class TestTrainingPipeline:
         if not (data_root / "BTCUSD.csv").exists():
             pytest.skip("No training data available")
         from train_calibrator import prepare_symbol_tensors
+
         data = prepare_symbol_tensors("BTCUSD", data_root=data_root)
         assert data["features"].shape[1] == 16
         assert data["closes"].shape[0] == data["features"].shape[0]

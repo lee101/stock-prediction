@@ -110,7 +110,6 @@ def build_rsync_remote_shell() -> str:
     return " ".join(["ssh", *SSH_OPTIONS])
 
 
-
 def summarize_eval_windows(payload: dict[str, Any]) -> dict[str, Any]:
     windows = payload.get("windows")
     if not isinstance(windows, list):
@@ -339,7 +338,9 @@ def _find_latest_eval_result(*, add_symbol: str, signal_mode: str) -> Path:
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate a Binance Chronos2 LoRA candidate using real cache MAE and hybrid portfolio windows.")
+    parser = argparse.ArgumentParser(
+        description="Evaluate a Binance Chronos2 LoRA candidate using real cache MAE and hybrid portfolio windows."
+    )
     parser.add_argument("--report-path", type=Path, required=True)
     parser.add_argument("--remote-host", default=DEFAULT_REMOTE_HOST)
     parser.add_argument("--remote-root", type=Path, default=DEFAULT_REMOTE_ROOT)
@@ -385,9 +386,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         horizons=str(args.horizons),
         lookback_hours=float(args.lookback_hours),
     )
-    _run(
-        build_ssh_command(str(args.remote_host), ssh_cmd)
-    )
+    _run(build_ssh_command(str(args.remote_host), ssh_cmd))
 
     _run(
         [

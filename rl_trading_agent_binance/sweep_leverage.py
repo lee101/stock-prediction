@@ -1,15 +1,21 @@
 """Sweep leverage 1x-5x on cached LLM signals. No API calls needed."""
+
 from __future__ import annotations
-import argparse, sys, json, time
+
+import argparse
+import json
+import sys
 from pathlib import Path
-from copy import deepcopy
-import numpy as np, pandas as pd
+
+import numpy as np
+import pandas as pd
+
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from llm_hourly_trader.backtest import load_bars, load_forecasts, simulate, RESULTS_DIR
+from llm_hourly_trader.backtest import RESULTS_DIR, load_bars, load_forecasts
 from llm_hourly_trader.config import SYMBOL_UNIVERSE, BacktestConfig, SymbolConfig
 
 
@@ -41,7 +47,7 @@ def simulate_leveraged(
 
     for ts, chunk in merged.groupby("timestamp", sort=True):
         # Charge margin interest on borrowed portion
-        for sym, pos in list(positions.items()):
+        for _sym, pos in list(positions.items()):
             if pos["qty"] <= 0:
                 continue
             pos_value = pos["qty"] * pos["cost_basis"]
@@ -65,12 +71,19 @@ def simulate_leveraged(
                 fee = pos["qty"] * close_price * fee_rate
                 interest = pos.get("total_interest", 0)
                 cash += pos["equity_used"] + pnl - fee - interest
-                trades.append({
-                    "timestamp": str(ts), "symbol": sym, "side": "close",
-                    "price": close_price, "quantity": pos["qty"],
-                    "realized_pnl": pnl, "interest": interest,
-                    "fee": fee, "reason": "max_hold",
-                })
+                trades.append(
+                    {
+                        "timestamp": str(ts),
+                        "symbol": sym,
+                        "side": "close",
+                        "price": close_price,
+                        "quantity": pos["qty"],
+                        "realized_pnl": pnl,
+                        "interest": interest,
+                        "fee": fee,
+                        "reason": "max_hold",
+                    }
+                )
                 del positions[sym]
 
         # Take-profit exits
@@ -89,12 +102,19 @@ def simulate_leveraged(
                 fee = pos["qty"] * sell_price * fee_rate
                 interest = pos.get("total_interest", 0)
                 cash += pos["equity_used"] + pnl - fee - interest
-                trades.append({
-                    "timestamp": str(ts), "symbol": sym, "side": "sell",
-                    "price": sell_price, "quantity": pos["qty"],
-                    "realized_pnl": pnl, "interest": interest,
-                    "fee": fee, "reason": "take_profit",
-                })
+                trades.append(
+                    {
+                        "timestamp": str(ts),
+                        "symbol": sym,
+                        "side": "sell",
+                        "price": sell_price,
+                        "quantity": pos["qty"],
+                        "realized_pnl": pnl,
+                        "interest": interest,
+                        "fee": fee,
+                        "reason": "take_profit",
+                    }
+                )
                 del positions[sym]
 
         # Entries with leverage
@@ -126,16 +146,25 @@ def simulate_leveraged(
                 equity_used = cost / leverage
                 cash -= equity_used
                 positions[sym] = {
-                    "qty": qty, "cost_basis": buy_price,
-                    "open_time": ts, "equity_used": equity_used,
+                    "qty": qty,
+                    "cost_basis": buy_price,
+                    "open_time": ts,
+                    "equity_used": equity_used,
                     "total_interest": 0,
                 }
-                trades.append({
-                    "timestamp": str(ts), "symbol": sym, "side": "buy",
-                    "price": buy_price, "quantity": qty,
-                    "realized_pnl": 0, "interest": 0,
-                    "fee": qty * buy_price * fee_rate, "reason": "entry",
-                })
+                trades.append(
+                    {
+                        "timestamp": str(ts),
+                        "symbol": sym,
+                        "side": "buy",
+                        "price": buy_price,
+                        "quantity": qty,
+                        "realized_pnl": 0,
+                        "interest": 0,
+                        "fee": qty * buy_price * fee_rate,
+                        "reason": "entry",
+                    }
+                )
 
         # Equity = cash + sum(equity_used + unrealized_pnl) per position
         unrealized = 0
@@ -189,19 +218,19 @@ def main():
 
     cache_tag = f"prompt-v3-{args.variant}-{args.model}"
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"LEVERAGE SWEEP: {args.leverages}")
     print(f"Symbols: {args.symbols}, Days: {args.days}")
     print(f"Variant: {args.variant}, Model: {args.model}")
-    print(f"Margin rate: {args.margin_rate*100:.1f}% annual")
-    print(f"{'='*70}\n")
+    print(f"Margin rate: {args.margin_rate * 100:.1f}% annual")
+    print(f"{'=' * 70}\n")
 
     # Load cached signals
+    from datetime import timedelta
+
+    import torch
     from llm_hourly_trader.cache import get_cached
     from llm_hourly_trader.gemini_wrapper import TradePlan
-    from collections import defaultdict
-    from datetime import timedelta
-    import torch
 
     # Load bars + forecasts
     ab, af1 = {}, {}
@@ -215,8 +244,14 @@ def main():
     # Import v3 helpers
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from prompt_experiment_v3 import (
-        BINANCE6_SYMBOLS, MLPPolicy, _read_hourly_prices, _read_forecast,
-        compute_mktd_features, build_prompt, TradingSignal, get_forecast_at,
+        BINANCE6_SYMBOLS,
+        MLPPolicy,
+        TradingSignal,
+        _read_forecast,
+        _read_hourly_prices,
+        build_prompt,
+        compute_mktd_features,
+        get_forecast_at,
     )
 
     # Load RL model for prompt building (needed for cache key match)
@@ -244,6 +279,7 @@ def main():
         hidden = sd["encoder.0.weight"].shape[0]
         na = sd["actor.2.weight"].shape[0]
         from rl_signal import TradingPolicy
+
         rl = TradingPolicy(obs_size, na, hidden)
     else:
         obs_size = ns * 16 + 5 + ns
@@ -275,7 +311,8 @@ def main():
         tf = pd.Timestamp(ts).floor("h")
         for i, b in enumerate(BINANCE6_SYMBOLS):
             m = abf.get(b)
-            if m is None: continue
+            if m is None:
+                continue
             if tf in m.index:
                 f[i] = m.loc[tf].values[:16].astype(np.float32)
             else:
@@ -287,12 +324,14 @@ def main():
     def grs(fa):
         if has_obs_norm:
             o = np.zeros(obs_size, dtype=np.float32)
-            o[:ns*16] = fa.flatten()
-            o[ns*16] = 1.0; o[ns*16+4] = 0.5
+            o[: ns * 16] = fa.flatten()
+            o[ns * 16] = 1.0
+            o[ns * 16 + 4] = 0.5
         else:
             o = np.zeros(obs_size, dtype=np.float32)
-            o[:ns*16] = fa.flatten()
-            o[ns*16] = 1.0; o[ns*16+4] = 0.5
+            o[: ns * 16] = fa.flatten()
+            o[ns * 16] = 1.0
+            o[ns * 16 + 4] = 0.5
         ot = torch.from_numpy(o).unsqueeze(0)
         with torch.no_grad():
             lg, v = rl(ot)
@@ -300,18 +339,20 @@ def main():
             a = lg.argmax(-1).item()
             cf = pr[0, a].item()
             vl = v.item()
-        if a == 0: return TradingSignal("flat", None, None, cf, vl, 0, 0)
+        if a == 0:
+            return TradingSignal("flat", None, None, cf, vl, 0, 0)
         ai = a - 1
         sh = ai >= ns
-        if sh: ai -= ns
+        if sh:
+            ai -= ns
         sy = BINANCE6_SYMBOLS[ai] if ai < ns else "?"
         return TradingSignal(f"{'short' if sh else 'long'}_{sy}", sy, "short" if sh else "long", cf, vl, 1, 0)
 
     # Build actions from cached prompts
     print("Building actions from cached LLM signals...")
     ar, br = [], []
-    ps = {s: None for s in args.symbols}
-    po = {s: "N/A" for s in args.symbols}
+    ps = dict.fromkeys(args.symbols)
+    po = dict.fromkeys(args.symbols, "N/A")
     hits, misses = 0, 0
     for s in args.symbols:
         sb = ab[s]
@@ -321,7 +362,16 @@ def main():
             ts_bar = bar["timestamp"]
             h = sb[sb["timestamp"] <= ts_bar].tail(72)
             if len(h) < 5:
-                ar.append({"timestamp": ts_bar, "symbol": s, "buy_price": 0, "sell_price": 0, "direction": "hold", "confidence": 0})
+                ar.append(
+                    {
+                        "timestamp": ts_bar,
+                        "symbol": s,
+                        "buy_price": 0,
+                        "sell_price": 0,
+                        "direction": "hold",
+                        "confidence": 0,
+                    }
+                )
                 br.append(bar.to_dict())
                 continue
             f1 = get_forecast_at(af1[s], ts_bar)
@@ -338,13 +388,22 @@ def main():
                 misses += 1
             if plan.direction == "short":
                 plan = TradePlan("hold", 0, 0, 0, "short filtered")
-            ar.append({"timestamp": ts_bar, "symbol": s, "buy_price": plan.buy_price, "sell_price": plan.sell_price, "direction": plan.direction, "confidence": plan.confidence})
+            ar.append(
+                {
+                    "timestamp": ts_bar,
+                    "symbol": s,
+                    "buy_price": plan.buy_price,
+                    "sell_price": plan.sell_price,
+                    "direction": plan.direction,
+                    "confidence": plan.confidence,
+                }
+            )
             br.append(bar.to_dict())
             ps[s] = rs
             if i > 0:
-                pc = float(w.iloc[i-1]["close"])
+                pc = float(w.iloc[i - 1]["close"])
                 cc = float(bar["close"])
-                po[s] = f"{(cc-pc)/pc*100:+.2f}% (${pc:.2f}->${cc:.2f})"
+                po[s] = f"{(cc - pc) / pc * 100:+.2f}% (${pc:.2f}->${cc:.2f})"
 
     print(f"  Cache: {hits} hits, {misses} misses")
     if misses > hits * 0.5:
@@ -359,7 +418,9 @@ def main():
 
     # Sweep
     results = {}
-    print(f"\n{'Leverage':<10} {'Return':>10} {'Sortino':>10} {'MaxDD':>10} {'Trades':>8} {'PnL':>12} {'Fees':>10} {'Interest':>10}")
+    print(
+        f"\n{'Leverage':<10} {'Return':>10} {'Sortino':>10} {'MaxDD':>10} {'Trades':>8} {'PnL':>12} {'Fees':>10} {'Interest':>10}"
+    )
     print("-" * 90)
     for lev in args.leverages:
         r = simulate_leveraged(bd, ad, cfg_base, sc, leverage=lev, margin_rate_annual=args.margin_rate)
@@ -368,7 +429,9 @@ def main():
             continue
         label = f"{lev:.0f}x"
         results[label] = r
-        print(f"{label:<10} {r['total_return_pct']:>+9.2f}% {r['sortino']:>10.2f} {r['max_drawdown_pct']:>9.2f}% {r['entries']:>8d} ${r['realized_pnl']:>+10.2f} ${r['fees']:>9.2f} ${r['interest']:>9.2f}")
+        print(
+            f"{label:<10} {r['total_return_pct']:>+9.2f}% {r['sortino']:>10.2f} {r['max_drawdown_pct']:>9.2f}% {r['entries']:>8d} ${r['realized_pnl']:>+10.2f} ${r['fees']:>9.2f} ${r['interest']:>9.2f}"
+        )
 
     # Per-pair breakdown for best
     if results:
@@ -377,12 +440,15 @@ def main():
         print(f"\nBest by Sortino: {best_key}")
 
         from prompt_experiment_v3 import per_pair_pnl
+
         pp = per_pair_pnl(best["trades"])
         print("  Per-pair:")
         for sym in sorted(pp.keys()):
             ps_data = pp[sym]
             wr = ps_data["wins"] / max(1, ps_data["wins"] + ps_data["losses"]) * 100
-            print(f"    {sym:>8}: PnL=${ps_data['pnl']:+8.2f}  fees=${ps_data['fees']:6.2f}  entries={ps_data['entries']:3d}  W/L={ps_data['wins']}/{ps_data['losses']} ({wr:.0f}%)")
+            print(
+                f"    {sym:>8}: PnL=${ps_data['pnl']:+8.2f}  fees=${ps_data['fees']:6.2f}  entries={ps_data['entries']:3d}  W/L={ps_data['wins']}/{ps_data['losses']} ({wr:.0f}%)"
+            )
 
     # Save
     out = RESULTS_DIR / "leverage_sweep.json"
