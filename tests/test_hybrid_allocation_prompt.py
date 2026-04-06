@@ -389,7 +389,9 @@ def test_quote_buying_power_only_counts_borrow_headroom_in_margin_mode() -> None
 
 
 def test_get_portfolio_state_margin_uses_net_asset_for_locked_inventory(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(trade_binance_live, "get_margin_free_balance", lambda asset: 1595.35 if asset == "USDT" else 0.0)
+    monkeypatch.setattr(
+        trade_binance_live, "get_margin_free_balance", lambda asset: 1595.35 if asset == "USDT" else 0.0
+    )
     monkeypatch.setattr(trade_binance_live, "get_margin_borrowed_balance", lambda asset: 0.0)
     monkeypatch.setattr(trade_binance_live, "get_max_borrowable", lambda asset: 10547.83 if asset == "USDT" else 0.0)
     monkeypatch.setattr(trade_binance_live, "get_margin_account", lambda: {"totalNetAssetOfBtc": "0.0374722"})
@@ -403,6 +405,7 @@ def test_get_portfolio_state_margin_uses_net_asset_for_locked_inventory(monkeypa
         "BTC": {"free": "0.00000671", "locked": "0.01473", "netAsset": "0.01473671"},
         "ETH": {"free": "0.00001189", "locked": "0", "netAsset": "0.00000842"},
     }
+
     def _lookup_balance(asset: str) -> dict[str, str] | None:
         return balances.get(asset)
 

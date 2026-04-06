@@ -158,6 +158,16 @@ qwen_rl = [
     "bitsandbytes>=0.45",
 ]
 
+trl_vllm = [
+    "trl[vllm]>=0.15",
+    "transformers>=4.50",
+    "datasets>=2.17",
+    "accelerate>=1.10.1",
+    "outlines>=0.1",
+    "peft>=0.14",
+    "bitsandbytes>=0.45; sys_platform == 'linux'",
+]
+
 sp500 = [
     "yfinance>=0.2.0",
     "pandas>=2.0.0",

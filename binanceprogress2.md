@@ -2,6 +2,47 @@
 
 Updated: 2026-04-07
 
+## Package Rename + Quality Gate + Restart (2026-04-07)
+
+- Renamed the live Binance package path from `rl-trading-agent-binance/` to `rl_trading_agent_binance/`.
+- Updated deployment scripts, docs, evaluation helpers, and Binance-specific tests to use the underscore path so Python import tooling works without hyphen-path workarounds.
+- Added a working Binance live quality gate on:
+  - `rl_trading_agent_binance/hybrid_prompt.py`
+  - `rl_trading_agent_binance/trade_binance_live.py`
+  - `evaluate_binance_lora_candidate.py`
+  - `scripts/evaluate_binance_lora_candidate.py`
+  - `tests/test_hybrid_allocation_prompt.py`
+  - `tests/test_hybrid_prompt_parsing.py`
+  - `tests/test_rl_only_fallback.py`
+  - `tests/test_evaluate_binance_lora_candidate.py`
+  - `tests/test_validate_hybrid_cycle_snapshots.py`
+- Checks now passing on that slice:
+  - `pytest ...` -> **69 passed**
+  - `ty check ...` -> passed
+  - `ruff check ...` -> passed
+  - `ruff format --check ...` -> passed
+  - `pre-commit run --files ...` -> passed
+- Hook / CI wiring updated:
+  - `.pre-commit-config.yaml`
+  - `.github/workflows/ci-fast.yml`
+  - `.github/workflows/ci.yml`
+  - `.github/workflows/ci-ubuntu.yml`
+- Local git hook:
+  - removed redundant local `core.hooksPath=.git/hooks`
+  - installed `pre-commit` into `.git/hooks/pre-commit`
+- Live restart completed:
+  - `sudo supervisorctl restart binance-hybrid-spot`
+  - verified `RUNNING` after restart
+  - verified active PID `1712424`
+  - verified command line still targets `rl_trading_agent_binance/trade_binance_live.py` with margin mode, `gemini-3.1-flash-lite-preview`, and checkpoint `pufferlib_market/checkpoints/a100_scaleup/robust_champion/best.pt`
+- New TRL research scaffold added under `trltraining/`:
+  - generalized GRPO-first wrapper over the existing `qwen_rl_trading` reward + prompt stack
+  - explicit recommendation is `GRPOTrainer` with `use_vllm=True` and `vllm_mode="colocate"`
+  - added `trltraining/README.md`, config/dataset/method helpers, and tests
+  - added `trl_vllm` optional dependency set in `pyproject.toml`
+  - included `trltraining` in the local `ty` / `ruff` / pre-commit / CI enforcement slice
+  - this is research-only scaffolding for the next experiment round, not a live deployment change
+
 ## Hybrid Margin Runtime Audit + Gemini Schema Fix (2026-04-07)
 
 Audited the currently running Binance processes and cross-checked the live account state against both the spot CLI and the margin API.

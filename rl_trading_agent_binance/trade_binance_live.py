@@ -92,6 +92,10 @@ class BinanceSymbolConfig:
     max_position_pct: float = 0.20  # max % of portfolio in this symbol
 
 
+type JSONDict = dict[str, object]
+type JSONList = list[JSONDict]
+
+
 # BTC/ETH trade on FDUSD (zero maker fees)
 # Altcoins trade on USDT
 TRADING_SYMBOLS = {
@@ -284,7 +288,7 @@ class PortfolioState:
 def _isoformat_utc(value: object) -> str | None:
     if value is None:
         return None
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
+    if isinstance(value, int | float) and not isinstance(value, bool):
         numeric = float(value)
         if not np.isfinite(numeric):
             return None
@@ -306,7 +310,8 @@ def _isoformat_utc(value: object) -> str | None:
                 ts = ts.tz_convert("UTC")
         return str(ts.isoformat())
     try:
-        ts = pd.Timestamp(value)
+        timestamp_value = value if isinstance(value, str) else str(value)
+        ts = pd.Timestamp(timestamp_value)
     except Exception:
         return None
     if ts.tzinfo is None:
@@ -320,7 +325,7 @@ def _safe_float(value: object) -> float | None:
     if value is None or isinstance(value, bool):
         return None
     try:
-        numeric = float(value) if isinstance(value, (int, float, str)) else float(str(value))
+        numeric = float(value) if isinstance(value, int | float | str) else float(str(value))
     except (TypeError, ValueError):
         return None
     if not np.isfinite(numeric):
@@ -332,7 +337,7 @@ def _safe_int(value: object) -> int | None:
     if value is None or isinstance(value, bool):
         return None
     try:
-        return int(value) if isinstance(value, (int, str)) else int(str(value))
+        return int(value) if isinstance(value, int | str) else int(str(value))
     except (TypeError, ValueError):
         return None
 
@@ -364,7 +369,28 @@ def _serialize_portfolio_state(state: PortfolioState) -> dict[str, object]:
     }
 
 
-def _serialize_order(order: dict | None) -> dict[str, object] | None:
+def _cycle_order_bucket(cycle_snapshot: JSONDict, bucket: str) -> JSONList:
+    orders = cycle_snapshot["orders"]
+    assert isinstance(orders, dict)
+    typed_orders = cast(dict[str, object], orders)
+    order_bucket = typed_orders[bucket]
+    assert isinstance(order_bucket, list)
+    return cast(JSONList, order_bucket)
+
+
+def _cycle_symbols_detail(cycle_snapshot: JSONDict) -> JSONList:
+    details = cycle_snapshot["symbols_detail"]
+    assert isinstance(details, list)
+    return cast(JSONList, details)
+
+
+def _detail_actions(detail: JSONDict) -> JSONList:
+    actions = detail["actions"]
+    assert isinstance(actions, list)
+    return cast(JSONList, actions)
+
+
+def _serialize_order(order: dict[str, Any] | None) -> JSONDict | None:
     if not order:
         return None
     return {
@@ -383,8 +409,8 @@ def _serialize_order(order: dict | None) -> dict[str, object] | None:
     }
 
 
-def _serialize_orders(orders: list[dict] | tuple[dict, ...]) -> list[dict[str, object]]:
-    serialized: list[dict[str, object]] = []
+def _serialize_orders(orders: list[dict[str, Any]] | tuple[dict[str, Any], ...]) -> JSONList:
+    serialized: JSONList = []
     for order in orders:
         item = _serialize_order(order)
         if item is not None:
@@ -836,7 +862,7 @@ def _reserve_buying_power(
 
 def _load_open_orders(execution_mode: str) -> list[dict[str, Any]]:
     orders = get_open_margin_orders() if execution_mode == "margin" else binance_wrapper.get_open_orders()
-    return [cast(dict[str, Any], order) for order in orders]
+    return list(orders)
 
 
 def _cancel_open_order(execution_mode: str, symbol: str, order_id: int) -> None:
@@ -1064,7 +1090,7 @@ def place_limit_buy(
     try:
         order = binance_wrapper.create_order(market_symbol, "BUY", qty, price)
         logger.info(f"  Order placed: {order.get('orderId')}")
-        return cast(dict[str, Any], order)
+        return order
     except Exception as e:
         logger.error(f"  Order failed: {e}")
         return None
@@ -1100,7 +1126,7 @@ def place_limit_sell(
     try:
         order = binance_wrapper.create_order(market_symbol, "SELL", qty, price)
         logger.info(f"  Order placed: {order.get('orderId')}")
-        return cast(dict[str, Any], order)
+        return order
     except Exception as e:
         logger.error(f"  Order failed: {e}")
         return None
@@ -1143,7 +1169,7 @@ def place_margin_limit_buy(
             time_in_force="GTC",
         )
         logger.info(f"  Margin order placed: {order.get('orderId')}")
-        return cast(dict[str, Any], order)
+        return order
     except Exception as e:
         logger.error(f"  Margin order failed: {e}")
         return None
@@ -1185,7 +1211,7 @@ def place_margin_limit_sell(
             time_in_force="GTC",
         )
         logger.info(f"  Margin order placed: {order.get('orderId')}")
-        return cast(dict[str, Any], order)
+        return order
     except Exception as e:
         logger.error(f"  Margin order failed: {e}")
         return None
@@ -1275,17 +1301,23 @@ def _chronos2_fallback_signal(
 # ---------------------------------------------------------------------------
 
 
-def _klines_to_rows(klines: list) -> list[dict]:
-    rows = []
+def _klines_to_rows(klines: list[list[object]] | list[tuple[object, ...]]) -> list[dict[str, float | str]]:
+    rows: list[dict[str, float | str]] = []
     for k in klines:
+        timestamp_ms = int(str(k[0]))
+        open_price = float(str(k[1]))
+        high_price = float(str(k[2]))
+        low_price = float(str(k[3]))
+        close_price = float(str(k[4]))
+        volume = float(str(k[5]))
         rows.append(
             {
-                "timestamp": pd.Timestamp(k[0], unit="ms", tz="UTC").isoformat(),
-                "open": float(k[1]),
-                "high": float(k[2]),
-                "low": float(k[3]),
-                "close": float(k[4]),
-                "volume": float(k[5]),
+                "timestamp": pd.Timestamp(timestamp_ms, unit="ms", tz="UTC").isoformat(),
+                "open": open_price,
+                "high": high_price,
+                "low": low_price,
+                "close": close_price,
+                "volume": volume,
             }
         )
     return rows
@@ -1345,7 +1377,9 @@ def get_hybrid_signal(
                         klines = bw.get_client().get_klines(symbol=pair, interval="1h", limit=72)
                     else:
                         raise
-                history_rows = _klines_to_rows(klines)
+                if not isinstance(klines, list):
+                    raise TypeError(f"Unexpected klines payload for {pair}: {type(klines).__name__}")
+                history_rows = _klines_to_rows(cast(list[list[object]], klines))
             except Exception as e:
                 logger.error(f"Failed to get klines for {market_symbol}: {e}")
                 return TradePlan("hold", 0, 0, 0, f"klines error: {e}")
@@ -1464,7 +1498,7 @@ def run_trading_cycle(
     resolved_execution_mode = _resolve_execution_mode(execution_mode, leverage)
     effective_leverage = _effective_leverage(resolved_execution_mode, leverage)
     cycle_started_at = datetime.now(UTC)
-    cycle_snapshot: dict[str, object] = {
+    cycle_snapshot: JSONDict = {
         "cycle_id": f"{cycle_started_at.isoformat()}|per_symbol|{resolved_execution_mode}|{'live' if not dry_run else 'dry_run'}",
         "cycle_kind": "per_symbol",
         "cycle_started_at": cycle_started_at.isoformat(),
@@ -1490,7 +1524,7 @@ def run_trading_cycle(
         "status": "running",
         "error": None,
     }
-    orders_placed: list[dict] = []
+    orders_placed: list[dict[str, Any]] = []
 
     try:
         logger.info(f"\n{'=' * 60}")
@@ -1565,16 +1599,14 @@ def run_trading_cycle(
             if order:
                 orders_placed.append(order)
                 open_orders.append(order)
-                cast_fe = cycle_snapshot["orders"]
-                assert isinstance(cast_fe, dict)
-                cast_fe_list = cast_fe["forced_exits"]
-                assert isinstance(cast_fe_list, list)
-                cast_fe_list.append(_serialize_order(order))
+                serialized_forced_exit = _serialize_order(order)
+                if serialized_forced_exit is not None:
+                    _cycle_order_bucket(cycle_snapshot, "forced_exits").append(serialized_forced_exit)
                 logger.info(f"  Forced exit sell @ ${sell_price:.2f}")
 
         # Prefetch bars for all symbols (used for cross-asset context + per-symbol signals)
         cross_asset_context = ""
-        all_symbol_bars: dict[str, list[dict]] = {}
+        all_symbol_bars: dict[str, list[dict[str, float | str]]] = {}
         try:
             from src.binan import binance_wrapper as bw
 
@@ -1584,8 +1616,10 @@ def run_trading_cycle(
                     continue
                 mp = _execution_pair(sc, resolved_execution_mode)
                 try:
-                    kl = bw.get_client().get_klines(symbol=mp, interval="1h", limit=72)
-                    all_symbol_bars[sn] = _klines_to_rows(kl)
+                    raw_klines = bw.get_client().get_klines(symbol=mp, interval="1h", limit=72)
+                    if not isinstance(raw_klines, list):
+                        raise TypeError(f"Unexpected klines payload for {mp}: {type(raw_klines).__name__}")
+                    all_symbol_bars[sn] = _klines_to_rows(cast(list[list[object]], raw_klines))
                 except Exception:
                     pass
             if len(all_symbol_bars) >= 2:
@@ -1605,15 +1639,13 @@ def run_trading_cycle(
 
             market_symbol = _execution_pair(sym_cfg, resolved_execution_mode)
             trade_quote = _execution_quote_asset(sym_cfg, resolved_execution_mode)
-            symbol_detail: dict[str, object] = {
+            symbol_detail: JSONDict = {
                 "symbol": sym_cfg.symbol,
                 "market_symbol": market_symbol,
                 "quote_asset": trade_quote,
                 "actions": [],
             }
-            cast_details = cycle_snapshot["symbols_detail"]
-            assert isinstance(cast_details, list)
-            cast_details.append(symbol_detail)
+            _cycle_symbols_detail(cycle_snapshot).append(symbol_detail)
 
             logger.info(f"\n--- {sym_cfg.symbol} ({market_symbol}) ---")
 
@@ -1676,8 +1708,7 @@ def run_trading_cycle(
             logger.info(f"  Buy: ${plan.buy_price:.2f}, Sell: ${plan.sell_price:.2f}")
             logger.info(f"  Reasoning: {plan.reasoning[:100]}")
 
-            actions = symbol_detail["actions"]
-            assert isinstance(actions, list)
+            actions = _detail_actions(symbol_detail)
 
             if position_value >= MIN_TRADE_USD and position_qty > 0:
                 sell_price = plan.sell_price if plan.sell_price > current_price else current_price * 1.01
@@ -1720,11 +1751,8 @@ def run_trading_cycle(
                         serialized_order = _serialize_order(order)
                         sell_action["status"] = "placed"
                         sell_action["placed_order"] = serialized_order
-                        cast_orders = cycle_snapshot["orders"]
-                        assert isinstance(cast_orders, dict)
-                        cast_placed = cast_orders["placed"]
-                        assert isinstance(cast_placed, list)
-                        cast_placed.append(serialized_order)
+                        if serialized_order is not None:
+                            _cycle_order_bucket(cycle_snapshot, "placed").append(serialized_order)
                         logger.info(f"  Take-profit sell @ ${sell_price:.2f}")
                     else:
                         sell_action["status"] = "failed"
@@ -1835,11 +1863,8 @@ def run_trading_cycle(
                     buy_action["status"] = "placed"
                     buy_action["reason"] = "order_placed"
                     buy_action["placed_order"] = serialized_order
-                    cast_orders = cycle_snapshot["orders"]
-                    assert isinstance(cast_orders, dict)
-                    cast_placed = cast_orders["placed"]
-                    assert isinstance(cast_placed, list)
-                    cast_placed.append(serialized_order)
+                    if serialized_order is not None:
+                        _cycle_order_bucket(cycle_snapshot, "placed").append(serialized_order)
 
                     # Place take-profit sell if buy already filled
                     buy_status = order.get("status", "")
@@ -1876,7 +1901,8 @@ def run_trading_cycle(
                             orders_placed.append(tp_order)
                             open_orders.append(tp_order)
                             tp_serialized = _serialize_order(tp_order)
-                            cast_placed.append(tp_serialized)
+                            if tp_serialized is not None:
+                                _cycle_order_bucket(cycle_snapshot, "placed").append(tp_serialized)
                             logger.info(f"  Immediate take-profit sell @ ${plan.sell_price:.2f}")
                 else:
                     buy_action["status"] = "failed"
@@ -2007,7 +2033,7 @@ def run_hybrid_trading_cycle(
     resolved_execution_mode = _resolve_execution_mode(execution_mode, leverage)
     effective_leverage = _effective_leverage(resolved_execution_mode, leverage)
     cycle_started_at = datetime.now(UTC)
-    cycle_snapshot: dict[str, object] = {
+    cycle_snapshot: JSONDict = {
         "cycle_id": f"{cycle_started_at.isoformat()}|allocation|{resolved_execution_mode}|{'live' if not dry_run else 'dry_run'}",
         "cycle_kind": "allocation",
         "cycle_started_at": cycle_started_at.isoformat(),
@@ -2032,7 +2058,7 @@ def run_hybrid_trading_cycle(
         "status": "running",
         "error": None,
     }
-    orders_placed: list[dict] = []
+    orders_placed: list[dict[str, Any]] = []
 
     try:
         logger.info(f"\n{'=' * 60}")
@@ -2202,7 +2228,7 @@ def run_hybrid_trading_cycle(
         }
         logger.info(f"Target allocation: {plan.allocations} | cash={plan.cash_pct:.0f}%")
 
-        symbol_details: dict[str, dict[str, object]] = {}
+        symbol_details: dict[str, JSONDict] = {}
         for sym in sorted({ctx.symbol for ctx in contexts} | set(target_values) | set(positions_valued)):
             cfg = TRADING_SYMBOLS.get(sym)
             if cfg is None:
@@ -2210,7 +2236,7 @@ def run_hybrid_trading_cycle(
             market_symbol = _execution_pair(cfg, resolved_execution_mode)
             trade_quote = _execution_quote_asset(cfg, resolved_execution_mode)
             current_qty, current_value = positions_valued.get(sym, (0.0, 0.0))
-            detail: dict[str, object] = {
+            detail: JSONDict = {
                 "symbol": sym,
                 "market_symbol": market_symbol,
                 "quote_asset": trade_quote,
@@ -2223,9 +2249,7 @@ def run_hybrid_trading_cycle(
                 "actions": [],
             }
             symbol_details[sym] = detail
-            cast_details = cycle_snapshot["symbols_detail"]
-            assert isinstance(cast_details, list)
-            cast_details.append(detail)
+            _cycle_symbols_detail(cycle_snapshot).append(detail)
 
         for sym, (qty, cur_value) in positions_valued.items():
             target_val = target_values.get(sym, 0.0)
@@ -2243,8 +2267,7 @@ def run_hybrid_trading_cycle(
                     "actions": [],
                 },
             )
-            actions = detail["actions"]
-            assert isinstance(actions, list)
+            actions = _detail_actions(detail)
             try:
                 price = _get_market_price(cfg, resolved_execution_mode)
                 sell_value = cur_value - target_val
@@ -2289,11 +2312,8 @@ def run_hybrid_trading_cycle(
                         serialized_order = _serialize_order(order)
                         sell_action["status"] = "placed"
                         sell_action["placed_order"] = serialized_order
-                        cast_orders = cycle_snapshot["orders"]
-                        assert isinstance(cast_orders, dict)
-                        cast_placed = cast_orders["placed"]
-                        assert isinstance(cast_placed, list)
-                        cast_placed.append(serialized_order)
+                        if serialized_order is not None:
+                            _cycle_order_bucket(cycle_snapshot, "placed").append(serialized_order)
                         logger.info(f"  SELL {sym}: {sell_qty:.6f} @ ${exit_price:.2f} (reduce to {target_val:.0f})")
                     else:
                         sell_action["status"] = "failed"
@@ -2315,8 +2335,7 @@ def run_hybrid_trading_cycle(
             if not cfg:
                 continue
             detail = symbol_details[sym]
-            actions = detail["actions"]
-            assert isinstance(actions, list)
+            actions = _detail_actions(detail)
             cur_value = positions_valued.get(sym, (0.0, 0.0))[1]
             buy_needed = target_val - cur_value
             buy_action: dict[str, object] = {
@@ -2405,11 +2424,8 @@ def run_hybrid_trading_cycle(
                     buy_action["status"] = "placed"
                     buy_action["reason"] = "order_placed"
                     buy_action["placed_order"] = serialized_order
-                    cast_orders = cycle_snapshot["orders"]
-                    assert isinstance(cast_orders, dict)
-                    cast_placed = cast_orders["placed"]
-                    assert isinstance(cast_placed, list)
-                    cast_placed.append(serialized_order)
+                    if serialized_order is not None:
+                        _cycle_order_bucket(cycle_snapshot, "placed").append(serialized_order)
                     logger.info(f"  BUY {sym}: ${buy_needed:.2f} @ ${entry_price:.2f}")
                 else:
                     buy_action["status"] = "failed"
