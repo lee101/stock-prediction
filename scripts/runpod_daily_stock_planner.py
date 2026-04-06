@@ -9,6 +9,7 @@ resulting JSON locally for a separate local execution layer to consume.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shlex
@@ -28,6 +29,7 @@ from src.runpod_client import PodConfig, RunPodClient, build_gpu_fallback_types,
 DEFAULT_REMOTE_WORKSPACE = "/workspace/stock-prediction"
 DEFAULT_REMOTE_VENV = ".venv"
 _SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes"]
+_REPO_EXTERNAL_ROOTS = (REPO / ".pytest_tmp",)
 
 
 @dataclass(frozen=True)
@@ -57,17 +59,49 @@ class PlannerExecutionPlan:
     errors: tuple[str, ...]
 
 
+def _collect_dry_run_warnings(plan: PlannerExecutionPlan) -> list[str]:
+    warnings: list[str] = []
+    if plan.missing_forward_env:
+        warnings.append(
+            f"Forwarded environment variables not set: {', '.join(plan.missing_forward_env)}"
+        )
+    if plan.removed_duplicate_symbols:
+        warnings.append(
+            f"Removed duplicate symbols: {', '.join(plan.removed_duplicate_symbols)}"
+        )
+    if plan.ignored_symbol_inputs:
+        warnings.append(
+            f"Ignored symbol inputs: {', '.join(plan.ignored_symbol_inputs)}"
+        )
+    return warnings
+
+
 def _resolve_local_path(path_str: str) -> Path:
     path = Path(path_str).expanduser()
     return path if path.is_absolute() else (REPO / path).resolve()
 
 
+def _external_remote_name(local_path: Path) -> str:
+    resolved = local_path.resolve()
+    digest = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:12]
+    if resolved.suffix:
+        return f"{resolved.stem}-{digest}{resolved.suffix}"
+    return f"{resolved.name}-{digest}"
+
+
 def _relative_remote_path(local_path: Path, remote_workspace: str) -> str:
+    resolved = local_path.resolve()
+    for external_root in _REPO_EXTERNAL_ROOTS:
+        try:
+            resolved.relative_to(external_root)
+        except ValueError:
+            continue
+        return str(Path(remote_workspace) / ".external" / _external_remote_name(resolved))
     try:
-        rel = local_path.resolve().relative_to(REPO)
+        rel = resolved.relative_to(REPO)
         return str(Path(remote_workspace) / rel)
     except ValueError:
-        return str(Path(remote_workspace) / ".external" / local_path.name)
+        return str(Path(remote_workspace) / ".external" / _external_remote_name(resolved))
 
 
 def _rsync_path(*, ssh_host: str, ssh_port: int, local_path: Path, remote_path: str, delete: bool = False) -> None:
@@ -422,25 +456,11 @@ def _build_execution_plan(args: argparse.Namespace) -> PlannerExecutionPlan:
     )
 
 
-def _print_dry_run_plan(plan: PlannerExecutionPlan) -> None:
-    warnings: list[str] = []
-    if plan.missing_forward_env:
-        warnings.append(
-            f"Forwarded environment variables not set: {', '.join(plan.missing_forward_env)}"
-        )
-    if plan.removed_duplicate_symbols:
-        warnings.append(
-            f"Removed duplicate symbols: {', '.join(plan.removed_duplicate_symbols)}"
-        )
-    if plan.ignored_symbol_inputs:
-        warnings.append(
-            f"Ignored symbol inputs: {', '.join(plan.ignored_symbol_inputs)}"
-        )
-
-    payload: dict[str, object] = {
+def _build_dry_run_payload(plan: PlannerExecutionPlan) -> dict[str, object]:
+    return {
         "ready": not plan.errors,
         "errors": list(plan.errors),
-        "warnings": warnings,
+        "warnings": _collect_dry_run_warnings(plan),
         "gpu_preferences": list(plan.gpu_preferences),
         "checkpoint": {
             "local": str(plan.checkpoint_local),
@@ -470,7 +490,42 @@ def _print_dry_run_plan(plan: PlannerExecutionPlan) -> None:
         "keep_pod": plan.keep_pod,
         "planner_command_preview": plan.planner_command_preview,
     }
-    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def _format_dry_run_summary(plan: PlannerExecutionPlan) -> str:
+    status = "ready" if not plan.errors else "not ready"
+    lines = [
+        "RunPod Daily Planner",
+        f"Status: {status}",
+        f"GPU preferences: {', '.join(plan.gpu_preferences)}",
+        f"Checkpoint: {plan.checkpoint_local} -> {plan.checkpoint_remote}",
+        f"Data source: {plan.data_source}",
+        f"Symbols: {len(plan.symbols)} via {plan.symbol_source}",
+    ]
+    if plan.symbols:
+        lines.append(f"Resolved symbols: {', '.join(plan.symbols)}")
+    if plan.present_forward_env or plan.missing_forward_env:
+        lines.append(
+            "Forward env: "
+            f"{len(plan.present_forward_env)} present, {len(plan.missing_forward_env)} missing"
+        )
+    lines.append(f"Bootstrap: {'enabled' if plan.bootstrap_enabled else 'skipped'}")
+    lines.append(f"Keep pod: {'yes' if plan.keep_pod else 'no'}")
+    lines.append(f"Remote planner command: {plan.planner_command_preview}")
+    if plan.errors:
+        lines.append("Errors:")
+        lines.extend(f"- {error}" for error in plan.errors)
+    warnings = _collect_dry_run_warnings(plan)
+    if warnings:
+        lines.append("Warnings:")
+        lines.extend(f"- {warning}" for warning in warnings)
+    if not plan.errors:
+        lines.append("Next step: rerun without --dry-run to provision a pod and execute the planner.")
+    return "\n".join(lines)
+
+
+def _print_dry_run_plan(plan: PlannerExecutionPlan) -> None:
+    print(json.dumps(_build_dry_run_payload(plan), indent=2, sort_keys=True))
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -495,6 +550,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--keep-pod", action="store_true")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the resolved remote execution plan and exit without creating a pod")
+    parser.add_argument(
+        "--dry-run-text",
+        action="store_true",
+        help="When used with --dry-run, also print a human-readable summary to stderr.",
+    )
     return parser.parse_args(argv)
 
 
@@ -503,6 +563,8 @@ def main(argv: list[str] | None = None) -> None:
     plan = _build_execution_plan(args)
     if args.dry_run:
         _print_dry_run_plan(plan)
+        if args.dry_run_text:
+            print(_format_dry_run_summary(plan), file=sys.stderr)
         if plan.errors:
             raise SystemExit(1)
         return

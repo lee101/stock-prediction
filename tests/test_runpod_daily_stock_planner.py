@@ -33,7 +33,30 @@ def test_extract_json_and_remote_path_helpers(tmp_path) -> None:
 
     external = tmp_path / "checkpoint.pt"
     external.write_text("stub", encoding="utf-8")
-    assert mod._relative_remote_path(external, "/workspace/stock") == "/workspace/stock/.external/checkpoint.pt"
+    remote_external = mod._relative_remote_path(external, "/workspace/stock")
+    assert remote_external.startswith("/workspace/stock/.external/checkpoint-")
+    assert remote_external.endswith(".pt")
+
+
+def test_relative_remote_path_disambiguates_external_paths_with_same_name(tmp_path) -> None:
+    mod = _load_module()
+    first_dir = tmp_path / "one"
+    second_dir = tmp_path / "two"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    first = first_dir / "checkpoint.pt"
+    second = second_dir / "checkpoint.pt"
+    first.write_text("one", encoding="utf-8")
+    second.write_text("two", encoding="utf-8")
+
+    first_remote = mod._relative_remote_path(first, "/workspace/stock")
+    second_remote = mod._relative_remote_path(second, "/workspace/stock")
+
+    assert first_remote != second_remote
+    assert first_remote.startswith("/workspace/stock/.external/checkpoint-")
+    assert second_remote.startswith("/workspace/stock/.external/checkpoint-")
+    assert first_remote.endswith(".pt")
+    assert second_remote.endswith(".pt")
 
 
 def test_extract_json_reports_invalid_remote_output() -> None:
@@ -171,14 +194,18 @@ def test_main_syncs_inputs_and_prints_remote_payload(monkeypatch, tmp_path, caps
     }
 
     planner_cmd = next(cmd for cmd in ssh_cmds if "python trade_daily_stock_prod.py" in cmd)
+    checkpoint_remote = mod._relative_remote_path(checkpoint, mod.DEFAULT_REMOTE_WORKSPACE)
+    data_dir_remote = mod._relative_remote_path(data_dir, mod.DEFAULT_REMOTE_WORKSPACE)
+    extra_one_remote = mod._relative_remote_path(extra_one, mod.DEFAULT_REMOTE_WORKSPACE)
+    extra_two_remote = mod._relative_remote_path(extra_two, mod.DEFAULT_REMOTE_WORKSPACE)
     assert "ALPACA_API_KEY=test-key python trade_daily_stock_prod.py" in planner_cmd
     assert "--dry-run" in planner_cmd
     assert "--print-payload" in planner_cmd
-    assert "--checkpoint /workspace/stock-prediction/.external/checkpoint.pt" in planner_cmd
-    assert "--data-dir /workspace/stock-prediction/.external/data" in planner_cmd
+    assert f"--checkpoint {checkpoint_remote}" in planner_cmd
+    assert f"--data-dir {data_dir_remote}" in planner_cmd
     assert "--extra-checkpoints" in planner_cmd
-    assert "/workspace/stock-prediction/.external/extra_one.pt" in planner_cmd
-    assert "/workspace/stock-prediction/.external/extra_two.pt" in planner_cmd
+    assert extra_one_remote in planner_cmd
+    assert extra_two_remote in planner_cmd
     assert "--symbols AAPL MSFT" in planner_cmd
 
 
@@ -285,6 +312,47 @@ def test_main_dry_run_prints_resolved_plan_without_creating_pod(monkeypatch, tmp
     assert "test-key" not in payload["planner_command_preview"]
 
 
+def test_main_dry_run_text_prints_human_summary_to_stderr(monkeypatch, tmp_path, capsys) -> None:
+    mod = _load_module()
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_text("checkpoint", encoding="utf-8")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+
+    monkeypatch.setattr(mod, "RunPodClient", lambda: (_ for _ in ()).throw(AssertionError("should not create pod")))
+    monkeypatch.setattr(mod, "build_gpu_fallback_types", lambda primary, fallbacks=None: [primary, *(fallbacks or [])])
+    monkeypatch.setenv("ALPACA_API_KEY", "test-key")
+
+    mod.main(
+        [
+            "--checkpoint",
+            str(checkpoint),
+            "--data-dir",
+            str(data_dir),
+            "--no-ensemble",
+            "--symbols",
+            "AAPL",
+            "MSFT",
+            "--forward-env",
+            "ALPACA_API_KEY",
+            "MISSING_ENV",
+            "--dry-run",
+            "--dry-run-text",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert payload["ready"] is True
+    assert "RunPod Daily Planner" in captured.err
+    assert "Status: ready" in captured.err
+    assert "Resolved symbols: AAPL, MSFT" in captured.err
+    assert "Forward env: 1 present, 1 missing" in captured.err
+    assert "rerun without --dry-run" in captured.err
+    assert "test-key" not in captured.err
+
+
 def test_main_preflight_fails_before_provisioning_when_checkpoint_missing(monkeypatch, tmp_path) -> None:
     mod = _load_module()
     data_dir = tmp_path / "data"
@@ -376,3 +444,37 @@ def test_main_dry_run_rejects_symbols_file_without_valid_symbols(monkeypatch, tm
     assert payload["symbols"] == []
     assert payload["symbol_count"] == 0
     assert payload["errors"] == [f"Invalid symbols file {symbols_file}: No valid symbols found in {symbols_file}"]
+
+
+def test_main_dry_run_text_includes_errors_for_invalid_plan(monkeypatch, tmp_path, capsys) -> None:
+    mod = _load_module()
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_text("checkpoint", encoding="utf-8")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    symbols_file = tmp_path / "symbols.txt"
+    symbols_file.write_text("# comment only\n\n", encoding="utf-8")
+
+    monkeypatch.setattr(mod, "RunPodClient", lambda: (_ for _ in ()).throw(AssertionError("should not create pod")))
+
+    with pytest.raises(SystemExit, match="1"):
+        mod.main(
+            [
+                "--checkpoint",
+                str(checkpoint),
+                "--data-dir",
+                str(data_dir),
+                "--symbols-file",
+                str(symbols_file),
+                "--no-ensemble",
+                "--dry-run",
+                "--dry-run-text",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["ready"] is False
+    assert "Status: not ready" in captured.err
+    assert "Errors:" in captured.err
+    assert str(symbols_file) in captured.err

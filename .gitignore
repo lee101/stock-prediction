@@ -37,6 +37,7 @@ build
 .pytest_cache
 .pytest_tmp
 pytest-of-*
+ctrader/.tmp/
 .ruff_cache
 .mypy_cache
 .pytype
