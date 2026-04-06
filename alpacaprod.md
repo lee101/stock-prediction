@@ -51,9 +51,11 @@
   - Trades more conservatively (54 vs 80 for ent, 76 for dd002) with better returns
   - Previous: ent (+191%, Sort=19.82), dd002 (+117%, Sort=15.35)
   - **ACTION REQUIRED**: `sudo supervisorctl restart binance-hybrid-spot` to activate
-- **New training launched (2026-04-06)**: crypto6 hourly, 6 symbols, 43,624 timesteps (5yr), h=1024
-  - Checkpoint dir: `pufferlib_market/checkpoints/crypto6_scaled_20260406/`
-  - Config: ent_anneal 0.08->0.02, wd=0.05, obs_norm, trade_penalty=0.005, fill_slip=5bps
+- **crypto6 training (2026-04-06)**: COMPLETED, OVERFIT -- not deployable
+  - 6 symbols, 43,624 timesteps (5yr), h=1024, seed=42, 20M steps
+  - Train: +405x return, Sort=69, 81% WR (memorized training data)
+  - Val: val_best=-11.3%, Sort=-4.45 (14/20 neg); final=-22.3%, Sort=-8.34
+  - Conclusion: 5yr hourly crypto-only overfits badly. Mixed23 training (stocks+crypto) with shorter window generalizes better. robust_champion remains the best available model.
 - **Previous champion (not deployed)**: `c15_tp03_s78` (daily model, not applicable to hourly bot)
   - 100/100 positive, median=+141.4%, Sortino=4.52 -- but this is a DAILY model (180-bar/6mo)
   - eval: `python -m pufferlib_market.evaluate --checkpoint pufferlib_market/checkpoints/crypto15_tp03_s50_200/gpu0/c15_tp03_s78/best.pt --data-path pufferlib_market/data/crypto15_daily_val.bin --deterministic --no-drawdown-profit-early-exit --hidden-size 1024 --max-steps 180 --num-episodes 100 --periods-per-year 365.0 --fill-slippage-bps 8`
