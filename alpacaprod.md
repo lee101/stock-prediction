@@ -39,14 +39,26 @@
   - ⚠️ ACTION REQUIRED: Renew live API key → update env_real.py lines 54-55 (ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD) → `sudo systemctl restart daily-rl-trader.service`
 - **V4 screening**: 336/737 done (45.6%), wave 22 running, now using 32-model baseline
 
-### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- UPDATED (2026-04-06, pending restart)
+### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- UPGRADE READY (2026-04-06)
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`
 - **Launch**: `deployments/binance-hybrid-spot/launch.sh`
-- **Active RL model**: `robust_reg_tp005_ent` (2026-04-06, upgraded from dd002)
-  - Checkpoint: `pufferlib_market/checkpoints/mixed23_a40_sweep/robust_reg_tp005_ent/best.pt`
-  - **20/20 positive, median=+191.4%, Sortino=19.82, WR=56.7%, 80 trades/30d**
-  - Slippage robust: 0bps=+181.6%, 5bps=+191.4%, 10bps=+252.8%, 20bps=+194.3%
-  - Previous: dd002 (+116.6%, Sort=15.35) -- ent is +75pp better on same val period
+- **Currently running**: `robust_reg_tp005_dd002` (stale, PID 4008176 from Mar 31)
+- **UPGRADE TARGET**: `robust_champion` (a100_scaleup, validated 2026-04-06)
+  - Checkpoint: `pufferlib_market/checkpoints/a100_scaleup/robust_champion/best.pt`
+  - **20/20 positive, +216% return, Sortino=25.06, WR=64.8%, 54 trades/period**
+  - Slippage robust: 0bps=+131% Sort=18.13, 5bps=+216% Sort=25.06, 10bps=+217% Sort=25.30, 20bps=+204% Sort=24.40
+  - 50-window holdout: 82% positive@30bar, 100%@60bar, median Sort=3.28 cross-seed (5 seeds tested)
+  - Trades more conservatively (54 vs 80 for ent, 76 for dd002) with better returns
+  - Previous: ent (+191%, Sort=19.82), dd002 (+117%, Sort=15.35)
+  - **ACTION REQUIRED**: `sudo supervisorctl restart binance-hybrid-spot` to activate
+- **New training launched (2026-04-06)**: crypto6 hourly, 6 symbols, 43,624 timesteps (5yr), h=1024
+  - Checkpoint dir: `pufferlib_market/checkpoints/crypto6_scaled_20260406/`
+  - Config: ent_anneal 0.08->0.02, wd=0.05, obs_norm, trade_penalty=0.005, fill_slip=5bps
+- **Previous champion (not deployed)**: `c15_tp03_s78` (daily model, not applicable to hourly bot)
+  - 100/100 positive, median=+141.4%, Sortino=4.52 -- but this is a DAILY model (180-bar/6mo)
+  - eval: `python -m pufferlib_market.evaluate --checkpoint pufferlib_market/checkpoints/crypto15_tp03_s50_200/gpu0/c15_tp03_s78/best.pt --data-path pufferlib_market/data/crypto15_daily_val.bin --deterministic --no-drawdown-profit-early-exit --hidden-size 1024 --max-steps 180 --num-episodes 100 --periods-per-year 365.0 --fill-slippage-bps 8`
+  - Previous champion: c15_tp03_slip5_s33 (+118.5%/180d, +388% ann, Sortino=2.85)
+  - Previous best: c15_tp03_s19 (+75.1%/180d, +211% ann), c15_tp03_s7 (+69%/180d, +190% ann)
 - **Previous champion (not deployed)**: `c15_tp03_s78` (daily model, not applicable to hourly bot)
   - 100/100 positive, median=+141.4%, Sortino=4.52 -- but this is a DAILY model (180-bar/6mo)
   - eval: `python -m pufferlib_market.evaluate --checkpoint pufferlib_market/checkpoints/crypto15_tp03_s50_200/gpu0/c15_tp03_s78/best.pt --data-path pufferlib_market/data/crypto15_daily_val.bin --deterministic --no-drawdown-profit-early-exit --hidden-size 1024 --max-steps 180 --num-episodes 100 --periods-per-year 365.0 --fill-slippage-bps 8`
@@ -63,6 +75,8 @@
   - Upgraded checkpoint: s7 (median -2%, 50% negative) -> s78 champion (median +141%, 100/100 positive)
 - **RL signal broken (FIXED)**: Was always FLAT because shorts dominated logits. `_mask_shorts()` added to mask all short actions before argmax in spot mode.
 - **RL obs bugs (FIXED 2026-04-06)**: hold_hours was hardcoded 0 (now tracked), episode_progress was fixed 0.25 (now increments), features_per_sym was hardcoded 16 (now from checkpoint). 14 new tests in test_rl_signal_obs.py.
+- **Data freshness (2026-04-06)**: trainingdatahourly/ has STALE root-level CSVs (DOGEUSD ends 2025-10-23, SOLUSD ends 2026-02-16) that shadow fresh crypto/ subfolder copies. Export scripts must use `--data-root trainingdatahourly/crypto` to get fresh data. LTCUSD/AVAXUSD/UNIUSD/DOTUSD/SHIBUSD/XRPUSD stop at 2026-03-20. Stock hourly data also stops at 2026-03-20.
+- **Test coverage (2026-04-06)**: 77 rl_signal tests (masking, portfolio, obs, features), ctrader 205 assertions (ASAN+valgrind clean, 0 errors 0 leaks).
 - **Eval command**:
   ```bash
   # Backtest is built into the bot's Chronos2 fallback path
