@@ -7,6 +7,7 @@ Usage:
     source .venv313/bin/activate
     python rl_trading_agent_binance/sweep_calibrator.py --symbols BTCUSD
 """
+
 from __future__ import annotations
 
 import argparse
@@ -17,14 +18,16 @@ from pathlib import Path
 
 import torch
 
+
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from signal_calibrator import CalibrationConfig
 from train_calibrator import (
-    DEPLOYED_SYMBOLS, DATA_ROOT, FORECAST_ROOT,
-    prepare_symbol_tensors, train_one_symbol, compute_baseline,
+    compute_baseline,
+    prepare_symbol_tensors,
+    train_one_symbol,
 )
 
 
@@ -43,8 +46,12 @@ def main():
     parser.add_argument("--symbols", type=str, default="BTCUSD")
     parser.add_argument("--epochs", type=int, default=150)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--sweep-keys", type=str, default="max_price_bps,base_sell_offset,lr",
-                        help="Comma-separated keys to sweep (others use default)")
+    parser.add_argument(
+        "--sweep-keys",
+        type=str,
+        default="max_price_bps,base_sell_offset,lr",
+        help="Comma-separated keys to sweep (others use default)",
+    )
     parser.add_argument("--save-dir", type=str, default="rl_trading_agent_binance/calibrator_sweep")
     args = parser.parse_args()
 
@@ -72,9 +79,9 @@ def main():
 
     all_results = []
     for symbol in symbols:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"SYMBOL: {symbol}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
         data = prepare_symbol_tensors(symbol, device=args.device)
         print(f"  {data['n_bars']} bars loaded")
@@ -96,7 +103,9 @@ def main():
 
             try:
                 result = train_one_symbol(
-                    symbol, data, config,
+                    symbol,
+                    data,
+                    config,
                     epochs=args.epochs,
                     lr=params["lr"],
                     device=args.device,
@@ -111,23 +120,28 @@ def main():
                 print(f"  FAILED: {e}")
 
     all_results.sort(key=lambda r: r.get("test_metrics", {}).get("sortino", -999), reverse=True)
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print("SWEEP RESULTS (sorted by test Sortino)")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
     print(f"{'Label':<35} {'Sym':<8} {'Base':>6} {'Test Sort':>10} {'Test Ret':>10} {'Ep':>4}")
     print("-" * 70)
     for r in all_results:
         ts = r.get("test_metrics", {}).get("sortino", 0)
         tr = r.get("test_metrics", {}).get("return", 0)
         bs = r.get("baseline", {}).get("sortino", 0)
-        print(f"{r.get('config_label','?'):<35} {r['symbol']:<8} {bs:+6.2f} {ts:+10.2f} {tr:+10.4f} {r['best_epoch']:4d}")
+        print(
+            f"{r.get('config_label', '?'):<35} {r['symbol']:<8} {bs:+6.2f} {ts:+10.2f} {tr:+10.4f} {r['best_epoch']:4d}"
+        )
 
     out_path = Path(args.save_dir) / "sweep_results.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(
-        [{k: v for k, v in r.items() if k != "history"} for r in all_results],
-        indent=2, default=str,
-    ))
+    out_path.write_text(
+        json.dumps(
+            [{k: v for k, v in r.items() if k != "history"} for r in all_results],
+            indent=2,
+            default=str,
+        )
+    )
     print(f"\nResults saved to {out_path}")
 
 

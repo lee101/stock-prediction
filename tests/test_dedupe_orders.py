@@ -1,20 +1,19 @@
 """Tests for _dedupe_side_orders exit-order cancellation logic."""
+
 import sys
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "rl_trading_agent_binance"))
 
 import trade_binance_live as trade_binance_live_module
-
 from trade_binance_live import (
+    _BINANCE_ORDER_GONE_CODES,
     _binance_error_code,
     _dedupe_side_orders,
-    _BINANCE_ORDER_GONE_CODES,
 )
 
 
@@ -37,6 +36,7 @@ class FakeBinanceAPIException(Exception):
 
 
 # --- _binance_error_code tests ---
+
 
 def test_error_code_from_attribute():
     exc = FakeBinanceAPIException(-2011, "Unknown order sent.")
@@ -73,9 +73,7 @@ def test_gone_codes():
 
 def test_no_matching_orders():
     orders = [_make_order(symbol="ETHUSDT")]
-    result, skip = _dedupe_side_orders(
-        orders, symbol="BTCUSDT", side="SELL", execution_mode="margin", dry_run=False
-    )
+    result, skip = _dedupe_side_orders(orders, symbol="BTCUSDT", side="SELL", execution_mode="margin", dry_run=False)
     assert skip is False
     assert result == orders
 
@@ -83,8 +81,12 @@ def test_no_matching_orders():
 def test_existing_order_covers_qty():
     order = _make_order(qty=1.0, executed=0.0)
     result, skip = _dedupe_side_orders(
-        [order], symbol="BTCUSDT", side="SELL", execution_mode="margin",
-        dry_run=False, desired_qty=0.9,
+        [order],
+        symbol="BTCUSDT",
+        side="SELL",
+        execution_mode="margin",
+        dry_run=False,
+        desired_qty=0.9,
     )
     assert skip is True
     assert len(result) == 1
@@ -92,9 +94,13 @@ def test_existing_order_covers_qty():
 
 def test_existing_order_covers_notional():
     order = _make_order(qty=1.0, executed=0.0, price=50000.0)
-    result, skip = _dedupe_side_orders(
-        [order], symbol="BTCUSDT", side="SELL", execution_mode="margin",
-        dry_run=False, desired_notional=49000.0,
+    _result, skip = _dedupe_side_orders(
+        [order],
+        symbol="BTCUSDT",
+        side="SELL",
+        execution_mode="margin",
+        dry_run=False,
+        desired_notional=49000.0,
     )
     assert skip is True
 
@@ -104,8 +110,12 @@ def test_cancel_succeeds(mock_cancel):
     order = _make_order(order_id=101, qty=0.3)
     other = _make_order(symbol="ETHUSDT", order_id=200)
     result, skip = _dedupe_side_orders(
-        [order, other], symbol="BTCUSDT", side="SELL", execution_mode="margin",
-        dry_run=False, desired_qty=0.5,
+        [order, other],
+        symbol="BTCUSDT",
+        side="SELL",
+        execution_mode="margin",
+        dry_run=False,
+        desired_qty=0.5,
     )
     assert skip is False
     mock_cancel.assert_called_once_with("margin", "BTCUSDT", 101)
@@ -113,34 +123,52 @@ def test_cancel_succeeds(mock_cancel):
     assert result[0]["orderId"] == 200
 
 
-@patch.object(trade_binance_live_module, "_cancel_open_order", side_effect=FakeBinanceAPIException(-2011, "Unknown order sent."))
+@patch.object(
+    trade_binance_live_module, "_cancel_open_order", side_effect=FakeBinanceAPIException(-2011, "Unknown order sent.")
+)
 def test_cancel_fails_2011_order_gone(mock_cancel):
     order = _make_order(order_id=555, qty=0.3)
     result, skip = _dedupe_side_orders(
-        [order], symbol="BTCUSDT", side="SELL", execution_mode="margin",
-        dry_run=False, desired_qty=0.5,
+        [order],
+        symbol="BTCUSDT",
+        side="SELL",
+        execution_mode="margin",
+        dry_run=False,
+        desired_qty=0.5,
     )
     assert skip is False, "should place new order when old order is gone"
     assert order not in result
 
 
-@patch.object(trade_binance_live_module, "_cancel_open_order", side_effect=FakeBinanceAPIException(-2013, "Order does not exist."))
+@patch.object(
+    trade_binance_live_module, "_cancel_open_order", side_effect=FakeBinanceAPIException(-2013, "Order does not exist.")
+)
 def test_cancel_fails_2013_order_gone(mock_cancel):
     order = _make_order(order_id=556, qty=0.3)
     result, skip = _dedupe_side_orders(
-        [order], symbol="BTCUSDT", side="SELL", execution_mode="margin",
-        dry_run=False, desired_qty=0.5,
+        [order],
+        symbol="BTCUSDT",
+        side="SELL",
+        execution_mode="margin",
+        dry_run=False,
+        desired_qty=0.5,
     )
     assert skip is False
     assert order not in result
 
 
-@patch.object(trade_binance_live_module, "_cancel_open_order", side_effect=Exception("APIError(code=-2011): Unknown order sent."))
+@patch.object(
+    trade_binance_live_module, "_cancel_open_order", side_effect=Exception("APIError(code=-2011): Unknown order sent.")
+)
 def test_cancel_fails_2011_from_string(mock_cancel):
     order = _make_order(order_id=557, qty=0.3)
-    result, skip = _dedupe_side_orders(
-        [order], symbol="BTCUSDT", side="SELL", execution_mode="margin",
-        dry_run=False, desired_qty=0.5,
+    _result, skip = _dedupe_side_orders(
+        [order],
+        symbol="BTCUSDT",
+        side="SELL",
+        execution_mode="margin",
+        dry_run=False,
+        desired_qty=0.5,
     )
     assert skip is False
 
@@ -148,19 +176,29 @@ def test_cancel_fails_2011_from_string(mock_cancel):
 @patch.object(trade_binance_live_module, "_cancel_open_order", side_effect=Exception("Connection timeout"))
 def test_cancel_fails_transient_error(mock_cancel):
     order = _make_order(order_id=558, qty=0.3)
-    result, skip = _dedupe_side_orders(
-        [order], symbol="BTCUSDT", side="SELL", execution_mode="margin",
-        dry_run=False, desired_qty=0.5,
+    _result, skip = _dedupe_side_orders(
+        [order],
+        symbol="BTCUSDT",
+        side="SELL",
+        execution_mode="margin",
+        dry_run=False,
+        desired_qty=0.5,
     )
     assert skip is False, "transient error should not prevent placing new order"
 
 
-@patch.object(trade_binance_live_module, "_cancel_open_order", side_effect=FakeBinanceAPIException(None, "No message available"))
+@patch.object(
+    trade_binance_live_module, "_cancel_open_order", side_effect=FakeBinanceAPIException(None, "No message available")
+)
 def test_cancel_fails_without_binance_code(mock_cancel):
     order = _make_order(order_id=560, qty=0.3)
     result, skip = _dedupe_side_orders(
-        [order], symbol="BTCUSDT", side="SELL", execution_mode="margin",
-        dry_run=False, desired_qty=0.5,
+        [order],
+        symbol="BTCUSDT",
+        side="SELL",
+        execution_mode="margin",
+        dry_run=False,
+        desired_qty=0.5,
     )
     assert skip is False
     assert order not in result
@@ -169,9 +207,13 @@ def test_cancel_fails_without_binance_code(mock_cancel):
 @patch.object(trade_binance_live_module, "_cancel_open_order", side_effect=ConnectionError("Network unreachable"))
 def test_cancel_fails_network_error(mock_cancel):
     order = _make_order(order_id=559, qty=0.3)
-    result, skip = _dedupe_side_orders(
-        [order], symbol="BTCUSDT", side="SELL", execution_mode="margin",
-        dry_run=False, desired_qty=0.5,
+    _result, skip = _dedupe_side_orders(
+        [order],
+        symbol="BTCUSDT",
+        side="SELL",
+        execution_mode="margin",
+        dry_run=False,
+        desired_qty=0.5,
     )
     assert skip is False
 
@@ -179,8 +221,12 @@ def test_cancel_fails_network_error(mock_cancel):
 def test_order_id_none():
     order = {"symbol": "BTCUSDT", "side": "SELL", "origQty": "0.3", "executedQty": "0.0", "price": "50000"}
     result, skip = _dedupe_side_orders(
-        [order], symbol="BTCUSDT", side="SELL", execution_mode="margin",
-        dry_run=False, desired_qty=0.5,
+        [order],
+        symbol="BTCUSDT",
+        side="SELL",
+        execution_mode="margin",
+        dry_run=False,
+        desired_qty=0.5,
     )
     assert skip is False, "no orderId means order is unverifiable, should place new"
     assert order not in result
@@ -189,8 +235,12 @@ def test_order_id_none():
 def test_dry_run_skips_cancel():
     order = _make_order(order_id=600, qty=0.3)
     result, skip = _dedupe_side_orders(
-        [order], symbol="BTCUSDT", side="SELL", execution_mode="margin",
-        dry_run=True, desired_qty=0.5,
+        [order],
+        symbol="BTCUSDT",
+        side="SELL",
+        execution_mode="margin",
+        dry_run=True,
+        desired_qty=0.5,
     )
     assert skip is False
     assert result == []
@@ -202,8 +252,12 @@ def test_multiple_orders_all_cancelled(mock_cancel):
     o2 = _make_order(order_id=702, qty=0.2)
     other = _make_order(symbol="ETHUSDT", order_id=800)
     result, skip = _dedupe_side_orders(
-        [o1, o2, other], symbol="BTCUSDT", side="SELL", execution_mode="margin",
-        dry_run=False, desired_qty=0.5,
+        [o1, o2, other],
+        symbol="BTCUSDT",
+        side="SELL",
+        execution_mode="margin",
+        dry_run=False,
+        desired_qty=0.5,
     )
     assert skip is False
     assert mock_cancel.call_count == 2
@@ -217,8 +271,12 @@ def test_multiple_orders_second_fails_2011(mock_cancel):
     o1 = _make_order(order_id=901, qty=0.2)
     o2 = _make_order(order_id=902, qty=0.2)
     result, skip = _dedupe_side_orders(
-        [o1, o2], symbol="BTCUSDT", side="SELL", execution_mode="margin",
-        dry_run=False, desired_qty=0.5,
+        [o1, o2],
+        symbol="BTCUSDT",
+        side="SELL",
+        execution_mode="margin",
+        dry_run=False,
+        desired_qty=0.5,
     )
     assert skip is False
     assert len(result) == 0

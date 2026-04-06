@@ -10,19 +10,19 @@ from typing import Any
 
 import pandas as pd
 
+
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from src.binan.binance_margin import get_all_margin_orders, get_margin_trades
-from src.binan.history_dedupe import dedupe_margin_orders, dedupe_margin_trades
 from src.binan.binance_wrapper import get_client
+from src.binan.history_dedupe import dedupe_margin_orders, dedupe_margin_trades
 from src.binan.hybrid_cycle_trace import (
     DEFAULT_TRACE_DIR,
     build_cycle_windows,
     extract_expected_orders,
     load_cycle_snapshots,
     match_expected_orders,
-    normalize_exchange_order,
     normalize_exchange_trade,
     order_price_touch_summary,
     summarize_touch_results,
@@ -39,7 +39,9 @@ def _to_utc_ts(value: Any) -> pd.Timestamp:
     return ts.tz_convert("UTC")
 
 
-def _chunk_windows(start_ts: pd.Timestamp, end_ts: pd.Timestamp, *, max_span: pd.Timedelta) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+def _chunk_windows(
+    start_ts: pd.Timestamp, end_ts: pd.Timestamp, *, max_span: pd.Timedelta
+) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
     windows: list[tuple[pd.Timestamp, pd.Timestamp]] = []
     cursor = start_ts
     while cursor < end_ts:
@@ -207,13 +209,22 @@ def build_report(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Validate hybrid cycle snapshots against live Binance margin orders and 5m price touches.")
+    parser = argparse.ArgumentParser(
+        description="Validate hybrid cycle snapshots against live Binance margin orders and 5m price touches."
+    )
     parser.add_argument("--start", required=True, help="UTC start timestamp")
     parser.add_argument("--end", default=None, help="UTC end timestamp (defaults to now)")
     parser.add_argument("--log-dir", default=str(DEFAULT_TRACE_DIR), help="Hybrid cycle JSONL directory")
     parser.add_argument("--live-only", action="store_true", help="Only validate live snapshots")
-    parser.add_argument("--symbols", nargs="*", default=None, help="Optional symbol override, e.g. BTCUSDT ETHUSDT SOLUSDT")
-    parser.add_argument("--order-lookback-hours", type=float, default=48.0, help="Extra lookback window for matching already-working orders created before the first validated cycle.")
+    parser.add_argument(
+        "--symbols", nargs="*", default=None, help="Optional symbol override, e.g. BTCUSDT ETHUSDT SOLUSDT"
+    )
+    parser.add_argument(
+        "--order-lookback-hours",
+        type=float,
+        default=48.0,
+        help="Extra lookback window for matching already-working orders created before the first validated cycle.",
+    )
     parser.add_argument("--output-json", default=None, help="Optional path to write the full validation report")
     args = parser.parse_args()
 

@@ -8,6 +8,7 @@ Usage:
     python rl_trading_agent_binance/eval_calibrator_multiwindow.py \
         --checkpoint-dir rl_trading_agent_binance/calibrator_checkpoints
 """
+
 from __future__ import annotations
 
 import argparse
@@ -16,19 +17,25 @@ from pathlib import Path
 
 import torch
 
+
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from signal_calibrator import SignalCalibrator, CalibrationConfig, load_calibrator
-from train_calibrator import prepare_symbol_tensors, run_sim, time_split
+from signal_calibrator import CalibrationConfig, SignalCalibrator, load_calibrator
+from train_calibrator import prepare_symbol_tensors, run_sim
+
 
 DEPLOYED_SYMBOLS = ("BTCUSD", "ETHUSD", "SOLUSD", "DOGEUSD", "AAVEUSD", "LINKUSD")
 FEE_MAP = {
-    "BTCUSD": 0.0, "ETHUSD": 0.0,
-    "SOLUSD": 0.001, "DOGEUSD": 0.001, "AAVEUSD": 0.001, "LINKUSD": 0.001,
+    "BTCUSD": 0.0,
+    "ETHUSD": 0.0,
+    "SOLUSD": 0.001,
+    "DOGEUSD": 0.001,
+    "AAVEUSD": 0.001,
+    "LINKUSD": 0.001,
 }
-WINDOWS_HOURS = [24*3, 24*7, 24*14, 24*30, 24*60, 24*90]
+WINDOWS_HOURS = [24 * 3, 24 * 7, 24 * 14, 24 * 30, 24 * 60, 24 * 90]
 WINDOW_NAMES = ["3d", "7d", "14d", "30d", "60d", "90d"]
 
 
@@ -59,8 +66,7 @@ def eval_window(
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint-dir", type=str,
-                        default="rl_trading_agent_binance/calibrator_checkpoints")
+    parser.add_argument("--checkpoint-dir", type=str, default="rl_trading_agent_binance/calibrator_checkpoints")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
 
@@ -81,12 +87,14 @@ def main():
         baseline = SignalCalibrator(baseline_cfg).to(args.device)
         baseline.eval()
 
-        print(f"\n{'='*70}")
+        print(f"\n{'=' * 70}")
         print(f"{symbol} (n={n}, fee={fee})")
-        print(f"  Config: buy_off={cfg.base_buy_offset:.4f} sell_off={cfg.base_sell_offset:.4f} "
-              f"intensity={cfg.base_intensity:.2f} max_adj={cfg.max_price_adj_bps}bps")
+        print(
+            f"  Config: buy_off={cfg.base_buy_offset:.4f} sell_off={cfg.base_sell_offset:.4f} "
+            f"intensity={cfg.base_intensity:.2f} max_adj={cfg.max_price_adj_bps}bps"
+        )
         print(f"  {'Window':>6} {'Cal Sort':>10} {'Cal Ret':>10} {'Base Sort':>10} {'Base Ret':>10} {'Delta':>8}")
-        print(f"  {'-'*60}")
+        print(f"  {'-' * 60}")
 
         for wname, whours in zip(WINDOW_NAMES, WINDOWS_HOURS):
             if whours > n:
@@ -96,8 +104,10 @@ def main():
             cal_m = eval_window(cal, data, start, end, fee, args.device)
             base_m = eval_window(baseline, data, start, end, fee, args.device)
             delta = cal_m["sortino"] - base_m["sortino"]
-            print(f"  {wname:>6} {cal_m['sortino']:+10.2f} {cal_m['return']:+10.4f} "
-                  f"{base_m['sortino']:+10.2f} {base_m['return']:+10.4f} {delta:+8.2f}")
+            print(
+                f"  {wname:>6} {cal_m['sortino']:+10.2f} {cal_m['return']:+10.4f} "
+                f"{base_m['sortino']:+10.2f} {base_m['return']:+10.4f} {delta:+8.2f}"
+            )
 
 
 if __name__ == "__main__":

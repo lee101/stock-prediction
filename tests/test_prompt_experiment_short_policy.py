@@ -66,7 +66,8 @@ def _load_module(name: str, relative_path: str):
     module_path = RL_BINANCE_DIR / relative_path
     spec = importlib.util.spec_from_file_location(name, module_path)
     module = importlib.util.module_from_spec(spec)
-    assert spec is not None and spec.loader is not None
+    assert spec is not None
+    assert spec.loader is not None
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
@@ -116,8 +117,8 @@ def test_short_plan_adjusts_sell_price_above_close() -> None:
             plan.sell_price = last_close * 0.999
 
     assert plan.direction == "short"
-    assert plan.buy_price == 100.1   # bumped from 99.0
-    assert plan.sell_price == 99.9   # clamped from 101.0
+    assert plan.buy_price == 100.1  # bumped from 99.0
+    assert plan.sell_price == 99.9  # clamped from 101.0
 
 
 def test_long_plan_unchanged() -> None:

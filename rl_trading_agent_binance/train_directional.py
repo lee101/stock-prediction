@@ -8,34 +8,41 @@ Usage:
     python rl_trading_agent_binance/train_directional.py \
         --symbols BTCUSD,ETHUSD,SOLUSD,DOGEUSD,AAVEUSD,LINKUSD
 """
+
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 import torch
+
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from signal_calibrator import SignalCalibrator, CalibrationConfig, save_calibrator
-from train_calibrator import (
-    DEPLOYED_SYMBOLS, prepare_symbol_tensors, run_sim,
-)
 from differentiable_loss_utils import (
     combined_sortino_pnl_loss,
-    DEFAULT_MAKER_FEE_RATE,
+)
+from signal_calibrator import CalibrationConfig, SignalCalibrator, save_calibrator
+from train_calibrator import (
+    DEPLOYED_SYMBOLS,
+    prepare_symbol_tensors,
+    run_sim,
 )
 
+
 FEE_MAP = {
-    "BTCUSD": 0.0, "ETHUSD": 0.0,
-    "SOLUSD": 0.001, "DOGEUSD": 0.001, "AAVEUSD": 0.001, "LINKUSD": 0.001,
+    "BTCUSD": 0.0,
+    "ETHUSD": 0.0,
+    "SOLUSD": 0.001,
+    "DOGEUSD": 0.001,
+    "AAVEUSD": 0.001,
+    "LINKUSD": 0.001,
 }
+
 
 def recent_split(n: int, train_hours: int = 4000, val_hours: int = 1500, test_hours: int = 1500):
     total = train_hours + val_hours + test_hours
@@ -45,7 +52,11 @@ def recent_split(n: int, train_hours: int = 4000, val_hours: int = 1500, test_ho
         val_hours = int(val_hours * scale)
         test_hours = n - train_hours - val_hours
     start = n - total
-    return slice(start, start + train_hours), slice(start + train_hours, start + train_hours + val_hours), slice(start + train_hours + val_hours, n)
+    return (
+        slice(start, start + train_hours),
+        slice(start + train_hours, start + train_hours + val_hours),
+        slice(start + train_hours + val_hours, n),
+    )
 
 
 def train_one(
@@ -63,7 +74,7 @@ def train_one(
     train_sl: slice,
     val_sl: slice,
     test_sl: slice,
-    save_dir: Optional[Path] = None,
+    save_dir: Path | None = None,
 ) -> dict:
     cal = SignalCalibrator(config).to(device)
     opt = torch.optim.AdamW(cal.parameters(), lr=lr, weight_decay=weight_decay)
@@ -80,8 +91,18 @@ def train_one(
     for ep in range(epochs):
         cal.train()
         opt.zero_grad()
-        ret, tm = run_sim(cal, f[train_sl], c[train_sl], h[train_sl], l[train_sl], o[train_sl],
-                          maker_fee=maker_fee, temperature=temperature, decision_lag=decision_lag, binary=False)
+        ret, tm = run_sim(
+            cal,
+            f[train_sl],
+            c[train_sl],
+            h[train_sl],
+            l[train_sl],
+            o[train_sl],
+            maker_fee=maker_fee,
+            temperature=temperature,
+            decision_lag=decision_lag,
+            binary=False,
+        )
         loss = combined_sortino_pnl_loss(ret.unsqueeze(0), return_weight=return_weight)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(cal.parameters(), 1.0)
@@ -90,11 +111,27 @@ def train_one(
 
         cal.eval()
         with torch.no_grad():
-            _, vm = run_sim(cal, f[val_sl], c[val_sl], h[val_sl], l[val_sl], o[val_sl],
-                            maker_fee=maker_fee, decision_lag=decision_lag, binary=True)
+            _, vm = run_sim(
+                cal,
+                f[val_sl],
+                c[val_sl],
+                h[val_sl],
+                l[val_sl],
+                o[val_sl],
+                maker_fee=maker_fee,
+                decision_lag=decision_lag,
+                binary=True,
+            )
 
-        history.append({"ep": ep, "train_sort": tm["sortino"], "train_ret": tm["return"],
-                        "val_sort": vm["sortino"], "val_ret": vm["return"]})
+        history.append(
+            {
+                "ep": ep,
+                "train_sort": tm["sortino"],
+                "train_ret": tm["return"],
+                "val_sort": vm["sortino"],
+                "val_ret": vm["return"],
+            }
+        )
 
         if vm["sortino"] > best_val_sort:
             best_val_sort = vm["sortino"]
@@ -103,29 +140,53 @@ def train_one(
 
         if ep % 10 == 0 or ep == epochs - 1:
             elapsed = time.time() - t0
-            print(f"  [{symbol}] ep={ep:3d} t_sort={tm['sortino']:+.2f} t_ret={tm['return']:+.4f} "
-                  f"v_sort={vm['sortino']:+.2f} v_ret={vm['return']:+.4f} best={best_val_sort:+.2f}@{best_ep} "
-                  f"[{elapsed:.0f}s]")
+            print(
+                f"  [{symbol}] ep={ep:3d} t_sort={tm['sortino']:+.2f} t_ret={tm['return']:+.4f} "
+                f"v_sort={vm['sortino']:+.2f} v_ret={vm['return']:+.4f} best={best_val_sort:+.2f}@{best_ep} "
+                f"[{elapsed:.0f}s]"
+            )
 
     if best_state:
         cal.load_state_dict(best_state)
     cal.eval()
     with torch.no_grad():
-        _, test_m = run_sim(cal, f[test_sl], c[test_sl], h[test_sl], l[test_sl], o[test_sl],
-                            maker_fee=maker_fee, decision_lag=decision_lag, binary=True)
+        _, test_m = run_sim(
+            cal,
+            f[test_sl],
+            c[test_sl],
+            h[test_sl],
+            l[test_sl],
+            o[test_sl],
+            maker_fee=maker_fee,
+            decision_lag=decision_lag,
+            binary=True,
+        )
 
     print(f"  [{symbol}] TEST sort={test_m['sortino']:+.2f} ret={test_m['return']:+.4f} @ep{best_ep}")
 
     if save_dir:
         save_dir.mkdir(parents=True, exist_ok=True)
-        save_calibrator(cal, save_dir / f"{symbol}_calibrator.pt", config, metadata={
-            "symbol": symbol, "best_epoch": best_ep,
-            "test_sortino": test_m["sortino"], "test_return": test_m["return"],
-            "val_sortino": best_val_sort, "maker_fee": maker_fee,
-        })
+        save_calibrator(
+            cal,
+            save_dir / f"{symbol}_calibrator.pt",
+            config,
+            metadata={
+                "symbol": symbol,
+                "best_epoch": best_ep,
+                "test_sortino": test_m["sortino"],
+                "test_return": test_m["return"],
+                "val_sortino": best_val_sort,
+                "maker_fee": maker_fee,
+            },
+        )
 
-    return {"symbol": symbol, "best_epoch": best_ep, "best_val_sortino": best_val_sort,
-            "test_metrics": test_m, "history": history}
+    return {
+        "symbol": symbol,
+        "best_epoch": best_ep,
+        "best_val_sortino": best_val_sort,
+        "test_metrics": test_m,
+        "history": history,
+    }
 
 
 def main():
@@ -182,30 +243,54 @@ def main():
             base_cal = SignalCalibrator(config).to(args.device)
             base_cal.eval()
             with torch.no_grad():
-                _, bm = run_sim(base_cal, data["features"][test_sl], data["closes"][test_sl],
-                                data["highs"][test_sl], data["lows"][test_sl], data["opens"][test_sl],
-                                maker_fee=fee, binary=True, decision_lag=args.decision_lag)
+                _, bm = run_sim(
+                    base_cal,
+                    data["features"][test_sl],
+                    data["closes"][test_sl],
+                    data["highs"][test_sl],
+                    data["lows"][test_sl],
+                    data["opens"][test_sl],
+                    maker_fee=fee,
+                    binary=True,
+                    decision_lag=args.decision_lag,
+                )
             print(f"  baseline sort={bm['sortino']:+.2f} ret={bm['return']:+.4f}")
 
-            r = train_one(sym, data, config, args.epochs, args.lr, args.weight_decay,
-                          fee, args.temperature, args.decision_lag, args.device,
-                          args.return_weight, train_sl, val_sl, test_sl, save_dir)
+            r = train_one(
+                sym,
+                data,
+                config,
+                args.epochs,
+                args.lr,
+                args.weight_decay,
+                fee,
+                args.temperature,
+                args.decision_lag,
+                args.device,
+                args.return_weight,
+                train_sl,
+                val_sl,
+                test_sl,
+                save_dir,
+            )
             r["baseline"] = bm
             results.append(r)
         except Exception as e:
             print(f"  FAILED: {e}")
-            import traceback; traceback.print_exc()
+            import traceback
 
-    print(f"\n{'='*70}")
+            traceback.print_exc()
+
+    print(f"\n{'=' * 70}")
     print("SUMMARY")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
     print(f"{'Sym':<10} {'Base':>8} {'Test':>8} {'Ret':>10} {'Ep':>4} {'Delta':>8}")
     print("-" * 50)
     for r in results:
         bs = r["baseline"]["sortino"]
         ts = r["test_metrics"]["sortino"]
         tr = r["test_metrics"]["return"]
-        print(f"{r['symbol']:<10} {bs:+8.2f} {ts:+8.2f} {tr:+10.4f} {r['best_epoch']:4d} {ts-bs:+8.2f}")
+        print(f"{r['symbol']:<10} {bs:+8.2f} {ts:+8.2f} {tr:+10.4f} {r['best_epoch']:4d} {ts - bs:+8.2f}")
 
 
 if __name__ == "__main__":

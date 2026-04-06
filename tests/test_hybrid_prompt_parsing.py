@@ -3,6 +3,7 @@
 Covers: parse_allocation_response, _coerce_allocation_number, _alloc_fields_for_symbol.
 These handle real Gemini LLM output and are critical for trade decisions.
 """
+
 from __future__ import annotations
 
 import json
@@ -76,15 +77,17 @@ class TestAllocFieldsForSymbol:
 
 class TestParseAllocationResponse:
     def test_valid_json_with_allocations(self):
-        response = json.dumps({
-            "btc_pct": "25",
-            "btc_entry": "82000",
-            "btc_exit": "85000",
-            "eth_pct": "15",
-            "eth_entry": "1900",
-            "eth_exit": "2100",
-            "reasoning": "Bullish on BTC and ETH",
-        })
+        response = json.dumps(
+            {
+                "btc_pct": "25",
+                "btc_entry": "82000",
+                "btc_exit": "85000",
+                "eth_pct": "15",
+                "eth_entry": "1900",
+                "eth_exit": "2100",
+                "reasoning": "Bullish on BTC and ETH",
+            }
+        )
         plan = parse_allocation_response(response)
         assert plan.allocations["BTCUSD"] == 25.0
         assert plan.allocations["ETHUSD"] == 15.0
@@ -93,21 +96,25 @@ class TestParseAllocationResponse:
         assert "Bullish" in plan.reasoning
 
     def test_zero_allocation_excluded(self):
-        response = json.dumps({
-            "btc_pct": "0",
-            "eth_pct": "30",
-            "reasoning": "Only ETH",
-        })
+        response = json.dumps(
+            {
+                "btc_pct": "0",
+                "eth_pct": "30",
+                "reasoning": "Only ETH",
+            }
+        )
         plan = parse_allocation_response(response)
         assert "BTCUSD" not in plan.allocations
         assert plan.allocations["ETHUSD"] == 30.0
 
     def test_total_over_100_scales_down(self):
-        response = json.dumps({
-            "btc_pct": "60",
-            "eth_pct": "60",
-            "reasoning": "Over-allocated",
-        })
+        response = json.dumps(
+            {
+                "btc_pct": "60",
+                "eth_pct": "60",
+                "reasoning": "Over-allocated",
+            }
+        )
         plan = parse_allocation_response(response)
         total = sum(plan.allocations.values())
         assert total == pytest.approx(100.0)
@@ -135,41 +142,49 @@ class TestParseAllocationResponse:
         assert plan.reasoning == "Nothing to trade"
 
     def test_na_values_treated_as_zero(self):
-        response = json.dumps({
-            "btc_pct": "N/A",
-            "eth_pct": "20",
-            "reasoning": "BTC is N/A",
-        })
+        response = json.dumps(
+            {
+                "btc_pct": "N/A",
+                "eth_pct": "20",
+                "reasoning": "BTC is N/A",
+            }
+        )
         plan = parse_allocation_response(response)
         assert "BTCUSD" not in plan.allocations
         assert plan.allocations["ETHUSD"] == 20.0
 
     def test_allocation_capped_at_100(self):
-        response = json.dumps({
-            "btc_pct": "150",
-            "reasoning": "Over-confident",
-        })
+        response = json.dumps(
+            {
+                "btc_pct": "150",
+                "reasoning": "Over-confident",
+            }
+        )
         plan = parse_allocation_response(response)
         assert plan.allocations["BTCUSD"] == 100.0
 
     def test_unknown_symbol_pct_keys_parsed(self):
-        response = json.dumps({
-            "zec_pct": "10",
-            "zec_entry": "230",
-            "zec_exit": "280",
-            "reasoning": "ZEC dip buy",
-        })
+        response = json.dumps(
+            {
+                "zec_pct": "10",
+                "zec_entry": "230",
+                "zec_exit": "280",
+                "reasoning": "ZEC dip buy",
+            }
+        )
         plan = parse_allocation_response(response)
         assert plan.allocations["ZECUSD"] == 10.0
         assert plan.entry_prices["ZECUSD"] == 230.0
 
     def test_dollar_sign_in_entry_prices(self):
-        response = json.dumps({
-            "btc_pct": "25",
-            "btc_entry": "$82,000",
-            "btc_exit": "$85,000.50",
-            "reasoning": "Dollar formatted",
-        })
+        response = json.dumps(
+            {
+                "btc_pct": "25",
+                "btc_entry": "$82,000",
+                "btc_exit": "$85,000.50",
+                "reasoning": "Dollar formatted",
+            }
+        )
         plan = parse_allocation_response(response)
         assert plan.entry_prices["BTCUSD"] == 82000.0
         assert plan.exit_prices["BTCUSD"] == 85000.50

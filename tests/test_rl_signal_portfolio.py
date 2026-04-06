@@ -1,4 +1,5 @@
 """Tests for pufferlib portfolio-level model support in rl_signal.py."""
+
 import sys
 from pathlib import Path
 
@@ -6,26 +7,26 @@ import numpy as np
 import pytest
 import torch
 
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rl_trading_agent_binance"))
 
 import rl_signal as rl_signal_module
-
 from rl_signal import (
-    RLSignalGenerator,
-    TradingPolicy,
+    ACTION_NAMES,
+    INITIAL_CASH,
+    MIXED23_SYMBOLS,
+    SYMBOLS,
     PortfolioSnapshot,
     RLSignal,
-    SYMBOLS,
-    ACTION_NAMES,
-    MIXED23_SYMBOLS,
-    INITIAL_CASH,
-    _infer_obs_size,
-    _infer_num_actions,
-    _infer_hidden_size,
-    _has_obs_norm,
-    _infer_num_symbols,
-    _infer_symbols,
+    RLSignalGenerator,
+    TradingPolicy,
     _build_action_names,
+    _has_obs_norm,
+    _infer_hidden_size,
+    _infer_num_actions,
+    _infer_num_symbols,
+    _infer_obs_size,
+    _infer_symbols,
 )
 
 
