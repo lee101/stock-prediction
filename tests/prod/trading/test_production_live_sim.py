@@ -8,10 +8,9 @@ import pytest
 import numpy as np
 import pandas as pd
 import torch
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 import sys
-import json
 
 sys.path.append(str(Path(__file__).parent.parent))
 
@@ -36,7 +35,19 @@ def _build_engine_or_skip(*args, **kwargs) -> ProductionTradingEngine:
         raise
 
 
-def test_production_engine_with_real_data():
+def _write_mock_checkpoint(tmp_path: Path, config: dict, name: str) -> str:
+    checkpoint_path = tmp_path / name
+    torch.save(
+        {
+            "model_state_dict": {},
+            "config": config,
+        },
+        checkpoint_path,
+    )
+    return str(checkpoint_path)
+
+
+def test_production_engine_with_real_data(tmp_path: Path):
     """Test production engine with real market data"""
     
     # Use bundled historical data to keep the test deterministic/offline.
@@ -77,15 +88,7 @@ def test_production_engine_with_real_data():
         }
     }
     
-    # Create mock checkpoint
-    import tempfile
-    
-    with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as tmp:
-        checkpoint_path = tmp.name
-        torch.save({
-            'model_state_dict': {},
-            'config': config
-        }, checkpoint_path)
+    checkpoint_path = _write_mock_checkpoint(tmp_path, config, "production_live_sim_real_data.pt")
     
     try:
         # Initialize engine
@@ -195,11 +198,10 @@ def test_production_engine_with_real_data():
         print("\n✅ Production engine test passed!")
         
     finally:
-        # Cleanup
         Path(checkpoint_path).unlink(missing_ok=True)
 
 
-def test_risk_management_scenario():
+def test_risk_management_scenario(tmp_path: Path):
     """Test risk management in adverse conditions"""
     
     print("\n=== Risk Management Scenario Test ===")
@@ -249,11 +251,7 @@ def test_risk_management_scenario():
         }
     }
     
-    import tempfile
-    
-    with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as tmp:
-        checkpoint_path = tmp.name
-        torch.save({'model_state_dict': {}, 'config': config}, checkpoint_path)
+    checkpoint_path = _write_mock_checkpoint(tmp_path, config, "production_live_sim_risk.pt")
     
     try:
         engine = _build_engine_or_skip(
@@ -298,7 +296,7 @@ def test_risk_management_scenario():
         Path(checkpoint_path).unlink(missing_ok=True)
 
 
-def test_portfolio_evolution():
+def test_portfolio_evolution(tmp_path: Path):
     """Test portfolio evolution over time"""
     
     print("\n=== Portfolio Evolution Test ===")
@@ -315,18 +313,14 @@ def test_portfolio_evolution():
         'Volume': np.random.randint(1000000, 10000000, 250)
     }, index=dates)
     
-    import tempfile
-    
     config = {
         'model': {'input_features': 30, 'hidden_size': 64, 'num_heads': 4, 
                  'num_layers': 2, 'sequence_length': 60, 'prediction_horizon': 5},
         'trading': {'initial_capital': 100000, 'max_position_size': 0.10,
                    'confidence_threshold': 0.65, 'stop_loss': 0.02, 'take_profit': 0.05}
     }
-    
-    with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as tmp:
-        checkpoint_path = tmp.name
-        torch.save({'model_state_dict': {}, 'config': config}, checkpoint_path)
+
+    checkpoint_path = _write_mock_checkpoint(tmp_path, config, "production_live_sim_portfolio.pt")
     
     try:
         engine = _build_engine_or_skip(checkpoint_path=checkpoint_path, paper_trading=True)

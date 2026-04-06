@@ -23,6 +23,13 @@
   - s292 (+20,000% single-window) → marginal, median negative
   - Single-window results were entirely overfit to crypto bull run. Deployment correctly blocked.
 - ⚠️ **ACTION REQUIRED**: Renew Alpaca LIVE API key → update env_real.py lines 38-39 → restart service
+- **v5_rsi BREAKTHROUGH (2026-04-06)**: Phase-transition seeds found with RSI(14) feature replacement
+  - **s42**: med=+36.0%, p10=+26.3%, Sortino=28.05, **0/58 neg**, worst=+20.7% (lag=2, 5bps fill, exhaustive)
+  - **s38**: med=+14.6%, p10=+3.5%, Sortino=15.79, **0/58 neg** (robust 0-20bps slippage)
+  - **s37**: med=+5.7%, p10=+1.3%, Sortino=11.40, 5/58 neg
+  - Checkpoints: `pufferlib_market/checkpoints/stocks12_v5_rsi/tp05_s{37,38,42}/best.pt`
+  - Val data: stocks12_daily_v5_rsi_val.bin (Jul-Nov 2025, 58 exhaustive 90d windows)
+  - ⚠️ **NEXT STEPS**: Build v5_rsi ensemble, validate on longer time periods, deploy to paper first
 - **LIVE daily-rl-trader (when restarted)**: **32-model ensemble** (live API key expired)
   - **Ensemble members**: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835+s2827+s2722+s3668+s3411+s4011+s4777+s4080+s4533+s4813+s5045+s5337+s5199+s5019+s6808+s3456+s7159+**s6758**
   - **Best short-list benchmark**: 0/111 neg, med=73.4%, **p10=66.2%** @fill_bps=5

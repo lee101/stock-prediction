@@ -16,12 +16,25 @@ def load_checkpoint_payload(
     checkpoint_path: str | Path,
     *,
     map_location: torch.device | str | None = None,
+    allow_unsafe_checkpoint_loading: bool = False,
 ) -> object:
     checkpoint_path = Path(checkpoint_path)
     try:
-        return torch.load(checkpoint_path, map_location=map_location, weights_only=False)
-    except (FileNotFoundError, IsADirectoryError, OSError, EOFError, RuntimeError, pickle.UnpicklingError) as exc:
+        return torch.load(
+            checkpoint_path,
+            map_location=map_location,
+            weights_only=not allow_unsafe_checkpoint_loading,
+        )
+    except (FileNotFoundError, IsADirectoryError, OSError) as exc:
         raise RuntimeError(f"Failed to load checkpoint {checkpoint_path.resolve()}: {exc}") from exc
+    except (EOFError, RuntimeError, pickle.UnpicklingError) as exc:
+        if allow_unsafe_checkpoint_loading:
+            raise RuntimeError(f"Failed to load checkpoint {checkpoint_path.resolve()}: {exc}") from exc
+        raise RuntimeError(
+            "Safe checkpoint load failed for "
+            f"{checkpoint_path.resolve()}: {exc}. "
+            "If this is a trusted legacy checkpoint, retry with allow_unsafe_checkpoint_loading=True."
+        ) from exc
 
 
 def _looks_like_state_dict(value: object) -> bool:

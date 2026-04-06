@@ -4,6 +4,7 @@ import sys
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
+import numpy as np
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO / "scripts" / "simulate_multistage_refiner.py"
@@ -66,3 +67,33 @@ def test_baseline_plan_from_rl_respects_direction_and_caps_allocation() -> None:
     assert hold_plan.buy_price == 0.0
     assert hold_plan.sell_price == 0.0
     assert hold_plan.allocation_pct == 0.0
+
+
+def test_build_synthetic_forecast_returns_expected_snapshot_keys() -> None:
+    mod = _load_module()
+
+    frame = mod._synthetic_bars("AAPL", bars=32, seed=7, phase=0)
+    forecast = mod._build_synthetic_forecast(
+        frame,
+        4,
+        12,
+        noise_scale=0.0,
+        rng=np.random.default_rng(11),
+    )
+
+    assert set(forecast) == {
+        "predicted_close_p50",
+        "predicted_close_p10",
+        "predicted_close_p90",
+        "predicted_high_p50",
+        "predicted_low_p50",
+    }
+    assert forecast["predicted_close_p10"] <= forecast["predicted_close_p50"] <= forecast["predicted_close_p90"]
+    assert forecast["predicted_high_p50"] >= max(
+        float(frame.iloc[4]["close"]),
+        forecast["predicted_close_p50"],
+    )
+    assert forecast["predicted_low_p50"] <= min(
+        float(frame.iloc[4]["close"]),
+        forecast["predicted_close_p50"],
+    )

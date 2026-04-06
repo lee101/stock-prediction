@@ -13,10 +13,12 @@ try:
         build_daily_hybrid_prompt,
         current_allocation_from_position,
         get_forecast_at,
+        normalize_trade_plan,
         previous_forecast_error_pct,
         refine_trade_plan_multistage,
         rl_refine_trade_plan,
         select_best_candidate,
+        snapshot_plan,
     )
     from unified_orchestrator.rl_gemini_bridge import RLSignal
 except (ImportError, ModuleNotFoundError):
@@ -152,10 +154,41 @@ def test_build_daily_hybrid_prompt_includes_previous_state_and_forecasts():
     assert "Overnight capped allocation: +2.00x" in prompt
     assert "maximize expected realized PnL net fees and slippage" in prompt
     assert "up to the 2.0x stock cap" in prompt
+    assert "6.25% annualized financing charge" in prompt
     assert "Previous Chronos2 forecast error vs realized move: +1.25%" in prompt
     assert "MSFT: SHORT" in prompt
     assert "Opened prior position" in prompt
     assert "24h: close=108.20" in prompt
+
+
+def test_normalize_trade_plan_allows_2x_stock_but_not_crypto() -> None:
+    stock_plan = normalize_trade_plan(
+        TradePlan(
+            direction="long",
+            buy_price=99.0,
+            sell_price=104.0,
+            confidence=0.8,
+            reasoning="stock",
+            allocation_pct=250.0,
+        ),
+        current_price=100.0,
+        asset_class="stock",
+    )
+    crypto_plan = normalize_trade_plan(
+        TradePlan(
+            direction="long",
+            buy_price=99.0,
+            sell_price=104.0,
+            confidence=0.8,
+            reasoning="crypto",
+            allocation_pct=250.0,
+        ),
+        current_price=100.0,
+        asset_class="crypto",
+    )
+
+    assert stock_plan.allocation_pct == pytest.approx(200.0)
+    assert crypto_plan.allocation_pct == pytest.approx(100.0)
 
 
 def test_previous_forecast_error_pct_uses_reference_and_predicted_close():
@@ -213,6 +246,45 @@ def test_select_best_candidate_prefers_positive_score():
     selected = select_best_candidate([blocked, best])
 
     assert selected == best
+
+
+def test_snapshot_plan_returns_normalized_snapshot_payload() -> None:
+    payload = snapshot_plan(
+        timestamp=pd.Timestamp("2026-03-14T00:00:00"),
+        symbol="nvda",
+        rl_signal=RLSignal(
+            symbol_idx=0,
+            symbol_name="NVDA",
+            direction="long",
+            confidence=0.82,
+            logit_gap=2.4,
+            allocation_pct=1.0,
+        ),
+        plan=TradePlan(
+            direction="long",
+            buy_price=103.25,
+            sell_price=108.90,
+            confidence=0.76,
+            reasoning="Previous plan context",
+        ),
+        current_price=105.0,
+        forecast_1h={"predicted_close_p50": 105.8, "predicted_high_p50": 106.4},
+        forecast_24h=None,
+        score=0.031,
+        target_allocation=1.5,
+        overnight_allocation=1.0,
+    )
+
+    assert payload["timestamp"] == "2026-03-14T00:00:00+00:00"
+    assert payload["symbol"] == "NVDA"
+    assert payload["direction"] == "long"
+    assert payload["forecast_1h"] == {
+        "predicted_close_p50": 105.8,
+        "predicted_high_p50": 106.4,
+    }
+    assert payload["forecast_24h"] is None
+    assert payload["target_allocation"] == 1.5
+    assert payload["overnight_allocation"] == 1.0
 
 
 def test_current_allocation_from_position_computes_signed_leverage() -> None:

@@ -50,10 +50,14 @@ def _run_public_fused_mlp(x, W1, b1, W2, b2):
     """
     from pufferlib_market.kernels.fused_mlp import fused_mlp_relu, HAS_TRITON
 
-    if HAS_TRITON and x.is_cuda:
-        with torch.no_grad():
-            return fused_mlp_relu(x, W1, b1, W2, b2)
-    return fused_mlp_relu(x, W1, b1, W2, b2)
+    try:
+        if HAS_TRITON and x.is_cuda:
+            with torch.no_grad():
+                return fused_mlp_relu(x, W1, b1, W2, b2)
+        return fused_mlp_relu(x, W1, b1, W2, b2)
+    except Exception as exc:
+        _skip_for_cuda_resource_pressure(exc)
+        raise
 
 
 def _is_cuda_resource_pressure_error(exc: BaseException) -> bool:

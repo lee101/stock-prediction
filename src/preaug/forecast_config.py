@@ -16,9 +16,9 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 from src.symbol_utils import is_crypto_symbol
 
@@ -254,7 +254,13 @@ class ForecastConfigSelector:
 
         # Start with base defaults
         use_multivariate = is_ohlc and tag.asset_type == "stock"
-        use_cross_learning = is_multi_symbol and tag.asset_type == "crypto"
+        # Keep joint training off for multi-symbol crypto OHLC by default.
+        # A wider sweep found the joint path never beat independent forecasting there.
+        use_cross_learning = (
+            is_multi_symbol
+            and tag.asset_type == "crypto"
+            and not is_ohlc
+        )
         use_multiscale = False
         multiscale_method = "single"
         multiscale_skip_rates = (1,)

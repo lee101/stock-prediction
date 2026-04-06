@@ -1,4 +1,5 @@
 """Tests for the meta-strategy symbol selector."""
+import os
 import tempfile
 from datetime import datetime, timezone, timedelta
 
@@ -60,20 +61,19 @@ def test_prune_old_trades():
 
 def test_persistence():
     """Test save/load cycle."""
-    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
-        path = f.name
+    with tempfile.TemporaryDirectory(dir=os.getcwd()) as tmpdir:
+        path = os.path.join(tmpdir, "selector.json")
+        now = datetime.now(timezone.utc)
+        selector1 = SymbolSelector(["BTCUSD", "ETHUSD"], persist_path=path)
+        selector1.record_trade("BTCUSD", pnl_pct=1.5, timestamp=now)
+        selector1.record_trade("ETHUSD", pnl_pct=-0.5, timestamp=now)
 
-    now = datetime.now(timezone.utc)
-    selector1 = SymbolSelector(["BTCUSD", "ETHUSD"], persist_path=path)
-    selector1.record_trade("BTCUSD", pnl_pct=1.5, timestamp=now)
-    selector1.record_trade("ETHUSD", pnl_pct=-0.5, timestamp=now)
-
-    # Load from disk
-    selector2 = SymbolSelector(["BTCUSD", "ETHUSD"], persist_path=path)
-    stats = selector2._stats
-    assert stats["BTCUSD"].num_trades == 1
-    assert stats["ETHUSD"].num_trades == 1
-    assert stats["BTCUSD"].trades[0].pnl_pct == 1.5
+        # Load from disk
+        selector2 = SymbolSelector(["BTCUSD", "ETHUSD"], persist_path=path)
+        stats = selector2._stats
+        assert stats["BTCUSD"].num_trades == 1
+        assert stats["ETHUSD"].num_trades == 1
+        assert stats["BTCUSD"].trades[0].pnl_pct == 1.5
 
 
 def test_symbol_weights():

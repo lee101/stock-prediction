@@ -6,8 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from experiments.neural_strategies.toto_distillation import TotoDistillationExperiment
-from experiments.neural_strategies.dual_attention import DualAttentionPrototype
+TotoDistillationExperiment = pytest.importorskip(
+    "experiments.neural_strategies.toto_distillation",
+    reason="experimental neural strategy modules are not installed in this checkout",
+).TotoDistillationExperiment
+DualAttentionPrototype = pytest.importorskip(
+    "experiments.neural_strategies.dual_attention",
+    reason="experimental neural strategy modules are not installed in this checkout",
+).DualAttentionPrototype
 
 
 @pytest.mark.parametrize(

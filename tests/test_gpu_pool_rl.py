@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-import subprocess
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -23,7 +23,6 @@ sys.modules["src.runpod_client"] = _mock_runpod
 
 from pufferlib_market.gpu_pool_rl import (  # noqa: E402
     DEFAULT_POOL_LIMITS,
-    GPU_ALIASES,
     HOURLY_RATES,
     SETUP_OVERHEAD_SECS,
     PoolPod,
@@ -40,7 +39,6 @@ from pufferlib_market.gpu_pool_rl import (  # noqa: E402
     refresh_pod_status,
     save_pool_state,
     cmd_status,
-    POOL_STATE_FILE,
 )
 
 # Restore the real src.runpod_client module so other test files see the real module.
@@ -126,6 +124,71 @@ def test_save_creates_parent_directories(tmp_path: Path) -> None:
     assert pool_file.exists()
     data = json.loads(pool_file.read_text())
     assert "pods" in data
+
+
+def test_save_pool_state_writes_via_atomic_replace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from pufferlib_market import gpu_pool_rl
+
+    pool_file = tmp_path / "pool.json"
+    state = PoolState()
+    replace_calls: list[tuple[str, str]] = []
+    original_replace = os.replace
+
+    def _record_replace(src: str | os.PathLike[str], dst: str | os.PathLike[str]) -> None:
+        replace_calls.append((os.fspath(src), os.fspath(dst)))
+        original_replace(src, dst)
+
+    monkeypatch.setattr(gpu_pool_rl.os, "replace", _record_replace)
+
+    with patch("pufferlib_market.gpu_pool_rl.POOL_STATE_FILE", pool_file):
+        save_pool_state(state)
+
+    assert replace_calls == [
+        (str(tmp_path / "pool.json.tmp"), str(pool_file))
+    ]
+    assert pool_file.exists()
+
+
+def test_pool_state_guard_uses_shared_and_exclusive_file_locks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pufferlib_market import gpu_pool_rl
+
+    pool_file = tmp_path / "pool.json"
+    pool_file.write_text(
+        json.dumps(
+            {
+                "pods": {},
+                "limits": dict(DEFAULT_POOL_LIMITS),
+                "total_experiments_run": 0,
+            }
+        )
+        + "\n"
+    )
+    operations: list[object] = []
+
+    class _FakeFcntl:
+        LOCK_SH = "LOCK_SH"
+        LOCK_EX = "LOCK_EX"
+        LOCK_UN = "LOCK_UN"
+
+        @staticmethod
+        def flock(_fileno: int, operation: object) -> None:
+            operations.append(operation)
+
+    monkeypatch.setattr(gpu_pool_rl, "_fcntl", _FakeFcntl)
+
+    with patch("pufferlib_market.gpu_pool_rl.POOL_STATE_FILE", pool_file):
+        load_pool_state()
+        save_pool_state(PoolState())
+
+    assert operations == [
+        _FakeFcntl.LOCK_SH,
+        _FakeFcntl.LOCK_UN,
+        _FakeFcntl.LOCK_EX,
+        _FakeFcntl.LOCK_UN,
+    ]
 
 
 # ---------------------------------------------------------------------------

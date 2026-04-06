@@ -25,6 +25,13 @@ import torch
 import torch.nn as nn
 
 
+@pytest.fixture(autouse=True)
+def _reset_pufferlib_binding_module(reset_package_submodules):
+    reset_package_submodules("pufferlib_market", "binding")
+    yield
+    reset_package_submodules("pufferlib_market", "binding")
+
+
 # ---------------------------------------------------------------------------
 # Helpers: write a minimal MKTD binary
 # ---------------------------------------------------------------------------

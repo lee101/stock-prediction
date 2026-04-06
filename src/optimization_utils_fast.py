@@ -54,8 +54,6 @@ try:
     HAS_NEVERGRAD = True
 except ImportError:  # pragma: no cover - optional dep absent on CI
     HAS_NEVERGRAD = False
-    # Fallback to scipy
-    from scipy.optimize import differential_evolution
 
 if _USE_TORCH_GRID:
     if HAS_NEVERGRAD:
@@ -143,18 +141,19 @@ def optimize_entry_exit_multipliers(
 
     # Nevergrad implementation
     def objective(params):
-        h_mult, l_mult = params
-        profit_tensor = calculate_profit_torch_with_entry_buysell_profit_values(
-            close_actual,
-            high_actual,
-            high_pred + float(h_mult),
-            low_actual,
-            low_pred + float(l_mult),
-            positions,
-            close_at_eod=close_at_eod,
-            trading_fee=trading_fee,
-        )
-        return -float(profit_tensor.sum().item())  # minimize negative = maximize profit
+        with torch.inference_mode():
+            h_mult, l_mult = params
+            profit_tensor = calculate_profit_torch_with_entry_buysell_profit_values(
+                close_actual,
+                high_actual,
+                high_pred + float(h_mult),
+                low_actual,
+                low_pred + float(l_mult),
+                positions,
+                close_at_eod=close_at_eod,
+                trading_fee=trading_fee,
+            )
+            return -float(profit_tensor.sum().item())  # minimize negative = maximize profit
 
     parametrization = ng.p.Array(shape=(2,), lower=bounds[0][0], upper=bounds[0][1])
     budget = maxiter * popsize
@@ -246,21 +245,22 @@ def optimize_always_on_multipliers(
 
     # Nevergrad implementation
     def objective(params):
-        h_mult, l_mult = params
-        buy_returns = calculate_profit_torch_with_entry_buysell_profit_values(
-            close_actual, high_actual, high_pred + float(h_mult),
-            low_actual, low_pred + float(l_mult), buy_indicator,
-            close_at_eod=close_at_eod, trading_fee=trading_fee,
-        )
-        if is_crypto:
-            return -float(buy_returns.sum().item())
-        else:
-            sell_returns = calculate_profit_torch_with_entry_buysell_profit_values(
+        with torch.inference_mode():
+            h_mult, l_mult = params
+            buy_returns = calculate_profit_torch_with_entry_buysell_profit_values(
                 close_actual, high_actual, high_pred + float(h_mult),
-                low_actual, low_pred + float(l_mult), sell_indicator,
+                low_actual, low_pred + float(l_mult), buy_indicator,
                 close_at_eod=close_at_eod, trading_fee=trading_fee,
             )
-            return -float(buy_returns.sum().item() + sell_returns.sum().item())
+            if is_crypto:
+                return -float(buy_returns.sum().item())
+            else:
+                sell_returns = calculate_profit_torch_with_entry_buysell_profit_values(
+                    close_actual, high_actual, high_pred + float(h_mult),
+                    low_actual, low_pred + float(l_mult), sell_indicator,
+                    close_at_eod=close_at_eod, trading_fee=trading_fee,
+                )
+                return -float(buy_returns.sum().item() + sell_returns.sum().item())
 
     parametrization = ng.p.Array(shape=(2,), lower=bounds[0][0], upper=bounds[0][1])
     budget = maxiter * popsize
@@ -324,6 +324,7 @@ def optimize_entry_exit_multipliers_with_callback(
     return float(best_params[0]), float(best_params[1]), float(-best_loss)
 
 
+@torch.inference_mode()
 def _grid_search_entry_exit_multipliers(
     close_actual: torch.Tensor,
     positions: torch.Tensor,
@@ -377,6 +378,7 @@ def _grid_search_entry_exit_multipliers(
     return best_h, best_l, float(final_profit)
 
 
+@torch.inference_mode()
 def _grid_search_always_on_multipliers(
     close_actual: torch.Tensor,
     buy_indicator: torch.Tensor,
@@ -507,6 +509,7 @@ def _multi_stage_grid_search(
     return best
 
 
+@torch.inference_mode()
 def _entry_exit_profit_grid(
     close_actual: torch.Tensor,
     positions: torch.Tensor,
@@ -528,68 +531,67 @@ def _entry_exit_profit_grid(
     if trading_fee is None:
         trading_fee = TRADING_FEE
 
-    with torch.no_grad():
-        close = close_actual.view(1, 1, -1)
-        high_act = high_actual.view(1, 1, -1)
-        low_act = low_actual.view(1, 1, -1)
-        pos = positions.to(close.dtype).view(1, 1, -1)
+    close = close_actual.view(1, 1, -1)
+    high_act = high_actual.view(1, 1, -1)
+    low_act = low_actual.view(1, 1, -1)
+    pos = positions.to(close.dtype).view(1, 1, -1)
 
-        base_high_pred = high_pred.view(1, 1, -1)
-        base_low_pred = low_pred.view(1, 1, -1)
+    base_high_pred = high_pred.view(1, 1, -1)
+    base_low_pred = low_pred.view(1, 1, -1)
 
-        high_pred_grid = base_high_pred + high_offsets.view(H, 1, 1)
-        high_pred_grid = torch.clamp(high_pred_grid, 0.0, 10.0).expand(H, L, -1)
+    high_pred_grid = base_high_pred + high_offsets.view(H, 1, 1)
+    high_pred_grid = torch.clamp(high_pred_grid, 0.0, 10.0).expand(H, L, -1)
 
-        low_pred_grid = base_low_pred + low_offsets.view(1, L, 1)
-        low_pred_grid = torch.clamp(low_pred_grid, -1.0, 0.0).expand(H, L, -1)
+    low_pred_grid = base_low_pred + low_offsets.view(1, L, 1)
+    low_pred_grid = torch.clamp(low_pred_grid, -1.0, 0.0).expand(H, L, -1)
 
-        close = close.expand_as(high_pred_grid)
-        high_act = high_act.expand_as(high_pred_grid)
-        low_act = low_act.expand_as(high_pred_grid)
-        pos = pos.expand_as(high_pred_grid)
+    close = close.expand_as(high_pred_grid)
+    high_act = high_act.expand_as(high_pred_grid)
+    low_act = low_act.expand_as(high_pred_grid)
+    pos = pos.expand_as(high_pred_grid)
 
-        pred_low_to_close = close - low_pred_grid
-        pred_high_to_close = close - high_pred_grid
-        pred_low_to_high = high_pred_grid - low_pred_grid
-        pred_high_to_low = low_pred_grid - high_pred_grid
+    pred_low_to_close = close - low_pred_grid
+    pred_high_to_close = close - high_pred_grid
+    pred_low_to_high = high_pred_grid - low_pred_grid
+    pred_high_to_low = low_pred_grid - high_pred_grid
 
-        long_mask = (low_pred_grid > low_act).to(close.dtype)
-        short_mask = (high_pred_grid < high_act).to(close.dtype)
-        long_positions = torch.clamp(pos, 0.0, 10.0)
-        short_positions = torch.clamp(pos, -10.0, 0.0)
+    long_mask = (low_pred_grid > low_act).to(close.dtype)
+    short_mask = (high_pred_grid < high_act).to(close.dtype)
+    long_positions = torch.clamp(pos, 0.0, 10.0)
+    short_positions = torch.clamp(pos, -10.0, 0.0)
 
-        if close_at_eod:
-            bought_profits = long_positions * pred_low_to_close * long_mask
-            sold_profits = short_positions * pred_high_to_close * short_mask
-            hit_points = ((long_mask > 0) | (short_mask > 0)).to(close.dtype)
-            profit_values = bought_profits + sold_profits - (pos.abs() * trading_fee) * hit_points
-        else:
-            bought_profits = long_positions * pred_low_to_close * long_mask
-            sold_profits = short_positions * pred_high_to_close * short_mask
+    if close_at_eod:
+        bought_profits = long_positions * pred_low_to_close * long_mask
+        sold_profits = short_positions * pred_high_to_close * short_mask
+        hit_points = ((long_mask > 0) | (short_mask > 0)).to(close.dtype)
+        profit_values = bought_profits + sold_profits - (pos.abs() * trading_fee) * hit_points
+    else:
+        bought_profits = long_positions * pred_low_to_close * long_mask
+        sold_profits = short_positions * pred_high_to_close * short_mask
 
-            hit_high_points = (
-                pred_low_to_high
-                * (high_pred_grid <= high_act).to(close.dtype)
-                * long_positions
-                * long_mask
-            )
-            missed_high_points = bought_profits * (high_pred_grid > high_act).to(close.dtype)
-            bought_adjusted = hit_high_points + missed_high_points
+        hit_high_points = (
+            pred_low_to_high
+            * (high_pred_grid <= high_act).to(close.dtype)
+            * long_positions
+            * long_mask
+        )
+        missed_high_points = bought_profits * (high_pred_grid > high_act).to(close.dtype)
+        bought_adjusted = hit_high_points + missed_high_points
 
-            hit_low_points = (
-                pred_high_to_low
-                * (low_pred_grid >= low_act).to(close.dtype)
-                * short_positions
-                * (high_pred_grid < high_act).to(close.dtype)
-            )
-            missed_low_points = sold_profits * (low_pred_grid < low_act).to(close.dtype)
-            adjusted_profits = hit_low_points + missed_low_points
+        hit_low_points = (
+            pred_high_to_low
+            * (low_pred_grid >= low_act).to(close.dtype)
+            * short_positions
+            * (high_pred_grid < high_act).to(close.dtype)
+        )
+        missed_low_points = sold_profits * (low_pred_grid < low_act).to(close.dtype)
+        adjusted_profits = hit_low_points + missed_low_points
 
-            hit_trading_points = ((high_pred_grid < high_act) & (low_pred_grid > low_act)).to(close.dtype)
-            profit_values = (
-                bought_adjusted
-                + adjusted_profits
-                - (pos.abs() * trading_fee) * hit_trading_points
-            )
+        hit_trading_points = ((high_pred_grid < high_act) & (low_pred_grid > low_act)).to(close.dtype)
+        profit_values = (
+            bought_adjusted
+            + adjusted_profits
+            - (pos.abs() * trading_fee) * hit_trading_points
+        )
 
-        return profit_values.sum(dim=-1)
+    return profit_values.sum(dim=-1)

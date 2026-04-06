@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Dict, Tuple
-import torch  # noqa: early import to warm page cache
+import torch  # noqa: F401  # early import to warm page cache
 import numpy as np
 import pandas as pd
 from loguru import logger

@@ -1,0 +1,674 @@
+{
+  "action_allocation_bins": 1,
+  "action_level_bins": 1,
+  "action_max_offset_bps": 0.0,
+  "arch": "mlp",
+  "checkpoint": "pufferlib_market/checkpoints/stocks12_v5_rsi/tp05_s40/best.pt",
+  "data_path": "pufferlib_market/data/stocks12_daily_v5_rsi_val.bin",
+  "decision_lag": 2,
+  "end_within_hours": null,
+  "eval_hours": 90,
+  "fee_rate": 0.001,
+  "fill_buffer_bps": 5.0,
+  "hidden_size": 1024,
+  "max_leverage": 1.0,
+  "n_windows": 20,
+  "periods_per_year": 8760.0,
+  "seed": 1337,
+  "short_borrow_apr": 0.0,
+  "summary": {
+    "action_allocation_bins": 1,
+    "action_level_bins": 1,
+    "action_max_offset_bps": 0.0,
+    "arch": "mlp",
+    "best_window": {
+      "annualized_return": 31.479809387019166,
+      "max_drawdown": 0.03493191270659846,
+      "num_trades": 21,
+      "sortino": 10.297996833693475,
+      "start_idx": 6,
+      "total_return": 0.036406851570237084,
+      "win_rate": 0.7142857142857143
+    },
+    "candidate_window_count": 58,
+    "checkpoint": "pufferlib_market/checkpoints/stocks12_v5_rsi/tp05_s40/best.pt",
+    "data_path": "pufferlib_market/data/stocks12_daily_v5_rsi_val.bin",
+    "duplicate_sample_count": 0,
+    "eval_hours": 90,
+    "hidden_size": 1024,
+    "median_annualized_return": -0.600977500164841,
+    "median_max_drawdown": 0.05191341239884914,
+    "median_sortino": -0.7881242138203797,
+    "median_total_return": -0.009591795849106256,
+    "p10_annualized_return": -0.984080297808579,
+    "p10_sortino": -5.950835620968603,
+    "p10_total_return": -0.04164492992563499,
+    "p90_annualized_return": 16.533661757876327,
+    "p90_max_drawdown": 0.07144788380027131,
+    "p90_sortino": 8.235842560491625,
+    "p90_total_return": 0.02982891663350273,
+    "sampled_window_count": 58,
+    "sampled_with_replacement": false,
+    "unique_sampled_window_count": 58,
+    "window_mode": "exhaustive",
+    "worst_window": {
+      "annualized_return": -0.9955142225694485,
+      "max_drawdown": 0.07994591346847844,
+      "num_trades": 21,
+      "sortino": -7.499491082854705,
+      "start_idx": 54,
+      "total_return": -0.05403505019085369,
+      "win_rate": 0.38095238095238093
+    }
+  },
+  "symbols": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "GOOG",
+    "META",
+    "TSLA",
+    "SPY",
+    "QQQ",
+    "PLTR",
+    "JPM",
+    "V",
+    "AMZN"
+  ],
+  "window_selection": {
+    "candidate_start_range": [
+      0,
+      57
+    ],
+    "candidate_window_count": 58,
+    "duplicate_sample_count": 0,
+    "mode": "exhaustive",
+    "sampled_start_indices": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      39,
+      40,
+      41,
+      42,
+      43,
+      44,
+      45,
+      46,
+      47,
+      48,
+      49,
+      50,
+      51,
+      52,
+      53,
+      54,
+      55,
+      56,
+      57
+    ],
+    "sampled_window_count": 58,
+    "sampled_with_replacement": false,
+    "unique_sampled_window_count": 58
+  },
+  "windows": [
+    {
+      "annualized_return": 3.1322292766052007,
+      "max_drawdown": 0.034931912706598595,
+      "num_trades": 21,
+      "sortino": 4.520950852390577,
+      "start_idx": 0,
+      "total_return": 0.014683648313687991,
+      "win_rate": 0.7142857142857143
+    },
+    {
+      "annualized_return": 11.935741693278285,
+      "max_drawdown": 0.03493191270659863,
+      "num_trades": 20,
+      "sortino": 7.762857109423699,
+      "start_idx": 1,
+      "total_return": 0.026650241655204264,
+      "win_rate": 0.75
+    },
+    {
+      "annualized_return": 13.826684981263295,
+      "max_drawdown": 0.03493191270659863,
+      "num_trades": 21,
+      "sortino": 8.142353560608733,
+      "start_idx": 2,
+      "total_return": 0.028090330723188162,
+      "win_rate": 0.7619047619047619
+    },
+    {
+      "annualized_return": 15.584658972126284,
+      "max_drawdown": 0.03493191270659863,
+      "num_trades": 21,
+      "sortino": 8.45398356021837,
+      "start_idx": 3,
+      "total_return": 0.029274543260306016,
+      "win_rate": 0.7619047619047619
+    },
+    {
+      "annualized_return": 8.053893593123785,
+      "max_drawdown": 0.03493191270659863,
+      "num_trades": 22,
+      "sortino": 6.680915094261816,
+      "start_idx": 4,
+      "total_return": 0.02289369233118632,
+      "win_rate": 0.7272727272727273
+    },
+    {
+      "annualized_return": 7.572434854025195,
+      "max_drawdown": 0.034931912706598366,
+      "num_trades": 22,
+      "sortino": 6.529857787906967,
+      "start_idx": 5,
+      "total_return": 0.022319599323426337,
+      "win_rate": 0.7272727272727273
+    },
+    {
+      "annualized_return": 31.479809387019166,
+      "max_drawdown": 0.03493191270659846,
+      "num_trades": 21,
+      "sortino": 10.297996833693475,
+      "start_idx": 6,
+      "total_return": 0.036406851570237084,
+      "win_rate": 0.7142857142857143
+    },
+    {
+      "annualized_return": 18.746238599952694,
+      "max_drawdown": 0.0349319127065989,
+      "num_trades": 20,
+      "sortino": 8.867440740676853,
+      "start_idx": 7,
+      "total_return": 0.031121330408100768,
+      "win_rate": 0.75
+    },
+    {
+      "annualized_return": 24.404382094566778,
+      "max_drawdown": 0.03359980011449633,
+      "num_trades": 18,
+      "sortino": 9.6234411736141,
+      "start_idx": 8,
+      "total_return": 0.033793965684364775,
+      "win_rate": 0.7222222222222222
+    },
+    {
+      "annualized_return": 22.62554121720882,
+      "max_drawdown": 0.03359980011449592,
+      "num_trades": 18,
+      "sortino": 9.42568528360476,
+      "start_idx": 9,
+      "total_return": 0.033023227284515635,
+      "win_rate": 0.7222222222222222
+    },
+    {
+      "annualized_return": 24.47952718692364,
+      "max_drawdown": 0.03359980011449592,
+      "num_trades": 18,
+      "sortino": 9.73232635728108,
+      "start_idx": 10,
+      "total_return": 0.03382533676288531,
+      "win_rate": 0.7222222222222222
+    },
+    {
+      "annualized_return": -0.9783734076504483,
+      "max_drawdown": 0.05692608143147212,
+      "num_trades": 20,
+      "sortino": -5.744098348104169,
+      "start_idx": 11,
+      "total_return": -0.038623032214826526,
+      "win_rate": 0.65
+    },
+    {
+      "annualized_return": -0.9887791698119223,
+      "max_drawdown": 0.05692608143147326,
+      "num_trades": 22,
+      "sortino": -6.807446956128361,
+      "start_idx": 12,
+      "total_return": -0.04508215304610531,
+      "win_rate": 0.6818181818181818
+    },
+    {
+      "annualized_return": -0.9730978355810306,
+      "max_drawdown": 0.056926081431472486,
+      "num_trades": 21,
+      "sortino": -5.354408624788912,
+      "start_idx": 13,
+      "total_return": -0.036464595979340084,
+      "win_rate": 0.6666666666666666
+    },
+    {
+      "annualized_return": -0.9519687772041041,
+      "max_drawdown": 0.056926081431472604,
+      "num_trades": 21,
+      "sortino": -4.380659826845601,
+      "start_idx": 14,
+      "total_return": -0.03070937995262957,
+      "win_rate": 0.6666666666666666
+    },
+    {
+      "annualized_return": -0.9833449290706985,
+      "max_drawdown": 0.05692608143147262,
+      "num_trades": 21,
+      "sortino": -6.0858146661385115,
+      "start_idx": 15,
+      "total_return": -0.04119957619264733,
+      "win_rate": 0.6190476190476191
+    },
+    {
+      "annualized_return": -0.9762513396393305,
+      "max_drawdown": 0.057080692473146885,
+      "num_trades": 22,
+      "sortino": -5.510329026225706,
+      "start_idx": 16,
+      "total_return": -0.03769806121038473,
+      "win_rate": 0.5909090909090909
+    },
+    {
+      "annualized_return": -0.9899484339423403,
+      "max_drawdown": 0.057080692473146885,
+      "num_trades": 23,
+      "sortino": -6.844804193270504,
+      "start_idx": 17,
+      "total_return": -0.04616115713967047,
+      "win_rate": 0.5652173913043478
+    },
+    {
+      "annualized_return": -0.9843551961207258,
+      "max_drawdown": 0.057080692473146885,
+      "num_trades": 24,
+      "sortino": -6.12509347221411,
+      "start_idx": 18,
+      "total_return": -0.041815793726837,
+      "win_rate": 0.5833333333333334
+    },
+    {
+      "annualized_return": -0.882988782140719,
+      "max_drawdown": 0.060007923012269586,
+      "num_trades": 23,
+      "sortino": -2.848522240338091,
+      "start_idx": 19,
+      "total_return": -0.021801494744989214,
+      "win_rate": 0.6086956521739131
+    },
+    {
+      "annualized_return": -0.9655353026109053,
+      "max_drawdown": 0.05486788692774401,
+      "num_trades": 23,
+      "sortino": -4.842560356288898,
+      "start_idx": 20,
+      "total_return": -0.03400912189504561,
+      "win_rate": 0.6086956521739131
+    },
+    {
+      "annualized_return": -0.9396707591131972,
+      "max_drawdown": 0.05581207485289087,
+      "num_trades": 23,
+      "sortino": -3.9234869106554404,
+      "start_idx": 21,
+      "total_return": -0.02843653149472666,
+      "win_rate": 0.5652173913043478
+    },
+    {
+      "annualized_return": -0.9202316975615928,
+      "max_drawdown": 0.05285096134228879,
+      "num_trades": 21,
+      "sortino": -3.482222199822761,
+      "start_idx": 22,
+      "total_return": -0.025644513199939503,
+      "win_rate": 0.5714285714285714
+    },
+    {
+      "annualized_return": -0.9654214214833441,
+      "max_drawdown": 0.05181540442768837,
+      "num_trades": 24,
+      "sortino": -4.624591336669646,
+      "start_idx": 23,
+      "total_return": -0.033976381829308594,
+      "win_rate": 0.625
+    },
+    {
+      "annualized_return": -0.9839624842462303,
+      "max_drawdown": 0.0629438224873922,
+      "num_trades": 27,
+      "sortino": -5.688629619236691,
+      "start_idx": 24,
+      "total_return": -0.0415717025822627,
+      "win_rate": 0.5925925925925926
+    },
+    {
+      "annualized_return": -0.8857705475092975,
+      "max_drawdown": 0.05476316416673831,
+      "num_trades": 24,
+      "sortino": -2.7606752492909448,
+      "start_idx": 25,
+      "total_return": -0.022043273949171636,
+      "win_rate": 0.625
+    },
+    {
+      "annualized_return": -0.9229006603547527,
+      "max_drawdown": 0.05964304737651467,
+      "num_trades": 24,
+      "sortino": -3.2795636592425996,
+      "start_idx": 26,
+      "total_return": -0.025985126008890438,
+      "win_rate": 0.625
+    },
+    {
+      "annualized_return": -0.9819455444380915,
+      "max_drawdown": 0.06985674097540887,
+      "num_trades": 23,
+      "sortino": -5.4576765046549935,
+      "start_idx": 27,
+      "total_return": -0.040404515093191914,
+      "win_rate": 0.6086956521739131
+    },
+    {
+      "annualized_return": -0.6791585237567308,
+      "max_drawdown": 0.05871113540460792,
+      "num_trades": 23,
+      "sortino": -1.082020297606864,
+      "start_idx": 28,
+      "total_return": -0.01161159448198996,
+      "win_rate": 0.6086956521739131
+    },
+    {
+      "annualized_return": 6.0500328680991675,
+      "max_drawdown": 0.05476316416673946,
+      "num_trades": 23,
+      "sortino": 3.9257574254281375,
+      "start_idx": 29,
+      "total_return": 0.020268063505032477,
+      "win_rate": 0.6521739130434783
+    },
+    {
+      "annualized_return": 2.480286968204303,
+      "max_drawdown": 0.05792597071930576,
+      "num_trades": 22,
+      "sortino": 2.7476606170700486,
+      "start_idx": 30,
+      "total_return": 0.012895258716536772,
+      "win_rate": 0.6363636363636364
+    },
+    {
+      "annualized_return": 2.542140909264498,
+      "max_drawdown": 0.04867362140099617,
+      "num_trades": 22,
+      "sortino": 2.7458717806356905,
+      "start_idx": 31,
+      "total_return": 0.013078601389993129,
+      "win_rate": 0.6363636363636364
+    },
+    {
+      "annualized_return": 0.36856469452188745,
+      "max_drawdown": 0.0486736214009967,
+      "num_trades": 22,
+      "sortino": 1.0009227857771463,
+      "start_idx": 32,
+      "total_return": 0.003228788904979956,
+      "win_rate": 0.6363636363636364
+    },
+    {
+      "annualized_return": 1.915567808714202,
+      "max_drawdown": 0.04867362140099617,
+      "num_trades": 23,
+      "sortino": 2.4224732950448713,
+      "start_idx": 33,
+      "total_return": 0.011054468320283013,
+      "win_rate": 0.6086956521739131
+    },
+    {
+      "annualized_return": 1.8386591267358903,
+      "max_drawdown": 0.04867362140099703,
+      "num_trades": 23,
+      "sortino": 2.3711245034060733,
+      "start_idx": 34,
+      "total_return": 0.010776818396221096,
+      "win_rate": 0.6086956521739131
+    },
+    {
+      "annualized_return": 24.457820751829114,
+      "max_drawdown": 0.046112954039594825,
+      "num_trades": 22,
+      "sortino": 6.190930540946178,
+      "start_idx": 35,
+      "total_return": 0.033816284318408725,
+      "win_rate": 0.6818181818181818
+    },
+    {
+      "annualized_return": 0.9866337275433908,
+      "max_drawdown": 0.046112954039595005,
+      "num_trades": 22,
+      "sortino": 1.7604563999669378,
+      "start_idx": 36,
+      "total_return": 0.007077409635661752,
+      "win_rate": 0.6363636363636364
+    },
+    {
+      "annualized_return": -0.8039346977108396,
+      "max_drawdown": 0.05201142037000991,
+      "num_trades": 22,
+      "sortino": -1.92115558991432,
+      "start_idx": 37,
+      "total_return": -0.016600134347374115,
+      "win_rate": 0.5909090909090909
+    },
+    {
+      "annualized_return": -0.943524271452926,
+      "max_drawdown": 0.05201142037000991,
+      "num_trades": 23,
+      "sortino": -3.7943327782067753,
+      "start_idx": 38,
+      "total_return": -0.029095167393508564,
+      "win_rate": 0.5652173913043478
+    },
+    {
+      "annualized_return": -0.4500298208004681,
+      "max_drawdown": 0.046112954039595,
+      "num_trades": 23,
+      "sortino": -0.2919412176485496,
+      "start_idx": 39,
+      "total_return": -0.0061238901116843405,
+      "win_rate": 0.5652173913043478
+    },
+    {
+      "annualized_return": -0.9164043364052429,
+      "max_drawdown": 0.04611295403959518,
+      "num_trades": 22,
+      "sortino": -3.2359414387586476,
+      "start_idx": 40,
+      "total_return": -0.02517525372644468,
+      "win_rate": 0.5
+    },
+    {
+      "annualized_return": -0.8113036457089191,
+      "max_drawdown": 0.046112954039594575,
+      "num_trades": 22,
+      "sortino": -1.9915012307699493,
+      "start_idx": 41,
+      "total_return": -0.016987106661783765,
+      "win_rate": 0.5454545454545454
+    },
+    {
+      "annualized_return": -0.5227964765729511,
+      "max_drawdown": 0.04706588815144332,
+      "num_trades": 22,
+      "sortino": -0.4942281300338955,
+      "start_idx": 42,
+      "total_return": -0.007571997216222553,
+      "win_rate": 0.5454545454545454
+    },
+    {
+      "annualized_return": 0.2084389890894216,
+      "max_drawdown": 0.04353537637457115,
+      "num_trades": 22,
+      "sortino": 0.9770054777659052,
+      "start_idx": 43,
+      "total_return": 0.0019470584902357587,
+      "win_rate": 0.5909090909090909
+    },
+    {
+      "annualized_return": 15.58541453984358,
+      "max_drawdown": 0.043535376374571264,
+      "num_trades": 25,
+      "sortino": 5.339072146655572,
+      "start_idx": 44,
+      "total_return": 0.029275025015817847,
+      "win_rate": 0.64
+    },
+    {
+      "annualized_return": 1.678223840795736,
+      "max_drawdown": 0.043535376374571264,
+      "num_trades": 26,
+      "sortino": 2.2440219718858265,
+      "start_idx": 45,
+      "total_return": 0.010172838506734843,
+      "win_rate": 0.6153846153846154
+    },
+    {
+      "annualized_return": -0.87168092717044,
+      "max_drawdown": 0.04353537637457067,
+      "num_trades": 27,
+      "sortino": -2.5143979602756907,
+      "start_idx": 46,
+      "total_return": -0.020873943077495825,
+      "win_rate": 0.5925925925925926
+    },
+    {
+      "annualized_return": 3.1013774860914083,
+      "max_drawdown": 0.04285802857071122,
+      "num_trades": 23,
+      "sortino": 2.930123223388347,
+      "start_idx": 47,
+      "total_return": 0.014605526084584562,
+      "win_rate": 0.6086956521739131
+    },
+    {
+      "annualized_return": 1.0210374820709565,
+      "max_drawdown": 0.04285802857071139,
+      "num_trades": 22,
+      "sortino": 1.8018445488779071,
+      "start_idx": 48,
+      "total_return": 0.0072550714046336,
+      "win_rate": 0.5909090909090909
+    },
+    {
+      "annualized_return": 0.13193371314528018,
+      "max_drawdown": 0.05103256796406687,
+      "num_trades": 22,
+      "sortino": 0.8737596032093943,
+      "start_idx": 49,
+      "total_return": 0.0012740378232811054,
+      "win_rate": 0.5454545454545454
+    },
+    {
+      "annualized_return": -0.9299484005723769,
+      "max_drawdown": 0.06258689948779043,
+      "num_trades": 22,
+      "sortino": -3.47223023625145,
+      "start_idx": 50,
+      "total_return": -0.02694395110971036,
+      "win_rate": 0.5
+    },
+    {
+      "annualized_return": -0.8289092371377802,
+      "max_drawdown": 0.06258689948779059,
+      "num_trades": 20,
+      "sortino": -2.092210300432623,
+      "start_idx": 51,
+      "total_return": -0.017975798902601856,
+      "win_rate": 0.55
+    },
+    {
+      "annualized_return": -0.9868719876456671,
+      "max_drawdown": 0.07516055039161694,
+      "num_trades": 21,
+      "sortino": -5.892987458752928,
+      "start_idx": 52,
+      "total_return": -0.04354084640348228,
+      "win_rate": 0.42857142857142855
+    },
+    {
+      "annualized_return": -0.9920766625786502,
+      "max_drawdown": 0.07994591346847814,
+      "num_trades": 22,
+      "sortino": -6.634631979690692,
+      "start_idx": 53,
+      "total_return": -0.04848981816294272,
+      "win_rate": 0.4090909090909091
+    },
+    {
+      "annualized_return": -0.9955142225694485,
+      "max_drawdown": 0.07994591346847844,
+      "num_trades": 21,
+      "sortino": -7.499491082854705,
+      "start_idx": 54,
+      "total_return": -0.05403505019085369,
+      "win_rate": 0.38095238095238093
+    },
+    {
+      "annualized_return": -0.983597766034009,
+      "max_drawdown": 0.07994591346847826,
+      "num_trades": 20,
+      "sortino": -5.558319118353257,
+      "start_idx": 55,
+      "total_return": -0.04135025219186373,
+      "win_rate": 0.45
+    },
+    {
+      "annualized_return": 1.5857239786547304,
+      "max_drawdown": 0.0799459134684783,
+      "num_trades": 22,
+      "sortino": 2.351145769517019,
+      "start_idx": 56,
+      "total_return": 0.009808118244756223,
+      "win_rate": 0.5
+    },
+    {
+      "annualized_return": 9.895951552867237,
+      "max_drawdown": 0.07994591346847824,
+      "num_trades": 22,
+      "sortino": 4.882191889487463,
+      "start_idx": 57,
+      "total_return": 0.02484180778605314,
+      "win_rate": 0.5454545454545454
+    }
+  ]
+}

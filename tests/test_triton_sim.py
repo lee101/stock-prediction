@@ -1,4 +1,6 @@
 """Tests for Triton fused simulation kernel numerical parity."""
+from functools import wraps
+
 import pytest
 import torch
 
@@ -23,6 +25,35 @@ def _resolve_test_device() -> str:
             return "cpu"
         raise
     return "cuda"
+
+
+def _skip_for_cuda_resource_pressure(exc: BaseException) -> None:
+    if _is_cuda_resource_pressure_error(exc):
+        pytest.skip(f"Triton sim CUDA test skipped under shared-GPU resource pressure: {exc}")
+
+
+def _skip_on_cuda_resource_pressure(test_fn):
+    @wraps(test_fn)
+    def wrapped(*args, **kwargs):
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        try:
+            return test_fn(*args, **kwargs)
+        except Exception as exc:
+            _skip_for_cuda_resource_pressure(exc)
+            raise
+        finally:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    return wrapped
+
+
+def _decorate_test_class_for_cuda_resource_pressure(cls):
+    for name, value in vars(cls).items():
+        if name.startswith("test_") and callable(value):
+            setattr(cls, name, _skip_on_cuda_resource_pressure(value))
+    return cls
 
 
 DEVICE = _resolve_test_device()
@@ -59,6 +90,7 @@ def _compare_results(r1, r2, atol=1e-5, rtol=1e-4):
     assert torch.allclose(r1.inventory, r2.inventory, atol=atol, rtol=rtol), "inventory mismatch"
 
 
+@_decorate_test_class_for_cuda_resource_pressure
 class TestTritonSimParity:
 
     def test_1d_basic(self):

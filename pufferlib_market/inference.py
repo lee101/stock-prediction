@@ -95,6 +95,7 @@ class PPOTrader:
         device: str = "cpu",
         long_only: bool = False,
         symbols: Optional[Sequence[str]] = None,
+        allow_unsafe_checkpoint_loading: bool = False,
     ):
         self.device = torch.device(device)
         self.checkpoint_path = checkpoint_path
@@ -102,7 +103,11 @@ class PPOTrader:
         if symbols:
             self.SYMBOLS = [str(s).upper() for s in symbols]
 
-        ckpt = load_checkpoint_payload(checkpoint_path, map_location=self.device)
+        ckpt = load_checkpoint_payload(
+            checkpoint_path,
+            map_location=self.device,
+            allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+        )
         state_dict = extract_checkpoint_state_dict(ckpt)
         config = (
             ckpt.get("config", {}) if isinstance(ckpt, Mapping) and isinstance(ckpt.get("config", {}), Mapping) else {}

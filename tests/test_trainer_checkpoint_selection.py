@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 import tempfile
 
 import numpy as np
+import pytest
 
 from binanceneural.config import TrainingConfig
 from binanceneural.data import FeatureNormalizer
@@ -26,7 +28,7 @@ class _TinyDataModule:
         return [None]
 
 
-def test_trainer_prefers_robust_checkpoint_metric(monkeypatch) -> None:
+def test_trainer_prefers_robust_checkpoint_metric(monkeypatch, caplog: pytest.LogCaptureFixture) -> None:
     epoch_metrics = iter(
         [
             {"loss": -1.0, "score": 120.0, "sortino": 110.0, "return": 8.0},
@@ -47,44 +49,47 @@ def test_trainer_prefers_robust_checkpoint_metric(monkeypatch) -> None:
     monkeypatch.setattr(BinanceHourlyTrainer, "_run_epoch", _fake_run_epoch)
     monkeypatch.setattr(BinanceHourlyTrainer, "_save_checkpoint", _fake_save_checkpoint)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        cfg = TrainingConfig(
-            epochs=2,
-            batch_size=2,
-            sequence_length=8,
-            transformer_dim=16,
-            transformer_layers=1,
-            transformer_heads=4,
-            transformer_dropout=0.0,
-            use_compile=False,
-            use_amp=False,
-            checkpoint_root=Path(tmpdir) / "ckpts",
-            run_name="robust_ckpt_test",
-            checkpoint_metric="robust_score",
-            checkpoint_gap_penalty=1.0,
-            top_k_checkpoints=2,
-        )
-        trainer = BinanceHourlyTrainer(cfg, _TinyDataModule())
-        artifacts = trainer.train()
+    with caplog.at_level(logging.INFO, logger="binanceneural.trainer"):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = TrainingConfig(
+                epochs=2,
+                batch_size=2,
+                sequence_length=8,
+                transformer_dim=16,
+                transformer_layers=1,
+                transformer_heads=4,
+                transformer_dropout=0.0,
+                use_compile=False,
+                use_amp=False,
+                checkpoint_root=Path(tmpdir) / "ckpts",
+                run_name="robust_ckpt_test",
+                checkpoint_metric="robust_score",
+                checkpoint_gap_penalty=1.0,
+                top_k_checkpoints=2,
+            )
+            trainer = BinanceHourlyTrainer(cfg, _TinyDataModule())
+            artifacts = trainer.train()
 
-        expected_best = trainer.checkpoint_dir / "epoch_002.pt"
-        assert artifacts.best_checkpoint == expected_best
+            expected_best = trainer.checkpoint_dir / "epoch_002.pt"
+            assert artifacts.best_checkpoint == expected_best
 
-        alias_path = trainer.checkpoint_dir / "best.pt"
-        assert alias_path.exists()
-        if alias_path.is_symlink():
-            assert alias_path.resolve() == expected_best.resolve()
-        else:
-            assert alias_path.read_text() == expected_best.read_text()
+            alias_path = trainer.checkpoint_dir / "best.pt"
+            assert alias_path.exists()
+            if alias_path.is_symlink():
+                assert alias_path.resolve() == expected_best.resolve()
+            else:
+                assert alias_path.read_text() == expected_best.read_text()
 
-        manifest = json.loads((trainer.checkpoint_dir / ".topk_manifest.json").read_text())
-        metrics_by_epoch = {int(row["epoch"]): float(row["metric"]) for row in manifest}
-        assert metrics_by_epoch[1] == 80.0
-        assert metrics_by_epoch[2] == 85.0
+            manifest = json.loads((trainer.checkpoint_dir / ".topk_manifest.json").read_text())
+            metrics_by_epoch = {int(row["epoch"]): float(row["metric"]) for row in manifest}
+            assert metrics_by_epoch[1] == 80.0
+            assert metrics_by_epoch[2] == 85.0
 
-        progress = json.loads((trainer.checkpoint_dir / "training_progress.json").read_text())
-        assert progress["trainer_backend"] == "torch"
-        assert progress["checkpoint_metric_name"] == "robust_score"
-        assert progress["checkpoint_metric"] == 85.0
-        assert progress["generalization_gap"] == 10.0
-        assert progress["best_checkpoint"].endswith("epoch_002.pt")
+            progress = json.loads((trainer.checkpoint_dir / "training_progress.json").read_text())
+            assert progress["trainer_backend"] == "torch"
+            assert progress["checkpoint_metric_name"] == "robust_score"
+            assert progress["checkpoint_metric"] == 85.0
+            assert progress["generalization_gap"] == 10.0
+            assert progress["best_checkpoint"].endswith("epoch_002.pt")
+
+    assert "Skipping initial CUDA forward probe because the first training batch was None." in caplog.text

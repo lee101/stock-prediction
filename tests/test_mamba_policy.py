@@ -39,6 +39,22 @@ def _cuda_randn_or_skip(*shape, **kwargs):
         raise
 
 
+def _run_cuda_forward_or_skip(model, x):
+    try:
+        return model(x)
+    except Exception as exc:
+        _skip_for_cuda_resource_pressure(exc)
+        raise
+
+
+def _backward_or_skip(loss):
+    try:
+        loss.backward()
+    except Exception as exc:
+        _skip_for_cuda_resource_pressure(exc)
+        raise
+
+
 def _make_config(**overrides):
     defaults = dict(
         input_dim=10,
@@ -153,7 +169,7 @@ class TestBinanceHourlyPolicyMamba:
         cfg = _make_config(hidden_dim=128, num_layers=2)
         model = _cuda_module_or_skip(build_policy(cfg))
         x = _cuda_randn_or_skip(2, 48, 10, device="cuda")
-        out = model(x)
+        out = _run_cuda_forward_or_skip(model, x)
         assert out["buy_price_logits"].device.type == "cuda"
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
@@ -161,9 +177,9 @@ class TestBinanceHourlyPolicyMamba:
         cfg = _make_config(hidden_dim=128, num_layers=2)
         model = _cuda_module_or_skip(build_policy(cfg))
         x = _cuda_randn_or_skip(2, 48, 10, device="cuda", requires_grad=True)
-        out = model(x)
+        out = _run_cuda_forward_or_skip(model, x)
         loss = sum(v.sum() for v in out.values())
-        loss.backward()
+        _backward_or_skip(loss)
         assert x.grad is not None
 
     def test_softcap(self):

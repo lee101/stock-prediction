@@ -18,6 +18,7 @@ import torch
 from src.date_utils import is_nyse_open_on_date
 from src.fees import get_fee_for_symbol
 from src.robust_trading_metrics import compute_pnl_smoothness_from_equity, summarize_scenario_results
+from src.symbol_utils import is_crypto_symbol
 from src.trade_directions import DEFAULT_ALPACA_LIVE8_STOCKS, resolve_trade_directions
 from src.trade_stock_utils import expected_cost_bps
 from src.tradinglib.metrics import pnl_metrics
@@ -28,6 +29,8 @@ NEW_YORK = ZoneInfo("America/New_York")
 MARKET_OPEN = time(9, 30)
 MARKET_CLOSE = time(16, 0)
 DEFAULT_DAILY_SYMBOLS = ("AAPL", "AMD", "AMZN", "GOOG", "NVDA", "PLTR", "MTCH")
+DEFAULT_ANNUAL_LEVERAGE_RATE = 0.0625
+DEFAULT_MAX_GROSS_LEVERAGE = 2.0
 
 
 @dataclass(frozen=True)
@@ -51,6 +54,8 @@ class TaskConfig:
     close_at_session_end: bool = True
     spread_lookback_days: int = 14
     periods_per_year: float = 252.0
+    annual_leverage_rate: float = DEFAULT_ANNUAL_LEVERAGE_RATE
+    max_gross_leverage: float = DEFAULT_MAX_GROSS_LEVERAGE
     dashboard_db_path: Path = Path("dashboards/metrics.db")
 
 
@@ -134,6 +139,8 @@ def resolve_task_config(
     allow_short: bool = True,
     close_at_session_end: bool | None = None,
     spread_lookback_days: int = 14,
+    annual_leverage_rate: float = DEFAULT_ANNUAL_LEVERAGE_RATE,
+    max_gross_leverage: float = DEFAULT_MAX_GROSS_LEVERAGE,
     dashboard_db_path: str | Path = "dashboards/metrics.db",
 ) -> TaskConfig:
     mode = str(frequency).strip().lower()
@@ -194,6 +201,8 @@ def resolve_task_config(
         close_at_session_end=close_eod,
         spread_lookback_days=int(spread_lookback_days),
         periods_per_year=float(periods_per_year),
+        annual_leverage_rate=float(max(0.0, annual_leverage_rate)),
+        max_gross_leverage=float(max(1.0, max_gross_leverage)),
         dashboard_db_path=Path(dashboard_db_path),
     )
 
@@ -745,6 +754,7 @@ def build_action_frame(
     rows: list[dict[str, Any]] = []
 
     for row, prediction in zip(action_rows.itertuples(index=False), predictions, strict=True):
+        symbol = str(row.symbol).upper()
         close_price = float(row.close)
         spread_bps = float(getattr(row, "spread_bps", 0.0) or 0.0)
         spread_frac = max(spread_bps, 0.0) / 1e4
@@ -758,10 +768,11 @@ def build_action_frame(
         pred_close = float(np.clip(prediction[2], -0.25, 0.25))
         pred_high = max(pred_high, pred_close, 0.0)
         pred_low = min(pred_low, pred_close, 0.0)
+        max_trade_amount = 100.0 if is_crypto_symbol(symbol) else float(config.max_gross_leverage * 100.0)
 
         up_move = max(pred_high, pred_close, 0.0)
         down_move = max(-pred_low, -pred_close, 0.0)
-        directions = direction_cache[str(row.symbol)]
+        directions = direction_cache[symbol]
         long_edge = up_move - round_trip_cost if directions.can_long else float("-inf")
         short_edge = down_move - round_trip_cost if directions.can_short else float("-inf")
 
@@ -790,14 +801,14 @@ def build_action_frame(
 
             strength = float(np.clip(expected_edge / max(min_edge * 4.0, 0.03), 0.0, 1.0))
             if side == "long":
-                buy_amount = 100.0 * strength
+                buy_amount = max_trade_amount * strength
             else:
-                sell_amount = 100.0 * strength
+                sell_amount = max_trade_amount * strength
 
         rows.append(
             {
                 "timestamp": pd.Timestamp(row.timestamp),
-                "symbol": str(row.symbol).upper(),
+                "symbol": symbol,
                 "side": side,
                 "strength": strength,
                 "target_price": float(target_price),
@@ -843,7 +854,7 @@ def apply_execution_modifiers(
     adjusted["strength"] = np.clip(
         adjusted["strength"].astype(float) * amount_scale,
         0.0,
-        1.30,
+        2.0,
     )
 
     long_mask = adjusted["side"].astype(str).str.lower() == "long"
@@ -876,6 +887,20 @@ def _mark_to_market(positions: dict[str, _Position], closes: dict[str, float]) -
         else:
             value += position.qty * close_price
     return value
+
+
+def _gross_exposure(positions: dict[str, _Position], closes: dict[str, float]) -> float:
+    total = 0.0
+    for position in positions.values():
+        close_price = float(closes.get(position.symbol, position.entry_price))
+        total += abs(float(position.qty) * close_price)
+    return total
+
+
+def _symbol_max_gross_leverage(symbol: str, config: TaskConfig) -> float:
+    if is_crypto_symbol(symbol):
+        return 1.0
+    return float(max(1.0, config.max_gross_leverage))
 
 
 def simulate_actions(
@@ -1001,14 +1026,18 @@ def simulate_actions(
                 if side == "short" and target_price >= entry_price:
                     continue
 
+                max_gross_leverage = _symbol_max_gross_leverage(symbol, config)
                 trade_amount = float(getattr(row, "trade_amount", 0.0) or 0.0)
                 if trade_amount > 0.0:
-                    allocation_fraction = float(np.clip(trade_amount / 100.0, 0.0, 1.30))
+                    allocation_fraction = float(np.clip(trade_amount / 100.0, 0.0, max_gross_leverage))
                 else:
-                    allocation_fraction = float(np.clip(strength, 0.0, 1.30))
+                    allocation_fraction = float(np.clip(strength, 0.0, max_gross_leverage))
                 desired_alloc = max(0.0, equity_now / max(int(config.max_positions), 1)) * allocation_fraction
+                current_gross = _gross_exposure(positions, last_close)
+                gross_cap = max(0.0, equity_now) * max_gross_leverage
+                remaining_gross = max(0.0, gross_cap - current_gross)
                 volume_cap = max(0.0, float(row.volume) * float(row.open) * float(config.max_volume_fraction))
-                allocation = min(desired_alloc, volume_cap)
+                allocation = min(desired_alloc, volume_cap, remaining_gross)
                 qty = allocation / (entry_price * (1.0 + fee_rate)) if entry_price > 0.0 else 0.0
                 if qty <= 0.0 or not math.isfinite(qty):
                     continue
@@ -1048,6 +1077,16 @@ def simulate_actions(
                     )
                 )
 
+        equity_now = cash + _mark_to_market(positions, last_close)
+        gross_exposure = _gross_exposure(positions, last_close)
+        leverage_ratio = 0.0 if equity_now <= 0.0 else gross_exposure / max(equity_now, 1e-9)
+        financing_cost = (
+            max(0.0, leverage_ratio - 1.0)
+            * float(config.annual_leverage_rate)
+            / max(float(config.periods_per_year), 1.0)
+            * max(equity_now, 0.0)
+        )
+        cash -= financing_cost
         equity_index.append(ts)
         equity_values.append(float(cash + _mark_to_market(positions, last_close)))
 

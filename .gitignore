@@ -35,6 +35,7 @@ stock_trading_suite.egg-info
 *.so
 build
 .pytest_cache
+.pytest_tmp
 pytest-of-*
 .ruff_cache
 .mypy_cache

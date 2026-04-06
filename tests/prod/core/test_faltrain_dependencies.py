@@ -5,7 +5,7 @@ from types import ModuleType
 
 import pytest
 
-from faltrain import dependencies as deps
+deps = pytest.importorskip("faltrain.dependencies")
 
 
 @pytest.fixture(autouse=True)

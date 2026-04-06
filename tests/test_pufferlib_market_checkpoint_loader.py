@@ -183,6 +183,48 @@ def test_load_checkpoint_payload_wraps_path_and_original_error(tmp_path):
     assert isinstance(excinfo.value.__cause__, FileNotFoundError)
 
 
+def test_load_checkpoint_payload_uses_safe_loading_by_default(tmp_path):
+    checkpoint_path = tmp_path / "checkpoint.pt"
+
+    with patch("pufferlib_market.checkpoint_loader.torch.load", return_value={"model": {}}) as load:
+        payload = load_checkpoint_payload(checkpoint_path, map_location="cpu")
+
+    assert payload == {"model": {}}
+    load.assert_called_once_with(checkpoint_path, map_location="cpu", weights_only=True)
+
+
+def test_load_checkpoint_payload_supports_explicit_unsafe_loading(tmp_path):
+    checkpoint_path = tmp_path / "checkpoint.pt"
+
+    with patch("pufferlib_market.checkpoint_loader.torch.load", return_value={"model": {}}) as load:
+        payload = load_checkpoint_payload(
+            checkpoint_path,
+            map_location="cpu",
+            allow_unsafe_checkpoint_loading=True,
+        )
+
+    assert payload == {"model": {}}
+    load.assert_called_once_with(checkpoint_path, map_location="cpu", weights_only=False)
+
+
+def test_load_checkpoint_payload_reports_safe_load_failure_with_opt_in_hint(tmp_path):
+    checkpoint_path = tmp_path / "checkpoint.pt"
+
+    with (
+        patch(
+            "pufferlib_market.checkpoint_loader.torch.load",
+            side_effect=RuntimeError("Weights only load failed due to unsupported global"),
+        ),
+        pytest.raises(
+            RuntimeError,
+            match=r"Safe checkpoint load failed for .*allow_unsafe_checkpoint_loading=True",
+        ) as excinfo,
+    ):
+        load_checkpoint_payload(checkpoint_path, map_location="cpu")
+
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+
+
 def test_extract_checkpoint_state_dict_accepts_bare_state_dict_and_rejects_metadata_only_mapping():
     state_dict = {"encoder.0.weight": torch.zeros(16, 21)}
 

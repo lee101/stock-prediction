@@ -255,6 +255,41 @@ def test_predict_ohlc_multivariate_preserves_hourly_cadence() -> None:
 
 
 @pytest.mark.skipif(chronos2_mod.torch is None, reason="torch required")
+def test_predict_ohlc_multivariate_sorts_samples_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    df = _make_dataframe(48)
+    df["timestamp"] = pd.date_range("2024-01-01", periods=48, freq="h", tz="UTC")
+    wrapper = Chronos2OHLCWrapper(
+        pipeline=_DummyTensorPipeline(),
+        id_column="symbol",
+        timestamp_column="timestamp",
+        target_columns=("open", "high", "low", "close"),
+        default_context_length=24,
+        quantile_levels=(0.1, 0.5, 0.9),
+        preaugmentation_dirs=(),
+    )
+
+    sort_calls: list[tuple[int, ...]] = []
+    original_sort = chronos2_mod.torch.Tensor.sort
+
+    def recording_sort(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        sort_calls.append(tuple(int(dim) for dim in self.shape))
+        return original_sort(self, *args, **kwargs)
+
+    monkeypatch.setattr(chronos2_mod.torch.Tensor, "sort", recording_sort)
+
+    batch = wrapper.predict_ohlc_multivariate(
+        df.iloc[:-1],
+        symbol="BTCUSD",
+        prediction_length=3,
+        context_length=24,
+        batch_size=1,
+    )
+
+    assert batch.quantile_frames[0.5].shape == (3, 4)
+    assert sort_calls == [(4, 5, 3)]
+
+
+@pytest.mark.skipif(chronos2_mod.torch is None, reason="torch required")
 def test_predict_ohlc_joint_preserves_hourly_cadence() -> None:
     base = _make_dataframe(48)
     base["timestamp"] = pd.date_range("2024-01-01", periods=48, freq="h", tz="UTC")
@@ -287,6 +322,52 @@ def test_predict_ohlc_joint_preserves_hourly_cadence() -> None:
     assert len(batches) == 2
     assert batches[0].quantile_frames[0.5].index.equals(expected)
     assert batches[1].quantile_frames[0.5].index.equals(expected)
+
+
+@pytest.mark.skipif(chronos2_mod.torch is None, reason="torch required")
+def test_predict_ohlc_joint_independent_sorts_once_per_symbol(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = _make_dataframe(48)
+    base["timestamp"] = pd.date_range("2024-01-01", periods=48, freq="h", tz="UTC")
+    other = base.copy()
+    other["symbol"] = "ETHUSD"
+    pipeline = _DummyTensorPipeline()
+    wrapper = Chronos2OHLCWrapper(
+        pipeline=pipeline,
+        id_column="symbol",
+        timestamp_column="timestamp",
+        target_columns=("open", "high", "low", "close"),
+        default_context_length=24,
+        quantile_levels=(0.1, 0.5, 0.9),
+        preaugmentation_dirs=(),
+    )
+
+    sort_calls: list[tuple[int, ...]] = []
+    original_sort = chronos2_mod.torch.Tensor.sort
+
+    def recording_sort(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        sort_calls.append(tuple(int(dim) for dim in self.shape))
+        return original_sort(self, *args, **kwargs)
+
+    monkeypatch.setattr(chronos2_mod.torch.Tensor, "sort", recording_sort)
+
+    batches = wrapper.predict_ohlc_joint(
+        [base.iloc[:-1], other.iloc[:-1]],
+        symbols=["BTCUSD", "ETHUSD"],
+        prediction_length=2,
+        context_length=24,
+        batch_size=2,
+        predict_batches_jointly=False,
+    )
+
+    assert len(batches) == 2
+    assert pipeline.predict_calls[-1]["predict_batches_jointly"] is False
+    assert [batch.applied_augmentation for batch in batches] == [
+        "joint_independent",
+        "joint_independent",
+    ]
+    assert sort_calls == [(4, 5, 2), (4, 5, 2)]
 
 
 def test_unload_blocks_future_predictions() -> None:

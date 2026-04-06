@@ -30,11 +30,18 @@ import os
 import shlex
 import subprocess
 import sys
-import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from contextlib import contextmanager
 from typing import Optional
+
+try:
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - non-POSIX platforms
+    _fcntl = None
+
+from src.shared_path_guard import ReaderWriterGuard, shared_path_guard
 
 try:
     from dotenv import load_dotenv
@@ -63,6 +70,7 @@ except ImportError:
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 POOL_STATE_FILE = REPO_ROOT / "analysis" / "rl_training_pool.json"
+POOL_STATE_TMP_SUFFIX = ".tmp"
 
 # Fallback GPU aliases/rates used when src.runpod_client is unavailable.
 _FALLBACK_GPU_ALIASES: dict[str, str] = {
@@ -193,28 +201,69 @@ def _resolve_gpu(alias: str) -> str:
     return GPU_ALIASES.get(alias.lower(), alias)
 
 
-def load_pool_state() -> PoolState:
-    if POOL_STATE_FILE.exists():
-        data = json.loads(POOL_STATE_FILE.read_text())
-        pods = {}
-        for name, info in data.get("pods", {}).items():
-            pods[name] = PoolPod(**info)
-        return PoolState(
-            pods=pods,
-            limits=data.get("limits", dict(DEFAULT_POOL_LIMITS)),
-            total_experiments_run=data.get("total_experiments_run", 0),
-        )
-    return PoolState()
+def _pool_state_lock_path() -> Path:
+    return POOL_STATE_FILE.with_name(f"{POOL_STATE_FILE.name}.lock")
 
 
-def save_pool_state(state: PoolState) -> None:
-    POOL_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    data = {
+@contextmanager
+def _pool_state_guard(*, write: bool) -> "Iterator[None]":
+    lock_path = _pool_state_lock_path()
+    thread_guard: ReaderWriterGuard = shared_path_guard(lock_path)
+    acquire = thread_guard.acquire_write if write else thread_guard.acquire_read
+    release = thread_guard.release_write if write else thread_guard.release_read
+    acquire()
+    handle = None
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+", encoding="utf-8")
+        if _fcntl is not None:
+            lock_mode = _fcntl.LOCK_EX if write else _fcntl.LOCK_SH
+            _fcntl.flock(handle.fileno(), lock_mode)
+        yield
+    finally:
+        try:
+            if _fcntl is not None and handle is not None:
+                _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
+        finally:
+            if handle is not None:
+                handle.close()
+            release()
+
+
+def _deserialize_pool_state(data: dict) -> PoolState:
+    pods = {}
+    for name, info in data.get("pods", {}).items():
+        pods[name] = PoolPod(**info)
+    return PoolState(
+        pods=pods,
+        limits=data.get("limits", dict(DEFAULT_POOL_LIMITS)),
+        total_experiments_run=data.get("total_experiments_run", 0),
+    )
+
+
+def _serialize_pool_state(state: PoolState) -> dict:
+    return {
         "pods": {name: asdict(pod) for name, pod in state.pods.items()},
         "limits": state.limits,
         "total_experiments_run": state.total_experiments_run,
     }
-    POOL_STATE_FILE.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def load_pool_state() -> PoolState:
+    with _pool_state_guard(write=False):
+        if POOL_STATE_FILE.exists():
+            data = json.loads(POOL_STATE_FILE.read_text())
+            return _deserialize_pool_state(data)
+        return PoolState()
+
+
+def save_pool_state(state: PoolState) -> None:
+    POOL_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    data = _serialize_pool_state(state)
+    tmp_path = POOL_STATE_FILE.with_name(f"{POOL_STATE_FILE.name}{POOL_STATE_TMP_SUFFIX}")
+    with _pool_state_guard(write=True):
+        tmp_path.write_text(json.dumps(data, indent=2) + "\n")
+        os.replace(tmp_path, POOL_STATE_FILE)
 
 
 def _count_gpu_type(state: PoolState, gpu_type: str) -> int:
@@ -564,7 +613,6 @@ echo "EXPERIMENT_OK"
     print(f"  [{pod.name}] Starting autoresearch run_id={run_id} (budget={time_budget}s)...")
     result = ssh_exec(pod, experiment_script)
 
-    log_text = (result.stdout or "") + "\n" + (result.stderr or "")
     metrics: dict = {
         "run_id": run_id,
         "pod": pod.name,

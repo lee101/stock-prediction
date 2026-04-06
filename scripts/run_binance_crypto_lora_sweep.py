@@ -7,7 +7,7 @@ import json
 import math
 import sys
 from pathlib import Path
-from typing import Any, Iterable, Optional, Sequence
+from typing import Callable, Iterable, Optional, Sequence, TypedDict, cast
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -19,6 +19,135 @@ DEFAULT_DATA_ROOT = Path("trainingdatahourlybinance")
 DEFAULT_OUTPUT_ROOT = Path("chronos2_finetuned")
 DEFAULT_RESULTS_ROOT = Path("experiments/binance_crypto_lora_sweep")
 DEFAULT_EVAL_BASELINE_SYMBOLS = ("BTCUSD", "ETHUSD", "SOLUSD")
+
+
+class TrainResultConfig(TypedDict, total=False):
+    symbol: str
+    preaug: str
+
+
+class MetricBlock(TypedDict, total=False):
+    mae_percent_mean: object
+
+
+class StabilityBlock(TypedDict, total=False):
+    stability_score: object
+    mae_percent_gap: object
+    consistency_gap: object
+
+
+class RawTrainResult(TypedDict, total=False):
+    config: TrainResultConfig
+    val: MetricBlock
+    test: MetricBlock
+    stability: StabilityBlock
+    run_name: str
+    output_dir: str
+    val_consistency_score: object
+    test_consistency_score: object
+    train_stability_score: object
+
+
+class CandidateEvalSummary(TypedDict, total=False):
+    window_count: object
+    accepted_window_count: object
+    rejected_window_count: object
+    all_windows_accept: object
+    mean_return_delta: object
+    min_return_delta: object
+    mean_sortino_delta: object
+    min_sortino_delta: object
+    mean_max_dd_delta: object
+    max_max_dd_delta: object
+    mean_new_symbol_pnl: object
+    min_new_symbol_pnl: object
+    mean_annualized_return_delta: object
+    weighted_annualized_return_delta: object
+    mean_annualized_new_symbol_pnl: object
+    weighted_annualized_new_symbol_pnl: object
+
+
+class CandidateEvalPayload(TypedDict, total=False):
+    eval_result_path: str
+    eval_summary: CandidateEvalSummary
+
+
+class EvaluationConfig(TypedDict):
+    baseline_symbols: list[str]
+    windows: str
+    end: str
+    signal_mode: str
+    remote_host: str
+    remote_root: Path
+    remote_venv: str
+    remote_data_root: str
+    remote_output_root: str
+    local_output_root: Path
+    data_root: str
+    horizons: str
+    lookback_hours: float
+    model: str
+    thinking: str
+    rate_limit: float
+    forecast_rule_total_cost_bps: float
+    forecast_rule_min_reward_risk: float
+    add_symbol_forecast_rule_total_cost_bps: float | None
+    add_symbol_forecast_rule_min_reward_risk: float | None
+    add_symbol_max_pos: float | None
+
+
+class SweepSummaryRecord(TypedDict, total=False):
+    symbol: str
+    preaug: str
+    run_name: str
+    output_dir: str
+    result_path: str
+    val_consistency_score: float | None
+    test_consistency_score: float | None
+    val_mae_percent_mean: float | None
+    test_mae_percent_mean: float | None
+    train_stability_score: float | None
+    train_mae_percent_gap: float | None
+    train_consistency_gap: float | None
+    pnl_eval_present: bool
+    pnl_window_count: int
+    pnl_accepted_window_count: int
+    pnl_rejected_window_count: int
+    pnl_all_windows_accept: bool
+    pnl_mean_return_delta: float | None
+    pnl_min_return_delta: float | None
+    pnl_mean_sortino_delta: float | None
+    pnl_min_sortino_delta: float | None
+    pnl_mean_max_dd_delta: float | None
+    pnl_max_max_dd_delta: float | None
+    pnl_mean_new_symbol_pnl: float | None
+    pnl_min_new_symbol_pnl: float | None
+    pnl_mean_annualized_return_delta: float | None
+    pnl_weighted_annualized_return_delta: float | None
+    pnl_mean_annualized_new_symbol_pnl: float | None
+    pnl_weighted_annualized_new_symbol_pnl: float | None
+    pnl_eval_path: str
+    pnl_eval_summary_path: str
+
+
+class SweepSummaryConfig(TypedDict):
+    data_root: str
+    output_root: str
+    results_dir: str
+    context_length: int
+    prediction_length: int
+    learning_rate: float
+    num_steps: int
+    lora_r: int
+    evaluation_config: EvaluationConfig | None
+
+
+class SweepSummaryOutput(TypedDict):
+    symbols: list[str]
+    preaugs: list[str]
+    config: SweepSummaryConfig
+    results: list[SweepSummaryRecord]
+    best_by_symbol: dict[str, SweepSummaryRecord]
 
 
 def _load_train_helpers():
@@ -33,7 +162,7 @@ def _load_eval_helpers():
     return evaluate_candidate_main
 
 
-def _parse_multi_value(raw_values: Optional[Sequence[str]], *, normalizer) -> list[str]:
+def _parse_multi_value(raw_values: Sequence[str] | None, *, normalizer: Callable[[str], str]) -> list[str]:
     values: list[str] = []
     seen: set[str] = set()
     for raw in raw_values or ():
@@ -54,7 +183,7 @@ def parse_preaugs(raw_values: Optional[Sequence[str]]) -> list[str]:
     return _parse_multi_value(raw_values, normalizer=lambda value: str(value).strip().lower())
 
 
-def _coerce_float(value: Any) -> Optional[float]:
+def _coerce_float(value: object) -> Optional[float]:
     if value is None:
         return None
     try:
@@ -66,11 +195,11 @@ def _coerce_float(value: Any) -> Optional[float]:
     return numeric
 
 
-def summarize_result(result: dict[str, Any], *, result_path: Path) -> dict[str, Any]:
-    config = result.get("config") if isinstance(result.get("config"), dict) else {}
-    val = result.get("val") if isinstance(result.get("val"), dict) else {}
-    test = result.get("test") if isinstance(result.get("test"), dict) else {}
-    stability = result.get("stability") if isinstance(result.get("stability"), dict) else {}
+def summarize_result(result: RawTrainResult, *, result_path: Path) -> SweepSummaryRecord:
+    config = result.get("config") if isinstance(result.get("config"), dict) else TrainResultConfig()
+    val = result.get("val") if isinstance(result.get("val"), dict) else MetricBlock()
+    test = result.get("test") if isinstance(result.get("test"), dict) else MetricBlock()
+    stability = result.get("stability") if isinstance(result.get("stability"), dict) else StabilityBlock()
     return {
         "symbol": str(config.get("symbol") or "").upper(),
         "preaug": str(config.get("preaug") or ""),
@@ -87,7 +216,7 @@ def summarize_result(result: dict[str, Any], *, result_path: Path) -> dict[str, 
     }
 
 
-def _pnl_gate_passed(record: dict[str, Any]) -> bool:
+def _pnl_gate_passed(record: SweepSummaryRecord) -> bool:
     if not record.get("pnl_eval_present"):
         return True
     if bool(record.get("pnl_all_windows_accept")):
@@ -98,8 +227,8 @@ def _pnl_gate_passed(record: dict[str, Any]) -> bool:
     return accepted > 0 and (min_pnl is None or min_pnl > 0.0) and (min_sortino is None or min_sortino >= -0.5)
 
 
-def rank_results(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    def _sort_key(record: dict[str, Any]) -> tuple[int, int, float, float, float, float, float, float, str, str]:
+def rank_results(records: Iterable[SweepSummaryRecord]) -> list[SweepSummaryRecord]:
+    def _sort_key(record: SweepSummaryRecord) -> tuple[int, int, float, float, float, float, float, float, float, str, str]:
         pnl_present = bool(record.get("pnl_eval_present"))
         accepted = int(record.get("pnl_accepted_window_count") or 0)
         window_count = int(record.get("pnl_window_count") or 0)
@@ -124,12 +253,12 @@ def rank_results(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
             str(record.get("preaug") or ""),
         )
 
-    return sorted((dict(record) for record in records), key=_sort_key)
+    return sorted((cast(SweepSummaryRecord, dict(record)) for record in records), key=_sort_key)
 
 
-def best_by_symbol(records: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def best_by_symbol(records: Iterable[SweepSummaryRecord]) -> dict[str, SweepSummaryRecord]:
     ranked = rank_results(records)
-    best: dict[str, dict[str, Any]] = {}
+    best: dict[str, SweepSummaryRecord] = {}
     for record in ranked:
         symbol = str(record.get("symbol") or "")
         if symbol and symbol not in best:
@@ -137,14 +266,14 @@ def best_by_symbol(records: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any
     return best
 
 
-def _format_metric(value: Any, *, signed: bool = False, digits: int = 4, default: str = "n/a") -> str:
+def _format_metric(value: object, *, signed: bool = False, digits: int = 4, default: str = "n/a") -> str:
     numeric = _coerce_float(value)
     if numeric is None:
         return default
     return f"{numeric:+.{digits}f}" if signed else f"{numeric:.{digits}f}"
 
 
-def render_summary_md(records: Iterable[dict[str, Any]]) -> str:
+def render_summary_md(records: Iterable[SweepSummaryRecord]) -> str:
     ranked = rank_results(records)
     best = best_by_symbol(ranked)
     include_pnl = any(record.get("pnl_eval_present") for record in ranked)
@@ -235,7 +364,7 @@ def render_summary_md(records: Iterable[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
+def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n")
 
@@ -247,7 +376,7 @@ def _parse_symbol_list(raw: Optional[str], *, default: Sequence[str]) -> list[st
     return values or [str(symbol).strip().upper() for symbol in default if str(symbol).strip()]
 
 
-def _flatten_pnl_summary(summary: dict[str, Any]) -> dict[str, Any]:
+def _flatten_pnl_summary(summary: CandidateEvalSummary) -> SweepSummaryRecord:
     return {
         "pnl_eval_present": True,
         "pnl_window_count": int(summary.get("window_count") or 0),
@@ -272,8 +401,8 @@ def _flatten_pnl_summary(summary: dict[str, Any]) -> dict[str, Any]:
 def evaluate_pnl_for_result(
     *,
     result_path: Path,
-    evaluation_config: dict[str, Any],
-) -> dict[str, Any]:
+    evaluation_config: EvaluationConfig,
+) -> CandidateEvalPayload:
     evaluate_candidate_main = _load_eval_helpers()
     local_output_root = Path(evaluation_config["local_output_root"])
     report_name = Path(result_path).stem
@@ -344,7 +473,7 @@ def evaluate_pnl_for_result(
     payload = json.loads(summary_path.read_text())
     if not isinstance(payload, dict):
         raise ValueError(f"Expected JSON object in {summary_path}")
-    return payload
+    return cast(CandidateEvalPayload, payload)
 
 
 def run_sweep(
@@ -359,12 +488,12 @@ def run_sweep(
     learning_rate: float,
     num_steps: int,
     lora_r: int,
-    evaluation_config: Optional[dict[str, Any]] = None,
-) -> dict[str, Any]:
+    evaluation_config: EvaluationConfig | None = None,
+) -> SweepSummaryOutput:
     TrainConfig, train_and_evaluate = _load_train_helpers()
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    summarized_runs: list[dict[str, Any]] = []
+    summarized_runs: list[SweepSummaryRecord] = []
     for symbol in symbols:
         data_path = Path(data_root) / f"{symbol}.csv"
         if not data_path.exists():
@@ -379,13 +508,17 @@ def run_sweep(
                 lora_r=int(lora_r),
                 preaug=preaug,
             )
-            result = train_and_evaluate(cfg, data_path, Path(output_root))
+            result = cast(RawTrainResult, train_and_evaluate(cfg, data_path, Path(output_root)))
             result_path = Path(results_dir) / f"{result['run_name']}.json"
             _write_json(result_path, result)
             summary_record = summarize_result(result, result_path=result_path)
             if evaluation_config is not None:
                 pnl_payload = evaluate_pnl_for_result(result_path=result_path, evaluation_config=evaluation_config)
-                pnl_summary = pnl_payload.get("eval_summary") if isinstance(pnl_payload.get("eval_summary"), dict) else {}
+                pnl_summary = (
+                    pnl_payload.get("eval_summary")
+                    if isinstance(pnl_payload.get("eval_summary"), dict)
+                    else CandidateEvalSummary()
+                )
                 summary_record["pnl_eval_path"] = str(pnl_payload.get("eval_result_path") or "")
                 summary_record["pnl_eval_summary_path"] = str(
                     Path(evaluation_config["local_output_root"]) / result_path.stem / "candidate_summary.json"
@@ -395,7 +528,7 @@ def run_sweep(
 
     ranked = rank_results(summarized_runs)
     best = best_by_symbol(ranked)
-    summary = {
+    summary: SweepSummaryOutput = {
         "symbols": list(symbols),
         "preaugs": list(preaugs),
         "config": {
@@ -463,7 +596,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not preaugs:
         raise SystemExit("At least one preaug is required.")
 
-    evaluation_config: Optional[dict[str, Any]] = None
+    evaluation_config: EvaluationConfig | None = None
     if args.evaluate_pnl:
         evaluation_config = {
             "baseline_symbols": _parse_symbol_list(args.eval_baseline_symbols, default=DEFAULT_EVAL_BASELINE_SYMBOLS),
