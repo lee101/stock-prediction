@@ -509,6 +509,30 @@ def parse_allocation_response(text: str) -> AllocationPlan:
     return plan
 
 
+def _build_allocation_response_schema(
+    genai_types: object,
+    tradable_symbols: list[str],
+):
+    """Build a response schema whose required keys all exist in properties."""
+
+    props = {
+        "reasoning": genai_types.Schema(type=genai_types.Type.STRING),
+    }
+    required = ["reasoning"]
+    for sym in tradable_symbols:
+        pct_key, entry_key, exit_key = _alloc_fields_for_symbol(sym)
+        props[pct_key] = genai_types.Schema(type=genai_types.Type.STRING)
+        props[entry_key] = genai_types.Schema(type=genai_types.Type.STRING)
+        props[exit_key] = genai_types.Schema(type=genai_types.Type.STRING)
+        required.append(pct_key)
+
+    return genai_types.Schema(
+        type=genai_types.Type.OBJECT,
+        required=required,
+        properties=props,
+    )
+
+
 def call_gemini_allocation(
     prompt: str,
     model: str = "gemini-3.1-flash-lite-preview",
@@ -521,21 +545,7 @@ def call_gemini_allocation(
 
     if tradable_symbols is None:
         tradable_symbols = ["BTCUSD", "ETHUSD", "DOGEUSD", "AAVEUSD"]
-    props = {}
-    required = ["reasoning"]
-    for sym in tradable_symbols:
-        pct_key, entry_key, exit_key = _alloc_fields_for_symbol(sym)
-        props[pct_key] = genai.types.Schema(type=genai.types.Type.STRING)
-        props[entry_key] = genai.types.Schema(type=genai.types.Type.STRING)
-        props[exit_key] = genai.types.Schema(type=genai.types.Type.STRING)
-        required.append(pct_key)
-    # props["reasoning"] = genai.types.Schema(type=genai.types.Type.STRING)
-
-    schema = genai.types.Schema(
-        type=genai.types.Type.OBJECT,
-        required=required,
-        properties=props,
-    )
+    schema = _build_allocation_response_schema(genai.types, tradable_symbols)
 
     api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key:

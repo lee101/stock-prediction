@@ -1,6 +1,6 @@
 # Production Pipeline Notes
 
-Updated: 2026-03-17
+Updated: 2026-04-07
 
 ## Scope
 
@@ -22,6 +22,47 @@ Checked against the live Binance API on 2026-03-17:
 - I could not reproduce the quoted `BTC/USDT` and `ETH/USDT` sell rows for 2026-03-17 from the current API history on those pairs
 
 That means the current account state does not show any active BTC/ETH major-spot orders on USDT right now, and the most recent visible major-pair spot history in this account is predominantly FDUSD.
+
+## Margin Runtime Audit (2026-04-07)
+
+Checked against the locally running `rl-trading-agent-binance/trade_binance_live.py` deployment and direct margin-account reads on 2026-04-07.
+
+- The current hybrid deployment is running in `margin` mode with:
+  - Gemini model `gemini-3.1-flash-lite-preview`
+  - RL checkpoint `pufferlib_market/checkpoints/a100_scaleup/robust_champion/best.pt`
+  - symbols `BTCUSD ETHUSD SOLUSD DOGEUSD AAVEUSD LINKUSD`
+  - requested leverage `0.5x`
+- Margin account inspection showed:
+  - `2` open margin orders at audit time
+  - active open sell orders on `DOGEUSDT` and `AAVEUSDT`
+  - non-trivial live margin inventory in `DOGE`, `AAVE`, and `USDT`
+  - recent margin fills over the previous 48h on `DOGEUSDT`, `AAVEUSDT`, `BTCUSDT`, and `LINKUSDT`
+
+Important operational distinction:
+
+- `python -m binance_cli ...` is a spot-account view and can report no open orders / no recent trades / very small account value even while the hybrid margin bot is active.
+- For `trade_binance_live.py` in `margin` mode, production verification must use margin-account reads (`get_margin_account()`, `get_open_margin_orders()`, `get_margin_trades()`), not the spot-only CLI.
+
+## Fixed Failure Mode (2026-04-07)
+
+Observed in the live hybrid log:
+
+- Gemini allocation sometimes failed with:
+  - `400 INVALID_ARGUMENT`
+  - `GenerateContentRequest.generation_config.response_schema.required[0]: property is not defined`
+
+Root cause:
+
+- `rl-trading-agent-binance/hybrid_prompt.py` built a response schema that marked `reasoning` as required but did not include `reasoning` in `properties`.
+
+Production impact:
+
+- The bot dropped into RL-only fallback for that cycle instead of running the intended RL+Gemini allocation refinement.
+
+Status:
+
+- Code fixed so required schema keys are now present in the response schema.
+- Unit coverage added for schema construction consistency.
 
 ## Current Pipeline Families
 

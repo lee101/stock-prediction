@@ -127,6 +127,23 @@ def test_parse_allocation_response_accepts_decorated_numbers_and_scales_total() 
     assert "DOGEUSD" not in plan.allocations
 
 
+def test_build_allocation_response_schema_keeps_required_keys_in_properties() -> None:
+    schema = hybrid_prompt._build_allocation_response_schema(
+        sys.modules["google.genai"].types,
+        ["BTCUSD", "DOGEUSD"],
+    )
+
+    required = schema.kwargs["required"]
+    properties = schema.kwargs["properties"]
+
+    assert "reasoning" in required
+    assert "reasoning" in properties
+    assert "btc_pct" in required
+    assert "btc_pct" in properties
+    assert "doge_pct" in required
+    assert "doge_pct" in properties
+
+
 def test_build_allocation_prompt_keeps_rl_probs_mapped_to_symbol() -> None:
     contexts = [
         hybrid_prompt.SymbolContext(symbol="BTCUSD", price=111.0, klines=_sample_klines()),
@@ -182,6 +199,20 @@ def test_reserve_quote_balance_only_reduces_requested_asset() -> None:
     trade_binance_live._reserve_quote_balance(state, "USDT", 30.0)
     assert state.fdusd_balance == pytest.approx(40.0)
     assert state.usdt_balance == pytest.approx(0.0)
+
+
+def test_build_margin_capital_sync_plan_transfers_assets_and_converts_fdusd() -> None:
+    plan = trade_binance_live._build_margin_capital_sync_plan(
+        spot_free={"BTC": 0.5, "FDUSD": 25.0, "USDT": 7.0},
+        margin_free={"FDUSD": 15.0, "USDT": 0.0},
+    )
+
+    assert any(transfer.asset == "BTC" and transfer.amount > 0 for transfer in plan.spot_to_margin)
+    assert len(plan.margin_to_spot) == 1
+    assert plan.margin_to_spot[0].asset == "FDUSD"
+    assert plan.margin_to_spot[0].amount == pytest.approx(15.0 - 1e-6)
+    assert plan.spot_fdusd_to_usdt == pytest.approx((25.0 - 1e-6) + (15.0 - 1e-6))
+    assert plan.transfer_all_spot_usdt_to_margin is True
 
 
 def test_resolve_spot_leverage_clamps_anything_above_one() -> None:

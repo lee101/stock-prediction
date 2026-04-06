@@ -1,6 +1,56 @@
 # Binance Progress Log 2 - SUI & DOGE Trading
 
-Updated: 2026-03-03
+Updated: 2026-04-07
+
+## Hybrid Margin Runtime Audit + Gemini Schema Fix (2026-04-07)
+
+Audited the currently running Binance processes and cross-checked the live account state against both the spot CLI and the margin API.
+
+### What is actually live now
+- Active hybrid live writer: `rl-trading-agent-binance/trade_binance_live.py`
+  - launched `2026-04-07 09:05:11`
+  - mode: `--live --execution-mode margin --leverage 0.5`
+  - model: `gemini-3.1-flash-lite-preview`
+  - RL checkpoint: `pufferlib_market/checkpoints/a100_scaleup/robust_champion/best.pt`
+- Older Binance-related daemons are also still running locally:
+  - `binanceexp1.trade_binance_selector`
+  - `binanceexp1.trade_binance_hourly`
+  - `binanceleveragesui.trade_margin_meta`
+  - `binance_worksteal.trade_live`
+- The live hybrid path is the one interacting with the margin account right now; the spot CLI alone is not sufficient for operational verification.
+
+### Live account observations
+- Spot CLI check was misleading for this deployment:
+  - `python -m binance_cli open-orders` -> `No open orders.`
+  - `python -m binance_cli recent-trades --days 2` -> `No executed trades in the requested window.`
+  - `python -m binance_cli account-value --hide-assets` -> tiny spot-only balance
+- Margin API check showed the real hybrid runtime state:
+  - `2` open margin orders at audit time
+  - open sells: `DOGEUSDT` and `AAVEUSDT`
+  - non-trivial margin inventory in `DOGE`, `AAVE`, `USDT`, with residual dust across several other assets
+  - recent margin fills over the prior 2 days on `DOGEUSDT`, `AAVEUSDT`, `BTCUSDT`, and `LINKUSDT`
+
+### Critical issue found
+- The live log showed Gemini allocation calls intermittently failing with:
+  - `400 INVALID_ARGUMENT`
+  - `GenerateContentRequest.generation_config.response_schema.required[0]: property is not defined`
+- Root cause:
+  - `rl-trading-agent-binance/hybrid_prompt.py` declared `reasoning` as a required response-schema field
+  - but omitted `reasoning` from the schema `properties`
+- Effect in production:
+  - the hybrid bot falls back to RL-only execution even when Gemini is meant to refine the allocation
+  - this weakens the intended RL+LLM policy and makes live behavior diverge from the designed strategy
+
+### Fix shipped in code
+- Added `_build_allocation_response_schema(...)` in `rl-trading-agent-binance/hybrid_prompt.py`
+- Included `reasoning` in schema properties so every required key is defined
+- Added unit coverage for:
+  - schema required/property consistency
+  - margin capital sync planning logic
+
+### Operational conclusion
+- Before comparing new experiments against `robust_champion`, the hybrid path needs to run without schema-induced RL-only fallback.
+- Use margin-account inspection, not spot-only CLI output, when validating this deployment family.
 
 ## Meta Portfolio Auto-Selector Sweep (2026-03-03)
 
