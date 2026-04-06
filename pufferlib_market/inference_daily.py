@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional, Sequence
 
 from pufferlib_market.inference import PPOTrader, TradingSignal
@@ -56,7 +54,12 @@ def compute_daily_features(df: pd.DataFrame) -> np.ndarray:
     atr_pct_14d = (atr14 / close.clip(lower=1e-8)).fillna(0.0).clip(0.0, 0.5)
     range_pct_1d = ((high - low) / close.clip(lower=1e-8)).fillna(0.0).clip(0.0, 0.5)
 
-    trend_20d = close.pct_change(20).fillna(0.0).clip(-2.0, 2.0)
+    # RSI(14) normalized to [-1, 1] — replaces duplicate trend_20d (was identical to ret_20d)
+    delta = close.diff()
+    gain = delta.clip(lower=0.0).rolling(14, min_periods=1).mean()
+    loss = (-delta.clip(upper=0.0)).rolling(14, min_periods=1).mean()
+    rs = gain / loss.clip(lower=1e-8)
+    rsi_14 = (2.0 * (100.0 - 100.0 / (1.0 + rs)) / 100.0 - 1.0).fillna(0.0).clip(-1.0, 1.0)
     trend_60d = close.pct_change(60).fillna(0.0).clip(-3.0, 3.0)
 
     roll_max_20 = close.rolling(20, min_periods=1).max()
@@ -81,7 +84,7 @@ def compute_daily_features(df: pd.DataFrame) -> np.ndarray:
         float(ma_delta_60d.iloc[-1]),
         float(atr_pct_14d.iloc[-1]),
         float(range_pct_1d.iloc[-1]),
-        float(trend_20d.iloc[-1]),
+        float(rsi_14.iloc[-1]),
         float(trend_60d.iloc[-1]),
         float(drawdown_20d.iloc[-1]),
         float(drawdown_60d.iloc[-1]),
@@ -101,10 +104,17 @@ class DailyPPOTrader(PPOTrader):
         device: str = "cpu",
         long_only: bool = False,
         symbols: Optional[Sequence[str]] = None,
+        allow_unsafe_checkpoint_loading: bool = False,
     ):
         if symbols is None:
             symbols = ["BTCUSD", "ETHUSD", "SOLUSD", "LTCUSD", "AVAXUSD"]
-        super().__init__(checkpoint_path, device, long_only, symbols)
+        super().__init__(
+            checkpoint_path,
+            device,
+            long_only,
+            symbols,
+            allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+        )
         # Override max_steps for daily (90 days per episode)
         self.max_steps = 90
         self.hold_days = 0

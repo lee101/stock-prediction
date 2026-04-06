@@ -7,9 +7,23 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
-### Current Alpaca snapshot (2026-04-01 23:57 UTC)
-- **LIVE account**: equity ~$38,954 (from 2026-03-28 snapshot, not updated — API key expired)
-- **LIVE daily-rl-trader**: **32-model ensemble** running on PAPER (live API key expired)
+### Current Alpaca snapshot (2026-04-06 audit)
+- **LIVE account**: equity ~$38,954 (flat, no positions since ~2026-04-01)
+- **daily-rl-trader.service**: STOPPED (was crash-looping 4725+ restarts, missing ALP_KEY_ID_PROD/ALP_SECRET_KEY_PROD). Stopped 2026-04-06 to save resources.
+- **unified-orchestrator.service**: DEAD since 2026-03-29 (Gemini API exhausted)
+- **LLM stock trader (glm-4-plus)**: Running but ZERO trades — also hitting 401 on Alpaca API. PID 3803544 trading YELP/NET/DBX.
+- **No live trading has occurred since ~2026-04-01**
+- **Bugs fixed 2026-04-06**:
+  - `hfinference/production_engine.py:527` KeyError: 'data' — fixed with defensive `.get()` access
+  - `trade_daily_stock_prod.py` state/position divergence — state was cleared before limit sell fill confirmation. Added `pending_close_symbol` tracking and `reconcile_pending_close()` to re-adopt unfilled positions on next cycle.
+  - Duplicate feature `trend_20d` = `return_20d` in daily feature vector — replaced with RSI(14) normalized to [-1,1]. Requires retrain (v5_rsi data exported, training in progress).
+- **Crypto70 sliding-window validation (2026-04-06)**: ALL top seeds catastrophically fail under exhaustive evaluation with lag=2:
+  - s670 (+29,099% single-window) → **-87.4% ann median, -64.0% median return** across 25 windows
+  - s275 (+23,595% single-window) → negative median, p10=-28.4%
+  - s292 (+20,000% single-window) → marginal, median negative
+  - Single-window results were entirely overfit to crypto bull run. Deployment correctly blocked.
+- ⚠️ **ACTION REQUIRED**: Renew Alpaca LIVE API key → update env_real.py lines 38-39 → restart service
+- **LIVE daily-rl-trader (when restarted)**: **32-model ensemble** (live API key expired)
   - **Ensemble members**: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835+s2827+s2722+s3668+s3411+s4011+s4777+s4080+s4533+s4813+s5045+s5337+s5199+s5019+s6808+s3456+s7159+**s6758**
   - **Best short-list benchmark**: 0/111 neg, med=73.4%, **p10=66.2%** @fill_bps=5
   - **Latest full-history replay (2026-04-01, refreshed data, 1827 rolling 90d windows)**: 342/1827 neg, med=2.36%, p10=-0.79%, worst=-47.79%, med Sortino=2.92, med MaxDD=-1.28%, med trades=68

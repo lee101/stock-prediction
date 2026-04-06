@@ -10,6 +10,7 @@ market order shortly after the regular session opens.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import logging
 import math
@@ -17,13 +18,15 @@ import os
 import re
 import shlex
 import sys
+import tempfile
 import time
+from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Iterable, Optional, Sequence
-from urllib.parse import urlparse
+from threading import Lock
+from typing import Iterable, Literal, Optional, Sequence, TypeAlias, TypedDict, cast
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -37,15 +40,22 @@ if str(REPO) not in sys.path:
 
 from pufferlib_market.inference_daily import DailyPPOTrader, compute_daily_features
 from pufferlib_market.export_data_daily import compute_daily_features as compute_daily_feature_history
+from pufferlib_market.checkpoint_loader import load_checkpoint_payload
 from src.alpaca_account_lock import acquire_alpaca_account_lock, require_explicit_live_trading_enable
+from src.local_data_health import format_local_data_health_lines
+from src.shared_path_guard import shared_path_guard
 from src.trading_server.client import (
     InMemoryTradingServerClient,
+    TradingServerBaseUrlDetails,
     TradingServerAccountSnapshot,
     TradingServerClient,
     TradingServerClientLike,
     TradingServerPositionPayload,
     TradingServerQuotePayload,
+    describe_trading_server_base_url,
+    is_secure_or_loopback_trading_server_url,
 )
+from src.trading_server.settings import TRADING_SERVER_BASE_URL_ENV, resolve_trading_server_base_url
 from unified_orchestrator.jsonl_utils import append_jsonl_row
 
 logging.basicConfig(
@@ -145,6 +155,9 @@ DEFAULT_BACKTEST_SERVER_SESSION_ID = "daily-stock-backtest"
 DEFAULT_BACKTEST_WRITER_TTL_SECONDS = 3600
 DEFAULT_BACKTEST_STARTING_CASH = 10_000.0
 DEFAULT_BACKTEST_BUYING_POWER_MULTIPLIER = 1.0
+DEFAULT_DAILY_FRAME_MIN_DAYS = 120
+DEFAULT_ALPACA_DAILY_HISTORY_LOOKBACK_DAYS = 420
+DEFAULT_BAR_FRESHNESS_MAX_AGE_DAYS = 5
 BUYING_POWER_USAGE_CAP = 0.95
 MAX_STOCK_SYMBOL_LENGTH = 20
 SAFE_STOCK_SYMBOL_RE = re.compile(
@@ -160,6 +173,126 @@ DEFAULT_MIN_OPEN_VALUE_ESTIMATE = 0.0
 STATE_PATH = REPO / "strategy_state/daily_stock_rl_state.json"
 SIGNAL_LOG_PATH = REPO / "strategy_state/daily_stock_rl_signals.jsonl"
 
+StockDataSource: TypeAlias = Literal["alpaca", "local"]
+StockExecutionBackend: TypeAlias = Literal["alpaca", "trading_server"]
+StockRunMode: TypeAlias = Literal["once", "daemon", "backtest"]
+StockAccountMode: TypeAlias = Literal["paper", "live"]
+TradingServerUrlSource: TypeAlias = Literal["cli", "env", "default"]
+StockExecutionStatus: TypeAlias = Literal[
+    "local_only",
+    "submitted",
+    "dry_run_would_execute",
+    "skipped_market_closed",
+    "skipped_stale_bars",
+    "no_action_flat_signal",
+    "blocked_open_gate",
+    "no_action_executor_declined",
+]
+StockExecutionSkipReason: TypeAlias = Literal[
+    "local_data_mode",
+    "market_closed",
+    "stale_bars",
+    "flat_signal",
+    "open_gate",
+    "executor_declined",
+]
+StockLocalDataStatus: TypeAlias = Literal["usable", "stale", "missing", "invalid"]
+
+
+class RuntimeLogPayload(TypedDict, total=False):
+    account_mode: StockAccountMode
+    run_mode: StockRunMode
+    dry_run: bool
+    data_source: StockDataSource
+    execution_backend: StockExecutionBackend
+    symbol_count: int
+    symbols: list[str]
+    checkpoint: str
+    ensemble_size: int
+    command_preview: str
+    data_dir: str
+    server_account: str
+    server_bot_id: str
+    configured_server_url: str | None
+    server_url: str
+    resolved_server_url: str
+    server_url_source: TradingServerUrlSource
+    server_url_transport: str
+    server_url_scope: str
+    server_url_security: str
+
+
+class SignalPayload(TypedDict):
+    timestamp: str
+    checkpoint: str
+    action: str
+    symbol: str | None
+    direction: str | None
+    confidence: float
+    value_estimate: float
+    allocation_fraction: float
+    quotes: dict[str, float]
+
+
+class ExecutionObservabilityFields(TypedDict):
+    execution_submitted: bool
+    execution_would_submit: bool
+    execution_status: StockExecutionStatus
+    execution_skip_reason: StockExecutionSkipReason | None
+
+
+class RunSummaryPayload(TypedDict):
+    event: str
+    timestamp: object
+    checkpoint: object
+    action: object
+    symbol: object
+    direction: object
+    confidence: object
+    value_estimate: object
+    bar_data_source: object
+    quote_data_source: object
+    latest_bar_timestamp: object
+    bars_fresh: object
+    market_open: object
+    dry_run: object
+    execution_backend: object
+    execution_status: object
+    execution_skip_reason: object
+    execution_submitted: object
+    execution_would_submit: object
+    allow_open: object
+    allow_open_reason: object
+    state_advanced: object
+    signal_log_written: object
+    signal_log_write_error: object
+
+
+class RunFailurePayload(TypedDict):
+    event: str
+    timestamp: str
+    checkpoint: str
+    stage: str
+    error_type: str
+    error: str
+    data_source: StockDataSource
+    execution_backend: StockExecutionBackend
+    account_mode: StockAccountMode
+    dry_run: bool
+    state_path: str
+    symbols: list[str]
+    server_account: str | None
+    server_bot_id: str | None
+    server_url: str | None
+
+
+class StockLocalSymbolDetail(TypedDict):
+    status: StockLocalDataStatus
+    file_path: str
+    local_data_date: str | None
+    row_count: int | None
+    reason: str | None
+
 
 @dataclass
 class StrategyState:
@@ -171,6 +304,8 @@ class StrategyState:
     last_signal_action: Optional[str] = None
     last_signal_timestamp: Optional[str] = None
     last_order_id: Optional[str] = None
+    pending_close_symbol: Optional[str] = None
+    pending_close_order_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -182,6 +317,20 @@ class PortfolioContext:
     hold_days: int = 0
 
 
+@dataclass
+class _DailyTraderCacheEntry:
+    size: int
+    mtime_ns: int
+    trader: DailyPPOTrader
+
+
+@dataclass
+class _BarePolicyCacheEntry:
+    size: int
+    mtime_ns: int
+    policy: torch.nn.Module
+
+
 @dataclass(frozen=True)
 class ServerPositionView:
     symbol: str
@@ -191,6 +340,14 @@ class ServerPositionView:
     current_price: float = 0.0
 
 
+_DAILY_TRADER_CACHE_MAX_ENTRIES = 8
+_BARE_POLICY_CACHE_MAX_ENTRIES = 64
+_DAILY_TRADER_CACHE: "OrderedDict[tuple[object, ...], _DailyTraderCacheEntry]" = OrderedDict()
+_BARE_POLICY_CACHE: "OrderedDict[tuple[object, ...], _BarePolicyCacheEntry]" = OrderedDict()
+_DAILY_TRADER_CACHE_LOCK = Lock()
+_BARE_POLICY_CACHE_LOCK = Lock()
+
+
 @dataclass(frozen=True)
 class CliRuntimeConfig:
     paper: bool
@@ -198,9 +355,9 @@ class CliRuntimeConfig:
     checkpoint: str
     extra_checkpoints: Optional[list[str]]
     data_dir: str
-    data_source: str
+    data_source: StockDataSource
     allocation_pct: float
-    execution_backend: str
+    execution_backend: StockExecutionBackend
     server_account: str
     server_bot_id: str
     server_url: Optional[str]
@@ -215,6 +372,7 @@ class CliRuntimeConfig:
     min_open_confidence: float = DEFAULT_MIN_OPEN_CONFIDENCE
     min_open_value_estimate: float = DEFAULT_MIN_OPEN_VALUE_ESTIMATE
     print_payload: bool = False
+    allow_unsafe_checkpoint_loading: bool = False
     removed_duplicate_symbols: list[str] = field(default_factory=list)
     ignored_symbol_inputs: list[str] = field(default_factory=list)
 
@@ -227,11 +385,11 @@ class CliRuntimeConfig:
         return 1 + len(self.extra_checkpoints or [])
 
     @property
-    def account_mode(self) -> str:
+    def account_mode(self) -> StockAccountMode:
         return "paper" if self.paper else "live"
 
     @property
-    def run_mode(self) -> str:
+    def run_mode(self) -> StockRunMode:
         return "backtest" if self.backtest else ("daemon" if self.daemon else "once")
 
     @property
@@ -248,7 +406,19 @@ class CliRuntimeConfig:
 
     @property
     def resolved_server_url(self) -> str:
-        return (self.server_url or os.getenv("TRADING_SERVER_URL", "http://127.0.0.1:8050")).rstrip("/")
+        return resolve_trading_server_base_url(self.server_url)
+
+    @property
+    def server_url_source(self) -> TradingServerUrlSource:
+        if self.server_url:
+            return "cli"
+        if os.getenv(TRADING_SERVER_BASE_URL_ENV):
+            return "env"
+        return "default"
+
+    @property
+    def resolved_server_url_details(self) -> TradingServerBaseUrlDetails:
+        return describe_trading_server_base_url(self.resolved_server_url)
 
     def to_runtime_payload(self) -> dict[str, object]:
         payload = asdict(self)
@@ -258,10 +428,16 @@ class CliRuntimeConfig:
         payload["account_mode"] = self.account_mode
         payload["run_mode"] = self.run_mode
         payload["summary"] = self.summary
+        payload["check_command_preview"] = self.command_preview(check_config=True)
         payload["run_command_preview"] = self.command_preview()
         payload["safe_command_preview"] = self.command_preview(force_dry_run=True)
         payload["checkpoints_exist"] = self.checkpoints_exist
         payload["missing_checkpoints"] = self.missing_checkpoint_paths
+        payload["daily_frame_min_days"] = DEFAULT_DAILY_FRAME_MIN_DAYS
+        payload["alpaca_daily_history_lookback_days"] = DEFAULT_ALPACA_DAILY_HISTORY_LOOKBACK_DAYS
+        payload["bar_freshness_max_age_days"] = DEFAULT_BAR_FRESHNESS_MAX_AGE_DAYS
+        if self.execution_backend == "trading_server":
+            payload.update(_trading_server_runtime_fields(self))
         return payload
 
     @property
@@ -275,8 +451,15 @@ class CliRuntimeConfig:
             f"with {self.ensemble_size} {checkpoint_label}"
         )
 
-    def command_preview(self, *, force_dry_run: bool | None = None) -> str:
+    def command_preview(
+        self,
+        *,
+        force_dry_run: bool | None = None,
+        check_config: bool = False,
+    ) -> str:
         args = ["python", Path(__file__).name]
+        if check_config:
+            args.append("--check-config")
 
         if self.run_mode == "daemon":
             args.append("--daemon")
@@ -286,11 +469,13 @@ class CliRuntimeConfig:
             args.append("--once")
 
         args.append("--paper" if self.paper else "--live")
-        use_dry_run = force_dry_run if force_dry_run is not None else self.dry_run
+        use_dry_run = False if check_config else (force_dry_run if force_dry_run is not None else self.dry_run)
         if use_dry_run and not self.backtest:
             args.append("--dry-run")
 
         args.extend(["--checkpoint", self.checkpoint])
+        if self.allow_unsafe_checkpoint_loading:
+            args.append("--allow-unsafe-checkpoint-loading")
         if self.extra_checkpoints is None:
             args.append("--no-ensemble")
         elif self.extra_checkpoints != DEFAULT_EXTRA_CHECKPOINTS:
@@ -333,8 +518,50 @@ class CliRuntimeConfig:
         return " ".join(shlex.quote(arg) for arg in args)
 
 
-def _runtime_log_payload(config: CliRuntimeConfig) -> dict[str, object]:
-    payload: dict[str, object] = {
+def _trading_server_runtime_fields(config: CliRuntimeConfig) -> dict[str, object]:
+    details = config.resolved_server_url_details
+    return {
+        "configured_server_url": config.server_url,
+        "server_url": config.resolved_server_url,
+        "resolved_server_url": config.resolved_server_url,
+        "server_url_source": config.server_url_source,
+        "server_url_transport": details["transport"],
+        "server_url_scope": details["scope"],
+        "server_url_security": details["security"],
+    }
+
+
+def _trading_server_url_source_label(source: object) -> str:
+    normalized = str(source or "").strip().lower()
+    if normalized == "cli":
+        return "--server-url"
+    if normalized == "env":
+        return TRADING_SERVER_BASE_URL_ENV
+    return "built-in default"
+
+
+def _trading_server_url_update_hint(source: object) -> str:
+    normalized = str(source or "").strip().lower()
+    if normalized == "cli":
+        return "Update --server-url"
+    if normalized == "env":
+        return f"Update {TRADING_SERVER_BASE_URL_ENV}"
+    return f"Pass --server-url or set {TRADING_SERVER_BASE_URL_ENV}"
+
+
+def _trading_server_url_security_label(security: object) -> str:
+    normalized = str(security or "").strip().lower()
+    if normalized == "https":
+        return "https"
+    if normalized == "loopback_http":
+        return "loopback http"
+    if normalized == "insecure_remote_http":
+        return "remote http rejected in live mode"
+    return "invalid url"
+
+
+def _runtime_log_payload(config: CliRuntimeConfig) -> RuntimeLogPayload:
+    payload: RuntimeLogPayload = {
         "account_mode": config.account_mode,
         "run_mode": config.run_mode,
         "dry_run": config.dry_run,
@@ -351,7 +578,7 @@ def _runtime_log_payload(config: CliRuntimeConfig) -> dict[str, object]:
     if config.execution_backend == "trading_server":
         payload["server_account"] = config.server_account
         payload["server_bot_id"] = config.server_bot_id
-        payload["server_url"] = config.resolved_server_url
+        payload.update(cast(RuntimeLogPayload, _trading_server_runtime_fields(config)))
     return payload
 
 
@@ -469,7 +696,7 @@ def load_local_daily_frames(
     symbols: Iterable[str],
     *,
     data_dir: str = DEFAULT_DATA_DIR,
-    min_days: int = 120,
+    min_days: int = DEFAULT_DAILY_FRAME_MIN_DAYS,
 ) -> dict[str, pd.DataFrame]:
     frames: dict[str, pd.DataFrame] = {}
     normalized_symbols = _normalize_stock_symbol_list(symbols)
@@ -571,8 +798,8 @@ def load_alpaca_daily_frames(
     symbols: Iterable[str],
     *,
     paper: bool,
-    min_days: int = 120,
-    history_days: int = 420,
+    min_days: int = DEFAULT_DAILY_FRAME_MIN_DAYS,
+    history_days: int = DEFAULT_ALPACA_DAILY_HISTORY_LOOKBACK_DAYS,
     now: Optional[datetime] = None,
     data_client=None,
 ) -> dict[str, pd.DataFrame]:
@@ -653,32 +880,67 @@ def load_alpaca_daily_frames(
 
 
 def load_state(path: Path = STATE_PATH) -> StrategyState:
-    if not path.exists():
-        return StrategyState()
+    guard = shared_path_guard(path)
+    guard.acquire_read()
     try:
-        payload = json.loads(path.read_text())
-    except Exception as exc:
-        logger.warning("Could not parse %s: %s", path, exc)
-        return StrategyState()
-    return StrategyState(
-        active_symbol=payload.get("active_symbol"),
-        active_qty=float(payload.get("active_qty", 0.0) or 0.0),
-        entry_price=float(payload.get("entry_price", 0.0) or 0.0),
-        entry_date=payload.get("entry_date"),
-        last_run_date=payload.get("last_run_date"),
-        last_signal_action=payload.get("last_signal_action"),
-        last_signal_timestamp=payload.get("last_signal_timestamp"),
-        last_order_id=payload.get("last_order_id"),
-    )
+        if not path.exists():
+            return StrategyState()
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("Could not parse %s: %s", path, exc)
+            return StrategyState()
+        return StrategyState(
+            active_symbol=payload.get("active_symbol"),
+            active_qty=float(payload.get("active_qty", 0.0) or 0.0),
+            entry_price=float(payload.get("entry_price", 0.0) or 0.0),
+            entry_date=payload.get("entry_date"),
+            last_run_date=payload.get("last_run_date"),
+            last_signal_action=payload.get("last_signal_action"),
+            last_signal_timestamp=payload.get("last_signal_timestamp"),
+            last_order_id=payload.get("last_order_id"),
+        )
+    finally:
+        guard.release_read()
 
 
 def save_state(state: StrategyState, path: Path = STATE_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(state), indent=2, sort_keys=True))
+    payload = json.dumps(asdict(state), indent=2, sort_keys=True)
+    guard = shared_path_guard(path)
+    temp_path: Path | None = None
+    guard.acquire_write()
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+            temp_path = Path(handle.name)
+        os.replace(temp_path, path)
+    finally:
+        guard.release_write()
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink(missing_ok=True)
 
 
 def append_signal_log(payload: dict, path: Path = SIGNAL_LOG_PATH) -> None:
     append_jsonl_row(path, payload, sort_keys=True)
+
+
+def _append_signal_log_best_effort(payload: dict, path: Path = SIGNAL_LOG_PATH) -> str | None:
+    try:
+        append_signal_log(payload, path=path)
+    except (OSError, TypeError, ValueError) as exc:
+        logger.warning("Signal log write failed for %s: %s", path, exc)
+        return str(exc)
+    return None
 
 
 def latest_close_prices(frames: dict[str, pd.DataFrame]) -> dict[str, float]:
@@ -751,17 +1013,112 @@ def load_inference_frames(
     data_client=None,
 ) -> tuple[dict[str, pd.DataFrame], str]:
     try:
-        frames = load_alpaca_daily_frames(symbols, paper=paper, data_client=data_client, now=now)
+        frames = load_alpaca_daily_frames(
+            symbols,
+            paper=paper,
+            min_days=DEFAULT_DAILY_FRAME_MIN_DAYS,
+            history_days=DEFAULT_ALPACA_DAILY_HISTORY_LOOKBACK_DAYS,
+            data_client=data_client,
+            now=now,
+        )
         return frames, "alpaca"
     except Exception as exc:
         logger.warning("Falling back to local daily CSVs for inference bars: %s", exc)
-        frames = load_local_daily_frames(symbols, data_dir=data_dir)
+        frames = load_local_daily_frames(
+            symbols,
+            data_dir=data_dir,
+            min_days=DEFAULT_DAILY_FRAME_MIN_DAYS,
+        )
         return frames, "local_fallback"
 
 
-def _load_bare_policy(checkpoint_path: str, obs_size: int, num_actions: int, device: str):
+def _prune_ordered_cache(cache: OrderedDict[object, object], *, max_entries: int) -> None:
+    while len(cache) > max_entries:
+        cache.popitem(last=False)
+
+
+def _load_cached_daily_trader(
+    checkpoint_path: str,
+    *,
+    device: str = "cpu",
+    long_only: bool = False,
+    symbols: Optional[Sequence[str]] = None,
+    allow_unsafe_checkpoint_loading: bool = False,
+) -> DailyPPOTrader:
+    normalized_symbols = tuple(str(symbol).upper() for symbol in (symbols or []))
+    checkpoint = Path(checkpoint_path).expanduser()
+    resolved_path = checkpoint.resolve(strict=False)
+    try:
+        stat_result = resolved_path.stat()
+    except OSError:
+        stat_result = None
+    cache_key = (
+        resolved_path,
+        str(device),
+        bool(long_only),
+        normalized_symbols,
+        bool(allow_unsafe_checkpoint_loading),
+    )
+    if stat_result is not None:
+        with _DAILY_TRADER_CACHE_LOCK:
+            cached = _DAILY_TRADER_CACHE.get(cache_key)
+            if cached is not None and cached.size == stat_result.st_size and cached.mtime_ns == stat_result.st_mtime_ns:
+                _DAILY_TRADER_CACHE.move_to_end(cache_key)
+                return copy.deepcopy(cached.trader)
+
+    trader = DailyPPOTrader(
+        checkpoint_path,
+        device=device,
+        long_only=long_only,
+        symbols=list(normalized_symbols) if normalized_symbols else None,
+        allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+    )
+    if stat_result is not None:
+        with _DAILY_TRADER_CACHE_LOCK:
+            _DAILY_TRADER_CACHE[cache_key] = _DailyTraderCacheEntry(
+                size=stat_result.st_size,
+                mtime_ns=stat_result.st_mtime_ns,
+                trader=copy.deepcopy(trader),
+            )
+            _DAILY_TRADER_CACHE.move_to_end(cache_key)
+            _prune_ordered_cache(_DAILY_TRADER_CACHE, max_entries=_DAILY_TRADER_CACHE_MAX_ENTRIES)
+    return trader
+
+
+def _load_bare_policy(
+    checkpoint_path: str,
+    obs_size: int,
+    num_actions: int,
+    device: str,
+    *,
+    allow_unsafe_checkpoint_loading: bool = False,
+):
     """Load a policy nn.Module from a checkpoint without full PPOTrader overhead."""
-    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    checkpoint = Path(checkpoint_path).expanduser()
+    resolved_path = checkpoint.resolve(strict=False)
+    try:
+        stat_result = resolved_path.stat()
+    except OSError:
+        stat_result = None
+    cache_key = (
+        resolved_path,
+        int(obs_size),
+        int(num_actions),
+        str(device),
+        bool(allow_unsafe_checkpoint_loading),
+    )
+    if stat_result is not None:
+        with _BARE_POLICY_CACHE_LOCK:
+            cached = _BARE_POLICY_CACHE.get(cache_key)
+            if cached is not None and cached.size == stat_result.st_size and cached.mtime_ns == stat_result.st_mtime_ns:
+                _BARE_POLICY_CACHE.move_to_end(cache_key)
+                return copy.deepcopy(cached.policy)
+
+    ckpt = load_checkpoint_payload(
+        checkpoint_path,
+        map_location=device,
+        allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+    )
     # Support multiple checkpoint formats: direct state_dict, {"model": sd}, {"model_state_dict": sd}
     if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
         state_dict = ckpt["model_state_dict"]
@@ -798,6 +1155,15 @@ def _load_bare_policy(checkpoint_path: str, obs_size: int, num_actions: int, dev
     policy.load_state_dict(state_dict, strict=False)
     policy.to(torch.device(device))
     policy.eval()
+    if stat_result is not None:
+        with _BARE_POLICY_CACHE_LOCK:
+            _BARE_POLICY_CACHE[cache_key] = _BarePolicyCacheEntry(
+                size=stat_result.st_size,
+                mtime_ns=stat_result.st_mtime_ns,
+                policy=copy.deepcopy(policy),
+            )
+            _BARE_POLICY_CACHE.move_to_end(cache_key)
+            _prune_ordered_cache(_BARE_POLICY_CACHE, max_entries=_BARE_POLICY_CACHE_MAX_ENTRIES)
     return policy
 
 
@@ -865,6 +1231,7 @@ def build_signal(
     device: str = "cpu",
     portfolio: PortfolioContext = PortfolioContext(),
     extra_checkpoints: Optional[list] = None,
+    allow_unsafe_checkpoint_loading: bool = False,
 ):
     aligned = _align_frames(frames)
     indexed = {
@@ -872,7 +1239,13 @@ def build_signal(
         for symbol, frame in aligned.items()
     }
     prices = {symbol: float(frame["close"].iloc[-1]) for symbol, frame in aligned.items()}
-    trader = DailyPPOTrader(checkpoint, device=device, long_only=True, symbols=list(indexed.keys()))
+    trader = _load_cached_daily_trader(
+        checkpoint,
+        device=device,
+        long_only=True,
+        symbols=list(indexed.keys()),
+        allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+    )
     trader.cash = float(portfolio.cash)
     trader.position_qty = float(portfolio.position_qty)
     trader.entry_price = float(portfolio.entry_price)
@@ -896,6 +1269,7 @@ def build_signal(
                 trader.obs_size,
                 trader.num_actions,
                 device,
+                allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
             )
             for p in extra_checkpoints
         ]
@@ -925,7 +1299,12 @@ def latest_bar_timestamp(frames: dict[str, pd.DataFrame]) -> pd.Timestamp:
     return latest.tz_localize("UTC") if latest.tzinfo is None else latest.tz_convert("UTC")
 
 
-def bars_are_fresh(*, latest_bar: pd.Timestamp, now: datetime, max_age_days: int = 5) -> bool:
+def bars_are_fresh(
+    *,
+    latest_bar: pd.Timestamp,
+    now: datetime,
+    max_age_days: int = DEFAULT_BAR_FRESHNESS_MAX_AGE_DAYS,
+) -> bool:
     latest_bar = latest_bar.tz_localize("UTC") if latest_bar.tzinfo is None else latest_bar.tz_convert("UTC")
     age_days = (now.date() - latest_bar.date()).days
     return age_days <= max(0, int(max_age_days))
@@ -1188,6 +1567,8 @@ def execute_signal_with_trading_server(
                 metadata={"strategy": "daily_stock_rl", "intent": "close_managed"},
             )
             state.last_order_id = str(order.get("order", {}).get("id", ""))
+            state.pending_close_symbol = managed_symbol
+            state.pending_close_order_id = state.last_order_id
             state.active_symbol = None
             state.active_qty = 0.0
             state.entry_price = 0.0
@@ -1305,6 +1686,8 @@ def execute_signal(
             else:
                 order = submit_market_order(client, symbol=managed_symbol, qty=abs(qty), side=close_side)
             state.last_order_id = str(getattr(order, "id", ""))
+            state.pending_close_symbol = managed_symbol
+            state.pending_close_order_id = state.last_order_id
             state.active_symbol = None
             state.active_qty = 0.0
             state.entry_price = 0.0
@@ -1312,6 +1695,13 @@ def execute_signal(
 
     if desired_symbol is None:
         logger.info("Signal is flat; no new position opened")
+        return managed_position is not None
+
+    if state.pending_close_symbol:
+        logger.warning(
+            "Pending close for %s still outstanding (order %s); skipping new open",
+            state.pending_close_symbol, state.pending_close_order_id,
+        )
         return managed_position is not None
 
     if not allow_open:
@@ -1405,6 +1795,39 @@ def build_portfolio_context(
     )
 
 
+def reconcile_pending_close(
+    *,
+    state: StrategyState,
+    live_positions: dict[str, object],
+) -> None:
+    """Clear pending_close_symbol once the close order has actually filled."""
+    if not state.pending_close_symbol:
+        return
+    sym = state.pending_close_symbol.upper()
+    if sym not in live_positions:
+        logger.info(
+            "Pending close for %s confirmed filled (order %s); clearing pending state",
+            sym, state.pending_close_order_id,
+        )
+        state.pending_close_symbol = None
+        state.pending_close_order_id = None
+    else:
+        logger.warning(
+            "Pending close for %s NOT yet filled (order %s); position still open on broker",
+            sym, state.pending_close_order_id,
+        )
+        # Re-adopt the position so we don't lose track of it
+        position = live_positions[sym]
+        qty = abs(_signed_position_qty(position))
+        if qty > 0 and not state.active_symbol:
+            state.active_symbol = sym
+            state.active_qty = qty
+            state.entry_price = float(getattr(position, "avg_entry_price", 0.0) or 0.0)
+            state.pending_close_symbol = None
+            state.pending_close_order_id = None
+            logger.warning("Re-adopted unfilled close position %s back into active state", sym)
+
+
 def adopt_existing_position(
     *,
     state: StrategyState,
@@ -1454,7 +1877,7 @@ def seconds_until_next_check(*, now: datetime, is_market_open: bool, next_open: 
     return 300.0 if is_market_open else 900.0
 
 
-def _signal_payload(signal, *, checkpoint: str, quotes: dict[str, float]) -> dict:
+def _signal_payload(signal, *, checkpoint: str, quotes: dict[str, float]) -> SignalPayload:
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "checkpoint": checkpoint,
@@ -1468,6 +1891,123 @@ def _signal_payload(signal, *, checkpoint: str, quotes: dict[str, float]) -> dic
     }
 
 
+def _execution_observability_fields(
+    *,
+    data_source: StockDataSource,
+    dry_run: bool,
+    market_open: bool | None,
+    bars_fresh: bool,
+    signal,
+    allow_open: bool,
+    executed: bool,
+) -> ExecutionObservabilityFields:
+    execution_submitted = bool(data_source == "alpaca" and not dry_run and executed)
+    execution_would_submit = bool(data_source == "alpaca" and dry_run and executed)
+    skip_reason: StockExecutionSkipReason | None = None
+
+    if data_source != "alpaca":
+        status: StockExecutionStatus = "local_only"
+        skip_reason = "local_data_mode"
+    elif execution_submitted:
+        status = "submitted"
+    elif execution_would_submit:
+        status = "dry_run_would_execute"
+    elif not dry_run and market_open is False:
+        status = "skipped_market_closed"
+        skip_reason = "market_closed"
+    elif not dry_run and not bars_fresh:
+        status = "skipped_stale_bars"
+        skip_reason = "stale_bars"
+    elif signal.symbol is None or signal.direction != "long":
+        status = "no_action_flat_signal"
+        skip_reason = "flat_signal"
+    elif not allow_open:
+        status = "blocked_open_gate"
+        skip_reason = "open_gate"
+    else:
+        status = "no_action_executor_declined"
+        skip_reason = "executor_declined"
+
+    return {
+        "execution_submitted": execution_submitted,
+        "execution_would_submit": execution_would_submit,
+        "execution_status": status,
+        "execution_skip_reason": skip_reason,
+    }
+
+
+def _run_summary_payload(payload: dict[str, object]) -> RunSummaryPayload:
+    return {
+        "event": "daily_stock_run_once",
+        "timestamp": payload.get("timestamp"),
+        "checkpoint": payload.get("checkpoint"),
+        "action": payload.get("action"),
+        "symbol": payload.get("symbol"),
+        "direction": payload.get("direction"),
+        "confidence": payload.get("confidence"),
+        "value_estimate": payload.get("value_estimate"),
+        "bar_data_source": payload.get("bar_data_source"),
+        "quote_data_source": payload.get("quote_data_source"),
+        "latest_bar_timestamp": payload.get("latest_bar_timestamp"),
+        "bars_fresh": payload.get("bars_fresh"),
+        "market_open": payload.get("market_open"),
+        "dry_run": payload.get("dry_run"),
+        "execution_backend": payload.get("execution_backend"),
+        "allow_open": payload.get("allow_open"),
+        "allow_open_reason": payload.get("allow_open_reason"),
+        "execution_status": payload.get("execution_status"),
+        "execution_skip_reason": payload.get("execution_skip_reason"),
+        "execution_submitted": payload.get("execution_submitted"),
+        "execution_would_submit": payload.get("execution_would_submit"),
+        "state_advanced": payload.get("state_advanced"),
+        "signal_log_written": payload.get("signal_log_written"),
+        "signal_log_write_error": payload.get("signal_log_write_error"),
+    }
+
+
+def _log_run_summary(payload: dict[str, object]) -> None:
+    logger.info("Run summary: %s", json.dumps(_run_summary_payload(payload), sort_keys=True))
+
+
+def _run_failure_payload(
+    *,
+    now: datetime,
+    checkpoint: str,
+    stage: str,
+    exc: Exception,
+    data_source: StockDataSource,
+    execution_backend: StockExecutionBackend,
+    paper: bool,
+    dry_run: bool,
+    state_path: Path,
+    symbols: Sequence[str],
+    server_account: str | None,
+    server_bot_id: str | None,
+    server_url: str | None,
+) -> RunFailurePayload:
+    return {
+        "event": "daily_stock_run_once_failed",
+        "timestamp": now.isoformat(),
+        "checkpoint": checkpoint,
+        "stage": stage,
+        "error_type": type(exc).__name__,
+        "error": str(exc),
+        "data_source": data_source,
+        "execution_backend": execution_backend,
+        "account_mode": "paper" if paper else "live",
+        "dry_run": bool(dry_run),
+        "state_path": str(state_path),
+        "symbols": [str(symbol).upper() for symbol in symbols],
+        "server_account": str(server_account).strip() or None,
+        "server_bot_id": str(server_bot_id).strip() or None,
+        "server_url": (str(server_url).strip().rstrip("/") or None) if server_url is not None else None,
+    }
+
+
+def _log_run_failure(payload: RunFailurePayload) -> None:
+    logger.error("Run failure: %s", json.dumps(payload, sort_keys=True))
+
+
 def run_backtest(
     *,
     checkpoint: str,
@@ -1478,12 +2018,19 @@ def run_backtest(
     starting_cash: float = DEFAULT_BACKTEST_STARTING_CASH,
     extra_checkpoints: Optional[list[str]] = None,
     buying_power_multiplier: float = DEFAULT_BACKTEST_BUYING_POWER_MULTIPLIER,
+    allow_unsafe_checkpoint_loading: bool = False,
+    entry_offset_bps: float = 0.0,
+    exit_offset_bps: float = 0.0,
 ) -> dict[str, float]:
     if starting_cash <= 0:
         raise ValueError("starting_cash must be positive")
     if buying_power_multiplier <= 0:
         raise ValueError("buying_power_multiplier must be positive")
-    frames = load_local_daily_frames(symbols, data_dir=data_dir, min_days=days + 120)
+    frames = load_local_daily_frames(
+        symbols,
+        data_dir=data_dir,
+        min_days=days + DEFAULT_DAILY_FRAME_MIN_DAYS,
+    )
     indexed = {
         symbol: frame.set_index("timestamp")[["open", "high", "low", "close", "volume"]].copy()
         for symbol, frame in frames.items()
@@ -1493,13 +2040,20 @@ def run_backtest(
     if start < 1:
         raise ValueError(f"Need at least {days + 1} aligned days for backtest")
 
-    trader = DailyPPOTrader(checkpoint, device="cpu", long_only=True, symbols=list(indexed.keys()))
+    trader = _load_cached_daily_trader(
+        checkpoint,
+        device="cpu",
+        long_only=True,
+        symbols=list(indexed.keys()),
+        allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+    )
     extra_policies = [
         _load_bare_policy(
             str((REPO / path).resolve()) if not Path(path).is_absolute() else path,
             trader.obs_size,
             trader.num_actions,
             "cpu",
+            allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
         )
         for path in (extra_checkpoints or [])
     ]
@@ -1548,7 +2102,8 @@ def run_backtest(
 
         if position is not None and (signal.symbol != position[0] or signal.direction != "long"):
             pos_symbol, qty, _ = position
-            cash += qty * prices[pos_symbol]
+            sell_price = prices[pos_symbol] * (1.0 + exit_offset_bps / 10_000.0)
+            cash += qty * sell_price
             position = None
             trades += 1
             trader.update_state(0, 0.0, "")
@@ -1558,17 +2113,18 @@ def run_backtest(
                 signal,
                 base_allocation_pct=allocation_pct,
             )
+            buy_price = prices[signal.symbol] * (1.0 + entry_offset_bps / 10_000.0)
             qty = compute_target_qty_from_values(
                 portfolio_value=equity,
                 buying_power=equity * float(buying_power_multiplier),
-                price=prices[signal.symbol],
+                price=buy_price,
                 allocation_pct=effective_allocation_pct,
             )
             if qty <= 0:
                 trader.step_day()
                 continue
-            cash -= qty * prices[signal.symbol]
-            position = (signal.symbol, qty, prices[signal.symbol])
+            cash -= qty * buy_price
+            position = (signal.symbol, qty, buy_price)
             trader.update_state(trader.SYMBOLS.index(signal.symbol) + 1, prices[signal.symbol], signal.symbol)
 
         trader.step_day()
@@ -1608,188 +2164,272 @@ def run_once(
     paper: bool,
     allocation_pct: float,
     dry_run: bool,
-    data_source: str,
+    data_source: StockDataSource,
     data_dir: str,
     state_path: Path = STATE_PATH,
     extra_checkpoints: Optional[list] = None,
-    execution_backend: str = "alpaca",
+    execution_backend: StockExecutionBackend = "alpaca",
     server_account: str = DEFAULT_SERVER_PAPER_ACCOUNT,
     server_bot_id: str = DEFAULT_SERVER_PAPER_BOT_ID,
     server_url: str | None = None,
     server_session_id: str | None = None,
     min_open_confidence: float = DEFAULT_MIN_OPEN_CONFIDENCE,
     min_open_value_estimate: float = DEFAULT_MIN_OPEN_VALUE_ESTIMATE,
+    allow_unsafe_checkpoint_loading: bool = False,
 ) -> dict:
     now = datetime.now(timezone.utc)
-    state = load_state(state_path)
-    quote_data_source = "local"
-    quote_source_by_symbol: dict[str, str] = {}
-    latest_bar = None
-    market_open = None
-    if data_source == "alpaca":
-        data_client = build_data_client(paper=paper)
-        clock_client = build_trading_client(paper=paper)
-        frames, bar_data_source = load_inference_frames(
-            symbols,
-            paper=paper,
-            data_dir=data_dir,
-            now=now,
-            data_client=data_client,
-        )
-        close_prices = latest_close_prices(frames)
-        latest_bar = latest_bar_timestamp(frames)
-        quotes, quote_data_source, quote_source_by_symbol = load_latest_quotes_with_source(
-            symbols,
-            paper=paper,
-            fallback_prices=close_prices,
-            data_client=data_client,
-        )
-        if execution_backend == "trading_server":
-            client = build_server_client(
-                account=server_account,
-                bot_id=server_bot_id,
+    symbol_list = [str(symbol).upper() for symbol in symbols]
+    failure_stage = "load_state"
+    try:
+        state = load_state(state_path)
+        quote_data_source = "local"
+        quote_source_by_symbol: dict[str, str] = {}
+        latest_bar = None
+        market_open = None
+        if data_source == "alpaca":
+            failure_stage = "build_data_client"
+            data_client = build_data_client(paper=paper)
+            failure_stage = "build_clock_client"
+            clock_client = build_trading_client(paper=paper)
+            failure_stage = "load_inference_frames"
+            frames, bar_data_source = load_inference_frames(
+                symbol_list,
                 paper=paper,
-                base_url=server_url,
-                session_id=server_session_id,
-            )
-            if not dry_run:
-                client.claim_writer()
-            snapshot = client.get_account()
-            live_positions = server_positions_by_symbol(snapshot, symbols)
-            if not dry_run:
-                adopt_existing_position(state=state, live_positions=live_positions, now=now)
-            portfolio = server_portfolio_context(
-                snapshot=snapshot,
-                state=state,
-                quotes=quotes,
+                data_dir=data_dir,
                 now=now,
+                data_client=data_client,
             )
-        else:
-            client = build_trading_client(paper=paper)
-            live_positions = positions_by_symbol(client, symbols)
-            if not dry_run:
-                adopt_existing_position(state=state, live_positions=live_positions, now=now)
-            portfolio = build_portfolio_context(
-                state=state,
-                live_positions=live_positions,
-                account=client.get_account(),
-                now=now,
+            close_prices = latest_close_prices(frames)
+            latest_bar = latest_bar_timestamp(frames)
+            failure_stage = "load_latest_quotes"
+            quotes, quote_data_source, quote_source_by_symbol = load_latest_quotes_with_source(
+                symbol_list,
+                paper=paper,
+                fallback_prices=close_prices,
+                data_client=data_client,
             )
-        try:
-            market_open = bool(getattr(clock_client.get_clock(), "is_open", False))
-        except Exception as exc:
-            logger.warning("Could not read Alpaca market clock: %s", exc)
-            market_open = False
-    else:
-        frames = load_local_daily_frames(symbols, data_dir=data_dir)
-        quotes = latest_close_prices(frames)
-        portfolio = PortfolioContext()
-        bar_data_source = "local"
-        latest_bar = latest_bar_timestamp(frames)
-
-    signal, close_prices = build_signal(checkpoint, frames, portfolio=portfolio, extra_checkpoints=extra_checkpoints)
-    bars_fresh = bars_are_fresh(latest_bar=latest_bar, now=now) if latest_bar is not None else False
-
-    payload = _signal_payload(signal, checkpoint=checkpoint, quotes=quotes)
-    payload["close_prices"] = close_prices
-    payload["bar_data_source"] = bar_data_source
-    payload["quote_data_source"] = quote_data_source
-    payload["quote_source_by_symbol"] = dict(quote_source_by_symbol)
-    payload["latest_bar_timestamp"] = latest_bar.isoformat() if latest_bar is not None else None
-    payload["bars_fresh"] = bars_fresh
-    payload["min_open_confidence"] = float(min_open_confidence)
-    payload["min_open_value_estimate"] = float(min_open_value_estimate)
-
-    logger.info("%s", "=" * 60)
-    logger.info("DAILY STOCK RL SIGNAL (%s)", now.strftime("%Y-%m-%d %H:%M UTC"))
-    logger.info("%s", "=" * 60)
-    logger.info("Action:     %s", signal.action)
-    logger.info("Symbol:     %s", signal.symbol or "N/A")
-    logger.info("Direction:  %s", signal.direction or "N/A")
-    logger.info("Confidence: %.1f%%", float(signal.confidence) * 100.0)
-    logger.info("Value est:  %.4f", float(signal.value_estimate))
-    logger.info("Bars:       %s latest=%s fresh=%s", bar_data_source, latest_bar.isoformat() if latest_bar is not None else "n/a", bars_fresh)
-    logger.info("Quotes:     %s", quote_data_source)
-    if quote_source_by_symbol:
-        fallback_symbols = sorted(symbol for symbol, source in quote_source_by_symbol.items() if source != "alpaca")
-        if fallback_symbols:
-            logger.info("Quote fallbacks: %s", ", ".join(fallback_symbols))
-
-    executed = False
-    allow_open = True
-    allow_open_reason: str | None = None
-    allow_open_reasons: list[str] = []
-    if data_source == "alpaca":
-        signal_quote_source = quote_source_by_symbol.get(signal.symbol, quote_data_source) if signal.symbol else quote_data_source
-        allow_open_reasons = _open_gate_reasons(
-            signal,
-            signal_quote_source=signal_quote_source,
-            quote_data_source=quote_data_source,
-            min_open_confidence=min_open_confidence,
-            min_open_value_estimate=min_open_value_estimate,
-        )
-        allow_open = not allow_open_reasons
-        if signal.symbol and not allow_open:
-            allow_open_reason = "; ".join(allow_open_reasons)
-            logger.warning(
-                "Execution safety gate active for %s: %s",
-                signal.symbol,
-                allow_open_reason,
-            )
-        if not dry_run and not bool(market_open):
-            logger.warning("Market is closed; skipping order placement")
-        elif not dry_run and not bars_fresh:
-            logger.warning("Latest inference bar is stale; skipping order placement")
-        else:
             if execution_backend == "trading_server":
-                executed = execute_signal_with_trading_server(
-                    signal,
-                    server_client=client,
-                    quotes=quotes,
-                    state=state,
-                    symbols=symbols,
-                    allocation_pct=allocation_pct,
-                    dry_run=dry_run,
-                    now=now,
-                    allow_open=allow_open,
-                    allow_open_reason=allow_open_reason,
-                )
-                payload["server_account"] = server_account
-                payload["server_bot_id"] = server_bot_id
-                payload["server_snapshot"] = client.get_account()
-            else:
-                executed = execute_signal(
-                    signal,
-                    client=client,
+                failure_stage = "build_trading_server_client"
+                client = build_server_client(
+                    account=server_account,
+                    bot_id=server_bot_id,
                     paper=paper,
-                    quotes=quotes,
-                    state=state,
-                    symbols=symbols,
-                    allocation_pct=allocation_pct,
-                    dry_run=dry_run,
-                    now=now,
-                    allow_open=allow_open,
-                    allow_open_reason=allow_open_reason,
+                    base_url=server_url,
+                    session_id=server_session_id,
                 )
-    else:
-        logger.info("Local data mode selected; skipping execution")
+                if not dry_run:
+                    failure_stage = "claim_trading_server_writer"
+                    client.claim_writer()
+                failure_stage = "get_trading_server_account"
+                snapshot = client.get_account()
+                live_positions = server_positions_by_symbol(snapshot, symbol_list)
+                if not dry_run:
+                    reconcile_pending_close(state=state, live_positions=live_positions)
+                    adopt_existing_position(state=state, live_positions=live_positions, now=now)
+                portfolio = server_portfolio_context(
+                    snapshot=snapshot,
+                    state=state,
+                    quotes=quotes,
+                    now=now,
+                )
+            else:
+                failure_stage = "build_alpaca_trading_client"
+                client = build_trading_client(paper=paper)
+                failure_stage = "get_alpaca_positions"
+                live_positions = positions_by_symbol(client, symbol_list)
+                if not dry_run:
+                    reconcile_pending_close(state=state, live_positions=live_positions)
+                    adopt_existing_position(state=state, live_positions=live_positions, now=now)
+                failure_stage = "get_alpaca_account"
+                portfolio = build_portfolio_context(
+                    state=state,
+                    live_positions=live_positions,
+                    account=client.get_account(),
+                    now=now,
+                )
+            try:
+                failure_stage = "get_market_clock"
+                market_open = bool(getattr(clock_client.get_clock(), "is_open", False))
+            except Exception as exc:
+                logger.warning("Could not read Alpaca market clock: %s", exc)
+                market_open = False
+        else:
+            failure_stage = "load_local_daily_frames"
+            frames = load_local_daily_frames(
+                symbol_list,
+                data_dir=data_dir,
+                min_days=DEFAULT_DAILY_FRAME_MIN_DAYS,
+            )
+            quotes = latest_close_prices(frames)
+            portfolio = PortfolioContext()
+            bar_data_source = "local"
+            latest_bar = latest_bar_timestamp(frames)
 
-    payload["allow_open"] = allow_open
-    payload["allow_open_reason"] = allow_open_reason
-    payload["allow_open_reasons"] = allow_open_reasons
-    should_advance_state = (
-        not dry_run
-        and (data_source != "alpaca" or bool(market_open))
-    )
-    if should_advance_state:
-        state.last_run_date = now.astimezone(EASTERN).date().isoformat()
-        state.last_signal_action = signal.action
-        state.last_signal_timestamp = now.isoformat()
-        save_state(state, path=state_path)
-    payload["executed"] = executed
-    append_signal_log(payload)
-    logger.info("%s", "=" * 60)
-    return payload
+        failure_stage = "build_signal"
+        signal, close_prices = build_signal(
+            checkpoint,
+            frames,
+            portfolio=portfolio,
+            extra_checkpoints=extra_checkpoints,
+            allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+        )
+        bars_fresh = (
+            bars_are_fresh(
+                latest_bar=latest_bar,
+                now=now,
+                max_age_days=DEFAULT_BAR_FRESHNESS_MAX_AGE_DAYS,
+            )
+            if latest_bar is not None
+            else False
+        )
+
+        payload = _signal_payload(signal, checkpoint=checkpoint, quotes=quotes)
+        payload["close_prices"] = close_prices
+        payload["bar_data_source"] = bar_data_source
+        payload["quote_data_source"] = quote_data_source
+        payload["quote_source_by_symbol"] = dict(quote_source_by_symbol)
+        payload["latest_bar_timestamp"] = latest_bar.isoformat() if latest_bar is not None else None
+        payload["bars_fresh"] = bars_fresh
+        payload["market_open"] = market_open
+        payload["dry_run"] = bool(dry_run)
+        payload["execution_backend"] = execution_backend
+        payload["min_open_confidence"] = float(min_open_confidence)
+        payload["min_open_value_estimate"] = float(min_open_value_estimate)
+
+        logger.info("%s", "=" * 60)
+        logger.info("DAILY STOCK RL SIGNAL (%s)", now.strftime("%Y-%m-%d %H:%M UTC"))
+        logger.info("%s", "=" * 60)
+        logger.info("Action:     %s", signal.action)
+        logger.info("Symbol:     %s", signal.symbol or "N/A")
+        logger.info("Direction:  %s", signal.direction or "N/A")
+        logger.info("Confidence: %.1f%%", float(signal.confidence) * 100.0)
+        logger.info("Value est:  %.4f", float(signal.value_estimate))
+        logger.info("Bars:       %s latest=%s fresh=%s", bar_data_source, latest_bar.isoformat() if latest_bar is not None else "n/a", bars_fresh)
+        logger.info("Quotes:     %s", quote_data_source)
+        if quote_source_by_symbol:
+            fallback_symbols = sorted(symbol for symbol, source in quote_source_by_symbol.items() if source != "alpaca")
+            if fallback_symbols:
+                logger.info("Quote fallbacks: %s", ", ".join(fallback_symbols))
+
+        executed = False
+        allow_open = True
+        allow_open_reason: str | None = None
+        allow_open_reasons: list[str] = []
+        if data_source == "alpaca":
+            signal_quote_source = quote_source_by_symbol.get(signal.symbol, quote_data_source) if signal.symbol else quote_data_source
+            allow_open_reasons = _open_gate_reasons(
+                signal,
+                signal_quote_source=signal_quote_source,
+                quote_data_source=quote_data_source,
+                min_open_confidence=min_open_confidence,
+                min_open_value_estimate=min_open_value_estimate,
+            )
+            allow_open = not allow_open_reasons
+            if signal.symbol and not allow_open:
+                allow_open_reason = "; ".join(allow_open_reasons)
+                logger.warning(
+                    "Execution safety gate active for %s: %s",
+                    signal.symbol,
+                    allow_open_reason,
+                )
+            if not dry_run and not bool(market_open):
+                logger.warning("Market is closed; skipping order placement")
+            elif not dry_run and not bars_fresh:
+                logger.warning("Latest inference bar is stale; skipping order placement")
+            else:
+                if execution_backend == "trading_server":
+                    failure_stage = "execute_signal_with_trading_server"
+                    executed = execute_signal_with_trading_server(
+                        signal,
+                        server_client=client,
+                        quotes=quotes,
+                        state=state,
+                        symbols=symbol_list,
+                        allocation_pct=allocation_pct,
+                        dry_run=dry_run,
+                        now=now,
+                        allow_open=allow_open,
+                        allow_open_reason=allow_open_reason,
+                    )
+                    failure_stage = "get_trading_server_account_snapshot"
+                    payload["server_account"] = server_account
+                    payload["server_bot_id"] = server_bot_id
+                    payload["server_snapshot"] = client.get_account()
+                else:
+                    failure_stage = "execute_signal"
+                    executed = execute_signal(
+                        signal,
+                        client=client,
+                        paper=paper,
+                        quotes=quotes,
+                        state=state,
+                        symbols=symbol_list,
+                        allocation_pct=allocation_pct,
+                        dry_run=dry_run,
+                        now=now,
+                        allow_open=allow_open,
+                        allow_open_reason=allow_open_reason,
+                    )
+        else:
+            logger.info("Local data mode selected; skipping execution")
+
+        payload["allow_open"] = allow_open
+        payload["allow_open_reason"] = allow_open_reason
+        payload["allow_open_reasons"] = allow_open_reasons
+        should_advance_state = (
+            not dry_run
+            and (data_source != "alpaca" or bool(market_open))
+        )
+        payload.update(
+            _execution_observability_fields(
+                data_source=data_source,
+                dry_run=dry_run,
+                market_open=market_open,
+                bars_fresh=bars_fresh,
+                signal=signal,
+                allow_open=allow_open,
+                executed=executed,
+            )
+        )
+        payload["state_advanced"] = should_advance_state
+        if should_advance_state:
+            failure_stage = "save_state"
+            state.last_run_date = now.astimezone(EASTERN).date().isoformat()
+            state.last_signal_action = signal.action
+            state.last_signal_timestamp = now.isoformat()
+            save_state(state, path=state_path)
+        payload["executed"] = executed
+        signal_log_write_error = _append_signal_log_best_effort(payload)
+        payload["signal_log_written"] = signal_log_write_error is None
+        payload["signal_log_write_error"] = signal_log_write_error
+        failure_stage = "log_run_summary"
+        _log_run_summary(payload)
+        logger.info("%s", "=" * 60)
+        return payload
+    except Exception as exc:
+        stage_note = f"run_once stage: {failure_stage}"
+        if hasattr(exc, "add_note") and stage_note not in _exception_notes(exc):
+            exc.add_note(stage_note)
+        _log_run_failure(
+            _run_failure_payload(
+                now=now,
+                checkpoint=checkpoint,
+                stage=failure_stage,
+                exc=exc,
+                data_source=data_source,
+                execution_backend=execution_backend,
+                paper=paper,
+                dry_run=dry_run,
+                state_path=state_path,
+                symbols=symbol_list,
+                server_account=server_account if execution_backend == "trading_server" else None,
+                server_bot_id=server_bot_id if execution_backend == "trading_server" else None,
+                server_url=resolve_trading_server_base_url(server_url)
+                if execution_backend == "trading_server"
+                else None,
+            )
+        )
+        raise
 
 
 def run_daemon(
@@ -1807,6 +2447,7 @@ def run_daemon(
     server_url: str | None = None,
     min_open_confidence: float = DEFAULT_MIN_OPEN_CONFIDENCE,
     min_open_value_estimate: float = DEFAULT_MIN_OPEN_VALUE_ESTIMATE,
+    allow_unsafe_checkpoint_loading: bool = False,
 ) -> None:
     logger.info("Starting daily stock RL daemon")
     server_session_id = f"daily-rl-trader-{execution_backend}-{os.getpid()}"
@@ -1849,11 +2490,12 @@ def run_daemon(
                     execution_backend=execution_backend,
                     server_account=server_account,
                     server_bot_id=server_bot_id,
-                    server_url=server_url,
-                    server_session_id=server_session_id,
-                    min_open_confidence=min_open_confidence,
-                    min_open_value_estimate=min_open_value_estimate,
-                )
+                server_url=server_url,
+                server_session_id=server_session_id,
+                min_open_confidence=min_open_confidence,
+                min_open_value_estimate=min_open_value_estimate,
+                allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+            )
             except Exception as exc:
                 logger.exception("Daily stock RL cycle failed: %s", exc)
             time.sleep(60.0)
@@ -1905,6 +2547,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                         help="Optional newline/comma separated symbol file. Overrides --symbols.")
     parser.add_argument("--check-config", action="store_true",
                         help="Run a preflight config check, print a readiness report, and exit")
+    parser.add_argument(
+        "--check-config-text",
+        action="store_true",
+        help="When combined with --check-config, also print a human-readable readiness summary to stderr",
+    )
     parser.add_argument("--print-config", action="store_true",
                         help="Print the fully resolved runtime configuration and exit")
     parser.add_argument("--print-payload", action="store_true",
@@ -1913,6 +2560,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                         help="Minimum ensemble confidence required before opening a new position")
     parser.add_argument("--min-open-value-estimate", type=float, default=DEFAULT_MIN_OPEN_VALUE_ESTIMATE,
                         help="Minimum critic value estimate required before opening a new position")
+    parser.add_argument(
+        "--allow-unsafe-checkpoint-loading",
+        action="store_true",
+        help="Allow legacy pickle checkpoint loading. Only use this with trusted checkpoint files.",
+    )
     return parser.parse_args(argv)
 
 
@@ -1947,9 +2599,9 @@ def _resolve_runtime_config(args: argparse.Namespace) -> CliRuntimeConfig:
         checkpoint=checkpoint,
         extra_checkpoints=extra_checkpoints,
         data_dir=args.data_dir,
-        data_source=args.data_source,
+        data_source=cast(StockDataSource, args.data_source),
         allocation_pct=float(args.allocation_pct),
-        execution_backend=args.execution_backend,
+        execution_backend=cast(StockExecutionBackend, args.execution_backend),
         server_account=args.server_account,
         server_bot_id=args.server_bot_id,
         server_url=args.server_url,
@@ -1963,6 +2615,7 @@ def _resolve_runtime_config(args: argparse.Namespace) -> CliRuntimeConfig:
         min_open_confidence=float(args.min_open_confidence),
         min_open_value_estimate=float(args.min_open_value_estimate),
         print_payload=bool(args.print_payload),
+        allow_unsafe_checkpoint_loading=bool(args.allow_unsafe_checkpoint_loading),
     )
 
 
@@ -1983,15 +2636,22 @@ def _checkpoint_load_diagnostics(config: CliRuntimeConfig) -> dict[str, object]:
             "extras": [],
         }
     try:
-        trader = DailyPPOTrader(
+        trader = _load_cached_daily_trader(
             config.checkpoint,
             device="cpu",
             long_only=True,
             symbols=list(config.symbols),
+            allow_unsafe_checkpoint_loading=config.allow_unsafe_checkpoint_loading,
         )
         extras: list[dict[str, object]] = []
         for path in config.extra_checkpoints or []:
-            policy = _load_bare_policy(path, trader.obs_size, trader.num_actions, "cpu")
+            policy = _load_bare_policy(
+                path,
+                trader.obs_size,
+                trader.num_actions,
+                "cpu",
+                allow_unsafe_checkpoint_loading=config.allow_unsafe_checkpoint_loading,
+            )
             extras.append(
                 {
                     "path": path,
@@ -2039,6 +2699,153 @@ def _resolved_trading_server_url(config: CliRuntimeConfig) -> str:
     return config.resolved_server_url
 
 
+def _preflight_next_steps(payload: dict[str, object]) -> list[str]:
+    steps: list[str] = []
+    check_command = str(payload.get("check_command_preview") or "").strip()
+    safe_command = str(payload.get("safe_command_preview") or "").strip()
+    run_command = str(payload.get("run_command_preview") or "").strip()
+
+    if bool(payload.get("ready")):
+        if safe_command:
+            steps.append(f"Run a safe dry run: {safe_command}")
+        if run_command and run_command != safe_command:
+            steps.append(f"Start the configured runtime: {run_command}")
+        if check_command:
+            steps.append(f"Re-run preflight later: {check_command}")
+        return steps
+
+    if payload.get("missing_checkpoints"):
+        steps.append("Provide the missing checkpoint file(s) or update --checkpoint/--extra-checkpoints.")
+    if payload.get("missing_local_symbol_files"):
+        steps.append("Add the missing local daily CSV files under the resolved data directory.")
+    stale_symbol_data = payload.get("stale_symbol_data")
+    if isinstance(stale_symbol_data, dict) and stale_symbol_data:
+        steps.append(
+            "Refresh stale local daily CSVs for: "
+            + ", ".join(str(symbol) for symbol in stale_symbol_data)
+            + "."
+        )
+    symbol_details = payload.get("symbol_details")
+    if isinstance(symbol_details, dict):
+        invalid_symbols = [
+            str(symbol)
+            for symbol, detail in symbol_details.items()
+            if isinstance(detail, dict) and detail.get("status") == "invalid"
+        ]
+        if invalid_symbols:
+            steps.append("Repair unreadable local daily CSVs for: " + ", ".join(invalid_symbols) + ".")
+    if bool(payload.get("alpaca_required")) and not bool(payload.get("alpaca_credentials_configured")):
+        steps.append("Configure valid Alpaca credentials for the selected account mode.")
+    if bool(payload.get("trading_server_required")):
+        server_step_count = len(steps)
+        server_url_source = payload.get("server_url_source")
+        server_url_update_hint = _trading_server_url_update_hint(server_url_source)
+        resolved_server_url = str(
+            payload.get("resolved_server_url") or payload.get("server_url") or ""
+        ).strip()
+        server_url_security = str(payload.get("server_url_security") or "").strip().lower()
+        if server_url_security == "invalid":
+            steps.append(
+                f"{server_url_update_hint} to a valid http:// or https:// trading server URL "
+                f"(current: {resolved_server_url or '<unset>'})."
+            )
+        elif server_url_security == "insecure_remote_http":
+            steps.append(
+                f"{server_url_update_hint} to an https:// trading server URL for live remote "
+                f"execution (current: {resolved_server_url})."
+            )
+        if str(payload.get("account_mode") or "").strip().lower() == "live":
+            if str(payload.get("server_url_source") or "").strip().lower() == "default":
+                steps.append(
+                    "Pass --server-url explicitly or set TRADING_SERVER_URL before live "
+                    "trading_server runs if the server is not local."
+                )
+            if str(payload.get("server_account") or "").strip() == DEFAULT_SERVER_PAPER_ACCOUNT:
+                steps.append(
+                    "Pass --server-account explicitly for the live trading_server account "
+                    "instead of the paper default."
+                )
+        if not str(payload.get("server_account") or "").strip():
+            steps.append("Set --server-account to the trading_server account before retrying.")
+        if not str(payload.get("server_bot_id") or "").strip():
+            steps.append("Set --server-bot-id to the trading_server bot id before retrying.")
+        if len(steps) == server_step_count:
+            steps.append("Verify --server-url, --server-account, and --server-bot-id before retrying.")
+    if check_command:
+        steps.append(f"Re-run preflight after fixes: {check_command}")
+    return steps
+
+
+def _build_local_symbol_details(
+    *,
+    symbols: Sequence[str],
+    resolved_local_data_dir: Path | None,
+) -> tuple[
+    dict[str, StockLocalSymbolDetail],
+    list[str],
+    str | None,
+    str | None,
+]:
+    details: dict[str, StockLocalSymbolDetail] = {}
+    usable_symbols: list[str] = []
+    usable_timestamps: dict[str, pd.Timestamp] = {}
+
+    if resolved_local_data_dir is None:
+        return details, usable_symbols, None, None
+
+    for symbol in symbols:
+        path = (resolved_local_data_dir / f"{symbol}.csv").resolve()
+        if not path.exists():
+            details[symbol] = {
+                "status": "missing",
+                "file_path": str(path),
+                "local_data_date": None,
+                "row_count": None,
+                "reason": "missing local daily CSV",
+            }
+            continue
+        try:
+            frame = _normalize_daily_frame(pd.read_csv(path))
+        except Exception as exc:
+            details[symbol] = {
+                "status": "invalid",
+                "file_path": str(path),
+                "local_data_date": None,
+                "row_count": None,
+                "reason": str(exc),
+            }
+            continue
+
+        latest_timestamp = pd.Timestamp(frame["timestamp"].iloc[-1])
+        latest_date = latest_timestamp.date().isoformat()
+        usable_symbols.append(symbol)
+        usable_timestamps[symbol] = latest_timestamp
+        details[symbol] = {
+            "status": "usable",
+            "file_path": str(path),
+            "local_data_date": latest_date,
+            "row_count": int(len(frame)),
+            "reason": None,
+        }
+
+    latest_local_data_date: str | None = None
+    oldest_local_data_date: str | None = None
+    if usable_timestamps:
+        newest_timestamp = max(usable_timestamps.values())
+        oldest_timestamp = min(usable_timestamps.values())
+        latest_local_data_date = newest_timestamp.date().isoformat()
+        oldest_local_data_date = oldest_timestamp.date().isoformat()
+        for symbol, timestamp in usable_timestamps.items():
+            if timestamp < newest_timestamp:
+                details[symbol] = {
+                    **details[symbol],
+                    "status": "stale",
+                    "reason": f"local data lags freshest date {latest_local_data_date}",
+                }
+
+    return details, usable_symbols, latest_local_data_date, oldest_local_data_date
+
+
 def _preflight_config_payload(config: CliRuntimeConfig) -> dict[str, object]:
     payload = _runtime_config_payload(config)
     errors: list[str] = []
@@ -2049,6 +2856,8 @@ def _preflight_config_payload(config: CliRuntimeConfig) -> dict[str, object]:
             "Removed duplicate symbol input(s): "
             + ", ".join(config.removed_duplicate_symbols)
         )
+    if config.allow_unsafe_checkpoint_loading:
+        warnings.append("unsafe checkpoint loading enabled; only use trusted checkpoint files")
     if config.ignored_symbol_inputs:
         warnings.append(
             "Ignored blank symbol input(s): "
@@ -2061,6 +2870,8 @@ def _preflight_config_payload(config: CliRuntimeConfig) -> dict[str, object]:
         errors.append("--backtest-starting-cash must be positive")
     if config.backtest_buying_power_multiplier <= 0:
         errors.append("--backtest-buying-power-multiplier must be positive")
+    if not 0.0 <= float(config.min_open_confidence) <= 1.0:
+        errors.append("--min-open-confidence must be between 0 and 1")
     if config.compare_server_parity and not config.backtest:
         errors.append("--compare-server-parity requires --backtest")
     if config.backtest and not config.paper:
@@ -2076,6 +2887,14 @@ def _preflight_config_payload(config: CliRuntimeConfig) -> dict[str, object]:
             "primary": None,
             "extras": [],
         }
+    elif errors:
+        payload["checkpoint_load"] = {
+            "ok": None,
+            "error": None,
+            "primary": None,
+            "extras": [],
+            "skipped": True,
+        }
     else:
         checkpoint_load = _checkpoint_load_diagnostics(config)
         payload["checkpoint_load"] = checkpoint_load
@@ -2086,20 +2905,60 @@ def _preflight_config_payload(config: CliRuntimeConfig) -> dict[str, object]:
     local_data_required = bool(config.backtest or config.data_source == "local")
     missing_local_symbol_files: list[str] = []
     resolved_local_data_dir: Path | None = None
+    symbol_details: dict[str, StockLocalSymbolDetail] = {}
+    usable_symbols: list[str] = []
+    usable_symbol_count = 0
+    latest_local_data_date: str | None = None
+    oldest_local_data_date: str | None = None
+    stale_symbol_data: dict[str, str] = {}
     if local_data_required:
         if not data_dir.exists():
             errors.append(f"Local data directory does not exist: {data_dir}")
         else:
             resolved_local_data_dir = _resolve_local_data_base(config.data_dir, config.symbols)
+            (
+                symbol_details,
+                usable_symbols,
+                latest_local_data_date,
+                oldest_local_data_date,
+            ) = _build_local_symbol_details(
+                symbols=config.symbols,
+                resolved_local_data_dir=resolved_local_data_dir,
+            )
+            usable_symbol_count = len(usable_symbols)
+            stale_symbol_data = {
+                symbol: detail["local_data_date"]
+                for symbol, detail in symbol_details.items()
+                if detail["status"] == "stale" and detail["local_data_date"] is not None
+            }
             missing_local_symbol_files = [
-                str((resolved_local_data_dir / f"{symbol}.csv").resolve())
-                for symbol in config.symbols
-                if not (resolved_local_data_dir / f"{symbol}.csv").exists()
+                detail["file_path"]
+                for detail in symbol_details.values()
+                if detail["status"] == "missing"
             ]
             if missing_local_symbol_files:
                 errors.append(
                     "Missing local daily data file(s): "
                     + ", ".join(missing_local_symbol_files)
+                )
+            invalid_local_symbol_files = [
+                detail["file_path"]
+                for detail in symbol_details.values()
+                if detail["status"] == "invalid"
+            ]
+            if invalid_local_symbol_files:
+                errors.append(
+                    "Unreadable local daily data file(s): "
+                    + ", ".join(invalid_local_symbol_files)
+                )
+            if stale_symbol_data and latest_local_data_date is not None:
+                stale_symbol_label = (
+                    "symbol" if len(stale_symbol_data) == 1 else "symbols"
+                )
+                warnings.append(
+                    "local daily CSV data for "
+                    f"{len(stale_symbol_data)} {stale_symbol_label} "
+                    f"lags freshest date {latest_local_data_date}"
                 )
     payload["local_data_required"] = local_data_required
     payload["data_dir_exists"] = data_dir.exists()
@@ -2107,6 +2966,12 @@ def _preflight_config_payload(config: CliRuntimeConfig) -> dict[str, object]:
         str(resolved_local_data_dir) if resolved_local_data_dir is not None else None
     )
     payload["missing_local_symbol_files"] = missing_local_symbol_files
+    payload["usable_symbols"] = usable_symbols
+    payload["usable_symbol_count"] = usable_symbol_count
+    payload["latest_local_data_date"] = latest_local_data_date
+    payload["oldest_local_data_date"] = oldest_local_data_date
+    payload["stale_symbol_data"] = stale_symbol_data
+    payload["symbol_details"] = symbol_details
 
     alpaca_required = bool(not config.backtest and config.data_source == "alpaca")
     alpaca_missing_env: list[str] = []
@@ -2137,16 +3002,26 @@ def _preflight_config_payload(config: CliRuntimeConfig) -> dict[str, object]:
 
     trading_server_required = bool(not config.backtest and config.execution_backend == "trading_server")
     resolved_server_url = _resolved_trading_server_url(config)
+    server_url_details = config.resolved_server_url_details
     payload["trading_server_required"] = trading_server_required
     payload["resolved_server_url"] = resolved_server_url
     if trading_server_required:
-        parsed = urlparse(resolved_server_url)
-        if not parsed.scheme or not parsed.netloc:
+        if server_url_details["security"] == "invalid":
             errors.append(f"Invalid trading server URL: {resolved_server_url}")
+        elif not config.paper and not is_secure_or_loopback_trading_server_url(resolved_server_url):
+            errors.append(
+                "Live trading_server requires an https URL unless it targets loopback: "
+                + resolved_server_url
+            )
         if not str(config.server_account).strip():
             errors.append("--server-account must not be empty when using trading_server")
         if not str(config.server_bot_id).strip():
             errors.append("--server-bot-id must not be empty when using trading_server")
+        if not config.paper and config.server_url_source == "default":
+            warnings.append(
+                "--live with trading_server is using the built-in loopback default server URL; "
+                "pass --server-url explicitly or set TRADING_SERVER_URL if the server is remote"
+            )
         if not config.paper and config.server_account == DEFAULT_SERVER_PAPER_ACCOUNT:
             warnings.append(
                 "--live with trading_server is still using the paper default server account; "
@@ -2156,34 +3031,146 @@ def _preflight_config_payload(config: CliRuntimeConfig) -> dict[str, object]:
     payload["ready"] = not errors
     payload["errors"] = errors
     payload["warnings"] = warnings
+    payload["next_steps"] = _preflight_next_steps(payload)
     return payload
 
 
-def _validate_runtime_config(config: CliRuntimeConfig) -> None:
-    if not config.symbols:
-        raise ValueError("At least one valid symbol is required")
-    if config.backtest_days < 1:
-        raise ValueError("--backtest-days must be at least 1")
-    if config.backtest_starting_cash <= 0:
-        raise ValueError("--backtest-starting-cash must be positive")
-    if config.backtest_buying_power_multiplier <= 0:
-        raise ValueError("--backtest-buying-power-multiplier must be positive")
-    if not 0.0 <= float(config.min_open_confidence) <= 1.0:
-        raise ValueError("--min-open-confidence must be between 0 and 1")
-    if config.compare_server_parity and not config.backtest:
-        raise ValueError("--compare-server-parity requires --backtest")
-    if config.backtest and not config.paper:
-        raise ValueError("--backtest is local-only; omit --live")
-    missing_checkpoints = _missing_checkpoint_paths(config)
-    if missing_checkpoints:
-        details = "\n".join(f"- {path}" for path in missing_checkpoints)
-        raise FileNotFoundError(
-            "Missing checkpoint file(s):\n"
-            f"{details}"
+def _format_runtime_preflight_failure(payload: dict[str, object]) -> str:
+    lines = [
+        "Daily stock RL setup is not ready.",
+        str(payload.get("summary") or ""),
+    ]
+    errors = [str(item) for item in payload.get("errors", [])]
+    warnings = [str(item) for item in payload.get("warnings", [])]
+    next_steps = [str(item) for item in payload.get("next_steps", [])]
+    if errors:
+        lines.append("Errors:")
+        lines.extend(f"- {item}" for item in errors)
+    if warnings:
+        lines.append("Warnings:")
+        lines.extend(f"- {item}" for item in warnings)
+    symbol_details = payload.get("symbol_details")
+    if isinstance(symbol_details, dict) and symbol_details:
+        latest_local_data_date = str(payload.get("latest_local_data_date") or "").strip() or None
+        lines.extend(
+            format_local_data_health_lines(
+                symbol_details=symbol_details,
+                usable_symbol_count=int(payload.get("usable_symbol_count") or 0),
+                latest_local_data_date=latest_local_data_date,
+            )
         )
-    checkpoint_load = _checkpoint_load_diagnostics(config)
-    if not checkpoint_load["ok"]:
-        raise RuntimeError(f"Checkpoint load failed: {checkpoint_load['error']}")
+    if bool(payload.get("trading_server_required")):
+        resolved_server_url = str(
+            payload.get("resolved_server_url") or payload.get("server_url") or ""
+        ).strip()
+        lines.append("Trading server config:")
+        if resolved_server_url:
+            lines.append(f"- resolved server URL: {resolved_server_url}")
+        lines.append(
+            "- server URL source: "
+            + _trading_server_url_source_label(payload.get("server_url_source"))
+        )
+        lines.append(
+            "- server URL security: "
+            + _trading_server_url_security_label(payload.get("server_url_security"))
+        )
+    if next_steps:
+        lines.append("Next steps:")
+        lines.extend(f"- {item}" for item in next_steps)
+    return "\n".join(line for line in lines if line)
+
+
+def _format_runtime_preflight_ready(payload: dict[str, object]) -> str:
+    lines = [
+        "Daily stock RL setup is ready.",
+        str(payload.get("summary") or ""),
+    ]
+    warnings = [str(item) for item in payload.get("warnings", [])]
+    if warnings:
+        lines.append("Warnings:")
+        lines.extend(f"- {item}" for item in warnings)
+    symbol_details = payload.get("symbol_details")
+    if isinstance(symbol_details, dict) and symbol_details:
+        latest_local_data_date = str(payload.get("latest_local_data_date") or "").strip() or None
+        lines.extend(
+            format_local_data_health_lines(
+                symbol_details=symbol_details,
+                usable_symbol_count=int(payload.get("usable_symbol_count") or 0),
+                latest_local_data_date=latest_local_data_date,
+            )
+        )
+    if bool(payload.get("trading_server_required")):
+        resolved_server_url = str(
+            payload.get("resolved_server_url") or payload.get("server_url") or ""
+        ).strip()
+        lines.append("Trading server config:")
+        if resolved_server_url:
+            lines.append(f"- resolved server URL: {resolved_server_url}")
+        lines.append(
+            "- server URL source: "
+            + _trading_server_url_source_label(payload.get("server_url_source"))
+        )
+        lines.append(
+            "- server URL security: "
+            + _trading_server_url_security_label(payload.get("server_url_security"))
+        )
+
+    safe_command = str(payload.get("safe_command_preview") or "").strip()
+    run_command = str(payload.get("run_command_preview") or "").strip()
+    check_command = str(payload.get("check_command_preview") or "").strip()
+    lines.append("Suggested commands:")
+    if safe_command:
+        lines.append(f"- dry run: {safe_command}")
+    if run_command and run_command != safe_command:
+        lines.append(f"- configured runtime: {run_command}")
+
+    next_steps = [str(item) for item in payload.get("next_steps", [])]
+    command_steps = {
+        f"Run a safe dry run: {safe_command}" if safe_command else "",
+        f"Start the configured runtime: {run_command}" if run_command else "",
+        f"Re-run preflight later: {check_command}" if check_command else "",
+    }
+    command_steps.discard("")
+    additional_steps = [item for item in next_steps if item not in command_steps]
+    if additional_steps:
+        lines.append("Additional next steps:")
+        lines.extend(f"- {item}" for item in additional_steps)
+    return "\n".join(line for line in lines if line)
+
+
+def _exception_notes(exc: BaseException) -> list[str]:
+    notes = getattr(exc, "__notes__", None)
+    if not notes:
+        return []
+    return [str(note) for note in notes if str(note).strip()]
+
+
+def _format_run_once_failure_message(config: CliRuntimeConfig, exc: BaseException) -> str:
+    stage_label: str | None = None
+    for note in _exception_notes(exc):
+        if note.startswith("run_once stage: "):
+            stage_label = note.removeprefix("run_once stage: ").replace("_", " ")
+            break
+
+    if stage_label:
+        lines = [f"Daily stock RL run failed during {stage_label}."]
+    else:
+        lines = ["Daily stock RL run failed."]
+    lines.append(f"Error: {type(exc).__name__}: {exc}")
+    lines.append(f"Check config: {config.command_preview(check_config=True)}")
+
+    safe_command = config.command_preview(force_dry_run=True)
+    run_command = config.command_preview()
+    if safe_command and safe_command != run_command:
+        lines.append(f"Try a safe dry run: {safe_command}")
+
+    extra_notes = [
+        note for note in _exception_notes(exc) if not note.startswith("run_once stage: ")
+    ]
+    if extra_notes:
+        lines.append("Additional context:")
+        lines.extend(f"- {note}" for note in extra_notes)
+    return "\n".join(lines)
 
 
 def run_backtest_via_trading_server(
@@ -2198,6 +3185,7 @@ def run_backtest_via_trading_server(
     account: str = DEFAULT_BACKTEST_SERVER_ACCOUNT,
     bot_id: str = DEFAULT_BACKTEST_SERVER_BOT_ID,
     extra_checkpoints: Optional[list[str]] = None,
+    allow_unsafe_checkpoint_loading: bool = False,
 ) -> dict[str, float]:
     if starting_cash <= 0:
         raise ValueError("starting_cash must be positive")
@@ -2205,7 +3193,11 @@ def run_backtest_via_trading_server(
         raise ValueError("buying_power_multiplier must be positive")
     from src.trading_server.server import TradingServerEngine
 
-    frames = load_local_daily_frames(symbols, data_dir=data_dir, min_days=days + 120)
+    frames = load_local_daily_frames(
+        symbols,
+        data_dir=data_dir,
+        min_days=days + DEFAULT_DAILY_FRAME_MIN_DAYS,
+    )
     indexed = {
         symbol: frame.set_index("timestamp")[["open", "high", "low", "close", "volume"]].copy()
         for symbol, frame in frames.items()
@@ -2289,6 +3281,7 @@ def run_backtest_via_trading_server(
                 {symbol: frame.iloc[: idx + 1].reset_index() for symbol, frame in indexed.items()},
                 portfolio=portfolio,
                 extra_checkpoints=extra_checkpoints,
+                allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
             )[0]
             equity_curve.append(server_equity(snapshot, prices))
             execute_signal_with_trading_server(
@@ -2337,6 +3330,7 @@ def compare_backtest_to_trading_server(
     starting_cash: float = DEFAULT_BACKTEST_STARTING_CASH,
     extra_checkpoints: Optional[list[str]] = None,
     buying_power_multiplier: float = DEFAULT_BACKTEST_BUYING_POWER_MULTIPLIER,
+    allow_unsafe_checkpoint_loading: bool = False,
 ) -> dict[str, object]:
     legacy = run_backtest(
         checkpoint=checkpoint,
@@ -2347,6 +3341,7 @@ def compare_backtest_to_trading_server(
         starting_cash=starting_cash,
         extra_checkpoints=extra_checkpoints,
         buying_power_multiplier=buying_power_multiplier,
+        allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
     )
     server = run_backtest_via_trading_server(
         checkpoint=checkpoint,
@@ -2357,6 +3352,7 @@ def compare_backtest_to_trading_server(
         starting_cash=starting_cash,
         extra_checkpoints=extra_checkpoints,
         buying_power_multiplier=buying_power_multiplier,
+        allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
     )
     deltas = {
         key: float(server.get(key, 0.0) - legacy.get(key, 0.0))
@@ -2373,13 +3369,23 @@ def main(argv: Optional[list[str]] = None) -> None:
     if args.check_config:
         payload = _preflight_config_payload(config)
         print(json.dumps(payload, indent=2, sort_keys=True))
+        if args.check_config_text:
+            rendered = (
+                _format_runtime_preflight_ready(payload)
+                if payload["ready"]
+                else _format_runtime_preflight_failure(payload)
+            )
+            print(rendered, file=sys.stderr)
         if not payload["ready"]:
             raise SystemExit(1)
         return
     if args.print_config:
         print(json.dumps(_runtime_config_payload(config), indent=2, sort_keys=True))
         return
-    _validate_runtime_config(config)
+    payload = _preflight_config_payload(config)
+    if not payload["ready"]:
+        print(_format_runtime_preflight_failure(payload), file=sys.stderr)
+        raise SystemExit(1)
     _log_runtime_start(config)
 
     if config.backtest:
@@ -2393,6 +3399,7 @@ def main(argv: Optional[list[str]] = None) -> None:
                 starting_cash=config.backtest_starting_cash,
                 extra_checkpoints=config.extra_checkpoints,
                 buying_power_multiplier=config.backtest_buying_power_multiplier,
+                allow_unsafe_checkpoint_loading=config.allow_unsafe_checkpoint_loading,
             )
             return
         run_backtest(
@@ -2404,6 +3411,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             starting_cash=config.backtest_starting_cash,
             extra_checkpoints=config.extra_checkpoints,
             buying_power_multiplier=config.backtest_buying_power_multiplier,
+            allow_unsafe_checkpoint_loading=config.allow_unsafe_checkpoint_loading,
         )
         return
 
@@ -2432,25 +3440,31 @@ def main(argv: Optional[list[str]] = None) -> None:
             server_url=config.server_url,
             min_open_confidence=config.min_open_confidence,
             min_open_value_estimate=config.min_open_value_estimate,
+            allow_unsafe_checkpoint_loading=config.allow_unsafe_checkpoint_loading,
         )
         return
 
-    payload = run_once(
-        checkpoint=config.checkpoint,
-        symbols=config.symbols,
-        paper=config.paper,
-        allocation_pct=config.allocation_pct,
-        dry_run=config.dry_run,
-        data_source=config.data_source,
-        data_dir=config.data_dir,
-        extra_checkpoints=config.extra_checkpoints,
-        execution_backend=config.execution_backend,
-        server_account=config.server_account,
-        server_bot_id=config.server_bot_id,
-        server_url=config.server_url,
-        min_open_confidence=config.min_open_confidence,
-        min_open_value_estimate=config.min_open_value_estimate,
-    )
+    try:
+        payload = run_once(
+            checkpoint=config.checkpoint,
+            symbols=config.symbols,
+            paper=config.paper,
+            allocation_pct=config.allocation_pct,
+            dry_run=config.dry_run,
+            data_source=config.data_source,
+            data_dir=config.data_dir,
+            extra_checkpoints=config.extra_checkpoints,
+            execution_backend=config.execution_backend,
+            server_account=config.server_account,
+            server_bot_id=config.server_bot_id,
+            server_url=config.server_url,
+            min_open_confidence=config.min_open_confidence,
+            min_open_value_estimate=config.min_open_value_estimate,
+            allow_unsafe_checkpoint_loading=config.allow_unsafe_checkpoint_loading,
+        )
+    except Exception as exc:
+        print(_format_run_once_failure_message(config, exc), file=sys.stderr)
+        raise SystemExit(1) from exc
     if config.print_payload:
         print(json.dumps(payload, indent=2, sort_keys=True))
 

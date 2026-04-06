@@ -524,7 +524,7 @@ class ProductionTradingEngine:
             features = features[-seq_len:]
             
             # Normalize features to match training if configured
-            if self.config['data']['normalize_features']:
+            if self.config.get('data', {}).get('normalize_features', True):
                 features = self._normalize_features(features, data)
             
             # Convert to tensor
