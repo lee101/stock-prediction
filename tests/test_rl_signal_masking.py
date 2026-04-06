@@ -8,6 +8,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "rl-trading-agent-binance"))
 
 from rl_signal import (
+    FEATURES_PER_SYM,
     MIXED23_SYMBOLS,
     RLSignalGenerator,
     _build_action_names,
@@ -19,13 +20,17 @@ def _make_generator_stub():
     gen = object.__new__(RLSignalGenerator)
     gen.symbols = MIXED23_SYMBOLS
     gen.num_symbols = len(MIXED23_SYMBOLS)
+    gen.features_per_sym = FEATURES_PER_SYM
     gen.action_allocation_bins = 1
     gen.action_level_bins = 1
     gen.per_symbol_actions = 1
     gen.disable_shorts = False
     gen.action_names = _build_action_names(MIXED23_SYMBOLS)
-    gen.obs_size = gen.num_symbols * 16 + 5 + gen.num_symbols
+    gen.obs_size = gen.num_symbols * FEATURES_PER_SYM + 5 + gen.num_symbols
     gen.num_actions = 1 + 2 * gen.num_symbols  # 47
+    gen._episode_step = 0
+    gen.max_steps = 720
+    gen.forecast_cache_root = None
     return gen
 
 
@@ -203,10 +208,11 @@ class TestSignalMetadata:
         gen = _make_generator_stub()
         gen.symbols = ("BTCUSD", "ETHUSD")
         gen.num_symbols = 2
+        gen.features_per_sym = FEATURES_PER_SYM
         gen.action_allocation_bins = 2
         gen.action_level_bins = 1
         gen.per_symbol_actions = 2
-        gen.obs_size = gen.num_symbols * 16 + 5 + gen.num_symbols
+        gen.obs_size = gen.num_symbols * FEATURES_PER_SYM + 5 + gen.num_symbols
         gen.num_actions = 1 + 2 * gen.num_symbols * gen.per_symbol_actions
 
         logits = np.array([0.0, -2.0, 3.5, -3.0, -4.0, -6.0, -7.0, -8.0, -9.0], dtype=np.float32)
@@ -237,10 +243,11 @@ class TestSignalMetadata:
         gen = _make_generator_stub()
         gen.symbols = ("BTCUSD",)
         gen.num_symbols = 1
+        gen.features_per_sym = FEATURES_PER_SYM
         gen.action_allocation_bins = 1
         gen.action_level_bins = 1
         gen.per_symbol_actions = 1
-        gen.obs_size = gen.num_symbols * 16 + 5 + gen.num_symbols
+        gen.obs_size = gen.num_symbols * FEATURES_PER_SYM + 5 + gen.num_symbols
         gen.num_actions = 3
 
         logits = np.array([0.0, -1.0, 5.0], dtype=np.float32)
