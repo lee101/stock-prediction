@@ -24,8 +24,9 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -45,7 +46,7 @@ from hybrid_prompt import (
 from llm_hourly_trader.gemini_wrapper import TradePlan
 from llm_hourly_trader.providers import call_llm
 from loguru import logger
-from rl_signal import SYMBOL_TO_BINANCE_PAIR, PortfolioSnapshot, RLSignalGenerator
+from rl_signal import RLSignal, SYMBOL_TO_BINANCE_PAIR, PortfolioSnapshot, RLSignalGenerator
 from signal_calibrator import SignalCalibrator, load_calibrator
 
 from binanceneural.execution import (
@@ -73,9 +74,6 @@ from src.binan.binance_margin import (
     transfer_spot_to_margin,
 )
 from src.binan.hybrid_cycle_trace import append_cycle_snapshot
-
-UTC = timezone.utc
-
 
 # ---------------------------------------------------------------------------
 # Symbol Configuration
@@ -125,7 +123,7 @@ _calibrators: dict[str, SignalCalibrator] = {}
 def _load_calibrators(calibrator_dir: str | Path) -> dict[str, SignalCalibrator]:
     """Load per-symbol calibrator checkpoints from directory."""
     cdir = Path(calibrator_dir)
-    loaded = {}
+    loaded: dict[str, SignalCalibrator] = {}
     if not cdir.exists():
         return loaded
     for pt_file in cdir.glob("*_calibrator.pt"):
@@ -306,7 +304,7 @@ def _isoformat_utc(value: object) -> str | None:
                 ts = ts.tz_localize("UTC")
             else:
                 ts = ts.tz_convert("UTC")
-        return ts.isoformat()
+        return str(ts.isoformat())
     try:
         ts = pd.Timestamp(value)
     except Exception:
@@ -315,12 +313,14 @@ def _isoformat_utc(value: object) -> str | None:
         ts = ts.tz_localize("UTC")
     else:
         ts = ts.tz_convert("UTC")
-    return ts.isoformat()
+    return str(ts.isoformat())
 
 
 def _safe_float(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
     try:
-        numeric = float(value)
+        numeric = float(value) if isinstance(value, (int, float, str)) else float(str(value))
     except (TypeError, ValueError):
         return None
     if not np.isfinite(numeric):
@@ -329,8 +329,10 @@ def _safe_float(value: object) -> float | None:
 
 
 def _safe_int(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
     try:
-        return int(value)
+        return int(value) if isinstance(value, (int, str)) else int(str(value))
     except (TypeError, ValueError):
         return None
 
@@ -536,7 +538,7 @@ def _execution_quote_asset(sym_cfg: BinanceSymbolConfig, execution_mode: str) ->
 
 def _execution_fee_bps(sym_cfg: BinanceSymbolConfig, execution_mode: str) -> int:
     fee = 0.001 if execution_mode == "margin" else sym_cfg.maker_fee
-    return int(round(fee * 10000))
+    return round(fee * 10000)
 
 
 def _resolve_execution_mode(execution_mode: str, leverage: float) -> str:
@@ -775,12 +777,12 @@ def _estimate_order_notional(order: dict | None, fallback: float) -> float:
     """Estimate quote notional reserved by a limit order."""
     if not order:
         return max(0.0, fallback)
-    qty = order.get("qty", order.get("origQty", order.get("executedQty", order.get("quantity"))))
-    price = order.get("price")
-    try:
-        notional = float(qty) * float(price)
-    except (TypeError, ValueError):
+    qty = _safe_float(order.get("qty", order.get("origQty", order.get("executedQty", order.get("quantity")))))
+    price = _safe_float(order.get("price"))
+    if qty is None or price is None:
         notional = 0.0
+    else:
+        notional = qty * price
     if notional > 0:
         return notional
     return max(0.0, fallback)
@@ -803,10 +805,11 @@ def _quote_buying_power(
     execution_mode: str,
     effective_leverage: float,
 ) -> float:
-    available = state.available_quote(quote_asset)
+    available = float(state.available_quote(quote_asset))
     if execution_mode != "margin" or effective_leverage <= 1.0 + 1e-9:
         return available
-    return available + max(0.0, state.borrowable_quotes.get(quote_asset, 0.0))
+    borrowable_headroom = float(state.borrowable_quotes.get(quote_asset, 0.0))
+    return available + max(0.0, borrowable_headroom)
 
 
 def _reserve_buying_power(
@@ -831,10 +834,9 @@ def _reserve_buying_power(
     state.borrowable_quotes[quote_asset] = max(0.0, current_headroom - borrowed_remaining)
 
 
-def _load_open_orders(execution_mode: str) -> list[dict]:
-    if execution_mode == "margin":
-        return get_open_margin_orders()
-    return binance_wrapper.get_open_orders()
+def _load_open_orders(execution_mode: str) -> list[dict[str, Any]]:
+    orders = get_open_margin_orders() if execution_mode == "margin" else binance_wrapper.get_open_orders()
+    return [cast(dict[str, Any], order) for order in orders]
 
 
 def _cancel_open_order(execution_mode: str, symbol: str, order_id: int) -> None:
@@ -1056,13 +1058,13 @@ def place_limit_buy(
     logger.info(f"BUY {market_symbol}: qty={qty}, price={price}, notional={notional:.2f}")
 
     if dry_run:
-        logger.info(f"  [DRY RUN] Would place limit buy")
+        logger.info("  [DRY RUN] Would place limit buy")
         return {"symbol": market_symbol, "side": "BUY", "qty": qty, "price": price, "dry_run": True}
 
     try:
         order = binance_wrapper.create_order(market_symbol, "BUY", qty, price)
         logger.info(f"  Order placed: {order.get('orderId')}")
-        return order
+        return cast(dict[str, Any], order)
     except Exception as e:
         logger.error(f"  Order failed: {e}")
         return None
@@ -1092,13 +1094,13 @@ def place_limit_sell(
     logger.info(f"SELL {market_symbol}: qty={qty}, price={price}, notional={notional:.2f}")
 
     if dry_run:
-        logger.info(f"  [DRY RUN] Would place limit sell")
+        logger.info("  [DRY RUN] Would place limit sell")
         return {"symbol": market_symbol, "side": "SELL", "qty": qty, "price": price, "dry_run": True}
 
     try:
         order = binance_wrapper.create_order(market_symbol, "SELL", qty, price)
         logger.info(f"  Order placed: {order.get('orderId')}")
-        return order
+        return cast(dict[str, Any], order)
     except Exception as e:
         logger.error(f"  Order failed: {e}")
         return None
@@ -1141,7 +1143,7 @@ def place_margin_limit_buy(
             time_in_force="GTC",
         )
         logger.info(f"  Margin order placed: {order.get('orderId')}")
-        return order
+        return cast(dict[str, Any], order)
     except Exception as e:
         logger.error(f"  Margin order failed: {e}")
         return None
@@ -1183,7 +1185,7 @@ def place_margin_limit_sell(
             time_in_force="GTC",
         )
         logger.info(f"  Margin order placed: {order.get('orderId')}")
-        return order
+        return cast(dict[str, Any], order)
     except Exception as e:
         logger.error(f"  Margin order failed: {e}")
         return None
@@ -2168,7 +2170,7 @@ def run_hybrid_trading_cycle(
                 cycle_snapshot["allocation_source"] = "rl_only_fallback"
             else:
                 reason = "gemini_error" if gemini_failed else "invalid_allocation_plan"
-                logger.info(f"Gemini unavailable and RL signal is FLAT, no action needed")
+                logger.info("Gemini unavailable and RL signal is FLAT, no action needed")
                 cycle_snapshot["status"] = f"{reason}_rl_flat"
                 cycle_snapshot["allocation_source"] = "rl_flat_no_action"
                 return []
@@ -2208,7 +2210,7 @@ def run_hybrid_trading_cycle(
             market_symbol = _execution_pair(cfg, resolved_execution_mode)
             trade_quote = _execution_quote_asset(cfg, resolved_execution_mode)
             current_qty, current_value = positions_valued.get(sym, (0.0, 0.0))
-            detail = {
+            detail: dict[str, object] = {
                 "symbol": sym,
                 "market_symbol": market_symbol,
                 "quote_asset": trade_quote,

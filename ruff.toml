@@ -67,9 +67,16 @@ unfixable = []
 "__init__.py" = ["F401"]  # Unused imports in __init__.py are often intentional
 "tests/**" = ["ARG", "PLR2004", "T201"]  # More lenient for tests
 "scripts/**" = ["T201", "T203"]  # Allow print in scripts
+"rl_trading_agent_binance/hybrid_prompt.py" = ["I001", "PLC0415"]
+"rl_trading_agent_binance/trade_binance_live.py" = ["E402", "I001", "PLC0415", "PLW0603"]
+"evaluate_binance_lora_candidate.py" = ["I001"]
+"scripts/evaluate_binance_lora_candidate.py" = ["E402"]
+"tests/test_hybrid_allocation_prompt.py" = ["PT018"]
+"tests/test_rl_only_fallback.py" = ["E402"]
+"tests/test_validate_hybrid_cycle_snapshots.py" = ["PT018"]
 
 [lint.isort]
-known-first-party = ["src", "unified_hourly_experiment", "binanceneural"]
+known-first-party = ["src", "unified_hourly_experiment", "binanceneural", "rl_trading_agent_binance"]
 force-single-line = false
 lines-after-imports = 2
 

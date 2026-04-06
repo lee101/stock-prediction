@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from scripts.evaluate_binance_lora_candidate import (
     build_eval_command,
     build_remote_cache_command,

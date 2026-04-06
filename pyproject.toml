@@ -490,6 +490,12 @@ known-first-party = [
 # Ignore all rules in test files that would be too restrictive
 "tests/**/*.py" = ["N", "SIM", "B"]
 "**/test_*.py" = ["N", "SIM", "B"]
+"rl_trading_agent_binance/hybrid_prompt.py" = ["PLC0415"]
+"rl_trading_agent_binance/trade_binance_live.py" = ["E402", "PLC0415", "PLW0603"]
+"scripts/evaluate_binance_lora_candidate.py" = ["E402"]
+"tests/test_hybrid_allocation_prompt.py" = ["PT018"]
+"tests/test_rl_only_fallback.py" = ["E402"]
+"tests/test_validate_hybrid_cycle_snapshots.py" = ["PT018"]
 
 # Allow prints and asserts in scripts
 "scripts/**/*.py" = ["T201"]

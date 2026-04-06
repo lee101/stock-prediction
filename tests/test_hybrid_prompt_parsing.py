@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "rl_trading_agent_binance"))
 
 from hybrid_prompt import (
@@ -69,7 +70,7 @@ class TestAllocFieldsForSymbol:
         assert _alloc_fields_for_symbol("DOGEUSD") == ("doge_pct", "doge_entry", "doge_exit")
 
     def test_unknown_symbol_uses_full_prefix(self):
-        pct, entry, exit_ = _alloc_fields_for_symbol("FOOUSD")
+        pct, _entry, _exit = _alloc_fields_for_symbol("FOOUSD")
         assert pct == "foo_pct"
 
 
