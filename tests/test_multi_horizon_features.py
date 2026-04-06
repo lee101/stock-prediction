@@ -1,14 +1,15 @@
 """Tests for multi-horizon forecast expansion (h1, h4, h12, h24)."""
+
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
+
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "rl_trading_agent_binance"))
 
-from binanceneural.data import build_default_feature_columns
 from rl_trading_agent_binance_prompt import (
     FORECAST_MAE_1H,
     FORECAST_MAE_4H,
@@ -19,16 +20,23 @@ from rl_trading_agent_binance_prompt import (
     load_latest_forecast,
 )
 
+from binanceneural.data import build_default_feature_columns
+
 
 def _make_history(n=50, base_price=85000.0):
     rows = []
     for i in range(n):
         p = base_price + i * 10
-        rows.append({
-            "timestamp": f"2026-03-19T{i%24:02d}:00:00",
-            "open": p - 5, "high": p + 20, "low": p - 20, "close": p,
-            "volume": 1000 + i,
-        })
+        rows.append(
+            {
+                "timestamp": f"2026-03-19T{i % 24:02d}:00:00",
+                "open": p - 5,
+                "high": p + 20,
+                "low": p - 20,
+                "close": p,
+                "volume": 1000 + i,
+            }
+        )
     return rows
 
 
@@ -67,8 +75,13 @@ class TestBuildLivePromptAllHorizons:
         fc12 = _make_forecast(price, 1.5)
         fc24 = _make_forecast(price, 2.5)
         prompt = build_live_prompt(
-            "BTCUSD", rows, price,
-            fc_1h=fc1, fc_24h=fc24, fc_4h=fc4, fc_12h=fc12,
+            "BTCUSD",
+            rows,
+            price,
+            fc_1h=fc1,
+            fc_24h=fc24,
+            fc_4h=fc4,
+            fc_12h=fc12,
         )
         assert "1-hour ahead:" in prompt
         assert "4-hour ahead:" in prompt
@@ -83,8 +96,13 @@ class TestBuildLivePromptAllHorizons:
         fc12 = _make_forecast(price, 1.5)
         fc24 = _make_forecast(price, 2.5)
         prompt = build_live_prompt(
-            "BTCUSD", rows, price,
-            fc_1h=fc1, fc_24h=fc24, fc_4h=fc4, fc_12h=fc12,
+            "BTCUSD",
+            rows,
+            price,
+            fc_1h=fc1,
+            fc_24h=fc24,
+            fc_4h=fc4,
+            fc_12h=fc12,
         )
         idx1 = prompt.index("1-hour ahead:")
         idx4 = prompt.index("4-hour ahead:")
@@ -98,8 +116,11 @@ class TestBuildLivePromptAllHorizons:
         fc1 = _make_forecast(price, 0.3)
         fc24 = _make_forecast(price, 2.5)
         prompt = build_live_prompt(
-            "BTCUSD", rows, price,
-            fc_1h=fc1, fc_24h=fc24,
+            "BTCUSD",
+            rows,
+            price,
+            fc_1h=fc1,
+            fc_24h=fc24,
         )
         assert "1-hour ahead:" in prompt
         assert "24-hour ahead:" in prompt
@@ -111,7 +132,9 @@ class TestBuildLivePromptAllHorizons:
         price = rows[-1]["close"]
         fc4 = _make_forecast(price, 0.8)
         prompt = build_live_prompt(
-            "BTCUSD", rows, price,
+            "BTCUSD",
+            rows,
+            price,
             fc_4h=fc4,
         )
         assert "4-hour ahead:" in prompt
@@ -124,8 +147,12 @@ class TestBuildLivePromptAllHorizons:
         fc4 = _make_forecast(price)
         fc12 = _make_forecast(price)
         prompt = build_live_prompt(
-            "BTCUSD", rows, price,
-            fc_1h=fc1, fc_4h=fc4, fc_12h=fc12,
+            "BTCUSD",
+            rows,
+            price,
+            fc_1h=fc1,
+            fc_4h=fc4,
+            fc_12h=fc12,
         )
         assert "0.55%" in prompt  # 1h MAE for BTCUSD
         assert "0.83%" in prompt  # 4h MAE for BTCUSD
@@ -141,8 +168,13 @@ class TestBuildLivePromptFreeformAllHorizons:
         fc12 = _make_forecast(price, 1.5)
         fc24 = _make_forecast(price, 2.5)
         prompt = build_live_prompt_freeform(
-            "BTCUSD", rows, price,
-            fc_1h=fc1, fc_24h=fc24, fc_4h=fc4, fc_12h=fc12,
+            "BTCUSD",
+            rows,
+            price,
+            fc_1h=fc1,
+            fc_24h=fc24,
+            fc_4h=fc4,
+            fc_12h=fc12,
         )
         assert "1h ahead:" in prompt
         assert "4h ahead:" in prompt
@@ -155,8 +187,11 @@ class TestBuildLivePromptFreeformAllHorizons:
         fc1 = _make_forecast(price, 0.3)
         fc24 = _make_forecast(price, 2.5)
         prompt = build_live_prompt_freeform(
-            "BTCUSD", rows, price,
-            fc_1h=fc1, fc_24h=fc24,
+            "BTCUSD",
+            rows,
+            price,
+            fc_1h=fc1,
+            fc_24h=fc24,
         )
         assert "1h ahead:" in prompt
         assert "24h ahead:" in prompt
@@ -169,8 +204,11 @@ class TestBuildLivePromptFreeformAllHorizons:
         fc4 = _make_forecast(price, 0.8)
         fc12 = _make_forecast(price, 1.5)
         prompt = build_live_prompt_freeform(
-            "BTCUSD", rows, price,
-            fc_4h=fc4, fc_12h=fc12,
+            "BTCUSD",
+            rows,
+            price,
+            fc_4h=fc4,
+            fc_12h=fc12,
             forecast_error_4h={"mae_pct": 1.2, "samples": 50},
             forecast_error_12h={"mae_pct": 2.8, "samples": 30},
         )

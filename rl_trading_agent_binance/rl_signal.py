@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
+from torch import nn
 
 
 try:
@@ -423,9 +423,7 @@ class RLSignalGenerator:
             self.policy = self.policy.to(self.device)
         except Exception as exc:
             if _should_fallback_to_cpu(self._device_preference, self.device, exc):
-                logger.warning(
-                    f"Auto-selected CUDA unavailable for RLSignalGenerator, falling back to CPU: {exc}"
-                )
+                logger.warning(f"Auto-selected CUDA unavailable for RLSignalGenerator, falling back to CPU: {exc}")
                 self.device = torch.device("cpu")
                 self.policy = self.policy.to(self.device)
             else:

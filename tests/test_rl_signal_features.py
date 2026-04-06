@@ -1,10 +1,11 @@
 """Tests for RL signal feature computation edge cases."""
+
 import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pytest
+
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "rl_trading_agent_binance"))
@@ -33,13 +34,16 @@ def _make_price_df(n=100, base_price=100.0, seed=42):
 
 
 def _make_forecast_df(idx, close, horizon=1):
-    return pd.DataFrame({
-        "predicted_close_p50": close * 1.001,
-        "predicted_high_p50": close * 1.005,
-        "predicted_low_p50": close * 0.995,
-        "predicted_close_p90": close * 1.01,
-        "predicted_close_p10": close * 0.99,
-    }, index=idx)
+    return pd.DataFrame(
+        {
+            "predicted_close_p50": close * 1.001,
+            "predicted_high_p50": close * 1.005,
+            "predicted_low_p50": close * 0.995,
+            "predicted_close_p90": close * 1.01,
+            "predicted_close_p10": close * 0.99,
+        },
+        index=idx,
+    )
 
 
 class TestComputeSymbolFeatures:
@@ -74,10 +78,7 @@ class TestComputeSymbolFeatures:
     def test_constant_price(self):
         n = 100
         idx = pd.date_range("2025-01-01", periods=n, freq="h", tz="UTC")
-        df = pd.DataFrame({
-            "open": 100.0, "high": 100.0, "low": 100.0,
-            "close": 100.0, "volume": 1000.0
-        }, index=idx)
+        df = pd.DataFrame({"open": 100.0, "high": 100.0, "low": 100.0, "close": 100.0, "volume": 1000.0}, index=idx)
         result = compute_symbol_features(df, pd.DataFrame(), pd.DataFrame())
         assert np.all(np.isfinite(result))
         assert result[-1, 8] == 0.0  # return_1h should be 0
@@ -95,10 +96,7 @@ class TestComputeSymbolFeatures:
     def test_near_zero_price(self):
         n = 50
         idx = pd.date_range("2025-01-01", periods=n, freq="h", tz="UTC")
-        df = pd.DataFrame({
-            "open": 1e-9, "high": 1e-9, "low": 1e-9,
-            "close": 1e-9, "volume": 1000.0
-        }, index=idx)
+        df = pd.DataFrame({"open": 1e-9, "high": 1e-9, "low": 1e-9, "close": 1e-9, "volume": 1000.0}, index=idx)
         result = compute_symbol_features(df, pd.DataFrame(), pd.DataFrame())
         assert np.all(np.isfinite(result))
 
@@ -138,20 +136,26 @@ class TestForecastDelta:
 class TestForecastConfidence:
     def test_narrow_spread_high_confidence(self):
         idx = pd.date_range("2025-01-01", periods=5, freq="h", tz="UTC")
-        fc = pd.DataFrame({
-            "predicted_close_p90": [101.0] * 5,
-            "predicted_close_p10": [99.0] * 5,
-        }, index=idx)
+        fc = pd.DataFrame(
+            {
+                "predicted_close_p90": [101.0] * 5,
+                "predicted_close_p10": [99.0] * 5,
+            },
+            index=idx,
+        )
         close = pd.Series(100.0, index=idx)
         result = _forecast_confidence(fc, idx, close)
         assert np.all(result > 0.9)
 
     def test_wide_spread_low_confidence(self):
         idx = pd.date_range("2025-01-01", periods=5, freq="h", tz="UTC")
-        fc = pd.DataFrame({
-            "predicted_close_p90": [200.0] * 5,
-            "predicted_close_p10": [50.0] * 5,
-        }, index=idx)
+        fc = pd.DataFrame(
+            {
+                "predicted_close_p90": [200.0] * 5,
+                "predicted_close_p10": [50.0] * 5,
+            },
+            index=idx,
+        )
         close = pd.Series(100.0, index=idx)
         result = _forecast_confidence(fc, idx, close)
         assert np.all(result < 0.5)
@@ -191,6 +195,7 @@ class TestEndToEndSignal:
         class _P:
             def __call__(self, obs):
                 return torch.tensor([logits], dtype=torch.float32), torch.tensor([0.0])
+
         return _P()
 
     def test_flat_signal_with_zero_logits(self):
@@ -237,11 +242,9 @@ class TestEndToEndSignal:
         gen.policy = self._make_policy([1.0, -1.0, -1.0])
         portfolio = PortfolioSnapshot(cash_usd=10000.0)
         assert gen._episode_step == 0
-        gen.get_signal(portfolio=portfolio, klines_map={"BTCUSD": None},
-                       tradable_symbols=["BTCUSD"], spot_only=True)
+        gen.get_signal(portfolio=portfolio, klines_map={"BTCUSD": None}, tradable_symbols=["BTCUSD"], spot_only=True)
         assert gen._episode_step == 1
-        gen.get_signal(portfolio=portfolio, klines_map={"BTCUSD": None},
-                       tradable_symbols=["BTCUSD"], spot_only=True)
+        gen.get_signal(portfolio=portfolio, klines_map={"BTCUSD": None}, tradable_symbols=["BTCUSD"], spot_only=True)
         assert gen._episode_step == 2
 
     def test_reset_episode_clears_step(self):
@@ -253,31 +256,35 @@ class TestEndToEndSignal:
     def test_degenerate_portfolio_zero_cash(self):
         gen = self._make_gen(1)
         gen.policy = self._make_policy([1.0, 0.0, -1.0])
-        portfolio = PortfolioSnapshot(cash_usd=0.0, position_value_usd=10000.0,
-                                     position_symbol="BTCUSD", hold_hours=5)
-        sig = gen.get_signal(portfolio=portfolio, klines_map={"BTCUSD": None},
-                             tradable_symbols=["BTCUSD"], spot_only=True)
+        portfolio = PortfolioSnapshot(cash_usd=0.0, position_value_usd=10000.0, position_symbol="BTCUSD", hold_hours=5)
+        sig = gen.get_signal(
+            portfolio=portfolio, klines_map={"BTCUSD": None}, tradable_symbols=["BTCUSD"], spot_only=True
+        )
         assert isinstance(sig, RLSignal)
 
     def test_all_symbols_masked(self):
         gen = self._make_gen(2)
         gen.policy = self._make_policy([0.0, 5.0, 5.0, -1.0, -1.0])
         portfolio = PortfolioSnapshot(cash_usd=10000.0)
-        sig = gen.get_signal(portfolio=portfolio,
-                             klines_map={"BTCUSD": None, "ETHUSD": None},
-                             tradable_symbols=[], spot_only=True)
+        sig = gen.get_signal(
+            portfolio=portfolio, klines_map={"BTCUSD": None, "ETHUSD": None}, tradable_symbols=[], spot_only=True
+        )
         assert sig.direction == "flat"
 
     def test_portfolio_with_short_position(self):
         gen = self._make_gen(1)
         gen.policy = self._make_policy([1.0, -1.0, -1.0])
         portfolio = PortfolioSnapshot(
-            cash_usd=5000.0, position_value_usd=5000.0,
-            position_symbol="BTCUSD", is_short=True,
-            unrealized_pnl_usd=-100.0, hold_hours=3
+            cash_usd=5000.0,
+            position_value_usd=5000.0,
+            position_symbol="BTCUSD",
+            is_short=True,
+            unrealized_pnl_usd=-100.0,
+            hold_hours=3,
         )
-        sig = gen.get_signal(portfolio=portfolio, klines_map={"BTCUSD": None},
-                             tradable_symbols=["BTCUSD"], spot_only=False)
+        sig = gen.get_signal(
+            portfolio=portfolio, klines_map={"BTCUSD": None}, tradable_symbols=["BTCUSD"], spot_only=False
+        )
         assert isinstance(sig, RLSignal)
 
 
@@ -291,9 +298,13 @@ class TestPortfolioSnapshot:
 
     def test_custom_values(self):
         p = PortfolioSnapshot(
-            cash_usd=5000.0, total_value_usd=10000.0,
-            position_symbol="ETHUSD", position_value_usd=5000.0,
-            unrealized_pnl_usd=200.0, hold_hours=3, is_short=False
+            cash_usd=5000.0,
+            total_value_usd=10000.0,
+            position_symbol="ETHUSD",
+            position_value_usd=5000.0,
+            unrealized_pnl_usd=200.0,
+            hold_hours=3,
+            is_short=False,
         )
         assert p.position_symbol == "ETHUSD"
         assert p.hold_hours == 3

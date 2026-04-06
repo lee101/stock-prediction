@@ -1,20 +1,18 @@
 """Tests for rl_signal.py obs construction and portfolio model support."""
+
 import sys
 from pathlib import Path
 
 import numpy as np
-import pytest
+
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rl_trading_agent_binance"))
 
 from rl_signal import (
-    FEATURES_PER_SYM,
-    INITIAL_CASH,
-    DEFAULT_MAX_STEPS,
-    _infer_num_symbols,
     _OBS_SIZE_TO_SYMBOLS,
     PortfolioSnapshot,
     RLSignalGenerator,
+    _infer_num_symbols,
     compute_symbol_features,
 )
 
@@ -135,13 +133,17 @@ class TestBuildObs:
 class TestComputeSymbolFeatures:
     def test_output_shape(self):
         import pandas as pd
+
         idx = pd.date_range("2026-01-01", periods=100, freq="h", tz="UTC")
-        df = pd.DataFrame({
-            "open": np.random.uniform(90, 110, 100),
-            "high": np.random.uniform(100, 120, 100),
-            "low": np.random.uniform(80, 100, 100),
-            "close": np.random.uniform(90, 110, 100),
-        }, index=idx)
+        df = pd.DataFrame(
+            {
+                "open": np.random.uniform(90, 110, 100),
+                "high": np.random.uniform(100, 120, 100),
+                "low": np.random.uniform(80, 100, 100),
+                "close": np.random.uniform(90, 110, 100),
+            },
+            index=idx,
+        )
         feat = compute_symbol_features(df, pd.DataFrame(), pd.DataFrame())
         assert feat.shape == (100, 16)
         assert feat.dtype == np.float32

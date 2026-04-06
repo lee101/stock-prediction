@@ -2,28 +2,44 @@
 Prompt experiment v2: test optimization prompt (long-only) vs original prompt.
 Then test winner with gemini-3.1-pro-preview.
 """
+
 from __future__ import annotations
-import argparse, json, sys, time, concurrent.futures
-from pathlib import Path
+
+import argparse
+import concurrent.futures
+import json
+import sys
+import time
 from datetime import timedelta
-import numpy as np, pandas as pd
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from llm_hourly_trader.backtest import load_bars, load_forecasts, get_forecast_at, simulate, RESULTS_DIR
+import torch
+from llm_hourly_trader.backtest import RESULTS_DIR, get_forecast_at, load_bars, load_forecasts, simulate
+from llm_hourly_trader.cache import get_cached, set_cached
 from llm_hourly_trader.config import SYMBOL_UNIVERSE, BacktestConfig, SymbolConfig
 from llm_hourly_trader.gemini_wrapper import TradePlan
 from llm_hourly_trader.providers import call_llm
-from llm_hourly_trader.cache import get_cached, set_cached
-from run_hybrid import (
-    MLPPolicy, BINANCE6_SYMBOLS, TradingSignal, _compute_trend_context,
+from pufferlib_market.export_data_hourly_forecast import (
+    _read_forecast,
+    _read_hourly_prices,
 )
 from pufferlib_market.export_data_hourly_forecast import (
-    compute_features as compute_mktd_features, _read_hourly_prices, _read_forecast,
+    compute_features as compute_mktd_features,
 )
-import torch
+from run_hybrid import (
+    BINANCE6_SYMBOLS,
+    MLPPolicy,
+    TradingSignal,
+    _compute_trend_context,
+)
 
 
 def _market_context(symbol, history_rows, current_price, fc_1h, fc_24h, rl_signal, prev_rl_signal, prev_outcome):
@@ -48,12 +64,14 @@ def _market_context(symbol, history_rows, current_price, fc_1h, fc_24h, rl_signa
         sr_line = f"  24h range: ${trend['low_24h']:.2f} - ${trend['high_24h']:.2f} ({trend['range_pct']:.2f}% wide)"
     fc_text = ""
     if fc_1h:
-        delta = (fc_1h['predicted_close_p50'] - current_price) / current_price * 100
+        delta = (fc_1h["predicted_close_p50"] - current_price) / current_price * 100
         fc_text += f"\n  1h forecast: close={fc_1h['predicted_close_p50']:.2f} ({delta:+.2f}%)"
     if fc_24h:
-        delta = (fc_24h['predicted_close_p50'] - current_price) / current_price * 100
+        delta = (fc_24h["predicted_close_p50"] - current_price) / current_price * 100
         fc_text += f"\n  24h forecast: close={fc_24h['predicted_close_p50']:.2f} ({delta:+.2f}%)"
-    rl_text = f"Direction: {rl_signal.action}, Confidence: {rl_signal.confidence:.1%}, Value: {rl_signal.value_estimate:.4f}"
+    rl_text = (
+        f"Direction: {rl_signal.action}, Confidence: {rl_signal.confidence:.1%}, Value: {rl_signal.value_estimate:.4f}"
+    )
     prev_text = "None (first hour)"
     if prev_rl_signal is not None:
         prev_text = f"RL: {prev_rl_signal.action} (conf={prev_rl_signal.confidence:.1%}), Outcome: {prev_outcome}"
@@ -129,7 +147,9 @@ PROMPTS = {
 
 def build_prompt(variant, symbol, history_rows, fc_1h, fc_24h, rl_signal, prev_rl_signal, prev_outcome):
     current_price = float(history_rows[-1]["close"])
-    context = _market_context(symbol, history_rows, current_price, fc_1h, fc_24h, rl_signal, prev_rl_signal, prev_outcome)
+    context = _market_context(
+        symbol, history_rows, current_price, fc_1h, fc_24h, rl_signal, prev_rl_signal, prev_outcome
+    )
     return PROMPTS[variant].format(context=context)
 
 
@@ -183,7 +203,8 @@ def run_experiment(variant, symbols, days, model, parallel, checkpoint_path, thi
         tf = pd.Timestamp(ts).floor("h")
         for i, b in enumerate(BINANCE6_SYMBOLS):
             m = abf.get(b)
-            if m is None: continue
+            if m is None:
+                continue
             if tf in m.index:
                 f[i] = m.loc[tf].values[:16].astype(np.float32)
             else:
@@ -194,8 +215,9 @@ def run_experiment(variant, symbols, days, model, parallel, checkpoint_path, thi
 
     def grs(fa, c):
         o = np.zeros(obs_size, dtype=np.float32)
-        o[:ns*16] = fa.flatten()
-        o[ns*16] = 1.0; o[ns*16+4] = 0.5
+        o[: ns * 16] = fa.flatten()
+        o[ns * 16] = 1.0
+        o[ns * 16 + 4] = 0.5
         ot = torch.from_numpy(o).unsqueeze(0)
         with torch.no_grad():
             lg, v = rl(ot)
@@ -203,16 +225,18 @@ def run_experiment(variant, symbols, days, model, parallel, checkpoint_path, thi
             a = lg.argmax(-1).item()
             cf = pr[0, a].item()
             vl = v.item()
-        if a == 0: return TradingSignal("flat", None, None, cf, vl, 0, 0)
+        if a == 0:
+            return TradingSignal("flat", None, None, cf, vl, 0, 0)
         ai = a - 1
         sh = ai >= ns
-        if sh: ai -= ns
+        if sh:
+            ai -= ns
         sy = BINANCE6_SYMBOLS[ai] if ai < ns else "?"
         return TradingSignal(f"{'short' if sh else 'long'}_{sy}", sy, "short" if sh else "long", cf, vl, 1, 0)
 
     tasks = []
-    ps = {s: None for s in symbols}
-    po = {s: "N/A" for s in symbols}
+    ps = dict.fromkeys(symbols)
+    po = dict.fromkeys(symbols, "N/A")
     for s in symbols:
         sb = ab[s]
         w = sb[(sb["timestamp"] >= start_ts) & (sb["timestamp"] <= end_ts)].copy()
@@ -230,24 +254,27 @@ def run_experiment(variant, symbols, days, model, parallel, checkpoint_path, thi
             tasks.append((s, bar.to_dict(), prompt, rs))
             ps[s] = rs
             if i > 0:
-                pc = float(w.iloc[i-1]["close"])
+                pc = float(w.iloc[i - 1]["close"])
                 c = float(bar["close"])
-                po[s] = f"{(c-pc)/pc*100:+.2f}% (${pc:.2f}->${c:.2f})"
+                po[s] = f"{(c - pc) / pc * 100:+.2f}% (${pc:.2f}->${c:.2f})"
 
     total = len(tasks)
     api = sum(1 for _, _, p, _ in tasks if p)
     print(f"  [{variant}] {total} bars, {api} API calls")
 
     def call(s, b, p, r, i):
-        if p is None: return s, b, TradePlan("hold", 0, 0, 0, "no data"), r, i
+        if p is None:
+            return s, b, TradePlan("hold", 0, 0, 0, "no data"), r, i
         c = get_cached(cache_tag, p)
-        if c: return s, b, TradePlan(**c), r, i
+        if c:
+            return s, b, TradePlan(**c), r, i
         plan = call_llm(p, model=model, thinking_level=thinking_level)
         set_cached(cache_tag, p, plan.__dict__)
         return s, b, plan, r, i
 
     results = [None] * total
-    done = 0; t0 = time.time()
+    done = 0
+    t0 = time.time()
     with concurrent.futures.ThreadPoolExecutor(max_workers=parallel) as pool:
         futs = {pool.submit(call, *tasks[i], i): i for i in range(total)}
         for f in concurrent.futures.as_completed(futs):
@@ -262,7 +289,8 @@ def run_experiment(variant, symbols, days, model, parallel, checkpoint_path, thi
     # Long-only: filter to long/hold only
     ar, br = [], []
     stats = {"long": 0, "hold": 0, "short_filtered": 0}
-    for s, b, plan, rs in results:
+    for s, b, plan_orig, _rs in results:
+        plan = plan_orig
         ts = b["timestamp"] if isinstance(b["timestamp"], pd.Timestamp) else pd.Timestamp(b["timestamp"])
         if plan.direction == "short":
             plan = TradePlan("hold", 0, 0, 0, "short filtered")
@@ -270,11 +298,21 @@ def run_experiment(variant, symbols, days, model, parallel, checkpoint_path, thi
         elif plan.direction not in ("long", "hold"):
             plan = TradePlan("hold", 0, 0, 0, "invalid")
         stats[plan.direction] = stats.get(plan.direction, 0) + 1
-        ar.append({"timestamp": ts, "symbol": s, "buy_price": plan.buy_price, "sell_price": plan.sell_price, "direction": plan.direction, "confidence": plan.confidence})
+        ar.append(
+            {
+                "timestamp": ts,
+                "symbol": s,
+                "buy_price": plan.buy_price,
+                "sell_price": plan.sell_price,
+                "direction": plan.direction,
+                "confidence": plan.confidence,
+            }
+        )
         br.append(b)
 
     cfg = BacktestConfig(initial_cash=10_000.0, max_hold_hours=6, max_position_pct=0.25, model=cache_tag)
-    bd = pd.DataFrame(br); ad = pd.DataFrame(ar)
+    bd = pd.DataFrame(br)
+    ad = pd.DataFrame(ar)
     bd["timestamp"] = pd.to_datetime(bd["timestamp"], utc=True)
     ad["timestamp"] = pd.to_datetime(ad["timestamp"], utc=True)
 
@@ -293,7 +331,15 @@ def run_experiment(variant, symbols, days, model, parallel, checkpoint_path, thi
     print(f"    Signals: {stats}")
     print(f"    Final equity: ${m['final_equity']:,.2f}")
 
-    return {"variant": variant, "model": model, **m, "entries": buys, "realized_pnl": pnl, "fees": fees, "signal_counts": stats}
+    return {
+        "variant": variant,
+        "model": model,
+        **m,
+        "entries": buys,
+        "realized_pnl": pnl,
+        "fees": fees,
+        "signal_counts": stats,
+    }
 
 
 def main():
@@ -307,10 +353,10 @@ def main():
     p.add_argument("--variants", nargs="+", default=list(PROMPTS.keys()))
     args = p.parse_args()
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"PROMPT V2 EXPERIMENT: {args.variants}")
     print(f"Model: {args.model}, Days: {args.days}, Long-only")
-    print(f"{'='*70}\n")
+    print(f"{'=' * 70}\n")
 
     results = {}
     for v in args.variants:
@@ -318,13 +364,15 @@ def main():
         r = run_experiment(v, args.symbols, args.days, args.model, args.parallel, args.checkpoint, args.thinking_level)
         results[v] = r
 
-    print(f"\n{'='*70}")
-    print(f"COMPARISON (Long-only)")
-    print(f"{'='*70}")
+    print("\n" + "=" * 70)
+    print("COMPARISON (Long-only)")
+    print("=" * 70)
     print(f"{'Variant':<25} {'Return':>10} {'Sortino':>10} {'MaxDD':>10} {'Trades':>8} {'PnL':>10}")
     print("-" * 75)
     for v, r in sorted(results.items(), key=lambda x: -x[1]["total_return_pct"]):
-        print(f"{v:<25} {r['total_return_pct']:>+9.2f}% {r['sortino']:>10.2f} {r['max_drawdown_pct']:>9.2f}% {r['entries']:>8} ${r['realized_pnl']:>+9.2f}")
+        print(
+            f"{v:<25} {r['total_return_pct']:>+9.2f}% {r['sortino']:>10.2f} {r['max_drawdown_pct']:>9.2f}% {r['entries']:>8} ${r['realized_pnl']:>+9.2f}"
+        )
     best = max(results.items(), key=lambda x: x[1]["sortino"])
     print(f"\nBEST: {best[0]} (Sortino={best[1]['sortino']:.2f})")
 
