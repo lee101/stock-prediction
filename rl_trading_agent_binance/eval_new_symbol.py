@@ -30,7 +30,7 @@ from src.binance_symbol_utils import forecast_cache_symbol_candidates
 from src.forecast_cache_lookup import load_latest_forecast_from_cache
 from src.hourly_data_utils import resolve_hourly_symbol_path
 
-CACHE_DIR = Path("rl-trading-agent-binance/signal_cache")
+CACHE_DIR = Path("rl_trading_agent_binance/signal_cache")
 SIGNAL_COLUMNS = [
     "timestamp",
     "symbol",

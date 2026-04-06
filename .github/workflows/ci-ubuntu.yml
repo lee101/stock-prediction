@@ -12,5 +12,9 @@ jobs:
         uses: astral-sh/setup-uv@v3
       - name: Install dependencies
         run: uv pip install --system -e ".[dev]" 2>/dev/null || uv pip install --system pytest pytest-mock
+      - name: Run quality checks
+        run: |
+          python -m ruff check rl_trading_agent_binance unified_orchestrator/orchestrator.py evaluate_binance_lora_candidate.py scripts/evaluate_binance_lora_candidate.py
+          python -m mypy --python-version 3.13 --follow-imports=skip --config-file=pyproject.toml rl_trading_agent_binance unified_orchestrator/orchestrator.py evaluate_binance_lora_candidate.py scripts/evaluate_binance_lora_candidate.py
       - name: Run tests
         run: python -m pytest tests/ -x -q --tb=short --ignore=tests/integration -k "not slow" 2>&1 | head -100

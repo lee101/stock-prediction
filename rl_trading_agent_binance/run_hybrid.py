@@ -14,7 +14,7 @@ Pipeline:
 3. Run market simulation on the refined plans
 
 Usage:
-  python -m rl-trading-agent-binance.run_hybrid --days 7 --model deepseek-chat --parallel 5
+  python -m rl_trading_agent_binance.run_hybrid --days 7 --model deepseek-chat --parallel 5
 """
 
 from __future__ import annotations

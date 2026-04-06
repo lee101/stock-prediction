@@ -192,7 +192,7 @@ def build_eval_command(
 ) -> list[str]:
     cmd = [
         python_executable,
-        "rl-trading-agent-binance/eval_new_symbol.py",
+        "rl_trading_agent_binance/eval_new_symbol.py",
         "--symbols",
         *[str(symbol).strip().upper() for symbol in baseline_symbols],
         "--add-symbol",

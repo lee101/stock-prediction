@@ -4,7 +4,7 @@
 
 ### 1. binance-hybrid-spot
 - **Supervisor**: `binance-hybrid-spot` (auto-restart)
-- **Entry**: `rl-trading-agent-binance/trade_binance_live.py`
+- **Entry**: `rl_trading_agent_binance/trade_binance_live.py`
 - **Launch**: `deployments/binance-hybrid-spot/launch.sh`
 - **Config**: `deployments/binance-hybrid-spot/supervisor.conf`
 - **Python**: `.venv313`

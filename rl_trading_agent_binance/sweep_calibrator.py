@@ -5,7 +5,7 @@ Evaluates on holdout with binary fills.
 
 Usage:
     source .venv313/bin/activate
-    python rl-trading-agent-binance/sweep_calibrator.py --symbols BTCUSD
+    python rl_trading_agent_binance/sweep_calibrator.py --symbols BTCUSD
 """
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ def main():
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--sweep-keys", type=str, default="max_price_bps,base_sell_offset,lr",
                         help="Comma-separated keys to sweep (others use default)")
-    parser.add_argument("--save-dir", type=str, default="rl-trading-agent-binance/calibrator_sweep")
+    parser.add_argument("--save-dir", type=str, default="rl_trading_agent_binance/calibrator_sweep")
     args = parser.parse_args()
 
     symbols = [s.strip() for s in args.symbols.split(",")]

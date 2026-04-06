@@ -5,8 +5,8 @@ to verify robustness (no single-window overfitting).
 
 Usage:
     source .venv313/bin/activate
-    python rl-trading-agent-binance/eval_calibrator_multiwindow.py \
-        --checkpoint-dir rl-trading-agent-binance/calibrator_checkpoints
+    python rl_trading_agent_binance/eval_calibrator_multiwindow.py \
+        --checkpoint-dir rl_trading_agent_binance/calibrator_checkpoints
 """
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ def eval_window(
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint-dir", type=str,
-                        default="rl-trading-agent-binance/calibrator_checkpoints")
+                        default="rl_trading_agent_binance/calibrator_checkpoints")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
 

@@ -4,23 +4,17 @@ repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.8.4
     hooks:
-      # Run the linter
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]
-      # Run the formatter
       - id: ruff-format
 
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.13.0
+  - repo: local
     hooks:
-      - id: mypy
-        additional_dependencies:
-          - numpy
-          - torch
-          - types-PyYAML
-        args: [--config-file=pyproject.toml]
-        # Only check src/ directory by default
-        files: ^src/
+      - id: mypy-rl-trading-agent-binance
+        name: mypy (rl_trading_agent_binance)
+        entry: python -m mypy --python-version 3.13 --follow-imports=skip --config-file=pyproject.toml rl_trading_agent_binance unified_orchestrator/orchestrator.py evaluate_binance_lora_candidate.py scripts/evaluate_binance_lora_candidate.py
+        language: system
+        pass_filenames: false
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0

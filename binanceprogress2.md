@@ -7,7 +7,7 @@ Updated: 2026-04-07
 Audited the currently running Binance processes and cross-checked the live account state against both the spot CLI and the margin API.
 
 ### What is actually live now
-- Active hybrid live writer: `rl-trading-agent-binance/trade_binance_live.py`
+- Active hybrid live writer: `rl_trading_agent_binance/trade_binance_live.py`
   - launched `2026-04-07 09:05:11`
   - mode: `--live --execution-mode margin --leverage 0.5`
   - model: `gemini-3.1-flash-lite-preview`
@@ -35,14 +35,14 @@ Audited the currently running Binance processes and cross-checked the live accou
   - `400 INVALID_ARGUMENT`
   - `GenerateContentRequest.generation_config.response_schema.required[0]: property is not defined`
 - Root cause:
-  - `rl-trading-agent-binance/hybrid_prompt.py` declared `reasoning` as a required response-schema field
+  - `rl_trading_agent_binance/hybrid_prompt.py` declared `reasoning` as a required response-schema field
   - but omitted `reasoning` from the schema `properties`
 - Effect in production:
   - the hybrid bot falls back to RL-only execution even when Gemini is meant to refine the allocation
   - this weakens the intended RL+LLM policy and makes live behavior diverge from the designed strategy
 
 ### Fix shipped in code
-- Added `_build_allocation_response_schema(...)` in `rl-trading-agent-binance/hybrid_prompt.py`
+- Added `_build_allocation_response_schema(...)` in `rl_trading_agent_binance/hybrid_prompt.py`
 - Included `reasoning` in schema properties so every required key is defined
 - Added unit coverage for:
   - schema required/property consistency

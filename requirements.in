@@ -80,6 +80,9 @@ websockets>=9,<11
 exchange-calendars>=4.5
 
 # Development extras
+ruff>=0.8.4
+mypy>=1.13
+pre-commit>=4.0
 black==24.10.0
 isort==5.13.2
 jupyter==1.1.1

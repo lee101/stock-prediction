@@ -6,9 +6,9 @@ runs through the differentiable sim to optimize Sortino via AdamW.
 
 Usage:
     source .venv313/bin/activate
-    python rl-trading-agent-binance/train_calibrator.py \
+    python rl_trading_agent_binance/train_calibrator.py \
         --symbols BTCUSD,ETHUSD,SOLUSD,DOGEUSD,AAVEUSD,LINKUSD \
-        --epochs 200 --lr 1e-3 --save-dir rl-trading-agent-binance/calibrator_checkpoints
+        --epochs 200 --lr 1e-3 --save-dir rl_trading_agent_binance/calibrator_checkpoints
 """
 from __future__ import annotations
 
@@ -337,7 +337,7 @@ def main():
     parser.add_argument("--decision-lag", type=int, default=2)
     parser.add_argument("--return-weight", type=float, default=0.1)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--save-dir", type=str, default="rl-trading-agent-binance/calibrator_checkpoints")
+    parser.add_argument("--save-dir", type=str, default="rl_trading_agent_binance/calibrator_checkpoints")
     parser.add_argument("--data-root", type=str, default=str(DATA_ROOT))
     parser.add_argument("--forecast-root", type=str, default=str(FORECAST_ROOT))
     parser.add_argument("--directional", action="store_true", help="Use separate buy/sell intensities")

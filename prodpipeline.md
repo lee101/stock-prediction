@@ -7,7 +7,7 @@ Updated: 2026-04-07
 This repo currently has more than one Binance-facing trading path. The main ones that matter for daily crypto are:
 
 1. `trade_mixed_daily.py`
-2. `rl-trading-agent-binance/trade_binance_live.py`
+2. `rl_trading_agent_binance/trade_binance_live.py`
 3. `binanceneural/trade_binance_daily_levels.py`
 
 They are not the same strategy family, and they do not all have the same idempotency and quote-routing behavior.
@@ -25,7 +25,7 @@ That means the current account state does not show any active BTC/ETH major-spot
 
 ## Margin Runtime Audit (2026-04-07)
 
-Checked against the locally running `rl-trading-agent-binance/trade_binance_live.py` deployment and direct margin-account reads on 2026-04-07.
+Checked against the locally running `rl_trading_agent_binance/trade_binance_live.py` deployment and direct margin-account reads on 2026-04-07.
 
 - The current hybrid deployment is running in `margin` mode with:
   - Gemini model `gemini-3.1-flash-lite-preview`
@@ -53,7 +53,7 @@ Observed in the live hybrid log:
 
 Root cause:
 
-- `rl-trading-agent-binance/hybrid_prompt.py` built a response schema that marked `reasoning` as required but did not include `reasoning` in `properties`.
+- `rl_trading_agent_binance/hybrid_prompt.py` built a response schema that marked `reasoning` as required but did not include `reasoning` in `properties`.
 
 Production impact:
 
@@ -90,7 +90,7 @@ So for `trade_mixed_daily.py`, your intuition is broadly right:
 - the main same-day rerun drift comes from the current daily row changing
 - that changes the effective current close and therefore the feature snapshot
 
-### 2. `rl-trading-agent-binance/trade_binance_live.py`
+### 2. `rl_trading_agent_binance/trade_binance_live.py`
 
 Purpose:
 - Binance RL+LLM hybrid live trader
@@ -147,7 +147,7 @@ What can still change on same-day rerun here:
 
 As of this update:
 
-- `rl-trading-agent-binance/trade_binance_live.py` already had FDUSD routing for BTC/ETH spot
+- `rl_trading_agent_binance/trade_binance_live.py` already had FDUSD routing for BTC/ETH spot
 - `binanceneural/trade_binance_daily_levels.py` now also has explicit FDUSD routing for BTC/ETH spot
 - `binanceneural` watcher spawning now carries an explicit `exchange_symbol`, so reruns dedupe against the real pair, not just the internal symbol
 
