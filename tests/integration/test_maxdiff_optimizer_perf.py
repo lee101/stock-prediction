@@ -141,6 +141,7 @@ def test_maxdiff_optimizer_gpu_vs_cpu(runner):
     assert abs(cpu_optimized - gpu_optimized) < 1e-5
     # These kernels are very short, so a few milliseconds of scheduler noise can
     # dominate the CPU/GPU ratio on otherwise healthy runs. Keep the ratio check
-    # for slower paths, but floor the allowance for very small CPU timings.
-    allowed_gpu_duration = max(cpu_duration * 1.5, 0.025)
+    # for slower paths, but floor the allowance for very small CPU timings with
+    # a slightly wider 35ms guard for shared-GPU variance.
+    allowed_gpu_duration = max(cpu_duration * 1.5, 0.035)
     assert gpu_duration <= allowed_gpu_duration

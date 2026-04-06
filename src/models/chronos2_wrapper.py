@@ -18,7 +18,7 @@ import os
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, MutableMapping, Optional, Protocol, Sequence, Tuple, TypeGuard, TypeVar
+from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Sequence, Tuple, TypeGuard, TypeVar
 
 _T = TypeVar("_T")
 
@@ -37,7 +37,6 @@ except Exception:  # pragma: no cover
     _chronos_pkg = None  # type: ignore
 
 from chronos import BaseChronosPipeline as _ChronosBasePipeline
-from chronos import Chronos2Pipeline as _Chronos2Pipeline
 from preaug_sweeps.augmentations import BaseAugmentation
 try:  # pragma: no cover - backward compatibility with pre-helper snapshots
     from src.cache_utils import find_hf_snapshot_dir
@@ -47,7 +46,6 @@ except ImportError:  # pragma: no cover
 from src.gpu_utils import should_offload_to_cpu as gpu_should_offload_to_cpu
 from src.preaug import PreAugmentationChoice, PreAugmentationSelector, candidate_preaug_symbols
 from src.preaug.multiscale import MultiscaleSelector, aggregate_forecasts
-from src.preaug.forecast_config import ForecastConfigSelector, ForecastTag, ForecastConfig
 from .model_cache import ModelCacheError, ModelCacheManager, dtype_to_token
 
 logger = logging.getLogger(__name__)
@@ -453,6 +451,30 @@ def _quantile_column(level: float) -> str:
     """Return the column name used by Chronos for a quantile level."""
 
     return format(level, "g")
+
+
+def _build_quantile_frames_from_sorted_samples(
+    sorted_samples: "torch.Tensor",
+    *,
+    future_index: pd.DatetimeIndex,
+    target_columns: Sequence[str],
+    quantiles: Sequence[float],
+) -> QuantileFrameMap:
+    quantile_frames: QuantileFrameMap = {}
+    columns = list(target_columns)
+    sample_count = int(sorted_samples.shape[1])
+    for q_level in quantiles:
+        q_idx = int(q_level * sample_count)
+        q_idx = min(q_idx, sample_count - 1)
+        q_pred = sorted_samples[:, q_idx, :]
+        q_values = q_pred.transpose(0, 1).contiguous().cpu().numpy()
+        quantile_frames[q_level] = pd.DataFrame(
+            q_values,
+            index=future_index,
+            columns=columns,
+            dtype="float32",
+        )
+    return quantile_frames
 
 
 def _normalize_symbol(symbol: Optional[str], df: pd.DataFrame, id_column: str) -> str:
@@ -1736,7 +1758,6 @@ class Chronos2OHLCWrapper:
         multiscale_choice: Optional[Any] = None,
     ) -> Chronos2PredictionBatch:
         """Run multi-scale forecasting with aggregation."""
-        from src.preaug.multiscale import MultiscaleChoice
 
         # Get multi-scale settings
         if multiscale_choice is None:
@@ -1903,11 +1924,6 @@ class Chronos2OHLCWrapper:
         # predictions is a list of tensors, shape (n_variates, num_samples, pred_len)
         pred_tensor = predictions[0]  # Single input, single output
 
-        # Compute median across samples dimension
-        median_pred = pred_tensor.median(dim=1).values  # Shape: (n_variates, pred_len)
-
-        # Build quantile frames from samples
-        quantile_frames: QuantileFrameMap = {}
         last_timestamp = df[self.timestamp_column].iloc[-1] if self.timestamp_column in df.columns else pd.Timestamp.now(tz="UTC")
 
         # Preserve the source cadence so hourly multivariate forecasts stay hourly.
@@ -1915,24 +1931,13 @@ class Chronos2OHLCWrapper:
 
         future_timestamps = [last_timestamp + delta * (i + 1) for i in range(prediction_length)]
         future_index = pd.DatetimeIndex(future_timestamps, name=self.timestamp_column)
-
-        for q_level in quantiles:
-            # Compute quantile across samples
-            q_idx = int(q_level * pred_tensor.shape[1])
-            q_idx = min(q_idx, pred_tensor.shape[1] - 1)
-            sorted_samples = pred_tensor.sort(dim=1).values
-            q_pred = sorted_samples[:, q_idx, :]  # Shape: (n_variates, pred_len)
-
-            # Build DataFrame
-            q_df = pd.DataFrame(
-                index=future_index,
-                columns=list(self.target_columns),
-                dtype="float32",
-            )
-            for i, col in enumerate(self.target_columns):
-                q_df[col] = q_pred[i, :].cpu().numpy()
-
-            quantile_frames[q_level] = q_df
+        sorted_samples = pred_tensor.sort(dim=1).values
+        quantile_frames = _build_quantile_frames_from_sorted_samples(
+            sorted_samples,
+            future_index=future_index,
+            target_columns=self.target_columns,
+            quantiles=quantiles,
+        )
 
         # Build panel for compatibility
         panel = Chronos2PreparedPanel(
@@ -2069,7 +2074,6 @@ class Chronos2OHLCWrapper:
         results = []
         for pred_idx, (orig_idx, symbol, df) in enumerate(valid_indices):
             pred_tensor = predictions[pred_idx]  # Shape: (n_variates, num_samples, pred_len)
-            median_pred = pred_tensor.median(dim=1).values
 
             # Build timestamps
             last_ts = df[self.timestamp_column].iloc[-1] if self.timestamp_column in df.columns else pd.Timestamp.now(tz="UTC")
@@ -2078,22 +2082,13 @@ class Chronos2OHLCWrapper:
             future_timestamps = [last_ts + delta * (i + 1) for i in range(prediction_length)]
             future_index = pd.DatetimeIndex(future_timestamps, name=self.timestamp_column)
 
-            quantile_frames: QuantileFrameMap = {}
-            for q_level in quantiles:
-                q_idx = int(q_level * pred_tensor.shape[1])
-                q_idx = min(q_idx, pred_tensor.shape[1] - 1)
-                sorted_samples = pred_tensor.sort(dim=1).values
-                q_pred = sorted_samples[:, q_idx, :]
-
-                q_df = pd.DataFrame(
-                    index=future_index,
-                    columns=list(self.target_columns),
-                    dtype="float32",
-                )
-                for i, col in enumerate(self.target_columns):
-                    q_df[col] = q_pred[i, :].cpu().numpy()
-
-                quantile_frames[q_level] = q_df
+            sorted_samples = pred_tensor.sort(dim=1).values
+            quantile_frames = _build_quantile_frames_from_sorted_samples(
+                sorted_samples,
+                future_index=future_index,
+                target_columns=self.target_columns,
+                quantiles=quantiles,
+            )
 
             panel = Chronos2PreparedPanel(
                 symbol=symbol,

@@ -1,18 +1,36 @@
 from __future__ import annotations
 
-import os
 import uuid
 from dataclasses import dataclass
+from ipaddress import ip_address
 from typing import Any, Iterable, Literal, NotRequired, Protocol, TypedDict, cast
+from urllib.parse import urlparse
 
 import requests
 
-from .settings import TradingServerSettings
+from src.json_types import JsonObject
+from src.order_validation import (
+    MAX_ORDER_METADATA_BYTES,
+    MAX_ORDER_METADATA_ITEMS,
+    normalize_order_metadata,
+    normalize_positive_finite_float,
+)
+from src.server_http_auth import format_bearer_auth_header, normalize_auth_token
+from .settings import (
+    TradingServerSettings,
+    resolve_trading_server_auth_token,
+    resolve_trading_server_base_url,
+)
 
 
 TradingMode = Literal["paper", "live"]
 ExecutionMode = Literal["paper", "live"]
 OrderSide = Literal["buy", "sell"]
+OrderStatus = Literal["open", "filled", "submitted"]
+TradingServerBaseUrlTransport = Literal["http", "https", "missing", "unsupported"]
+TradingServerBaseUrlScope = Literal["loopback", "remote", "invalid"]
+TradingServerBaseUrlSecurity = Literal["https", "loopback_http", "insecure_remote_http", "invalid"]
+TRADING_SERVER_ERROR_BODY_MAX_CHARS = 300
 
 
 class TradingServerWriterLeaseResponse(TypedDict):
@@ -52,16 +70,16 @@ class TradingServerOrderPayload(TypedDict, total=False):
     side: OrderSide
     qty: float
     limit_price: float
-    status: str
+    status: OrderStatus
     execution_mode: ExecutionMode
     allow_loss_exit: bool
     force_exit_reason: str | None
-    metadata: dict[str, Any]
+    metadata: JsonObject
     created_at: str | None
     updated_at: str | None
     filled_at: str | None
     fill_price: float | None
-    broker_response: dict[str, Any]
+    broker_response: JsonObject
 
 
 class TradingServerOrderSubmitResponse(TypedDict):
@@ -74,6 +92,8 @@ class TradingServerRefreshAccountResult(TypedDict):
     account: str
     refreshed_symbols: list[str]
     unavailable_symbols: list[str]
+    quote_error_symbols: NotRequired[list[str]]
+    unavailable_reasons: NotRequired[dict[str, str]]
     filled_orders: list[str]
 
 
@@ -100,6 +120,13 @@ class TradingServerOrdersResponse(TypedDict):
     order_history: NotRequired[list[TradingServerOrderPayload]]
 
 
+class TradingServerBaseUrlDetails(TypedDict):
+    host: str | None
+    transport: TradingServerBaseUrlTransport
+    scope: TradingServerBaseUrlScope
+    security: TradingServerBaseUrlSecurity
+
+
 @dataclass(frozen=True)
 class EngineWriterLeaseRequest:
     account: str
@@ -114,14 +141,14 @@ class EngineOrderRequest:
     bot_id: str
     session_id: str
     symbol: str
-    side: str
+    side: OrderSide
     qty: float
     limit_price: float
-    execution_mode: str
+    execution_mode: ExecutionMode
     allow_loss_exit: bool
     force_exit_reason: str | None
     live_ack: str | None
-    metadata: dict[str, Any]
+    metadata: JsonObject
 
 
 class InProcessTradingServerEngineLike(Protocol):
@@ -151,6 +178,137 @@ def resolve_writer_ttl_seconds(ttl_seconds: int | None = None) -> int:
     )
 
 
+def _is_loopback_hostname(hostname: str | None) -> bool:
+    normalized = str(hostname or "").strip().strip("[]").lower()
+    if not normalized:
+        return False
+    if normalized == "localhost" or normalized.endswith(".localhost"):
+        return True
+    try:
+        return ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def _normalize_execution_mode(value: str) -> ExecutionMode:
+    normalized = str(value).strip().lower() or "paper"
+    if normalized in {"paper", "live"}:
+        return cast(ExecutionMode, normalized)
+    raise ValueError(f"unsupported trading server execution mode: {value!r}")
+
+
+def _normalize_order_side(value: str) -> OrderSide:
+    normalized = str(value).strip().lower()
+    if normalized in {"buy", "sell"}:
+        return cast(OrderSide, normalized)
+    raise ValueError(f"unsupported trading server order side: {value!r}")
+
+def _normalize_order_metadata(value: JsonObject | None) -> JsonObject:
+    return cast(
+        JsonObject,
+        normalize_order_metadata(
+            value,
+            metadata_label="trading server metadata",
+            max_items=MAX_ORDER_METADATA_ITEMS,
+            max_bytes=MAX_ORDER_METADATA_BYTES,
+        ),
+    )
+
+
+def describe_trading_server_base_url(base_url: str) -> TradingServerBaseUrlDetails:
+    parsed = urlparse(str(base_url).strip())
+    scheme = parsed.scheme.strip().lower()
+    host = parsed.hostname.strip().lower() if parsed.hostname else None
+    if not scheme or not parsed.netloc:
+        return {
+            "host": host,
+            "transport": "missing" if not scheme else "unsupported",
+            "scope": "invalid",
+            "security": "invalid",
+        }
+    if scheme == "https":
+        return {
+            "host": host,
+            "transport": "https",
+            "scope": "loopback" if _is_loopback_hostname(parsed.hostname) else "remote",
+            "security": "https",
+        }
+    if scheme != "http":
+        return {
+            "host": host,
+            "transport": "unsupported",
+            "scope": "invalid",
+            "security": "invalid",
+        }
+    if _is_loopback_hostname(parsed.hostname):
+        return {
+            "host": host,
+            "transport": "http",
+            "scope": "loopback",
+            "security": "loopback_http",
+        }
+    return {
+        "host": host,
+        "transport": "http",
+        "scope": "remote",
+        "security": "insecure_remote_http",
+    }
+
+
+def is_secure_or_loopback_trading_server_url(base_url: str) -> bool:
+    return describe_trading_server_base_url(base_url)["security"] in {"https", "loopback_http"}
+
+
+def validate_trading_server_base_url(*, base_url: str, execution_mode: str) -> None:
+    normalized_mode = str(execution_mode).strip().lower() or "paper"
+    if normalized_mode != "live":
+        return
+    if is_secure_or_loopback_trading_server_url(base_url):
+        return
+    raise ValueError(
+        "live trading_server requires an https URL unless the server targets loopback "
+        f"(got {base_url!r})"
+    )
+
+
+def _response_body_excerpt(
+    response: requests.Response | None,
+    *,
+    max_chars: int = TRADING_SERVER_ERROR_BODY_MAX_CHARS,
+) -> str | None:
+    if response is None:
+        return None
+    try:
+        text = str(response.text or "").strip()
+    except Exception:
+        return None
+    if not text:
+        return None
+    if len(text) <= max_chars:
+        return text
+    return text[: max(0, max_chars - 3)] + "..."
+
+
+def _raise_response_contract_error(
+    *,
+    method: Literal["GET", "POST"],
+    path: str,
+    url: str,
+    response: requests.Response,
+    detail: str,
+) -> None:
+    message_parts = [
+        f"trading server {method} {path} returned unexpected JSON payload",
+        f"url={url}",
+        f"status={response.status_code}",
+        detail,
+    ]
+    body_excerpt = _response_body_excerpt(response)
+    if body_excerpt is not None:
+        message_parts.append(f"body={body_excerpt}")
+    raise RuntimeError(", ".join(message_parts))
+
+
 class TradingServerClientLike(Protocol):
     account: str
     bot_id: str
@@ -164,13 +322,13 @@ class TradingServerClientLike(Protocol):
         self,
         *,
         symbol: str,
-        side: str,
+        side: OrderSide,
         qty: float,
         limit_price: float,
         allow_loss_exit: bool = False,
         force_exit_reason: str | None = None,
         live_ack: str | None = None,
-        metadata: dict[str, Any] | None = None,
+        metadata: JsonObject | None = None,
     ) -> TradingServerOrderSubmitResponse: ...
 
     def refresh_prices(self, *, symbols: Iterable[str] | None = None) -> TradingServerRefreshResponse: ...
@@ -178,6 +336,8 @@ class TradingServerClientLike(Protocol):
     def get_account(self) -> TradingServerAccountSnapshot: ...
 
     def get_orders(self, *, include_history: bool = False) -> TradingServerOrdersResponse: ...
+
+    def close(self) -> None: ...
 
 
 class TradingServerClient:
@@ -195,33 +355,109 @@ class TradingServerClient:
         account: str,
         bot_id: str,
         session_id: str | None = None,
-        execution_mode: str = "paper",
+        execution_mode: ExecutionMode = "paper",
         timeout: float = 10.0,
+        session: requests.Session | None = None,
+        auth_token: str | None = None,
     ) -> None:
-        self.base_url = (base_url or os.getenv("TRADING_SERVER_URL", "http://127.0.0.1:8050")).rstrip("/")
+        self.base_url = resolve_trading_server_base_url(base_url)
         self.account = str(account).strip()
         self.bot_id = str(bot_id).strip()
         self.session_id = str(session_id or uuid.uuid4())
-        self.execution_mode = str(execution_mode).strip().lower() or "paper"
+        self.execution_mode = _normalize_execution_mode(execution_mode)
         self.timeout = float(timeout)
+        self.auth_token = normalize_auth_token(resolve_trading_server_auth_token(auth_token))
+        self._owns_session = session is None
+        self._session = session or requests.Session()
+        validate_trading_server_base_url(
+            base_url=self.base_url,
+            execution_mode=self.execution_mode,
+        )
+
+    def close(self) -> None:
+        if self._owns_session:
+            self._session.close()
+
+    def __enter__(self) -> TradingServerClient:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: object,
+    ) -> None:
+        del exc_type, exc, traceback
+        self.close()
 
     def _get(self, path: str, **params: Any) -> dict[str, Any]:
-        response = requests.get(
-            f"{self.base_url}{path}",
-            params=params,
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._request_json("GET", path, params=params)
 
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        response = requests.post(
-            f"{self.base_url}{path}",
-            json=payload,
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._request_json("POST", path, payload=payload)
+
+    def _request_json(
+        self,
+        method: Literal["GET", "POST"],
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        url = f"{self.base_url}{path}"
+        response: requests.Response | None = None
+        request_kwargs: dict[str, Any] = {"timeout": self.timeout}
+        if self.auth_token is not None:
+            request_kwargs["headers"] = {"Authorization": format_bearer_auth_header(self.auth_token)}
+        try:
+            if method == "GET":
+                response = self._session.get(
+                    url,
+                    params=params,
+                    **request_kwargs,
+                )
+            else:
+                response = self._session.post(
+                    url,
+                    json=payload,
+                    **request_kwargs,
+                )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            response = cast(requests.Response | None, getattr(exc, "response", response))
+            message_parts = [
+                f"trading server {method} {path} failed",
+                f"url={url}",
+                f"error={type(exc).__name__}: {exc}",
+            ]
+            if response is not None:
+                message_parts.append(f"status={response.status_code}")
+            body_excerpt = _response_body_excerpt(response)
+            if body_excerpt is not None:
+                message_parts.append(f"body={body_excerpt}")
+            raise RuntimeError(", ".join(message_parts)) from exc
+        try:
+            decoded = response.json()
+        except ValueError as exc:
+            message_parts = [
+                f"trading server {method} {path} returned invalid JSON",
+                f"url={url}",
+                f"status={response.status_code}",
+                f"error={type(exc).__name__}: {exc}",
+            ]
+            body_excerpt = _response_body_excerpt(response)
+            if body_excerpt is not None:
+                message_parts.append(f"body={body_excerpt}")
+            raise RuntimeError(", ".join(message_parts)) from exc
+        if not isinstance(decoded, dict):
+            _raise_response_contract_error(
+                method=method,
+                path=path,
+                url=url,
+                response=response,
+                detail=f"type={type(decoded).__name__}",
+            )
+        return cast(dict[str, Any], decoded)
 
     def claim_writer(self, *, ttl_seconds: int | None = None) -> TradingServerWriterLeaseResponse:
         resolved_ttl_seconds = resolve_writer_ttl_seconds(ttl_seconds)
@@ -257,27 +493,31 @@ class TradingServerClient:
         self,
         *,
         symbol: str,
-        side: str,
+        side: OrderSide,
         qty: float,
         limit_price: float,
         allow_loss_exit: bool = False,
         force_exit_reason: str | None = None,
         live_ack: str | None = None,
-        metadata: dict[str, Any] | None = None,
+        metadata: JsonObject | None = None,
     ) -> TradingServerOrderSubmitResponse:
+        normalized_side = _normalize_order_side(side)
+        normalized_qty = normalize_positive_finite_float(qty, field_name="qty")
+        normalized_limit_price = normalize_positive_finite_float(limit_price, field_name="limit_price")
+        normalized_metadata = _normalize_order_metadata(metadata)
         payload = {
             "account": self.account,
             "bot_id": self.bot_id,
             "session_id": self.session_id,
             "symbol": symbol,
-            "side": side,
-            "qty": float(qty),
-            "limit_price": float(limit_price),
+            "side": normalized_side,
+            "qty": normalized_qty,
+            "limit_price": normalized_limit_price,
             "execution_mode": self.execution_mode,
             "allow_loss_exit": bool(allow_loss_exit),
             "force_exit_reason": force_exit_reason,
             "live_ack": live_ack,
-            "metadata": metadata or {},
+            "metadata": normalized_metadata,
         }
         return cast(TradingServerOrderSubmitResponse, self._post("/api/v1/orders", payload))
 
@@ -306,14 +546,29 @@ class InMemoryTradingServerClient:
         engine: InProcessTradingServerEngineLike,
         account: str,
         bot_id: str,
-        execution_mode: str = "paper",
+        execution_mode: ExecutionMode = "paper",
         session_id: str = "daily-stock-backtest",
     ) -> None:
         self.engine = engine
         self.account = str(account).strip()
         self.bot_id = str(bot_id).strip()
-        self.execution_mode = str(execution_mode).strip().lower() or "paper"
+        self.execution_mode = _normalize_execution_mode(execution_mode)
         self.session_id = str(session_id).strip()
+
+    def close(self) -> None:
+        return None
+
+    def __enter__(self) -> InMemoryTradingServerClient:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: object,
+    ) -> None:
+        del exc_type, exc, traceback
+        self.close()
 
     def claim_writer(self, *, ttl_seconds: int | None = None) -> TradingServerWriterLeaseResponse:
         return self.engine.claim_writer(
@@ -348,27 +603,31 @@ class InMemoryTradingServerClient:
         self,
         *,
         symbol: str,
-        side: str,
+        side: OrderSide,
         qty: float,
         limit_price: float,
         allow_loss_exit: bool = False,
         force_exit_reason: str | None = None,
         live_ack: str | None = None,
-        metadata: dict[str, Any] | None = None,
+        metadata: JsonObject | None = None,
     ) -> TradingServerOrderSubmitResponse:
+        normalized_side = _normalize_order_side(side)
+        normalized_qty = normalize_positive_finite_float(qty, field_name="qty")
+        normalized_limit_price = normalize_positive_finite_float(limit_price, field_name="limit_price")
+        normalized_metadata = _normalize_order_metadata(metadata)
         return self.engine.submit_order(
             EngineOrderRequest(
                 account=self.account,
                 bot_id=self.bot_id,
                 session_id=self.session_id,
                 symbol=symbol,
-                side=side,
-                qty=qty,
-                limit_price=limit_price,
+                side=normalized_side,
+                qty=normalized_qty,
+                limit_price=normalized_limit_price,
                 execution_mode=self.execution_mode,
                 allow_loss_exit=allow_loss_exit,
                 force_exit_reason=force_exit_reason,
                 live_ack=live_ack,
-                metadata=metadata or {},
+                metadata=normalized_metadata,
             )
         )

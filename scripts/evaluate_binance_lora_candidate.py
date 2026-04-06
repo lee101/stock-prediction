@@ -108,6 +108,7 @@ def build_rsync_remote_shell() -> str:
     return " ".join(["ssh", *SSH_OPTIONS])
 
 
+
 def summarize_eval_windows(payload: dict[str, Any]) -> dict[str, Any]:
     windows = payload.get("windows")
     if not isinstance(windows, list):

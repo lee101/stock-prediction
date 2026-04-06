@@ -9,6 +9,9 @@ Run:
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from functools import wraps
+
 import pytest
 import torch
 import torch.nn.functional as F
@@ -27,6 +30,30 @@ def _is_cuda_resource_pressure_error(exc: BaseException) -> bool:
 def _skip_for_cuda_resource_pressure(exc: BaseException) -> None:
     if _is_cuda_resource_pressure_error(exc):
         pytest.skip(f"RoPE CUDA test skipped under shared-GPU resource pressure: {exc}")
+
+
+def _skip_on_cuda_resource_pressure(test_fn):
+    @wraps(test_fn)
+    def wrapped(*args, **kwargs):
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        try:
+            return test_fn(*args, **kwargs)
+        except Exception as exc:
+            _skip_for_cuda_resource_pressure(exc)
+            raise
+        finally:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    return wrapped
+
+
+def _decorate_test_class_for_cuda_resource_pressure(cls):
+    for name, value in vars(cls).items():
+        if name.startswith("test_") and callable(value):
+            setattr(cls, name, _skip_on_cuda_resource_pressure(value))
+    return cls
 
 
 def _cuda_module_or_skip(module):
@@ -98,10 +125,58 @@ def _rms_norm_ref(x: torch.Tensor, weight: torch.Tensor | None = None, eps: floa
     return normed
 
 
+@contextmanager
+def _strict_float32_matmul():
+    """Pin FP32 references to IEEE math so leaked TF32 settings don't skew comparisons."""
+    if DEVICE != "cuda":
+        yield
+        return
+
+    get_precision = getattr(torch, "get_float32_matmul_precision", None)
+    set_precision = getattr(torch, "set_float32_matmul_precision", None)
+    matmul_backend = getattr(torch.backends.cuda, "matmul", None)
+    cudnn_backend = getattr(torch.backends, "cudnn", None)
+    cudnn_conv = getattr(cudnn_backend, "conv", None) if cudnn_backend is not None else None
+
+    snapshot = {
+        "float32_matmul_precision": get_precision() if callable(get_precision) else None,
+        "cuda_allow_tf32": getattr(matmul_backend, "allow_tf32", None) if matmul_backend is not None else None,
+        "cuda_matmul_fp32_precision": getattr(matmul_backend, "fp32_precision", None) if matmul_backend is not None else None,
+        "cudnn_allow_tf32": getattr(cudnn_backend, "allow_tf32", None) if cudnn_backend is not None else None,
+        "cudnn_conv_fp32_precision": getattr(cudnn_conv, "fp32_precision", None) if cudnn_conv is not None else None,
+    }
+
+    if callable(set_precision):
+        set_precision("highest")
+    if snapshot["cuda_allow_tf32"] is not None:
+        matmul_backend.allow_tf32 = False
+    if snapshot["cuda_matmul_fp32_precision"] is not None:
+        matmul_backend.fp32_precision = "ieee"
+    if snapshot["cudnn_allow_tf32"] is not None:
+        cudnn_backend.allow_tf32 = False
+    if snapshot["cudnn_conv_fp32_precision"] is not None:
+        cudnn_conv.fp32_precision = "ieee"
+
+    try:
+        yield
+    finally:
+        if callable(set_precision) and snapshot["float32_matmul_precision"] is not None:
+            set_precision(snapshot["float32_matmul_precision"])
+        if snapshot["cuda_allow_tf32"] is not None:
+            matmul_backend.allow_tf32 = snapshot["cuda_allow_tf32"]
+        if snapshot["cuda_matmul_fp32_precision"] is not None:
+            matmul_backend.fp32_precision = snapshot["cuda_matmul_fp32_precision"]
+        if snapshot["cudnn_allow_tf32"] is not None:
+            cudnn_backend.allow_tf32 = snapshot["cudnn_allow_tf32"]
+        if snapshot["cudnn_conv_fp32_precision"] is not None:
+            cudnn_conv.fp32_precision = snapshot["cudnn_conv_fp32_precision"]
+
+
 # ---------------------------------------------------------------------------
 # RoPE tests
 # ---------------------------------------------------------------------------
 
+@_decorate_test_class_for_cuda_resource_pressure
 class TestApplyRope:
     """Tests for apply_rope (pre-computed cos/sin)."""
 
@@ -188,6 +263,7 @@ class TestApplyRope:
         assert k_out.dtype == torch.bfloat16
 
 
+@_decorate_test_class_for_cuda_resource_pressure
 class TestApplyRopeFused:
     """Tests for apply_rope_fused (computes cos/sin internally from inv_freq)."""
 
@@ -246,6 +322,7 @@ class TestApplyRopeFused:
 # RMS norm tests
 # ---------------------------------------------------------------------------
 
+@_decorate_test_class_for_cuda_resource_pressure
 class TestRmsNorm:
     """Tests for rms_norm (unweighted and weighted)."""
 
@@ -307,6 +384,7 @@ class TestRmsNorm:
 # Fused RMS norm + QKV tests
 # ---------------------------------------------------------------------------
 
+@_decorate_test_class_for_cuda_resource_pressure
 class TestFusedRmsNormQkv:
     """Tests for fused_rms_norm_qkv."""
 
@@ -319,12 +397,13 @@ class TestFusedRmsNormQkv:
         wk = torch.randn(Dk, N, device=DEVICE, dtype=torch.float32)
         wv = torch.randn(Dv, N, device=DEVICE, dtype=torch.float32)
 
-        normed = _rms_norm_ref(x, None, eps=1e-5)
-        q_ref = F.linear(normed, wq)
-        k_ref = F.linear(normed, wk)
-        v_ref = F.linear(normed, wv)
+        with _strict_float32_matmul():
+            normed = _rms_norm_ref(x, None, eps=1e-5)
+            q_ref = F.linear(normed, wq)
+            k_ref = F.linear(normed, wk)
+            v_ref = F.linear(normed, wv)
 
-        q_out, k_out, v_out = fused_rms_norm_qkv(x, None, wq, wk, wv, eps=1e-5)
+            q_out, k_out, v_out = fused_rms_norm_qkv(x, None, wq, wk, wv, eps=1e-5)
 
         assert torch.allclose(q_out, q_ref, atol=1e-3), \
             f"Q max_diff={(q_out - q_ref).abs().max()}"
@@ -369,12 +448,13 @@ class TestFusedRmsNormQkv:
         wk = torch.randn(Dk, N, device=DEVICE, dtype=torch.float32)
         wv = torch.randn(Dv, N, device=DEVICE, dtype=torch.float32)
 
-        normed = _rms_norm_ref(x, norm_w, eps=1e-5)
-        q_ref = F.linear(normed, wq)
-        k_ref = F.linear(normed, wk)
-        v_ref = F.linear(normed, wv)
+        with _strict_float32_matmul():
+            normed = _rms_norm_ref(x, norm_w, eps=1e-5)
+            q_ref = F.linear(normed, wq)
+            k_ref = F.linear(normed, wk)
+            v_ref = F.linear(normed, wv)
 
-        q_out, k_out, v_out = fused_rms_norm_qkv(x, norm_w, wq, wk, wv, eps=1e-5)
+            q_out, k_out, v_out = fused_rms_norm_qkv(x, norm_w, wq, wk, wv, eps=1e-5)
 
         assert torch.allclose(q_out, q_ref, atol=1e-3)
         assert torch.allclose(k_out, k_ref, atol=1e-3)
@@ -410,6 +490,7 @@ class TestFusedRmsNormQkv:
 # End-to-end model import test
 # ---------------------------------------------------------------------------
 
+@_skip_on_cuda_resource_pressure
 def test_model_import_ok() -> None:
     """Ensure model.py can be imported with Triton kernels wired in."""
     from binanceneural.model import BinanceHourlyPolicyNano, PolicyConfig
@@ -423,6 +504,7 @@ def test_model_import_ok() -> None:
     assert out["buy_price_logits"].shape == (2, 32, 1)
 
 
+@_skip_on_cuda_resource_pressure
 def test_model_rope_triton_path() -> None:
     """With CUDA available, the Triton RoPE path is exercised without error."""
     if not torch.cuda.is_available():

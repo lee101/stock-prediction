@@ -42,8 +42,8 @@ try:
 except Exception:
     HAS_TRITON = False
 
-def _probe_flash_attn(fn):
-    """Return True iff fn can run a tiny forward pass on the current GPU."""
+def _probe_attention_backend(fn):
+    """Return True iff an attention backend can run a tiny CUDA forward pass."""
     if not torch.cuda.is_available():
         return False
     try:
@@ -67,7 +67,7 @@ HAS_FLASH_ATTN: bool = False
 # Path 1: FA2 standard C++ extension (flash_attn_2_cuda .so)
 try:
     from flash_attn.flash_attn_interface import flash_attn_func as _fa2_func  # type: ignore[import]
-    if _probe_flash_attn(_fa2_func):
+    if _probe_attention_backend(_fa2_func):
         _flash_attn_func_inner = _fa2_func
         import flash_attn as _fa_mod
         _flash_attn_version = getattr(_fa_mod, "__version__", "2.x")
@@ -79,7 +79,7 @@ except Exception:
 if not HAS_FLASH_ATTN:
     try:
         from flash_attn.cute import flash_attn_func as _fa4_func  # type: ignore[import]
-        if _probe_flash_attn(_fa4_func):
+        if _probe_attention_backend(_fa4_func):
             _flash_attn_func_inner = _fa4_func
             _flash_attn_version = "4.x"
             HAS_FLASH_ATTN = True
@@ -386,6 +386,13 @@ def multi_query_attention(
     )
 
     return out
+
+
+# Triton can be importable but still unusable on a given machine due to
+# compiler/ptxas/runtime incompatibilities. Probe it once so callers fall back
+# cleanly instead of treating "import succeeded" as "kernel works".
+if HAS_TRITON:
+    HAS_TRITON = _probe_attention_backend(multi_query_attention)
 
 
 def flash_attn_mqa(

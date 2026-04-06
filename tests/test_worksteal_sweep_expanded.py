@@ -1,9 +1,7 @@
 """Tests for expanded work-stealing sweep."""
 from __future__ import annotations
 
-import os
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -276,37 +274,29 @@ class TestEvalMultiWindow:
 
 
 class TestCSVOutput:
-    def test_csv_has_required_columns(self):
+    def test_csv_has_required_columns(self, tmp_path):
         bars = _make_bars(["BTCUSD", "ETHUSD"], n_days=150)
         windows = build_windows(bars, window_days=60, n_windows=2)
-        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
-            out_path = f.name
-        try:
-            results = run_sweep(bars, windows, out_path, max_trials=5, cash=10000.0)
-            if results:
-                df = pd.read_csv(out_path)
-                for col in ["dip_pct", "max_leverage", "max_positions",
-                            "trailing_stop_pct", "profit_target_pct", "stop_loss_pct",
-                            "mean_sortino", "mean_return_pct", "max_drawdown_pct",
-                            "safety_score", "total_n_trades", "mean_win_rate"]:
-                    assert col in df.columns, f"Missing column: {col}"
-                assert df["safety_score"].is_monotonic_decreasing or len(df) <= 1
-        finally:
-            os.unlink(out_path)
+        out_path = tmp_path / "expanded_columns.csv"
+        results = run_sweep(bars, windows, str(out_path), max_trials=5, cash=10000.0)
+        if results:
+            df = pd.read_csv(out_path)
+            for col in ["dip_pct", "max_leverage", "max_positions",
+                        "trailing_stop_pct", "profit_target_pct", "stop_loss_pct",
+                        "mean_sortino", "mean_return_pct", "max_drawdown_pct",
+                        "safety_score", "total_n_trades", "mean_win_rate"]:
+                assert col in df.columns, f"Missing column: {col}"
+            assert df["safety_score"].is_monotonic_decreasing or len(df) <= 1
 
-    def test_csv_sorted_by_safety(self):
+    def test_csv_sorted_by_safety(self, tmp_path):
         bars = _make_bars(["BTCUSD", "ETHUSD", "SOLUSD"], n_days=200)
         windows = build_windows(bars, window_days=60, n_windows=2)
-        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
-            out_path = f.name
-        try:
-            results = run_sweep(bars, windows, out_path, max_trials=10, cash=10000.0)
-            if len(results) > 1:
-                df = pd.read_csv(out_path)
-                safety = df["safety_score"].values
-                assert all(safety[i] >= safety[i + 1] for i in range(len(safety) - 1))
-        finally:
-            os.unlink(out_path)
+        out_path = tmp_path / "expanded_sorted.csv"
+        results = run_sweep(bars, windows, str(out_path), max_trials=10, cash=10000.0)
+        if len(results) > 1:
+            df = pd.read_csv(out_path)
+            safety = df["safety_score"].values
+            assert all(safety[i] >= safety[i + 1] for i in range(len(safety) - 1))
 
 
 class TestDispatch:

@@ -13,6 +13,7 @@ def cli(monkeypatch) -> ModuleType:
     data_module = ModuleType("alpaca.data")
     data_module.StockHistoricalDataClient = lambda *args, **kwargs: SimpleNamespace()
     monkeypatch.setitem(sys.modules, "alpaca.data", data_module)
+    sys.modules.pop("scripts.alpaca_cli", None)
     module = importlib.import_module("scripts.alpaca_cli")
     yield module
     sys.modules.pop("scripts.alpaca_cli", None)

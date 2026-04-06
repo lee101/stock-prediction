@@ -8,7 +8,7 @@ from typing import Any, Dict
 
 import pytest
 
-from fal_marketsimulator import runner
+runner = pytest.importorskip("fal_marketsimulator.runner")
 
 
 class _Context:

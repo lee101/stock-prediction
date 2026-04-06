@@ -138,6 +138,22 @@ class BinanceHourlyTrainer:
         try:
             probe_batch = next(iter(probe_loader))
         except StopIteration:
+            logger.info("Skipping initial CUDA forward probe because train_dataloader() yielded no batches.")
+            return model
+        if probe_batch is None:
+            logger.info("Skipping initial CUDA forward probe because the first training batch was None.")
+            return model
+        if not isinstance(probe_batch, dict):
+            logger.info(
+                "Skipping initial CUDA forward probe because the first training batch had unexpected type %s.",
+                type(probe_batch).__name__,
+            )
+            return model
+        if "features" not in probe_batch:
+            logger.info(
+                "Skipping initial CUDA forward probe because the first training batch keys %s did not include 'features'.",
+                sorted(probe_batch.keys()),
+            )
             return model
 
         was_training = model.training

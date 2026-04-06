@@ -5,11 +5,14 @@ import json
 import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, TypedDict, cast
 
 import pandas as pd
 
 from llm_hourly_trader.gemini_wrapper import TradePlan
+
+DEFAULT_STOCK_FINANCING_RATE = 0.0625
+DEFAULT_TRADING_DAYS_PER_YEAR = 252.0
 
 @dataclass(frozen=True)
 class LeverageLimits:
@@ -41,8 +44,8 @@ def _fallback_refine_allocation(
     rl_logit_gap: float,
     current_allocation: float,
     current_price: float,
-    forecast_1h: Optional[dict[str, float]],
-    forecast_24h: Optional[dict[str, float]],
+    forecast_1h: Optional[ForecastSnapshot],
+    forecast_24h: Optional[ForecastSnapshot],
     previous_forecast_error: Optional[float],
 ) -> AllocationRefinement:
     limits = _fallback_leverage_limits_for_asset(asset_class)
@@ -137,6 +140,44 @@ class DailyPosition:
     hold_days: int = 0
 
 
+class ForecastSnapshot(TypedDict, total=False):
+    predicted_close_p50: float
+    predicted_close_p10: float
+    predicted_close_p90: float
+    predicted_high_p50: float
+    predicted_low_p50: float
+
+
+class PositionSnapshot(TypedDict):
+    symbol: str
+    direction: str
+    qty: float
+    entry_price: float
+    entry_timestamp: str
+    current_price: float
+    unrealized_pnl_pct: float
+    hold_days: int
+
+
+class PlanSnapshot(TypedDict):
+    timestamp: str
+    symbol: str
+    direction: str
+    buy_price: float
+    sell_price: float
+    confidence: float
+    reasoning: str
+    current_price: float
+    rl_direction: str
+    rl_confidence: float
+    rl_logit_gap: float
+    score: float
+    forecast_1h: ForecastSnapshot | None
+    forecast_24h: ForecastSnapshot | None
+    target_allocation: float | None
+    overnight_allocation: float | None
+
+
 @dataclass(frozen=True)
 class CandidatePlan:
     symbol: str
@@ -146,8 +187,8 @@ class CandidatePlan:
     plan: TradePlan
     score: float
     expected_edge_pct: float
-    forecast_1h: Optional[dict[str, float]] = None
-    forecast_24h: Optional[dict[str, float]] = None
+    forecast_1h: Optional[ForecastSnapshot] = None
+    forecast_24h: Optional[ForecastSnapshot] = None
     current_allocation: float = 0.0
     target_allocation: float = 0.0
     overnight_allocation: float = 0.0
@@ -179,8 +220,8 @@ class RefinementTraceEntry:
 
 @dataclass(frozen=True)
 class _ForecastLookupCache:
-    timestamps_ns: pd.Index
-    rows: tuple[Optional[dict[str, float]], ...]
+    timestamps_ns: pd.DatetimeIndex
+    rows: tuple[Optional[ForecastSnapshot], ...]
 
 
 DEFAULT_REFINEMENT_PASSES: tuple[RefinementPassConfig, ...] = (
@@ -288,15 +329,18 @@ def load_forecast_frame(symbol: str, horizon: str) -> pd.DataFrame:
 
 
 def _build_forecast_lookup_cache(frame: pd.DataFrame) -> _ForecastLookupCache:
-    timestamps_ns = pd.Index(pd.to_datetime(frame["timestamp"], utc=True).astype("int64"))
+    timestamps_ns = pd.DatetimeIndex(pd.to_datetime(frame["timestamp"], utc=True))
     value_frame = frame.reindex(columns=FORECAST_VALUE_COLUMNS)
-    rows: list[Optional[dict[str, float]]] = []
+    rows: list[Optional[ForecastSnapshot]] = []
     for values in value_frame.itertuples(index=False, name=None):
-        payload = {
-            column: float(value)
-            for column, value in zip(FORECAST_VALUE_COLUMNS, values)
-            if value is not None and not pd.isna(value)
-        }
+        payload = cast(
+            ForecastSnapshot,
+            {
+                column: float(value)
+                for column, value in zip(FORECAST_VALUE_COLUMNS, values)
+                if value is not None and not pd.isna(value)
+            },
+        )
         rows.append(payload or None)
     return _ForecastLookupCache(timestamps_ns=timestamps_ns, rows=tuple(rows))
 
@@ -310,19 +354,18 @@ def _get_forecast_lookup_cache(frame: pd.DataFrame) -> _ForecastLookupCache:
     return cache
 
 
-def get_forecast_at(frame: pd.DataFrame, ts: pd.Timestamp) -> Optional[dict[str, float]]:
+def get_forecast_at(frame: pd.DataFrame, ts: pd.Timestamp) -> Optional[ForecastSnapshot]:
     if frame is None or frame.empty:
         return None
     timestamp = pd.Timestamp(ts)
     if timestamp.tzinfo is None:
         timestamp = timestamp.tz_localize("UTC")
     cache = _get_forecast_lookup_cache(frame)
-    lookup_value = timestamp.value
-    row_idx = int(cache.timestamps_ns.searchsorted(lookup_value, side="right") - 1)
+    row_idx = int(cache.timestamps_ns.searchsorted(timestamp, side="right") - 1)
     if row_idx < 0:
         return None
     payload = cache.rows[row_idx]
-    return None if payload is None else dict(payload)
+    return None if payload is None else cast(ForecastSnapshot, dict(payload))
 
 
 def load_strategy_state(path: Path | str = DEFAULT_STATE_FILE) -> dict[str, Any]:
@@ -434,7 +477,7 @@ def _history_block(history_rows: list[dict[str, Any]], *, limit: int = 30) -> st
     return "\n".join(lines) if lines else "  (no daily history available)"
 
 
-def _forecast_block(label: str, forecast: Optional[dict[str, float]], current_price: float) -> str:
+def _forecast_block(label: str, forecast: Optional[ForecastSnapshot], current_price: float) -> str:
     if not forecast:
         return f"  {label}: unavailable"
     p50 = float(forecast.get("predicted_close_p50", 0.0) or 0.0)
@@ -536,11 +579,11 @@ def build_daily_hybrid_prompt(
     rl_signal: RLSignal,
     other_rl_signals: list[RLSignal],
     history_rows: list[dict[str, Any]],
-    forecast_1h: Optional[dict[str, float]],
-    forecast_24h: Optional[dict[str, float]],
+    forecast_1h: Optional[ForecastSnapshot],
+    forecast_24h: Optional[ForecastSnapshot],
     current_position: Optional[DailyPosition],
     portfolio_positions: Optional[list[DailyPosition]],
-    previous_plan: Optional[dict[str, Any]],
+    previous_plan: Optional[PlanSnapshot],
     recent_trades: list[dict[str, Any]],
     previous_forecast_error: Optional[float],
     cash: float,
@@ -650,6 +693,7 @@ Other ranked RL signals:
 {overnight_alloc_block}
 {alloc_reason_block}
   Stocks: long up to {leverage_limits.long_max_leverage:.1f}x intraday, short up to {leverage_limits.short_max_leverage:.1f}x, overnight gross cap {leverage_limits.overnight_max_gross:.1f}x.
+  {_stock_financing_sentence()}
   Crypto: long-only up to 1.0x and should not be shorted.
 
 ## Previous Plan And Outcome Context
@@ -670,7 +714,7 @@ Other ranked RL signals:
 - Optimize for expected realized PnL first, then prefer the smoother/risk-controlled plan when two plans have similar edge.
 - The RL signal is a strong prior, but you may downgrade it if the forecasts or recent trade context conflict.
 - Respect the leverage envelope and use the refined allocation as sizing guidance, not a guarantee.
-- For stocks, it is valid to use sizing above 1.0x and up to the 2.0x stock cap when RL, Chronos2, and portfolio context all align.
+- For stocks, it is valid to use sizing above 1.0x and up to the 2.0x stock cap when RL, Chronos2, and portfolio context all align, but only if the extra edge still clears the financing drag on the borrowed portion.
 - Use previous positions, previous forecasts, previous plan timing, and current Chronos2 forecasts explicitly in your judgment.
 - If already in a position, focus on whether to keep the position and where to set a realistic exit.
 - If FLAT and there is no clean edge after fees, return HOLD.
@@ -689,8 +733,8 @@ def build_fallback_trade_plan(
     current_price: float,
     asset_class: str,
     history_rows: list[dict[str, Any]],
-    forecast_1h: Optional[dict[str, float]],
-    forecast_24h: Optional[dict[str, float]],
+    forecast_1h: Optional[ForecastSnapshot],
+    forecast_24h: Optional[ForecastSnapshot],
     current_position: Optional[DailyPosition],
 ) -> TradePlan:
     ranges = [
@@ -790,7 +834,11 @@ def score_candidate_plan(
 ) -> float:
     edge_pct = expected_edge_pct(plan, current_price=current_price, current_position=current_position)
     fee_buffer = 0.0015 if asset_class == "crypto" else 0.0010
-    score = max(0.0, edge_pct - fee_buffer) * max(float(plan.confidence), 0.0)
+    financing_drag = _daily_financing_drag_pct(
+        asset_class=asset_class,
+        target_allocation=target_allocation,
+    )
+    score = max(0.0, edge_pct - fee_buffer - financing_drag) * max(float(plan.confidence), 0.0)
     if target_allocation is not None:
         notional_scale = max(0.35, min(2.0, math.sqrt(abs(float(target_allocation)))))
         score *= notional_scale
@@ -812,8 +860,8 @@ def build_candidate_plan(
     plan: TradePlan,
     current_position: Optional[DailyPosition],
     equity: float,
-    forecast_1h: Optional[dict[str, float]] = None,
-    forecast_24h: Optional[dict[str, float]] = None,
+    forecast_1h: Optional[ForecastSnapshot] = None,
+    forecast_24h: Optional[ForecastSnapshot] = None,
     previous_forecast_error: Optional[float] = None,
 ) -> CandidatePlan:
     current_allocation = current_allocation_from_position(current_position, equity=equity)
@@ -882,43 +930,76 @@ def snapshot_plan(
     rl_signal: RLSignal,
     plan: TradePlan,
     current_price: float,
-    forecast_1h: Optional[dict[str, float]],
-    forecast_24h: Optional[dict[str, float]],
+    forecast_1h: Optional[ForecastSnapshot],
+    forecast_24h: Optional[ForecastSnapshot],
     score: float,
     target_allocation: Optional[float] = None,
     overnight_allocation: Optional[float] = None,
-) -> dict[str, Any]:
+) -> PlanSnapshot:
     ts = pd.Timestamp(timestamp)
     if ts.tzinfo is None:
         ts = ts.tz_localize("UTC")
-    return {
-        "timestamp": ts.isoformat(),
-        "symbol": str(symbol).upper(),
-        "direction": plan.direction,
-        "buy_price": float(plan.buy_price),
-        "sell_price": float(plan.sell_price),
-        "confidence": float(plan.confidence),
-        "reasoning": str(plan.reasoning),
-        "current_price": float(current_price),
-        "rl_direction": rl_signal.direction,
-        "rl_confidence": float(rl_signal.confidence),
-        "rl_logit_gap": float(rl_signal.logit_gap),
-        "score": float(score),
-        "forecast_1h": forecast_1h,
-        "forecast_24h": forecast_24h,
-        "target_allocation": None if target_allocation is None else float(target_allocation),
-        "overnight_allocation": None if overnight_allocation is None else float(overnight_allocation),
-    }
+    return cast(
+        PlanSnapshot,
+        {
+            "timestamp": ts.isoformat(),
+            "symbol": str(symbol).upper(),
+            "direction": plan.direction,
+            "buy_price": float(plan.buy_price),
+            "sell_price": float(plan.sell_price),
+            "confidence": float(plan.confidence),
+            "reasoning": str(plan.reasoning),
+            "current_price": float(current_price),
+            "rl_direction": rl_signal.direction,
+            "rl_confidence": float(rl_signal.confidence),
+            "rl_logit_gap": float(rl_signal.logit_gap),
+            "score": float(score),
+            "forecast_1h": forecast_1h,
+            "forecast_24h": forecast_24h,
+            "target_allocation": None if target_allocation is None else float(target_allocation),
+            "overnight_allocation": None if overnight_allocation is None else float(overnight_allocation),
+        },
+    )
 
 
-def snapshot_position(position: Optional[DailyPosition]) -> Optional[dict[str, Any]]:
+def snapshot_position(position: Optional[DailyPosition]) -> Optional[PositionSnapshot]:
     if position is None:
         return None
-    return asdict(position)
+    return cast(PositionSnapshot, asdict(position))
 
 
 def _clamp(value: float, low: float, high: float) -> float:
     return float(max(low, min(high, value)))
+
+
+def _max_allocation_pct_for_asset(asset_class: str) -> float:
+    limits = leverage_limits_for_asset(asset_class)
+    if str(asset_class).lower() == "crypto":
+        return 100.0
+    return float(max(limits.long_max_leverage, limits.short_max_leverage, 1.0) * 100.0)
+
+
+def _daily_financing_drag_pct(
+    *,
+    asset_class: str,
+    target_allocation: float | None,
+    annual_rate: float = DEFAULT_STOCK_FINANCING_RATE,
+    periods_per_year: float = DEFAULT_TRADING_DAYS_PER_YEAR,
+) -> float:
+    if str(asset_class).lower() == "crypto" or target_allocation is None:
+        return 0.0
+    leverage = abs(float(target_allocation))
+    excess_leverage = max(0.0, leverage - 1.0)
+    if excess_leverage <= 0.0:
+        return 0.0
+    return float(excess_leverage * float(annual_rate) / max(float(periods_per_year), 1.0))
+
+
+def _stock_financing_sentence() -> str:
+    return (
+        "Stock exposure above 1.0x pays a 6.25% annualized financing charge, "
+        "accrued daily on the borrowed portion."
+    )
 
 
 def _cap_relative_move(value: float, reference: float, max_pct: float) -> float:
@@ -929,11 +1010,11 @@ def _cap_relative_move(value: float, reference: float, max_pct: float) -> float:
     return _clamp(float(value), min(low, high), max(low, high))
 
 
-def _resolve_allocation_pct(raw_value: float | None) -> float:
+def _resolve_allocation_pct(raw_value: float | None, *, asset_class: str) -> float:
     value = abs(float(raw_value or 0.0))
     if value <= 3.0:
         value *= 100.0
-    return _clamp(value, 0.0, 100.0)
+    return _clamp(value, 0.0, _max_allocation_pct_for_asset(asset_class))
 
 
 def _plan_distance(plan: TradePlan, target: TradePlan, *, current_price: float) -> float:
@@ -1045,7 +1126,11 @@ def normalize_trade_plan(
     buy_price = max(0.0, float(plan.buy_price or 0.0))
     sell_price = max(0.0, float(plan.sell_price or 0.0))
     confidence = _clamp(float(plan.confidence or 0.0), 0.0, 1.0)
-    allocation_pct = _clamp(float(getattr(plan, "allocation_pct", 0.0) or 0.0), 0.0, 100.0)
+    allocation_pct = _clamp(
+        float(getattr(plan, "allocation_pct", 0.0) or 0.0),
+        0.0,
+        _max_allocation_pct_for_asset(asset_class),
+    )
     current_price = max(float(current_price), 1e-6)
 
     if direction == "long":
@@ -1087,9 +1172,9 @@ def build_refinement_prompt(
     rl_signal: RLSignal,
     current_plan: TradePlan,
     current_position: Optional[DailyPosition],
-    previous_plan: Optional[dict[str, Any]],
-    forecast_1h: Optional[dict[str, float]],
-    forecast_24h: Optional[dict[str, float]],
+    previous_plan: Optional[PlanSnapshot],
+    forecast_1h: Optional[ForecastSnapshot],
+    forecast_24h: Optional[ForecastSnapshot],
     pass_config: RefinementPassConfig,
 ) -> str:
     turn_label = {
@@ -1113,6 +1198,7 @@ def build_refinement_prompt(
         f"Edit energy budget: {energy_budget:.2f}\n"
         f"{change_style}\n"
         "For stocks, plans may size up toward 2.0x gross when the RL prior and forecasts align; do not default to timid sizing when the edge is strong.\n"
+        f"{_stock_financing_sentence()}\n"
         "Prompt travel policy:\n"
         "  1. Preserve the previous thesis unless the evidence now clearly rejects it.\n"
         "  2. Spend the available edit energy on the whole plan, not just one field.\n"
@@ -1147,8 +1233,8 @@ def rl_refine_trade_plan(
     current_price: float,
     asset_class: str,
     history_rows: list[dict[str, Any]],
-    forecast_1h: Optional[dict[str, float]] = None,
-    forecast_24h: Optional[dict[str, float]] = None,
+    forecast_1h: Optional[ForecastSnapshot] = None,
+    forecast_24h: Optional[ForecastSnapshot] = None,
     current_position: Optional[DailyPosition] = None,
     target_allocation: Optional[float] = None,
     pass_config: RefinementPassConfig = DEFAULT_REFINEMENT_PASSES[0],
@@ -1170,7 +1256,10 @@ def rl_refine_trade_plan(
         sell_price=rl_target.sell_price,
         confidence=rl_target.confidence,
         reasoning=rl_target.reasoning,
-        allocation_pct=_resolve_allocation_pct(target_allocation if target_allocation is not None else rl_signal.allocation_pct),
+        allocation_pct=_resolve_allocation_pct(
+            target_allocation if target_allocation is not None else rl_signal.allocation_pct,
+            asset_class=asset_class,
+        ),
     )
     base_plan = normalize_trade_plan(
         base_plan,
@@ -1215,9 +1304,9 @@ def llm_refine_trade_plan(
     current_price: float,
     rl_signal: RLSignal,
     current_position: Optional[DailyPosition],
-    previous_plan: Optional[dict[str, Any]],
-    forecast_1h: Optional[dict[str, float]],
-    forecast_24h: Optional[dict[str, float]],
+    previous_plan: Optional[PlanSnapshot],
+    forecast_1h: Optional[ForecastSnapshot],
+    forecast_24h: Optional[ForecastSnapshot],
     pass_config: RefinementPassConfig = DEFAULT_REFINEMENT_PASSES[1],
     llm_refiner: Optional[Callable[[str], TradePlan]] = None,
     llm_model: Optional[str] = None,
@@ -1317,9 +1406,9 @@ def refine_trade_plan_multistage(
     rl_signal: RLSignal,
     history_rows: list[dict[str, Any]],
     current_position: Optional[DailyPosition] = None,
-    previous_plan: Optional[dict[str, Any]] = None,
-    forecast_1h: Optional[dict[str, float]] = None,
-    forecast_24h: Optional[dict[str, float]] = None,
+    previous_plan: Optional[PlanSnapshot] = None,
+    forecast_1h: Optional[ForecastSnapshot] = None,
+    forecast_24h: Optional[ForecastSnapshot] = None,
     target_allocation: Optional[float] = None,
     passes: Optional[list[RefinementPassConfig]] = None,
     llm_refiner: Optional[Callable[[str], TradePlan]] = None,

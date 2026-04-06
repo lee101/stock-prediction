@@ -8,8 +8,9 @@ from types import ModuleType, SimpleNamespace
 from typing import Dict, Iterable
 
 import pytest
-from fal_marketsimulator import runner as fal_runner
-from falmarket.app import MarketSimulatorApp
+
+fal_runner = pytest.importorskip("fal_marketsimulator.runner")
+MarketSimulatorApp = pytest.importorskip("falmarket.app").MarketSimulatorApp
 from src.runtime_imports import _reset_for_tests
 
 

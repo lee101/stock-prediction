@@ -41,6 +41,10 @@ Example response:
 {
   "generated_at": "2025-02-21T02:53:14.669196+00:00",
   "source_file": "/home/lee/code/stock/results/predictions-sim.csv",
+  "source_filename": "predictions-sim.csv",
+  "source_file_updated_at": "2025-02-21T02:53:14.669196+00:00",
+  "source_file_age_seconds": 42,
+  "symbol_query": {"applied": false},
   "count": 2,
   "forecasts": [
     {
@@ -58,6 +62,13 @@ Example response:
 ```
 
 Notes:
+- `forecast_source_status` is `ready`, `missing`, or `error` so callers can distinguish healthy data from setup problems and transient source failures.
+- `source_filename` is the basename of `source_file` for quick scanning in dashboards and logs.
+- `source_file_updated_at` / `source_file_age_seconds` describe how fresh the underlying forecast file is.
+- `symbol_query.applied` shows whether a `symbols=` filter was used.
+- When `symbol_query.applied` is `true`, `requested` / `matched` / `missing` explain partial results, and filtered responses preserve the requested symbol order.
+- If no prediction file exists yet, these endpoints still return HTTP `200` with `forecast_source_status="missing"`, `error="forecast_source_missing"`, `source_search_paths`, and `next_steps` so setup problems are actionable.
+- If the latest forecast file is temporarily unreadable, these endpoints return HTTP `503` with `error="forecast_source_unavailable"` plus the usual source/query metadata and empty result lists instead of a generic `500`.
 - `predicted.*` are the latest model price targets when available (close/high/low).
 - `last.close` is the most recent observed close when available.
 - `strategy.*.profit` is the model-estimated profitability for each strategy.
@@ -75,6 +86,15 @@ Example response:
 {
   "generated_at": "2025-02-21T02:53:14.669196+00:00",
   "source_file": "/home/lee/code/stock/results/predictions-sim.csv",
+  "source_filename": "predictions-sim.csv",
+  "source_file_updated_at": "2025-02-21T02:53:14.669196+00:00",
+  "source_file_age_seconds": 42,
+  "symbol_query": {
+    "applied": true,
+    "requested": ["AAPL", "MSFT"],
+    "matched": ["AAPL", "MSFT"],
+    "missing": []
+  },
   "count": 2,
   "prices": [
     {
@@ -99,6 +119,10 @@ Example response:
 {
   "generated_at": "2025-02-21T02:53:14.669196+00:00",
   "source_file": "/home/lee/code/stock/results/predictions-sim.csv",
+  "source_filename": "predictions-sim.csv",
+  "source_file_updated_at": "2025-02-21T02:53:14.669196+00:00",
+  "source_file_age_seconds": 42,
+  "symbol_query": {"applied": false},
   "count": 2,
   "buy_list": ["AAPL"],
   "forecasts": [

@@ -239,6 +239,7 @@ class TestFallbackPath:
         """BinanceHourlyPolicyNano still forward-passes when Triton is patched out."""
         import binanceneural.kernels.attention as attn_mod
         from binanceneural.config import PolicyConfig
+        import binanceneural.model as model_mod
         from binanceneural.model import BinanceHourlyPolicyNano
 
         cfg = PolicyConfig(
@@ -253,7 +254,11 @@ class TestFallbackPath:
         model = _cuda_module_or_skip(BinanceHourlyPolicyNano(cfg).eval())
         x = _cuda_randn_or_skip(2, 48, 32, device="cuda", dtype=torch.float32)
 
-        with mock.patch.object(attn_mod, "HAS_TRITON", False):
+        # This test is specifically about the attention fallback path, so patch
+        # the model-level Triton kernel switch off as well to avoid unrelated
+        # RMSNorm/rope Triton kernels from masking the attention behavior.
+        with mock.patch.object(attn_mod, "HAS_TRITON", False), \
+             mock.patch.object(model_mod, "_HAS_TRITON_KERNELS", False):
             out = model(x)
         assert "buy_price_logits" in out
         assert out["buy_price_logits"].shape == (2, 48, 1)
@@ -385,6 +390,20 @@ class TestFlashAttnMqa:
 
 class TestFlashAttnDetection:
     """Verify HAS_FLASH_ATTN flag and version string reflect hardware capability."""
+
+    def test_probe_attention_backend_returns_false_on_runtime_error(self):
+        import binanceneural.kernels.attention as attn_mod
+
+        assert attn_mod._probe_attention_backend(  # type: ignore[attr-defined]
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("backend boom"))
+        ) is False
+
+    def test_probe_attention_backend_returns_true_for_working_backend(self):
+        import binanceneural.kernels.attention as attn_mod
+
+        assert attn_mod._probe_attention_backend(  # type: ignore[attr-defined]
+            lambda q, _k, _v, causal=False: q
+        ) is True
 
     def test_has_flash_attn_is_bool(self):
         """HAS_FLASH_ATTN must always be a bool (import probe must not raise)."""

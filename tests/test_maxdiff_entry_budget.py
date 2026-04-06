@@ -18,7 +18,11 @@ if "alpaca_trade_api" not in sys.modules:
         APIError=Exception,
     )
 
-from src.maxdiff_entry_guard import _effective_entry_quantities, _parse_iso_timestamp
+from src.maxdiff_entry_guard import (
+    EntryQuantitySnapshot,
+    _effective_entry_quantities,
+    _parse_iso_timestamp,
+)
 
 
 def test_pending_reserves_cap_prevents_reorders():
@@ -29,7 +33,7 @@ def test_pending_reserves_cap_prevents_reorders():
         "position_qty": 0.0,
     }
 
-    effective, remaining, pending, reached = _effective_entry_quantities(
+    result = _effective_entry_quantities(
         status=status,
         current_qty=0.0,
         open_order_qty=0.0,
@@ -38,12 +42,13 @@ def test_pending_reserves_cap_prevents_reorders():
         pending_ttl_seconds=120,
     )
 
-    assert reached is True
-    assert effective == pytest.approx(2.0)
-    assert remaining == pytest.approx(0.0)
+    assert isinstance(result, EntryQuantitySnapshot)
+    assert result.target_reached is True
+    assert result.effective_qty == pytest.approx(2.0)
+    assert result.remaining_qty == pytest.approx(0.0)
     # Pending expiry should be extended when reservations remain
     assert _parse_iso_timestamp(status["pending_expires_at"]) > now
-    assert pending == pytest.approx(2.0)
+    assert result.pending_qty == pytest.approx(2.0)
 
 
 def test_pending_expiry_releases_capacity():
@@ -54,7 +59,7 @@ def test_pending_expiry_releases_capacity():
         "position_qty": 0.0,
     }
 
-    effective, remaining, pending, reached = _effective_entry_quantities(
+    result = _effective_entry_quantities(
         status=status,
         current_qty=0.0,
         open_order_qty=0.0,
@@ -63,10 +68,10 @@ def test_pending_expiry_releases_capacity():
         pending_ttl_seconds=120,
     )
 
-    assert reached is False
-    assert effective == pytest.approx(0.0)
-    assert remaining == pytest.approx(2.0)
-    assert pending == pytest.approx(0.0)
+    assert result.target_reached is False
+    assert result.effective_qty == pytest.approx(0.0)
+    assert result.remaining_qty == pytest.approx(2.0)
+    assert result.pending_qty == pytest.approx(0.0)
 
 
 def test_fills_reduce_pending_reservation():
@@ -77,7 +82,7 @@ def test_fills_reduce_pending_reservation():
         "position_qty": 0.0,
     }
 
-    effective, remaining, pending, reached = _effective_entry_quantities(
+    result = _effective_entry_quantities(
         status=status,
         current_qty=1.0,  # Newly observed fill
         open_order_qty=0.2,
@@ -87,8 +92,8 @@ def test_fills_reduce_pending_reservation():
     )
 
     # Pending should drop by the filled amount (1.0), leaving 0.5
-    assert pending == pytest.approx(0.5)
+    assert result.pending_qty == pytest.approx(0.5)
     # Effective exposure counts position + open orders + pending remainder
-    assert effective == pytest.approx(1.0 + 0.2 + 0.5)
-    assert remaining == pytest.approx(2.0 - effective)
-    assert reached is False
+    assert result.effective_qty == pytest.approx(1.0 + 0.2 + 0.5)
+    assert result.remaining_qty == pytest.approx(2.0 - result.effective_qty)
+    assert result.target_reached is False

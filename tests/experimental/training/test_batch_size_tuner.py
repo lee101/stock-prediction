@@ -1,7 +1,12 @@
 import json
 from types import SimpleNamespace
 
-import faltrain.batch_size_tuner as bst
+import pytest
+
+bst = pytest.importorskip(
+    "faltrain.batch_size_tuner",
+    reason="faltrain optional training utilities are not installed in this checkout",
+)
 
 
 class _DummyCuda:

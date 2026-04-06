@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,7 +9,11 @@ from unittest import mock
 from gymrl import FeatureBuilder, FeatureBuilderConfig
 from gymrl.cache_utils import load_feature_cache, save_feature_cache
 from gymrl.train_ppo_allocator import optional_float
-from src.models.kronos_wrapper import KronosForecastResult
+
+try:
+    from src.models.kronos_wrapper import KronosForecastResult
+except ModuleNotFoundError:  # pragma: no cover - optional experimental dependency
+    KronosForecastResult = None
 
 
 def _write_symbol_csv(path: Path, symbol: str, *, periods: int = 12) -> None:
@@ -72,6 +77,10 @@ class GymRLTrainingTests(unittest.TestCase):
         self.assertEqual(meta["backend_name"], "bootstrap")
         self.assertEqual(meta["backend_errors"], [])
 
+    @pytest.mark.skipif(
+        KronosForecastResult is None,
+        reason="src.models.kronos_wrapper is unavailable in this checkout",
+    )
     @mock.patch("src.models.kronos_wrapper.KronosForecastingWrapper")
     def test_feature_builder_kronos_backend_with_stub(self, kronos_mock: mock.MagicMock) -> None:
         class _StubKronos:

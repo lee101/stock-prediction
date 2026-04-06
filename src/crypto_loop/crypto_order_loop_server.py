@@ -9,15 +9,17 @@ getting the current orders
 
 """
 import csv
+import math
 from contextlib import asynccontextmanager
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event, Lock, Thread
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Callable, Dict, Iterable, List, Literal, NotRequired, Optional, Tuple, TypedDict
 
 from fastapi import FastAPI, Query
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from starlette.responses import JSONResponse
 
 from alpaca_wrapper import open_order_at_price_or_all
@@ -51,12 +53,71 @@ _STRATEGY_FIELDS = {
     "maxdiffprofit": ("maxdiffprofit_profit", "maxdiffprofit_high_price", "maxdiffprofit_low_price"),
     "takeprofit": ("takeprofit_profit", "takeprofit_high_price", "takeprofit_low_price"),
 }
+_forecast_cache_lock = Lock()
+_order_book_lock = Lock()
+_BINANCE_ALL_IN_MIRROR_MIN_QTY = 0.03
+_BINANCE_ORDER_MIRROR_SYMBOLS = {
+    "BTCUSD": "BTCUSDT",
+}
+
+OrderSide = Literal["buy", "sell"]
+BinanceOrderSide = Literal["BUY", "SELL"]
 
 
-def _parse_symbols(raw_symbols: Optional[str]) -> Optional[Set[str]]:
+class QueuedOrderPayload(TypedDict):
+    symbol: str
+    side: OrderSide
+    price: float
+    qty: float
+    created_at: NotRequired[str]
+
+
+class StockOrderLogPayload(TypedDict):
+    symbol: str
+    side: OrderSide
+    price: float
+    qty: float
+    created_at: str
+    mirrored_to_binance: bool
+    mirror_symbol: Optional[str]
+
+
+@dataclass(frozen=True)
+class ForecastFileCacheEntry:
+    source_file: str
+    stat_key: Tuple[int, int]
+    generated_at: Optional[str]
+    records: List[Dict[str, object]]
+
+
+_forecast_cache_entry: Optional[ForecastFileCacheEntry] = None
+
+
+@dataclass(frozen=True)
+class CryptoOrderBrokerApi:
+    submit_price_order: Callable[[str, float, OrderSide, float], object]
+    cancel_all_binance_orders: Callable[[], object]
+    mirror_all_in_order: Callable[[str, BinanceOrderSide, float], object]
+
+
+class ForecastSourceLoadError(RuntimeError):
+    def __init__(self, message: str, source_file: Optional[str] = None):
+        super().__init__(message)
+        self.source_file = source_file
+
+
+def _parse_symbols(raw_symbols: Optional[str]) -> Optional[List[str]]:
     if not raw_symbols:
         return None
-    return {symbol.strip().upper() for symbol in raw_symbols.split(",") if symbol.strip()}
+    parsed_symbols: List[str] = []
+    seen_symbols = set()
+    for raw_symbol in raw_symbols.split(","):
+        symbol = raw_symbol.strip().upper()
+        if not symbol or symbol in seen_symbols:
+            continue
+        seen_symbols.add(symbol)
+        parsed_symbols.append(symbol)
+    return parsed_symbols
 
 
 def _normalize_scalar(raw: object) -> Optional[float]:
@@ -91,7 +152,22 @@ def _find_latest_prediction_file() -> Optional[Path]:
         candidates.extend(_candidate_prediction_files(results_dir))
     if not candidates:
         return None
-    return max(candidates, key=lambda path: path.stat().st_mtime)
+    latest_candidate: Optional[Path] = None
+    latest_mtime: Optional[float] = None
+    for candidate in candidates:
+        try:
+            candidate_mtime = candidate.stat().st_mtime
+        except OSError:
+            continue
+        if latest_candidate is None or latest_mtime is None or candidate_mtime > latest_mtime:
+            latest_candidate = candidate
+            latest_mtime = candidate_mtime
+    return latest_candidate
+
+
+def _prediction_file_stat_key(path: Path) -> Tuple[int, int]:
+    stat = path.stat()
+    return int(stat.st_mtime_ns), int(stat.st_size)
 
 
 def _extract_generated_at(rows: List[Dict[str, str]], source_file: Path) -> str:
@@ -99,7 +175,299 @@ def _extract_generated_at(rows: List[Dict[str, str]], source_file: Path) -> str:
         generated_at = row.get("generated_at")
         if generated_at:
             return str(generated_at)
-    return datetime.fromtimestamp(source_file.stat().st_mtime).isoformat()
+    return datetime.fromtimestamp(source_file.stat().st_mtime, tz=timezone.utc).isoformat()
+
+
+def _forecast_metadata_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _build_forecast_response_metadata(source_file: Optional[str], generated_at: Optional[str]) -> Dict[str, object]:
+    metadata: Dict[str, object] = {
+        "generated_at": generated_at,
+        "source_file": source_file,
+        "source_filename": None,
+        "source_file_updated_at": None,
+        "source_file_age_seconds": None,
+    }
+    if source_file is None:
+        return metadata
+
+    source_path = Path(source_file)
+    metadata["source_filename"] = source_path.name
+    try:
+        source_stat = source_path.stat()
+    except OSError:
+        return metadata
+
+    source_updated_at = datetime.fromtimestamp(source_stat.st_mtime, tz=timezone.utc)
+    source_age_seconds = max(0, int((_forecast_metadata_now() - source_updated_at).total_seconds()))
+    metadata["source_file_updated_at"] = source_updated_at.isoformat()
+    metadata["source_file_age_seconds"] = source_age_seconds
+    return metadata
+
+
+def _forecast_search_paths() -> List[str]:
+    return [str(path) for path in _FORECAST_RESULTS_DIRS]
+
+
+def _build_missing_forecast_source_payload(
+    payload_key: str,
+    requested_symbols: Optional[List[str]],
+    *,
+    include_buy_list: bool = False,
+) -> Dict[str, object]:
+    payload: Dict[str, object] = {
+        **_build_forecast_response_metadata(None, None),
+        **_build_symbol_query_metadata(requested_symbols, ()),
+        "count": 0,
+        payload_key: [],
+        "forecast_source_status": "missing",
+        "error": "forecast_source_missing",
+        "error_detail": "no prediction files found in configured results directories",
+        "source_search_paths": _forecast_search_paths(),
+        "source_search_filenames": list(_PREDICTION_FILENAMES),
+        "next_steps": [
+            f"write one of {', '.join(_PREDICTION_FILENAMES)} under a configured results directory",
+            "rerun the forecast request after the predictions file is generated",
+        ],
+    }
+    if include_buy_list:
+        payload["buy_list"] = []
+    return payload
+
+
+def _build_symbol_query_metadata(
+    requested_symbols: Optional[List[str]],
+    returned_records: Iterable[Dict[str, object]],
+) -> Dict[str, object]:
+    if not requested_symbols:
+        return {"symbol_query": {"applied": False}}
+
+    returned_symbols = {
+        str(record.get("symbol")).upper()
+        for record in returned_records
+        if record.get("symbol")
+    }
+    matched_symbols = [symbol for symbol in requested_symbols if symbol in returned_symbols]
+    missing_symbols = [symbol for symbol in requested_symbols if symbol not in returned_symbols]
+    return {
+        "symbol_query": {
+            "applied": True,
+            "requested": list(requested_symbols),
+            "matched": matched_symbols,
+            "missing": missing_symbols,
+        }
+    }
+
+
+def _build_forecast_source_error_payload(
+    payload_key: str,
+    requested_symbols: Optional[List[str]],
+    error: ForecastSourceLoadError,
+    *,
+    include_buy_list: bool = False,
+) -> Dict[str, object]:
+    payload: Dict[str, object] = {
+        **_build_forecast_response_metadata(error.source_file, None),
+        **_build_symbol_query_metadata(requested_symbols, ()),
+        "count": 0,
+        payload_key: [],
+        "forecast_source_status": "error",
+        "error": "forecast_source_unavailable",
+        "error_detail": str(error),
+    }
+    if include_buy_list:
+        payload["buy_list"] = []
+    return payload
+
+
+def _build_ready_forecast_payload(
+    requested_symbols: Optional[List[str]],
+    source_file: str,
+    generated_at: Optional[str],
+    returned_records: Iterable[Dict[str, object]],
+    payload_body: Dict[str, object],
+) -> Dict[str, object]:
+    return {
+        **_build_forecast_response_metadata(source_file, generated_at),
+        **_build_symbol_query_metadata(requested_symbols, returned_records),
+        "forecast_source_status": "ready",
+        **payload_body,
+    }
+
+
+def _serve_forecast_endpoint(
+    endpoint: str,
+    payload_key: str,
+    requested_symbols: Optional[List[str]],
+    payload_factory: Callable[[List[Dict[str, object]]], Dict[str, object]],
+    *,
+    include_buy_list: bool = False,
+) -> object:
+    try:
+        records, source_file, generated_at = _load_forecast_records(requested_symbols)
+    except ForecastSourceLoadError as exc:
+        error_payload = _build_forecast_source_error_payload(
+            payload_key,
+            requested_symbols,
+            exc,
+            include_buy_list=include_buy_list,
+        )
+        _log_forecast_response(endpoint, error_payload, status_code=503)
+        return JSONResponse(status_code=503, content=error_payload)
+    if source_file is None:
+        payload = _build_missing_forecast_source_payload(
+            payload_key,
+            requested_symbols,
+            include_buy_list=include_buy_list,
+        )
+        _log_forecast_response(endpoint, payload, status_code=200)
+        return payload
+    payload = _build_ready_forecast_payload(
+        requested_symbols,
+        source_file,
+        generated_at,
+        records,
+        payload_factory(records),
+    )
+    _log_forecast_response(endpoint, payload, status_code=200)
+    return payload
+
+
+def _log_forecast_response(endpoint: str, payload: Dict[str, object], *, status_code: int) -> None:
+    event = {
+        "endpoint": endpoint,
+        "status_code": status_code,
+        "forecast_source_status": payload.get("forecast_source_status", "ready"),
+        "source_file": payload.get("source_file"),
+        "source_filename": payload.get("source_filename"),
+        "generated_at": payload.get("generated_at"),
+        "source_file_age_seconds": payload.get("source_file_age_seconds"),
+        "symbol_query": payload.get("symbol_query"),
+        "count": payload.get("count"),
+        "error": payload.get("error"),
+        "error_detail": payload.get("error_detail"),
+        "source_search_paths": payload.get("source_search_paths"),
+    }
+    if status_code >= 500:
+        logger.warning("crypto_loop_forecast_response {}", event)
+        return
+    logger.info("crypto_loop_forecast_response {}", event)
+
+
+def _log_stock_order(order_payload: StockOrderLogPayload) -> None:
+    logger.info("crypto_loop_stock_order {}", order_payload)
+
+
+def _load_crypto_order_broker_api() -> CryptoOrderBrokerApi:
+    return CryptoOrderBrokerApi(
+        submit_price_order=open_order_at_price_or_all,
+        cancel_all_binance_orders=binance_wrapper.cancel_all_orders,
+        mirror_all_in_order=binance_wrapper.create_all_in_order,
+    )
+
+
+def _binance_mirror_symbol_for(symbol: str) -> Optional[str]:
+    return _BINANCE_ORDER_MIRROR_SYMBOLS.get(symbol)
+
+
+def _binance_order_side_for(side: OrderSide) -> BinanceOrderSide:
+    return "BUY" if side == "buy" else "SELL"
+
+
+def _coerce_queued_order_payload(raw: object) -> Optional[QueuedOrderPayload]:
+    if not isinstance(raw, dict):
+        return None
+    symbol = raw.get("symbol")
+    side = raw.get("side")
+    price = raw.get("price")
+    qty = raw.get("qty")
+    created_at = raw.get("created_at")
+    if not isinstance(symbol, str) or not isinstance(side, str):
+        return None
+    if side not in ("buy", "sell"):
+        return None
+    normalized_price = _normalize_scalar(price)
+    normalized_qty = _normalize_scalar(qty)
+    if normalized_price is None or normalized_qty is None:
+        return None
+    payload: QueuedOrderPayload = {
+        "symbol": symbol,
+        "side": side,
+        "price": normalized_price,
+        "qty": normalized_qty,
+    }
+    if created_at is not None:
+        if not isinstance(created_at, str):
+            return None
+        payload["created_at"] = created_at
+    return payload
+
+
+def _order_book_items_snapshot() -> List[Tuple[str, Optional[QueuedOrderPayload]]]:
+    with _order_book_lock:
+        if hasattr(crypto_symbol_to_order, "items"):
+            raw_items = list(crypto_symbol_to_order.items())
+        else:
+            raw_items = [(str(key), crypto_symbol_to_order.get(key)) for key in list(crypto_symbol_to_order)]
+    return [(str(symbol), _coerce_queued_order_payload(order)) for symbol, order in raw_items]
+
+
+def _snapshot_order_book() -> Dict[str, QueuedOrderPayload]:
+    return {
+        str(symbol): order
+        for symbol, order in _order_book_items_snapshot()
+        if order is not None
+    }
+
+
+def _snapshot_order_symbols() -> List[str]:
+    return [str(symbol) for symbol in _snapshot_order_book().keys()]
+
+
+def _get_queued_order(symbol: str) -> Optional[QueuedOrderPayload]:
+    with _order_book_lock:
+        return _coerce_queued_order_payload(crypto_symbol_to_order.get(symbol))
+
+
+def _set_queued_order(symbol: str, order_payload: QueuedOrderPayload) -> None:
+    with _order_book_lock:
+        crypto_symbol_to_order[symbol] = order_payload
+
+
+def _clear_queued_order(symbol: str) -> None:
+    with _order_book_lock:
+        crypto_symbol_to_order[symbol] = None
+        try:
+            del crypto_symbol_to_order[symbol]
+        except KeyError:
+            pass
+
+
+def _pop_queued_order(symbol: str) -> Optional[QueuedOrderPayload]:
+    with _order_book_lock:
+        order = _coerce_queued_order_payload(crypto_symbol_to_order.get(symbol))
+        if order is None:
+            try:
+                del crypto_symbol_to_order[symbol]
+            except KeyError:
+                pass
+            return None
+        crypto_symbol_to_order[symbol] = None
+        try:
+            del crypto_symbol_to_order[symbol]
+        except KeyError:
+            pass
+        return order
+
+
+def _restore_queued_order_if_missing(symbol: str, order_payload: QueuedOrderPayload) -> bool:
+    with _order_book_lock:
+        if crypto_symbol_to_order.get(symbol) is not None:
+            return False
+        crypto_symbol_to_order[symbol] = order_payload
+        return True
 
 
 def _normalize_forecast_row(row: Dict[str, str]) -> Optional[Dict[str, object]]:
@@ -159,26 +527,56 @@ def _normalize_forecast_row(row: Dict[str, str]) -> Optional[Dict[str, object]]:
     return record
 
 
-def _load_forecast_records(symbols_filter: Optional[Set[str]]) -> Tuple[List[Dict[str, object]], Optional[str], Optional[str]]:
+def _load_forecast_records(symbols_filter: Optional[List[str]]) -> Tuple[List[Dict[str, object]], Optional[str], Optional[str]]:
     source_file = _find_latest_prediction_file()
     if source_file is None:
         return [], None, None
-    with source_file.open(newline="") as handle:
-        reader = csv.DictReader(handle)
-        rows = list(reader)
-    generated_at = _extract_generated_at(rows, source_file)
+    source_file_str = str(source_file)
+    try:
+        stat_key = _prediction_file_stat_key(source_file)
+    except OSError as exc:
+        raise ForecastSourceLoadError(
+            f"failed to stat forecast source: {exc}",
+            source_file=source_file_str,
+        ) from exc
+    with _forecast_cache_lock:
+        cached = _forecast_cache_entry
+        if cached is not None and cached.source_file == source_file_str and cached.stat_key == stat_key:
+            records = cached.records
+            generated_at = cached.generated_at
+        else:
+            try:
+                with source_file.open(newline="") as handle:
+                    reader = csv.DictReader(handle)
+                    rows = list(reader)
+                generated_at = _extract_generated_at(rows, source_file)
+                records = []
+                for row in rows:
+                    record = _normalize_forecast_row(row)
+                    if record is not None:
+                        records.append(record)
+            except (OSError, csv.Error) as exc:
+                raise ForecastSourceLoadError(
+                    f"failed to load forecast source: {exc}",
+                    source_file=source_file_str,
+                ) from exc
+            globals()["_forecast_cache_entry"] = ForecastFileCacheEntry(
+                source_file=source_file_str,
+                stat_key=stat_key,
+                generated_at=generated_at,
+                records=records,
+            )
 
-    records: List[Dict[str, object]] = []
-    for row in rows:
-        record = _normalize_forecast_row(row)
-        if record is None:
-            continue
-        symbol = record["symbol"]
-        if symbols_filter and symbol not in symbols_filter:
-            continue
-        records.append(record)
-
-    return records, str(source_file), generated_at
+    if symbols_filter:
+        records_by_symbol: Dict[str, List[Dict[str, object]]] = {}
+        for record in records:
+            symbol = str(record["symbol"]).upper()
+            records_by_symbol.setdefault(symbol, []).append(record)
+        filtered: List[Dict[str, object]] = []
+        for symbol in symbols_filter:
+            filtered.extend(records_by_symbol.get(symbol, ()))
+        return filtered, source_file_str, generated_at
+    return list(records), source_file_str, generated_at
 
 
 def _build_recommendations(
@@ -238,37 +636,49 @@ def _build_recommendations(
     return recommendations, buy_list
 
 
+def _process_queued_order(symbol: str, broker_api: CryptoOrderBrokerApi) -> None:
+    order = _pop_queued_order(symbol)
+    if order is None:
+        return
+
+    logger.info(f"order {order}")
+    side = order["side"]
+    try:
+        if side == "buy":
+            logger.info(f"buying {symbol} at {order['price']}")
+            broker_api.submit_price_order(symbol, order["qty"], "buy", order["price"])
+            return
+        if side == "sell":
+            logger.info(f"selling {symbol} at {order['price']}")
+            broker_api.submit_price_order(symbol, order["qty"], "sell", order["price"])
+            return
+        logger.error(f"unknown side {side}")
+        logger.error(f"order {order}")
+    except Exception as exc:
+        restored = _restore_queued_order_if_missing(symbol, order)
+        logger.error(f"failed to submit {symbol} order: {exc}")
+        logger.error(f"requeued_failed_order={restored} order={order}")
+
+
 def crypto_order_loop():
-    while not _thread_stop_event.is_set():
-        try:
-            # get all data for symbols
-            for symbol in symbols:
-                # very_latest_data = latest_data(symbol)
-                order = crypto_symbol_to_order.get(symbol)
-                if order:
-                    logger.info(f"order {order}")
-                    if order['side'] == "buy":
-                        # if float(very_latest_data.ask_price) < order['price']:
-                        logger.info(f"buying {symbol} at {order['price']}")
-                        crypto_symbol_to_order[symbol] = None
-                        del crypto_symbol_to_order[symbol]
-                        open_order_at_price_or_all(symbol, order['qty'], "buy", order['price'])
-                    elif order['side'] == "sell":
-                        # if float(very_latest_data.bid_price) > order['price']:
-                        logger.info(f"selling {symbol} at {order['price']}")
-                        crypto_symbol_to_order[symbol] = None
-                        del crypto_symbol_to_order[symbol]
-                        open_order_at_price_or_all(symbol, order['qty'], "sell", order['price'])
-                    else:
-                        logger.error(f"unknown side {order['side']}")
-                        logger.error(f"order {order}")
-        except Exception as e:
-            logger.error(e)
-        _thread_stop_event.wait(10)
+    broker_api = _load_crypto_order_broker_api()
+    try:
+        while not _thread_stop_event.is_set():
+            try:
+                # get all data for symbols
+                for symbol in symbols:
+                    _process_queued_order(symbol, broker_api)
+            except Exception as e:
+                logger.error(e)
+            _thread_stop_event.wait(10)
+    finally:
+        _thread_stopped_event.set()
 
 
 _thread_lock = Lock()
 _thread_stop_event = Event()
+_thread_stopped_event = Event()
+_thread_stopped_event.set()
 thread_loop: Optional[Thread] = None
 
 
@@ -276,8 +686,11 @@ def ensure_crypto_order_loop_started() -> Optional[Thread]:
     global thread_loop
     with _thread_lock:
         if thread_loop is not None and thread_loop.is_alive():
+            if _thread_stop_event.is_set() and not _thread_stopped_event.is_set():
+                _thread_stop_event.clear()
             return thread_loop
         _thread_stop_event.clear()
+        _thread_stopped_event.clear()
         thread_loop = Thread(target=crypto_order_loop, daemon=True, name="crypto-order-loop")
         thread_loop.start()
         return thread_loop
@@ -310,51 +723,85 @@ app = FastAPI(lifespan=_lifespan)
 
 class OrderRequest(BaseModel):
     symbol: str
-    side: str
-    price: float
-    qty: float
+    side: Literal["buy", "sell"]
+    price: float = Field(gt=0.0)
+    qty: float = Field(gt=0.0)
+
+    @field_validator("symbol")
+    @classmethod
+    def validate_symbol(cls, value: str) -> str:
+        normalized = unmap_symbols(str(value).strip().upper())
+        if normalized not in symbols:
+            raise ValueError(f"unsupported symbol: {normalized}")
+        return normalized
+
+    @field_validator("side", mode="before")
+    @classmethod
+    def normalize_side(cls, value: object) -> object:
+        if value is None:
+            return value
+        return str(value).strip().lower()
+
+    @field_validator("price", "qty")
+    @classmethod
+    def validate_finite_number(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("must be a finite number")
+        return value
 
 
 @app.post("/api/v1/stock_order")
 def stock_order(order: OrderRequest):
-    symbol = unmap_symbols(order.symbol)
-    crypto_symbol_to_order[symbol] = {
+    broker_api = _load_crypto_order_broker_api()
+    symbol = order.symbol
+    queued_order: QueuedOrderPayload = {
         "symbol": symbol,
         "side": order.side,
         "price": order.price,
         "qty": order.qty,
-        "created_at": datetime.now().isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    # convert to USDT - assume crypto
-    usdt_symbol = symbol[:3] + "USDT"
-    # order all on binance
-    if order.qty > 0.03 and symbol == "BTCUSD":  # going all in on a bitcoin side
-        binance_wrapper.cancel_all_orders()  # why cancel all crypto?
-        # replicate order to binance account for free trading on btc
-        binance_wrapper.create_all_in_order(usdt_symbol, order.side.upper(), order.price)
+    _set_queued_order(symbol, queued_order)
+    mirror_symbol = _binance_mirror_symbol_for(symbol)
+    mirrored_to_binance = False
+    if mirror_symbol is not None and order.qty > _BINANCE_ALL_IN_MIRROR_MIN_QTY:
+        broker_api.cancel_all_binance_orders()  # why cancel all crypto?
+        broker_api.mirror_all_in_order(mirror_symbol, _binance_order_side_for(order.side), order.price)
+        mirrored_to_binance = True
+
+    log_payload: StockOrderLogPayload = {
+        "symbol": symbol,
+        "side": order.side,
+        "price": order.price,
+        "qty": order.qty,
+        "created_at": queued_order["created_at"],
+        "mirrored_to_binance": mirrored_to_binance,
+        "mirror_symbol": mirror_symbol if mirrored_to_binance else None,
+    }
+    _log_stock_order(log_payload)
 
 
 @app.get("/api/v1/stock_orders")
 def stock_orders():
-    return JSONResponse(crypto_symbol_to_order.__dict__)
+    return JSONResponse(_snapshot_order_book())
 
 
 @app.get("/api/v1/stock_order/{symbol}")
 def get_stock_order(symbol: str):
     symbol = unmap_symbols(symbol)
-    return JSONResponse(crypto_symbol_to_order.get(symbol))
+    return JSONResponse(_get_queued_order(symbol))
 
 
 @app.delete("/api/v1/stock_order/{symbol}")
 def delete_stock_order(symbol: str):
     symbol = unmap_symbols(symbol)
-    crypto_symbol_to_order[symbol] = None
+    _clear_queued_order(symbol)
 
 
 @app.get("/api/v1/stock_order/cancel_all")
 def delete_stock_orders():
-    for symbol in crypto_symbol_to_order:
-        crypto_symbol_to_order[symbol] = None
+    for symbol in _snapshot_order_symbols():
+        _clear_queued_order(symbol)
 
 
 @app.get("/api/v1/forecasts/latest")
@@ -362,13 +809,15 @@ def forecasts_latest(
     symbols: Optional[str] = Query(default=None, description="Comma-separated list of symbols to include"),
 ):
     symbol_filter = _parse_symbols(symbols)
-    records, source_file, generated_at = _load_forecast_records(symbol_filter)
-    return {
-        "generated_at": generated_at,
-        "source_file": source_file,
-        "count": len(records),
-        "forecasts": records,
-    }
+    return _serve_forecast_endpoint(
+        "/api/v1/forecasts/latest",
+        "forecasts",
+        symbol_filter,
+        lambda records: {
+            "count": len(records),
+            "forecasts": records,
+        },
+    )
 
 
 @app.get("/api/v1/forecasts/prices")
@@ -376,21 +825,26 @@ def forecasts_prices(
     symbols: Optional[str] = Query(default=None, description="Comma-separated list of symbols to include"),
 ):
     symbol_filter = _parse_symbols(symbols)
-    records, source_file, generated_at = _load_forecast_records(symbol_filter)
-    prices: List[Dict[str, object]] = []
-    for record in records:
-        entry = {"symbol": record.get("symbol")}
-        if "last" in record:
-            entry["last"] = record["last"]
-        if "predicted" in record:
-            entry["predicted"] = record["predicted"]
-        prices.append(entry)
-    return {
-        "generated_at": generated_at,
-        "source_file": source_file,
-        "count": len(prices),
-        "prices": prices,
-    }
+    def build_prices_payload(records: List[Dict[str, object]]) -> Dict[str, object]:
+        prices: List[Dict[str, object]] = []
+        for record in records:
+            entry = {"symbol": record.get("symbol")}
+            if "last" in record:
+                entry["last"] = record["last"]
+            if "predicted" in record:
+                entry["predicted"] = record["predicted"]
+            prices.append(entry)
+        return {
+            "count": len(prices),
+            "prices": prices,
+        }
+
+    return _serve_forecast_endpoint(
+        "/api/v1/forecasts/prices",
+        "prices",
+        symbol_filter,
+        build_prices_payload,
+    )
 
 
 @app.get("/api/v1/bot/forecasts")
@@ -399,12 +853,18 @@ def bot_forecasts(
     min_profit: float = Query(default=0.0, description="Minimum profit threshold for BUY recommendations"),
 ):
     symbol_filter = _parse_symbols(symbols)
-    records, source_file, generated_at = _load_forecast_records(symbol_filter)
-    forecasts, buy_list = _build_recommendations(records, min_profit)
-    return {
-        "generated_at": generated_at,
-        "source_file": source_file,
-        "count": len(forecasts),
-        "buy_list": buy_list,
-        "forecasts": forecasts,
-    }
+    def build_recommendation_payload(records: List[Dict[str, object]]) -> Dict[str, object]:
+        forecasts, buy_list = _build_recommendations(records, min_profit)
+        return {
+            "count": len(forecasts),
+            "buy_list": buy_list,
+            "forecasts": forecasts,
+        }
+
+    return _serve_forecast_endpoint(
+        "/api/v1/bot/forecasts",
+        "forecasts",
+        symbol_filter,
+        build_recommendation_payload,
+        include_buy_list=True,
+    )

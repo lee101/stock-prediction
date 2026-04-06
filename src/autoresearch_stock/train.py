@@ -5,8 +5,10 @@ import json
 import math
 import os
 import random
+import shutil
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -15,7 +17,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
-from src.torch_device_utils import move_module_to_runtime_device, resolve_runtime_device
+from src.checkpoint_manager import TopKCheckpointManager
+from src.torch_device_utils import move_module_to_runtime_device, resolve_runtime_device, should_auto_fallback_to_cpu
 
 from src.fees import get_fee_for_symbol
 from src.robust_trading_metrics import summarize_scenario_results
@@ -60,6 +63,7 @@ from .prepare import (
 
 DEFAULT_LEARNING_RATE = 3e-4
 DEFAULT_AUTO_LR_CANDIDATES: tuple[float, ...] = (1e-4, 2e-4, 3e-4, 5e-4, 7.5e-4, 1e-3)
+DEFAULT_TOP_K_CHECKPOINTS = 5
 
 
 class SequenceDataset(Dataset):
@@ -941,13 +945,12 @@ def load_planner_model(
     device: torch.device,
     context: str,
 ) -> tuple[PlannerNet, torch.device]:
-    model, resolved_device = move_module_to_runtime_device(
+    return move_module_to_runtime_device(
         model_factory(),
-        requested_device,
-        device,
+        requested_device=requested_device,
+        device=device,
         context=context,
     )
-    return model, resolved_device
 
 
 def update_ema_state(
@@ -1179,6 +1182,8 @@ def _planner_objective(
     plan_labels = batch["plan_labels"].to(device=device, dtype=torch.long, non_blocking=non_blocking)
     margin_targets = batch["margin_targets"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
     budget_labels = batch["budget_labels"].to(device=device, dtype=torch.long, non_blocking=non_blocking)
+    plan_class_weights = plan_class_weights.to(device=device, dtype=torch.float32)
+    budget_class_weights = budget_class_weights.to(device=device, dtype=torch.float32)
 
     with torch.amp.autocast(device_type=device.type, enabled=(device.type == "cuda")):
         predictions, plan_logits, margin_logits, budget_logits = model.predict_with_plan(features, symbol_ids)
@@ -1245,31 +1250,57 @@ def auto_find_learning_rate(
         scaler = torch.amp.GradScaler("cuda", enabled=(tuner_device.type == "cuda"))
         losses: list[float] = []
         unstable = False
+        retried_on_cpu = False
+        batch_index = 0
 
-        for batch in preview_batches:
+        while batch_index < len(preview_batches):
+            batch = preview_batches[batch_index]
             model.train()
             optimizer.zero_grad(set_to_none=True)
-            loss = _planner_objective(
-                model,
-                batch,
-                device=tuner_device,
-                ambiguity_floor=ambiguity_floor,
-                plan_loss_weight=plan_loss_weight,
-                margin_loss_weight=margin_loss_weight,
-                budget_loss_weight=budget_loss_weight,
-                plan_class_weights=plan_class_weights,
-                budget_class_weights=budget_class_weights,
-            )
-            loss_value = float(loss.detach().item())
-            if not math.isfinite(loss_value):
-                unstable = True
-                break
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            scaler.step(optimizer)
-            scaler.update()
-            losses.append(loss_value)
+            try:
+                loss = _planner_objective(
+                    model,
+                    batch,
+                    device=tuner_device,
+                    ambiguity_floor=ambiguity_floor,
+                    plan_loss_weight=plan_loss_weight,
+                    margin_loss_weight=margin_loss_weight,
+                    budget_loss_weight=budget_loss_weight,
+                    plan_class_weights=plan_class_weights,
+                    budget_class_weights=budget_class_weights,
+                )
+                loss_value = float(loss.detach().item())
+                if not math.isfinite(loss_value):
+                    unstable = True
+                    break
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                scaler.step(optimizer)
+                scaler.update()
+                losses.append(loss_value)
+                batch_index += 1
+            except Exception as exc:
+                if retried_on_cpu or not should_auto_fallback_to_cpu(requested_device, tuner_device, exc):
+                    raise
+                retried_on_cpu = True
+                del model
+                del optimizer
+                del scaler
+                if tuner_device.type == "cuda":
+                    torch.cuda.empty_cache()
+                tuner_device = torch.device("cpu")
+                model = model_factory().to(tuner_device)
+                model.load_state_dict(base_state, strict=True)
+                optimizer = torch.optim.AdamW(
+                    model.parameters(),
+                    lr=float(learning_rate),
+                    weight_decay=float(weight_decay),
+                )
+                scaler = torch.amp.GradScaler("cuda", enabled=False)
+                losses = []
+                unstable = False
+                batch_index = 0
 
         if not unstable and losses:
             score = float(sum(losses[-2:]) / min(len(losses), 2))
@@ -1283,6 +1314,151 @@ def auto_find_learning_rate(
             torch.cuda.empty_cache()
 
     return float(best_lr)
+
+
+def default_autoresearch_checkpoint_root() -> Path:
+    env_path = os.getenv("AUTORESEARCH_STOCK_CHECKPOINT_ROOT")
+    if env_path:
+        return Path(env_path)
+    preferred = Path("/sdb-disk/code/stock-prediction/checkpoints/autoresearch_stock")
+    if preferred.parent.parent.exists():
+        return preferred
+    return Path("checkpoints/autoresearch_stock")
+
+
+def resolve_autoresearch_checkpoint_dir(*, frequency: str, checkpoint_dir: str | None) -> Path:
+    if checkpoint_dir is not None:
+        return Path(checkpoint_dir)
+    return default_autoresearch_checkpoint_root() / str(frequency).strip().lower()
+
+
+def _clone_state_dict_to_cpu(model: nn.Module) -> dict[str, torch.Tensor]:
+    return {
+        name: tensor.detach().cpu().clone()
+        for name, tensor in model.state_dict().items()
+    }
+
+
+def _task_config_payload(task_config) -> dict[str, Any]:
+    return {
+        "frequency": str(task_config.frequency),
+        "data_root": str(task_config.data_root),
+        "recent_data_root": None if task_config.recent_data_root is None else str(task_config.recent_data_root),
+        "symbols": list(task_config.symbols),
+        "sequence_length": int(task_config.sequence_length),
+        "hold_bars": int(task_config.hold_bars),
+        "eval_windows": [int(value) for value in task_config.eval_windows],
+        "recent_overlay_bars": int(task_config.recent_overlay_bars),
+        "initial_cash": float(task_config.initial_cash),
+        "max_positions": int(task_config.max_positions),
+        "max_volume_fraction": float(task_config.max_volume_fraction),
+        "min_edge_bps": float(task_config.min_edge_bps),
+        "entry_slippage_bps": float(task_config.entry_slippage_bps),
+        "exit_slippage_bps": float(task_config.exit_slippage_bps),
+        "decision_lag_bars": int(task_config.decision_lag_bars),
+        "allow_short": bool(task_config.allow_short),
+        "close_at_session_end": bool(task_config.close_at_session_end),
+        "spread_lookback_days": int(task_config.spread_lookback_days),
+        "periods_per_year": float(task_config.periods_per_year),
+        "annual_leverage_rate": float(getattr(task_config, "annual_leverage_rate", 0.0625)),
+        "max_gross_leverage": float(getattr(task_config, "max_gross_leverage", 2.0)),
+        "dashboard_db_path": str(task_config.dashboard_db_path),
+    }
+
+
+def _current_topk_paths(manifest_path: Path) -> list[Path]:
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError, TypeError, ValueError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    paths: list[Path] = []
+    for row in payload:
+        if not isinstance(row, dict):
+            continue
+        raw_path = str(row.get("path") or "").strip()
+        if not raw_path:
+            continue
+        path = Path(raw_path)
+        if path.exists():
+            paths.append(path)
+    return paths
+
+
+def _refresh_best_checkpoint_alias(checkpoint_dir: Path, *, manifest_path: Path) -> Path | None:
+    topk_paths = _current_topk_paths(manifest_path)
+    if not topk_paths:
+        return None
+    best_path = topk_paths[0]
+    best_alias = checkpoint_dir / "best.pt"
+    if best_path.resolve() != best_alias.resolve():
+        shutil.copy2(best_path, best_alias)
+    return best_path
+
+
+def save_autoresearch_checkpoint(
+    *,
+    checkpoint_dir: Path,
+    frequency: str,
+    model: nn.Module,
+    planner_cfg: PlannerConfig,
+    task,
+    summary: dict[str, Any],
+    val_loss: float,
+    model_parameters: int,
+    step_count: int,
+    training_seconds: float,
+    total_seconds: float,
+    peak_vram_mb: float,
+    best_modifiers: ExecutionModifierSet,
+    learning_rate_source: str,
+    execution_modifier_tuning_enabled: bool,
+    top_k_checkpoints: int,
+) -> tuple[Path, Path | None]:
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    created_at = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    robust_score = float(summary["robust_score"])
+    score_tag = f"{robust_score:+010.4f}".replace("+", "p").replace("-", "m")
+    checkpoint_path = checkpoint_dir / f"{str(frequency).lower()}_{created_at}_{score_tag}.pt"
+
+    payload = {
+        "model": _clone_state_dict_to_cpu(model),
+        "metadata": {
+            "created_at": created_at,
+            "frequency": str(frequency),
+            "planner_config": asdict(planner_cfg),
+            "task_config": _task_config_payload(task.config),
+            "summary": {key: float(value) for key, value in summary.items()},
+            "val_loss": float(val_loss),
+            "model_parameters": int(model_parameters),
+            "num_steps": int(step_count),
+            "training_seconds": float(training_seconds),
+            "total_seconds": float(total_seconds),
+            "peak_vram_mb": float(peak_vram_mb),
+            "learning_rate_source": str(learning_rate_source),
+            "execution_modifier_tuning_enabled": bool(execution_modifier_tuning_enabled),
+            "best_modifiers": asdict(best_modifiers),
+            "train_samples": int(len(task.train_features)),
+            "symbol_count": int(max(len(task.symbol_to_id), 1)),
+            "feature_dim": int(task.train_features.shape[-1]),
+            "top_k_checkpoints": int(top_k_checkpoints),
+        },
+    }
+    torch.save(payload, checkpoint_path)
+
+    latest_path = checkpoint_dir / "latest.pt"
+    latest_summary_path = checkpoint_dir / "latest_summary.json"
+    shutil.copy2(checkpoint_path, latest_path)
+    latest_summary_path.write_text(
+        json.dumps(payload["metadata"], indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    manager = TopKCheckpointManager(checkpoint_dir, max_keep=max(int(top_k_checkpoints), 1), mode="max")
+    manager.register(checkpoint_path, robust_score)
+    best_path = _refresh_best_checkpoint_alias(checkpoint_dir, manifest_path=(checkpoint_dir / ".topk_manifest.json"))
+    return checkpoint_path, best_path
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1304,6 +1480,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--disable-short", action="store_true")
     parser.add_argument("--dashboard-db", default="dashboards/metrics.db")
     parser.add_argument("--spread-lookback-days", type=int, default=14)
+    parser.add_argument("--annual-leverage-rate", type=float, default=0.0625)
+    parser.add_argument("--max-gross-leverage", type=float, default=2.0)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--eval-batch-size", type=int, default=None)
@@ -1319,6 +1497,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--num-workers", type=int, default=None)
     parser.add_argument("--deterministic", action="store_true")
     parser.add_argument("--context-blocks", type=int, default=2)
+    parser.add_argument("--checkpoint-dir", default=None)
+    parser.add_argument("--top-k-checkpoints", type=int, default=DEFAULT_TOP_K_CHECKPOINTS)
     parser.add_argument("--execution-modifier-tuning", action="store_true")
     parser.add_argument("--disable-execution-modifier-tuning", action="store_true")
     parser.add_argument("--buy-price-modifier-grid-bps", default="-25,-15,-10,-5,0,5,10,15,25")
@@ -1366,6 +1546,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         allow_short=not bool(args.disable_short),
         dashboard_db_path=args.dashboard_db,
         spread_lookback_days=args.spread_lookback_days,
+        annual_leverage_rate=args.annual_leverage_rate,
+        max_gross_leverage=args.max_gross_leverage,
     )
     task = prepare_task(task_config)
     planner_cfg = PlannerConfig(
@@ -1633,6 +1815,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         peak_vram_mb = float(torch.cuda.max_memory_allocated(device) / (1024.0 * 1024.0))
 
     total_seconds = time.perf_counter() - total_start
+    checkpoint_dir = resolve_autoresearch_checkpoint_dir(
+        frequency=task.config.frequency,
+        checkpoint_dir=args.checkpoint_dir,
+    )
+    saved_checkpoint_path, best_checkpoint_path = save_autoresearch_checkpoint(
+        checkpoint_dir=checkpoint_dir,
+        frequency=task.config.frequency,
+        model=model,
+        planner_cfg=planner_cfg,
+        task=task,
+        summary=summary,
+        val_loss=float(val_loss),
+        model_parameters=model_parameters,
+        step_count=step_count,
+        training_seconds=training_seconds,
+        total_seconds=total_seconds,
+        peak_vram_mb=peak_vram_mb,
+        best_modifiers=best_modifiers,
+        learning_rate_source=learning_rate_source,
+        execution_modifier_tuning_enabled=execution_modifier_tuning_enabled,
+        top_k_checkpoints=int(args.top_k_checkpoints),
+    )
     print("---")
     print(f"robust_score:      {float(summary['robust_score']):.6f}")
     print(f"val_loss:          {float(val_loss):.6f}")
@@ -1659,6 +1863,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"amount_mod_pct:    {best_modifiers.amount_modifier_pct:.1f}")
     print(f"frequency:         {task.config.frequency}")
     print(f"hold_bars:         {int(task.config.hold_bars)}")
+    print(f"checkpoint_dir:    {checkpoint_dir}")
+    print(f"saved_checkpoint:  {saved_checkpoint_path}")
+    print(f"best_checkpoint:   {best_checkpoint_path or ''}")
     return 0
 
 

@@ -3,9 +3,7 @@ from __future__ import annotations
 
 import csv
 import sys
-import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
@@ -289,7 +287,7 @@ class TestMultiwindowEval:
 
 
 class TestWriteResultsCsv:
-    def test_csv_output(self):
+    def test_csv_output(self, tmp_path):
         results = [
             CalibrationResult(
                 params=CalibrationParams(entry_offset_bps=-5, exit_offset_bps=10, allocation_scale=1.2),
@@ -298,12 +296,11 @@ class TestWriteResultsCsv:
                 num_train_windows=50, num_val_windows=20,
             ),
         ]
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
-            _write_results_csv(results, f.name)
-            f.flush()
-            with open(f.name) as rf:
-                reader = csv.DictReader(rf)
-                rows = list(reader)
+        output_path = tmp_path / "calibration_results.csv"
+        _write_results_csv(results, str(output_path))
+        with output_path.open() as rf:
+            reader = csv.DictReader(rf)
+            rows = list(reader)
         assert len(rows) == 1
         assert float(rows[0]["entry_offset_bps"]) == -5.0
         assert float(rows[0]["val_sortino"]) == pytest.approx(1.8, abs=0.01)
@@ -332,7 +329,6 @@ class TestNegativeEntryOffset:
         """If we set buy limit far below open and low doesn't reach it, no fill."""
         symbols = ["SYM0"]
         # Create data where lows are always close to opens (tight range)
-        rng = np.random.default_rng(99)
         n = 200
         closes = 100.0 * np.ones(n)
         opens = closes.copy()

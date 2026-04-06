@@ -178,3 +178,58 @@ def test_save_autoresearch_checkpoint_keeps_top_k_and_aliases(tmp_path: Path) ->
 
     assert best_payload["metadata"]["summary"]["robust_score"] == pytest.approx(3.0)
     assert latest_summary["summary"]["robust_score"] == pytest.approx(2.0)
+
+
+def test_auto_find_learning_rate_retries_probe_on_cpu_after_cuda_failure(monkeypatch) -> None:
+    class TinyModel(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.linear = nn.Linear(2, 3)
+
+        def predict_with_plan(self, features, symbol_ids):
+            logits = self.linear(features[:, -1, :])
+            return logits, logits, logits[:, :1], logits
+
+    first_attempt = {"done": False}
+    seen_devices: list[str] = []
+
+    def _fake_objective(model, batch, *, device, **kwargs):
+        seen_devices.append(device.type)
+        if device.type == "cuda" and not first_attempt["done"]:
+            first_attempt["done"] = True
+            raise RuntimeError("CUDA out of memory during probe")
+        return (next(model.parameters()) ** 2).sum()
+
+    monkeypatch.setattr(train_mod, "_planner_objective", _fake_objective)
+    monkeypatch.setattr(train_mod, "load_planner_model", lambda **kwargs: (TinyModel(), torch.device("cuda")))
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+
+    batch = {
+        "features": torch.zeros((2, 3, 2), dtype=torch.float32),
+        "targets": torch.zeros((2, 3), dtype=torch.float32),
+        "symbol_ids": torch.zeros((2,), dtype=torch.long),
+        "weights": torch.ones((2,), dtype=torch.float32),
+        "plan_labels": torch.zeros((2,), dtype=torch.long),
+        "margin_targets": torch.zeros((2,), dtype=torch.float32),
+        "budget_labels": torch.zeros((2,), dtype=torch.long),
+    }
+
+    best_lr = train_mod.auto_find_learning_rate(
+        model_factory=TinyModel,
+        base_state=TinyModel().state_dict(),
+        train_loader=[batch],
+        requested_device="auto",
+        device=torch.device("cuda"),
+        ambiguity_floor=1e-4,
+        plan_loss_weight=0.2,
+        margin_loss_weight=0.1,
+        budget_loss_weight=0.1,
+        plan_class_weights=torch.ones((3,), dtype=torch.float32),
+        budget_class_weights=torch.ones((3,), dtype=torch.float32),
+        weight_decay=0.0,
+        candidate_lrs=(1e-3,),
+        max_batches=1,
+    )
+
+    assert best_lr == pytest.approx(1e-3)
+    assert seen_devices == ["cuda", "cpu"]

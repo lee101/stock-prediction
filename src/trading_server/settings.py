@@ -4,66 +4,74 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.server_settings_utils import (
+    IntResolution,
+    PathResolution as RegistryPathResolution,
+    SecretResolution,
+    resolve_explicit_or_env_int_resolution,
+    resolve_optional_secret,
+    resolve_optional_secret_resolution,
+    resolve_repo_relative_path,
+)
+
 REPO = Path(__file__).resolve().parents[2]
+TRADING_SERVER_BASE_URL_ENV = "TRADING_SERVER_URL"
 TRADING_SERVER_REGISTRY_PATH_ENV = "TRADING_SERVER_REGISTRY_PATH"
 TRADING_SERVER_QUOTE_STALE_SECONDS_ENV = "TRADING_SERVER_QUOTE_STALE_SECONDS"
 TRADING_SERVER_WRITER_TTL_SECONDS_ENV = "TRADING_SERVER_WRITER_TTL_SECONDS"
 TRADING_SERVER_BACKGROUND_POLL_SECONDS_ENV = "TRADING_SERVER_BACKGROUND_POLL_SECONDS"
 TRADING_SERVER_QUOTE_FETCH_WORKERS_ENV = "TRADING_SERVER_QUOTE_FETCH_WORKERS"
 TRADING_SERVER_MAX_ORDER_HISTORY_ENV = "TRADING_SERVER_MAX_ORDER_HISTORY"
+TRADING_SERVER_SHARED_QUOTE_CACHE_SIZE_ENV = "TRADING_SERVER_SHARED_QUOTE_CACHE_SIZE"
+TRADING_SERVER_AUTH_TOKEN_ENV = "TRADING_SERVER_AUTH_TOKEN"
+DEFAULT_TRADING_SERVER_BASE_URL = "http://127.0.0.1:8050"
 DEFAULT_REGISTRY_PATH = REPO / "config" / "trading_server" / "accounts.json"
 DEFAULT_QUOTE_STALE_SECONDS = 90
 DEFAULT_WRITER_TTL_SECONDS = 120
 DEFAULT_BACKGROUND_POLL_SECONDS = 60
 DEFAULT_QUOTE_FETCH_WORKERS = 4
 DEFAULT_MAX_ORDER_HISTORY = 1000
+DEFAULT_SHARED_QUOTE_CACHE_SIZE = 512
 MIN_QUOTE_STALE_SECONDS = 1
 MIN_WRITER_TTL_SECONDS = 10
 MAX_WRITER_TTL_SECONDS = 3600
 MIN_BACKGROUND_POLL_SECONDS = 1
 MIN_QUOTE_FETCH_WORKERS = 1
 MIN_MAX_ORDER_HISTORY = 1
+MIN_SHARED_QUOTE_CACHE_SIZE = 1
 MAX_ACCOUNT_NAME_LENGTH = 64
 MAX_SYMBOL_LENGTH = 20
 
 
+def resolve_registry_path_resolution(path: str | Path | None = None) -> RegistryPathResolution:
+    return resolve_repo_relative_path(
+        path,
+        repo_root=REPO,
+        env_name=TRADING_SERVER_REGISTRY_PATH_ENV,
+        default_path=DEFAULT_REGISTRY_PATH,
+        explicit_label="registry_path",
+    )
+
+
 def resolve_registry_path(path: str | Path | None = None) -> Path:
-    raw_path = path if path is not None else os.getenv(TRADING_SERVER_REGISTRY_PATH_ENV)
-    resolved = Path(raw_path).expanduser() if raw_path is not None else DEFAULT_REGISTRY_PATH
-    if not resolved.is_absolute():
-        resolved = REPO / resolved
-    return resolved
+    return resolve_registry_path_resolution(path).path
 
 
-def _clamp_int(value: int, *, minimum: int, maximum: int | None = None) -> int:
-    clamped = max(int(value), minimum)
-    if maximum is not None:
-        clamped = min(clamped, maximum)
-    return clamped
+def resolve_trading_server_base_url(base_url: str | None = None) -> str:
+    raw_url = (
+        base_url
+        if base_url is not None
+        else os.getenv(TRADING_SERVER_BASE_URL_ENV, DEFAULT_TRADING_SERVER_BASE_URL)
+    )
+    return str(raw_url).strip().rstrip("/")
 
 
-def resolve_env_int(name: str, default: int, *, minimum: int, maximum: int | None = None) -> int:
-    raw_value = os.getenv(name)
-    if raw_value is None:
-        return default
-    try:
-        parsed = int(str(raw_value).strip())
-    except (TypeError, ValueError):
-        return default
-    return _clamp_int(parsed, minimum=minimum, maximum=maximum)
-
-
-def resolve_explicit_or_env_int(
-    explicit: int | None,
-    *,
-    env_name: str,
-    default: int,
-    minimum: int,
-    maximum: int | None = None,
-) -> int:
-    if explicit is None:
-        return resolve_env_int(env_name, default, minimum=minimum, maximum=maximum)
-    return _clamp_int(int(explicit), minimum=minimum, maximum=maximum)
+def resolve_trading_server_auth_token(auth_token: str | None = None) -> str | None:
+    return resolve_optional_secret(
+        auth_token,
+        env_name=TRADING_SERVER_AUTH_TOKEN_ENV,
+        explicit_label="auth_token",
+    )
 
 
 @dataclass(frozen=True)
@@ -74,6 +82,8 @@ class TradingServerSettings:
     background_poll_seconds: int
     quote_fetch_workers: int
     max_order_history: int
+    shared_quote_cache_size: int
+    auth_token: str | None
 
     @classmethod
     def from_env(
@@ -85,38 +95,116 @@ class TradingServerSettings:
         background_poll_seconds: int | None = None,
         quote_fetch_workers: int | None = None,
         max_order_history: int | None = None,
+        shared_quote_cache_size: int | None = None,
+        auth_token: str | None = None,
     ) -> "TradingServerSettings":
-        return cls(
-            registry_path=resolve_registry_path(registry_path),
-            quote_stale_seconds=resolve_explicit_or_env_int(
-                quote_stale_seconds,
-                env_name=TRADING_SERVER_QUOTE_STALE_SECONDS_ENV,
-                default=DEFAULT_QUOTE_STALE_SECONDS,
-                minimum=MIN_QUOTE_STALE_SECONDS,
-            ),
-            writer_ttl_seconds=resolve_explicit_or_env_int(
-                writer_ttl_seconds,
-                env_name=TRADING_SERVER_WRITER_TTL_SECONDS_ENV,
-                default=DEFAULT_WRITER_TTL_SECONDS,
-                minimum=MIN_WRITER_TTL_SECONDS,
-                maximum=MAX_WRITER_TTL_SECONDS,
-            ),
-            background_poll_seconds=resolve_explicit_or_env_int(
-                background_poll_seconds,
-                env_name=TRADING_SERVER_BACKGROUND_POLL_SECONDS_ENV,
-                default=DEFAULT_BACKGROUND_POLL_SECONDS,
-                minimum=MIN_BACKGROUND_POLL_SECONDS,
-            ),
-            quote_fetch_workers=resolve_explicit_or_env_int(
-                quote_fetch_workers,
-                env_name=TRADING_SERVER_QUOTE_FETCH_WORKERS_ENV,
-                default=DEFAULT_QUOTE_FETCH_WORKERS,
-                minimum=MIN_QUOTE_FETCH_WORKERS,
-            ),
-            max_order_history=resolve_explicit_or_env_int(
-                max_order_history,
-                env_name=TRADING_SERVER_MAX_ORDER_HISTORY_ENV,
-                default=DEFAULT_MAX_ORDER_HISTORY,
-                minimum=MIN_MAX_ORDER_HISTORY,
-            ),
+        return resolve_settings_resolution(
+            registry_path=registry_path,
+            quote_stale_seconds=quote_stale_seconds,
+            writer_ttl_seconds=writer_ttl_seconds,
+            background_poll_seconds=background_poll_seconds,
+            quote_fetch_workers=quote_fetch_workers,
+            max_order_history=max_order_history,
+            shared_quote_cache_size=shared_quote_cache_size,
+            auth_token=auth_token,
+        ).settings()
+
+
+@dataclass(frozen=True)
+class TradingServerSettingsResolution:
+    registry_path: RegistryPathResolution
+    quote_stale_seconds: IntResolution
+    writer_ttl_seconds: IntResolution
+    background_poll_seconds: IntResolution
+    quote_fetch_workers: IntResolution
+    max_order_history: IntResolution
+    shared_quote_cache_size: IntResolution
+    auth_token: SecretResolution
+
+    def settings(self) -> TradingServerSettings:
+        return TradingServerSettings(
+            registry_path=self.registry_path.path,
+            quote_stale_seconds=self.quote_stale_seconds.value,
+            writer_ttl_seconds=self.writer_ttl_seconds.value,
+            background_poll_seconds=self.background_poll_seconds.value,
+            quote_fetch_workers=self.quote_fetch_workers.value,
+            max_order_history=self.max_order_history.value,
+            shared_quote_cache_size=self.shared_quote_cache_size.value,
+            auth_token=self.auth_token.secret,
         )
+
+    def as_dict(self) -> dict[str, dict[str, object]]:
+        return {
+            "registry_path": self.registry_path.as_dict(),
+            "quote_stale_seconds": self.quote_stale_seconds.as_dict(),
+            "writer_ttl_seconds": self.writer_ttl_seconds.as_dict(),
+            "background_poll_seconds": self.background_poll_seconds.as_dict(),
+            "quote_fetch_workers": self.quote_fetch_workers.as_dict(),
+            "max_order_history": self.max_order_history.as_dict(),
+            "shared_quote_cache_size": self.shared_quote_cache_size.as_dict(),
+            "auth_token": self.auth_token.as_dict(),
+        }
+
+
+def resolve_settings_resolution(
+    *,
+    registry_path: str | Path | None = None,
+    quote_stale_seconds: int | None = None,
+    writer_ttl_seconds: int | None = None,
+    background_poll_seconds: int | None = None,
+    quote_fetch_workers: int | None = None,
+    max_order_history: int | None = None,
+    shared_quote_cache_size: int | None = None,
+    auth_token: str | None = None,
+) -> TradingServerSettingsResolution:
+    return TradingServerSettingsResolution(
+        registry_path=resolve_registry_path_resolution(registry_path),
+        quote_stale_seconds=resolve_explicit_or_env_int_resolution(
+            quote_stale_seconds,
+            env_name=TRADING_SERVER_QUOTE_STALE_SECONDS_ENV,
+            default=DEFAULT_QUOTE_STALE_SECONDS,
+            minimum=MIN_QUOTE_STALE_SECONDS,
+            explicit_label="quote_stale_seconds",
+        ),
+        writer_ttl_seconds=resolve_explicit_or_env_int_resolution(
+            writer_ttl_seconds,
+            env_name=TRADING_SERVER_WRITER_TTL_SECONDS_ENV,
+            default=DEFAULT_WRITER_TTL_SECONDS,
+            minimum=MIN_WRITER_TTL_SECONDS,
+            maximum=MAX_WRITER_TTL_SECONDS,
+            explicit_label="writer_ttl_seconds",
+        ),
+        background_poll_seconds=resolve_explicit_or_env_int_resolution(
+            background_poll_seconds,
+            env_name=TRADING_SERVER_BACKGROUND_POLL_SECONDS_ENV,
+            default=DEFAULT_BACKGROUND_POLL_SECONDS,
+            minimum=MIN_BACKGROUND_POLL_SECONDS,
+            explicit_label="background_poll_seconds",
+        ),
+        quote_fetch_workers=resolve_explicit_or_env_int_resolution(
+            quote_fetch_workers,
+            env_name=TRADING_SERVER_QUOTE_FETCH_WORKERS_ENV,
+            default=DEFAULT_QUOTE_FETCH_WORKERS,
+            minimum=MIN_QUOTE_FETCH_WORKERS,
+            explicit_label="quote_fetch_workers",
+        ),
+        max_order_history=resolve_explicit_or_env_int_resolution(
+            max_order_history,
+            env_name=TRADING_SERVER_MAX_ORDER_HISTORY_ENV,
+            default=DEFAULT_MAX_ORDER_HISTORY,
+            minimum=MIN_MAX_ORDER_HISTORY,
+            explicit_label="max_order_history",
+        ),
+        shared_quote_cache_size=resolve_explicit_or_env_int_resolution(
+            shared_quote_cache_size,
+            env_name=TRADING_SERVER_SHARED_QUOTE_CACHE_SIZE_ENV,
+            default=DEFAULT_SHARED_QUOTE_CACHE_SIZE,
+            minimum=MIN_SHARED_QUOTE_CACHE_SIZE,
+            explicit_label="shared_quote_cache_size",
+        ),
+        auth_token=resolve_optional_secret_resolution(
+            auth_token,
+            env_name=TRADING_SERVER_AUTH_TOKEN_ENV,
+            explicit_label="auth_token",
+        ),
+    )

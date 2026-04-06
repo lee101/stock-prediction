@@ -10,7 +10,6 @@ Verifies that:
 from __future__ import annotations
 
 import json
-import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -142,19 +141,17 @@ def test_load_service_symbols_unknown_service(config_path: Path) -> None:
     assert stocks == []
 
 
-def test_load_service_symbols_uppercase(config_path: Path) -> None:
+def test_load_service_symbols_uppercase(tmp_path: Path) -> None:
     """Symbols are always uppercased regardless of config case."""
     # Patch the config with lowercase symbols
     low_cfg = {
         "svc": {"crypto_symbols": ["btcusd"], "stock_symbols": ["nvda"]},
     }
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as fh:
-        json.dump(low_cfg, fh)
-        p = Path(fh.name)
+    p = tmp_path / "service_config_lowercase.json"
+    p.write_text(json.dumps(low_cfg))
     crypto, stocks = load_service_symbols("svc", p)
     assert crypto == ["BTCUSD"]
     assert stocks == ["NVDA"]
-    p.unlink()
 
 
 # ---------------------------------------------------------------------------

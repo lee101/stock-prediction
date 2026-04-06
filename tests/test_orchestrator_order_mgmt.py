@@ -16,7 +16,6 @@ import json
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
 from unittest.mock import MagicMock, patch
@@ -180,7 +179,6 @@ class TestCancelThenReorderTimingGap:
         """An existing order with no limit_price should always be cancelled."""
         order = _FakeOrder.buy("order-999", "ETHUSD", 0.0)
         plan = _fake_trade_plan(buy_price=2000.0)
-        signals = {"ETHUSD": plan}
 
         kept: set[str] = set()
         canceled: set[str] = set()
@@ -205,7 +203,6 @@ class TestCancelThenReorderTimingGap:
         """When an existing order is kept, the placement loop must skip it."""
         kept_order_syms = {"BTCUSD"}
         sym = "BTCUSD"
-        plan = _fake_trade_plan(direction="long", buy_price=100.0, confidence=0.9)
 
         placed = []
         if sym not in kept_order_syms:
@@ -655,7 +652,18 @@ class TestReadPendingFills:
         })
         fill_file.write_text(good + "\n{BAD JSON}\n")
 
-        events = co.read_pending_fills(since_minutes=9999, fill_events_file=fill_file)
+        class _FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                current = cls(2026, 3, 28, 12, 0, tzinfo=timezone.utc)
+                return current if tz is not None else current.replace(tzinfo=None)
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(co, "datetime", _FrozenDatetime)
+        try:
+            events = co.read_pending_fills(since_minutes=9999, fill_events_file=fill_file)
+        finally:
+            monkeypatch.undo()
 
         assert len(events) == 1, "Only the valid line should be returned"
         assert events[0]["symbol"] == "BTCUSD"
@@ -688,7 +696,18 @@ class TestReadPendingFills:
         })
         fill_file.write_text(good + "\n" + bad_ts + "\n")
 
-        events = co.read_pending_fills(since_minutes=9999, fill_events_file=fill_file)
+        class _FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                current = cls(2026, 3, 28, 12, 0, tzinfo=timezone.utc)
+                return current if tz is not None else current.replace(tzinfo=None)
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(co, "datetime", _FrozenDatetime)
+        try:
+            events = co.read_pending_fills(since_minutes=9999, fill_events_file=fill_file)
+        finally:
+            monkeypatch.undo()
 
         assert len(events) == 1
         assert events[0]["step_id"] == "s1"

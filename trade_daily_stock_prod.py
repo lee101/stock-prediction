@@ -1112,7 +1112,8 @@ def _load_bare_policy(
             cached = _BARE_POLICY_CACHE.get(cache_key)
             if cached is not None and cached.size == stat_result.st_size and cached.mtime_ns == stat_result.st_mtime_ns:
                 _BARE_POLICY_CACHE.move_to_end(cache_key)
-                return copy.deepcopy(cached.policy)
+                # Bare policies are eval-only (no mutable state changed during inference_mode forward)
+                return cached.policy
 
     ckpt = load_checkpoint_payload(
         checkpoint_path,

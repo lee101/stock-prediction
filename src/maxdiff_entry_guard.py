@@ -1,7 +1,22 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, Tuple
+from typing import Iterable, NamedTuple, TypedDict
+
+
+class EntryReservationStatus(TypedDict, total=False):
+    pending_qty: float
+    pending_expires_at: str
+    position_qty: float
+    effective_qty: float
+    remaining_qty: float
+
+
+class EntryQuantitySnapshot(NamedTuple):
+    effective_qty: float
+    remaining_qty: float
+    pending_qty: float
+    target_reached: bool
 
 
 def _parse_iso_timestamp(value: str | None) -> datetime | None:
@@ -29,13 +44,13 @@ def _sum_order_qty(orders: Iterable[object]) -> float:
 
 def _effective_entry_quantities(
     *,
-    status: dict,
+    status: EntryReservationStatus,
     current_qty: float,
     open_order_qty: float,
     target_qty: float,
     now: datetime,
     pending_ttl_seconds: int,
-) -> Tuple[float, float, float, bool]:
+) -> EntryQuantitySnapshot:
     """
     Compute effective exposure for an entry watcher, accounting for:
       * current filled position
@@ -75,4 +90,9 @@ def _effective_entry_quantities(
     status["effective_qty"] = effective_qty
     status["remaining_qty"] = remaining_qty
 
-    return effective_qty, remaining_qty, pending_qty, target_reached
+    return EntryQuantitySnapshot(
+        effective_qty=effective_qty,
+        remaining_qty=remaining_qty,
+        pending_qty=pending_qty,
+        target_reached=target_reached,
+    )

@@ -10,7 +10,7 @@ import subprocess
 import sys
 from dataclasses import asdict
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable
+from typing import Literal, TypedDict
 
 import numpy as np
 import pandas as pd
@@ -21,6 +21,8 @@ if str(REPO) not in sys.path:
 
 from llm_hourly_trader.gemini_wrapper import TradePlan
 from src.daily_mixed_hybrid import (
+    ForecastSnapshot,
+    PlanSnapshot,
     RLSignal,
     build_candidate_plan,
     normalize_trade_plan,
@@ -28,8 +30,40 @@ from src.daily_mixed_hybrid import (
     snapshot_plan,
 )
 
-if TYPE_CHECKING:
-    from binanceneural.marketsimulator import SimulationConfig
+SimulationMode = Literal["baseline", "refined"]
+
+
+class ActionRow(TypedDict):
+    timestamp: pd.Timestamp
+    symbol: str
+    buy_price: float
+    sell_price: float
+    buy_amount: float
+    sell_amount: float
+    trade_amount: float
+    confidence: float
+    plan_direction: str
+    reasoning: str
+
+
+class TradeSummary(TypedDict):
+    trade_count: float
+    round_trips: float
+    win_rate: float
+    realized_pnl: float
+
+
+class TraceRow(TypedDict):
+    timestamp: str
+    symbol: str
+    step_idx: int
+    stage: str
+    driver: str
+    energy_budget: float | None
+    alpha: float | None
+    target_distance: float | None
+    plan: dict[str, object]
+    prompt: str | None
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -78,7 +112,14 @@ def _synthetic_bars(symbol: str, *, bars: int, seed: int, phase: int) -> pd.Data
     return pd.DataFrame(rows)
 
 
-def _build_synthetic_forecast(frame: pd.DataFrame, idx: int, horizon: int, *, noise_scale: float, rng: np.random.Generator) -> dict[str, float]:
+def _build_synthetic_forecast(
+    frame: pd.DataFrame,
+    idx: int,
+    horizon: int,
+    *,
+    noise_scale: float,
+    rng: np.random.Generator,
+) -> ForecastSnapshot:
     current = float(frame.iloc[idx]["close"])
     future_idx = min(len(frame) - 1, idx + horizon)
     future_close = float(frame.iloc[future_idx]["close"])
@@ -138,8 +179,8 @@ def _baseline_plan_from_rl(signal: RLSignal, *, current_price: float) -> TradePl
 def _make_llm_refiner(
     *,
     current_price: float,
-    forecast_1h: dict[str, float] | None,
-    forecast_24h: dict[str, float] | None,
+    forecast_1h: ForecastSnapshot | None,
+    forecast_24h: ForecastSnapshot | None,
     base_plan: TradePlan,
 ) -> callable:
     def _refine(_prompt: str) -> TradePlan:
@@ -173,7 +214,7 @@ def _make_llm_refiner(
     return _refine
 
 
-def _plan_to_action_row(ts: pd.Timestamp, symbol: str, plan: TradePlan) -> dict[str, float | str | pd.Timestamp]:
+def _plan_to_action_row(ts: pd.Timestamp, symbol: str, plan: TradePlan) -> ActionRow:
     buy_amount = float(max(0.0, min(100.0, float(getattr(plan, "allocation_pct", 0.0) or 0.0))))
     sell_amount = 100.0 if float(plan.sell_price) > 0.0 else 0.0
     if plan.direction != "long":
@@ -192,7 +233,7 @@ def _plan_to_action_row(ts: pd.Timestamp, symbol: str, plan: TradePlan) -> dict[
     }
 
 
-def _trade_summary(result) -> dict[str, float]:
+def _trade_summary(result) -> TradeSummary:
     trades = [trade for symbol_result in result.per_symbol.values() for trade in symbol_result.trades]
     realized = [float(trade.realized_pnl) for trade in trades if trade.side == "sell"]
     wins = [pnl for pnl in realized if pnl > 0.0]
@@ -213,12 +254,12 @@ def _build_actions(
     *,
     bars: pd.DataFrame,
     warmup_bars: int,
-    mode: str,
+    mode: SimulationMode,
     seed: int,
-) -> tuple[pd.DataFrame, list[dict[str, object]]]:
-    action_rows: list[dict[str, object]] = []
-    trace_rows: list[dict[str, object]] = []
-    previous_plans: dict[str, dict[str, object]] = {}
+) -> tuple[pd.DataFrame, list[TraceRow]]:
+    action_rows: list[ActionRow] = []
+    trace_rows: list[TraceRow] = []
+    previous_plans: dict[str, PlanSnapshot] = {}
     grouped = {symbol: frame.reset_index(drop=True) for symbol, frame in bars.groupby("symbol", sort=False)}
 
     for symbol_idx, symbol in enumerate(grouped):

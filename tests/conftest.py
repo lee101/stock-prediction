@@ -28,6 +28,21 @@ if "STATE_DIR" not in os.environ:
 
 import pytest
 
+
+@pytest.fixture
+def reset_package_submodules():
+    """Remove selected package submodules from both sys.modules and package attrs."""
+
+    def _reset(package_name: str, *submodule_names: str) -> None:
+        package = sys.modules.get(package_name)
+        for submodule_name in submodule_names:
+            sys.modules.pop(f"{package_name}.{submodule_name}", None)
+        if isinstance(package, types.ModuleType):
+            for submodule_name in submodule_names:
+                package.__dict__.pop(submodule_name, None)
+
+    return _reset
+
 # Provide a harmless env_real stub during tests so we never import the real
 # credentials or accidentally place live trades. Set USE_REAL_ENV=1 to bypass.
 if os.getenv("USE_REAL_ENV", "0") not in ("1", "true", "TRUE", "yes", "YES"):

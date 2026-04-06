@@ -90,3 +90,33 @@ def test_grid_optimizer_matches_scipy(monkeypatch):
     assert abs(p_fast - p_ref) < 0.1
     assert abs(h_fast - h_ref) < 5e-3
     assert abs(l_fast - l_ref) < 5e-3
+
+
+def test_entry_exit_profit_grid_runs_under_inference_mode(monkeypatch):
+    fast = _reload_fast(monkeypatch)
+    close_actual, positions, high_actual, high_pred, low_actual, low_pred = _sample_data(n=12, seed=17)
+    inference_flags: list[bool] = []
+    original_clamp = fast.torch.clamp
+
+    def recording_clamp(*args, **kwargs):
+        inference_flags.append(fast.torch.is_inference_mode_enabled())
+        return original_clamp(*args, **kwargs)
+
+    monkeypatch.setattr(fast.torch, "clamp", recording_clamp)
+
+    profit_grid = fast._entry_exit_profit_grid(
+        close_actual,
+        positions,
+        high_actual,
+        high_pred,
+        low_actual,
+        low_pred,
+        torch.tensor([-0.01, 0.0, 0.01], dtype=close_actual.dtype),
+        torch.tensor([-0.01, 0.0, 0.01], dtype=close_actual.dtype),
+        close_at_eod=False,
+        trading_fee=None,
+    )
+
+    assert profit_grid.shape == (3, 3)
+    assert inference_flags
+    assert all(inference_flags)

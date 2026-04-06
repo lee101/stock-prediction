@@ -718,7 +718,11 @@ class TestAMP:
             "max_positions": 3, "loss_type": "sortino", "return_weight": 0.05,
             "grad_clip": 1.0,
         }
-        metrics = train_epoch(model, loader, optimizer, device, config, scaler=scaler)
+        try:
+            metrics = train_epoch(model, loader, optimizer, device, config, scaler=scaler)
+        except Exception as exc:
+            self._skip_for_cuda_resource_pressure(exc)
+            raise
         assert "loss" in metrics
         assert not np.isnan(metrics["loss"])
 
@@ -749,7 +753,11 @@ class TestAMP:
             "max_positions": 3, "max_hold_days": 14, "loss_type": "sortino",
             "return_weight": 0.05, "grad_clip": 1.0,
         }
-        metrics = train_epoch_multistep(model, loader, optimizer, device, config, scaler=scaler)
+        try:
+            metrics = train_epoch_multistep(model, loader, optimizer, device, config, scaler=scaler)
+        except Exception as exc:
+            self._skip_for_cuda_resource_pressure(exc)
+            raise
         assert "loss" in metrics
         assert not np.isnan(metrics["loss"])
 

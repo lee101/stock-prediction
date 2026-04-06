@@ -11,7 +11,17 @@ from scripts.run_binance_crypto_lora_sweep import (
     rank_results,
     render_summary_md,
     run_sweep,
+    summarize_result,
 )
+
+
+def test_root_module_delegates_to_scripts_module() -> None:
+    import run_binance_crypto_lora_sweep as root_module
+    import scripts.run_binance_crypto_lora_sweep as scripts_module
+
+    assert root_module.main is scripts_module.main
+    assert root_module.rank_results is scripts_module.rank_results
+    assert root_module.render_summary_md is scripts_module.render_summary_md
 
 
 def test_parse_symbols_and_preaugs_deduplicate_preserve_order() -> None:
@@ -85,8 +95,34 @@ def test_rank_results_prefers_pnl_gate_then_validation_consistency() -> None:
 
     rendered = render_summary_md(records)
     assert "`DOGEUSDT`: `percent_change`" in rendered
-    assert "| 1 | DOGEUSDT | percent_change | pass | 2/3 |" in rendered
-    assert "doge_pct" in rendered
+    assert "| Rank | Symbol | Preaug | PnL Gate | PnL Accept | Ann Return Δ% | Ann Symbol PnL | Mean Sortino Δ | Mean Symbol PnL | Stability | Val Consistency | Val MAE% | Test MAE% | Run Name |" in rendered
+    assert "| 1 | DOGEUSDT | percent_change | pass | 2/3 | n/a | n/a | +0.3000 | +11.50 | n/a | 0.4200 | 0.8000 | 0.8800 | doge_pct |" in rendered
+
+
+def test_summarize_result_extracts_stability_fields() -> None:
+    record = summarize_result(
+        {
+            "config": {"symbol": "dogeusdt", "preaug": "percent_change"},
+            "run_name": "doge_pct",
+            "output_dir": "chronos2_finetuned/doge_pct",
+            "val_consistency_score": 0.42,
+            "test_consistency_score": 0.39,
+            "val": {"mae_percent_mean": 0.8},
+            "test": {"mae_percent_mean": 0.88},
+            "stability": {
+                "stability_score": 0.17,
+                "mae_percent_gap": 0.08,
+                "consistency_gap": 0.03,
+            },
+        },
+        result_path=Path("experiments/binance_crypto_lora_sweep/doge_pct.json"),
+    )
+
+    assert record["symbol"] == "DOGEUSDT"
+    assert record["preaug"] == "percent_change"
+    assert record["train_stability_score"] == 0.17
+    assert record["train_mae_percent_gap"] == 0.08
+    assert record["train_consistency_gap"] == 0.03
 
 
 def test_rank_results_prefers_annualized_pnl_over_validation_when_gate_matches() -> None:

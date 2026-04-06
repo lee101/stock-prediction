@@ -1,11 +1,12 @@
 """Tests for replay_prod_trades.py log parsing and simulation."""
 
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime
+import uuid
 
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
-from replay_prod_trades import parse_log, simulate, build_comparison, Trade, PortfolioSnapshot, Position
+from replay_prod_trades import parse_log, simulate, build_comparison, Trade, PortfolioSnapshot
 
 
 SAMPLE_LOG = """\
@@ -27,17 +28,30 @@ SAMPLE_LOG_NEW_PORTFOLIO = """\
 
 
 def _write_tmp(content):
-    f = tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False)
-    f.write(content)
-    f.close()
-    return f.name
+    temp_dir = tempfile.mkdtemp(prefix="replay_prod_trades_", dir=os.getcwd())
+    path = os.path.join(temp_dir, f"{uuid.uuid4().hex}.log")
+    with open(path, "w") as handle:
+        handle.write(content)
+    os.chmod(path, 0o600)
+    return path
+
+
+def _cleanup_tmp(path):
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    try:
+        os.rmdir(os.path.dirname(path))
+    except OSError:
+        pass
 
 
 def test_parse_trades():
     path = _write_tmp(SAMPLE_LOG)
     cutoff = datetime(2026, 3, 22)
     trades, snaps = parse_log(path, cutoff)
-    os.unlink(path)
+    _cleanup_tmp(path)
 
     assert len(trades) == 5
     assert trades[0].side == "SELL"
@@ -57,7 +71,7 @@ def test_parse_portfolio_old_format():
     path = _write_tmp(SAMPLE_LOG)
     cutoff = datetime(2026, 3, 22)
     _, snaps = parse_log(path, cutoff)
-    os.unlink(path)
+    _cleanup_tmp(path)
 
     assert len(snaps) == 2
     assert abs(snaps[0].total - 3313.41) < 0.01
@@ -68,7 +82,7 @@ def test_parse_portfolio_new_format():
     path = _write_tmp(SAMPLE_LOG_NEW_PORTFOLIO)
     cutoff = datetime(2026, 3, 22)
     _, snaps = parse_log(path, cutoff)
-    os.unlink(path)
+    _cleanup_tmp(path)
 
     assert len(snaps) == 2
     assert abs(snaps[0].total - 3068.33) < 0.01
@@ -92,7 +106,6 @@ def test_simulate_buy_sell():
     assert tp["margin_interest"] > 0
     assert tp["hours_held"] == 4.0
 
-    fee = 2000.0 * 0.001 + 2100.0 * 0.001
     margin = 2000.0 * 0.0625 * 4.0 / 8760.0
     expected_net = 100.0 - 2100.0 * 0.001 - margin
     assert abs(tp["net_pnl"] - expected_net) < 0.01
@@ -147,7 +160,7 @@ def test_cutoff_filtering():
     path = _write_tmp(log)
     cutoff = datetime(2026, 3, 21)
     trades, _ = parse_log(path, cutoff)
-    os.unlink(path)
+    _cleanup_tmp(path)
     assert len(trades) == 1
     assert trades[0].side == "SELL"
 

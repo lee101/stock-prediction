@@ -12,6 +12,13 @@ import pytest
 from pufferlib_market import binding_fallback
 
 
+@pytest.fixture(autouse=True)
+def _reset_pufferlib_binding_module(reset_package_submodules):
+    reset_package_submodules("pufferlib_market", "binding")
+    yield
+    reset_package_submodules("pufferlib_market", "binding")
+
+
 def _write_mktd(path: Path, *, closes: list[float]) -> None:
     num_symbols = 1
     num_timesteps = len(closes)
@@ -48,7 +55,7 @@ def test_package_binding_attribute_tracks_sys_modules_override(monkeypatch):
     assert pufferlib_market.binding is fake_binding
 
 
-def test_package_binding_falls_back_when_native_import_fails(monkeypatch):
+def test_package_binding_falls_back_when_native_import_fails(monkeypatch, reset_package_submodules):
     real_import_module = importlib.import_module
 
     def fake_import_module(name: str, package: str | None = None):
@@ -56,8 +63,7 @@ def test_package_binding_falls_back_when_native_import_fails(monkeypatch):
             raise ImportError("native binding unavailable")
         return real_import_module(name, package)
 
-    monkeypatch.delitem(sys.modules, "pufferlib_market.binding", raising=False)
-    monkeypatch.delattr(pufferlib_market, "binding", raising=False)
+    reset_package_submodules("pufferlib_market", "binding")
     monkeypatch.setattr(importlib, "import_module", fake_import_module)
 
     result = pufferlib_market._ensure_binding()

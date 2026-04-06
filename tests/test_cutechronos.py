@@ -12,13 +12,11 @@ small randomly-initialised CuteChronos2Model instances instead.
 
 from __future__ import annotations
 
-import json
+import importlib
 import math
 import sys
-import tempfile
 import warnings
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 import torch
@@ -27,6 +25,15 @@ import torch
 # ---------------------------------------------------------------------------
 # Helpers shared across tests
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_cutechronos_modules() -> None:
+    for module_name in list(sys.modules):
+        if module_name == "cutechronos" or module_name.startswith("cutechronos."):
+            sys.modules.pop(module_name, None)
+    importlib.invalidate_caches()
+
 
 def _make_small_config():
     """Return a CuteChronos2Config suitable for fast CPU tests."""
@@ -160,11 +167,6 @@ class TestSyntheticFallback:
 
     def test_synthetic_generation(self):
         """When no CSV is found, benchmark should generate synthetic series."""
-        from cutechronos.benchmark import (
-            compute_mae,
-            median_from_predictions,
-        )
-
         # Replicate the synthetic generation logic from benchmark.main()
         torch.manual_seed(42)
         context_length = 32
@@ -378,8 +380,6 @@ class TestPipelineFallbackWhenCuteUnavailable:
         """If cutechronos.model is broken, from_pretrained(use_cute=True) should raise."""
         import cutechronos.pipeline as pipeline_mod
 
-        original_fn = pipeline_mod._load_model_cute
-
         def _raise(*args, **kwargs):
             raise ImportError("simulated cutechronos.model not available")
 
@@ -393,8 +393,6 @@ class TestPipelineFallbackWhenCuteUnavailable:
     def test_from_pretrained_original_import_error_propagates(self, monkeypatch):
         """If chronos package is missing, from_pretrained(use_cute=False) should raise."""
         import cutechronos.pipeline as pipeline_mod
-
-        original_fn = pipeline_mod._load_model_original
 
         def _raise(*args, **kwargs):
             raise ImportError("chronos-forecasting not installed")
@@ -622,9 +620,9 @@ class TestInitExports:
         assert CuteChronos2Config is not None
 
     def test_benchmark_importable(self):
-        from cutechronos.benchmark import compute_mae, load_series, benchmark_pipeline
+        from cutechronos.benchmark import compute_mae
         assert compute_mae is not None
 
     def test_convert_importable(self):
-        from cutechronos.convert import convert_model, run_benchmark, validate_conversion
+        from cutechronos.convert import convert_model
         assert convert_model is not None

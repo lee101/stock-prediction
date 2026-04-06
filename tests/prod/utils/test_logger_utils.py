@@ -3,7 +3,9 @@ import sys
 
 import pytest
 
-from faltrain.logger_utils import configure_stdout_logging, std_logger
+logger_utils = pytest.importorskip("faltrain.logger_utils")
+configure_stdout_logging = logger_utils.configure_stdout_logging
+std_logger = logger_utils.std_logger
 
 
 @pytest.fixture
