@@ -46,18 +46,16 @@
   - ⚠️ ACTION REQUIRED: Renew live API key → update env_real.py lines 54-55 (ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD) → `sudo systemctl restart daily-rl-trader.service`
 - **V4 screening**: 336/737 done (45.6%), wave 22 running, now using 32-model baseline
 
-### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- UPGRADE READY (2026-04-06)
+### 1. Binance Hybrid Spot (`binance-hybrid-spot`) -- DEPLOYED (2026-04-07)
 - **Bot**: `rl-trading-agent-binance/trade_binance_live.py`
 - **Launch**: `deployments/binance-hybrid-spot/launch.sh`
-- **Currently running**: `robust_reg_tp005_dd002` (stale, PID 4008176 from Mar 31)
-- **UPGRADE TARGET**: `robust_champion` (a100_scaleup, validated 2026-04-06)
+- **Active RL model**: `robust_champion` (a100_scaleup, deployed 2026-04-07, PID 1640864)
   - Checkpoint: `pufferlib_market/checkpoints/a100_scaleup/robust_champion/best.pt`
   - **20/20 positive, +216% return, Sortino=25.06, WR=64.8%, 54 trades/period**
   - Slippage robust: 0bps=+131% Sort=18.13, 5bps=+216% Sort=25.06, 10bps=+217% Sort=25.30, 20bps=+204% Sort=24.40
   - 50-window holdout: 82% positive@30bar, 100%@60bar, median Sort=3.28 cross-seed (5 seeds tested)
   - Trades more conservatively (54 vs 80 for ent, 76 for dd002) with better returns
   - Previous: ent (+191%, Sort=19.82), dd002 (+117%, Sort=15.35)
-  - **ACTION REQUIRED**: `sudo supervisorctl restart binance-hybrid-spot` to activate
 - **crypto6 training (2026-04-06)**: COMPLETED, OVERFIT -- not deployable
   - 6 symbols, 43,624 timesteps (5yr), h=1024, seed=42, 20M steps
   - Train: +405x return, Sort=69, 81% WR (memorized training data)
