@@ -161,7 +161,12 @@ def compute_daily_features(price_df: pd.DataFrame) -> pd.DataFrame:
     feat["atr_pct_14d"] = (atr14 / close.clip(lower=1e-8)).fillna(0.0).clip(0.0, 0.5)
     feat["range_pct_1d"] = ((high - low) / close.clip(lower=1e-8)).fillna(0.0).clip(0.0, 0.5)
 
-    feat["trend_20d"] = close.pct_change(20).fillna(0.0).clip(-2.0, 2.0)
+    # RSI(14) normalized to [-1, 1] — replaces duplicate trend_20d (was identical to return_20d)
+    delta = close.diff()
+    gain = delta.clip(lower=0.0).rolling(14, min_periods=1).mean()
+    loss = (-delta.clip(upper=0.0)).rolling(14, min_periods=1).mean()
+    rs = gain / loss.clip(lower=1e-8)
+    feat["rsi_14"] = (2.0 * (100.0 - 100.0 / (1.0 + rs)) / 100.0 - 1.0).fillna(0.0).clip(-1.0, 1.0)
     feat["trend_60d"] = close.pct_change(60).fillna(0.0).clip(-3.0, 3.0)
 
     roll_max_20 = close.rolling(20, min_periods=1).max()
@@ -186,7 +191,7 @@ def compute_daily_features(price_df: pd.DataFrame) -> pd.DataFrame:
         "ma_delta_60d",
         "atr_pct_14d",
         "range_pct_1d",
-        "trend_20d",
+        "rsi_14",
         "trend_60d",
         "drawdown_20d",
         "drawdown_60d",
