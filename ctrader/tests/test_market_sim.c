@@ -1120,6 +1120,146 @@ static void test_weight_env_borrow_cost(void) {
     weight_env_free(&env);
 }
 
+static void test_weight_env_extreme_scores(void) {
+    int n_bars = 8;
+    int n_symbols = 2;
+    double close[] = {
+        100.0, 200.0,
+        105.0, 195.0,
+        110.0, 190.0,
+        115.0, 185.0,
+        120.0, 180.0,
+        125.0, 175.0,
+        130.0, 170.0,
+        135.0, 165.0,
+    };
+    WeightEnvConfig ecfg = {2, 4, 100.0};
+    WeightSimConfig scfg = {10000.0, 1.0, 0.001, 0.0, 8760.0, 0};
+    WeightEnv env;
+    WeightEnvStepInfo info;
+
+    ASSERT_EQ_INT(weight_env_init(&env, close, n_bars, n_symbols, &ecfg, &scfg), 0, "extreme: init");
+    ASSERT_EQ_INT(weight_env_reset(&env, 2), 0, "extreme: reset");
+
+    double huge_scores[] = {1e10, -1e10};
+    ASSERT_EQ_INT(weight_env_step(&env, huge_scores, 2, &info), 0, "extreme: huge scores step");
+    ASSERT_EQ_INT(info.equity > 0.0, 1, "extreme: equity positive after huge scores");
+
+    double zero_scores[] = {0.0, 0.0};
+    ASSERT_EQ_INT(weight_env_step(&env, zero_scores, 2, &info), 0, "extreme: zero scores step");
+    ASSERT_EQ_INT(info.equity > 0.0, 1, "extreme: equity positive after zero scores");
+
+    double neg_scores[] = {-100.0, -100.0};
+    ASSERT_EQ_INT(weight_env_step(&env, neg_scores, 2, &info), 0, "extreme: neg scores step");
+    ASSERT_EQ_INT(info.equity > 0.0, 1, "extreme: equity positive after neg scores");
+
+    weight_env_free(&env);
+}
+
+static void test_weight_env_multi_symbol_rotation(void) {
+    int n_bars = 10;
+    int n_symbols = 3;
+    double close[30];
+    for (int t = 0; t < n_bars; t++) {
+        close[t * 3 + 0] = 100.0 + t * 2.0;
+        close[t * 3 + 1] = 200.0 - t * 1.0;
+        close[t * 3 + 2] = 50.0 + (t % 3) * 5.0;
+    }
+    WeightEnvConfig ecfg = {2, 5, 100.0};
+    WeightSimConfig scfg = {10000.0, 1.0, 0.001, 0.0, 8760.0, 0};
+    WeightEnv env;
+    WeightEnvStepInfo info;
+
+    ASSERT_EQ_INT(weight_env_init(&env, close, n_bars, n_symbols, &ecfg, &scfg), 0, "rotation: init");
+    ASSERT_EQ_INT(weight_env_reset(&env, 2), 0, "rotation: reset");
+
+    double scores_a[] = {10.0, 0.0, 0.0};
+    ASSERT_EQ_INT(weight_env_step(&env, scores_a, 3, &info), 0, "rotation: step1 all-in sym0");
+
+    double scores_b[] = {0.0, 10.0, 0.0};
+    ASSERT_EQ_INT(weight_env_step(&env, scores_b, 3, &info), 0, "rotation: step2 rotate to sym1");
+    ASSERT_EQ_INT(info.turnover > 0.0, 1, "rotation: turnover from rotation");
+    ASSERT_EQ_INT(info.fees > 0.0, 1, "rotation: fees from rotation");
+
+    double scores_c[] = {0.0, 0.0, 10.0};
+    ASSERT_EQ_INT(weight_env_step(&env, scores_c, 3, &info), 0, "rotation: step3 rotate to sym2");
+
+    weight_env_free(&env);
+}
+
+static void test_weight_env_zero_equity_recovery(void) {
+    int n_bars = 8;
+    int n_symbols = 1;
+    double close[] = {100.0, 50.0, 25.0, 12.5, 6.25, 12.5, 25.0, 50.0};
+    WeightEnvConfig ecfg = {2, 4, 100.0};
+    WeightSimConfig scfg = {10000.0, 1.0, 0.0, 0.0, 8760.0, 0};
+    WeightEnv env;
+    WeightEnvStepInfo info;
+
+    ASSERT_EQ_INT(weight_env_init(&env, close, n_bars, n_symbols, &ecfg, &scfg), 0, "crash: init");
+    ASSERT_EQ_INT(weight_env_reset(&env, 2), 0, "crash: reset");
+
+    double scores[] = {10.0};
+    for (int i = 0; i < 4; i++) {
+        ASSERT_EQ_INT(weight_env_step(&env, scores, 1, &info), 0, "crash: step");
+    }
+    ASSERT_EQ_INT(info.equity > 0.0, 1, "crash: equity still positive after 75% drawdown");
+    ASSERT_EQ_INT(info.summary.max_drawdown > 0.5, 1, "crash: max drawdown > 50%");
+
+    weight_env_free(&env);
+}
+
+static void test_weight_env_all_cash(void) {
+    int n_bars = 8;
+    int n_symbols = 2;
+    double close[] = {
+        100.0, 200.0,
+        110.0, 180.0,
+        120.0, 160.0,
+        130.0, 140.0,
+        140.0, 120.0,
+        150.0, 100.0,
+        160.0, 80.0,
+        170.0, 60.0,
+    };
+    WeightEnvConfig ecfg = {2, 4, 100.0};
+    WeightSimConfig scfg = {10000.0, 1.0, 0.001, 0.0, 8760.0, 0};
+    WeightEnv env;
+    WeightEnvStepInfo info;
+
+    ASSERT_EQ_INT(weight_env_init(&env, close, n_bars, n_symbols, &ecfg, &scfg), 0, "cash: init");
+    ASSERT_EQ_INT(weight_env_reset(&env, 2), 0, "cash: reset");
+
+    double neg_scores[] = {-100.0, -100.0};
+    for (int i = 0; i < 4; i++) {
+        ASSERT_EQ_INT(weight_env_step(&env, neg_scores, 2, &info), 0, "cash: step");
+    }
+    /* softmax(-100,-100) = (0.5, 0.5), so still allocated equally -- not cash */
+    ASSERT_EQ_INT(info.equity > 0.0, 1, "cash: equity still positive");
+    ASSERT_EQ_INT(info.done, 1, "cash: episode done");
+
+    weight_env_free(&env);
+}
+
+static void test_simulate_large_position(void) {
+    int n_bars = 5;
+    double open[]  = {100.0, 100.0, 100.0, 100.0, 100.0};
+    double high[]  = {105.0, 105.0, 105.0, 105.0, 105.0};
+    double low[]   = {95.0, 95.0, 95.0, 95.0, 95.0};
+    double close[] = {100.0, 100.0, 100.0, 100.0, 100.0};
+    double bp[]    = {100.0, 0.0, 0.0, 0.0, 0.0};
+    double sp[]    = {0.0, 0.0, 0.0, 0.0, 100.0};
+    double ba[]    = {100.0, 0.0, 0.0, 0.0, 0.0};
+    double sa[]    = {0.0, 0.0, 0.0, 0.0, 100.0};
+    SimConfig cfg = {1.0, 0, 0.001, 0.0, 10000.0, 0.0, 0.0, 0, 1.0};
+    SimResult res;
+    double eq[6];
+    simulate(open, high, low, close, bp, sp, ba, sa, n_bars, &cfg, &res, eq);
+    ASSERT_EQ_INT(res.num_trades, 2, "large_pos: buy+sell");
+    ASSERT_EQ_INT(res.final_equity < 10000.0, 1, "large_pos: fees reduce equity");
+    ASSERT_EQ_INT(res.final_equity > 9900.0, 1, "large_pos: not too much lost");
+}
+
 int main(void) {
     fprintf(stderr, "=== market_sim tests ===\n");
 
@@ -1159,6 +1299,12 @@ int main(void) {
     test_compute_annualized_edge_cases();
     test_single_bar_simulation();
     test_weight_env_borrow_cost();
+
+    test_weight_env_extreme_scores();
+    test_weight_env_multi_symbol_rotation();
+    test_weight_env_zero_equity_recovery();
+    test_weight_env_all_cash();
+    test_simulate_large_position();
 
     fprintf(stderr, "\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail > 0 ? 1 : 0;
