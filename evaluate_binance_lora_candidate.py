@@ -2,21 +2,20 @@
 from __future__ import annotations
 
 import argparse
-import shutil
 import json
 import math
 import shlex
+import shutil
 import subprocess
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
-
-REPO = Path(__file__).resolve().parents[1]
-if str(REPO) not in sys.path:
-    sys.path.insert(0, str(REPO))
+from typing import Any
 
 from src.binance_symbol_utils import proxy_symbol_to_usd
+
+REPO = Path(__file__).resolve().parent
 
 
 DEFAULT_REMOTE_HOST = "administrator@93.127.141.100"

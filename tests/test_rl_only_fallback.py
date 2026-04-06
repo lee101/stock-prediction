@@ -1,24 +1,23 @@
 """Tests for RL-only fallback in hybrid trading when Gemini is unavailable."""
 import sys
-from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Optional
+from pathlib import Path
 
-import numpy as np
 import pandas as pd
+
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "rl_trading_agent_binance"))
 
-from hybrid_prompt import AllocationPlan, SymbolContext
+from hybrid_prompt import SymbolContext
 
 
 @dataclass
 class FakeRLSignal:
     action: int = 1
     action_name: str = "LONG_BTC"
-    target_symbol: Optional[str] = "BTCUSD"
+    target_symbol: str | None = "BTCUSD"
     direction: str = "long"
     logits: list = field(default_factory=lambda: [0.1, 2.0, 0.5, 0.3, 0.2])
     value: float = 0.5

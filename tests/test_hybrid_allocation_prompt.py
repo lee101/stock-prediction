@@ -133,8 +133,13 @@ def test_build_allocation_response_schema_keeps_required_keys_in_properties() ->
         ["BTCUSD", "DOGEUSD"],
     )
 
-    required = schema.kwargs["required"]
-    properties = schema.kwargs["properties"]
+    required = getattr(schema, "required", None)
+    if required is None and hasattr(schema, "kwargs"):
+        required = schema.kwargs["required"]
+
+    properties = getattr(schema, "properties", None)
+    if properties is None and hasattr(schema, "kwargs"):
+        properties = schema.kwargs["properties"]
 
     assert "reasoning" in required
     assert "reasoning" in properties
@@ -398,7 +403,10 @@ def test_get_portfolio_state_margin_uses_net_asset_for_locked_inventory(monkeypa
         "BTC": {"free": "0.00000671", "locked": "0.01473", "netAsset": "0.01473671"},
         "ETH": {"free": "0.00001189", "locked": "0", "netAsset": "0.00000842"},
     }
-    monkeypatch.setattr(trade_binance_live, "get_margin_asset_balance", lambda asset: balances.get(asset, None))
+    def _lookup_balance(asset: str) -> dict[str, str] | None:
+        return balances.get(asset)
+
+    monkeypatch.setattr(trade_binance_live, "get_margin_asset_balance", _lookup_balance)
 
     state = trade_binance_live.get_portfolio_state(execution_mode="margin")
 

@@ -11,19 +11,12 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
-
-
-try:
-    from loguru import logger
-except ImportError:
-    import logging
-
-    logger = logging.getLogger(__name__)
 
 from rl_signal import (
     ACTION_NAMES,
@@ -32,8 +25,14 @@ from rl_signal import (
     _load_forecast_parquet,
 )
 
-UTC = timezone.utc
+try:
+    from loguru import logger as _loguru_logger
+except ImportError:
+    import logging
 
+    logger: Any = logging.getLogger(__name__)
+else:
+    logger = _loguru_logger
 
 SYMBOL_BINANCE_MAP = {
     "BTCUSD": ("BTCFDUSD", "BTC", "FDUSD"),
@@ -183,7 +182,7 @@ def gather_symbol_contexts(
     for sym in symbols:
         if sym not in SYMBOL_BINANCE_MAP:
             continue
-        pair, base, quote = SYMBOL_BINANCE_MAP[sym]
+        pair, _base, _quote = SYMBOL_BINANCE_MAP[sym]
         try:
             klines = _fetch_klines(pair, limit=96)
         except Exception as e:
@@ -197,17 +196,17 @@ def gather_symbol_contexts(
         fc_h1 = _get_forecast_latest(forecast_cache_root, sym, 1)
         fc_h24 = _get_forecast_latest(forecast_cache_root, sym, 24)
 
-        def delta(fc, col):
+        def delta(fc: dict[str, float], col: str, current_price: float = price) -> float:
             v = fc.get(col, 0)
-            if v and price > 0:
-                return (v - price) / price
+            if v and current_price > 0:
+                return (v - current_price) / current_price
             return 0.0
 
-        def confidence(fc):
+        def confidence(fc: dict[str, float], current_price: float = price) -> float:
             p90 = fc.get("predicted_close_p90", 0)
             p10 = fc.get("predicted_close_p10", 0)
-            if p90 and p10 and price > 0:
-                return 1.0 / (1.0 + abs(p90 - p10) / price)
+            if p90 and p10 and current_price > 0:
+                return 1.0 / (1.0 + abs(p90 - p10) / current_price)
             return 0.0
 
         ctx = SymbolContext(
@@ -247,15 +246,21 @@ def _format_klines_compact(klines: pd.DataFrame, n: int = 12) -> str:
     lines = []
     for ts, r in rows.iterrows():
         t = str(ts)[:16]
-        o, h, l, c = _fmt_price(r["open"]), _fmt_price(r["high"]), _fmt_price(r["low"]), _fmt_price(r["close"])
-        lines.append(f"  {t}  O={o:<12s} H={h:<12s} L={l:<12s} C={c:<12s} V={r['volume']:.0f}")
+        open_price = _fmt_price(r["open"])
+        high_price = _fmt_price(r["high"])
+        low_price = _fmt_price(r["low"])
+        close_price = _fmt_price(r["close"])
+        lines.append(
+            f"  {t}  O={open_price:<12s} H={high_price:<12s} "
+            f"L={low_price:<12s} C={close_price:<12s} V={r['volume']:.0f}"
+        )
     return "\n".join(lines)
 
 
 def _softmax(logits: list[float]) -> list[float]:
     x = np.array(logits, dtype=np.float64)
     e = np.exp(x - x.max())
-    return (e / e.sum()).tolist()
+    return [float(value) for value in (e / e.sum())]
 
 
 def build_allocation_prompt(
@@ -295,7 +300,7 @@ def build_allocation_prompt(
 
     # Per-symbol market context
     sym_sections = []
-    for i, ctx in enumerate(contexts):
+    for ctx in contexts:
         fc_h1_str = "unavailable"
         if ctx.fc_h1_confidence > 0:
             fc_h1_str = (
@@ -353,7 +358,6 @@ Last 12h:
     rl_value = rl_signal.value
 
     n_ctx = len(contexts)
-    ctx_syms = [ctx.symbol for ctx in contexts]
 
     # Build dynamic JSON schema for response
     json_fields = []
@@ -510,7 +514,7 @@ def parse_allocation_response(text: str) -> AllocationPlan:
 
 
 def _build_allocation_response_schema(
-    genai_types: object,
+    genai_types: Any,
     tradable_symbols: list[str],
 ):
     """Build a response schema whose required keys all exist in properties."""
@@ -551,11 +555,11 @@ def call_gemini_allocation(
     if not api_key:
         raise ValueError("GEMINI_API_KEY not set - generate a new key at Google AI Studio")
     client = genai.Client(api_key=api_key)
-    config_kwargs = dict(
-        response_mime_type="application/json",
-        response_schema=schema,
-        temperature=0.3,
-    )
+    config_kwargs = {
+        "response_mime_type": "application/json",
+        "response_schema": schema,
+        "temperature": 0.3,
+    }
     # Add thinking for models that support it
     if "lite" not in model:
         try:

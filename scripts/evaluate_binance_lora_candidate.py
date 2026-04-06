@@ -2,16 +2,18 @@
 from __future__ import annotations
 
 import argparse
-import shutil
 import json
 import math
 import shlex
+import shutil
 import subprocess
 import sys
-from datetime import date
+from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
+
 
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
@@ -62,7 +64,7 @@ def _parse_window_days(window: dict[str, Any]) -> float | None:
         except ValueError:
             days = None
         else:
-            if days > 0:
+            if days is not None and days > 0:
                 return days
 
     start_raw = str(window.get("start") or "").strip()
