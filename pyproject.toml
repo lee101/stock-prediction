@@ -81,6 +81,9 @@ puffer-training3 = "pufferlibtraining3.pufferrl:main"
 [project.optional-dependencies]
 dev = [
     "stock-trading-suite[all]",
+    "ruff>=0.8.4",
+    "mypy>=1.13",
+    "pre-commit>=4.0",
     "ty==0.0.1a24",
     "black==24.10.0",
     "isort==5.13.2",
@@ -345,7 +348,7 @@ unresolved-import = "ignore"
 unresolved-attribute = "ignore"
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.13"
 explicit_package_bases = true  # Avoid "stock-prediction is not a valid package name" from dir name
 mypy_path = ["."]
 warn_return_any = true
@@ -469,6 +472,7 @@ line-ending = "auto"
 
 [tool.ruff.lint.isort]
 known-first-party = [
+    "rl_trading_agent_binance",
     "src",
     "marketsimulator",
     "differentiable_market",

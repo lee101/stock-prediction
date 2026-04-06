@@ -68,7 +68,7 @@ python /tmp/run_binance_hybrid.py --compare --symbols BTCUSD ETHUSD SOLUSD --day
 
 ### Dry Run (live data, no orders)
 ```bash
-python rl-trading-agent-binance/trade_binance_live.py \
+python rl_trading_agent_binance/trade_binance_live.py \
   --dry-run \
   --once \
   --model gemini-3.1-flash-lite-preview \
@@ -78,7 +78,7 @@ python rl-trading-agent-binance/trade_binance_live.py \
 
 ### Production
 ```bash
-python rl-trading-agent-binance/trade_binance_live.py \
+python rl_trading_agent_binance/trade_binance_live.py \
   --live \
   --model gemini-3.1-flash-lite-preview \
   --thinking-level HIGH \

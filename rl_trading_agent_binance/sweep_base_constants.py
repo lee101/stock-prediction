@@ -6,7 +6,7 @@ binary-fill market simulation with proper train/val/test splits.
 
 Usage:
     source .venv313/bin/activate
-    python rl-trading-agent-binance/sweep_base_constants.py \
+    python rl_trading_agent_binance/sweep_base_constants.py \
         --symbols BTCUSD,ETHUSD,SOLUSD,DOGEUSD,AAVEUSD,LINKUSD
 """
 from __future__ import annotations
@@ -78,7 +78,7 @@ def main():
     parser.add_argument("--symbols", type=str, default=",".join(DEPLOYED_SYMBOLS))
     parser.add_argument("--decision-lag", type=int, default=2)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--save-dir", type=str, default="rl-trading-agent-binance/calibrator_checkpoints")
+    parser.add_argument("--save-dir", type=str, default="rl_trading_agent_binance/calibrator_checkpoints")
     parser.add_argument("--top-k", type=int, default=10)
     args = parser.parse_args()
 

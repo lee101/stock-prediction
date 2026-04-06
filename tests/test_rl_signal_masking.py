@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO / "rl-trading-agent-binance"))
+sys.path.insert(0, str(REPO / "rl_trading_agent_binance"))
 
 from rl_signal import (
     FEATURES_PER_SYM,

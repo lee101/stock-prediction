@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO / "rl-trading-agent-binance"))
+sys.path.insert(0, str(REPO / "rl_trading_agent_binance"))
 sys.path.insert(0, str(REPO))
 
 from rl_trading_agent_binance_prompt import (

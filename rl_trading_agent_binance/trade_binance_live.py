@@ -13,8 +13,8 @@ Modes:
   (default)              Use LLM signals per symbol
 
 Usage:
-  python rl-trading-agent-binance/trade_binance_live.py --dry-run
-  python rl-trading-agent-binance/trade_binance_live.py --live --rl-checkpoint rl-trainingbinance/checkpoints/autoresearch_ema.pt
+  python rl_trading_agent_binance/trade_binance_live.py --dry-run
+  python rl_trading_agent_binance/trade_binance_live.py --live --rl-checkpoint rl-trainingbinance/checkpoints/autoresearch_ema.pt
 """
 
 from __future__ import annotations

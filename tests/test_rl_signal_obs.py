@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rl-trading-agent-binance"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rl_trading_agent_binance"))
 
 from rl_signal import (
     FEATURES_PER_SYM,

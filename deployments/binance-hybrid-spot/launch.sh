@@ -10,7 +10,7 @@ set -a; source /home/lee/code/stock/.env.binance-hybrid 2>/dev/null || true; set
 # 50-window holdout: 82% positive@30bar, 100% positive@60bar, median Sort=3.28 cross-seed
 # Previous: robust_reg_tp005_ent (+191%, Sort=19.82), dd002 (+117%, Sort=15.35)
 exec /home/lee/code/stock/.venv313/bin/python -u \
-  rl-trading-agent-binance/trade_binance_live.py \
+  rl_trading_agent_binance/trade_binance_live.py \
   --live \
   --model gemini-3.1-flash-lite-preview \
   --symbols BTCUSD ETHUSD SOLUSD DOGEUSD AAVEUSD LINKUSD \

@@ -6,7 +6,7 @@ simulation. No gradient, no lookahead bias.
 
 Usage:
     source .venv313/bin/activate
-    python rl-trading-agent-binance/calibrate_execution.py \
+    python rl_trading_agent_binance/calibrate_execution.py \
         --symbols BTCUSD,ETHUSD,SOLUSD,DOGEUSD,AAVEUSD,LINKUSD
 """
 from __future__ import annotations
@@ -124,7 +124,7 @@ def main():
     parser.add_argument("--top-k", type=int, default=15)
     parser.add_argument("--val-hours", type=int, default=2000)
     parser.add_argument("--test-hours", type=int, default=2000)
-    parser.add_argument("--save-dir", type=str, default="rl-trading-agent-binance/calibrator_checkpoints/execution")
+    parser.add_argument("--save-dir", type=str, default="rl_trading_agent_binance/calibrator_checkpoints/execution")
     parser.add_argument("--batch-size", type=int, default=200)
     args = parser.parse_args()
 

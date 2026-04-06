@@ -93,7 +93,7 @@ def test_build_eval_command_passes_forecast_rule_tuning_args() -> None:
         add_symbol_max_pos=0.01,
     )
 
-    assert cmd[:4] == ["python", "rl-trading-agent-binance/eval_new_symbol.py", "--symbols", "BTCUSD"]
+    assert cmd[:4] == ["python", "rl_trading_agent_binance/eval_new_symbol.py", "--symbols", "BTCUSD"]
     assert "--forecast-rule-total-cost-bps" in cmd
     assert "25.0" in cmd
     assert "--forecast-rule-min-reward-risk" in cmd

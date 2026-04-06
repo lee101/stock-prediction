@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 
-MODULE_DIR = Path(__file__).resolve().parents[1] / "rl-trading-agent-binance"
+MODULE_DIR = Path(__file__).resolve().parents[1] / "rl_trading_agent_binance"
 
 
 def _load_module(name: str, relative_path: str):

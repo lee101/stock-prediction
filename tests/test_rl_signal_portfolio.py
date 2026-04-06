@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rl-trading-agent-binance"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "rl_trading_agent_binance"))
 
 import rl_signal as rl_signal_module
 

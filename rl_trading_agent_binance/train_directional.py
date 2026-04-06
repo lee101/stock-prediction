@@ -5,7 +5,7 @@ for fast iteration. Directional mode with separate buy/sell intensities.
 
 Usage:
     source .venv313/bin/activate
-    python rl-trading-agent-binance/train_directional.py \
+    python rl_trading_agent_binance/train_directional.py \
         --symbols BTCUSD,ETHUSD,SOLUSD,DOGEUSD,AAVEUSD,LINKUSD
 """
 from __future__ import annotations
@@ -144,7 +144,7 @@ def main():
     parser.add_argument("--decision-lag", type=int, default=2)
     parser.add_argument("--return-weight", type=float, default=0.3)
     parser.add_argument("--device", type=str, default="cpu")
-    parser.add_argument("--save-dir", type=str, default="rl-trading-agent-binance/calibrator_checkpoints/directional")
+    parser.add_argument("--save-dir", type=str, default="rl_trading_agent_binance/calibrator_checkpoints/directional")
     parser.add_argument("--train-hours", type=int, default=4000)
     parser.add_argument("--val-hours", type=int, default=1500)
     parser.add_argument("--test-hours", type=int, default=1500)

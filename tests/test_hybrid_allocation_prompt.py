@@ -11,7 +11,7 @@ import pytest
 
 
 REPO = Path(__file__).resolve().parents[1]
-RL_BINANCE_DIR = REPO / "rl-trading-agent-binance"
+RL_BINANCE_DIR = REPO / "rl_trading_agent_binance"
 
 
 def _install_google_genai_stub() -> None:
