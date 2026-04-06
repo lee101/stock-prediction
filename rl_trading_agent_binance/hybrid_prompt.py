@@ -116,7 +116,7 @@ def _fetch_klines(binance_pair: str, limit: int = 96) -> pd.DataFrame:
     for k in klines:
         rows.append(
             {
-                "timestamp": pd.Timestamp(k[0], unit="ms", tz="UTC").floor(freq="h"),
+                "timestamp": pd.Timestamp(int(k[0]) // 3_600_000 * 3_600_000, unit="ms", tz="UTC"),
                 "open": float(k[1]),
                 "high": float(k[2]),
                 "low": float(k[3]),
