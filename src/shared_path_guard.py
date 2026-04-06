@@ -33,6 +33,8 @@ class _PathGuard:
         self._lock.release()
 
 
+ReaderWriterGuard = _PathGuard
+
 _guards: dict[str, _PathGuard] = {}
 _guards_lock = threading.Lock()
 
