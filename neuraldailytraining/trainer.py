@@ -258,11 +258,7 @@ class NeuralDailyTrainer:
             pin_memory=use_pinned_memory,
         )
         scheduler = self._build_scheduler(optimizer, train_loader)
-        scaler = (
-            torch.amp.GradScaler("cuda")
-            if (self.config.use_amp and self.device.type == "cuda")
-            else None
-        )
+        scaler = torch.amp.GradScaler("cuda") if (self.config.use_amp and self.device.type == "cuda") else None
         ema_state: dict[str, torch.Tensor] | None = None
         if self.config.ema_decay and self.config.ema_decay > 0:
             ema_state = {
