@@ -1196,6 +1196,86 @@ def _ensemble_softmax_signal(
     return primary._decode_action(action, confidence, value_est)
 
 
+def _ensemble_top_k_signals(
+    primary: DailyPPOTrader,
+    extra_policies: list,
+    features: np.ndarray,
+    prices: dict,
+    k: int = 4,
+    min_prob_ratio: float = 0.3,
+):
+    """Return top K long signals from ensemble softmax, with proportional allocation.
+
+    Args:
+        k: Max number of simultaneous positions
+        min_prob_ratio: Only include signals with prob >= min_prob_ratio * top_prob
+    """
+    obs = primary.build_observation(features, prices)
+    obs_t = torch.from_numpy(obs).unsqueeze(0).to(primary.device)
+    all_probs = []
+    all_values: list[float] = []
+    with torch.inference_mode():
+        logits, value = primary.policy(obs_t)
+        logits = primary.apply_action_constraints(logits)
+        all_probs.append(F.softmax(logits, dim=-1))
+        all_values.append(float(value.item()))
+        for pol in extra_policies:
+            logits_i, value_i = pol(obs_t)
+            logits_i = primary.apply_action_constraints(logits_i)
+            all_probs.append(F.softmax(logits_i, dim=-1))
+            all_values.append(float(value_i.item()))
+    avg_probs = torch.stack(all_probs, dim=0).mean(dim=0).squeeze(0)  # [num_actions]
+    value_est = float(sum(all_values) / max(len(all_values), 1))
+
+    # Collect per-symbol long probabilities (sum across allocation/level bins)
+    num_symbols = primary.num_symbols
+    per_sym = max(1, primary.per_symbol_actions)
+    symbol_probs: list[tuple[int, float]] = []
+    for sym_idx in range(num_symbols):
+        start = 1 + sym_idx * per_sym
+        end = start + per_sym
+        sym_prob = float(avg_probs[start:end].sum().item())
+        symbol_probs.append((sym_idx, sym_prob))
+
+    # Sort by probability descending
+    symbol_probs.sort(key=lambda x: -x[1])
+    flat_prob = float(avg_probs[0].item())
+
+    signals = []
+    top_prob = symbol_probs[0][1] if symbol_probs else 0.0
+    prob_threshold = max(flat_prob, top_prob * min_prob_ratio)
+
+    for sym_idx, sym_prob in symbol_probs[:k]:
+        if sym_prob < prob_threshold:
+            break
+        symbol = primary.SYMBOLS[sym_idx]
+        signals.append(TradingSignal(
+            action=f"long_{symbol}",
+            symbol=symbol,
+            direction="long",
+            confidence=sym_prob,
+            value_estimate=value_est,
+            allocation_pct=sym_prob,  # Will be normalized later
+            level_offset_bps=0.0,
+        ))
+
+    # Normalize allocations to sum to 1.0
+    if signals:
+        total_prob = sum(s.allocation_pct for s in signals)
+        for i, s in enumerate(signals):
+            signals[i] = TradingSignal(
+                action=s.action,
+                symbol=s.symbol,
+                direction=s.direction,
+                confidence=s.confidence,
+                value_estimate=s.value_estimate,
+                allocation_pct=s.allocation_pct / total_prob,
+                level_offset_bps=s.level_offset_bps,
+            )
+
+    return signals
+
+
 def _open_gate_reasons(
     signal,
     *,
@@ -1794,6 +1874,81 @@ def build_portfolio_context(
         entry_price=entry_price,
         hold_days=hold_days,
     )
+
+
+def execute_multi_position_signals(
+    signals: list,
+    *,
+    client,
+    paper: bool = False,
+    quotes: dict[str, float],
+    symbols: Iterable[str],
+    total_allocation_pct: float,
+    dry_run: bool,
+    now: Optional[datetime] = None,
+) -> dict[str, float]:
+    """Execute a portfolio of top-K signals, managing multiple positions.
+
+    Returns dict of symbol -> qty for currently held positions.
+    """
+    now = now or datetime.now(timezone.utc)
+    symbol_set = [str(s).upper() for s in symbols]
+    live_positions = positions_by_symbol(client, symbol_set)
+
+    # Desired portfolio: symbol -> target_allocation_fraction
+    desired = {}
+    for sig in signals:
+        if sig.symbol and sig.direction == "long":
+            sym = sig.symbol.upper()
+            desired[sym] = float(sig.allocation_pct)
+
+    # Close positions not in desired set
+    orders_placed = 0
+    for sym, pos in list(live_positions.items()):
+        if sym not in desired:
+            qty = abs(_signed_position_qty(pos))
+            if qty > 0:
+                sell_price = float(quotes.get(sym, 0.0) or 0.0)
+                limit_sell_price = (
+                    sell_price if paper
+                    else sell_price * (1.0 + CALIBRATED_EXIT_OFFSET_BPS / 10_000.0)
+                ) if sell_price > 0 else 0
+                logger.info("Multi-pos: closing %s qty=%.4f limit=%.2f", sym, qty, limit_sell_price)
+                if not dry_run and limit_sell_price > 0:
+                    submit_limit_order(client, symbol=sym, qty=qty, side="sell", limit_price=limit_sell_price)
+                    orders_placed += 1
+
+    # Get account for buying power
+    account = client.get_account()
+    equity = float(getattr(account, "equity", 0) or 0)
+    buying_power = float(getattr(account, "buying_power", 0) or 0)
+
+    # Open/adjust positions in desired set
+    held = {}
+    for sym, alloc_frac in desired.items():
+        existing = live_positions.get(sym)
+        existing_qty = abs(_signed_position_qty(existing)) if existing else 0.0
+        price = float(quotes.get(sym, 0.0) or 0.0)
+        if price <= 0:
+            continue
+
+        buy_price = price if paper else price * (1.0 + CALIBRATED_ENTRY_OFFSET_BPS / 10_000.0)
+        target_value = equity * (total_allocation_pct / 100.0) * alloc_frac
+        target_qty = int(target_value / buy_price) if buy_price > 0 else 0
+
+        if existing_qty > 0:
+            held[sym] = existing_qty
+            logger.info("Multi-pos: holding %s qty=%.4f (target=%.4f)", sym, existing_qty, target_qty)
+        elif target_qty > 0:
+            logger.info("Multi-pos: opening %s qty=%d limit=%.2f (alloc=%.1f%%)",
+                        sym, target_qty, buy_price, alloc_frac * total_allocation_pct)
+            if not dry_run:
+                submit_limit_order(client, symbol=sym, qty=target_qty, side="buy", limit_price=buy_price)
+                orders_placed += 1
+            held[sym] = target_qty
+
+    logger.info("Multi-pos: %d orders placed, %d positions targeted", orders_placed, len(held))
+    return held
 
 
 def reconcile_pending_close(
@@ -2521,6 +2676,10 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--data-dir", default=DEFAULT_DATA_DIR)
     parser.add_argument("--data-source", choices=["alpaca", "local"], default="alpaca")
     parser.add_argument("--allocation-pct", type=float, default=DEFAULT_ALLOCATION_PCT)
+    parser.add_argument("--multi-position", type=int, default=0,
+                        help="Hold up to N simultaneous positions (0=single position mode)")
+    parser.add_argument("--multi-position-min-prob-ratio", type=float, default=0.3,
+                        help="Min probability ratio vs top signal to include in portfolio")
     run_mode_group = parser.add_mutually_exclusive_group()
     run_mode_group.add_argument("--once", action="store_true", help="Run one inference cycle")
     run_mode_group.add_argument("--daemon", action="store_true", help="Run as a daemon around market open")
