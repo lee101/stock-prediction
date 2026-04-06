@@ -215,6 +215,11 @@ multivariate_group_results/
 rlinference/models
 rlinference/logs
 rlinference/data
+trltraining/checkpoints/
+trltraining/runs/
+trltraining/reports/
+trltraining/artifacts/
+trltraining/outputs/
 pufferlibtraining/logs
 pufferlibtraining/models
 pufferlibtraining/cache

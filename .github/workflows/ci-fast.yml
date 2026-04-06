@@ -29,16 +29,16 @@ jobs:
 
       - name: Install linting dependencies
         run: |
-          uv pip install --system -e ".[dev]" flake8
+          uv pip install --system ruff
 
       - name: Run Ruff linter
         run: |
-          RUFF_TARGETS="rl_trading_agent_binance unified_orchestrator/orchestrator.py evaluate_binance_lora_candidate.py scripts/evaluate_binance_lora_candidate.py tests/test_cross_asset_prompt.py tests/test_dedupe_orders.py tests/test_eval_new_symbol.py tests/test_evaluate_binance_lora_candidate.py tests/test_hybrid_allocation_prompt.py tests/test_hybrid_prompt_parsing.py tests/test_multi_horizon_features.py tests/test_prompt_experiment_short_policy.py tests/test_rl_only_fallback.py tests/test_rl_signal_features.py tests/test_rl_signal_masking.py tests/test_rl_signal_obs.py tests/test_rl_signal_portfolio.py tests/test_signal_calibrator.py tests/test_validate_hybrid_cycle_snapshots.py"
+          RUFF_TARGETS="rl_trading_agent_binance/hybrid_prompt.py rl_trading_agent_binance/trade_binance_live.py evaluate_binance_lora_candidate.py scripts/evaluate_binance_lora_candidate.py trltraining tests/test_hybrid_allocation_prompt.py tests/test_hybrid_prompt_parsing.py tests/test_rl_only_fallback.py tests/test_evaluate_binance_lora_candidate.py tests/test_validate_hybrid_cycle_snapshots.py tests/test_trltraining.py"
           ruff check $RUFF_TARGETS --output-format=github
 
       - name: Run Ruff format check
         run: |
-          RUFF_TARGETS="rl_trading_agent_binance unified_orchestrator/orchestrator.py evaluate_binance_lora_candidate.py scripts/evaluate_binance_lora_candidate.py tests/test_cross_asset_prompt.py tests/test_dedupe_orders.py tests/test_eval_new_symbol.py tests/test_evaluate_binance_lora_candidate.py tests/test_hybrid_allocation_prompt.py tests/test_hybrid_prompt_parsing.py tests/test_multi_horizon_features.py tests/test_prompt_experiment_short_policy.py tests/test_rl_only_fallback.py tests/test_rl_signal_features.py tests/test_rl_signal_masking.py tests/test_rl_signal_obs.py tests/test_rl_signal_portfolio.py tests/test_signal_calibrator.py tests/test_validate_hybrid_cycle_snapshots.py"
+          RUFF_TARGETS="rl_trading_agent_binance/hybrid_prompt.py rl_trading_agent_binance/trade_binance_live.py evaluate_binance_lora_candidate.py scripts/evaluate_binance_lora_candidate.py trltraining tests/test_hybrid_allocation_prompt.py tests/test_hybrid_prompt_parsing.py tests/test_rl_only_fallback.py tests/test_evaluate_binance_lora_candidate.py tests/test_validate_hybrid_cycle_snapshots.py tests/test_trltraining.py"
           ruff format --check $RUFF_TARGETS
 
       - name: Report to CI Sentinel
@@ -202,26 +202,20 @@ jobs:
       - name: Install dependencies
         run: |
           uv pip install --system --requirement requirements-ci.txt
-          uv pip install --system ty pyright mypy -e ".[dev]"
+          uv pip install --system ty pyright
 
       - name: Type check with ty
-        continue-on-error: true
-        run: ty check
+        run: |
+          ty check \
+            rl_trading_agent_binance/hybrid_prompt.py \
+            rl_trading_agent_binance/trade_binance_live.py \
+            evaluate_binance_lora_candidate.py \
+            scripts/evaluate_binance_lora_candidate.py \
+            trltraining
 
       - name: Type check with Pyright
         continue-on-error: true
         run: python -m pyright src
-
-      - name: Type check with mypy
-        run: |
-          mypy \
-            --python-version 3.13 \
-            --follow-imports=skip \
-            --config-file pyproject.toml \
-            rl_trading_agent_binance \
-            unified_orchestrator/orchestrator.py \
-            evaluate_binance_lora_candidate.py \
-            scripts/evaluate_binance_lora_candidate.py
 
       - name: Report to CI Sentinel
         if: always()

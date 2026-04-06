@@ -174,7 +174,7 @@ def test_summarize_eval_windows_aggregates_deltas_and_verdicts() -> None:
                         "max_dd_delta": -1.0,
                         "new_symbol_pnl": 12.0,
                         "verdict": "ACCEPT",
-                    }
+                    },
                 },
                 {
                     "window": "60d",
@@ -184,7 +184,7 @@ def test_summarize_eval_windows_aggregates_deltas_and_verdicts() -> None:
                         "max_dd_delta": 0.5,
                         "new_symbol_pnl": 4.0,
                         "verdict": "REJECT",
-                    }
+                    },
                 },
             ]
         }
