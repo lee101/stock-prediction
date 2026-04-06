@@ -2,11 +2,23 @@ from __future__ import annotations
 
 import ctypes
 import os
+import subprocess
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Iterator, Mapping
+
+try:
+    import fcntl as _fcntl
+except ImportError:
+    _fcntl = None
 
 import numpy as np
+
+
+CTRADER_DIR = Path(__file__).resolve().parent
+MAX_NATIVE_WEIGHT_SYMBOLS = 64
+_LIBRARY_CACHE: dict[tuple[str, int], ctypes.CDLL] = {}
 
 
 class WeightSimConfig(ctypes.Structure):
@@ -57,7 +69,7 @@ class NativeWeightEnv(ctypes.Structure):
         ("total_turnover", ctypes.c_double),
         ("total_fees", ctypes.c_double),
         ("total_borrow_cost", ctypes.c_double),
-        ("current_weights", ctypes.c_double * 64),
+        ("current_weights", ctypes.c_double * MAX_NATIVE_WEIGHT_SYMBOLS),
         ("equity_curve", ctypes.POINTER(ctypes.c_double)),
         ("returns", ctypes.POINTER(ctypes.c_double)),
     ]
@@ -102,12 +114,76 @@ class WeightSimSummary:
 
 
 def _default_library_path() -> Path:
-    return Path(__file__).with_name("libmarket_sim.so")
+    return CTRADER_DIR / "libmarket_sim.so"
 
 
-def load_library(path: str | os.PathLike[str] | None = None) -> ctypes.CDLL:
-    lib_path = Path(path) if path is not None else Path(os.environ.get("CTRADER_SIM_LIB", _default_library_path()))
-    lib = ctypes.CDLL(str(lib_path))
+def _build_lock_path() -> Path:
+    return CTRADER_DIR / ".build.lock"
+
+
+def _needs_rebuild(lib_path: Path) -> bool:
+    source_paths = [CTRADER_DIR / "market_sim.c", CTRADER_DIR / "market_sim.h"]
+    if not lib_path.exists():
+        return True
+    return any(src.stat().st_mtime > lib_path.stat().st_mtime for src in source_paths)
+
+
+@contextmanager
+def _build_lock_context(lock_path: Path) -> Iterator[None]:
+    with lock_path.open("a+b") as handle:
+        if _fcntl is not None:
+            _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if _fcntl is not None:
+                _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
+
+
+def _validate_native_symbol_count(n_symbols: int) -> None:
+    if n_symbols > MAX_NATIVE_WEIGHT_SYMBOLS:
+        raise ValueError(
+            "Native ctrader weight simulation supports at most "
+            f"{MAX_NATIVE_WEIGHT_SYMBOLS} symbols; received {n_symbols}."
+        )
+
+
+def ensure_library_built(path: str | os.PathLike[str] | None = None) -> Path:
+    lib_path = Path(path) if path is not None else _default_library_path()
+    default_lib_path = _default_library_path()
+    if lib_path.resolve() != default_lib_path.resolve():
+        if not lib_path.exists():
+            raise FileNotFoundError(f"Native ctrader library does not exist: {lib_path}")
+        return lib_path
+
+    if not _needs_rebuild(lib_path):
+        return lib_path
+
+    with _build_lock_context(_build_lock_path()):
+        if not _needs_rebuild(lib_path):
+            return lib_path
+        try:
+            subprocess.run(
+                ["make", "libmarket_sim.so"],
+                cwd=CTRADER_DIR,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            output = (exc.stdout or "").strip()
+            message = [
+                f"Failed to build native ctrader library at {lib_path}",
+                "command: make libmarket_sim.so",
+            ]
+            if output:
+                message.append(f"output:\n{output}")
+            raise RuntimeError("\n".join(message)) from exc
+    return lib_path
+
+
+def _configure_library(lib: ctypes.CDLL) -> ctypes.CDLL:
     lib.simulate_target_weights.argtypes = [
         ctypes.c_int,
         ctypes.c_int,
@@ -151,6 +227,27 @@ def load_library(path: str | os.PathLike[str] | None = None) -> ctypes.CDLL:
     return lib
 
 
+def load_library(path: str | os.PathLike[str] | None = None) -> ctypes.CDLL:
+    lib_path = ensure_library_built(path if path is not None else os.environ.get("CTRADER_SIM_LIB"))
+    resolved_path = lib_path.resolve()
+    cache_key = (str(resolved_path), resolved_path.stat().st_mtime_ns)
+    cached = _LIBRARY_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    try:
+        lib = _configure_library(ctypes.CDLL(str(resolved_path)))
+    except OSError as exc:
+        raise RuntimeError(
+            f"Failed to load native ctrader library at {resolved_path}: {exc}"
+        ) from exc
+    stale_keys = [key for key in _LIBRARY_CACHE if key[0] == cache_key[0] and key != cache_key]
+    for stale_key in stale_keys:
+        del _LIBRARY_CACHE[stale_key]
+    _LIBRARY_CACHE[cache_key] = lib
+    return lib
+
+
 def _as_config(config: WeightSimConfig | Mapping[str, float | int]) -> WeightSimConfig:
     if isinstance(config, WeightSimConfig):
         return config
@@ -170,7 +267,6 @@ def simulate_target_weights(
     config: WeightSimConfig | Mapping[str, float | int],
     library: ctypes.CDLL | None = None,
 ) -> tuple[WeightSimSummary, np.ndarray]:
-    lib = library or load_library()
     close_arr = np.ascontiguousarray(close, dtype=np.float64)
     weights_arr = np.ascontiguousarray(target_weights, dtype=np.float64)
 
@@ -180,6 +276,8 @@ def simulate_target_weights(
         raise ValueError("close and target_weights must have the same shape")
 
     n_bars, n_symbols = close_arr.shape
+    _validate_native_symbol_count(int(n_symbols))
+    lib = library or load_library()
     eq_curve = np.zeros(n_bars, dtype=np.float64)
     cfg = _as_config(config)
     result = WeightSimResult()
@@ -204,10 +302,11 @@ class NativeWeightEnvHandle:
         sim_config: WeightSimConfig | Mapping[str, float | int],
         library: ctypes.CDLL | None = None,
     ) -> None:
-        self.lib = library or load_library()
         self.close = np.ascontiguousarray(close, dtype=np.float64)
         if self.close.ndim != 2:
             raise ValueError("close must be 2D [n_bars, n_symbols]")
+        _validate_native_symbol_count(int(self.close.shape[1]))
+        self.lib = library or load_library()
         self.env = NativeWeightEnv()
         self.sim_config = _as_config(sim_config)
         rc = self.lib.weight_env_init(
