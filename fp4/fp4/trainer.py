@@ -92,14 +92,103 @@ class StubVecEnv:
         return self._obs, reward, done.to(torch.float32)
 
 
+class _Env3Tuple:
+    """Adapt an ``env_adapter.EnvHandle`` (4-tuple step) to the legacy
+    ``(obs, reward, done)`` 3-tuple contract used inside the trainers."""
+
+    def __init__(self, handle):
+        self._h = handle
+        self.num_envs = int(handle.num_envs)
+        self.obs_dim = int(handle.obs_dim)
+        self.act_dim = int(handle.action_dim)
+        self.backend_name = handle.backend_name
+
+    def reset(self):
+        return self._h.reset()
+
+    def step(self, action):
+        obs, rew, done, _cost = self._h.step(action)
+        return obs, rew, done
+
+
+class _GPUVecEnvAdapter:
+    """Wrap a ``GPUVecEnv``-style env (dict-output) so it matches the
+    ``(next_obs, reward, done)`` tuple contract that ``train_ppo`` /
+    ``train_sac`` / ``train_qr_ppo`` use in their rollout loops.
+
+    Also exposes ``num_envs`` / ``obs_dim`` / ``act_dim`` so the caller can
+    size its rollout buffer + policy from the *real* env shapes instead of a
+    cfg-default that silently mismatches the marketsim (root cause of every
+    fp4 sweep cell skipping eval with "obs_dim=16 != marketsim obs_dim=305").
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.num_envs = int(getattr(inner, "num_envs"))
+        # Run a probe reset so we can read the real obs/act dims even when the
+        # underlying env doesn't expose them as attributes.
+        sample = inner.reset()
+        if isinstance(sample, dict):
+            obs = sample["obs"] if "obs" in sample else sample["observations"]
+        else:
+            obs = sample
+        self._cached_first_obs = obs
+        self.obs_dim = int(obs.shape[-1])
+        # ``act_dim`` is best effort: prefer attribute, else assume scalar.
+        self.act_dim = int(getattr(inner, "act_dim", 1))
+
+    def reset(self) -> torch.Tensor:
+        if self._cached_first_obs is not None:
+            obs = self._cached_first_obs
+            self._cached_first_obs = None
+            return obs
+        out = self._inner.reset()
+        return out["obs"] if isinstance(out, dict) else out
+
+    def step(self, action: torch.Tensor):
+        out = self._inner.step(action)
+        if isinstance(out, dict):
+            return out["obs"], out["reward"], out["done"].to(torch.float32)
+        return out  # already a tuple
+
+
 def _make_env(cfg: Dict[str, Any], num_envs: int, obs_dim: int, act_dim: int,
               device: torch.device, seed: int):
     env_spec = cfg.get("env", "stub")
     # If caller passed a ready-to-use env object, just use it.
     if hasattr(env_spec, "reset") and hasattr(env_spec, "step"):
         return env_spec
-    # Real marketsim wiring lands in Unit G; until then we use the stub for
-    # everything so the bench harness can still produce a JSON.
+    # If env spec is a dict (the stocks12 yaml shape), build a real
+    # GPU-resident env via fp4.vec_env.GPUVecEnv. This routes through the
+    # market_sim_py C++ binding when available and falls back to a torch
+    # synthetic random-walk env otherwise. Either way the trainer reads the
+    # real obs/act dims via the adapter rather than guessing from cfg.
+    if isinstance(env_spec, dict):
+        from .vec_env import GPUVecEnv
+        env_kwargs: Dict[str, Any] = {}
+        if "action_mode" in env_spec:
+            env_kwargs["action_mode"] = str(env_spec["action_mode"])
+        if "symbols" in env_spec:
+            env_kwargs["symbols"] = list(env_spec["symbols"])
+        try:
+            inner = GPUVecEnv(
+                num_envs=num_envs,
+                obs_dim=obs_dim,
+                act_dim=act_dim,
+                device=device,
+                seed=seed,
+                **env_kwargs,
+            )
+            return _GPUVecEnvAdapter(inner)
+        except Exception as exc:
+            # Fall back to the synthetic stub so the smoke test still runs,
+            # but make the failure visible so callers can spot it in logs.
+            import sys as _sys
+            print(
+                f"[fp4.trainer] GPUVecEnv unavailable ({type(exc).__name__}: {exc}); "
+                f"falling back to StubVecEnv",
+                file=_sys.stderr,
+            )
     episode_len = int(cfg.get("episode_len", 256))
     return StubVecEnv(num_envs, obs_dim, act_dim, episode_len, device, seed)
 
@@ -202,7 +291,19 @@ def train_ppo(cfg: Dict[str, Any], total_timesteps: int, seed: int,
     obs_dim = int(cfg.get("obs_dim", 16)) if isinstance(cfg, dict) else 16
     act_dim = int(cfg.get("act_dim", 3)) if isinstance(cfg, dict) else 3
 
-    env = _make_env(cfg if isinstance(cfg, dict) else {}, num_envs, obs_dim, act_dim, device, seed)
+    from .env_adapter import make_env as _adapter_make_env
+    _raw_env = _adapter_make_env(cfg if isinstance(cfg, dict) else {},
+                                 num_envs=num_envs, obs_dim=obs_dim,
+                                 act_dim=act_dim, device=device, seed=seed)
+    env_backend_name = _raw_env.backend_name
+    env = _Env3Tuple(_raw_env)
+    # Re-read shapes from the constructed env so the policy + rollout buffers
+    # match the real environment, not whatever default lived in cfg. This is
+    # what unblocks evaluation against the marketsim — the policy is born
+    # the right size from the start.
+    obs_dim = int(getattr(env, "obs_dim", obs_dim))
+    act_dim = int(getattr(env, "act_dim", act_dim))
+    num_envs = int(getattr(env, "num_envs", num_envs))
 
     policy = ActorCritic(obs_dim=obs_dim, act_dim=act_dim, hidden=hidden, seed=int(seed)).to(device)
     optim = AdamWMaster(policy.parameters(), lr=lr)
@@ -232,6 +333,50 @@ def train_ppo(cfg: Dict[str, Any], total_timesteps: int, seed: int,
     last_metrics: Dict[str, float] = {}
     cuda_graph_attempted = False
     cuda_graph_used = False
+
+    # ----- P5-3 opt-in: full rollout+update CUDA graph capture -----
+    # Isolated branch — when cfg["full_graph_capture"] is truthy and CUDA is
+    # available, build a synthetic-env full PPO step, capture it as one
+    # CUDA graph, replay for `n_iters`, then return early. Exercised by
+    # `fp4/bench/bench_full_graph.py` and `tests/test_cuda_graph_full.py`.
+    if (isinstance(cfg, dict) and cfg.get("full_graph_capture")
+            and torch.cuda.is_available()):
+        from .cuda_graph_full import build_synthetic_full_step, capture_full_step
+        step_fn, _state = build_synthetic_full_step(
+            policy, optim,
+            num_envs=num_envs, rollout_len=rollout_len,
+            obs_dim=obs_dim, act_dim=act_dim, device=device,
+            gamma=gamma, gae_lambda=gae_lambda,
+            clip_eps=clip_eps, vf_coef=vf_coef, ent_coef=ent_coef,
+        )
+        captured = capture_full_step(step_fn)
+        for _ in range(n_iters):
+            captured.replay()
+        torch.cuda.synchronize()
+        wall = time.perf_counter() - t0
+        out_loss = float(captured.outputs["loss"].item())
+        out_meanr = float(captured.outputs["mean_reward"].item())
+        metrics: Dict[str, Any] = {
+            "final_sortino": 0.0,
+            "final_p10": 0.0,
+            "mean_return": out_meanr,
+            "n_episodes": 0,
+            "steps_per_sec": float(n_iters * steps_per_iter) / max(wall, 1e-9),
+            "wall_sec": wall,
+            "gpu_peak_mb": float(torch.cuda.max_memory_allocated() / (1024 * 1024)),
+            "device": str(device),
+            "cuda_graph_used": True,
+            "full_graph_used": True,
+            "n_iters": int(n_iters),
+            "total_steps": int(n_iters * steps_per_iter),
+            "last_loss": out_loss,
+            "last_entropy": 0.0,
+        }
+        ckpt_dir = Path(checkpoint_dir)
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        (ckpt_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
+        return metrics
+    # ----- end P5-3 branch -----
 
     # Try graph capture BEFORE any eager training so the params/grads have
     # never been touched by the legacy stream. This is a correctness probe:
@@ -334,6 +479,7 @@ def train_ppo(cfg: Dict[str, Any], total_timesteps: int, seed: int,
         if torch.cuda.is_available() else 0.0,
         "device": str(device),
         "cuda_graph_used": bool(cuda_graph_used),
+        "env_backend": env_backend_name,
         "n_iters": int(n_iters),
         "total_steps": int(n_iters * steps_per_iter),
         "last_loss": last_metrics.get("loss", 0.0),

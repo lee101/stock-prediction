@@ -22,6 +22,11 @@ from pathlib import Path
 from typing import Any
 
 REPO = Path(__file__).resolve().parents[2]
+# Ensure REPO is on sys.path so `import fp4.bench.eval_generic` resolves to the
+# in-tree directory layout (fp4/bench/) rather than the installed `fp4` package
+# (which intentionally excludes the bench tree from its packages.find).
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 DEFAULT_CFG = REPO / "fp4" / "experiments" / "fp4_ppo_stocks12.yaml"
@@ -352,8 +357,19 @@ def _evaluate_ckpt(ckpt_dir: Path, cfg: dict[str, Any], trainer: str) -> dict[st
     return out
 
 
-def run_one(trainer: str, cfg_path: Path, steps: int, seed: int, smoke: bool = False) -> dict[str, Any]:
+def run_one(trainer: str, cfg_path: Path, steps: int, seed: int,
+            smoke: bool = False, env_override: str | None = None) -> dict[str, Any]:
     cfg = _load_cfg(cfg_path)
+    if env_override:
+        # Preserve any existing env params (e.g. ohlc_path) when overriding
+        # only the backend selector.
+        existing = cfg.get("env")
+        if isinstance(existing, dict):
+            existing = dict(existing)
+            existing["backend"] = env_override
+            cfg["env"] = existing
+        else:
+            cfg["env"] = env_override
     if smoke:
         # Shrink the model so the smoke test fits on shared GPUs / CI boxes.
         ppo = cfg.setdefault("ppo", {})
@@ -409,8 +425,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--steps", type=int, default=200_000)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--smoke", action="store_true")
+    p.add_argument("--env", default=None,
+                   help="override cfg['env'] backend: auto|gpu_trading_env|market_sim_py|stub")
     args = p.parse_args(argv)
-    rec = run_one(args.trainer, Path(args.config), args.steps, args.seed, smoke=args.smoke)
+    rec = run_one(args.trainer, Path(args.config), args.steps, args.seed,
+                  smoke=args.smoke, env_override=args.env)
     print(json.dumps({k: v for k, v in rec.items() if k != "train"}, indent=2, default=str))
     return 0 if rec["status"] in ("ok", "skip") else 1
 
