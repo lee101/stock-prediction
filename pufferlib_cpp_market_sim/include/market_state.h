@@ -16,8 +16,8 @@ struct MarketData {
     torch::Tensor volume;      // [T]
 
     std::string symbol;
-    AssetClass asset_class;
-    int length;
+    AssetClass asset_class = AssetClass::STOCK;
+    int length = 0;
 };
 
 class MarketState {

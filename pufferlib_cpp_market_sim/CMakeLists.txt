@@ -118,6 +118,14 @@ else()
     target_compile_options(market_sim PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+# DPS action-mode unit tests
+add_executable(test_dps_action_mode tests/test_dps_action_mode.cpp)
+target_link_libraries(test_dps_action_mode market_sim "${TORCH_LIBRARIES}")
+set_target_properties(test_dps_action_mode PROPERTIES
+    BUILD_RPATH "${TORCH_INSTALL_PREFIX}/lib:${PUFFERLIB_PATH}"
+    INSTALL_RPATH "${TORCH_INSTALL_PREFIX}/lib:${PUFFERLIB_PATH}"
+)
+
 # Installation
 install(TARGETS market_sim train_market test_market
     LIBRARY DESTINATION lib
