@@ -7,6 +7,37 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
+### 2026-04-07 — Crypto → Stocks recipe port (FAILED, baseline s42 retained)
+- **Goal**: apply crypto34 hourly champion's training recipe (h1024 + RunningObsNorm + BF16 autocast + CUDA-graph PPO) to stocks12 v5_rsi daily, on top of the existing h1024 + legacy linear anneal stocks recipe.
+- **Script**: `scripts/stocks12_v5_rsi_crypto_recipe.sh` (seeds 100–104, 15M total timesteps after the v1 30M+cosine attempt over-converged into a 1-trade/episode policy with val med=0.2%; v1 dir kept as `stocks12_v5_rsi_cryptorcp/tp05_s100_v1_30M_cosine_BAD` for postmortem).
+- **Checkpoints**: `pufferlib_market/checkpoints/stocks12_v5_rsi_cryptorcp/tp05_s{100..104}/` + per-seed `eval_holdout50.json`.
+- **Result vs s42 baseline (med=+36%, p10=+26.3%, 0/58 neg, ~25 trades/window)**:
+
+  | seed | med | p10 | worst | best | sortino | trades/win |
+  |------|-----|-----|-------|------|---------|------------|
+  | s100 | +6.89% | +4.88% | +2.19% | +12.48% | 13.0 | 1 |
+  | s101 |  0.00% |  0.00% |  0.00% |  0.00% |  0.0 | 0 (degenerate) |
+  | s102 | +4.06% | +0.56% | -1.72% |  +9.11% |  7.2 | 1 |
+
+- **Diagnosis**: All trained seeds collapse to 1-trade-per-window or 0-trade. Hypothesis: obs_norm + bf16 + cuda_graph improve gradient quality, which lets `--trade-penalty 0.05` dominate faster on the small daily dataset (only 1306 timesteps train). The s42 baseline benefits from noisier gradients that prevent trade-collapse. Daily PPO does not respond like hourly PPO to the crypto recipe.
+- **Decision**: keep s42 in production, do NOT add s100/s101/s102 to the 32-model prod ensemble. Recipe port is **worse than current**.
+- **Next experiments queued**:
+  1. Ablate `--trade-penalty` to 0.02 with the same crypto recipe (does the trade-collapse go away?).
+  2. Single-knob ablation: add only `--obs-norm` (no bf16, no cuda-graph) on top of baseline to isolate which knob causes the collapse.
+  3. Pivot to scaling: extend `newnanoalpacahourlyexp` per-symbol architecture to 100+ symbol coverage; the C env `ctrader/market_sim.h MAX_SYMBOLS=64` blocks monolithic scaling.
+
+### 2026-04-07 — ctrader C audit (in progress)
+- **Existing tests**: `ctrader/tests/test_market_sim.c` 145→**151 passed** after adding 3 new fee/borrow pin tests:
+  - `test_alpaca_margin_rate_pin`: pins 6.25% APR → `0.0625/8760` hourly, validates margin cost > 0 and within plausible band.
+  - `test_binance_borrow_rate_pin`: pins ~3% APR Binance cross-margin midrate, validates strict ordering Binance < Alpaca for identical scenarios.
+  - `test_binance_fdusd_zero_fee_pin`: validates round-trip equity is unchanged when `maker_fee=0` (FDUSD pairs per `BINANCE_FDUSD_ZERO_FEE.md`).
+  - Build (avoid /tmp gcc temp issue): `cd ctrader && TMPDIR=$PWD/.tmp gcc -O2 -Wall -std=c11 -o .tmp/test_market_sim tests/test_market_sim.c market_sim.c -lm && .tmp/test_market_sim`
+- **Parity test failures**: `ctrader/tests/test_sim_parity.c` against `tests/parity_cases.bin` → **100 passed, 20 failed**. **Root cause: sign-convention mismatch on `compute_max_drawdown`**. C `market_sim.c:48-57` returns positive magnitude `(peak-eq)/peak`; Python ref `rlsys/utils.py:59` and the parity fixture use signed convention (negative=loss). All 20 failures are exactly `got X, expected -X`. PnL math (total_return, sortino, num_trades, equity curve) all match — only the metric sign differs.
+  - **API blast radius**: `test_target_weights_max_drawdown_is_positive` (line 753) and Python FFI consumers in `market_sim_ffi.py` and `pufferlib_market.evaluate*` currently expect positive convention. Needs explicit decision before flipping.
+  - Recommended path A: flip C to signed (negate return value, update offending C test, audit Python FFI callers, regenerate display strings).
+- **Compiler warning** (pre-existing, surfaced by gcc -Wall): `market_sim.c:247 next_weights` `-Wmaybe-uninitialized` in `weight_env_step` via `clamp_target_weights`. Not from any new test code.
+- **C in live Binance bot**: confirmed `rl_trading_agent_binance/trade_binance_live.py` does **not** import `market_sim_ffi` or load `libmarket_sim.so`. Live bot uses Python-side fill simulation only — task #4 (wire C sim into live bot) is greenfield.
+
 ### Current Alpaca snapshot (2026-04-06 audit)
 - **LIVE account**: equity ~$38,954 (flat, no positions since ~2026-04-01)
 - **daily-rl-trader.service**: STOPPED (was crash-looping 4725+ restarts, missing ALP_KEY_ID_PROD/ALP_SECRET_KEY_PROD). Stopped 2026-04-06 to save resources.
