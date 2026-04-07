@@ -1,5 +1,21 @@
 # Binance Production Systems
 
+## CRITICAL (2026-04-07): Lag=0 Validation Is Untrustworthy
+`robust_champion` was briefly deployed after a "+216% Sort=25.06" holdout — this was run at `decision_lag=0` which embeds lookahead bias (agent sees bar t features and trades at bar t close, impossible live). At realistic `decision_lag=2` on the SAME `mixed23_latest_val` data (50 windows x 30h):
+
+| Checkpoint | med_ret | med_sort | p10_ret |
+|---|---:|---:|---:|
+| robust_champion (lag=0 claim: +12.4%/+3.35) | -2.8% | -0.50 | -14.0% |
+| robust_reg_tp005_dd002 | +0.0% | +0.76 | -26.9% |
+| robust_reg_tp005_ent | -5.5% | -2.09 | -21.1% |
+
+**PROTOCOL**: Never trust a holdout unless run with `--decision-lag 2` AND a slippage sweep (0/5/10/20 bps). `evaluate_holdout.py` now has `--slippage-bps`. The C training env has a built-in `t_obs = t-1` single-bar lag, but production exhibits >=2 bars lag (forecast build + Gemini call + order placement). Training sim vs production gap is the ROOT CAUSE of why every deploy since 2026-03 looks great in holdout and drifts flat/negative live.
+
+Launch.sh reverted to dd002 pending supervisor restart:
+`sudo supervisorctl restart binance-hybrid-spot`
+
+Artifacts: `analysis/robust_champion_validation/slip{0,5,10,20}.json`
+
 ## Active Services
 
 ### 1. binance-hybrid-spot
