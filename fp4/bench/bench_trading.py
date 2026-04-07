@@ -172,7 +172,11 @@ def _run_hf_trainer(cfg: dict[str, Any], steps: int, seed: int, ckpt_dir: Path) 
 
 
 def _run_trl(cfg: dict[str, Any], steps: int, seed: int, ckpt_dir: Path) -> dict[str, Any]:
-    return {"status": "skip", "reason": "trl PPO adapter for marketsim not implemented in this iteration"}
+    try:
+        from fp4.bench.adapters.trl_adapter import run_trl as _trl_entry
+    except Exception as exc:
+        return {"status": "skip", "reason": f"trl_adapter import failed: {type(exc).__name__}: {exc}"}
+    return _trl_entry(cfg, steps, seed, ckpt_dir)
 
 
 def _run_fp4(cfg: dict[str, Any], steps: int, seed: int, ckpt_dir: Path) -> dict[str, Any]:
