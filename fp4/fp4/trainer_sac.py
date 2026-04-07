@@ -108,11 +108,11 @@ class _QNet(nn.Module):
 
 def _make_env(cfg: Dict[str, Any], num_envs: int, obs_dim: int, act_dim: int,
               device: torch.device, seed: int):
-    env_spec = cfg.get("env", "stub") if isinstance(cfg, dict) else "stub"
-    if hasattr(env_spec, "reset") and hasattr(env_spec, "step"):
-        return env_spec
-    episode_len = int(cfg.get("episode_len", 256)) if isinstance(cfg, dict) else 256
-    return StubVecEnv(num_envs, obs_dim, act_dim, episode_len, device, seed)
+    # Delegate to fp4.trainer._make_env so SAC, PPO and QR-PPO all share one
+    # env construction path. This is what wires SAC up to the real marketsim
+    # via GPUVecEnv when ``cfg["env"]`` is a dict.
+    from .trainer import _make_env as _shared_make_env
+    return _shared_make_env(cfg if isinstance(cfg, dict) else {}, num_envs, obs_dim, act_dim, device, seed)
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +142,16 @@ def train_sac(cfg: Dict[str, Any], total_timesteps: int, seed: int,
     obs_dim = int(cfg.get("obs_dim", 16)) if isinstance(cfg, dict) else 16
     act_dim = int(cfg.get("act_dim", 3)) if isinstance(cfg, dict) else 3
 
-    env = _make_env(cfg if isinstance(cfg, dict) else {}, num_envs, obs_dim, act_dim, device, seed)
+    from .env_adapter import make_env as _adapter_make_env
+    from .trainer import _Env3Tuple
+    _raw_env = _adapter_make_env(cfg if isinstance(cfg, dict) else {},
+                                 num_envs=num_envs, obs_dim=obs_dim,
+                                 act_dim=act_dim, device=device, seed=seed)
+    env_backend_name = _raw_env.backend_name
+    env = _Env3Tuple(_raw_env)
+    obs_dim = int(getattr(env, "obs_dim", obs_dim))
+    act_dim = int(getattr(env, "act_dim", act_dim))
+    num_envs = int(getattr(env, "num_envs", num_envs))
 
     actor = _build_actor(obs_dim, act_dim, hidden).to(device)
     q1 = _QNet(obs_dim, act_dim, hidden).to(device)
@@ -293,6 +302,7 @@ def train_sac(cfg: Dict[str, Any], total_timesteps: int, seed: int,
         "last_actor_loss": last_metrics.get("actor_loss", 0.0),
         "last_alpha": last_metrics.get("alpha", 0.0),
         "algorithm": "sac",
+        "env_backend": env_backend_name,
     }
 
     ckpt_dir = Path(checkpoint_dir)
