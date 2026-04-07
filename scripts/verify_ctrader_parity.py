@@ -149,13 +149,24 @@ def py_compute_sortino(equity_curve):
 
 
 def py_compute_max_drawdown(equity_curve):
+    """Match the canonical positive-magnitude convention used by C
+    `compute_max_drawdown` in market_sim.c, by `pufferlib_market.binding_fallback`,
+    `pufferlib_market.evaluate_holdout` (median_max_drawdown aggregation),
+    `pufferlib_market.evaluate_sliding.compute_calmar`, and the C unit test
+    `test_target_weights_max_drawdown_is_positive`.
+
+    The previous version of this helper returned a *signed* (negative) value
+    using `rlsys/utils.py:compute_max_drawdown` semantics, which made the
+    parity fixture disagree with the C convention on 20/120 cases. The
+    underlying PnL math was correct in both code paths — only the metric sign
+    differed. Fixed 2026-04-07 during the ctrader audit (alpacaprod.md)."""
     running_max = equity_curve[0]
     max_dd = 0.0
     for v in equity_curve:
         if v > running_max:
             running_max = v
-        dd = (v - running_max) / (running_max + 1e-10)
-        if dd < max_dd:
+        dd = (running_max - v) / (running_max + 1e-10)
+        if dd > max_dd:
             max_dd = dd
     return max_dd
 

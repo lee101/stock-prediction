@@ -38,6 +38,7 @@ build
 .pytest_tmp
 pytest-of-*
 ctrader/.tmp/
+pufferlib_market/.tmp/
 .ruff_cache
 .mypy_cache
 .pytype
@@ -665,3 +666,10 @@ pufferlib_market/stocks12_*.log
 monitoring/
 chronos2_finetuned
 compiled_models
+
+# scratch / generated
+.s100_val.json
+.ablate_*.log
+.render_*.log
+.tmp/
+.tmp_train/
