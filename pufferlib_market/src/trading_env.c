@@ -95,11 +95,13 @@ MarketData* market_data_load(const char* path) {
     ptr += md->num_symbols * SYM_NAME_LEN;
 
     /* feature array */
-    md->features = (float*)ptr;
+    /* cppcheck-suppress invalidPointerCast ; file buffer is aligned by mmap/malloc */
+    md->features = (float*)(void*)ptr;
     ptr += (size_t)md->num_timesteps * md->num_symbols * md->features_per_sym * sizeof(float);
 
     /* price array */
-    md->prices = (float*)ptr;
+    /* cppcheck-suppress invalidPointerCast ; file buffer is aligned by mmap/malloc */
+    md->prices = (float*)(void*)ptr;
     ptr += (size_t)md->num_timesteps * md->num_symbols * PRICE_FEATS * sizeof(float);
 
     /* optional tradable mask (uint8[T][S]) appended after prices (v2+) */
@@ -532,11 +534,9 @@ __attribute__((hot)) void c_step(TradingEnv* env) {
     }
 
     /* current position info */
-    int cur_sym = -1;
     int cur_tradable = 1;
     if (ag->position_sym >= 0) {
-        cur_sym = ag->position_sym % S;
-        cur_tradable = is_tradable(md, t, cur_sym);
+        cur_tradable = is_tradable(md, t, ag->position_sym % S);
     }
     int any_tradable = (md->any_tradable != NULL) ? (md->any_tradable[t] != 0) : 1;
 

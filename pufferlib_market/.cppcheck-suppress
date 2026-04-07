@@ -1,0 +1,3 @@
+// cppcheck doesn't expand Python C-API macros (Py_RETURN_NONE etc), so it
+// thinks functions ending in those macros are missing a return statement.
+missingReturn:*binding.c
