@@ -18,6 +18,10 @@
   | s100 | +6.89% | +4.88% | +2.19% | +12.48% | 13.0 | 1 |
   | s101 |  0.00% |  0.00% |  0.00% |  0.00% |  0.0 | 0 (degenerate) |
   | s102 | +4.06% | +0.56% | -1.72% |  +9.11% |  7.2 | 1 |
+  | s103 | -0.96% | -2.30% | -3.84% |  +1.40% | -8.75 | 11 |
+  | **s104** | **+12.36%** | **+7.76%** | **+5.04%** | **+32.54%** | **22.7** | **22** |
+
+  s104 is the only partial win: robust (0/50 neg), actively trading (22 trades/window), Sortino 22.7. Still below s42 baseline (+36% median) so does **not** meet the ensemble bar — but proves the recipe is not fundamentally broken, just unstable across seeds. Recipe → seed-collapse rate 4/5.
 
 - **Diagnosis**: All trained seeds collapse to 1-trade-per-window or 0-trade. Hypothesis: obs_norm + bf16 + cuda_graph improve gradient quality, which lets `--trade-penalty 0.05` dominate faster on the small daily dataset (only 1306 timesteps train). The s42 baseline benefits from noisier gradients that prevent trade-collapse. Daily PPO does not respond like hourly PPO to the crypto recipe.
 - **Decision**: keep s42 in production, do NOT add s100/s101/s102 to the 32-model prod ensemble. Recipe port is **worse than current**.
