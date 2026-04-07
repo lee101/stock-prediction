@@ -713,7 +713,7 @@
    "num_trades": 71,
    "margin_cost_total": 0.0,
    "sortino": 0.32808232036153223,
-   "max_drawdown": -0.08756643676651535,
+   "max_drawdown": 0.08756643676651535,
    "equity_curve": [
     10000.0,
     10000.0,
@@ -1460,7 +1460,7 @@
    "num_trades": 55,
    "margin_cost_total": 9.946100258896749,
    "sortino": 36.999480032608666,
-   "max_drawdown": -0.12110401504060594,
+   "max_drawdown": 0.12110401504060594,
    "equity_curve": [
     10000.0,
     10105.33359266911,
@@ -2043,7 +2043,7 @@
    "num_trades": 44,
    "margin_cost_total": 7.4121439241469895,
    "sortino": 32.92115207047222,
-   "max_drawdown": -0.08956392348686738,
+   "max_drawdown": 0.08956392348686738,
    "equity_curve": [
     10000.0,
     10000.0,
@@ -3241,7 +3241,7 @@
    "num_trades": 117,
    "margin_cost_total": 0.0,
    "sortino": 11.19746647943533,
-   "max_drawdown": -0.03041248985553511,
+   "max_drawdown": 0.03041248985553511,
    "equity_curve": [
     10000.0,
     10001.615434435209,
@@ -4642,7 +4642,7 @@
    "num_trades": 12,
    "margin_cost_total": 0.0,
    "sortino": -5.707935572549979,
-   "max_drawdown": -0.09470594814801381,
+   "max_drawdown": 0.09470594814801381,
    "equity_curve": [
     10000.0,
     10000.0,
@@ -5898,7 +5898,7 @@
    "num_trades": 100,
    "margin_cost_total": 0.0,
    "sortino": 0.060639952237178545,
-   "max_drawdown": -0.08206008311947702,
+   "max_drawdown": 0.08206008311947702,
    "equity_curve": [
     10000.0,
     10019.20376640703,
@@ -7404,7 +7404,7 @@
    "num_trades": 140,
    "margin_cost_total": 20.082287514752725,
    "sortino": 0.7715329852312242,
-   "max_drawdown": -0.43320381818188597,
+   "max_drawdown": 0.43320381818188597,
    "equity_curve": [
     10000.0,
     10013.43875819182,
@@ -8158,7 +8158,7 @@
    "num_trades": 54,
    "margin_cost_total": 0.0,
    "sortino": 15.120766843983322,
-   "max_drawdown": -0.07097881452539016,
+   "max_drawdown": 0.07097881452539016,
    "equity_curve": [
     50000.0,
     49898.67908838582,
@@ -9212,7 +9212,7 @@
    "num_trades": 100,
    "margin_cost_total": 0.0,
    "sortino": 9.388413140761946,
-   "max_drawdown": -0.03975798928844362,
+   "max_drawdown": 0.03975798928844362,
    "equity_curve": [
     10000.0,
     9999.816800842229,
@@ -10619,7 +10619,7 @@
    "num_trades": 123,
    "margin_cost_total": 17.219213818976318,
    "sortino": 13.221648161222772,
-   "max_drawdown": -0.3274226514600081,
+   "max_drawdown": 0.3274226514600081,
    "equity_curve": [
     10000.0,
     10000.0,
@@ -11249,7 +11249,7 @@
    "num_trades": 39,
    "margin_cost_total": 4.0111566680021085,
    "sortino": 41.33131236256219,
-   "max_drawdown": -0.07485828099984079,
+   "max_drawdown": 0.07485828099984079,
    "equity_curve": [
     10000.0,
     10000.0,
@@ -12259,7 +12259,7 @@
    "num_trades": 90,
    "margin_cost_total": 0.0,
    "sortino": -1.5362437705753846,
-   "max_drawdown": -0.09348070070327921,
+   "max_drawdown": 0.09348070070327921,
    "equity_curve": [
     10000.0,
     10000.0,
@@ -13305,7 +13305,7 @@
    "num_trades": 8,
    "margin_cost_total": 0.0,
    "sortino": 2.9988296031095065,
-   "max_drawdown": -0.023106715190360675,
+   "max_drawdown": 0.023106715190360675,
    "equity_curve": [
     10000.0,
     10000.0,
@@ -14395,7 +14395,7 @@
    "num_trades": 88,
    "margin_cost_total": 0.0,
    "sortino": 13.770708876932977,
-   "max_drawdown": -0.06833493382507493,
+   "max_drawdown": 0.06833493382507493,
    "equity_curve": [
     10000.0,
     10000.0,
@@ -15667,7 +15667,7 @@
    "num_trades": 115,
    "margin_cost_total": 10.297559404588515,
    "sortino": 9.839070563186139,
-   "max_drawdown": -0.15868633750880898,
+   "max_drawdown": 0.15868633750880898,
    "equity_curve": [
     10000.0,
     10019.846329622555,
@@ -17195,7 +17195,7 @@
    "num_trades": 146,
    "margin_cost_total": 0.0,
    "sortino": 5.20188073139724,
-   "max_drawdown": -0.05024103000807026,
+   "max_drawdown": 0.05024103000807026,
    "equity_curve": [
     50000.0,
     49948.68395820704,
@@ -18623,7 +18623,7 @@
    "num_trades": 117,
    "margin_cost_total": 0.0,
    "sortino": 4.500155409185097,
-   "max_drawdown": -0.07496274577314017,
+   "max_drawdown": 0.07496274577314017,
    "equity_curve": [
     10000.0,
     10000.0,
@@ -19962,7 +19962,7 @@
    "num_trades": 122,
    "margin_cost_total": 11.13177348769122,
    "sortino": 12.620746073157544,
-   "max_drawdown": -0.2841079882827646,
+   "max_drawdown": 0.2841079882827646,
    "equity_curve": [
     10000.0,
     10002.812940698208,
@@ -20808,7 +20808,7 @@
    "num_trades": 71,
    "margin_cost_total": 1.7682877735778337,
    "sortino": -3.8155655852289168,
-   "max_drawdown": -0.09564112795369664,
+   "max_drawdown": 0.09564112795369664,
    "equity_curve": [
     10000.0,
     9997.916014586694,
@@ -21942,7 +21942,7 @@
    "num_trades": 102,
    "margin_cost_total": 0.0,
    "sortino": 22.980451223944254,
-   "max_drawdown": -0.030925506037275976,
+   "max_drawdown": 0.030925506037275976,
    "equity_curve": [
     10000.0,
     10004.79124256929,

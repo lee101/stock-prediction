@@ -30,15 +30,37 @@
   2. Single-knob ablation: add only `--obs-norm` (no bf16, no cuda-graph) on top of baseline to isolate which knob causes the collapse.
   3. Pivot to scaling: extend `newnanoalpacahourlyexp` per-symbol architecture to 100+ symbol coverage; the C env `ctrader/market_sim.h MAX_SYMBOLS=64` blocks monolithic scaling.
 
+### 2026-04-07 — v5_rsi crypto-recipe ablations (CONFIRMS s42 is champion)
+- Two single-variable ablations to diagnose the recipe-port collapse from the previous section.
+- **Ablation A — full recipe + `--trade-penalty 0.02`** (was 0.05): seeds 200/201/202.
+- **Ablation B — only `--obs-norm` on top of baseline** (no bf16, no cuda-graph): seeds 300/301/302.
+- Driver: `scripts/stocks12_v5_rsi_ablations.sh A|B`. CSVs in `pufferlib_market/stocks12_v5_rsi_ablate_{tp02,obsonly}_leaderboard.csv`.
+
+  | Ablation | Seed | Med | p10 | Worst | Best | Sortino | Trades | Verdict |
+  |----------|------|-----|-----|-------|------|---------|--------|---------|
+  | A tp=0.02 | s200 | **−22.67%** | −28.79% | −31.09% | −14.17% | −26.6 | 13 | catastrophic |
+  | A tp=0.02 | s201 | +18.39% | +1.24% | −1.11% | +28.41% | 15.0 | 25 | best of batch |
+  | A tp=0.02 | s202 |  +7.16% | −13.21% | −14.37% | +14.25% |  7.4 | 26 | tail risk |
+  | B obs-norm | s300 | −4.00% | −20.71% | −21.16% |  +7.36% | −4.1 | 14 | bad |
+  | B obs-norm | s301 | −3.40% | −17.36% | −21.48% | +10.23% | −1.4 | 30 | bad |
+  | B obs-norm | s302 |  +2.89% |  +0.14% |  −1.94% |  +5.60% |  7.2 | 26 | marginal |
+  | **baseline s42** | | **+36%** | **+26.3%** | (0/58 neg) | — | **28** | ~ | **champion** |
+
+- **Diagnosis**: `--obs-norm` is the principal harm. B (obs-norm alone, three independent seeds) is uniformly worse than baseline. A (which keeps obs-norm but lowers trade penalty) is high-variance — the lower penalty sometimes overcomes the obs-norm damage and sometimes amplifies overfitting (s200). The crypto champion benefits from obs-norm because hourly crypto values span a wider distribution; daily stock returns are already roughly Gaussian and don't need normalization on the v5_rsi feature set.
+- **Decision**: keep s42 in production. Do **not** port `--obs-norm` to daily stocks training. Crypto-recipe port closed as complete (8 seeds total: 5 cryptorcp + 3 ablation A + 3 ablation B = 0 deployable models).
+- **Replay videos** rendered for visual comparison:
+  - `models/artifacts/v5_rsi_cryptorcp/videos/baseline_s42_window0.mp4` — s42 on val window 0: **+34.59% / 22 trades / Sortino 3.93 / DD 8.37%**
+  - `models/artifacts/v5_rsi_cryptorcp/videos/s104_window0.mp4` — s104 cryptorcp on same window: **+10.08% / 25 trades / Sortino 3.15 / DD 4.90%** (overly conservative)
+  - Renderer: `scripts/render_prod_stocks_video.py` (already wired into `src/marketsim_video.py`).
+  - Note: needed `uv pip install --python .venv313/bin/python imageio_ffmpeg` and `TMPDIR=$(pwd)/.tmp_train` to dodge the Triton/tempfile race that breaks training without obs-norm flags too.
+
 ### 2026-04-07 — ctrader C audit (in progress)
 - **Existing tests**: `ctrader/tests/test_market_sim.c` 145→**151 passed** after adding 3 new fee/borrow pin tests:
   - `test_alpaca_margin_rate_pin`: pins 6.25% APR → `0.0625/8760` hourly, validates margin cost > 0 and within plausible band.
   - `test_binance_borrow_rate_pin`: pins ~3% APR Binance cross-margin midrate, validates strict ordering Binance < Alpaca for identical scenarios.
   - `test_binance_fdusd_zero_fee_pin`: validates round-trip equity is unchanged when `maker_fee=0` (FDUSD pairs per `BINANCE_FDUSD_ZERO_FEE.md`).
   - Build (avoid /tmp gcc temp issue): `cd ctrader && TMPDIR=$PWD/.tmp gcc -O2 -Wall -std=c11 -o .tmp/test_market_sim tests/test_market_sim.c market_sim.c -lm && .tmp/test_market_sim`
-- **Parity test failures**: `ctrader/tests/test_sim_parity.c` against `tests/parity_cases.bin` → **100 passed, 20 failed**. **Root cause: sign-convention mismatch on `compute_max_drawdown`**. C `market_sim.c:48-57` returns positive magnitude `(peak-eq)/peak`; Python ref `rlsys/utils.py:59` and the parity fixture use signed convention (negative=loss). All 20 failures are exactly `got X, expected -X`. PnL math (total_return, sortino, num_trades, equity curve) all match — only the metric sign differs.
-  - **API blast radius**: `test_target_weights_max_drawdown_is_positive` (line 753) and Python FFI consumers in `market_sim_ffi.py` and `pufferlib_market.evaluate*` currently expect positive convention. Needs explicit decision before flipping.
-  - Recommended path A: flip C to signed (negate return value, update offending C test, audit Python FFI callers, regenerate display strings).
+- **Parity test failures (RESOLVED 2026-04-07)**: `ctrader/tests/test_sim_parity.c` was 100/120 (20 failures, all `compute_max_drawdown` sign mismatch). After re-auditing the codebase: positive-magnitude is the **canonical** convention (used by `market_sim.c`, `pufferlib_market.binding_fallback`, `pufferlib_market.evaluate_holdout`, `compute_calmar`, `robust_trading_metrics.py`, and the `test_target_weights_max_drawdown_is_positive` C test). The outlier was the `py_compute_max_drawdown` helper inside `scripts/verify_ctrader_parity.py` which generated the parity fixture with signed values matching `rlsys/utils.py`. Fixed the generator to return positive magnitude, regenerated `ctrader/tests/parity_cases.bin`, parity test now **140 passed, 0 failed**. Zero API blast.
 - **Compiler warning** (pre-existing, surfaced by gcc -Wall): `market_sim.c:247 next_weights` `-Wmaybe-uninitialized` in `weight_env_step` via `clamp_target_weights`. Not from any new test code.
 - **C in live Binance bot**: confirmed `rl_trading_agent_binance/trade_binance_live.py` does **not** import `market_sim_ffi` or load `libmarket_sim.so`. Live bot uses Python-side fill simulation only — task #4 (wire C sim into live bot) is greenfield.
 
