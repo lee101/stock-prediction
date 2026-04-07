@@ -92,7 +92,9 @@ ext = Extension(
         "-DNDEBUG",
         "-std=c11",
         "-Wno-unused-function",
+        "-flto",
     ],
+    extra_link_args=["-flto"],
     language="c",
 )
 
