@@ -49,7 +49,13 @@ PortfolioStepResult Portfolio::step(
 
     // Determine target position size based on action
     // action represents leverage multiplier (-max_leverage to +max_leverage)
-    auto clamped_action = torch::clamp(action, -config_.MAX_LEVERAGE, config_.MAX_LEVERAGE);
+    // SCALAR mode: clamp to legacy MAX_LEVERAGE. DPS mode: caller installs an override
+    // (see set_leverage_cap_override) so direction*size can reach max_leverage_dps. The
+    // SCALAR codepath is bit-identical to before because leverage_cap_override_ defaults
+    // to 0.0f and the branch picks config_.MAX_LEVERAGE in that case.
+    float lev_cap = (leverage_cap_override_ > 0.0f) ? leverage_cap_override_
+                                                    : config_.MAX_LEVERAGE;
+    auto clamped_action = torch::clamp(action, -lev_cap, lev_cap);
 
     // For crypto, no short selling (negative positions)
     if (is_crypto) {

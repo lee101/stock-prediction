@@ -38,7 +38,10 @@ public:
 
     // Get observation/action space dimensions
     int get_observation_dim() const;
-    int get_action_dim() const { return 1; }  // Single continuous action
+    // SCALAR mode: 1 (legacy continuous leverage). DPS mode: 3 = (direction, size, limit_offset).
+    int get_action_dim() const {
+        return config_.action_mode == ActionMode::DPS ? 3 : 1;
+    }
 
     // Peek at the next-step OHLC data without advancing the sim
     torch::Tensor peek_next_prices() const;

@@ -55,6 +55,12 @@ public:
     // Calculate leverage cost for positions > 1.0x
     torch::Tensor calculate_leverage_cost(const torch::Tensor& positions);
 
+    // Override the per-action leverage clamp. Used by DPS action mode so that
+    // direction*size can target up to max_leverage_dps without altering SCALAR runs.
+    // Pass <=0 to restore the legacy SCALAR clamp (config_.MAX_LEVERAGE).
+    void set_leverage_cap_override(float cap) { leverage_cap_override_ = cap; }
+    float leverage_cap_override() const { return leverage_cap_override_; }
+
 private:
     MarketConfig config_;
     torch::Device device_;
@@ -71,6 +77,7 @@ private:
     torch::Tensor num_trades_;         // Number of trades executed
     torch::Tensor daily_returns_;      // [batch_size, 252] - rolling returns for Sharpe
     torch::Tensor days_held_;          // Days current position has been held
+    float leverage_cap_override_ = 0.0f;  // <=0 means use config_.MAX_LEVERAGE (SCALAR legacy)
 
     // Calculate trading fees
     torch::Tensor calculate_trading_fee(
