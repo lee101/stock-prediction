@@ -168,7 +168,25 @@ def _run_pufferlib_bf16(cfg: dict[str, Any], steps: int, seed: int, ckpt_dir: Pa
 
 
 def _run_hf_trainer(cfg: dict[str, Any], steps: int, seed: int, ckpt_dir: Path) -> dict[str, Any]:
-    return {"status": "skip", "reason": "hf_trainer adapter not implemented (RL-on-marketsim is custom; HF baseline is for the supervised forecaster)."}
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+    try:
+        from fp4.bench.adapters.hf_adapter import run as _hf_run
+    except Exception as exc:
+        return {"status": "skip", "reason": f"hf_adapter import failed: {type(exc).__name__}: {exc}"}
+    _gpu_peak_mb_reset()
+    t0 = time.perf_counter()
+    try:
+        out = _hf_run(cfg=cfg, steps=int(steps), seed=int(seed), ckpt_dir=Path(ckpt_dir))
+    except Exception as exc:
+        return {"status": "error", "reason": f"{type(exc).__name__}: {exc}"}
+    wall = time.perf_counter() - t0
+    if not isinstance(out, dict):
+        out = {"raw": str(out)}
+    out.setdefault("status", "ok")
+    out["wall_sec"] = wall
+    out["gpu_peak_mb"] = _gpu_peak_mb()
+    return out
 
 
 def _run_trl(cfg: dict[str, Any], steps: int, seed: int, ckpt_dir: Path) -> dict[str, Any]:
