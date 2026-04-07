@@ -130,6 +130,10 @@ static int my_init(Env* env, PyObject* args, PyObject* kwargs) {
     if (env->fill_probability < 0.0f) env->fill_probability = 0.0f;
     if (env->fill_probability > 1.0f) env->fill_probability = 1.0f;
 
+    val = kwargs ? PyDict_GetItemString(kwargs, "decision_lag") : NULL;
+    env->decision_lag = val ? (int)PyLong_AsLong(val) : 1;
+    if (env->decision_lag < 1) env->decision_lag = 1;
+
     val = kwargs ? PyDict_GetItemString(kwargs, "forced_offset") : NULL;
     if (val) {
         int offset = (int)PyLong_AsLong(val);

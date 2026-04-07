@@ -140,11 +140,12 @@ static void fill_observations(TradingEnv* __restrict__ env) {
     if (UNLIKELY(t < 0)) t = 0;
     if (UNLIKELY(t >= md->num_timesteps)) t = md->num_timesteps - 1;
 
-    /* Observation lag: agent sees features from t-1 to prevent look-ahead bias.
-       The agent decides based on the PREVIOUS bar's information, then trades
-       execute at bar t. This matches real trading where you can only see
-       completed bars before making decisions. */
-    int t_obs = t - 1;
+    /* Observation lag: agent sees features from t-lag to prevent look-ahead bias.
+       lag=1 matches the prior hardcoded behavior. Production uses lag>=2
+       because Chronos2 forecast + Gemini call + order placement straddles
+       more than one bar. */
+    int lag = env->decision_lag >= 1 ? env->decision_lag : 1;
+    int t_obs = t - lag;
     if (UNLIKELY(t_obs < 0)) t_obs = 0;
 
     const int F = md->features_per_sym;
