@@ -73,6 +73,17 @@ def test_extract_json_rejects_non_object_payload() -> None:
         mod._extract_json('["not", "an", "object"]')
 
 
+def test_normalize_forward_env_names_filters_invalid_and_duplicate_names() -> None:
+    mod = _load_module()
+
+    normalized, invalid = mod._normalize_forward_env_names(
+        [" ALPACA_API_KEY ", "BAD-NAME", "ALPACA_API_KEY", "ALSO=BAD", ""]
+    )
+
+    assert normalized == ("ALPACA_API_KEY",)
+    assert invalid == ("BAD-NAME", "ALSO=BAD")
+
+
 def test_rsync_repo_wraps_subprocess_failures(monkeypatch) -> None:
     mod = _load_module()
 
@@ -106,13 +117,19 @@ def test_main_syncs_inputs_and_prints_remote_payload(monkeypatch, tmp_path, caps
     class _FakeClient:
         def __init__(self) -> None:
             self.created = []
+            self.requested_gpu_preferences: tuple[str, ...] | None = None
+            self.wait_timeout: int | None = None
+            self.wait_poll_interval: int | None = None
             self.terminated: list[str] = []
 
-        def create_pod(self, config):
+        def create_pod_with_fallback(self, config, gpu_preferences):
             self.created.append(config)
+            self.requested_gpu_preferences = tuple(gpu_preferences)
             return SimpleNamespace(id="pod-123")
 
         def wait_for_pod(self, pod_id, timeout=0, poll_interval=0):
+            self.wait_timeout = timeout
+            self.wait_poll_interval = poll_interval
             return SimpleNamespace(
                 id=pod_id,
                 gpu_type="NVIDIA RTX 4090",
@@ -176,6 +193,9 @@ def test_main_syncs_inputs_and_prints_remote_payload(monkeypatch, tmp_path, caps
     }
     assert fake_client.created[0].name == "daily-stock-plan-1700000000"
     assert fake_client.created[0].gpu_type == "4090"
+    assert fake_client.requested_gpu_preferences == ("4090",)
+    assert fake_client.wait_timeout == mod.DEFAULT_POD_READY_TIMEOUT_SECONDS
+    assert fake_client.wait_poll_interval == mod.DEFAULT_POD_READY_POLL_INTERVAL_SECONDS
     assert fake_client.terminated == ["pod-123"]
 
     assert rsync_repo_calls == [
@@ -220,7 +240,7 @@ def test_main_terminates_pod_when_remote_output_is_invalid(monkeypatch, tmp_path
         def __init__(self) -> None:
             self.terminated: list[str] = []
 
-        def create_pod(self, config):
+        def create_pod_with_fallback(self, config, gpu_preferences):
             return SimpleNamespace(id="pod-123")
 
         def wait_for_pod(self, pod_id, timeout=0, poll_interval=0):
@@ -249,7 +269,7 @@ def test_main_terminates_pod_when_remote_output_is_invalid(monkeypatch, tmp_path
     monkeypatch.setattr(mod, "_rsync_path", lambda **kwargs: None)
     monkeypatch.setattr(mod, "_ssh_run", _fake_ssh_run)
 
-    with pytest.raises(RuntimeError, match="did not emit valid JSON payload"):
+    with pytest.raises(RuntimeError) as excinfo:
         mod.main(
             [
                 "--checkpoint",
@@ -262,6 +282,141 @@ def test_main_terminates_pod_when_remote_output_is_invalid(monkeypatch, tmp_path
             ]
         )
 
+    message = str(excinfo.value)
+    assert "RunPod planner planner output parsing failed" in message
+    assert "pod_id: pod-123" in message
+    assert "gpu_type: NVIDIA RTX 4090" in message
+    assert "ssh_host: 1.2.3.4" in message
+    assert "did not emit valid JSON payload" in message
+    assert "python trade_daily_stock_prod.py" in message
+    assert fake_client.terminated == ["pod-123"]
+
+
+def test_main_reports_remote_bootstrap_failure_with_stage_context(monkeypatch, tmp_path) -> None:
+    mod = _load_module()
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_text("checkpoint", encoding="utf-8")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.terminated: list[str] = []
+
+        def create_pod_with_fallback(self, config, gpu_preferences):
+            return SimpleNamespace(id="pod-123")
+
+        def wait_for_pod(self, pod_id, timeout=0, poll_interval=0):
+            return SimpleNamespace(
+                id=pod_id,
+                gpu_type="NVIDIA RTX 4090",
+                ssh_host="1.2.3.4",
+                ssh_port=22022,
+            )
+
+        def terminate_pod(self, pod_id):
+            self.terminated.append(pod_id)
+
+    fake_client = _FakeClient()
+
+    def _fake_ssh_run(*, ssh_host: str, ssh_port: int, remote_cmd: str, capture_output: bool = False):
+        if "python -m pip install -e ." in remote_cmd:
+            return SimpleNamespace(returncode=19, stdout="bootstrap stdout", stderr="bootstrap stderr")
+        raise AssertionError(f"unexpected ssh command: {remote_cmd}")
+
+    monkeypatch.setattr(mod, "RunPodClient", lambda: fake_client)
+    monkeypatch.setattr(mod, "build_gpu_fallback_types", lambda primary, fallbacks=None: [primary, *(fallbacks or [])])
+    monkeypatch.setattr(mod, "_rsync_repo", lambda **kwargs: None)
+    monkeypatch.setattr(mod, "_rsync_path", lambda **kwargs: None)
+    monkeypatch.setattr(mod, "_ssh_run", _fake_ssh_run)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        mod.main(
+            [
+                "--checkpoint",
+                str(checkpoint),
+                "--data-dir",
+                str(data_dir),
+                "--no-ensemble",
+                "--symbols",
+                "AAPL",
+            ]
+        )
+
+    message = str(excinfo.value)
+    assert "RunPod planner bootstrap failed" in message
+    assert "pod_id: pod-123" in message
+    assert "gpu_type: NVIDIA RTX 4090" in message
+    assert "ssh_host: 1.2.3.4" in message
+    assert "remote bootstrap command returned exit 19" in message
+    assert "/tmp/runpod_daily_pip.log" in message
+    assert "stdout excerpt:\nbootstrap stdout" in message
+    assert "stderr excerpt:\nbootstrap stderr" in message
+    assert fake_client.terminated == ["pod-123"]
+
+
+def test_main_reports_remote_planner_exit_with_stage_context(monkeypatch, tmp_path) -> None:
+    mod = _load_module()
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_text("checkpoint", encoding="utf-8")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.terminated: list[str] = []
+
+        def create_pod_with_fallback(self, config, gpu_preferences):
+            return SimpleNamespace(id="pod-123")
+
+        def wait_for_pod(self, pod_id, timeout=0, poll_interval=0):
+            return SimpleNamespace(
+                id=pod_id,
+                gpu_type="NVIDIA RTX 4090",
+                ssh_host="1.2.3.4",
+                ssh_port=22022,
+            )
+
+        def terminate_pod(self, pod_id):
+            self.terminated.append(pod_id)
+
+    fake_client = _FakeClient()
+
+    def _fake_ssh_run(*, ssh_host: str, ssh_port: int, remote_cmd: str, capture_output: bool = False):
+        if "python -m pip install -e ." in remote_cmd:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if "python trade_daily_stock_prod.py" in remote_cmd:
+            return SimpleNamespace(returncode=17, stdout="planner stdout", stderr="planner stderr")
+        raise AssertionError(f"unexpected ssh command: {remote_cmd}")
+
+    monkeypatch.setattr(mod, "RunPodClient", lambda: fake_client)
+    monkeypatch.setattr(mod, "build_gpu_fallback_types", lambda primary, fallbacks=None: [primary, *(fallbacks or [])])
+    monkeypatch.setattr(mod, "_rsync_repo", lambda **kwargs: None)
+    monkeypatch.setattr(mod, "_rsync_path", lambda **kwargs: None)
+    monkeypatch.setattr(mod, "_ssh_run", _fake_ssh_run)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        mod.main(
+            [
+                "--checkpoint",
+                str(checkpoint),
+                "--data-dir",
+                str(data_dir),
+                "--no-ensemble",
+                "--symbols",
+                "AAPL",
+            ]
+        )
+
+    message = str(excinfo.value)
+    assert "RunPod planner planner command failed" in message
+    assert "pod_id: pod-123" in message
+    assert "gpu_type: NVIDIA RTX 4090" in message
+    assert "ssh_host: 1.2.3.4" in message
+    assert "remote planner command returned exit 17" in message
+    assert "planner_command_preview:" in message
+    assert "stdout excerpt:\nplanner stdout" in message
+    assert "stderr excerpt:\nplanner stderr" in message
     assert fake_client.terminated == ["pod-123"]
 
 
@@ -312,6 +467,71 @@ def test_main_dry_run_prints_resolved_plan_without_creating_pod(monkeypatch, tmp
     assert "test-key" not in payload["planner_command_preview"]
 
 
+def test_main_dry_run_auto_forwards_alpaca_paper_credentials(monkeypatch, tmp_path, capsys) -> None:
+    mod = _load_module()
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_text("checkpoint", encoding="utf-8")
+
+    monkeypatch.setattr(mod, "RunPodClient", lambda: (_ for _ in ()).throw(AssertionError("should not create pod")))
+    monkeypatch.setenv("ALP_KEY_ID_PAPER", "paper-key")
+    monkeypatch.setenv("ALP_SECRET_KEY_PAPER", "paper-secret")
+
+    mod.main(
+        [
+            "--checkpoint",
+            str(checkpoint),
+            "--data-source",
+            "alpaca",
+            "--no-ensemble",
+            "--symbols",
+            "AAPL",
+            "--dry-run",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ready"] is True
+    assert payload["auto_forward_env"] == ["ALP_KEY_ID_PAPER", "ALP_SECRET_KEY_PAPER"]
+    assert payload["forward_env_present"] == ["ALP_KEY_ID_PAPER", "ALP_SECRET_KEY_PAPER"]
+    assert "Automatically forwarding Alpaca paper credential env vars" in "\n".join(payload["warnings"])
+    assert "ALP_KEY_ID_PAPER=$ALP_KEY_ID_PAPER" in payload["planner_command_preview"]
+    assert "ALP_SECRET_KEY_PAPER=$ALP_SECRET_KEY_PAPER" in payload["planner_command_preview"]
+    assert "paper-key" not in payload["planner_command_preview"]
+    assert "paper-secret" not in payload["planner_command_preview"]
+
+
+def test_main_dry_run_warns_when_alpaca_credentials_are_not_forwarded(monkeypatch, tmp_path, capsys) -> None:
+    mod = _load_module()
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_text("checkpoint", encoding="utf-8")
+
+    monkeypatch.setattr(mod, "RunPodClient", lambda: (_ for _ in ()).throw(AssertionError("should not create pod")))
+    monkeypatch.delenv("ALP_KEY_ID_PAPER", raising=False)
+    monkeypatch.delenv("ALP_SECRET_KEY_PAPER", raising=False)
+    monkeypatch.delenv("ALP_KEY_ID", raising=False)
+    monkeypatch.delenv("ALP_SECRET_KEY", raising=False)
+
+    mod.main(
+        [
+            "--checkpoint",
+            str(checkpoint),
+            "--data-source",
+            "alpaca",
+            "--no-ensemble",
+            "--symbols",
+            "AAPL",
+            "--dry-run",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ready"] is True
+    assert payload["auto_forward_env"] == []
+    assert payload["forward_env_present"] == []
+    assert payload["forward_env_missing"] == []
+    assert any("Alpaca paper credentials are not being forwarded." in warning for warning in payload["warnings"])
+
+
 def test_main_dry_run_text_prints_human_summary_to_stderr(monkeypatch, tmp_path, capsys) -> None:
     mod = _load_module()
     checkpoint = tmp_path / "checkpoint.pt"
@@ -351,6 +571,75 @@ def test_main_dry_run_text_prints_human_summary_to_stderr(monkeypatch, tmp_path,
     assert "Forward env: 1 present, 1 missing" in captured.err
     assert "rerun without --dry-run" in captured.err
     assert "test-key" not in captured.err
+
+
+def test_main_dry_run_text_reports_auto_forwarded_env(monkeypatch, tmp_path, capsys) -> None:
+    mod = _load_module()
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_text("checkpoint", encoding="utf-8")
+
+    monkeypatch.setattr(mod, "RunPodClient", lambda: (_ for _ in ()).throw(AssertionError("should not create pod")))
+    monkeypatch.setenv("ALP_KEY_ID_PAPER", "paper-key")
+    monkeypatch.setenv("ALP_SECRET_KEY_PAPER", "paper-secret")
+
+    mod.main(
+        [
+            "--checkpoint",
+            str(checkpoint),
+            "--data-source",
+            "alpaca",
+            "--no-ensemble",
+            "--symbols",
+            "AAPL",
+            "--dry-run",
+            "--dry-run-text",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["ready"] is True
+    assert "Auto-forward env: ALP_KEY_ID_PAPER, ALP_SECRET_KEY_PAPER" in captured.err
+    assert "paper-key" not in captured.err
+    assert "paper-secret" not in captured.err
+
+
+def test_main_dry_run_rejects_invalid_forward_env_names(monkeypatch, tmp_path, capsys) -> None:
+    mod = _load_module()
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_text("checkpoint", encoding="utf-8")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+
+    monkeypatch.setattr(mod, "RunPodClient", lambda: (_ for _ in ()).throw(AssertionError("should not create pod")))
+    monkeypatch.setenv("ALPACA_API_KEY", "test-key")
+
+    with pytest.raises(SystemExit, match="1"):
+        mod.main(
+            [
+                "--checkpoint",
+                str(checkpoint),
+                "--data-dir",
+                str(data_dir),
+                "--no-ensemble",
+                "--symbols",
+                "AAPL",
+                "--forward-env",
+                "ALPACA_API_KEY",
+                "BAD-NAME",
+                "ALSO=BAD",
+                "--dry-run",
+            ]
+        )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ready"] is False
+    assert payload["forward_env_present"] == ["ALPACA_API_KEY"]
+    assert payload["forward_env_missing"] == []
+    assert payload["errors"] == ["Invalid --forward-env names: BAD-NAME, ALSO=BAD"]
+    assert "ALPACA_API_KEY=$ALPACA_API_KEY" in payload["planner_command_preview"]
+    assert "BAD-NAME" not in payload["planner_command_preview"]
+    assert "ALSO=BAD" not in payload["planner_command_preview"]
 
 
 def test_main_preflight_fails_before_provisioning_when_checkpoint_missing(monkeypatch, tmp_path) -> None:

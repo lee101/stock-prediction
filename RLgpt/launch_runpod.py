@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,7 +39,6 @@ from src.runpod_client import (
     PodConfig,
     RunPodClient,
     build_gpu_fallback_types,
-    is_capacity_error,
     parse_gpu_fallback_types,
 )
 
@@ -97,6 +97,7 @@ def build_launch_manifest(
     container_disk: int,
     repo_root: Path,
     remote_repo_root: str,
+    gpu_preferences: tuple[str, ...] | None = None,
     pod: Pod | None = None,
 ) -> dict[str, Any]:
     remote_output_root = f"{remote_repo_root}/experiments/RLgpt"
@@ -123,6 +124,7 @@ def build_launch_manifest(
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "pod_name": pod_name,
         "gpu_type": gpu_type,
+        "gpu_preferences": list(gpu_preferences or (gpu_type,)),
         "gpu_count": gpu_count,
         "volume_size_gb": volume_size,
         "container_disk_gb": container_disk,
@@ -169,29 +171,56 @@ def create_pod_with_fallbacks(
         gpu_type,
         parse_gpu_fallback_types(gpu_fallbacks),
     )
-    last_error: BaseException | None = None
-    for candidate in gpu_candidates:
-        try:
-            pod_cfg = PodConfig(
-                name=pod_name,
-                gpu_type=candidate,
-                gpu_count=gpu_count,
-                volume_size=volume_size,
-                container_disk=container_disk,
-            )
-            pod = client.create_pod(pod_cfg)
-            pod = client.wait_for_pod(pod.id, timeout=wait_timeout)
-            return pod, candidate
-        except Exception as exc:  # pragma: no cover - exercised in real launch path
-            last_error = exc
-            if not is_capacity_error(exc):
-                raise
-    if last_error is not None:
-        raise last_error
-    raise RuntimeError("Failed to create a RunPod pod.")
+    pod_cfg = PodConfig(
+        name=pod_name,
+        gpu_type=gpu_candidates[0],
+        gpu_count=gpu_count,
+        volume_size=volume_size,
+        container_disk=container_disk,
+    )
+    pod = client.create_pod_with_fallback(pod_cfg, gpu_candidates)
+    pod = client.wait_for_pod(pod.id, timeout=wait_timeout)
+    return pod, pod.gpu_type
 
 
 DEFAULT_RUNPOD_EPOCHS = 12
+
+
+def _default_manifest_path(*, run_name: str, output_manifest: str) -> Path:
+    if output_manifest:
+        return Path(output_manifest)
+    return Path("analysis") / "remote_runs" / run_name / "launch_manifest.json"
+
+
+def _format_launch_summary(
+    *,
+    manifest: dict[str, Any],
+    manifest_path: Path,
+    dry_run: bool,
+    will_create_pod: bool,
+) -> str:
+    status = "dry run" if dry_run else "ready"
+    gpu_preferences = manifest.get("gpu_preferences") or [manifest.get("gpu_type", "")]
+    lines = [
+        "RLgpt RunPod Launch Plan",
+        f"Status: {status}",
+        f"Pod name: {manifest.get('pod_name', '')}",
+        f"Manifest path: {manifest_path}",
+        f"GPU preferences: {', '.join(str(item) for item in gpu_preferences if item)}",
+        f"Remote repo root: {manifest.get('remote_repo_root', '')}",
+        f"Training command: {manifest.get('training_command', '')}",
+    ]
+    pod = manifest.get("pod")
+    if isinstance(pod, dict) and pod:
+        lines.append(
+            "Resolved pod: "
+            f"{pod.get('id', '')} @ {pod.get('ssh_host', '')}:{pod.get('ssh_port', '')}"
+        )
+    next_step = "write the manifest."
+    if will_create_pod:
+        next_step = "provision the pod and write the manifest."
+    lines.append(f"Next step: rerun without --dry-run to {next_step}")
+    return "\n".join(lines)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -230,17 +259,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--carry-inventory", action="store_true")
     parser.add_argument("--max-train-days", type=int)
     parser.add_argument("--max-val-days", type=int)
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the resolved launch manifest and exit without creating a pod or writing files.",
+    )
+    parser.add_argument(
+        "--dry-run-text",
+        action="store_true",
+        help="When used with --dry-run, also print a human-readable summary to stderr.",
+    )
     return parser.parse_args(argv)
 
 
-def main() -> None:
-    args = parse_args()
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
     config = _build_training_config(args)
     repo_root = Path(__file__).resolve().parent.parent
     pod_name = f"rlgpt-{args.run_name}"
     pod = None
-    selected_gpu_type = args.gpu_type
-    if args.create_pod:
+    gpu_preferences = tuple(
+        build_gpu_fallback_types(
+            args.gpu_type,
+            parse_gpu_fallback_types(args.gpu_fallbacks),
+        )
+    )
+    selected_gpu_type = gpu_preferences[0]
+    if args.create_pod and not args.dry_run:
         client = RunPodClient()
         pod, selected_gpu_type = create_pod_with_fallbacks(
             client=client,
@@ -262,9 +307,26 @@ def main() -> None:
         container_disk=args.container_disk,
         repo_root=repo_root,
         remote_repo_root=args.remote_repo_root,
+        gpu_preferences=gpu_preferences,
         pod=pod,
     )
-    manifest_path = Path(args.output_manifest) if args.output_manifest else Path("analysis") / "remote_runs" / args.run_name / "launch_manifest.json"
+    manifest_path = _default_manifest_path(
+        run_name=args.run_name,
+        output_manifest=args.output_manifest,
+    )
+    if args.dry_run:
+        print(json.dumps(manifest, indent=2, sort_keys=True))
+        if args.dry_run_text:
+            print(
+                _format_launch_summary(
+                    manifest=manifest,
+                    manifest_path=manifest_path,
+                    dry_run=True,
+                    will_create_pod=bool(args.create_pod),
+                ),
+                file=sys.stderr,
+            )
+        return
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps({"manifest_path": str(manifest_path), "pod_id": manifest.get("pod", {}).get("id", "")}, indent=2))

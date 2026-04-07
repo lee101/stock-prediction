@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import copy
 import os
 import re
+import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional, Sequence
 
 import requests
@@ -15,6 +17,8 @@ RUNPOD_GRAPHQL_URL = "https://api.runpod.io/graphql"
 RUNPOD_REST_URL = "https://rest.runpod.io/v1"
 
 TRAINING_DOCKER_IMAGE = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
+DEFAULT_POD_READY_TIMEOUT_SECONDS = 900
+DEFAULT_POD_READY_POLL_INTERVAL_SECONDS = 10
 
 GPU_ALIASES: dict[str, str] = {
     "a100": "NVIDIA A100 80GB PCIe",
@@ -167,6 +171,22 @@ class RunPodClient:
         if not self.api_key:
             raise ValueError("RUNPOD_API_KEY not set")
         self.session = session or requests.Session()
+        self._gpu_types_cache: dict[bool, list[dict]] = {}
+        self._gpu_types_cache_lock = threading.Lock()
+        self._gpu_type_id_cache: dict[tuple[str, str], str] = {}
+
+    def _cached_gpu_display_name(self, gpu_id: str) -> str:
+        with self._gpu_types_cache_lock:
+            cached_gpu_types = self._gpu_types_cache.get(False)
+            if cached_gpu_types is None:
+                cached_gpu_types = self._gpu_types_cache.get(True)
+            if not cached_gpu_types:
+                return ""
+            for gpu in cached_gpu_types:
+                candidate_id = str(gpu.get("id", "") or "")
+                if candidate_id == gpu_id:
+                    return str(gpu.get("displayName", "") or "")
+        return ""
 
     def _graphql(self, query: str, variables: Optional[dict] = None) -> dict:
         payload: dict = {"query": query}
@@ -202,6 +222,30 @@ class RunPodClient:
             return response.json()
         return {}
 
+    def _get_cached_gpu_types(self, include_pricing: bool) -> list[dict]:
+        cached = self._gpu_types_cache.get(include_pricing)
+        if cached is not None:
+            return cached
+
+        with self._gpu_types_cache_lock:
+            cached = self._gpu_types_cache.get(include_pricing)
+            if cached is not None:
+                return cached
+
+            if include_pricing:
+                query = (
+                    "query { gpuTypes { id displayName memoryInGb"
+                    " lowestPrice { minimumBidPrice unInterruptablePrice } } }"
+                )
+            else:
+                query = "query { gpuTypes { id displayName memoryInGb } }"
+            data = self._graphql(query)
+            gpu_types = data.get("gpuTypes", [])
+            self._gpu_types_cache[include_pricing] = copy.deepcopy(gpu_types)
+            if not include_pricing:
+                self._gpu_type_id_cache.clear()
+            return self._gpu_types_cache[include_pricing]
+
     def list_gpu_types(self, include_pricing: bool = True) -> list[dict]:
         """Return available GPU types from RunPod.
 
@@ -216,34 +260,39 @@ class RunPodClient:
             c = RunPodClient(api_key="...")
             print(c.list_gpu_types())
         """
-        if include_pricing:
-            query = (
-                "query { gpuTypes { id displayName memoryInGb"
-                " lowestPrice { minimumBidPrice unInterruptablePrice } } }"
-            )
-        else:
-            query = "query { gpuTypes { id displayName memoryInGb } }"
-        data = self._graphql(query)
-        return data.get("gpuTypes", [])
+        return copy.deepcopy(self._get_cached_gpu_types(include_pricing))
 
     def find_gpu_type_id(self, name_substr: str) -> str:
         needle = name_substr.lower()
         needle_key = _gpu_match_key(name_substr)
+        cache_key = (needle, needle_key)
+        with self._gpu_types_cache_lock:
+            cached = self._gpu_type_id_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         normalized_matches: list[str] = []
-        for gpu in self.list_gpu_types(include_pricing=False):
+        for gpu in self._get_cached_gpu_types(include_pricing=False):
             display_name = gpu.get("displayName", "")
             gpu_id = gpu.get("id", "")
             if needle in display_name.lower() or needle in gpu_id.lower():
+                with self._gpu_types_cache_lock:
+                    self._gpu_type_id_cache[cache_key] = gpu_id
                 return gpu_id
             if not needle_key:
                 continue
             candidate_keys = (_gpu_match_key(display_name), _gpu_match_key(gpu_id))
             if needle_key in candidate_keys:
+                with self._gpu_types_cache_lock:
+                    self._gpu_type_id_cache[cache_key] = gpu_id
                 return gpu_id
             if any(needle_key and needle_key in key for key in candidate_keys):
                 normalized_matches.append(gpu_id)
         if normalized_matches:
-            return normalized_matches[0]
+            match = normalized_matches[0]
+            with self._gpu_types_cache_lock:
+                self._gpu_type_id_cache[cache_key] = match
+            return match
         raise ValueError(f"No GPU type matching {name_substr!r}")
 
     def create_pod(self, config: PodConfig) -> Pod:
@@ -288,6 +337,23 @@ class RunPodClient:
             gpu_type=config.gpu_type,
         )
 
+    def create_pod_with_fallback(self, config: PodConfig, gpu_preferences: Sequence[str]) -> Pod:
+        preferences = [str(gpu_name).strip() for gpu_name in gpu_preferences if str(gpu_name).strip()]
+        if not preferences:
+            raise ValueError("gpu_preferences must contain at least one GPU type")
+
+        last_error: Exception | None = None
+        for gpu_name in preferences:
+            try:
+                candidate_config = config if config.gpu_type == gpu_name else replace(config, gpu_type=gpu_name)
+                return self.create_pod(candidate_config)
+            except Exception as exc:
+                last_error = exc
+                if not is_capacity_error(exc):
+                    raise
+
+        raise RuntimeError(f"Could not provision any requested RunPod GPU: {last_error}") from last_error
+
     def get_pod(self, pod_id: str) -> Pod:
         query = """query($podId: String!) {
             pod(input: { podId: $podId }) {
@@ -320,7 +386,8 @@ class RunPodClient:
             break
         gpu_type = ""
         if gpus:
-            gpu_type = str(gpus[0].get("id", "") or "")
+            gpu_type_id = str(gpus[0].get("id", "") or "")
+            gpu_type = self._cached_gpu_display_name(gpu_type_id) or gpu_type_id
 
         return Pod(
             id=pod_data.get("id", pod_id),
@@ -350,7 +417,12 @@ class RunPodClient:
                 return pod
         return None
 
-    def wait_for_pod(self, pod_id: str, timeout: int = 900, poll_interval: int = 10) -> Pod:
+    def wait_for_pod(
+        self,
+        pod_id: str,
+        timeout: int = DEFAULT_POD_READY_TIMEOUT_SECONDS,
+        poll_interval: int = DEFAULT_POD_READY_POLL_INTERVAL_SECONDS,
+    ) -> Pod:
         start = time.monotonic()
         while time.monotonic() - start < timeout:
             pod = self.get_pod(pod_id)
