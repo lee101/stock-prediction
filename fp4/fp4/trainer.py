@@ -111,82 +111,30 @@ class _Env3Tuple:
         return obs, rew, done
 
 
-class _GPUVecEnvAdapter:
-    """Wrap a ``GPUVecEnv``-style env (dict-output) so it matches the
-    ``(next_obs, reward, done)`` tuple contract that ``train_ppo`` /
-    ``train_sac`` / ``train_qr_ppo`` use in their rollout loops.
-
-    Also exposes ``num_envs`` / ``obs_dim`` / ``act_dim`` so the caller can
-    size its rollout buffer + policy from the *real* env shapes instead of a
-    cfg-default that silently mismatches the marketsim (root cause of every
-    fp4 sweep cell skipping eval with "obs_dim=16 != marketsim obs_dim=305").
-    """
-
-    def __init__(self, inner):
-        self._inner = inner
-        self.num_envs = int(getattr(inner, "num_envs"))
-        # Run a probe reset so we can read the real obs/act dims even when the
-        # underlying env doesn't expose them as attributes.
-        sample = inner.reset()
-        if isinstance(sample, dict):
-            obs = sample["obs"] if "obs" in sample else sample["observations"]
-        else:
-            obs = sample
-        self._cached_first_obs = obs
-        self.obs_dim = int(obs.shape[-1])
-        # ``act_dim`` is best effort: prefer attribute, else assume scalar.
-        self.act_dim = int(getattr(inner, "act_dim", 1))
-
-    def reset(self) -> torch.Tensor:
-        if self._cached_first_obs is not None:
-            obs = self._cached_first_obs
-            self._cached_first_obs = None
-            return obs
-        out = self._inner.reset()
-        return out["obs"] if isinstance(out, dict) else out
-
-    def step(self, action: torch.Tensor):
-        out = self._inner.step(action)
-        if isinstance(out, dict):
-            return out["obs"], out["reward"], out["done"].to(torch.float32)
-        return out  # already a tuple
-
-
 def _make_env(cfg: Dict[str, Any], num_envs: int, obs_dim: int, act_dim: int,
               device: torch.device, seed: int):
+    """Legacy entry point retained for callers that still import it from
+    ``fp4.trainer`` directly. New code should go through ``env_adapter.make_env``
+    + ``_Env3Tuple`` (used inline in ``train_ppo``/``train_sac``/``train_qr_ppo``).
+    This shim preserves backwards compatibility: it routes a dict env spec
+    through ``env_adapter`` and falls back to ``StubVecEnv`` only when the
+    adapter is not importable.
+    """
     env_spec = cfg.get("env", "stub")
-    # If caller passed a ready-to-use env object, just use it.
     if hasattr(env_spec, "reset") and hasattr(env_spec, "step"):
         return env_spec
-    # If env spec is a dict (the stocks12 yaml shape), build a real
-    # GPU-resident env via fp4.vec_env.GPUVecEnv. This routes through the
-    # market_sim_py C++ binding when available and falls back to a torch
-    # synthetic random-walk env otherwise. Either way the trainer reads the
-    # real obs/act dims via the adapter rather than guessing from cfg.
     if isinstance(env_spec, dict):
-        from .vec_env import GPUVecEnv
-        env_kwargs: Dict[str, Any] = {}
-        if "action_mode" in env_spec:
-            env_kwargs["action_mode"] = str(env_spec["action_mode"])
-        if "symbols" in env_spec:
-            env_kwargs["symbols"] = list(env_spec["symbols"])
         try:
-            inner = GPUVecEnv(
-                num_envs=num_envs,
-                obs_dim=obs_dim,
-                act_dim=act_dim,
-                device=device,
-                seed=seed,
-                **env_kwargs,
-            )
-            return _GPUVecEnvAdapter(inner)
+            from .env_adapter import make_env as _adapter_make_env
+            return _Env3Tuple(_adapter_make_env(
+                cfg, num_envs=num_envs, obs_dim=obs_dim,
+                act_dim=act_dim, device=device, seed=seed,
+            ))
         except Exception as exc:
-            # Fall back to the synthetic stub so the smoke test still runs,
-            # but make the failure visible so callers can spot it in logs.
             import sys as _sys
             print(
-                f"[fp4.trainer] GPUVecEnv unavailable ({type(exc).__name__}: {exc}); "
-                f"falling back to StubVecEnv",
+                f"[fp4.trainer] env_adapter.make_env unavailable "
+                f"({type(exc).__name__}: {exc}); falling back to StubVecEnv",
                 file=_sys.stderr,
             )
     episode_len = int(cfg.get("episode_len", 256))
@@ -331,6 +279,12 @@ def train_ppo(cfg: Dict[str, Any], total_timesteps: int, seed: int,
         torch.cuda.reset_peak_memory_stats()
 
     last_metrics: Dict[str, float] = {}
+    _last_info_t: Dict[str, torch.Tensor] | None = None
+    _last_loss_t: torch.Tensor | None = None
+    # Sync-free rollout accounting: stage finished-episode returns into a
+    # GPU buffer each step, then host-sync once per iter (instead of per-step
+    # via .cpu().tolist()).
+    finished_buf = torch.zeros(rollout_len, num_envs, device=device)
     cuda_graph_attempted = False
     cuda_graph_used = False
 
@@ -417,13 +371,20 @@ def train_ppo(cfg: Dict[str, Any], total_timesteps: int, seed: int,
                 rew_buf[t] = reward
                 done_buf[t] = done
                 running_returns = running_returns + reward
-                if done.any():
-                    finished = running_returns[done.bool()]
-                    if finished.numel() > 0:
-                        all_episode_returns.extend(finished.detach().cpu().tolist())
-                    running_returns = torch.where(done.bool(), torch.zeros_like(running_returns), running_returns)
+                # Sync-free episode-return capture: stage `running_returns`
+                # into finished_buf[t] at finished envs only; reset
+                # `running_returns` via masked multiply (no host branch).
+                done_f = done.to(running_returns.dtype)
+                finished_buf[t] = running_returns * done_f
+                running_returns = running_returns * (1.0 - done_f)
                 obs = next_obs
             _, _, last_value = policy(obs)
+            # Single host sync per rollout iter to harvest finished returns.
+            done_mask_flat = (done_buf > 0.5).reshape(-1)
+            if bool(done_mask_flat.any().item()):
+                all_episode_returns.extend(
+                    finished_buf.reshape(-1)[done_mask_flat].cpu().tolist()
+                )
 
         adv_buf, ret_buf = compute_gae(rew_buf, val_buf, done_buf, last_value, gamma, gae_lambda)
 
@@ -453,11 +414,18 @@ def train_ppo(cfg: Dict[str, Any], total_timesteps: int, seed: int,
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(policy.parameters(), grad_clip)
                 optim.step()
-                last_metrics = {k: float(v.item()) for k, v in info.items()}
-                last_metrics["loss"] = float(loss.item())
+                # Defer host syncs: stash detached tensors and convert to
+                # python floats at the very end (saves N_minibatch syncs/iter).
+                _last_info_t = info
+                _last_loss_t = loss.detach()
 
 
     wall = time.perf_counter() - t0
+
+    # Convert deferred metrics to python floats once, after the training loop.
+    if _last_info_t is not None and _last_loss_t is not None:
+        last_metrics = {k: float(v.item()) for k, v in _last_info_t.items()}
+        last_metrics["loss"] = float(_last_loss_t.item())
 
     # ---- Final metrics ----
     if all_episode_returns:

@@ -1,0 +1,36 @@
+{
+  "rows": [
+    {
+      "mode": "eager",
+      "iters": 74,
+      "wall_sec": 10.021720597986132,
+      "total_env_steps": 303104,
+      "sps": 30244.706688481103
+    },
+    {
+      "mode": "update_only",
+      "iters": 83,
+      "wall_sec": 10.10686000995338,
+      "total_env_steps": 339968,
+      "sps": 33637.3512312622
+    },
+    {
+      "mode": "full",
+      "iters": 1181,
+      "wall_sec": 10.505538017954677,
+      "total_env_steps": 4837376,
+      "sps": 460459.61584571836
+    }
+  ],
+  "config": {
+    "budget_sec": 10.0,
+    "num_envs": 128,
+    "rollout_len": 32,
+    "obs_dim": 16,
+    "act_dim": 4,
+    "hidden": 64
+  },
+  "torch_version": "2.9.0+cu130",
+  "cuda_device": "NVIDIA GeForce RTX 5090",
+  "phase3_baseline_sps": 5159
+}
