@@ -73,8 +73,9 @@ def _write_mktd_bin(path: Path, num_symbols: int = 12, num_timesteps: int = 5000
 def run_benchmark(
     data_path: Path,
     num_envs: int = 128,
-    target_steps: int = 1_000_000,
+    target_steps: int = 4_000_000,
     max_episode_steps: int = 720,
+    trials: int = 5,
 ) -> float:
     """Run num_envs parallel envs for target_steps total steps. Returns steps/sec."""
     import pufferlib_market.binding as binding
@@ -113,19 +114,24 @@ def run_benchmark(
         act_buf[:] = rng.integers(0, 1 + 2 * num_symbols, size=num_envs, dtype=np.int32)
         binding.vec_step(vec_handle)
 
-    # Timed run
+    # Pre-generate action sequences to remove numpy rng cost from the timed loop
     steps_per_iter = num_envs
     iters = max(1, target_steps // steps_per_iter)
-    t0 = time.perf_counter()
-    for _ in range(iters):
-        act_buf[:] = rng.integers(0, 1 + 2 * num_symbols, size=num_envs, dtype=np.int32)
-        binding.vec_step(vec_handle)
-    elapsed = time.perf_counter() - t0
+    act_pool = rng.integers(0, 1 + 2 * num_symbols, size=(min(iters, 1024), num_envs), dtype=np.int32)
+    pool_n = act_pool.shape[0]
 
-    total_steps = iters * steps_per_iter
+    results = []
+    for _ in range(trials):
+        t0 = time.perf_counter()
+        for i in range(iters):
+            act_buf[:] = act_pool[i % pool_n]
+            binding.vec_step(vec_handle)
+        elapsed = time.perf_counter() - t0
+        results.append((iters * steps_per_iter) / elapsed)
+
     binding.vec_close(vec_handle)
-
-    return total_steps / elapsed
+    results.sort()
+    return results[len(results) // 2]  # median
 
 
 def main() -> None:
