@@ -1120,6 +1120,7 @@ def train(args):
         trade_penalty=config.trade_penalty,
         fill_slippage_bps=config.fill_slippage_bps,
         fill_probability=config.fill_probability,
+        decision_lag=int(getattr(args, "decision_lag", 1)),
         max_hold_hours=config.max_hold_hours,
         enable_drawdown_profit_early_exit=config.enable_drawdown_profit_early_exit,
         drawdown_profit_early_exit_verbose=config.drawdown_profit_early_exit_verbose,
@@ -2351,6 +2352,12 @@ def main():
         type=float,
         default=1.0,
         help="Probability an order fills [0-1]. 1.0=always fills. 0.8=20%% of entries randomly rejected (simulates low liquidity).",
+    )
+    parser.add_argument(
+        "--decision-lag",
+        type=int,
+        default=1,
+        help="Bars between observation and execution. 1=prior hardcoded (lookahead-ish). 2+=realistic production (Chronos+LLM+order placement straddle >1 bar).",
     )
     parser.add_argument("--num-envs", type=int, default=64,
                         help="Number of parallel envs (default 64). For H100, consider --num-envs 256 (4x default) for better GPU utilization.")
