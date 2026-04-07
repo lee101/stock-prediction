@@ -2092,6 +2092,91 @@ def train(args):
             n_val = len(_val_eval_starts)
             print(f"  [val] med={val_med:.1f}% neg={val_neg}/{n_val} trades_avg={val_avg_trades:.1f} score={val_score:.1f} best_score={_val_best_score:.1f} best_neg={_val_best_neg_track}")
 
+            # ── Optional: render an MP4 of one validation window for visual debugging ──
+            if getattr(args, "record_val_video", False) and _val_eval_starts:
+                try:
+                    from src.marketsim_video import MarketsimTrace, render_mp4
+
+                    _vs0 = int(_val_eval_starts[0])
+                    _vw = _slice_window(_val_data, start=_vs0, steps=_VAL_WINDOW_STEPS)
+                    # Per-step prices for the window: close prices for all symbols.
+                    from pufferlib_market.hourly_replay import P_CLOSE as _P_CLOSE
+                    _close_prices = _vw.prices[:, :, _P_CLOSE].astype(np.float32, copy=False)
+                    _trace = MarketsimTrace(symbols=list(_vw.symbols), prices=_close_prices)
+
+                    # Recording wrapper: also tracks position via second-call inspection.
+                    # We piggy-back on simulate_daily_policy by exposing a side-channel:
+                    # since simulate_daily_policy doesn't expose internal state to the
+                    # policy_fn, we infer position transitions from the action stream
+                    # using the trained env's action_meta.
+                    _rec_step = {"i": 0}
+                    _rec_actions: list[int] = []
+
+                    def _rec_policy_fn(obs_np: np.ndarray) -> int:
+                        a = _val_policy_fn(obs_np)
+                        _rec_actions.append(int(a))
+                        _rec_step["i"] += 1
+                        return int(a)
+
+                    _r2 = simulate_daily_policy(
+                        _vw, _rec_policy_fn, max_steps=_VAL_WINDOW_STEPS,
+                        fill_buffer_bps=5.0, periods_per_year=float(args.periods_per_year),
+                        enable_drawdown_profit_early_exit=False,
+                    )
+
+                    # Reconstruct (position_sym, is_short, equity) from sim result.
+                    # DailySimResult exposes per-step equity and per-step position via
+                    # `equity_history` and (if available) `position_history`. Use what's
+                    # there; fall back to flat positions when missing.
+                    _eq_hist = list(getattr(_r2, "equity_history", []))
+                    _pos_hist = list(getattr(_r2, "position_history", []))
+                    _T_rec = len(_rec_actions)
+                    for _i in range(_T_rec):
+                        _eq = float(_eq_hist[_i + 1]) if (_i + 1) < len(_eq_hist) else float(_eq_hist[-1] if _eq_hist else 1.0)
+                        if _i < len(_pos_hist) and _pos_hist[_i] is not None:
+                            _ph = _pos_hist[_i]
+                            _psym = int(getattr(_ph, "sym", -1))
+                            _pshort = bool(getattr(_ph, "is_short", False))
+                        else:
+                            _psym, _pshort = -1, False
+                        _trace.record(
+                            step=_i,
+                            action_id=_rec_actions[_i],
+                            position_sym=_psym,
+                            position_is_short=_pshort,
+                            equity=_eq,
+                        )
+
+                    _run_name = (
+                        getattr(args, "wandb_run_name", None)
+                        or Path(args.checkpoint_dir).name
+                        or "run"
+                    )
+                    _art_root = Path(
+                        getattr(args, "artifacts_root", None)
+                        or (Path(__file__).resolve().parent.parent / "models" / "artifacts")
+                    )
+                    _vid_dir = _art_root / _run_name / "videos"
+                    _vid_path = _vid_dir / f"val_update_{update:06d}.mp4"
+                    render_mp4(
+                        _trace,
+                        _vid_path,
+                        num_pairs=int(getattr(args, "video_num_pairs", 4)),
+                        fps=int(getattr(args, "video_fps", 1)),
+                        title=f"{_run_name} update={update} window={_vs0} ret={_r2.total_return*100:.1f}%",
+                    )
+                    print(f"  [val] video → {_vid_path}")
+                    if wandb_run is not None:
+                        try:
+                            wandb_run.log(
+                                {"val/video": wandb.Video(str(_vid_path), fps=int(getattr(args, "video_fps", 1)), format="mp4")},
+                                step=global_step,
+                            )
+                        except Exception as _e:
+                            print(f"  [val] wandb.Video upload failed: {_e}")
+                except Exception as _e:
+                    print(f"  [val] video render failed: {_e}")
+
             latest_val_summary = {
                 **val_summary,
                 "val/best_score": float(_val_best_score),
@@ -2600,6 +2685,17 @@ def main():
     parser.add_argument("--wandb-mode", type=str, default="online",
                         choices=["online", "offline", "disabled"],
                         help="W&B run mode")
+
+    # Validation video logging
+    parser.add_argument("--record-val-video", action="store_true",
+                        help="Render an MP4 of one validation window each val eval and write to "
+                             "models/artifacts/<run>/videos/. 1s = 1 simulator bar.")
+    parser.add_argument("--video-num-pairs", type=int, default=4,
+                        help="Number of trading pairs to render per validation video (default 4).")
+    parser.add_argument("--video-fps", type=int, default=1,
+                        help="Frames-per-second for validation videos (default 1 = one second per bar).")
+    parser.add_argument("--artifacts-root", type=str, default=None,
+                        help="Override the root directory for marketsim artifacts (default: <repo>/models/artifacts).")
 
     args = parser.parse_args()
     train(args)
