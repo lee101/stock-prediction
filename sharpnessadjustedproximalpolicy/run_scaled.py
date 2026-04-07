@@ -25,6 +25,7 @@ import argparse
 import csv
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -34,6 +35,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 REPO = Path(__file__).resolve().parent.parent
+RUNPOD_SSH_READY_TIMEOUT_SECONDS = 600
 
 
 def get_all_symbols(min_rows: int = 2000) -> list[str]:
@@ -225,35 +227,23 @@ def run_local(args):
 
 def run_remote(args):
     """Provision RunPod GPU, sync code+data, run training remotely."""
-    from src.runpod_client import RunPodClient, PodConfig, GPU_ALIASES, build_gpu_fallback_types, is_capacity_error
+    from src.runpod_client import RunPodClient, PodConfig, build_gpu_fallback_types
 
     gpu = args.gpu
     gpu_chain = build_gpu_fallback_types(gpu)
     print(f"Provisioning RunPod — preference chain: {gpu_chain}", flush=True)
 
     client = RunPodClient()
-    pod = None
-    for full_gpu in gpu_chain:
-        try:
-            config = PodConfig(
-                name=f"sap-sweep-{time.strftime('%m%d%H%M')}",
-                gpu_type=full_gpu,
-                gpu_count=1,
-                image="runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04",
-                volume_size=50,
-            )
-            pod = client.create_pod(config)
-            print(f"Pod {pod.id} created on {full_gpu}", flush=True)
-            break
-        except Exception as exc:
-            if is_capacity_error(exc):
-                print(f"  {full_gpu}: no capacity, trying next...", flush=True)
-                continue
-            raise
-    if pod is None:
-        raise RuntimeError("No GPU available in fallback chain. Try again later.")
+    config = PodConfig(
+        name=f"sap-sweep-{time.strftime('%m%d%H%M')}",
+        gpu_type=gpu_chain[0],
+        gpu_count=1,
+        image="runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04",
+        volume_size=50,
+    )
+    pod = client.create_pod_with_fallback(config, gpu_chain)
     print(f"Pod {pod.id} created, waiting for SSH...", flush=True)
-    pod = client.wait_for_pod(pod.id, timeout=600)
+    pod = client.wait_for_pod(pod.id, timeout=RUNPOD_SSH_READY_TIMEOUT_SECONDS)
     host, port = pod.ssh_host, pod.ssh_port
     print(f"SSH ready: {host}:{port}", flush=True)
 
@@ -271,35 +261,65 @@ def run_remote(args):
 def _bootstrap_remote(host: str, port: int, remote_dir: str):
     """Sync code and install deps on remote pod."""
     print("Syncing code...", flush=True)
-    excludes = " ".join(f"--exclude={p}" for p in [
-        "__pycache__/", ".git/", ".venv*/", "*.pyc",
-        "pufferlib_market/data/", "pufferlib_market/checkpoints/",
+    exclude_patterns = [
+        "__pycache__/",
+        ".git/",
+        ".venv*/",
+        "*.pyc",
+        "pufferlib_market/data/",
+        "pufferlib_market/checkpoints/",
         "sharpnessadjustedproximalpolicy/checkpoints/",
-    ])
-    os.system(
-        f'rsync -az --delete {excludes} '
-        f'-e "ssh -o StrictHostKeyChecking=no -p {port}" '
-        f'. root@{host}:{remote_dir}/'
+    ]
+    _run_checked_local(
+        [
+            "rsync",
+            "-az",
+            "--delete",
+            *[value for pattern in exclude_patterns for value in ("--exclude", pattern)],
+            "-e",
+            f"ssh -o StrictHostKeyChecking=no -p {port}",
+            ".",
+            f"root@{host}:{remote_dir}/",
+        ],
+        description="Failed to sync repository to remote pod",
     )
 
     # sync forecast caches
     print("Syncing forecast caches...", flush=True)
-    os.system(
-        f'rsync -az '
-        f'-e "ssh -o StrictHostKeyChecking=no -p {port}" '
-        f'binanceneural/forecast_cache/ root@{host}:{remote_dir}/binanceneural/forecast_cache/'
+    _run_checked_local(
+        [
+            "rsync",
+            "-az",
+            "-e",
+            f"ssh -o StrictHostKeyChecking=no -p {port}",
+            "binanceneural/forecast_cache/",
+            f"root@{host}:{remote_dir}/binanceneural/forecast_cache/",
+        ],
+        description="Failed to sync forecast caches to remote pod",
     )
 
     # sync training data
     print("Syncing training data...", flush=True)
-    os.system(
-        f'rsync -az '
-        f'-e "ssh -o StrictHostKeyChecking=no -p {port}" '
-        f'trainingdatahourly/crypto/ root@{host}:{remote_dir}/trainingdatahourly/crypto/'
+    _run_checked_local(
+        [
+            "rsync",
+            "-az",
+            "-e",
+            f"ssh -o StrictHostKeyChecking=no -p {port}",
+            "trainingdatahourly/crypto/",
+            f"root@{host}:{remote_dir}/trainingdatahourly/crypto/",
+        ],
+        description="Failed to sync training data to remote pod",
     )
 
     print("Installing deps...", flush=True)
-    _ssh(host, port, f"cd {remote_dir} && pip install -e . 2>&1 | tail -3")
+    result = _ssh(host, port, f"cd {remote_dir} && pip install -e . 2>&1 | tail -3")
+    if result.returncode != 0:
+        raise _render_subprocess_error(
+            description="Remote dependency installation failed",
+            cmd=_ssh_cmd(host, port, f"cd {remote_dir} && pip install -e . 2>&1 | tail -3"),
+            result=result,
+        )
 
 
 def _run_remote_sweep(host: str, port: int, remote_dir: str, args):
@@ -318,7 +338,13 @@ def _run_remote_sweep(host: str, port: int, remote_dir: str, args):
 
     cmd = " && ".join(cmd_parts)
     print(f"Running: {cmd}", flush=True)
-    _ssh(host, port, cmd, check=False)
+    result = _ssh(host, port, cmd)
+    if result.returncode != 0:
+        raise _render_subprocess_error(
+            description="Remote training sweep failed",
+            cmd=_ssh_cmd(host, port, cmd),
+            result=result,
+        )
 
 
 def _download_results(host: str, port: int, remote_dir: str):
@@ -340,11 +366,58 @@ def _download_results(host: str, port: int, remote_dir: str):
 
 
 def _ssh(host: str, port: int, cmd: str, check: bool = True):
-    subprocess.run(
-        ["ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes",
-         "-p", str(port), f"root@{host}", cmd],
-        check=check,
+    return subprocess.run(
+        _ssh_cmd(host, port, cmd),
+        check=False,
+        text=True,
+        capture_output=True,
     )
+
+
+def _ssh_cmd(host: str, port: int, cmd: str) -> list[str]:
+    return [
+        "ssh",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "BatchMode=yes",
+        "-p",
+        str(port),
+        f"root@{host}",
+        cmd,
+    ]
+
+
+def _run_checked_local(cmd: list[str], *, description: str) -> None:
+    result = subprocess.run(
+        cmd,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise _render_subprocess_error(description=description, cmd=cmd, result=result)
+
+
+def _render_subprocess_error(*, description: str, cmd: list[str], result) -> RuntimeError:
+    message = [
+        f"{description} (exit {result.returncode})",
+        f"command: {shlex.join(cmd)}",
+    ]
+    stdout = _tail_excerpt(result.stdout)
+    stderr = _tail_excerpt(result.stderr)
+    if stdout:
+        message.append(f"stdout excerpt:\n{stdout}")
+    if stderr:
+        message.append(f"stderr excerpt:\n{stderr}")
+    return RuntimeError("\n".join(message))
+
+
+def _tail_excerpt(text: str | None, *, limit: int = 400) -> str:
+    rendered = str(text or "").strip()
+    if len(rendered) <= limit:
+        return rendered
+    return rendered[-limit:]
 
 
 def _save_results(results: list[dict], json_path: Path, csv_path: Path):

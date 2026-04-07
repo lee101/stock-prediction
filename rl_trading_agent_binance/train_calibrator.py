@@ -15,14 +15,14 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import time
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
+
+sys.modules.setdefault("train_calibrator", sys.modules[__name__])
+sys.modules.setdefault("rl_trading_agent_binance.train_calibrator", sys.modules[__name__])
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
@@ -36,7 +36,6 @@ from differentiable_loss_utils import (
     compute_hourly_objective,
     combined_sortino_pnl_loss,
     DEFAULT_MAKER_FEE_RATE,
-    HOURLY_PERIODS_PER_YEAR,
 )
 
 
