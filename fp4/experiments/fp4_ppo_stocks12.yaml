@@ -30,6 +30,7 @@ ppo:
 eval:
   slippage_bps: [0, 5, 10, 20]
   n_windows: 58
+  eval_hours: 60         # daily bars: val set is ~148 steps so keep well under that
   fill_buffer_bps: 5
   decision_lag: 2
 
