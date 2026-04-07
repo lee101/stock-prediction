@@ -94,12 +94,24 @@ def _trainer_available(name: str) -> tuple[bool, str]:
             return True, ""
         except Exception as exc:
             return False, f"{type(exc).__name__}: {exc}"
+    if name == "sac":
+        try:
+            from fp4.trainer_sac import train_sac  # type: ignore  # noqa: F401
+            return True, ""
+        except Exception as exc:
+            return False, f"fp4 sac trainer import failed: {type(exc).__name__}: {exc}"
     if name == "fp4":
         try:
             from fp4 import linear  # type: ignore  # noqa: F401
             return True, ""
         except Exception as exc:
             return False, f"fp4 lib not built yet: {type(exc).__name__}: {exc}"
+    if name == "qr_ppo":
+        try:
+            from fp4 import trainer_qr  # type: ignore  # noqa: F401
+            return True, ""
+        except Exception as exc:
+            return False, f"fp4 qr_ppo trainer not available: {type(exc).__name__}: {exc}"
     return False, f"unknown trainer {name!r}"
 
 
@@ -220,11 +232,53 @@ def _run_fp4(cfg: dict[str, Any], steps: int, seed: int, ckpt_dir: Path) -> dict
     }
 
 
+def _run_sac(cfg: dict[str, Any], steps: int, seed: int, ckpt_dir: Path) -> dict[str, Any]:
+    try:
+        from fp4.trainer_sac import train_sac  # type: ignore
+    except Exception as exc:
+        return {"status": "skip", "reason": f"fp4 sac trainer import failed: {type(exc).__name__}: {exc}"}
+    _gpu_peak_mb_reset()
+    t0 = time.perf_counter()
+    try:
+        out = train_sac(cfg=cfg, total_timesteps=int(steps), seed=int(seed), checkpoint_dir=str(ckpt_dir))
+    except Exception as exc:
+        return {"status": "error", "reason": f"{type(exc).__name__}: {exc}"}
+    wall = time.perf_counter() - t0
+    return {
+        "status": "ok",
+        "wall_sec": wall,
+        "gpu_peak_mb": _gpu_peak_mb(),
+        "trainer_output": out if isinstance(out, dict) else {"raw": str(out)},
+    }
+
+
+def _run_qr_ppo(cfg: dict[str, Any], steps: int, seed: int, ckpt_dir: Path) -> dict[str, Any]:
+    try:
+        from fp4.trainer_qr import train_qr_ppo  # type: ignore
+    except Exception as exc:
+        return {"status": "skip", "reason": f"fp4 qr_ppo trainer import failed: {type(exc).__name__}: {exc}"}
+    _gpu_peak_mb_reset()
+    t0 = time.perf_counter()
+    try:
+        out = train_qr_ppo(cfg=cfg, total_timesteps=int(steps), seed=int(seed), checkpoint_dir=str(ckpt_dir))
+    except Exception as exc:
+        return {"status": "error", "reason": f"{type(exc).__name__}: {exc}"}
+    wall = time.perf_counter() - t0
+    return {
+        "status": "ok",
+        "wall_sec": wall,
+        "gpu_peak_mb": _gpu_peak_mb(),
+        "trainer_output": out if isinstance(out, dict) else {"raw": str(out)},
+    }
+
+
 _RUNNERS = {
     "pufferlib_bf16": _run_pufferlib_bf16,
     "hf_trainer": _run_hf_trainer,
     "trl": _run_trl,
     "fp4": _run_fp4,
+    "sac": _run_sac,
+    "qr_ppo": _run_qr_ppo,
 }
 
 
