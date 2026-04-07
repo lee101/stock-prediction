@@ -233,6 +233,30 @@ def train_ppo(cfg: Dict[str, Any], total_timesteps: int, seed: int,
     cuda_graph_attempted = False
     cuda_graph_used = False
 
+    # Try graph capture BEFORE any eager training so the params/grads have
+    # never been touched by the legacy stream. This is a correctness probe:
+    # if NVFP4Linear's autograd Function is graph-safe the capture will
+    # succeed, and we record that in the metrics. (We don't yet replay the
+    # captured graph inside the main loop — wiring that up is a follow-up,
+    # guarded by Unit G's cuda_graph helper.)
+    if torch.cuda.is_available():
+        cuda_graph_attempted = True
+        probe_obs = torch.zeros(minibatch_size, obs_dim, device=device)
+        probe_act = torch.zeros(minibatch_size, act_dim, device=device)
+        probe_lp = torch.zeros(minibatch_size, device=device)
+        probe_adv = torch.zeros(minibatch_size, device=device)
+        probe_ret = torch.zeros(minibatch_size, device=device)
+        try:
+            _try_capture_update(policy, optim, probe_obs, probe_act, probe_lp,
+                                probe_adv, probe_ret,
+                                clip_eps, vf_coef, ent_coef, grad_clip)
+            cuda_graph_used = True
+        except Exception as exc:
+            cuda_graph_used = False
+            import sys
+            print(f"[fp4.trainer] cuda-graph capture failed: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+
     for it in range(n_iters):
         # ---- Rollout ----
         with torch.no_grad():
@@ -287,23 +311,6 @@ def train_ppo(cfg: Dict[str, Any], total_timesteps: int, seed: int,
                 last_metrics = {k: float(v.item()) for k, v in info.items()}
                 last_metrics["loss"] = float(loss.item())
 
-        # CUDA-graph capture: attempted once at the *end* of training so it
-        # cannot perturb the rollout/update state.  It's a measurement of
-        # whether the inner step is graph-capturable, not an optimisation we
-        # actually use in the loop.  NVFP4Linear's custom autograd Function
-        # historically isn't graph-safe, so we expect this to fail today and
-        # silently fall back.
-        if (it == n_iters - 1 and not cuda_graph_attempted
-                and torch.cuda.is_available() and n_samples >= mb):
-            cuda_graph_attempted = True
-            try:
-                _try_capture_update(policy, optim, b_obs[:mb].clone(),
-                                    b_act[:mb].clone(), b_logp[:mb].clone(),
-                                    b_adv[:mb].clone(), b_ret[:mb].clone(),
-                                    clip_eps, vf_coef, ent_coef, grad_clip)
-                cuda_graph_used = True
-            except Exception:
-                cuda_graph_used = False
 
     wall = time.perf_counter() - t0
 
@@ -350,24 +357,31 @@ def train_ppo(cfg: Dict[str, Any], total_timesteps: int, seed: int,
 def _try_capture_update(policy, optim, obs_mb, act_mb, lp_mb, adv_mb, ret_mb,
                         clip_eps, vf_coef, ent_coef, grad_clip):
     """Best-effort CUDA-graph capture of one update step.  Raises on failure."""
-    s = torch.cuda.Stream()
+    # Prime the NVFP4 per-(device, dtype) level-table caches so the captured
+    # forward does not need to do a host->device copy of the level tables.
+    from .quant import prime_caches
+    prime_caches(obs_mb.device, (torch.float32,))
+
+    # Must run BEFORE any eager update has scheduled work on the legacy
+    # stream that params/grads depend on, otherwise backward inside the
+    # capture will try to sync legacy<->side-stream and fail with
+    # cudaErrorStreamCaptureImplicit.
+    s = torch.cuda.Stream(device=obs_mb.device)
     s.wait_stream(torch.cuda.current_stream())
     with torch.cuda.stream(s):
-        # Warm-up: a few eager runs so memory pools are stable.
-        for _ in range(2):
+        for _ in range(3):
             optim.zero_grad(set_to_none=True)
             loss, _ = _ppo_loss(policy, obs_mb, act_mb, lp_mb, adv_mb, ret_mb,
                                 clip_eps, vf_coef, ent_coef)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(policy.parameters(), grad_clip)
-            optim.step()
+
+        g = torch.cuda.CUDAGraph()
+        optim.zero_grad(set_to_none=True)
+        with torch.cuda.graph(g, stream=s):
+            loss, _ = _ppo_loss(policy, obs_mb, act_mb, lp_mb, adv_mb, ret_mb,
+                                clip_eps, vf_coef, ent_coef)
+            loss.backward()
+        for _ in range(3):
+            g.replay()
     torch.cuda.current_stream().wait_stream(s)
-    g = torch.cuda.CUDAGraph()
-    optim.zero_grad(set_to_none=True)
-    with torch.cuda.graph(g):
-        loss, _ = _ppo_loss(policy, obs_mb, act_mb, lp_mb, adv_mb, ret_mb,
-                            clip_eps, vf_coef, ent_coef)
-        loss.backward()
-    # Replay once to confirm it actually runs.
-    g.replay()
     torch.cuda.synchronize()
