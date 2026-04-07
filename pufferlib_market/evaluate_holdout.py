@@ -363,6 +363,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--end-within-hours", type=int, default=None, help="Only sample windows ending within last N hours")
     parser.add_argument("--fee-rate", type=float, default=0.001)
+    parser.add_argument("--slippage-bps", type=float, default=0.0, help="Adverse fill slippage in bps applied symmetrically")
     parser.add_argument(
         "--fill-buffer-bps",
         type=float,
@@ -503,6 +504,7 @@ def main() -> None:
             _policy_fn,
             max_steps=int(steps),
             fee_rate=float(args.fee_rate),
+            slippage_bps=float(args.slippage_bps),
             fill_buffer_bps=float(args.fill_buffer_bps),
             max_leverage=float(args.max_leverage),
             periods_per_year=float(args.periods_per_year),
@@ -555,6 +557,7 @@ def main() -> None:
         "end_within_hours": int(args.end_within_hours) if args.end_within_hours is not None else None,
         "decision_lag": int(decision_lag),
         "fee_rate": float(args.fee_rate),
+        "slippage_bps": float(args.slippage_bps),
         "fill_buffer_bps": float(args.fill_buffer_bps),
         "max_leverage": float(args.max_leverage),
         "short_borrow_apr": float(args.short_borrow_apr),
