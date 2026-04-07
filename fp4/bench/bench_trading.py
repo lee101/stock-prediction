@@ -246,6 +246,14 @@ def _evaluate_ckpt(ckpt_dir: Path, cfg: dict[str, Any]) -> dict[str, Any]:
 
 def run_one(trainer: str, cfg_path: Path, steps: int, seed: int, smoke: bool = False) -> dict[str, Any]:
     cfg = _load_cfg(cfg_path)
+    if smoke:
+        # Shrink the model so the smoke test fits on shared GPUs / CI boxes.
+        ppo = cfg.setdefault("ppo", {})
+        ppo["hidden_size"] = 64
+        ppo["num_envs"] = 8
+        ppo["rollout_len"] = 64
+        ppo["minibatch_size"] = 128
+        ppo["ppo_epochs"] = 1
     avail, why = _trainer_available(trainer)
     date = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     rec: dict[str, Any] = {
