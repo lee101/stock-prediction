@@ -1,0 +1,36 @@
+# fp4 vs baseline PPO config — crypto12 hourly
+env:
+  name: crypto12
+  train_data: pufferlib_market/data/crypto12_train.bin
+  val_data: pufferlib_market/data/crypto12_val.bin
+  fee_rate: 0.001
+  fill_buffer_bps: 5
+  decision_lag: 2
+  binary_fills: true
+  action_mode: dps
+  max_leverage: 5.0
+  max_leverage_scalar_fallback: 1.5
+
+ppo:
+  hidden_size: 1024
+  lr: 3.0e-4
+  anneal_lr: true
+  ent_coef: 0.05
+  ent_coef_end: 0.02
+  clip_eps: 0.2
+  num_envs: 64
+  rollout_len: 256
+  ppo_epochs: 4
+  minibatch_size: 2048
+  total_timesteps: 300_000_000
+  smooth_downside_temperature: 0.01
+  obs_norm: true
+
+eval:
+  slippage_bps: [0, 5, 10, 20]
+  n_windows: 58
+  fill_buffer_bps: 5
+  decision_lag: 2
+
+target:
+  sortino: 5.0
