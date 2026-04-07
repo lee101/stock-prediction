@@ -228,9 +228,16 @@ _RUNNERS = {
 }
 
 
-def _evaluate_ckpt(ckpt_dir: Path, cfg: dict[str, Any]) -> dict[str, Any]:
+def _evaluate_ckpt(ckpt_dir: Path, cfg: dict[str, Any], trainer: str) -> dict[str, Any]:
     """Evaluate the latest checkpoint at multiple slippage levels using the C
-    binary-fill marketsim via `pufferlib_market.evaluate_fast`."""
+    binary-fill marketsim.
+
+    For ``pufferlib_bf16`` we delegate to the subprocess-driven
+    ``pufferlib_market.evaluate_fast`` CLI (it knows how to load that exact
+    policy arch).  For every other trainer we use the generic loader in
+    ``fp4.bench.eval_generic`` which tolerates different checkpoint formats
+    and skips gracefully when the policy's dims don't match the marketsim.
+    """
     ckpts = sorted(ckpt_dir.rglob("best.pt")) + sorted(ckpt_dir.rglob("final.pt"))
     if not ckpts:
         ckpts = sorted(ckpt_dir.rglob("*.pt"))
@@ -241,6 +248,19 @@ def _evaluate_ckpt(ckpt_dir: Path, cfg: dict[str, Any]) -> dict[str, Any]:
     val_data = REPO / env["val_data"]
     if not val_data.exists():
         return {"status": "skip", "reason": f"val data missing: {val_data}"}
+
+    if trainer != "pufferlib_bf16":
+        try:
+            from fp4.bench.eval_generic import evaluate_policy_file
+        except Exception as exc:
+            return {"status": "skip", "reason": f"eval_generic import failed: {exc}"}
+        try:
+            result = evaluate_policy_file(ckpt, cfg, REPO)
+        except Exception as exc:
+            return {"status": "error", "reason": f"eval_generic raised: {type(exc).__name__}: {exc}"}
+        result["checkpoint"] = str(ckpt)
+        return result
+
     out: dict[str, Any] = {"checkpoint": str(ckpt), "by_slippage": {}}
     for bps in cfg["eval"]["slippage_bps"]:
         cmd = [
@@ -249,6 +269,7 @@ def _evaluate_ckpt(ckpt_dir: Path, cfg: dict[str, Any]) -> dict[str, Any]:
             "--data-path", str(val_data),
             "--fill-slippage-bps", str(bps),
             "--n-windows", str(int(cfg["eval"].get("n_windows", 20))),
+            "--eval-hours", str(int(cfg["eval"].get("eval_hours", 720))),
             "--max-leverage", str(float(env.get("max_leverage_scalar_fallback", 1.5))),
             "--fee-rate", str(float(env.get("fee_rate", 0.001))),
             "--out", str(RESULTS_DIR / f"_eval_{ckpt.stem}_{bps}bps.json"),
@@ -258,7 +279,18 @@ def _evaluate_ckpt(ckpt_dir: Path, cfg: dict[str, Any]) -> dict[str, Any]:
         proc = subprocess.run(cmd, cwd=str(REPO), env=env_vars, capture_output=True, text=True)
         rec: dict[str, Any] = {"returncode": proc.returncode}
         try:
-            rec.update(json.loads((RESULTS_DIR / f"_eval_{ckpt.stem}_{bps}bps.json").read_text()))
+            blob = json.loads((RESULTS_DIR / f"_eval_{ckpt.stem}_{bps}bps.json").read_text())
+            rec.update(blob)
+            summary = blob.get("summary") or {}
+            # Normalise to the keys _flatten_eval looks for.
+            if "p10_total_return" in summary:
+                rec["p10_return"] = summary["p10_total_return"]
+            if "median_total_return" in summary:
+                rec["median_return"] = summary["median_total_return"]
+            if "median_max_drawdown" in summary:
+                rec["max_drawdown"] = summary["median_max_drawdown"]
+            if "median_sortino" in summary:
+                rec["sortino"] = summary["median_sortino"]
         except Exception:
             rec["stdout_tail"] = proc.stdout[-500:]
             rec["stderr_tail"] = proc.stderr[-500:]
@@ -300,7 +332,7 @@ def run_one(trainer: str, cfg_path: Path, steps: int, seed: int, smoke: bool = F
     train_rec = runner(cfg, steps, seed, ckpt_dir)
     rec["train"] = train_rec
     if train_rec.get("status") == "ok":
-        rec["eval"] = _evaluate_ckpt(ckpt_dir, cfg)
+        rec["eval"] = _evaluate_ckpt(ckpt_dir, cfg, trainer)
         wall = train_rec.get("wall_sec", 0.0) or 1e-9
         rec["steps_per_sec"] = float(steps) / wall
     rec["status"] = train_rec.get("status", "error")
