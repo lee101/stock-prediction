@@ -1,0 +1,68 @@
+name: C/CUDA lint
+
+# Lints owned C/CUDA sources with cppcheck. Vendored / external / upstream
+# trees are excluded by lint-c-md. Errors fail the build; style/perf are
+# advisory and uploaded as an artifact.
+
+on:
+  push:
+    paths:
+      - '**/*.c'
+      - '**/*.h'
+      - '**/*.cu'
+      - '**/*.cuh'
+      - '.github/workflows/c-lint.yml'
+      - 'tools/lint-c-md'
+  pull_request:
+    paths:
+      - '**/*.c'
+      - '**/*.h'
+      - '**/*.cu'
+      - '**/*.cuh'
+
+jobs:
+  cppcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cppcheck + clang-format
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y cppcheck clang-format
+
+      - name: Fetch lint-c-md from dotfiles toolset
+        run: |
+          mkdir -p tools
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository_owner }}/dotfiles/main/profiling/bin/lint-c-md \
+            -o tools/lint-c-md || cp $GITHUB_WORKSPACE/tools/lint-c-md tools/lint-c-md 2>/dev/null || true
+          chmod +x tools/lint-c-md || true
+
+      - name: Run cppcheck
+        run: |
+          set -e
+          # Use the in-repo lint-c-md if dotfiles fetch failed.
+          LINT=tools/lint-c-md
+          [[ -x $LINT ]] || LINT="cppcheck --enable=warning --error-exitcode=2 --quiet"
+          $LINT --out lint-report.md \
+            crl ctrader market_sim_c rl_trading fast_market_sim binance_worksteal pufferlib_market || EXIT=$?
+          cat lint-report.md
+          exit ${EXIT:-0}
+
+      - name: clang-format check (advisory)
+        continue-on-error: true
+        run: |
+          mapfile -t files < <(git ls-files '*.c' '*.h' '*.cu' '*.cuh' \
+            | grep -Ev '(^|/)(vendor|external|\.pytest_tmp|build|\.venv)(/|$)' \
+            | grep -Ev 'PufferLib/(vendor|ocean|src)/' \
+            | grep -Ev 'chronos-forecasting/' || true)
+          if [[ ${#files[@]} -gt 0 ]]; then
+            clang-format --dry-run --Werror "${files[@]}" || \
+              echo "::warning::clang-format would reformat files; run \`clang-format -i\` to fix"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c-lint-report
+          path: lint-report.md
