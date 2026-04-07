@@ -167,6 +167,76 @@ int main() {
         EXPECT_NEAR(f3, 3.0f * f1, 1e-3, "DPS: fee linear in notional");
     }
 
+    // ---- Test 6: execution_price_override flows into PnL & cost basis -------------
+    // Vanilla SCALAR vs SCALAR+override on a flat bar: fees match exactly (fee
+    // depends only on |trade_amount|, not on price), and on the *next* step
+    // closing back to flat at close=100 the override portfolio has realized
+    // PnL ~= -1% of notional (entry was marked at 101) while the vanilla
+    // portfolio realizes ~0.
+    {
+        MarketConfig cfg;
+        cfg.action_mode = ActionMode::SCALAR;
+
+        Portfolio pf_a(cfg, device, 1);
+        MarketState mkt(cfg, device);
+        auto action = torch::tensor({1.0f}, torch::TensorOptions().device(device));
+        auto prices = make_ohlc(100.f, 105.f, 95.f, 100.f, device);
+        auto r_a = pf_a.step(action, prices, mkt, false);
+        float fee_a    = r_a.fees_paid[0].item<float>();
+        float unreal_a = r_a.unrealized_pnl[0].item<float>();
+
+        Portfolio pf_b(cfg, device, 1);
+        auto override_px = torch::tensor({101.0f}, torch::TensorOptions().device(device));
+        pf_b.set_execution_price_override(override_px);
+        auto r_b = pf_b.step(action, prices, mkt, false);
+        float fee_b = r_b.fees_paid[0].item<float>();
+        pf_b.clear_execution_price_override();
+
+        EXPECT_NEAR(fee_a, fee_b, 1e-3, "override: fee independent of exec price");
+
+        // Close back to flat at close=100 to materialize realized PnL.
+        auto sell    = torch::tensor({0.0f}, torch::TensorOptions().device(device));
+        auto prices2 = make_ohlc(100.f, 100.f, 100.f, 100.f, device);
+        auto r_a2 = pf_a.step(sell, prices2, mkt, false);
+        auto r_b2 = pf_b.step(sell, prices2, mkt, false);
+        float realized_a = r_a2.realized_pnl[0].item<float>();
+        float realized_b = r_b2.realized_pnl[0].item<float>();
+        EXPECT_NEAR(realized_a, 0.0f, 1e-2, "vanilla close: realized=0");
+        // pos ~100000, entry=101, exit=100 -> ~ -990
+        EXPECT_TRUE(realized_b < -900.0f && realized_b > -1100.0f,
+                    "override: realized ~ -1% of notional from limit entry");
+
+        // Bit-identity of SCALAR golden after toggling override on/off.
+        Portfolio pf_c(cfg, device, 1);
+        pf_c.set_execution_price_override(override_px);
+        pf_c.clear_execution_price_override();
+        auto r_c = pf_c.step(action, prices, mkt, false);
+        EXPECT_NEAR(r_c.fees_paid[0].item<float>(), fee_a, 0.0,
+                    "override toggle: SCALAR fee bit-identical");
+        EXPECT_NEAR(r_c.unrealized_pnl[0].item<float>(), unreal_a, 0.0,
+                    "override toggle: SCALAR unreal bit-identical");
+    }
+
+    // ---- Test 7: cost basis uses override (entry_price = override) ----------------
+    {
+        MarketConfig cfg;
+        Portfolio pf(cfg, device, 1);
+        MarketState mkt(cfg, device);
+        auto override_px = torch::tensor({110.0f}, torch::TensorOptions().device(device));
+        pf.set_execution_price_override(override_px);
+        auto open_action = torch::tensor({1.0f}, torch::TensorOptions().device(device));
+        auto prices = make_ohlc(100.f, 100.f, 100.f, 100.f, device);
+        pf.step(open_action, prices, mkt, false);
+        pf.clear_execution_price_override();
+
+        auto sell = torch::tensor({0.0f}, torch::TensorOptions().device(device));
+        auto r = pf.step(sell, prices, mkt, false);
+        float realized = r.realized_pnl[0].item<float>();
+        // pos ~100000, entry=110, exit=100 -> ~ -9090
+        EXPECT_TRUE(realized < -8000.0f && realized > -10000.0f,
+                    "cost basis uses override: ~-9% loss closing override-entry at close");
+    }
+
     std::cout << "\n=== test_dps_action_mode summary ===\n";
     std::cout << "passed: " << g_passed << "  failed: " << g_failed << "\n";
     return g_failed == 0 ? 0 : 1;

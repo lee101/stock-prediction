@@ -166,6 +166,13 @@ EnvOutput MarketEnvironment::step(const torch::Tensor& actions) {
 
         // Activate the wider DPS leverage cap on the portfolio for this call.
         portfolio_->set_leverage_cap_override(config_.max_leverage_dps);
+
+        // Mark trades & PnL at the limit fill price on filled bars; on unfilled
+        // bars there is no trade so the mark price falls back to close (no
+        // observable fill exists). This is what gives DPS its trade-edge alpha
+        // accounting in the C++ ground truth.
+        auto exec_px = torch::where(fill_mask, limit_price, close);
+        portfolio_->set_execution_price_override(exec_px);
     } else {
         scalar_actions = actions;
     }
@@ -174,9 +181,11 @@ EnvOutput MarketEnvironment::step(const torch::Tensor& actions) {
     // In a real implementation, you'd want to handle different assets separately
     auto step_result = portfolio_->step(scalar_actions, all_prices, *market_states_[0], false);
 
-    // Restore SCALAR clamp so any subsequent caller of portfolio sees legacy behavior.
+    // Restore SCALAR clamp & clear DPS execution-price override so any subsequent
+    // caller of portfolio sees legacy behavior.
     if (config_.action_mode == ActionMode::DPS) {
         portfolio_->set_leverage_cap_override(0.0f);
+        portfolio_->clear_execution_price_override();
     }
     auto rewards = step_result.rewards;
 
