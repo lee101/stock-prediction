@@ -153,7 +153,11 @@ def train_qr_ppo(cfg: Dict[str, Any], total_timesteps: int, seed: int,
         torch.cuda.reset_peak_memory_stats()
 
     last_metrics: Dict[str, float] = {}
+    _last_info_t: Dict[str, torch.Tensor] | None = None
+    _last_loss_t: torch.Tensor | None = None
+    last_cvar_t: torch.Tensor | None = None
     last_cvar: float = 0.0
+    finished_buf = torch.zeros(rollout_len, num_envs, device=device)
 
     for _it in range(n_iters):
         with torch.no_grad():
@@ -169,14 +173,17 @@ def train_qr_ppo(cfg: Dict[str, Any], total_timesteps: int, seed: int,
                 rew_buf[t] = reward
                 done_buf[t] = done
                 running_returns = running_returns + reward
-                if done.any():
-                    finished = running_returns[done.bool()]
-                    if finished.numel() > 0:
-                        all_episode_returns.extend(finished.detach().cpu().tolist())
-                    running_returns = torch.where(done.bool(), torch.zeros_like(running_returns), running_returns)
+                done_f = done.to(running_returns.dtype)
+                finished_buf[t] = running_returns * done_f
+                running_returns = running_returns * (1.0 - done_f)
                 obs = next_obs
             _, _, last_value, last_q = policy(obs)
-            last_cvar = float(cvar_from_quantiles(last_q, alpha=cvar_alpha).mean().item())
+            last_cvar_t = cvar_from_quantiles(last_q, alpha=cvar_alpha).mean().detach()
+            done_mask_flat = (done_buf > 0.5).reshape(-1)
+            if bool(done_mask_flat.any().item()):
+                all_episode_returns.extend(
+                    finished_buf.reshape(-1)[done_mask_flat].cpu().tolist()
+                )
 
         adv_buf, ret_buf = compute_gae(rew_buf, val_buf, done_buf, last_value, gamma, gae_lambda)
 
@@ -205,10 +212,15 @@ def train_qr_ppo(cfg: Dict[str, Any], total_timesteps: int, seed: int,
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(policy.parameters(), grad_clip)
                 optim.step()
-                last_metrics = {k: float(v.item()) for k, v in info.items()}
-                last_metrics["loss"] = float(loss.item())
+                _last_info_t = info
+                _last_loss_t = loss.detach()
 
     wall = time.perf_counter() - t0
+    if _last_info_t is not None and _last_loss_t is not None:
+        last_metrics = {k: float(v.item()) for k, v in _last_info_t.items()}
+        last_metrics["loss"] = float(_last_loss_t.item())
+    if last_cvar_t is not None:
+        last_cvar = float(last_cvar_t.item())
 
     if all_episode_returns:
         ret_t = torch.tensor(all_episode_returns, dtype=torch.float32)
