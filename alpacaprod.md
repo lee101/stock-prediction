@@ -7,6 +7,51 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
+### 2026-04-08 — Alpaca daily PPO audit + 120d replay
+- **Actual machine state (verified on host, not just docs)**:
+  - `daily-rl-trader.service`: **ACTIVE** since **2026-04-08 10:23:53 UTC**
+  - Main PID at audit: `2599365`
+  - Exact live command: `.venv313/bin/python -u trade_daily_stock_prod.py --daemon --live --allocation-pct 12.5`
+  - Runtime config confirms: **32-model ensemble**, symbols `AAPL,MSFT,NVDA,GOOG,META,TSLA,SPY,QQQ,PLTR,JPM,V,AMZN`
+  - `unified-orchestrator.service`: `inactive`
+  - Process audit found **no** running `unified_orchestrator.orchestrator` or `trade_unified_hourly_meta` stock process at check time. `supervisorctl status` was not readable from the current shell due permissions, so this was validated via `ps` rather than supervisor RPC.
+- **Important mismatch discovered**:
+  - The checked-in daily feature builder now uses `RSI(14)` in place of the old duplicated `trend_20d`.
+  - The live 32-model prod ensemble was trained **before** that fix.
+  - Therefore, current code + old prod ensemble is a feature-mismatch risk and should not be treated as equivalent to the historical 32-model leaderboard numbers.
+- **120 trading-day local replay using calibrated execution offsets (`entry=+5bps`, `exit=+25bps`)**:
+  - **Legacy prod feature mapping** (approximate old live feature layout): `+0.21% total`, `+0.04% monthly`, `Sortino 0.14`, `MaxDD -2.99%`, `24 trades`
+  - **Current RSI feature mapping** with the same 32-model ensemble: `-0.92% total`, `-0.16% monthly`, `Sortino -0.53`, `MaxDD -3.04%`, `26 trades`
+  - **Current RSI + concentrated 95% allocation**: `-5.17% total`, `-0.93% monthly`, `MaxDD -21.58%`
+  - **Current RSI + 190% allocation @ 2x buying power**: `-22.86% total`, `-4.44% monthly`, `MaxDD -43.15%`
+- **Decision**:
+  - Do **not** increase concentration or apply 2x leverage to the current stock ensemble.
+  - Do **not** assume the running daily service matches the historical prod backtests unless the legacy feature mapping is restored or the ensemble is retrained on the RSI feature set.
+  - Near-term bar remains: retrained RSI-family checkpoints must beat the legacy ensemble under realistic replay before any allocation increase.
+- **Repo fix landed in this session**:
+  - Added a daily-stock feature-schema compatibility guard in `trade_daily_stock_prod.py` + `src/daily_stock_feature_schema.py`.
+  - Known `pufferlib_market/prod_ensemble/*` checkpoints now use the legacy pre-RSI daily feature vector automatically.
+  - `stocks12_v5_rsi/*` checkpoints use the RSI feature vector.
+  - Mixed-schema ensembles now fail fast instead of silently running undefined feature semantics.
+  - Optimized the trading-server backtest/variant-matrix path to precompute aligned close-price matrices and timestamps once in `PreparedDailyBacktestData` instead of re-reading them from pandas inside every simulated day.
+  - Tightened `src/alpaca_account_lock.py` so in-process lock reuse is only idempotent for the same `service_name`; conflicting service identities now fail loudly with holder metadata instead of silently sharing the writer lock.
+  - Hardened `src/alpaca_account_lock.py` and `src/alpaca_singleton.py` to reject path-like Alpaca account names before deriving lock-file or buy-memory state paths, closing a traversal-style state-file escape hatch.
+  - Improved `src/alpaca_singleton.py` observability for death-spiral state corruption: malformed buy-memory JSON is now logged loudly to stderr and quarantined to a timestamped `.corrupt-*` file instead of being silently ignored in place.
+  - Added a cross-process file lock around `src/alpaca_singleton.py` buy-memory read/modify/write paths so concurrent processes cannot silently clobber each other’s death-spiral state updates.
+  - Hardened `src/autoresearch_stock/prepare.py` to load symbol CSVs by attempting the read directly rather than depending on a pre-`Path.exists()` check, which removed a brittle hourly smoke-test failure under the repo-wide suite.
+  - Daily stock runtime startup logs now include preflight-derived checkpoint schema/feature-dimension details, primary/ensemble policy classes, local data freshness, and preflight warnings so production has a single structured record of what actually passed startup validation.
+  - Human-readable daily stock preflight output (`--check-config --check-config-text`) now surfaces the checkpoint arch/schema/feature-dimension and ensemble policy classes, so the operator-facing readiness report matches the richer JSON/runtime diagnostics.
+  - Daily stock preflight now also supports a compact operator summary (`--check-config --check-config-summary`) that prints a single stderr line with readiness, symbol usability, checkpoint schema/dimension, local-data freshness, and first-error context for quick terminal checks.
+  - The daily stock CLI now rejects `--check-config-text` and `--check-config-summary` unless `--check-config` is also present, so setup mistakes fail explicitly instead of silently ignoring the requested output mode.
+  - Shared local-data health reporting now includes invalid-symbol reasons inline, so daily-stock preflight failures explain why a CSV is unreadable without forcing operators to cross-reference file-path errors separately.
+  - Shared local-data health reporting now truncates large stale/missing/invalid symbol lists with a preview and `(+N more)` tail, so operator logs stay readable as symbol universes grow.
+  - Daily stock preflight local-data inspection now uses lightweight CSV metadata reads instead of fully normalizing each daily frame just to compute row counts and freshness, which reduces startup/preflight churn as symbol counts grow while preserving unreadable-file detection.
+  - Hardened `trade_daily_stock_prod.py` state-file handling so malformed or type-invalid `state.json` no longer silently resets to empty state. `load_state(...)` now fails closed with a clear error, and the daemon logs that condition and sleeps 5 minutes instead of trading blind or crashing.
+  - Daily stock daemon transient retry paths now emit structured `Daemon warning:` JSON logs for state-load failures and market-clock retry/sleep events, so operators can diagnose live incidents from logs without scraping free-form warning strings.
+  - Hardened the daily stock state/log artifact guards to reject broken symlink paths as well as live symlinks, closing a race-prone gap where a dangling symlink could bypass the existing safety check and be followed later by the state or JSONL write path.
+  - Tests: `tests/test_daily_stock_feature_schema.py`, `tests/test_daily_rl_service_unit.py`, `tests/test_validate_marketsim.py`, `tests/test_validate_marketsim_shim.py`, `tests/test_alpaca_account_lock.py`, `tests/test_alpaca_singleton.py`, `tests/test_autoresearch_stock_prepare.py`, `tests/test_autoresearch_stock_train_smoke.py`
+  - **Important**: the currently running `daily-rl-trader.service` PID predates this repo change; restart is required before live runtime picks up the compatibility guard.
+
 ### 2026-04-07 — Crypto → Stocks recipe port (FAILED, baseline s42 retained)
 - **Goal**: apply crypto34 hourly champion's training recipe (h1024 + RunningObsNorm + BF16 autocast + CUDA-graph PPO) to stocks12 v5_rsi daily, on top of the existing h1024 + legacy linear anneal stocks recipe.
 - **Script**: `scripts/stocks12_v5_rsi_crypto_recipe.sh` (seeds 100–104, 15M total timesteps after the v1 30M+cosine attempt over-converged into a 1-trade/episode policy with val med=0.2%; v1 dir kept as `stocks12_v5_rsi_cryptorcp/tp05_s100_v1_30M_cosine_BAD` for postmortem).

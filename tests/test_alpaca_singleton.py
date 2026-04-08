@@ -15,9 +15,10 @@ import os
 import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 
-import pytest
+from src import alpaca_singleton as singleton_mod
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -54,6 +55,173 @@ def test_paper_mode_singleton_is_noop(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr
     assert "OK" in proc.stdout
+
+
+def test_buy_memory_path_rejects_path_like_account_name(tmp_path):
+    proc = _run_snippet(
+        """
+        from src.alpaca_singleton import _buy_memory_path
+        try:
+            _buy_memory_path('../alpaca_test_writer')
+        except ValueError as exc:
+            print(exc)
+        else:
+            raise SystemExit('expected ValueError')
+        """,
+        env_extra={"ALP_PAPER": "1"},
+        tmp_path=tmp_path,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "Unsupported Alpaca account name" in proc.stdout
+
+
+def test_record_buy_price_uses_explicit_default_account_name(tmp_path):
+    proc = _run_snippet(
+        """
+        from src.alpaca_singleton import (
+            DEFAULT_ALPACA_ACCOUNT_NAME,
+            _buy_memory_path,
+            record_buy_price,
+        )
+        record_buy_price('AAPL', 123.45)
+        path = _buy_memory_path(DEFAULT_ALPACA_ACCOUNT_NAME)
+        assert path.exists(), path
+        print(path.name)
+        """,
+        env_extra={"ALP_PAPER": "1"},
+        tmp_path=tmp_path,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert f"{'alpaca_live_writer'}_buys.json" in proc.stdout
+
+
+def test_buy_memory_lock_is_reused_per_account_name() -> None:
+    first = singleton_mod._buy_memory_lock("alpaca_test_writer")
+    second = singleton_mod._buy_memory_lock("alpaca_test_writer")
+    other = singleton_mod._buy_memory_lock("alpaca_other_writer")
+
+    assert first is second
+    assert first is not other
+
+
+def test_buy_memory_file_lock_path_is_scoped_per_account_name(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("UNIFIED_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg_state"))
+
+    path = singleton_mod._buy_memory_file_lock_path("alpaca_test_writer")
+
+    assert path.name == "alpaca_test_writer_buys.lock"
+    assert path.parent == singleton_mod._state_dir()
+
+
+def test_save_buys_uses_unique_temp_file_before_replace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("UNIFIED_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg_state"))
+
+    captured: dict[str, Path] = {}
+    original_replace = singleton_mod.os.replace
+
+    def _record_replace(src, dst):
+        captured["src"] = Path(src)
+        captured["dst"] = Path(dst)
+        original_replace(src, dst)
+
+    monkeypatch.setattr(singleton_mod.os, "replace", _record_replace)
+
+    singleton_mod._save_buys(
+        "alpaca_test_writer",
+        {"AAPL": {"price": 123.45, "ts": 1.0, "iso": "2026-04-08T00:00:00+00:00"}},
+    )
+
+    final_path = singleton_mod._buy_memory_path("alpaca_test_writer")
+    assert captured["dst"] == final_path
+    assert captured["src"].parent == final_path.parent
+    assert captured["src"].name.startswith("alpaca_test_writer_buys.")
+    assert captured["src"].name.endswith(".tmp")
+    assert captured["src"] != final_path.with_suffix(".tmp")
+    assert final_path.exists()
+
+
+def test_corrupt_buy_memory_is_quarantined_with_loud_log(tmp_path):
+    proc = _run_snippet(
+        """
+        from src.alpaca_singleton import _buy_memory_path, _load_buys
+        path = _buy_memory_path('alpaca_test_writer')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{not-json', encoding='utf-8')
+        payload = _load_buys('alpaca_test_writer')
+        assert payload == {}, payload
+        quarantined = sorted(path.parent.glob('alpaca_test_writer_buys.corrupt-*.json'))
+        assert len(quarantined) == 1, quarantined
+        assert not path.exists(), path
+        print(quarantined[0].name)
+        """,
+        env_extra={"ALP_PAPER": "1"},
+        tmp_path=tmp_path,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "alpaca_test_writer_buys.corrupt-" in proc.stdout
+    assert "CORRUPT BUY MEMORY ignored" in proc.stderr
+
+
+def test_record_buy_price_waits_for_cross_process_file_lock(tmp_path: Path) -> None:
+    holder = subprocess.Popen(
+        [sys.executable, "-c", textwrap.dedent("""
+            import fcntl
+            import os
+            import time
+            from src.alpaca_singleton import _buy_memory_file_lock_path
+            path = _buy_memory_file_lock_path('alpaca_test_writer')
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open('a+', encoding='utf-8') as handle:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                print('LOCKED', flush=True)
+                time.sleep(1.0)
+        """)],
+        env={
+            **os.environ,
+            "PYTHONPATH": str(REPO),
+            "UNIFIED_STATE_DIR": str(tmp_path / "state"),
+            "XDG_STATE_HOME": str(tmp_path / "xdg_state"),
+            "ALP_PAPER": "1",
+        },
+        cwd=str(REPO),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        for _ in range(30):
+            line = holder.stdout.readline()  # type: ignore[union-attr]
+            if "LOCKED" in line:
+                break
+        else:
+            holder.kill()
+            raise AssertionError("holder never announced LOCKED")
+
+        start = time.monotonic()
+        proc = _run_snippet(
+            """
+            from src.alpaca_singleton import _load_buys, enforce_live_singleton, record_buy_price
+            enforce_live_singleton(service_name='wait_test', account_name='alpaca_test_writer')
+            record_buy_price('AAPL', 123.45)
+            data = _load_buys('alpaca_test_writer')
+            assert data['AAPL']['price'] == 123.45
+            print('RECORDED')
+            """,
+            env_extra={"ALP_PAPER": "1"},
+            tmp_path=tmp_path,
+        )
+        elapsed = time.monotonic() - start
+        assert proc.returncode == 0, proc.stderr
+        assert "RECORDED" in proc.stdout
+        assert elapsed >= 0.8, elapsed
+    finally:
+        holder.kill()
+        holder.wait(timeout=5)
 
 
 def test_live_mode_singleton_acquires_and_second_fails(tmp_path):

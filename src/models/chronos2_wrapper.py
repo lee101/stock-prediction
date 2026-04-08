@@ -15,6 +15,7 @@ import inspect
 import json
 import logging
 import os
+import sys
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,6 +54,9 @@ from src.preaug.multiscale import MultiscaleSelector, aggregate_forecasts
 from .model_cache import ModelCacheError, ModelCacheManager, dtype_to_token
 
 logger = logging.getLogger(__name__)
+
+sys.modules.setdefault("models.chronos2_wrapper", sys.modules[__name__])
+sys.modules.setdefault("src.models.chronos2_wrapper", sys.modules[__name__])
 
 DEFAULT_TARGET_COLUMNS: Tuple[str, ...] = ("open", "high", "low", "close")
 DEFAULT_QUANTILE_LEVELS: Tuple[float, ...] = (0.1, 0.5, 0.9)

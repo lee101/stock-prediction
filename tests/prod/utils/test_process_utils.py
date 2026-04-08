@@ -73,6 +73,32 @@ def test_get_inherited_env_falls_back_when_active_aliases_are_missing(monkeypatc
     assert debug_messages
 
 
+def test_persist_watcher_metadata_uses_unique_temp_file(tmp_watchers_dir, monkeypatch):
+    config_path = tmp_watchers_dir / "watcher.json"
+    captured: dict[str, object] = {}
+    original_named_temporary_file = process_utils.tempfile.NamedTemporaryFile
+
+    def fake_named_temporary_file(*args, **kwargs):
+        captured["dir"] = kwargs.get("dir")
+        captured["prefix"] = kwargs.get("prefix")
+        captured["suffix"] = kwargs.get("suffix")
+        captured["delete"] = kwargs.get("delete")
+        return original_named_temporary_file(*args, **kwargs)
+
+    monkeypatch.setattr(process_utils.tempfile, "NamedTemporaryFile", fake_named_temporary_file)
+
+    process_utils._persist_watcher_metadata(config_path, {"symbol": "AAPL", "pid": 123})
+
+    assert captured == {
+        "dir": tmp_watchers_dir,
+        "prefix": "watcher.json.",
+        "suffix": ".tmp",
+        "delete": False,
+    }
+    assert json.loads(config_path.read_text()) == {"pid": 123, "symbol": "AAPL"}
+    assert not (tmp_watchers_dir / "watcher.json.tmp").exists()
+
+
 def test_spawn_open_replaces_existing_watcher(tmp_watchers_dir, monkeypatch):
     symbol = "AAPL_PRUNE"
     side = "buy"

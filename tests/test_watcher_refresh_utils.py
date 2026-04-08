@@ -1,10 +1,13 @@
 """Tests for watcher refresh utilities."""
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from threading import Event, Thread
 
-import pytest
-
+import src.process_utils as process_utils
+import src.watcher_refresh_utils as watcher_refresh_utils
 from src.watcher_refresh_utils import (
+    find_existing_watcher_price,
     should_use_existing_watcher_prices,
     should_spawn_watcher,
 )
@@ -181,3 +184,362 @@ class TestShouldSpawnWatcher:
         assert should_spawn is False
         assert price is None
         assert reason == "invalid_new_price"
+
+
+def test_find_existing_watcher_price_uses_public_process_utils_loader(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    watcher_file = tmp_path / "BTCUSD_buy_entry_test.json"
+    watcher_file.write_text("{not valid json", encoding="utf-8")
+
+    metadata = {
+        "started_at": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),
+        "expiry_at": (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat(),
+        "limit_price": 101.25,
+    }
+
+    monkeypatch.setattr(process_utils, "load_watcher_metadata", lambda _path: dict(metadata))
+
+    price, reason = find_existing_watcher_price(
+        tmp_path,
+        "BTCUSD",
+        "buy",
+        "entry",
+        is_crypto=True,
+    )
+
+    assert price == 101.25
+    assert reason is not None and "keeping_original_plan" in reason
+
+
+def test_find_existing_watcher_price_uses_exit_takeprofit_field(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    watcher_file = tmp_path / "BTCUSD_sell_exit_test.json"
+    watcher_file.write_text("{not valid json", encoding="utf-8")
+
+    metadata = {
+        "started_at": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),
+        "expiry_at": (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat(),
+        "takeprofit_price": 202.5,
+    }
+
+    monkeypatch.setattr(process_utils, "load_watcher_metadata", lambda _path: dict(metadata))
+
+    price, reason = find_existing_watcher_price(
+        tmp_path,
+        "BTCUSD",
+        "sell",
+        "exit",
+        is_crypto=True,
+    )
+
+    assert price == 202.5
+    assert reason is not None and "keeping_original_plan" in reason
+
+
+def test_find_existing_watcher_price_rejects_unknown_mode(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    watcher_file = tmp_path / "BTCUSD_buy_weird_test.json"
+    watcher_file.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        process_utils,
+        "load_watcher_metadata",
+        lambda _path: (_ for _ in ()).throw(AssertionError("should not be called")),
+    )
+
+    price, reason = find_existing_watcher_price(
+        tmp_path,
+        "BTCUSD",
+        "buy",
+        "weird",
+        is_crypto=True,
+    )
+
+    assert price is None
+    assert reason == "unknown_watcher_mode"
+
+
+def test_find_existing_watcher_price_reuses_cached_directory_index(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    watcher_refresh_utils._WATCHER_FILE_INDEX_CACHE.clear()
+    watcher_refresh_utils._WATCHER_METADATA_CACHE.clear()
+    (tmp_path / "BTCUSD_buy_entry_test.json").write_text("{}", encoding="utf-8")
+    metadata = {
+        "started_at": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),
+        "expiry_at": (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat(),
+        "limit_price": 101.25,
+    }
+    monkeypatch.setattr(process_utils, "load_watcher_metadata", lambda _path: dict(metadata))
+
+    build_calls = 0
+    original_builder = watcher_refresh_utils._build_watcher_file_index
+
+    def counting_builder(watcher_dir: Path) -> dict[tuple[str, str, watcher_refresh_utils.WatcherMode], tuple[Path, ...]]:
+        nonlocal build_calls
+        build_calls += 1
+        return original_builder(watcher_dir)
+
+    monkeypatch.setattr(watcher_refresh_utils, "_build_watcher_file_index", counting_builder)
+
+    first_price, first_reason = find_existing_watcher_price(
+        tmp_path,
+        "BTCUSD",
+        "buy",
+        "entry",
+        is_crypto=True,
+    )
+    second_price, second_reason = find_existing_watcher_price(
+        tmp_path,
+        "BTCUSD",
+        "buy",
+        "entry",
+        is_crypto=True,
+    )
+
+    assert first_price == second_price == 101.25
+    assert first_reason == second_reason
+    assert build_calls == 1
+
+
+def test_find_existing_watcher_price_refreshes_cached_directory_index_when_listing_changes(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    watcher_refresh_utils._WATCHER_FILE_INDEX_CACHE.clear()
+    watcher_refresh_utils._WATCHER_METADATA_CACHE.clear()
+    (tmp_path / "BTCUSD_buy_entry_test.json").write_text("{}", encoding="utf-8")
+    metadata_by_name = {
+        "BTCUSD_buy_entry_test.json": {
+            "started_at": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),
+            "expiry_at": (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat(),
+            "limit_price": 101.25,
+        },
+        "ETHUSD_buy_entry_test.json": {
+            "started_at": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),
+            "expiry_at": (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat(),
+            "limit_price": 202.5,
+        },
+    }
+    monkeypatch.setattr(process_utils, "load_watcher_metadata", lambda path: dict(metadata_by_name[path.name]))
+
+    build_calls = 0
+    original_builder = watcher_refresh_utils._build_watcher_file_index
+
+    def counting_builder(watcher_dir: Path) -> dict[tuple[str, str, watcher_refresh_utils.WatcherMode], tuple[Path, ...]]:
+        nonlocal build_calls
+        build_calls += 1
+        return original_builder(watcher_dir)
+
+    listing_versions = iter((1, 2))
+    monkeypatch.setattr(
+        watcher_refresh_utils,
+        "_watcher_directory_listing_version",
+        lambda _watcher_dir: next(listing_versions),
+    )
+    monkeypatch.setattr(watcher_refresh_utils, "_build_watcher_file_index", counting_builder)
+
+    first_price, _first_reason = find_existing_watcher_price(
+        tmp_path,
+        "BTCUSD",
+        "buy",
+        "entry",
+        is_crypto=True,
+    )
+    (tmp_path / "ETHUSD_buy_entry_test.json").write_text("{}", encoding="utf-8")
+    second_price, second_reason = find_existing_watcher_price(
+        tmp_path,
+        "ETHUSD",
+        "buy",
+        "entry",
+        is_crypto=True,
+    )
+
+    assert first_price == 101.25
+    assert second_price == 202.5
+    assert second_reason is not None and "keeping_original_plan" in second_reason
+    assert build_calls == 2
+
+
+def test_find_existing_watcher_price_coalesces_concurrent_directory_index_cache_misses(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    watcher_refresh_utils._WATCHER_FILE_INDEX_CACHE.clear()
+    watcher_refresh_utils._WATCHER_FILE_INDEX_CACHE_INFLIGHT.clear()
+    watcher_refresh_utils._WATCHER_METADATA_CACHE.clear()
+    watcher_refresh_utils._WATCHER_METADATA_CACHE_INFLIGHT.clear()
+    watcher_file = tmp_path / "BTCUSD_buy_entry_test.json"
+    watcher_file.write_text("{}", encoding="utf-8")
+
+    metadata = {
+        "started_at": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),
+        "expiry_at": (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat(),
+        "limit_price": 101.25,
+    }
+
+    monkeypatch.setattr(process_utils, "load_watcher_metadata", lambda _path: dict(metadata))
+
+    build_calls = 0
+    builder_started = Event()
+    release_builder = Event()
+    original_builder = watcher_refresh_utils._build_watcher_file_index
+
+    def blocking_builder(
+        watcher_dir: Path,
+    ) -> dict[tuple[str, str, watcher_refresh_utils.WatcherMode], tuple[Path, ...]]:
+        nonlocal build_calls
+        build_calls += 1
+        builder_started.set()
+        release_builder.wait(timeout=5.0)
+        return original_builder(watcher_dir)
+
+    monkeypatch.setattr(watcher_refresh_utils, "_build_watcher_file_index", blocking_builder)
+
+    results: list[tuple[float | None, str | None]] = []
+
+    def run_lookup() -> None:
+        results.append(
+            find_existing_watcher_price(
+                tmp_path,
+                "BTCUSD",
+                "buy",
+                "entry",
+                is_crypto=True,
+            )
+        )
+
+    first = Thread(target=run_lookup)
+    second = Thread(target=run_lookup)
+    first.start()
+    assert builder_started.wait(timeout=5.0)
+    second.start()
+    release_builder.set()
+    first.join(timeout=5.0)
+    second.join(timeout=5.0)
+
+    assert len(results) == 2
+    assert [price for price, _reason in results] == [101.25, 101.25]
+    assert all(reason is not None and "keeping_original_plan" in reason for _, reason in results)
+    assert build_calls == 1
+
+
+def test_find_existing_watcher_price_reuses_cached_watcher_metadata(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    watcher_refresh_utils._WATCHER_FILE_INDEX_CACHE.clear()
+    watcher_refresh_utils._WATCHER_METADATA_CACHE.clear()
+    watcher_refresh_utils._WATCHER_METADATA_CACHE_INFLIGHT.clear()
+    watcher_file = tmp_path / "BTCUSD_buy_entry_test.json"
+    watcher_file.write_text("{}", encoding="utf-8")
+
+    metadata = {
+        "started_at": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),
+        "expiry_at": (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat(),
+        "limit_price": 101.25,
+    }
+
+    load_calls = 0
+
+    def counting_loader(_path: Path) -> dict:
+        nonlocal load_calls
+        load_calls += 1
+        return dict(metadata)
+
+    monkeypatch.setattr(process_utils, "load_watcher_metadata", counting_loader)
+
+    first_price, first_reason = find_existing_watcher_price(
+        tmp_path,
+        "BTCUSD",
+        "buy",
+        "entry",
+        is_crypto=True,
+    )
+    second_price, second_reason = find_existing_watcher_price(
+        tmp_path,
+        "BTCUSD",
+        "buy",
+        "entry",
+        is_crypto=True,
+    )
+
+    assert first_price == second_price == 101.25
+    assert first_reason == second_reason
+    assert load_calls == 1
+
+
+def test_find_existing_watcher_price_coalesces_concurrent_metadata_cache_misses(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    watcher_refresh_utils._WATCHER_FILE_INDEX_CACHE.clear()
+    watcher_refresh_utils._WATCHER_METADATA_CACHE.clear()
+    watcher_refresh_utils._WATCHER_METADATA_CACHE_INFLIGHT.clear()
+    watcher_file = tmp_path / "BTCUSD_buy_entry_test.json"
+    watcher_file.write_text("{}", encoding="utf-8")
+
+    metadata = {
+        "started_at": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),
+        "expiry_at": (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat(),
+        "limit_price": 101.25,
+    }
+
+    load_calls = 0
+    loader_started = Event()
+    release_loader = Event()
+
+    def blocking_loader(_path: Path) -> dict:
+        nonlocal load_calls
+        load_calls += 1
+        loader_started.set()
+        release_loader.wait(timeout=5.0)
+        return dict(metadata)
+
+    monkeypatch.setattr(process_utils, "load_watcher_metadata", blocking_loader)
+
+    results: list[tuple[float | None, str | None]] = []
+
+    def run_lookup() -> None:
+        results.append(
+            find_existing_watcher_price(
+                tmp_path,
+                "BTCUSD",
+                "buy",
+                "entry",
+                is_crypto=True,
+            )
+        )
+
+    first = Thread(target=run_lookup)
+    second = Thread(target=run_lookup)
+    first.start()
+    assert loader_started.wait(timeout=5.0)
+    second.start()
+    release_loader.set()
+    first.join(timeout=5.0)
+    second.join(timeout=5.0)
+
+    assert len(results) == 2
+    assert [price for price, _reason in results] == [101.25, 101.25]
+    assert all(reason is not None and "keeping_original_plan" in reason for _, reason in results)
+    assert load_calls == 1
+
+
+def test_watcher_price_field_accepts_enum_and_string_modes() -> None:
+    assert (
+        watcher_refresh_utils._watcher_price_field(watcher_refresh_utils.WatcherMode.ENTRY)
+        == "limit_price"
+    )
+    assert (
+        watcher_refresh_utils._watcher_price_field(watcher_refresh_utils.WatcherMode.EXIT)
+        == "takeprofit_price"
+    )
+    assert watcher_refresh_utils._watcher_price_field(" entry ") == "limit_price"
+    assert watcher_refresh_utils._watcher_price_field("bogus") is None

@@ -3,6 +3,7 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import re
 import socket
 import sys
 from dataclasses import dataclass
@@ -16,6 +17,12 @@ try:
     import fcntl
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError("alpaca_account_lock requires fcntl support") from exc
+
+
+MAX_ALPACA_ACCOUNT_NAME_LENGTH = 64
+SAFE_ALPACA_ACCOUNT_NAME_RE = re.compile(
+    rf"^[a-z0-9](?:[a-z0-9._-]{{0,{MAX_ALPACA_ACCOUNT_NAME_LENGTH - 2}}}[a-z0-9])?$"
+)
 
 
 @dataclass
@@ -79,8 +86,19 @@ def _lock_dir(state_dir: str | Path | None = None) -> Path:
     return resolve_state_dir(state_dir) / "account_locks"
 
 
+def normalize_alpaca_account_name(account_name: object) -> str:
+    normalized = str(account_name).strip().lower().replace(" ", "_")
+    if not normalized:
+        raise ValueError("account_name is required")
+    if ".." in normalized or "/" in normalized or "\\" in normalized:
+        raise ValueError(f"Unsupported Alpaca account name: {account_name}")
+    if not SAFE_ALPACA_ACCOUNT_NAME_RE.fullmatch(normalized):
+        raise ValueError(f"Unsupported Alpaca account name: {account_name}")
+    return normalized
+
+
 def lock_path_for_account(account_name: str, *, state_dir: str | Path | None = None) -> Path:
-    safe_account = str(account_name).strip().lower().replace("/", "_").replace(" ", "_")
+    safe_account = normalize_alpaca_account_name(account_name)
     return _lock_dir(state_dir) / f"{safe_account}.lock"
 
 

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import os
+from collections import OrderedDict
 from datetime import datetime, timezone
+from enum import StrEnum
 from pathlib import Path
+from threading import Event, Lock
 from typing import Dict, Optional, Tuple
 
 from src.logging_utils import setup_logging, get_log_filename
@@ -12,12 +15,208 @@ from src.logging_utils import setup_logging, get_log_filename
 # Detect if we're in hourly mode based on TRADE_STATE_SUFFIX env var
 _is_hourly = os.getenv("TRADE_STATE_SUFFIX", "") == "hourly"
 logger = setup_logging(get_log_filename("watcher_refresh_utils.log", is_hourly=_is_hourly))
+DEFAULT_CRYPTO_WATCHER_REUSE_MAX_AGE_HOURS = 24.0
+_WATCHER_FILE_INDEX_CACHE_MAX_ENTRIES = 128
+_WATCHER_METADATA_CACHE_MAX_ENTRIES = 512
+_WatcherLookupKey = tuple[str, str, "WatcherMode"]
+_WATCHER_FILE_INDEX_CACHE: OrderedDict[
+    tuple[Path, int],
+    dict[_WatcherLookupKey, tuple[Path, ...]],
+] = OrderedDict()
+_WATCHER_FILE_INDEX_CACHE_LOCK = Lock()
+_WATCHER_FILE_INDEX_CACHE_INFLIGHT: dict[tuple[Path, int], Event] = {}
+_WATCHER_METADATA_CACHE: OrderedDict[
+    tuple[Path, int, int],
+    Optional[Dict],
+] = OrderedDict()
+_WATCHER_METADATA_CACHE_LOCK = Lock()
+_WATCHER_METADATA_CACHE_INFLIGHT: dict[tuple[Path, int, int], Event] = {}
+
+
+class WatcherMode(StrEnum):
+    ENTRY = "entry"
+    EXIT = "exit"
+
+
+WATCHER_MODE_PRICE_FIELDS: dict[WatcherMode, str] = {
+    WatcherMode.ENTRY: "limit_price",
+    WatcherMode.EXIT: "takeprofit_price",
+}
+
+
+def _coerce_watcher_mode(mode: str | WatcherMode) -> WatcherMode | None:
+    if isinstance(mode, WatcherMode):
+        return mode
+    if isinstance(mode, str):
+        normalized = mode.strip().lower()
+        if not normalized:
+            return None
+        try:
+            return WatcherMode(normalized)
+        except ValueError:
+            return None
+    return None
+
+
+def _watcher_price_field(mode: str | WatcherMode) -> str | None:
+    resolved_mode = _coerce_watcher_mode(mode)
+    if resolved_mode is None:
+        return None
+    return WATCHER_MODE_PRICE_FIELDS.get(resolved_mode)
+
+
+def _watcher_lookup_key(
+    symbol: str,
+    side: str,
+    mode: WatcherMode,
+) -> _WatcherLookupKey:
+    return (str(symbol).upper(), str(side).lower(), mode)
+
+
+def _watcher_directory_listing_version(watcher_dir: Path) -> int | None:
+    try:
+        return watcher_dir.resolve(strict=False).stat().st_mtime_ns
+    except OSError:
+        return None
+
+
+def _prune_watcher_file_index_cache() -> None:
+    while len(_WATCHER_FILE_INDEX_CACHE) > _WATCHER_FILE_INDEX_CACHE_MAX_ENTRIES:
+        _WATCHER_FILE_INDEX_CACHE.popitem(last=False)
+
+
+def _build_watcher_file_index(watcher_dir: Path) -> dict[_WatcherLookupKey, tuple[Path, ...]]:
+    index: dict[_WatcherLookupKey, list[Path]] = {}
+    for watcher_file in sorted(watcher_dir.iterdir(), key=lambda path: path.name):
+        if watcher_file.suffix != ".json":
+            continue
+        stem_parts = watcher_file.stem.split("_", 3)
+        if len(stem_parts) < 4:
+            continue
+        resolved_mode = _coerce_watcher_mode(stem_parts[2])
+        if resolved_mode is None:
+            continue
+        lookup_key = _watcher_lookup_key(stem_parts[0], stem_parts[1], resolved_mode)
+        index.setdefault(lookup_key, []).append(watcher_file)
+    return {key: tuple(paths) for key, paths in index.items()}
+
+
+def _watcher_metadata_version(watcher_file: Path) -> tuple[Path, int, int] | None:
+    try:
+        resolved_file = watcher_file.resolve(strict=False)
+        stat_result = resolved_file.stat()
+    except OSError:
+        return None
+    return (resolved_file, stat_result.st_size, stat_result.st_mtime_ns)
+
+
+def _prune_watcher_metadata_cache() -> None:
+    while len(_WATCHER_METADATA_CACHE) > _WATCHER_METADATA_CACHE_MAX_ENTRIES:
+        _WATCHER_METADATA_CACHE.popitem(last=False)
+
+
+def _load_cached_watcher_metadata(watcher_file: Path) -> Optional[Dict]:
+    version = _watcher_metadata_version(watcher_file)
+    if version is None:
+        return None
+
+    should_load = False
+    with _WATCHER_METADATA_CACHE_LOCK:
+        cached = _WATCHER_METADATA_CACHE.get(version)
+        if cached is not None or version in _WATCHER_METADATA_CACHE:
+            _WATCHER_METADATA_CACHE.move_to_end(version)
+            return None if cached is None else dict(cached)
+        inflight = _WATCHER_METADATA_CACHE_INFLIGHT.get(version)
+        if inflight is None:
+            inflight = Event()
+            _WATCHER_METADATA_CACHE_INFLIGHT[version] = inflight
+            should_load = True
+
+    if not should_load:
+        inflight.wait()
+        with _WATCHER_METADATA_CACHE_LOCK:
+            cached = _WATCHER_METADATA_CACHE.get(version)
+            if cached is not None or version in _WATCHER_METADATA_CACHE:
+                _WATCHER_METADATA_CACHE.move_to_end(version)
+                return None if cached is None else dict(cached)
+        return None
+
+    # Import here to avoid circular dependency
+    from src.process_utils import load_watcher_metadata
+
+    metadata: Optional[Dict] = None
+    try:
+        metadata = load_watcher_metadata(watcher_file)
+        with _WATCHER_METADATA_CACHE_LOCK:
+            for existing_key in list(_WATCHER_METADATA_CACHE):
+                if existing_key[0] == version[0] and existing_key != version:
+                    del _WATCHER_METADATA_CACHE[existing_key]
+            _WATCHER_METADATA_CACHE[version] = None if metadata is None else dict(metadata)
+            _WATCHER_METADATA_CACHE.move_to_end(version)
+            _prune_watcher_metadata_cache()
+    finally:
+        with _WATCHER_METADATA_CACHE_LOCK:
+            inflight = _WATCHER_METADATA_CACHE_INFLIGHT.pop(version, None)
+            if inflight is not None:
+                inflight.set()
+
+    return None if metadata is None else dict(metadata)
+
+
+def _watcher_file_candidates(
+    watcher_dir: Path,
+    symbol: str,
+    side: str,
+    mode: WatcherMode,
+) -> tuple[Path, ...]:
+    resolved_dir = watcher_dir.resolve(strict=False)
+    listing_version = _watcher_directory_listing_version(resolved_dir)
+    if listing_version is None:
+        return ()
+    cache_key = (resolved_dir, listing_version)
+    should_build = False
+    with _WATCHER_FILE_INDEX_CACHE_LOCK:
+        cached = _WATCHER_FILE_INDEX_CACHE.get(cache_key)
+        if cached is not None:
+            _WATCHER_FILE_INDEX_CACHE.move_to_end(cache_key)
+            return cached.get(_watcher_lookup_key(symbol, side, mode), ())
+        inflight = _WATCHER_FILE_INDEX_CACHE_INFLIGHT.get(cache_key)
+        if inflight is None:
+            inflight = Event()
+            _WATCHER_FILE_INDEX_CACHE_INFLIGHT[cache_key] = inflight
+            should_build = True
+
+    if not should_build:
+        inflight.wait()
+        with _WATCHER_FILE_INDEX_CACHE_LOCK:
+            cached = _WATCHER_FILE_INDEX_CACHE.get(cache_key)
+            if cached is not None:
+                _WATCHER_FILE_INDEX_CACHE.move_to_end(cache_key)
+                return cached.get(_watcher_lookup_key(symbol, side, mode), ())
+        return ()
+
+    try:
+        cached = _build_watcher_file_index(resolved_dir)
+        with _WATCHER_FILE_INDEX_CACHE_LOCK:
+            for existing_key in list(_WATCHER_FILE_INDEX_CACHE):
+                if existing_key[0] == resolved_dir and existing_key != cache_key:
+                    del _WATCHER_FILE_INDEX_CACHE[existing_key]
+            _WATCHER_FILE_INDEX_CACHE[cache_key] = cached
+            _WATCHER_FILE_INDEX_CACHE.move_to_end(cache_key)
+            _prune_watcher_file_index_cache()
+    finally:
+        with _WATCHER_FILE_INDEX_CACHE_LOCK:
+            inflight = _WATCHER_FILE_INDEX_CACHE_INFLIGHT.pop(cache_key, None)
+            if inflight is not None:
+                inflight.set()
+
+    return cached.get(_watcher_lookup_key(symbol, side, mode), ())
 
 
 def should_use_existing_watcher_prices(
     watcher_metadata: Dict,
     is_crypto: bool,
-    max_age_hours: float = 24.0,
+    max_age_hours: float = DEFAULT_CRYPTO_WATCHER_REUSE_MAX_AGE_HOURS,
 ) -> Tuple[bool, Optional[str]]:
     """
     Determine if we should use existing watcher prices or refresh with new forecast.
@@ -74,9 +273,9 @@ def find_existing_watcher_price(
     watcher_dir: Path,
     symbol: str,
     side: str,
-    mode: str,
+    mode: str | WatcherMode,
     is_crypto: bool,
-    max_age_hours: float = 24.0,
+    max_age_hours: float = DEFAULT_CRYPTO_WATCHER_REUSE_MAX_AGE_HOURS,
 ) -> Tuple[Optional[float], Optional[str]]:
     """
     Find existing watcher and determine if its price should be reused.
@@ -97,14 +296,14 @@ def find_existing_watcher_price(
     if not watcher_dir.exists():
         return None, "watcher_dir_not_found"
 
-    # Import here to avoid circular dependency
-    from src.process_utils import _load_watcher_metadata
-
     # Search for existing watchers matching symbol/side/mode
-    pattern = f"{symbol}_{side}_{mode}_*.json"
-
-    for watcher_file in watcher_dir.glob(pattern):
-        metadata = _load_watcher_metadata(watcher_file)
+    resolved_mode = _coerce_watcher_mode(mode)
+    if resolved_mode is None:
+        logger.warning(f"Unknown watcher mode: {mode}")
+        return None, "unknown_watcher_mode"
+    price_field = WATCHER_MODE_PRICE_FIELDS[resolved_mode]
+    for watcher_file in _watcher_file_candidates(watcher_dir, symbol, side, resolved_mode):
+        metadata = _load_cached_watcher_metadata(watcher_file)
         if not metadata:
             continue
 
@@ -115,15 +314,7 @@ def find_existing_watcher_price(
         )
 
         if should_use:
-            # Extract the appropriate price field based on mode
-            if mode == "entry":
-                price = metadata.get("limit_price")
-            elif mode == "exit":
-                price = metadata.get("takeprofit_price")
-            else:
-                logger.warning(f"Unknown watcher mode: {mode}")
-                price = None
-
+            price = metadata.get(price_field)
             if price is not None:
                 logger.info(
                     f"{symbol} {side} {mode}: Using existing watcher price={price:.4f} ({reason})"
@@ -140,7 +331,7 @@ def find_existing_watcher_price(
 def should_spawn_watcher(
     existing_price: Optional[float],
     new_price: Optional[float],
-    mode: str,
+    mode: str | WatcherMode,
 ) -> Tuple[bool, Optional[float], str]:
     """
     Decide whether to spawn a watcher and which price to use.
