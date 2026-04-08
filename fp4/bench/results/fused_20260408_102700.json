@@ -1,0 +1,12 @@
+{
+  "bench": "bench_fused.py",
+  "timestamp": "20260408_102700",
+  "device": "cuda",
+  "unfused_sec": 2.346,
+  "fused_sec": 3.506,
+  "unfused_sps": 426.2,
+  "fused_sps": 285.3,
+  "speedup": 0.669,
+  "target_speedup": 1.5,
+  "verdict": "fused slower than unfused on this GPU/shape; do NOT enable fused linear+gelu"
+}

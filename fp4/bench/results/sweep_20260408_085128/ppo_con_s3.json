@@ -1,0 +1,86 @@
+{
+  "algo": "ppo",
+  "constrained": true,
+  "seed": 3,
+  "steps": 2000000,
+  "status": "ok",
+  "reason": "",
+  "returncode": 0,
+  "bench_record": {
+    "trainer": "fp4",
+    "seed": 3,
+    "steps": 2000000,
+    "date": "20260408_091630",
+    "config_path": "/nvme0n1-disk/code/stock-prediction/fp4/experiments/fp4_ppo_stocks12.yaml",
+    "smoke": false,
+    "available": true,
+    "train": {
+      "status": "ok",
+      "wall_sec": 176.46557251899503,
+      "gpu_peak_mb": 239.33544921875,
+      "trainer_output": {
+        "final_sortino": -0.44683021306991577,
+        "final_p10": -3.8359031677246094,
+        "mean_return": -1.2172777652740479,
+        "n_episodes": 960,
+        "steps_per_sec": 11490.47089675302,
+        "wall_sec": 173.95701342099346,
+        "gpu_peak_mb": 239.33544921875,
+        "device": "cuda",
+        "cuda_graph_used": true,
+        "env_backend": "gpu_trading_env",
+        "n_iters": 122,
+        "total_steps": 1998848,
+        "last_loss": -0.3438912630081177,
+        "last_entropy": 6.916475296020508,
+        "last_monthly_return": 0.0,
+        "last_avg_max_dd": 0.0,
+        "last_lambda_monthly_pnl": 0.0,
+        "last_lambda_max_dd": 0.0,
+        "last_leverage_cap": 0.0,
+        "lagrangian_enabled": false,
+        "leverage_curriculum_enabled": false
+      }
+    },
+    "eval": {
+      "status": "failed_fast",
+      "backend": "same_as_train",
+      "eval_env_backend": "gpu_trading_env",
+      "n_envs": 128,
+      "n_steps": 1856,
+      "n_loaded_weights": 4,
+      "by_slippage": {
+        "0": {
+          "summary": {
+            "p10_return": -0.04936681687831879,
+            "median_return": -0.04936681687831879,
+            "p90_return": -0.04936681687831879,
+            "mean_return": -0.04936681687831879,
+            "sortino": -0.05574699405010335,
+            "max_drawdown": 0.11877792328596115,
+            "n_neg": 128,
+            "n_windows": 128
+          },
+          "p10_return": 0.0,
+          "median_return": 0.0,
+          "max_drawdown": 0.0,
+          "sortino": 0.0
+        }
+      },
+      "failed_reason": "median running PnL=-0.0494 < 0 after 128 steps",
+      "steps_run": 128,
+      "shape_mismatch": {
+        "policy_obs_dim": 7,
+        "marketsim_obs_dim": 209,
+        "policy_act_dim": 4,
+        "marketsim_act_dim": 25
+      },
+      "checkpoint": "/nvme0n1-disk/code/stock-prediction/fp4/bench/results/_ckpt_fp4_s3_20260408_091630/final.pt"
+    },
+    "steps_per_sec": 11333.65546293579,
+    "status": "ok",
+    "monthly_return": 0.0,
+    "hit_27pct": false,
+    "current_leverage_cap": 1.0
+  }
+}

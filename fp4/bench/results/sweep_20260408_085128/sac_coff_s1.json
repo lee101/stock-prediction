@@ -1,0 +1,50 @@
+{
+  "algo": "sac",
+  "constrained": false,
+  "seed": 1,
+  "steps": 2000000,
+  "status": "ok",
+  "reason": "",
+  "returncode": 0,
+  "bench_record": {
+    "trainer": "sac",
+    "seed": 1,
+    "steps": 2000000,
+    "date": "20260408_093724",
+    "config_path": "/nvme0n1-disk/code/stock-prediction/fp4/experiments/fp4_ppo_stocks12.yaml",
+    "smoke": false,
+    "available": true,
+    "train": {
+      "status": "ok",
+      "wall_sec": 861.8038392171729,
+      "gpu_peak_mb": 97.888671875,
+      "trainer_output": {
+        "final_sortino": -0.07838032394647598,
+        "final_p10": 0.0,
+        "mean_return": -0.0047792247496545315,
+        "n_episodes": 960,
+        "steps_per_sec": 2327.951588425734,
+        "wall_sec": 859.1243950019125,
+        "gpu_peak_mb": 97.888671875,
+        "device": "cuda",
+        "total_steps": 2000000,
+        "replay_size": 100000,
+        "last_q_loss": 2542733650558976.0,
+        "last_actor_loss": 4513904128.0,
+        "last_alpha": 10904739.0,
+        "algorithm": "sac",
+        "env_backend": "gpu_trading_env"
+      }
+    },
+    "eval": {
+      "status": "skip",
+      "reason": "could not find a state_dict in checkpoint keys: ['actor', 'q1', 'q2', 'q1_tgt', 'q2_tgt', 'log_alpha', 'metrics', 'cfg', 'seed']",
+      "checkpoint": "/nvme0n1-disk/code/stock-prediction/fp4/bench/results/_ckpt_sac_s1_20260408_093724/final.pt"
+    },
+    "steps_per_sec": 2320.7137274031147,
+    "status": "ok",
+    "monthly_return": 0.0,
+    "hit_27pct": false,
+    "current_leverage_cap": 1.0
+  }
+}
