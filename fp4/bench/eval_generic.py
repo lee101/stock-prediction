@@ -189,7 +189,27 @@ def _run_slippage_sweep(
     max_leverage: float,
     seed: int,
     decision_lag: int = 2,
+    fail_fast: bool = True,
+    fail_fast_max_dd: float = 0.20,
+    fail_fast_neg_window: bool = True,
+    fail_fast_min_completed: int = 3,
 ) -> Dict[str, Any]:
+    """Run a per-slippage policy eval through the pufferlib_market C env.
+
+    ``fail_fast`` (default True) bails out as soon as a clearly-bad experiment
+    is detected so we don't burn time + GPU on a doomed checkpoint:
+
+    - ``fail_fast_max_dd`` — if ANY completed window's max_drawdown exceeds
+      this threshold (default 0.20 = 20%), the sweep cell aborts.
+    - ``fail_fast_neg_window`` — if any completed window has total_return < 0
+      AND we have at least ``fail_fast_min_completed`` windows finished, the
+      sweep cell aborts. The min_completed gate (default 3) prevents bailing
+      on a single unlucky first window.
+
+    On early exit the cell sets ``status="failed_fast"`` and includes a
+    ``failed_reason`` so the caller can skip expensive followups
+    (e.g. video rendering).
+    """
     import torch
     from pufferlib_market import binding
 
@@ -243,9 +263,11 @@ def _run_slippage_sweep(
             completed: List[Dict[str, float]] = [None] * n_windows  # type: ignore
             active = np.ones(n_windows, dtype=bool)
             obs_cpu = torch.from_numpy(obs_bufs)
+            failed_fast_reason: Optional[str] = None
+            n_done = 0
 
             for _step in range(eval_hours + 10):
-                if not active.any():
+                if not active.any() or failed_fast_reason is not None:
                     break
                 with torch.inference_mode():
                     obs_t = obs_cpu.to(device, non_blocking=True)
@@ -261,12 +283,31 @@ def _run_slippage_sweep(
                     if term_bufs[i] or trunc_bufs[i]:
                         env_handle = binding.vec_env_at(vec_handle, i)
                         env_data = binding.env_get(env_handle)
-                        completed[i] = {
+                        rec = {
                             "total_return": float(env_data.get("total_return", 0.0)),
                             "sortino": float(env_data.get("sortino", 0.0)),
                             "max_drawdown": float(env_data.get("max_drawdown", 0.0)),
                         }
+                        completed[i] = rec
                         active[i] = False
+                        n_done += 1
+                        # Early-exit checks against the just-completed window.
+                        if fail_fast:
+                            if rec["max_drawdown"] > float(fail_fast_max_dd):
+                                failed_fast_reason = (
+                                    f"window {i} max_drawdown="
+                                    f"{rec['max_drawdown']:.3f} > {fail_fast_max_dd:.3f}"
+                                )
+                                break
+                            if (fail_fast_neg_window
+                                    and rec["total_return"] < 0.0
+                                    and n_done >= int(fail_fast_min_completed)):
+                                failed_fast_reason = (
+                                    f"window {i} total_return="
+                                    f"{rec['total_return']:.4f} < 0 "
+                                    f"after {n_done} completed"
+                                )
+                                break
         finally:
             try:
                 binding.vec_close(vec_handle)
@@ -277,7 +318,21 @@ def _run_slippage_sweep(
         rets = [c["total_return"] for c in valid]
         sortinos = [c["sortino"] for c in valid]
         maxdds = [c["max_drawdown"] for c in valid]
-        out_by_bps[str(int(bps))] = _summarise_windows(rets, sortinos, maxdds)
+        cell = _summarise_windows(rets, sortinos, maxdds)
+        if failed_fast_reason is not None:
+            cell["failed_fast"] = True
+            cell["failed_reason"] = failed_fast_reason
+            cell["n_completed_before_bail"] = int(n_done)
+            # If the very first slip cell already failed-fast, propagate to
+            # the top-level status so callers (eval_100d.py, sweep.py) can
+            # skip downstream work.
+            out_by_bps[str(int(bps))] = cell
+            return {
+                "status": "failed_fast",
+                "failed_reason": failed_fast_reason,
+                "by_slippage": out_by_bps,
+            }
+        out_by_bps[str(int(bps))] = cell
     return {"status": "ok", "by_slippage": out_by_bps}
 
 
@@ -338,6 +393,13 @@ def _same_backend_eval(
 
     eval_steps = max(64, int(n_windows) * 32)
 
+    # Same fail-fast knobs as the marketsim path so fp4 trainers benefit too.
+    eval_cfg = (cfg or {}).get("eval", {}) if isinstance(cfg, dict) else {}
+    fail_fast = bool(eval_cfg.get("fail_fast", True))
+    fail_fast_max_dd = float(eval_cfg.get("fail_fast_max_dd", 0.20))
+    fail_fast_neg_window = bool(eval_cfg.get("fail_fast_neg_window", True))
+    fail_fast_check_every = int(eval_cfg.get("fail_fast_check_every", 32))
+
     # Opt-in: attach a ReplayRecorder so we can render an MP4 + HTML scrubber
     # of this exact eval rollout. Slow (~secs), so it's only wired when the
     # caller asks for it. The recorder captures env 0 of the batch.
@@ -364,8 +426,10 @@ def _same_backend_eval(
     sum_ret = torch.zeros_like(rewards_per_env)
     n_count = torch.zeros_like(rewards_per_env)
 
+    failed_fast_reason: Optional[str] = None
+    steps_run = 0
     with torch.no_grad():
-        for _ in range(eval_steps):
+        for _step_i in range(eval_steps):
             logits = policy(obs)
             # The shim outputs (..., act_dim). Trainer/SAC use continuous
             # actions; pick mean (== logits) and clamp to [-1, 1] so we don't
@@ -388,6 +452,26 @@ def _same_backend_eval(
             sum_ret = sum_ret + reward
             sum_neg_sq = sum_neg_sq + torch.where(reward < 0, reward * reward, torch.zeros_like(reward))
             n_count = n_count + 1.0
+            steps_run += 1
+            # Periodic fail-fast check (every K steps to keep host syncs cheap):
+            # bail if any env's running drawdown crossed the threshold or, after
+            # the buffer steps, any env's running PnL went negative.
+            if fail_fast and (steps_run % fail_fast_check_every) == 0:
+                worst_dd = float(drawdown_per_env.max().item())
+                if worst_dd > fail_fast_max_dd:
+                    failed_fast_reason = (
+                        f"running max_drawdown={worst_dd:.3f} > {fail_fast_max_dd:.3f} "
+                        f"after {steps_run} steps"
+                    )
+                    break
+                if fail_fast_neg_window and steps_run >= 64:
+                    median_running = float(rewards_per_env.median().item())
+                    if median_running < 0.0:
+                        failed_fast_reason = (
+                            f"median running PnL={median_running:.4f} < 0 "
+                            f"after {steps_run} steps"
+                        )
+                        break
 
     returns = rewards_per_env.detach().cpu().numpy().tolist()
     drawdowns = drawdown_per_env.detach().cpu().numpy().tolist()
@@ -405,7 +489,7 @@ def _same_backend_eval(
 
     summary = _summarise_windows(returns, sortinos, drawdowns)
     out: Dict[str, Any] = {
-        "status": "ok",
+        "status": "failed_fast" if failed_fast_reason is not None else "ok",
         "backend": "same_as_train",
         "eval_env_backend": handle.backend_name,
         "n_envs": int(handle.num_envs),
@@ -417,9 +501,15 @@ def _same_backend_eval(
                               "max_drawdown": summary.get("median_max_drawdown", 0.0),
                               "sortino": summary.get("median_sortino", 0.0)}},
     }
+    if failed_fast_reason is not None:
+        out["failed_reason"] = failed_fast_reason
+        out["steps_run"] = int(steps_run)
 
     # ---- Render the captured trajectory into MP4 + HTML if requested ----
-    if recorder is not None and video_out_dir is not None:
+    # Skip the (slow) video render on failed_fast experiments — saves the
+    # ~1-3s render cost per dud cell across a sweep.
+    if (recorder is not None and video_out_dir is not None
+            and failed_fast_reason is None):
         try:
             from fp4.fp4.replay_recorder import trajectory_to_marketsim_trace
             from fp4.bench.render_replay import render_videos
@@ -523,4 +613,8 @@ def evaluate_policy_file(
         max_leverage=float(env_cfg.get("max_leverage_scalar_fallback", 1.5)),
         seed=int(eval_cfg.get("seed", 1337)),
         decision_lag=int(eval_cfg.get("decision_lag", env_cfg.get("decision_lag", 2))),
+        fail_fast=bool(eval_cfg.get("fail_fast", True)),
+        fail_fast_max_dd=float(eval_cfg.get("fail_fast_max_dd", 0.20)),
+        fail_fast_neg_window=bool(eval_cfg.get("fail_fast_neg_window", True)),
+        fail_fast_min_completed=int(eval_cfg.get("fail_fast_min_completed", 3)),
     )
