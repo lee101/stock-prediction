@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+import src.autoresearch_stock.prepare as stock_prepare
 from src.autoresearch_stock.prepare import ISO_FORMAT, evaluate_model, load_live_spread_profile, prepare_task, resolve_task_config
 from src.trade_stock_utils import expected_cost_bps
 
@@ -139,6 +140,47 @@ def test_prepare_task_and_evaluate_model_hourly(tmp_path: Path) -> None:
     summary = result["summary"]
     assert summary["scenario_count"] == 2.0
     assert np.isfinite(summary["robust_score"])
+
+
+def test_prepare_task_hourly_does_not_depend_on_path_exists_precheck(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_root = tmp_path / "hourly"
+    data_root.mkdir()
+    timestamps = _hourly_market_timestamps(96)
+    _write_symbol_csv(data_root, "AAPL", timestamps, sign=1.0)
+    _write_symbol_csv(data_root, "DBX", timestamps, sign=-1.0)
+
+    config = resolve_task_config(
+        frequency="hourly",
+        symbols=("AAPL", "DBX"),
+        data_root=data_root,
+        sequence_length=8,
+        hold_bars=3,
+        eval_windows=(8, 16),
+        max_positions=2,
+        dashboard_db_path=tmp_path / "missing.db",
+    )
+    original_exists = Path.exists
+
+    def _fake_exists(self: Path) -> bool:
+        if self.name in {"AAPL.csv", "DBX.csv"} and self.parent == data_root:
+            return False
+        return original_exists(self)
+
+    monkeypatch.setattr(Path, "exists", _fake_exists)
+
+    task = prepare_task(config)
+
+    assert task.train_features.shape[0] > 0
+    assert len(task.scenarios) == 2
+
+
+def test_try_read_symbol_bars_from_path_returns_none_for_missing_file(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.csv"
+
+    assert stock_prepare._try_read_symbol_bars_from_path(missing, "AAPL") is None
 
 
 def test_prepare_task_daily(tmp_path: Path) -> None:
