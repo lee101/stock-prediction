@@ -374,6 +374,71 @@ def test_prepare_action_inputs_stacks_feature_and_price_matrices() -> None:
     assert timestamps[0] == pd.Timestamp("2026-01-01T00:00:00Z")
 
 
+def test_generate_policy_actions_uses_precomputed_arrays(monkeypatch) -> None:
+    class _ExplodingFrame:
+        def __len__(self) -> int:
+            return 4
+
+        def __getitem__(self, key):  # noqa: ANN001
+            raise AssertionError(f"aligned frame access should be avoided after precompute: {key}")
+
+    seen_prices: list[dict[str, float]] = []
+
+    class _FakeTrader:
+        def __init__(self) -> None:
+            self.SYMBOLS = ["AAPL", "MSFT"]
+            self.cash = 0.0
+            self.position_qty = 0.0
+            self.entry_price = 0.0
+            self.current_position = None
+            self.step = 0
+            self.hold_hours = 0
+
+        def get_signal(self, features, prices):  # noqa: ANN001
+            assert features.shape == (2, 16)
+            seen_prices.append(dict(prices))
+            return TradingSignal("flat", None, None, 0.0, 0.0, 0.0, 0.0)
+
+    monkeypatch.setattr(validate, "_align_symbol_frames", lambda bars, symbols: {"AAPL": _ExplodingFrame(), "MSFT": _ExplodingFrame()})
+    monkeypatch.setattr(validate, "_load_trader_for_timeframe", lambda **kwargs: _FakeTrader())
+    monkeypatch.setattr(validate, "_build_feature_history", lambda aligned_frames, timeframe: {})
+    monkeypatch.setattr(
+        validate,
+        "_prepare_action_inputs",
+        lambda aligned_frames, feature_history, symbols: (
+            np.zeros((4, 2, 16), dtype=np.float32),
+            np.asarray(
+                [
+                    [100.0, 200.0],
+                    [101.0, 201.0],
+                    [102.0, 202.0],
+                    [103.0, 203.0],
+                ],
+                dtype=np.float64,
+            ),
+            tuple(pd.date_range("2026-01-01T00:00:00Z", periods=4, freq="h")),
+        ),
+    )
+
+    actions, stats = validate._generate_policy_actions(
+        bars=_make_bars(),
+        checkpoint="unused.pt",
+        symbols=["AAPL", "MSFT"],
+        timeframe="hourly",
+        device="cpu",
+        long_only=False,
+        min_history_bars=1,
+    )
+
+    assert stats["action_timestamps"] == 3
+    assert len(actions) == 6
+    assert seen_prices == [
+        {"AAPL": 101.0, "MSFT": 201.0},
+        {"AAPL": 102.0, "MSFT": 202.0},
+        {"AAPL": 103.0, "MSFT": 203.0},
+    ]
+
+
 def test_parse_args_supports_json_only_and_output_json() -> None:
     args = validate.parse_args(
         [
