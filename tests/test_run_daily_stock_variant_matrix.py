@@ -13,6 +13,18 @@ def test_parse_args_defaults_to_current_vs_candidates() -> None:
     assert args.checkpoint == sweep_mod.daily_stock.DEFAULT_CHECKPOINT
 
 
+def test_resolve_preset_returns_named_preset() -> None:
+    preset = sweep_mod._resolve_preset("promising_only")
+
+    assert preset.name == "promising_only"
+    assert "beat the current live-equivalent baseline" in preset.description
+    assert [variant.name for variant in preset.variants] == [
+        "single_static_25",
+        "portfolio2_static_50",
+        "portfolio3_static_50",
+    ]
+
+
 def test_normalize_symbols_uses_defaults_when_omitted() -> None:
     assert sweep_mod._normalize_symbols(None) == list(sweep_mod.daily_stock.DEFAULT_SYMBOLS)
 
@@ -27,6 +39,7 @@ def test_main_dry_run_prints_resolved_config(capsys) -> None:
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["preset"] == "promising_only"
+    assert "beat the current live-equivalent baseline" in payload["preset_description"]
     assert payload["days"] == 120
     assert payload["symbols"] == ["NVDA", "MSFT"]
     assert [item["name"] for item in payload["variants"]] == [
