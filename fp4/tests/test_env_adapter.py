@@ -79,6 +79,15 @@ def test_gpu_trading_env_backend_or_skip():
 def test_auto_falls_back_when_no_cuda():
     if torch.cuda.is_available():
         pytest.skip("auto-fallback path is only meaningful on CPU-only boxes")
+    # If market_sim_py is importable we don't expect a stub fallback even on
+    # CPU-only boxes — the binding builds against CPU torch fine. Skip in
+    # that case so the test still asserts the genuine fallback path on
+    # systems where market_sim_py is unavailable.
+    try:
+        import market_sim_py  # noqa: F401
+        pytest.skip("market_sim_py is importable; stub fallback not exercised")
+    except Exception:
+        pass
     h = make_env({}, num_envs=2, obs_dim=4, act_dim=2,
                  device=torch.device("cpu"), seed=0)
     assert h.backend_name == "stub"

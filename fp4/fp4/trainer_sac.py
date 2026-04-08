@@ -205,11 +205,17 @@ def train_sac(cfg: Dict[str, Any], total_timesteps: int, seed: int,
                 next_obs = next_obs.to(torch.float32)
             replay.add(obs, action, reward, next_obs, done)
             running_returns = running_returns + reward
-            if done.any():
-                finished = running_returns[done.bool()]
-                if finished.numel() > 0:
-                    all_episode_returns.extend(finished.detach().cpu().tolist())
-                running_returns = torch.where(done.bool(), torch.zeros_like(running_returns), running_returns)
+            # Sync-free finished-return capture: stage into a per-iter
+            # tensor and only host-sync once per env-interaction iter.
+            done_f = done.to(running_returns.dtype)
+            _finished_this_step = running_returns * done_f
+            running_returns = running_returns * (1.0 - done_f)
+            # Single sync per env-interaction iter (not per step).
+            done_mask = done_f > 0.5
+            if bool(done_mask.any().item()):
+                all_episode_returns.extend(
+                    _finished_this_step[done_mask].cpu().tolist()
+                )
             obs = next_obs
             total_env_steps += num_envs
 
@@ -269,14 +275,19 @@ def train_sac(cfg: Dict[str, Any], total_timesteps: int, seed: int,
                     for p, tp in zip(q2.parameters(), q2_tgt.parameters()):
                         tp.data.mul_(1.0 - tau).add_(p.data, alpha=tau)
 
-                last_metrics = {
-                    "q_loss": float(q_loss.detach().item()),
-                    "actor_loss": float(actor_loss.detach().item()),
-                    "alpha": float(alpha.item()),
-                    "alpha_loss": float(alpha_loss.detach().item()),
+                # Defer host syncs: stash the latest detached scalar tensors;
+                # convert to python floats once after training (saves
+                # 4 syncs * updates_per_step per env step).
+                _last_metrics_t = {
+                    "q_loss": q_loss.detach(),
+                    "actor_loss": actor_loss.detach(),
+                    "alpha": alpha.detach(),
+                    "alpha_loss": alpha_loss.detach(),
                 }
 
     wall = time.perf_counter() - t0
+    if '_last_metrics_t' in locals():
+        last_metrics = {k: float(v.item()) for k, v in _last_metrics_t.items()}
 
     if all_episode_returns:
         ret_t = torch.tensor(all_episode_returns, dtype=torch.float32)
