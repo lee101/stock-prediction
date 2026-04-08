@@ -147,6 +147,7 @@ def make_policy_fn(
     policy: nn.Module,
     *,
     num_symbols: int,
+    tradable_mask: torch.Tensor | None = None,
     disable_shorts: bool = False,
     shortable_mask: torch.Tensor | None = None,
     deterministic: bool = True,
@@ -160,6 +161,8 @@ def make_policy_fn(
         obs_t = torch.from_numpy(obs.astype(np.float32, copy=False)).to(device=device).view(1, -1)
         with torch.no_grad():
             logits, _ = policy(obs_t)
+        if tradable_mask is not None:
+            logits = _mask_disallowed_symbols(logits, num_symbols=num_symbols, tradable_mask=tradable_mask)
         if disable_shorts:
             logits = _mask_all_shorts(logits, num_symbols=num_symbols)
         elif shortable_mask is not None:
@@ -177,6 +180,27 @@ def make_policy_fn(
         return pending_actions.popleft()
 
     return _policy_fn
+
+
+def _mask_disallowed_symbols(
+    logits: torch.Tensor,
+    *,
+    num_symbols: int,
+    tradable_mask: torch.Tensor,
+) -> torch.Tensor:
+    if tradable_mask.numel() != num_symbols:
+        raise ValueError("tradable_mask length mismatch")
+    if tradable_mask.dtype is not torch.bool:
+        tradable_mask = tradable_mask.to(torch.bool)
+    if bool(torch.all(tradable_mask)):
+        return logits
+    masked = logits.clone()
+    min_val = torch.finfo(masked.dtype).min
+    disallowed = (~tradable_mask).nonzero(as_tuple=False).view(-1).tolist()
+    for sym_idx in disallowed:
+        masked[:, 1 + int(sym_idx)] = min_val
+        masked[:, 1 + num_symbols + int(sym_idx)] = min_val
+    return masked
 
 
 def evaluate_period(

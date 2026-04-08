@@ -29,6 +29,7 @@ def _fake_main_args(tmp_path: Path, **overrides) -> SimpleNamespace:
         "short_borrow_apr": 0.0,
         "disable_shorts": False,
         "shortable_symbols": None,
+        "tradable_symbols": None,
         "decision_lag": 0,
         "deterministic": True,
         "no_early_stop": False,
@@ -170,6 +171,33 @@ def test_load_policy_prefers_checkpoint_encoder_norm_flag(tmp_path: Path) -> Non
         )
 
     assert loaded.policy._use_encoder_norm is False
+
+
+def test_mask_disallowed_symbols_masks_long_and_short_blocks() -> None:
+    logits = torch.zeros((1, 9), dtype=torch.float32)
+
+    masked = eval_mod._mask_disallowed_symbols(
+        logits,
+        num_symbols=2,
+        per_symbol_actions=2,
+        tradable_mask=torch.tensor([True, False], dtype=torch.bool),
+    )
+
+    min_val = torch.finfo(masked.dtype).min
+    assert torch.isfinite(masked[0, 0])
+    assert torch.isfinite(masked[0, 1])
+    assert torch.isfinite(masked[0, 2])
+    assert masked[0, 3] == min_val
+    assert masked[0, 4] == min_val
+    assert torch.isfinite(masked[0, 5])
+    assert torch.isfinite(masked[0, 6])
+    assert masked[0, 7] == min_val
+    assert masked[0, 8] == min_val
+
+
+def test_build_tradable_mask_rejects_unknown_symbols() -> None:
+    with pytest.raises(ValueError, match="unknown symbols: SYM9"):
+        eval_mod._build_tradable_mask(["SYM0", "SYM1"], "SYM0,SYM9")
 
 
 
@@ -430,6 +458,58 @@ def test_main_moves_shortable_mask_once(tmp_path: Path) -> None:
         eval_mod.main()
 
     assert fake_mask.to_calls == [torch.device("cpu")]
+
+
+def test_main_applies_tradable_symbol_mask_and_reports_subset(tmp_path: Path) -> None:
+    fake_args = _fake_main_args(
+        tmp_path,
+        out=str(tmp_path / "summary.json"),
+        tradable_symbols="SYM0",
+    )
+    fake_result = SimpleNamespace(
+        total_return=0.1,
+        sortino=0.8,
+        max_drawdown=0.05,
+        num_trades=2,
+        win_rate=0.5,
+    )
+    seen_actions: list[int] = []
+
+    class FakePolicy:
+        def __call__(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+            logits = torch.tensor([[0.0, 3.0, 10.0, -1.0, 5.0]], dtype=torch.float32)
+            value = torch.tensor([0.0], dtype=torch.float32)
+            return logits, value
+
+        def eval(self) -> FakePolicy:
+            return self
+
+    loaded = eval_mod.LoadedPolicy(
+        policy=FakePolicy(),
+        arch="mlp",
+        hidden_size=16,
+        action_allocation_bins=1,
+        action_level_bins=1,
+        action_max_offset_bps=0.0,
+    )
+
+    def _simulate_once(window, policy_fn, **kwargs):
+        obs = np.zeros((39,), dtype=np.float32)
+        seen_actions.append(policy_fn(obs))
+        return fake_result
+
+    with (
+        patch.object(eval_mod.argparse.ArgumentParser, "parse_args", return_value=fake_args),
+        patch.object(eval_mod, "load_policy", return_value=loaded),
+        patch.object(eval_mod, "read_mktd", return_value=_make_data(40, num_symbols=2)),
+        patch.object(eval_mod, "simulate_daily_policy", side_effect=_simulate_once),
+    ):
+        eval_mod.main()
+
+    out = json.loads(Path(fake_args.out).read_text())
+    assert seen_actions == [1, 1, 1]
+    assert out["tradable_symbols"] == ["SYM0"]
+    assert out["summary"]["tradable_symbols"] == ["SYM0"]
 
 
 def test_main_uses_shared_checkpoint_loader_boundary(tmp_path: Path) -> None:
