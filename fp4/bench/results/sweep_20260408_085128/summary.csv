@@ -1,0 +1,73 @@
+algo,constrained,seed,steps,status,reason,wall_sec,sps,median_5bps,p10_5bps,sortino_5bps,max_dd_5bps,n_neg_5bps,result_path
+ppo,off,0,2000000,ok,,181.319,11030.26,-1.2387,-4.02884,-0.442149,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/fp4_s0_20260408_085130.json
+ppo,off,1,2000000,ok,,175.242,11412.77,-1.31673,-3.82595,-0.486312,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/fp4_s1_20260408_085436.json
+ppo,off,2,2000000,ok,,189.238,10568.68,-1.23785,-4.17832,-0.45648,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/fp4_s2_20260408_085738.json
+ppo,off,3,2000000,ok,,182.500,10958.90,-1.21728,-3.8359,-0.44683,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/fp4_s3_20260408_090052.json
+ppo,off,4,2000000,ok,,183.143,10920.40,-1.47264,-6.63088,-0.43674,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/fp4_s4_20260408_090400.json
+ppo,on,0,2000000,ok,,182.806,10940.57,-1.2387,-4.02884,-0.442149,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/fp4_s0_20260408_090709.json
+ppo,on,1,2000000,ok,,182.760,10943.29,-1.31673,-3.82595,-0.486312,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/fp4_s1_20260408_091018.json
+ppo,on,2,2000000,ok,,179.290,11155.12,-1.23785,-4.17832,-0.45648,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/fp4_s2_20260408_091326.json
+ppo,on,3,2000000,ok,,176.466,11333.66,-1.21728,-3.8359,-0.44683,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/fp4_s3_20260408_091630.json
+ppo,on,4,2000000,ok,,202.578,9872.76,-1.47264,-6.63088,-0.43674,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/fp4_s4_20260408_091932.json
+sac,off,0,2000000,ok,,860.256,2324.89,-0.00447532,0,-0.0790328,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/sac_s0_20260408_092300.json
+sac,off,1,2000000,ok,,861.804,2320.71,-0.00477922,0,-0.0783803,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/sac_s1_20260408_093724.json
+sac,off,2,2000000,error,"AcceleratorError: CUDA error: out of memory
+Search for `cudaErrorMemoryAllocation' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+",0.000,0.00,,,,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/sac_s2_20260408_095150.json
+sac,off,3,2000000,error,"AcceleratorError: CUDA error: out of memory
+Search for `cudaErrorMemoryAllocation' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+",0.000,0.00,,,,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/sac_s3_20260408_095156.json
+sac,off,4,2000000,error,OutOfMemoryError: CUDA out of memory. Tried to allocate 20.00 MiB. GPU 0 has a total capacity of 31.36 GiB of which 10.88 MiB is free. Process 356947 has 1.15 GiB memory in use. Process 670615 has 1.12 GiB memory in use. Process 1042630 has 1.04 GiB memory in use. Process 1077054 has 26.70 GiB memor,0.000,0.00,,,,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/sac_s4_20260408_095200.json
+sac,on,0,2000000,error,"AcceleratorError: CUDA error: out of memory
+Search for `cudaErrorMemoryAllocation' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+",0.000,0.00,,,,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/sac_s0_20260408_095207.json
+sac,on,1,2000000,error,"AcceleratorError: CUDA error: out of memory
+Search for `cudaErrorMemoryAllocation' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+",0.000,0.00,,,,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/sac_s1_20260408_095213.json
+sac,on,2,2000000,error,"AcceleratorError: CUDA error: out of memory
+Search for `cudaErrorMemoryAllocation' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+",0.000,0.00,,,,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/sac_s2_20260408_095219.json
+sac,on,3,2000000,error,"AcceleratorError: CUDA error: out of memory
+Search for `cudaErrorMemoryAllocation' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+",0.000,0.00,,,,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/sac_s3_20260408_095223.json
+sac,on,4,2000000,error,"AcceleratorError: CUDA error: out of memory
+Search for `cudaErrorMemoryAllocation' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+",0.000,0.00,,,,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/sac_s4_20260408_095228.json
+qr_ppo,off,0,2000000,error,"AcceleratorError: CUDA error: out of memory
+Search for `cudaErrorMemoryAllocation' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+",0.000,0.00,,,,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/qr_ppo_s0_20260408_095233.json
+qr_ppo,off,1,2000000,error,"AcceleratorError: CUDA error: out of memory
+Search for `cudaErrorMemoryAllocation' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+",0.000,0.00,,,,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/qr_ppo_s1_20260408_095237.json
+qr_ppo,off,2,2000000,error,"AcceleratorError: CUDA error: out of memory
+Search for `cudaErrorMemoryAllocation' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+",0.000,0.00,,,,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/qr_ppo_s2_20260408_095243.json
+qr_ppo,off,3,2000000,error,"AcceleratorError: CUDA error: out of memory
+Search for `cudaErrorMemoryAllocation' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+",0.000,0.00,,,,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/qr_ppo_s3_20260408_095248.json
+qr_ppo,off,4,2000000,error,"AcceleratorError: CUDA error: out of memory
+Search for `cudaErrorMemoryAllocation' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+",0.000,0.00,,,,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/qr_ppo_s4_20260408_095253.json
+qr_ppo,on,0,2000000,error,"AcceleratorError: CUDA error: out of memory
+Search for `cudaErrorMemoryAllocation' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+",0.000,0.00,,,,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/qr_ppo_s0_20260408_095258.json
+qr_ppo,on,1,2000000,error,"AcceleratorError: CUDA error: out of memory
+Search for `cudaErrorMemoryAllocation' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+CUDA kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+",0.000,0.00,,,,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/qr_ppo_s1_20260408_095303.json
+qr_ppo,on,2,2000000,ok,,195.185,10246.70,-0.970714,-4.26056,-0.360765,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/qr_ppo_s2_20260408_095308.json
+qr_ppo,on,3,2000000,ok,,185.417,10786.52,-0.87405,-3.67409,-0.352486,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/qr_ppo_s3_20260408_095627.json
+qr_ppo,on,4,2000000,ok,,173.045,11557.70,-0.941271,-3.18274,-0.377679,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/qr_ppo_s4_20260408_095936.json
