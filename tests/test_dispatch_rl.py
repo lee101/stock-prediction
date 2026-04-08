@@ -43,6 +43,10 @@ _REAL_GPU_ALIASES = {
 }
 
 
+def test_dispatch_rl_uses_shared_safe_ssh_options() -> None:
+    assert dispatch._SSH_OPTS == ["-o", "StrictHostKeyChecking=accept-new", "-o", "BatchMode=yes"]
+
+
 # ---------------------------------------------------------------------------
 # parse_args — --stocks flag
 # ---------------------------------------------------------------------------

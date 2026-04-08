@@ -55,6 +55,7 @@ from src.runpod_client import (  # noqa: E402
     RunPodClient,
     resolve_gpu_type,
 )
+from src.runpod_remote_utils import SSH_OPTIONS  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -75,7 +76,7 @@ CUTELLM_DEFAULT_EXPERIMENTS_JSON = (
 CUTELLM_PROGRESS_MD = CUTELLM_ROOT / "PROGRESS.md"
 CUTELLM_REMOTE_DIR = "/workspace/cutellm"
 
-_SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes"]
+_SSH_OPTS = list(SSH_OPTIONS)
 
 DISPATCH_HOURLY_RATES: dict[str, float] = {
     "NVIDIA A100 80GB PCIe": 1.64,
