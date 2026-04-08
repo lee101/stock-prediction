@@ -1226,7 +1226,7 @@ def _load_bare_policy(
             _BARE_POLICY_CACHE[cache_key] = _BarePolicyCacheEntry(
                 size=stat_result.st_size,
                 mtime_ns=stat_result.st_mtime_ns,
-                policy=copy.deepcopy(policy),
+                policy=policy,
             )
             _BARE_POLICY_CACHE.move_to_end(cache_key)
             _prune_ordered_cache(_BARE_POLICY_CACHE, max_entries=_BARE_POLICY_CACHE_MAX_ENTRIES)

@@ -784,7 +784,7 @@ def test_load_bare_policy_reuses_cached_template_for_unchanged_checkpoint(
         daily_stock._BARE_POLICY_CACHE.clear()
 
     assert load_calls == [{"map_location": "cpu", "allow_unsafe_checkpoint_loading": False}]
-    assert first is not second
+    assert first is second
     obs = torch.randn(4, obs_size)
     with torch.inference_mode():
         expected_logits, expected_value = first(obs)
