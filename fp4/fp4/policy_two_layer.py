@@ -22,6 +22,7 @@ from torch import nn
 import torch.nn.functional as F
 
 from .linear import NVFP4Linear
+from .fused_linear import FusedLinearGELU
 
 
 LAYER_A_DIM = 3  # inventory_frac, leverage, risk_budget
@@ -50,17 +51,35 @@ def _make_linear(in_f: int, out_f: int, precision: str, seed: int) -> nn.Module:
 class SharedEncoder(nn.Module):
     """Linear(F->512) GELU Linear(512->512) GELU Linear(512->256) GELU."""
 
-    def __init__(self, obs_dim: int, precision: str = "nvfp4", seed: int = 0):
+    def __init__(
+        self,
+        obs_dim: int,
+        precision: str = "nvfp4",
+        seed: int = 0,
+        fuse_gelu: bool = False,
+    ):
         super().__init__()
-        self.l1 = _make_linear(obs_dim, 512, precision, seed + 0)
-        self.l2 = _make_linear(512, 512, precision, seed + 1)
-        self.l3 = _make_linear(512, 256, precision, seed + 2)
+        self.fuse_gelu = bool(fuse_gelu)
+        if self.fuse_gelu:
+            # Opt-in fused Linear+GELU path (only valid for plain linears, not NVFP4).
+            self.l1 = FusedLinearGELU(obs_dim, 512)
+            self.l2 = FusedLinearGELU(512, 512)
+            self.l3 = FusedLinearGELU(512, 256)
+        else:
+            self.l1 = _make_linear(obs_dim, 512, precision, seed + 0)
+            self.l2 = _make_linear(512, 512, precision, seed + 1)
+            self.l3 = _make_linear(512, 256, precision, seed + 2)
 
     def forward(self, obs: torch.Tensor) -> torch.Tensor:
         # Match encoder weight dtype (bf16 encoders need bf16 inputs).
         w = getattr(self.l1, "weight", None)
         if w is not None and obs.dtype != w.dtype:
             obs = obs.to(w.dtype)
+        if self.fuse_gelu:
+            x = self.l1(obs)
+            x = self.l2(x)
+            x = self.l3(x)
+            return x
         x = F.gelu(self.l1(obs))
         x = F.gelu(self.l2(x))
         x = F.gelu(self.l3(x))
@@ -91,14 +110,18 @@ class TwoLayerPolicy(nn.Module):
         precision: str = "nvfp4",
         delta_max_bps: float = 50.0,
         seed: int = 0,
+        fuse_gelu: bool = False,
     ) -> None:
         super().__init__()
         self.obs_dim = int(obs_dim)
         self.n_costs = int(n_costs)
         self.precision = precision
         self.delta_max_bps = float(delta_max_bps)
+        self.fuse_gelu = bool(fuse_gelu)
 
-        self.encoder = SharedEncoder(obs_dim, precision=precision, seed=seed)
+        self.encoder = SharedEncoder(
+            obs_dim, precision=precision, seed=seed, fuse_gelu=self.fuse_gelu
+        )
         feat_dim = 256
 
         # Policy heads: keep standard precision (small, sensitive).
