@@ -14,6 +14,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 import trade_daily_stock_prod as daily_stock
+from src import stock_symbol_inputs
 from src.daily_stock_variant_presets import preset_choices, resolve_variant_preset
 
 
@@ -23,16 +24,12 @@ VariantSpec = daily_stock.BacktestVariantSpec
 def _normalize_symbols(values: list[str] | None) -> list[str]:
     if not values:
         return list(daily_stock.DEFAULT_SYMBOLS)
-    symbols: list[str] = []
-    seen: set[str] = set()
+    raw_symbols: list[str] = []
     for raw in values:
         for item in str(raw).split(","):
-            symbol = item.strip().upper()
-            if not symbol or symbol in seen:
-                continue
-            seen.add(symbol)
-            symbols.append(symbol)
-    return symbols
+            raw_symbols.append(item)
+    normalized, _removed_duplicates, _ignored_inputs = stock_symbol_inputs.normalize_symbols(raw_symbols)
+    return normalized
 
 
 def _variant_payload(spec: VariantSpec) -> dict[str, object]:
@@ -401,7 +398,7 @@ def main(argv: list[str] | None = None) -> int:
             if message:
                 print(message)
         return 0
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         print(f"daily stock variant sweep failed: {exc}", file=sys.stderr)
         return 1
 

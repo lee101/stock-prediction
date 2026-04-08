@@ -41,6 +41,15 @@ def test_normalize_symbols_dedupes_and_uppercases() -> None:
     assert sweep_mod._normalize_symbols(["aapl,msft", "AAPL", " nvda "]) == ["AAPL", "MSFT", "NVDA"]
 
 
+def test_normalize_symbols_rejects_unsafe_values() -> None:
+    try:
+        sweep_mod._normalize_symbols(["../../etc/passwd"])
+    except ValueError as exc:
+        assert "Unsupported symbol" in str(exc)
+    else:
+        raise AssertionError("expected invalid symbol input to be rejected")
+
+
 def test_main_dry_run_prints_resolved_config(capsys) -> None:
     exit_code = sweep_mod.main(["--dry-run", "--preset", "promising_only", "--symbols", "nvda,msft"])
 
@@ -330,6 +339,13 @@ def test_main_returns_error_when_window_backtest_fails(monkeypatch, capsys) -> N
     stderr = capsys.readouterr().err
     assert "Backtest sweep failed" in stderr
     assert "60 trading days" in stderr
+
+
+def test_main_returns_error_for_invalid_symbol_input(capsys) -> None:
+    exit_code = sweep_mod.main(["--dry-run", "--symbols", "../../etc/passwd"])
+
+    assert exit_code == 1
+    assert "Unsupported symbol" in capsys.readouterr().err
 
 
 def test_table_for_results_contains_headers() -> None:
