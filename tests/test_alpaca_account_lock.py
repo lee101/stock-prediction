@@ -53,7 +53,9 @@ def test_acquire_alpaca_account_lock_reacquires_after_release(tmp_path: Path) ->
         account_name="alpaca_live_writer",
         state_dir=tmp_path,
     )
+    first_key = str(first.path.resolve())
     first.release()
+    assert first_key not in account_lock._HELD_LOCKS
 
     second = account_lock.acquire_alpaca_account_lock(
         "second-service",
