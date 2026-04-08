@@ -8,6 +8,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import RLock
 
 from unified_orchestrator.state_paths import resolve_state_dir
 
@@ -27,9 +28,10 @@ class AlpacaAccountLock:
     released: bool = False
 
     def release(self) -> None:
-        if self.released:
-            return
-        self.released = True
+        with _HELD_LOCKS_LOCK:
+            if self.released:
+                return
+            self.released = True
         try:
             fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
         finally:
@@ -37,9 +39,10 @@ class AlpacaAccountLock:
                 self.handle.close()
             except Exception:
                 pass
-            held = _HELD_LOCKS.get(self.registry_key)
-            if held is self:
-                _HELD_LOCKS.pop(self.registry_key, None)
+            with _HELD_LOCKS_LOCK:
+                held = _HELD_LOCKS.get(self.registry_key)
+                if held is self:
+                    _HELD_LOCKS.pop(self.registry_key, None)
 
 
 def _lock_payload(service_name: str, account_name: str) -> dict[str, object]:
@@ -87,16 +90,18 @@ def lock_path_for_account(account_name: str, *, state_dir: str | Path | None = N
 # call acquire_alpaca_account_lock later without the second call racing
 # itself on the same fcntl file descriptor.
 _HELD_LOCKS: dict[str, "AlpacaAccountLock"] = {}
+_HELD_LOCKS_LOCK = RLock()
 
 
 def _active_held_lock(registry_key: str) -> AlpacaAccountLock | None:
-    existing = _HELD_LOCKS.get(registry_key)
-    if existing is None:
-        return None
-    if existing.released:
-        _HELD_LOCKS.pop(registry_key, None)
-        return None
-    return existing
+    with _HELD_LOCKS_LOCK:
+        existing = _HELD_LOCKS.get(registry_key)
+        if existing is None:
+            return None
+        if existing.released:
+            _HELD_LOCKS.pop(registry_key, None)
+            return None
+        return existing
 
 
 def acquire_alpaca_account_lock(
@@ -114,51 +119,52 @@ def acquire_alpaca_account_lock(
 
     lock_path = lock_path_for_account(account_name, state_dir=state_dir)
     key = str(lock_path.resolve())
-    existing = _active_held_lock(key)
-    if existing is not None:
-        if existing.service_name == service_name:
-            return existing
-        raise RuntimeError(
-            "Alpaca account writer lock is already held in-process: "
-            f"account={account_name} path={lock_path} holder_service={existing.service_name} "
-            f"holder_pid={os.getpid()} holder_host={socket.gethostname()}"
-        )
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    handle = lock_path.open("a+", encoding="utf-8")
-    try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError as exc:
-        handle.seek(0)
-        holder_raw = handle.read().strip()
+    with _HELD_LOCKS_LOCK:
+        existing = _active_held_lock(key)
+        if existing is not None:
+            if existing.service_name == service_name:
+                return existing
+            raise RuntimeError(
+                "Alpaca account writer lock is already held in-process: "
+                f"account={account_name} path={lock_path} holder_service={existing.service_name} "
+                f"holder_pid={os.getpid()} holder_host={socket.gethostname()}"
+            )
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+", encoding="utf-8")
         try:
-            holder = json.loads(holder_raw) if holder_raw else {}
-        except Exception:
-            holder = {"raw": holder_raw}
-        holder_service = holder.get("service_name", "unknown")
-        holder_pid = holder.get("pid", "unknown")
-        holder_host = holder.get("hostname", "unknown")
-        holder_started = holder.get("started_at", "unknown")
-        handle.close()
-        raise RuntimeError(
-            "Alpaca account writer lock is already held: "
-            f"account={account_name} path={lock_path} holder_service={holder_service} "
-            f"holder_pid={holder_pid} holder_host={holder_host} holder_started_at={holder_started}"
-        ) from exc
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            handle.seek(0)
+            holder_raw = handle.read().strip()
+            try:
+                holder = json.loads(holder_raw) if holder_raw else {}
+            except Exception:
+                holder = {"raw": holder_raw}
+            holder_service = holder.get("service_name", "unknown")
+            holder_pid = holder.get("pid", "unknown")
+            holder_host = holder.get("hostname", "unknown")
+            holder_started = holder.get("started_at", "unknown")
+            handle.close()
+            raise RuntimeError(
+                "Alpaca account writer lock is already held: "
+                f"account={account_name} path={lock_path} holder_service={holder_service} "
+                f"holder_pid={holder_pid} holder_host={holder_host} holder_started_at={holder_started}"
+            ) from exc
 
-    payload = _lock_payload(service_name, account_name)
-    handle.seek(0)
-    handle.truncate()
-    handle.write(json.dumps(payload, sort_keys=True))
-    handle.flush()
-    os.fsync(handle.fileno())
+        payload = _lock_payload(service_name, account_name)
+        handle.seek(0)
+        handle.truncate()
+        handle.write(json.dumps(payload, sort_keys=True))
+        handle.flush()
+        os.fsync(handle.fileno())
 
-    lock = AlpacaAccountLock(
-        service_name=service_name,
-        account_name=account_name,
-        path=lock_path,
-        handle=handle,
-        registry_key=key,
-    )
-    _HELD_LOCKS[key] = lock
+        lock = AlpacaAccountLock(
+            service_name=service_name,
+            account_name=account_name,
+            path=lock_path,
+            handle=handle,
+            registry_key=key,
+        )
+        _HELD_LOCKS[key] = lock
     atexit.register(lock.release)
     return lock

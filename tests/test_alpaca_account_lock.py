@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 from pathlib import Path
+from threading import Barrier, Thread
 
 import pytest
 
@@ -84,6 +85,33 @@ def test_acquire_alpaca_account_lock_is_idempotent_for_same_service(tmp_path: Pa
         assert second is first
     finally:
         first.release()
+
+
+def test_acquire_alpaca_account_lock_is_thread_safe_for_same_service(tmp_path: Path) -> None:
+    barrier = Barrier(3)
+    results: list[account_lock.AlpacaAccountLock] = []
+
+    def _worker() -> None:
+        barrier.wait()
+        lock = account_lock.acquire_alpaca_account_lock(
+            "same-service",
+            account_name="alpaca_live_writer",
+            state_dir=tmp_path,
+        )
+        results.append(lock)
+        barrier.wait()
+
+    threads = [Thread(target=_worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    barrier.wait()
+    for thread in threads:
+        thread.join()
+
+    assert len(results) == 2
+    assert results[0] is results[1]
+    results[0].release()
 
 
 def test_acquire_alpaca_account_lock_rejects_different_in_process_service(tmp_path: Path) -> None:
