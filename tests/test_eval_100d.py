@@ -99,6 +99,20 @@ def test_render_md_reports_pass_when_worst_slip_beats_target():
     assert "100d unseen-data eval" in md
 
 
+def test_aggregate_carries_failed_fast_marker_through():
+    # _run_slippage_sweep marks the bailed cell with failed_fast=True; the
+    # aggregate function should still produce valid numbers (we treat the
+    # failed-fast cell like a normal one — its absurd values will simply
+    # show up in the markdown so the operator can see why it bailed).
+    summaries = {
+        "0": {"median_return": -0.10, "p10_return": -0.30, "mean_return": -0.20,
+              "sortino": -2.0, "max_drawdown": 0.25, "n_windows": 3, "n_neg": 3,
+              "failed_fast": True, "failed_reason": "max_dd > 0.20"},
+    }
+    agg = _mod._aggregate(summaries, window_days=100)
+    assert agg["worst_slip_monthly"] < 0.0
+
+
 def test_render_md_reports_fail_when_worst_slip_under_target():
     summaries = {
         "0": {"median_return": 0.05, "p10_return": -0.02, "mean_return": 0.03,

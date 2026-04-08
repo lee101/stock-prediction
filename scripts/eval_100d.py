@@ -152,6 +152,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--video", action="store_true",
                     help="Render an MP4+HTML of the rollout when running the "
                          "same-backend fallback.")
+    ap.add_argument("--no-fail-fast", dest="fail_fast", action="store_false",
+                    help="Disable the early-exit on >max-dd or negative-window "
+                         "checks (default: enabled).")
+    ap.set_defaults(fail_fast=True)
+    ap.add_argument("--fail-fast-max-dd", type=float, default=0.20,
+                    help="Bail any sweep cell whose worst window drawdown "
+                         "exceeds this fraction (default 0.20 = 20%%).")
+    ap.add_argument("--fail-fast-min-completed", type=int, default=3,
+                    help="Min completed windows before the negative-window "
+                         "check fires (default 3).")
     ap.add_argument("--out-dir", default=None,
                     help="Where to write the JSON + MD. Defaults to the ckpt dir.")
     args = ap.parse_args(argv)
@@ -180,20 +190,42 @@ def main(argv: list[str] | None = None) -> int:
             "eval_hours": int(args.window_days),
             "seed": int(args.seed),
             "video": bool(args.video),
+            "fail_fast": bool(args.fail_fast),
+            "fail_fast_max_dd": float(args.fail_fast_max_dd),
+            "fail_fast_min_completed": int(args.fail_fast_min_completed),
         },
     }
 
     from fp4.bench.eval_generic import evaluate_policy_file
     result = evaluate_policy_file(ckpt, cfg, REPO)
 
-    if result.get("status") != "ok":
+    if result.get("status") not in ("ok", "failed_fast"):
         print(f"eval_100d: evaluate_policy_file returned status={result.get('status')}: "
               f"{result.get('reason', '<no reason>')}", file=sys.stderr)
-        # Still write the json so the caller can inspect the reason.
         out_dir = Path(args.out_dir) if args.out_dir else ckpt.parent
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / f"{ckpt.stem}_eval100d.json").write_text(json.dumps(result, indent=2, default=str))
         return 1
+    if result.get("status") == "failed_fast":
+        # Still emit JSON + a short MD so the leaderboard can record the dud
+        # without spending more time. No videos rendered downstream either —
+        # the same-backend path already skips them on failed_fast.
+        out_dir = Path(args.out_dir) if args.out_dir else ckpt.parent
+        out_dir.mkdir(parents=True, exist_ok=True)
+        bail_md = (
+            f"# 100d unseen-data eval — `{ckpt.name}`\n\n"
+            f"- **status**: FAILED_FAST  ({result.get('failed_reason', '<no reason>')})\n"
+            f"- backend: {result.get('backend', 'pufferlib_market')}\n"
+        )
+        (out_dir / f"{ckpt.stem}_eval100d.md").write_text(bail_md)
+        (out_dir / f"{ckpt.stem}_eval100d.json").write_text(json.dumps({
+            "checkpoint": str(ckpt), "val_data": str(val), "raw": result,
+            "monthly_target": float(args.monthly_target),
+            "n_windows": int(args.n_windows), "window_days": int(args.window_days),
+            "slippage_bps": slippages,
+        }, indent=2, default=str))
+        print(bail_md)
+        return 3
 
     by_slip = result.get("by_slippage", {})
     aggregate = _aggregate(by_slip, window_days=int(args.window_days))
