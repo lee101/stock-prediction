@@ -14,6 +14,7 @@ def test_parse_args_defaults_to_current_vs_candidates() -> None:
     assert args.days == 120
     assert args.window is None
     assert args.output_json is None
+    assert args.run_log_json is None
     assert args.checkpoint == sweep_mod.daily_stock.DEFAULT_CHECKPOINT
 
 
@@ -84,6 +85,13 @@ def test_main_dry_run_writes_json_report(tmp_path) -> None:
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["preset"] == "promising_only"
     assert payload["days_list"] == [120]
+
+
+def test_resolve_run_log_json_path_defaults_next_to_output_json() -> None:
+    assert sweep_mod._resolve_run_log_json_path(
+        output_json="reports/sweep.json",
+        run_log_json=None,
+    ) == "reports/sweep.run.json"
 
 
 def test_main_delegates_to_variant_matrix_runner(monkeypatch, capsys) -> None:
@@ -244,6 +252,10 @@ def test_main_multi_window_json_writes_report_file(monkeypatch, tmp_path) -> Non
     assert payload["config"]["days_list"] == [60, 120]
     assert payload["summary"][0]["name"] == "single_static_25"
     assert payload["baseline_comparison"]["beaters"][0]["name"] == "single_static_25"
+    run_log = json.loads(output_path.with_suffix(".run.json").read_text(encoding="utf-8"))
+    assert run_log["status"] == "success"
+    assert run_log["mode"] == "multi_window"
+    assert run_log["top_result_name"] == "single_static_25"
 
 
 def test_main_text_mode_writes_json_report(monkeypatch, tmp_path, capsys) -> None:
@@ -296,6 +308,9 @@ def test_main_text_mode_writes_json_report(monkeypatch, tmp_path, capsys) -> Non
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["results"][0]["name"] == "single_static_25"
     assert payload["baseline_comparison"]["beaters"][0]["name"] == "single_static_25"
+    run_log = json.loads(output_path.with_suffix(".run.json").read_text(encoding="utf-8"))
+    assert run_log["status"] == "success"
+    assert run_log["mode"] == "single_window"
 
 
 def test_parse_args_rejects_nonpositive_windows() -> None:
@@ -339,6 +354,33 @@ def test_main_returns_error_when_window_backtest_fails(monkeypatch, capsys) -> N
     stderr = capsys.readouterr().err
     assert "Backtest sweep failed" in stderr
     assert "60 trading days" in stderr
+
+
+def test_main_failure_writes_run_log_when_configured(monkeypatch, tmp_path, capsys) -> None:
+    def _boom(**kwargs):
+        raise RuntimeError("transient broker simulation failure")
+
+    monkeypatch.setattr(sweep_mod.daily_stock, "run_backtest_variant_matrix_via_trading_server", _boom)
+    run_log_path = tmp_path / "logs" / "failure.run.json"
+
+    exit_code = sweep_mod.main(
+        [
+            "--preset",
+            "current_vs_candidates",
+            "--days",
+            "60",
+            "--run-log-json",
+            str(run_log_path),
+        ]
+    )
+
+    assert exit_code == 1
+    stderr = capsys.readouterr().err
+    assert f"run log: {run_log_path}" in stderr
+    payload = json.loads(run_log_path.read_text(encoding="utf-8"))
+    assert payload["status"] == "failure"
+    assert payload["error_type"] == "RuntimeError"
+    assert "transient broker simulation failure" in payload["error"]
 
 
 def test_main_returns_error_for_invalid_symbol_input(capsys) -> None:

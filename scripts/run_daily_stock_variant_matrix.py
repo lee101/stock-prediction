@@ -53,6 +53,17 @@ def _emit_json_payload(payload: dict[str, object], *, output_json: str | None) -
     print(rendered)
 
 
+def _resolve_run_log_json_path(*, output_json: str | None, run_log_json: str | None) -> str | None:
+    if run_log_json:
+        return str(Path(run_log_json))
+    if not output_json:
+        return None
+    output_path = Path(output_json)
+    if output_path.suffix:
+        return str(output_path.with_suffix(".run.json"))
+    return str(output_path.with_name(f"{output_path.name}.run.json"))
+
+
 def _write_json_payload(rendered: str, *, output_json: str | None) -> None:
     if output_json:
         output_path = Path(output_json)
@@ -61,6 +72,14 @@ def _write_json_payload(rendered: str, *, output_json: str | None) -> None:
             output_path.write_text(f"{rendered}\n", encoding="utf-8")
         except OSError as exc:
             raise RuntimeError(f"Failed to write JSON report to {output_path}: {exc}") from exc
+
+
+def _write_run_log(payload: dict[str, object], *, run_log_json: str | None) -> str | None:
+    if not run_log_json:
+        return None
+    rendered = json.dumps(payload, indent=2, sort_keys=True)
+    _write_json_payload(rendered, output_json=run_log_json)
+    return str(Path(run_log_json))
 
 
 def _table_for_results(rows: list[dict[str, object]]) -> str:
@@ -300,6 +319,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--symbols", action="append", default=None, help="Optional comma-separated symbol override.")
     parser.add_argument("--json", action="store_true", help="Print JSON instead of a table.")
     parser.add_argument("--output-json", default=None, help="Optional path to write the JSON report.")
+    parser.add_argument(
+        "--run-log-json",
+        default=None,
+        help="Optional path to write a machine-readable run log. Defaults to a sibling *.run.json when --output-json is set.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print resolved config without running the sweep.")
     args = parser.parse_args(argv)
     if not _resolve_days(args.days, args.window):
@@ -314,6 +338,7 @@ def main(argv: list[str] | None = None) -> int:
         variants = list(preset.variants)
         symbols = _normalize_symbols(args.symbols)
         days_list = _resolve_days(args.days, args.window)
+        run_log_json = _resolve_run_log_json_path(output_json=args.output_json, run_log_json=args.run_log_json)
         payload = {
             "preset": preset.name,
             "preset_description": preset.description,
@@ -323,8 +348,11 @@ def main(argv: list[str] | None = None) -> int:
             "data_dir": str(args.data_dir),
             "symbols": symbols,
             "variants": [_variant_payload(item) for item in variants],
+            "output_json": str(Path(args.output_json)) if args.output_json else None,
+            "run_log_json": run_log_json,
         }
         if args.dry_run:
+            _write_run_log({"status": "dry_run", "config": payload}, run_log_json=run_log_json)
             _emit_json_payload(payload, output_json=args.output_json)
             return 0
 
@@ -355,6 +383,17 @@ def main(argv: list[str] | None = None) -> int:
             ranked = list(window_results[0]["results"])
             comparison = _single_window_baseline_comparison(ranked)
             report_payload = {"config": payload, "results": ranked, "baseline_comparison": comparison}
+            _write_run_log(
+                {
+                    "status": "success",
+                    "mode": "single_window",
+                    "config": payload,
+                    "baseline_comparison": comparison,
+                    "result_count": len(ranked),
+                    "top_result_name": str(ranked[0]["name"]) if ranked else None,
+                },
+                run_log_json=run_log_json,
+            )
             if args.json:
                 _emit_json_payload(report_payload, output_json=args.output_json)
             else:
@@ -379,6 +418,18 @@ def main(argv: list[str] | None = None) -> int:
             "summary": summary,
             "baseline_comparison": comparison,
         }
+        _write_run_log(
+            {
+                "status": "success",
+                "mode": "multi_window",
+                "config": payload,
+                "window_days": [int(item["days"]) for item in window_results],
+                "baseline_comparison": comparison,
+                "summary_count": len(summary),
+                "top_result_name": str(summary[0]["name"]) if summary else None,
+            },
+            run_log_json=run_log_json,
+        )
 
         if args.json:
             _emit_json_payload(report_payload, output_json=args.output_json)
@@ -399,7 +450,24 @@ def main(argv: list[str] | None = None) -> int:
                 print(message)
         return 0
     except (RuntimeError, ValueError) as exc:
+        run_log_json = None
+        if "args" in locals():
+            run_log_json = _resolve_run_log_json_path(output_json=args.output_json, run_log_json=args.run_log_json)
+            try:
+                _write_run_log(
+                    {
+                        "status": "failure",
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                        "config": payload if "payload" in locals() else None,
+                    },
+                    run_log_json=run_log_json,
+                )
+            except RuntimeError:
+                run_log_json = None
         print(f"daily stock variant sweep failed: {exc}", file=sys.stderr)
+        if run_log_json:
+            print(f"run log: {run_log_json}", file=sys.stderr)
         return 1
 
 
