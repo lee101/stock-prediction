@@ -88,6 +88,89 @@ def _table_for_results(rows: list[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
+def _table_for_multi_window_summary(rows: list[dict[str, object]]) -> str:
+    headers = [
+        "name",
+        "alloc",
+        "multi",
+        "avg_monthly",
+        "min_monthly",
+        "avg_sortino",
+        "worst_drawdown",
+        "windows",
+    ]
+    printable: list[dict[str, str]] = []
+    for row in rows:
+        printable.append(
+            {
+                "name": str(row["name"]),
+                "alloc": f"{float(row['allocation_pct']):g}",
+                "multi": str(int(row["multi_position"])),
+                "avg_monthly": f"{float(row['avg_monthly_return']):+.4%}",
+                "min_monthly": f"{float(row['min_monthly_return']):+.4%}",
+                "avg_sortino": f"{float(row['avg_sortino']):+.3f}",
+                "worst_drawdown": f"{float(row['worst_max_drawdown']):+.4%}",
+                "windows": str(int(row["window_count"])),
+            }
+        )
+    widths = {
+        header: max(len(header), *(len(item[header]) for item in printable)) if printable else len(header)
+        for header in headers
+    }
+    lines = [
+        " ".join(header.ljust(widths[header]) for header in headers),
+        " ".join("-" * widths[header] for header in headers),
+    ]
+    for item in printable:
+        lines.append(" ".join(item[header].ljust(widths[header]) for header in headers))
+    return "\n".join(lines)
+
+
+def _resolve_days(days: int, windows: list[int] | None) -> list[int]:
+    if windows:
+        resolved = [int(item) for item in windows]
+    else:
+        resolved = [int(days)]
+    return list(dict.fromkeys(item for item in resolved if int(item) > 0))
+
+
+def _summarize_multi_window_results(
+    windows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    if not windows:
+        return []
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for window in windows:
+        for row in window["results"]:
+            grouped.setdefault(str(row["name"]), []).append(row)
+    summary: list[dict[str, object]] = []
+    for name, rows in grouped.items():
+        exemplar = rows[0]
+        monthly_returns = [float(row["monthly_return"]) for row in rows]
+        sortinos = [float(row["sortino"]) for row in rows]
+        max_drawdowns = [float(row["max_drawdown"]) for row in rows]
+        summary.append(
+            {
+                "name": name,
+                "allocation_pct": float(exemplar["allocation_pct"]),
+                "allocation_sizing_mode": exemplar["allocation_sizing_mode"],
+                "multi_position": int(exemplar["multi_position"]),
+                "multi_position_min_prob_ratio": float(exemplar["multi_position_min_prob_ratio"]),
+                "buying_power_multiplier": float(exemplar["buying_power_multiplier"]),
+                "avg_monthly_return": sum(monthly_returns) / len(monthly_returns),
+                "min_monthly_return": min(monthly_returns),
+                "avg_sortino": sum(sortinos) / len(sortinos),
+                "worst_max_drawdown": min(max_drawdowns),
+                "window_count": len(rows),
+            }
+        )
+    summary.sort(
+        key=lambda item: (float(item["min_monthly_return"]), float(item["avg_monthly_return"])),
+        reverse=True,
+    )
+    return summary
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a server-aware daily stock variant sweep.")
     parser.add_argument(
@@ -97,6 +180,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Named variant set to evaluate.",
     )
     parser.add_argument("--days", type=int, default=120, help="Backtest trading days.")
+    parser.add_argument(
+        "--window",
+        action="append",
+        type=int,
+        default=None,
+        help="Optional repeatable backtest window in trading days. Overrides single-window ranking with a multi-window summary.",
+    )
     parser.add_argument("--checkpoint", default=daily_stock.DEFAULT_CHECKPOINT)
     parser.add_argument("--data-dir", default=daily_stock.DEFAULT_DATA_DIR)
     parser.add_argument("--symbols", action="append", default=None, help="Optional comma-separated symbol override.")
@@ -110,10 +200,12 @@ def main(argv: list[str] | None = None) -> int:
     preset = resolve_variant_preset(args.preset)
     variants = list(preset.variants)
     symbols = _normalize_symbols(args.symbols)
+    days_list = _resolve_days(args.days, args.window)
     payload = {
         "preset": preset.name,
         "preset_description": preset.description,
         "days": int(args.days),
+        "days_list": days_list,
         "checkpoint": str(Path(args.checkpoint)),
         "data_dir": str(args.data_dir),
         "symbols": symbols,
@@ -123,27 +215,45 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
 
-    results = daily_stock.run_backtest_variant_matrix_via_trading_server(
-        checkpoint=args.checkpoint,
-        symbols=symbols,
-        data_dir=args.data_dir,
-        days=args.days,
-        variants=variants,
-        extra_checkpoints=list(daily_stock.DEFAULT_EXTRA_CHECKPOINTS),
-    )
-    ranked: list[dict[str, object]] = []
-    for row in results:
-        enriched = dict(row)
-        enriched["monthly_return"] = _monthly_return(float(row["total_return"]), days=int(args.days))
-        ranked.append(enriched)
-    ranked.sort(key=lambda item: float(item["monthly_return"]), reverse=True)
+    window_results: list[dict[str, object]] = []
+    for days in days_list:
+        results = daily_stock.run_backtest_variant_matrix_via_trading_server(
+            checkpoint=args.checkpoint,
+            symbols=symbols,
+            data_dir=args.data_dir,
+            days=days,
+            variants=variants,
+            extra_checkpoints=list(daily_stock.DEFAULT_EXTRA_CHECKPOINTS),
+        )
+        ranked: list[dict[str, object]] = []
+        for row in results:
+            enriched = dict(row)
+            enriched["monthly_return"] = _monthly_return(float(row["total_return"]), days=int(days))
+            ranked.append(enriched)
+        ranked.sort(key=lambda item: float(item["monthly_return"]), reverse=True)
+        window_results.append({"days": int(days), "results": ranked})
+
+    if len(window_results) == 1:
+        ranked = list(window_results[0]["results"])
+        if args.json:
+            print(json.dumps({"config": payload, "results": ranked}, indent=2, sort_keys=True))
+        else:
+            print(f"Daily stock variant sweep: preset={preset.name} days={days_list[0]} symbols={len(symbols)}")
+            print(preset.description)
+            print(_table_for_results(ranked))
+        return 0
+
+    summary = _summarize_multi_window_results(window_results)
 
     if args.json:
-        print(json.dumps({"config": payload, "results": ranked}, indent=2, sort_keys=True))
+        print(json.dumps({"config": payload, "windows": window_results, "summary": summary}, indent=2, sort_keys=True))
     else:
-        print(f"Daily stock variant sweep: preset={preset.name} days={args.days} symbols={len(symbols)}")
+        print(
+            "Daily stock variant sweep: "
+            f"preset={preset.name} windows={','.join(str(item) for item in days_list)} symbols={len(symbols)}"
+        )
         print(preset.description)
-        print(_table_for_results(ranked))
+        print(_table_for_multi_window_summary(summary))
     return 0
 
 
