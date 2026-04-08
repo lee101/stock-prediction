@@ -27,6 +27,18 @@ def test_map_file_to_tests_ignores_experimental_tests() -> None:
     assert runner.map_file_to_tests("tests/experimental/rl/test_realistic_rl_env.py") == []
 
 
+def test_map_file_to_tests_gracefully_handles_missing_grep(monkeypatch, tmp_path: Path) -> None:
+    source = tmp_path / "foo.py"
+    source.write_text("print('ok')\n", encoding="utf-8")
+
+    def _missing_grep(*args, **kwargs):
+        raise FileNotFoundError("grep")
+
+    monkeypatch.setattr(runner_impl.subprocess, "run", _missing_grep)
+
+    assert runner.map_file_to_tests(str(source)) == []
+
+
 def test_prioritize_tests_excludes_experimental_tree_from_remaining_tests() -> None:
     _, remaining = runner.prioritize_tests(set())
 
@@ -89,6 +101,23 @@ def test_run_tests_prints_rerun_command_on_failure(
     assert f"{sys.executable} -m pytest tests/test_smart_test_runner.py -v --ignore=tests/experimental -x" in output
 
 
+def test_run_tests_reports_failed_subprocess_start(
+    monkeypatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def _missing_pytest(*args, **kwargs):
+        raise FileNotFoundError("pytest")
+
+    monkeypatch.setattr(runner_impl.subprocess, "run", _missing_pytest)
+
+    ok = runner.run_tests(["tests/test_smart_test_runner.py"], "priority", verbose=False, dry_run=False)
+
+    output = capsys.readouterr().out
+    assert ok is False
+    assert "TESTS FAILED TO START" in output
+    assert "Rerun command:" in output
+
+
 def test_scripts_entrypoint_delegates_to_shared_implementation(monkeypatch) -> None:
     called = False
     repo_root = Path(__file__).resolve().parents[1]
@@ -131,6 +160,15 @@ def test_main_reports_remaining_failures_without_claiming_all_tests_passed(
     assert calls == ["priority", "remaining"]
     assert "⚠️  PRIORITY TESTS PASSED; REMAINING TESTS HAD FAILURES" in output
     assert "✅ ALL TESTS PASSED" not in output
+
+
+def test_get_changed_files_gracefully_handles_missing_git(monkeypatch) -> None:
+    def _missing_git(*args, **kwargs):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(runner_impl.subprocess, "run", _missing_git)
+
+    assert runner_impl.get_changed_files("main") == set()
 
 
 def test_main_priority_only_runs_only_priority_lane(

@@ -41,7 +41,7 @@ def get_changed_files(base_branch: str = "main") -> set[str]:
         files = result.stdout.strip().split("\n")
         if files and files[0]:
             return {f for f in files if f}
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, OSError):
         pass
 
     try:
@@ -59,7 +59,7 @@ def get_changed_files(base_branch: str = "main") -> set[str]:
         )
         files = set(result.stdout.strip().split("\n") + staged_result.stdout.strip().split("\n"))
         return {f for f in files if f}
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, OSError):
         return set()
 
 
@@ -119,7 +119,7 @@ def map_file_to_tests(file_path: str) -> list[str]:
                     test_path = Path(line)
                     if line and line.endswith(".py") and _is_project_test_file(test_path):
                         tests.append(line)
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, OSError):
             pass
 
     return list(set(tests))
@@ -184,7 +184,13 @@ def run_tests(test_files: list[str], label: str, verbose: bool = False, dry_run:
         cmd.extend(["--ignore=tests/experimental"])
         cmd.append("-x" if label == "priority" else "--maxfail=20")
 
-        result = subprocess.run(cmd, check=False)
+        try:
+            result = subprocess.run(cmd, check=False)
+        except OSError as exc:
+            print(f"\n❌ {label.upper()} TESTS FAILED TO START: {exc}")
+            print("Rerun command:")
+            print(f"  {format_rerun_command(test_files, label=label, verbose=verbose)}")
+            return False
     if result.returncode != 0:
         print(f"\n❌ {label.upper()} TESTS FAILED")
         print("Rerun command:")
