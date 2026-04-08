@@ -15,7 +15,7 @@ if str(REPO) not in sys.path:
 
 import trade_daily_stock_prod as daily_stock
 from src import stock_symbol_inputs
-from src.daily_stock_variant_presets import preset_choices, resolve_variant_preset
+from src.daily_stock_variant_presets import PRESET_VARIANTS, preset_choices, resolve_variant_preset
 
 
 VariantSpec = daily_stock.BacktestVariantSpec
@@ -30,6 +30,38 @@ def _normalize_symbols(values: list[str] | None) -> list[str]:
             raw_symbols.append(item)
     normalized, _removed_duplicates, _ignored_inputs = stock_symbol_inputs.normalize_symbols(raw_symbols)
     return normalized
+
+
+def _load_symbols(values: list[str] | None, *, symbols_file: str | None) -> list[str]:
+    if symbols_file:
+        return stock_symbol_inputs.load_symbols_file(symbols_file)
+    return _normalize_symbols(values)
+
+
+def _preset_catalog_payload() -> list[dict[str, object]]:
+    return [
+        {
+            "name": preset.name,
+            "description": preset.description,
+            "variants": [_variant_payload(spec) for spec in preset.variants],
+        }
+        for preset in (PRESET_VARIANTS[name] for name in preset_choices())
+    ]
+
+
+def _print_preset_catalog(*, as_json: bool) -> None:
+    payload = _preset_catalog_payload()
+    if as_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    for item in payload:
+        print(f"{item['name']}: {item['description']}")
+        for variant in item["variants"]:
+            print(
+                "  "
+                f"{variant['name']} alloc={variant['allocation_pct']:g} "
+                f"multi={variant['multi_position']} sizing={variant['allocation_sizing_mode']}"
+            )
 
 
 def _variant_payload(spec: VariantSpec) -> dict[str, object]:
@@ -300,6 +332,7 @@ def _format_multi_window_baseline_comparison(comparison: dict[str, object] | Non
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a server-aware daily stock variant sweep.")
+    parser.add_argument("--list-presets", action="store_true", help="List available named sweep presets and exit.")
     parser.add_argument(
         "--preset",
         choices=preset_choices(),
@@ -316,7 +349,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--checkpoint", default=daily_stock.DEFAULT_CHECKPOINT)
     parser.add_argument("--data-dir", default=daily_stock.DEFAULT_DATA_DIR)
-    parser.add_argument("--symbols", action="append", default=None, help="Optional comma-separated symbol override.")
+    symbol_group = parser.add_mutually_exclusive_group()
+    symbol_group.add_argument("--symbols", action="append", default=None, help="Optional comma-separated symbol override.")
+    symbol_group.add_argument("--symbols-file", default=None, help="Optional newline/comma-delimited symbols file.")
     parser.add_argument("--json", action="store_true", help="Print JSON instead of a table.")
     parser.add_argument("--output-json", default=None, help="Optional path to write the JSON report.")
     parser.add_argument(
@@ -334,9 +369,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     try:
         args = parse_args(argv)
+        if args.list_presets:
+            _print_preset_catalog(as_json=bool(args.json))
+            return 0
         preset = resolve_variant_preset(args.preset)
         variants = list(preset.variants)
-        symbols = _normalize_symbols(args.symbols)
+        symbols = _load_symbols(args.symbols, symbols_file=args.symbols_file)
         days_list = _resolve_days(args.days, args.window)
         run_log_json = _resolve_run_log_json_path(output_json=args.output_json, run_log_json=args.run_log_json)
         payload = {
@@ -347,6 +385,7 @@ def main(argv: list[str] | None = None) -> int:
             "checkpoint": str(Path(args.checkpoint)),
             "data_dir": str(args.data_dir),
             "symbols": symbols,
+            "symbols_file": str(Path(args.symbols_file)) if args.symbols_file else None,
             "variants": [_variant_payload(item) for item in variants],
             "output_json": str(Path(args.output_json)) if args.output_json else None,
             "run_log_json": run_log_json,
