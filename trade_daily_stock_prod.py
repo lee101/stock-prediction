@@ -26,7 +26,7 @@ from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Lock
-from typing import Iterable, Iterator, Literal, Optional, Sequence, TypeAlias, TypedDict, cast
+from typing import Iterable, Iterator, Literal, Mapping, Optional, Sequence, TypeAlias, TypedDict, cast
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -297,12 +297,20 @@ class ServerPositionView:
     current_price: float = 0.0
 
 
+@dataclass(frozen=True)
+class PortfolioRebalanceTarget:
+    symbol: str
+    existing_qty: float
+    target_qty: float
+
+
 _DAILY_TRADER_CACHE_MAX_ENTRIES = 8
 _BARE_POLICY_CACHE_MAX_ENTRIES = 64
 _DAILY_TRADER_CACHE: "OrderedDict[tuple[object, ...], _DailyTraderCacheEntry]" = OrderedDict()
 _BARE_POLICY_CACHE: "OrderedDict[tuple[object, ...], _BarePolicyCacheEntry]" = OrderedDict()
 _DAILY_TRADER_CACHE_LOCK = Lock()
 _BARE_POLICY_CACHE_LOCK = Lock()
+_PORTFOLIO_REBALANCE_QTY_EPSILON = 1e-4
 
 
 @dataclass(frozen=True)
@@ -1647,6 +1655,83 @@ def compute_target_qty_from_values(
     return round(target_notional / price, 4)
 
 
+def _raw_portfolio_target_qty(
+    *,
+    portfolio_value: float,
+    price: float,
+    total_allocation_pct: float,
+    allocation_fraction: float,
+) -> float:
+    if portfolio_value <= 0.0 or price <= 0.0:
+        return 0.0
+    target_notional = portfolio_value * max(0.0, float(total_allocation_pct)) / 100.0
+    target_notional *= max(0.0, float(allocation_fraction))
+    if target_notional <= 0.0:
+        return 0.0
+    return round(target_notional / price, 4)
+
+
+def _portfolio_rebalance_targets(
+    *,
+    desired_allocations: Mapping[str, float],
+    existing_qty_by_symbol: Mapping[str, float],
+    buy_prices: Mapping[str, float],
+    sell_prices: Mapping[str, float],
+    portfolio_value: float,
+    buying_power: float,
+    total_allocation_pct: float,
+) -> dict[str, PortfolioRebalanceTarget]:
+    """Compute rebalance targets while sharing one buying-power budget."""
+    raw_targets: dict[str, float] = {}
+    available_buy_notional = max(0.0, float(buying_power)) * BUYING_POWER_USAGE_CAP
+    all_symbols = set(existing_qty_by_symbol) | set(desired_allocations)
+    for symbol in all_symbols:
+        existing_qty = max(0.0, float(existing_qty_by_symbol.get(symbol, 0.0) or 0.0))
+        allocation_fraction = max(0.0, float(desired_allocations.get(symbol, 0.0) or 0.0))
+        raw_target = _raw_portfolio_target_qty(
+            portfolio_value=portfolio_value,
+            price=float(buy_prices.get(symbol, 0.0) or 0.0),
+            total_allocation_pct=total_allocation_pct,
+            allocation_fraction=allocation_fraction,
+        )
+        raw_targets[symbol] = raw_target
+        sell_delta = max(0.0, existing_qty - raw_target)
+        sell_price = float(sell_prices.get(symbol, 0.0) or 0.0)
+        if sell_delta > 0.0 and sell_price > 0.0:
+            available_buy_notional += sell_delta * sell_price
+
+    required_buy_notional = 0.0
+    for symbol, allocation_fraction in desired_allocations.items():
+        if float(allocation_fraction or 0.0) <= 0.0:
+            continue
+        existing_qty = max(0.0, float(existing_qty_by_symbol.get(symbol, 0.0) or 0.0))
+        raw_target = raw_targets.get(symbol, 0.0)
+        buy_delta = max(0.0, raw_target - existing_qty)
+        buy_price = float(buy_prices.get(symbol, 0.0) or 0.0)
+        if buy_delta > 0.0 and buy_price > 0.0:
+            required_buy_notional += buy_delta * buy_price
+
+    buy_scale = min(1.0, available_buy_notional / required_buy_notional) if required_buy_notional > 0.0 else 1.0
+
+    planned: dict[str, PortfolioRebalanceTarget] = {}
+    for symbol, allocation_fraction in desired_allocations.items():
+        if float(allocation_fraction or 0.0) <= 0.0:
+            continue
+        existing_qty = max(0.0, float(existing_qty_by_symbol.get(symbol, 0.0) or 0.0))
+        raw_target = raw_targets.get(symbol, 0.0)
+        if raw_target <= existing_qty:
+            target_qty = raw_target
+        else:
+            target_qty = existing_qty + ((raw_target - existing_qty) * buy_scale)
+        target_qty = round(max(0.0, target_qty), 4)
+        planned[symbol] = PortfolioRebalanceTarget(
+            symbol=symbol,
+            existing_qty=existing_qty,
+            target_qty=target_qty,
+        )
+    return planned
+
+
 def effective_signal_allocation_pct(signal, *, base_allocation_pct: float) -> float:
     return resolved_signal_allocation_pct(
         signal,
@@ -2140,9 +2225,13 @@ def execute_multi_position_signals(
     now = now or datetime.now(timezone.utc)
     symbol_set = [str(s).upper() for s in symbols]
     live_positions = positions_by_symbol(client, symbol_set)
+    existing_qty_by_symbol = {
+        sym: abs(_signed_position_qty(pos))
+        for sym, pos in live_positions.items()
+    }
 
     # Desired portfolio: symbol -> target_allocation_fraction
-    desired = {}
+    desired: dict[str, float] = {}
     for sig in signals:
         if sig.symbol and sig.direction == "long":
             sym = sig.symbol.upper()
@@ -2156,54 +2245,85 @@ def execute_multi_position_signals(
                 continue
             desired[sym] = alloc_frac
 
-    # Close positions not in desired set
-    orders_placed = 0
-    for sym, pos in list(live_positions.items()):
-        if sym not in desired:
-            qty = abs(_signed_position_qty(pos))
-            if qty > 0:
-                sell_price = float(quotes.get(sym, 0.0) or 0.0)
-                limit_sell_price = (
-                    sell_price if paper
-                    else sell_price * (1.0 + CALIBRATED_EXIT_OFFSET_BPS / 10_000.0)
-                ) if sell_price > 0 else 0
-                logger.info("Multi-pos: closing %s qty=%.4f limit=%.2f", sym, qty, limit_sell_price)
-                if not dry_run and limit_sell_price > 0:
-                    submit_limit_order(client, symbol=sym, qty=qty, side="sell", limit_price=limit_sell_price)
-                    orders_placed += 1
-
     # Get account for buying power
     account = client.get_account()
     portfolio_value = account_portfolio_value(account)
     buying_power = float(getattr(account, "buying_power", 0) or 0)
-
-    # Open/adjust positions in desired set
-    held = {}
-    for sym, alloc_frac in desired.items():
-        existing = live_positions.get(sym)
-        existing_qty = abs(_signed_position_qty(existing)) if existing else 0.0
-        price = float(quotes.get(sym, 0.0) or 0.0)
-        if price <= 0:
-            continue
-
-        buy_price = price if paper else price * (1.0 + CALIBRATED_ENTRY_OFFSET_BPS / 10_000.0)
-        target_qty = compute_target_qty_from_values(
-            portfolio_value=portfolio_value,
-            buying_power=buying_power,
-            price=buy_price,
-            allocation_pct=float(total_allocation_pct) * float(alloc_frac),
+    buy_prices = {
+        sym: (
+            float(quotes.get(sym, 0.0) or 0.0)
+            if paper
+            else float(quotes.get(sym, 0.0) or 0.0) * (1.0 + CALIBRATED_ENTRY_OFFSET_BPS / 10_000.0)
         )
+        for sym in set(existing_qty_by_symbol) | set(desired)
+    }
+    sell_prices = {
+        sym: (
+            float(quotes.get(sym, 0.0) or 0.0)
+            if paper
+            else float(quotes.get(sym, 0.0) or 0.0) * (1.0 + CALIBRATED_EXIT_OFFSET_BPS / 10_000.0)
+        )
+        for sym in set(existing_qty_by_symbol) | set(desired)
+    }
+    target_plan = _portfolio_rebalance_targets(
+        desired_allocations=desired,
+        existing_qty_by_symbol=existing_qty_by_symbol,
+        buy_prices=buy_prices,
+        sell_prices=sell_prices,
+        portfolio_value=portfolio_value,
+        buying_power=buying_power,
+        total_allocation_pct=total_allocation_pct,
+    )
 
-        if existing_qty > 0:
-            held[sym] = existing_qty
+    orders_placed = 0
+    held = {}
+    for sym, existing_qty in existing_qty_by_symbol.items():
+        if sym in target_plan:
+            continue
+        sell_price = sell_prices.get(sym, 0.0)
+        if existing_qty <= 0.0 or sell_price <= 0.0:
+            continue
+        logger.info("Multi-pos: closing %s qty=%.4f limit=%.2f", sym, existing_qty, sell_price)
+        if not dry_run:
+            submit_limit_order(client, symbol=sym, qty=existing_qty, side="sell", limit_price=sell_price)
+            orders_placed += 1
+
+    for sym, alloc_frac in desired.items():
+        plan = target_plan[sym]
+        existing_qty = plan.existing_qty
+        target_qty = plan.target_qty
+        buy_price = buy_prices.get(sym, 0.0)
+        sell_price = sell_prices.get(sym, 0.0)
+        delta_qty = round(target_qty - existing_qty, 4)
+        if target_qty <= 0.0:
+            continue
+        held[sym] = target_qty
+        if abs(delta_qty) <= _PORTFOLIO_REBALANCE_QTY_EPSILON:
             logger.info("Multi-pos: holding %s qty=%.4f (target=%.4f)", sym, existing_qty, target_qty)
-        elif target_qty > 0:
-            logger.info("Multi-pos: opening %s qty=%.4f limit=%.2f (alloc=%.1f%%)",
-                        sym, target_qty, buy_price, alloc_frac * total_allocation_pct)
-            if not dry_run:
-                submit_limit_order(client, symbol=sym, qty=target_qty, side="buy", limit_price=buy_price)
+            continue
+        if delta_qty < 0.0:
+            logger.info(
+                "Multi-pos: trimming %s qty=%.4f -> %.4f limit=%.2f",
+                sym,
+                existing_qty,
+                target_qty,
+                sell_price,
+            )
+            if not dry_run and sell_price > 0.0:
+                submit_limit_order(client, symbol=sym, qty=abs(delta_qty), side="sell", limit_price=sell_price)
                 orders_placed += 1
-            held[sym] = target_qty
+            continue
+        logger.info(
+            "Multi-pos: buying %s qty=%.4f -> %.4f limit=%.2f (alloc=%.1f%%)",
+            sym,
+            existing_qty,
+            target_qty,
+            buy_price,
+            alloc_frac * total_allocation_pct,
+        )
+        if not dry_run and buy_price > 0.0:
+            submit_limit_order(client, symbol=sym, qty=delta_qty, side="buy", limit_price=buy_price)
+            orders_placed += 1
 
     logger.info("Multi-pos: %d orders placed, %d positions targeted", orders_placed, len(held))
     return held
@@ -2222,6 +2342,10 @@ def execute_multi_position_signals_with_trading_server(
     symbol_set = [str(symbol).upper() for symbol in symbols]
     snapshot = server_client.get_account()
     live_positions = server_positions_by_symbol(snapshot, symbol_set)
+    existing_qty_by_symbol = {
+        symbol: abs(_signed_position_qty(position))
+        for symbol, position in live_positions.items()
+    }
 
     desired: dict[str, float] = {}
     for sig in signals:
@@ -2237,38 +2361,45 @@ def execute_multi_position_signals_with_trading_server(
                 continue
             desired[symbol] = alloc_frac
 
-    close_orders: list[tuple[str, float, float]] = []
-    open_orders: list[tuple[str, float, float]] = []
-    orders_placed = 0
-    for sym, pos in list(live_positions.items()):
-        if sym not in desired:
-            qty = abs(_signed_position_qty(pos))
-            if qty <= 0:
-                continue
-            sell_price = float(quotes.get(sym, 0.0) or 0.0)
-            if sell_price <= 0.0:
-                continue
-            logger.info("Server multi-pos: closing %s qty=%.4f", sym, qty)
-            if not dry_run:
-                close_orders.append((sym, qty, sell_price))
-
     equity = server_equity(snapshot, quotes)
+    buy_prices = {
+        symbol: float(quotes.get(symbol, 0.0) or 0.0)
+        for symbol in set(existing_qty_by_symbol) | set(desired)
+    }
+    sell_prices = dict(buy_prices)
+    target_plan = _portfolio_rebalance_targets(
+        desired_allocations=desired,
+        existing_qty_by_symbol=existing_qty_by_symbol,
+        buy_prices=buy_prices,
+        sell_prices=sell_prices,
+        portfolio_value=equity,
+        buying_power=float(snapshot.get("buying_power", snapshot["cash"]) or 0.0),
+        total_allocation_pct=total_allocation_pct,
+    )
+    sell_orders: list[tuple[str, float, float, str]] = []
+    buy_orders: list[tuple[str, float, float, str]] = []
+    orders_placed = 0
     held: dict[str, float] = {}
-    for sym, alloc_frac in desired.items():
-        existing = live_positions.get(sym)
-        existing_qty = abs(_signed_position_qty(existing)) if existing else 0.0
-        price = float(quotes.get(sym, 0.0) or 0.0)
-        if price <= 0.0:
+    for sym, existing_qty in existing_qty_by_symbol.items():
+        if sym in target_plan:
             continue
-        target_qty = compute_target_qty_from_server_snapshot(
-            snapshot=snapshot,
-            quotes=quotes,
-            price=price,
-            allocation_pct=float(total_allocation_pct) * max(0.0, float(alloc_frac)),
-        )
+        sell_price = sell_prices.get(sym, 0.0)
+        if existing_qty <= 0.0 or sell_price <= 0.0:
+            continue
+        logger.info("Server multi-pos: closing %s qty=%.4f", sym, existing_qty)
+        if not dry_run:
+            sell_orders.append((sym, existing_qty, sell_price, "close_portfolio_position"))
 
-        if existing_qty > 0.0:
-            held[sym] = existing_qty
+    for sym, alloc_frac in desired.items():
+        plan = target_plan[sym]
+        existing_qty = plan.existing_qty
+        target_qty = plan.target_qty
+        price = buy_prices.get(sym, 0.0)
+        if target_qty <= 0.0:
+            continue
+        held[sym] = target_qty
+        delta_qty = round(target_qty - existing_qty, 4)
+        if abs(delta_qty) <= _PORTFOLIO_REBALANCE_QTY_EPSILON:
             logger.info(
                 "Server multi-pos: holding %s qty=%.4f (target=%.4f)",
                 sym,
@@ -2276,23 +2407,25 @@ def execute_multi_position_signals_with_trading_server(
                 target_qty,
             )
             continue
-
-        if target_qty <= 0.0:
+        if delta_qty < 0.0:
+            logger.info("Server multi-pos: trimming %s qty=%.4f -> %.4f", sym, existing_qty, target_qty)
+            if not dry_run and price > 0.0:
+                sell_orders.append((sym, abs(delta_qty), price, "rebalance_portfolio_position"))
             continue
         logger.info(
-            "Server multi-pos: opening %s qty=%.4f @ %.4f (alloc=%.1f%%)",
+            "Server multi-pos: buying %s qty=%.4f -> %.4f @ %.4f (alloc=%.1f%%)",
             sym,
+            existing_qty,
             target_qty,
             price,
             float(alloc_frac) * float(total_allocation_pct),
         )
-        if not dry_run:
-            open_orders.append((sym, target_qty, price))
-        held[sym] = target_qty
-    if not dry_run and (close_orders or open_orders):
-        refresh_symbols = sorted({symbol for symbol, *_rest in close_orders + open_orders})
+        if not dry_run and price > 0.0:
+            buy_orders.append((sym, delta_qty, price, "open_portfolio_position"))
+    if not dry_run and (sell_orders or buy_orders):
+        refresh_symbols = sorted({symbol for symbol, *_rest in sell_orders + buy_orders})
         server_client.refresh_prices(symbols=refresh_symbols)
-        for sym, qty, sell_price in close_orders:
+        for sym, qty, sell_price, intent in sell_orders:
             server_client.submit_limit_order(
                 symbol=sym,
                 qty=qty,
@@ -2300,16 +2433,16 @@ def execute_multi_position_signals_with_trading_server(
                 limit_price=_marketable_limit_price(sell_price, "sell"),
                 allow_loss_exit=True,
                 force_exit_reason="daily portfolio rebalance",
-                metadata={"strategy": "daily_stock_rl", "intent": "close_portfolio_position"},
+                metadata={"strategy": "daily_stock_rl", "intent": intent},
             )
             orders_placed += 1
-        for sym, qty, price in open_orders:
+        for sym, qty, price, intent in buy_orders:
             server_client.submit_limit_order(
                 symbol=sym,
                 qty=qty,
                 side="buy",
                 limit_price=_marketable_limit_price(price, "buy"),
-                metadata={"strategy": "daily_stock_rl", "intent": "open_portfolio_position"},
+                metadata={"strategy": "daily_stock_rl", "intent": intent},
             )
             orders_placed += 1
 
@@ -2703,32 +2836,64 @@ def run_backtest(
         equity_curve.append(equity)
 
         if multi_position > 1:
-            desired = {
-                str(sig.symbol).upper(): float(sig.allocation_pct)
-                for sig in signals
-                if sig.symbol and sig.direction == "long"
-            }
-            for pos_symbol, (qty, _entry_price) in list(portfolio_positions.items()):
-                if pos_symbol not in desired:
-                    sell_price = prices[pos_symbol] * (1.0 + exit_offset_bps / 10_000.0)
-                    cash += qty * sell_price
-                    del portfolio_positions[pos_symbol]
-                    trades += 1
+            desired: dict[str, float] = {}
+            for sig in signals:
+                if not sig.symbol or sig.direction != "long":
+                    continue
+                alloc_frac = _portfolio_signal_allocation_fraction(sig)
+                if alloc_frac is None:
+                    continue
+                desired[str(sig.symbol).upper()] = alloc_frac
             max_total_allocation_pct = max(0.0, 100.0 * BUYING_POWER_USAGE_CAP * float(buying_power_multiplier))
             total_allocation_pct = min(max(0.0, float(allocation_pct)), max_total_allocation_pct)
-            for pos_symbol, alloc_frac in desired.items():
-                if pos_symbol in portfolio_positions:
+            target_plan = _portfolio_rebalance_targets(
+                desired_allocations=desired,
+                existing_qty_by_symbol={
+                    symbol: qty for symbol, (qty, _entry_price) in portfolio_positions.items()
+                },
+                buy_prices={
+                    symbol: prices.get(symbol, 0.0) * (1.0 + entry_offset_bps / 10_000.0)
+                    for symbol in set(portfolio_positions) | set(desired)
+                },
+                sell_prices={
+                    symbol: prices.get(symbol, 0.0) * (1.0 + exit_offset_bps / 10_000.0)
+                    for symbol in set(portfolio_positions) | set(desired)
+                },
+                portfolio_value=equity,
+                buying_power=max(0.0, cash * float(buying_power_multiplier)),
+                total_allocation_pct=total_allocation_pct,
+            )
+            for pos_symbol, (qty, entry_price) in list(portfolio_positions.items()):
+                plan = target_plan.get(pos_symbol)
+                sell_price = prices.get(pos_symbol, 0.0) * (1.0 + exit_offset_bps / 10_000.0)
+                target_qty = 0.0 if plan is None else plan.target_qty
+                delta_qty = round(target_qty - qty, 4)
+                if delta_qty >= -_PORTFOLIO_REBALANCE_QTY_EPSILON:
+                    continue
+                cash += abs(delta_qty) * sell_price
+                trades += 1
+                if target_qty <= _PORTFOLIO_REBALANCE_QTY_EPSILON:
+                    del portfolio_positions[pos_symbol]
+                else:
+                    portfolio_positions[pos_symbol] = (target_qty, entry_price)
+            for pos_symbol, plan in target_plan.items():
+                target_qty = plan.target_qty
+                if target_qty <= _PORTFOLIO_REBALANCE_QTY_EPSILON:
+                    continue
+                existing_qty, existing_entry_price = portfolio_positions.get(pos_symbol, (0.0, 0.0))
+                delta_qty = round(target_qty - existing_qty, 4)
+                if delta_qty <= _PORTFOLIO_REBALANCE_QTY_EPSILON:
                     continue
                 buy_price = prices[pos_symbol] * (1.0 + entry_offset_bps / 10_000.0)
                 if buy_price <= 0.0:
                     continue
-                target_notional = equity * (total_allocation_pct / 100.0) * max(0.0, float(alloc_frac))
-                qty = round(target_notional / buy_price, 4)
-                if qty <= 0.0:
-                    continue
-                cash -= qty * buy_price
-                portfolio_positions[pos_symbol] = (qty, buy_price)
+                cash -= delta_qty * buy_price
                 trades += 1
+                if existing_qty > 0.0:
+                    entry_price = ((existing_qty * existing_entry_price) + (delta_qty * buy_price)) / target_qty
+                else:
+                    entry_price = buy_price
+                portfolio_positions[pos_symbol] = (target_qty, entry_price)
             trader.step_day()
             continue
 
