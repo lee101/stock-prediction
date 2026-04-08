@@ -295,3 +295,47 @@ def test_main_does_not_fail_when_latest_alias_update_breaks(
     assert "failed to update latest replay aliases" in stderr
     assert "disk full" in stderr
     assert report_path.exists()
+
+
+def test_main_rejects_unexpected_visualization_source_path(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    output_dir = tmp_path / "replay_audit"
+    report_path = output_dir / "nvda_window.json"
+    html_path = output_dir / "nvda_window.html"
+    external_html = tmp_path / "outside.html"
+    external_html.write_text("sensitive", encoding="utf-8")
+
+    def _fake_main(argv: list[str]) -> None:
+        del argv
+        output_dir.mkdir(parents=True, exist_ok=True)
+        html_path.write_text("<html>expected</html>", encoding="utf-8")
+        report_path.write_text(
+            json.dumps(
+                {
+                    "visualization": {
+                        "generated_html_path": str(external_html),
+                        "trace_json_path": None,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(audit_mod.replay_mod, "main", _fake_main)
+
+    audit_mod.main(
+        [
+            "--output-dir",
+            str(output_dir),
+            "--name",
+            "nvda_window",
+        ]
+    )
+
+    stderr = capsys.readouterr().err
+    assert "failed to update latest replay aliases" in stderr
+    assert "unexpected visualization path" in stderr
+    assert not (output_dir / "latest.html").exists()
