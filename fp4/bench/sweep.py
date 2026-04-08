@@ -43,9 +43,10 @@ import os
 import statistics
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
 
 REPO = Path(__file__).resolve().parents[2]
 BENCH = Path(__file__).resolve().parent / "bench_trading.py"
@@ -161,12 +162,54 @@ def _extract_metrics(rec: dict[str, Any]) -> dict[str, float]:
     return out
 
 
+def _query_free_gpu_mb() -> Optional[int]:
+    """Return min free MB across visible GPUs via nvidia-smi, or None on failure."""
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            text=True, stderr=subprocess.DEVNULL, timeout=4,
+        )
+    except Exception:
+        return None
+    vals: list[int] = []
+    for line in out.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            vals.append(int(line))
+        except ValueError:
+            continue
+    if not vals:
+        return None
+    return min(vals)
+
+
+def _wait_for_gpu_mem(min_free_mb: int, timeout_sec: float = 600.0,
+                      poll_sec: float = 5.0) -> bool:
+    """Block until ≥min_free_mb is free on every visible GPU. Returns False on timeout."""
+    if min_free_mb <= 0:
+        return True
+    deadline = time.time() + float(timeout_sec)
+    while time.time() < deadline:
+        free = _query_free_gpu_mb()
+        if free is None:
+            # nvidia-smi unavailable → don't block.
+            return True
+        if free >= min_free_mb:
+            return True
+        time.sleep(poll_sec)
+    return False
+
+
 def _run_cell(
     algo: str,
     constrained: bool,
     seed: int,
     steps: int,
     sweep_dir: Path,
+    min_free_gpu_mb: int = 0,
+    oom_retries: int = 1,
 ) -> CellResult:
     trainer = ALGO_TO_TRAINER[algo]
     env = os.environ.copy()
@@ -179,18 +222,51 @@ def _run_cell(
         "--steps", str(int(steps)),
         "--seed", str(int(seed)),
     ]
-    try:
-        proc = subprocess.run(
-            cmd, cwd=str(REPO), env=env, capture_output=True, text=True
-        )
-    except Exception as exc:  # pragma: no cover - defensive
-        return CellResult(
-            algo=algo, constrained=constrained, seed=seed, steps=steps,
-            status="error", reason=f"subprocess raised: {type(exc).__name__}: {exc}",
-            wall_sec=0.0, sps=0.0,
-            median_5bps=_nan(), p10_5bps=_nan(), sortino_5bps=_nan(),
-            max_dd_5bps=_nan(), n_neg_5bps=_nan(), result_path="",
-        )
+
+    # Block until enough GPU memory is free so we don't immediately OOM
+    # against a sibling process. No-op if min_free_gpu_mb <= 0.
+    if min_free_gpu_mb > 0:
+        ok = _wait_for_gpu_mem(min_free_gpu_mb)
+        if not ok:
+            return CellResult(
+                algo=algo, constrained=constrained, seed=seed, steps=steps,
+                status="error",
+                reason=f"timed out waiting for {min_free_gpu_mb}MB free GPU mem",
+                wall_sec=0.0, sps=0.0,
+                median_5bps=_nan(), p10_5bps=_nan(), sortino_5bps=_nan(),
+                max_dd_5bps=_nan(), n_neg_5bps=_nan(), result_path="",
+            )
+
+    proc = None
+    last_err = ""
+    attempts = max(1, int(oom_retries) + 1)
+    for attempt in range(attempts):
+        try:
+            proc = subprocess.run(
+                cmd, cwd=str(REPO), env=env, capture_output=True, text=True
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            return CellResult(
+                algo=algo, constrained=constrained, seed=seed, steps=steps,
+                status="error", reason=f"subprocess raised: {type(exc).__name__}: {exc}",
+                wall_sec=0.0, sps=0.0,
+                median_5bps=_nan(), p10_5bps=_nan(), sortino_5bps=_nan(),
+                max_dd_5bps=_nan(), n_neg_5bps=_nan(), result_path="",
+            )
+        # Detect "CUDA out of memory" and back off + retry once.
+        stderr_tail = (proc.stderr or "")[-2000:]
+        oom = ("out of memory" in stderr_tail) or ("CUDA error: out of memory" in stderr_tail)
+        if not oom:
+            break
+        last_err = stderr_tail
+        if attempt + 1 >= attempts:
+            break
+        # Wait for the contending process to release memory before retrying.
+        backoff = 30.0 + 30.0 * attempt
+        time.sleep(backoff)
+        if min_free_gpu_mb > 0:
+            _wait_for_gpu_mem(min_free_gpu_mb)
+    assert proc is not None
 
     # bench_trading prints a single JSON doc as its last stdout blob. Locate it.
     rec: dict[str, Any] = {}
@@ -355,6 +431,8 @@ def run_sweep(
     steps: int,
     smoke: bool,
     sweep_dir: Path,
+    min_free_gpu_mb: int = 0,
+    oom_retries: int = 1,
 ) -> tuple[Path, Path, list[CellResult]]:
     sweep_dir.mkdir(parents=True, exist_ok=True)
     cells: list[CellResult] = []
@@ -366,7 +444,10 @@ def run_sweep(
                 idx += 1
                 tag = f"[{idx}/{total}] algo={algo} constrained={'on' if constrained else 'off'} seed={seed}"
                 print(f">>> {tag}", flush=True)
-                c = _run_cell(algo, constrained, seed, steps, sweep_dir)
+                c = _run_cell(
+                    algo, constrained, seed, steps, sweep_dir,
+                    min_free_gpu_mb=min_free_gpu_mb, oom_retries=oom_retries,
+                )
                 print(
                     f"    status={c.status} sps={c.sps:.0f} "
                     f"p10={_fmt(c.p10_5bps) or '—'} sortino={_fmt(c.sortino_5bps) or '—'}"
@@ -394,6 +475,12 @@ def main(argv: list[str] | None = None) -> int:
                    help="1 seed x 50k steps per cell, quick sanity")
     p.add_argument("--out-dir", default="",
                    help="override sweep output dir (default sweep_<date>)")
+    p.add_argument("--min-free-gpu-mb", type=int, default=4096,
+                   help="Block before launching each cell until at least N MB "
+                        "of GPU memory are free (default 4096). Set 0 to disable.")
+    p.add_argument("--oom-retries", type=int, default=1,
+                   help="Retry a cell once after a CUDA OOM with backoff "
+                        "(default 1; set 0 to fail immediately).")
     args = p.parse_args(argv)
 
     algos = _parse_list(args.algos)
@@ -421,6 +508,8 @@ def main(argv: list[str] | None = None) -> int:
     csv_path, md_path, cells = run_sweep(
         algos=algos, constrained_modes=cmodes, seeds=seeds,
         steps=steps, smoke=args.smoke, sweep_dir=sweep_dir,
+        min_free_gpu_mb=int(args.min_free_gpu_mb),
+        oom_retries=int(args.oom_retries),
     )
     n_ok = sum(1 for c in cells if c.status == "ok")
     print(f"\nsweep complete: {n_ok}/{len(cells)} ok")
