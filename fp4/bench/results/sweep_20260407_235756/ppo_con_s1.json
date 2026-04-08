@@ -1,0 +1,23 @@
+{
+  "algo": "ppo",
+  "constrained": true,
+  "seed": 1,
+  "steps": 2000000,
+  "status": "error",
+  "reason": "OutOfMemoryError: CUDA out of memory. Tried to allocate 64.00 MiB. GPU 0 has a total capacity of 31.36 GiB of which 20.19 MiB is free. Process 2179166 has 2.52 GiB memory in use. Process 3377678 has 714.00 MiB memory in use. Process 3513723 has 26.66 GiB memory in use. Process 3538354 has 630.00 MiB memory in use. Including non-PyTorch memory, this process has 824.00 MiB memory in use. Of the allocated memory 130.93 MiB is allocated by PyTorch, and 31.07 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+  "returncode": 1,
+  "bench_record": {
+    "trainer": "fp4",
+    "seed": 1,
+    "steps": 2000000,
+    "date": "20260408_000745",
+    "config_path": "/nvme0n1-disk/code/stock-prediction/fp4/experiments/fp4_ppo_stocks12.yaml",
+    "smoke": false,
+    "available": true,
+    "train": {
+      "status": "error",
+      "reason": "OutOfMemoryError: CUDA out of memory. Tried to allocate 64.00 MiB. GPU 0 has a total capacity of 31.36 GiB of which 20.19 MiB is free. Process 2179166 has 2.52 GiB memory in use. Process 3377678 has 714.00 MiB memory in use. Process 3513723 has 26.66 GiB memory in use. Process 3538354 has 630.00 MiB memory in use. Including non-PyTorch memory, this process has 824.00 MiB memory in use. Of the allocated memory 130.93 MiB is allocated by PyTorch, and 31.07 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)"
+    },
+    "status": "error"
+  }
+}

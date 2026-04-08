@@ -1,0 +1,74 @@
+{
+  "algo": "ppo",
+  "constrained": false,
+  "seed": 1,
+  "steps": 2000000,
+  "status": "ok",
+  "reason": "",
+  "returncode": 0,
+  "bench_record": {
+    "trainer": "fp4",
+    "seed": 1,
+    "steps": 2000000,
+    "date": "20260408_000101",
+    "config_path": "/nvme0n1-disk/code/stock-prediction/fp4/experiments/fp4_ppo_stocks12.yaml",
+    "smoke": false,
+    "available": true,
+    "train": {
+      "status": "ok",
+      "wall_sec": 184.122248735046,
+      "gpu_peak_mb": 239.33544921875,
+      "trainer_output": {
+        "final_sortino": -0.48631179332733154,
+        "final_p10": -3.8259472846984863,
+        "mean_return": -1.316729187965393,
+        "n_episodes": 960,
+        "steps_per_sec": 11021.289636162111,
+        "wall_sec": 181.36244178190827,
+        "gpu_peak_mb": 239.33544921875,
+        "device": "cuda",
+        "cuda_graph_used": true,
+        "env_backend": "gpu_trading_env",
+        "n_iters": 122,
+        "total_steps": 1998848,
+        "last_loss": -0.3552113473415375,
+        "last_entropy": 7.071813106536865
+      }
+    },
+    "eval": {
+      "status": "ok",
+      "backend": "same_as_train",
+      "eval_env_backend": "gpu_trading_env",
+      "n_envs": 128,
+      "n_steps": 1856,
+      "n_loaded_weights": 4,
+      "by_slippage": {
+        "0": {
+          "summary": {
+            "p10_return": 0.0,
+            "median_return": 0.0,
+            "p90_return": 0.0,
+            "mean_return": 0.0,
+            "sortino": 0.0,
+            "max_drawdown": 0.0,
+            "n_neg": 0,
+            "n_windows": 128
+          },
+          "p10_return": 0.0,
+          "median_return": 0.0,
+          "max_drawdown": 0.0,
+          "sortino": 0.0
+        }
+      },
+      "shape_mismatch": {
+        "policy_obs_dim": 7,
+        "marketsim_obs_dim": 209,
+        "policy_act_dim": 4,
+        "marketsim_act_dim": 25
+      },
+      "checkpoint": "/nvme0n1-disk/code/stock-prediction/fp4/bench/results/_ckpt_fp4_s1_20260408_000101/final.pt"
+    },
+    "steps_per_sec": 10862.348324226816,
+    "status": "ok"
+  }
+}
