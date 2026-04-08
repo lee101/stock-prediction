@@ -3496,11 +3496,26 @@ def run_backtest(
     allow_unsafe_checkpoint_loading: bool = False,
     entry_offset_bps: float = 0.0,
     exit_offset_bps: float = 0.0,
+    min_open_confidence: float = DEFAULT_MIN_OPEN_CONFIDENCE,
+    min_open_value_estimate: float = DEFAULT_MIN_OPEN_VALUE_ESTIMATE,
 ) -> dict[str, float]:
     if starting_cash <= 0:
         raise ValueError("starting_cash must be positive")
     if buying_power_multiplier <= 0:
         raise ValueError("buying_power_multiplier must be positive")
+    min_open_confidence = float(min_open_confidence)
+    min_open_value_estimate = float(min_open_value_estimate)
+
+    def _signal_passes_open_gate(sig) -> bool:
+        confidence = float(getattr(sig, "confidence", 0.0) or 0.0)
+        if confidence < min_open_confidence:
+            return False
+        value_estimate = float(getattr(sig, "value_estimate", 0.0) or 0.0)
+        if value_estimate < min_open_value_estimate:
+            return False
+        return True
+
+    gate_blocked_opens = 0
     feature_schema = resolve_daily_feature_schema(
         checkpoint,
         extra_checkpoints=extra_checkpoints,
@@ -3599,6 +3614,9 @@ def run_backtest(
             for sig in signals:
                 if not sig.symbol or sig.direction != "long":
                     continue
+                if not _signal_passes_open_gate(sig):
+                    gate_blocked_opens += 1
+                    continue
                 alloc_frac = _portfolio_signal_allocation_fraction(sig)
                 if alloc_frac is None:
                     continue
@@ -3665,6 +3683,10 @@ def run_backtest(
             trader.update_state(0, 0.0, "")
 
         if position is None and signal.symbol and signal.direction == "long":
+            if not _signal_passes_open_gate(signal):
+                gate_blocked_opens += 1
+                trader.step_day()
+                continue
             effective_allocation_pct = resolved_signal_allocation_pct(
                 signal,
                 base_allocation_pct=allocation_pct,
@@ -3718,6 +3740,7 @@ def run_backtest(
         "sortino": sortino,
         "max_drawdown": max_dd,
         "trades": float(trades),
+        "gate_blocked_opens": float(gate_blocked_opens),
     }
     logger.info("Backtest results: %s", json.dumps(results, sort_keys=True))
     return results
@@ -5798,6 +5821,8 @@ def main(argv: Optional[list[str]] = None) -> None:
             buying_power_multiplier=config.backtest_buying_power_multiplier,
             entry_offset_bps=config.backtest_entry_offset_bps,
             exit_offset_bps=config.backtest_exit_offset_bps,
+            min_open_confidence=config.min_open_confidence,
+            min_open_value_estimate=config.min_open_value_estimate,
             allow_unsafe_checkpoint_loading=config.allow_unsafe_checkpoint_loading,
         )
         return
