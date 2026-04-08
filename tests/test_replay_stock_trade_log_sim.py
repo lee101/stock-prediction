@@ -4,13 +4,18 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 import unified_hourly_experiment.replay_stock_trade_log_sim as replay_mod
 from unified_hourly_experiment.replay_stock_trade_log_sim import (
+    _format_best_replay_summary,
+    _resolve_artifact_paths,
+    _row_rank_key,
+    _write_replay_visualization,
     compare_counts,
     compare_entries,
-    load_live_entry_fills,
     load_live_entries,
+    load_live_entry_fills,
     parse_bool_list,
     run_replay,
     split_live_entries_by_bar_coverage,
@@ -21,6 +26,153 @@ def _write_log(path: Path, rows: list[dict]) -> None:
     with path.open("w") as handle:
         for row in rows:
             handle.write(json.dumps(row) + "\n")
+
+
+def test_resolve_artifact_paths_defaults_visualization_to_report_stem() -> None:
+    now = replay_mod.datetime(2026, 4, 8, 12, 34, 56, tzinfo=replay_mod.UTC)
+
+    report_path, html_path = _resolve_artifact_paths(
+        output=None,
+        visualize_html=Path("auto"),
+        now=now,
+    )
+
+    assert report_path == Path("experiments/stock_trade_log_sim_replay_20260408_123456.json")
+    assert html_path == Path("experiments/stock_trade_log_sim_replay_20260408_123456.html")
+
+
+def test_resolve_artifact_paths_adds_html_suffix_for_custom_visualization_path() -> None:
+    report_path, html_path = _resolve_artifact_paths(
+        output=Path("reports/replay.json"),
+        visualize_html=Path("artifacts/replay_best"),
+        now=replay_mod.datetime(2026, 4, 8, 12, 34, 56, tzinfo=replay_mod.UTC),
+    )
+
+    assert report_path == Path("reports/replay.json")
+    assert html_path == Path("artifacts/replay_best.html")
+
+
+def test_format_best_replay_summary_includes_paths_and_core_metrics() -> None:
+    summary = _format_best_replay_summary(
+        best_row={
+            "market_order_entry": True,
+            "entry_order_ttl_hours": 2,
+            "bar_margin": 0.0005,
+            "hourly_abs_count_delta_total": 1.0,
+            "hourly_abs_qty_delta_total": 3.5,
+            "matched_price_mae": 0.0123,
+            "exact_row_ratio": 0.75,
+            "sim_metrics": {"backend": "python"},
+        },
+        report_path=Path("experiments/replay.json"),
+        visualize_html_path=Path("experiments/replay.html"),
+        trace_json_path=Path("experiments/replay_trace.json"),
+        visualization_error="plotly not installed",
+    )
+
+    assert "Best replay scenario:" in summary
+    assert "backend=python" in summary
+    assert "market_order_entry=1" in summary
+    assert "entry_order_ttl_hours=2" in summary
+    assert "matched_price_mae=0.0123" in summary
+    assert "report=experiments/replay.json" in summary
+    assert "visualization=experiments/replay.html" in summary
+    assert "trace_json=experiments/replay_trace.json" in summary
+    assert "visualization_error=plotly not installed" in summary
+
+
+def test_row_rank_key_prioritizes_count_qty_price_then_exact_ratio() -> None:
+    better_exact = {
+        "hourly_abs_count_delta_total": 1.0,
+        "hourly_abs_qty_delta_total": 2.0,
+        "matched_price_mae": 0.5,
+        "exact_row_ratio": 0.75,
+    }
+    worse_exact = {
+        "hourly_abs_count_delta_total": 1.0,
+        "hourly_abs_qty_delta_total": 2.0,
+        "matched_price_mae": 0.5,
+        "exact_row_ratio": 0.5,
+    }
+    worse_count = {
+        "hourly_abs_count_delta_total": 2.0,
+        "hourly_abs_qty_delta_total": 0.0,
+        "matched_price_mae": 0.0,
+        "exact_row_ratio": 1.0,
+    }
+
+    assert _row_rank_key(better_exact) < _row_rank_key(worse_exact)
+    assert _row_rank_key(better_exact) < _row_rank_key(worse_count)
+
+
+def test_write_replay_visualization_returns_error_without_raising(tmp_path: Path, monkeypatch) -> None:
+    class _DummyTrace:
+        def to_json(self, path: Path) -> None:
+            path.write_text('{"ok":true}')
+
+    def _fake_trace_from_portfolio_result(**kwargs):
+        return _DummyTrace()
+
+    def _fake_render_html_plotly(*args, **kwargs) -> None:
+        raise RuntimeError("plotly exploded")
+
+    monkeypatch.setattr(replay_mod, "trace_from_portfolio_result", _fake_trace_from_portfolio_result)
+    monkeypatch.setattr(replay_mod, "render_html_plotly", _fake_render_html_plotly)
+
+    html_path = tmp_path / "replay.html"
+    written_html_path, trace_json_path, visualization_error = _write_replay_visualization(
+        bars=pd.DataFrame(),
+        actions=pd.DataFrame(),
+        best_replay={"sim": object()},
+        best_row={
+            "bar_margin": 0.0005,
+            "entry_order_ttl_hours": 2,
+            "matched_price_mae": 0.0123,
+        },
+        symbols=["NVDA"],
+        visualize_html_path=html_path,
+        visualize_num_pairs=4,
+        sim_backend="python",
+    )
+
+    assert written_html_path is None
+    assert trace_json_path == tmp_path / "replay.json"
+    assert trace_json_path.read_text() == '{"ok":true}'
+    assert visualization_error == "plotly exploded"
+
+
+def test_write_replay_visualization_rejects_hourly_trader_backend(tmp_path: Path) -> None:
+    written_html_path, trace_json_path, visualization_error = _write_replay_visualization(
+        bars=pd.DataFrame(),
+        actions=pd.DataFrame(),
+        best_replay={"sim": object()},
+        best_row={"bar_margin": 0.0, "entry_order_ttl_hours": 0, "matched_price_mae": 0.0},
+        symbols=["NVDA"],
+        visualize_html_path=tmp_path / "replay.html",
+        visualize_num_pairs=4,
+        sim_backend="hourly_trader",
+    )
+
+    assert written_html_path is None
+    assert trace_json_path is None
+    assert visualization_error == "visualization_not_supported_for_hourly_trader_backend"
+
+
+def test_write_replay_visualization_reports_missing_best_replay(tmp_path: Path) -> None:
+    written_html_path, trace_json_path, visualization_error = _write_replay_visualization(
+        bars=pd.DataFrame(),
+        actions=pd.DataFrame(),
+        best_replay=None,
+        best_row=None,
+        symbols=["NVDA"],
+        visualize_html_path=tmp_path / "replay.html",
+        visualize_num_pairs=4,
+        sim_backend="python",
+    )
+
+    assert written_html_path is None
+    assert trace_json_path is None
+    assert visualization_error == "no_best_replay_available"
 
 
 def test_load_live_entries_parses_and_deduplicates_hour_symbol(tmp_path: Path) -> None:
@@ -186,12 +338,8 @@ def test_parse_bool_list_accepts_common_tokens() -> None:
 
 
 def test_parse_bool_list_rejects_invalid_token() -> None:
-    try:
+    with pytest.raises(ValueError, match="Invalid boolean token"):
         parse_bool_list("1,maybe")
-    except ValueError as exc:
-        assert "Invalid boolean token" in str(exc)
-    else:
-        raise AssertionError("Expected ValueError for invalid bool token")
 
 
 def test_compare_entries_tracks_qty_and_price_error() -> None:
@@ -323,8 +471,9 @@ def test_run_replay_passes_market_order_entry(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     class _DummyResult:
-        trades = []
-        metrics = {}
+        def __init__(self) -> None:
+            self.trades = []
+            self.metrics = {}
 
     def _fake_run_portfolio_simulation(bars, actions, config, horizon):
         captured["market_order_entry"] = config.market_order_entry
