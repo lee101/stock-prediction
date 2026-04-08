@@ -1,3 +1,34 @@
+# HARD RULES (production safety — do not bypass)
+
+1. **27%/month PnL target on unseen data.** Every new model / knob is
+   judged by `scripts/eval_100d.py` at `decision_lag=2` binary fills,
+   worst slip cell, median monthly ≥ 0.27. Under-target experiments do
+   NOT enter prod. Use fail-fast eval (`--fail-fast-max-dd 0.20`) so
+   duds cost seconds.
+
+2. **Exactly one LIVE Alpaca writer at a time.** Everything that trades
+   real money must import `alpaca_wrapper`, which calls
+   `src/alpaca_singleton.py::enforce_live_singleton` at import and takes
+   an fcntl lock on `<state>/account_locks/alpaca_live_writer.lock`. A
+   second live import exits 42 with the holder's PID/host. Paper mode
+   (`ALP_PAPER=1`) bypasses this — paper can run unlimited instances.
+   Do NOT add a second path to Alpaca's write API; make new entry
+   points import `alpaca_wrapper` so they inherit the gate.
+   Break-glass: `ALPACA_SINGLETON_OVERRIDE=1` (human-only, never in systemd).
+
+3. **No death-spiral sells.** `alpaca_wrapper.alpaca_order_stock` calls
+   `guard_sell_against_death_spiral` before every order. Any sell
+   priced >50 bps below the most recent buy for the same symbol raises
+   `RuntimeError` and crashes the loop — that's the desired behaviour.
+   Buy prices are tracked on disk at
+   `<state>/alpaca_singleton/alpaca_live_writer_buys.json` (3-day TTL).
+   Break-glass: `ALPACA_DEATH_SPIRAL_OVERRIDE=1` (human-only, loudly logged).
+
+4. **Tests in `tests/test_alpaca_singleton.py` must stay green.**
+   Change these and AGENTS.md in the same commit if you change the guard.
+
+---
+
 dont use git branches all on one branch is fine
 use uv pip NEVER just pip
 

@@ -1,5 +1,49 @@
 # Agents Guide
 
+## PRODUCTION GROUND RULES (read this before touching anything live)
+
+### Target: ≥27% monthly PnL on 100+ day unseen data
+- Every new model / variant / training knob is measured against **median
+  monthly return ≥ 0.27** on the worst slippage cell of
+  `scripts/eval_100d.py` run with `decision_lag=2` binary fills.
+- Under-target variants are not production. Don't merge into the 32-model
+  ensemble, don't update `alpacaprod.md`, don't flip `ALLOW_ALPACA_LIVE_TRADING=1`.
+- Use the fail-fast gates (`--fail-fast-max-dd 0.20`, negative-month bail,
+  skip-video-on-dud) so doomed experiments cost ~3s instead of ~3min.
+
+### Single-writer rule: one live Alpaca process, server-enforced
+- Every process that reaches Alpaca's write API **must** import
+  `alpaca_wrapper`. At import time, `src/alpaca_singleton.py::enforce_live_singleton`
+  acquires an fcntl writer lock on `<state>/account_locks/alpaca_live_writer.lock`.
+  A second live import **exits 42** with a loud stderr banner naming the
+  holder PID/host/start-time.
+- Paper mode (`ALP_PAPER=1`) skips the lock entirely — run as many paper
+  clients as you like. Live (`ALP_PAPER=0`) enforces singleton.
+- Override escape hatch: `ALPACA_SINGLETON_OVERRIDE=1`. This is a
+  break-glass lever that logs `OVERRIDE ACTIVE` to stderr on every order
+  and should NEVER be set in systemd units — only by a human at a terminal
+  during a conscious recovery.
+- Do not add a second path that reaches Alpaca. If you need a new entry
+  point (REST server, webhook, CLI) make it import `alpaca_wrapper` so it
+  inherits the gate.
+
+### Death-spiral guard: no selling below last buy
+- `alpaca_wrapper.alpaca_order_stock` calls
+  `src/alpaca_singleton.py::guard_sell_against_death_spiral` before every
+  order. Any sell priced more than **50 bps below the last recorded buy**
+  for that symbol raises `RuntimeError` and the order never leaves the
+  process — stops the "keep lowering the ask until we fill" death loop.
+- Buy prices are tracked per-symbol on disk under
+  `<state>/alpaca_singleton/alpaca_live_writer_buys.json` so the guard
+  survives restarts. The record window is 3 days; older buys are pruned.
+- Override escape hatch: `ALPACA_DEATH_SPIRAL_OVERRIDE=1`. Same rules —
+  loudly logged, never in systemd units, only by a human.
+
+### Before changing any of the above
+- `tests/test_alpaca_singleton.py` must stay green. If you need to change
+  the guard semantics, update the tests in the same commit.
+- Update this section + the matching block in `CLAUDE.md` in lockstep.
+
 ## Machines
 - `local`: development machine
 - `leaf-gpu`: see `~/.secretbashrc` for connection details
