@@ -44,11 +44,17 @@ REPO = Path(__file__).resolve().parent
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from pufferlib_market.inference_daily import DailyPPOTrader, compute_daily_features
+from pufferlib_market.inference_daily import DailyPPOTrader
 from pufferlib_market.inference import TradingSignal
-from pufferlib_market.export_data_daily import compute_daily_features as compute_daily_feature_history
 from pufferlib_market.checkpoint_loader import load_checkpoint_payload
 from src.alpaca_account_lock import acquire_alpaca_account_lock, require_explicit_live_trading_enable
+from src.daily_stock_feature_schema import (
+    DailyStockFeatureSchema,
+    build_daily_feature_history_for_schema,
+    compute_daily_feature_vector_for_schema,
+    daily_feature_dimension,
+    resolve_daily_feature_schema,
+)
 from src.daily_stock_defaults import (
     DEFAULT_CHECKPOINT,
     DEFAULT_DATA_DIR,
@@ -80,6 +86,16 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()],
 )
 logger = logging.getLogger("daily_stock_rl")
+
+# Backwards-compatible module-level helpers.
+# Keep these names patchable for existing tests and callers; the schema-aware
+# wrappers below decide when to use the legacy prod feature vector instead.
+def compute_daily_feature_history(price_df: pd.DataFrame, *, schema: str = "rsi_v5") -> pd.DataFrame:
+    return build_daily_feature_history_for_schema(price_df, schema=schema)
+
+
+def compute_daily_features(price_df: pd.DataFrame, *, schema: str = "rsi_v5") -> np.ndarray:
+    return compute_daily_feature_vector_for_schema(price_df, schema=schema)
 
 EASTERN = ZoneInfo("America/New_York")
 RUN_AFTER_OPEN_ET = dt_time(hour=9, minute=35)
@@ -319,7 +335,10 @@ class PreparedDailyBacktestData:
     indexed: dict[str, pd.DataFrame]
     trader_template: DailyPPOTrader
     extra_policies: list[torch.nn.Module]
+    symbols: tuple[str, ...]
     feature_cube: np.ndarray
+    close_matrix: np.ndarray
+    timestamps: tuple[datetime, ...]
     start: int
     min_len: int
 
@@ -1365,15 +1384,74 @@ def _build_daily_feature_cube(
     indexed: dict[str, pd.DataFrame],
     *,
     symbols: Sequence[str],
+    feature_schema: str,
 ) -> np.ndarray:
     """Materialize aligned daily features once as [time, symbol, feature]."""
+    feature_dimension = daily_feature_dimension(cast(DailyStockFeatureSchema, feature_schema))
     feature_blocks = [
-        compute_daily_feature_history(indexed[symbol]).to_numpy(dtype=np.float32, copy=False)
+        _daily_feature_history_for_schema(indexed[symbol], feature_schema=feature_schema).to_numpy(dtype=np.float32, copy=False)
         for symbol in symbols
     ]
     if not feature_blocks:
-        return np.zeros((0, 0, 16), dtype=np.float32)
+        return np.zeros((0, 0, feature_dimension), dtype=np.float32)
     return np.stack(feature_blocks, axis=1)
+
+
+def _build_daily_close_matrix(
+    indexed: dict[str, pd.DataFrame],
+    *,
+    symbols: Sequence[str],
+) -> np.ndarray:
+    close_columns = [
+        indexed[symbol]["close"].to_numpy(dtype=np.float64, copy=False)
+        for symbol in symbols
+    ]
+    if not close_columns:
+        return np.zeros((0, 0), dtype=np.float64)
+    return np.stack(close_columns, axis=1)
+
+
+def _build_daily_timestamps(
+    indexed: dict[str, pd.DataFrame],
+    *,
+    symbols: Sequence[str],
+) -> tuple[datetime, ...]:
+    if not symbols:
+        return ()
+    reference_index = indexed[symbols[0]].index
+    timestamps: list[datetime] = []
+    for raw_timestamp in reference_index:
+        current_now = pd.Timestamp(raw_timestamp).to_pydatetime()
+        if current_now.tzinfo is None:
+            current_now = current_now.replace(tzinfo=timezone.utc)
+        timestamps.append(current_now)
+    return tuple(timestamps)
+
+
+def _daily_feature_history_for_schema(
+    price_df: pd.DataFrame,
+    *,
+    feature_schema: str,
+) -> pd.DataFrame:
+    if feature_schema == "legacy_prod":
+        return build_daily_feature_history_for_schema(price_df, schema="legacy_prod")
+    try:
+        return compute_daily_feature_history(price_df, schema="rsi_v5")
+    except TypeError:
+        return compute_daily_feature_history(price_df)
+
+
+def _daily_feature_vector_for_schema(
+    price_df: pd.DataFrame,
+    *,
+    feature_schema: str,
+) -> np.ndarray:
+    if feature_schema == "legacy_prod":
+        return compute_daily_feature_vector_for_schema(price_df, schema="legacy_prod")
+    try:
+        return compute_daily_features(price_df, schema="rsi_v5")
+    except TypeError:
+        return compute_daily_features(price_df)
 
 
 def _prepare_daily_backtest_data(
@@ -1416,12 +1494,32 @@ def _prepare_daily_backtest_data(
         )
         for path in (extra_checkpoints or [])
     ]
-    feature_cube = _build_daily_feature_cube(indexed, symbols=trader_template.SYMBOLS)
+    feature_schema = resolve_daily_feature_schema(
+        checkpoint,
+        extra_checkpoints=extra_checkpoints,
+    )
+    symbols_order = tuple(str(symbol).upper() for symbol in trader_template.SYMBOLS)
+    feature_cube = _build_daily_feature_cube(
+        indexed,
+        symbols=symbols_order,
+        feature_schema=feature_schema,
+    )
+    close_matrix = _build_daily_close_matrix(
+        indexed,
+        symbols=symbols_order,
+    )
+    timestamps = _build_daily_timestamps(
+        indexed,
+        symbols=symbols_order,
+    )
     return PreparedDailyBacktestData(
         indexed=indexed,
         trader_template=trader_template,
         extra_policies=extra_policies,
+        symbols=symbols_order,
         feature_cube=feature_cube,
+        close_matrix=close_matrix,
+        timestamps=timestamps,
         start=start,
         min_len=min_len,
     )
@@ -1455,9 +1553,14 @@ def _build_multi_position_signals(
         trader,
         portfolio=PortfolioContext(cash=max(0.0, float(portfolio_value))),
     )
-    features = np.zeros((trader.num_symbols, 16), dtype=np.float32)
+    feature_schema = resolve_daily_feature_schema(
+        checkpoint,
+        extra_checkpoints=extra_checkpoints,
+    )
+    feature_dimension = daily_feature_dimension(feature_schema)
+    features = np.zeros((trader.num_symbols, feature_dimension), dtype=np.float32)
     for index, symbol in enumerate(trader.SYMBOLS):
-        features[index] = compute_daily_features(indexed[symbol])
+        features[index] = _daily_feature_vector_for_schema(indexed[symbol], feature_schema=feature_schema)
     prices = {
         symbol: float(quotes.get(symbol, frame["close"].iloc[-1]) or frame["close"].iloc[-1])
         for symbol, frame in aligned.items()
@@ -1573,12 +1676,17 @@ def build_signal(
         allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
     )
     _apply_portfolio_context_to_trader(trader, portfolio=portfolio)
+    feature_schema = resolve_daily_feature_schema(
+        checkpoint,
+        extra_checkpoints=extra_checkpoints,
+    )
+    feature_dimension = daily_feature_dimension(feature_schema)
+    features = np.zeros((trader.num_symbols, feature_dimension), dtype=np.float32)
+    for i, sym in enumerate(trader.SYMBOLS):
+        if sym in indexed:
+            features[i] = _daily_feature_vector_for_schema(indexed[sym], feature_schema=feature_schema)
 
     if extra_checkpoints:
-        features = np.zeros((trader.num_symbols, 16), dtype=np.float32)
-        for i, sym in enumerate(trader.SYMBOLS):
-            if sym in indexed:
-                features[i] = compute_daily_features(indexed[sym])
         extra_policies = [
             _load_bare_policy(
                 str((REPO / p).resolve()) if not Path(p).is_absolute() else p,
@@ -1592,7 +1700,13 @@ def build_signal(
         signal = _ensemble_softmax_signal(trader, extra_policies, features, prices)
         logger.info("Ensemble signal (%d policies, softmax_avg)", 1 + len(extra_policies))
     else:
-        signal = trader.get_daily_signal(indexed, prices)
+        signal = _trader_signal_from_features(
+            trader,
+            features=features,
+            prices=prices,
+            indexed=indexed,
+            idx=max(len(frame) for frame in indexed.values()) - 1,
+        )
 
     if signal.direction == "short":
         logger.warning("Checkpoint produced short signal on long-only path; flattening")
@@ -2876,6 +2990,10 @@ def run_backtest(
         raise ValueError("starting_cash must be positive")
     if buying_power_multiplier <= 0:
         raise ValueError("buying_power_multiplier must be positive")
+    feature_schema = resolve_daily_feature_schema(
+        checkpoint,
+        extra_checkpoints=extra_checkpoints,
+    )
     frames = load_local_daily_frames(
         symbols,
         data_dir=data_dir,
@@ -2907,7 +3025,11 @@ def run_backtest(
         )
         for path in (extra_checkpoints or [])
     ]
-    feature_cube = _build_daily_feature_cube(indexed, symbols=trader.SYMBOLS)
+    feature_cube = _build_daily_feature_cube(
+        indexed,
+        symbols=trader.SYMBOLS,
+        feature_schema=feature_schema,
+    )
 
     cash = float(starting_cash)
     position: Optional[tuple[str, float, float]] = None
@@ -4418,6 +4540,10 @@ def run_backtest_via_trading_server(
     extra_checkpoints: Optional[list[str]] = None,
     allow_unsafe_checkpoint_loading: bool = False,
 ) -> dict[str, float]:
+    if starting_cash <= 0:
+        raise ValueError("starting_cash must be positive")
+    if buying_power_multiplier <= 0:
+        raise ValueError("buying_power_multiplier must be positive")
     prepared = _prepare_daily_backtest_data(
         checkpoint=checkpoint,
         symbols=symbols,
@@ -4472,7 +4598,10 @@ def _run_backtest_via_trading_server_with_prepared_data(
     start = prepared.start
     trader = _clone_daily_trader_template(prepared.trader_template)
     extra_policies = prepared.extra_policies
+    symbols_order = prepared.symbols
     feature_cube = prepared.feature_cube
+    close_matrix = prepared.close_matrix
+    timestamps = prepared.timestamps
 
     current_state = StrategyState()
     current_quotes: dict[str, TradingServerQuotePayload] = {}
@@ -4520,10 +4649,11 @@ def _run_backtest_via_trading_server_with_prepared_data(
         equity_curve: list[float] = []
         closes_last: dict[str, float] = {}
         for idx in range(start, min_len):
-            current_now = pd.Timestamp(next(iter(indexed.values())).index[idx]).to_pydatetime()
-            if current_now.tzinfo is None:
-                current_now = current_now.replace(tzinfo=timezone.utc)
-            prices = {symbol: float(frame["close"].iloc[idx]) for symbol, frame in indexed.items()}
+            current_now = timestamps[idx]
+            prices = {
+                symbol: float(price)
+                for symbol, price in zip(symbols_order, close_matrix[idx], strict=True)
+            }
             closes_last = prices
             current_quotes = {
                 symbol: {
@@ -4537,11 +4667,12 @@ def _run_backtest_via_trading_server_with_prepared_data(
             }
             server_client.refresh_prices(symbols=prices.keys())
             snapshot = server_client.get_account()
-            equity_curve.append(server_equity(snapshot, prices))
+            equity = server_equity(snapshot, prices)
+            equity_curve.append(equity)
             features = feature_cube[idx]
 
             if multi_position > 1:
-                trader.cash = server_equity(snapshot, prices)
+                trader.cash = equity
                 trader.current_position = None
                 trader.position_qty = 0.0
                 trader.entry_price = 0.0
