@@ -7,6 +7,7 @@ scripts/ CLI entry point use the same code path.
 """
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,14 @@ _IGNORED_TEST_PARTS = {".uvcache", ".pytest_cache", "__pycache__"}
 _IGNORED_TEST_ROOTS = {"tests/experimental"}
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _NESTED_PYTEST_BASETEMP_ROOT = _REPO_ROOT / ".smart-test-runner"
+_BASE_TEMP_ROOT_ENV_VAR = "SMART_TEST_RUNNER_BASETEMP_ROOT"
+
+
+def nested_pytest_basetemp_root() -> Path:
+    override = os.getenv(_BASE_TEMP_ROOT_ENV_VAR)
+    if override:
+        return Path(override).expanduser()
+    return _NESTED_PYTEST_BASETEMP_ROOT
 
 
 def _is_project_test_file(path: Path) -> bool:
@@ -174,8 +183,10 @@ def run_tests(test_files: list[str], label: str, verbose: bool = False, dry_run:
         print(f"  {sys.executable} -m pytest {' '.join(test_files)} -v")
         return True
 
-    _NESTED_PYTEST_BASETEMP_ROOT.mkdir(parents=True, exist_ok=True)
-    nested_basetemp = tempfile.mktemp(prefix=f"{label}-", dir=_NESTED_PYTEST_BASETEMP_ROOT)
+    basetemp_root = nested_pytest_basetemp_root()
+    basetemp_root.mkdir(parents=True, exist_ok=True)
+    nested_run_root = Path(tempfile.mkdtemp(prefix=f"{label}-", dir=basetemp_root))
+    nested_basetemp = str(nested_run_root / "basetemp")
     cmd = [sys.executable, "-m", "pytest", "--basetemp", nested_basetemp, *test_files]
     if verbose:
         cmd.append("-v")
@@ -190,7 +201,7 @@ def run_tests(test_files: list[str], label: str, verbose: bool = False, dry_run:
         print(f"  {format_rerun_command(test_files, label=label, verbose=verbose)}")
         return False
     finally:
-        shutil.rmtree(nested_basetemp, ignore_errors=True)
+        shutil.rmtree(nested_run_root, ignore_errors=True)
     if result.returncode != 0:
         print(f"\n❌ {label.upper()} TESTS FAILED")
         print("Rerun command:")

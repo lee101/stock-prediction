@@ -61,6 +61,7 @@ def test_run_tests_uses_current_interpreter(monkeypatch) -> None:
     assert captured["cmd"][1:3] == ["-m", "pytest"]
     assert captured["cmd"][3] == "--basetemp"
     assert "smart-test-runner/priority-" in captured["cmd"][4]
+    assert captured["cmd"][4].endswith("/basetemp")
 
 
 def test_run_tests_cleans_up_nested_basetemp(monkeypatch, tmp_path: Path) -> None:
@@ -79,8 +80,14 @@ def test_run_tests_cleans_up_nested_basetemp(monkeypatch, tmp_path: Path) -> Non
     ok = runner.run_tests(["tests/test_smart_test_runner.py"], "priority", verbose=False, dry_run=False)
 
     assert ok is True
-    basetemp = Path(captured["cmd"][4])
-    assert not basetemp.exists()
+    run_root = Path(captured["cmd"][4]).parent
+    assert not run_root.exists()
+
+
+def test_nested_pytest_basetemp_root_honors_env_override(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("SMART_TEST_RUNNER_BASETEMP_ROOT", str(tmp_path / "custom-root"))
+
+    assert runner_impl.nested_pytest_basetemp_root() == tmp_path / "custom-root"
 
 
 def test_run_tests_prints_rerun_command_on_failure(
