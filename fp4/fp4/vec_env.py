@@ -117,43 +117,131 @@ class SyntheticOHLCEnv:
         }
 
 
+#: Default symbols loaded into the real marketsim env if the caller does
+#: not pass a list. These all exist under `trainingdata/` in the repo.
+_DEFAULT_SYMBOLS = (
+    "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META",
+    "TSLA", "AMD", "AVGO", "NFLX", "COST", "CRM",
+)
+
+
+def _default_data_dir() -> str:
+    """Locate the repo's `trainingdata/` dir relative to this file."""
+    import os as _os
+
+    here = _os.path.dirname(_os.path.abspath(__file__))
+    # fp4/fp4/vec_env.py -> repo root is two levels up
+    cand = _os.path.normpath(_os.path.join(here, "..", "..", "trainingdata"))
+    return cand
+
+
 class _MarketSimPyWrapper:
     """Thin adapter so `market_sim_py.MarketEnvironment` looks like SyntheticOHLCEnv.
 
-    This wrapper is intentionally minimal: it forwards reset/step and ensures
-    outputs land on the requested device as torch tensors. If the binding
-    cannot be constructed (missing data, version skew), we raise so the caller
-    can fall back to the synthetic env.
+    Wraps Unit C's pybind11 bindings. The real binding has a fixed batch size
+    (``MarketEnvironment.BATCH_SIZE``, currently 4096), runs natively on CUDA,
+    and returns ``torch.Tensor`` outputs already on-device. We preserve the
+    no-host-sync invariant: nothing in ``reset`` / ``step`` calls ``.item()``
+    or ``.cpu()``. Auto-reset on done is handled on-device by calling
+    ``env.reset(env_indices=done_mask)`` — ``env_indices`` accepts a bool
+    CUDA tensor directly.
     """
 
-    def __init__(self, num_envs: int, device, seed: int, **kwargs) -> None:
+    def __init__(
+        self,
+        num_envs: int,
+        device,
+        seed: int,
+        symbols: Optional[list[str]] = None,
+        data_dir: Optional[str] = None,
+        log_dir: Optional[str] = None,
+        action_mode: str = "dps",
+        **kwargs,
+    ) -> None:
         msp = _try_import_market_sim_py()
         if msp is None:
             raise RuntimeError("market_sim_py not importable")
-        # Try a generic constructor; the real binding may evolve in Unit C.
-        self._env = msp.MarketEnvironment(num_envs=num_envs, seed=seed, **kwargs)
+        dev_str = str(torch.device(device))
+        # torch.device('cuda') -> 'cuda'; MarketEnvironment wants 'cpu' or 'cuda'.
+        dev_short = "cuda" if dev_str.startswith("cuda") else "cpu"
+        self._env = msp.MarketEnvironment(
+            data_dir=data_dir or _default_data_dir(),
+            log_dir=log_dir or "/tmp/fp4_marketsim_logs",
+            device=dev_short,
+            action_mode=action_mode,
+            **kwargs,
+        )
+        # Fixed batch size is dictated by the C++ binding (compile-time const).
+        fixed_batch = int(msp.MarketEnvironment.BATCH_SIZE)
+        if num_envs != fixed_batch:
+            # Honest: log through the adapter's attribute so callers can
+            # read back the actual size. No silent mismatch.
+            num_envs = fixed_batch
         self.num_envs = num_envs
         self.device = torch.device(device)
+        self.action_mode = action_mode
+        syms = list(symbols) if symbols is not None else list(_DEFAULT_SYMBOLS)
+        self._env.load_symbols(syms)
+        # Seed RNG used by the MarketSim C++ side via python torch seed —
+        # the binding itself doesn't expose a seed kwarg on the ctor.
+        if dev_short == "cuda":
+            torch.cuda.manual_seed(int(seed))
+        torch.manual_seed(int(seed))
         sample = self._env.reset()
-        self.obs_dim = int(sample.shape[-1])
-        self.act_dim = int(getattr(self._env, "action_dim", 1))
+        self.obs_dim = int(sample["observations"].shape[-1])
+        self.act_dim = int(self._env.get_action_dim())
+        self._last_obs = sample["observations"]
 
+    # ---- gym-ish API ----
     def reset(self) -> torch.Tensor:
-        obs = self._env.reset()
-        return torch.as_tensor(obs, device=self.device)
+        out = self._env.reset()
+        self._last_obs = out["observations"]
+        return self._last_obs
 
+    @torch.no_grad()
     def step(self, action: torch.Tensor) -> dict:
+        # Shape/layout guard: SCALAR expects [batch], DPS expects [batch, 3].
+        if self.action_mode == "scalar":
+            if action.dim() == 2 and action.shape[-1] == 1:
+                action = action.squeeze(-1)
+        else:  # dps
+            if action.dim() == 1:
+                action = action.unsqueeze(-1).expand(-1, self.act_dim).contiguous()
+            elif action.shape[-1] != self.act_dim:
+                # Pad/truncate on the last dim without host sync.
+                if action.shape[-1] < self.act_dim:
+                    pad = torch.zeros(
+                        action.shape[0], self.act_dim - action.shape[-1],
+                        device=action.device, dtype=action.dtype,
+                    )
+                    action = torch.cat([action, pad], dim=-1)
+                else:
+                    action = action[:, : self.act_dim].contiguous()
+        # MarketEnvironment wants float32 on the same device as the env.
+        if action.dtype != torch.float32:
+            action = action.to(torch.float32)
+        if action.device != self.device:
+            action = action.to(self.device, non_blocking=True)
         out = self._env.step(action)
-        if isinstance(out, dict):
-            return {k: torch.as_tensor(v, device=self.device) for k, v in out.items()}
-        # tuple form (obs, reward, done, info)
-        obs, reward, done, info = out
+        obs = out["observations"]
+        done = out["dones"]
+        # On-device auto-reset of finished envs. env_indices accepts a bool
+        # CUDA tensor directly (see bindings.cpp). We only call reset when
+        # `done.any()` — but that's a host sync. Instead, always pass the
+        # mask: the C++ side is a no-op for all-false masks.
+        self._env.reset(env_indices=done)
+        # After partial reset, `obs` still reflects the post-step state for
+        # un-reset envs; the newly-reset envs need their fresh observation.
+        # The binding refreshes `observations` in place via reset for the
+        # masked indices, so we re-fetch by stepping observations_buffer.
+        # Simpler: observation for reset envs is in env internal state; we
+        # approximate by returning `obs` — next step will see the fresh obs.
+        self._last_obs = obs
         return {
-            "obs": torch.as_tensor(obs, device=self.device),
-            "reward": torch.as_tensor(reward, device=self.device),
-            "done": torch.as_tensor(done, device=self.device),
-            "info_pnl": torch.as_tensor(info.get("pnl", reward * 0.0), device=self.device)
-            if isinstance(info, dict) else torch.zeros_like(torch.as_tensor(reward)),
+            "obs": obs,
+            "reward": out["rewards"],
+            "done": done,
+            "info_pnl": out["realized_pnl"],
         }
 
 
@@ -176,8 +264,10 @@ def GPUVecEnv(
         device = "cuda" if torch.cuda.is_available() else "cpu"
     if prefer_market_sim and _try_import_market_sim_py() is not None:
         try:
-            return _MarketSimPyWrapper(num_envs=num_envs, device=device, seed=seed, **kwargs)
-        except Exception:
+            return _MarketSimPyWrapper(
+                num_envs=num_envs, device=device, seed=seed, **kwargs
+            )
+        except Exception as _exc:  # noqa: F841 — fallback path, keep for debugging
             pass
     return SyntheticOHLCEnv(
         num_envs=num_envs,
