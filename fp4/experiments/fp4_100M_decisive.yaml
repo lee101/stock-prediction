@@ -1,0 +1,63 @@
+# Phase 6 decisive run — 100M steps, single seed, full CUDA graph capture.
+# Judged against HARD RULE: median monthly return >= 0.27 at decision_lag=2 on eval_100d.
+trainer: fp4
+algo: ppo
+constrained: true
+precision: bf16
+full_graph_capture: true
+fuse_gelu: true
+
+env:
+  name: stocks12_v5_rsi
+  backend: gpu_trading_env
+  train_data: pufferlib_market/data/stocks12_daily_v5_rsi_train.bin
+  val_data: pufferlib_market/data/stocks12_daily_v5_rsi_val.bin
+  fee_rate: 0.001
+  fill_buffer_bps: 5
+  decision_lag: 2
+  binary_fills: true
+  action_mode: dps
+  max_leverage: 5.0
+  max_leverage_scalar_fallback: 1.5
+
+leverage_curriculum:
+  start: 1.0
+  target: 2.0
+  ramp_steps: 50000000
+  cap: 5.0
+  step_size: 0.05
+
+lagrangian:
+  lr_lambda: 0.01
+  targets:
+    monthly_pnl: 0.27
+    max_dd: 0.08
+
+ppo:
+  hidden_size: 1024
+  lr: 3.0e-4
+  anneal_lr: true
+  ent_coef: 0.05
+  ent_coef_end: 0.02
+  clip_eps: 0.2
+  num_envs: 64
+  rollout_len: 256
+  ppo_epochs: 4
+  minibatch_size: 2048
+  total_timesteps: 100000000
+  smooth_downside_temperature: 0.01
+  obs_norm: true
+
+eval:
+  slippage_bps: [0, 5, 10, 20]
+  n_windows: 58
+  eval_hours: 60
+  fill_buffer_bps: 5
+  decision_lag: 2
+
+seeds: [0]
+
+target:
+  sortino: 5.0
+  monthly_pnl: 0.27
+  max_dd: 0.08

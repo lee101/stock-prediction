@@ -1,0 +1,39 @@
+{
+  "trainer": "fp4",
+  "seed": 0,
+  "steps": 100000000,
+  "date": "20260408_214411",
+  "config_path": "fp4/experiments/fp4_100M_decisive.yaml",
+  "smoke": false,
+  "available": true,
+  "train": {
+    "status": "ok",
+    "wall_sec": 495.88016045093536,
+    "gpu_peak_mb": 1536.5654296875,
+    "trainer_output": {
+      "final_sortino": 0.0,
+      "final_p10": 0.0,
+      "mean_return": 0.9525375366210938,
+      "n_episodes": 0,
+      "steps_per_sec": 202631.29567199305,
+      "wall_sec": 493.46549193398096,
+      "gpu_peak_mb": 1536.5654296875,
+      "device": "cuda",
+      "cuda_graph_used": true,
+      "full_graph_used": true,
+      "n_iters": 6103,
+      "total_steps": 99991552,
+      "last_loss": 73.38211059570312,
+      "last_entropy": 0.0
+    }
+  },
+  "eval": {
+    "status": "skip",
+    "reason": "no checkpoint produced"
+  },
+  "steps_per_sec": 201661.62709365835,
+  "status": "ok",
+  "monthly_return": 0.0,
+  "hit_27pct": false,
+  "current_leverage_cap": 1.0
+}
