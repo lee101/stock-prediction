@@ -674,3 +674,7 @@ compiled_models
 .tmp/
 .tmp_train/
 artifacts
+
+# ctrader build artifacts + exported policy weights
+ctrader/binance_bot/.tmp/
+ctrader/models/
