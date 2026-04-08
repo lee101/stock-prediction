@@ -285,6 +285,61 @@ def train_ppo(cfg: Dict[str, Any], total_timesteps: int, seed: int,
     # GPU buffer each step, then host-sync once per iter (instead of per-step
     # via .cpu().tolist()).
     finished_buf = torch.zeros(rollout_len, num_envs, device=device)
+
+    # ---- Phase 6 Unit P6-2: 27%/month Lagrangian + leverage curriculum ----
+    # Both opt-in via cfg['lagrangian'] / cfg['leverage_curriculum']. When
+    # present, the reward buffer is shaped after each rollout: a drawdown
+    # penalty (per-step dd growth * lambda_dd) is subtracted and a target
+    # residual bonus (lambda_pnl * positive_reward) is added. The Lagrangian
+    # multipliers are updated once per iter from the per-iter equity curve.
+    lagrangian = None
+    lag_cfg = cfg.get("lagrangian") if isinstance(cfg, dict) else None
+    if isinstance(lag_cfg, dict):
+        try:
+            from .lagrangian import Lagrangian
+            targets = lag_cfg.get("targets", {}) or {}
+            # We represent the "monthly PnL" constraint with a cost = -actual,
+            # target = -target_monthly (so cost - target = target - actual,
+            # positive when we're below target). max_dd cost = avg_worst_dd.
+            target_d = {
+                "monthly_pnl": -float(targets.get("monthly_pnl", 0.27)),
+                "max_dd": float(targets.get("max_dd", 0.08)),
+            }
+            lagrangian = Lagrangian(
+                constraint_names=list(target_d.keys()),
+                init_lambda=0.0,
+                lr_lambda=float(lag_cfg.get("lr_lambda", 1e-2)),
+                slow_update_every=int(lag_cfg.get("slow_update_every", 1)),
+                target_d=target_d,
+            )
+        except Exception as _exc:
+            import sys as _sys
+            print(f"[fp4.trainer] lagrangian disabled: {_exc}", file=_sys.stderr)
+            lagrangian = None
+
+    lev_curriculum = None
+    lev_cfg = cfg.get("leverage_curriculum") if isinstance(cfg, dict) else None
+    if isinstance(lev_cfg, dict):
+        try:
+            from .curriculum import LeverageCurriculum
+            lev_curriculum = LeverageCurriculum(
+                start=float(lev_cfg.get("start", 1.0)),
+                target=float(lev_cfg.get("target", 2.0)),
+                ramp_steps=int(lev_cfg.get("ramp_steps", 500_000)),
+                cap=float(lev_cfg.get("cap", 5.0)),
+                step_size=float(lev_cfg.get("step_size", 0.05)),
+            )
+        except Exception as _exc:
+            import sys as _sys
+            print(f"[fp4.trainer] curriculum disabled: {_exc}", file=_sys.stderr)
+            lev_curriculum = None
+
+    # Per-iter telemetry we'll record in the metrics JSON.
+    last_monthly_return: float = 0.0
+    last_avg_max_dd: float = 0.0
+    last_lam_pnl: float = 0.0
+    last_lam_dd: float = 0.0
+    last_leverage_cap: float = float(lev_cfg.get("start", 1.0)) if isinstance(lev_cfg, dict) else 0.0
     cuda_graph_attempted = False
     cuda_graph_used = False
 
@@ -386,6 +441,52 @@ def train_ppo(cfg: Dict[str, Any], total_timesteps: int, seed: int,
                     finished_buf.reshape(-1)[done_mask_flat].cpu().tolist()
                 )
 
+        # ---- Lagrangian reward shaping (P6-2 opt-in) ----
+        # Equity curve from rewards: eq[n, t] = 1 + cumsum_t rew[n, t].
+        # Shape: rew_buf is [T, N]; transpose to [N, T].
+        if lagrangian is not None:
+            rew_NT = rew_buf.detach().transpose(0, 1)  # [N, T]
+            eq = 1.0 + torch.cumsum(rew_NT, dim=1)  # [N, T]
+            peak = torch.cummax(eq, dim=1).values
+            dd_path = (peak - eq).clamp_min(0.0)  # [N, T] non-negative
+            try:
+                from .objective_27pct import monthly_return_value
+                actual_monthly_t = monthly_return_value(eq)
+                actual_monthly = float(actual_monthly_t.item())
+            except Exception:
+                actual_monthly = 0.0
+            avg_max_dd = float(dd_path.amax(dim=1).mean().item())
+            lam_state = lagrangian.step({
+                "monthly_pnl": -actual_monthly,   # cost = -return; constraint satisfied when actual >= target
+                "max_dd": avg_max_dd,
+            })
+            lam_pnl = float(lam_state.get("monthly_pnl", 0.0))
+            lam_dd = float(lam_state.get("max_dd", 0.0))
+            last_monthly_return = actual_monthly
+            last_avg_max_dd = avg_max_dd
+            last_lam_pnl = lam_pnl
+            last_lam_dd = lam_dd
+            # Drawdown-growth per step (on-device): dd_growth[n, t] = max(0, dd[t] - dd[t-1]).
+            dd_prev = torch.cat([dd_path[:, :1], dd_path[:, :-1]], dim=1)
+            dd_growth = (dd_path - dd_prev).clamp_min(0.0)  # [N, T]
+            dd_growth_TN = dd_growth.transpose(0, 1)        # [T, N]
+            # Shape rewards: penalise drawdown growth, amplify upside when behind target.
+            shaped = rew_buf - lam_dd * dd_growth_TN
+            if lam_pnl > 0.0:
+                shaped = shaped + lam_pnl * rew_buf.clamp_min(0.0)
+            rew_buf = shaped
+
+        # ---- Leverage curriculum telemetry ----
+        if lev_curriculum is not None:
+            # Use a running proxy Sortino from the iter: mean/std of rew_buf.
+            r_flat = rew_buf.detach().reshape(-1)
+            downside = r_flat.clamp_max(0.0)
+            dd_std = torch.sqrt((downside * downside).mean() + 1e-8)
+            proxy_sortino = float((r_flat.mean() / (dd_std + 1e-8)).item())
+            last_leverage_cap = lev_curriculum.current_cap(
+                step=int(it * steps_per_iter), last_sortino=proxy_sortino
+            )
+
         adv_buf, ret_buf = compute_gae(rew_buf, val_buf, done_buf, last_value, gamma, gae_lambda)
 
         # Flatten for minibatch SGD.
@@ -452,6 +553,13 @@ def train_ppo(cfg: Dict[str, Any], total_timesteps: int, seed: int,
         "total_steps": int(n_iters * steps_per_iter),
         "last_loss": last_metrics.get("loss", 0.0),
         "last_entropy": last_metrics.get("entropy", 0.0),
+        "last_monthly_return": float(last_monthly_return),
+        "last_avg_max_dd": float(last_avg_max_dd),
+        "last_lambda_monthly_pnl": float(last_lam_pnl),
+        "last_lambda_max_dd": float(last_lam_dd),
+        "last_leverage_cap": float(last_leverage_cap),
+        "lagrangian_enabled": bool(lagrangian is not None),
+        "leverage_curriculum_enabled": bool(lev_curriculum is not None),
     }
 
     # ---- Checkpoint ----

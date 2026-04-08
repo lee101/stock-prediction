@@ -32,7 +32,7 @@ from __future__ import annotations
 import math
 import struct
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
@@ -292,6 +292,9 @@ def _same_backend_eval(
     cfg: Dict[str, Any],
     n_windows: int = 20,
     seed: int = 1337,
+    *,
+    video_out_dir: Optional[Path] = None,
+    video_title: str = "fp4 eval",
 ) -> Dict[str, Any]:
     """Run a deterministic policy eval through ``fp4.env_adapter.make_env``.
 
@@ -332,7 +335,26 @@ def _same_backend_eval(
     policy.to(device).eval()
 
     eval_steps = max(64, int(n_windows) * 32)
+
+    # Opt-in: attach a ReplayRecorder so we can render an MP4 + HTML scrubber
+    # of this exact eval rollout. Slow (~secs), so it's only wired when the
+    # caller asks for it. The recorder captures env 0 of the batch.
+    recorder = None
+    if video_out_dir is not None:
+        try:
+            from fp4.fp4.replay_recorder import ReplayRecorder
+            recorder = ReplayRecorder.attach(handle, max_steps=int(eval_steps), env_index=0)
+        except Exception as _exc:
+            import sys as _sys
+            print(f"[eval_generic] ReplayRecorder attach failed: {_exc}", file=_sys.stderr)
+            recorder = None
+
     obs = handle.reset().to(torch.float32).to(device)
+    if recorder is not None:
+        try:
+            recorder.on_reset(obs)
+        except Exception:
+            recorder = None
     rewards_per_env = torch.zeros(int(handle.num_envs), device=device)
     peak_per_env = torch.zeros_like(rewards_per_env)
     drawdown_per_env = torch.zeros_like(rewards_per_env)
@@ -350,6 +372,13 @@ def _same_backend_eval(
             obs, reward, _done, _cost = handle.step(action)
             obs = obs.to(torch.float32)
             reward = reward.to(torch.float32)
+            if recorder is not None:
+                try:
+                    recorder.on_step(action=action, obs=obs, reward=reward, done=_done)
+                except Exception as _exc:
+                    import sys as _sys
+                    print(f"[eval_generic] recorder.on_step failed: {_exc}", file=_sys.stderr)
+                    recorder = None
             rewards_per_env = rewards_per_env + reward
             peak_per_env = torch.maximum(peak_per_env, rewards_per_env)
             cur_dd = peak_per_env - rewards_per_env
@@ -373,7 +402,7 @@ def _same_backend_eval(
         sortinos.append(mean_r / (downside + eps))
 
     summary = _summarise_windows(returns, sortinos, drawdowns)
-    return {
+    out: Dict[str, Any] = {
         "status": "ok",
         "backend": "same_as_train",
         "eval_env_backend": handle.backend_name,
@@ -386,6 +415,26 @@ def _same_backend_eval(
                               "max_drawdown": summary.get("median_max_drawdown", 0.0),
                               "sortino": summary.get("median_sortino", 0.0)}},
     }
+
+    # ---- Render the captured trajectory into MP4 + HTML if requested ----
+    if recorder is not None and video_out_dir is not None:
+        try:
+            from fp4.fp4.replay_recorder import trajectory_to_marketsim_trace
+            from fp4.bench.render_replay import render_videos
+            traj = recorder.trajectory()
+            video_out_dir.mkdir(parents=True, exist_ok=True)
+            produced = render_videos(
+                traj, Path(video_out_dir),
+                title=video_title, fps=8, num_pairs=1,
+            )
+            out["videos"] = produced
+        except Exception as exc:
+            import sys as _sys
+            print(f"[eval_generic] video render failed: {type(exc).__name__}: {exc}",
+                  file=_sys.stderr)
+            out["videos"] = {"error": f"{type(exc).__name__}: {exc}"}
+
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -437,9 +486,19 @@ def evaluate_policy_file(
         # NOT directly comparable to the production marketsim numbers, but
         # it lets the sweep produce monotone-improving results we can
         # iterate on.
+        video_out_dir: Optional[Path] = None
+        video_title = ckpt_path.stem
+        if bool(eval_cfg.get("video", False)):
+            # Emit videos under models/artifacts/<ckpt_stem>/videos/ so the
+            # existing src/artifacts_server.py serves them at /files/<stem>/videos/.
+            artifacts_root = repo_root / "models" / "artifacts"
+            video_out_dir = artifacts_root / ckpt_path.stem / "videos"
+            video_title = f"fp4 {ckpt_path.stem}"
         same_backend = _same_backend_eval(
             sd, obs_dim, act_dim, hidden, cfg, n_windows=int(eval_cfg.get("n_windows", 20)),
             seed=int(eval_cfg.get("seed", 1337)),
+            video_out_dir=video_out_dir,
+            video_title=video_title,
         )
         same_backend["shape_mismatch"] = {
             "policy_obs_dim": obs_dim, "marketsim_obs_dim": expected_obs,
