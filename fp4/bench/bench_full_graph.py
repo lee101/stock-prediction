@@ -148,8 +148,40 @@ def bench_full(*, num_envs, rollout_len, obs_dim, act_dim, hidden, budget_s, dev
     torch.cuda.synchronize()
     wall = time.perf_counter() - t0
     total_steps = n_iters * num_envs * rollout_len
-    return {"mode": "full", "iters": n_iters, "wall_sec": wall,
+    return {"mode": "synthetic_full", "iters": n_iters, "wall_sec": wall,
             "total_env_steps": total_steps, "sps": total_steps / wall}
+
+
+def bench_real_env_full(*, num_envs, rollout_len, obs_dim, act_dim, hidden, budget_s, device):
+    """Capture+replay the real gpu_trading_env PPO inner loop (P6-5)."""
+    from fp4.cuda_graph_full import build_real_full_step, capture_full_step
+    from fp4.env_adapter import make_env
+    handle = make_env(cfg={"env": "gpu_trading_env"}, num_envs=num_envs, seed=0)
+    if handle.backend_name != "gpu_trading_env":
+        return {"mode": "real_env_full", "skipped": True,
+                "reason": f"backend={handle.backend_name}", "sps": 0.0}
+    from fp4.policy import ActorCritic
+    policy = ActorCritic(
+        obs_dim=handle.obs_dim, act_dim=handle.action_dim,
+        hidden=hidden, seed=0,
+    ).to(device)
+    optim = torch.optim.SGD(policy.parameters(), lr=1e-3)
+    step_fn, _ = build_real_full_step(
+        handle, policy, optim, rollout_len=rollout_len, device=device,
+    )
+    captured = capture_full_step(step_fn)
+
+    n_iters = 0
+    t0 = time.perf_counter()
+    while time.perf_counter() - t0 < budget_s:
+        captured.replay()
+        n_iters += 1
+    torch.cuda.synchronize()
+    wall = time.perf_counter() - t0
+    total_steps = n_iters * handle.num_envs * rollout_len
+    return {"mode": "real_env_full", "iters": n_iters, "wall_sec": wall,
+            "total_env_steps": total_steps, "sps": total_steps / wall,
+            "backend": handle.backend_name}
 
 
 def main():
@@ -182,7 +214,7 @@ def main():
                   budget_s=args.budget_sec, device=device)
 
     rows = []
-    for fn in (bench_eager, bench_update_only, bench_full):
+    for fn in (bench_eager, bench_update_only, bench_full, bench_real_env_full):
         try:
             row = fn(**common)
         except Exception as exc:
@@ -202,7 +234,7 @@ def main():
     out_path.write_text(json.dumps(payload, indent=2))
     print(f"[bench_full_graph] wrote {out_path}")
 
-    full = next((r for r in rows if r.get("mode") == "full"), {})
+    full = next((r for r in rows if r.get("mode") == "synthetic_full"), {})
     upd = next((r for r in rows if r.get("mode") == "update_only"), {})
     if full.get("sps", 0) <= upd.get("sps", 0):
         print(f"[bench_full_graph] WARNING: full ({full.get('sps')}) <= "
