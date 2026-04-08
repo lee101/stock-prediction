@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import shutil
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -41,6 +42,15 @@ def _resolve_artifact_paths(
     normalized_stem = stem_path.stem
     base = output_dir / normalized_stem
     return base.with_suffix(".json"), base.with_suffix(".html")
+
+
+def _latest_alias_paths(output_dir: Path) -> dict[str, Path]:
+    return {
+        "report": output_dir / "latest.json",
+        "visualization": output_dir / "latest.html",
+        "trace": output_dir / "latest.trace.json",
+        "manifest": output_dir / "latest_manifest.json",
+    }
 
 
 def build_replay_args(args: argparse.Namespace, *, report_path: Path, html_path: Path) -> list[str]:
@@ -96,6 +106,65 @@ def build_replay_args(args: argparse.Namespace, *, report_path: Path, html_path:
     return replay_args
 
 
+def _replace_file(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_suffix(dst.suffix + ".tmp")
+    shutil.copy2(src, tmp)
+    tmp.replace(dst)
+
+
+def _write_latest_aliases(*, output_dir: Path, report_path: Path) -> dict[str, str | None]:
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    alias_paths = _latest_alias_paths(output_dir)
+    _replace_file(report_path, alias_paths["report"])
+
+    visualization = payload.get("visualization") or {}
+    generated_html = visualization.get("generated_html_path")
+    trace_json = visualization.get("trace_json_path")
+
+    html_src = Path(generated_html) if generated_html else None
+    trace_src = Path(trace_json) if trace_json else None
+
+    if html_src is not None and html_src.exists():
+        _replace_file(html_src, alias_paths["visualization"])
+        html_alias = str(alias_paths["visualization"])
+    else:
+        alias_paths["visualization"].unlink(missing_ok=True)
+        html_alias = None
+
+    if trace_src is not None and trace_src.exists():
+        _replace_file(trace_src, alias_paths["trace"])
+        trace_alias = str(alias_paths["trace"])
+    else:
+        alias_paths["trace"].unlink(missing_ok=True)
+        trace_alias = None
+
+    manifest = {
+        "updated_at_utc": datetime.now(UTC).isoformat(),
+        "report_path": str(report_path),
+        "latest_report_path": str(alias_paths["report"]),
+        "visualization_path": generated_html,
+        "latest_visualization_path": html_alias,
+        "trace_json_path": trace_json,
+        "latest_trace_json_path": trace_alias,
+    }
+    alias_paths["manifest"].write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    return {
+        "report": str(alias_paths["report"]),
+        "visualization": html_alias,
+        "trace": trace_alias,
+        "manifest": str(alias_paths["manifest"]),
+    }
+
+
+def _write_latest_aliases_best_effort(*, output_dir: Path, report_path: Path) -> dict[str, str | None] | None:
+    try:
+        return _write_latest_aliases(output_dir=output_dir, report_path=report_path)
+    except Exception as exc:  # pragma: no cover - exercised via tests with monkeypatch
+        print(f"Warning: failed to update latest replay aliases: {exc}", file=sys.stderr)
+        return None
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run a stock trade-log replay audit with auto-named JSON and HTML artifacts."
@@ -130,6 +199,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="",
         help="Artifact stem without extension. Defaults to a UTC timestamped stock_replay_audit_* name.",
     )
+    parser.add_argument(
+        "--no-latest-alias",
+        action="store_true",
+        help="Skip updating stable latest.json/latest.html alias artifacts in the output directory.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print resolved artifact paths and delegated replay args.")
     return parser.parse_args(argv)
 
@@ -146,12 +220,19 @@ def main(argv: list[str] | None = None) -> None:
         payload = {
             "report_path": str(report_path),
             "visualization_path": str(html_path),
+            "latest_alias_paths": (
+                None
+                if args.no_latest_alias
+                else {key: str(path) for key, path in _latest_alias_paths(args.output_dir).items()}
+            ),
             "replay_args": replay_args,
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
 
     replay_mod.main(replay_args)
+    if not args.no_latest_alias and report_path.exists():
+        _write_latest_aliases_best_effort(output_dir=args.output_dir, report_path=report_path)
 
 
 if __name__ == "__main__":
