@@ -113,26 +113,68 @@ def _replace_file(src: Path, dst: Path) -> None:
     tmp.replace(dst)
 
 
+def _resolve_expected_report_artifacts(report_path: Path) -> dict[str, Path]:
+    expected_report = report_path.resolve()
+    expected_html = report_path.with_suffix(".html").resolve()
+    expected_trace = expected_html.with_suffix(".trace.json").resolve()
+    return {
+        "report": expected_report,
+        "visualization": expected_html,
+        "trace": expected_trace,
+    }
+
+
+def _trusted_report_artifact_path(
+    *,
+    label: str,
+    expected_path: Path,
+    reported_path: object,
+) -> Path | None:
+    if not reported_path:
+        return None
+    candidate = Path(str(reported_path)).expanduser()
+    resolved = candidate.resolve(strict=False)
+    if resolved != expected_path:
+        raise ValueError(
+            f"Refusing to trust unexpected {label} path from replay report: {resolved} "
+            f"(expected {expected_path})"
+        )
+    if not resolved.exists():
+        return None
+    return resolved
+
+
 def _write_latest_aliases(*, output_dir: Path, report_path: Path) -> dict[str, str | None]:
-    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    resolved_report_path = report_path.resolve()
+    payload = json.loads(resolved_report_path.read_text(encoding="utf-8"))
     alias_paths = _latest_alias_paths(output_dir)
-    _replace_file(report_path, alias_paths["report"])
+    expected_artifacts = _resolve_expected_report_artifacts(resolved_report_path)
 
     visualization = payload.get("visualization") or {}
     generated_html = visualization.get("generated_html_path")
     trace_json = visualization.get("trace_json_path")
 
-    html_src = Path(generated_html) if generated_html else None
-    trace_src = Path(trace_json) if trace_json else None
+    html_src = _trusted_report_artifact_path(
+        label="visualization",
+        expected_path=expected_artifacts["visualization"],
+        reported_path=generated_html,
+    )
+    trace_src = _trusted_report_artifact_path(
+        label="trace json",
+        expected_path=expected_artifacts["trace"],
+        reported_path=trace_json,
+    )
 
-    if html_src is not None and html_src.exists():
+    _replace_file(resolved_report_path, alias_paths["report"])
+
+    if html_src is not None:
         _replace_file(html_src, alias_paths["visualization"])
         html_alias = str(alias_paths["visualization"])
     else:
         alias_paths["visualization"].unlink(missing_ok=True)
         html_alias = None
 
-    if trace_src is not None and trace_src.exists():
+    if trace_src is not None:
         _replace_file(trace_src, alias_paths["trace"])
         trace_alias = str(alias_paths["trace"])
     else:

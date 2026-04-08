@@ -136,7 +136,7 @@ def test_write_replay_visualization_returns_error_without_raising(tmp_path: Path
     )
 
     assert written_html_path is None
-    assert trace_json_path == tmp_path / "replay.json"
+    assert trace_json_path == tmp_path / "replay.trace.json"
     assert trace_json_path.read_text() == '{"ok":true}'
     assert visualization_error == "plotly exploded"
 

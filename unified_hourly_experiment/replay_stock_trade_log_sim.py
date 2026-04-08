@@ -803,7 +803,7 @@ def _write_replay_visualization(
             result=best_replay["sim"],
             symbols=symbols,
         )
-        trace_json_path = visualize_html_path.with_suffix(".json")
+        trace_json_path = visualize_html_path.with_suffix(".trace.json")
         trace.to_json(trace_json_path)
         render_html_plotly(
             trace,
