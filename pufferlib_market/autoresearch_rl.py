@@ -2672,6 +2672,8 @@ def run_trial(
     holdout_fill_buffer_bps: float = 5.0,
     holdout_max_leverage: float = 1.0,
     holdout_short_borrow_apr: float = 0.0,
+    eval_tradable_symbols: str | None = None,
+    eval_disable_shorts: bool = False,
     eval_timeout_s: int = 0,
     holdout_timeout_s: int = 0,
     market_validation_asset_class: str = "",
@@ -3163,6 +3165,10 @@ def run_trial(
             "--no-early-stop",
             "--out", str(holdout_json_path),
         ]
+        if eval_tradable_symbols:
+            holdout_cmd.extend(["--tradable-symbols", str(eval_tradable_symbols)])
+        if eval_disable_shorts:
+            holdout_cmd.append("--disable-shorts")
         if holdout_end_within_steps > 0:
             holdout_cmd.extend(["--end-within-hours", str(holdout_end_within_steps)])
         try:
@@ -3272,6 +3278,10 @@ def run_trial(
             "--deterministic",
             "--output-json", str(replay_json_path),
         ]
+        if eval_tradable_symbols:
+            replay_cmd.extend(["--tradable-symbols", str(eval_tradable_symbols)])
+        if eval_disable_shorts:
+            replay_cmd.append("--disable-shorts")
         if replay_eval_robust_start_states:
             replay_cmd.extend(["--robust-start-states", str(replay_eval_robust_start_states)])
         if replay_eval_run_hourly_policy:
@@ -3516,6 +3526,10 @@ def main():
                         help="Require holdout daily bars to trade through each limit by this many bps")
     parser.add_argument("--holdout-max-leverage", type=float, default=1.0)
     parser.add_argument("--holdout-short-borrow-apr", type=float, default=0.0)
+    parser.add_argument("--eval-tradable-symbols", default="",
+                        help="Optional comma-separated tradable symbol subset applied to holdout and replay eval")
+    parser.add_argument("--eval-disable-shorts", action="store_true",
+                        help="Mask short actions during holdout and replay eval")
     parser.add_argument("--rank-metric",
                         choices=[
                             "auto",
@@ -3941,6 +3955,8 @@ def main():
             holdout_fill_buffer_bps=args.holdout_fill_buffer_bps,
             holdout_max_leverage=args.holdout_max_leverage,
             holdout_short_borrow_apr=args.holdout_short_borrow_apr,
+            eval_tradable_symbols=args.eval_tradable_symbols,
+            eval_disable_shorts=args.eval_disable_shorts,
             eval_timeout_s=args.eval_timeout_seconds,
             holdout_timeout_s=args.holdout_timeout_seconds,
             market_validation_asset_class=args.market_validation_asset_class,

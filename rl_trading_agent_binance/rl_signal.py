@@ -378,11 +378,12 @@ class RLSignalGenerator:
         device: str = "auto",
         symbols: tuple[str, ...] | None = None,
     ):
+        self.checkpoint_path = str(Path(checkpoint_path).expanduser().resolve())
         self._device_preference = device
         self.device = _resolve_device(device)
         self.forecast_cache_root = Path(forecast_cache_root)
 
-        ckpt = torch.load(str(checkpoint_path), map_location="cpu", weights_only=False)
+        ckpt = torch.load(self.checkpoint_path, map_location="cpu", weights_only=False)
         state_dict = ckpt["model"]
 
         obs_size = _infer_obs_size(state_dict)
