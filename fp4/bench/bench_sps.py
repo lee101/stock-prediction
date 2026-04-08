@@ -25,7 +25,11 @@ import torch
 _REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO / "fp4"))
 
-from fp4.vec_env import SyntheticOHLCEnv  # noqa: E402
+from fp4.vec_env import (  # noqa: E402
+    SyntheticOHLCEnv,
+    _MarketSimPyWrapper,
+    _try_import_market_sim_py,
+)
 from fp4.cuda_graph import capture_step  # noqa: E402
 
 
@@ -105,6 +109,90 @@ def bench_cuda_graph(env: SyntheticOHLCEnv, policy: torch.nn.Module, iters: int)
     return (iters * env.num_envs) / (time.perf_counter() - t0)
 
 
+def bench_marketsim_real_eager(env, iters: int) -> float:
+    """Real `market_sim_py` env stepped in a Python loop with a tiny policy
+    forward pass — keeps everything on CUDA, no host syncs in the loop body.
+    """
+    device = "cuda"
+    obs = env.reset()
+    policy = _make_policy(env.obs_dim, env.act_dim, 64, device)
+    for _ in range(10):
+        with torch.no_grad():
+            action = policy(obs)
+        obs = env.step(action)["obs"]
+    _sync(device)
+    t0 = time.perf_counter()
+    for _ in range(iters):
+        with torch.no_grad():
+            action = policy(obs)
+        obs = env.step(action)["obs"]
+    _sync(device)
+    return (iters * env.num_envs) / (time.perf_counter() - t0)
+
+
+def bench_marketsim_real_cuda_graph(env, iters: int) -> float:
+    """Capture marketsim env.step + policy forward into a single CUDA graph.
+
+    The pybind11 binding launches CUDA kernels into the current stream, so it
+    is graph-capturable as long as we don't allocate or sync mid-step. We
+    pre-allocate output buffers and reuse them across replays.
+    """
+    device = "cuda"
+    obs = env.reset()
+    policy = _make_policy(env.obs_dim, env.act_dim, 64, device)
+    out_obs = torch.zeros_like(obs)
+    out_action = torch.zeros(env.num_envs, env.act_dim, device=device)
+    out_reward = torch.zeros(env.num_envs, device=device)
+
+    def step_fn(inputs):
+        with torch.no_grad():
+            a = policy(inputs["obs"])
+        out_action.copy_(a)
+        step_out = env.step(out_action)
+        out_obs.copy_(step_out["obs"])
+        out_reward.copy_(step_out["reward"])
+        return {"obs": out_obs, "action": out_action, "reward": out_reward}
+
+    try:
+        captured = capture_step(step_fn, {"obs": obs.clone()}, warmup=5)
+    except Exception as exc:  # pragma: no cover - graph capture incompatible
+        print(f"  marketsim cuda graph capture failed: {exc}")
+        return float("nan")
+    captured.copy_inputs(obs=obs)
+    torch.cuda.synchronize()
+    t0 = time.perf_counter()
+    for _ in range(iters):
+        out = captured.replay()
+        captured.copy_inputs(obs=out["obs"])
+    torch.cuda.synchronize()
+    return (iters * env.num_envs) / (time.perf_counter() - t0)
+
+
+def bench_pufferlib_bf16_baseline(target_steps: int = 1_000_000) -> float | None:
+    """Measure SPS for the pufferlib_market C env on the same box.
+
+    Reuses the synthetic-MKTD path from `pufferlib_market.bench_env` so we
+    don't need real training data on disk. Returns None if the binding can't
+    be imported (e.g., wheel mismatch).
+    """
+    try:
+        import tempfile
+        from pathlib import Path
+
+        import pufferlib_market.binding as binding
+        from pufferlib_market.bench_env import _write_mktd_bin, run_benchmark
+    except Exception as exc:  # pragma: no cover - optional baseline
+        print(f"  pufferlib_bf16 baseline unavailable: {exc}")
+        return None
+    with tempfile.TemporaryDirectory() as tmp:
+        data_path = Path(tmp) / "bench_data.bin"
+        _write_mktd_bin(data_path, num_symbols=12, num_timesteps=5000)
+        binding.shared(data_path=str(data_path))
+        return run_benchmark(
+            data_path, num_envs=128, target_steps=target_steps, trials=3
+        )
+
+
 def main() -> int:
     device = _device()
     num_envs = 4096 if device == "cuda" else 256
@@ -136,6 +224,34 @@ def main() -> int:
         results["rows"]["fp4_cuda_graph"] = bench_cuda_graph(env, policy, iters)
     else:
         results["rows"]["fp4_cuda_graph"] = None
+
+    # ---- Real marketsim (Unit C bindings) ----
+    if device == "cuda" and _try_import_market_sim_py() is not None:
+        try:
+            real_env = _MarketSimPyWrapper(
+                num_envs=4096, device="cuda", seed=0, action_mode="dps"
+            )
+            results["marketsim_num_envs"] = real_env.num_envs
+            results["marketsim_obs_dim"] = real_env.obs_dim
+            results["marketsim_act_dim"] = real_env.act_dim
+            results["rows"]["marketsim_real_eager"] = bench_marketsim_real_eager(
+                real_env, iters
+            )
+            results["rows"]["marketsim_real_cuda_graph"] = (
+                bench_marketsim_real_cuda_graph(real_env, iters)
+            )
+        except Exception as exc:
+            print(f"  marketsim real bench failed: {exc}")
+            results["rows"]["marketsim_real_eager"] = None
+            results["rows"]["marketsim_real_cuda_graph"] = None
+    else:
+        results["rows"]["marketsim_real_eager"] = None
+        results["rows"]["marketsim_real_cuda_graph"] = None
+
+    # ---- Pufferlib BF16 baseline (C env on the same box) ----
+    pl_sps = bench_pufferlib_bf16_baseline()
+    results["rows"]["pufferlib_bf16_baseline"] = pl_sps
+    results["pufferlib_bf16_sps"] = pl_sps
 
     out_dir = Path(__file__).parent / "results"
     out_dir.mkdir(parents=True, exist_ok=True)
