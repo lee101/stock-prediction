@@ -59,8 +59,11 @@ def _emit_json_payload(payload: dict[str, object], *, output_json: str | None) -
 def _write_json_payload(rendered: str, *, output_json: str | None) -> None:
     if output_json:
         output_path = Path(output_json)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(f"{rendered}\n", encoding="utf-8")
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(f"{rendered}\n", encoding="utf-8")
+        except OSError as exc:
+            raise RuntimeError(f"Failed to write JSON report to {output_path}: {exc}") from exc
 
 
 def _table_for_results(rows: list[dict[str, object]]) -> str:
@@ -301,51 +304,85 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--json", action="store_true", help="Print JSON instead of a table.")
     parser.add_argument("--output-json", default=None, help="Optional path to write the JSON report.")
     parser.add_argument("--dry-run", action="store_true", help="Print resolved config without running the sweep.")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if not _resolve_days(args.days, args.window):
+        parser.error("at least one positive backtest window is required")
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-    preset = resolve_variant_preset(args.preset)
-    variants = list(preset.variants)
-    symbols = _normalize_symbols(args.symbols)
-    days_list = _resolve_days(args.days, args.window)
-    payload = {
-        "preset": preset.name,
-        "preset_description": preset.description,
-        "days": int(args.days),
-        "days_list": days_list,
-        "checkpoint": str(Path(args.checkpoint)),
-        "data_dir": str(args.data_dir),
-        "symbols": symbols,
-        "variants": [_variant_payload(item) for item in variants],
-    }
-    if args.dry_run:
-        _emit_json_payload(payload, output_json=args.output_json)
-        return 0
+    try:
+        args = parse_args(argv)
+        preset = resolve_variant_preset(args.preset)
+        variants = list(preset.variants)
+        symbols = _normalize_symbols(args.symbols)
+        days_list = _resolve_days(args.days, args.window)
+        payload = {
+            "preset": preset.name,
+            "preset_description": preset.description,
+            "days": int(args.days),
+            "days_list": days_list,
+            "checkpoint": str(Path(args.checkpoint)),
+            "data_dir": str(args.data_dir),
+            "symbols": symbols,
+            "variants": [_variant_payload(item) for item in variants],
+        }
+        if args.dry_run:
+            _emit_json_payload(payload, output_json=args.output_json)
+            return 0
 
-    window_results: list[dict[str, object]] = []
-    for days in days_list:
-        results = daily_stock.run_backtest_variant_matrix_via_trading_server(
-            checkpoint=args.checkpoint,
-            symbols=symbols,
-            data_dir=args.data_dir,
-            days=days,
-            variants=variants,
-            extra_checkpoints=list(daily_stock.DEFAULT_EXTRA_CHECKPOINTS),
-        )
-        ranked: list[dict[str, object]] = []
-        for row in results:
-            enriched = dict(row)
-            enriched["monthly_return"] = _monthly_return(float(row["total_return"]), days=int(days))
-            ranked.append(enriched)
-        ranked.sort(key=lambda item: float(item["monthly_return"]), reverse=True)
-        window_results.append({"days": int(days), "results": ranked})
+        window_results: list[dict[str, object]] = []
+        for days in days_list:
+            try:
+                results = daily_stock.run_backtest_variant_matrix_via_trading_server(
+                    checkpoint=args.checkpoint,
+                    symbols=symbols,
+                    data_dir=args.data_dir,
+                    days=days,
+                    variants=variants,
+                    extra_checkpoints=list(daily_stock.DEFAULT_EXTRA_CHECKPOINTS),
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Backtest sweep failed for preset {preset.name} at {int(days)} trading days: {exc}"
+                ) from exc
+            ranked: list[dict[str, object]] = []
+            for row in results:
+                enriched = dict(row)
+                enriched["monthly_return"] = _monthly_return(float(row["total_return"]), days=int(days))
+                ranked.append(enriched)
+            ranked.sort(key=lambda item: float(item["monthly_return"]), reverse=True)
+            window_results.append({"days": int(days), "results": ranked})
 
-    if len(window_results) == 1:
-        ranked = list(window_results[0]["results"])
-        comparison = _single_window_baseline_comparison(ranked)
-        report_payload = {"config": payload, "results": ranked, "baseline_comparison": comparison}
+        if len(window_results) == 1:
+            ranked = list(window_results[0]["results"])
+            comparison = _single_window_baseline_comparison(ranked)
+            report_payload = {"config": payload, "results": ranked, "baseline_comparison": comparison}
+            if args.json:
+                _emit_json_payload(report_payload, output_json=args.output_json)
+            else:
+                if args.output_json:
+                    _write_json_payload(
+                        json.dumps(report_payload, indent=2, sort_keys=True),
+                        output_json=args.output_json,
+                    )
+                print(f"Daily stock variant sweep: preset={preset.name} days={days_list[0]} symbols={len(symbols)}")
+                print(preset.description)
+                print(_table_for_results(ranked))
+                message = _format_single_window_baseline_comparison(comparison)
+                if message:
+                    print(message)
+            return 0
+
+        summary = _summarize_multi_window_results(window_results)
+        comparison = _multi_window_baseline_comparison(summary)
+        report_payload = {
+            "config": payload,
+            "windows": window_results,
+            "summary": summary,
+            "baseline_comparison": comparison,
+        }
+
         if args.json:
             _emit_json_payload(report_payload, output_json=args.output_json)
         else:
@@ -354,41 +391,19 @@ def main(argv: list[str] | None = None) -> int:
                     json.dumps(report_payload, indent=2, sort_keys=True),
                     output_json=args.output_json,
                 )
-            print(f"Daily stock variant sweep: preset={preset.name} days={days_list[0]} symbols={len(symbols)}")
+            print(
+                "Daily stock variant sweep: "
+                f"preset={preset.name} windows={','.join(str(item) for item in days_list)} symbols={len(symbols)}"
+            )
             print(preset.description)
-            print(_table_for_results(ranked))
-            message = _format_single_window_baseline_comparison(comparison)
+            print(_table_for_multi_window_summary(summary))
+            message = _format_multi_window_baseline_comparison(comparison)
             if message:
                 print(message)
         return 0
-
-    summary = _summarize_multi_window_results(window_results)
-    comparison = _multi_window_baseline_comparison(summary)
-    report_payload = {
-        "config": payload,
-        "windows": window_results,
-        "summary": summary,
-        "baseline_comparison": comparison,
-    }
-
-    if args.json:
-        _emit_json_payload(report_payload, output_json=args.output_json)
-    else:
-        if args.output_json:
-            _write_json_payload(
-                json.dumps(report_payload, indent=2, sort_keys=True),
-                output_json=args.output_json,
-            )
-        print(
-            "Daily stock variant sweep: "
-            f"preset={preset.name} windows={','.join(str(item) for item in days_list)} symbols={len(symbols)}"
-        )
-        print(preset.description)
-        print(_table_for_multi_window_summary(summary))
-        message = _format_multi_window_baseline_comparison(comparison)
-        if message:
-            print(message)
-    return 0
+    except RuntimeError as exc:
+        print(f"daily stock variant sweep failed: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
