@@ -356,7 +356,7 @@ def _generate_policy_actions(
     return actions, stats
 
 
-def main() -> None:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--symbols", required=True, help="Comma-separated symbols")
@@ -373,16 +373,42 @@ def main() -> None:
         action="store_true",
         help="Mask short actions during inference before simulation.",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--json-only",
+        action="store_true",
+        help="Print only the final JSON summary without progress lines.",
+    )
+    parser.add_argument(
+        "--output-json",
+        default=None,
+        help="Optional path to write the final JSON summary.",
+    )
+    return parser.parse_args(argv)
+
+
+def _emit_validation_summary(
+    summary: dict[str, object],
+    *,
+    output_json: str | None,
+) -> None:
+    rendered = json.dumps(summary, indent=2, sort_keys=True)
+    if output_json:
+        Path(output_json).write_text(f"{rendered}\n", encoding="utf-8")
+    print(rendered)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
     fee = FEE_TIERS[args.fee_tier]
 
-    print(f"Validating {args.checkpoint}")
-    print(f"  Symbols: {symbols}")
-    print(f"  Fee tier: {args.fee_tier} ({fee*100:.2f}%)")
-    print(f"  Timeframe: {args.timeframe}")
-    print(f"  Period: {args.start_date} to {args.end_date or 'latest'}")
+    if not args.json_only:
+        print(f"Validating {args.checkpoint}")
+        print(f"  Symbols: {symbols}")
+        print(f"  Fee tier: {args.fee_tier} ({fee*100:.2f}%)")
+        print(f"  Timeframe: {args.timeframe}")
+        print(f"  Period: {args.start_date} to {args.end_date or 'latest'}")
 
     all_bars = []
     for sym in symbols:
@@ -398,7 +424,8 @@ def main() -> None:
     if bars.empty:
         raise ValueError("No bars remain after applying the requested date range")
 
-    print(f"  Loaded {len(bars)} bars ({bars['timestamp'].min()} to {bars['timestamp'].max()})")
+    if not args.json_only:
+        print(f"  Loaded {len(bars)} bars ({bars['timestamp'].min()} to {bars['timestamp'].max()})")
 
     actions, action_stats = _generate_policy_actions(
         bars=bars,
@@ -408,13 +435,14 @@ def main() -> None:
         device=str(args.device),
         long_only=bool(args.long_only),
     )
-    print(
-        "  Generated actions: "
-        f"{action_stats['action_timestamps']} timestamps, "
-        f"{action_stats['buy_rows']} buys, "
-        f"{action_stats['sell_rows']} sells, "
-        f"{action_stats['short_signals_flattened']} short signals flattened"
-    )
+    if not args.json_only:
+        print(
+            "  Generated actions: "
+            f"{action_stats['action_timestamps']} timestamps, "
+            f"{action_stats['buy_rows']} buys, "
+            f"{action_stats['sell_rows']} sells, "
+            f"{action_stats['short_signals_flattened']} short signals flattened"
+        )
 
     simulation_config_cls, run_shared_cash_simulation = _load_marketsimulator_api()
     config = simulation_config_cls(
@@ -454,8 +482,9 @@ def main() -> None:
         summary["metrics"]["annualized_return"] = float(annualized)
         summary["period_years"] = float(years)
 
-    print(json.dumps(summary, indent=2, sort_keys=True))
+    _emit_validation_summary(summary, output_json=args.output_json)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

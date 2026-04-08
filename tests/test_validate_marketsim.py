@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 import marketsimulator
 import numpy as np
 import pandas as pd
 import pytest
+from pathlib import Path
 
 from pufferlib_market.inference import TradingSignal
 from pufferlib_market import validate_marketsim as validate
@@ -346,3 +348,88 @@ def test_generate_policy_actions_rejects_insufficient_history(monkeypatch) -> No
             long_only=False,
             min_history_bars=4,
         )
+
+
+def test_parse_args_supports_json_only_and_output_json() -> None:
+    args = validate.parse_args(
+        [
+            "--checkpoint",
+            "demo.pt",
+            "--symbols",
+            "AAPL,MSFT",
+            "--json-only",
+            "--output-json",
+            "summary.json",
+        ]
+    )
+
+    assert args.checkpoint == "demo.pt"
+    assert args.symbols == "AAPL,MSFT"
+    assert args.json_only is True
+    assert args.output_json == "summary.json"
+
+
+def test_main_json_only_emits_only_summary_json(monkeypatch, capsys, tmp_path: Path) -> None:
+    monkeypatch.setattr(validate, "load_hourly_bars", lambda symbol: _make_bars().query("symbol == @symbol").copy())
+    monkeypatch.setattr(
+        validate,
+        "_generate_policy_actions",
+        lambda **kwargs: (
+            pd.DataFrame(
+                [
+                    {
+                        "timestamp": pd.Timestamp("2026-01-01T01:00:00Z"),
+                        "symbol": "AAPL",
+                        "buy_price": 101.0,
+                        "sell_price": 0.0,
+                        "buy_amount": 1.0,
+                        "sell_amount": 0.0,
+                    }
+                ]
+            ),
+            {
+                "history_bars": 1,
+                "aligned_timestamps": 4,
+                "action_timestamps": 1,
+                "buy_rows": 1,
+                "sell_rows": 0,
+                "short_signals_flattened": 0,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        validate,
+        "_load_marketsimulator_api",
+        lambda: (
+            marketsimulator.SimulationConfig,
+            lambda bars, actions, config: type(
+                "_Result",
+                (),
+                {
+                    "metrics": {"total_return": 0.02, "sortino": 1.5},
+                    "per_symbol": {"AAPL": type("_SymbolResult", (), {"trades": [object(), object()]})()},
+                    "combined_equity": [1.0, 1.02],
+                },
+            )(),
+        ),
+    )
+
+    output_path = tmp_path / "summary.json"
+    exit_code = validate.main(
+        [
+            "--checkpoint",
+            "demo.pt",
+            "--symbols",
+            "AAPL",
+            "--json-only",
+            "--output-json",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["checkpoint"] == "demo.pt"
+    assert payload["metrics"]["total_return"] == pytest.approx(0.02)
+    assert payload["metrics"]["trades"] == 2
+    assert json.loads(output_path.read_text(encoding="utf-8")) == payload
