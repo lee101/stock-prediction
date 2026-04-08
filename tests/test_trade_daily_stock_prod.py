@@ -5157,6 +5157,121 @@ def test_run_backtest_reports_full_loss_annualized_when_equity_turns_negative(mo
     assert results["annualized_return"] == -1.0
 
 
+def test_run_backtest_applies_open_gate_to_low_confidence_signals(monkeypatch, tmp_path: Path) -> None:
+    """Regression: backtest must honour min_open_confidence / min_open_value_estimate.
+
+    Prior to the 2026-04-08 fix, ``run_backtest`` emitted open orders without
+    calling the live open-gate, so threshold sweeps produced identical
+    numbers and the production gate could not be tuned offline.
+    """
+
+    rows = []
+    base = pd.Timestamp("2025-09-01T00:00:00Z")
+    for idx in range(140):
+        ts = base + pd.Timedelta(days=idx)
+        close = 100.0 + idx
+        rows.append(
+            {
+                "timestamp": ts.isoformat(),
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "volume": 1_000 + idx,
+            }
+        )
+    _write_daily_csv(tmp_path / "AAPL.csv", rows)
+
+    class _FakeTrader:
+        def __init__(
+            self,
+            checkpoint,
+            device="cpu",
+            long_only=True,
+            symbols=None,
+            allow_unsafe_checkpoint_loading=False,
+        ):
+            self.SYMBOLS = list(symbols or [])
+            self.num_symbols = len(self.SYMBOLS)
+            self.obs_size = 16 * max(1, self.num_symbols)
+            self.num_actions = 1 + self.num_symbols
+            self.cash = 0.0
+            self.current_position = None
+            self.position_qty = 0.0
+            self.entry_price = 0.0
+
+        def step_day(self):
+            return None
+
+        def update_state(self, action, price, symbol):
+            return None
+
+    def _fake_loader(checkpoint, *, device="cpu", long_only=True, symbols=None, allow_unsafe_checkpoint_loading=False):
+        return _FakeTrader(checkpoint, symbols=symbols)
+
+    monkeypatch.setattr(daily_stock, "DailyPPOTrader", _FakeTrader)
+    monkeypatch.setattr(daily_stock, "_load_cached_daily_trader", _fake_loader)
+    monkeypatch.setattr(
+        daily_stock,
+        "_trader_signal_from_features",
+        lambda trader, *, features, prices, indexed, idx: SimpleNamespace(
+            action="buy",
+            symbol="AAPL",
+            direction="long",
+            confidence=0.10,
+            value_estimate=0.25,
+            allocation_pct=None,
+            level_offset_bps=0.0,
+        ),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "_build_daily_feature_cube",
+        lambda indexed, *, symbols, feature_schema: np.zeros((200, len(symbols), 16), dtype=np.float32),
+    )
+
+    blocked = daily_stock.run_backtest(
+        checkpoint="unused.pt",
+        symbols=["AAPL"],
+        data_dir=str(tmp_path),
+        days=10,
+        allocation_pct=50.0,
+        starting_cash=10_000.0,
+        min_open_confidence=0.20,
+        min_open_value_estimate=0.0,
+    )
+    allowed = daily_stock.run_backtest(
+        checkpoint="unused.pt",
+        symbols=["AAPL"],
+        data_dir=str(tmp_path),
+        days=10,
+        allocation_pct=50.0,
+        starting_cash=10_000.0,
+        min_open_confidence=0.05,
+        min_open_value_estimate=0.0,
+    )
+    value_blocked = daily_stock.run_backtest(
+        checkpoint="unused.pt",
+        symbols=["AAPL"],
+        data_dir=str(tmp_path),
+        days=10,
+        allocation_pct=50.0,
+        starting_cash=10_000.0,
+        min_open_confidence=0.05,
+        min_open_value_estimate=1.0,
+    )
+
+    # Blocked: every open is rejected by the gate, no PnL is realized.
+    assert blocked["gate_blocked_opens"] >= 1.0
+    assert blocked["total_return"] == pytest.approx(0.0)
+    # Allowed: no gate blocks, position opens and rides the monotonic ramp.
+    assert allowed["gate_blocked_opens"] == pytest.approx(0.0)
+    assert allowed["total_return"] > 0.0
+    # Value gate (min_open_value_estimate > signal.value_estimate) also bites.
+    assert value_blocked["gate_blocked_opens"] >= 1.0
+    assert value_blocked["total_return"] == pytest.approx(0.0)
+
+
 def test_load_local_daily_frames_prefers_nested_train_subdir(tmp_path: Path) -> None:
     root = tmp_path / "trainingdata"
     nested = root / "train"
