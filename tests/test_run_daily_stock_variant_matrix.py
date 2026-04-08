@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import scripts.run_daily_stock_variant_matrix as sweep_mod
+from src.daily_stock_variant_presets import preset_choices, resolve_variant_preset
 
 
 def test_parse_args_defaults_to_current_vs_candidates() -> None:
@@ -14,7 +15,7 @@ def test_parse_args_defaults_to_current_vs_candidates() -> None:
 
 
 def test_resolve_preset_returns_named_preset() -> None:
-    preset = sweep_mod._resolve_preset("promising_only")
+    preset = resolve_variant_preset("promising_only")
 
     assert preset.name == "promising_only"
     assert "beat the current live-equivalent baseline" in preset.description
@@ -23,6 +24,10 @@ def test_resolve_preset_returns_named_preset() -> None:
         "portfolio2_static_50",
         "portfolio3_static_50",
     ]
+
+
+def test_preset_choices_are_stable_and_sorted() -> None:
+    assert preset_choices() == ["current_only", "current_vs_candidates", "promising_only"]
 
 
 def test_normalize_symbols_uses_defaults_when_omitted() -> None:
