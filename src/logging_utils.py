@@ -13,7 +13,7 @@ class EDTFormatter(logging.Formatter):
     def __init__(self):
         super().__init__()
         self.utc_zone = ZoneInfo("UTC")
-        self.local_tz = self._load_zone("US/Eastern", self.utc_zone)
+        self.local_tz = self._load_zone("America/New_York", self.utc_zone)
         self.nzdt_zone = self._load_zone("Pacific/Auckland", self.utc_zone)
 
         self.level_colors = {

@@ -673,3 +673,4 @@ compiled_models
 .render_*.log
 .tmp/
 .tmp_train/
+artifacts

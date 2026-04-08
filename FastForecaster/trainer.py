@@ -7,7 +7,7 @@ import time
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 import numpy as np
 import torch
@@ -698,6 +698,7 @@ class FastForecasterTrainer:
             "epoch_history": epoch_history,
         }
 
+        self.config.ensure_output_dirs()
         with open(self.config.metrics_file, "w", encoding="utf-8") as fp:
             json.dump(summary, fp, indent=2)
         with open(self.config.metrics_dir / "epoch_metrics.json", "w", encoding="utf-8") as fp:

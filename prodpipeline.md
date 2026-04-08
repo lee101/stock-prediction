@@ -101,7 +101,7 @@ Status:
 
 Purpose:
 - Daily mixed stock+crypto RL inference utility
-- The checked-in systemd unit `systemd/daily-rl-trader.service` is paper-only
+- This is not the versioned live `daily-rl-trader.service` entrypoint; the checked-in unit now targets `trade_daily_stock_prod.py`
 
 Training path:
 - Trained from daily binaries exported by `pufferlib_market.export_data_daily`

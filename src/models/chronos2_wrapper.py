@@ -36,7 +36,11 @@ try:  # pragma: no cover - surface chronos version info when available
 except Exception:  # pragma: no cover
     _chronos_pkg = None  # type: ignore
 
-from chronos import BaseChronosPipeline as _ChronosBasePipeline
+try:  # pragma: no cover - optional dependency loaded lazily by callers
+    from chronos import BaseChronosPipeline as _ChronosBasePipeline
+except Exception:  # pragma: no cover
+    _ChronosBasePipeline = None  # type: ignore[assignment]
+
 from preaug_sweeps.augmentations import BaseAugmentation
 try:  # pragma: no cover - backward compatibility with pre-helper snapshots
     from src.cache_utils import find_hf_snapshot_dir

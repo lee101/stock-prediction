@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: I001
 """Run the daily stock planner remotely on RunPod and return the JSON plan.
 
 This wrapper is intentionally planning-only. It runs the existing daily stock
@@ -14,33 +15,62 @@ import json
 import os
 import re
 import shlex
-import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
+
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-import trade_daily_stock_prod as daily_stock
-from src.runpod_client import (
-    DEFAULT_POD_READY_POLL_INTERVAL_SECONDS,
-    DEFAULT_POD_READY_TIMEOUT_SECONDS,
-    Pod,
-    PodConfig,
-    RunPodClient,
-    build_gpu_fallback_types,
+import src.runpod_client as _runpod_client  # noqa: E402
+from src.daily_stock_defaults import (  # noqa: E402
+    DEFAULT_CHECKPOINT,
+    DEFAULT_DATA_DIR,
+    DEFAULT_EXTRA_CHECKPOINTS,
+    DEFAULT_MIN_OPEN_CONFIDENCE,
+    DEFAULT_MIN_OPEN_VALUE_ESTIMATE,
+    DEFAULT_SYMBOLS,
 )
+from src.runpod_remote_utils import (  # noqa: E402
+    SSH_OPTIONS as _SSH_OPTS,
+    run_checked_subprocess as _run_checked_subprocess,
+    ssh_run as _ssh_run,
+    tail_excerpt as _tail_excerpt,
+)
+from src.stock_symbol_inputs import load_symbols_file, normalize_symbols  # noqa: E402
+
+
+DEFAULT_POD_READY_POLL_INTERVAL_SECONDS = _runpod_client.DEFAULT_POD_READY_POLL_INTERVAL_SECONDS
+DEFAULT_POD_READY_TIMEOUT_SECONDS = _runpod_client.DEFAULT_POD_READY_TIMEOUT_SECONDS
+Pod = _runpod_client.Pod
+PodConfig = _runpod_client.PodConfig
+RunPodClient = _runpod_client.RunPodClient
+
+if hasattr(_runpod_client, "resolve_gpu_preferences"):
+    resolve_gpu_preferences = _runpod_client.resolve_gpu_preferences
+else:
+    def resolve_gpu_preferences(
+        primary: str,
+        fallbacks: str | tuple[str, ...] | list[str] | None = None,
+    ) -> tuple[str, ...]:
+        parsed_fallbacks: tuple[str, ...] | list[str] | None
+        if isinstance(fallbacks, str) or fallbacks is None:
+            parsed_fallbacks = _runpod_client.parse_gpu_fallback_types(fallbacks)
+        else:
+            parsed_fallbacks = fallbacks
+        return tuple(_runpod_client.build_gpu_fallback_types(primary, parsed_fallbacks))
 
 DEFAULT_REMOTE_WORKSPACE = "/workspace/stock-prediction"
 DEFAULT_REMOTE_VENV = ".venv"
-_SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes"]
 _REPO_EXTERNAL_ROOTS = (REPO / ".pytest_tmp",)
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_ALPACA_PAPER_KEY_ENV_CANDIDATES = ("ALP_KEY_ID_PAPER", "ALP_KEY_ID")
-_ALPACA_PAPER_SECRET_ENV_CANDIDATES = ("ALP_SECRET_KEY_PAPER", "ALP_SECRET_KEY")
+_ALPACA_PAPER_KEY_ENV_CANDIDATES = ("ALP_KEY_ID_PAPER",)
+_ALPACA_PAPER_SECRET_ENV_CANDIDATES = ("ALP_SECRET_KEY_PAPER",)
+_ALPACA_ANY_KEY_ENV_CANDIDATES = ("ALP_KEY_ID_PAPER", "ALP_KEY_ID")
+_ALPACA_ANY_SECRET_ENV_CANDIDATES = ("ALP_SECRET_KEY_PAPER", "ALP_SECRET_KEY")
 
 
 @dataclass(frozen=True)
@@ -169,43 +199,6 @@ def _rsync_repo(*, ssh_host: str, ssh_port: int, remote_workspace: str) -> None:
     _run_checked_subprocess(cmd, description=f"Failed to rsync repository to {remote_workspace}")
 
 
-def _run_checked_subprocess(cmd: list[str], *, description: str) -> None:
-    result = subprocess.run(cmd, check=False, text=True, capture_output=True)
-    if result.returncode == 0:
-        return
-
-    rendered_cmd = shlex.join(cmd)
-    stdout = (result.stdout or "").strip()
-    stderr = (result.stderr or "").strip()
-    message = [
-        f"{description} (exit {result.returncode})",
-        f"command: {rendered_cmd}",
-    ]
-    if stdout:
-        message.append(f"stdout:\n{stdout}")
-    if stderr:
-        message.append(f"stderr:\n{stderr}")
-    raise RuntimeError("\n".join(message))
-
-
-def _ssh_run(
-    *,
-    ssh_host: str,
-    ssh_port: int,
-    remote_cmd: str,
-    capture_output: bool = False,
-) -> subprocess.CompletedProcess[str]:
-    cmd = [
-        "ssh",
-        *_SSH_OPTS,
-        "-p",
-        str(ssh_port),
-        f"root@{ssh_host}",
-        remote_cmd,
-    ]
-    return subprocess.run(cmd, check=False, text=True, capture_output=capture_output)
-
-
 def _remote_bootstrap_cmd(*, remote_workspace: str, remote_venv: str) -> str:
     return (
         f"mkdir -p {shlex.quote(remote_workspace)} && "
@@ -248,14 +241,6 @@ def _extract_json(stdout: str) -> dict[str, object]:
         )
     return payload
 
-
-def _tail_excerpt(text: str, *, limit: int = 400) -> str:
-    rendered = str(text or "").strip()
-    if len(rendered) <= limit:
-        return rendered
-    return rendered[-limit:]
-
-
 def _build_stage_error(
     *,
     stage: str,
@@ -284,17 +269,11 @@ def _build_stage_error(
     return RuntimeError("\n".join(message))
 
 
-def _split_gpu_fallbacks(raw_value: str | None) -> list[str] | None:
-    if raw_value is None:
-        return None
-    return [token.strip() for token in raw_value.split(",") if token.strip()]
-
-
 def _resolve_extra_checkpoint_inputs(args: argparse.Namespace) -> list[str] | None:
     if args.no_ensemble:
         return None
     if args.extra_checkpoints is None:
-        return list(daily_stock.DEFAULT_EXTRA_CHECKPOINTS)
+        return list(DEFAULT_EXTRA_CHECKPOINTS)
     return list(args.extra_checkpoints)
 
 
@@ -421,7 +400,7 @@ def _resolve_symbols_config(
         if not symbols_file_local.exists():
             return symbol_source, (), (), ()
         try:
-            symbol_inputs = daily_stock._load_symbols_file(symbols_file_local)
+            symbol_inputs = load_symbols_file(symbols_file_local)
         except (OSError, ValueError) as exc:
             errors.append(f"Invalid symbols file {symbols_file_local}: {exc}")
             return symbol_source, (), (), ()
@@ -429,7 +408,7 @@ def _resolve_symbols_config(
         symbol_inputs = list(raw_symbols)
 
     try:
-        normalized, removed_duplicates, ignored_inputs = daily_stock._normalize_symbols(symbol_inputs)
+        normalized, removed_duplicates, ignored_inputs = normalize_symbols(symbol_inputs)
     except ValueError as exc:
         errors.append(f"Invalid symbols configuration: {exc}")
         return symbol_source, (), (), ()
@@ -443,11 +422,7 @@ def _resolve_symbols_config(
 
 
 def _build_execution_plan(args: argparse.Namespace) -> PlannerExecutionPlan:
-    gpu_fallbacks = _split_gpu_fallbacks(args.gpu_fallbacks)
-    if gpu_fallbacks is None:
-        gpu_preferences = tuple(build_gpu_fallback_types(args.gpu_type))
-    else:
-        gpu_preferences = tuple(build_gpu_fallback_types(args.gpu_type, gpu_fallbacks))
+    gpu_preferences = resolve_gpu_preferences(args.gpu_type, args.gpu_fallbacks)
 
     checkpoint_local = _resolve_local_path(args.checkpoint)
     checkpoint_remote = _relative_remote_path(checkpoint_local, args.remote_workspace)
@@ -496,13 +471,23 @@ def _build_execution_plan(args: argparse.Namespace) -> PlannerExecutionPlan:
         )
     if args.data_source == "alpaca":
         effective_names = set(effective_forward_env_names)
-        if not any(name in effective_names for name in _ALPACA_PAPER_KEY_ENV_CANDIDATES) or not any(
-            name in effective_names for name in _ALPACA_PAPER_SECRET_ENV_CANDIDATES
+        if not any(name in effective_names for name in _ALPACA_ANY_KEY_ENV_CANDIDATES) or not any(
+            name in effective_names for name in _ALPACA_ANY_SECRET_ENV_CANDIDATES
         ):
             setup_warnings.append(
                 "Alpaca paper credentials are not being forwarded. "
                 "Remote planner may need ALP_KEY_ID_PAPER/ALP_SECRET_KEY_PAPER "
                 "or ALP_KEY_ID/ALP_SECRET_KEY."
+            )
+        live_creds_present = any(os.getenv(name) for name in ("ALP_KEY_ID", "ALP_SECRET_KEY"))
+        paper_creds_present = any(os.getenv(name) for name in ("ALP_KEY_ID_PAPER", "ALP_SECRET_KEY_PAPER"))
+        if live_creds_present and not paper_creds_present and not any(
+            name in effective_names for name in ("ALP_KEY_ID", "ALP_SECRET_KEY")
+        ):
+            setup_warnings.append(
+                "Live Alpaca credentials detected but not auto-forwarded. "
+                "Pass --forward-env ALP_KEY_ID ALP_SECRET_KEY explicitly if you intend "
+                "to use live credentials on the remote pod."
             )
 
     _, present_forward_env, missing_forward_env = _forward_env_assignments(
@@ -770,15 +755,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Comma-separated fallback GPU aliases/names (default: use client defaults)")
     parser.add_argument("--remote-workspace", default=DEFAULT_REMOTE_WORKSPACE)
     parser.add_argument("--remote-venv", default=DEFAULT_REMOTE_VENV)
-    parser.add_argument("--checkpoint", default=daily_stock.DEFAULT_CHECKPOINT)
+    parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT)
     parser.add_argument("--extra-checkpoints", nargs="*", default=None)
     parser.add_argument("--no-ensemble", action="store_true")
     parser.add_argument("--data-source", choices=["local", "alpaca"], default="local")
-    parser.add_argument("--data-dir", default=daily_stock.DEFAULT_DATA_DIR)
-    parser.add_argument("--symbols", nargs="+", default=list(daily_stock.DEFAULT_SYMBOLS))
+    parser.add_argument("--data-dir", default=DEFAULT_DATA_DIR)
+    parser.add_argument("--symbols", nargs="+", default=list(DEFAULT_SYMBOLS))
     parser.add_argument("--symbols-file", default=None)
-    parser.add_argument("--min-open-confidence", type=float, default=daily_stock.DEFAULT_MIN_OPEN_CONFIDENCE)
-    parser.add_argument("--min-open-value-estimate", type=float, default=daily_stock.DEFAULT_MIN_OPEN_VALUE_ESTIMATE)
+    parser.add_argument("--min-open-confidence", type=float, default=DEFAULT_MIN_OPEN_CONFIDENCE)
+    parser.add_argument("--min-open-value-estimate", type=float, default=DEFAULT_MIN_OPEN_VALUE_ESTIMATE)
     parser.add_argument("--forward-env", nargs="*", default=[],
                         help="Environment variable names to forward to the remote planner command")
     parser.add_argument("--skip-bootstrap", action="store_true")
@@ -809,21 +794,18 @@ def main(argv: list[str] | None = None) -> None:
 
     client = RunPodClient()
 
-    pod = client.create_pod_with_fallback(
+    ready = client.create_ready_pod_with_fallback(
         PodConfig(
             name=f"daily-stock-plan-{int(time.time())}",
             gpu_type=plan.gpu_preferences[0],
         ),
         plan.gpu_preferences,
+        timeout=DEFAULT_POD_READY_TIMEOUT_SECONDS,
+        poll_interval=DEFAULT_POD_READY_POLL_INTERVAL_SECONDS,
     )
 
     terminate_pod = not args.keep_pod
     try:
-        ready = client.wait_for_pod(
-            pod.id,
-            timeout=DEFAULT_POD_READY_TIMEOUT_SECONDS,
-            poll_interval=DEFAULT_POD_READY_POLL_INTERVAL_SECONDS,
-        )
         _sync_execution_plan_inputs(
             ready=ready,
             plan=plan,
@@ -849,11 +831,11 @@ def main(argv: list[str] | None = None) -> None:
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
     finally:
-        if terminate_pod and pod is not None:
+        if terminate_pod and ready is not None:
             try:
-                client.terminate_pod(pod.id)
+                client.terminate_pod(ready.id)
             except Exception as exc:
-                print(f"warning: failed to terminate pod {pod.id}: {exc}", file=sys.stderr)
+                print(f"warning: failed to terminate pod {ready.id}: {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":

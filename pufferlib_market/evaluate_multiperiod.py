@@ -90,10 +90,6 @@ def load_policy(
         action_level_bins=1,
         action_max_offset_bps=0.0,
     )
-    if action_allocation_bins != 1 or action_level_bins != 1:
-        raise ValueError(
-            f"Only supports alloc_bins=1 level_bins=1 (got {action_allocation_bins}, {action_level_bins})"
-        )
 
     obs_size = num_symbols * features_per_sym + 5 + num_symbols
     fallback_actions = 1 + 2 * num_symbols
@@ -199,6 +195,9 @@ def evaluate_period(
     deterministic: bool = True,
     decision_lag: int = 0,
     device: torch.device = torch.device("cpu"),
+    action_allocation_bins: int = 1,
+    action_level_bins: int = 1,
+    action_max_offset_bps: float = 0.0,
 ) -> dict:
     """Evaluate a single time period on the tail of data."""
     if data.num_timesteps < eval_hours + 1:
@@ -227,6 +226,9 @@ def evaluate_period(
         max_leverage=max_leverage,
         periods_per_year=periods_per_year,
         short_borrow_apr=short_borrow_apr,
+        action_allocation_bins=action_allocation_bins,
+        action_level_bins=action_level_bins,
+        action_max_offset_bps=action_max_offset_bps,
     )
 
     ann_ret = annualize_total_return(
@@ -296,6 +298,9 @@ def evaluate_checkpoint(
             deterministic=deterministic,
             decision_lag=decision_lag,
             device=device,
+            action_allocation_bins=loaded.action_allocation_bins,
+            action_level_bins=loaded.action_level_bins,
+            action_max_offset_bps=loaded.action_max_offset_bps,
         )
         r["period"] = period_name
         r["checkpoint"] = checkpoint_path

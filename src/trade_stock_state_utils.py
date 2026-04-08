@@ -14,6 +14,15 @@ StoreLoader = Callable[[], Optional[FlatShelf]]
 LoggerLike = Optional[logging.Logger]
 
 
+def _load_timezone(name: str):
+    for candidate in (name, "America/New_York", "US/Eastern"):
+        try:
+            return pytz.timezone(candidate)
+        except Exception:
+            continue
+    return pytz.UTC
+
+
 def normalize_side_for_key(side: str) -> str:
     normalized = str(side or "").lower()
     if "short" in normalized or "sell" in normalized:
@@ -244,7 +253,7 @@ def describe_probe_state(
     *,
     now: Optional[datetime] = None,
     probe_max_duration: timedelta,
-    timezone_name: str = "US/Eastern",
+    timezone_name: str = "America/New_York",
 ) -> Dict[str, Optional[Any]]:
     if learning_state is None:
         learning_state = {}
@@ -268,7 +277,7 @@ def describe_probe_state(
     summary["probe_expires_at"] = expires_at.isoformat()
     summary["probe_expired"] = now >= expires_at
 
-    est = pytz.timezone(timezone_name)
+    est = _load_timezone(timezone_name)
     now_est = now.astimezone(est)
     started_est = probe_started_at.astimezone(est)
     summary["probe_transition_ready"] = now_est.date() > started_est.date()

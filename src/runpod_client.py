@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import copy
 import os
 import re
 import threading
 import time
 from dataclasses import dataclass, field, replace
-from typing import Optional, Sequence
+from typing import NotRequired, Optional, Sequence, TypedDict
 
 import requests
 
@@ -19,6 +18,7 @@ RUNPOD_REST_URL = "https://rest.runpod.io/v1"
 TRAINING_DOCKER_IMAGE = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
 DEFAULT_POD_READY_TIMEOUT_SECONDS = 900
 DEFAULT_POD_READY_POLL_INTERVAL_SECONDS = 10
+MAX_POD_READY_POLL_INTERVAL_SECONDS = 30
 
 GPU_ALIASES: dict[str, str] = {
     "a100": "NVIDIA A100 80GB PCIe",
@@ -60,6 +60,18 @@ HOURLY_RATES: dict[str, float] = {
     "NVIDIA A40": 0.35,
     "NVIDIA RTX 6000 Ada Generation": 0.74,
 }
+
+
+class RunPodLowestPrice(TypedDict, total=False):
+    minimumBidPrice: float
+    unInterruptablePrice: float
+
+
+class RunPodGpuType(TypedDict):
+    id: str
+    displayName: str
+    memoryInGb: int
+    lowestPrice: NotRequired[RunPodLowestPrice]
 
 
 def resolve_gpu_type(alias: str) -> str:
@@ -108,6 +120,19 @@ def parse_gpu_fallback_types(value: Optional[str]) -> Optional[list[str]]:
     return [part.strip() for part in text.split(",") if part.strip()]
 
 
+def resolve_gpu_preferences(
+    primary: str,
+    fallbacks: Optional[str | Sequence[str]] = None,
+) -> tuple[str, ...]:
+    """Resolve a CLI or programmatic fallback specification into a GPU chain."""
+    parsed_fallbacks: Optional[Sequence[str]]
+    if isinstance(fallbacks, str) or fallbacks is None:
+        parsed_fallbacks = parse_gpu_fallback_types(fallbacks)
+    else:
+        parsed_fallbacks = fallbacks
+    return tuple(build_gpu_fallback_types(primary, parsed_fallbacks))
+
+
 def _gpu_match_key(text: str) -> str:
     normalized = text.lower()
     for token in (
@@ -141,6 +166,81 @@ def get_hourly_rate(gpu_full_name: str) -> float:
     return HOURLY_RATES.get(gpu_full_name, 0.0)
 
 
+def _coerce_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_float(value: object) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_lowest_price(raw_value: object) -> RunPodLowestPrice | None:
+    if not isinstance(raw_value, dict):
+        return None
+    normalized: RunPodLowestPrice = {}
+    minimum_bid_price = _coerce_float(raw_value.get("minimumBidPrice"))
+    if minimum_bid_price is not None:
+        normalized["minimumBidPrice"] = minimum_bid_price
+    uninterruptable_price = _coerce_float(raw_value.get("unInterruptablePrice"))
+    if uninterruptable_price is not None:
+        normalized["unInterruptablePrice"] = uninterruptable_price
+    return normalized or None
+
+
+def _normalize_gpu_type(raw_value: object) -> RunPodGpuType | None:
+    if not isinstance(raw_value, dict):
+        return None
+    gpu_id = str(raw_value.get("id", "") or "").strip()
+    display_name = str(raw_value.get("displayName", "") or "").strip()
+    if not gpu_id or not display_name:
+        return None
+    normalized: RunPodGpuType = {
+        "id": gpu_id,
+        "displayName": display_name,
+        "memoryInGb": _coerce_int(raw_value.get("memoryInGb")),
+    }
+    lowest_price = _normalize_lowest_price(raw_value.get("lowestPrice"))
+    if lowest_price is not None:
+        normalized["lowestPrice"] = lowest_price
+    return normalized
+
+
+def _normalize_gpu_types(raw_values: object) -> list[RunPodGpuType]:
+    if not isinstance(raw_values, list):
+        return []
+    normalized: list[RunPodGpuType] = []
+    for raw_value in raw_values:
+        gpu_type = _normalize_gpu_type(raw_value)
+        if gpu_type is not None:
+            normalized.append(gpu_type)
+    return normalized
+
+
+def _clone_gpu_type(gpu_type: RunPodGpuType) -> RunPodGpuType:
+    cloned: RunPodGpuType = {
+        "id": gpu_type["id"],
+        "displayName": gpu_type["displayName"],
+        "memoryInGb": gpu_type["memoryInGb"],
+    }
+    lowest_price = gpu_type.get("lowestPrice")
+    if lowest_price is not None:
+        cloned["lowestPrice"] = {
+            key: float(value)
+            for key, value in lowest_price.items()
+        }
+    return cloned
+
+
+def _clone_gpu_types(gpu_types: list[RunPodGpuType]) -> list[RunPodGpuType]:
+    return [_clone_gpu_type(gpu_type) for gpu_type in gpu_types]
+
+
 @dataclass(slots=True)
 class PodConfig:
     name: str
@@ -171,28 +271,25 @@ class RunPodClient:
         if not self.api_key:
             raise ValueError("RUNPOD_API_KEY not set")
         self.session = session or requests.Session()
-        self._gpu_types_cache: dict[bool, list[dict]] = {}
+        self._session_lock = threading.Lock()
+        self._gpu_types_cache: dict[bool, list[RunPodGpuType]] = {}
         self._gpu_types_cache_lock = threading.Lock()
         self._gpu_type_id_cache: dict[tuple[str, str], str] = {}
+        self._gpu_display_name_cache: dict[str, str] = {}
+
+    def _session_post(self, url: str, **kwargs) -> requests.Response:
+        with self._session_lock:
+            return self.session.post(url, **kwargs)
 
     def _cached_gpu_display_name(self, gpu_id: str) -> str:
         with self._gpu_types_cache_lock:
-            cached_gpu_types = self._gpu_types_cache.get(False)
-            if cached_gpu_types is None:
-                cached_gpu_types = self._gpu_types_cache.get(True)
-            if not cached_gpu_types:
-                return ""
-            for gpu in cached_gpu_types:
-                candidate_id = str(gpu.get("id", "") or "")
-                if candidate_id == gpu_id:
-                    return str(gpu.get("displayName", "") or "")
-        return ""
+            return self._gpu_display_name_cache.get(gpu_id, "")
 
     def _graphql(self, query: str, variables: Optional[dict] = None) -> dict:
         payload: dict = {"query": query}
         if variables:
             payload["variables"] = variables
-        response = self.session.post(
+        response = self._session_post(
             RUNPOD_GRAPHQL_URL,
             params={"api_key": self.api_key},
             json=payload,
@@ -211,7 +308,7 @@ class RunPodClient:
         }
 
     def _rest_post(self, path: str, payload: Optional[dict] = None) -> dict:
-        response = self.session.post(
+        response = self._session_post(
             f"{RUNPOD_REST_URL}{path}",
             headers=self._rest_headers(),
             json=payload or {},
@@ -222,7 +319,7 @@ class RunPodClient:
             return response.json()
         return {}
 
-    def _get_cached_gpu_types(self, include_pricing: bool) -> list[dict]:
+    def _get_cached_gpu_types(self, include_pricing: bool) -> list[RunPodGpuType]:
         cached = self._gpu_types_cache.get(include_pricing)
         if cached is not None:
             return cached
@@ -240,13 +337,15 @@ class RunPodClient:
             else:
                 query = "query { gpuTypes { id displayName memoryInGb } }"
             data = self._graphql(query)
-            gpu_types = data.get("gpuTypes", [])
-            self._gpu_types_cache[include_pricing] = copy.deepcopy(gpu_types)
+            gpu_types = _normalize_gpu_types(data.get("gpuTypes", []))
+            self._gpu_types_cache[include_pricing] = _clone_gpu_types(gpu_types)
+            for gpu in gpu_types:
+                self._gpu_display_name_cache[gpu["id"]] = gpu["displayName"]
             if not include_pricing:
                 self._gpu_type_id_cache.clear()
             return self._gpu_types_cache[include_pricing]
 
-    def list_gpu_types(self, include_pricing: bool = True) -> list[dict]:
+    def list_gpu_types(self, include_pricing: bool = True) -> list[RunPodGpuType]:
         """Return available GPU types from RunPod.
 
         Each entry has at least: ``id``, ``displayName``, ``memoryInGb``.
@@ -260,7 +359,7 @@ class RunPodClient:
             c = RunPodClient(api_key="...")
             print(c.list_gpu_types())
         """
-        return copy.deepcopy(self._get_cached_gpu_types(include_pricing))
+        return _clone_gpu_types(self._get_cached_gpu_types(include_pricing))
 
     def find_gpu_type_id(self, name_substr: str) -> str:
         needle = name_substr.lower()
@@ -354,6 +453,31 @@ class RunPodClient:
 
         raise RuntimeError(f"Could not provision any requested RunPod GPU: {last_error}") from last_error
 
+    def create_ready_pod_with_fallback(
+        self,
+        config: PodConfig,
+        gpu_preferences: Sequence[str],
+        *,
+        timeout: int = DEFAULT_POD_READY_TIMEOUT_SECONDS,
+        poll_interval: int = DEFAULT_POD_READY_POLL_INTERVAL_SECONDS,
+    ) -> Pod:
+        pod = self.create_pod_with_fallback(config, gpu_preferences)
+        try:
+            return self.wait_for_pod(
+                pod.id,
+                timeout=timeout,
+                poll_interval=poll_interval,
+            )
+        except Exception as exc:
+            try:
+                self.terminate_pod(pod.id)
+            except Exception as cleanup_exc:
+                exc.add_note(
+                    "failed to terminate pod "
+                    f"{pod.id} after readiness wait failed: {cleanup_exc}"
+                )
+            raise
+
     def get_pod(self, pod_id: str) -> Pod:
         query = """query($podId: String!) {
             pod(input: { podId: $podId }) {
@@ -424,12 +548,24 @@ class RunPodClient:
         poll_interval: int = DEFAULT_POD_READY_POLL_INTERVAL_SECONDS,
     ) -> Pod:
         start = time.monotonic()
+        last_observed_state: tuple[str, str, int] | None = None
+        next_poll_interval = max(1, poll_interval)
         while time.monotonic() - start < timeout:
             pod = self.get_pod(pod_id)
-            print(f"  Pod {pod.id}: status={pod.status}, ssh={pod.ssh_host}:{pod.ssh_port}")
+            observed_state = (pod.status, pod.ssh_host, pod.ssh_port)
+            state_changed = observed_state != last_observed_state
+            if state_changed:
+                print(f"  Pod {pod.id}: status={pod.status}, ssh={pod.ssh_host}:{pod.ssh_port}")
+                last_observed_state = observed_state
+                next_poll_interval = max(1, poll_interval)
+            else:
+                next_poll_interval = min(
+                    next_poll_interval * 2,
+                    MAX_POD_READY_POLL_INTERVAL_SECONDS,
+                )
             if pod.status == "RUNNING" and pod.ssh_host and pod.ssh_port:
                 return pod
-            time.sleep(poll_interval)
+            time.sleep(next_poll_interval)
         elapsed = int(time.monotonic() - start)
         raise TimeoutError(
             f"Pod {pod_id!r} did not become ready after {elapsed}s (timeout={timeout}s)"

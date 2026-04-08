@@ -26,7 +26,7 @@ from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Lock
-from typing import Iterable, Literal, Optional, Sequence, TypeAlias, TypedDict, cast
+from typing import Iterable, Iterator, Literal, Optional, Sequence, TypeAlias, TypedDict, cast
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -49,6 +49,14 @@ from pufferlib_market.inference import TradingSignal
 from pufferlib_market.export_data_daily import compute_daily_features as compute_daily_feature_history
 from pufferlib_market.checkpoint_loader import load_checkpoint_payload
 from src.alpaca_account_lock import acquire_alpaca_account_lock, require_explicit_live_trading_enable
+from src.daily_stock_defaults import (
+    DEFAULT_CHECKPOINT,
+    DEFAULT_DATA_DIR,
+    DEFAULT_EXTRA_CHECKPOINTS,
+    DEFAULT_MIN_OPEN_CONFIDENCE,
+    DEFAULT_MIN_OPEN_VALUE_ESTIMATE,
+    DEFAULT_SYMBOLS,
+)
 from src.local_data_health import format_local_data_health_lines
 from src.shared_path_guard import shared_path_guard
 from src import stock_symbol_inputs
@@ -76,83 +84,6 @@ logger = logging.getLogger("daily_stock_rl")
 EASTERN = ZoneInfo("America/New_York")
 RUN_AFTER_OPEN_ET = dt_time(hour=9, minute=35)
 
-DEFAULT_SYMBOLS = [
-    "AAPL",
-    "MSFT",
-    "NVDA",
-    "GOOG",
-    "META",
-    "TSLA",
-    "SPY",
-    "QQQ",
-    "PLTR",
-    "JPM",
-    "V",
-    "AMZN",
-]
-DEFAULT_CHECKPOINT = "pufferlib_market/prod_ensemble/tp10.pt"
-# 32-model ensemble stored in prod_ensemble/ (protected from *_screen/ deletion pattern)
-# Members: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835+s2827+s2722+s3668+s3411+s4011+s4777+s4080+s4533+s4813+s5045+s5337+s5199+s5019+s6808+s3456+s7159+s6758
-# Updated 2026-03-31 — all checkpoints are screen-phase (≤3M steps) or exact-match recoveries
-# s2827 added 2026-03-28: +16% delta vs 15-model
-# s2722 added 2026-03-29: +6% delta vs 16-model
-# s3668 added 2026-03-29: +1.1% delta vs 17-model
-# s3411 added 2026-03-29: +1.8% delta vs 18-model — 19-model: 0/111 neg, p10=44.1%
-# s4011 added 2026-03-29: +4.4% delta vs 19-model — 20-model: 0/111 neg, p10=48.5%
-# s4777 added 2026-03-29: +0.2% delta vs 20-model — 21-model: 0/111 neg, p10=48.7%
-# s4080 added 2026-03-29: +0.1% delta vs 21-model — 22-model: 0/111 neg, p10=48.8%
-# s4533 added 2026-03-29: +4.2% delta vs 22-model — 23-model: 0/111 neg, p10=52.9%
-# s4813 added 2026-03-29: +4.4% delta vs 23-model — 24-model: 0/111 neg, p10=57.4%
-# s5045 added 2026-03-29: +1.2% delta vs 24-model — 25-model: 0/111 neg, p10=58.6%
-# s5337 added 2026-03-29: +1.8% delta vs 25-model — 26-model: 0/111 neg, p10=60.3%
-# s5199 added 2026-03-29: +2.2% delta vs 26-model — 27-model: 0/111 neg, p10=62.6%
-# s5019 added 2026-03-29: +0.9% delta vs 27-model — 28-model: 0/111 neg, p10=63.5%
-# s6808 added 2026-03-30: +0.7% delta vs 28-model — 29-model: 0/111 neg, p10=64.1%
-# s3456 added 2026-03-31: +0.5% delta vs 29-model — 30-model: 0/111 neg, p10=64.6%
-# s7159 added 2026-03-31: +0.7% delta vs 30-model — 31-model: 0/111 neg, p10=65.3%
-# s6758 added 2026-03-31: +1.0% delta vs 31-model — 32-model: 0/111 neg, med=73.4%, p10=66.2%
-# (15-model was: 0/111 neg, med=50.9%, p10=19.2%)
-# ENCODER_NORM NOTE: models use encoder_norm; production inference.py applies it correctly
-# 33-model bar: 33-model exhaustive p10 >= 66.2% @fill_bps=5 (encoder_norm-correct methodology)
-# NOTE: s4009 REJECTED (batch misidentification — actual delta=-25.1%)
-# REJECTED: s2655, s2206, resmlp_a40, s28, tp03, s241, s541, s310, stock_ent_05
-# REJECTED (high in-sample return = aggressive overfit): s2793, s2815, s2099, s2118, s2247, s2695
-# REJECTED against 16-model: s2433/s2831/s2275 (correlated w/ s2827), s2137, s2276, s2279, s2435, s2575
-# REJECTED against 17/18/19/20/21/22/23-model: 100+ seeds tested (see batch_new_*.log)
-DEFAULT_EXTRA_CHECKPOINTS = [
-    "pufferlib_market/prod_ensemble/s15.pt",
-    "pufferlib_market/prod_ensemble/s36.pt",
-    "pufferlib_market/prod_ensemble/gamma_995.pt",
-    "pufferlib_market/prod_ensemble/muon_wd_005.pt",
-    "pufferlib_market/prod_ensemble/h1024_a40.pt",
-    "pufferlib_market/prod_ensemble/s1731.pt",
-    "pufferlib_market/prod_ensemble/gamma995_s2006.pt",
-    "pufferlib_market/prod_ensemble/s1401.pt",
-    "pufferlib_market/prod_ensemble/s1726.pt",
-    "pufferlib_market/prod_ensemble/s1523.pt",
-    "pufferlib_market/prod_ensemble/s2617.pt",
-    "pufferlib_market/prod_ensemble/s2033.pt",
-    "pufferlib_market/prod_ensemble/s2495.pt",
-    "pufferlib_market/prod_ensemble/s1835.pt",
-    "pufferlib_market/prod_ensemble/s2827.pt",
-    "pufferlib_market/prod_ensemble/s2722.pt",
-    "pufferlib_market/prod_ensemble/s3668.pt",
-    "pufferlib_market/prod_ensemble/s3411.pt",
-    "pufferlib_market/prod_ensemble/s4011.pt",
-    "pufferlib_market/prod_ensemble/s4777.pt",
-    "pufferlib_market/prod_ensemble/s4080.pt",
-    "pufferlib_market/prod_ensemble/s4533.pt",
-    "pufferlib_market/prod_ensemble/s4813.pt",
-    "pufferlib_market/prod_ensemble/s5045.pt",
-    "pufferlib_market/prod_ensemble/s5337.pt",
-    "pufferlib_market/prod_ensemble/s5199.pt",
-    "pufferlib_market/prod_ensemble/s5019.pt",
-    "pufferlib_market/prod_ensemble/s6808.pt",
-    "pufferlib_market/prod_ensemble/s3456.pt",
-    "pufferlib_market/prod_ensemble/s7159.pt",
-    "pufferlib_market/prod_ensemble/s6758.pt",
-]
-DEFAULT_DATA_DIR = "trainingdata"
 DEFAULT_ALLOCATION_PCT = 12.5  # Calibrated 2026-03-31: was 25%, 0.5x scale improves val_p10 by +1.9%
 DEFAULT_SORTINO_SERVER_CHECKPOINT = "pufferlib_market/checkpoints/stocks12_v2_sweep/stock_trade_pen_05_s123/best.pt"
 DEFAULT_SERVER_PAPER_ACCOUNT = "paper_sortino_daily"
@@ -168,14 +99,13 @@ DEFAULT_ALPACA_DAILY_HISTORY_LOOKBACK_DAYS = 420
 DEFAULT_BAR_FRESHNESS_MAX_AGE_DAYS = 5
 DEFAULT_MULTI_POSITION = 0
 DEFAULT_MULTI_POSITION_MIN_PROB_RATIO = 0.3
+DEFAULT_SYMBOL_PREVIEW_LIMIT = 5
 BUYING_POWER_USAGE_CAP = 0.95
 SERVER_MARKETABLE_LIMIT_BUFFER_BPS = 100.0
 # Calibrated execution offsets (2026-03-31 sweep over 726 combos, 788 windows)
 # Best: entry=+5bps, exit=+25bps, scale=0.5x → val_p10=-0.4% vs baseline -2.3%
 CALIBRATED_ENTRY_OFFSET_BPS = 5.0   # Buy limit at open * 1.0005
 CALIBRATED_EXIT_OFFSET_BPS = 25.0   # Sell limit at open * 1.0025
-DEFAULT_MIN_OPEN_CONFIDENCE = 0.20
-DEFAULT_MIN_OPEN_VALUE_ESTIMATE = 0.0
 DEFAULT_ALLOCATION_SIZING_MODE = "static"
 STATE_PATH = REPO / "strategy_state/daily_stock_rl_state.json"
 SIGNAL_LOG_PATH = REPO / "strategy_state/daily_stock_rl_signals.jsonl"
@@ -217,6 +147,10 @@ class RuntimeLogPayload(TypedDict, total=False):
     execution_backend: StockExecutionBackend
     symbol_count: int
     symbols: list[str]
+    symbol_source: str
+    symbol_source_label: str
+    symbol_preview: list[str]
+    symbol_preview_text: str
     checkpoint: str
     ensemble_size: int
     command_preview: str
@@ -243,6 +177,15 @@ class SignalPayload(TypedDict):
     value_estimate: float
     allocation_fraction: float
     quotes: dict[str, float]
+
+
+class PortfolioSignalPayload(TypedDict):
+    action: str
+    symbol: str | None
+    direction: str | None
+    confidence: float
+    value_estimate: float
+    allocation_fraction: float
 
 
 class ExecutionObservabilityFields(TypedDict):
@@ -439,6 +382,42 @@ class CliRuntimeConfig:
     def resolved_server_url_details(self) -> TradingServerBaseUrlDetails:
         return describe_trading_server_base_url(self.resolved_server_url)
 
+    @property
+    def portfolio_mode(self) -> bool:
+        return self.multi_position > 1
+
+    @property
+    def position_capacity(self) -> int:
+        return self.multi_position if self.portfolio_mode else 1
+
+    @property
+    def strategy_mode(self) -> str:
+        if self.portfolio_mode:
+            return f"portfolio (up to {self.multi_position} positions)"
+        return "single-position"
+
+    @property
+    def symbol_source(self) -> str:
+        return "symbols_file" if self.symbols_file else "cli"
+
+    @property
+    def symbol_source_label(self) -> str:
+        if self.symbols_file:
+            return f"symbols file: {self.symbols_file}"
+        return "--symbols"
+
+    @property
+    def symbol_preview(self) -> list[str]:
+        return list(self.symbols[:DEFAULT_SYMBOL_PREVIEW_LIMIT])
+
+    @property
+    def symbol_preview_text(self) -> str:
+        preview = ", ".join(self.symbol_preview)
+        remaining = len(self.symbols) - len(self.symbol_preview)
+        if remaining > 0:
+            return f"{preview} (+{remaining} more)"
+        return preview
+
     def to_runtime_payload(self) -> dict[str, object]:
         payload = asdict(self)
         payload["symbol_count"] = len(self.symbols)
@@ -446,6 +425,13 @@ class CliRuntimeConfig:
         payload["ensemble_size"] = self.ensemble_size
         payload["account_mode"] = self.account_mode
         payload["run_mode"] = self.run_mode
+        payload["symbol_source"] = self.symbol_source
+        payload["symbol_source_label"] = self.symbol_source_label
+        payload["symbol_preview"] = self.symbol_preview
+        payload["symbol_preview_text"] = self.symbol_preview_text
+        payload["portfolio_mode"] = self.portfolio_mode
+        payload["position_capacity"] = self.position_capacity
+        payload["strategy_mode"] = self.strategy_mode
         payload["summary"] = self.summary
         payload["check_command_preview"] = self.command_preview(check_config=True)
         payload["run_command_preview"] = self.command_preview()
@@ -467,7 +453,8 @@ class CliRuntimeConfig:
         return (
             f"{self.account_mode} {self.run_mode} via {self.execution_backend} "
             f"using {data_label} on {len(self.symbols)} {symbol_label} "
-            f"with {self.ensemble_size} {checkpoint_label}"
+            f"with {self.ensemble_size} {checkpoint_label} "
+            f"as {self.strategy_mode}"
         )
 
     def command_preview(
@@ -497,7 +484,7 @@ class CliRuntimeConfig:
             args.append("--allow-unsafe-checkpoint-loading")
         if self.extra_checkpoints is None:
             args.append("--no-ensemble")
-        elif self.extra_checkpoints != DEFAULT_EXTRA_CHECKPOINTS:
+        elif self.extra_checkpoints != _resolved_default_extra_checkpoints():
             args.append("--extra-checkpoints")
             args.extend(self.extra_checkpoints)
 
@@ -603,6 +590,10 @@ def _runtime_log_payload(config: CliRuntimeConfig) -> RuntimeLogPayload:
         "execution_backend": config.execution_backend,
         "symbol_count": len(config.symbols),
         "symbols": list(config.symbols),
+        "symbol_source": config.symbol_source,
+        "symbol_source_label": config.symbol_source_label,
+        "symbol_preview": config.symbol_preview,
+        "symbol_preview_text": config.symbol_preview_text,
         "checkpoint": config.checkpoint,
         "ensemble_size": config.ensemble_size,
         "command_preview": config.command_preview(),
@@ -634,6 +625,13 @@ def _normalize_stock_symbol(raw_symbol: object) -> str:
 
 def _load_symbols_file(path: str | Path) -> list[str]:
     return stock_symbol_inputs.load_symbols_file(path)
+
+
+def _resolved_default_extra_checkpoints() -> list[str]:
+    return [
+        str((REPO / path).resolve()) if not Path(path).is_absolute() else path
+        for path in DEFAULT_EXTRA_CHECKPOINTS
+    ]
 
 
 def _resolve_local_data_base(data_dir: str | Path, symbols: Iterable[str]) -> Path:
@@ -1350,6 +1348,61 @@ def _build_daily_feature_cube(
     return np.stack(feature_blocks, axis=1)
 
 
+def _build_multi_position_signals(
+    checkpoint: str,
+    frames: dict[str, pd.DataFrame],
+    *,
+    quotes: dict[str, float],
+    portfolio_value: float,
+    multi_position: int,
+    multi_position_min_prob_ratio: float,
+    device: str = "cpu",
+    extra_checkpoints: Optional[list[str]] = None,
+    allow_unsafe_checkpoint_loading: bool = False,
+) -> list[TradingSignal]:
+    aligned = _align_frames(frames)
+    indexed = {
+        symbol: frame.set_index("timestamp")[["open", "high", "low", "close", "volume"]].copy()
+        for symbol, frame in aligned.items()
+    }
+    trader = _load_cached_daily_trader(
+        checkpoint,
+        device=device,
+        long_only=True,
+        symbols=list(indexed.keys()),
+        allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+    )
+    _apply_portfolio_context_to_trader(
+        trader,
+        portfolio=PortfolioContext(cash=max(0.0, float(portfolio_value))),
+    )
+    features = np.zeros((trader.num_symbols, 16), dtype=np.float32)
+    for index, symbol in enumerate(trader.SYMBOLS):
+        features[index] = compute_daily_features(indexed[symbol])
+    prices = {
+        symbol: float(quotes.get(symbol, frame["close"].iloc[-1]) or frame["close"].iloc[-1])
+        for symbol, frame in aligned.items()
+    }
+    extra_policies = [
+        _load_bare_policy(
+            str((REPO / path).resolve()) if not Path(path).is_absolute() else path,
+            trader.obs_size,
+            trader.num_actions,
+            device,
+            allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+        )
+        for path in (extra_checkpoints or [])
+    ]
+    return _ensemble_top_k_signals(
+        trader,
+        extra_policies,
+        features,
+        prices,
+        k=multi_position,
+        min_prob_ratio=multi_position_min_prob_ratio,
+    )
+
+
 def _trader_signal_from_features(
     trader: DailyPPOTrader,
     *,
@@ -1558,13 +1611,23 @@ def submit_limit_order(
 
 
 def compute_target_qty(*, account, price: float, allocation_pct: float) -> float:
-    portfolio_value = float(getattr(account, "portfolio_value", 0.0) or 0.0)
+    portfolio_value = account_portfolio_value(account)
     buying_power = float(getattr(account, "buying_power", 0.0) or 0.0)
     return compute_target_qty_from_values(
         portfolio_value=portfolio_value,
         buying_power=buying_power,
         price=price,
         allocation_pct=allocation_pct,
+    )
+
+
+def account_portfolio_value(account) -> float:
+    return float(
+        getattr(account, "portfolio_value", 0.0)
+        or getattr(account, "equity", 0.0)
+        or getattr(account, "cash", 0.0)
+        or getattr(account, "buying_power", 0.0)
+        or 0.0
     )
 
 
@@ -1593,17 +1656,40 @@ def effective_signal_allocation_pct(signal, *, base_allocation_pct: float) -> fl
     )
 
 
-def _signal_allocation_fraction(signal) -> float:
-    raw_fraction = getattr(signal, "allocation_pct", None)
+def _coerce_signal_allocation_fraction(
+    raw_fraction: object,
+    *,
+    default: float | None,
+) -> float | None:
     if raw_fraction is None:
-        return 1.0
+        return default
     try:
         fraction = float(raw_fraction)
     except (TypeError, ValueError):
-        return 1.0
+        return default
     if not math.isfinite(fraction):
-        return 1.0
+        return default
     return min(max(fraction, 0.0), 1.0)
+
+
+def _signal_allocation_fraction(signal) -> float:
+    fraction = _coerce_signal_allocation_fraction(
+        getattr(signal, "allocation_pct", None),
+        default=1.0,
+    )
+    return 1.0 if fraction is None else fraction
+
+
+def _portfolio_signal_allocation_fraction(signal) -> float | None:
+    fraction = _coerce_signal_allocation_fraction(
+        getattr(signal, "allocation_pct", None),
+        default=None,
+    )
+    if fraction is None:
+        return None
+    if fraction <= 0.0:
+        return None
+    return fraction
 
 
 def _signal_confidence_fraction(
@@ -2060,7 +2146,15 @@ def execute_multi_position_signals(
     for sig in signals:
         if sig.symbol and sig.direction == "long":
             sym = sig.symbol.upper()
-            desired[sym] = float(sig.allocation_pct)
+            alloc_frac = _portfolio_signal_allocation_fraction(sig)
+            if alloc_frac is None:
+                logger.warning(
+                    "Skipping malformed portfolio signal allocation for %s: %r",
+                    sym,
+                    getattr(sig, "allocation_pct", None),
+                )
+                continue
+            desired[sym] = alloc_frac
 
     # Close positions not in desired set
     orders_placed = 0
@@ -2080,7 +2174,7 @@ def execute_multi_position_signals(
 
     # Get account for buying power
     account = client.get_account()
-    equity = float(getattr(account, "equity", 0) or 0)
+    portfolio_value = account_portfolio_value(account)
     buying_power = float(getattr(account, "buying_power", 0) or 0)
 
     # Open/adjust positions in desired set
@@ -2093,14 +2187,18 @@ def execute_multi_position_signals(
             continue
 
         buy_price = price if paper else price * (1.0 + CALIBRATED_ENTRY_OFFSET_BPS / 10_000.0)
-        target_value = equity * (total_allocation_pct / 100.0) * alloc_frac
-        target_qty = int(target_value / buy_price) if buy_price > 0 else 0
+        target_qty = compute_target_qty_from_values(
+            portfolio_value=portfolio_value,
+            buying_power=buying_power,
+            price=buy_price,
+            allocation_pct=float(total_allocation_pct) * float(alloc_frac),
+        )
 
         if existing_qty > 0:
             held[sym] = existing_qty
             logger.info("Multi-pos: holding %s qty=%.4f (target=%.4f)", sym, existing_qty, target_qty)
         elif target_qty > 0:
-            logger.info("Multi-pos: opening %s qty=%d limit=%.2f (alloc=%.1f%%)",
+            logger.info("Multi-pos: opening %s qty=%.4f limit=%.2f (alloc=%.1f%%)",
                         sym, target_qty, buy_price, alloc_frac * total_allocation_pct)
             if not dry_run:
                 submit_limit_order(client, symbol=sym, qty=target_qty, side="buy", limit_price=buy_price)
@@ -2128,8 +2226,19 @@ def execute_multi_position_signals_with_trading_server(
     desired: dict[str, float] = {}
     for sig in signals:
         if sig.symbol and sig.direction == "long":
-            desired[str(sig.symbol).upper()] = float(sig.allocation_pct)
+            symbol = str(sig.symbol).upper()
+            alloc_frac = _portfolio_signal_allocation_fraction(sig)
+            if alloc_frac is None:
+                logger.warning(
+                    "Skipping malformed server portfolio signal allocation for %s: %r",
+                    symbol,
+                    getattr(sig, "allocation_pct", None),
+                )
+                continue
+            desired[symbol] = alloc_frac
 
+    close_orders: list[tuple[str, float, float]] = []
+    open_orders: list[tuple[str, float, float]] = []
     orders_placed = 0
     for sym, pos in list(live_positions.items()):
         if sym not in desired:
@@ -2141,17 +2250,7 @@ def execute_multi_position_signals_with_trading_server(
                 continue
             logger.info("Server multi-pos: closing %s qty=%.4f", sym, qty)
             if not dry_run:
-                server_client.refresh_prices(symbols=[sym])
-                server_client.submit_limit_order(
-                    symbol=sym,
-                    qty=qty,
-                    side="sell",
-                    limit_price=_marketable_limit_price(sell_price, "sell"),
-                    allow_loss_exit=True,
-                    force_exit_reason="daily portfolio rebalance",
-                    metadata={"strategy": "daily_stock_rl", "intent": "close_portfolio_position"},
-                )
-                orders_placed += 1
+                close_orders.append((sym, qty, sell_price))
 
     equity = server_equity(snapshot, quotes)
     held: dict[str, float] = {}
@@ -2161,8 +2260,12 @@ def execute_multi_position_signals_with_trading_server(
         price = float(quotes.get(sym, 0.0) or 0.0)
         if price <= 0.0:
             continue
-        target_notional = equity * (float(total_allocation_pct) / 100.0) * max(0.0, float(alloc_frac))
-        target_qty = round(target_notional / price, 4)
+        target_qty = compute_target_qty_from_server_snapshot(
+            snapshot=snapshot,
+            quotes=quotes,
+            price=price,
+            allocation_pct=float(total_allocation_pct) * max(0.0, float(alloc_frac)),
+        )
 
         if existing_qty > 0.0:
             held[sym] = existing_qty
@@ -2184,16 +2287,31 @@ def execute_multi_position_signals_with_trading_server(
             float(alloc_frac) * float(total_allocation_pct),
         )
         if not dry_run:
-            server_client.refresh_prices(symbols=[sym])
+            open_orders.append((sym, target_qty, price))
+        held[sym] = target_qty
+    if not dry_run and (close_orders or open_orders):
+        refresh_symbols = sorted({symbol for symbol, *_rest in close_orders + open_orders})
+        server_client.refresh_prices(symbols=refresh_symbols)
+        for sym, qty, sell_price in close_orders:
             server_client.submit_limit_order(
                 symbol=sym,
-                qty=target_qty,
+                qty=qty,
+                side="sell",
+                limit_price=_marketable_limit_price(sell_price, "sell"),
+                allow_loss_exit=True,
+                force_exit_reason="daily portfolio rebalance",
+                metadata={"strategy": "daily_stock_rl", "intent": "close_portfolio_position"},
+            )
+            orders_placed += 1
+        for sym, qty, price in open_orders:
+            server_client.submit_limit_order(
+                symbol=sym,
+                qty=qty,
                 side="buy",
                 limit_price=_marketable_limit_price(price, "buy"),
                 metadata={"strategy": "daily_stock_rl", "intent": "open_portfolio_position"},
             )
             orders_placed += 1
-        held[sym] = target_qty
 
     logger.info(
         "Server multi-pos: %d orders placed, %d positions targeted",
@@ -2297,6 +2415,17 @@ def _signal_payload(signal, *, checkpoint: str, quotes: dict[str, float], now: d
         "value_estimate": float(signal.value_estimate),
         "allocation_fraction": float(getattr(signal, "allocation_pct", 1.0) or 0.0),
         "quotes": {symbol: float(price) for symbol, price in quotes.items()},
+    }
+
+
+def _portfolio_signal_payload(signal) -> PortfolioSignalPayload:
+    return {
+        "action": signal.action,
+        "symbol": signal.symbol,
+        "direction": signal.direction,
+        "confidence": float(signal.confidence),
+        "value_estimate": float(signal.value_estimate),
+        "allocation_fraction": float(getattr(signal, "allocation_pct", 1.0) or 0.0),
     }
 
 
@@ -2693,8 +2822,6 @@ def run_once(
     min_open_value_estimate: float = DEFAULT_MIN_OPEN_VALUE_ESTIMATE,
     allow_unsafe_checkpoint_loading: bool = False,
 ) -> dict:
-    if multi_position > 1:
-        raise NotImplementedError("run_once multi-position execution is not implemented yet; use --backtest for portfolio mode")
     now = datetime.now(timezone.utc)
     run_id = f"{now.strftime('%Y%m%dT%H%M%SZ')}-{uuid4().hex[:12]}"
     symbol_list = [str(symbol).upper() for symbol in symbols]
@@ -2716,6 +2843,7 @@ def run_once(
         quote_source_by_symbol: dict[str, str] = {}
         latest_bar = None
         market_open = None
+        portfolio_equity = float(DEFAULT_BACKTEST_STARTING_CASH)
         if data_source == "alpaca":
             failure_stage = "build_data_client"
             data_client = build_data_client(paper=paper)
@@ -2765,32 +2893,41 @@ def run_once(
                 failure_stage = "get_trading_server_account"
                 snapshot = client.get_account()
                 live_positions = server_positions_by_symbol(snapshot, symbol_list)
-                if not dry_run:
+                if not dry_run and multi_position <= 1:
                     reconcile_pending_close(state=state, live_positions=live_positions)
                     adopt_existing_position(state=state, live_positions=live_positions, now=now)
                 failure_observability["live_position_symbols"] = sorted(live_positions.keys())
-                portfolio = server_portfolio_context(
-                    snapshot=snapshot,
-                    state=state,
-                    quotes=quotes,
-                    now=now,
-                )
+                portfolio_equity = server_equity(snapshot, quotes)
+                if multi_position > 1:
+                    portfolio = PortfolioContext(cash=portfolio_equity)
+                else:
+                    portfolio = server_portfolio_context(
+                        snapshot=snapshot,
+                        state=state,
+                        quotes=quotes,
+                        now=now,
+                    )
             else:
                 failure_stage = "build_alpaca_trading_client"
                 client = build_trading_client(paper=paper)
                 failure_stage = "get_alpaca_positions"
                 live_positions = positions_by_symbol(client, symbol_list)
-                if not dry_run:
+                if not dry_run and multi_position <= 1:
                     reconcile_pending_close(state=state, live_positions=live_positions)
                     adopt_existing_position(state=state, live_positions=live_positions, now=now)
                 failure_observability["live_position_symbols"] = sorted(live_positions.keys())
                 failure_stage = "get_alpaca_account"
-                portfolio = build_portfolio_context(
-                    state=state,
-                    live_positions=live_positions,
-                    account=client.get_account(),
-                    now=now,
-                )
+                account = client.get_account()
+                portfolio_equity = account_portfolio_value(account) or float(DEFAULT_BACKTEST_STARTING_CASH)
+                if multi_position > 1:
+                    portfolio = PortfolioContext(cash=portfolio_equity)
+                else:
+                    portfolio = build_portfolio_context(
+                        state=state,
+                        live_positions=live_positions,
+                        account=account,
+                        now=now,
+                    )
             try:
                 failure_stage = "get_market_clock"
                 market_open = bool(getattr(clock_client.get_clock(), "is_open", False))
@@ -2809,6 +2946,7 @@ def run_once(
             portfolio = PortfolioContext()
             bar_data_source = "local"
             latest_bar = latest_bar_timestamp(frames)
+            portfolio_equity = float(portfolio.cash)
             failure_observability["bar_data_source"] = bar_data_source
             failure_observability["quote_data_source"] = "local_close"
             failure_observability["latest_bar_timestamp"] = (
@@ -2816,13 +2954,49 @@ def run_once(
             )
 
         failure_stage = "build_signal"
-        signal, close_prices = build_signal(
-            checkpoint,
-            frames,
-            portfolio=portfolio,
-            extra_checkpoints=extra_checkpoints,
-            allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
-        )
+        close_prices = latest_close_prices(frames)
+        portfolio_signals: list[TradingSignal] = []
+        if multi_position > 1:
+            portfolio_quotes = {
+                symbol: float(quotes.get(symbol, close_prices.get(symbol, 0.0)) or close_prices.get(symbol, 0.0))
+                for symbol in symbol_list
+            }
+            portfolio_signals = _build_multi_position_signals(
+                checkpoint,
+                frames,
+                quotes=portfolio_quotes,
+                portfolio_value=portfolio_equity,
+                multi_position=multi_position,
+                multi_position_min_prob_ratio=multi_position_min_prob_ratio,
+                extra_checkpoints=extra_checkpoints,
+                allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+            )
+            signal = (
+                portfolio_signals[0]
+                if portfolio_signals
+                else TradingSignal(
+                    action="flat",
+                    symbol=None,
+                    direction=None,
+                    confidence=0.0,
+                    value_estimate=0.0,
+                    allocation_pct=0.0,
+                    level_offset_bps=0.0,
+                )
+            )
+            failure_observability["portfolio_signal_symbols"] = [
+                str(sig.symbol).upper()
+                for sig in portfolio_signals
+                if sig.symbol
+            ]
+        else:
+            signal, close_prices = build_signal(
+                checkpoint,
+                frames,
+                portfolio=portfolio,
+                extra_checkpoints=extra_checkpoints,
+                allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+            )
         failure_observability["signal_action"] = signal.action
         failure_observability["signal_symbol"] = signal.symbol
         failure_observability["signal_direction"] = signal.direction
@@ -2851,6 +3025,13 @@ def run_once(
         payload["allocation_sizing_mode"] = allocation_sizing_mode
         payload["min_open_confidence"] = float(min_open_confidence)
         payload["min_open_value_estimate"] = float(min_open_value_estimate)
+        payload["portfolio_mode"] = bool(multi_position > 1)
+        if multi_position > 1:
+            payload["portfolio_signal_count"] = len(portfolio_signals)
+            payload["portfolio_signals"] = [
+                _portfolio_signal_payload(portfolio_signal)
+                for portfolio_signal in portfolio_signals
+            ]
 
         logger.info("%s", "=" * 60)
         logger.info("DAILY STOCK RL SIGNAL (%s, run_id=%s)", now.strftime("%Y-%m-%d %H:%M UTC"), run_id)
@@ -2860,6 +3041,13 @@ def run_once(
         logger.info("Direction:  %s", signal.direction or "N/A")
         logger.info("Confidence: %.1f%%", float(signal.confidence) * 100.0)
         logger.info("Value est:  %.4f", float(signal.value_estimate))
+        if multi_position > 1:
+            rendered_portfolio = ", ".join(
+                f"{str(sig.symbol).upper()}:{float(sig.allocation_pct) * 100.0:.1f}%"
+                for sig in portfolio_signals
+                if sig.symbol
+            ) or "flat"
+            logger.info("Portfolio:  %s", rendered_portfolio)
         logger.info("Bars:       %s latest=%s fresh=%s", bar_data_source, latest_bar.isoformat() if latest_bar is not None else "n/a", bars_fresh)
         logger.info("Quotes:     %s", quote_data_source)
         if quote_source_by_symbol:
@@ -2871,23 +3059,67 @@ def run_once(
         allow_open = True
         allow_open_reason: str | None = None
         allow_open_reasons: list[str] = []
+        blocked_portfolio_signals: list[dict[str, object]] = []
         if data_source == "alpaca":
-            signal_quote_source = quote_source_by_symbol.get(signal.symbol, quote_data_source) if signal.symbol else quote_data_source
-            allow_open_reasons = _open_gate_reasons(
-                signal,
-                signal_quote_source=signal_quote_source,
-                quote_data_source=quote_data_source,
-                min_open_confidence=min_open_confidence,
-                min_open_value_estimate=min_open_value_estimate,
-            )
-            allow_open = not allow_open_reasons
-            if signal.symbol and not allow_open:
-                allow_open_reason = "; ".join(allow_open_reasons)
-                logger.warning(
-                    "Execution safety gate active for %s: %s",
-                    signal.symbol,
-                    allow_open_reason,
+            if multi_position > 1:
+                desired_portfolio_signals = [
+                    portfolio_signal
+                    for portfolio_signal in portfolio_signals
+                    if portfolio_signal.symbol and portfolio_signal.direction == "long"
+                ]
+                executable_signals: list[TradingSignal] = []
+                for portfolio_signal in desired_portfolio_signals:
+                    signal_quote_source = quote_source_by_symbol.get(
+                        str(portfolio_signal.symbol).upper(),
+                        quote_data_source,
+                    )
+                    reasons = _open_gate_reasons(
+                        portfolio_signal,
+                        signal_quote_source=signal_quote_source,
+                        quote_data_source=quote_data_source,
+                        min_open_confidence=min_open_confidence,
+                        min_open_value_estimate=min_open_value_estimate,
+                    )
+                    if reasons:
+                        blocked_portfolio_signals.append(
+                            {
+                                "symbol": str(portfolio_signal.symbol).upper(),
+                                "reasons": reasons,
+                            }
+                        )
+                        continue
+                    executable_signals.append(portfolio_signal)
+                allow_open = bool(executable_signals) or not desired_portfolio_signals
+                if blocked_portfolio_signals and not allow_open:
+                    allow_open_reasons = [
+                        f"{blocked['symbol']}: {'; '.join(cast(list[str], blocked['reasons']))}"
+                        for blocked in blocked_portfolio_signals
+                    ]
+                    allow_open_reason = " | ".join(allow_open_reasons)
+                    logger.warning("Execution safety gate active for portfolio: %s", allow_open_reason)
+                if blocked_portfolio_signals:
+                    payload["blocked_portfolio_signals"] = blocked_portfolio_signals
+                    failure_observability["blocked_portfolio_signal_symbols"] = [
+                        str(blocked["symbol"])
+                        for blocked in blocked_portfolio_signals
+                    ]
+            else:
+                signal_quote_source = quote_source_by_symbol.get(signal.symbol, quote_data_source) if signal.symbol else quote_data_source
+                allow_open_reasons = _open_gate_reasons(
+                    signal,
+                    signal_quote_source=signal_quote_source,
+                    quote_data_source=quote_data_source,
+                    min_open_confidence=min_open_confidence,
+                    min_open_value_estimate=min_open_value_estimate,
                 )
+                allow_open = not allow_open_reasons
+                if signal.symbol and not allow_open:
+                    allow_open_reason = "; ".join(allow_open_reasons)
+                    logger.warning(
+                        "Execution safety gate active for %s: %s",
+                        signal.symbol,
+                        allow_open_reason,
+                    )
             failure_observability["allow_open"] = allow_open
             failure_observability["allow_open_reason"] = allow_open_reason
             if not dry_run and not bool(market_open):
@@ -2896,42 +3128,82 @@ def run_once(
                 logger.warning("Latest inference bar is stale; skipping order placement")
             else:
                 if execution_backend == "trading_server":
-                    failure_stage = "execute_signal_with_trading_server"
-                    executed = execute_signal_with_trading_server(
-                        signal,
-                        server_client=client,
-                        quotes=quotes,
-                        state=state,
-                        symbols=symbol_list,
-                        allocation_pct=allocation_pct,
-                        allocation_sizing_mode=allocation_sizing_mode,
-                        dry_run=dry_run,
-                        now=now,
-                        allow_open=allow_open,
-                        allow_open_reason=allow_open_reason,
-                        min_open_confidence=min_open_confidence,
-                    )
+                    if multi_position > 1:
+                        failure_stage = "execute_multi_position_signals_with_trading_server"
+                        held_positions = execute_multi_position_signals_with_trading_server(
+                            executable_signals,
+                            server_client=client,
+                            quotes=quotes,
+                            symbols=symbol_list,
+                            total_allocation_pct=allocation_pct,
+                            dry_run=dry_run,
+                        )
+                        desired_symbols = {
+                            str(portfolio_signal.symbol).upper()
+                            for portfolio_signal in executable_signals
+                            if portfolio_signal.symbol
+                        }
+                        live_position_symbols = set(live_positions.keys())
+                        executed = bool(held_positions) or bool(live_position_symbols - desired_symbols)
+                        payload["held_positions"] = held_positions
+                    else:
+                        failure_stage = "execute_signal_with_trading_server"
+                        executed = execute_signal_with_trading_server(
+                            signal,
+                            server_client=client,
+                            quotes=quotes,
+                            state=state,
+                            symbols=symbol_list,
+                            allocation_pct=allocation_pct,
+                            allocation_sizing_mode=allocation_sizing_mode,
+                            dry_run=dry_run,
+                            now=now,
+                            allow_open=allow_open,
+                            allow_open_reason=allow_open_reason,
+                            min_open_confidence=min_open_confidence,
+                        )
                     failure_stage = "get_trading_server_account_snapshot"
                     payload["server_account"] = server_account
                     payload["server_bot_id"] = server_bot_id
                     payload["server_snapshot"] = client.get_account()
                 else:
-                    failure_stage = "execute_signal"
-                    executed = execute_signal(
-                        signal,
-                        client=client,
-                        paper=paper,
-                        quotes=quotes,
-                        state=state,
-                        symbols=symbol_list,
-                        allocation_pct=allocation_pct,
-                        allocation_sizing_mode=allocation_sizing_mode,
-                        dry_run=dry_run,
-                        now=now,
-                        allow_open=allow_open,
-                        allow_open_reason=allow_open_reason,
-                        min_open_confidence=min_open_confidence,
-                    )
+                    if multi_position > 1:
+                        failure_stage = "execute_multi_position_signals"
+                        held_positions = execute_multi_position_signals(
+                            executable_signals,
+                            client=client,
+                            paper=paper,
+                            quotes=quotes,
+                            symbols=symbol_list,
+                            total_allocation_pct=allocation_pct,
+                            dry_run=dry_run,
+                            now=now,
+                        )
+                        desired_symbols = {
+                            str(portfolio_signal.symbol).upper()
+                            for portfolio_signal in executable_signals
+                            if portfolio_signal.symbol
+                        }
+                        live_position_symbols = set(live_positions.keys())
+                        executed = bool(held_positions) or bool(live_position_symbols - desired_symbols)
+                        payload["held_positions"] = held_positions
+                    else:
+                        failure_stage = "execute_signal"
+                        executed = execute_signal(
+                            signal,
+                            client=client,
+                            paper=paper,
+                            quotes=quotes,
+                            state=state,
+                            symbols=symbol_list,
+                            allocation_pct=allocation_pct,
+                            allocation_sizing_mode=allocation_sizing_mode,
+                            dry_run=dry_run,
+                            now=now,
+                            allow_open=allow_open,
+                            allow_open_reason=allow_open_reason,
+                            min_open_confidence=min_open_confidence,
+                        )
         else:
             logger.info("Local data mode selected; skipping execution")
 
@@ -2957,8 +3229,16 @@ def run_once(
         if should_advance_state:
             failure_stage = "save_state"
             state.last_run_date = now.astimezone(EASTERN).date().isoformat()
-            state.last_signal_action = signal.action
+            state.last_signal_action = "portfolio" if multi_position > 1 else signal.action
             state.last_signal_timestamp = now.isoformat()
+            if multi_position > 1:
+                state.active_symbol = None
+                state.active_qty = 0.0
+                state.entry_price = 0.0
+                state.entry_date = None
+                state.last_order_id = None
+                state.pending_close_symbol = None
+                state.pending_close_order_id = None
             save_state(state, path=state_path)
         payload["executed"] = executed
         signal_log_write_error = _append_signal_log_best_effort(payload)
@@ -3020,8 +3300,6 @@ def run_daemon(
     min_open_value_estimate: float = DEFAULT_MIN_OPEN_VALUE_ESTIMATE,
     allow_unsafe_checkpoint_loading: bool = False,
 ) -> None:
-    if multi_position > 1:
-        raise NotImplementedError("run_daemon multi-position execution is not implemented yet; use --backtest for portfolio mode")
     logger.info("Starting daily stock RL daemon")
     server_session_id = f"daily-rl-trader-{execution_backend}-{os.getpid()}"
     while True:
@@ -3192,7 +3470,7 @@ def _resolve_runtime_config(args: argparse.Namespace) -> CliRuntimeConfig:
     elif args.extra_checkpoints is not None:
         extra_checkpoints = [_resolve(path) for path in args.extra_checkpoints]
     else:
-        extra_checkpoints = [_resolve(path) for path in DEFAULT_EXTRA_CHECKPOINTS]
+        extra_checkpoints = _resolved_default_extra_checkpoints()
 
     return CliRuntimeConfig(
         paper=paper,
@@ -3493,8 +3771,6 @@ def _preflight_config_payload(config: CliRuntimeConfig) -> dict[str, object]:
         errors.append("--multi-position must be 0 or at least 2")
     if not 0.0 <= float(config.multi_position_min_prob_ratio) <= 1.0:
         errors.append("--multi-position-min-prob-ratio must be between 0 and 1")
-    if config.multi_position > 1 and not config.backtest:
-        errors.append("--multi-position is currently implemented for --backtest only")
     if not 0.0 <= float(config.min_open_confidence) <= 1.0:
         errors.append("--min-open-confidence must be between 0 and 1")
     if config.compare_server_parity and not config.backtest:
@@ -3670,6 +3946,18 @@ def _format_runtime_preflight_failure(payload: dict[str, object]) -> str:
         "Daily stock RL setup is not ready.",
         str(payload.get("summary") or ""),
     ]
+    strategy_mode = str(payload.get("strategy_mode") or "").strip()
+    position_capacity = int(payload.get("position_capacity") or 0)
+    if strategy_mode:
+        lines.append(f"Strategy mode: {strategy_mode}")
+    if position_capacity > 0:
+        lines.append(f"Position capacity: {position_capacity}")
+    symbol_source_label = str(payload.get("symbol_source_label") or "").strip()
+    symbol_preview_text = str(payload.get("symbol_preview_text") or "").strip()
+    if symbol_source_label:
+        lines.append(f"Symbol source: {symbol_source_label}")
+    if symbol_preview_text:
+        lines.append(f"Symbols: {symbol_preview_text}")
     errors = [str(item) for item in payload.get("errors", [])]
     warnings = [str(item) for item in payload.get("warnings", [])]
     next_steps = [str(item) for item in payload.get("next_steps", [])]
@@ -3715,6 +4003,18 @@ def _format_runtime_preflight_ready(payload: dict[str, object]) -> str:
         "Daily stock RL setup is ready.",
         str(payload.get("summary") or ""),
     ]
+    strategy_mode = str(payload.get("strategy_mode") or "").strip()
+    position_capacity = int(payload.get("position_capacity") or 0)
+    if strategy_mode:
+        lines.append(f"Strategy mode: {strategy_mode}")
+    if position_capacity > 0:
+        lines.append(f"Position capacity: {position_capacity}")
+    symbol_source_label = str(payload.get("symbol_source_label") or "").strip()
+    symbol_preview_text = str(payload.get("symbol_preview_text") or "").strip()
+    if symbol_source_label:
+        lines.append(f"Symbol source: {symbol_source_label}")
+    if symbol_preview_text:
+        lines.append(f"Symbols: {symbol_preview_text}")
     warnings = [str(item) for item in payload.get("warnings", [])]
     if warnings:
         lines.append("Warnings:")

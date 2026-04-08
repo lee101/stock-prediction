@@ -87,28 +87,35 @@ def test_load_policy_ignores_invalid_action_grid_metadata(tmp_path: Path) -> Non
 
 
 @pytest.mark.unit
-def test_load_policy_rejects_nonlegacy_action_grid_checkpoint(tmp_path: Path) -> None:
+def test_load_policy_accepts_action_grid_checkpoint(tmp_path: Path) -> None:
     obs_size = 21
     hidden = 8
-    policy = TradingPolicy(obs_size, 3, hidden=hidden)
-    checkpoint_path = tmp_path / "nonlegacy_tail.pt"
+    policy = TradingPolicy(obs_size, 5, hidden=hidden)
+    checkpoint_path = tmp_path / "grid_tail.pt"
     torch.save(
         {
             "model": policy.state_dict(),
-            "action_level_bins": 2,
+            "action_allocation_bins": 2,
+            "action_level_bins": 1,
+            "action_max_offset_bps": 12.5,
         },
         checkpoint_path,
     )
 
-    with pytest.raises(ValueError, match="only supports action_allocation_bins=1 and action_level_bins=1"):
-        load_policy(
-            checkpoint_path=checkpoint_path,
-            obs_size=obs_size,
-            num_symbols=1,
-            arch="mlp",
-            hidden_size=hidden,
-            device=torch.device("cpu"),
-        )
+    loaded = load_policy(
+        checkpoint_path=checkpoint_path,
+        obs_size=obs_size,
+        num_symbols=1,
+        arch="mlp",
+        hidden_size=hidden,
+        device=torch.device("cpu"),
+    )
+
+    assert loaded.num_actions == 5
+    assert loaded.per_symbol_actions == 2
+    assert loaded.action_allocation_bins == 2
+    assert loaded.action_level_bins == 1
+    assert loaded.action_max_offset_bps == pytest.approx(12.5)
 
 
 
@@ -189,18 +196,40 @@ def test_main_supports_legacy_bare_state_dict_checkpoint(tmp_path: Path, capsys:
 
 
 @pytest.mark.unit
-def test_main_rejects_nonlegacy_action_grid_checkpoint(tmp_path: Path) -> None:
+def test_main_forwards_action_grid_checkpoint_metadata(tmp_path: Path) -> None:
     fake_args = _fake_main_args(tmp_path)
-    source_policy = eval_mod.TradingPolicy(obs_size=22, num_actions=3, hidden=8)
+    source_policy = eval_mod.TradingPolicy(obs_size=22, num_actions=5, hidden=8)
+    captured: dict[str, object] = {}
+
+    def _fake_simulate_daily_policy(*args, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            total_return=0.0,
+            sortino=0.0,
+            max_drawdown=0.0,
+            num_trades=0,
+            win_rate=0.0,
+            avg_hold_steps=0.0,
+        )
 
     with (
         patch.object(eval_mod.argparse.ArgumentParser, "parse_args", return_value=fake_args),
         patch.object(
             eval_mod,
             "load_checkpoint_payload",
-            return_value={"model": source_policy.state_dict(), "action_level_bins": 2},
+            return_value={
+                "model": source_policy.state_dict(),
+                "action_allocation_bins": 2,
+                "action_level_bins": 1,
+                "action_max_offset_bps": 7.5,
+            },
         ),
         patch.object(eval_mod, "read_mktd", return_value=_make_data(40)),
-        pytest.raises(ValueError, match="only supports action_allocation_bins=1 and action_level_bins=1"),
+        patch.object(eval_mod, "simulate_daily_policy", side_effect=_fake_simulate_daily_policy),
+        patch.object(eval_mod, "annualize_total_return", return_value=0.0),
     ):
         eval_mod.main()
+
+    assert captured["action_allocation_bins"] == 2
+    assert captured["action_level_bins"] == 1
+    assert captured["action_max_offset_bps"] == pytest.approx(7.5)

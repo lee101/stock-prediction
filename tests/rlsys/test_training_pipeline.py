@@ -24,6 +24,15 @@ def _make_dataframe(length: int = 256) -> pd.DataFrame:
     return pd.DataFrame(data, index=index)
 
 
+def _cpu_training_config(**overrides) -> TrainingConfig:
+    config = {
+        "device": "cpu",
+        "use_amp": False,
+    }
+    config.update(overrides)
+    return TrainingConfig(**config)
+
+
 def test_trainer_produces_finite_metrics():
     df = _make_dataframe(160)
     data_config = DataConfig(window_size=16)
@@ -37,14 +46,13 @@ def test_trainer_produces_finite_metrics():
     policy_config = PolicyConfig(hidden_sizes=(64, 64), dropout=0.0)
     policy = ActorCriticPolicy(observation_dim=env.observation_space.shape[0], config=policy_config)
 
-    training_config = TrainingConfig(
+    training_config = _cpu_training_config(
         total_timesteps=64,
         rollout_steps=32,
         num_epochs=2,
         minibatch_size=8,
         gamma=0.98,
         gae_lambda=0.9,
-        use_amp=False,
         seed=7,
     )
 
@@ -74,12 +82,11 @@ def test_linear_lr_schedule_updates_learning_rate():
     policy_config = PolicyConfig(hidden_sizes=(32, 32), dropout=0.0)
     policy = ActorCriticPolicy(observation_dim=env.observation_space.shape[0], config=policy_config)
 
-    training_config = TrainingConfig(
+    training_config = _cpu_training_config(
         total_timesteps=64,
         rollout_steps=32,
         num_epochs=1,
         minibatch_size=8,
-        use_amp=False,
         seed=3,
         lr_schedule="linear",
     )
@@ -105,12 +112,11 @@ def test_trainer_can_disable_observation_normalization():
         observation_dim=env.observation_space.shape[0],
         config=PolicyConfig(hidden_sizes=(16, 16), dropout=0.0),
     )
-    training_config = TrainingConfig(
+    training_config = _cpu_training_config(
         total_timesteps=32,
         rollout_steps=16,
         minibatch_size=8,
         num_epochs=1,
-        use_amp=False,
         normalize_observations=False,
     )
     trainer = PPOTrainer(env, policy, training_config)

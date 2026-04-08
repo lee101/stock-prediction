@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -221,6 +222,10 @@ def test_resolve_runtime_config_uses_symbols_file(tmp_path: Path) -> None:
 
     assert config.symbols == ["AAPL", "MSFT", "NVDA"]
     assert config.symbols_file == str(symbols_file)
+    assert config.symbol_source == "symbols_file"
+    assert config.symbol_source_label == f"symbols file: {symbols_file}"
+    assert config.symbol_preview == ["AAPL", "MSFT", "NVDA"]
+    assert config.symbol_preview_text == "AAPL, MSFT, NVDA"
     assert "--symbols-file" in config.command_preview()
     assert "TSLA" not in config.command_preview()
 
@@ -277,6 +282,22 @@ def test_resolve_runtime_config_preserves_allocation_sizing_mode(tmp_path: Path)
 
     assert config.allocation_sizing_mode == "confidence_scaled"
     assert "--allocation-sizing-mode confidence_scaled" in config.command_preview()
+
+
+def test_command_preview_omits_extra_checkpoints_when_using_default_ensemble(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_text("stub", encoding="utf-8")
+
+    args = daily_stock.parse_args(
+        [
+            "--checkpoint",
+            str(checkpoint),
+        ]
+    )
+    config = daily_stock._resolve_runtime_config(args)
+
+    assert config.extra_checkpoints == daily_stock._resolved_default_extra_checkpoints()
+    assert "--extra-checkpoints" not in config.command_preview()
 
 
 def test_frames_from_alpaca_bars_handles_single_symbol_without_multiindex() -> None:
@@ -352,6 +373,53 @@ def test_should_run_today_only_after_market_open_window() -> None:
         is_market_open=True,
         last_run_date="2026-03-16",
     ) is False
+
+
+def test_run_daemon_passes_multi_position_through_to_run_once(monkeypatch) -> None:
+    class _StopDaemon(RuntimeError):
+        pass
+
+    captured: dict[str, object] = {}
+    sleep_calls: list[float] = []
+
+    monkeypatch.setattr(daily_stock, "load_state", lambda path=daily_stock.STATE_PATH: daily_stock.StrategyState())
+    monkeypatch.setattr(
+        daily_stock,
+        "build_trading_client",
+        lambda paper: SimpleNamespace(get_clock=lambda: SimpleNamespace(is_open=True)),
+    )
+    monkeypatch.setattr(daily_stock, "should_run_today", lambda **kwargs: True)
+
+    def _fake_run_once(**kwargs):
+        captured.update(kwargs)
+        return {"executed": False}
+
+    def _fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+        raise _StopDaemon
+
+    monkeypatch.setattr(daily_stock, "run_once", _fake_run_once)
+    monkeypatch.setattr(daily_stock.time, "sleep", _fake_sleep)
+
+    with pytest.raises(_StopDaemon):
+        daily_stock.run_daemon(
+            checkpoint="dummy.ckpt",
+            symbols=["AAPL", "MSFT"],
+            paper=True,
+            allocation_pct=25.0,
+            allocation_sizing_mode="static",
+            dry_run=True,
+            data_dir="trainingdata",
+            extra_checkpoints=None,
+            execution_backend="alpaca",
+            multi_position=2,
+            multi_position_min_prob_ratio=0.55,
+        )
+
+    assert captured["multi_position"] == 2
+    assert captured["multi_position_min_prob_ratio"] == pytest.approx(0.55)
+    assert captured["symbols"] == ["AAPL", "MSFT"]
+    assert sleep_calls == [60.0]
 
 
 def test_compute_target_qty_respects_buying_power_cap() -> None:
@@ -937,7 +1005,14 @@ def test_main_print_config_outputs_resolved_runtime_config(capsys) -> None:
     assert payload["ensemble_size"] == 1
     assert payload["symbol_count"] == 2
     assert payload["symbols"] == ["AAPL", "MSFT"]
-    assert payload["summary"] == "live once via alpaca using alpaca data on 2 symbols with 1 checkpoint"
+    assert payload["symbol_source"] == "cli"
+    assert payload["symbol_source_label"] == "--symbols"
+    assert payload["symbol_preview"] == ["AAPL", "MSFT"]
+    assert payload["symbol_preview_text"] == "AAPL, MSFT"
+    assert payload["summary"] == "live once via alpaca using alpaca data on 2 symbols with 1 checkpoint as single-position"
+    assert payload["portfolio_mode"] is False
+    assert payload["position_capacity"] == 1
+    assert payload["strategy_mode"] == "single-position"
     assert payload["extra_checkpoints"] is None
     assert payload["backtest_starting_cash"] == daily_stock.DEFAULT_BACKTEST_STARTING_CASH
     assert payload["daily_frame_min_days"] == daily_stock.DEFAULT_DAILY_FRAME_MIN_DAYS
@@ -999,6 +1074,34 @@ def test_main_print_config_normalizes_duplicate_and_blank_symbols(capsys) -> Non
     assert payload["removed_duplicate_symbols"] == ["AAPL"]
     assert payload["ignored_symbol_inputs"] == ["<blank>"]
     assert "--symbols AAPL MSFT" in payload["run_command_preview"]
+
+
+def test_main_print_config_reports_symbol_file_preview(tmp_path: Path, capsys) -> None:
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_text("stub", encoding="utf-8")
+    symbols_file = tmp_path / "symbols.txt"
+    symbols_file.write_text(
+        "aapl\nmsft\nnvda\namd\nmeta\ngoogl\n",
+        encoding="utf-8",
+    )
+
+    daily_stock.main(
+        [
+            "--print-config",
+            "--no-ensemble",
+            "--checkpoint",
+            str(checkpoint),
+            "--symbols-file",
+            str(symbols_file),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["symbol_source"] == "symbols_file"
+    assert payload["symbol_source_label"] == f"symbols file: {symbols_file}"
+    assert payload["symbol_preview"] == ["AAPL", "MSFT", "NVDA", "AMD", "META"]
+    assert payload["symbol_preview_text"] == "AAPL, MSFT, NVDA, AMD, META (+1 more)"
 
 
 def test_main_logs_runtime_config(caplog, monkeypatch, tmp_path: Path) -> None:
@@ -1292,7 +1395,10 @@ def test_main_check_config_reports_ready_for_local_setup(monkeypatch, tmp_path: 
         }
     }
     assert payload["checkpoint_load"]["ok"] is True
-    assert payload["summary"] == "paper once via alpaca using local data on 1 symbol with 1 checkpoint"
+    assert payload["summary"] == "paper once via alpaca using local data on 1 symbol with 1 checkpoint as single-position"
+    assert payload["portfolio_mode"] is False
+    assert payload["position_capacity"] == 1
+    assert payload["strategy_mode"] == "single-position"
     assert payload["daily_frame_min_days"] == daily_stock.DEFAULT_DAILY_FRAME_MIN_DAYS
     assert (
         payload["alpaca_daily_history_lookback_days"]
@@ -1349,9 +1455,76 @@ def test_main_check_config_text_emits_human_ready_summary(monkeypatch, tmp_path:
 
     assert payload["ready"] is True
     assert "Daily stock RL setup is ready." in captured.err
+    assert "Strategy mode: single-position" in captured.err
+    assert "Position capacity: 1" in captured.err
+    assert "Symbol source: --symbols" in captured.err
+    assert "Symbols: AAPL" in captured.err
     assert "Suggested commands:" in captured.err
     assert f"- dry run: {payload['safe_command_preview']}" in captured.err
     assert "Additional next steps:" not in captured.err
+
+
+def test_main_print_config_reports_portfolio_strategy_mode(tmp_path: Path, capsys) -> None:
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_text("stub", encoding="utf-8")
+
+    daily_stock.main(
+        [
+            "--print-config",
+            "--no-ensemble",
+            "--symbols",
+            "AAPL",
+            "MSFT",
+            "--checkpoint",
+            str(checkpoint),
+            "--multi-position",
+            "3",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["portfolio_mode"] is True
+    assert payload["position_capacity"] == 3
+    assert payload["strategy_mode"] == "portfolio (up to 3 positions)"
+    assert payload["summary"] == (
+        "paper once via alpaca using alpaca data on 2 symbols "
+        "with 1 checkpoint as portfolio (up to 3 positions)"
+    )
+
+
+def test_main_check_config_text_reports_portfolio_strategy_mode(monkeypatch, tmp_path: Path, capsys) -> None:
+    checkpoint = tmp_path / "model.pt"
+    checkpoint.write_text("stub", encoding="utf-8")
+    monkeypatch.setattr(
+        daily_stock,
+        "_checkpoint_load_diagnostics",
+        lambda _config: {"ok": True, "error": None, "primary": {"arch": "mlp"}, "extras": []},
+    )
+
+    daily_stock.main(
+        [
+            "--check-config",
+            "--check-config-text",
+            "--dry-run",
+            "--no-ensemble",
+            "--symbols",
+            "AAPL",
+            "MSFT",
+            "--checkpoint",
+            str(checkpoint),
+            "--multi-position",
+            "3",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert payload["ready"] is True
+    assert payload["portfolio_mode"] is True
+    assert "Strategy mode: portfolio (up to 3 positions)" in captured.err
+    assert "Position capacity: 3" in captured.err
 
 
 def test_main_check_config_reports_symbol_level_local_data_health(monkeypatch, tmp_path: Path, capsys) -> None:
@@ -2516,9 +2689,19 @@ def test_compare_backtest_to_trading_server_passes_extra_checkpoints(monkeypatch
     assert captured["server"]["extra_checkpoints"] == extras
 
 
-def test_preflight_rejects_multi_position_outside_backtest(tmp_path: Path) -> None:
+def test_preflight_allows_multi_position_outside_backtest(monkeypatch, tmp_path: Path) -> None:
     checkpoint = tmp_path / "model.pt"
     checkpoint.write_text("stub", encoding="utf-8")
+    monkeypatch.setattr(
+        daily_stock,
+        "_checkpoint_load_diagnostics",
+        lambda config: {
+            "ok": True,
+            "primary": {"path": config.checkpoint},
+            "extras": [],
+            "error": None,
+        },
+    )
     args = daily_stock.parse_args(
         [
             "--checkpoint",
@@ -2532,8 +2715,8 @@ def test_preflight_rejects_multi_position_outside_backtest(tmp_path: Path) -> No
 
     payload = daily_stock._preflight_config_payload(config)
 
-    assert payload["ready"] is False
-    assert "--multi-position is currently implemented for --backtest only" in payload["errors"]
+    assert payload["ready"] is True
+    assert "--multi-position is currently implemented for --backtest only" not in payload["errors"]
 
 
 def test_preflight_rejects_negative_allocation_pct(tmp_path: Path) -> None:
@@ -4081,6 +4264,402 @@ def test_run_once_blocks_new_entry_when_confidence_or_value_fail_gate(monkeypatc
     assert payload["execution_skip_reason"] == "open_gate"
 
 
+def test_run_once_dry_run_executes_multi_position_portfolio(monkeypatch, tmp_path: Path) -> None:
+    fresh_timestamp = pd.Timestamp.now(tz="UTC").normalize()
+
+    monkeypatch.setattr(
+        daily_stock,
+        "load_inference_frames",
+        lambda symbols, paper, data_dir, now, data_client=None: (
+            {
+                "AAPL": pd.DataFrame(
+                    {
+                        "timestamp": pd.to_datetime([fresh_timestamp]),
+                        "open": [100.0],
+                        "high": [101.0],
+                        "low": [99.0],
+                        "close": [100.5],
+                        "volume": [1_000.0],
+                    }
+                ),
+                "MSFT": pd.DataFrame(
+                    {
+                        "timestamp": pd.to_datetime([fresh_timestamp]),
+                        "open": [200.0],
+                        "high": [201.0],
+                        "low": [199.0],
+                        "close": [200.5],
+                        "volume": [2_000.0],
+                    }
+                ),
+            },
+            "alpaca",
+        ),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "build_trading_client",
+        lambda paper: SimpleNamespace(
+            get_all_positions=lambda: [],
+            get_account=lambda: SimpleNamespace(
+                cash=10_000.0,
+                buying_power=10_000.0,
+                portfolio_value=10_000.0,
+            ),
+            get_clock=lambda: SimpleNamespace(is_open=True),
+        ),
+    )
+    monkeypatch.setattr(daily_stock, "build_data_client", lambda paper: object())
+    monkeypatch.setattr(
+        daily_stock,
+        "load_latest_quotes_with_source",
+        lambda symbols, paper, fallback_prices, data_client=None: (
+            {"AAPL": 100.75, "MSFT": 200.75},
+            "alpaca",
+            {"AAPL": "alpaca", "MSFT": "alpaca"},
+        ),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "_build_multi_position_signals",
+        lambda *args, **kwargs: [
+            daily_stock.TradingSignal("long_AAPL", "AAPL", "long", 0.9, 1.2, 0.6, 0.0),
+            daily_stock.TradingSignal("long_MSFT", "MSFT", "long", 0.8, 1.1, 0.4, 0.0),
+        ],
+    )
+    execute_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        daily_stock,
+        "execute_multi_position_signals",
+        lambda signals, **kwargs: execute_calls.append(
+            {
+                "signals": [signal.symbol for signal in signals],
+                **kwargs,
+            }
+        ) or {"AAPL": 12.0, "MSFT": 5.0},
+    )
+
+    payload = daily_stock.run_once(
+        checkpoint="dummy.ckpt",
+        symbols=["AAPL", "MSFT"],
+        paper=True,
+        allocation_pct=25.0,
+        dry_run=True,
+        data_source="alpaca",
+        data_dir=str(tmp_path),
+        state_path=tmp_path / "state.json",
+        multi_position=2,
+    )
+
+    assert execute_calls
+    assert execute_calls[0]["signals"] == ["AAPL", "MSFT"]
+    assert payload["portfolio_mode"] is True
+    assert payload["portfolio_signal_count"] == 2
+    assert [item["symbol"] for item in payload["portfolio_signals"]] == ["AAPL", "MSFT"]
+    assert payload["held_positions"] == {"AAPL": 12.0, "MSFT": 5.0}
+    assert payload["execution_status"] == "dry_run_would_execute"
+    assert payload["execution_skip_reason"] is None
+
+
+def test_run_once_multi_position_filters_blocked_signals_before_execution(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    fresh_timestamp = pd.Timestamp.now(tz="UTC").normalize()
+
+    monkeypatch.setattr(
+        daily_stock,
+        "load_inference_frames",
+        lambda symbols, paper, data_dir, now, data_client=None: (
+            {
+                "AAPL": pd.DataFrame(
+                    {
+                        "timestamp": pd.to_datetime([fresh_timestamp]),
+                        "open": [100.0],
+                        "high": [101.0],
+                        "low": [99.0],
+                        "close": [100.5],
+                        "volume": [1_000.0],
+                    }
+                ),
+                "MSFT": pd.DataFrame(
+                    {
+                        "timestamp": pd.to_datetime([fresh_timestamp]),
+                        "open": [200.0],
+                        "high": [201.0],
+                        "low": [199.0],
+                        "close": [200.5],
+                        "volume": [2_000.0],
+                    }
+                ),
+            },
+            "alpaca",
+        ),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "build_trading_client",
+        lambda paper: SimpleNamespace(
+            get_all_positions=lambda: [],
+            get_account=lambda: SimpleNamespace(
+                cash=10_000.0,
+                buying_power=10_000.0,
+                portfolio_value=10_000.0,
+            ),
+            get_clock=lambda: SimpleNamespace(is_open=True),
+        ),
+    )
+    monkeypatch.setattr(daily_stock, "build_data_client", lambda paper: object())
+    monkeypatch.setattr(
+        daily_stock,
+        "load_latest_quotes_with_source",
+        lambda symbols, paper, fallback_prices, data_client=None: (
+            {"AAPL": 100.75, "MSFT": 200.75},
+            "alpaca",
+            {"AAPL": "alpaca", "MSFT": "alpaca"},
+        ),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "_build_multi_position_signals",
+        lambda *args, **kwargs: [
+            daily_stock.TradingSignal("long_AAPL", "AAPL", "long", 0.1, 1.2, 0.6, 0.0),
+            daily_stock.TradingSignal("long_MSFT", "MSFT", "long", 0.8, 1.1, 0.4, 0.0),
+        ],
+    )
+    execute_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        daily_stock,
+        "execute_multi_position_signals",
+        lambda signals, **kwargs: execute_calls.append([str(signal.symbol) for signal in signals]) or {"MSFT": 5.0},
+    )
+
+    payload = daily_stock.run_once(
+        checkpoint="dummy.ckpt",
+        symbols=["AAPL", "MSFT"],
+        paper=True,
+        allocation_pct=25.0,
+        dry_run=True,
+        data_source="alpaca",
+        data_dir=str(tmp_path),
+        state_path=tmp_path / "state.json",
+        multi_position=2,
+        min_open_confidence=0.2,
+        min_open_value_estimate=0.0,
+    )
+
+    assert execute_calls == [["MSFT"]]
+    assert payload["allow_open"] is True
+    assert payload["blocked_portfolio_signals"] == [
+        {
+            "symbol": "AAPL",
+            "reasons": ["confidence=0.1000 < min_open_confidence=0.2000"],
+        }
+    ]
+    assert payload["execution_status"] == "dry_run_would_execute"
+
+
+def test_run_once_dry_run_executes_multi_position_portfolio_via_trading_server(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    fresh_timestamp = pd.Timestamp.now(tz="UTC").normalize()
+
+    monkeypatch.setattr(
+        daily_stock,
+        "load_inference_frames",
+        lambda symbols, paper, data_dir, now, data_client=None: (
+            {
+                "AAPL": pd.DataFrame(
+                    {
+                        "timestamp": pd.to_datetime([fresh_timestamp]),
+                        "open": [100.0],
+                        "high": [101.0],
+                        "low": [99.0],
+                        "close": [100.5],
+                        "volume": [1_000.0],
+                    }
+                ),
+                "MSFT": pd.DataFrame(
+                    {
+                        "timestamp": pd.to_datetime([fresh_timestamp]),
+                        "open": [200.0],
+                        "high": [201.0],
+                        "low": [199.0],
+                        "close": [200.5],
+                        "volume": [2_000.0],
+                    }
+                ),
+            },
+            "alpaca",
+        ),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "build_trading_client",
+        lambda paper: SimpleNamespace(get_clock=lambda: SimpleNamespace(is_open=True)),
+    )
+    monkeypatch.setattr(daily_stock, "build_data_client", lambda paper: object())
+    monkeypatch.setattr(
+        daily_stock,
+        "load_latest_quotes_with_source",
+        lambda symbols, paper, fallback_prices, data_client=None: (
+            {"AAPL": 100.75, "MSFT": 200.75},
+            "alpaca",
+            {"AAPL": "alpaca", "MSFT": "alpaca"},
+        ),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "_build_multi_position_signals",
+        lambda *args, **kwargs: [
+            daily_stock.TradingSignal("long_AAPL", "AAPL", "long", 0.9, 1.2, 0.6, 0.0),
+            daily_stock.TradingSignal("long_MSFT", "MSFT", "long", 0.8, 1.1, 0.4, 0.0),
+        ],
+    )
+
+    server_client = SimpleNamespace(
+        get_account=lambda: {"cash": 10_000.0, "buying_power": 10_000.0, "positions": {}}
+    )
+    monkeypatch.setattr(daily_stock, "build_server_client", lambda **kwargs: server_client)
+
+    execute_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        daily_stock,
+        "execute_multi_position_signals_with_trading_server",
+        lambda signals, **kwargs: execute_calls.append(
+            {
+                "signals": [signal.symbol for signal in signals],
+                **kwargs,
+            }
+        ) or {"AAPL": 12.0, "MSFT": 5.0},
+    )
+
+    payload = daily_stock.run_once(
+        checkpoint="dummy.ckpt",
+        symbols=["AAPL", "MSFT"],
+        paper=True,
+        allocation_pct=25.0,
+        dry_run=True,
+        data_source="alpaca",
+        data_dir=str(tmp_path),
+        state_path=tmp_path / "state.json",
+        execution_backend="trading_server",
+        server_account="paper-account",
+        server_bot_id="daily-bot",
+        multi_position=2,
+    )
+
+    assert execute_calls
+    assert execute_calls[0]["signals"] == ["AAPL", "MSFT"]
+    assert execute_calls[0]["server_client"] is server_client
+    assert payload["portfolio_mode"] is True
+    assert payload["held_positions"] == {"AAPL": 12.0, "MSFT": 5.0}
+    assert payload["server_account"] == "paper-account"
+    assert payload["server_bot_id"] == "daily-bot"
+    assert payload["server_snapshot"] == {"cash": 10_000.0, "buying_power": 10_000.0, "positions": {}}
+    assert payload["execution_status"] == "dry_run_would_execute"
+
+
+def test_run_once_multi_position_all_blocked_skips_execution(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    fresh_timestamp = pd.Timestamp.now(tz="UTC").normalize()
+
+    monkeypatch.setattr(
+        daily_stock,
+        "load_inference_frames",
+        lambda symbols, paper, data_dir, now, data_client=None: (
+            {
+                "AAPL": pd.DataFrame(
+                    {
+                        "timestamp": pd.to_datetime([fresh_timestamp]),
+                        "open": [100.0],
+                        "high": [101.0],
+                        "low": [99.0],
+                        "close": [100.5],
+                        "volume": [1_000.0],
+                    }
+                ),
+                "MSFT": pd.DataFrame(
+                    {
+                        "timestamp": pd.to_datetime([fresh_timestamp]),
+                        "open": [200.0],
+                        "high": [201.0],
+                        "low": [199.0],
+                        "close": [200.5],
+                        "volume": [2_000.0],
+                    }
+                ),
+            },
+            "alpaca",
+        ),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "build_trading_client",
+        lambda paper: SimpleNamespace(
+            get_all_positions=lambda: [],
+            get_account=lambda: SimpleNamespace(
+                cash=10_000.0,
+                buying_power=10_000.0,
+                portfolio_value=10_000.0,
+            ),
+            get_clock=lambda: SimpleNamespace(is_open=True),
+        ),
+    )
+    monkeypatch.setattr(daily_stock, "build_data_client", lambda paper: object())
+    monkeypatch.setattr(
+        daily_stock,
+        "load_latest_quotes_with_source",
+        lambda symbols, paper, fallback_prices, data_client=None: (
+            {"AAPL": 100.75, "MSFT": 200.75},
+            "alpaca",
+            {"AAPL": "alpaca", "MSFT": "alpaca"},
+        ),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "_build_multi_position_signals",
+        lambda *args, **kwargs: [
+            daily_stock.TradingSignal("long_AAPL", "AAPL", "long", 0.1, -1.2, 0.6, 0.0),
+            daily_stock.TradingSignal("long_MSFT", "MSFT", "long", 0.15, -0.4, 0.4, 0.0),
+        ],
+    )
+    execute_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        daily_stock,
+        "execute_multi_position_signals",
+        lambda signals, **kwargs: execute_calls.append([str(signal.symbol) for signal in signals]) or {},
+    )
+
+    payload = daily_stock.run_once(
+        checkpoint="dummy.ckpt",
+        symbols=["AAPL", "MSFT"],
+        paper=True,
+        allocation_pct=25.0,
+        dry_run=True,
+        data_source="alpaca",
+        data_dir=str(tmp_path),
+        state_path=tmp_path / "state.json",
+        multi_position=2,
+        min_open_confidence=0.2,
+        min_open_value_estimate=0.0,
+    )
+
+    assert execute_calls == [[]]
+    assert payload["allow_open"] is False
+    assert payload["allow_open_reason"] == (
+        "AAPL: confidence=0.1000 < min_open_confidence=0.2000; "
+        "value_estimate=-1.2000 < min_open_value_estimate=0.0000 | "
+        "MSFT: confidence=0.1500 < min_open_confidence=0.2000; "
+        "value_estimate=-0.4000 < min_open_value_estimate=0.0000"
+    )
+    assert payload["execution_status"] == "blocked_open_gate"
+    assert payload["execution_skip_reason"] == "open_gate"
+
+
 def test_main_print_payload_outputs_run_once_json(monkeypatch, capsys, tmp_path: Path) -> None:
     checkpoint = tmp_path / "model.pt"
     checkpoint.write_text("stub", encoding="utf-8")
@@ -4689,5 +5268,238 @@ def test_execute_multi_position_signals_dry_run_skips_order_submission(monkeypat
         dry_run=True,
     )
 
-    assert held == {"NVDA": 19}
+    assert held == {"NVDA": pytest.approx(19.99)}
     assert submitted == []
+
+
+def test_execute_multi_position_signals_respects_buying_power_cap(monkeypatch) -> None:
+    class _FakeClient:
+        def get_account(self):
+            return SimpleNamespace(equity=10_000.0, buying_power=100.0)
+
+    monkeypatch.setattr(daily_stock, "positions_by_symbol", lambda client, symbols: {})
+    monkeypatch.setattr(daily_stock, "_signed_position_qty", lambda pos: float(pos.qty))
+
+    held = daily_stock.execute_multi_position_signals(
+        [daily_stock.TradingSignal("long_nvda", "NVDA", "long", 0.7, 1.0, 1.0, 0.0)],
+        client=_FakeClient(),
+        paper=True,
+        quotes={"NVDA": 10.0},
+        symbols=["NVDA"],
+        total_allocation_pct=50.0,
+        dry_run=True,
+    )
+
+    assert held == {"NVDA": pytest.approx(9.5)}
+
+
+def test_execute_multi_position_signals_skips_malformed_allocation_fractions(monkeypatch, caplog) -> None:
+    class _FakeClient:
+        def get_account(self):
+            return SimpleNamespace(equity=10_000.0, buying_power=10_000.0)
+
+    monkeypatch.setattr(daily_stock, "positions_by_symbol", lambda client, symbols: {})
+    monkeypatch.setattr(daily_stock, "_signed_position_qty", lambda pos: float(pos.qty))
+
+    with caplog.at_level(logging.WARNING, logger="daily_stock_rl"):
+        held = daily_stock.execute_multi_position_signals(
+            [
+                daily_stock.TradingSignal("bad_nan", "NVDA", "long", 0.7, 1.0, float("nan"), 0.0),
+                daily_stock.TradingSignal("bad_neg", "AMD", "long", 0.7, 1.0, -0.25, 0.0),
+                daily_stock.TradingSignal("good", "AAPL", "long", 0.7, 1.0, 0.5, 0.0),
+            ],
+            client=_FakeClient(),
+            paper=True,
+            quotes={"NVDA": 100.0, "AMD": 50.0, "AAPL": 20.0},
+            symbols=["NVDA", "AMD", "AAPL"],
+            total_allocation_pct=50.0,
+            dry_run=True,
+        )
+
+    assert held == {"AAPL": pytest.approx(125.0)}
+    assert "Skipping malformed portfolio signal allocation for NVDA" in caplog.text
+    assert "Skipping malformed portfolio signal allocation for AMD" in caplog.text
+
+
+def test_execute_multi_position_signals_with_trading_server_batches_refresh(monkeypatch) -> None:
+    refresh_calls: list[list[str]] = []
+    submitted: list[dict[str, object]] = []
+
+    class _FakeServerClient:
+        def get_account(self):
+            return {
+                "cash": 5_000.0,
+                "buying_power": 5_000.0,
+                "positions": {
+                    "AAPL": {"qty": 5.0, "avg_entry_price": 100.0, "current_price": 100.0},
+                },
+            }
+
+        def refresh_prices(self, *, symbols):
+            refresh_calls.append(list(symbols))
+            return {"accounts": []}
+
+        def submit_limit_order(self, **kwargs):
+            submitted.append(dict(kwargs))
+            return {"order": {"id": f"order-{len(submitted)}"}}
+
+    held = daily_stock.execute_multi_position_signals_with_trading_server(
+        [
+            daily_stock.TradingSignal("long_msft", "MSFT", "long", 0.7, 1.0, 1.0, 0.0),
+        ],
+        server_client=_FakeServerClient(),
+        quotes={"AAPL": 100.0, "MSFT": 50.0},
+        symbols=["AAPL", "MSFT"],
+        total_allocation_pct=50.0,
+        dry_run=False,
+    )
+
+    assert refresh_calls == [["AAPL", "MSFT"]]
+    assert [order["symbol"] for order in submitted] == ["AAPL", "MSFT"]
+    assert submitted[0]["side"] == "sell"
+    assert submitted[1]["side"] == "buy"
+    assert held == {"MSFT": pytest.approx(55.0)}
+
+
+def test_execute_multi_position_signals_with_trading_server_respects_buying_power_cap() -> None:
+    class _FakeServerClient:
+        def get_account(self):
+            return {
+                "cash": 10_000.0,
+                "buying_power": 100.0,
+                "positions": {},
+            }
+
+        def refresh_prices(self, *, symbols):
+            raise AssertionError("dry-run should not refresh prices")
+
+        def submit_limit_order(self, **kwargs):
+            raise AssertionError("dry-run should not submit orders")
+
+    held = daily_stock.execute_multi_position_signals_with_trading_server(
+        [
+            daily_stock.TradingSignal("long_nvda", "NVDA", "long", 0.7, 1.0, 1.0, 0.0),
+        ],
+        server_client=_FakeServerClient(),
+        quotes={"NVDA": 10.0},
+        symbols=["NVDA"],
+        total_allocation_pct=50.0,
+        dry_run=True,
+    )
+
+    assert held == {"NVDA": pytest.approx(9.5)}
+
+
+def test_execute_multi_position_signals_with_trading_server_skips_malformed_allocation_fractions(
+    caplog,
+) -> None:
+    class _FakeServerClient:
+        def get_account(self):
+            return {
+                "cash": 10_000.0,
+                "buying_power": 10_000.0,
+                "positions": {},
+            }
+
+        def refresh_prices(self, *, symbols):
+            raise AssertionError("dry-run should not refresh prices")
+
+        def submit_limit_order(self, **kwargs):
+            raise AssertionError("dry-run should not submit orders")
+
+    with caplog.at_level(logging.WARNING, logger="daily_stock_rl"):
+        held = daily_stock.execute_multi_position_signals_with_trading_server(
+            [
+                daily_stock.TradingSignal("bad_nan", "NVDA", "long", 0.7, 1.0, float("nan"), 0.0),
+                daily_stock.TradingSignal("bad_neg", "AMD", "long", 0.7, 1.0, -0.25, 0.0),
+                daily_stock.TradingSignal("good", "AAPL", "long", 0.7, 1.0, 0.5, 0.0),
+            ],
+            server_client=_FakeServerClient(),
+            quotes={"NVDA": 100.0, "AMD": 50.0, "AAPL": 20.0},
+            symbols=["NVDA", "AMD", "AAPL"],
+            total_allocation_pct=50.0,
+            dry_run=True,
+        )
+
+    assert held == {"AAPL": pytest.approx(125.0)}
+    assert "Skipping malformed server portfolio signal allocation for NVDA" in caplog.text
+    assert "Skipping malformed server portfolio signal allocation for AMD" in caplog.text
+
+
+def test_build_multi_position_signals_uses_latest_features(monkeypatch) -> None:
+    class _FakeTrader:
+        SYMBOLS = ["AAPL", "MSFT", "NVDA"]
+        device = "cpu"
+        obs_size = 3
+        num_actions = 7
+        num_symbols = 3
+        per_symbol_actions = 2
+        max_steps = 64
+        cash = 0.0
+        current_position = None
+        position_qty = 0.0
+        entry_price = 0.0
+
+        @staticmethod
+        def build_observation(features, prices):
+            return np.array([features[0, 0], features[1, 0], features[2, 0]], dtype=np.float32)
+
+        @staticmethod
+        def policy(obs_t):
+            return torch.tensor([[0.0, 3.7, 3.6, 3.6, 3.5, -2.0, -2.0]]), torch.tensor([[1.25]])
+
+        @staticmethod
+        def apply_action_constraints(logits):
+            return logits
+
+    monkeypatch.setattr(daily_stock, "_load_cached_daily_trader", lambda *args, **kwargs: _FakeTrader())
+    monkeypatch.setattr(
+        daily_stock,
+        "compute_daily_features",
+        lambda frame: np.full(16, float(frame["close"].iloc[-1]), dtype=np.float32),
+    )
+
+    frames = {
+        "AAPL": pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(["2026-03-13T00:00:00Z"]),
+                "open": [1.0],
+                "high": [1.0],
+                "low": [1.0],
+                "close": [101.0],
+                "volume": [1.0],
+            }
+        ),
+        "MSFT": pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(["2026-03-13T00:00:00Z"]),
+                "open": [1.0],
+                "high": [1.0],
+                "low": [1.0],
+                "close": [202.0],
+                "volume": [1.0],
+            }
+        ),
+        "NVDA": pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(["2026-03-13T00:00:00Z"]),
+                "open": [1.0],
+                "high": [1.0],
+                "low": [1.0],
+                "close": [303.0],
+                "volume": [1.0],
+            }
+        ),
+    }
+
+    signals = daily_stock._build_multi_position_signals(
+        "dummy.ckpt",
+        frames,
+        quotes={"AAPL": 101.0, "MSFT": 202.0, "NVDA": 303.0},
+        portfolio_value=12_500.0,
+        multi_position=2,
+        multi_position_min_prob_ratio=0.5,
+    )
+
+    assert [signal.symbol for signal in signals] == ["AAPL", "MSFT"]
+    assert sum(signal.allocation_pct for signal in signals) == pytest.approx(1.0)

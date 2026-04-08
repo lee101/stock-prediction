@@ -3,13 +3,25 @@ from __future__ import annotations
 import math
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Mapping, cast
+from importlib import import_module
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Mapping, cast
 
-from binance import Client
 from loguru import logger
 
 from env_real import BINANCE_API_KEY, BINANCE_SECRET
-from src.stock_utils import binance_remap_symbols
+ORDER_TYPE_LIMIT = "LIMIT"
+ORDER_TYPE_MARKET = "MARKET"
+TIME_IN_FORCE_GTC = "GTC"
+
+if TYPE_CHECKING:
+    from binance import Client
+else:
+    Client = Any
+
+try:
+    from binance import Client as _BinanceClient
+except ModuleNotFoundError:
+    _BinanceClient = None
 
 _client: Client | None
 
@@ -42,6 +54,10 @@ def _is_restricted_location_error(exc: Exception) -> bool:
 
 
 def _init_client() -> Client | None:
+    if _BinanceClient is None:
+        logger.warning("python-binance is not installed; Binance client features are unavailable.")
+        return None
+
     kwargs: Dict[str, Any] = {}
     tld = os.getenv("BINANCE_TLD")
     base_endpoint = os.getenv("BINANCE_BASE_ENDPOINT")
@@ -63,7 +79,7 @@ def _init_client() -> Client | None:
     explicit_endpoint = bool(tld) or bool(base_endpoint)
 
     try:
-        return Client(BINANCE_API_KEY, BINANCE_SECRET, **kwargs)
+        return _BinanceClient(BINANCE_API_KEY, BINANCE_SECRET, **kwargs)
     except Exception as exc:  # pragma: no cover - connectivity / credential issues
         if (
             not explicit_endpoint
@@ -78,7 +94,7 @@ def _init_client() -> Client | None:
             retry_kwargs = dict(kwargs)
             retry_kwargs["tld"] = "us"
             try:
-                return Client(BINANCE_API_KEY, BINANCE_SECRET, **retry_kwargs)
+                return _BinanceClient(BINANCE_API_KEY, BINANCE_SECRET, **retry_kwargs)
             except Exception as exc2:  # pragma: no cover
                 logger.error(f"Failed to initialise Binance.US client: {exc2}")
                 return None
@@ -126,11 +142,19 @@ def _coerce_balance_value(value: Any) -> float:
     return numeric
 
 
+def _binance_remap_symbols(symbol: str) -> str:
+    module = import_module("src.stock_utils")
+    remap = getattr(module, "binance_remap_symbols", None)
+    if callable(remap):
+        return str(remap(symbol))
+    return symbol
+
+
 def _normalize_symbol(symbol: str) -> str:
     if not isinstance(symbol, str):
         raise TypeError(f"Symbol must be a string, received {type(symbol).__name__}.")
     normalized = symbol.replace("/", "").strip().upper()
-    normalized = binance_remap_symbols(normalized)
+    normalized = _binance_remap_symbols(normalized)
     return normalized
 
 
@@ -230,8 +254,8 @@ def create_order(symbol: str, side: str, quantity: float, price: float | str | N
     payload: Dict[str, Any] = {
         "symbol": symbol,
         "side": side,
-        "type": Client.ORDER_TYPE_LIMIT,
-        "timeInForce": Client.TIME_IN_FORCE_GTC,
+        "type": ORDER_TYPE_LIMIT,
+        "timeInForce": TIME_IN_FORCE_GTC,
         "quantity": quantity,
     }
     if price is not None:
@@ -260,7 +284,7 @@ def create_market_buy_quote(
     payload: Dict[str, Any] = {
         "symbol": normalized,
         "side": "BUY",
-        "type": Client.ORDER_TYPE_MARKET,
+        "type": ORDER_TYPE_MARKET,
         "quoteOrderQty": _format_price(quote_amount),
     }
     try:
@@ -370,7 +394,6 @@ def cancel_all_orders(client: Client | None = None):
             try:
                 client.cancel_order(symbol=order["symbol"], orderId=order["orderId"])
             except Exception as e:
-                print(e)
                 logger.error(e)
 
 
