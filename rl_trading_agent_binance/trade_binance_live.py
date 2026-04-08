@@ -24,7 +24,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -458,6 +458,82 @@ def _serialize_rl_signal(signal: object) -> dict[str, object]:
         "value": _safe_float(getattr(signal, "value", None)),
         "logits": [float(item) for item in list(getattr(signal, "logits", []) or []) if _safe_float(item) is not None],
     }
+
+
+def _normalize_symbol_list(symbols: list[str] | tuple[str, ...] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_symbol in symbols or []:
+        symbol = str(raw_symbol or "").strip().upper()
+        if not symbol or symbol in seen:
+            continue
+        normalized.append(symbol)
+        seen.add(symbol)
+    return normalized
+
+
+def _restrict_contexts_to_tradable_symbols(
+    contexts: list,
+    tradable_symbols: list[str] | None,
+) -> tuple[list, list[str], list[str]]:
+    """Restrict market contexts to the configured live tradable universe."""
+
+    context_by_symbol = {str(ctx.symbol).upper(): ctx for ctx in contexts}
+    requested_symbols = _normalize_symbol_list(tradable_symbols)
+    if not requested_symbols:
+        active_symbols = [str(ctx.symbol).upper() for ctx in contexts]
+        return list(contexts), active_symbols, []
+
+    active_symbols = [symbol for symbol in requested_symbols if symbol in context_by_symbol]
+    missing_symbols = [symbol for symbol in requested_symbols if symbol not in context_by_symbol]
+    filtered_contexts = [context_by_symbol[symbol] for symbol in active_symbols]
+    return filtered_contexts, active_symbols, missing_symbols
+
+
+def _filter_allocation_plan_to_symbols(
+    plan: AllocationPlan,
+    allowed_symbols: list[str] | tuple[str, ...] | None,
+) -> AllocationPlan:
+    """Drop allocations for symbols outside the allowed live trading universe."""
+
+    allowed = set(_normalize_symbol_list(allowed_symbols))
+    if not allowed:
+        return plan
+
+    filtered_allocations = {symbol: pct for symbol, pct in plan.allocations.items() if str(symbol).upper() in allowed}
+    filtered_entry_prices = {
+        symbol: price for symbol, price in plan.entry_prices.items() if str(symbol).upper() in allowed
+    }
+    filtered_exit_prices = {
+        symbol: price for symbol, price in plan.exit_prices.items() if str(symbol).upper() in allowed
+    }
+
+    if (
+        len(filtered_allocations) == len(plan.allocations)
+        and len(filtered_entry_prices) == len(plan.entry_prices)
+        and len(filtered_exit_prices) == len(plan.exit_prices)
+    ):
+        return plan
+
+    dropped_symbols = sorted(
+        {
+            str(symbol).upper()
+            for symbol in (set(plan.allocations) | set(plan.entry_prices) | set(plan.exit_prices))
+            if str(symbol).upper() not in allowed
+        }
+    )
+    reasoning = str(plan.reasoning or "")
+    if dropped_symbols:
+        suffix = f"filtered_non_tradable={','.join(dropped_symbols)}"
+        reasoning = f"{reasoning} [{suffix}]".strip() if reasoning else suffix
+
+    return AllocationPlan(
+        allocations=filtered_allocations,
+        entry_prices=filtered_entry_prices,
+        exit_prices=filtered_exit_prices,
+        reasoning=reasoning,
+        timestamp=plan.timestamp,
+    )
 
 
 def _tracked_base_assets() -> tuple[str, ...]:
@@ -1956,6 +2032,20 @@ RL_BINANCE_PAIRS = {
 _prev_plan: AllocationPlan | None = None
 _prev_outcome: PlanOutcome | None = None
 _prev_portfolio_value: float = 0.0
+_GEMINI_CIRCUIT_TRANSIENT_FAILURE_THRESHOLD = 3
+_GEMINI_CIRCUIT_TRANSIENT_COOLDOWN = timedelta(hours=6)
+_GEMINI_CIRCUIT_PERSISTENT_COOLDOWN = timedelta(hours=24)
+_gemini_failure_streak: int = 0
+_gemini_circuit_open_until: datetime | None = None
+_gemini_last_failure_reason: str | None = None
+
+
+def _has_positions_to_flatten(
+    positions_valued: dict[str, tuple[float, float]],
+    *,
+    min_trade_usd: float = MIN_TRADE_USD,
+) -> bool:
+    return any(float(value_usd) > float(min_trade_usd) for _qty, value_usd in positions_valued.values())
 
 
 def _allocation_plan_has_error(plan: AllocationPlan) -> bool:
@@ -1972,6 +2062,83 @@ def _allocation_plan_has_error(plan: AllocationPlan) -> bool:
     )
 
 
+def _reset_gemini_failure_circuit() -> None:
+    global _gemini_failure_streak, _gemini_circuit_open_until, _gemini_last_failure_reason
+
+    _gemini_failure_streak = 0
+    _gemini_circuit_open_until = None
+    _gemini_last_failure_reason = None
+
+
+def _gemini_failure_is_persistent(reason: str) -> bool:
+    normalized = str(reason or "").strip().lower()
+    if not normalized:
+        return False
+    return any(
+        token in normalized
+        for token in (
+            "permission_denied",
+            "reported as leaked",
+            "api key",
+            "forbidden",
+            "403",
+        )
+    )
+
+
+def _refresh_gemini_circuit(now: datetime) -> None:
+    global _gemini_failure_streak, _gemini_circuit_open_until, _gemini_last_failure_reason
+
+    if _gemini_circuit_open_until is None:
+        return
+    if now < _gemini_circuit_open_until:
+        return
+    _gemini_failure_streak = 0
+    _gemini_circuit_open_until = None
+    _gemini_last_failure_reason = None
+
+
+def _get_gemini_circuit_skip_reason(now: datetime) -> str | None:
+    _refresh_gemini_circuit(now)
+    if _gemini_circuit_open_until is None:
+        return None
+    remaining = _gemini_circuit_open_until - now
+    remaining_minutes = max(1, int(remaining.total_seconds() // 60))
+    return f"gemini_circuit_open until {_gemini_circuit_open_until.isoformat()} ({remaining_minutes}m remaining)"
+
+
+def _record_gemini_failure(reason: str, now: datetime) -> str | None:
+    global _gemini_failure_streak, _gemini_circuit_open_until, _gemini_last_failure_reason
+
+    _refresh_gemini_circuit(now)
+    normalized_reason = str(reason or "").strip()
+    _gemini_failure_streak += 1
+    _gemini_last_failure_reason = normalized_reason or None
+
+    if _gemini_failure_is_persistent(normalized_reason):
+        _gemini_circuit_open_until = now + _GEMINI_CIRCUIT_PERSISTENT_COOLDOWN
+        return (
+            "persistent Gemini/provider failure detected; opening circuit until "
+            f"{_gemini_circuit_open_until.isoformat()}"
+        )
+
+    if _gemini_failure_streak >= _GEMINI_CIRCUIT_TRANSIENT_FAILURE_THRESHOLD:
+        _gemini_circuit_open_until = now + _GEMINI_CIRCUIT_TRANSIENT_COOLDOWN
+        return f"repeated Gemini failures detected; opening circuit until {_gemini_circuit_open_until.isoformat()}"
+    return None
+
+
+def _record_gemini_success(now: datetime) -> None:
+    del now
+    _reset_gemini_failure_circuit()
+
+
+def _update_gemini_circuit_snapshot_fields(cycle_snapshot: JSONDict) -> None:
+    cycle_snapshot["gemini_failure_streak"] = int(_gemini_failure_streak)
+    cycle_snapshot["gemini_circuit_open_until"] = _isoformat_utc(_gemini_circuit_open_until)
+    cycle_snapshot["gemini_last_failure_reason"] = str(_gemini_last_failure_reason or "") or None
+
+
 def _rl_signal_to_allocation_plan(
     rl_signal: RLSignal,
     contexts: list,
@@ -1985,6 +2152,7 @@ def _rl_signal_to_allocation_plan(
     if rl_signal.direction == "flat" or rl_signal.target_symbol is None:
         return None
 
+    direction = str(rl_signal.direction or "").strip().lower()
     sym = rl_signal.target_symbol
     ctx_map = {c.symbol: c for c in contexts}
     ctx = ctx_map.get(sym)
@@ -1995,6 +2163,20 @@ def _rl_signal_to_allocation_plan(
     probs = np.exp(np.array(rl_signal.logits, dtype=np.float64))
     probs = probs / probs.sum()
     target_prob = float(probs[rl_signal.action])
+
+    if direction == "short":
+        plan = AllocationPlan(
+            reasoning=(
+                f"rl_only_fallback_short_to_cash: {rl_signal.action_name} "
+                f"prob={target_prob:.2%} value={rl_signal.value:.3f}"
+            ),
+            timestamp=datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
+        )
+        logger.warning(
+            "RL-only fallback received short signal for {} but allocation plans are long-only; exiting to cash",
+            sym,
+        )
+        return plan
 
     alloc_pct = min(max(target_prob * 100.0, 15.0), 50.0)
 
@@ -2031,7 +2213,7 @@ def _get_current_positions_valued(
     return result
 
 
-def run_hybrid_trading_cycle(
+def run_hybrid_trading_cycle(  # noqa: PLR0911
     rl_gen: RLSignalGenerator,
     gemini_model: str = "gemini-2.5-flash",
     forecast_cache_root: str = "binanceneural/forecast_cache",
@@ -2046,12 +2228,15 @@ def run_hybrid_trading_cycle(
     resolved_execution_mode = _resolve_execution_mode(execution_mode, leverage)
     effective_leverage = _effective_leverage(resolved_execution_mode, leverage)
     cycle_started_at = datetime.now(UTC)
+    _refresh_gemini_circuit(cycle_started_at)
     cycle_snapshot: JSONDict = {
         "cycle_id": f"{cycle_started_at.isoformat()}|allocation|{resolved_execution_mode}|{'live' if not dry_run else 'dry_run'}",
         "cycle_kind": "allocation",
         "cycle_started_at": cycle_started_at.isoformat(),
         "mode": "live" if not dry_run else "dry_run",
         "gemini_model": gemini_model,
+        "rl_checkpoint": str(getattr(rl_gen, "checkpoint_path", "") or ""),
+        "rl_symbols": [str(sym) for sym in getattr(rl_gen, "symbols", ())],
         "execution_mode": resolved_execution_mode,
         "requested_leverage": float(leverage),
         "effective_leverage": float(effective_leverage),
@@ -2061,6 +2246,8 @@ def run_hybrid_trading_cycle(
         "previous_outcome": _serialize_plan_outcome(_prev_outcome),
         "rl_signal": None,
         "allocation_plan": None,
+        "gemini_call_skipped": False,
+        "gemini_skip_reason": None,
         "orders": {
             "open_before_cleanup": [],
             "open_after_cleanup": [],
@@ -2071,6 +2258,7 @@ def run_hybrid_trading_cycle(
         "status": "running",
         "error": None,
     }
+    _update_gemini_circuit_snapshot_fields(cycle_snapshot)
     orders_placed: list[dict[str, Any]] = []
 
     try:
@@ -2130,7 +2318,25 @@ def run_hybrid_trading_cycle(
             cycle_snapshot["status"] = "no_contexts"
             return []
 
+        contexts, active_tradable_symbols, missing_tradable_symbols = _restrict_contexts_to_tradable_symbols(
+            contexts,
+            tradable_symbols,
+        )
+        cycle_snapshot["requested_tradable_symbols"] = _normalize_symbol_list(tradable_symbols)
+        cycle_snapshot["active_tradable_symbols"] = list(active_tradable_symbols)
+        if missing_tradable_symbols:
+            cycle_snapshot["missing_tradable_symbols"] = list(missing_tradable_symbols)
+            logger.warning(
+                "Requested tradable symbols missing market context and will be skipped: {}",
+                ", ".join(missing_tradable_symbols),
+            )
+        if not active_tradable_symbols:
+            logger.error("No active tradable symbols available after market-context filtering")
+            cycle_snapshot["status"] = "no_active_tradable_symbols"
+            return []
+
         positions_valued = _get_current_positions_valued(state, resolved_execution_mode)
+        positions_to_flatten = _has_positions_to_flatten(positions_valued)
         largest_pos = max(positions_valued.items(), key=lambda x: x[1][1]) if positions_valued else None
         cur_sym = largest_pos[0] if largest_pos else None
 
@@ -2159,7 +2365,7 @@ def run_hybrid_trading_cycle(
             rl_signal = rl_gen.get_signal(
                 portfolio=portfolio_snap,
                 klines_map=klines_map,
-                tradable_symbols=tradable_symbols,
+                tradable_symbols=active_tradable_symbols,
             )
         except Exception as exc:
             logger.error(f"RL signal error: {exc}")
@@ -2181,19 +2387,43 @@ def run_hybrid_trading_cycle(
         )
         cycle_snapshot["prompt_chars"] = len(prompt)
 
-        tradable_syms = [ctx.symbol for ctx in contexts]
+        tradable_syms = list(active_tradable_symbols)
         logger.info(f"Prompt built ({len(prompt)} chars), calling Gemini...")
         gemini_failed = False
-        try:
-            plan = call_gemini_allocation(prompt, model=gemini_model, tradable_symbols=tradable_syms)
-        except Exception as exc:
-            logger.error(f"Gemini call failed: {exc}")
+        gemini_failure_reason = ""
+        gemini_skip_reason = _get_gemini_circuit_skip_reason(datetime.now(UTC))
+        if gemini_skip_reason is not None:
             gemini_failed = True
-            plan = AllocationPlan(reasoning=f"API error: {exc}")
+            gemini_failure_reason = "gemini_circuit_open"
+            cycle_snapshot["gemini_call_skipped"] = True
+            cycle_snapshot["gemini_skip_reason"] = gemini_skip_reason
+            logger.warning("Skipping Gemini allocation call: {}", gemini_skip_reason)
+            plan = AllocationPlan(reasoning=gemini_skip_reason)
+        else:
+            try:
+                plan = call_gemini_allocation(prompt, model=gemini_model, tradable_symbols=tradable_syms)
+            except Exception as exc:
+                failure_reason = f"API error: {exc}"
+                logger.error(f"Gemini call failed: {exc}")
+                gemini_failed = True
+                gemini_failure_reason = "gemini_error"
+                circuit_message = _record_gemini_failure(failure_reason, datetime.now(UTC))
+                if circuit_message:
+                    logger.warning(circuit_message)
+                plan = AllocationPlan(reasoning=failure_reason)
+            else:
+                if _allocation_plan_has_error(plan):
+                    circuit_message = _record_gemini_failure(str(plan.reasoning or ""), datetime.now(UTC))
+                    if circuit_message:
+                        logger.warning(circuit_message)
+                else:
+                    _record_gemini_success(datetime.now(UTC))
+        _update_gemini_circuit_snapshot_fields(cycle_snapshot)
 
         cycle_snapshot["allocation_plan"] = _serialize_allocation_plan(plan)
 
         use_rl_only = False
+        forced_cash_flatten = False
         if gemini_failed or _allocation_plan_has_error(plan):
             rl_plan = _rl_signal_to_allocation_plan(
                 rl_signal,
@@ -2209,12 +2439,23 @@ def run_hybrid_trading_cycle(
                 cycle_snapshot["allocation_source"] = "rl_only_fallback"
             else:
                 reason = "gemini_error" if gemini_failed else "invalid_allocation_plan"
-                logger.info("Gemini unavailable and RL signal is FLAT, no action needed")
-                cycle_snapshot["status"] = f"{reason}_rl_flat"
-                cycle_snapshot["allocation_source"] = "rl_flat_no_action"
-                return []
+                if gemini_failed and gemini_failure_reason:
+                    reason = gemini_failure_reason
+                if not positions_to_flatten:
+                    logger.info("Gemini unavailable and RL signal is FLAT, no action needed")
+                    cycle_snapshot["status"] = f"{reason}_rl_flat"
+                    cycle_snapshot["allocation_source"] = "rl_flat_no_action"
+                    return []
+                logger.warning("Gemini unavailable and RL signal is FLAT; flattening existing positions to cash")
+                plan = AllocationPlan(
+                    reasoning=f"{reason}_rl_flat_to_cash",
+                    timestamp=datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
+                )
+                forced_cash_flatten = True
+                cycle_snapshot["allocation_plan"] = _serialize_allocation_plan(plan)
+                cycle_snapshot["allocation_source"] = "rl_flat_cash_flatten"
 
-        if not use_rl_only and not plan.allocations:
+        if not use_rl_only and not forced_cash_flatten and not plan.allocations:
             rl_plan = _rl_signal_to_allocation_plan(
                 rl_signal,
                 contexts,
@@ -2228,12 +2469,17 @@ def run_hybrid_trading_cycle(
                 cycle_snapshot["allocation_plan"] = _serialize_allocation_plan(plan)
                 cycle_snapshot["allocation_source"] = "rl_override_gemini_cash"
             else:
-                logger.info("Both Gemini and RL agree: stay in cash")
-                cycle_snapshot["status"] = "gemini_cash_rl_flat"
-                return []
+                if not positions_to_flatten:
+                    logger.info("Both Gemini and RL agree: stay in cash")
+                    cycle_snapshot["status"] = "gemini_cash_rl_flat"
+                    return []
+                logger.info("Both Gemini and RL agree: move to cash and flatten existing positions")
+                cycle_snapshot["allocation_source"] = "gemini_cash_flatten"
 
+        plan = _filter_allocation_plan_to_symbols(plan, active_tradable_symbols)
         if _calibrators:
             plan = _apply_calibration(plan, contexts, _calibrators)
+            plan = _filter_allocation_plan_to_symbols(plan, active_tradable_symbols)
             cycle_snapshot["calibrated"] = True
 
         target_values = {
@@ -2562,6 +2808,8 @@ def main():
         )
         logger.info(f"Hybrid mode: RL={rl_checkpoint} + Gemini={args.model}")
         logger.info(f"RL symbols ({rl_gen.num_symbols}): {', '.join(rl_gen.symbols)}")
+    else:
+        logger.info(f"Hybrid mode: RL=disabled + Gemini={args.model}")
 
     global _calibrators
     if args.calibrator_dir:

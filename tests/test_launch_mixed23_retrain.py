@@ -5,14 +5,16 @@ from pathlib import Path
 
 import launch_mixed23_retrain as compat_launcher
 from scripts.launch_mixed23_retrain import (
+    DEFAULT_PROD_LAUNCH_SCRIPT,
     PRESET_DESCRIPTIONS,
     TRAIN_DATA,
     VAL_DATA,
     _build_rsync_cmd,
-    main,
     _write_local_manifest,
+    main,
     parse_args,
     resolve_descriptions,
+    resolve_eval_constraints,
 )
 
 
@@ -39,6 +41,10 @@ def test_parse_args_defaults_to_longer_budget_and_replay_rank() -> None:
     assert args.replay_eval_run_hourly_policy is False
     assert args.replay_eval_robust_start_states == ""
     assert args.replay_eval_hourly_periods_per_year == 8760.0
+    assert args.prod_launch_script == DEFAULT_PROD_LAUNCH_SCRIPT
+    assert args.eval_tradable_symbols == ""
+    assert args.eval_max_leverage is None
+    assert args.eval_disable_shorts is None
 
 
 def test_parse_args_accepts_robust_replay_rank_metrics() -> None:
@@ -56,6 +62,77 @@ def test_parse_args_accepts_robust_replay_rank_metrics() -> None:
     assert args.replay_eval_run_hourly_policy is True
     assert args.replay_eval_robust_start_states == "flat,long:BTCUSD:0.25"
     assert args.replay_eval_hourly_periods_per_year == 365.0
+
+
+def test_resolve_eval_constraints_defaults_to_prod_launch_config() -> None:
+    max_leverage, tradable_symbols, disable_shorts = resolve_eval_constraints(
+        prod_launch_script=DEFAULT_PROD_LAUNCH_SCRIPT,
+        eval_max_leverage=None,
+        eval_tradable_symbols="",
+        eval_disable_shorts=None,
+    )
+
+    assert max_leverage == 0.5
+    assert tradable_symbols == "BTCUSD,ETHUSD,SOLUSD,DOGEUSD,AAVEUSD,LINKUSD"
+    assert disable_shorts is True
+
+
+def test_resolve_eval_constraints_honors_explicit_overrides() -> None:
+    max_leverage, tradable_symbols, disable_shorts = resolve_eval_constraints(
+        prod_launch_script=DEFAULT_PROD_LAUNCH_SCRIPT,
+        eval_max_leverage=1.25,
+        eval_tradable_symbols="BTCUSD,ETHUSD",
+        eval_disable_shorts=False,
+    )
+
+    assert max_leverage == 1.25
+    assert tradable_symbols == "BTCUSD,ETHUSD"
+    assert disable_shorts is False
+
+
+def test_resolve_eval_constraints_without_prod_launch_keeps_shorts_enabled() -> None:
+    max_leverage, tradable_symbols, disable_shorts = resolve_eval_constraints(
+        prod_launch_script="",
+        eval_max_leverage=None,
+        eval_tradable_symbols="",
+        eval_disable_shorts=None,
+    )
+
+    assert max_leverage == 1.0
+    assert tradable_symbols == ""
+    assert disable_shorts is False
+
+
+def test_resolve_eval_constraints_handles_gemini_only_launch(tmp_path: Path) -> None:
+    launch = tmp_path / "launch.sh"
+    launch.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                "exec /tmp/.venv/bin/python -u \\",
+                "  rl_trading_agent_binance/trade_binance_live.py \\",
+                "  --live \\",
+                "  --model gemini-3.1-flash-lite-preview \\",
+                "  --symbols BTCUSD ETHUSD SOLUSD \\",
+                "  --execution-mode margin \\",
+                "  --leverage 0.5 \\",
+                "  --interval 3600 \\",
+                "  --fallback-mode chronos2 \\",
+                '  "$@"',
+            ]
+        )
+    )
+
+    max_leverage, tradable_symbols, disable_shorts = resolve_eval_constraints(
+        prod_launch_script=str(launch),
+        eval_max_leverage=None,
+        eval_tradable_symbols="",
+        eval_disable_shorts=None,
+    )
+
+    assert max_leverage == 0.5
+    assert tradable_symbols == "BTCUSD,ETHUSD,SOLUSD"
+    assert disable_shorts is False
 
 
 def test_build_rsync_cmd_targets_remote_repo() -> None:

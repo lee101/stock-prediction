@@ -554,6 +554,8 @@ def build_remote_autoresearch_plan(
     holdout_fill_buffer_bps: float = 5.0,
     holdout_max_leverage: float = 1.0,
     holdout_short_borrow_apr: float = 0.0,
+    eval_tradable_symbols: str | Sequence[str] | None = None,
+    eval_disable_shorts: bool = False,
     replay_eval_data: str | None = None,
     replay_eval_hourly_root: str = "",
     replay_eval_start_date: str = "",
@@ -624,6 +626,9 @@ def build_remote_autoresearch_plan(
         _append_optional_cli_arg(cmd, "--holdout-fill-buffer-bps", holdout_fill_buffer_bps)
         _append_optional_cli_arg(cmd, "--holdout-max-leverage", holdout_max_leverage)
         _append_optional_cli_arg(cmd, "--holdout-short-borrow-apr", holdout_short_borrow_apr)
+    _append_optional_cli_arg(cmd, "--eval-tradable-symbols", eval_tradable_symbols)
+    if eval_disable_shorts:
+        cmd.append("--eval-disable-shorts")
     if market_validation_asset_class:
         _append_optional_cli_arg(cmd, "--market-validation-asset-class", market_validation_asset_class)
         if market_validation_days > 0:
@@ -685,6 +690,10 @@ def build_remote_autoresearch_plan(
             ]
             cache_path = post_eval_cache_path or f"{run_dir}/marketsim_cache.json"
             fast_eval_cmd.extend(["--cache-path", cache_path])
+            _append_optional_cli_arg(fast_eval_cmd, "--max-leverage", holdout_max_leverage)
+            _append_optional_cli_arg(fast_eval_cmd, "--tradable-symbols", eval_tradable_symbols)
+            if eval_disable_shorts:
+                fast_eval_cmd.append("--disable-shorts")
             if not post_eval_use_compile:
                 fast_eval_cmd.append("--no-compile")
             if not post_eval_parallel:

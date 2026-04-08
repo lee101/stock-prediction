@@ -527,6 +527,8 @@ def run_rl_experiment_on_pod(
     holdout_eval_steps: int = 0,
     holdout_n_windows: int = 0,
     holdout_fill_buffer_bps: float = 0.0,
+    eval_tradable_symbols: str = "",
+    eval_disable_shorts: bool = False,
     max_steps_override: int = 0,
     max_timesteps_per_sample: int = 0,
     fee_rate_override: float = -1.0,
@@ -573,6 +575,10 @@ def run_rl_experiment_on_pod(
         extra_args.extend(["--holdout-n-windows", str(holdout_n_windows)])
     if holdout_fill_buffer_bps > 0:
         extra_args.extend(["--holdout-fill-buffer-bps", str(holdout_fill_buffer_bps)])
+    if eval_tradable_symbols:
+        extra_args.extend(["--eval-tradable-symbols", shlex.quote(eval_tradable_symbols)])
+    if eval_disable_shorts:
+        extra_args.append("--eval-disable-shorts")
     if max_steps_override > 0:
         extra_args.extend(["--max-steps-override", str(max_steps_override)])
     if max_timesteps_per_sample > 0:
@@ -792,6 +798,8 @@ def cmd_run(args: argparse.Namespace) -> None:
             holdout_eval_steps=getattr(args, "holdout_eval_steps", 0),
             holdout_n_windows=getattr(args, "holdout_n_windows", 0),
             holdout_fill_buffer_bps=getattr(args, "holdout_fill_buffer_bps", 0.0),
+            eval_tradable_symbols=getattr(args, "eval_tradable_symbols", ""),
+            eval_disable_shorts=getattr(args, "eval_disable_shorts", False),
             max_steps_override=getattr(args, "max_steps_override", 0),
             max_timesteps_per_sample=getattr(args, "max_timesteps_per_sample", 0),
             fee_rate_override=getattr(args, "fee_rate_override", -1.0),
@@ -944,6 +952,14 @@ def main() -> None:
     run_p.add_argument(
         "--holdout-fill-buffer-bps", type=float, default=0.0,
         help="Fill buffer bps for holdout eval",
+    )
+    run_p.add_argument(
+        "--eval-tradable-symbols", default="",
+        help="Comma-separated tradable symbol subset for holdout and replay eval",
+    )
+    run_p.add_argument(
+        "--eval-disable-shorts", action="store_true",
+        help="Mask short actions during holdout and replay eval",
     )
     run_p.add_argument(
         "--max-steps-override", type=int, default=0,

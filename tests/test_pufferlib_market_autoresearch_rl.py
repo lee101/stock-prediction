@@ -563,14 +563,18 @@ def test_run_trial_collects_replay_eval_metrics(monkeypatch, tmp_path: Path) -> 
         replay_eval_end_date="2026-02-05",
         replay_eval_run_hourly_policy=True,
         replay_eval_robust_start_states="flat,long:AAA:0.25",
+        eval_tradable_symbols="AAA,BBB",
+        eval_disable_shorts=True,
         rank_metric="replay_hourly_policy_robust_worst_return_pct",
     )
 
     replay_cmd = next(cmd for cmd in commands if "pufferlib_market.replay_eval" in cmd)
     assert replay_cmd[replay_cmd.index("--hourly-data-root") + 1] == "trainingdatahourly"
     assert replay_cmd[replay_cmd.index("--fill-buffer-bps") + 1] == "5.0"
+    assert replay_cmd[replay_cmd.index("--tradable-symbols") + 1] == "AAA,BBB"
     assert replay_cmd[replay_cmd.index("--robust-start-states") + 1] == "flat,long:AAA:0.25"
     assert "--run-hourly-policy" in replay_cmd
+    assert "--disable-shorts" in replay_cmd
     assert result["replay_hourly_return_pct"] == pytest.approx(3.0)
     assert result["replay_hourly_robust_worst_return_pct"] == pytest.approx(-4.0)
     assert result["replay_hourly_policy_robust_worst_return_pct"] == pytest.approx(-8.0)
@@ -849,10 +853,14 @@ def test_run_trial_passes_holdout_fill_buffer_bps(monkeypatch, tmp_path: Path) -
         holdout_eval_steps=10,
         holdout_n_windows=3,
         holdout_fill_buffer_bps=7.5,
+        eval_tradable_symbols="AAA,BBB",
+        eval_disable_shorts=True,
     )
 
     holdout_cmd = next(cmd for cmd in commands if "pufferlib_market.evaluate_holdout" in cmd)
     assert holdout_cmd[holdout_cmd.index("--fill-buffer-bps") + 1] == "7.5"
+    assert holdout_cmd[holdout_cmd.index("--tradable-symbols") + 1] == "AAA,BBB"
+    assert "--disable-shorts" in holdout_cmd
 
 
 def test_main_creates_leaderboard_parent_directory(monkeypatch, tmp_path: Path) -> None:
