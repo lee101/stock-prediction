@@ -280,16 +280,26 @@ def _overlay_cutoff_timestamp(frame: pd.DataFrame, config: TaskConfig) -> pd.Tim
     return latest_ts - pd.Timedelta(days=int(config.recent_overlay_bars))
 
 
+def _try_read_symbol_bars_from_path(path: Path | None, symbol: str) -> pd.DataFrame | None:
+    if path is None:
+        return None
+    try:
+        return _read_symbol_bars_from_path(path, symbol)
+    except FileNotFoundError:
+        return None
+
+
 def _load_symbol_bars(symbol: str, config: TaskConfig) -> pd.DataFrame:
     symbol_name = symbol.upper()
     primary_path = Path(config.data_root) / f"{symbol_name}.csv"
     recent_path = Path(config.recent_data_root) / f"{symbol_name}.csv" if config.recent_data_root is not None else None
 
     parts: list[pd.DataFrame] = []
-    if primary_path.exists():
-        parts.append(_read_symbol_bars_from_path(primary_path, symbol_name))
-    if recent_path is not None and recent_path.exists():
-        recent = _read_symbol_bars_from_path(recent_path, symbol_name)
+    primary = _try_read_symbol_bars_from_path(primary_path, symbol_name)
+    if primary is not None:
+        parts.append(primary)
+    recent = _try_read_symbol_bars_from_path(recent_path, symbol_name)
+    if recent is not None:
         cutoff = _overlay_cutoff_timestamp(recent, config)
         if cutoff is not None:
             recent = recent.loc[pd.to_datetime(recent["timestamp"], utc=True) >= cutoff].copy()
