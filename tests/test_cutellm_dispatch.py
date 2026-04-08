@@ -200,6 +200,10 @@ def test_enforce_budget_dry_run_warns_not_raises(capsys):
     assert "10.00" in out
 
 
+def test_cutellm_dispatch_uses_shared_safe_ssh_options() -> None:
+    assert dispatch._SSH_OPTS == ["-o", "StrictHostKeyChecking=accept-new", "-o", "BatchMode=yes"]
+
+
 # ---------------------------------------------------------------------------
 # load_llm_experiments
 # ---------------------------------------------------------------------------

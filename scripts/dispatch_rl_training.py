@@ -40,6 +40,7 @@ from src.runpod_client import (  # noqa: E402
     is_capacity_error,
     resolve_gpu_type,
 )
+from src.runpod_remote_utils import SSH_OPTIONS  # noqa: E402
 from src.remote_training_pipeline import DEFAULT_REMOTE_ENV  # noqa: E402
 
 
@@ -61,7 +62,7 @@ _STOCKS_PERIODS_PER_YEAR = 252.0
 _STOCKS_HOLDOUT_EVAL_STEPS = 90
 
 # SSH options used consistently across all remote calls.
-_SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes"]
+_SSH_OPTS = list(SSH_OPTIONS)
 
 _SETUP_OVERHEAD_SECS = 1800  # code sync + bootstrap + teardown
 _REMOTE_READY_TIMEOUT_SECS = 180
