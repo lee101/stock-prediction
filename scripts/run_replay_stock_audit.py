@@ -53,6 +53,42 @@ def _latest_alias_paths(output_dir: Path) -> dict[str, Path]:
     }
 
 
+def _run_manifest_path(report_path: Path) -> Path:
+    return report_path.with_suffix(".run.json")
+
+
+def _run_manifest_payload(
+    *,
+    status: str,
+    started_at: datetime,
+    report_path: Path,
+    html_path: Path,
+    manifest_path: Path,
+    replay_args: list[str],
+    latest_alias_paths: dict[str, Path] | None,
+    latest_alias_results: dict[str, str | None] | None = None,
+    error: Exception | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "status": status,
+        "started_at_utc": started_at.isoformat(),
+        "completed_at_utc": datetime.now(UTC).isoformat(),
+        "report_path": str(report_path),
+        "visualization_path": str(html_path),
+        "run_manifest_path": str(manifest_path),
+        "latest_alias_paths": (
+            None if latest_alias_paths is None else {key: str(path) for key, path in latest_alias_paths.items()}
+        ),
+        "replay_args": replay_args,
+    }
+    if latest_alias_results is not None or status == "success":
+        payload["latest_alias_results"] = latest_alias_results
+    if error is not None:
+        payload["error_type"] = type(error).__name__
+        payload["error"] = str(error)
+    return payload
+
+
 def build_replay_args(args: argparse.Namespace, *, report_path: Path, html_path: Path) -> list[str]:
     def _fmt_float(value: float) -> str:
         return f"{float(value):g}"
@@ -207,6 +243,14 @@ def _write_latest_aliases_best_effort(*, output_dir: Path, report_path: Path) ->
         return None
 
 
+def _write_run_manifest_best_effort(*, manifest_path: Path, payload: dict[str, object]) -> None:
+    try:
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    except Exception as exc:  # pragma: no cover - exercised via tests with monkeypatch
+        print(f"Warning: failed to write replay run manifest: {exc}", file=sys.stderr)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run a stock trade-log replay audit with auto-named JSON and HTML artifacts."
@@ -257,6 +301,8 @@ def main(argv: list[str] | None = None) -> None:
         name=args.name,
     )
     replay_args = build_replay_args(args, report_path=report_path, html_path=html_path)
+    manifest_path = _run_manifest_path(report_path)
+    latest_alias_paths = None if args.no_latest_alias else _latest_alias_paths(args.output_dir)
 
     if args.dry_run:
         payload = {
@@ -264,17 +310,54 @@ def main(argv: list[str] | None = None) -> None:
             "visualization_path": str(html_path),
             "latest_alias_paths": (
                 None
-                if args.no_latest_alias
-                else {key: str(path) for key, path in _latest_alias_paths(args.output_dir).items()}
+                if latest_alias_paths is None
+                else {key: str(path) for key, path in latest_alias_paths.items()}
             ),
+            "run_manifest_path": str(manifest_path),
             "replay_args": replay_args,
         }
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
 
-    replay_mod.main(replay_args)
-    if not args.no_latest_alias and report_path.exists():
-        _write_latest_aliases_best_effort(output_dir=args.output_dir, report_path=report_path)
+    started_at = datetime.now(UTC)
+    try:
+        replay_mod.main(replay_args)
+    except Exception as exc:
+        _write_run_manifest_best_effort(
+            manifest_path=manifest_path,
+            payload=_run_manifest_payload(
+                status="failure",
+                started_at=started_at,
+                report_path=report_path,
+                html_path=html_path,
+                manifest_path=manifest_path,
+                replay_args=replay_args,
+                latest_alias_paths=latest_alias_paths,
+                error=exc,
+            ),
+        )
+        print(
+            f"Replay stock audit failed. See run manifest: {manifest_path}",
+            file=sys.stderr,
+        )
+        raise
+
+    alias_payload = None
+    if latest_alias_paths is not None and report_path.exists():
+        alias_payload = _write_latest_aliases_best_effort(output_dir=args.output_dir, report_path=report_path)
+    _write_run_manifest_best_effort(
+        manifest_path=manifest_path,
+        payload=_run_manifest_payload(
+            status="success",
+            started_at=started_at,
+            report_path=report_path,
+            html_path=html_path,
+            manifest_path=manifest_path,
+            replay_args=replay_args,
+            latest_alias_paths=latest_alias_paths,
+            latest_alias_results=alias_payload,
+        ),
+    )
 
 
 if __name__ == "__main__":
