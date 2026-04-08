@@ -3513,6 +3513,50 @@ def test_execute_signal_with_trading_server_rotation_close_does_not_force_loss_e
         "metadata": {"strategy": "daily_stock_rl", "intent": "close_managed"},
     }
 
+
+def test_execute_signal_with_trading_server_holds_position_when_loss_guard_blocks_close(caplog) -> None:
+    submitted: list[dict[str, object]] = []
+
+    class _FakeServerClient:
+        def get_account(self):
+            return {
+                "cash": 5_000.0,
+                "buying_power": 5_000.0,
+                "positions": {
+                    "AAPL": {"qty": 10.0, "avg_entry_price": 100.0, "current_price": 95.0},
+                },
+            }
+
+        def refresh_prices(self, *, symbols):
+            return {"accounts": []}
+
+        def submit_limit_order(self, **kwargs):
+            submitted.append(dict(kwargs))
+            if kwargs["side"] == "sell":
+                raise RuntimeError(
+                    "400: sell rejected for AAPL: limit 95.0000 is below safety floor 100.0000. "
+                    "Loss-taking exits require allow_loss_exit=true and a force_exit_reason."
+                )
+            return {"order": {"id": "order-2"}}
+
+    state = daily_stock.StrategyState(active_symbol="AAPL", active_qty=10.0, entry_price=100.0)
+    changed = daily_stock.execute_signal_with_trading_server(
+        SimpleNamespace(symbol="MSFT", direction="long", action="long_MSFT"),
+        server_client=_FakeServerClient(),
+        quotes={"AAPL": 95.0, "MSFT": 50.0},
+        state=state,
+        symbols=["AAPL", "MSFT"],
+        allocation_pct=25.0,
+        dry_run=False,
+        now=datetime(2026, 3, 16, 14, 0, tzinfo=timezone.utc),
+    )
+
+    assert changed is False
+    assert len(submitted) == 1
+    assert state.active_symbol == "AAPL"
+    assert state.pending_close_symbol is None
+    assert "Server rejected ordinary sell for AAPL" in caplog.text
+
 def test_adopt_existing_position_populates_state() -> None:
     state = daily_stock.StrategyState()
     adopted = daily_stock.adopt_existing_position(
@@ -5521,6 +5565,52 @@ def test_execute_multi_position_signals_with_trading_server_rebalances_existing_
             "metadata": {"strategy": "daily_stock_rl", "intent": "open_portfolio_position"},
         },
     ]
+
+
+def test_execute_multi_position_signals_with_trading_server_keeps_position_when_loss_guard_blocks_trim(
+    caplog,
+) -> None:
+    submitted: list[dict[str, object]] = []
+
+    class _FakeServerClient:
+        def get_account(self):
+            return {
+                "cash": 7_000.0,
+                "buying_power": 7_000.0,
+                "positions": {
+                    "AAPL": {"qty": 30.0, "avg_entry_price": 100.0, "current_price": 95.0},
+                },
+            }
+
+        def refresh_prices(self, *, symbols):
+            return {"accounts": []}
+
+        def submit_limit_order(self, **kwargs):
+            submitted.append(dict(kwargs))
+            if kwargs["side"] == "sell":
+                raise RuntimeError(
+                    "400: sell rejected for AAPL: limit 95.0000 is below safety floor 100.0000. "
+                    "Loss-taking exits require allow_loss_exit=true and a force_exit_reason."
+                )
+            return {"order": {"id": f"order-{len(submitted)}"}}
+
+    held = daily_stock.execute_multi_position_signals_with_trading_server(
+        [
+            daily_stock.TradingSignal("rebalance_aapl", "AAPL", "long", 0.8, 1.0, 0.25, 0.0),
+            daily_stock.TradingSignal("open_msft", "MSFT", "long", 0.7, 1.0, 0.75, 0.0),
+        ],
+        server_client=_FakeServerClient(),
+        quotes={"AAPL": 95.0, "MSFT": 50.0},
+        symbols=["AAPL", "MSFT"],
+        total_allocation_pct=50.0,
+        dry_run=False,
+    )
+
+    assert held == {"AAPL": pytest.approx(30.0)}
+    assert any(order["side"] == "sell" for order in submitted)
+    assert not any(order["side"] == "buy" for order in submitted)
+    assert "Server rejected ordinary sell for AAPL" in caplog.text
+    assert "skipped 1 buy order(s) because loss guard kept existing positions in AAPL" in caplog.text
 
 
 def test_execute_multi_position_signals_with_trading_server_scales_shared_buying_power_budget() -> None:

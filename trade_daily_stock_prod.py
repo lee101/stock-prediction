@@ -1917,6 +1917,40 @@ def _marketable_limit_price(price: float, side: str, *, buffer_bps: float = SERV
     return round(float(price) / scale, 4)
 
 
+def _is_server_loss_guard_rejection(exc: Exception) -> bool:
+    text = str(exc)
+    return "below safety floor" in text and "allow_loss_exit=true" in text
+
+
+def _submit_server_limit_order_with_loss_guard(
+    server_client: TradingServerClientLike,
+    *,
+    symbol: str,
+    qty: float,
+    side: str,
+    limit_price: float,
+    metadata: dict[str, object],
+) -> dict[str, object] | None:
+    try:
+        return server_client.submit_limit_order(
+            symbol=symbol,
+            qty=qty,
+            side=side,
+            limit_price=limit_price,
+            metadata=metadata,
+        )
+    except Exception as exc:
+        if side == "sell" and _is_server_loss_guard_rejection(exc):
+            logger.warning(
+                "Server rejected ordinary sell for %s at %.4f due to loss guard; keeping position: %s",
+                symbol,
+                limit_price,
+                exc,
+            )
+            return None
+        raise
+
+
 def execute_signal_with_trading_server(
     signal,
     *,
@@ -1957,13 +1991,16 @@ def execute_signal_with_trading_server(
         logger.info("Closing managed server position: %s qty=%.4f", managed_symbol, qty)
         if not dry_run:
             server_client.refresh_prices(symbols=[managed_symbol])
-            order = server_client.submit_limit_order(
+            order = _submit_server_limit_order_with_loss_guard(
+                server_client,
                 symbol=managed_symbol,
                 qty=qty,
                 side="sell",
                 limit_price=float(quotes[managed_symbol]),
                 metadata={"strategy": "daily_stock_rl", "intent": "close_managed"},
             )
+            if order is None:
+                return False
             state.last_order_id = str(order.get("order", {}).get("id", ""))
             state.pending_close_symbol = managed_symbol
             state.pending_close_order_id = state.last_order_id
@@ -2378,6 +2415,7 @@ def execute_multi_position_signals_with_trading_server(
     buy_orders: list[tuple[str, float, float, str]] = []
     orders_placed = 0
     held: dict[str, float] = {}
+    actual_held: dict[str, float] = dict(existing_qty_by_symbol)
     for sym, existing_qty in existing_qty_by_symbol.items():
         if sym in target_plan:
             continue
@@ -2423,15 +2461,33 @@ def execute_multi_position_signals_with_trading_server(
     if not dry_run and (sell_orders or buy_orders):
         refresh_symbols = sorted({symbol for symbol, *_rest in sell_orders + buy_orders})
         server_client.refresh_prices(symbols=refresh_symbols)
+        blocked_sell_symbols: list[str] = []
         for sym, qty, sell_price, intent in sell_orders:
-            server_client.submit_limit_order(
+            order = _submit_server_limit_order_with_loss_guard(
+                server_client,
                 symbol=sym,
                 qty=qty,
                 side="sell",
                 limit_price=sell_price,
                 metadata={"strategy": "daily_stock_rl", "intent": intent},
             )
+            if order is None:
+                blocked_sell_symbols.append(sym)
+                actual_held[sym] = existing_qty_by_symbol.get(sym, 0.0)
+                continue
+            remaining_qty = max(0.0, actual_held.get(sym, 0.0) - qty)
+            if remaining_qty <= _PORTFOLIO_REBALANCE_QTY_EPSILON:
+                actual_held.pop(sym, None)
+            else:
+                actual_held[sym] = remaining_qty
             orders_placed += 1
+        if blocked_sell_symbols:
+            logger.warning(
+                "Server multi-pos: skipped %d buy order(s) because loss guard kept existing positions in %s",
+                len(buy_orders),
+                ", ".join(sorted(blocked_sell_symbols)),
+            )
+            return {sym: qty for sym, qty in actual_held.items() if qty > _PORTFOLIO_REBALANCE_QTY_EPSILON}
         for sym, qty, price, intent in buy_orders:
             server_client.submit_limit_order(
                 symbol=sym,
@@ -2440,6 +2496,7 @@ def execute_multi_position_signals_with_trading_server(
                 limit_price=_marketable_limit_price(price, "buy"),
                 metadata={"strategy": "daily_stock_rl", "intent": intent},
             )
+            actual_held[sym] = actual_held.get(sym, 0.0) + qty
             orders_placed += 1
 
     logger.info(
@@ -2447,7 +2504,9 @@ def execute_multi_position_signals_with_trading_server(
         orders_placed,
         len(held),
     )
-    return held
+    if dry_run:
+        return held
+    return {sym: qty for sym, qty in actual_held.items() if qty > _PORTFOLIO_REBALANCE_QTY_EPSILON}
 
 
 def reconcile_pending_close(
