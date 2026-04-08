@@ -1,0 +1,67 @@
+# fp4 PPO with Gemini 3.x daily re-planner (A/B arm ON).
+# All other fp4 configs leave gemini_replanner unset (== False).
+# Real Gemini API calls are gated on BOTH gemini_replanner=True AND
+# GEMINI_API_KEY being set in the environment. Otherwise the planner falls
+# back to a deterministic stub so marketsim runs never bill.
+env:
+  name: crypto12
+  train_data: pufferlib_market/data/crypto12_train.bin
+  val_data: pufferlib_market/data/crypto12_val.bin
+  fee_rate: 0.001
+  fill_buffer_bps: 5
+  decision_lag: 2
+  binary_fills: true
+  action_mode: dps
+  max_leverage: 5.0
+  max_leverage_scalar_fallback: 1.5
+
+ppo:
+  hidden_size: 1024
+  lr: 3.0e-4
+  anneal_lr: true
+  ent_coef: 0.05
+  ent_coef_end: 0.02
+  clip_eps: 0.2
+  num_envs: 64
+  rollout_len: 256
+  ppo_epochs: 4
+  minibatch_size: 2048
+  total_timesteps: 300_000_000
+  smooth_downside_temperature: 0.01
+  obs_norm: true
+
+curriculum:
+  leverage_start: 1.0
+  leverage_target: 2.0
+  ramp_steps: 500_000
+
+objective:
+  monthly_target_return: 0.27
+  max_dd_target: 0.08
+
+# Gemini 3.x daily re-planner — A/B arm ON.
+gemini_replanner: true
+gemini_model: gemini-3-pro
+gemini_universe: [BTC, ETH, SOL, SPY, QQQ, NVDA, TSLA, MSFT]
+# Deterministic fallback used when GEMINI_API_KEY is missing or the API fails.
+# Keeps marketsim reproducible and zero-cost.
+fallback_plan:
+  BTC:  {dir: 0.2, size_frac: 0.15, max_lev: 2.0, confidence: 0.5}
+  ETH:  {dir: 0.2, size_frac: 0.15, max_lev: 2.0, confidence: 0.5}
+  SOL:  {dir: 0.1, size_frac: 0.10, max_lev: 1.5, confidence: 0.4}
+  SPY:  {dir: 0.1, size_frac: 0.10, max_lev: 1.5, confidence: 0.5}
+  QQQ:  {dir: 0.1, size_frac: 0.10, max_lev: 1.5, confidence: 0.5}
+  NVDA: {dir: 0.1, size_frac: 0.08, max_lev: 1.5, confidence: 0.4}
+  TSLA: {dir: 0.0, size_frac: 0.05, max_lev: 1.0, confidence: 0.3}
+  MSFT: {dir: 0.1, size_frac: 0.08, max_lev: 1.5, confidence: 0.5}
+
+eval:
+  slippage_bps: [0, 5, 10, 20]
+  n_windows: 58
+  fill_buffer_bps: 5
+  decision_lag: 2
+
+target:
+  sortino: 5.0
+  monthly_return: 0.27
+  max_dd: 0.08
