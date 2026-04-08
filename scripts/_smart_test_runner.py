@@ -209,6 +209,17 @@ def main() -> None:
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose pytest output")
     parser.add_argument("--dry-run", "-n", action="store_true", help="Show what would be tested without running")
     parser.add_argument("--base-branch", "-b", default="main", help="Base branch for comparison (default: main)")
+    lane_group = parser.add_mutually_exclusive_group()
+    lane_group.add_argument(
+        "--priority-only",
+        action="store_true",
+        help="Run only the fail-fast priority lane",
+    )
+    lane_group.add_argument(
+        "--remaining-only",
+        action="store_true",
+        help="Run only the remaining non-priority lane",
+    )
     args = parser.parse_args()
 
     print("Smart Test Runner")
@@ -229,19 +240,39 @@ def main() -> None:
     print("\nTest execution plan:")
     print(f"  Priority tests (fail-fast): {len(priority_tests)}")
     print(f"  Remaining tests: {len(remaining_tests)}")
+    if args.priority_only:
+        print("  Selected lane: priority only")
+    elif args.remaining_only:
+        print("  Selected lane: remaining only")
+    else:
+        print("  Selected lane: priority + remaining")
 
-    if not run_tests(priority_tests, "priority", args.verbose, args.dry_run):
-        print("\n❌ PRIORITY TESTS FAILED - Stopping here (fail-fast)")
-        sys.exit(1)
+    if args.remaining_only:
+        remaining_ok = run_tests(remaining_tests, "remaining", args.verbose, args.dry_run)
+    else:
+        if not run_tests(priority_tests, "priority", args.verbose, args.dry_run):
+            print("\n❌ PRIORITY TESTS FAILED - Stopping here (fail-fast)")
+            sys.exit(1)
+        if args.priority_only:
+            remaining_ok = True
+        else:
+            remaining_ok = run_tests(remaining_tests, "remaining", args.verbose, args.dry_run)
+            if not remaining_ok:
+                print("\n⚠️  SOME REMAINING TESTS FAILED (non-fatal)")
 
-    remaining_ok = run_tests(remaining_tests, "remaining", args.verbose, args.dry_run)
-    if not remaining_ok:
-        print("\n⚠️  SOME REMAINING TESTS FAILED (non-fatal)")
-
+    exit_code = 0
     print("\n" + "=" * 80)
-    if remaining_ok:
+    if args.priority_only:
+        print("✅ PRIORITY TESTS PASSED")
+    elif args.remaining_only:
+        if remaining_ok:
+            print("✅ REMAINING TESTS PASSED")
+        else:
+            print("❌ REMAINING TESTS FAILED")
+            exit_code = 1
+    elif remaining_ok:
         print("✅ ALL TESTS PASSED")
     else:
         print("⚠️  PRIORITY TESTS PASSED; REMAINING TESTS HAD FAILURES")
     print("=" * 80)
-    sys.exit(0)
+    sys.exit(exit_code)
