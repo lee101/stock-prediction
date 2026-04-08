@@ -71,6 +71,24 @@ def test_run_tests_cleans_up_nested_basetemp(monkeypatch, tmp_path: Path) -> Non
     assert not basetemp.exists()
 
 
+def test_run_tests_prints_rerun_command_on_failure(
+    monkeypatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def _fake_run(cmd, *args, **kwargs):
+        del args, kwargs
+        return subprocess.CompletedProcess(cmd, 1)
+
+    monkeypatch.setattr(runner_impl.subprocess, "run", _fake_run)
+
+    ok = runner.run_tests(["tests/test_smart_test_runner.py"], "priority", verbose=True, dry_run=False)
+
+    output = capsys.readouterr().out
+    assert ok is False
+    assert "Rerun command:" in output
+    assert f"{sys.executable} -m pytest tests/test_smart_test_runner.py -v --ignore=tests/experimental -x" in output
+
+
 def test_scripts_entrypoint_delegates_to_shared_implementation(monkeypatch) -> None:
     called = False
     repo_root = Path(__file__).resolve().parents[1]

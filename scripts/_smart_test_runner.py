@@ -187,10 +187,21 @@ def run_tests(test_files: list[str], label: str, verbose: bool = False, dry_run:
         result = subprocess.run(cmd, check=False)
     if result.returncode != 0:
         print(f"\n❌ {label.upper()} TESTS FAILED")
+        print("Rerun command:")
+        print(f"  {format_rerun_command(test_files, label=label, verbose=verbose)}")
         return False
 
     print(f"\n✅ {label.upper()} TESTS PASSED")
     return True
+
+
+def format_rerun_command(test_files: list[str], *, label: str, verbose: bool = False) -> str:
+    cmd = [sys.executable, "-m", "pytest", *test_files]
+    if verbose:
+        cmd.append("-v")
+    cmd.extend(["--ignore=tests/experimental"])
+    cmd.append("-x" if label == "priority" else "--maxfail=20")
+    return " ".join(cmd)
 
 
 def main() -> None:
