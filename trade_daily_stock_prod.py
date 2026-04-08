@@ -4825,6 +4825,33 @@ def run_backtest_variant_matrix_via_trading_server(
         extra_checkpoints=extra_checkpoints,
         allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
     )
+    return _run_backtest_variant_matrix_via_trading_server_with_prepared_data(
+        prepared=prepared,
+        symbols=symbols,
+        days=days,
+        variants=variants,
+        starting_cash=starting_cash,
+        extra_checkpoints=extra_checkpoints,
+        allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+        account_prefix=account_prefix,
+        bot_id_prefix=bot_id_prefix,
+        checkpoint=checkpoint,
+    )
+
+
+def _run_backtest_variant_matrix_via_trading_server_with_prepared_data(
+    *,
+    prepared: PreparedDailyBacktestData,
+    symbols: Iterable[str],
+    days: int,
+    variants: Sequence[BacktestVariantSpec],
+    starting_cash: float = DEFAULT_BACKTEST_STARTING_CASH,
+    extra_checkpoints: Optional[list[str]] = None,
+    allow_unsafe_checkpoint_loading: bool = False,
+    account_prefix: str = DEFAULT_BACKTEST_SERVER_ACCOUNT,
+    bot_id_prefix: str = DEFAULT_BACKTEST_SERVER_BOT_ID,
+    checkpoint: str = "",
+) -> list[dict[str, float | int | str]]:
     results: list[dict[str, float | int | str]] = []
     for idx, variant in enumerate(variants):
         metrics = _run_backtest_via_trading_server_with_prepared_data(
@@ -4855,6 +4882,50 @@ def run_backtest_variant_matrix_via_trading_server(
             }
         )
     return results
+
+
+def run_backtest_multi_window_variant_matrix_via_trading_server(
+    *,
+    checkpoint: str,
+    symbols: Iterable[str],
+    data_dir: str,
+    days_list: Sequence[int],
+    variants: Sequence[BacktestVariantSpec],
+    starting_cash: float = DEFAULT_BACKTEST_STARTING_CASH,
+    extra_checkpoints: Optional[list[str]] = None,
+    allow_unsafe_checkpoint_loading: bool = False,
+    account_prefix: str = DEFAULT_BACKTEST_SERVER_ACCOUNT,
+    bot_id_prefix: str = DEFAULT_BACKTEST_SERVER_BOT_ID,
+) -> list[dict[str, object]]:
+    resolved_days = list(dict.fromkeys(int(day) for day in days_list if int(day) > 0))
+    if not resolved_days:
+        raise ValueError("days_list must contain at least one positive backtest window")
+    prepared = _prepare_daily_backtest_data(
+        checkpoint=checkpoint,
+        symbols=symbols,
+        data_dir=data_dir,
+        days=max(resolved_days),
+        extra_checkpoints=extra_checkpoints,
+        allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+    )
+    return [
+        {
+            "days": int(days),
+            "results": _run_backtest_variant_matrix_via_trading_server_with_prepared_data(
+                prepared=prepared,
+                symbols=symbols,
+                days=int(days),
+                variants=variants,
+                starting_cash=starting_cash,
+                extra_checkpoints=extra_checkpoints,
+                allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+                account_prefix=f"{account_prefix}_{int(days)}",
+                bot_id_prefix=f"{bot_id_prefix}_{int(days)}",
+                checkpoint=checkpoint,
+            ),
+        }
+        for days in resolved_days
+    ]
 
 
 def compare_backtest_to_trading_server(

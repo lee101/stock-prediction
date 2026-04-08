@@ -357,27 +357,51 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         window_results: list[dict[str, object]] = []
-        for days in days_list:
+        if len(days_list) == 1:
             try:
                 results = daily_stock.run_backtest_variant_matrix_via_trading_server(
                     checkpoint=args.checkpoint,
                     symbols=symbols,
                     data_dir=args.data_dir,
-                    days=days,
+                    days=days_list[0],
                     variants=variants,
                     extra_checkpoints=list(daily_stock.DEFAULT_EXTRA_CHECKPOINTS),
                 )
             except Exception as exc:
                 raise RuntimeError(
-                    f"Backtest sweep failed for preset {preset.name} at {int(days)} trading days: {exc}"
+                    f"Backtest sweep failed for preset {preset.name} at {int(days_list[0])} trading days: {exc}"
                 ) from exc
             ranked: list[dict[str, object]] = []
             for row in results:
                 enriched = dict(row)
-                enriched["monthly_return"] = _monthly_return(float(row["total_return"]), days=int(days))
+                enriched["monthly_return"] = _monthly_return(float(row["total_return"]), days=int(days_list[0]))
                 ranked.append(enriched)
             ranked.sort(key=lambda item: float(item["monthly_return"]), reverse=True)
-            window_results.append({"days": int(days), "results": ranked})
+            window_results.append({"days": int(days_list[0]), "results": ranked})
+        else:
+            try:
+                raw_window_results = daily_stock.run_backtest_multi_window_variant_matrix_via_trading_server(
+                    checkpoint=args.checkpoint,
+                    symbols=symbols,
+                    data_dir=args.data_dir,
+                    days_list=days_list,
+                    variants=variants,
+                    extra_checkpoints=list(daily_stock.DEFAULT_EXTRA_CHECKPOINTS),
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "Backtest sweep failed for preset "
+                    f"{preset.name} across windows {','.join(str(item) for item in days_list)}: {exc}"
+                ) from exc
+            for window in raw_window_results:
+                days = int(window["days"])
+                ranked: list[dict[str, object]] = []
+                for row in window["results"]:
+                    enriched = dict(row)
+                    enriched["monthly_return"] = _monthly_return(float(row["total_return"]), days=days)
+                    ranked.append(enriched)
+                ranked.sort(key=lambda item: float(item["monthly_return"]), reverse=True)
+                window_results.append({"days": days, "results": ranked})
 
         if len(window_results) == 1:
             ranked = list(window_results[0]["results"])

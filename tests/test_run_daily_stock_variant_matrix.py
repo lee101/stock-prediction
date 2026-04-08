@@ -149,47 +149,55 @@ def test_resolve_days_prefers_explicit_windows() -> None:
 
 
 def test_main_multi_window_json_reports_summary(monkeypatch, capsys) -> None:
-    captured_days: list[int] = []
+    captured_days_list: list[list[int]] = []
 
-    def _fake_runner(**kwargs):
-        days = int(kwargs["days"])
-        captured_days.append(days)
-        return [
-            {
-                "name": "current_live_12p5",
-                "allocation_pct": 12.5,
-                "allocation_sizing_mode": "static",
-                "multi_position": 0,
-                "multi_position_min_prob_ratio": 0.3,
-                "buying_power_multiplier": 1.0,
-                "total_return": 0.01 if days == 60 else -0.01,
-                "annualized_return": 0.02,
-                "sortino": 0.4 if days == 60 else -0.2,
-                "max_drawdown": -0.03 if days == 60 else -0.05,
-                "trades": 8.0,
-            },
-            {
-                "name": "single_static_25",
-                "allocation_pct": 25.0,
-                "allocation_sizing_mode": "static",
-                "multi_position": 0,
-                "multi_position_min_prob_ratio": 0.3,
-                "buying_power_multiplier": 1.0,
-                "total_return": 0.02 if days == 60 else 0.03,
-                "annualized_return": 0.04,
-                "sortino": 0.8 if days == 60 else 1.0,
-                "max_drawdown": -0.02 if days == 60 else -0.04,
-                "trades": 7.0,
-            },
-        ]
+    def _fake_multi_runner(**kwargs):
+        days_list = [int(day) for day in kwargs["days_list"]]
+        captured_days_list.append(days_list)
+        windows = []
+        for days in days_list:
+            windows.append(
+                {
+                    "days": days,
+                    "results": [
+                        {
+                            "name": "current_live_12p5",
+                            "allocation_pct": 12.5,
+                            "allocation_sizing_mode": "static",
+                            "multi_position": 0,
+                            "multi_position_min_prob_ratio": 0.3,
+                            "buying_power_multiplier": 1.0,
+                            "total_return": 0.01 if days == 60 else -0.01,
+                            "annualized_return": 0.02,
+                            "sortino": 0.4 if days == 60 else -0.2,
+                            "max_drawdown": -0.03 if days == 60 else -0.05,
+                            "trades": 8.0,
+                        },
+                        {
+                            "name": "single_static_25",
+                            "allocation_pct": 25.0,
+                            "allocation_sizing_mode": "static",
+                            "multi_position": 0,
+                            "multi_position_min_prob_ratio": 0.3,
+                            "buying_power_multiplier": 1.0,
+                            "total_return": 0.02 if days == 60 else 0.03,
+                            "annualized_return": 0.04,
+                            "sortino": 0.8 if days == 60 else 1.0,
+                            "max_drawdown": -0.02 if days == 60 else -0.04,
+                            "trades": 7.0,
+                        },
+                    ],
+                }
+            )
+        return windows
 
-    monkeypatch.setattr(sweep_mod.daily_stock, "run_backtest_variant_matrix_via_trading_server", _fake_runner)
+    monkeypatch.setattr(sweep_mod.daily_stock, "run_backtest_multi_window_variant_matrix_via_trading_server", _fake_multi_runner)
 
     exit_code = sweep_mod.main(["--preset", "current_vs_candidates", "--json", "--window", "60", "--window", "120"])
 
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
-    assert captured_days == [60, 120]
+    assert captured_days_list == [[60, 120]]
     assert payload["config"]["days_list"] == [60, 120]
     assert payload["summary"][0]["name"] == "single_static_25"
     assert payload["summary"][0]["window_count"] == 2
@@ -199,38 +207,73 @@ def test_main_multi_window_json_reports_summary(monkeypatch, capsys) -> None:
 
 
 def test_main_multi_window_json_writes_report_file(monkeypatch, tmp_path) -> None:
-    def _fake_runner(**kwargs):
-        days = int(kwargs["days"])
+    def _fake_multi_runner(**kwargs):
         return [
             {
-                "name": "current_live_12p5",
-                "allocation_pct": 12.5,
-                "allocation_sizing_mode": "static",
-                "multi_position": 0,
-                "multi_position_min_prob_ratio": 0.3,
-                "buying_power_multiplier": 1.0,
-                "total_return": -0.01 if days == 120 else 0.0,
-                "annualized_return": -0.02,
-                "sortino": -0.5,
-                "max_drawdown": -0.03,
-                "trades": 8.0,
+                "days": 60,
+                "results": [
+                    {
+                        "name": "current_live_12p5",
+                        "allocation_pct": 12.5,
+                        "allocation_sizing_mode": "static",
+                        "multi_position": 0,
+                        "multi_position_min_prob_ratio": 0.3,
+                        "buying_power_multiplier": 1.0,
+                        "total_return": 0.0,
+                        "annualized_return": -0.02,
+                        "sortino": -0.5,
+                        "max_drawdown": -0.03,
+                        "trades": 8.0,
+                    },
+                    {
+                        "name": "single_static_25",
+                        "allocation_pct": 25.0,
+                        "allocation_sizing_mode": "static",
+                        "multi_position": 0,
+                        "multi_position_min_prob_ratio": 0.3,
+                        "buying_power_multiplier": 1.0,
+                        "total_return": 0.03,
+                        "annualized_return": 0.04,
+                        "sortino": 0.8,
+                        "max_drawdown": -0.02,
+                        "trades": 7.0,
+                    },
+                ],
             },
             {
-                "name": "single_static_25",
-                "allocation_pct": 25.0,
-                "allocation_sizing_mode": "static",
-                "multi_position": 0,
-                "multi_position_min_prob_ratio": 0.3,
-                "buying_power_multiplier": 1.0,
-                "total_return": 0.02 if days == 120 else 0.03,
-                "annualized_return": 0.04,
-                "sortino": 0.8,
-                "max_drawdown": -0.02,
-                "trades": 7.0,
+                "days": 120,
+                "results": [
+                    {
+                        "name": "current_live_12p5",
+                        "allocation_pct": 12.5,
+                        "allocation_sizing_mode": "static",
+                        "multi_position": 0,
+                        "multi_position_min_prob_ratio": 0.3,
+                        "buying_power_multiplier": 1.0,
+                        "total_return": -0.01,
+                        "annualized_return": -0.02,
+                        "sortino": -0.5,
+                        "max_drawdown": -0.03,
+                        "trades": 8.0,
+                    },
+                    {
+                        "name": "single_static_25",
+                        "allocation_pct": 25.0,
+                        "allocation_sizing_mode": "static",
+                        "multi_position": 0,
+                        "multi_position_min_prob_ratio": 0.3,
+                        "buying_power_multiplier": 1.0,
+                        "total_return": 0.02,
+                        "annualized_return": 0.04,
+                        "sortino": 0.8,
+                        "max_drawdown": -0.02,
+                        "trades": 7.0,
+                    },
+                ],
             },
         ]
 
-    monkeypatch.setattr(sweep_mod.daily_stock, "run_backtest_variant_matrix_via_trading_server", _fake_runner)
+    monkeypatch.setattr(sweep_mod.daily_stock, "run_backtest_multi_window_variant_matrix_via_trading_server", _fake_multi_runner)
     output_path = tmp_path / "reports" / "multi_window.json"
 
     exit_code = sweep_mod.main(
