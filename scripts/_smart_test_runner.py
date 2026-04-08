@@ -7,6 +7,7 @@ scripts/ CLI entry point use the same code path.
 """
 
 import argparse
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,7 +17,7 @@ from pathlib import Path
 _IGNORED_TEST_PARTS = {".uvcache", ".pytest_cache", "__pycache__"}
 _IGNORED_TEST_ROOTS = {"tests/experimental"}
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-_NESTED_PYTEST_BASETEMP_ROOT = _REPO_ROOT / ".pytest_tmp" / "smart-test-runner"
+_NESTED_PYTEST_BASETEMP_ROOT = _REPO_ROOT / ".smart-test-runner"
 
 
 def _is_project_test_file(path: Path) -> bool:
@@ -174,23 +175,22 @@ def run_tests(test_files: list[str], label: str, verbose: bool = False, dry_run:
         return True
 
     _NESTED_PYTEST_BASETEMP_ROOT.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(
-        prefix=f"{label}-",
-        dir=_NESTED_PYTEST_BASETEMP_ROOT,
-    ) as nested_basetemp:
-        cmd = [sys.executable, "-m", "pytest", "--basetemp", nested_basetemp, *test_files]
-        if verbose:
-            cmd.append("-v")
-        cmd.extend(["--ignore=tests/experimental"])
-        cmd.append("-x" if label == "priority" else "--maxfail=20")
+    nested_basetemp = tempfile.mktemp(prefix=f"{label}-", dir=_NESTED_PYTEST_BASETEMP_ROOT)
+    cmd = [sys.executable, "-m", "pytest", "--basetemp", nested_basetemp, *test_files]
+    if verbose:
+        cmd.append("-v")
+    cmd.extend(["--ignore=tests/experimental"])
+    cmd.append("-x" if label == "priority" else "--maxfail=20")
 
-        try:
-            result = subprocess.run(cmd, check=False)
-        except OSError as exc:
-            print(f"\n❌ {label.upper()} TESTS FAILED TO START: {exc}")
-            print("Rerun command:")
-            print(f"  {format_rerun_command(test_files, label=label, verbose=verbose)}")
-            return False
+    try:
+        result = subprocess.run(cmd, check=False)
+    except OSError as exc:
+        print(f"\n❌ {label.upper()} TESTS FAILED TO START: {exc}")
+        print("Rerun command:")
+        print(f"  {format_rerun_command(test_files, label=label, verbose=verbose)}")
+        return False
+    finally:
+        shutil.rmtree(nested_basetemp, ignore_errors=True)
     if result.returncode != 0:
         print(f"\n❌ {label.upper()} TESTS FAILED")
         print("Rerun command:")

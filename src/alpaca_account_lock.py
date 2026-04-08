@@ -23,6 +23,7 @@ class AlpacaAccountLock:
     account_name: str
     path: Path
     handle: object
+    registry_key: str
     released: bool = False
 
     def release(self) -> None:
@@ -36,6 +37,9 @@ class AlpacaAccountLock:
                 self.handle.close()
             except Exception:
                 pass
+            held = _HELD_LOCKS.get(self.registry_key)
+            if held is self:
+                _HELD_LOCKS.pop(self.registry_key, None)
 
 
 def _lock_payload(service_name: str, account_name: str) -> dict[str, object]:
@@ -85,6 +89,16 @@ def lock_path_for_account(account_name: str, *, state_dir: str | Path | None = N
 _HELD_LOCKS: dict[str, "AlpacaAccountLock"] = {}
 
 
+def _active_held_lock(registry_key: str) -> AlpacaAccountLock | None:
+    existing = _HELD_LOCKS.get(registry_key)
+    if existing is None:
+        return None
+    if existing.released:
+        _HELD_LOCKS.pop(registry_key, None)
+        return None
+    return existing
+
+
 def acquire_alpaca_account_lock(
     service_name: str,
     *,
@@ -100,9 +114,15 @@ def acquire_alpaca_account_lock(
 
     lock_path = lock_path_for_account(account_name, state_dir=state_dir)
     key = str(lock_path.resolve())
-    existing = _HELD_LOCKS.get(key)
-    if existing is not None and not existing.released:
-        return existing
+    existing = _active_held_lock(key)
+    if existing is not None:
+        if existing.service_name == service_name:
+            return existing
+        raise RuntimeError(
+            "Alpaca account writer lock is already held in-process: "
+            f"account={account_name} path={lock_path} holder_service={existing.service_name} "
+            f"holder_pid={os.getpid()} holder_host={socket.gethostname()}"
+        )
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_path.open("a+", encoding="utf-8")
     try:
@@ -137,6 +157,7 @@ def acquire_alpaca_account_lock(
         account_name=account_name,
         path=lock_path,
         handle=handle,
+        registry_key=key,
     )
     _HELD_LOCKS[key] = lock
     atexit.register(lock.release)
