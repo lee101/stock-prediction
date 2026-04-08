@@ -171,6 +171,101 @@ def _summarize_multi_window_results(
     return summary
 
 
+def _single_window_baseline_comparison(
+    rows: list[dict[str, object]],
+    *,
+    baseline_name: str = "current_live_12p5",
+) -> dict[str, object] | None:
+    baseline = next((row for row in rows if str(row["name"]) == baseline_name), None)
+    if baseline is None:
+        return None
+    baseline_metric = float(baseline["monthly_return"])
+    beaters = [
+        {
+            "name": str(row["name"]),
+            "candidate_monthly_return": float(row["monthly_return"]),
+            "delta_monthly_return": float(row["monthly_return"]) - baseline_metric,
+        }
+        for row in rows
+        if str(row["name"]) != baseline_name and float(row["monthly_return"]) > baseline_metric
+    ]
+    beaters.sort(key=lambda item: float(item["delta_monthly_return"]), reverse=True)
+    return {
+        "baseline_name": baseline_name,
+        "baseline_monthly_return": baseline_metric,
+        "beaters": beaters,
+    }
+
+
+def _multi_window_baseline_comparison(
+    rows: list[dict[str, object]],
+    *,
+    baseline_name: str = "current_live_12p5",
+) -> dict[str, object] | None:
+    baseline = next((row for row in rows if str(row["name"]) == baseline_name), None)
+    if baseline is None:
+        return None
+    baseline_avg = float(baseline["avg_monthly_return"])
+    baseline_min = float(baseline["min_monthly_return"])
+    beaters = [
+        {
+            "name": str(row["name"]),
+            "candidate_avg_monthly_return": float(row["avg_monthly_return"]),
+            "candidate_min_monthly_return": float(row["min_monthly_return"]),
+            "delta_avg_monthly_return": float(row["avg_monthly_return"]) - baseline_avg,
+            "delta_min_monthly_return": float(row["min_monthly_return"]) - baseline_min,
+        }
+        for row in rows
+        if str(row["name"]) != baseline_name
+        and float(row["avg_monthly_return"]) > baseline_avg
+    ]
+    beaters.sort(key=lambda item: float(item["delta_avg_monthly_return"]), reverse=True)
+    return {
+        "baseline_name": baseline_name,
+        "baseline_avg_monthly_return": baseline_avg,
+        "baseline_min_monthly_return": baseline_min,
+        "beaters": beaters,
+    }
+
+
+def _format_single_window_baseline_comparison(comparison: dict[str, object] | None) -> str | None:
+    if not comparison:
+        return None
+    baseline_name = str(comparison["baseline_name"])
+    baseline_monthly = float(comparison["baseline_monthly_return"])
+    beaters = list(comparison["beaters"])
+    if not beaters:
+        return f"Baseline {baseline_name}: {baseline_monthly:+.4%} monthly. No tested variant beat it."
+    lead = ", ".join(
+        f"{item['name']} ({float(item['delta_monthly_return']):+.4%})"
+        for item in beaters
+    )
+    return f"Baseline {baseline_name}: {baseline_monthly:+.4%} monthly. Beat baseline: {lead}"
+
+
+def _format_multi_window_baseline_comparison(comparison: dict[str, object] | None) -> str | None:
+    if not comparison:
+        return None
+    baseline_name = str(comparison["baseline_name"])
+    baseline_avg = float(comparison["baseline_avg_monthly_return"])
+    baseline_min = float(comparison["baseline_min_monthly_return"])
+    beaters = list(comparison["beaters"])
+    if not beaters:
+        return (
+            f"Baseline {baseline_name}: avg {baseline_avg:+.4%}, worst {baseline_min:+.4%}. "
+            "No tested variant beat its average monthly return."
+        )
+    lead = ", ".join(
+        f"{item['name']} (avg {float(item['delta_avg_monthly_return']):+.4%}, "
+        f"worst {float(item['delta_min_monthly_return']):+.4%})"
+        for item in beaters
+    )
+    return (
+        f"Baseline {baseline_name}: avg {baseline_avg:+.4%}, worst {baseline_min:+.4%}. "
+        f"Beat baseline: {lead}"
+    )
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a server-aware daily stock variant sweep.")
     parser.add_argument(
@@ -235,18 +330,40 @@ def main(argv: list[str] | None = None) -> int:
 
     if len(window_results) == 1:
         ranked = list(window_results[0]["results"])
+        comparison = _single_window_baseline_comparison(ranked)
         if args.json:
-            print(json.dumps({"config": payload, "results": ranked}, indent=2, sort_keys=True))
+            print(
+                json.dumps(
+                    {"config": payload, "results": ranked, "baseline_comparison": comparison},
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
         else:
             print(f"Daily stock variant sweep: preset={preset.name} days={days_list[0]} symbols={len(symbols)}")
             print(preset.description)
             print(_table_for_results(ranked))
+            message = _format_single_window_baseline_comparison(comparison)
+            if message:
+                print(message)
         return 0
 
     summary = _summarize_multi_window_results(window_results)
+    comparison = _multi_window_baseline_comparison(summary)
 
     if args.json:
-        print(json.dumps({"config": payload, "windows": window_results, "summary": summary}, indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                {
+                    "config": payload,
+                    "windows": window_results,
+                    "summary": summary,
+                    "baseline_comparison": comparison,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
     else:
         print(
             "Daily stock variant sweep: "
@@ -254,6 +371,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(preset.description)
         print(_table_for_multi_window_summary(summary))
+        message = _format_multi_window_baseline_comparison(comparison)
+        if message:
+            print(message)
     return 0
 
 
