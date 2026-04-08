@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import scripts.run_daily_stock_variant_matrix as sweep_mod
 from src.daily_stock_variant_presets import preset_choices, resolve_variant_preset
@@ -286,6 +287,49 @@ def test_main_text_mode_writes_json_report(monkeypatch, tmp_path, capsys) -> Non
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["results"][0]["name"] == "single_static_25"
     assert payload["baseline_comparison"]["beaters"][0]["name"] == "single_static_25"
+
+
+def test_parse_args_rejects_nonpositive_windows() -> None:
+    try:
+        sweep_mod.parse_args(["--window", "0", "--window", "-5"])
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("expected parse_args to reject empty resolved window set")
+
+
+def test_main_returns_error_when_output_json_write_fails(monkeypatch, capsys) -> None:
+    def _boom(self, rendered: str, *, encoding: str) -> int:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "write_text", _boom)
+
+    exit_code = sweep_mod.main(
+        [
+            "--dry-run",
+            "--preset",
+            "promising_only",
+            "--output-json",
+            "reports/sweep.json",
+        ]
+    )
+
+    assert exit_code == 1
+    assert "Failed to write JSON report" in capsys.readouterr().err
+
+
+def test_main_returns_error_when_window_backtest_fails(monkeypatch, capsys) -> None:
+    def _boom(**kwargs):
+        raise RuntimeError("transient broker simulation failure")
+
+    monkeypatch.setattr(sweep_mod.daily_stock, "run_backtest_variant_matrix_via_trading_server", _boom)
+
+    exit_code = sweep_mod.main(["--preset", "current_vs_candidates", "--days", "60"])
+
+    assert exit_code == 1
+    stderr = capsys.readouterr().err
+    assert "Backtest sweep failed" in stderr
+    assert "60 trading days" in stderr
 
 
 def test_table_for_results_contains_headers() -> None:
