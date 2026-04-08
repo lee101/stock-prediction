@@ -25,7 +25,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, time as dt_time, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Lock
+from threading import Event, Lock
 from typing import Iterable, Iterator, Literal, Mapping, Optional, Sequence, TypeAlias, TypedDict, cast
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -347,6 +347,8 @@ _DAILY_TRADER_CACHE_MAX_ENTRIES = 8
 _BARE_POLICY_CACHE_MAX_ENTRIES = 64
 _DAILY_TRADER_CACHE: "OrderedDict[tuple[object, ...], _DailyTraderCacheEntry]" = OrderedDict()
 _BARE_POLICY_CACHE: "OrderedDict[tuple[object, ...], _BarePolicyCacheEntry]" = OrderedDict()
+_DAILY_TRADER_CACHE_INFLIGHT: dict[tuple[object, ...], Event] = {}
+_BARE_POLICY_CACHE_INFLIGHT: dict[tuple[object, ...], Event] = {}
 _DAILY_TRADER_CACHE_LOCK = Lock()
 _BARE_POLICY_CACHE_LOCK = Lock()
 _PORTFOLIO_REBALANCE_QTY_EPSILON = 1e-4
@@ -1163,30 +1165,48 @@ def _load_cached_daily_trader(
         bool(allow_unsafe_checkpoint_loading),
     )
     if stat_result is not None:
-        with _DAILY_TRADER_CACHE_LOCK:
-            cached = _DAILY_TRADER_CACHE.get(cache_key)
-            if cached is not None and cached.size == stat_result.st_size and cached.mtime_ns == stat_result.st_mtime_ns:
-                _DAILY_TRADER_CACHE.move_to_end(cache_key)
-                return _clone_daily_trader_template(cached.trader)
+        while True:
+            with _DAILY_TRADER_CACHE_LOCK:
+                cached = _DAILY_TRADER_CACHE.get(cache_key)
+                if cached is not None and cached.size == stat_result.st_size and cached.mtime_ns == stat_result.st_mtime_ns:
+                    _DAILY_TRADER_CACHE.move_to_end(cache_key)
+                    return _clone_daily_trader_template(cached.trader)
+                inflight = _DAILY_TRADER_CACHE_INFLIGHT.get(cache_key)
+                if inflight is None:
+                    inflight = Event()
+                    _DAILY_TRADER_CACHE_INFLIGHT[cache_key] = inflight
+                    break
+            inflight.wait()
 
-    trader = DailyPPOTrader(
-        checkpoint_path,
-        device=device,
-        long_only=long_only,
-        symbols=list(normalized_symbols) if normalized_symbols else None,
-        allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
-    )
-    if stat_result is not None:
-        template = _clone_daily_trader_template(trader)
-        with _DAILY_TRADER_CACHE_LOCK:
-            _DAILY_TRADER_CACHE[cache_key] = _DailyTraderCacheEntry(
-                size=stat_result.st_size,
-                mtime_ns=stat_result.st_mtime_ns,
-                trader=template,
-            )
-            _DAILY_TRADER_CACHE.move_to_end(cache_key)
-            _prune_ordered_cache(_DAILY_TRADER_CACHE, max_entries=_DAILY_TRADER_CACHE_MAX_ENTRIES)
-    return trader
+    try:
+        trader = DailyPPOTrader(
+            checkpoint_path,
+            device=device,
+            long_only=long_only,
+            symbols=list(normalized_symbols) if normalized_symbols else None,
+            allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+        )
+        if stat_result is not None:
+            template = _clone_daily_trader_template(trader)
+            with _DAILY_TRADER_CACHE_LOCK:
+                _DAILY_TRADER_CACHE[cache_key] = _DailyTraderCacheEntry(
+                    size=stat_result.st_size,
+                    mtime_ns=stat_result.st_mtime_ns,
+                    trader=template,
+                )
+                _DAILY_TRADER_CACHE.move_to_end(cache_key)
+                _prune_ordered_cache(_DAILY_TRADER_CACHE, max_entries=_DAILY_TRADER_CACHE_MAX_ENTRIES)
+                inflight = _DAILY_TRADER_CACHE_INFLIGHT.pop(cache_key, None)
+                if inflight is not None:
+                    inflight.set()
+        return trader
+    except Exception:
+        if stat_result is not None:
+            with _DAILY_TRADER_CACHE_LOCK:
+                inflight = _DAILY_TRADER_CACHE_INFLIGHT.pop(cache_key, None)
+                if inflight is not None:
+                    inflight.set()
+        raise
 
 
 def _load_bare_policy(
@@ -1212,64 +1232,82 @@ def _load_bare_policy(
         bool(allow_unsafe_checkpoint_loading),
     )
     if stat_result is not None:
-        with _BARE_POLICY_CACHE_LOCK:
-            cached = _BARE_POLICY_CACHE.get(cache_key)
-            if cached is not None and cached.size == stat_result.st_size and cached.mtime_ns == stat_result.st_mtime_ns:
-                _BARE_POLICY_CACHE.move_to_end(cache_key)
-                # Bare policies are eval-only (no mutable state changed during inference_mode forward)
-                return cached.policy
+        while True:
+            with _BARE_POLICY_CACHE_LOCK:
+                cached = _BARE_POLICY_CACHE.get(cache_key)
+                if cached is not None and cached.size == stat_result.st_size and cached.mtime_ns == stat_result.st_mtime_ns:
+                    _BARE_POLICY_CACHE.move_to_end(cache_key)
+                    # Bare policies are eval-only (no mutable state changed during inference_mode forward)
+                    return cached.policy
+                inflight = _BARE_POLICY_CACHE_INFLIGHT.get(cache_key)
+                if inflight is None:
+                    inflight = Event()
+                    _BARE_POLICY_CACHE_INFLIGHT[cache_key] = inflight
+                    break
+            inflight.wait()
 
-    ckpt = load_checkpoint_payload(
-        checkpoint_path,
-        map_location=device,
-        allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
-    )
-    # Support multiple checkpoint formats: direct state_dict, {"model": sd}, {"model_state_dict": sd}
-    if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
-        state_dict = ckpt["model_state_dict"]
-    elif isinstance(ckpt, dict) and "model" in ckpt and isinstance(ckpt["model"], dict):
-        state_dict = ckpt["model"]
-    else:
-        state_dict = ckpt
-    encoder_key = [k for k in state_dict if "encoder" in k and "weight" in k]
-    if encoder_key:
-        hidden = state_dict[encoder_key[0]].shape[0]
-        if isinstance(ckpt, dict) and "use_encoder_norm" in ckpt:
-            has_encoder_norm = bool(ckpt["use_encoder_norm"])
-        else:
-            has_encoder_norm = any("encoder_norm" in k for k in state_dict)
-        activation = "relu"
-        if isinstance(ckpt, dict):
-            raw_arch = str(ckpt.get("arch") or "").strip().lower()
-            raw_activation = str(ckpt.get("activation") or "").strip().lower()
-            if raw_arch == "mlp_relu_sq" or raw_activation == "relu_sq":
-                activation = "relu_sq"
-        from pufferlib_market.train import TradingPolicy
-        policy = TradingPolicy(
-            obs_size,
-            num_actions,
-            hidden,
-            activation=activation,
-            use_encoder_norm=has_encoder_norm,
+    try:
+        ckpt = load_checkpoint_payload(
+            checkpoint_path,
+            map_location=device,
+            allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
         )
-    else:
-        input_proj_key = [k for k in state_dict if "input_proj" in k and "weight" in k]
-        hidden = state_dict[input_proj_key[0]].shape[0] if input_proj_key else 256
-        from pufferlib_market.inference import Policy
-        policy = Policy(obs_size, num_actions, hidden, 3)
-    policy.load_state_dict(state_dict, strict=False)
-    policy.to(torch.device(device))
-    policy.eval()
-    if stat_result is not None:
-        with _BARE_POLICY_CACHE_LOCK:
-            _BARE_POLICY_CACHE[cache_key] = _BarePolicyCacheEntry(
-                size=stat_result.st_size,
-                mtime_ns=stat_result.st_mtime_ns,
-                policy=policy,
+        # Support multiple checkpoint formats: direct state_dict, {"model": sd}, {"model_state_dict": sd}
+        if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
+            state_dict = ckpt["model_state_dict"]
+        elif isinstance(ckpt, dict) and "model" in ckpt and isinstance(ckpt["model"], dict):
+            state_dict = ckpt["model"]
+        else:
+            state_dict = ckpt
+        encoder_key = [k for k in state_dict if "encoder" in k and "weight" in k]
+        if encoder_key:
+            hidden = state_dict[encoder_key[0]].shape[0]
+            if isinstance(ckpt, dict) and "use_encoder_norm" in ckpt:
+                has_encoder_norm = bool(ckpt["use_encoder_norm"])
+            else:
+                has_encoder_norm = any("encoder_norm" in k for k in state_dict)
+            activation = "relu"
+            if isinstance(ckpt, dict):
+                raw_arch = str(ckpt.get("arch") or "").strip().lower()
+                raw_activation = str(ckpt.get("activation") or "").strip().lower()
+                if raw_arch == "mlp_relu_sq" or raw_activation == "relu_sq":
+                    activation = "relu_sq"
+            from pufferlib_market.train import TradingPolicy
+            policy = TradingPolicy(
+                obs_size,
+                num_actions,
+                hidden,
+                activation=activation,
+                use_encoder_norm=has_encoder_norm,
             )
-            _BARE_POLICY_CACHE.move_to_end(cache_key)
-            _prune_ordered_cache(_BARE_POLICY_CACHE, max_entries=_BARE_POLICY_CACHE_MAX_ENTRIES)
-    return policy
+        else:
+            input_proj_key = [k for k in state_dict if "input_proj" in k and "weight" in k]
+            hidden = state_dict[input_proj_key[0]].shape[0] if input_proj_key else 256
+            from pufferlib_market.inference import Policy
+            policy = Policy(obs_size, num_actions, hidden, 3)
+        policy.load_state_dict(state_dict, strict=False)
+        policy.to(torch.device(device))
+        policy.eval()
+        if stat_result is not None:
+            with _BARE_POLICY_CACHE_LOCK:
+                _BARE_POLICY_CACHE[cache_key] = _BarePolicyCacheEntry(
+                    size=stat_result.st_size,
+                    mtime_ns=stat_result.st_mtime_ns,
+                    policy=policy,
+                )
+                _BARE_POLICY_CACHE.move_to_end(cache_key)
+                _prune_ordered_cache(_BARE_POLICY_CACHE, max_entries=_BARE_POLICY_CACHE_MAX_ENTRIES)
+                inflight = _BARE_POLICY_CACHE_INFLIGHT.pop(cache_key, None)
+                if inflight is not None:
+                    inflight.set()
+        return policy
+    except Exception:
+        if stat_result is not None:
+            with _BARE_POLICY_CACHE_LOCK:
+                inflight = _BARE_POLICY_CACHE_INFLIGHT.pop(cache_key, None)
+                if inflight is not None:
+                    inflight.set()
+        raise
 
 
 def _ensemble_softmax_signal(

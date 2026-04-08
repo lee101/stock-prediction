@@ -4,8 +4,10 @@ import json
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Event, Thread
 from types import SimpleNamespace
 from types import ModuleType
 
@@ -761,6 +763,80 @@ def test_load_cached_daily_trader_skips_cache_when_checkpoint_cannot_be_statted(
     assert first is not second
 
 
+def test_load_cached_daily_trader_coalesces_concurrent_cache_misses(
+    monkeypatch, tmp_path: Path
+) -> None:
+    checkpoint = tmp_path / "cached_trader.pt"
+    _write_policy_checkpoint(checkpoint, num_symbols=2, num_actions=5, hot_action=1)
+
+    started = Event()
+    release = Event()
+    init_calls: list[tuple[str, str, tuple[str, ...], bool, bool]] = []
+    real_trader_cls = daily_stock.DailyPPOTrader
+
+    class _RecordingTrader(real_trader_cls):
+        def __init__(
+            self,
+            checkpoint_path,
+            device="cpu",
+            long_only=False,
+            symbols=None,
+            allow_unsafe_checkpoint_loading=False,
+        ):
+            init_calls.append(
+                (
+                    str(checkpoint_path),
+                    str(device),
+                    tuple(symbols or ()),
+                    bool(long_only),
+                    bool(allow_unsafe_checkpoint_loading),
+                )
+            )
+            started.set()
+            release.wait(timeout=5.0)
+            super().__init__(
+                checkpoint_path,
+                device=device,
+                long_only=long_only,
+                symbols=symbols,
+                allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+            )
+
+    monkeypatch.setattr(daily_stock, "DailyPPOTrader", _RecordingTrader)
+    daily_stock._DAILY_TRADER_CACHE.clear()
+    daily_stock._DAILY_TRADER_CACHE_INFLIGHT.clear()
+    results: list[object] = []
+
+    def _worker() -> None:
+        results.append(
+            daily_stock._load_cached_daily_trader(
+                str(checkpoint),
+                device="cpu",
+                long_only=True,
+                symbols=["AAPL", "MSFT"],
+            )
+        )
+
+    first = Thread(target=_worker)
+    second = Thread(target=_worker)
+    try:
+        first.start()
+        assert started.wait(timeout=5.0)
+        second.start()
+        time.sleep(0.1)
+        assert len(init_calls) == 1
+        release.set()
+        first.join(timeout=5.0)
+        second.join(timeout=5.0)
+    finally:
+        release.set()
+        daily_stock._DAILY_TRADER_CACHE.clear()
+        daily_stock._DAILY_TRADER_CACHE_INFLIGHT.clear()
+
+    assert len(results) == 2
+    assert len(init_calls) == 1
+
+
 def test_load_bare_policy_reuses_cached_template_for_unchanged_checkpoint(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -820,6 +896,52 @@ def test_load_bare_policy_evicts_older_entries_when_capacity_is_exceeded(
         daily_stock._BARE_POLICY_CACHE.clear()
 
     assert load_calls == [checkpoint_a, checkpoint_b, checkpoint_a]
+
+
+def test_load_bare_policy_coalesces_concurrent_cache_misses(
+    monkeypatch, tmp_path: Path
+) -> None:
+    checkpoint = tmp_path / "cached_policy.pt"
+    _write_policy_checkpoint(checkpoint, num_symbols=2, num_actions=3, hot_action=1)
+    obs_size = 2 * 16 + 5 + 2
+
+    started = Event()
+    release = Event()
+    load_calls: list[dict[str, object]] = []
+    real_loader = daily_stock.load_checkpoint_payload
+
+    def _recording_loader(*args, **kwargs):
+        load_calls.append(kwargs)
+        started.set()
+        release.wait(timeout=5.0)
+        return real_loader(*args, **kwargs)
+
+    monkeypatch.setattr(daily_stock, "load_checkpoint_payload", _recording_loader)
+    daily_stock._BARE_POLICY_CACHE.clear()
+    daily_stock._BARE_POLICY_CACHE_INFLIGHT.clear()
+    results: list[object] = []
+
+    def _worker() -> None:
+        results.append(daily_stock._load_bare_policy(str(checkpoint), obs_size, 3, "cpu"))
+
+    first = Thread(target=_worker)
+    second = Thread(target=_worker)
+    try:
+        first.start()
+        assert started.wait(timeout=5.0)
+        second.start()
+        time.sleep(0.1)
+        assert len(load_calls) == 1
+        release.set()
+        first.join(timeout=5.0)
+        second.join(timeout=5.0)
+    finally:
+        release.set()
+        daily_stock._BARE_POLICY_CACHE.clear()
+        daily_stock._BARE_POLICY_CACHE_INFLIGHT.clear()
+
+    assert len(results) == 2
+    assert len(load_calls) == 1
 
 
 def test_ensemble_softmax_signal_averages_value_estimates() -> None:
@@ -4899,6 +5021,55 @@ def test_run_backtest_via_trading_server_single_position_precomputes_feature_his
     assert results["total_return"] == pytest.approx(0.0)
 
 
+def test_prepare_daily_backtest_data_precomputes_close_matrix_and_timestamps(monkeypatch) -> None:
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01T00:00:00Z", periods=25, freq="D"),
+            "open": np.linspace(100.0, 124.0, 25),
+            "high": np.linspace(101.0, 125.0, 25),
+            "low": np.linspace(99.0, 123.0, 25),
+            "close": np.linspace(100.5, 124.5, 25),
+            "volume": np.linspace(1_000.0, 1_024.0, 25),
+        }
+    )
+
+    class _FakeTrader:
+        def __init__(self) -> None:
+            self.device = "cpu"
+            self.SYMBOLS = ["AAPL", "MSFT"]
+            self.num_symbols = len(self.SYMBOLS)
+            self.obs_size = self.num_symbols * 16 + 5 + self.num_symbols
+            self.num_actions = 1 + self.num_symbols
+
+    monkeypatch.setattr(
+        daily_stock,
+        "load_local_daily_frames",
+        lambda symbols, data_dir, min_days=daily_stock.DEFAULT_DAILY_FRAME_MIN_DAYS: {
+            "AAPL": frame.copy(),
+            "MSFT": frame.assign(close=frame["close"] + 10.0),
+        },
+    )
+    monkeypatch.setattr(daily_stock, "_load_cached_daily_trader", lambda *args, **kwargs: _FakeTrader())
+    monkeypatch.setattr(
+        daily_stock,
+        "compute_daily_feature_history",
+        lambda df: pd.DataFrame(np.tile(np.arange(16, dtype=np.float32), (len(df), 1))),
+    )
+
+    prepared = daily_stock._prepare_daily_backtest_data(
+        checkpoint="unused.pt",
+        symbols=["AAPL", "MSFT"],
+        data_dir="unused",
+        days=5,
+    )
+
+    assert prepared.symbols == ("AAPL", "MSFT")
+    assert prepared.close_matrix.shape == (25, 2)
+    assert prepared.close_matrix[0].tolist() == pytest.approx([100.5, 110.5])
+    assert prepared.timestamps[0] == datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert prepared.timestamps[-1] == datetime(2026, 1, 25, tzinfo=timezone.utc)
+
+
 def test_run_backtest_via_trading_server_falls_back_to_build_signal_without_get_signal(monkeypatch) -> None:
     frame = pd.DataFrame(
         {
@@ -5196,6 +5367,79 @@ def test_run_backtest_variant_matrix_via_trading_server_prepares_inputs_once(mon
     assert [row["name"] for row in results] == ["a", "b"]
     assert results[0]["total_return"] == pytest.approx(0.125)
     assert results[1]["total_return"] == pytest.approx(0.25)
+
+
+def test_run_backtest_with_prepared_data_uses_precomputed_prices_and_timestamps() -> None:
+    class _ExplodingSeries:
+        @property
+        def iloc(self):  # noqa: D401
+            raise AssertionError("close prices should come from prepared.close_matrix")
+
+    class _ExplodingFrame:
+        @property
+        def index(self):  # noqa: D401
+            raise AssertionError("timestamps should come from prepared.timestamps")
+
+        def __getitem__(self, key):  # noqa: ANN001
+            if key == "close":
+                return _ExplodingSeries()
+            raise KeyError(key)
+
+    class _FakeTrader:
+        def __init__(self) -> None:
+            self.device = "cpu"
+            self.SYMBOLS = ["AAPL", "MSFT"]
+            self.num_symbols = len(self.SYMBOLS)
+            self.num_actions = 1 + self.num_symbols
+            self.cash = 0.0
+            self.current_position = None
+            self.position_qty = 0.0
+            self.entry_price = 0.0
+            self.hold_days = 0
+            self.hold_hours = 0
+            self.step = 0
+            self.max_steps = 90
+
+        def get_signal(self, features, prices):  # noqa: ANN001, ARG002
+            assert features.shape == (self.num_symbols, 16)
+            return SimpleNamespace(action="flat", symbol=None, direction=None, confidence=0.0, value_estimate=0.0)
+
+        def step_day(self):
+            return None
+
+    prepared = daily_stock.PreparedDailyBacktestData(
+        indexed={"AAPL": _ExplodingFrame(), "MSFT": _ExplodingFrame()},
+        trader_template=_FakeTrader(),
+        extra_policies=[],
+        symbols=("AAPL", "MSFT"),
+        feature_cube=np.zeros((4, 2, 16), dtype=np.float32),
+        close_matrix=np.asarray(
+            [
+                [100.0, 200.0],
+                [101.0, 201.0],
+                [102.0, 202.0],
+                [103.0, 203.0],
+            ],
+            dtype=np.float64,
+        ),
+        timestamps=(
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            datetime(2026, 1, 2, tzinfo=timezone.utc),
+            datetime(2026, 1, 3, tzinfo=timezone.utc),
+            datetime(2026, 1, 4, tzinfo=timezone.utc),
+        ),
+        start=1,
+        min_len=4,
+    )
+
+    results = daily_stock._run_backtest_via_trading_server_with_prepared_data(
+        prepared=prepared,
+        symbols=["AAPL", "MSFT"],
+        days=3,
+    )
+
+    assert results["trades"] == pytest.approx(0.0)
+    assert results["orders"] == pytest.approx(0.0)
 
 
 # ---- Tests for pending close reconciliation (BUG 3 fix) ----
