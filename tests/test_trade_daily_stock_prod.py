@@ -5121,6 +5121,83 @@ def test_run_backtest_via_trading_server_matches_legacy_multi_position(monkeypat
     assert server["orders"] == pytest.approx(legacy["trades"])
 
 
+def test_run_backtest_variant_matrix_via_trading_server_prepares_inputs_once(monkeypatch) -> None:
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01T00:00:00Z", periods=25, freq="D"),
+            "open": np.linspace(100.0, 124.0, 25),
+            "high": np.linspace(101.0, 125.0, 25),
+            "low": np.linspace(99.0, 123.0, 25),
+            "close": np.linspace(100.5, 124.5, 25),
+            "volume": np.linspace(1_000.0, 1_024.0, 25),
+        }
+    )
+    history_calls = {"count": 0}
+
+    class _FakeTrader:
+        def __init__(self) -> None:
+            self.device = "cpu"
+            self.SYMBOLS = ["AAPL", "MSFT"]
+            self.num_symbols = len(self.SYMBOLS)
+            self.obs_size = self.num_symbols * 16 + 5 + self.num_symbols
+            self.num_actions = 1 + self.num_symbols
+            self.cash = 0.0
+            self.current_position = None
+            self.position_qty = 0.0
+            self.entry_price = 0.0
+            self.hold_days = 0
+            self.hold_hours = 0
+            self.step = 0
+            self.max_steps = 90
+
+        def step_day(self):
+            return None
+
+    monkeypatch.setattr(
+        daily_stock,
+        "load_local_daily_frames",
+        lambda symbols, data_dir, min_days=daily_stock.DEFAULT_DAILY_FRAME_MIN_DAYS: {
+            "AAPL": frame.copy(),
+            "MSFT": frame.copy(),
+        },
+    )
+    monkeypatch.setattr(daily_stock, "_load_cached_daily_trader", lambda *args, **kwargs: _FakeTrader())
+    monkeypatch.setattr(
+        daily_stock,
+        "compute_daily_feature_history",
+        lambda df: history_calls.__setitem__("count", history_calls["count"] + 1)
+        or pd.DataFrame(np.tile(np.arange(16, dtype=np.float32), (len(df), 1))),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "_run_backtest_via_trading_server_with_prepared_data",
+        lambda **kwargs: {
+            "total_return": float(kwargs["allocation_pct"]) / 100.0,
+            "annualized_return": 0.0,
+            "sortino": 0.0,
+            "max_drawdown": 0.0,
+            "trades": 0.0,
+            "orders": 0.0,
+        },
+    )
+
+    results = daily_stock.run_backtest_variant_matrix_via_trading_server(
+        checkpoint="unused.pt",
+        symbols=["AAPL", "MSFT"],
+        data_dir="unused",
+        days=5,
+        variants=[
+            daily_stock.BacktestVariantSpec(name="a", allocation_pct=12.5),
+            daily_stock.BacktestVariantSpec(name="b", allocation_pct=25.0, multi_position=2),
+        ],
+    )
+
+    assert history_calls["count"] == 2
+    assert [row["name"] for row in results] == ["a", "b"]
+    assert results[0]["total_return"] == pytest.approx(0.125)
+    assert results[1]["total_return"] == pytest.approx(0.25)
+
+
 # ---- Tests for pending close reconciliation (BUG 3 fix) ----
 
 class _FakePosition:
