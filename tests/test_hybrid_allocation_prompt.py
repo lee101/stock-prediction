@@ -5,6 +5,7 @@ import json
 import sys
 import types
 from pathlib import Path
+from typing import ClassVar
 
 import pandas as pd
 import pytest
@@ -79,6 +80,13 @@ def _load_module(name: str, relative_path: str):
 _install_google_genai_stub()
 hybrid_prompt = _load_module("hybrid_prompt", "hybrid_prompt.py")
 trade_binance_live = _load_module("trade_binance_live", "trade_binance_live.py")
+
+
+@pytest.fixture(autouse=True)
+def _reset_gemini_failure_circuit() -> None:
+    trade_binance_live._reset_gemini_failure_circuit()
+    yield
+    trade_binance_live._reset_gemini_failure_circuit()
 
 
 def _sample_klines() -> pd.DataFrame:
@@ -530,3 +538,748 @@ def test_dedupe_side_orders_replaces_underfilled_buy_order() -> None:
 
     assert skip is False
     assert remaining == []
+
+
+def test_restrict_contexts_to_tradable_symbols_filters_and_reports_missing() -> None:
+    contexts = [
+        hybrid_prompt.SymbolContext(symbol="BTCUSD", price=100.0, klines=_sample_klines()),
+        hybrid_prompt.SymbolContext(symbol="DOGEUSD", price=0.1, klines=_sample_klines()),
+        hybrid_prompt.SymbolContext(symbol="DOTUSD", price=1.0, klines=_sample_klines()),
+    ]
+
+    filtered, active, missing = trade_binance_live._restrict_contexts_to_tradable_symbols(
+        contexts,
+        ["dogeusd", "BTCUSD", "ETHUSD"],
+    )
+
+    assert [ctx.symbol for ctx in filtered] == ["DOGEUSD", "BTCUSD"]
+    assert active == ["DOGEUSD", "BTCUSD"]
+    assert missing == ["ETHUSD"]
+
+
+def test_filter_allocation_plan_to_symbols_drops_non_tradable_entries() -> None:
+    plan = hybrid_prompt.AllocationPlan(
+        allocations={"BTCUSD": 50.0, "DOTUSD": 50.0},
+        entry_prices={"BTCUSD": 100.0, "DOTUSD": 1.0},
+        exit_prices={"BTCUSD": 101.0, "DOTUSD": 1.1},
+        reasoning="test plan",
+    )
+
+    filtered = trade_binance_live._filter_allocation_plan_to_symbols(plan, ["BTCUSD", "DOGEUSD"])
+
+    assert filtered.allocations == {"BTCUSD": 50.0}
+    assert filtered.entry_prices == {"BTCUSD": 100.0}
+    assert filtered.exit_prices == {"BTCUSD": 101.0}
+    assert "filtered_non_tradable=DOTUSD" in filtered.reasoning
+
+
+def test_run_hybrid_trading_cycle_limits_gemini_to_active_symbols(monkeypatch: pytest.MonkeyPatch) -> None:
+    contexts = [
+        hybrid_prompt.SymbolContext(symbol="BTCUSD", price=100.0, klines=_sample_klines()),
+        hybrid_prompt.SymbolContext(symbol="DOGEUSD", price=0.1, klines=_sample_klines()),
+        hybrid_prompt.SymbolContext(symbol="DOTUSD", price=1.0, klines=_sample_klines()),
+    ]
+    captured: dict[str, object] = {}
+    placed_symbols: list[str] = []
+
+    class FakeRLGen:
+        symbols = ("BTCUSD", "DOGEUSD", "DOTUSD")
+        action_names: ClassVar[list[str]] = ["FLAT", "LONG_BTC", "LONG_DOGE", "LONG_DOT"]
+
+        def get_signal(self, **kwargs):
+            captured["rl_tradable_symbols"] = kwargs.get("tradable_symbols")
+            return trade_binance_live.RLSignal(
+                action=0,
+                action_name="FLAT",
+                target_symbol=None,
+                direction="flat",
+                confidence=1.0,
+                logits=[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                value=0.0,
+            )
+
+    monkeypatch.setattr(
+        trade_binance_live, "_sync_margin_capital", lambda dry_run: trade_binance_live.MarginCapitalSyncPlan()
+    )
+    monkeypatch.setattr(
+        trade_binance_live,
+        "get_portfolio_state",
+        lambda execution_mode: trade_binance_live.PortfolioState(
+            fdusd_balance=0.0,
+            usdt_balance=1000.0,
+            borrowed_quotes={"USDT": 0.0},
+            borrowable_quotes={"USDT": 0.0},
+            positions={},
+            total_value_usd=1000.0,
+        ),
+    )
+    monkeypatch.setattr(trade_binance_live, "_repay_margin_debt_if_flat", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_cleanup_open_orders",
+        lambda *args, **kwargs: trade_binance_live.OpenOrderCleanupResult(),
+    )
+    monkeypatch.setattr(trade_binance_live, "gather_symbol_contexts", lambda *args, **kwargs: contexts)
+    monkeypatch.setattr(trade_binance_live, "_get_current_positions_valued", lambda *args, **kwargs: {})
+    monkeypatch.setattr(trade_binance_live, "append_cycle_snapshot", lambda *args, **kwargs: None)
+
+    def _fake_build_allocation_prompt(*, contexts, **kwargs):
+        captured["prompt_context_symbols"] = [ctx.symbol for ctx in contexts]
+        return "prompt"
+
+    monkeypatch.setattr(trade_binance_live, "build_allocation_prompt", _fake_build_allocation_prompt)
+
+    def _fake_call_gemini_allocation(prompt, model, tradable_symbols):
+        captured["gemini_tradable_symbols"] = list(tradable_symbols)
+        return hybrid_prompt.AllocationPlan(
+            allocations={"BTCUSD": 50.0, "DOTUSD": 50.0},
+            entry_prices={"BTCUSD": 99.0, "DOTUSD": 0.99},
+            exit_prices={"BTCUSD": 101.0, "DOTUSD": 1.01},
+            reasoning="test",
+        )
+
+    monkeypatch.setattr(trade_binance_live, "call_gemini_allocation", _fake_call_gemini_allocation)
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_get_market_price",
+        lambda cfg, execution_mode: {"BTCUSD": 100.0, "DOGEUSD": 0.1, "DOTUSD": 1.0}[cfg.symbol],
+    )
+    monkeypatch.setattr(trade_binance_live, "place_limit_sell", lambda *args, **kwargs: None)
+    monkeypatch.setattr(trade_binance_live, "_reserve_buying_power", lambda *args, **kwargs: None)
+
+    def _fake_place_limit_buy(sym_cfg, price, amount_usd, execution_mode="spot", dry_run=True):
+        placed_symbols.append(sym_cfg.symbol)
+        return {
+            "symbol": trade_binance_live._execution_pair(sym_cfg, execution_mode),
+            "side": "BUY",
+            "status": "NEW",
+            "origQty": amount_usd / price,
+            "executedQty": 0.0,
+            "price": price,
+            "orderId": len(placed_symbols),
+        }
+
+    monkeypatch.setattr(trade_binance_live, "place_limit_buy", _fake_place_limit_buy)
+
+    orders = trade_binance_live.run_hybrid_trading_cycle(
+        rl_gen=FakeRLGen(),
+        gemini_model="gemini-3.1-flash-lite-preview",
+        dry_run=True,
+        leverage=0.5,
+        execution_mode="margin",
+        tradable_symbols=["BTCUSD", "DOGEUSD"],
+    )
+
+    assert captured["rl_tradable_symbols"] == ["BTCUSD", "DOGEUSD"]
+    assert captured["prompt_context_symbols"] == ["BTCUSD", "DOGEUSD"]
+    assert captured["gemini_tradable_symbols"] == ["BTCUSD", "DOGEUSD"]
+    assert placed_symbols == ["BTCUSD"]
+    assert len(orders) == 1
+
+
+def test_run_hybrid_trading_cycle_short_rl_fallback_exits_to_cash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contexts = [
+        hybrid_prompt.SymbolContext(symbol="BTCUSD", price=100.0, klines=_sample_klines()),
+        hybrid_prompt.SymbolContext(symbol="DOGEUSD", price=0.1, klines=_sample_klines()),
+    ]
+    sell_symbols: list[str] = []
+    buy_attempts: list[str] = []
+
+    class FakeRLGen:
+        symbols = ("BTCUSD", "DOGEUSD")
+        action_names: ClassVar[list[str]] = ["FLAT", "LONG_BTC", "LONG_DOGE", "SHORT_BTC", "SHORT_DOGE"]
+
+        def get_signal(self, **kwargs):
+            return trade_binance_live.RLSignal(
+                action=3,
+                action_name="SHORT_BTC",
+                target_symbol="BTCUSD",
+                direction="short",
+                confidence=1.0,
+                logits=[0.0, -1.0, -2.0, 3.0, -3.0],
+                value=0.25,
+            )
+
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_sync_margin_capital",
+        lambda dry_run: trade_binance_live.MarginCapitalSyncPlan(),
+    )
+    monkeypatch.setattr(
+        trade_binance_live,
+        "get_portfolio_state",
+        lambda execution_mode: trade_binance_live.PortfolioState(
+            fdusd_balance=0.0,
+            usdt_balance=100.0,
+            borrowed_quotes={"USDT": 0.0},
+            borrowable_quotes={"USDT": 0.0},
+            positions={"DOGE": 1000.0},
+            total_value_usd=200.0,
+        ),
+    )
+    monkeypatch.setattr(trade_binance_live, "_repay_margin_debt_if_flat", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_cleanup_open_orders",
+        lambda *args, **kwargs: trade_binance_live.OpenOrderCleanupResult(),
+    )
+    monkeypatch.setattr(trade_binance_live, "gather_symbol_contexts", lambda *args, **kwargs: contexts)
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_get_current_positions_valued",
+        lambda *args, **kwargs: {"DOGEUSD": (1000.0, 100.0)},
+    )
+    monkeypatch.setattr(trade_binance_live, "append_cycle_snapshot", lambda *args, **kwargs: None)
+    monkeypatch.setattr(trade_binance_live, "build_allocation_prompt", lambda **kwargs: "prompt")
+    monkeypatch.setattr(
+        trade_binance_live,
+        "call_gemini_allocation",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("gemini down")),
+    )
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_get_market_price",
+        lambda cfg, execution_mode: {"BTCUSD": 100.0, "DOGEUSD": 0.1}[cfg.symbol],
+    )
+
+    def _fake_place_limit_sell(sym_cfg, price, quantity, execution_mode="spot", dry_run=True):
+        sell_symbols.append(sym_cfg.symbol)
+        return {
+            "symbol": trade_binance_live._execution_pair(sym_cfg, execution_mode),
+            "side": "SELL",
+            "status": "NEW",
+            "origQty": quantity,
+            "executedQty": 0.0,
+            "price": price,
+            "orderId": len(sell_symbols),
+        }
+
+    def _fake_place_limit_buy(sym_cfg, price, amount_usd, execution_mode="spot", dry_run=True):
+        buy_attempts.append(sym_cfg.symbol)
+        raise AssertionError("short RL fallback should not place buy orders")
+
+    monkeypatch.setattr(trade_binance_live, "place_limit_sell", _fake_place_limit_sell)
+    monkeypatch.setattr(trade_binance_live, "place_limit_buy", _fake_place_limit_buy)
+    monkeypatch.setattr(trade_binance_live, "_reserve_buying_power", lambda *args, **kwargs: None)
+
+    orders = trade_binance_live.run_hybrid_trading_cycle(
+        rl_gen=FakeRLGen(),
+        gemini_model="gemini-3.1-flash-lite-preview",
+        dry_run=True,
+        leverage=0.5,
+        execution_mode="margin",
+        tradable_symbols=["BTCUSD", "DOGEUSD"],
+    )
+
+    assert buy_attempts == []
+    assert sell_symbols == ["DOGEUSD"]
+    assert len(orders) == 1
+    assert orders[0]["side"] == "SELL"
+
+
+def test_run_hybrid_trading_cycle_gemini_cash_flattens_existing_positions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contexts = [
+        hybrid_prompt.SymbolContext(symbol="BTCUSD", price=100.0, klines=_sample_klines()),
+        hybrid_prompt.SymbolContext(symbol="DOGEUSD", price=0.1, klines=_sample_klines()),
+    ]
+    sell_symbols: list[str] = []
+    buy_attempts: list[str] = []
+    snapshots: list[dict[str, object]] = []
+
+    class FakeRLGen:
+        symbols = ("BTCUSD", "DOGEUSD")
+        action_names: ClassVar[list[str]] = ["FLAT", "LONG_BTC", "LONG_DOGE"]
+        checkpoint_path = "/tmp/fake_hybrid_checkpoint.pt"
+
+        def get_signal(self, **kwargs):
+            return trade_binance_live.RLSignal(
+                action=0,
+                action_name="FLAT",
+                target_symbol=None,
+                direction="flat",
+                confidence=1.0,
+                logits=[3.0, -1.0, -2.0],
+                value=0.0,
+            )
+
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_sync_margin_capital",
+        lambda dry_run: trade_binance_live.MarginCapitalSyncPlan(),
+    )
+    monkeypatch.setattr(
+        trade_binance_live,
+        "get_portfolio_state",
+        lambda execution_mode: trade_binance_live.PortfolioState(
+            fdusd_balance=0.0,
+            usdt_balance=100.0,
+            borrowed_quotes={"USDT": 0.0},
+            borrowable_quotes={"USDT": 0.0},
+            positions={"DOGE": 1000.0},
+            total_value_usd=200.0,
+        ),
+    )
+    monkeypatch.setattr(trade_binance_live, "_repay_margin_debt_if_flat", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_cleanup_open_orders",
+        lambda *args, **kwargs: trade_binance_live.OpenOrderCleanupResult(),
+    )
+    monkeypatch.setattr(trade_binance_live, "gather_symbol_contexts", lambda *args, **kwargs: contexts)
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_get_current_positions_valued",
+        lambda *args, **kwargs: {"DOGEUSD": (1000.0, 100.0)},
+    )
+    monkeypatch.setattr(trade_binance_live, "append_cycle_snapshot", snapshots.append)
+    monkeypatch.setattr(trade_binance_live, "build_allocation_prompt", lambda **kwargs: "prompt")
+    monkeypatch.setattr(
+        trade_binance_live,
+        "call_gemini_allocation",
+        lambda *args, **kwargs: hybrid_prompt.AllocationPlan(reasoning="go cash"),
+    )
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_get_market_price",
+        lambda cfg, execution_mode: {"BTCUSD": 100.0, "DOGEUSD": 0.1}[cfg.symbol],
+    )
+
+    def _fake_place_limit_sell(sym_cfg, price, quantity, execution_mode="spot", dry_run=True):
+        sell_symbols.append(sym_cfg.symbol)
+        return {
+            "symbol": trade_binance_live._execution_pair(sym_cfg, execution_mode),
+            "side": "SELL",
+            "status": "NEW",
+            "origQty": quantity,
+            "executedQty": 0.0,
+            "price": price,
+            "orderId": len(sell_symbols),
+        }
+
+    def _fake_place_limit_buy(sym_cfg, price, amount_usd, execution_mode="spot", dry_run=True):
+        buy_attempts.append(sym_cfg.symbol)
+        raise AssertionError("cash plan should not place buy orders")
+
+    monkeypatch.setattr(trade_binance_live, "place_limit_sell", _fake_place_limit_sell)
+    monkeypatch.setattr(trade_binance_live, "place_limit_buy", _fake_place_limit_buy)
+    monkeypatch.setattr(trade_binance_live, "_reserve_buying_power", lambda *args, **kwargs: None)
+
+    orders = trade_binance_live.run_hybrid_trading_cycle(
+        rl_gen=FakeRLGen(),
+        gemini_model="gemini-3.1-flash-lite-preview",
+        dry_run=True,
+        leverage=0.5,
+        execution_mode="margin",
+        tradable_symbols=["BTCUSD", "DOGEUSD"],
+    )
+
+    assert buy_attempts == []
+    assert sell_symbols == ["DOGEUSD"]
+    assert len(orders) == 1
+    assert orders[0]["side"] == "SELL"
+    assert snapshots[-1]["allocation_source"] == "gemini_cash_flatten"
+    assert snapshots[-1]["rl_checkpoint"] == "/tmp/fake_hybrid_checkpoint.pt"
+    assert snapshots[-1]["status"] == "completed"
+
+
+def test_run_hybrid_trading_cycle_gemini_error_rl_flat_flattens_existing_positions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contexts = [
+        hybrid_prompt.SymbolContext(symbol="BTCUSD", price=100.0, klines=_sample_klines()),
+        hybrid_prompt.SymbolContext(symbol="DOGEUSD", price=0.1, klines=_sample_klines()),
+    ]
+    sell_symbols: list[str] = []
+    buy_attempts: list[str] = []
+    snapshots: list[dict[str, object]] = []
+
+    class FakeRLGen:
+        symbols = ("BTCUSD", "DOGEUSD")
+        action_names: ClassVar[list[str]] = ["FLAT", "LONG_BTC", "LONG_DOGE"]
+
+        def get_signal(self, **kwargs):
+            return trade_binance_live.RLSignal(
+                action=0,
+                action_name="FLAT",
+                target_symbol=None,
+                direction="flat",
+                confidence=1.0,
+                logits=[3.0, -1.0, -2.0],
+                value=0.0,
+            )
+
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_sync_margin_capital",
+        lambda dry_run: trade_binance_live.MarginCapitalSyncPlan(),
+    )
+    monkeypatch.setattr(
+        trade_binance_live,
+        "get_portfolio_state",
+        lambda execution_mode: trade_binance_live.PortfolioState(
+            fdusd_balance=0.0,
+            usdt_balance=100.0,
+            borrowed_quotes={"USDT": 0.0},
+            borrowable_quotes={"USDT": 0.0},
+            positions={"DOGE": 1000.0},
+            total_value_usd=200.0,
+        ),
+    )
+    monkeypatch.setattr(trade_binance_live, "_repay_margin_debt_if_flat", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_cleanup_open_orders",
+        lambda *args, **kwargs: trade_binance_live.OpenOrderCleanupResult(),
+    )
+    monkeypatch.setattr(trade_binance_live, "gather_symbol_contexts", lambda *args, **kwargs: contexts)
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_get_current_positions_valued",
+        lambda *args, **kwargs: {"DOGEUSD": (1000.0, 100.0)},
+    )
+    monkeypatch.setattr(trade_binance_live, "append_cycle_snapshot", snapshots.append)
+    monkeypatch.setattr(trade_binance_live, "build_allocation_prompt", lambda **kwargs: "prompt")
+    monkeypatch.setattr(
+        trade_binance_live,
+        "call_gemini_allocation",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("gemini down")),
+    )
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_get_market_price",
+        lambda cfg, execution_mode: {"BTCUSD": 100.0, "DOGEUSD": 0.1}[cfg.symbol],
+    )
+
+    def _fake_place_limit_sell(sym_cfg, price, quantity, execution_mode="spot", dry_run=True):
+        sell_symbols.append(sym_cfg.symbol)
+        return {
+            "symbol": trade_binance_live._execution_pair(sym_cfg, execution_mode),
+            "side": "SELL",
+            "status": "NEW",
+            "origQty": quantity,
+            "executedQty": 0.0,
+            "price": price,
+            "orderId": len(sell_symbols),
+        }
+
+    def _fake_place_limit_buy(sym_cfg, price, amount_usd, execution_mode="spot", dry_run=True):
+        buy_attempts.append(sym_cfg.symbol)
+        raise AssertionError("flat RL fallback should not place buy orders")
+
+    monkeypatch.setattr(trade_binance_live, "place_limit_sell", _fake_place_limit_sell)
+    monkeypatch.setattr(trade_binance_live, "place_limit_buy", _fake_place_limit_buy)
+    monkeypatch.setattr(trade_binance_live, "_reserve_buying_power", lambda *args, **kwargs: None)
+
+    orders = trade_binance_live.run_hybrid_trading_cycle(
+        rl_gen=FakeRLGen(),
+        gemini_model="gemini-3.1-flash-lite-preview",
+        dry_run=True,
+        leverage=0.5,
+        execution_mode="margin",
+        tradable_symbols=["BTCUSD", "DOGEUSD"],
+    )
+
+    assert buy_attempts == []
+    assert sell_symbols == ["DOGEUSD"]
+    assert len(orders) == 1
+    assert orders[0]["side"] == "SELL"
+    assert snapshots[-1]["allocation_source"] == "rl_flat_cash_flatten"
+    assert snapshots[-1]["status"] == "completed"
+
+
+def test_run_hybrid_trading_cycle_opens_gemini_circuit_on_permission_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contexts = [
+        hybrid_prompt.SymbolContext(symbol="BTCUSD", price=100.0, klines=_sample_klines()),
+        hybrid_prompt.SymbolContext(symbol="DOGEUSD", price=0.1, klines=_sample_klines()),
+    ]
+    snapshots: list[dict[str, object]] = []
+    call_count = {"gemini": 0}
+
+    class FakeRLGen:
+        checkpoint_path = "/tmp/fake_hybrid_checkpoint.pt"
+        symbols = ("BTCUSD", "DOGEUSD")
+        action_names: ClassVar[list[str]] = ["FLAT", "LONG_BTC", "LONG_DOGE"]
+
+        def get_signal(self, **kwargs):
+            return trade_binance_live.RLSignal(
+                action=1,
+                action_name="LONG_BTC",
+                target_symbol="BTCUSD",
+                direction="long",
+                confidence=1.0,
+                logits=[-1.0, 3.0, -2.0],
+                value=0.5,
+            )
+
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_sync_margin_capital",
+        lambda dry_run: trade_binance_live.MarginCapitalSyncPlan(),
+    )
+    monkeypatch.setattr(
+        trade_binance_live,
+        "get_portfolio_state",
+        lambda execution_mode: trade_binance_live.PortfolioState(
+            fdusd_balance=0.0,
+            usdt_balance=500.0,
+            borrowed_quotes={"USDT": 0.0},
+            borrowable_quotes={"USDT": 0.0},
+            positions={},
+            total_value_usd=500.0,
+        ),
+    )
+    monkeypatch.setattr(trade_binance_live, "_repay_margin_debt_if_flat", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_cleanup_open_orders",
+        lambda *args, **kwargs: trade_binance_live.OpenOrderCleanupResult(),
+    )
+    monkeypatch.setattr(trade_binance_live, "gather_symbol_contexts", lambda *args, **kwargs: contexts)
+    monkeypatch.setattr(trade_binance_live, "_get_current_positions_valued", lambda *args, **kwargs: {})
+    monkeypatch.setattr(trade_binance_live, "append_cycle_snapshot", snapshots.append)
+    monkeypatch.setattr(trade_binance_live, "build_allocation_prompt", lambda **kwargs: "prompt")
+
+    def _fake_call_gemini_allocation(*args, **kwargs):
+        call_count["gemini"] += 1
+        raise RuntimeError("API error: 403 PERMISSION_DENIED. Your API key was reported as leaked.")
+
+    monkeypatch.setattr(trade_binance_live, "call_gemini_allocation", _fake_call_gemini_allocation)
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_get_market_price",
+        lambda cfg, execution_mode: {"BTCUSD": 100.0, "DOGEUSD": 0.1}[cfg.symbol],
+    )
+    monkeypatch.setattr(
+        trade_binance_live,
+        "place_limit_buy",
+        lambda sym_cfg, price, amount_usd, execution_mode="spot", dry_run=True: {
+            "symbol": trade_binance_live._execution_pair(sym_cfg, execution_mode),
+            "side": "BUY",
+            "status": "NEW",
+            "origQty": amount_usd / price,
+            "executedQty": 0.0,
+            "price": price,
+            "orderId": 1,
+        },
+    )
+    monkeypatch.setattr(trade_binance_live, "place_limit_sell", lambda *args, **kwargs: None)
+    monkeypatch.setattr(trade_binance_live, "_reserve_buying_power", lambda *args, **kwargs: None)
+
+    first_orders = trade_binance_live.run_hybrid_trading_cycle(
+        rl_gen=FakeRLGen(),
+        gemini_model="gemini-3.1-flash-lite-preview",
+        dry_run=True,
+        leverage=0.5,
+        execution_mode="margin",
+        tradable_symbols=["BTCUSD", "DOGEUSD"],
+    )
+    second_orders = trade_binance_live.run_hybrid_trading_cycle(
+        rl_gen=FakeRLGen(),
+        gemini_model="gemini-3.1-flash-lite-preview",
+        dry_run=True,
+        leverage=0.5,
+        execution_mode="margin",
+        tradable_symbols=["BTCUSD", "DOGEUSD"],
+    )
+
+    assert len(first_orders) == 1
+    assert len(second_orders) == 1
+    assert call_count["gemini"] == 1
+    assert snapshots[0]["gemini_call_skipped"] is False
+    assert snapshots[0]["allocation_source"] == "rl_only_fallback"
+    assert snapshots[0]["gemini_circuit_open_until"] is not None
+    assert snapshots[1]["gemini_call_skipped"] is True
+    assert "gemini_circuit_open" in str(snapshots[1]["gemini_skip_reason"])
+    assert snapshots[1]["allocation_source"] == "rl_only_fallback"
+
+
+def test_run_hybrid_trading_cycle_opens_gemini_circuit_after_repeated_transient_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contexts = [
+        hybrid_prompt.SymbolContext(symbol="BTCUSD", price=100.0, klines=_sample_klines()),
+        hybrid_prompt.SymbolContext(symbol="DOGEUSD", price=0.1, klines=_sample_klines()),
+    ]
+    snapshots: list[dict[str, object]] = []
+    call_count = {"gemini": 0}
+
+    class FakeRLGen:
+        checkpoint_path = "/tmp/fake_hybrid_checkpoint.pt"
+        symbols = ("BTCUSD", "DOGEUSD")
+        action_names: ClassVar[list[str]] = ["FLAT", "LONG_BTC", "LONG_DOGE"]
+
+        def get_signal(self, **kwargs):
+            return trade_binance_live.RLSignal(
+                action=1,
+                action_name="LONG_BTC",
+                target_symbol="BTCUSD",
+                direction="long",
+                confidence=1.0,
+                logits=[-1.0, 3.0, -2.0],
+                value=0.5,
+            )
+
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_sync_margin_capital",
+        lambda dry_run: trade_binance_live.MarginCapitalSyncPlan(),
+    )
+    monkeypatch.setattr(
+        trade_binance_live,
+        "get_portfolio_state",
+        lambda execution_mode: trade_binance_live.PortfolioState(
+            fdusd_balance=0.0,
+            usdt_balance=500.0,
+            borrowed_quotes={"USDT": 0.0},
+            borrowable_quotes={"USDT": 0.0},
+            positions={},
+            total_value_usd=500.0,
+        ),
+    )
+    monkeypatch.setattr(trade_binance_live, "_repay_margin_debt_if_flat", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_cleanup_open_orders",
+        lambda *args, **kwargs: trade_binance_live.OpenOrderCleanupResult(),
+    )
+    monkeypatch.setattr(trade_binance_live, "gather_symbol_contexts", lambda *args, **kwargs: contexts)
+    monkeypatch.setattr(trade_binance_live, "_get_current_positions_valued", lambda *args, **kwargs: {})
+    monkeypatch.setattr(trade_binance_live, "append_cycle_snapshot", snapshots.append)
+    monkeypatch.setattr(trade_binance_live, "build_allocation_prompt", lambda **kwargs: "prompt")
+
+    def _fake_call_gemini_allocation(*args, **kwargs):
+        call_count["gemini"] += 1
+        raise RuntimeError("deadline exceeded")
+
+    monkeypatch.setattr(trade_binance_live, "call_gemini_allocation", _fake_call_gemini_allocation)
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_get_market_price",
+        lambda cfg, execution_mode: {"BTCUSD": 100.0, "DOGEUSD": 0.1}[cfg.symbol],
+    )
+    monkeypatch.setattr(
+        trade_binance_live,
+        "place_limit_buy",
+        lambda sym_cfg, price, amount_usd, execution_mode="spot", dry_run=True: {
+            "symbol": trade_binance_live._execution_pair(sym_cfg, execution_mode),
+            "side": "BUY",
+            "status": "NEW",
+            "origQty": amount_usd / price,
+            "executedQty": 0.0,
+            "price": price,
+            "orderId": 1,
+        },
+    )
+    monkeypatch.setattr(trade_binance_live, "place_limit_sell", lambda *args, **kwargs: None)
+    monkeypatch.setattr(trade_binance_live, "_reserve_buying_power", lambda *args, **kwargs: None)
+
+    for _ in range(4):
+        trade_binance_live.run_hybrid_trading_cycle(
+            rl_gen=FakeRLGen(),
+            gemini_model="gemini-3.1-flash-lite-preview",
+            dry_run=True,
+            leverage=0.5,
+            execution_mode="margin",
+            tradable_symbols=["BTCUSD", "DOGEUSD"],
+        )
+
+    assert call_count["gemini"] == 3
+    assert snapshots[2]["gemini_circuit_open_until"] is not None
+    assert snapshots[2]["gemini_failure_streak"] == 3
+    assert snapshots[3]["gemini_call_skipped"] is True
+    assert "gemini_circuit_open" in str(snapshots[3]["gemini_skip_reason"])
+
+
+def test_run_hybrid_trading_cycle_resets_gemini_failure_streak_after_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contexts = [
+        hybrid_prompt.SymbolContext(symbol="BTCUSD", price=100.0, klines=_sample_klines()),
+        hybrid_prompt.SymbolContext(symbol="DOGEUSD", price=0.1, klines=_sample_klines()),
+    ]
+    snapshots: list[dict[str, object]] = []
+    call_count = {"gemini": 0}
+
+    class FakeRLGen:
+        checkpoint_path = "/tmp/fake_hybrid_checkpoint.pt"
+        symbols = ("BTCUSD", "DOGEUSD")
+        action_names: ClassVar[list[str]] = ["FLAT", "LONG_BTC", "LONG_DOGE"]
+
+        def get_signal(self, **kwargs):
+            return trade_binance_live.RLSignal(
+                action=0,
+                action_name="FLAT",
+                target_symbol=None,
+                direction="flat",
+                confidence=1.0,
+                logits=[3.0, -1.0, -2.0],
+                value=0.0,
+            )
+
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_sync_margin_capital",
+        lambda dry_run: trade_binance_live.MarginCapitalSyncPlan(),
+    )
+    monkeypatch.setattr(
+        trade_binance_live,
+        "get_portfolio_state",
+        lambda execution_mode: trade_binance_live.PortfolioState(
+            fdusd_balance=0.0,
+            usdt_balance=500.0,
+            borrowed_quotes={"USDT": 0.0},
+            borrowable_quotes={"USDT": 0.0},
+            positions={},
+            total_value_usd=500.0,
+        ),
+    )
+    monkeypatch.setattr(trade_binance_live, "_repay_margin_debt_if_flat", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_cleanup_open_orders",
+        lambda *args, **kwargs: trade_binance_live.OpenOrderCleanupResult(),
+    )
+    monkeypatch.setattr(trade_binance_live, "gather_symbol_contexts", lambda *args, **kwargs: contexts)
+    monkeypatch.setattr(trade_binance_live, "_get_current_positions_valued", lambda *args, **kwargs: {})
+    monkeypatch.setattr(trade_binance_live, "append_cycle_snapshot", snapshots.append)
+    monkeypatch.setattr(trade_binance_live, "build_allocation_prompt", lambda **kwargs: "prompt")
+
+    def _fake_call_gemini_allocation(*args, **kwargs):
+        call_count["gemini"] += 1
+        if call_count["gemini"] < 3:
+            raise RuntimeError("deadline exceeded")
+        return hybrid_prompt.AllocationPlan(reasoning="go cash")
+
+    monkeypatch.setattr(trade_binance_live, "call_gemini_allocation", _fake_call_gemini_allocation)
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_get_market_price",
+        lambda cfg, execution_mode: {"BTCUSD": 100.0, "DOGEUSD": 0.1}[cfg.symbol],
+    )
+    monkeypatch.setattr(trade_binance_live, "place_limit_buy", lambda *args, **kwargs: None)
+    monkeypatch.setattr(trade_binance_live, "place_limit_sell", lambda *args, **kwargs: None)
+    monkeypatch.setattr(trade_binance_live, "_reserve_buying_power", lambda *args, **kwargs: None)
+
+    for _ in range(3):
+        trade_binance_live.run_hybrid_trading_cycle(
+            rl_gen=FakeRLGen(),
+            gemini_model="gemini-3.1-flash-lite-preview",
+            dry_run=True,
+            leverage=0.5,
+            execution_mode="margin",
+            tradable_symbols=["BTCUSD", "DOGEUSD"],
+        )
+
+    assert call_count["gemini"] == 3
+    assert snapshots[0]["gemini_failure_streak"] == 1
+    assert snapshots[1]["gemini_failure_streak"] == 2
+    assert snapshots[2]["gemini_failure_streak"] == 0
+    assert snapshots[2]["gemini_circuit_open_until"] is None
+    assert snapshots[2]["gemini_last_failure_reason"] is None
+    assert snapshots[2]["gemini_call_skipped"] is False

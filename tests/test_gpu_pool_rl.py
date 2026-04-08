@@ -707,6 +707,8 @@ def test_cmd_run_forwards_replay_eval_arguments(tmp_path: Path) -> None:
         replay_eval_robust_start_states="flat,long:BTCUSD:0.25",
         replay_eval_fill_buffer_bps=5.0,
         replay_eval_hourly_periods_per_year=8760.0,
+        eval_tradable_symbols="BTCUSD,ETHUSD",
+        eval_disable_shorts=True,
     )
 
     def _fake_run_rl_experiment_on_pod(*args, **kwargs):
@@ -731,6 +733,8 @@ def test_cmd_run_forwards_replay_eval_arguments(tmp_path: Path) -> None:
     assert captured["replay_eval_robust_start_states"] == "flat,long:BTCUSD:0.25"
     assert captured["replay_eval_fill_buffer_bps"] == 5.0
     assert captured["replay_eval_hourly_periods_per_year"] == 8760.0
+    assert captured["eval_tradable_symbols"] == "BTCUSD,ETHUSD"
+    assert captured["eval_disable_shorts"] is True
 
 
 # ---------------------------------------------------------------------------

@@ -372,6 +372,9 @@ def test_build_remote_autoresearch_plan_includes_replay_and_post_eval() -> None:
         holdout_eval_steps=90,
         holdout_n_windows=20,
         holdout_fee_rate=0.001,
+        holdout_max_leverage=0.5,
+        eval_tradable_symbols=["BTCUSD", "ETHUSD"],
+        eval_disable_shorts=True,
         replay_eval_hourly_root="trainingdatahourly",
         replay_eval_start_date="2025-06-01",
         replay_eval_end_date="2026-02-05",
@@ -389,11 +392,19 @@ def test_build_remote_autoresearch_plan_includes_replay_and_post_eval() -> None:
     assert "--replay-eval-hourly-root" in autoresearch_cmd
     assert "--replay-eval-run-hourly-policy" in autoresearch_cmd
     assert "--replay-eval-robust-start-states" in autoresearch_cmd
+    assert "--eval-tradable-symbols" in autoresearch_cmd
+    assert autoresearch_cmd[autoresearch_cmd.index("--eval-tradable-symbols") + 1] == "BTCUSD,ETHUSD"
+    assert "--eval-disable-shorts" in autoresearch_cmd
     assert "--rank-metric" in autoresearch_cmd
     assert autoresearch_cmd[0:4] == ["python", "-u", "-m", "pufferlib_market.autoresearch_rl"]
     post_eval_cmd = list(plan.commands[1])
     assert post_eval_cmd[0:3] == ["python", "-u", "pufferlib_market/fast_marketsim_eval.py"]
     assert "--checkpoint-dirs" in post_eval_cmd
+    assert "--max-leverage" in post_eval_cmd
+    assert post_eval_cmd[post_eval_cmd.index("--max-leverage") + 1] == "0.5"
+    assert "--tradable-symbols" in post_eval_cmd
+    assert post_eval_cmd[post_eval_cmd.index("--tradable-symbols") + 1] == "BTCUSD,ETHUSD"
+    assert "--disable-shorts" in post_eval_cmd
     assert "--sequential" in post_eval_cmd
 
 

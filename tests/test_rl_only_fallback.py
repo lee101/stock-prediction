@@ -104,3 +104,17 @@ def test_entry_exit_prices():
     assert result is not None
     assert abs(result.entry_prices["BTCUSD"] - price * 0.999) < 1.0
     assert abs(result.exit_prices["BTCUSD"] - price * 1.008) < 1.0
+
+
+def test_short_signal_de_risks_to_cash_plan():
+    sig = FakeRLSignal(action_name="SHORT_BTC", direction="short")
+    gen = FakeRLGen()
+    ctxs = [_make_ctx("BTCUSD", 85000), _make_ctx("ETHUSD", 2000)]
+
+    result = _rl_signal_to_allocation_plan(sig, ctxs, gen, 1.0)
+
+    assert result is not None
+    assert result.allocations == {}
+    assert result.entry_prices == {}
+    assert result.exit_prices == {}
+    assert "rl_only_fallback_short_to_cash" in result.reasoning
