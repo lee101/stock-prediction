@@ -304,6 +304,26 @@ class PortfolioRebalanceTarget:
     target_qty: float
 
 
+@dataclass(frozen=True)
+class BacktestVariantSpec:
+    name: str
+    allocation_pct: float
+    allocation_sizing_mode: StockAllocationSizingMode = DEFAULT_ALLOCATION_SIZING_MODE
+    multi_position: int = DEFAULT_MULTI_POSITION
+    multi_position_min_prob_ratio: float = DEFAULT_MULTI_POSITION_MIN_PROB_RATIO
+    buying_power_multiplier: float = DEFAULT_BACKTEST_BUYING_POWER_MULTIPLIER
+
+
+@dataclass
+class PreparedDailyBacktestData:
+    indexed: dict[str, pd.DataFrame]
+    trader_template: DailyPPOTrader
+    extra_policies: list[torch.nn.Module]
+    feature_cube: np.ndarray
+    start: int
+    min_len: int
+
+
 _DAILY_TRADER_CACHE_MAX_ENTRIES = 8
 _BARE_POLICY_CACHE_MAX_ENTRIES = 64
 _DAILY_TRADER_CACHE: "OrderedDict[tuple[object, ...], _DailyTraderCacheEntry]" = OrderedDict()
@@ -1354,6 +1374,57 @@ def _build_daily_feature_cube(
     if not feature_blocks:
         return np.zeros((0, 0, 16), dtype=np.float32)
     return np.stack(feature_blocks, axis=1)
+
+
+def _prepare_daily_backtest_data(
+    *,
+    checkpoint: str,
+    symbols: Iterable[str],
+    data_dir: str,
+    days: int,
+    extra_checkpoints: Optional[list[str]] = None,
+    allow_unsafe_checkpoint_loading: bool = False,
+) -> PreparedDailyBacktestData:
+    frames = load_local_daily_frames(
+        symbols,
+        data_dir=data_dir,
+        min_days=days + DEFAULT_DAILY_FRAME_MIN_DAYS,
+    )
+    indexed = {
+        symbol: frame.set_index("timestamp")[["open", "high", "low", "close", "volume"]].copy()
+        for symbol, frame in frames.items()
+    }
+    min_len = min(len(frame) for frame in indexed.values())
+    start = min_len - days
+    if start < 1:
+        raise ValueError(f"Need at least {days + 1} aligned days for backtest")
+
+    trader_template = _load_cached_daily_trader(
+        checkpoint,
+        device="cpu",
+        long_only=True,
+        symbols=list(indexed.keys()),
+        allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+    )
+    extra_policies = [
+        _load_bare_policy(
+            str((REPO / path).resolve()) if not Path(path).is_absolute() else path,
+            trader_template.obs_size,
+            trader_template.num_actions,
+            "cpu",
+            allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+        )
+        for path in (extra_checkpoints or [])
+    ]
+    feature_cube = _build_daily_feature_cube(indexed, symbols=trader_template.SYMBOLS)
+    return PreparedDailyBacktestData(
+        indexed=indexed,
+        trader_template=trader_template,
+        extra_policies=extra_policies,
+        feature_cube=feature_cube,
+        start=start,
+        min_len=min_len,
+    )
 
 
 def _build_multi_position_signals(
@@ -4347,44 +4418,61 @@ def run_backtest_via_trading_server(
     extra_checkpoints: Optional[list[str]] = None,
     allow_unsafe_checkpoint_loading: bool = False,
 ) -> dict[str, float]:
+    prepared = _prepare_daily_backtest_data(
+        checkpoint=checkpoint,
+        symbols=symbols,
+        data_dir=data_dir,
+        days=days,
+        extra_checkpoints=extra_checkpoints,
+        allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+    )
+    return _run_backtest_via_trading_server_with_prepared_data(
+        prepared=prepared,
+        symbols=symbols,
+        days=days,
+        allocation_pct=allocation_pct,
+        allocation_sizing_mode=allocation_sizing_mode,
+        starting_cash=starting_cash,
+        buying_power_multiplier=buying_power_multiplier,
+        multi_position=multi_position,
+        multi_position_min_prob_ratio=multi_position_min_prob_ratio,
+        account=account,
+        bot_id=bot_id,
+        checkpoint=checkpoint,
+        extra_checkpoints=extra_checkpoints,
+        allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+    )
+
+
+def _run_backtest_via_trading_server_with_prepared_data(
+    *,
+    prepared: PreparedDailyBacktestData,
+    symbols: Iterable[str],
+    days: int,
+    allocation_pct: float = 100.0,
+    allocation_sizing_mode: StockAllocationSizingMode = DEFAULT_ALLOCATION_SIZING_MODE,
+    starting_cash: float = DEFAULT_BACKTEST_STARTING_CASH,
+    buying_power_multiplier: float = DEFAULT_BACKTEST_BUYING_POWER_MULTIPLIER,
+    multi_position: int = DEFAULT_MULTI_POSITION,
+    multi_position_min_prob_ratio: float = DEFAULT_MULTI_POSITION_MIN_PROB_RATIO,
+    account: str = DEFAULT_BACKTEST_SERVER_ACCOUNT,
+    bot_id: str = DEFAULT_BACKTEST_SERVER_BOT_ID,
+    checkpoint: str = "",
+    extra_checkpoints: Optional[list[str]] = None,
+    allow_unsafe_checkpoint_loading: bool = False,
+) -> dict[str, float]:
     if starting_cash <= 0:
         raise ValueError("starting_cash must be positive")
     if buying_power_multiplier <= 0:
         raise ValueError("buying_power_multiplier must be positive")
     from src.trading_server.server import TradingServerEngine
 
-    frames = load_local_daily_frames(
-        symbols,
-        data_dir=data_dir,
-        min_days=days + DEFAULT_DAILY_FRAME_MIN_DAYS,
-    )
-    indexed = {
-        symbol: frame.set_index("timestamp")[["open", "high", "low", "close", "volume"]].copy()
-        for symbol, frame in frames.items()
-    }
-    min_len = min(len(frame) for frame in indexed.values())
-    start = min_len - days
-    if start < 1:
-        raise ValueError(f"Need at least {days + 1} aligned days for backtest")
-
-    trader = _load_cached_daily_trader(
-        checkpoint,
-        device="cpu",
-        long_only=True,
-        symbols=list(indexed.keys()),
-        allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
-    )
-    extra_policies = [
-        _load_bare_policy(
-            str((REPO / path).resolve()) if not Path(path).is_absolute() else path,
-            trader.obs_size,
-            trader.num_actions,
-            "cpu",
-            allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
-        )
-        for path in (extra_checkpoints or [])
-    ]
-    feature_cube = _build_daily_feature_cube(indexed, symbols=trader.SYMBOLS)
+    indexed = prepared.indexed
+    min_len = prepared.min_len
+    start = prepared.start
+    trader = _clone_daily_trader_template(prepared.trader_template)
+    extra_policies = prepared.extra_policies
+    feature_cube = prepared.feature_cube
 
     current_state = StrategyState()
     current_quotes: dict[str, TradingServerQuotePayload] = {}
@@ -4543,6 +4631,59 @@ def run_backtest_via_trading_server(
         }
         logger.info("Trading-server paper backtest: %s", json.dumps(results, sort_keys=True))
         return results
+
+
+def run_backtest_variant_matrix_via_trading_server(
+    *,
+    checkpoint: str,
+    symbols: Iterable[str],
+    data_dir: str,
+    days: int,
+    variants: Sequence[BacktestVariantSpec],
+    starting_cash: float = DEFAULT_BACKTEST_STARTING_CASH,
+    extra_checkpoints: Optional[list[str]] = None,
+    allow_unsafe_checkpoint_loading: bool = False,
+    account_prefix: str = DEFAULT_BACKTEST_SERVER_ACCOUNT,
+    bot_id_prefix: str = DEFAULT_BACKTEST_SERVER_BOT_ID,
+) -> list[dict[str, float | int | str]]:
+    prepared = _prepare_daily_backtest_data(
+        checkpoint=checkpoint,
+        symbols=symbols,
+        data_dir=data_dir,
+        days=days,
+        extra_checkpoints=extra_checkpoints,
+        allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+    )
+    results: list[dict[str, float | int | str]] = []
+    for idx, variant in enumerate(variants):
+        metrics = _run_backtest_via_trading_server_with_prepared_data(
+            prepared=prepared,
+            symbols=symbols,
+            days=days,
+            allocation_pct=variant.allocation_pct,
+            allocation_sizing_mode=variant.allocation_sizing_mode,
+            starting_cash=starting_cash,
+            buying_power_multiplier=variant.buying_power_multiplier,
+            multi_position=variant.multi_position,
+            multi_position_min_prob_ratio=variant.multi_position_min_prob_ratio,
+            account=f"{account_prefix}_{idx}",
+            bot_id=f"{bot_id_prefix}_{idx}",
+            checkpoint=checkpoint,
+            extra_checkpoints=extra_checkpoints,
+            allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+        )
+        results.append(
+            {
+                "name": variant.name,
+                "allocation_pct": float(variant.allocation_pct),
+                "allocation_sizing_mode": str(variant.allocation_sizing_mode),
+                "multi_position": int(variant.multi_position),
+                "multi_position_min_prob_ratio": float(variant.multi_position_min_prob_ratio),
+                "buying_power_multiplier": float(variant.buying_power_multiplier),
+                **metrics,
+            }
+        )
+    return results
 
 
 def compare_backtest_to_trading_server(
