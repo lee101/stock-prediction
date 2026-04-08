@@ -9,11 +9,14 @@ scripts/ CLI entry point use the same code path.
 import argparse
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
 _IGNORED_TEST_PARTS = {".uvcache", ".pytest_cache", "__pycache__"}
 _IGNORED_TEST_ROOTS = {"tests/experimental"}
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_NESTED_PYTEST_BASETEMP_ROOT = _REPO_ROOT / ".pytest_tmp" / "smart-test-runner"
 
 
 def _is_project_test_file(path: Path) -> bool:
@@ -170,13 +173,18 @@ def run_tests(test_files: list[str], label: str, verbose: bool = False, dry_run:
         print(f"  {sys.executable} -m pytest {' '.join(test_files)} -v")
         return True
 
-    cmd = [sys.executable, "-m", "pytest", *test_files]
-    if verbose:
-        cmd.append("-v")
-    cmd.extend(["--ignore=tests/experimental"])
-    cmd.append("-x" if label == "priority" else "--maxfail=20")
+    _NESTED_PYTEST_BASETEMP_ROOT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=f"{label}-",
+        dir=_NESTED_PYTEST_BASETEMP_ROOT,
+    ) as nested_basetemp:
+        cmd = [sys.executable, "-m", "pytest", "--basetemp", nested_basetemp, *test_files]
+        if verbose:
+            cmd.append("-v")
+        cmd.extend(["--ignore=tests/experimental"])
+        cmd.append("-x" if label == "priority" else "--maxfail=20")
 
-    result = subprocess.run(cmd, check=False)
+        result = subprocess.run(cmd, check=False)
     if result.returncode != 0:
         print(f"\n❌ {label.upper()} TESTS FAILED")
         return False

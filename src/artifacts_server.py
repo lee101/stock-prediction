@@ -192,6 +192,26 @@ class ArtifactServerConfig(TypedDict):
     listing_cache_inflight_wait_seconds: float
 
 
+class ArtifactHealthPayload(TypedDict):
+    ok: bool
+    root: str
+    root_exists: bool
+    config: ArtifactServerConfig
+    cache: ListingCacheStats
+
+
+class ArtifactListPayload(TypedDict, total=False):
+    root: str
+    path: str
+    entries: list[ArtifactEntry]
+    offset: int
+    limit: int
+    returned_entries: int
+    total_entries: int
+    has_more: bool
+    next_offset: int | None
+
+
 def _has_hidden_path_segment(path_like: str | Path) -> bool:
     path = Path(path_like)
     return any(part.startswith(".") for part in path.parts if part not in ("", ".", ".."))
@@ -367,7 +387,7 @@ def _list_response(
     root: Path | None = None,
     settings: ArtifactServerSettings = _DEFAULT_SETTINGS,
     cache_state: _ListingCacheState = _DEFAULT_CACHE_STATE,
-) -> dict[str, object]:
+) -> ArtifactListPayload:
     root_path = (root or settings.root).resolve()
     children = _cached_list_children(
         dir_path,
@@ -406,7 +426,7 @@ def create_app(
     app = FastAPI(title="marketsim-artifacts", version="0.1.0")
 
     @app.get("/health")
-    def health() -> dict:
+    def health() -> ArtifactHealthPayload:
         return {
             "ok": True,
             "root": str(root_path),
