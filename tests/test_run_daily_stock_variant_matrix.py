@@ -12,6 +12,7 @@ def test_parse_args_defaults_to_current_vs_candidates() -> None:
     assert args.preset == "current_vs_candidates"
     assert args.days == 120
     assert args.window is None
+    assert args.output_json is None
     assert args.checkpoint == sweep_mod.daily_stock.DEFAULT_CHECKPOINT
 
 
@@ -54,6 +55,25 @@ def test_main_dry_run_prints_resolved_config(capsys) -> None:
         "portfolio2_static_50",
         "portfolio3_static_50",
     ]
+
+
+def test_main_dry_run_writes_json_report(tmp_path) -> None:
+    output_path = tmp_path / "reports" / "sweep.json"
+
+    exit_code = sweep_mod.main(
+        [
+            "--dry-run",
+            "--preset",
+            "promising_only",
+            "--output-json",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["preset"] == "promising_only"
+    assert payload["days_list"] == [120]
 
 
 def test_main_delegates_to_variant_matrix_runner(monkeypatch, capsys) -> None:
@@ -158,6 +178,114 @@ def test_main_multi_window_json_reports_summary(monkeypatch, capsys) -> None:
     assert payload["baseline_comparison"]["baseline_name"] == "current_live_12p5"
     assert payload["baseline_comparison"]["beaters"][0]["name"] == "single_static_25"
     assert len(payload["windows"]) == 2
+
+
+def test_main_multi_window_json_writes_report_file(monkeypatch, tmp_path) -> None:
+    def _fake_runner(**kwargs):
+        days = int(kwargs["days"])
+        return [
+            {
+                "name": "current_live_12p5",
+                "allocation_pct": 12.5,
+                "allocation_sizing_mode": "static",
+                "multi_position": 0,
+                "multi_position_min_prob_ratio": 0.3,
+                "buying_power_multiplier": 1.0,
+                "total_return": -0.01 if days == 120 else 0.0,
+                "annualized_return": -0.02,
+                "sortino": -0.5,
+                "max_drawdown": -0.03,
+                "trades": 8.0,
+            },
+            {
+                "name": "single_static_25",
+                "allocation_pct": 25.0,
+                "allocation_sizing_mode": "static",
+                "multi_position": 0,
+                "multi_position_min_prob_ratio": 0.3,
+                "buying_power_multiplier": 1.0,
+                "total_return": 0.02 if days == 120 else 0.03,
+                "annualized_return": 0.04,
+                "sortino": 0.8,
+                "max_drawdown": -0.02,
+                "trades": 7.0,
+            },
+        ]
+
+    monkeypatch.setattr(sweep_mod.daily_stock, "run_backtest_variant_matrix_via_trading_server", _fake_runner)
+    output_path = tmp_path / "reports" / "multi_window.json"
+
+    exit_code = sweep_mod.main(
+        [
+            "--preset",
+            "current_vs_candidates",
+            "--json",
+            "--window",
+            "60",
+            "--window",
+            "120",
+            "--output-json",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["config"]["days_list"] == [60, 120]
+    assert payload["summary"][0]["name"] == "single_static_25"
+    assert payload["baseline_comparison"]["beaters"][0]["name"] == "single_static_25"
+
+
+def test_main_text_mode_writes_json_report(monkeypatch, tmp_path, capsys) -> None:
+    def _fake_runner(**kwargs):
+        return [
+            {
+                "name": "current_live_12p5",
+                "allocation_pct": 12.5,
+                "allocation_sizing_mode": "static",
+                "multi_position": 0,
+                "multi_position_min_prob_ratio": 0.3,
+                "buying_power_multiplier": 1.0,
+                "total_return": -0.01,
+                "annualized_return": -0.02,
+                "sortino": -0.5,
+                "max_drawdown": -0.03,
+                "trades": 8.0,
+            },
+            {
+                "name": "single_static_25",
+                "allocation_pct": 25.0,
+                "allocation_sizing_mode": "static",
+                "multi_position": 0,
+                "multi_position_min_prob_ratio": 0.3,
+                "buying_power_multiplier": 1.0,
+                "total_return": 0.02,
+                "annualized_return": 0.04,
+                "sortino": 0.8,
+                "max_drawdown": -0.02,
+                "trades": 7.0,
+            },
+        ]
+
+    monkeypatch.setattr(sweep_mod.daily_stock, "run_backtest_variant_matrix_via_trading_server", _fake_runner)
+    output_path = tmp_path / "reports" / "single_window.json"
+
+    exit_code = sweep_mod.main(
+        [
+            "--preset",
+            "current_vs_candidates",
+            "--days",
+            "60",
+            "--output-json",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert "Beat baseline" in capsys.readouterr().out
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["results"][0]["name"] == "single_static_25"
+    assert payload["baseline_comparison"]["beaters"][0]["name"] == "single_static_25"
 
 
 def test_table_for_results_contains_headers() -> None:
