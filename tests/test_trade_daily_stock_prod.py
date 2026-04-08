@@ -5421,9 +5421,22 @@ def test_execute_multi_position_signals_with_trading_server_batches_refresh(monk
     )
 
     assert refresh_calls == [["AAPL", "MSFT"]]
-    assert [order["symbol"] for order in submitted] == ["AAPL", "MSFT"]
-    assert submitted[0]["side"] == "sell"
-    assert submitted[1]["side"] == "buy"
+    assert submitted == [
+        {
+            "symbol": "AAPL",
+            "qty": 5.0,
+            "side": "sell",
+            "limit_price": 100.0,
+            "metadata": {"strategy": "daily_stock_rl", "intent": "close_portfolio_position"},
+        },
+        {
+            "symbol": "MSFT",
+            "qty": pytest.approx(55.0),
+            "side": "buy",
+            "limit_price": pytest.approx(daily_stock._marketable_limit_price(50.0, "buy")),
+            "metadata": {"strategy": "daily_stock_rl", "intent": "open_portfolio_position"},
+        },
+    ]
     assert held == {"MSFT": pytest.approx(55.0)}
 
 
