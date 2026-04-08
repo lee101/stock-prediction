@@ -131,3 +131,57 @@ def test_main_reports_remaining_failures_without_claiming_all_tests_passed(
     assert calls == ["priority", "remaining"]
     assert "⚠️  PRIORITY TESTS PASSED; REMAINING TESTS HAD FAILURES" in output
     assert "✅ ALL TESTS PASSED" not in output
+
+
+def test_main_priority_only_runs_only_priority_lane(
+    monkeypatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(runner_impl, "get_changed_files", lambda _base_branch: {"trade_daily_stock_prod.py"})
+    monkeypatch.setattr(runner_impl, "prioritize_tests", lambda _changed: (["tests/test_a.py"], ["tests/test_b.py"]))
+    monkeypatch.setattr(sys, "argv", ["smart_test_runner.py", "--priority-only"])
+
+    calls: list[str] = []
+
+    def _fake_run_tests(test_files, label, verbose=False, dry_run=False):
+        del test_files, verbose, dry_run
+        calls.append(label)
+        return True
+
+    monkeypatch.setattr(runner_impl, "run_tests", _fake_run_tests)
+
+    with pytest.raises(SystemExit) as exc_info:
+        runner_impl.main()
+
+    output = capsys.readouterr().out
+    assert exc_info.value.code == 0
+    assert calls == ["priority"]
+    assert "Selected lane: priority only" in output
+    assert "✅ PRIORITY TESTS PASSED" in output
+
+
+def test_main_remaining_only_runs_only_remaining_lane_and_fails_on_failure(
+    monkeypatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(runner_impl, "get_changed_files", lambda _base_branch: set())
+    monkeypatch.setattr(runner_impl, "prioritize_tests", lambda _changed: (["tests/test_a.py"], ["tests/test_b.py"]))
+    monkeypatch.setattr(sys, "argv", ["smart_test_runner.py", "--remaining-only"])
+
+    calls: list[str] = []
+
+    def _fake_run_tests(test_files, label, verbose=False, dry_run=False):
+        del test_files, verbose, dry_run
+        calls.append(label)
+        return False
+
+    monkeypatch.setattr(runner_impl, "run_tests", _fake_run_tests)
+
+    with pytest.raises(SystemExit) as exc_info:
+        runner_impl.main()
+
+    output = capsys.readouterr().out
+    assert exc_info.value.code == 1
+    assert calls == ["remaining"]
+    assert "Selected lane: remaining only" in output
+    assert "❌ REMAINING TESTS FAILED" in output
