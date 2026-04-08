@@ -242,6 +242,28 @@ def _build_feature_history(
     return feature_history
 
 
+def _prepare_action_inputs(
+    aligned_frames: dict[str, pd.DataFrame],
+    feature_history: dict[str, pd.DataFrame],
+    *,
+    symbols: list[str],
+) -> tuple[np.ndarray, np.ndarray, tuple[pd.Timestamp, ...]]:
+    feature_blocks = [
+        feature_history[symbol].to_numpy(dtype=np.float32, copy=False)
+        for symbol in symbols
+    ]
+    close_columns = [
+        aligned_frames[symbol]["close"].to_numpy(dtype=np.float64, copy=False)
+        for symbol in symbols
+    ]
+    timestamps = tuple(
+        pd.to_datetime(aligned_frames[symbols[0]]["timestamp"], utc=True).tolist()
+    )
+    feature_cube = np.stack(feature_blocks, axis=1)
+    close_matrix = np.stack(close_columns, axis=1)
+    return feature_cube, close_matrix, timestamps
+
+
 def _generate_policy_actions(
     *,
     bars: pd.DataFrame,
@@ -266,6 +288,11 @@ def _generate_policy_actions(
     )
     symbol_to_index = {symbol: idx for idx, symbol in enumerate(symbols)}
     feature_history = _build_feature_history(aligned_frames, timeframe=normalized_timeframe)
+    feature_cube, close_matrix, timestamps = _prepare_action_inputs(
+        aligned_frames,
+        feature_history,
+        symbols=symbols,
+    )
     total_steps = len(next(iter(aligned_frames.values())))
     history_bars = int(_minimum_history_bars(normalized_timeframe) if min_history_bars is None else min_history_bars)
     if total_steps <= history_bars:
@@ -293,15 +320,13 @@ def _generate_policy_actions(
         )
 
         prices = {
-            symbol: float(frame["close"].iloc[idx])
-            for symbol, frame in aligned_frames.items()
+            symbol: float(close_matrix[idx, symbol_idx])
+            for symbol_idx, symbol in enumerate(symbols)
         }
-        features = np.zeros((len(symbols), 16), dtype=np.float32)
-        for feature_idx, symbol in enumerate(symbols):
-            features[feature_idx] = feature_history[symbol].iloc[idx].to_numpy(dtype=np.float32, copy=False)
+        features = feature_cube[idx]
         signal = trader.get_signal(features, prices)
 
-        timestamp = pd.Timestamp(next(iter(aligned_frames.values()))["timestamp"].iloc[idx])
+        timestamp = pd.Timestamp(timestamps[idx])
         per_symbol_rows = {
             symbol: {
                 "timestamp": timestamp,

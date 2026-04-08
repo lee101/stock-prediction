@@ -350,6 +350,30 @@ def test_generate_policy_actions_rejects_insufficient_history(monkeypatch) -> No
         )
 
 
+def test_prepare_action_inputs_stacks_feature_and_price_matrices() -> None:
+    bars = _make_bars()
+    aligned_frames = validate._align_symbol_frames(bars, symbols=["AAPL", "MSFT"])
+    feature_history = {
+        symbol: pd.DataFrame(
+            np.full((len(frame), 16), 1.0 if symbol == "AAPL" else 2.0, dtype=np.float32)
+        )
+        for symbol, frame in aligned_frames.items()
+    }
+
+    feature_cube, close_matrix, timestamps = validate._prepare_action_inputs(
+        aligned_frames,
+        feature_history,
+        symbols=["AAPL", "MSFT"],
+    )
+
+    assert feature_cube.shape == (4, 2, 16)
+    assert np.all(feature_cube[:, 0, :] == 1.0)
+    assert np.all(feature_cube[:, 1, :] == 2.0)
+    assert close_matrix.shape == (4, 2)
+    assert close_matrix[0].tolist() == pytest.approx([100.0, 200.0])
+    assert timestamps[0] == pd.Timestamp("2026-01-01T00:00:00Z")
+
+
 def test_parse_args_supports_json_only_and_output_json() -> None:
     args = validate.parse_args(
         [
