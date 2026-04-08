@@ -2822,7 +2822,7 @@ def test_run_backtest_rejects_non_positive_buying_power_multiplier() -> None:
         )
 
 
-def test_run_backtest_multi_position_uses_top_k_portfolio(monkeypatch) -> None:
+def test_run_backtest_multi_position_rebalances_top_k_portfolio(monkeypatch) -> None:
     frame = pd.DataFrame(
         {
             "timestamp": pd.date_range("2026-01-01T00:00:00Z", periods=25, freq="D"),
@@ -2883,7 +2883,7 @@ def test_run_backtest_multi_position_uses_top_k_portfolio(monkeypatch) -> None:
         multi_position=2,
     )
 
-    assert results["trades"] == pytest.approx(2.0)
+    assert results["trades"] == pytest.approx(10.0)
     assert results["total_return"] > 0.0
 
 
@@ -5193,7 +5193,7 @@ def test_execute_multi_position_signals_exists():
     assert 'dry_run' in params
 
 
-def test_execute_multi_position_signals_closes_stale_and_opens_new(monkeypatch) -> None:
+def test_execute_multi_position_signals_closes_stale_rebalances_and_opens_new(monkeypatch) -> None:
     submitted: list[dict[str, float | str]] = []
 
     class _FakeClient:
@@ -5230,9 +5230,10 @@ def test_execute_multi_position_signals_closes_stale_and_opens_new(monkeypatch) 
         dry_run=False,
     )
 
-    assert held == {"AAPL": 5.0, "NVDA": 40}
+    assert held == {"AAPL": 30.0, "NVDA": 40.0}
     assert submitted == [
         {"symbol": "MSFT", "qty": 3.0, "side": "sell", "limit_price": 200.0},
+        {"symbol": "AAPL", "qty": 25.0, "side": "buy", "limit_price": 100.0},
         {"symbol": "NVDA", "qty": 40, "side": "buy", "limit_price": 50.0},
     ]
 
@@ -5291,6 +5292,30 @@ def test_execute_multi_position_signals_respects_buying_power_cap(monkeypatch) -
     )
 
     assert held == {"NVDA": pytest.approx(9.5)}
+
+
+def test_execute_multi_position_signals_scales_shared_buying_power_budget(monkeypatch) -> None:
+    class _FakeClient:
+        def get_account(self):
+            return SimpleNamespace(equity=10_000.0, buying_power=100.0)
+
+    monkeypatch.setattr(daily_stock, "positions_by_symbol", lambda client, symbols: {})
+    monkeypatch.setattr(daily_stock, "_signed_position_qty", lambda pos: float(pos.qty))
+
+    held = daily_stock.execute_multi_position_signals(
+        [
+            daily_stock.TradingSignal("long_aapl", "AAPL", "long", 0.8, 1.0, 0.6, 0.0),
+            daily_stock.TradingSignal("long_msft", "MSFT", "long", 0.7, 1.0, 0.4, 0.0),
+        ],
+        client=_FakeClient(),
+        paper=True,
+        quotes={"AAPL": 10.0, "MSFT": 10.0},
+        symbols=["AAPL", "MSFT"],
+        total_allocation_pct=50.0,
+        dry_run=True,
+    )
+
+    assert held == {"AAPL": pytest.approx(5.7), "MSFT": pytest.approx(3.8)}
 
 
 def test_execute_multi_position_signals_skips_malformed_allocation_fractions(monkeypatch, caplog) -> None:
@@ -5388,6 +5413,92 @@ def test_execute_multi_position_signals_with_trading_server_respects_buying_powe
     )
 
     assert held == {"NVDA": pytest.approx(9.5)}
+
+
+def test_execute_multi_position_signals_with_trading_server_rebalances_existing_position() -> None:
+    refresh_calls: list[list[str]] = []
+    submitted: list[dict[str, object]] = []
+
+    class _FakeServerClient:
+        def get_account(self):
+            return {
+                "cash": 7_000.0,
+                "buying_power": 7_000.0,
+                "positions": {
+                    "AAPL": {"qty": 30.0, "avg_entry_price": 100.0, "current_price": 100.0},
+                },
+            }
+
+        def refresh_prices(self, *, symbols):
+            refresh_calls.append(list(symbols))
+            return {"accounts": []}
+
+        def submit_limit_order(self, **kwargs):
+            submitted.append(dict(kwargs))
+            return {"order": {"id": f"order-{len(submitted)}"}}
+
+    held = daily_stock.execute_multi_position_signals_with_trading_server(
+        [
+            daily_stock.TradingSignal("rebalance_aapl", "AAPL", "long", 0.8, 1.0, 0.25, 0.0),
+            daily_stock.TradingSignal("open_msft", "MSFT", "long", 0.7, 1.0, 0.75, 0.0),
+        ],
+        server_client=_FakeServerClient(),
+        quotes={"AAPL": 100.0, "MSFT": 50.0},
+        symbols=["AAPL", "MSFT"],
+        total_allocation_pct=50.0,
+        dry_run=False,
+    )
+
+    assert refresh_calls == [["AAPL", "MSFT"]]
+    assert held == {"AAPL": pytest.approx(12.5), "MSFT": pytest.approx(75.0)}
+    assert submitted == [
+        {
+            "symbol": "AAPL",
+            "qty": pytest.approx(17.5),
+            "side": "sell",
+            "limit_price": pytest.approx(daily_stock._marketable_limit_price(100.0, "sell")),
+            "allow_loss_exit": True,
+            "force_exit_reason": "daily portfolio rebalance",
+            "metadata": {"strategy": "daily_stock_rl", "intent": "rebalance_portfolio_position"},
+        },
+        {
+            "symbol": "MSFT",
+            "qty": pytest.approx(75.0),
+            "side": "buy",
+            "limit_price": pytest.approx(daily_stock._marketable_limit_price(50.0, "buy")),
+            "metadata": {"strategy": "daily_stock_rl", "intent": "open_portfolio_position"},
+        },
+    ]
+
+
+def test_execute_multi_position_signals_with_trading_server_scales_shared_buying_power_budget() -> None:
+    class _FakeServerClient:
+        def get_account(self):
+            return {
+                "cash": 10_000.0,
+                "buying_power": 100.0,
+                "positions": {},
+            }
+
+        def refresh_prices(self, *, symbols):
+            raise AssertionError("dry-run should not refresh prices")
+
+        def submit_limit_order(self, **kwargs):
+            raise AssertionError("dry-run should not submit orders")
+
+    held = daily_stock.execute_multi_position_signals_with_trading_server(
+        [
+            daily_stock.TradingSignal("long_aapl", "AAPL", "long", 0.8, 1.0, 0.6, 0.0),
+            daily_stock.TradingSignal("long_msft", "MSFT", "long", 0.7, 1.0, 0.4, 0.0),
+        ],
+        server_client=_FakeServerClient(),
+        quotes={"AAPL": 10.0, "MSFT": 10.0},
+        symbols=["AAPL", "MSFT"],
+        total_allocation_pct=50.0,
+        dry_run=True,
+    )
+
+    assert held == {"AAPL": pytest.approx(5.7), "MSFT": pytest.approx(3.8)}
 
 
 def test_execute_multi_position_signals_with_trading_server_skips_malformed_allocation_fractions(
