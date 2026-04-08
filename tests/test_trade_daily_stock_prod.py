@@ -5369,6 +5369,88 @@ def test_run_backtest_variant_matrix_via_trading_server_prepares_inputs_once(mon
     assert results[1]["total_return"] == pytest.approx(0.25)
 
 
+def test_run_backtest_multi_window_variant_matrix_via_trading_server_prepares_inputs_once(monkeypatch) -> None:
+    frame = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01T00:00:00Z", periods=40, freq="D"),
+            "open": np.linspace(100.0, 139.0, 40),
+            "high": np.linspace(101.0, 140.0, 40),
+            "low": np.linspace(99.0, 138.0, 40),
+            "close": np.linspace(100.5, 139.5, 40),
+            "volume": np.linspace(1_000.0, 1_039.0, 40),
+        }
+    )
+    history_calls = {"count": 0}
+
+    class _FakeTrader:
+        def __init__(self) -> None:
+            self.device = "cpu"
+            self.SYMBOLS = ["AAPL", "MSFT"]
+            self.num_symbols = len(self.SYMBOLS)
+            self.obs_size = self.num_symbols * 16 + 5 + self.num_symbols
+            self.num_actions = 1 + self.num_symbols
+            self.cash = 0.0
+            self.current_position = None
+            self.position_qty = 0.0
+            self.entry_price = 0.0
+            self.hold_days = 0
+            self.hold_hours = 0
+            self.step = 0
+            self.max_steps = 90
+
+        def step_day(self):
+            return None
+
+    monkeypatch.setattr(
+        daily_stock,
+        "load_local_daily_frames",
+        lambda symbols, data_dir, min_days=daily_stock.DEFAULT_DAILY_FRAME_MIN_DAYS: {
+            "AAPL": frame.copy(),
+            "MSFT": frame.copy(),
+        },
+    )
+    monkeypatch.setattr(daily_stock, "_load_cached_daily_trader", lambda *args, **kwargs: _FakeTrader())
+    monkeypatch.setattr(
+        daily_stock,
+        "compute_daily_feature_history",
+        lambda df: history_calls.__setitem__("count", history_calls["count"] + 1)
+        or pd.DataFrame(np.tile(np.arange(16, dtype=np.float32), (len(df), 1))),
+    )
+    monkeypatch.setattr(
+        daily_stock,
+        "_run_backtest_variant_matrix_via_trading_server_with_prepared_data",
+        lambda **kwargs: [
+            {
+                "name": "a",
+                "allocation_pct": 12.5,
+                "allocation_sizing_mode": "static",
+                "multi_position": 0,
+                "multi_position_min_prob_ratio": 0.3,
+                "buying_power_multiplier": 1.0,
+                "total_return": float(kwargs["days"]) / 100.0,
+                "annualized_return": 0.0,
+                "sortino": 0.0,
+                "max_drawdown": 0.0,
+                "trades": 0.0,
+                "orders": 0.0,
+            }
+        ],
+    )
+
+    results = daily_stock.run_backtest_multi_window_variant_matrix_via_trading_server(
+        checkpoint="unused.pt",
+        symbols=["AAPL", "MSFT"],
+        data_dir="unused",
+        days_list=[5, 10, 5],
+        variants=[daily_stock.BacktestVariantSpec(name="a", allocation_pct=12.5)],
+    )
+
+    assert history_calls["count"] == 2
+    assert [row["days"] for row in results] == [5, 10]
+    assert results[0]["results"][0]["total_return"] == pytest.approx(0.05)
+    assert results[1]["results"][0]["total_return"] == pytest.approx(0.10)
+
+
 def test_run_backtest_with_prepared_data_uses_precomputed_prices_and_timestamps() -> None:
     class _ExplodingSeries:
         @property
