@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -15,58 +14,10 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 import trade_daily_stock_prod as daily_stock
+from src.daily_stock_variant_presets import preset_choices, resolve_variant_preset
 
 
 VariantSpec = daily_stock.BacktestVariantSpec
-
-
-@dataclass(frozen=True)
-class VariantPreset:
-    name: str
-    description: str
-    variants: tuple[VariantSpec, ...]
-
-
-CURRENT_LIVE_VARIANT = VariantSpec(name="current_live_12p5", allocation_pct=12.5)
-SINGLE_STATIC_25_VARIANT = VariantSpec(name="single_static_25", allocation_pct=25.0)
-PORTFOLIO2_STATIC_50_VARIANT = VariantSpec(name="portfolio2_static_50", allocation_pct=50.0, multi_position=2)
-PORTFOLIO3_STATIC_50_VARIANT = VariantSpec(name="portfolio3_static_50", allocation_pct=50.0, multi_position=3)
-
-
-PRESET_VARIANTS: dict[str, VariantPreset] = {
-    "current_vs_candidates": VariantPreset(
-        name="current_vs_candidates",
-        description="Current live-equivalent config plus the strongest server-aware static candidates.",
-        variants=(
-            CURRENT_LIVE_VARIANT,
-            SINGLE_STATIC_25_VARIANT,
-            PORTFOLIO2_STATIC_50_VARIANT,
-            PORTFOLIO3_STATIC_50_VARIANT,
-        ),
-    ),
-    "current_only": VariantPreset(
-        name="current_only",
-        description="Only the current live-equivalent single-position configuration.",
-        variants=(CURRENT_LIVE_VARIANT,),
-    ),
-    "promising_only": VariantPreset(
-        name="promising_only",
-        description="Only the short-window variants that beat the current live-equivalent baseline.",
-        variants=(
-            SINGLE_STATIC_25_VARIANT,
-            PORTFOLIO2_STATIC_50_VARIANT,
-            PORTFOLIO3_STATIC_50_VARIANT,
-        ),
-    ),
-}
-
-
-def _preset_choices() -> list[str]:
-    return sorted(PRESET_VARIANTS)
-
-
-def _resolve_preset(name: str) -> VariantPreset:
-    return PRESET_VARIANTS[str(name).strip()]
 
 
 def _normalize_symbols(values: list[str] | None) -> list[str]:
@@ -141,7 +92,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a server-aware daily stock variant sweep.")
     parser.add_argument(
         "--preset",
-        choices=_preset_choices(),
+        choices=preset_choices(),
         default="current_vs_candidates",
         help="Named variant set to evaluate.",
     )
@@ -156,7 +107,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    preset = _resolve_preset(args.preset)
+    preset = resolve_variant_preset(args.preset)
     variants = list(preset.variants)
     symbols = _normalize_symbols(args.symbols)
     payload = {
