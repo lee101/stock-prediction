@@ -50,6 +50,19 @@ def _monthly_return(total_return: float, *, days: int) -> float:
     return float((1.0 + float(total_return)) ** (21.0 / float(days)) - 1.0)
 
 
+def _emit_json_payload(payload: dict[str, object], *, output_json: str | None) -> None:
+    rendered = json.dumps(payload, indent=2, sort_keys=True)
+    _write_json_payload(rendered, output_json=output_json)
+    print(rendered)
+
+
+def _write_json_payload(rendered: str, *, output_json: str | None) -> None:
+    if output_json:
+        output_path = Path(output_json)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(f"{rendered}\n", encoding="utf-8")
+
+
 def _table_for_results(rows: list[dict[str, object]]) -> str:
     headers = [
         "name",
@@ -286,6 +299,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--data-dir", default=daily_stock.DEFAULT_DATA_DIR)
     parser.add_argument("--symbols", action="append", default=None, help="Optional comma-separated symbol override.")
     parser.add_argument("--json", action="store_true", help="Print JSON instead of a table.")
+    parser.add_argument("--output-json", default=None, help="Optional path to write the JSON report.")
     parser.add_argument("--dry-run", action="store_true", help="Print resolved config without running the sweep.")
     return parser.parse_args(argv)
 
@@ -307,7 +321,7 @@ def main(argv: list[str] | None = None) -> int:
         "variants": [_variant_payload(item) for item in variants],
     }
     if args.dry_run:
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        _emit_json_payload(payload, output_json=args.output_json)
         return 0
 
     window_results: list[dict[str, object]] = []
@@ -331,15 +345,15 @@ def main(argv: list[str] | None = None) -> int:
     if len(window_results) == 1:
         ranked = list(window_results[0]["results"])
         comparison = _single_window_baseline_comparison(ranked)
+        report_payload = {"config": payload, "results": ranked, "baseline_comparison": comparison}
         if args.json:
-            print(
-                json.dumps(
-                    {"config": payload, "results": ranked, "baseline_comparison": comparison},
-                    indent=2,
-                    sort_keys=True,
-                )
-            )
+            _emit_json_payload(report_payload, output_json=args.output_json)
         else:
+            if args.output_json:
+                _write_json_payload(
+                    json.dumps(report_payload, indent=2, sort_keys=True),
+                    output_json=args.output_json,
+                )
             print(f"Daily stock variant sweep: preset={preset.name} days={days_list[0]} symbols={len(symbols)}")
             print(preset.description)
             print(_table_for_results(ranked))
@@ -350,21 +364,21 @@ def main(argv: list[str] | None = None) -> int:
 
     summary = _summarize_multi_window_results(window_results)
     comparison = _multi_window_baseline_comparison(summary)
+    report_payload = {
+        "config": payload,
+        "windows": window_results,
+        "summary": summary,
+        "baseline_comparison": comparison,
+    }
 
     if args.json:
-        print(
-            json.dumps(
-                {
-                    "config": payload,
-                    "windows": window_results,
-                    "summary": summary,
-                    "baseline_comparison": comparison,
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
+        _emit_json_payload(report_payload, output_json=args.output_json)
     else:
+        if args.output_json:
+            _write_json_payload(
+                json.dumps(report_payload, indent=2, sort_keys=True),
+                output_json=args.output_json,
+            )
         print(
             "Daily stock variant sweep: "
             f"preset={preset.name} windows={','.join(str(item) for item in days_list)} symbols={len(symbols)}"
