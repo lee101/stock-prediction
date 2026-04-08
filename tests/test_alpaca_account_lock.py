@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import ast
 import json
+import time
 from pathlib import Path
-from threading import Barrier, Thread
+from threading import Barrier, Event, Thread
 
 import pytest
 
@@ -31,6 +32,40 @@ def _module_function_source(module: object, function_name: str) -> str:
 def test_lock_path_for_account_uses_state_dir(tmp_path: Path) -> None:
     path = account_lock.lock_path_for_account("alpaca_live_writer", state_dir=tmp_path)
     assert path == tmp_path / "account_locks" / "alpaca_live_writer.lock"
+
+
+def test_normalize_alpaca_account_name_normalizes_spaces_and_case() -> None:
+    assert account_lock.normalize_alpaca_account_name(" Alpaca Live Writer ") == "alpaca_live_writer"
+
+
+@pytest.mark.parametrize(
+    "raw_name",
+    [
+        "",
+        "   ",
+        "alpaca/live",
+        r"alpaca\\live",
+        "alpaca..live",
+        "alpaca!live",
+        "x" * 65,
+    ],
+)
+def test_normalize_alpaca_account_name_rejects_unsupported_values(raw_name: str) -> None:
+    with pytest.raises(ValueError):
+        account_lock.normalize_alpaca_account_name(raw_name)
+
+
+def test_lock_path_for_account_normalizes_spaces(tmp_path: Path) -> None:
+    path = account_lock.lock_path_for_account(" Alpaca Live Writer ", state_dir=tmp_path)
+    assert path == tmp_path / "account_locks" / "alpaca_live_writer.lock"
+
+
+def test_lock_path_for_account_rejects_path_like_account_name(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="Unsupported Alpaca account name"):
+        account_lock.lock_path_for_account("../alpaca_live_writer", state_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="Unsupported Alpaca account name"):
+        account_lock.lock_path_for_account(r"..\\alpaca_live_writer", state_dir=tmp_path)
 
 
 def test_acquire_alpaca_account_lock_writes_metadata(tmp_path: Path) -> None:
@@ -129,6 +164,48 @@ def test_acquire_alpaca_account_lock_rejects_different_in_process_service(tmp_pa
             )
     finally:
         first.release()
+
+
+def test_acquire_alpaca_account_lock_rejects_conflicting_service_across_threads(tmp_path: Path) -> None:
+    start_barrier = Barrier(3)
+    release_event = Event()
+    results: list[tuple[str, object]] = []
+
+    def _worker(service_name: str) -> None:
+        start_barrier.wait()
+        try:
+            lock = account_lock.acquire_alpaca_account_lock(
+                service_name,
+                account_name="alpaca_live_writer",
+                state_dir=tmp_path,
+            )
+        except Exception as exc:  # pragma: no cover - asserted below
+            results.append(("error", exc))
+            return
+        results.append(("lock", lock))
+        release_event.wait(timeout=5.0)
+        lock.release()
+
+    threads = [
+        Thread(target=_worker, args=("first-service",)),
+        Thread(target=_worker, args=("second-service",)),
+    ]
+    for thread in threads:
+        thread.start()
+    start_barrier.wait()
+    deadline = time.time() + 5.0
+    while len(results) < 2 and time.time() < deadline:
+        time.sleep(0.01)
+    release_event.set()
+    for thread in threads:
+        thread.join(timeout=5.0)
+
+    locks = [payload for kind, payload in results if kind == "lock"]
+    errors = [payload for kind, payload in results if kind == "error"]
+    assert len(locks) == 1
+    assert len(errors) == 1
+    assert isinstance(errors[0], RuntimeError)
+    assert "held in-process" in str(errors[0])
 
 
 def test_acquire_alpaca_account_lock_reports_current_holder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

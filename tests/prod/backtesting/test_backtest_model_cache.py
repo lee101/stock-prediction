@@ -10,20 +10,35 @@ from types import SimpleNamespace
 import pytest
 
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _load_backtest_module_from_path():
     module_path = _REPO_ROOT / "backtest_test3_inline.py"
     root_str = str(_REPO_ROOT)
+    added_path = False
     if root_str not in sys.path:
         sys.path.insert(0, root_str)
+        added_path = True
     spec = importlib.util.spec_from_file_location("backtest_test3_inline", module_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load backtest_test3_inline from {module_path}")
     module = importlib.util.module_from_spec(spec)
+    original_module = sys.modules.get("backtest_test3_inline")
     sys.modules["backtest_test3_inline"] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if added_path:
+            try:
+                sys.path.remove(root_str)
+            except ValueError:
+                pass
+        if original_module is None:
+            if sys.modules.get("backtest_test3_inline") is module:
+                sys.modules.pop("backtest_test3_inline", None)
+        else:
+            sys.modules["backtest_test3_inline"] = original_module
     return module
 
 
@@ -45,6 +60,26 @@ def _fresh_module():
         reason = getattr(module, "__import_error__", None)
         pytest.skip(f"backtest_test3_inline unavailable: {reason!r}")
     return module
+
+
+def test_backtest_module_loader_does_not_leave_test_prod_path_in_sys_path():
+    prod_test_root = str(Path(__file__).resolve().parents[1])
+    while prod_test_root in sys.path:
+        sys.path.remove(prod_test_root)
+
+    module = _load_backtest_module_from_path()
+
+    assert module.__file__ == str(_REPO_ROOT / "backtest_test3_inline.py")
+    assert prod_test_root not in sys.path
+
+
+def test_backtest_module_loader_restores_original_sys_modules_entry():
+    original_module = importlib.import_module("backtest_test3_inline")
+
+    loaded_module = _load_backtest_module_from_path()
+
+    assert loaded_module.__file__ == str(_REPO_ROOT / "backtest_test3_inline.py")
+    assert sys.modules.get("backtest_test3_inline") is original_module
 
 
 def test_resolve_toto_params_cached(monkeypatch):

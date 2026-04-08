@@ -56,7 +56,8 @@ def _make_trainer(tmp_path: Path, *, max_steps: int = 2) -> HFTrainer:
     return HFTrainer(model=model, config=config, train_dataset=dataset, eval_dataset=None)
 
 
-def test_cpu_training_records_step_time(tmp_path: Path) -> None:
+def test_cpu_training_records_step_time(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("hftraining.train_hf.torch.cuda.is_available", lambda: False)
     trainer = _make_trainer(tmp_path, max_steps=2)
     trainer.train()
 

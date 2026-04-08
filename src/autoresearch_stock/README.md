@@ -49,6 +49,29 @@ python -m autoresearch_stock.train --frequency hourly
 python -m autoresearch_stock.train --frequency daily
 ```
 
+Before a longer run, validate the resolved symbols and roots without touching CUDA:
+
+```bash
+python -m autoresearch_stock.train \
+  --frequency hourly \
+  --symbols NVDA,PLTR,GOOG \
+  --data-root trainingdatahourly/stocks \
+  --check-inputs-text
+```
+
+`--data-root` is optional when you use the repo's conventional layouts:
+- hourly defaults to `trainingdatahourly/stocks`
+- daily defaults to `trainingdata`
+
+For machine-readable preflight output:
+
+```bash
+python -m autoresearch_stock.train \
+  --frequency daily \
+  --symbols AAPL,AMD,NVDA \
+  --check-inputs
+```
+
 Useful overrides:
 
 ```bash
@@ -58,6 +81,15 @@ python -m autoresearch_stock.train \
   --eval-windows 35,140,420 \
   --dashboard-db dashboards/metrics.db
 ```
+
+Config notes:
+
+- `--max-positions` must be at least `1`.
+- `--max-volume-fraction` must be in `(0, 1]`.
+- `--recent-overlay-bars`, slippage values, and `--min-edge-bps` must be non-negative.
+- `--spread-lookback-days` must be at least `1`.
+- `--annual-leverage-rate` must be non-negative and `--max-gross-leverage` must be at least `1.0`.
+- `AUTORESEARCH_STOCK_INPUT_CHECK_WORKERS` optionally caps `--check-inputs` parallelism.
 
 Current experimental flags:
 

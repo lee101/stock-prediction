@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import runpy
 from pathlib import Path
 
 from pufferlib_market import validate_marketsim as package_module
@@ -48,3 +49,18 @@ def test_root_validate_marketsim_shim_exports_explicit_public_surface() -> None:
         "load_hourly_bars",
         "main",
     )
+
+
+def test_root_validate_marketsim_shim_script_mode_delegates_to_canonical_main(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    def _fake_main() -> None:
+        calls.append("main")
+
+    monkeypatch.setattr(package_module, "main", _fake_main)
+
+    runpy.run_path(str(ROOT_SHIM), run_name="__main__")
+
+    assert calls == ["main"]

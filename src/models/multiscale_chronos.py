@@ -16,6 +16,7 @@ The adaptive method uses volatility to decide whether to use multi-scale:
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from typing import Dict, Sequence
 
@@ -25,8 +26,10 @@ import pandas as pd
 from .chronos2_wrapper import (
     Chronos2OHLCWrapper,
     Chronos2PredictionBatch,
-    Chronos2PreparedPanel,
 )
+
+sys.modules.setdefault("models.multiscale_chronos", sys.modules[__name__])
+sys.modules.setdefault("src.models.multiscale_chronos", sys.modules[__name__])
 
 
 @dataclass

@@ -23,6 +23,7 @@ from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, time as dt_time, timedelta, timezone
+from enum import StrEnum
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Lock
@@ -63,7 +64,12 @@ from src.daily_stock_defaults import (
     DEFAULT_MIN_OPEN_VALUE_ESTIMATE,
     DEFAULT_SYMBOLS,
 )
-from src.local_data_health import format_local_data_health_lines
+from src.local_data_health import (
+    LocalDataHealthStatus,
+    LocalDataStatusCounts,
+    format_local_data_health_lines,
+    local_data_status_counts,
+)
 from src.shared_path_guard import shared_path_guard
 from src import stock_symbol_inputs
 from src.trading_server.client import (
@@ -113,6 +119,7 @@ DEFAULT_BACKTEST_BUYING_POWER_MULTIPLIER = 1.0
 DEFAULT_DAILY_FRAME_MIN_DAYS = 120
 DEFAULT_ALPACA_DAILY_HISTORY_LOOKBACK_DAYS = 420
 DEFAULT_BAR_FRESHNESS_MAX_AGE_DAYS = 5
+DEFAULT_DAEMON_RETRY_SLEEP_SECONDS = 300.0
 DEFAULT_MULTI_POSITION = 0
 DEFAULT_MULTI_POSITION_MIN_PROB_RATIO = 0.3
 DEFAULT_SYMBOL_PREVIEW_LIMIT = 5
@@ -134,6 +141,13 @@ StockRunMode: TypeAlias = Literal["once", "daemon", "backtest"]
 StockAccountMode: TypeAlias = Literal["paper", "live"]
 StockAllocationSizingMode: TypeAlias = Literal["static", "confidence_scaled"]
 TradingServerUrlSource: TypeAlias = Literal["cli", "env", "default"]
+
+
+class LocalDataDirResolutionSource(StrEnum):
+    REQUESTED = "requested"
+    NESTED_TRAIN = "nested_train"
+
+
 StockExecutionStatus: TypeAlias = Literal[
     "local_only",
     "submitted",
@@ -152,7 +166,7 @@ StockExecutionSkipReason: TypeAlias = Literal[
     "open_gate",
     "executor_declined",
 ]
-StockLocalDataStatus: TypeAlias = Literal["usable", "stale", "missing", "invalid"]
+StockLocalDataStatus = LocalDataHealthStatus
 
 
 class RuntimeLogPayload(TypedDict, total=False):
@@ -171,6 +185,9 @@ class RuntimeLogPayload(TypedDict, total=False):
     ensemble_size: int
     command_preview: str
     data_dir: str
+    requested_local_data_dir: str
+    resolved_local_data_dir: str
+    resolved_local_data_dir_source: LocalDataDirResolutionSource
     server_account: str
     server_bot_id: str
     configured_server_url: str | None
@@ -180,6 +197,66 @@ class RuntimeLogPayload(TypedDict, total=False):
     server_url_transport: str
     server_url_scope: str
     server_url_security: str
+    checkpoint_feature_schema: DailyStockFeatureSchema
+    checkpoint_feature_dimension: int
+    primary_checkpoint_arch: str
+    extra_checkpoint_classes: list[str]
+    usable_symbol_count: int
+    latest_local_data_date: str
+    stale_symbol_count: int
+    missing_symbol_count: int
+    invalid_symbol_count: int
+    preflight_warnings: list[str]
+
+
+class CheckpointLoadPrimarySummary(TypedDict, total=False):
+    checkpoint: str
+    device: str
+    arch: str
+    hidden_size: int
+    num_actions: int
+    num_symbols: int
+    long_only: bool
+    action_allocation_bins: int
+    action_level_bins: int
+    action_max_offset_bps: float
+    max_steps: int
+    symbols: list[str]
+    feature_schema: DailyStockFeatureSchema
+    feature_dimension: int
+
+
+CheckpointLoadExtraSummary = TypedDict(
+    "CheckpointLoadExtraSummary",
+    {
+        "path": str,
+        "class": str,
+    },
+)
+
+
+class CheckpointLoadDiagnostics(TypedDict, total=False):
+    ok: bool | None
+    error: str | None
+    primary: CheckpointLoadPrimarySummary | None
+    extras: list[CheckpointLoadExtraSummary]
+    skipped: bool
+
+
+class DaemonWarningPayload(TypedDict, total=False):
+    event: str
+    timestamp: str
+    checkpoint: str
+    stage: str
+    error_type: str
+    error: str
+    account_mode: str
+    execution_backend: str
+    sleep_seconds: float
+    state_path: str
+    retry_with_paper_clock: bool
+    clock_source: str
+    server_session_id: str
 
 
 class SignalPayload(TypedDict):
@@ -237,6 +314,8 @@ class RunSummaryPayload(TypedDict):
     state_advanced: object
     signal_log_written: object
     signal_log_write_error: object
+    run_event_log_written: object
+    run_event_log_write_error: object
 
 
 class RunFailurePayload(TypedDict):
@@ -253,6 +332,9 @@ class RunFailurePayload(TypedDict):
     dry_run: bool
     state_path: str
     symbols: list[str]
+    requested_local_data_dir: str | None
+    resolved_local_data_dir: str | None
+    resolved_local_data_dir_source: LocalDataDirResolutionSource | None
     server_account: str | None
     server_bot_id: str | None
     server_url: str | None
@@ -265,6 +347,18 @@ class StockLocalSymbolDetail(TypedDict):
     local_data_date: str | None
     row_count: int | None
     reason: str | None
+
+
+class LocalDataDirContext(TypedDict):
+    requested_local_data_dir: str
+    resolved_local_data_dir: str
+    resolved_local_data_dir_source: LocalDataDirResolutionSource
+
+
+@dataclass(frozen=True)
+class LocalDailySymbolInspection:
+    row_count: int
+    latest_timestamp: pd.Timestamp
 
 
 @dataclass
@@ -302,6 +396,13 @@ class _BarePolicyCacheEntry:
     size: int
     mtime_ns: int
     policy: torch.nn.Module
+
+
+@dataclass
+class _LocalDailySymbolInspectionCacheEntry:
+    size: int
+    mtime_ns: int
+    inspection: LocalDailySymbolInspection
 
 
 @dataclass(frozen=True)
@@ -346,12 +447,18 @@ class PreparedDailyBacktestData:
 
 _DAILY_TRADER_CACHE_MAX_ENTRIES = 8
 _BARE_POLICY_CACHE_MAX_ENTRIES = 64
+_LOCAL_DAILY_SYMBOL_INSPECTION_CACHE_MAX_ENTRIES = 512
+_LOCAL_DAILY_SYMBOL_INSPECTION_MAX_ATTEMPTS = 2
+_LOCAL_DATA_NESTED_TRAIN_DIRNAME = "train"
 _DAILY_TRADER_CACHE: "OrderedDict[tuple[object, ...], _DailyTraderCacheEntry]" = OrderedDict()
 _BARE_POLICY_CACHE: "OrderedDict[tuple[object, ...], _BarePolicyCacheEntry]" = OrderedDict()
+_LOCAL_DAILY_SYMBOL_INSPECTION_CACHE: "OrderedDict[Path, _LocalDailySymbolInspectionCacheEntry]" = OrderedDict()
 _DAILY_TRADER_CACHE_INFLIGHT: dict[tuple[object, ...], Event] = {}
 _BARE_POLICY_CACHE_INFLIGHT: dict[tuple[object, ...], Event] = {}
+_LOCAL_DAILY_SYMBOL_INSPECTION_CACHE_INFLIGHT: dict[Path, Event] = {}
 _DAILY_TRADER_CACHE_LOCK = Lock()
 _BARE_POLICY_CACHE_LOCK = Lock()
+_LOCAL_DAILY_SYMBOL_INSPECTION_CACHE_LOCK = Lock()
 _PORTFOLIO_REBALANCE_QTY_EPSILON = 1e-4
 
 
@@ -484,6 +591,10 @@ class CliRuntimeConfig:
         payload["strategy_mode"] = self.strategy_mode
         payload["summary"] = self.summary
         payload["check_command_preview"] = self.command_preview(check_config=True)
+        payload["check_text_command_preview"] = self.command_preview(
+            check_config=True,
+            check_config_text=True,
+        )
         payload["run_command_preview"] = self.command_preview()
         payload["safe_command_preview"] = self.command_preview(force_dry_run=True)
         payload["checkpoints_exist"] = self.checkpoints_exist
@@ -512,10 +623,13 @@ class CliRuntimeConfig:
         *,
         force_dry_run: bool | None = None,
         check_config: bool = False,
+        check_config_text: bool = False,
     ) -> str:
         args = ["python", Path(__file__).name]
-        if check_config:
+        if check_config or check_config_text:
             args.append("--check-config")
+        if check_config_text:
+            args.append("--check-config-text")
 
         if self.run_mode == "daemon":
             args.append("--daemon")
@@ -631,7 +745,11 @@ def _trading_server_url_security_label(security: object) -> str:
     return "invalid url"
 
 
-def _runtime_log_payload(config: CliRuntimeConfig) -> RuntimeLogPayload:
+def _runtime_log_payload(
+    config: CliRuntimeConfig,
+    *,
+    preflight_payload: Mapping[str, object] | None = None,
+) -> RuntimeLogPayload:
     payload: RuntimeLogPayload = {
         "account_mode": config.account_mode,
         "run_mode": config.run_mode,
@@ -650,15 +768,93 @@ def _runtime_log_payload(config: CliRuntimeConfig) -> RuntimeLogPayload:
     }
     if config.backtest or config.data_source == "local":
         payload["data_dir"] = config.data_dir
+        local_data_dir_context_payload = (
+            _coerce_local_data_dir_context(preflight_payload)
+            if preflight_payload is not None
+            else None
+        )
+        if local_data_dir_context_payload is None:
+            local_data_dir_context_payload = _local_data_dir_context(config.data_dir, config.symbols)
+        payload.update(cast(RuntimeLogPayload, local_data_dir_context_payload))
     if config.execution_backend == "trading_server":
         payload["server_account"] = config.server_account
         payload["server_bot_id"] = config.server_bot_id
         payload.update(cast(RuntimeLogPayload, _trading_server_runtime_fields(config)))
+    if preflight_payload is not None:
+        local_data_status_counts = preflight_payload.get("local_data_status_counts")
+        if isinstance(local_data_status_counts, Mapping):
+            usable_symbol_count = local_data_status_counts.get("usable")
+            if isinstance(usable_symbol_count, int):
+                payload["usable_symbol_count"] = usable_symbol_count
+            stale_symbol_count = local_data_status_counts.get("stale")
+            if isinstance(stale_symbol_count, int):
+                payload["stale_symbol_count"] = stale_symbol_count
+            missing_symbol_count = local_data_status_counts.get("missing")
+            if isinstance(missing_symbol_count, int):
+                payload["missing_symbol_count"] = missing_symbol_count
+            invalid_symbol_count = local_data_status_counts.get("invalid")
+            if isinstance(invalid_symbol_count, int):
+                payload["invalid_symbol_count"] = invalid_symbol_count
+        checkpoint_load = preflight_payload.get("checkpoint_load")
+        if isinstance(checkpoint_load, Mapping):
+            primary = checkpoint_load.get("primary")
+            if isinstance(primary, Mapping):
+                feature_schema = primary.get("feature_schema")
+                if isinstance(feature_schema, str):
+                    payload["checkpoint_feature_schema"] = cast(DailyStockFeatureSchema, feature_schema)
+                feature_dimension = primary.get("feature_dimension")
+                if isinstance(feature_dimension, int):
+                    payload["checkpoint_feature_dimension"] = feature_dimension
+                primary_checkpoint_arch = primary.get("arch")
+                if isinstance(primary_checkpoint_arch, str) and primary_checkpoint_arch.strip():
+                    payload["primary_checkpoint_arch"] = primary_checkpoint_arch
+            extras = checkpoint_load.get("extras")
+            if isinstance(extras, list):
+                extra_checkpoint_classes = [
+                    str(extra.get("class"))
+                    for extra in extras
+                    if isinstance(extra, Mapping) and str(extra.get("class") or "").strip()
+                ]
+                if extra_checkpoint_classes:
+                    payload["extra_checkpoint_classes"] = extra_checkpoint_classes
+        usable_symbol_count = preflight_payload.get("usable_symbol_count")
+        if isinstance(usable_symbol_count, int) and "usable_symbol_count" not in payload:
+            payload["usable_symbol_count"] = usable_symbol_count
+        latest_local_data_date = preflight_payload.get("latest_local_data_date")
+        if isinstance(latest_local_data_date, str) and latest_local_data_date.strip():
+            payload["latest_local_data_date"] = latest_local_data_date
+        resolved_local_data_dir = preflight_payload.get("resolved_local_data_dir")
+        if (
+            isinstance(resolved_local_data_dir, str)
+            and resolved_local_data_dir.strip()
+            and "resolved_local_data_dir" not in payload
+        ):
+            payload["resolved_local_data_dir"] = resolved_local_data_dir
+        resolved_local_data_dir_source = _coerce_local_data_dir_resolution_source(
+            preflight_payload.get("resolved_local_data_dir_source")
+        )
+        if resolved_local_data_dir_source is not None and "resolved_local_data_dir_source" not in payload:
+            payload["resolved_local_data_dir_source"] = resolved_local_data_dir_source
+        stale_symbol_data = preflight_payload.get("stale_symbol_data")
+        if isinstance(stale_symbol_data, Mapping) and "stale_symbol_count" not in payload:
+            payload["stale_symbol_count"] = len(stale_symbol_data)
+        warnings = preflight_payload.get("warnings")
+        if isinstance(warnings, list):
+            preflight_warnings = [str(warning) for warning in warnings if str(warning).strip()]
+            if preflight_warnings:
+                payload["preflight_warnings"] = preflight_warnings
     return payload
 
 
-def _log_runtime_start(config: CliRuntimeConfig) -> None:
-    logger.info("Runtime config: %s", json.dumps(_runtime_log_payload(config), sort_keys=True))
+def _log_runtime_start(
+    config: CliRuntimeConfig,
+    *,
+    preflight_payload: Mapping[str, object] | None = None,
+) -> None:
+    logger.info(
+        "Runtime config: %s",
+        json.dumps(_runtime_log_payload(config, preflight_payload=preflight_payload), sort_keys=True),
+    )
 
 
 def _normalize_stock_symbol_list(symbols: Iterable[object]) -> list[str]:
@@ -684,32 +880,173 @@ def _resolved_default_extra_checkpoints() -> list[str]:
     ]
 
 
-def _resolve_local_data_base(data_dir: str | Path, symbols: Iterable[str]) -> Path:
+def _resolve_local_data_base_with_source(
+    data_dir: str | Path,
+    symbols: Iterable[str],
+) -> tuple[Path, LocalDataDirResolutionSource]:
     base = (REPO / Path(data_dir).expanduser()).resolve()
     normalized_symbols = _normalize_stock_symbol_list(symbols)
-    nested_train = base / "train"
-    if base.name != "train" and nested_train.exists():
+    nested_train = base / _LOCAL_DATA_NESTED_TRAIN_DIRNAME
+    if base.name != _LOCAL_DATA_NESTED_TRAIN_DIRNAME and nested_train.exists():
         if all((nested_train / f"{symbol}.csv").exists() for symbol in normalized_symbols):
-            return nested_train
-    return base
+            return nested_train, LocalDataDirResolutionSource.NESTED_TRAIN
+    return base, LocalDataDirResolutionSource.REQUESTED
 
 
-def _normalize_daily_frame(frame: pd.DataFrame) -> pd.DataFrame:
-    lower_map = {str(col).lower(): col for col in frame.columns}
+def _resolve_local_data_base(data_dir: str | Path, symbols: Iterable[str]) -> Path:
+    resolved, _source = _resolve_local_data_base_with_source(data_dir, symbols)
+    return resolved
+
+
+def _local_data_dir_context(
+    data_dir: str | Path,
+    symbols: Iterable[str],
+) -> LocalDataDirContext:
+    resolved_local_data_dir, resolved_local_data_dir_source = _resolve_local_data_base_with_source(
+        data_dir,
+        symbols,
+    )
+    return {
+        "requested_local_data_dir": str((REPO / Path(data_dir).expanduser()).resolve()),
+        "resolved_local_data_dir": str(resolved_local_data_dir),
+        "resolved_local_data_dir_source": resolved_local_data_dir_source,
+    }
+
+
+def _coerce_local_data_dir_context(payload: Mapping[str, object]) -> LocalDataDirContext | None:
+    requested_local_data_dir = payload.get("requested_local_data_dir")
+    resolved_local_data_dir = payload.get("resolved_local_data_dir")
+    resolved_local_data_dir_source = _coerce_local_data_dir_resolution_source(
+        payload.get("resolved_local_data_dir_source")
+    )
+    if (
+        isinstance(requested_local_data_dir, str)
+        and requested_local_data_dir.strip()
+        and isinstance(resolved_local_data_dir, str)
+        and resolved_local_data_dir.strip()
+        and resolved_local_data_dir_source is not None
+    ):
+        return {
+            "requested_local_data_dir": requested_local_data_dir,
+            "resolved_local_data_dir": resolved_local_data_dir,
+            "resolved_local_data_dir_source": resolved_local_data_dir_source,
+        }
+    return None
+
+
+def _local_data_dir_exists(resolved_local_data_dir: Path | None) -> bool:
+    return resolved_local_data_dir is not None and resolved_local_data_dir.exists()
+
+
+def _coerce_local_data_dir_resolution_source(
+    value: object,
+) -> LocalDataDirResolutionSource | None:
+    if isinstance(value, LocalDataDirResolutionSource):
+        return value
+    if isinstance(value, str):
+        try:
+            return LocalDataDirResolutionSource(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _resolve_daily_frame_columns(columns: Iterable[object]) -> tuple[str, list[str]]:
+    lower_map = {str(col).lower(): str(col) for col in columns}
     ts_col = lower_map.get("timestamp") or lower_map.get("date")
     required = ["open", "high", "low", "close", "volume"]
     missing = [name for name in required if name not in lower_map]
     if ts_col is None or missing:
         raise ValueError(f"Daily frame missing columns: timestamp/date + {required}")
+    return ts_col, [lower_map[name] for name in required]
+
+
+def _parse_daily_timestamps(values: pd.Series) -> pd.Series:
+    return pd.to_datetime(values, utc=True, errors="coerce", format="mixed")
+
+
+def _normalize_daily_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    ts_col, required_columns = _resolve_daily_frame_columns(frame.columns)
 
     normalized = frame.rename(columns={src: src.lower() for src in frame.columns}).copy()
-    normalized["timestamp"] = pd.to_datetime(normalized[ts_col.lower()], utc=True)
+    normalized["timestamp"] = _parse_daily_timestamps(normalized[ts_col.lower()])
     normalized = normalized[["timestamp", "open", "high", "low", "close", "volume"]].copy()
     normalized = normalized.dropna(subset=["timestamp"]).sort_values("timestamp")
     normalized = normalized.drop_duplicates(subset="timestamp", keep="last").reset_index(drop=True)
-    for column in required:
+    for column in (name.lower() for name in required_columns):
         normalized[column] = normalized[column].astype(float)
     return normalized
+
+
+def _inspect_local_daily_symbol_file(path: Path) -> LocalDailySymbolInspection:
+    resolved_path = path.resolve(strict=False)
+    for attempt in range(_LOCAL_DAILY_SYMBOL_INSPECTION_MAX_ATTEMPTS):
+        stat_result = resolved_path.stat()
+        while True:
+            with _LOCAL_DAILY_SYMBOL_INSPECTION_CACHE_LOCK:
+                cached = _LOCAL_DAILY_SYMBOL_INSPECTION_CACHE.get(resolved_path)
+                if cached is not None and cached.size == stat_result.st_size and cached.mtime_ns == stat_result.st_mtime_ns:
+                    _LOCAL_DAILY_SYMBOL_INSPECTION_CACHE.move_to_end(resolved_path)
+                    return cached.inspection
+                inflight = _LOCAL_DAILY_SYMBOL_INSPECTION_CACHE_INFLIGHT.get(resolved_path)
+                if inflight is None:
+                    inflight = Event()
+                    _LOCAL_DAILY_SYMBOL_INSPECTION_CACHE_INFLIGHT[resolved_path] = inflight
+                    break
+            inflight.wait()
+            stat_result = resolved_path.stat()
+        try:
+            ts_col, required_columns = _resolve_daily_frame_columns(pd.read_csv(path, nrows=0).columns)
+            selected_columns = [ts_col, *required_columns]
+            frame = pd.read_csv(path, usecols=selected_columns)
+            normalized_names = {str(col).lower(): str(col) for col in frame.columns}
+            timestamps = _parse_daily_timestamps(frame[normalized_names[ts_col.lower()]])
+            valid_mask = timestamps.notna()
+            for column in required_columns:
+                numeric = pd.to_numeric(frame[normalized_names[column.lower()]], errors="coerce")
+                valid_mask &= numeric.notna()
+            valid_timestamps = pd.DatetimeIndex(timestamps.loc[valid_mask]).sort_values()
+            if len(valid_timestamps) == 0:
+                raise ValueError("Daily frame has no valid timestamped OHLCV rows")
+            valid_timestamps = valid_timestamps.drop_duplicates(keep="last")
+            inspection = LocalDailySymbolInspection(
+                row_count=len(valid_timestamps),
+                latest_timestamp=pd.Timestamp(valid_timestamps[-1]),
+            )
+            final_stat_result = resolved_path.stat()
+            if (
+                final_stat_result.st_size != stat_result.st_size
+                or final_stat_result.st_mtime_ns != stat_result.st_mtime_ns
+            ):
+                if attempt + 1 < _LOCAL_DAILY_SYMBOL_INSPECTION_MAX_ATTEMPTS:
+                    with _LOCAL_DAILY_SYMBOL_INSPECTION_CACHE_LOCK:
+                        inflight = _LOCAL_DAILY_SYMBOL_INSPECTION_CACHE_INFLIGHT.pop(resolved_path, None)
+                        if inflight is not None:
+                            inflight.set()
+                    continue
+                raise RuntimeError(f"Local daily CSV changed during inspection: {resolved_path}")
+            with _LOCAL_DAILY_SYMBOL_INSPECTION_CACHE_LOCK:
+                _LOCAL_DAILY_SYMBOL_INSPECTION_CACHE[resolved_path] = _LocalDailySymbolInspectionCacheEntry(
+                    size=final_stat_result.st_size,
+                    mtime_ns=final_stat_result.st_mtime_ns,
+                    inspection=inspection,
+                )
+                _LOCAL_DAILY_SYMBOL_INSPECTION_CACHE.move_to_end(resolved_path)
+                _prune_ordered_cache(
+                    _LOCAL_DAILY_SYMBOL_INSPECTION_CACHE,
+                    max_entries=_LOCAL_DAILY_SYMBOL_INSPECTION_CACHE_MAX_ENTRIES,
+                )
+                inflight = _LOCAL_DAILY_SYMBOL_INSPECTION_CACHE_INFLIGHT.pop(resolved_path, None)
+                if inflight is not None:
+                    inflight.set()
+            return inspection
+        except Exception:
+            with _LOCAL_DAILY_SYMBOL_INSPECTION_CACHE_LOCK:
+                inflight = _LOCAL_DAILY_SYMBOL_INSPECTION_CACHE_INFLIGHT.pop(resolved_path, None)
+                if inflight is not None:
+                    inflight.set()
+            raise
+    raise AssertionError("unreachable")
 
 
 def _align_frames(frames: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
@@ -922,33 +1259,53 @@ def load_alpaca_daily_frames(
 
 
 def load_state(path: Path = STATE_PATH) -> StrategyState:
-    with _state_file_guard(path, write=False):
-        if not path.exists():
-            return StrategyState()
-        try:
+    try:
+        with _state_file_guard(path, write=False):
+            if not path.exists():
+                return StrategyState()
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            logger.warning("Could not parse %s: %s", path, exc)
-            return StrategyState()
-        return StrategyState(
-            active_symbol=payload.get("active_symbol"),
-            active_qty=float(payload.get("active_qty", 0.0) or 0.0),
-            entry_price=float(payload.get("entry_price", 0.0) or 0.0),
-            entry_date=payload.get("entry_date"),
-            last_run_date=payload.get("last_run_date"),
-            last_signal_action=payload.get("last_signal_action"),
-            last_signal_timestamp=payload.get("last_signal_timestamp"),
-            last_order_id=payload.get("last_order_id"),
-        )
+            if not isinstance(payload, dict):
+                raise TypeError(f"Expected JSON object, got {type(payload).__name__}")
+            return StrategyState(
+                active_symbol=payload.get("active_symbol"),
+                active_qty=float(payload.get("active_qty", 0.0) or 0.0),
+                entry_price=float(payload.get("entry_price", 0.0) or 0.0),
+                entry_date=payload.get("entry_date"),
+                last_run_date=payload.get("last_run_date"),
+                last_signal_action=payload.get("last_signal_action"),
+                last_signal_timestamp=payload.get("last_signal_timestamp"),
+                last_order_id=payload.get("last_order_id"),
+            )
+    except Exception as exc:
+        raise RuntimeError(f"Unreadable strategy state file {path}: {exc}") from exc
 
 
 def _state_lock_path(path: Path) -> Path:
     return path.parent / f".{path.name}{STATE_LOCK_SUFFIX}"
 
 
+def _ensure_non_symlink_artifact_path(path: Path, *, label: str) -> None:
+    if path.is_symlink():
+        raise OSError(f"Unsafe {label} path is symlinked: {path}")
+
+
+def _ensure_non_symlink_artifact_parent_dirs(path: Path, *, label: str) -> None:
+    for parent in path.parents:
+        if parent.is_symlink():
+            raise OSError(f"Unsafe {label} parent directory is symlinked: {parent}")
+
+
+def _jsonl_log_lock_path(path: Path) -> Path:
+    return path.parent / f".{path.name}{STATE_LOCK_SUFFIX}"
+
+
 @contextmanager
 def _state_file_guard(path: Path, *, write: bool) -> Iterator[None]:
     lock_path = _state_lock_path(path)
+    _ensure_non_symlink_artifact_path(path, label="strategy state file")
+    _ensure_non_symlink_artifact_parent_dirs(path, label="strategy state file")
+    _ensure_non_symlink_artifact_path(lock_path, label="strategy state lock file")
+    _ensure_non_symlink_artifact_parent_dirs(lock_path, label="strategy state lock file")
     guard = shared_path_guard(lock_path)
     acquire = guard.acquire_write if write else guard.acquire_read
     release = guard.release_write if write else guard.release_read
@@ -969,6 +1326,32 @@ def _state_file_guard(path: Path, *, write: bool) -> Iterator[None]:
             if handle is not None:
                 handle.close()
             release()
+
+
+@contextmanager
+def _jsonl_log_guard(path: Path, *, label: str) -> Iterator[None]:
+    lock_path = _jsonl_log_lock_path(path)
+    _ensure_non_symlink_artifact_path(path, label=label)
+    _ensure_non_symlink_artifact_parent_dirs(path, label=label)
+    _ensure_non_symlink_artifact_path(lock_path, label=f"{label} lock file")
+    _ensure_non_symlink_artifact_parent_dirs(lock_path, label=f"{label} lock file")
+    guard = shared_path_guard(lock_path)
+    handle = None
+    guard.acquire_write()
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+", encoding="utf-8")
+        if _fcntl is not None:
+            _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            if _fcntl is not None and handle is not None:
+                _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
+        finally:
+            if handle is not None:
+                handle.close()
+            guard.release_write()
 
 
 def save_state(state: StrategyState, path: Path = STATE_PATH) -> None:
@@ -994,7 +1377,8 @@ def save_state(state: StrategyState, path: Path = STATE_PATH) -> None:
 
 
 def append_signal_log(payload: dict, path: Path = SIGNAL_LOG_PATH) -> None:
-    append_jsonl_row(path, payload, sort_keys=True)
+    with _jsonl_log_guard(path, label="signal log"):
+        append_jsonl_row(path, payload, sort_keys=True)
 
 
 def _append_jsonl_log_best_effort(
@@ -1022,7 +1406,8 @@ def _append_signal_log_best_effort(payload: dict, path: Path = SIGNAL_LOG_PATH) 
 
 
 def append_run_event_log(payload: dict, path: Path = RUN_EVENT_LOG_PATH) -> None:
-    append_jsonl_row(path, payload, sort_keys=True)
+    with _jsonl_log_guard(path, label="run event log"):
+        append_jsonl_row(path, payload, sort_keys=True)
 
 
 def _append_run_event_log_best_effort(payload: dict, path: Path = RUN_EVENT_LOG_PATH) -> str | None:
@@ -2914,6 +3299,8 @@ def _run_summary_payload(payload: dict[str, object]) -> RunSummaryPayload:
         "state_advanced": payload.get("state_advanced"),
         "signal_log_written": payload.get("signal_log_written"),
         "signal_log_write_error": payload.get("signal_log_write_error"),
+        "run_event_log_written": payload.get("run_event_log_written"),
+        "run_event_log_write_error": payload.get("run_event_log_write_error"),
     }
 
 
@@ -2979,11 +3366,20 @@ def _run_failure_payload(
     dry_run: bool,
     state_path: Path,
     symbols: Sequence[str],
+    data_dir: str | None,
     server_account: str | None,
     server_bot_id: str | None,
     server_url: str | None,
     observability: dict[str, object] | None = None,
 ) -> RunFailurePayload:
+    requested_local_data_dir: str | None = None
+    resolved_local_data_dir: str | None = None
+    resolved_local_data_dir_source: LocalDataDirResolutionSource | None = None
+    if data_source == "local" and data_dir is not None:
+        local_data_dir_context = _local_data_dir_context(data_dir, symbols)
+        requested_local_data_dir = local_data_dir_context["requested_local_data_dir"]
+        resolved_local_data_dir = local_data_dir_context["resolved_local_data_dir"]
+        resolved_local_data_dir_source = local_data_dir_context["resolved_local_data_dir_source"]
     return {
         "event": "daily_stock_run_once_failed",
         "run_id": run_id,
@@ -2998,6 +3394,9 @@ def _run_failure_payload(
         "dry_run": bool(dry_run),
         "state_path": str(state_path),
         "symbols": [str(symbol).upper() for symbol in symbols],
+        "requested_local_data_dir": requested_local_data_dir,
+        "resolved_local_data_dir": resolved_local_data_dir,
+        "resolved_local_data_dir_source": resolved_local_data_dir_source,
         "server_account": str(server_account).strip() or None,
         "server_bot_id": str(server_bot_id).strip() or None,
         "server_url": (str(server_url).strip().rstrip("/") or None) if server_url is not None else None,
@@ -3007,6 +3406,78 @@ def _run_failure_payload(
 
 def _log_run_failure(payload: RunFailurePayload) -> None:
     logger.error("Run failure: %s", json.dumps(payload, sort_keys=True))
+
+
+def _daemon_warning_payload(
+    *,
+    now: datetime,
+    checkpoint: str,
+    stage: str,
+    exc: Exception,
+    paper: bool,
+    execution_backend: str,
+    sleep_seconds: float | None = None,
+    state_path: Path | None = None,
+    retry_with_paper_clock: bool | None = None,
+    clock_source: str | None = None,
+    server_session_id: str | None = None,
+) -> DaemonWarningPayload:
+    payload: DaemonWarningPayload = {
+        "event": "daily_stock_daemon_warning",
+        "timestamp": now.isoformat(),
+        "checkpoint": checkpoint,
+        "stage": stage,
+        "error_type": type(exc).__name__,
+        "error": str(exc),
+        "account_mode": "paper" if paper else "live",
+        "execution_backend": execution_backend,
+    }
+    if sleep_seconds is not None:
+        payload["sleep_seconds"] = float(sleep_seconds)
+    if state_path is not None:
+        payload["state_path"] = str(state_path)
+    if retry_with_paper_clock is not None:
+        payload["retry_with_paper_clock"] = bool(retry_with_paper_clock)
+    if clock_source is not None:
+        payload["clock_source"] = clock_source
+    if server_session_id:
+        payload["server_session_id"] = server_session_id
+    return payload
+
+
+def _log_daemon_warning(payload: DaemonWarningPayload) -> None:
+    logger.warning("Daemon warning: %s", json.dumps(payload, sort_keys=True))
+
+
+def _log_daemon_warning_and_sleep(
+    *,
+    checkpoint: str,
+    stage: str,
+    exc: Exception,
+    paper: bool,
+    execution_backend: str,
+    sleep_seconds: float,
+    state_path: Path | None = None,
+    retry_with_paper_clock: bool | None = None,
+    clock_source: str | None = None,
+    server_session_id: str | None = None,
+) -> None:
+    _log_daemon_warning(
+        _daemon_warning_payload(
+            now=datetime.now(timezone.utc),
+            checkpoint=checkpoint,
+            stage=stage,
+            exc=exc,
+            paper=paper,
+            execution_backend=execution_backend,
+            sleep_seconds=sleep_seconds,
+            state_path=state_path,
+            retry_with_paper_clock=retry_with_paper_clock,
+            clock_source=clock_source,
+            server_session_id=server_session_id,
+        )
+    )
+    time.sleep(sleep_seconds)
 
 
 def run_backtest(
@@ -3697,7 +4168,9 @@ def run_once(
         signal_log_write_error = _append_signal_log_best_effort(payload)
         payload["signal_log_written"] = signal_log_write_error is None
         payload["signal_log_write_error"] = signal_log_write_error
-        _append_run_event_log_best_effort(_run_summary_payload(payload))
+        run_event_log_write_error = _append_run_event_log_best_effort(_run_summary_payload(payload))
+        payload["run_event_log_written"] = run_event_log_write_error is None
+        payload["run_event_log_write_error"] = run_event_log_write_error
         failure_stage = "log_run_summary"
         _log_run_summary(payload)
         logger.info("%s", "=" * 60)
@@ -3721,6 +4194,7 @@ def run_once(
             dry_run=dry_run,
             state_path=state_path,
             symbols=symbol_list,
+            data_dir=data_dir,
             server_account=server_account if execution_backend == "trading_server" else None,
             server_bot_id=server_bot_id if execution_backend == "trading_server" else None,
             server_url=resolve_trading_server_base_url(server_url)
@@ -3755,8 +4229,23 @@ def run_daemon(
 ) -> None:
     logger.info("Starting daily stock RL daemon")
     server_session_id = f"daily-rl-trader-{execution_backend}-{os.getpid()}"
+    state_path = STATE_PATH
     while True:
-        state = load_state()
+        try:
+            state = load_state(state_path)
+        except Exception as exc:
+            logger.warning("State load failed (%s); sleeping 5min", exc)
+            _log_daemon_warning_and_sleep(
+                checkpoint=checkpoint,
+                stage="load_state",
+                exc=exc,
+                paper=paper,
+                execution_backend=execution_backend,
+                sleep_seconds=DEFAULT_DAEMON_RETRY_SLEEP_SECONDS,
+                state_path=state_path,
+                server_session_id=server_session_id,
+            )
+            continue
         # Use paper API for clock check (market hours same regardless of paper/live).
         # Fall back to paper=True if live keys are invalid (401) — service stays alive.
         clock_client = build_trading_client(paper=paper)
@@ -3765,15 +4254,46 @@ def run_daemon(
         except Exception as _clock_err:
             if not paper:
                 logger.warning("Live clock check failed (%s); retrying with paper API", _clock_err)
+                _log_daemon_warning(
+                    _daemon_warning_payload(
+                        now=datetime.now(timezone.utc),
+                        checkpoint=checkpoint,
+                        stage="clock_check_live",
+                        exc=_clock_err,
+                        paper=paper,
+                        execution_backend=execution_backend,
+                        retry_with_paper_clock=True,
+                        clock_source="live",
+                        server_session_id=server_session_id,
+                    )
+                )
                 try:
                     clock = build_trading_client(paper=True).get_clock()
                 except Exception as _paper_err:
                     logger.warning("Paper clock check also failed (%s); sleeping 5min", _paper_err)
-                    time.sleep(300.0)
+                    _log_daemon_warning_and_sleep(
+                        checkpoint=checkpoint,
+                        stage="clock_check_paper_fallback",
+                        exc=_paper_err,
+                        paper=paper,
+                        execution_backend=execution_backend,
+                        sleep_seconds=DEFAULT_DAEMON_RETRY_SLEEP_SECONDS,
+                        clock_source="paper_fallback",
+                        server_session_id=server_session_id,
+                    )
                     continue
             else:
                 logger.warning("Clock check failed (%s); sleeping 5min", _clock_err)
-                time.sleep(300.0)
+                _log_daemon_warning_and_sleep(
+                    checkpoint=checkpoint,
+                    stage="clock_check_paper",
+                    exc=_clock_err,
+                    paper=paper,
+                    execution_backend=execution_backend,
+                    sleep_seconds=DEFAULT_DAEMON_RETRY_SLEEP_SECONDS,
+                    clock_source="paper",
+                    server_session_id=server_session_id,
+                )
                 continue
         now = datetime.now(timezone.utc)
         if should_run_today(
@@ -3887,6 +4407,11 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="When combined with --check-config, also print a human-readable readiness summary to stderr",
     )
+    parser.add_argument(
+        "--check-config-summary",
+        action="store_true",
+        help="When combined with --check-config, also print a compact one-line readiness summary to stderr",
+    )
     parser.add_argument("--print-config", action="store_true",
                         help="Print the fully resolved runtime configuration and exit")
     parser.add_argument("--print-payload", action="store_true",
@@ -3900,7 +4425,12 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Allow legacy pickle checkpoint loading. Only use this with trusted checkpoint files.",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.check_config_text and not args.check_config:
+        parser.error("--check-config-text requires --check-config")
+    if args.check_config_summary and not args.check_config:
+        parser.error("--check-config-summary requires --check-config")
+    return args
 
 
 def _resolve_runtime_config(args: argparse.Namespace) -> CliRuntimeConfig:
@@ -3967,7 +4497,7 @@ def _missing_checkpoint_paths(config: CliRuntimeConfig) -> list[str]:
     return config.missing_checkpoint_paths
 
 
-def _checkpoint_load_diagnostics(config: CliRuntimeConfig) -> dict[str, object]:
+def _checkpoint_load_diagnostics(config: CliRuntimeConfig) -> CheckpointLoadDiagnostics:
     if config.missing_checkpoint_paths:
         return {
             "ok": False,
@@ -3976,6 +4506,10 @@ def _checkpoint_load_diagnostics(config: CliRuntimeConfig) -> dict[str, object]:
             "extras": [],
         }
     try:
+        feature_schema = resolve_daily_feature_schema(
+            config.checkpoint,
+            extra_checkpoints=config.extra_checkpoints,
+        )
         trader = _load_cached_daily_trader(
             config.checkpoint,
             device="cpu",
@@ -3983,7 +4517,13 @@ def _checkpoint_load_diagnostics(config: CliRuntimeConfig) -> dict[str, object]:
             symbols=list(config.symbols),
             allow_unsafe_checkpoint_loading=config.allow_unsafe_checkpoint_loading,
         )
-        extras: list[dict[str, object]] = []
+        primary_summary: CheckpointLoadPrimarySummary = cast(
+            CheckpointLoadPrimarySummary,
+            trader.summary_dict(),
+        )
+        primary_summary["feature_schema"] = feature_schema
+        primary_summary["feature_dimension"] = daily_feature_dimension(feature_schema)
+        extras: list[CheckpointLoadExtraSummary] = []
         for path in config.extra_checkpoints or []:
             policy = _load_bare_policy(
                 path,
@@ -4001,7 +4541,7 @@ def _checkpoint_load_diagnostics(config: CliRuntimeConfig) -> dict[str, object]:
         return {
             "ok": True,
             "error": None,
-            "primary": trader.summary_dict(),
+            "primary": primary_summary,
             "extras": extras,
         }
     except Exception as exc:
@@ -4042,6 +4582,7 @@ def _resolved_trading_server_url(config: CliRuntimeConfig) -> str:
 def _preflight_next_steps(payload: dict[str, object]) -> list[str]:
     steps: list[str] = []
     check_command = str(payload.get("check_command_preview") or "").strip()
+    check_text_command = str(payload.get("check_text_command_preview") or "").strip()
     safe_command = str(payload.get("safe_command_preview") or "").strip()
     run_command = str(payload.get("run_command_preview") or "").strip()
 
@@ -4050,7 +4591,9 @@ def _preflight_next_steps(payload: dict[str, object]) -> list[str]:
             steps.append(f"Run a safe dry run: {safe_command}")
         if run_command and run_command != safe_command:
             steps.append(f"Start the configured runtime: {run_command}")
-        if check_command:
+        if check_text_command:
+            steps.append(f"Re-run text preflight later: {check_text_command}")
+        elif check_command:
             steps.append(f"Re-run preflight later: {check_command}")
         return steps
 
@@ -4112,7 +4655,7 @@ def _preflight_next_steps(payload: dict[str, object]) -> list[str]:
         if len(steps) == server_step_count:
             steps.append("Verify --server-url, --server-account, and --server-bot-id before retrying.")
     if check_command:
-        steps.append(f"Re-run preflight after fixes: {check_command}")
+        steps.append(f"Re-run preflight after fixes: {check_text_command or check_command}")
     return steps
 
 
@@ -4137,7 +4680,7 @@ def _build_local_symbol_details(
         path = (resolved_local_data_dir / f"{symbol}.csv").resolve()
         if not path.exists():
             details[symbol] = {
-                "status": "missing",
+                "status": LocalDataHealthStatus.MISSING,
                 "file_path": str(path),
                 "local_data_date": None,
                 "row_count": None,
@@ -4145,10 +4688,10 @@ def _build_local_symbol_details(
             }
             continue
         try:
-            frame = _normalize_daily_frame(pd.read_csv(path))
+            inspection = _inspect_local_daily_symbol_file(path)
         except Exception as exc:
             details[symbol] = {
-                "status": "invalid",
+                "status": LocalDataHealthStatus.INVALID,
                 "file_path": str(path),
                 "local_data_date": None,
                 "row_count": None,
@@ -4156,15 +4699,15 @@ def _build_local_symbol_details(
             }
             continue
 
-        latest_timestamp = pd.Timestamp(frame["timestamp"].iloc[-1])
+        latest_timestamp = inspection.latest_timestamp
         latest_date = latest_timestamp.date().isoformat()
         usable_symbols.append(symbol)
         usable_timestamps[symbol] = latest_timestamp
         details[symbol] = {
-            "status": "usable",
+            "status": LocalDataHealthStatus.USABLE,
             "file_path": str(path),
             "local_data_date": latest_date,
-            "row_count": int(len(frame)),
+            "row_count": inspection.row_count,
             "reason": None,
         }
 
@@ -4179,7 +4722,7 @@ def _build_local_symbol_details(
             if timestamp < newest_timestamp:
                 details[symbol] = {
                     **details[symbol],
-                    "status": "stale",
+                    "status": LocalDataHealthStatus.STALE,
                     "reason": f"local data lags freshest date {latest_local_data_date}",
                 }
 
@@ -4260,21 +4803,46 @@ def _preflight_config_payload(config: CliRuntimeConfig) -> dict[str, object]:
         if not checkpoint_load["ok"]:
             errors.append(f"Checkpoint load failed: {checkpoint_load['error']}")
 
-    data_dir = Path(config.data_dir).expanduser()
     local_data_required = bool(config.backtest or config.data_source == "local")
     missing_local_symbol_files: list[str] = []
+    local_data_dir_context: LocalDataDirContext | None = None
     resolved_local_data_dir: Path | None = None
+    resolved_local_data_dir_exists = False
     symbol_details: dict[str, StockLocalSymbolDetail] = {}
     usable_symbols: list[str] = []
     usable_symbol_count = 0
     latest_local_data_date: str | None = None
     oldest_local_data_date: str | None = None
     stale_symbol_data: dict[str, str] = {}
+    status_counts: LocalDataStatusCounts = {
+        "usable": 0,
+        "stale": 0,
+        "missing": 0,
+        "invalid": 0,
+    }
     if local_data_required:
-        if not data_dir.exists():
-            errors.append(f"Local data directory does not exist: {data_dir}")
+        local_data_dir_context = _local_data_dir_context(config.data_dir, config.symbols)
+        resolved_local_data_dir = Path(local_data_dir_context["resolved_local_data_dir"])
+        resolved_local_data_dir_exists = _local_data_dir_exists(resolved_local_data_dir)
+        if not resolved_local_data_dir_exists:
+            errors.append(f"Local data directory does not exist: {resolved_local_data_dir}")
+            (
+                symbol_details,
+                usable_symbols,
+                latest_local_data_date,
+                oldest_local_data_date,
+            ) = _build_local_symbol_details(
+                symbols=config.symbols,
+                resolved_local_data_dir=resolved_local_data_dir,
+            )
+            usable_symbol_count = len(usable_symbols)
+            status_counts = local_data_status_counts(symbol_details)
+            missing_local_symbol_files = [
+                detail["file_path"]
+                for detail in symbol_details.values()
+                if detail["status"] == "missing"
+            ]
         else:
-            resolved_local_data_dir = _resolve_local_data_base(config.data_dir, config.symbols)
             (
                 symbol_details,
                 usable_symbols,
@@ -4290,6 +4858,7 @@ def _preflight_config_payload(config: CliRuntimeConfig) -> dict[str, object]:
                 for symbol, detail in symbol_details.items()
                 if detail["status"] == "stale" and detail["local_data_date"] is not None
             }
+            status_counts = local_data_status_counts(symbol_details)
             missing_local_symbol_files = [
                 detail["file_path"]
                 for detail in symbol_details.values()
@@ -4320,16 +4889,21 @@ def _preflight_config_payload(config: CliRuntimeConfig) -> dict[str, object]:
                     f"lags freshest date {latest_local_data_date}"
                 )
     payload["local_data_required"] = local_data_required
-    payload["data_dir_exists"] = data_dir.exists()
-    payload["resolved_local_data_dir"] = (
-        str(resolved_local_data_dir) if resolved_local_data_dir is not None else None
-    )
+    payload["data_dir_exists"] = resolved_local_data_dir_exists
+    if local_data_dir_context is not None:
+        payload["requested_local_data_dir"] = local_data_dir_context["requested_local_data_dir"]
+        payload["resolved_local_data_dir"] = local_data_dir_context["resolved_local_data_dir"]
+        payload["resolved_local_data_dir_source"] = local_data_dir_context["resolved_local_data_dir_source"]
+    else:
+        payload["resolved_local_data_dir"] = None
+        payload["resolved_local_data_dir_source"] = None
     payload["missing_local_symbol_files"] = missing_local_symbol_files
     payload["usable_symbols"] = usable_symbols
     payload["usable_symbol_count"] = usable_symbol_count
     payload["latest_local_data_date"] = latest_local_data_date
     payload["oldest_local_data_date"] = oldest_local_data_date
     payload["stale_symbol_data"] = stale_symbol_data
+    payload["local_data_status_counts"] = status_counts
     payload["symbol_details"] = symbol_details
 
     alpaca_required = bool(not config.backtest and config.data_source == "alpaca")
@@ -4393,6 +4967,125 @@ def _preflight_config_payload(config: CliRuntimeConfig) -> dict[str, object]:
     payload["next_steps"] = _preflight_next_steps(payload)
     return payload
 
+def _format_checkpoint_load_lines(payload: Mapping[str, object]) -> list[str]:
+    checkpoint_load = payload.get("checkpoint_load")
+    if not isinstance(checkpoint_load, Mapping):
+        return []
+
+    lines = [
+        "Checkpoint load:",
+    ]
+    primary = checkpoint_load.get("primary")
+    if isinstance(primary, Mapping):
+        details: list[str] = []
+        arch = str(primary.get("arch") or "").strip()
+        if arch:
+            details.append(f"arch={arch}")
+        feature_schema = str(primary.get("feature_schema") or "").strip()
+        if feature_schema:
+            details.append(f"schema={feature_schema}")
+        feature_dimension = primary.get("feature_dimension")
+        if isinstance(feature_dimension, int):
+            details.append(f"feature_dim={feature_dimension}")
+        if details:
+            lines.append("- primary: " + ", ".join(details))
+    extras = checkpoint_load.get("extras")
+    if isinstance(extras, list):
+        extra_classes = [
+            str(extra.get("class"))
+            for extra in extras
+            if isinstance(extra, Mapping) and str(extra.get("class") or "").strip()
+        ]
+        if extra_classes:
+            lines.append("- ensemble extras: " + ", ".join(extra_classes))
+    error = checkpoint_load.get("error")
+    if isinstance(error, str) and error.strip() and len(lines) == 1:
+        lines.append(f"- error: {error}")
+    if len(lines) == 1:
+        return []
+    return lines
+
+
+def _compact_preflight_summary_field(value: object) -> str:
+    return " ".join(str(value).split())
+
+
+def _format_runtime_preflight_summary(payload: Mapping[str, object]) -> str:
+    ready = bool(payload.get("ready"))
+    parts = ["READY" if ready else "NOT READY"]
+
+    strategy_mode = _compact_preflight_summary_field(payload.get("strategy_mode") or "")
+    if strategy_mode:
+        parts.append(strategy_mode)
+
+    symbol_count = int(payload.get("symbol_count") or 0)
+    usable_symbol_count = payload.get("usable_symbol_count")
+    if bool(payload.get("local_data_required")) and isinstance(usable_symbol_count, int):
+        parts.append(f"symbols={usable_symbol_count}/{symbol_count} usable")
+    elif symbol_count > 0:
+        parts.append(f"symbols={symbol_count}")
+
+    checkpoint_load = payload.get("checkpoint_load")
+    if isinstance(checkpoint_load, Mapping):
+        primary = checkpoint_load.get("primary")
+        if isinstance(primary, Mapping):
+            checkpoint_parts: list[str] = []
+            arch = _compact_preflight_summary_field(primary.get("arch") or "")
+            if arch:
+                checkpoint_parts.append(arch)
+            feature_schema = _compact_preflight_summary_field(primary.get("feature_schema") or "")
+            if feature_schema:
+                checkpoint_parts.append(f"schema={feature_schema}")
+            feature_dimension = primary.get("feature_dimension")
+            if isinstance(feature_dimension, int):
+                checkpoint_parts.append(f"dim={feature_dimension}")
+            if checkpoint_parts:
+                parts.append("checkpoint=" + " ".join(checkpoint_parts))
+        elif _compact_preflight_summary_field(checkpoint_load.get("error") or ""):
+            parts.append("checkpoint=error")
+
+    latest_local_data_date = _compact_preflight_summary_field(payload.get("latest_local_data_date") or "")
+    if latest_local_data_date:
+        parts.append(f"latest_local_data={latest_local_data_date}")
+
+    local_data_status_counts = payload.get("local_data_status_counts")
+    if isinstance(local_data_status_counts, Mapping):
+        issue_parts: list[str] = []
+        for status in ("stale", "missing", "invalid"):
+            count = local_data_status_counts.get(status)
+            if isinstance(count, int) and count > 0:
+                issue_parts.append(f"{status}:{count}")
+        if issue_parts:
+            parts.append("local_issues=" + ",".join(issue_parts))
+
+    raw_warnings = payload.get("warnings")
+    warnings = (
+        [
+            _compact_preflight_summary_field(item)
+            for item in raw_warnings
+            if _compact_preflight_summary_field(item)
+        ]
+        if isinstance(raw_warnings, list)
+        else []
+    )
+    raw_errors = payload.get("errors")
+    errors = (
+        [
+            _compact_preflight_summary_field(item)
+            for item in raw_errors
+            if _compact_preflight_summary_field(item)
+        ]
+        if isinstance(raw_errors, list)
+        else []
+    )
+    if warnings:
+        parts.append(f"warnings={len(warnings)}")
+    if errors:
+        parts.append(f"errors={len(errors)}")
+        parts.append(f"first_error={errors[0]}")
+
+    return " | ".join(parts)
+
 
 def _format_runtime_preflight_failure(payload: dict[str, object]) -> str:
     lines = [
@@ -4411,6 +5104,7 @@ def _format_runtime_preflight_failure(payload: dict[str, object]) -> str:
         lines.append(f"Symbol source: {symbol_source_label}")
     if symbol_preview_text:
         lines.append(f"Symbols: {symbol_preview_text}")
+    lines.extend(_format_local_data_resolution_lines(payload))
     errors = [str(item) for item in payload.get("errors", [])]
     warnings = [str(item) for item in payload.get("warnings", [])]
     next_steps = [str(item) for item in payload.get("next_steps", [])]
@@ -4420,6 +5114,7 @@ def _format_runtime_preflight_failure(payload: dict[str, object]) -> str:
     if warnings:
         lines.append("Warnings:")
         lines.extend(f"- {item}" for item in warnings)
+    lines.extend(_format_checkpoint_load_lines(payload))
     symbol_details = payload.get("symbol_details")
     if isinstance(symbol_details, dict) and symbol_details:
         latest_local_data_date = str(payload.get("latest_local_data_date") or "").strip() or None
@@ -4468,10 +5163,12 @@ def _format_runtime_preflight_ready(payload: dict[str, object]) -> str:
         lines.append(f"Symbol source: {symbol_source_label}")
     if symbol_preview_text:
         lines.append(f"Symbols: {symbol_preview_text}")
+    lines.extend(_format_local_data_resolution_lines(payload))
     warnings = [str(item) for item in payload.get("warnings", [])]
     if warnings:
         lines.append("Warnings:")
         lines.extend(f"- {item}" for item in warnings)
+    lines.extend(_format_checkpoint_load_lines(payload))
     symbol_details = payload.get("symbol_details")
     if isinstance(symbol_details, dict) and symbol_details:
         latest_local_data_date = str(payload.get("latest_local_data_date") or "").strip() or None
@@ -4501,6 +5198,7 @@ def _format_runtime_preflight_ready(payload: dict[str, object]) -> str:
     safe_command = str(payload.get("safe_command_preview") or "").strip()
     run_command = str(payload.get("run_command_preview") or "").strip()
     check_command = str(payload.get("check_command_preview") or "").strip()
+    check_text_command = str(payload.get("check_text_command_preview") or "").strip()
     lines.append("Suggested commands:")
     if safe_command:
         lines.append(f"- dry run: {safe_command}")
@@ -4512,6 +5210,7 @@ def _format_runtime_preflight_ready(payload: dict[str, object]) -> str:
         f"Run a safe dry run: {safe_command}" if safe_command else "",
         f"Start the configured runtime: {run_command}" if run_command else "",
         f"Re-run preflight later: {check_command}" if check_command else "",
+        f"Re-run text preflight later: {check_text_command}" if check_text_command else "",
     }
     command_steps.discard("")
     additional_steps = [item for item in next_steps if item not in command_steps]
@@ -4519,6 +5218,42 @@ def _format_runtime_preflight_ready(payload: dict[str, object]) -> str:
         lines.append("Additional next steps:")
         lines.extend(f"- {item}" for item in additional_steps)
     return "\n".join(line for line in lines if line)
+
+
+def _format_local_data_resolution_lines(payload: Mapping[str, object]) -> list[str]:
+    if not bool(payload.get("local_data_required")):
+        return []
+    requested_data_dir = str(payload.get("data_dir") or "").strip()
+    local_data_dir_context = _coerce_local_data_dir_context(payload)
+    if local_data_dir_context is None:
+        requested_local_data_dir: str | None = None
+        resolved_local_data_dir = str(payload.get("resolved_local_data_dir") or "").strip()
+        resolved_local_data_dir_source = _coerce_local_data_dir_resolution_source(
+            payload.get("resolved_local_data_dir_source")
+        )
+    else:
+        requested_local_data_dir = local_data_dir_context["requested_local_data_dir"]
+        resolved_local_data_dir = local_data_dir_context["resolved_local_data_dir"]
+        resolved_local_data_dir_source = local_data_dir_context["resolved_local_data_dir_source"]
+    if not resolved_local_data_dir:
+        return []
+    lines: list[str] = []
+    if requested_local_data_dir:
+        if requested_local_data_dir != resolved_local_data_dir:
+            lines.append(f"Requested local data dir: {requested_local_data_dir}")
+    elif requested_data_dir:
+        requested_path = (REPO / Path(requested_data_dir).expanduser()).resolve()
+        if str(requested_path) != resolved_local_data_dir:
+            lines.append(f"Requested local data dir: {requested_path}")
+    if bool(payload.get("data_dir_exists")):
+        lines.append(f"Resolved local data dir: {resolved_local_data_dir}")
+    else:
+        lines.append(f"Resolved local data dir: {resolved_local_data_dir} (missing)")
+    if resolved_local_data_dir_source == LocalDataDirResolutionSource.NESTED_TRAIN:
+        lines.append("Local data dir source: auto-selected nested train/ directory")
+    elif resolved_local_data_dir_source == LocalDataDirResolutionSource.REQUESTED:
+        lines.append("Local data dir source: requested directory")
+    return lines
 
 
 def _exception_notes(exc: BaseException) -> list[str]:
@@ -4542,9 +5277,34 @@ def _format_run_once_failure_message(config: CliRuntimeConfig, exc: BaseExceptio
     else:
         lines = ["Daily stock RL run failed."]
     lines.append(f"Error: {type(exc).__name__}: {exc}")
+    if config.backtest or config.data_source == "local":
+        try:
+            local_data_dir_context = _local_data_dir_context(config.data_dir, config.symbols)
+        except Exception as local_data_context_exc:
+            lines.append(
+                "Local data dir context unavailable: "
+                + f"{type(local_data_context_exc).__name__}: {local_data_context_exc}"
+            )
+        else:
+            lines.extend(
+                _format_local_data_resolution_lines(
+                    {
+                        "local_data_required": True,
+                        "data_dir": config.data_dir,
+                        "data_dir_exists": _local_data_dir_exists(
+                            Path(local_data_dir_context["resolved_local_data_dir"])
+                        ),
+                        "resolved_local_data_dir": local_data_dir_context["resolved_local_data_dir"],
+                        "resolved_local_data_dir_source": local_data_dir_context["resolved_local_data_dir_source"],
+                    }
+                )
+            )
     if context_label:
         lines.append(f"Latest context: {context_label}")
-    lines.append(f"Check config: {config.command_preview(check_config=True)}")
+    lines.append(
+        "Check config: "
+        + config.command_preview(check_config=True, check_config_text=True)
+    )
 
     safe_command = config.command_preview(force_dry_run=True)
     run_command = config.command_preview()
@@ -4986,6 +5746,8 @@ def main(argv: Optional[list[str]] = None) -> None:
     if args.check_config:
         payload = _preflight_config_payload(config)
         print(json.dumps(payload, indent=2, sort_keys=True))
+        if args.check_config_summary:
+            print(_format_runtime_preflight_summary(payload), file=sys.stderr)
         if args.check_config_text:
             rendered = (
                 _format_runtime_preflight_ready(payload)
@@ -5003,7 +5765,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     if not payload["ready"]:
         print(_format_runtime_preflight_failure(payload), file=sys.stderr)
         raise SystemExit(1)
-    _log_runtime_start(config)
+    _log_runtime_start(config, preflight_payload=payload)
 
     if config.backtest:
         if config.compare_server_parity:

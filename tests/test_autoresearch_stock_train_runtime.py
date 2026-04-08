@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 import torch
 import torch.nn as nn
@@ -13,16 +15,30 @@ import autoresearch_stock.train as train_mod
 
 def test_resolve_autoresearch_training_device_rejects_cpu_request(monkeypatch) -> None:
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
 
-    with pytest.raises(RuntimeError, match="requires CUDA"):
+    with pytest.raises(RuntimeError, match="requested_device='cpu'") as excinfo:
         train_mod.resolve_autoresearch_training_device("cpu")
+    assert "cuda_device_count=2" in str(excinfo.value)
 
 
 def test_resolve_autoresearch_training_device_rejects_missing_cuda(monkeypatch) -> None:
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 0)
 
-    with pytest.raises(RuntimeError, match="requires CUDA"):
+    with pytest.raises(RuntimeError, match="cuda_available=False") as excinfo:
         train_mod.resolve_autoresearch_training_device("auto")
+    assert "cuda_device_count=0" in str(excinfo.value)
+
+
+def test_resolve_autoresearch_training_device_reports_non_cuda_resolution(monkeypatch) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(train_mod, "resolve_runtime_device", lambda _requested: torch.device("cpu"))
+
+    with pytest.raises(RuntimeError, match="resolved_device=cpu") as excinfo:
+        train_mod.resolve_autoresearch_training_device("auto")
+    assert "requested_device='auto'" in str(excinfo.value)
 
 
 def test_build_auto_lr_cache_key_changes_with_network_size(monkeypatch) -> None:
@@ -154,6 +170,8 @@ def test_save_autoresearch_checkpoint_keeps_top_k_and_aliases(tmp_path: Path) ->
             training_seconds=1.0,
             total_seconds=2.0,
             peak_vram_mb=3.0,
+            runtime_device="cuda",
+            auto_cpu_fallback_used=False,
             best_modifiers=train_mod.ExecutionModifierSet(),
             learning_rate_source="auto",
             execution_modifier_tuning_enabled=False,
@@ -178,6 +196,8 @@ def test_save_autoresearch_checkpoint_keeps_top_k_and_aliases(tmp_path: Path) ->
 
     assert best_payload["metadata"]["summary"]["robust_score"] == pytest.approx(3.0)
     assert latest_summary["summary"]["robust_score"] == pytest.approx(2.0)
+    assert latest_summary["runtime_device"] == "cuda"
+    assert latest_summary["auto_cpu_fallback_used"] is False
 
 
 def test_auto_find_learning_rate_retries_probe_on_cpu_after_cuda_failure(monkeypatch) -> None:
@@ -233,3 +253,543 @@ def test_auto_find_learning_rate_retries_probe_on_cpu_after_cuda_failure(monkeyp
 
     assert best_lr == pytest.approx(1e-3)
     assert seen_devices == ["cuda", "cpu"]
+
+
+def test_run_with_auto_cpu_fallback_retries_operation_on_cpu(monkeypatch) -> None:
+    seen_devices: list[str] = []
+    seen_fallback_flags: list[bool] = []
+
+    def _operation(device: torch.device, fallback_used: bool) -> str:
+        seen_devices.append(device.type)
+        seen_fallback_flags.append(fallback_used)
+        if device.type == "cuda":
+            raise RuntimeError("CUDA out of memory during train step")
+        return "ok"
+
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+
+    with pytest.warns(RuntimeWarning, match="falling back to CPU"):
+        result = train_mod.run_with_auto_cpu_fallback(
+            requested_device="auto",
+            device=torch.device("cuda"),
+            context="unit-test",
+            operation=_operation,
+        )
+
+    assert result.value == "ok"
+    assert result.final_device == torch.device("cpu")
+    assert result.fallback_used is True
+    assert seen_devices == ["cuda", "cpu"]
+    assert seen_fallback_flags == [False, True]
+
+
+def test_run_with_auto_cpu_fallback_does_not_mark_initial_cpu_execution_as_fallback() -> None:
+    seen_fallback_flags: list[bool] = []
+
+    def _operation(device: torch.device, fallback_used: bool) -> str:
+        assert device == torch.device("cpu")
+        seen_fallback_flags.append(fallback_used)
+        return "cpu-ok"
+
+    result = train_mod.run_with_auto_cpu_fallback(
+        requested_device="auto",
+        device=torch.device("cpu"),
+        context="unit-test",
+        operation=_operation,
+    )
+
+    assert result.value == "cpu-ok"
+    assert result.final_device == torch.device("cpu")
+    assert result.fallback_used is False
+    assert seen_fallback_flags == [False]
+
+
+def test_main_surfaces_helpful_missing_dataset_error(tmp_path: Path, monkeypatch) -> None:
+    data_root = tmp_path / "hourly"
+    data_root.mkdir()
+    pd = pytest.importorskip("pandas")
+    pd.DataFrame(
+        [
+            {
+                "timestamp": "2024-01-02T14:30:00Z",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "volume": 1_000_000.0,
+                "vwap": 100.25,
+                "symbol": "DBX",
+            }
+        ]
+    ).to_csv(data_root / "DBX.csv", index=False)
+
+    monkeypatch.setattr(train_mod, "resolve_autoresearch_training_device", lambda _device: torch.device("cpu"))
+    monkeypatch.setattr(train_mod, "seed_everything", lambda *args, **kwargs: None)
+
+    with pytest.raises(FileNotFoundError, match=r"Missing dataset for AAPL") as excinfo:
+        train_mod.main(
+            [
+                "--frequency",
+                "hourly",
+                "--data-root",
+                str(data_root),
+                "--symbols",
+                "AAPL",
+                "--sequence-length",
+                "8",
+                "--hold-bars",
+                "3",
+                "--eval-windows",
+                "8",
+                "--disable-auto-lr-find",
+                "--dashboard-db",
+                str(tmp_path / "missing.db"),
+            ]
+        )
+
+    message = str(excinfo.value)
+    assert "DBX.csv" in message
+    assert "Point --data-root at a directory containing per-symbol CSVs" in message
+
+
+def test_main_rejects_path_like_symbol_input(tmp_path: Path) -> None:
+    data_root = tmp_path / "hourly"
+    data_root.mkdir()
+
+    with pytest.raises(ValueError, match=r"Unsupported symbol"):
+        train_mod.main(
+            [
+                "--frequency",
+                "hourly",
+                "--data-root",
+                str(data_root),
+                "--symbols",
+                "../secret",
+                "--check-inputs",
+            ]
+        )
+
+
+def test_main_rejects_invalid_numeric_config_before_cuda(tmp_path: Path, monkeypatch) -> None:
+    data_root = tmp_path / "hourly"
+    data_root.mkdir()
+
+    monkeypatch.setattr(
+        train_mod,
+        "resolve_autoresearch_training_device",
+        lambda _device: (_ for _ in ()).throw(AssertionError("CUDA path should not run for invalid config")),
+    )
+
+    with pytest.raises(ValueError, match=r"max_volume_fraction must be > 0 and <= 1"):
+        train_mod.main(
+            [
+                "--frequency",
+                "hourly",
+                "--data-root",
+                str(data_root),
+                "--symbols",
+                "AAPL",
+                "--max-volume-fraction",
+                "0",
+                "--check-inputs",
+            ]
+        )
+
+
+def test_main_rejects_conflicting_check_input_modes(capsys) -> None:
+    with pytest.raises(SystemExit, match="2"):
+        train_mod.main(["--check-inputs", "--check-inputs-text"])
+
+    assert "not allowed with argument" in capsys.readouterr().err
+
+
+def test_main_help_documents_default_data_roots(capsys) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        train_mod.main(["--help"])
+
+    assert excinfo.value.code == 0
+    output = capsys.readouterr().out
+    assert "trainingdatahourly/stocks" in output
+    assert "trainingdata for daily" in output
+    assert "built-in" in output and "hourly 8-symbol set" in output
+
+
+def test_main_check_inputs_reports_invalid_worker_env_cleanly(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    data_root = tmp_path / "hourly"
+    data_root.mkdir()
+    pd.DataFrame(
+        [
+            {
+                "timestamp": "2024-01-02T14:30:00Z",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "volume": 1_000_000.0,
+                "vwap": 100.25,
+                "symbol": "AAPL",
+            }
+        ]
+    ).to_csv(data_root / "AAPL.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "timestamp": "2024-01-02T14:30:00Z",
+                "open": 200.0,
+                "high": 201.0,
+                "low": 199.0,
+                "close": 200.5,
+                "volume": 2_000_000.0,
+                "vwap": 200.25,
+                "symbol": "MSFT",
+            }
+        ]
+    ).to_csv(data_root / "MSFT.csv", index=False)
+    monkeypatch.setenv("AUTORESEARCH_STOCK_INPUT_CHECK_WORKERS", "not-an-int")
+    monkeypatch.setattr(
+        train_mod,
+        "resolve_autoresearch_training_device",
+        lambda _device: (_ for _ in ()).throw(AssertionError("CUDA path should not run under --check-inputs")),
+    )
+
+    exit_code = train_mod.main(
+        [
+            "--frequency",
+            "hourly",
+            "--data-root",
+            str(data_root),
+            "--symbols",
+            "AAPL,MSFT",
+            "--check-inputs",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert captured.out == ""
+    assert "Autoresearch stock input check failed:" in captured.err
+    assert "AUTORESEARCH_STOCK_INPUT_CHECK_WORKERS" in captured.err
+    assert "positive integer" in captured.err
+
+
+def test_main_check_inputs_reports_ready_symbols_without_touching_cuda(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    data_root = tmp_path / "hourly"
+    data_root.mkdir()
+    pd.DataFrame(
+        [
+            {
+                "timestamp": "2024-01-02T14:30:00Z",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "volume": 1_000_000.0,
+                "vwap": 100.25,
+                "symbol": "AAPL",
+            }
+        ]
+    ).to_csv(data_root / "AAPL.csv", index=False)
+
+    monkeypatch.setattr(
+        train_mod,
+        "resolve_autoresearch_training_device",
+        lambda _device: (_ for _ in ()).throw(AssertionError("CUDA path should not run under --check-inputs")),
+    )
+
+    exit_code = train_mod.main(
+        [
+            "--frequency",
+            "hourly",
+            "--data-root",
+            str(data_root),
+            "--symbols",
+            "AAPL",
+            "--check-inputs",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["all_symbols_ready"] is True
+    assert payload["worker_count"] >= 1
+    assert payload["worker_source"] in {"serial", "auto", "env"}
+    assert payload["status_counts"] == {
+        "ready": 1,
+        "missing": 0,
+        "invalid": 0,
+        "partial": 0,
+        "other": 0,
+    }
+    assert payload["symbols"][0]["symbol"] == "AAPL"
+    assert payload["symbols"][0]["status"] == "ready"
+
+
+def test_main_check_inputs_returns_nonzero_for_missing_symbols(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    data_root = tmp_path / "hourly"
+    data_root.mkdir()
+    pd.DataFrame(
+        [
+            {
+                "timestamp": "2024-01-02T14:30:00Z",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "volume": 1_000_000.0,
+                "vwap": 100.25,
+                "symbol": "DBX",
+            }
+        ]
+    ).to_csv(data_root / "DBX.csv", index=False)
+
+    monkeypatch.setattr(
+        train_mod,
+        "resolve_autoresearch_training_device",
+        lambda _device: (_ for _ in ()).throw(AssertionError("CUDA path should not run under --check-inputs")),
+    )
+
+    exit_code = train_mod.main(
+        [
+            "--frequency",
+            "hourly",
+            "--data-root",
+            str(data_root),
+            "--symbols",
+            "AAPL",
+            "--check-inputs",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert payload["all_symbols_ready"] is False
+    assert payload["data_root_preview"].endswith("DBX.csv")
+    assert payload["symbols"][0]["status"] == "missing"
+
+
+def test_main_check_inputs_reports_invalid_csv_without_touching_cuda(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    data_root = tmp_path / "hourly"
+    data_root.mkdir()
+    (data_root / "AAPL.csv").write_text(
+        "timestamp,open,close\n2024-01-02T14:30:00Z,100,100.5\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        train_mod,
+        "resolve_autoresearch_training_device",
+        lambda _device: (_ for _ in ()).throw(AssertionError("CUDA path should not run under --check-inputs")),
+    )
+
+    exit_code = train_mod.main(
+        [
+            "--frequency",
+            "hourly",
+            "--data-root",
+            str(data_root),
+            "--symbols",
+            "AAPL",
+            "--check-inputs",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert payload["all_symbols_ready"] is False
+    assert payload["symbols"][0]["status"] == "invalid"
+    assert "missing required columns" in str(payload["symbols"][0]["primary_error"])
+
+
+def test_main_check_inputs_returns_nonzero_for_invalid_recent_overlay(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    data_root = tmp_path / "hourly"
+    recent_root = tmp_path / "recent"
+    data_root.mkdir()
+    recent_root.mkdir()
+    pd.DataFrame(
+        [
+            {
+                "timestamp": "2024-01-02T14:30:00Z",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "volume": 1_000_000.0,
+                "vwap": 100.25,
+                "symbol": "AAPL",
+            }
+        ]
+    ).to_csv(data_root / "AAPL.csv", index=False)
+    (recent_root / "AAPL.csv").write_text(
+        "timestamp,open,close\n2024-01-02T14:30:00Z,100,100.5\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        train_mod,
+        "resolve_autoresearch_training_device",
+        lambda _device: (_ for _ in ()).throw(AssertionError("CUDA path should not run under --check-inputs")),
+    )
+
+    exit_code = train_mod.main(
+        [
+            "--frequency",
+            "hourly",
+            "--data-root",
+            str(data_root),
+            "--recent-data-root",
+            str(recent_root),
+            "--symbols",
+            "AAPL",
+            "--check-inputs",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert payload["all_symbols_ready"] is False
+    assert payload["status_counts"] == {
+        "ready": 0,
+        "missing": 0,
+        "invalid": 0,
+        "partial": 1,
+        "other": 0,
+    }
+    assert payload["symbols"][0]["status"] == "partial"
+    assert "missing required columns" in str(payload["symbols"][0]["recent_error"])
+
+
+def test_main_check_inputs_text_reports_human_readable_summary(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    data_root = tmp_path / "hourly"
+    data_root.mkdir()
+    pd.DataFrame(
+        [
+            {
+                "timestamp": "2024-01-02T14:30:00Z",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "volume": 1_000_000.0,
+                "vwap": 100.25,
+                "symbol": "AAPL",
+            }
+        ]
+    ).to_csv(data_root / "AAPL.csv", index=False)
+
+    monkeypatch.setattr(
+        train_mod,
+        "resolve_autoresearch_training_device",
+        lambda _device: (_ for _ in ()).throw(AssertionError("CUDA path should not run under --check-inputs-text")),
+    )
+
+    exit_code = train_mod.main(
+        [
+            "--frequency",
+            "hourly",
+            "--data-root",
+            str(data_root),
+            "--symbols",
+            "AAPL",
+            "--check-inputs-text",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Autoresearch Stock Input Check" in output
+    assert "Input check workers: 1 (serial)" in output
+    assert "Ready symbols: 1/1" in output
+    assert "All symbols ready: yes" in output
+    assert "Summary: ready=1, missing=0, invalid=0, partial=0, other=0" in output
+    assert "Next step: rerun without --check-inputs-text to start training." in output
+    assert "Suggested command:" in output
+    assert (
+        f"{sys.executable} -m autoresearch_stock.train --frequency hourly --data-root {data_root} --symbols AAPL"
+        in output
+    )
+    assert (
+        f"{sys.executable} -m autoresearch_stock.train --frequency hourly --data-root {data_root} --symbols AAPL --check-inputs-text"
+        not in output
+    )
+    assert "- AAPL: ready, rows=1" in output
+
+
+def test_main_check_inputs_text_surfaces_next_step_for_missing_symbols(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    data_root = tmp_path / "hourly"
+    data_root.mkdir()
+    pd.DataFrame(
+        [
+            {
+                "timestamp": "2024-01-02T14:30:00Z",
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "volume": 1_000_000.0,
+                "vwap": 100.25,
+                "symbol": "DBX",
+            }
+        ]
+    ).to_csv(data_root / "DBX.csv", index=False)
+
+    monkeypatch.setattr(
+        train_mod,
+        "resolve_autoresearch_training_device",
+        lambda _device: (_ for _ in ()).throw(AssertionError("CUDA path should not run under --check-inputs-text")),
+    )
+
+    exit_code = train_mod.main(
+        [
+            "--frequency",
+            "hourly",
+            "--data-root",
+            str(data_root),
+            "--symbols",
+            "AAPL",
+            "--check-inputs-text",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "Ready symbols: 0/1" in output
+    assert "Summary: ready=0, missing=1, invalid=0, partial=0, other=0" in output
+    assert "Next step: fix the symbols above, or rerun with --check-inputs for JSON output." in output
+    assert "Suggested JSON command:" in output
+    assert (
+        f"{sys.executable} -m autoresearch_stock.train --frequency hourly --data-root {data_root} --symbols AAPL --check-inputs"
+        in output
+    )
+    assert (
+        f"{sys.executable} -m autoresearch_stock.train --frequency hourly --data-root {data_root} --symbols AAPL --check-inputs-text"
+        not in output
+    )
+    assert "- AAPL: missing, rows=0" in output
