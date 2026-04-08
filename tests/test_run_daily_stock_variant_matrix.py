@@ -10,11 +10,13 @@ from src.daily_stock_variant_presets import preset_choices, resolve_variant_pres
 def test_parse_args_defaults_to_current_vs_candidates() -> None:
     args = sweep_mod.parse_args([])
 
+    assert args.list_presets is False
     assert args.preset == "current_vs_candidates"
     assert args.days == 120
     assert args.window is None
     assert args.output_json is None
     assert args.run_log_json is None
+    assert args.symbols_file is None
     assert args.checkpoint == sweep_mod.daily_stock.DEFAULT_CHECKPOINT
 
 
@@ -51,6 +53,13 @@ def test_normalize_symbols_rejects_unsafe_values() -> None:
         raise AssertionError("expected invalid symbol input to be rejected")
 
 
+def test_load_symbols_supports_symbols_file(tmp_path) -> None:
+    symbols_file = tmp_path / "symbols.txt"
+    symbols_file.write_text("nvda, msft\nAAPL\n", encoding="utf-8")
+
+    assert sweep_mod._load_symbols(None, symbols_file=str(symbols_file)) == ["NVDA", "MSFT", "AAPL"]
+
+
 def test_main_dry_run_prints_resolved_config(capsys) -> None:
     exit_code = sweep_mod.main(["--dry-run", "--preset", "promising_only", "--symbols", "nvda,msft"])
 
@@ -66,6 +75,18 @@ def test_main_dry_run_prints_resolved_config(capsys) -> None:
         "portfolio2_static_50",
         "portfolio3_static_50",
     ]
+
+
+def test_main_dry_run_supports_symbols_file(tmp_path, capsys) -> None:
+    symbols_file = tmp_path / "symbols.txt"
+    symbols_file.write_text("nvda, msft\nAAPL\n", encoding="utf-8")
+
+    exit_code = sweep_mod.main(["--dry-run", "--preset", "promising_only", "--symbols-file", str(symbols_file)])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["symbols"] == ["NVDA", "MSFT", "AAPL"]
+    assert payload["symbols_file"] == str(symbols_file)
 
 
 def test_main_dry_run_writes_json_report(tmp_path) -> None:
@@ -85,6 +106,25 @@ def test_main_dry_run_writes_json_report(tmp_path) -> None:
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["preset"] == "promising_only"
     assert payload["days_list"] == [120]
+
+
+def test_main_list_presets_prints_catalog(capsys) -> None:
+    exit_code = sweep_mod.main(["--list-presets"])
+
+    assert exit_code == 0
+    output = capsys.readouterr().out
+    assert "current_vs_candidates:" in output
+    assert "promising_only:" in output
+    assert "current_live_12p5" in output
+
+
+def test_main_list_presets_prints_json_catalog(capsys) -> None:
+    exit_code = sweep_mod.main(["--list-presets", "--json"])
+
+    assert exit_code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload[0]["name"] == "current_only"
+    assert any(item["name"] == "current_vs_candidates" for item in payload)
 
 
 def test_resolve_run_log_json_path_defaults_next_to_output_json() -> None:
