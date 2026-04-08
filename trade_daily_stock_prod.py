@@ -1961,9 +1961,7 @@ def execute_signal_with_trading_server(
                 symbol=managed_symbol,
                 qty=qty,
                 side="sell",
-                limit_price=_marketable_limit_price(float(quotes[managed_symbol]), "sell"),
-                allow_loss_exit=True,
-                force_exit_reason="daily strategy rotation",
+                limit_price=float(quotes[managed_symbol]),
                 metadata={"strategy": "daily_stock_rl", "intent": "close_managed"},
             )
             state.last_order_id = str(order.get("order", {}).get("id", ""))
@@ -2430,9 +2428,7 @@ def execute_multi_position_signals_with_trading_server(
                 symbol=sym,
                 qty=qty,
                 side="sell",
-                limit_price=_marketable_limit_price(sell_price, "sell"),
-                allow_loss_exit=True,
-                force_exit_reason="daily portfolio rebalance",
+                limit_price=sell_price,
                 metadata={"strategy": "daily_stock_rl", "intent": intent},
             )
             orders_placed += 1

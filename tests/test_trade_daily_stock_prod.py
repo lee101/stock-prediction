@@ -3472,6 +3472,47 @@ def test_execute_signal_with_trading_server_closes_managed_then_opens_new(tmp_pa
     assert state.active_symbol == "MSFT"
     assert state.active_qty == 50.0
 
+
+def test_execute_signal_with_trading_server_rotation_close_does_not_force_loss_exit() -> None:
+    submitted: list[dict[str, object]] = []
+
+    class _FakeServerClient:
+        def get_account(self):
+            return {
+                "cash": 5_000.0,
+                "buying_power": 5_000.0,
+                "positions": {
+                    "AAPL": {"qty": 10.0, "avg_entry_price": 100.0, "current_price": 100.0},
+                },
+            }
+
+        def refresh_prices(self, *, symbols):
+            return {"accounts": []}
+
+        def submit_limit_order(self, **kwargs):
+            submitted.append(dict(kwargs))
+            return {"order": {"id": "order-1"}}
+
+    changed = daily_stock.execute_signal_with_trading_server(
+        SimpleNamespace(symbol="MSFT", direction="long", action="long_MSFT"),
+        server_client=_FakeServerClient(),
+        quotes={"AAPL": 100.0, "MSFT": 50.0},
+        state=daily_stock.StrategyState(active_symbol="AAPL", active_qty=10.0, entry_price=100.0),
+        symbols=["AAPL", "MSFT"],
+        allocation_pct=25.0,
+        dry_run=False,
+        now=datetime(2026, 3, 16, 14, 0, tzinfo=timezone.utc),
+    )
+
+    assert changed is True
+    assert submitted[0] == {
+        "symbol": "AAPL",
+        "qty": 10.0,
+        "side": "sell",
+        "limit_price": 100.0,
+        "metadata": {"strategy": "daily_stock_rl", "intent": "close_managed"},
+    }
+
 def test_adopt_existing_position_populates_state() -> None:
     state = daily_stock.StrategyState()
     adopted = daily_stock.adopt_existing_position(
@@ -5456,9 +5497,7 @@ def test_execute_multi_position_signals_with_trading_server_rebalances_existing_
             "symbol": "AAPL",
             "qty": pytest.approx(17.5),
             "side": "sell",
-            "limit_price": pytest.approx(daily_stock._marketable_limit_price(100.0, "sell")),
-            "allow_loss_exit": True,
-            "force_exit_reason": "daily portfolio rebalance",
+            "limit_price": 100.0,
             "metadata": {"strategy": "daily_stock_rl", "intent": "rebalance_portfolio_position"},
         },
         {
