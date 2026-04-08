@@ -406,6 +406,15 @@ def run_one(trainer: str, cfg_path: Path, steps: int, seed: int,
         wall = train_rec.get("wall_sec", 0.0) or 1e-9
         rec["steps_per_sec"] = float(steps) / wall
     rec["status"] = train_rec.get("status", "error")
+    # P6-2: surface 27%/month + curriculum metrics if present in trainer_output.
+    to = train_rec.get("trainer_output") if isinstance(train_rec, dict) else None
+    if not isinstance(to, dict):
+        to = {}
+    lev_cfg = cfg.get("leverage_curriculum") if isinstance(cfg, dict) else None
+    default_cap = float((lev_cfg or {}).get("start", 1.0)) if isinstance(lev_cfg, dict) else 1.0
+    rec["monthly_return"] = float(to.get("monthly_return", 0.0))
+    rec["hit_27pct"] = bool(to.get("hit_27pct", rec["monthly_return"] >= 0.27))
+    rec["current_leverage_cap"] = float(to.get("current_leverage_cap", default_cap))
     out_path = RESULTS_DIR / f"{trainer}_s{seed}_{date}.json"
     out_path.write_text(json.dumps(rec, indent=2, default=str))
     rec["result_path"] = str(out_path)
