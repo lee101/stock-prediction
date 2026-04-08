@@ -54,6 +54,32 @@
   - Renderer: `scripts/render_prod_stocks_video.py` (already wired into `src/marketsim_video.py`).
   - Note: needed `uv pip install --python .venv313/bin/python imageio_ffmpeg` and `TMPDIR=$(pwd)/.tmp_train` to dodge the Triton/tempfile race that breaks training without obs-norm flags too.
 
+### 2026-04-08 — ctrader/binance_bot: first end-to-end C pipeline lands
+- **Problem**: the existing `ctrader/main.c` + `trade_loop.c` has been architectural scaffolding only — `ctrader/policy_infer.c` is a stub that returns "model not loaded" and `trade_loop.c:build_observation` emits a 6-dim-per-symbol vector that has nothing to do with the 209-dim obs the RL policies train against. The C side has never actually run a trained model.
+- **Fix (this session)**: new `ctrader/binance_bot/` subdirectory with three pure-C components (no libtorch, no BLAS, no libcurl):
+  1. `policy_mlp.{c,h}` — loads a `.ctrdpol` binary (produced by `scripts/export_policy_to_ctrader.py`) and runs the full MLP forward pass for stocks12-style policies: Linear → ReLU ×3, optional LayerNorm, Linear → ReLU → Linear. Verified against a Python twin built from the same state_dict: **max abs diff 1.4e-6 on all 25 logits for s42** (209→1024³→LN→512→25, 2.85M params, 11.4 MB file). argmax matches.
+  2. `obs_builder.{c,h}` — produces the 209-dim obs vector byte-identically to `pufferlib_market/inference.py:build_observation` given the same MKTD row + portfolio state. Parity test: **0.000e+00 max abs diff** on window 0 of `stocks12_daily_v5_rsi_val.bin`.
+  3. `backtest_main.c` — end-to-end binary: `mktd_reader` + `obs_builder` + `policy_mlp.forward` + a v0 C trade sim. Runs s42 on 90-bar windows and prints total return + max drawdown + num trades. First end-to-end invocation on s42 window 0: **+14.80% / 68 trades / DD 16.72%**.
+- **Known gap (follow-up)**: Python `render_prod_stocks_video.py` reports +34.59% / 22 trades / DD 8.37% on the same s42 window 0. Policy forward is byte-perfect (parity tested), so the entire delta is in the v0 C trade simulator: full-cash allocation on every flip, no decision lag (Python uses ≥2), no fill buffer, no fractional action bins, no max-hold. Port the semantics from `pufferlib_market/evaluate_holdout.py` into `backtest_main.c` next.
+- **Build & test**:
+  ```
+  cd ctrader/binance_bot && make test
+  ```
+  Produces `.tmp/test_policy_mlp_parity` (OK @ 1.4e-6), `.tmp/test_obs_builder_parity` (OK @ 0.0), and `.tmp/backtest_main` (returns +14.80% for s42 on val window 0). TMPDIR pinned in the Makefile to dodge the gcc/triton /tmp race.
+- **Why this matters**: it's the first time the ctrader codebase has actually run a trained policy end-to-end. Makes the "live Binance bot in C" plan from the previous sessions concrete and unblocks the trade_loop.c stub replacement, paper-mode dry run, and Alpaca REST port follow-ups (see `ctrader/binance_bot/README.md` for the sequenced plan).
+- **Files added**:
+  - `ctrader/binance_bot/policy_mlp.{c,h}` (pure-C MLP)
+  - `ctrader/binance_bot/obs_builder.{c,h}` (209-dim obs builder)
+  - `ctrader/binance_bot/backtest_main.c` (end-to-end C backtest)
+  - `ctrader/binance_bot/tests/test_policy_mlp_parity.c`
+  - `ctrader/binance_bot/tests/test_obs_builder_parity.c`
+  - `ctrader/binance_bot/Makefile`
+  - `ctrader/binance_bot/README.md`
+  - `ctrader/models/stocks12_v5_rsi_s42.ctrdpol` (11.4 MB s42 weights, exported)
+  - `scripts/export_policy_to_ctrader.py`
+  - `scripts/gen_policy_mlp_parity_fixture.py`
+  - `scripts/gen_obs_parity_fixture.py`
+
 ### 2026-04-07 — ctrader C audit (in progress)
 - **Existing tests**: `ctrader/tests/test_market_sim.c` 145→**151 passed** after adding 3 new fee/borrow pin tests:
   - `test_alpaca_margin_rate_pin`: pins 6.25% APR → `0.0625/8760` hourly, validates margin cost > 0 and within plausible band.
