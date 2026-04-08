@@ -54,6 +54,35 @@
   - Renderer: `scripts/render_prod_stocks_video.py` (already wired into `src/marketsim_video.py`).
   - Note: needed `uv pip install --python .venv313/bin/python imageio_ffmpeg` and `TMPDIR=$(pwd)/.tmp_train` to dodge the Triton/tempfile race that breaks training without obs-norm flags too.
 
+### 2026-04-08 — Singleton writer lock + death-spiral guard baked into alpaca_wrapper; prod restarted
+
+- **Goal**: make it physically impossible to run two live Alpaca writers at
+  once, and to sell below the last buy (death-spiral loop).
+- **How**: new `src/alpaca_singleton.py`, wired into `alpaca_wrapper.py` at
+  import time. Every process that touches live Alpaca write API takes an
+  fcntl writer lock on `strategy_state/account_locks/alpaca_live_writer.lock`
+  — a second live import exits 42. Paper mode (`ALP_PAPER=1`) skips the
+  gate so unlimited paper clients can run. `alpaca_order_stock` now calls
+  `guard_sell_against_death_spiral` before submitting any order; a sell
+  priced more than 50 bps below the last recorded buy for the symbol
+  raises RuntimeError and never reaches Alpaca. Buy prices persist on disk
+  for 3 days. `src/alpaca_account_lock.py` is now per-process idempotent
+  so the wrapper and daemon can both acquire without racing themselves.
+- **Tests**: `tests/test_alpaca_singleton.py` — 6/6 passing (paper no-op,
+  live acquire, 2nd live fails with exit 42, override bypass, death-spiral
+  refuse, death-spiral no-record-allows). `tests/test_eval_100d.py` 8/8.
+- **Redeploy**: `sudo systemctl restart daily-rl-trader.service`. Old PID
+  2622306 → new PID 2599365 at 2026-04-08T10:23:53 UTC, lock handoff clean.
+  Service is LIVE, 32-model ensemble loaded, sleeping 190min until next
+  tick. Verified: a second live probe against the live lock exits 42 with
+  the holder PID named in stderr.
+- **Break-glass**: `ALPACA_SINGLETON_OVERRIDE=1` /
+  `ALPACA_DEATH_SPIRAL_OVERRIDE=1` — never in systemd units, human-only,
+  every invocation prints `OVERRIDE ACTIVE` to stderr.
+- **Ground rules documented**: `AGENTS.md` + `CLAUDE.md` have a new
+  "PRODUCTION GROUND RULES" section at the top: 27%/month PnL target,
+  single-writer rule, death-spiral guard, keep the tests green.
+
 ### 2026-04-08 — ctrader/binance_bot: first end-to-end C pipeline lands
 - **Problem**: the existing `ctrader/main.c` + `trade_loop.c` has been architectural scaffolding only — `ctrader/policy_infer.c` is a stub that returns "model not loaded" and `trade_loop.c:build_observation` emits a 6-dim-per-symbol vector that has nothing to do with the 209-dim obs the RL policies train against. The C side has never actually run a trained model.
 - **Fix (this session)**: new `ctrader/binance_bot/` subdirectory with three pure-C components (no libtorch, no BLAS, no libcurl):
