@@ -188,6 +188,7 @@ def _run_slippage_sweep(
     fee_rate: float,
     max_leverage: float,
     seed: int,
+    decision_lag: int = 2,
 ) -> Dict[str, Any]:
     import torch
     from pufferlib_market import binding
@@ -227,6 +228,7 @@ def _run_slippage_sweep(
             short_borrow_apr=0.0,
             periods_per_year=8760.0,
             fill_slippage_bps=float(bps),
+            decision_lag=int(decision_lag),
             forced_offset=-1,
             action_allocation_bins=1,
             action_level_bins=1,
@@ -520,4 +522,5 @@ def evaluate_policy_file(
         fee_rate=float(env_cfg.get("fee_rate", 0.001)),
         max_leverage=float(env_cfg.get("max_leverage_scalar_fallback", 1.5)),
         seed=int(eval_cfg.get("seed", 1337)),
+        decision_lag=int(eval_cfg.get("decision_lag", env_cfg.get("decision_lag", 2))),
     )
