@@ -216,6 +216,16 @@ def percentile(returns: torch.Tensor, q: float) -> float:
 # Public entry
 # ---------------------------------------------------------------------------
 
+def _save_checkpoint(ckpt_dir: Path, name: str, policy, cfg, seed, metrics):
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    torch.save({
+        "policy": policy.state_dict(),
+        "metrics": metrics,
+        "cfg": cfg if isinstance(cfg, dict) else {},
+        "seed": int(seed),
+    }, ckpt_dir / name)
+
+
 def train_ppo(cfg: Dict[str, Any], total_timesteps: int, seed: int,
               checkpoint_dir: str) -> Dict[str, Any]:
     """GPU-resident PPO. See module docstring for the contract."""
@@ -344,46 +354,90 @@ def train_ppo(cfg: Dict[str, Any], total_timesteps: int, seed: int,
     cuda_graph_used = False
 
     # ----- P5-3 opt-in: full rollout+update CUDA graph capture -----
-    # Isolated branch — when cfg["full_graph_capture"] is truthy and CUDA is
-    # available, build a synthetic-env full PPO step, capture it as one
-    # CUDA graph, replay for `n_iters`, then return early. Exercised by
-    # `fp4/bench/bench_full_graph.py` and `tests/test_cuda_graph_full.py`.
+    # Captures one full PPO iter (rollout on the real env + update) into a
+    # single CUDA graph, replays it `n_iters` times. After each replay we
+    # read the persistent finished_buf + done_buf to harvest real episode
+    # returns, so sortino / n_episodes / entropy are all real, not stubbed.
     if (isinstance(cfg, dict) and cfg.get("full_graph_capture")
             and torch.cuda.is_available()):
-        from .cuda_graph_full import build_synthetic_full_step, capture_full_step
-        step_fn, _state = build_synthetic_full_step(
-            policy, optim,
-            num_envs=num_envs, rollout_len=rollout_len,
-            obs_dim=obs_dim, act_dim=act_dim, device=device,
+        from .cuda_graph_full import build_real_full_step, capture_full_step
+        step_fn, fg_state = build_real_full_step(
+            _raw_env, policy, optim,
+            rollout_len=rollout_len, device=device,
             gamma=gamma, gae_lambda=gae_lambda,
             clip_eps=clip_eps, vf_coef=vf_coef, ent_coef=ent_coef,
         )
         captured = capture_full_step(step_fn)
-        for _ in range(n_iters):
+        best_sortino = -float("inf")
+        last_entropy_f = 0.0
+        last_loss_f = 0.0
+        last_n_done_f = 0.0
+        for it in range(n_iters):
             captured.replay()
+            # Per-iter host sync to harvest finished episode returns. This
+            # is cheap (one sync per iter, not per step).
+            done_mask_flat = (fg_state["done_buf"] > 0.5).reshape(-1)
+            if bool(done_mask_flat.any().item()):
+                all_episode_returns.extend(
+                    fg_state["finished_buf"].reshape(-1)[done_mask_flat].cpu().tolist()
+                )
+            last_entropy_f = float(fg_state["entropy"].item())
+            last_loss_f = float(fg_state["loss"].item())
+            last_n_done_f = float(fg_state["n_done"].item())
+            # Track best-so-far so we can save a best.pt checkpoint that
+            # `scripts/eval_100d.py` can consume.
+            if all_episode_returns:
+                running_ret_t = torch.tensor(all_episode_returns[-max(256, num_envs):],
+                                             dtype=torch.float32)
+                cur_sortino = sortino_ratio(running_ret_t)
+                if cur_sortino > best_sortino:
+                    best_sortino = cur_sortino
+                    _save_checkpoint(Path(checkpoint_dir), "best.pt",
+                                     policy, cfg, seed, {"sortino": cur_sortino,
+                                                         "iter": it})
+            if lev_curriculum is not None:
+                r_flat = fg_state["rew_buf"].detach().reshape(-1)
+                downside = r_flat.clamp_max(0.0)
+                dd_std = torch.sqrt((downside * downside).mean() + 1e-8)
+                proxy_sortino = float((r_flat.mean() / (dd_std + 1e-8)).item())
+                last_leverage_cap = lev_curriculum.current_cap(
+                    step=int((it + 1) * steps_per_iter), last_sortino=proxy_sortino
+                )
         torch.cuda.synchronize()
         wall = time.perf_counter() - t0
-        out_loss = float(captured.outputs["loss"].item())
-        out_meanr = float(captured.outputs["mean_reward"].item())
-        metrics: Dict[str, Any] = {
-            "final_sortino": 0.0,
-            "final_p10": 0.0,
-            "mean_return": out_meanr,
-            "n_episodes": 0,
+        if all_episode_returns:
+            ret_t = torch.tensor(all_episode_returns, dtype=torch.float32)
+        else:
+            ret_t = fg_state["running_returns"].detach().cpu().to(torch.float32)
+        final_sortino = sortino_ratio(ret_t)
+        final_p10 = percentile(ret_t, 0.10)
+        mean_return = float(ret_t.mean().item()) if ret_t.numel() else 0.0
+        metrics = {
+            "final_sortino": final_sortino,
+            "final_p10": final_p10,
+            "mean_return": mean_return,
+            "n_episodes": int(ret_t.numel()),
             "steps_per_sec": float(n_iters * steps_per_iter) / max(wall, 1e-9),
             "wall_sec": wall,
             "gpu_peak_mb": float(torch.cuda.max_memory_allocated() / (1024 * 1024)),
             "device": str(device),
             "cuda_graph_used": True,
             "full_graph_used": True,
+            "env_backend": env_backend_name,
             "n_iters": int(n_iters),
             "total_steps": int(n_iters * steps_per_iter),
-            "last_loss": out_loss,
-            "last_entropy": 0.0,
+            "last_loss": last_loss_f,
+            "last_entropy": last_entropy_f,
+            "last_leverage_cap": float(last_leverage_cap),
+            "n_done_last_iter": last_n_done_f,
         }
-        ckpt_dir = Path(checkpoint_dir)
-        ckpt_dir.mkdir(parents=True, exist_ok=True)
-        (ckpt_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
+        # Always write final.pt too. If best.pt never got written (e.g. no
+        # episodes closed), promote final.pt as the only ckpt the evaluator
+        # can consume.
+        _save_checkpoint(Path(checkpoint_dir), "final.pt", policy, cfg, seed, metrics)
+        if not (Path(checkpoint_dir) / "best.pt").exists():
+            _save_checkpoint(Path(checkpoint_dir), "best.pt", policy, cfg, seed, metrics)
+        (Path(checkpoint_dir) / "metrics.json").write_text(json.dumps(metrics, indent=2))
         return metrics
     # ----- end P5-3 branch -----
 
@@ -564,13 +618,11 @@ def train_ppo(cfg: Dict[str, Any], total_timesteps: int, seed: int,
 
     # ---- Checkpoint ----
     ckpt_dir = Path(checkpoint_dir)
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
-    torch.save({
-        "policy": policy.state_dict(),
-        "metrics": metrics,
-        "cfg": cfg if isinstance(cfg, dict) else {},
-        "seed": int(seed),
-    }, ckpt_dir / "final.pt")
+    _save_checkpoint(ckpt_dir, "final.pt", policy, cfg, seed, metrics)
+    # Promote final.pt as best.pt if no best-so-far exists (eval_100d gates
+    # on the presence of a best.pt file).
+    if not (ckpt_dir / "best.pt").exists():
+        _save_checkpoint(ckpt_dir, "best.pt", policy, cfg, seed, metrics)
     (ckpt_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
 
     return metrics

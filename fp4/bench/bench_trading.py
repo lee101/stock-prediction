@@ -358,7 +358,8 @@ def _evaluate_ckpt(ckpt_dir: Path, cfg: dict[str, Any], trainer: str) -> dict[st
 
 
 def run_one(trainer: str, cfg_path: Path, steps: int, seed: int,
-            smoke: bool = False, env_override: str | None = None) -> dict[str, Any]:
+            smoke: bool = False, env_override: str | None = None,
+            checkpoint_dir: str | None = None) -> dict[str, Any]:
     cfg = _load_cfg(cfg_path)
     if env_override:
         # Preserve any existing env params (e.g. ohlc_path) when overriding
@@ -396,7 +397,10 @@ def run_one(trainer: str, cfg_path: Path, steps: int, seed: int,
         out_path.write_text(json.dumps(rec, indent=2))
         rec["result_path"] = str(out_path)
         return rec
-    ckpt_dir = RESULTS_DIR / f"_ckpt_{trainer}_s{seed}_{date}"
+    if checkpoint_dir:
+        ckpt_dir = Path(checkpoint_dir)
+    else:
+        ckpt_dir = RESULTS_DIR / f"_ckpt_{trainer}_s{seed}_{date}"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     runner = _RUNNERS[trainer]
     train_rec = runner(cfg, steps, seed, ckpt_dir)
@@ -418,7 +422,7 @@ def run_one(trainer: str, cfg_path: Path, steps: int, seed: int,
     out_path = RESULTS_DIR / f"{trainer}_s{seed}_{date}.json"
     out_path.write_text(json.dumps(rec, indent=2, default=str))
     rec["result_path"] = str(out_path)
-    if smoke:
+    if smoke and not checkpoint_dir:
         # leave checkpoint dir to inspect; cleanup is best-effort
         try:
             shutil.rmtree(ckpt_dir)
@@ -436,9 +440,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--smoke", action="store_true")
     p.add_argument("--env", default=None,
                    help="override cfg['env'] backend: auto|gpu_trading_env|market_sim_py|stub")
+    p.add_argument("--checkpoint-dir", default=None,
+                   help="override checkpoint output dir (default: auto under results/)")
     args = p.parse_args(argv)
     rec = run_one(args.trainer, Path(args.config), args.steps, args.seed,
-                  smoke=args.smoke, env_override=args.env)
+                  smoke=args.smoke, env_override=args.env,
+                  checkpoint_dir=args.checkpoint_dir)
     print(json.dumps({k: v for k, v in rec.items() if k != "train"}, indent=2, default=str))
     return 0 if rec["status"] in ("ok", "skip") else 1
 

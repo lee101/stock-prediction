@@ -292,8 +292,17 @@ def build_real_full_step(
         "done_buf": torch.zeros(T, N, device=device),
         "adv_buf":  torch.zeros(T, N, device=device),
         "ret_buf":  torch.zeros(T, N, device=device),
+        # Per-step running episode return; reset on each `done` inside the
+        # captured body so the trainer sees real episode boundaries.
+        "running_returns": torch.zeros(N, device=device),
+        # Staged finished-episode returns (masked by done) — one row per
+        # rollout step. Trainer reads this + done_buf after each replay.
+        "finished_buf": torch.zeros(T, N, device=device),
         "loss":     torch.zeros((), device=device),
         "mean_reward": torch.zeros((), device=device),
+        "entropy":  torch.zeros((), device=device),
+        "n_done":   torch.zeros((), device=device),
+        "sum_rew":  torch.zeros((), device=device),
     }
 
     def _policy_act(obs):
@@ -307,6 +316,9 @@ def build_real_full_step(
 
     def step_fn() -> Dict[str, torch.Tensor]:
         obs = state["obs"]
+        running = state["running_returns"]
+        running.zero_()
+        state["finished_buf"].zero_()
         with torch.no_grad():
             for t in range(T):
                 action, logp, value = _policy_act(obs)
@@ -315,12 +327,21 @@ def build_real_full_step(
                 state["logp_buf"][t].copy_(logp)
                 state["val_buf"][t].copy_(value)
                 next_obs, reward, done, _cost = env_handle.step(action)
-                state["rew_buf"][t].copy_(reward.to(torch.float32))
-                state["done_buf"][t].copy_(done.to(torch.float32))
+                rew_f = reward.to(torch.float32)
+                done_f = done.to(torch.float32)
+                state["rew_buf"][t].copy_(rew_f)
+                state["done_buf"][t].copy_(done_f)
+                # Accumulate running per-env return; stage into finished_buf
+                # at finished envs, reset running via masked multiply. No
+                # host syncs, graph-safe.
+                running = running + rew_f
+                state["finished_buf"][t].copy_(running * done_f)
+                running = running * (1.0 - done_f)
                 # Persistent staging: copy the (possibly freshly-allocated)
                 # obs view into the locked buffer the next iteration reads.
                 state["obs"].copy_(next_obs.to(torch.float32))
                 obs = state["obs"]
+            state["running_returns"].copy_(running)
             _, _, last_value = policy(obs)
 
         adv = state["adv_buf"]
@@ -359,7 +380,16 @@ def build_real_full_step(
 
         state["loss"].copy_(loss.detach())
         state["mean_reward"].copy_(state["rew_buf"].mean())
-        return {"loss": state["loss"], "mean_reward": state["mean_reward"]}
+        state["entropy"].copy_(entropy.detach())
+        state["n_done"].copy_(state["done_buf"].sum())
+        state["sum_rew"].copy_(state["rew_buf"].sum())
+        return {
+            "loss": state["loss"],
+            "mean_reward": state["mean_reward"],
+            "entropy": state["entropy"],
+            "n_done": state["n_done"],
+            "sum_rew": state["sum_rew"],
+        }
 
     return step_fn, state
 
