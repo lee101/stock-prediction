@@ -77,6 +77,14 @@ def lock_path_for_account(account_name: str, *, state_dir: str | Path | None = N
     return _lock_dir(state_dir) / f"{safe_account}.lock"
 
 
+# Per-process idempotency: once this process has acquired a given account
+# lock, subsequent calls for the same path return the existing handle. This
+# lets alpaca_wrapper acquire at import time AND trade_daily_stock_prod
+# call acquire_alpaca_account_lock later without the second call racing
+# itself on the same fcntl file descriptor.
+_HELD_LOCKS: dict[str, "AlpacaAccountLock"] = {}
+
+
 def acquire_alpaca_account_lock(
     service_name: str,
     *,
@@ -86,9 +94,15 @@ def acquire_alpaca_account_lock(
     """Acquire a non-blocking exclusive lock for an Alpaca account writer.
 
     The lock is process-scoped and released automatically on process exit.
+    Idempotent: if this process already holds the same lock, the existing
+    ``AlpacaAccountLock`` is returned and no new fd is opened.
     """
 
     lock_path = lock_path_for_account(account_name, state_dir=state_dir)
+    key = str(lock_path.resolve())
+    existing = _HELD_LOCKS.get(key)
+    if existing is not None and not existing.released:
+        return existing
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_path.open("a+", encoding="utf-8")
     try:
@@ -124,5 +138,6 @@ def acquire_alpaca_account_lock(
         path=lock_path,
         handle=handle,
     )
+    _HELD_LOCKS[key] = lock
     atexit.register(lock.release)
     return lock
