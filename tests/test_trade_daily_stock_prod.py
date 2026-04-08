@@ -5408,6 +5408,7 @@ def test_run_backtest_with_prepared_data_uses_precomputed_prices_and_timestamps(
             return None
 
     prepared = daily_stock.PreparedDailyBacktestData(
+        feature_schema="rsi_v5",
         indexed={"AAPL": _ExplodingFrame(), "MSFT": _ExplodingFrame()},
         trader_template=_FakeTrader(),
         extra_policies=[],
