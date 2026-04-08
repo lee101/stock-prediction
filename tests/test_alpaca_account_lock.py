@@ -67,6 +67,40 @@ def test_acquire_alpaca_account_lock_reacquires_after_release(tmp_path: Path) ->
         second.release()
 
 
+def test_acquire_alpaca_account_lock_is_idempotent_for_same_service(tmp_path: Path) -> None:
+    first = account_lock.acquire_alpaca_account_lock(
+        "same-service",
+        account_name="alpaca_live_writer",
+        state_dir=tmp_path,
+    )
+    try:
+        second = account_lock.acquire_alpaca_account_lock(
+            "same-service",
+            account_name="alpaca_live_writer",
+            state_dir=tmp_path,
+        )
+        assert second is first
+    finally:
+        first.release()
+
+
+def test_acquire_alpaca_account_lock_rejects_different_in_process_service(tmp_path: Path) -> None:
+    first = account_lock.acquire_alpaca_account_lock(
+        "first-service",
+        account_name="alpaca_live_writer",
+        state_dir=tmp_path,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="held in-process"):
+            account_lock.acquire_alpaca_account_lock(
+                "second-service",
+                account_name="alpaca_live_writer",
+                state_dir=tmp_path,
+            )
+    finally:
+        first.release()
+
+
 def test_acquire_alpaca_account_lock_reports_current_holder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     first = account_lock.acquire_alpaca_account_lock(
         "first-service",
@@ -78,6 +112,9 @@ def test_acquire_alpaca_account_lock_reports_current_holder(tmp_path: Path, monk
     def _fake_flock(fd: int, operation: int):
         raise BlockingIOError("locked")
 
+    key = str(first.path.resolve())
+    held = account_lock._HELD_LOCKS.pop(key)
+    assert held is first
     monkeypatch.setattr(account_lock.fcntl, "flock", _fake_flock)
     try:
         with pytest.raises(RuntimeError, match="holder_service=first-service"):
