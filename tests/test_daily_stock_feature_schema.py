@@ -129,4 +129,5 @@ def test_prepare_daily_backtest_data_uses_schema_aware_feature_history(monkeypat
     )
 
     assert recorded == ["legacy_prod"]
+    assert prepared.feature_schema == "legacy_prod"
     assert prepared.feature_cube.shape == (4, 1, 16)

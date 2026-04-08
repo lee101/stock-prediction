@@ -332,6 +332,7 @@ class BacktestVariantSpec:
 
 @dataclass
 class PreparedDailyBacktestData:
+    feature_schema: DailyStockFeatureSchema
     indexed: dict[str, pd.DataFrame]
     trader_template: DailyPPOTrader
     extra_policies: list[torch.nn.Module]
@@ -1422,10 +1423,10 @@ def _build_daily_feature_cube(
     indexed: dict[str, pd.DataFrame],
     *,
     symbols: Sequence[str],
-    feature_schema: str,
+    feature_schema: DailyStockFeatureSchema,
 ) -> np.ndarray:
     """Materialize aligned daily features once as [time, symbol, feature]."""
-    feature_dimension = daily_feature_dimension(cast(DailyStockFeatureSchema, feature_schema))
+    feature_dimension = daily_feature_dimension(feature_schema)
     feature_blocks = [
         _daily_feature_history_for_schema(indexed[symbol], feature_schema=feature_schema).to_numpy(dtype=np.float32, copy=False)
         for symbol in symbols
@@ -1469,7 +1470,7 @@ def _build_daily_timestamps(
 def _daily_feature_history_for_schema(
     price_df: pd.DataFrame,
     *,
-    feature_schema: str,
+    feature_schema: DailyStockFeatureSchema,
 ) -> pd.DataFrame:
     if feature_schema == "legacy_prod":
         return build_daily_feature_history_for_schema(price_df, schema="legacy_prod")
@@ -1482,7 +1483,7 @@ def _daily_feature_history_for_schema(
 def _daily_feature_vector_for_schema(
     price_df: pd.DataFrame,
     *,
-    feature_schema: str,
+    feature_schema: DailyStockFeatureSchema,
 ) -> np.ndarray:
     if feature_schema == "legacy_prod":
         return compute_daily_feature_vector_for_schema(price_df, schema="legacy_prod")
@@ -1551,6 +1552,7 @@ def _prepare_daily_backtest_data(
         symbols=symbols_order,
     )
     return PreparedDailyBacktestData(
+        feature_schema=feature_schema,
         indexed=indexed,
         trader_template=trader_template,
         extra_policies=extra_policies,
