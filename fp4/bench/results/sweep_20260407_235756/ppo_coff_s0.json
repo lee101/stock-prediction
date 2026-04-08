@@ -1,0 +1,45 @@
+{
+  "algo": "ppo",
+  "constrained": false,
+  "seed": 0,
+  "steps": 2000000,
+  "status": "ok",
+  "reason": "",
+  "returncode": 0,
+  "bench_record": {
+    "trainer": "fp4",
+    "seed": 0,
+    "steps": 2000000,
+    "date": "20260407_235758",
+    "config_path": "/nvme0n1-disk/code/stock-prediction/fp4/experiments/fp4_ppo_stocks12.yaml",
+    "smoke": false,
+    "available": true,
+    "train": {
+      "status": "ok",
+      "wall_sec": 178.56741532706656,
+      "gpu_peak_mb": 239.33544921875,
+      "trainer_output": {
+        "final_sortino": -0.44214850664138794,
+        "final_p10": -4.028838157653809,
+        "mean_return": -1.2386966943740845,
+        "n_episodes": 960,
+        "steps_per_sec": 11344.160297556933,
+        "wall_sec": 176.20061314105988,
+        "gpu_peak_mb": 239.33544921875,
+        "device": "cuda",
+        "cuda_graph_used": true,
+        "env_backend": "gpu_trading_env",
+        "n_iters": 122,
+        "total_steps": 1998848,
+        "last_loss": -0.3571964204311371,
+        "last_entropy": 7.11699914932251
+      }
+    },
+    "eval": {
+      "status": "error",
+      "reason": "eval_generic raised: NameError: name '_same_backend_eval' is not defined"
+    },
+    "steps_per_sec": 11200.2517163435,
+    "status": "ok"
+  }
+}
