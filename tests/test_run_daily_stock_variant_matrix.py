@@ -101,6 +101,8 @@ def test_main_delegates_to_variant_matrix_runner(monkeypatch, capsys) -> None:
     assert len(captured["variants"]) == 4
     assert payload["results"][0]["name"] == "single_static_25"
     assert payload["results"][1]["name"] == "current_live_12p5"
+    assert payload["baseline_comparison"]["baseline_name"] == "current_live_12p5"
+    assert payload["baseline_comparison"]["beaters"][0]["name"] == "single_static_25"
 
 
 def test_resolve_days_prefers_explicit_windows() -> None:
@@ -153,6 +155,8 @@ def test_main_multi_window_json_reports_summary(monkeypatch, capsys) -> None:
     assert payload["config"]["days_list"] == [60, 120]
     assert payload["summary"][0]["name"] == "single_static_25"
     assert payload["summary"][0]["window_count"] == 2
+    assert payload["baseline_comparison"]["baseline_name"] == "current_live_12p5"
+    assert payload["baseline_comparison"]["beaters"][0]["name"] == "single_static_25"
     assert len(payload["windows"]) == 2
 
 
@@ -196,3 +200,46 @@ def test_table_for_multi_window_summary_contains_headers() -> None:
     assert "avg_monthly" in table
     assert "min_monthly" in table
     assert "demo" in table
+
+
+def test_format_single_window_baseline_comparison_lists_beaters() -> None:
+    message = sweep_mod._format_single_window_baseline_comparison(
+        {
+            "baseline_name": "current_live_12p5",
+            "baseline_monthly_return": -0.001,
+            "beaters": [
+                {
+                    "name": "single_static_25",
+                    "candidate_monthly_return": 0.003,
+                    "delta_monthly_return": 0.004,
+                }
+            ],
+        }
+    )
+
+    assert message is not None
+    assert "current_live_12p5" in message
+    assert "single_static_25" in message
+
+
+def test_format_multi_window_baseline_comparison_lists_beaters() -> None:
+    message = sweep_mod._format_multi_window_baseline_comparison(
+        {
+            "baseline_name": "current_live_12p5",
+            "baseline_avg_monthly_return": -0.001,
+            "baseline_min_monthly_return": -0.003,
+            "beaters": [
+                {
+                    "name": "portfolio2_static_50",
+                    "candidate_avg_monthly_return": 0.004,
+                    "candidate_min_monthly_return": 0.001,
+                    "delta_avg_monthly_return": 0.005,
+                    "delta_min_monthly_return": 0.004,
+                }
+            ],
+        }
+    )
+
+    assert message is not None
+    assert "current_live_12p5" in message
+    assert "portfolio2_static_50" in message
