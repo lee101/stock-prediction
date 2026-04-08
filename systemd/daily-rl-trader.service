@@ -1,15 +1,15 @@
 [Unit]
-Description=Daily Mixed23 RL+Gemini Trading Bot
+Description=Daily Stock RL Trading Bot
 After=network.target
 
 [Service]
 Type=simple
 User=administrator
 WorkingDirectory=/nvme0n1-disk/code/stock-prediction
-ExecStart=/nvme0n1-disk/code/stock-prediction/.venv313/bin/python -u trade_mixed_daily.py --daemon --mode hybrid --paper --top-k 2 --max-positions 2 --max-position-fraction 0.25 --max-hold-days 5 --llm-model gemini-3.1-flash-lite-preview --thinking-level=
+ExecStart=/bin/bash -lc 'cd /nvme0n1-disk/code/stock-prediction && source ~/.secretbashrc && source .venv313/bin/activate && export PYTHONPATH=/nvme0n1-disk/code/stock-prediction && export ALLOW_ALPACA_LIVE_TRADING=1 && exec python -u trade_daily_stock_prod.py --daemon --live --allocation-pct 12.5'
 Restart=on-failure
 RestartSec=60
-Environment=PYTHONPATH=/nvme0n1-disk/code/stock-prediction
+Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target

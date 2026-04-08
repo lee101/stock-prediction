@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import json
 import sys
 from importlib.util import module_from_spec, spec_from_file_location
@@ -8,6 +9,10 @@ from types import SimpleNamespace
 
 import pytest
 
+import src.runpod_remote_utils as remote_utils
+from src import runpod_client
+from src.daily_stock_defaults import DEFAULT_CHECKPOINT, DEFAULT_EXTRA_CHECKPOINTS, DEFAULT_SYMBOLS
+
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO / "scripts" / "runpod_daily_stock_planner.py"
@@ -15,8 +20,9 @@ SCRIPT_PATH = REPO / "scripts" / "runpod_daily_stock_planner.py"
 
 def _load_module():
     spec = spec_from_file_location("runpod_daily_stock_planner", SCRIPT_PATH)
+    assert spec is not None
     module = module_from_spec(spec)
-    assert spec is not None and spec.loader is not None
+    assert spec.loader is not None
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
@@ -25,7 +31,7 @@ def _load_module():
 def test_extract_json_and_remote_path_helpers(tmp_path) -> None:
     mod = _load_module()
 
-    payload = mod._extract_json("boot logs\n{\"plan\": {\"direction\": \"hold\"}}\n")
+    payload = mod._extract_json('boot logs\n{"plan": {"direction": "hold"}}\n')
     assert payload == {"plan": {"direction": "hold"}}
 
     in_repo = mod.REPO / "trade_daily_stock_prod.py"
@@ -36,6 +42,41 @@ def test_extract_json_and_remote_path_helpers(tmp_path) -> None:
     remote_external = mod._relative_remote_path(external, "/workspace/stock")
     assert remote_external.startswith("/workspace/stock/.external/checkpoint-")
     assert remote_external.endswith(".pt")
+
+
+def test_load_module_falls_back_when_runpod_client_lacks_resolve_gpu_preferences(monkeypatch) -> None:
+    monkeypatch.delattr(runpod_client, "resolve_gpu_preferences", raising=False)
+    monkeypatch.setattr(runpod_client, "parse_gpu_fallback_types", lambda value: ["l4"] if value else None)
+    monkeypatch.setattr(
+        runpod_client,
+        "build_gpu_fallback_types",
+        lambda primary, fallbacks=None: [primary, *(fallbacks or [])],
+    )
+
+    mod = _load_module()
+
+    assert mod.resolve_gpu_preferences("4090", "l4") == ("4090", "l4")
+
+
+def test_load_module_does_not_import_daily_stock_entrypoint(monkeypatch) -> None:
+    original_import = builtins.__import__
+
+    def _guarded_import(name, _globals=None, _locals=None, fromlist=(), level=0):
+        if name == "trade_daily_stock_prod":
+            raise AssertionError("planner should not import trade_daily_stock_prod for defaults")
+        return original_import(name, _globals, _locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _guarded_import)
+
+    mod = _load_module()
+
+    assert mod.DEFAULT_CHECKPOINT == DEFAULT_CHECKPOINT
+    assert mod.DEFAULT_SYMBOLS == DEFAULT_SYMBOLS
+
+
+def test_daily_stock_defaults_are_immutable_sequences() -> None:
+    assert isinstance(DEFAULT_SYMBOLS, tuple)
+    assert isinstance(DEFAULT_EXTRA_CHECKPOINTS, tuple)
 
 
 def test_relative_remote_path_disambiguates_external_paths_with_same_name(tmp_path) -> None:
@@ -93,7 +134,7 @@ def test_rsync_repo_wraps_subprocess_failures(monkeypatch) -> None:
         assert capture_output is True
         return SimpleNamespace(returncode=23, stdout="partial transfer", stderr="ssh: connection refused")
 
-    monkeypatch.setattr(mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(remote_utils.subprocess, "run", _fake_run)
 
     with pytest.raises(RuntimeError, match="Failed to rsync repository"):
         mod._rsync_repo(
@@ -122,16 +163,13 @@ def test_main_syncs_inputs_and_prints_remote_payload(monkeypatch, tmp_path, caps
             self.wait_poll_interval: int | None = None
             self.terminated: list[str] = []
 
-        def create_pod_with_fallback(self, config, gpu_preferences):
+        def create_ready_pod_with_fallback(self, config, gpu_preferences, *, timeout=0, poll_interval=0):
             self.created.append(config)
             self.requested_gpu_preferences = tuple(gpu_preferences)
-            return SimpleNamespace(id="pod-123")
-
-        def wait_for_pod(self, pod_id, timeout=0, poll_interval=0):
             self.wait_timeout = timeout
             self.wait_poll_interval = poll_interval
             return SimpleNamespace(
-                id=pod_id,
+                id="pod-123",
                 gpu_type="NVIDIA RTX 4090",
                 ssh_host="1.2.3.4",
                 ssh_port=22022,
@@ -158,7 +196,7 @@ def test_main_syncs_inputs_and_prints_remote_payload(monkeypatch, tmp_path, caps
         raise AssertionError(f"unexpected ssh command: {remote_cmd}")
 
     monkeypatch.setattr(mod, "RunPodClient", lambda: fake_client)
-    monkeypatch.setattr(mod, "build_gpu_fallback_types", lambda primary, fallbacks=None: [primary, *(fallbacks or [])])
+    monkeypatch.setattr(mod, "resolve_gpu_preferences", lambda primary, fallbacks=None: (primary,))
     monkeypatch.setattr(mod, "_rsync_repo", lambda **kwargs: rsync_repo_calls.append(kwargs))
     monkeypatch.setattr(mod, "_rsync_path", lambda **kwargs: rsync_path_calls.append(kwargs))
     monkeypatch.setattr(mod, "_ssh_run", _fake_ssh_run)
@@ -240,12 +278,9 @@ def test_main_terminates_pod_when_remote_output_is_invalid(monkeypatch, tmp_path
         def __init__(self) -> None:
             self.terminated: list[str] = []
 
-        def create_pod_with_fallback(self, config, gpu_preferences):
-            return SimpleNamespace(id="pod-123")
-
-        def wait_for_pod(self, pod_id, timeout=0, poll_interval=0):
+        def create_ready_pod_with_fallback(self, config, gpu_preferences, *, timeout=0, poll_interval=0):
             return SimpleNamespace(
-                id=pod_id,
+                id="pod-123",
                 gpu_type="NVIDIA RTX 4090",
                 ssh_host="1.2.3.4",
                 ssh_port=22022,
@@ -264,7 +299,7 @@ def test_main_terminates_pod_when_remote_output_is_invalid(monkeypatch, tmp_path
         raise AssertionError(f"unexpected ssh command: {remote_cmd}")
 
     monkeypatch.setattr(mod, "RunPodClient", lambda: fake_client)
-    monkeypatch.setattr(mod, "build_gpu_fallback_types", lambda primary, fallbacks=None: [primary, *(fallbacks or [])])
+    monkeypatch.setattr(mod, "resolve_gpu_preferences", lambda primary, fallbacks=None: (primary,))
     monkeypatch.setattr(mod, "_rsync_repo", lambda **kwargs: None)
     monkeypatch.setattr(mod, "_rsync_path", lambda **kwargs: None)
     monkeypatch.setattr(mod, "_ssh_run", _fake_ssh_run)
@@ -303,12 +338,9 @@ def test_main_reports_remote_bootstrap_failure_with_stage_context(monkeypatch, t
         def __init__(self) -> None:
             self.terminated: list[str] = []
 
-        def create_pod_with_fallback(self, config, gpu_preferences):
-            return SimpleNamespace(id="pod-123")
-
-        def wait_for_pod(self, pod_id, timeout=0, poll_interval=0):
+        def create_ready_pod_with_fallback(self, config, gpu_preferences, *, timeout=0, poll_interval=0):
             return SimpleNamespace(
-                id=pod_id,
+                id="pod-123",
                 gpu_type="NVIDIA RTX 4090",
                 ssh_host="1.2.3.4",
                 ssh_port=22022,
@@ -325,7 +357,7 @@ def test_main_reports_remote_bootstrap_failure_with_stage_context(monkeypatch, t
         raise AssertionError(f"unexpected ssh command: {remote_cmd}")
 
     monkeypatch.setattr(mod, "RunPodClient", lambda: fake_client)
-    monkeypatch.setattr(mod, "build_gpu_fallback_types", lambda primary, fallbacks=None: [primary, *(fallbacks or [])])
+    monkeypatch.setattr(mod, "resolve_gpu_preferences", lambda primary, fallbacks=None: (primary,))
     monkeypatch.setattr(mod, "_rsync_repo", lambda **kwargs: None)
     monkeypatch.setattr(mod, "_rsync_path", lambda **kwargs: None)
     monkeypatch.setattr(mod, "_ssh_run", _fake_ssh_run)
@@ -366,12 +398,9 @@ def test_main_reports_remote_planner_exit_with_stage_context(monkeypatch, tmp_pa
         def __init__(self) -> None:
             self.terminated: list[str] = []
 
-        def create_pod_with_fallback(self, config, gpu_preferences):
-            return SimpleNamespace(id="pod-123")
-
-        def wait_for_pod(self, pod_id, timeout=0, poll_interval=0):
+        def create_ready_pod_with_fallback(self, config, gpu_preferences, *, timeout=0, poll_interval=0):
             return SimpleNamespace(
-                id=pod_id,
+                id="pod-123",
                 gpu_type="NVIDIA RTX 4090",
                 ssh_host="1.2.3.4",
                 ssh_port=22022,
@@ -390,7 +419,7 @@ def test_main_reports_remote_planner_exit_with_stage_context(monkeypatch, tmp_pa
         raise AssertionError(f"unexpected ssh command: {remote_cmd}")
 
     monkeypatch.setattr(mod, "RunPodClient", lambda: fake_client)
-    monkeypatch.setattr(mod, "build_gpu_fallback_types", lambda primary, fallbacks=None: [primary, *(fallbacks or [])])
+    monkeypatch.setattr(mod, "resolve_gpu_preferences", lambda primary, fallbacks=None: (primary,))
     monkeypatch.setattr(mod, "_rsync_repo", lambda **kwargs: None)
     monkeypatch.setattr(mod, "_rsync_path", lambda **kwargs: None)
     monkeypatch.setattr(mod, "_ssh_run", _fake_ssh_run)
@@ -431,7 +460,7 @@ def test_main_dry_run_prints_resolved_plan_without_creating_pod(monkeypatch, tmp
         raise AssertionError("RunPodClient should not be created in --dry-run mode")
 
     monkeypatch.setattr(mod, "RunPodClient", _unexpected_runpod_client)
-    monkeypatch.setattr(mod, "build_gpu_fallback_types", lambda primary, fallbacks=None: [primary, *(fallbacks or [])])
+    monkeypatch.setattr(mod, "resolve_gpu_preferences", lambda primary, fallbacks=None: ("4090", "A40", "L4"))
     monkeypatch.setenv("ALPACA_API_KEY", "test-key")
 
     mod.main(
@@ -532,6 +561,43 @@ def test_main_dry_run_warns_when_alpaca_credentials_are_not_forwarded(monkeypatc
     assert any("Alpaca paper credentials are not being forwarded." in warning for warning in payload["warnings"])
 
 
+def test_main_dry_run_does_not_auto_forward_live_alpaca_credentials(monkeypatch, tmp_path, capsys) -> None:
+    mod = _load_module()
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_text("checkpoint", encoding="utf-8")
+
+    monkeypatch.setattr(mod, "RunPodClient", lambda: (_ for _ in ()).throw(AssertionError("should not create pod")))
+    monkeypatch.delenv("ALP_KEY_ID_PAPER", raising=False)
+    monkeypatch.delenv("ALP_SECRET_KEY_PAPER", raising=False)
+    monkeypatch.setenv("ALP_KEY_ID", "live-key")
+    monkeypatch.setenv("ALP_SECRET_KEY", "live-secret")
+
+    mod.main(
+        [
+            "--checkpoint",
+            str(checkpoint),
+            "--data-source",
+            "alpaca",
+            "--no-ensemble",
+            "--symbols",
+            "AAPL",
+            "--dry-run",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ready"] is True
+    assert payload["auto_forward_env"] == []
+    assert payload["forward_env_present"] == []
+    assert payload["forward_env_missing"] == []
+    warnings = "\n".join(payload["warnings"])
+    assert "Live Alpaca credentials detected but not auto-forwarded." in warnings
+    assert "ALP_KEY_ID=$ALP_KEY_ID" not in payload["planner_command_preview"]
+    assert "ALP_SECRET_KEY=$ALP_SECRET_KEY" not in payload["planner_command_preview"]
+    assert "live-key" not in payload["planner_command_preview"]
+    assert "live-secret" not in payload["planner_command_preview"]
+
+
 def test_main_dry_run_text_prints_human_summary_to_stderr(monkeypatch, tmp_path, capsys) -> None:
     mod = _load_module()
     checkpoint = tmp_path / "checkpoint.pt"
@@ -540,7 +606,7 @@ def test_main_dry_run_text_prints_human_summary_to_stderr(monkeypatch, tmp_path,
     data_dir.mkdir()
 
     monkeypatch.setattr(mod, "RunPodClient", lambda: (_ for _ in ()).throw(AssertionError("should not create pod")))
-    monkeypatch.setattr(mod, "build_gpu_fallback_types", lambda primary, fallbacks=None: [primary, *(fallbacks or [])])
+    monkeypatch.setattr(mod, "resolve_gpu_preferences", lambda primary, fallbacks=None: (primary,))
     monkeypatch.setenv("ALPACA_API_KEY", "test-key")
 
     mod.main(
@@ -676,7 +742,7 @@ def test_main_dry_run_supports_symbols_file(monkeypatch, tmp_path, capsys) -> No
     symbols_file.write_text("AAPL\nmsft\nAAPL\n# comment\n", encoding="utf-8")
 
     monkeypatch.setattr(mod, "RunPodClient", lambda: (_ for _ in ()).throw(AssertionError("should not create pod")))
-    monkeypatch.setattr(mod, "build_gpu_fallback_types", lambda primary, fallbacks=None: [primary, *(fallbacks or [])])
+    monkeypatch.setattr(mod, "resolve_gpu_preferences", lambda primary, fallbacks=None: (primary,))
 
     mod.main(
         [

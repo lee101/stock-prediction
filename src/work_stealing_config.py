@@ -3,14 +3,32 @@
 import os
 from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pytz
 
 # Crypto symbols (imported from fixtures for consistency)
 from src.fixtures import active_crypto_symbols
 
+
+def _load_new_york_timezone():
+    """Return a robust New York market-hours timezone across lean environments."""
+
+    try:
+        return ZoneInfo("America/New_York")
+    except ZoneInfoNotFoundError:
+        pass
+    for zone_name in ("America/New_York", "US/Eastern"):
+        try:
+            return pytz.timezone(zone_name)
+        except Exception:
+            continue
+    # Last-resort fallback keeps import-time configuration from crashing.
+    return pytz.UTC
+
+
 # Market hours timezone
-EST = pytz.timezone("US/Eastern")
+EST = _load_new_york_timezone()
 
 # Crypto out-of-hours settings
 CRYPTO_OUT_OF_HOURS_FORCE_IMMEDIATE_COUNT = int(

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import sys
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
-import sys
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -11,8 +11,9 @@ SCRIPT_PATH = REPO / "scripts" / "alpaca_deploy_preflight.py"
 
 def _load_module():
     spec = spec_from_file_location("alpaca_deploy_preflight", SCRIPT_PATH)
+    assert spec is not None
+    assert spec.loader is not None
     module = module_from_spec(spec)
-    assert spec is not None and spec.loader is not None
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
@@ -24,6 +25,15 @@ def test_extract_flag_csv_values_handles_split_and_equals_forms() -> None:
     inline = mod.extract_flag_csv_values("python bot.py --stock-symbols=DBX,TRIP,dbx", "--stock-symbols")
     assert split == ["AAPL", "MSFT"]
     assert inline == ["DBX", "TRIP"]
+
+
+def test_extract_flag_csv_values_handles_nargs_style_values() -> None:
+    mod = _load_module()
+    out = mod.extract_flag_csv_values(
+        "python bot.py --stock-symbols YELP NET dbx --live --interval 3600",
+        "--stock-symbols",
+    )
+    assert out == ["YELP", "NET", "DBX"]
 
 
 def test_parse_git_status_porcelain_extracts_dirty_paths_and_ahead_behind() -> None:
@@ -66,7 +76,6 @@ def test_build_service_report_marks_restart_reasons_and_apply_blockers(monkeypat
         watched_repo_files=("watched.py",),
         symbols_flag="--stock-symbols",
         ownership_service_name="owner",
-        peer_service_name="peer",
     )
     git_status = mod.GitStatusSummary(
         branch_line="main...origin/main [ahead 2, behind 4]",
@@ -101,7 +110,6 @@ def test_build_service_report_marks_restart_reasons_and_apply_blockers(monkeypat
         "get_service_owned_symbols",
         lambda service_name: {
             "owner": ["AAPL", "MSFT"],
-            "peer": ["GOOG", "TSLA"],
         }.get(service_name, []),
     )
 
@@ -110,17 +118,36 @@ def test_build_service_report_marks_restart_reasons_and_apply_blockers(monkeypat
     assert report.running is True
     assert report.runtime_symbols == ["AAPL", "MSFT", "GOOG"]
     assert report.configured_symbols == ["AAPL", "MSFT"]
-    assert report.overlap_with_peer == ["GOOG"]
+    assert report.runtime_symbols_outside_ownership == ["GOOG"]
+    assert report.configured_symbols_outside_ownership == []
     assert report.restart_reasons == [
         "watched_files_newer_than_process",
         "runtime_command_differs_from_config",
-        "runtime_symbol_overlap_with_peer_service",
+        "runtime_symbols_do_not_match_service_ownership",
     ]
     assert report.apply_blockers == [
         "dirty_repo_outside_watchlist:1",
         "branch_behind_origin:4",
     ]
     assert report.safe_to_apply is False
+
+
+def test_symbols_outside_ownership_filters_non_owned_symbols() -> None:
+    mod = _load_module()
+    out = mod.symbols_outside_ownership(["YELP", "NET", "DBX"], ["NET", "DBX"])
+    assert out == ["YELP"]
+
+
+def test_extract_systemd_execstart_parses_unit_text() -> None:
+    mod = _load_module()
+    text = "\n".join(
+        [
+            "[Service]",
+            "Environment=PYTHONUNBUFFERED=1",
+            "ExecStart=/bin/bash -lc 'echo hi'",
+        ]
+    )
+    assert mod._extract_systemd_execstart(text) == "/bin/bash -lc 'echo hi'"
 
 
 def test_daily_rl_trader_watchlist_includes_inference_loader_files() -> None:
@@ -132,5 +159,40 @@ def test_daily_rl_trader_watchlist_includes_inference_loader_files() -> None:
         "pufferlib_market/inference.py",
         "pufferlib_market/inference_daily.py",
         "pufferlib_market/checkpoint_loader.py",
+        "systemd/daily-rl-trader.service",
         "unified_orchestrator/service_config.json",
     )
+    assert spec.repo_config_path == REPO / "systemd" / "daily-rl-trader.service"
+
+
+def test_build_service_report_flags_installed_config_drift_from_repo(monkeypatch) -> None:
+    mod = _load_module()
+    spec = mod.ServiceSpec(
+        name="unit-test-svc",
+        manager="systemd",
+        actual_name="unit-test-svc.service",
+        config_path=Path("/etc/systemd/system/unit-test-svc.service"),
+        repo_config_path=REPO / "systemd" / "daily-rl-trader.service",
+    )
+    git_status = mod.GitStatusSummary(branch_line="main...origin/main", dirty_paths=[])
+
+    monkeypatch.setattr(mod, "get_systemd_pid", lambda _unit: None)
+    monkeypatch.setattr(mod, "read_systemd_execstart", lambda _unit: "python live.py --live")
+    monkeypatch.setattr(mod, "read_repo_configured_command", lambda _spec: "python live.py --paper")
+    monkeypatch.setattr(mod, "_read_runtime_cmd", lambda _pid: None)
+    monkeypatch.setattr(mod, "_read_process_start_utc", lambda _pid: None)
+    monkeypatch.setattr(mod, "files_newer_than_process", lambda _pid, _paths: [])
+
+    report = mod.build_service_report(spec, git_status)
+
+    assert report.repo_configured_cmd == "python live.py --paper"
+    assert report.restart_reasons == ["installed_config_differs_from_repo"]
+
+
+def test_llm_stock_trader_spec_exists_and_tracks_symbol_ownership() -> None:
+    mod = _load_module()
+    spec = mod.SPECS["llm-stock-trader"]
+
+    assert spec.manager == "supervisor"
+    assert spec.symbols_flag == "--stock-symbols"
+    assert spec.ownership_service_name == "llm-stock-trader"

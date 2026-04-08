@@ -11,6 +11,7 @@ Remote (RunPod H100):
 All flags:
     --local              Run on local GPU
     --gpu TYPE           RunPod GPU type (h100, 4090, a100, 5090)
+    --gpu-fallbacks CSV  Optional fallback GPU aliases/names, or 'none'
     --epochs N           Training epochs per experiment (default 15)
     --configs LIST       Comma-sep config names (default: top performers)
     --symbols LIST       Space-sep symbols (default: all with hourly data)
@@ -24,18 +25,39 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import os
 import shlex
-import subprocess
 import sys
 import time
 import traceback
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.runpod_remote_utils import (
+    render_subprocess_error as _render_subprocess_error,
+    run_checked_subprocess as _run_checked_local,
+    ssh_cmd as _ssh_cmd,
+    ssh_run as _ssh,
+)
+
 REPO = Path(__file__).resolve().parent.parent
+DEFAULT_REMOTE_WORKSPACE = "/workspace/sap"
 RUNPOD_SSH_READY_TIMEOUT_SECONDS = 600
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteSweepPlan:
+    gpu_preferences: tuple[str, ...]
+    config_names: tuple[str, ...]
+    symbol_source: str
+    symbols: tuple[str, ...]
+    remote_dir: str
+    wait_timeout_seconds: int
+    epochs: int
+    compile: bool
+    keep_pod: bool
+    remote_command_preview: str
 
 
 def get_all_symbols(min_rows: int = 2000) -> list[str]:
@@ -101,20 +123,118 @@ TOP_CONFIGS = [
 ]
 
 
+def _available_config_map() -> dict[str, dict]:
+    from .config import EXPERIMENTS
+
+    config_map = {str(config["name"]): config for config in TOP_CONFIGS}
+    config_map.update({str(config["name"]): config for config in EXPERIMENTS})
+    return config_map
+
+
+def _resolve_requested_configs(configs_arg: str | None) -> list[dict]:
+    config_map = _available_config_map()
+    if configs_arg is None:
+        return list(TOP_CONFIGS)
+
+    requested_names = [name.strip() for name in str(configs_arg).split(",") if name.strip()]
+    if not requested_names:
+        raise ValueError("--configs must include at least one config name")
+
+    missing = [name for name in requested_names if name not in config_map]
+    if missing:
+        available = ", ".join(sorted(config_map))
+        raise ValueError(
+            "Unknown --configs values: "
+            f"{', '.join(missing)}. Available configs: {available}"
+        )
+
+    return [config_map[name] for name in requested_names]
+
+
+def _build_remote_sweep_cmd(remote_dir: str, args) -> str:
+    quoted_remote_dir = shlex.quote(remote_dir)
+    cmd_parts = [
+        f"cd {quoted_remote_dir}",
+        "source /workspace/venv/bin/activate 2>/dev/null || true",
+        (
+            "PYTHONUNBUFFERED=1 python -m sharpnessadjustedproximalpolicy.run_scaled"
+            f" --local --epochs {shlex.quote(str(args.epochs))}"
+        ),
+    ]
+    if args.compile:
+        cmd_parts[-1] += " --compile"
+    if args.symbols:
+        cmd_parts[-1] += " --symbols " + " ".join(shlex.quote(symbol) for symbol in args.symbols)
+    if args.configs:
+        cmd_parts[-1] += f" --configs {shlex.quote(args.configs)}"
+    return " && ".join(cmd_parts)
+
+
+def _build_remote_install_cmd(remote_dir: str) -> str:
+    return f"cd {shlex.quote(remote_dir)} && pip install -e . 2>&1 | tail -3"
+
+
+def _build_remote_plan(args, *, resolve_gpu_preferences) -> RemoteSweepPlan:
+    configs = _resolve_requested_configs(args.configs)
+    symbols = tuple(args.symbols or ())
+    return RemoteSweepPlan(
+        gpu_preferences=resolve_gpu_preferences(args.gpu, getattr(args, "gpu_fallbacks", None)),
+        config_names=tuple(str(config["name"]) for config in configs),
+        symbol_source="cli" if symbols else "auto",
+        symbols=symbols,
+        remote_dir=DEFAULT_REMOTE_WORKSPACE,
+        wait_timeout_seconds=RUNPOD_SSH_READY_TIMEOUT_SECONDS,
+        epochs=int(args.epochs),
+        compile=bool(args.compile),
+        keep_pod=bool(args.keep_pod),
+        remote_command_preview=_build_remote_sweep_cmd(DEFAULT_REMOTE_WORKSPACE, args),
+    )
+
+
+def _remote_plan_payload(plan: RemoteSweepPlan) -> dict[str, object]:
+    return {
+        "status": "dry_run",
+        "mode": "runpod_remote",
+        "gpu_preferences": list(plan.gpu_preferences),
+        "config_names": list(plan.config_names),
+        "symbol_source": plan.symbol_source,
+        "symbols": list(plan.symbols),
+        "remote_dir": plan.remote_dir,
+        "wait_timeout_seconds": plan.wait_timeout_seconds,
+        "epochs": plan.epochs,
+        "compile": plan.compile,
+        "keep_pod": plan.keep_pod,
+        "remote_command_preview": plan.remote_command_preview,
+    }
+
+
+def _format_remote_plan_summary(plan: RemoteSweepPlan) -> str:
+    symbols = ", ".join(plan.symbols) if plan.symbols else "auto-detect eligible cached symbols on remote host"
+    configs = ", ".join(plan.config_names)
+    lines = [
+        "SAP RunPod Sweep Plan",
+        "Status: dry run",
+        f"GPU preferences: {', '.join(plan.gpu_preferences)}",
+        f"Configs: {configs}",
+        f"Symbols: {symbols}",
+        f"Compile: {'enabled' if plan.compile else 'disabled'}",
+        f"Pod cleanup: {'keep pod running' if plan.keep_pod else 'terminate pod after sweep'}",
+        f"Remote dir: {plan.remote_dir}",
+        f"Remote command: {plan.remote_command_preview}",
+        "Next step: rerun without --dry-run to provision the pod and execute the sweep.",
+    ]
+    return "\n".join(lines)
+
+
 def run_local(args):
     """Run sweep locally on this machine's GPU."""
     from binanceneural.config import DatasetConfig, TrainingConfig
     from binanceneural.data import BinanceHourlyDataModule
-    from .config import DEFAULT_TRAINING_OVERRIDES, EXPERIMENTS, SAPConfig
+    from .config import DEFAULT_TRAINING_OVERRIDES, SAPConfig
     from .trainer import SAPTrainer
 
     symbols = args.symbols or get_all_symbols(args.min_rows)
-    configs = TOP_CONFIGS
-    if args.configs:
-        names = set(args.configs.split(","))
-        all_exps = {e["name"]: e for e in TOP_CONFIGS}
-        all_exps.update({e["name"]: e for e in EXPERIMENTS})
-        configs = [all_exps[n] for n in names if n in all_exps]
+    configs = _resolve_requested_configs(args.configs)
 
     print(f"Symbols ({len(symbols)}): {', '.join(symbols)}", flush=True)
     print(f"Configs ({len(configs)}): {', '.join(c['name'] for c in configs)}", flush=True)
@@ -227,35 +347,76 @@ def run_local(args):
 
 def run_remote(args):
     """Provision RunPod GPU, sync code+data, run training remotely."""
-    from src.runpod_client import RunPodClient, PodConfig, build_gpu_fallback_types
+    from src.runpod_client import RunPodClient, PodConfig, resolve_gpu_preferences
 
-    gpu = args.gpu
-    gpu_chain = build_gpu_fallback_types(gpu)
-    print(f"Provisioning RunPod — preference chain: {gpu_chain}", flush=True)
+    plan = _build_remote_plan(
+        args,
+        resolve_gpu_preferences=resolve_gpu_preferences,
+    )
+    print(f"Provisioning RunPod — preference chain: {plan.gpu_preferences}", flush=True)
 
     client = RunPodClient()
     config = PodConfig(
         name=f"sap-sweep-{time.strftime('%m%d%H%M')}",
-        gpu_type=gpu_chain[0],
+        gpu_type=plan.gpu_preferences[0],
         gpu_count=1,
         image="runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04",
         volume_size=50,
     )
-    pod = client.create_pod_with_fallback(config, gpu_chain)
-    print(f"Pod {pod.id} created, waiting for SSH...", flush=True)
-    pod = client.wait_for_pod(pod.id, timeout=RUNPOD_SSH_READY_TIMEOUT_SECONDS)
+    print(f"Provisioning pod and waiting for SSH...", flush=True)
+    pod = client.create_ready_pod_with_fallback(
+        config,
+        plan.gpu_preferences,
+        timeout=plan.wait_timeout_seconds,
+    )
     host, port = pod.ssh_host, pod.ssh_port
     print(f"SSH ready: {host}:{port}", flush=True)
 
-    remote_dir = "/workspace/sap"
+    remote_dir = plan.remote_dir
+    stage_error: BaseException | None = None
     try:
-        _bootstrap_remote(host, port, remote_dir)
-        _run_remote_sweep(host, port, remote_dir, args)
-        _download_results(host, port, remote_dir)
+        try:
+            _bootstrap_remote(host, port, remote_dir)
+        except Exception as exc:
+            raise _render_remote_stage_error(
+                stage="bootstrap/install",
+                pod=pod,
+                remote_dir=remote_dir,
+                detail=str(exc),
+            ) from exc
+        try:
+            _run_remote_sweep(host, port, remote_dir, args)
+        except Exception as exc:
+            raise _render_remote_stage_error(
+                stage="remote sweep",
+                pod=pod,
+                remote_dir=remote_dir,
+                detail=str(exc),
+            ) from exc
+        try:
+            _download_results(host, port, remote_dir)
+        except Exception as exc:
+            raise _render_remote_stage_error(
+                stage="result download",
+                pod=pod,
+                remote_dir=remote_dir,
+                detail=str(exc),
+            ) from exc
+    except Exception as exc:
+        stage_error = exc
+        raise
     finally:
         if not args.keep_pod:
             print("Terminating pod...", flush=True)
-            client.terminate_pod(pod.id)
+            if stage_error is None:
+                client.terminate_pod(pod.id)
+            else:
+                try:
+                    client.terminate_pod(pod.id)
+                except Exception as cleanup_exc:
+                    stage_error.add_note(
+                        f"failed to terminate pod {pod.id} after remote failure: {cleanup_exc}"
+                    )
 
 
 def _bootstrap_remote(host: str, port: int, remote_dir: str):
@@ -313,36 +474,61 @@ def _bootstrap_remote(host: str, port: int, remote_dir: str):
     )
 
     print("Installing deps...", flush=True)
-    result = _ssh(host, port, f"cd {remote_dir} && pip install -e . 2>&1 | tail -3")
+    install_cmd = _build_remote_install_cmd(remote_dir)
+    result = _ssh(host, port, install_cmd)
     if result.returncode != 0:
-        raise _render_subprocess_error(
-            description="Remote dependency installation failed",
-            cmd=_ssh_cmd(host, port, f"cd {remote_dir} && pip install -e . 2>&1 | tail -3"),
+        raise _render_bootstrap_install_error(
+            host=host,
+            port=port,
+            remote_dir=remote_dir,
             result=result,
+            install_cmd=install_cmd,
         )
+
+
+def _render_bootstrap_install_error(
+    *,
+    host: str,
+    port: int,
+    remote_dir: str,
+    result,
+    install_cmd: str,
+) -> RuntimeError:
+    base_error = _render_subprocess_error(
+        description="Remote dependency installation failed",
+        cmd=_ssh_cmd(
+            ssh_host=host,
+            ssh_port=port,
+            remote_cmd=install_cmd,
+        ),
+        result=result,
+    )
+    return RuntimeError(
+        "\n".join(
+            [
+                "RunPod SAP remote bootstrap/install failed",
+                f"ssh_host: {host}",
+                f"ssh_port: {port}",
+                f"remote_dir: {remote_dir}",
+                str(base_error),
+            ]
+        )
+    )
 
 
 def _run_remote_sweep(host: str, port: int, remote_dir: str, args):
     """Execute sweep on remote pod."""
-    cmd_parts = [
-        f"cd {remote_dir}",
-        "source /workspace/venv/bin/activate 2>/dev/null || true",
-        f"PYTHONUNBUFFERED=1 python -m sharpnessadjustedproximalpolicy.run_scaled --local --epochs {args.epochs}",
-    ]
-    if args.compile:
-        cmd_parts[-1] += " --compile"
-    if args.symbols:
-        cmd_parts[-1] += f" --symbols {' '.join(args.symbols)}"
-    if args.configs:
-        cmd_parts[-1] += f" --configs {args.configs}"
-
-    cmd = " && ".join(cmd_parts)
+    cmd = _build_remote_sweep_cmd(remote_dir, args)
     print(f"Running: {cmd}", flush=True)
     result = _ssh(host, port, cmd)
     if result.returncode != 0:
         raise _render_subprocess_error(
             description="Remote training sweep failed",
-            cmd=_ssh_cmd(host, port, cmd),
+            cmd=_ssh_cmd(
+                ssh_host=host,
+                ssh_port=port,
+                remote_cmd=cmd,
+            ),
             result=result,
         )
 
@@ -350,75 +536,42 @@ def _run_remote_sweep(host: str, port: int, remote_dir: str, args):
 def _download_results(host: str, port: int, remote_dir: str):
     """Download results from remote pod."""
     print("Downloading results...", flush=True)
-    os.system(
-        f'rsync -az '
-        f'-e "ssh -o StrictHostKeyChecking=no -p {port}" '
-        f'root@{host}:{remote_dir}/sharpnessadjustedproximalpolicy/scaled_*.json '
-        f'root@{host}:{remote_dir}/sharpnessadjustedproximalpolicy/scaled_*.csv '
-        f'sharpnessadjustedproximalpolicy/ 2>/dev/null'
+    _run_checked_local(
+        [
+            "rsync",
+            "-az",
+            "-e",
+            f"ssh -o StrictHostKeyChecking=no -p {port}",
+            f"root@{host}:{remote_dir}/sharpnessadjustedproximalpolicy/scaled_*.json",
+            f"root@{host}:{remote_dir}/sharpnessadjustedproximalpolicy/scaled_*.csv",
+            "sharpnessadjustedproximalpolicy/",
+        ],
+        description="Failed to download remote result summaries",
     )
-    os.system(
-        f'rsync -az '
-        f'-e "ssh -o StrictHostKeyChecking=no -p {port}" '
-        f'root@{host}:{remote_dir}/sharpnessadjustedproximalpolicy/checkpoints/ '
-        f'sharpnessadjustedproximalpolicy/checkpoints/ 2>/dev/null'
+    _run_checked_local(
+        [
+            "rsync",
+            "-az",
+            "-e",
+            f"ssh -o StrictHostKeyChecking=no -p {port}",
+            f"root@{host}:{remote_dir}/sharpnessadjustedproximalpolicy/checkpoints/",
+            "sharpnessadjustedproximalpolicy/checkpoints/",
+        ],
+        description="Failed to download remote checkpoints",
     )
 
 
-def _ssh(host: str, port: int, cmd: str, check: bool = True):
-    return subprocess.run(
-        _ssh_cmd(host, port, cmd),
-        check=False,
-        text=True,
-        capture_output=True,
-    )
-
-
-def _ssh_cmd(host: str, port: int, cmd: str) -> list[str]:
-    return [
-        "ssh",
-        "-o",
-        "StrictHostKeyChecking=no",
-        "-o",
-        "BatchMode=yes",
-        "-p",
-        str(port),
-        f"root@{host}",
-        cmd,
-    ]
-
-
-def _run_checked_local(cmd: list[str], *, description: str) -> None:
-    result = subprocess.run(
-        cmd,
-        check=False,
-        text=True,
-        capture_output=True,
-    )
-    if result.returncode != 0:
-        raise _render_subprocess_error(description=description, cmd=cmd, result=result)
-
-
-def _render_subprocess_error(*, description: str, cmd: list[str], result) -> RuntimeError:
+def _render_remote_stage_error(*, stage: str, pod, remote_dir: str, detail: str) -> RuntimeError:
     message = [
-        f"{description} (exit {result.returncode})",
-        f"command: {shlex.join(cmd)}",
+        f"RunPod SAP remote {stage} failed",
+        f"pod_id: {pod.id}",
+        f"gpu_type: {pod.gpu_type}",
+        f"ssh_host: {pod.ssh_host}",
+        f"ssh_port: {pod.ssh_port}",
+        f"remote_dir: {remote_dir}",
+        detail,
     ]
-    stdout = _tail_excerpt(result.stdout)
-    stderr = _tail_excerpt(result.stderr)
-    if stdout:
-        message.append(f"stdout excerpt:\n{stdout}")
-    if stderr:
-        message.append(f"stderr excerpt:\n{stderr}")
     return RuntimeError("\n".join(message))
-
-
-def _tail_excerpt(text: str | None, *, limit: int = 400) -> str:
-    rendered = str(text or "").strip()
-    if len(rendered) <= limit:
-        return rendered
-    return rendered[-limit:]
-
 
 def _save_results(results: list[dict], json_path: Path, csv_path: Path):
     json_path.parent.mkdir(parents=True, exist_ok=True)
@@ -479,10 +632,16 @@ def _print_summary(results: list[dict]):
         print(f"\nSAM wins: {sam_wins}/{total} | Baseline wins: {baseline_wins}/{total} | Ties: {ties}/{total}", flush=True)
 
 
-def main():
-    parser = argparse.ArgumentParser()
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run local or RunPod-backed scaled SAP training sweeps.")
     parser.add_argument("--local", action="store_true")
     parser.add_argument("--gpu", type=str, default=None, help="RunPod GPU type")
+    parser.add_argument(
+        "--gpu-fallbacks",
+        type=str,
+        default=None,
+        help="Comma-separated fallback GPU aliases/names, or 'none' to disable fallbacks",
+    )
     parser.add_argument("--epochs", type=int, default=15)
     parser.add_argument("--configs", type=str, default=None)
     parser.add_argument("--symbols", nargs="+", default=None)
@@ -490,9 +649,40 @@ def main():
     parser.add_argument("--skip-cache-gen", action="store_true")
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--keep-pod", action="store_true")
-    args = parser.parse_args()
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the resolved remote RunPod execution plan and exit without provisioning a pod.",
+    )
+    parser.add_argument(
+        "--dry-run-text",
+        action="store_true",
+        help="When used with --dry-run, also print a human-readable summary to stderr.",
+    )
+    args = parser.parse_args(argv)
+    if args.dry_run and not args.gpu:
+        parser.error("--dry-run requires --gpu TYPE")
+    if args.dry_run_text and not args.dry_run:
+        parser.error("--dry-run-text requires --dry-run")
+    if args.gpu_fallbacks and not args.gpu:
+        parser.error("--gpu-fallbacks requires --gpu TYPE")
+    return args
 
+
+def main(argv: list[str] | None = None):
+    args = parse_args(argv)
     if args.gpu:
+        if args.dry_run:
+            from src.runpod_client import resolve_gpu_preferences
+
+            plan = _build_remote_plan(
+                args,
+                resolve_gpu_preferences=resolve_gpu_preferences,
+            )
+            print(json.dumps(_remote_plan_payload(plan), indent=2, sort_keys=True))
+            if args.dry_run_text:
+                print(_format_remote_plan_summary(plan), file=sys.stderr)
+            return
         run_remote(args)
     elif args.local:
         run_local(args)

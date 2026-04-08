@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -35,51 +36,88 @@ from RLgpt.config import (
     parse_horizon_list,
 )
 from src.runpod_client import (
+    DEFAULT_POD_READY_TIMEOUT_SECONDS,
     Pod,
     PodConfig,
     RunPodClient,
-    build_gpu_fallback_types,
-    parse_gpu_fallback_types,
+    resolve_gpu_preferences,
 )
+
+DEFAULT_REMOTE_REPO_ROOT = "/workspace/stock"
+DEFAULT_REMOTE_OUTPUT_SUBDIR = "experiments/RLgpt"
+DEFAULT_REMOTE_VENV = ".venv313"
+DEFAULT_REMOTE_LOG_DIR = "analysis/remote_logs"
 
 
 def build_training_command(config: TrainingConfig, *, remote_output_root: str) -> str:
+    def _shell_arg(value: object) -> str:
+        return shlex.quote(str(value))
+
     horizons = ",".join(str(value) for value in config.data.forecast_horizons)
     symbols = ",".join(config.data.symbols)
     parts = [
-        "python -m RLgpt.train",
-        f"--symbols {symbols}",
-        f"--data-root {config.data.data_root}",
-        f"--forecast-cache-root {config.data.forecast_cache_root}",
-        f"--forecast-horizons {horizons}",
-        f"--validation-days {config.data.validation_days}",
-        f"--epochs {config.epochs}",
-        f"--batch-size {config.batch_size}",
-        f"--learning-rate {config.learning_rate}",
-        f"--weight-decay {config.weight_decay}",
-        f"--hidden-dim {config.planner.hidden_dim}",
-        f"--depth {config.planner.depth}",
-        f"--heads {config.planner.heads}",
-        f"--dropout {config.planner.dropout}",
-        f"--shared-unit-budget {config.simulator.shared_unit_budget}",
-        f"--max-units-per-asset {config.simulator.max_units_per_asset}",
-        f"--initial-cash {config.simulator.initial_cash}",
-        f"--maker-fee-bps {config.simulator.maker_fee_bps}",
-        f"--slippage-bps {config.simulator.slippage_bps}",
-        f"--fill-buffer-bps {config.simulator.fill_buffer_bps}",
-        f"--fill-temperature-bps {config.simulator.fill_temperature_bps}",
-        f"--output-root {remote_output_root}",
-        f"--run-name {config.run_name}",
-        f"--seed {config.seed}",
-        f"--min-history-hours {config.data.min_history_hours}",
-        f"--sequence-length {config.data.sequence_length}",
-        f"--max-feature-lookback-hours {config.data.max_feature_lookback_hours}",
-        f"--min-bars-per-day {config.data.min_bars_per_day}",
+        "python",
+        "-m",
+        "RLgpt.train",
+        "--symbols",
+        _shell_arg(symbols),
+        "--data-root",
+        _shell_arg(config.data.data_root),
+        "--forecast-cache-root",
+        _shell_arg(config.data.forecast_cache_root),
+        "--forecast-horizons",
+        _shell_arg(horizons),
+        "--validation-days",
+        _shell_arg(config.data.validation_days),
+        "--epochs",
+        _shell_arg(config.epochs),
+        "--batch-size",
+        _shell_arg(config.batch_size),
+        "--learning-rate",
+        _shell_arg(config.learning_rate),
+        "--weight-decay",
+        _shell_arg(config.weight_decay),
+        "--hidden-dim",
+        _shell_arg(config.planner.hidden_dim),
+        "--depth",
+        _shell_arg(config.planner.depth),
+        "--heads",
+        _shell_arg(config.planner.heads),
+        "--dropout",
+        _shell_arg(config.planner.dropout),
+        "--shared-unit-budget",
+        _shell_arg(config.simulator.shared_unit_budget),
+        "--max-units-per-asset",
+        _shell_arg(config.simulator.max_units_per_asset),
+        "--initial-cash",
+        _shell_arg(config.simulator.initial_cash),
+        "--maker-fee-bps",
+        _shell_arg(config.simulator.maker_fee_bps),
+        "--slippage-bps",
+        _shell_arg(config.simulator.slippage_bps),
+        "--fill-buffer-bps",
+        _shell_arg(config.simulator.fill_buffer_bps),
+        "--fill-temperature-bps",
+        _shell_arg(config.simulator.fill_temperature_bps),
+        "--output-root",
+        _shell_arg(remote_output_root),
+        "--run-name",
+        _shell_arg(config.run_name),
+        "--seed",
+        _shell_arg(config.seed),
+        "--min-history-hours",
+        _shell_arg(config.data.min_history_hours),
+        "--sequence-length",
+        _shell_arg(config.data.sequence_length),
+        "--max-feature-lookback-hours",
+        _shell_arg(config.data.max_feature_lookback_hours),
+        "--min-bars-per-day",
+        _shell_arg(config.data.min_bars_per_day),
     ]
     if config.max_train_days is not None:
-        parts.append(f"--max-train-days {config.max_train_days}")
+        parts.extend(["--max-train-days", _shell_arg(config.max_train_days)])
     if config.max_val_days is not None:
-        parts.append(f"--max-val-days {config.max_val_days}")
+        parts.extend(["--max-val-days", _shell_arg(config.max_val_days)])
     if config.data.cache_only:
         parts.append("--cache-only")
     if config.simulator.carry_inventory:
@@ -100,24 +138,26 @@ def build_launch_manifest(
     gpu_preferences: tuple[str, ...] | None = None,
     pod: Pod | None = None,
 ) -> dict[str, Any]:
-    remote_output_root = f"{remote_repo_root}/experiments/RLgpt"
+    remote_output_root = f"{remote_repo_root}/{DEFAULT_REMOTE_OUTPUT_SUBDIR}"
     training_command = build_training_command(config, remote_output_root=remote_output_root)
+    quoted_remote_repo_root = shlex.quote(remote_repo_root)
+    quoted_run_name = shlex.quote(config.run_name)
     remote_setup = [
-        f"cd {remote_repo_root}",
+        f"cd {quoted_remote_repo_root}",
         "command -v uv >/dev/null 2>&1 || (curl -LsSf https://astral.sh/uv/install.sh | sh)",
         "export PATH=$HOME/.local/bin:$PATH",
-        "python -m venv .venv313",
-        "source .venv313/bin/activate",
+        f"python -m venv {DEFAULT_REMOTE_VENV}",
+        f"source {DEFAULT_REMOTE_VENV}/bin/activate",
         "uv pip install -e .",
-        f"export PYTHONPATH={remote_repo_root}:$PYTHONPATH",
-        "mkdir -p analysis/remote_logs",
+        f"export PYTHONPATH={quoted_remote_repo_root}:$PYTHONPATH",
+        f"mkdir -p {DEFAULT_REMOTE_LOG_DIR}",
     ]
     remote_launch = (
-        f"cd {remote_repo_root} && "
-        "source .venv313/bin/activate && "
-        f"export PYTHONPATH={remote_repo_root}:$PYTHONPATH && "
-        f"nohup {training_command} > analysis/remote_logs/{config.run_name}.log 2>&1 & "
-        f"echo $! > analysis/remote_logs/{config.run_name}.pid"
+        f"cd {quoted_remote_repo_root} && "
+        f"source {DEFAULT_REMOTE_VENV}/bin/activate && "
+        f"export PYTHONPATH={quoted_remote_repo_root}:$PYTHONPATH && "
+        f"nohup {training_command} > {DEFAULT_REMOTE_LOG_DIR}/{quoted_run_name}.log 2>&1 & "
+        f"echo $! > {DEFAULT_REMOTE_LOG_DIR}/{quoted_run_name}.pid"
     )
 
     manifest: dict[str, Any] = {
@@ -154,33 +194,6 @@ def build_launch_manifest(
         )
         manifest["ssh_command"] = f"ssh -o StrictHostKeyChecking=no -p {pod.ssh_port} root@{pod.ssh_host}"
     return manifest
-
-
-def create_pod_with_fallbacks(
-    *,
-    client: RunPodClient,
-    pod_name: str,
-    gpu_type: str,
-    gpu_fallbacks: str | None,
-    gpu_count: int,
-    volume_size: int,
-    container_disk: int,
-    wait_timeout: int,
-) -> tuple[Pod, str]:
-    gpu_candidates = build_gpu_fallback_types(
-        gpu_type,
-        parse_gpu_fallback_types(gpu_fallbacks),
-    )
-    pod_cfg = PodConfig(
-        name=pod_name,
-        gpu_type=gpu_candidates[0],
-        gpu_count=gpu_count,
-        volume_size=volume_size,
-        container_disk=container_disk,
-    )
-    pod = client.create_pod_with_fallback(pod_cfg, gpu_candidates)
-    pod = client.wait_for_pod(pod.id, timeout=wait_timeout)
-    return pod, pod.gpu_type
 
 
 DEFAULT_RUNPOD_EPOCHS = 12
@@ -223,6 +236,22 @@ def _format_launch_summary(
     return "\n".join(lines)
 
 
+def _cleanup_failed_pod_launch(
+    *,
+    client: RunPodClient,
+    pod: Pod,
+    manifest_path: Path,
+    exc: BaseException,
+) -> None:
+    try:
+        client.terminate_pod(pod.id)
+    except Exception as cleanup_exc:
+        exc.add_note(
+            "failed to terminate pod "
+            f"{pod.id} after local launch failure before writing {manifest_path}: {cleanup_exc}"
+        )
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Create or launch a RunPod RLgpt training run.")
     parser.add_argument("--symbols", required=True, help="Comma-separated symbols")
@@ -252,9 +281,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--fill-buffer-bps", type=float, default=DEFAULT_RLGPT_FILL_BUFFER_BPS)
     parser.add_argument("--fill-temperature-bps", type=float, default=DEFAULT_RLGPT_FILL_TEMPERATURE_BPS)
     parser.add_argument("--output-manifest", default="")
-    parser.add_argument("--remote-repo-root", default="/workspace/stock")
+    parser.add_argument("--remote-repo-root", default=DEFAULT_REMOTE_REPO_ROOT)
     parser.add_argument("--create-pod", action="store_true")
-    parser.add_argument("--wait-timeout", type=int, default=900)
+    parser.add_argument("--wait-timeout", type=int, default=DEFAULT_POD_READY_TIMEOUT_SECONDS)
     parser.add_argument("--cache-only", action="store_true")
     parser.add_argument("--carry-inventory", action="store_true")
     parser.add_argument("--max-train-days", type=int)
@@ -278,25 +307,23 @@ def main(argv: list[str] | None = None) -> None:
     repo_root = Path(__file__).resolve().parent.parent
     pod_name = f"rlgpt-{args.run_name}"
     pod = None
-    gpu_preferences = tuple(
-        build_gpu_fallback_types(
-            args.gpu_type,
-            parse_gpu_fallback_types(args.gpu_fallbacks),
-        )
-    )
+    client: RunPodClient | None = None
+    gpu_preferences = resolve_gpu_preferences(args.gpu_type, args.gpu_fallbacks)
     selected_gpu_type = gpu_preferences[0]
     if args.create_pod and not args.dry_run:
         client = RunPodClient()
-        pod, selected_gpu_type = create_pod_with_fallbacks(
-            client=client,
-            pod_name=pod_name,
-            gpu_type=args.gpu_type,
-            gpu_fallbacks=args.gpu_fallbacks,
-            gpu_count=args.gpu_count,
-            volume_size=args.volume_size,
-            container_disk=args.container_disk,
-            wait_timeout=args.wait_timeout,
+        pod = client.create_ready_pod_with_fallback(
+            PodConfig(
+                name=pod_name,
+                gpu_type=gpu_preferences[0],
+                gpu_count=args.gpu_count,
+                volume_size=args.volume_size,
+                container_disk=args.container_disk,
+            ),
+            gpu_preferences,
+            timeout=args.wait_timeout,
         )
+        selected_gpu_type = pod.gpu_type
 
     manifest = build_launch_manifest(
         config=config,
@@ -327,9 +354,26 @@ def main(argv: list[str] | None = None) -> None:
                 file=sys.stderr,
             )
         return
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
-    print(json.dumps({"manifest_path": str(manifest_path), "pod_id": manifest.get("pod", {}).get("id", "")}, indent=2))
+    manifest_written = False
+    try:
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+        manifest_written = True
+        print(
+            json.dumps(
+                {"manifest_path": str(manifest_path), "pod_id": manifest.get("pod", {}).get("id", "")},
+                indent=2,
+            )
+        )
+    except Exception as exc:
+        if pod is not None and client is not None and not manifest_written:
+            _cleanup_failed_pod_launch(
+                client=client,
+                pod=pod,
+                manifest_path=manifest_path,
+                exc=exc,
+            )
+        raise
 
 
 def _build_training_config(args: argparse.Namespace) -> TrainingConfig:

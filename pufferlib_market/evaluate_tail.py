@@ -6,10 +6,6 @@ Why this exists:
   compare "latest 30d" apples-to-apples.
 - Here we use the pure-python simulator in ``pufferlib_market.hourly_replay`` on
   a deterministic tail slice (e.g., last 720 hours = ~30 calendar days).
-
-Limitations:
-- Currently supports the legacy action space only: action_allocation_bins=1 and
-  action_level_bins=1 (actions: flat, long(sym), short(sym)).
 """
 
 from __future__ import annotations
@@ -36,10 +32,10 @@ from pufferlib_market.hourly_replay import MktdData, read_mktd, simulate_daily_p
 from pufferlib_market.metrics import annualize_total_return
 
 
-def _mask_all_shorts(logits: torch.Tensor, *, num_symbols: int) -> torch.Tensor:
-    # action layout: 0 flat, 1..S long, S+1..2S short
+def _mask_all_shorts(logits: torch.Tensor, *, num_symbols: int, per_symbol_actions: int = 1) -> torch.Tensor:
     masked = logits.clone()
-    masked[:, 1 + num_symbols :] = torch.finfo(masked.dtype).min
+    side_block = int(num_symbols) * max(1, int(per_symbol_actions))
+    masked[:, 1 + side_block :] = torch.finfo(masked.dtype).min
     return masked
 
 
@@ -47,6 +43,7 @@ def _mask_disallowed_shorts(
     logits: torch.Tensor,
     *,
     num_symbols: int,
+    per_symbol_actions: int,
     shortable_mask: torch.Tensor,
 ) -> torch.Tensor:
     if shortable_mask.numel() != num_symbols:
@@ -57,9 +54,12 @@ def _mask_disallowed_shorts(
         return logits
     masked = logits.clone()
     min_val = torch.finfo(masked.dtype).min
+    side_block = int(num_symbols) * max(1, int(per_symbol_actions))
     disallowed = (~shortable_mask).nonzero(as_tuple=False).view(-1).tolist()
     for sym_idx in disallowed:
-        masked[:, 1 + num_symbols + int(sym_idx)] = min_val
+        start = 1 + side_block + int(sym_idx) * max(1, int(per_symbol_actions))
+        end = start + max(1, int(per_symbol_actions))
+        masked[:, start:end] = min_val
     return masked
 
 
@@ -184,9 +184,52 @@ class LoadedPolicy:
     policy: nn.Module
     arch: str
     hidden_size: int
+    num_actions: int
+    per_symbol_actions: int
     action_allocation_bins: int
     action_level_bins: int
     action_max_offset_bps: float
+
+
+def _infer_action_grid(
+    *,
+    payload: object,
+    state_dict: dict[str, torch.Tensor],
+    num_symbols: int,
+) -> tuple[int, int, int, int, float]:
+    action_allocation_bins, action_level_bins, action_max_offset_bps = resolve_checkpoint_action_grid_config(
+        payload,
+        action_allocation_bins=1,
+        action_level_bins=1,
+        action_max_offset_bps=0.0,
+    )
+    per_symbol_actions = int(action_allocation_bins) * int(action_level_bins)
+    expected_actions = 1 + 2 * int(num_symbols) * int(per_symbol_actions)
+    num_actions = _infer_num_actions(state_dict, fallback=expected_actions)
+    if num_actions != expected_actions:
+        denom = 2 * int(num_symbols)
+        rem = int(num_actions) - 1
+        if rem <= 0 or denom <= 0 or rem % denom != 0:
+            raise ValueError(
+                f"Checkpoint num_actions={num_actions} incompatible with num_symbols={num_symbols} "
+                f"(cannot infer action grid)"
+            )
+        inferred_per_symbol = rem // denom
+        if inferred_per_symbol % int(action_level_bins) == 0:
+            action_allocation_bins = inferred_per_symbol // int(action_level_bins)
+        else:
+            action_level_bins = 1
+            action_allocation_bins = inferred_per_symbol
+        per_symbol_actions = inferred_per_symbol
+    if per_symbol_actions < 1:
+        raise ValueError("Invalid action grid (per_symbol_actions < 1)")
+    return (
+        int(num_actions),
+        int(per_symbol_actions),
+        int(action_allocation_bins),
+        int(action_level_bins),
+        float(action_max_offset_bps),
+    )
 
 
 def load_policy(
@@ -201,22 +244,17 @@ def load_policy(
     payload = load_checkpoint_payload(checkpoint_path, map_location=device)
     state_dict = extract_checkpoint_state_dict(payload)
 
-    action_allocation_bins, action_level_bins, action_max_offset_bps = resolve_checkpoint_action_grid_config(
-        payload,
-        action_allocation_bins=1,
-        action_level_bins=1,
-        action_max_offset_bps=0.0,
+    (
+        num_actions,
+        per_symbol_actions,
+        action_allocation_bins,
+        action_level_bins,
+        action_max_offset_bps,
+    ) = _infer_action_grid(
+        payload=payload,
+        state_dict=state_dict,
+        num_symbols=num_symbols,
     )
-    if action_allocation_bins != 1 or action_level_bins != 1:
-        raise ValueError(
-            "evaluate_tail only supports action_allocation_bins=1 and action_level_bins=1 "
-            f"(got alloc_bins={action_allocation_bins} level_bins={action_level_bins})"
-        )
-
-    fallback_actions = 1 + 2 * num_symbols
-    num_actions = _infer_num_actions(state_dict, fallback=fallback_actions)
-    if num_actions != fallback_actions:
-        raise ValueError(f"Checkpoint num_actions={num_actions} does not match expected={fallback_actions}")
 
     resolved = resolve_checkpoint_policy_details(
         payload if isinstance(payload, dict) and "model" in payload else {"model": state_dict},
@@ -254,6 +292,8 @@ def load_policy(
         policy=policy,
         arch=effective_arch,
         hidden_size=effective_hidden,
+        num_actions=int(num_actions),
+        per_symbol_actions=int(per_symbol_actions),
         action_allocation_bins=int(action_allocation_bins),
         action_level_bins=int(action_level_bins),
         action_max_offset_bps=float(action_max_offset_bps),
@@ -309,6 +349,7 @@ def main() -> None:
     policy = loaded.policy
     arch = loaded.arch
     hidden = loaded.hidden_size
+    per_symbol_actions = loaded.per_symbol_actions
 
     shortable_mask = _build_shortable_mask(tail.symbols, args.shortable_symbols)
     if shortable_mask is not None:
@@ -324,9 +365,14 @@ def main() -> None:
         with torch.no_grad():
             logits, _ = policy(obs_t)
         if args.disable_shorts:
-            logits = _mask_all_shorts(logits, num_symbols=num_symbols)
+            logits = _mask_all_shorts(logits, num_symbols=num_symbols, per_symbol_actions=per_symbol_actions)
         elif shortable_mask is not None:
-            logits = _mask_disallowed_shorts(logits, num_symbols=num_symbols, shortable_mask=shortable_mask)
+            logits = _mask_disallowed_shorts(
+                logits,
+                num_symbols=num_symbols,
+                per_symbol_actions=per_symbol_actions,
+                shortable_mask=shortable_mask,
+            )
         if args.deterministic:
             action_now = int(torch.argmax(logits, dim=-1).item())
         else:
@@ -349,6 +395,9 @@ def main() -> None:
         max_leverage=float(args.max_leverage),
         periods_per_year=float(args.periods_per_year),
         short_borrow_apr=float(args.short_borrow_apr),
+        action_allocation_bins=int(loaded.action_allocation_bins),
+        action_level_bins=int(loaded.action_level_bins),
+        action_max_offset_bps=float(loaded.action_max_offset_bps),
     )
     annualized_return = annualize_total_return(
         float(result.total_return),

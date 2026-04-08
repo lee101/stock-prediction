@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from pufferlib_market.evaluate_multiperiod import load_policy, make_policy_fn
+from pufferlib_market.evaluate_multiperiod import LoadedPolicy, load_policy, make_policy_fn
 from pufferlib_market.hourly_replay import (
     DailySimResult,
     HourlyMarket,
@@ -131,6 +131,24 @@ def summarize_candidate(candidate: CandidateReplay) -> dict[str, object]:
     }
 
 
+def _coerce_loaded_policy(value: object) -> LoadedPolicy:
+    if isinstance(value, LoadedPolicy):
+        return value
+    if isinstance(value, tuple) and len(value) == 3:
+        policy, metadata, num_actions = value
+        meta = metadata if isinstance(metadata, dict) else {}
+        return LoadedPolicy(
+            policy=policy,
+            arch=str(meta.get("arch", "unknown")),
+            hidden_size=int(meta.get("hidden_size", 0) or 0),
+            action_allocation_bins=int(meta.get("action_allocation_bins", 1) or 1),
+            action_level_bins=int(meta.get("action_level_bins", 1) or 1),
+            action_max_offset_bps=float(meta.get("action_max_offset_bps", 0.0) or 0.0),
+            num_actions=int(num_actions),
+        )
+    raise TypeError(f"Unsupported load_policy result: {type(value)!r}")
+
+
 def _fixed_action_policy(actions: np.ndarray):
     cursor = {"idx": 0}
 
@@ -163,21 +181,15 @@ def _evaluate_candidate(
     device: torch.device,
 ) -> CandidateReplay:
     data = read_mktd(daily_data_path)
-    expected_actions = 1 + 2 * int(data.num_symbols)
-    policy, _, num_actions = load_policy(
+    loaded = _coerce_loaded_policy(load_policy(
         checkpoint,
         data.num_symbols,
         arch="auto",
         hidden_size=None,
         device=device,
-    )
-    if int(num_actions) != int(expected_actions):
-        raise ValueError(
-            f"{name}: checkpoint num_actions={num_actions} is not supported by frozen-daily replay "
-            f"(expected legacy action space {expected_actions})."
-        )
+    ))
     policy_fn = make_policy_fn(
-        policy,
+        loaded.policy,
         num_symbols=int(data.num_symbols),
         deterministic=bool(deterministic),
         device=device,
@@ -191,6 +203,9 @@ def _evaluate_candidate(
         max_leverage=float(max_leverage),
         periods_per_year=float(daily_periods_per_year),
         short_borrow_apr=float(short_borrow_apr),
+        action_allocation_bins=int(loaded.action_allocation_bins),
+        action_level_bins=int(loaded.action_level_bins),
+        action_max_offset_bps=float(loaded.action_max_offset_bps),
     )
     hourly = replay_hourly_frozen_daily_actions(
         data=data,
@@ -203,6 +218,9 @@ def _evaluate_candidate(
         max_leverage=float(max_leverage),
         short_borrow_apr=float(short_borrow_apr),
         periods_per_year=float(hourly_periods_per_year),
+        action_allocation_bins=int(loaded.action_allocation_bins),
+        action_level_bins=int(loaded.action_level_bins),
+        action_max_offset_bps=float(loaded.action_max_offset_bps),
     )
     equity = pd.Series(hourly.equity_curve, index=market.index, name=name)
     daily_returns = daily_returns_from_equity(equity)

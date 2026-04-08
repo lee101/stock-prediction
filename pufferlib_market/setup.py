@@ -8,13 +8,13 @@ Usage:
 """
 
 import os
-import sys
 from pathlib import Path
 from setuptools import setup, Extension
 
 # Paths
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent
+LOCAL_TMPDIR = ROOT / ".tmp"
 _local_ocean_candidates = [
     REPO / "PufferLib" / "ocean",
     REPO / "PufferLib" / "pufferlib" / "ocean",
@@ -70,6 +70,12 @@ else:
         "Could not locate pufferlib/ocean/env_binding.h. "
         "Set PUFFERLIB_OCEAN_DIR or install pufferlib in an active/local venv."
     )
+
+# Keep compiler scratch files inside the repo. Some long pytest runs in this
+# environment lose /tmp assembler outputs mid-build, which breaks build_ext.
+LOCAL_TMPDIR.mkdir(parents=True, exist_ok=True)
+for env_name in ("TMPDIR", "TMP", "TEMP"):
+    os.environ.setdefault(env_name, str(LOCAL_TMPDIR))
 
 # Find numpy include
 import numpy as np

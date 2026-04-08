@@ -14,6 +14,7 @@ from src.runpod_client import (
     DEFAULT_POD_READY_TIMEOUT_SECONDS,
     GPU_ALIASES,
     HOURLY_RATES,
+    MAX_POD_READY_POLL_INTERVAL_SECONDS,
     TRAINING_DOCKER_IMAGE,
     TRAINING_GPU_TYPES,
     Pod,
@@ -21,6 +22,7 @@ from src.runpod_client import (
     RunPodClient,
     get_hourly_rate,
     get_supported_gpu_types,
+    resolve_gpu_preferences,
     resolve_gpu_type,
 )
 
@@ -61,6 +63,25 @@ def test_resolve_gpu_type_passthrough_unknown():
 def test_resolve_gpu_type_all_aliases():
     for alias, expected in TRAINING_GPU_TYPES.items():
         assert resolve_gpu_type(alias) == expected
+
+
+def test_resolve_gpu_preferences_uses_default_fallbacks():
+    gpu_preferences = resolve_gpu_preferences("4090")
+
+    assert gpu_preferences[0] == "NVIDIA GeForce RTX 4090"
+    assert "NVIDIA RTX PRO 4500 Ada Generation" in gpu_preferences
+
+
+def test_resolve_gpu_preferences_parses_cli_fallbacks():
+    assert resolve_gpu_preferences("4090", "6000-ada,l4") == (
+        "NVIDIA GeForce RTX 4090",
+        "NVIDIA RTX 6000 Ada Generation",
+        "NVIDIA L4",
+    )
+
+
+def test_resolve_gpu_preferences_allows_disabling_fallbacks():
+    assert resolve_gpu_preferences("4090", "none") == ("NVIDIA GeForce RTX 4090",)
 
 
 # ---------------------------------------------------------------------------
@@ -228,6 +249,117 @@ def test_create_pod_with_fallback_rejects_empty_preferences():
         )
 
 
+def test_create_ready_pod_with_fallback_waits_for_ready_pod():
+    client, _ = _make_client()
+    created_with: list[object] = []
+
+    def _fake_create_pod_with_fallback(config: PodConfig, gpu_preferences: tuple[str, ...]) -> Pod:
+        created_with.append((config, gpu_preferences))
+        return Pod(id="pod-ready", name=config.name, status="CREATED", gpu_type="L4")
+
+    def _fake_wait_for_pod(pod_id: str, *, timeout: int = 0, poll_interval: int = 0) -> Pod:
+        created_with.append((pod_id, timeout, poll_interval))
+        return Pod(id=pod_id, name="trainer", status="RUNNING", gpu_type="L4")
+
+    client.create_pod_with_fallback = _fake_create_pod_with_fallback  # type: ignore[method-assign]
+    client.wait_for_pod = _fake_wait_for_pod  # type: ignore[method-assign]
+
+    pod = client.create_ready_pod_with_fallback(
+        PodConfig(name="trainer", gpu_type="4090"),
+        ("4090", "L4"),
+        timeout=45,
+        poll_interval=3,
+    )
+
+    assert pod.id == "pod-ready"
+    create_call, wait_call = created_with
+    assert create_call[0].name == "trainer"
+    assert create_call[1] == ("4090", "L4")
+    assert wait_call == ("pod-ready", 45, 3)
+
+
+def test_create_ready_pod_with_fallback_terminates_pod_when_wait_fails():
+    client, _ = _make_client()
+    terminated: list[str] = []
+
+    def _fake_create_pod_with_fallback(config: PodConfig, gpu_preferences: tuple[str, ...]) -> Pod:
+        return Pod(id="pod-ready", name=config.name, status="CREATED", gpu_type="L4")
+
+    def _fake_wait_for_pod(pod_id: str, *, timeout: int = 0, poll_interval: int = 0) -> Pod:
+        raise TimeoutError("ssh never appeared")
+
+    def _fake_terminate_pod(pod_id: str) -> None:
+        terminated.append(pod_id)
+
+    client.create_pod_with_fallback = _fake_create_pod_with_fallback  # type: ignore[method-assign]
+    client.wait_for_pod = _fake_wait_for_pod  # type: ignore[method-assign]
+    client.terminate_pod = _fake_terminate_pod  # type: ignore[method-assign]
+
+    with pytest.raises(TimeoutError, match="ssh never appeared"):
+        client.create_ready_pod_with_fallback(
+            PodConfig(name="trainer", gpu_type="4090"),
+            ("4090", "L4"),
+            timeout=45,
+            poll_interval=3,
+        )
+
+    assert terminated == ["pod-ready"]
+
+
+def test_create_ready_pod_with_fallback_does_not_attempt_cleanup_when_create_fails():
+    client, _ = _make_client()
+    terminated: list[str] = []
+
+    def _fake_create_pod_with_fallback(config: PodConfig, gpu_preferences: tuple[str, ...]) -> Pod:
+        raise RuntimeError("provisioning failed")
+
+    def _fake_terminate_pod(pod_id: str) -> None:
+        terminated.append(pod_id)
+
+    client.create_pod_with_fallback = _fake_create_pod_with_fallback  # type: ignore[method-assign]
+    client.terminate_pod = _fake_terminate_pod  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="provisioning failed"):
+        client.create_ready_pod_with_fallback(
+            PodConfig(name="trainer", gpu_type="4090"),
+            ("4090", "L4"),
+        )
+
+    assert terminated == []
+
+
+def test_create_ready_pod_with_fallback_adds_note_when_cleanup_fails():
+    client, _ = _make_client()
+
+    def _fake_create_pod_with_fallback(config: PodConfig, gpu_preferences: tuple[str, ...]) -> Pod:
+        return Pod(id="pod-ready", name=config.name, status="CREATED", gpu_type="L4")
+
+    def _fake_wait_for_pod(pod_id: str, *, timeout: int = 0, poll_interval: int = 0) -> Pod:
+        raise TimeoutError("ssh never appeared")
+
+    def _fake_terminate_pod(pod_id: str) -> None:
+        raise RuntimeError("terminate failed")
+
+    client.create_pod_with_fallback = _fake_create_pod_with_fallback  # type: ignore[method-assign]
+    client.wait_for_pod = _fake_wait_for_pod  # type: ignore[method-assign]
+    client.terminate_pod = _fake_terminate_pod  # type: ignore[method-assign]
+
+    with pytest.raises(TimeoutError, match="ssh never appeared") as excinfo:
+        client.create_ready_pod_with_fallback(
+            PodConfig(name="trainer", gpu_type="4090"),
+            ("4090", "L4"),
+            timeout=45,
+            poll_interval=3,
+        )
+
+    assert excinfo.value.__notes__ is not None
+    assert any(
+        "failed to terminate pod pod-ready after readiness wait failed" in note
+        and "terminate failed" in note
+        for note in excinfo.value.__notes__
+    )
+
+
 # ---------------------------------------------------------------------------
 # get_pod
 # ---------------------------------------------------------------------------
@@ -241,6 +373,7 @@ def test_get_pod_parses_ssh_host_and_port():
             "memoryInGb": 80,
         }
     ]
+    client._gpu_display_name_cache["NVIDIA_A100_PCIE_80GB"] = "NVIDIA A100 80GB PCIe"
 
     resp = _json_response({
         "data": {
@@ -268,6 +401,32 @@ def test_get_pod_parses_ssh_host_and_port():
     assert pod.ssh_host == "1.2.3.4"
     assert pod.ssh_port == 10022
     assert pod.public_ip == "1.2.3.4"
+
+
+def test_get_pod_uses_cached_gpu_display_name_map():
+    client, mock_session = _make_client()
+    client._gpu_display_name_cache["NVIDIA_A100_PCIE_80GB"] = "NVIDIA A100 80GB PCIe"
+
+    resp = _json_response({
+        "data": {
+            "pod": {
+                "id": "pod-123",
+                "name": "my-pod",
+                "desiredStatus": "RUNNING",
+                "runtime": {
+                    "gpus": [{"id": "NVIDIA_A100_PCIE_80GB"}],
+                    "ports": [
+                        {"ip": "1.2.3.4", "isIpPublic": True, "privatePort": 22, "publicPort": 10022, "type": "tcp"},
+                    ],
+                },
+            }
+        }
+    })
+    mock_session.post.return_value = resp
+
+    pod = client.get_pod("pod-123")
+
+    assert pod.gpu_type == "NVIDIA A100 80GB PCIe"
 
 
 def test_get_pod_returns_terminated_on_http_error():
@@ -444,6 +603,114 @@ def test_wait_for_pod_returns_when_running():
     assert pod.id == "pod-fast"
     assert pod.ssh_host == "5.6.7.8"
     assert pod.ssh_port == 22222
+
+
+def test_wait_for_pod_logs_only_on_state_change():
+    client, mock_session = _make_client()
+
+    starting_resp = _json_response({
+        "data": {
+            "pod": {
+                "id": "pod-progress",
+                "name": "pod-progress",
+                "desiredStatus": "STARTING",
+                "runtime": None,
+            }
+        }
+    })
+    running_resp = _json_response({
+        "data": {
+            "pod": {
+                "id": "pod-progress",
+                "name": "pod-progress",
+                "desiredStatus": "RUNNING",
+                "runtime": {
+                    "gpus": [{"id": "GPU_ID"}],
+                    "ports": [
+                        {"ip": "5.6.7.8", "isIpPublic": True, "privatePort": 22, "publicPort": 22222, "type": "tcp"},
+                    ],
+                },
+            }
+        }
+    })
+    mock_session.post.side_effect = [starting_resp, starting_resp, running_resp]
+
+    with patch("src.runpod_client.time.sleep"), \
+         patch("src.runpod_client.time.monotonic", side_effect=[0, 0, 1, 2]), \
+         patch("builtins.print") as mock_print:
+        pod = client.wait_for_pod(
+            "pod-progress",
+            timeout=DEFAULT_POD_READY_TIMEOUT_SECONDS,
+            poll_interval=DEFAULT_POD_READY_POLL_INTERVAL_SECONDS,
+        )
+
+    assert pod.id == "pod-progress"
+    assert mock_print.call_count == 2
+    assert "status=STARTING" in mock_print.call_args_list[0].args[0]
+    assert "status=RUNNING" in mock_print.call_args_list[1].args[0]
+
+
+def test_wait_for_pod_backs_off_when_state_is_unchanged():
+    client, _ = _make_client()
+    client.get_pod = MagicMock(  # type: ignore[method-assign]
+        side_effect=[
+            Pod(id="pod-stuck", name="pod-stuck", status="STARTING"),
+            Pod(id="pod-stuck", name="pod-stuck", status="STARTING"),
+            Pod(id="pod-stuck", name="pod-stuck", status="STARTING"),
+        ]
+    )
+
+    with patch("src.runpod_client.time.sleep") as mock_sleep, patch(
+        "src.runpod_client.time.monotonic",
+        side_effect=[0, 0, 1, 2, 31, 31],
+    ):
+        with pytest.raises(TimeoutError, match="pod-stuck"):
+            client.wait_for_pod(
+                "pod-stuck",
+                timeout=30,
+                poll_interval=DEFAULT_POD_READY_POLL_INTERVAL_SECONDS,
+            )
+
+    assert [call.args[0] for call in mock_sleep.call_args_list] == [
+        DEFAULT_POD_READY_POLL_INTERVAL_SECONDS,
+        DEFAULT_POD_READY_POLL_INTERVAL_SECONDS * 2,
+        MAX_POD_READY_POLL_INTERVAL_SECONDS,
+    ]
+
+
+def test_wait_for_pod_resets_backoff_after_state_change():
+    client, _ = _make_client()
+    client.get_pod = MagicMock(  # type: ignore[method-assign]
+        side_effect=[
+            Pod(id="pod-progress", name="pod-progress", status="STARTING"),
+            Pod(id="pod-progress", name="pod-progress", status="STARTING"),
+            Pod(id="pod-progress", name="pod-progress", status="PROVISIONING"),
+            Pod(
+                id="pod-progress",
+                name="pod-progress",
+                status="RUNNING",
+                ssh_host="5.6.7.8",
+                ssh_port=22222,
+            ),
+        ]
+    )
+
+    with patch("src.runpod_client.time.sleep") as mock_sleep, patch(
+        "src.runpod_client.time.monotonic",
+        side_effect=[0, 0, 1, 2, 3],
+    ):
+        pod = client.wait_for_pod(
+            "pod-progress",
+            timeout=30,
+            poll_interval=DEFAULT_POD_READY_POLL_INTERVAL_SECONDS,
+        )
+
+    assert pod.status == "RUNNING"
+    assert [call.args[0] for call in mock_sleep.call_args_list] == [
+        DEFAULT_POD_READY_POLL_INTERVAL_SECONDS,
+        DEFAULT_POD_READY_POLL_INTERVAL_SECONDS * 2,
+        DEFAULT_POD_READY_POLL_INTERVAL_SECONDS,
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -699,6 +966,57 @@ def test_list_gpu_types_returns_empty_on_empty_response():
     assert gpus == []
 
 
+def test_list_gpu_types_normalizes_raw_gpu_records():
+    client, mock_session = _make_client()
+
+    resp = _json_response({
+        "data": {
+            "gpuTypes": [
+                {
+                    "id": 123,
+                    "displayName": "NVIDIA GeForce RTX 4090",
+                    "memoryInGb": "24",
+                    "lowestPrice": {
+                        "minimumBidPrice": "0.69",
+                        "unInterruptablePrice": "1.05",
+                    },
+                },
+                {
+                    "id": "",
+                    "displayName": "",
+                    "memoryInGb": "bad",
+                },
+                {
+                    "id": "NVIDIA_L4",
+                    "displayName": "NVIDIA L4",
+                    "memoryInGb": 24,
+                    "lowestPrice": "unexpected",
+                },
+            ]
+        }
+    })
+    mock_session.post.return_value = resp
+
+    gpus = client.list_gpu_types()
+
+    assert gpus == [
+        {
+            "id": "123",
+            "displayName": "NVIDIA GeForce RTX 4090",
+            "memoryInGb": 24,
+            "lowestPrice": {
+                "minimumBidPrice": 0.69,
+                "unInterruptablePrice": 1.05,
+            },
+        },
+        {
+            "id": "NVIDIA_L4",
+            "displayName": "NVIDIA L4",
+            "memoryInGb": 24,
+        },
+    ]
+
+
 def test_list_gpu_types_reuses_cached_response_for_same_pricing_mode():
     client, mock_session = _make_client()
 
@@ -715,6 +1033,43 @@ def test_list_gpu_types_reuses_cached_response_for_same_pricing_mode():
     second = client.list_gpu_types(include_pricing=False)
 
     assert first == second
+    assert mock_session.post.call_count == 1
+
+
+def test_list_gpu_types_returns_isolated_copies_from_cache():
+    client, mock_session = _make_client()
+
+    resp = _json_response({
+        "data": {
+            "gpuTypes": [
+                {
+                    "id": "NVIDIA_A100_PCIE_80GB",
+                    "displayName": "NVIDIA A100 80GB PCIe",
+                    "memoryInGb": 80,
+                    "lowestPrice": {"minimumBidPrice": 1.20, "unInterruptablePrice": 1.64},
+                }
+            ]
+        }
+    })
+    mock_session.post.return_value = resp
+
+    first = client.list_gpu_types()
+    first[0]["displayName"] = "mutated"
+    first[0]["lowestPrice"]["minimumBidPrice"] = 99.0
+
+    second = client.list_gpu_types()
+
+    assert second == [
+        {
+            "id": "NVIDIA_A100_PCIE_80GB",
+            "displayName": "NVIDIA A100 80GB PCIe",
+            "memoryInGb": 80,
+            "lowestPrice": {
+                "minimumBidPrice": 1.2,
+                "unInterruptablePrice": 1.64,
+            },
+        }
+    ]
     assert mock_session.post.call_count == 1
 
 
@@ -758,6 +1113,44 @@ def test_list_gpu_types_coalesces_concurrent_cache_miss():
     assert results[0] == results[1] == [
         {"id": "NVIDIA_A100_PCIE_80GB", "displayName": "NVIDIA A100 80GB PCIe", "memoryInGb": 80}
     ]
+
+
+def test_graphql_serializes_shared_session_access_across_threads():
+    client, mock_session = _make_client()
+
+    start = threading.Event()
+    state_lock = threading.Lock()
+    active_calls = 0
+    max_active_calls = 0
+
+    def _fake_post(*_args, **_kwargs):
+        nonlocal active_calls, max_active_calls
+        start.wait(timeout=1)
+        with state_lock:
+            active_calls += 1
+            max_active_calls = max(max_active_calls, active_calls)
+        time.sleep(0.05)
+        with state_lock:
+            active_calls -= 1
+        return _json_response({"data": {"gpuTypes": []}})
+
+    mock_session.post.side_effect = _fake_post
+
+    def _worker() -> None:
+        client._graphql("query { gpuTypes { id } }")
+
+    threads = [
+        threading.Thread(target=_worker),
+        threading.Thread(target=_worker),
+    ]
+    for thread in threads:
+        thread.start()
+    start.set()
+    for thread in threads:
+        thread.join()
+
+    assert mock_session.post.call_count == 2
+    assert max_active_calls == 1
 
 
 def test_create_pod_reuses_cached_gpu_listing_across_multiple_calls():

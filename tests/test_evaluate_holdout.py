@@ -22,6 +22,7 @@ def _fake_main_args(tmp_path: Path, **overrides) -> SimpleNamespace:
         "seed": 1337,
         "end_within_hours": None,
         "fee_rate": 0.001,
+        "slippage_bps": 0.0,
         "fill_buffer_bps": 5.0,
         "max_leverage": 1.0,
         "periods_per_year": 8760.0,
@@ -241,6 +242,7 @@ def test_main_supports_bare_state_dict_payload(tmp_path: Path, capsys: pytest.Ca
     assert out["action_max_offset_bps"] == pytest.approx(0.0)
     assert len(out["windows"]) == fake_args.n_windows
     assert simulate_mock.call_count == fake_args.n_windows
+    assert simulate_mock.call_args.kwargs["slippage_bps"] == pytest.approx(fake_args.slippage_bps)
 
 
 def test_main_ignores_invalid_checkpoint_action_grid_metadata(tmp_path: Path) -> None:

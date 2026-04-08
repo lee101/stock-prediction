@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from importlib import import_module
 from typing import Dict, Optional, Tuple
 
 from loguru import logger
-
-from src.binan import binance_wrapper
-from src.stock_utils import binance_remap_symbols
 
 
 @dataclass
@@ -28,6 +26,20 @@ class OrderSizingResult:
     notes: list[str] = field(default_factory=list)
 
 
+def _binance_wrapper():
+    from src.binan import binance_wrapper
+
+    return binance_wrapper
+
+
+def _binance_remap_symbols(symbol: str) -> str:
+    module = import_module("src.stock_utils")
+    remap = getattr(module, "binance_remap_symbols", None)
+    if callable(remap):
+        return str(remap(symbol))
+    return symbol
+
+
 def _coerce_float(value: object) -> float:
     try:
         numeric = float(value)
@@ -39,7 +51,7 @@ def _coerce_float(value: object) -> float:
 
 
 def resolve_binance_symbol(symbol: str) -> str:
-    return binance_remap_symbols(symbol.replace("/", ""))
+    return _binance_remap_symbols(symbol.replace("/", ""))
 
 
 def split_binance_symbol(symbol: str) -> Tuple[str, str]:
@@ -60,6 +72,7 @@ def quote_asset_for_symbol(symbol: str) -> str:
 
 def resolve_symbol_rules(symbol: str) -> SymbolRules:
     pair = resolve_binance_symbol(symbol)
+    binance_wrapper = _binance_wrapper()
     filters = binance_wrapper.get_symbol_filters(pair)
     rules = SymbolRules(min_notional=binance_wrapper.get_min_notional(pair))
 
@@ -115,6 +128,7 @@ def quantize_qty(quantity: float, *, step_size: Optional[float]) -> float:
 def get_free_balances(symbol: str) -> Tuple[float, float]:
     pair = resolve_binance_symbol(symbol)
     base, quote = split_binance_symbol(pair)
+    binance_wrapper = _binance_wrapper()
     balances = binance_wrapper.get_account_balances()
     base_entry = binance_wrapper.get_asset_balance(base, balances=balances) or {}
     quote_entry = binance_wrapper.get_asset_balance(quote, balances=balances) or {}
@@ -126,6 +140,7 @@ def get_free_balances(symbol: str) -> Tuple[float, float]:
 def get_total_balances(symbol: str) -> Tuple[float, float]:
     pair = resolve_binance_symbol(symbol)
     base, quote = split_binance_symbol(pair)
+    binance_wrapper = _binance_wrapper()
     balances = binance_wrapper.get_account_balances()
     base_entry = binance_wrapper.get_asset_balance(base, balances=balances) or {}
     quote_entry = binance_wrapper.get_asset_balance(quote, balances=balances) or {}

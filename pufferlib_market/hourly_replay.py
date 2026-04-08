@@ -176,6 +176,18 @@ class DailySimResult:
     stop_reason: str = ""
     evaluated_steps: int = 0
     equity_curve: np.ndarray | None = None
+    position_history: list[Position | None] | None = None
+
+
+def _clone_position(pos: Optional[Position]) -> Optional[Position]:
+    if pos is None:
+        return None
+    return Position(
+        sym=int(pos.sym),
+        is_short=bool(pos.is_short),
+        qty=float(pos.qty),
+        entry_price=float(pos.entry_price),
+    )
 
 
 def _is_tradable(data: MktdData, t: int, sym: int) -> bool:
@@ -633,6 +645,7 @@ def simulate_daily_policy(
 
     actions = np.zeros((max_steps,), dtype=np.int32)
     equity_history: list[float] = [float(initial_equity)]
+    position_history: list[Position | None] = []
     alloc_bins = max(1, int(action_allocation_bins))
     level_bins = max(1, int(action_level_bins))
     per_symbol_actions = alloc_bins * level_bins
@@ -822,6 +835,7 @@ def simulate_daily_policy(
         if dd > max_dd:
             max_dd = dd
         equity_history.append(float(equity_after))
+        position_history.append(_clone_position(pos))
 
         early_exit = None
         if enable_drawdown_profit_early_exit:
@@ -892,6 +906,7 @@ def simulate_daily_policy(
                 stop_reason=early_exit.reason if early_exit is not None else "",
                 evaluated_steps=int(step),
                 equity_curve=np.asarray(equity_history, dtype=np.float64),
+                position_history=position_history,
             )
 
 
@@ -1036,6 +1051,9 @@ def replay_hourly_frozen_daily_actions(
     short_borrow_apr: float = 0.0,
     initial_cash: float = INITIAL_CASH,
     initial_position: InitialPositionSpec | None = None,
+    action_allocation_bins: int = 1,
+    action_level_bins: int = 1,
+    action_max_offset_bps: float = 0.0,
 ) -> HourlyReplayResult:
     """Replay a daily action sequence on hourly prices.
 
@@ -1126,6 +1144,10 @@ def replay_hourly_frozen_daily_actions(
     winning_trades = 0
     num_orders = 0
     orders_by_day: dict[str, int] = {}
+    alloc_bins = max(1, int(action_allocation_bins))
+    level_bins = max(1, int(action_level_bins))
+    per_symbol_actions = alloc_bins * level_bins
+    side_block = S * per_symbol_actions
 
     equity_curve = np.zeros((len(market.index),), dtype=np.float64)
     peak_equity = float(init_state.initial_equity)
@@ -1154,7 +1176,7 @@ def replay_hourly_frozen_daily_actions(
         # Execute scheduled daily action at the trade hour for that calendar day.
         if ts in trade_ts_set and 0 <= day_idx < max_steps:
             action = int(actions[day_idx])
-            if action < 0 or action > 2 * S:
+            if action < 0 or action > 2 * side_block:
                 action = 0
 
             cur_sym = pos.sym if pos is not None else -1
@@ -1179,12 +1201,25 @@ def replay_hourly_frozen_daily_actions(
                     num_trades += 1
                     winning_trades += int(win)
                     pos = None
-            elif 1 <= action <= S:
-                target = action - 1
+            elif 1 <= action <= 2 * side_block:
+                action_idx = action - 1
+                is_short_target = action_idx >= side_block
+                if is_short_target:
+                    action_idx -= side_block
+                target = action_idx // per_symbol_actions
+                rem = action_idx % per_symbol_actions
+                alloc_idx = rem // level_bins
+                level_idx = rem % level_bins
+                target_alloc = _action_allocation_pct(alloc_idx=alloc_idx, alloc_bins=alloc_bins)
+                level_bps = _action_level_offset_bps(
+                    level_idx=level_idx,
+                    level_bins=level_bins,
+                    max_offset_bps=action_max_offset_bps,
+                )
                 target_day_tr = _is_tradable(data, day_idx, target)
                 target_hr_tr = _hour_tradable_at(target, hi=hi, day_idx=day_idx, ts=ts)
                 target_tradable = bool(target_day_tr and target_hr_tr)
-                if pos is not None and (not pos.is_short) and pos.sym == target:
+                if pos is not None and (pos.is_short == is_short_target) and pos.sym == target:
                     pass
                 else:
                     if not target_tradable:
@@ -1197,28 +1232,23 @@ def replay_hourly_frozen_daily_actions(
                             _count_order()
                             num_trades += 1
                             winning_trades += int(win)
-                        cash, pos = _open_long(cash, target, _hour_price(target), fee_rate, max_leverage)
-                        if pos is not None:
-                            _count_order()
-            else:
-                target = action - S - 1
-                target_day_tr = _is_tradable(data, day_idx, target)
-                target_hr_tr = _hour_tradable_at(target, hi=hi, day_idx=day_idx, ts=ts)
-                target_tradable = bool(target_day_tr and target_hr_tr)
-                if pos is not None and pos.is_short and pos.sym == target:
-                    pass
-                else:
-                    if not target_tradable:
-                        pass
-                    elif pos is not None and not cur_tradable:
-                        pass
-                    else:
-                        if pos is not None:
-                            cash, win = _close_position(cash, pos, _hour_price(pos.sym), fee_rate)
-                            _count_order()
-                            num_trades += 1
-                            winning_trades += int(win)
-                        cash, pos = _open_short(cash, target, _hour_price(target), fee_rate, max_leverage)
+                        hour_price = _hour_price(target)
+                        open_kwargs = dict(
+                            cash=cash,
+                            sym=target,
+                            close_price=hour_price,
+                            low_price=hour_price,
+                            high_price=hour_price,
+                            fee_rate=fee_rate,
+                            max_leverage=max_leverage,
+                            allocation_pct=target_alloc,
+                            level_offset_bps=level_bps,
+                            fill_buffer_bps=0.0,
+                        )
+                        if is_short_target:
+                            cash, pos = _open_short_limit(**open_kwargs)
+                        else:
+                            cash, pos = _open_long_limit(**open_kwargs)
                         if pos is not None:
                             _count_order()
 
@@ -1355,6 +1385,9 @@ def simulate_hourly_policy(
     short_borrow_apr: float = 0.0,
     initial_cash: float = INITIAL_CASH,
     initial_position: InitialPositionSpec | None = None,
+    action_allocation_bins: int = 1,
+    action_level_bins: int = 1,
+    action_max_offset_bps: float = 0.0,
 ) -> HourlyReplayResult:
     """Execute the policy at hourly frequency using daily features + hourly mark-to-market.
 
@@ -1443,6 +1476,10 @@ def simulate_hourly_policy(
     winning_trades = 0
     num_orders = 0
     orders_by_day: dict[str, int] = {}
+    alloc_bins = max(1, int(action_allocation_bins))
+    level_bins = max(1, int(action_level_bins))
+    per_symbol_actions = alloc_bins * level_bins
+    side_block = S * per_symbol_actions
 
     equity_curve = np.zeros((len(market.index),), dtype=np.float64)
     peak_equity = float(init_state.initial_equity)
@@ -1513,7 +1550,7 @@ def simulate_hourly_policy(
                 portfolio_scale=init_state.obs_scale,
             )
             action = int(policy_fn(obs))
-            if action < 0 or action > 2 * S:
+            if action < 0 or action > 2 * side_block:
                 action = 0
 
             cur_sym = pos.sym if pos is not None else -1
@@ -1529,12 +1566,25 @@ def simulate_hourly_policy(
                     winning_trades += int(win)
                     pos = None
                     hold_days = 0
-            elif 1 <= action <= S:
-                target = action - 1
+            elif 1 <= action <= 2 * side_block:
+                action_idx = action - 1
+                is_short_target = action_idx >= side_block
+                if is_short_target:
+                    action_idx -= side_block
+                target = action_idx // per_symbol_actions
+                rem = action_idx % per_symbol_actions
+                alloc_idx = rem // level_bins
+                level_idx = rem % level_bins
+                target_alloc = _action_allocation_pct(alloc_idx=alloc_idx, alloc_bins=alloc_bins)
+                level_bps = _action_level_offset_bps(
+                    level_idx=level_idx,
+                    level_bins=level_bins,
+                    max_offset_bps=action_max_offset_bps,
+                )
                 target_day_tr = _is_tradable(data, day_idx, target)
                 target_hr_tr = _hour_tradable(target)
                 target_tradable = bool(target_day_tr and target_hr_tr)
-                if pos is not None and (not pos.is_short) and pos.sym == target:
+                if pos is not None and (pos.is_short == is_short_target) and pos.sym == target:
                     pass
                 else:
                     if not target_tradable:
@@ -1547,29 +1597,23 @@ def simulate_hourly_policy(
                             _count_order(ts)
                             num_trades += 1
                             winning_trades += int(win)
-                        cash, pos = _open_long(cash, target, _hour_price(target), fee_rate, max_leverage)
-                        if pos is not None:
-                            _count_order(ts)
-                            hold_days = 0
-            else:
-                target = action - S - 1
-                target_day_tr = _is_tradable(data, day_idx, target)
-                target_hr_tr = _hour_tradable(target)
-                target_tradable = bool(target_day_tr and target_hr_tr)
-                if pos is not None and pos.is_short and pos.sym == target:
-                    pass
-                else:
-                    if not target_tradable:
-                        pass
-                    elif pos is not None and not cur_tradable:
-                        pass
-                    else:
-                        if pos is not None:
-                            cash, win = _close_position(cash, pos, _hour_price(pos.sym), fee_rate)
-                            _count_order(ts)
-                            num_trades += 1
-                            winning_trades += int(win)
-                        cash, pos = _open_short(cash, target, _hour_price(target), fee_rate, max_leverage)
+                        hour_price = _hour_price(target)
+                        open_kwargs = dict(
+                            cash=cash,
+                            sym=target,
+                            close_price=hour_price,
+                            low_price=hour_price,
+                            high_price=hour_price,
+                            fee_rate=fee_rate,
+                            max_leverage=max_leverage,
+                            allocation_pct=target_alloc,
+                            level_offset_bps=level_bps,
+                            fill_buffer_bps=0.0,
+                        )
+                        if is_short_target:
+                            cash, pos = _open_short_limit(**open_kwargs)
+                        else:
+                            cash, pos = _open_long_limit(**open_kwargs)
                         if pos is not None:
                             _count_order(ts)
                             hold_days = 0

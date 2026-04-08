@@ -36,6 +36,14 @@ def _allocate_or_skip(factory, *args, **kwargs):
         raise
 
 
+def _compute_or_skip(factory):
+    try:
+        return factory()
+    except Exception as exc:
+        _skip_for_cuda_resource_pressure(exc)
+        raise
+
+
 def _to_device_or_skip(tensor: torch.Tensor, device: torch.device) -> torch.Tensor:
     try:
         return tensor.to(device)
@@ -47,22 +55,43 @@ def _to_device_or_skip(tensor: torch.Tensor, device: torch.device) -> torch.Tens
 def _make_market_data(steps=100, seed=42, device="cpu"):
     torch.manual_seed(seed)
     close_start = 100.0
-    returns = _allocate_or_skip(torch.randn, steps, device=device) * 0.01
-    closes = close_start * torch.cumprod(1 + returns, dim=0)
-    highs = closes * (1 + _allocate_or_skip(torch.rand, steps, device=device) * 0.02)
-    lows = closes * (1 - _allocate_or_skip(torch.rand, steps, device=device) * 0.02)
-    opens = closes * (1 + (_allocate_or_skip(torch.rand, steps, device=device) - 0.5) * 0.01)
+    returns = _compute_or_skip(lambda: _allocate_or_skip(torch.randn, steps, device=device) * 0.01)
+    closes = _compute_or_skip(lambda: close_start * torch.cumprod(1 + returns, dim=0))
+    highs = _compute_or_skip(
+        lambda: closes * (1 + _allocate_or_skip(torch.rand, steps, device=device) * 0.02)
+    )
+    lows = _compute_or_skip(
+        lambda: closes * (1 - _allocate_or_skip(torch.rand, steps, device=device) * 0.02)
+    )
+    opens = _compute_or_skip(
+        lambda: closes * (1 + (_allocate_or_skip(torch.rand, steps, device=device) - 0.5) * 0.01)
+    )
     return highs, lows, closes, opens
 
 
 def _make_actions(closes, device=None):
     device = closes.device if device is None else device
     steps = closes.shape[-1]
-    buy_prices = closes * (1 - 0.005 * _allocate_or_skip(torch.rand, steps, device=device))
-    sell_prices = closes * (1 + 0.005 * _allocate_or_skip(torch.rand, steps, device=device))
-    buy_amounts = _allocate_or_skip(torch.rand, steps, device=device) * 0.5
-    sell_amounts = _allocate_or_skip(torch.rand, steps, device=device) * 0.5
+    buy_prices = _compute_or_skip(
+        lambda: closes * (1 - 0.005 * _allocate_or_skip(torch.rand, steps, device=device))
+    )
+    sell_prices = _compute_or_skip(
+        lambda: closes * (1 + 0.005 * _allocate_or_skip(torch.rand, steps, device=device))
+    )
+    buy_amounts = _compute_or_skip(lambda: _allocate_or_skip(torch.rand, steps, device=device) * 0.5)
+    sell_amounts = _compute_or_skip(lambda: _allocate_or_skip(torch.rand, steps, device=device) * 0.5)
     return buy_prices, sell_prices, buy_amounts, sell_amounts
+
+
+def test_make_market_data_skips_when_post_allocation_math_hits_cuda_oom(monkeypatch):
+    class _DeferredCudaOOM:
+        def __mul__(self, _other):
+            raise RuntimeError("CUDA error: out of memory")
+
+    monkeypatch.setattr(sys.modules[__name__], "_allocate_or_skip", lambda *args, **kwargs: _DeferredCudaOOM())
+
+    with pytest.raises(pytest.skip.Exception, match="shared-GPU resource pressure"):
+        _make_market_data(steps=4, device=torch.device("cuda"))
 
 
 class TestGpuSimulateVsReference:
