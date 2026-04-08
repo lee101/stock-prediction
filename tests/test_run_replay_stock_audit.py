@@ -93,6 +93,12 @@ def test_latest_alias_paths_use_stable_names() -> None:
     }
 
 
+def test_run_manifest_path_uses_run_json_suffix() -> None:
+    assert audit_mod._run_manifest_path(Path("artifacts/replay_audit/nvda_window.json")) == Path(
+        "artifacts/replay_audit/nvda_window.run.json"
+    )
+
+
 def test_main_dry_run_prints_resolved_payload(capsys) -> None:
     audit_mod.main(
         [
@@ -113,6 +119,7 @@ def test_main_dry_run_prints_resolved_payload(capsys) -> None:
         "trace": "artifacts/custom/latest.trace.json",
         "visualization": "artifacts/custom/latest.html",
     }
+    assert payload["run_manifest_path"] == "artifacts/custom/nvda_window.run.json"
     assert "--output" in payload["replay_args"]
     assert "artifacts/custom/nvda_window.json" in payload["replay_args"]
     assert "--visualize-html" in payload["replay_args"]
@@ -218,6 +225,17 @@ def test_main_updates_latest_aliases_after_success(tmp_path: Path, monkeypatch) 
     assert manifest["latest_visualization_path"] == str(report_path.parent / "latest.html")
     assert manifest["latest_trace_json_path"] == str(report_path.parent / "latest.trace.json")
 
+    run_manifest = json.loads((report_path.parent / "nvda_window.run.json").read_text(encoding="utf-8"))
+    assert run_manifest["status"] == "success"
+    assert run_manifest["report_path"] == str(report_path)
+    assert run_manifest["run_manifest_path"] == str(report_path.parent / "nvda_window.run.json")
+    assert run_manifest["latest_alias_results"] == {
+        "manifest": str(report_path.parent / "latest_manifest.json"),
+        "report": str(report_path.parent / "latest.json"),
+        "trace": str(report_path.parent / "latest.trace.json"),
+        "visualization": str(report_path.parent / "latest.html"),
+    }
+
 
 def test_main_clears_stale_latest_visualization_aliases_when_not_generated(
     tmp_path: Path,
@@ -296,6 +314,10 @@ def test_main_does_not_fail_when_latest_alias_update_breaks(
     assert "disk full" in stderr
     assert report_path.exists()
 
+    run_manifest = json.loads((report_path.parent / "nvda_window.run.json").read_text(encoding="utf-8"))
+    assert run_manifest["status"] == "success"
+    assert run_manifest["latest_alias_results"] is None
+
 
 def test_main_rejects_unexpected_visualization_source_path(
     tmp_path: Path,
@@ -339,3 +361,36 @@ def test_main_rejects_unexpected_visualization_source_path(
     assert "failed to update latest replay aliases" in stderr
     assert "unexpected visualization path" in stderr
     assert not (output_dir / "latest.html").exists()
+
+
+def test_main_writes_failure_run_manifest_and_reraises(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    output_dir = tmp_path / "replay_audit"
+    report_path = output_dir / "nvda_window.json"
+
+    def _fake_main(argv: list[str]) -> None:
+        del argv
+        raise RuntimeError("sim backend exploded")
+
+    monkeypatch.setattr(audit_mod.replay_mod, "main", _fake_main)
+
+    with pytest.raises(RuntimeError, match="sim backend exploded"):
+        audit_mod.main(
+            [
+                "--output-dir",
+                str(output_dir),
+                "--name",
+                "nvda_window",
+            ]
+        )
+
+    stderr = capsys.readouterr().err
+    assert "Replay stock audit failed. See run manifest:" in stderr
+    run_manifest = json.loads((output_dir / "nvda_window.run.json").read_text(encoding="utf-8"))
+    assert run_manifest["status"] == "failure"
+    assert run_manifest["report_path"] == str(report_path)
+    assert run_manifest["error_type"] == "RuntimeError"
+    assert run_manifest["error"] == "sim backend exploded"
