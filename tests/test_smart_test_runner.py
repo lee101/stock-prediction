@@ -47,6 +47,28 @@ def test_run_tests_uses_current_interpreter(monkeypatch) -> None:
     assert ok is True
     assert captured["cmd"][0] == sys.executable
     assert captured["cmd"][1:3] == ["-m", "pytest"]
+    assert captured["cmd"][3] == "--basetemp"
+    assert "smart-test-runner/priority-" in captured["cmd"][4]
+
+
+def test_run_tests_cleans_up_nested_basetemp(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(runner_impl, "_NESTED_PYTEST_BASETEMP_ROOT", tmp_path / "smart-test-runner")
+
+    def _fake_run(cmd, *args, **kwargs):
+        captured["cmd"] = cmd
+        basetemp = Path(cmd[4])
+        basetemp.mkdir(parents=True, exist_ok=True)
+        (basetemp / "sentinel.txt").write_text("ok", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(runner_impl.subprocess, "run", _fake_run)
+
+    ok = runner.run_tests(["tests/test_smart_test_runner.py"], "priority", verbose=False, dry_run=False)
+
+    assert ok is True
+    basetemp = Path(captured["cmd"][4])
+    assert not basetemp.exists()
 
 
 def test_scripts_entrypoint_delegates_to_shared_implementation(monkeypatch) -> None:
