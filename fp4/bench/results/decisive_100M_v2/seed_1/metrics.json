@@ -1,0 +1,19 @@
+{
+  "final_sortino": -0.7832956910133362,
+  "final_p10": -9.379753112792969,
+  "mean_return": -3.8962032794952393,
+  "n_episodes": 23869,
+  "steps_per_sec": 147912.90416829468,
+  "wall_sec": 67.5684116689954,
+  "gpu_peak_mb": 1573.30908203125,
+  "device": "cuda",
+  "cuda_graph_used": true,
+  "full_graph_used": true,
+  "env_backend": "gpu_trading_env_multi",
+  "n_iters": 610,
+  "total_steps": 9994240,
+  "last_loss": -1.1629654169082642,
+  "last_entropy": 24.981386184692383,
+  "last_leverage_cap": 1.0,
+  "n_done_last_iter": 16.0
+}
