@@ -82,8 +82,9 @@ def _try_load() -> Optional[object]:
         os.environ.setdefault("TORCH_CUDA_ARCH_LIST", f"{cap[0]}.{cap[1]}+PTX")
         # /tmp may be sandboxed (compiler-spawned subprocess temp files vanish
         # before the assembler reads them). Force compiler temp files onto a
-        # writable on-disk location under the kernel build dir.
-        alt_tmp = str((_KERNEL_DIR / ".." / ".." / "build_tmp").resolve())
+        # writable on-disk location under the repo-local tmp/ directory.
+        from fp4.paths import ensure_tmp
+        alt_tmp = str(ensure_tmp() / "cuda_build")
         os.makedirs(alt_tmp, exist_ok=True)
         os.environ["TMPDIR"] = alt_tmp
         _ext = load(

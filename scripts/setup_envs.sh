@@ -28,11 +28,14 @@ for cand in /usr/local/cuda /usr/local/cuda-13 /usr/local/cuda-12.9 /usr/local/c
         break
     fi
 done
-BUILD_TMP="$REPO_ROOT/fp4/build_tmp"
+BUILD_TMP="$REPO_ROOT/tmp/cuda_build"
 mkdir -p "$BUILD_TMP"
 export TMPDIR="$BUILD_TMP"
-export TRITON_CACHE_DIR="$REPO_ROOT/.triton_cache"
+export TRITON_CACHE_DIR="$REPO_ROOT/tmp/triton_cache"
 mkdir -p "$TRITON_CACHE_DIR"
+
+# Optional: prune stale bench result JSONs older than 30 days
+# find "$REPO_ROOT/fp4/bench/results" -name '*.json' -mtime +30 -delete
 
 echo "[setup_envs] installing fp4 (editable)"
 uv pip install -e fp4/ >/dev/null

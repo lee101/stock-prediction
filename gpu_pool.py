@@ -9,7 +9,7 @@ Usage
 -----
 # 1) Generate a queue of jobs and launch workers:
 python -m pufferlib_market.gpu_pool run \\
-    --queue /tmp/pool_queue.jsonl \\
+    --queue tmp/pool_queue.jsonl \\
     --train-data pufferlib_market/data/stocks12_daily_train.bin \\
     --val-data   pufferlib_market/data/stocks12_daily_val.bin \\
     --leaderboard sweepresults/pool_leaderboard.csv \\
@@ -20,11 +20,11 @@ python -m pufferlib_market.gpu_pool run \\
 
 # 2) Add more jobs to a running pool:
 python -m pufferlib_market.gpu_pool add \\
-    --queue /tmp/pool_queue.jsonl \\
+    --queue tmp/pool_queue.jsonl \\
     --preset stocks12_tp05_family
 
 # 3) Show queue status:
-python -m pufferlib_market.gpu_pool status --queue /tmp/pool_queue.jsonl
+python -m pufferlib_market.gpu_pool status --queue tmp/pool_queue.jsonl
 """
 
 from __future__ import annotations

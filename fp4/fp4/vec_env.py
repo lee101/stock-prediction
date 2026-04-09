@@ -20,9 +20,16 @@ No Python int/float syncs in the hot loop.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 import torch
+
+
+def _local_tmp() -> Path:
+    """Return repo-local tmp/ dir (created on first call)."""
+    from fp4.paths import ensure_tmp
+    return ensure_tmp()
 
 
 def _try_import_market_sim_py():
@@ -166,7 +173,7 @@ class _MarketSimPyWrapper:
         dev_short = "cuda" if dev_str.startswith("cuda") else "cpu"
         self._env = msp.MarketEnvironment(
             data_dir=data_dir or _default_data_dir(),
-            log_dir=log_dir or "/tmp/fp4_marketsim_logs",
+            log_dir=log_dir or str(_local_tmp() / "fp4_marketsim_logs"),
             device=dev_short,
             action_mode=action_mode,
             **kwargs,
