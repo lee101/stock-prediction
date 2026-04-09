@@ -1,0 +1,12 @@
+# 100d unseen-data eval — `best.pt`
+
+- **status**: FAIL  (-2.00%/month vs target 27.00%/month)
+- windows: 30 × 100d  (total 3000d unseen)
+- backend: pufferlib_market
+
+| slip_bps | median total | median monthly | p10 total | p10 monthly | sortino | max dd | n_neg |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | -9.17% | -2.00% | -22.36% | -5.18% | -8.65 | 18.18% | 23/30 |
+| 5 | -5.85% | -1.26% | -17.97% | -4.07% | -5.16 | 18.44% | 19/30 |
+| 10 | -6.87% | -1.48% | -18.89% | -4.30% | -6.25 | 18.69% | 19/30 |
+| 20 | -8.88% | -1.93% | -20.67% | -4.75% | -8.33 | 19.19% | 22/30 |
