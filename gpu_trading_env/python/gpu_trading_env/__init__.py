@@ -67,9 +67,10 @@ def _load_ext():
         _ensure_cuda_home()
         arch = f"{cap[0]}.{cap[1]}+PTX"
         os.environ.setdefault("TORCH_CUDA_ARCH_LIST", arch)
-        # Force compiler temp files onto the package build dir (/tmp is
-        # sandboxed on this box).
-        build_tmp = (_PKG_DIR / ".." / ".." / "tmp").resolve()
+        # Force compiler temp files onto repo-local tmp/ (/tmp is sandboxed
+        # on this box and fills up with CUDA artefacts).
+        _repo_root = _PKG_DIR.parents[2]  # gpu_trading_env/python/gpu_trading_env -> repo
+        build_tmp = _repo_root / "tmp" / "cuda_build"
         build_tmp.mkdir(parents=True, exist_ok=True)
         os.environ["TMPDIR"] = str(build_tmp)
         from torch.utils.cpp_extension import load

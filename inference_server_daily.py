@@ -394,7 +394,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
     checkpoint_path = REPO / args.checkpoint
-    data_path = Path(f"/tmp/inference_data_{today}.bin")
+    _local_tmp = REPO / "tmp"
+    _local_tmp.mkdir(parents=True, exist_ok=True)
+    data_path = _local_tmp / f"inference_data_{today}.bin"
     output_dir = REPO / args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     decisions_local = str(output_dir / f"decisions_{today}.json")

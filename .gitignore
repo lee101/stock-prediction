@@ -401,6 +401,7 @@ BACKTESTING_SUMMARY.md
 BACKTESTING_README.md
 
 # Temp files and misc
+tmp/
 tmp*
 *.bak
 /1

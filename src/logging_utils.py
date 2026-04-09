@@ -154,8 +154,8 @@ def setup_logging(log_file: str) -> logging.Logger:
         # Create and configure file handler
         file_handler = RotatingFileHandler(
             log_file,
-            maxBytes=500 * 1024 * 1024,  # 500MB
-            backupCount=5
+            maxBytes=50 * 1024 * 1024,  # 50MB
+            backupCount=3
         )
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(file_formatter)
