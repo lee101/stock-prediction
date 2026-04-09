@@ -76,10 +76,59 @@ def _try_gpu_trading_env(
     env_spec = cfg.get("env")
     params = {}
     ohlc_path = None
+    bin_path = None
     if isinstance(env_spec, dict):
-        params = {k: v for k, v in env_spec.items() if k != "ohlc_path"}
+        params = {k: v for k, v in env_spec.items()
+                  if k not in ("ohlc_path", "train_data", "val_data", "backend", "name")}
         ohlc_path = env_spec.get("ohlc_path")
+        # Detect multi-symbol .bin data (stocks12_v5_rsi etc.).
+        train_data = env_spec.get("train_data")
+        if train_data and str(train_data).endswith(".bin"):
+            from pathlib import Path
+            # Resolve relative to repo root.
+            p = Path(train_data)
+            if not p.is_absolute():
+                # fp4/fp4/env_adapter.py -> repo root is two parents up from fp4/fp4/
+                repo = Path(__file__).resolve().parents[2]
+                p = repo / train_data
+            if p.exists():
+                bin_path = str(p)
     global _LAST_GTE_ERR
+
+    # --- Multi-symbol path: load .bin, present full obs/act shapes ---
+    if bin_path is not None:
+        try:
+            inner = gte.make_multi_symbol(
+                B=int(num_envs),
+                bin_path=bin_path,
+                params=params or None,
+            )
+        except Exception as exc:
+            _LAST_GTE_ERR = f"{type(exc).__name__}: {exc}"
+            return None
+
+        device = inner.features.device
+        obs_dim = inner.obs_dim
+        action_dim = inner.action_dim
+
+        def _reset_ms() -> torch.Tensor:
+            inner.reset()
+            return inner._obs().to(torch.float32)
+
+        def _step_ms(action: torch.Tensor):
+            obs, reward, done, cost = inner.step(action.to(device))
+            return obs.to(torch.float32), reward, done.to(torch.float32), cost
+
+        return EnvHandle(
+            backend_name="gpu_trading_env_multi",
+            num_envs=int(num_envs),
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            _reset_fn=_reset_ms,
+            _step_fn=_step_ms,
+        )
+
+    # --- Legacy single-instrument path ---
     try:
         inner = gte.make(
             B=int(num_envs),
