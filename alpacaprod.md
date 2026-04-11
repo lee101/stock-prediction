@@ -7,6 +7,45 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
+### 2026-04-11 — stocks17 augmented RL training + algorithmic sweep
+
+#### Background
+Goal: train a 17-symbol daily RL model (adds AMD, NFLX, COIN, CRWD, UBER to stocks12)
+using hourly session-shift augmentation (offsets 0-4 = 5× training variants per day).
+
+#### Data
+- `pufferlib_market/data/stocks17_augmented_train.bin`: 2911 timesteps, 17 syms, 16 feats
+  - offset=0: 1275 days (2021-12-03 to 2025-05-31, original daily bars)
+  - offsets 1-4: 409 days each (2024-04-17 to 2025-05-31, hourly-shifted daily bars)
+  - Hourly data backfilled to 2yr via yfinance for MSFT/NVDA/GOOG/META/PLTR/CRWD/SPY/QQQ/COIN
+- `pufferlib_market/data/stocks17_augmented_val.bin`: 177 days (2025-06-02 to 2025-11-25)
+
+#### Key bugs fixed
+1. `_concat_binaries` was including symbol tables from each offset file, corrupting data
+   (72-byte phantom data between segments → NaN training crashes). Fixed + 5 tests added.
+2. Post-training eval was using decision_lag=0 (same-bar fill). Fixed to lag=2 binary fills.
+   Consequence: internal holdout rankings were inverted vs real binary-fill eval.
+
+#### Seeds 1-15 results (lag=2, 60d windows, 50 samples, old 1703-step data)
+Best: s4 med=+18.8%, sortino=21 | s12 med=+23.7%, sortino=24
+Not at 27%/month target. Old data (107-day offsets) is now superseded by 2yr hourly backfill.
+
+#### Algorithmic sweep (NEW — 2yr augmented data, 2911 steps)
+Running: `scripts/sweep_stocks17_algos.sh` — 3 seeds each, lag=2 eval, variants:
+- A baseline:   tp=0.05, 15M steps, max_ep=252, adamw
+- B long_train: tp=0.05, 30M steps, max_ep=252, adamw  (2x training)
+- C low_tp:     tp=0.02, 15M steps, max_ep=252, adamw
+- D muon:       tp=0.05, 15M steps, max_ep=252, muon optimizer
+- E short_ep:   tp=0.05, 15M steps, max_ep=90,  adamw
+Results in `pufferlib_market/checkpoints/stocks17_sweep/`
+
+#### Deploy plan
+Once a variant exceeds s4/s12 baseline (med>+20%, 0-neg p10>0), deploy alongside
+32-model stocks12 ensemble OR build a new 17-sym ensemble from best seeds.
+The 17-sym model cannot be mixed with 12-sym models in the same softmax ensemble.
+
+---
+
 ### 2026-04-11 — Confidence gate fix + OPTX added
 
 - **Root cause identified**: `DEFAULT_MIN_OPEN_CONFIDENCE = 0.20` was blocking ALL trades.
