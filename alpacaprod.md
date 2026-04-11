@@ -7,6 +7,30 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
+### 2026-04-11 — Confidence gate fix + OPTX added
+
+- **Root cause identified**: `DEFAULT_MIN_OPEN_CONFIDENCE = 0.20` was blocking ALL trades.
+  The 32-model ensemble with 13 long-only actions (uniform=0.077) consistently outputs
+  confidence ~0.11-0.12 for its top pick — well above random but below the 0.20 threshold.
+  Every signal since the service restarted on 2026-04-08 was blocked (GOOG @0.116, SPY @0.114).
+- **Fix**: Lowered `DEFAULT_MIN_OPEN_CONFIDENCE` from 0.20 → **0.05** in `src/daily_stock_defaults.py`.
+  This is above uniform (1/25 = 0.04) but well below the observed 0.11-0.12 ensemble output.
+  The 0.20 threshold was calibrated for single-model operation; the 32-model ensemble's
+  softmax average naturally dilutes confidence across models.
+- **daily-rl-trader.service restarted**: 2026-04-11 01:35 UTC, new PID 1652847.
+  Next market-hour decision: Monday 2026-04-14 ~13:35 UTC. Sleeping 3599 min.
+- **Alpaca account**: equity $28,679 (down from ~$38,954 in March — market drawdown),
+  no stock positions, no open orders, API status ACTIVE.
+- **OPTX (Syntec Optics Holdings, Technology) added**:
+  - Saved 1055 bars (5yr) to `trainingdata/OPTX.csv`
+  - Added to `llm-stock-trader` symbol list: YELP, NET, DBX, **OPTX**
+  - `llm-stock-trader` restarted on `llm_stock_writer` lock (coexists with daily-rl-trader)
+  - OPTX cannot join the 32-model RL ensemble without retraining (13 symbols vs trained 12)
+- **Orchestrator lock bug fixed**: `unified_orchestrator/orchestrator.py` was ignoring `--lock-name`
+  in live mode and forcing `alpaca_live_writer`, blocking LLM trader startup. Fixed to respect
+  `--lock-name` so multiple non-overlapping traders can coexist with different lock files.
+- **llm-stock-trader** RUNNING: pid 1686618, lock=llm_stock_writer, symbols=YELP NET DBX OPTX
+
 ### 2026-04-08 — Alpaca daily PPO audit + 120d replay
 - **Actual machine state (verified on host, not just docs)**:
   - `daily-rl-trader.service`: **ACTIVE** since **2026-04-08 10:23:53 UTC**
@@ -356,6 +380,29 @@
 - **Service manager**: systemd unit `daily-rl-trader.service`
 - **Installed unit**: `/etc/systemd/system/daily-rl-trader.service`
 - **Installed ExecStart**: `.venv313/bin/python -u trade_daily_stock_prod.py --daemon --live --allocation-pct 12.5`
+- **Status (2026-04-09)**: DIAGNOSED BUT NOT REDEPLOYED — service is healthy, live account is reachable, but new entries are currently blocked by the execution confidence gate
+  - `daily-rl-trader.service` has been running since `2026-04-08 10:23:53 UTC`
+  - Live broker snapshot on `2026-04-09`: account `ACTIVE`, `0` open orders, `0` stock positions; only dust crypto leftovers remain
+  - Last stock fills were GOOG buy on `2026-04-01 13:35:13 UTC` and GOOG sell on `2026-04-07 16:28:01 UTC`
+  - Recent live runs:
+    - `2026-04-08 13:35 UTC`: `long_AAPL` blocked (`confidence=0.1061 < min_open_confidence=0.2000`, `value_estimate=-0.0215 < 0`)
+    - `2026-04-09 13:35 UTC`: `long_GOOG` blocked (`confidence=0.1157 < min_open_confidence=0.2000`)
+  - Root cause of the inactivity is the new default `DEFAULT_MIN_OPEN_CONFIDENCE = 0.20` introduced in commit `985ba08d` on `2026-04-08`; the 32-model ensemble's live confidence prints are currently below that threshold
+  - Do **not** hotfix by simply lowering the gate without requalification. 100-day backtest with current 32-model ensemble + calibrated offsets (`entry=+5bps`, `exit=+25bps`, `allocation=12.5%`) produced:
+    - `min_open_confidence=0.20`: `0` trades, `0.00%` total return, `100` blocked opens
+    - `min_open_confidence=0.10`: `21` trades, `+0.24%` total return, Sortino `0.19`, MaxDD `-2.99%`
+    - `min_open_confidence=0.00`: `27` trades, `+0.20%` total return, Sortino `0.16`, MaxDD `-3.07%`
+  - Requalification sweep on `2026-04-09`:
+    - `origin/main` is ahead by one README-only docs commit (`3b364488`); there is no unpulled Alpaca stock prod fix
+    - Archived `stocks12_v5_rsi` champions do not clear the current 100-day gate. Fresh `scripts/eval_100d.py` runs:
+      - `tp05_s42` @ `1.0x`: **FAIL**, worst-slip monthly `-0.39%`
+      - `tp05_s42` @ `2.0x`: **FAILED_FAST**, max drawdown `32.0%` on the first completed window
+      - current prod solo `s15.pt` @ `1.0x`: **FAIL**, worst-slip monthly `-0.47%`
+      - current prod solo `s15.pt` @ `2.0x`: **FAIL**, worst-slip monthly `-4.19%`
+    - Local orchestration-only 100d backtests can make `s15.pt` trade much more aggressively:
+      - best local config seen was `allocation=100%`, `multi_position=2`, `leverage=2.0x` with `+37.31%` total return over 100d (`+6.89%` derived monthly), Sortino `3.87`, MaxDD `-4.57%`
+      - however that execution policy is **not** certified by `scripts/eval_100d.py`, which does not expose `multi_position` / allocation orchestration knobs, and the underlying checkpoint fails the actual 100d gate even before that wrapper logic
+  - Conclusion: the gate explains why prod stopped trading after the `2026-04-08` restart, but neither a threshold rollback nor the aggressive `s15` resweep produced a deployable candidate; prod remains intentionally unreleased pending a checkpoint family that clears the true 100d bar
 - **Status (2026-03-31)**: CALIBRATED — limit orders at entry+5bps/exit+25bps, allocation reduced 25%→12.5%
 - **Status (2026-04-01)**: VERIFIED on refreshed data; current 32-model prod ensemble stays deployed, latest 3M-step retrain is not promotable
 - **Calibration (2026-03-31)**: 726-combo sweep over 788 windows (90d each), 11 entry x 11 exit x 6 scale

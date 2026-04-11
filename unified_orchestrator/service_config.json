@@ -13,9 +13,9 @@
   },
   "llm-stock-trader": {
     "crypto_symbols": [],
-    "stock_symbols": ["YELP", "NET", "DBX"],
+    "stock_symbols": ["YELP", "NET", "DBX", "OPTX"],
     "model": "glm-4-plus",
-    "note": "GLM-4-plus backtest 30d: YELP+12.4% NET+5.8% DBX+0.8% (deployed 2026-03-29)"
+    "note": "GLM-4-plus backtest 30d: YELP+12.4% NET+5.8% DBX+0.8% (deployed 2026-03-29). OPTX (Syntec Optics, Technology) added 2026-04-11."
   },
   "trade-unified-hourly-meta": {
     "crypto_symbols": [],
