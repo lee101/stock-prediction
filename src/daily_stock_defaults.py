@@ -78,5 +78,8 @@ DEFAULT_EXTRA_CHECKPOINTS = (
 )
 
 DEFAULT_DATA_DIR = "trainingdata"
-DEFAULT_MIN_OPEN_CONFIDENCE = 0.20
+# 32-model ensemble softmax average: top-action confidence is naturally ~0.11-0.12
+# (uniform over 13 long-only actions = 0.077; 0.20 gate blocked every trade).
+# Gate is now set just above uniform so it only rejects near-random signals.
+DEFAULT_MIN_OPEN_CONFIDENCE = 0.05
 DEFAULT_MIN_OPEN_VALUE_ESTIMATE = 0.0
