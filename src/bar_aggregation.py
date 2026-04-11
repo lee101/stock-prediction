@@ -142,4 +142,145 @@ def hourly_to_daily_ohlcv(
     return daily, stats
 
 
-__all__ = ["DailyAggregationStats", "hourly_to_daily_ohlcv"]
+@dataclass(frozen=True)
+class ShiftedSessionStats:
+    """Lightweight diagnostics returned by `hourly_to_shifted_session_daily_ohlcv`."""
+
+    total_virtual_days: int
+    dropped_boundary: int
+
+
+def hourly_to_shifted_session_daily_ohlcv(
+    hourly: pd.DataFrame,
+    *,
+    offset_bars: int = 0,
+    timestamp_col: str = "timestamp",
+    require_full_shift: bool = True,
+) -> tuple[pd.DataFrame, ShiftedSessionStats]:
+    """Create shifted-session daily OHLCV bars from hourly data.
+
+    Each "virtual day" for offset_bars=N uses the last (M-N) bars from calendar
+    day i and the first N bars from calendar day i+1 (where M is the number of
+    bars in day i).  This produces alternative daily bars without lookahead bias
+    because the shifted bar only depends on already-elapsed hourly bars.
+
+    For offset_bars=0 the result is equivalent to a standard daily OHLCV
+    aggregation (same as ``hourly_to_daily_ohlcv``).
+
+    Args:
+        hourly: Hourly bars DataFrame.  Must contain ``timestamp_col``, ``open``,
+            ``high``, ``low``, ``close``.  ``volume`` is aggregated when present.
+        offset_bars: Number of hours to shift the session window.
+        timestamp_col: Name of the UTC timestamp column.
+        require_full_shift: When True (default), virtual days that do not have
+            *offset_bars* bars available from the following calendar day are
+            dropped.  This ensures every virtual day covers a complete shifted
+            window.
+
+    Returns:
+        ``(daily_df, stats)`` where *daily_df* has columns
+        ``[timestamp_col, open, high, low, close, volume?]`` and *stats*
+        carries :class:`ShiftedSessionStats` diagnostics.
+    """
+    if not isinstance(hourly, pd.DataFrame):
+        raise TypeError(f"hourly must be a pandas DataFrame, got {type(hourly).__name__}")
+    if timestamp_col not in hourly.columns:
+        raise KeyError(f"Missing required column '{timestamp_col}'")
+
+    required = {"open", "high", "low", "close"}
+    missing_cols = sorted(required - set(hourly.columns))
+    if missing_cols:
+        raise KeyError(f"Missing required OHLC column(s): {missing_cols}")
+
+    df = hourly.copy()
+    df[timestamp_col] = pd.to_datetime(df[timestamp_col], utc=True, errors="coerce")
+    df = df.dropna(subset=[timestamp_col]).sort_values(timestamp_col).reset_index(drop=True)
+
+    if df.empty:
+        return pd.DataFrame(), ShiftedSessionStats(0, 0)
+
+    for col in ("open", "high", "low", "close", "volume"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Group into calendar days.
+    df["_day"] = df[timestamp_col].dt.floor("D")
+    days = sorted(df["_day"].unique())
+
+    if offset_bars == 0:
+        # Standard daily aggregation — combine all bars for each calendar day.
+        records = []
+        for day in days:
+            day_bars = df[df["_day"] == day].sort_values(timestamp_col)
+            if day_bars.empty:
+                continue
+            row: dict = {
+                timestamp_col: day,
+                "open": float(day_bars["open"].iloc[0]),
+                "high": float(day_bars["high"].max()),
+                "low": float(day_bars["low"].min()),
+                "close": float(day_bars["close"].iloc[-1]),
+            }
+            if "volume" in day_bars.columns:
+                vol = day_bars["volume"].sum(min_count=1)
+                row["volume"] = float(vol) if not pd.isna(vol) else 0.0
+            records.append(row)
+        if not records:
+            return pd.DataFrame(), ShiftedSessionStats(0, 0)
+        result = pd.DataFrame(records)
+        result[timestamp_col] = pd.to_datetime(result[timestamp_col], utc=True)
+        return result, ShiftedSessionStats(len(result), 0)
+
+    # Shifted-session aggregation.
+    virtual_days = []
+    dropped = 0
+
+    for i in range(len(days) - 1):
+        day_i_bars = df[df["_day"] == days[i]].sort_values(timestamp_col)
+        day_j_bars = df[df["_day"] == days[i + 1]].sort_values(timestamp_col)
+
+        if len(day_i_bars) <= offset_bars:
+            # Not enough bars on day i to take a suffix after the offset.
+            dropped += 1
+            continue
+
+        n_from_j = min(offset_bars, len(day_j_bars))
+        if require_full_shift and n_from_j < offset_bars:
+            # Day i+1 doesn't have enough bars to complete the shifted window.
+            dropped += 1
+            continue
+
+        bars_from_i = day_i_bars.iloc[offset_bars:]
+        bars_from_j = day_j_bars.iloc[:n_from_j]
+
+        combined = pd.concat([bars_from_i, bars_from_j], ignore_index=True)
+        if combined.empty:
+            dropped += 1
+            continue
+
+        row = {
+            timestamp_col: days[i],
+            "open": float(combined["open"].iloc[0]),
+            "high": float(combined["high"].max()),
+            "low": float(combined["low"].min()),
+            "close": float(combined["close"].iloc[-1]),
+        }
+        if "volume" in combined.columns:
+            vol = combined["volume"].sum(min_count=1)
+            row["volume"] = float(vol) if not pd.isna(vol) else 0.0
+        virtual_days.append(row)
+
+    if not virtual_days:
+        return pd.DataFrame(), ShiftedSessionStats(0, dropped)
+
+    result = pd.DataFrame(virtual_days)
+    result[timestamp_col] = pd.to_datetime(result[timestamp_col], utc=True)
+    return result, ShiftedSessionStats(len(result), dropped)
+
+
+__all__ = [
+    "DailyAggregationStats",
+    "ShiftedSessionStats",
+    "hourly_to_daily_ohlcv",
+    "hourly_to_shifted_session_daily_ohlcv",
+]
