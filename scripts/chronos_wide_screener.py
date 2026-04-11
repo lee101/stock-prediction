@@ -209,6 +209,20 @@ def _predict_next_day(
     return pred_close, pred_high or pred_close, pred_low or pred_close, elapsed_ms
 
 
+def _load_hyperparam_map(hyperparam_dir: Path) -> dict[str, dict]:
+    """Load per-symbol Chronos2 hyperparams from hyperparams/chronos2/*.json."""
+    result: dict[str, dict] = {}
+    if not hyperparam_dir.exists():
+        return result
+    for j in hyperparam_dir.glob("*.json"):
+        try:
+            import json as _json
+            result[j.stem.upper()] = _json.loads(j.read_text())
+        except Exception:
+            pass
+    return result
+
+
 def run_screener(
     symbols: list[str],
     *,
@@ -220,8 +234,15 @@ def run_screener(
     warmup_symbol: str | None = None,
     verbose: bool = False,
     max_staleness_days: int = 45,
+    use_per_symbol_context: bool = True,
 ) -> list[ScreenerResult]:
     """Run Chronos2 inference on all symbols and return ScreenerResult list."""
+    # Load per-symbol calibrated hyperparams (context_length, MAE) if available
+    hp_dir = REPO / "hyperparams" / "chronos2"
+    hp_map = _load_hyperparam_map(hp_dir)
+    if hp_map and use_per_symbol_context:
+        print(f"[screener] Loaded hyperparams for {len(hp_map)} symbols (will use calibrated context_length)", flush=True)
+
     print(f"[screener] Building Chronos2 wrapper (backend={backend}) ...", flush=True)
     wrapper = _build_chronos_wrapper(backend, device_map=device_map)
     print(f"[screener] Wrapper ready. Starting warmup...", flush=True)
@@ -239,7 +260,19 @@ def run_screener(
     t_start = time.perf_counter()
 
     for i, symbol in enumerate(symbols, 1):
-        df = _load_daily_csv(symbol, data_root, context_length, max_staleness_days=max_staleness_days)
+        # Use per-symbol calibrated context_length if available
+        sym_ctx = context_length
+        if use_per_symbol_context and symbol in hp_map:
+            hp = hp_map[symbol]
+            calibrated_ctx = (
+                hp.get("context_length")
+                or hp.get("config", {}).get("context_length")
+                or hp.get("best", {}).get("context_length")
+            )
+            if calibrated_ctx and isinstance(calibrated_ctx, (int, float)) and int(calibrated_ctx) > 0:
+                sym_ctx = int(calibrated_ctx)
+
+        df = _load_daily_csv(symbol, data_root, sym_ctx, max_staleness_days=max_staleness_days)
         if df is None or len(df) < 30:
             if verbose:
                 logger.debug("[%d/%d] %s: no data", i, len(symbols), symbol)
@@ -250,7 +283,7 @@ def run_screener(
             continue
 
         pred = _predict_next_day(wrapper, df, symbol,
-                                 context_length=context_length)
+                                 context_length=sym_ctx)
         if pred is None:
             continue
 
@@ -303,6 +336,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="Only output symbols with calibrated Chronos MAE (<= --max-mae-pct)")
     parser.add_argument("--max-mae-pct", type=float, default=5.0,
                         help="Maximum pct_return_mae%% for MAE filter (used with --require-mae-calibration)")
+    parser.add_argument("--no-per-symbol-context", action="store_true",
+                        help="Disable per-symbol calibrated context_length (use global --context-length for all)")
     parser.add_argument("--verbose", "-v", action="store_true")
     return parser.parse_args(argv)
 
@@ -328,6 +363,7 @@ def main(argv: list[str] | None = None) -> int:
         data_root=args.data_root,
         backend=args.backend,
         context_length=args.context_length,
+        use_per_symbol_context=not args.no_per_symbol_context,
         device_map=args.device_map,
         use_multivariate=not args.no_multivariate,
         verbose=args.verbose,
