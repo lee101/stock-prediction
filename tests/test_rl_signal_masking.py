@@ -1,8 +1,10 @@
 """Tests for RL signal action masking to restrict actions to tradable symbols."""
+
 import sys
 from pathlib import Path
 
 import numpy as np
+
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "rl_trading_agent_binance"))
@@ -119,9 +121,7 @@ class TestMaskLogits:
             masked = gen._mask_logits(logits, tradable)
             action = int(masked.argmax())
             sym = gen._action_to_symbol(action)
-            assert sym is None or sym in tradable_set, (
-                f"argmax action {action} maps to {sym}, not in tradable set"
-            )
+            assert sym is None or sym in tradable_set, f"argmax action {action} maps to {sym}, not in tradable set"
 
     def test_six_crypto_masking(self):
         gen = _make_generator_stub()
@@ -184,7 +184,7 @@ class TestMaskShorts:
         gen = _make_generator_stub()
         logits = np.zeros(47, dtype=np.float32)
         logits[30] = 10.0  # SHORT action
-        logits[5] = 3.0    # LONG action
+        logits[5] = 3.0  # LONG action
         masked = gen._mask_shorts(logits)
         assert masked.argmax() == 5
 
@@ -226,7 +226,18 @@ class TestSignalMetadata:
         gen.policy = _Policy()
         gen.device = "cpu"
         signal = gen.get_signal(
-            portfolio=type("P", (), {"cash_usd": 1.0, "position_value_usd": 0.0, "unrealized_pnl_usd": 0.0, "hold_hours": 0, "is_short": False, "position_symbol": None})(),
+            portfolio=type(
+                "P",
+                (),
+                {
+                    "cash_usd": 1.0,
+                    "position_value_usd": 0.0,
+                    "unrealized_pnl_usd": 0.0,
+                    "hold_hours": 0,
+                    "is_short": False,
+                    "position_symbol": None,
+                },
+            )(),
             klines_map={"BTCUSD": None, "ETHUSD": None},
             tradable_symbols=["BTCUSD", "ETHUSD"],
             spot_only=False,
@@ -261,7 +272,18 @@ class TestSignalMetadata:
         gen.policy = _Policy()
         gen.device = "cpu"
         signal = gen.get_signal(
-            portfolio=type("P", (), {"cash_usd": 1.0, "position_value_usd": 0.0, "unrealized_pnl_usd": 0.0, "hold_hours": 0, "is_short": False, "position_symbol": None})(),
+            portfolio=type(
+                "P",
+                (),
+                {
+                    "cash_usd": 1.0,
+                    "position_value_usd": 0.0,
+                    "unrealized_pnl_usd": 0.0,
+                    "hold_hours": 0,
+                    "is_short": False,
+                    "position_symbol": None,
+                },
+            )(),
             klines_map={"BTCUSD": None},
             tradable_symbols=["BTCUSD"],
             spot_only=True,

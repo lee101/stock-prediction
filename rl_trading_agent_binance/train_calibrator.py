@@ -10,13 +10,13 @@ Usage:
         --symbols BTCUSD,ETHUSD,SOLUSD,DOGEUSD,AAVEUSD,LINKUSD \
         --epochs 200 --lr 1e-3 --save-dir rl_trading_agent_binance/calibrator_checkpoints
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 import torch
@@ -28,15 +28,18 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from signal_calibrator import SignalCalibrator, CalibrationConfig, save_calibrator
-from rl_signal import compute_symbol_features, _load_forecast_parquet
 from differentiable_loss_utils import (
+    DEFAULT_MAKER_FEE_RATE,
+    combined_sortino_pnl_loss,
+    compute_hourly_objective,
     simulate_hourly_trades,
     simulate_hourly_trades_binary,
     compute_hourly_objective,
     combined_sortino_pnl_loss,
     DEFAULT_MAKER_FEE_RATE,
 )
+from rl_signal import _load_forecast_parquet, compute_symbol_features
+from signal_calibrator import CalibrationConfig, SignalCalibrator, save_calibrator
 
 
 DEPLOYED_SYMBOLS = ("BTCUSD", "ETHUSD", "SOLUSD", "DOGEUSD", "AAVEUSD", "LINKUSD")
@@ -113,19 +116,19 @@ def run_sim(
     else:
         buy_price, sell_price, intensity = result_tuple
     sim_fn = simulate_hourly_trades_binary if binary else simulate_hourly_trades
-    kwargs = dict(
-        highs=highs.unsqueeze(0),
-        lows=lows.unsqueeze(0),
-        closes=closes.unsqueeze(0),
-        opens=opens.unsqueeze(0),
-        buy_prices=buy_price.unsqueeze(0),
-        sell_prices=sell_price.unsqueeze(0),
-        maker_fee=maker_fee,
-        initial_cash=1.0,
-        decision_lag_bars=decision_lag,
-        fill_buffer_pct=fill_buffer_pct,
-        can_short=False,
-    )
+    kwargs = {
+        "highs": highs.unsqueeze(0),
+        "lows": lows.unsqueeze(0),
+        "closes": closes.unsqueeze(0),
+        "opens": opens.unsqueeze(0),
+        "buy_prices": buy_price.unsqueeze(0),
+        "sell_prices": sell_price.unsqueeze(0),
+        "maker_fee": maker_fee,
+        "initial_cash": 1.0,
+        "decision_lag_bars": decision_lag,
+        "fill_buffer_pct": fill_buffer_pct,
+        "can_short": False,
+    }
     if directional:
         kwargs["trade_intensity"] = buy_int.unsqueeze(0)
         kwargs["buy_trade_intensity"] = buy_int.unsqueeze(0)
@@ -163,7 +166,7 @@ def train_one_symbol(
     decision_lag: int = 2,
     device: str = "cpu",
     return_weight: float = 0.1,
-    save_dir: Optional[Path] = None,
+    save_dir: Path | None = None,
 ) -> dict:
     n = data["n_bars"]
     train_sl, val_sl, test_sl = time_split(n)
@@ -205,7 +208,7 @@ def train_one_symbol(
 
         calibrator.eval()
         with torch.no_grad():
-            val_returns, val_metrics = run_sim(
+            _val_returns, val_metrics = run_sim(
                 calibrator,
                 data["features"][val_sl],
                 data["closes"][val_sl],
@@ -246,7 +249,7 @@ def train_one_symbol(
 
     calibrator.eval()
     with torch.no_grad():
-        test_returns, test_metrics = run_sim(
+        _test_returns, test_metrics = run_sim(
             calibrator,
             data["features"][test_sl],
             data["closes"][test_sl],
@@ -275,15 +278,20 @@ def train_one_symbol(
     if save_dir is not None:
         save_dir.mkdir(parents=True, exist_ok=True)
         ckpt_path = save_dir / f"{symbol}_calibrator.pt"
-        save_calibrator(calibrator, ckpt_path, config, metadata={
-            "symbol": symbol,
-            "best_epoch": best_epoch,
-            "test_sortino": test_metrics["sortino"],
-            "test_return": test_metrics["return"],
-            "maker_fee": maker_fee,
-            "fill_buffer_pct": fill_buffer_pct,
-            "decision_lag": decision_lag,
-        })
+        save_calibrator(
+            calibrator,
+            ckpt_path,
+            config,
+            metadata={
+                "symbol": symbol,
+                "best_epoch": best_epoch,
+                "test_sortino": test_metrics["sortino"],
+                "test_return": test_metrics["return"],
+                "maker_fee": maker_fee,
+                "fill_buffer_pct": fill_buffer_pct,
+                "decision_lag": decision_lag,
+            },
+        )
         print(f"  [{symbol}] saved -> {ckpt_path}")
 
     return result
@@ -375,7 +383,8 @@ def main():
             print(f"  loaded {data['n_bars']} bars")
 
             baseline = compute_baseline(
-                data, config,
+                data,
+                config,
                 maker_fee=args.maker_fee,
                 fill_buffer_pct=args.fill_buffer_pct,
                 decision_lag=args.decision_lag,
@@ -384,7 +393,9 @@ def main():
             print(f"  baseline sort={baseline['sortino']:+.2f} ret={baseline['return']:+.4f}")
 
             result = train_one_symbol(
-                symbol, data, config,
+                symbol,
+                data,
+                config,
                 epochs=args.epochs,
                 lr=args.lr,
                 weight_decay=args.weight_decay,
@@ -400,12 +411,16 @@ def main():
             results.append(result)
         except Exception as e:
             print(f"  FAILED: {e}")
-            import traceback; traceback.print_exc()
+            import traceback
+
+            traceback.print_exc()
 
     print("\n" + "=" * 70)
     print("SUMMARY")
     print("=" * 70)
-    print(f"{'Symbol':<10} {'Base Sort':>10} {'Base Ret':>10} {'Cal Sort':>10} {'Cal Ret':>10} {'Ep':>4} {'Improve':>10}")
+    print(
+        f"{'Symbol':<10} {'Base Sort':>10} {'Base Ret':>10} {'Cal Sort':>10} {'Cal Ret':>10} {'Ep':>4} {'Improve':>10}"
+    )
     print("-" * 70)
     for r in results:
         bs = r["baseline"]["sortino"]
@@ -413,20 +428,24 @@ def main():
         cs = r["test_metrics"]["sortino"]
         cr = r["test_metrics"]["return"]
         improvement = cs - bs
-        print(f"{r['symbol']:<10} {bs:+10.2f} {br:+10.4f} {cs:+10.2f} {cr:+10.4f} {r['best_epoch']:4d} {improvement:+10.2f}")
+        print(
+            f"{r['symbol']:<10} {bs:+10.2f} {br:+10.4f} {cs:+10.2f} {cr:+10.4f} {r['best_epoch']:4d} {improvement:+10.2f}"
+        )
 
     summary_path = save_dir / "training_summary.json"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary = []
     for r in results:
-        summary.append({
-            "symbol": r["symbol"],
-            "best_epoch": r["best_epoch"],
-            "baseline_sortino": r["baseline"]["sortino"],
-            "baseline_return": r["baseline"]["return"],
-            "test_sortino": r["test_metrics"]["sortino"],
-            "test_return": r["test_metrics"]["return"],
-        })
+        summary.append(
+            {
+                "symbol": r["symbol"],
+                "best_epoch": r["best_epoch"],
+                "baseline_sortino": r["baseline"]["sortino"],
+                "baseline_return": r["baseline"]["return"],
+                "test_sortino": r["test_metrics"]["sortino"],
+                "test_return": r["test_metrics"]["return"],
+            }
+        )
     summary_path.write_text(json.dumps(summary, indent=2))
     print(f"\nSummary saved to {summary_path}")
 

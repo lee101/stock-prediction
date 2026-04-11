@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
+from torch import nn
 
 
 try:
@@ -424,9 +424,7 @@ class RLSignalGenerator:
             self.policy = self.policy.to(self.device)
         except Exception as exc:
             if _should_fallback_to_cpu(self._device_preference, self.device, exc):
-                logger.warning(
-                    f"Auto-selected CUDA unavailable for RLSignalGenerator, falling back to CPU: {exc}"
-                )
+                logger.warning(f"Auto-selected CUDA unavailable for RLSignalGenerator, falling back to CPU: {exc}")
                 self.device = torch.device("cpu")
                 self.policy = self.policy.to(self.device)
             else:
@@ -441,7 +439,7 @@ class RLSignalGenerator:
         )
 
     def _fetch_klines(self, binance_pair: str, limit: int = 96) -> pd.DataFrame:
-        from src.binan import binance_wrapper as bw
+        from src.binan import binance_wrapper as bw  # noqa: PLC0415
 
         # todo optimize to only get latest hour and have already got/cached this in trainingdata/ in daily case or trainingdatahourly/ in this case
         klines = bw.get_client().get_klines(symbol=binance_pair, interval="1h", limit=limit)
