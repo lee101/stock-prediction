@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 import os
+import sys
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -33,6 +34,11 @@ def configure_default_jax_platforms() -> str | None:
     hidden_cuda = os.environ.get("CUDA_VISIBLE_DEVICES")
     if hidden_cuda is not None and not hidden_cuda.strip():
         os.environ["JAX_PLATFORMS"] = "cpu"
+        jax_module = sys.modules.get("jax")
+        if jax_module is not None:
+            config = getattr(jax_module, "config", None)
+            if config is not None:
+                config.update("jax_platforms", "cpu")
         return "cpu"
     return None
 
@@ -48,6 +54,7 @@ def headless_cpu_jax_requested() -> bool:
 def preferred_jax_device() -> "jax.Device | None":
     if not headless_cpu_jax_requested():
         return None
+    configure_default_jax_platforms()
     import jax
 
     return jax.devices("cpu")[0]
@@ -58,6 +65,7 @@ def clear_jax_device_cache() -> None:
 
 
 def as_jax_array(value: Any, *, dtype: Any | None = None) -> "jax.Array":
+    configure_default_jax_platforms()
     import jax
     import jax.numpy as jnp
 

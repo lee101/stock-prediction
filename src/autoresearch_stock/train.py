@@ -5,12 +5,15 @@ import json
 import math
 import os
 import random
+import shlex
 import shutil
+import sys
 import time
+import warnings
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Generic, Protocol, Sequence, TypeVar
 
 import numpy as np
 import torch
@@ -50,20 +53,25 @@ from .experiments.timestamp_budget_head import (
     rebuild_split_sample_rows,
 )
 from .prepare import (
+    TASK_INPUT_CHECK_WORKERS_ENV_VAR,
     TIME_BUDGET,
-    _lag_action_frame,
     apply_execution_modifiers,
     build_action_frame,
+    data_root_help_text,
+    lag_action_frame,
     parse_csv_list,
     parse_int_list,
     prepare_task,
     resolve_task_config,
+    run_task_input_check,
     simulate_actions,
+    symbols_help_text,
 )
 
 DEFAULT_LEARNING_RATE = 3e-4
 DEFAULT_AUTO_LR_CANDIDATES: tuple[float, ...] = (1e-4, 2e-4, 3e-4, 5e-4, 7.5e-4, 1e-3)
 DEFAULT_TOP_K_CHECKPOINTS = 5
+RuntimeValueT = TypeVar("RuntimeValueT")
 
 
 class SequenceDataset(Dataset):
@@ -186,6 +194,17 @@ class ExecutionModifierSet:
     buy_price_modifier_bps: float = 0.0
     sell_price_modifier_bps: float = 0.0
     amount_modifier_pct: float = 0.0
+
+
+class RuntimeExecutionOperation(Protocol[RuntimeValueT]):
+    def __call__(self, device: torch.device, fallback_used: bool, /) -> RuntimeValueT: ...
+
+
+@dataclass(frozen=True)
+class RuntimeExecutionResult(Generic[RuntimeValueT]):
+    value: RuntimeValueT
+    final_device: torch.device
+    fallback_used: bool
 
 
 class ResidualContextBlock(nn.Module):
@@ -643,7 +662,7 @@ def evaluate_ranked_model(
             sell_price_modifier_bps=float(sell_price_modifier_bps),
             amount_modifier_pct=float(amount_modifier_pct),
         )
-        actions = _lag_action_frame(actions, scenario.bars, int(task.config.decision_lag_bars))
+        actions = lag_action_frame(actions, scenario.bars, int(task.config.decision_lag_bars))
         result = simulate_actions(scenario.bars, actions, task.config)
         total_trade_count += int(result["trade_count"])
         scenario_rows.append(
@@ -1038,20 +1057,80 @@ def parse_float_list(raw: str | None) -> tuple[float, ...]:
     return tuple(values)
 
 
+def _cuda_runtime_diagnostics(
+    requested: str | None,
+    *,
+    resolved_device: torch.device | None = None,
+) -> str:
+    requested_token = (requested or "auto").strip().lower()
+    diagnostics = [f"requested_device={requested_token!r}"]
+    try:
+        cuda_available = bool(torch.cuda.is_available())
+    except Exception as exc:
+        diagnostics.append(f"cuda_available_error={type(exc).__name__}: {exc}")
+    else:
+        diagnostics.append(f"cuda_available={cuda_available}")
+    try:
+        diagnostics.append(f"cuda_device_count={int(torch.cuda.device_count())}")
+    except Exception as exc:
+        diagnostics.append(f"cuda_device_count_error={type(exc).__name__}: {exc}")
+    if resolved_device is not None:
+        diagnostics.append(f"resolved_device={resolved_device}")
+    return ", ".join(diagnostics)
+
+
 def resolve_autoresearch_training_device(requested: str | None) -> torch.device:
     token = (requested or "auto").strip().lower()
     if token == "cpu":
-        raise RuntimeError("Autoresearch stock trainer requires CUDA and cannot run on CPU.")
+        raise RuntimeError(
+            "Autoresearch stock trainer requires CUDA and cannot run on CPU "
+            f"({_cuda_runtime_diagnostics(requested)})."
+        )
     if not torch.cuda.is_available():
-        raise RuntimeError("Autoresearch stock trainer requires CUDA but no CUDA device is available.")
+        raise RuntimeError(
+            "Autoresearch stock trainer requires CUDA but no CUDA device is available "
+            f"({_cuda_runtime_diagnostics(requested)})."
+        )
     device = resolve_runtime_device(requested)
     if device.type != "cuda":
-        raise RuntimeError(f"Autoresearch stock trainer requires CUDA, got resolved device {device}.")
+        raise RuntimeError(
+            "Autoresearch stock trainer requires CUDA, "
+            f"got resolved device {device} ({_cuda_runtime_diagnostics(requested, resolved_device=device)})."
+        )
     return device
 
 
 def resolve_execution_modifier_tuning_enabled(*, requested: bool, disabled: bool) -> bool:
     return bool(requested) and not bool(disabled)
+
+
+def run_with_auto_cpu_fallback(
+    *,
+    requested_device: str | None,
+    device: torch.device,
+    context: str,
+    operation: RuntimeExecutionOperation[RuntimeValueT],
+) -> RuntimeExecutionResult[RuntimeValueT]:
+    current_device = device
+    fallback_used = False
+    while True:
+        try:
+            return RuntimeExecutionResult(
+                value=operation(current_device, fallback_used),
+                final_device=current_device,
+                fallback_used=fallback_used,
+            )
+        except Exception as exc:
+            if fallback_used or not should_auto_fallback_to_cpu(requested_device, current_device, exc):
+                raise
+            warnings.warn(
+                f"{context}: auto-selected CUDA unavailable during execution, falling back to CPU: {exc}",
+                RuntimeWarning,
+            )
+            if current_device.type == "cuda":
+                torch.cuda.empty_cache()
+            current_device = torch.device("cpu")
+            fallback_used = True
 
 
 def auto_lr_cache_path(cache_path: str | None = None) -> Path:
@@ -1411,6 +1490,8 @@ def save_autoresearch_checkpoint(
     training_seconds: float,
     total_seconds: float,
     peak_vram_mb: float,
+    runtime_device: str,
+    auto_cpu_fallback_used: bool,
     best_modifiers: ExecutionModifierSet,
     learning_rate_source: str,
     execution_modifier_tuning_enabled: bool,
@@ -1436,6 +1517,8 @@ def save_autoresearch_checkpoint(
             "training_seconds": float(training_seconds),
             "total_seconds": float(total_seconds),
             "peak_vram_mb": float(peak_vram_mb),
+            "runtime_device": str(runtime_device),
+            "auto_cpu_fallback_used": bool(auto_cpu_fallback_used),
             "learning_rate_source": str(learning_rate_source),
             "execution_modifier_tuning_enabled": bool(execution_modifier_tuning_enabled),
             "best_modifiers": asdict(best_modifiers),
@@ -1461,12 +1544,48 @@ def save_autoresearch_checkpoint(
     return checkpoint_path, best_path
 
 
+def _task_input_check_cli_args(argv: Sequence[str] | None) -> list[str]:
+    return list(sys.argv[1:] if argv is None else argv)
+
+
+def _without_task_input_check_flags(args: Sequence[str]) -> list[str]:
+    return [arg for arg in args if arg not in {"--check-inputs", "--check-inputs-text"}]
+
+
+def _task_input_follow_up_command(
+    args: Sequence[str],
+    *,
+    add_check_inputs: bool,
+) -> str:
+    command = [sys.executable, "-m", "autoresearch_stock.train", *_without_task_input_check_flags(args)]
+    if add_check_inputs:
+        command.append("--check-inputs")
+    return shlex.join(command)
+
+
+def _task_input_check_failure_message(exc: Exception) -> str:
+    message = f"Autoresearch stock input check failed: {exc}"
+    if TASK_INPUT_CHECK_WORKERS_ENV_VAR in str(exc):
+        return (
+            f"{message}\n"
+            f"Unset or set {TASK_INPUT_CHECK_WORKERS_ENV_VAR} to a positive integer before rerunning."
+        )
+    return message
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Train the autoresearch-style stock planner for a fixed time budget.")
     parser.add_argument("--frequency", choices=("hourly", "daily"), default="hourly")
-    parser.add_argument("--symbols", default="")
-    parser.add_argument("--data-root", default=None)
-    parser.add_argument("--recent-data-root", default=None)
+    parser.add_argument("--symbols", default="", help=symbols_help_text())
+    parser.add_argument("--data-root", default=None, help=data_root_help_text())
+    parser.add_argument(
+        "--recent-data-root",
+        default=None,
+        help="Optional overlay directory with recent per-symbol CSVs named like SYMBOL.csv.",
+    )
+    check_inputs_group = parser.add_mutually_exclusive_group()
+    check_inputs_group.add_argument("--check-inputs", action="store_true")
+    check_inputs_group.add_argument("--check-inputs-text", action="store_true")
     parser.add_argument("--sequence-length", type=int, default=None)
     parser.add_argument("--hold-bars", type=int, default=None)
     parser.add_argument("--eval-windows", default="")
@@ -1513,21 +1632,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--budget-consensus-dispersion", action="store_true")
     args = parser.parse_args(argv)
 
-    total_start = time.perf_counter()
-    device = resolve_autoresearch_training_device(args.device)
-    seed_everything(args.seed, deterministic=bool(args.deterministic))
-    resolved_hidden_size, resolved_layers, resolved_symbol_embedding_dim, resolved_batch_size, resolved_eval_batch_size = (
-        resolve_planner_sizing(
-            frequency=args.frequency,
-            device=device,
-            hidden_size=args.hidden_size,
-            num_layers=args.layers,
-            symbol_embedding_dim=args.symbol_embedding_dim,
-            batch_size=args.batch_size,
-            eval_batch_size=args.eval_batch_size,
-        )
-    )
-
     task_config = resolve_task_config(
         frequency=args.frequency,
         symbols=parse_csv_list(args.symbols) or None,
@@ -1548,6 +1652,39 @@ def main(argv: Sequence[str] | None = None) -> int:
         spread_lookback_days=args.spread_lookback_days,
         annual_leverage_rate=args.annual_leverage_rate,
         max_gross_leverage=args.max_gross_leverage,
+    )
+    cli_args = _task_input_check_cli_args(argv)
+    if args.check_inputs or args.check_inputs_text:
+        try:
+            check_result = run_task_input_check(task_config, text_output=bool(args.check_inputs_text))
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(_task_input_check_failure_message(exc), file=sys.stderr)
+            return 2
+        if args.check_inputs_text:
+            print(check_result.rendered_output)
+            if check_result.payload["all_symbols_ready"]:
+                print("Suggested command:")
+                print(f"  {_task_input_follow_up_command(cli_args, add_check_inputs=False)}")
+            else:
+                print("Suggested JSON command:")
+                print(f"  {_task_input_follow_up_command(cli_args, add_check_inputs=True)}")
+        else:
+            print(check_result.rendered_output)
+        return check_result.exit_code
+
+    total_start = time.perf_counter()
+    device = resolve_autoresearch_training_device(args.device)
+    seed_everything(args.seed, deterministic=bool(args.deterministic))
+    resolved_hidden_size, resolved_layers, resolved_symbol_embedding_dim, resolved_batch_size, resolved_eval_batch_size = (
+        resolve_planner_sizing(
+            frequency=args.frequency,
+            device=device,
+            hidden_size=args.hidden_size,
+            num_layers=args.layers,
+            symbol_embedding_dim=args.symbol_embedding_dim,
+            batch_size=args.batch_size,
+            eval_batch_size=args.eval_batch_size,
+        )
     )
     task = prepare_task(task_config)
     planner_cfg = PlannerConfig(
@@ -1596,277 +1733,294 @@ def main(argv: Sequence[str] | None = None) -> int:
         context_blocks=planner_cfg.context_blocks,
         weak_action_scale=planner_cfg.weak_action_scale,
     )
-    model, device = load_planner_model(
-        model_factory=model_factory,
-        requested_device=args.device,
-        device=device,
-        context="Autoresearch stock planner",
-    )
-    train_loader, val_loader, plan_class_weights_np, budget_class_weights_np = build_dataloaders(
-        task,
-        planner_cfg,
-        ambiguity_floor=ambiguity_floor,
-        pin_memory=(device.type == "cuda"),
-    )
-    model_parameters = count_trainable_parameters(model)
-    ema_state = clone_model_state(model)
-    plan_class_weights = torch.from_numpy(plan_class_weights_np).to(device=device, dtype=torch.float32)
-    budget_class_weights = torch.from_numpy(budget_class_weights_np).to(device=device, dtype=torch.float32)
-    learning_rate, learning_rate_source = resolve_learning_rate(
-        requested_lr=args.lr,
-        disable_auto_lr_find=bool(args.disable_auto_lr_find),
-        cache_path=args.auto_lr_cache,
-        cache_key=build_auto_lr_cache_key(
-            frequency=task.config.frequency,
-            device=device,
-            feature_dim=int(task.train_features.shape[-1]),
-            symbol_count=max(len(task.symbol_to_id), 1),
-            hidden_size=planner_cfg.hidden_size,
-            num_layers=planner_cfg.num_layers,
-            symbol_embedding_dim=planner_cfg.symbol_embedding_dim,
-            context_blocks=planner_cfg.context_blocks,
-            batch_size=planner_cfg.batch_size,
-        ),
-        tuner=lambda: auto_find_learning_rate(
+    def _run_training_for_device(runtime_device: torch.device, auto_cpu_fallback_used: bool) -> int:
+        planner_cfg.dataloader_workers = resolve_dataloader_workers(
+            device=runtime_device,
+            requested=(-1 if args.num_workers is None else int(args.num_workers)),
+        )
+        model, runtime_device = load_planner_model(
             model_factory=model_factory,
-            base_state=ema_state,
-            train_loader=train_loader,
             requested_device=args.device,
-            device=device,
+            device=runtime_device,
+            context="Autoresearch stock planner",
+        )
+        train_loader, val_loader, plan_class_weights_np, budget_class_weights_np = build_dataloaders(
+            task,
+            planner_cfg,
+            ambiguity_floor=ambiguity_floor,
+            pin_memory=(runtime_device.type == "cuda"),
+        )
+        model_parameters = count_trainable_parameters(model)
+        ema_state = clone_model_state(model)
+        plan_class_weights = torch.from_numpy(plan_class_weights_np).to(device=runtime_device, dtype=torch.float32)
+        budget_class_weights = torch.from_numpy(budget_class_weights_np).to(device=runtime_device, dtype=torch.float32)
+        learning_rate, learning_rate_source = resolve_learning_rate(
+            requested_lr=args.lr,
+            disable_auto_lr_find=bool(args.disable_auto_lr_find),
+            cache_path=args.auto_lr_cache,
+            cache_key=build_auto_lr_cache_key(
+                frequency=task.config.frequency,
+                device=runtime_device,
+                feature_dim=int(task.train_features.shape[-1]),
+                symbol_count=max(len(task.symbol_to_id), 1),
+                hidden_size=planner_cfg.hidden_size,
+                num_layers=planner_cfg.num_layers,
+                symbol_embedding_dim=planner_cfg.symbol_embedding_dim,
+                context_blocks=planner_cfg.context_blocks,
+                batch_size=planner_cfg.batch_size,
+            ),
+            tuner=lambda: auto_find_learning_rate(
+                model_factory=model_factory,
+                base_state=ema_state,
+                train_loader=train_loader,
+                requested_device=args.device,
+                device=runtime_device,
+                ambiguity_floor=ambiguity_floor,
+                plan_loss_weight=planner_cfg.plan_loss_weight,
+                margin_loss_weight=planner_cfg.margin_loss_weight,
+                budget_loss_weight=budget_loss_weight,
+                plan_class_weights=plan_class_weights,
+                budget_class_weights=budget_class_weights,
+                weight_decay=planner_cfg.weight_decay,
+            ),
+        )
+        planner_cfg.learning_rate = float(learning_rate)
+
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=float(planner_cfg.learning_rate),
+            weight_decay=float(planner_cfg.weight_decay),
+        )
+        scaler = torch.amp.GradScaler("cuda", enabled=(runtime_device.type == "cuda"))
+
+        if runtime_device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(runtime_device)
+
+        train_start = time.perf_counter()
+        step_count = 0
+        data_iter = iter(train_loader)
+        non_blocking = runtime_device.type == "cuda"
+        while (time.perf_counter() - train_start) < TIME_BUDGET:
+            try:
+                batch = next(data_iter)
+            except StopIteration:
+                data_iter = iter(train_loader)
+                batch = next(data_iter)
+
+            model.train()
+            optimizer.zero_grad(set_to_none=True)
+            features = batch["features"].to(device=runtime_device, dtype=torch.float32, non_blocking=non_blocking)
+            targets = batch["targets"].to(device=runtime_device, dtype=torch.float32, non_blocking=non_blocking)
+            symbol_ids = batch["symbol_ids"].to(device=runtime_device, dtype=torch.long, non_blocking=non_blocking)
+            weights = batch["weights"].to(device=runtime_device, dtype=torch.float32, non_blocking=non_blocking)
+            plan_labels = batch["plan_labels"].to(device=runtime_device, dtype=torch.long, non_blocking=non_blocking)
+            margin_targets = batch["margin_targets"].to(device=runtime_device, dtype=torch.float32, non_blocking=non_blocking)
+            budget_labels = batch["budget_labels"].to(device=runtime_device, dtype=torch.long, non_blocking=non_blocking)
+
+            autocast_enabled = runtime_device.type == "cuda"
+            with torch.amp.autocast(device_type=runtime_device.type, enabled=autocast_enabled):
+                predictions, plan_logits, margin_logits, budget_logits = model.predict_with_plan(features, symbol_ids)
+                loss = decision_aware_loss(
+                    predictions,
+                    targets,
+                    weights,
+                    ambiguity_floor=ambiguity_floor,
+                ) + planner_cfg.plan_loss_weight * plan_loss(
+                    plan_logits,
+                    plan_labels,
+                    weights,
+                    class_weights=plan_class_weights,
+                ) + planner_cfg.margin_loss_weight * margin_loss(
+                    margin_logits,
+                    margin_targets,
+                    weights,
+                ) + budget_loss_weight * budget_loss(
+                    budget_logits,
+                    budget_labels,
+                    weights,
+                    class_weights=budget_class_weights,
+                )
+
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+            step_count += 1
+            update_ema_state(ema_state, model, step_count=step_count, decay=planner_cfg.ema_decay)
+
+        training_seconds = time.perf_counter() - train_start
+        raw_state = clone_model_state(model)
+        raw_val_loss, raw_selection_loss = evaluate_validation(
+            model,
+            val_loader,
+            device=runtime_device,
             ambiguity_floor=ambiguity_floor,
             plan_loss_weight=planner_cfg.plan_loss_weight,
             margin_loss_weight=planner_cfg.margin_loss_weight,
             budget_loss_weight=budget_loss_weight,
             plan_class_weights=plan_class_weights,
             budget_class_weights=budget_class_weights,
-            weight_decay=planner_cfg.weight_decay,
-        ),
-    )
-    planner_cfg.learning_rate = float(learning_rate)
+        )
+        model.load_state_dict(ema_state, strict=True)
+        ema_val_loss, ema_selection_loss = evaluate_validation(
+            model,
+            val_loader,
+            device=runtime_device,
+            ambiguity_floor=ambiguity_floor,
+            plan_loss_weight=planner_cfg.plan_loss_weight,
+            margin_loss_weight=planner_cfg.margin_loss_weight,
+            budget_loss_weight=budget_loss_weight,
+            plan_class_weights=plan_class_weights,
+            budget_class_weights=budget_class_weights,
+        )
+        raw_is_better = raw_selection_loss < ema_selection_loss
+        if math.isclose(raw_selection_loss, ema_selection_loss, rel_tol=1e-4, abs_tol=1e-6):
+            raw_is_better = raw_val_loss <= ema_val_loss
+        if raw_is_better:
+            model.load_state_dict(raw_state, strict=True)
+            val_loss = raw_val_loss
+        else:
+            val_loss = ema_val_loss
+        eval_kwargs = {
+            "device": runtime_device,
+            "batch_size": planner_cfg.eval_batch_size,
+            "rank_top_k": planner_cfg.rank_top_k,
+            "rank_min_score": planner_cfg.rank_min_score,
+            "use_dynamic_score_floor": planner_cfg.use_dynamic_score_floor,
+            "rank_floor_min_strength": planner_cfg.rank_floor_min_strength,
+            "rank_floor_quantile": planner_cfg.rank_floor_quantile,
+            "rank_floor_gap_scale": planner_cfg.rank_floor_gap_scale,
+            "use_soft_rank_sizing": planner_cfg.use_soft_rank_sizing,
+            "use_timestamp_budget_head": planner_cfg.use_timestamp_budget_head,
+            "use_budget_guided_keep_count": planner_cfg.use_budget_guided_keep_count,
+            "use_continuous_budget_thresholds": planner_cfg.use_continuous_budget_thresholds,
+            "use_budget_entropy_confidence": planner_cfg.use_budget_entropy_confidence,
+            "use_budget_consensus_dispersion": planner_cfg.use_budget_consensus_dispersion,
+            "budget_skip_scale": planner_cfg.budget_skip_scale,
+            "budget_selective_scale": planner_cfg.budget_selective_scale,
+            "budget_selective_top_k": planner_cfg.budget_selective_top_k,
+            "budget_selective_max_keep": planner_cfg.budget_selective_max_keep,
+            "budget_broad_top_k": planner_cfg.budget_broad_top_k,
+            "budget_broad_max_keep": planner_cfg.budget_broad_max_keep,
+            "budget_selective_gap_scale": planner_cfg.budget_selective_gap_scale,
+            "budget_broad_gap_scale": planner_cfg.budget_broad_gap_scale,
+            "budget_skip_gap_scale": planner_cfg.budget_skip_gap_scale,
+            "budget_skip_min_score_scale": planner_cfg.budget_skip_min_score_scale,
+            "budget_selective_min_score_scale": planner_cfg.budget_selective_min_score_scale,
+            "budget_broad_min_score_scale": planner_cfg.budget_broad_min_score_scale,
+            "budget_confidence_power": planner_cfg.budget_confidence_power,
+            "budget_selective_prior_skip_weight": planner_cfg.budget_selective_prior_skip_weight,
+            "budget_uncertainty_gap_floor": planner_cfg.budget_uncertainty_gap_floor,
+            "budget_uncertainty_fractional_floor": planner_cfg.budget_uncertainty_fractional_floor,
+            "budget_broad_consensus_power": planner_cfg.budget_broad_consensus_power,
+            "budget_consensus_selective_reallocation": planner_cfg.budget_consensus_selective_reallocation,
+            "budget_consensus_gap_floor": planner_cfg.budget_consensus_gap_floor,
+            "budget_consensus_fractional_floor": planner_cfg.budget_consensus_fractional_floor,
+            "rank_sizing_reference_quantile": planner_cfg.rank_sizing_reference_quantile,
+            "rank_sizing_regime_floor_scale": planner_cfg.rank_sizing_regime_floor_scale,
+            "rank_sizing_name_floor_scale": planner_cfg.rank_sizing_name_floor_scale,
+            "rank_sizing_regime_power": planner_cfg.rank_sizing_regime_power,
+            "rank_sizing_rank_power": planner_cfg.rank_sizing_rank_power,
+            "rank_min_keep": planner_cfg.rank_min_keep,
+            "rank_max_keep": planner_cfg.rank_max_keep,
+            "rank_reference_quantile": planner_cfg.rank_reference_quantile,
+            "rank_gap_scale": planner_cfg.rank_gap_scale,
+        }
 
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=float(planner_cfg.learning_rate),
-        weight_decay=float(planner_cfg.weight_decay),
-    )
-    scaler = torch.amp.GradScaler("cuda", enabled=(device.type == "cuda"))
-
-    if device.type == "cuda":
-        torch.cuda.reset_peak_memory_stats(device)
-
-    train_start = time.perf_counter()
-    step_count = 0
-    data_iter = iter(train_loader)
-    non_blocking = device.type == "cuda"
-    while (time.perf_counter() - train_start) < TIME_BUDGET:
-        try:
-            batch = next(data_iter)
-        except StopIteration:
-            data_iter = iter(train_loader)
-            batch = next(data_iter)
-
-        model.train()
-        optimizer.zero_grad(set_to_none=True)
-        features = batch["features"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
-        targets = batch["targets"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
-        symbol_ids = batch["symbol_ids"].to(device=device, dtype=torch.long, non_blocking=non_blocking)
-        weights = batch["weights"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
-        plan_labels = batch["plan_labels"].to(device=device, dtype=torch.long, non_blocking=non_blocking)
-        margin_targets = batch["margin_targets"].to(device=device, dtype=torch.float32, non_blocking=non_blocking)
-        budget_labels = batch["budget_labels"].to(device=device, dtype=torch.long, non_blocking=non_blocking)
-
-        autocast_enabled = device.type == "cuda"
-        with torch.amp.autocast(device_type=device.type, enabled=autocast_enabled):
-            predictions, plan_logits, margin_logits, budget_logits = model.predict_with_plan(features, symbol_ids)
-            loss = decision_aware_loss(
-                predictions,
-                targets,
-                weights,
-                ambiguity_floor=ambiguity_floor,
-            ) + planner_cfg.plan_loss_weight * plan_loss(
-                plan_logits,
-                plan_labels,
-                weights,
-                class_weights=plan_class_weights,
-            ) + planner_cfg.margin_loss_weight * margin_loss(
-                margin_logits,
-                margin_targets,
-                weights,
-            ) + budget_loss_weight * budget_loss(
-                budget_logits,
-                budget_labels,
-                weights,
-                class_weights=budget_class_weights,
+        def _evaluate_with_modifiers(modifiers: ExecutionModifierSet) -> dict[str, Any]:
+            return evaluate_ranked_model(
+                model,
+                task,
+                buy_price_modifier_bps=modifiers.buy_price_modifier_bps,
+                sell_price_modifier_bps=modifiers.sell_price_modifier_bps,
+                amount_modifier_pct=modifiers.amount_modifier_pct,
+                **eval_kwargs,
             )
 
-        scaler.scale(loss).backward()
-        scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        scaler.step(optimizer)
-        scaler.update()
-        step_count += 1
-        update_ema_state(ema_state, model, step_count=step_count, decay=planner_cfg.ema_decay)
-
-    training_seconds = time.perf_counter() - train_start
-    raw_state = clone_model_state(model)
-    raw_val_loss, raw_selection_loss = evaluate_validation(
-        model,
-        val_loader,
-        device=device,
-        ambiguity_floor=ambiguity_floor,
-        plan_loss_weight=planner_cfg.plan_loss_weight,
-        margin_loss_weight=planner_cfg.margin_loss_weight,
-        budget_loss_weight=budget_loss_weight,
-        plan_class_weights=plan_class_weights,
-        budget_class_weights=budget_class_weights,
-    )
-    model.load_state_dict(ema_state, strict=True)
-    ema_val_loss, ema_selection_loss = evaluate_validation(
-        model,
-        val_loader,
-        device=device,
-        ambiguity_floor=ambiguity_floor,
-        plan_loss_weight=planner_cfg.plan_loss_weight,
-        margin_loss_weight=planner_cfg.margin_loss_weight,
-        budget_loss_weight=budget_loss_weight,
-        plan_class_weights=plan_class_weights,
-        budget_class_weights=budget_class_weights,
-    )
-    raw_is_better = raw_selection_loss < ema_selection_loss
-    if math.isclose(raw_selection_loss, ema_selection_loss, rel_tol=1e-4, abs_tol=1e-6):
-        raw_is_better = raw_val_loss <= ema_val_loss
-    if raw_is_better:
-        model.load_state_dict(raw_state, strict=True)
-        val_loss = raw_val_loss
-    else:
-        val_loss = ema_val_loss
-    eval_kwargs = {
-        "device": device,
-        "batch_size": planner_cfg.eval_batch_size,
-        "rank_top_k": planner_cfg.rank_top_k,
-        "rank_min_score": planner_cfg.rank_min_score,
-        "use_dynamic_score_floor": planner_cfg.use_dynamic_score_floor,
-        "rank_floor_min_strength": planner_cfg.rank_floor_min_strength,
-        "rank_floor_quantile": planner_cfg.rank_floor_quantile,
-        "rank_floor_gap_scale": planner_cfg.rank_floor_gap_scale,
-        "use_soft_rank_sizing": planner_cfg.use_soft_rank_sizing,
-        "use_timestamp_budget_head": planner_cfg.use_timestamp_budget_head,
-        "use_budget_guided_keep_count": planner_cfg.use_budget_guided_keep_count,
-        "use_continuous_budget_thresholds": planner_cfg.use_continuous_budget_thresholds,
-        "use_budget_entropy_confidence": planner_cfg.use_budget_entropy_confidence,
-        "use_budget_consensus_dispersion": planner_cfg.use_budget_consensus_dispersion,
-        "budget_skip_scale": planner_cfg.budget_skip_scale,
-        "budget_selective_scale": planner_cfg.budget_selective_scale,
-        "budget_selective_top_k": planner_cfg.budget_selective_top_k,
-        "budget_selective_max_keep": planner_cfg.budget_selective_max_keep,
-        "budget_broad_top_k": planner_cfg.budget_broad_top_k,
-        "budget_broad_max_keep": planner_cfg.budget_broad_max_keep,
-        "budget_selective_gap_scale": planner_cfg.budget_selective_gap_scale,
-        "budget_broad_gap_scale": planner_cfg.budget_broad_gap_scale,
-        "budget_skip_gap_scale": planner_cfg.budget_skip_gap_scale,
-        "budget_skip_min_score_scale": planner_cfg.budget_skip_min_score_scale,
-        "budget_selective_min_score_scale": planner_cfg.budget_selective_min_score_scale,
-        "budget_broad_min_score_scale": planner_cfg.budget_broad_min_score_scale,
-        "budget_confidence_power": planner_cfg.budget_confidence_power,
-        "budget_selective_prior_skip_weight": planner_cfg.budget_selective_prior_skip_weight,
-        "budget_uncertainty_gap_floor": planner_cfg.budget_uncertainty_gap_floor,
-        "budget_uncertainty_fractional_floor": planner_cfg.budget_uncertainty_fractional_floor,
-        "budget_broad_consensus_power": planner_cfg.budget_broad_consensus_power,
-        "budget_consensus_selective_reallocation": planner_cfg.budget_consensus_selective_reallocation,
-        "budget_consensus_gap_floor": planner_cfg.budget_consensus_gap_floor,
-        "budget_consensus_fractional_floor": planner_cfg.budget_consensus_fractional_floor,
-        "rank_sizing_reference_quantile": planner_cfg.rank_sizing_reference_quantile,
-        "rank_sizing_regime_floor_scale": planner_cfg.rank_sizing_regime_floor_scale,
-        "rank_sizing_name_floor_scale": planner_cfg.rank_sizing_name_floor_scale,
-        "rank_sizing_regime_power": planner_cfg.rank_sizing_regime_power,
-        "rank_sizing_rank_power": planner_cfg.rank_sizing_rank_power,
-        "rank_min_keep": planner_cfg.rank_min_keep,
-        "rank_max_keep": planner_cfg.rank_max_keep,
-        "rank_reference_quantile": planner_cfg.rank_reference_quantile,
-        "rank_gap_scale": planner_cfg.rank_gap_scale,
-    }
-
-    def _evaluate_with_modifiers(modifiers: ExecutionModifierSet) -> dict[str, Any]:
-        return evaluate_ranked_model(
-            model,
-            task,
-            buy_price_modifier_bps=modifiers.buy_price_modifier_bps,
-            sell_price_modifier_bps=modifiers.sell_price_modifier_bps,
-            amount_modifier_pct=modifiers.amount_modifier_pct,
-            **eval_kwargs,
+        best_modifiers = ExecutionModifierSet()
+        execution_modifier_tuning_enabled = resolve_execution_modifier_tuning_enabled(
+            requested=bool(args.execution_modifier_tuning),
+            disabled=bool(args.disable_execution_modifier_tuning),
         )
+        eval_result = _evaluate_with_modifiers(best_modifiers)
+        if execution_modifier_tuning_enabled:
+            best_modifiers, eval_result = tune_execution_modifiers(
+                _evaluate_with_modifiers,
+                buy_grid_bps=parse_float_list(args.buy_price_modifier_grid_bps),
+                sell_grid_bps=parse_float_list(args.sell_price_modifier_grid_bps),
+                amount_grid_pct=parse_float_list(args.amount_modifier_grid_pct),
+            )
+        summary = eval_result["summary"]
+        peak_vram_mb = 0.0
+        if runtime_device.type == "cuda":
+            peak_vram_mb = float(torch.cuda.max_memory_allocated(runtime_device) / (1024.0 * 1024.0))
 
-    best_modifiers = ExecutionModifierSet()
-    execution_modifier_tuning_enabled = resolve_execution_modifier_tuning_enabled(
-        requested=bool(args.execution_modifier_tuning),
-        disabled=bool(args.disable_execution_modifier_tuning),
-    )
-    eval_result = _evaluate_with_modifiers(best_modifiers)
-    if execution_modifier_tuning_enabled:
-        best_modifiers, eval_result = tune_execution_modifiers(
-            _evaluate_with_modifiers,
-            buy_grid_bps=parse_float_list(args.buy_price_modifier_grid_bps),
-            sell_grid_bps=parse_float_list(args.sell_price_modifier_grid_bps),
-            amount_grid_pct=parse_float_list(args.amount_modifier_grid_pct),
+        total_seconds = time.perf_counter() - total_start
+        checkpoint_dir = resolve_autoresearch_checkpoint_dir(
+            frequency=task.config.frequency,
+            checkpoint_dir=args.checkpoint_dir,
         )
-    summary = eval_result["summary"]
-    peak_vram_mb = 0.0
-    if device.type == "cuda":
-        peak_vram_mb = float(torch.cuda.max_memory_allocated(device) / (1024.0 * 1024.0))
+        saved_checkpoint_path, best_checkpoint_path = save_autoresearch_checkpoint(
+            checkpoint_dir=checkpoint_dir,
+            frequency=task.config.frequency,
+            model=model,
+            planner_cfg=planner_cfg,
+            task=task,
+            summary=summary,
+            val_loss=float(val_loss),
+            model_parameters=model_parameters,
+            step_count=step_count,
+            training_seconds=training_seconds,
+            total_seconds=total_seconds,
+            peak_vram_mb=peak_vram_mb,
+            runtime_device=str(runtime_device),
+            auto_cpu_fallback_used=auto_cpu_fallback_used,
+            best_modifiers=best_modifiers,
+            learning_rate_source=learning_rate_source,
+            execution_modifier_tuning_enabled=execution_modifier_tuning_enabled,
+            top_k_checkpoints=int(args.top_k_checkpoints),
+        )
+        print("---")
+        print(f"robust_score:      {float(summary['robust_score']):.6f}")
+        print(f"val_loss:          {float(val_loss):.6f}")
+        print(f"training_seconds:  {training_seconds:.1f}")
+        print(f"total_seconds:     {total_seconds:.1f}")
+        print(f"peak_vram_mb:      {peak_vram_mb:.1f}")
+        print(f"runtime_device:    {runtime_device}")
+        print(f"auto_cpu_fallback: {'yes' if auto_cpu_fallback_used else 'no'}")
+        print(f"scenario_count:    {int(summary['scenario_count'])}")
+        print(f"total_trade_count: {int(summary['total_trade_count'])}")
+        print(f"train_samples:     {len(task.train_features)}")
+        print(f"num_steps:         {int(step_count)}")
+        print(f"model_parameters:  {model_parameters}")
+        print(f"hidden_size:       {planner_cfg.hidden_size}")
+        print(f"layers:            {planner_cfg.num_layers}")
+        print(f"context_blocks:    {planner_cfg.context_blocks}")
+        print(f"learning_rate:     {planner_cfg.learning_rate:.6g}")
+        print(f"lr_source:         {learning_rate_source}")
+        print(f"batch_size:        {planner_cfg.batch_size}")
+        print(f"eval_batch_size:   {planner_cfg.eval_batch_size}")
+        print(f"num_workers:       {planner_cfg.dataloader_workers}")
+        print(f"deterministic:     {planner_cfg.deterministic}")
+        print(f"exec_mod_tuning:   {execution_modifier_tuning_enabled}")
+        print(f"buy_mod_bps:       {best_modifiers.buy_price_modifier_bps:.1f}")
+        print(f"sell_mod_bps:      {best_modifiers.sell_price_modifier_bps:.1f}")
+        print(f"amount_mod_pct:    {best_modifiers.amount_modifier_pct:.1f}")
+        print(f"frequency:         {task.config.frequency}")
+        print(f"hold_bars:         {int(task.config.hold_bars)}")
+        print(f"checkpoint_dir:    {checkpoint_dir}")
+        print(f"saved_checkpoint:  {saved_checkpoint_path}")
+        print(f"best_checkpoint:   {best_checkpoint_path or ''}")
+        return 0
 
-    total_seconds = time.perf_counter() - total_start
-    checkpoint_dir = resolve_autoresearch_checkpoint_dir(
-        frequency=task.config.frequency,
-        checkpoint_dir=args.checkpoint_dir,
+    execution_result = run_with_auto_cpu_fallback(
+        requested_device=args.device,
+        device=device,
+        context="Autoresearch stock trainer",
+        operation=_run_training_for_device,
     )
-    saved_checkpoint_path, best_checkpoint_path = save_autoresearch_checkpoint(
-        checkpoint_dir=checkpoint_dir,
-        frequency=task.config.frequency,
-        model=model,
-        planner_cfg=planner_cfg,
-        task=task,
-        summary=summary,
-        val_loss=float(val_loss),
-        model_parameters=model_parameters,
-        step_count=step_count,
-        training_seconds=training_seconds,
-        total_seconds=total_seconds,
-        peak_vram_mb=peak_vram_mb,
-        best_modifiers=best_modifiers,
-        learning_rate_source=learning_rate_source,
-        execution_modifier_tuning_enabled=execution_modifier_tuning_enabled,
-        top_k_checkpoints=int(args.top_k_checkpoints),
-    )
-    print("---")
-    print(f"robust_score:      {float(summary['robust_score']):.6f}")
-    print(f"val_loss:          {float(val_loss):.6f}")
-    print(f"training_seconds:  {training_seconds:.1f}")
-    print(f"total_seconds:     {total_seconds:.1f}")
-    print(f"peak_vram_mb:      {peak_vram_mb:.1f}")
-    print(f"scenario_count:    {int(summary['scenario_count'])}")
-    print(f"total_trade_count: {int(summary['total_trade_count'])}")
-    print(f"train_samples:     {len(task.train_features)}")
-    print(f"num_steps:         {int(step_count)}")
-    print(f"model_parameters:  {model_parameters}")
-    print(f"hidden_size:       {planner_cfg.hidden_size}")
-    print(f"layers:            {planner_cfg.num_layers}")
-    print(f"context_blocks:    {planner_cfg.context_blocks}")
-    print(f"learning_rate:     {planner_cfg.learning_rate:.6g}")
-    print(f"lr_source:         {learning_rate_source}")
-    print(f"batch_size:        {planner_cfg.batch_size}")
-    print(f"eval_batch_size:   {planner_cfg.eval_batch_size}")
-    print(f"num_workers:       {planner_cfg.dataloader_workers}")
-    print(f"deterministic:     {planner_cfg.deterministic}")
-    print(f"exec_mod_tuning:   {execution_modifier_tuning_enabled}")
-    print(f"buy_mod_bps:       {best_modifiers.buy_price_modifier_bps:.1f}")
-    print(f"sell_mod_bps:      {best_modifiers.sell_price_modifier_bps:.1f}")
-    print(f"amount_mod_pct:    {best_modifiers.amount_modifier_pct:.1f}")
-    print(f"frequency:         {task.config.frequency}")
-    print(f"hold_bars:         {int(task.config.hold_bars)}")
-    print(f"checkpoint_dir:    {checkpoint_dir}")
-    print(f"saved_checkpoint:  {saved_checkpoint_path}")
-    print(f"best_checkpoint:   {best_checkpoint_path or ''}")
-    return 0
+    return int(execution_result.value)
 
 
 if __name__ == "__main__":

@@ -32,15 +32,30 @@ PortfolioStepResult Portfolio::step(
 
     auto opts = torch::TensorOptions().dtype(torch::kFloat32).device(device_);
 
-    // Get current close price
-    auto current_price = prices.index({torch::indexing::Slice(), 3});  // close
+    // Get current close price (mark price)
+    auto close_price = prices.index({torch::indexing::Slice(), 3});  // close
 
-    // If using high/low strategy, execute based on high/low prices
+    // Execution price selection:
+    //   1. high/low strategy (legacy maxdiff path) — unchanged
+    //   2. DPS limit-fill override installed by market_env (use limit fill price
+    //      for both fills and the per-step PnL mark, so trade-edge alpha lands
+    //      in PnL accounting)
+    //   3. SCALAR legacy: execution_price = current close, mark = close.
+    //
+    // The SCALAR codepath is bit-identical to the previous version when no
+    // override is installed because execution_price_override_ defaults to an
+    // undefined tensor, and we then fall through to the original branch.
     torch::Tensor execution_price;
+    torch::Tensor current_price;
     if (use_high_low_strategy) {
         execution_price = execute_high_low_strategy(action, prices);
+        current_price = close_price;
+    } else if (execution_price_override_.defined()) {
+        execution_price = execution_price_override_;
+        current_price = execution_price_override_;
     } else {
-        execution_price = current_price;
+        execution_price = close_price;
+        current_price = close_price;
     }
 
     // Get trading fee rate
@@ -49,7 +64,13 @@ PortfolioStepResult Portfolio::step(
 
     // Determine target position size based on action
     // action represents leverage multiplier (-max_leverage to +max_leverage)
-    auto clamped_action = torch::clamp(action, -config_.MAX_LEVERAGE, config_.MAX_LEVERAGE);
+    // SCALAR mode: clamp to legacy MAX_LEVERAGE. DPS mode: caller installs an override
+    // (see set_leverage_cap_override) so direction*size can reach max_leverage_dps. The
+    // SCALAR codepath is bit-identical to before because leverage_cap_override_ defaults
+    // to 0.0f and the branch picks config_.MAX_LEVERAGE in that case.
+    float lev_cap = (leverage_cap_override_ > 0.0f) ? leverage_cap_override_
+                                                    : config_.MAX_LEVERAGE;
+    auto clamped_action = torch::clamp(action, -lev_cap, lev_cap);
 
     // For crypto, no short selling (negative positions)
     if (is_crypto) {

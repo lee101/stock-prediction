@@ -7,6 +7,187 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
+### 2026-04-11 — Confidence gate fix + OPTX added
+
+- **Root cause identified**: `DEFAULT_MIN_OPEN_CONFIDENCE = 0.20` was blocking ALL trades.
+  The 32-model ensemble with 13 long-only actions (uniform=0.077) consistently outputs
+  confidence ~0.11-0.12 for its top pick — well above random but below the 0.20 threshold.
+  Every signal since the service restarted on 2026-04-08 was blocked (GOOG @0.116, SPY @0.114).
+- **Fix**: Lowered `DEFAULT_MIN_OPEN_CONFIDENCE` from 0.20 → **0.05** in `src/daily_stock_defaults.py`.
+  This is above uniform (1/25 = 0.04) but well below the observed 0.11-0.12 ensemble output.
+  The 0.20 threshold was calibrated for single-model operation; the 32-model ensemble's
+  softmax average naturally dilutes confidence across models.
+- **daily-rl-trader.service restarted**: 2026-04-11 01:35 UTC, new PID 1652847.
+  Next market-hour decision: Monday 2026-04-14 ~13:35 UTC. Sleeping 3599 min.
+- **Alpaca account**: equity $28,679 (down from ~$38,954 in March — market drawdown),
+  no stock positions, no open orders, API status ACTIVE.
+- **OPTX (Syntec Optics Holdings, Technology) added**:
+  - Saved 1055 bars (5yr) to `trainingdata/OPTX.csv`
+  - Added to `llm-stock-trader` symbol list: YELP, NET, DBX, **OPTX**
+  - `llm-stock-trader` restarted on `llm_stock_writer` lock (coexists with daily-rl-trader)
+  - OPTX cannot join the 32-model RL ensemble without retraining (13 symbols vs trained 12)
+- **Orchestrator lock bug fixed**: `unified_orchestrator/orchestrator.py` was ignoring `--lock-name`
+  in live mode and forcing `alpaca_live_writer`, blocking LLM trader startup. Fixed to respect
+  `--lock-name` so multiple non-overlapping traders can coexist with different lock files.
+- **llm-stock-trader** RUNNING: pid 1686618, lock=llm_stock_writer, symbols=YELP NET DBX OPTX
+
+### 2026-04-08 — Alpaca daily PPO audit + 120d replay
+- **Actual machine state (verified on host, not just docs)**:
+  - `daily-rl-trader.service`: **ACTIVE** since **2026-04-08 10:23:53 UTC**
+  - Main PID at audit: `2599365`
+  - Exact live command: `.venv313/bin/python -u trade_daily_stock_prod.py --daemon --live --allocation-pct 12.5`
+  - Runtime config confirms: **32-model ensemble**, symbols `AAPL,MSFT,NVDA,GOOG,META,TSLA,SPY,QQQ,PLTR,JPM,V,AMZN`
+  - `unified-orchestrator.service`: `inactive`
+  - Process audit found **no** running `unified_orchestrator.orchestrator` or `trade_unified_hourly_meta` stock process at check time. `supervisorctl status` was not readable from the current shell due permissions, so this was validated via `ps` rather than supervisor RPC.
+- **Important mismatch discovered**:
+  - The checked-in daily feature builder now uses `RSI(14)` in place of the old duplicated `trend_20d`.
+  - The live 32-model prod ensemble was trained **before** that fix.
+  - Therefore, current code + old prod ensemble is a feature-mismatch risk and should not be treated as equivalent to the historical 32-model leaderboard numbers.
+- **120 trading-day local replay using calibrated execution offsets (`entry=+5bps`, `exit=+25bps`)**:
+  - **Legacy prod feature mapping** (approximate old live feature layout): `+0.21% total`, `+0.04% monthly`, `Sortino 0.14`, `MaxDD -2.99%`, `24 trades`
+  - **Current RSI feature mapping** with the same 32-model ensemble: `-0.92% total`, `-0.16% monthly`, `Sortino -0.53`, `MaxDD -3.04%`, `26 trades`
+  - **Current RSI + concentrated 95% allocation**: `-5.17% total`, `-0.93% monthly`, `MaxDD -21.58%`
+  - **Current RSI + 190% allocation @ 2x buying power**: `-22.86% total`, `-4.44% monthly`, `MaxDD -43.15%`
+- **Decision**:
+  - Do **not** increase concentration or apply 2x leverage to the current stock ensemble.
+  - Do **not** assume the running daily service matches the historical prod backtests unless the legacy feature mapping is restored or the ensemble is retrained on the RSI feature set.
+  - Near-term bar remains: retrained RSI-family checkpoints must beat the legacy ensemble under realistic replay before any allocation increase.
+- **Repo fix landed in this session**:
+  - Added a daily-stock feature-schema compatibility guard in `trade_daily_stock_prod.py` + `src/daily_stock_feature_schema.py`.
+  - Known `pufferlib_market/prod_ensemble/*` checkpoints now use the legacy pre-RSI daily feature vector automatically.
+  - `stocks12_v5_rsi/*` checkpoints use the RSI feature vector.
+  - Mixed-schema ensembles now fail fast instead of silently running undefined feature semantics.
+  - Optimized the trading-server backtest/variant-matrix path to precompute aligned close-price matrices and timestamps once in `PreparedDailyBacktestData` instead of re-reading them from pandas inside every simulated day.
+  - Tightened `src/alpaca_account_lock.py` so in-process lock reuse is only idempotent for the same `service_name`; conflicting service identities now fail loudly with holder metadata instead of silently sharing the writer lock.
+  - Hardened `src/alpaca_account_lock.py` and `src/alpaca_singleton.py` to reject path-like Alpaca account names before deriving lock-file or buy-memory state paths, closing a traversal-style state-file escape hatch.
+  - Improved `src/alpaca_singleton.py` observability for death-spiral state corruption: malformed buy-memory JSON is now logged loudly to stderr and quarantined to a timestamped `.corrupt-*` file instead of being silently ignored in place.
+  - Added a cross-process file lock around `src/alpaca_singleton.py` buy-memory read/modify/write paths so concurrent processes cannot silently clobber each other’s death-spiral state updates.
+  - Hardened `src/autoresearch_stock/prepare.py` to load symbol CSVs by attempting the read directly rather than depending on a pre-`Path.exists()` check, which removed a brittle hourly smoke-test failure under the repo-wide suite.
+  - Daily stock runtime startup logs now include preflight-derived checkpoint schema/feature-dimension details, primary/ensemble policy classes, local data freshness, and preflight warnings so production has a single structured record of what actually passed startup validation.
+  - Human-readable daily stock preflight output (`--check-config --check-config-text`) now surfaces the checkpoint arch/schema/feature-dimension and ensemble policy classes, so the operator-facing readiness report matches the richer JSON/runtime diagnostics.
+  - Daily stock preflight now also supports a compact operator summary (`--check-config --check-config-summary`) that prints a single stderr line with readiness, symbol usability, checkpoint schema/dimension, local-data freshness, and first-error context for quick terminal checks.
+  - The daily stock CLI now rejects `--check-config-text` and `--check-config-summary` unless `--check-config` is also present, so setup mistakes fail explicitly instead of silently ignoring the requested output mode.
+  - Shared local-data health reporting now includes invalid-symbol reasons inline, so daily-stock preflight failures explain why a CSV is unreadable without forcing operators to cross-reference file-path errors separately.
+  - Shared local-data health reporting now truncates large stale/missing/invalid symbol lists with a preview and `(+N more)` tail, so operator logs stay readable as symbol universes grow.
+  - Daily stock preflight local-data inspection now uses lightweight CSV metadata reads instead of fully normalizing each daily frame just to compute row counts and freshness, which reduces startup/preflight churn as symbol counts grow while preserving unreadable-file detection.
+  - Hardened `trade_daily_stock_prod.py` state-file handling so malformed or type-invalid `state.json` no longer silently resets to empty state. `load_state(...)` now fails closed with a clear error, and the daemon logs that condition and sleeps 5 minutes instead of trading blind or crashing.
+  - Daily stock daemon transient retry paths now emit structured `Daemon warning:` JSON logs for state-load failures and market-clock retry/sleep events, so operators can diagnose live incidents from logs without scraping free-form warning strings.
+  - Hardened the daily stock state/log artifact guards to reject broken symlink paths as well as live symlinks, closing a race-prone gap where a dangling symlink could bypass the existing safety check and be followed later by the state or JSONL write path.
+  - Tests: `tests/test_daily_stock_feature_schema.py`, `tests/test_daily_rl_service_unit.py`, `tests/test_validate_marketsim.py`, `tests/test_validate_marketsim_shim.py`, `tests/test_alpaca_account_lock.py`, `tests/test_alpaca_singleton.py`, `tests/test_autoresearch_stock_prepare.py`, `tests/test_autoresearch_stock_train_smoke.py`
+  - **Important**: the currently running `daily-rl-trader.service` PID predates this repo change; restart is required before live runtime picks up the compatibility guard.
+
+### 2026-04-07 — Crypto → Stocks recipe port (FAILED, baseline s42 retained)
+- **Goal**: apply crypto34 hourly champion's training recipe (h1024 + RunningObsNorm + BF16 autocast + CUDA-graph PPO) to stocks12 v5_rsi daily, on top of the existing h1024 + legacy linear anneal stocks recipe.
+- **Script**: `scripts/stocks12_v5_rsi_crypto_recipe.sh` (seeds 100–104, 15M total timesteps after the v1 30M+cosine attempt over-converged into a 1-trade/episode policy with val med=0.2%; v1 dir kept as `stocks12_v5_rsi_cryptorcp/tp05_s100_v1_30M_cosine_BAD` for postmortem).
+- **Checkpoints**: `pufferlib_market/checkpoints/stocks12_v5_rsi_cryptorcp/tp05_s{100..104}/` + per-seed `eval_holdout50.json`.
+- **Result vs s42 baseline (med=+36%, p10=+26.3%, 0/58 neg, ~25 trades/window)**:
+
+  | seed | med | p10 | worst | best | sortino | trades/win |
+  |------|-----|-----|-------|------|---------|------------|
+  | s100 | +6.89% | +4.88% | +2.19% | +12.48% | 13.0 | 1 |
+  | s101 |  0.00% |  0.00% |  0.00% |  0.00% |  0.0 | 0 (degenerate) |
+  | s102 | +4.06% | +0.56% | -1.72% |  +9.11% |  7.2 | 1 |
+  | s103 | -0.96% | -2.30% | -3.84% |  +1.40% | -8.75 | 11 |
+  | **s104** | **+12.36%** | **+7.76%** | **+5.04%** | **+32.54%** | **22.7** | **22** |
+
+  s104 is the only partial win: robust (0/50 neg), actively trading (22 trades/window), Sortino 22.7. Still below s42 baseline (+36% median) so does **not** meet the ensemble bar — but proves the recipe is not fundamentally broken, just unstable across seeds. Recipe → seed-collapse rate 4/5.
+
+- **Diagnosis**: All trained seeds collapse to 1-trade-per-window or 0-trade. Hypothesis: obs_norm + bf16 + cuda_graph improve gradient quality, which lets `--trade-penalty 0.05` dominate faster on the small daily dataset (only 1306 timesteps train). The s42 baseline benefits from noisier gradients that prevent trade-collapse. Daily PPO does not respond like hourly PPO to the crypto recipe.
+- **Decision**: keep s42 in production, do NOT add s100/s101/s102 to the 32-model prod ensemble. Recipe port is **worse than current**.
+- **Next experiments queued**:
+  1. Ablate `--trade-penalty` to 0.02 with the same crypto recipe (does the trade-collapse go away?).
+  2. Single-knob ablation: add only `--obs-norm` (no bf16, no cuda-graph) on top of baseline to isolate which knob causes the collapse.
+  3. Pivot to scaling: extend `newnanoalpacahourlyexp` per-symbol architecture to 100+ symbol coverage; the C env `ctrader/market_sim.h MAX_SYMBOLS=64` blocks monolithic scaling.
+
+### 2026-04-07 — v5_rsi crypto-recipe ablations (CONFIRMS s42 is champion)
+- Two single-variable ablations to diagnose the recipe-port collapse from the previous section.
+- **Ablation A — full recipe + `--trade-penalty 0.02`** (was 0.05): seeds 200/201/202.
+- **Ablation B — only `--obs-norm` on top of baseline** (no bf16, no cuda-graph): seeds 300/301/302.
+- Driver: `scripts/stocks12_v5_rsi_ablations.sh A|B`. CSVs in `pufferlib_market/stocks12_v5_rsi_ablate_{tp02,obsonly}_leaderboard.csv`.
+
+  | Ablation | Seed | Med | p10 | Worst | Best | Sortino | Trades | Verdict |
+  |----------|------|-----|-----|-------|------|---------|--------|---------|
+  | A tp=0.02 | s200 | **−22.67%** | −28.79% | −31.09% | −14.17% | −26.6 | 13 | catastrophic |
+  | A tp=0.02 | s201 | +18.39% | +1.24% | −1.11% | +28.41% | 15.0 | 25 | best of batch |
+  | A tp=0.02 | s202 |  +7.16% | −13.21% | −14.37% | +14.25% |  7.4 | 26 | tail risk |
+  | B obs-norm | s300 | −4.00% | −20.71% | −21.16% |  +7.36% | −4.1 | 14 | bad |
+  | B obs-norm | s301 | −3.40% | −17.36% | −21.48% | +10.23% | −1.4 | 30 | bad |
+  | B obs-norm | s302 |  +2.89% |  +0.14% |  −1.94% |  +5.60% |  7.2 | 26 | marginal |
+  | **baseline s42** | | **+36%** | **+26.3%** | (0/58 neg) | — | **28** | ~ | **champion** |
+
+- **Diagnosis**: `--obs-norm` is the principal harm. B (obs-norm alone, three independent seeds) is uniformly worse than baseline. A (which keeps obs-norm but lowers trade penalty) is high-variance — the lower penalty sometimes overcomes the obs-norm damage and sometimes amplifies overfitting (s200). The crypto champion benefits from obs-norm because hourly crypto values span a wider distribution; daily stock returns are already roughly Gaussian and don't need normalization on the v5_rsi feature set.
+- **Decision**: keep s42 in production. Do **not** port `--obs-norm` to daily stocks training. Crypto-recipe port closed as complete (8 seeds total: 5 cryptorcp + 3 ablation A + 3 ablation B = 0 deployable models).
+- **Replay videos** rendered for visual comparison:
+  - `models/artifacts/v5_rsi_cryptorcp/videos/baseline_s42_window0.mp4` — s42 on val window 0: **+34.59% / 22 trades / Sortino 3.93 / DD 8.37%**
+  - `models/artifacts/v5_rsi_cryptorcp/videos/s104_window0.mp4` — s104 cryptorcp on same window: **+10.08% / 25 trades / Sortino 3.15 / DD 4.90%** (overly conservative)
+  - Renderer: `scripts/render_prod_stocks_video.py` (already wired into `src/marketsim_video.py`).
+  - Note: needed `uv pip install --python .venv313/bin/python imageio_ffmpeg` and `TMPDIR=$(pwd)/.tmp_train` to dodge the Triton/tempfile race that breaks training without obs-norm flags too.
+
+### 2026-04-08 — Singleton writer lock + death-spiral guard baked into alpaca_wrapper; prod restarted
+
+- **Goal**: make it physically impossible to run two live Alpaca writers at
+  once, and to sell below the last buy (death-spiral loop).
+- **How**: new `src/alpaca_singleton.py`, wired into `alpaca_wrapper.py` at
+  import time. Every process that touches live Alpaca write API takes an
+  fcntl writer lock on `strategy_state/account_locks/alpaca_live_writer.lock`
+  — a second live import exits 42. Paper mode (`ALP_PAPER=1`) skips the
+  gate so unlimited paper clients can run. `alpaca_order_stock` now calls
+  `guard_sell_against_death_spiral` before submitting any order; a sell
+  priced more than 50 bps below the last recorded buy for the symbol
+  raises RuntimeError and never reaches Alpaca. Buy prices persist on disk
+  for 3 days. `src/alpaca_account_lock.py` is now per-process idempotent
+  so the wrapper and daemon can both acquire without racing themselves.
+- **Tests**: `tests/test_alpaca_singleton.py` — 6/6 passing (paper no-op,
+  live acquire, 2nd live fails with exit 42, override bypass, death-spiral
+  refuse, death-spiral no-record-allows). `tests/test_eval_100d.py` 8/8.
+- **Redeploy**: `sudo systemctl restart daily-rl-trader.service`. Old PID
+  2622306 → new PID 2599365 at 2026-04-08T10:23:53 UTC, lock handoff clean.
+  Service is LIVE, 32-model ensemble loaded, sleeping 190min until next
+  tick. Verified: a second live probe against the live lock exits 42 with
+  the holder PID named in stderr.
+- **Break-glass**: `ALPACA_SINGLETON_OVERRIDE=1` /
+  `ALPACA_DEATH_SPIRAL_OVERRIDE=1` — never in systemd units, human-only,
+  every invocation prints `OVERRIDE ACTIVE` to stderr.
+- **Ground rules documented**: `AGENTS.md` + `CLAUDE.md` have a new
+  "PRODUCTION GROUND RULES" section at the top: 27%/month PnL target,
+  single-writer rule, death-spiral guard, keep the tests green.
+
+### 2026-04-08 — ctrader/binance_bot: first end-to-end C pipeline lands
+- **Problem**: the existing `ctrader/main.c` + `trade_loop.c` has been architectural scaffolding only — `ctrader/policy_infer.c` is a stub that returns "model not loaded" and `trade_loop.c:build_observation` emits a 6-dim-per-symbol vector that has nothing to do with the 209-dim obs the RL policies train against. The C side has never actually run a trained model.
+- **Fix (this session)**: new `ctrader/binance_bot/` subdirectory with three pure-C components (no libtorch, no BLAS, no libcurl):
+  1. `policy_mlp.{c,h}` — loads a `.ctrdpol` binary (produced by `scripts/export_policy_to_ctrader.py`) and runs the full MLP forward pass for stocks12-style policies: Linear → ReLU ×3, optional LayerNorm, Linear → ReLU → Linear. Verified against a Python twin built from the same state_dict: **max abs diff 1.4e-6 on all 25 logits for s42** (209→1024³→LN→512→25, 2.85M params, 11.4 MB file). argmax matches.
+  2. `obs_builder.{c,h}` — produces the 209-dim obs vector byte-identically to `pufferlib_market/inference.py:build_observation` given the same MKTD row + portfolio state. Parity test: **0.000e+00 max abs diff** on window 0 of `stocks12_daily_v5_rsi_val.bin`.
+  3. `backtest_main.c` — end-to-end binary: `mktd_reader` + `obs_builder` + `policy_mlp.forward` + a v0 C trade sim. Runs s42 on 90-bar windows and prints total return + max drawdown + num trades. First end-to-end invocation on s42 window 0: **+14.80% / 68 trades / DD 16.72%**.
+- **Known gap (follow-up)**: Python `render_prod_stocks_video.py` reports +34.59% / 22 trades / DD 8.37% on the same s42 window 0. Policy forward is byte-perfect (parity tested), so the entire delta is in the v0 C trade simulator: full-cash allocation on every flip, no decision lag (Python uses ≥2), no fill buffer, no fractional action bins, no max-hold. Port the semantics from `pufferlib_market/evaluate_holdout.py` into `backtest_main.c` next.
+- **Build & test**:
+  ```
+  cd ctrader/binance_bot && make test
+  ```
+  Produces `.tmp/test_policy_mlp_parity` (OK @ 1.4e-6), `.tmp/test_obs_builder_parity` (OK @ 0.0), and `.tmp/backtest_main` (returns +14.80% for s42 on val window 0). TMPDIR pinned in the Makefile to dodge the gcc/triton /tmp race.
+- **Why this matters**: it's the first time the ctrader codebase has actually run a trained policy end-to-end. Makes the "live Binance bot in C" plan from the previous sessions concrete and unblocks the trade_loop.c stub replacement, paper-mode dry run, and Alpaca REST port follow-ups (see `ctrader/binance_bot/README.md` for the sequenced plan).
+- **Files added**:
+  - `ctrader/binance_bot/policy_mlp.{c,h}` (pure-C MLP)
+  - `ctrader/binance_bot/obs_builder.{c,h}` (209-dim obs builder)
+  - `ctrader/binance_bot/backtest_main.c` (end-to-end C backtest)
+  - `ctrader/binance_bot/tests/test_policy_mlp_parity.c`
+  - `ctrader/binance_bot/tests/test_obs_builder_parity.c`
+  - `ctrader/binance_bot/Makefile`
+  - `ctrader/binance_bot/README.md`
+  - `ctrader/models/stocks12_v5_rsi_s42.ctrdpol` (11.4 MB s42 weights, exported)
+  - `scripts/export_policy_to_ctrader.py`
+  - `scripts/gen_policy_mlp_parity_fixture.py`
+  - `scripts/gen_obs_parity_fixture.py`
+
+### 2026-04-07 — ctrader C audit (in progress)
+- **Existing tests**: `ctrader/tests/test_market_sim.c` 145→**151 passed** after adding 3 new fee/borrow pin tests:
+  - `test_alpaca_margin_rate_pin`: pins 6.25% APR → `0.0625/8760` hourly, validates margin cost > 0 and within plausible band.
+  - `test_binance_borrow_rate_pin`: pins ~3% APR Binance cross-margin midrate, validates strict ordering Binance < Alpaca for identical scenarios.
+  - `test_binance_fdusd_zero_fee_pin`: validates round-trip equity is unchanged when `maker_fee=0` (FDUSD pairs per `BINANCE_FDUSD_ZERO_FEE.md`).
+  - Build (avoid /tmp gcc temp issue): `cd ctrader && TMPDIR=$PWD/.tmp gcc -O2 -Wall -std=c11 -o .tmp/test_market_sim tests/test_market_sim.c market_sim.c -lm && .tmp/test_market_sim`
+- **Parity test failures (RESOLVED 2026-04-07)**: `ctrader/tests/test_sim_parity.c` was 100/120 (20 failures, all `compute_max_drawdown` sign mismatch). After re-auditing the codebase: positive-magnitude is the **canonical** convention (used by `market_sim.c`, `pufferlib_market.binding_fallback`, `pufferlib_market.evaluate_holdout`, `compute_calmar`, `robust_trading_metrics.py`, and the `test_target_weights_max_drawdown_is_positive` C test). The outlier was the `py_compute_max_drawdown` helper inside `scripts/verify_ctrader_parity.py` which generated the parity fixture with signed values matching `rlsys/utils.py`. Fixed the generator to return positive magnitude, regenerated `ctrader/tests/parity_cases.bin`, parity test now **140 passed, 0 failed**. Zero API blast.
+- **Compiler warning** (pre-existing, surfaced by gcc -Wall): `market_sim.c:247 next_weights` `-Wmaybe-uninitialized` in `weight_env_step` via `clamp_target_weights`. Not from any new test code.
+- **C in live Binance bot**: confirmed `rl_trading_agent_binance/trade_binance_live.py` does **not** import `market_sim_ffi` or load `libmarket_sim.so`. Live bot uses Python-side fill simulation only — task #4 (wire C sim into live bot) is greenfield.
+
 ### Current Alpaca snapshot (2026-04-06 audit)
 - **LIVE account**: equity ~$38,954 (flat, no positions since ~2026-04-01)
 - **daily-rl-trader.service**: STOPPED (was crash-looping 4725+ restarts, missing ALP_KEY_ID_PROD/ALP_SECRET_KEY_PROD). Stopped 2026-04-06 to save resources.
@@ -199,6 +380,29 @@
 - **Service manager**: systemd unit `daily-rl-trader.service`
 - **Installed unit**: `/etc/systemd/system/daily-rl-trader.service`
 - **Installed ExecStart**: `.venv313/bin/python -u trade_daily_stock_prod.py --daemon --live --allocation-pct 12.5`
+- **Status (2026-04-09)**: DIAGNOSED BUT NOT REDEPLOYED — service is healthy, live account is reachable, but new entries are currently blocked by the execution confidence gate
+  - `daily-rl-trader.service` has been running since `2026-04-08 10:23:53 UTC`
+  - Live broker snapshot on `2026-04-09`: account `ACTIVE`, `0` open orders, `0` stock positions; only dust crypto leftovers remain
+  - Last stock fills were GOOG buy on `2026-04-01 13:35:13 UTC` and GOOG sell on `2026-04-07 16:28:01 UTC`
+  - Recent live runs:
+    - `2026-04-08 13:35 UTC`: `long_AAPL` blocked (`confidence=0.1061 < min_open_confidence=0.2000`, `value_estimate=-0.0215 < 0`)
+    - `2026-04-09 13:35 UTC`: `long_GOOG` blocked (`confidence=0.1157 < min_open_confidence=0.2000`)
+  - Root cause of the inactivity is the new default `DEFAULT_MIN_OPEN_CONFIDENCE = 0.20` introduced in commit `985ba08d` on `2026-04-08`; the 32-model ensemble's live confidence prints are currently below that threshold
+  - Do **not** hotfix by simply lowering the gate without requalification. 100-day backtest with current 32-model ensemble + calibrated offsets (`entry=+5bps`, `exit=+25bps`, `allocation=12.5%`) produced:
+    - `min_open_confidence=0.20`: `0` trades, `0.00%` total return, `100` blocked opens
+    - `min_open_confidence=0.10`: `21` trades, `+0.24%` total return, Sortino `0.19`, MaxDD `-2.99%`
+    - `min_open_confidence=0.00`: `27` trades, `+0.20%` total return, Sortino `0.16`, MaxDD `-3.07%`
+  - Requalification sweep on `2026-04-09`:
+    - `origin/main` is ahead by one README-only docs commit (`3b364488`); there is no unpulled Alpaca stock prod fix
+    - Archived `stocks12_v5_rsi` champions do not clear the current 100-day gate. Fresh `scripts/eval_100d.py` runs:
+      - `tp05_s42` @ `1.0x`: **FAIL**, worst-slip monthly `-0.39%`
+      - `tp05_s42` @ `2.0x`: **FAILED_FAST**, max drawdown `32.0%` on the first completed window
+      - current prod solo `s15.pt` @ `1.0x`: **FAIL**, worst-slip monthly `-0.47%`
+      - current prod solo `s15.pt` @ `2.0x`: **FAIL**, worst-slip monthly `-4.19%`
+    - Local orchestration-only 100d backtests can make `s15.pt` trade much more aggressively:
+      - best local config seen was `allocation=100%`, `multi_position=2`, `leverage=2.0x` with `+37.31%` total return over 100d (`+6.89%` derived monthly), Sortino `3.87`, MaxDD `-4.57%`
+      - however that execution policy is **not** certified by `scripts/eval_100d.py`, which does not expose `multi_position` / allocation orchestration knobs, and the underlying checkpoint fails the actual 100d gate even before that wrapper logic
+  - Conclusion: the gate explains why prod stopped trading after the `2026-04-08` restart, but neither a threshold rollback nor the aggressive `s15` resweep produced a deployable candidate; prod remains intentionally unreleased pending a checkpoint family that clears the true 100d bar
 - **Status (2026-03-31)**: CALIBRATED — limit orders at entry+5bps/exit+25bps, allocation reduced 25%→12.5%
 - **Status (2026-04-01)**: VERIFIED on refreshed data; current 32-model prod ensemble stays deployed, latest 3M-step retrain is not promotable
 - **Calibration (2026-03-31)**: 726-combo sweep over 788 windows (90d each), 11 entry x 11 exit x 6 scale

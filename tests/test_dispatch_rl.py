@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -41,6 +42,34 @@ _REAL_GPU_ALIASES = {
     "4090": "NVIDIA GeForce RTX 4090",
     "5090": "NVIDIA GeForce RTX 5090",
 }
+
+
+def test_dispatch_rl_uses_shared_safe_ssh_options() -> None:
+    assert dispatch._SSH_OPTS == ["-o", "StrictHostKeyChecking=accept-new", "-o", "BatchMode=yes"]
+
+
+def test_dispatch_rl_ssh_run_includes_stderr_context_on_failure(monkeypatch) -> None:
+    def _fake_run(cmd, check=False, text=True, capture_output=True):
+        return subprocess.CompletedProcess(cmd, 255, stdout="", stderr="connection refused")
+
+    monkeypatch.setattr(dispatch.subprocess, "run", _fake_run)
+
+    with pytest.raises(RuntimeError, match="SSH command failed"):
+        dispatch._ssh_run("1.2.3.4", 22, "echo hi")
+
+
+def test_dispatch_rl_scp_from_pod_prints_failure_context(monkeypatch, capsys, tmp_path: Path) -> None:
+    def _fake_run(cmd, check=False, text=True, capture_output=True):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="remote file missing")
+
+    monkeypatch.setattr(dispatch.subprocess, "run", _fake_run)
+
+    ok = dispatch._scp_from_pod("1.2.3.4", 22, "/remote/missing.csv", tmp_path / "out.csv")
+
+    output = capsys.readouterr().out
+    assert ok is False
+    assert "scp from pod failed for /remote/missing.csv" in output
+    assert "remote file missing" in output
 
 
 # ---------------------------------------------------------------------------

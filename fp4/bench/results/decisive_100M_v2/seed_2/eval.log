@@ -1,0 +1,14 @@
+market_data_load: 12 symbols, 148 timesteps from /nvme0n1-disk/code/stock-prediction/pufferlib_market/data/stocks12_daily_v5_rsi_val.bin
+# 100d unseen-data eval — `best.pt`
+
+- **status**: FAIL  (-0.78%/month vs target 27.00%/month)
+- windows: 30 × 100d  (total 3000d unseen)
+- backend: pufferlib_market
+
+| slip_bps | median total | median monthly | p10 total | p10 monthly | sortino | max dd | n_neg |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | -2.87% | -0.61% | -8.34% | -1.81% | -3.33 | 10.23% | 30/30 |
+| 5 | -2.21% | -0.47% | -9.10% | -1.98% | -1.65 | 10.64% | 30/30 |
+| 10 | -1.96% | -0.41% | -9.86% | -2.16% | -2.55 | 11.19% | 24/30 |
+| 20 | -3.64% | -0.78% | -11.36% | -2.50% | -5.89 | 12.27% | 29/30 |
+

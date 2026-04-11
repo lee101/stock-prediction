@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import sys
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -27,6 +29,24 @@ def test_configure_default_jax_platforms_preserves_explicit_choice(monkeypatch) 
 
     assert selected is None
     assert os.environ["JAX_PLATFORMS"] == "cuda"
+
+
+def test_configure_default_jax_platforms_updates_imported_jax_config(monkeypatch) -> None:
+    monkeypatch.delenv("JAX_PLATFORMS", raising=False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    jax_utils.clear_jax_device_cache()
+
+    updates: list[tuple[str, str]] = []
+    fake_jax = SimpleNamespace(
+        config=SimpleNamespace(update=lambda key, value: updates.append((key, value)))
+    )
+    monkeypatch.setitem(sys.modules, "jax", fake_jax)
+
+    selected = jax_utils.configure_default_jax_platforms()
+
+    assert selected == "cpu"
+    assert os.environ["JAX_PLATFORMS"] == "cpu"
+    assert updates == [("jax_platforms", "cpu")]
 
 
 def test_as_jax_array_uses_cpu_device_when_cuda_hidden(monkeypatch) -> None:

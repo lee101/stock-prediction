@@ -226,28 +226,31 @@ def test_load_policy_preserves_valid_action_max_offset_bps_metadata(tmp_path: Pa
     assert loaded.action_max_offset_bps == pytest.approx(12.5)
 
 
-def test_load_policy_rejects_incompatible_action_grid_metadata(tmp_path: Path):
+def test_load_policy_preserves_action_grid_metadata(tmp_path: Path):
     num_symbols = 1
     obs_size = num_symbols * 16 + 5 + num_symbols
-    num_actions = 1 + 2 * num_symbols
+    num_actions = 1 + 2 * num_symbols * 2 * 3
     source_policy = eval_mod.TradingPolicy(obs_size, num_actions, hidden=16)
     payload = {
         "model": source_policy.state_dict(),
         "action_allocation_bins": 2,
         "action_level_bins": 3,
+        "action_max_offset_bps": 12.5,
     }
 
-    with (
-        patch.object(eval_mod, "load_checkpoint_payload", return_value=payload),
-        pytest.raises(ValueError, match=r"Only supports alloc_bins=1 level_bins=1 \(got 2, 3\)"),
-    ):
-        eval_mod.load_policy(
+    with patch.object(eval_mod, "load_checkpoint_payload", return_value=payload):
+        loaded = eval_mod.load_policy(
             str(tmp_path / "checkpoint.pt"),
             num_symbols,
             arch="mlp",
             hidden_size=16,
             device=torch.device("cpu"),
         )
+
+    assert loaded.num_actions == num_actions
+    assert loaded.action_allocation_bins == 2
+    assert loaded.action_level_bins == 3
+    assert loaded.action_max_offset_bps == pytest.approx(12.5)
 
 
 def test_evaluate_checkpoint_includes_effective_policy_metadata(tmp_path: Path):
@@ -312,6 +315,48 @@ def test_evaluate_checkpoint_includes_effective_policy_metadata(tmp_path: Path):
             "action_max_offset_bps": 0.0,
         }
     ]
+
+
+def test_evaluate_period_forwards_action_grid_to_simulator() -> None:
+    fake_data = SimpleNamespace(num_timesteps=40)
+    seen: dict[str, float] = {}
+
+    def _fake_policy_fn(_obs) -> int:
+        return 0
+
+    def _fake_simulate_daily_policy(*args, **kwargs):
+        seen["action_allocation_bins"] = float(kwargs["action_allocation_bins"])
+        seen["action_level_bins"] = float(kwargs["action_level_bins"])
+        seen["action_max_offset_bps"] = float(kwargs["action_max_offset_bps"])
+        return SimpleNamespace(
+            total_return=0.0,
+            sortino=0.0,
+            max_drawdown=0.0,
+            num_trades=0,
+            win_rate=0.0,
+            avg_hold_steps=0.0,
+        )
+
+    with (
+        patch.object(eval_mod, "_slice_tail", return_value=fake_data),
+        patch.object(eval_mod, "simulate_daily_policy", side_effect=_fake_simulate_daily_policy),
+    ):
+        result = eval_mod.evaluate_period(
+            policy=object(),
+            data=SimpleNamespace(num_timesteps=40),
+            eval_hours=24,
+            num_symbols=1,
+            action_allocation_bins=3,
+            action_level_bins=2,
+            action_max_offset_bps=7.5,
+        )
+
+    assert result["eval_hours"] == 24
+    assert seen == {
+        "action_allocation_bins": 3.0,
+        "action_level_bins": 2.0,
+        "action_max_offset_bps": 7.5,
+    }
 
 
 def test_format_table_includes_checkpoint_identity_effective_config_and_period_summary() -> None:

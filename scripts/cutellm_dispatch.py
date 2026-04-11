@@ -55,6 +55,7 @@ from src.runpod_client import (  # noqa: E402
     RunPodClient,
     resolve_gpu_type,
 )
+from src.runpod_remote_utils import SSH_OPTIONS, render_subprocess_error  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -75,7 +76,7 @@ CUTELLM_DEFAULT_EXPERIMENTS_JSON = (
 CUTELLM_PROGRESS_MD = CUTELLM_ROOT / "PROGRESS.md"
 CUTELLM_REMOTE_DIR = "/workspace/cutellm"
 
-_SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes"]
+_SSH_OPTS = list(SSH_OPTIONS)
 
 DISPATCH_HOURLY_RATES: dict[str, float] = {
     "NVIDIA A100 80GB PCIe": 1.64,
@@ -158,7 +159,14 @@ def _ssh_run(
         remote_cmd,
     ]
     print(f"[ssh] {remote_cmd[:120]}")
-    return subprocess.run(cmd, check=check)
+    result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+    if check and result.returncode != 0:
+        raise render_subprocess_error(
+            description="SSH command failed",
+            cmd=cmd,
+            result=result,
+        )
+    return result
 
 
 def _rsync_to_pod(
@@ -179,7 +187,13 @@ def _rsync_to_pod(
         f"root@{ssh_host}:{remote_dir}/",
     ]
     print(f"[rsync] {local_dir} -> {remote_dir}")
-    subprocess.run(cmd, check=True)
+    result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+    if result.returncode != 0:
+        raise render_subprocess_error(
+            description=f"rsync to pod failed for {local_dir}",
+            cmd=cmd,
+            result=result,
+        )
 
 
 def _scp_from_pod(
@@ -195,7 +209,13 @@ def _scp_from_pod(
         f"root@{ssh_host}:{remote_path}",
         str(local_path),
     ]
-    result = subprocess.run(cmd, check=False)
+    result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+    if result.returncode != 0:
+        print(render_subprocess_error(
+            description=f"scp from pod failed for {remote_path}",
+            cmd=cmd,
+            result=result,
+        ))
     return result.returncode == 0
 
 

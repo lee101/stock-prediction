@@ -90,10 +90,6 @@ def load_policy(
         action_level_bins=1,
         action_max_offset_bps=0.0,
     )
-    if action_allocation_bins != 1 or action_level_bins != 1:
-        raise ValueError(
-            f"Only supports alloc_bins=1 level_bins=1 (got {action_allocation_bins}, {action_level_bins})"
-        )
 
     obs_size = num_symbols * features_per_sym + 5 + num_symbols
     fallback_actions = 1 + 2 * num_symbols
@@ -151,6 +147,7 @@ def make_policy_fn(
     policy: nn.Module,
     *,
     num_symbols: int,
+    tradable_mask: torch.Tensor | None = None,
     disable_shorts: bool = False,
     shortable_mask: torch.Tensor | None = None,
     deterministic: bool = True,
@@ -164,6 +161,8 @@ def make_policy_fn(
         obs_t = torch.from_numpy(obs.astype(np.float32, copy=False)).to(device=device).view(1, -1)
         with torch.no_grad():
             logits, _ = policy(obs_t)
+        if tradable_mask is not None:
+            logits = _mask_disallowed_symbols(logits, num_symbols=num_symbols, tradable_mask=tradable_mask)
         if disable_shorts:
             logits = _mask_all_shorts(logits, num_symbols=num_symbols)
         elif shortable_mask is not None:
@@ -183,6 +182,27 @@ def make_policy_fn(
     return _policy_fn
 
 
+def _mask_disallowed_symbols(
+    logits: torch.Tensor,
+    *,
+    num_symbols: int,
+    tradable_mask: torch.Tensor,
+) -> torch.Tensor:
+    if tradable_mask.numel() != num_symbols:
+        raise ValueError("tradable_mask length mismatch")
+    if tradable_mask.dtype is not torch.bool:
+        tradable_mask = tradable_mask.to(torch.bool)
+    if bool(torch.all(tradable_mask)):
+        return logits
+    masked = logits.clone()
+    min_val = torch.finfo(masked.dtype).min
+    disallowed = (~tradable_mask).nonzero(as_tuple=False).view(-1).tolist()
+    for sym_idx in disallowed:
+        masked[:, 1 + int(sym_idx)] = min_val
+        masked[:, 1 + num_symbols + int(sym_idx)] = min_val
+    return masked
+
+
 def evaluate_period(
     policy: nn.Module,
     data: MktdData,
@@ -199,6 +219,9 @@ def evaluate_period(
     deterministic: bool = True,
     decision_lag: int = 0,
     device: torch.device = torch.device("cpu"),
+    action_allocation_bins: int = 1,
+    action_level_bins: int = 1,
+    action_max_offset_bps: float = 0.0,
 ) -> dict:
     """Evaluate a single time period on the tail of data."""
     if data.num_timesteps < eval_hours + 1:
@@ -227,6 +250,9 @@ def evaluate_period(
         max_leverage=max_leverage,
         periods_per_year=periods_per_year,
         short_borrow_apr=short_borrow_apr,
+        action_allocation_bins=action_allocation_bins,
+        action_level_bins=action_level_bins,
+        action_max_offset_bps=action_max_offset_bps,
     )
 
     ann_ret = annualize_total_return(
@@ -296,6 +322,9 @@ def evaluate_checkpoint(
             deterministic=deterministic,
             decision_lag=decision_lag,
             device=device,
+            action_allocation_bins=loaded.action_allocation_bins,
+            action_level_bins=loaded.action_level_bins,
+            action_max_offset_bps=loaded.action_max_offset_bps,
         )
         r["period"] = period_name
         r["checkpoint"] = checkpoint_path

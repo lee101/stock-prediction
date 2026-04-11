@@ -1,0 +1,21 @@
+{
+  "device": "cuda",
+  "num_envs": 4096,
+  "obs_dim": 16,
+  "act_dim": 1,
+  "hidden": 64,
+  "iters": 200,
+  "torch_version": "2.9.0+cu130",
+  "rows": {
+    "fp4_eager_env_only": 6013778.1592679145,
+    "fp4_eager_env_plus_policy": 4398883.756147913,
+    "fp4_cuda_graph": 38605946.476129286,
+    "marketsim_real_eager": 139.7671226934904,
+    "marketsim_real_cuda_graph": NaN,
+    "pufferlib_bf16_baseline": null
+  },
+  "pufferlib_bf16_sps": null,
+  "marketsim_num_envs": 4096,
+  "marketsim_obs_dim": 305,
+  "marketsim_act_dim": 3
+}

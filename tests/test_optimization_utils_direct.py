@@ -177,6 +177,30 @@ class TestDirectOptimizer:
 
     def test_close_at_eod_parameter(self, sample_data):
         """Test optimization with close_at_eod parameter"""
+        objective_keep_open = opt_utils._EntryExitObjective(
+            sample_data['close_actual'],
+            sample_data['positions'],
+            sample_data['high_actual'],
+            sample_data['high_pred'],
+            sample_data['low_actual'],
+            sample_data['low_pred'],
+            close_at_eod=False,
+            trading_fee=None,
+        )
+        objective_close_eod = opt_utils._EntryExitObjective(
+            sample_data['close_actual'],
+            sample_data['positions'],
+            sample_data['high_actual'],
+            sample_data['high_pred'],
+            sample_data['low_actual'],
+            sample_data['low_pred'],
+            close_at_eod=True,
+            trading_fee=None,
+        )
+        reference_params = (0.01, -0.01)
+
+        assert objective_keep_open(reference_params) != objective_close_eod(reference_params)
+
         h1, l1, p1 = optimize_entry_exit_multipliers(
             sample_data['close_actual'],
             sample_data['positions'],
@@ -187,6 +211,7 @@ class TestDirectOptimizer:
             close_at_eod=False,
             maxiter=20,
             popsize=6,
+            seed=42,
         )
 
         h2, l2, p2 = optimize_entry_exit_multipliers(
@@ -199,10 +224,11 @@ class TestDirectOptimizer:
             close_at_eod=True,
             maxiter=20,
             popsize=6,
+            seed=42,
         )
 
-        # Results should differ (different policy)
-        assert h1 != h2 or l1 != l2 or p1 != p2
+        assert p1 == pytest.approx(-objective_keep_open((h1, l1)))
+        assert p2 == pytest.approx(-objective_close_eod((h2, l2)))
 
     def test_trading_fee_effect(self, sample_data):
         """Test that trading fee affects optimization"""

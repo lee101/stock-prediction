@@ -21,6 +21,10 @@ from loguru import logger
 
 from data_curate_daily import download_daily_stock_data
 from src.alpaca_stock_expansion import default_stock_expansion_candidates, get_sp500_symbols
+from src.symbol_file_utils import (
+    SymbolFileOrdering,
+    load_symbols_from_file as load_symbols_from_text_file,
+)
 from src.symbol_utils import is_crypto_symbol
 from src.trade_directions import DEFAULT_ALPACA_LIVE8_STOCKS
 
@@ -286,13 +290,12 @@ def load_symbols_file(path: Path) -> List[str]:
     file_path = Path(path)
     if not file_path.exists():
         raise FileNotFoundError(f"Symbols file does not exist: {file_path}")
-    tokens: List[str] = []
-    for raw_line in file_path.read_text().splitlines():
-        line = raw_line.split("#", 1)[0].strip()
-        if not line:
-            continue
-        tokens.extend(_split_symbol_tokens(line))
-    unique = sorted(set(tokens))
+    unique = load_symbols_from_text_file(
+        file_path,
+        normalize_symbol=_canonical_cli_symbol,
+        dedupe=True,
+        ordering=SymbolFileOrdering.SORTED,
+    )
     if not unique:
         raise RuntimeError(f"No symbols found in {file_path}")
     return unique

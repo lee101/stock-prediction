@@ -19,14 +19,14 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from pufferlib_market.evaluate_multiperiod import load_policy, make_policy_fn
+from pufferlib_market.evaluate_multiperiod import LoadedPolicy, load_policy, make_policy_fn
 from pufferlib_market.hourly_replay import (
     InitialPositionSpec,
     load_hourly_market,
     read_mktd,
     replay_hourly_frozen_daily_actions,
-    simulate_hourly_policy,
     simulate_daily_policy,
+    simulate_hourly_policy,
 )
 from pufferlib_market.metrics import annualize_total_return
 from src.robust_trading_metrics import (
@@ -34,6 +34,18 @@ from src.robust_trading_metrics import (
     compute_pnl_smoothness_from_equity,
     compute_ulcer_index,
 )
+
+
+def _build_tradable_mask(symbols: list[str], tradable_symbols_raw: str) -> torch.Tensor | None:
+    requested = [str(symbol).strip().upper() for symbol in str(tradable_symbols_raw or "").split(",") if str(symbol).strip()]
+    if not requested:
+        return None
+    requested_set = set(requested)
+    symbol_map = [str(symbol).strip().upper() for symbol in symbols]
+    missing = sorted(requested_set.difference(symbol_map))
+    if missing:
+        raise ValueError(f"--tradable-symbols contains unknown symbols: {', '.join(missing)}")
+    return torch.tensor([symbol in requested_set for symbol in symbol_map], dtype=torch.bool)
 
 
 def _order_day_stats(orders_by_day: dict[str, int], num_days: int) -> dict[str, object]:
@@ -185,6 +197,24 @@ def _summarize_robust_scenarios(scenarios: list[dict[str, object]]) -> dict[str,
     return summary
 
 
+def _coerce_loaded_policy(value: object) -> LoadedPolicy:
+    if isinstance(value, LoadedPolicy):
+        return value
+    if isinstance(value, tuple) and len(value) == 3:
+        policy, metadata, num_actions = value
+        meta = metadata if isinstance(metadata, dict) else {}
+        return LoadedPolicy(
+            policy=policy,
+            arch=str(meta.get("arch", "unknown")),
+            hidden_size=int(meta.get("hidden_size", 0) or 0),
+            action_allocation_bins=int(meta.get("action_allocation_bins", 1) or 1),
+            action_level_bins=int(meta.get("action_level_bins", 1) or 1),
+            action_max_offset_bps=float(meta.get("action_max_offset_bps", 0.0) or 0.0),
+            num_actions=int(num_actions),
+        )
+    raise TypeError(f"Unsupported load_policy result: {type(value)!r}")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description="Replay daily RL actions on hourly prices")
     p.add_argument("--checkpoint", required=True)
@@ -204,6 +234,8 @@ def main() -> None:
     p.add_argument("--short-borrow-apr", type=float, default=0.0)
     p.add_argument("--daily-periods-per-year", type=float, default=365.0)
     p.add_argument("--hourly-periods-per-year", type=float, default=8760.0)
+    p.add_argument("--disable-shorts", action="store_true")
+    p.add_argument("--tradable-symbols", default="")
     p.add_argument("--arch", choices=["auto", "mlp", "resmlp"], default="auto")
     p.add_argument("--hidden-size", type=int, default=None)
     p.add_argument("--deterministic", action="store_true")
@@ -227,18 +259,28 @@ def main() -> None:
     daily_data = read_mktd(args.daily_data_path)
     S = daily_data.num_symbols
     features_per_sym = int(daily_data.features.shape[2])
-    policy, _, _ = load_policy(
-        args.checkpoint,
-        S,
-        arch=args.arch,
-        hidden_size=args.hidden_size,
-        device=device,
-        features_per_sym=features_per_sym,
+    tradable_mask = _build_tradable_mask(daily_data.symbols, args.tradable_symbols)
+    resolved_tradable_symbols = (
+        [symbol for symbol, enabled in zip(daily_data.symbols, tradable_mask.tolist(), strict=True) if enabled]
+        if tradable_mask is not None
+        else list(daily_data.symbols)
+    )
+    loaded = _coerce_loaded_policy(
+        load_policy(
+            args.checkpoint,
+            S,
+            arch=args.arch,
+            hidden_size=args.hidden_size,
+            device=device,
+            features_per_sym=features_per_sym,
+        )
     )
 
     policy_fn = make_policy_fn(
-        policy,
+        loaded.policy,
         num_symbols=S,
+        tradable_mask=tradable_mask,
+        disable_shorts=bool(args.disable_shorts),
         deterministic=bool(args.deterministic),
         device=device,
     )
@@ -253,6 +295,9 @@ def main() -> None:
         max_leverage=args.max_leverage,
         short_borrow_apr=args.short_borrow_apr,
         periods_per_year=args.daily_periods_per_year,
+        action_allocation_bins=loaded.action_allocation_bins,
+        action_level_bins=loaded.action_level_bins,
+        action_max_offset_bps=loaded.action_max_offset_bps,
     )
 
     market = load_hourly_market(
@@ -273,6 +318,9 @@ def main() -> None:
         max_leverage=args.max_leverage,
         short_borrow_apr=args.short_borrow_apr,
         periods_per_year=args.hourly_periods_per_year,
+        action_allocation_bins=loaded.action_allocation_bins,
+        action_level_bins=loaded.action_level_bins,
+        action_max_offset_bps=loaded.action_max_offset_bps,
     )
 
     hourly_policy = None
@@ -288,6 +336,9 @@ def main() -> None:
             max_leverage=args.max_leverage,
             short_borrow_apr=args.short_borrow_apr,
             periods_per_year=args.hourly_periods_per_year,
+            action_allocation_bins=loaded.action_allocation_bins,
+            action_level_bins=loaded.action_level_bins,
+            action_max_offset_bps=loaded.action_max_offset_bps,
         )
 
     report = {
@@ -296,6 +347,8 @@ def main() -> None:
         "hourly_data_root": str(args.hourly_data_root),
         "date_range": {"start": args.start_date, "end": args.end_date},
         "symbols": list(daily_data.symbols),
+        "tradable_symbols": resolved_tradable_symbols,
+        "disable_shorts": bool(args.disable_shorts),
         "fill_buffer_bps": float(args.fill_buffer_bps),
         "daily": _section_metrics(
             total_return=daily.total_return,
@@ -346,6 +399,9 @@ def main() -> None:
                 short_borrow_apr=args.short_borrow_apr,
                 periods_per_year=args.daily_periods_per_year,
                 initial_position=initial_position,
+                action_allocation_bins=loaded.action_allocation_bins,
+                action_level_bins=loaded.action_level_bins,
+                action_max_offset_bps=loaded.action_max_offset_bps,
             )
             scenario: dict[str, object] = {
                 "name": name,
@@ -373,6 +429,9 @@ def main() -> None:
                 short_borrow_apr=args.short_borrow_apr,
                 periods_per_year=args.hourly_periods_per_year,
                 initial_position=initial_position,
+                action_allocation_bins=loaded.action_allocation_bins,
+                action_level_bins=loaded.action_level_bins,
+                action_max_offset_bps=loaded.action_max_offset_bps,
             )
             scenario["hourly_replay"] = _section_metrics(
                 total_return=scenario_hourly.total_return,
@@ -398,6 +457,9 @@ def main() -> None:
                     short_borrow_apr=args.short_borrow_apr,
                     periods_per_year=args.hourly_periods_per_year,
                     initial_position=initial_position,
+                    action_allocation_bins=loaded.action_allocation_bins,
+                    action_level_bins=loaded.action_level_bins,
+                    action_max_offset_bps=loaded.action_max_offset_bps,
                 )
                 scenario["hourly_policy"] = _section_metrics(
                     total_return=scenario_hourly_policy.total_return,

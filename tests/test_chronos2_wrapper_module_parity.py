@@ -16,6 +16,8 @@ def test_chronos2_root_module_reexports_src_implementation() -> None:
 
 def test_root_multiscale_module_uses_shared_chronos2_wrapper() -> None:
     root_multiscale = importlib.import_module("models.multiscale_chronos")
+    src_multiscale = importlib.import_module("src.models.multiscale_chronos")
     src_module = importlib.import_module("src.models.chronos2_wrapper")
 
+    assert root_multiscale is src_multiscale
     assert root_multiscale.Chronos2OHLCWrapper is src_module.Chronos2OHLCWrapper

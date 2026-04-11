@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from io import StringIO
 from pathlib import Path
@@ -198,6 +199,34 @@ def test_enforce_budget_dry_run_warns_not_raises(capsys):
     out = capsys.readouterr().out
     assert "budget warning" in out
     assert "10.00" in out
+
+
+def test_cutellm_dispatch_uses_shared_safe_ssh_options() -> None:
+    assert dispatch._SSH_OPTS == ["-o", "StrictHostKeyChecking=accept-new", "-o", "BatchMode=yes"]
+
+
+def test_cutellm_ssh_run_includes_stderr_context_on_failure(monkeypatch) -> None:
+    def _fake_run(cmd, check=False, text=True, capture_output=True):
+        return subprocess.CompletedProcess(cmd, 255, stdout="", stderr="permission denied")
+
+    monkeypatch.setattr(dispatch.subprocess, "run", _fake_run)
+
+    with pytest.raises(RuntimeError, match="SSH command failed"):
+        dispatch._ssh_run("1.2.3.4", 22, "echo hi")
+
+
+def test_cutellm_scp_from_pod_prints_failure_context(monkeypatch, capsys, tmp_path: Path) -> None:
+    def _fake_run(cmd, check=False, text=True, capture_output=True):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no such file")
+
+    monkeypatch.setattr(dispatch.subprocess, "run", _fake_run)
+
+    ok = dispatch._scp_from_pod("1.2.3.4", 22, "/remote/missing.txt", tmp_path / "out.txt")
+
+    output = capsys.readouterr().out
+    assert ok is False
+    assert "scp from pod failed for /remote/missing.txt" in output
+    assert "no such file" in output
 
 
 # ---------------------------------------------------------------------------

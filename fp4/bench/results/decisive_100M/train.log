@@ -1,0 +1,19 @@
+{
+  "trainer": "fp4",
+  "seed": 0,
+  "steps": 100000000,
+  "date": "20260408_214411",
+  "config_path": "fp4/experiments/fp4_100M_decisive.yaml",
+  "smoke": false,
+  "available": true,
+  "eval": {
+    "status": "skip",
+    "reason": "no checkpoint produced"
+  },
+  "steps_per_sec": 201661.62709365835,
+  "status": "ok",
+  "monthly_return": 0.0,
+  "hit_27pct": false,
+  "current_leverage_cap": 1.0,
+  "result_path": "/nvme0n1-disk/code/stock-prediction/fp4/bench/results/fp4_s0_20260408_214411.json"
+}

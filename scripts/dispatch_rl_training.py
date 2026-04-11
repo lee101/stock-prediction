@@ -40,6 +40,7 @@ from src.runpod_client import (  # noqa: E402
     is_capacity_error,
     resolve_gpu_type,
 )
+from src.runpod_remote_utils import SSH_OPTIONS, render_subprocess_error  # noqa: E402
 from src.remote_training_pipeline import DEFAULT_REMOTE_ENV  # noqa: E402
 
 
@@ -61,7 +62,7 @@ _STOCKS_PERIODS_PER_YEAR = 252.0
 _STOCKS_HOLDOUT_EVAL_STEPS = 90
 
 # SSH options used consistently across all remote calls.
-_SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes"]
+_SSH_OPTS = list(SSH_OPTIONS)
 
 _SETUP_OVERHEAD_SECS = 1800  # code sync + bootstrap + teardown
 _REMOTE_READY_TIMEOUT_SECS = 180
@@ -173,7 +174,13 @@ def _rsync_to_pod(
         f"root@{ssh_host}:{remote_dir}/",
     ]
     print(f"[rsync] {' '.join(cmd)}")
-    subprocess.run(cmd, check=True)  # no timeout — may take time for large repos
+    result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+    if result.returncode != 0:
+        raise render_subprocess_error(
+            description=f"rsync to pod failed for {local_dir}",
+            cmd=cmd,
+            result=result,
+        )
 
 
 def _rsync_data_file(
@@ -199,7 +206,13 @@ def _rsync_data_file(
         remote_path,
     ]
     print(f"[rsync data] {' '.join(cmd)}")
-    subprocess.run(cmd, check=True)
+    result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+    if result.returncode != 0:
+        raise render_subprocess_error(
+            description=f"rsync data upload failed for {local_path}",
+            cmd=cmd,
+            result=result,
+        )
 
 
 def _ssh_run(ssh_host: str, ssh_port: int, remote_cmd: str, *, check: bool = True) -> subprocess.CompletedProcess:
@@ -212,7 +225,14 @@ def _ssh_run(ssh_host: str, ssh_port: int, remote_cmd: str, *, check: bool = Tru
         remote_cmd,
     ]
     print(f"[ssh] {remote_cmd}")
-    return subprocess.run(cmd, check=check)  # no timeout — training may run for hours
+    result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+    if check and result.returncode != 0:
+        raise render_subprocess_error(
+            description="SSH command failed",
+            cmd=cmd,
+            result=result,
+        )
+    return result
 
 
 def _scp_from_pod(
@@ -231,7 +251,13 @@ def _scp_from_pod(
         str(local_path),
     ]
     print(f"[scp] {' '.join(cmd)}")
-    result = subprocess.run(cmd, check=False)
+    result = subprocess.run(cmd, check=False, text=True, capture_output=True)
+    if result.returncode != 0:
+        print(render_subprocess_error(
+            description=f"scp from pod failed for {remote_path}",
+            cmd=cmd,
+            result=result,
+        ))
     return result.returncode == 0
 
 

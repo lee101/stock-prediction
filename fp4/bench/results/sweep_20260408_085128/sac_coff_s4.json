@@ -1,0 +1,26 @@
+{
+  "algo": "sac",
+  "constrained": false,
+  "seed": 4,
+  "steps": 2000000,
+  "status": "error",
+  "reason": "OutOfMemoryError: CUDA out of memory. Tried to allocate 20.00 MiB. GPU 0 has a total capacity of 31.36 GiB of which 10.88 MiB is free. Process 356947 has 1.15 GiB memory in use. Process 670615 has 1.12 GiB memory in use. Process 1042630 has 1.04 GiB memory in use. Process 1077054 has 26.70 GiB memory in use. Process 1744957 has 726.00 MiB memory in use. Including non-PyTorch memory, this process has 602.00 MiB memory in use. Of the allocated memory 20.45 MiB is allocated by PyTorch, and 1.55 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)",
+  "returncode": 1,
+  "bench_record": {
+    "trainer": "sac",
+    "seed": 4,
+    "steps": 2000000,
+    "date": "20260408_095200",
+    "config_path": "/nvme0n1-disk/code/stock-prediction/fp4/experiments/fp4_ppo_stocks12.yaml",
+    "smoke": false,
+    "available": true,
+    "train": {
+      "status": "error",
+      "reason": "OutOfMemoryError: CUDA out of memory. Tried to allocate 20.00 MiB. GPU 0 has a total capacity of 31.36 GiB of which 10.88 MiB is free. Process 356947 has 1.15 GiB memory in use. Process 670615 has 1.12 GiB memory in use. Process 1042630 has 1.04 GiB memory in use. Process 1077054 has 26.70 GiB memory in use. Process 1744957 has 726.00 MiB memory in use. Including non-PyTorch memory, this process has 602.00 MiB memory in use. Of the allocated memory 20.45 MiB is allocated by PyTorch, and 1.55 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)"
+    },
+    "status": "error",
+    "monthly_return": 0.0,
+    "hit_27pct": false,
+    "current_leverage_cap": 1.0
+  }
+}

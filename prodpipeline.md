@@ -2,6 +2,37 @@
 
 Updated: 2026-04-07
 
+## Tooling + Restart Record (2026-04-07)
+
+- Live package path renamed to `rl_trading_agent_binance/` so import-based tooling can type-check the Binance runner directly.
+- Binance hybrid live quality gate now runs on the validated production slice:
+  - `rl_trading_agent_binance/hybrid_prompt.py`
+  - `rl_trading_agent_binance/trade_binance_live.py`
+  - `evaluate_binance_lora_candidate.py`
+  - `scripts/evaluate_binance_lora_candidate.py`
+  - Binance allocation / eval unit tests
+- Gate status before restart:
+  - `pytest` -> **69 passed**
+  - `ty check` -> passed on the four production/eval source files above
+  - `ruff check` -> passed on the narrowed Binance slice
+  - `ruff format --check` -> passed on the same slice
+  - `pre-commit run --files ...` -> passed
+- CI / hook wiring updated:
+  - `.pre-commit-config.yaml`
+  - `.github/workflows/ci-fast.yml`
+  - `.github/workflows/ci.yml`
+  - `.github/workflows/ci-ubuntu.yml`
+- Supervisor action completed:
+  - `sudo supervisorctl restart binance-hybrid-spot`
+  - verified `RUNNING` after restart
+  - verified active command still points at `rl_trading_agent_binance/trade_binance_live.py`
+  - verified margin execution mode, `gemini-3.1-flash-lite-preview`, and RL checkpoint `pufferlib_market/checkpoints/a100_scaleup/robust_champion/best.pt`
+- TRL research lane initialized under `trltraining/`:
+  - default recommendation: `GRPOTrainer`
+  - default inference acceleration: `use_vllm=True`, `vllm_mode="colocate"`
+  - reward path reuses the existing Binance simulator reward instead of introducing a second reward stack
+  - current status: scaffolding and tests only; not yet promoted into production evaluation or live routing
+
 ## Scope
 
 This repo currently has more than one Binance-facing trading path. The main ones that matter for daily crypto are:
@@ -70,7 +101,7 @@ Status:
 
 Purpose:
 - Daily mixed stock+crypto RL inference utility
-- The checked-in systemd unit `systemd/daily-rl-trader.service` is paper-only
+- This is not the versioned live `daily-rl-trader.service` entrypoint; the checked-in unit now targets `trade_daily_stock_prod.py`
 
 Training path:
 - Trained from daily binaries exported by `pufferlib_market.export_data_daily`

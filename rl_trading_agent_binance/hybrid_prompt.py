@@ -116,7 +116,7 @@ def _fetch_klines(binance_pair: str, limit: int = 96) -> pd.DataFrame:
     for k in klines:
         rows.append(
             {
-                "timestamp": pd.Timestamp(k[0], unit="ms", tz="UTC").floor("h"),
+                "timestamp": pd.Timestamp(int(k[0]) // 3_600_000 * 3_600_000, unit="ms", tz="UTC"),
                 "open": float(k[1]),
                 "high": float(k[2]),
                 "low": float(k[3]),
@@ -449,7 +449,7 @@ def _alloc_fields_for_symbol(sym: str) -> tuple[str, str, str]:
 def _coerce_allocation_number(value: object) -> float:
     if value is None:
         return 0.0
-    if isinstance(value, (int, float)):
+    if isinstance(value, int | float):
         return float(value)
     text = str(value).strip()
     if not text:
@@ -555,18 +555,18 @@ def call_gemini_allocation(
     if not api_key:
         raise ValueError("GEMINI_API_KEY not set - generate a new key at Google AI Studio")
     client = genai.Client(api_key=api_key)
-    config_kwargs = {
-        "response_mime_type": "application/json",
-        "response_schema": schema,
-        "temperature": 0.3,
-    }
-    # Add thinking for models that support it
+    thinking_config = None
     if "lite" not in model:
         try:
-            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=2048)
+            thinking_config = types.ThinkingConfig(thinking_budget=2048)
         except Exception as e:
             logger.exception(e)
-    config = types.GenerateContentConfig(**config_kwargs)
+    config = types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema=schema,
+        temperature=0.3,
+        thinking_config=thinking_config,
+    )
 
     for attempt in range(max_retries):
         try:
@@ -575,7 +575,10 @@ def call_gemini_allocation(
                 contents=[types.Content(role="user", parts=[types.Part.from_text(text=prompt)])],
                 config=config,
             )
-            plan = parse_allocation_response(resp.text)
+            response_text = resp.text
+            if response_text is None:
+                raise ValueError("Gemini response text was empty")
+            plan = parse_allocation_response(response_text)
             logger.info(f"Gemini allocation: {plan.allocations} cash={plan.cash_pct:.0f}%")
             return plan
         except Exception as e:

@@ -1,0 +1,36 @@
+market_data_load: 12 symbols, 148 timesteps from /nvme0n1-disk/code/stock-prediction/pufferlib_market/data/stocks12_daily_v5_rsi_val.bin
+{
+  "trainer": "fp4",
+  "seed": 3,
+  "steps": 10000000,
+  "date": "20260409_083528",
+  "config_path": "fp4/experiments/fp4_100M_decisive.yaml",
+  "smoke": false,
+  "available": true,
+  "eval": {
+    "status": "failed_fast",
+    "failed_reason": "window 6 total_return=-0.0075 < 0 after 3 completed",
+    "by_slippage": {
+      "0": {
+        "p10_return": -0.011537011712789536,
+        "median_return": -0.007542870938777924,
+        "p90_return": 0.05120963007211685,
+        "mean_return": 0.015273112493256727,
+        "sortino": 2.966808557510376,
+        "max_drawdown": 0.13675491511821747,
+        "n_neg": 2,
+        "n_windows": 3,
+        "failed_fast": true,
+        "failed_reason": "window 6 total_return=-0.0075 < 0 after 3 completed",
+        "n_completed_before_bail": 3
+      }
+    },
+    "checkpoint": "fp4/bench/results/decisive_100M_v2/seed_3/final.pt"
+  },
+  "steps_per_sec": 137408.55170901486,
+  "status": "ok",
+  "monthly_return": 0.0,
+  "hit_27pct": false,
+  "current_leverage_cap": 1.0,
+  "result_path": "/nvme0n1-disk/code/stock-prediction/fp4/bench/results/fp4_s3_20260409_083528.json"
+}

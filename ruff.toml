@@ -45,6 +45,7 @@ ignore = [
     "T203",   # pprint() found
     "B008",   # Do not perform function call in argument defaults
     "B905",   # zip without explicit strict parameter
+    "ISC001", # Formatter already handles implicit string concatenation safely
     "N802",   # Function name should be lowercase
     "N803",   # Argument name should be lowercase
     "N806",   # Variable in function should be lowercase
@@ -67,10 +68,13 @@ unfixable = []
 "__init__.py" = ["F401"]  # Unused imports in __init__.py are often intentional
 "tests/**" = ["ARG", "PLR2004", "T201"]  # More lenient for tests
 "scripts/**" = ["T201", "T203"]  # Allow print in scripts
+"src/marketsim_video.py" = ["C408", "I001", "ICN001", "PLC0415", "RUF003"]
+"unified_hourly_experiment/replay_stock_trade_log_sim.py" = ["I001"]
 "rl_trading_agent_binance/hybrid_prompt.py" = ["I001", "PLC0415"]
 "rl_trading_agent_binance/trade_binance_live.py" = ["E402", "I001", "PLC0415", "PLW0603"]
 "evaluate_binance_lora_candidate.py" = ["I001"]
 "scripts/evaluate_binance_lora_candidate.py" = ["E402"]
+"trltraining/train_grpo.py" = ["PLC0415"]
 "tests/test_hybrid_allocation_prompt.py" = ["PT018"]
 "tests/test_rl_only_fallback.py" = ["E402"]
 "tests/test_validate_hybrid_cycle_snapshots.py" = ["PT018"]

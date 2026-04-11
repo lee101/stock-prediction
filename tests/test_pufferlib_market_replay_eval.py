@@ -6,10 +6,15 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pytest
-
 import pufferlib_market.replay_eval as module
-from pufferlib_market.hourly_replay import DailySimResult, HourlyMarket, HourlyReplayResult, InitialPositionSpec, MktdData
+import pytest
+from pufferlib_market.hourly_replay import (
+    DailySimResult,
+    HourlyMarket,
+    HourlyReplayResult,
+    InitialPositionSpec,
+    MktdData,
+)
 
 
 def _build_test_data() -> tuple[MktdData, HourlyMarket]:
@@ -191,6 +196,97 @@ def test_replay_eval_main_forwards_fill_buffer_bps_and_caps_steps(monkeypatch, t
     assert payload["fill_buffer_bps"] == 7.5
 
 
+def test_replay_eval_main_forwards_prod_action_constraints(monkeypatch, tmp_path: Path) -> None:
+    features = np.zeros((3, 2, 16), dtype=np.float32)
+    prices = np.zeros((3, 2, 5), dtype=np.float32)
+    prices[:, :, :] = 100.0
+    data = MktdData(
+        version=2,
+        symbols=["AAA", "BBB"],
+        features=features,
+        prices=prices,
+        tradable=np.ones((3, 2), dtype=np.uint8),
+    )
+    _, market = _build_test_data()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(module, "read_mktd", lambda path: data)
+    monkeypatch.setattr(module, "load_hourly_market", lambda *args, **kwargs: market)
+    monkeypatch.setattr(module, "load_policy", lambda *args, **kwargs: (object(), {}, 5))
+    monkeypatch.setattr(module, "annualize_total_return", lambda total_return, periods, periods_per_year: total_return)
+
+    def _fake_make_policy_fn(*args, **kwargs):
+        captured["disable_shorts"] = bool(kwargs["disable_shorts"])
+        tradable_mask = kwargs["tradable_mask"]
+        captured["tradable_mask"] = tradable_mask.tolist() if tradable_mask is not None else None
+        return lambda obs: 1
+
+    monkeypatch.setattr(module, "make_policy_fn", _fake_make_policy_fn)
+    monkeypatch.setattr(
+        module,
+        "simulate_daily_policy",
+        lambda *args, **kwargs: DailySimResult(
+            actions=np.asarray([1, 1], dtype=np.int32),
+            total_return=0.10,
+            sortino=1.2,
+            max_drawdown=0.05,
+            num_trades=1,
+            win_rate=1.0,
+            avg_hold_steps=2.0,
+            equity_curve=np.asarray([10_000.0, 10_500.0, 11_000.0], dtype=np.float64),
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "replay_hourly_frozen_daily_actions",
+        lambda **kwargs: HourlyReplayResult(
+            total_return=0.08,
+            sortino=0.9,
+            max_drawdown=0.07,
+            num_trades=1,
+            num_orders=2,
+            win_rate=1.0,
+            equity_curve=np.full((len(market.index),), 10_000.0, dtype=np.float64),
+            orders_by_day={},
+        ),
+    )
+
+    output_json = tmp_path / "report.json"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "replay_eval.py",
+            "--checkpoint",
+            str(tmp_path / "checkpoint.pt"),
+            "--daily-data-path",
+            str(tmp_path / "daily.bin"),
+            "--hourly-data-root",
+            str(tmp_path / "hourly"),
+            "--start-date",
+            "2026-01-01",
+            "--end-date",
+            "2026-01-03",
+            "--max-steps",
+            "2",
+            "--disable-shorts",
+            "--tradable-symbols",
+            "BBB",
+            "--cpu",
+            "--output-json",
+            str(output_json),
+        ],
+    )
+
+    module.main()
+
+    payload = json.loads(output_json.read_text())
+    assert captured["disable_shorts"] is True
+    assert captured["tradable_mask"] == [False, True]
+    assert payload["disable_shorts"] is True
+    assert payload["tradable_symbols"] == ["BBB"]
+
+
 
 def test_replay_eval_main_emits_robust_start_state_summary(monkeypatch, tmp_path: Path) -> None:
     data, market = _build_test_data()
@@ -270,7 +366,8 @@ def test_replay_eval_main_emits_robust_start_state_summary(monkeypatch, tmp_path
     module.main()
 
     payload = json.loads(output_json.read_text())
-    assert scenarios and scenarios[0].symbol == "AAA"
+    assert scenarios
+    assert scenarios[0].symbol == "AAA"
     assert payload["robust_start_summary"]["hourly_replay"]["worst_total_return"] == -0.05
     assert payload["robust_start_summary"]["hourly_policy"]["worst_sortino"] == -0.8
 
@@ -459,3 +556,96 @@ def test_replay_eval_main_emits_robust_start_summary(monkeypatch, tmp_path: Path
     assert payload["robust_start_summary"]["hourly_replay"]["worst_total_return"] == pytest.approx(-0.06)
     assert payload["robust_start_summary"]["hourly_policy"]["worst_max_drawdown"] == pytest.approx(0.105)
     assert seen_positions == [None, None, ("long", "AAA", 0.25), ("short", "AAA", 0.5)]
+
+
+def test_replay_eval_forwards_action_grid_to_hourly_policy(monkeypatch, tmp_path: Path) -> None:
+    data, market = _build_test_data()
+    seen: dict[str, float] = {}
+
+    monkeypatch.setattr(module, "read_mktd", lambda path: data)
+    monkeypatch.setattr(module, "load_hourly_market", lambda *args, **kwargs: market)
+    monkeypatch.setattr(
+        module,
+        "load_policy",
+        lambda *args, **kwargs: (
+            object(),
+            {"action_allocation_bins": 3, "action_level_bins": 2, "action_max_offset_bps": 7.5},
+            13,
+        ),
+    )
+    monkeypatch.setattr(module, "make_policy_fn", lambda *args, **kwargs: (lambda obs: 1))
+    monkeypatch.setattr(module, "annualize_total_return", lambda total_return, periods, periods_per_year: total_return)
+    monkeypatch.setattr(
+        module,
+        "simulate_daily_policy",
+        lambda *args, **kwargs: DailySimResult(
+            actions=np.asarray([1, 1], dtype=np.int32),
+            total_return=0.0,
+            sortino=0.0,
+            max_drawdown=0.0,
+            num_trades=0,
+            win_rate=0.0,
+            avg_hold_steps=0.0,
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "replay_hourly_frozen_daily_actions",
+        lambda **kwargs: HourlyReplayResult(
+            total_return=0.0,
+            sortino=0.0,
+            max_drawdown=0.0,
+            num_trades=0,
+            num_orders=0,
+            win_rate=0.0,
+            equity_curve=np.full((len(market.index),), 10_000.0, dtype=np.float64),
+            orders_by_day={},
+        ),
+    )
+
+    def _fake_simulate_hourly_policy(**kwargs) -> HourlyReplayResult:
+        seen["action_allocation_bins"] = float(kwargs["action_allocation_bins"])
+        seen["action_level_bins"] = float(kwargs["action_level_bins"])
+        seen["action_max_offset_bps"] = float(kwargs["action_max_offset_bps"])
+        return HourlyReplayResult(
+            total_return=0.0,
+            sortino=0.0,
+            max_drawdown=0.0,
+            num_trades=0,
+            num_orders=0,
+            win_rate=0.0,
+            equity_curve=np.full((len(market.index),), 10_000.0, dtype=np.float64),
+            orders_by_day={},
+        )
+
+    monkeypatch.setattr(module, "simulate_hourly_policy", _fake_simulate_hourly_policy)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "replay_eval.py",
+            "--checkpoint",
+            str(tmp_path / "checkpoint.pt"),
+            "--daily-data-path",
+            str(tmp_path / "daily.bin"),
+            "--hourly-data-root",
+            str(tmp_path / "hourly"),
+            "--start-date",
+            "2026-01-01",
+            "--end-date",
+            "2026-01-03",
+            "--max-steps",
+            "2",
+            "--run-hourly-policy",
+            "--cpu",
+        ],
+    )
+
+    module.main()
+
+    assert seen == {
+        "action_allocation_bins": 3.0,
+        "action_level_bins": 2.0,
+        "action_max_offset_bps": 7.5,
+    }

@@ -20,7 +20,7 @@ from src.models.model_cache import ModelCacheManager
 def test_load_chronos2_wrapper_reuses_cache_for_equivalent_params(monkeypatch: pytest.MonkeyPatch) -> None:
     try:
         module = importlib.reload(marketsim)
-    except ModuleNotFoundError:
+    except (ImportError, ModuleNotFoundError):
         module = importlib.import_module(marketsim.__name__)
     cache = getattr(module, "_chronos2_wrapper_cache", None)
     if cache is None:  # pragma: no cover - defensive guard for partial imports

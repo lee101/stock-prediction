@@ -21,6 +21,8 @@ from pathlib import Path
 import pandas as pd
 import torch
 
+sys.modules.setdefault("train_calibrator", sys.modules[__name__])
+sys.modules.setdefault("rl_trading_agent_binance.train_calibrator", sys.modules[__name__])
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
@@ -32,6 +34,9 @@ from differentiable_loss_utils import (
     compute_hourly_objective,
     simulate_hourly_trades,
     simulate_hourly_trades_binary,
+    compute_hourly_objective,
+    combined_sortino_pnl_loss,
+    DEFAULT_MAKER_FEE_RATE,
 )
 from rl_signal import _load_forecast_parquet, compute_symbol_features
 from signal_calibrator import CalibrationConfig, SignalCalibrator, save_calibrator

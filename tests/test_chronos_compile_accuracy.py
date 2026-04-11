@@ -49,6 +49,7 @@ RELATIVE_TOLERANCE = 0.05
 MAX_INFERENCE_ATTEMPTS = 3
 MAX_DRIFT_ATTEMPTS = 3
 BASELINE_PATH = Path(__file__).parent / "chronos_mae_baseline.txt"
+UPDATE_BASELINE_ENV = "CHRONOS_UPDATE_BASELINE"
 _CHRONOS_ENV_KEYS: Tuple[str, ...] = (
     "TORCH_COMPILED",
     "CHRONOS_COMPILE",
@@ -469,6 +470,13 @@ def _write_baseline(rows: Tuple[Dict[str, float], ...]) -> None:
             )
 
 
+def _maybe_write_baseline(rows: Tuple[Dict[str, float], ...]) -> bool:
+    if str(os.getenv(UPDATE_BASELINE_ENV, "")).strip() not in {"1", "true", "TRUE"}:
+        return False
+    _write_baseline(rows)
+    return True
+
+
 def test_assert_mae_drift_within_tolerance_accepts_small_relative_drift() -> None:
     diff, relative_diff = _calculate_mae_drift(13883.051100, 13463.967115)
     _assert_mae_drift_within_tolerance(diff, relative_diff, symbol="BTCUSD")
@@ -554,6 +562,32 @@ def test_measure_symbol_compile_accuracy_skips_after_repeated_drift(
     assert call_count["count"] == MAX_DRIFT_ATTEMPTS * 2
 
 
+def test_maybe_write_baseline_is_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    module = sys.modules[__name__]
+    baseline_path = tmp_path / "chronos_mae_baseline.txt"
+    monkeypatch.setattr(module, "BASELINE_PATH", baseline_path)
+    rows = (
+        {
+            "symbol": "BTCUSD",
+            "mae_uncompiled": 1.0,
+            "mae_compiled": 1.1,
+            "latency_uncompiled_ms": 10.0,
+            "latency_compiled_ms": 20.0,
+        },
+    )
+
+    monkeypatch.delenv(UPDATE_BASELINE_ENV, raising=False)
+    assert _maybe_write_baseline(rows) is False
+    assert not baseline_path.exists()
+
+    monkeypatch.setenv(UPDATE_BASELINE_ENV, "1")
+    assert _maybe_write_baseline(rows) is True
+    assert baseline_path.exists()
+
+
 def test_chronos_compile_matches_baseline() -> None:
     logger.info("Chronos2 compile accuracy test (context=%s, horizon=%s)", CONTEXT_LENGTH, PREDICTION_LENGTH)
 
@@ -562,8 +596,14 @@ def test_chronos_compile_matches_baseline() -> None:
         logger.info("\n=== %s ===", symbol)
         summary_rows.append(_measure_symbol_compile_accuracy(symbol))
 
-    _write_baseline(tuple(summary_rows))
-    logger.info("\nBaseline written to %s", BASELINE_PATH)
+    if _maybe_write_baseline(tuple(summary_rows)):
+        logger.info("\nBaseline written to %s", BASELINE_PATH)
+    else:
+        logger.info(
+            "\nBaseline not updated. Set %s=1 to refresh %s",
+            UPDATE_BASELINE_ENV,
+            BASELINE_PATH,
+        )
 
 
 if __name__ == "__main__":

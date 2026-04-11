@@ -9,6 +9,31 @@
 #include "../include/trading_env.h"
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <stdint.h>
+
+/* Fast inline PRNG (xorshift64*) to replace glibc rand() in the hotpath.
+ * glibc rand() is ~10x slower than this and goes through a PLT indirection;
+ * xorshift64* inlines to ~5 instructions and has better statistical quality
+ * than LCG rand() for sim-fill gating and episode-offset randomization. */
+static __thread uint64_t g_trading_rng_state = 0x9E3779B97F4A7C15ULL;
+static inline uint64_t fast_rand_u64(void) {
+    uint64_t x = g_trading_rng_state;
+    if (UNLIKELY(x == 0)) x = 0x9E3779B97F4A7C15ULL;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    g_trading_rng_state = x;
+    return x * 0x2545F4914F6CDD1DULL;
+}
+static inline float fast_rand_float(void) {
+    /* uniform [0,1) using top 24 bits -> float mantissa */
+    return (float)((fast_rand_u64() >> 40) * (1.0f / 16777216.0f));
+}
+static inline int fast_rand_int(int n) {
+    if (n <= 1) return 0;
+    /* Lemire's nearly-divisionless bounded int */
+    return (int)(((fast_rand_u64() >> 32) * (uint64_t)n) >> 32);
+}
 
 /* ------------------------------------------------------------------ */
 /*  Data loading                                                       */
@@ -70,11 +95,13 @@ MarketData* market_data_load(const char* path) {
     ptr += md->num_symbols * SYM_NAME_LEN;
 
     /* feature array */
-    md->features = (float*)ptr;
+    /* cppcheck-suppress invalidPointerCast ; file buffer is aligned by mmap/malloc */
+    md->features = (float*)(void*)ptr;
     ptr += (size_t)md->num_timesteps * md->num_symbols * md->features_per_sym * sizeof(float);
 
     /* price array */
-    md->prices = (float*)ptr;
+    /* cppcheck-suppress invalidPointerCast ; file buffer is aligned by mmap/malloc */
+    md->prices = (float*)(void*)ptr;
     ptr += (size_t)md->num_timesteps * md->num_symbols * PRICE_FEATS * sizeof(float);
 
     /* optional tradable mask (uint8[T][S]) appended after prices (v2+) */
@@ -140,11 +167,12 @@ static void fill_observations(TradingEnv* __restrict__ env) {
     if (UNLIKELY(t < 0)) t = 0;
     if (UNLIKELY(t >= md->num_timesteps)) t = md->num_timesteps - 1;
 
-    /* Observation lag: agent sees features from t-1 to prevent look-ahead bias.
-       The agent decides based on the PREVIOUS bar's information, then trades
-       execute at bar t. This matches real trading where you can only see
-       completed bars before making decisions. */
-    int t_obs = t - 1;
+    /* Observation lag: agent sees features from t-lag to prevent look-ahead bias.
+       lag=1 matches the prior hardcoded behavior. Production uses lag>=2
+       because Chronos2 forecast + Gemini call + order placement straddles
+       more than one bar. */
+    int lag = env->decision_lag >= 1 ? env->decision_lag : 1;
+    int t_obs = t - lag;
     if (UNLIKELY(t_obs < 0)) t_obs = 0;
 
     const int F = md->features_per_sym;
@@ -450,7 +478,7 @@ static void reset_agent_state(TradingEnv* env) {
     } else if (max_offset <= 0) {
         ag->data_offset = 0;
     } else {
-        ag->data_offset = rand() % (max_offset + 1);
+        ag->data_offset = fast_rand_int(max_offset + 1);
     }
     ag->step = 0;
 
@@ -506,11 +534,9 @@ __attribute__((hot)) void c_step(TradingEnv* env) {
     }
 
     /* current position info */
-    int cur_sym = -1;
     int cur_tradable = 1;
     if (ag->position_sym >= 0) {
-        cur_sym = ag->position_sym % S;
-        cur_tradable = is_tradable(md, t, cur_sym);
+        cur_tradable = is_tradable(md, t, ag->position_sym % S);
     }
     int any_tradable = (md->any_tradable != NULL) ? (md->any_tradable[t] != 0) : 1;
 
@@ -576,7 +602,7 @@ __attribute__((hot)) void c_step(TradingEnv* env) {
                 /* fill_probability gate: simulate unfilled orders due to low liquidity */
                 int fill_ok = 1;
                 if (env->fill_probability < 1.0f) {
-                    float roll = (float)rand() / (float)RAND_MAX;
+                    float roll = fast_rand_float();
                     fill_ok = (roll <= env->fill_probability);
                 }
                 if (fill_ok) {

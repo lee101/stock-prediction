@@ -89,13 +89,25 @@ EnvOutput MarketEnvironment::reset(const torch::Tensor& env_indices) {
     output.fees_paid = zero_float.clone();
     output.leverage_costs = zero_float.clone();
     output.realized_pnl = zero_float.clone();
-    output.days_held = days_held_;
+    output.days_held = zero_float.clone();
 
     return output;
 }
 
 EnvOutput MarketEnvironment::step(const torch::Tensor& actions) {
-    // actions: [batch_size]
+    // SCALAR mode: actions [batch_size]            (legacy, bit-identical path)
+    // DPS    mode: actions [batch_size, 3] = (dir, size, limit_offset_bps_norm)
+    //              dir   in [-1, 1]   (tanh)
+    //              size  in [ 0, 1]   (sigmoid)
+    //              off   in [-1, 1]   (tanh) -> scaled by max_limit_offset_bps
+    //
+    // In DPS mode we collapse the 3-d action down to a single scalar leverage
+    // value (target = dir*size*max_leverage_dps) gated by a binary fill check
+    // against the bar's [low, high] range:
+    //   buy  fills iff bar low  <= limit price
+    //   sell fills iff bar high >= limit price
+    // Unfilled steps pass leverage = previous_leverage so the position is
+    // unchanged (no trade -> no fee). Filled steps pass the new target.
 
     // Increment indices and episode steps
     current_indices_ = current_indices_ + 1;
@@ -112,9 +124,69 @@ EnvOutput MarketEnvironment::step(const torch::Tensor& actions) {
     }
     auto all_prices = torch::stack(prices_list, /*dim=*/0);  // [batch_size, 4]
 
+    // Translate DPS action -> scalar leverage with binary fill gating.
+    torch::Tensor scalar_actions;
+    if (config_.action_mode == ActionMode::DPS) {
+        TORCH_CHECK(actions.dim() == 2 && actions.size(1) == 3,
+                    "DPS action_mode expects [batch, 3] actions");
+        // OHLC layout matches market_state convention used in execute_high_low_strategy:
+        // index 0 = open, 1 = high, 2 = low, 3 = close.
+        auto high  = all_prices.index({torch::indexing::Slice(), 1});
+        auto low   = all_prices.index({torch::indexing::Slice(), 2});
+        auto close = all_prices.index({torch::indexing::Slice(), 3});
+
+        auto dir    = actions.index({torch::indexing::Slice(), 0});
+        auto size   = actions.index({torch::indexing::Slice(), 1});
+        auto offset = actions.index({torch::indexing::Slice(), 2});
+
+        // Sanitize ranges (policy is responsible for tanh/sigmoid; clamp defensively).
+        dir    = torch::clamp(dir,    -1.0f, 1.0f);
+        size   = torch::clamp(size,    0.0f, 1.0f);
+        offset = torch::clamp(offset, -1.0f, 1.0f);
+
+        auto target_lev = dir * size * config_.max_leverage_dps;
+
+        // Limit price = mid * (1 + sign(dir) * (fill_buffer_bps + offset*max_limit_offset_bps) * 1e-4)
+        auto sign_dir = torch::sign(dir);
+        auto bps = (config_.fill_buffer_bps + offset * config_.max_limit_offset_bps) * 1e-4f;
+        auto limit_price = close * (1.0f + sign_dir * bps);
+
+        auto buy_mask  = dir > 0;
+        auto sell_mask = dir < 0;
+        auto buy_fill  = buy_mask  & (low  <= limit_price);
+        auto sell_fill = sell_mask & (high >= limit_price);
+        auto fill_mask = buy_fill | sell_fill;  // dir==0 => no trade desired anyway
+
+        // Unfilled -> hold previous leverage. Compute previous leverage from
+        // current portfolio state (positions / equity), so a no-fill is a no-op.
+        auto pf_state = portfolio_->get_state();  // [batch, 5], col 1 = position pct of equity
+        auto prev_lev = pf_state.index({torch::indexing::Slice(), 1});
+
+        scalar_actions = torch::where(fill_mask, target_lev, prev_lev);
+
+        // Activate the wider DPS leverage cap on the portfolio for this call.
+        portfolio_->set_leverage_cap_override(config_.max_leverage_dps);
+
+        // Mark trades & PnL at the limit fill price on filled bars; on unfilled
+        // bars there is no trade so the mark price falls back to close (no
+        // observable fill exists). This is what gives DPS its trade-edge alpha
+        // accounting in the C++ ground truth.
+        auto exec_px = torch::where(fill_mask, limit_price, close);
+        portfolio_->set_execution_price_override(exec_px);
+    } else {
+        scalar_actions = actions;
+    }
+
     // Execute portfolio step (for now, use first market state's properties)
     // In a real implementation, you'd want to handle different assets separately
-    auto step_result = portfolio_->step(actions, all_prices, *market_states_[0], false);
+    auto step_result = portfolio_->step(scalar_actions, all_prices, *market_states_[0], false);
+
+    // Restore SCALAR clamp & clear DPS execution-price override so any subsequent
+    // caller of portfolio sees legacy behavior.
+    if (config_.action_mode == ActionMode::DPS) {
+        portfolio_->set_leverage_cap_override(0.0f);
+        portfolio_->clear_execution_price_override();
+    }
     auto rewards = step_result.rewards;
 
     // Check termination conditions

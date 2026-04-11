@@ -1,0 +1,38 @@
+# fp4 vs baseline PPO config — stocks12 v5_rsi
+# Consumed by fp4/bench/compare_trainers.py
+env:
+  name: stocks12_v5_rsi
+  train_data: pufferlib_market/data/stocks12_daily_v5_rsi_train.bin
+  val_data: pufferlib_market/data/stocks12_daily_v5_rsi_val.bin
+  fee_rate: 0.001          # 10 bps
+  fill_buffer_bps: 5
+  decision_lag: 2
+  binary_fills: true
+  action_mode: dps         # falls back to scalar if DPS marketsim missing
+  max_leverage: 5.0
+  max_leverage_scalar_fallback: 1.5
+
+ppo:
+  hidden_size: 1024
+  lr: 3.0e-4
+  anneal_lr: true
+  ent_coef: 0.05
+  ent_coef_end: 0.02
+  clip_eps: 0.2
+  num_envs: 64
+  rollout_len: 256
+  ppo_epochs: 4
+  minibatch_size: 2048
+  total_timesteps: 100_000_000
+  smooth_downside_temperature: 0.01
+  obs_norm: true
+
+eval:
+  slippage_bps: [0, 5, 10, 20]
+  n_windows: 58
+  eval_hours: 60         # daily bars: val set is ~148 steps so keep well under that
+  fill_buffer_bps: 5
+  decision_lag: 2
+
+target:
+  sortino: 5.0

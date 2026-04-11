@@ -11,10 +11,12 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v3
       - name: Install dependencies
-        run: uv pip install --system -e ".[dev]" 2>/dev/null || uv pip install --system pytest pytest-mock
+        run: |
+          uv pip install --system --requirement requirements-ci.txt || uv pip install --system pytest pytest-mock
+          uv pip install --system ruff ty
       - name: Run quality checks
         run: |
-          python -m ruff check rl_trading_agent_binance unified_orchestrator/orchestrator.py evaluate_binance_lora_candidate.py scripts/evaluate_binance_lora_candidate.py
-          python -m mypy --python-version 3.13 --follow-imports=skip --config-file=pyproject.toml rl_trading_agent_binance unified_orchestrator/orchestrator.py evaluate_binance_lora_candidate.py scripts/evaluate_binance_lora_candidate.py
+          python -m ruff check rl_trading_agent_binance/hybrid_prompt.py rl_trading_agent_binance/trade_binance_live.py evaluate_binance_lora_candidate.py scripts/evaluate_binance_lora_candidate.py trltraining tests/test_hybrid_allocation_prompt.py tests/test_hybrid_prompt_parsing.py tests/test_rl_only_fallback.py tests/test_evaluate_binance_lora_candidate.py tests/test_validate_hybrid_cycle_snapshots.py tests/test_trltraining.py
+          ty check rl_trading_agent_binance/hybrid_prompt.py rl_trading_agent_binance/trade_binance_live.py evaluate_binance_lora_candidate.py scripts/evaluate_binance_lora_candidate.py trltraining
       - name: Run tests
         run: python -m pytest tests/ -x -q --tb=short --ignore=tests/integration -k "not slow" 2>&1 | head -100

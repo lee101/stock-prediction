@@ -2641,14 +2641,13 @@ def main():
     account_lock = None
     if args.live:
         require_explicit_live_trading_enable("unified-orchestrator")
-        if str(args.lock_name).strip() != "alpaca_live_writer":
-            logger.warning(
-                "Ignoring --lock-name={} in live mode; using canonical Alpaca account lock alpaca_live_writer.",
-                args.lock_name,
-            )
+        # Respect --lock-name so multiple non-overlapping orchestrators can
+        # coexist (e.g. daily-rl-trader holds alpaca_live_writer while the
+        # LLM trader runs under llm_stock_writer on a disjoint symbol set).
+        effective_lock_name = str(args.lock_name).strip() or "alpaca_live_writer"
         account_lock = acquire_alpaca_account_lock(
             "unified-orchestrator",
-            account_name="alpaca_live_writer",
+            account_name=effective_lock_name,
         )
         logger.info("Acquired Alpaca live writer lock: {}", account_lock.path)
     os.environ["ORCH_BAR_FETCH_WORKERS"] = str(max(1, int(args.bar_fetch_workers)))

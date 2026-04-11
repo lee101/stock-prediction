@@ -3,6 +3,7 @@ import os
 import sys
 import signal
 import subprocess
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from shlex import quote
@@ -198,14 +199,27 @@ def enforce_min_spread(buy_price: float, sell_price: float, min_spread_pct: floa
 
 
 def _persist_watcher_metadata(path: Path, payload: dict) -> None:
+    temp_path: Path | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = path.with_suffix(path.suffix + ".tmp")
-        with temp_path.open("w", encoding="utf-8") as handle:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f"{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
             json.dump(payload, handle, indent=2, sort_keys=True)
         temp_path.replace(path)
     except Exception as exc:  # pragma: no cover - best effort logging
         logger.warning(f"Failed to persist watcher metadata {path}: {exc}")
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def _load_watcher_metadata(path: Path) -> Optional[dict]:
@@ -217,6 +231,10 @@ def _load_watcher_metadata(path: Path) -> Optional[dict]:
     except Exception as exc:  # pragma: no cover - best effort logging
         logger.warning(f"Failed to read watcher metadata {path}: {exc}")
         return None
+
+
+def load_watcher_metadata(path: Path) -> Optional[dict]:
+    return _load_watcher_metadata(path)
 
 
 def _is_pid_alive(pid: Optional[int]) -> bool:

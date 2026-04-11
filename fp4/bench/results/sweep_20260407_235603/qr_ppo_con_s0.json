@@ -1,0 +1,50 @@
+{
+  "algo": "qr_ppo",
+  "constrained": true,
+  "seed": 0,
+  "steps": 50000,
+  "status": "ok",
+  "reason": "",
+  "returncode": 0,
+  "bench_record": {
+    "trainer": "qr_ppo",
+    "seed": 0,
+    "steps": 50000,
+    "date": "20260407_235738",
+    "config_path": "/nvme0n1-disk/code/stock-prediction/fp4/experiments/fp4_ppo_stocks12.yaml",
+    "smoke": false,
+    "available": true,
+    "train": {
+      "status": "ok",
+      "wall_sec": 8.090116843115538,
+      "gpu_peak_mb": 222.7607421875,
+      "trainer_output": {
+        "trainer": "qr_ppo",
+        "final_sortino": -0.9934393763542175,
+        "final_p10": -4.557592391967773,
+        "mean_return": -3.9490623474121094,
+        "n_episodes": 64,
+        "steps_per_sec": 8742.864203811938,
+        "wall_sec": 5.6219562438782305,
+        "gpu_peak_mb": 222.7607421875,
+        "device": "cuda",
+        "num_quantiles": 51,
+        "cvar_alpha": 0.05,
+        "last_cvar": -0.8614515662193298,
+        "n_iters": 3,
+        "total_steps": 49152,
+        "last_loss": -0.1861059069633484,
+        "last_value_loss": 0.011945108883082867,
+        "last_entropy": 3.724457263946533,
+        "env_backend": "gpu_trading_env"
+      }
+    },
+    "eval": {
+      "status": "skip",
+      "reason": "policy obs_dim=7 != marketsim obs_dim=209",
+      "checkpoint": "/nvme0n1-disk/code/stock-prediction/fp4/bench/results/_ckpt_qr_ppo_s0_20260407_235738/final.pt"
+    },
+    "steps_per_sec": 6180.380453039883,
+    "status": "ok"
+  }
+}

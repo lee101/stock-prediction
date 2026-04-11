@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List
-
-from binance import Client
+from typing import TYPE_CHECKING, Any, Dict, List
 from loguru import logger
 
 from src.binan.binance_wrapper import (
@@ -12,6 +10,11 @@ from src.binan.binance_wrapper import (
     _normalize_symbol,
     _resolve_client,
 )
+
+if TYPE_CHECKING:
+    from binance import Client
+else:
+    Client = Any
 
 
 def get_margin_account(client: Client | None = None) -> Dict[str, Any]:

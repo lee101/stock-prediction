@@ -13,7 +13,7 @@ class EDTFormatter(logging.Formatter):
     def __init__(self):
         super().__init__()
         self.utc_zone = ZoneInfo("UTC")
-        self.local_tz = self._load_zone("US/Eastern", self.utc_zone)
+        self.local_tz = self._load_zone("America/New_York", self.utc_zone)
         self.nzdt_zone = self._load_zone("Pacific/Auckland", self.utc_zone)
 
         self.level_colors = {
@@ -154,8 +154,8 @@ def setup_logging(log_file: str) -> logging.Logger:
         # Create and configure file handler
         file_handler = RotatingFileHandler(
             log_file,
-            maxBytes=500 * 1024 * 1024,  # 500MB
-            backupCount=5
+            maxBytes=50 * 1024 * 1024,  # 50MB
+            backupCount=3
         )
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(file_formatter)

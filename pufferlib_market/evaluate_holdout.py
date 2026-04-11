@@ -59,6 +59,33 @@ def _mask_disallowed_shorts(
     return masked
 
 
+def _mask_disallowed_symbols(
+    logits: torch.Tensor,
+    *,
+    num_symbols: int,
+    per_symbol_actions: int,
+    tradable_mask: torch.Tensor,
+) -> torch.Tensor:
+    if tradable_mask.numel() != num_symbols:
+        raise ValueError("tradable_mask length mismatch")
+    if tradable_mask.dtype is not torch.bool:
+        tradable_mask = tradable_mask.to(torch.bool)
+    if bool(torch.all(tradable_mask)):
+        return logits
+    masked = logits.clone()
+    min_val = torch.finfo(masked.dtype).min
+    side_block = int(num_symbols) * max(1, int(per_symbol_actions))
+    disallowed = (~tradable_mask).nonzero(as_tuple=False).view(-1).tolist()
+    for sym_idx in disallowed:
+        long_start = 1 + int(sym_idx) * max(1, int(per_symbol_actions))
+        long_end = long_start + max(1, int(per_symbol_actions))
+        short_start = 1 + side_block + int(sym_idx) * max(1, int(per_symbol_actions))
+        short_end = short_start + max(1, int(per_symbol_actions))
+        masked[:, long_start:long_end] = min_val
+        masked[:, short_start:short_end] = min_val
+    return masked
+
+
 def _act_holdout(name: str) -> nn.Module:
     if name == "relu_sq":
         from pufferlib_market.train import _ReLUSq  # noqa: PLC0415
@@ -240,6 +267,26 @@ def _build_shortable_mask(symbols: list[str], shortable_csv: str | None) -> torc
     return torch.tensor([sym.upper() in requested for sym in symbols], dtype=torch.bool)
 
 
+def _build_tradable_mask(symbols: list[str], tradable_csv: str | None) -> tuple[torch.Tensor | None, list[str]]:
+    if not tradable_csv:
+        return None, []
+    requested = [s.strip().upper() for s in tradable_csv.split(",") if s.strip()]
+    if not requested:
+        return None, []
+
+    deduped_requested = list(dict.fromkeys(requested))
+    available = {sym.upper() for sym in symbols}
+    missing = [sym for sym in deduped_requested if sym not in available]
+    if missing:
+        raise ValueError(f"--tradable-symbols contains unknown symbols: {', '.join(missing)}")
+
+    requested_set = set(deduped_requested)
+    return (
+        torch.tensor([sym.upper() in requested_set for sym in symbols], dtype=torch.bool),
+        deduped_requested,
+    )
+
+
 def _slice_window(data: MktdData, *, start: int, steps: int) -> MktdData:
     if steps < 1:
         raise ValueError("steps must be >= 1")
@@ -363,6 +410,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--end-within-hours", type=int, default=None, help="Only sample windows ending within last N hours")
     parser.add_argument("--fee-rate", type=float, default=0.001)
+    parser.add_argument("--slippage-bps", type=float, default=0.0, help="Adverse fill slippage in bps applied symmetrically")
     parser.add_argument(
         "--fill-buffer-bps",
         type=float,
@@ -374,6 +422,12 @@ def main() -> None:
     parser.add_argument("--short-borrow-apr", type=float, default=0.0)
     parser.add_argument("--disable-shorts", action="store_true")
     parser.add_argument("--shortable-symbols", type=str, default=None)
+    parser.add_argument(
+        "--tradable-symbols",
+        type=str,
+        default=None,
+        help="Comma-separated live tradable symbol subset; masks all other long/short actions.",
+    )
     parser.add_argument("--decision-lag", type=int, default=0)
     parser.add_argument("--deterministic", action="store_true", help="Argmax actions (recommended)")
     parser.add_argument("--no-early-stop", action="store_true", help="Disable drawdown-vs-profit early exit (run full window)")
@@ -412,6 +466,9 @@ def main() -> None:
     shortable_mask = _build_shortable_mask(list(data.symbols), args.shortable_symbols)
     if shortable_mask is not None:
         shortable_mask = shortable_mask.to(device=device)
+    tradable_mask, requested_tradable_symbols = _build_tradable_mask(list(data.symbols), args.tradable_symbols)
+    if tradable_mask is not None:
+        tradable_mask = tradable_mask.to(device=device)
 
     pending_actions: collections.deque[int] = collections.deque(maxlen=max(1, decision_lag + 1))
 
@@ -419,6 +476,13 @@ def main() -> None:
         obs_t = torch.from_numpy(obs.astype(np.float32, copy=False)).to(device=device).view(1, -1)
         with torch.no_grad():
             logits, _ = policy(obs_t)
+        if tradable_mask is not None:
+            logits = _mask_disallowed_symbols(
+                logits,
+                num_symbols=int(num_symbols),
+                per_symbol_actions=int(per_symbol_actions),
+                tradable_mask=tradable_mask,
+            )
         if args.disable_shorts:
             logits = _mask_all_shorts(
                 logits,
@@ -503,6 +567,7 @@ def main() -> None:
             _policy_fn,
             max_steps=int(steps),
             fee_rate=float(args.fee_rate),
+            slippage_bps=float(args.slippage_bps),
             fill_buffer_bps=float(args.fill_buffer_bps),
             max_leverage=float(args.max_leverage),
             periods_per_year=float(args.periods_per_year),
@@ -550,11 +615,13 @@ def main() -> None:
     out = {
         **resolved_config,
         "symbols": list(data.symbols),
+        "tradable_symbols": list(requested_tradable_symbols),
         "n_windows": int(n_windows),
         "seed": int(args.seed),
         "end_within_hours": int(args.end_within_hours) if args.end_within_hours is not None else None,
         "decision_lag": int(decision_lag),
         "fee_rate": float(args.fee_rate),
+        "slippage_bps": float(args.slippage_bps),
         "fill_buffer_bps": float(args.fill_buffer_bps),
         "max_leverage": float(args.max_leverage),
         "short_borrow_apr": float(args.short_borrow_apr),
@@ -564,6 +631,7 @@ def main() -> None:
             **resolved_config,
             "window_mode": selection_mode,
             **selection_summary,
+            "tradable_symbols": list(requested_tradable_symbols),
             "median_total_return": float(_percentile(returns, 50)),
             "p10_total_return": float(_percentile(returns, 10)),
             "p90_total_return": float(_percentile(returns, 90)),

@@ -11,6 +11,7 @@ from src.models.chronos2_wrapper import (
     Chronos2OHLCWrapper,
     Chronos2PreparedPanel,
     DEFAULT_QUANTILE_LEVELS,
+    _require_chronos_pipeline,
     _resolve_model_source,
 )
 
@@ -70,6 +71,13 @@ def test_build_panel_truncates_when_history_is_short() -> None:
     assert len(panel.context_df) == 15
     assert panel.future_df is None
     assert len(panel.actual_df) == 5
+
+
+def test_require_chronos_pipeline_raises_when_dependency_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(chronos2_mod, "_ChronosBasePipeline", None)
+
+    with pytest.raises(RuntimeError, match="chronos is unavailable"):
+        _require_chronos_pipeline()
 
 
 class _DummyPipeline:

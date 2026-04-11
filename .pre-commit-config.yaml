@@ -6,15 +6,18 @@ repos:
     hooks:
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]
+        files: ^(rl_trading_agent_binance/hybrid_prompt\.py|rl_trading_agent_binance/trade_binance_live\.py|evaluate_binance_lora_candidate\.py|scripts/evaluate_binance_lora_candidate\.py|trltraining/.*\.py|tests/test_hybrid_allocation_prompt\.py|tests/test_hybrid_prompt_parsing\.py|tests/test_rl_only_fallback\.py|tests/test_evaluate_binance_lora_candidate\.py|tests/test_validate_hybrid_cycle_snapshots\.py|tests/test_trltraining\.py)$
       - id: ruff-format
+        files: ^(rl_trading_agent_binance/hybrid_prompt\.py|rl_trading_agent_binance/trade_binance_live\.py|evaluate_binance_lora_candidate\.py|scripts/evaluate_binance_lora_candidate\.py|trltraining/.*\.py|tests/test_hybrid_allocation_prompt\.py|tests/test_hybrid_prompt_parsing\.py|tests/test_rl_only_fallback\.py|tests/test_evaluate_binance_lora_candidate\.py|tests/test_validate_hybrid_cycle_snapshots\.py|tests/test_trltraining\.py)$
 
   - repo: local
     hooks:
-      - id: mypy-rl-trading-agent-binance
-        name: mypy (rl_trading_agent_binance)
-        entry: python -m mypy --python-version 3.13 --follow-imports=skip --config-file=pyproject.toml rl_trading_agent_binance unified_orchestrator/orchestrator.py evaluate_binance_lora_candidate.py scripts/evaluate_binance_lora_candidate.py
+      - id: ty-rl-trading-agent-binance
+        name: ty (rl_trading_agent_binance)
+        entry: bash -lc 'if [ -x .venv313/bin/python ]; then .venv313/bin/python -m ty check rl_trading_agent_binance/hybrid_prompt.py rl_trading_agent_binance/trade_binance_live.py evaluate_binance_lora_candidate.py scripts/evaluate_binance_lora_candidate.py trltraining; else python -m ty check rl_trading_agent_binance/hybrid_prompt.py rl_trading_agent_binance/trade_binance_live.py evaluate_binance_lora_candidate.py scripts/evaluate_binance_lora_candidate.py trltraining; fi'
         language: system
         pass_filenames: false
+        files: ^(rl_trading_agent_binance/hybrid_prompt\.py|rl_trading_agent_binance/trade_binance_live\.py|evaluate_binance_lora_candidate\.py|scripts/evaluate_binance_lora_candidate\.py|trltraining/.*\.py)$
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0

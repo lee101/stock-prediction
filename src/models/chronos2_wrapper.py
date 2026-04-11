@@ -15,6 +15,7 @@ import inspect
 import json
 import logging
 import os
+import sys
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,7 +37,11 @@ try:  # pragma: no cover - surface chronos version info when available
 except Exception:  # pragma: no cover
     _chronos_pkg = None  # type: ignore
 
-from chronos import BaseChronosPipeline as _ChronosBasePipeline
+try:  # pragma: no cover - optional dependency loaded lazily by callers
+    from chronos import BaseChronosPipeline as _ChronosBasePipeline
+except Exception:  # pragma: no cover
+    _ChronosBasePipeline = None  # type: ignore[assignment]
+
 from preaug_sweeps.augmentations import BaseAugmentation
 try:  # pragma: no cover - backward compatibility with pre-helper snapshots
     from src.cache_utils import find_hf_snapshot_dir
@@ -49,6 +54,9 @@ from src.preaug.multiscale import MultiscaleSelector, aggregate_forecasts
 from .model_cache import ModelCacheError, ModelCacheManager, dtype_to_token
 
 logger = logging.getLogger(__name__)
+
+sys.modules.setdefault("models.chronos2_wrapper", sys.modules[__name__])
+sys.modules.setdefault("src.models.chronos2_wrapper", sys.modules[__name__])
 
 DEFAULT_TARGET_COLUMNS: Tuple[str, ...] = ("open", "high", "low", "close")
 DEFAULT_QUANTILE_LEVELS: Tuple[float, ...] = (0.1, 0.5, 0.9)

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402
 from __future__ import annotations
 
 import argparse
@@ -6,13 +7,25 @@ import json
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
+
 
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+from src.binance_hybrid_eval_defaults import (
+    DEFAULT_DAILY_PERIODS_PER_YEAR,
+    DEFAULT_HOURLY_PERIODS_PER_YEAR,
+    DEFAULT_REPLAY_EVAL_END_DATE,
+    DEFAULT_REPLAY_EVAL_HOURLY_ROOT,
+    DEFAULT_REPLAY_EVAL_START_DATE,
+)
+from src.binance_hybrid_launch import (
+    DEFAULT_LAUNCH_SCRIPT,
+    resolve_launch_eval_constraints,
+)
 from src.remote_training_pipeline import (
     DEFAULT_REMOTE_DIR,
     DEFAULT_REMOTE_ENV,
@@ -22,12 +35,11 @@ from src.remote_training_pipeline import (
     render_remote_pipeline_script,
 )
 
+
 TRAIN_DATA = "pufferlib_market/data/mixed23_fresh_train.bin"
 VAL_DATA = "pufferlib_market/data/mixed23_fresh_val.bin"
-REPLAY_EVAL_HOURLY_ROOT = "trainingdatahourly"
-REPLAY_EVAL_START_DATE = "2025-06-01"
-REPLAY_EVAL_END_DATE = "2026-02-05"
 DEFAULT_POST_EVAL_PERIODS = (30, 60, 90, 120)
+DEFAULT_PROD_LAUNCH_SCRIPT = str(DEFAULT_LAUNCH_SCRIPT)
 
 PRESET_DESCRIPTIONS: dict[str, tuple[str, ...]] = {
     "champions": (
@@ -130,6 +142,22 @@ def _build_remote_bootstrap_script(
     ) + "\n"
 
 
+def resolve_eval_constraints(
+    *,
+    prod_launch_script: str,
+    eval_max_leverage: float | None,
+    eval_tradable_symbols: str,
+    eval_disable_shorts: bool | None,
+) -> tuple[float, str, bool]:
+    constraints = resolve_launch_eval_constraints(
+        prod_launch_script=prod_launch_script,
+        eval_max_leverage=eval_max_leverage,
+        eval_tradable_symbols=eval_tradable_symbols,
+        eval_disable_shorts=eval_disable_shorts,
+    )
+    return constraints.max_leverage, constraints.tradable_symbols_csv, constraints.disable_shorts
+
+
 def _write_local_manifest(
     *,
     manifest_dir: Path,
@@ -217,19 +245,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ],
         default="replay_hourly_return_pct",
     )
-    parser.add_argument("--periods-per-year", type=float, default=365.0)
+    parser.add_argument("--periods-per-year", type=float, default=DEFAULT_DAILY_PERIODS_PER_YEAR)
     parser.add_argument("--max-steps-override", type=int, default=90)
     parser.add_argument("--holdout-eval-steps", type=int, default=90)
     parser.add_argument("--holdout-n-windows", type=int, default=20)
     parser.add_argument("--holdout-fill-buffer-bps", type=float, default=5.0)
     parser.add_argument("--holdout-fee-rate", type=float, default=0.001)
-    parser.add_argument("--replay-eval-hourly-root", default=REPLAY_EVAL_HOURLY_ROOT)
-    parser.add_argument("--replay-eval-start-date", default=REPLAY_EVAL_START_DATE)
-    parser.add_argument("--replay-eval-end-date", default=REPLAY_EVAL_END_DATE)
+    parser.add_argument("--replay-eval-hourly-root", default=DEFAULT_REPLAY_EVAL_HOURLY_ROOT)
+    parser.add_argument("--replay-eval-start-date", default=DEFAULT_REPLAY_EVAL_START_DATE)
+    parser.add_argument("--replay-eval-end-date", default=DEFAULT_REPLAY_EVAL_END_DATE)
     parser.add_argument("--replay-eval-fill-buffer-bps", type=float, default=5.0)
     parser.add_argument("--replay-eval-run-hourly-policy", action="store_true")
     parser.add_argument("--replay-eval-robust-start-states", default="")
-    parser.add_argument("--replay-eval-hourly-periods-per-year", type=float, default=8760.0)
+    parser.add_argument("--replay-eval-hourly-periods-per-year", type=float, default=DEFAULT_HOURLY_PERIODS_PER_YEAR)
+    parser.add_argument("--prod-launch-script", default=DEFAULT_PROD_LAUNCH_SCRIPT)
+    parser.add_argument("--eval-tradable-symbols", default="")
+    parser.add_argument("--eval-max-leverage", type=float, default=None)
+    parser.add_argument("--eval-disable-shorts", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--post-eval-periods", default="30,60,90,120")
     parser.add_argument("--post-eval-sort-period", type=int, default=120)
     parser.add_argument("--post-eval-max-workers", type=int, default=2)
@@ -248,6 +280,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     descriptions = resolve_descriptions(preset=str(args.preset), descriptions=str(args.descriptions))
     max_trials = int(args.max_trials) if int(args.max_trials) > 0 else len(descriptions)
     post_eval_periods = [int(value) for value in parse_csv_tokens(args.post_eval_periods, cast=int)] or list(DEFAULT_POST_EVAL_PERIODS)
+    eval_max_leverage, eval_tradable_symbols, eval_disable_shorts = resolve_eval_constraints(
+        prod_launch_script=str(args.prod_launch_script),
+        eval_max_leverage=args.eval_max_leverage,
+        eval_tradable_symbols=str(args.eval_tradable_symbols),
+        eval_disable_shorts=args.eval_disable_shorts,
+    )
 
     plan = build_remote_autoresearch_plan(
         run_id=str(args.run_id),
@@ -264,6 +302,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         holdout_n_windows=int(args.holdout_n_windows),
         holdout_fee_rate=float(args.holdout_fee_rate),
         holdout_fill_buffer_bps=float(args.holdout_fill_buffer_bps),
+        holdout_max_leverage=float(eval_max_leverage),
+        eval_tradable_symbols=str(eval_tradable_symbols),
+        eval_disable_shorts=bool(eval_disable_shorts),
         replay_eval_data=str(args.holdout_data),
         replay_eval_hourly_root=str(args.replay_eval_hourly_root),
         replay_eval_start_date=str(args.replay_eval_start_date),

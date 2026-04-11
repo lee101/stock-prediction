@@ -20,6 +20,7 @@ from loguru import logger
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from newnanoalpacahourlyexp.marketsimulator import HourlyTraderMarketSimulator, HourlyTraderSimulationConfig
+from src.marketsim_video import render_html_plotly, trace_from_portfolio_result
 from unified_hourly_experiment.marketsimulator import PortfolioConfig, run_portfolio_simulation
 
 
@@ -101,8 +102,8 @@ def infer_live_replay_context(
     best_payload: dict[str, Any] | None = None
 
     with event_log.open() as handle:
-        for line in handle:
-            line = line.strip()
+        for raw_line in handle:
+            line = raw_line.strip()
             if not line:
                 continue
             try:
@@ -186,8 +187,8 @@ def load_live_entries(
 ) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     with trade_log.open() as handle:
-        for line in handle:
-            line = line.strip()
+        for raw_line in handle:
+            line = raw_line.strip()
             if not line:
                 continue
             try:
@@ -296,8 +297,8 @@ def load_live_entry_fills(
     rows: list[dict[str, Any]] = []
 
     with event_log.open() as handle:
-        for line in handle:
-            line = line.strip()
+        for raw_line in handle:
+            line = raw_line.strip()
             if not line:
                 continue
             try:
@@ -523,8 +524,8 @@ def split_live_entries_by_bar_coverage(
     )
     freshness["last_bar_timestamp_utc"] = freshness["last_bar_timestamp_utc"].astype(str)
 
-    covered_count = int(len(covered))
-    uncovered_count = int(len(uncovered))
+    covered_count = len(covered)
+    uncovered_count = len(uncovered)
     total_count = covered_count + uncovered_count
     return (
         covered,
@@ -672,7 +673,7 @@ def compare_counts(live_counts: pd.DataFrame, sim_counts: pd.DataFrame) -> dict[
         "exact_row_ratio": float(merged["exact"].mean()) if len(merged) else 1.0,
         "live_entries": int(live_counts["count"].sum()) if len(live_counts) else 0,
         "sim_entries": int(sim_counts["count"].sum()) if len(sim_counts) else 0,
-        "rows_compared": int(len(merged)),
+        "rows_compared": len(merged),
         "per_symbol": per_symbol.to_dict(orient="records"),
     }
 
@@ -714,12 +715,116 @@ def compare_entries(live_entries: pd.DataFrame, sim_entries: pd.DataFrame) -> di
         "exact_row_ratio": float(merged["exact"].mean()) if len(merged) else 1.0,
         "live_entries": int(live_summary["count"].sum()) if len(live_summary) else 0,
         "sim_entries": int(sim_summary["count"].sum()) if len(sim_summary) else 0,
-        "rows_compared": int(len(merged)),
+        "rows_compared": len(merged),
         "per_symbol": per_symbol.to_dict(orient="records"),
     }
 
 
-def main() -> None:
+def _row_rank_key(row: dict[str, Any]) -> tuple[float, float, float, float]:
+    return (
+        float(row["hourly_abs_count_delta_total"]),
+        float(row["hourly_abs_qty_delta_total"]),
+        float(row["matched_price_mae"]),
+        -float(row["exact_row_ratio"]),
+    )
+
+
+def _resolve_artifact_paths(
+    *,
+    output: Path | None,
+    visualize_html: Path | None,
+    now: datetime | None = None,
+) -> tuple[Path, Path | None]:
+    stamp = (now or datetime.now(UTC)).strftime("%Y%m%d_%H%M%S")
+    output_path = output or (Path("experiments") / f"stock_trade_log_sim_replay_{stamp}.json")
+    if visualize_html is None:
+        return output_path, None
+    requested = str(visualize_html).strip()
+    if requested.lower() == "auto":
+        return output_path, output_path.with_suffix(".html")
+    html_path = Path(requested)
+    if html_path.suffix.lower() != ".html":
+        html_path = html_path.with_suffix(".html")
+    return output_path, html_path
+
+
+def _format_best_replay_summary(
+    *,
+    best_row: dict[str, Any],
+    report_path: Path,
+    visualize_html_path: Path | None,
+    trace_json_path: Path | None,
+    visualization_error: str | None = None,
+) -> str:
+    lines = [
+        "Best replay scenario:",
+        f"  backend={best_row['sim_metrics'].get('backend', 'unknown')}",
+        f"  market_order_entry={int(bool(best_row['market_order_entry']))}",
+        f"  entry_order_ttl_hours={best_row['entry_order_ttl_hours']}",
+        f"  bar_margin={best_row['bar_margin']:.4f}",
+        f"  abs_count_delta={best_row['hourly_abs_count_delta_total']}",
+        f"  abs_qty_delta={best_row['hourly_abs_qty_delta_total']:.2f}",
+        f"  matched_price_mae={best_row['matched_price_mae']:.4f}",
+        f"  exact_row_ratio={best_row['exact_row_ratio']:.3f}",
+        f"  report={report_path}",
+    ]
+    if visualize_html_path is not None:
+        lines.append(f"  visualization={visualize_html_path}")
+    if trace_json_path is not None:
+        lines.append(f"  trace_json={trace_json_path}")
+    if visualization_error is not None:
+        lines.append(f"  visualization_error={visualization_error}")
+    return "\n".join(lines)
+
+
+def _write_replay_visualization(
+    *,
+    bars: pd.DataFrame,
+    actions: pd.DataFrame,
+    best_replay: dict[str, Any] | None,
+    best_row: dict[str, Any] | None,
+    symbols: list[str],
+    visualize_html_path: Path | None,
+    visualize_num_pairs: int,
+    sim_backend: str,
+) -> tuple[Path | None, Path | None, str | None]:
+    if visualize_html_path is None:
+        return None, None, None
+    if best_replay is None or best_row is None:
+        return None, None, "no_best_replay_available"
+    if str(sim_backend).strip().lower() == "hourly_trader":
+        return None, None, "visualization_not_supported_for_hourly_trader_backend"
+
+    trace_json_path: Path | None = None
+    try:
+        trace = trace_from_portfolio_result(
+            bars=bars,
+            actions=actions,
+            result=best_replay["sim"],
+            symbols=symbols,
+        )
+        trace_json_path = visualize_html_path.with_suffix(".trace.json")
+        trace.to_json(trace_json_path)
+        render_html_plotly(
+            trace,
+            visualize_html_path,
+            num_pairs=int(visualize_num_pairs),
+            title=(
+                "stock trade log replay"
+                f" · margin={best_row['bar_margin']:.4f}"
+                f" · ttl={best_row['entry_order_ttl_hours']}"
+                f" · price_mae={best_row['matched_price_mae']:.4f}"
+            ),
+            animated=False,
+        )
+        logger.info("Saved replay visualization to {} (trace json {})", visualize_html_path, trace_json_path)
+        return visualize_html_path, trace_json_path, None
+    except Exception as exc:  # pragma: no cover - exercised via tests using monkeypatch
+        logger.warning("Replay visualization export failed: {}", exc)
+        return None, trace_json_path, str(exc)
+
+
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Replay sparse live stock entry log in simulator.")
     parser.add_argument("--trade-log", type=Path, default=Path("strategy_state/stock_trade_log.jsonl"))
     parser.add_argument("--event-log", type=Path, default=Path("strategy_state/stock_event_log.jsonl"))
@@ -764,7 +869,14 @@ def main() -> None:
         help="Comma-separated bool flags for the live-like hourly trader backend.",
     )
     parser.add_argument("--output", type=Path, default=None)
-    args = parser.parse_args()
+    parser.add_argument(
+        "--visualize-html",
+        type=Path,
+        default=None,
+        help="Optional Plotly HTML output for the best replay scenario. Use 'auto' to place it next to the JSON report.",
+    )
+    parser.add_argument("--visualize-num-pairs", type=int, default=6)
+    args = parser.parse_args(argv)
 
     start = _as_utc(args.start) if str(args.start).strip() else None
     end = _as_utc(args.end) if str(args.end).strip() else None
@@ -828,6 +940,8 @@ def main() -> None:
     partial_fill_values = parse_bool_list(args.partial_fill_on_touch) if is_hourly_trader_backend else [False]
 
     rows: list[dict[str, Any]] = []
+    best_row: dict[str, Any] | None = None
+    best_replay: dict[str, Any] | None = None
     for market_order_entry in market_order_values:
         for ttl in ttl_values:
             for bar_margin in parse_float_list(args.bar_margins):
@@ -873,6 +987,9 @@ def main() -> None:
                             "sim_metrics": replay["sim"].metrics,
                         }
                         rows.append(row)
+                        if best_row is None or _row_rank_key(row) < _row_rank_key(best_row):
+                            best_row = row
+                            best_replay = replay
                         logger.info(
                             "backend={} mkt={} ttl={} margin={:.4f} cancel_ack={} partial={} -> abs_delta={} qty_delta={:.2f} price_mae={:.4f}",
                             args.sim_backend,
@@ -894,6 +1011,22 @@ def main() -> None:
             -r["exact_row_ratio"],
         )
     )
+    output_path, visualize_html_path = _resolve_artifact_paths(
+        output=args.output,
+        visualize_html=args.visualize_html,
+    )
+
+    written_visualize_html_path, trace_json_path, visualization_error = _write_replay_visualization(
+        bars=bars,
+        actions=actions,
+        best_replay=best_replay,
+        best_row=best_row,
+        symbols=symbols,
+        visualize_html_path=visualize_html_path,
+        visualize_num_pairs=int(args.visualize_num_pairs),
+        sim_backend=args.sim_backend,
+    )
+
     payload = {
         "generated_at_utc": datetime.now(UTC).isoformat(),
         "trade_log": str(args.trade_log),
@@ -910,20 +1043,33 @@ def main() -> None:
         },
         "live_entry_count": int(live_counts["count"].sum()) if len(live_counts) else 0,
         "live_entry_bar_coverage": coverage_summary,
-        "covered_live_entry_count": int(len(covered_live_entries)),
-        "uncovered_live_entry_count": int(len(uncovered_live_entries)),
+        "covered_live_entry_count": len(covered_live_entries),
+        "uncovered_live_entry_count": len(uncovered_live_entries),
+        "visualization": {
+            "requested_html_path": str(visualize_html_path) if visualize_html_path is not None else None,
+            "generated_html_path": str(written_visualize_html_path) if written_visualize_html_path is not None else None,
+            "trace_json_path": str(trace_json_path) if trace_json_path is not None else None,
+            "error": visualization_error,
+        },
         "top": rows[:10],
         "all": rows,
     }
 
-    if args.output is None:
-        stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
-        output_path = Path("experiments") / f"stock_trade_log_sim_replay_{stamp}.json"
-    else:
-        output_path = args.output
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload, indent=2, default=str))
     logger.info("Saved replay report to {}", output_path)
+
+    if best_row is not None:
+        logger.info(
+            "\n{}",
+            _format_best_replay_summary(
+                best_row=best_row,
+                report_path=output_path,
+                visualize_html_path=written_visualize_html_path,
+                trace_json_path=trace_json_path,
+                visualization_error=visualization_error,
+            ),
+        )
 
 
 if __name__ == "__main__":

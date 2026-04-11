@@ -52,7 +52,10 @@ from pufferlib_market.evaluate_tail import (
     _slice_tail,
 )
 from pufferlib_market.evaluate_holdout import (
+    _mask_all_shorts,
+    _mask_disallowed_symbols,
     _infer_arch,
+    _build_tradable_mask,
     _infer_hidden_size,
     _infer_resmlp_blocks,
 )
@@ -255,12 +258,68 @@ def try_compile_policy(policy: nn.Module) -> nn.Module:
         return policy
 
 
-def make_policy_fn(policy: nn.Module, device: torch.device) -> Callable[[np.ndarray], int]:
+def _normalized_tradable_symbols_csv(tradable_symbols_raw: str | None) -> str:
+    tokens = [str(symbol).strip().upper() for symbol in str(tradable_symbols_raw or "").split(",") if str(symbol).strip()]
+    if not tokens:
+        return ""
+    return ",".join(sorted(set(tokens)))
+
+
+def _cache_config_signature(
+    *,
+    data_dir: str | Path,
+    periods: list[int],
+    fee_rate: float,
+    fill_buffer_bps: float,
+    periods_per_year: float,
+    slippage_bps: float,
+    trailing_stop_pct: float,
+    max_hold_bars: int,
+    min_notional_usd: float,
+    max_leverage: float,
+    tradable_symbols: str | None,
+    disable_shorts: bool,
+) -> str:
+    payload = {
+        "version": 2,
+        "data_dir": str(data_dir),
+        "periods": [int(period) for period in periods],
+        "fee_rate": float(fee_rate),
+        "fill_buffer_bps": float(fill_buffer_bps),
+        "periods_per_year": float(periods_per_year),
+        "slippage_bps": float(slippage_bps),
+        "trailing_stop_pct": float(trailing_stop_pct),
+        "max_hold_bars": int(max_hold_bars),
+        "min_notional_usd": float(min_notional_usd),
+        "max_leverage": float(max_leverage),
+        "tradable_symbols": _normalized_tradable_symbols_csv(tradable_symbols),
+        "disable_shorts": bool(disable_shorts),
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def make_policy_fn(
+    policy: nn.Module,
+    device: torch.device,
+    *,
+    num_symbols: int,
+    tradable_mask: torch.Tensor | None = None,
+    disable_shorts: bool = False,
+) -> Callable[[np.ndarray], int]:
     """Create a deterministic policy function for simulate_daily_policy."""
     def _fn(obs: np.ndarray) -> int:
         obs_t = torch.from_numpy(obs.astype(np.float32, copy=False)).to(device=device).view(1, -1)
         with torch.inference_mode():
             logits, _ = policy(obs_t)
+        if tradable_mask is not None:
+            logits = _mask_disallowed_symbols(
+                logits,
+                num_symbols=num_symbols,
+                per_symbol_actions=1,
+                tradable_mask=tradable_mask,
+            )
+        if disable_shorts:
+            logits = _mask_all_shorts(logits, num_symbols=num_symbols, per_symbol_actions=1)
         return int(torch.argmax(logits, dim=-1).item())
     return _fn
 
@@ -307,12 +366,15 @@ def save_cache(cache_path: str, cache: dict[str, dict]) -> None:
         print(f"  WARNING: failed to save cache: {e}")
 
 
-def is_cached(cache: dict[str, dict], ckpt_path: str, mtime: float) -> bool:
+def is_cached(cache: dict[str, dict], ckpt_path: str, mtime: float, config_signature: str) -> bool:
     """Check if a checkpoint result is cached and still valid (same mtime)."""
     entry = cache.get(ckpt_path)
     if entry is None:
         return False
-    return abs(entry.get("mtime", 0.0) - mtime) < 0.01
+    return (
+        abs(entry.get("mtime", 0.0) - mtime) < 0.01
+        and str(entry.get("config_signature", "")) == str(config_signature)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +419,7 @@ def _eval_all_periods(
     fee_rate: float,
     fill_buffer_bps: float,
     periods_per_year: float,
+    max_leverage: float = MAX_LEVERAGE,
     slippage_bps: float = SLIPPAGE_BPS,
     trailing_stop_pct: float = TRAILING_STOP_PCT,
     max_hold_bars: int = MAX_HOLD_BARS,
@@ -379,7 +442,7 @@ def _eval_all_periods(
             fee_rate=fee_rate,
             slippage_bps=slippage_bps,
             fill_buffer_bps=fill_buffer_bps,
-            max_leverage=MAX_LEVERAGE,
+            max_leverage=max_leverage,
             periods_per_year=periods_per_year,
             trailing_stop_pct=trailing_stop_pct,
             max_hold_bars=max_hold_bars,
@@ -397,6 +460,9 @@ def evaluate_single_checkpoint(
     fill_buffer_bps: float,
     periods_per_year: float,
     use_compile: bool = True,
+    max_leverage: float = MAX_LEVERAGE,
+    tradable_symbols: str | None = None,
+    disable_shorts: bool = False,
     slippage_bps: float = SLIPPAGE_BPS,
     trailing_stop_pct: float = TRAILING_STOP_PCT,
     max_hold_bars: int = MAX_HOLD_BARS,
@@ -432,6 +498,9 @@ def evaluate_single_checkpoint(
     expected_actions = 1 + 2 * data.num_symbols
     if info.num_actions != expected_actions:
         return []
+    tradable_mask, resolved_tradable_symbols = _build_tradable_mask(list(data.symbols), tradable_symbols)
+    if tradable_mask is not None:
+        tradable_mask = tradable_mask.to(device=device)
 
     try:
         policy = build_policy(info, state_dict, device)
@@ -442,11 +511,21 @@ def evaluate_single_checkpoint(
     if use_compile:
         policy = try_compile_policy(policy)
 
-    policy_fn = make_policy_fn(policy, device)
+    policy_fn = make_policy_fn(
+        policy,
+        device,
+        num_symbols=data.num_symbols,
+        tradable_mask=tradable_mask,
+        disable_shorts=disable_shorts,
+    )
     return _eval_all_periods(
         policy_fn, data, periods,
-        short_checkpoint_name(path), _universe_name(data),
-        fee_rate, fill_buffer_bps, periods_per_year,
+        short_checkpoint_name(path),
+        "+".join(resolved_tradable_symbols) if resolved_tradable_symbols else _universe_name(data),
+        fee_rate,
+        fill_buffer_bps,
+        periods_per_year,
+        max_leverage=max_leverage,
         slippage_bps=slippage_bps,
         trailing_stop_pct=trailing_stop_pct,
         max_hold_bars=max_hold_bars,
@@ -467,6 +546,9 @@ def fast_eval_sequential(
     periods_per_year: float,
     cache_path: str,
     use_compile: bool = True,
+    max_leverage: float = MAX_LEVERAGE,
+    tradable_symbols: str | None = None,
+    disable_shorts: bool = False,
     slippage_bps: float = SLIPPAGE_BPS,
     trailing_stop_pct: float = TRAILING_STOP_PCT,
     max_hold_bars: int = MAX_HOLD_BARS,
@@ -493,6 +575,20 @@ def fast_eval_sequential(
 
     # 3. Load result cache
     cache = load_cache(cache_path)
+    config_signature = _cache_config_signature(
+        data_dir=data_dir,
+        periods=periods,
+        fee_rate=fee_rate,
+        fill_buffer_bps=fill_buffer_bps,
+        periods_per_year=periods_per_year,
+        slippage_bps=slippage_bps,
+        trailing_stop_pct=trailing_stop_pct,
+        max_hold_bars=max_hold_bars,
+        min_notional_usd=min_notional_usd,
+        max_leverage=max_leverage,
+        tradable_symbols=tradable_symbols,
+        disable_shorts=disable_shorts,
+    )
     cache_hits = 0
 
     # 4. Evaluate each checkpoint (load once, check cache before building policy)
@@ -509,7 +605,7 @@ def fast_eval_sequential(
             mtime = os.path.getmtime(str(ckpt_path))
         except OSError:
             continue
-        if is_cached(cache, ckpt_key, mtime):
+        if is_cached(cache, ckpt_key, mtime, config_signature):
             cached_results = cache[ckpt_key].get("results", [])
             if cached_results:
                 all_results.extend(cached_results)
@@ -529,6 +625,9 @@ def fast_eval_sequential(
             print(f"{progress} SKIP {ckpt_name}: no val data for obs_size={info.obs_size}")
             del state_dict
             continue
+        tradable_mask, resolved_tradable_symbols = _build_tradable_mask(list(data.symbols), tradable_symbols)
+        if tradable_mask is not None:
+            tradable_mask = tradable_mask.to(device=device)
 
         expected_actions = 1 + 2 * data.num_symbols
         if info.num_actions != expected_actions:
@@ -550,12 +649,19 @@ def fast_eval_sequential(
         if use_compile:
             policy = try_compile_policy(policy)
 
-        policy_fn = make_policy_fn(policy, device)
-        universe = _universe_name(data)
+        policy_fn = make_policy_fn(
+            policy,
+            device,
+            num_symbols=data.num_symbols,
+            tradable_mask=tradable_mask,
+            disable_shorts=disable_shorts,
+        )
+        universe = "+".join(resolved_tradable_symbols) if resolved_tradable_symbols else _universe_name(data)
 
         ckpt_results = _eval_all_periods(
             policy_fn, data, periods, ckpt_name, universe,
             fee_rate, fill_buffer_bps, periods_per_year,
+            max_leverage=max_leverage,
             slippage_bps=slippage_bps,
             trailing_stop_pct=trailing_stop_pct,
             max_hold_bars=max_hold_bars,
@@ -564,7 +670,7 @@ def fast_eval_sequential(
         all_results.extend(ckpt_results)
 
         # Update cache
-        cache[ckpt_key] = {"mtime": info.mtime, "results": ckpt_results}
+        cache[ckpt_key] = {"mtime": info.mtime, "config_signature": config_signature, "results": ckpt_results}
 
         if ckpt_results:
             show = next((r for r in ckpt_results if r["period"] == 120), ckpt_results[-1])
@@ -599,6 +705,9 @@ def fast_eval_parallel(
     cache_path: str,
     max_workers: int = 4,
     use_compile: bool = True,
+    max_leverage: float = MAX_LEVERAGE,
+    tradable_symbols: str | None = None,
+    disable_shorts: bool = False,
     slippage_bps: float = SLIPPAGE_BPS,
     trailing_stop_pct: float = TRAILING_STOP_PCT,
     max_hold_bars: int = MAX_HOLD_BARS,
@@ -619,6 +728,20 @@ def fast_eval_parallel(
 
     # 2. Load result cache
     cache = load_cache(cache_path)
+    config_signature = _cache_config_signature(
+        data_dir=data_dir,
+        periods=periods,
+        fee_rate=fee_rate,
+        fill_buffer_bps=fill_buffer_bps,
+        periods_per_year=periods_per_year,
+        slippage_bps=slippage_bps,
+        trailing_stop_pct=trailing_stop_pct,
+        max_hold_bars=max_hold_bars,
+        min_notional_usd=min_notional_usd,
+        max_leverage=max_leverage,
+        tradable_symbols=tradable_symbols,
+        disable_shorts=disable_shorts,
+    )
     cache_hits = 0
 
     # 3. Partition: cached vs. need-eval
@@ -631,7 +754,7 @@ def fast_eval_parallel(
             mtime = os.path.getmtime(str(ckpt_path))
         except OSError:
             continue
-        if is_cached(cache, ckpt_key, mtime):
+        if is_cached(cache, ckpt_key, mtime, config_signature):
             entry_results = cache[ckpt_key].get("results", [])
             cached_results.extend(entry_results)
             cache_hits += 1
@@ -660,6 +783,9 @@ def fast_eval_parallel(
                     fill_buffer_bps,
                     periods_per_year,
                     use_compile,
+                    max_leverage,
+                    tradable_symbols,
+                    disable_shorts,
                     slippage_bps,
                     trailing_stop_pct,
                     max_hold_bars,
@@ -676,7 +802,7 @@ def fast_eval_parallel(
                     results = future.result()
                     all_results.extend(results)
                     mtime = os.path.getmtime(str(ckpt_path))
-                    cache[ckpt_key] = {"mtime": mtime, "results": results}
+                    cache[ckpt_key] = {"mtime": mtime, "config_signature": config_signature, "results": results}
                     if results:
                         show = next((r for r in results if r["period"] == 120), results[-1])
                         name = short_checkpoint_name(ckpt_path)
@@ -711,6 +837,9 @@ def fast_eval_all(
     root: str = ".",
     use_compile: bool = True,
     parallel: bool = True,
+    max_leverage: float = MAX_LEVERAGE,
+    tradable_symbols: str | None = None,
+    disable_shorts: bool = False,
     slippage_bps: float = SLIPPAGE_BPS,
     trailing_stop_pct: float = TRAILING_STOP_PCT,
     max_hold_bars: int = MAX_HOLD_BARS,
@@ -755,6 +884,9 @@ def fast_eval_all(
         return fast_eval_parallel(
             root_path, dirs, periods, fee_rate, fill_buffer_bps,
             periods_per_year, cache_path, max_workers, use_compile,
+            max_leverage=max_leverage,
+            tradable_symbols=tradable_symbols,
+            disable_shorts=disable_shorts,
             slippage_bps=slippage_bps,
             trailing_stop_pct=trailing_stop_pct,
             max_hold_bars=max_hold_bars,
@@ -764,6 +896,9 @@ def fast_eval_all(
         return fast_eval_sequential(
             root_path, dirs, periods, fee_rate, fill_buffer_bps,
             periods_per_year, cache_path, use_compile,
+            max_leverage=max_leverage,
+            tradable_symbols=tradable_symbols,
+            disable_shorts=disable_shorts,
             slippage_bps=slippage_bps,
             trailing_stop_pct=trailing_stop_pct,
             max_hold_bars=max_hold_bars,
@@ -786,6 +921,9 @@ def main():
     parser.add_argument("--cache-path", type=str, default="marketsim_eval_cache.json")
     parser.add_argument("--no-compile", action="store_true", help="Disable torch.compile")
     parser.add_argument("--sequential", action="store_true", help="Force sequential evaluation")
+    parser.add_argument("--max-leverage", type=float, default=MAX_LEVERAGE)
+    parser.add_argument("--tradable-symbols", type=str, default="")
+    parser.add_argument("--disable-shorts", action="store_true")
     parser.add_argument(
         "--sort-period", type=int, default=120,
         help="Period to sort final leaderboard by Sortino",
@@ -812,6 +950,10 @@ def main():
     print(f"Workers: {args.max_workers}")
     print(f"Compile: {use_compile}")
     print(f"Parallel: {parallel}")
+    if args.tradable_symbols:
+        print(f"Tradable symbols: {_normalized_tradable_symbols_csv(args.tradable_symbols)}")
+    print(f"Disable shorts: {bool(args.disable_shorts)}")
+    print(f"Max leverage: {float(args.max_leverage):.4g}")
     print(f"Fee: {FEE_RATE*10000:.0f}bps + {SLIPPAGE_BPS:.1f}bps slippage")
     print(f"Trailing stop: {TRAILING_STOP_PCT*100:.2f}%  Max hold: {MAX_HOLD_BARS} bars  Min notional: ${MIN_NOTIONAL_USD:.0f}")
     print()
@@ -822,6 +964,9 @@ def main():
         df = fast_eval_parallel(
             root, dirs, periods, FEE_RATE, FILL_BUFFER_BPS,
             PERIODS_PER_YEAR, args.cache_path, args.max_workers, use_compile,
+            max_leverage=args.max_leverage,
+            tradable_symbols=args.tradable_symbols,
+            disable_shorts=args.disable_shorts,
             slippage_bps=SLIPPAGE_BPS,
             trailing_stop_pct=TRAILING_STOP_PCT,
             max_hold_bars=MAX_HOLD_BARS,
@@ -831,6 +976,9 @@ def main():
         df = fast_eval_sequential(
             root, dirs, periods, FEE_RATE, FILL_BUFFER_BPS,
             PERIODS_PER_YEAR, args.cache_path, use_compile,
+            max_leverage=args.max_leverage,
+            tradable_symbols=args.tradable_symbols,
+            disable_shorts=args.disable_shorts,
             slippage_bps=SLIPPAGE_BPS,
             trailing_stop_pct=TRAILING_STOP_PCT,
             max_hold_bars=MAX_HOLD_BARS,

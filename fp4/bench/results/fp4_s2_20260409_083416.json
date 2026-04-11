@@ -1,0 +1,58 @@
+{
+  "trainer": "fp4",
+  "seed": 2,
+  "steps": 10000000,
+  "date": "20260409_083416",
+  "config_path": "fp4/experiments/fp4_100M_decisive.yaml",
+  "smoke": false,
+  "available": true,
+  "train": {
+    "status": "ok",
+    "wall_sec": 65.18051698012277,
+    "gpu_peak_mb": 1573.30908203125,
+    "trainer_output": {
+      "final_sortino": 0.7246637940406799,
+      "final_p10": 0.30352044105529785,
+      "mean_return": 1.0767890214920044,
+      "n_episodes": 880173,
+      "steps_per_sec": 159802.63252328662,
+      "wall_sec": 62.541147427866235,
+      "gpu_peak_mb": 1573.30908203125,
+      "device": "cuda",
+      "cuda_graph_used": true,
+      "full_graph_used": true,
+      "env_backend": "gpu_trading_env_multi",
+      "n_iters": 610,
+      "total_steps": 9994240,
+      "last_loss": -0.6957336664199829,
+      "last_entropy": 24.979902267456055,
+      "last_leverage_cap": 1.0,
+      "n_done_last_iter": 1485.0
+    }
+  },
+  "eval": {
+    "status": "failed_fast",
+    "failed_reason": "window 5 total_return=-0.0042 < 0 after 3 completed",
+    "by_slippage": {
+      "0": {
+        "p10_return": -0.02872111452743411,
+        "median_return": -0.004163769539445639,
+        "p90_return": 0.0397813861258328,
+        "mean_return": 0.0039144849094251795,
+        "sortino": 1.016595721244812,
+        "max_drawdown": 0.08216755092144012,
+        "n_neg": 2,
+        "n_windows": 3,
+        "failed_fast": true,
+        "failed_reason": "window 5 total_return=-0.0042 < 0 after 3 completed",
+        "n_completed_before_bail": 3
+      }
+    },
+    "checkpoint": "fp4/bench/results/decisive_100M_v2/seed_2/final.pt"
+  },
+  "steps_per_sec": 153420.0780127222,
+  "status": "ok",
+  "monthly_return": 0.0,
+  "hit_27pct": false,
+  "current_leverage_cap": 1.0
+}

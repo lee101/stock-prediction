@@ -45,6 +45,29 @@ from src.trading_obj_utils import filter_to_realistic_positions
 _is_hourly = os.getenv("TRADE_STATE_SUFFIX", "") == "hourly"
 logger = setup_logging(get_log_filename("alpaca_cli.log", is_hourly=_is_hourly))
 
+# ---------------------------------------------------------------------------
+# Singleton + death-spiral safety gate
+#
+# Every caller that imports `alpaca_wrapper` is a "client" of the one-and-only
+# live alpaca writer on this host. Fail fast if another live process is
+# already running, and refuse death-spiral sells before we even build the
+# order payload. Paper mode is a no-op — run as many paper processes as you
+# like. Override envs:
+#   ALPACA_SINGLETON_OVERRIDE=1      bypass the writer lock (logged loudly)
+#   ALPACA_DEATH_SPIRAL_OVERRIDE=1   bypass the sell-price floor (logged loudly)
+# ---------------------------------------------------------------------------
+from src.alpaca_singleton import (  # noqa: E402
+    enforce_live_singleton,
+    guard_sell_against_death_spiral,
+    record_buy_price,
+)
+
+# Run the singleton lock acquisition exactly once per process import.
+_ALPACA_SINGLETON_LOCK = enforce_live_singleton(
+    service_name=os.getenv("ALPACA_SERVICE_NAME", f"alpaca_wrapper_{os.getpid()}"),
+    account_name=os.getenv("ALPACA_ACCOUNT_NAME", "alpaca_live_writer"),
+)
+
 
 def _get_time_in_force_for_qty(qty: float, symbol: str = None) -> str:
     """
@@ -1396,6 +1419,19 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
         else:
             amount_to_trade = abs(math.floor(float(amount_to_trade) * 1000) / 1000.0)
 
+        # Death-spiral guard: if this is a sell and we bought this symbol
+        # recently above the sell price (outside tolerance), refuse. Raises
+        # RuntimeError which propagates out of alpaca_order_stock so the
+        # caller crashes the loop rather than scraping the ask. Override via
+        # ALPACA_DEATH_SPIRAL_OVERRIDE=1 (loudly logged).
+        try:
+            guard_sell_against_death_spiral(
+                symbol=currentBuySymbol, side=side, price=float(price),
+            )
+        except RuntimeError as spiral_exc:
+            logger.error(f"death-spiral guard refused sell: {spiral_exc}")
+            raise
+
         # Cancel existing orders for this symbol
         current_orders = get_orders()
         for order in current_orders:
@@ -1425,6 +1461,13 @@ def alpaca_order_stock(currentBuySymbol, row, price, margin_multiplier=1.95, sid
                     limit_price=str(math.floor(price) if is_buy_side(side) else math.ceil(price)),
                 )
             )
+        # Remember buy price so future sells are vetted by the
+        # death-spiral guard against a recent cost basis.
+        if is_buy_side(side):
+            try:
+                record_buy_price(currentBuySymbol, float(price))
+            except Exception as _rec_exc:
+                logger.warning(f"record_buy_price failed: {_rec_exc}")
         print(result)
         return True
 

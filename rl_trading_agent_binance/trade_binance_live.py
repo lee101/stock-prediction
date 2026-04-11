@@ -24,7 +24,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -90,6 +90,10 @@ class BinanceSymbolConfig:
     base_asset: str  # "BTC", "ETH", etc.
     maker_fee: float  # 0.0 for FDUSD, 0.001 for USDT
     max_position_pct: float = 0.20  # max % of portfolio in this symbol
+
+
+type JSONDict = dict[str, object]
+type JSONList = list[JSONDict]
 
 
 # BTC/ETH trade on FDUSD (zero maker fees)
@@ -284,7 +288,7 @@ class PortfolioState:
 def _isoformat_utc(value: object) -> str | None:
     if value is None:
         return None
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
+    if isinstance(value, int | float) and not isinstance(value, bool):
         numeric = float(value)
         if not np.isfinite(numeric):
             return None
@@ -306,7 +310,8 @@ def _isoformat_utc(value: object) -> str | None:
                 ts = ts.tz_convert("UTC")
         return str(ts.isoformat())
     try:
-        ts = pd.Timestamp(value)
+        timestamp_value = value if isinstance(value, str) else str(value)
+        ts = pd.Timestamp(timestamp_value)
     except Exception:
         return None
     if ts.tzinfo is None:
@@ -320,7 +325,7 @@ def _safe_float(value: object) -> float | None:
     if value is None or isinstance(value, bool):
         return None
     try:
-        numeric = float(value) if isinstance(value, (int, float, str)) else float(str(value))
+        numeric = float(value) if isinstance(value, int | float | str) else float(str(value))
     except (TypeError, ValueError):
         return None
     if not np.isfinite(numeric):
@@ -332,7 +337,7 @@ def _safe_int(value: object) -> int | None:
     if value is None or isinstance(value, bool):
         return None
     try:
-        return int(value) if isinstance(value, (int, str)) else int(str(value))
+        return int(value) if isinstance(value, int | str) else int(str(value))
     except (TypeError, ValueError):
         return None
 
@@ -364,7 +369,28 @@ def _serialize_portfolio_state(state: PortfolioState) -> dict[str, object]:
     }
 
 
-def _serialize_order(order: dict | None) -> dict[str, object] | None:
+def _cycle_order_bucket(cycle_snapshot: JSONDict, bucket: str) -> JSONList:
+    orders = cycle_snapshot["orders"]
+    assert isinstance(orders, dict)
+    typed_orders = cast(dict[str, object], orders)
+    order_bucket = typed_orders[bucket]
+    assert isinstance(order_bucket, list)
+    return cast(JSONList, order_bucket)
+
+
+def _cycle_symbols_detail(cycle_snapshot: JSONDict) -> JSONList:
+    details = cycle_snapshot["symbols_detail"]
+    assert isinstance(details, list)
+    return cast(JSONList, details)
+
+
+def _detail_actions(detail: JSONDict) -> JSONList:
+    actions = detail["actions"]
+    assert isinstance(actions, list)
+    return cast(JSONList, actions)
+
+
+def _serialize_order(order: dict[str, Any] | None) -> JSONDict | None:
     if not order:
         return None
     return {
@@ -383,8 +409,8 @@ def _serialize_order(order: dict | None) -> dict[str, object] | None:
     }
 
 
-def _serialize_orders(orders: list[dict] | tuple[dict, ...]) -> list[dict[str, object]]:
-    serialized: list[dict[str, object]] = []
+def _serialize_orders(orders: list[dict[str, Any]] | tuple[dict[str, Any], ...]) -> JSONList:
+    serialized: JSONList = []
     for order in orders:
         item = _serialize_order(order)
         if item is not None:
@@ -432,6 +458,82 @@ def _serialize_rl_signal(signal: object) -> dict[str, object]:
         "value": _safe_float(getattr(signal, "value", None)),
         "logits": [float(item) for item in list(getattr(signal, "logits", []) or []) if _safe_float(item) is not None],
     }
+
+
+def _normalize_symbol_list(symbols: list[str] | tuple[str, ...] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_symbol in symbols or []:
+        symbol = str(raw_symbol or "").strip().upper()
+        if not symbol or symbol in seen:
+            continue
+        normalized.append(symbol)
+        seen.add(symbol)
+    return normalized
+
+
+def _restrict_contexts_to_tradable_symbols(
+    contexts: list,
+    tradable_symbols: list[str] | None,
+) -> tuple[list, list[str], list[str]]:
+    """Restrict market contexts to the configured live tradable universe."""
+
+    context_by_symbol = {str(ctx.symbol).upper(): ctx for ctx in contexts}
+    requested_symbols = _normalize_symbol_list(tradable_symbols)
+    if not requested_symbols:
+        active_symbols = [str(ctx.symbol).upper() for ctx in contexts]
+        return list(contexts), active_symbols, []
+
+    active_symbols = [symbol for symbol in requested_symbols if symbol in context_by_symbol]
+    missing_symbols = [symbol for symbol in requested_symbols if symbol not in context_by_symbol]
+    filtered_contexts = [context_by_symbol[symbol] for symbol in active_symbols]
+    return filtered_contexts, active_symbols, missing_symbols
+
+
+def _filter_allocation_plan_to_symbols(
+    plan: AllocationPlan,
+    allowed_symbols: list[str] | tuple[str, ...] | None,
+) -> AllocationPlan:
+    """Drop allocations for symbols outside the allowed live trading universe."""
+
+    allowed = set(_normalize_symbol_list(allowed_symbols))
+    if not allowed:
+        return plan
+
+    filtered_allocations = {symbol: pct for symbol, pct in plan.allocations.items() if str(symbol).upper() in allowed}
+    filtered_entry_prices = {
+        symbol: price for symbol, price in plan.entry_prices.items() if str(symbol).upper() in allowed
+    }
+    filtered_exit_prices = {
+        symbol: price for symbol, price in plan.exit_prices.items() if str(symbol).upper() in allowed
+    }
+
+    if (
+        len(filtered_allocations) == len(plan.allocations)
+        and len(filtered_entry_prices) == len(plan.entry_prices)
+        and len(filtered_exit_prices) == len(plan.exit_prices)
+    ):
+        return plan
+
+    dropped_symbols = sorted(
+        {
+            str(symbol).upper()
+            for symbol in (set(plan.allocations) | set(plan.entry_prices) | set(plan.exit_prices))
+            if str(symbol).upper() not in allowed
+        }
+    )
+    reasoning = str(plan.reasoning or "")
+    if dropped_symbols:
+        suffix = f"filtered_non_tradable={','.join(dropped_symbols)}"
+        reasoning = f"{reasoning} [{suffix}]".strip() if reasoning else suffix
+
+    return AllocationPlan(
+        allocations=filtered_allocations,
+        entry_prices=filtered_entry_prices,
+        exit_prices=filtered_exit_prices,
+        reasoning=reasoning,
+        timestamp=plan.timestamp,
+    )
 
 
 def _tracked_base_assets() -> tuple[str, ...]:
@@ -663,7 +765,10 @@ def get_portfolio_state(execution_mode: str = "spot") -> PortfolioState:
         margin_account = get_margin_account()
         try:
             total_net_btc = float(margin_account.get("totalNetAssetOfBtc", 0.0))
-            btc_price = float(binance_wrapper.get_symbol_price("BTCUSDT") or 0.0)
+            _btc_raw = binance_wrapper.get_symbol_price("BTCUSDT")
+            if _btc_raw is None:
+                raise ValueError("Could not get BTC price")
+            btc_price = float(_btc_raw)
             state.total_value_usd = total_net_btc * btc_price
         except Exception:
             state.total_value_usd = 0.0
@@ -840,7 +945,7 @@ def _reserve_buying_power(
 
 def _load_open_orders(execution_mode: str) -> list[dict[str, Any]]:
     orders = get_open_margin_orders() if execution_mode == "margin" else binance_wrapper.get_open_orders()
-    return [cast(dict[str, Any], order) for order in orders]
+    return list(orders)
 
 
 def _cancel_open_order(execution_mode: str, symbol: str, order_id: int) -> None:
@@ -998,7 +1103,10 @@ def _repay_margin_debt_if_flat(
             net_asset = 0.0
         price = 0.0
         try:
-            price = float(binance_wrapper.get_symbol_price(f"{cfg.base_asset}USDT") or 0.0)
+            _raw_price = binance_wrapper.get_symbol_price(f"{cfg.base_asset}USDT")
+            if _raw_price is None:
+                raise ValueError(f"Could not get price for {cfg.base_asset}USDT")
+            price = float(_raw_price)
         except Exception:
             pass
         if net_asset * price > 5.0:
@@ -1068,7 +1176,7 @@ def place_limit_buy(
     try:
         order = binance_wrapper.create_order(market_symbol, "BUY", qty, price)
         logger.info(f"  Order placed: {order.get('orderId')}")
-        return cast(dict[str, Any], order)
+        return order
     except Exception as e:
         logger.error(f"  Order failed: {e}")
         return None
@@ -1104,7 +1212,7 @@ def place_limit_sell(
     try:
         order = binance_wrapper.create_order(market_symbol, "SELL", qty, price)
         logger.info(f"  Order placed: {order.get('orderId')}")
-        return cast(dict[str, Any], order)
+        return order
     except Exception as e:
         logger.error(f"  Order failed: {e}")
         return None
@@ -1147,7 +1255,7 @@ def place_margin_limit_buy(
             time_in_force="GTC",
         )
         logger.info(f"  Margin order placed: {order.get('orderId')}")
-        return cast(dict[str, Any], order)
+        return order
     except Exception as e:
         logger.error(f"  Margin order failed: {e}")
         return None
@@ -1189,7 +1297,7 @@ def place_margin_limit_sell(
             time_in_force="GTC",
         )
         logger.info(f"  Margin order placed: {order.get('orderId')}")
-        return cast(dict[str, Any], order)
+        return order
     except Exception as e:
         logger.error(f"  Margin order failed: {e}")
         return None
@@ -1279,17 +1387,23 @@ def _chronos2_fallback_signal(
 # ---------------------------------------------------------------------------
 
 
-def _klines_to_rows(klines: list) -> list[dict]:
-    rows = []
+def _klines_to_rows(klines: list[list[object]] | list[tuple[object, ...]]) -> list[dict[str, float | str]]:
+    rows: list[dict[str, float | str]] = []
     for k in klines:
+        timestamp_ms = int(str(k[0]))
+        open_price = float(str(k[1]))
+        high_price = float(str(k[2]))
+        low_price = float(str(k[3]))
+        close_price = float(str(k[4]))
+        volume = float(str(k[5]))
         rows.append(
             {
-                "timestamp": pd.Timestamp(k[0], unit="ms", tz="UTC").isoformat(),
-                "open": float(k[1]),
-                "high": float(k[2]),
-                "low": float(k[3]),
-                "close": float(k[4]),
-                "volume": float(k[5]),
+                "timestamp": pd.Timestamp(timestamp_ms, unit="ms", tz="UTC").isoformat(),
+                "open": open_price,
+                "high": high_price,
+                "low": low_price,
+                "close": close_price,
+                "volume": volume,
             }
         )
     return rows
@@ -1349,7 +1463,9 @@ def get_hybrid_signal(
                         klines = bw.get_client().get_klines(symbol=pair, interval="1h", limit=72)
                     else:
                         raise
-                history_rows = _klines_to_rows(klines)
+                if not isinstance(klines, list):
+                    raise TypeError(f"Unexpected klines payload for {pair}: {type(klines).__name__}")
+                history_rows = _klines_to_rows(cast(list[list[object]], klines))
             except Exception as e:
                 logger.error(f"Failed to get klines for {market_symbol}: {e}")
                 return TradePlan("hold", 0, 0, 0, f"klines error: {e}")
@@ -1468,7 +1584,7 @@ def run_trading_cycle(
     resolved_execution_mode = _resolve_execution_mode(execution_mode, leverage)
     effective_leverage = _effective_leverage(resolved_execution_mode, leverage)
     cycle_started_at = datetime.now(UTC)
-    cycle_snapshot: dict[str, object] = {
+    cycle_snapshot: JSONDict = {
         "cycle_id": f"{cycle_started_at.isoformat()}|per_symbol|{resolved_execution_mode}|{'live' if not dry_run else 'dry_run'}",
         "cycle_kind": "per_symbol",
         "cycle_started_at": cycle_started_at.isoformat(),
@@ -1494,7 +1610,7 @@ def run_trading_cycle(
         "status": "running",
         "error": None,
     }
-    orders_placed: list[dict] = []
+    orders_placed: list[dict[str, Any]] = []
 
     try:
         logger.info(f"\n{'=' * 60}")
@@ -1540,7 +1656,10 @@ def run_trading_cycle(
             pos_qty = state.positions.get(sym_cfg.base_asset, 0.0)
             market_symbol = _execution_pair(sym_cfg, resolved_execution_mode)
             try:
-                cur_price = float(binance_wrapper.get_symbol_price(market_symbol) or 0.0)
+                _raw_cur_price = binance_wrapper.get_symbol_price(market_symbol)
+                if _raw_cur_price is None:
+                    raise ValueError(f"Could not get price for {market_symbol}")
+                cur_price = float(_raw_cur_price)
             except Exception:
                 continue
             pos_val = pos_qty * cur_price
@@ -1569,16 +1688,14 @@ def run_trading_cycle(
             if order:
                 orders_placed.append(order)
                 open_orders.append(order)
-                cast_fe = cycle_snapshot["orders"]
-                assert isinstance(cast_fe, dict)
-                cast_fe_list = cast_fe["forced_exits"]
-                assert isinstance(cast_fe_list, list)
-                cast_fe_list.append(_serialize_order(order))
+                serialized_forced_exit = _serialize_order(order)
+                if serialized_forced_exit is not None:
+                    _cycle_order_bucket(cycle_snapshot, "forced_exits").append(serialized_forced_exit)
                 logger.info(f"  Forced exit sell @ ${sell_price:.2f}")
 
         # Prefetch bars for all symbols (used for cross-asset context + per-symbol signals)
         cross_asset_context = ""
-        all_symbol_bars: dict[str, list[dict]] = {}
+        all_symbol_bars: dict[str, list[dict[str, float | str]]] = {}
         try:
             from src.binan import binance_wrapper as bw
 
@@ -1588,8 +1705,10 @@ def run_trading_cycle(
                     continue
                 mp = _execution_pair(sc, resolved_execution_mode)
                 try:
-                    kl = bw.get_client().get_klines(symbol=mp, interval="1h", limit=72)
-                    all_symbol_bars[sn] = _klines_to_rows(kl)
+                    raw_klines = bw.get_client().get_klines(symbol=mp, interval="1h", limit=72)
+                    if not isinstance(raw_klines, list):
+                        raise TypeError(f"Unexpected klines payload for {mp}: {type(raw_klines).__name__}")
+                    all_symbol_bars[sn] = _klines_to_rows(cast(list[list[object]], raw_klines))
                 except Exception:
                     pass
             if len(all_symbol_bars) >= 2:
@@ -1609,15 +1728,13 @@ def run_trading_cycle(
 
             market_symbol = _execution_pair(sym_cfg, resolved_execution_mode)
             trade_quote = _execution_quote_asset(sym_cfg, resolved_execution_mode)
-            symbol_detail: dict[str, object] = {
+            symbol_detail: JSONDict = {
                 "symbol": sym_cfg.symbol,
                 "market_symbol": market_symbol,
                 "quote_asset": trade_quote,
                 "actions": [],
             }
-            cast_details = cycle_snapshot["symbols_detail"]
-            assert isinstance(cast_details, list)
-            cast_details.append(symbol_detail)
+            _cycle_symbols_detail(cycle_snapshot).append(symbol_detail)
 
             logger.info(f"\n--- {sym_cfg.symbol} ({market_symbol}) ---")
 
@@ -1680,8 +1797,7 @@ def run_trading_cycle(
             logger.info(f"  Buy: ${plan.buy_price:.2f}, Sell: ${plan.sell_price:.2f}")
             logger.info(f"  Reasoning: {plan.reasoning[:100]}")
 
-            actions = symbol_detail["actions"]
-            assert isinstance(actions, list)
+            actions = _detail_actions(symbol_detail)
 
             if position_value >= MIN_TRADE_USD and position_qty > 0:
                 sell_price = plan.sell_price if plan.sell_price > current_price else current_price * 1.01
@@ -1724,11 +1840,8 @@ def run_trading_cycle(
                         serialized_order = _serialize_order(order)
                         sell_action["status"] = "placed"
                         sell_action["placed_order"] = serialized_order
-                        cast_orders = cycle_snapshot["orders"]
-                        assert isinstance(cast_orders, dict)
-                        cast_placed = cast_orders["placed"]
-                        assert isinstance(cast_placed, list)
-                        cast_placed.append(serialized_order)
+                        if serialized_order is not None:
+                            _cycle_order_bucket(cycle_snapshot, "placed").append(serialized_order)
                         logger.info(f"  Take-profit sell @ ${sell_price:.2f}")
                     else:
                         sell_action["status"] = "failed"
@@ -1839,11 +1952,8 @@ def run_trading_cycle(
                     buy_action["status"] = "placed"
                     buy_action["reason"] = "order_placed"
                     buy_action["placed_order"] = serialized_order
-                    cast_orders = cycle_snapshot["orders"]
-                    assert isinstance(cast_orders, dict)
-                    cast_placed = cast_orders["placed"]
-                    assert isinstance(cast_placed, list)
-                    cast_placed.append(serialized_order)
+                    if serialized_order is not None:
+                        _cycle_order_bucket(cycle_snapshot, "placed").append(serialized_order)
 
                     # Place take-profit sell if buy already filled
                     buy_status = order.get("status", "")
@@ -1880,7 +1990,8 @@ def run_trading_cycle(
                             orders_placed.append(tp_order)
                             open_orders.append(tp_order)
                             tp_serialized = _serialize_order(tp_order)
-                            cast_placed.append(tp_serialized)
+                            if tp_serialized is not None:
+                                _cycle_order_bucket(cycle_snapshot, "placed").append(tp_serialized)
                             logger.info(f"  Immediate take-profit sell @ ${plan.sell_price:.2f}")
                 else:
                     buy_action["status"] = "failed"
@@ -1921,6 +2032,20 @@ RL_BINANCE_PAIRS = {
 _prev_plan: AllocationPlan | None = None
 _prev_outcome: PlanOutcome | None = None
 _prev_portfolio_value: float = 0.0
+_GEMINI_CIRCUIT_TRANSIENT_FAILURE_THRESHOLD = 3
+_GEMINI_CIRCUIT_TRANSIENT_COOLDOWN = timedelta(hours=6)
+_GEMINI_CIRCUIT_PERSISTENT_COOLDOWN = timedelta(hours=24)
+_gemini_failure_streak: int = 0
+_gemini_circuit_open_until: datetime | None = None
+_gemini_last_failure_reason: str | None = None
+
+
+def _has_positions_to_flatten(
+    positions_valued: dict[str, tuple[float, float]],
+    *,
+    min_trade_usd: float = MIN_TRADE_USD,
+) -> bool:
+    return any(float(value_usd) > float(min_trade_usd) for _qty, value_usd in positions_valued.values())
 
 
 def _allocation_plan_has_error(plan: AllocationPlan) -> bool:
@@ -1937,6 +2062,83 @@ def _allocation_plan_has_error(plan: AllocationPlan) -> bool:
     )
 
 
+def _reset_gemini_failure_circuit() -> None:
+    global _gemini_failure_streak, _gemini_circuit_open_until, _gemini_last_failure_reason
+
+    _gemini_failure_streak = 0
+    _gemini_circuit_open_until = None
+    _gemini_last_failure_reason = None
+
+
+def _gemini_failure_is_persistent(reason: str) -> bool:
+    normalized = str(reason or "").strip().lower()
+    if not normalized:
+        return False
+    return any(
+        token in normalized
+        for token in (
+            "permission_denied",
+            "reported as leaked",
+            "api key",
+            "forbidden",
+            "403",
+        )
+    )
+
+
+def _refresh_gemini_circuit(now: datetime) -> None:
+    global _gemini_failure_streak, _gemini_circuit_open_until, _gemini_last_failure_reason
+
+    if _gemini_circuit_open_until is None:
+        return
+    if now < _gemini_circuit_open_until:
+        return
+    _gemini_failure_streak = 0
+    _gemini_circuit_open_until = None
+    _gemini_last_failure_reason = None
+
+
+def _get_gemini_circuit_skip_reason(now: datetime) -> str | None:
+    _refresh_gemini_circuit(now)
+    if _gemini_circuit_open_until is None:
+        return None
+    remaining = _gemini_circuit_open_until - now
+    remaining_minutes = max(1, int(remaining.total_seconds() // 60))
+    return f"gemini_circuit_open until {_gemini_circuit_open_until.isoformat()} ({remaining_minutes}m remaining)"
+
+
+def _record_gemini_failure(reason: str, now: datetime) -> str | None:
+    global _gemini_failure_streak, _gemini_circuit_open_until, _gemini_last_failure_reason
+
+    _refresh_gemini_circuit(now)
+    normalized_reason = str(reason or "").strip()
+    _gemini_failure_streak += 1
+    _gemini_last_failure_reason = normalized_reason or None
+
+    if _gemini_failure_is_persistent(normalized_reason):
+        _gemini_circuit_open_until = now + _GEMINI_CIRCUIT_PERSISTENT_COOLDOWN
+        return (
+            "persistent Gemini/provider failure detected; opening circuit until "
+            f"{_gemini_circuit_open_until.isoformat()}"
+        )
+
+    if _gemini_failure_streak >= _GEMINI_CIRCUIT_TRANSIENT_FAILURE_THRESHOLD:
+        _gemini_circuit_open_until = now + _GEMINI_CIRCUIT_TRANSIENT_COOLDOWN
+        return f"repeated Gemini failures detected; opening circuit until {_gemini_circuit_open_until.isoformat()}"
+    return None
+
+
+def _record_gemini_success(now: datetime) -> None:
+    del now
+    _reset_gemini_failure_circuit()
+
+
+def _update_gemini_circuit_snapshot_fields(cycle_snapshot: JSONDict) -> None:
+    cycle_snapshot["gemini_failure_streak"] = int(_gemini_failure_streak)
+    cycle_snapshot["gemini_circuit_open_until"] = _isoformat_utc(_gemini_circuit_open_until)
+    cycle_snapshot["gemini_last_failure_reason"] = str(_gemini_last_failure_reason or "") or None
+
+
 def _rl_signal_to_allocation_plan(
     rl_signal: RLSignal,
     contexts: list,
@@ -1950,6 +2152,7 @@ def _rl_signal_to_allocation_plan(
     if rl_signal.direction == "flat" or rl_signal.target_symbol is None:
         return None
 
+    direction = str(rl_signal.direction or "").strip().lower()
     sym = rl_signal.target_symbol
     ctx_map = {c.symbol: c for c in contexts}
     ctx = ctx_map.get(sym)
@@ -1960,6 +2163,20 @@ def _rl_signal_to_allocation_plan(
     probs = np.exp(np.array(rl_signal.logits, dtype=np.float64))
     probs = probs / probs.sum()
     target_prob = float(probs[rl_signal.action])
+
+    if direction == "short":
+        plan = AllocationPlan(
+            reasoning=(
+                f"rl_only_fallback_short_to_cash: {rl_signal.action_name} "
+                f"prob={target_prob:.2%} value={rl_signal.value:.3f}"
+            ),
+            timestamp=datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
+        )
+        logger.warning(
+            "RL-only fallback received short signal for {} but allocation plans are long-only; exiting to cash",
+            sym,
+        )
+        return plan
 
     alloc_pct = min(max(target_prob * 100.0, 15.0), 50.0)
 
@@ -1996,7 +2213,7 @@ def _get_current_positions_valued(
     return result
 
 
-def run_hybrid_trading_cycle(
+def run_hybrid_trading_cycle(  # noqa: PLR0911
     rl_gen: RLSignalGenerator,
     gemini_model: str = "gemini-2.5-flash",
     forecast_cache_root: str = "binanceneural/forecast_cache",
@@ -2011,12 +2228,15 @@ def run_hybrid_trading_cycle(
     resolved_execution_mode = _resolve_execution_mode(execution_mode, leverage)
     effective_leverage = _effective_leverage(resolved_execution_mode, leverage)
     cycle_started_at = datetime.now(UTC)
-    cycle_snapshot: dict[str, object] = {
+    _refresh_gemini_circuit(cycle_started_at)
+    cycle_snapshot: JSONDict = {
         "cycle_id": f"{cycle_started_at.isoformat()}|allocation|{resolved_execution_mode}|{'live' if not dry_run else 'dry_run'}",
         "cycle_kind": "allocation",
         "cycle_started_at": cycle_started_at.isoformat(),
         "mode": "live" if not dry_run else "dry_run",
         "gemini_model": gemini_model,
+        "rl_checkpoint": str(getattr(rl_gen, "checkpoint_path", "") or ""),
+        "rl_symbols": [str(sym) for sym in getattr(rl_gen, "symbols", ())],
         "execution_mode": resolved_execution_mode,
         "requested_leverage": float(leverage),
         "effective_leverage": float(effective_leverage),
@@ -2026,6 +2246,8 @@ def run_hybrid_trading_cycle(
         "previous_outcome": _serialize_plan_outcome(_prev_outcome),
         "rl_signal": None,
         "allocation_plan": None,
+        "gemini_call_skipped": False,
+        "gemini_skip_reason": None,
         "orders": {
             "open_before_cleanup": [],
             "open_after_cleanup": [],
@@ -2036,7 +2258,8 @@ def run_hybrid_trading_cycle(
         "status": "running",
         "error": None,
     }
-    orders_placed: list[dict] = []
+    _update_gemini_circuit_snapshot_fields(cycle_snapshot)
+    orders_placed: list[dict[str, Any]] = []
 
     try:
         logger.info(f"\n{'=' * 60}")
@@ -2095,7 +2318,25 @@ def run_hybrid_trading_cycle(
             cycle_snapshot["status"] = "no_contexts"
             return []
 
+        contexts, active_tradable_symbols, missing_tradable_symbols = _restrict_contexts_to_tradable_symbols(
+            contexts,
+            tradable_symbols,
+        )
+        cycle_snapshot["requested_tradable_symbols"] = _normalize_symbol_list(tradable_symbols)
+        cycle_snapshot["active_tradable_symbols"] = list(active_tradable_symbols)
+        if missing_tradable_symbols:
+            cycle_snapshot["missing_tradable_symbols"] = list(missing_tradable_symbols)
+            logger.warning(
+                "Requested tradable symbols missing market context and will be skipped: {}",
+                ", ".join(missing_tradable_symbols),
+            )
+        if not active_tradable_symbols:
+            logger.error("No active tradable symbols available after market-context filtering")
+            cycle_snapshot["status"] = "no_active_tradable_symbols"
+            return []
+
         positions_valued = _get_current_positions_valued(state, resolved_execution_mode)
+        positions_to_flatten = _has_positions_to_flatten(positions_valued)
         largest_pos = max(positions_valued.items(), key=lambda x: x[1][1]) if positions_valued else None
         cur_sym = largest_pos[0] if largest_pos else None
 
@@ -2124,7 +2365,7 @@ def run_hybrid_trading_cycle(
             rl_signal = rl_gen.get_signal(
                 portfolio=portfolio_snap,
                 klines_map=klines_map,
-                tradable_symbols=tradable_symbols,
+                tradable_symbols=active_tradable_symbols,
             )
         except Exception as exc:
             logger.error(f"RL signal error: {exc}")
@@ -2146,19 +2387,43 @@ def run_hybrid_trading_cycle(
         )
         cycle_snapshot["prompt_chars"] = len(prompt)
 
-        tradable_syms = [ctx.symbol for ctx in contexts]
+        tradable_syms = list(active_tradable_symbols)
         logger.info(f"Prompt built ({len(prompt)} chars), calling Gemini...")
         gemini_failed = False
-        try:
-            plan = call_gemini_allocation(prompt, model=gemini_model, tradable_symbols=tradable_syms)
-        except Exception as exc:
-            logger.error(f"Gemini call failed: {exc}")
+        gemini_failure_reason = ""
+        gemini_skip_reason = _get_gemini_circuit_skip_reason(datetime.now(UTC))
+        if gemini_skip_reason is not None:
             gemini_failed = True
-            plan = AllocationPlan(reasoning=f"API error: {exc}")
+            gemini_failure_reason = "gemini_circuit_open"
+            cycle_snapshot["gemini_call_skipped"] = True
+            cycle_snapshot["gemini_skip_reason"] = gemini_skip_reason
+            logger.warning("Skipping Gemini allocation call: {}", gemini_skip_reason)
+            plan = AllocationPlan(reasoning=gemini_skip_reason)
+        else:
+            try:
+                plan = call_gemini_allocation(prompt, model=gemini_model, tradable_symbols=tradable_syms)
+            except Exception as exc:
+                failure_reason = f"API error: {exc}"
+                logger.error(f"Gemini call failed: {exc}")
+                gemini_failed = True
+                gemini_failure_reason = "gemini_error"
+                circuit_message = _record_gemini_failure(failure_reason, datetime.now(UTC))
+                if circuit_message:
+                    logger.warning(circuit_message)
+                plan = AllocationPlan(reasoning=failure_reason)
+            else:
+                if _allocation_plan_has_error(plan):
+                    circuit_message = _record_gemini_failure(str(plan.reasoning or ""), datetime.now(UTC))
+                    if circuit_message:
+                        logger.warning(circuit_message)
+                else:
+                    _record_gemini_success(datetime.now(UTC))
+        _update_gemini_circuit_snapshot_fields(cycle_snapshot)
 
         cycle_snapshot["allocation_plan"] = _serialize_allocation_plan(plan)
 
         use_rl_only = False
+        forced_cash_flatten = False
         if gemini_failed or _allocation_plan_has_error(plan):
             rl_plan = _rl_signal_to_allocation_plan(
                 rl_signal,
@@ -2174,12 +2439,23 @@ def run_hybrid_trading_cycle(
                 cycle_snapshot["allocation_source"] = "rl_only_fallback"
             else:
                 reason = "gemini_error" if gemini_failed else "invalid_allocation_plan"
-                logger.info("Gemini unavailable and RL signal is FLAT, no action needed")
-                cycle_snapshot["status"] = f"{reason}_rl_flat"
-                cycle_snapshot["allocation_source"] = "rl_flat_no_action"
-                return []
+                if gemini_failed and gemini_failure_reason:
+                    reason = gemini_failure_reason
+                if not positions_to_flatten:
+                    logger.info("Gemini unavailable and RL signal is FLAT, no action needed")
+                    cycle_snapshot["status"] = f"{reason}_rl_flat"
+                    cycle_snapshot["allocation_source"] = "rl_flat_no_action"
+                    return []
+                logger.warning("Gemini unavailable and RL signal is FLAT; flattening existing positions to cash")
+                plan = AllocationPlan(
+                    reasoning=f"{reason}_rl_flat_to_cash",
+                    timestamp=datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
+                )
+                forced_cash_flatten = True
+                cycle_snapshot["allocation_plan"] = _serialize_allocation_plan(plan)
+                cycle_snapshot["allocation_source"] = "rl_flat_cash_flatten"
 
-        if not use_rl_only and not plan.allocations:
+        if not use_rl_only and not forced_cash_flatten and not plan.allocations:
             rl_plan = _rl_signal_to_allocation_plan(
                 rl_signal,
                 contexts,
@@ -2193,12 +2469,17 @@ def run_hybrid_trading_cycle(
                 cycle_snapshot["allocation_plan"] = _serialize_allocation_plan(plan)
                 cycle_snapshot["allocation_source"] = "rl_override_gemini_cash"
             else:
-                logger.info("Both Gemini and RL agree: stay in cash")
-                cycle_snapshot["status"] = "gemini_cash_rl_flat"
-                return []
+                if not positions_to_flatten:
+                    logger.info("Both Gemini and RL agree: stay in cash")
+                    cycle_snapshot["status"] = "gemini_cash_rl_flat"
+                    return []
+                logger.info("Both Gemini and RL agree: move to cash and flatten existing positions")
+                cycle_snapshot["allocation_source"] = "gemini_cash_flatten"
 
+        plan = _filter_allocation_plan_to_symbols(plan, active_tradable_symbols)
         if _calibrators:
             plan = _apply_calibration(plan, contexts, _calibrators)
+            plan = _filter_allocation_plan_to_symbols(plan, active_tradable_symbols)
             cycle_snapshot["calibrated"] = True
 
         target_values = {
@@ -2206,7 +2487,7 @@ def run_hybrid_trading_cycle(
         }
         logger.info(f"Target allocation: {plan.allocations} | cash={plan.cash_pct:.0f}%")
 
-        symbol_details: dict[str, dict[str, object]] = {}
+        symbol_details: dict[str, JSONDict] = {}
         for sym in sorted({ctx.symbol for ctx in contexts} | set(target_values) | set(positions_valued)):
             cfg = TRADING_SYMBOLS.get(sym)
             if cfg is None:
@@ -2214,7 +2495,7 @@ def run_hybrid_trading_cycle(
             market_symbol = _execution_pair(cfg, resolved_execution_mode)
             trade_quote = _execution_quote_asset(cfg, resolved_execution_mode)
             current_qty, current_value = positions_valued.get(sym, (0.0, 0.0))
-            detail: dict[str, object] = {
+            detail: JSONDict = {
                 "symbol": sym,
                 "market_symbol": market_symbol,
                 "quote_asset": trade_quote,
@@ -2227,9 +2508,7 @@ def run_hybrid_trading_cycle(
                 "actions": [],
             }
             symbol_details[sym] = detail
-            cast_details = cycle_snapshot["symbols_detail"]
-            assert isinstance(cast_details, list)
-            cast_details.append(detail)
+            _cycle_symbols_detail(cycle_snapshot).append(detail)
 
         for sym, (qty, cur_value) in positions_valued.items():
             target_val = target_values.get(sym, 0.0)
@@ -2247,8 +2526,7 @@ def run_hybrid_trading_cycle(
                     "actions": [],
                 },
             )
-            actions = detail["actions"]
-            assert isinstance(actions, list)
+            actions = _detail_actions(detail)
             try:
                 price = _get_market_price(cfg, resolved_execution_mode)
                 sell_value = cur_value - target_val
@@ -2293,11 +2571,8 @@ def run_hybrid_trading_cycle(
                         serialized_order = _serialize_order(order)
                         sell_action["status"] = "placed"
                         sell_action["placed_order"] = serialized_order
-                        cast_orders = cycle_snapshot["orders"]
-                        assert isinstance(cast_orders, dict)
-                        cast_placed = cast_orders["placed"]
-                        assert isinstance(cast_placed, list)
-                        cast_placed.append(serialized_order)
+                        if serialized_order is not None:
+                            _cycle_order_bucket(cycle_snapshot, "placed").append(serialized_order)
                         logger.info(f"  SELL {sym}: {sell_qty:.6f} @ ${exit_price:.2f} (reduce to {target_val:.0f})")
                     else:
                         sell_action["status"] = "failed"
@@ -2319,8 +2594,7 @@ def run_hybrid_trading_cycle(
             if not cfg:
                 continue
             detail = symbol_details[sym]
-            actions = detail["actions"]
-            assert isinstance(actions, list)
+            actions = _detail_actions(detail)
             cur_value = positions_valued.get(sym, (0.0, 0.0))[1]
             buy_needed = target_val - cur_value
             buy_action: dict[str, object] = {
@@ -2409,11 +2683,8 @@ def run_hybrid_trading_cycle(
                     buy_action["status"] = "placed"
                     buy_action["reason"] = "order_placed"
                     buy_action["placed_order"] = serialized_order
-                    cast_orders = cycle_snapshot["orders"]
-                    assert isinstance(cast_orders, dict)
-                    cast_placed = cast_orders["placed"]
-                    assert isinstance(cast_placed, list)
-                    cast_placed.append(serialized_order)
+                    if serialized_order is not None:
+                        _cycle_order_bucket(cycle_snapshot, "placed").append(serialized_order)
                     logger.info(f"  BUY {sym}: ${buy_needed:.2f} @ ${entry_price:.2f}")
                 else:
                     buy_action["status"] = "failed"
@@ -2537,6 +2808,8 @@ def main():
         )
         logger.info(f"Hybrid mode: RL={rl_checkpoint} + Gemini={args.model}")
         logger.info(f"RL symbols ({rl_gen.num_symbols}): {', '.join(rl_gen.symbols)}")
+    else:
+        logger.info(f"Hybrid mode: RL=disabled + Gemini={args.model}")
 
     global _calibrators
     if args.calibrator_dir:

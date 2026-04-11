@@ -5,10 +5,12 @@ import json
 import math
 import os
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime, time, timezone
+from enum import StrEnum
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, TypedDict, Sequence
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -18,6 +20,7 @@ import torch
 from src.date_utils import is_nyse_open_on_date
 from src.fees import get_fee_for_symbol
 from src.robust_trading_metrics import compute_pnl_smoothness_from_equity, summarize_scenario_results
+from src.stock_symbol_inputs import normalize_stock_symbol
 from src.symbol_utils import is_crypto_symbol
 from src.trade_directions import DEFAULT_ALPACA_LIVE8_STOCKS, resolve_trade_directions
 from src.trade_stock_utils import expected_cost_bps
@@ -29,8 +32,112 @@ NEW_YORK = ZoneInfo("America/New_York")
 MARKET_OPEN = time(9, 30)
 MARKET_CLOSE = time(16, 0)
 DEFAULT_DAILY_SYMBOLS = ("AAPL", "AMD", "AMZN", "GOOG", "NVDA", "PLTR", "MTCH")
+DEFAULT_DATA_ROOT_BY_FREQUENCY: dict[str, Path] = {
+    "hourly": Path("trainingdatahourly/stocks"),
+    "daily": Path("trainingdata"),
+}
 DEFAULT_ANNUAL_LEVERAGE_RATE = 0.0625
 DEFAULT_MAX_GROSS_LEVERAGE = 2.0
+DEFAULT_TASK_INPUT_CSV_PREVIEW_LIMIT = 5
+DEFAULT_TASK_INPUT_CHECK_MAX_WORKERS = 8
+TASK_INPUT_CHECK_WORKERS_ENV_VAR = "AUTORESEARCH_STOCK_INPUT_CHECK_WORKERS"
+
+
+class TaskInputStatus(StrEnum):
+    READY = "ready"
+    MISSING = "missing"
+    INVALID = "invalid"
+    PARTIAL = "partial"
+
+
+class TaskInputWorkerSource(StrEnum):
+    SERIAL = "serial"
+    ENV = "env"
+    AUTO = "auto"
+
+
+def default_data_root_for_frequency(frequency: str) -> Path:
+    mode = str(frequency).strip().lower()
+    try:
+        return DEFAULT_DATA_ROOT_BY_FREQUENCY[mode]
+    except KeyError as exc:
+        raise ValueError(f"frequency must be one of hourly/daily, got {frequency!r}") from exc
+
+
+def data_root_help_text() -> str:
+    hourly_root = DEFAULT_DATA_ROOT_BY_FREQUENCY["hourly"]
+    daily_root = DEFAULT_DATA_ROOT_BY_FREQUENCY["daily"]
+    return (
+        "Directory containing per-symbol CSVs named like SYMBOL.csv. "
+        f"Defaults to {hourly_root} for hourly and {daily_root} for daily."
+    )
+
+
+def symbols_help_text() -> str:
+    hourly_symbol_count = len(DEFAULT_ALPACA_LIVE8_STOCKS)
+    daily_symbols = ",".join(DEFAULT_DAILY_SYMBOLS)
+    return (
+        "Comma-separated symbol list. "
+        f"Defaults to the built-in hourly {hourly_symbol_count}-symbol set or daily set ({daily_symbols}) "
+        "for the selected frequency."
+    )
+
+
+class TaskInputStatusCounts(TypedDict):
+    ready: int
+    missing: int
+    invalid: int
+    partial: int
+    other: int
+
+
+class TaskInputSymbolPayload(TypedDict):
+    symbol: str
+    status: TaskInputStatus
+    rows: int
+    start_timestamp: str | None
+    end_timestamp: str | None
+    primary_path: str
+    primary_rows: int
+    primary_error: str | None
+    recent_path: str | None
+    recent_rows: int
+    recent_overlay_rows: int
+    recent_error: str | None
+
+
+class TaskInputReport(TypedDict):
+    frequency: str
+    data_root: str
+    data_root_preview: str
+    recent_data_root: str | None
+    recent_data_root_preview: str
+    symbol_count: int
+    worker_count: int
+    worker_source: TaskInputWorkerSource
+    all_symbols_ready: bool
+    status_counts: TaskInputStatusCounts
+    symbols: list[TaskInputSymbolPayload]
+
+
+@dataclass(frozen=True)
+class TaskInputCheckResult:
+    payload: TaskInputReport
+    rendered_output: str
+    exit_code: int
+
+
+@dataclass(frozen=True)
+class _SymbolBarsInspection:
+    row_count: int
+    timestamps: pd.DatetimeIndex
+
+
+@dataclass(frozen=True)
+class _TaskInputSymbolPaths:
+    symbol: str
+    primary: Path
+    recent: Path | None
 
 
 @dataclass(frozen=True)
@@ -149,7 +256,7 @@ def resolve_task_config(
 
     if mode == "hourly":
         selected_symbols = symbols or DEFAULT_ALPACA_LIVE8_STOCKS
-        root = Path(data_root) if data_root is not None else Path("trainingdatahourly/stocks")
+        root = Path(data_root) if data_root is not None else default_data_root_for_frequency(mode)
         seq_len = int(sequence_length or 32)
         hold = int(hold_bars or 6)
         windows = tuple(int(v) for v in (eval_windows or (35, 140, 420)))
@@ -158,7 +265,7 @@ def resolve_task_config(
         periods_per_year = 252.0 * 7.0
     else:
         selected_symbols = symbols or DEFAULT_DAILY_SYMBOLS
-        root = Path(data_root) if data_root is not None else Path("trainingdata")
+        root = Path(data_root) if data_root is not None else default_data_root_for_frequency(mode)
         seq_len = int(sequence_length or 32)
         hold = int(hold_bars or 5)
         windows = tuple(int(v) for v in (eval_windows or (20, 60, 120)))
@@ -166,7 +273,7 @@ def resolve_task_config(
         close_eod = bool(False if close_at_session_end is None else close_at_session_end)
         periods_per_year = 252.0
 
-    default_symbols = tuple(str(symbol).upper() for symbol in selected_symbols)
+    default_symbols = tuple(normalize_stock_symbol(symbol) for symbol in selected_symbols)
     if not default_symbols:
         raise ValueError("At least one symbol is required")
 
@@ -180,6 +287,26 @@ def resolve_task_config(
         raise ValueError("eval_windows must not be empty")
     if min(windows) < 4:
         raise ValueError("eval_windows must all be at least 4 bars")
+    if int(recent_overlay_bars) < 0:
+        raise ValueError("recent_overlay_bars must be non-negative")
+    if float(initial_cash) <= 0.0:
+        raise ValueError("initial_cash must be positive")
+    if int(max_positions) < 1:
+        raise ValueError("max_positions must be at least 1")
+    if not (0.0 < float(max_volume) <= 1.0):
+        raise ValueError("max_volume_fraction must be > 0 and <= 1")
+    if float(min_edge_bps) < 0.0:
+        raise ValueError("min_edge_bps must be non-negative")
+    if float(entry_slippage_bps) < 0.0:
+        raise ValueError("entry_slippage_bps must be non-negative")
+    if float(exit_slippage_bps) < 0.0:
+        raise ValueError("exit_slippage_bps must be non-negative")
+    if int(spread_lookback_days) < 1:
+        raise ValueError("spread_lookback_days must be at least 1")
+    if float(annual_leverage_rate) < 0.0:
+        raise ValueError("annual_leverage_rate must be non-negative")
+    if float(max_gross_leverage) < 1.0:
+        raise ValueError("max_gross_leverage must be at least 1.0")
 
     return TaskConfig(
         frequency=mode,
@@ -189,7 +316,7 @@ def resolve_task_config(
         sequence_length=seq_len,
         hold_bars=hold,
         eval_windows=tuple(sorted(set(int(v) for v in windows))),
-        recent_overlay_bars=max(int(recent_overlay_bars), 0),
+        recent_overlay_bars=int(recent_overlay_bars),
         initial_cash=float(initial_cash),
         max_positions=int(max_positions),
         max_volume_fraction=max_volume,
@@ -201,8 +328,8 @@ def resolve_task_config(
         close_at_session_end=close_eod,
         spread_lookback_days=int(spread_lookback_days),
         periods_per_year=float(periods_per_year),
-        annual_leverage_rate=float(max(0.0, annual_leverage_rate)),
-        max_gross_leverage=float(max(1.0, max_gross_leverage)),
+        annual_leverage_rate=float(annual_leverage_rate),
+        max_gross_leverage=float(max_gross_leverage),
         dashboard_db_path=Path(dashboard_db_path),
     )
 
@@ -271,42 +398,411 @@ def _read_symbol_bars_from_path(path: Path, symbol: str) -> pd.DataFrame:
     return frame[["timestamp", "symbol", "open", "high", "low", "close", "volume", "vwap"]]
 
 
+def _normalized_csv_columns(path: Path) -> dict[str, str]:
+    columns = pd.read_csv(path, nrows=0).columns
+    return {str(column).strip().lower(): str(column) for column in columns}
+
+
+def _inspect_symbol_bars_metadata_from_path(path: Path) -> _SymbolBarsInspection:
+    column_map = _normalized_csv_columns(path)
+    required = {"timestamp", "open", "high", "low", "close", "volume"}
+    missing = required - set(column_map)
+    if missing:
+        raise ValueError(f"{path} is missing required columns: {sorted(missing)}")
+
+    selected_columns = [column_map["timestamp"], column_map["open"], column_map["high"], column_map["low"], column_map["close"], column_map["volume"]]
+    frame = pd.read_csv(path, usecols=selected_columns)
+    frame.columns = [str(col).strip().lower() for col in frame.columns]
+    timestamps = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce")
+    valid_mask = timestamps.notna()
+    for column in ("open", "high", "low", "close", "volume"):
+        valid_mask &= pd.to_numeric(frame[column], errors="coerce").notna()
+    valid_timestamps = pd.DatetimeIndex(timestamps.loc[valid_mask]).sort_values()
+    return _SymbolBarsInspection(
+        row_count=int(len(valid_timestamps)),
+        timestamps=valid_timestamps,
+    )
+
+
 def _overlay_cutoff_timestamp(frame: pd.DataFrame, config: TaskConfig) -> pd.Timestamp | None:
     if frame.empty or int(config.recent_overlay_bars) <= 0:
         return None
     latest_ts = pd.Timestamp(frame["timestamp"].max())
+    return _overlay_cutoff_for_latest_timestamp(latest_ts, config)
+
+
+def _overlay_cutoff_for_latest_timestamp(latest_ts: pd.Timestamp | None, config: TaskConfig) -> pd.Timestamp | None:
+    if latest_ts is None or pd.isna(latest_ts) or int(config.recent_overlay_bars) <= 0:
+        return None
     if config.frequency == "hourly":
         return latest_ts - pd.Timedelta(hours=int(config.recent_overlay_bars))
     return latest_ts - pd.Timedelta(days=int(config.recent_overlay_bars))
 
 
+def _try_read_symbol_bars_from_path(path: Path | None, symbol: str) -> pd.DataFrame | None:
+    frame, _error = _inspect_symbol_bars_path(path, symbol=symbol)
+    return frame
+
+
+def _read_optional_symbol_bars_with_context(
+    path: Path | None,
+    *,
+    symbol: str,
+    source_name: str,
+) -> pd.DataFrame | None:
+    frame, error = _inspect_symbol_bars_path(path, symbol=symbol)
+    if error is not None:
+        raise RuntimeError(f"Failed to load {source_name} for {symbol} from {path}: {error}")
+    return frame
+
+
+def _inspect_symbol_bars_path(
+    path: Path | None,
+    *,
+    symbol: str,
+) -> tuple[pd.DataFrame | None, str | None]:
+    if path is None:
+        return None, None
+    try:
+        return _read_symbol_bars_from_path(path, symbol), None
+    except FileNotFoundError:
+        return None, None
+    except Exception as exc:
+        return None, str(exc)
+
+
+def _inspect_symbol_bars_metadata_path(
+    path: Path | None,
+) -> tuple[_SymbolBarsInspection | None, str | None]:
+    if path is None:
+        return None, None
+    try:
+        return _inspect_symbol_bars_metadata_from_path(path), None
+    except FileNotFoundError:
+        return None, None
+    except Exception as exc:
+        return None, str(exc)
+
+
+def _csv_preview_for_root(root: Path | None, *, limit: int = DEFAULT_TASK_INPUT_CSV_PREVIEW_LIMIT) -> str:
+    if root is None:
+        return "not configured"
+    if not root.exists():
+        return "missing"
+    if not root.is_dir():
+        return "not a directory"
+    names = sorted(path.name for path in root.glob("*.csv"))
+    if not names:
+        return "exists, no CSVs found"
+    preview = ", ".join(names[:limit])
+    remaining = len(names) - min(len(names), limit)
+    if remaining > 0:
+        preview = f"{preview} (+{remaining} more)"
+    return f"exists, CSVs: {preview}"
+
+
+def _format_missing_symbol_dataset_error(
+    *,
+    symbol_name: str,
+    primary_path: Path,
+    recent_path: Path | None,
+) -> str:
+    checked = [str(primary_path)]
+    hints = [
+        f"data_root={primary_path.parent} ({_csv_preview_for_root(primary_path.parent)})",
+    ]
+    if recent_path is not None:
+        checked.append(str(recent_path))
+        hints.append(
+            f"recent_data_root={recent_path.parent} ({_csv_preview_for_root(recent_path.parent)})",
+        )
+    return (
+        f"Missing dataset for {symbol_name}; checked: {', '.join(checked)}. "
+        f"{'; '.join(hints)}. "
+        "Point --data-root at a directory containing per-symbol CSVs named like SYMBOL.csv."
+    )
+
+
+def _task_input_symbol_paths(config: TaskConfig, symbol: str) -> _TaskInputSymbolPaths:
+    symbol_name = str(symbol).upper()
+    recent_path = None
+    if config.recent_data_root is not None:
+        recent_path = Path(config.recent_data_root) / f"{symbol_name}.csv"
+    return _TaskInputSymbolPaths(
+        symbol=symbol_name,
+        primary=Path(config.data_root) / f"{symbol_name}.csv",
+        recent=recent_path,
+    )
+
+
+def _combine_symbol_bar_parts(parts: Sequence[pd.DataFrame]) -> pd.DataFrame:
+    combined = pd.concat(parts, ignore_index=True)
+    combined = combined.dropna(subset=["timestamp"]).copy()
+    combined = combined.sort_values("timestamp").drop_duplicates(subset=["timestamp"], keep="last").reset_index(drop=True)
+    return combined[["timestamp", "symbol", "open", "high", "low", "close", "volume", "vwap"]]
+
+
+def _empty_task_input_status_counts() -> TaskInputStatusCounts:
+    return {
+        TaskInputStatus.READY: 0,
+        TaskInputStatus.MISSING: 0,
+        TaskInputStatus.INVALID: 0,
+        TaskInputStatus.PARTIAL: 0,
+        "other": 0,
+    }
+
+
+def _resolve_task_input_check_worker_config(symbol_count: int) -> tuple[int, TaskInputWorkerSource]:
+    if symbol_count <= 1:
+        return 1, TaskInputWorkerSource.SERIAL
+    raw = os.getenv(TASK_INPUT_CHECK_WORKERS_ENV_VAR, "").strip()
+    if raw:
+        try:
+            requested_workers = int(raw)
+        except ValueError as exc:
+            raise ValueError(
+                f"{TASK_INPUT_CHECK_WORKERS_ENV_VAR} must be an integer, got {raw!r}"
+            ) from exc
+        return max(1, min(requested_workers, int(symbol_count))), TaskInputWorkerSource.ENV
+    cpu_count = os.cpu_count() or 1
+    return (
+        max(1, min(DEFAULT_TASK_INPUT_CHECK_MAX_WORKERS, int(symbol_count), int(cpu_count))),
+        TaskInputWorkerSource.AUTO,
+    )
+
+
+def _task_input_symbol_payload(
+    *,
+    symbol_paths: _TaskInputSymbolPaths,
+    status: TaskInputStatus,
+    rows: int,
+    start_timestamp: str | None,
+    end_timestamp: str | None,
+    primary_rows: int,
+    primary_error: str | None,
+    recent_rows: int,
+    recent_overlay_rows: int,
+    recent_error: str | None,
+) -> TaskInputSymbolPayload:
+    return {
+        "symbol": symbol_paths.symbol,
+        "status": status,
+        "rows": int(rows),
+        "start_timestamp": start_timestamp,
+        "end_timestamp": end_timestamp,
+        "primary_path": str(symbol_paths.primary),
+        "primary_rows": int(primary_rows),
+        "primary_error": primary_error,
+        "recent_path": None if symbol_paths.recent is None else str(symbol_paths.recent),
+        "recent_rows": int(recent_rows),
+        "recent_overlay_rows": int(recent_overlay_rows),
+        "recent_error": recent_error,
+    }
+
+
+def _describe_task_input_symbol(config: TaskConfig, symbol_name: str) -> TaskInputSymbolPayload:
+    symbol_paths = _task_input_symbol_paths(config, symbol_name)
+    primary, primary_error = _inspect_symbol_bars_metadata_path(symbol_paths.primary)
+    recent_raw, recent_error = _inspect_symbol_bars_metadata_path(symbol_paths.recent)
+    recent_overlay_timestamps = recent_raw.timestamps if recent_raw is not None else pd.DatetimeIndex([])
+    recent_overlay_rows = 0
+    if len(recent_overlay_timestamps) > 0:
+        cutoff = _overlay_cutoff_for_latest_timestamp(pd.Timestamp(recent_overlay_timestamps[-1]), config)
+        if cutoff is not None:
+            recent_overlay_timestamps = recent_overlay_timestamps[recent_overlay_timestamps >= cutoff]
+        recent_overlay_rows = int(len(recent_overlay_timestamps))
+    combined_timestamps = pd.DatetimeIndex([])
+    if primary is not None and len(primary.timestamps) > 0:
+        combined_timestamps = combined_timestamps.union(primary.timestamps)
+    if len(recent_overlay_timestamps) > 0:
+        combined_timestamps = combined_timestamps.union(recent_overlay_timestamps)
+    if len(combined_timestamps) > 0:
+        start_timestamp = pd.Timestamp(combined_timestamps[0]).isoformat()
+        end_timestamp = pd.Timestamp(combined_timestamps[-1]).isoformat()
+        status = TaskInputStatus.PARTIAL if (primary_error or recent_error) else TaskInputStatus.READY
+    else:
+        start_timestamp = None
+        end_timestamp = None
+        status = TaskInputStatus.INVALID if (primary_error or recent_error) else TaskInputStatus.MISSING
+
+    return _task_input_symbol_payload(
+        symbol_paths=symbol_paths,
+        status=status,
+        rows=len(combined_timestamps),
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
+        primary_rows=0 if primary is None else int(primary.row_count),
+        primary_error=primary_error,
+        recent_rows=0 if recent_raw is None else int(recent_raw.row_count),
+        recent_overlay_rows=recent_overlay_rows,
+        recent_error=recent_error,
+    )
+
+
+def _unexpected_task_input_symbol_payload(
+    config: TaskConfig,
+    symbol_name: str,
+    error_message: str,
+) -> TaskInputSymbolPayload:
+    symbol_paths = _task_input_symbol_paths(config, symbol_name)
+    return _task_input_symbol_payload(
+        symbol_paths=symbol_paths,
+        status=TaskInputStatus.INVALID,
+        rows=0,
+        start_timestamp=None,
+        end_timestamp=None,
+        primary_rows=0,
+        primary_error=str(error_message),
+        recent_rows=0,
+        recent_overlay_rows=0,
+        recent_error=None,
+    )
+
+
+def _describe_task_input_symbol_safely(config: TaskConfig, symbol_name: str) -> TaskInputSymbolPayload:
+    try:
+        return _describe_task_input_symbol(config, symbol_name)
+    except Exception as exc:
+        return _unexpected_task_input_symbol_payload(
+            config,
+            symbol_name,
+            f"Unexpected input inspection failure: {exc}",
+        )
+
+
+def describe_task_inputs(config: TaskConfig) -> TaskInputReport:
+    worker_count, worker_source = _resolve_task_input_check_worker_config(len(config.symbols))
+    if worker_count <= 1:
+        symbols = [_describe_task_input_symbol_safely(config, symbol_name) for symbol_name in config.symbols]
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            symbols = list(executor.map(lambda symbol_name: _describe_task_input_symbol_safely(config, symbol_name), config.symbols))
+
+    all_symbols_ready = True
+    status_counts = _empty_task_input_status_counts()
+    for symbol_payload in symbols:
+        status = symbol_payload["status"]
+        if status is not TaskInputStatus.READY:
+            all_symbols_ready = False
+        if status in status_counts:
+            status_counts[status] += 1
+        else:
+            status_counts["other"] += 1
+
+    return {
+        "frequency": config.frequency,
+        "data_root": str(config.data_root),
+        "data_root_preview": _csv_preview_for_root(Path(config.data_root)),
+        "recent_data_root": None if config.recent_data_root is None else str(config.recent_data_root),
+        "recent_data_root_preview": _csv_preview_for_root(config.recent_data_root),
+        "symbol_count": len(config.symbols),
+        "worker_count": int(worker_count),
+        "worker_source": worker_source,
+        "all_symbols_ready": all_symbols_ready,
+        "status_counts": status_counts,
+        "symbols": symbols,
+    }
+
+
+def format_task_input_report(payload: TaskInputReport) -> str:
+    status_counts = dict(payload.get("status_counts") or {})
+    ready_count = int(status_counts.get(TaskInputStatus.READY, 0))
+    missing_count = int(status_counts.get(TaskInputStatus.MISSING, 0))
+    invalid_count = int(status_counts.get(TaskInputStatus.INVALID, 0))
+    partial_count = int(status_counts.get(TaskInputStatus.PARTIAL, 0))
+    unknown_count = int(status_counts.get("other", 0))
+
+    lines = [
+        "Autoresearch Stock Input Check",
+        f"Frequency: {payload['frequency']}",
+        f"Data root: {payload['data_root']} ({payload['data_root_preview']})",
+        (
+            f"Recent data root: {payload['recent_data_root']} ({payload['recent_data_root_preview']})"
+            if payload["recent_data_root"] is not None
+            else "Recent data root: not configured"
+        ),
+        f"Input check workers: {payload['worker_count']} ({payload.get('worker_source', 'unknown')})",
+        f"Symbols: {payload['symbol_count']}",
+        f"Ready symbols: {ready_count}/{payload['symbol_count']}",
+        f"All symbols ready: {'yes' if payload['all_symbols_ready'] else 'no'}",
+        "",
+        "Per-symbol status:",
+    ]
+
+    for symbol_payload in payload["symbols"]:
+        status = symbol_payload["status"]
+        rows = int(symbol_payload["rows"])
+        start_timestamp = symbol_payload["start_timestamp"] or "n/a"
+        end_timestamp = symbol_payload["end_timestamp"] or "n/a"
+        lines.append(
+            f"- {symbol_payload['symbol']}: {status}, rows={rows}, range={start_timestamp} -> {end_timestamp}"
+        )
+        primary_error = symbol_payload.get("primary_error")
+        recent_error = symbol_payload.get("recent_error")
+        if primary_error:
+            lines.append(f"  primary_error: {primary_error}")
+        if recent_error:
+            lines.append(f"  recent_error: {recent_error}")
+    lines.append("")
+    lines.append(
+        "Summary:"
+        f" ready={ready_count}, missing={missing_count}, invalid={invalid_count},"
+        f" partial={partial_count}, other={unknown_count}"
+    )
+    if payload["all_symbols_ready"]:
+        lines.append("Next step: rerun without --check-inputs-text to start training.")
+    else:
+        lines.append("Next step: fix the symbols above, or rerun with --check-inputs for JSON output.")
+    return "\n".join(lines)
+
+
+def run_task_input_check(config: TaskConfig, *, text_output: bool) -> TaskInputCheckResult:
+    payload = describe_task_inputs(config)
+    rendered_output = (
+        format_task_input_report(payload)
+        if text_output
+        else json.dumps(payload, indent=2, sort_keys=True)
+    )
+    return TaskInputCheckResult(
+        payload=payload,
+        rendered_output=rendered_output,
+        exit_code=0 if payload["all_symbols_ready"] else 1,
+    )
+
+
 def _load_symbol_bars(symbol: str, config: TaskConfig) -> pd.DataFrame:
-    symbol_name = symbol.upper()
-    primary_path = Path(config.data_root) / f"{symbol_name}.csv"
-    recent_path = Path(config.recent_data_root) / f"{symbol_name}.csv" if config.recent_data_root is not None else None
+    symbol_paths = _task_input_symbol_paths(config, symbol)
 
     parts: list[pd.DataFrame] = []
-    if primary_path.exists():
-        parts.append(_read_symbol_bars_from_path(primary_path, symbol_name))
-    if recent_path is not None and recent_path.exists():
-        recent = _read_symbol_bars_from_path(recent_path, symbol_name)
+    primary = _read_optional_symbol_bars_with_context(
+        symbol_paths.primary,
+        symbol=symbol_paths.symbol,
+        source_name="primary dataset",
+    )
+    if primary is not None:
+        parts.append(primary)
+    recent = _read_optional_symbol_bars_with_context(
+        symbol_paths.recent,
+        symbol=symbol_paths.symbol,
+        source_name="recent overlay dataset",
+    )
+    if recent is not None:
         cutoff = _overlay_cutoff_timestamp(recent, config)
         if cutoff is not None:
-            recent = recent.loc[pd.to_datetime(recent["timestamp"], utc=True) >= cutoff].copy()
+            recent = recent.loc[recent["timestamp"] >= cutoff].copy()
         if not recent.empty:
             parts.append(recent)
 
     if not parts:
-        missing = [str(primary_path)]
-        if recent_path is not None:
-            missing.append(str(recent_path))
-        raise FileNotFoundError(f"Missing dataset for {symbol_name}; checked: {', '.join(missing)}")
+        raise FileNotFoundError(
+            _format_missing_symbol_dataset_error(
+                symbol_name=symbol_paths.symbol,
+                primary_path=symbol_paths.primary,
+                recent_path=symbol_paths.recent,
+            )
+        )
 
-    combined = pd.concat(parts, ignore_index=True)
-    combined["timestamp"] = pd.to_datetime(combined["timestamp"], utc=True, errors="coerce")
-    combined = combined.dropna(subset=["timestamp"]).copy()
-    combined = combined.sort_values("timestamp").drop_duplicates(subset=["timestamp"], keep="last").reset_index(drop=True)
-    return combined[["timestamp", "symbol", "open", "high", "low", "close", "volume", "vwap"]]
+    return _combine_symbol_bar_parts(parts)
 
 
 def _rolling_zscore(series: pd.Series, window: int) -> pd.Series:
@@ -486,10 +982,14 @@ def _build_sequence_block(
         empty_targets = np.zeros((0, 3), dtype=np.float32)
         return empty_features, empty_targets, frame.iloc[0:0].copy()
 
-    sequences = np.stack(
-        [feature_matrix[index - sequence_length + 1 : index + 1] for index in valid_indices],
+    start_indices = valid_indices - (int(sequence_length) - 1)
+    sequence_windows = np.lib.stride_tricks.sliding_window_view(
+        feature_matrix,
+        int(sequence_length),
         axis=0,
-    ).astype(np.float32, copy=False)
+    )
+    sequence_windows = np.moveaxis(sequence_windows, -1, 1)
+    sequences = sequence_windows[start_indices].astype(np.float32, copy=False)
     target_block = targets[valid_indices].astype(np.float32, copy=False)
     rows = frame.iloc[valid_indices].copy().reset_index(drop=True)
     return sequences, target_block, rows
@@ -690,7 +1190,7 @@ def _predict_in_batches(
     return np.concatenate(predictions, axis=0).astype(np.float32, copy=False)
 
 
-def _lag_action_frame(actions: pd.DataFrame, bars: pd.DataFrame, lag: int) -> pd.DataFrame:
+def lag_action_frame(actions: pd.DataFrame, bars: pd.DataFrame, lag: int) -> pd.DataFrame:
     if actions.empty or int(lag) <= 0:
         return actions.copy()
 
@@ -716,6 +1216,11 @@ def _lag_action_frame(actions: pd.DataFrame, bars: pd.DataFrame, lag: int) -> pd
     if not shifted_parts:
         return actions.iloc[0:0].copy()
     return pd.concat(shifted_parts, ignore_index=True).sort_values(["timestamp", "symbol"]).reset_index(drop=True)
+
+
+def _lag_action_frame(actions: pd.DataFrame, bars: pd.DataFrame, lag: int) -> pd.DataFrame:
+    """Backward-compatible private alias for older call sites inside this module."""
+    return lag_action_frame(actions, bars, lag)
 
 
 def build_action_frame(
@@ -1157,7 +1662,7 @@ def evaluate_model(
             batch_size=batch_size,
         )
         actions = build_action_frame(scenario.action_rows, predictions, task.config)
-        actions = _lag_action_frame(actions, scenario.bars, int(task.config.decision_lag_bars))
+        actions = lag_action_frame(actions, scenario.bars, int(task.config.decision_lag_bars))
         result = simulate_actions(scenario.bars, actions, task.config)
         total_trade_count += int(result["trade_count"])
         scenario_rows.append(
@@ -1208,9 +1713,13 @@ def task_summary(task: PreparedTask) -> dict[str, Any]:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Prepare and inspect the autoresearch-style stock planner task.")
     parser.add_argument("--frequency", choices=("hourly", "daily"), default="hourly")
-    parser.add_argument("--symbols", default="")
-    parser.add_argument("--data-root", default=None)
-    parser.add_argument("--recent-data-root", default=None)
+    parser.add_argument("--symbols", default="", help=symbols_help_text())
+    parser.add_argument("--data-root", default=None, help=data_root_help_text())
+    parser.add_argument(
+        "--recent-data-root",
+        default=None,
+        help="Optional overlay directory with recent per-symbol CSVs named like SYMBOL.csv.",
+    )
     parser.add_argument("--sequence-length", type=int, default=None)
     parser.add_argument("--hold-bars", type=int, default=None)
     parser.add_argument("--eval-windows", default="")

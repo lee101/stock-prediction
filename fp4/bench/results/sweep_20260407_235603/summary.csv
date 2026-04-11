@@ -1,0 +1,7 @@
+algo,constrained,seed,steps,status,reason,wall_sec,sps,median_5bps,p10_5bps,sortino_5bps,max_dd_5bps,n_neg_5bps,result_path
+ppo,off,0,50000,ok,,9.329,5359.41,-3.80147,-4.31967,-0.994093,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/fp4_s0_20260407_235606.json
+ppo,on,0,50000,ok,,7.847,6371.51,-3.80147,-4.31967,-0.994093,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/fp4_s0_20260407_235620.json
+sac,off,0,50000,ok,,24.242,2062.52,-0.0601513,-0.580722,-0.19576,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/sac_s0_20260407_235632.json
+sac,on,0,50000,ok,,23.872,2094.51,-0.0601513,-0.580722,-0.19576,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/sac_s0_20260407_235659.json
+qr_ppo,off,0,50000,ok,,7.629,6554.11,-3.94906,-4.55759,-0.993439,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/qr_ppo_s0_20260407_235727.json
+qr_ppo,on,0,50000,ok,,8.090,6180.38,-3.94906,-4.55759,-0.993439,,,/nvme0n1-disk/code/stock-prediction/fp4/bench/results/qr_ppo_s0_20260407_235738.json

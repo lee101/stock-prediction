@@ -136,6 +136,25 @@ def test_probe_state_helpers(dummy_store):
     assert completed["last_probe_successful"] is True
 
 
+def test_describe_probe_state_falls_back_for_unknown_timezone() -> None:
+    now = datetime(2025, 1, 3, 12, tzinfo=timezone.utc)
+    started = now - timedelta(hours=3)
+
+    summary = state_utils.describe_probe_state(
+        {
+            "probe_active": True,
+            "probe_started_at": started.isoformat(),
+        },
+        now=now,
+        probe_max_duration=timedelta(hours=4),
+        timezone_name="Mars/Olympus_Mons",
+    )
+
+    assert summary["probe_active"] is True
+    assert summary["probe_expired"] is False
+    assert summary["probe_transition_ready"] is False
+
+
 def test_active_trade_record_round_trip(dummy_store):
     store, loader = dummy_store
     now = datetime(2025, 3, 4, tzinfo=timezone.utc)
