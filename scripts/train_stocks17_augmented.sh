@@ -66,10 +66,11 @@ eval_one() {
   python -m pufferlib_market.evaluate_holdout \
       --checkpoint "$ckpt" \
       --data-path  "$VAL_DATA" \
-      --eval-hours 90 \
-      --n-windows  50 \
+      --eval-hours 60 \
+      --n-windows  30 \
       --fee-rate   0.001 \
       --fill-buffer-bps 5.0 \
+      --decision-lag 2 \
       --deterministic \
       --no-early-stop \
       > "$out" 2>/dev/null || { echo "  s${seed}: eval failed"; return; }
@@ -89,8 +90,8 @@ PY
   echo "  s${seed}: med=${stats%%,*}% | $stats"
 }
 
-# Run 5 seeds sequentially on a single GPU
-SEEDS=(1 2 3 4 5)
+# Run seeds sequentially on a single GPU (seeds 1-5 already done; resume from 6)
+SEEDS=(6 7 8 9 10 11 12 13 14 15)
 echo "=== stocks17 augmented training: seeds=${SEEDS[*]} ==="
 echo "    train=$TRAIN_DATA  val=$VAL_DATA"
 echo "    tp=$TRADE_PENALTY  h=$HIDDEN_SIZE  steps=$TOTAL_TIMESTEPS  --disable-shorts"

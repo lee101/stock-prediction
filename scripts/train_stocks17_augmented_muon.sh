@@ -61,10 +61,11 @@ eval_one() {
   python -m pufferlib_market.evaluate_holdout \
       --checkpoint "$ckpt" \
       --data-path  "$VAL_DATA" \
-      --eval-hours 90 \
-      --n-windows  50 \
+      --eval-hours 60 \
+      --n-windows  30 \
       --fee-rate   0.001 \
       --fill-buffer-bps 5.0 \
+      --decision-lag 2 \
       --deterministic \
       --no-early-stop \
       > "$out" 2>/dev/null || { echo "  s${seed}: eval failed"; return; }
