@@ -645,7 +645,11 @@ def _normalize_live_trade_plan(
 
 
 def _get_market_price(sym_cfg: BinanceSymbolConfig, execution_mode: str) -> float:
-    return float(binance_wrapper.get_symbol_price(_execution_pair(sym_cfg, execution_mode)))
+    pair = _execution_pair(sym_cfg, execution_mode)
+    price = binance_wrapper.get_symbol_price(pair)
+    if price is None:
+        raise ValueError(f"Could not get price for {pair}")
+    return float(price)
 
 
 def get_portfolio_state(execution_mode: str = "spot") -> PortfolioState:
@@ -659,7 +663,7 @@ def get_portfolio_state(execution_mode: str = "spot") -> PortfolioState:
         margin_account = get_margin_account()
         try:
             total_net_btc = float(margin_account.get("totalNetAssetOfBtc", 0.0))
-            btc_price = float(binance_wrapper.get_symbol_price("BTCUSDT"))
+            btc_price = float(binance_wrapper.get_symbol_price("BTCUSDT") or 0.0)
             state.total_value_usd = total_net_btc * btc_price
         except Exception:
             state.total_value_usd = 0.0
@@ -994,7 +998,7 @@ def _repay_margin_debt_if_flat(
             net_asset = 0.0
         price = 0.0
         try:
-            price = float(binance_wrapper.get_symbol_price(f"{cfg.base_asset}USDT"))
+            price = float(binance_wrapper.get_symbol_price(f"{cfg.base_asset}USDT") or 0.0)
         except Exception:
             pass
         if net_asset * price > 5.0:
@@ -1536,7 +1540,7 @@ def run_trading_cycle(
             pos_qty = state.positions.get(sym_cfg.base_asset, 0.0)
             market_symbol = _execution_pair(sym_cfg, resolved_execution_mode)
             try:
-                cur_price = float(binance_wrapper.get_symbol_price(market_symbol))
+                cur_price = float(binance_wrapper.get_symbol_price(market_symbol) or 0.0)
             except Exception:
                 continue
             pos_val = pos_qty * cur_price
