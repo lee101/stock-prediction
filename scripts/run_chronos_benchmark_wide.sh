@@ -33,7 +33,7 @@ python -u scripts/refit_chronos2_pair_configs.py \
     --asset-kind "$ASSET_KIND" \
     --run-id "$RUN_ID" \
     --report-root "$REPORT_ROOT" \
-    --pipeline-backend "cutechronos" \
+    --pipeline-backend "chronos" \
     --torch-compile \
     --torch-dtype "float32" \
     --search-method "direct" \

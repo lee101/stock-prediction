@@ -1912,7 +1912,11 @@ class Chronos2OHLCWrapper:
             target_values.append(torch.tensor(series.values, dtype=torch.float32))
 
         target_tensor = torch.stack(target_values, dim=0)  # Shape: (n_variates, history)
-        inputs = [{"target": target_tensor}]
+        # cutechronos expects a list of tensors; standard chronos expects list of {"target": tensor} dicts
+        if self._pipeline_backend_name == "cutechronos":
+            inputs: Any = [target_tensor]
+        else:
+            inputs = [{"target": target_tensor}]
 
         # Run prediction
         effective_batch_size = int(batch_size or self.default_batch_size)
@@ -1920,11 +1924,12 @@ class Chronos2OHLCWrapper:
         tensor_pipeline = _require_predict_tensor_pipeline(self.pipeline)
 
         def _predict_call():
-            return tensor_pipeline.predict(
-                inputs,
-                prediction_length=prediction_length,
-                batch_size=effective_batch_size,
-            )
+            kwargs: Dict[str, Any] = {
+                "prediction_length": prediction_length,
+            }
+            if self._pipeline_backend_name != "cutechronos":
+                kwargs["batch_size"] = effective_batch_size
+            return tensor_pipeline.predict(inputs, **kwargs)
 
         predictions = self._call_with_compile_fallback(_predict_call, "predict_multivariate")
 
@@ -2059,7 +2064,11 @@ class Chronos2OHLCWrapper:
                 series = pd.to_numeric(series, errors="coerce")
                 target_values.append(torch.tensor(series.values, dtype=torch.float32))
             target_tensor = torch.stack(target_values, dim=0)
-            inputs.append({"target": target_tensor})
+            # cutechronos expects raw tensors; standard chronos expects {"target": tensor} dicts
+            if self._pipeline_backend_name == "cutechronos":
+                inputs.append(target_tensor)
+            else:
+                inputs.append({"target": target_tensor})
             valid_indices.append((idx, symbol, df))
 
         if not inputs:
@@ -2069,12 +2078,13 @@ class Chronos2OHLCWrapper:
         tensor_pipeline = _require_predict_tensor_pipeline(self.pipeline)
 
         def _predict_call():
-            return tensor_pipeline.predict(
-                inputs,
-                prediction_length=prediction_length,
-                batch_size=effective_batch_size,
-                predict_batches_jointly=predict_batches_jointly,
-            )
+            kwargs: Dict[str, Any] = {
+                "prediction_length": prediction_length,
+                "predict_batches_jointly": predict_batches_jointly,
+            }
+            if self._pipeline_backend_name != "cutechronos":
+                kwargs["batch_size"] = effective_batch_size
+            return tensor_pipeline.predict(inputs, **kwargs)
 
         predictions = self._call_with_compile_fallback(_predict_call, "predict_joint")
 
@@ -2226,16 +2236,23 @@ class Chronos2OHLCWrapper:
             predict_df_pipeline = _require_predict_df_pipeline(self.pipeline)
 
             def _batched_call() -> pd.DataFrame:
-                return predict_df_pipeline.predict_df(
-                    combined_context,
+                kwargs: Dict[str, Any] = dict(
                     future_df=combined_future,
                     id_column=self.id_column,
                     timestamp_column=self.timestamp_column,
                     target=list(self.target_columns),
                     prediction_length=prediction_length,
                     quantile_levels=list(quantiles),
-                    batch_size=effective_batch_size,
                     **predict_options,
+                )
+                # CuteChronos routes predict_df through pipeline.predict(), which
+                # does not accept the standard batch_size kwarg used by the
+                # reference Chronos pipeline.
+                if self._pipeline_backend_name != "cutechronos":
+                    kwargs["batch_size"] = effective_batch_size
+                return predict_df_pipeline.predict_df(
+                    combined_context,
+                    **kwargs,
                 )
 
             raw_predictions = self._call_with_compile_fallback(_batched_call, "predict_df")
