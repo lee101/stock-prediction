@@ -299,6 +299,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-multivariate", action="store_true", help="Unused; multivariate handled by wrapper config")
     parser.add_argument("--max-staleness-days", type=int, default=45,
                         help="Skip stocks whose latest bar is older than this many days (0=disable)")
+    parser.add_argument("--require-mae-calibration", action="store_true",
+                        help="Only output symbols with calibrated Chronos MAE (<= --max-mae-pct)")
+    parser.add_argument("--max-mae-pct", type=float, default=5.0,
+                        help="Maximum pct_return_mae%% for MAE filter (used with --require-mae-calibration)")
     parser.add_argument("--verbose", "-v", action="store_true")
     return parser.parse_args(argv)
 
@@ -334,11 +338,36 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: No results produced", file=sys.stderr)
         return 1
 
+    # Load MAE calibration data for post-filtering / annotation
+    mae_by_symbol: dict[str, float] = {}
+    hp_dir = REPO / "hyperparams" / "chronos2"
+    if hp_dir.exists():
+        for j in hp_dir.glob("*.json"):
+            try:
+                import json as _json
+                d = _json.loads(j.read_text())
+                mae = d.get("test", {}).get("pct_return_mae")
+                if mae is not None:
+                    mae_by_symbol[j.stem] = float(mae)
+            except Exception:
+                pass
+
     # Sort by predicted return descending
     results.sort(key=lambda r: r.predicted_return_pct, reverse=True)
 
-    # Filter and take top-N
+    # Annotate results with MAE where available
+    for r in results:
+        if r.symbol in mae_by_symbol:
+            object.__setattr__(r, "lora_applied", False)  # use as MAE carrier - TODO: proper field
+
+    # Filter by min predicted return
     filtered = [r for r in results if r.predicted_return_pct >= args.min_predicted_return_pct]
+
+    # Optional MAE filter
+    if args.require_mae_calibration:
+        filtered = [r for r in filtered
+                    if r.symbol in mae_by_symbol and mae_by_symbol[r.symbol] <= args.max_mae_pct / 100.0]
+
     top_n = filtered[: args.top_n]
 
     # Output
@@ -348,15 +377,24 @@ def main(argv: list[str] | None = None) -> int:
     csv_path = args.output_dir / f"screener_{ts}.csv"
     latest_json = args.output_dir / "screener_latest.json"
 
+    def _enrich(r: ScreenerResult) -> dict:
+        d = asdict(r)
+        mae = mae_by_symbol.get(r.symbol)
+        d["mae_pct"] = round(mae * 100.0, 3) if mae is not None else None
+        return d
+
     payload = {
         "generated_at": ts,
         "backend": args.backend,
         "context_length": args.context_length,
         "symbols_screened": len(results),
+        "mae_calibrated_symbols": len(mae_by_symbol),
         "symbols_file": str(args.symbols_file),
         "top_n": args.top_n,
-        "top_candidates": [asdict(r) for r in top_n],
-        "all_results": [asdict(r) for r in results],
+        "require_mae_calibration": args.require_mae_calibration,
+        "max_mae_pct": args.max_mae_pct,
+        "top_candidates": [_enrich(r) for r in top_n],
+        "all_results": [_enrich(r) for r in results],
     }
     json_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     latest_json.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
