@@ -75,6 +75,7 @@ def _load_candidate(config_path: Path) -> Chronos2Candidate:
         aggregation=str(cfg.get("aggregation", "median")),
         sample_count=int(cfg.get("sample_count", 0)),
         scaler=str(cfg.get("scaler", "none")),
+        use_multivariate=bool(cfg.get("use_multivariate", False)),
         predict_kwargs=dict(cfg.get("predict_kwargs") or {}),
     )
 
@@ -94,6 +95,7 @@ def _build_benchmark(args: argparse.Namespace) -> Chronos2Benchmark:
         torch_dtype=args.torch_dtype,
         torch_compile=args.torch_compile,
         verbose=args.verbose,
+        pipeline_backend=args.pipeline_backend,
         output_dir=str(args.benchmark_cache_dir),
         val_window=args.val_window,
         test_window=args.test_window,
@@ -255,6 +257,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device-map", default="cuda")
     parser.add_argument("--torch-dtype", default=None)
     parser.add_argument("--torch-compile", action="store_true", help="Enable torch.compile for Chronos2.")
+    parser.add_argument("--pipeline-backend", choices=("chronos", "cutechronos", "auto"), default="chronos",
+                        help="Chronos2 pipeline backend (chronos or cutechronos).")
     parser.add_argument("--val-window", type=int, default=VAL_WINDOW)
     parser.add_argument("--test-window", type=int, default=TEST_WINDOW)
     parser.add_argument("--predict-batches-jointly", action="store_true")
