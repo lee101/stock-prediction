@@ -119,6 +119,9 @@ TRADING_SYMBOLS = {
 
 MIN_TRADE_USD = 12.0
 SUPPORTED_EXECUTION_MODES = {"auto", "spot", "margin"}
+_ACCOUNT_GUARD_BORROW_BUFFER_USD = 25.0
+_ACCOUNT_GUARD_GROSS_TOLERANCE_RATIO = 1.25
+_ACCOUNT_GUARD_GROSS_BUFFER_USD = 25.0
 
 # Per-symbol signal calibrators (loaded once at startup)
 _calibrators: dict[str, SignalCalibrator] = {}
@@ -538,6 +541,147 @@ def _filter_allocation_plan_to_symbols(
 
 def _tracked_base_assets() -> tuple[str, ...]:
     return tuple(sorted({cfg.base_asset for cfg in TRADING_SYMBOLS.values()}))
+
+
+def _evaluate_hybrid_account_guard(
+    state: PortfolioState,
+    positions_valued: dict[str, tuple[float, float]],
+    open_orders: list[dict[str, Any]],
+    *,
+    execution_mode: str,
+    effective_leverage: float,
+    allowed_symbols: list[str] | tuple[str, ...] | None,
+    enforce: bool,
+) -> JSONDict:
+    normalized_symbols = _normalize_symbol_list(allowed_symbols)
+    allowed_market_symbols = sorted(
+        _execution_pair(TRADING_SYMBOLS[symbol], execution_mode)
+        for symbol in normalized_symbols
+        if symbol in TRADING_SYMBOLS
+    )
+    allowed_market_symbol_set = set(allowed_market_symbols)
+    gross_symbol_budget_usd = max(0.0, float(state.total_value_usd) * max(0.0, float(effective_leverage)))
+    gross_symbol_limit_usd = (
+        gross_symbol_budget_usd * _ACCOUNT_GUARD_GROSS_TOLERANCE_RATIO + _ACCOUNT_GUARD_GROSS_BUFFER_USD
+    )
+    allowed_borrow_usd = 0.0
+    if float(effective_leverage) > 1.0 + 1e-9:
+        allowed_borrow_usd = max(0.0, float(state.total_value_usd) * (float(effective_leverage) - 1.0))
+    borrow_limit_usd = allowed_borrow_usd + _ACCOUNT_GUARD_BORROW_BUFFER_USD
+
+    foreign_positions: JSONList = []
+    oversized_positions: JSONList = []
+    foreign_orders: JSONList = []
+    oversized_orders: JSONList = []
+    unexpected_borrowed_quotes: JSONList = []
+
+    borrowed_usdt = max(0.0, float(state.borrowed_quotes.get("USDT", 0.0) or 0.0))
+    if borrowed_usdt > borrow_limit_usd:
+        unexpected_borrowed_quotes.append(
+            {
+                "asset": "USDT",
+                "borrowed_usd": float(borrowed_usdt),
+                "limit_usd": float(borrow_limit_usd),
+            }
+        )
+
+    for symbol, (qty, value_usd) in positions_valued.items():
+        if value_usd < MIN_TRADE_USD:
+            continue
+        payload: JSONDict = {
+            "symbol": str(symbol),
+            "qty": float(qty),
+            "value_usd": float(value_usd),
+        }
+        if normalized_symbols and symbol not in normalized_symbols:
+            foreign_positions.append(payload)
+            continue
+        if value_usd > gross_symbol_limit_usd:
+            payload["limit_usd"] = float(gross_symbol_limit_usd)
+            oversized_positions.append(payload)
+
+    market_symbol_to_internal = {
+        _execution_pair(cfg, execution_mode): symbol for symbol, cfg in TRADING_SYMBOLS.items()
+    }
+    for raw_order in open_orders:
+        serialized = _serialize_order(raw_order)
+        if serialized is None:
+            continue
+        market_symbol = str(serialized.get("symbol") or "").upper()
+        price = _safe_float(serialized.get("price"))
+        orig_qty = _safe_float(serialized.get("orig_qty"))
+        executed_qty = _safe_float(serialized.get("executed_qty")) or 0.0
+        remaining_qty = max((orig_qty or 0.0) - executed_qty, 0.0) if orig_qty is not None else None
+        notional_usd = remaining_qty * price if remaining_qty is not None and price is not None else None
+        if notional_usd is not None and notional_usd < MIN_TRADE_USD:
+            continue
+        payload = dict(serialized)
+        internal_symbol = market_symbol_to_internal.get(market_symbol)
+        if internal_symbol is not None:
+            payload["internal_symbol"] = internal_symbol
+        if notional_usd is not None:
+            payload["notional_usd"] = float(notional_usd)
+        if normalized_symbols and market_symbol not in allowed_market_symbol_set:
+            foreign_orders.append(payload)
+            continue
+        if notional_usd is not None and notional_usd > gross_symbol_limit_usd:
+            payload["limit_usd"] = float(gross_symbol_limit_usd)
+            oversized_orders.append(payload)
+
+    issues: list[str] = []
+    if unexpected_borrowed_quotes:
+        issues.append(
+            "borrowed quote exceeds allowed leverage: "
+            + ", ".join(
+                f"{item['asset']}={float(item['borrowed_usd']):.2f}>{float(item['limit_usd']):.2f}"
+                for item in unexpected_borrowed_quotes
+            )
+        )
+    if foreign_positions:
+        issues.append(
+            "foreign positions detected: "
+            + ", ".join(f"{item['symbol']}=${float(item['value_usd']):.2f}" for item in foreign_positions)
+        )
+    if foreign_orders:
+        issues.append(
+            "foreign working orders detected: " + ", ".join(str(item.get("symbol") or "") for item in foreign_orders)
+        )
+    if oversized_positions:
+        issues.append(
+            "oversized live positions exceed hybrid gross budget: "
+            + ", ".join(
+                f"{item['symbol']}=${float(item['value_usd']):.2f}>{float(item['limit_usd']):.2f}"
+                for item in oversized_positions
+            )
+        )
+    if oversized_orders:
+        issues.append(
+            "oversized working orders exceed hybrid gross budget: "
+            + ", ".join(
+                f"{item.get('internal_symbol') or item.get('symbol') or ''!s}="
+                f"${float(item.get('notional_usd') or 0.0):.2f}>${float(item.get('limit_usd') or 0.0):.2f}"
+                for item in oversized_orders
+            )
+        )
+
+    triggered = bool(issues)
+    return {
+        "enforced": bool(enforce),
+        "triggered": triggered,
+        "blocked": bool(enforce and triggered),
+        "allowed_symbols": list(normalized_symbols),
+        "allowed_market_symbols": allowed_market_symbols,
+        "gross_symbol_budget_usd": float(gross_symbol_budget_usd),
+        "gross_symbol_limit_usd": float(gross_symbol_limit_usd),
+        "borrow_limit_usd": float(borrow_limit_usd),
+        "unexpected_borrowed_quotes": unexpected_borrowed_quotes,
+        "foreign_positions": foreign_positions,
+        "foreign_orders": foreign_orders,
+        "oversized_positions": oversized_positions,
+        "oversized_orders": oversized_orders,
+        "issues": issues,
+        "reason": "; ".join(issues) if issues else None,
+    }
 
 
 def _transfer_reserve(asset: str) -> float:
@@ -1119,6 +1263,7 @@ def _repay_margin_debt_if_flat(
         return
     try:
         margin_repay_all("USDT")
+        state.borrowed_quotes["USDT"] = 0.0
     except Exception as exc:
         logger.warning(f"  Margin repay failed: {exc}")
 
@@ -2246,6 +2391,7 @@ def run_hybrid_trading_cycle(  # noqa: PLR0911
         "previous_outcome": _serialize_plan_outcome(_prev_outcome),
         "rl_signal": None,
         "allocation_plan": None,
+        "account_guard": None,
         "gemini_call_skipped": False,
         "gemini_skip_reason": None,
         "orders": {
@@ -2302,6 +2448,28 @@ def run_hybrid_trading_cycle(  # noqa: PLR0911
             "cancelled_stale": _serialize_orders(cleanup.cancelled),
             "placed": [],
         }
+        guard_symbols = _normalize_symbol_list(tradable_symbols) or _normalize_symbol_list(
+            getattr(rl_gen, "symbols", ())
+        )
+        cycle_snapshot["requested_tradable_symbols"] = list(guard_symbols)
+        positions_valued = _get_current_positions_valued(state, resolved_execution_mode)
+        account_guard = _evaluate_hybrid_account_guard(
+            state,
+            positions_valued,
+            open_orders,
+            execution_mode=resolved_execution_mode,
+            effective_leverage=effective_leverage,
+            allowed_symbols=guard_symbols,
+            enforce=not dry_run,
+        )
+        cycle_snapshot["account_guard"] = account_guard
+        if bool(account_guard.get("blocked")):
+            reason = str(account_guard.get("reason") or "account_guard_blocked")
+            logger.error("Hybrid account guard blocked live trading: {}", reason)
+            cycle_snapshot["status"] = "account_guard_blocked"
+            cycle_snapshot["allocation_source"] = "account_guard_noop"
+            cycle_snapshot["error"] = reason
+            return []
 
         cache_root = Path(forecast_cache_root)
         all_crypto_syms = tuple(s for s in rl_gen.symbols if s in SYMBOL_TO_BINANCE_PAIR)
@@ -2322,7 +2490,6 @@ def run_hybrid_trading_cycle(  # noqa: PLR0911
             contexts,
             tradable_symbols,
         )
-        cycle_snapshot["requested_tradable_symbols"] = _normalize_symbol_list(tradable_symbols)
         cycle_snapshot["active_tradable_symbols"] = list(active_tradable_symbols)
         if missing_tradable_symbols:
             cycle_snapshot["missing_tradable_symbols"] = list(missing_tradable_symbols)
@@ -2335,7 +2502,6 @@ def run_hybrid_trading_cycle(  # noqa: PLR0911
             cycle_snapshot["status"] = "no_active_tradable_symbols"
             return []
 
-        positions_valued = _get_current_positions_valued(state, resolved_execution_mode)
         positions_to_flatten = _has_positions_to_flatten(positions_valued)
         largest_pos = max(positions_valued.items(), key=lambda x: x[1][1]) if positions_valued else None
         cur_sym = largest_pos[0] if largest_pos else None

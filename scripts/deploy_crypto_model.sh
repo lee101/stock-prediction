@@ -159,6 +159,14 @@ show_recent_logs() {
     fi
 }
 
+current_log_size() {
+    if [[ ! -f "$LOG" ]]; then
+        echo 0
+        return 0
+    fi
+    wc -c < "$LOG" | tr -d '[:space:]'
+}
+
 verify_launch_state() {
     local expected_checkpoint="$1"
     local expected_symbols="$2"
@@ -166,6 +174,7 @@ verify_launch_state() {
     local deployed_after="$4"
     local wait_timeout="${5:-}"
     local min_healthy_cycles="${6:-}"
+    local log_offset_bytes="${7:-0}"
     local -a verify_args=(
         -m src.binance_hybrid_prod_verify
         --launch-script "$LAUNCH"
@@ -173,6 +182,8 @@ verify_launch_state() {
         --log-path "$LOG"
         --trace-dir "$TRACE_DIR"
         --deployed-after "$deployed_after"
+        --log-offset-bytes "$log_offset_bytes"
+        --require-machine-state-match
     )
     if [[ -n "$expected_symbols" ]]; then
         verify_args+=( --expected-symbols "$expected_symbols" )
@@ -195,6 +206,7 @@ verify_launch_without_rl() {
     local deployed_after="$3"
     local wait_timeout="${4:-}"
     local min_healthy_cycles="${5:-}"
+    local log_offset_bytes="${6:-0}"
     local -a verify_args=(
         -m src.binance_hybrid_prod_verify
         --launch-script "$LAUNCH"
@@ -202,6 +214,8 @@ verify_launch_without_rl() {
         --log-path "$LOG"
         --trace-dir "$TRACE_DIR"
         --deployed-after "$deployed_after"
+        --log-offset-bytes "$log_offset_bytes"
+        --require-machine-state-match
     )
     if [[ -n "$expected_symbols" ]]; then
         verify_args+=( --expected-symbols "$expected_symbols" )
@@ -278,6 +292,23 @@ print(result.manifest_path or "")
 PYSUB
 }
 
+verify_live_process_preflight() {
+    run_python - "$LAUNCH" <<'PY'
+from src.binance_hybrid_machine_audit import (
+    audit_binance_hybrid_machine_state,
+    build_machine_deploy_preflight_reason,
+)
+import sys
+
+launch_script = sys.argv[1]
+machine_audit = audit_binance_hybrid_machine_state(launch_script)
+preflight_reason = build_machine_deploy_preflight_reason(machine_audit)
+if preflight_reason is not None:
+    sys.stderr.write(f"{preflight_reason}\n")
+    raise SystemExit(1)
+PY
+}
+
 rollback_launch() {
     local failure_reason="$1"
     if [[ -z "$backup" || ! -f "$backup" ]]; then
@@ -292,6 +323,8 @@ rollback_launch() {
     echo "Restored launch.sh from backup"
     echo ""
     echo "Restarting $SUPERVISOR_PROG with previous config..."
+    local rollback_log_offset
+    rollback_log_offset="$(current_log_size)"
     local rollback_started_at
     rollback_started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
     if ! restart_supervisor; then
@@ -303,9 +336,9 @@ rollback_launch() {
     echo ""
     echo "Verifying rollback..."
     if [[ -n "$PREVIOUS_CHECKPOINT" ]]; then
-        verify_launch_state "$PREVIOUS_CHECKPOINT" "$PREVIOUS_SYMBOLS" "$PREVIOUS_LEVERAGE" "$rollback_started_at"
+        verify_launch_state "$PREVIOUS_CHECKPOINT" "$PREVIOUS_SYMBOLS" "$PREVIOUS_LEVERAGE" "$rollback_started_at" "" "" "$rollback_log_offset"
     else
-        verify_launch_without_rl "$PREVIOUS_SYMBOLS" "$PREVIOUS_LEVERAGE" "$rollback_started_at"
+        verify_launch_without_rl "$PREVIOUS_SYMBOLS" "$PREVIOUS_LEVERAGE" "$rollback_started_at" "" "" "$rollback_log_offset"
     fi
 }
 
@@ -473,6 +506,12 @@ if [[ "$REMOVE_RL" -eq 1 ]]; then
         [[ -n "$MIN_HEALTHY_LIVE_CYCLES" ]] && echo "[dry-run] Would require $MIN_HEALTHY_LIVE_CYCLES healthy live cycle snapshots after deploy"
         exit 0
     fi
+    echo ""
+    echo "Checking live process preflight..."
+    if ! verify_live_process_preflight; then
+        echo "Deployment blocked by live process preflight."
+        exit 1
+    fi
     backup="${LAUNCH}.bak.$(date +%s)"
     cp "$LAUNCH" "$backup"
     sed -i '/--rl-checkpoint/d' "$LAUNCH"
@@ -481,6 +520,7 @@ if [[ "$REMOVE_RL" -eq 1 ]]; then
     echo "Removed --rl-checkpoint from launch.sh"
     echo ""
     echo "Restarting $SUPERVISOR_PROG..."
+    LOG_OFFSET_BEFORE_RESTART="$(current_log_size)"
     DEPLOYED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
     if ! restart_supervisor; then
         if ! rollback_launch "supervisor restart failed after removing --rl-checkpoint"; then
@@ -493,7 +533,7 @@ if [[ "$REMOVE_RL" -eq 1 ]]; then
     show_recent_logs
     echo ""
     echo "Verifying deploy..."
-    if ! verify_launch_without_rl "$EXPECTED_SYMBOLS" "$EXPECTED_LEVERAGE" "$DEPLOYED_AT" "$WAIT_FOR_LIVE_CYCLE_SECONDS" "$MIN_HEALTHY_LIVE_CYCLES"; then
+    if ! verify_launch_without_rl "$EXPECTED_SYMBOLS" "$EXPECTED_LEVERAGE" "$DEPLOYED_AT" "$WAIT_FOR_LIVE_CYCLE_SECONDS" "$MIN_HEALTHY_LIVE_CYCLES" "$LOG_OFFSET_BEFORE_RESTART"; then
         if ! rollback_launch "post-remove-rl verification failed"; then
             echo ""
             echo "Rollback failed."
@@ -585,6 +625,13 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
     exit 0
 fi
 
+echo ""
+echo "Checking live process preflight..."
+if ! verify_live_process_preflight; then
+    echo "Deployment blocked by live process preflight."
+    exit 1
+fi
+
 backup="${LAUNCH}.bak.$(date +%s)"
 cp "$LAUNCH" "$backup"
 echo "Backup: $backup"
@@ -607,6 +654,7 @@ echo "--- end ---"
 
 echo ""
 echo "Restarting $SUPERVISOR_PROG..."
+LOG_OFFSET_BEFORE_RESTART="$(current_log_size)"
 DEPLOYED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 if ! restart_supervisor; then
     if ! rollback_launch "supervisor restart failed after updating launch.sh"; then
@@ -620,7 +668,7 @@ show_recent_logs
 
 echo ""
 echo "Verifying deploy..."
-if ! verify_launch_state "$CHECKPOINT" "$EXPECTED_SYMBOLS" "$EXPECTED_LEVERAGE" "$DEPLOYED_AT" "$WAIT_FOR_LIVE_CYCLE_SECONDS" "$MIN_HEALTHY_LIVE_CYCLES"; then
+if ! verify_launch_state "$CHECKPOINT" "$EXPECTED_SYMBOLS" "$EXPECTED_LEVERAGE" "$DEPLOYED_AT" "$WAIT_FOR_LIVE_CYCLE_SECONDS" "$MIN_HEALTHY_LIVE_CYCLES" "$LOG_OFFSET_BEFORE_RESTART"; then
     if ! rollback_launch "post-deploy verification failed"; then
         echo ""
         echo "Rollback failed."

@@ -167,10 +167,16 @@ class TrainingConfig:
     price_offset_pct: float = 0.0003
     min_price_gap_pct: float = 0.0003
     trade_amount_scale: float = 100.0
+    use_midpoint_offsets: bool = True
     fill_temperature: float = 0.01
     decision_lag_bars: int = 0
     decision_lag_range: str = ""  # e.g. "0,1,2" -- average loss across lags during training
     market_order_entry: bool = False
+    use_rebalance_sim: bool = False
+    rebalance_allow_short: bool = False
+    rebalance_regime_mode: bool = False
+    rebalance_entropy_weight: float = 0.0
+    rebalance_smoothness_weight: float = 0.0
     fill_buffer_pct: float = 0.0005
     spread_penalty: float = 0.0
     spread_target: float = 0.0005
@@ -227,6 +233,7 @@ class TrainingConfig:
     weight_decay_end: float = 0.0
     ema_decay: float = 0.0
     validation_use_binary_fills: bool = True
+    validation_lag_aggregation: str = "minimax"  # minimax or mean across decision_lag_range
     dry_train_steps: int | None = None
     device: str | None = None
     run_name: str | None = None

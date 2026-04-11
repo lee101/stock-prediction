@@ -48,6 +48,33 @@ def _is_cuda_resource_pressure_error(exc: BaseException) -> bool:
     return "out of memory" in str(exc).lower()
 
 
+def _aggregate_validation_lag_metrics(
+    losses: list[torch.Tensor],
+    scores: list[torch.Tensor],
+    sortinos: list[torch.Tensor],
+    annual_returns: list[torch.Tensor],
+    *,
+    mode: str,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    normalized = str(mode or "minimax").strip().lower()
+    if normalized == "mean":
+        n = max(1, len(losses))
+        return (
+            sum(losses) / n,
+            sum(scores) / n,
+            sum(sortinos) / n,
+            sum(annual_returns) / n,
+        )
+    if normalized != "minimax":
+        normalized = "minimax"
+    return (
+        torch.stack(losses, dim=0).amax(dim=0),
+        torch.stack(scores, dim=0).amin(dim=0),
+        torch.stack(sortinos, dim=0).amin(dim=0),
+        torch.stack(annual_returns, dim=0).amin(dim=0),
+    )
+
+
 @dataclass
 class TrainEpochMetrics:
     loss: float
@@ -234,6 +261,42 @@ class UnifiedPolicyHFModel(nn.Module):
             score = sum(scores) / len(scores)
             sortino = sum(sortinos) / len(sortinos)
             annual_return = sum(returns_list) / len(returns_list)
+        elif (not self.training) and len(lag_values) > 1:
+            losses = []
+            scores = []
+            sortinos = []
+            returns_list = []
+            for lag in lag_values:
+                if bool(cfg.validation_use_binary_fills):
+                    sim = simulate_hourly_trades_binary(**sim_kwargs, decision_lag_bars=lag)
+                else:
+                    sim = sim_fn(
+                        **sim_kwargs,
+                        temperature=float(cfg.fill_temperature),
+                        decision_lag_bars=lag,
+                    )
+                result = compute_loss_by_type(
+                    sim.returns.float(),
+                    cfg.loss_type,
+                    target_sign=cfg.sortino_target_sign,
+                    periods_per_year=periods_per_year if periods_per_year is not None else float(cfg.periods_per_year or HOURLY_PERIODS_PER_YEAR),
+                    return_weight=cfg.return_weight,
+                    smoothness_penalty=cfg.smoothness_penalty,
+                    dd_penalty=cfg.dd_penalty,
+                    multiwindow_fractions=cfg.multiwindow_fractions,
+                    multiwindow_aggregation=cfg.multiwindow_aggregation,
+                )
+                losses.append(result[0])
+                scores.append(result[1])
+                sortinos.append(result[2])
+                returns_list.append(result[3])
+            loss, score, sortino, annual_return = _aggregate_validation_lag_metrics(
+                losses,
+                scores,
+                sortinos,
+                returns_list,
+                mode=str(getattr(cfg, "validation_lag_aggregation", "minimax")),
+            )
         else:
             lag = max(lag_values) if not self.training else int(cfg.decision_lag_bars)
             if (not self.training) and bool(cfg.validation_use_binary_fills):

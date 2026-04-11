@@ -767,3 +767,178 @@ def compute_loss_by_type(
     loss = -target_sign * score.mean()
     loss = _apply_smoothness(loss, hourly_returns, smoothness_penalty)
     return loss, score, ratio, annual_return
+
+
+def simulate_rebalance_fast(
+    *,
+    closes: torch.Tensor,
+    opens: torch.Tensor | None = None,
+    allocation: torch.Tensor,
+    maker_fee: float = DEFAULT_MAKER_FEE_RATE,
+    initial_cash: float = 1.0,
+    decision_lag_bars: int = 0,
+    margin_annual_rate: float = 0.0,
+    max_leverage: float = 1.0,
+    **_kwargs,
+) -> HourlySimulationResult:
+    """Vectorized approximation of position-target rebalancing.
+
+    r_portfolio[t] ~ alloc[t] * r_asset[t] - fee * |delta_alloc[t]|
+
+    Fully vectorized (no Python for-loop). Good for training gradients.
+    """
+    if closes.ndim == 0:
+        raise ValueError("Input tensors must include a time dimension")
+
+    if decision_lag_bars > 0:
+        lag = decision_lag_bars
+        closes = closes[..., lag:]
+        if opens is not None:
+            opens = opens[..., lag:]
+        allocation = allocation[..., :-lag]
+
+    alloc = torch.clamp(allocation, min=0.0, max=float(max_leverage))
+
+    asset_returns = (closes[..., 1:] - closes[..., :-1]) / torch.clamp(closes[..., :-1], min=_EPS)
+    alloc_trimmed = alloc[..., :-1]
+    alloc_delta = torch.abs(alloc[..., 1:] - alloc[..., :-1])
+
+    initial_fee = torch.abs(alloc[..., :1]) * maker_fee
+    turnover_fee = alloc_delta * maker_fee
+
+    portfolio_returns = alloc_trimmed * asset_returns - turnover_fee
+    first_return = -initial_fee
+
+    returns = torch.cat([first_return, portfolio_returns], dim=-1)
+
+    cum_log_returns = torch.cumsum(torch.log1p(torch.clamp(returns, min=-0.99)), dim=-1)
+    portfolio_values = initial_cash * torch.exp(cum_log_returns)
+
+    pnl = portfolio_values - torch.cat([
+        torch.full((*closes.shape[:-1], 1), initial_cash, dtype=closes.dtype, device=closes.device),
+        portfolio_values[..., :-1],
+    ], dim=-1)
+
+    steps = returns.shape[-1]
+    zeros = torch.zeros(*closes.shape[:-1], steps, dtype=closes.dtype, device=closes.device)
+
+    return HourlySimulationResult(
+        pnl=pnl,
+        returns=returns,
+        portfolio_values=portfolio_values,
+        cash=torch.zeros(closes.shape[:-1], dtype=closes.dtype, device=closes.device),
+        inventory=torch.zeros(closes.shape[:-1], dtype=closes.dtype, device=closes.device),
+        buy_fill_probability=zeros,
+        sell_fill_probability=zeros,
+        executed_buys=zeros,
+        executed_sells=zeros,
+        inventory_path=zeros,
+    )
+
+
+def simulate_rebalance(
+    *,
+    closes: torch.Tensor,
+    opens: torch.Tensor | None = None,
+    allocation: torch.Tensor,
+    maker_fee: float = DEFAULT_MAKER_FEE_RATE,
+    initial_cash: float = 1.0,
+    decision_lag_bars: int = 0,
+    margin_annual_rate: float = 0.0,
+    max_leverage: float = 1.0,
+    allow_short: bool = False,
+) -> HourlySimulationResult:
+    """Position-target rebalancing sim. No limit orders, no adverse selection.
+
+    At each bar, rebalance toward target allocation at execution price (open
+    if available, else close). Buys/sells are market orders (always fill).
+
+    allocation: [..., T] tensor in [0, 1] representing target fraction of
+                equity invested in the asset.
+    """
+    if closes.ndim == 0:
+        raise ValueError("Input tensors must include a time dimension")
+
+    exec_prices = opens if opens is not None else closes
+
+    original_steps = closes.shape[-1]
+    if decision_lag_bars > 0:
+        lag = decision_lag_bars
+        closes = closes[..., lag:]
+        exec_prices = exec_prices[..., lag:] if exec_prices is not None else closes
+        allocation = allocation[..., :-lag]
+
+    margin_cost_per_step = margin_annual_rate / HOURLY_PERIODS_PER_YEAR
+
+    batch_shape = closes.shape[:-1]
+    steps = closes.shape[-1]
+    device = closes.device
+    dtype = closes.dtype
+    fee = torch.as_tensor(maker_fee, dtype=dtype, device=device)
+
+    cash = torch.full(batch_shape, initial_cash, dtype=dtype, device=device)
+    inventory = torch.zeros(batch_shape, dtype=dtype, device=device)
+    prev_value = cash.clone()
+
+    fee_buy = 1.0 + fee
+    fee_sell = 1.0 - fee
+
+    pnl_list = []
+    returns_list = []
+    values_list = []
+    buy_fill_list = []
+    sell_fill_list = []
+    exec_buy_list = []
+    exec_sell_list = []
+    inventory_list = []
+
+    for idx in range(steps):
+        close = closes[..., idx]
+        exec_p = torch.clamp(exec_prices[..., idx], min=_EPS)
+        alloc_min = -float(max_leverage) if allow_short else 0.0
+        alloc = torch.clamp(allocation[..., idx], min=alloc_min, max=float(max_leverage))
+
+        equity = cash + inventory * exec_p
+        equity = torch.clamp(equity, min=_EPS)
+
+        target_inventory = alloc * equity / exec_p
+        delta = target_inventory - inventory
+
+        buy_qty = torch.clamp(delta, min=0.0)
+        sell_qty = torch.clamp(-delta, min=0.0)
+
+        cash = cash - buy_qty * exec_p * fee_buy + sell_qty * exec_p * fee_sell
+        inventory = inventory + buy_qty - sell_qty
+
+        if margin_cost_per_step > 0:
+            pos_value = torch.abs(inventory * close)
+            eq = cash + inventory * close
+            margin_used = torch.clamp(pos_value - torch.clamp(eq, min=0.0), min=0.0)
+            cash = cash - margin_used * margin_cost_per_step
+
+        portfolio_value = cash + inventory * close
+        step_pnl = portfolio_value - prev_value
+        step_ret = step_pnl / torch.clamp(prev_value, min=_EPS)
+
+        pnl_list.append(step_pnl)
+        returns_list.append(step_ret)
+        values_list.append(portfolio_value)
+        exec_buy_list.append(buy_qty)
+        exec_sell_list.append(sell_qty)
+        buy_fill_list.append((buy_qty > 0).float())
+        sell_fill_list.append((sell_qty > 0).float())
+        inventory_list.append(inventory)
+        prev_value = torch.clamp(portfolio_value.detach(), min=_EPS)
+
+    return HourlySimulationResult(
+        pnl=torch.stack(pnl_list, dim=-1),
+        returns=torch.stack(returns_list, dim=-1),
+        portfolio_values=torch.stack(values_list, dim=-1),
+        cash=cash,
+        inventory=inventory,
+        buy_fill_probability=torch.stack(buy_fill_list, dim=-1),
+        sell_fill_probability=torch.stack(sell_fill_list, dim=-1),
+        executed_buys=torch.stack(exec_buy_list, dim=-1),
+        executed_sells=torch.stack(exec_sell_list, dim=-1),
+        inventory_path=torch.stack(inventory_list, dim=-1),
+    )

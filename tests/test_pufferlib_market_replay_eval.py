@@ -122,7 +122,7 @@ def test_replay_eval_main_passes_dataset_feature_width_to_load_policy(monkeypatc
     assert seen["features_per_sym"] == 28
 
 
-def test_replay_eval_main_forwards_fill_buffer_bps_and_caps_steps(monkeypatch, tmp_path: Path) -> None:
+def test_replay_eval_main_forwards_fill_buffer_and_slippage_bps_and_caps_steps(monkeypatch, tmp_path: Path) -> None:
     data, market = _build_test_data()
     captured: dict[str, float] = {}
 
@@ -133,7 +133,7 @@ def test_replay_eval_main_forwards_fill_buffer_bps_and_caps_steps(monkeypatch, t
     monkeypatch.setattr(module, "annualize_total_return", lambda total_return, periods, periods_per_year: total_return)
 
     def _fake_simulate_daily_policy(*args, **kwargs) -> DailySimResult:
-        captured["fill_buffer_bps"] = float(kwargs["fill_buffer_bps"])
+        captured["daily_fill_buffer_bps"] = float(kwargs["fill_buffer_bps"])
         captured["max_steps"] = float(kwargs["max_steps"])
         return DailySimResult(
             actions=np.asarray([1, 1], dtype=np.int32),
@@ -147,10 +147,10 @@ def test_replay_eval_main_forwards_fill_buffer_bps_and_caps_steps(monkeypatch, t
         )
 
     monkeypatch.setattr(module, "simulate_daily_policy", _fake_simulate_daily_policy)
-    monkeypatch.setattr(
-        module,
-        "replay_hourly_frozen_daily_actions",
-        lambda **kwargs: HourlyReplayResult(
+    def _fake_replay_hourly_frozen_daily_actions(**kwargs) -> HourlyReplayResult:
+        captured["hourly_fill_buffer_bps"] = float(kwargs["fill_buffer_bps"])
+        captured["slippage_bps"] = float(kwargs["slippage_bps"])
+        return HourlyReplayResult(
             total_return=0.08,
             sortino=0.9,
             max_drawdown=0.07,
@@ -159,8 +159,9 @@ def test_replay_eval_main_forwards_fill_buffer_bps_and_caps_steps(monkeypatch, t
             win_rate=1.0,
             equity_curve=np.full((len(market.index),), 10_000.0, dtype=np.float64),
             orders_by_day={},
-        ),
-    )
+        )
+
+    monkeypatch.setattr(module, "replay_hourly_frozen_daily_actions", _fake_replay_hourly_frozen_daily_actions)
 
     output_json = tmp_path / "report.json"
     monkeypatch.setattr(
@@ -182,6 +183,8 @@ def test_replay_eval_main_forwards_fill_buffer_bps_and_caps_steps(monkeypatch, t
             "90",
             "--fill-buffer-bps",
             "7.5",
+            "--slippage-bps",
+            "12.5",
             "--cpu",
             "--output-json",
             str(output_json),
@@ -191,9 +194,12 @@ def test_replay_eval_main_forwards_fill_buffer_bps_and_caps_steps(monkeypatch, t
     module.main()
 
     payload = json.loads(output_json.read_text())
-    assert captured["fill_buffer_bps"] == 7.5
+    assert captured["daily_fill_buffer_bps"] == 7.5
+    assert captured["hourly_fill_buffer_bps"] == 7.5
+    assert captured["slippage_bps"] == 12.5
     assert captured["max_steps"] == 2.0
     assert payload["fill_buffer_bps"] == 7.5
+    assert payload["slippage_bps"] == 12.5
 
 
 def test_replay_eval_main_forwards_prod_action_constraints(monkeypatch, tmp_path: Path) -> None:
@@ -607,6 +613,8 @@ def test_replay_eval_forwards_action_grid_to_hourly_policy(monkeypatch, tmp_path
         seen["action_allocation_bins"] = float(kwargs["action_allocation_bins"])
         seen["action_level_bins"] = float(kwargs["action_level_bins"])
         seen["action_max_offset_bps"] = float(kwargs["action_max_offset_bps"])
+        seen["fill_buffer_bps"] = float(kwargs["fill_buffer_bps"])
+        seen["slippage_bps"] = float(kwargs["slippage_bps"])
         return HourlyReplayResult(
             total_return=0.0,
             sortino=0.0,
@@ -638,6 +646,10 @@ def test_replay_eval_forwards_action_grid_to_hourly_policy(monkeypatch, tmp_path
             "--max-steps",
             "2",
             "--run-hourly-policy",
+            "--fill-buffer-bps",
+            "6.0",
+            "--slippage-bps",
+            "4.0",
             "--cpu",
         ],
     )
@@ -648,4 +660,6 @@ def test_replay_eval_forwards_action_grid_to_hourly_policy(monkeypatch, tmp_path
         "action_allocation_bins": 3.0,
         "action_level_bins": 2.0,
         "action_max_offset_bps": 7.5,
+        "fill_buffer_bps": 6.0,
+        "slippage_bps": 4.0,
     }

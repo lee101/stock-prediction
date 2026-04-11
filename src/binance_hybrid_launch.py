@@ -85,21 +85,7 @@ def _extract_exec_tokens(text: str) -> list[str]:
     return [token for token in tokens if token != "$@"]
 
 
-def parse_launch_script(
-    path: str | Path,
-    *,
-    require_rl_checkpoint: bool = True,
-) -> BinanceHybridLaunchConfig:
-    launch_path = Path(path)
-    tokens = _extract_exec_tokens(launch_path.read_text())
-    script_index = next((i for i, token in enumerate(tokens) if token.endswith("trade_binance_live.py")), None)
-    if script_index is None:
-        raise ValueError(f"Unable to find trade_binance_live.py in {launch_path}")
-
-    python_bin = tokens[0]
-    trade_script = tokens[script_index]
-    cli_tokens = tokens[script_index + 1 :]
-
+def _build_trade_binance_live_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--model", default="")
@@ -109,23 +95,43 @@ def parse_launch_script(
     parser.add_argument("--interval", type=int, default=None)
     parser.add_argument("--fallback-mode", default="")
     parser.add_argument("--rl-checkpoint", default="")
+    return parser
+
+
+def parse_trade_binance_live_tokens(
+    tokens: list[str],
+    *,
+    source: str,
+    require_rl_checkpoint: bool = True,
+    checkpoint_base_path: str | Path | None = None,
+) -> BinanceHybridLaunchConfig:
+    script_index = next((i for i, token in enumerate(tokens) if token.endswith("trade_binance_live.py")), None)
+    if script_index is None:
+        raise ValueError(f"Unable to find trade_binance_live.py in {source}")
+
+    python_bin = tokens[0]
+    trade_script = tokens[script_index]
+    cli_tokens = tokens[script_index + 1 :]
+
+    parser = _build_trade_binance_live_parser()
     args, _unknown = parser.parse_known_args(cli_tokens)
 
     if not args.live:
-        raise ValueError(f"{launch_path} is not configured with --live")
+        raise ValueError(f"{source} is not configured with --live")
     if not args.symbols:
-        raise ValueError(f"{launch_path} does not define --symbols")
+        raise ValueError(f"{source} does not define --symbols")
     if not args.rl_checkpoint and require_rl_checkpoint:
-        raise ValueError(f"{launch_path} does not define --rl-checkpoint")
+        raise ValueError(f"{source} does not define --rl-checkpoint")
 
     checkpoint_path: Path | None = None
     if args.rl_checkpoint:
         checkpoint_path = Path(args.rl_checkpoint)
-        if not checkpoint_path.is_absolute():
-            checkpoint_path = (launch_path.parent / checkpoint_path).resolve()
+        if not checkpoint_path.is_absolute() and checkpoint_base_path is not None:
+            checkpoint_path = Path(checkpoint_base_path) / checkpoint_path
+        checkpoint_path = checkpoint_path.resolve(strict=False)
 
     return BinanceHybridLaunchConfig(
-        launch_script=str(launch_path.resolve()),
+        launch_script=str(source),
         python_bin=python_bin,
         trade_script=trade_script,
         model=str(args.model),
@@ -135,6 +141,39 @@ def parse_launch_script(
         interval=args.interval,
         fallback_mode=str(args.fallback_mode),
         rl_checkpoint=str(checkpoint_path) if checkpoint_path is not None else None,
+    )
+
+
+def parse_trade_binance_live_command(
+    command: str,
+    *,
+    source: str = "<command>",
+    require_rl_checkpoint: bool = True,
+    checkpoint_base_path: str | Path | None = None,
+) -> BinanceHybridLaunchConfig:
+    tokens = shlex.split(str(command or ""))
+    if not tokens:
+        raise ValueError(f"Unable to parse empty command in {source}")
+    return parse_trade_binance_live_tokens(
+        tokens,
+        source=source,
+        require_rl_checkpoint=require_rl_checkpoint,
+        checkpoint_base_path=checkpoint_base_path,
+    )
+
+
+def parse_launch_script(
+    path: str | Path,
+    *,
+    require_rl_checkpoint: bool = True,
+) -> BinanceHybridLaunchConfig:
+    launch_path = Path(path)
+    tokens = _extract_exec_tokens(launch_path.read_text())
+    return parse_trade_binance_live_tokens(
+        tokens,
+        source=str(launch_path.resolve()),
+        require_rl_checkpoint=require_rl_checkpoint,
+        checkpoint_base_path=launch_path.parent,
     )
 
 

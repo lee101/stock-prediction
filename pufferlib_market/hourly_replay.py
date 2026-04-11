@@ -356,11 +356,6 @@ def _open_long_limit(
     cost = qty * denom
     if qty <= 0.0 or cost <= 0.0:
         return float(cash), None
-    if cost > cash:
-        cost = float(cash)
-        qty = cost / denom
-        if qty <= 0.0:
-            return float(cash), None
     cash -= cost
     return float(cash), Position(sym=sym, is_short=False, qty=float(qty), entry_price=float(fill_price))
 
@@ -1046,6 +1041,8 @@ def replay_hourly_frozen_daily_actions(
     end_date: str,
     max_steps: int,
     fee_rate: float = 0.001,
+    slippage_bps: float = 0.0,
+    fill_buffer_bps: float = 0.0,
     max_leverage: float = 1.0,
     periods_per_year: float = 8760.0,
     short_borrow_apr: float = 0.0,
@@ -1077,6 +1074,9 @@ def replay_hourly_frozen_daily_actions(
     if max_steps >= len(daily_days):
         raise ValueError("max_steps must be < num_timesteps (needs t_new)")
     final_day_idx = max_steps  # terminal close uses t_new
+    fill_buffer_bps = _normalize_fill_buffer_bps(fill_buffer_bps)
+    slip_frac = max(0.0, float(slippage_bps)) / 10_000.0
+    effective_fee = float(fee_rate) + slip_frac
 
     # Pick a reference "stock-like" symbol (if present) to find the daily "stock close hour".
     # In our daily exporter, stocks have tradable=0 on weekends/holidays while crypto is 1 daily.
@@ -1127,7 +1127,7 @@ def replay_hourly_frozen_daily_actions(
         symbols=symbols,
         initial_cash=initial_cash,
         initial_position=initial_position,
-        fee_rate=fee_rate,
+        fee_rate=effective_fee,
         max_leverage=max_leverage,
         price_by_sym=lambda sym_idx: _positive_price_or_fallback(
             _first_positive_market_close(
@@ -1196,7 +1196,7 @@ def replay_hourly_frozen_daily_actions(
 
             if action == 0:
                 if pos is not None and cur_tradable:
-                    cash, win = _close_position(cash, pos, _hour_price(pos.sym), fee_rate)
+                    cash, win = _close_position(cash, pos, _hour_price(pos.sym), effective_fee)
                     _count_order()
                     num_trades += 1
                     winning_trades += int(win)
@@ -1228,7 +1228,7 @@ def replay_hourly_frozen_daily_actions(
                         pass
                     else:
                         if pos is not None:
-                            cash, win = _close_position(cash, pos, _hour_price(pos.sym), fee_rate)
+                            cash, win = _close_position(cash, pos, _hour_price(pos.sym), effective_fee)
                             _count_order()
                             num_trades += 1
                             winning_trades += int(win)
@@ -1239,11 +1239,11 @@ def replay_hourly_frozen_daily_actions(
                             close_price=hour_price,
                             low_price=hour_price,
                             high_price=hour_price,
-                            fee_rate=fee_rate,
+                            fee_rate=effective_fee,
                             max_leverage=max_leverage,
                             allocation_pct=target_alloc,
                             level_offset_bps=level_bps,
-                            fill_buffer_bps=0.0,
+                            fill_buffer_bps=fill_buffer_bps,
                         )
                         if is_short_target:
                             cash, pos = _open_short_limit(**open_kwargs)
@@ -1279,7 +1279,7 @@ def replay_hourly_frozen_daily_actions(
     if stopped_early:
         if pos is not None and last_hi >= 0 and last_ts is not None:
             px_end = _hour_price_at(pos.sym, hi=last_hi, day_idx=int((last_ts.floor("D") - start_day).days))
-            cash, win = _close_position(cash, pos, px_end, fee_rate)
+            cash, win = _close_position(cash, pos, px_end, effective_fee)
             num_trades += 1
             winning_trades += int(win)
             num_orders += 1
@@ -1294,7 +1294,7 @@ def replay_hourly_frozen_daily_actions(
         if final_close_ts in market.index and pos is not None:
             hi_end = int(market.index.get_loc(final_close_ts))
             px_end = _hour_price_at(pos.sym, hi=hi_end, day_idx=final_day_idx)
-            cash, win = _close_position(cash, pos, px_end, fee_rate)
+            cash, win = _close_position(cash, pos, px_end, effective_fee)
             num_trades += 1
             winning_trades += int(win)
             num_orders += 1
@@ -1380,6 +1380,8 @@ def simulate_hourly_policy(
     end_date: str,
     max_steps_days: int,
     fee_rate: float = 0.001,
+    slippage_bps: float = 0.0,
+    fill_buffer_bps: float = 0.0,
     max_leverage: float = 1.0,
     periods_per_year: float = 8760.0,
     short_borrow_apr: float = 0.0,
@@ -1409,6 +1411,9 @@ def simulate_hourly_policy(
     if max_steps_days >= len(daily_days):
         raise ValueError("max_steps_days must be < num_timesteps (needs terminal day)")
     final_day_idx = max_steps_days
+    fill_buffer_bps = _normalize_fill_buffer_bps(fill_buffer_bps)
+    slip_frac = max(0.0, float(slippage_bps)) / 10_000.0
+    effective_fee = float(fee_rate) + slip_frac
 
     # Reference stock-like symbol to find a realistic terminal close hour.
     ref_stock = None
@@ -1456,7 +1461,7 @@ def simulate_hourly_policy(
         symbols=symbols,
         initial_cash=initial_cash,
         initial_position=initial_position,
-        fee_rate=fee_rate,
+        fee_rate=effective_fee,
         max_leverage=max_leverage,
         price_by_sym=lambda sym_idx: _positive_price_or_fallback(
             _first_positive_market_close(
@@ -1560,7 +1565,7 @@ def simulate_hourly_policy(
 
             if action == 0:
                 if pos is not None and cur_tradable:
-                    cash, win = _close_position(cash, pos, _hour_price(pos.sym), fee_rate)
+                    cash, win = _close_position(cash, pos, _hour_price(pos.sym), effective_fee)
                     _count_order(ts)
                     num_trades += 1
                     winning_trades += int(win)
@@ -1593,7 +1598,7 @@ def simulate_hourly_policy(
                         pass
                     else:
                         if pos is not None:
-                            cash, win = _close_position(cash, pos, _hour_price(pos.sym), fee_rate)
+                            cash, win = _close_position(cash, pos, _hour_price(pos.sym), effective_fee)
                             _count_order(ts)
                             num_trades += 1
                             winning_trades += int(win)
@@ -1604,11 +1609,11 @@ def simulate_hourly_policy(
                             close_price=hour_price,
                             low_price=hour_price,
                             high_price=hour_price,
-                            fee_rate=fee_rate,
+                            fee_rate=effective_fee,
                             max_leverage=max_leverage,
                             allocation_pct=target_alloc,
                             level_offset_bps=level_bps,
-                            fill_buffer_bps=0.0,
+                            fill_buffer_bps=fill_buffer_bps,
                         )
                         if is_short_target:
                             cash, pos = _open_short_limit(**open_kwargs)
@@ -1645,7 +1650,7 @@ def simulate_hourly_policy(
     if stopped_early:
         if pos is not None and last_hi >= 0 and last_ts is not None:
             px_end = _hour_price_at(pos.sym, hi=last_hi, day_idx=int((last_ts.floor("D") - start_day).days))
-            cash, win = _close_position(cash, pos, px_end, fee_rate)
+            cash, win = _close_position(cash, pos, px_end, effective_fee)
             _count_order(last_ts)
             num_trades += 1
             winning_trades += int(win)
@@ -1657,7 +1662,7 @@ def simulate_hourly_policy(
         if final_close_ts in market.index and pos is not None:
             hi_end = int(market.index.get_loc(final_close_ts))
             px_end = _hour_price_at(pos.sym, hi=hi_end, day_idx=final_day_idx)
-            cash, win = _close_position(cash, pos, px_end, fee_rate)
+            cash, win = _close_position(cash, pos, px_end, effective_fee)
             _count_order(final_close_ts)
             num_trades += 1
             winning_trades += int(win)

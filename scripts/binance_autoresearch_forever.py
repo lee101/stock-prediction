@@ -40,7 +40,7 @@ import subprocess
 import sys
 import time
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 
@@ -50,24 +50,35 @@ if str(REPO) not in sys.path:
 
 from src.binance_deploy_gate import (
     GateResult,
-    gate_deploy_candidate,
+    gate_deploy_candidate_from_payload,
+    load_current_production_baseline_evaluation,
     load_launch_checkpoint_evaluation,
+    manifest_matches_deploy_config,
+    prepare_gate_payload_context,
     production_metric_sort_key,
 )
 from src.binance_hybrid_launch import (
     DEFAULT_LAUNCH_SCRIPT,
+    BinanceHybridLaunchConfig,
     parse_launch_script,
     parse_symbols_override,
     resolve_launch_eval_constraints,
+    resolve_target_launch_config,
+)
+from src.binance_hybrid_machine_audit import (
+    audit_binance_hybrid_machine_state,
+    build_machine_deploy_preflight_reason,
 )
 from src.binance_prod_config_search import (
     DEFAULT_MAX_CHECKPOINT_CONFIG_EVALS,
     DEFAULT_MAX_VARIANTS,
     build_config_variants,
+    build_pending_checkpoint_coverage_plan,
+    estimate_pending_checkpoint_config_evals_with_coverage,
     limit_config_variants,
     limit_ranked_candidates,
-    max_candidate_checkpoints_for_budget,
 )
+from src.binance_prod_manifest_targets import ManifestEvalTargetSpec, find_target_evaluation, requested_checkpoints
 from src.checkpoint_manager import TopKCheckpointManager
 from src.r2_client import R2Client
 from src.runpod_client import (
@@ -88,6 +99,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 DEFAULT_PROD_EVAL_TOP_K = 3
 DEFAULT_PROD_CONFIG_MAX_VARIANTS = DEFAULT_MAX_VARIANTS
 DEFAULT_PROD_CONFIG_MAX_CHECKPOINT_EVALS = DEFAULT_MAX_CHECKPOINT_CONFIG_EVALS
+DEFAULT_FOREVER_STATE_FILENAME = "binance_autoresearch_forever_state.json"
 
 # ---------------------------------------------------------------------------
 # Data tracks
@@ -228,24 +240,31 @@ class TrialResult:
 
     def beats_baseline(self, baseline: ProductionBaseline) -> bool:
         if self.production_gate_reason is None:
-            if self.val_return is None or self.val_sortino is None:
-                return False
-            return self.combined_score() > baseline.combined_score()
+            has_holdout_score = self.val_return is not None and self.val_sortino is not None
+            return has_holdout_score and self.combined_score() > baseline.combined_score()
 
-        if self.production_gate_allowed is not True:
+        candidate_metric = self.production_metric_candidate
+        has_production_improvement = (
+            self.production_gate_allowed is True
+            and self.production_gate_reason != "candidate already matches current live checkpoint"
+            and self.production_metric_name is not None
+            and candidate_metric is not None
+        )
+        if not has_production_improvement:
             return False
-        if self.production_gate_reason == "candidate already matches current live checkpoint":
-            return False
+
+        same_checkpoint = False
         if baseline.checkpoint and self.best_checkpoint:
             baseline_checkpoint = str(Path(baseline.checkpoint).expanduser().resolve(strict=False))
             candidate_checkpoint = str(Path(self.best_checkpoint).expanduser().resolve(strict=False))
-            if candidate_checkpoint == baseline_checkpoint:
-                return (
-                    _trial_result_changes_production_config(self, baseline)
-                    and self.production_metric_name is not None
-                    and self.production_metric_candidate is not None
-                )
-        return self.production_metric_name is not None and self.production_metric_candidate is not None
+            same_checkpoint = candidate_checkpoint == baseline_checkpoint
+        if not same_checkpoint:
+            return True
+        if not _trial_result_changes_production_config(self, baseline):
+            return False
+
+        comparison_metric = _comparison_live_metric_value(self, baseline)
+        return comparison_metric is not None and candidate_metric > comparison_metric
 
 
 @dataclass(frozen=True)
@@ -283,6 +302,122 @@ def _checkpoint_label(checkpoint: str | Path) -> str:
     return checkpoint_path.stem or str(checkpoint_path)
 
 
+def _comparison_live_metric_value(result: TrialResult, baseline: ProductionBaseline) -> float | None:
+    same_checkpoint = False
+    if baseline.checkpoint and result.best_checkpoint:
+        baseline_checkpoint = str(Path(baseline.checkpoint).expanduser().resolve(strict=False))
+        candidate_checkpoint = str(Path(result.best_checkpoint).expanduser().resolve(strict=False))
+        same_checkpoint = candidate_checkpoint == baseline_checkpoint
+    if same_checkpoint and _trial_result_changes_production_config(result, baseline):
+        if result.production_metric_current is not None:
+            return result.production_metric_current
+        return baseline.production_metric_value
+    if (
+        result.production_metric_name is not None
+        and result.production_metric_name == baseline.production_metric_name
+        and baseline.production_metric_value is not None
+    ):
+        return baseline.production_metric_value
+    return result.production_metric_current
+
+
+
+def _result_live_comparison_metric(result: TrialResult, baseline: ProductionBaseline) -> tuple[str | None, float | None]:
+    metric_name = result.production_metric_name or baseline.production_metric_name
+    live_metric_value = _comparison_live_metric_value(result, baseline)
+    if live_metric_value is None and result.production_metric_name is None:
+        live_metric_value = baseline.production_metric_value
+    return metric_name, live_metric_value
+
+
+def _evaluation_metric_value(evaluation: dict[str, object], metric_name: str | None) -> float | None:
+    if not metric_name:
+        return None
+    if metric_name.startswith("replay."):
+        replay = evaluation.get("replay")
+        if not isinstance(replay, dict):
+            return None
+        return _safe_float(replay.get(metric_name.removeprefix("replay.")))
+    if metric_name == "holdout.median_total_return":
+        return _safe_float(evaluation.get("median_total_return"))
+    if metric_name == "holdout.median_sortino":
+        return _safe_float(evaluation.get("median_sortino"))
+    return None
+
+
+def _launch_configs_match(left: BinanceHybridLaunchConfig, right: BinanceHybridLaunchConfig) -> bool:
+    return (
+        left.trade_script == right.trade_script
+        and left.model == right.model
+        and left.execution_mode == right.execution_mode
+        and left.fallback_mode == right.fallback_mode
+        and int(left.interval) == int(right.interval)
+        and (left.rl_checkpoint or "") == (right.rl_checkpoint or "")
+        and list(left.symbols) == list(right.symbols)
+        and math.isclose(float(left.leverage), float(right.leverage), rel_tol=0.0, abs_tol=1e-9)
+    )
+
+
+def _align_gate_result_to_live_baseline(
+    gate_result: GateResult,
+    *,
+    live_evaluation: dict[str, object],
+) -> GateResult:
+    live_metric = _evaluation_metric_value(live_evaluation, gate_result.metric_name)
+    if gate_result.metric_name is None or live_metric is None:
+        return gate_result
+    if gate_result.candidate_metric is None:
+        return replace(gate_result, current_metric=live_metric)
+    allowed = gate_result.candidate_metric > live_metric
+    reason = "candidate passes deploy gate" if allowed else "candidate does not beat current live checkpoint"
+    return replace(
+        gate_result,
+        allowed=allowed,
+        reason=reason,
+        current_metric=live_metric,
+    )
+
+
+def _apply_loaded_production_baseline(
+    baseline: ProductionBaseline,
+    loaded_baseline: tuple[Path, str, BinanceHybridLaunchConfig, dict[str, object]],
+    *,
+    metric_name: str | None = None,
+) -> None:
+    resolved_manifest_path, baseline_label, current_config, evaluation = loaded_baseline
+    baseline.manifest_path = str(resolved_manifest_path)
+    baseline.checkpoint = str(current_config.rl_checkpoint or "")
+    baseline.symbols = " ".join(current_config.symbols)
+    baseline.leverage = float(current_config.leverage)
+    if baseline_label == "running_hybrid" and baseline.checkpoint:
+        baseline.description = f"{_checkpoint_label(baseline.checkpoint)} (current live baseline)"
+    baseline.val_return = _safe_float(evaluation.get("median_total_return"))
+    baseline.val_sortino = _safe_float(evaluation.get("median_sortino"))
+    baseline_metric_value = _evaluation_metric_value(evaluation, metric_name)
+    if metric_name is not None and baseline_metric_value is not None:
+        baseline.production_metric_name = metric_name
+        baseline.production_metric_value = baseline_metric_value
+
+
+def _missing_requested_target_checkpoints(
+    payload: dict[str, object],
+    *,
+    target_launch_config: BinanceHybridLaunchConfig,
+    candidate_checkpoints: list[str | Path],
+) -> tuple[str, ...]:
+    required_checkpoints = requested_checkpoints(target_launch_config.rl_checkpoint, candidate_checkpoints)
+    target_spec = ManifestEvalTargetSpec(
+        symbols=tuple(target_launch_config.symbols),
+        leverage=float(target_launch_config.leverage),
+        preferred_target_label="launch_target",
+    )
+    return tuple(
+        checkpoint
+        for checkpoint in required_checkpoints
+        if find_target_evaluation(payload, checkpoint, target_spec=target_spec) is None
+    )
+
+
 def _baseline_from_launch(
     launch_script: str | Path = DEFAULT_LAUNCH_SCRIPT,
     *,
@@ -317,6 +452,7 @@ def evaluate_candidate_vs_production(
     leverage_override: float | None = None,
     require_runtime_match: bool = True,
     require_runtime_health: bool = True,
+    require_process_isolation: bool = False,
 ) -> tuple[ProductionBaseline, GateResult]:
     baseline, gate_results = evaluate_candidates_vs_production(
         [candidate_checkpoint],
@@ -328,6 +464,7 @@ def evaluate_candidate_vs_production(
         leverage_override=leverage_override,
         require_runtime_match=require_runtime_match,
         require_runtime_health=require_runtime_health,
+        require_process_isolation=require_process_isolation,
     )
     normalized = str(Path(candidate_checkpoint).expanduser().resolve(strict=False))
     return baseline, gate_results[normalized]
@@ -345,7 +482,13 @@ def deploy_candidate_checkpoint(
     leverage_override: float | None = None,
     wait_for_live_cycle_seconds: float | None = None,
     min_healthy_live_cycles: int | None = None,
+    require_process_isolation: bool = True,
 ) -> tuple[bool, str]:
+    if require_process_isolation and not dry_run:
+        machine_audit = audit_binance_hybrid_machine_state(launch_script)
+        preflight_reason = build_machine_deploy_preflight_reason(machine_audit)
+        if preflight_reason is not None:
+            return False, preflight_reason
     script_path = Path(deploy_script) if deploy_script is not None else REPO / "scripts" / "deploy_crypto_model.sh"
     cmd = ["bash", str(script_path)]
     if dry_run:
@@ -380,6 +523,32 @@ def deploy_candidate_checkpoint(
     return False, output or f"deployment failed with returncode={completed.returncode}"
 
 
+def resolve_auto_deploy_live_cycle_requirements(
+    *,
+    launch_script: str | Path = DEFAULT_LAUNCH_SCRIPT,
+    auto_deploy: bool,
+    deploy_dry_run: bool,
+    wait_for_live_cycle_seconds: float | None,
+    min_healthy_live_cycles: int | None,
+) -> tuple[float | None, int | None]:
+    resolved_wait = float(wait_for_live_cycle_seconds) if wait_for_live_cycle_seconds is not None else None
+    resolved_min_healthy = int(min_healthy_live_cycles) if min_healthy_live_cycles is not None else None
+    if resolved_wait is not None and resolved_wait < 0:
+        raise ValueError("deploy_wait_for_live_cycle_seconds must be >= 0")
+    if resolved_min_healthy is not None and resolved_min_healthy < 0:
+        raise ValueError("deploy_min_healthy_live_cycles must be >= 0")
+    if not auto_deploy or deploy_dry_run:
+        return resolved_wait, resolved_min_healthy
+    if resolved_wait is None:
+        launch_cfg = parse_launch_script(launch_script, require_rl_checkpoint=False)
+        if int(launch_cfg.interval) <= 0:
+            raise ValueError("prod launch interval must be > 0 to derive auto-deploy live-cycle verification")
+        resolved_wait = float(launch_cfg.interval)
+    if resolved_min_healthy is None:
+        resolved_min_healthy = 1
+    return resolved_wait, resolved_min_healthy
+
+
 def evaluate_candidates_vs_production(
     candidate_checkpoints: list[str | Path],
     *,
@@ -391,6 +560,7 @@ def evaluate_candidates_vs_production(
     leverage_override: float | None = None,
     require_runtime_match: bool = True,
     require_runtime_health: bool = True,
+    require_process_isolation: bool = False,
 ) -> tuple[ProductionBaseline, dict[str, GateResult]]:
     normalized_candidates: list[str] = []
     seen: set[str] = set()
@@ -442,33 +612,117 @@ def evaluate_candidates_vs_production(
         )
 
     manifest_path = output_dir / "prod_launch_eval_manifest.json"
+    payload = json.loads(manifest_path.read_text())
+    launch_cfg = parse_launch_script(launch_script, require_rl_checkpoint=False)
+    target_launch_cfg = resolve_target_launch_config(
+        launch_script,
+        symbols_override=symbols_override or None,
+        leverage_override=leverage_override,
+    )
+    compatible, compatibility_reason = manifest_matches_deploy_config(
+        payload,
+        launch_script=launch_script,
+        symbols_override=symbols_override or None,
+        leverage_override=leverage_override,
+    )
+    if not compatible:
+        raise RuntimeError(
+            "production comparison manifest incompatible with current deploy config: "
+            f"manifest={manifest_path} reason={compatibility_reason or 'unknown'}"
+        )
+    missing_requested_checkpoints = _missing_requested_target_checkpoints(
+        payload,
+        target_launch_config=target_launch_cfg,
+        candidate_checkpoints=normalized_candidates,
+    )
+    if missing_requested_checkpoints:
+        raise RuntimeError(
+            "production comparison manifest missing requested checkpoint evaluations: "
+            f"manifest={manifest_path} missing={', '.join(missing_requested_checkpoints)}"
+        )
+    prepared_payload_context = prepare_gate_payload_context(
+        payload,
+        launch_config=launch_cfg,
+        target_config=target_launch_cfg,
+    )
+    process_isolation_preflight_checked = False
+    process_isolation_preflight_reason: str | None = None
+    if require_process_isolation:
+        machine_audit = audit_binance_hybrid_machine_state(launch_script)
+        process_isolation_preflight_reason = build_machine_deploy_preflight_reason(machine_audit)
+        process_isolation_preflight_checked = True
     gate_results = {
-        checkpoint: gate_deploy_candidate(
+        checkpoint: gate_deploy_candidate_from_payload(
             candidate_checkpoint=checkpoint,
             launch_script=launch_script,
+            payload=payload,
             manifest_path=manifest_path,
+            require_process_isolation=require_process_isolation,
+            process_isolation_preflight_checked=process_isolation_preflight_checked,
+            process_isolation_preflight_reason=process_isolation_preflight_reason,
+            prepared_payload_context=prepared_payload_context,
             symbols_override=symbols_override or None,
             leverage_override=leverage_override,
+            launch_cfg=launch_cfg,
+            target_launch_cfg=target_launch_cfg,
         )
         for checkpoint in normalized_candidates
     }
     baseline = _baseline_from_launch(launch_script, source="production_eval_manifest")
     baseline.manifest_path = str(manifest_path)
-    manifest_eval = load_launch_checkpoint_evaluation(
+    baseline_metric_name = next(
+        (
+            gate_result.metric_name
+            for gate_result in gate_results.values()
+            if gate_result.metric_name is not None and gate_result.current_metric is not None
+        ),
+        None,
+    )
+    live_config_baseline = None
+    if symbols_override.strip() or leverage_override is not None:
+        live_config_baseline = load_current_production_baseline_evaluation(
+            launch_script=launch_script,
+            analysis_root=output_root_path,
+        )
+        if live_config_baseline is not None:
+            _live_manifest_path, _live_label, live_current_config, live_evaluation = live_config_baseline
+            if not _launch_configs_match(live_current_config, target_launch_cfg):
+                gate_results = {
+                    checkpoint: _align_gate_result_to_live_baseline(
+                        gate_result,
+                        live_evaluation=live_evaluation,
+                    )
+                    for checkpoint, gate_result in gate_results.items()
+                }
+    current_baseline = live_config_baseline or load_current_production_baseline_evaluation(
         launch_script=launch_script,
         manifest_path=manifest_path,
         symbols_override=symbols_override or None,
         leverage_override=leverage_override,
     )
-    if manifest_eval is not None:
-        _manifest_path, evaluation = manifest_eval
-        baseline.val_return = _safe_float(evaluation.get("median_total_return"))
-        baseline.val_sortino = _safe_float(evaluation.get("median_sortino"))
-    for gate_result in gate_results.values():
-        if gate_result.metric_name is not None and gate_result.current_metric is not None:
-            baseline.production_metric_name = gate_result.metric_name
-            baseline.production_metric_value = gate_result.current_metric
-            break
+    if current_baseline is not None:
+        _apply_loaded_production_baseline(
+            baseline,
+            current_baseline,
+            metric_name=baseline_metric_name,
+        )
+    else:
+        manifest_eval = load_launch_checkpoint_evaluation(
+            launch_script=launch_script,
+            manifest_path=manifest_path,
+            symbols_override=symbols_override or None,
+            leverage_override=leverage_override,
+        )
+        if manifest_eval is not None:
+            _manifest_path, evaluation = manifest_eval
+            baseline.val_return = _safe_float(evaluation.get("median_total_return"))
+            baseline.val_sortino = _safe_float(evaluation.get("median_sortino"))
+    if baseline.production_metric_name is None or baseline.production_metric_value is None:
+        for gate_result in gate_results.values():
+            if gate_result.metric_name is not None and gate_result.current_metric is not None:
+                baseline.production_metric_name = gate_result.metric_name
+                baseline.production_metric_value = gate_result.current_metric
+                break
     return baseline, gate_results
 
 
@@ -490,6 +744,7 @@ def evaluate_candidates_across_prod_configs(
     run_id: str,
     launch_script: str | Path = DEFAULT_LAUNCH_SCRIPT,
     output_root: str | Path | None = None,
+    output_dir: str | Path | None = None,
     python_bin: str | Path = sys.executable,
     symbol_sets: list[str] | None = None,
     symbol_subset_sizes: list[int] | None = None,
@@ -497,8 +752,9 @@ def evaluate_candidates_across_prod_configs(
     jobs: int = 1,
     max_variants: int = DEFAULT_PROD_CONFIG_MAX_VARIANTS,
     max_checkpoint_config_evals: int = DEFAULT_PROD_CONFIG_MAX_CHECKPOINT_EVALS,
-    include_launch_checkpoint: bool = True,
+    include_launch_checkpoint: bool = False,
     variant_offset: int = 0,
+    require_process_isolation: bool = False,
 ) -> tuple[ProductionBaseline, ProductionConfigSelection]:
     normalized_candidates: list[str] = []
     seen: set[str] = set()
@@ -519,15 +775,18 @@ def evaluate_candidates_across_prod_configs(
     if variant_offset < 0:
         raise ValueError("variant_offset must be >= 0")
 
-    output_root_path = Path(output_root) if output_root is not None else REPO / "analysis"
-    output_dir = output_root_path / f"{run_id}_prod_config_grid"
+    if output_dir is not None:
+        resolved_output_dir = Path(output_dir)
+    else:
+        output_root_path = Path(output_root) if output_root is not None else REPO / "analysis"
+        resolved_output_dir = output_root_path / f"{run_id}_prod_config_grid"
     cmd = [
         str(python_bin),
         str(REPO / "scripts" / "search_binance_prod_config_grid.py"),
         "--launch-script",
         str(launch_script),
         "--output-dir",
-        str(output_dir),
+        str(resolved_output_dir),
         "--python-bin",
         str(python_bin),
         "--top-k",
@@ -543,6 +802,8 @@ def evaluate_candidates_across_prod_configs(
     ]
     if include_launch_checkpoint:
         cmd.append("--include-launch-checkpoint")
+    if require_process_isolation:
+        cmd.append("--require-process-isolation")
     for symbol_set in symbol_sets or []:
         if str(symbol_set).strip():
             cmd.extend(["--symbols-set", str(symbol_set).strip()])
@@ -566,7 +827,7 @@ def evaluate_candidates_across_prod_configs(
             f"returncode={completed.returncode} stdout={completed.stdout.strip()} stderr={completed.stderr.strip()}"
         )
 
-    best_rows_path = output_dir / "best_by_config.csv"
+    best_rows_path = resolved_output_dir / "best_by_config.csv"
     if not best_rows_path.exists():
         raise RuntimeError(f"production config grid search missing best_by_config.csv: {best_rows_path}")
     with best_rows_path.open() as handle:
@@ -574,73 +835,152 @@ def evaluate_candidates_across_prod_configs(
     if not best_rows:
         raise RuntimeError("production config grid search produced no ranked rows")
 
-    all_rows_path = output_dir / "all_results.csv"
+    all_rows_path = resolved_output_dir / "all_results.csv"
     all_rows: list[dict[str, str]] = []
     if all_rows_path.exists():
         with all_rows_path.open() as handle:
             all_rows = list(csv.DictReader(handle))
 
-    best_row = best_rows[0]
-    selected_checkpoint = str(best_row.get("checkpoint") or "").strip()
-    selected_manifest_path = str(best_row.get("manifest_path") or "").strip()
-    selected_symbols = str(best_row.get("symbols") or "").strip()
-    leverage_value = _safe_float(best_row.get("leverage"))
-    if not selected_checkpoint:
-        raise RuntimeError("production config grid search did not return a checkpoint")
-    if not selected_manifest_path:
-        raise RuntimeError("production config grid search did not return a manifest path")
-    if leverage_value is None:
-        raise RuntimeError("production config grid search did not return a leverage value")
+    launch_cfg = parse_launch_script(launch_script, require_rl_checkpoint=False)
+    process_isolation_preflight_checked = False
+    process_isolation_preflight_reason: str | None = None
+    if require_process_isolation:
+        machine_audit = audit_binance_hybrid_machine_state(launch_script)
+        process_isolation_preflight_reason = build_machine_deploy_preflight_reason(machine_audit)
+        process_isolation_preflight_checked = True
+    payload_cache: dict[str, dict[str, object]] = {}
+    prepared_context_cache: dict[tuple[str, tuple[str, ...], float], object] = {}
 
-    gate_result = gate_deploy_candidate(
-        candidate_checkpoint=selected_checkpoint,
+    best_row: dict[str, str] | None = None
+    gate_result: GateResult | None = None
+    selected_checkpoint = ""
+    selected_manifest_path = ""
+    selected_symbols = ""
+    leverage_value: float | None = None
+    for candidate_row in best_rows:
+        candidate_checkpoint_text = str(candidate_row.get("checkpoint") or "").strip()
+        candidate_manifest_path = str(candidate_row.get("manifest_path") or "").strip()
+        candidate_symbols = str(candidate_row.get("symbols") or "").strip()
+        candidate_leverage = _safe_float(candidate_row.get("leverage"))
+        if not candidate_checkpoint_text:
+            raise RuntimeError("production config grid search did not return a checkpoint")
+        if not candidate_manifest_path:
+            raise RuntimeError("production config grid search did not return a manifest path")
+        if candidate_leverage is None:
+            raise RuntimeError("production config grid search did not return a leverage value")
+
+        candidate_manifest_path_resolved = str(Path(candidate_manifest_path).resolve())
+        payload = payload_cache.get(candidate_manifest_path_resolved)
+        if payload is None:
+            payload = json.loads(Path(candidate_manifest_path).read_text())
+            payload_cache[candidate_manifest_path_resolved] = payload
+        target_launch_cfg = resolve_target_launch_config(
+            launch_script,
+            symbols_override=candidate_symbols or None,
+            leverage_override=candidate_leverage,
+        )
+        context_key = (
+            candidate_manifest_path_resolved,
+            tuple(target_launch_cfg.symbols),
+            float(target_launch_cfg.leverage),
+        )
+        prepared_payload_context = prepared_context_cache.get(context_key)
+        if prepared_payload_context is None:
+            prepared_payload_context = prepare_gate_payload_context(
+                payload,
+                launch_config=launch_cfg,
+                target_config=target_launch_cfg,
+            )
+            prepared_context_cache[context_key] = prepared_payload_context
+
+        candidate_gate_result = gate_deploy_candidate_from_payload(
+            candidate_checkpoint=candidate_checkpoint_text,
+            launch_script=launch_script,
+            payload=payload,
+            manifest_path=candidate_manifest_path,
+            require_process_isolation=require_process_isolation,
+            process_isolation_preflight_checked=process_isolation_preflight_checked,
+            process_isolation_preflight_reason=process_isolation_preflight_reason,
+            prepared_payload_context=prepared_payload_context,
+            symbols_override=candidate_symbols or None,
+            leverage_override=candidate_leverage,
+            launch_cfg=launch_cfg,
+            target_launch_cfg=target_launch_cfg,
+        )
+        if candidate_gate_result.allowed is not True:
+            continue
+        best_row = candidate_row
+        gate_result = candidate_gate_result
+        selected_checkpoint = candidate_checkpoint_text
+        selected_manifest_path = candidate_manifest_path
+        selected_symbols = candidate_symbols
+        leverage_value = candidate_leverage
+        break
+
+    if best_row is None or gate_result is None or leverage_value is None:
+        raise RuntimeError("production config grid search produced no currently deployable rows")
+    baseline = _baseline_from_launch(launch_script, source="production_eval_manifest")
+    current_baseline = load_current_production_baseline_evaluation(
         launch_script=launch_script,
         manifest_path=selected_manifest_path,
         symbols_override=selected_symbols or None,
         leverage_override=leverage_value,
     )
-    baseline = _baseline_from_launch(launch_script, source="production_eval_manifest")
-    launch_cfg = parse_launch_script(launch_script, require_rl_checkpoint=False)
-    launch_checkpoint_norm = (
-        str(Path(launch_cfg.rl_checkpoint).expanduser().resolve(strict=False))
-        if launch_cfg.rl_checkpoint
-        else ""
-    )
-    launch_symbols = " ".join(launch_cfg.symbols)
-    launch_leverage = float(launch_cfg.leverage)
-    live_row = next(
-        (
-            row
-            for row in all_rows
-            if str(row.get("checkpoint") or "").strip() == launch_checkpoint_norm
-            and _normalized_symbol_text(str(row.get("symbols") or "")) == _normalized_symbol_text(launch_symbols)
-            and _safe_float(row.get("leverage")) == launch_leverage
-        ),
-        None,
-    )
-    if live_row is not None:
-        baseline.manifest_path = str(live_row.get("manifest_path") or "") or selected_manifest_path
-        baseline.val_return = _safe_float(live_row.get("median_total_return"))
-        baseline.val_sortino = _safe_float(live_row.get("median_sortino"))
-        baseline.production_metric_name = str(live_row.get("gate_metric_name") or live_row.get("metric_name") or "") or None
-        baseline.production_metric_value = _safe_float(live_row.get("gate_candidate_metric"))
-        if baseline.production_metric_value is None:
-            baseline.production_metric_value = _safe_float(live_row.get("metric_value"))
-    else:
-        baseline.manifest_path = selected_manifest_path
-        manifest_eval = load_launch_checkpoint_evaluation(
-            launch_script=launch_script,
-            manifest_path=selected_manifest_path,
-            symbols_override=selected_symbols or None,
-            leverage_override=leverage_value,
-        )
-        if manifest_eval is not None:
-            _manifest_path, evaluation = manifest_eval
-            baseline.val_return = _safe_float(evaluation.get("median_total_return"))
-            baseline.val_sortino = _safe_float(evaluation.get("median_sortino"))
+    if current_baseline is not None and current_baseline[1] == "running_hybrid":
+        resolved_manifest_path, _baseline_label, current_config, evaluation = current_baseline
+        baseline.manifest_path = str(resolved_manifest_path)
+        baseline.checkpoint = str(current_config.rl_checkpoint or "")
+        baseline.symbols = " ".join(current_config.symbols)
+        baseline.leverage = float(current_config.leverage)
+        if baseline.checkpoint:
+            baseline.description = f"{_checkpoint_label(baseline.checkpoint)} (current live baseline)"
+        baseline.val_return = _safe_float(evaluation.get("median_total_return"))
+        baseline.val_sortino = _safe_float(evaluation.get("median_sortino"))
         if gate_result.metric_name is not None and gate_result.current_metric is not None:
             baseline.production_metric_name = gate_result.metric_name
             baseline.production_metric_value = gate_result.current_metric
+    else:
+        launch_cfg = parse_launch_script(launch_script, require_rl_checkpoint=False)
+        launch_checkpoint_norm = (
+            str(Path(launch_cfg.rl_checkpoint).expanduser().resolve(strict=False))
+            if launch_cfg.rl_checkpoint
+            else ""
+        )
+        launch_symbols = " ".join(launch_cfg.symbols)
+        launch_leverage = float(launch_cfg.leverage)
+        live_row = next(
+            (
+                row
+                for row in all_rows
+                if str(row.get("checkpoint") or "").strip() == launch_checkpoint_norm
+                and _normalized_symbol_text(str(row.get("symbols") or "")) == _normalized_symbol_text(launch_symbols)
+                and _safe_float(row.get("leverage")) == launch_leverage
+            ),
+            None,
+        )
+        if live_row is not None:
+            baseline.manifest_path = str(live_row.get("manifest_path") or "") or selected_manifest_path
+            baseline.val_return = _safe_float(live_row.get("median_total_return"))
+            baseline.val_sortino = _safe_float(live_row.get("median_sortino"))
+            baseline.production_metric_name = str(live_row.get("gate_metric_name") or live_row.get("metric_name") or "") or None
+            baseline.production_metric_value = _safe_float(live_row.get("gate_candidate_metric"))
+            if baseline.production_metric_value is None:
+                baseline.production_metric_value = _safe_float(live_row.get("metric_value"))
+        else:
+            baseline.manifest_path = selected_manifest_path
+            manifest_eval = load_launch_checkpoint_evaluation(
+                launch_script=launch_script,
+                manifest_path=selected_manifest_path,
+                symbols_override=selected_symbols or None,
+                leverage_override=leverage_value,
+            )
+            if manifest_eval is not None:
+                _manifest_path, evaluation = manifest_eval
+                baseline.val_return = _safe_float(evaluation.get("median_total_return"))
+                baseline.val_sortino = _safe_float(evaluation.get("median_sortino"))
+            if gate_result.metric_name is not None and gate_result.current_metric is not None:
+                baseline.production_metric_name = gate_result.metric_name
+                baseline.production_metric_value = gate_result.current_metric
     return baseline, ProductionConfigSelection(
         checkpoint=selected_checkpoint,
         manifest_path=selected_manifest_path,
@@ -672,6 +1012,7 @@ def write_success_progress(result: TrialResult, baseline: ProductionBaseline, ro
     num = _find_next_progress_number()
     path = REPO / f"binanceprogress{num}.md"
     now = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M UTC")
+    _, live_metric_value = _result_live_comparison_metric(result, baseline)
     content = f"""# Binance Autoresearch Success #{num} ({now})
 
 ## Round {round_num} -- {result.description}
@@ -701,7 +1042,7 @@ def write_success_progress(result: TrialResult, baseline: ProductionBaseline, ro
 
 **Metric**: `{result.production_metric_name}`
 **Candidate**: {_fmt(result.production_metric_candidate)}
-**Live**: {_fmt(baseline.production_metric_value)}
+**Live**: {_fmt(live_metric_value)}
 **Manifest**: `{result.production_manifest_path or baseline.manifest_path or 'N/A'}`
 **Gate**: {result.production_gate_reason or 'candidate passes live comparison'}
 
@@ -734,6 +1075,7 @@ def write_success_progress(result: TrialResult, baseline: ProductionBaseline, ro
 def append_failure_progress(result: TrialResult, baseline: ProductionBaseline, round_num: int) -> Path:
     path = REPO / "binanceprogress_failed.md"
     now = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M UTC")
+    live_metric_name, live_metric_value = _result_live_comparison_metric(result, baseline)
     entry = f"""
 ---
 
@@ -750,9 +1092,9 @@ def append_failure_progress(result: TrialResult, baseline: ProductionBaseline, r
 """
     if result.production_gate_reason:
         entry += (
-            f"Production comparison: `{result.production_metric_name or 'N/A'}` "
+            f"Production comparison: `{live_metric_name or 'N/A'}` "
             f"candidate={_fmt(result.production_metric_candidate)} "
-            f"live={_fmt(baseline.production_metric_value)} "
+            f"live={_fmt(live_metric_value)} "
             f"reason={result.production_gate_reason}\n\n"
         )
     if result.deploy_attempted:
@@ -1030,8 +1372,8 @@ def read_best_from_leaderboard(leaderboard: Path, checkpoint_dir: Path) -> Trial
 
 
 def _selection_sort_key(result: TrialResult, baseline: ProductionBaseline) -> tuple[float, float, int, float, float]:
-    improved = 1.0 if result.beats_baseline(baseline) else 0.0
     gate_allowed = 1.0 if result.production_gate_allowed is True else 0.0
+    improved = 1.0 if result.beats_baseline(baseline) else 0.0
     metric_priority, production_metric = production_metric_sort_key(
         result.production_metric_name,
         result.production_metric_candidate,
@@ -1039,7 +1381,7 @@ def _selection_sort_key(result: TrialResult, baseline: ProductionBaseline) -> tu
     rank_score = result.rank_score
     if rank_score is None:
         rank_score = result.combined_score()
-    return improved, gate_allowed, metric_priority, production_metric, rank_score
+    return gate_allowed, improved, metric_priority, production_metric, rank_score
 
 
 def select_result_for_production(results: list[TrialResult], baseline: ProductionBaseline) -> TrialResult:
@@ -1058,6 +1400,150 @@ def _safe_float(v) -> float | None:
         return f
     except (TypeError, ValueError):
         return None
+
+
+
+def load_forever_state(path: str | Path) -> dict[str, object]:
+    state_path = Path(path)
+    if not state_path.exists():
+        return {"completed_rounds": 0, "track_completed_rounds": {}}
+
+    try:
+        payload = json.loads(state_path.read_text())
+    except Exception as exc:
+        log.warning("failed to read forever state %s: %s", state_path, exc)
+        return {"completed_rounds": 0, "track_completed_rounds": {}}
+
+    completed_rounds_raw = payload.get("completed_rounds", 0)
+    try:
+        completed_rounds = int(completed_rounds_raw)
+    except (TypeError, ValueError):
+        log.warning("invalid completed_rounds in forever state %s: %r", state_path, completed_rounds_raw)
+        completed_rounds = 0
+    if completed_rounds < 0:
+        log.warning("negative completed_rounds in forever state %s: %r", state_path, completed_rounds_raw)
+        completed_rounds = 0
+
+    normalized_track_completed_rounds: dict[str, int] = {}
+    track_completed_rounds_raw = payload.get("track_completed_rounds", {})
+    if isinstance(track_completed_rounds_raw, dict):
+        for track_name, track_rounds_raw in track_completed_rounds_raw.items():
+            normalized_track_name = str(track_name or "").strip()
+            if not normalized_track_name:
+                continue
+            try:
+                track_rounds = int(track_rounds_raw)
+            except (TypeError, ValueError):
+                log.warning(
+                    "invalid track_completed_rounds[%r] in forever state %s: %r",
+                    normalized_track_name,
+                    state_path,
+                    track_rounds_raw,
+                )
+                continue
+            if track_rounds < 0:
+                log.warning(
+                    "negative track_completed_rounds[%r] in forever state %s: %r",
+                    normalized_track_name,
+                    state_path,
+                    track_rounds_raw,
+                )
+                continue
+            normalized_track_completed_rounds[normalized_track_name] = track_rounds
+
+    return {
+        "completed_rounds": completed_rounds,
+        "last_run_id": str(payload.get("last_run_id") or ""),
+        "last_track": str(payload.get("last_track") or ""),
+        "track_completed_rounds": normalized_track_completed_rounds,
+        "updated_at": str(payload.get("updated_at") or ""),
+    }
+
+
+def write_forever_state(
+    path: str | Path,
+    *,
+    completed_rounds: int,
+    last_run_id: str = "",
+    last_track: str = "",
+    track_completed_rounds: dict[str, int] | None = None,
+) -> None:
+    if completed_rounds < 0:
+        raise ValueError("completed_rounds must be >= 0")
+
+    normalized_track_completed_rounds: dict[str, int] = {}
+    for track_name, track_rounds in (track_completed_rounds or {}).items():
+        normalized_track_name = str(track_name or "").strip()
+        if not normalized_track_name:
+            continue
+        normalized_track_rounds = int(track_rounds)
+        if normalized_track_rounds < 0:
+            raise ValueError("track_completed_rounds values must be >= 0")
+        normalized_track_completed_rounds[normalized_track_name] = normalized_track_rounds
+
+    state_path = Path(path)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "completed_rounds": int(completed_rounds),
+        "last_run_id": str(last_run_id or ""),
+        "last_track": str(last_track or ""),
+        "track_completed_rounds": normalized_track_completed_rounds,
+        "updated_at": datetime.datetime.now(datetime.UTC).isoformat(),
+    }
+    tmp_path = state_path.with_suffix(f"{state_path.suffix}.tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    tmp_path.replace(state_path)
+
+
+def resolve_track_completed_rounds(
+    tracks: list[DataTrack],
+    *,
+    completed_rounds: int,
+    track_completed_rounds: dict[str, object] | None = None,
+) -> dict[str, int]:
+    if not tracks:
+        return {}
+
+    normalized_track_completed_rounds = {track.name: 0 for track in tracks}
+    if track_completed_rounds:
+        for track in tracks:
+            raw_track_rounds = track_completed_rounds.get(track.name, 0)
+            try:
+                normalized_track_rounds = int(raw_track_rounds)
+            except (TypeError, ValueError):
+                normalized_track_rounds = 0
+            normalized_track_completed_rounds[track.name] = max(normalized_track_rounds, 0)
+        return normalized_track_completed_rounds
+
+    for round_index in range(max(int(completed_rounds), 0)):
+        track = tracks[round_index % len(tracks)]
+        normalized_track_completed_rounds[track.name] += 1
+    return normalized_track_completed_rounds
+
+
+def resolve_resume_track_index(
+    tracks: list[DataTrack],
+    *,
+    completed_rounds: int,
+    last_track: str = "",
+) -> int:
+    if not tracks:
+        return 0
+    if completed_rounds <= 0:
+        return 0
+
+    normalized_last_track = str(last_track or "").strip()
+    if normalized_last_track:
+        for idx, track in enumerate(tracks):
+            if track.name == normalized_last_track:
+                return (idx + 1) % len(tracks)
+        log.warning(
+            "last_track %r was not found in current track set; falling back to completed_rounds modulo track count",
+            normalized_last_track,
+        )
+
+    return completed_rounds % len(tracks)
+
 
 # ---------------------------------------------------------------------------
 # Pod lifecycle
@@ -1181,6 +1667,7 @@ def run_forever(
     dry_run: bool = False,
     descriptions: str = "",
     remote_dir: str = "/workspace/stock-prediction",
+    state_path: str | Path | None = None,
     r2_sync: bool = True,
     prod_launch_script: str = str(DEFAULT_LAUNCH_SCRIPT),
     prod_symbols: str = "",
@@ -1218,6 +1705,18 @@ def run_forever(
         eval_max_leverage=grid_eval_leverage,
         eval_tradable_symbols=grid_eval_symbols,
     )
+    resolved_deploy_wait_for_live_cycle_seconds, resolved_deploy_min_healthy_live_cycles = (
+        resolve_auto_deploy_live_cycle_requirements(
+            launch_script=prod_launch_script,
+            auto_deploy=auto_deploy,
+            deploy_dry_run=deploy_dry_run,
+            wait_for_live_cycle_seconds=deploy_wait_for_live_cycle_seconds,
+            min_healthy_live_cycles=deploy_min_healthy_live_cycles,
+        )
+    )
+
+    resolved_state_path = Path(state_path) if state_path is not None else REPO / "analysis" / DEFAULT_FOREVER_STATE_FILENAME
+    persisted_state = load_forever_state(resolved_state_path)
 
     log_file = REPO / "analysis" / "binance_autoresearch_forever_log.jsonl"
     log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1226,8 +1725,17 @@ def run_forever(
     if not local:
         pod_mgr = PodManager(gpu_type=gpu_type, gpu_fallback_types=gpu_fallback_types)
 
-    round_num = 0
-    track_idx = 0
+    round_num = int(persisted_state.get("completed_rounds", 0) or 0)
+    track_completed_rounds = resolve_track_completed_rounds(
+        tracks,
+        completed_rounds=round_num,
+        track_completed_rounds=persisted_state.get("track_completed_rounds") if isinstance(persisted_state.get("track_completed_rounds"), dict) else None,
+    )
+    track_idx = resolve_resume_track_index(
+        tracks,
+        completed_rounds=round_num,
+        last_track=str(persisted_state.get("last_track") or ""),
+    )
     _shutdown = False
 
     def _handle_signal(signum, frame):
@@ -1237,6 +1745,15 @@ def run_forever(
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
+
+    if round_num > 0:
+        next_track = tracks[track_idx % len(tracks)].name if tracks else "<none>"
+        log.info(
+            "resuming forever loop after %d completed round(s) from %s; next track=%s",
+            round_num,
+            resolved_state_path,
+            next_track,
+        )
 
     if dry_run:
         _print_plan(
@@ -1259,8 +1776,8 @@ def run_forever(
             prod_config_variant_offset,
             auto_deploy,
             deploy_dry_run,
-            deploy_wait_for_live_cycle_seconds,
-            deploy_min_healthy_live_cycles,
+            resolved_deploy_wait_for_live_cycle_seconds,
+            resolved_deploy_min_healthy_live_cycles,
             prod_eval_top_k,
         )
         return
@@ -1277,6 +1794,8 @@ def run_forever(
             t0 = time.time()
             ssh_host, ssh_port = "", 0
             baseline = _baseline_from_launch(prod_launch_script)
+            round_should_advance_state = False
+            completed_track_rounds = track_completed_rounds.get(track.name, 0)
 
             try:
                 if pod_mgr:
@@ -1321,14 +1840,15 @@ def run_forever(
                 if candidate_checkpoints:
                     try:
                         if normalized_prod_symbol_sets or normalized_prod_symbol_subset_sizes or normalized_prod_leverage_options:
-                            grid_variant_offset = prod_config_variant_offset + (round_num - 1)
+                            grid_variant_offset = prod_config_variant_offset + completed_track_rounds
+                            config_grid_output_dir = REPO / "analysis" / "binance_forever_prod_config_grid" / track.name
                             launch_cfg = parse_launch_script(prod_launch_script, require_rl_checkpoint=False)
                             planned_variants = build_config_variants(
                                 launch_script=prod_launch_script,
                                 symbol_set_specs=normalized_prod_symbol_sets,
                                 symbol_subset_sizes=normalized_prod_symbol_subset_sizes,
                                 leverage_options=normalized_prod_leverage_options,
-                                output_root=REPO / "analysis" / "_prod_config_budget_probe",
+                                output_root=config_grid_output_dir,
                                 include_launch_variant=True,
                             )
                             planned_variants = limit_config_variants(
@@ -1337,39 +1857,68 @@ def run_forever(
                                 max_variants=None if prod_config_max_variants == 0 else prod_config_max_variants,
                                 variant_offset=grid_variant_offset,
                             )
-                            budgeted_max_candidates = max_candidate_checkpoints_for_budget(
-                                launch_cfg,
-                                variant_count=len(planned_variants),
-                                max_checkpoint_config_evals=prod_config_max_checkpoint_evals,
-                            )
-                            if budgeted_max_candidates is not None:
-                                if budgeted_max_candidates < 1:
-                                    raise RuntimeError(
-                                        "production config search budget is too small to compare even one candidate across the requested configs"
-                                    )
-                                if len(candidate_checkpoints) > budgeted_max_candidates:
-                                    candidate_rotation_offset = round_num - 1
+                            if prod_config_max_checkpoint_evals != 0:
+                                candidate_rotation_offset = completed_track_rounds
+                                pending_checkpoint_coverage_plan = build_pending_checkpoint_coverage_plan(
+                                    planned_variants,
+                                    launch_script=prod_launch_script,
+                                    launch_config=launch_cfg,
+                                )
+                                pending_checkpoint_config_evals = estimate_pending_checkpoint_config_evals_with_coverage(
+                                    planned_variants,
+                                    launch_script=prod_launch_script,
+                                    launch_config=launch_cfg,
+                                    candidate_checkpoints=candidate_checkpoints,
+                                    pending_checkpoint_coverage_plan=pending_checkpoint_coverage_plan,
+                                )
+                                if pending_checkpoint_config_evals > prod_config_max_checkpoint_evals:
+                                    budgeted_max_candidates = None
+                                    budgeted_candidate_results = candidate_results
+                                    budgeted_candidate_checkpoints = candidate_checkpoints
+                                    for max_candidates in range(len(candidate_checkpoints) - 1, 0, -1):
+                                        trimmed_candidate_results = limit_ranked_candidates(
+                                            candidate_results,
+                                            max_candidates=max_candidates,
+                                            offset=candidate_rotation_offset,
+                                        )
+                                        trimmed_candidate_checkpoints = [
+                                            candidate_result.best_checkpoint
+                                            for candidate_result in trimmed_candidate_results
+                                            if candidate_result.best_checkpoint
+                                        ]
+                                        estimated_trimmed_evals = estimate_pending_checkpoint_config_evals_with_coverage(
+                                            planned_variants,
+                                            launch_script=prod_launch_script,
+                                            launch_config=launch_cfg,
+                                            candidate_checkpoints=trimmed_candidate_checkpoints,
+                                            pending_checkpoint_coverage_plan=pending_checkpoint_coverage_plan,
+                                        )
+                                        if estimated_trimmed_evals <= prod_config_max_checkpoint_evals:
+                                            budgeted_max_candidates = max_candidates
+                                            budgeted_candidate_results = trimmed_candidate_results
+                                            budgeted_candidate_checkpoints = trimmed_candidate_checkpoints
+                                            pending_checkpoint_config_evals = estimated_trimmed_evals
+                                            break
+                                    if budgeted_max_candidates is None:
+                                        raise RuntimeError(
+                                            "production config search budget is too small to compare even one candidate across the requested configs"
+                                        )
                                     log.warning(
-                                        "trimming production config search candidates from %d to %d to respect checkpoint-config eval budget (leader preserved, rotation offset=%d)",
+                                        "trimming production config search candidates from %d to %d to respect checkpoint-config eval budget after manifest reuse (pending evals=%d, budget=%d, leader preserved, rotation offset=%d)",
                                         len(candidate_checkpoints),
                                         budgeted_max_candidates,
+                                        pending_checkpoint_config_evals,
+                                        prod_config_max_checkpoint_evals,
                                         candidate_rotation_offset,
                                     )
-                                    candidate_results = limit_ranked_candidates(
-                                        candidate_results,
-                                        max_candidates=budgeted_max_candidates,
-                                        offset=candidate_rotation_offset,
-                                    )
-                                    candidate_checkpoints = [
-                                        candidate_result.best_checkpoint
-                                        for candidate_result in candidate_results
-                                        if candidate_result.best_checkpoint
-                                    ]
+                                    candidate_results = budgeted_candidate_results
+                                    candidate_checkpoints = budgeted_candidate_checkpoints
                                     result = candidate_results[0]
                             baseline, config_selection = evaluate_candidates_across_prod_configs(
                                 candidate_checkpoints,
                                 run_id=run_id,
                                 launch_script=prod_launch_script,
+                                output_dir=config_grid_output_dir,
                                 symbol_sets=normalized_prod_symbol_sets,
                                 symbol_subset_sizes=normalized_prod_symbol_subset_sizes,
                                 leverage_options=normalized_prod_leverage_options,
@@ -1377,6 +1926,7 @@ def run_forever(
                                 max_variants=prod_config_max_variants,
                                 max_checkpoint_config_evals=prod_config_max_checkpoint_evals,
                                 variant_offset=grid_variant_offset,
+                                require_process_isolation=auto_deploy,
                             )
                             selected_checkpoint = config_selection.checkpoint
                             selected_result = next(
@@ -1389,13 +1939,33 @@ def run_forever(
                                 None,
                             )
                             if selected_result is None:
-                                if baseline.checkpoint and selected_checkpoint == str(Path(baseline.checkpoint).expanduser().resolve(strict=False)):
+                                baseline_checkpoint = (
+                                    str(Path(baseline.checkpoint).expanduser().resolve(strict=False))
+                                    if baseline.checkpoint
+                                    else ""
+                                )
+                                launch_checkpoint = (
+                                    str(Path(launch_cfg.rl_checkpoint).expanduser().resolve(strict=False))
+                                    if launch_cfg.rl_checkpoint
+                                    else ""
+                                )
+                                if baseline_checkpoint and selected_checkpoint == baseline_checkpoint:
                                     selected_result = TrialResult(
                                         description="current live checkpoint under searched production config",
                                         track=track.name,
                                         val_return=config_selection.val_return,
                                         val_sortino=config_selection.val_sortino,
                                         best_checkpoint=baseline.checkpoint,
+                                        gpu_type=pod_mgr.active_gpu_type if pod_mgr else "local",
+                                        training_time_s=training_time,
+                                    )
+                                elif launch_checkpoint and selected_checkpoint == launch_checkpoint:
+                                    selected_result = TrialResult(
+                                        description="launch checkpoint under searched production config",
+                                        track=track.name,
+                                        val_return=config_selection.val_return,
+                                        val_sortino=config_selection.val_sortino,
+                                        best_checkpoint=launch_checkpoint,
                                         gpu_type=pod_mgr.active_gpu_type if pod_mgr else "local",
                                         training_time_s=training_time,
                                     )
@@ -1414,9 +1984,10 @@ def run_forever(
                                 and str(Path(selected_result.best_checkpoint).expanduser().resolve(strict=False))
                                 == str(Path(baseline.checkpoint).expanduser().resolve(strict=False))
                                 and _trial_result_changes_production_config(selected_result, baseline)
-                                and baseline.production_metric_value is not None
                             ):
-                                selected_result.production_metric_current = baseline.production_metric_value
+                                paired_live_metric = _comparison_live_metric_value(selected_result, baseline)
+                                if paired_live_metric is not None:
+                                    selected_result.production_metric_current = paired_live_metric
                             selected_result.production_metric_candidate = config_selection.gate_result.candidate_metric
                             selected_result.production_gate_reason = config_selection.gate_result.reason
                             selected_result.production_gate_allowed = config_selection.gate_result.allowed
@@ -1431,8 +2002,11 @@ def run_forever(
                                 candidate_checkpoints,
                                 run_id=run_id,
                                 launch_script=prod_launch_script,
+                                require_process_isolation=auto_deploy,
                                 **prod_eval_kwargs,
                             )
+                            normalized_prod_symbols_override = prod_symbols.strip()
+                            normalized_prod_leverage_override = float(prod_leverage) if prod_leverage is not None else None
                             for candidate_result in candidate_results:
                                 if not candidate_result.best_checkpoint:
                                     continue
@@ -1447,11 +2021,11 @@ def run_forever(
                                 candidate_result.production_metric_candidate = gate_result.candidate_metric
                                 candidate_result.production_gate_reason = gate_result.reason
                                 candidate_result.production_gate_allowed = gate_result.allowed
+                                if normalized_prod_symbols_override:
+                                    candidate_result.production_symbols_override = normalized_prod_symbols_override
+                                if normalized_prod_leverage_override is not None:
+                                    candidate_result.production_leverage_override = normalized_prod_leverage_override
                             result = select_result_for_production(candidate_results, baseline)
-                            if prod_symbols.strip():
-                                result.production_symbols_override = prod_symbols.strip()
-                            if prod_leverage is not None:
-                                result.production_leverage_override = float(prod_leverage)
                     except Exception as e:
                         comparison_error = str(e)
                         for candidate_result in candidate_results:
@@ -1483,10 +2057,10 @@ def run_forever(
                         )
                         if selected_leverage_override is not None:
                             deploy_kwargs["leverage_override"] = selected_leverage_override
-                        if deploy_wait_for_live_cycle_seconds is not None:
-                            deploy_kwargs["wait_for_live_cycle_seconds"] = deploy_wait_for_live_cycle_seconds
-                        if deploy_min_healthy_live_cycles is not None:
-                            deploy_kwargs["min_healthy_live_cycles"] = deploy_min_healthy_live_cycles
+                        if resolved_deploy_wait_for_live_cycle_seconds is not None:
+                            deploy_kwargs["wait_for_live_cycle_seconds"] = resolved_deploy_wait_for_live_cycle_seconds
+                        if resolved_deploy_min_healthy_live_cycles is not None:
+                            deploy_kwargs["min_healthy_live_cycles"] = resolved_deploy_min_healthy_live_cycles
                         deploy_ok, deploy_message = deploy_candidate_checkpoint(
                             result.best_checkpoint,
                             manifest_path=result.production_manifest_path,
@@ -1505,6 +2079,7 @@ def run_forever(
                 round_succeeded = improved and (not auto_deploy or result.deploy_succeeded is True)
 
                 # log result
+                live_metric_name, live_metric_value = _result_live_comparison_metric(result, baseline)
                 log_entry = {
                     "round": round_num,
                     "run_id": run_id,
@@ -1521,8 +2096,8 @@ def run_forever(
                     "baseline_combined": baseline.combined_score(),
                     "baseline_checkpoint": baseline.checkpoint,
                     "baseline_source": baseline.source,
-                    "production_metric_name": result.production_metric_name or baseline.production_metric_name,
-                    "production_metric_live": baseline.production_metric_value,
+                    "production_metric_name": live_metric_name,
+                    "production_metric_live": live_metric_value,
                     "production_metric_candidate": result.production_metric_candidate,
                     "production_manifest_path": result.production_manifest_path or baseline.manifest_path,
                     "production_gate_reason": result.production_gate_reason,
@@ -1548,7 +2123,7 @@ def run_forever(
                             result.description,
                             result.production_metric_name,
                             result.production_metric_candidate or 0.0,
-                            baseline.production_metric_value or 0.0,
+                            live_metric_value or 0.0,
                         )
                     else:
                         log.info(
@@ -1575,7 +2150,7 @@ def run_forever(
                             result.description,
                             result.production_metric_name,
                             result.production_metric_candidate or 0.0,
-                            baseline.production_metric_value or 0.0,
+                            live_metric_value or 0.0,
                         )
                     else:
                         log.info(
@@ -1601,6 +2176,8 @@ def run_forever(
                     except Exception as e:
                         log.warning("checkpoint manager error: %s", e)
 
+                round_should_advance_state = True
+
             except Exception as e:
                 log.error("round %d failed: %s", round_num, e)
                 traceback.print_exc()
@@ -1612,6 +2189,20 @@ def run_forever(
                     gpu_type=pod_mgr.active_gpu_type if pod_mgr else "local",
                 )
                 append_failure_progress(result, baseline, round_num)
+                round_should_advance_state = True
+
+            if round_should_advance_state:
+                track_completed_rounds[track.name] = completed_track_rounds + 1
+                try:
+                    write_forever_state(
+                        resolved_state_path,
+                        completed_rounds=round_num,
+                        last_run_id=run_id,
+                        last_track=track.name,
+                        track_completed_rounds=track_completed_rounds,
+                    )
+                except Exception as state_exc:
+                    log.warning("failed to persist forever state %s: %s", resolved_state_path, state_exc)
 
             if once:
                 log.info("--once mode, exiting after round %d", round_num)
@@ -1742,6 +2333,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--descriptions", default="", help="comma-separated experiment descriptions to run")
     p.add_argument("--no-r2", action="store_true", help="disable R2 sync")
     p.add_argument("--remote-dir", default="/workspace/stock-prediction")
+    p.add_argument("--state-path", default="", help="optional path to persisted forever-loop round state; defaults to analysis/binance_autoresearch_forever_state.json")
     p.add_argument("--prod-launch-script", default=str(DEFAULT_LAUNCH_SCRIPT))
     p.add_argument("--prod-symbols", default="", help="override target production symbols for eval and auto-deploy")
     p.add_argument("--prod-symbols-set", action="append", default=[], help="repeatable target production symbol set for config search")
@@ -1784,6 +2376,7 @@ def main():
         dry_run=args.dry_run,
         descriptions=args.descriptions,
         remote_dir=args.remote_dir,
+        state_path=args.state_path or None,
         r2_sync=not args.no_r2,
         prod_launch_script=args.prod_launch_script,
         prod_symbols=args.prod_symbols,

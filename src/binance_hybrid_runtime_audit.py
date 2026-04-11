@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from src.binan.hybrid_cycle_trace import DEFAULT_TRACE_DIR, load_cycle_snapshots
-from src.binance_hybrid_launch import DEFAULT_LAUNCH_SCRIPT, parse_launch_script
+from src.binance_hybrid_launch import DEFAULT_LAUNCH_SCRIPT, BinanceHybridLaunchConfig, parse_launch_script
 from src.binance_hybrid_prod_verify import evaluate_live_snapshot_health
 from src.binance_hybrid_snapshot_activity import (
     detail_has_activity,
@@ -23,6 +23,7 @@ from src.binance_hybrid_snapshot_activity import (
 
 _DEGRADED_STATUSES = frozenset(
     {
+        "account_guard_blocked",
         "failed",
         "context_error",
         "gemini_error_rl_flat",
@@ -41,6 +42,9 @@ _DEGRADED_ALLOCATION_SOURCES = frozenset(
     }
 )
 _OVERRIDE_ALLOCATION_SOURCES = frozenset({"rl_override_gemini_cash"})
+_UNEXPECTED_BORROW_ABS_USD = 25.0
+_OVERSIZED_POSITION_RATIO = 3.0
+_OVERSIZED_POSITION_ABS_USD = 100.0
 
 
 def _normalize_checkpoint(path: str | Path | None) -> str | None:
@@ -65,6 +69,39 @@ def _extract_snapshot_symbols(snapshot: dict[str, Any]) -> list[str]:
     return requested or active
 
 
+def _is_legacy_allocation_snapshot_missing_provenance(snapshot: dict[str, Any]) -> bool:
+    return (
+        _normalize_checkpoint(snapshot.get("rl_checkpoint")) is None
+        and not _extract_snapshot_symbols(snapshot)
+        and not normalize_symbols(snapshot.get("rl_symbols"))
+        and not str(snapshot.get("allocation_source") or "").strip()
+    )
+
+
+def _apply_legacy_provenance_fallback(
+    snapshot: dict[str, Any],
+    *,
+    running_config_fallback: BinanceHybridLaunchConfig | None,
+) -> tuple[dict[str, Any], bool]:
+    if running_config_fallback is None or not _is_legacy_allocation_snapshot_missing_provenance(snapshot):
+        return snapshot, False
+    normalized = dict(snapshot)
+    used_fallback = False
+    if running_config_fallback.rl_checkpoint and _normalize_checkpoint(normalized.get("rl_checkpoint")) is None:
+        normalized["rl_checkpoint"] = str(running_config_fallback.rl_checkpoint)
+        used_fallback = True
+    if not _extract_snapshot_symbols(normalized) and running_config_fallback.symbols:
+        normalized["requested_tradable_symbols"] = list(running_config_fallback.symbols)
+        used_fallback = True
+    if not normalize_symbols(normalized.get("rl_symbols")) and running_config_fallback.symbols:
+        normalized["rl_symbols"] = list(running_config_fallback.symbols)
+        used_fallback = True
+    if safe_float(normalized.get("requested_leverage")) is None:
+        normalized["requested_leverage"] = float(running_config_fallback.leverage)
+        used_fallback = True
+    return normalized, used_fallback
+
+
 @dataclass(frozen=True)
 class BinanceHybridRuntimeAuditResult:
     launch_script: str
@@ -84,11 +121,15 @@ class BinanceHybridRuntimeAuditResult:
     checkpoint_mismatch_count: int
     symbols_mismatch_count: int
     leverage_mismatch_count: int
+    unexpected_borrow_count: int
     status_counts: dict[str, int]
     allocation_source_counts: dict[str, int]
     unexpected_symbol_activity_counts: dict[str, int]
     unexpected_order_symbol_counts: dict[str, int]
+    oversized_position_counts: dict[str, int]
+    oversized_order_counts: dict[str, int]
     degraded_examples: list[dict[str, str]]
+    legacy_provenance_inferred_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -119,6 +160,10 @@ def build_runtime_audit_launch_mismatch_issues(
         issues.append(
             f"{result.leverage_mismatch_count} recent live snapshot(s) disagree with the launch leverage"
         )
+    if result.unexpected_borrow_count:
+        issues.append(
+            f"{result.unexpected_borrow_count} recent live snapshot(s) show borrowed quote exposure beyond the launch leverage"
+        )
     if result.unexpected_symbol_activity_counts:
         issues.append(
             "unexpected symbol activity outside launch universe: "
@@ -128,6 +173,16 @@ def build_runtime_audit_launch_mismatch_issues(
         issues.append(
             "unexpected order symbols outside launch universe: "
             + ", ".join(sorted(result.unexpected_order_symbol_counts))
+        )
+    if result.oversized_position_counts:
+        issues.append(
+            "oversized managed positions versus planned sleeve: "
+            + ", ".join(sorted(result.oversized_position_counts))
+        )
+    if result.oversized_order_counts:
+        issues.append(
+            "oversized managed orders versus planned sleeve: "
+            + ", ".join(sorted(result.oversized_order_counts))
         )
     return issues
 
@@ -175,6 +230,7 @@ def audit_binance_hybrid_runtime(
     end: str | None = None,
     hours: float | None = 24.0,
     max_examples: int = 5,
+    running_config_fallback: BinanceHybridLaunchConfig | None = None,
 ) -> BinanceHybridRuntimeAuditResult:
     launch_cfg = parse_launch_script(launch_script, require_rl_checkpoint=False)
     end_ts = _parse_utc(end) if end else datetime.now(UTC)
@@ -201,6 +257,8 @@ def audit_binance_hybrid_runtime(
     allocation_source_counts: Counter[str] = Counter()
     unexpected_symbol_activity_counts: Counter[str] = Counter()
     unexpected_order_symbol_counts: Counter[str] = Counter()
+    oversized_position_counts: Counter[str] = Counter()
+    oversized_order_counts: Counter[str] = Counter()
 
     healthy_completed_count = 0
     gemini_call_skipped_count = 0
@@ -211,11 +269,19 @@ def audit_binance_hybrid_runtime(
     checkpoint_mismatch_count = 0
     symbols_mismatch_count = 0
     leverage_mismatch_count = 0
+    unexpected_borrow_count = 0
+    legacy_provenance_inferred_count = 0
     degraded_examples: list[dict[str, str]] = []
 
     for snapshot in snapshots:
-        status = str(snapshot.get("status") or "").strip() or "<missing>"
-        allocation_source = str(snapshot.get("allocation_source") or "").strip() or "<none>"
+        audit_snapshot, used_legacy_provenance = _apply_legacy_provenance_fallback(
+            snapshot,
+            running_config_fallback=running_config_fallback,
+        )
+        if used_legacy_provenance:
+            legacy_provenance_inferred_count += 1
+        status = str(audit_snapshot.get("status") or "").strip() or "<missing>"
+        allocation_source = str(audit_snapshot.get("allocation_source") or "").strip() or "<none>"
         status_counts[status] += 1
         allocation_source_counts[allocation_source] += 1
 
@@ -227,9 +293,9 @@ def audit_binance_hybrid_runtime(
             degraded_allocation_source_count += 1
         if allocation_source in _OVERRIDE_ALLOCATION_SOURCES:
             override_allocation_source_count += 1
-        if bool(snapshot.get("gemini_call_skipped")):
+        if bool(audit_snapshot.get("gemini_call_skipped")):
             gemini_call_skipped_count += 1
-        snapshot_checkpoint = _normalize_checkpoint(snapshot.get("rl_checkpoint"))
+        snapshot_checkpoint = _normalize_checkpoint(audit_snapshot.get("rl_checkpoint"))
         if launch_checkpoint is None:
             if snapshot_checkpoint is not None:
                 checkpoint_mismatch_count += 1
@@ -238,50 +304,116 @@ def audit_binance_hybrid_runtime(
         elif snapshot_checkpoint != launch_checkpoint:
             checkpoint_mismatch_count += 1
 
-        snapshot_symbols = _extract_snapshot_symbols(snapshot)
+        snapshot_symbols = _extract_snapshot_symbols(audit_snapshot)
         if snapshot_symbols and snapshot_symbols != launch_symbols:
             symbols_mismatch_count += 1
 
-        snapshot_leverage = safe_float(snapshot.get("requested_leverage"))
+        snapshot_leverage = safe_float(audit_snapshot.get("requested_leverage"))
         if (
             snapshot_leverage is not None
             and not math.isclose(snapshot_leverage, launch_leverage, rel_tol=0.0, abs_tol=1e-9)
         ):
             leverage_mismatch_count += 1
+        portfolio = audit_snapshot.get("portfolio") if isinstance(audit_snapshot.get("portfolio"), dict) else {}
+        borrowed_quotes = portfolio.get("borrowed_quotes") if isinstance(portfolio, dict) else {}
+        borrowed_usdt = safe_float((borrowed_quotes or {}).get("USDT")) or 0.0
+        if launch_leverage <= 1.0 + 1e-9:
+            if borrowed_usdt > _UNEXPECTED_BORROW_ABS_USD:
+                unexpected_borrow_count += 1
+        else:
+            total_value_usd = safe_float(portfolio.get("total_value_usd")) or 0.0
+            allowed_borrow = max(0.0, total_value_usd * max(launch_leverage - 1.0, 0.0))
+            if borrowed_usdt > max(_UNEXPECTED_BORROW_ABS_USD, allowed_borrow * 1.25 + _UNEXPECTED_BORROW_ABS_USD):
+                unexpected_borrow_count += 1
 
-        allowed_market_symbols = snapshot_allowed_market_symbols(snapshot, launch_symbols)
-        for detail in snapshot.get("symbols_detail") or []:
+        allowed_market_symbols = snapshot_allowed_market_symbols(audit_snapshot, launch_symbols)
+        market_symbol_to_launch_symbol: dict[str, str] = {}
+        for detail in audit_snapshot.get("symbols_detail") or []:
             if not isinstance(detail, dict):
                 continue
             symbol = str(detail.get("symbol") or "").strip().upper()
+            market_symbol = str(detail.get("market_symbol") or "").strip().upper()
+            if symbol and market_symbol:
+                market_symbol_to_launch_symbol[market_symbol] = symbol
             if symbol and symbol not in launch_symbols and detail_has_activity(detail):
                 unexpected_symbol_activity_counts[symbol] += 1
+            if symbol and symbol in launch_symbols:
+                current_value = safe_float(detail.get("current_value")) or 0.0
+                target_value = safe_float(detail.get("target_value")) or 0.0
+                oversize_threshold = max(
+                    _OVERSIZED_POSITION_ABS_USD,
+                    target_value * _OVERSIZED_POSITION_RATIO,
+                )
+                if current_value - target_value > _OVERSIZED_POSITION_ABS_USD and current_value > oversize_threshold:
+                    oversized_position_counts[symbol] += 1
 
         if allowed_market_symbols:
-            for order_symbol in iter_snapshot_order_symbols(snapshot):
+            for order_symbol in iter_snapshot_order_symbols(audit_snapshot):
                 if order_symbol not in allowed_market_symbols:
                     unexpected_order_symbol_counts[order_symbol] += 1
+        orders = audit_snapshot.get("orders")
+        if isinstance(orders, dict):
+            for bucket_name in ("open_before_cleanup", "open_after_cleanup", "placed", "cancelled_stale"):
+                bucket = orders.get(bucket_name)
+                if not isinstance(bucket, list):
+                    continue
+                for order in bucket:
+                    if not isinstance(order, dict):
+                        continue
+                    market_symbol = str(order.get("symbol") or "").strip().upper()
+                    symbol = market_symbol_to_launch_symbol.get(market_symbol)
+                    if not symbol or symbol not in launch_symbols:
+                        continue
+                    orig_qty = safe_float(
+                        order.get("orig_qty", order.get("origQty", order.get("qty", order.get("quantity"))))
+                    )
+                    price = safe_float(order.get("price"))
+                    if orig_qty is None or price is None:
+                        continue
+                    order_notional = orig_qty * price
+                    detail = next(
+                        (
+                            candidate
+                            for candidate in audit_snapshot.get("symbols_detail") or []
+                            if isinstance(candidate, dict) and str(candidate.get("symbol") or "").strip().upper() == symbol
+                        ),
+                        None,
+                    )
+                    target_value = safe_float((detail or {}).get("target_value")) or 0.0
+                    oversize_threshold = max(
+                        _OVERSIZED_POSITION_ABS_USD,
+                        target_value * _OVERSIZED_POSITION_RATIO,
+                    )
+                    if order_notional > oversize_threshold:
+                        oversized_order_counts[symbol] += 1
 
+        health_checkpoint = launch_checkpoint
+        health_symbols = launch_symbols
+        health_leverage = launch_leverage
+        if used_legacy_provenance and running_config_fallback is not None:
+            health_checkpoint = _normalize_checkpoint(running_config_fallback.rl_checkpoint)
+            health_symbols = list(running_config_fallback.symbols)
+            health_leverage = float(running_config_fallback.leverage)
         snapshot_confirmed, _snapshot_reason, _snapshot_meta = evaluate_live_snapshot_health(
-            snapshot,
-            expected_checkpoint_norm=launch_checkpoint,
-            expect_no_rl_checkpoint=launch_checkpoint is None,
-            expected_symbols_list=launch_symbols,
-            launch_symbols=launch_symbols,
-            expected_leverage=launch_leverage,
+            audit_snapshot,
+            expected_checkpoint_norm=health_checkpoint,
+            expect_no_rl_checkpoint=health_checkpoint is None,
+            expected_symbols_list=health_symbols,
+            launch_symbols=health_symbols,
+            expected_leverage=health_leverage,
         )
         if status == "completed" and snapshot_confirmed is True:
             healthy_completed_count += 1
 
         if (degraded_status or degraded_source) and len(degraded_examples) < max(0, int(max_examples)):
             reasoning = ""
-            allocation_plan = snapshot.get("allocation_plan")
+            allocation_plan = audit_snapshot.get("allocation_plan")
             if isinstance(allocation_plan, dict):
                 reasoning = str(allocation_plan.get("reasoning") or "").strip()
-            error = str(snapshot.get("error") or "").strip()
+            error = str(audit_snapshot.get("error") or "").strip()
             degraded_examples.append(
                 {
-                    "cycle_started_at": str(snapshot.get("cycle_started_at") or ""),
+                    "cycle_started_at": str(audit_snapshot.get("cycle_started_at") or ""),
                     "status": status,
                     "allocation_source": allocation_source,
                     "reason": error or reasoning,
@@ -306,11 +438,15 @@ def audit_binance_hybrid_runtime(
         checkpoint_mismatch_count=checkpoint_mismatch_count,
         symbols_mismatch_count=symbols_mismatch_count,
         leverage_mismatch_count=leverage_mismatch_count,
+        unexpected_borrow_count=unexpected_borrow_count,
         status_counts=dict(status_counts),
         allocation_source_counts=dict(allocation_source_counts),
         unexpected_symbol_activity_counts=dict(unexpected_symbol_activity_counts),
         unexpected_order_symbol_counts=dict(unexpected_order_symbol_counts),
+        oversized_position_counts=dict(oversized_position_counts),
+        oversized_order_counts=dict(oversized_order_counts),
         degraded_examples=degraded_examples,
+        legacy_provenance_inferred_count=legacy_provenance_inferred_count,
     )
 
 
@@ -362,6 +498,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Checkpoint mismatch:  {result.checkpoint_mismatch_count}")
     print(f"Symbols mismatch:     {result.symbols_mismatch_count}")
     print(f"Leverage mismatch:    {result.leverage_mismatch_count}")
+    print(f"Unexpected borrow:    {result.unexpected_borrow_count}")
+    print(f"Legacy inferred:     {result.legacy_provenance_inferred_count}")
     print("")
     print("Status counts:")
     for status, count in sorted(result.status_counts.items(), key=lambda item: (-item[1], item[0])):
@@ -380,6 +518,20 @@ def main(argv: list[str] | None = None) -> int:
         print("Unexpected order symbols:")
         for symbol, count in sorted(
             result.unexpected_order_symbol_counts.items(),
+            key=lambda item: (-item[1], item[0]),
+        ):
+            print(f"  {symbol}: {count}")
+    if result.oversized_position_counts:
+        print("Oversized managed positions:")
+        for symbol, count in sorted(
+            result.oversized_position_counts.items(),
+            key=lambda item: (-item[1], item[0]),
+        ):
+            print(f"  {symbol}: {count}")
+    if result.oversized_order_counts:
+        print("Oversized managed orders:")
+        for symbol, count in sorted(
+            result.oversized_order_counts.items(),
             key=lambda item: (-item[1], item[0]),
         ):
             print(f"  {symbol}: {count}")

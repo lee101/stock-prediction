@@ -140,6 +140,7 @@ claudeideas.md
 scratch.txt
 scratches
 metric_history.json
+binance_worksteal/trade_log.jsonl
 
 # Training module artifacts
 training/traininglogs

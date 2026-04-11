@@ -15,6 +15,8 @@ from differentiable_loss_utils import (
     compute_loss_by_type,
     simulate_hourly_trades,
     simulate_hourly_trades_binary,
+    simulate_rebalance,
+    simulate_rebalance_fast,
 )
 try:
     from trainingefficiency.fast_differentiable_sim import (
@@ -62,6 +64,33 @@ except Exception:
         MUON_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+
+def _aggregate_validation_lag_metrics(
+    losses: list[torch.Tensor],
+    scores: list[torch.Tensor],
+    sortinos: list[torch.Tensor],
+    annual_returns: list[torch.Tensor],
+    *,
+    mode: str,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    normalized = str(mode or "minimax").strip().lower()
+    if normalized == "mean":
+        n = max(1, len(losses))
+        return (
+            sum(losses) / n,
+            sum(scores) / n,
+            sum(sortinos) / n,
+            sum(annual_returns) / n,
+        )
+    if normalized != "minimax":
+        normalized = "minimax"
+    return (
+        torch.stack(losses, dim=0).amax(dim=0),
+        torch.stack(scores, dim=0).amin(dim=0),
+        torch.stack(sortinos, dim=0).amin(dim=0),
+        torch.stack(annual_returns, dim=0).amin(dim=0),
+    )
 
 
 @dataclass
@@ -177,6 +206,144 @@ class BinanceHourlyTrainer:
         raw = str(getattr(self.config, "wandb_tags", "") or "")
         return tuple(token.strip() for token in raw.split(",") if token.strip())
 
+    def _marketsim_eval(self, model: torch.nn.Module, epoch: int) -> dict | None:
+        """Run full compounded PnL eval every N epochs."""
+        try:
+            import numpy as np
+        except ImportError:
+            return None
+
+        val_frame = self.data.val_dataset.frame.copy()
+        if len(val_frame) < self.config.sequence_length + 10:
+            return None
+
+        try:
+            sd = {k: v.cpu() for k, v in model.state_dict().items()}
+            from .model import build_policy
+            policy_cfg = self._policy_cfg
+            cpu_model = build_policy(policy_cfg).cpu().eval()
+            cpu_model.load_state_dict(sd, strict=False)
+        except Exception:
+            return None
+
+        use_rebal = bool(self.config.use_rebalance_sim)
+
+        if use_rebal:
+            results = self._rebalance_marketsim_eval(cpu_model, val_frame, np)
+        else:
+            results = self._limit_order_marketsim_eval(cpu_model, val_frame, np)
+
+        del cpu_model, sd
+
+        if results:
+            parts = []
+            for lag in [0, 1, 2]:
+                ret = results.get(f"msim_lag{lag}_ret", 0)
+                srt = results.get(f"msim_lag{lag}_sort", 0)
+                parts.append(f"lag{lag}:{ret:+.2%}/s{srt:+.1f}")
+            mean_a = results.get("msim_mean_alloc", 0)
+            turnover = results.get("msim_turnover", 0)
+            print(f"  [MarketsimEval ep{epoch}] {' | '.join(parts)} alloc={mean_a:.2f} turn={turnover:.2f}", flush=True)
+        return results
+
+    def _rebalance_marketsim_eval(self, cpu_model, val_frame, np) -> dict:
+        """Eval using position-target rebalance sim on full val window."""
+        feature_columns = list(self.data.feature_columns)
+        normalizer = self.data.normalizer
+        seq_len = self.config.sequence_length
+
+        allow_short = bool(getattr(self.config, "rebalance_allow_short", False))
+        alloc_fn = torch.tanh if allow_short else torch.sigmoid
+        allocations = []
+        for start in range(0, len(val_frame) - seq_len + 1):
+            window = val_frame.iloc[start:start + seq_len]
+            feats = normalizer.transform(window[feature_columns].values)
+            feats_t = torch.tensor(feats, dtype=torch.float32).unsqueeze(0)
+            with torch.inference_mode():
+                outputs = cpu_model(feats_t)
+                alloc_logits = outputs.get("allocation_logits", outputs.get("buy_amount_logits"))
+                alloc = float(alloc_fn(alloc_logits[0, -1, 0]))
+            allocations.append(alloc)
+
+        aligned = val_frame.iloc[seq_len - 1:seq_len - 1 + len(allocations)]
+        closes_t = torch.tensor(aligned["close"].values, dtype=torch.float32)
+        opens_t = torch.tensor(aligned["open"].values, dtype=torch.float32) if "open" in aligned.columns else None
+        alloc_t = torch.tensor(allocations, dtype=torch.float32)
+
+        alloc_np = alloc_t.numpy()
+        results = {
+            "msim_mean_alloc": float(np.mean(alloc_np)),
+            "msim_turnover": float(np.mean(np.abs(np.diff(alloc_np)))),
+        }
+        for lag in [0, 1, 2]:
+            try:
+                result = simulate_rebalance(
+                    closes=closes_t, opens=opens_t, allocation=alloc_t,
+                    maker_fee=self.config.maker_fee, initial_cash=10_000.0,
+                    decision_lag_bars=lag, allow_short=allow_short,
+                )
+                vals = result.portfolio_values.numpy()
+                total_return = float((vals[-1] - 10000.0) / 10000.0)
+                returns_np = result.returns.numpy()
+                neg_r = returns_np[returns_np < 0]
+                ds = float(np.std(neg_r)) if len(neg_r) > 0 else 1e-8
+                sortino = float(np.mean(returns_np)) / max(ds, 1e-8) * np.sqrt(8760)
+                peak = np.maximum.accumulate(vals)
+                dd = float(((vals - peak) / np.clip(peak, 1e-8, None)).min())
+                results[f"msim_lag{lag}_ret"] = total_return
+                results[f"msim_lag{lag}_sort"] = sortino
+                results[f"msim_lag{lag}_dd"] = dd
+                results[f"msim_lag{lag}_trades"] = int((result.executed_buys > 0).sum() + (result.executed_sells > 0).sum())
+            except Exception:
+                pass
+        return results
+
+    def _limit_order_marketsim_eval(self, cpu_model, val_frame, np) -> dict:
+        """Eval using limit-order BinanceMarketSimulator."""
+        try:
+            from .inference import generate_actions_from_frame
+            from .marketsimulator import BinanceMarketSimulator, SimulationConfig
+        except ImportError:
+            return {}
+
+        primary_horizon = getattr(self.data, "primary_horizon", 1)
+        with torch.inference_mode():
+            actions_df = generate_actions_from_frame(
+                model=cpu_model, frame=val_frame,
+                feature_columns=self.data.feature_columns,
+                normalizer=self.data.normalizer,
+                sequence_length=self.config.sequence_length,
+                horizon=primary_horizon, device=torch.device("cpu"),
+            )
+        if actions_df.empty:
+            return {}
+
+        results = {}
+        for lag in [0, 1, 2]:
+            sim_cfg = SimulationConfig(
+                maker_fee=self.config.maker_fee,
+                fill_buffer_bps=self.config.fill_buffer_pct * 10000,
+                decision_lag_bars=lag,
+                max_hold_hours=int(self.config.max_hold_hours),
+                initial_cash=10_000.0,
+                market_order_entry=self.config.market_order_entry,
+            )
+            try:
+                sim = BinanceMarketSimulator(sim_cfg)
+                result = sim.run(val_frame, actions_df)
+                m = result.metrics
+                equity = result.combined_equity.to_numpy(dtype=float)
+                peak = np.maximum.accumulate(equity)
+                dd = float(((equity - peak) / np.clip(peak, 1e-8, None)).min())
+                n_trades = sum(len(sr.trades) for sr in result.per_symbol.values())
+                results[f"msim_lag{lag}_ret"] = m.get("total_return", 0.0)
+                results[f"msim_lag{lag}_sort"] = m.get("sortino", 0.0)
+                results[f"msim_lag{lag}_dd"] = dd
+                results[f"msim_lag{lag}_trades"] = n_trades
+            except Exception:
+                pass
+        return results
+
     def _get_fill_buffer(self, epoch: int) -> float:
         buf = self.config.fill_buffer_pct
         warmup = self.config.fill_buffer_warmup_epochs
@@ -239,13 +406,14 @@ class BinanceHourlyTrainer:
             use_value_embedding=self.config.use_value_embedding,
             value_embedding_every=self.config.value_embedding_every,
             value_embedding_scale=self.config.value_embedding_scale,
-            use_midpoint_offsets=True,
+            use_midpoint_offsets=self.config.use_midpoint_offsets,
             num_outputs=self.config.num_outputs,
             max_hold_hours=self.config.max_hold_hours,
             num_memory_tokens=self.config.num_memory_tokens,
             dilated_strides=self.config.dilated_strides,
             use_flex_attention=self.config.use_flex_attention,
         )
+        self._policy_cfg = policy_cfg
         model = self._move_model_to_device(build_policy(policy_cfg))
 
         if self.config.preload_checkpoint_path:
@@ -401,6 +569,23 @@ class BinanceHourlyTrainer:
                     f"Sortino: {val_metrics['sortino']:.4f} Return: {val_metrics['return']:.4f} | "
                     f"Gap: {generalization_gap:.4f} {checkpoint_metric_name}: {checkpoint_metric:.4f}"
                 )
+
+                if epoch % 5 == 0 or epoch == 1:
+                    try:
+                        msim_metrics = self._marketsim_eval(model, epoch)
+                    except Exception as e:
+                        print(f"  [MarketsimEval ep{epoch}] skipped: {e}", flush=True)
+                        msim_metrics = None
+                    if msim_metrics:
+                        msim_path = self.checkpoint_dir / "marketsim_eval.json"
+                        existing = []
+                        if msim_path.exists():
+                            try:
+                                existing = json.loads(msim_path.read_text())
+                            except Exception:
+                                pass
+                        existing.append({"epoch": epoch, **msim_metrics})
+                        msim_path.write_text(json.dumps(existing, indent=2))
 
                 lr_now = optimizer.param_groups[0]["lr"] if hasattr(optimizer, "param_groups") else self.config.learning_rate
                 metrics_logger.log({
@@ -584,46 +769,82 @@ class BinanceHourlyTrainer:
                     )
 
                 with sim_context:
-                    if split_amp:
-                        trade_intensity = actions["trade_amount"].float() / scale
-                        buy_intensity = actions["buy_amount"].float() / scale
-                        sell_intensity = actions["sell_amount"].float() / scale
-                        sim_highs = highs.float()
-                        sim_lows = lows.float()
-                        sim_closes = closes.float()
-                        sim_opens = opens.float() if opens is not None else None
-                        sim_buy = actions["buy_price"].float()
-                        sim_sell = actions["sell_price"].float()
-                    else:
-                        trade_intensity = actions["trade_amount"] / scale
-                        buy_intensity = actions["buy_amount"] / scale
-                        sell_intensity = actions["sell_amount"] / scale
-                        sim_highs = highs
-                        sim_lows = lows
-                        sim_closes = closes
-                        sim_opens = opens
-                        sim_buy = actions["buy_price"]
-                        sim_sell = actions["sell_price"]
+                    use_rebal = bool(self.config.use_rebalance_sim)
 
-                    sim_kwargs = {
-                        "highs": sim_highs,
-                        "lows": sim_lows,
-                        "closes": sim_closes,
-                        "opens": sim_opens,
-                        "buy_prices": sim_buy,
-                        "sell_prices": sim_sell,
-                        "trade_intensity": trade_intensity,
-                        "buy_trade_intensity": buy_intensity,
-                        "sell_trade_intensity": sell_intensity,
-                        "maker_fee": batch.get("maker_fee", self.config.maker_fee),
-                        "initial_cash": self.config.initial_cash,
-                        "can_short": batch.get("can_short", False),
-                        "can_long": batch.get("can_long", True),
-                        "max_leverage": self.config.max_leverage,
-                        "market_order_entry": self.config.market_order_entry,
-                        "fill_buffer_pct": self._get_fill_buffer(current_epoch),
-                        "margin_annual_rate": float(self.config.margin_annual_rate),
-                    }
+                    if use_rebal:
+                        allow_short = bool(getattr(self.config, "rebalance_allow_short", False))
+                        alloc_raw = actions.get("allocation_fraction")
+                        if alloc_raw is None:
+                            alloc_logits = outputs.get("allocation_logits", outputs.get("buy_amount_logits"))
+                            if allow_short:
+                                alloc_raw = torch.tanh(alloc_logits.squeeze(-1))
+                            else:
+                                alloc_raw = torch.sigmoid(alloc_logits.squeeze(-1))
+                        regime_mode = bool(getattr(self.config, "rebalance_regime_mode", False))
+                        if regime_mode:
+                            alloc_raw = alloc_raw[..., -1:].expand_as(alloc_raw)
+                        sim_alloc = alloc_raw.float() if split_amp else alloc_raw
+                        sim_closes_r = closes.float() if split_amp else closes
+                        sim_opens_r = (opens.float() if split_amp else opens) if opens is not None else None
+                        rebal_base = {
+                            "closes": sim_closes_r,
+                            "opens": sim_opens_r,
+                            "allocation": sim_alloc,
+                            "maker_fee": batch.get("maker_fee", self.config.maker_fee),
+                            "initial_cash": self.config.initial_cash,
+                            "margin_annual_rate": float(self.config.margin_annual_rate),
+                            "max_leverage": self.config.max_leverage,
+                            "allow_short": allow_short,
+                        }
+
+                        def _run_sim(lag_i, is_val=False):
+                            return simulate_rebalance(**rebal_base, decision_lag_bars=lag_i)
+                    else:
+                        if split_amp:
+                            trade_intensity = actions["trade_amount"].float() / scale
+                            buy_intensity = actions["buy_amount"].float() / scale
+                            sell_intensity = actions["sell_amount"].float() / scale
+                            sim_highs = highs.float()
+                            sim_lows = lows.float()
+                            sim_closes = closes.float()
+                            sim_opens = opens.float() if opens is not None else None
+                            sim_buy = actions["buy_price"].float()
+                            sim_sell = actions["sell_price"].float()
+                        else:
+                            trade_intensity = actions["trade_amount"] / scale
+                            buy_intensity = actions["buy_amount"] / scale
+                            sell_intensity = actions["sell_amount"] / scale
+                            sim_highs = highs
+                            sim_lows = lows
+                            sim_closes = closes
+                            sim_opens = opens
+                            sim_buy = actions["buy_price"]
+                            sim_sell = actions["sell_price"]
+
+                        sim_kwargs = {
+                            "highs": sim_highs,
+                            "lows": sim_lows,
+                            "closes": sim_closes,
+                            "opens": sim_opens,
+                            "buy_prices": sim_buy,
+                            "sell_prices": sim_sell,
+                            "trade_intensity": trade_intensity,
+                            "buy_trade_intensity": buy_intensity,
+                            "sell_trade_intensity": sell_intensity,
+                            "maker_fee": batch.get("maker_fee", self.config.maker_fee),
+                            "initial_cash": self.config.initial_cash,
+                            "can_short": batch.get("can_short", False),
+                            "can_long": batch.get("can_long", True),
+                            "max_leverage": self.config.max_leverage,
+                            "market_order_entry": self.config.market_order_entry,
+                            "fill_buffer_pct": self._get_fill_buffer(current_epoch),
+                            "margin_annual_rate": float(self.config.margin_annual_rate),
+                        }
+
+                        def _run_sim(lag_i, is_val=False):
+                            if is_val and bool(self.config.validation_use_binary_fills):
+                                return simulate_hourly_trades_binary(**sim_kwargs, decision_lag_bars=lag_i)
+                            return sim_fn(**sim_kwargs, temperature=float(self.config.fill_temperature), decision_lag_bars=lag_i)
 
                     if train and len(lag_list) > 1:
                         all_losses = []
@@ -631,11 +852,7 @@ class BinanceHourlyTrainer:
                         all_sortinos = []
                         all_returns_val = []
                         for lag_i in lag_list:
-                            sim_i = sim_fn(
-                                **sim_kwargs,
-                                temperature=float(self.config.fill_temperature),
-                                decision_lag_bars=lag_i,
-                            )
+                            sim_i = _run_sim(lag_i, is_val=False)
                             ret_i = sim_i.returns.float()
                             ppy = batch.get("periods_per_year", None)
                             if ppy is None:
@@ -660,18 +877,44 @@ class BinanceHourlyTrainer:
                             score = sum(all_scores) / len(all_scores)
                             sortino = sum(all_sortinos) / len(all_sortinos)
                             annual_return = sum(all_returns_val) / len(all_returns_val)
+                    elif (not train) and len(lag_list) > 1:
+                        val_losses = []
+                        val_scores = []
+                        val_sortinos = []
+                        val_returns = []
+                        for lag_i in lag_list:
+                            sim_i = _run_sim(lag_i, is_val=True)
+                            ret_i = sim_i.returns.float()
+                            ppy = batch.get("periods_per_year", None)
+                            if ppy is None:
+                                ppy = float(self.config.periods_per_year or HOURLY_PERIODS_PER_YEAR)
+                            lo_i, sc_i, so_i, ar_i = compute_loss_by_type(
+                                ret_i,
+                                self.config.loss_type,
+                                target_sign=self.config.sortino_target_sign,
+                                periods_per_year=ppy,
+                                return_weight=self.config.return_weight,
+                                smoothness_penalty=self.config.smoothness_penalty,
+                                dd_penalty=self.config.dd_penalty,
+                                multiwindow_fractions=self.config.multiwindow_fractions,
+                                multiwindow_aggregation=self.config.multiwindow_aggregation,
+                            )
+                            val_losses.append(lo_i)
+                            val_scores.append(sc_i)
+                            val_sortinos.append(so_i)
+                            val_returns.append(ar_i)
+                        loss, score, sortino, annual_return = _aggregate_validation_lag_metrics(
+                            val_losses,
+                            val_scores,
+                            val_sortinos,
+                            val_returns,
+                            mode=str(getattr(self.config, "validation_lag_aggregation", "minimax")),
+                        )
                     else:
                         val_lag = max(lag_list) if not train else base_lag
-                        if (not train) and bool(self.config.validation_use_binary_fills):
-                            sim = simulate_hourly_trades_binary(**sim_kwargs, decision_lag_bars=val_lag)
-                        else:
-                            sim = sim_fn(
-                                **sim_kwargs,
-                                temperature=float(self.config.fill_temperature),
-                                decision_lag_bars=val_lag,
-                            )
+                        sim = _run_sim(val_lag, is_val=not train)
 
-                if not (train and len(lag_list) > 1):
+                if not ((train and len(lag_list) > 1) or ((not train) and len(lag_list) > 1)):
                     returns = sim.returns.float()
                     periods_per_year = batch.get("periods_per_year", None)
                     if periods_per_year is None:
@@ -688,7 +931,7 @@ class BinanceHourlyTrainer:
                         multiwindow_aggregation=self.config.multiwindow_aggregation,
                     )
 
-                if train and self.config.spread_penalty > 0:
+                if train and self.config.spread_penalty > 0 and not use_rebal:
                     bp = actions["buy_price"]
                     sp = actions["sell_price"]
                     tgt = self.config.spread_target
@@ -697,6 +940,20 @@ class BinanceHourlyTrainer:
                     buy_pen = torch.relu(tgt - buy_gap).mean()
                     sell_pen = torch.relu(tgt - sell_gap).mean()
                     loss = loss + self.config.spread_penalty * (buy_pen + sell_pen)
+
+                if train and use_rebal:
+                    ent_w = getattr(self.config, "rebalance_entropy_weight", 0.0)
+                    if ent_w > 0:
+                        if allow_short:
+                            p = ((sim_alloc + 1.0) / 2.0).clamp(1e-6, 1.0 - 1e-6)
+                        else:
+                            p = sim_alloc.clamp(1e-6, 1.0 - 1e-6)
+                        entropy = -(p * p.log() + (1 - p) * (1 - p).log()).mean()
+                        loss = loss - ent_w * entropy
+                    smooth_w = getattr(self.config, "rebalance_smoothness_weight", 0.0)
+                    if smooth_w > 0:
+                        delta_alloc = (sim_alloc[..., 1:] - sim_alloc[..., :-1]).abs().mean()
+                        loss = loss + smooth_w * delta_alloc
 
                 if train and optimizer is not None:
                     loss_scaled = loss / accum_steps

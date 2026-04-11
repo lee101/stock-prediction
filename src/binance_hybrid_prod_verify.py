@@ -9,11 +9,17 @@ from pathlib import Path
 
 from src.binan.hybrid_cycle_trace import DEFAULT_TRACE_DIR, load_cycle_snapshots
 from src.binance_hybrid_launch import DEFAULT_LAUNCH_SCRIPT, parse_launch_script
+from src.binance_hybrid_machine_audit import (
+    audit_binance_hybrid_machine_state,
+    build_machine_audit_health_issues,
+    build_machine_audit_launch_mismatch_issues,
+)
 from src.binance_hybrid_snapshot_activity import find_unexpected_snapshot_activity
 
 
 _UNHEALTHY_SNAPSHOT_STATUSES = frozenset(
     {
+        "account_guard_blocked",
         "failed",
         "context_error",
         "gemini_error_rl_flat",
@@ -58,12 +64,19 @@ def _parse_utc(value: str | None) -> datetime | None:
     return ts.astimezone(UTC)
 
 
-def _tail_lines(path: Path, max_lines: int) -> str:
+def _tail_lines(path: Path, max_lines: int, *, start_offset: int = 0) -> str:
     if not path.exists():
         return ""
-    with open(path, encoding="utf-8", errors="replace") as handle:
-        lines = handle.readlines()
-    return "".join(lines[-max(1, int(max_lines)) :])
+    max_lines = max(1, int(max_lines))
+    start_offset = max(0, int(start_offset))
+    file_size = path.stat().st_size
+    read_offset = start_offset if 0 < start_offset <= file_size else 0
+    with open(path, "rb") as handle:
+        if read_offset:
+            handle.seek(read_offset)
+        payload = handle.read()
+    lines = payload.decode("utf-8", errors="replace").splitlines(keepends=True)
+    return "".join(lines[-max_lines:])
 
 
 @dataclass(frozen=True)
@@ -89,6 +102,11 @@ class DeployVerificationResult:
     snapshot_checked: bool = False
     snapshot_confirmed: bool | None = None
     snapshot_reason: str | None = None
+    machine_checked: bool = False
+    machine_confirmed: bool | None = None
+    machine_reason: str | None = None
+    machine_launch_mismatch_issues: tuple[str, ...] = ()
+    machine_health_issues: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -224,11 +242,13 @@ def verify_deployed_binance_hybrid(
     log_path: str | Path,
     trace_dir: str | Path = DEFAULT_TRACE_DIR,
     deployed_after: str | None = None,
+    log_offset_bytes: int = 0,
     max_log_lines: int = 200,
     require_live_snapshot: bool = False,
     minimum_healthy_live_cycles: int = 0,
     wait_timeout_seconds: float | None = None,
     poll_interval_seconds: float = 5.0,
+    require_machine_state_match: bool = False,
 ) -> DeployVerificationResult:
     if expect_no_rl_checkpoint and expected_checkpoint is not None:
         raise ValueError("expected_checkpoint must be omitted when expect_no_rl_checkpoint=True")
@@ -236,6 +256,8 @@ def verify_deployed_binance_hybrid(
         raise ValueError("expected_checkpoint is required unless expect_no_rl_checkpoint=True")
     if int(minimum_healthy_live_cycles) < 0:
         raise ValueError("minimum_healthy_live_cycles must be >= 0")
+    if int(log_offset_bytes) < 0:
+        raise ValueError("log_offset_bytes must be >= 0")
 
     launch_cfg = parse_launch_script(launch_script, require_rl_checkpoint=not expect_no_rl_checkpoint)
     expected_checkpoint_norm = _normalize_checkpoint_path(expected_checkpoint)
@@ -271,7 +293,7 @@ def verify_deployed_binance_hybrid(
             log_confirmed=False,
         )
 
-    log_text = _tail_lines(Path(log_path_resolved), max_lines=max_log_lines)
+    log_text = _tail_lines(Path(log_path_resolved), max_lines=max_log_lines, start_offset=log_offset_bytes)
     expected_log_snippet = "Hybrid mode: RL=disabled" if expect_no_rl_checkpoint else f"Hybrid mode: RL={expected_checkpoint_norm}"
     log_confirmed = expected_log_snippet in log_text
     if not log_confirmed:
@@ -437,6 +459,51 @@ def verify_deployed_binance_hybrid(
             snapshot_reason=snapshot_reason,
         )
 
+    machine_checked = False
+    machine_confirmed: bool | None = None
+    machine_reason: str | None = None
+    machine_launch_mismatch_issues: tuple[str, ...] = ()
+    machine_health_issues: tuple[str, ...] = ()
+    if require_machine_state_match:
+        machine_checked = True
+        machine_audit = audit_binance_hybrid_machine_state(launch_script)
+        machine_launch_mismatch_issues = tuple(build_machine_audit_launch_mismatch_issues(machine_audit))
+        machine_health_issues = tuple(build_machine_audit_health_issues(machine_audit))
+        machine_issues = [*machine_launch_mismatch_issues, *machine_health_issues]
+        machine_confirmed = not machine_issues
+        if machine_confirmed:
+            machine_reason = "running process matches launch config and Binance live writer set is isolated"
+        else:
+            machine_reason = "; ".join(machine_issues)
+            return DeployVerificationResult(
+                ok=False,
+                reason=machine_reason,
+                launch_script=str(Path(launch_script).resolve()),
+                expected_checkpoint=expected_checkpoint_norm,
+                launch_checkpoint=launch_checkpoint,
+                expected_leverage=expected_leverage,
+                launch_leverage=launch_leverage,
+                expected_symbols=expected_symbols_list,
+                launch_symbols=launch_symbols,
+                log_path=log_path_resolved,
+                log_confirmed=True,
+                latest_live_cycle_started_at=latest_live_cycle_started_at,
+                latest_live_cycle_checkpoint=latest_live_cycle_checkpoint,
+                latest_live_cycle_requested_leverage=latest_live_cycle_requested_leverage,
+                latest_live_cycle_status=latest_live_cycle_status,
+                latest_live_cycle_allocation_source=latest_live_cycle_allocation_source,
+                healthy_live_cycle_count=healthy_live_cycle_count,
+                required_healthy_live_cycles=minimum_healthy_live_cycles,
+                snapshot_checked=snapshot_checked,
+                snapshot_confirmed=snapshot_confirmed,
+                snapshot_reason=snapshot_reason,
+                machine_checked=machine_checked,
+                machine_confirmed=machine_confirmed,
+                machine_reason=machine_reason,
+                machine_launch_mismatch_issues=machine_launch_mismatch_issues,
+                machine_health_issues=machine_health_issues,
+            )
+
     return DeployVerificationResult(
         ok=True,
         reason="deploy verification passed",
@@ -459,6 +526,11 @@ def verify_deployed_binance_hybrid(
         snapshot_checked=snapshot_checked,
         snapshot_confirmed=snapshot_confirmed,
         snapshot_reason=snapshot_reason,
+        machine_checked=machine_checked,
+        machine_confirmed=machine_confirmed,
+        machine_reason=machine_reason,
+        machine_launch_mismatch_issues=machine_launch_mismatch_issues,
+        machine_health_issues=machine_health_issues,
     )
 
 
@@ -472,11 +544,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-path", required=True)
     parser.add_argument("--trace-dir", default=str(DEFAULT_TRACE_DIR))
     parser.add_argument("--deployed-after", default="")
+    parser.add_argument("--log-offset-bytes", type=int, default=0)
     parser.add_argument("--max-log-lines", type=int, default=200)
     parser.add_argument("--require-live-snapshot", action="store_true")
     parser.add_argument("--min-healthy-live-cycles", type=int, default=0)
     parser.add_argument("--wait-timeout-seconds", type=float, default=0.0)
     parser.add_argument("--poll-interval-seconds", type=float, default=5.0)
+    parser.add_argument("--require-machine-state-match", action="store_true")
     return parser
 
 
@@ -495,11 +569,13 @@ def main(argv: list[str] | None = None) -> int:
         log_path=args.log_path,
         trace_dir=args.trace_dir,
         deployed_after=args.deployed_after or None,
+        log_offset_bytes=args.log_offset_bytes,
         max_log_lines=args.max_log_lines,
         require_live_snapshot=args.require_live_snapshot,
         minimum_healthy_live_cycles=args.min_healthy_live_cycles,
         wait_timeout_seconds=args.wait_timeout_seconds,
         poll_interval_seconds=args.poll_interval_seconds,
+        require_machine_state_match=args.require_machine_state_match,
     )
 
     print(f"Launch:   {result.launch_script}")
@@ -523,6 +599,10 @@ def main(argv: list[str] | None = None) -> int:
         )
     if result.snapshot_reason:
         print(f"Snapshot: {result.snapshot_reason}")
+    if result.machine_checked:
+        print(f"Mach OK:  {'yes' if result.machine_confirmed else 'no'}")
+        if result.machine_reason:
+            print(f"Machine: {result.machine_reason}")
     print(f"Decision: {'ALLOW' if result.ok else 'BLOCK'} -- {result.reason}")
     return 0 if result.ok else 1
 

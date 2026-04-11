@@ -7,6 +7,7 @@ import tempfile
 
 import numpy as np
 import pytest
+import torch
 
 from binanceneural.config import TrainingConfig
 from binanceneural.data import FeatureNormalizer
@@ -26,6 +27,63 @@ class _TinyDataModule:
 
     def val_dataloader(self, batch_size: int, num_workers: int = 0):
         return [None]
+
+
+class _SingleBatchDataModule:
+    def __init__(self) -> None:
+        self.feature_columns = [f"feat_{idx}" for idx in range(4)]
+        self.normalizer = FeatureNormalizer(
+            mean=np.zeros(4, dtype=np.float32),
+            std=np.ones(4, dtype=np.float32),
+        )
+        seq_len = 6
+        batch = {
+            "features": torch.zeros(1, seq_len, 4),
+            "open": torch.full((1, seq_len), 100.0),
+            "high": torch.full((1, seq_len), 101.0),
+            "low": torch.full((1, seq_len), 99.0),
+            "close": torch.full((1, seq_len), 100.0),
+            "reference_close": torch.full((1, seq_len), 100.0),
+            "chronos_high": torch.full((1, seq_len), 101.0),
+            "chronos_low": torch.full((1, seq_len), 99.0),
+            "can_long": torch.tensor([1.0]),
+            "can_short": torch.tensor([0.0]),
+        }
+        self._loader = [batch]
+
+    def train_dataloader(self, batch_size: int, num_workers: int = 0):
+        return self._loader
+
+    def val_dataloader(self, batch_size: int, num_workers: int = 0):
+        return self._loader
+
+
+class _DummyPolicy(torch.nn.Module):
+    def forward(self, features: torch.Tensor) -> dict[str, torch.Tensor]:
+        shape = (*features.shape[:2], 1)
+        zeros = torch.zeros(shape, device=features.device, dtype=features.dtype)
+        return {
+            "buy_price_logits": zeros,
+            "sell_price_logits": zeros,
+            "buy_amount_logits": zeros,
+            "sell_amount_logits": zeros,
+        }
+
+    def decode_actions(
+        self,
+        outputs: dict[str, torch.Tensor],
+        *,
+        reference_close: torch.Tensor,
+        chronos_high: torch.Tensor,
+        chronos_low: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        return {
+            "buy_price": reference_close * 0.999,
+            "sell_price": reference_close * 1.001,
+            "buy_amount": torch.full_like(reference_close, 50.0),
+            "sell_amount": torch.full_like(reference_close, 50.0),
+            "trade_amount": torch.full_like(reference_close, 50.0),
+        }
 
 
 def test_trainer_prefers_robust_checkpoint_metric(monkeypatch, caplog: pytest.LogCaptureFixture) -> None:
@@ -93,3 +151,63 @@ def test_trainer_prefers_robust_checkpoint_metric(monkeypatch, caplog: pytest.Lo
             assert progress["best_checkpoint"].endswith("epoch_002.pt")
 
     assert "Skipping initial CUDA forward probe because the first training batch was None." in caplog.text
+
+
+def test_validation_aggregates_binary_fill_metrics_across_lag_range_with_minimax(monkeypatch) -> None:
+    lag_calls: list[int] = []
+
+    class _FakeSimResult:
+        def __init__(self, lag: int) -> None:
+            self.returns = torch.full((1, 4), float(lag))
+
+    def _fake_binary_sim(**kwargs):
+        lag = int(kwargs["decision_lag_bars"])
+        lag_calls.append(lag)
+        return _FakeSimResult(lag)
+
+    def _fake_compute_loss_by_type(returns, *_args, **_kwargs):
+        lag_score = float(returns.mean().item())
+        score = torch.tensor(lag_score)
+        loss = torch.tensor(-lag_score)
+        sortino = torch.tensor(lag_score + 10.0)
+        annual_return = torch.tensor(lag_score + 20.0)
+        return loss, score, sortino, annual_return
+
+    monkeypatch.setattr("binanceneural.trainer.simulate_hourly_trades_binary", _fake_binary_sim)
+    monkeypatch.setattr("binanceneural.trainer.compute_loss_by_type", _fake_compute_loss_by_type)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cfg = TrainingConfig(
+            epochs=1,
+            batch_size=1,
+            sequence_length=6,
+            transformer_dim=16,
+            transformer_layers=1,
+            transformer_heads=4,
+            transformer_dropout=0.0,
+            use_compile=False,
+            use_amp=False,
+            use_tf32=False,
+            use_flash_attention=False,
+            checkpoint_root=Path(tmpdir) / "ckpts",
+            run_name="validation_lag_minimax",
+            decision_lag_bars=0,
+            decision_lag_range="0,1,2",
+            validation_use_binary_fills=True,
+            validation_lag_aggregation="minimax",
+        )
+        trainer = BinanceHourlyTrainer(cfg, _SingleBatchDataModule())
+        metrics, _ = trainer._run_epoch(
+            _DummyPolicy(),
+            trainer.data.val_dataloader(batch_size=1),
+            optimizer=None,
+            train=False,
+            global_step=0,
+            current_epoch=1,
+        )
+
+    assert lag_calls == [0, 1, 2]
+    assert metrics["loss"] == pytest.approx(0.0)
+    assert metrics["score"] == pytest.approx(0.0)
+    assert metrics["sortino"] == pytest.approx(10.0)
+    assert metrics["return"] == pytest.approx(20.0)

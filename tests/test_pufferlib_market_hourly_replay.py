@@ -136,6 +136,74 @@ def test_simulate_daily_policy_allocation_bins_scale_position_size():
     assert res_full.total_return == pytest.approx(res_half.total_return * 2.0, abs=1e-9)
 
 
+def test_simulate_daily_policy_respects_long_leverage_above_one() -> None:
+    data = _single_symbol_daily_data(np.asarray([100.0, 110.0, 121.0], dtype=np.float32))
+
+    res_1x = simulate_daily_policy(
+        data,
+        lambda obs: 1,
+        max_steps=2,
+        fee_rate=0.0,
+        max_leverage=1.0,
+        periods_per_year=365.0,
+    )
+    res_2x = simulate_daily_policy(
+        data,
+        lambda obs: 1,
+        max_steps=2,
+        fee_rate=0.0,
+        max_leverage=2.0,
+        periods_per_year=365.0,
+    )
+
+    assert res_1x.total_return == pytest.approx(0.21, abs=1e-9)
+    assert res_2x.total_return == pytest.approx(0.42, abs=1e-9)
+    assert res_2x.total_return > res_1x.total_return
+
+
+def test_hourly_replay_respects_fill_buffer_and_slippage() -> None:
+    data = _single_symbol_daily_data(np.asarray([100.0, 110.0, 121.0], dtype=np.float32))
+    market_index = pd.date_range("2024-01-01T00:00:00Z", "2024-01-03T23:00:00Z", freq="h", tz="UTC")
+    market_close = np.zeros((len(market_index),), dtype=np.float64)
+    market_close[market_index.floor("D") == pd.Timestamp("2024-01-01", tz="UTC")] = 100.0
+    market_close[market_index.floor("D") == pd.Timestamp("2024-01-02", tz="UTC")] = 110.0
+    market_close[market_index.floor("D") == pd.Timestamp("2024-01-03", tz="UTC")] = 121.0
+    market = HourlyMarket(
+        index=market_index,
+        close={"AAA": market_close},
+        tradable={"AAA": np.ones((len(market_index),), dtype=bool)},
+    )
+
+    slipped = replay_hourly_frozen_daily_actions(
+        data=data,
+        actions=np.asarray([1, 1], dtype=np.int32),
+        market=market,
+        start_date="2024-01-01",
+        end_date="2024-01-03",
+        max_steps=2,
+        fee_rate=0.0,
+        slippage_bps=100.0,
+        max_leverage=1.0,
+        periods_per_year=8760.0,
+    )
+    blocked = replay_hourly_frozen_daily_actions(
+        data=data,
+        actions=np.asarray([1, 1], dtype=np.int32),
+        market=market,
+        start_date="2024-01-01",
+        end_date="2024-01-03",
+        max_steps=2,
+        fee_rate=0.0,
+        fill_buffer_bps=50.0,
+        max_leverage=1.0,
+        periods_per_year=8760.0,
+    )
+
+    assert slipped.total_return == pytest.approx(0.1860396039603962, abs=1e-9)
+    assert blocked.total_return == pytest.approx(0.0, abs=1e-12)
+    assert blocked.num_orders == 0
+
+
 def test_hourly_replay_supports_allocation_bins_for_frozen_daily_actions() -> None:
     data = _single_symbol_daily_data(np.asarray([100.0, 110.0, 121.0], dtype=np.float32))
     market_index = pd.date_range("2024-01-01T00:00:00Z", "2024-01-03T23:00:00Z", freq="h", tz="UTC")
@@ -176,6 +244,49 @@ def test_hourly_replay_supports_allocation_bins_for_frozen_daily_actions() -> No
 
     assert hourly_half.total_return == pytest.approx(0.105, abs=1e-9)
     assert hourly_full.total_return == pytest.approx(0.21, abs=1e-9)
+
+
+def test_simulate_hourly_policy_respects_fill_buffer_and_slippage() -> None:
+    data = _single_symbol_daily_data(np.asarray([100.0, 110.0, 121.0], dtype=np.float32))
+    market_index = pd.date_range("2024-01-01T00:00:00Z", "2024-01-03T23:00:00Z", freq="h", tz="UTC")
+    market_close = np.zeros((len(market_index),), dtype=np.float64)
+    market_close[market_index.floor("D") == pd.Timestamp("2024-01-01", tz="UTC")] = 100.0
+    market_close[market_index.floor("D") == pd.Timestamp("2024-01-02", tz="UTC")] = 110.0
+    market_close[market_index.floor("D") == pd.Timestamp("2024-01-03", tz="UTC")] = 121.0
+    market = HourlyMarket(
+        index=market_index,
+        close={"AAA": market_close},
+        tradable={"AAA": np.ones((len(market_index),), dtype=bool)},
+    )
+
+    slipped = simulate_hourly_policy(
+        data=data,
+        policy_fn=lambda obs: 1,
+        market=market,
+        start_date="2024-01-01",
+        end_date="2024-01-03",
+        max_steps_days=2,
+        fee_rate=0.0,
+        slippage_bps=100.0,
+        max_leverage=1.0,
+        periods_per_year=8760.0,
+    )
+    blocked = simulate_hourly_policy(
+        data=data,
+        policy_fn=lambda obs: 1,
+        market=market,
+        start_date="2024-01-01",
+        end_date="2024-01-03",
+        max_steps_days=2,
+        fee_rate=0.0,
+        fill_buffer_bps=50.0,
+        max_leverage=1.0,
+        periods_per_year=8760.0,
+    )
+
+    assert slipped.total_return == pytest.approx(0.1860396039603962, abs=1e-9)
+    assert blocked.total_return == pytest.approx(0.0, abs=1e-12)
+    assert blocked.num_orders == 0
 
 
 def test_simulate_hourly_policy_supports_allocation_bins() -> None:

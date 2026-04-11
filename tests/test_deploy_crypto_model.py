@@ -133,6 +133,48 @@ def _write_executable(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
+def _write_matching_live_ps(path: Path) -> None:
+    _write_executable(
+        path,
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                'launch="${LAUNCH:?}"',
+                'checkpoint="$(grep -oE -- \'--rl-checkpoint [^ \\\\\\\\]*\' "$launch" | awk \'{print $2}\' | head -n 1)"',
+                'symbols="$(grep -oE -- \'--symbols [^\\\\]*\\\\\' "$launch" | head -n 1 | sed -E \'s/^--symbols //; s/[[:space:]]*\\\\$//\' | xargs)"',
+                'leverage="$(grep -oE -- \'--leverage [^ \\\\\\\\]*\' "$launch" | awk \'{print $2}\' | head -n 1)"',
+                'if [[ -z "$symbols" ]]; then symbols="BTCUSD ETHUSD SOLUSD"; fi',
+                'if [[ -z "$leverage" ]]; then leverage="0.5"; fi',
+                'if [[ -n "$checkpoint" ]]; then',
+                '  printf "1712424 /home/lee/code/stock/.venv313/bin/python -u rl_trading_agent_binance/trade_binance_live.py --live --model gemini-3.1-flash-lite-preview --symbols %s --execution-mode margin --leverage %s --interval 3600 --fallback-mode chronos2 --rl-checkpoint %s\\n" "$symbols" "$leverage" "$checkpoint"',
+                "else",
+                '  printf "1712424 /home/lee/code/stock/.venv313/bin/python -u rl_trading_agent_binance/trade_binance_live.py --live --model gemini-3.1-flash-lite-preview --symbols %s --execution-mode margin --leverage %s --interval 3600 --fallback-mode chronos2\\n" "$symbols" "$leverage"',
+                "fi",
+            ]
+        ),
+    )
+
+
+def _write_logging_supervisorctl(path: Path, *, append: bool = True) -> None:
+    redirect = ">>" if append else ">"
+    _write_executable(
+        path,
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                'launch="${LAUNCH:?}"',
+                'log="${LOG:?}"',
+                'checkpoint="$(grep -oE -- \'--rl-checkpoint [^ \\\\\\\\]*\' "$launch" | awk \'{print $2}\' | head -n 1)"',
+                'if [[ -n "$checkpoint" ]]; then',
+                f'  printf "Hybrid mode: RL=%s + Gemini=gemini-3.1-flash-lite-preview\\n" "$checkpoint" {redirect} "$log"',
+                "else",
+                f'  printf "Hybrid mode: RL=disabled + Gemini=gemini-3.1-flash-lite-preview\\n" {redirect} "$log"',
+                "fi",
+                "exit 0",
+            ]
+        ),
+    )
+
 def test_deploy_crypto_model_dry_run_blocks_stale_manifest(tmp_path: Path) -> None:
     launch = tmp_path / "launch.sh"
     current_checkpoint = tmp_path / "current.pt"
@@ -818,11 +860,69 @@ def test_deploy_crypto_model_live_run_verifies_restart_state(tmp_path: Path) -> 
     _write_manifest(manifest, current_checkpoint, candidate_checkpoint, candidate_goodness=2.0)
     log_path = tmp_path / "supervisor.log"
     log_path.write_text(
+        f"Hybrid mode: RL={current_checkpoint.resolve()} + Gemini=gemini-3.1-flash-lite-preview\n"
+    )
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_matching_live_ps(fake_bin / "ps")
+    _write_executable(
+        fake_bin / "sudo",
+        '#!/usr/bin/env bash\nif [[ "$1" == "-S" ]]; then shift; fi\nexec "$@"\n',
+    )
+    _write_logging_supervisorctl(fake_bin / "supervisorctl")
+    _write_executable(
+        fake_bin / "sleep",
+        "#!/usr/bin/env bash\nexit 0\n",
+    )
+
+    env = os.environ.copy()
+    env["LAUNCH"] = str(launch)
+    env["LOG"] = str(log_path)
+    env["SUPERVISOR_PROG"] = "test-binance-hybrid-spot"
+    env["PYTHON_BIN"] = sys.executable
+    env["TRACE_DIR"] = str(tmp_path / "trace")
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(SCRIPT),
+            "--manifest-path",
+            str(manifest),
+            str(candidate_checkpoint),
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        cwd=str(REPO),
+        env=env,
+    )
+
+    combined = result.stdout + result.stderr
+    assert result.returncode == 0
+    assert "Verifying deploy..." in combined
+    assert "Decision: ALLOW -- deploy verification passed" in combined
+    assert str(candidate_checkpoint.resolve()) in launch.read_text()
+
+
+def test_deploy_crypto_model_blocks_live_run_when_startup_log_is_only_stale(tmp_path: Path) -> None:
+    launch = tmp_path / "launch.sh"
+    current_checkpoint = tmp_path / "current.pt"
+    current_checkpoint.write_text("x")
+    candidate_checkpoint = tmp_path / "candidate.pt"
+    candidate_checkpoint.write_text("y")
+    _write_launch(launch, current_checkpoint)
+    manifest = tmp_path / "prod_launch_eval_manifest.json"
+    _write_manifest(manifest, current_checkpoint, candidate_checkpoint, candidate_goodness=2.0)
+    log_path = tmp_path / "supervisor.log"
+    log_path.write_text(
         f"Hybrid mode: RL={candidate_checkpoint.resolve()} + Gemini=gemini-3.1-flash-lite-preview\n"
     )
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    _write_matching_live_ps(fake_bin / "ps")
     _write_executable(
         fake_bin / "sudo",
         '#!/usr/bin/env bash\nif [[ "$1" == "-S" ]]; then shift; fi\nexec "$@"\n',
@@ -860,10 +960,71 @@ def test_deploy_crypto_model_live_run_verifies_restart_state(tmp_path: Path) -> 
     )
 
     combined = result.stdout + result.stderr
-    assert result.returncode == 0
-    assert "Verifying deploy..." in combined
-    assert "Decision: ALLOW -- deploy verification passed" in combined
-    assert str(candidate_checkpoint.resolve()) in launch.read_text()
+    assert result.returncode != 0
+    assert "supervisor log does not show the expected checkpoint startup line" in combined
+    assert "Rolling back launch.sh" in combined
+    assert str(current_checkpoint.resolve()) in launch.read_text()
+
+def test_deploy_crypto_model_blocks_live_run_when_hybrid_process_drifts(tmp_path: Path) -> None:
+    launch = tmp_path / "launch.sh"
+    current_checkpoint = tmp_path / "current.pt"
+    current_checkpoint.write_text("x")
+    candidate_checkpoint = tmp_path / "candidate.pt"
+    candidate_checkpoint.write_text("y")
+    stale_checkpoint = tmp_path / "stale.pt"
+    stale_checkpoint.write_text("z")
+    _write_launch(launch, current_checkpoint)
+    manifest = tmp_path / "prod_launch_eval_manifest.json"
+    _write_manifest(manifest, current_checkpoint, candidate_checkpoint, candidate_goodness=2.0)
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "ps",
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                f'printf "1712424 /home/lee/code/stock/.venv313/bin/python -u rl_trading_agent_binance/trade_binance_live.py --live --model gemini-3.1-flash-lite-preview --symbols BTCUSD ETHUSD SOLUSD --execution-mode margin --leverage 0.5 --interval 3600 --fallback-mode chronos2 --rl-checkpoint {stale_checkpoint.resolve()}\\n"',
+            ]
+        ),
+    )
+    _write_executable(
+        fake_bin / "sudo",
+        '#!/usr/bin/env bash\nif [[ "$1" == "-S" ]]; then shift; fi\nexec "$@"\n',
+    )
+    _write_executable(
+        fake_bin / "supervisorctl",
+        "#!/usr/bin/env bash\nexit 0\n",
+    )
+
+    env = os.environ.copy()
+    env["LAUNCH"] = str(launch)
+    env["LOG"] = str(tmp_path / "supervisor.log")
+    env["SUPERVISOR_PROG"] = "test-binance-hybrid-spot"
+    env["PYTHON_BIN"] = sys.executable
+    env["TRACE_DIR"] = str(tmp_path / "trace")
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(SCRIPT),
+            "--manifest-path",
+            str(manifest),
+            str(candidate_checkpoint),
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        cwd=str(REPO),
+        env=env,
+    )
+
+    combined = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "Deployment blocked by live process preflight." in combined
+    assert "binance live hybrid process drift detected" in combined
+    assert str(current_checkpoint.resolve()) in launch.read_text()
 
 
 def test_deploy_crypto_model_waits_for_healthy_live_snapshot_when_requested(tmp_path: Path) -> None:
@@ -879,6 +1040,7 @@ def test_deploy_crypto_model_waits_for_healthy_live_snapshot_when_requested(tmp_
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    _write_matching_live_ps(fake_bin / "ps")
     _write_executable(
         fake_bin / "sudo",
         '#!/usr/bin/env bash\nif [[ "$1" == "-S" ]]; then shift; fi\nexec "$@"\n',
@@ -955,6 +1117,130 @@ def test_deploy_crypto_model_waits_for_healthy_live_snapshot_when_requested(tmp_
     assert "Decision: ALLOW -- deploy verification passed" in combined
 
 
+def test_deploy_crypto_model_rolls_back_when_machine_state_drifts_after_restart(tmp_path: Path) -> None:
+    launch = tmp_path / "launch.sh"
+    current_checkpoint = tmp_path / "current.pt"
+    current_checkpoint.write_text("x")
+    candidate_checkpoint = tmp_path / "candidate.pt"
+    candidate_checkpoint.write_text("y")
+    _write_launch(launch, current_checkpoint)
+    manifest = tmp_path / "prod_launch_eval_manifest.json"
+    _write_manifest(manifest, current_checkpoint, candidate_checkpoint, candidate_goodness=2.0)
+    log_path = tmp_path / "supervisor.log"
+    supervisor_count_path = tmp_path / "restart_count.txt"
+    ps_count_path = tmp_path / "ps_count.txt"
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "ps",
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                'count_file="${PS_CALL_COUNT:?}"',
+                'launch="${LAUNCH:?}"',
+                "count=0",
+                'if [[ -f "$count_file" ]]; then count="$(cat "$count_file")"; fi',
+                "count=$((count + 1))",
+                'printf "%s" "$count" > "$count_file"',
+                'checkpoint="$(grep -oE -- \'--rl-checkpoint [^ \\\\\\\\]*\' "$launch" | awk \'{print $2}\' | head -n 1)"',
+                "if (( count >= 3 && count <= 4 )); then",
+                '  printf "1712424 /home/lee/code/stock/.venv313/bin/python -u rl_trading_agent_binance/trade_binance_live.py --live --model gemini-3.1-flash-lite-preview --symbols BTCUSD ETHUSD SOLUSD --execution-mode margin --leverage 0.5 --interval 3600 --fallback-mode chronos2 --rl-checkpoint %s\\n" "$checkpoint"',
+                '  printf "2135 /home/lee/code/stock/.venv313/bin/python -u -m binanceexp1.trade_binance_selector --symbols BTCUSD\\n"',
+                "else",
+                '  if [[ -n "$checkpoint" ]]; then',
+                '    printf "1712424 /home/lee/code/stock/.venv313/bin/python -u rl_trading_agent_binance/trade_binance_live.py --live --model gemini-3.1-flash-lite-preview --symbols BTCUSD ETHUSD SOLUSD --execution-mode margin --leverage 0.5 --interval 3600 --fallback-mode chronos2 --rl-checkpoint %s\\n" "$checkpoint"',
+                "  else",
+                '    printf "1712424 /home/lee/code/stock/.venv313/bin/python -u rl_trading_agent_binance/trade_binance_live.py --live --model gemini-3.1-flash-lite-preview --symbols BTCUSD ETHUSD SOLUSD --execution-mode margin --leverage 0.5 --interval 3600 --fallback-mode chronos2\\n"',
+                "  fi",
+                "fi",
+            ]
+        ),
+    )
+    _write_executable(
+        fake_bin / "sudo",
+        '#!/usr/bin/env bash\nif [[ "$1" == "-S" ]]; then shift; fi\nexec "$@"\n',
+    )
+    _write_executable(
+        fake_bin / "supervisorctl",
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                'count_file="${SUPERVISOR_CALL_COUNT:?}"',
+                'launch="${LAUNCH:?}"',
+                'log="${LOG:?}"',
+                'trace_dir="${TRACE_DIR:?}"',
+                "count=0",
+                'if [[ -f "$count_file" ]]; then count="$(cat "$count_file")"; fi',
+                "count=$((count + 1))",
+                'printf "%s" "$count" > "$count_file"',
+                'checkpoint="$(grep -oE -- \'--rl-checkpoint [^ \\\\\\\\]*\' "$launch" | awk \'{print $2}\' | head -n 1)"',
+                'ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"',
+                'printf "Hybrid mode: RL=%s + Gemini=gemini-3.1-flash-lite-preview\\n" "$checkpoint" > "$log"',
+                'mkdir -p "$trace_dir"',
+                'python - "$trace_dir" "$ts" "$checkpoint" "$count" <<\'PY\'',
+                "import json",
+                "import sys",
+                "from pathlib import Path",
+                "trace_dir = Path(sys.argv[1])",
+                "ts = sys.argv[2]",
+                "checkpoint = sys.argv[3]",
+                "count = int(sys.argv[4])",
+                "path = trace_dir / f\"hybrid-cycle_{ts[:10].replace('-', '')}.jsonl\"",
+                "snapshot = {",
+                '    "event": "cycle_snapshot",',
+                '    "cycle_started_at": ts,',
+                '    "mode": "live",',
+                '    "cycle_id": f"c{count}",',
+                '    "status": "completed",',
+                '    "rl_checkpoint": checkpoint,',
+                '    "requested_tradable_symbols": ["BTCUSD", "ETHUSD", "SOLUSD"],',
+                '    "requested_leverage": 0.5,',
+                "}",
+                'path.write_text(json.dumps(snapshot) + "\\n", encoding="utf-8")',
+                "PY",
+                "exit 0",
+                "",
+            ]
+        ),
+    )
+    _write_executable(fake_bin / "sleep", "#!/usr/bin/env bash\nexit 0\n")
+
+    env = os.environ.copy()
+    env["LAUNCH"] = str(launch)
+    env["LOG"] = str(log_path)
+    env["SUPERVISOR_PROG"] = "test-binance-hybrid-spot"
+    env["PYTHON_BIN"] = sys.executable
+    env["TRACE_DIR"] = str(tmp_path / "trace")
+    env["SUPERVISOR_CALL_COUNT"] = str(supervisor_count_path)
+    env["PS_CALL_COUNT"] = str(ps_count_path)
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(SCRIPT),
+            "--manifest-path",
+            str(manifest),
+            "--wait-for-live-cycle-seconds",
+            "60",
+            str(candidate_checkpoint),
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+        cwd=str(REPO),
+        env=env,
+    )
+
+    combined = result.stdout + result.stderr
+    assert result.returncode == 1
+    assert "conflicting Binance live writers detected: selector(pid=2135)" in combined
+    assert "Rolling back launch.sh" in combined
+    assert launch.read_text().find(str(current_checkpoint.resolve())) != -1
+    assert supervisor_count_path.read_text() == "2"
+
+
 def test_deploy_crypto_model_rolls_back_when_waited_live_snapshot_has_unexpected_order_symbol(tmp_path: Path) -> None:
     launch = tmp_path / "launch.sh"
     current_checkpoint = tmp_path / "current.pt"
@@ -969,6 +1255,7 @@ def test_deploy_crypto_model_rolls_back_when_waited_live_snapshot_has_unexpected
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    _write_matching_live_ps(fake_bin / "ps")
     _write_executable(
         fake_bin / "sudo",
         '#!/usr/bin/env bash\nif [[ "$1" == "-S" ]]; then shift; fi\nexec "$@"\n',
@@ -1070,6 +1357,7 @@ def test_deploy_crypto_model_rolls_back_when_live_snapshot_omits_checkpoint(tmp_
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    _write_matching_live_ps(fake_bin / "ps")
     _write_executable(
         fake_bin / "sudo",
         '#!/usr/bin/env bash\nif [[ "$1" == "-S" ]]; then shift; fi\nexec "$@"\n',
@@ -1167,6 +1455,7 @@ def test_deploy_crypto_model_requires_multiple_healthy_live_cycles_when_requeste
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    _write_matching_live_ps(fake_bin / "ps")
     _write_executable(
         fake_bin / "sudo",
         '#!/usr/bin/env bash\nif [[ "$1" == "-S" ]]; then shift; fi\nexec "$@"\n',
@@ -1274,6 +1563,7 @@ def test_deploy_crypto_model_rolls_back_when_waited_live_snapshot_is_unhealthy(t
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    _write_matching_live_ps(fake_bin / "ps")
     _write_executable(
         fake_bin / "sudo",
         '#!/usr/bin/env bash\nif [[ "$1" == "-S" ]]; then shift; fi\nexec "$@"\n',
@@ -1376,6 +1666,7 @@ def test_deploy_crypto_model_rolls_back_when_waited_live_snapshot_uses_rl_only_f
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    _write_matching_live_ps(fake_bin / "ps")
     _write_executable(
         fake_bin / "sudo",
         '#!/usr/bin/env bash\nif [[ "$1" == "-S" ]]; then shift; fi\nexec "$@"\n',
@@ -1479,6 +1770,7 @@ def test_deploy_crypto_model_rolls_back_when_verification_fails(tmp_path: Path) 
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    _write_matching_live_ps(fake_bin / "ps")
     _write_executable(
         fake_bin / "sudo",
         '#!/usr/bin/env bash\nif [[ "$1" == "-S" ]]; then shift; fi\nexec "$@"\n',
@@ -1558,6 +1850,7 @@ def test_deploy_crypto_model_verifies_existing_symbols_when_not_overridden(tmp_p
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    _write_matching_live_ps(fake_bin / "ps")
     _write_executable(
         fake_bin / "sudo",
         '#!/usr/bin/env bash\nif [[ "$1" == "-S" ]]; then shift; fi\nexec "$@"\n',
@@ -1637,6 +1930,7 @@ def test_deploy_crypto_model_remove_rl_verifies_gemini_only_restart(tmp_path: Pa
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    _write_matching_live_ps(fake_bin / "ps")
     _write_executable(
         fake_bin / "sudo",
         '#!/usr/bin/env bash\nif [[ "$1" == "-S" ]]; then shift; fi\nexec "$@"\n',
@@ -1698,6 +1992,7 @@ def test_deploy_crypto_model_remove_rl_updates_symbols_when_overridden(tmp_path:
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    _write_matching_live_ps(fake_bin / "ps")
     _write_executable(
         fake_bin / "sudo",
         '#!/usr/bin/env bash\nif [[ "$1" == "-S" ]]; then shift; fi\nexec "$@"\n',
@@ -1761,6 +2056,7 @@ def test_deploy_crypto_model_remove_rl_rolls_back_on_verification_failure(tmp_pa
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    _write_matching_live_ps(fake_bin / "ps")
     _write_executable(
         fake_bin / "sudo",
         '#!/usr/bin/env bash\nif [[ "$1" == "-S" ]]; then shift; fi\nexec "$@"\n',
@@ -1835,6 +2131,7 @@ def test_deploy_crypto_model_redeploys_from_gemini_only_launch_and_rolls_back_cl
 
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
+    _write_matching_live_ps(fake_bin / "ps")
     _write_executable(
         fake_bin / "sudo",
         '#!/usr/bin/env bash\nif [[ "$1" == "-S" ]]; then shift; fi\nexec "$@"\n',

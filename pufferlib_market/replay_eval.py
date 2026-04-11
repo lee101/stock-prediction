@@ -224,6 +224,7 @@ def main() -> None:
     p.add_argument("--end-date", required=True, help="UTC date used to export the daily MKTD (inclusive)")
     p.add_argument("--max-steps", type=int, required=True, help="Episode steps (days), e.g. 50")
     p.add_argument("--fee-rate", type=float, default=0.001)
+    p.add_argument("--slippage-bps", type=float, default=0.0)
     p.add_argument(
         "--fill-buffer-bps",
         type=float,
@@ -315,6 +316,8 @@ def main() -> None:
         end_date=args.end_date,
         max_steps=effective_max_steps,
         fee_rate=args.fee_rate,
+        slippage_bps=args.slippage_bps,
+        fill_buffer_bps=args.fill_buffer_bps,
         max_leverage=args.max_leverage,
         short_borrow_apr=args.short_borrow_apr,
         periods_per_year=args.hourly_periods_per_year,
@@ -333,6 +336,8 @@ def main() -> None:
             end_date=args.end_date,
             max_steps_days=effective_max_steps,
             fee_rate=args.fee_rate,
+            slippage_bps=args.slippage_bps,
+            fill_buffer_bps=args.fill_buffer_bps,
             max_leverage=args.max_leverage,
             short_borrow_apr=args.short_borrow_apr,
             periods_per_year=args.hourly_periods_per_year,
@@ -349,6 +354,7 @@ def main() -> None:
         "symbols": list(daily_data.symbols),
         "tradable_symbols": resolved_tradable_symbols,
         "disable_shorts": bool(args.disable_shorts),
+        "slippage_bps": float(args.slippage_bps),
         "fill_buffer_bps": float(args.fill_buffer_bps),
         "daily": _section_metrics(
             total_return=daily.total_return,
@@ -425,6 +431,8 @@ def main() -> None:
                 end_date=args.end_date,
                 max_steps=effective_max_steps,
                 fee_rate=args.fee_rate,
+                slippage_bps=args.slippage_bps,
+                fill_buffer_bps=args.fill_buffer_bps,
                 max_leverage=args.max_leverage,
                 short_borrow_apr=args.short_borrow_apr,
                 periods_per_year=args.hourly_periods_per_year,
@@ -453,6 +461,8 @@ def main() -> None:
                     end_date=args.end_date,
                     max_steps_days=effective_max_steps,
                     fee_rate=args.fee_rate,
+                    slippage_bps=args.slippage_bps,
+                    fill_buffer_bps=args.fill_buffer_bps,
                     max_leverage=args.max_leverage,
                     short_borrow_apr=args.short_borrow_apr,
                     periods_per_year=args.hourly_periods_per_year,

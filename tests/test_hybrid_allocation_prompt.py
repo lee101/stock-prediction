@@ -573,6 +573,57 @@ def test_filter_allocation_plan_to_symbols_drops_non_tradable_entries() -> None:
     assert "filtered_non_tradable=DOTUSD" in filtered.reasoning
 
 
+def test_evaluate_hybrid_account_guard_flags_contaminated_margin_state() -> None:
+    state = trade_binance_live.PortfolioState(
+        usdt_balance=120.0,
+        borrowed_quotes={"USDT": 650.0},
+        positions={"AAVE": 50.0, "XRP": 1000.0},
+        total_value_usd=1000.0,
+    )
+    positions_valued = {
+        "AAVEUSD": (50.0, 5000.0),
+        "XRPUSD": (1000.0, 400.0),
+    }
+    open_orders = [
+        {
+            "symbol": "AAVEUSDT",
+            "side": "SELL",
+            "status": "NEW",
+            "price": "100.0",
+            "origQty": "40",
+            "executedQty": "0",
+            "orderId": 1,
+        },
+        {
+            "symbol": "XRPUSDT",
+            "side": "BUY",
+            "status": "NEW",
+            "price": "0.4",
+            "origQty": "500",
+            "executedQty": "0",
+            "orderId": 2,
+        },
+    ]
+
+    result = trade_binance_live._evaluate_hybrid_account_guard(
+        state,
+        positions_valued,
+        open_orders,
+        execution_mode="margin",
+        effective_leverage=0.5,
+        allowed_symbols=["BTCUSD", "DOGEUSD", "AAVEUSD"],
+        enforce=True,
+    )
+
+    assert result["triggered"] is True
+    assert result["blocked"] is True
+    assert len(result["unexpected_borrowed_quotes"]) == 1
+    assert [item["symbol"] for item in result["foreign_positions"]] == ["XRPUSD"]
+    assert [item["symbol"] for item in result["oversized_positions"]] == ["AAVEUSD"]
+    assert [item["symbol"] for item in result["foreign_orders"]] == ["XRPUSDT"]
+    assert [item["internal_symbol"] for item in result["oversized_orders"]] == ["AAVEUSD"]
+
+
 def test_run_hybrid_trading_cycle_limits_gemini_to_active_symbols(monkeypatch: pytest.MonkeyPatch) -> None:
     contexts = [
         hybrid_prompt.SymbolContext(symbol="BTCUSD", price=100.0, klines=_sample_klines()),
@@ -675,6 +726,111 @@ def test_run_hybrid_trading_cycle_limits_gemini_to_active_symbols(monkeypatch: p
     assert captured["gemini_tradable_symbols"] == ["BTCUSD", "DOGEUSD"]
     assert placed_symbols == ["BTCUSD"]
     assert len(orders) == 1
+
+
+def test_run_hybrid_trading_cycle_blocks_live_trading_on_contaminated_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshots: list[dict[str, object]] = []
+    gather_called = False
+    gemini_called = False
+    buy_called = False
+    sell_called = False
+
+    class FakeRLGen:
+        checkpoint_path = "/tmp/fake_hybrid_checkpoint.pt"
+        symbols = ("BTCUSD", "DOGEUSD")
+        action_names: ClassVar[list[str]] = ["FLAT", "LONG_BTC", "LONG_DOGE"]
+
+        def get_signal(self, **kwargs):
+            raise AssertionError("RL signal should not be requested after account guard blocks")
+
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_sync_margin_capital",
+        lambda dry_run: trade_binance_live.MarginCapitalSyncPlan(),
+    )
+    monkeypatch.setattr(
+        trade_binance_live,
+        "get_portfolio_state",
+        lambda execution_mode: trade_binance_live.PortfolioState(
+            fdusd_balance=0.0,
+            usdt_balance=120.0,
+            borrowed_quotes={"USDT": 600.0},
+            borrowable_quotes={"USDT": 0.0},
+            positions={"XRP": 1000.0},
+            total_value_usd=1000.0,
+        ),
+    )
+    monkeypatch.setattr(trade_binance_live, "_repay_margin_debt_if_flat", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_cleanup_open_orders",
+        lambda *args, **kwargs: trade_binance_live.OpenOrderCleanupResult(
+            active=(
+                {
+                    "symbol": "XRPUSDT",
+                    "side": "BUY",
+                    "status": "NEW",
+                    "price": "0.4",
+                    "origQty": "500",
+                    "executedQty": "0",
+                    "orderId": 7,
+                },
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_get_market_price",
+        lambda cfg, execution_mode: {"BTCUSD": 100.0, "DOGEUSD": 0.1, "XRPUSD": 0.4}[cfg.symbol],
+    )
+
+    def _fake_gather_symbol_contexts(*args, **kwargs):
+        nonlocal gather_called
+        gather_called = True
+        return []
+
+    def _fake_call_gemini_allocation(*args, **kwargs):
+        nonlocal gemini_called
+        gemini_called = True
+        return hybrid_prompt.AllocationPlan(reasoning="should not happen")
+
+    def _fake_place_limit_buy(*args, **kwargs):
+        nonlocal buy_called
+        buy_called = True
+
+    def _fake_place_limit_sell(*args, **kwargs):
+        nonlocal sell_called
+        sell_called = True
+
+    monkeypatch.setattr(trade_binance_live, "gather_symbol_contexts", _fake_gather_symbol_contexts)
+    monkeypatch.setattr(trade_binance_live, "call_gemini_allocation", _fake_call_gemini_allocation)
+    monkeypatch.setattr(trade_binance_live, "place_limit_buy", _fake_place_limit_buy)
+    monkeypatch.setattr(trade_binance_live, "place_limit_sell", _fake_place_limit_sell)
+    monkeypatch.setattr(trade_binance_live, "append_cycle_snapshot", snapshots.append)
+
+    orders = trade_binance_live.run_hybrid_trading_cycle(
+        rl_gen=FakeRLGen(),
+        gemini_model="gemini-3.1-flash-lite-preview",
+        dry_run=False,
+        leverage=0.5,
+        execution_mode="margin",
+        tradable_symbols=["BTCUSD", "DOGEUSD"],
+    )
+
+    assert orders == []
+    assert gather_called is False
+    assert gemini_called is False
+    assert buy_called is False
+    assert sell_called is False
+    assert snapshots[-1]["status"] == "account_guard_blocked"
+    assert snapshots[-1]["allocation_source"] == "account_guard_noop"
+    account_guard = snapshots[-1]["account_guard"]
+    assert isinstance(account_guard, dict)
+    assert account_guard["blocked"] is True
+    assert [item["symbol"] for item in account_guard["foreign_positions"]] == ["XRPUSD"]
+    assert [item["symbol"] for item in account_guard["foreign_orders"]] == ["XRPUSDT"]
 
 
 def test_run_hybrid_trading_cycle_short_rl_fallback_exits_to_cash(

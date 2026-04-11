@@ -18,6 +18,7 @@ DEFAULT_REPLAY_EVAL_HOURLY_ROOT = "trainingdatahourly"
 DEFAULT_REPLAY_EVAL_START_DATE = "2025-06-01"
 DEFAULT_REPLAY_EVAL_END_DATE = "2026-02-05"
 DEFAULT_REPLAY_EVAL_FILL_BUFFER_BPS = 5.0
+DEFAULT_REPLAY_EVAL_SLIPPAGE_BPS_VALUES = (0.0, 5.0, 10.0, 20.0)
 DEFAULT_DAILY_PERIODS_PER_YEAR = 365.0
 DEFAULT_HOURLY_PERIODS_PER_YEAR = 8760.0
 DEFAULT_REPLAY_ROBUST_START_STATES = ""
@@ -32,6 +33,29 @@ DEFAULT_PROD_EVAL_RUNTIME_MIN_HEALTHY_COMPLETED = 1
 DEFAULT_PROD_EVAL_RUNTIME_MAX_DEGRADED_STATUS_COUNT = 0
 DEFAULT_PROD_EVAL_RUNTIME_MAX_DEGRADED_FALLBACK_COUNT = 0
 DEFAULT_PROD_EVAL_RUNTIME_MAX_GEMINI_SKIPPED_COUNT = 0
+
+
+def normalize_replay_eval_slippage_bps_values(values: object) -> tuple[float, ...]:
+    if isinstance(values, str):
+        raw_tokens = [token.strip() for token in values.replace(",", " ").split()]
+    elif isinstance(values, (list, tuple, set)):
+        raw_tokens = [str(token).strip() for token in values]
+    else:
+        raw_tokens = [str(values).strip()] if values not in (None, "") else []
+
+    normalized: list[float] = []
+    seen: set[float] = set()
+    for token in raw_tokens:
+        if not token:
+            continue
+        value = float(token)
+        if value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    if not normalized:
+        raise ValueError("replay_eval_slippage_bps_values must contain at least one numeric value")
+    return tuple(sorted(normalized))
 
 
 def build_expected_prod_eval_config() -> dict[str, object]:
@@ -49,6 +73,7 @@ def build_expected_prod_eval_config() -> dict[str, object]:
         "replay_eval_start_date": DEFAULT_REPLAY_EVAL_START_DATE,
         "replay_eval_end_date": DEFAULT_REPLAY_EVAL_END_DATE,
         "replay_eval_fill_buffer_bps": DEFAULT_REPLAY_EVAL_FILL_BUFFER_BPS,
+        "replay_eval_slippage_bps_values": list(DEFAULT_REPLAY_EVAL_SLIPPAGE_BPS_VALUES),
         "replay_eval_hourly_periods_per_year": DEFAULT_HOURLY_PERIODS_PER_YEAR,
         "replay_robust_start_states": DEFAULT_REPLAY_ROBUST_START_STATES,
         "runtime_trace_dir": str(DEFAULT_PROD_EVAL_RUNTIME_TRACE_DIR.resolve(strict=False)),

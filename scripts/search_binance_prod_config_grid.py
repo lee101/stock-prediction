@@ -18,27 +18,38 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import src.binance_prod_manifest_targets as manifest_targets  # noqa: E402
 from src.binance_deploy_gate import (  # noqa: E402
     DEFAULT_MAX_MANIFEST_AGE_HOURS,
-    gate_deploy_candidate,
+    PreparedGatePayloadContext,
+    gate_deploy_candidate_from_payload,
     manifest_matches_deploy_config,
     pick_candidate_production_metric,
+    prepare_gate_payload_context,
     production_metric_sort_key,
 )
 from src.binance_hybrid_launch import (  # noqa: E402
     DEFAULT_LAUNCH_SCRIPT,
     BinanceHybridLaunchConfig,
     parse_launch_script,
+    resolve_target_launch_config,
+)
+from src.binance_hybrid_machine_audit import (  # noqa: E402
+    audit_binance_hybrid_machine_state,
+    build_machine_deploy_preflight_reason,
 )
 from src.binance_prod_config_search import (  # noqa: E402
     DEFAULT_MAX_CHECKPOINT_CONFIG_EVALS,
     DEFAULT_MAX_VARIANTS,
     ConfigVariant,
     build_config_variants,
-    estimate_checkpoint_evals_per_variant,
+    build_pending_checkpoint_eval_plan,
+    estimate_pending_checkpoint_config_evals,
     limit_config_variants,
-    max_variants_for_checkpoint_eval_budget,
+    limit_config_variants_by_pending_eval_budget,
+    order_config_variants_by_pending_eval_cost,
 )
+from src.binance_prod_manifest_targets import requested_checkpoints  # noqa: E402
 
 
 PROD_EVAL_SCRIPT = REPO_ROOT / "scripts" / "evaluate_binance_hybrid_prod.py"
@@ -60,6 +71,9 @@ class ConfigSearchRow:
     gate_metric_name: str | None = None
     gate_current_metric: float | None = None
     gate_candidate_metric: float | None = None
+    gate_current_target_label: str | None = None
+    gate_current_symbols: str = ""
+    gate_current_leverage: float | None = None
     gate_allowed: bool | None = None
     gate_reason: str | None = None
 
@@ -134,6 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-checkpoint-config-evals", type=int, default=DEFAULT_MAX_CHECKPOINT_CONFIG_EVALS, help="maximum total checkpoint-config evaluations to schedule; use 0 to disable")
     parser.add_argument("--variant-offset", type=int, default=0, help="offset into the config variant list before applying caps; useful for rotating through large searches")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--require-process-isolation", action="store_true")
     return parser
 
 
@@ -156,6 +171,12 @@ def _slugify_leverage(leverage: float) -> str:
 
 def _normalize_checkpoint_path(path: str | Path) -> str:
     return str(Path(path).expanduser().resolve(strict=False))
+
+
+def _normalize_symbol_list(symbols: object) -> list[str]:
+    if not isinstance(symbols, list):
+        return []
+    return [str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()]
 
 
 def build_variant_command(
@@ -194,21 +215,65 @@ def _safe_float(value: object) -> float | None:
     return numeric
 
 
+def _select_launch_target_evaluations(
+    payload: dict[str, object],
+    *,
+    symbols: list[str],
+    leverage: float,
+) -> list[dict[str, object]]:
+    return manifest_targets.select_target_evaluations(
+        payload,
+        target_spec=manifest_targets.ManifestEvalTargetSpec(
+            symbols=tuple(symbols),
+            leverage=float(leverage),
+            preferred_target_label="launch_target",
+        ),
+    )
+
+
+def _evaluation_identity(evaluation: dict[str, object]) -> tuple[str, str, tuple[str, ...], float | None] | None:
+    checkpoint = _normalize_checkpoint_path(str(evaluation.get("checkpoint", "")))
+    if not checkpoint:
+        return None
+    return (
+        checkpoint,
+        str(evaluation.get("target_label") or "").strip(),
+        tuple(_normalize_symbol_list(evaluation.get("symbols"))),
+        _safe_float(evaluation.get("leverage")),
+    )
+
+
 def _annotate_row_with_gate(
     row: ConfigSearchRow,
     *,
     launch_script: str | Path | None,
+    payload: dict[str, object] | None = None,
+    launch_cfg: BinanceHybridLaunchConfig | None = None,
+    target_launch_cfg: BinanceHybridLaunchConfig | None = None,
+    prepared_payload_context: PreparedGatePayloadContext | None = None,
     require_manifest_best: bool = False,
+    require_process_isolation: bool = False,
+    process_isolation_preflight_checked: bool = False,
+    process_isolation_preflight_reason: str | None = None,
 ) -> ConfigSearchRow:
     if launch_script is None or not row.checkpoint:
         return row
-    gate_result = gate_deploy_candidate(
+    if payload is None:
+        payload = json.loads(Path(row.manifest_path).read_text())
+    gate_result = gate_deploy_candidate_from_payload(
         candidate_checkpoint=row.checkpoint,
         launch_script=launch_script,
+        payload=payload,
         manifest_path=row.manifest_path,
         require_manifest_best=require_manifest_best,
+        require_process_isolation=require_process_isolation,
+        process_isolation_preflight_checked=process_isolation_preflight_checked,
+        process_isolation_preflight_reason=process_isolation_preflight_reason,
+        prepared_payload_context=prepared_payload_context,
         symbols_override=row.symbols,
         leverage_override=row.leverage,
+        launch_cfg=launch_cfg,
+        target_launch_cfg=target_launch_cfg,
     )
     return ConfigSearchRow(
         config_slug=row.config_slug,
@@ -225,6 +290,9 @@ def _annotate_row_with_gate(
         gate_metric_name=gate_result.metric_name,
         gate_current_metric=gate_result.current_metric,
         gate_candidate_metric=gate_result.candidate_metric,
+        gate_current_target_label=gate_result.current_target_label,
+        gate_current_symbols=gate_result.current_symbols,
+        gate_current_leverage=gate_result.current_leverage,
         gate_allowed=gate_result.allowed,
         gate_reason=gate_result.reason,
     )
@@ -235,15 +303,41 @@ def load_manifest_rows(
     *,
     launch_script: str | Path | None = None,
     require_manifest_best: bool = False,
+    require_process_isolation: bool = False,
+    process_isolation_preflight_checked: bool = False,
+    process_isolation_preflight_reason: str | None = None,
 ) -> list[ConfigSearchRow]:
     manifest_file = Path(manifest_path)
     payload = json.loads(manifest_file.read_text())
     launch_config = payload.get("launch_config") if isinstance(payload.get("launch_config"), dict) else {}
-    evaluations = payload.get("evaluations") if isinstance(payload.get("evaluations"), list) else []
     launch_checkpoint = str(launch_config.get("rl_checkpoint") or "")
-    symbols = launch_config.get("symbols") if isinstance(launch_config.get("symbols"), list) else []
+    symbols = _normalize_symbol_list(launch_config.get("symbols"))
     leverage = _safe_float(launch_config.get("leverage")) or 0.0
+    evaluations = _select_launch_target_evaluations(
+        payload,
+        symbols=symbols,
+        leverage=leverage,
+    )
     config_slug = f"{_slugify_symbols(tuple(str(symbol) for symbol in symbols))}__lev_{_slugify_leverage(leverage)}"
+    parsed_launch_cfg = None
+    target_launch_cfg = None
+    prepared_payload_context: PreparedGatePayloadContext | None = None
+    if launch_script is not None:
+        parsed_launch_cfg = parse_launch_script(launch_script, require_rl_checkpoint=False)
+        target_launch_cfg = resolve_target_launch_config(
+            launch_script,
+            symbols_override=symbols,
+            leverage_override=leverage,
+        )
+        prepared_payload_context = prepare_gate_payload_context(
+            payload,
+            launch_config=parsed_launch_cfg,
+            target_config=target_launch_cfg,
+        )
+        if require_process_isolation and not process_isolation_preflight_checked:
+            machine_audit = audit_binance_hybrid_machine_state(launch_script)
+            process_isolation_preflight_reason = build_machine_deploy_preflight_reason(machine_audit)
+            process_isolation_preflight_checked = True
 
     rows: list[ConfigSearchRow] = []
     for evaluation in evaluations:
@@ -269,39 +363,31 @@ def load_manifest_rows(
             _annotate_row_with_gate(
                 row,
                 launch_script=launch_script,
+                payload=payload,
+                launch_cfg=parsed_launch_cfg,
+                target_launch_cfg=target_launch_cfg,
+                prepared_payload_context=prepared_payload_context,
                 require_manifest_best=require_manifest_best,
+                require_process_isolation=require_process_isolation,
+                process_isolation_preflight_checked=process_isolation_preflight_checked,
+                process_isolation_preflight_reason=process_isolation_preflight_reason,
             )
         )
     return rows
 
 
-def _requested_checkpoints(
-    launch_config: BinanceHybridLaunchConfig,
-    candidate_checkpoints: list[str | Path],
-) -> tuple[str, ...]:
-    checkpoints: list[str] = []
-    seen: set[str] = set()
-    if launch_config.rl_checkpoint:
-        normalized_launch = _normalize_checkpoint_path(launch_config.rl_checkpoint)
-        seen.add(normalized_launch)
-        checkpoints.append(normalized_launch)
-    for checkpoint in candidate_checkpoints:
-        normalized = _normalize_checkpoint_path(checkpoint)
-        if normalized in seen:
-            continue
-        seen.add(normalized)
-        checkpoints.append(normalized)
-    return tuple(checkpoints)
-
-
 def _manifest_checkpoint_paths(payload: dict[str, object]) -> set[str]:
-    manifest_evaluations = payload.get("evaluations")
-    if not isinstance(manifest_evaluations, list):
-        return set()
+    launch_config = payload.get("launch_config") if isinstance(payload.get("launch_config"), dict) else {}
+    symbols = _normalize_symbol_list(launch_config.get("symbols"))
+    leverage = _safe_float(launch_config.get("leverage")) or 0.0
     return {
         _normalize_checkpoint_path(str(evaluation.get("checkpoint", "")))
-        for evaluation in manifest_evaluations
-        if isinstance(evaluation, dict) and str(evaluation.get("checkpoint", "")).strip()
+        for evaluation in _select_launch_target_evaluations(
+            payload,
+            symbols=symbols,
+            leverage=leverage,
+        )
+        if str(evaluation.get("checkpoint", "")).strip()
     }
 
 
@@ -311,7 +397,7 @@ def _missing_requested_checkpoints(
     launch_config: BinanceHybridLaunchConfig,
     candidate_checkpoints: list[str | Path],
 ) -> tuple[str, ...]:
-    required_checkpoints = _requested_checkpoints(launch_config, candidate_checkpoints)
+    required_checkpoints = requested_checkpoints(launch_config.rl_checkpoint, candidate_checkpoints)
     manifest_checkpoints = _manifest_checkpoint_paths(payload)
     return tuple(checkpoint for checkpoint in required_checkpoints if checkpoint not in manifest_checkpoints)
 
@@ -339,12 +425,22 @@ def _filter_rows_for_requested_checkpoints(
     launch_config: BinanceHybridLaunchConfig,
     candidate_checkpoints: list[str | Path],
 ) -> list[ConfigSearchRow]:
-    requested = set(_requested_checkpoints(launch_config, candidate_checkpoints))
+    requested = set(requested_checkpoints(launch_config.rl_checkpoint, candidate_checkpoints))
     return [
         row
         for row in rows
         if _normalize_checkpoint_path(row.checkpoint) in requested
     ]
+
+
+def _preserved_manifest_baseline_checkpoints(payload: dict[str, object]) -> set[str]:
+    preserved: set[str] = set()
+    current_running = payload.get("current_running_hybrid_config")
+    if isinstance(current_running, dict):
+        running_checkpoint = str(current_running.get("rl_checkpoint") or "").strip()
+        if running_checkpoint:
+            preserved.add(_normalize_checkpoint_path(running_checkpoint))
+    return preserved
 
 
 def _filter_manifest_payload_for_requested_checkpoints(
@@ -353,7 +449,8 @@ def _filter_manifest_payload_for_requested_checkpoints(
     launch_config: BinanceHybridLaunchConfig,
     candidate_checkpoints: list[str | Path],
 ) -> dict[str, object]:
-    requested = set(_requested_checkpoints(launch_config, candidate_checkpoints))
+    requested = set(requested_checkpoints(launch_config.rl_checkpoint, candidate_checkpoints))
+    requested.update(_preserved_manifest_baseline_checkpoints(payload))
     filtered_payload = dict(payload)
     evaluations = payload.get("evaluations")
     filtered_payload["evaluations"] = [
@@ -371,7 +468,7 @@ def _requested_manifest_path(
     launch_config: BinanceHybridLaunchConfig,
     candidate_checkpoints: list[str | Path],
 ) -> Path:
-    requested = _requested_checkpoints(launch_config, candidate_checkpoints)
+    requested = requested_checkpoints(launch_config.rl_checkpoint, candidate_checkpoints)
     digest = hashlib.sha256("\n".join(requested).encode("utf-8")).hexdigest()[:16]
     return Path(variant.output_dir) / f"prod_launch_eval_manifest.requested.{digest}.json"
 
@@ -383,6 +480,9 @@ def _load_requested_manifest_rows(
     launch_script: str | Path,
     launch_config: BinanceHybridLaunchConfig,
     candidate_checkpoints: list[str | Path],
+    require_process_isolation: bool = False,
+    process_isolation_preflight_checked: bool = False,
+    process_isolation_preflight_reason: str | None = None,
 ) -> list[ConfigSearchRow]:
     payload = json.loads(source_manifest_path.read_text())
     requested_payload = _filter_manifest_payload_for_requested_checkpoints(
@@ -396,7 +496,13 @@ def _load_requested_manifest_rows(
         candidate_checkpoints=candidate_checkpoints,
     )
     requested_manifest_path.write_text(json.dumps(requested_payload, indent=2, sort_keys=True))
-    return load_manifest_rows(requested_manifest_path, launch_script=launch_script)
+    return load_manifest_rows(
+        requested_manifest_path,
+        launch_script=launch_script,
+        require_process_isolation=require_process_isolation,
+        process_isolation_preflight_checked=process_isolation_preflight_checked,
+        process_isolation_preflight_reason=process_isolation_preflight_reason,
+    )
 
 
 def _merge_manifest_payloads(
@@ -405,8 +511,8 @@ def _merge_manifest_payloads(
 ) -> dict[str, object]:
     existing_evaluations = existing_payload.get("evaluations")
     incremental_evaluations = incremental_payload.get("evaluations")
-    merged_by_checkpoint: dict[str, dict[str, object]] = {}
-    ordered_checkpoints: list[str] = []
+    merged_by_identity: dict[tuple[str, str, tuple[str, ...], float | None], dict[str, object]] = {}
+    ordered_identities: list[tuple[str, str, tuple[str, ...], float | None]] = []
 
     for evaluations in (existing_evaluations, incremental_evaluations):
         if not isinstance(evaluations, list):
@@ -414,16 +520,15 @@ def _merge_manifest_payloads(
         for evaluation in evaluations:
             if not isinstance(evaluation, dict):
                 continue
-            checkpoint = str(evaluation.get("checkpoint", "")).strip()
-            if not checkpoint:
+            identity = _evaluation_identity(evaluation)
+            if identity is None:
                 continue
-            normalized = _normalize_checkpoint_path(checkpoint)
-            if normalized not in ordered_checkpoints:
-                ordered_checkpoints.append(normalized)
-            merged_by_checkpoint[normalized] = evaluation
+            if identity not in merged_by_identity:
+                ordered_identities.append(identity)
+            merged_by_identity[identity] = evaluation
 
     merged_payload = dict(incremental_payload)
-    merged_payload["evaluations"] = [merged_by_checkpoint[checkpoint] for checkpoint in ordered_checkpoints]
+    merged_payload["evaluations"] = [merged_by_identity[identity] for identity in ordered_identities]
     return merged_payload
 
 
@@ -434,6 +539,9 @@ def _load_reusable_manifest_plan(
     launch_config: BinanceHybridLaunchConfig,
     candidate_checkpoints: list[str | Path],
     max_manifest_age_hours: float | None,
+    require_process_isolation: bool = False,
+    process_isolation_preflight_checked: bool = False,
+    process_isolation_preflight_reason: str | None = None,
 ) -> ManifestReusePlan | None:
     manifest_path = Path(variant.output_dir) / "prod_launch_eval_manifest.json"
     if not manifest_path.exists():
@@ -451,21 +559,28 @@ def _load_reusable_manifest_plan(
     )
     if not compatible:
         return None
-    return ManifestReusePlan(
-        manifest_path=manifest_path,
-        payload=payload,
-        rows=_load_requested_manifest_rows(
+    missing_requested_checkpoints = _missing_requested_checkpoints(
+        payload,
+        launch_config=launch_config,
+        candidate_checkpoints=candidate_checkpoints,
+    )
+    rows: list[ConfigSearchRow] = []
+    if not missing_requested_checkpoints:
+        rows = _load_requested_manifest_rows(
             manifest_path,
             variant=variant,
             launch_script=launch_script,
             launch_config=launch_config,
             candidate_checkpoints=candidate_checkpoints,
-        ),
-        missing_requested_checkpoints=_missing_requested_checkpoints(
-            payload,
-            launch_config=launch_config,
-            candidate_checkpoints=candidate_checkpoints,
-        ),
+            require_process_isolation=require_process_isolation,
+            process_isolation_preflight_checked=process_isolation_preflight_checked,
+            process_isolation_preflight_reason=process_isolation_preflight_reason,
+        )
+    return ManifestReusePlan(
+        manifest_path=manifest_path,
+        payload=payload,
+        rows=rows,
+        missing_requested_checkpoints=missing_requested_checkpoints,
     )
 
 
@@ -487,6 +602,12 @@ def _row_selection_sort_key(row: ConfigSearchRow) -> tuple[int, int, float]:
     return gate_allowed, metric_priority, metric_value
 
 
+def _row_is_plain_live_baseline(row: ConfigSearchRow) -> bool:
+    if not row.is_launch_checkpoint:
+        return False
+    return row.gate_allowed is not True or row.gate_reason == "candidate already matches current live checkpoint"
+
+
 def select_best_rows(rows: list[ConfigSearchRow], *, candidate_checkpoints_requested: bool, include_launch_checkpoint: bool = False) -> list[ConfigSearchRow]:
     grouped: dict[str, list[ConfigSearchRow]] = {}
     for row in rows:
@@ -496,9 +617,10 @@ def select_best_rows(rows: list[ConfigSearchRow], *, candidate_checkpoints_reque
     for config_rows in grouped.values():
         selectable_rows = config_rows
         if candidate_checkpoints_requested and not include_launch_checkpoint:
-            candidate_rows = [row for row in config_rows if not row.is_launch_checkpoint]
-            if candidate_rows:
-                selectable_rows = candidate_rows
+            candidate_rows = [row for row in config_rows if not _row_is_plain_live_baseline(row)]
+            if not candidate_rows:
+                continue
+            selectable_rows = candidate_rows
         best_rows.append(max(selectable_rows, key=_row_selection_sort_key))
     return sorted(best_rows, key=_row_selection_sort_key, reverse=True)
 
@@ -512,6 +634,17 @@ def _write_rows_csv(path: Path, rows: list[ConfigSearchRow]) -> None:
             writer.writerow(asdict(row))
 
 
+def _missing_requested_checkpoints_message(
+    manifest_path: Path,
+    *,
+    missing_requested_checkpoints: tuple[str, ...],
+) -> str:
+    return (
+        f"requested checkpoint evaluations missing from manifest {manifest_path}: "
+        + ", ".join(missing_requested_checkpoints)
+    )
+
+
 def _merge_incremental_manifest_rows(
     reuse_plan: ManifestReusePlan,
     *,
@@ -519,9 +652,24 @@ def _merge_incremental_manifest_rows(
     launch_script: str | Path,
     launch_config: BinanceHybridLaunchConfig,
     candidate_checkpoints: list[str | Path],
+    require_process_isolation: bool = False,
+    process_isolation_preflight_checked: bool = False,
+    process_isolation_preflight_reason: str | None = None,
 ) -> list[ConfigSearchRow]:
     incremental_payload = json.loads(reuse_plan.manifest_path.read_text())
     merged_payload = _merge_manifest_payloads(reuse_plan.payload, incremental_payload)
+    missing_requested_checkpoints = _missing_requested_checkpoints(
+        merged_payload,
+        launch_config=launch_config,
+        candidate_checkpoints=candidate_checkpoints,
+    )
+    if missing_requested_checkpoints:
+        raise ValueError(
+            _missing_requested_checkpoints_message(
+                reuse_plan.manifest_path,
+                missing_requested_checkpoints=missing_requested_checkpoints,
+            )
+        )
     reuse_plan.manifest_path.write_text(json.dumps(merged_payload, indent=2, sort_keys=True))
     return _load_requested_manifest_rows(
         reuse_plan.manifest_path,
@@ -529,6 +677,9 @@ def _merge_incremental_manifest_rows(
         launch_script=launch_script,
         launch_config=launch_config,
         candidate_checkpoints=candidate_checkpoints,
+        require_process_isolation=require_process_isolation,
+        process_isolation_preflight_checked=process_isolation_preflight_checked,
+        process_isolation_preflight_reason=process_isolation_preflight_reason,
     )
 
 
@@ -539,6 +690,9 @@ def _evaluate_variant(
     python_bin: str | Path,
     launch_config: BinanceHybridLaunchConfig,
     candidate_checkpoints: list[str | Path],
+    require_process_isolation: bool = False,
+    process_isolation_preflight_checked: bool = False,
+    process_isolation_preflight_reason: str | None = None,
 ) -> VariantEvalResult:
     cmd = build_variant_command(
         variant,
@@ -561,6 +715,21 @@ def _evaluate_variant(
     if not manifest_path.exists():
         sys.stderr.write(f"missing manifest: {manifest_path}\n")
         return VariantEvalResult(returncode=2, rows=[])
+    payload = json.loads(manifest_path.read_text())
+    missing_requested_checkpoints = _missing_requested_checkpoints(
+        payload,
+        launch_config=launch_config,
+        candidate_checkpoints=candidate_checkpoints,
+    )
+    if missing_requested_checkpoints:
+        sys.stderr.write(
+            _missing_requested_checkpoints_message(
+                manifest_path,
+                missing_requested_checkpoints=missing_requested_checkpoints,
+            )
+            + "\n"
+        )
+        return VariantEvalResult(returncode=2, rows=[])
     return VariantEvalResult(
         returncode=0,
         rows=_load_requested_manifest_rows(
@@ -569,6 +738,9 @@ def _evaluate_variant(
             launch_script=launch_script,
             launch_config=launch_config,
             candidate_checkpoints=candidate_checkpoints,
+            require_process_isolation=require_process_isolation,
+            process_isolation_preflight_checked=process_isolation_preflight_checked,
+            process_isolation_preflight_reason=process_isolation_preflight_reason,
         ),
     )
 
@@ -607,43 +779,68 @@ def run_grid_search(args: argparse.Namespace) -> int:  # noqa: PLR0911
         sys.stderr.write("--max-checkpoint-config-evals must be >= 0\n")
         return 2
     max_checkpoint_config_evals = None if raw_max_checkpoint_config_evals == 0 else raw_max_checkpoint_config_evals
-    per_variant_checkpoint_evals = estimate_checkpoint_evals_per_variant(
-        launch_config,
-        list(args.candidate_checkpoint),
-    )
-    requested_checkpoint_config_evals = len(requested_variants) * per_variant_checkpoint_evals
-    max_variants_by_checkpoint_budget = max_variants_for_checkpoint_eval_budget(
-        launch_config,
-        candidate_checkpoints=list(args.candidate_checkpoint),
-        max_checkpoint_config_evals=max_checkpoint_config_evals,
-    )
-    if max_variants_by_checkpoint_budget is not None and max_variants_by_checkpoint_budget < 1 and requested_variants:
-        sys.stderr.write(
-            f"estimated checkpoint-config eval count {requested_checkpoint_config_evals} exceeds max_checkpoint_config_evals {max_checkpoint_config_evals}; budget too small to evaluate even one config variant\n"
-        )
-        return 2
-    effective_max_variants = max_variants
-    if max_variants_by_checkpoint_budget is not None:
-        effective_max_variants = (
-            max_variants_by_checkpoint_budget
-            if effective_max_variants is None
-            else min(effective_max_variants, max_variants_by_checkpoint_budget)
-        )
     variants = limit_config_variants(
         requested_variants,
         launch_config=launch_config,
-        max_variants=effective_max_variants,
+        max_variants=max_variants,
         variant_offset=variant_offset,
     )
     if max_variants is not None and len(requested_variants) > max_variants:
         sys.stderr.write(
             f"variant count {len(requested_variants)} exceeds max_variants {raw_max_variants}; pruning to {len(variants)} variant(s)\n"
         )
-    if max_variants_by_checkpoint_budget is not None and len(requested_variants) > max_variants_by_checkpoint_budget:
-        sys.stderr.write(
-            f"estimated checkpoint-config eval count {requested_checkpoint_config_evals} exceeds max_checkpoint_config_evals {max_checkpoint_config_evals}; pruning to {len(variants)} variant(s)\n"
+    pending_eval_plan = build_pending_checkpoint_eval_plan(
+        variants,
+        launch_script=args.launch_script,
+        launch_config=launch_config,
+        candidate_checkpoints=list(args.candidate_checkpoint),
+        max_manifest_age_hours=args.manifest_max_age_hours,
+        allow_manifest_reuse=bool(args.reuse_manifests),
+    )
+    requested_checkpoint_config_evals = estimate_pending_checkpoint_config_evals(
+        variants,
+        launch_script=args.launch_script,
+        launch_config=launch_config,
+        candidate_checkpoints=list(args.candidate_checkpoint),
+        max_manifest_age_hours=args.manifest_max_age_hours,
+        pending_eval_plan=pending_eval_plan,
+    )
+    if max_checkpoint_config_evals is not None:
+        budgeted_variants = limit_config_variants_by_pending_eval_budget(
+            variants,
+            launch_script=args.launch_script,
+            launch_config=launch_config,
+            candidate_checkpoints=list(args.candidate_checkpoint),
+            max_checkpoint_config_evals=max_checkpoint_config_evals,
+            max_manifest_age_hours=args.manifest_max_age_hours,
+            pending_eval_plan=pending_eval_plan,
         )
-    estimated_checkpoint_config_evals = len(variants) * per_variant_checkpoint_evals
+        if not budgeted_variants and variants:
+            sys.stderr.write(
+                f"estimated checkpoint-config eval count {requested_checkpoint_config_evals} exceeds max_checkpoint_config_evals {max_checkpoint_config_evals}; budget too small to evaluate even one config variant\n"
+            )
+            return 2
+        if len(budgeted_variants) < len(variants):
+            sys.stderr.write(
+                f"estimated checkpoint-config eval count {requested_checkpoint_config_evals} exceeds max_checkpoint_config_evals {max_checkpoint_config_evals}; pruning to {len(budgeted_variants)} variant(s)\n"
+            )
+        variants = budgeted_variants
+    variants = order_config_variants_by_pending_eval_cost(
+        variants,
+        launch_script=args.launch_script,
+        launch_config=launch_config,
+        candidate_checkpoints=list(args.candidate_checkpoint),
+        max_manifest_age_hours=args.manifest_max_age_hours,
+        pending_eval_plan=pending_eval_plan,
+    )
+    estimated_checkpoint_config_evals = estimate_pending_checkpoint_config_evals(
+        variants,
+        launch_script=args.launch_script,
+        launch_config=launch_config,
+        candidate_checkpoints=list(args.candidate_checkpoint),
+        max_manifest_age_hours=args.manifest_max_age_hours,
+        pending_eval_plan=pending_eval_plan,
+    )
 
     print("Binance production config grid search")
     print(f"  launch:        {Path(args.launch_script).resolve()}")
@@ -680,6 +877,13 @@ def run_grid_search(args: argparse.Namespace) -> int:  # noqa: PLR0911
         print("\nDRY RUN -- no evaluations executed")
         return 0
 
+    process_isolation_preflight_checked = False
+    process_isolation_preflight_reason: str | None = None
+    if args.require_process_isolation:
+        machine_audit = audit_binance_hybrid_machine_state(args.launch_script)
+        process_isolation_preflight_reason = build_machine_deploy_preflight_reason(machine_audit)
+        process_isolation_preflight_checked = True
+
     all_rows: list[ConfigSearchRow] = []
     pending_variants: list[tuple[ConfigVariant, ManifestReusePlan | None, list[str | Path]]] = []
     fully_reused_variants = 0
@@ -692,6 +896,9 @@ def run_grid_search(args: argparse.Namespace) -> int:  # noqa: PLR0911
                 launch_config=launch_config,
                 candidate_checkpoints=list(args.candidate_checkpoint),
                 max_manifest_age_hours=args.manifest_max_age_hours,
+                require_process_isolation=bool(args.require_process_isolation),
+                process_isolation_preflight_checked=process_isolation_preflight_checked,
+                process_isolation_preflight_reason=process_isolation_preflight_reason,
             )
             if reuse_plan is None:
                 pending_variants.append((variant, None, list(args.candidate_checkpoint)))
@@ -725,19 +932,28 @@ def run_grid_search(args: argparse.Namespace) -> int:  # noqa: PLR0911
                 python_bin=args.python_bin,
                 launch_config=launch_config,
                 candidate_checkpoints=variant_candidate_checkpoints,
+                require_process_isolation=bool(args.require_process_isolation),
+                process_isolation_preflight_checked=process_isolation_preflight_checked,
+                process_isolation_preflight_reason=process_isolation_preflight_reason,
             )
             if result.returncode != 0:
                 return result.returncode
             if reuse_plan is not None:
-                all_rows.extend(
-                    _merge_incremental_manifest_rows(
+                try:
+                    merged_rows = _merge_incremental_manifest_rows(
                         reuse_plan,
                         variant=variant,
                         launch_script=args.launch_script,
                         launch_config=launch_config,
                         candidate_checkpoints=list(args.candidate_checkpoint),
+                        require_process_isolation=bool(args.require_process_isolation),
+                        process_isolation_preflight_checked=process_isolation_preflight_checked,
+                        process_isolation_preflight_reason=process_isolation_preflight_reason,
                     )
-                )
+                except ValueError as exc:
+                    sys.stderr.write(f"{exc}\n")
+                    return 2
+                all_rows.extend(merged_rows)
             else:
                 all_rows.extend(result.rows)
     else:
@@ -750,6 +966,9 @@ def run_grid_search(args: argparse.Namespace) -> int:  # noqa: PLR0911
                     python_bin=args.python_bin,
                     launch_config=launch_config,
                     candidate_checkpoints=variant_candidate_checkpoints,
+                    require_process_isolation=bool(args.require_process_isolation),
+                    process_isolation_preflight_checked=process_isolation_preflight_checked,
+                    process_isolation_preflight_reason=process_isolation_preflight_reason,
                 ): (variant, reuse_plan)
                 for variant, reuse_plan, variant_candidate_checkpoints in pending_variants
             }
@@ -762,15 +981,24 @@ def run_grid_search(args: argparse.Namespace) -> int:  # noqa: PLR0911
                             pending.cancel()
                     return result.returncode
                 if reuse_plan is not None:
-                    all_rows.extend(
-                        _merge_incremental_manifest_rows(
+                    try:
+                        merged_rows = _merge_incremental_manifest_rows(
                             reuse_plan,
                             variant=variant,
                             launch_script=args.launch_script,
                             launch_config=launch_config,
                             candidate_checkpoints=list(args.candidate_checkpoint),
+                            require_process_isolation=bool(args.require_process_isolation),
+                            process_isolation_preflight_checked=process_isolation_preflight_checked,
+                            process_isolation_preflight_reason=process_isolation_preflight_reason,
                         )
-                    )
+                    except ValueError as exc:
+                        sys.stderr.write(f"{exc}\n")
+                        for pending in futures:
+                            if pending is not future:
+                                pending.cancel()
+                        return 2
+                    all_rows.extend(merged_rows)
                 else:
                     all_rows.extend(result.rows)
 
@@ -783,6 +1011,9 @@ def run_grid_search(args: argparse.Namespace) -> int:  # noqa: PLR0911
         candidate_checkpoints_requested=candidate_checkpoints_requested,
         include_launch_checkpoint=args.include_launch_checkpoint,
     )
+    if not best_rows:
+        sys.stderr.write("no actionable production configs found for the requested candidate/config search\n")
+        return 2
     output_root.mkdir(parents=True, exist_ok=True)
     all_rows_path = output_root / "all_results.csv"
     best_rows_path = output_root / "best_by_config.csv"

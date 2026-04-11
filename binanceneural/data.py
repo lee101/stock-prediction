@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from itertools import combinations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -17,6 +18,8 @@ BASE_FEATURES: Tuple[str, ...] = (
     "return_1h",
     "return_4h",
     "return_24h",
+    "return_48h",
+    "return_168h",
     "volatility_24h",
     "range_pct",
     "volume_z",
@@ -34,13 +37,15 @@ class FeatureNormalizer:
 
     @classmethod
     def fit(cls, matrix: np.ndarray) -> "FeatureNormalizer":
-        mean = matrix.mean(axis=0)
-        std = matrix.std(axis=0)
+        mean = np.nanmean(matrix, axis=0)
+        std = np.nanstd(matrix, axis=0)
         std = np.where(std < 1e-6, 1.0, std)
         return cls(mean=mean.astype(np.float32), std=std.astype(np.float32))
 
     def transform(self, matrix: np.ndarray) -> np.ndarray:
-        return (matrix - self.mean) / self.std
+        result = (matrix - self.mean) / self.std
+        np.nan_to_num(result, copy=False, nan=0.0)
+        return result
 
     def to_dict(self) -> Dict[str, List[float]]:
         return {"mean": self.mean.tolist(), "std": self.std.tolist()}
@@ -416,6 +421,8 @@ def build_feature_frame(
     frame["return_1h"] = frame["close"].pct_change(1)
     frame["return_4h"] = frame["close"].pct_change(4)
     frame["return_24h"] = frame["close"].pct_change(24)
+    frame["return_48h"] = frame["close"].pct_change(48)
+    frame["return_168h"] = frame["close"].pct_change(168)
     frame["volatility_24h"] = frame["return_1h"].rolling(24).std()
     frame["range_pct"] = (frame["high"] - frame["low"]).abs() / frame["close"].replace(0.0, np.nan)
     frame["volume_z"] = _zscore(frame["volume"].astype(float), window=max(2, int(max_lookback)))
@@ -425,7 +432,10 @@ def build_feature_frame(
     frame["hour_sin"], frame["hour_cos"] = _cycle_features(hours, 24)
     frame["dow_sin"], frame["dow_cos"] = _cycle_features(dow, 7)
 
-    for horizon in horizons:
+    sorted_horizons = tuple(sorted({int(horizon) for horizon in horizons if int(horizon) > 0}))
+    close_delta_by_horizon: Dict[int, pd.Series] = {}
+
+    for horizon in sorted_horizons:
         suffix = f"_h{int(horizon)}"
         close_col = f"predicted_close_p50{suffix}"
         high_col = f"predicted_high_p50{suffix}"
@@ -434,25 +444,64 @@ def build_feature_frame(
             continue
         ref = frame["reference_close"].replace(0.0, np.nan)
         frame[f"chronos_close_delta{suffix}"] = (frame[close_col] - ref) / ref
+        close_delta_by_horizon[int(horizon)] = frame[f"chronos_close_delta{suffix}"]
         if high_col in frame.columns:
             frame[f"chronos_high_delta{suffix}"] = (frame[high_col] - ref) / ref
         if low_col in frame.columns:
             frame[f"chronos_low_delta{suffix}"] = (frame[low_col] - ref) / ref
+
+        close_delta = frame.get(f"chronos_close_delta{suffix}")
+        high_delta = frame.get(f"chronos_high_delta{suffix}")
+        low_delta = frame.get(f"chronos_low_delta{suffix}")
+        if close_delta is None or high_delta is None or low_delta is None:
+            continue
+
+        # Explicitly expose reward/risk asymmetry and forecast width so the
+        # policy does not need to rediscover these nonlinear combinations from
+        # raw deltas alone.
+        upside = np.maximum.reduce(
+            [
+                high_delta.to_numpy(dtype=np.float64, copy=False),
+                close_delta.to_numpy(dtype=np.float64, copy=False),
+                np.zeros(len(frame), dtype=np.float64),
+            ]
+        )
+        downside = np.maximum.reduce(
+            [
+                -low_delta.to_numpy(dtype=np.float64, copy=False),
+                -close_delta.to_numpy(dtype=np.float64, copy=False),
+                np.zeros(len(frame), dtype=np.float64),
+            ]
+        )
+        frame[f"chronos_asymmetry{suffix}"] = upside - downside
+        frame[f"chronos_range_width{suffix}"] = high_delta - low_delta
+
+    for left, right in combinations(sorted_horizons, 2):
+        left_delta = close_delta_by_horizon.get(int(left))
+        right_delta = close_delta_by_horizon.get(int(right))
+        if left_delta is None or right_delta is None:
+            continue
+        frame[f"forecast_delta_spread_h{int(left)}_h{int(right)}"] = right_delta - left_delta
 
     return frame
 
 
 def build_default_feature_columns(horizons: Sequence[int]) -> List[str]:
     columns = list(BASE_FEATURES)
-    for horizon in horizons:
+    sorted_horizons = tuple(sorted({int(horizon) for horizon in horizons if int(horizon) > 0}))
+    for horizon in sorted_horizons:
         suffix = f"_h{int(horizon)}"
         columns.extend(
             [
                 f"chronos_close_delta{suffix}",
                 f"chronos_high_delta{suffix}",
                 f"chronos_low_delta{suffix}",
+                f"chronos_asymmetry{suffix}",
+                f"chronos_range_width{suffix}",
             ]
         )
+    for left, right in combinations(sorted_horizons, 2):
+        columns.append(f"forecast_delta_spread_h{int(left)}_h{int(right)}")
     return columns
 
 

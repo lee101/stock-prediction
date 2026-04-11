@@ -25,6 +25,7 @@ class SimulationConfig:
     force_close_on_max_hold: bool = True
     fill_buffer_bps: float = 0.0  # require price to penetrate limit by N bps to fill
     decision_lag_bars: int = 0  # shift actions forward by N bars (0 = same-bar, 1 = realistic)
+    market_order_entry: bool = False  # buy at open instead of limit price
     one_side_per_bar: bool = False  # only allow buy OR sell per bar, not both
     tick_size: Optional[float] = None  # price quantization step (buy rounds down, sell rounds up)
     step_size: Optional[float] = None  # quantity quantization step (rounds down)
@@ -190,7 +191,13 @@ def run_shared_cash_simulation(
             buy_intensity = float(np.clip(float(buy_amount) / scale, 0.0, 1.0))
             low = float(getattr(row, "low"))
             buffer = sim_config.fill_buffer_bps / 10_000.0
-            buy_fill = buy_price > 0 and low <= buy_price * (1 - buffer) and buy_intensity > 0
+            if sim_config.market_order_entry:
+                open_price = float(getattr(row, "open", 0.0) or 0.0)
+                buy_fill = buy_intensity > 0 and open_price > 0
+                if buy_fill:
+                    buy_price = open_price
+            else:
+                buy_fill = buy_price > 0 and low <= buy_price * (1 - buffer) and buy_intensity > 0
             if not buy_fill or cash <= 0:
                 continue
 
@@ -429,7 +436,13 @@ def _simulate_symbol(frame: pd.DataFrame, symbol: str, config: SimulationConfig)
         close = float(getattr(row, "close"))
 
         buffer = config.fill_buffer_bps / 10_000.0  # convert bps to fraction
-        buy_fill = buy_price > 0 and low <= buy_price * (1 - buffer) and buy_intensity > 0
+        if config.market_order_entry:
+            open_price = float(getattr(row, "open", 0.0) or 0.0)
+            buy_fill = buy_intensity > 0 and open_price > 0
+            if buy_fill:
+                buy_price = open_price
+        else:
+            buy_fill = buy_price > 0 and low <= buy_price * (1 - buffer) and buy_intensity > 0
         sell_fill = sell_price > 0 and high >= sell_price * (1 + buffer) and sell_intensity > 0
         if config.one_side_per_bar and buy_fill and sell_fill:
             # Only allow the side with stronger intensity
