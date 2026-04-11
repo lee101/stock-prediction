@@ -3,27 +3,38 @@ Prompt experiment v4: RL+Chronos2+LLM integrated prompt.
 Tests the full pipeline: RL signal + Chronos2 forecasts + price history -> Gemini optimization prompt.
 Compares: pure RL rotator vs RL+Gemini hybrid vs Gemini-only (baseline from v2).
 """
+
 from __future__ import annotations
-import argparse, json, sys, time, concurrent.futures, os
-from pathlib import Path
-from datetime import timedelta
+
+import argparse
+import concurrent.futures
+import json
+import sys
+import time
 from collections import defaultdict
-import numpy as np, pandas as pd
-import torch
+from datetime import timedelta
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from llm_hourly_trader.backtest import load_bars, load_forecasts, get_forecast_at, RESULTS_DIR
-from llm_hourly_trader.config import SYMBOL_UNIVERSE, BacktestConfig, SymbolConfig
+from llm_hourly_trader.backtest import RESULTS_DIR, load_bars, load_forecasts
+from llm_hourly_trader.cache import get_cached, set_cached
+from llm_hourly_trader.config import SYMBOL_UNIVERSE, SymbolConfig
 from llm_hourly_trader.gemini_wrapper import TradePlan
 from llm_hourly_trader.providers import call_llm
-from llm_hourly_trader.cache import get_cached, set_cached
 from rl_signal import (
-    RLSignalGenerator, PortfolioSnapshot, TradingPolicy,
-    SYMBOLS as RL_SYMBOLS, NUM_SYMBOLS, FEATURES_PER_SYM, OBS_SIZE, NUM_ACTIONS,
-    ACTION_NAMES, compute_symbol_features, _load_forecast_parquet,
+    ACTION_NAMES,
+    PortfolioSnapshot,
+    RLSignalGenerator,
+)
+from rl_signal import (
+    SYMBOLS as RL_SYMBOLS,
 )
 
 
@@ -73,15 +84,15 @@ def _build_symbol_block(sym, bars_df, fc_h1_df, fc_h24_df, ts):
     price = float(hist.iloc[-1]["close"])
     lines = []
     for _, row in hist.tail(12).iterrows():
-        t = str(row.name)[-19:-6] if hasattr(row.name, 'isoformat') else str(row.name)[:13]
+        t = str(row.name)[-19:-6] if hasattr(row.name, "isoformat") else str(row.name)[:13]
         lines.append(f"  {t}: O={row['open']:.2f} H={row['high']:.2f} L={row['low']:.2f} C={row['close']:.2f}")
 
     # Trend
     closes = hist["close"].values
-    ret_24h = (closes[-1] - closes[0]) / closes[0] * 100 if len(closes) > 1 else 0
+    _ret_24h = (closes[-1] - closes[0]) / closes[0] * 100 if len(closes) > 1 else 0
     highs, lows = hist["high"].values, hist["low"].values
-    atr = np.mean(highs[-min(24, len(highs)):] - lows[-min(24, len(lows)):])
-    atr_pct = atr / price * 100
+    atr = np.mean(highs[-min(24, len(highs)) :] - lows[-min(24, len(lows)) :])
+    _atr_pct = atr / price * 100
 
     # Forecasts
     fc_text = ""
@@ -99,7 +110,7 @@ def _build_symbol_block(sym, bars_df, fc_h1_df, fc_h24_df, ts):
             delta = (p50 - price) / price * 100
             fc_text += f"\n  Chronos2 24h forecast: ${p50:.2f} ({delta:+.2f}%)"
 
-    return f"""--- {sym} @ ${price:.2f} ---
+    return """--- {sym} @ ${price:.2f} ---
 Trend 24h: {ret_24h:+.2f}% | ATR: {atr_pct:.2f}%
 Last 12h:
 {chr(10).join(lines)}{fc_text}
@@ -107,9 +118,17 @@ Last 12h:
 
 
 def simulate_integrated(
-    bars_map, fc_h1_map, fc_h24_map,
-    rl_gen, symbols, days, model, thinking_level,
-    parallel, cache_tag, prev_plan_text="None",
+    bars_map,
+    fc_h1_map,
+    fc_h24_map,
+    rl_gen,
+    symbols,
+    days,
+    model,
+    thinking_level,
+    parallel,
+    cache_tag,
+    prev_plan_text="None",
 ):
     """Run integrated RL+LLM backtest."""
     # Find common timestamp range
@@ -175,7 +194,8 @@ def simulate_integrated(
             if ts in b.index:
                 prices[s] = float(b.loc[ts, "close"])
             block = _build_symbol_block(
-                s, bars_map[s],
+                s,
+                bars_map[s],
                 fc_h1_map.get(s, pd.DataFrame()),
                 fc_h24_map.get(s, pd.DataFrame()),
                 ts,
@@ -205,7 +225,9 @@ def simulate_integrated(
             current_position=pos_str,
             rl_action=rl_sig.action_name if rl_sig else "UNAVAILABLE",
             rl_value=rl_sig.value if rl_sig else 0,
-            rl_logits=", ".join(f"{ACTION_NAMES[i]}={l:.2f}" for i, l in enumerate(rl_sig.logits)) if rl_sig else "N/A",
+            rl_logits=", ".join(f"{ACTION_NAMES[i]}={logit:.2f}" for i, logit in enumerate(rl_sig.logits))
+            if rl_sig
+            else "N/A",
             symbol_blocks="\n".join(sym_blocks),
             prev_plan=prev_plan,
         )
@@ -266,9 +288,18 @@ def simulate_integrated(
                 cfg = SYMBOL_UNIVERSE.get(position_sym, SymbolConfig(position_sym, "crypto"))
                 fee = proceeds * cfg.maker_fee
                 cash += proceeds - fee
-                trades.append({"timestamp": str(ts), "symbol": position_sym, "side": "close",
-                              "price": cur_price, "quantity": position_qty, "realized_pnl": rpnl,
-                              "fee": fee, "reason": "max_hold"})
+                trades.append(
+                    {
+                        "timestamp": str(ts),
+                        "symbol": position_sym,
+                        "side": "close",
+                        "price": cur_price,
+                        "quantity": position_qty,
+                        "realized_pnl": rpnl,
+                        "fee": fee,
+                        "reason": "max_hold",
+                    }
+                )
                 position_sym = None
                 position_qty = 0
                 position_entry = 0
@@ -276,14 +307,14 @@ def simulate_integrated(
 
         # Filter shorts
         if plan.direction == "short":
-            plan = TradePlan("hold", 0, 0, 0, "short filtered")
+            plan = TradePlan("hold", 0, 0, 0, "short filtered")  # noqa: PLW2901
 
         # Extract target symbol from plan
         target_sym = None
         if plan.direction == "long":
             # Try to get symbol from reasoning or default
             reasoning = plan.reasoning.lower() if plan.reasoning else ""
-            if hasattr(plan, 'symbol') and plan.symbol:
+            if hasattr(plan, "symbol") and plan.symbol:
                 target_sym = plan.symbol
             elif "btc" in reasoning:
                 target_sym = "BTCUSD"
@@ -312,16 +343,25 @@ def simulate_integrated(
                 cfg = SYMBOL_UNIVERSE.get(position_sym, SymbolConfig(position_sym, "crypto"))
                 fee = proceeds * cfg.maker_fee
                 cash += proceeds - fee
-                trades.append({"timestamp": str(ts), "symbol": position_sym, "side": "sell",
-                              "price": cur_price, "quantity": position_qty, "realized_pnl": rpnl,
-                              "fee": fee, "reason": "rotate"})
+                trades.append(
+                    {
+                        "timestamp": str(ts),
+                        "symbol": position_sym,
+                        "side": "sell",
+                        "price": cur_price,
+                        "quantity": position_qty,
+                        "realized_pnl": rpnl,
+                        "fee": fee,
+                        "reason": "rotate",
+                    }
+                )
                 position_sym = None
                 position_qty = 0
                 hold_hours = 0
 
             # Buy target (only if not already holding it)
             if position_sym != target_sym:
-                target_price = prices.get(target_sym, 0)
+                _target_price = prices.get(target_sym, 0)
                 # Check fill: would limit order fill?
                 bar = bars_map[target_sym]
                 if ts in bar.index:
@@ -338,9 +378,18 @@ def simulate_integrated(
                             position_qty = qty
                             position_entry = buy_price
                             hold_hours = 0
-                            trades.append({"timestamp": str(ts), "symbol": target_sym, "side": "buy",
-                                          "price": buy_price, "quantity": qty, "realized_pnl": 0,
-                                          "fee": qty * buy_price * fee_rate, "reason": "entry"})
+                            trades.append(
+                                {
+                                    "timestamp": str(ts),
+                                    "symbol": target_sym,
+                                    "side": "buy",
+                                    "price": buy_price,
+                                    "quantity": qty,
+                                    "realized_pnl": 0,
+                                    "fee": qty * buy_price * fee_rate,
+                                    "reason": "entry",
+                                }
+                            )
 
             # Check take-profit for existing position
             if position_sym and position_qty > 0 and sell_price > 0:
@@ -353,9 +402,18 @@ def simulate_integrated(
                         rpnl = (sell_price - position_entry) * position_qty
                         fee = proceeds * cfg.maker_fee
                         cash += proceeds - fee
-                        trades.append({"timestamp": str(ts), "symbol": position_sym, "side": "sell",
-                                      "price": sell_price, "quantity": position_qty, "realized_pnl": rpnl,
-                                      "fee": fee, "reason": "take_profit"})
+                        trades.append(
+                            {
+                                "timestamp": str(ts),
+                                "symbol": position_sym,
+                                "side": "sell",
+                                "price": sell_price,
+                                "quantity": position_qty,
+                                "realized_pnl": rpnl,
+                                "fee": fee,
+                                "reason": "take_profit",
+                            }
+                        )
                         position_sym = None
                         position_qty = 0
                         hold_hours = 0
@@ -385,8 +443,10 @@ def simulate_integrated(
         if t["side"] in ("sell", "close"):
             rpnl = t.get("realized_pnl", 0)
             pair_stats[sym]["pnl"] += rpnl
-            if rpnl > 0: pair_stats[sym]["wins"] += 1
-            elif rpnl < 0: pair_stats[sym]["losses"] += 1
+            if rpnl > 0:
+                pair_stats[sym]["wins"] += 1
+            elif rpnl < 0:
+                pair_stats[sym]["losses"] += 1
         elif t["side"] == "buy":
             pair_stats[sym]["entries"] += 1
 
@@ -394,17 +454,19 @@ def simulate_integrated(
     total_pnl = sum(t.get("realized_pnl", 0) for t in trades)
     total_fees = sum(t.get("fee", 0) for t in trades)
 
-    print(f"\n  RESULTS:")
-    print(f"    Return: {total_return*100:+.4f}%")
+    print("\n  RESULTS:")
+    print(f"    Return: {total_return * 100:+.4f}%")
     print(f"    Sortino: {sortino:.2f}")
     print(f"    Max DD: {max_dd:.2f}%")
     print(f"    Trades: {entries} entries, PnL=${total_pnl:+.2f}, fees=${total_fees:.2f}")
     print(f"    Final equity: ${equity[-1]:,.2f}")
-    print(f"    --- Per-Pair PnL ---")
+    print("    --- Per-Pair PnL ---")
     for sym in sorted(pair_stats.keys()):
         ps = pair_stats[sym]
         wr = ps["wins"] / max(1, ps["wins"] + ps["losses"]) * 100
-        print(f"    {sym:>8}: PnL=${ps['pnl']:+8.2f}  fees=${ps['fees']:6.2f}  entries={ps['entries']:3d}  W/L={ps['wins']}/{ps['losses']} ({wr:.0f}%)")
+        print(
+            f"    {sym:>8}: PnL=${ps['pnl']:+8.2f}  fees=${ps['fees']:6.2f}  entries={ps['entries']:3d}  W/L={ps['wins']}/{ps['losses']} ({wr:.0f}%)"
+        )
 
     return {
         "total_return_pct": total_return * 100,
@@ -414,7 +476,10 @@ def simulate_integrated(
         "entries": entries,
         "realized_pnl": total_pnl,
         "fees": total_fees,
-        "per_pair": {k: {kk: round(vv, 2) if isinstance(vv, float) else vv for kk, vv in v.items()} for k, v in pair_stats.items()},
+        "per_pair": {
+            k: {kk: round(vv, 2) if isinstance(vv, float) else vv for kk, vv in v.items()}
+            for k, v in pair_stats.items()
+        },
     }
 
 
@@ -429,11 +494,11 @@ def main():
     p.add_argument("--forecast-cache", default="binanceneural/forecast_cache")
     args = p.parse_args()
 
-    print(f"\n{'='*70}")
-    print(f"V4: RL+Chronos2+Gemini Integrated Test")
+    print(f"\n{'=' * 70}")
+    print("V4: RL+Chronos2+Gemini Integrated Test")
     print(f"Model: {args.model}, Days: {args.days}, Symbols: {args.symbols}")
     print(f"Checkpoint: {args.checkpoint}")
-    print(f"{'='*70}\n")
+    print(f"{'=' * 70}\n")
 
     # Load RL generator
     rl_gen = RLSignalGenerator(
@@ -467,9 +532,16 @@ def main():
     cache_tag = f"prompt-v4-integrated-{args.model}"
     print("--- RL+Chronos2+Gemini Integrated ---")
     result = simulate_integrated(
-        bars_map, fc_h1_map, fc_h24_map,
-        rl_gen, args.symbols, args.days, args.model, args.thinking_level,
-        args.parallel, cache_tag,
+        bars_map,
+        fc_h1_map,
+        fc_h24_map,
+        rl_gen,
+        args.symbols,
+        args.days,
+        args.model,
+        args.thinking_level,
+        args.parallel,
+        cache_tag,
     )
 
     if result:

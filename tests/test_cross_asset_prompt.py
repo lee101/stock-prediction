@@ -1,12 +1,12 @@
 """Tests for build_cross_asset_context and cross-asset prompt integration."""
+
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
-import pytest
+
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "rl_trading_agent_binance"))
@@ -29,14 +29,16 @@ def _make_bars(base_price: float, ret_24h_pct: float, n: int = 72) -> list[dict]
         prices.append(p)
     rows = []
     for i, p in enumerate(prices):
-        rows.append({
-            "timestamp": f"2026-03-19T{i % 24:02d}:00:00+00:00",
-            "open": p * 0.999,
-            "high": p * 1.002,
-            "low": p * 0.998,
-            "close": p,
-            "volume": 1000.0,
-        })
+        rows.append(
+            {
+                "timestamp": f"2026-03-19T{i % 24:02d}:00:00+00:00",
+                "open": p * 0.999,
+                "high": p * 1.002,
+                "low": p * 0.998,
+                "close": p,
+                "volume": 1000.0,
+            }
+        )
     return rows
 
 
@@ -153,7 +155,7 @@ class TestBuildCrossAssetContext:
         }
         ctx = build_cross_asset_context(bars)
         lines = ctx.split("\n")
-        movers_line = [l for l in lines if "Top movers" in l][0]
+        movers_line = next(line for line in lines if "Top movers" in line)
         assert "SOL" in movers_line.split(",")[0]
 
     def test_correlation_computed(self):
@@ -162,7 +164,7 @@ class TestBuildCrossAssetContext:
             "ETHUSD": _make_bars(2000, 3.0),
         }
         ctx = build_cross_asset_context(bars)
-        corr_line = [l for l in ctx.split("\n") if "correlation" in l][0]
+        corr_line = next(line for line in ctx.split("\n") if "correlation" in line)
         assert "N/A" not in corr_line
 
     def test_no_btc_still_works(self):
@@ -192,7 +194,9 @@ class TestPromptIntegration:
         }
         ctx = build_cross_asset_context(bars)
         prompt = build_live_prompt(
-            "BTCUSD", self._minimal_history(), 85000.0,
+            "BTCUSD",
+            self._minimal_history(),
+            85000.0,
             cross_asset_context=ctx,
         )
         assert "=== Market Regime ===" in prompt
@@ -206,7 +210,9 @@ class TestPromptIntegration:
         }
         ctx = build_cross_asset_context(bars)
         prompt = build_live_prompt_freeform(
-            "BTCUSD", self._minimal_history(), 85000.0,
+            "BTCUSD",
+            self._minimal_history(),
+            85000.0,
             cross_asset_context=ctx,
         )
         assert "=== Market Regime ===" in prompt
@@ -223,7 +229,9 @@ class TestPromptIntegration:
         ctx = build_cross_asset_context(bars)
         assert len(ctx) < 500
         prompt = build_live_prompt(
-            "BTCUSD", self._minimal_history(), 85000.0,
+            "BTCUSD",
+            self._minimal_history(),
+            85000.0,
             cross_asset_context=ctx,
         )
         assert len(prompt) < 5000
@@ -231,7 +239,9 @@ class TestPromptIntegration:
     def test_backwards_compat_no_cross_asset(self):
         prompt_old = build_live_prompt("BTCUSD", self._minimal_history(), 85000.0)
         prompt_new = build_live_prompt(
-            "BTCUSD", self._minimal_history(), 85000.0,
+            "BTCUSD",
+            self._minimal_history(),
+            85000.0,
             cross_asset_context="",
         )
         assert prompt_old == prompt_new
@@ -239,7 +249,9 @@ class TestPromptIntegration:
     def test_freeform_backwards_compat(self):
         prompt_old = build_live_prompt_freeform("BTCUSD", self._minimal_history(), 85000.0)
         prompt_new = build_live_prompt_freeform(
-            "BTCUSD", self._minimal_history(), 85000.0,
+            "BTCUSD",
+            self._minimal_history(),
+            85000.0,
             cross_asset_context="",
         )
         assert prompt_old == prompt_new

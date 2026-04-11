@@ -3,15 +3,20 @@
 Runs multiple prompt variants through the backtest simulator and compares.
 Uses cached LLM responses where available; calls API for new ones.
 """
+
 from __future__ import annotations
-import argparse, sys, json, time
+
+import argparse
+import json
+import sys
 from pathlib import Path
+
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from llm_hourly_trader.backtest import run_backtest, RESULTS_DIR
+from llm_hourly_trader.backtest import RESULTS_DIR, run_backtest
 from llm_hourly_trader.config import BacktestConfig
 
 
@@ -44,18 +49,18 @@ def main():
 
     margin_fee = 0.001 if args.leverage > 1.0 else None
 
-    print(f"\n{'='*70}")
-    print(f"PROMPT VARIANT SWEEP")
+    print(f"\n{'=' * 70}")
+    print("PROMPT VARIANT SWEEP")
     print(f"Symbols: {args.symbols} | Days: {args.days} | Model: {args.model}")
     print(f"Leverage: {args.leverage}x | Margin fee: {margin_fee}")
     print(f"Variants: {args.variants}")
-    print(f"{'='*70}\n")
+    print(f"{'=' * 70}\n")
 
     results = {}
     for variant in args.variants:
-        print(f"\n{'#'*60}")
+        print(f"\n{'#' * 60}")
         print(f"# VARIANT: {variant}")
-        print(f"{'#'*60}")
+        print(f"{'#' * 60}")
 
         config = BacktestConfig(
             initial_cash=10_000.0,
@@ -81,7 +86,7 @@ def main():
             results[variant] = {"error": str(e)}
 
     # Summary table
-    print(f"\n\n{'='*90}")
+    print(f"\n\n{'=' * 90}")
     print(f"{'Variant':<22} {'Return':>10} {'Sortino':>10} {'MaxDD':>10} {'Trades':>8} {'PnL':>10}")
     print("-" * 90)
     for v in args.variants:
@@ -108,8 +113,7 @@ def main():
     save = {}
     for k, v in results.items():
         if isinstance(v, dict):
-            save[k] = {kk: vv for kk, vv in v.items()
-                       if kk not in ("equity_history", "timestamps", "trades")}
+            save[k] = {kk: vv for kk, vv in v.items() if kk not in ("equity_history", "timestamps", "trades")}
     with open(out, "w") as f:
         json.dump(save, f, indent=2, default=str)
     print(f"\nSaved: {out}")

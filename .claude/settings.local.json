@@ -2,8 +2,13 @@
   "permissions": {
     "allow": [
       "Bash(ls:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(*)"
     ],
     "deny": []
+  },
+  "env": {
+    "CLAUDE_CODE_TMPDIR": "/run/user/1002",
+    "TMPDIR": "/run/user/1002"
   }
 }

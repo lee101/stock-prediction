@@ -11,7 +11,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import math
 import os
@@ -20,52 +19,51 @@ import struct
 import sys
 import time
 import traceback
-from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "rl_trading_agent_binance"))
 
+from llm_hourly_trader.gemini_wrapper import TradePlan
+from llm_hourly_trader.providers import call_llm
 from loguru import logger
 
-from unified_orchestrator.state import (
-    build_snapshot,
-    save_snapshot,
-    PendingOrder,
-    Position,
-    UnifiedPortfolioSnapshot,
-)
-from unified_orchestrator.prompt_builder import build_unified_prompt
+from src.alpaca_account_lock import acquire_alpaca_account_lock, require_explicit_live_trading_enable
+from src.split_monitor import check_recent_splits, log_split_event
 from unified_orchestrator.alpaca_watcher import AlpacaCryptoWatcher, OrderPair
-from unified_orchestrator.position_tracker import (
-    load_entry_times,
-    save_entry_times,
-    update_entry_times,
-    get_force_exit_symbols,
-    load_peak_prices,
-    save_peak_prices,
-    update_peak_prices,
-    get_trailing_stop_symbols,
-)
-from unified_orchestrator.backout import select_backout_candidates, execute_backout
+from unified_orchestrator.backout import execute_backout, select_backout_candidates
 from unified_orchestrator.conditional_orders import (
     read_pending_fills,
 )
-
-from src.split_monitor import check_recent_splits, log_split_event
-from src.alpaca_account_lock import acquire_alpaca_account_lock, require_explicit_live_trading_enable
-
-from llm_hourly_trader.providers import call_llm
-from llm_hourly_trader.gemini_wrapper import TradePlan
-
+from unified_orchestrator.jsonl_utils import append_jsonl_row, iter_jsonl_lines_reverse
+from unified_orchestrator.position_tracker import (
+    get_force_exit_symbols,
+    get_trailing_stop_symbols,
+    load_entry_times,
+    load_peak_prices,
+    save_entry_times,
+    save_peak_prices,
+    update_entry_times,
+    update_peak_prices,
+)
+from unified_orchestrator.prompt_builder import build_unified_prompt
 from unified_orchestrator.rl_gemini_bridge import (
     RLGeminiBridge,
     RLSignal,
     _rl_only_plan,
     build_portfolio_observation,
 )
-from unified_orchestrator.jsonl_utils import append_jsonl_row, iter_jsonl_lines_reverse
+from unified_orchestrator.state import (
+    PendingOrder,
+    Position,
+    UnifiedPortfolioSnapshot,
+    build_snapshot,
+    save_snapshot,
+)
 from unified_orchestrator.state_paths import cycle_event_log_path, resolve_state_dir, stock_event_log_path
 
 
@@ -106,6 +104,7 @@ CRYPTO_CHECKPOINT_CANDIDATES = [
 _CRYPTO_SYMBOLS_DEFAULT = ["BTCUSD", "ETHUSD", "SOLUSD", "LTCUSD", "AVAXUSD"]
 _STOCK_SYMBOLS_DEFAULT = ["NVDA", "PLTR", "META", "MSFT", "NET"]
 
+
 def _load_symbols_from_config() -> tuple[list[str], list[str]]:
     """Load symbol sets from service_config.json, falling back to hardcoded defaults.
 
@@ -114,16 +113,19 @@ def _load_symbols_from_config() -> tuple[list[str], list[str]]:
     """
     try:
         from unified_orchestrator.symbol_lock import load_service_symbols
+
         crypto, stocks = load_service_symbols("unified-orchestrator")
         if crypto or stocks:
             logger.info(
                 "Symbol ownership loaded from service_config.json: crypto={} stocks={}",
-                crypto, stocks,
+                crypto,
+                stocks,
             )
             return crypto, stocks
     except Exception as exc:
         logger.warning("Could not load service_config.json ({}); using hardcoded defaults", exc)
     return list(_CRYPTO_SYMBOLS_DEFAULT), list(_STOCK_SYMBOLS_DEFAULT)
+
 
 _cfg_crypto, _cfg_stocks = _load_symbols_from_config()
 CRYPTO_SYMBOLS: list[str] = _cfg_crypto
@@ -148,13 +150,15 @@ CRYPTO_SAFETY_FEE_BPS = 16.0
 CRYPTO_EXIT_BUFFER_BPS = 5.0
 
 # Leverage settings for stocks
-MAX_INTRADAY_LEVERAGE = 4.0   # Alpaca PDT 4x intraday
+MAX_INTRADAY_LEVERAGE = 4.0  # Alpaca PDT 4x intraday
 MAX_OVERNIGHT_LEVERAGE = 2.0  # Must deleverage to 2x before market close
 MARGIN_INTEREST_ANNUAL = 0.0625  # 6.25% annual on leveraged portion
 DELEVERAGE_MINUTES_BEFORE_CLOSE = 60  # Start deleveraging 1h before close
 _CHECKPOINT_DATA_HINTS = {
-    "stocks13_featlag1_fee5bps_longonly_run4": REPO / "pufferlib_market/data/stocks13_hourly_forecast_mktd_v2_start20250915_featlag1.bin",
-    "stocks13_issuedat_featlag1_fee5bps_longonly_run5": REPO / "pufferlib_market/data/stocks13_hourly_forecast_mktd_v2_start20250915_issuedat_featlag1.bin",
+    "stocks13_featlag1_fee5bps_longonly_run4": REPO
+    / "pufferlib_market/data/stocks13_hourly_forecast_mktd_v2_start20250915_featlag1.bin",
+    "stocks13_issuedat_featlag1_fee5bps_longonly_run5": REPO
+    / "pufferlib_market/data/stocks13_hourly_forecast_mktd_v2_start20250915_issuedat_featlag1.bin",
     "tp0.15_s314": REPO / "pufferlib_market/data/crypto5_daily_train.bin",
     "tp0.10_s42": REPO / "pufferlib_market/data/crypto5_daily_train.bin",
     "tp0.20_s123": REPO / "pufferlib_market/data/crypto5_daily_train.bin",
@@ -196,7 +200,7 @@ CRYPTO_TREND_SOFT_REDUCTION_FACTOR = 0.5
 
 def get_rl_bridge(checkpoint_path: str = "", hidden_size: int = 1024) -> RLGeminiBridge | None:
     """Get or create the crypto RL+Gemini bridge (lazy singleton)."""
-    global _rl_bridge
+    global _rl_bridge  # noqa: PLW0603
     if _rl_bridge is not None:
         return _rl_bridge
     if not checkpoint_path:
@@ -213,7 +217,7 @@ def get_rl_bridge(checkpoint_path: str = "", hidden_size: int = 1024) -> RLGemin
 
 def get_rl_bridge_stock(checkpoint_path: str = "", hidden_size: int = 1024) -> RLGeminiBridge | None:
     """Get or create the stock RL+Gemini bridge (lazy singleton)."""
-    global _rl_bridge_stock
+    global _rl_bridge_stock  # noqa: PLW0603
     if _rl_bridge_stock is not None:
         return _rl_bridge_stock
     if not checkpoint_path:
@@ -228,9 +232,17 @@ def get_rl_bridge_stock(checkpoint_path: str = "", hidden_size: int = 1024) -> R
     logger.info(f"  Stock RL bridge loaded: {checkpoint_path}")
     return _rl_bridge_stock
 
-CRYPTO_PAIRS = {"BTCUSD": "BTCUSDT", "ETHUSD": "ETHUSDT", "SOLUSD": "SOLUSDT",
-                "LTCUSD": "LTCUSDT", "AVAXUSD": "AVAXUSDT",
-                "DOGEUSD": "DOGEUSDT", "SUIUSD": "SUIUSDT", "AAVEUSD": "AAVEUSDT"}
+
+CRYPTO_PAIRS = {
+    "BTCUSD": "BTCUSDT",
+    "ETHUSD": "ETHUSDT",
+    "SOLUSD": "SOLUSDT",
+    "LTCUSD": "LTCUSDT",
+    "AVAXUSD": "AVAXUSDT",
+    "DOGEUSD": "DOGEUSDT",
+    "SUIUSD": "SUIUSDT",
+    "AAVEUSD": "AAVEUSDT",
+}
 
 # STOCK_SYMBOLS is now loaded from service_config.json via _load_symbols_from_config() above.
 
@@ -266,7 +278,7 @@ def _load_recent_stock_edges_from_meta_log(
         return {}
 
     target_symbols = {str(symbol).upper() for symbol in stock_symbols or [] if str(symbol).strip()}
-    now = as_of if as_of is not None else datetime.now(timezone.utc)
+    now = as_of if as_of is not None else datetime.now(UTC)
     latest_by_symbol: dict[str, tuple[datetime, float]] = {}
     latest_cycle_start: tuple[datetime, int] | None = None
     recent_signal_rows: list[tuple[datetime, int, str, float]] = []
@@ -290,9 +302,9 @@ def _load_recent_stock_edges_from_meta_log(
         except ValueError:
             continue
         if logged_at.tzinfo is None:
-            logged_at = logged_at.replace(tzinfo=timezone.utc)
+            logged_at = logged_at.replace(tzinfo=UTC)
         else:
-            logged_at = logged_at.astimezone(timezone.utc)
+            logged_at = logged_at.astimezone(UTC)
         if logged_at > now or (now - logged_at) > max_age:
             continue
         if event_type == "meta_cycle_start":
@@ -338,9 +350,9 @@ def _utc_isoformat(ts: datetime) -> str:
     """Render a timezone-aware timestamp as canonical UTC ISO-8601."""
 
     if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
+        ts = ts.replace(tzinfo=UTC)
     else:
-        ts = ts.astimezone(timezone.utc)
+        ts = ts.astimezone(UTC)
     return ts.isoformat().replace("+00:00", "Z")
 
 
@@ -356,7 +368,7 @@ def _append_cycle_event(
     event_log = event_log or cycle_event_log_path()
     payload = {
         "event_type": str(event_type),
-        "logged_at": _utc_isoformat(logged_at or datetime.now(timezone.utc)),
+        "logged_at": _utc_isoformat(logged_at or datetime.now(UTC)),
         **fields,
     }
     try:
@@ -382,7 +394,7 @@ def _run_cycle_with_runtime_logging(
     """Run one orchestrator cycle and persist structured start/end/error diagnostics."""
 
     event_log = event_log or cycle_event_log_path()
-    started_at = datetime.now(timezone.utc)
+    started_at = datetime.now(UTC)
     cycle_id = f"{_os.getpid()}:{int(started_at.timestamp() * 1000)}"
     shared_fields = {
         "cycle_id": cycle_id,
@@ -417,7 +429,7 @@ def _run_cycle_with_runtime_logging(
             dry_run=dry_run,
         )
     except Exception as exc:
-        finished_at = datetime.now(timezone.utc)
+        finished_at = datetime.now(UTC)
         duration_seconds = max(0.0, (finished_at - started_at).total_seconds())
         _append_cycle_event(
             "cycle_error",
@@ -439,7 +451,7 @@ def _run_cycle_with_runtime_logging(
         )
         return False
 
-    finished_at = datetime.now(timezone.utc)
+    finished_at = datetime.now(UTC)
     duration_seconds = max(0.0, (finished_at - started_at).total_seconds())
     _append_cycle_event(
         "cycle_success",
@@ -595,7 +607,7 @@ def _maybe_use_rl_only_fallback_plan(
 
 def _get_crypto_rl_trader():
     """Lazy-load PPOTrader for crypto RL signals."""
-    global _crypto_rl_trader
+    global _crypto_rl_trader  # noqa: PLW0603
     if "_crypto_rl_trader" not in globals():
         _crypto_rl_trader = None
     if _crypto_rl_trader is not None:
@@ -604,13 +616,16 @@ def _get_crypto_rl_trader():
         if c.exists():
             try:
                 from pufferlib_market.inference import PPOTrader
+
                 bridge = RLGeminiBridge(checkpoint_path=str(c))
                 trained_symbols = _read_trained_symbols_for_checkpoint(
                     c,
                     _num_symbols_from_obs_size(bridge.get_checkpoint_spec().obs_size),
                 )
                 _crypto_rl_trader = PPOTrader(
-                    str(c), device="cpu", symbols=trained_symbols,
+                    str(c),
+                    device="cpu",
+                    symbols=trained_symbols,
                 )
                 logger.info(f"  Crypto RL trader loaded: {c}")
                 return _crypto_rl_trader
@@ -628,7 +643,7 @@ def _checkpoint_hint_keys(checkpoint_path: Path) -> list[str]:
     rel_parts: tuple[str, ...] = ()
     if "checkpoints" in parent.parts:
         idx = parent.parts.index("checkpoints")
-        rel_parts = tuple(str(part) for part in parent.parts[idx + 1:] if str(part) not in ("", "."))
+        rel_parts = tuple(str(part) for part in parent.parts[idx + 1 :] if str(part) not in ("", "."))
     else:
         checkpoint_root = REPO / "pufferlib_market" / "checkpoints"
         try:
@@ -842,11 +857,13 @@ def _build_crypto_rl_signal_map(history_frames: dict[str, object], bridge: RLGem
     daily = _is_daily_checkpoint(bridge.checkpoint_path)
     if daily:
         from pufferlib_market.inference_daily import compute_daily_features
+
         min_bars = 60
         feature_fn = compute_daily_features
         bar_label = "daily"
     else:
         from pufferlib_market.inference import compute_hourly_features
+
         min_bars = 72
         feature_fn = compute_hourly_features
         bar_label = "hourly"
@@ -864,7 +881,9 @@ def _build_crypto_rl_signal_map(history_frames: dict[str, object], bridge: RLGem
     for idx, sym in enumerate(trained_symbols):
         frame = history_frames.get(sym)
         if frame is None or len(frame) < min_bars:
-            logger.warning(f"  Crypto RL skipped: {sym} only has {0 if frame is None else len(frame)} {bar_label} bars (need {min_bars}); using zeros")
+            logger.warning(
+                f"  Crypto RL skipped: {sym} only has {0 if frame is None else len(frame)} {bar_label} bars (need {min_bars}); using zeros"
+            )
             continue
         features[idx] = feature_fn(frame)
         valid_symbols.append(sym)
@@ -895,12 +914,18 @@ def _build_stock_rl_signal_map(
     for idx, sym in enumerate(trained_symbols):
         frame = history_frames.get(sym)
         if frame is None or len(frame) < 72:
-            logger.warning(f"  Stock RL skipped: {sym} only has {0 if frame is None else len(frame)} bars (need 72); using zeros")
+            logger.warning(
+                f"  Stock RL skipped: {sym} only has {0 if frame is None else len(frame)} bars (need 72); using zeros"
+            )
             continue
         price_df = frame.loc[:, ["timestamp", "open", "high", "low", "close", "volume"]].copy()
         price_df["timestamp"] = pd.to_datetime(price_df["timestamp"], utc=True, errors="coerce").dt.floor("h")
-        price_df = price_df.dropna(subset=["timestamp"]).drop_duplicates("timestamp", keep="last").set_index("timestamp")
-        feature_df = compute_features(price_df, forecasts_1h.get(sym, pd.DataFrame()), forecasts_24h.get(sym, pd.DataFrame()))
+        price_df = (
+            price_df.dropna(subset=["timestamp"]).drop_duplicates("timestamp", keep="last").set_index("timestamp")
+        )
+        feature_df = compute_features(
+            price_df, forecasts_1h.get(sym, pd.DataFrame()), forecasts_24h.get(sym, pd.DataFrame())
+        )
         features[idx] = feature_df.iloc[-1].to_numpy(dtype=np.float32, copy=False)
         valid_symbols.append(sym)
     if not valid_symbols:
@@ -961,16 +986,34 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stock-symbols", nargs="+", default=STOCK_SYMBOLS)
     parser.add_argument("--model", default="gemini-3.1-flash-lite-preview")
     parser.add_argument("--thinking-level", default="HIGH")
-    parser.add_argument("--review-thinking-level", default=None,
-                        help="Optional thinking level for pass 2+. Defaults to --thinking-level.")
-    parser.add_argument("--reprompt-passes", type=int, default=1,
-                        help="Total Gemini plan passes per symbol. 1 = current behavior, 2 = review once.")
-    parser.add_argument("--reprompt-policy", choices=["always", "actionable", "entry_only"], default="always",
-                        help="When to run pass 2+. 'actionable' reviews any order-managing plan; 'entry_only' only reviews plans with a buy target.")
-    parser.add_argument("--review-max-confidence", type=float, default=None,
-                        help="Optional cap on first-pass confidence for running pass 2+. Example: 0.60 only reviews plans at 60% confidence or below.")
-    parser.add_argument("--review-model", default=None,
-                        help="Optional alternate model for review pass 2+. Defaults to the primary model.")
+    parser.add_argument(
+        "--review-thinking-level",
+        default=None,
+        help="Optional thinking level for pass 2+. Defaults to --thinking-level.",
+    )
+    parser.add_argument(
+        "--reprompt-passes",
+        type=int,
+        default=1,
+        help="Total Gemini plan passes per symbol. 1 = current behavior, 2 = review once.",
+    )
+    parser.add_argument(
+        "--reprompt-policy",
+        choices=["always", "actionable", "entry_only"],
+        default="always",
+        help="When to run pass 2+. 'actionable' reviews any order-managing plan; 'entry_only' only reviews plans with a buy target.",
+    )
+    parser.add_argument(
+        "--review-max-confidence",
+        type=float,
+        default=None,
+        help="Optional cap on first-pass confidence for running pass 2+. Example: 0.60 only reviews plans at 60% confidence or below.",
+    )
+    parser.add_argument(
+        "--review-model",
+        default=None,
+        help="Optional alternate model for review pass 2+. Defaults to the primary model.",
+    )
     parser.add_argument(
         "--bar-fetch-workers",
         type=int,
@@ -978,10 +1021,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Bounded per-cycle parallelism for Alpaca bar fetches. Defaults to ORCH_BAR_FETCH_WORKERS or 4.",
     )
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--dry-run", dest="live", action="store_false",
-                      help="Run without submitting live orders (default).")
-    mode.add_argument("--live", dest="live", action="store_true",
-                      help="Submit live orders.")
+    mode.add_argument(
+        "--dry-run", dest="live", action="store_false", help="Run without submitting live orders (default)."
+    )
+    mode.add_argument("--live", dest="live", action="store_true", help="Submit live orders.")
     parser.set_defaults(live=False)
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--interval", type=int, default=3600)
@@ -1038,10 +1081,7 @@ def _fetch_history_frames_parallel(
 
     resolved_frames: dict[str, object] = {}
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="orch-bars") as executor:
-        future_to_symbol = {
-            executor.submit(_safe_fetch, sym): sym
-            for sym in ordered_symbols
-        }
+        future_to_symbol = {executor.submit(_safe_fetch, sym): sym for sym in ordered_symbols}
         for future in as_completed(future_to_symbol):
             sym = future_to_symbol[future]
             frame = future.result()
@@ -1083,9 +1123,12 @@ def _fetch_crypto_bars(data_client, symbols: list[str], now, *, timeframe, lookb
 def _fetch_crypto_history_frames(data_client, symbols: list[str], now, *, lookback_hours: int = 78):
     """Fetch hourly bars for each crypto symbol."""
     from datetime import timedelta
+
     from alpaca.data.timeframe import TimeFrame
-    return _fetch_crypto_bars(data_client, symbols, now, timeframe=TimeFrame.Hour,
-                              lookback=timedelta(hours=lookback_hours), limit=72)
+
+    return _fetch_crypto_bars(
+        data_client, symbols, now, timeframe=TimeFrame.Hour, lookback=timedelta(hours=lookback_hours), limit=72
+    )
 
 
 def _fetch_crypto_daily_history_frames(data_client, symbols: list[str], now, *, lookback_days: int = 100):
@@ -1096,9 +1139,12 @@ def _fetch_crypto_daily_history_frames(data_client, symbols: list[str], now, *, 
     its 60-day rolling windows.
     """
     from datetime import timedelta
+
     from alpaca.data.timeframe import TimeFrame
-    return _fetch_crypto_bars(data_client, symbols, now, timeframe=TimeFrame.Day,
-                              lookback=timedelta(days=lookback_days), limit=lookback_days)
+
+    return _fetch_crypto_bars(
+        data_client, symbols, now, timeframe=TimeFrame.Day, lookback=timedelta(days=lookback_days), limit=lookback_days
+    )
 
 
 def _fetch_stock_history_frames(data_client, symbols: list[str], now, *, lookback_hours: int = 78):
@@ -1153,7 +1199,7 @@ def get_crypto_signals(
 
     signals = {}
     data_client = CryptoHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     rl_bridge = get_rl_bridge()
     rl_symbol_universe: list[str] = []
@@ -1265,16 +1311,20 @@ def get_crypto_signals(
 
         held_pos = snapshot.alpaca_positions.get(sym)
         actionable_held_pos = held_pos if _has_actionable_crypto_position(held_pos) else None
-        prompt = build_unified_prompt(
-            symbol=sym,
-            history_rows=history,
-            current_price=current_price,
-            snapshot=snapshot,
-            asset_class="crypto",
-            forecast_1h=forecast_1h,
-            forecast_24h=forecast_24h,
-            held_position=actionable_held_pos,
-        ) + rl_hint + trend_warning
+        prompt = (
+            build_unified_prompt(
+                symbol=sym,
+                history_rows=history,
+                current_price=current_price,
+                snapshot=snapshot,
+                asset_class="crypto",
+                forecast_1h=forecast_1h,
+                forecast_24h=forecast_24h,
+                held_position=actionable_held_pos,
+            )
+            + rl_hint
+            + trend_warning
+        )
 
         # Log the RL hint being injected (before LLM call)
         rl_sig = rl_signal_map.get(sym)
@@ -1322,6 +1372,7 @@ def get_crypto_signals(
     #   - moderate discount (2-5%): reduce allocation_pct by 50%
     #   - extreme discount (>5%): hard LONG→HOLD (strong sustained downtrend)
     from llm_hourly_trader.gemini_wrapper import TradePlan as _TradePlan
+
     for sym, plan in list(signals.items()):
         if plan.direction != "long":
             continue
@@ -1376,8 +1427,8 @@ def get_crypto_signals(
 # Crypto execution
 # ---------------------------------------------------------------------------
 
-def validate_plan_safety(plan: TradePlan, current_price: float,
-                         fee_bps: float = 20.0) -> tuple[bool, str]:
+
+def validate_plan_safety(plan: TradePlan, current_price: float, fee_bps: float = 20.0) -> tuple[bool, str]:
     """Validate a trade plan is safe to execute in production.
 
     Checks:
@@ -1395,8 +1446,7 @@ def validate_plan_safety(plan: TradePlan, current_price: float,
     if plan.direction == "long" and plan.buy_price > 0 and plan.sell_price > 0:
         fee_cost = plan.buy_price * fee_bps / 10000 * 2  # round-trip
         if plan.sell_price <= plan.buy_price + fee_cost:
-            return False, (f"sell ${plan.sell_price:.2f} <= buy ${plan.buy_price:.2f} "
-                          f"+ fees ${fee_cost:.2f}")
+            return False, (f"sell ${plan.sell_price:.2f} <= buy ${plan.buy_price:.2f} + fees ${fee_cost:.2f}")
 
     # Prices should be within 5% of current
     if plan.buy_price > 0:
@@ -1412,16 +1462,16 @@ def validate_plan_safety(plan: TradePlan, current_price: float,
     return True, "ok"
 
 
-def _place_crypto_tp_sell(alpaca, sym: str, pos, sell_price: float,
-                          dry_run: bool, orders: list[dict]) -> None:
+def _place_crypto_tp_sell(alpaca, sym: str, pos, sell_price: float, dry_run: bool, orders: list[dict]) -> None:
     """Place a take-profit sell order for a crypto position.
 
     Uses a slightly reduced qty (floor to 8 decimals minus epsilon) to avoid
     Alpaca's 'insufficient balance' error from floating-point qty mismatch.
     """
     import math
-    from alpaca.trading.requests import LimitOrderRequest
+
     from alpaca.trading.enums import OrderSide, TimeInForce
+    from alpaca.trading.requests import LimitOrderRequest
 
     # Floor qty to 8 decimals minus a tiny buffer to avoid exceeding available
     sell_qty = math.floor(pos.qty * 1e8 - 1) / 1e8
@@ -1429,8 +1479,9 @@ def _place_crypto_tp_sell(alpaca, sym: str, pos, sell_price: float,
         return
 
     # Cancel any existing sell orders for this symbol first
-    from alpaca.trading.requests import GetOrdersRequest
     from alpaca.trading.enums import QueryOrderStatus
+    from alpaca.trading.requests import GetOrdersRequest
+
     canceled_any = False
     try:
         open_orders = alpaca.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN))
@@ -1453,8 +1504,7 @@ def _place_crypto_tp_sell(alpaca, sym: str, pos, sell_price: float,
     safe_sell_limit = round(safe_sell_price, 2)
     if safe_sell_price > float(sell_price):
         logger.warning(
-            f"  {sym}: raised TP sell from ${float(sell_price):.2f} to "
-            f"fee-aware floor ${safe_sell_price:.2f}"
+            f"  {sym}: raised TP sell from ${float(sell_price):.2f} to fee-aware floor ${safe_sell_price:.2f}"
         )
 
     logger.info(f"  {sym}: placing TP sell {sell_qty:.8f} @ ${safe_sell_limit:.2f}")
@@ -1469,20 +1519,32 @@ def _place_crypto_tp_sell(alpaca, sym: str, pos, sell_price: float,
                 limit_price=safe_sell_limit,
             )
             result = alpaca.submit_order(req)
-            orders.append({"symbol": sym, "action": "sell_tp", "price": safe_sell_limit,
-                           "qty": sell_qty, "order_id": str(result.id)})
+            orders.append(
+                {
+                    "symbol": sym,
+                    "action": "sell_tp",
+                    "price": safe_sell_limit,
+                    "qty": sell_qty,
+                    "order_id": str(result.id),
+                }
+            )
         except Exception as e:
             logger.error(f"  {sym}: TP sell error: {e}")
     else:
-        orders.append({"symbol": sym, "action": "sell_tp", "price": safe_sell_limit,
-                       "qty": sell_qty, "dry_run": True})
+        orders.append({"symbol": sym, "action": "sell_tp", "price": safe_sell_limit, "qty": sell_qty, "dry_run": True})
 
 
-def _place_crypto_force_exit_sell(alpaca, sym: str, pos, dry_run: bool,
-                                   orders: list[dict], *,
-                                   min_limit_price: float = 0.0,
-                                   action: str = "force_exit",
-                                   reason_label: str = "FORCE EXIT") -> None:
+def _place_crypto_force_exit_sell(
+    alpaca,
+    sym: str,
+    pos,
+    dry_run: bool,
+    orders: list[dict],
+    *,
+    min_limit_price: float = 0.0,
+    action: str = "force_exit",
+    reason_label: str = "FORCE EXIT",
+) -> None:
     """Force-exit a position that has exceeded MAX_HOLD_HOURS.
 
     Places an aggressive IOC limit sell 0.1% below current price so it either
@@ -1490,8 +1552,9 @@ def _place_crypto_force_exit_sell(alpaca, sym: str, pos, dry_run: bool,
     Cancels any open orders for this symbol first.
     """
     import math
-    from alpaca.trading.requests import LimitOrderRequest, GetOrdersRequest
-    from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
+
+    from alpaca.trading.enums import OrderSide, QueryOrderStatus, TimeInForce
+    from alpaca.trading.requests import GetOrdersRequest, LimitOrderRequest
 
     sell_qty = math.floor(pos.qty * 1e8 - 1) / 1e8
     if sell_qty <= 0:
@@ -1519,12 +1582,10 @@ def _place_crypto_force_exit_sell(alpaca, sym: str, pos, dry_run: bool,
     min_limit_price = float(min_limit_price or 0.0)
     if min_limit_price > exit_price:
         logger.warning(
-            f"  {sym}: {reason_label} blocked below profit floor "
-            f"(${exit_price:.2f} -> ${min_limit_price:.2f})"
+            f"  {sym}: {reason_label} blocked below profit floor (${exit_price:.2f} -> ${min_limit_price:.2f})"
         )
         exit_price = round(min_limit_price, 2)
-    logger.info(f"  {sym}: {reason_label} {sell_qty:.8f} @ ${exit_price:.2f} "
-                f"(current ${pos.current_price:.2f})")
+    logger.info(f"  {sym}: {reason_label} {sell_qty:.8f} @ ${exit_price:.2f} (current ${pos.current_price:.2f})")
     if not dry_run:
         try:
             tif_ioc = getattr(TimeInForce, "IOC", "ioc")
@@ -1537,13 +1598,13 @@ def _place_crypto_force_exit_sell(alpaca, sym: str, pos, dry_run: bool,
                 limit_price=exit_price,
             )
             result = alpaca.submit_order(req)
-            orders.append({"symbol": sym, "action": action, "price": exit_price,
-                           "qty": sell_qty, "order_id": str(result.id)})
+            orders.append(
+                {"symbol": sym, "action": action, "price": exit_price, "qty": sell_qty, "order_id": str(result.id)}
+            )
         except Exception as e:
             logger.error(f"  {sym}: force exit order error: {e}")
     else:
-        orders.append({"symbol": sym, "action": action, "price": exit_price,
-                       "qty": sell_qty, "dry_run": True})
+        orders.append({"symbol": sym, "action": action, "price": exit_price, "qty": sell_qty, "dry_run": True})
 
 
 def execute_crypto_signals(
@@ -1553,10 +1614,10 @@ def execute_crypto_signals(
     alpaca_client=None,
 ) -> list[dict]:
     """Execute crypto trading signals on Alpaca."""
-    from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
     from alpaca.trading.client import TradingClient
-    from alpaca.trading.requests import LimitOrderRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
+    from alpaca.trading.requests import LimitOrderRequest
+    from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 
     orders = []
     alpaca = alpaca_client or TradingClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, paper=False)
@@ -1587,14 +1648,16 @@ def execute_crypto_signals(
         refreshed_orders: list[PendingOrder] = []
         refreshed_open_orders = alpaca.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN))
         for order in refreshed_open_orders:
-            refreshed_orders.append(PendingOrder(
-                symbol=_norm(str(order.symbol)),
-                side=order.side.value.lower(),
-                qty=float(order.qty),
-                limit_price=float(order.limit_price) if order.limit_price else 0.0,
-                broker="alpaca",
-                order_id=str(order.id),
-            ))
+            refreshed_orders.append(
+                PendingOrder(
+                    symbol=_norm(str(order.symbol)),
+                    side=order.side.value.lower(),
+                    qty=float(order.qty),
+                    limit_price=float(order.limit_price) if order.limit_price else 0.0,
+                    broker="alpaca",
+                    order_id=str(order.id),
+                )
+            )
         snapshot.alpaca_pending_orders = refreshed_orders
 
     # Cancel stale pending buy orders for crypto symbols (GTC orders from last
@@ -1607,8 +1670,9 @@ def execute_crypto_signals(
     # between cancel and re-place.  Symbols with a kept order are recorded in
     # kept_order_syms so the placement loop below skips re-placing them.
     crypto_sym_set = set(signals)
-    from alpaca.trading.requests import GetOrdersRequest
     from alpaca.trading.enums import QueryOrderStatus
+    from alpaca.trading.requests import GetOrdersRequest
+
     open_orders = alpaca.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN))
     canceled_for: set[str] = set()
     kept_order_syms: set[str] = set()  # symbols whose existing buy order is still valid
@@ -1630,17 +1694,12 @@ def execute_crypto_signals(
                 kept_order_syms.add(sym_norm)
                 continue
         if dry_run:
-            logger.info(
-                f"  {sym_norm}: [DRY RUN] would cancel stale buy order"
-                f" {order.id} @ {existing_price}"
-            )
+            logger.info(f"  {sym_norm}: [DRY RUN] would cancel stale buy order {order.id} @ {existing_price}")
             continue
         try:
             alpaca.cancel_order_by_id(str(order.id))
             canceled_for.add(sym_norm)
-            logger.info(
-                f"  {sym_norm}: canceled stale buy order {order.id} @ {existing_price}"
-            )
+            logger.info(f"  {sym_norm}: canceled stale buy order {order.id} @ {existing_price}")
         except Exception as e:
             logger.warning(f"  {sym_norm}: failed to cancel stale order: {e}")
 
@@ -1683,9 +1742,13 @@ def execute_crypto_signals(
     # Sortino=76.5, MaxDD=4.7% (vs 30.9/28.3% with LLM TP alone).
     peak_prices = load_peak_prices()
     peak_prices = update_peak_prices(peak_prices, crypto_pos)
-    raw_trailing_stop_syms = set(get_trailing_stop_symbols(
-        peak_prices, crypto_pos, trail_pct=TRAILING_STOP_PCT,
-    ))
+    raw_trailing_stop_syms = set(
+        get_trailing_stop_symbols(
+            peak_prices,
+            crypto_pos,
+            trail_pct=TRAILING_STOP_PCT,
+        )
+    )
     trailing_stop_syms: set[str] = set()
     for sym in raw_trailing_stop_syms:
         pos = snapshot.alpaca_positions.get(sym)
@@ -1727,11 +1790,10 @@ def execute_crypto_signals(
 
     # Sizing: use LLM's allocation_pct when available, else fall back to equal split
     num_long_signals = sum(
-        1 for plan in signals.values()
-        if plan.direction == "long" and plan.confidence >= MIN_CONFIDENCE_CRYPTO
+        1 for plan in signals.values() if plan.direction == "long" and plan.confidence >= MIN_CONFIDENCE_CRYPTO
     )
     fallback_pct = min(0.40, 1.0 / max(num_long_signals, 1))
-    logger.info(f"  Sizing: {num_long_signals} long signals, fallback {fallback_pct*100:.0f}% per symbol")
+    logger.info(f"  Sizing: {num_long_signals} long signals, fallback {fallback_pct * 100:.0f}% per symbol")
 
     # Track cash reserved by orders placed in this cycle to avoid oversizing
     cash_reserved_this_cycle = 0.0
@@ -1745,9 +1807,7 @@ def execute_crypto_signals(
                         f"< MIN_CONFIDENCE_CRYPTO={MIN_CONFIDENCE_CRYPTO:.2f} (direction=long)"
                     )
                 elif plan.direction != "long":
-                    logger.info(
-                        f"[CRYPTO_SIGNAL] {sym}: TradePlan direction={plan.direction} — skipping entry"
-                    )
+                    logger.info(f"[CRYPTO_SIGNAL] {sym}: TradePlan direction={plan.direction} — skipping entry")
                 continue
 
             # Don't buy into a position we're actively exiting
@@ -1777,7 +1837,7 @@ def execute_crypto_signals(
             alloc = plan.allocation_pct / 100.0 if plan.allocation_pct > 0 else fallback_pct
             alloc = min(alloc, 0.50)  # hard cap at 50% per symbol
             max_position = snapshot.alpaca_cash * alloc
-            logger.info(f"  {sym}: alloc={alloc*100:.0f}% → max ${max_position:.0f}")
+            logger.info(f"  {sym}: alloc={alloc * 100:.0f}% → max ${max_position:.0f}")
 
             if pos_value > 0 and pos_value >= max_position:
                 logger.info(f"  {sym}: already at max position (${pos_value:.0f})")
@@ -1814,13 +1874,13 @@ def execute_crypto_signals(
                 )
                 result = alpaca.submit_order(req)
                 cash_reserved_this_cycle += trade_size
-                orders.append({"symbol": sym, "action": "buy", "price": buy_price,
-                                "qty": qty, "order_id": str(result.id)})
+                orders.append(
+                    {"symbol": sym, "action": "buy", "price": buy_price, "qty": qty, "order_id": str(result.id)}
+                )
             else:
                 logger.info("    [DRY RUN]")
                 cash_reserved_this_cycle += trade_size
-                orders.append({"symbol": sym, "action": "buy", "price": buy_price,
-                                "qty": qty, "dry_run": True})
+                orders.append({"symbol": sym, "action": "buy", "price": buy_price, "qty": qty, "dry_run": True})
 
         except Exception as e:
             logger.error(f"  {sym}: execution error: {e}")
@@ -1831,6 +1891,7 @@ def execute_crypto_signals(
 # ---------------------------------------------------------------------------
 # Stock signal generation (Alpaca + Gemini)
 # ---------------------------------------------------------------------------
+
 
 def get_stock_signals(
     symbols: list[str],
@@ -1850,7 +1911,7 @@ def get_stock_signals(
 
     data_client = StockHistoricalDataClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD)
     signals = {}
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     rl_bridge = get_rl_bridge_stock()
     rl_symbol_universe: list[str] = []
@@ -1930,15 +1991,19 @@ def get_stock_signals(
                         f"Strongly prefer HOLD/FLAT unless there is very clear reversal evidence."
                     )
 
-            prompt = build_unified_prompt(
-                symbol=sym,
-                history_rows=history,
-                current_price=current_price,
-                snapshot=snapshot,
-                asset_class="stock",
-                forecast_1h=forecast_1h,
-                forecast_24h=forecast_24h,
-            ) + rl_hint + stock_trend_warning
+            prompt = (
+                build_unified_prompt(
+                    symbol=sym,
+                    history_rows=history,
+                    current_price=current_price,
+                    snapshot=snapshot,
+                    asset_class="stock",
+                    forecast_1h=forecast_1h,
+                    forecast_24h=forecast_24h,
+                )
+                + rl_hint
+                + stock_trend_warning
+            )
 
             plan = call_llm(
                 prompt,
@@ -1990,8 +2055,10 @@ def _validate_trade_plan(plan: TradePlan, symbol: str) -> tuple[bool, str]:
         if plan.sell_price <= 0:
             return False, "sell_price must be > 0 for long"
         if plan.sell_price <= plan.buy_price * fee_factor:
-            return False, (f"sell_price ${plan.sell_price:.2f} <= buy_price ${plan.buy_price:.2f} "
-                           f"* fee_factor {fee_factor:.5f} — not profitable after fees")
+            return False, (
+                f"sell_price ${plan.sell_price:.2f} <= buy_price ${plan.buy_price:.2f} "
+                f"* fee_factor {fee_factor:.5f} — not profitable after fees"
+            )
     if plan.confidence < 0.4:
         return False, f"confidence {plan.confidence:.2f} < threshold 0.40"
     return True, "ok"
@@ -2006,10 +2073,10 @@ def execute_stock_signals(
     dry_run: bool = True,
 ) -> list[dict]:
     """Execute stock trading signals on Alpaca with safety validation."""
-    from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
     from alpaca.trading.client import TradingClient
-    from alpaca.trading.requests import LimitOrderRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
+    from alpaca.trading.requests import LimitOrderRequest
+    from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 
     orders = []
     alpaca = TradingClient(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, paper=False)
@@ -2018,10 +2085,7 @@ def execute_stock_signals(
     # Same mechanism as crypto: track peak price, exit if price drops 0.3%.
     # Exp06 stocks: trail 0.3% → Sortino 89.4, +6.77% (vs -1.09% baseline).
     stock_syms = set(signals.keys())
-    stock_pos = {
-        sym: pos for sym, pos in snapshot.alpaca_positions.items()
-        if sym in stock_syms and pos.qty > 0
-    }
+    stock_pos = {sym: pos for sym, pos in snapshot.alpaca_positions.items() if sym in stock_syms and pos.qty > 0}
     stock_peaks = {}
     try:
         if STOCK_PEAKS_FILE.exists():
@@ -2032,9 +2096,13 @@ def execute_stock_signals(
         stock_peaks = {}
 
     stock_peaks = update_peak_prices(stock_peaks, stock_pos)
-    trail_exit_syms = set(get_trailing_stop_symbols(
-        stock_peaks, stock_pos, trail_pct=TRAILING_STOP_PCT,
-    ))
+    trail_exit_syms = set(
+        get_trailing_stop_symbols(
+            stock_peaks,
+            stock_pos,
+            trail_pct=TRAILING_STOP_PCT,
+        )
+    )
 
     # Remove exited positions from peaks
     for sym in list(stock_peaks):
@@ -2058,8 +2126,9 @@ def execute_stock_signals(
             if not dry_run:
                 try:
                     # Cancel existing sells first
-                    from alpaca.trading.requests import GetOrdersRequest
                     from alpaca.trading.enums import QueryOrderStatus
+                    from alpaca.trading.requests import GetOrdersRequest
+
                     open_orders = alpaca.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN))
                     for order in open_orders:
                         if str(order.symbol) == sym and order.side.value.lower() == "sell":
@@ -2067,19 +2136,27 @@ def execute_stock_signals(
                     time.sleep(0.5)
                     sell_price = round(pos.current_price * 0.999, 2)
                     req = LimitOrderRequest(
-                        symbol=sym, qty=pos.qty, side=OrderSide.SELL,
-                        type="limit", time_in_force=TimeInForce.DAY,
+                        symbol=sym,
+                        qty=pos.qty,
+                        side=OrderSide.SELL,
+                        type="limit",
+                        time_in_force=TimeInForce.DAY,
                         limit_price=sell_price,
                     )
                     result = alpaca.submit_order(req)
-                    orders.append({"symbol": sym, "action": "trailing_stop_sell",
-                                   "price": sell_price, "qty": pos.qty,
-                                   "order_id": str(result.id)})
+                    orders.append(
+                        {
+                            "symbol": sym,
+                            "action": "trailing_stop_sell",
+                            "price": sell_price,
+                            "qty": pos.qty,
+                            "order_id": str(result.id),
+                        }
+                    )
                 except Exception as e:
                     logger.error(f"  {sym}: trailing stop sell error: {e}")
             else:
-                orders.append({"symbol": sym, "action": "trailing_stop_sell",
-                               "qty": pos.qty, "dry_run": True})
+                orders.append({"symbol": sym, "action": "trailing_stop_sell", "qty": pos.qty, "dry_run": True})
 
     # ── Split detection ───────────────────────────────────────────────────
     # Forward splits make our stored entry_price stale (pre-split price is
@@ -2090,8 +2167,9 @@ def execute_stock_signals(
         recent_splits = check_recent_splits(list(stock_pos), lookback_days=7)
         if recent_splits:
             logger.warning(f"  Split-affected positions detected: {list(recent_splits)} — force-closing")
-            from alpaca.trading.requests import GetOrdersRequest
             from alpaca.trading.enums import QueryOrderStatus
+            from alpaca.trading.requests import GetOrdersRequest
+
             for sym, ratio in recent_splits.items():
                 log_split_event(sym, ratio)
                 pos = snapshot.alpaca_positions.get(sym)
@@ -2099,32 +2177,41 @@ def execute_stock_signals(
                     logger.warning(f"  {sym}: SPLIT FORCE-CLOSE — selling {pos.qty} shares near market")
                     if not dry_run:
                         try:
-                            open_orders = alpaca.get_orders(
-                                GetOrdersRequest(status=QueryOrderStatus.OPEN)
-                            )
+                            open_orders = alpaca.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN))
                             for order in open_orders:
                                 if str(order.symbol) == sym and order.side.value.lower() == "sell":
                                     alpaca.cancel_order_by_id(str(order.id))
                             time.sleep(0.5)
                             sell_price = round(pos.current_price * 0.999, 2)
                             req = LimitOrderRequest(
-                                symbol=sym, qty=pos.qty, side=OrderSide.SELL,
-                                type="limit", time_in_force=TimeInForce.DAY,
+                                symbol=sym,
+                                qty=pos.qty,
+                                side=OrderSide.SELL,
+                                type="limit",
+                                time_in_force=TimeInForce.DAY,
                                 limit_price=sell_price,
                             )
                             result = alpaca.submit_order(req)
-                            orders.append({
-                                "symbol": sym, "action": "split_force_close",
-                                "price": sell_price, "qty": pos.qty,
-                                "order_id": str(result.id),
-                            })
+                            orders.append(
+                                {
+                                    "symbol": sym,
+                                    "action": "split_force_close",
+                                    "price": sell_price,
+                                    "qty": pos.qty,
+                                    "order_id": str(result.id),
+                                }
+                            )
                         except Exception as e:
                             logger.error(f"  {sym}: split force-close order error: {e}")
                     else:
-                        orders.append({
-                            "symbol": sym, "action": "split_force_close",
-                            "qty": pos.qty, "dry_run": True,
-                        })
+                        orders.append(
+                            {
+                                "symbol": sym,
+                                "action": "split_force_close",
+                                "qty": pos.qty,
+                                "dry_run": True,
+                            }
+                        )
             trail_exit_syms |= set(recent_splits)
 
     for sym, plan in signals.items():
@@ -2144,8 +2231,9 @@ def execute_stock_signals(
                 logger.info(f"  {sym}: updating take-profit sell @ ${plan.sell_price:.2f} ({pos.qty:.2f} shares)")
                 if not dry_run:
                     # Cancel any existing sell orders for this symbol before placing new TP
-                    from alpaca.trading.requests import GetOrdersRequest
                     from alpaca.trading.enums import QueryOrderStatus
+                    from alpaca.trading.requests import GetOrdersRequest
+
                     try:
                         open_orders = alpaca.get_orders(GetOrdersRequest(status=QueryOrderStatus.OPEN))
                         for order in open_orders:
@@ -2163,11 +2251,19 @@ def execute_stock_signals(
                         limit_price=round(plan.sell_price, 2),
                     )
                     result = alpaca.submit_order(req)
-                    orders.append({"symbol": sym, "action": "sell_tp", "price": plan.sell_price,
-                                   "qty": pos.qty, "order_id": str(result.id)})
+                    orders.append(
+                        {
+                            "symbol": sym,
+                            "action": "sell_tp",
+                            "price": plan.sell_price,
+                            "qty": pos.qty,
+                            "order_id": str(result.id),
+                        }
+                    )
                 else:
-                    orders.append({"symbol": sym, "action": "sell_tp", "price": plan.sell_price,
-                                   "qty": pos.qty, "dry_run": True})
+                    orders.append(
+                        {"symbol": sym, "action": "sell_tp", "price": plan.sell_price, "qty": pos.qty, "dry_run": True}
+                    )
                 continue
 
             # New long entry
@@ -2198,7 +2294,9 @@ def execute_stock_signals(
             max_position = equity * alloc
             available = min(room_for_new, snapshot.alpaca_buying_power * 0.95)
             trade_usd = min(max_position, available)
-            logger.info(f"  {sym}: alloc={alloc*100:.0f}% lev={current_leverage:.2f}x/{max_lev:.0f}x → max ${trade_usd:.0f}")
+            logger.info(
+                f"  {sym}: alloc={alloc * 100:.0f}% lev={current_leverage:.2f}x/{max_lev:.0f}x → max ${trade_usd:.0f}"
+            )
 
             if trade_usd < 50:
                 logger.info(f"  {sym}: insufficient buying power (${trade_usd:.0f})")
@@ -2220,12 +2318,12 @@ def execute_stock_signals(
                     limit_price=round(plan.buy_price, 2),
                 )
                 result = alpaca.submit_order(req)
-                orders.append({"symbol": sym, "action": "buy", "price": plan.buy_price,
-                                "qty": qty, "order_id": str(result.id)})
+                orders.append(
+                    {"symbol": sym, "action": "buy", "price": plan.buy_price, "qty": qty, "order_id": str(result.id)}
+                )
             else:
                 logger.info("    [DRY RUN]")
-                orders.append({"symbol": sym, "action": "buy", "price": plan.buy_price,
-                                "qty": qty, "dry_run": True})
+                orders.append({"symbol": sym, "action": "buy", "price": plan.buy_price, "qty": qty, "dry_run": True})
 
         except Exception as e:
             logger.error(f"  {sym}: execution error: {e}")
@@ -2236,6 +2334,7 @@ def execute_stock_signals(
 # ---------------------------------------------------------------------------
 # End-of-day deleveraging
 # ---------------------------------------------------------------------------
+
 
 def deleverage_to_target(
     snapshot: UnifiedPortfolioSnapshot,
@@ -2254,15 +2353,14 @@ def deleverage_to_target(
                    Limit price = current_price * (1 - limit_offset_pct/100).
         limit_offset_pct: Percent below current price for limit (default 0.05%).
     """
-    from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
     from alpaca.trading.client import TradingClient
-    from alpaca.trading.requests import LimitOrderRequest
     from alpaca.trading.enums import OrderSide, TimeInForce
+    from alpaca.trading.requests import LimitOrderRequest
+    from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
 
     equity = max(snapshot.total_stock_value, 1.0)
     stock_positions = {
-        sym: pos for sym, pos in snapshot.alpaca_positions.items()
-        if sym not in set(CRYPTO_SYMBOLS) and pos.qty > 0
+        sym: pos for sym, pos in snapshot.alpaca_positions.items() if sym not in set(CRYPTO_SYMBOLS) and pos.qty > 0
     }
     long_val = sum(p.market_value for p in stock_positions.values())
     current_lev = long_val / equity
@@ -2303,8 +2401,9 @@ def deleverage_to_target(
         limit_price = round(pos.current_price * (1 - limit_offset_pct / 100), 2)
         sell_value = sell_qty * pos.current_price
         order_type = "limit" if use_limit else "market"
-        logger.info(f"  Deleverage SELL: {sym} {sell_qty:.2f} shares @ ${limit_price:.2f} "
-                    f"({order_type}, ${sell_value:,.0f})")
+        logger.info(
+            f"  Deleverage SELL: {sym} {sell_qty:.2f} shares @ ${limit_price:.2f} ({order_type}, ${sell_value:,.0f})"
+        )
 
         if not dry_run:
             try:
@@ -2317,20 +2416,28 @@ def deleverage_to_target(
                     limit_price=limit_price,
                 )
                 result = alpaca.submit_order(req)
-                orders.append({
-                    "symbol": sym, "action": "deleverage_sell",
-                    "qty": sell_qty, "limit_price": limit_price,
-                    "order_id": str(result.id),
-                })
+                orders.append(
+                    {
+                        "symbol": sym,
+                        "action": "deleverage_sell",
+                        "qty": sell_qty,
+                        "limit_price": limit_price,
+                        "order_id": str(result.id),
+                    }
+                )
                 sold_value += sell_value
             except Exception as e:
                 logger.error(f"  {sym}: deleverage sell error: {e}")
         else:
-            orders.append({
-                "symbol": sym, "action": "deleverage_sell",
-                "qty": sell_qty, "limit_price": limit_price,
-                "dry_run": True,
-            })
+            orders.append(
+                {
+                    "symbol": sym,
+                    "action": "deleverage_sell",
+                    "qty": sell_qty,
+                    "limit_price": limit_price,
+                    "dry_run": True,
+                }
+            )
             sold_value += sell_value
 
     new_lev = (long_val - sold_value) / equity
@@ -2341,6 +2448,7 @@ def deleverage_to_target(
 # ---------------------------------------------------------------------------
 # Main trading cycle
 # ---------------------------------------------------------------------------
+
 
 def run_cycle(
     crypto_symbols: list[str],
@@ -2355,7 +2463,7 @@ def run_cycle(
     dry_run: bool = True,
 ) -> dict:
     """Run one unified trading cycle."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     logger.info(f"\n{'=' * 70}")
     logger.info(f"UNIFIED TRADING CYCLE: {now.strftime('%Y-%m-%d %H:%M UTC')}")
     logger.info(f"Mode: {'DRY RUN' if dry_run else 'LIVE'}")
@@ -2367,8 +2475,10 @@ def run_cycle(
     long_val = sum(p.market_value for p in snapshot.alpaca_positions.values())
     lev = long_val / equity if equity > 0 else 0
     margin_cost_day = max(0, long_val - equity) * MARGIN_INTEREST_ANNUAL / 365
-    logger.info(f"Equity: ${equity:,.0f} | Positions: ${long_val:,.0f} | "
-                f"Leverage: {lev:.2f}x | Margin cost: ${margin_cost_day:.2f}/day")
+    logger.info(
+        f"Equity: ${equity:,.0f} | Positions: ${long_val:,.0f} | "
+        f"Leverage: {lev:.2f}x | Margin cost: ${margin_cost_day:.2f}/day"
+    )
     if snapshot.alpaca_positions:
         crypto_syms = set(CRYPTO_SYMBOLS)
         for sym, pos in snapshot.alpaca_positions.items():
@@ -2433,15 +2543,17 @@ def run_cycle(
                     sym = order["symbol"]
                     plan = crypto_signals.get(sym)
                     if plan and plan.sell_price > 0:
-                        watcher_pairs.append(OrderPair(
-                            symbol=sym,
-                            buy_price=order["price"],
-                            sell_price=max(
-                                float(plan.sell_price),
-                                _crypto_round_trip_profit_floor(float(order["price"])),
-                            ),
-                            target_qty=order["qty"],
-                        ))
+                        watcher_pairs.append(
+                            OrderPair(
+                                symbol=sym,
+                                buy_price=order["price"],
+                                sell_price=max(
+                                    float(plan.sell_price),
+                                    _crypto_round_trip_profit_floor(float(order["price"])),
+                                ),
+                                target_qty=order["qty"],
+                            )
+                        )
             if watcher_pairs:
                 # Stop previous watcher if still running
                 prev_watcher = results.get("_watcher")
@@ -2467,17 +2579,20 @@ def run_cycle(
             if delev_orders:
                 results["orders"].extend(delev_orders)
                 # Refresh snapshot after sells
-                snapshot = build_snapshot(datetime.now(timezone.utc))
+                snapshot = build_snapshot(datetime.now(UTC))
 
         # 4b. Generate and execute stock signals
         syms = stock_symbols or STOCK_SYMBOLS
         logger.info(f"\n--- STOCK SIGNALS ({len(syms)} symbols) ---")
         # Log leverage info
         equity = max(snapshot.total_stock_value, 1.0)
-        long_val = sum(p.market_value for p in snapshot.alpaca_positions.values()
-                       if p.symbol not in set(CRYPTO_SYMBOLS))
-        logger.info(f"  Leverage: {long_val / equity:.2f}x | Equity: ${equity:,.0f} | "
-                    f"Margin cost: ${max(0, long_val - equity) * MARGIN_INTEREST_ANNUAL / 365:.2f}/day")
+        long_val = sum(
+            p.market_value for p in snapshot.alpaca_positions.values() if p.symbol not in set(CRYPTO_SYMBOLS)
+        )
+        logger.info(
+            f"  Leverage: {long_val / equity:.2f}x | Equity: ${equity:,.0f} | "
+            f"Margin cost: ${max(0, long_val - equity) * MARGIN_INTEREST_ANNUAL / 365:.2f}/day"
+        )
         stock_signals = get_stock_signals(
             syms,
             snapshot,
@@ -2493,8 +2608,9 @@ def run_cycle(
         if stock_signals:
             stock_orders = execute_stock_signals(stock_signals, snapshot, dry_run)
             results["orders"].extend(stock_orders)
-            results["stock_signals"] = {s: {"direction": p.direction, "confidence": p.confidence}
-                                         for s, p in stock_signals.items()}
+            results["stock_signals"] = {
+                s: {"direction": p.direction, "confidence": p.confidence} for s, p in stock_signals.items()
+            }
 
     # 5. Check conditional order triggers
     pending_fills = read_pending_fills(since_minutes=65)
@@ -2515,6 +2631,7 @@ def run_cycle(
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def main():
     parser = _build_arg_parser()
@@ -2543,11 +2660,13 @@ def main():
 
     # Startup conflict check: warn if another service has open positions on our symbols.
     try:
-        from unified_orchestrator.symbol_lock import warn_position_conflicts, assert_no_overlaps
+        from unified_orchestrator.symbol_lock import assert_no_overlaps, warn_position_conflicts
+
         assert_no_overlaps()
         logger.info("Symbol ownership config: no overlaps detected across services.")
+        from alpaca.trading.client import TradingClient as _TC  # noqa: N814
         from env_real import ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD
-        from alpaca.trading.client import TradingClient as _TC
+
         _startup_alpaca = _TC(ALP_KEY_ID_PROD, ALP_SECRET_KEY_PROD, paper=False)
         warn_position_conflicts("unified-orchestrator", _startup_alpaca)
     except Exception as _conflict_exc:
@@ -2571,10 +2690,11 @@ def main():
             break
 
         # Sleep until :01 of next hour
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         next_hour = now.replace(minute=1, second=0, microsecond=0)
         if next_hour <= now:
             from datetime import timedelta
+
             next_hour += timedelta(hours=1)
         sleep_secs = (next_hour - now).total_seconds()
         logger.info(f"Next cycle at {next_hour.strftime('%H:%M')} UTC ({sleep_secs:.0f}s)")
