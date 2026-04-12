@@ -5,9 +5,10 @@ export TMPDIR=/nvme0n1-disk/code/stock-prediction/.tmp_train
 cd /nvme0n1-disk/code/stock-prediction
 source .venv313/bin/activate
 
-VAL="pufferlib_market/data/stocks17_augmented_val.bin"
-LOG="/tmp/auto_eval_watcher.log"
-LEADERBOARD="/tmp/promising_seeds.txt"
+VAL17="pufferlib_market/data/stocks17_augmented_val.bin"
+VAL32="pufferlib_market/data/screened32_augmented_val.bin"
+LOG="/nvme0n1-disk/code/stock-prediction/.watcher.log"
+LEADERBOARD="/nvme0n1-disk/code/stock-prediction/.promising_seeds.txt"
 
 echo "[$(date -u +%FT%TZ)] Auto-eval watcher started" | tee -a "$LOG"
 echo "neg/50|p10%|med%|sortino|checkpoint" > "$LEADERBOARD"
@@ -19,11 +20,12 @@ already_evaled() {
 
 eval_checkpoint() {
     local ckpt="$1"
+    local val_path="$2"
     local out="${ckpt%.pt}_eval.json"
     [ -f "$out" ] && python3 -c "import json; d=json.load(open('$out')); exit(0 if d.get('negative_windows') is not None else 1)" 2>/dev/null && return 0
 
     python -m pufferlib_market.evaluate_holdout \
-        --checkpoint "$ckpt" --data-path "$VAL" \
+        --checkpoint "$ckpt" --data-path "$val_path" \
         --eval-hours 60 --n-windows 50 --fee-rate 0.001 \
         --fill-buffer-bps 5.0 --decision-lag 2 --deterministic --no-early-stop \
         > "$out" 2>/dev/null && return 0
@@ -48,9 +50,20 @@ PY
 }
 
 while true; do
-    # Scan all stocks17 sweep directories
-    for variant_dir in pufferlib_market/checkpoints/stocks17_sweep/C_low_tp pufferlib_market/checkpoints/stocks17_sweep/D_muon; do
+    # Scan all stocks17 + screened32 sweep directories
+    for variant_dir in \
+        pufferlib_market/checkpoints/stocks17_sweep/C_low_tp \
+        pufferlib_market/checkpoints/stocks17_sweep/D_muon \
+        pufferlib_market/checkpoints/screened32_sweep/C \
+        pufferlib_market/checkpoints/screened32_sweep/D; do
         variant=$(basename "$variant_dir" | sed 's/_.*//; s/C/C/; s/D/D/')
+
+        # Select val path based on dataset
+        if echo "$variant_dir" | grep -q "screened32"; then
+            val_path="$VAL32"
+        else
+            val_path="$VAL17"
+        fi
 
         for seed_dir in "$variant_dir"/s*/; do
             [ -d "$seed_dir" ] || continue
@@ -71,23 +84,21 @@ while true; do
             [ -f "$ckpt" ] || ckpt="$seed_dir/best.pt"
             [ -f "$ckpt" ] || continue
 
-            if eval_checkpoint "$ckpt"; then
+            if eval_checkpoint "$ckpt" "$val_path"; then
                 result=$(print_result "${ckpt%.pt}_eval.json" "$seed_dir")
                 echo "  $result" | tee -a "$LOG"
                 # Check if promising (neg <= 5)
                 neg=$(python3 -c "import json; d=json.load(open('${ckpt%.pt}_eval.json')); print(d.get('negative_windows', 99))" 2>/dev/null)
                 if [ -n "$neg" ] && [ "$neg" -le 5 ] 2>/dev/null; then
                     echo "  *** PROMISING: $seed_dir neg=$neg ***" | tee -a "$LOG"
-                    # For D seeds, also eval periodic checkpoints
-                    if echo "$seed_dir" | grep -q "D_muon"; then
-                        for pckpt in "$seed_dir"/update_000*.pt; do
-                            [ -f "$pckpt" ] || continue
-                            pname=$(basename "$pckpt" .pt)
-                            echo "  Evaluating periodic $pname..." | tee -a "$LOG"
-                            eval_checkpoint "$pckpt"
-                            print_result "${pckpt%.pt}_eval.json" "  $seed_dir/$pname" | tee -a "$LOG"
-                        done
-                    fi
+                    # Also eval all periodic checkpoints for promising seeds
+                    for pckpt in "$seed_dir"/update_000*.pt; do
+                        [ -f "$pckpt" ] || continue
+                        pname=$(basename "$pckpt" .pt)
+                        echo "  Evaluating periodic $pname..." | tee -a "$LOG"
+                        eval_checkpoint "$pckpt" "$val_path"
+                        print_result "${pckpt%.pt}_eval.json" "  $seed_dir/$pname" | tee -a "$LOG"
+                    done
                 fi
                 # Copy to seed's eval_lag2.json if not set
                 [ -f "$seed_dir/eval_lag2.json" ] || cp "${ckpt%.pt}_eval.json" "$seed_dir/eval_lag2.json" 2>/dev/null
