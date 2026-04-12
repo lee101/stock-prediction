@@ -18,11 +18,12 @@
 - `pufferlib_market/data/stocks17_augmented_train.bin`: 2911 ts, 17 syms, 16 feats
 - CF variant ABANDONED — cross-features (rolling_corr/beta/rel_return/breadth_rank) systematically overfit; CF s1 holdout: med=-4.28%, 31/50 neg despite good in-training val (37.9%, 15/50 neg)
 
-#### Full leaderboard — all seeds with ≤10/50 neg (proper 50-window eval) — updated 2026-04-12
-| Checkpoint | med | p10 | neg/50 | sortino | notes |
-|-----------|-----|-----|--------|---------|-------|
-| C_s31 val_best | 15.44% | 6.58% | **0** | 39.9 | CHAMPION |
-| C_s22 val_best | 14.78% | 4.41% | 1 | 17.1 | strong |
+#### Full leaderboard — all seeds with ≤10/50 neg (proper 50-window eval) — updated 2026-04-12 09:40Z
+| Checkpoint | med | p10 | worst | neg/50 | sortino | notes |
+|-----------|-----|-----|-------|--------|---------|-------|
+| D_s29 u200 | 15.63% | **7.88%** | +2.11% | **0** | 23.74 | **NEW CHAMPION** — all 50 windows positive! |
+| C_s31 val_best | 15.44% | 6.58% | +4.00% | **0** | 39.9 | CHAMPION |
+| C_s22 val_best | 14.78% | 4.41% | ? | 1 | 17.1 | strong |
 | C_s44 val_best | 8.46% | 3.49% | 2 | 12.9 | |
 | D_s26 u350 | 12.59% | 0.92% | 3 | 24.2 | periodic ckpt |
 | D_s21 val_best | 19.09% | 0.97% | 4 | 21.8 | best median |
