@@ -451,6 +451,8 @@ def main() -> None:
     parser.add_argument("--no-early-stop", action="store_true", help="Disable drawdown-vs-profit early exit (run full window)")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--out", type=str, default=None, help="Optional JSON output path")
+    parser.add_argument("--extra-checkpoints", nargs="*", default=[],
+                        help="Additional checkpoint paths for softmax-avg ensemble")
     args = parser.parse_args()
 
     steps = int(args.eval_hours)
@@ -481,6 +483,14 @@ def main() -> None:
     max_offset_bps = loaded.action_max_offset_bps
     per_symbol_actions = int(alloc_bins) * int(level_bins)
 
+    # Ensemble: load extra checkpoints and softmax-average their logits.
+    extra_policies: list = []
+    for extra_ckpt in (args.extra_checkpoints or []):
+        extra_loaded = load_policy(extra_ckpt, num_symbols, features_per_sym=features_per_sym, device=device)
+        extra_policies.append(extra_loaded.policy)
+    all_policies = [policy] + extra_policies
+    n_ensemble = len(all_policies)
+
     shortable_mask = _build_shortable_mask(list(data.symbols), args.shortable_symbols)
     if shortable_mask is not None:
         shortable_mask = shortable_mask.to(device=device)
@@ -493,7 +503,16 @@ def main() -> None:
     def _policy_fn(obs: np.ndarray) -> int:
         obs_t = torch.from_numpy(obs.astype(np.float32, copy=False)).to(device=device).view(1, -1)
         with torch.no_grad():
-            logits, _ = policy(obs_t)
+            if n_ensemble == 1:
+                logits, _ = policy(obs_t)
+            else:
+                # Softmax-average ensemble: average the softmax probabilities then re-log.
+                probs_sum = None
+                for p in all_policies:
+                    lg, _ = p(obs_t)
+                    pr = torch.softmax(lg, dim=-1)
+                    probs_sum = pr if probs_sum is None else probs_sum + pr
+                logits = torch.log(probs_sum / n_ensemble + 1e-8)
         if tradable_mask is not None:
             logits = _mask_disallowed_symbols(
                 logits,
@@ -621,6 +640,8 @@ def main() -> None:
 
     resolved_config = {
         "checkpoint": str(Path(args.checkpoint)),
+        "extra_checkpoints": list(args.extra_checkpoints or []),
+        "ensemble_size": int(n_ensemble),
         "data_path": str(Path(args.data_path)),
         "arch": str(arch),
         "hidden_size": int(hidden),
