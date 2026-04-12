@@ -7,57 +7,44 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
-### 2026-04-12 — wide73 augmented dataset + 3-variant sweep (ACTIVE)
+### 2026-04-12 — stocks17 sweep expansion + cross-features experiment (ACTIVE)
 
-#### Data
-- `pufferlib_market/data/wide73_augmented_train.bin`: **8733 timesteps, 73 syms, 16 feats**
-  - 5 session-offsets × 3 vol-scales × 73 S&P blue-chips
-  - offset=0: 1275 days (2021-12-03 to 2025-05-31), offsets 1-4: 409 days each
-  - 15× more data diversity than stocks17 (sector diversity + regime augmentation)
-- `pufferlib_market/data/wide73_augmented_val.bin`: **177 days, 73 symbols**
-
-#### Sweep (running, 3 variants in parallel)
-`scripts/sweep_wide_augmented.sh C/F/D` — 20 seeds each, lag=2 eval, 60d×50 windows:
-- C low_tp:   tp=0.02, 15M steps, adamw, hidden=1024
-- D muon:     tp=0.05, 15M steps, muon optimizer
-- F psn_lotp: tp=0.02, 15M steps, adamw + per-sym-norm (LayerNorm per symbol)
-Results in `pufferlib_market/checkpoints/wide73_sweep/`
-
-Early training (seed 1 at ~18% of steps):
-- C: ret=+0.05-0.11 (positive, steady)
-- F: ret=+0.16-0.34 (VERY strong — per-sym-norm effective on 73-sector diversity)
-- D: ret=−0.2 (still initializing, typical for muon)
-
-**F variant is the leading hypothesis** for wide73: 73 symbols span very different sectors/vols,
-so LayerNorm per-symbol lets the encoder learn features relative to each stock's own baseline.
-
-ETA: ~5-7 hours for all 20 seeds per variant (12-20 min/seed, sequential within variant).
-Monitor: `python scripts/rebuild_leaderboard.py pufferlib_market/checkpoints/wide73_sweep/C_low_tp C`
-
----
-
-### 2026-04-11 — stocks17 augmented RL training + best seed
-
-#### Best model: `C_low_tp/s31`
+#### Current champion: stocks17 `C_low_tp/s31`
 - med=+15.44%, p10=+6.58%, worst=+4.00%, **0/50 negative windows**, sortino=39.90
-- Eval: lag=2, binary fills, fee=10bps, fill_buffer=5bps, 60d×50 windows on val_full
-- Meets 0-neg + p10>0 deploy criteria. Below med>+20% threshold.
+- Eval: lag=2, binary fills, fee=10bps, fill_buffer=5bps, 60d×50 windows
+- Meets 0-neg + p10>0. Below med>27% prod target.
 
 #### Stocks17 data
-- `pufferlib_market/data/stocks17_augmented_train.bin`: 2911 timesteps, 17 syms, 16 feats
-- `pufferlib_market/data/stocks17_augmented_val.bin`: 177 days (2025-06-02 to 2025-11-25)
+- `pufferlib_market/data/stocks17_augmented_train.bin`: 2911 ts, 17 syms, 16 feats
+- `pufferlib_market/data/stocks17_cf_augmented_train.bin`: 2911 ts, 17 syms, **20 feats** (cross-features)
+  - 4 extra: rolling_corr(SPY), rolling_beta(SPY), relative_return, breadth_rank
 
-#### Sweep results (2026-04-12, 22 seeds of C_low_tp, 16 seeds of D_muon in progress)
-- C_low_tp seeds with p10>0: s31 (6.58%), s22 (4.41%), s23 (0.59%)
-- All three have 0 negative windows. s31 is best individual model.
-- D_muon high variance: s21 original=19.09% med but only p10=0.97%, neg=4; retrain also ~19%
-- Per-sym-norm (F variant): HURTS on stocks17 (s21=-10%, s22=6%, s23=-3%). Not deployed.
-- Ensemble of top-3 C seeds: WORSE than s31 alone (ensemble dilutes signal with small N)
+#### Active sweeps (2026-04-12)
+All use lag=2 binary fills, 50 holdout windows, TMPDIR=/nvme0n1-disk/code/stock-prediction/.tmp_train
+
+| Variant | Seeds | Config | Status |
+|---------|-------|--------|--------|
+| C_low_tp | 37-50 (old), 51-70 (new) | tp=0.02, adamw | running |
+| D_muon | 21-36 (old), 37-50 (new) | tp=0.05, muon | running |
+| CF_C (cross-feats) | 1-20 | tp=0.02, adamw, 20 feats | running |
+
+#### Best results by variant (seeds tested so far)
+| Seed | med | p10 | neg/50 | notes |
+|------|-----|-----|--------|-------|
+| C_s31 | 15.44% | 6.58% | 0 | CHAMPION |
+| D_s21 | 19.09% | 0.97% | 4 | best median |
+| C_s22 | 14.78% | 4.41% | N/A | (old eval) |
+| C_s44 | 8.46% | 3.49% | 2 | |
+
+#### Wide73 — ABANDONED (all seeds fail)
+- Tested 7 seeds across C/F/D/G variants: neg ranges 17-44/50, all below stocks17
+- Root cause: 73 symbols × 15M steps → insufficient per-symbol training; large obs space overfits
+- G s2 best wide73 result: med=12.75%, 17/50 neg — still below stocks17 s31
 
 #### Deploy plan
-Once wide73 produces med>+20% with p10>0 and 0-neg, build a 73-symbol ensemble.
-The 17-sym s31 may still be deployable if 73-sym models fail to generalize.
-Use `scripts/rebuild_leaderboard.py` to get clean results (C_low_tp leaderboard has f-string bug).
+- Target: med>27%, p10>0, 0/50 neg
+- Current gap: best is s31 at 15.44% (57% of target)
+- Strategy: run sweeps to s100+ for C/D; test CF variant; check if D_muon finds 0-neg seed
 
 #### Key bugs fixed
 1. `_concat_binaries` corrupted data (72-byte phantom data). Fixed.
