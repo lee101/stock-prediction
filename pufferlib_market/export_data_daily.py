@@ -219,8 +219,8 @@ def export_binary(
     symbols = [s.strip().upper() for s in symbols if s.strip()]
     if not symbols:
         raise ValueError("No symbols provided")
-    if len(symbols) > 64:
-        raise ValueError("Too many symbols (max 64)")
+    if len(symbols) > 128:
+        raise ValueError("Too many symbols (max 128)")
 
     original_prices: dict[str, pd.DataFrame] = {}
     for sym in symbols:
