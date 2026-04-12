@@ -74,7 +74,7 @@ def read_mktd(path: str | Path) -> MktdData:
         features_per_sym = int.from_bytes(header[16:20], "little", signed=False)
         price_features = int.from_bytes(header[20:24], "little", signed=False)
 
-        if num_symbols <= 0 or num_symbols > 64:
+        if num_symbols <= 0 or num_symbols > 1024:
             raise ValueError(f"Invalid num_symbols={num_symbols} in {path}")
         if num_timesteps <= 0:
             raise ValueError(f"Invalid num_timesteps={num_timesteps} in {path}")
