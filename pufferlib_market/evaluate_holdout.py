@@ -96,8 +96,16 @@ def _act_holdout(name: str) -> nn.Module:
 
 
 class TradingPolicy(nn.Module):
-    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256, activation: str = "relu"):
+    def __init__(self, obs_size: int, num_actions: int, hidden: int = 256, activation: str = "relu",
+                 per_sym_norm: bool = False, features_per_sym: int = 16):
         super().__init__()
+        self._per_sym_norm = per_sym_norm
+        self._features_per_sym = features_per_sym
+        if per_sym_norm:
+            self._num_sym = max(1, (obs_size - 5) // (features_per_sym + 1))
+            self.sym_input_norm = nn.LayerNorm(features_per_sym, elementwise_affine=True)
+        else:
+            self._num_sym = 0
         self.encoder = nn.Sequential(
             nn.Linear(obs_size, hidden),
             _act_holdout(activation),
@@ -121,6 +129,11 @@ class TradingPolicy(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if self._per_sym_norm:
+            S, F = self._num_sym, self._features_per_sym
+            sym_part = x[:, :S * F].view(x.shape[0], S, F)
+            sym_part = self.sym_input_norm(sym_part)
+            x = torch.cat([sym_part.reshape(x.shape[0], S * F), x[:, S * F:]], dim=1)
         h = self.encoder(x)
         if getattr(self, "_use_encoder_norm", False):
             h = self.encoder_norm(h)
@@ -367,12 +380,16 @@ def load_policy(
         from pufferlib_market.train import DepthRecurrenceTradingPolicy  # noqa: PLC0415
 
         policy = DepthRecurrenceTradingPolicy(obs_size, num_actions, hidden=int(hidden)).to(device)
-    elif arch == "mlp_relu_sq":
-        policy = TradingPolicy(obs_size, num_actions, hidden=int(hidden), activation="relu_sq").to(device)
-    elif arch == "mlp":
-        policy = TradingPolicy(obs_size, num_actions, hidden=int(hidden)).to(device)
     else:
-        raise ValueError(f"Unsupported checkpoint architecture: {arch}")
+        # Per-sym-norm: read from checkpoint metadata if present.
+        _per_sym_norm = bool(payload.get("per_sym_norm", False)) if isinstance(payload, Mapping) else False
+        _feats_per_sym = int(payload.get("features_per_sym", features_per_sym)) if isinstance(payload, Mapping) else int(features_per_sym)
+        if arch == "mlp_relu_sq":
+            policy = TradingPolicy(obs_size, num_actions, hidden=int(hidden), activation="relu_sq",
+                                   per_sym_norm=_per_sym_norm, features_per_sym=_feats_per_sym).to(device)
+        else:
+            policy = TradingPolicy(obs_size, num_actions, hidden=int(hidden),
+                                   per_sym_norm=_per_sym_norm, features_per_sym=_feats_per_sym).to(device)
 
     missing_keys, unexpected_keys = policy.load_state_dict(state_dict, strict=False)
     if hasattr(policy, "_use_encoder_norm"):
@@ -380,7 +397,8 @@ def load_policy(
             policy._use_encoder_norm = bool(payload["use_encoder_norm"])
         else:
             policy._use_encoder_norm = "encoder_norm.weight" not in missing_keys
-    ignored = {"obs_mean", "obs_std", "encoder_norm.weight", "encoder_norm.bias"}
+    ignored = {"obs_mean", "obs_std", "encoder_norm.weight", "encoder_norm.bias",
+               "sym_input_norm.weight", "sym_input_norm.bias"}
     bad_missing = [key for key in missing_keys if key not in ignored]
     bad_unexpected = [key for key in unexpected_keys if key not in ignored]
     if bad_missing or bad_unexpected:

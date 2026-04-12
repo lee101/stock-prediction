@@ -315,6 +315,9 @@ def _checkpoint_payload(
         "arch": arch,
         # Whether encoder_norm was applied during training — needed for consistent inference.
         "use_encoder_norm": bool(getattr(policy, "_use_encoder_norm", False)),
+        # Per-symbol input norm metadata — needed to reconstruct the layer on load.
+        "per_sym_norm": bool(getattr(policy, "_per_sym_norm", False)),
+        "features_per_sym": int(getattr(policy, "_features_per_sym", 16)),
         **action_meta,
     }
     if activation_name is not None:
@@ -410,7 +413,8 @@ class TradingPolicy(nn.Module):
     """
 
     def __init__(self, obs_size: int, num_actions: int, hidden: int = 256, activation: str = "relu",
-                 use_encoder_norm: bool = True):
+                 use_encoder_norm: bool = True, per_sym_norm: bool = False,
+                 features_per_sym: int = 16):
         super().__init__()
         self.obs_size = obs_size
         self.num_actions = num_actions
@@ -418,6 +422,20 @@ class TradingPolicy(nn.Module):
         # Precompute whether fused kernel can be used (activation must be relu).
         # x.is_cuda is still checked at forward time since the model can be on CPU.
         self._can_fuse = HAS_TRITON and activation == "relu"
+
+        # Per-symbol input normalization: LayerNorm(F) applied to each symbol's
+        # features independently before the encoder.  Handles the fact that TSLA's
+        # 5% daily return is very different from SPY's 5% daily return — each symbol's
+        # feature vector is normalized to zero-mean unit-variance over its F features.
+        # elementwise_affine=True: learns shared (scale, bias) over the F features.
+        self._per_sym_norm = per_sym_norm
+        self._features_per_sym = features_per_sym
+        if per_sym_norm:
+            # Infer num_symbols: obs = S*F + 5 + S  =>  S = (obs_size - 5) / (F + 1)
+            self._num_sym = max(1, (obs_size - 5) // (features_per_sym + 1))
+            self.sym_input_norm = nn.LayerNorm(features_per_sym, elementwise_affine=True)
+        else:
+            self._num_sym = 0
 
         # Running obs-norm statistics (set by set_obs_norm_stats() when --obs-norm is used).
         # Stored as non-parameter buffers so they move with the model but are not trained.
@@ -497,7 +515,18 @@ class TradingPolicy(nn.Module):
            Fuses Linear[0]+ReLU+Linear[2]+ReLU via fused_mlp_relu, then
            applies encoder[4..5] normally.
         3. Fallback: standard nn.Sequential pass.
+        Per-sym-norm (optional): applied first, before any path above.
         """
+        # Per-symbol input normalization: normalize each symbol's F features to
+        # zero-mean unit-variance over the feature dimension. This handles
+        # different volatility regimes across symbols without global obs_norm.
+        if self._per_sym_norm:
+            S = self._num_sym
+            F = self._features_per_sym
+            sym_part = x[:, :S * F].view(x.shape[0], S, F)
+            sym_part = self.sym_input_norm(sym_part)
+            x = torch.cat([sym_part.reshape(x.shape[0], S * F), x[:, S * F:]], dim=1)
+
         hidden = self.encoder[0].weight.shape[0]
         use_fused_obs = (
             self._can_fuse
@@ -1156,10 +1185,14 @@ def train(args):
         ).to(device)
     elif args.arch == "mlp_relu_sq":
         policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size, activation="relu_sq",
-                               use_encoder_norm=not args.no_encoder_norm).to(device)
+                               use_encoder_norm=not args.no_encoder_norm,
+                               per_sym_norm=getattr(args, "per_sym_norm", False),
+                               features_per_sym=getattr(args, "features_per_sym", 16)).to(device)
     else:
         policy = TradingPolicy(obs_size, num_actions, hidden=args.hidden_size,
-                               use_encoder_norm=not args.no_encoder_norm).to(device)
+                               use_encoder_norm=not args.no_encoder_norm,
+                               per_sym_norm=getattr(args, "per_sym_norm", False),
+                               features_per_sym=getattr(args, "features_per_sym", 16)).to(device)
 
     # Enable fused GPU obs-normalize + first-linear + ReLU when:
     #   - TradingPolicy (has set_obs_norm_stats / obs_mean buffer)
@@ -2583,6 +2616,11 @@ def main():
     parser.add_argument("--clip-eps-end", type=float, default=0.05, help="Final clip eps (with --anneal-clip)")
     parser.add_argument("--clip-vloss", action="store_true", help="PPO-style value function clipping")
     parser.add_argument("--obs-norm", action="store_true", help="Running observation normalization")
+    parser.add_argument("--per-sym-norm", action="store_true",
+                        help="Per-symbol input LayerNorm: normalize each symbol's features independently "
+                             "before the encoder (handles cross-symbol vol differences without global obs-norm)")
+    parser.add_argument("--features-per-sym", type=int, default=16,
+                        help="Number of features per symbol in the observation vector (default 16)")
     parser.add_argument("--resume-from", type=str, default=None, help="Checkpoint to resume from")
     parser.add_argument("--val-data-path", type=str, default=None,
                         help="Validation data for val_best.pt checkpointing (saves at peak val performance)")

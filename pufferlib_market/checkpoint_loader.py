@@ -496,7 +496,13 @@ def load_policy_from_resolved_metadata(
 
     if hasattr(policy, "_use_encoder_norm"):
         policy._use_encoder_norm = "encoder_norm.weight" not in missing
-    ignored = {"obs_mean", "obs_std", "encoder_norm.weight", "encoder_norm.bias"}
+    # per_sym_norm: if sym_input_norm weights are missing, the checkpoint predates the feature.
+    # The policy won't have a sym_input_norm layer so it will not apply it.
+    ignored = {
+        "obs_mean", "obs_std",
+        "encoder_norm.weight", "encoder_norm.bias",
+        "sym_input_norm.weight", "sym_input_norm.bias",
+    }
     bad_missing = [key for key in missing if key not in ignored]
     bad_unexpected = [key for key in unexpected if key not in ignored]
     if bad_missing or bad_unexpected:
