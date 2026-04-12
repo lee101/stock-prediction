@@ -1,0 +1,37 @@
+{
+  "symbol": "QQQ",
+  "best_strategy": "differencing",
+  "mae": 7.663341064453141,
+  "mae_percent": 1.2502014482723243,
+  "rmse": 9.392377203775155,
+  "pct_return_mae": 0.01250423554881229,
+  "config": {
+    "name": "differencing",
+    "params": {}
+  },
+  "timestamp": "2026-04-12T09:20:59Z",
+  "selection_metric": "mae_percent",
+  "selection_value": 1.2502014482723243,
+  "comparison": {
+    "differencing": {
+      "mae": 7.663341064453141,
+      "mae_percent": 1.2502014482723243,
+      "pct_return_mae": 0.01250423554881229
+    },
+    "log_diff": {
+      "mae": 7.718547363281266,
+      "mae_percent": 1.2592078325854046,
+      "pct_return_mae": 0.012597217259651312
+    },
+    "diff_norm": {
+      "mae": 7.743217773437516,
+      "mae_percent": 1.2632325761336052,
+      "pct_return_mae": 0.0126386999857073
+    }
+  },
+  "metadata": {
+    "source": "chronos2_preaug_eval",
+    "hyperparam_root": "hyperparams/chronos2",
+    "strategy_repeats": 1
+  }
+}

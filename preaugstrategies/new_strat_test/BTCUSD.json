@@ -1,0 +1,37 @@
+{
+  "symbol": "BTCUSD",
+  "best_strategy": "diff_norm",
+  "mae": 1790.2678156250017,
+  "mae_percent": 1.966223169706907,
+  "rmse": 2271.8389623368885,
+  "pct_return_mae": 0.019379775588778892,
+  "config": {
+    "name": "diff_norm",
+    "params": {}
+  },
+  "timestamp": "2026-04-12T09:14:27Z",
+  "selection_metric": "mae_percent",
+  "selection_value": 1.966223169706907,
+  "comparison": {
+    "differencing": {
+      "mae": 1796.8947687500017,
+      "mae_percent": 1.9735014487806937,
+      "pct_return_mae": 0.019451193722657186
+    },
+    "log_diff": {
+      "mae": 1807.5803156250017,
+      "mae_percent": 1.9852372179562563,
+      "pct_return_mae": 0.019562062312344572
+    },
+    "diff_norm": {
+      "mae": 1790.2678156250017,
+      "mae_percent": 1.966223169706907,
+      "pct_return_mae": 0.019379775588778892
+    }
+  },
+  "metadata": {
+    "source": "chronos2_preaug_eval",
+    "hyperparam_root": "hyperparams/chronos2",
+    "strategy_repeats": 1
+  }
+}

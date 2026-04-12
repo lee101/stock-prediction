@@ -1,0 +1,37 @@
+{
+  "symbol": "ARKK",
+  "best_strategy": "log_diff",
+  "mae": 2.0963190917968766,
+  "mae_percent": 2.6372940296233707,
+  "rmse": 2.6316676346823957,
+  "pct_return_mae": 0.025910534525552663,
+  "config": {
+    "name": "log_diff",
+    "params": {}
+  },
+  "timestamp": "2026-04-12T09:20:18Z",
+  "selection_metric": "mae_percent",
+  "selection_value": 2.6372940296233707,
+  "comparison": {
+    "differencing": {
+      "mae": 2.155782592773439,
+      "mae_percent": 2.7121026485591315,
+      "pct_return_mae": 0.026662565543594467
+    },
+    "log_diff": {
+      "mae": 2.0963190917968766,
+      "mae_percent": 2.6372940296233707,
+      "pct_return_mae": 0.025910534525552663
+    },
+    "diff_norm": {
+      "mae": 2.1221629333496104,
+      "mae_percent": 2.6698071185401613,
+      "pct_return_mae": 0.026240760234705958
+    }
+  },
+  "metadata": {
+    "source": "chronos2_preaug_eval",
+    "hyperparam_root": "hyperparams/chronos2",
+    "strategy_repeats": 1
+  }
+}

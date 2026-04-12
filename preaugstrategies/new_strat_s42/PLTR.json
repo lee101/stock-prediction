@@ -1,0 +1,37 @@
+{
+  "symbol": "PLTR",
+  "best_strategy": "log_diff",
+  "mae": 7.553029571533202,
+  "mae_percent": 4.281289523852636,
+  "rmse": 9.433728345477927,
+  "pct_return_mae": 0.04131718710849422,
+  "config": {
+    "name": "log_diff",
+    "params": {}
+  },
+  "timestamp": "2026-04-12T09:22:15Z",
+  "selection_metric": "mae_percent",
+  "selection_value": 4.281289523852636,
+  "comparison": {
+    "differencing": {
+      "mae": 7.81851837158203,
+      "mae_percent": 4.431776743263659,
+      "pct_return_mae": 0.04281170474554615
+    },
+    "log_diff": {
+      "mae": 7.553029571533202,
+      "mae_percent": 4.281289523852636,
+      "pct_return_mae": 0.04131718710849422
+    },
+    "diff_norm": {
+      "mae": 9.440532623291015,
+      "mae_percent": 5.351184321059188,
+      "pct_return_mae": 0.05189587706031419
+    }
+  },
+  "metadata": {
+    "source": "chronos2_preaug_eval",
+    "hyperparam_root": "hyperparams/chronos2",
+    "strategy_repeats": 1
+  }
+}

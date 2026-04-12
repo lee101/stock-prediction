@@ -1,0 +1,37 @@
+{
+  "symbol": "ETHUSD",
+  "best_strategy": "diff_norm",
+  "mae": 72.1654966796875,
+  "mae_percent": 2.3994574460468256,
+  "rmse": 94.30787697756708,
+  "pct_return_mae": 0.02359459792323016,
+  "config": {
+    "name": "diff_norm",
+    "params": {}
+  },
+  "timestamp": "2026-04-12T09:21:29Z",
+  "selection_metric": "mae_percent",
+  "selection_value": 2.3994574460468256,
+  "comparison": {
+    "differencing": {
+      "mae": 72.4873638671875,
+      "mae_percent": 2.410159327904758,
+      "pct_return_mae": 0.023710500772918537
+    },
+    "log_diff": {
+      "mae": 72.85113544921876,
+      "mae_percent": 2.422254504565696,
+      "pct_return_mae": 0.02383620497775118
+    },
+    "diff_norm": {
+      "mae": 72.1654966796875,
+      "mae_percent": 2.3994574460468256,
+      "pct_return_mae": 0.02359459792323016
+    }
+  },
+  "metadata": {
+    "source": "chronos2_preaug_eval",
+    "hyperparam_root": "hyperparams/chronos2",
+    "strategy_repeats": 1
+  }
+}

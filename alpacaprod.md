@@ -7,12 +7,37 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
-### 2026-04-12 — stocks17 sweep expansion + cross-features experiment
+### 2026-04-12 — screened32 new wide dataset + stocks17 sweep expansion
+
+#### Production status
+- **daily-rl-trader.service** (PID 1652847): sleeping until Mon 2026-04-14 ~13:35 UTC (normal weekend)
+  - Confidence gate FIXED: 0.20→0.05 (was blocking all trades since Apr 8 restart)
+  - Next trade signals: Monday. Ensemble=32-model stocks12, min_confidence=0.05
+- **No issues**: service is correct. Low confidence (~11%) in current volatile market is expected.
 
 #### Current champion: stocks17 `C_low_tp/s31`
 - med=+15.44%, p10=+6.58%, worst=+4.00%, **0/50 negative windows**, sortino=39.90
 - Eval: lag=2, binary fills, fee=10bps, fill_buffer=5bps, 60d×50 windows
 - Meets 0-neg + p10>0. Below med>27% prod target.
+
+#### NEW: screened32 dataset (2026-04-12)
+- 32 curated stocks screened by learnability heuristics (trend, Sharpe, autocorrelation)
+- Symbols: LLY, BSX, ABBV, VRTX, SYK, WELL, JPM, GS, V, MA, AXP, MS, AAPL, MSFT, NVDA, KLAC, CRWD, META, COST, AZO, TJX, CAT, PH, RTX, BKNG, MAR, HLT, PLTR, SPY, QQQ, AMZN, GOOG
+- Train: `screened32_augmented_train.bin` — 20,377 ts (7x more than stocks17's 2,911)
+  - 5 session offsets × 7 vol scales = 35x augmentation
+  - Training period: 2019-2025-05-31
+- Val sets:
+  - `screened32_augmented_val.bin` — 177 ts (Jun-Nov 2025, in-training checkpoint selection)
+  - `screened32_recent_val.bin` — 131 ts (Dec 2025-Apr 2026, NEW recent bear market test)
+  - `screened32_full_val.bin` — 314 ts (Jun 2025-Apr 2026, comprehensive holdout)
+- Extended dataset building: `screened32_ext_augmented_*.bin` (train through Nov 2025, val=Dec 2025-Apr 2026)
+- Pair screener tool: `scripts/screen_stocks_rl.py` for stock-level learnability screening
+
+#### screened32 sweep status (2026-04-12)
+| Variant | Seeds | Config | Status |
+|---------|-------|--------|--------|
+| C | 1-20 | tp=0.02, adamw, h=1024 | running — s1 at update 150/457 |
+| D | 1-20 | tp=0.05, muon, h=1024 | running — s1 training |
 
 #### Stocks17 data
 - `pufferlib_market/data/stocks17_augmented_train.bin`: 2911 ts, 17 syms, 16 feats

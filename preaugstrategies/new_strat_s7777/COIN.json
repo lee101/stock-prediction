@@ -1,0 +1,37 @@
+{
+  "symbol": "COIN",
+  "best_strategy": "diff_norm",
+  "mae": 7.369026184082027,
+  "mae_percent": 4.036893532159064,
+  "rmse": 8.92547641052173,
+  "pct_return_mae": 0.04037165386307546,
+  "config": {
+    "name": "diff_norm",
+    "params": {}
+  },
+  "timestamp": "2026-04-12T09:18:57Z",
+  "selection_metric": "mae_percent",
+  "selection_value": 4.036893532159064,
+  "comparison": {
+    "differencing": {
+      "mae": 8.198597717285152,
+      "mae_percent": 4.491348689895507,
+      "pct_return_mae": 0.04523535876759206
+    },
+    "log_diff": {
+      "mae": 7.78379974365234,
+      "mae_percent": 4.264114423782015,
+      "pct_return_mae": 0.04266716490312207
+    },
+    "diff_norm": {
+      "mae": 7.369026184082027,
+      "mae_percent": 4.036893532159064,
+      "pct_return_mae": 0.04037165386307546
+    }
+  },
+  "metadata": {
+    "source": "chronos2_preaug_eval",
+    "hyperparam_root": "hyperparams/chronos2",
+    "strategy_repeats": 1
+  }
+}

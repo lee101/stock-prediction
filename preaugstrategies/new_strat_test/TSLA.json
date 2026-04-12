@@ -1,0 +1,37 @@
+{
+  "symbol": "TSLA",
+  "best_strategy": "diff_norm",
+  "mae": 12.983322082519525,
+  "mae_percent": 3.0483954721355144,
+  "rmse": 15.723769582345989,
+  "pct_return_mae": 0.03012137096860431,
+  "config": {
+    "name": "diff_norm",
+    "params": {}
+  },
+  "timestamp": "2026-04-12T09:10:49Z",
+  "selection_metric": "mae_percent",
+  "selection_value": 3.0483954721355144,
+  "comparison": {
+    "differencing": {
+      "mae": 13.489437805175774,
+      "mae_percent": 3.1672279918493365,
+      "pct_return_mae": 0.0312709781912047
+    },
+    "log_diff": {
+      "mae": 13.082115112304681,
+      "mae_percent": 3.071591401710511,
+      "pct_return_mae": 0.030326856024732184
+    },
+    "diff_norm": {
+      "mae": 12.983322082519525,
+      "mae_percent": 3.0483954721355144,
+      "pct_return_mae": 0.03012137096860431
+    }
+  },
+  "metadata": {
+    "source": "chronos2_preaug_eval",
+    "hyperparam_root": "hyperparams/chronos2",
+    "strategy_repeats": 1
+  }
+}

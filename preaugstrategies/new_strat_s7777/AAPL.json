@@ -1,0 +1,37 @@
+{
+  "symbol": "AAPL",
+  "best_strategy": "differencing",
+  "mae": 2.0596759033203087,
+  "mae_percent": 0.7582966578412974,
+  "rmse": 2.761505829379678,
+  "pct_return_mae": 0.007618112354725806,
+  "config": {
+    "name": "differencing",
+    "params": {}
+  },
+  "timestamp": "2026-04-12T09:16:26Z",
+  "selection_metric": "mae_percent",
+  "selection_value": 0.7582966578412974,
+  "comparison": {
+    "differencing": {
+      "mae": 2.0596759033203087,
+      "mae_percent": 0.7582966578412974,
+      "pct_return_mae": 0.007618112354725806
+    },
+    "log_diff": {
+      "mae": 2.0596759033203087,
+      "mae_percent": 0.7582966578412974,
+      "pct_return_mae": 0.007618112354725806
+    },
+    "diff_norm": {
+      "mae": 2.0596759033203087,
+      "mae_percent": 0.7582966578412974,
+      "pct_return_mae": 0.007618112354725806
+    }
+  },
+  "metadata": {
+    "source": "chronos2_preaug_eval",
+    "hyperparam_root": "hyperparams/chronos2",
+    "strategy_repeats": 1
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "symbol": "MCD",
+  "best_strategy": "diff_norm",
+  "mae": 4.068876770019531,
+  "mae_percent": 1.3361849008896232,
+  "rmse": 5.242452288804781,
+  "pct_return_mae": 0.01341605579507985,
+  "config": {
+    "name": "diff_norm",
+    "params": {}
+  },
+  "timestamp": "2026-04-12T09:10:16Z",
+  "selection_metric": "mae_percent",
+  "selection_value": 1.3361849008896232,
+  "comparison": {
+    "differencing": {
+      "mae": 4.509758056640626,
+      "mae_percent": 1.480966606398259,
+      "pct_return_mae": 0.014882016322951696
+    },
+    "log_diff": {
+      "mae": 4.475071777343752,
+      "mae_percent": 1.469575924083665,
+      "pct_return_mae": 0.014766794014073372
+    },
+    "diff_norm": {
+      "mae": 4.068876770019531,
+      "mae_percent": 1.3361849008896232,
+      "pct_return_mae": 0.01341605579507985
+    }
+  },
+  "metadata": {
+    "source": "chronos2_preaug_eval",
+    "hyperparam_root": "hyperparams/chronos2",
+    "strategy_repeats": 1
+  }
+}

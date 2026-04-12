@@ -1,0 +1,37 @@
+{
+  "symbol": "MSFT",
+  "best_strategy": "log_diff",
+  "mae": 5.256095458984373,
+  "mae_percent": 1.0561534406716926,
+  "rmse": 6.542505401758266,
+  "pct_return_mae": 0.010539131406192469,
+  "config": {
+    "name": "log_diff",
+    "params": {}
+  },
+  "timestamp": "2026-04-12T09:16:51Z",
+  "selection_metric": "mae_percent",
+  "selection_value": 1.0561534406716926,
+  "comparison": {
+    "differencing": {
+      "mae": 5.350178100585936,
+      "mae_percent": 1.075058292459558,
+      "pct_return_mae": 0.010725957314090193
+    },
+    "log_diff": {
+      "mae": 5.256095458984373,
+      "mae_percent": 1.0561534406716926,
+      "pct_return_mae": 0.010539131406192469
+    },
+    "diff_norm": {
+      "mae": 5.393040039062498,
+      "mae_percent": 1.083670918342998,
+      "pct_return_mae": 0.010817005313974568
+    }
+  },
+  "metadata": {
+    "source": "chronos2_preaug_eval",
+    "hyperparam_root": "hyperparams/chronos2",
+    "strategy_repeats": 1
+  }
+}

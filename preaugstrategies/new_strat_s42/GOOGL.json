@@ -1,0 +1,37 @@
+{
+  "symbol": "GOOGL",
+  "best_strategy": "differencing",
+  "mae": 5.557148681640621,
+  "mae_percent": 1.900830306312343,
+  "rmse": 7.109708480685839,
+  "pct_return_mae": 0.01929389430241084,
+  "config": {
+    "name": "differencing",
+    "params": {}
+  },
+  "timestamp": "2026-04-12T09:17:19Z",
+  "selection_metric": "mae_percent",
+  "selection_value": 1.900830306312343,
+  "comparison": {
+    "differencing": {
+      "mae": 5.557148681640621,
+      "mae_percent": 1.900830306312343,
+      "pct_return_mae": 0.01929389430241084
+    },
+    "log_diff": {
+      "mae": 5.742202697753902,
+      "mae_percent": 1.9641282855971238,
+      "pct_return_mae": 0.019879788396935404
+    },
+    "diff_norm": {
+      "mae": 5.743534240722653,
+      "mae_percent": 1.9645837416905558,
+      "pct_return_mae": 0.019884297712394364
+    }
+  },
+  "metadata": {
+    "source": "chronos2_preaug_eval",
+    "hyperparam_root": "hyperparams/chronos2",
+    "strategy_repeats": 1
+  }
+}
