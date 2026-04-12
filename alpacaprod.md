@@ -47,10 +47,21 @@ bash scripts/train_chronos2_full_runpod.sh --steps 100000 --muon
   - Next trade signals: Monday. Ensemble=32-model stocks12, min_confidence=0.05
 - **No issues**: service is correct. Low confidence (~11%) in current volatile market is expected.
 
-#### Current champion: stocks17 `C_low_tp/s31`
-- med=+15.44%, p10=+6.58%, worst=+4.00%, **0/50 negative windows**, sortino=39.90
-- Eval: lag=2, binary fills, fee=10bps, fill_buffer=5bps, 60d×50 windows
-- Meets 0-neg + p10>0. Below med>27% prod target.
+#### Current champion: 2-model ensemble C s31 + D s29 u200
+- **Ensemble** (softmax_avg of C s31 val_best + D s29 champion_u200):
+  - med=+18.84%, p10=+6.25%, worst=+4.04%, **0/50 negative windows**, sortino=48.81
+  - Better than either individual: med +3.4pp above best individual
+- Slippage stress test PASSED (all 0/50 neg):
+  - fill_buffer=0bps:  p10=6.37% med=19.28% sort=48.81
+  - fill_buffer=5bps:  p10=6.25% med=18.84% sort=48.81 ← production setting
+  - fill_buffer=10bps: p10=2.42% med=18.84% sort=48.81
+  - fill_buffer=20bps: p10=3.44% med=20.82% sort=58.23
+- Eval: lag=2, binary fills, fee=10bps, 60d×50 windows
+- Meets 0-neg + p10>0. Below med>27% prod target. Ready to deploy if stocks17 infra built.
+
+Individual champions:
+- D s29 u200: med=+15.63%, p10=+7.88%, worst=+2.11%, 0/50 neg, sortino=23.74 (champion_u200.pt)
+- C s31 val_best: med=+15.44%, p10=+6.58%, worst=+4.00%, 0/50 neg, sortino=39.90
 
 #### NEW: screened32 dataset (2026-04-12)
 - 32 curated stocks screened by learnability heuristics (trend, Sharpe, autocorrelation)
@@ -75,7 +86,7 @@ bash scripts/train_chronos2_full_runpod.sh --steps 100000 --muon
 - `pufferlib_market/data/stocks17_augmented_train.bin`: 2911 ts, 17 syms, 16 feats
 - CF variant ABANDONED — cross-features (rolling_corr/beta/rel_return/breadth_rank) systematically overfit; CF s1 holdout: med=-4.28%, 31/50 neg despite good in-training val (37.9%, 15/50 neg)
 
-#### Full leaderboard — all seeds with ≤10/50 neg (proper 50-window eval) — updated 2026-04-12 09:40Z
+#### Full leaderboard — all seeds with ≤10/50 neg (proper 50-window eval) — updated 2026-04-12
 | Checkpoint | med | p10 | worst | neg/50 | sortino | notes |
 |-----------|-----|-----|-------|--------|---------|-------|
 | D_s29 u200 | 15.63% | **7.88%** | +2.11% | **0** | 23.74 | **NEW CHAMPION** — all 50 windows positive! |
@@ -92,11 +103,12 @@ bash scripts/train_chronos2_full_runpod.sh --steps 100000 --muon
 | C_s40 val_best | 8.07% | -0.55% | 8 | 16.6 | |
 | D_s28 val_best | 7.34% | -1.19% | 8 | 11.9 | D had 0/20 in-val |
 | D_s39 val_best | 6.71% | -0.26% | 6 | 11.3 | |
+| **2-model ensemble** | **18.84%** | **6.25%** | **+4.04%** | **0** | **48.81** | **C s31 + D s29 u200 — BEST OVERALL** |
 
 #### Key learnings from 100+ seeds tested (updated 2026-04-12)
 1. **20-window in-training val is unreliable** — even 5 consecutive 0/20 neg can be false positive (C s53, s54, s55 all failed holdout). The 50-window holdout eval is ground truth.
 2. **50-window in-training val also unreliable for per-sym-norm** — F s1 had 4-5/50 neg in training val, but all checkpoints showed 26-42/50 neg on holdout. Per-sym-norm BROKEN.
-3. **Ensemble of 2-3 models hurts performance** — s31+s22: 9/50 neg vs s31 alone: 0/50 neg. Only large ensembles (32+) help.
+3. **Same-variant 2-model ensemble hurts** — C s31+C s22: 9/50 neg vs s31 alone: 0/50 neg. BUT **cross-variant ensemble helps**: C s31 + D s29 u200 (adamw + muon diversity) → 0/50 neg, med=18.84% vs 15.44%/15.63% individually.
 4. **High training returns → bad holdout** — C s52 (ret=0.44-0.50), C s54 (ret=0.86-0.89) both fail; C s31 had ret≈0.003 at val peak.
 5. **CF cross-features overfit** — adding corr/beta/rel_return/breadth_rank features helps training but hurts generalization.
 6. **D_muon best checkpoint ≠ val_best.pt** — for D seeds, eval periodic checkpoints (u100-u450); D s26 best was u350 not val_best.
@@ -105,18 +117,21 @@ bash scripts/train_chronos2_full_runpod.sh --steps 100000 --muon
 #### Active sweeps (2026-04-12 session)
 | Variant | Seeds | Config | Status |
 |---------|-------|--------|--------|
-| C_low_tp | 51-70 | tp=0.02, adamw, 16 feats | running (s56 current, s57-70 pending) |
-| C_low_tp | 71-100 | tp=0.02, adamw, 16 feats | launched 2026-04-12 09:30 UTC |
-| D_muon | 21-50 | tp=0.05, muon, 16 feats | running (s28,s40 current) |
+| C_low_tp | 51-70 | tp=0.02, adamw, 16 feats | s51-58 done (all fail, 8-43 neg), s59-70 running |
+| C_low_tp | 71-100 | tp=0.02, adamw, 16 feats | s71 done (8/50 neg best), s72+ running |
+| D_muon | 37-50 | tp=0.05, muon, 16 feats | s37-41 done (best=6 neg s39), s42+ running |
+| D_muon | 30-36 | tp=0.05, muon, 16 feats | s30 running (best_neg=9 in-train) |
 
 #### Wide73 — ABANDONED (all seeds fail)
 - Tested 7 seeds across C/F/D/G variants: neg ranges 17-44/50, all below stocks17
 - Root cause: 73 symbols × 15M steps → insufficient per-symbol training
 
 #### Deploy plan
-- Target: med>27%, p10>0, 0/50 neg. Current gap: best is s31 at 15.44%.
-- Strategy: run C seeds to s100+; D sweep finishing s28-50; never use per-sym-norm
-- DO NOT add models with neg>5 to ensemble — hurts champion
+- Target: med>27%, p10>0, 0/50 neg. Current gap: 2-model ensemble at 18.84%.
+- Strategy: run C seeds to s100+; D sweep finishing s42-50; never use per-sym-norm
+- For 3-model ensemble: add only a new 0/50 neg seed (0-neg bar is strict)
+- Cross-variant diversity (adamw+muon) is beneficial for ensemble
+- DO NOT add models with neg>5 to ensemble
 - DO NOT trust in-training val (even 50-window) for per-sym-norm variants
 
 #### Key bugs fixed
