@@ -242,6 +242,12 @@ def main() -> None:
     parser.add_argument("--val-start-date", default=None)
     parser.add_argument("--val-end-date", default=None)
     parser.add_argument("--min-days", type=int, default=200)
+    parser.add_argument("--cross-features", action="store_true", default=False,
+                        help="Append 4 cross-symbol features (corr, beta, rel_return, breadth_rank)")
+    parser.add_argument("--cross-anchor", default="SPY",
+                        help="Anchor symbol for cross features (default: SPY)")
+    parser.add_argument("--cross-window", type=int, default=20,
+                        help="Rolling window in days for cross features (default: 20)")
     args = parser.parse_args()
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
@@ -294,6 +300,9 @@ def main() -> None:
                     start_date=args.start_date,
                     end_date=args.end_date,
                     min_days=effective_min_days,
+                    cross_features=args.cross_features,
+                    cross_anchor=args.cross_anchor,
+                    cross_window=args.cross_window,
                 )
                 offset_bins.append(bin_path)
             except Exception as e:
@@ -330,6 +339,9 @@ def main() -> None:
                     start_date=args.val_start_date,
                     end_date=args.val_end_date,
                     min_days=50,  # val period is typically shorter than a full year
+                    cross_features=args.cross_features,
+                    cross_anchor=args.cross_anchor,
+                    cross_window=args.cross_window,
                 )
                 print(f"Val data  → {val_output}")
             except Exception as e:

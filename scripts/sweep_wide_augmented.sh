@@ -69,6 +69,7 @@ train_one() {
       --hidden-size     1024 \
       --anneal-lr \
       --disable-shorts \
+      --val-eval-windows 50 \
       "${EXTRA_FLAGS[@]}" \
       --num-envs        128 \
       --seed            "$seed" \
