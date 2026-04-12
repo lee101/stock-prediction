@@ -207,77 +207,88 @@ def build_wide_augmented(
         print(f"  Truncating to 128 symbols (C env max)")
         symbols = symbols[:128]
 
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_dir = Path(tmp)
+    # Use a persistent intermediate directory (survives crashes, allows resume).
+    cache_dir = output_train.parent / f".build_cache_{output_train.stem}"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    print(f"  intermediate cache: {cache_dir}")
 
-        # Build one base binary per session-offset for train and val.
-        train_offset_bins: list[Path] = []
-        val_offset_bins: list[Path] = []
+    # Build one base binary per session-offset for train and val.
+    train_offset_bins: list[Path] = []
+    val_offset_bins: list[Path] = []
 
-        for offset in offsets:
-            print(f"\n--- Session offset {offset} ---")
-            # Build augmented CSV per symbol, then export binary.
-            out_train = tmp_dir / f"offset{offset}_train.bin"
-            out_val   = tmp_dir / f"offset{offset}_val.bin"
+    for offset in offsets:
+        out_train = cache_dir / f"offset{offset}_train.bin"
+        out_val   = cache_dir / f"offset{offset}_val.bin"
 
-            # Build augmented CSVs (same logic as build_augmented_daily_training.py).
-            combined_train_csvs: dict[str, pd.DataFrame] = {}
-            combined_val_csvs: dict[str, pd.DataFrame] = {}
-
-            for sym in symbols:
-                df_train = build_augmented_csv(
-                    sym,
-                    hourly_root=hourly_root,
-                    daily_root=daily_root,
-                    offsets=[offset],
-                    start_date=train_start,
-                    end_date=train_end,
-                )
-                df_val = build_augmented_csv(
-                    sym,
-                    hourly_root=hourly_root,
-                    daily_root=daily_root,
-                    offsets=[offset],
-                    start_date=val_start,
-                    end_date=val_end,
-                )
-                if df_train is not None:
-                    combined_train_csvs[sym] = df_train
-                if df_val is not None:
-                    combined_val_csvs[sym] = df_val
-
-            # Verify all symbols present.
-            sym_train = [s for s in symbols if s in combined_train_csvs]
-            sym_val   = [s for s in symbols if s in combined_val_csvs]
-
-            with tempfile.TemporaryDirectory() as csv_tmp:
-                csv_tmp_dir = Path(csv_tmp)
-                for sym, df in combined_train_csvs.items():
-                    df.to_csv(csv_tmp_dir / f"{sym}.csv", index=False)
-                export_binary(
-                    sym_train,
-                    csv_tmp_dir,
-                    out_train,
-                    start_date=train_start,
-                    end_date=train_end,
-                    min_days=min_days,
-                )
-
-            with tempfile.TemporaryDirectory() as csv_tmp:
-                csv_tmp_dir = Path(csv_tmp)
-                for sym, df in combined_val_csvs.items():
-                    df.to_csv(csv_tmp_dir / f"{sym}.csv", index=False)
-                export_binary(
-                    sym_val,
-                    csv_tmp_dir,
-                    out_val,
-                    start_date=val_start,
-                    end_date=val_end,
-                    min_days=20,
-                )
-
+        # Resume: skip already-built offset binaries.
+        if out_train.exists() and out_val.exists():
+            print(f"\n--- Session offset {offset}: CACHED (skip) ---")
             train_offset_bins.append(out_train)
             val_offset_bins.append(out_val)
+            continue
+
+        print(f"\n--- Session offset {offset} ---")
+
+        # Build augmented CSVs (same logic as build_augmented_daily_training.py).
+        combined_train_csvs: dict[str, pd.DataFrame] = {}
+        combined_val_csvs: dict[str, pd.DataFrame] = {}
+
+        for i, sym in enumerate(symbols):
+            if i % 10 == 0:
+                print(f"  [{i+1}/{len(symbols)}] processing {sym}...")
+            df_train = build_augmented_csv(
+                sym,
+                hourly_root=hourly_root,
+                daily_root=daily_root,
+                offsets=[offset],
+                start_date=train_start,
+                end_date=train_end,
+            )
+            df_val = build_augmented_csv(
+                sym,
+                hourly_root=hourly_root,
+                daily_root=daily_root,
+                offsets=[offset],
+                start_date=val_start,
+                end_date=val_end,
+            )
+            if df_train is not None:
+                combined_train_csvs[sym] = df_train
+            if df_val is not None:
+                combined_val_csvs[sym] = df_val
+
+        # Verify all symbols present.
+        sym_train = [s for s in symbols if s in combined_train_csvs]
+        sym_val   = [s for s in symbols if s in combined_val_csvs]
+
+        csv_dir_train = cache_dir / f"csv_offset{offset}_train"
+        csv_dir_train.mkdir(exist_ok=True)
+        for sym, df in combined_train_csvs.items():
+            df.to_csv(csv_dir_train / f"{sym}.csv", index=False)
+        export_binary(
+            sym_train,
+            csv_dir_train,
+            out_train,
+            start_date=train_start,
+            end_date=train_end,
+            min_days=min_days if offset == 0 else min(min_days, 50),
+        )
+
+        csv_dir_val = cache_dir / f"csv_offset{offset}_val"
+        csv_dir_val.mkdir(exist_ok=True)
+        for sym, df in combined_val_csvs.items():
+            df.to_csv(csv_dir_val / f"{sym}.csv", index=False)
+        export_binary(
+            sym_val,
+            csv_dir_val,
+            out_val,
+            start_date=val_start,
+            end_date=val_end,
+            min_days=20,
+        )
+
+        train_offset_bins.append(out_train)
+        val_offset_bins.append(out_val)
 
         # ── Apply vol-scale augmentation across all session-offset binaries ──
         print(f"\n--- Applying vol-scale augmentation {vol_scales} ---")

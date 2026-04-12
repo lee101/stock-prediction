@@ -16,15 +16,23 @@ set -u
 cd /nvme0n1-disk/code/stock-prediction
 source .venv313/bin/activate
 
+# Triton CUDA kernel compilation needs a stable TMPDIR (sm_120a Blackwell arch
+# has a race where /tmp log files are cleaned up before Triton can read them).
+export TMPDIR="$(pwd)/.tmp_train"
+mkdir -p "$TMPDIR"
+
 VARIANT="${1:-F}"
 TRAIN_DATA="pufferlib_market/data/wide73_augmented_train.bin"
 VAL_DATA="pufferlib_market/data/wide73_augmented_val.bin"
+# Sentinel: build is done when all 5 session-offset cache files exist.
+CACHE_DIR="pufferlib_market/data/.build_cache_wide73_augmented_train"
+BUILD_SENTINEL="${CACHE_DIR}/offset4_train.bin"
 
-# Wait for data to be ready
-if [ ! -f "$TRAIN_DATA" ] || [ ! -f "$VAL_DATA" ]; then
-  echo "Waiting for $TRAIN_DATA and $VAL_DATA to be built..."
-  while [ ! -f "$TRAIN_DATA" ] || [ ! -f "$VAL_DATA" ]; do sleep 30; done
-  echo "Data ready!"
+# Wait for data to be fully built (all 5 offsets completed).
+if [ ! -f "$BUILD_SENTINEL" ]; then
+  echo "Waiting for full build (need $BUILD_SENTINEL)..."
+  while [ ! -f "$BUILD_SENTINEL" ]; do sleep 60; done
+  echo "Build complete — starting sweep."
 fi
 
 case "$VARIANT" in
