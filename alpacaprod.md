@@ -7,6 +7,38 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
+### 2026-04-12 — Chronos2 full domain fine-tune (RUNNING)
+
+#### Training run: stocks_all_v1
+- Script: `chronos2_full_finetune.py`, PID 408556
+- Log: `chronos2_finetune_v1.log`
+- Config: 30k steps, batch=256, ctx=512, lr=5e-5, full (not LoRA), bfloat16
+- Dataset: 3930 series (325 daily stocks + 205 hourly crypto + 1435 sliding-daily + 1965 return variants), 23M timesteps
+- Data cache: `.cache/chronos2_train_data.npz` (8s load vs 312s cold)
+- Baseline MAE% (pre-training, 500 val windows): **2.60%**
+- Target: beat 2.60% MAE% on unseen val; then per-symbol LoRAs can use this as a better base
+- Output: `chronos2_finetuned/stocks_all_v1/finetuned-ckpt/`
+
+#### Key augmentations:
+- Sliding-window hourly→daily aggregation: 7 offsets per hourly series
+- Percent-return variants: 1965 extra stationary series
+- Online per-batch: amplitude jitter (log_std=0.30), relative noise (0.2%), time-dropout (2%)
+
+#### Next after training:
+1. Evaluate final MAE% vs baseline
+2. If improved: update `hyperparams/chronos2/*.json` to use `stocks_all_v1` as model_id base
+3. Run per-symbol LoRA fine-tunes on top of this base (`retrain_chronos2_lora_binance_pairs.py`)
+4. Run linear calibration: `chronos2_linear_calibration.py --max-shift-bps 8`
+5. Benchmark via `benchmark_chronos2.py` and compare to current prod
+
+#### RunPod training (for larger GPU / longer runs):
+```bash
+bash scripts/train_chronos2_full_runpod.sh --steps 100000 --muon
+# Uploads checkpoint to R2 under chronos2/finetune/stocks_all_v1
+```
+
+---
+
 ### 2026-04-12 — screened32 new wide dataset + stocks17 sweep expansion
 
 #### Production status
