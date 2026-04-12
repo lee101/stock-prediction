@@ -10,6 +10,8 @@ from .strategies import (
     RobustScalingAugmentation,
     MinMaxStandardAugmentation,
     RollingWindowNormalization,
+    LogDiffAugmentation,
+    DiffNormAugmentation,
     AUGMENTATION_REGISTRY,
     get_augmentation,
 )
@@ -24,6 +26,8 @@ __all__ = [
     "RobustScalingAugmentation",
     "MinMaxStandardAugmentation",
     "RollingWindowNormalization",
+    "LogDiffAugmentation",
+    "DiffNormAugmentation",
     "AUGMENTATION_REGISTRY",
     "get_augmentation",
 ]

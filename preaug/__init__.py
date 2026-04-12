@@ -7,6 +7,8 @@ from .strategies import (
     LogReturnsAugmentation,
     DifferencingAugmentation,
     RobustScalingAugmentation,
+    LogDiffAugmentation,
+    DiffNormAugmentation,
     AUGMENTATION_REGISTRY,
     get_augmentation,
 )
@@ -28,6 +30,8 @@ __all__ = [
     "LogReturnsAugmentation",
     "DifferencingAugmentation",
     "RobustScalingAugmentation",
+    "LogDiffAugmentation",
+    "DiffNormAugmentation",
     "AUGMENTATION_REGISTRY",
     "get_augmentation",
     "BaseInferenceStrategy",

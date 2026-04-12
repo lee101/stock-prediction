@@ -673,6 +673,151 @@ class RollingWindowNormalization(BaseAugmentation):
         return restored
 
 
+class LogDiffAugmentation(BaseAugmentation):
+    """
+    Day-over-day log returns: y[t] = log(x[t] / x[t-1])
+
+    Unlike LogReturnsAugmentation (which anchors to the first bar),
+    this computes period-over-period log ratios, making it equivalent
+    to first-order differencing in log-price space. The series is
+    stationary and compresses extreme absolute moves proportionally.
+
+    Inverse: x[t] = x[t-1] * exp(y[t])
+    """
+
+    def name(self) -> str:
+        return "log_diff"
+
+    def transform_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        df_aug = df.copy()
+        for col in PRICE_COLS:
+            if col not in df_aug.columns:
+                continue
+            series = df_aug[col].astype(float).clip(lower=1e-8)
+            log_prices = np.log(series)
+            # Store tail for inverse transform seeding
+            self.metadata[f"{col}_log_tail"] = float(log_prices.iloc[-1])
+            df_aug[col] = log_prices.diff(1).fillna(0.0)
+        for col in VOLUME_COLS:
+            if col not in df_aug.columns:
+                continue
+            log_vol = np.log1p(df_aug[col].astype(float))
+            self.metadata[f"{col}_log_tail"] = float(log_vol.iloc[-1])
+            df_aug[col] = log_vol.diff(1).fillna(0.0)
+        return df_aug
+
+    def inverse_transform_predictions(
+        self,
+        predictions: np.ndarray,
+        context: pd.DataFrame,
+        *,
+        columns: Optional[Sequence[str]] = None,
+    ) -> np.ndarray:
+        pred_df = _prediction_frame(predictions, context, columns)
+        for col in PRICE_COLS:
+            if col not in pred_df.columns:
+                continue
+            log_diffs = pred_df[col].to_numpy(dtype=float)
+            # Seed from last known log-price in context
+            if context is not None and col in context.columns:
+                anchor_log = float(np.log(context[col].astype(float).clip(lower=1e-8).iloc[-1]))
+            else:
+                anchor_log = self.metadata.get(f"{col}_log_tail", 0.0)
+            # Cumsum log-diffs and add anchor to get log-prices, then exp
+            log_prices = anchor_log + np.cumsum(log_diffs)
+            pred_df[col] = np.exp(log_prices)
+        for col in VOLUME_COLS:
+            if col not in pred_df.columns:
+                continue
+            log_diffs = pred_df[col].to_numpy(dtype=float)
+            if context is not None and col in context.columns:
+                anchor_log = float(np.log1p(context[col].astype(float).iloc[-1]))
+            else:
+                anchor_log = self.metadata.get(f"{col}_log_tail", 0.0)
+            log_vols = anchor_log + np.cumsum(log_diffs)
+            pred_df[col] = np.expm1(log_vols)
+        return pred_df.values
+
+
+class DiffNormAugmentation(BaseAugmentation):
+    """
+    Normalized differencing: y[t] = (x[t] - x[t-1]) / rolling_std(diffs, window)
+
+    Combines stationarity (like differencing) with volatility normalization so
+    the model sees unit-scale changes regardless of how volatile a symbol is.
+    At prediction time the last observed rolling_std is used for inversion.
+
+    Inverse: x[t] = x[t-1] + y[t] * rolling_std_last
+    """
+
+    def __init__(self, window: int = 20, **kwargs):
+        super().__init__(**kwargs)
+        self.window = window
+
+    def name(self) -> str:
+        return f"diff_norm_w{self.window}"
+
+    def transform_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        df_aug = df.copy()
+        for col in PRICE_COLS:
+            if col not in df_aug.columns:
+                continue
+            series = df_aug[col].astype(float)
+            diffs = series.diff(1).fillna(0.0)
+            roll_std = diffs.rolling(self.window, min_periods=1).std().fillna(1.0)
+            roll_std = roll_std.replace(0.0, 1.0)
+            # Store last scale + tail price for inverse
+            self.metadata[f"{col}_last_scale"] = float(roll_std.iloc[-1])
+            self.metadata[f"{col}_tail"] = float(series.iloc[-1])
+            df_aug[col] = diffs / roll_std
+        for col in VOLUME_COLS:
+            if col not in df_aug.columns:
+                continue
+            log_vol = np.log1p(df_aug[col].astype(float))
+            diffs = log_vol.diff(1).fillna(0.0)
+            roll_std = diffs.rolling(self.window, min_periods=1).std().fillna(1.0)
+            roll_std = roll_std.replace(0.0, 1.0)
+            self.metadata[f"{col}_last_scale"] = float(roll_std.iloc[-1])
+            self.metadata[f"{col}_tail"] = float(log_vol.iloc[-1])
+            df_aug[col] = diffs / roll_std
+        return df_aug
+
+    def inverse_transform_predictions(
+        self,
+        predictions: np.ndarray,
+        context: pd.DataFrame,
+        *,
+        columns: Optional[Sequence[str]] = None,
+    ) -> np.ndarray:
+        pred_df = _prediction_frame(predictions, context, columns)
+        for col in PRICE_COLS:
+            if col not in pred_df.columns:
+                continue
+            normed = pred_df[col].to_numpy(dtype=float)
+            scale = self.metadata.get(f"{col}_last_scale", 1.0)
+            diffs = normed * scale
+            # Seed anchor from context tail or metadata
+            if context is not None and col in context.columns:
+                anchor = float(context[col].astype(float).iloc[-1])
+            else:
+                anchor = self.metadata.get(f"{col}_tail", 0.0)
+            restored = anchor + np.cumsum(diffs)
+            pred_df[col] = restored
+        for col in VOLUME_COLS:
+            if col not in pred_df.columns:
+                continue
+            normed = pred_df[col].to_numpy(dtype=float)
+            scale = self.metadata.get(f"{col}_last_scale", 1.0)
+            diffs = normed * scale
+            if context is not None and col in context.columns:
+                anchor = float(np.log1p(context[col].astype(float).iloc[-1]))
+            else:
+                anchor = self.metadata.get(f"{col}_tail", 0.0)
+            log_vols = anchor + np.cumsum(diffs)
+            pred_df[col] = np.expm1(log_vols)
+        return pred_df.values
+
+
 # Registry of all augmentation strategies
 AUGMENTATION_REGISTRY = {
     "baseline": NoAugmentation,
@@ -683,6 +828,8 @@ AUGMENTATION_REGISTRY = {
     "robust_scaling": RobustScalingAugmentation,
     "minmax_standard": MinMaxStandardAugmentation,
     "rolling_norm": RollingWindowNormalization,
+    "log_diff": LogDiffAugmentation,
+    "diff_norm": DiffNormAugmentation,
 }
 
 
