@@ -6,6 +6,7 @@ follows the K models with the best trailing performance.
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,31 @@ def _mask_shorts(logits: torch.Tensor, num_symbols: int) -> torch.Tensor:
     return masked
 
 
+def _compute_features_from_frames(
+    frames: dict[str, pd.DataFrame],
+    symbols: list[str],
+    day_idx: int,
+) -> np.ndarray:
+    """Compute 16-feature vector for each symbol at day_idx."""
+    from pufferlib_market.inference_daily import compute_daily_features
+    F = 16
+    features = np.zeros((len(symbols), F), dtype=np.float32)
+    for i, sym in enumerate(symbols):
+        if sym not in frames:
+            continue
+        df = frames[sym]
+        if day_idx >= len(df):
+            continue
+        window = df.iloc[:day_idx + 1]
+        if len(window) < 2:
+            continue
+        try:
+            features[i] = compute_daily_features(window)
+        except Exception:
+            pass
+    return features
+
+
 class MetaSelector:
     """Loads N models, simulates each on recent bars, selects top-K by momentum."""
 
@@ -40,15 +66,19 @@ class MetaSelector:
         checkpoint_paths: list[str | Path],
         symbols: list[str],
         *,
-        top_k: int = 2,
-        lookback: int = 5,
+        top_k: int = 1,
+        lookback: int = 3,
+        fee_rate: float = 0.001,
         device: str = "cpu",
+        state_path: Path | None = None,
     ):
         self.symbols = list(symbols)
         self.top_k = top_k
         self.lookback = lookback
+        self.fee_rate = fee_rate
         self.device = device
         self.checkpoint_paths = [Path(p) for p in checkpoint_paths]
+        self.state_path = state_path
 
         from pufferlib_market.evaluate_holdout import load_policy
         self.policies = []
@@ -61,57 +91,141 @@ class MetaSelector:
             except Exception as e:
                 log.warning("skip %s: %s", cp.stem, e)
 
-        # Per-model equity tracking (updated each day)
         self.model_equity: dict[str, list[float]] = {n: [10000.0] for n in self.names}
         self.model_positions: dict[str, int | None] = {n: None for n in self.names}
         self.model_entry_prices: dict[str, float] = {n: 0.0 for n in self.names}
         self._day_count = 0
 
-    def update_model_pnls(self, prices: dict[str, float], fee_rate: float = 0.001):
-        """Mark-to-market each model's simulated position."""
-        for name in self.names:
-            sym_idx = self.model_positions.get(name)
-            if sym_idx is not None and 0 <= sym_idx < len(self.symbols):
-                sym = self.symbols[sym_idx]
+        if state_path and state_path.exists():
+            self._load_state()
+
+    def _load_state(self):
+        try:
+            data = json.loads(self.state_path.read_text())
+            for name in self.names:
+                if name in data.get("equity", {}):
+                    self.model_equity[name] = data["equity"][name]
+                if name in data.get("positions", {}):
+                    self.model_positions[name] = data["positions"][name]
+                if name in data.get("entry_prices", {}):
+                    self.model_entry_prices[name] = data["entry_prices"][name]
+            self._day_count = data.get("day_count", 0)
+            log.info("loaded meta state: %d days, %d models", self._day_count, len(self.names))
+        except Exception as e:
+            log.warning("failed to load meta state: %s", e)
+
+    def _save_state(self):
+        if not self.state_path:
+            return
+        data = {
+            "day_count": self._day_count,
+            "equity": self.model_equity,
+            "positions": {k: v for k, v in self.model_positions.items()},
+            "entry_prices": self.model_entry_prices,
+            "names": self.names,
+            "symbols": self.symbols,
+            "lookback": self.lookback,
+            "top_k": self.top_k,
+        }
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.state_path.write_text(json.dumps(data, indent=2))
+
+    def warmup_from_frames(
+        self,
+        frames: dict[str, pd.DataFrame],
+        min_days: int = 30,
+    ):
+        """Simulate all models over historical bars to build momentum history."""
+        if self._day_count > 0:
+            log.info("already warmed up (%d days), skipping", self._day_count)
+            return
+
+        sample_df = next(iter(frames.values()))
+        n_days = len(sample_df)
+        if n_days < min_days:
+            log.warning("only %d days available, need %d for warmup", n_days, min_days)
+            return
+
+        log.info("warming up meta-selector over %d days...", n_days)
+        S = len(self.symbols)
+        for day_idx in range(1, n_days):
+            features = _compute_features_from_frames(frames, self.symbols, day_idx)
+            prices = {}
+            for i, sym in enumerate(self.symbols):
+                if sym in frames and day_idx < len(frames[sym]):
+                    prices[sym] = float(frames[sym]["close"].iloc[day_idx])
+            self._step_models(features, prices)
+
+        self._save_state()
+        log.info("warmup done: %d days simulated", self._day_count)
+
+    def _step_models(self, features: np.ndarray, prices: dict[str, float]):
+        """Run all models for one day, update equity tracking."""
+        S = len(self.symbols)
+        F = 16
+        obs_size = S * F + 5 + S
+        obs = np.zeros(obs_size, dtype=np.float32)
+        obs[:S * F] = features.reshape(-1)[:S * F]
+
+        obs_t = torch.from_numpy(obs).to(self.device).view(1, -1)
+        for name, policy in zip(self.names, self.policies):
+            with torch.inference_mode():
+                logits, _ = policy(obs_t)
+            logits = _mask_shorts(logits, S)
+            action = int(torch.argmax(logits, dim=-1).item())
+            new_pos = (action - 1) if 1 <= action <= S else None
+            old_pos = self.model_positions.get(name)
+
+            if old_pos != new_pos:
+                if old_pos is not None and 0 <= old_pos < S:
+                    old_sym = self.symbols[old_pos]
+                    old_price = prices.get(old_sym, 0.0)
+                    entry = self.model_entry_prices.get(name, 0.0)
+                    if entry > 0 and old_price > 0:
+                        pnl = (old_price - entry) / entry - 2 * self.fee_rate
+                        self.model_equity[name][-1] *= (1 + pnl)
+
+                if new_pos is not None and 0 <= new_pos < S:
+                    self.model_entry_prices[name] = prices.get(self.symbols[new_pos], 0.0)
+                else:
+                    self.model_entry_prices[name] = 0.0
+                self.model_positions[name] = new_pos
+
+            # Mark-to-market current position
+            cur_pos = self.model_positions.get(name)
+            if cur_pos is not None and 0 <= cur_pos < S:
+                sym = self.symbols[cur_pos]
                 price = prices.get(sym, 0.0)
                 entry = self.model_entry_prices.get(name, 0.0)
-                eq = self.model_equity[name]
                 if entry > 0 and price > 0:
-                    # Simple PnL: (price - entry) / entry * allocation
-                    pnl_pct = (price - entry) / entry
-                    new_eq = eq[-1] * (1 + pnl_pct)
-                    eq.append(new_eq)
+                    mtm = (price - entry) / entry
+                    self.model_equity[name].append(self.model_equity[name][-1] * (1 + mtm))
                 else:
-                    eq.append(eq[-1])
+                    self.model_equity[name].append(self.model_equity[name][-1])
             else:
                 self.model_equity[name].append(self.model_equity[name][-1])
+
         self._day_count += 1
 
     def get_meta_signal(
         self,
         features: np.ndarray,
         prices: dict[str, float],
-        portfolio_obs_suffix: np.ndarray | None = None,
     ) -> MetaSignal:
         """Run all models, select top-K by trailing momentum, return their signals."""
         S = len(self.symbols)
         F = 16
-
-        # Build obs
         obs_size = S * F + 5 + S
         obs = np.zeros(obs_size, dtype=np.float32)
         obs[:S * F] = features.reshape(-1)[:S * F]
-        if portfolio_obs_suffix is not None:
-            obs[S * F:] = portfolio_obs_suffix[:5 + S]
 
-        # Run each model
         model_actions = {}
         model_symbols = {}
         model_confs = {}
 
         obs_t = torch.from_numpy(obs).to(self.device).view(1, -1)
-        for i, (name, policy) in enumerate(zip(self.names, self.policies)):
-            with torch.no_grad():
+        for name, policy in zip(self.names, self.policies):
+            with torch.inference_mode():
                 logits, value = policy(obs_t)
             logits = _mask_shorts(logits, S)
             probs = torch.softmax(logits, dim=-1)
@@ -132,26 +246,9 @@ class MetaSelector:
                 model_symbols[name] = None
                 model_confs[name] = 0.0
 
-            # Update simulated position for this model
-            old_pos = self.model_positions.get(name)
-            new_pos = (action - 1) if 1 <= action <= S else None
-
-            if old_pos != new_pos:
-                # Close old position
-                if old_pos is not None and 0 <= old_pos < S:
-                    old_sym = self.symbols[old_pos]
-                    old_price = prices.get(old_sym, 0.0)
-                    entry = self.model_entry_prices.get(name, 0.0)
-                    if entry > 0 and old_price > 0:
-                        pnl = (old_price - entry) / entry - 2 * 0.001  # round-trip fee
-                        self.model_equity[name][-1] *= (1 + pnl)
-
-                # Open new position
-                if new_pos is not None and 0 <= new_pos < S:
-                    self.model_entry_prices[name] = prices.get(self.symbols[new_pos], 0.0)
-                else:
-                    self.model_entry_prices[name] = 0.0
-                self.model_positions[name] = new_pos
+        # Step model simulations
+        self._step_models(features, prices)
+        self._save_state()
 
         # Select top-K by trailing momentum
         model_returns = {}
@@ -166,6 +263,9 @@ class MetaSelector:
 
         sorted_models = sorted(self.names, key=lambda n: model_returns[n], reverse=True)
         selected = sorted_models[:self.top_k]
+
+        log.info("meta selected: %s (returns: %s)",
+                 selected, {n: f"{model_returns[n]:+.2%}" for n in selected})
 
         return MetaSignal(
             selected_models=selected,

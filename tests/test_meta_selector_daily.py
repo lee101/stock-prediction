@@ -1,6 +1,7 @@
 """Tests for src/meta_selector.py (daily stock meta-selector)"""
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -86,7 +87,6 @@ class TestMetaSelector:
     def test_momentum_prefers_winning_model(self, checkpoints):
         symbols = [f"SYM{i}" for i in range(12)]
         sel = MetaSelector(checkpoints, symbols, top_k=1, lookback=3)
-        # Set equity manually
         sel.model_equity["model_a"] = [10000, 10100, 10200, 10500, 10800]
         sel.model_equity["model_b"] = [10000, 9900, 9800, 9700, 9600]
         sel.model_equity["model_c"] = [10000, 10050, 10080, 10100, 10120]
@@ -114,3 +114,47 @@ class TestMetaSelector:
             sel.get_meta_signal(features, prices)
         for name in sel.names:
             assert len(sel.model_equity[name]) >= 1
+
+    def test_state_persistence(self, checkpoints, tmp_path):
+        state_file = tmp_path / "meta_state.json"
+        symbols = [f"SYM{i}" for i in range(12)]
+        sel = MetaSelector(checkpoints, symbols, top_k=1, lookback=3, state_path=state_file)
+        features = np.random.randn(12, 16).astype(np.float32)
+        prices = {f"SYM{i}": 100.0 for i in range(12)}
+        for _ in range(5):
+            sel.get_meta_signal(features, prices)
+        assert state_file.exists()
+        data = json.loads(state_file.read_text())
+        assert data["day_count"] == 5
+        assert len(data["equity"]) == 3
+
+        # Reload and verify state restored
+        sel2 = MetaSelector(checkpoints, symbols, top_k=1, lookback=3, state_path=state_file)
+        assert sel2._day_count == 5
+        for name in sel2.names:
+            assert len(sel2.model_equity[name]) == len(sel.model_equity[name])
+
+    def test_warmup_skips_if_already_run(self, checkpoints, tmp_path):
+        symbols = [f"SYM{i}" for i in range(12)]
+        sel = MetaSelector(checkpoints, symbols, top_k=1, lookback=3)
+        sel._day_count = 10
+        n_bars = 50
+        frames = {}
+        for sym in symbols:
+            frames[sym] = _make_dummy_frame(n_bars)
+        sel.warmup_from_frames(frames)
+        assert sel._day_count == 10  # unchanged
+
+
+def _make_dummy_frame(n_days: int) -> "pd.DataFrame":
+    import pandas as pd
+    dates = pd.date_range("2025-01-01", periods=n_days, freq="B")
+    close = 100.0 + np.cumsum(np.random.randn(n_days) * 0.5)
+    return pd.DataFrame({
+        "timestamp": dates,
+        "open": close * 0.999,
+        "high": close * 1.005,
+        "low": close * 0.995,
+        "close": close,
+        "volume": np.random.randint(1000, 10000, n_days).astype(float),
+    })

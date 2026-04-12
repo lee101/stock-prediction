@@ -492,6 +492,9 @@ class CliRuntimeConfig:
     min_open_value_estimate: float = DEFAULT_MIN_OPEN_VALUE_ESTIMATE
     print_payload: bool = False
     allow_unsafe_checkpoint_loading: bool = False
+    meta_selector: bool = False
+    meta_top_k: int = 1
+    meta_lookback: int = 3
     removed_duplicate_symbols: list[str] = field(default_factory=list)
     ignored_symbol_inputs: list[str] = field(default_factory=list)
 
@@ -1724,6 +1727,71 @@ def _ensemble_softmax_signal(
     return primary._decode_action(action, confidence, value_est)
 
 
+_META_SELECTOR_INSTANCE: "MetaSelector | None" = None
+
+
+def _get_or_create_meta_selector(
+    checkpoint_paths: list[str],
+    symbols: list[str],
+    top_k: int = 1,
+    lookback: int = 3,
+    device: str = "cpu",
+) -> "MetaSelector":
+    global _META_SELECTOR_INSTANCE
+    if _META_SELECTOR_INSTANCE is not None:
+        return _META_SELECTOR_INSTANCE
+    from src.meta_selector import MetaSelector
+    state_path = STATE_PATH / "meta_selector_state.json"
+    sel = MetaSelector(
+        checkpoint_paths,
+        symbols,
+        top_k=top_k,
+        lookback=lookback,
+        device=device,
+        state_path=state_path,
+    )
+    _META_SELECTOR_INSTANCE = sel
+    logger.info("MetaSelector created: %d models, top_k=%d, lookback=%d", len(sel.names), top_k, lookback)
+    return sel
+
+
+def _meta_selector_signal(
+    checkpoint_paths: list[str],
+    symbols: list[str],
+    features: np.ndarray,
+    prices: dict[str, float],
+    frames: dict[str, pd.DataFrame],
+    top_k: int = 1,
+    lookback: int = 3,
+    device: str = "cpu",
+) -> TradingSignal:
+    """Build a TradingSignal using MetaSelector (momentum-based model selection)."""
+    sel = _get_or_create_meta_selector(checkpoint_paths, symbols, top_k, lookback, device)
+    if sel._day_count == 0 and frames:
+        sel.warmup_from_frames(frames, min_days=10)
+    meta_sig = sel.get_meta_signal(features, prices)
+    if not meta_sig.selected_symbols or all(s is None for s in meta_sig.selected_symbols):
+        return TradingSignal(
+            action="flat", symbol=None, direction=None,
+            confidence=0.0, value_estimate=0.0,
+            allocation_pct=0.0, level_offset_bps=0.0,
+        )
+    sym = meta_sig.selected_symbols[0]
+    conf = meta_sig.confidences[0]
+    logger.info("Meta-selector: model=%s sym=%s conf=%.3f returns=%s",
+                meta_sig.selected_models[0], sym, conf,
+                {n: f"{r:+.2%}" for n, r in meta_sig.model_returns.items()})
+    return TradingSignal(
+        action="long" if sym else "flat",
+        symbol=sym,
+        direction="long" if sym else None,
+        confidence=conf,
+        value_estimate=0.0,
+        allocation_pct=1.0,
+        level_offset_bps=0.0,
+    )
+
+
 def _ensemble_top_k_signals(
     primary: DailyPPOTrader,
     extra_policies: list,
@@ -2086,6 +2154,9 @@ def build_signal(
     portfolio: PortfolioContext = PortfolioContext(),
     extra_checkpoints: Optional[list] = None,
     allow_unsafe_checkpoint_loading: bool = False,
+    meta_selector: bool = False,
+    meta_top_k: int = 1,
+    meta_lookback: int = 3,
 ):
     aligned = _align_frames(frames)
     indexed = {
@@ -2111,7 +2182,14 @@ def build_signal(
         if sym in indexed:
             features[i] = _daily_feature_vector_for_schema(indexed[sym], feature_schema=feature_schema)
 
-    if extra_checkpoints:
+    if meta_selector and extra_checkpoints:
+        all_paths = [checkpoint] + list(extra_checkpoints)
+        signal = _meta_selector_signal(
+            all_paths, list(indexed.keys()), features, prices, indexed,
+            top_k=meta_top_k, lookback=meta_lookback, device=device,
+        )
+        logger.info("Meta-selector signal (%d models, top_k=%d, lookback=%d)", len(all_paths), meta_top_k, meta_lookback)
+    elif extra_checkpoints:
         extra_policies = [
             _load_bare_policy(
                 str((REPO / p).resolve()) if not Path(p).is_absolute() else p,
@@ -3768,6 +3846,9 @@ def run_once(
     min_open_confidence: float = DEFAULT_MIN_OPEN_CONFIDENCE,
     min_open_value_estimate: float = DEFAULT_MIN_OPEN_VALUE_ESTIMATE,
     allow_unsafe_checkpoint_loading: bool = False,
+    meta_selector: bool = False,
+    meta_top_k: int = 1,
+    meta_lookback: int = 3,
 ) -> dict:
     now = datetime.now(timezone.utc)
     run_id = f"{now.strftime('%Y%m%dT%H%M%SZ')}-{uuid4().hex[:12]}"
@@ -3943,6 +4024,9 @@ def run_once(
                 portfolio=portfolio,
                 extra_checkpoints=extra_checkpoints,
                 allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+                meta_selector=meta_selector,
+                meta_top_k=meta_top_k,
+                meta_lookback=meta_lookback,
             )
         failure_observability["signal_action"] = signal.action
         failure_observability["signal_symbol"] = signal.symbol
@@ -4249,6 +4333,9 @@ def run_daemon(
     min_open_confidence: float = DEFAULT_MIN_OPEN_CONFIDENCE,
     min_open_value_estimate: float = DEFAULT_MIN_OPEN_VALUE_ESTIMATE,
     allow_unsafe_checkpoint_loading: bool = False,
+    meta_selector: bool = False,
+    meta_top_k: int = 1,
+    meta_lookback: int = 3,
 ) -> None:
     logger.info("Starting daily stock RL daemon")
     server_session_id = f"daily-rl-trader-{execution_backend}-{os.getpid()}"
@@ -4345,6 +4432,9 @@ def run_daemon(
                     min_open_confidence=min_open_confidence,
                     min_open_value_estimate=min_open_value_estimate,
                     allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
+                    meta_selector=meta_selector,
+                    meta_top_k=meta_top_k,
+                    meta_lookback=meta_lookback,
                 )
             except Exception as exc:
                 logger.exception("Daily stock RL cycle failed: %s", exc)
@@ -4448,6 +4538,15 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Allow legacy pickle checkpoint loading. Only use this with trusted checkpoint files.",
     )
+    parser.add_argument(
+        "--meta-selector",
+        action="store_true",
+        help="Use meta-selector (per-model momentum selection) instead of softmax ensemble",
+    )
+    parser.add_argument("--meta-top-k", type=int, default=1,
+                        help="Number of top models to follow in meta-selector mode")
+    parser.add_argument("--meta-lookback", type=int, default=3,
+                        help="Lookback days for meta-selector momentum ranking")
     args = parser.parse_args(argv)
     if args.check_config_text and not args.check_config:
         parser.error("--check-config-text requires --check-config")
@@ -4509,6 +4608,9 @@ def _resolve_runtime_config(args: argparse.Namespace) -> CliRuntimeConfig:
         min_open_value_estimate=float(args.min_open_value_estimate),
         print_payload=bool(args.print_payload),
         allow_unsafe_checkpoint_loading=bool(args.allow_unsafe_checkpoint_loading),
+        meta_selector=bool(args.meta_selector),
+        meta_top_k=int(args.meta_top_k),
+        meta_lookback=int(args.meta_lookback),
     )
 
 
@@ -5856,6 +5958,9 @@ def main(argv: Optional[list[str]] = None) -> None:
             min_open_confidence=config.min_open_confidence,
             min_open_value_estimate=config.min_open_value_estimate,
             allow_unsafe_checkpoint_loading=config.allow_unsafe_checkpoint_loading,
+            meta_selector=config.meta_selector,
+            meta_top_k=config.meta_top_k,
+            meta_lookback=config.meta_lookback,
         )
         return
 
@@ -5879,6 +5984,9 @@ def main(argv: Optional[list[str]] = None) -> None:
             min_open_confidence=config.min_open_confidence,
             min_open_value_estimate=config.min_open_value_estimate,
             allow_unsafe_checkpoint_loading=config.allow_unsafe_checkpoint_loading,
+            meta_selector=config.meta_selector,
+            meta_top_k=config.meta_top_k,
+            meta_lookback=config.meta_lookback,
         )
     except Exception as exc:
         print(_format_run_once_failure_message(config, exc), file=sys.stderr)
