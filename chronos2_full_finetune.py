@@ -229,6 +229,10 @@ def _make_muon_optimizer(model: Any, lr: float, weight_decay: float = 0.01):
     2D+ weight matrices (attention projections, FFN) use Muon with NS orthogonalization.
     1D parameters (biases, layer-norm) use AdamW as fallback.
 
+    Muon lr should be lower than typical AdamW lr since NS orthogonalization
+    amplifies the effective step size. We scale muon_lr = lr * 0.4 and use
+    the same lr for the AdamW 1D-param fallback.
+
     Requires pufferlib_market/muon.py to be importable.
     """
     try:
@@ -237,7 +241,16 @@ def _make_muon_optimizer(model: Any, lr: float, weight_decay: float = 0.01):
         raise RuntimeError(
             "Muon optimizer requires pufferlib_market/muon.py — ensure pufferlib_market is on sys.path"
         ) from e
-    return make_muon_optimizer(model, lr=lr, weight_decay=weight_decay)
+    # make_muon_optimizer splits params: 2D+ -> Muon, 1D -> AdamW
+    # muon_lr is the orthogonalised-update LR; adamw_lr is for biases/norms
+    muon_lr  = lr * 0.4   # Muon updates are "amplified" by NS → use smaller base LR
+    adamw_lr = lr          # biases, layer-norm: same as the requested lr
+    return make_muon_optimizer(
+        model,
+        muon_lr=muon_lr,
+        adamw_lr=adamw_lr,
+        adamw_wd=weight_decay,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -473,7 +486,11 @@ def train(
         _wd = 0.01
 
         def _muon_create_optimizer():
-            return _make_muon_optimizer(model, lr=_lr, weight_decay=_wd)
+            # HF Trainer.create_optimizer_and_scheduler calls create_optimizer() then reads
+            # self.optimizer — so we must set self.optimizer here too, matching base behavior.
+            opt = _make_muon_optimizer(model, lr=_lr, weight_decay=_wd)
+            trainer.optimizer = opt
+            return opt
 
         trainer.create_optimizer = _muon_create_optimizer
         print("Using Muon optimizer (Newton-Schulz orthogonalized momentum)")

@@ -35,7 +35,7 @@ echo "[$(date -u +%H:%M:%SZ)] Cache ready: $CACHE_PATH"
 # Activate venv
 source .venv/bin/activate
 
-echo "[$(date -u +%H:%M:%SZ)] Launching v2 training (full cache, 50k steps)..."
+echo "[$(date -u +%H:%M:%SZ)] Launching v2 training (full 7796-series cache, 50k steps, Muon)..."
 nohup python chronos2_full_finetune.py \
     --cache-path     "$CACHE_PATH" \
     --output-dir     "$OUTPUT_DIR" \
@@ -45,6 +45,7 @@ nohup python chronos2_full_finetune.py \
     --finetune-mode  full \
     --torch-dtype    bfloat16 \
     --learning-rate  5e-5 \
+    --use-muon \
     --seed           42 \
     > "$LOG_FILE" 2>&1 &
 V2_PID=$!
