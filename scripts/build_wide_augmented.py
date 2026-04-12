@@ -232,6 +232,9 @@ def build_wide_augmented(
         # Build augmented CSVs (same logic as build_augmented_daily_training.py).
         combined_train_csvs: dict[str, pd.DataFrame] = {}
         combined_val_csvs: dict[str, pd.DataFrame] = {}
+        # Val is only needed for offset=0 (unshifted bars); skip val CSV
+        # computation for other offsets to avoid wasted work + alignment errors.
+        need_val = (offset == 0)
 
         for i, sym in enumerate(symbols):
             if i % 10 == 0:
@@ -244,18 +247,19 @@ def build_wide_augmented(
                 start_date=train_start,
                 end_date=train_end,
             )
-            df_val = build_augmented_csv(
-                sym,
-                hourly_root=hourly_root,
-                daily_root=daily_root,
-                offsets=[offset],
-                start_date=val_start,
-                end_date=val_end,
-            )
             if df_train is not None:
                 combined_train_csvs[sym] = df_train
-            if df_val is not None:
-                combined_val_csvs[sym] = df_val
+            if need_val:
+                df_val = build_augmented_csv(
+                    sym,
+                    hourly_root=hourly_root,
+                    daily_root=daily_root,
+                    offsets=[offset],
+                    start_date=val_start,
+                    end_date=val_end,
+                )
+                if df_val is not None:
+                    combined_val_csvs[sym] = df_val
 
         # Verify all symbols present.
         sym_train = [s for s in symbols if s in combined_train_csvs]

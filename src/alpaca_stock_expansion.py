@@ -44,6 +44,7 @@ DEFAULT_STOCK_EXPANSION_CANDIDATES: tuple[StockExpansionCandidate, ...] = (
     StockExpansionCandidate("NFLX", sector="technology_services", thesis="Large-cap software/media name with useful liquidity and prior seeded-short edge.", priority=9),
     StockExpansionCandidate("AVGO", sector="electronic_technology", thesis="Semiconductor/platform exposure beyond NVDA/AMD.", priority=8),
     StockExpansionCandidate("MU", sector="electronic_technology", thesis="Memory-cycle semiconductor exposure with high realized volatility.", priority=8),
+    StockExpansionCandidate("OKLO", sector="utilities", thesis="Nuclear-power growth exposure with policy/news regime distinct from software and semis.", priority=8),
     StockExpansionCandidate("ORCL", sector="technology_services", thesis="Enterprise software/cloud exposure outside mega-cap internet.", priority=8),
     StockExpansionCandidate("CSCO", sector="electronic_technology", thesis="Networking infrastructure anchor with different trend regime.", priority=7),
     StockExpansionCandidate("LRCX", sector="producer_manufacturing", thesis="Semicap equipment exposure complementary to NVDA/AMD.", priority=7),
@@ -65,6 +66,32 @@ DEFAULT_STOCK_EXPANSION_CANDIDATES: tuple[StockExpansionCandidate, ...] = (
 
 def default_stock_expansion_candidates() -> list[StockExpansionCandidate]:
     return [candidate.normalized() for candidate in DEFAULT_STOCK_EXPANSION_CANDIDATES]
+
+
+def build_candidate_sector_buckets(
+    candidates: Sequence[StockExpansionCandidate],
+    *,
+    include_symbols: Sequence[str] | None = None,
+) -> dict[str, tuple[str, ...]]:
+    """Group symbols into deterministic sector buckets for wide-universe planning."""
+    include_filter = {
+        str(symbol or "").strip().upper()
+        for symbol in (include_symbols or ())
+        if str(symbol or "").strip()
+    }
+    buckets: dict[str, list[tuple[int, str]]] = {}
+    for candidate in candidates:
+        normalized = candidate.normalized()
+        if include_filter and normalized.symbol not in include_filter:
+            continue
+        sector = str(normalized.sector or "").strip().lower() or "unspecified"
+        buckets.setdefault(sector, []).append((int(normalized.priority), normalized.symbol))
+
+    result: dict[str, tuple[str, ...]] = {}
+    for sector, rows in sorted(buckets.items()):
+        ranked = sorted(rows, key=lambda row: (-row[0], row[1]))
+        result[sector] = tuple(symbol for _priority, symbol in ranked)
+    return result
 
 
 def candidates_to_jsonable(candidates: Sequence[StockExpansionCandidate]) -> list[dict[str, Any]]:
@@ -490,6 +517,7 @@ def get_sp500_symbols(
 __all__ = [
     "DEFAULT_STOCK_EXPANSION_CANDIDATES",
     "StockExpansionCandidate",
+    "build_candidate_sector_buckets",
     "build_hourly_return_correlation_cohorts",
     "candidate_from_mapping",
     "candidate_hourly_tuning_command",

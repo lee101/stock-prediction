@@ -151,12 +151,14 @@ class WandBoardLogger(AbstractContextManager):
         self,
         *,
         run_name: Optional[str] = None,
+        run_id: Optional[str] = None,
         project: Optional[str] = None,
         entity: Optional[str] = None,
         tags: Optional[Sequence[str]] = None,
         group: Optional[str] = None,
         notes: Optional[str] = None,
         config: Optional[Mapping[str, Any]] = None,
+        resume: Optional[str] = None,
         mode: str = "auto",
         enable_wandb: bool = True,
         log_dir: Optional[Union[str, Path]] = None,
@@ -167,6 +169,7 @@ class WandBoardLogger(AbstractContextManager):
     ) -> None:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         self.run_name = run_name or f"run_{timestamp}"
+        self.run_id = run_id
         if project is not None:
             self.project = project
         else:
@@ -181,6 +184,7 @@ class WandBoardLogger(AbstractContextManager):
         self.tags = tuple(tags) if tags else tuple()
         self.group = group
         self.notes = notes
+        self.resume = resume
         self.mode = (mode or os.getenv("WANDB_MODE") or "auto").lower()
         self.settings = dict(settings or {})
         self._log_metrics = bool(log_metrics)
@@ -222,6 +226,8 @@ class WandBoardLogger(AbstractContextManager):
                 "project": self.project,
                 "entity": self.entity,
                 "name": self.run_name,
+                "id": self.run_id,
+                "resume": self.resume,
                 "tags": list(self.tags) if self.tags else None,
                 "group": self.group,
                 "notes": self.notes,

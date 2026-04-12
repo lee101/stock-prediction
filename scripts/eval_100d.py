@@ -32,6 +32,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
+import numpy as np
+
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
@@ -133,6 +135,159 @@ def _render_md(
     return "\n".join(lines)
 
 
+def _slice_mktd_window(data, *, start: int, steps: int):
+    from pufferlib_market.hourly_replay import MktdData
+
+    end = int(start) + int(steps) + 1
+    if start < 0 or end > data.num_timesteps:
+        raise ValueError(f"Invalid MKTD slice start={start} steps={steps} for T={data.num_timesteps}")
+    tradable = None if data.tradable is None else data.tradable[start:end].copy()
+    return MktdData(
+        version=int(data.version),
+        symbols=list(data.symbols),
+        features=data.features[start:end].copy(),
+        prices=data.prices[start:end].copy(),
+        tradable=tradable,
+    )
+
+
+def _summarise_window_metrics(rows: List[Dict[str, float]]) -> Dict[str, Any]:
+    if not rows:
+        return {"error": "no windows completed"}
+    returns = np.asarray([float(r["total_return"]) for r in rows], dtype=np.float64)
+    sortinos = np.asarray([float(r["sortino"]) for r in rows], dtype=np.float64)
+    maxdds = np.asarray([float(r["max_drawdown"]) for r in rows], dtype=np.float64)
+    return {
+        "p10_return": float(np.percentile(returns, 10)),
+        "median_return": float(np.percentile(returns, 50)),
+        "p90_return": float(np.percentile(returns, 90)),
+        "mean_return": float(np.mean(returns)),
+        "sortino": float(np.median(sortinos)),
+        "max_drawdown": float(np.median(maxdds)),
+        "n_neg": int(np.sum(returns < 0.0)),
+        "n_windows": int(returns.size),
+    }
+
+
+def _evaluate_intrabar_hourly(
+    *,
+    checkpoint: Path,
+    val_data: Path,
+    hourly_data_root: Path,
+    daily_start_date: str,
+    n_windows: int,
+    window_days: int,
+    slippages: List[int],
+    fee_rate: float,
+    max_leverage: float,
+    seed: int,
+    fill_buffer_bps: float,
+    max_hold_hours: int,
+    stop_loss_pct: float,
+    take_profit_pct: float,
+    trade_hour_mode: str,
+    fail_fast: bool,
+    fail_fast_max_dd: float,
+    fail_fast_min_completed: int,
+):
+    import torch
+
+    from pufferlib_market.evaluate_multiperiod import load_policy, make_policy_fn
+    from pufferlib_market.hourly_replay import read_mktd
+    from pufferlib_market.intrabar_replay import load_hourly_ohlc, simulate_daily_policy_intrabar
+
+    data = read_mktd(val_data)
+    num_symbols = data.num_symbols
+    features_per_sym = int(data.features.shape[2])
+    loaded = load_policy(
+        str(checkpoint),
+        num_symbols,
+        arch="auto",
+        hidden_size=None,
+        device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+        features_per_sym=features_per_sym,
+    )
+
+    full_start_day = np.datetime64(str(daily_start_date))
+    full_end_day = full_start_day + np.timedelta64(data.num_timesteps - 1, "D")
+    hourly = load_hourly_ohlc(
+        data.symbols,
+        hourly_data_root,
+        start=f"{str(full_start_day)} 00:00",
+        end=f"{str(full_end_day)} 23:00",
+    )
+
+    window_len = int(window_days) + 1
+    max_offset = data.num_timesteps - window_len
+    if max_offset < 0:
+        return {"status": "skip", "reason": f"val data too short: {data.num_timesteps} < {window_len}"}
+
+    rng = np.random.default_rng(int(seed))
+    starts = rng.choice(max_offset + 1, size=int(n_windows), replace=(max_offset + 1 < int(n_windows)))
+    by_slippage: Dict[str, Any] = {}
+
+    for bps in slippages:
+        cell_rows: List[Dict[str, float]] = []
+        failed_fast_reason: str | None = None
+        for idx, start in enumerate(starts.tolist()):
+            window_data = _slice_mktd_window(data, start=int(start), steps=int(window_days))
+            policy_fn = make_policy_fn(
+                loaded.policy,
+                num_symbols=num_symbols,
+                deterministic=True,
+                decision_lag=2,
+                device=next(loaded.policy.parameters()).device,
+            )
+            window_start_day = full_start_day + np.timedelta64(int(start), "D")
+            result = simulate_daily_policy_intrabar(
+                data=window_data,
+                policy_fn=policy_fn,
+                hourly=hourly,
+                start_date=str(window_start_day),
+                max_steps=int(window_days),
+                fee_rate=float(fee_rate) + float(bps) / 10_000.0,
+                fill_buffer_bps=float(fill_buffer_bps),
+                max_leverage=float(max_leverage),
+                stop_loss_pct=(float(stop_loss_pct) if stop_loss_pct > 0.0 else None),
+                take_profit_pct=(float(take_profit_pct) if take_profit_pct > 0.0 else None),
+                max_hold_hours=(int(max_hold_hours) if max_hold_hours > 0 else None),
+                periods_per_year=8760.0,
+                action_allocation_bins=loaded.action_allocation_bins,
+                action_level_bins=loaded.action_level_bins,
+                action_max_offset_bps=loaded.action_max_offset_bps,
+                trade_hour_mode=trade_hour_mode,
+            )
+            rec = {
+                "total_return": float(result.total_return),
+                "sortino": float(result.sortino),
+                "max_drawdown": float(result.max_drawdown),
+            }
+            cell_rows.append(rec)
+            if fail_fast:
+                if rec["max_drawdown"] > float(fail_fast_max_dd):
+                    failed_fast_reason = f"window {idx} max_drawdown={rec['max_drawdown']:.3f} > {float(fail_fast_max_dd):.3f}"
+                    break
+                if rec["total_return"] < 0.0 and len(cell_rows) >= int(fail_fast_min_completed):
+                    failed_fast_reason = f"window {idx} total_return={rec['total_return']:.4f} < 0 after {len(cell_rows)} completed"
+                    break
+
+        cell = _summarise_window_metrics(cell_rows)
+        if failed_fast_reason is not None:
+            cell["failed_fast"] = True
+            cell["failed_reason"] = failed_fast_reason
+            cell["n_completed_before_bail"] = int(len(cell_rows))
+            by_slippage[str(int(bps))] = cell
+            return {
+                "status": "failed_fast",
+                "backend": "pufferlib_market_intrabar_hourly",
+                "failed_reason": failed_fast_reason,
+                "by_slippage": by_slippage,
+            }
+        by_slippage[str(int(bps))] = cell
+
+    return {"status": "ok", "backend": "pufferlib_market_intrabar_hourly", "by_slippage": by_slippage}
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--checkpoint", required=True)
@@ -146,6 +301,26 @@ def main(argv: list[str] | None = None) -> int:
                     help="Comma-separated slippage levels in bps")
     ap.add_argument("--fee-rate", type=float, default=0.001)
     ap.add_argument("--max-leverage", type=float, default=1.5)
+    ap.add_argument(
+        "--execution-granularity",
+        choices=["daily", "hourly_intrabar"],
+        default="daily",
+        help="Use the default C daily marketsim or replay daily decisions through hourly OHLC execution.",
+    )
+    ap.add_argument("--hourly-data-root", default=None,
+                    help="Required for --execution-granularity hourly_intrabar. Root with stocks/ and/or crypto/ hourly CSVs.")
+    ap.add_argument("--daily-start-date", default=None,
+                    help="Required for --execution-granularity hourly_intrabar. UTC start date of row 0 in the MKTD file.")
+    ap.add_argument("--hourly-fill-buffer-bps", type=float, default=5.0,
+                    help="Hourly limit fill-through buffer for hourly_intrabar mode.")
+    ap.add_argument("--hourly-max-hold-hours", type=int, default=0,
+                    help="Optional hourly max-hold guard in hourly_intrabar mode.")
+    ap.add_argument("--hourly-stop-loss-pct", type=float, default=0.0,
+                    help="Optional intrabar stop-loss fraction in hourly_intrabar mode.")
+    ap.add_argument("--hourly-take-profit-pct", type=float, default=0.0,
+                    help="Optional intrabar take-profit fraction in hourly_intrabar mode.")
+    ap.add_argument("--hourly-trade-hour-mode", choices=["first_tradable", "last_tradable"], default="first_tradable",
+                    help="When to query the daily policy inside each day for hourly_intrabar mode.")
     ap.add_argument("--monthly-target", type=float, default=0.27,
                     help="Minimum acceptable median monthly return (worst slip).")
     ap.add_argument("--seed", type=int, default=1337)
@@ -196,8 +371,36 @@ def main(argv: list[str] | None = None) -> int:
         },
     }
 
-    from fp4.bench.eval_generic import evaluate_policy_file
-    result = evaluate_policy_file(ckpt, cfg, REPO)
+    if args.execution_granularity == "hourly_intrabar":
+        if not args.hourly_data_root:
+            print("eval_100d: --hourly-data-root is required for hourly_intrabar", file=sys.stderr)
+            return 2
+        if not args.daily_start_date:
+            print("eval_100d: --daily-start-date is required for hourly_intrabar", file=sys.stderr)
+            return 2
+        result = _evaluate_intrabar_hourly(
+            checkpoint=ckpt,
+            val_data=val,
+            hourly_data_root=Path(args.hourly_data_root).resolve(),
+            daily_start_date=str(args.daily_start_date),
+            n_windows=int(args.n_windows),
+            window_days=int(args.window_days),
+            slippages=slippages,
+            fee_rate=float(args.fee_rate),
+            max_leverage=float(args.max_leverage),
+            seed=int(args.seed),
+            fill_buffer_bps=float(args.hourly_fill_buffer_bps),
+            max_hold_hours=int(args.hourly_max_hold_hours),
+            stop_loss_pct=float(args.hourly_stop_loss_pct),
+            take_profit_pct=float(args.hourly_take_profit_pct),
+            trade_hour_mode=str(args.hourly_trade_hour_mode),
+            fail_fast=bool(args.fail_fast),
+            fail_fast_max_dd=float(args.fail_fast_max_dd),
+            fail_fast_min_completed=int(args.fail_fast_min_completed),
+        )
+    else:
+        from fp4.bench.eval_generic import evaluate_policy_file
+        result = evaluate_policy_file(ckpt, cfg, REPO)
 
     if result.get("status") not in ("ok", "failed_fast"):
         print(f"eval_100d: evaluate_policy_file returned status={result.get('status')}: "

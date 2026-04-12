@@ -19,6 +19,25 @@ logger = logging.getLogger(__name__)
 CRYPTO_SUFFIXES = ("USD", "BTC", "ETH", "USDT", "USDC")
 
 
+def _candidate_file_last_timestamp(path: Path) -> pd.Timestamp:
+    try:
+        header = pd.read_csv(path, nrows=0)
+        columns = [str(col).strip().lower() for col in header.columns]
+        if "timestamp" in columns:
+            col = header.columns[columns.index("timestamp")]
+        elif "date" in columns:
+            col = header.columns[columns.index("date")]
+        else:
+            col = header.columns[0]
+        series = pd.read_csv(path, usecols=[col])[col]
+        timestamps = pd.to_datetime(series, utc=True, errors="coerce").dropna()
+        if timestamps.empty:
+            return pd.Timestamp.min.tz_localize("UTC")
+        return timestamps.max()
+    except Exception:
+        return pd.Timestamp.min.tz_localize("UTC")
+
+
 def is_crypto_symbol(symbol: str) -> bool:
     """Check if symbol is a cryptocurrency."""
     return any(symbol.upper().endswith(suf) for suf in CRYPTO_SUFFIXES)
@@ -85,14 +104,16 @@ def load_symbol_data(
         if not search_dir.exists():
             continue
         for pattern in patterns:
-            csv_files.extend(sorted(search_dir.glob(pattern), key=lambda p: p.stat().st_mtime))
+            csv_files.extend(search_dir.glob(pattern))
 
     if not csv_files:
         logger.warning("No data files found for symbol %s in %s", symbol, data_root)
         return pd.DataFrame()
 
-    # Use most recent file
-    latest_file = csv_files[-1]
+    latest_file = max(
+        csv_files,
+        key=lambda p: (_candidate_file_last_timestamp(p), p.stat().st_mtime),
+    )
     logger.debug("Loading %s from %s", symbol, latest_file)
 
     try:

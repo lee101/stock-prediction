@@ -9,7 +9,9 @@ from __future__ import annotations
 import importlib.util
 import math
 from pathlib import Path
+import json
 
+import pytest
 
 _REPO = Path(__file__).resolve().parents[1]
 _MOD_PATH = _REPO / "scripts" / "eval_100d.py"
@@ -128,3 +130,55 @@ def test_render_md_reports_fail_when_worst_slip_under_target():
         eval_result={"backend": "pufferlib_market"},
     )
     assert "FAIL" in md
+
+
+def test_main_routes_hourly_intrabar_and_writes_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    ckpt = tmp_path / "best.pt"
+    val = tmp_path / "val.bin"
+    hourly_root = tmp_path / "hourly"
+    out_dir = tmp_path / "out"
+    ckpt.write_bytes(b"x")
+    val.write_bytes(b"x")
+    hourly_root.mkdir()
+
+    seen = {}
+
+    def _fake_eval(**kwargs):
+        seen.update(kwargs)
+        return {
+            "status": "ok",
+            "backend": "pufferlib_market_intrabar_hourly",
+            "by_slippage": {
+                "0": {
+                    "median_return": 3.0,
+                    "p10_return": 2.0,
+                    "mean_return": 2.5,
+                    "sortino": 2.0,
+                    "max_drawdown": 0.05,
+                    "n_windows": 4,
+                    "n_neg": 0,
+                }
+            },
+        }
+
+    monkeypatch.setattr(_mod, "_evaluate_intrabar_hourly", _fake_eval)
+
+    rc = _mod.main([
+        "--checkpoint", str(ckpt),
+        "--val-data", str(val),
+        "--execution-granularity", "hourly_intrabar",
+        "--hourly-data-root", str(hourly_root),
+        "--daily-start-date", "2026-01-01",
+        "--n-windows", "4",
+        "--window-days", "100",
+        "--out-dir", str(out_dir),
+    ])
+
+    assert rc == 0
+    assert seen["daily_start_date"] == "2026-01-01"
+    assert Path(seen["hourly_data_root"]) == hourly_root.resolve()
+
+    payload = json.loads((out_dir / "best_eval100d.json").read_text())
+    md = (out_dir / "best_eval100d.md").read_text()
+    assert payload["raw"]["backend"] == "pufferlib_market_intrabar_hourly"
+    assert "pufferlib_market_intrabar_hourly" in md

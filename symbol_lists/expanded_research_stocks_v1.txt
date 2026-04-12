@@ -1,0 +1,42 @@
+# Base daily stock universe
+AAPL
+AMZN
+GOOG
+JPM
+META
+MSFT
+NVDA
+PLTR
+QQQ
+SPY
+TSLA
+V
+
+# Semis and infrastructure
+AVGO
+AMAT
+ANET
+CSCO
+INTC
+LRCX
+MU
+
+# Software and platforms
+CRM
+IBM
+INTU
+NFLX
+NOW
+ORCL
+PANW
+SHOP
+UBER
+
+# Travel, finance, defensive
+BKNG
+JPM
+V
+WMT
+
+# User-requested power / special-situations additions
+OKLO

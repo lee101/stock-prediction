@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -30,6 +30,7 @@ from src.trade_directions import DEFAULT_ALPACA_LIVE8_STOCKS
 
 TRAINING_DIR = Path("trainingdata/train")
 SNAPSHOT_DIR = Path("data/train")
+IPO_SYMBOLS_FILE = Path(__file__).resolve().parent / "symbol_lists" / "ipo_candidates_2025_2026.txt"
 BASE_COLUMN_ORDER: Tuple[str, ...] = (
     "timestamp",
     "open",
@@ -46,6 +47,7 @@ SYMBOL_SET_ALIASES = {
     "stock-expansion": lambda: [candidate.symbol for candidate in default_stock_expansion_candidates()],
     "alpaca-live8": lambda: list(DEFAULT_ALPACA_LIVE8_STOCKS),
     "sp500": lambda: list(get_sp500_symbols(use_cache=True)),
+    "ipo-2025-2026": lambda: load_symbols_file(IPO_SYMBOLS_FILE),
 }
 
 
@@ -235,6 +237,92 @@ def _sync_symbol(symbol: str, snapshot_dir: Path, training_dir: Path) -> int:
     return new_rows
 
 
+def _flatten_download_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(frame.columns, pd.MultiIndex):
+        return frame
+    flattened: list[str] = []
+    for column in frame.columns:
+        if isinstance(column, tuple):
+            flattened.append(str(column[0]).strip())
+        else:
+            flattened.append(str(column).strip())
+    result = frame.copy()
+    result.columns = flattened
+    return result
+
+
+def _download_stock_with_yfinance(symbol: str) -> pd.DataFrame:
+    import yfinance as yf  # noqa: PLC0415
+
+    end = datetime.now(timezone.utc).date() + timedelta(days=1)
+    start = end - timedelta(days=365 * 5)
+    yf_symbol = str(symbol).strip().upper().replace(".", "-")
+    frame = yf.download(
+        yf_symbol,
+        start=start.isoformat(),
+        end=end.isoformat(),
+        auto_adjust=False,
+        actions=False,
+        progress=False,
+        threads=False,
+    )
+    if frame is None or frame.empty:
+        raise RuntimeError(f"No yfinance history returned for {symbol}")
+    frame = _flatten_download_columns(frame)
+    frame = frame.reset_index()
+    if "Date" in frame.columns and "timestamp" not in frame.columns:
+        frame = frame.rename(columns={"Date": "timestamp"})
+    return _prepare_training_frame(frame, symbol)
+
+
+def _merge_direct_training_frame(
+    symbol: str,
+    updates: pd.DataFrame,
+    *,
+    training_dir: Path,
+) -> int:
+    existing = _load_existing_training(symbol, training_dir)
+    merged, new_rows = _merge_training_frames(existing, updates)
+    target_path = Path(training_dir) / f"{_storage_symbol(symbol)}.csv"
+    if new_rows > 0 or not target_path.exists():
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        merged.to_csv(target_path, index=False)
+    return new_rows
+
+
+def _fallback_sync_with_yfinance(
+    symbols: Sequence[str],
+    *,
+    training_dir: Path = TRAINING_DIR,
+) -> Dict[str, int]:
+    appended: Dict[str, int] = {}
+    stock_symbols = [symbol for symbol in symbols if not is_crypto_symbol(symbol)]
+    if not stock_symbols:
+        return appended
+
+    logger.warning(
+        "Primary daily refresh failed; attempting yfinance fallback for %d stock symbols.",
+        len(stock_symbols),
+    )
+    for symbol in stock_symbols:
+        try:
+            updates = _download_stock_with_yfinance(symbol)
+            appended[symbol] = _merge_direct_training_frame(
+                symbol,
+                updates,
+                training_dir=training_dir,
+            )
+            logger.info(
+                "{}: yfinance fallback merged {} rows",
+                symbol,
+                appended[symbol],
+            )
+        except Exception as exc:
+            logger.warning("yfinance fallback failed for {}: {}", symbol, exc)
+            appended[symbol] = 0
+    return appended
+
+
 _NON_SYMBOL_STEMS = frozenset({
     "correlation_matrix",
     "data_summary",
@@ -399,19 +487,31 @@ def download_and_sync(symbols: Sequence[str], *, strict: bool = False) -> Dict[s
     """Download the latest bars and sync them into trainingdata/train."""
     logger.info("Updating {} symbols (strict={})", len(symbols), strict)
     download_symbols = [_market_data_symbol(symbol) for symbol in symbols]
-    download_daily_stock_data(
-        path="train",
-        all_data_force=True,
-        symbols=download_symbols,
-        strict=strict,
-    )
     snapshot_dir = SNAPSHOT_DIR
     snapshot_dir.mkdir(parents=True, exist_ok=True)
     training_dir = TRAINING_DIR
     training_dir.mkdir(parents=True, exist_ok=True)
 
+    fallback_appended: Dict[str, int] = {}
+    try:
+        download_daily_stock_data(
+            path="train",
+            all_data_force=True,
+            symbols=download_symbols,
+            strict=strict,
+        )
+    except Exception as exc:
+        logger.warning("Primary daily refresh failed: {}", exc)
+        fallback_appended = _fallback_sync_with_yfinance(
+            symbols,
+            training_dir=training_dir,
+        )
+
     appended: Dict[str, int] = {}
     for symbol in symbols:
+        if symbol in fallback_appended:
+            appended[symbol] = int(fallback_appended[symbol])
+            continue
         try:
             appended[symbol] = _sync_symbol(symbol, snapshot_dir, training_dir)
         except Exception as exc:

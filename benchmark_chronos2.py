@@ -90,6 +90,25 @@ def _parse_torch_dtype(value: Optional[str]):
     return mapping[normalized]
 
 
+def _parse_bool_tokens(values: Sequence[object], *, flag_name: str) -> Tuple[bool, ...]:
+    parsed: List[bool] = []
+    for raw in values:
+        normalized = str(raw).strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            parsed.append(True)
+            continue
+        if normalized in {"0", "false", "no", "off"}:
+            parsed.append(False)
+            continue
+        raise argparse.ArgumentTypeError(
+            f"{flag_name} accepts only true/false-style values, got '{raw}'."
+        )
+    unique = tuple(_unique_sequence(parsed))
+    if not unique:
+        raise argparse.ArgumentTypeError(f"{flag_name} must include at least one value.")
+    return unique
+
+
 @dataclass
 class Chronos2Candidate:
     name: str
@@ -99,6 +118,7 @@ class Chronos2Candidate:
     aggregation: str = "median"
     sample_count: int = 0
     scaler: str = "none"
+    use_multivariate: bool = False
     predict_kwargs: Dict[str, float | int | bool | Sequence[float]] = field(default_factory=dict)
 
 
@@ -111,6 +131,7 @@ class DirectSearchSpace:
     aggregations: Tuple[str, ...]
     sample_counts: Tuple[int, ...]
     scalers: Tuple[str, ...]
+    multivariate_modes: Tuple[bool, ...]
 
 
 @dataclass
@@ -205,6 +226,8 @@ def _build_direct_search_space(series_length: int, args: argparse.Namespace) -> 
     sample_counts = tuple(int(max(0, s)) for s in _unique_sequence(samples_source) if int(s) >= 0)
     scalers_source = getattr(args, "direct_scalers", None) or getattr(args, "scalers", [] )
     scalers = tuple(str(s) for s in _unique_sequence(scalers_source)) or ("none",)
+    multivariate_source = getattr(args, "direct_multivariate_modes", None) or getattr(args, "multivariate_modes", [])
+    multivariate_modes = tuple(bool(mode) for mode in _unique_sequence(multivariate_source)) or (False,)
     if not contexts:
         raise ValueError("No context lengths available for DIRECT search")
     if not batches:
@@ -219,6 +242,7 @@ def _build_direct_search_space(series_length: int, args: argparse.Namespace) -> 
         aggregations=aggregations,
         sample_counts=sample_counts,
         scalers=scalers,
+        multivariate_modes=multivariate_modes,
     )
 
 
@@ -251,6 +275,7 @@ def _candidate_signature(candidate: Chronos2Candidate) -> Tuple[object, ...]:
         candidate.aggregation,
         candidate.sample_count,
         candidate.scaler,
+        candidate.use_multivariate,
         tuple(candidate.quantile_levels),
         _hashable(candidate.predict_kwargs),
     )
@@ -284,6 +309,7 @@ class Chronos2Benchmark:
         self.rng = np.random.default_rng(args.seed)
         self.output_root = Path(args.output_dir)
         self.output_root.mkdir(parents=True, exist_ok=True)
+        self.pipeline_backend = args.pipeline_backend
         if args.torch_compile and chronos_compile_config is not None:
             chronos_compile_config.apply(verbose=args.verbose)
 
@@ -312,6 +338,7 @@ class Chronos2Benchmark:
             default_context_length=context_length,
             quantile_levels=quantile_levels,
             torch_dtype=self.torch_dtype,
+            pipeline_backend=self.pipeline_backend,
         )
         self.wrapper_cache[cache_key] = wrapper
         return wrapper
@@ -384,6 +411,7 @@ class Chronos2Benchmark:
             _option_bounds(len(search_space.aggregations)),
             _option_bounds(len(search_space.sample_counts)),
             _option_bounds(len(search_space.scalers)),
+            _option_bounds(len(search_space.multivariate_modes)),
         ]
         eval_history: List[CandidateReport] = []
         cache: Dict[Tuple[object, ...], Optional[CandidateReport]] = {}
@@ -396,12 +424,14 @@ class Chronos2Benchmark:
             agg, _ = _pick_option(search_space.aggregations, vector[2])
             samples, _ = _pick_option(search_space.sample_counts, vector[3])
             scaler, _ = _pick_option(search_space.scalers, vector[4])
+            use_multivariate, _ = _pick_option(search_space.multivariate_modes, vector[5])
             eval_counter += 1
             name_parts = ["direct", f"ctx{ctx}", f"bs{batch}", agg.replace(" ", "")]
             if scaler != "none":
                 name_parts.append(f"scale_{scaler}")
             if samples > 0:
                 name_parts.append(f"s{samples}")
+            name_parts.append("mv" if use_multivariate else "uni")
             name_parts.append(f"eval{eval_counter}")
             return Chronos2Candidate(
                 name="_".join(name_parts),
@@ -411,6 +441,7 @@ class Chronos2Benchmark:
                 aggregation=agg,
                 sample_count=samples,
                 scaler=scaler,
+                use_multivariate=use_multivariate,
                 predict_kwargs=dict(self.predict_kwargs),
             )
 
@@ -526,15 +557,25 @@ class Chronos2Benchmark:
             predict_kwargs.update(candidate.predict_kwargs or {})
 
             start = time.perf_counter()
-            batch = wrapper.predict_ohlc(
-                transformed_context,
-                symbol=symbol,
-                prediction_length=FORECAST_HORIZON,
-                context_length=candidate.context_length,
-                quantile_levels=quantile_tuple,
-                batch_size=candidate.batch_size,
-                predict_kwargs=predict_kwargs,
-            )
+            if candidate.use_multivariate:
+                batch = wrapper.predict_ohlc_multivariate(
+                    transformed_context,
+                    symbol=symbol,
+                    prediction_length=FORECAST_HORIZON,
+                    context_length=candidate.context_length,
+                    quantile_levels=quantile_tuple,
+                    batch_size=candidate.batch_size,
+                )
+            else:
+                batch = wrapper.predict_ohlc(
+                    transformed_context,
+                    symbol=symbol,
+                    prediction_length=FORECAST_HORIZON,
+                    context_length=candidate.context_length,
+                    quantile_levels=quantile_tuple,
+                    batch_size=candidate.batch_size,
+                    predict_kwargs=predict_kwargs,
+                )
             total_latency += time.perf_counter() - start
 
             quantile_frames: Dict[float, pd.DataFrame] = {
@@ -600,6 +641,7 @@ def _load_candidates_from_file(
             aggregation=str(entry.get("aggregation", "median")),
             sample_count=int(entry.get("sample_count", 0)),
             scaler=str(entry.get("scaler", "none")),
+            use_multivariate=bool(entry.get("use_multivariate", False)),
             predict_kwargs=predict_kwargs,
         )
         candidates.append(candidate)
@@ -617,25 +659,28 @@ def _build_cross_product_candidates(
             for agg in args.aggregations:
                 for scaler in args.scalers:
                     for sample_count in args.sample_counts:
-                        idx += 1
-                        name_parts = [f"ctx{ctx}", f"bs{batch}", agg.replace(" ", "")]
-                        if scaler != "none":
-                            name_parts.append(f"scale_{scaler}")
-                        if sample_count > 0:
-                            name_parts.append(f"s{sample_count}")
-                        candidate = Chronos2Candidate(
-                            name="_".join(name_parts),
-                            context_length=ctx,
-                            batch_size=batch,
-                            quantile_levels=tuple(args.quantile_levels),
-                            aggregation=agg,
-                            sample_count=sample_count,
-                            scaler=scaler,
-                            predict_kwargs=dict(base_predict_kwargs),
-                        )
-                        candidates.append(candidate)
-                        if args.max_candidates and len(candidates) >= args.max_candidates:
-                            return candidates
+                        for use_multivariate in args.multivariate_modes:
+                            idx += 1
+                            name_parts = [f"ctx{ctx}", f"bs{batch}", agg.replace(" ", "")]
+                            if scaler != "none":
+                                name_parts.append(f"scale_{scaler}")
+                            if sample_count > 0:
+                                name_parts.append(f"s{sample_count}")
+                            name_parts.append("mv" if use_multivariate else "uni")
+                            candidate = Chronos2Candidate(
+                                name="_".join(name_parts),
+                                context_length=ctx,
+                                batch_size=batch,
+                                quantile_levels=tuple(args.quantile_levels),
+                                aggregation=agg,
+                                sample_count=sample_count,
+                                scaler=scaler,
+                                use_multivariate=use_multivariate,
+                                predict_kwargs=dict(base_predict_kwargs),
+                            )
+                            candidates.append(candidate)
+                            if args.max_candidates and len(candidates) >= args.max_candidates:
+                                return candidates
     return candidates
 
 
@@ -701,6 +746,7 @@ def _maybe_update_hyperparams(reports: Sequence[CandidateReport], args: argparse
                 "aggregation": best_report.candidate.aggregation,
                 "sample_count": best_report.candidate.sample_count,
                 "scaler": best_report.candidate.scaler,
+                "use_multivariate": best_report.candidate.use_multivariate,
                 "predict_kwargs": best_report.candidate.predict_kwargs,
             },
             "validation": {
@@ -759,10 +805,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--aggregations", nargs="+", default=["median"])
     parser.add_argument("--sample-counts", type=int, nargs="+", default=[0])
     parser.add_argument("--scalers", nargs="+", default=["none"])
+    parser.add_argument(
+        "--multivariate-modes",
+        nargs="+",
+        default=["false"],
+        help="Candidate multivariate modes to benchmark (e.g. false true).",
+    )
     parser.add_argument("--direct-sample-counts", type=int, nargs="+", help="Override sample counts for DIRECT")
     parser.add_argument("--direct-batch-sizes", type=int, nargs="+", help="Override batch sizes for DIRECT")
     parser.add_argument("--direct-aggregations", nargs="+", help="Override aggregations for DIRECT")
     parser.add_argument("--direct-scalers", nargs="+", help="Override scalers for DIRECT")
+    parser.add_argument(
+        "--direct-multivariate-modes",
+        nargs="+",
+        help="Override multivariate modes for DIRECT (e.g. false true).",
+    )
     parser.add_argument("--quantile-levels", type=float, nargs="+", default=list(DEFAULT_QUANTILE_LEVELS))
     parser.add_argument("--sample-seed", dest="seed", type=int, default=1337)
     parser.add_argument("--predict-batches-jointly", action="store_true")
@@ -770,6 +827,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-output-patches", type=int)
     parser.add_argument("--unrolled-quantiles", type=float, nargs="+")
     parser.add_argument("--torch-compile", action="store_true")
+    parser.add_argument(
+        "--pipeline-backend",
+        choices=["chronos", "cutechronos", "auto"],
+        default="chronos",
+        help="Chronos2 inference backend to benchmark",
+    )
     parser.add_argument(
         "--torch-dtype",
         choices=["float32", "fp32", "float16", "fp16", "half", "bfloat16", "bf16"],
@@ -823,6 +886,12 @@ def parse_args() -> argparse.Namespace:
     if args.deprecated_batch_size and args.deprecated_batch_size not in args.batch_sizes:
         args.batch_sizes.append(args.deprecated_batch_size)
     args.quantile_levels = sorted(set(args.quantile_levels))
+    args.multivariate_modes = _parse_bool_tokens(args.multivariate_modes, flag_name="--multivariate-modes")
+    if args.direct_multivariate_modes is not None:
+        args.direct_multivariate_modes = _parse_bool_tokens(
+            args.direct_multivariate_modes,
+            flag_name="--direct-multivariate-modes",
+        )
     return args
 
 

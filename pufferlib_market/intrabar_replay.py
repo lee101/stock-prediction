@@ -36,12 +36,18 @@ from pufferlib_market.hourly_replay import (
     P_OPEN,
     MktdData,
     Position,
+    _action_allocation_pct,
+    _action_level_offset_bps,
+    _apply_short_borrow_cost,
+    _build_obs_hourly_price,
     _close_position,
     _compute_equity,
     _is_tradable,
     _normalize_fill_buffer_bps,
     _open_long,
+    _open_long_limit,
     _open_short,
+    _open_short_limit,
     _resolve_limit_fill_price,
     _load_hourly_bars,
 )
@@ -96,6 +102,11 @@ class IntraBarReplayResult:
     win_rate: float
     initial_equity: float
     final_equity: float
+
+
+@dataclass
+class DailyPolicyIntrabarResult(IntraBarReplayResult):
+    actions: np.ndarray
 
 
 # ---------------------------------------------------------------------------
@@ -241,6 +252,41 @@ def synthetic_hourly_ohlc_from_daily(data: MktdData, *, start: str | pd.Timestam
 def _bar_intersects_level(low: float, high: float, level: float) -> bool:
     """True if a horizontal price level falls inside [low, high] inclusive."""
     return float(min(low, high)) <= float(level) <= float(max(low, high))
+
+
+def _resolve_trade_hour_indices(
+    *,
+    hourly: HourlyOHLC,
+    start_day: pd.Timestamp,
+    num_days: int,
+    mode: str,
+) -> list[int]:
+    """Return one scheduled decision hour per calendar day.
+
+    `mode="first_tradable"` aligns to a market-open style daily plan.
+    `mode="last_tradable"` aligns to a market-close style daily plan.
+    If no real hourly bars exist for a day, fall back to hour 23:00 UTC.
+    """
+    if mode not in {"first_tradable", "last_tradable"}:
+        raise ValueError(f"Unsupported trade_hour_mode {mode!r}")
+
+    trade_hours: list[int] = []
+    market_days = hourly.index.floor("D")
+    any_tradable = np.zeros((len(hourly.index),), dtype=bool)
+    for sym in hourly.symbols:
+        any_tradable |= np.asarray(hourly.tradable[sym], dtype=bool)
+
+    for day_idx in range(num_days):
+        day = start_day + pd.Timedelta(days=day_idx)
+        day_mask = (market_days == day)
+        candidates = np.flatnonzero(day_mask & any_tradable)
+        if candidates.size > 0:
+            hi = int(candidates[0] if mode == "first_tradable" else candidates[-1])
+        else:
+            fallback_ts = day + pd.Timedelta(hours=23)
+            hi = int(hourly.index.get_indexer([fallback_ts], method="nearest")[0])
+        trade_hours.append(hi)
+    return trade_hours
 
 
 def _stop_loss_triggered(
@@ -593,6 +639,321 @@ def replay_intrabar(
         num_orders=len(fills),
         win_rate=float(win_rate),
         initial_equity=float(initial_equity),
+        final_equity=float(final_equity),
+    )
+
+
+def simulate_daily_policy_intrabar(
+    *,
+    data: MktdData,
+    policy_fn,
+    hourly: HourlyOHLC,
+    start_date: str | pd.Timestamp,
+    max_steps: int,
+    fee_rate: float = 0.001,
+    fill_buffer_bps: float = 5.0,
+    max_leverage: float = 1.0,
+    stop_loss_pct: Optional[float] = None,
+    take_profit_pct: Optional[float] = None,
+    max_hold_hours: Optional[int] = None,
+    initial_cash: float = INITIAL_CASH,
+    periods_per_year: float = 8760.0,
+    short_borrow_apr: float = 0.0,
+    action_allocation_bins: int = 1,
+    action_level_bins: int = 1,
+    action_max_offset_bps: float = 0.0,
+    trade_hour_mode: str = "first_tradable",
+) -> DailyPolicyIntrabarResult:
+    """Run a daily-trained policy on a once-per-day schedule with hourly execution.
+
+    The policy is queried exactly once per calendar day at the configured trade
+    hour. Between decision points we keep simulating every hourly bar so stop /
+    take-profit / max-hold logic can fire at realistic times and affect the
+    next day's observation.
+    """
+    if max_steps <= 0:
+        raise ValueError("max_steps must be positive")
+    if data.num_timesteps < max_steps + 1:
+        raise ValueError(f"data.num_timesteps={data.num_timesteps} must be >= max_steps+1={max_steps + 1}")
+
+    fill_buffer = _normalize_fill_buffer_bps(fill_buffer_bps) / 10_000.0
+    start_day = pd.to_datetime(start_date, utc=True).floor("D")
+
+    H = len(hourly.index)
+    sym_names = [s.upper() for s in data.symbols]
+    S = data.num_symbols
+    alloc_bins = max(1, int(action_allocation_bins))
+    level_bins = max(1, int(action_level_bins))
+    per_symbol_actions = alloc_bins * level_bins
+    side_block = S * per_symbol_actions
+
+    day_floor = hourly.index.floor("D")
+    day_idx_per_hour = ((day_floor - start_day).days).to_numpy()
+    decision_hours = _resolve_trade_hour_indices(
+        hourly=hourly,
+        start_day=start_day,
+        num_days=max_steps,
+        mode=trade_hour_mode,
+    )
+
+    cash = float(initial_cash)
+    pos: Optional[Position] = None
+    peak_equity = float(initial_cash)
+    max_dd = 0.0
+    equity_curve = np.full(H, float(initial_cash), dtype=np.float64)
+    fills: list[IntraBarFill] = []
+    actions = np.zeros((max_steps,), dtype=np.int32)
+    num_trades = 0
+    winning_trades = 0
+    pos_open_hi = -1
+    pos_open_day = -1
+    pending_action: Optional[int] = None
+
+    def _hour_close(sym_i: int, hi: int) -> float:
+        return float(hourly.close[sym_names[sym_i]][hi])
+
+    def _bar(sym_i: int, hi: int) -> tuple[float, float, float, float, bool]:
+        name = sym_names[sym_i]
+        return (
+            float(hourly.open[name][hi]),
+            float(hourly.high[name][hi]),
+            float(hourly.low[name][hi]),
+            float(hourly.close[name][hi]),
+            bool(hourly.tradable[name][hi]),
+        )
+
+    def _mark_price(sym_i: int, hi: int, day_idx: int) -> float:
+        hourly_close = float(hourly.close[sym_names[sym_i]][hi])
+        daily_close = float(data.prices[min(max(day_idx, 0), data.num_timesteps - 1), sym_i, P_CLOSE])
+        return hourly_close if np.isfinite(hourly_close) and hourly_close > 0.0 else daily_close
+
+    def _record(hi: int, sym_i: int, side: str, price: float, qty: float, kind: str) -> None:
+        equity_after = _compute_equity(cash, pos, price)
+        fills.append(
+            IntraBarFill(
+                hourly_idx=int(hi),
+                timestamp=hourly.index[hi],
+                sym=int(sym_i),
+                side=side,
+                price=float(price),
+                qty=float(qty),
+                cash_after=float(cash),
+                equity_after=float(equity_after),
+                kind=kind,
+            )
+        )
+
+    for hi, ts in enumerate(hourly.index):
+        day_idx = int(day_idx_per_hour[hi])
+
+        if hi > 0 and pos is not None:
+            carry_px = _mark_price(pos.sym, hi, day_idx)
+            cash, _ = _apply_short_borrow_cost(
+                cash=cash,
+                pos=pos,
+                price=carry_px,
+                short_borrow_apr=short_borrow_apr,
+                periods_per_year=periods_per_year,
+            )
+
+        if pos is not None:
+            _, hi_high, hi_low, _, _ = _bar(pos.sym, hi)
+            exit_price: Optional[float] = None
+            exit_kind: Optional[str] = None
+
+            sl = _stop_loss_triggered(
+                pos=pos, bar_low=hi_low, bar_high=hi_high, stop_pct=stop_loss_pct or 0.0
+            )
+            tp = _take_profit_triggered(
+                pos=pos, bar_low=hi_low, bar_high=hi_high, tp_pct=take_profit_pct or 0.0
+            )
+            if sl is not None:
+                exit_price = sl
+                exit_kind = "stop"
+            elif tp is not None:
+                exit_price = tp
+                exit_kind = "take_profit"
+            elif (
+                max_hold_hours is not None
+                and max_hold_hours > 0
+                and pos_open_hi >= 0
+                and (hi - pos_open_hi) >= max_hold_hours
+            ):
+                bar_open, _, _, bar_close, _ = _bar(pos.sym, hi)
+                exit_price = bar_open if bar_open > 0.0 else bar_close
+                exit_kind = "max_hold"
+
+            if exit_price is not None:
+                side = "short_close" if pos.is_short else "long_close"
+                closed_sym = pos.sym
+                qty = pos.qty
+                cash, win = _close_position(cash, pos, exit_price, fee_rate)
+                pos = None
+                pos_open_hi = -1
+                pos_open_day = -1
+                num_trades += 1
+                winning_trades += int(win)
+                _record(hi, closed_sym, side, exit_price, qty, exit_kind or "exit")
+
+        if 0 <= day_idx < max_steps and hi == decision_hours[day_idx]:
+            hold_days = max(0, day_idx - pos_open_day) if pos is not None and pos_open_day >= 0 else 0
+            obs = _build_obs_hourly_price(
+                data=data,
+                t_day=day_idx,
+                pos=pos,
+                cash=cash,
+                hold_days=hold_days,
+                step_day=day_idx,
+                max_steps_days=max_steps,
+                price_now_by_sym=lambda sym_i, _hi=hi, _day=day_idx: _mark_price(sym_i, _hi, _day),
+                portfolio_scale=initial_cash,
+            )
+            pending_action = int(policy_fn(obs))
+            actions[day_idx] = int(pending_action)
+
+        if pending_action is not None and 0 <= day_idx < max_steps:
+            action = int(pending_action)
+            if action < 0 or action > 2 * side_block:
+                action = 0
+
+            if action == 0:
+                if pos is not None:
+                    cur_open, _, _, cur_close, cur_tr = _bar(pos.sym, hi)
+                    if cur_tr:
+                        exit_px = cur_open if cur_open > 0.0 else cur_close
+                        side = "short_close" if pos.is_short else "long_close"
+                        closed_sym = pos.sym
+                        qty = pos.qty
+                        cash, win = _close_position(cash, pos, exit_px, fee_rate)
+                        pos = None
+                        pos_open_hi = -1
+                        pos_open_day = -1
+                        num_trades += 1
+                        winning_trades += int(win)
+                        _record(hi, closed_sym, side, exit_px, qty, "exit")
+                    pending_action = None
+                else:
+                    pending_action = None
+            else:
+                action_idx = action - 1
+                is_short_target = action_idx >= side_block
+                if is_short_target:
+                    action_idx -= side_block
+                target = action_idx // per_symbol_actions
+                rem = action_idx % per_symbol_actions
+                alloc_idx = rem // level_bins
+                level_idx = rem % level_bins
+                target_alloc = _action_allocation_pct(alloc_idx=alloc_idx, alloc_bins=alloc_bins)
+                target_level_bps = _action_level_offset_bps(
+                    level_idx=level_idx,
+                    level_bins=level_bins,
+                    max_offset_bps=action_max_offset_bps,
+                )
+                bar_open, bar_high, bar_low, bar_close, target_tradable = _bar(target, hi)
+                if target_tradable and bar_open > 0.0:
+                    if pos is not None and pos.sym == target and pos.is_short == is_short_target:
+                        pending_action = None
+                    else:
+                        if pos is not None:
+                            cur_open, _, _, cur_close, cur_tr = _bar(pos.sym, hi)
+                            if not cur_tr:
+                                target_tradable = False
+                            else:
+                                exit_px = cur_open if cur_open > 0.0 else cur_close
+                                side = "short_close" if pos.is_short else "long_close"
+                                closed_sym = pos.sym
+                                qty = pos.qty
+                                cash, win = _close_position(cash, pos, exit_px, fee_rate)
+                                pos = None
+                                pos_open_hi = -1
+                                pos_open_day = -1
+                                num_trades += 1
+                                winning_trades += int(win)
+                                _record(hi, closed_sym, side, exit_px, qty, "exit")
+                        if target_tradable:
+                            target_price = bar_open * (1.0 + float(target_level_bps) / 10_000.0)
+                            target_price *= (1.0 - fill_buffer) if not is_short_target else (1.0 + fill_buffer)
+                            fill_px = _resolve_limit_fill_price(
+                                low=bar_low,
+                                high=bar_high,
+                                target_price=target_price,
+                                is_buy=not is_short_target,
+                                fill_buffer_bps=0.0,
+                            )
+                            if fill_px is not None:
+                                open_kwargs = dict(
+                                    cash=cash,
+                                    sym=target,
+                                    close_price=fill_px,
+                                    low_price=fill_px,
+                                    high_price=fill_px,
+                                    fee_rate=fee_rate,
+                                    max_leverage=max_leverage,
+                                    allocation_pct=target_alloc,
+                                    level_offset_bps=0.0,
+                                    fill_buffer_bps=0.0,
+                                )
+                                if is_short_target:
+                                    cash, pos = _open_short_limit(**open_kwargs)
+                                    side = "short_open"
+                                else:
+                                    cash, pos = _open_long_limit(**open_kwargs)
+                                    side = "long_open"
+                                if pos is not None:
+                                    pos_open_hi = hi
+                                    pos_open_day = day_idx
+                                    _record(hi, target, side, fill_px, pos.qty, "entry")
+                                    pending_action = None
+
+        if pos is None:
+            eq = float(cash)
+        else:
+            eq = _compute_equity(cash, pos, _hour_close(pos.sym, hi))
+        equity_curve[hi] = eq
+        if eq > peak_equity:
+            peak_equity = eq
+        dd = (peak_equity - eq) / peak_equity if peak_equity > 0 else 0.0
+        if dd > max_dd:
+            max_dd = dd
+
+    final_idx = H - 1
+    if pos is not None and final_idx >= 0:
+        exit_px = _hour_close(pos.sym, final_idx)
+        side = "short_close" if pos.is_short else "long_close"
+        closed_sym = pos.sym
+        qty = pos.qty
+        cash, win = _close_position(cash, pos, exit_px, fee_rate)
+        pos = None
+        num_trades += 1
+        winning_trades += int(win)
+        _record(final_idx, closed_sym, side, exit_px, qty, "exit")
+        equity_curve[final_idx] = float(cash)
+
+    final_equity = float(cash)
+    total_return = (final_equity - initial_cash) / initial_cash if initial_cash != 0.0 else 0.0
+    rets = (equity_curve[1:] - equity_curve[:-1]) / np.clip(equity_curve[:-1], 1e-12, None)
+    neg = rets[rets < 0.0]
+    if neg.size > 1:
+        downside_dev = float(np.sqrt(np.mean(neg * neg)))
+        ppy = float(periods_per_year) if periods_per_year > 0 else 8760.0
+        mean_ret = float(np.mean(rets))
+        sortino = float(mean_ret / downside_dev * np.sqrt(ppy)) if downside_dev > 0 else 0.0
+    else:
+        sortino = 0.0
+
+    win_rate = float(winning_trades / num_trades) if num_trades > 0 else 0.0
+    return DailyPolicyIntrabarResult(
+        actions=actions,
+        equity_curve=equity_curve,
+        timestamps=hourly.index,
+        fills=fills,
+        total_return=float(total_return),
+        sortino=float(sortino),
+        max_drawdown=float(max_dd),
+        num_trades=int(num_trades),
+        num_orders=len(fills),
+        win_rate=float(win_rate),
+        initial_equity=float(initial_cash),
         final_equity=float(final_equity),
     )
 

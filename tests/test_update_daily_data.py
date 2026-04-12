@@ -1,9 +1,14 @@
+import sys
+
 import pandas as pd
 
+import update_daily_data as udd
 from update_daily_data import (
+    _fallback_sync_with_yfinance,
     _market_data_symbol,
     _merge_training_frames,
     _prepare_training_frame,
+    _download_stock_with_yfinance,
     _sync_symbol,
     _storage_symbol,
     build_sync_report,
@@ -200,6 +205,16 @@ def test_resolve_symbol_set_stock_expansion_contains_known_names():
     assert "JPM" in symbols
 
 
+def test_resolve_symbol_set_ipo_2025_2026_contains_known_names():
+    symbols = resolve_symbol_set("ipo-2025-2026")
+    assert "CRCL" in symbols
+    assert "FIG" in symbols
+    assert "KLAR" in symbols
+    assert "PAYP" in symbols
+    assert "RDDT" in symbols
+    assert "IROH" in symbols
+
+
 def test_load_symbols_file_supports_comments_and_commas(tmp_path):
     path = tmp_path / "symbols.txt"
     path.write_text("pltr, nflx\n# ignore\njpm\n")
@@ -266,3 +281,82 @@ def test_build_sync_report_returns_freshness(tmp_path):
     assert by_symbol["PLTR"]["stale_days"] == 1
     assert by_symbol["PLTR"]["appended_rows"] == 2
     assert by_symbol["NFLX"]["exists"] is False
+
+
+def test_download_stock_with_yfinance_normalizes_training_schema(monkeypatch):
+    source = pd.DataFrame(
+        {
+            "Open": [10.0, 11.0],
+            "High": [10.5, 11.5],
+            "Low": [9.5, 10.5],
+            "Close": [10.2, 11.2],
+            "Volume": [1000, 1100],
+        },
+        index=pd.to_datetime(["2025-01-02", "2025-01-03"], utc=True),
+    )
+    source.index.name = "Date"
+
+    class _FakeYF:
+        @staticmethod
+        def download(*_args, **_kwargs):
+            return source
+
+    monkeypatch.setitem(sys.modules, "yfinance", _FakeYF)
+
+    frame = _download_stock_with_yfinance("crcl")
+    assert list(frame.columns[:9]) == [
+        "timestamp",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "trade_count",
+        "vwap",
+        "symbol",
+    ]
+    assert frame["symbol"].tolist() == ["CRCL", "CRCL"]
+    assert frame["trade_count"].tolist() == [0.0, 0.0]
+
+
+def test_fallback_sync_with_yfinance_merges_rows(monkeypatch, tmp_path):
+    training_dir = tmp_path / "trainingdata" / "train"
+    training_dir.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "timestamp": ["2025-01-02 00:00:00+00:00"],
+            "open": [10.0],
+            "high": [10.5],
+            "low": [9.5],
+            "close": [10.2],
+            "volume": [1000.0],
+            "trade_count": [0.0],
+            "vwap": [10.2],
+            "symbol": ["CRCL"],
+        }
+    ).to_csv(training_dir / "CRCL.csv", index=False)
+
+    updates = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(
+                ["2025-01-02 00:00:00+00:00", "2025-01-03 00:00:00+00:00"],
+                utc=True,
+            ),
+            "open": [10.0, 11.0],
+            "high": [10.5, 11.5],
+            "low": [9.5, 10.5],
+            "close": [10.2, 11.2],
+            "volume": [1000.0, 1100.0],
+            "trade_count": [0.0, 0.0],
+            "vwap": [10.2, 11.2],
+            "symbol": ["CRCL", "CRCL"],
+        }
+    )
+
+    monkeypatch.setattr(udd, "_download_stock_with_yfinance", lambda symbol: updates if symbol == "CRCL" else (_ for _ in ()).throw(RuntimeError("missing")))
+
+    appended = _fallback_sync_with_yfinance(["CRCL", "BTCUSD"], training_dir=training_dir)
+    assert appended["CRCL"] == 1
+    assert "BTCUSD" not in appended
+    merged = pd.read_csv(training_dir / "CRCL.csv")
+    assert len(merged) == 2

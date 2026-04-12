@@ -1,61 +1,38 @@
 {
   "symbol": "AVGO",
-  "best_strategy": "detrending",
-  "mae": 4.60438232421875,
-  "mae_percent": 1.53569246723294,
-  "rmse": 5.789295254829139,
-  "pct_return_mae": 0.015377319776552064,
+  "best_strategy": "rolling_norm",
+  "mae": 11.63850146484375,
+  "mae_percent": 3.2400068385317455,
+  "rmse": 15.422462231641118,
+  "pct_return_mae": 0.03230662177221701,
   "config": {
-    "name": "detrending",
+    "name": "rolling_norm",
     "params": {}
   },
-  "timestamp": "2025-11-12T11:21:02Z",
+  "timestamp": "2026-04-11T11:39:21Z",
   "selection_metric": "mae_percent",
-  "selection_value": 1.53569246723294,
+  "selection_value": 3.2400068385317455,
   "comparison": {
     "baseline": {
-      "mae": 4.820500183105469,
-      "mae_percent": 1.6077739201959405,
-      "pct_return_mae": 0.01612844079858661
+      "mae": 29.250182434082024,
+      "mae_percent": 8.142868856527588,
+      "pct_return_mae": 0.08014677902814217
     },
     "percent_change": {
-      "mae": 4.927238464355469,
-      "mae_percent": 1.643374172941857,
-      "pct_return_mae": 0.01648036364110523
-    },
-    "log_returns": {
-      "mae": 4.8639678955078125,
-      "mae_percent": 1.622271638631052,
-      "pct_return_mae": 0.016296317281062258
-    },
-    "differencing": {
-      "mae": 212.57075881958008,
-      "mae_percent": 70.89839420070498,
-      "pct_return_mae": 0.709102595627131
-    },
-    "detrending": {
-      "mae": 4.60438232421875,
-      "mae_percent": 1.53569246723294,
-      "pct_return_mae": 0.015377319776552064
-    },
-    "robust_scaling": {
-      "mae": 4.819001770019531,
-      "mae_percent": 1.6072741568125277,
-      "pct_return_mae": 0.016134006706902328
-    },
-    "minmax_standard": {
-      "mae": 4.823576354980469,
-      "mae_percent": 1.6087999110115825,
-      "pct_return_mae": 0.01613823673386786
+      "mae": 29.25016717529296,
+      "mae_percent": 8.142864608679954,
+      "pct_return_mae": 0.08014673636889011
     },
     "rolling_norm": {
-      "mae": 4.846931457519531,
-      "mae_percent": 1.6165895019958143,
-      "pct_return_mae": 0.016227247801304495
+      "mae": 11.63850146484375,
+      "mae_percent": 3.2400068385317455,
+      "pct_return_mae": 0.03230662177221701
     }
   },
   "metadata": {
     "source": "chronos2_preaug_eval",
-    "hyperparam_root": "hyperparams/chronos2"
+    "hyperparam_root": "hyperparams/chronos2",
+    "frequency": "daily",
+    "strategy_repeats": 1
   }
 }

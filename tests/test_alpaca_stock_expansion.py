@@ -7,6 +7,7 @@ import pandas as pd
 
 from src.alpaca_stock_expansion import (
     StockExpansionCandidate,
+    build_candidate_sector_buckets,
     build_hourly_return_correlation_cohorts,
     candidate_hourly_tuning_command,
     candidate_lora_command,
@@ -309,3 +310,16 @@ def test_default_stock_expansion_candidates_include_new_tech_names() -> None:
     assert "AVGO" in symbols
     assert "PANW" in symbols
     assert "NOW" in symbols
+    assert "OKLO" in symbols
+
+
+def test_build_candidate_sector_buckets_orders_by_priority() -> None:
+    buckets = build_candidate_sector_buckets(
+        [
+            StockExpansionCandidate("oklo", sector="utilities", priority=8),
+            StockExpansionCandidate("nee", sector="utilities", priority=4),
+            StockExpansionCandidate("avgo", sector="electronic_technology", priority=7),
+        ]
+    )
+    assert buckets["utilities"] == ("OKLO", "NEE")
+    assert buckets["electronic_technology"] == ("AVGO",)

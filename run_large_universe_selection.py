@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -114,7 +115,19 @@ def _format_float(value: float, digits: int = 4) -> str:
     return f"{value:.{digits}f}"
 
 
-def main() -> int:
+def _configure_chronos_runtime(
+    *,
+    pipeline_backend: str,
+    torch_compile: bool,
+    compile_mode: str,
+) -> None:
+    os.environ["CHRONOS2_PIPELINE_BACKEND"] = pipeline_backend
+    os.environ["CHRONOS_COMPILE"] = "1" if torch_compile else "0"
+    if compile_mode:
+        os.environ["CHRONOS_COMPILE_MODE"] = compile_mode
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Rank a large daily symbol universe by Chronos2 forecasts and pick top N.",
     )
@@ -131,10 +144,35 @@ def main() -> int:
     parser.add_argument("--min-history", type=int, default=60, help="Minimum history rows per symbol")
     parser.add_argument("--max-symbols", type=int, default=0, help="Limit number of symbols (0 = no limit)")
     parser.add_argument("--device", type=str, default="cuda", help="Device map for Chronos2 (cuda/cpu)")
+    parser.add_argument(
+        "--pipeline-backend",
+        type=str,
+        default="chronos",
+        choices=("chronos", "cutechronos", "auto"),
+        help="Chronos2 pipeline backend. Use cutechronos when cutedsl is installed.",
+    )
+    parser.add_argument(
+        "--torch-compile",
+        action="store_true",
+        help="Enable torch.compile for the Chronos2 wrapper.",
+    )
+    parser.add_argument(
+        "--compile-mode",
+        type=str,
+        default="",
+        help="Optional torch.compile mode (e.g. reduce-overhead, max-autotune).",
+    )
+    parser.add_argument(
+        "--cross-learning",
+        type=str,
+        default="on",
+        choices=("on", "off"),
+        help="Whether to use predict_batches_jointly across the batch.",
+    )
     parser.add_argument("--output-csv", type=str, default="", help="Optional CSV output path")
     parser.add_argument("--output-json", type=str, default="", help="Optional JSON output path")
     parser.add_argument("--log-gpu-mem", action="store_true", help="Log peak GPU memory for forecasting")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     symbols: List[str]
     if args.symbols_file:
@@ -149,11 +187,13 @@ def main() -> int:
     stock_symbols = tuple(sym for sym in symbols if not is_crypto_symbol(sym))
     crypto_symbols = tuple(sym for sym in symbols if is_crypto_symbol(sym))
 
+    configured_end_date = date.today() if args.date.lower() == "auto" else _parse_date(args.date)
     data_config = DataConfigLong(
         stock_symbols=stock_symbols,
         crypto_symbols=crypto_symbols,
         data_root=Path(args.data_root),
         context_days=args.context_length,
+        end_date=configured_end_date,
     )
     loader = DailyDataLoader(data_config)
     loader.load_all_symbols()
@@ -177,6 +217,12 @@ def main() -> int:
     if not tradable:
         raise RuntimeError(f"No tradable symbols found on {target_date}.")
 
+    _configure_chronos_runtime(
+        pipeline_backend=args.pipeline_backend,
+        torch_compile=bool(args.torch_compile),
+        compile_mode=args.compile_mode,
+    )
+
     forecast_config = ForecastConfigLong(
         model_id="amazon/chronos-2",
         device_map=args.device,
@@ -185,7 +231,7 @@ def main() -> int:
         quantile_levels=(0.1, 0.5, 0.9),
         batch_size=args.batch_size,
         use_multivariate=True,
-        use_cross_learning=True,
+        use_cross_learning=args.cross_learning == "on",
         cross_learning_min_batch=2,
         cross_learning_group_by_asset_type=True,
         cross_learning_chunk_size=args.chunk_size,
@@ -260,7 +306,9 @@ def main() -> int:
         Path(args.output_json).write_text(json.dumps(rows, indent=2))
         print(f"Wrote JSON: {args.output_json}")
 
-    forecaster.unload()
+    unload = getattr(forecaster, "unload", None)
+    if callable(unload):
+        unload()
     return 0
 
 

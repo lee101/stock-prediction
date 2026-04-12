@@ -1,57 +1,32 @@
 {
   "symbol": "SHOP",
-  "best_strategy": "differencing",
-  "mae": 3.7994369506835937,
-  "mae_percent": 2.5782142207438525,
-  "rmse": 4.698649394429036,
-  "pct_return_mae": 0.026026119291524773,
+  "best_strategy": "rolling_norm",
+  "mae": 7.062884796142581,
+  "mae_percent": 4.564879838641554,
+  "rmse": 9.79489256249579,
+  "pct_return_mae": 0.043831195511483415,
   "config": {
-    "name": "differencing",
+    "name": "rolling_norm",
     "params": {}
   },
-  "timestamp": "2025-11-13T22:34:46Z",
+  "timestamp": "2026-04-11T11:49:26Z",
   "selection_metric": "mae_percent",
-  "selection_value": 2.5782142207438525,
+  "selection_value": 4.564879838641554,
   "comparison": {
     "baseline": {
-      "mae": 45.04200000000001,
-      "mae_percent": 30.56450901490836,
-      "pct_return_mae": 0.3064021163574465
+      "mae": 12.679040863037113,
+      "mae_percent": 8.194710756233906,
+      "pct_return_mae": 0.07618170059788557
     },
     "percent_change": {
-      "mae": 47.888850585937504,
-      "mae_percent": 32.49631911210617,
-      "pct_return_mae": 0.3258298746620686
-    },
-    "log_returns": {
-      "mae": 47.484570495605475,
-      "mae_percent": 32.22198354828792,
-      "pct_return_mae": 0.32303205807149926
-    },
-    "differencing": {
-      "mae": 3.7994369506835937,
-      "mae_percent": 2.5782142207438525,
-      "pct_return_mae": 0.026026119291524773
-    },
-    "detrending": {
-      "mae": 124.27340287399292,
-      "mae_percent": 84.32919369600582,
-      "pct_return_mae": 0.8460530937632587
-    },
-    "robust_scaling": {
-      "mae": 45.03553294372559,
-      "mae_percent": 30.560120612976842,
-      "pct_return_mae": 0.30635192408362283
-    },
-    "minmax_standard": {
-      "mae": 45.062172119140634,
-      "mae_percent": 30.578197370605785,
-      "pct_return_mae": 0.3065445015962439
+      "mae": 12.679044677734378,
+      "mae_percent": 8.194713221746957,
+      "pct_return_mae": 0.07618171033388382
     },
     "rolling_norm": {
-      "mae": 11.178514282226564,
-      "mae_percent": 7.5854935516272715,
-      "pct_return_mae": 0.07577071227634051
+      "mae": 7.062884796142581,
+      "mae_percent": 4.564879838641554,
+      "pct_return_mae": 0.043831195511483415
     }
   },
   "metadata": {

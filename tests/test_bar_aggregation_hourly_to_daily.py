@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.bar_aggregation import hourly_to_daily_ohlcv
+from src.bar_aggregation import hourly_to_daily_ohlcv, hourly_to_shifted_session_daily_ohlcv
 
 
 def _hourly_rows(start: datetime, count: int) -> list[datetime]:
@@ -143,3 +143,42 @@ def test_hourly_to_daily_ohlcv_rejects_mixed_symbols():
     )
     with pytest.raises(ValueError, match="single symbol"):
         hourly_to_daily_ohlcv(df, expected_bars_per_day=4)
+
+
+def test_hourly_to_shifted_session_daily_ohlcv_stitches_adjacent_sessions():
+    start = datetime(2026, 2, 1, 0, 0, tzinfo=timezone.utc)
+    ts = _hourly_rows(start, 4) + _hourly_rows(start + pd.Timedelta(days=1), 4)
+    df = pd.DataFrame(
+        {
+            "timestamp": ts,
+            "open": [10, 11, 12, 13, 20, 21, 22, 23],
+            "high": [11, 12, 13, 14, 21, 22, 23, 24],
+            "low": [9, 8, 7, 6, 19, 18, 17, 16],
+            "close": [10.5, 11.5, 12.5, 13.5, 20.5, 21.5, 22.5, 23.5],
+            "volume": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
+            "symbol": ["SOLFDUSD"] * 8,
+        }
+    )
+
+    shifted, stats = hourly_to_shifted_session_daily_ohlcv(
+        df,
+        offset_bars=1,
+        require_full_shift=True,
+        output_symbol="SOLUSD",
+    )
+
+    assert stats.offset_bars == 1
+    assert stats.source_sessions == 2
+    assert stats.emitted_days == 1
+    assert stats.dropped_incomplete_days == 1
+    assert len(shifted) == 1
+
+    row = shifted.iloc[0]
+    assert pd.Timestamp(row["timestamp"]) == pd.Timestamp("2026-02-01T00:00:00Z")
+    assert row["open"] == 11
+    assert row["high"] == 21
+    assert row["low"] == 6
+    assert row["close"] == 20.5
+    assert row["volume"] == 14.0
+    assert row["symbol"] == "SOLUSD"
+    assert row["bar_count"] == 4

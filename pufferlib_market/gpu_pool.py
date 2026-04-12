@@ -394,12 +394,122 @@ def _stocks12_sortino_sweep(seeds: range = range(1, 31)) -> list[dict]:
     return configs
 
 
+def _stocks_daily_hourlycovered_frontier() -> list[dict]:
+    """Focused frontier sweep for the hourly-covered daily-stock universe.
+
+    Intended for externally prepared MKTD bins built from the 10-symbol
+    hourly-covered stock set:
+    AAPL, MSFT, NVDA, GOOG, META, TSLA, AMZN, JPM, V, PLTR
+
+    This keeps the proven daily-stock recipe family:
+    cosine LR, obs-norm, bf16, CUDA-graph PPO, no weight decay, no train-time
+    slippage. Use gpu_pool against either baseline or shifted-augmentation bins,
+    then send surviving checkpoints through scripts/eval_100d.py hourly_intrabar.
+    """
+    base = {
+        "hidden_size": 1024,
+        "lr": 3e-4,
+        "lr_schedule": "cosine",
+        "obs_norm": True,
+        "ent_coef": 0.05,
+        "trade_penalty": 0.05,
+        "weight_decay": 0.0,
+        "fill_slippage_bps": 0.0,
+        "num_envs": 128,
+        "use_bf16": True,
+        "cuda_graph_ppo": True,
+        "no_cuda_graph": False,
+        "periods_per_year": 252.0,
+        "max_steps": 252,
+    }
+    configs = [
+        {**base, "seed": 42, "description": "stocks10h_cos_s42"},
+        {**base, "seed": 123, "description": "stocks10h_cos_s123"},
+        {**base, "seed": 15, "description": "stocks10h_cos_s15"},
+        {**base, "seed": 36, "description": "stocks10h_cos_s36"},
+        {**base, "seed": 42, "trade_penalty": 0.03, "description": "stocks10h_tp03_s42"},
+        {**base, "seed": 123, "trade_penalty": 0.08, "description": "stocks10h_tp08_s123"},
+    ]
+    return configs
+
+
+def _stocks_daily_hourlycovered_refine() -> list[dict]:
+    """Refinement sweep after the first hourly-covered stock scout.
+
+    Centered on the early winner pattern from the shifted scout:
+    lower trade_penalty around 0.03 with strong seeds (42/15/123) and a few
+    nearby LR / entropy variants. Intended for the shifted-augmentation train bin.
+    """
+    base = {
+        "hidden_size": 1024,
+        "lr_schedule": "cosine",
+        "obs_norm": True,
+        "weight_decay": 0.0,
+        "fill_slippage_bps": 0.0,
+        "num_envs": 128,
+        "use_bf16": True,
+        "cuda_graph_ppo": True,
+        "no_cuda_graph": False,
+        "periods_per_year": 252.0,
+        "max_steps": 252,
+    }
+    return [
+        {**base, "seed": 42, "lr": 3e-4, "ent_coef": 0.05, "trade_penalty": 0.03, "description": "stocks10h_refine_tp03_s42"},
+        {**base, "seed": 15, "lr": 3e-4, "ent_coef": 0.05, "trade_penalty": 0.03, "description": "stocks10h_refine_tp03_s15"},
+        {**base, "seed": 123, "lr": 3e-4, "ent_coef": 0.05, "trade_penalty": 0.03, "description": "stocks10h_refine_tp03_s123"},
+        {**base, "seed": 42, "lr": 3e-4, "ent_coef": 0.05, "trade_penalty": 0.04, "description": "stocks10h_refine_tp04_s42"},
+        {**base, "seed": 15, "lr": 3e-4, "ent_coef": 0.05, "trade_penalty": 0.04, "description": "stocks10h_refine_tp04_s15"},
+        {**base, "seed": 42, "lr": 1e-4, "ent_coef": 0.05, "trade_penalty": 0.03, "description": "stocks10h_refine_tp03_lr1e4_s42"},
+        {**base, "seed": 42, "lr": 5e-4, "ent_coef": 0.05, "trade_penalty": 0.03, "description": "stocks10h_refine_tp03_lr5e4_s42"},
+        {**base, "seed": 42, "lr": 3e-4, "ent_coef": 0.03, "trade_penalty": 0.03, "description": "stocks10h_refine_tp03_ent003_s42"},
+        {**base, "seed": 42, "lr": 3e-4, "ent_coef": 0.08, "trade_penalty": 0.03, "description": "stocks10h_refine_tp03_ent008_s42"},
+    ]
+
+
+def _stocks_daily_hourlycovered_defensive() -> list[dict]:
+    """Defensive refinement around the shifted scout's least-brittle regime.
+
+    The shifted x4 scout showed one candidate family that remained within the
+    max-drawdown fence through 0/5 bps hourly replay, but it still missed the
+    monthly target and failed at 10 bps. This sweep tightens that regime toward
+    lower turnover and smoother behavior instead of chasing the soft-holdout
+    val_return winners that immediately failed fast on eval_100d.
+    """
+    base = {
+        "hidden_size": 1024,
+        "lr_schedule": "cosine",
+        "obs_norm": True,
+        "weight_decay": 0.0,
+        "fill_slippage_bps": 0.0,
+        "num_envs": 128,
+        "use_bf16": True,
+        "cuda_graph_ppo": True,
+        "no_cuda_graph": False,
+        "periods_per_year": 252.0,
+        "max_steps": 252,
+    }
+    return [
+        {**base, "seed": 42, "lr": 3e-4, "ent_coef": 0.05, "trade_penalty": 0.05, "description": "stocks10h_def_tp05_s42"},
+        {**base, "seed": 15, "lr": 3e-4, "ent_coef": 0.05, "trade_penalty": 0.05, "description": "stocks10h_def_tp05_s15"},
+        {**base, "seed": 123, "lr": 3e-4, "ent_coef": 0.05, "trade_penalty": 0.05, "description": "stocks10h_def_tp05_s123"},
+        {**base, "seed": 42, "lr": 3e-4, "ent_coef": 0.05, "trade_penalty": 0.06, "description": "stocks10h_def_tp06_s42"},
+        {**base, "seed": 15, "lr": 3e-4, "ent_coef": 0.05, "trade_penalty": 0.06, "description": "stocks10h_def_tp06_s15"},
+        {**base, "seed": 42, "lr": 3e-4, "ent_coef": 0.05, "trade_penalty": 0.08, "description": "stocks10h_def_tp08_s42"},
+        {**base, "seed": 42, "lr": 2e-4, "ent_coef": 0.05, "trade_penalty": 0.05, "description": "stocks10h_def_tp05_lr2e4_s42"},
+        {**base, "seed": 42, "lr": 1e-4, "ent_coef": 0.05, "trade_penalty": 0.05, "description": "stocks10h_def_tp05_lr1e4_s42"},
+        {**base, "seed": 42, "lr": 3e-4, "ent_coef": 0.03, "trade_penalty": 0.05, "description": "stocks10h_def_tp05_ent003_s42"},
+    ]
+
+
 PRESETS: dict[str, list[dict]] = {
     "stocks12_seedsweep": _stocks12_seedsweep(),
     "stocks12_seedsweep_ext": _stocks12_seedsweep_ext(),
     "stocks12_tp05_family": _stocks12_tp05_family(),
     "stocks12_fidelity_longrun": _stocks12_fidelity_longrun(),
     "stocks12_sortino_sweep": _stocks12_sortino_sweep(),
+    "stocks_daily_hourlycovered_frontier": _stocks_daily_hourlycovered_frontier(),
+    "stocks_daily_hourlycovered_defensive": _stocks_daily_hourlycovered_defensive(),
+    "stocks_daily_hourlycovered_refine": _stocks_daily_hourlycovered_refine(),
     "stocks15_tp05_sweep": _stocks15_tp05_sweep(),
     "crypto_seedsweep": _crypto_seedsweep(),
     "crypto70_autoresearch": _crypto70_autoresearch(),
