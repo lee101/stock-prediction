@@ -18,7 +18,7 @@
 - `pufferlib_market/data/stocks17_augmented_train.bin`: 2911 ts, 17 syms, 16 feats
 - CF variant ABANDONED — cross-features (rolling_corr/beta/rel_return/breadth_rank) systematically overfit; CF s1 holdout: med=-4.28%, 31/50 neg despite good in-training val (37.9%, 15/50 neg)
 
-#### Full leaderboard — all seeds with ≤10/50 neg (proper 50-window eval)
+#### Full leaderboard — all seeds with ≤10/50 neg (proper 50-window eval) — updated 2026-04-12
 | Checkpoint | med | p10 | neg/50 | sortino | notes |
 |-----------|-----|-----|--------|---------|-------|
 | C_s31 val_best | 15.44% | 6.58% | **0** | 39.9 | CHAMPION |
@@ -29,24 +29,27 @@
 | D_s25 u150 | 10.45% | 0.37% | 4 | 12.7 | periodic ckpt |
 | D_s26 u200 | 13.91% | 1.87% | 5 | 32.5 | |
 | C_s23 val_best | 12.23% | 0.59% | 5 | 15.1 | |
+| D_s27 val_best | 14.55% | 0.27% | 5 | 18.7 | |
+| D_s37 val_best | 13.79% | -3.76% | 11 | 25.3 | |
 | C_s40 val_best | 8.07% | -0.55% | 8 | 16.6 | |
-| D_s23 val_best | 9.29% | -3.51% | 9 | 14.8 | |
-| D_s26 val_best | 10.81% | -1.32% | 10 | 22.5 | |
-| C_s46 val_best | 4.22% | -3.74% | 10 | 7.9 | |
+| D_s28 val_best | 7.34% | -1.19% | 8 | 11.9 | D had 0/20 in-val |
+| D_s39 val_best | 6.71% | -0.26% | 6 | 11.3 | |
 
-#### Key learnings from 80+ seeds tested
-1. **20-window in-training val is unreliable** — even 5 consecutive 0/20 neg can be false positive (confirmed on s51, s53). The 50-window holdout eval is ground truth.
-2. **Ensemble of 2-3 models hurts performance** — s31+s22: 9/50 neg vs s31 alone: 0/50 neg. Only large ensembles (32+) help.
-3. **High training returns → bad holdout** — C s52 (ret=0.44-0.50), C s54 (ret=0.86-0.89) both fail; C s31 had ret≈0.003 at val peak.
-4. **CF cross-features overfit** — adding corr/beta/rel_return/breadth_rank features helps training but hurts generalization.
-5. **D_muon best checkpoint ≠ val_best.pt** — for D seeds, eval periodic checkpoints (u100-u450); D s26 best was u350 not val_best.
+#### Key learnings from 100+ seeds tested (updated 2026-04-12)
+1. **20-window in-training val is unreliable** — even 5 consecutive 0/20 neg can be false positive (C s53, s54, s55 all failed holdout). The 50-window holdout eval is ground truth.
+2. **50-window in-training val also unreliable for per-sym-norm** — F s1 had 4-5/50 neg in training val, but all checkpoints showed 26-42/50 neg on holdout. Per-sym-norm BROKEN.
+3. **Ensemble of 2-3 models hurts performance** — s31+s22: 9/50 neg vs s31 alone: 0/50 neg. Only large ensembles (32+) help.
+4. **High training returns → bad holdout** — C s52 (ret=0.44-0.50), C s54 (ret=0.86-0.89) both fail; C s31 had ret≈0.003 at val peak.
+5. **CF cross-features overfit** — adding corr/beta/rel_return/breadth_rank features helps training but hurts generalization.
+6. **D_muon best checkpoint ≠ val_best.pt** — for D seeds, eval periodic checkpoints (u100-u450); D s26 best was u350 not val_best.
+7. **Per-sym-norm (F/G variants) ABANDONED** — LayerNorm per symbol corrupts val signal; holdout diverges 20+ neg/50 even with perfect in-training val.
 
-#### Active sweeps (2026-04-12)
+#### Active sweeps (2026-04-12 session)
 | Variant | Seeds | Config | Status |
 |---------|-------|--------|--------|
-| C_low_tp | 37-70 | tp=0.02, adamw, 16 feats | running (s50-70) |
-| D_muon | 21-50 | tp=0.05, muon, 16 feats | running (s27-50) |
-| F_psn_lotp | TBD | tp=0.02, adamw, per-sym-norm | planned |
+| C_low_tp | 51-70 | tp=0.02, adamw, 16 feats | running (s56 current, s57-70 pending) |
+| C_low_tp | 71-100 | tp=0.02, adamw, 16 feats | launched 2026-04-12 09:30 UTC |
+| D_muon | 21-50 | tp=0.05, muon, 16 feats | running (s28,s40 current) |
 
 #### Wide73 — ABANDONED (all seeds fail)
 - Tested 7 seeds across C/F/D/G variants: neg ranges 17-44/50, all below stocks17
@@ -54,8 +57,9 @@
 
 #### Deploy plan
 - Target: med>27%, p10>0, 0/50 neg. Current gap: best is s31 at 15.44%.
-- Strategy: run C/D sweeps to s100+; launch F variant (per-sym-norm) next
+- Strategy: run C seeds to s100+; D sweep finishing s28-50; never use per-sym-norm
 - DO NOT add models with neg>5 to ensemble — hurts champion
+- DO NOT trust in-training val (even 50-window) for per-sym-norm variants
 
 #### Key bugs fixed
 1. `_concat_binaries` corrupted data (72-byte phantom data). Fixed.
