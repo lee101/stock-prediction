@@ -7,7 +7,7 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
-### 2026-04-12 — stocks17 sweep expansion + cross-features experiment (ACTIVE)
+### 2026-04-12 — stocks17 sweep expansion + cross-features experiment
 
 #### Current champion: stocks17 `C_low_tp/s31`
 - med=+15.44%, p10=+6.58%, worst=+4.00%, **0/50 negative windows**, sortino=39.90
@@ -16,41 +16,52 @@
 
 #### Stocks17 data
 - `pufferlib_market/data/stocks17_augmented_train.bin`: 2911 ts, 17 syms, 16 feats
-- `pufferlib_market/data/stocks17_cf_augmented_train.bin`: 2911 ts, 17 syms, **20 feats** (cross-features)
-  - 4 extra: rolling_corr(SPY), rolling_beta(SPY), relative_return, breadth_rank
+- CF variant ABANDONED — cross-features (rolling_corr/beta/rel_return/breadth_rank) systematically overfit; CF s1 holdout: med=-4.28%, 31/50 neg despite good in-training val (37.9%, 15/50 neg)
+
+#### Full leaderboard — all seeds with ≤10/50 neg (proper 50-window eval)
+| Checkpoint | med | p10 | neg/50 | sortino | notes |
+|-----------|-----|-----|--------|---------|-------|
+| C_s31 val_best | 15.44% | 6.58% | **0** | 39.9 | CHAMPION |
+| C_s22 val_best | 14.78% | 4.41% | 1 | 17.1 | strong |
+| C_s44 val_best | 8.46% | 3.49% | 2 | 12.9 | |
+| D_s26 u350 | 12.59% | 0.92% | 3 | 24.2 | periodic ckpt |
+| D_s21 val_best | 19.09% | 0.97% | 4 | 21.8 | best median |
+| D_s25 u150 | 10.45% | 0.37% | 4 | 12.7 | periodic ckpt |
+| D_s26 u200 | 13.91% | 1.87% | 5 | 32.5 | |
+| C_s23 val_best | 12.23% | 0.59% | 5 | 15.1 | |
+| C_s40 val_best | 8.07% | -0.55% | 8 | 16.6 | |
+| D_s23 val_best | 9.29% | -3.51% | 9 | 14.8 | |
+| D_s26 val_best | 10.81% | -1.32% | 10 | 22.5 | |
+| C_s46 val_best | 4.22% | -3.74% | 10 | 7.9 | |
+
+#### Key learnings from 80+ seeds tested
+1. **20-window in-training val is unreliable** — even 5 consecutive 0/20 neg can be false positive (confirmed on s51, s53). The 50-window holdout eval is ground truth.
+2. **Ensemble of 2-3 models hurts performance** — s31+s22: 9/50 neg vs s31 alone: 0/50 neg. Only large ensembles (32+) help.
+3. **High training returns → bad holdout** — C s52 (ret=0.44-0.50), C s54 (ret=0.86-0.89) both fail; C s31 had ret≈0.003 at val peak.
+4. **CF cross-features overfit** — adding corr/beta/rel_return/breadth_rank features helps training but hurts generalization.
+5. **D_muon best checkpoint ≠ val_best.pt** — for D seeds, eval periodic checkpoints (u100-u450); D s26 best was u350 not val_best.
 
 #### Active sweeps (2026-04-12)
-All use lag=2 binary fills, 50 holdout windows, TMPDIR=/nvme0n1-disk/code/stock-prediction/.tmp_train
-
 | Variant | Seeds | Config | Status |
 |---------|-------|--------|--------|
-| C_low_tp | 37-50 (old), 51-70 (new) | tp=0.02, adamw | running |
-| D_muon | 21-36 (old), 37-50 (new) | tp=0.05, muon | running |
-| CF_C (cross-feats) | 1-20 | tp=0.02, adamw, 20 feats | running |
-
-#### Best results by variant (seeds tested so far)
-| Seed | med | p10 | neg/50 | notes |
-|------|-----|-----|--------|-------|
-| C_s31 | 15.44% | 6.58% | 0 | CHAMPION |
-| D_s21 | 19.09% | 0.97% | 4 | best median |
-| C_s22 | 14.78% | 4.41% | N/A | (old eval) |
-| C_s44 | 8.46% | 3.49% | 2 | |
+| C_low_tp | 37-70 | tp=0.02, adamw, 16 feats | running (s50-70) |
+| D_muon | 21-50 | tp=0.05, muon, 16 feats | running (s27-50) |
+| F_psn_lotp | TBD | tp=0.02, adamw, per-sym-norm | planned |
 
 #### Wide73 — ABANDONED (all seeds fail)
 - Tested 7 seeds across C/F/D/G variants: neg ranges 17-44/50, all below stocks17
-- Root cause: 73 symbols × 15M steps → insufficient per-symbol training; large obs space overfits
-- G s2 best wide73 result: med=12.75%, 17/50 neg — still below stocks17 s31
+- Root cause: 73 symbols × 15M steps → insufficient per-symbol training
 
 #### Deploy plan
-- Target: med>27%, p10>0, 0/50 neg
-- Current gap: best is s31 at 15.44% (57% of target)
-- Strategy: run sweeps to s100+ for C/D; test CF variant; check if D_muon finds 0-neg seed
+- Target: med>27%, p10>0, 0/50 neg. Current gap: best is s31 at 15.44%.
+- Strategy: run C/D sweeps to s100+; launch F variant (per-sym-norm) next
+- DO NOT add models with neg>5 to ensemble — hurts champion
 
 #### Key bugs fixed
 1. `_concat_binaries` corrupted data (72-byte phantom data). Fixed.
 2. Post-training eval was using decision_lag=0. Fixed to lag=2 binary fills.
-3. val binary for wide73 offsets 1-4 had alignment failure (3 days, need 20). Fixed: val=offset0 only.
-4. Build cache resume: intermediate cache dir skips already-built offsets on restart.
+3. val binary for wide73 offsets 1-4 had alignment failure (3 days, need 20). Fixed.
+4. Old C s21-36 eval_lag2.json missing `negative_windows` field (old evaluator). Re-evaluated 2026-04-12.
 
 ---
 
