@@ -659,6 +659,7 @@ def main() -> None:
             "median_sortino": float(_percentile(sortinos, 50)),
             "p10_sortino": float(_percentile(sortinos, 10)),
             "p90_sortino": float(_percentile(sortinos, 90)),
+            "negative_windows": int(sum(1 for r in returns if r < 0.0)),
             "median_max_drawdown": float(_percentile(maxdds, 50)),
             "p90_max_drawdown": float(_percentile(maxdds, 90)),
             "best_window": asdict(best_window),

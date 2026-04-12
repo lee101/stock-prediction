@@ -274,21 +274,26 @@ def build_wide_augmented(
             min_days=min_days if offset == 0 else min(min_days, 50),
         )
 
-        csv_dir_val = cache_dir / f"csv_offset{offset}_val"
-        csv_dir_val.mkdir(exist_ok=True)
-        for sym, df in combined_val_csvs.items():
-            df.to_csv(csv_dir_val / f"{sym}.csv", index=False)
-        export_binary(
-            sym_val,
-            csv_dir_val,
-            out_val,
-            start_date=val_start,
-            end_date=val_end,
-            min_days=20,
-        )
+        # Val: only build from offset=0 (unshifted daily bars).
+        # Session-shifted val periods are shorter and may not align across
+        # symbols, causing export_binary to fail. Val is used for checkpoint
+        # selection only; σ=1.0 + offset=0 is the canonical unbiased split.
+        if offset == 0:
+            csv_dir_val = cache_dir / f"csv_offset{offset}_val"
+            csv_dir_val.mkdir(exist_ok=True)
+            for sym, df in combined_val_csvs.items():
+                df.to_csv(csv_dir_val / f"{sym}.csv", index=False)
+            export_binary(
+                sym_val,
+                csv_dir_val,
+                out_val,
+                start_date=val_start,
+                end_date=val_end,
+                min_days=20,
+            )
+            val_offset_bins.append(out_val)
 
         train_offset_bins.append(out_train)
-        val_offset_bins.append(out_val)
 
         # ── Apply vol-scale augmentation across all session-offset binaries ──
         print(f"\n--- Applying vol-scale augmentation {vol_scales} ---")
@@ -305,20 +310,17 @@ def build_wide_augmented(
                 rec["feat"] = apply_vol_scale(rec["feat"], sigma)
                 all_val_parts.append(rec)
 
-        # Deduplicate val: only keep σ=1.0 variant for val to avoid leakage bias.
-        # Val measures real performance; augmented val would distort metrics.
-        val_sigma1_parts = all_val_parts[
-            len(val_offset_bins) * vol_scales.index(1.0):
-            len(val_offset_bins) * (vol_scales.index(1.0) + 1)
-        ]
+        # Val: use only offset=0, σ=1.0 (unshifted, unscaled daily bars).
+        # val_offset_bins always contains exactly one entry (offset0_val.bin).
+        val_merged = _read_mktd(val_offset_bins[0])  # σ=1.0 unscaled
 
         train_merged = concat_mktd_list(all_train_parts)
-        val_merged = concat_mktd_list(val_sigma1_parts)
 
+        base_days = all_train_parts[0]['nts'] if all_train_parts else 0
         print(f"\n  Train: {train_merged['nts']} timesteps "
-              f"({len(offsets)} offsets × {len(vol_scales)} scales × "
-              f"{all_train_parts[0]['nts'] // len(offsets):.0f} base days)")
-        print(f"  Val:   {val_merged['nts']} timesteps (σ=1.0 only, {len(offsets)} offsets)")
+              f"({len(train_offset_bins)} offsets × {len(vol_scales)} scales × "
+              f"{base_days:.0f} base days, offset-weighted)")
+        print(f"  Val:   {val_merged['nts']} timesteps (offset=0, σ=1.0 only)")
 
         _write_mktd(output_train, train_merged, train_merged["feat"],
                     train_merged["price"], train_merged["mask"])
