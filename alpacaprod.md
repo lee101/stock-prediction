@@ -7,42 +7,63 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
-### 2026-04-11 — stocks17 augmented RL training + algorithmic sweep
-
-#### Background
-Goal: train a 17-symbol daily RL model (adds AMD, NFLX, COIN, CRWD, UBER to stocks12)
-using hourly session-shift augmentation (offsets 0-4 = 5× training variants per day).
+### 2026-04-12 — wide73 augmented dataset + 3-variant sweep (ACTIVE)
 
 #### Data
+- `pufferlib_market/data/wide73_augmented_train.bin`: **8733 timesteps, 73 syms, 16 feats**
+  - 5 session-offsets × 3 vol-scales × 73 S&P blue-chips
+  - offset=0: 1275 days (2021-12-03 to 2025-05-31), offsets 1-4: 409 days each
+  - 15× more data diversity than stocks17 (sector diversity + regime augmentation)
+- `pufferlib_market/data/wide73_augmented_val.bin`: **177 days, 73 symbols**
+
+#### Sweep (running, 3 variants in parallel)
+`scripts/sweep_wide_augmented.sh C/F/D` — 20 seeds each, lag=2 eval, 60d×50 windows:
+- C low_tp:   tp=0.02, 15M steps, adamw, hidden=1024
+- D muon:     tp=0.05, 15M steps, muon optimizer
+- F psn_lotp: tp=0.02, 15M steps, adamw + per-sym-norm (LayerNorm per symbol)
+Results in `pufferlib_market/checkpoints/wide73_sweep/`
+
+Early training (seed 1 at ~18% of steps):
+- C: ret=+0.05-0.11 (positive, steady)
+- F: ret=+0.16-0.34 (VERY strong — per-sym-norm effective on 73-sector diversity)
+- D: ret=−0.2 (still initializing, typical for muon)
+
+**F variant is the leading hypothesis** for wide73: 73 symbols span very different sectors/vols,
+so LayerNorm per-symbol lets the encoder learn features relative to each stock's own baseline.
+
+ETA: ~5-7 hours for all 20 seeds per variant (12-20 min/seed, sequential within variant).
+Monitor: `python scripts/rebuild_leaderboard.py pufferlib_market/checkpoints/wide73_sweep/C_low_tp C`
+
+---
+
+### 2026-04-11 — stocks17 augmented RL training + best seed
+
+#### Best model: `C_low_tp/s31`
+- med=+15.44%, p10=+6.58%, worst=+4.00%, **0/50 negative windows**, sortino=39.90
+- Eval: lag=2, binary fills, fee=10bps, fill_buffer=5bps, 60d×50 windows on val_full
+- Meets 0-neg + p10>0 deploy criteria. Below med>+20% threshold.
+
+#### Stocks17 data
 - `pufferlib_market/data/stocks17_augmented_train.bin`: 2911 timesteps, 17 syms, 16 feats
-  - offset=0: 1275 days (2021-12-03 to 2025-05-31, original daily bars)
-  - offsets 1-4: 409 days each (2024-04-17 to 2025-05-31, hourly-shifted daily bars)
-  - Hourly data backfilled to 2yr via yfinance for MSFT/NVDA/GOOG/META/PLTR/CRWD/SPY/QQQ/COIN
 - `pufferlib_market/data/stocks17_augmented_val.bin`: 177 days (2025-06-02 to 2025-11-25)
 
-#### Key bugs fixed
-1. `_concat_binaries` was including symbol tables from each offset file, corrupting data
-   (72-byte phantom data between segments → NaN training crashes). Fixed + 5 tests added.
-2. Post-training eval was using decision_lag=0 (same-bar fill). Fixed to lag=2 binary fills.
-   Consequence: internal holdout rankings were inverted vs real binary-fill eval.
-
-#### Seeds 1-15 results (lag=2, 60d windows, 50 samples, old 1703-step data)
-Best: s4 med=+18.8%, sortino=21 | s12 med=+23.7%, sortino=24
-Not at 27%/month target. Old data (107-day offsets) is now superseded by 2yr hourly backfill.
-
-#### Algorithmic sweep (NEW — 2yr augmented data, 2911 steps)
-Running: `scripts/sweep_stocks17_algos.sh` — 3 seeds each, lag=2 eval, variants:
-- A baseline:   tp=0.05, 15M steps, max_ep=252, adamw
-- B long_train: tp=0.05, 30M steps, max_ep=252, adamw  (2x training)
-- C low_tp:     tp=0.02, 15M steps, max_ep=252, adamw
-- D muon:       tp=0.05, 15M steps, max_ep=252, muon optimizer
-- E short_ep:   tp=0.05, 15M steps, max_ep=90,  adamw
-Results in `pufferlib_market/checkpoints/stocks17_sweep/`
+#### Sweep results (2026-04-12, 22 seeds of C_low_tp, 16 seeds of D_muon in progress)
+- C_low_tp seeds with p10>0: s31 (6.58%), s22 (4.41%), s23 (0.59%)
+- All three have 0 negative windows. s31 is best individual model.
+- D_muon high variance: s21 original=19.09% med but only p10=0.97%, neg=4; retrain also ~19%
+- Per-sym-norm (F variant): HURTS on stocks17 (s21=-10%, s22=6%, s23=-3%). Not deployed.
+- Ensemble of top-3 C seeds: WORSE than s31 alone (ensemble dilutes signal with small N)
 
 #### Deploy plan
-Once a variant exceeds s4/s12 baseline (med>+20%, 0-neg p10>0), deploy alongside
-32-model stocks12 ensemble OR build a new 17-sym ensemble from best seeds.
-The 17-sym model cannot be mixed with 12-sym models in the same softmax ensemble.
+Once wide73 produces med>+20% with p10>0 and 0-neg, build a 73-symbol ensemble.
+The 17-sym s31 may still be deployable if 73-sym models fail to generalize.
+Use `scripts/rebuild_leaderboard.py` to get clean results (C_low_tp leaderboard has f-string bug).
+
+#### Key bugs fixed
+1. `_concat_binaries` corrupted data (72-byte phantom data). Fixed.
+2. Post-training eval was using decision_lag=0. Fixed to lag=2 binary fills.
+3. val binary for wide73 offsets 1-4 had alignment failure (3 days, need 20). Fixed: val=offset0 only.
+4. Build cache resume: intermediate cache dir skips already-built offsets on restart.
 
 ---
 
