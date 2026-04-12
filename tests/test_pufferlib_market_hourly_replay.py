@@ -11,6 +11,7 @@ from pufferlib_market.hourly_replay import (
     simulate_daily_policy,
     simulate_hourly_policy,
 )
+from pufferlib_market.intrabar_replay import HourlyOHLC, simulate_daily_policy_intrabar
 
 
 def _single_symbol_daily_data(close: np.ndarray) -> MktdData:
@@ -217,6 +218,47 @@ def test_simulate_hourly_policy_supports_allocation_bins() -> None:
 
     assert hourly_half.total_return == pytest.approx(0.105, abs=1e-9)
     assert hourly_full.total_return == pytest.approx(0.21, abs=1e-9)
+
+
+def test_simulate_daily_policy_intrabar_matches_simple_buy_and_hold() -> None:
+    data = _single_symbol_daily_data(np.asarray([100.0, 110.0, 121.0], dtype=np.float32))
+    market_index = pd.date_range("2024-01-01T00:00:00Z", "2024-01-03T23:00:00Z", freq="h", tz="UTC")
+    market_close = np.zeros((len(market_index),), dtype=np.float64)
+    market_close[market_index.floor("D") == pd.Timestamp("2024-01-01", tz="UTC")] = 100.0
+    market_close[market_index.floor("D") == pd.Timestamp("2024-01-02", tz="UTC")] = 110.0
+    market_close[market_index.floor("D") == pd.Timestamp("2024-01-03", tz="UTC")] = 121.0
+    hourly = HourlyOHLC(
+        index=market_index,
+        symbols=["AAA"],
+        open={"AAA": market_close.copy()},
+        high={"AAA": market_close.copy()},
+        low={"AAA": market_close.copy()},
+        close={"AAA": market_close.copy()},
+        tradable={"AAA": np.ones((len(market_index),), dtype=bool)},
+    )
+
+    calls = {"n": 0}
+
+    def _policy_fn(obs: np.ndarray) -> int:
+        calls["n"] += 1
+        return 1
+
+    result = simulate_daily_policy_intrabar(
+        data=data,
+        policy_fn=_policy_fn,
+        hourly=hourly,
+        start_date="2024-01-01",
+        max_steps=2,
+        fee_rate=0.0,
+        fill_buffer_bps=0.0,
+        max_leverage=1.0,
+        trade_hour_mode="first_tradable",
+    )
+
+    assert result.actions.tolist() == [1, 1]
+    assert result.total_return == pytest.approx(0.21, abs=1e-9)
+    assert result.num_trades == 1
+    assert calls["n"] == 2
 
 
 def test_simulate_daily_policy_level_bins_require_fill():
@@ -454,3 +496,34 @@ def test_simulate_daily_policy_can_early_exit_on_running_sortino_threshold(
     assert result.evaluated_steps < 20
     assert "sortino" in result.stop_reason.lower()
     assert "sortino" in capsys.readouterr().out.lower()
+
+
+def test_read_mktd_wide_universe(tmp_path):
+    """read_mktd must accept num_symbols up to 1024 (regression for >64 limit)."""
+    import struct
+    from pathlib import Path
+    from pufferlib_market.hourly_replay import read_mktd
+
+    # Build a minimal valid MKTD binary with 73 symbols (wide73 use case).
+    nts, nsym, nfeat, nprice = 10, 73, 16, 5
+    hdr = struct.pack("<4sIIIII40s", b"MKTD", 2, nsym, nts, nfeat, nprice, b"\x00" * 40)
+    sym_table = b"".join(
+        (f"SYM{i}".encode() + b"\x00" * (16 - len(f"SYM{i}"))).ljust(16, b"\x00")
+        for i in range(nsym)
+    )
+    feat = np.zeros((nts, nsym, nfeat), dtype=np.float32)
+    price = np.ones((nts, nsym, nprice), dtype=np.float32)
+    mask = np.ones((nts, nsym), dtype=np.uint8)
+
+    p = tmp_path / "wide73.bin"
+    with open(p, "wb") as f:
+        f.write(hdr)
+        f.write(sym_table)
+        f.write(feat.tobytes())
+        f.write(price.tobytes())
+        f.write(mask.tobytes())
+
+    data = read_mktd(p)
+    assert data.num_symbols == 73
+    assert data.num_timesteps == 10
+    assert data.features.shape == (10, 73, 16)
