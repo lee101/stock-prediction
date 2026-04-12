@@ -299,6 +299,33 @@ def apply_lora(model: Any, r: int = 32, alpha: int = 64, dropout: float = 0.05):
 
 
 # ---------------------------------------------------------------------------
+# Callbacks
+# ---------------------------------------------------------------------------
+
+def _make_print_loss_callback():
+    """Build a TrainerCallback that prints loss to stdout at every logging step."""
+    from transformers.trainer_callback import TrainerCallback
+
+    class _PrintLossCallback(TrainerCallback):
+        def on_log(self, args, state, control, logs=None, **kwargs):
+            if not logs:
+                return
+            loss = logs.get("loss", logs.get("train_loss"))
+            eval_loss = logs.get("eval_loss")
+            lr = logs.get("learning_rate")
+            parts = [f"step={state.global_step}"]
+            if loss is not None:
+                parts.append(f"loss={loss:.4f}")
+            if eval_loss is not None:
+                parts.append(f"eval_loss={eval_loss:.4f}")
+            if lr is not None:
+                parts.append(f"lr={lr:.2e}")
+            print(f"[train] {' | '.join(parts)}", flush=True)
+
+    return _PrintLossCallback()
+
+
+# ---------------------------------------------------------------------------
 # Training
 # ---------------------------------------------------------------------------
 
@@ -363,7 +390,7 @@ def train(
 
     # Val dataset (no augmentation)
     val_dataset = None
-    callbacks = []
+    callbacks: List[Any] = [_make_print_loss_callback()]
     eval_kwargs: Dict[str, Any] = {}
 
     if val_series:
