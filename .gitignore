@@ -682,3 +682,4 @@ ctrader/binance_bot/.tmp/
 ctrader/models/
 trade_stock_wide/logs
 trade_stock_wide/gemini_cache/
+trainingdata_nvme_backup/

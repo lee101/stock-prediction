@@ -40,9 +40,9 @@ DEFAULT_CONFIGS = [
     {"reprompt_passes": 2, "review_model": None, "reprompt_policy": "entry_only"},
     {"reprompt_passes": 2, "review_model": None, "reprompt_policy": "always"},
     {"reprompt_passes": 3, "review_model": None, "reprompt_policy": "entry_only"},
-    {"reprompt_passes": 2, "review_model": "gemini-2.5-pro", "reprompt_policy": "entry_only"},
-    {"reprompt_passes": 2, "review_model": "gemini-2.5-pro", "reprompt_policy": "always"},
-    {"reprompt_passes": 3, "review_model": "gemini-2.5-pro", "reprompt_policy": "entry_only"},
+    {"reprompt_passes": 2, "review_model": "gemini-3.1-pro-preview", "reprompt_policy": "entry_only"},
+    {"reprompt_passes": 2, "review_model": "gemini-3.1-pro-preview", "reprompt_policy": "always"},
+    {"reprompt_passes": 3, "review_model": "gemini-3.1-pro-preview", "reprompt_policy": "entry_only"},
 ]
 
 

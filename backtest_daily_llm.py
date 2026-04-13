@@ -20,7 +20,7 @@ The LLM decides:
 Usage:
     python backtest_daily_llm.py --symbols BTCUSD,ETHUSD,SOLUSD \
         --start-date 2025-06-01 --end-date 2026-03-01 \
-        --model gemini-2.5-flash --fee-tier fdusd
+        --model gemini-3.1-flash-lite-preview --fee-tier fdusd
 """
 
 from __future__ import annotations
@@ -322,7 +322,7 @@ Think about position sizing, trend following, and when to stay flat."""
     return prompt
 
 
-def call_llm_daily(prompt: str, model: str = "gemini-2.5-flash") -> DailyDecision:
+def call_llm_daily(prompt: str, model: str = "gemini-3.1-flash-lite-preview") -> DailyDecision:
     """Call LLM and parse daily decision."""
     from llm_hourly_trader.providers import _normalize_confidence, call_gemini
 
@@ -354,7 +354,7 @@ def call_llm_daily(prompt: str, model: str = "gemini-2.5-flash") -> DailyDecisio
         )
 
 
-def call_llm_daily_structured(prompt: str, model: str = "gemini-2.5-flash") -> dict:
+def call_llm_daily_structured(prompt: str, model: str = "gemini-3.1-flash-lite-preview") -> dict:
     """Call LLM with structured output for allocation decisions."""
     from llm_hourly_trader.cache import get_cached, set_cached
 
@@ -776,7 +776,7 @@ def main():
     parser.add_argument("--symbols", default="BTCUSD,ETHUSD,SOLUSD")
     parser.add_argument("--start-date", default="2025-06-01")
     parser.add_argument("--end-date", default=None)
-    parser.add_argument("--model", default="gemini-2.5-flash")
+    parser.add_argument("--model", default="gemini-3.1-flash-lite-preview")
     parser.add_argument("--fee-tier", choices=list(FEE_TIERS.keys()), default="fdusd")
     parser.add_argument("--initial-cash", type=float, default=10000)
     parser.add_argument("--slippage-bps", type=float, default=5)

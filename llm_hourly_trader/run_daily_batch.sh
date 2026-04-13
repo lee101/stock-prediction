@@ -20,28 +20,28 @@ echo "=== LLM Hourly Trader Batch - $(date -u) ===" >> "$LOG"
 # and it picks up where it left off.
 # Budget: ~450 calls/day (leave 50 buffer)
 
-# Priority 1: BTC 7d with gemini-2.5-flash (151 remaining from cache)
+# Priority 1: BTC 7d with gemini-3.1-flash-lite-preview
 python -m llm_hourly_trader.backtest \
     --symbols BTCUSD --days 7 --prompt default \
-    --model gemini-2.5-flash --rate-limit 7.0 \
+    --model gemini-3.1-flash-lite-preview --rate-limit 7.0 \
     >> "$LOG" 2>&1 || true
 
-# Priority 2: BTC+ETH 7d with gemini-2.5-flash
+# Priority 2: BTC+ETH 7d with gemini-3.1-flash-lite-preview
 python -m llm_hourly_trader.backtest \
     --symbols BTCUSD ETHUSD --days 7 --prompt default \
-    --model gemini-2.5-flash --rate-limit 7.0 \
+    --model gemini-3.1-flash-lite-preview --rate-limit 7.0 \
     >> "$LOG" 2>&1 || true
 
 # Priority 3: Full crypto 7d default
 python -m llm_hourly_trader.backtest \
     --group crypto --days 7 --prompt default \
-    --model gemini-2.5-flash --rate-limit 7.0 \
+    --model gemini-3.1-flash-lite-preview --rate-limit 7.0 \
     >> "$LOG" 2>&1 || true
 
 # Priority 4: Crypto 7d conservative
 python -m llm_hourly_trader.backtest \
     --group crypto --days 7 --prompt conservative \
-    --model gemini-2.5-flash --rate-limit 7.0 \
+    --model gemini-3.1-flash-lite-preview --rate-limit 7.0 \
     >> "$LOG" 2>&1 || true
 
 echo "=== Batch complete - $(date -u) ===" >> "$LOG"

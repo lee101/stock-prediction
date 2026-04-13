@@ -922,7 +922,7 @@ def get_portfolio_state(execution_mode: str = "spot") -> PortfolioState:
             if not asset_entry:
                 continue
             qty = float(asset_entry.get("netAsset", 0.0))
-            if qty > 0:
+            if abs(qty) > 1e-12:
                 state.positions[cfg.base_asset] = qty
         return state
 
@@ -1125,6 +1125,10 @@ def _matching_open_orders(open_orders: list[dict], symbol: str, side: str) -> li
     ]
 
 
+def _remaining_side_qty(open_orders: list[dict], symbol: str, side: str) -> float:
+    return sum(_order_remaining_qty(order) for order in _matching_open_orders(open_orders, symbol, side))
+
+
 def _binance_error_code(exc: Exception) -> int | None:
     code = getattr(exc, "code", None)
     if code is not None:
@@ -1223,6 +1227,44 @@ def _cleanup_open_orders(execution_mode: str, dry_run: bool) -> OpenOrderCleanup
 
 def _cancel_stale_open_orders(execution_mode: str, dry_run: bool) -> list[dict]:
     return list(_cleanup_open_orders(execution_mode, dry_run).active)
+
+
+def _symbol_forecast_snapshot(ctx: Any | None) -> dict[str, float | None]:
+    if ctx is None:
+        return {
+            "current_price": None,
+            "forecast_h1_close_delta": None,
+            "forecast_h1_high_delta": None,
+            "forecast_h1_low_delta": None,
+            "forecast_h1_confidence": None,
+            "forecast_h1_timestamp": None,
+            "forecast_h1_lag_hours": None,
+            "forecast_h1_stale": None,
+            "forecast_h24_close_delta": None,
+            "forecast_h24_high_delta": None,
+            "forecast_h24_low_delta": None,
+            "forecast_h24_confidence": None,
+            "forecast_h24_timestamp": None,
+            "forecast_h24_lag_hours": None,
+            "forecast_h24_stale": None,
+        }
+    return {
+        "current_price": float(ctx.price),
+        "forecast_h1_close_delta": float(ctx.fc_h1_close_delta),
+        "forecast_h1_high_delta": float(ctx.fc_h1_high_delta),
+        "forecast_h1_low_delta": float(ctx.fc_h1_low_delta),
+        "forecast_h1_confidence": float(ctx.fc_h1_confidence),
+        "forecast_h1_timestamp": ctx.fc_h1_timestamp,
+        "forecast_h1_lag_hours": ctx.fc_h1_lag_hours,
+        "forecast_h1_stale": bool(ctx.fc_h1_stale),
+        "forecast_h24_close_delta": float(ctx.fc_h24_close_delta),
+        "forecast_h24_high_delta": float(ctx.fc_h24_high_delta),
+        "forecast_h24_low_delta": float(ctx.fc_h24_low_delta),
+        "forecast_h24_confidence": float(ctx.fc_h24_confidence),
+        "forecast_h24_timestamp": ctx.fc_h24_timestamp,
+        "forecast_h24_lag_hours": ctx.fc_h24_lag_hours,
+        "forecast_h24_stale": bool(ctx.fc_h24_stale),
+    }
 
 
 def _repay_margin_debt_if_flat(
@@ -2190,7 +2232,7 @@ def _has_positions_to_flatten(
     *,
     min_trade_usd: float = MIN_TRADE_USD,
 ) -> bool:
-    return any(float(value_usd) > float(min_trade_usd) for _qty, value_usd in positions_valued.values())
+    return any(abs(float(value_usd)) > float(min_trade_usd) for _qty, value_usd in positions_valued.values())
 
 
 def _allocation_plan_has_error(plan: AllocationPlan) -> bool:
@@ -2348,11 +2390,14 @@ def _get_current_positions_valued(
     result = {}
     for sym, cfg in TRADING_SYMBOLS.items():
         qty = state.positions.get(cfg.base_asset, 0.0)
-        if qty <= 0:
+        if abs(qty) <= 1e-12:
             continue
         try:
             price = _get_market_price(cfg, execution_mode)
-            result[sym] = (qty, qty * price)
+            value_usd = qty * price
+            if abs(value_usd) < MIN_TRADE_USD:
+                continue
+            result[sym] = (qty, value_usd)
         except Exception:
             pass
     return result
@@ -2360,7 +2405,7 @@ def _get_current_positions_valued(
 
 def run_hybrid_trading_cycle(  # noqa: PLR0911
     rl_gen: RLSignalGenerator,
-    gemini_model: str = "gemini-2.5-flash",
+    gemini_model: str = "gemini-3.1-flash-lite-preview",
     forecast_cache_root: str = "binanceneural/forecast_cache",
     dry_run: bool = True,
     leverage: float = 1.0,
@@ -2503,7 +2548,7 @@ def run_hybrid_trading_cycle(  # noqa: PLR0911
             return []
 
         positions_to_flatten = _has_positions_to_flatten(positions_valued)
-        largest_pos = max(positions_valued.items(), key=lambda x: x[1][1]) if positions_valued else None
+        largest_pos = max(positions_valued.items(), key=lambda x: abs(x[1][1])) if positions_valued else None
         cur_sym = largest_pos[0] if largest_pos else None
 
         cur_hold_hours = 0
@@ -2523,7 +2568,7 @@ def run_hybrid_trading_cycle(  # noqa: PLR0911
             position_symbol=cur_sym,
             position_value_usd=largest_pos[1][1] if largest_pos else 0.0,
             hold_hours=cur_hold_hours,
-            is_short=False,
+            is_short=bool(largest_pos and float(largest_pos[1][1]) < 0.0),
         )
 
         klines_map = {ctx.symbol: ctx.klines for ctx in contexts}
@@ -2546,6 +2591,7 @@ def run_hybrid_trading_cycle(  # noqa: PLR0911
             portfolio_value=state.total_value_usd,
             cash_usd=cash_usd,
             positions=state.positions,
+            effective_leverage=effective_leverage,
             prev_plan=_prev_plan,
             prev_outcome=_prev_outcome,
             rl_symbols=rl_gen.symbols,
@@ -2647,6 +2693,9 @@ def run_hybrid_trading_cycle(  # noqa: PLR0911
             plan = _apply_calibration(plan, contexts, _calibrators)
             plan = _filter_allocation_plan_to_symbols(plan, active_tradable_symbols)
             cycle_snapshot["calibrated"] = True
+        if cycle_snapshot.get("allocation_source") is None:
+            cycle_snapshot["allocation_source"] = "gemini_hybrid"
+        context_by_symbol = {ctx.symbol: ctx for ctx in contexts}
 
         target_values = {
             sym: state.total_value_usd * pct / 100.0 * effective_leverage for sym, pct in plan.allocations.items()
@@ -2671,6 +2720,7 @@ def run_hybrid_trading_cycle(  # noqa: PLR0911
                 "allocation_pct": float(plan.allocations.get(sym, 0.0)),
                 "entry_price": _safe_float(plan.entry_prices.get(sym)),
                 "exit_price": _safe_float(plan.exit_prices.get(sym)),
+                **_symbol_forecast_snapshot(context_by_symbol.get(sym)),
                 "actions": [],
             }
             symbol_details[sym] = detail
@@ -2755,7 +2805,12 @@ def run_hybrid_trading_cycle(  # noqa: PLR0911
                     }
                 )
 
-        for sym, target_val in target_values.items():
+        buy_symbols = sorted(
+            set(target_values)
+            | {sym for sym, (_qty, cur_value) in positions_valued.items() if float(cur_value) < -MIN_TRADE_USD}
+        )
+        for sym in buy_symbols:
+            target_val = target_values.get(sym, 0.0)
             cfg = TRADING_SYMBOLS.get(sym)
             if not cfg:
                 continue
@@ -2763,8 +2818,9 @@ def run_hybrid_trading_cycle(  # noqa: PLR0911
             actions = _detail_actions(detail)
             cur_value = positions_valued.get(sym, (0.0, 0.0))[1]
             buy_needed = target_val - cur_value
+            is_short_cover = float(cur_value) < -MIN_TRADE_USD
             buy_action: dict[str, object] = {
-                "kind": "rebalance_buy",
+                "kind": "short_cover" if is_short_cover else "rebalance_buy",
                 "side": "BUY",
                 "status": "skipped",
                 "desired_notional": float(max(buy_needed, 0.0)),
@@ -2773,7 +2829,7 @@ def run_hybrid_trading_cycle(  # noqa: PLR0911
                 "placed_order": None,
             }
             actions.append(buy_action)
-            if target_val < MIN_TRADE_USD:
+            if target_val < MIN_TRADE_USD and not is_short_cover:
                 buy_action["reason"] = "target_below_min_trade"
                 continue
             if buy_needed < MIN_TRADE_USD:
@@ -2852,6 +2908,34 @@ def run_hybrid_trading_cycle(  # noqa: PLR0911
                     if serialized_order is not None:
                         _cycle_order_bucket(cycle_snapshot, "placed").append(serialized_order)
                     logger.info(f"  BUY {sym}: ${buy_needed:.2f} @ ${entry_price:.2f}")
+                    buy_status = str(order.get("status", "")).upper()
+                    filled_qty = _safe_float(order.get("executedQty")) or 0.0
+                    exit_price = _safe_float(plan.exit_prices.get(sym)) or 0.0
+                    if buy_status == "FILLED" and filled_qty > 0.0 and exit_price > 0.0:
+                        tp_order = place_limit_sell(
+                            cfg,
+                            exit_price,
+                            filled_qty,
+                            execution_mode=resolved_execution_mode,
+                            dry_run=dry_run,
+                        )
+                        tp_action: dict[str, object] = {
+                            "kind": "buy_fill_immediate_exit",
+                            "side": "SELL",
+                            "status": "failed",
+                            "desired_qty": float(filled_qty),
+                            "desired_price": float(exit_price),
+                            "placed_order": None,
+                        }
+                        if tp_order:
+                            orders_placed.append(tp_order)
+                            open_orders.append(tp_order)
+                            tp_serialized = _serialize_order(tp_order)
+                            tp_action["status"] = "placed"
+                            tp_action["placed_order"] = tp_serialized
+                            if tp_serialized is not None:
+                                _cycle_order_bucket(cycle_snapshot, "placed").append(tp_serialized)
+                        actions.append(tp_action)
                 else:
                     buy_action["status"] = "failed"
                     buy_action["reason"] = "order_not_placed"
@@ -2859,6 +2943,81 @@ def run_hybrid_trading_cycle(  # noqa: PLR0911
                 logger.error(f"  Failed to buy {sym}: {exc}")
                 buy_action["status"] = "failed"
                 buy_action["reason"] = str(exc)
+
+        exit_coverage: JSONDict = {
+            "required_symbols": [],
+            "covered_symbols": [],
+            "missing_symbols": [],
+        }
+        for sym, (qty, cur_value) in positions_valued.items():
+            cfg = TRADING_SYMBOLS.get(sym)
+            if cfg is None or qty <= 0.0 or cur_value < MIN_TRADE_USD:
+                continue
+            detail: JSONDict | None = symbol_details.get(sym)
+            if detail is None:
+                continue
+            actions = _detail_actions(detail)
+            market_symbol = _execution_pair(cfg, resolved_execution_mode)
+            current_price = _safe_float(detail.get("current_price")) or _get_market_price(cfg, resolved_execution_mode)
+            entry_price, _open_time = get_position_entry(cfg, execution_mode=resolved_execution_mode)
+            exit_price = _safe_float(plan.exit_prices.get(sym))
+            min_exit_price = _minimum_live_exit_price(
+                cfg,
+                current_price=float(current_price),
+                execution_mode=resolved_execution_mode,
+                entry_price=float(entry_price),
+            )
+            if exit_price is None or exit_price <= 0.0:
+                exit_price = float(min_exit_price)
+            else:
+                exit_price = max(float(exit_price), float(min_exit_price))
+            detail["exit_price"] = float(exit_price)
+            cast(list[str], exit_coverage["required_symbols"]).append(sym)
+
+            covered_qty_before = _remaining_side_qty(open_orders, market_symbol, "SELL")
+            uncovered_qty = max(0.0, float(qty) - covered_qty_before)
+            uncovered_value = uncovered_qty * float(current_price)
+            coverage_action: dict[str, object] = {
+                "kind": "position_exit_coverage",
+                "side": "SELL",
+                "status": "already_covered",
+                "desired_qty": float(uncovered_qty),
+                "desired_price": float(exit_price),
+                "matched_open_orders": _serialize_orders(_matching_open_orders(open_orders, market_symbol, "SELL")),
+                "placed_order": None,
+            }
+            if uncovered_value >= MIN_TRADE_USD:
+                tp_order = place_limit_sell(
+                    cfg,
+                    float(exit_price),
+                    float(uncovered_qty),
+                    execution_mode=resolved_execution_mode,
+                    dry_run=dry_run,
+                )
+                if tp_order:
+                    orders_placed.append(tp_order)
+                    open_orders.append(tp_order)
+                    tp_serialized = _serialize_order(tp_order)
+                    coverage_action["status"] = "placed"
+                    coverage_action["placed_order"] = tp_serialized
+                    if tp_serialized is not None:
+                        _cycle_order_bucket(cycle_snapshot, "placed").append(tp_serialized)
+                else:
+                    coverage_action["status"] = "failed"
+                    coverage_action["reason"] = "order_not_placed"
+            elif uncovered_qty > 0.0:
+                coverage_action["status"] = "residual_below_min_trade"
+            actions.append(coverage_action)
+
+            covered_qty_after = _remaining_side_qty(open_orders, market_symbol, "SELL")
+            uncovered_qty_after = max(0.0, float(qty) - covered_qty_after)
+            uncovered_value_after = uncovered_qty_after * float(current_price)
+            if uncovered_value_after >= MIN_TRADE_USD and uncovered_qty_after > float(qty) * 0.02:
+                cast(list[str], exit_coverage["missing_symbols"]).append(sym)
+            else:
+                cast(list[str], exit_coverage["covered_symbols"]).append(sym)
+
+        cycle_snapshot["exit_order_coverage"] = exit_coverage
 
         _prev_plan = plan
         _prev_portfolio_value = state.total_value_usd
@@ -2933,7 +3092,7 @@ def main():
         "--review-model",
         type=str,
         default=None,
-        help="Stronger model for review passes (e.g. gemini-2.5-pro). Default: same as --model.",
+        help="Stronger model for review passes (e.g. gemini-3.1-pro-preview). Default: same as --model.",
     )
     parser.add_argument(
         "--reprompt-policy",

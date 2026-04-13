@@ -532,7 +532,7 @@ def main() -> int:
     parser.add_argument("--days", type=int, default=60)
     parser.add_argument("--window-count", type=int, default=1)
     parser.add_argument("--end-date", default="2026-03-14")
-    parser.add_argument("--models", nargs="+", default=["gemini-2.5-flash", "gemini-3.1-flash-lite-preview"])
+    parser.add_argument("--models", nargs="+", default=["gemini-3.1-flash-lite-preview", "gemini-3.1-pro-preview"])
     parser.add_argument("--start-states", nargs="+", default=["flat", "BTCUSD", "ETHUSD"])
     parser.add_argument("--symbols", nargs="+", default=FULL_UNIVERSE[:30])
     parser.add_argument("--no-cache", action="store_true")

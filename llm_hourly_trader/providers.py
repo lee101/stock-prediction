@@ -54,7 +54,7 @@ def _gemini_timeout_ms() -> int | None:
 # Gemini
 # ---------------------------------------------------------------------------
 
-def call_gemini(prompt: str, model: str = "gemini-2.5-flash", max_retries: int = 3,
+def call_gemini(prompt: str, model: str = "gemini-3.1-flash-lite-preview", max_retries: int = 3,
                 thinking_level: str | None = None,
                 cache_model: str | None = None,
                 provider_call_models: list[str] | None = None) -> TradePlan:
@@ -985,9 +985,8 @@ PROVIDER_FNS = {
 # Model -> provider mapping for convenience
 MODEL_PROVIDERS = {
     # Gemini
-    "gemini-2.5-flash": "gemini",
-    "gemini-2.5-pro": "gemini",
     "gemini-3.1-flash-lite-preview": "gemini",
+    "gemini-3.1-pro-preview": "gemini",
     "gemini-2.0-flash": "gemini",
     # OpenAI (direct API - needs billing credits)
     "gpt-4.1-mini": "openai",

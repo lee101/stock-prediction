@@ -14,7 +14,10 @@ from src.binance_hybrid_machine_audit import (
     build_machine_audit_health_issues,
     build_machine_audit_launch_mismatch_issues,
 )
-from src.binance_hybrid_snapshot_activity import find_unexpected_snapshot_activity
+from src.binance_hybrid_snapshot_activity import (
+    find_missing_exit_order_coverage,
+    find_unexpected_snapshot_activity,
+)
 
 
 _UNHEALTHY_SNAPSHOT_STATUSES = frozenset(
@@ -97,6 +100,8 @@ class DeployVerificationResult:
     latest_live_cycle_requested_leverage: float | None = None
     latest_live_cycle_status: str | None = None
     latest_live_cycle_allocation_source: str | None = None
+    latest_live_cycle_missing_exit_price_symbols: tuple[str, ...] = ()
+    latest_live_cycle_missing_exit_order_symbols: tuple[str, ...] = ()
     healthy_live_cycle_count: int = 0
     required_healthy_live_cycles: int = 0
     snapshot_checked: bool = False
@@ -130,6 +135,10 @@ def _extract_live_snapshot_fields(snapshot: dict[str, object]) -> dict[str, obje
     requested_symbols = _normalize_symbols(snapshot.get("requested_tradable_symbols"))
     active_symbols = _normalize_symbols(snapshot.get("active_tradable_symbols"))
     snapshot_symbols = requested_symbols or active_symbols
+    missing_exit_price_symbols, missing_exit_order_symbols = find_missing_exit_order_coverage(
+        snapshot,
+        snapshot_symbols,
+    )
 
     return {
         "started_at": str(snapshot.get("cycle_started_at") or ""),
@@ -138,6 +147,8 @@ def _extract_live_snapshot_fields(snapshot: dict[str, object]) -> dict[str, obje
         "status": str(snapshot.get("status") or "").strip() or None,
         "allocation_source": str(snapshot.get("allocation_source") or "").strip() or None,
         "snapshot_symbols": snapshot_symbols,
+        "missing_exit_price_symbols": tuple(missing_exit_price_symbols),
+        "missing_exit_order_symbols": tuple(missing_exit_order_symbols),
         "snapshot": snapshot,
     }
 
@@ -162,6 +173,8 @@ def evaluate_live_snapshot_health(
         meta["snapshot"],  # type: ignore[arg-type]
         allowed_symbols,
     )
+    missing_exit_price_symbols = meta["missing_exit_price_symbols"]
+    missing_exit_order_symbols = meta["missing_exit_order_symbols"]
 
     snapshot_confirmed: bool | None = True
     snapshot_reason: str | None = None
@@ -188,6 +201,18 @@ def evaluate_live_snapshot_health(
         snapshot_reason = (
             "latest live snapshot shows unexpected order symbols: "
             + ", ".join(unexpected_order_symbols)
+        )
+    elif missing_exit_price_symbols:
+        snapshot_confirmed = False
+        snapshot_reason = (
+            "latest live snapshot is missing exit prices for open positions: "
+            + ", ".join(missing_exit_price_symbols)
+        )
+    elif missing_exit_order_symbols:
+        snapshot_confirmed = False
+        snapshot_reason = (
+            "latest live snapshot is missing closing sell orders for open positions: "
+            + ", ".join(missing_exit_order_symbols)
         )
     elif expected_leverage is not None and latest_live_cycle_requested_leverage is None:
         snapshot_confirmed = False
@@ -367,6 +392,8 @@ def verify_deployed_binance_hybrid(
     latest_live_cycle_requested_leverage: float | None = None
     latest_live_cycle_status: str | None = None
     latest_live_cycle_allocation_source: str | None = None
+    latest_live_cycle_missing_exit_price_symbols: tuple[str, ...] = ()
+    latest_live_cycle_missing_exit_order_symbols: tuple[str, ...] = ()
     healthy_live_cycle_count = 0
     snapshot_checked = False
     snapshot_confirmed: bool | None = None
@@ -379,6 +406,8 @@ def verify_deployed_binance_hybrid(
         latest_live_cycle_requested_leverage = latest_meta["requested_leverage"]  # type: ignore[assignment]
         latest_live_cycle_status = latest_meta["status"]  # type: ignore[assignment]
         latest_live_cycle_allocation_source = latest_meta["allocation_source"]  # type: ignore[assignment]
+        latest_live_cycle_missing_exit_price_symbols = latest_meta["missing_exit_price_symbols"]  # type: ignore[assignment]
+        latest_live_cycle_missing_exit_order_symbols = latest_meta["missing_exit_order_symbols"]  # type: ignore[assignment]
         snapshot_checked = True
         healthy_live_cycle_count = sum(1 for confirmed, _reason, _meta in snapshot_evaluations if confirmed is True)
 
@@ -427,6 +456,8 @@ def verify_deployed_binance_hybrid(
             latest_live_cycle_requested_leverage=latest_live_cycle_requested_leverage,
             latest_live_cycle_status=latest_live_cycle_status,
             latest_live_cycle_allocation_source=latest_live_cycle_allocation_source,
+            latest_live_cycle_missing_exit_price_symbols=latest_live_cycle_missing_exit_price_symbols,
+            latest_live_cycle_missing_exit_order_symbols=latest_live_cycle_missing_exit_order_symbols,
             healthy_live_cycle_count=healthy_live_cycle_count,
             required_healthy_live_cycles=minimum_healthy_live_cycles,
             snapshot_checked=False,
@@ -452,6 +483,8 @@ def verify_deployed_binance_hybrid(
             latest_live_cycle_requested_leverage=latest_live_cycle_requested_leverage,
             latest_live_cycle_status=latest_live_cycle_status,
             latest_live_cycle_allocation_source=latest_live_cycle_allocation_source,
+            latest_live_cycle_missing_exit_price_symbols=latest_live_cycle_missing_exit_price_symbols,
+            latest_live_cycle_missing_exit_order_symbols=latest_live_cycle_missing_exit_order_symbols,
             healthy_live_cycle_count=healthy_live_cycle_count,
             required_healthy_live_cycles=minimum_healthy_live_cycles,
             snapshot_checked=True,
@@ -492,6 +525,8 @@ def verify_deployed_binance_hybrid(
                 latest_live_cycle_requested_leverage=latest_live_cycle_requested_leverage,
                 latest_live_cycle_status=latest_live_cycle_status,
                 latest_live_cycle_allocation_source=latest_live_cycle_allocation_source,
+                latest_live_cycle_missing_exit_price_symbols=latest_live_cycle_missing_exit_price_symbols,
+                latest_live_cycle_missing_exit_order_symbols=latest_live_cycle_missing_exit_order_symbols,
                 healthy_live_cycle_count=healthy_live_cycle_count,
                 required_healthy_live_cycles=minimum_healthy_live_cycles,
                 snapshot_checked=snapshot_checked,
@@ -521,6 +556,8 @@ def verify_deployed_binance_hybrid(
         latest_live_cycle_requested_leverage=latest_live_cycle_requested_leverage,
         latest_live_cycle_status=latest_live_cycle_status,
         latest_live_cycle_allocation_source=latest_live_cycle_allocation_source,
+        latest_live_cycle_missing_exit_price_symbols=latest_live_cycle_missing_exit_price_symbols,
+        latest_live_cycle_missing_exit_order_symbols=latest_live_cycle_missing_exit_order_symbols,
         healthy_live_cycle_count=healthy_live_cycle_count,
         required_healthy_live_cycles=minimum_healthy_live_cycles,
         snapshot_checked=snapshot_checked,
@@ -593,6 +630,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Snap St:  {result.latest_live_cycle_status}")
     if result.latest_live_cycle_allocation_source:
         print(f"Snap Src: {result.latest_live_cycle_allocation_source}")
+    if result.latest_live_cycle_missing_exit_price_symbols:
+        print(f"Snap No Exit Px: {','.join(result.latest_live_cycle_missing_exit_price_symbols)}")
+    if result.latest_live_cycle_missing_exit_order_symbols:
+        print(f"Snap No Exit Ord:{','.join(result.latest_live_cycle_missing_exit_order_symbols)}")
     if result.required_healthy_live_cycles > 0:
         print(
             f"Healthy:  {result.healthy_live_cycle_count}/{result.required_healthy_live_cycles}"

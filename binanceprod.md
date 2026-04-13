@@ -11,8 +11,23 @@
 
 **PROTOCOL**: Never trust a holdout unless run with `--decision-lag 2` AND a slippage sweep (0/5/10/20 bps). `evaluate_holdout.py` now has `--slippage-bps`. The C training env has a built-in `t_obs = t-1` single-bar lag, but production exhibits >=2 bars lag (forecast build + Gemini call + order placement). Training sim vs production gap is the ROOT CAUSE of why every deploy since 2026-03 looks great in holdout and drifts flat/negative live.
 
-Launch.sh reverted to dd002 pending supervisor restart:
+Launch.sh reverted to dd002 and now pins live Gemini inference to `gemini-3.1-pro-preview` after supervisor restart on 2026-04-12:
 `sudo supervisorctl restart binance-hybrid-spot`
+
+Follow-up production isolation and strategy patch on 2026-04-12:
+
+- stopped the conflicting Binance writers `binance-meta-margin`, `binance-worksteal-daily`, and `binance-sui-margin`
+- restarted `binance-hybrid-spot`, now running as PID `1923453`
+- live snapshots now record per-symbol forecast deltas/confidence plus `exit_order_coverage`
+- hybrid allocation cycles now top up closing sell orders for held positions instead of only trimming oversized inventory
+- negative margin base inventory now stays visible in the portfolio snapshot, and the hybrid buy pass can place explicit `short_cover` orders back toward zero
+
+Follow-up pipeline audit hardening on 2026-04-12:
+
+- hybrid prompt now shows the real live effective leverage instead of implying `5x`
+- prompt now includes negative inventory in the portfolio section so Gemini can see accidental shorts / debt
+- Chronos2 context now carries forecast issuance timestamps and lag so stale cache rows are visible instead of silently treated as fresh
+- executable code defaults were moved off `gemini-2.5*`; active Binance runtime and eval paths now default to `gemini-3.1-*`
 
 Artifacts: `analysis/robust_champion_validation/slip{0,5,10,20}.json`
 
@@ -27,7 +42,7 @@ Live source of truth remains:
 - launch: `deployments/binance-hybrid-spot/launch.sh`
 - symbols: `BTCUSD ETHUSD SOLUSD DOGEUSD AAVEUSD LINKUSD`
 - leverage: `0.5x`
-- model: `gemini-3.1-flash-lite-preview`
+- model: `gemini-3.1-pro-preview`
 - RL checkpoint: `pufferlib_market/checkpoints/mixed23_a40_sweep/robust_reg_tp005_dd002/best.pt`
 
 ### Runtime drift confirmed on machine
@@ -199,7 +214,7 @@ Bottom line:
 - **Launch target RL model**: `pufferlib_market/checkpoints/mixed23_a40_sweep/robust_reg_tp005_dd002/best.pt`
 - **Actual running RL model on 2026-04-09**: `pufferlib_market/checkpoints/a100_scaleup/robust_champion/best.pt`
 - **Previous model**: `robust_reg_tp005_ent` (switched 2026-03-31, dd002 has better 120d: +54.6% Sort=2.85 vs +42.4% Sort=2.71)
-- **LLM**: Gemini 3.1 Flash Lite (thinking=HIGH)
+- **LLM**: Gemini 3.1 Pro Preview
 - **Equity**: ~$3,025 (2026-03-31)
 - **Logs**: `/var/log/supervisor/binance-hybrid-spot-error.log`
 

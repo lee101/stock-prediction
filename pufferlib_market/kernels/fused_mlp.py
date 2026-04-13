@@ -13,10 +13,14 @@ Usage:
 If triton is unavailable, falls back to pure PyTorch.
 """
 
+import os
+
 import torch
 import torch.nn.functional as F
 
 try:
+    if os.environ.get("TRITON_DISABLED"):
+        raise ImportError("Triton disabled via TRITON_DISABLED env var")
     import triton
     import triton.language as tl
     HAS_TRITON = True

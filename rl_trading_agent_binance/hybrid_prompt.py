@@ -74,6 +74,12 @@ class SymbolContext:
     fc_h24_high_delta: float = 0.0
     fc_h24_low_delta: float = 0.0
     fc_h24_confidence: float = 0.0
+    fc_h1_timestamp: str | None = None
+    fc_h24_timestamp: str | None = None
+    fc_h1_lag_hours: float | None = None
+    fc_h24_lag_hours: float | None = None
+    fc_h1_stale: bool = False
+    fc_h24_stale: bool = False
     # RL
     rl_long_prob: float = 0.0
     rl_short_prob: float = 0.0
@@ -161,14 +167,41 @@ def _get_forecast_latest(cache_root: Path, symbol: str, horizon: int) -> dict:
     if fc.empty:
         return {}
     row = fc.iloc[-1]
-    out = {}
+    out: dict[str, Any] = {}
     for c in fc.columns:
+        if c in {"timestamp", "issued_at", "target_timestamp"}:
+            parsed_ts = pd.to_datetime(row[c], utc=True, errors="coerce")
+            if pd.notna(parsed_ts):
+                out[c] = parsed_ts
+            continue
         if c in row.index:
             try:
                 out[c] = float(row[c])
             except (TypeError, ValueError):
                 pass
+    index_ts = pd.to_datetime(fc.index[-1], utc=True, errors="coerce")
+    if pd.notna(index_ts):
+        out["_index_timestamp"] = index_ts
     return out
+
+
+def _forecast_reference_timestamp(fc: dict[str, Any]) -> pd.Timestamp | None:
+    for key in ("timestamp", "issued_at", "_index_timestamp"):
+        raw = fc.get(key)
+        if raw is None:
+            continue
+        ts = pd.to_datetime(raw, utc=True, errors="coerce")
+        if pd.notna(ts):
+            return ts
+    return None
+
+
+def _forecast_lag_hours(ts: pd.Timestamp | None) -> float | None:
+    if ts is None:
+        return None
+    expected_latest_closed = pd.Timestamp.now(tz="UTC").floor("h") - pd.Timedelta(hours=1)
+    lag = (expected_latest_closed - ts.floor("h")).total_seconds() / 3600.0
+    return max(0.0, float(lag))
 
 
 def gather_symbol_contexts(
@@ -195,6 +228,12 @@ def gather_symbol_contexts(
         # Chronos2 forecasts
         fc_h1 = _get_forecast_latest(forecast_cache_root, sym, 1)
         fc_h24 = _get_forecast_latest(forecast_cache_root, sym, 24)
+        fc_h1_ts = _forecast_reference_timestamp(fc_h1)
+        fc_h24_ts = _forecast_reference_timestamp(fc_h24)
+        fc_h1_lag = _forecast_lag_hours(fc_h1_ts)
+        fc_h24_lag = _forecast_lag_hours(fc_h24_ts)
+        fc_h1_stale = fc_h1_lag is not None and fc_h1_lag > 1.0
+        fc_h24_stale = fc_h24_lag is not None and fc_h24_lag > 1.0
 
         def delta(fc: dict[str, float], col: str, current_price: float = price) -> float:
             v = fc.get(col, 0)
@@ -220,14 +259,20 @@ def gather_symbol_contexts(
             atr_pct=tech.get("atr_pct", 0),
             trend_72h=tech.get("trend_72h", 0),
             drawdown_72h=tech.get("drawdown_72h", 0),
-            fc_h1_close_delta=delta(fc_h1, "predicted_close_p50"),
-            fc_h1_high_delta=delta(fc_h1, "predicted_high_p50"),
-            fc_h1_low_delta=delta(fc_h1, "predicted_low_p50"),
-            fc_h1_confidence=confidence(fc_h1),
-            fc_h24_close_delta=delta(fc_h24, "predicted_close_p50"),
-            fc_h24_high_delta=delta(fc_h24, "predicted_high_p50"),
-            fc_h24_low_delta=delta(fc_h24, "predicted_low_p50"),
-            fc_h24_confidence=confidence(fc_h24),
+            fc_h1_close_delta=0.0 if fc_h1_stale else delta(fc_h1, "predicted_close_p50"),
+            fc_h1_high_delta=0.0 if fc_h1_stale else delta(fc_h1, "predicted_high_p50"),
+            fc_h1_low_delta=0.0 if fc_h1_stale else delta(fc_h1, "predicted_low_p50"),
+            fc_h1_confidence=0.0 if fc_h1_stale else confidence(fc_h1),
+            fc_h24_close_delta=0.0 if fc_h24_stale else delta(fc_h24, "predicted_close_p50"),
+            fc_h24_high_delta=0.0 if fc_h24_stale else delta(fc_h24, "predicted_high_p50"),
+            fc_h24_low_delta=0.0 if fc_h24_stale else delta(fc_h24, "predicted_low_p50"),
+            fc_h24_confidence=0.0 if fc_h24_stale else confidence(fc_h24),
+            fc_h1_timestamp=fc_h1_ts.isoformat() if fc_h1_ts is not None else None,
+            fc_h24_timestamp=fc_h24_ts.isoformat() if fc_h24_ts is not None else None,
+            fc_h1_lag_hours=fc_h1_lag,
+            fc_h24_lag_hours=fc_h24_lag,
+            fc_h1_stale=fc_h1_stale,
+            fc_h24_stale=fc_h24_stale,
         )
         contexts.append(ctx)
     return contexts
@@ -269,6 +314,7 @@ def build_allocation_prompt(
     portfolio_value: float,
     cash_usd: float,
     positions: dict[str, float],  # base_asset -> qty
+    effective_leverage: float = 1.0,
     prev_plan: AllocationPlan | None = None,
     prev_outcome: PlanOutcome | None = None,
     rl_symbols: tuple[str, ...] | None = None,
@@ -293,25 +339,46 @@ def build_allocation_prompt(
         qty = positions.get(base, 0)
         val = qty * ctx.price
         pct = val / max(portfolio_value, 1) * 100
-        if val >= 1.0:
-            pos_lines.append(f"  {ctx.symbol}: {qty:.6f} ({base}) = ${val:.2f} ({pct:.1f}%)")
+        if abs(val) >= 1.0:
+            side = "SHORT" if qty < 0 else "LONG"
+            pos_lines.append(f"  {ctx.symbol}: {side} {qty:.6f} ({base}) = ${val:.2f} ({pct:.1f}%)")
     cash_pct = cash_usd / max(portfolio_value, 1) * 100
     pos_section = "\n".join(pos_lines) if pos_lines else "  (none)"
 
     # Per-symbol market context
     sym_sections = []
     for ctx in contexts:
+
+        def _forecast_meta(ts: str | None, lag_hours: float | None, stale: bool) -> str:
+            if not ts:
+                return "timestamp unavailable"
+            lag_text = "lag=unknown"
+            if lag_hours is not None:
+                lag_text = f"lag={lag_hours:.1f}h"
+            stale_text = " STALE" if stale else ""
+            return f"issued={ts} ({lag_text}){stale_text}"
+
         fc_h1_str = "unavailable"
-        if ctx.fc_h1_confidence > 0:
+        if ctx.fc_h1_stale:
+            fc_h1_str = (
+                f"stale or unavailable ({_forecast_meta(ctx.fc_h1_timestamp, ctx.fc_h1_lag_hours, ctx.fc_h1_stale)})"
+            )
+        elif ctx.fc_h1_confidence > 0:
             fc_h1_str = (
                 f"close {ctx.fc_h1_close_delta:+.2%} (conf={ctx.fc_h1_confidence:.2f}), "
-                f"high {ctx.fc_h1_high_delta:+.2%}, low {ctx.fc_h1_low_delta:+.2%}"
+                f"high {ctx.fc_h1_high_delta:+.2%}, low {ctx.fc_h1_low_delta:+.2%}; "
+                f"{_forecast_meta(ctx.fc_h1_timestamp, ctx.fc_h1_lag_hours, ctx.fc_h1_stale)}"
             )
         fc_h24_str = "unavailable"
-        if ctx.fc_h24_confidence > 0:
+        if ctx.fc_h24_stale:
+            fc_h24_str = (
+                f"stale or unavailable ({_forecast_meta(ctx.fc_h24_timestamp, ctx.fc_h24_lag_hours, ctx.fc_h24_stale)})"
+            )
+        elif ctx.fc_h24_confidence > 0:
             fc_h24_str = (
                 f"close {ctx.fc_h24_close_delta:+.2%} (conf={ctx.fc_h24_confidence:.2f}), "
-                f"high {ctx.fc_h24_high_delta:+.2%}, low {ctx.fc_h24_low_delta:+.2%}"
+                f"high {ctx.fc_h24_high_delta:+.2%}, low {ctx.fc_h24_low_delta:+.2%}; "
+                f"{_forecast_meta(ctx.fc_h24_timestamp, ctx.fc_h24_lag_hours, ctx.fc_h24_stale)}"
             )
 
         # Look up RL prob indices dynamically
@@ -389,6 +456,7 @@ TIME: {now}
 === PORTFOLIO STATE ===
 Total value: ${portfolio_value:,.2f}
 Cash: ${cash_usd:,.2f} ({cash_pct:.1f}%)
+Effective leverage: {effective_leverage:.2f}x
 Positions:
 {pos_section}
 
@@ -405,8 +473,10 @@ Recommendation: {rl_rec} | Value estimate: {rl_value:.3f}
 Action probabilities: {", ".join(prob_labels[:20])}
 
 === ALLOCATION INSTRUCTIONS ===
-Set target allocation % for each symbol (0-100). Sum of all allocations must be <= 500. max 5x leverage
-The remainder stays in cash.
+Set target allocation % for each symbol (0-100). Sum of all allocations must be <= 100.
+The live runner will apply the effective leverage shown above when translating these percentages into actual gross exposure.
+Do not assume 5x leverage or hidden extra buying power.
+If a symbol is currently SHORT, treat that as inventory debt that should normally be covered back toward zero unless the short is explicitly intended.
 
 For each symbol with allocation > 0, set:
 - entry_price: limit buy price (slightly below current for favorable fill)

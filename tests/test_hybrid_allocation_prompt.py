@@ -190,6 +190,50 @@ def test_build_allocation_prompt_keeps_rl_probs_mapped_to_symbol() -> None:
     assert expected_btc_line in btc_block
 
 
+def test_build_allocation_prompt_includes_live_leverage_short_inventory_and_forecast_recency() -> None:
+    contexts = [
+        hybrid_prompt.SymbolContext(
+            symbol="AAVEUSD",
+            price=90.0,
+            klines=_sample_klines(),
+            fc_h1_close_delta=-0.01,
+            fc_h1_high_delta=0.002,
+            fc_h1_low_delta=-0.02,
+            fc_h1_confidence=0.8,
+            fc_h24_close_delta=0.01,
+            fc_h24_high_delta=0.03,
+            fc_h24_low_delta=-0.01,
+            fc_h24_confidence=0.7,
+            fc_h1_timestamp="2026-04-12T09:00:00+00:00",
+            fc_h24_timestamp="2026-04-12T09:00:00+00:00",
+            fc_h1_lag_hours=0.0,
+            fc_h24_lag_hours=0.0,
+        ),
+    ]
+    rl_signal = hybrid_prompt.RLSignal(
+        action=0,
+        action_name="FLAT",
+        target_symbol=None,
+        direction="flat",
+        logits=[0.0, 0.0, 0.0],
+        value=0.0,
+    )
+
+    prompt = hybrid_prompt.build_allocation_prompt(
+        contexts=contexts,
+        rl_signal=rl_signal,
+        portfolio_value=1000.0,
+        cash_usd=800.0,
+        positions={"AAVE": -1.0},
+        effective_leverage=0.5,
+    )
+
+    assert "Effective leverage: 0.50x" in prompt
+    assert "AAVEUSD: SHORT -1.000000" in prompt
+    assert "issued=2026-04-12T09:00:00+00:00 (lag=0.0h)" in prompt
+    assert "Do not assume 5x leverage" in prompt
+
+
 def test_allocation_plan_has_error_detects_parser_and_api_failures() -> None:
     assert trade_binance_live._allocation_plan_has_error(
         hybrid_prompt.AllocationPlan(reasoning="Failed to parse response")
@@ -412,6 +456,7 @@ def test_get_portfolio_state_margin_uses_net_asset_for_locked_inventory(monkeypa
     balances = {
         "BTC": {"free": "0.00000671", "locked": "0.01473", "netAsset": "0.01473671"},
         "ETH": {"free": "0.00001189", "locked": "0", "netAsset": "0.00000842"},
+        "AAVE": {"free": "0", "locked": "0", "netAsset": "-1.28264963"},
     }
 
     def _lookup_balance(asset: str) -> dict[str, str] | None:
@@ -425,7 +470,23 @@ def test_get_portfolio_state_margin_uses_net_asset_for_locked_inventory(monkeypa
     assert state.borrowable_quotes["USDT"] == pytest.approx(10547.83)
     assert state.positions["BTC"] == pytest.approx(0.01473671)
     assert state.positions["ETH"] == pytest.approx(0.00000842)
+    assert state.positions["AAVE"] == pytest.approx(-1.28264963)
     assert state.total_value_usd == pytest.approx(0.0374722 * 70434.01)
+
+
+def test_get_current_positions_valued_keeps_meaningful_negative_margin_positions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(trade_binance_live, "_get_market_price", lambda cfg, execution_mode: 90.0)
+    state = trade_binance_live.PortfolioState(
+        positions={"AAVE": -1.28264963, "DOGE": -0.1},
+    )
+
+    positions = trade_binance_live._get_current_positions_valued(state, execution_mode="margin")
+
+    assert positions["AAVEUSD"][0] == pytest.approx(-1.28264963)
+    assert positions["AAVEUSD"][1] == pytest.approx(-1.28264963 * 90.0)
+    assert "DOGEUSD" not in positions
 
 
 def test_reserve_buying_power_uses_free_quote_before_borrow_headroom() -> None:
@@ -667,6 +728,27 @@ def test_run_hybrid_trading_cycle_limits_gemini_to_active_symbols(monkeypatch: p
     monkeypatch.setattr(trade_binance_live, "_repay_margin_debt_if_flat", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         trade_binance_live,
+        "_evaluate_hybrid_account_guard",
+        lambda *args, **kwargs: {
+            "blocked": False,
+            "triggered": False,
+            "issues": [],
+            "allowed_symbols": ["AAVEUSD"],
+            "allowed_market_symbols": ["AAVEUSDT"],
+            "foreign_positions": [],
+            "foreign_orders": [],
+            "oversized_positions": [],
+            "oversized_orders": [],
+            "unexpected_borrowed_quotes": [],
+            "borrow_limit_usd": 25.0,
+            "gross_symbol_budget_usd": 100.0,
+            "gross_symbol_limit_usd": 100.0,
+            "reason": None,
+            "enforced": True,
+        },
+    )
+    monkeypatch.setattr(
+        trade_binance_live,
         "_cleanup_open_orders",
         lambda *args, **kwargs: trade_binance_live.OpenOrderCleanupResult(),
     )
@@ -831,6 +913,235 @@ def test_run_hybrid_trading_cycle_blocks_live_trading_on_contaminated_account(
     assert account_guard["blocked"] is True
     assert [item["symbol"] for item in account_guard["foreign_positions"]] == ["XRPUSD"]
     assert [item["symbol"] for item in account_guard["foreign_orders"]] == ["XRPUSDT"]
+
+
+def test_run_hybrid_trading_cycle_adds_exit_coverage_for_held_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshots: list[dict[str, object]] = []
+    sell_orders: list[dict[str, object]] = []
+    contexts = [
+        hybrid_prompt.SymbolContext(
+            symbol="BTCUSD",
+            price=100.0,
+            klines=_sample_klines(),
+            fc_h1_close_delta=0.01,
+            fc_h24_close_delta=0.02,
+            fc_h1_confidence=0.8,
+            fc_h24_confidence=0.7,
+        ),
+    ]
+
+    class FakeRLGen:
+        symbols = ("BTCUSD",)
+        action_names: ClassVar[list[str]] = ["FLAT", "LONG_BTC"]
+        checkpoint_path = "/tmp/fake_hybrid_checkpoint.pt"
+
+        def get_signal(self, **kwargs):
+            return trade_binance_live.RLSignal(
+                action=0,
+                action_name="FLAT",
+                target_symbol=None,
+                direction="flat",
+                confidence=1.0,
+                logits=[3.0, -1.0],
+                value=0.0,
+            )
+
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_sync_margin_capital",
+        lambda dry_run: trade_binance_live.MarginCapitalSyncPlan(),
+    )
+    monkeypatch.setattr(
+        trade_binance_live,
+        "get_portfolio_state",
+        lambda execution_mode: trade_binance_live.PortfolioState(
+            fdusd_balance=0.0,
+            usdt_balance=100.0,
+            borrowed_quotes={"USDT": 0.0},
+            borrowable_quotes={"USDT": 0.0},
+            positions={"BTC": 1.0},
+            total_value_usd=200.0,
+        ),
+    )
+    monkeypatch.setattr(trade_binance_live, "_repay_margin_debt_if_flat", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_cleanup_open_orders",
+        lambda *args, **kwargs: trade_binance_live.OpenOrderCleanupResult(),
+    )
+    monkeypatch.setattr(trade_binance_live, "gather_symbol_contexts", lambda *args, **kwargs: contexts)
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_get_current_positions_valued",
+        lambda *args, **kwargs: {"BTCUSD": (1.0, 100.0)},
+    )
+    monkeypatch.setattr(trade_binance_live, "append_cycle_snapshot", snapshots.append)
+    monkeypatch.setattr(trade_binance_live, "build_allocation_prompt", lambda **kwargs: "prompt")
+    monkeypatch.setattr(
+        trade_binance_live,
+        "call_gemini_allocation",
+        lambda *args, **kwargs: hybrid_prompt.AllocationPlan(
+            allocations={"BTCUSD": 50.0},
+            entry_prices={"BTCUSD": 99.0},
+            exit_prices={"BTCUSD": 102.0},
+            reasoning="keep btc with exit",
+        ),
+    )
+    monkeypatch.setattr(trade_binance_live, "_get_market_price", lambda cfg, execution_mode: 100.0)
+    monkeypatch.setattr(trade_binance_live, "get_position_entry", lambda *args, **kwargs: (98.0, None))
+    monkeypatch.setattr(trade_binance_live, "place_limit_buy", lambda *args, **kwargs: None)
+    monkeypatch.setattr(trade_binance_live, "_reserve_buying_power", lambda *args, **kwargs: None)
+
+    def _fake_place_limit_sell(sym_cfg, price, quantity, execution_mode="spot", dry_run=True):
+        order = {
+            "symbol": trade_binance_live._execution_pair(sym_cfg, execution_mode),
+            "side": "SELL",
+            "status": "NEW",
+            "origQty": quantity,
+            "executedQty": 0.0,
+            "price": price,
+            "orderId": len(sell_orders) + 1,
+        }
+        sell_orders.append(order)
+        return order
+
+    monkeypatch.setattr(trade_binance_live, "place_limit_sell", _fake_place_limit_sell)
+
+    orders = trade_binance_live.run_hybrid_trading_cycle(
+        rl_gen=FakeRLGen(),
+        gemini_model="gemini-3.1-flash-lite-preview",
+        dry_run=True,
+        leverage=0.5,
+        execution_mode="margin",
+        tradable_symbols=["BTCUSD"],
+    )
+
+    assert len(orders) == 2
+    assert len(sell_orders) == 2
+    assert all(order["side"] == "SELL" for order in sell_orders)
+    snapshot = snapshots[-1]
+    assert snapshot["exit_order_coverage"] == {
+        "required_symbols": ["BTCUSD"],
+        "covered_symbols": ["BTCUSD"],
+        "missing_symbols": [],
+    }
+    detail = snapshot["symbols_detail"][0]
+    assert detail["forecast_h1_close_delta"] == 0.01
+    assert detail["forecast_h24_close_delta"] == 0.02
+    assert detail["current_price"] == 100.0
+    assert detail["exit_price"] == 102.0
+
+
+def test_run_hybrid_trading_cycle_covers_meaningful_negative_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshots: list[dict[str, object]] = []
+    buy_orders: list[dict[str, object]] = []
+    contexts = [
+        hybrid_prompt.SymbolContext(
+            symbol="AAVEUSD",
+            price=90.0,
+            klines=_sample_klines(),
+            fc_h1_close_delta=-0.01,
+            fc_h24_close_delta=-0.02,
+            fc_h1_confidence=0.8,
+            fc_h24_confidence=0.7,
+        ),
+    ]
+
+    class FakeRLGen:
+        symbols = ("AAVEUSD",)
+        action_names: ClassVar[list[str]] = ["FLAT", "LONG_AAVE"]
+        checkpoint_path = "/tmp/fake_hybrid_checkpoint.pt"
+
+        def get_signal(self, **kwargs):
+            return trade_binance_live.RLSignal(
+                action=0,
+                action_name="FLAT",
+                target_symbol=None,
+                direction="flat",
+                confidence=1.0,
+                logits=[3.0, -1.0],
+                value=0.0,
+            )
+
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_sync_margin_capital",
+        lambda dry_run: trade_binance_live.MarginCapitalSyncPlan(),
+    )
+    monkeypatch.setattr(
+        trade_binance_live,
+        "get_portfolio_state",
+        lambda execution_mode: trade_binance_live.PortfolioState(
+            fdusd_balance=0.0,
+            usdt_balance=200.0,
+            borrowed_quotes={"USDT": 0.0},
+            borrowable_quotes={"USDT": 0.0},
+            positions={"AAVE": -1.0},
+            total_value_usd=200.0,
+        ),
+    )
+    monkeypatch.setattr(trade_binance_live, "_repay_margin_debt_if_flat", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_cleanup_open_orders",
+        lambda *args, **kwargs: trade_binance_live.OpenOrderCleanupResult(),
+    )
+    monkeypatch.setattr(trade_binance_live, "gather_symbol_contexts", lambda *args, **kwargs: contexts)
+    monkeypatch.setattr(
+        trade_binance_live,
+        "_get_current_positions_valued",
+        lambda *args, **kwargs: {"AAVEUSD": (-1.0, -90.0)},
+    )
+    monkeypatch.setattr(trade_binance_live, "append_cycle_snapshot", snapshots.append)
+    monkeypatch.setattr(trade_binance_live, "build_allocation_prompt", lambda **kwargs: "prompt")
+    monkeypatch.setattr(
+        trade_binance_live,
+        "call_gemini_allocation",
+        lambda *args, **kwargs: hybrid_prompt.AllocationPlan(
+            allocations={},
+            entry_prices={"AAVEUSD": 89.5},
+            exit_prices={},
+            reasoning="flatten negative aave",
+        ),
+    )
+    monkeypatch.setattr(trade_binance_live, "_get_market_price", lambda cfg, execution_mode: 90.0)
+    monkeypatch.setattr(trade_binance_live, "place_limit_sell", lambda *args, **kwargs: None)
+    monkeypatch.setattr(trade_binance_live, "_reserve_buying_power", lambda *args, **kwargs: None)
+
+    def _fake_place_limit_buy(sym_cfg, price, buy_needed, execution_mode="spot", dry_run=True):
+        order = {
+            "symbol": trade_binance_live._execution_pair(sym_cfg, execution_mode),
+            "side": "BUY",
+            "status": "NEW",
+            "origQty": 1.0,
+            "executedQty": 0.0,
+            "price": price,
+            "orderId": len(buy_orders) + 1,
+        }
+        buy_orders.append(order)
+        return order
+
+    monkeypatch.setattr(trade_binance_live, "place_limit_buy", _fake_place_limit_buy)
+
+    orders = trade_binance_live.run_hybrid_trading_cycle(
+        rl_gen=FakeRLGen(),
+        gemini_model="gemini-3.1-flash-lite-preview",
+        dry_run=True,
+        leverage=0.5,
+        execution_mode="margin",
+        tradable_symbols=["AAVEUSD"],
+    )
+
+    assert len(orders) == 1
+    assert len(buy_orders) == 1
+    detail = snapshots[-1]["symbols_detail"][0]
+    assert detail["current_qty"] == -1.0
+    assert detail["actions"][0]["kind"] == "short_cover"
+    assert detail["actions"][0]["status"] == "placed"
 
 
 def test_run_hybrid_trading_cycle_short_rl_fallback_exits_to_cash(

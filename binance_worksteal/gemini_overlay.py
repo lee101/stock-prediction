@@ -280,7 +280,7 @@ Respond JSON: {{"action": "buy"|"sell"|"hold"|"adjust", "buy_price": <limit buy>
 
 def call_gemini_daily(
     prompt: str,
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.1-flash-lite-preview",
     api_key: Optional[str] = None,
     temperature: float = 0.3,
     max_retries: int = 3,
@@ -337,7 +337,7 @@ def call_gemini_daily(
 def backtest_gemini_decisions(
     bars: pd.DataFrame,
     candidates: List[dict],
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.1-flash-lite-preview",
     api_key: Optional[str] = None,
     use_cache: bool = True,
     cache_dir: Optional[Path] = None,

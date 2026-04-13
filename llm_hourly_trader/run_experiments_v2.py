@@ -1,6 +1,6 @@
 """Run LLM hourly trader experiments v2.
 
-Uses gemini-2.5-flash (separate quota from 3.1-flash-lite).
+Uses gemini-3.1-flash-lite-preview.
 Runs experiments sequentially to stay within rate limits.
 Disk cache avoids repeating API calls on re-runs.
 """
@@ -17,8 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from llm_hourly_trader.backtest import run_backtest, GROUPS
 from llm_hourly_trader.config import BacktestConfig
 
-MODEL = "gemini-2.5-flash"
-# gemini-2.5-flash free tier: 500 req/day, 10 req/min
+MODEL = "gemini-3.1-flash-lite-preview"
+# Keep this on the lighter 3.1 lane for batch experiments.
 RATE_LIMIT = 6.5  # ~9 req/min to be safe
 
 experiments = [

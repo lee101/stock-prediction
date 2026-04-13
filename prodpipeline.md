@@ -69,6 +69,22 @@ Checked against the locally running `rl_trading_agent_binance/trade_binance_live
   - non-trivial live margin inventory in `DOGE`, `AAVE`, and `USDT`
   - recent margin fills over the previous 48h on `DOGEUSDT`, `AAVEUSDT`, `BTCUSDT`, and `LINKUSDT`
 
+## Restart Record (2026-04-12)
+
+- Updated `deployments/binance-hybrid-spot/launch.sh` to use `--model gemini-3.1-pro-preview` for live Binance hybrid inference.
+- Left testing and experiment defaults on lighter Gemini variants; only the live production launcher was changed.
+- Redeployed with `sudo supervisorctl restart binance-hybrid-spot`.
+- Follow-up prod hardening redeploy:
+  - stopped `binance-meta-margin`, `binance-worksteal-daily`, and `binance-sui-margin` so the hybrid bot is the only Binance live writer on the account
+  - added hybrid snapshot forecast fields (`forecast_h1_*`, `forecast_h24_*`, `current_price`) for per-cycle monitoring
+  - added `exit_order_coverage` tracking and a post-allocation exit top-up pass so held positions carry explicit closing sell orders
+  - kept meaningful negative margin base inventory in the live portfolio snapshot and added `short_cover` buy handling for those positions
+  - tightened `src/binance_hybrid_prod_verify.py` to fail when a healthy live snapshot is missing exit prices or closing sell coverage for open positions
+- Follow-up prompt / model cleanup:
+  - `rl_trading_agent_binance/hybrid_prompt.py` now exposes forecast timestamps / lag and the real effective leverage in the Gemini prompt
+  - prompt portfolio state now includes negative inventory so accidental shorts are visible to the allocator
+  - active executable code defaults were moved from `gemini-2.5*` to `gemini-3.1-flash-lite-preview` / `gemini-3.1-pro-preview`
+
 Important operational distinction:
 
 - `python -m binance_cli ...` is a spot-account view and can report no open orders / no recent trades / very small account value even while the hybrid margin bot is active.

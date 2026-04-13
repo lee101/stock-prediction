@@ -15,7 +15,7 @@ set -a; source /home/lee/code/stock/.env.binance-hybrid 2>/dev/null || true; set
 exec /home/lee/code/stock/.venv313/bin/python -u \
   rl_trading_agent_binance/trade_binance_live.py \
   --live \
-  --model gemini-3.1-flash-lite-preview \
+  --model gemini-3.1-pro-preview \
   --symbols BTCUSD ETHUSD SOLUSD DOGEUSD AAVEUSD LINKUSD \
   --execution-mode margin \
   --leverage 0.5 \

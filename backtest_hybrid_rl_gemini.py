@@ -382,7 +382,7 @@ Respond JSON:
     return prompt
 
 
-def call_gemini_structured(prompt: str, model: str = "gemini-2.5-flash") -> dict:
+def call_gemini_structured(prompt: str, model: str = "gemini-3.1-flash-lite-preview") -> dict:
     """Call Gemini with structured output."""
     from llm_hourly_trader.cache import get_cached, set_cached
 
@@ -443,7 +443,7 @@ def run_hybrid_backtest(
     end_date: Optional[str],
     mode: str = "hybrid",
     initial_cash: float = 10000.0,
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.1-flash-lite-preview",
     slippage_bps: float = 5.0,
 ) -> Tuple[BacktestContext, Dict[str, float]]:
     """Run RL+Gemini hybrid or RL-only backtest."""
@@ -678,7 +678,7 @@ def main():
     parser.add_argument("--start-date", default="2025-06-01")
     parser.add_argument("--end-date", default="2025-12-01")
     parser.add_argument("--mode", choices=["hybrid", "rl_only"], default="hybrid")
-    parser.add_argument("--model", default="gemini-2.5-flash")
+    parser.add_argument("--model", default="gemini-3.1-flash-lite-preview")
     parser.add_argument("--cash", type=float, default=10000.0)
     parser.add_argument("--slippage-bps", type=float, default=5.0)
     args = parser.parse_args()

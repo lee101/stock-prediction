@@ -215,6 +215,7 @@ def export_binary(
     cross_features: bool = False,
     cross_anchor: str = "BTC",
     cross_window: int = 20,
+    union_dates: bool = False,
 ) -> None:
     symbols = [s.strip().upper() for s in symbols if s.strip()]
     if not symbols:
@@ -226,11 +227,18 @@ def export_binary(
     for sym in symbols:
         original_prices[sym] = load_price_data(sym, data_root)
 
-    # Limit common window to where all symbols have at least some data.
+    # Align time window across all symbols.
     starts = [df.index.min() for df in original_prices.values()]
     ends = [df.index.max() for df in original_prices.values()]
-    start = max(starts)
-    end = min(ends)
+    if union_dates:
+        # Union: use earliest start / latest end. Symbols without data get
+        # tradable=0 and bfill prices. Good for crypto with staggered launches.
+        start = min(starts)
+        end = max(ends)
+    else:
+        # Intersection (default): all symbols must have data.
+        start = max(starts)
+        end = min(ends)
     if start_date is not None:
         start = max(start, pd.to_datetime(start_date, utc=True))
     if end_date is not None:
@@ -333,6 +341,8 @@ def main() -> None:
     )
     parser.add_argument("--cross-anchor", default="BTC", help="Anchor symbol name for cross features (default: BTC)")
     parser.add_argument("--cross-window", type=int, default=20, help="Rolling window in days for cross features (default: 20)")
+    parser.add_argument("--union-dates", action="store_true", default=False,
+                        help="Use union of all symbol date ranges instead of intersection (good for crypto with staggered launches)")
     args = parser.parse_args()
 
     try:
@@ -346,6 +356,7 @@ def main() -> None:
             cross_features=args.cross_features,
             cross_anchor=args.cross_anchor,
             cross_window=args.cross_window,
+            union_dates=args.union_dates,
         )
     except Exception as e:
         print(f"ERROR: {e}", file=sys.stderr)

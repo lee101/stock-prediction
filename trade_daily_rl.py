@@ -171,7 +171,7 @@ def get_llm_filter(
     )
 
     try:
-        response = call_llm(prompt, model="gemini-2.5-flash")
+        response = call_llm(prompt, model="gemini-3.1-flash-lite-preview")
         if isinstance(response, str):
             import re
             match = re.search(r'\{[^}]+\}', response)

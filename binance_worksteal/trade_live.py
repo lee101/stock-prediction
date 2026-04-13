@@ -774,7 +774,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--startup-preview-only", dest="startup_preview_only", action="store_true", default=True)
     parser.add_argument("--startup-live-cycle", dest="startup_preview_only", action="store_false")
     parser.add_argument("--gemini", action="store_true", help="Enable Gemini LLM overlay")
-    parser.add_argument("--gemini-model", default="gemini-2.5-flash")
+    parser.add_argument("--gemini-model", default="gemini-3.1-flash-lite-preview")
     parser.add_argument("--poll-seconds", type=int, default=300)
     parser.add_argument("--entry-poll-hours", type=int, default=4)
     parser.add_argument("--health-report-hours", type=int, default=6)
@@ -2292,7 +2292,7 @@ def _stage_entry_candidates(
     dry_run: bool,
     slots: int,
     gemini_enabled: bool = False,
-    gemini_model: str = "gemini-2.5-flash",
+    gemini_model: str = "gemini-3.1-flash-lite-preview",
     neural_predictions: dict[str, dict[str, float]] | None = None,
 ) -> dict:
     n_staged = 0
@@ -2651,7 +2651,7 @@ def run_entry_scan(
     config: WorkStealConfig,
     dry_run: bool = True,
     gemini_enabled: bool = False,
-    gemini_model: str = "gemini-2.5-flash",
+    gemini_model: str = "gemini-3.1-flash-lite-preview",
     neural_model=None,
     neural_model_symbols: list[str] | None = None,
     neural_seq_len: int = 30,
@@ -2869,7 +2869,7 @@ def run_daily_cycle(
     config: WorkStealConfig,
     dry_run: bool = True,
     gemini_enabled: bool = False,
-    gemini_model: str = "gemini-2.5-flash",
+    gemini_model: str = "gemini-3.1-flash-lite-preview",
     neural_model=None,
     neural_model_symbols: list[str] | None = None,
     neural_seq_len: int = 30,

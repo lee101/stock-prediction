@@ -19,7 +19,7 @@ REPO = Path(__file__).resolve().parents[1]
 DEFAULT_START = "2025-11-15"
 DEFAULT_END = "2026-03-19"
 DEFAULT_DATA_DIR = "trainingdata/train"
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
 DEFAULT_REPORT = "reports/120d_worksteal_eval.json"
 DEFAULT_UNIVERSE_FILE = "binance_worksteal/universe_v2.yaml"
 

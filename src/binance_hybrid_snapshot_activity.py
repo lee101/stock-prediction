@@ -77,6 +77,90 @@ def iter_snapshot_order_symbols(snapshot: dict[str, Any]) -> list[str]:
     return symbols
 
 
+def iter_snapshot_active_orders(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    orders = snapshot.get("orders")
+    if not isinstance(orders, dict):
+        return []
+
+    active_orders: list[dict[str, Any]] = []
+    used_target_buckets = False
+    for bucket_name in ("open_after_cleanup", "placed"):
+        bucket = orders.get(bucket_name)
+        if not isinstance(bucket, list):
+            continue
+        used_target_buckets = True
+        for order in bucket:
+            if isinstance(order, dict):
+                active_orders.append(order)
+
+    if used_target_buckets:
+        return active_orders
+
+    for bucket in orders.values():
+        if not isinstance(bucket, list):
+            continue
+        for order in bucket:
+            if isinstance(order, dict):
+                active_orders.append(order)
+    return active_orders
+
+
+def find_missing_exit_order_coverage(
+    snapshot: dict[str, Any],
+    allowed_symbols: list[str],
+    *,
+    min_position_value_usd: float = 12.0,
+) -> tuple[list[str], list[str]]:
+    sell_qty_by_market_symbol: dict[str, float] = {}
+    for order in iter_snapshot_active_orders(snapshot):
+        symbol = str(order.get("symbol") or "").strip().upper()
+        side = str(order.get("side") or "").strip().upper()
+        if not symbol or side != "SELL":
+            continue
+        orig_qty = safe_float(order.get("origQty"))
+        if orig_qty is None:
+            orig_qty = safe_float(order.get("qty"))
+        if orig_qty is None:
+            orig_qty = safe_float(order.get("orig_qty"))
+        executed_qty = safe_float(order.get("executedQty"))
+        if executed_qty is None:
+            executed_qty = safe_float(order.get("executed_qty"))
+        executed_qty = executed_qty or 0.0
+        remaining_qty = max(0.0, float(orig_qty or 0.0) - float(executed_qty))
+        if remaining_qty <= _EPSILON:
+            continue
+        sell_qty_by_market_symbol[symbol] = sell_qty_by_market_symbol.get(symbol, 0.0) + remaining_qty
+
+    missing_exit_price_symbols: set[str] = set()
+    missing_exit_order_symbols: set[str] = set()
+    for detail in snapshot.get("symbols_detail") or []:
+        if not isinstance(detail, dict):
+            continue
+        symbol = str(detail.get("symbol") or "").strip().upper()
+        if not symbol or symbol not in allowed_symbols:
+            continue
+        current_qty = safe_float(detail.get("current_qty")) or 0.0
+        current_value = safe_float(detail.get("current_value")) or 0.0
+        if current_qty <= _EPSILON or current_value < float(min_position_value_usd):
+            continue
+        exit_price = safe_float(detail.get("exit_price"))
+        if exit_price is None or exit_price <= 0.0:
+            missing_exit_price_symbols.add(symbol)
+            continue
+        market_symbol = str(detail.get("market_symbol") or "").strip().upper()
+        if not market_symbol:
+            missing_exit_order_symbols.add(symbol)
+            continue
+        covered_qty = sell_qty_by_market_symbol.get(market_symbol, 0.0)
+        uncovered_qty = max(0.0, current_qty - covered_qty)
+        current_price = current_value / current_qty if current_qty > _EPSILON else 0.0
+        uncovered_value = uncovered_qty * current_price
+        if uncovered_qty > current_qty * 0.02 and uncovered_value >= float(min_position_value_usd):
+            missing_exit_order_symbols.add(symbol)
+
+    return sorted(missing_exit_price_symbols), sorted(missing_exit_order_symbols)
+
+
 def find_unexpected_snapshot_activity(
     snapshot: dict[str, Any],
     allowed_symbols: list[str],

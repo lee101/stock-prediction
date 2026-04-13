@@ -56,7 +56,7 @@ def run_gemini_backtest(
     config: WorkStealConfig,
     start_date: str,
     end_date: str,
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.1-flash-lite-preview",
     use_cache: bool = True,
     api_key: Optional[str] = None,
     forecast_cache_root: Optional[Path] = None,
@@ -390,7 +390,7 @@ def main():
     parser.add_argument("--start-date", "--start", default=None)
     parser.add_argument("--end-date", "--end", default=None)
     parser.add_argument("--days", type=int, default=30)
-    parser.add_argument("--gemini-model", "--model", default="gemini-2.5-flash")
+    parser.add_argument("--gemini-model", "--model", default="gemini-3.1-flash-lite-preview")
     parser.add_argument("--symbols", nargs="+", default=None)
     parser.add_argument("--forecast-cache-root", type=Path, default=None)
     parser.add_argument("--output-json", type=Path, default=None)

@@ -17,7 +17,7 @@ DEFAULT_SYMBOLS = "auto"
 DEFAULT_START = "2025-11-15"
 DEFAULT_END = "2026-03-19"
 DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/mixed23_fresh_targeted/reg_combo_2/best.pt"
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
 DEFAULT_CASH = 10000.0
 DEFAULT_REPORT = "reports/120d_hybrid_spot_eval.json"
 
