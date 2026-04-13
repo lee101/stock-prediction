@@ -7,6 +7,21 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
+### 2026-04-13 (latest update ~18:05 UTC) — Active sweep status
+
+**Active sweeps (9 training processes, RTX 5090, ~8-11k SPS each):**
+- D s24-80: seeds s36, s51, s62 training; ~62 D seeds total; 2 new anchors found (D_s28 neg=16, D_s42 neg=24)
+- H variant (Muon + tp=0.10): s1 training; first val best_neg=1/50 (then degraded → likely false positive)
+- G variant (Muon + tp=0.07): s1 OOS=neg46 (false positive); s2 training
+- I variant (Muon + tp=0.03): s1 OOS=neg47 (false positive); s2 training
+- v2 sweep (C+D, data 2019-2025-11-30, 31% more data): s1 training on crash-period val (neg=31/31 expected)
+- monitor_sweeps.sh: runs every 30min, auto-evals, flags anchors neg<25
+
+**Next live trade**: Monday 2026-04-14 ~13:35 UTC (service PID 1885963, sleeping)
+**Live account**: $28,679 equity, 0 positions, value gate=-1.0 (fixed), regime=BULL
+
+---
+
 ### 2026-04-13 — Screened32 8-model ensemble deployed (CURRENT PRODUCTION)
 
 #### Current champion: screened32 8-model ensemble (D_s13→D_s42 swap)
