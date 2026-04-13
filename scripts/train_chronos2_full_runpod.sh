@@ -13,11 +13,16 @@
 #   --lora            Use LoRA fine-tuning instead of full
 #   --muon            Use Muon optimizer (default: enabled)
 #   --no-muon         Disable Muon, use AdamW instead
+#   --grad-accum N    Gradient accumulation steps (default: 1)
 #   --r2-prefix STR   R2 key prefix for checkpoint upload
 #   --output-dir STR  Local output directory
 #   --cache STR       Path to pre-built .npz cache
 #   --rebuild-cache   Force rebuild data cache even if it exists
 #   --tag STR         Version tag for naming (default: v3)
+#
+# v4 example (ctx=1024, larger effective batch):
+#   bash scripts/train_chronos2_full_runpod.sh \
+#       --tag v4 --context 1024 --batch 128 --grad-accum 2 --steps 200000
 #
 # Environment vars (required for R2 upload):
 #   R2_ENDPOINT, R2_BUCKET, R2_ACCESS_KEY, R2_SECRET_KEY
@@ -46,6 +51,11 @@ CONTEXT=512
 LR=5e-5
 FINETUNE_MODE=full
 LORA_R=32
+GRAD_ACCUM=1
+AMP_LOG_STD=0.45
+NOISE_FRAC=0.003
+DROPOUT_RATE=0.03
+SEED=42
 USE_MUON=true          # Muon on by default for RunPod runs
 R2_PREFIX=""           # set auto from tag below
 CACHE_PATH=".cache/chronos2_train_data_full.npz"
@@ -63,6 +73,11 @@ while [[ $# -gt 0 ]]; do
         --lora)          FINETUNE_MODE=lora; shift   ;;
         --muon)          USE_MUON=true;      shift   ;;
         --no-muon)       USE_MUON=false;     shift   ;;
+        --grad-accum)    GRAD_ACCUM=$2;      shift 2 ;;
+        --amp-log-std)   AMP_LOG_STD=$2;    shift 2 ;;
+        --noise-frac)    NOISE_FRAC=$2;     shift 2 ;;
+        --dropout-rate)  DROPOUT_RATE=$2;   shift 2 ;;
+        --seed)          SEED=$2;           shift 2 ;;
         --r2-prefix)     R2_PREFIX=$2;       shift 2 ;;
         --output-dir)    OUTPUT_DIR=$2;      shift 2 ;;
         --cache)         CACHE_PATH=$2;      shift 2 ;;
@@ -172,7 +187,11 @@ ARGS=(
     --torch-dtype      bfloat16
     --r2-prefix        "$R2_PREFIX/finetuned-ckpt"
     --num-workers      16
-    --seed             42
+    --seed             $SEED
+    --grad-accum       $GRAD_ACCUM
+    --amp-log-std      $AMP_LOG_STD
+    --noise-frac       $NOISE_FRAC
+    --dropout-rate     $DROPOUT_RATE
 )
 if $USE_MUON; then ARGS+=(--use-muon); fi
 
