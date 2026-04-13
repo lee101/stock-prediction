@@ -85,11 +85,12 @@ class TestComputeSharpe:
                                   allow_short=False, fee_bps=10.0)
         assert sharpe == -999.0
 
-    def test_fee_hurts_break_even_trades(self):
-        """Exactly break-even returns minus fee should produce negative Sharpe."""
+    def test_fee_hurts_churning_strategy(self):
+        """Strategy that enters/exits every bar pays N fees → negative Sharpe on flat market."""
+        # Alternating signal forces a position flip every bar (long/flat/long/flat...)
         N = 500
-        signals = np.full(N, 0.002)
-        actual  = np.full(N, 0.0)   # 0 return, but pay 10bps fee each trade
+        signals = np.array([0.002 if i % 2 == 0 else 0.0 for i in range(N)])
+        actual  = np.zeros(N)   # flat market, every flip costs a fee
         sharpe  = compute_sharpe(signals, actual, buy_thresh=0.001, sell_thresh=0.001,
                                   allow_short=False, fee_bps=10.0)
         assert sharpe < 0.0
@@ -99,13 +100,14 @@ class TestComputeSharpe:
         N = 500
         signals = np.full(N, -0.002)   # all below -sell_thresh
         actual  = np.full(N, -0.003)   # market always falls 30bps
-        # Long only: no buys triggered → penalty
+        # Long only: no buys triggered → -999 penalty (no trades at all)
         sharpe_long = compute_sharpe(signals, actual, buy_thresh=0.001, sell_thresh=0.001,
                                       allow_short=False, fee_bps=1.0)
+        assert sharpe_long == -999.0
         # Short allowed: shorts triggered → profits from decline
         sharpe_short = compute_sharpe(signals, actual, buy_thresh=0.001, sell_thresh=0.001,
                                        allow_short=True, fee_bps=1.0)
-        assert sharpe_short > sharpe_long
+        assert sharpe_short > 0.0
 
 
 # ---------------------------------------------------------------------------

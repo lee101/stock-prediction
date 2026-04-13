@@ -225,17 +225,46 @@ def compute_sharpe(
     """
     Compute Sharpe-like score for a given threshold pair on in-sample data.
 
+    Fee is charged only on position transitions (entry/exit), not every held day.
+    A "hold" day (flat) earns 0. P&L is collected as a daily series over all
+    windows (including flat days) so the denominator reflects real volatility.
+
     signals:        predicted returns (q50 - prev_close) / prev_close
     actual_returns: (actual_close - prev_close) / prev_close
     """
     fee = fee_bps / 10_000.0
     pnl: List[float] = []
+    position = 0  # 0=flat, 1=long, -1=short
+    n_trades = 0
+
     for sig, ret in zip(signals, actual_returns):
+        # Determine desired position from signal
         if sig > buy_thresh:
-            pnl.append(ret - fee)
+            desired = 1
         elif allow_short and sig < -sell_thresh:
-            pnl.append(-ret - fee)
-    if len(pnl) < 10:
+            desired = -1
+        else:
+            desired = 0
+
+        # Pay transition fee when position changes
+        if desired != position:
+            transition_cost = fee
+            n_trades += 1
+        else:
+            transition_cost = 0.0
+
+        # Collect P&L: return from held position minus any transition cost
+        if position == 1:
+            pnl.append(ret - transition_cost)
+        elif position == -1:
+            pnl.append(-ret - transition_cost)
+        else:
+            # flat — only cost is entry fee if we're entering this bar
+            pnl.append(-transition_cost)
+
+        position = desired
+
+    if n_trades == 0:
         return -999.0
     arr = np.array(pnl)
     mean = arr.mean()
