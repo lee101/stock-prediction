@@ -11,13 +11,13 @@ FULL_VAL="pufferlib_market/data/screened32_single_offset_val_full.bin"
 LOG="pufferlib_market/checkpoints/monitor_sweeps.log"
 ANCHOR_THRESH=25   # neg/100 threshold for "anchor" evaluation
 
-# Current 8-model production ensemble
+# Current 8-model production ensemble (updated 2026-04-13: D_s5->I_s3 swap)
 PROD_PRIMARY="pufferlib_market/prod_ensemble_screened32/C_s7.pt"
 PROD_EXTRAS=(
   "pufferlib_market/prod_ensemble_screened32/D_s16.pt"
   "pufferlib_market/prod_ensemble_screened32/D_s42.pt"
   "pufferlib_market/prod_ensemble_screened32/D_s3.pt"
-  "pufferlib_market/prod_ensemble_screened32/D_s5.pt"
+  "pufferlib_market/prod_ensemble_screened32/I_s3.pt"
   "pufferlib_market/prod_ensemble_screened32/D_s2.pt"
   "pufferlib_market/prod_ensemble_screened32/D_s14.pt"
   "pufferlib_market/prod_ensemble_screened32/D_s28.pt"
