@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"binancego/data"
+	"binancego/policy"
 	"binancego/sim"
 	"binancego/sweep"
 )
@@ -26,6 +27,10 @@ func main() {
 		runSim()
 	case "sweep":
 		runSweep()
+	case "onnx-sweep":
+		runONNXSweep()
+	case "infer":
+		runInfer()
 	case "bench":
 		runBench()
 	case "cmaes":
@@ -34,10 +39,12 @@ func main() {
 		fmt.Println("binancego simcli -- trading simulation toolkit")
 		fmt.Println()
 		fmt.Println("Commands:")
-		fmt.Println("  sim     Run a single simulation on a CSV file")
-		fmt.Println("  sweep   Sweep epochs/configs in parallel")
-		fmt.Println("  bench   Benchmark simulator throughput")
-		fmt.Println("  cmaes   Optimize sim params with CMA-ES")
+		fmt.Println("  sim         Run a single simulation on a CSV file")
+		fmt.Println("  sweep       Sweep epochs/configs from pre-computed actions")
+		fmt.Println("  onnx-sweep  Sweep ONNX checkpoints: inference -> sim -> leaderboard")
+		fmt.Println("  infer       Run ONNX inference on a CSV and print actions")
+		fmt.Println("  bench       Benchmark simulator throughput")
+		fmt.Println("  cmaes       Optimize sim params with CMA-ES")
 	}
 }
 
@@ -61,14 +68,12 @@ func runSim() {
 	}
 
 	simBars := data.ToSimBars(bars)
-
-	// Generate dummy actions for testing (buy 0.5% below close, sell 0.5% above)
 	actions := make([]sim.Action, len(simBars))
 	for i, b := range simBars {
 		actions[i] = sim.Action{
-			BuyPrice:  b.Close * 0.995,
-			SellPrice: b.Close * 1.005,
-			BuyAmount: 50,
+			BuyPrice:   b.Close * 0.995,
+			SellPrice:  b.Close * 1.005,
+			BuyAmount:  50,
 			SellAmount: 80,
 		}
 	}
@@ -97,13 +102,13 @@ func runSim() {
 func runSweep() {
 	fs := flag.NewFlagSet("sweep", flag.ExitOnError)
 	actionsDir := fs.String("actions-dir", "", "directory with pre-computed action CSVs")
-	dataRoot := fs.String("data-root", "trainingdatahourly/crypto", "data root for OHLCV CSVs")
-	symbols := fs.String("symbols", "BTCUSD,ETHUSD,SOLUSD,DOGEUSD,AAVEUSD,LINKUSD", "comma-separated symbols")
-	lags := fs.String("lags", "0,1,2", "comma-separated decision lags")
-	windows := fs.String("windows", "14,30,60", "comma-separated window days")
-	fee := fs.Float64("fee", 0.001, "maker fee rate")
-	workers := fs.Int("workers", runtime.NumCPU(), "num workers")
-	output := fs.String("output", "sweep_results.json", "output JSON path")
+	dataRoot := fs.String("data-root", "trainingdatahourly/crypto", "data root")
+	symbols := fs.String("symbols", "BTCUSD,ETHUSD,SOLUSD,DOGEUSD,AAVEUSD,LINKUSD", "symbols")
+	lags := fs.String("lags", "0,1,2", "decision lags")
+	windows := fs.String("windows", "14,30,60", "window days")
+	fee := fs.Float64("fee", 0.001, "fee rate")
+	workers := fs.Int("workers", runtime.NumCPU(), "workers")
+	output := fs.String("output", "sweep_results.json", "output JSON")
 	fs.Parse(os.Args[2:])
 
 	if *actionsDir == "" {
@@ -131,10 +136,129 @@ func runSweep() {
 	fmt.Printf("\nResults saved to %s\n", *output)
 }
 
+func runONNXSweep() {
+	fs := flag.NewFlagSet("onnx-sweep", flag.ExitOnError)
+	ckptDir := fs.String("checkpoints", "", "directory with .onnx or .pt files")
+	dataRoot := fs.String("data-root", "trainingdatahourly/crypto", "OHLCV data root")
+	forecastDir := fs.String("forecasts", "", "forecast cache dir")
+	symbols := fs.String("symbols", "BTCUSD,ETHUSD,SOLUSD,DOGEUSD,AAVEUSD,LINKUSD", "symbols")
+	lags := fs.String("lags", "0,1,2", "decision lags")
+	windows := fs.String("windows", "14,30,60", "window days")
+	fee := fs.Float64("fee", 0.001, "fee rate")
+	maxHold := fs.Int("max-hold", 6, "max hold bars")
+	seqLen := fs.Int("seq-len", 48, "model sequence length")
+	workers := fs.Int("workers", runtime.NumCPU(), "workers")
+	output := fs.String("output", "onnx_sweep_results.json", "output JSON")
+	fs.Parse(os.Args[2:])
+
+	if *ckptDir == "" {
+		log.Fatal("--checkpoints required")
+	}
+
+	cfg := sweep.ONNXSweepConfig{
+		CheckpointDir:  *ckptDir,
+		DataRoot:       *dataRoot,
+		ForecastDir:    *forecastDir,
+		Symbols:        strings.Split(*symbols, ","),
+		Lags:           parseInts(*lags),
+		WindowDays:     parseInts(*windows),
+		FeeRate:        *fee,
+		MaxHoldBars:    *maxHold,
+		SeqLen:         *seqLen,
+		NumWorkers:     *workers,
+		DecodeConfig:   policy.DefaultDecodeConfig(),
+	}
+
+	results, err := sweep.RunONNXSweep(cfg)
+	if err != nil {
+		log.Fatalf("onnx-sweep: %v", err)
+	}
+
+	sweep.PrintLeaderboard(results)
+	if err := sweep.SaveCheckpointResults(results, *output); err != nil {
+		log.Printf("save: %v", err)
+	}
+	fmt.Printf("\n%d results saved to %s\n", len(results), *output)
+}
+
+func runInfer() {
+	fs := flag.NewFlagSet("infer", flag.ExitOnError)
+	modelPath := fs.String("model", "", "path to .onnx model")
+	csvPath := fs.String("data", "", "path to OHLCV CSV")
+	seqLen := fs.Int("seq-len", 48, "sequence length")
+	metaPath := fs.String("meta", "", "training_meta.json for normalizer")
+	n := fs.Int("n", 10, "number of actions to print")
+	fs.Parse(os.Args[2:])
+
+	if *modelPath == "" || *csvPath == "" {
+		log.Fatal("--model and --data required")
+	}
+
+	model, err := policy.LoadONNX(*modelPath)
+	if err != nil {
+		log.Fatalf("load model: %v", err)
+	}
+	defer model.Close()
+
+	bars, err := data.LoadCSV(*csvPath)
+	if err != nil {
+		log.Fatalf("load csv: %v", err)
+	}
+
+	var norm *data.FeatureNormalizer
+	if *metaPath != "" {
+		norm, err = data.LoadNormalizerFromMeta(*metaPath)
+		if err != nil {
+			log.Printf("warn: normalizer: %v", err)
+		}
+	}
+
+	feats := data.ComputeFeatures(bars)
+	featureNames := []string{"return_1h", "volatility_24h", "volume_z", "hour_sin", "hour_cos", "dow_sin", "dow_cos", "high_low_range"}
+
+	features := make([][]float32, len(bars))
+	for i := range bars {
+		row := make([]float32, len(featureNames))
+		for j, name := range featureNames {
+			val := feats[name][i]
+			if norm != nil {
+				val = norm.Normalize(name, val)
+			}
+			row[j] = float32(val)
+		}
+		features[i] = row
+	}
+
+	if len(features) > *seqLen {
+		features = features[len(features)-*seqLen:]
+		bars = bars[len(bars)-*seqLen:]
+	}
+
+	logits, err := model.InferSequence(features)
+	if err != nil {
+		log.Fatalf("inference: %v", err)
+	}
+
+	cfg := policy.DefaultDecodeConfig()
+	start := len(logits) - *n
+	if start < 0 {
+		start = 0
+	}
+
+	fmt.Printf("%-20s %10s %10s %8s %8s  logits\n", "timestamp", "buy_price", "sell_price", "buy_amt", "sell_amt")
+	for i := start; i < len(logits); i++ {
+		ref := bars[i].Close
+		action := policy.DecodeActions(logits[i], ref, ref*1.01, ref*0.99, cfg)
+		fmt.Printf("%-20s %10.2f %10.2f %8.1f %8.1f  %v\n",
+			bars[i].Timestamp.Format("2006-01-02T15:04"),
+			action.BuyPrice, action.SellPrice, action.BuyAmount, action.SellAmount,
+			logits[i])
+	}
+}
+
 func runBench() {
 	fmt.Printf("Benchmarking on %d cores...\n", runtime.NumCPU())
 
-	// Generate 30-day data
 	nBars := 720
 	bars := make([]sim.Bar, nBars)
 	actions := make([]sim.Action, nBars)
@@ -147,7 +271,6 @@ func runBench() {
 	cfg := sim.DefaultSimConfig()
 	cfg.FillBufferPct = 0
 
-	// Single-threaded benchmark
 	nIter := 10000
 	start := time.Now()
 	for i := 0; i < nIter; i++ {
@@ -158,7 +281,6 @@ func runBench() {
 	fmt.Printf("Single-thread: %.0f sims/sec (%.1f us/sim)\n",
 		simsPerSec, elapsed.Seconds()/float64(nIter)*1e6)
 
-	// Multi-threaded benchmark
 	pool := sweep.NewWorkerPool(runtime.NumCPU())
 	jobs := make([]sweep.SimJob, nIter)
 	for i := range jobs {
@@ -178,7 +300,7 @@ func runCMAES() {
 	csvPath := fs.String("data", "", "path to OHLCV CSV")
 	popSize := fs.Int("pop", 20, "population size")
 	maxIter := fs.Int("iter", 50, "max iterations")
-	metric := fs.String("metric", "sortino", "target metric (sortino or total_return)")
+	metric := fs.String("metric", "sortino", "target metric")
 	fs.Parse(os.Args[2:])
 
 	if *csvPath == "" {
@@ -191,7 +313,6 @@ func runCMAES() {
 	}
 
 	simBars := data.ToSimBars(bars)
-	// Dummy actions
 	actions := make([]sim.Action, len(simBars))
 	for i, b := range simBars {
 		actions[i] = sim.Action{b.Close * 0.995, b.Close * 1.005, 50, 80}
