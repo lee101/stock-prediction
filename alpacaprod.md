@@ -7,14 +7,37 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
-### 2026-04-13 (latest update ~22:11 UTC) — Active sweep status
+### 2026-04-14 (latest update ~23:20 UTC) — Active sweep status
 
-**Active sweeps (RTX 5090, ~8-11k SPS each):**
-- D s70+: training; ~70 D seeds total; new anchor D_s67 (neg=7)
-- I variant (Muon + tp=0.03): s4+ training (s3 was best individual anchor neg=8!)
-- v2 sweep (C+D, data 2019-2025-11-30, 31% more data): running
-- monitor_sweeps.sh: runs every 30min, auto-evals, flags anchors neg<25
-- **G/H/I s1-s2 killed** (G/I false positive pattern confirmed), transformer killed (degenerate training)
+**Active sweeps (RTX 5090, ~21k SPS each):**
+- I variant (Muon + tp=0.03): s6+ training (s3 was best individual anchor neg=8 — DEPLOYED)
+- E variant (Muon + tp=0.02): s5+ training (s1-4 neg=33-43; s5 OOS in progress)
+- v2 sweeps KILLED (all seeds neg=30-78, consistently terrible, GPU wasted)
+- monitor_sweeps.sh: one-shot, re-run manually after new seeds finish
+
+**Sweep results so far:**
+- I/s3: neg=8 ★ (deployed), I/s2: neg=17, I/s1: neg=47, I/s4: neg=74, I/s5: neg=43
+- E/s1-s4: neg=33-43 (poor, Muon+tp=0.02 produces different behavior than I)
+- D/s71: neg=28 (bad, D sweep killed to free GPU)
+- G/H/F variants: all neg≥33 (no anchors)
+
+**Slippage robustness (8-model prod ensemble, 100 windows):**
+- 5 bps: med=18.17%, p10=5.07%, neg=8/100, sort=30.67 (standard)
+- 10 bps: med=17.73%, p10=3.05%, neg=8/100, sort=29.06
+- 20 bps: med=15.47%, p10=2.64%, neg=8/100, sort=26.01
+- 30 bps: med=16.19%, p10=2.54%, neg=8/100, sort=27.61
+→ neg=8 invariant across all slippage levels! Very robust.
+
+**Ext val benchmark (Dec 2025-Apr 2026 tariff crash, 30 windows):**
+- Prod 8-model (trained through May 2025): **neg=0/30**, med=22.66%, p10=6.65%, sort=19.24
+- Best ext 3-model (trained through Nov 2025): neg=12/30, med=12.52%, p10=-21.72%
+→ Prod ensemble DOMINATES on the most recent trading period. No need to switch to ext models.
+
+**Pruning test (new 8-model with I_s3, 100 windows):**
+- D_s14: most valuable (+4.13% med if present)
+- D_s16: second most valuable (+3.80% med)
+- D_s3: removing it reduces neg 8→7 but costs -2.40% med (swap candidate)
+- I_s3: smallest individual contribution (+1.32% med) but still positive
 
 **Next live trade**: Monday 2026-04-14 ~13:35 UTC (service PID 4116758, restarted 22:11)
 **Live account**: $28,679 equity, 0 positions, value gate=-1.0 (fixed), regime=BULL
