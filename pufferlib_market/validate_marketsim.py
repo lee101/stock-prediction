@@ -156,7 +156,9 @@ def _set_trader_shadow_state(
     # would give obs[base+1] = cur_price / 10_000 — up to 8.5× off for BTC at
     # $85k.  Use the same normalization as the C env.
     _ep = float(entry_price) if held_symbol and entry_price and entry_price > 0 else 0.0
-    trader.cash = 10_000.0
+    # C env: flat→cash=10000/obs[base+0]=1.0; holding→cash≈0/obs[base+0]≈0.
+    # Set 0 when holding to match training obs[base+0] distribution.
+    trader.cash = 0.0 if held_symbol else 10_000.0
     trader.position_qty = (10_000.0 / _ep) if (held_symbol and _ep > 0) else 0.0
     trader.entry_price = _ep
     trader.current_position = symbol_to_index[held_symbol] if held_symbol else None

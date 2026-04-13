@@ -2105,13 +2105,14 @@ def _apply_portfolio_context_to_trader(
     *,
     portfolio: PortfolioContext,
 ) -> None:
-    trader.cash = float(portfolio.cash)
-    # The C training env starts with INITIAL_CASH=10_000 and buys
-    # qty = INITIAL_CASH / entry_price, so obs[base+1] = pos_val /
-    # INITIAL_CASH ≈ 1.0 when fully invested.  Using the actual Alpaca qty
-    # here (which depends on account size, e.g. 12.5% × $28k / $200 = 17.5
-    # shares) gives obs[base+1] ≈ 0.175 × (price / 10_000), far below 1.0
-    # and mismatch vs training.  Normalise to match the C env instead.
+    # The C training env: flat→cash=10000/obs[base+0]=1.0;
+    # holding (allocation_pct=1.0)→cash≈0/obs[base+0]≈0.
+    # Actual Alpaca cash (e.g. $28k) gives obs[base+0]=2.8+, way outside
+    # [0,1] training range.  Normalise to match the training convention.
+    trader.cash = 0.0 if portfolio.current_symbol else 10_000.0
+    # Similarly, C env buys qty = INITIAL_CASH / entry_price so obs[base+1]
+    # = pos_val / INITIAL_CASH ≈ 1.0 when fully invested.  Using actual
+    # Alpaca qty (account-size-dependent) gives wrong obs[base+1].
     _ep = float(portfolio.entry_price) if portfolio.entry_price and portfolio.entry_price > 0 else 0.0
     trader.position_qty = (10_000.0 / _ep) if (portfolio.current_symbol and _ep > 0) else 0.0
     trader.entry_price = _ep
@@ -2687,12 +2688,19 @@ def execute_signal_with_trading_server(
         logger.info("Closing managed server position: %s qty=%.4f", managed_symbol, qty)
         if not dry_run:
             server_client.refresh_prices(symbols=[managed_symbol])
+            # Prefer live quote; fall back to position current_price if managed_symbol
+            # was removed from symbol_list (quotes only contains symbols in symbol_list).
+            close_price = (
+                quotes.get(managed_symbol)
+                or (managed_position.current_price if managed_position.current_price > 0 else 0.0)
+                or managed_position.avg_entry_price
+            )
             order = _submit_server_limit_order_with_loss_guard(
                 server_client,
                 symbol=managed_symbol,
                 qty=qty,
                 side="sell",
-                limit_price=float(quotes[managed_symbol]),
+                limit_price=float(close_price),
                 metadata={"strategy": "daily_stock_rl", "intent": "close_managed"},
             )
             if order is None:
