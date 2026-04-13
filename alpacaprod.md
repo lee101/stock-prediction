@@ -7,6 +7,39 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
+### 2026-04-13 — Regime filter + evaluation audit
+
+#### SPY regime filter added to production
+- **Root cause**: all RL models fail in bear markets. Production account dropped $38,954→$28,679 (-26%) during March 2026 tariff shock.
+- **Fix**: Added `src/market_regime.py` — SPY 20-day MA regime filter in `trade_daily_stock_prod.py`.
+  - Skips opening new long positions when SPY close < SPY 20-day MA.
+  - Does NOT force-close existing positions (only blocks new entries).
+  - Fails open if SPY data unavailable.
+- **Current regime (2026-04-13)**: BULL (SPY 679.46 > MA20 ~657.72) — trading allowed Monday.
+- **Service restarted**: 2026-04-13 08:46 UTC, PID 3026039. Sleeping until Mon 2026-04-14 ~13:35 UTC.
+- **Regime history**: Nov 2025 47% bull, Dec 86%, Jan 90%, **Feb 42% BEAR**, **Mar 0% BEAR**, Apr 71% BULL
+
+#### Key evaluation finding: 5-offset augmented eval ≠ real returns
+- **Augmented eval** (evaluate_holdout.py, 5 session offsets): 18.5%/60 steps for C94, 15.6% for D29
+  - 60 augmented steps = 12 actual trading days (5 offsets per day)
+  - Metric reads "18%" but model is getting 5 decisions per actual day vs 1 in production
+- **Single-offset eval** (realistic, 1 decision/day — ground truth):
+  - C94 on 150 actual days (Jun-Nov 2025): **51.66% total**, 45 trades, 62.2% WR, 15.3% MaxDD
+  - D29 champion_u200 on 150 actual days: **54.22% total**, 71 trades, 54.9% WR, 11.6% MaxDD
+  - Monthly equiv (150 days = 7.5 months): C94=**5.7%/month**, D29=**5.9%/month** at 100% allocation
+- **At 12.5% production allocation**: C94/D29 → **0.7-0.9%/month** actual portfolio return
+  - Explains why live returns are ~+0.21% total — production allocation is the bottleneck
+- **Bear market (single-offset)**: ALL models fail — C94=-10%/60d, C31=-3.1%/60d, 70-88% neg windows
+- **fp4.bench.eval_generic (eval_100d.py)**: BROKEN for stocks17 checkpoints — ignores disable_shorts mask.
+  Use evaluate_holdout.py --decision-lag 2 for correct evaluation.
+- **27%/month HARD RULE note**: this target is calibrated for crypto, NOT achievable for stocks systematically.
+  Realistic stock target: 5-8%/month (60-96%/year) at full allocation with regime filter.
+
+#### Chronos2 directional signal: confirmed zero
+- 60-day backtest: 50.1% directional accuracy, Pearson r=-0.017. Zero signal for trading.
+- Pre-augmentation (differencing/log_diff/diff_norm) reduces MAE 2.45%→1.93% but does NOT improve direction.
+- Chronos2 cannot be used as a direct trading signal for daily stocks.
+
 ### 2026-04-13 — Chronos2 full domain fine-tune
 
 #### Training run: stocks_all_v1 (DONE)
