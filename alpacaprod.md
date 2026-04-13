@@ -22,8 +22,9 @@
 - Output: `chronos2_finetuned/stocks_all_v2/finetuned-ckpt/`
 - R2: `models/chronos2/finetune/stocks_all_v2/`
 - **Result: MAE% 2.38%** (baseline 2.45% → **+2.9% improvement**)
-- Calibration (long-only): buy=-8bps, sell=-8bps, Sharpe=0.326 (aggressive long bias)
-- Calibration (short-allowed): buy=-8bps, sell=-8bps, Sharpe=0.214 (shorting hurts)
+- Calibration (long-only): buy=-6bps, sell=-8bps, weight=0.50, Sharpe=0.154 (re-run 2026-04-13 with fixed fee logic)
+- Calibration (short-allowed): buy=-6bps, sell=-8bps, weight=0.50, Sharpe=0.213
+- **Note**: old Sharpe=0.326 was wrong — fee was charged every held day, not just on transitions
 
 #### Training run: stocks_all_v3 (RUNNING — 2026-04-13, PID 2029405)
 - Log: `chronos2_finetune_v3.log`
