@@ -32,7 +32,9 @@ FULL_VAL="pufferlib_market/data/screened32_single_offset_val_full.bin"
 case "$VARIANT" in
   C) TP=0.02; STEPS=15000000; EXTRA_FLAGS=() ;;
   D) TP=0.05; STEPS=15000000; EXTRA_FLAGS=(--optimizer muon) ;;
-  *) echo "Unknown variant $VARIANT (use C or D)"; exit 1 ;;
+  E) TP=0.02; STEPS=15000000; EXTRA_FLAGS=(--optimizer muon) ;;  # Muon at C's trade-penalty
+  F) TP=0.05; STEPS=15000000; EXTRA_FLAGS=() ;;                  # AdamW at D's trade-penalty
+  *) echo "Unknown variant $VARIANT (use C D E F)"; exit 1 ;;
 esac
 
 SEEDS=${SEEDS:-1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20}
