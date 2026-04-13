@@ -9,7 +9,7 @@ MODEL_MAP = {
     "gemini-flash": "gemini-flash",
     "gemini-3.1": "gemini-3.1-pro-preview",
     "gemini-3.1-pro": "gemini-3.1-pro-preview",
-    "gemini-3.1-lite": "gemini-3.1-flash-lite-preview",
+    "gemini-3.1-lite": "gemini-3.1-flash-lite",
     "glm-5": "glm-5",
     "glm-4-plus": "glm-4-plus",
 }

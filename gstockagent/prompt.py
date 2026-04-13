@@ -15,7 +15,10 @@ def load_forecast(symbol: str, forecast_dir: Path, as_of: pd.Timestamp) -> dict:
     for suffix in ["USD", "USDT"]:
         p = forecast_dir / f"{symbol}{suffix}.parquet"
         if p.exists():
-            df = pd.read_parquet(p)
+            try:
+                df = pd.read_parquet(p)
+            except Exception:
+                continue
             df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
             mask = df["timestamp"] <= as_of
             if mask.any():

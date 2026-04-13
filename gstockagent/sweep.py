@@ -8,7 +8,7 @@ from .simulator import run_simulation
 
 def run_sweep(start_date: str, end_date: str, verbose: bool = False):
     leverage_grid = [0.5, 1.0, 2.0, 3.0, 5.0]
-    model_grid = ["gemini-3.1", "glm-5"]
+    model_grid = ["gemini-3.1-lite", "glm-5"]
     max_pos_grid = [5, 10]
 
     results = []

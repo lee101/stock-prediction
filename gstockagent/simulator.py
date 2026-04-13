@@ -130,12 +130,14 @@ def run_simulation(config: GStockConfig, start_date: str, end_date: str,
                     close_position(state, sym, pos.exit_price, "tp", str(date.date()))
                     state.cash -= apply_fees(pos.qty * pos.exit_price, config.fee_bps)
 
-        # margin interest on borrowed
+        # margin interest on leveraged exposure
         if config.leverage > 1.0:
-            borrowed = max(0, sum(
+            total_exposure = sum(
                 pos.qty * prices.get(pos.symbol, pos.entry_price)
                 for pos in state.positions.values()
-            ) - config.initial_capital)
+            )
+            eq_now = portfolio_value(state, prices)
+            borrowed = max(0, total_exposure - eq_now)
             daily_interest = borrowed * config.margin_annual_rate / 365
             state.cash -= daily_interest
 
@@ -162,66 +164,80 @@ def run_simulation(config: GStockConfig, start_date: str, end_date: str,
                 print(f"{date_str}: LLM error: {e}")
             alloc = {}
 
-        # rebalance to target allocation
+        # parse target allocation
         total_capital = eq * config.leverage
-        target_syms = set()
-
+        target = {}
         for sym, spec in alloc.items():
             sym = sym.upper()
-            if sym not in prices:
+            if sym not in prices or not isinstance(spec, dict):
                 continue
-            if not isinstance(spec, dict):
-                continue
-            pct = float(spec.get("allocation_pct", 0))
-            direction = spec.get("direction", "long")
-            exit_price = float(spec.get("exit_price", 0))
-            stop_price = float(spec.get("stop_price", 0))
-
+            pct = float(spec.get("allocation_pct", 0) or 0)
             if pct <= 0:
                 continue
-            target_syms.add(sym)
-            target_notional = total_capital * pct / 100
+            target[sym] = {
+                "pct": pct,
+                "direction": spec.get("direction", "long") or "long",
+                "exit_price": float(spec.get("exit_price", 0) or 0),
+                "stop_price": float(spec.get("stop_price", 0) or 0),
+            }
+
+        # step 1: close positions not in target (free up cash first)
+        for sym in list(state.positions.keys()):
+            if sym not in target:
+                pos = state.positions[sym]
+                close_position(state, sym, prices[sym], "rebalance", date_str)
+                state.cash -= apply_fees(pos.qty * prices[sym], config.fee_bps)
+
+        # step 2: close positions that need direction flip
+        for sym, spec in target.items():
+            if sym in state.positions and state.positions[sym].direction != spec["direction"]:
+                pos = state.positions[sym]
+                close_position(state, sym, prices[sym], "flip", date_str)
+                state.cash -= apply_fees(pos.qty * prices[sym], config.fee_bps)
+
+        # step 3: open/adjust positions with cash constraint
+        for sym, spec in target.items():
+            target_notional = total_capital * spec["pct"] / 100
             target_qty = target_notional / prices[sym]
 
             if sym in state.positions:
                 cur_pos = state.positions[sym]
-                if cur_pos.direction != direction:
-                    # close and reopen
-                    close_position(state, sym, prices[sym], "flip", date_str)
-                    state.cash -= apply_fees(cur_pos.qty * prices[sym], config.fee_bps)
-                else:
-                    # adjust size
-                    diff_qty = target_qty - cur_pos.qty
-                    if abs(diff_qty) > target_qty * 0.05:
-                        diff_notional = abs(diff_qty) * prices[sym]
-                        state.cash -= apply_fees(diff_notional, config.fee_bps)
-                        if direction == "long":
+                diff_qty = target_qty - cur_pos.qty
+                if abs(diff_qty) > target_qty * 0.05:
+                    diff_notional = abs(diff_qty) * prices[sym]
+                    fee = apply_fees(diff_notional, config.fee_bps)
+                    if diff_qty > 0 and spec["direction"] == "long":
+                        cost = diff_qty * prices[sym] + fee
+                        if cost > state.cash:
+                            diff_qty = max(0, (state.cash - fee) / prices[sym])
+                            if diff_qty <= 0:
+                                continue
+                        state.cash -= diff_qty * prices[sym] + fee
+                    else:
+                        state.cash -= fee
+                        if spec["direction"] == "long":
                             state.cash -= diff_qty * prices[sym]
-                        cur_pos.qty = target_qty
-                        cur_pos.exit_price = exit_price
-                        cur_pos.stop_price = stop_price
-                    continue
+                    cur_pos.qty += diff_qty
+                cur_pos.exit_price = spec["exit_price"]
+                cur_pos.stop_price = spec["stop_price"]
+                continue
 
-            # open new position
-            if sym not in state.positions:
+            # open new position (both long and short require margin/cash)
+            cost = target_qty * prices[sym]
+            fee = apply_fees(cost, config.fee_bps)
+            total_cost = cost + fee
+            if total_cost > state.cash:
+                target_qty = max(0, (state.cash - fee) / prices[sym])
+                if target_qty <= 0:
+                    continue
                 cost = target_qty * prices[sym]
                 fee = apply_fees(cost, config.fee_bps)
-                if direction == "long":
-                    state.cash -= cost + fee
-                else:
-                    state.cash -= fee  # short: margin posted
-                state.positions[sym] = Position(
-                    symbol=sym, qty=target_qty, entry_price=prices[sym],
-                    direction=direction, exit_price=exit_price,
-                    stop_price=stop_price, entry_date=date_str
-                )
-
-        # close positions not in target
-        for sym in list(state.positions.keys()):
-            if sym not in target_syms:
-                pos = state.positions[sym]
-                close_position(state, sym, prices[sym], "rebalance", date_str)
-                state.cash -= apply_fees(pos.qty * prices[sym], config.fee_bps)
+            state.cash -= cost + fee
+            state.positions[sym] = Position(
+                symbol=sym, qty=target_qty, entry_price=prices[sym],
+                direction=spec["direction"], exit_price=spec["exit_price"],
+                stop_price=spec["stop_price"], entry_date=date_str
+            )
 
         eq = portfolio_value(state, prices)
         daily_ret = (eq / prev_equity - 1) if prev_equity > 0 else 0

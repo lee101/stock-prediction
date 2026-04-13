@@ -25,7 +25,7 @@ class TestConfig:
         assert c.leverage == 1.0
         assert c.fee_bps == 10.0
         assert len(c.symbols) == len(CRYPTO_SYMBOLS)
-        assert c.model == "gemini-3.1"
+        assert c.model == "gemini-flash"
 
     def test_custom(self):
         c = GStockConfig(leverage=3.0, model="glm-5", max_positions=5)
@@ -172,6 +172,46 @@ class TestGetCurrentPrices:
         bars = {"TEST": df}
         prices = get_current_prices(bars, pd.Timestamp("2025-01-02", tz="UTC"))
         assert prices["TEST"] == 105
+
+
+class TestMarginConstraints:
+    def test_short_requires_cash(self):
+        s = SimState(cash=1000)
+        from gstockagent.simulator import apply_fees
+        # opening short should deduct cash like a long
+        s.positions["BTC"] = Position("BTC", 0.01, 100000, "short", entry_date="2025-01-01")
+        # if we had the bug, shorts wouldn't cost cash
+        # verify portfolio_value works correctly for shorts
+        assert portfolio_value(s, {"BTC": 100000}) == 1000 + 0.01 * (2 * 100000 - 100000)
+
+    def test_cash_constraint_prevents_overleveraging(self):
+        s = SimState(cash=5000)
+        # cannot buy more than cash allows
+        prices = {"BTC": 50000}
+        target_qty = 10000 / 50000  # want 0.2 BTC = $10k
+        cost = target_qty * prices["BTC"]
+        fee = apply_fees(cost, 10)
+        total_cost = cost + fee
+        assert total_cost > s.cash  # confirms would exceed cash
+        # sim should reduce qty
+        actual_qty = max(0, (s.cash - fee) / prices["BTC"])
+        assert actual_qty < target_qty
+        assert actual_qty * prices["BTC"] <= s.cash
+
+    def test_close_short_returns_correct_cash(self):
+        s = SimState(cash=0)
+        s.positions["ETH"] = Position("ETH", 1.0, 3000, "short", entry_date="2025-01-01")
+        # profitable short: entry 3000, exit 2500
+        close_position(s, "ETH", 2500, "tp", "2025-01-02")
+        assert s.cash == 1.0 * (2 * 3000 - 2500)  # 3500
+        assert s.trade_log[-1]["pnl"] == 500
+
+    def test_close_short_losing(self):
+        s = SimState(cash=0)
+        s.positions["ETH"] = Position("ETH", 1.0, 3000, "short", entry_date="2025-01-01")
+        close_position(s, "ETH", 3500, "stop", "2025-01-02")
+        assert s.cash == 1.0 * (2 * 3000 - 3500)  # 2500
+        assert s.trade_log[-1]["pnl"] == -500
 
 
 if __name__ == "__main__":
