@@ -7,43 +7,52 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
-### 2026-04-12 — Chronos2 full domain fine-tune (RUNNING)
+### 2026-04-13 — Chronos2 full domain fine-tune
 
-#### Training run: stocks_all_v1 (RUNNING, ~2h remaining)
-- Script: `chronos2_full_finetune.py`, PID 408556
-- Log: `chronos2_finetune_v1.log`
-- Config: 30k steps, batch=256, ctx=512, lr=5e-5, full (not LoRA), bfloat16
-- Dataset: **3930 series** (stale cache — 325 daily only; v2 uses full 2258)
-- Data cache: `.cache/chronos2_train_data.npz`
-- Baseline MAE%: **2.45%** (n=500 val windows)
-- Output: `chronos2_finetuned/stocks_all_v1/finetuned-ckpt/`
+#### Training run: stocks_all_v1 (DONE)
+- Config: 30k steps, batch=256, ctx=512, lr=5e-5, full, bfloat16, no Muon
+- Dataset: 3930 series (stale cache)
+- Result: MAE% **2.49%** (slightly worse than baseline 2.45% — stale data cache)
 
-#### Training run: stocks_all_v2 (QUEUED — auto-launches after v1 finishes)
-- Script: `chronos2_full_finetune.py`, watcher PID 510335
+#### Training run: stocks_all_v2 (DONE — 2026-04-13)
 - Log: `chronos2_finetune_v2.log`
-- Config: **50k steps**, batch=256, ctx=512, lr=5e-5, full, bfloat16
+- Config: **50k steps**, batch=256, ctx=512, lr=5e-5, full, bfloat16, **Muon optimizer**
 - Dataset: **7796 series** — ALL 2258 daily stocks + 205 hourly crypto + 1435 sliding-daily + ~3895 return variants
-- Data cache: `.cache/chronos2_train_data_full.npz` (330MB, built 2026-04-12, 5min cold build)
+- Data cache: `.cache/chronos2_train_data_full.npz` (330MB)
 - Output: `chronos2_finetuned/stocks_all_v2/finetuned-ckpt/`
+- R2: `models/chronos2/finetune/stocks_all_v2/`
+- **Result: MAE% 2.38%** (baseline 2.45% → **+2.9% improvement**)
+- Calibration (long-only): buy=-8bps, sell=-8bps, Sharpe=0.326 (aggressive long bias)
+- Calibration (short-allowed): buy=-8bps, sell=-8bps, Sharpe=0.214 (shorting hurts)
 
-#### Key augmentations:
+#### Training run: stocks_all_v3 (RUNNING — 2026-04-13, PID 2029405)
+- Log: `chronos2_finetune_v3.log`
+- Config: **100k steps**, batch=256, ctx=512, lr=5e-5, full, bfloat16, **Muon + stronger aug**
+  - `amp_log_std=0.45` (vs 0.30 in v2) — stronger amplitude jitter
+  - `freq_subsample_prob=0.15` — stride-2 multi-timescale augmentation
+  - `noise_frac=0.003`, `dropout_rate=0.03`, `seed=123`
+- Dataset: same 7796-series cache as v2
+- Output: `chronos2_finetuned/stocks_all_v3/finetuned-ckpt/`
+- R2 prefix: `chronos2/finetune/stocks_all_v3/finetuned-ckpt`
+
+#### Key augmentations (v2/v3):
 - Sliding-window hourly→daily aggregation: 7 offsets per hourly series
 - Percent-return variants: stationary series for every price series
-- Online per-batch: amplitude jitter (log_std=0.30), relative noise (0.2%), time-dropout (2%)
+- Online per-batch: amplitude jitter, relative noise, time-dropout
+- v3 adds: freq_subsample_prob=0.15 (stride-2 "2-day" bars, multi-timescale)
 
-#### Next after v2 training:
-1. Evaluate final MAE% vs baseline 2.45%
-2. If improved: update `hyperparams/chronos2/*.json` to use new model as base
-3. Run per-symbol LoRA fine-tunes on top of this base (`retrain_chronos2_lora_binance_pairs.py`)
-4. Run linear calibration: `chronos2_linear_calibration.py --max-shift-bps 8`
-5. Benchmark via `benchmark_chronos2.py` and compare to current prod
+#### After v3 training:
+1. Run `benchmark_chronos2.py` on AAPL/SPY/GOOG/TSLA and compare to v2
+2. Run linear calibration: `python chronos2_linear_calibration.py --model-id chronos2_finetuned/stocks_all_v3/finetuned-ckpt --max-shift-bps 8`
+3. If v3 MAE% < v2 (2.38%): update `hyperparams/chronos2/*.json` with new base
+4. Per-symbol LoRA fine-tunes on top of best base: `retrain_chronos2_lora_binance_pairs.py`
 
 #### RunPod training (for larger GPU / longer runs):
 ```bash
 bash scripts/train_chronos2_full_runpod.sh \
     --cache .cache/chronos2_train_data_full.npz \
-    --steps 100000 --muon
-# Uploads checkpoint to R2 under chronos2/finetune/stocks_all_v2
+    --steps 200000 --muon
+# Downloads data cache from R2, uploads checkpoint to R2 when done
 ```
 
 ---
