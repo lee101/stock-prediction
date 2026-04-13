@@ -2122,10 +2122,11 @@ def _apply_portfolio_context_to_trader(
     # C env hold_hours convention: open_long() resets hold_hours=0, and the
     # NEXT step's obs (the first obs while holding) also sees hold_hours=0
     # because build_observation() runs BEFORE any hold action increments it.
-    # portfolio.hold_days is 1-indexed (days elapsed since buy date), so:
-    #   - Day after buying: hold_days=1 → C env hold_hours=0 → subtract 1
-    #   - 2nd day holding: hold_days=2 → C env hold_hours=1 → subtract 1
-    # Minimum is 0 (can't go negative when hold_days=0 meaning no position).
+    # portfolio.hold_days is 0-indexed calendar days since buy date:
+    #   - Bought today:    hold_days=0 → C env hold_hours=0 → subtract 1 → max(0,-1)=0 ✓
+    #   - Bought yesterday: hold_days=1 → C env hold_hours=0 → subtract 1 → 0 ✓
+    #   - Bought 2d ago:   hold_days=2 → C env hold_hours=1 → subtract 1 → 1 ✓
+    # Minimum is 0 (can't go negative).
     hold_bars_c = int(max(0, portfolio.hold_days - 1)) if portfolio.current_symbol else 0
     trader.hold_days = hold_bars_c
     trader.hold_hours = hold_bars_c
