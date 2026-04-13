@@ -357,6 +357,75 @@ def select_top_k_momentum(
     return [s[0] for s in scores[:top_k]]
 
 
+def select_top_k_ema_momentum(
+    traces: list[ModelTrace],
+    day_idx: int,
+    lookback: int = 5,
+    top_k: int = 1,
+    halflife: int = 2,
+) -> list[int]:
+    """Select top-K models by exponentially-weighted momentum (recent days weighted more)."""
+    scores = []
+    for i, tr in enumerate(traces):
+        start = max(0, day_idx - lookback)
+        end = day_idx + 1
+        if end > len(tr.equity_curve) or start >= end - 1:
+            scores.append((i, 0.0))
+            continue
+        daily_rets = []
+        for d in range(start + 1, end):
+            if tr.equity_curve[d - 1] > 0:
+                daily_rets.append((tr.equity_curve[d] - tr.equity_curve[d - 1]) / tr.equity_curve[d - 1])
+            else:
+                daily_rets.append(0.0)
+        if not daily_rets:
+            scores.append((i, 0.0))
+            continue
+        decay = np.log(2) / max(halflife, 1)
+        weights = np.array([np.exp(decay * j) for j in range(len(daily_rets))])
+        weights /= weights.sum()
+        score = float(np.dot(weights, daily_rets))
+        scores.append((i, score))
+    scores.sort(key=lambda x: x[1], reverse=True)
+    return [s[0] for s in scores[:top_k]]
+
+
+def select_top_k_sortino(
+    traces: list[ModelTrace],
+    day_idx: int,
+    lookback: int = 10,
+    top_k: int = 1,
+) -> list[int]:
+    """Select top-K models by trailing Sortino ratio."""
+    scores = []
+    for i, tr in enumerate(traces):
+        start = max(0, day_idx - lookback)
+        end = day_idx + 1
+        if end > len(tr.equity_curve) or start >= end - 1:
+            scores.append((i, 0.0))
+            continue
+        daily_rets = []
+        for d in range(start + 1, end):
+            if tr.equity_curve[d - 1] > 0:
+                daily_rets.append((tr.equity_curve[d] - tr.equity_curve[d - 1]) / tr.equity_curve[d - 1])
+            else:
+                daily_rets.append(0.0)
+        if len(daily_rets) < 2:
+            scores.append((i, 0.0))
+            continue
+        arr = np.array(daily_rets)
+        mean_ret = arr.mean()
+        downside = arr[arr < 0]
+        if len(downside) == 0:
+            sortino = mean_ret * 100  # all positive = very high score
+        else:
+            dd = float(np.sqrt(np.mean(downside**2)))
+            sortino = mean_ret / max(dd, 1e-8)
+        scores.append((i, sortino))
+    scores.sort(key=lambda x: x[1], reverse=True)
+    return [s[0] for s in scores[:top_k]]
+
+
 def select_top_k_chronos2(
     traces: list[ModelTrace],
     day_idx: int,
@@ -456,6 +525,10 @@ def run_meta_portfolio(
         # Select top-K models
         if selector == "chronos2":
             selected = select_top_k_chronos2(traces, t, lookback=lookback, top_k=top_k, wrapper=chronos2_wrapper)
+        elif selector == "ema":
+            selected = select_top_k_ema_momentum(traces, t, lookback=lookback, top_k=top_k)
+        elif selector == "sortino":
+            selected = select_top_k_sortino(traces, t, lookback=lookback, top_k=top_k)
         else:
             selected = select_top_k_momentum(traces, t, lookback=lookback, top_k=top_k)
 
@@ -565,6 +638,8 @@ def main():
     parser.add_argument("--fill-buffer-bps", type=float, default=5.0)
     parser.add_argument("--decision-lag", type=int, default=2)
     parser.add_argument("--use-chronos2", action="store_true")
+    parser.add_argument("--selector", type=str, default="momentum",
+                        choices=["momentum", "ema", "sortino", "chronos2"])
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--out", type=str, default=None)
     parser.add_argument("--max-models", type=int, default=0, help="Limit number of models to test (0=all)")
@@ -637,8 +712,9 @@ def main():
     ens_ret = ensemble_trace.equity_curve[-1] / ensemble_trace.equity_curve[0] * 100 - 100
     log.info("ensemble: return=%.2f%%", ens_ret)
 
-    # Phase 3: meta-strategy with momentum selection
-    log.info("running meta-strategy (momentum, top-%d, lookback=%d)...", args.top_k, args.lookback)
+    # Phase 3: meta-strategy with selected method
+    sel = args.selector if not args.use_chronos2 else "momentum"
+    log.info("running meta-strategy (%s, top-%d, lookback=%d)...", sel, args.top_k, args.lookback)
     meta_mom = run_meta_portfolio(
         data, traces,
         top_k=args.top_k,
@@ -646,7 +722,7 @@ def main():
         warmup=args.warmup,
         fee_rate=args.fee_rate,
         slippage_bps=args.slippage_bps,
-        selector="momentum",
+        selector=sel,
     )
 
     # Phase 4: optionally run with Chronos2

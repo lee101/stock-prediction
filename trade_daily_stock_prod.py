@@ -4455,6 +4455,8 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT)
     parser.add_argument("--extra-checkpoints", nargs="*", default=None,
                         help="Additional checkpoints for ensemble (default: DEFAULT_EXTRA_CHECKPOINTS)")
+    parser.add_argument("--ensemble-dir", default=None,
+                        help="Directory of .pt checkpoints (auto-discovers all, overrides --extra-checkpoints)")
     parser.add_argument("--no-ensemble", action="store_true",
                         help="Disable ensemble, use --checkpoint alone")
     parser.add_argument("--data-dir", default=DEFAULT_DATA_DIR)
@@ -4572,6 +4574,12 @@ def _resolve_runtime_config(args: argparse.Namespace) -> CliRuntimeConfig:
 
     if args.no_ensemble:
         extra_checkpoints: Optional[list[str]] = None
+    elif args.ensemble_dir is not None:
+        ens_dir = Path(_resolve(args.ensemble_dir))
+        all_pts = sorted(ens_dir.glob("*.pt"))
+        extra_checkpoints = [str(p) for p in all_pts]
+        checkpoint = extra_checkpoints[0] if extra_checkpoints else checkpoint
+        extra_checkpoints = extra_checkpoints[1:]
     elif args.extra_checkpoints is not None:
         extra_checkpoints = [_resolve(path) for path in args.extra_checkpoints]
     else:
