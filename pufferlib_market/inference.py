@@ -207,7 +207,12 @@ class PPOTrader:
         self.entry_price = 0.0
         self.hold_hours = 0
         self.step = 0
-        self.max_steps = int(config.get("max_steps", 720))
+        # max_steps stored at top-level (new format, added 2026-04-13) or in
+        # config dict (legacy), falling back to 720 (original hourly env default).
+        _ckpt_max_steps = ckpt.get("max_steps", None) if isinstance(ckpt, Mapping) else None
+        self.max_steps = int(
+            _ckpt_max_steps if _ckpt_max_steps is not None else config.get("max_steps", 720)
+        )
 
     def loaded_model_info(self) -> LoadedModelInfo:
         return LoadedModelInfo(

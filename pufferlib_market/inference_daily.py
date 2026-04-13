@@ -115,8 +115,15 @@ class DailyPPOTrader(PPOTrader):
             symbols,
             allow_unsafe_checkpoint_loading=allow_unsafe_checkpoint_loading,
         )
-        # Override max_steps for daily (90 days per episode)
-        self.max_steps = 90
+        # Use max_steps from the checkpoint if available (new checkpoints save
+        # the training max_steps via action_meta so obs[base+3] is correctly
+        # normalised).  Fall back to 90 for legacy checkpoints that don't have it
+        # (the historical default for this class — training typically used 252 but
+        # we kept 90 to avoid changing val/prod parity on existing models).
+        if self.max_steps == 720:
+            # PPOTrader used the hourly default (720) because max_steps was absent
+            # from the checkpoint.  Apply the daily legacy fallback of 90.
+            self.max_steps = 90
         self.hold_days = 0
 
     def get_daily_signal(

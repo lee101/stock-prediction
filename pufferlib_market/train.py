@@ -1243,6 +1243,11 @@ def train(args):
         "action_allocation_bins": int(config.action_allocation_bins),
         "action_level_bins": int(config.action_level_bins),
         "action_max_offset_bps": float(config.action_max_offset_bps),
+        # Save episode length so inference.py can use the correct max_steps for
+        # obs[base+3] = hold_hours / max_steps normalization (C env convention).
+        # Previously not saved → inference defaulted to 720 (hourly env default)
+        # then DailyPPOTrader overrode to 90, both wrong for daily models using 252.
+        "max_steps": int(args.max_steps),
     }
     if args.r2_pull_checkpoint:
         from src.r2_client import R2Client
