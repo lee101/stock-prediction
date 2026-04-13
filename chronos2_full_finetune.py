@@ -359,6 +359,9 @@ def train(
     aug_config: Optional[AugConfig] = None,
     use_muon: bool = False,
     grad_accum: int = 1,
+    wandb_project: Optional[str] = None,
+    wandb_run_name: Optional[str] = None,
+    wandb_entity: Optional[str] = None,
 ) -> Any:
     """
     Fine-tune pipeline on train_series with early stopping via val_series.
@@ -374,6 +377,36 @@ def train(
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
+
+    # W&B init (before TrainingArguments so run name is set before trainer reads env)
+    _wandb_project = wandb_project
+    if wandb_project:
+        try:
+            import wandb
+            import os
+            if wandb_entity:
+                os.environ["WANDB_ENTITY"] = wandb_entity
+            run_name = wandb_run_name or f"chronos2_{output_dir.name}"
+            wandb.init(
+                project=wandb_project,
+                name=run_name,
+                entity=wandb_entity,
+                config={
+                    "context_length": context_length,
+                    "prediction_length": prediction_length,
+                    "batch_size": batch_size,
+                    "num_steps": num_steps,
+                    "learning_rate": learning_rate,
+                    "finetune_mode": finetune_mode,
+                    "use_muon": use_muon,
+                    "grad_accum": grad_accum,
+                    "seed": seed,
+                },
+            )
+            print(f"W&B run: {wandb.run.url}")
+        except ImportError:
+            print("Warning: wandb not installed, disabling W&B logging")
+            _wandb_project = None
 
     base_model = pipeline.model
     model_cfg = deepcopy(base_model.config)
@@ -453,7 +486,7 @@ def train(
         logging_strategy="steps",
         logging_steps=200,
         disable_tqdm=False,
-        report_to="none",
+        report_to="wandb" if _wandb_project else "none",
         max_steps=num_steps,
         gradient_accumulation_steps=grad_accum,
         dataloader_num_workers=2,
@@ -566,6 +599,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("--grad-accum", type=int, default=1,
                    help="Gradient accumulation steps (default: 1). Effective batch = "
                         "batch_size × grad_accum. Steps are counted in optimizer updates.")
+    p.add_argument("--wandb-project", default=None,
+                   help="W&B project name. If set, logs training metrics to W&B.")
+    p.add_argument("--wandb-run-name", default=None,
+                   help="W&B run name (default: auto-generated from tag/timestamp)")
+    p.add_argument("--wandb-entity", default=None,
+                   help="W&B entity/team name")
     return p.parse_args(argv)
 
 
@@ -665,6 +704,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         aug_config=aug_config,
         use_muon=args.use_muon,
         grad_accum=args.grad_accum,
+        wandb_project=getattr(args, "wandb_project", None),
+        wandb_run_name=getattr(args, "wandb_run_name", None),
+        wandb_entity=getattr(args, "wandb_entity", None),
     )
 
     # --- Post-train eval (same eval_series as baseline for fair comparison) ---

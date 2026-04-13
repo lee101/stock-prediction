@@ -62,6 +62,8 @@ CACHE_PATH=".cache/chronos2_train_data_full.npz"
 OUTPUT_DIR=""          # auto-named from tag
 TAG="v3"
 REBUILD_CACHE=false
+WANDB_PROJECT=""
+WANDB_RUN=""
 
 # --- Parse flags ---
 while [[ $# -gt 0 ]]; do
@@ -83,6 +85,8 @@ while [[ $# -gt 0 ]]; do
         --cache)         CACHE_PATH=$2;      shift 2 ;;
         --rebuild-cache) REBUILD_CACHE=true; shift   ;;
         --tag)           TAG=$2;             shift 2 ;;
+        --wandb-project) WANDB_PROJECT=$2;   shift 2 ;;
+        --wandb-run)     WANDB_RUN=$2;       shift 2 ;;
         *) echo "Unknown flag: $1"; exit 1 ;;
     esac
 done
@@ -194,6 +198,10 @@ ARGS=(
     --dropout-rate     $DROPOUT_RATE
 )
 if $USE_MUON; then ARGS+=(--use-muon); fi
+if [[ -n "$WANDB_PROJECT" ]]; then
+    ARGS+=(--wandb-project "$WANDB_PROJECT")
+    [[ -n "$WANDB_RUN" ]] && ARGS+=(--wandb-run-name "${WANDB_RUN:-chronos2_${TAG}}")
+fi
 
 # --- Run training ---
 echo "Starting training at $(date -u +%Y-%m-%dT%H:%M:%SZ)"

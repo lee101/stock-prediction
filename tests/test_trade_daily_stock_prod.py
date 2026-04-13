@@ -5019,7 +5019,7 @@ def test_run_backtest_uses_named_history_floor(monkeypatch) -> None:
         def get_daily_signal(self, frames, prices):
             return SimpleNamespace(action="flat", symbol=None, direction=None, confidence=0.0, value_estimate=0.0)
 
-        def update_state(self, action, price, symbol):
+        def update_state(self, action, price, symbol, qty=0.0):
             return None
 
         def step_day(self):
@@ -5075,7 +5075,7 @@ def test_run_backtest_single_position_precomputes_feature_history(monkeypatch) -
         def step_day(self):
             return None
 
-        def update_state(self, action, price, symbol):  # noqa: ANN001, ARG002
+        def update_state(self, action, price, symbol, qty=0.0):  # noqa: ANN001, ARG002
             return None
 
     monkeypatch.setattr(
@@ -5149,7 +5149,7 @@ def test_run_backtest_reports_full_loss_annualized_when_equity_turns_negative(mo
                 return SimpleNamespace(action="buy", symbol="AAPL", direction="long", confidence=1.0, value_estimate=1.0)
             return SimpleNamespace(action="hold", symbol="AAPL", direction="long", confidence=1.0, value_estimate=1.0)
 
-        def update_state(self, action, price, symbol):
+        def update_state(self, action, price, symbol, qty=0.0):
             return None
 
         def step_day(self):
@@ -5217,7 +5217,7 @@ def test_run_backtest_applies_open_gate_to_low_confidence_signals(monkeypatch, t
         def step_day(self):
             return None
 
-        def update_state(self, action, price, symbol):
+        def update_state(self, action, price, symbol, qty=0.0):
             return None
 
     def _fake_loader(checkpoint, *, device="cpu", long_only=True, symbols=None, allow_unsafe_checkpoint_loading=False):
@@ -5365,7 +5365,7 @@ def test_run_backtest_passes_extra_checkpoints_to_preloaded_ensemble(monkeypatch
         def get_daily_signal(self, frames, prices):
             return SimpleNamespace(action="flat", symbol=None, direction=None, confidence=0.0, value_estimate=0.0)
 
-        def update_state(self, action, price, symbol):
+        def update_state(self, action, price, symbol, qty=0.0):
             return None
 
         def step_day(self):
@@ -5428,7 +5428,7 @@ def test_run_backtest_ensemble_precomputes_feature_history_once_per_symbol(monke
         def step_day(self):
             return None
 
-        def update_state(self, action, price, symbol):  # noqa: ANN001, ARG002
+        def update_state(self, action, price, symbol, qty=0.0):  # noqa: ANN001, ARG002
             return None
 
     monkeypatch.setattr(
@@ -5881,7 +5881,7 @@ def test_run_once_falls_back_to_local_daily_frames(monkeypatch, tmp_path: Path) 
         portfolio=daily_stock.PortfolioContext(),
         device="cpu",
         extra_checkpoints=None,
-        allow_unsafe_checkpoint_loading=False: (
+        allow_unsafe_checkpoint_loading=False, **_kw: (
             SimpleNamespace(
                 action="long_AAPL",
                 symbol="AAPL",
@@ -5940,7 +5940,7 @@ def test_run_once_dry_run_does_not_advance_state(monkeypatch, tmp_path: Path) ->
         portfolio=daily_stock.PortfolioContext(),
         device="cpu",
         extra_checkpoints=None,
-        allow_unsafe_checkpoint_loading=False: (
+        allow_unsafe_checkpoint_loading=False, **_kw: (
             SimpleNamespace(
                 action="flat",
                 symbol=None,
@@ -6024,7 +6024,7 @@ def test_run_once_continues_when_signal_log_write_fails(caplog, monkeypatch, tmp
         portfolio=daily_stock.PortfolioContext(),
         device="cpu",
         extra_checkpoints=None,
-        allow_unsafe_checkpoint_loading=False: (
+        allow_unsafe_checkpoint_loading=False, **_kw: (
             SimpleNamespace(
                 action="flat",
                 symbol=None,
@@ -6093,7 +6093,7 @@ def test_run_once_persists_structured_run_event(monkeypatch, tmp_path: Path) -> 
         portfolio=daily_stock.PortfolioContext(),
         device="cpu",
         extra_checkpoints=None,
-        allow_unsafe_checkpoint_loading=False: (
+        allow_unsafe_checkpoint_loading=False, **_kw: (
             SimpleNamespace(
                 action="flat",
                 symbol=None,
@@ -6164,7 +6164,7 @@ def test_run_once_continues_when_run_event_log_write_fails(caplog, monkeypatch, 
         portfolio=daily_stock.PortfolioContext(),
         device="cpu",
         extra_checkpoints=None,
-        allow_unsafe_checkpoint_loading=False: (
+        allow_unsafe_checkpoint_loading=False, **_kw: (
             SimpleNamespace(
                 action="flat",
                 symbol=None,
@@ -6270,7 +6270,7 @@ def test_run_once_market_closed_does_not_advance_state(caplog, monkeypatch, tmp_
         portfolio=daily_stock.PortfolioContext(),
         device="cpu",
         extra_checkpoints=None,
-        allow_unsafe_checkpoint_loading=False: (
+        allow_unsafe_checkpoint_loading=False, **_kw: (
             SimpleNamespace(
                 action="long_AAPL",
                 symbol="AAPL",
@@ -6567,7 +6567,7 @@ def test_run_once_blocks_new_entry_when_confidence_or_value_fail_gate(monkeypatc
         portfolio=daily_stock.PortfolioContext(),
         device="cpu",
         extra_checkpoints=None,
-        allow_unsafe_checkpoint_loading=False: (
+        allow_unsafe_checkpoint_loading=False, **_kw: (
             SimpleNamespace(
                 action="long_AAPL",
                 symbol="AAPL",

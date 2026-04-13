@@ -2,11 +2,11 @@
   "symbol": "SPY",
   "model": "chronos2",
   "config": {
-    "name": "direct_ctx128_bs32_median_mv_eval1",
-    "model_id": "amazon/chronos-2",
+    "name": "ctx512_bs128_median_uni",
+    "model_id": "chronos2_finetuned/stocks_all_v2/finetuned-ckpt",
     "device_map": "cuda",
-    "context_length": 128,
-    "batch_size": 32,
+    "context_length": 512,
+    "batch_size": 128,
     "quantile_levels": [
       0.1,
       0.5,
@@ -15,18 +15,18 @@
     "aggregation": "median",
     "sample_count": 0,
     "scaler": "none",
-    "use_multivariate": true,
+    "use_multivariate": false,
     "predict_kwargs": {}
   },
   "validation": {
-    "price_mae": 53.631869140624985,
-    "pct_return_mae": 0.08018302016109498,
-    "latency_s": 1.6744450184050947
+    "price_mae": 8.037985229492188,
+    "pct_return_mae": 0.011767271180987787,
+    "latency_s": 13.017689377069473
   },
   "test": {
-    "price_mae": 37.57792858886718,
-    "pct_return_mae": 0.05555415001129686,
-    "latency_s": 0.9152844932395965
+    "price_mae": 19.875027465820313,
+    "pct_return_mae": 0.03054428313483013,
+    "latency_s": 11.690021709073335
   },
   "windows": {
     "val_window": 20,
@@ -35,8 +35,8 @@
   },
   "metadata": {
     "source": "chronos2_benchmark",
-    "generated_at": "2026-04-11T12:03:23Z",
+    "generated_at": "2026-04-13T07:28:32Z",
     "selection_metric": "validation_pct_return_mae",
-    "selection_value": 0.08018302016109498
+    "selection_value": 0.011767271180987787
   }
 }

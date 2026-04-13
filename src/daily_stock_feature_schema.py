@@ -25,6 +25,9 @@ _LEGACY_PROD_MARKERS = (
 _RSI_V5_MARKERS = (
     "stocks12_v5_rsi",
     "v5_rsi",
+    "stocks17_sweep",
+    "screened32_sweep",
+    "screened32_ext",
 )
 
 

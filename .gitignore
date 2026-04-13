@@ -683,3 +683,8 @@ ctrader/models/
 trade_stock_wide/logs
 trade_stock_wide/gemini_cache/
 trainingdata_nvme_backup/
+.chronos2_v3_pid
+.tmp_weekly_build/
+AGENTS.local.md
+CLAUDE.local.md
+alpaca_go/alpaca_go

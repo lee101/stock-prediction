@@ -2,11 +2,11 @@
   "symbol": "AAPL",
   "model": "chronos2",
   "config": {
-    "name": "direct_ctx256_bs32_median_scale_meanstd_mv_eval20",
-    "model_id": "amazon/chronos-2",
+    "name": "ctx512_bs128_median_uni",
+    "model_id": "chronos2_finetuned/stocks_all_v2/finetuned-ckpt",
     "device_map": "cuda",
-    "context_length": 256,
-    "batch_size": 32,
+    "context_length": 512,
+    "batch_size": 128,
     "quantile_levels": [
       0.1,
       0.5,
@@ -14,19 +14,19 @@
     ],
     "aggregation": "median",
     "sample_count": 0,
-    "scaler": "meanstd",
-    "use_multivariate": true,
+    "scaler": "none",
+    "use_multivariate": false,
     "predict_kwargs": {}
   },
   "validation": {
-    "price_mae": 32.489638732910144,
-    "pct_return_mae": 0.12571811349565756,
-    "latency_s": 0.9510970546398312
+    "price_mae": 14.889305877685548,
+    "pct_return_mae": 0.05656335374099188,
+    "latency_s": 16.228365844348446
   },
   "test": {
-    "price_mae": 43.41213531494141,
-    "pct_return_mae": 0.15997227128490019,
-    "latency_s": 1.0040926823858172
+    "price_mae": 20.34738082885742,
+    "pct_return_mae": 0.08066333659791988,
+    "latency_s": 12.057641698047519
   },
   "windows": {
     "val_window": 20,
@@ -35,8 +35,8 @@
   },
   "metadata": {
     "source": "chronos2_benchmark",
-    "generated_at": "2026-04-11T12:03:23Z",
+    "generated_at": "2026-04-13T07:28:32Z",
     "selection_metric": "validation_pct_return_mae",
-    "selection_value": 0.12571811349565756
+    "selection_value": 0.05656335374099188
   }
 }
