@@ -137,18 +137,36 @@ class TestBuildFeaturesForSymbol:
         assert set(vals).issubset({0, 1})
 
     def test_no_future_leakage_rsi(self):
-        """RSI at row D uses only data up to D-1."""
-        df1 = self.df.copy()
-        df2 = self.df.copy()
-        # Change close on last day only
-        df2.loc[df2.index[-1], "close"] = df2["close"].iloc[-1] * 2.0
-        feat1 = build_features_for_symbol(df1)
-        feat2 = build_features_for_symbol(df2)
-        # RSI on the last day should differ (last day's close affects shifted close series)
-        # But RSI on second-to-last day should be the same (not affected by last day)
-        rsi1_prev = feat1["rsi_14"].iloc[-2]
-        rsi2_prev = feat2["rsi_14"].iloc[-2]
-        assert rsi1_prev == pytest.approx(rsi2_prev, rel=1e-4)
+        """RSI at row D uses only data up to D-1 (prev_close = close.shift(1)).
+
+        Since rsi_14[D] is computed on prev_close = close.shift(1), modifying
+        close[D] should NOT change rsi_14[D] — the feature at D only sees
+        close[0..D-1].  We verify:
+          1. Changing close[-1] leaves rsi_14[-1] unchanged (prev_close[-1] =
+             close[-2], so close[-1] is invisible).
+          2. Changing close[-2] DOES change rsi_14[-1] (prev_close[-1] =
+             close[-2]), confirming the signal actually propagates.
+        """
+        df_base = self.df.copy()
+
+        # --- test 1: modifying today's close must NOT affect today's RSI ---
+        df_modified_last = df_base.copy()
+        df_modified_last.loc[df_modified_last.index[-1], "close"] = \
+            df_modified_last["close"].iloc[-1] * 2.0
+        feat_base = build_features_for_symbol(df_base)
+        feat_mod_last = build_features_for_symbol(df_modified_last)
+        assert feat_base["rsi_14"].iloc[-1] == pytest.approx(
+            feat_mod_last["rsi_14"].iloc[-1], rel=1e-4
+        ), "rsi_14[-1] must not change when only close[-1] is modified (no-lookahead)"
+
+        # --- test 2: modifying yesterday's close SHOULD change today's RSI ---
+        df_modified_prev = df_base.copy()
+        df_modified_prev.loc[df_modified_prev.index[-2], "close"] = \
+            df_modified_prev["close"].iloc[-2] * 2.0
+        feat_mod_prev = build_features_for_symbol(df_modified_prev)
+        assert feat_base["rsi_14"].iloc[-1] != pytest.approx(
+            feat_mod_prev["rsi_14"].iloc[-1], rel=1e-4
+        ), "rsi_14[-1] must change when close[-2] changes (prev_close[-1] = close[-2])"
 
     def test_symbol_column(self):
         feat = build_features_for_symbol(self.df, symbol="AAPL")
