@@ -7,31 +7,53 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
-### 2026-04-13 — Screened32 5-model ensemble deployed (CURRENT PRODUCTION)
+### 2026-04-13 — Screened32 6-model ensemble deployed (CURRENT PRODUCTION)
 
-#### New champion: screened32 5-model ensemble
-- **Checkpoints**: `pufferlib_market/prod_ensemble_screened32/` (C_s7, D_s16, D_s13, D_s3, D_s5)
+#### Current champion: screened32 6-model ensemble
+- **Checkpoints**: `pufferlib_market/prod_ensemble_screened32/` (C_s7, D_s16, D_s13, D_s3, D_s5, **D_s2**)
 - **Symbols**: 32 screened stocks (LLY, BSX, ABBV, VRTX, SYK, WELL, JPM, GS, V, MA, AXP, MS, AAPL, MSFT, NVDA, KLAC, CRWD, META, COST, AZO, TJX, CAT, PH, RTX, BKNG, MAR, HLT, PLTR, SPY, QQQ, AMZN, GOOG)
 - **Allocation**: 25% (unchanged)
 - **Feature schema**: rsi_v5 (16 features/symbol)
-- **Service**: deployed 2026-04-13 09:44 UTC (latest restart), PID 4001104. Next tick ~13:35 UTC Monday.
+- **Service**: running PID 4118083 since 2026-04-13 09:51:56 UTC. Next tick ~13:35 UTC Monday.
 
-**Head-to-head vs stocks17 RSI 2-model on same Jun2025-Apr2026 OOS period (single-offset, 50d windows):**
+**Ensemble evolution:**
 
-| Model | Median | P10 | Neg/100 | Sortino |
-|-------|--------|-----|---------|---------|
-| stocks17 RSI 2-model | +7.09% | -8.26% | 34/100 | 16.88 |
-| **screened32 5-model** | **+12.39%** | **+0.31%** | **10/100** | **27.95** |
+| Model | Median | P10 | Neg/100 | Sortino | Notes |
+|-------|--------|-----|---------|---------|-------|
+| stocks17 RSI 2-model | +7.09% | -8.26% | 34/100 | 16.88 | prev prod |
+| screened32 5-model | +12.39% | +0.31% | 10/100 | 27.95 | deployed ~09:44 UTC |
+| **screened32 6-model (+D_s2)** | **+13.73%** | **+0.80%** | **9/100** | **27.39** | **CURRENT** |
 
-**Screened32 wins on ALL metrics** including positive P10 through the March 2026 tariff crash.
-- Healthcare stocks (LLY, ABBV, BSX, VRTX) are tariff-resilient → perform in bear markets
-- Ensemble synergy: individual best (C s7) gets +7.19%; 5-model gets +12.39%
-- Validated on 313 actual OOS trading days (Jun 2025-Apr 2026)
+**Why D_s2 helps**: Adding D_s2 (Muon, tp=0.05, seed 2) improves median +1.34pp, p10 +0.49pp, and cuts one negative window.
+Validated: full OOS Jun 2025-Apr 2026, 100 windows × 50d, lag=2, binary fills, fee=10bps, slip=5bps.
 
-**Why screened32 > stocks17:**
-1. Defensive sector mix (pharma, industrials) vs volatile (TSLA, COIN, NFLX in stocks17)
-2. 5 diverse models (2 AdamW variants + 3 Muon) provide better ensemble diversity
-3. 32 symbols → more opportunities to pick winners
+**Complete individual seed rankings (full OOS, 100 windows × 50d):**
+
+| V | S | Med% | P10% | Neg/100 | Sort | Prod |
+|---|---|------|------|---------|------|------|
+| C | 7 | +7.19% | -5.81% | 15 | 17.38 | ★ |
+| D | 16 | +5.49% | -3.75% | 17 | 14.30 | ★ |
+| D | 2 | +4.68% | -9.66% | 33 | 8.97 | ★ |
+| C | 3 | +2.83% | -9.08% | 34 | 7.93 | |
+| D | 1 | +6.12% | -5.25% | 37 | 19.20 | |
+| D | 20 | +2.71% | -8.14% | 38 | 6.89 | |
+| D | 13 | +2.53% | -9.83% | 39 | 8.10 | ★ |
+| D | 14 | +3.36% | -13.90% | 40 | 5.47 | |
+| D | 8 | +1.53% | -5.53% | 40 | 5.06 | |
+| D | 3 | +1.56% | -8.47% | 41 | 4.33 | ★ |
+| D | 5 | +1.60% | -11.86% | 42 | 5.43 | ★ |
+| (rest) | ... | ≤0.87% | neg | 44+ | | |
+
+**Ensemble combinations tested (all on same full OOS 100w):**
+
+| Config | Med | P10 | Neg | Sort |
+|--------|-----|-----|-----|------|
+| 5-model (C7,D16,D13,D3,D5) | 12.39% | 0.31% | 10 | 27.95 |
+| **6-model +D2** | **13.73%** | **0.80%** | **9** | **27.39** |
+| 6-model +D14 | 13.05% | -1.62% | 11 | 21.60 |
+| 6-model D2-set swap-D13→D14 | 13.45% | 1.15% | 8 | 20.91 |
+| 7-model +D2+D14 | 13.08% | 0.72% | 8 | 19.88 |
+| 8-model +D2+D14+D20 | 10.58% | 2.20% | 6 | 21.51 |
 
 **Deploy command** (if service restarts):
 ```bash

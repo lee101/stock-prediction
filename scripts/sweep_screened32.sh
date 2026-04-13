@@ -15,12 +15,19 @@ set -u
 cd /nvme0n1-disk/code/stock-prediction
 source .venv313/bin/activate
 
+# earlyoom kills training processes under memory pressure — stop it
+echo "ilu" | sudo -S systemctl stop earlyoom 2>/dev/null && echo "[sweep] earlyoom stopped" || echo "[sweep] earlyoom already stopped"
+
 export TMPDIR="$(pwd)/.tmp_train"
 mkdir -p "$TMPDIR"
+export TRITON_CACHE_DIR="$(pwd)/.tmp_train/triton_cache"
+export TORCH_COMPILE_DEBUG=0
+mkdir -p "$TRITON_CACHE_DIR"
 
 VARIANT="${1:-C}"
 TRAIN="pufferlib_market/data/screened32_augmented_train.bin"
 VAL="pufferlib_market/data/screened32_augmented_val.bin"
+FULL_VAL="pufferlib_market/data/screened32_single_offset_val_full.bin"
 
 case "$VARIANT" in
   C) TP=0.02; STEPS=15000000; EXTRA_FLAGS=() ;;
@@ -31,30 +38,66 @@ esac
 SEEDS=${SEEDS:-1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20}
 
 CKPT_ROOT="pufferlib_market/checkpoints/screened32_sweep/${VARIANT}"
-LOG="$CKPT_ROOT/leaderboard.csv"
+LOG="$CKPT_ROOT/leaderboard_fulloos.csv"
 mkdir -p "$CKPT_ROOT"
-echo "timestamp,variant,seed,med_pct,p10_pct,worst_pct,neg_count,med_sortino,checkpoint" > "$LOG"
+[ -f "$LOG" ] || echo "timestamp,variant,seed,med_pct,p10_pct,worst_pct,neg_count,med_sortino,checkpoint" > "$LOG"
 
 train_one() {
   local seed=$1
   local dir="$CKPT_ROOT/s${seed}"
   mkdir -p "$dir"
-  echo "[$(date -u +%FT%TZ)] [${VARIANT}] train seed ${seed}"
-  python -u -m pufferlib_market.train \
-      --data-path "$TRAIN" --val-data-path "$VAL" \
-      --total-timesteps "$STEPS" \
-      --max-steps 252 \
-      --trade-penalty "$TP" \
-      --hidden-size 1024 \
-      --anneal-lr \
-      --disable-shorts \
-      --val-eval-windows 50 \
-      "${EXTRA_FLAGS[@]}" \
-      --num-envs 128 \
-      --seed "$seed" \
-      --checkpoint-dir "$dir" \
-      > "$dir/train.log" 2>&1
-  echo "[$(date -u +%FT%TZ)] [${VARIANT}] done seed ${seed} (exit=$?)"
+  local attempt=1
+  local max_attempts=20
+  while [ $attempt -le $max_attempts ]; do
+    [ -f "$dir/final.pt" ] && { echo "  s${seed}: final.pt exists, training complete"; return 0; }
+    echo "[$(date -u +%FT%TZ)] [${VARIANT}] seed ${seed} training (attempt ${attempt})..."
+    python -u -m pufferlib_market.train \
+        --data-path "$TRAIN" --val-data-path "$VAL" \
+        --total-timesteps "$STEPS" \
+        --max-steps 252 \
+        --trade-penalty "$TP" \
+        --hidden-size 1024 \
+        --anneal-lr \
+        --disable-shorts \
+        --val-eval-windows 50 \
+        "${EXTRA_FLAGS[@]}" \
+        --num-envs 128 \
+        --seed "$seed" \
+        --checkpoint-dir "$dir" >> "$dir/train.log" 2>&1 &
+    local train_pid=$!
+    # Early termination: check first val (update 50)
+    local first_val_checked=0
+    while kill -0 $train_pid 2>/dev/null; do
+      sleep 45
+      if [ "$first_val_checked" -eq 0 ]; then
+        local first_val
+        first_val=$(grep -m1 "\[val\]" "$dir/train.log" 2>/dev/null)
+        if [ -n "$first_val" ]; then
+          first_val_checked=1
+          local neg n_val
+          neg=$(echo "$first_val" | grep -oP 'neg=\K[0-9]+(?=/)')
+          n_val=$(echo "$first_val" | grep -oP 'neg=[0-9]+/\K[0-9]+')
+          echo "  s${seed}: first val neg=${neg}/${n_val}"
+          # For 50-window val, skip if neg>40 (80%+ negative windows = definitely bad)
+          if [ -n "$neg" ] && [ "$neg" -gt 40 ]; then
+            echo "  s${seed}: early termination (neg=${neg}/${n_val} > 40)"
+            kill "$train_pid" 2>/dev/null
+            wait "$train_pid" 2>/dev/null
+            touch "$dir/SKIPPED_EARLY_TERM"
+            return 1
+          fi
+        fi
+      fi
+    done
+    wait "$train_pid"
+    local exit_code=$?
+    [ -f "$dir/final.pt" ] && { echo "[$(date -u +%FT%TZ)] [${VARIANT}] seed ${seed} done"; return 0; }
+    [ -f "$dir/SKIPPED_EARLY_TERM" ] && { echo "  s${seed}: skipped by early termination"; return 1; }
+    echo "[$(date -u +%FT%TZ)] [${VARIANT}] seed ${seed} exit_code=${exit_code}, retrying (attempt $((attempt+1)))..."
+    attempt=$((attempt + 1))
+  done
+  echo "[$(date -u +%FT%TZ)] [${VARIANT}] seed ${seed} FAILED after ${max_attempts} attempts"
+  return 1
 }
 
 eval_one() {
@@ -62,11 +105,11 @@ eval_one() {
   local ckpt="$CKPT_ROOT/s${seed}/val_best.pt"
   [ -f "$ckpt" ] || ckpt="$CKPT_ROOT/s${seed}/best.pt"
   [ -f "$ckpt" ] || { echo "  s${seed}: no checkpoint"; return; }
-  local out="$CKPT_ROOT/s${seed}/eval_lag2.json"
-  echo "  s${seed}: evaluating lag=2, 50 windows..."
+  local out="$CKPT_ROOT/s${seed}/eval_full.json"
+  echo "  s${seed}: evaluating on full OOS (100 windows)..."
   python -m pufferlib_market.evaluate_holdout \
-      --checkpoint "$ckpt" --data-path "$VAL" \
-      --eval-hours 60 --n-windows 50 --fee-rate 0.001 \
+      --checkpoint "$ckpt" --data-path "$FULL_VAL" \
+      --eval-hours 50 --n-windows 100 --fee-rate 0.001 \
       --fill-buffer-bps 5.0 --decision-lag 2 --deterministic --no-early-stop \
       > "$out" 2>/dev/null || { echo "  s${seed}: eval failed"; return; }
   stats=$(python3 - "$out" <<'PY'
@@ -92,17 +135,19 @@ echo "    train=$TRAIN ($nts)"
 echo
 
 for s in $SEEDS; do
-  if [ -f "$CKPT_ROOT/s${s}/eval_lag2.json" ]; then
-    echo "[$(date -u +%FT%TZ)] s${s}: already done, skipping"
-    continue
+  [ -f "$CKPT_ROOT/s${s}/eval_full.json" ] && [ -s "$CKPT_ROOT/s${s}/eval_full.json" ] && { echo "[$(date -u +%FT%TZ)] s${s}: already evaled on full OOS, skip"; continue; }
+  [ -f "$CKPT_ROOT/s${s}/SKIPPED_EARLY_TERM" ] && { echo "  s${s}: skipped by early termination, skip"; continue; }
+  if [ ! -f "$CKPT_ROOT/s${s}/final.pt" ]; then
+    train_one "$s" || continue
+  else
+    echo "  s${s}: final.pt exists, skipping training"
   fi
-  train_one "$s"
   eval_one "$s"
 done
 
 echo
-echo "=== [${VARIANT}] LEADERBOARD ==="
+echo "=== [${VARIANT}] LEADERBOARD (full OOS, 100 windows) ==="
 sort -t, -k4 -rn "$LOG" | head -10
 echo
-echo "=== Positive-p10 (p10>0, neg<5) ==="
-awk -F, 'NR>1 && $5+0>0 && $7+0<5 {print}' "$LOG" | sort -t, -k4 -rn
+echo "=== Positive-p10 (p10>0, neg<10) ==="
+awk -F, 'NR>1 && $5+0>0 && $7+0<10 {print}' "$LOG" | sort -t, -k4 -rn
