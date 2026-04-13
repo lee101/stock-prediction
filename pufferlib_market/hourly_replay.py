@@ -1527,12 +1527,18 @@ def simulate_hourly_policy(
                 periods_per_year=periods_per_year,
             )
 
-        # Increment hold_days once per day boundary while holding.
+        # Detect day boundary — but defer the hold_days increment until AFTER obs/action.
+        # C env convention: build_observation() runs BEFORE the action each step, so the
+        # first obs while holding a new position always shows hold_hours=0 (open_long() resets
+        # to 0 and the next step's obs is built before any HOLD increments it).  If we
+        # incremented hold_days here (before obs), the first hour of every new calendar day
+        # would show hold_days=1 instead of the correct 0 on day-1-after-buying.
+        was_holding_before_action = pos is not None
+        day_crossed = False
         if prev_day_idx is None:
             prev_day_idx = day_idx
         elif day_idx != prev_day_idx:
-            if pos is not None:
-                hold_days += 1
+            day_crossed = True
             prev_day_idx = day_idx
 
         # Stop issuing policy actions on the terminal day (we'll close at final_close_ts).
@@ -1622,6 +1628,13 @@ def simulate_hourly_policy(
                         if pos is not None:
                             _count_order(ts)
                             hold_days = 0
+
+        # Deferred hold_days increment: apply the day-crossing increment NOW (after obs/action)
+        # so the first obs of a new calendar day still shows the pre-increment value.
+        # Only increment if we were already holding BEFORE this action (a fresh buy on this
+        # same hour should not immediately bump the hold counter).
+        if day_crossed and was_holding_before_action and pos is not None:
+            hold_days += 1
 
         # Mark-to-market equity.
         if pos is None:

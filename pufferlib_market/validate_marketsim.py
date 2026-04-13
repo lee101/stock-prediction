@@ -162,7 +162,10 @@ def _set_trader_shadow_state(
     trader.position_qty = (10_000.0 / _ep) if (held_symbol and _ep > 0) else 0.0
     trader.entry_price = _ep
     trader.current_position = symbol_to_index[held_symbol] if held_symbol else None
-    trader.step = int(max(0, step_index))
+    # Production uses hold_bars (time held, capped at max_steps) for obs[base+4]=step/max_steps.
+    # step_index (overall bar index) is NOT the same as hold position — using it caused obs[base+4]
+    # to show ~0.4+ for bar 100 vs production's ~0.01 for a freshly-opened position.
+    trader.step = min(int(max(0, hold_bars)), getattr(trader, "max_steps", 252))
     trader.hold_hours = int(max(0, hold_bars))
     if hasattr(trader, "hold_days"):
         trader.hold_days = int(max(0, hold_bars))

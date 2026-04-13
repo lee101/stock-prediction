@@ -638,3 +638,63 @@ def test_read_mktd_wide_universe(tmp_path):
     assert data.num_symbols == 73
     assert data.num_timesteps == 10
     assert data.features.shape == (10, 73, 16)
+
+
+def test_simulate_hourly_policy_hold_days_increments_after_obs_not_before() -> None:
+    """hold_days in obs[base+3] must show 0 on the first hour of a new calendar day
+    after buying — matching C env hold_hours convention (build_obs before action).
+
+    Bug: hold_days was incremented at the day boundary BEFORE building obs, so the
+    first hour of day-1-after-buying showed hold_days=1 instead of 0.
+    """
+    # 3 daily timesteps, 1 symbol, constant price 100
+    data = _single_symbol_daily_data(np.asarray([100.0, 100.0, 100.0], dtype=np.float32))
+
+    # 3 days × 2 hours/day = 6 hourly bars
+    market_index = pd.date_range("2024-01-01T10:00:00Z", periods=6, freq="h", tz="UTC")
+    market_close = np.full((len(market_index),), 100.0, dtype=np.float64)
+    market = HourlyMarket(
+        index=market_index,
+        close={"AAA": market_close},
+        tradable={"AAA": np.ones((len(market_index),), dtype=bool)},
+    )
+
+    # Capture the hold_days obs field (base=1*16=16, obs[16+3]=obs[19]) at each policy call.
+    hold_days_obs: list[float] = []
+    S, F = 1, 16
+    base = S * F
+
+    def _recording_policy(obs: np.ndarray) -> int:
+        hold_days_obs.append(float(obs[base + 3]))
+        return 1  # always "buy AAA"
+
+    simulate_hourly_policy(
+        data=data,
+        policy_fn=_recording_policy,
+        market=market,
+        start_date="2024-01-01",
+        end_date="2024-01-03",
+        max_steps_days=2,
+        fee_rate=0.0,
+        max_leverage=1.0,
+        periods_per_year=8760.0,
+    )
+
+    # Policy is called once per hour on days 0 and 1 (max_steps_days=2, terminal day=2 not traded).
+    # Day 0 (hours 0-1): buying at hour 0, hold_days=0 → obs shows 0.0
+    # Day 1 (hours 2-3): first hour of new day after buying — hold_days must still be 0.0
+    #                    (incremented AFTER obs/action, not before)
+    assert len(hold_days_obs) >= 4, f"expected >=4 policy calls, got {len(hold_days_obs)}"
+    max_steps_days = 2
+
+    # First two calls are on day 0: hold_days=0
+    assert hold_days_obs[0] == pytest.approx(0.0 / max_steps_days)
+    assert hold_days_obs[1] == pytest.approx(0.0 / max_steps_days)
+
+    # First call on day 1 (obs index 2): must be 0/max_steps, NOT 1/max_steps
+    # (the increment happens AFTER this obs was built)
+    assert hold_days_obs[2] == pytest.approx(0.0 / max_steps_days), (
+        f"hold_days on first hour of day-1-after-buying was {hold_days_obs[2]:.4f} "
+        f"(expected 0.0, got {hold_days_obs[2] * max_steps_days:.1f} — "
+        "off-by-one: increment happened before obs build)"
+    )

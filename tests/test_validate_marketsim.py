@@ -528,3 +528,62 @@ def test_main_json_only_emits_only_summary_json(monkeypatch, capsys, tmp_path: P
     assert payload["metrics"]["total_return"] == pytest.approx(0.02)
     assert payload["metrics"]["trades"] == 2
     assert json.loads(output_path.read_text(encoding="utf-8")) == payload
+
+
+def test_set_trader_shadow_state_uses_hold_bars_not_step_index() -> None:
+    """trader.step must be clamped hold_bars (not the overall bar index).
+
+    Bug: line 165 used `step_index` (e.g. 100) for obs[base+4]=step/max_steps.
+    Production sets trader.step = min(hold_bars, max_steps).  A freshly-opened
+    position at overall bar 100 with hold_bars=0 must show step=0, not 100.
+    """
+    from pufferlib_market.validate_marketsim import _set_trader_shadow_state
+
+    class _FakeTrader:
+        cash = 0.0
+        position_qty = 0.0
+        entry_price = 0.0
+        current_position = None
+        step = 0
+        hold_hours = 0
+        hold_days = 0
+        max_steps = 252
+
+    trader = _FakeTrader()
+    symbol_to_index = {"AAPL": 0}
+
+    # Simulate: holding AAPL, hold_bars=3, but overall step_index=100
+    _set_trader_shadow_state(
+        trader,
+        symbol_to_index=symbol_to_index,
+        held_symbol="AAPL",
+        hold_bars=3,
+        entry_price=150.0,
+        step_index=100,
+    )
+
+    # step must match hold_bars (3), NOT the overall bar index (100)
+    assert trader.step == 3
+    assert trader.hold_hours == 3
+
+    # Flat: hold_bars=0, step_index=200 — step must be 0
+    _set_trader_shadow_state(
+        trader,
+        symbol_to_index=symbol_to_index,
+        held_symbol=None,
+        hold_bars=0,
+        entry_price=0.0,
+        step_index=200,
+    )
+    assert trader.step == 0
+
+    # Clamping: hold_bars > max_steps must be clamped
+    _set_trader_shadow_state(
+        trader,
+        symbol_to_index=symbol_to_index,
+        held_symbol="AAPL",
+        hold_bars=300,
+        entry_price=150.0,
+        step_index=999,
+    )
+    assert trader.step == 252  # clamped to max_steps
