@@ -49,6 +49,7 @@ from pufferlib_market.inference_daily import DailyPPOTrader
 from pufferlib_market.inference import TradingSignal
 from pufferlib_market.checkpoint_loader import load_checkpoint_payload
 from src.alpaca_account_lock import acquire_alpaca_account_lock, require_explicit_live_trading_enable
+from src.market_regime import regime_filter_reason
 from src.daily_stock_feature_schema import (
     DailyStockFeatureSchema,
     build_daily_feature_history_for_schema,
@@ -3783,7 +3784,7 @@ def run_backtest(
                 continue
             cash -= qty * buy_price
             position = (signal.symbol, qty, buy_price)
-            trader.update_state(trader.SYMBOLS.index(signal.symbol) + 1, prices[signal.symbol], signal.symbol)
+            trader.update_state(trader.SYMBOLS.index(signal.symbol) + 1, prices[signal.symbol], signal.symbol, qty=qty)
 
         trader.step_day()
 
@@ -4091,6 +4092,15 @@ def run_once(
         allow_open_reason: str | None = None
         allow_open_reasons: list[str] = []
         blocked_portfolio_signals: list[dict[str, object]] = []
+
+        # Regime filter: skip opening new positions in bear markets (SPY < 20-day MA).
+        # Does NOT force-close existing positions — only blocks new entries.
+        _regime_ok, _regime_reason = regime_filter_reason(data_dir=data_dir)
+        if not _regime_ok:
+            allow_open = False
+            allow_open_reason = _regime_reason
+            logger.warning("Regime filter: %s — skipping new position opens", _regime_reason)
+
         if data_source == "alpaca":
             if multi_position > 1:
                 desired_portfolio_signals = [
