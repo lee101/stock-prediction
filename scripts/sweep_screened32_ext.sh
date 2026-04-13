@@ -53,7 +53,7 @@ eval_one() {
   local out="$CKPT_ROOT/s${seed}/eval_lag2.json"
   python -m pufferlib_market.evaluate_holdout \
       --checkpoint "$ckpt" --data-path "$VAL" \
-      --eval-hours 50 --n-windows 30 --fee-rate 0.001 \
+      --eval-hours 90 --n-windows 30 --fee-rate 0.001 \
       --fill-buffer-bps 5.0 --decision-lag 2 --deterministic --no-early-stop \
       > "$out" 2>/dev/null || { echo "  s${seed}: eval failed"; return; }
   stats=$(python3 - "$out" <<'PY'
