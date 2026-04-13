@@ -255,17 +255,21 @@ def fit_calibration(
     allow_short: bool = False,
     fee_bps: float = 10.0,
     grid_steps: int = 17,
+    search_signal_weight: bool = True,
     model_id: str = "",
 ) -> CalibrationParams:
     """
-    Grid-search over (buy_threshold, sell_threshold) within ±max_shift_bps
-    to maximise Sharpe ratio on the calibration set.
+    Grid-search over (signal_weight, buy_threshold, sell_threshold) to maximise
+    Sharpe ratio on the calibration set.
 
-    The default un-calibrated threshold of 0 bps means: buy if q50 > prev_close.
-    This search adds an offset of ±max_shift_bps.
+    signal_weight scales the raw predicted return before thresholding:
+      signal = (q50 - prev_close) / prev_close * signal_weight
+      buy  when signal > buy_threshold
+      sell when signal < -sell_threshold  (with allow_short=True)
+      exit when signal < -sell_threshold  (without allow_short)
 
-    Constraint: sell_threshold > buy_threshold - min_gap (so we don't short things
-    we'd also buy simultaneously).
+    Threshold range: ±max_shift_bps around 0.
+    Constraint: sell_threshold > buy_threshold - min_gap (no accidental straddle).
 
     Returns CalibrationParams with the best-found thresholds.
     """
@@ -279,27 +283,33 @@ def fit_calibration(
     # Grid over thresholds in fractional return space
     thresh_vals = np.linspace(-max_shift, max_shift, grid_steps)
 
-    best_sharpe = -999.0
-    best_buy    = 0.001   # 10 bps default
-    best_sell   = 0.001
+    # Signal weight candidates: sub-1 = less sensitive, >1 = more sensitive
+    weight_vals = [0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0] if search_signal_weight else [1.0]
 
-    for buy_t in thresh_vals:
-        for sell_t in thresh_vals:
-            # Constraint: sell_t must be larger than buy_t - min_gap
-            # (prevents accidental straddling where both buy and sell fire)
-            if allow_short and sell_t < buy_t - min_gap:
-                continue
-            sharpe = compute_sharpe(
-                predicted_return, actual_return, float(buy_t), float(sell_t),
-                allow_short=allow_short, fee_bps=fee_bps,
-            )
-            if sharpe > best_sharpe:
-                best_sharpe = sharpe
-                best_buy    = float(buy_t)
-                best_sell   = float(sell_t)
+    best_sharpe  = -999.0
+    best_buy     = 0.0
+    best_sell    = 0.0
+    best_weight  = 1.0
+
+    for w in weight_vals:
+        scaled_return = predicted_return * w
+        for buy_t in thresh_vals:
+            for sell_t in thresh_vals:
+                # Constraint: sell_t must be larger than buy_t - min_gap
+                if allow_short and sell_t < buy_t - min_gap:
+                    continue
+                sharpe = compute_sharpe(
+                    scaled_return, actual_return, float(buy_t), float(sell_t),
+                    allow_short=allow_short, fee_bps=fee_bps,
+                )
+                if sharpe > best_sharpe:
+                    best_sharpe = sharpe
+                    best_buy    = float(buy_t)
+                    best_sell   = float(sell_t)
+                    best_weight = float(w)
 
     params = CalibrationParams(
-        signal_weight=1.0,
+        signal_weight=best_weight,
         signal_bias=0.0,
         buy_threshold=best_buy,
         sell_threshold=best_sell,
@@ -334,6 +344,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("--grid-steps",    type=int, default=17)
     p.add_argument("--batch-size",    type=int, default=32,
                    help="GPU batch size for inference (default: 32)")
+    p.add_argument("--no-search-signal-weight", action="store_true",
+                   help="Fix signal_weight=1.0, only search thresholds (faster)")
     return p.parse_args(argv)
 
 
@@ -383,7 +395,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 1
 
     # Fit calibration
-    print(f"Fitting calibration ({len(actual)} windows, max_shift={args.max_shift_bps}bps) ...")
+    search_w = not getattr(args, "no_search_signal_weight", False)
+    print(f"Fitting calibration ({len(actual)} windows, max_shift={args.max_shift_bps}bps"
+          f"{', weight-search' if search_w else ''}) ...")
     params = fit_calibration(
         q10=q10, q50=q50, q90=q90,
         actual=actual, prev_close=prev_close,
@@ -392,11 +406,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         allow_short=args.allow_short,
         fee_bps=args.fee_bps,
         grid_steps=args.grid_steps,
+        search_signal_weight=search_w,
         model_id=args.model_id,
     )
 
     print(f"Best thresholds: buy={params.buy_threshold*1e4:.1f}bps  "
           f"sell={params.sell_threshold*1e4:.1f}bps  "
+          f"weight={params.signal_weight:.2f}  "
           f"sharpe={params.cal_sharpe:.3f}  "
           f"allow_short={params.allow_short}")
 

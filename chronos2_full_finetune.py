@@ -358,6 +358,7 @@ def train(
     seed: int = DEFAULT_SEED,
     aug_config: Optional[AugConfig] = None,
     use_muon: bool = False,
+    grad_accum: int = 1,
 ) -> Any:
     """
     Fine-tune pipeline on train_series with early stopping via val_series.
@@ -454,7 +455,7 @@ def train(
         disable_tqdm=False,
         report_to="none",
         max_steps=num_steps,
-        gradient_accumulation_steps=1,
+        gradient_accumulation_steps=grad_accum,
         dataloader_num_workers=2,
         tf32=True,
         bf16=False,
@@ -544,6 +545,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("--amp-log-std", type=float, default=0.30)
     p.add_argument("--noise-frac",  type=float, default=0.002)
     p.add_argument("--dropout-rate", type=float, default=0.02)
+    p.add_argument("--freq-subsample-prob", type=float, default=0.0,
+                   help="Prob of stride-2 subsampling per batch (teaches multi-timescale). 0=off")
+    p.add_argument("--detrend",     action="store_true",
+                   help="Linear detrend context windows during training")
     p.add_argument("--no-return-variants", action="store_true")
     p.add_argument("--no-sliding",  action="store_true",
                    help="Disable hourly sliding-window daily aggregations")
@@ -558,6 +563,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                    help="R2 object key prefix for checkpoint upload (e.g. chronos2/finetune/v1)")
     p.add_argument("--num-workers", type=int, default=8,
                    help="Parallel workers for data loading")
+    p.add_argument("--grad-accum", type=int, default=1,
+                   help="Gradient accumulation steps (default: 1). Effective batch = "
+                        "batch_size × grad_accum. Steps are counted in optimizer updates.")
     return p.parse_args(argv)
 
 
@@ -578,6 +586,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         amplitude_log_std=args.amp_log_std,
         noise_std_frac=args.noise_frac,
         time_dropout_rate=args.dropout_rate,
+        freq_subsample_prob=args.freq_subsample_prob,
+        detrend_context=args.detrend,
         add_return_variants=not args.no_return_variants,
         sliding_daily_offsets=[] if args.no_sliding else [0, 1, 2, 3, 4, 5, 6],
     )
@@ -654,6 +664,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         seed=args.seed,
         aug_config=aug_config,
         use_muon=args.use_muon,
+        grad_accum=args.grad_accum,
     )
 
     # --- Post-train eval (same eval_series as baseline for fair comparison) ---
