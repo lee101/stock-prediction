@@ -633,14 +633,14 @@ def _evaluate_hybrid_account_guard(
         issues.append(
             "borrowed quote exceeds allowed leverage: "
             + ", ".join(
-                f"{item['asset']}={float(item['borrowed_usd']):.2f}>{float(item['limit_usd']):.2f}"
+                f"{item['asset']}={cast(float, item['borrowed_usd']):.2f}>{cast(float, item['limit_usd']):.2f}"
                 for item in unexpected_borrowed_quotes
             )
         )
     if foreign_positions:
         issues.append(
             "foreign positions detected: "
-            + ", ".join(f"{item['symbol']}=${float(item['value_usd']):.2f}" for item in foreign_positions)
+            + ", ".join(f"{item['symbol']}=${cast(float, item['value_usd']):.2f}" for item in foreign_positions)
         )
     if foreign_orders:
         issues.append(
@@ -650,7 +650,7 @@ def _evaluate_hybrid_account_guard(
         issues.append(
             "oversized live positions exceed hybrid gross budget: "
             + ", ".join(
-                f"{item['symbol']}=${float(item['value_usd']):.2f}>{float(item['limit_usd']):.2f}"
+                f"{item['symbol']}=${cast(float, item['value_usd']):.2f}>{cast(float, item['limit_usd']):.2f}"
                 for item in oversized_positions
             )
         )
@@ -659,7 +659,7 @@ def _evaluate_hybrid_account_guard(
             "oversized working orders exceed hybrid gross budget: "
             + ", ".join(
                 f"{item.get('internal_symbol') or item.get('symbol') or ''!s}="
-                f"${float(item.get('notional_usd') or 0.0):.2f}>${float(item.get('limit_usd') or 0.0):.2f}"
+                f"${cast(float, item.get('notional_usd', 0.0)):.2f}>${cast(float, item.get('limit_usd', 0.0)):.2f}"
                 for item in oversized_orders
             )
         )
