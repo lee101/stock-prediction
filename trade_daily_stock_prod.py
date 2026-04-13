@@ -2106,8 +2106,15 @@ def _apply_portfolio_context_to_trader(
     portfolio: PortfolioContext,
 ) -> None:
     trader.cash = float(portfolio.cash)
-    trader.position_qty = float(portfolio.position_qty)
-    trader.entry_price = float(portfolio.entry_price)
+    # The C training env starts with INITIAL_CASH=10_000 and buys
+    # qty = INITIAL_CASH / entry_price, so obs[base+1] = pos_val /
+    # INITIAL_CASH ≈ 1.0 when fully invested.  Using the actual Alpaca qty
+    # here (which depends on account size, e.g. 12.5% × $28k / $200 = 17.5
+    # shares) gives obs[base+1] ≈ 0.175 × (price / 10_000), far below 1.0
+    # and mismatch vs training.  Normalise to match the C env instead.
+    _ep = float(portfolio.entry_price) if portfolio.entry_price and portfolio.entry_price > 0 else 0.0
+    trader.position_qty = (10_000.0 / _ep) if (portfolio.current_symbol and _ep > 0) else 0.0
+    trader.entry_price = _ep
     trader.hold_days = int(max(0, portfolio.hold_days))
     trader.hold_hours = trader.hold_days
     trader.step = min(trader.hold_days, trader.max_steps)
