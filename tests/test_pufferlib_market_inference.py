@@ -332,3 +332,76 @@ def test_main_prints_self_describing_json(monkeypatch, capsys):
         "allocation_pct": 1.0,
         "level_offset_bps": 0.0,
     }
+
+
+class TestBuildObservationUnrealizedPnl:
+    """obs[base+2] must match C env: unrealised_pnl / INITIAL_CASH, not hardcoded 0."""
+
+    def _make_trader(self, tmp_path, symbols=("AAA", "BBB")):
+        ckpt = tmp_path / "ck.pt"
+        num_sym = len(symbols)
+        num_actions = 1 + num_sym
+        _write_checkpoint(ckpt, num_symbols=num_sym, num_actions=num_actions, hidden=16, num_blocks=1, hot_action=0)
+        trader = PPOTrader(str(ckpt), device="cpu", symbols=list(symbols))
+        return trader
+
+    def test_flat_position_zero_pnl(self, tmp_path):
+        trader = self._make_trader(tmp_path)
+        trader.cash = 10_000.0
+        trader.current_position = None
+        trader.position_qty = 0.0
+        trader.entry_price = 0.0
+        features = np.zeros((2, 16), dtype=np.float32)
+        prices = {"AAA": 100.0, "BBB": 200.0}
+        obs = trader.build_observation(features, prices)
+        base = 2 * 16
+        assert obs[base + 2] == 0.0
+
+    def test_long_profitable_position(self, tmp_path):
+        # Entry at 100, current price 110 → 10% up → obs[base+2] = 0.10
+        trader = self._make_trader(tmp_path)
+        entry_price = 100.0
+        cur_price = 110.0
+        trader.cash = 0.0
+        trader.entry_price = entry_price
+        trader.position_qty = 10_000.0 / entry_price  # 100 shares
+        trader.current_position = 0  # long AAA
+        features = np.zeros((2, 16), dtype=np.float32)
+        prices = {"AAA": cur_price, "BBB": 200.0}
+        obs = trader.build_observation(features, prices)
+        base = 2 * 16
+        expected_pnl = (10_000.0 / entry_price) * (cur_price - entry_price) / 10_000.0
+        assert abs(obs[base + 2] - expected_pnl) < 1e-5
+        assert obs[base + 2] > 0.0  # profitable → positive
+
+    def test_long_losing_position(self, tmp_path):
+        # Entry at 100, current price 90 → -10% → obs[base+2] = -0.10
+        trader = self._make_trader(tmp_path)
+        entry_price = 100.0
+        cur_price = 90.0
+        trader.cash = 0.0
+        trader.entry_price = entry_price
+        trader.position_qty = 10_000.0 / entry_price
+        trader.current_position = 0  # long AAA
+        features = np.zeros((2, 16), dtype=np.float32)
+        prices = {"AAA": cur_price, "BBB": 200.0}
+        obs = trader.build_observation(features, prices)
+        base = 2 * 16
+        expected_pnl = (10_000.0 / entry_price) * (cur_price - entry_price) / 10_000.0
+        assert abs(obs[base + 2] - expected_pnl) < 1e-5
+        assert obs[base + 2] < 0.0  # losing → negative
+
+    def test_pnl_formula_matches_c_env(self, tmp_path):
+        """Exact formula: qty*(cur-entry)/10000 = (cur-entry)/entry."""
+        trader = self._make_trader(tmp_path)
+        entry_price = 150.0
+        cur_price = 157.5  # +5%
+        trader.cash = 0.0
+        trader.entry_price = entry_price
+        trader.position_qty = 10_000.0 / entry_price
+        trader.current_position = 0
+        features = np.zeros((2, 16), dtype=np.float32)
+        prices = {"AAA": cur_price, "BBB": 200.0}
+        obs = trader.build_observation(features, prices)
+        base = 2 * 16
+        assert abs(obs[base + 2] - 0.05) < 1e-5  # exactly 5%

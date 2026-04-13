@@ -272,19 +272,27 @@ class PPOTrader:
         # Portfolio state
         base = feat_block
         pos_val = 0.0
+        unreal_pnl = 0.0
         if self.current_position is not None:
             sym_idx = self.current_position % self.num_symbols
             sym = self.SYMBOLS[sym_idx]
-            cur_price = prices.get(sym, 0)
+            cur_price = float(prices.get(sym, 0))
             is_short = self.current_position >= self.num_symbols
             if is_short:
                 pos_val = -self.position_qty * cur_price
+                # Short profits when price falls below entry
+                unreal_pnl = self.position_qty * (self.entry_price - cur_price)
             else:
                 pos_val = self.position_qty * cur_price
+                # Long profits when price rises above entry
+                unreal_pnl = self.position_qty * (cur_price - self.entry_price)
 
         obs[base + 0] = self.cash / 10000.0
         obs[base + 1] = pos_val / 10000.0
-        obs[base + 2] = 0  # unrealized pnl (simplified)
+        # Unrealised PnL normalised by INITIAL_CASH — matches C env obs[S*F+2].
+        # Previously hardcoded to 0 (sim-to-real gap): model trained with actual
+        # PnL signal but production always saw flat, affecting hold/sell decisions.
+        obs[base + 2] = unreal_pnl / 10000.0
         obs[base + 3] = self.hold_hours / self.max_steps
         obs[base + 4] = self.step / self.max_steps
 
