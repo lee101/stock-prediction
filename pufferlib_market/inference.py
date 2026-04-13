@@ -405,8 +405,18 @@ class PPOTrader:
         direction = "short" if is_short else "long"
         return TradingSignal(f"{direction}_{symbol}", symbol, direction, confidence, value_est, 1.0, 0.0)
 
-    def update_state(self, action: int, fill_price: float, symbol: str):
-        """Update internal state after trade execution."""
+    def update_state(self, action: int, fill_price: float, symbol: str, qty: float = 0.0):
+        """Update internal state after trade execution.
+
+        Args:
+            action: 0 = flat/close, 1..N = open position (action index)
+            fill_price: actual execution price
+            symbol: symbol being traded
+            qty: filled quantity (shares/units). Must be provided for non-flat
+                 actions so obs[base+1] (position value) matches the C env.
+                 Omitting it leaves position_qty=0 which creates a sim-to-real
+                 gap — the C training env always tracks position_qty correctly.
+        """
         if action == 0:
             self.current_position = None
             self.position_qty = 0.0
@@ -419,6 +429,11 @@ class PPOTrader:
             self.current_position = (self.num_symbols + sym_idx) if is_short else sym_idx
             self.entry_price = fill_price
             self.hold_hours = 0
+            # Track filled quantity so build_observation() sees the correct
+            # position value (obs[base+1]).  The C training env always sets
+            # ag->position_qty = qty; without this the Python inference wrapper
+            # always emits 0 for that observation dimension.
+            self.position_qty = float(qty)
 
         self.step += 1
 

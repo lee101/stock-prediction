@@ -150,9 +150,15 @@ def _set_trader_shadow_state(
     entry_price: float,
     step_index: int,
 ) -> None:
+    # The C training env starts with INITIAL_CASH=10_000 and buys
+    # qty = INITIAL_CASH / entry_price units, so obs[base+1] = pos_val /
+    # INITIAL_CASH ≈ 1.0 when fully invested.  Using position_qty=1.0 here
+    # would give obs[base+1] = cur_price / 10_000 — up to 8.5× off for BTC at
+    # $85k.  Use the same normalization as the C env.
+    _ep = float(entry_price) if held_symbol and entry_price and entry_price > 0 else 0.0
     trader.cash = 10_000.0
-    trader.position_qty = 1.0 if held_symbol else 0.0
-    trader.entry_price = float(entry_price if held_symbol else 0.0)
+    trader.position_qty = (10_000.0 / _ep) if (held_symbol and _ep > 0) else 0.0
+    trader.entry_price = _ep
     trader.current_position = symbol_to_index[held_symbol] if held_symbol else None
     trader.step = int(max(0, step_index))
     trader.hold_hours = int(max(0, hold_bars))

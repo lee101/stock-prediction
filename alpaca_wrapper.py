@@ -563,6 +563,10 @@ def open_market_order_violently(symbol, qty, side, retries=3):
     qty = _enforce_min_notional(symbol, qty, reference_price)
 
     result = None
+    # Fractional equity market orders require time_in_force="day"; whole-share
+    # equity and crypto use "gtc". Hardcoding "gtc" causes Alpaca to silently
+    # reject fractional equity market orders.
+    market_tif = _get_time_in_force_for_qty(qty, symbol)
     try:
         result = alpaca_api.submit_order(
             order_data=MarketOrderRequest(
@@ -570,7 +574,7 @@ def open_market_order_violently(symbol, qty, side, retries=3):
                 qty=qty,
                 side=side,
                 type=OrderType.MARKET,
-                time_in_force="gtc",
+                time_in_force=market_tif,
             )
         )
     except Exception as e:
@@ -853,6 +857,9 @@ def open_order_at_price_or_all(symbol, qty, side, price):
                 logger.error(f"Detected insufficient funds error. Full error_str: '{error_str}'")
                 available = _parse_available_balance(error_str)
                 if available <= 0:
+                    # Error message didn't embed the balance; force-refresh so `cash`
+                    # is the real current balance, not the stale module-level default.
+                    refresh_account_cache(force=True)
                     available = cash
 
                 if available > 0:
@@ -998,6 +1005,9 @@ def open_order_at_price_allow_add_to_position(symbol, qty, side, price, max_tota
                 logger.error(f"Detected insufficient funds error. Full error_str: '{error_str}'")
                 available = _parse_available_balance(error_str)
                 if available <= 0:
+                    # Error message didn't embed the balance; force-refresh so `cash`
+                    # is the real current balance, not the stale module-level default.
+                    refresh_account_cache(force=True)
                     available = cash
                 if available > 0:
                     # Calculate maximum quantity we can afford with available balance
@@ -1119,25 +1129,30 @@ def close_position_violently(position):
 
     # Market orders are allowed - proceed with market order
     result = None
+    close_qty = abs(float(position.qty))
+    # Fractional equity market orders require time_in_force="day"; whole-share
+    # equity and crypto use "gtc". Hardcoding "gtc" silently rejects fractional
+    # equity close orders on Alpaca.
+    close_tif = _get_time_in_force_for_qty(close_qty, position.symbol)
     try:
         if is_buy_side(getattr(position, "side", "")):
             result = alpaca_api.submit_order(
                 order_data=MarketOrderRequest(
                     symbol=remap_symbols(position.symbol),
-                    qty=abs(float(position.qty)),
+                    qty=close_qty,
                     side=OrderSide.SELL,
                     type=OrderType.MARKET,
-                    time_in_force="gtc",
+                    time_in_force=close_tif,
                 )
             )
         else:
             result = alpaca_api.submit_order(
                 order_data=MarketOrderRequest(
                     symbol=remap_symbols(position.symbol),
-                    qty=abs(float(position.qty)),
+                    qty=close_qty,
                     side=OrderSide.BUY,
                     type=OrderType.MARKET,
-                    time_in_force="gtc",
+                    time_in_force=close_tif,
                 )
             )
     except Exception as e:

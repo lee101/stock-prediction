@@ -142,9 +142,9 @@ class DailyPPOTrader(PPOTrader):
 
         return self.get_signal(features, prices)
 
-    def update_state_daily(self, action: int, fill_price: float, symbol: str):
+    def update_state_daily(self, action: int, fill_price: float, symbol: str, qty: float = 0.0):
         """Update internal state after daily trade execution."""
-        self.update_state(action, fill_price, symbol)
+        self.update_state(action, fill_price, symbol, qty=qty)
         # Use hold_days instead of hold_hours
         self.hold_days = 0 if action == 0 else self.hold_days
 
