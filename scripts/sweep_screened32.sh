@@ -37,7 +37,8 @@ case "$VARIANT" in
   G) TP=0.07; STEPS=15000000; EXTRA_FLAGS=(--optimizer muon) ;;  # Muon higher tp (more selective)
   H) TP=0.10; STEPS=15000000; EXTRA_FLAGS=(--optimizer muon) ;;  # Muon very high tp (fewest trades)
   I) TP=0.03; STEPS=15000000; EXTRA_FLAGS=(--optimizer muon) ;;  # Muon mid tp (between C and D)
-  *) echo "Unknown variant $VARIANT (use C D E F G H I)"; exit 1 ;;
+  J) TP=0.04; STEPS=15000000; EXTRA_FLAGS=(--optimizer muon) ;;  # Muon between I(0.03) and D(0.05)
+  *) echo "Unknown variant $VARIANT (use C D E F G H I J)"; exit 1 ;;
 esac
 
 SEEDS=${SEEDS:-1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20}

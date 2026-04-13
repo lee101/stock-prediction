@@ -59,7 +59,7 @@ train_one() {
 }
 
 eval_one() {
-  local lev_tag="$1" seed="$2"
+  local lev_tag="$1" seed="$2" max_lev="${3:-1.0}"
   local ckpt="${CKPT_ROOT}/${lev_tag}/s${seed}/val_best.pt"
   [ -f "$ckpt" ] || ckpt="${CKPT_ROOT}/${lev_tag}/s${seed}/best.pt"
   [ -f "$ckpt" ] || { echo "  ${lev_tag} s${seed}: no ckpt"; return; }
@@ -68,6 +68,7 @@ eval_one() {
       --checkpoint "$ckpt" --data-path "$VAL" \
       --eval-hours 50 --n-windows 30 \
       --fee-rate 0.001 --fill-buffer-bps 5.0 \
+      --max-leverage "$max_lev" \
       --decision-lag 2 --deterministic --no-early-stop \
       > "$out" 2>/dev/null || { echo "  ${lev_tag} s${seed}: eval failed"; return; }
   stats=$(python3 - "$out" <<'PY'
@@ -93,7 +94,7 @@ for cfg in "${LEV_CONFIGS[@]}"; do
     eval_json="${CKPT_ROOT}/${tag}/s${s}/eval_lag2.json"
     [ -f "$eval_json" ] && { echo "  s${s}: done, skip"; continue; }
     train_one "$tag" "$max_lev" "$ds_pen" "$s"
-    eval_one "$tag" "$s"
+    eval_one "$tag" "$s" "$max_lev"
   done
 done
 
