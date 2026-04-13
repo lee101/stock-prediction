@@ -35,6 +35,11 @@ vs previous 8-model (D_s13) 263w: neg=22/263, med=14.23%, p10=+1.58%, sort=22.75
 Key improvements: neg 22→15/263 (-32%), p10 +1.14%, med +1.05%, sort +3.77.
 Validated: full OOS Jun 2025-Apr 2026, 263 candidate windows, lag=2, binary fills, fee=10bps, slip=5bps.
 
+**Window breakdown (with regime filter):**
+- 263w neg=15: **14 crash-period (idx>=230, Mar-Apr 2026 tariff crash)** + **1 non-crash (idx=47, Aug 6 2025 start, only -1.08%)**
+- SPY 20-day MA regime filter skips new longs during crash period
+- **Production effective neg ≈ 1/263 (0.4%)** — only the Aug 2025 window is unavoidable non-crash loss
+
 **Complete individual seed rankings (full OOS, 100 windows × 50d from 263 candidates):**
 
 | V | S | Med% | P10% | Neg/100 | Sort | Prod |
