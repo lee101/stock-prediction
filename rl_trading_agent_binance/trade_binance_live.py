@@ -92,7 +92,7 @@ class BinanceSymbolConfig:
     max_position_pct: float = 0.20  # max % of portfolio in this symbol
 
 
-type JSONDict = dict[str, object]
+type JSONDict = dict[str, Any]
 type JSONList = list[JSONDict]
 
 
