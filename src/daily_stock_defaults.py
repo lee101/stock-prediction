@@ -32,6 +32,7 @@ DEFAULT_EXTRA_CHECKPOINTS = (
     "pufferlib_market/prod_ensemble_screened32/D_s13.pt",
     "pufferlib_market/prod_ensemble_screened32/D_s3.pt",
     "pufferlib_market/prod_ensemble_screened32/D_s5.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s2.pt",   # +D_s2: med→13.73%, p10→+0.80%, neg→9/100
 )
 
 DEFAULT_DATA_DIR = "trainingdata"
