@@ -38,7 +38,9 @@ case "$VARIANT" in
   H) TP=0.10; STEPS=15000000; EXTRA_FLAGS=(--optimizer muon) ;;  # Muon very high tp (fewest trades)
   I) TP=0.03; STEPS=15000000; EXTRA_FLAGS=(--optimizer muon) ;;  # Muon mid tp (between C and D)
   J) TP=0.04; STEPS=15000000; EXTRA_FLAGS=(--optimizer muon) ;;  # Muon between I(0.03) and D(0.05)
-  *) echo "Unknown variant $VARIANT (use C D E F G H I J)"; exit 1 ;;
+  K) TP=0.02; STEPS=15000000; EXTRA_FLAGS=(--weight-decay 0.005) ;;  # AdamW+wd: C with regularization
+  L) TP=0.05; STEPS=15000000; EXTRA_FLAGS=(--weight-decay 0.005) ;;  # AdamW+wd at D's trade-penalty
+  *) echo "Unknown variant $VARIANT (use C D E F G H I J K L)"; exit 1 ;;
 esac
 
 SEEDS=${SEEDS:-1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20}

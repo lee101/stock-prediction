@@ -58,7 +58,7 @@ echo "" | tee -a "$LOG"
 echo "[$(date -u +%FT%TZ)] === Monitor sweep run ===" | tee -a "$LOG"
 
 # v1 sweeps
-for variant in C D E F G H I J; do
+for variant in C D E F G H I J K L; do
   sweep_dir="pufferlib_market/checkpoints/screened32_sweep/${variant}"
   lb="$sweep_dir/leaderboard_fulloos.csv"
   [ -d "$sweep_dir" ] || continue
@@ -208,7 +208,7 @@ echo "" | tee -a "$LOG"
 
 # Print current leaderboard (anchors only)
 echo "=== CURRENT ANCHORS (neg < $ANCHOR_THRESH) ===" | tee -a "$LOG"
-for variant in C D E F G H I J; do
+for variant in C D E F G H I J K L; do
   lb="pufferlib_market/checkpoints/screened32_sweep/${variant}/leaderboard_fulloos.csv"
   [ -f "$lb" ] && awk -F, -v thresh="$ANCHOR_THRESH" 'NR>1 && $7+0 < thresh {print}' "$lb" | sort -t, -k4 -rn | while read line; do echo "  $line" | tee -a "$LOG"; done
 done

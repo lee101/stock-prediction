@@ -75,19 +75,43 @@ Picks top-K models by trailing return, follows their signal.
 
 ---
 
-### 2026-04-14 (latest update ~23:20 UTC) — Active sweep status
+### 2026-04-14 (latest update ~23:30 UTC) — Active sweep status
 
-**Active sweeps (RTX 5090, ~21k SPS each):**
-- I variant (Muon + tp=0.03): s6+ training (s3 was best individual anchor neg=8 — DEPLOYED)
-- E variant (Muon + tp=0.02): s5+ training (s1-4 neg=33-43; s5 OOS in progress)
-- v2 sweeps KILLED (all seeds neg=30-78, consistently terrible, GPU wasted)
-- monitor_sweeps.sh: one-shot, re-run manually after new seeds finish
+**Active sweeps (RTX 5090, ~13-19k SPS):**
+- I variant (Muon + tp=0.03): s8 training (best_neg=20, diverging — likely bad)
+- D variant (Muon + tp=0.05): s72 training (best_neg=17, diverging — likely bad)
+- J variant (Muon + tp=0.04): s1 training at 321/457 steps (**best_neg=1** @ step ~250) ← most promising
+- Ext D sweep (train→Nov 2025): s7 training (to find more ext_D_s4-like seeds)
 
-**Sweep results so far:**
-- I/s3: neg=8 ★ (deployed), I/s2: neg=17, I/s1: neg=47, I/s4: neg=74, I/s5: neg=43
-- E/s1-s4: neg=33-43 (poor, Muon+tp=0.02 produces different behavior than I)
-- D/s71: neg=28 (bad, D sweep killed to free GPU)
-- G/H/F variants: all neg≥33 (no anchors)
+**Full sweep results (D variant, full OOS 100 windows):**
+- D/s42: 10.28% ★★ (deployed), D/s28: 7.95% ★★ (deployed), D/s67: 6.64% neg=7 (tested, not additive)
+- D/s1: 6.12%, D/s16: 5.49%, D/s57: 5.83% — lower tier
+- D/s29-50 (except s42): ALL below 2.3%. D/s31,34,39,40,44,45-48 deeply negative.
+- D/s51-71: Only D/s57 (5.83%) and D/s67 (6.64%) meaningful. Rest mostly negative.
+- D/s72: in training, diverging
+
+**Full sweep results (I variant, full OOS 100 windows):**
+- I/s3: 8.73% neg=8 ★ (deployed), I/s2: 7.07% neg=17 (not additive to ensemble)
+- I/s1: 0.89%, I/s4: -5.35%, I/s5: 2.56%, I/s6: -1.79%, I/s7: -2.14% neg=55 (all bad)
+- I/s8: best_neg=20, diverging
+
+**J variant (Muon + tp=0.04, COMPLETELY NEW) — first seed in progress:**
+- J/s1 val progression: neg=23 → 13 → 4 → **1** → 4 → 8 (best_neg=1 at step ~250/457)
+- J/s1 first_val neg=23 (within range of D_s2=26, D_s28=32 which became prod models!)
+- OOS eval pending (training ~2-3 hours remaining)
+
+**Ensemble test summary (D/s67 not additive):**
+- 9-model +D67: 16.54%/5.71%/8neg (lower median than prod 18.17%)
+- swap D3→D67: 14.17%/2.89%/7neg (much worse — D_s3 diversity is critical)
+→ D/s67 does not improve the prod ensemble despite 6.64% individual OOS
+
+**Killed approaches (confirmed dead ends):**
+- E variant (Muon+tp=0.02): all neg=33-43 OOS. Done.
+- Leverage sweep: 1.5x → neg=48/100 OOS. Catastrophic.
+- v2 sweep: all neg=30-78 OOS. Done.
+- Ext models (trained→Nov 2025): mostly neg=11-30/30 on ext val. Only ext_D_s4 viable (neg=0/30 individual, but prod ensemble beats it at 22.66% vs 11.33%).
+- Cross features (20 feats, cross-symbol): D/s1-s4 all neg=42-66/100. Dead end.
+- GRU/transformer sweeps: previously confirmed worse than MLP.
 
 **Slippage robustness (8-model prod ensemble, 100 windows):**
 - 5 bps: med=18.17%, p10=5.07%, neg=8/100, sort=30.67 (standard)
