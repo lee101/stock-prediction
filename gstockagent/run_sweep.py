@@ -21,10 +21,13 @@ SYMS = [
 OUT_FILE = Path(__file__).parent / "sweep_results.json"
 
 def run():
+    use_rl = "--rl" in sys.argv
     leverage_grid = [0.5, 1.0, 2.0, 3.0, 5.0]
     model_grid = ["gemini-3.1-lite", "glm-5", "glm-5.1"]
     max_pos_grid = [5]
     start, end = "2025-10-01", "2026-01-10"
+    if use_rl:
+        print("RL signals ENABLED")
 
     # load existing results
     existing = []
@@ -48,7 +51,8 @@ def run():
                 try:
                     cfg = GStockConfig(symbols=SYMS, leverage=lev, model=model,
                                        max_positions=mp, initial_capital=10000)
-                    r = run_simulation(cfg, start, end, use_cache=True, verbose=False)
+                    r = run_simulation(cfg, start, end, use_cache=True, verbose=False,
+                                      use_rl_signals=use_rl)
                     if "error" in r:
                         print(f"  ERROR: {r['error']}")
                         continue

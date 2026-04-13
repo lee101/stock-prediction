@@ -5,6 +5,7 @@ from pathlib import Path
 from .config import GStockConfig
 from .prompt import load_daily_bars, build_prompt
 from .llm_client import call_llm, parse_allocation
+from .rl_signals import get_rl_signals, format_rl_signals_for_prompt
 
 
 @dataclass
@@ -101,7 +102,8 @@ def validate_exit_stop(entry_price: float, exit_price: float, stop_price: float,
 
 
 def run_simulation(config: GStockConfig, start_date: str, end_date: str,
-                   use_cache: bool = True, verbose: bool = False) -> dict:
+                   use_cache: bool = True, verbose: bool = False,
+                   use_rl_signals: bool = False) -> dict:
     bars_dict = {}
     for sym in config.symbols:
         df = load_daily_bars(sym, config.data_dir)
@@ -180,10 +182,27 @@ def run_simulation(config: GStockConfig, start_date: str, end_date: str,
         for sym, pos in state.positions.items():
             pos_dict[sym] = {"qty": pos.qty, "entry_price": pos.entry_price}
 
+        # compute RL signals if enabled
+        rl_table = ""
+        if use_rl_signals:
+            try:
+                daily_dfs = {}
+                for sym in available_syms:
+                    df = bars_dict[sym]
+                    df_up_to = df[df["timestamp"] <= date]
+                    if len(df_up_to) >= 20:
+                        daily_dfs[sym] = df_up_to.tail(60)
+                signals = get_rl_signals(daily_dfs, prices)
+                rl_table = format_rl_signals_for_prompt(signals)
+            except Exception as e:
+                if verbose:
+                    print(f"  RL signal error: {e}")
+
         # call LLM for new allocation
         prompt = build_prompt(
             available_syms, config.data_dir, config.forecast_cache_dir,
-            date, pos_dict, prices, eq, config.leverage, config.max_positions
+            date, pos_dict, prices, eq, config.leverage, config.max_positions,
+            rl_signals_table=rl_table
         )
 
         date_str = str(date.date())

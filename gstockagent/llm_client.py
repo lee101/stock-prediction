@@ -11,12 +11,16 @@ MODEL_MAP = {
     "gemini-3.1-pro": "gemini-3.1-pro-preview",
     "gemini-3.1-lite": "gemini-flash-lite",
     "glm-5": "glm-5",
-    "glm-5.1": "glm-5.1",
+    "glm-5.1": "zai-org/GLM-5.1",
     "glm-4-plus": "glm-4-plus",
 }
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+TOGETHER_API_KEY = os.environ.get("TOGETHER_API_KEY", "")
 GEMINI_MODELS = {"gemini-flash", "gemini-3.1", "gemini-3.1-pro", "gemini-3.1-lite"}
+TOGETHER_MODELS = {"glm-5.1"}
+ENABLE_THINKING = os.environ.get("GSTOCK_THINKING", "").lower() in ("1", "true", "yes")
+USE_DIRECT_GEMINI = os.environ.get("GSTOCK_DIRECT_GEMINI", "").lower() in ("1", "true", "yes")
 
 
 def _cache_path(model: str, prompt_hash: str, date_str: str) -> Path:
@@ -32,7 +36,7 @@ def _hash_prompt(prompt: str) -> str:
 def _call_openpaths(model: str, prompt: str, temperature: float = 0.2) -> str:
     api_key = OPENPATHS_API_KEY
     if not api_key:
-        raise RuntimeError("OPENPATHS_API_KEY env var required. Get one at https://openpaths.io")
+        raise RuntimeError("OPENPATHS_API_KEY env var required")
     url = f"{OPENPATHS_BASE_URL}/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {
@@ -47,6 +51,30 @@ def _call_openpaths(model: str, prompt: str, temperature: float = 0.2) -> str:
     content = data["choices"][0]["message"]["content"]
     if not content:
         raise RuntimeError(f"Empty response from {model}")
+    return content
+
+
+def _call_together(model_id: str, prompt: str, temperature: float = 0.2,
+                   thinking: bool = False) -> str:
+    api_key = TOGETHER_API_KEY
+    if not api_key:
+        raise RuntimeError("TOGETHER_API_KEY env var required")
+    url = "https://api.together.xyz/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": model_id,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": temperature,
+        "max_tokens": 4096,
+        "reasoning": {"enabled": thinking},
+    }
+    r = requests.post(url, json=payload, headers=headers,
+                      timeout=300 if thinking else 120)
+    r.raise_for_status()
+    data = r.json()
+    content = data["choices"][0]["message"]["content"]
+    if not content:
+        raise RuntimeError(f"Empty response from {model_id}")
     return content
 
 
@@ -66,9 +94,6 @@ def _call_gemini_direct(model: str, prompt: str, temperature: float = 0.2) -> st
     return data["candidates"][0]["content"]["parts"][0]["text"]
 
 
-USE_DIRECT_GEMINI = os.environ.get("GSTOCK_DIRECT_GEMINI", "").lower() in ("1", "true", "yes")
-
-
 def call_llm(prompt: str, model: str = "gemini-flash", temperature: float = 0.2,
              date_str: str = "", use_cache: bool = True) -> str:
     ph = _hash_prompt(prompt)
@@ -77,7 +102,9 @@ def call_llm(prompt: str, model: str = "gemini-flash", temperature: float = 0.2,
         return cp.read_text()
 
     resolved = MODEL_MAP.get(model, model)
-    if USE_DIRECT_GEMINI and model in GEMINI_MODELS:
+    if model in TOGETHER_MODELS and TOGETHER_API_KEY:
+        resp = _call_together(resolved, prompt, temperature, thinking=ENABLE_THINKING)
+    elif USE_DIRECT_GEMINI and model in GEMINI_MODELS:
         resp = _call_gemini_direct(model, prompt, temperature)
     else:
         resp = _call_openpaths(resolved, prompt, temperature)

@@ -92,10 +92,18 @@ def build_portfolio_table(positions: dict, current_prices: dict) -> str:
 def build_prompt(symbols: list, data_dir: Path, forecast_dir: Path,
                  as_of: pd.Timestamp, positions: dict,
                  current_prices: dict, capital: float,
-                 leverage_limit: float, max_positions: int) -> str:
+                 leverage_limit: float, max_positions: int,
+                 rl_signals_table: str = "") -> str:
     price_table = build_price_table(symbols, data_dir, as_of)
     forecast_table = build_forecast_table(symbols, forecast_dir, as_of)
     portfolio_table = build_portfolio_table(positions, current_prices)
+
+    rl_section = ""
+    if rl_signals_table:
+        rl_section = f"""
+RL MODEL SIGNALS (PPO ensemble trained on historical data, independent per-symbol):
+{rl_signals_table}
+"""
 
     return f"""You are a cryptocurrency portfolio manager on Binance.
 Date: {as_of.strftime('%Y-%m-%d')}
@@ -108,7 +116,7 @@ CURRENT PRICES (last 7 days):
 
 CHRONOS2 24-HOUR FORECASTS (statistical model predictions):
 {forecast_table}
-
+{rl_section}
 CURRENT PORTFOLIO:
 {portfolio_table}
 
@@ -120,8 +128,9 @@ For each position you want, specify:
 - stop_price: your stop-loss price
 
 You may hold USDT (cash) by not allocating 100%.
-Think about momentum, forecast direction, risk/reward, and diversification.
-Aim to maximize risk-adjusted returns (Sortino ratio).
+Consider the RL model signals alongside price momentum, forecasts, risk/reward, and diversification.
+High-confidence RL signals (>5%) are particularly informative.
+Aim to maximize risk-adjusted returns (Sortino ratio) with controlled drawdowns.
 
 Respond with ONLY a JSON object like:
 ```json
