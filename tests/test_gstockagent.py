@@ -215,6 +215,23 @@ class TestMarginConstraints:
         assert s.trade_log[-1]["pnl"] == -500
 
 
+    def test_close_short_deep_loss_capped(self):
+        s = SimState(cash=0)
+        s.positions["BTC"] = Position("BTC", 0.1, 50000, "short", entry_date="2025-01-01")
+        # price doubled: 100000. Uncapped: 0.1*(2*50000-100000)=0 -> 0 proceeds
+        close_position(s, "BTC", 100000, "liquidation", "2025-01-02")
+        assert s.cash == 0  # proceeds capped at 0
+        assert s.trade_log[-1]["pnl"] == -5000  # loss capped at initial margin
+
+    def test_close_short_extreme_loss_capped(self):
+        s = SimState(cash=1000)
+        s.positions["BTC"] = Position("BTC", 0.1, 50000, "short", entry_date="2025-01-01")
+        # price tripled: 150000. Uncapped: 0.1*(2*50000-150000)= -5000
+        close_position(s, "BTC", 150000, "liquidation", "2025-01-02")
+        assert s.cash == 1000  # 0 proceeds (capped), cash unchanged
+        assert s.trade_log[-1]["pnl"] == -5000  # capped at initial margin
+
+
 class TestValidateExitStop:
     def test_long_valid(self):
         e, s = validate_exit_stop(100, 110, 90, "long")

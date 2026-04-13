@@ -54,8 +54,8 @@ def portfolio_value(state: SimState, prices: dict) -> float:
         p = prices.get(sym, pos.entry_price)
         if pos.direction == "long":
             val += pos.qty * p
-        else:  # short
-            val += pos.qty * (2 * pos.entry_price - p)
+        else:  # short: value capped at 0 (can't owe more than margin)
+            val += max(0, pos.qty * (2 * pos.entry_price - p))
     return val
 
 
@@ -63,9 +63,13 @@ def close_position(state: SimState, sym: str, price: float, reason: str, date: s
     pos = state.positions[sym]
     if pos.direction == "long":
         pnl = pos.qty * (price - pos.entry_price)
+        proceeds = pos.qty * price
     else:
         pnl = pos.qty * (pos.entry_price - price)
-    state.cash += pos.qty * price if pos.direction == "long" else pos.qty * (2 * pos.entry_price - price)
+        # short close returns margin + pnl, but capped at 0 (can't lose more than margin)
+        proceeds = max(0, pos.qty * (2 * pos.entry_price - price))
+        pnl = max(-pos.qty * pos.entry_price, pnl)  # cap loss at initial margin
+    state.cash += proceeds
     state.trade_log.append({
         "symbol": sym, "direction": pos.direction, "entry": pos.entry_price,
         "exit": price, "pnl": pnl, "qty": pos.qty, "reason": reason,
