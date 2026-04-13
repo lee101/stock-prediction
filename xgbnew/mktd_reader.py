@@ -115,7 +115,13 @@ def read_mktd_hourly(
         close  = sym_data[:, 4].astype(float)
         volume = sym_data[:, 5].astype(float)
 
-        ts = pd.to_datetime(ts_col.astype("int64"), unit="s", utc=True)
+        # Guard against overflow: RL training tensors store normalized floats,
+        # not real Unix timestamps.  Filter to plausible range [2010, 2030].
+        ts_float = ts_col.astype("float64")
+        valid_ts = np.isfinite(ts_float) & (ts_float > 1.26e9) & (ts_float < 2.1e9)
+        ts_int = np.where(valid_ts, ts_float, 0).astype("int64")
+        ts_raw = pd.to_datetime(ts_int, unit="s", utc=True)
+        ts = pd.Series(ts_raw).where(pd.Series(valid_ts), pd.NaT)
 
         df = pd.DataFrame({
             "timestamp": ts,
@@ -126,7 +132,8 @@ def read_mktd_hourly(
             "volume": volume,
         })
 
-        # Drop zero-price bars (non-trading hours or missing)
+        # Drop rows with invalid timestamps or zero prices
+        df = df.dropna(subset=["timestamp"])
         df = df[(df["close"] > 0) & (df["open"] > 0)]
 
         if market_hours_only:

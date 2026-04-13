@@ -41,7 +41,8 @@ class BacktestConfig:
     leverage: float = 1.0               # 1.0 = no leverage, max 2.0
     xgb_weight: float = 0.5             # blend weight for XGB vs Chronos2
     min_score: float = 0.0              # min combined score to trade
-    min_dollar_vol: float = 1e6         # skip illiquid stocks (min avg daily $ vol)
+    min_dollar_vol: float = 5e6         # skip illiquid stocks (min avg daily $ vol)
+    max_spread_bps: float = 30.0        # skip wide-spread stocks (max volume-based cost)
     chronos_col: str = "chronos_oc_return"
 
 
@@ -121,6 +122,10 @@ def simulate(
     min_dolvol_log = np.log1p(config.min_dollar_vol)
     if "dolvol_20d_log" in test_df.columns:
         test_df = test_df[test_df["dolvol_20d_log"] >= min_dolvol_log]
+
+    # Spread filter — skip stocks with unrealistically wide volume-based spreads
+    if "spread_bps" in test_df.columns and config.max_spread_bps > 0:
+        test_df = test_df[test_df["spread_bps"] <= config.max_spread_bps]
 
     # Drop rows without valid actual prices
     test_df = test_df.dropna(subset=["actual_open", "actual_close"])

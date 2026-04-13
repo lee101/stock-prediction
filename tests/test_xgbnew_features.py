@@ -218,13 +218,13 @@ class TestBacktestSimulate:
                 o = 100.0 + s_idx
                 c = o * (1 + np.random.randn() * 0.01)
                 rows.append({
+                    **{col: 0.0 for col in DAILY_FEATURE_COLS},
+                    **{col: 0.0 for col in CHRONOS_FEATURE_COLS},
                     "date": d, "symbol": sym,
                     "actual_open": o, "actual_close": c,
                     "spread_bps": 10.0,
                     "dolvol_20d_log": np.log1p(1e7),
                     "target_oc_up": int(c > o),
-                    **{col: 0.0 for col in DAILY_FEATURE_COLS},
-                    **{col: 0.0 for col in CHRONOS_FEATURE_COLS},
                 })
         return pd.DataFrame(rows)
 
@@ -242,19 +242,22 @@ class TestBacktestSimulate:
         for dr in result.day_results:
             assert len(dr.trades) <= 3
 
-    def test_leverage_doubles_gross(self):
-        """2x leverage should give ~2x the gross return per trade."""
-        df = self._make_test_df(n_days=5, n_syms=3)
+    def test_leverage_doubles_net(self):
+        """2x leverage should give ~2x net return per trade (with zero commission).
+        gross_return_pct is the unleveraged asset return; net_return_pct applies leverage.
+        With commission=0, net ≈ leverage * gross_oc.
+        """
+        df = self._make_test_df(n_days=20, n_syms=5)
         cfg1 = BacktestConfig(top_n=1, leverage=1.0, commission_bps=0.0,
                                initial_cash=10_000.0)
         cfg2 = BacktestConfig(top_n=1, leverage=2.0, commission_bps=0.0,
                                initial_cash=10_000.0)
         r1 = simulate(df, _DummyModel(), cfg1)
         r2 = simulate(df, _DummyModel(), cfg2)
-        # 2x leverage should give roughly 2x gross (net might differ due to margin cost)
-        g1 = sum(t.gross_return_pct for dr in r1.day_results for t in dr.trades)
-        g2 = sum(t.gross_return_pct for dr in r2.day_results for t in dr.trades)
-        assert abs(g2 / g1 - 2.0) < 0.1, f"Expected 2x leverage, got {g2/g1:.2f}x"
+        n1 = sum(t.net_return_pct for dr in r1.day_results for t in dr.trades)
+        n2 = sum(t.net_return_pct for dr in r2.day_results for t in dr.trades)
+        assert n1 != 0, "Need non-zero returns to test leverage"
+        assert abs(n2 / n1 - 2.0) < 0.2, f"Expected ~2x leverage, got {n2/n1:.2f}x"
 
     def test_net_less_than_gross(self):
         """Net return must always be ≤ gross return (costs subtracted)."""

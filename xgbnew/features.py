@@ -29,13 +29,20 @@ def _rsi_series(close: pd.Series, period: int = 14) -> pd.Series:
     avg_gain = gain.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
     rs = avg_gain / avg_loss.replace(0, np.nan)
-    return 100.0 - 100.0 / (1.0 + rs)
+    rsi = 100.0 - 100.0 / (1.0 + rs)
+    # When avg_loss == 0 and avg_gain > 0, all moves are up → RSI = 100
+    return rsi.where(avg_loss > 1e-10, 100.0)
 
 
 # ── Corwin-Schultz spread (vectorized) ───────────────────────────────────────
 
 def _cs_spread_series(high: pd.Series, low: pd.Series, window: int = 20) -> pd.Series:
     """Corwin-Schultz (2012) bid-ask spread estimate as a rolling series (bps).
+
+    NOTE: For daily OHLCV on liquid stocks, C-S gives large values (100-300 bps)
+    because it interprets intraday price volatility as bid-ask spread. Use only
+    as a model feature (captures relative liquidity/volatility), not for cost modelling.
+    Use volume-based spread tiers for actual trade cost estimates.
 
     Negative estimates are clipped to 0.  Rolling mean over ``window`` pairs.
     """
@@ -56,6 +63,22 @@ def _cs_spread_series(high: pd.Series, low: pd.Series, window: int = 20) -> pd.S
     return spread.rolling(window, min_periods=max(2, window // 2)).mean() * 10_000.0
 
 
+def _vol_spread_series(
+    dolvol: pd.Series,
+    tiers: tuple = (1e10, 5e8, 1e8, 5e7, 1e7),
+    bps:   tuple = (2.0,  3.0,  7.0, 12.0, 25.0),
+    default_bps: float = 50.0,
+) -> pd.Series:
+    """Volume-based bid-ask spread estimate in bps (realistic cost model).
+
+    Uses dollar-volume tiers: larger stocks have tighter spreads.
+    Uses np.select so first matching condition wins (no overwrites).
+    """
+    conditions = [dolvol >= t for t in tiers]
+    spread_vals = np.select(conditions, list(bps), default=default_bps)
+    return pd.Series(spread_vals, index=dolvol.index).where(dolvol.notna(), np.nan)
+
+
 # ── Main feature builder (daily) ──────────────────────────────────────────────
 
 DAILY_FEATURE_COLS = [
@@ -63,7 +86,7 @@ DAILY_FEATURE_COLS = [
     "rsi_14",
     "vol_5d", "vol_20d",
     "atr_14",
-    "spread_bps",
+    "cs_spread_bps",   # C-S H/L spread (model feature: captures intraday liquidity)
     "dolvol_20d_log",
     "price_vs_52w_high", "price_vs_52w_range",
     "day_of_week",
@@ -139,12 +162,16 @@ def build_features_for_symbol(
     ], axis=1).max(axis=1)
     feat["atr_14"] = (true_range.rolling(14, min_periods=7).mean() / prev_close).clip(upper=1.0)
 
-    # ── Corwin-Schultz spread (shifted so we don't see today's H/L) ─────────
-    feat["spread_bps"] = _cs_spread_series(high.shift(1), low.shift(1), window=20)
-
     # ── Dollar volume (log) ──────────────────────────────────────────────────
     dolvol = (prev_close * vol.shift(1)).rolling(20, min_periods=5).mean()
     feat["dolvol_20d_log"] = np.log1p(dolvol.clip(lower=0.0))
+
+    # ── Spread estimates ─────────────────────────────────────────────────────
+    # cs_spread_bps: Corwin-Schultz H/L estimate (feature only — captures
+    #   intraday volatility proxy; large for liquid stocks due to wide H/L)
+    feat["cs_spread_bps"] = _cs_spread_series(high.shift(1), low.shift(1), window=20)
+    # spread_bps: volume-based cost estimate (used in backtest cost calculation)
+    feat["spread_bps"] = _vol_spread_series(dolvol)
 
     # ── Price vs 52-week range (use prev values) ─────────────────────────────
     high52 = prev_high.rolling(252, min_periods=63).max()
@@ -227,10 +254,16 @@ def build_features_for_symbol_hourly(
     ], axis=1).max(axis=1)
     feat["atr_4h"] = (tr.rolling(4, min_periods=2).mean() / prev_close.clip(lower=0.01)).clip(upper=1.0)
 
-    feat["spread_bps"] = _cs_spread_series(prev_high, prev_low, window=8)
+    # Volume-based spread for hourly bars (scale daily $ vol tiers by 6.5 bars/day)
+    dolvol_raw_h = (close.shift(1) * vol.shift(1))
+    dolvol_8h = dolvol_raw_h.rolling(8, min_periods=2).mean()
+    h_scale = 6.5
+    feat["spread_bps"] = _vol_spread_series(
+        dolvol_8h,
+        tiers=(1e10 / h_scale, 5e8 / h_scale, 1e8 / h_scale, 5e7 / h_scale, 1e7 / h_scale),
+    )
 
-    dolvol = (prev_close * vol.shift(1)).rolling(8, min_periods=2).mean()
-    feat["dolvol_4h_log"] = np.log1p(dolvol.clip(lower=0.0))
+    feat["dolvol_4h_log"] = np.log1p(dolvol_8h.clip(lower=0.0))
 
     ts = pd.to_datetime(df["timestamp"])
     feat["hour_of_day"] = ts.dt.hour.astype(float)
@@ -254,4 +287,6 @@ __all__ = [
     "HOURLY_FEATURE_COLS",
     "build_features_for_symbol",
     "build_features_for_symbol_hourly",
+    "_rsi_series",
+    "_cs_spread_series",
 ]

@@ -108,8 +108,12 @@ class XGBStockModel:
         fit_kwargs: dict = {}
         if eval_set:
             fit_kwargs["eval_set"] = eval_set
-            fit_kwargs["early_stopping_rounds"] = early_stopping_rounds
             fit_kwargs["verbose"] = verbose
+            # early_stopping_rounds moved to constructor in xgboost >= 2.0
+            try:
+                self.clf.set_params(early_stopping_rounds=early_stopping_rounds)
+            except Exception:
+                fit_kwargs["early_stopping_rounds"] = early_stopping_rounds
 
         logger.info(
             "Fitting XGBStockModel on %d rows, %d features...",
