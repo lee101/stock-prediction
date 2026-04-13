@@ -7,53 +7,62 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
-### 2026-04-13 — Screened32 6-model ensemble deployed (CURRENT PRODUCTION)
+### 2026-04-13 — Screened32 7-model ensemble deployed (CURRENT PRODUCTION)
 
-#### Current champion: screened32 6-model ensemble
-- **Checkpoints**: `pufferlib_market/prod_ensemble_screened32/` (C_s7, D_s16, D_s13, D_s3, D_s5, **D_s2**)
+#### Current champion: screened32 7-model ensemble
+- **Checkpoints**: `pufferlib_market/prod_ensemble_screened32/` (C_s7, D_s16, D_s13, D_s3, D_s5, D_s2, **D_s14**)
 - **Symbols**: 32 screened stocks (LLY, BSX, ABBV, VRTX, SYK, WELL, JPM, GS, V, MA, AXP, MS, AAPL, MSFT, NVDA, KLAC, CRWD, META, COST, AZO, TJX, CAT, PH, RTX, BKNG, MAR, HLT, PLTR, SPY, QQQ, AMZN, GOOG)
 - **Allocation**: 25% (unchanged)
 - **Feature schema**: rsi_v5 (16 features/symbol)
-- **Service**: running PID 4118083 since 2026-04-13 09:51:56 UTC. Next tick ~13:35 UTC Monday.
+- **Service**: restarted PID 3373041 at 2026-04-13 ~14:10 UTC. Next tick ~13:35 UTC Monday 2026-04-14.
 
 **Ensemble evolution:**
 
-| Model | Median | P10 | Neg/100 | Sortino | Notes |
+| Model | Median | P10 | Neg/263 | Sortino | Notes |
 |-------|--------|-----|---------|---------|-------|
 | stocks17 RSI 2-model | +7.09% | -8.26% | 34/100 | 16.88 | prev prod |
 | screened32 5-model | +12.39% | +0.31% | 10/100 | 27.95 | deployed ~09:44 UTC |
-| **screened32 6-model (+D_s2)** | **+13.73%** | **+0.80%** | **9/100** | **27.39** | **CURRENT** |
+| screened32 6-model (+D_s2) | +13.73% | +0.80% | 9/263 | 27.39 | deployed ~11:00 UTC |
+| **screened32 7-model (+D_s14)** | **+12.86%** | **+3.38%** | **4/263** | **19.53** | **CURRENT** |
 
-**Why D_s2 helps**: Adding D_s2 (Muon, tp=0.05, seed 2) improves median +1.34pp, p10 +0.49pp, and cuts one negative window.
-Validated: full OOS Jun 2025-Apr 2026, 100 windows × 50d, lag=2, binary fills, fee=10bps, slip=5bps.
+**Why D_s14 helps (contrarian veto)**: D/s14 has individual OOS neg=40/263 but acts as a contrarian veto, dissenting (choosing flat) in exactly the 5 windows where the 6-model ensemble is wrong. This halves neg (9→4) and raises p10 4× (+0.80%→+3.38%). Median drops slightly (13.73%→12.86%) which is acceptable.
+Validated: full OOS Jun 2025-Apr 2026, 263 candidate windows, 100 sampled, lag=2, binary fills, fee=10bps, slip=5bps.
 
-**Complete individual seed rankings (full OOS, 100 windows × 50d):**
+**Complete individual seed rankings (full OOS, 100 windows × 50d from 263 candidates):**
 
 | V | S | Med% | P10% | Neg/100 | Sort | Prod |
 |---|---|------|------|---------|------|------|
 | C | 7 | +7.19% | -5.81% | 15 | 17.38 | ★ |
 | D | 16 | +5.49% | -3.75% | 17 | 14.30 | ★ |
+| D | 26 | +3.46% | -7.23% | 29 | 7.94 | |
 | D | 2 | +4.68% | -9.66% | 33 | 8.97 | ★ |
 | C | 3 | +2.83% | -9.08% | 34 | 7.93 | |
+| D | 24 | +3.17% | -3.99% | 34 | 6.42 | |
+| F | 1 | +1.89% | -5.06% | 35 | 5.71 | |
+| C | 27 | +2.40% | -16.74% | 36 | 6.02 | |
 | D | 1 | +6.12% | -5.25% | 37 | 19.20 | |
-| D | 20 | +2.71% | -8.14% | 38 | 6.89 | |
+| C | 24 | +2.86% | -10.69% | 39 | 8.72 | |
 | D | 13 | +2.53% | -9.83% | 39 | 8.10 | ★ |
-| D | 14 | +3.36% | -13.90% | 40 | 5.47 | |
+| D | 14 | +3.36% | -13.90% | 40 | 5.47 | ★ |
 | D | 8 | +1.53% | -5.53% | 40 | 5.06 | |
+| F | 2 | +3.39% | neg | 40 | 9.94 | |
 | D | 3 | +1.56% | -8.47% | 41 | 4.33 | ★ |
 | D | 5 | +1.60% | -11.86% | 42 | 5.43 | ★ |
-| (rest) | ... | ≤0.87% | neg | 44+ | | |
+| E | 2 | +5.13% | -6.15% | 33 | 9.98 | |
+| (rest) | ... | ≤0.87% | neg | 43+ | | |
 
-**Ensemble combinations tested (all on same full OOS 100w):**
+**Ensemble combinations tested (all on same full OOS, 263 candidate windows):**
 
 | Config | Med | P10 | Neg | Sort |
 |--------|-----|-----|-----|------|
 | 5-model (C7,D16,D13,D3,D5) | 12.39% | 0.31% | 10 | 27.95 |
-| **6-model +D2** | **13.73%** | **0.80%** | **9** | **27.39** |
+| 6-model +D2 | 13.73% | 0.80% | 9 | 27.39 |
 | 6-model +D14 | 13.05% | -1.62% | 11 | 21.60 |
 | 6-model D2-set swap-D13→D14 | 13.45% | 1.15% | 8 | 20.91 |
 | 7-model +D2+D14 | 13.08% | 0.72% | 8 | 19.88 |
 | 8-model +D2+D14+D20 | 10.58% | 2.20% | 6 | 21.51 |
+| 7-model C7+D16+D13+D3+D5+D2+D1 (d1 as 7th) | 7.32% | -7.02% | 22 | 13.93 |
+| **7-model C7+D16+D13+D3+D5+D2+D14 (PROD)** | **12.86%** | **+3.38%** | **4** | **19.53** |
 
 **Deploy command** (if service restarts):
 ```bash

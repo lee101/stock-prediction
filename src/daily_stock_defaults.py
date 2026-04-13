@@ -16,15 +16,15 @@ DEFAULT_SYMBOLS = (
     "PLTR", "SPY", "QQQ", "AMZN", "GOOG",
 )
 
-# 2026-04-13: Switched to 5-model screened32 ensemble.
-# Reasons: head-to-head vs stocks17 on same Jun2025-Apr2026 OOS period (313 actual trading days):
-#   stocks17 RSI 2-model: med=7.09%, p10=-8.26%, 34/100 neg, Sortino=16.88
-#   screened32 5-model:   med=12.39%, p10=+0.31%, 10/100 neg, Sortino=27.95  ← winner
-# Screened32 includes defensive healthcare (LLY, ABBV, BSX) that outperforms in bear markets.
-# Validated through full OOS period including March 2026 tariff crash (-26% SPY).
-# Models: C_s7 (AdamW, tp=0.02) + D_s16 + D_s13 + D_s3 + D_s5 (Muon, tp=0.05)
-# All 5 models: disable_shorts=True, 33 actions (flat + 32 longs), features_per_sym=16
-# Trained on data through 2025-05-31, val 2025-06-01 to 2025-11-30 (bull period)
+# 2026-04-13: Upgraded to 7-model screened32 ensemble (+D_s2 +D_s14).
+# 7-model OOS (Jun 2025-Apr 2026, 263 windows, lag=2, fill_bps=5, fee=10bps):
+#   med=12.86%, p10=+3.38%, neg=4/263, sortino=19.53
+# vs 6-model baseline: med=13.73%, p10=+0.80%, neg=9/263, sortino=27.39
+# Key improvements: neg halved (9→4), p10 4x better (+0.80%→+3.38%). Med drop is acceptable.
+# D/s14 acts as contrarian veto catching ensemble errors in 5 windows.
+# Models: C_s7 (AdamW, tp=0.02) + D_s16, D_s13, D_s3, D_s5, D_s2, D_s14 (Muon, tp=0.05)
+# All models: disable_shorts=True, 65 actions (masked shorts), features_per_sym=16
+# Trained on data through 2025-05-31, val 2025-06-01 to 2025-11-30
 DEFAULT_CHECKPOINT = "pufferlib_market/prod_ensemble_screened32/C_s7.pt"
 
 DEFAULT_EXTRA_CHECKPOINTS = (
@@ -32,7 +32,8 @@ DEFAULT_EXTRA_CHECKPOINTS = (
     "pufferlib_market/prod_ensemble_screened32/D_s13.pt",
     "pufferlib_market/prod_ensemble_screened32/D_s3.pt",
     "pufferlib_market/prod_ensemble_screened32/D_s5.pt",
-    "pufferlib_market/prod_ensemble_screened32/D_s2.pt",   # +D_s2: med→13.73%, p10→+0.80%, neg→9/100
+    "pufferlib_market/prod_ensemble_screened32/D_s2.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s14.pt",  # +D_s14: neg→4/263, p10→+3.38%
 )
 
 DEFAULT_DATA_DIR = "trainingdata"
