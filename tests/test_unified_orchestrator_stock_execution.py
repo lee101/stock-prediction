@@ -5,6 +5,8 @@ import types
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import pytest
+
 import alpaca.trading.client as trading_client
 import alpaca.trading.enums as trading_enums
 import alpaca.trading.requests as trading_requests
@@ -39,7 +41,8 @@ def _patch_stock_execution_dependencies(monkeypatch, tmp_path) -> None:
     monkeypatch.setitem(sys.modules, "alpaca.trading.requests", fake_requests)
 
 
-def test_execute_stock_signals_respects_150pct_gross_exposure(monkeypatch, tmp_path) -> None:
+def test_execute_stock_signals_caps_per_stock_at_50pct(monkeypatch, tmp_path) -> None:
+    """Stock allocation is hard-capped at 50% of equity per symbol even when LLM requests more."""
     _patch_stock_execution_dependencies(monkeypatch, tmp_path)
 
     snapshot = UnifiedPortfolioSnapshot(
@@ -59,18 +62,15 @@ def test_execute_stock_signals_respects_150pct_gross_exposure(monkeypatch, tmp_p
 
     orders = orchestrator.execute_stock_signals({"CRWD": plan}, snapshot, dry_run=True)
 
-    assert orders == [
-        {
-            "symbol": "CRWD",
-            "action": "buy",
-            "price": 100.0,
-            "qty": 150.0,
-            "dry_run": True,
-        }
-    ]
+    # Hard cap: alloc = min(1.5, 0.5) = 0.5 → 10000 * 0.5 / 100 = 50 shares
+    assert len(orders) == 1
+    assert orders[0]["symbol"] == "CRWD"
+    assert orders[0]["qty"] == pytest.approx(50.0, rel=1e-3)
+    assert orders[0]["dry_run"] is True
 
 
-def test_execute_stock_signals_caps_single_name_stock_exposure_at_2x(monkeypatch, tmp_path) -> None:
+def test_execute_stock_signals_caps_single_name_stock_exposure_at_50pct(monkeypatch, tmp_path) -> None:
+    """Even at 250% allocation_pct the 50% per-stock hard cap applies."""
     _patch_stock_execution_dependencies(monkeypatch, tmp_path)
 
     snapshot = UnifiedPortfolioSnapshot(
@@ -90,15 +90,11 @@ def test_execute_stock_signals_caps_single_name_stock_exposure_at_2x(monkeypatch
 
     orders = orchestrator.execute_stock_signals({"COIN": plan}, snapshot, dry_run=True)
 
-    assert orders == [
-        {
-            "symbol": "COIN",
-            "action": "buy",
-            "price": 100.0,
-            "qty": 200.0,
-            "dry_run": True,
-        }
-    ]
+    # alloc = min(2.5, 0.5) = 0.5 → 10000 * 0.5 / 100 = 50 shares
+    assert len(orders) == 1
+    assert orders[0]["symbol"] == "COIN"
+    assert orders[0]["qty"] == pytest.approx(50.0, rel=1e-3)
+    assert orders[0]["dry_run"] is True
 
 
 def test_fetch_stock_history_frames_uses_wide_enough_calendar_lookback(monkeypatch) -> None:
@@ -136,4 +132,5 @@ def test_fetch_stock_history_frames_uses_wide_enough_calendar_lookback(monkeypat
     assert request["timeframe"] == "hour"
     assert request["feed"] == "iex"
     assert request["end"] == now
-    assert now - request["start"] >= timedelta(days=20)
+    # Default lookback is 78 hours (covers recent price action for LLM signals)
+    assert now - request["start"] >= timedelta(hours=72)

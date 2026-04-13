@@ -3722,7 +3722,7 @@ def test_trade_live_preview_run_exits_before_client_and_model_init(monkeypatch, 
     assert "live_mode: yes" in out
     assert "daemon: yes" in out
     assert "gemini_enabled: yes" in out
-    assert "gemini_model: gemini-2.5-flash" in out
+    assert "gemini_model: gemini-3.1-flash-lite-preview" in out
     assert "neural_model: model.pt" in out
     assert "neural_symbols: SOLUSD, ADAUSD" in out
     assert "Capital plan:" in out

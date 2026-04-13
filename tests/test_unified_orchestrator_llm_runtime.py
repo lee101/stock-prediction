@@ -83,7 +83,8 @@ def test_startup_config_summary_includes_effective_runtime_settings(monkeypatch)
     assert summary["cycle_event_log"] == "/tmp/runtime-state-dir/orchestrator_cycle_events.jsonl"
 
 
-def test_main_uses_canonical_live_account_lock_even_with_override(monkeypatch) -> None:
+def test_main_respects_custom_lock_name_in_live_mode(monkeypatch) -> None:
+    """--lock-name is respected so multiple orchestrators can coexist on disjoint symbols."""
     lock_calls: list[tuple[str, str]] = []
 
     class _StopMain(RuntimeError):
@@ -107,4 +108,6 @@ def test_main_uses_canonical_live_account_lock_even_with_override(monkeypatch) -
     with pytest.raises(_StopMain):
         orchestrator.main()
 
-    assert lock_calls == [("unified-orchestrator", "alpaca_live_writer")]
+    # The custom lock name is used as-is (allows coexistence with daily-rl-trader
+    # which holds alpaca_live_writer on a disjoint symbol set).
+    assert lock_calls == [("unified-orchestrator", "llm_stock_writer")]
