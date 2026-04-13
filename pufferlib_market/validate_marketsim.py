@@ -371,11 +371,19 @@ def _generate_policy_actions(
             entry_price = 0.0
             hold_bars = 0
         elif held_symbol == desired_symbol:
+            # Already holding — next obs should see hold_hours incremented.
+            # C env increments hold_hours AFTER the HOLD action so the *next*
+            # obs sees the incremented value.  hold_bars here is what the next
+            # _set_trader_shadow_state call will read, so we increment now.
             hold_bars += 1
         else:
+            # Transition to a new position.  C env: open_long() resets
+            # hold_hours=0.  The NEXT step's obs (first while holding) still
+            # sees hold_hours=0 because build_observation() runs before any
+            # action increments it.  Start at 0, not 1.
             held_symbol = desired_symbol
             entry_price = prices[desired_symbol]
-            hold_bars = 1
+            hold_bars = 0
 
     actions = pd.DataFrame(generated_rows).sort_values(["timestamp", "symbol"]).reset_index(drop=True)
     stats = {

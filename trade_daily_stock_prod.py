@@ -2116,9 +2116,17 @@ def _apply_portfolio_context_to_trader(
     _ep = float(portfolio.entry_price) if portfolio.entry_price and portfolio.entry_price > 0 else 0.0
     trader.position_qty = (10_000.0 / _ep) if (portfolio.current_symbol and _ep > 0) else 0.0
     trader.entry_price = _ep
-    trader.hold_days = int(max(0, portfolio.hold_days))
-    trader.hold_hours = trader.hold_days
-    trader.step = min(trader.hold_days, trader.max_steps)
+    # C env hold_hours convention: open_long() resets hold_hours=0, and the
+    # NEXT step's obs (the first obs while holding) also sees hold_hours=0
+    # because build_observation() runs BEFORE any hold action increments it.
+    # portfolio.hold_days is 1-indexed (days elapsed since buy date), so:
+    #   - Day after buying: hold_days=1 → C env hold_hours=0 → subtract 1
+    #   - 2nd day holding: hold_days=2 → C env hold_hours=1 → subtract 1
+    # Minimum is 0 (can't go negative when hold_days=0 meaning no position).
+    hold_bars_c = int(max(0, portfolio.hold_days - 1)) if portfolio.current_symbol else 0
+    trader.hold_days = hold_bars_c
+    trader.hold_hours = hold_bars_c
+    trader.step = min(hold_bars_c, trader.max_steps)
     trader.current_position = None
     if portfolio.current_symbol:
         symbol_upper = portfolio.current_symbol.upper()

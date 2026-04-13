@@ -318,7 +318,13 @@ def test_generate_policy_actions_daily_tracks_hold_days(monkeypatch) -> None:
         min_history_bars=1,
     )
 
-    assert trader.hold_days_seen == [0, 1, 2]
+    # C env hold_hours convention: open_long() resets hold_hours=0, and the
+    # first obs AFTER buying still sees hold_hours=0 (obs built before the HOLD
+    # action that would increment it).  So:
+    #   step 1 (buy): hold_days=0 (flat before signal)
+    #   step 2 (hold): hold_days=0 (just bought on step 1; hold_hours still 0)
+    #   step 3 (sell): hold_days=1 (held once on step 2)
+    assert trader.hold_days_seen == [0, 0, 1]
     assert stats["buy_rows"] == 1
     assert stats["sell_rows"] == 1
     first = actions[actions["timestamp"] == pd.Timestamp("2026-01-02T00:00:00Z")].set_index("symbol")
