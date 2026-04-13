@@ -552,28 +552,26 @@ def test_set_trader_shadow_state_uses_hold_bars_not_step_index() -> None:
     trader = _FakeTrader()
     symbol_to_index = {"AAPL": 0}
 
-    # Simulate: holding AAPL, hold_bars=3, but overall step_index=100
+    # Simulate: holding AAPL, hold_bars=3
     _set_trader_shadow_state(
         trader,
         symbol_to_index=symbol_to_index,
         held_symbol="AAPL",
         hold_bars=3,
         entry_price=150.0,
-        step_index=100,
     )
 
-    # step must match hold_bars (3), NOT the overall bar index (100)
+    # step must match hold_bars (3)
     assert trader.step == 3
     assert trader.hold_hours == 3
 
-    # Flat: hold_bars=0, step_index=200 — step must be 0
+    # Flat: hold_bars=0 — step must be 0
     _set_trader_shadow_state(
         trader,
         symbol_to_index=symbol_to_index,
         held_symbol=None,
         hold_bars=0,
         entry_price=0.0,
-        step_index=200,
     )
     assert trader.step == 0
 
@@ -584,6 +582,5 @@ def test_set_trader_shadow_state_uses_hold_bars_not_step_index() -> None:
         held_symbol="AAPL",
         hold_bars=300,
         entry_price=150.0,
-        step_index=999,
     )
     assert trader.step == 252  # clamped to max_steps

@@ -148,7 +148,6 @@ def _set_trader_shadow_state(
     held_symbol: str | None,
     hold_bars: int,
     entry_price: float,
-    step_index: int,
 ) -> None:
     # The C training env starts with INITIAL_CASH=10_000 and buys
     # qty = INITIAL_CASH / entry_price units, so obs[base+1] = pos_val /
@@ -327,7 +326,6 @@ def _generate_policy_actions(
             held_symbol=held_symbol,
             hold_bars=hold_bars,
             entry_price=entry_price,
-            step_index=idx,
         )
 
         prices = {

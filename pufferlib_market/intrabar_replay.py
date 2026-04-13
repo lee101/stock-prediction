@@ -796,7 +796,10 @@ def simulate_daily_policy_intrabar(
                 _record(hi, closed_sym, side, exit_price, qty, exit_kind or "exit")
 
         if 0 <= day_idx < max_steps and hi == decision_hours[day_idx]:
-            hold_days = max(0, day_idx - pos_open_day) if pos is not None and pos_open_day >= 0 else 0
+            # C env: open_long() resets hold_hours=0 and build_observation() runs BEFORE the
+            # HOLD action that would increment it.  So the first obs AFTER buying shows
+            # hold_hours=0 (not 1).  Subtract 1 from elapsed days to match.
+            hold_days = max(0, day_idx - pos_open_day - 1) if pos is not None and pos_open_day >= 0 else 0
             obs = _build_obs_hourly_price(
                 data=data,
                 t_day=day_idx,
