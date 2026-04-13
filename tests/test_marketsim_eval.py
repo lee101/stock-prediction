@@ -173,8 +173,7 @@ def test_fee_calculation():
 
 def test_leverage_budget():
     """Verify that _open_long with max_leverage=2.0 produces 2x the position
-    size vs 1x.  Also verify simulate_daily_policy's limit-order path clamps
-    cost to available cash (so 2x leverage has no effect when cost > cash)."""
+    size vs 1x and 2x the return on the same price move."""
     # _open_long (market-order style) allows cash to go negative (margin).
     cash = 10000.0
     cash_1x, pos_1x = _open_long(cash, sym=0, price=100.0, fee_rate=0.0, max_leverage=1.0)
@@ -186,9 +185,9 @@ def test_leverage_budget():
     assert cash_1x == pytest.approx(0.0, abs=1e-9)
     assert cash_2x == pytest.approx(-10000.0, abs=1e-9)
 
-    # simulate_daily_policy uses _open_long_limit which clamps cost to cash.
-    # Therefore, in the sim, 2x leverage has no extra effect when the limit
-    # order cost exceeds available cash.
+    # simulate_daily_policy uses _open_long_limit which also allows leverage > 1x.
+    # buy_budget = cash * max_leverage * alloc, so 2x leverage produces 2x position
+    # and therefore 2x the return on the same price move.
     close = np.array([100.0, 110.0, 110.0], dtype=np.float32)
     data = _make_mktd(close)
 
@@ -199,12 +198,12 @@ def test_leverage_budget():
         data, _always_long, max_steps=2, fee_rate=0.0, max_leverage=2.0, periods_per_year=365.0,
     )
 
-    # At 1x leverage, return should be 10%.
+    # At 1x leverage, 10% price move → 10% return.
     assert r_1x.total_return == pytest.approx(0.10, abs=1e-9)
-    # With limit-order clamping, 2x still produces 10% (cost clamped to cash).
-    assert r_2x.total_return == pytest.approx(0.10, abs=1e-9)
-    # Both runs produce the same result due to the cost clamp.
-    assert r_1x.total_return == pytest.approx(r_2x.total_return, abs=1e-12)
+    # At 2x leverage, 10% price move → 20% return (2x position size, cash goes negative).
+    assert r_2x.total_return == pytest.approx(0.20, abs=1e-9)
+    # 2x leverage produces exactly 2x return (zero fees, no clamping).
+    assert r_2x.total_return == pytest.approx(r_1x.total_return * 2.0, rel=1e-9)
 
 
 # ---------------------------------------------------------------------------
