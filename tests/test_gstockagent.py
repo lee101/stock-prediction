@@ -15,7 +15,8 @@ from gstockagent.prompt import (
 from gstockagent.llm_client import parse_allocation
 from gstockagent.simulator import (
     Position, SimState, portfolio_value, close_position,
-    apply_fees, get_current_prices, compute_metrics, run_simulation
+    apply_fees, get_current_prices, compute_metrics, run_simulation,
+    validate_exit_stop,
 )
 
 
@@ -212,6 +213,38 @@ class TestMarginConstraints:
         close_position(s, "ETH", 3500, "stop", "2025-01-02")
         assert s.cash == 1.0 * (2 * 3000 - 3500)  # 2500
         assert s.trade_log[-1]["pnl"] == -500
+
+
+class TestValidateExitStop:
+    def test_long_valid(self):
+        e, s = validate_exit_stop(100, 110, 90, "long")
+        assert e == 110
+        assert s == 90
+
+    def test_long_exit_below_entry_disabled(self):
+        e, s = validate_exit_stop(100, 95, 90, "long")
+        assert e == 0  # disabled
+        assert s == 90
+
+    def test_long_stop_above_entry_disabled(self):
+        e, s = validate_exit_stop(100, 110, 105, "long")
+        assert e == 110
+        assert s == 0  # disabled
+
+    def test_short_valid(self):
+        e, s = validate_exit_stop(100, 90, 110, "short")
+        assert e == 90
+        assert s == 110
+
+    def test_short_exit_above_entry_disabled(self):
+        e, s = validate_exit_stop(100, 105, 110, "short")
+        assert e == 0
+        assert s == 110
+
+    def test_short_stop_below_entry_disabled(self):
+        e, s = validate_exit_stop(100, 90, 95, "short")
+        assert e == 90
+        assert s == 0
 
 
 if __name__ == "__main__":

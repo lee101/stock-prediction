@@ -78,6 +78,24 @@ def apply_fees(notional: float, fee_bps: float) -> float:
     return notional * fee_bps / 10000
 
 
+def validate_exit_stop(entry_price: float, exit_price: float, stop_price: float,
+                       direction: str) -> tuple:
+    """Validate and sanitize exit/stop prices. Returns (exit, stop)."""
+    if direction == "long":
+        # long: exit must be above entry, stop must be below entry
+        if exit_price > 0 and exit_price <= entry_price:
+            exit_price = 0  # disable invalid exit
+        if stop_price > 0 and stop_price >= entry_price:
+            stop_price = 0  # disable invalid stop
+    else:
+        # short: exit must be below entry, stop must be above entry
+        if exit_price > 0 and exit_price >= entry_price:
+            exit_price = 0
+        if stop_price > 0 and stop_price <= entry_price:
+            stop_price = 0
+    return exit_price, stop_price
+
+
 def run_simulation(config: GStockConfig, start_date: str, end_date: str,
                    use_cache: bool = True, verbose: bool = False) -> dict:
     bars_dict = {}
@@ -143,6 +161,16 @@ def run_simulation(config: GStockConfig, start_date: str, end_date: str,
 
         eq = portfolio_value(state, prices)
 
+        # liquidation check: if equity <= 0, close all positions
+        if eq <= 0 and state.positions:
+            for sym in list(state.positions.keys()):
+                close_position(state, sym, prices.get(sym, 0), "liquidation", str(date.date()))
+            eq = state.cash
+            if eq <= 0:
+                state.equity_curve.append({"date": str(date.date()), "equity": max(0, eq)})
+                state.daily_returns.append(-1.0)
+                break
+
         # build positions dict for prompt
         pos_dict = {}
         for sym, pos in state.positions.items():
@@ -165,7 +193,15 @@ def run_simulation(config: GStockConfig, start_date: str, end_date: str,
             alloc = {}
 
         # parse target allocation
-        total_capital = eq * config.leverage
+        total_capital = max(0, eq * config.leverage)
+        if total_capital <= 0:
+            # no capital, skip allocation
+            eq = portfolio_value(state, prices)
+            daily_ret = (eq / prev_equity - 1) if prev_equity > 0 else 0
+            state.equity_curve.append({"date": date_str, "equity": eq})
+            state.daily_returns.append(daily_ret)
+            prev_equity = eq
+            continue
         target = {}
         for sym, spec in alloc.items():
             sym = sym.upper()
@@ -218,8 +254,11 @@ def run_simulation(config: GStockConfig, start_date: str, end_date: str,
                         if spec["direction"] == "long":
                             state.cash -= diff_qty * prices[sym]
                     cur_pos.qty += diff_qty
-                cur_pos.exit_price = spec["exit_price"]
-                cur_pos.stop_price = spec["stop_price"]
+                v_exit, v_stop = validate_exit_stop(
+                    cur_pos.entry_price, spec["exit_price"],
+                    spec["stop_price"], cur_pos.direction)
+                cur_pos.exit_price = v_exit
+                cur_pos.stop_price = v_stop
                 continue
 
             # open new position (both long and short require margin/cash)
@@ -233,10 +272,12 @@ def run_simulation(config: GStockConfig, start_date: str, end_date: str,
                 cost = target_qty * prices[sym]
                 fee = apply_fees(cost, config.fee_bps)
             state.cash -= cost + fee
+            v_exit, v_stop = validate_exit_stop(
+                prices[sym], spec["exit_price"], spec["stop_price"], spec["direction"])
             state.positions[sym] = Position(
                 symbol=sym, qty=target_qty, entry_price=prices[sym],
-                direction=spec["direction"], exit_price=spec["exit_price"],
-                stop_price=spec["stop_price"], entry_date=date_str
+                direction=spec["direction"], exit_price=v_exit,
+                stop_price=v_stop, entry_date=date_str
             )
 
         eq = portfolio_value(state, prices)
