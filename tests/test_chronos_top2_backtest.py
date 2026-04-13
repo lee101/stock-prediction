@@ -249,8 +249,8 @@ class TestSimulateDay:
         self.target = self.df["timestamp"].iloc[50].date()
         self.symbol = "FAKE"
         self.all_data = {self.symbol: self.df}
-        # Minimal forecasts
-        self.forecasts = {self.symbol: 1.5}
+        # Minimal forecasts — simulate_day expects dict[str, dict] with cc_return_pct
+        self.forecasts = {self.symbol: {"cc_return_pct": 1.5}}
 
     def test_returns_day_result(self):
         dr = simulate_day(
@@ -297,7 +297,7 @@ class TestSimulateDay:
 
     def test_returns_none_if_no_data_for_day(self):
         # forecasts for a symbol with no data on target day
-        forecasts = {"NONEXISTENT": 5.0}
+        forecasts = {"NONEXISTENT": {"cc_return_pct": 5.0}}
         dr = simulate_day(
             target_day=self.target,
             forecasts=forecasts,
@@ -312,7 +312,7 @@ class TestSimulateDay:
     def test_top_n_limits_picks(self):
         # Add multiple symbols
         all_data = {f"SYM{i}": self.df for i in range(10)}
-        forecasts = {f"SYM{i}": float(i) for i in range(10)}
+        forecasts = {f"SYM{i}": {"cc_return_pct": float(i)} for i in range(10)}
         dr = simulate_day(
             target_day=self.target,
             forecasts=forecasts,

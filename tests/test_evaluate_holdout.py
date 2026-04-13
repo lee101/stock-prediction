@@ -35,6 +35,7 @@ def _fake_main_args(tmp_path: Path, **overrides) -> SimpleNamespace:
         "no_early_stop": False,
         "device": "cpu",
         "out": None,
+        "extra_checkpoints": None,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -117,23 +118,23 @@ def test_load_policy_rejects_wrapped_checkpoint_with_invalid_model_payload(tmp_p
         )
 
 
-def test_load_policy_rejects_unsupported_checkpoint_architecture(tmp_path: Path) -> None:
+def test_load_policy_unknown_arch_falls_back_to_mlp(tmp_path: Path) -> None:
+    # evaluate_holdout.py no longer rejects unknown archs — they fall through to
+    # the TradingPolicy (mlp) branch for forward compatibility with new arch names.
     source_policy = eval_mod.TradingPolicy(obs_size=22, num_actions=3, hidden=16)
 
-    with (
-        patch.object(
-            eval_mod,
-            "load_checkpoint_payload",
-            return_value={"model": source_policy.state_dict(), "arch": "bogus"},
-        ),
-        pytest.raises(ValueError, match="Unsupported checkpoint architecture: bogus"),
+    with patch.object(
+        eval_mod,
+        "load_checkpoint_payload",
+        return_value={"model": source_policy.state_dict(), "arch": "bogus"},
     ):
-        eval_mod.load_policy(
+        loaded = eval_mod.load_policy(
             str(tmp_path / "checkpoint.pt"),
             num_symbols=1,
             features_per_sym=16,
             device=torch.device("cpu"),
         )
+    assert loaded.policy is not None
 
 
 def test_load_policy_supports_bare_state_dict_payload(tmp_path: Path) -> None:
