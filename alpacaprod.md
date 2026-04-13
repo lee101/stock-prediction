@@ -7,32 +7,36 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
-### 2026-04-13 (latest update ~18:05 UTC) — Active sweep status
+### 2026-04-13 (latest update ~22:11 UTC) — Active sweep status
 
-**Active sweeps (9 training processes, RTX 5090, ~8-11k SPS each):**
-- D s24-80: seeds s36, s51, s62 training; ~62 D seeds total; 2 new anchors found (D_s28 neg=16, D_s42 neg=24)
-- H variant (Muon + tp=0.10): s1 training; first val best_neg=1/50 (then degraded → likely false positive)
-- G variant (Muon + tp=0.07): s1 OOS=neg46 (false positive); s2 training
-- I variant (Muon + tp=0.03): s1 OOS=neg47 (false positive); s2 training
-- v2 sweep (C+D, data 2019-2025-11-30, 31% more data): s1 training on crash-period val (neg=31/31 expected)
+**Active sweeps (RTX 5090, ~8-11k SPS each):**
+- D s70+: training; ~70 D seeds total; new anchor D_s67 (neg=7)
+- I variant (Muon + tp=0.03): s4+ training (s3 was best individual anchor neg=8!)
+- v2 sweep (C+D, data 2019-2025-11-30, 31% more data): running
 - monitor_sweeps.sh: runs every 30min, auto-evals, flags anchors neg<25
+- **G/H/I s1-s2 killed** (G/I false positive pattern confirmed), transformer killed (degenerate training)
 
-**Next live trade**: Monday 2026-04-14 ~13:35 UTC (service PID 1885963, sleeping)
+**Next live trade**: Monday 2026-04-14 ~13:35 UTC (service PID 4116758, restarted 22:11)
 **Live account**: $28,679 equity, 0 positions, value gate=-1.0 (fixed), regime=BULL
 
 ---
 
-### 2026-04-13 — Screened32 8-model ensemble deployed (CURRENT PRODUCTION)
+### 2026-04-13 22:11 UTC — D_s5→I_s3 swap deployed (CURRENT PRODUCTION)
 
-#### Current champion: screened32 8-model ensemble (D_s13→D_s42 swap)
-- **Checkpoints**: `pufferlib_market/prod_ensemble_screened32/` (C_s7, D_s16, **D_s42**, D_s3, D_s5, D_s2, D_s14, D_s28)
+#### Current champion: screened32 8-model ensemble (D_s5→I_s3 swap)
+- **Checkpoints**: `pufferlib_market/prod_ensemble_screened32/` (C_s7, D_s16, D_s42, D_s3, **I_s3**, D_s2, D_s14, D_s28)
 - **Symbols**: 32 screened stocks (LLY, BSX, ABBV, VRTX, SYK, WELL, JPM, GS, V, MA, AXP, MS, AAPL, MSFT, NVDA, KLAC, CRWD, META, COST, AZO, TJX, CAT, PH, RTX, BKNG, MAR, HLT, PLTR, SPY, QQQ, AMZN, GOOG)
 - **Allocation**: 25% (unchanged)
 - **Feature schema**: rsi_v5 (16 features/symbol)
-- **Service**: restarted at 2026-04-13 ~17:22 UTC. Next tick ~13:35 UTC Monday 2026-04-14.
-- **Value estimate gate**: lowered 0.0 → -1.0 (2026-04-13). RL critic V(s) is miscalibrated OOS — systematic negative bias even when ensemble OOS returns are +15.81%. Only 1 trade ever submitted with 0.0 gate. Confidence gate (5%) is the meaningful filter.
+- **Service**: restarted at 2026-04-13 22:11 UTC. Next tick ~13:35 UTC Monday 2026-04-14.
+- **Value estimate gate**: -1.0 (disabled). Confidence gate 5% is the meaningful filter.
 
-**D_s42 profile**: Individual OOS neg=24/100, med=10.28% — 2nd best D seed. In ensemble, replaces D_s13 (neg=39) as it synergises better with other models.
+**Swap rationale**: Pruning test confirmed D_s5 (individual neg=42) is a drag on ensemble.
+- 7-model (no D_s5): med=16.85% p10=4.65% neg=8/100 sort=27.87 (+1.04% med vs baseline)
+- I_s3 profile: tp=0.03 Muon, individual OOS neg=8/100, med=6.64%
+- 8-model (D_s5→I_s3): med=18.17% p10=5.07% neg=8/100 sort=30.67 (vs 15.81% baseline)
+
+**Key improvement**: med +2.36%, sort +3.02, p10 +0.66% (neg 7→8, small cost). Exhaustive 263-window eval pending.
 
 **Ensemble evolution (all evals: 100 sampled windows from 263 candidates, lag=2, binary fills, fee=10bps, slip=5bps):**
 
@@ -43,7 +47,8 @@
 | screened32 6-model (+D_s2) | +13.73% | +0.80% | 9 | 27.39 | deployed ~11:00 UTC |
 | screened32 7-model (+D_s14) | +13.08% | +0.72% | 8 | 19.88 | deployed ~14:10 UTC |
 | screened32 8-model (+D_s28) | +14.42% | +2.33% | 8 | 23.33 | deployed ~15:17 UTC |
-| **screened32 8-model (D_s13→D_s42 swap)** | **+15.81%** | **+5.14%** | **7** | **27.65** | **CURRENT ~16:54 UTC** |
+| screened32 8-model (D_s13→D_s42 swap) | +15.81% | +5.14% | 7 | 27.65 | deployed ~16:54 UTC |
+| **screened32 8-model (D_s5→I_s3 swap)** | **+18.17%** | **+5.07%** | **8** | **30.67** | **CURRENT ~22:11 UTC** |
 
 Exhaustive 263w eval (current 8-model with D_s42): neg=15/263, med=15.28%, p10=+2.72%, sort=26.52
 vs previous 8-model (D_s13) 263w: neg=22/263, med=14.23%, p10=+1.58%, sort=22.75
@@ -60,6 +65,8 @@ Validated: full OOS Jun 2025-Apr 2026, 263 candidate windows, lag=2, binary fill
 | V | S | Med% | P10% | Neg/100 | Sort | Prod |
 |---|---|------|------|---------|------|------|
 | C | 7 | +7.19% | -5.81% | 15 | 17.38 | ★ |
+| I | 3 | +6.64% | +1.55% | 8 | 20.58 | ★ (replaced D_s5) |
+| D | 67 | +6.64% | +1.55% | 7 | 20.58 | anchor candidate |
 | D | 28 | +7.95% | -2.26% | 16 | 25.82 | ★ |
 | D | 16 | +5.49% | -3.75% | 17 | 14.30 | ★ |
 | D | 42 | +10.28% | -5.50% | 24 | 22.75 | ★ |
@@ -78,7 +85,7 @@ Validated: full OOS Jun 2025-Apr 2026, 263 candidate windows, lag=2, binary fill
 | D | 8 | +1.53% | -5.53% | 40 | 5.06 | |
 | F | 2 | +3.39% | neg | 40 | 9.94 | |
 | D | 3 | +1.56% | -8.47% | 41 | 4.33 | ★ |
-| D | 5 | +1.60% | -11.86% | 42 | 5.43 | ★ |
+| D | 5 | +1.60% | -11.86% | 42 | 5.43 | (was ★, drag confirmed) |
 | C | 29 | +1.64% | -12.59% | 44 | 5.89 | |
 | (rest) | ... | ≤0.87% | neg | 44+ | | |
 
@@ -96,7 +103,11 @@ Validated: full OOS Jun 2025-Apr 2026, 263 candidate windows, lag=2, binary fill
 | 7-model +D2+D14 | 13.08% | 0.72% | 8 | 19.88 |
 | 8-model +D26 | 13.34% | 0.74% | 9 | 19.41 |
 | 8-model +D2+D14+D28 | 14.42% | +2.33% | 8 | 23.33 | prev prod |
-| **8-model swap D13→D42 (PROD)** | **15.81%** | **+5.14%** | **7** | **27.65** | **CURRENT** |
+| 8-model swap D13→D42 | 15.81% | +5.14% | 7 | 27.65 | prev prod |
+| 7-model (no D_s5 drag) | 16.85% | +4.65% | 8 | 27.87 | D_s5 confirmed drag |
+| 8-model (D_s5→D_s67) | 16.23% | +5.46% | 7 | 26.86 | D_s67 ind=neg7 |
+| 9-model +I_s3 | 16.95% | +4.66% | 8 | 29.93 | I_s3 ind=neg8 |
+| **8-model (D_s5→I_s3)** | **18.17%** | **+5.07%** | **8** | **30.67** | **CURRENT** |
 | 8-model +E2 | 13.03% | 0.48% | 9 | 19.62 |
 | 7-model swap-D3→E2 | 12.02% | 1.53% | 9 | 18.68 |
 | 6-model drop-D3 (+D14) | 11.81% | 0.08% | ~10 | 18.01 |
