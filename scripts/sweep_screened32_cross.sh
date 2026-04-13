@@ -11,6 +11,9 @@ set -u
 cd /nvme0n1-disk/code/stock-prediction
 source .venv313/bin/activate
 
+# earlyoom kills training processes under memory pressure — stop it
+echo "ilu" | sudo -S systemctl stop earlyoom 2>/dev/null && echo "[sweep] earlyoom stopped" || echo "[sweep] earlyoom already stopped or no sudo"
+
 export TMPDIR="$(pwd)/.tmp_train"
 mkdir -p "$TMPDIR"
 # Ensure triton and torch.compile write to our tmpdir (avoids /tmp cleanup issues)
