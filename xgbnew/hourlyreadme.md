@@ -116,13 +116,16 @@ xgbnew/
   backtest.py         — BacktestConfig, DayResult, etc. (shared with daily)
 ```
 
-## Expected Performance (Hypothetical)
+## Daily Strategy (Real Backtest) vs Hourly (Pending Data)
 
-With genuine hourly OHLCV data, we would expect:
+The **daily** strategy (`run_daily.py`) ran a real day-by-day market simulation:
+- 846 stocks, real OHLCV bars from `trainingdata/*.csv`
+- Train: 2021–2024 (546k rows), Test: Jan–Apr 2026 (66 trading days)
+- **Verified result: +203% total, Sharpe 13.9, 85.6% directional accuracy** on top-2 picks
+- See `xgbnew/dailyreadme.md` for full results, caveats, and feature importances
+
+The **hourly** strategy code is ready but blocked on data. Expected characteristics when genuine hourly OHLCV becomes available:
 - Lower per-trade returns (hourly bars have smaller moves than daily)
 - Higher trade frequency (6.5× more bars per day than daily)
-- Similar Sharpe if the model captures intraday patterns (momentum, mean-reversion)
 - Higher transaction costs as a % of return (need tighter spreads to be viable)
-
-The daily strategy (+203% total, Sharpe 13.9 over 66 days) is a stronger result
-because it has 846 stocks to select from vs ~13 in any one MKTD hourly file.
+- Smaller universe per file (~13 stocks) vs 846 in daily — daily is the stronger strategy until hourly OHLCV is available

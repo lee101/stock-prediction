@@ -392,6 +392,7 @@ alpacaprod.md
 currentlyrunning.md
 *progress*.md
 !alpacaprogress.md
+!alpacaprogress[0-9]*.md
 !binanceprogress2.md
 !stockprogress.md
 !failedstockprogress5.md

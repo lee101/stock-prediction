@@ -1062,6 +1062,50 @@ sudo tail -20 /var/log/supervisor/binance-hybrid-spot-error.log
 - Holdout scores all negative (-231 to -283): 29-sym daily at 90 steps has limited edge
 - **Next**: Need hourly data (34-sym, 720 steps) on larger GPU for meaningful differentiation
 
+---
+
+## Research Candidates (2026-04-13)
+
+### XGBoost Daily Open-to-Close Strategy — promising, needs prod validation
+
+**Location**: `xgbnew/` — see `xgbnew/dailyreadme.md` for full details.
+
+**Approach**: XGBClassifier trained to predict open-to-close direction across 846 US stocks.
+Strategy: score all 846 stocks each morning, buy top-2 at market open, sell at close.
+No RL, no neural policy — pure technical feature engineering + gradient boosting.
+
+**Backtest (real simulation, not hypothetical):**
+- Train: 2021-01-01 → 2024-12-31 (546k rows, 4 years)
+- Test: 2026-01-05 → 2026-04-09 (66 trading days, out-of-sample)
+- top-2 picks, 1x leverage: **+203% total, +42% monthly equiv, Sharpe 13.9, Max DD 6.2%**
+- top-2 picks, 2x leverage: +767% total, +99% monthly, Sharpe 13.8
+- Avg spread on picks: 2.7 bps (consistently selects large-cap high-vol stocks)
+- Directional accuracy on top-2 picks: 85.6%
+
+**Key findings:**
+- Model is a **momentum/liquidity quality selector** — top features: `dolvol_20d_log` (0.130), `cs_spread_bps` (0.122), `ret_2d` (0.095)
+- Consistently picks high-vol tech: MU, PLTR, INTC, AVGO — these happened to be in a bull run Jan-Apr 2026
+- Val accuracy on full 185k-row 2025 universe: 51.67% — barely above chance. The 85.6% is selectivity, not model accuracy across all stocks.
+
+**Caveats before deploying:**
+1. Test window (66 days) coincided with AI/semiconductor bull run — need to test on bearish/choppy periods
+2. Not yet validated through marketsim with `decision_lag=2`, binary fills, `fee=10bps`, `slip=5bps`
+3. No Alpaca wrapper integration yet (needs singleton guard, death spiral guard, live open-price feed)
+4. Could complement the RL ensemble: RL system holds intraday positions, XGB makes one trade per day
+
+**To productionize:**
+```bash
+# 1. Run more robust eval across different market regimes
+python -m xgbnew.run_daily --symbols-file symbol_lists/stocks_wide_1000_v1.txt \
+    --data-root trainingdata --top-n 2 --leverage 1.0
+
+# 2. Train on data through 2025-11-30 (use same train cutoff as screened32 v2 sweep)
+# 3. Add marketsim validation at lag=2, binary fills (adaptor needed — xgbnew uses own backtest)
+# 4. Wrap in alpaca_wrapper for live trading with singleton + death-spiral guards
+```
+
+---
+
 ### 2026-03-23 -- Daily stock PPO: autoresearch leaderboard metric was wrong
 - **What**: The autoresearch leaderboard ranked random_mut_2272 as best (robust_score=-5.15) and random_mut_2201 as worst (-110.76) on the holdout set. In reality the ranking is inverted.
 - **Root cause**: Autoresearch used stochastic policy + `enable_drawdown_profit_early_exit=True` for holdout eval. Both inflate results for mediocre models. Deterministic + no-early-stop is the correct production proxy.
