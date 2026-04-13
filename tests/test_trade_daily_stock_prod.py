@@ -1427,7 +1427,8 @@ def test_main_uses_default_resolved_ensemble_checkpoints(monkeypatch) -> None:
     assert captured["checkpoint"] == str((daily_stock.REPO / daily_stock.DEFAULT_CHECKPOINT).resolve())
     assert captured["extra_checkpoints"] == resolved_defaults
     assert len(resolved_defaults) == len(set(resolved_defaults))
-    assert resolved_defaults[-1].endswith("s6758.pt")
+    # Verify the last entry matches the current DEFAULT_EXTRA_CHECKPOINTS tail
+    assert resolved_defaults[-1].endswith(daily_stock.DEFAULT_EXTRA_CHECKPOINTS[-1].split("/")[-1])
 
 
 def test_cli_runtime_config_exposes_derived_fields(monkeypatch, tmp_path: Path) -> None:
