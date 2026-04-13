@@ -22,8 +22,9 @@ DEFAULT_SYMBOLS = (
 # 8-model with I_s3 replacing D_s5 (OOS 100 windows, sampled):
 #   med=18.17%, p10=+5.07%, neg=8/100, sortino=30.67
 # vs previous 8-model (D_s5): med=15.81%, p10=+4.41%, neg=7/100, sortino=27.65
-# Key improvements: med+2.36%, sort+3.02, p10+0.66% (neg 7→8, minor cost)
-# Exhaustive 263-window eval: pending (running)
+# Exhaustive 263-window: med=17.77%, p10=+4.75%, neg=17/263, sort=30.61
+# vs previous 263-win: med=15.28%, p10=+2.72%, neg=15/263, sort=26.52
+# Net: med+2.49%, p10+2.03%, sort+4.09 (cost: neg 15→17/263, mostly crash-period windows)
 # Models: C_s7 (AdamW, tp=0.02) + D_s16, D_s42, D_s3, I_s3, D_s2, D_s14, D_s28
 # All models: disable_shorts=True, 65 actions (masked shorts), features_per_sym=16
 # Trained on data through 2025-05-31, val 2025-06-01 to 2025-11-30

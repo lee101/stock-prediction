@@ -36,7 +36,10 @@
 - I_s3 profile: tp=0.03 Muon, individual OOS neg=8/100, med=6.64%
 - 8-model (D_s5→I_s3): med=18.17% p10=5.07% neg=8/100 sort=30.67 (vs 15.81% baseline)
 
-**Key improvement**: med +2.36%, sort +3.02, p10 +0.66% (neg 7→8, small cost). Exhaustive 263-window eval pending.
+**100-win**: med +2.36%, sort +3.02, p10 +0.66% (neg 7→8).
+**263-win exhaustive**: med=17.77% p10=4.75% neg=17/263 sort=30.61 worst=-16.24%
+vs old 263-win: med=15.28% p10=2.72% neg=15/263 sort=26.52
+Net: med+2.49% p10+2.03% sort+4.09 (cost: neg 15→17/263, mostly crash-period windows).
 
 **Ensemble evolution (all evals: 100 sampled windows from 263 candidates, lag=2, binary fills, fee=10bps, slip=5bps):**
 
@@ -50,9 +53,10 @@
 | screened32 8-model (D_s13→D_s42 swap) | +15.81% | +5.14% | 7 | 27.65 | deployed ~16:54 UTC |
 | **screened32 8-model (D_s5→I_s3 swap)** | **+18.17%** | **+5.07%** | **8** | **30.67** | **CURRENT ~22:11 UTC** |
 
-Exhaustive 263w eval (current 8-model with D_s42): neg=15/263, med=15.28%, p10=+2.72%, sort=26.52
-vs previous 8-model (D_s13) 263w: neg=22/263, med=14.23%, p10=+1.58%, sort=22.75
-Key improvements: neg 22→15/263 (-32%), p10 +1.14%, med +1.05%, sort +3.77.
+Exhaustive 263w eval (previous 8-model with D_s42/D_s5): neg=15/263, med=15.28%, p10=+2.72%, sort=26.52
+Exhaustive 263w eval (current 8-model with I_s3): neg=17/263, med=17.77%, p10=+4.75%, sort=30.61
+Net improvement over D_s5 model: med+2.49%, p10+2.03%, sort+4.09 (neg 15→17, mostly crash-period).
+Previous vs D_s13: neg 22→15/263 (-32%), p10 +1.14%, med +1.05%, sort +3.77.
 Validated: full OOS Jun 2025-Apr 2026, 263 candidate windows, lag=2, binary fills, fee=10bps, slip=5bps.
 
 **Window breakdown (with regime filter):**
