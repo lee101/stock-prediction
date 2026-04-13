@@ -7,6 +7,39 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
+### 2026-04-13 — Screened32 5-model ensemble deployed (CURRENT PRODUCTION)
+
+#### New champion: screened32 5-model ensemble
+- **Checkpoints**: `pufferlib_market/prod_ensemble_screened32/` (C_s7, D_s16, D_s13, D_s3, D_s5)
+- **Symbols**: 32 screened stocks (LLY, BSX, ABBV, VRTX, SYK, WELL, JPM, GS, V, MA, AXP, MS, AAPL, MSFT, NVDA, KLAC, CRWD, META, COST, AZO, TJX, CAT, PH, RTX, BKNG, MAR, HLT, PLTR, SPY, QQQ, AMZN, GOOG)
+- **Allocation**: 25% (unchanged)
+- **Feature schema**: rsi_v5 (16 features/symbol)
+- **Service**: deployed 2026-04-13 09:41 UTC, PID 3919887. Next tick ~13:35 UTC Monday.
+
+**Head-to-head vs stocks17 RSI 2-model on same Jun2025-Apr2026 OOS period (single-offset, 50d windows):**
+
+| Model | Median | P10 | Neg/100 | Sortino |
+|-------|--------|-----|---------|---------|
+| stocks17 RSI 2-model | +7.09% | -8.26% | 34/100 | 16.88 |
+| **screened32 5-model** | **+12.39%** | **+0.31%** | **10/100** | **27.95** |
+
+**Screened32 wins on ALL metrics** including positive P10 through the March 2026 tariff crash.
+- Healthcare stocks (LLY, ABBV, BSX, VRTX) are tariff-resilient → perform in bear markets
+- Ensemble synergy: individual best (C s7) gets +7.19%; 5-model gets +12.39%
+- Validated on 313 actual OOS trading days (Jun 2025-Apr 2026)
+
+**Why screened32 > stocks17:**
+1. Defensive sector mix (pharma, industrials) vs volatile (TSLA, COIN, NFLX in stocks17)
+2. 5 diverse models (2 AdamW variants + 3 Muon) provide better ensemble diversity
+3. 32 symbols → more opportunities to pick winners
+
+**Deploy command** (if service restarts):
+```bash
+sudo systemctl restart daily-rl-trader.service
+```
+
+---
+
 ### 2026-04-13 — Regime filter + evaluation audit
 
 #### SPY regime filter added to production
