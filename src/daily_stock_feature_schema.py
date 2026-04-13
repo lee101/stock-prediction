@@ -28,6 +28,7 @@ _RSI_V5_MARKERS = (
     "stocks17_sweep",
     "screened32_sweep",
     "screened32_ext",
+    "prod_ensemble_screened32",
 )
 
 

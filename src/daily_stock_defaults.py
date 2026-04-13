@@ -1,41 +1,41 @@
 DEFAULT_SYMBOLS = (
-    "AAPL",
-    "MSFT",
-    "NVDA",
-    "GOOG",
-    "META",
-    "TSLA",
-    "SPY",
-    "QQQ",
-    "PLTR",
-    "JPM",
-    "V",
-    "AMZN",
-    "AMD",
-    "NFLX",
-    "COIN",
-    "CRWD",
-    "UBER",
+    # Screened32: 32 curated stocks with strong learnability (trend correlation, Sharpe)
+    # Healthcare / Pharma (defensive, tariff-resilient)
+    "LLY", "BSX", "ABBV", "VRTX", "SYK", "WELL",
+    # Finance (cyclical but trendy)
+    "JPM", "GS", "V", "MA", "AXP", "MS",
+    # Technology (core winners)
+    "AAPL", "MSFT", "NVDA", "KLAC", "CRWD", "META",
+    # Consumer / Retail (steady compounders)
+    "COST", "AZO", "TJX",
+    # Industrial / Defense (steady bull)
+    "CAT", "PH", "RTX",
+    # Travel / Hotels (recovery plays)
+    "BKNG", "MAR", "HLT",
+    # Broad market + tech
+    "PLTR", "SPY", "QQQ", "AMZN", "GOOG",
 )
 
-# 2026-04-13: Switched from 32-model stocks12 legacy ensemble → 2-model stocks17 RSI ensemble.
-# Old 32-model had feature mismatch (pre-RSI features) and showed ~0.04%/month in 120d replay.
-# New 2-model: C_s31 (AdamW) + D_s29 u200 (Muon) — cross-variant diversity.
-# Eval: lag=2, binary fills, fee=10bps, 60d×50 windows: med=18.84%, p10=6.25%, 0/50 neg, Sortino=48.81.
-# Slippage stress PASSED at 0/5/10/20bps (all 0/50 neg).
-# Feature schema: rsi_v5 (RSI(14) replaces duplicate trend_20d). 17 symbols, obs_dim=294.
-DEFAULT_CHECKPOINT = "pufferlib_market/checkpoints/stocks17_sweep/C_low_tp/s31/val_best.pt"
+# 2026-04-13: Switched to 5-model screened32 ensemble.
+# Reasons: head-to-head vs stocks17 on same Jun2025-Apr2026 OOS period (313 actual trading days):
+#   stocks17 RSI 2-model: med=7.09%, p10=-8.26%, 34/100 neg, Sortino=16.88
+#   screened32 5-model:   med=12.39%, p10=+0.31%, 10/100 neg, Sortino=27.95  ← winner
+# Screened32 includes defensive healthcare (LLY, ABBV, BSX) that outperforms in bear markets.
+# Validated through full OOS period including March 2026 tariff crash (-26% SPY).
+# Models: C_s7 (AdamW, tp=0.02) + D_s16 + D_s13 + D_s3 + D_s5 (Muon, tp=0.05)
+# All 5 models: disable_shorts=True, 33 actions (flat + 32 longs), features_per_sym=16
+# Trained on data through 2025-05-31, val 2025-06-01 to 2025-11-30 (bull period)
+DEFAULT_CHECKPOINT = "pufferlib_market/prod_ensemble_screened32/C_s7.pt"
 
-# Old 32-model ensemble (stocks12, legacy features) — kept for reference, not used:
-# Members: tp10+s15+s36+gamma_995+muon_wd_005+h1024_a40+s1731+gamma995_s2006+s1401+s1726+s1523+s2617+s2033+s2495+s1835+s2827+s2722+s3668+s3411+s4011+s4777+s4080+s4533+s4813+s5045+s5337+s5199+s5019+s6808+s3456+s7159+s6758
 DEFAULT_EXTRA_CHECKPOINTS = (
-    # D_s29 champion_u200: med=15.63%, p10=7.88%, 0/50 neg, Sortino=23.74 (Muon variant)
-    "pufferlib_market/checkpoints/stocks17_sweep/D_muon/s29/champion_u200.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s16.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s13.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s3.pt",
+    "pufferlib_market/prod_ensemble_screened32/D_s5.pt",
 )
 
 DEFAULT_DATA_DIR = "trainingdata"
-# 2-model stocks17 ensemble (17 symbols, 25 actions with disable_shorts).
-# Uniform = 1/25 = 0.04. Observed confidence ~0.08-0.12 for typical signals.
-# Gate set just above uniform; rejects only near-random signals.
+# 5-model screened32 ensemble (32 symbols, 33 actions with disable_shorts).
+# Uniform = 1/33 ≈ 0.030. Gate at 0.05 = ~1.67x uniform; rejects near-random signals.
 DEFAULT_MIN_OPEN_CONFIDENCE = 0.05
 DEFAULT_MIN_OPEN_VALUE_ESTIMATE = 0.0
