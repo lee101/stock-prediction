@@ -411,8 +411,12 @@ def pytest_ignore_collect(collection_path, config):
     ):
         return True
 
-    if rel.startswith("tests/pufferlibtraining2/") and not _module_available("pufferlib.pufferl"):
-        return True
+    if rel.startswith("tests/pufferlibtraining2/"):
+        # Skip if pufferlib C backend is unavailable or fails to import.
+        try:
+            import pufferlib.emulation  # noqa: F401
+        except (ImportError, ModuleNotFoundError):
+            return True
 
     return False
 

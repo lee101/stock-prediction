@@ -35,6 +35,56 @@ from pufferlib_market.evaluate_holdout import _slice_window
 from src.marketsim_video import MarketsimTrace, OrderTick, render_mp4, render_html_plotly
 
 
+def _find_best_window_start(
+    num_timesteps: int,
+    window_steps: int,
+    evaluate_start,
+) -> dict:
+    """Find the window start that maximises total_return, breaking ties by sortino.
+
+    Args:
+        num_timesteps: Total number of available timesteps in the data.
+        window_steps: Number of steps in each evaluation window.
+        evaluate_start: Callable(start: int) -> (total_return, sortino, max_drawdown, num_trades).
+
+    Returns:
+        dict with keys: total_return, sortino, max_drawdown, num_trades, window_start.
+
+    Raises:
+        ValueError: If window_steps >= num_timesteps (no valid start).
+    """
+    n_starts = num_timesteps - window_steps
+    if n_starts <= 0:
+        raise ValueError(
+            f"window_steps={window_steps} is too large for num_timesteps={num_timesteps} "
+            f"(need window_steps < num_timesteps)"
+        )
+
+    best_start = None
+    best_total_return = float("-inf")
+    best_sortino = float("-inf")
+    best_max_drawdown = 0.0
+    best_num_trades = 0
+
+    for start in range(n_starts):
+        total_return, sortino, max_drawdown, num_trades = evaluate_start(start)
+        if (total_return > best_total_return or
+                (total_return == best_total_return and sortino > best_sortino)):
+            best_start = start
+            best_total_return = total_return
+            best_sortino = sortino
+            best_max_drawdown = max_drawdown
+            best_num_trades = num_trades
+
+    return {
+        "total_return": best_total_return,
+        "sortino": best_sortino,
+        "max_drawdown": best_max_drawdown,
+        "num_trades": best_num_trades,
+        "window_start": best_start,
+    }
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--checkpoint", default="pufferlib_market/prod_ensemble/s15.pt")
