@@ -66,6 +66,12 @@ def main() -> None:
     parser.add_argument("--val-end", default="2025-11-30")
     parser.add_argument("--symbols", default=None,
                         help="Override symbol list (comma-separated)")
+    parser.add_argument("--cross-features", action="store_true", default=False,
+                        help="Append 4 cross-symbol features (corr, beta, rel_return, breadth_rank)")
+    parser.add_argument("--cross-anchor", default="SPY",
+                        help="Anchor symbol for cross features (default: SPY)")
+    parser.add_argument("--cross-window", type=int, default=20,
+                        help="Rolling window in days for cross features (default: 20)")
     args = parser.parse_args()
 
     symbols = SCREENED_SYMBOLS
@@ -73,19 +79,25 @@ def main() -> None:
         symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
 
     out_dir = REPO / "pufferlib_market" / "data"
+    prefix = args.out_prefix
+    if args.cross_features and "cross" not in prefix:
+        prefix = f"{prefix}_cross"
     build_wide_augmented(
         symbols=symbols,
         hourly_root=REPO / args.hourly_root,
         daily_root=REPO / args.daily_root,
         offsets=SESSION_OFFSETS,
         vol_scales=VOL_SCALES,
-        output_train=out_dir / f"{args.out_prefix}_augmented_train.bin",
-        output_val=out_dir / f"{args.out_prefix}_augmented_val.bin",
+        output_train=out_dir / f"{prefix}_augmented_train.bin",
+        output_val=out_dir / f"{prefix}_augmented_val.bin",
         train_start=args.train_start,
         train_end=args.train_end,
         val_start=args.val_start,
         val_end=args.val_end,
         min_days=200,
+        cross_features=args.cross_features,
+        cross_anchor=args.cross_anchor,
+        cross_window=args.cross_window,
     )
 
 

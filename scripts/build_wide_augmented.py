@@ -132,8 +132,10 @@ def _read_mktd(path: Path):
 
 def _write_mktd(path: Path, ref: dict, feat: np.ndarray, price: np.ndarray, mask):
     nts = feat.shape[0]
+    nfeat = feat.shape[2]  # may differ from ref["nfeat"] if cross-features appended
     new_hdr = bytearray(ref["hdr"])
     struct.pack_into("<I", new_hdr, 12, nts)
+    struct.pack_into("<I", new_hdr, 16, nfeat)  # update features_per_sym in header
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:
         f.write(bytes(new_hdr))
@@ -142,7 +144,7 @@ def _write_mktd(path: Path, ref: dict, feat: np.ndarray, price: np.ndarray, mask
         f.write(price.astype(np.float32).tobytes(order="C"))
         if mask is not None:
             f.write(mask.astype(np.uint8).tobytes(order="C"))
-    print(f"  Wrote {path} ({nts} timesteps, {ref['nsym']} symbols, {ref['nfeat']} feats)")
+    print(f"  Wrote {path} ({nts} timesteps, {ref['nsym']} symbols, {nfeat} feats)")
 
 
 def apply_vol_scale(feat: np.ndarray, sigma: float) -> np.ndarray:
@@ -156,6 +158,19 @@ def apply_vol_scale(feat: np.ndarray, sigma: float) -> np.ndarray:
             lo, hi = FEAT_CLIPS[fi]
             out[:, :, fi] = out[:, :, fi].clip(lo, hi)
     return out
+
+
+def _compute_cross_for_record(rec: dict, symbols: list[str], anchor: str = "SPY", window: int = 20) -> np.ndarray:
+    """Compute cross-symbol features [T, S, 4] from close prices in an MKTD record."""
+    from pufferlib_market.cross_symbol_features import compute_cross_features
+    close_prices = rec["price"][:, :, 3]  # OHLCV index 3 = close
+    return compute_cross_features(close_prices, symbols, window=window, anchor_symbol=anchor)
+
+
+def append_cross_features(rec: dict, cross: np.ndarray) -> dict:
+    """Return a new record with cross features appended to feat [T, S, F] → [T, S, F+4]."""
+    feat = np.concatenate([rec["feat"], cross], axis=2)
+    return {**rec, "feat": feat, "nfeat": feat.shape[2]}
 
 
 def concat_mktd_list(parts: list[dict]) -> dict:
@@ -185,6 +200,9 @@ def build_wide_augmented(
     val_start: str,
     val_end: str,
     min_days: int = 200,
+    cross_features: bool = False,
+    cross_anchor: str = "SPY",
+    cross_window: int = 20,
 ) -> None:
     print(f"Building wide augmented dataset:")
     print(f"  symbols: {len(symbols)} — {symbols[:5]}...")
@@ -304,19 +322,38 @@ def build_wide_augmented(
         all_train_parts: list[dict] = []
         all_val_parts: list[dict] = []
 
+        # Pre-compute cross-features once per session-offset binary (they are
+        # vol-scale invariant since they derive from log-returns of prices).
+        train_cross: dict[Path, np.ndarray] = {}
+        val_cross: dict[Path, np.ndarray] = {}
+        if cross_features:
+            print(f"  Computing cross-symbol features (anchor={cross_anchor}, window={cross_window}d)...")
+            for bp in train_offset_bins:
+                rec = _read_mktd(bp)
+                train_cross[bp] = _compute_cross_for_record(rec, symbols, cross_anchor, cross_window)
+            for bp in val_offset_bins:
+                rec = _read_mktd(bp)
+                val_cross[bp] = _compute_cross_for_record(rec, symbols, cross_anchor, cross_window)
+
         for sigma in vol_scales:
             for bp in train_offset_bins:
                 rec = _read_mktd(bp)
                 rec["feat"] = apply_vol_scale(rec["feat"], sigma)
+                if cross_features:
+                    rec = append_cross_features(rec, train_cross[bp])
                 all_train_parts.append(rec)
             for bp in val_offset_bins:
                 rec = _read_mktd(bp)
                 rec["feat"] = apply_vol_scale(rec["feat"], sigma)
+                if cross_features:
+                    rec = append_cross_features(rec, val_cross[bp])
                 all_val_parts.append(rec)
 
         # Val: use only offset=0, σ=1.0 (unshifted, unscaled daily bars).
         # val_offset_bins always contains exactly one entry (offset0_val.bin).
         val_merged = _read_mktd(val_offset_bins[0])  # σ=1.0 unscaled
+        if cross_features:
+            val_merged = append_cross_features(val_merged, val_cross[val_offset_bins[0]])
 
         train_merged = concat_mktd_list(all_train_parts)
 

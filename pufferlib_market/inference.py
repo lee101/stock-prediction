@@ -114,7 +114,8 @@ class PPOTrader:
         )
 
         self.num_symbols = len(self.SYMBOLS)
-        self.obs_size = self.num_symbols * 16 + 5 + self.num_symbols
+        self.features_per_sym = int(ckpt.get("features_per_sym", 16)) if isinstance(ckpt, dict) else 16
+        self.obs_size = self.num_symbols * self.features_per_sym + 5 + self.num_symbols
 
         # Infer num_actions from checkpoint
         for key in ("actor.2.bias", "actor.2.weight"):
@@ -256,7 +257,7 @@ class PPOTrader:
         Build observation vector from current market data.
 
         Args:
-            features: [num_symbols, 16] feature array (from compute_hourly_features)
+            features: [num_symbols, features_per_sym] feature array
             prices: dict of {symbol: current_price}
 
         Returns:
@@ -264,11 +265,12 @@ class PPOTrader:
         """
         obs = np.zeros(self.obs_size, dtype=np.float32)
 
-        # Per-symbol features
-        obs[: self.num_symbols * 16] = features.flatten()
+        # Per-symbol features (features_per_sym may be 16 or 20 for cross-features models)
+        feat_block = self.num_symbols * self.features_per_sym
+        obs[:feat_block] = features.flatten()
 
         # Portfolio state
-        base = self.num_symbols * 16
+        base = feat_block
         pos_val = 0.0
         if self.current_position is not None:
             sym_idx = self.current_position % self.num_symbols

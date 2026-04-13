@@ -135,10 +135,26 @@ class DailyPPOTrader(PPOTrader):
         Returns:
             TradingSignal
         """
-        features = np.zeros((self.num_symbols, 16), dtype=np.float32)
+        fps = self.features_per_sym  # 16 for standard, 20 for cross-features models
+        features = np.zeros((self.num_symbols, fps), dtype=np.float32)
         for i, sym in enumerate(self.SYMBOLS):
             if sym in daily_dfs:
-                features[i] = compute_daily_features(daily_dfs[sym])
+                features[i, :16] = compute_daily_features(daily_dfs[sym])
+
+        if fps > 16:
+            # Append cross-symbol features (corr, beta, relative_return, breadth_rank).
+            # These require prices from ALL symbols simultaneously.
+            from pufferlib_market.cross_symbol_features import compute_cross_features
+            # Build aligned close-price matrix [T, S] — use longest common length
+            max_len = max((len(daily_dfs[s]) for s in self.SYMBOLS if s in daily_dfs), default=0)
+            close_mat = np.zeros((max_len, self.num_symbols), dtype=np.float64)
+            for i, sym in enumerate(self.SYMBOLS):
+                if sym in daily_dfs:
+                    col = daily_dfs[sym]["close"].astype(float).values[-max_len:]
+                    close_mat[-len(col):, i] = col
+            cross = compute_cross_features(close_mat, self.SYMBOLS, window=20, anchor_symbol="SPY")
+            # cross[-1] is the cross-feature vector for the latest bar: [S, 4]
+            features[:, 16:fps] = cross[-1]
 
         return self.get_signal(features, prices)
 
