@@ -16,17 +16,18 @@
 - **Feature schema**: rsi_v5 (16 features/symbol)
 - **Service**: restarted PID 3373041 at 2026-04-13 ~14:10 UTC. Next tick ~13:35 UTC Monday 2026-04-14.
 
-**Ensemble evolution:**
+**Ensemble evolution (all evals: 100 sampled windows from 263 candidates, lag=2, binary fills, fee=10bps, slip=5bps):**
 
-| Model | Median | P10 | Neg/263 | Sortino | Notes |
+| Model | Median | P10 | Neg/100 | Sortino | Notes |
 |-------|--------|-----|---------|---------|-------|
-| stocks17 RSI 2-model | +7.09% | -8.26% | 34/100 | 16.88 | prev prod |
-| screened32 5-model | +12.39% | +0.31% | 10/100 | 27.95 | deployed ~09:44 UTC |
-| screened32 6-model (+D_s2) | +13.73% | +0.80% | 9/263 | 27.39 | deployed ~11:00 UTC |
-| **screened32 7-model (+D_s14)** | **+12.86%** | **+3.38%** | **4/263** | **19.53** | **CURRENT** |
+| stocks17 RSI 2-model | +7.09% | -8.26% | 34 | 16.88 | prev prod |
+| screened32 5-model | +12.39% | +0.31% | 10 | 27.95 | deployed ~09:44 UTC |
+| screened32 6-model (+D_s2) | +13.73% | +0.80% | 9 | 27.39 | deployed ~11:00 UTC |
+| **screened32 7-model (+D_s14)** | **+13.08%** | **+0.72%** | **8** | **19.88** | **CURRENT** |
 
-**Why D_s14 helps (contrarian veto)**: D/s14 has individual OOS neg=40/263 but acts as a contrarian veto, dissenting (choosing flat) in exactly the 5 windows where the 6-model ensemble is wrong. This halves neg (9→4) and raises p10 4× (+0.80%→+3.38%). Median drops slightly (13.73%→12.86%) which is acceptable.
-Validated: full OOS Jun 2025-Apr 2026, 263 candidate windows, 100 sampled, lag=2, binary fills, fee=10bps, slip=5bps.
+Note: Exhaustive 263-window eval (all candidates): 6-model med=12.27% neg=33/263 sort=22.93; 7-model med=12.62% neg=31/263 sort=20.98.
+D_s14 gives marginal neg improvement (9→8 on 100w, 33→31 on 263w) at cost of lower sortino (27.39→19.88).
+Validated: full OOS Jun 2025-Apr 2026, 263 candidate windows, lag=2, binary fills, fee=10bps, slip=5bps.
 
 **Complete individual seed rankings (full OOS, 100 windows × 50d from 263 candidates):**
 
@@ -51,7 +52,7 @@ Validated: full OOS Jun 2025-Apr 2026, 263 candidate windows, 100 sampled, lag=2
 | E | 2 | +5.13% | -6.15% | 33 | 9.98 | |
 | (rest) | ... | ≤0.87% | neg | 43+ | | |
 
-**Ensemble combinations tested (all on same full OOS, 263 candidate windows):**
+**Ensemble combinations tested (100 sampled windows from 263 candidates, lag=2, binary fills):**
 
 | Config | Med | P10 | Neg | Sort |
 |--------|-----|-----|-----|------|
@@ -62,7 +63,7 @@ Validated: full OOS Jun 2025-Apr 2026, 263 candidate windows, 100 sampled, lag=2
 | 7-model +D2+D14 | 13.08% | 0.72% | 8 | 19.88 |
 | 8-model +D2+D14+D20 | 10.58% | 2.20% | 6 | 21.51 |
 | 7-model C7+D16+D13+D3+D5+D2+D1 (d1 as 7th) | 7.32% | -7.02% | 22 | 13.93 |
-| **7-model C7+D16+D13+D3+D5+D2+D14 (PROD)** | **12.86%** | **+3.38%** | **4** | **19.53** |
+| **7-model C7+D16+D13+D3+D5+D2+D14 (PROD)** | **13.08%** | **0.72%** | **8** | **19.88** |
 
 **Deploy command** (if service restarts):
 ```bash

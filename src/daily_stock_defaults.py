@@ -16,12 +16,13 @@ DEFAULT_SYMBOLS = (
     "PLTR", "SPY", "QQQ", "AMZN", "GOOG",
 )
 
-# 2026-04-13: Upgraded to 7-model screened32 ensemble (+D_s2 +D_s14).
-# 7-model OOS (Jun 2025-Apr 2026, 263 windows, lag=2, fill_bps=5, fee=10bps):
-#   med=12.86%, p10=+3.38%, neg=4/263, sortino=19.53
-# vs 6-model baseline: med=13.73%, p10=+0.80%, neg=9/263, sortino=27.39
-# Key improvements: neg halved (9→4), p10 4x better (+0.80%→+3.38%). Med drop is acceptable.
-# D/s14 acts as contrarian veto catching ensemble errors in 5 windows.
+# 2026-04-13: Upgraded to 7-model screened32 ensemble (+D_s14).
+# 7-model OOS (Jun 2025-Apr 2026, all 263 windows, lag=2, fill_bps=5, fee=10bps):
+#   med=12.62%, p10=-1.30%, neg=31/263, sortino=20.98
+# vs 6-model baseline: med=12.27%, p10=-1.24%, neg=33/263, sortino=22.93
+# 100-window sample: 7-model med=13.08%, p10=0.72%, neg=8/100, sort=19.88
+#                    6-model med=13.73%, p10=0.80%, neg=9/100, sort=27.39
+# D_s14 adds marginal neg improvement (33→31 on full OOS), mixed on sortino.
 # Models: C_s7 (AdamW, tp=0.02) + D_s16, D_s13, D_s3, D_s5, D_s2, D_s14 (Muon, tp=0.05)
 # All models: disable_shorts=True, 65 actions (masked shorts), features_per_sym=16
 # Trained on data through 2025-05-31, val 2025-06-01 to 2025-11-30
