@@ -2067,18 +2067,31 @@ def train(args):
         ):
             policy.eval()
             _use_enorm = getattr(policy, "_use_encoder_norm", False)
+            _val_decision_lag = int(getattr(args, "val_decision_lag", 2))
             def _val_policy_fn(obs_np: np.ndarray) -> int:
                 obs_t = torch.from_numpy(obs_np.astype(np.float32, copy=False)).to(device).view(1, -1)
                 with torch.inference_mode():
                     logits, _ = policy(obs_t)
                 return int(torch.argmax(logits, dim=-1).item())
+            def _make_lagged_policy(fn, lag: int):
+                """Wrap fn with a decision lag queue matching production fill behaviour."""
+                import collections as _col
+                _pending: _col.deque[int] = _col.deque()
+                def _lagged(obs_np: np.ndarray) -> int:
+                    action_now = fn(obs_np)
+                    _pending.append(action_now)
+                    if len(_pending) <= lag:
+                        return 0  # flat while pipeline fills up
+                    return _pending.popleft()
+                return _lagged
             val_rets = []
             val_sortinos = []
             val_max_drawdowns = []
             val_trades = []
             for _vs in _val_eval_starts:
                 _w = _slice_window(_val_data, start=int(_vs), steps=_VAL_WINDOW_STEPS)
-                _r = simulate_daily_policy(_w, _val_policy_fn, max_steps=_VAL_WINDOW_STEPS,
+                _policy_for_window = _make_lagged_policy(_val_policy_fn, _val_decision_lag) if _val_decision_lag > 0 else _val_policy_fn
+                _r = simulate_daily_policy(_w, _policy_for_window, max_steps=_VAL_WINDOW_STEPS,
                                            fill_buffer_bps=5.0, periods_per_year=float(args.periods_per_year),
                                            enable_drawdown_profit_early_exit=False)
                 val_rets.append(_r.total_return)
@@ -2628,6 +2641,8 @@ def main():
                         help="Run val eval every N updates (default 50)")
     parser.add_argument("--val-eval-windows", type=int, default=20,
                         help="Number of val windows for periodic eval (default 20, tradeoff speed vs accuracy)")
+    parser.add_argument("--val-decision-lag", type=int, default=2,
+                        help="Decision lag steps in val eval to match production fill timing (default 2)")
     parser.add_argument(
         "--cuda-graph-ppo",
         action="store_true",
