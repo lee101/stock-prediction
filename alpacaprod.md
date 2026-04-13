@@ -9,14 +9,14 @@
 
 ### 2026-04-13 — Screened32 8-model ensemble deployed (CURRENT PRODUCTION)
 
-#### Current champion: screened32 8-model ensemble
-- **Checkpoints**: `pufferlib_market/prod_ensemble_screened32/` (C_s7, D_s16, D_s13, D_s3, D_s5, D_s2, D_s14, **D_s28**)
+#### Current champion: screened32 8-model ensemble (D_s13→D_s42 swap)
+- **Checkpoints**: `pufferlib_market/prod_ensemble_screened32/` (C_s7, D_s16, **D_s42**, D_s3, D_s5, D_s2, D_s14, D_s28)
 - **Symbols**: 32 screened stocks (LLY, BSX, ABBV, VRTX, SYK, WELL, JPM, GS, V, MA, AXP, MS, AAPL, MSFT, NVDA, KLAC, CRWD, META, COST, AZO, TJX, CAT, PH, RTX, BKNG, MAR, HLT, PLTR, SPY, QQQ, AMZN, GOOG)
 - **Allocation**: 25% (unchanged)
 - **Feature schema**: rsi_v5 (16 features/symbol)
-- **Service**: restarted at 2026-04-13 ~17:20 UTC. Next tick ~13:35 UTC Monday 2026-04-14.
+- **Service**: restarted at 2026-04-13 ~16:54 UTC. Next tick ~13:35 UTC Monday 2026-04-14.
 
-**D_s28 breakthrough**: 6 consecutive neg=0 val checks, best_score=+19.5 (new record). Individual OOS: neg=16/100, sort=25.82.
+**D_s42 profile**: Individual OOS neg=24/100, med=10.28% — 2nd best D seed. In ensemble, replaces D_s13 (neg=39) as it synergises better with other models.
 
 **Ensemble evolution (all evals: 100 sampled windows from 263 candidates, lag=2, binary fills, fee=10bps, slip=5bps):**
 
@@ -26,11 +26,12 @@
 | screened32 5-model | +12.39% | +0.31% | 10 | 27.95 | deployed ~09:44 UTC |
 | screened32 6-model (+D_s2) | +13.73% | +0.80% | 9 | 27.39 | deployed ~11:00 UTC |
 | screened32 7-model (+D_s14) | +13.08% | +0.72% | 8 | 19.88 | deployed ~14:10 UTC |
-| **screened32 8-model (+D_s28)** | **+14.42%** | **+2.33%** | **8** | **23.33** | **CURRENT** |
+| screened32 8-model (+D_s28) | +14.42% | +2.33% | 8 | 23.33 | deployed ~15:17 UTC |
+| **screened32 8-model (D_s13→D_s42 swap)** | **+15.81%** | **+5.14%** | **7** | **27.65** | **CURRENT ~16:54 UTC** |
 
-Exhaustive 263w eval: 8-model med=14.23%, p10=+1.58%, neg=22/263, sort=22.75
-vs 7-model 263w: med=12.62%, p10=-1.30%, neg=31/263, sort=20.98
-Key improvements: neg 31→22/263, p10 negative→positive, med +1.61%, sortino +9%.
+Exhaustive 263w eval (current 8-model with D_s42): neg=15/263, med=15.28%, p10=+2.72%, sort=26.52
+vs previous 8-model (D_s13) 263w: neg=22/263, med=14.23%, p10=+1.58%, sort=22.75
+Key improvements: neg 22→15/263 (-32%), p10 +1.14%, med +1.05%, sort +3.77.
 Validated: full OOS Jun 2025-Apr 2026, 263 candidate windows, lag=2, binary fills, fee=10bps, slip=5bps.
 
 **Complete individual seed rankings (full OOS, 100 windows × 50d from 263 candidates):**
@@ -40,6 +41,7 @@ Validated: full OOS Jun 2025-Apr 2026, 263 candidate windows, lag=2, binary fill
 | C | 7 | +7.19% | -5.81% | 15 | 17.38 | ★ |
 | D | 28 | +7.95% | -2.26% | 16 | 25.82 | ★ |
 | D | 16 | +5.49% | -3.75% | 17 | 14.30 | ★ |
+| D | 42 | +10.28% | -5.50% | 24 | 22.75 | ★ |
 | D | 26 | +3.46% | -7.23% | 29 | 7.94 | |
 | D | 2 | +4.68% | -9.66% | 33 | 8.97 | ★ |
 | E | 2 | +5.13% | -6.15% | 33 | 9.98 | |
@@ -50,7 +52,7 @@ Validated: full OOS Jun 2025-Apr 2026, 263 candidate windows, lag=2, binary fill
 | C | 27 | +2.40% | -16.74% | 36 | 6.02 | |
 | D | 1 | +6.12% | -5.25% | 37 | 19.20 | |
 | C | 24 | +2.86% | -10.69% | 39 | 8.72 | |
-| D | 13 | +2.53% | -9.83% | 39 | 8.10 | ★ |
+| D | 13 | +2.53% | -9.83% | 39 | 8.10 | (was ★) |
 | D | 14 | +3.36% | -13.90% | 40 | 5.47 | ★ |
 | D | 8 | +1.53% | -5.53% | 40 | 5.06 | |
 | F | 2 | +3.39% | neg | 40 | 9.94 | |
@@ -72,7 +74,8 @@ Validated: full OOS Jun 2025-Apr 2026, 263 candidate windows, lag=2, binary fill
 | 7-model +D1 (7th) | 7.32% | -7.02% | 22 | 13.93 |
 | 7-model +D2+D14 | 13.08% | 0.72% | 8 | 19.88 |
 | 8-model +D26 | 13.34% | 0.74% | 9 | 19.41 |
-| **8-model +D2+D14+D28 (PROD)** | **14.42%** | **+2.33%** | **8** | **23.33** |
+| 8-model +D2+D14+D28 | 14.42% | +2.33% | 8 | 23.33 | prev prod |
+| **8-model swap D13→D42 (PROD)** | **15.81%** | **+5.14%** | **7** | **27.65** | **CURRENT** |
 | 8-model +E2 | 13.03% | 0.48% | 9 | 19.62 |
 | 7-model swap-D3→E2 | 12.02% | 1.53% | 9 | 18.68 |
 | 6-model drop-D3 (+D14) | 11.81% | 0.08% | ~10 | 18.01 |
