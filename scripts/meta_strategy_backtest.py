@@ -343,12 +343,16 @@ def select_top_k_momentum(
     lookback: int = 20,
     top_k: int = 2,
 ) -> list[int]:
-    """Select top-K models by trailing momentum (cumulative return over lookback)."""
+    """Select top-K models by trailing momentum (cumulative return over lookback).
+
+    equity_curve[t] = equity valued at day t prices (available at end of day t).
+    We use end=day_idx so we only see equity through TODAY, not tomorrow.
+    """
     scores = []
     for i, tr in enumerate(traces):
         start = max(0, day_idx - lookback)
-        end = day_idx + 1  # equity_curve has T+1 entries
-        if end > len(tr.equity_curve) or start >= end:
+        end = day_idx  # no lookahead: equity through today's close
+        if end >= len(tr.equity_curve) or start >= end:
             scores.append((i, 0.0))
             continue
         ret = (tr.equity_curve[end] - tr.equity_curve[start]) / max(tr.equity_curve[start], 1e-8)
@@ -368,8 +372,8 @@ def select_top_k_ema_momentum(
     scores = []
     for i, tr in enumerate(traces):
         start = max(0, day_idx - lookback)
-        end = day_idx + 1
-        if end > len(tr.equity_curve) or start >= end - 1:
+        end = day_idx  # no lookahead
+        if end >= len(tr.equity_curve) or start >= end - 1:
             scores.append((i, 0.0))
             continue
         daily_rets = []
@@ -400,8 +404,8 @@ def select_top_k_sortino(
     scores = []
     for i, tr in enumerate(traces):
         start = max(0, day_idx - lookback)
-        end = day_idx + 1
-        if end > len(tr.equity_curve) or start >= end - 1:
+        end = day_idx  # no lookahead
+        if end >= len(tr.equity_curve) or start >= end - 1:
             scores.append((i, 0.0))
             continue
         daily_rets = []
@@ -440,8 +444,8 @@ def select_top_k_chronos2(
     scores = []
     for i, tr in enumerate(traces):
         start = max(0, day_idx - lookback + 1)
-        end = day_idx + 1
-        if end > len(tr.equity_curve):
+        end = day_idx  # no lookahead
+        if end >= len(tr.equity_curve):
             scores.append((i, 0.0))
             continue
         eq_slice = tr.equity_curve[start:end + 1]

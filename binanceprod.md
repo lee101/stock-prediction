@@ -159,6 +159,19 @@ But the same ETH-only setup remains negative on the 30-step median:
   - leverage to study: `1.0x` to `2.0x`
 - The next training loop should optimize directly for the concentrated `BTC/ETH` or `ETH`-only deployment profile, because the mixed 23-symbol models improve materially once masked down to that subset.
 
+### Meta-selector crossover assessment (2026-04-14)
+
+Tested PnL-momentum meta-selection (from stock meta-selector work) on crypto30 daily PPO models.
+
+- 4-model softmax ensemble (current prod): +81.36% over 192d val data
+- Meta-selector best (21m, lb=7 k=1): +16.16% with 48% MaxDD
+- Meta-selector best (21m, lb=7 k=3): +7.61% with 33% MaxDD
+- Individual models: ALL negative (-0.04% to -82.60%)
+- **Conclusion**: meta-selection does NOT help for crypto30. The curated 4-model softmax ensemble is already optimal.
+- Root cause: individual crypto models are too weak for momentum-based switching to find edge.
+- For hourly crypto (binance-hybrid-spot): all models remain negative at lag=2 -- meta-selector cannot fix this.
+- Artifact: `scripts/meta_strategy_crypto30_backtest.py`
+
 ### Follow-up candidate ranking (2026-04-09 later)
 
 Artifacts:
@@ -611,3 +624,14 @@ Results:
 
 - `54 passed`
 - `8 passed`
+
+- refreshed open-order dedupe so live cycles replace stale BUY/SELL working orders when price drifts materially from the current target instead of only checking remaining size
+- aligned hybrid rebalance sells with the same `_minimum_live_exit_price` floor used by the exit-coverage pass, avoiding duplicate flatten / coverage sells in one cycle
+
+- account guard now inspects all nonzero margin assets, not just tracked strategy symbols; foreign holdings like `ZEC` now surface in snapshots and block live trading
+- account-guard-blocked cycles now cancel tracked entry buys but still refresh/place closing sell coverage for tracked longs, so protective exits stay live even while new entries are frozen
+- live cycle snapshots now record a `reentry_plan` / `next_entry_price` per symbol so every protected open long carries an explicit follow-on buy plan or an explicit `stay_flat`/`deferred_account_guard` state
+- `scripts/eval_100d.py` now tolerates CUDA OOM in the pufferlib slippage sweep by retrying inference on CPU instead of dying mid-audit
+- live exit pricing now reconstructs the active entry lot from recent fills instead of using the most recent buy blindly; snapshots carry `position_entry_time`, `hold_hours`, `exit_basis`, and the real live basis when it can be inferred
+- account-guard-blocked cycles now cancel every non-cover BUY order and place closing sell coverage for any meaningful long on the account, including foreign holdings like `ZEC`/`XRP`, instead of only tracked strategy symbols
+- `BINANCE_HYBRID_MAX_HOLD_HOURS` is now a configurable but disabled-by-default backstop; when enabled and a live long exceeds that age, the runner prices its closing order from the exchange midpoint and records `exit_basis=max_hold_midpoint` in the snapshot

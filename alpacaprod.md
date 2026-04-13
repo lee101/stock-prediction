@@ -7,6 +7,74 @@
 - Before replacing an older current snapshot, move that previous state into `old_prod/YYYY-MM-DD[-HHMM]-<slug>.md`.
 - `AlpacaProgress*.md` and similar files are investigation logs; they are not the canonical current-prod record.
 
+### 2026-04-14 — Crypto30 Daily PPO Ensemble (DRY-RUN)
+
+#### Config
+- **Bot**: `trade_crypto30_daily.py` -- 4-seed softmax-average PPO ensemble
+- **Checkpoints**: `pufferlib_market/checkpoints/crypto30_ensemble/s{2,19,21,23}.pt`
+- **Symbols**: 30 USDT pairs (BTC, ETH, SOL, DOGE, AVAX, LINK, AAVE, LTC, XRP, DOT, UNI, NEAR, APT, ICP, SHIB, ADA, FIL, ARB, OP, INJ, SUI, TIA, SEI, ATOM, ALGO, BCH, BNB, TRX, PEPE, POL)
+- **Timeframe**: Daily, single position, long/flat only, 95% allocation per trade
+- **Model**: h256 MLP, wd=0.005, 15M steps, discrete 61-action space (shorts masked)
+- **Supervisor**: `crypto30-daily` (dry-run), deployment in `deployments/crypto30-daily/`
+
+#### Marketsim performance (lag=2 binary fills, cross-checked 6 eval seeds)
+| Slippage | Med% | Sortino | Neg/50 |
+|----------|------|---------|--------|
+| 0 bps | +84.31 | 42.52 | 3 |
+| 5 bps | +80.03 | 40.91 | 3 |
+| 10 bps | +75.57 | 39.30 | 3 |
+| 20 bps | +67.85 | 35.84 | 4 |
+
+#### Deploy commands
+```bash
+# Dry-run (paper trading)
+sudo cp deployments/crypto30-daily/supervisor.conf /etc/supervisor/conf.d/crypto30-daily.conf
+sudo supervisorctl reread && sudo supervisorctl update && sudo supervisorctl start crypto30-daily
+
+# Switch to LIVE (REAL MONEY)
+# Edit deployments/crypto30-daily/launch.sh: change --dry-run to --live
+sudo supervisorctl restart crypto30-daily
+```
+
+#### Status: DRY-RUN -- testing for 1 week before going live
+- First signal (2026-04-14): long_INJUSD conf=0.28, value=2.83
+- MATICUSDT renamed to POLUSDT, internal name MATICUSD preserved for model compat
+
+#### Meta-selector evaluation (2026-04-14): NOT useful for crypto30
+- Tested meta-selection (momentum-based model switching) on 21 crypto30 models
+- 4-model softmax ensemble: +81.36% (current, best approach)
+- Meta-selector best (lb=7 k=1): +16.16% with 48% MaxDD (far worse)
+- 21-model meta: +7.61% best (far worse). Individual models all negative.
+- **Conclusion**: keep 4-model softmax ensemble. Do NOT use meta-selector for crypto30.
+- Artifact: `scripts/meta_strategy_crypto30_backtest.py`
+
+---
+
+### 2026-04-14 — Stock Meta-Selector (RESEARCH ONLY, NOT DEPLOYED)
+
+21-model PnL-momentum meta-selector for stocks12 universe.
+Picks top-K models by trailing return, follows their signal.
+
+**Corrected results** (lookahead bug in selector fixed 2026-04-14):
+
+| Slippage | OOS 95d Return | Sortino | MaxDD |
+|----------|----------------|---------|-------|
+| 0bps | +38.40% | 4.02 | 10.51% |
+| 5bps | +31.06% | 3.35 | 10.96% |
+| 10bps | +24.11% | 2.67 | 11.40% |
+| 20bps | +11.29% | 1.37 | 13.25% |
+
+- vs Ensemble (+0.80%): meta is 39x better
+- vs Best individual model (+41.94%): meta captures ~74%
+- Monthly: ~6.9% at 5bps (**below 27%/month target**)
+- Best params: lb=3 k=1 (unchanged)
+- Pool: 8 old prod (s4080-s5337) + 13 diverse (s1-s13) = 21 models
+- **Previous claim +131.4% was inflated by 1-day lookahead in selector**
+- Checkpoints: `pufferlib_market/meta_ensemble_prod/` (21 .pt files)
+- Note: Alpaca stock trading is on sscp (`/nvmen01-disk/code/stock-prediction`), not this machine
+
+---
+
 ### 2026-04-14 (latest update ~23:20 UTC) — Active sweep status
 
 **Active sweeps (RTX 5090, ~21k SPS each):**
