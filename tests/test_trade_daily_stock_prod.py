@@ -1485,6 +1485,20 @@ def test_cli_runtime_config_exposes_derived_fields(monkeypatch, tmp_path: Path) 
     assert payload["server_url_security"] == "insecure_remote_http"
 
 
+def test_ensemble_dir_auto_discovers_checkpoints(tmp_path) -> None:
+    ens_dir = tmp_path / "ensemble"
+    ens_dir.mkdir()
+    for name in ["a.pt", "b.pt", "c.pt"]:
+        (ens_dir / name).write_text("stub", encoding="utf-8")
+    args = daily_stock.parse_args(
+        ["--ensemble-dir", str(ens_dir), "--once"]
+    )
+    config = daily_stock._resolve_runtime_config(args)
+    paths = config.checkpoint_paths
+    assert len(paths) == 3
+    assert all(p.endswith(".pt") for p in paths)
+
+
 def test_parse_args_rejects_conflicting_account_mode_flags() -> None:
     with pytest.raises(SystemExit):
         daily_stock.parse_args(["--paper", "--live"])
