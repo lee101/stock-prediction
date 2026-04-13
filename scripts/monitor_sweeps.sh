@@ -133,6 +133,76 @@ for variant in C D; do
   done
 done
 
+# gru sweeps
+for variant in C D; do
+  sweep_dir="pufferlib_market/checkpoints/screened32_gru_sweep/${variant}"
+  lb="$sweep_dir/leaderboard_fulloos.csv"
+  [ -d "$sweep_dir" ] || continue
+  [ -f "$lb" ] || echo "timestamp,variant,seed,med_pct,p10_pct,worst_pct,neg_count,med_sortino,checkpoint" > "$lb"
+
+  for seed_dir in "$sweep_dir"/s*/; do
+    seed=$(basename "$seed_dir" | sed 's/s//')
+    [ -f "$seed_dir/SKIPPED_EARLY_TERM" ] && continue
+    [ -f "$seed_dir/final.pt" ] || continue
+    out="$seed_dir/eval_full.json"
+    [ -f "$out" ] && [ -s "$out" ] && continue
+
+    ckpt="$seed_dir/val_best.pt"
+    [ -f "$ckpt" ] || ckpt="$seed_dir/best.pt"
+    [ -f "$ckpt" ] || continue
+
+    echo "[$(date -u +%FT%TZ)] Evaluating gru_${variant}/s${seed}..." | tee -a "$LOG"
+    eval_one "$ckpt" "$out"
+    if [ -s "$out" ]; then
+      result=$(python3 -c "import json; d=json.load(open('$out')); med=d.get('median_total_return',0)*100; p10=d.get('p10_total_return',0)*100; neg=d.get('negative_windows',0); s=d.get('median_sortino',0); print(f'gru_${variant} s${seed}: med={med:.2f}% p10={p10:.2f}% neg={neg}/100 sort={s:.2f}')" 2>/dev/null)
+      echo "  $result" | tee -a "$LOG"
+      ts=$(date -u +%FT%TZ)
+      stats=$(python3 -c "import json; d=json.load(open('$out')); med=d.get('median_total_return',0)*100; p10=d.get('p10_total_return',0)*100; neg=d.get('negative_windows',0); s=d.get('median_sortino',0); w=d.get('worst_window',{}).get('total_return',0)*100; print(f'{med:.2f},{p10:.2f},{w:.2f},{neg},{s:.2f}')" 2>/dev/null)
+      [ -n "$stats" ] && echo "$ts,gru_$variant,$seed,$stats,$ckpt" >> "$lb"
+      neg=$(python3 -c "import json; d=json.load(open('$out')); print(d.get('negative_windows',0))" 2>/dev/null || echo 99)
+      if [ "$neg" -lt "$ANCHOR_THRESH" ]; then
+        echo "  [ANCHOR CANDIDATE] gru_${variant}/s${seed}: neg=${neg}" | tee -a "$LOG"
+        test_in_ensemble "$ckpt" "gru_${variant}_s${seed}" | tee -a "$LOG"
+      fi
+    fi
+  done
+done
+
+# transformer sweeps
+for variant in C D; do
+  sweep_dir="pufferlib_market/checkpoints/screened32_transformer_sweep/${variant}"
+  lb="$sweep_dir/leaderboard_fulloos.csv"
+  [ -d "$sweep_dir" ] || continue
+  [ -f "$lb" ] || echo "timestamp,variant,seed,med_pct,p10_pct,worst_pct,neg_count,med_sortino,checkpoint" > "$lb"
+
+  for seed_dir in "$sweep_dir"/s*/; do
+    seed=$(basename "$seed_dir" | sed 's/s//')
+    [ -f "$seed_dir/SKIPPED_EARLY_TERM" ] && continue
+    [ -f "$seed_dir/final.pt" ] || continue
+    out="$seed_dir/eval_full.json"
+    [ -f "$out" ] && [ -s "$out" ] && continue
+
+    ckpt="$seed_dir/val_best.pt"
+    [ -f "$ckpt" ] || ckpt="$seed_dir/best.pt"
+    [ -f "$ckpt" ] || continue
+
+    echo "[$(date -u +%FT%TZ)] Evaluating transformer_${variant}/s${seed}..." | tee -a "$LOG"
+    eval_one "$ckpt" "$out"
+    if [ -s "$out" ]; then
+      result=$(python3 -c "import json; d=json.load(open('$out')); med=d.get('median_total_return',0)*100; p10=d.get('p10_total_return',0)*100; neg=d.get('negative_windows',0); s=d.get('median_sortino',0); print(f'transformer_${variant} s${seed}: med={med:.2f}% p10={p10:.2f}% neg={neg}/100 sort={s:.2f}')" 2>/dev/null)
+      echo "  $result" | tee -a "$LOG"
+      ts=$(date -u +%FT%TZ)
+      stats=$(python3 -c "import json; d=json.load(open('$out')); med=d.get('median_total_return',0)*100; p10=d.get('p10_total_return',0)*100; neg=d.get('negative_windows',0); s=d.get('median_sortino',0); w=d.get('worst_window',{}).get('total_return',0)*100; print(f'{med:.2f},{p10:.2f},{w:.2f},{neg},{s:.2f}')" 2>/dev/null)
+      [ -n "$stats" ] && echo "$ts,transformer_$variant,$seed,$stats,$ckpt" >> "$lb"
+      neg=$(python3 -c "import json; d=json.load(open('$out')); print(d.get('negative_windows',0))" 2>/dev/null || echo 99)
+      if [ "$neg" -lt "$ANCHOR_THRESH" ]; then
+        echo "  [ANCHOR CANDIDATE] transformer_${variant}/s${seed}: neg=${neg}" | tee -a "$LOG"
+        test_in_ensemble "$ckpt" "transformer_${variant}_s${seed}" | tee -a "$LOG"
+      fi
+    fi
+  done
+done
+
 echo "[$(date -u +%FT%TZ)] === Monitor run complete ===" | tee -a "$LOG"
 echo "" | tee -a "$LOG"
 
@@ -145,4 +215,12 @@ done
 for variant in C D; do
   lb="pufferlib_market/checkpoints/screened32_v2_sweep/${variant}/leaderboard_fulloos.csv"
   [ -f "$lb" ] && awk -F, -v thresh="$ANCHOR_THRESH" 'NR>1 && $7+0 < thresh {print}' "$lb" | sort -t, -k4 -rn | while read line; do echo "  v2: $line" | tee -a "$LOG"; done
+done
+for variant in C D; do
+  lb="pufferlib_market/checkpoints/screened32_transformer_sweep/${variant}/leaderboard_fulloos.csv"
+  [ -f "$lb" ] && awk -F, -v thresh="$ANCHOR_THRESH" 'NR>1 && $7+0 < thresh {print}' "$lb" | sort -t, -k4 -rn | while read line; do echo "  transformer: $line" | tee -a "$LOG"; done
+done
+for variant in C D; do
+  lb="pufferlib_market/checkpoints/screened32_gru_sweep/${variant}/leaderboard_fulloos.csv"
+  [ -f "$lb" ] && awk -F, -v thresh="$ANCHOR_THRESH" 'NR>1 && $7+0 < thresh {print}' "$lb" | sort -t, -k4 -rn | while read line; do echo "  gru: $line" | tee -a "$LOG"; done
 done
