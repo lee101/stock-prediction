@@ -221,11 +221,15 @@ class TestBuildLivePromptFreeformAllHorizons:
 class TestFeatureColumnCount:
     def test_two_horizons_legacy(self):
         cols = build_default_feature_columns((1, 24))
-        assert len(cols) == 10 + 3 * 2  # 10 base + 3 per horizon
+        # 12 base + 5 per horizon + C(N,2) cross-horizon spreads
+        # = 12 + 5*2 + C(2,2)=1  → 23
+        assert len(cols) == 12 + 5 * 2 + 1
 
     def test_four_horizons(self):
         cols = build_default_feature_columns((1, 4, 12, 24))
-        assert len(cols) == 10 + 3 * 4  # 10 base + 3 per horizon
+        # 12 base + 5 per horizon + C(N,2) cross-horizon spreads
+        # = 12 + 5*4 + C(4,2)=6  → 38
+        assert len(cols) == 12 + 5 * 4 + 6
 
     def test_column_names(self):
         cols = build_default_feature_columns((1, 4, 12, 24))
