@@ -45,13 +45,22 @@ def _call_openpaths(model: str, prompt: str, temperature: float = 0.2) -> str:
         "temperature": temperature,
         "max_tokens": 4096,
     }
-    r = requests.post(url, json=payload, headers=headers, timeout=180)
+    import time as _time
+
+    for attempt in range(5):
+        r = requests.post(url, json=payload, headers=headers, timeout=180)
+        if r.status_code == 429:
+            wait = 2 ** attempt
+            _time.sleep(wait)
+            continue
+        r.raise_for_status()
+        data = r.json()
+        content = data["choices"][0]["message"]["content"]
+        if not content:
+            raise RuntimeError(f"Empty response from {model}")
+        return content
     r.raise_for_status()
-    data = r.json()
-    content = data["choices"][0]["message"]["content"]
-    if not content:
-        raise RuntimeError(f"Empty response from {model}")
-    return content
+    raise RuntimeError(f"Rate limited after 5 retries for {model}")
 
 
 def _call_together(model_id: str, prompt: str, temperature: float = 0.2,
@@ -78,11 +87,19 @@ def _call_together(model_id: str, prompt: str, temperature: float = 0.2,
     return content
 
 
+GEMINI_DIRECT_MAP = {
+    "gemini-flash": "gemini-2.5-flash",
+    "gemini-3.1": "gemini-3-flash-preview",
+    "gemini-3.1-pro": "gemini-3-flash-preview",
+    "gemini-3.1-lite": "gemini-3.1-flash-lite-preview",
+}
+
+
 def _call_gemini_direct(model: str, prompt: str, temperature: float = 0.2) -> str:
     api_key = GEMINI_API_KEY
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY env var required")
-    model_id = MODEL_MAP.get(model, model)
+    model_id = GEMINI_DIRECT_MAP.get(model, MODEL_MAP.get(model, model))
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={api_key}"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
