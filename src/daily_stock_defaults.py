@@ -42,4 +42,8 @@ DEFAULT_DATA_DIR = "trainingdata"
 # 5-model screened32 ensemble (32 symbols, 33 actions with disable_shorts).
 # Uniform = 1/33 ≈ 0.030. Gate at 0.05 = ~1.67x uniform; rejects near-random signals.
 DEFAULT_MIN_OPEN_CONFIDENCE = 0.05
-DEFAULT_MIN_OPEN_VALUE_ESTIMATE = 0.0
+# Value estimate gate: RL critic V(s) is miscalibrated OOS — systematically negative
+# even when ensemble OOS returns are strongly positive (15.81% med). Disable gate by
+# setting to -1.0 (blocks only catastrophic predictions < -100%). Confidence gate is
+# the real quality filter.
+DEFAULT_MIN_OPEN_VALUE_ESTIMATE = -1.0

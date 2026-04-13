@@ -14,7 +14,8 @@
 - **Symbols**: 32 screened stocks (LLY, BSX, ABBV, VRTX, SYK, WELL, JPM, GS, V, MA, AXP, MS, AAPL, MSFT, NVDA, KLAC, CRWD, META, COST, AZO, TJX, CAT, PH, RTX, BKNG, MAR, HLT, PLTR, SPY, QQQ, AMZN, GOOG)
 - **Allocation**: 25% (unchanged)
 - **Feature schema**: rsi_v5 (16 features/symbol)
-- **Service**: restarted at 2026-04-13 ~16:54 UTC. Next tick ~13:35 UTC Monday 2026-04-14.
+- **Service**: restarted at 2026-04-13 ~17:22 UTC. Next tick ~13:35 UTC Monday 2026-04-14.
+- **Value estimate gate**: lowered 0.0 → -1.0 (2026-04-13). RL critic V(s) is miscalibrated OOS — systematic negative bias even when ensemble OOS returns are +15.81%. Only 1 trade ever submitted with 0.0 gate. Confidence gate (5%) is the meaningful filter.
 
 **D_s42 profile**: Individual OOS neg=24/100, med=10.28% — 2nd best D seed. In ensemble, replaces D_s13 (neg=39) as it synergises better with other models.
 
