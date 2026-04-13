@@ -14,7 +14,7 @@
 - **Symbols**: 32 screened stocks (LLY, BSX, ABBV, VRTX, SYK, WELL, JPM, GS, V, MA, AXP, MS, AAPL, MSFT, NVDA, KLAC, CRWD, META, COST, AZO, TJX, CAT, PH, RTX, BKNG, MAR, HLT, PLTR, SPY, QQQ, AMZN, GOOG)
 - **Allocation**: 25% (unchanged)
 - **Feature schema**: rsi_v5 (16 features/symbol)
-- **Service**: deployed 2026-04-13 09:41 UTC, PID 3919887. Next tick ~13:35 UTC Monday.
+- **Service**: deployed 2026-04-13 09:44 UTC (latest restart), PID 4001104. Next tick ~13:35 UTC Monday.
 
 **Head-to-head vs stocks17 RSI 2-model on same Jun2025-Apr2026 OOS period (single-offset, 50d windows):**
 
