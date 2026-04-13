@@ -75,6 +75,17 @@ class AugConfig:
     # Minimum number of bars for a series to be included.
     min_length: int = 50
 
+    # Frequency subsampling: with this probability, subsample a slice at stride 2
+    # (creating "2-day" bars by averaging adjacent bars). Teaches the model that
+    # longer-range patterns at lower resolution are similar to daily patterns.
+    # Set to 0 to disable.
+    freq_subsample_prob: float = 0.0
+
+    # Trend detrending: subtract a linear least-squares fit before each training
+    # slice (applied to context only). Makes context more stationary.
+    # Set to False to disable.
+    detrend_context: bool = False
+
 
 # ---------------------------------------------------------------------------
 # Dataset with online augmentation
@@ -138,6 +149,36 @@ class AugmentedChronos2Dataset(Chronos2Dataset):  # type: ignore[misc]
                 if mask.any():
                     task_context = task_context.clone()
                     task_context[:, mask] = float("nan")
+
+        # --- 4. Frequency subsampling (stride-2 "2-day" bars) ---
+        if cfg.freq_subsample_prob > 0 and random.random() < cfg.freq_subsample_prob:
+            # Subsample context at stride 2 by averaging adjacent pairs
+            T = task_context.shape[-1]
+            if T >= 4:
+                # pad to even length
+                if T % 2 == 1:
+                    task_context = task_context[:, :-1]
+                    T -= 1
+                task_context = (task_context[:, 0::2] + task_context[:, 1::2]) * 0.5
+
+        # --- 5. Linear detrend on context (makes it more stationary) ---
+        if cfg.detrend_context:
+            T = task_context.shape[-1]
+            if T > 2:
+                t = torch.arange(T, dtype=task_context.dtype, device=task_context.device)
+                # per-channel least-squares detrend
+                n = T
+                sx = t.sum()
+                sx2 = (t * t).sum()
+                denom = n * sx2 - sx * sx
+                if denom.abs() > 1e-8:
+                    for ch in range(task_context.shape[0]):
+                        valid = task_context[ch]
+                        sy = valid.nansum()
+                        sxy = (t * valid).nansum()
+                        slope = (n * sxy - sx * sy) / denom
+                        intercept = (sy - slope * sx) / n
+                        task_context[ch] = valid - (slope * t + intercept)
 
         return task_context, task_future_target, task_future_covariates, task_n_targets
 

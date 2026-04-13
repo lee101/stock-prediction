@@ -473,3 +473,69 @@ class TestAugmentedChronos2Dataset:
 
         # After 20 batches from 500-bar series, should have seen full-length contexts
         assert max_ctx_len == ctx_len, f"Expected at least one batch with context={ctx_len}, got {max_ctx_len}"
+
+    def test_freq_subsample_reduces_context_length(self):
+        """freq_subsample_prob=1.0 should halve context length via stride-2 averaging."""
+        try:
+            from chronos.chronos2.dataset import DatasetMode
+        except ImportError:
+            pytest.skip("chronos not installed")
+        from chronos2_stock_augmentation import AugmentedChronos2Dataset
+        import torch
+        inputs = self._make_inputs(5, 500)
+        ds = AugmentedChronos2Dataset(
+            inputs=inputs,
+            context_length=128,
+            prediction_length=1,
+            batch_size=4,
+            output_patch_size=16,
+            mode=DatasetMode.TRAIN,
+            aug_config=AugConfig(
+                amplitude_log_std=0.0, noise_std_frac=0.0,
+                time_dropout_rate=0.0, freq_subsample_prob=1.0,
+            ),
+        )
+        it = iter(ds)
+        batch = next(it)
+        # With stride-2, context should be halved (~64 instead of 128)
+        ctx_len = batch["context"].shape[-1]
+        assert ctx_len <= 64, f"Expected stride-2 subsampled context <= 64, got {ctx_len}"
+
+    def test_detrend_context_removes_trend(self):
+        """detrend_context=True should produce roughly zero-mean context for linear trend inputs."""
+        try:
+            from chronos.chronos2.dataset import DatasetMode
+        except ImportError:
+            pytest.skip("chronos not installed")
+        from chronos2_stock_augmentation import AugmentedChronos2Dataset
+        import torch
+        # Create strongly trending series
+        rng = np.random.default_rng(42)
+        T = 300
+        inputs = []
+        for _ in range(5):
+            trend = np.linspace(100, 200, T).astype(np.float32)
+            noise = rng.standard_normal((4, T)).astype(np.float32) * 0.01
+            inputs.append({"target": trend[np.newaxis] + noise})
+
+        ds = AugmentedChronos2Dataset(
+            inputs=inputs,
+            context_length=64,
+            prediction_length=1,
+            batch_size=4,
+            output_patch_size=16,
+            mode=DatasetMode.TRAIN,
+            aug_config=AugConfig(
+                amplitude_log_std=0.0, noise_std_frac=0.0,
+                time_dropout_rate=0.0, detrend_context=True,
+            ),
+        )
+        it = iter(ds)
+        # Check that detrended context is approximately zero-mean
+        batch = next(it)
+        ctx = batch["context"]
+        ctx_finite = ctx[~torch.isnan(ctx)]
+        if len(ctx_finite) > 10:
+            mean_abs = float(ctx_finite.abs().mean())
+            # After detrending a 100→200 trend, values should be much smaller
+            assert mean_abs < 10.0, f"Expected detrended context to be close to 0, mean_abs={mean_abs:.2f}"

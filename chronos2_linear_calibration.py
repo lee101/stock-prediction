@@ -115,9 +115,11 @@ def collect_predictions(
     device_map: str = "cuda",
     torch_dtype_str: str = "bfloat16",
     max_windows: int = 5000,
+    batch_size: int = 32,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Run model inference on sliding windows of each series.
+    Batches windows together for efficient GPU utilization.
 
     Returns:
         q10: (N,) predicted 10th percentile of close
@@ -151,45 +153,54 @@ def collect_predictions(
     all_q10, all_q50, all_q90, all_actual, all_prev = [], [], [], [], []
     window_count = 0
 
+    # Collect all windows first, then process in batches
+    pending_ctx: List[Any] = []
+    pending_labels: List[Tuple[float, float]] = []  # (fut_close, ctx_close)
+
     for s in series_list:
         arr = s["target"]  # (4, T)
         T = arr.shape[-1]
         if T < context_length + prediction_length:
             continue
 
-        # Step every prediction_length to avoid overlap
         for start in range(context_length, T - prediction_length + 1, prediction_length):
             if window_count >= max_windows:
                 break
 
             ctx_arr = arr[:, start - context_length : start]
-            fut_close = float(arr[3, start])   # future close (index 3 = close)
-            ctx_close = float(arr[3, start - 1])  # last context close
+            fut_close = float(arr[3, start])
+            ctx_close = float(arr[3, start - 1])
 
-            ctx_tensor = torch.from_numpy(ctx_arr).float()
-            try:
-                preds = pipeline.predict([ctx_tensor], prediction_length=prediction_length, batch_size=1)
-            except Exception:
-                continue
-            if not preds:
-                continue
-
-            pred_np = preds[0].detach().cpu().numpy()  # (4, n_quantiles, pred_len)
-            if pred_np.ndim != 3 or pred_np.shape[0] < 4:
-                continue
-
-            # Close channel is row 3
-            all_q10.append(float(pred_np[3, i10, 0]))
-            all_q50.append(float(pred_np[3, i50, 0]))
-            all_q90.append(float(pred_np[3, i90, 0]))
-            all_actual.append(fut_close)
-            all_prev.append(ctx_close)
+            pending_ctx.append(torch.from_numpy(ctx_arr).float())
+            pending_labels.append((fut_close, ctx_close))
             window_count += 1
 
         if window_count >= max_windows:
             break
 
-    print(f"Collected {window_count} calibration windows")
+    print(f"Running inference on {len(pending_ctx)} windows (batch={batch_size})...")
+    # Process in batches
+    for batch_start in range(0, len(pending_ctx), batch_size):
+        batch_ctx = pending_ctx[batch_start : batch_start + batch_size]
+        batch_labels = pending_labels[batch_start : batch_start + batch_size]
+
+        try:
+            preds = pipeline.predict(batch_ctx, prediction_length=prediction_length,
+                                     batch_size=len(batch_ctx))
+        except Exception:
+            continue
+
+        for j, (pred_t, (fut_close, ctx_close)) in enumerate(zip(preds, batch_labels)):
+            pred_np = pred_t.detach().cpu().numpy()  # (4, n_quantiles, pred_len)
+            if pred_np.ndim != 3 or pred_np.shape[0] < 4:
+                continue
+            all_q10.append(float(pred_np[3, i10, 0]))
+            all_q50.append(float(pred_np[3, i50, 0]))
+            all_q90.append(float(pred_np[3, i90, 0]))
+            all_actual.append(fut_close)
+            all_prev.append(ctx_close)
+
+    print(f"Collected {len(all_actual)} calibration windows")
     return (
         np.array(all_q10, dtype=np.float64),
         np.array(all_q50, dtype=np.float64),
@@ -321,6 +332,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("--fee-bps",       type=float, default=10.0)
     p.add_argument("--allow-short",   action="store_true")
     p.add_argument("--grid-steps",    type=int, default=17)
+    p.add_argument("--batch-size",    type=int, default=32,
+                   help="GPU batch size for inference (default: 32)")
     return p.parse_args(argv)
 
 
@@ -362,6 +375,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         device_map=args.device_map,
         torch_dtype_str=args.torch_dtype,
         max_windows=args.max_windows,
+        batch_size=args.batch_size,
     )
 
     if len(actual) < 50:
