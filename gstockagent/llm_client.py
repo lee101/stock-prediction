@@ -9,10 +9,14 @@ MODEL_MAP = {
     "gemini-flash": "gemini-flash",
     "gemini-3.1": "gemini-3.1-pro-preview",
     "gemini-3.1-pro": "gemini-3.1-pro-preview",
-    "gemini-3.1-lite": "gemini-3.1-flash-lite",
+    "gemini-3.1-lite": "gemini-flash-lite",
     "glm-5": "glm-5",
+    "glm-5.1": "glm-5.1",
     "glm-4-plus": "glm-4-plus",
 }
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODELS = {"gemini-flash", "gemini-3.1", "gemini-3.1-pro", "gemini-3.1-lite"}
 
 
 def _cache_path(model: str, prompt_hash: str, date_str: str) -> Path:
@@ -46,6 +50,25 @@ def _call_openpaths(model: str, prompt: str, temperature: float = 0.2) -> str:
     return content
 
 
+def _call_gemini_direct(model: str, prompt: str, temperature: float = 0.2) -> str:
+    api_key = GEMINI_API_KEY
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY env var required")
+    model_id = MODEL_MAP.get(model, model)
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={api_key}"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": temperature, "maxOutputTokens": 4096},
+    }
+    r = requests.post(url, json=payload, timeout=180)
+    r.raise_for_status()
+    data = r.json()
+    return data["candidates"][0]["content"]["parts"][0]["text"]
+
+
+USE_DIRECT_GEMINI = os.environ.get("GSTOCK_DIRECT_GEMINI", "").lower() in ("1", "true", "yes")
+
+
 def call_llm(prompt: str, model: str = "gemini-flash", temperature: float = 0.2,
              date_str: str = "", use_cache: bool = True) -> str:
     ph = _hash_prompt(prompt)
@@ -54,7 +77,10 @@ def call_llm(prompt: str, model: str = "gemini-flash", temperature: float = 0.2,
         return cp.read_text()
 
     resolved = MODEL_MAP.get(model, model)
-    resp = _call_openpaths(resolved, prompt, temperature)
+    if USE_DIRECT_GEMINI and model in GEMINI_MODELS:
+        resp = _call_gemini_direct(model, prompt, temperature)
+    else:
+        resp = _call_openpaths(resolved, prompt, temperature)
     cp.write_text(resp)
     return resp
 

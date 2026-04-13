@@ -22,7 +22,7 @@ OUT_FILE = Path(__file__).parent / "sweep_results.json"
 
 def run():
     leverage_grid = [0.5, 1.0, 2.0, 3.0, 5.0]
-    model_grid = ["gemini-3.1-lite", "glm-5"]
+    model_grid = ["gemini-3.1-lite", "glm-5", "glm-5.1"]
     max_pos_grid = [5]
     start, end = "2025-10-01", "2026-01-10"
 
