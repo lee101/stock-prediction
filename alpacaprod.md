@@ -36,10 +36,19 @@ sudo supervisorctl reread && sudo supervisorctl update && sudo supervisorctl sta
 sudo supervisorctl restart crypto30-daily
 ```
 
-#### Status: DRY-RUN -- supervisor installed, running
+#### Status: DRY-RUN -- supervisor installed, running, regime filter deployed
 - Signal 1 (2026-04-14 ~10pm UTC): long_INJUSD conf=0.28, value=2.83
 - Signal 2 (2026-04-14 ~1pm UTC): rotated INJ->TRX, long_TRXUSD conf=0.28
 - MATICUSDT renamed to POLUSDT, internal name MATICUSD preserved for model compat
+
+#### Live Binance backtest (Jan 15 - Apr 14, 2026 = recent 90d, lag=2, 5bp slip)
+| Config | Return | MaxDD | Trades |
+|--------|--------|-------|--------|
+| No filter | -8.63% | 29.31% | 33 |
+| **MA15 filter** | **-4.81%** | **15.31%** | 22 |
+Both negative (crypto crash), but MA15 saves ~4% and halves drawdown.
+Per-symbol: PEPE winner (+56%, 83% WR), TRX most traded (49%) but negative drag.
+Symbol blacklisting tested: DO NOT do (TRX blacklist: +86.64% -> +3.22%, catastrophic).
 
 #### BTC MA15 Regime Filter -- DEPLOYED in trade_crypto30_daily.py (default on)
 Full-period slippage test (regime filter vs no filter):
