@@ -48,25 +48,41 @@ def find_checkpoints(workspace: Path, n_last: int) -> List[Path]:
     return ckpts
 
 
-def average_weights(ckpt_dirs: List[Path]) -> dict:
-    """Load and average safetensors weights from multiple checkpoint directories."""
-    print(f"Averaging {len(ckpt_dirs)} checkpoints:")
-    for d in ckpt_dirs:
-        print(f"  {d.name}")
+def average_weights(ckpt_dirs: List[Path], exp_decay: float = 0.0) -> dict:
+    """Load and average safetensors weights from multiple checkpoint directories.
+
+    exp_decay: if > 0, apply exponential weighting — more recent checkpoints
+        (higher index in sorted order) receive weight proportional to
+        exp(exp_decay * i). exp_decay=0 gives uniform weights (default / SWA).
+        exp_decay=1.0 gives the most recent checkpoint ~2.7x more weight than
+        the second-most-recent (and e^n more than the oldest).
+    """
+    import numpy as np
+
+    n = len(ckpt_dirs)
+    # Compute per-checkpoint weights
+    if exp_decay > 0.0:
+        raw = np.array([math.exp(exp_decay * i) for i in range(n)], dtype=np.float64)
+        weights = raw / raw.sum()
+    else:
+        weights = np.ones(n, dtype=np.float64) / n
+
+    print(f"Averaging {n} checkpoints (exp_decay={exp_decay:.2f}):")
+    for d, w in zip(ckpt_dirs, weights):
+        print(f"  {d.name}  weight={w:.4f}")
 
     accumulated: Optional[dict] = None
-    n = len(ckpt_dirs)
 
-    for ckpt_dir in ckpt_dirs:
+    for ckpt_dir, w in zip(ckpt_dirs, weights):
         weights_path = ckpt_dir / "model.safetensors"
         if not weights_path.exists():
             raise FileNotFoundError(f"model.safetensors not found in {ckpt_dir}")
         state = load_file(str(weights_path))
         if accumulated is None:
-            accumulated = {k: v.float() / n for k, v in state.items()}
+            accumulated = {k: v.float() * float(w) for k, v in state.items()}
         else:
             for k, v in state.items():
-                accumulated[k] = accumulated[k] + v.float() / n
+                accumulated[k] = accumulated[k] + v.float() * float(w)
 
     assert accumulated is not None
     # Convert back to the original dtype (bfloat16 or float32)
@@ -93,6 +109,9 @@ def main(argv=None) -> int:
     p.add_argument("--copy-chronos-config", default=None,
                    help="Also copy chronos_config from this path (e.g. finetuned-ckpt dir) "
                         "so the output is a full Chronos2 pipeline directory")
+    p.add_argument("--exp-decay", type=float, default=0.0,
+                   help="Exponential weighting decay for checkpoints: 0=uniform SWA (default), "
+                        ">0=more recent checkpoints get higher weight (e.g. 0.5 or 1.0)")
     args = p.parse_args(argv)
 
     workspace = Path(args.trainer_workspace)
@@ -107,7 +126,7 @@ def main(argv=None) -> int:
 
     output.mkdir(parents=True, exist_ok=True)
 
-    averaged = average_weights(ckpts)
+    averaged = average_weights(ckpts, exp_decay=getattr(args, "exp_decay", 0.0))
     out_weights = output / "model.safetensors"
     save_file(averaged, str(out_weights))
     print(f"Saved averaged weights → {out_weights} ({out_weights.stat().st_size / 1e6:.1f} MB)")
