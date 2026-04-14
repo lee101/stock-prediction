@@ -41,13 +41,27 @@ sudo supervisorctl restart crypto30-daily
 - Signal 2 (2026-04-14 ~1pm UTC): rotated INJ->TRX, long_TRXUSD conf=0.28
 - MATICUSDT renamed to POLUSDT, internal name MATICUSD preserved for model compat
 
-#### Walk-forward analysis (2026-04-14)
-- 33 x 30d windows, 5d stride: mean=+11.27%, median=-0.81%, 48% positive
-- Returns highly concentrated in bull periods (windows 14-18: +43% to +103%)
-- BTC MA15 regime filter: full-period +91.86% (vs +81.36%), DD 13.79% (vs 24.16%)
-- At 20bps slip, filter wins (+62.25% vs +57.41%)
-- Walk-forward with filter inconclusive (MA needs lookback beyond window)
-- Artifacts: `scripts/crypto30_walkforward.py`, `scripts/crypto30_regime_filter.py`
+#### BTC MA15 Regime Filter -- DEPLOYED in trade_crypto30_daily.py (default on)
+Full-period slippage test (regime filter vs no filter):
+| Slippage | NoFilter | MA15 | Delta | MA15 DD |
+|----------|----------|------|-------|---------|
+| 0bp | +90.00% | +92.32% | +2.32% | 15.09% |
+| 5bp | +81.36% | +86.64% | +5.28% | 16.14% |
+| 10bp | +73.12% | +81.12% | +8.00% | 17.18% |
+| 20bp | +57.41% | +70.57% | +13.16% | 19.23% |
+| 50bp | +19.81% | +42.47% | +22.66% | 25.06% |
+
+Walk-forward (33 x 30d, 5d stride, GLOBAL MA):
+| Config | Mean | Median | %Pos | Min | Max |
+|--------|------|--------|------|-----|-----|
+| NoFilter | +11.27% | -0.81% | 48% | -27.15% | +102.63% |
+| MA15 | +12.51% | +0.62% | 55% | -10.23% | +102.10% |
+| MA15+Conf0.20 | +13.38% | +0.78% | 58% | -18.92% | +102.10% |
+| MA15+Conf0.25 | +10.22% | +0.95% | 61% | -9.88% | +69.38% |
+
+Confidence gate adds little because confidence distribution is tight (p10=0.237, p90=0.305).
+Currently deployed with MA15 on, confidence gate off (default). Can enable via --min-confidence.
+Artifacts: `scripts/crypto30_regime_filter_global.py`, `scripts/crypto30_combined_filters.py`, `scripts/crypto30_regime_slippage.py`
 
 #### Ensemble methods (2026-04-14)
 - softmax_avg (mask AFTER softmax): +81.36% -- CURRENT, BEST
@@ -55,12 +69,16 @@ sudo supervisorctl restart crypto30-daily
 - majority_vote: +7.73%, max_confidence: +3.28%, geometric_avg: +2.30%
 - Masking order is CRITICAL. Always softmax on raw logits, then mask, then argmax.
 
+#### CPU checkpoint evaluation (2026-04-14): 72 models, NONE improve ensemble
+- All 72 checkpoints from 12 cpu runs (base_s1-s5, wd005_s1-s3, wd01_s1-s3, tp005_s1) individually negative
+- No model improves prod ensemble when added (greedy) or swapped (replacement)
+- Confirms: prod ensemble magic is specific stage diversity at updates 150/400/750/1800
+
 #### Training in progress (2026-04-14)
 - 3 CPU jobs on sessaug data (31500d = 15x augmented): base_s1, base_s2, wd01_s1
-- ~4% complete (step 75-80/1831), ~17h remaining
-- Insight: prod ensemble uses models at updates 150/400/750/1800 (different convergence stages)
-- Batch 2 script ready with cosine LR + entropy annealing + obs-norm + clip-vloss
-- Diverse stages training script ready (save-every-25, 20 periodic checkpoints)
+- ~step 90/1831, ~14h remaining
+- Batch 2 ready: `scripts/train_crypto30_sessaug_batch2.sh`
+- Diverse stages ready: `scripts/train_crypto30_diverse_stages.sh` (blocked: machine overloaded)
 
 #### Meta-selector evaluation (2026-04-14): NOT useful for crypto30
 - Tested meta-selection (momentum-based model switching) on 21 crypto30 models
