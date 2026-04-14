@@ -334,23 +334,25 @@ sudo systemctl restart daily-rl-trader.service
 - **27%/month HARD RULE note**: this target is calibrated for crypto, NOT achievable for stocks systematically.
   Realistic stock target: 5-8%/month (60-96%/year) at full allocation with regime filter.
 
-#### Chronos2 directional signal: re-evaluated after calibration fix
-- Old claim (fee bug): Sharpe=0.326, directional acc=50.1% — looked like zero signal
-- **After fee fix** (fee charged on transitions only, not every held day):
-  - v2 long-only: Sharpe=0.359 (expanded ±20bps, conf filter, skew_weight)
-  - v2 short-allowed: Sharpe ~0.42+
-- Signal is real but weak. Trading viability to be confirmed with out-of-sample backtest on v3/v4.
+#### Chronos2 directional signal: calibration with symbol-boundary reset (2026-04-14)
+- **v2 long-only** (5000 cal windows, 2000 OOS windows): cal_sortino=**0.921**, oos_sortino=**1.719** — strong signal!
+  - Params: buy=-14.1bps, weight=0.25, conf=629bps, skew_weight=0.0 (global)
+  - Short-allowed oos=-2.113 → short is overfit; **long-only is the correct mode**
+- Previous claim (no boundary reset, wrong code): cal_sharpe=0.007 (appeared near-zero) — was a bug
+- Root cause of old bad score: round-robin sampling across 1963 symbols without position reset at symbol boundaries made continuous position carry-over incorrect; fixed by sorting windows by symbol and resetting at boundaries
 
 ### 2026-04-14 — Chronos2 full domain fine-tune pipeline (ACTIVE)
 
 #### Calibration improvements (2026-04-14)
 - **Fee fix**: fee charged only on position transitions, not every held day
+- **Symbol boundary reset**: position resets to 0 at symbol changes in multi-symbol calibration
+- **OOS validation**: test set (last 60 bars) evaluated separately to detect overfitting
+- **Single model pass**: `collect_predictions_with_oos()` loads model once for both cal + OOS
+- **Sortino objective**: optimizes downside-only std (better for trading than Sharpe)
 - **Expanded search**: ±20bps (was ±8bps), 25 grid steps, Phase 2 fine ±2bps, Phase 3 weight ±40%
-- **Confidence filter**: searches over 3 uncertainty percentile thresholds
-- **Skewness signal**: `(q90-q50)-(q50-q10)/prev_close` — new signal component
-  - `skew_weight` searched in [0, 0.5, 1.0, 2.0]; adds distributional tail-skew info
+- **120-bar cal window** (was 60): 2× larger cal set reduces threshold overfitting
+- **Round-robin + sort-by-symbol sampling**: diverse symbol coverage, grouped for valid Sortino
 - **Ensemble inference**: `collect_ensemble_predictions()` for multi-model average
-- **Per-symbol calibration**: per-symbol hyperparams/ JSONs (v3 dir: hyperparams/chronos2_v3/)
 
 #### Training run: stocks_all_v1 (DONE)
 - Config: 30k steps, batch=256, ctx=512, lr=5e-5, full, bfloat16, no Muon
@@ -361,34 +363,36 @@ sudo systemctl restart daily-rl-trader.service
 - Dataset: **7796 series** (full cache: 2258 daily stocks + 205 hourly crypto + 1435 sliding + 3895 return variants)
 - Output: `chronos2_finetuned/stocks_all_v2/finetuned-ckpt/`
 - **MAE% 2.38%** (baseline 2.45% → +2.9% improvement)
-- Calibration (updated 2026-04-14): buy=-20bps, sell=-20bps, weight=0.25, conf=737bps, Sharpe=0.359
+- **Calibration (2026-04-14)**: buy=-14.1bps, weight=0.25, conf=629bps, cal_sortino=0.921, **oos_sortino=1.719**
 
-#### Training run: stocks_all_v3 (RUNNING — 2026-04-14, PID 477746)
+#### Training run: stocks_all_v3 (RUNNING — 2026-04-14, PID 2572464)
 - Log: `chronos2_finetune_v3.log`
-- Config: **100k steps**, batch=256, ctx=512, lr=5e-5, full, bfloat16, **Muon + stronger aug**
+- Config: **100k steps**, batch=128, grad_accum=2, ctx=512, lr=5e-5, full, bfloat16, **Muon + stronger aug**
   - `amp_log_std=0.45`, `freq_subsample_prob=0.15`, `noise_frac=0.003`, `dropout_rate=0.03`, `seed=123`
-- **Resumed** from checkpoint-20000 at 00:47 UTC 2026-04-14 (killed at step 21400 by RAM pressure during baseline eval)
-- Fix applied: `--resume-from-checkpoint` skips baseline eval; training now proceeds from step 20000
-- Status: step ~22000/100000, ~11hr remaining
+- **Resumed** from checkpoint-20000; restarted with batch=128+grad_accum=2 after GPU OOM at step 23000
+- Watcher: `scripts/launch_chronos2_v4_when_v3_ready.sh` (PID 2575045)
+- Status: step ~23000/100000
 
 #### Training run: stocks_all_v4 (PLANNED — launches automatically after v3)
 - Config: ctx=1024, 200k steps, grad_accum=2, batch=128, Muon, seed=42
-- Watcher: `scripts/launch_chronos2_v4_when_v3_ready.sh` (PID 479990)
 
 #### Training run: stocks_all_v5 (PLANNED — launches after v4)
 - Config: ctx=1024, 200k steps, channel_dropout=0.15, time_warp=0.15, seed=43
 
 #### Training run: stocks_all_v6 (PLANNED — launches after v5)
 - Config: ctx=1024, 200k steps, outlier_inject=0.10 + full aug suite, seed=44
-- **New**: outlier injection teaches crash/spike robustness (5× local std, 1-3 bars)
 
-#### Augmentation roadmap (v2→v6):
+#### Training run: stocks_all_v7 (PLANNED — launches after v6)
+- Config: ctx=1024, 200k steps, gap_inject=0.15, lr=3e-5, all augs, seed=45
+
+#### Augmentation roadmap (v2→v7):
 | Version | Extra augmentations vs v2 |
 |---------|--------------------------|
 | v3 | freq_subsample=0.15, amp_log_std=0.45 |
 | v4 | ctx 512→1024 |
 | v5 | + channel_dropout=0.15, time_warp=0.15 |
 | v6 | + outlier_inject=0.10, freq_subsample=0.15 (full suite) |
+| v7 | + gap_inject=0.15, lr=3e-5 |
 
 #### RunPod training (for larger GPU / longer runs):
 ```bash

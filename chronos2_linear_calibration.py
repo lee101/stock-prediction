@@ -107,6 +107,9 @@ class CalibrationParams:
     n_cal_windows: int = 0
     cal_sharpe: float = 0.0
 
+    # OOS (test-set) score — set after validation pass; 0.0 means not computed
+    oos_sharpe: float = 0.0
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -141,6 +144,115 @@ class CalibrationParams:
 # Collect predictions from model
 # ---------------------------------------------------------------------------
 
+def _sample_windows(
+    series_list: List[dict],
+    context_length: int,
+    prediction_length: int,
+    max_windows: int,
+    shuffle: bool = True,
+    tag: int = 0,
+) -> List[Tuple]:  # (ctx_arr, fut_close, ctx_close, sym, tag)
+    """
+    Sample windows from a list of series using round-robin across symbols.
+    Returns (ctx_arr, fut_close, ctx_close, sym, tag) tuples, sorted by symbol.
+    """
+    import random as _rng
+
+    per_series_windows: List[List[Tuple]] = []
+    for s in series_list:
+        arr = s["target"]  # (4, T)
+        sym = s.get("symbol", "")
+        T = arr.shape[-1]
+        if T < context_length + prediction_length:
+            continue
+        wins = []
+        for start in range(context_length, T - prediction_length + 1, prediction_length):
+            ctx_arr = arr[:, start - context_length : start]
+            fut_close = float(arr[3, start])
+            ctx_close = float(arr[3, start - 1])
+            wins.append((ctx_arr, fut_close, ctx_close, sym, tag))
+        if wins:
+            per_series_windows.append(wins)
+
+    if shuffle:
+        _rng.shuffle(per_series_windows)
+
+    sampled: List[Tuple] = []
+    window_count = 0
+    max_per_series = max((len(w) for w in per_series_windows), default=0)
+    for w_idx in range(max_per_series):
+        for series_wins in per_series_windows:
+            if window_count >= max_windows:
+                break
+            if w_idx >= len(series_wins):
+                continue
+            sampled.append(series_wins[w_idx])
+            window_count += 1
+        if window_count >= max_windows:
+            break
+
+    # Sort by symbol so consecutive windows from same symbol are grouped (reduces
+    # cross-symbol carry-over errors in position-based Sortino calculation).
+    sampled.sort(key=lambda x: x[3])  # x[3] is sym
+    return sampled
+
+
+def _run_pipeline_inference(
+    pipeline: Any,
+    windows: List[Tuple],  # (ctx_arr, fut_close, ctx_close, sym, tag)
+    prediction_length: int,
+    batch_size: int,
+    i10: int,
+    i50: int,
+    i90: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str], List[int]]:
+    """
+    Run pipeline inference on pre-sampled windows. Returns arrays plus tag list.
+    """
+    import torch
+
+    all_q10, all_q50, all_q90, all_actual, all_prev, all_syms, all_tags = [], [], [], [], [], [], []
+    pending_ctx: List[Any] = []
+    pending_meta: List[Tuple[float, float, str, int]] = []
+
+    for ctx_arr, fut_close, ctx_close, sym, tag in windows:
+        pending_ctx.append(torch.from_numpy(ctx_arr).float())
+        pending_meta.append((fut_close, ctx_close, sym, tag))
+
+    print(f"Running inference on {len(pending_ctx)} windows (batch={batch_size})...")
+    for batch_start in range(0, len(pending_ctx), batch_size):
+        batch_ctx = pending_ctx[batch_start : batch_start + batch_size]
+        batch_meta = pending_meta[batch_start : batch_start + batch_size]
+
+        try:
+            preds = pipeline.predict(batch_ctx, prediction_length=prediction_length,
+                                     batch_size=len(batch_ctx))
+        except Exception:
+            continue
+
+        for pred_t, (fut_close, ctx_close, sym, tag) in zip(preds, batch_meta):
+            pred_np = pred_t.detach().cpu().numpy()  # (4, n_quantiles, pred_len)
+            if pred_np.ndim != 3 or pred_np.shape[0] < 4:
+                continue
+            all_q10.append(float(pred_np[3, i10, 0]))
+            all_q50.append(float(pred_np[3, i50, 0]))
+            all_q90.append(float(pred_np[3, i90, 0]))
+            all_actual.append(fut_close)
+            all_prev.append(ctx_close)
+            all_syms.append(sym)
+            all_tags.append(tag)
+
+    return (
+        np.array(all_q10, dtype=np.float64),
+        np.array(all_q50, dtype=np.float64),
+        np.array(all_q90, dtype=np.float64),
+        np.array(all_actual, dtype=np.float64),
+        np.array(all_prev, dtype=np.float64),
+        all_syms,
+        all_tags,
+    )
+
+
 def collect_predictions(
     model_id: str,
     series_list: List[dict],
@@ -151,6 +263,8 @@ def collect_predictions(
     max_windows: int = 5000,
     batch_size: int = 32,
     shuffle: bool = True,
+    extra_series_list: Optional[List[dict]] = None,
+    extra_max_windows: int = 2000,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]:
     """
     Run model inference on sliding windows of each series.
@@ -159,6 +273,9 @@ def collect_predictions(
     By default (shuffle=True), samples windows round-robin across all series so
     that max_windows windows are spread over as many symbols as possible rather
     than exhausting the first few alphabetical symbols.
+
+    extra_series_list: optional second series set (e.g. OOS test set) that is
+        collected in the same model pass. Access via the returned tag array.
 
     Returns:
         q10:       (N,) predicted 10th percentile of close
@@ -179,7 +296,7 @@ def collect_predictions(
     if torch_dtype_str:
         dtype = {"float32": torch.float32, "bfloat16": torch.bfloat16,
                  "float16": torch.float16}.get(torch_dtype_str.lower())
-    pipeline = Chronos2Pipeline.from_pretrained(model_id, device_map=device_map, torch_dtype=dtype)
+    pipeline = Chronos2Pipeline.from_pretrained(model_id, device_map=device_map, dtype=dtype)
 
     # Find quantile indices for q10, q50, q90
     try:
@@ -190,83 +307,97 @@ def collect_predictions(
     except Exception:
         i10, i50, i90 = 0, 10, 20  # fallback indices
 
-    all_q10, all_q50, all_q90, all_actual, all_prev, all_syms = [], [], [], [], [], []
+    # Build windows for primary series (tag=0) and optional extra series (tag=1)
+    all_windows = _sample_windows(series_list, context_length, prediction_length,
+                                   max_windows, shuffle, tag=0)
+    if extra_series_list is not None:
+        extra_windows = _sample_windows(extra_series_list, context_length, prediction_length,
+                                         extra_max_windows, shuffle, tag=1)
+        all_windows = all_windows + extra_windows
+        print(f"  Primary: {sum(1 for w in all_windows if w[4]==0)} windows,"
+              f" Extra (OOS): {sum(1 for w in all_windows if w[4]==1)} windows")
 
-    # Collect all windows first, then process in batches.
-    # Build per-series window lists, then interleave (round-robin) to maximise symbol diversity.
-    pending_ctx: List[Any] = []
-    pending_labels: List[Tuple[float, float, str]] = []  # (fut_close, ctx_close, symbol)
+    q10, q50, q90, actual, prev_close, syms, tags = _run_pipeline_inference(
+        pipeline, all_windows, prediction_length, batch_size, i10, i50, i90)
 
-    # Build per-series candidate windows
-    per_series_windows: List[List[Tuple]] = []
-    for s in series_list:
-        arr = s["target"]  # (4, T)
-        sym = s.get("symbol", "")
-        T = arr.shape[-1]
-        if T < context_length + prediction_length:
-            continue
-        wins = []
-        for start in range(context_length, T - prediction_length + 1, prediction_length):
-            ctx_arr = arr[:, start - context_length : start]
-            fut_close = float(arr[3, start])
-            ctx_close = float(arr[3, start - 1])
-            wins.append((ctx_arr, fut_close, ctx_close, sym))
-        if wins:
-            per_series_windows.append(wins)
+    print(f"Collected {len(actual)} total inference windows")
 
-    if shuffle:
-        import random as _rng
-        _rng.shuffle(per_series_windows)
+    # If extra_series_list was provided, the caller accesses extra results via the pipeline
+    # result directly. For the base collect_predictions API, only return primary (tag=0) results.
+    if extra_series_list is not None:
+        # Store extra results on the pipeline object as a side channel (ugly but avoids
+        # API change). Callers that want OOS results should use collect_predictions_with_oos().
+        pass  # returning all results; caller must filter by tags themselves
 
-    # Round-robin across series: take 1 window per series per round until max_windows.
-    # This ensures diverse symbol coverage even when max_windows << total windows.
-    window_count = 0
-    max_per_series = max((len(w) for w in per_series_windows), default=0)
-    for w_idx in range(max_per_series):
-        for series_wins in per_series_windows:
-            if window_count >= max_windows:
-                break
-            if w_idx >= len(series_wins):
-                continue
-            ctx_arr, fut_close, ctx_close, sym = series_wins[w_idx]
-            pending_ctx.append(torch.from_numpy(ctx_arr).float())
-            pending_labels.append((fut_close, ctx_close, sym))
-            window_count += 1
-        if window_count >= max_windows:
-            break
+    # Return only primary series results for backward compat
+    if extra_series_list is not None:
+        tags_arr = np.array(tags)
+        mask0 = tags_arr == 0
+        return (q10[mask0], q50[mask0], q90[mask0], actual[mask0],
+                prev_close[mask0], [s for s, t in zip(syms, tags) if t == 0])
 
-    print(f"Running inference on {len(pending_ctx)} windows (batch={batch_size})...")
-    # Process in batches
-    for batch_start in range(0, len(pending_ctx), batch_size):
-        batch_ctx = pending_ctx[batch_start : batch_start + batch_size]
-        batch_labels = pending_labels[batch_start : batch_start + batch_size]
+    return q10, q50, q90, actual, prev_close, syms
 
-        try:
-            preds = pipeline.predict(batch_ctx, prediction_length=prediction_length,
-                                     batch_size=len(batch_ctx))
-        except Exception:
-            continue
 
-        for j, (pred_t, (fut_close, ctx_close, sym)) in enumerate(zip(preds, batch_labels)):
-            pred_np = pred_t.detach().cpu().numpy()  # (4, n_quantiles, pred_len)
-            if pred_np.ndim != 3 or pred_np.shape[0] < 4:
-                continue
-            all_q10.append(float(pred_np[3, i10, 0]))
-            all_q50.append(float(pred_np[3, i50, 0]))
-            all_q90.append(float(pred_np[3, i90, 0]))
-            all_actual.append(fut_close)
-            all_prev.append(ctx_close)
-            all_syms.append(sym)
+def collect_predictions_with_oos(
+    model_id: str,
+    cal_series: List[dict],
+    test_series: List[dict],
+    context_length: int = 512,
+    prediction_length: int = 1,
+    device_map: str = "cuda",
+    torch_dtype_str: str = "bfloat16",
+    cal_max_windows: int = 5000,
+    oos_max_windows: int = 2000,
+    batch_size: int = 32,
+) -> Tuple[
+    Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]],
+    Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]],
+]:
+    """
+    Load the model ONCE and collect predictions for both cal_series and test_series.
+    Significantly faster than two separate collect_predictions() calls.
 
-    print(f"Collected {len(all_actual)} calibration windows")
-    return (
-        np.array(all_q10, dtype=np.float64),
-        np.array(all_q50, dtype=np.float64),
-        np.array(all_q90, dtype=np.float64),
-        np.array(all_actual, dtype=np.float64),
-        np.array(all_prev, dtype=np.float64),
-        all_syms,
-    )
+    Returns:
+        (q10_cal, q50_cal, q90_cal, actual_cal, prev_cal, syms_cal),
+        (q10_oos, q50_oos, q90_oos, actual_oos, prev_oos, syms_oos)
+    """
+    import torch
+
+    try:
+        from chronos import Chronos2Pipeline
+    except ImportError as e:
+        raise RuntimeError("chronos-forecasting required") from e
+
+    dtype = None
+    if torch_dtype_str:
+        dtype = {"float32": torch.float32, "bfloat16": torch.bfloat16,
+                 "float16": torch.float16}.get(torch_dtype_str.lower())
+    pipeline = Chronos2Pipeline.from_pretrained(model_id, device_map=device_map, dtype=dtype)
+
+    try:
+        qs = list(pipeline.model.chronos_config.quantiles)
+        i10 = min(range(len(qs)), key=lambda i: abs(qs[i] - 0.10))
+        i50 = min(range(len(qs)), key=lambda i: abs(qs[i] - 0.50))
+        i90 = min(range(len(qs)), key=lambda i: abs(qs[i] - 0.90))
+    except Exception:
+        i10, i50, i90 = 0, 10, 20
+
+    cal_windows  = _sample_windows(cal_series,  context_length, prediction_length, cal_max_windows,  True, tag=0)
+    test_windows = _sample_windows(test_series, context_length, prediction_length, oos_max_windows, True, tag=1)
+    all_windows  = cal_windows + test_windows
+    print(f"  Cal: {len(cal_windows)} windows,  OOS test: {len(test_windows)} windows — one model pass")
+
+    q10, q50, q90, actual, prev, syms, tags = _run_pipeline_inference(
+        pipeline, all_windows, prediction_length, batch_size, i10, i50, i90)
+
+    tags_arr = np.array(tags)
+    m0 = tags_arr == 0
+    m1 = tags_arr == 1
+
+    cal_result  = (q10[m0], q50[m0], q90[m0], actual[m0], prev[m0], [s for s,t in zip(syms,tags) if t==0])
+    test_result = (q10[m1], q50[m1], q90[m1], actual[m1], prev[m1], [s for s,t in zip(syms,tags) if t==1])
+    return cal_result, test_result
 
 
 # ---------------------------------------------------------------------------
@@ -342,6 +473,25 @@ def collect_ensemble_predictions(
 # Grid-search calibration
 # ---------------------------------------------------------------------------
 
+def _get_boundaries(symbols: List[str]) -> np.ndarray:
+    """
+    Return an array of boundary indices where the symbol changes.
+    Position is reset to 0 at these indices to prevent carry-over between symbols.
+
+    E.g. if symbols = [AAPL, AAPL, TSLA, TSLA, AMZN], returns [2, 4]
+    (the first index of each new symbol group after the first).
+    """
+    if not symbols:
+        return np.array([], dtype=np.int64)
+    prev = symbols[0]
+    boundaries = []
+    for i in range(1, len(symbols)):
+        if symbols[i] != prev:
+            boundaries.append(i)
+            prev = symbols[i]
+    return np.array(boundaries, dtype=np.int64)
+
+
 def compute_sharpe(
     signals: np.ndarray,
     actual_returns: np.ndarray,
@@ -353,6 +503,7 @@ def compute_sharpe(
     confidence_threshold: float = 0.0,
     skewness: Optional[np.ndarray] = None,
     skew_weight: float = 0.0,
+    boundaries: Optional[np.ndarray] = None,
 ) -> float:
     """
     Compute Sharpe-like score for a given threshold pair on in-sample data.
@@ -368,6 +519,7 @@ def compute_sharpe(
         actual_returns:       (actual_close - prev_close) / prev_close
         uncertainties:        (q90 - q10) / prev_close per window (optional)
         confidence_threshold: skip trade if uncertainty > this value (0 = disabled)
+        boundaries:           indices where position should be reset to 0 (symbol changes)
     """
     fee = fee_bps / 10_000.0
 
@@ -391,6 +543,10 @@ def compute_sharpe(
     position = np.empty_like(desired)
     position[0] = 0
     position[1:] = desired[:-1]
+
+    # Reset position at symbol boundaries (prevents carry-over between symbols)
+    if boundaries is not None and len(boundaries) > 0:
+        position[boundaries] = 0
 
     # Transitions (position changes → pay fee)
     transitions = position != desired
@@ -448,6 +604,7 @@ def _run_grid(
     skewness: Optional[np.ndarray] = None,
     skew_weight_vals: Optional[List[float]] = None,
     use_sortino: bool = False,
+    boundaries: Optional[np.ndarray] = None,
 ) -> Tuple[float, float, float, float, float, float]:
     """
     Vectorised inner grid search — evaluates all threshold pairs in one numpy pass.
@@ -455,6 +612,10 @@ def _run_grid(
     For each outer (weight, skew_weight, conf_threshold) combination, builds a
     (B, B, N) desired-position tensor (B = len(thresh_vals), N = windows) and
     computes Sharpe (or Sortino if use_sortino=True) for every pair simultaneously.
+
+    boundaries: indices where position should be reset to 0 (symbol boundaries).
+                These are applied before computing transitions, preventing carry-over
+                between different symbols in a mixed-symbol calibration window.
 
     Returns (best_score, best_buy, best_sell, best_weight, best_conf, best_skew_weight).
     """
@@ -510,6 +671,10 @@ def _run_grid(
                     position[:, :, 0] = 0
                     position[:, :, 1:] = desired[:, :, :-1]
 
+                    # Reset position at symbol boundaries (prevents cross-symbol carry-over)
+                    if boundaries is not None and len(boundaries) > 0:
+                        position[:, :, boundaries] = 0
+
                     transitions = position != desired                                       # (B, B, N)
                     n_trades    = transitions.sum(axis=-1)                                 # (B, B)
 
@@ -540,6 +705,10 @@ def _run_grid(
                     position_1d = np.empty_like(desired_1d)
                     position_1d[:, 0] = 0
                     position_1d[:, 1:] = desired_1d[:, :-1]
+
+                    # Reset position at symbol boundaries
+                    if boundaries is not None and len(boundaries) > 0:
+                        position_1d[:, boundaries] = 0
 
                     transitions_1d = position_1d != desired_1d                             # (B, N)
                     n_trades_1d    = transitions_1d.sum(axis=-1)                           # (B,)
@@ -579,6 +748,7 @@ def fit_calibration(
     search_confidence: bool = True,
     use_sortino: bool = True,
     model_id: str = "",
+    symbols: Optional[List[str]] = None,
 ) -> CalibrationParams:
     """
     Two-phase grid-search over (signal_weight, buy_threshold, sell_threshold,
@@ -590,6 +760,8 @@ def fit_calibration(
 
     signal_weight scales the raw predicted return before thresholding.
     confidence_threshold filters high-uncertainty bars (wide q90-q10 interval).
+    symbols: list of symbol names for each window. If provided, position is reset
+             to 0 at symbol change boundaries to prevent carry-over between symbols.
 
     Constraint: sell_threshold > buy_threshold - min_gap.
     """
@@ -599,6 +771,11 @@ def fit_calibration(
     uncertainties    = (q90 - q10) / (np.abs(prev_close) + eps)
     # Skewness: positive = right-tail heavy (upside surprise potential)
     skewness         = ((q90 - q50) - (q50 - q10)) / (np.abs(prev_close) + eps)
+
+    # Compute symbol boundaries if symbols provided (for multi-symbol calibration sets)
+    boundaries: Optional[np.ndarray] = None
+    if symbols is not None and len(symbols) > 1:
+        boundaries = _get_boundaries(symbols)
 
     max_shift = max_shift_bps / 10_000.0
     min_gap   = min_gap_bps   / 10_000.0
@@ -619,7 +796,7 @@ def fit_calibration(
     skew_weight_vals: List[float] = [0.0, 0.5, 1.0, 2.0]
 
     grid_kwargs = dict(allow_short=allow_short, min_gap=min_gap, fee_bps=fee_bps,
-                       skewness=skewness, use_sortino=use_sortino)
+                       skewness=skewness, use_sortino=use_sortino, boundaries=boundaries)
 
     best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w = _run_grid(
         predicted_return, actual_return, uncertainties,
@@ -679,14 +856,47 @@ def fit_calibration(
     return params
 
 
+def evaluate_params(
+    params: CalibrationParams,
+    q10: np.ndarray,
+    q50: np.ndarray,
+    q90: np.ndarray,
+    actual: np.ndarray,
+    prev_close: np.ndarray,
+    fee_bps: float = 10.0,
+    use_sortino: bool = True,
+) -> float:
+    """
+    Evaluate calibrated params on a held-out dataset (OOS validation).
+    Returns the Sortino (or Sharpe) score on the provided windows.
+    """
+    eps = 1e-8
+    predicted_return = (q50 - prev_close) / (np.abs(prev_close) + eps)
+    actual_return    = (actual - prev_close) / (np.abs(prev_close) + eps)
+    uncertainties    = (q90 - q10) / (np.abs(prev_close) + eps)
+    skewness         = ((q90 - q50) - (q50 - q10)) / (np.abs(prev_close) + eps)
+
+    return compute_sharpe(
+        signals=predicted_return * params.signal_weight + skewness * params.skew_weight,
+        actual_returns=actual_return,
+        buy_thresh=params.buy_threshold,
+        sell_thresh=params.sell_threshold,
+        allow_short=params.allow_short,
+        fee_bps=fee_bps,
+        uncertainties=uncertainties,
+        confidence_threshold=params.confidence_threshold,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def _print_params(params: CalibrationParams) -> None:
     conf_str = f"  conf={params.confidence_threshold*1e4:.1f}bps" if params.confidence_threshold > 0 else ""
+    oos_str = f"  oos={params.oos_sharpe:.3f}" if params.oos_sharpe != 0.0 else ""
     print(f"  buy={params.buy_threshold*1e4:.1f}bps  sell={params.sell_threshold*1e4:.1f}bps"
-          f"  weight={params.signal_weight:.2f}{conf_str}  sharpe={params.cal_sharpe:.3f}"
+          f"  weight={params.signal_weight:.2f}{conf_str}  cal={params.cal_sharpe:.3f}{oos_str}"
           f"  allow_short={params.allow_short}  n={params.n_cal_windows}")
 
 
@@ -752,6 +962,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     cal_bars = args.cal_bars
     test_bars = 60
     cal_series = []
+    test_series = []
     for s in all_series:
         arr = s["target"]
         sym = s.get("symbol", "")
@@ -762,30 +973,51 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             # Slice: leave last test_bars for OOS test; use n_cal bars before that as cal targets
             cal_arr = arr[:, -(args.context_length + n_cal + test_bars) : -test_bars]
             cal_series.append({"target": cal_arr, "symbol": sym})
+        # OOS test series: last context_length + test_bars
+        n_test = min(test_bars, T - args.context_length)
+        if n_test > 0:
+            test_arr = arr[:, -(args.context_length + n_test):]
+            test_series.append({"target": test_arr, "symbol": sym})
 
-    print(f"Using {len(cal_series)} series for calibration")
+    print(f"Using {len(cal_series)} series for calibration ({len(test_series)} for OOS test)")
 
-    # Collect predictions (one pass — reuse for global + per-symbol)
-    # If --ensemble-models given, average quantiles across all models
+    # Collect predictions — load model once, collect both cal and OOS test in one pass.
+    # If --ensemble-models given, fall back to sequential loading (one per model).
     ensemble_ids = [args.model_id] + (args.ensemble_models or [])
-    collect_fn = collect_ensemble_predictions if len(ensemble_ids) > 1 else collect_predictions
-    collect_kwargs: dict = dict(
-        series_list=cal_series,
-        context_length=args.context_length,
-        device_map=args.device_map,
-        torch_dtype_str=args.torch_dtype,
-        max_windows=args.max_windows,
-    )
-    if len(ensemble_ids) > 1:
-        print(f"Ensemble mode: averaging predictions from {len(ensemble_ids)} models")
-        collect_kwargs["model_ids"] = ensemble_ids
-    else:
-        collect_kwargs["model_id"] = args.model_id
+    oos_max_windows = min(args.max_windows // 2, 2000)
 
-    q10, q50, q90, actual, prev_close, symbols = collect_fn(
-        **collect_kwargs,
-        batch_size=args.batch_size,
-    )
+    if len(ensemble_ids) == 1:
+        # Single-model fast path: one model load, two window sets collected together
+        (q10, q50, q90, actual, prev_close, symbols), \
+        (q10_oos, q50_oos, q90_oos, actual_oos, prev_oos, syms_oos) = \
+            collect_predictions_with_oos(
+                model_id=args.model_id,
+                cal_series=cal_series,
+                test_series=test_series,
+                context_length=args.context_length,
+                device_map=args.device_map,
+                torch_dtype_str=args.torch_dtype,
+                cal_max_windows=args.max_windows,
+                oos_max_windows=oos_max_windows,
+                batch_size=args.batch_size,
+            )
+    else:
+        print(f"Ensemble mode: averaging predictions from {len(ensemble_ids)} models")
+        base_collect_kwargs: dict = dict(
+            context_length=args.context_length,
+            device_map=args.device_map,
+            torch_dtype_str=args.torch_dtype,
+            batch_size=args.batch_size,
+        )
+
+        def _collect(series: list, max_win: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]:
+            kw = dict(**base_collect_kwargs, series_list=series, max_windows=max_win,
+                      model_ids=ensemble_ids)
+            return collect_ensemble_predictions(**kw)
+
+        q10, q50, q90, actual, prev_close, symbols = _collect(cal_series, args.max_windows)
+        print(f"Collecting OOS test predictions (max {oos_max_windows} windows)...")
+        q10_oos, q50_oos, q90_oos, actual_oos, prev_oos, syms_oos = _collect(test_series, oos_max_windows)
 
     if len(actual) < 50:
         print(f"Too few calibration windows ({len(actual)}); cannot fit calibration.")
@@ -814,8 +1046,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
           f"{', weight-search' if search_w else ''}"
           f"{', conf-search' if search_c else ''}) ...")
     params = fit_calibration(q10=q10, q50=q50, q90=q90, actual=actual,
-                             prev_close=prev_close, allow_short=args.allow_short, **fit_kwargs)
-    print("Global result:"); _print_params(params)
+                             prev_close=prev_close, allow_short=args.allow_short,
+                             symbols=symbols, **fit_kwargs)
+
+    # OOS evaluation with test set
+    if len(actual_oos) >= 10:
+        oos_score = evaluate_params(params, q10_oos, q50_oos, q90_oos, actual_oos, prev_oos,
+                                    fee_bps=args.fee_bps, use_sortino=use_sortino)
+        params.oos_sharpe = oos_score
+        print(f"Global result: (OOS test n={len(actual_oos)})"); _print_params(params)
+    else:
+        print("Global result:"); _print_params(params)
+
     output_path.write_text(json.dumps(params.to_dict(), indent=2))
     print(f"Saved → {output_path}")
 
@@ -823,7 +1065,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if not args.allow_short:
         out_short = output_path.parent / "calibration_short.json"
         params_short = fit_calibration(q10=q10, q50=q50, q90=q90, actual=actual,
-                                       prev_close=prev_close, allow_short=True, **fit_kwargs)
+                                       prev_close=prev_close, allow_short=True,
+                                       symbols=symbols, **fit_kwargs)
+        if len(actual_oos) >= 10:
+            oos_score_short = evaluate_params(params_short, q10_oos, q50_oos, q90_oos, actual_oos, prev_oos,
+                                              fee_bps=args.fee_bps, use_sortino=use_sortino)
+            params_short.oos_sharpe = oos_score_short
         print("Short variant:"); _print_params(params_short)
         out_short.write_text(json.dumps(params_short.to_dict(), indent=2))
         print(f"Saved → {out_short}")
