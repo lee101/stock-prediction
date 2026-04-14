@@ -96,6 +96,15 @@ class CalibrationParams:
     # 0.0 = disabled (default — ignored when step2 data not provided)
     step2_weight: float = 0.0
 
+    # Weight on IC (Information Coefficient) signal:
+    #   ic_return = predicted_return / (uncertainty + 1e-8)
+    # This normalises the directional signal by model uncertainty, boosting
+    # high-confidence trades relative to uncertain ones.  Positive ic_weight
+    # amplifies the signal when the model is confident; negative ic_weight
+    # is a contrarian bet on uncertain predictions.
+    # 0.0 = disabled (default — adds no IC component)
+    ic_weight: float = 0.0
+
     # Buy threshold in fractional return space
     # If signal > buy_threshold: go long
     buy_threshold: float = 0.001   # 10 bps default
@@ -144,10 +153,12 @@ class CalibrationParams:
         # Confidence filter: hold if model is too uncertain
         if self.confidence_threshold > 0.0 and uncertainty > self.confidence_threshold:
             return "hold"
+        ic_return = predicted_return / (uncertainty + 1e-8) if self.ic_weight != 0.0 else 0.0
         signal = (predicted_return * self.signal_weight
                   + skewness * self.skew_weight
                   + midpoint_return * self.midpoint_weight
                   + step2_return * self.step2_weight
+                  + ic_return * self.ic_weight
                   + self.signal_bias)
         if signal > self.buy_threshold:
             return "buy"
@@ -668,28 +679,33 @@ def _run_grid(
     midpoint_weight_vals: Optional[List[float]] = None,
     step2_return: Optional[np.ndarray] = None,
     step2_weight_vals: Optional[List[float]] = None,
+    ic_return: Optional[np.ndarray] = None,
+    ic_weight_vals: Optional[List[float]] = None,
     use_sortino: bool = False,
     use_calmar: bool = False,
     boundaries: Optional[np.ndarray] = None,
-) -> Tuple[float, float, float, float, float, float, float, float]:
+) -> Tuple[float, float, float, float, float, float, float, float, float]:
     """
     Vectorised inner grid search — evaluates all threshold pairs in one numpy pass.
 
-    For each outer (weight, skew_weight, midpoint_weight, step2_weight, conf_threshold) combination,
-    builds a (B, B, N) desired-position tensor (B = len(thresh_vals), N = windows) and
-    computes Sharpe/Sortino/Calmar for every pair simultaneously.
+    For each outer (weight, skew_weight, midpoint_weight, step2_weight, ic_weight,
+    conf_threshold) combination, builds a (B, B, N) desired-position tensor
+    (B = len(thresh_vals), N = windows) and computes Sharpe/Sortino/Calmar
+    for every pair simultaneously.
 
     midpoint_return: optional (N,) OHLC midpoint return = ((hl_mid - prev) / prev)
     midpoint_weight_vals: weights to search for midpoint_return component.
     step2_return: optional (N,) multi-step continuation = (q50_step2 - q50_step1) / prev
     step2_weight_vals: weights to search for step2_return component.
+    ic_return: optional (N,) IC-normalised signal = predicted_return / (uncertainty + 1e-8)
+    ic_weight_vals: weights to search for ic_return component.
 
     boundaries: indices where position should be reset to 0 (symbol boundaries).
                 These are applied before computing transitions, preventing carry-over
                 between different symbols in a mixed-symbol calibration window.
 
     Returns (best_score, best_buy, best_sell, best_weight, best_conf, best_skew_weight,
-             best_midpoint_weight, best_step2_weight).
+             best_midpoint_weight, best_step2_weight, best_ic_weight).
     """
     best_sharpe = -999.0
     best_buy = 0.0
@@ -699,10 +715,12 @@ def _run_grid(
     best_skew_w = 0.0
     best_mid_w = 0.0
     best_step2_w = 0.0
+    best_ic_w = 0.0
 
     _skew_vals:  List[float] = skew_weight_vals  if skew_weight_vals  else [0.0]
     _mid_vals:   List[float] = midpoint_weight_vals if midpoint_weight_vals else [0.0]
     _step2_vals: List[float] = step2_weight_vals if step2_weight_vals else [0.0]
+    _ic_vals:    List[float] = ic_weight_vals    if ic_weight_vals    else [0.0]
     fee = fee_bps / 10_000.0
     B = len(thresh_vals)
     N = len(actual_return)
@@ -722,14 +740,16 @@ def _run_grid(
             for mw in _mid_vals:
                 mid_sig: np.ndarray = base_sig + (midpoint_return * mw if (mw != 0.0 and midpoint_return is not None) else 0.0)
                 for s2w in _step2_vals:
-                    eff_sig: np.ndarray = mid_sig + (step2_return * s2w if (s2w != 0.0 and step2_return is not None) else 0.0)
+                    s2_sig: np.ndarray = mid_sig + (step2_return * s2w if (s2w != 0.0 and step2_return is not None) else 0.0)
+                    for icw in _ic_vals:
+                        eff_sig: np.ndarray = s2_sig + (ic_return * icw if (icw != 0.0 and ic_return is not None) else 0.0)
 
-                    for conf in conf_vals:
-                        # Confidence mask (N,) — True where we force flat
-                        if conf > 0.0:
-                            force_flat: Optional[np.ndarray] = uncertainties > conf
-                        else:
-                            force_flat = None
+                        for conf in conf_vals:
+                            # Confidence mask (N,) — True where we force flat
+                            if conf > 0.0:
+                                force_flat: Optional[np.ndarray] = uncertainties > conf
+                            else:
+                                force_flat = None
 
                         if allow_short:
                             # desired[buy_i, sell_i, n]:
@@ -776,6 +796,7 @@ def _run_grid(
                                 best_skew_w  = float(sw)
                                 best_mid_w   = float(mw)
                                 best_step2_w = float(s2w)
+                                best_ic_w    = float(icw)
 
                         else:
                             # Long-only: sell_thresh has no effect → only need (B, N)
@@ -812,8 +833,9 @@ def _run_grid(
                                 best_skew_w  = float(sw)
                                 best_mid_w   = float(mw)
                                 best_step2_w = float(s2w)
+                                best_ic_w    = float(icw)
 
-    return best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_step2_w
+    return best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_step2_w, best_ic_w
 
 
 def fit_calibration(
@@ -884,7 +906,7 @@ def fit_calibration(
     thresh_vals_coarse = np.linspace(-max_shift, max_shift, grid_steps)
     # Extended weight range: include very small weights (0.05-0.2) since optimal
     # often falls below 0.25, and larger weights for completeness.
-    weight_vals = [0.05, 0.1, 0.15, 0.2, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0] if search_signal_weight else [1.0]
+    weight_vals = [0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0] if search_signal_weight else [1.0]
 
     # Confidence threshold: 0 = disabled, else % of prev_close
     # Grid over uncertainty percentiles: 25th, 50th, 75th, 90th (+ no filter)
@@ -901,13 +923,15 @@ def fit_calibration(
     midpoint_weight_vals: List[float] = [0.0, 0.5, 1.0, 2.0] if midpoint_return is not None else [0.0]
     # Step2 weight: search [0, 0.5, 1.0, 2.0] if step2 data available, else [0.0] only
     step2_weight_vals_: List[float] = [0.0, 0.5, 1.0, 2.0] if step2_return_arr is not None else [0.0]
+    # IC return: predicted_return / (uncertainty + eps) — high-confidence signal normalisation
+    ic_return_arr: Optional[np.ndarray] = predicted_return / (uncertainties + 1e-8)
 
     grid_kwargs = dict(allow_short=allow_short, min_gap=min_gap, fee_bps=fee_bps,
                        skewness=skewness, use_sortino=use_sortino, use_calmar=use_calmar,
                        boundaries=boundaries, midpoint_return=midpoint_return,
-                       step2_return=step2_return_arr)
+                       step2_return=step2_return_arr, ic_return=ic_return_arr)
 
-    best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w = _run_grid(
+    best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w, best_icw = _run_grid(
         predicted_return, actual_return, uncertainties,
         thresh_vals_coarse, weight_vals, conf_vals,
         skew_weight_vals=skew_weight_vals,
@@ -916,7 +940,8 @@ def fit_calibration(
         **grid_kwargs,  # type: ignore[arg-type]
     )
     print(f"  [P1 coarse] score={best_sharpe:.4f}  buy={best_buy*1e4:.1f}bps  sell={best_sell*1e4:.1f}bps"
-          f"  w={best_weight:.3f}  sw={best_skew_w:.2f}  mw={best_mid_w:.2f}  s2w={best_s2w:.2f}")
+          f"  w={best_weight:.3f}  sw={best_skew_w:.2f}  mw={best_mid_w:.2f}  s2w={best_s2w:.2f}"
+          f"  icw={best_icw:.3f}")
 
     # --- Fine phase: ±2bps around best, 17 points each ---
     fine_bps = 2.0 / 10_000.0
@@ -933,33 +958,44 @@ def fit_calibration(
     # Combine both ranges for both buy and sell
     thresh_both = np.unique(np.concatenate([thresh_fine, sell_fine]))
 
-    sharpe2, buy2, sell2, weight2, conf2, skew2, mid2, s2w2 = _run_grid(
+    sharpe2, buy2, sell2, weight2, conf2, skew2, mid2, s2w2, icw2 = _run_grid(
         predicted_return, actual_return, uncertainties,
         thresh_both, [best_weight], [best_conf],
         skew_weight_vals=[best_skew_w], midpoint_weight_vals=[best_mid_w],
-        step2_weight_vals=[best_s2w],
+        step2_weight_vals=[best_s2w], ic_weight_vals=[best_icw],
         **grid_kwargs,  # type: ignore[arg-type]
     )
     if sharpe2 > best_sharpe:
-        best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w = (
-            sharpe2, buy2, sell2, weight2, conf2, skew2, mid2, s2w2)
+        best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w, best_icw = (
+            sharpe2, buy2, sell2, weight2, conf2, skew2, mid2, s2w2, icw2)
     print(f"  [P2  fine ] score={best_sharpe:.4f}  buy={best_buy*1e4:.1f}bps  sell={best_sell*1e4:.1f}bps")
 
     # --- Phase 3: refine signal_weight around best (±40% in 9 steps) ---
     # Use the fine threshold grid from Phase 2 for joint threshold+weight search.
+    # Extend range if best_weight is at a coarse-grid boundary to avoid boundary artifacts.
     if search_signal_weight:
-        w_fine = np.linspace(best_weight * 0.6, best_weight * 1.4, 9)
-        sharpe3, buy3, sell3, weight3, conf3, skew3, mid3, s2w3 = _run_grid(
+        w_lo = max(0.01, best_weight * 0.6)
+        w_hi = best_weight * 1.4
+        # If best_weight is at or near the coarse boundary (0.05 or 3.0), extend the search
+        # in the appropriate direction so we don't miss the global optimum.
+        if best_weight <= weight_vals[1]:   # at or near lower boundary
+            w_lo = max(0.005, best_weight * 0.3)
+            w_hi = best_weight * 2.0
+        elif best_weight >= weight_vals[-2]:  # at or near upper boundary
+            w_lo = best_weight * 0.6
+            w_hi = best_weight * 2.0
+        w_fine = np.linspace(w_lo, w_hi, 11)  # 11 steps for better coverage
+        sharpe3, buy3, sell3, weight3, conf3, skew3, mid3, s2w3, icw3 = _run_grid(
             predicted_return, actual_return, uncertainties,
             thresh_both,  # joint threshold+weight search (Phase 2 fine grid)
             list(w_fine), [best_conf],
             skew_weight_vals=[best_skew_w], midpoint_weight_vals=[best_mid_w],
-            step2_weight_vals=[best_s2w],
+            step2_weight_vals=[best_s2w], ic_weight_vals=[best_icw],
             **grid_kwargs,  # type: ignore[arg-type]
         )
         if sharpe3 > best_sharpe:
-            best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w = (
-                sharpe3, buy3, sell3, weight3, conf3, skew3, mid3, s2w3)
+            best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w, best_icw = (
+                sharpe3, buy3, sell3, weight3, conf3, skew3, mid3, s2w3, icw3)
         print(f"  [P3  wgt  ] score={best_sharpe:.4f}  w={best_weight:.4f}")
 
     # --- Phase 4: fine-tune skew/midpoint/step2 weights around best values ---
@@ -977,20 +1013,25 @@ def fit_calibration(
     skew_fine  = _fine_weight_range(best_skew_w)
     mid_fine   = _fine_weight_range(best_mid_w)  if midpoint_return  is not None else [0.0]
     s2w_fine   = _fine_weight_range(best_s2w)    if step2_return_arr is not None else [0.0]
+    # IC weight: search ±50% around best value; also include 0 (no IC component)
+    # Include negative values to allow contrarian IC (uncertain prediction = buy signal)
+    ic_fine    = _fine_weight_range(best_icw, n=7) if best_icw != 0.0 else [-0.5, -0.2, 0.0, 0.2, 0.5, 1.0, 2.0]
 
-    sharpe4, buy4, sell4, weight4, conf4, skew4, mid4, s2w4 = _run_grid(
+    sharpe4, buy4, sell4, weight4, conf4, skew4, mid4, s2w4, icw4 = _run_grid(
         predicted_return, actual_return, uncertainties,
         np.array([best_buy, best_sell]),
         [best_weight], [best_conf],
         skew_weight_vals=skew_fine,
         midpoint_weight_vals=mid_fine,
         step2_weight_vals=s2w_fine,
+        ic_weight_vals=ic_fine,
         **grid_kwargs,  # type: ignore[arg-type]
     )
     if sharpe4 > best_sharpe:
-        best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w = (
-            sharpe4, buy4, sell4, weight4, conf4, skew4, mid4, s2w4)
-    print(f"  [P4  aux  ] score={best_sharpe:.4f}  sw={best_skew_w:.3f}  mw={best_mid_w:.3f}  s2w={best_s2w:.3f}")
+        best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w, best_icw = (
+            sharpe4, buy4, sell4, weight4, conf4, skew4, mid4, s2w4, icw4)
+    print(f"  [P4  aux  ] score={best_sharpe:.4f}  sw={best_skew_w:.3f}  mw={best_mid_w:.3f}"
+          f"  s2w={best_s2w:.3f}  icw={best_icw:.3f}")
 
     # --- Phase 5: ultra-fine joint search ±1bps thresholds + ±15% signal_weight ---
     # Final pass to escape any residual plateau after the 4-phase search.
@@ -1002,16 +1043,16 @@ def fit_calibration(
     thresh_ultra = np.unique(np.concatenate([thresh_ultra_b, thresh_ultra_s]))
     w_ultra = list(np.linspace(max(0.01, best_weight * 0.85), best_weight * 1.15, 5)) if search_signal_weight else [best_weight]
 
-    sharpe5, buy5, sell5, weight5, conf5, skew5, mid5, s2w5 = _run_grid(
+    sharpe5, buy5, sell5, weight5, conf5, skew5, mid5, s2w5, icw5 = _run_grid(
         predicted_return, actual_return, uncertainties,
         thresh_ultra, w_ultra, [best_conf],
         skew_weight_vals=[best_skew_w], midpoint_weight_vals=[best_mid_w],
-        step2_weight_vals=[best_s2w],
+        step2_weight_vals=[best_s2w], ic_weight_vals=[best_icw],
         **grid_kwargs,  # type: ignore[arg-type]
     )
     if sharpe5 > best_sharpe:
-        best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w = (
-            sharpe5, buy5, sell5, weight5, conf5, skew5, mid5, s2w5)
+        best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w, best_icw = (
+            sharpe5, buy5, sell5, weight5, conf5, skew5, mid5, s2w5, icw5)
     print(f"  [P5  ufine] score={best_sharpe:.4f}  buy={best_buy*1e4:.2f}bps  sell={best_sell*1e4:.2f}bps"
           f"  w={best_weight:.4f}")
 
@@ -1020,21 +1061,22 @@ def fit_calibration(
     if search_confidence and len(uncertainties) > 10:
         pcts_fine = np.percentile(uncertainties, [10, 20, 30, 40, 50, 60, 70, 80, 90, 95])
         conf_fine: List[float] = [0.0] + [float(p) for p in pcts_fine]
-        sharpe6, buy6, sell6, weight6, conf6, skew6, mid6, s2w6 = _run_grid(
+        sharpe6, buy6, sell6, weight6, conf6, skew6, mid6, s2w6, icw6 = _run_grid(
             predicted_return, actual_return, uncertainties,
             np.array([best_buy, best_sell]),
             [best_weight], conf_fine,
             skew_weight_vals=[best_skew_w], midpoint_weight_vals=[best_mid_w],
-            step2_weight_vals=[best_s2w],
+            step2_weight_vals=[best_s2w], ic_weight_vals=[best_icw],
             **grid_kwargs,  # type: ignore[arg-type]
         )
         if sharpe6 > best_sharpe:
-            best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w = (
-                sharpe6, buy6, sell6, weight6, conf6, skew6, mid6, s2w6)
+            best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w, best_icw = (
+                sharpe6, buy6, sell6, weight6, conf6, skew6, mid6, s2w6, icw6)
         print(f"  [P6  conf ] score={best_sharpe:.4f}  conf={best_conf*1e4:.1f}bps")
 
     print(f"  [FINAL    ] score={best_sharpe:.4f}  buy={best_buy*1e4:.2f}bps  sell={best_sell*1e4:.2f}bps"
-          f"  w={best_weight:.4f}  sw={best_skew_w:.3f}  mw={best_mid_w:.3f}  s2w={best_s2w:.3f}")
+          f"  w={best_weight:.4f}  sw={best_skew_w:.3f}  mw={best_mid_w:.3f}  s2w={best_s2w:.3f}"
+          f"  icw={best_icw:.3f}")
 
     params = CalibrationParams(
         signal_weight=best_weight,
@@ -1042,6 +1084,7 @@ def fit_calibration(
         skew_weight=best_skew_w,
         midpoint_weight=best_mid_w,
         step2_weight=best_s2w,
+        ic_weight=best_icw,
         buy_threshold=best_buy,
         sell_threshold=best_sell,
         allow_short=allow_short,
@@ -1085,11 +1128,13 @@ def evaluate_params(
     if symbols is not None and len(symbols) > 1:
         boundaries = _get_boundaries(symbols)
 
+    ic_return = predicted_return / (uncertainties + 1e-8)
     return compute_sharpe(
         signals=(predicted_return * params.signal_weight
                  + skewness * params.skew_weight
                  + midpoint_return * params.midpoint_weight
-                 + step2_return * params.step2_weight),
+                 + step2_return * params.step2_weight
+                 + ic_return * params.ic_weight),
         actual_returns=actual_return,
         buy_thresh=params.buy_threshold,
         sell_thresh=params.sell_threshold,

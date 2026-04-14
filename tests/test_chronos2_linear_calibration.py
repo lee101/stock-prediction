@@ -717,8 +717,8 @@ class TestMidpointSignal:
             thresh_vals=np.linspace(0.001, 0.01, 5),
             allow_short=False, min_gap=0.0, fee_bps=10.0, use_calmar=False,
         )
-        assert len(result) == 8
-        best_score, best_buy, best_sell, best_w, best_c, best_sw, best_mw, best_s2w = result
+        assert len(result) == 9
+        best_score, best_buy, best_sell, best_w, best_c, best_sw, best_mw, best_s2w, best_icw = result
         assert not np.isnan(best_buy)
         assert best_mw in (0.0, 0.5)
         assert best_s2w == 0.0  # step2_weight_vals not provided → stays 0.0
@@ -769,8 +769,8 @@ class TestStep2Signal:
         # step2_weight is searched from [0.0, 0.5, 1.0, 2.0] (coarse) + phase-4 fine range
         assert params.step2_weight >= 0.0
 
-    def test_run_grid_with_step2_returns_8_tuple(self):
-        """_run_grid with step2 data should return 8-tuple and may pick non-zero weight."""
+    def test_run_grid_with_step2_returns_9_tuple(self):
+        """_run_grid with step2 data should return 9-tuple and may pick non-zero weight."""
         rng = np.random.default_rng(55)
         N = 200
         pred = rng.normal(0.001, 0.01, N)
@@ -785,7 +785,7 @@ class TestStep2Signal:
             thresh_vals=np.linspace(0.001, 0.01, 5),
             allow_short=False, min_gap=0.0, fee_bps=10.0, use_calmar=False,
         )
-        assert len(result) == 8
+        assert len(result) == 9
         best_s2w = result[7]
         assert best_s2w in (0.0, 0.5, 1.0)
 

@@ -91,9 +91,14 @@ def run_backtest(
     if step2 is not None and params.step2_weight != 0.0:
         step2_ret = (step2 - q50) / (np.abs(prev_close) + eps)
 
-    # Signal: weighted median return + optional skewness + optional midpoint + step2 components
+    # IC (Information Coefficient) signal: predicted_return / uncertainty
+    ic_ret = pred_ret / (unc + 1e-8)
+    ic_weight = getattr(params, "ic_weight", 0.0)
+
+    # Signal: weighted median return + optional skewness + optional midpoint + step2 + IC components
     signals = (pred_ret * params.signal_weight + skewness * params.skew_weight
                + mid_ret * params.midpoint_weight + step2_ret * params.step2_weight
+               + ic_ret * ic_weight
                + params.signal_bias)
 
     # Vectorised position computation (same logic as _run_grid in calibration)

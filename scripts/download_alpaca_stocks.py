@@ -220,7 +220,8 @@ def main() -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    end_date = args.end_date or (datetime.now(tz=timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+    # Alpaca's end date is exclusive — use today's date so yesterday's bars are included
+    end_date = args.end_date or datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
     start_date = args.start_date
 
     print(f"Symbols: {len(symbols)}")
@@ -241,12 +242,41 @@ def main() -> int:
     total = len(symbols)
     done = 0
 
+    # --refresh-days: filter symbols to only those with stale/missing CSVs
+    if args.refresh_days > 0:
+        cutoff_dt = datetime.now(tz=timezone.utc) - timedelta(days=args.refresh_days)
+        refresh_cutoff = cutoff_dt.strftime("%Y-%m-%d")
+        print(f"Refresh mode: re-downloading symbols whose last date < {refresh_cutoff}")
+
+        def _is_stale(sym: str) -> bool:
+            dest = output_dir / f"{sym}.csv"
+            if not dest.exists():
+                return True
+            try:
+                with open(dest, "rb") as fh:
+                    fh.seek(-512, 2)
+                    last_bytes = fh.read().decode("utf-8", errors="ignore")
+                last_line = [l for l in last_bytes.splitlines() if l.strip()][-1]
+                last_date = last_line.split(",")[0].strip()[:10]
+                return last_date < refresh_cutoff
+            except Exception:
+                return True
+
+        stale_syms = [s for s in symbols if _is_stale(s)]
+        fresh_syms = [s for s in symbols if not _is_stale(s)]
+        print(f"  Stale (need refresh): {len(stale_syms)}  Fresh (already up-to-date): {len(fresh_syms)}")
+        symbols = stale_syms
+        total = len(symbols)
+        batches = [symbols[i : i + args.batch_size] for i in range(0, len(symbols), args.batch_size)]
+        done = 0
+
     for batch_idx, batch in enumerate(batches, 1):
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 results = download_batch(
                     client, batch, start_date, end_date, output_dir,
-                    force=args.force, min_rows=args.min_rows,
+                    force=True if args.refresh_days > 0 else args.force,
+                    min_rows=args.min_rows,
                 )
                 break
             except Exception as exc:

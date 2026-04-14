@@ -165,6 +165,40 @@ class AugConfig:
     # E.g. 0.15 = up to ±15% shock.
     earnings_shock_magnitude: float = 0.15
 
+    # Structural break injection: with this probability, at a random split point
+    # simultaneously apply a level shift (gap) AND a volatility regime change.
+    # Distinct from gap_inject (level-only) and vol_regime (vol-only) — this
+    # simulates macro/sector regime changes that alter both price level and volatility
+    # (e.g., rate shock, corporate restructuring, index inclusion/exclusion).
+    # The split is chosen in [T//4, 3*T//4] to ensure both halves have context.
+    # Set to 0 to disable.
+    struct_break_prob: float = 0.0
+
+    # Level shift magnitude for structural break: fraction of local mean price.
+    # The actual shift is U(0.02, struct_break_level_frac) with random sign.
+    struct_break_level_frac: float = 0.08
+
+    # Maximum volatility multiplier for structural break.
+    # The vol multiplier is log-uniform in [1/max_mult, max_mult].
+    struct_break_vol_mult: float = 3.0
+
+    # Return momentum injection: with this probability, apply a simple AR(1)-like
+    # smoothing to the returns within the context window, creating artificial
+    # autocorrelation (positive = momentum, negative = mean-reversion tendency).
+    # Implemented as a blend of the raw context with a smoothed version.
+    # Unlike mean_reversion (which adds a sinusoidal overlay), this directly
+    # manipulates the serial correlation structure of the return series.
+    # Set to 0 to disable.
+    return_momentum_prob: float = 0.0
+
+    # Blend ratio for momentum injection: how much of the smoothed/reversed
+    # version is mixed in (0.0 = no change, 1.0 = fully smoothed/reversed).
+    return_momentum_blend: float = 0.4
+
+    # AR coefficient for momentum injection: > 0 = momentum, < 0 = mean reversion.
+    # If None (default), randomly chosen from U(-0.5, 0.5) each application.
+    return_momentum_ar: Optional[float] = None
+
 
 # ---------------------------------------------------------------------------
 # Dataset with online augmentation
@@ -409,6 +443,70 @@ class AugmentedChronos2Dataset(Chronos2Dataset):  # type: ignore[misc]
                             pullback = -shock_size * 0.3 * (1.0 - k / (n_follow + 1))
                             task_context[:, shock_pos + k] = (
                                 task_context[:, shock_pos + k] + ch_mean * pullback)
+                task_context = task_context.to(task_context.dtype)
+
+        # --- 14. Structural break injection ---
+        # Simultaneously applies a level shift AND a volatility regime change at a
+        # random split point.  Simulates macro/sector regime changes (rate shock,
+        # earnings restatement, index inclusion) that alter both price and vol.
+        if cfg.struct_break_prob > 0 and random.random() < cfg.struct_break_prob:
+            T = task_context.shape[-1]
+            if T >= 12:
+                task_context = task_context.clone().float()
+                split = random.randint(T // 4, 3 * T // 4)
+                ch_mean = task_context[:, :split].abs().mean(dim=-1).clamp(min=1e-4)  # (n_ch,)
+                # Level shift: persistent gap at split point
+                sign_level = 1.0 if random.random() > 0.5 else -1.0
+                level_mag = random.uniform(0.02, max(0.02, cfg.struct_break_level_frac))
+                gap_shift = sign_level * level_mag * ch_mean  # (n_ch,)
+                task_context[:, split:] = task_context[:, split:] + gap_shift.unsqueeze(-1)
+                # Volatility change: scale second-half deviations around new mean
+                chunk = task_context[:, split:]
+                new_mean = chunk.mean(dim=-1, keepdim=True)
+                log_mult = (random.random() * 2 - 1.0) * math.log(cfg.struct_break_vol_mult)
+                vol_mult = math.exp(log_mult)
+                task_context[:, split:] = (chunk - new_mean) * vol_mult + new_mean
+                task_context = task_context.to(task_context.dtype)
+
+        # --- 15. Return momentum injection ---
+        # Blends context with a smoothed version (momentum) or differenced version
+        # (mean-reversion), creating artificial serial autocorrelation in the return
+        # series.  Distinct from mean_reversion (sinusoidal overlay) and trend_inject
+        # (linear drift) — operates on the local return autocorrelation structure.
+        if cfg.return_momentum_prob > 0 and random.random() < cfg.return_momentum_prob:
+            T = task_context.shape[-1]
+            if T >= 8:
+                task_context = task_context.clone().float()
+                ar = cfg.return_momentum_ar
+                if ar is None:
+                    ar = random.uniform(-0.5, 0.5)
+                blend = cfg.return_momentum_blend
+                if ar > 0:
+                    # Momentum: smooth returns with a kernel of width ~1/(1-ar)*2
+                    # Use a simple 3-bar symmetric moving average as momentum proxy
+                    w = min(max(3, round(1.0 / (1.0 - ar) * 2)), T // 4)
+                    w = w if w % 2 == 1 else w + 1  # ensure odd kernel
+                    kernel_size = min(w, T // 2)
+                    if kernel_size >= 3:
+                        import torch.nn.functional as F
+                        ctx_exp = task_context.unsqueeze(1)  # (n_ch, 1, T)
+                        kernel = torch.ones(1, 1, kernel_size, dtype=torch.float32,
+                                            device=task_context.device) / kernel_size
+                        smoothed = F.conv1d(ctx_exp, kernel,
+                                            padding=kernel_size // 2)[:, 0, :]  # (n_ch, T)
+                        # Crop to original T (padding may add extra bar)
+                        smoothed = smoothed[:, :T]
+                        task_context = (1 - blend) * task_context + blend * smoothed
+                else:
+                    # Mean-reversion: blend with the negated returns (detrended signal)
+                    if T > 2:
+                        returns_raw = torch.diff(task_context, dim=-1)          # (n_ch, T-1)
+                        neg_returns = -returns_raw * abs(ar)                     # damped negation
+                        # Reconstruct: cumsum of negated returns from initial bar
+                        reconstructed = torch.zeros_like(task_context)
+                        reconstructed[:, 0] = task_context[:, 0]
+                        reconstructed[:, 1:] = task_context[:, 0:1] + neg_returns.cumsum(dim=-1)
+                        task_context = (1 - blend) * task_context + blend * reconstructed
                 task_context = task_context.to(task_context.dtype)
 
         return task_context, task_future_target, task_future_covariates, task_n_targets

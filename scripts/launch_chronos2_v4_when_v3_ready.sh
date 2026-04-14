@@ -572,6 +572,67 @@ if [[ -n "$V4_PID" ]]; then
                                     --update-hyperparams \
                                     2>&1 | tee chronos2_benchmark_v10.log
                             fi
+
+                            # -------------------------------------------------------------------
+                            # Launch v11 after v10 completes
+                            # -------------------------------------------------------------------
+                            echo "[$(date -u +%H:%M:%SZ)] Launching v11 (struct_break + return_momentum augmentations)..."
+                            bash scripts/launch_chronos2_v11.sh
+
+                            # Wait for v11 then calibrate
+                            V11_PID="$(cat .chronos2_v11_pid 2>/dev/null)"
+                            if [[ -n "$V11_PID" ]]; then
+                                echo "[$(date -u +%H:%M:%SZ)] Waiting for v11 (PID $V11_PID) to complete..."
+                                while kill -0 "$V11_PID" 2>/dev/null; do
+                                    sleep 180
+                                done
+                                echo "[$(date -u +%H:%M:%SZ)] v11 complete. Running v11 SWA + calibration + benchmark..."
+
+                                V11_CKPT="chronos2_finetuned/stocks_all_v11/finetuned-ckpt"
+                                V11_SWA="chronos2_finetuned/stocks_all_v11/swa-ckpt"
+                                if [[ -d "chronos2_finetuned/stocks_all_v11/trainer_workspace" ]]; then
+                                    python scripts/average_checkpoints.py \
+                                        --trainer-workspace chronos2_finetuned/stocks_all_v11/trainer_workspace \
+                                        --output "$V11_SWA" --n-last 3 \
+                                        --copy-chronos-config "$V11_CKPT" 2>&1 | tee chronos2_swa_v11.log || true
+                                fi
+
+                                if [[ -d "$V11_CKPT" ]]; then
+                                    python chronos2_linear_calibration.py \
+                                        --model-id     "$V11_CKPT" \
+                                        --cal-data-dir trainingdata \
+                                        --output-path  "$V11_CKPT/calibration.json" \
+                                        --max-shift-bps 20 \
+                                        --min-gap-bps   2 \
+                                        --grid-steps   25 \
+                                        --cal-bars     120 \
+                                        --max-windows  5000 \
+                                        --batch-size   32 \
+                                        --per-symbol \
+                                        --prediction-length 2 \
+                                        --also-calmar \
+                                        --hyperparams-dir hyperparams/chronos2_v11 \
+                                        2>&1 | tee chronos2_calibration_v11.log
+
+                                    if [[ -d "${V11_SWA:-}" ]]; then
+                                        python chronos2_linear_calibration.py \
+                                            --model-id "$V11_SWA" --cal-data-dir trainingdata \
+                                            --output-path "$V11_SWA/calibration.json" \
+                                            --max-shift-bps 20 --min-gap-bps 2 --grid-steps 25 \
+                                            --cal-bars 120 --max-windows 5000 --batch-size 32 \
+                                            --prediction-length 2 --also-calmar \
+                                            2>&1 | tee chronos2_calibration_v11_swa.log || true
+                                    fi
+
+                                    python benchmark_chronos2.py \
+                                        --symbols AAPL SPY GOOG TSLA META NVDA MSFT AMZN \
+                                        --model-id "$V11_CKPT" \
+                                        --context-length 1024 \
+                                        --batch-size 64 \
+                                        --update-hyperparams \
+                                        2>&1 | tee chronos2_benchmark_v11.log
+                                fi
+                            fi
                         fi
                     fi
                 fi

@@ -613,6 +613,16 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                    help="Prob of injecting an earnings-like shock event in context. 0=off")
     p.add_argument("--earnings-shock-magnitude", type=float, default=0.15,
                    help="Max shock magnitude as fraction of local mean price (default: 0.15 = 15%%)")
+    p.add_argument("--struct-break-prob", type=float, default=0.0,
+                   help="Prob of injecting a structural break (level+vol change) in context. 0=off")
+    p.add_argument("--struct-break-level-frac", type=float, default=0.08,
+                   help="Max level shift for structural break as fraction of local mean (default: 0.08 = 8%%)")
+    p.add_argument("--struct-break-vol-mult", type=float, default=3.0,
+                   help="Max volatility multiplier for structural break (default: 3.0)")
+    p.add_argument("--return-momentum-prob", type=float, default=0.0,
+                   help="Prob of applying AR-like return autocorrelation augmentation. 0=off")
+    p.add_argument("--return-momentum-blend", type=float, default=0.4,
+                   help="Blend ratio for return momentum augmentation (default: 0.4)")
     p.add_argument("--no-return-variants", action="store_true")
     p.add_argument("--no-sliding",  action="store_true",
                    help="Disable hourly sliding-window daily aggregations")
@@ -677,6 +687,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         mean_reversion_amplitude=getattr(args, "mean_reversion_amplitude", 0.03),
         earnings_shock_prob=getattr(args, "earnings_shock_prob", 0.0),
         earnings_shock_magnitude=getattr(args, "earnings_shock_magnitude", 0.15),
+        struct_break_prob=getattr(args, "struct_break_prob", 0.0),
+        struct_break_level_frac=getattr(args, "struct_break_level_frac", 0.08),
+        struct_break_vol_mult=getattr(args, "struct_break_vol_mult", 3.0),
+        return_momentum_prob=getattr(args, "return_momentum_prob", 0.0),
+        return_momentum_blend=getattr(args, "return_momentum_blend", 0.4),
         add_return_variants=not args.no_return_variants,
         sliding_daily_offsets=[] if args.no_sliding else [0, 1, 2, 3, 4, 5, 6],
     )
