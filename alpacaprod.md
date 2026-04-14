@@ -204,6 +204,33 @@ Picks top-K models by trailing return, follows their signal.
 
 ---
 
+### 2026-04-14 09:49 UTC — 13-model v5: D_s27 → I_s32 swap DEPLOYED (neg 10→8/263)
+
+**Service restarted 09:49 UTC** (PID 1695556). Next tick Mon ~13:35 UTC.
+
+#### Current champion: screened32 13-model v5 ensemble (swap D_s27 → I_s32)
+- **Checkpoints**: `prod_ensemble_screened32/` (C_s7, D_s16, D_s42, D_s3, I_s3, D_s2, D_s14, D_s28, D_s81, D_s57, I_s3×2, D_s64, **I_s32**)
+- **I_s32**: I-variant (AdamW+RMSNorm), individual neg=10/263 — best individual I seed found
+
+**13-model v5 vs v4 (exhaustive 263 windows, lag=2, binary fills, fee=10bps, slip=5bps):**
+- **v5 (swap D_s27→I_s32)**: med=19.57%, p10=+7.68%, neg=8/263, sort=34.07
+- v4 (add D_s27): med=19.02%, p10=+8.11%, neg=10/263, sort=33.31
+- Net vs v4: med+0.55%, neg-2 (20% fewer losses), sort+0.76
+
+**Candidates tested to reach v5** (all vs baseline 13m neg=10, med=19.02%, p10=8.11%):
+- D_s67 (add): neg=15, med=17.25% — WORSE (neg+5)
+- D_s97 (add): neg=15, med=17.37% — WORSE
+- I_s2 (add): neg=15, med=17.77% — WORSE
+- I_s26 (add): neg=13, med=16.90% — WORSE
+- I_s32 (add): neg=10, med=19.58%, p10=7.62% — ties neg, better med but p10-0.49%
+- U_s2 (add): neg=15, med=17.32% — WORSE
+- **swap D_s27→I_s32**: neg=8, med=19.57%, p10=7.68% — **IMPROVEMENT** (neg<10 criteria met)
+- I_s32×2 (add twice, 15m): neg=9, med=17.35% — worse than swap
+
+**Verdict**: Swap is the right approach — removing weakest diversity seed (D_s27) + adding I_s32 reduces crashes without diluting median.
+
+---
+
 ### 2026-04-14 05:10 UTC — 13-model search: 12m ensemble is optimal (no improvement found)
 
 **13-model search exhaustive results** (vs 12m: neg=10/263, med=18.87%, p10=7.88%, sort=32.35):
@@ -245,7 +272,8 @@ Picks top-K models by trailing return, follows their signal.
 | ...9-model (+D_s81) | +17.82% | +5.09% | 8 | 30.34 | prev prod 2026-04-14 03:10 |
 | 11-model (+D_s57 +I_s3×2) | +17.58% | +5.64% | 6 | 29.77 | prev prod 2026-04-14 04:23 |
 | 12-model (+D_s57 +I_s3×2 +D_s64) | +19.84% | +5.34% | 6 | 34.07 | prev 2026-04-14 04:41 UTC |
-| **13-model (+D_s27)** | **+19.08%** | **+5.34%** | **6** | **34.30** | **CURRENT 2026-04-14 04:55 UTC** |
+| 13-model v4 (+D_s27) | +19.08% | +5.34% | 6 | 34.30 | prev 2026-04-14 05:07 UTC |
+| **13-model v5 (swap D_s27→I_s32)** | **+19.57%** | **+7.68%** | **8/263w** | **34.07** | **CURRENT 2026-04-14 09:49 UTC** |
 
 ### 2026-04-14 04:23 UTC — 11-model ensemble (+D_s57 +I_s3×2) (superseded)
 
