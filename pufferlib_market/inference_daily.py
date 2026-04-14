@@ -32,12 +32,13 @@ def compute_daily_features(df: pd.DataFrame) -> np.ndarray:
     low = df["low"].astype(float)
     volume = df["volume"].astype(float)
 
-    ret_1d = close.pct_change(1).fillna(0.0).clip(-0.5, 0.5)
+    ret_1d_raw = close.pct_change(1).fillna(0.0)  # unclipped — matches export_data_daily volatility calc
+    ret_1d = ret_1d_raw.clip(-0.5, 0.5)
     ret_5d = close.pct_change(5).fillna(0.0).clip(-1.0, 1.0)
     ret_20d = close.pct_change(20).fillna(0.0).clip(-2.0, 2.0)
 
-    vol_5d = ret_1d.rolling(5, min_periods=1).std(ddof=0).fillna(0.01).clip(0.0, 1.0)
-    vol_20d = ret_1d.rolling(20, min_periods=1).std(ddof=0).fillna(0.01).clip(0.0, 1.0)
+    vol_5d = ret_1d_raw.rolling(5, min_periods=1).std(ddof=0).fillna(0.01).clip(0.0, 1.0)
+    vol_20d = ret_1d_raw.rolling(20, min_periods=1).std(ddof=0).fillna(0.01).clip(0.0, 1.0)
 
     ma5 = close.rolling(5, min_periods=1).mean()
     ma20 = close.rolling(20, min_periods=1).mean()
@@ -165,17 +166,37 @@ class DailyPPOTrader(PPOTrader):
 
         return self.get_signal(features, prices)
 
+    def update_state(self, action: int, fill_price: float, symbol: str, qty: float = 0.0):
+        """Override to maintain hold_days in sync with C env hold_hours semantics.
+
+        C env: open_long() resets hold_hours=0; the first obs WHILE HOLDING
+        (next step) also sees hold_hours=0 because build_observation() runs
+        BEFORE any HOLD action increments it.
+
+        We match this by setting hold_days=-1 on a new open.  step_day() then
+        increments to 0, so the next obs correctly sees hold_hours=0.
+        On a close (action=0) we reset hold_days=0 immediately so that obs
+        after closing sees 0 (no stale value from the previous position).
+        """
+        super().update_state(action, fill_price, symbol, qty=qty)
+        if action == 0:
+            self.hold_days = 0
+        else:
+            # -1 so step_day() increments to 0; first obs while holding → 0
+            self.hold_days = -1
+
     def update_state_daily(self, action: int, fill_price: float, symbol: str, qty: float = 0.0):
         """Update internal state after daily trade execution."""
         self.update_state(action, fill_price, symbol, qty=qty)
-        # Use hold_days instead of hold_hours
-        self.hold_days = 0 if action == 0 else self.hold_days
 
     def step_day(self):
         """Advance one day."""
         self.step += 1
         if self.current_position is not None:
             self.hold_days += 1
+        else:
+            # Flat: clear any stale value left from a previous position.
+            self.hold_days = 0
         # Update hold_hours to hold_days for obs
         self.hold_hours = self.hold_days
 

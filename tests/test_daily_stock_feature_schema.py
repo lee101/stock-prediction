@@ -131,3 +131,69 @@ def test_prepare_daily_backtest_data_uses_schema_aware_feature_history(monkeypat
     assert recorded == ["legacy_prod"]
     assert prepared.feature_schema == "legacy_prod"
     assert prepared.feature_cube.shape == (4, 1, 16)
+
+
+def _make_ohlcv_with_spike(n: int = 100) -> pd.DataFrame:
+    """Return a price DataFrame with a +70% spike at bar 50 to expose clipping bugs."""
+    np.random.seed(7)
+    close = np.cumprod(1 + np.random.normal(0, 0.01, n)) * 100.0
+    close[50] = close[49] * 1.7  # +70% move
+    high = close * 1.005
+    low = close * 0.995
+    volume = np.full(n, 1_000_000.0)
+    return pd.DataFrame(
+        {"open": close, "high": high, "low": low, "close": close, "volume": volume},
+        index=pd.date_range("2022-01-01", periods=n, freq="B"),
+    )
+
+
+def test_rsi_v5_training_inference_feature_parity() -> None:
+    """export_data_daily and inference_daily must produce identical feature vectors.
+
+    Bug: inference_daily clipped ret_1d before computing volatility_5d/volatility_20d,
+    while export_data_daily used the raw (unclipped) returns.  On extreme-move days
+    (±50%+) the volatility features would diverge by up to ~0.08, causing the model
+    to see different inputs at inference time vs training time.
+    """
+    from pufferlib_market.export_data_daily import compute_daily_features as export_features
+    from pufferlib_market.inference_daily import compute_daily_features as infer_features
+
+    df = _make_ohlcv_with_spike()
+
+    # export_features returns a DataFrame; infer_features returns a 1-D array
+    train_df = export_features(df)
+    infer_vec = infer_features(df)
+
+    # Both cover the final bar (the same day)
+    train_vec = train_df.iloc[-1].to_numpy(dtype=np.float32)
+
+    assert train_vec.shape == infer_vec.shape == (16,), (
+        f"shape mismatch: train={train_vec.shape} infer={infer_vec.shape}"
+    )
+
+    max_diff = float(np.abs(train_vec - infer_vec).max())
+    assert max_diff < 1e-5, (
+        f"training/inference feature mismatch (max diff={max_diff:.6f}): "
+        f"train={train_vec}, infer={infer_vec}"
+    )
+
+
+def test_rsi_v5_volatility_uses_unclipped_returns() -> None:
+    """volatility_5d must use unclipped daily returns (same as training)."""
+    from pufferlib_market.inference_daily import compute_daily_features as infer_features
+    from pufferlib_market.export_data_daily import compute_daily_features as export_features
+
+    df = _make_ohlcv_with_spike()
+
+    # On the bar right after the +70% spike (bar 51), both vol features should match.
+    train_bar = export_features(df).iloc[51].to_numpy(dtype=np.float32)
+    infer_full = infer_features(df[:52])  # feed exactly 52 bars, take the last
+    infer_bar = infer_full  # inference returns only the last bar vector
+
+    # vol_5d = index 3, vol_20d = index 4
+    assert abs(float(train_bar[3]) - float(infer_bar[3])) < 1e-5, (
+        f"volatility_5d mismatch at spike bar: train={train_bar[3]:.6f} infer={infer_bar[3]:.6f}"
+    )
+    assert abs(float(train_bar[4]) - float(infer_bar[4])) < 1e-5, (
+        f"volatility_20d mismatch at spike bar: train={train_bar[4]:.6f} infer={infer_bar[4]:.6f}"
+    )

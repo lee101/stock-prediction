@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from pufferlib_market.inference import PPOTrader, Policy
+from pufferlib_market.inference_daily import DailyPPOTrader
 
 
 def _write_checkpoint(
@@ -405,3 +406,62 @@ class TestBuildObservationUnrealizedPnl:
         obs = trader.build_observation(features, prices)
         base = 2 * 16
         assert abs(obs[base + 2] - 0.05) < 1e-5  # exactly 5%
+
+
+class TestDailyPPOTraderHoldDaysConvention:
+    """DailyPPOTrader.step_day / update_state must match the C env hold_hours semantics.
+
+    C env rule: build_observation() runs BEFORE each action; hold_hours++ only
+    on a HOLD action.  So:
+      - First obs while holding (day after buying) → hold_hours=0
+      - After N HOLD actions → hold_hours=N
+      - After closing → hold_hours=0
+
+    Bugs fixed: step_day() used to increment hold_days on the same step as a
+    buy (giving hold_hours=1 on day-1-after-buying) and never cleared a stale
+    hold_days after a close.
+    """
+
+    def _make_daily_trader(self, tmp_path: Path) -> DailyPPOTrader:
+        ckpt = tmp_path / "daily.pt"
+        symbols = ["AAPL"]
+        _write_checkpoint(ckpt, num_symbols=1, num_actions=2, hidden=16, num_blocks=1, hot_action=0)
+        return DailyPPOTrader(str(ckpt), device="cpu", symbols=symbols)
+
+    def test_hold_hours_zero_on_first_day_after_buying(self, tmp_path: Path):
+        """Day-1-after-buying obs[base+3] must be 0/max_steps (not 1/max_steps)."""
+        trader = self._make_daily_trader(tmp_path)
+        # Day 0: flat
+        assert trader.hold_hours == 0
+        # BUY then advance one day
+        trader.update_state(1, 100.0, "AAPL", qty=100.0)
+        trader.step_day()
+        # Day 1: first obs while holding
+        assert trader.hold_hours == 0, (
+            f"expected hold_hours=0 (C env convention) on day after buying, got {trader.hold_hours}"
+        )
+
+    def test_hold_hours_increments_correctly_while_holding(self, tmp_path: Path):
+        """hold_hours must be 0 on day 1, 1 on day 2, 2 on day 3, ..."""
+        trader = self._make_daily_trader(tmp_path)
+        trader.update_state(1, 100.0, "AAPL", qty=100.0)
+        for expected in range(5):
+            trader.step_day()
+            assert trader.hold_hours == expected, (
+                f"day {expected+1}: expected hold_hours={expected}, got {trader.hold_hours}"
+            )
+
+    def test_hold_hours_resets_to_zero_after_close(self, tmp_path: Path):
+        """After closing a 3-day position, the next obs must see hold_hours=0."""
+        trader = self._make_daily_trader(tmp_path)
+        trader.update_state(1, 100.0, "AAPL", qty=100.0)
+        for _ in range(3):
+            trader.step_day()
+        assert trader.hold_hours == 2  # sanity: held 3 days → hold_hours=2
+
+        # Close
+        trader.update_state(0, 110.0, "")
+        trader.step_day()
+        assert trader.hold_hours == 0, (
+            f"expected hold_hours=0 after closing, got {trader.hold_hours} (stale)"
+        )
