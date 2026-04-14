@@ -76,46 +76,25 @@ def run_backtest(
 
     # Signal: weighted median return + optional skewness component
     signals = pred_ret * params.signal_weight + skewness * params.skew_weight + params.signal_bias
-    uncertainties = unc
 
+    # Vectorised position computation (same logic as _run_grid in calibration)
+    desired = np.zeros(len(signals), dtype=np.int8)
+    desired[signals > params.buy_threshold] = 1
+    if params.allow_short:
+        desired[signals < -params.sell_threshold] = -1
+    if params.confidence_threshold > 0.0:
+        desired[unc > params.confidence_threshold] = 0
+
+    pos_arr = np.empty_like(desired)
+    pos_arr[0] = 0
+    pos_arr[1:] = desired[:-1]
+
+    transitions = pos_arr != desired
+    n_trades = int(transitions.sum())
     fee = fee_bps / 10_000.0
-    pnl = []
-    positions = []
-    position = 0
-    n_trades = 0
-    conf_thresh = params.confidence_threshold
 
-    for i in range(len(signals)):
-        sig = signals[i]
-        ret = act_ret[i]
-        unc_i = uncertainties[i]
-
-        # Confidence filter
-        if conf_thresh > 0.0 and unc_i > conf_thresh:
-            desired = 0
-        elif sig > params.buy_threshold:
-            desired = 1
-        elif params.allow_short and sig < -params.sell_threshold:
-            desired = -1
-        else:
-            desired = 0
-
-        transition_cost = fee if desired != position else 0.0
-        if desired != position:
-            n_trades += 1
-
-        if position == 1:
-            pnl.append(ret - transition_cost)
-        elif position == -1:
-            pnl.append(-ret - transition_cost)
-        else:
-            pnl.append(-transition_cost)
-
-        positions.append(position)
-        position = desired
-
-    arr = np.array(pnl)
-    pos_arr = np.array(positions)
+    arr = np.where(pos_arr == 1, act_ret, np.where(pos_arr == -1, -act_ret, 0.0))
+    arr = arr - transitions.astype(np.float64) * fee
     n = len(arr)
 
     # Sortino: downside deviation only
