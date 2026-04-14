@@ -1053,6 +1053,7 @@ def evaluate_params(
     use_sortino: bool = True,
     q50_hl_mid: Optional[np.ndarray] = None,
     q50_step2: Optional[np.ndarray] = None,
+    symbols: Optional[List[str]] = None,
 ) -> float:
     """
     Evaluate calibrated params on a held-out dataset (OOS validation).
@@ -1068,6 +1069,11 @@ def evaluate_params(
     step2_return     = ((q50_step2 - q50) / (np.abs(prev_close) + eps)
                         if q50_step2 is not None else np.zeros_like(predicted_return))
 
+    # Compute symbol boundaries for consistent multi-symbol eval (same as fit_calibration)
+    boundaries: Optional[np.ndarray] = None
+    if symbols is not None and len(symbols) > 1:
+        boundaries = _get_boundaries(symbols)
+
     return compute_sharpe(
         signals=(predicted_return * params.signal_weight
                  + skewness * params.skew_weight
@@ -1080,6 +1086,7 @@ def evaluate_params(
         fee_bps=fee_bps,
         uncertainties=uncertainties,
         confidence_threshold=params.confidence_threshold,
+        boundaries=boundaries,
     )
 
 
@@ -1277,7 +1284,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if len(actual_oos) >= 10:
         oos_score = evaluate_params(params, q10_oos, q50_oos, q90_oos, actual_oos, prev_oos,
                                     fee_bps=args.fee_bps, use_sortino=use_sortino,
-                                    q50_hl_mid=hl_mid_oos, q50_step2=step2_oos)
+                                    q50_hl_mid=hl_mid_oos, q50_step2=step2_oos, symbols=syms_oos)
         params.oos_sharpe = oos_score
         print(f"Global result: (OOS test n={len(actual_oos)})"); _print_params(params)
     else:
@@ -1296,7 +1303,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if len(actual_oos) >= 10:
             oos_score_short = evaluate_params(params_short, q10_oos, q50_oos, q90_oos, actual_oos, prev_oos,
                                               fee_bps=args.fee_bps, use_sortino=use_sortino,
-                                              q50_hl_mid=hl_mid_oos, q50_step2=step2_oos)
+                                              q50_hl_mid=hl_mid_oos, q50_step2=step2_oos, symbols=syms_oos)
             params_short.oos_sharpe = oos_score_short
         print("Short variant:"); _print_params(params_short)
         out_short.write_text(json.dumps(params_short.to_dict(), indent=2))
@@ -1315,7 +1322,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if len(actual_oos) >= 10:
             oos_calmar = evaluate_params(params_calmar, q10_oos, q50_oos, q90_oos, actual_oos, prev_oos,
                                          fee_bps=args.fee_bps, use_sortino=False,
-                                         q50_hl_mid=hl_mid_oos, q50_step2=step2_oos)
+                                         q50_hl_mid=hl_mid_oos, q50_step2=step2_oos, symbols=syms_oos)
             params_calmar.oos_sharpe = oos_calmar
         print("Calmar variant:"); _print_params(params_calmar)
         out_calmar.write_text(json.dumps(params_calmar.to_dict(), indent=2))
