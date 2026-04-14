@@ -915,6 +915,8 @@ def fit_calibration(
         step2_weight_vals=step2_weight_vals_,
         **grid_kwargs,  # type: ignore[arg-type]
     )
+    print(f"  [P1 coarse] score={best_sharpe:.4f}  buy={best_buy*1e4:.1f}bps  sell={best_sell*1e4:.1f}bps"
+          f"  w={best_weight:.3f}  sw={best_skew_w:.2f}  mw={best_mid_w:.2f}  s2w={best_s2w:.2f}")
 
     # --- Fine phase: ±2bps around best, 17 points each ---
     fine_bps = 2.0 / 10_000.0
@@ -941,6 +943,7 @@ def fit_calibration(
     if sharpe2 > best_sharpe:
         best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w = (
             sharpe2, buy2, sell2, weight2, conf2, skew2, mid2, s2w2)
+    print(f"  [P2  fine ] score={best_sharpe:.4f}  buy={best_buy*1e4:.1f}bps  sell={best_sell*1e4:.1f}bps")
 
     # --- Phase 3: refine signal_weight around best (±40% in 9 steps) ---
     # Use the fine threshold grid from Phase 2 for joint threshold+weight search.
@@ -957,6 +960,7 @@ def fit_calibration(
         if sharpe3 > best_sharpe:
             best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w = (
                 sharpe3, buy3, sell3, weight3, conf3, skew3, mid3, s2w3)
+        print(f"  [P3  wgt  ] score={best_sharpe:.4f}  w={best_weight:.4f}")
 
     # --- Phase 4: fine-tune skew/midpoint/step2 weights around best values ---
     # Uses ±50% around coarse-search best in 7 steps each to avoid local minima.
@@ -986,6 +990,7 @@ def fit_calibration(
     if sharpe4 > best_sharpe:
         best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w = (
             sharpe4, buy4, sell4, weight4, conf4, skew4, mid4, s2w4)
+    print(f"  [P4  aux  ] score={best_sharpe:.4f}  sw={best_skew_w:.3f}  mw={best_mid_w:.3f}  s2w={best_s2w:.3f}")
 
     # --- Phase 5: ultra-fine joint search ±1bps thresholds + ±15% signal_weight ---
     # Final pass to escape any residual plateau after the 4-phase search.
@@ -1007,6 +1012,8 @@ def fit_calibration(
     if sharpe5 > best_sharpe:
         best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w = (
             sharpe5, buy5, sell5, weight5, conf5, skew5, mid5, s2w5)
+    print(f"  [P5  ufine] score={best_sharpe:.4f}  buy={best_buy*1e4:.2f}bps  sell={best_sell*1e4:.2f}bps"
+          f"  w={best_weight:.4f}")
 
     # --- Phase 6: confidence threshold refinement at fixed best weights ---
     # Fine-grain confidence search now that weights are settled.
@@ -1024,6 +1031,10 @@ def fit_calibration(
         if sharpe6 > best_sharpe:
             best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w, best_s2w = (
                 sharpe6, buy6, sell6, weight6, conf6, skew6, mid6, s2w6)
+        print(f"  [P6  conf ] score={best_sharpe:.4f}  conf={best_conf*1e4:.1f}bps")
+
+    print(f"  [FINAL    ] score={best_sharpe:.4f}  buy={best_buy*1e4:.2f}bps  sell={best_sell*1e4:.2f}bps"
+          f"  w={best_weight:.4f}  sw={best_skew_w:.3f}  mw={best_mid_w:.3f}  s2w={best_s2w:.3f}")
 
     params = CalibrationParams(
         signal_weight=best_weight,
