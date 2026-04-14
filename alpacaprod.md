@@ -307,51 +307,61 @@ sudo systemctl restart daily-rl-trader.service
 - **27%/month HARD RULE note**: this target is calibrated for crypto, NOT achievable for stocks systematically.
   Realistic stock target: 5-8%/month (60-96%/year) at full allocation with regime filter.
 
-#### Chronos2 directional signal: confirmed zero
-- 60-day backtest: 50.1% directional accuracy, Pearson r=-0.017. Zero signal for trading.
-- Pre-augmentation (differencing/log_diff/diff_norm) reduces MAE 2.45%→1.93% but does NOT improve direction.
-- Chronos2 cannot be used as a direct trading signal for daily stocks.
+#### Chronos2 directional signal: re-evaluated after calibration fix
+- Old claim (fee bug): Sharpe=0.326, directional acc=50.1% — looked like zero signal
+- **After fee fix** (fee charged on transitions only, not every held day):
+  - v2 long-only: Sharpe=0.359 (expanded ±20bps, conf filter, skew_weight)
+  - v2 short-allowed: Sharpe ~0.42+
+- Signal is real but weak. Trading viability to be confirmed with out-of-sample backtest on v3/v4.
 
-### 2026-04-13 — Chronos2 full domain fine-tune
+### 2026-04-14 — Chronos2 full domain fine-tune pipeline (ACTIVE)
+
+#### Calibration improvements (2026-04-14)
+- **Fee fix**: fee charged only on position transitions, not every held day
+- **Expanded search**: ±20bps (was ±8bps), 25 grid steps, Phase 2 fine ±2bps, Phase 3 weight ±40%
+- **Confidence filter**: searches over 3 uncertainty percentile thresholds
+- **Skewness signal**: `(q90-q50)-(q50-q10)/prev_close` — new signal component
+  - `skew_weight` searched in [0, 0.5, 1.0, 2.0]; adds distributional tail-skew info
+- **Ensemble inference**: `collect_ensemble_predictions()` for multi-model average
+- **Per-symbol calibration**: per-symbol hyperparams/ JSONs (v3 dir: hyperparams/chronos2_v3/)
 
 #### Training run: stocks_all_v1 (DONE)
 - Config: 30k steps, batch=256, ctx=512, lr=5e-5, full, bfloat16, no Muon
-- Dataset: 3930 series (stale cache)
 - Result: MAE% **2.49%** (slightly worse than baseline 2.45% — stale data cache)
 
 #### Training run: stocks_all_v2 (DONE — 2026-04-13)
-- Log: `chronos2_finetune_v2.log`
 - Config: **50k steps**, batch=256, ctx=512, lr=5e-5, full, bfloat16, **Muon optimizer**
-- Dataset: **7796 series** — ALL 2258 daily stocks + 205 hourly crypto + 1435 sliding-daily + ~3895 return variants
-- Data cache: `.cache/chronos2_train_data_full.npz` (330MB)
+- Dataset: **7796 series** (full cache: 2258 daily stocks + 205 hourly crypto + 1435 sliding + 3895 return variants)
 - Output: `chronos2_finetuned/stocks_all_v2/finetuned-ckpt/`
-- R2: `models/chronos2/finetune/stocks_all_v2/`
-- **Result: MAE% 2.38%** (baseline 2.45% → **+2.9% improvement**)
-- Calibration (long-only): buy=-6bps, sell=-8bps, weight=0.50, Sharpe=0.154 (re-run 2026-04-13 with fixed fee logic)
-- Calibration (short-allowed): buy=-6bps, sell=-8bps, weight=0.50, Sharpe=0.213
-- **Note**: old Sharpe=0.326 was wrong — fee was charged every held day, not just on transitions
+- **MAE% 2.38%** (baseline 2.45% → +2.9% improvement)
+- Calibration (updated 2026-04-14): buy=-20bps, sell=-20bps, weight=0.25, conf=737bps, Sharpe=0.359
 
-#### Training run: stocks_all_v3 (RUNNING — 2026-04-13, PID 2029405)
+#### Training run: stocks_all_v3 (RUNNING — 2026-04-14, PID 477746)
 - Log: `chronos2_finetune_v3.log`
 - Config: **100k steps**, batch=256, ctx=512, lr=5e-5, full, bfloat16, **Muon + stronger aug**
-  - `amp_log_std=0.45` (vs 0.30 in v2) — stronger amplitude jitter
-  - `freq_subsample_prob=0.15` — stride-2 multi-timescale augmentation
-  - `noise_frac=0.003`, `dropout_rate=0.03`, `seed=123`
-- Dataset: same 7796-series cache as v2
-- Output: `chronos2_finetuned/stocks_all_v3/finetuned-ckpt/`
-- R2 prefix: `chronos2/finetune/stocks_all_v3/finetuned-ckpt`
+  - `amp_log_std=0.45`, `freq_subsample_prob=0.15`, `noise_frac=0.003`, `dropout_rate=0.03`, `seed=123`
+- **Resumed** from checkpoint-20000 at 00:47 UTC 2026-04-14 (killed at step 21400 by RAM pressure during baseline eval)
+- Fix applied: `--resume-from-checkpoint` skips baseline eval; training now proceeds from step 20000
+- Status: step ~22000/100000, ~11hr remaining
 
-#### Key augmentations (v2/v3):
-- Sliding-window hourly→daily aggregation: 7 offsets per hourly series
-- Percent-return variants: stationary series for every price series
-- Online per-batch: amplitude jitter, relative noise, time-dropout
-- v3 adds: freq_subsample_prob=0.15 (stride-2 "2-day" bars, multi-timescale)
+#### Training run: stocks_all_v4 (PLANNED — launches automatically after v3)
+- Config: ctx=1024, 200k steps, grad_accum=2, batch=128, Muon, seed=42
+- Watcher: `scripts/launch_chronos2_v4_when_v3_ready.sh` (PID 479990)
 
-#### After v3 training:
-1. Run `benchmark_chronos2.py` on AAPL/SPY/GOOG/TSLA and compare to v2
-2. Run linear calibration: `python chronos2_linear_calibration.py --model-id chronos2_finetuned/stocks_all_v3/finetuned-ckpt --max-shift-bps 8`
-3. If v3 MAE% < v2 (2.38%): update `hyperparams/chronos2/*.json` with new base
-4. Per-symbol LoRA fine-tunes on top of best base: `retrain_chronos2_lora_binance_pairs.py`
+#### Training run: stocks_all_v5 (PLANNED — launches after v4)
+- Config: ctx=1024, 200k steps, channel_dropout=0.15, time_warp=0.15, seed=43
+
+#### Training run: stocks_all_v6 (PLANNED — launches after v5)
+- Config: ctx=1024, 200k steps, outlier_inject=0.10 + full aug suite, seed=44
+- **New**: outlier injection teaches crash/spike robustness (5× local std, 1-3 bars)
+
+#### Augmentation roadmap (v2→v6):
+| Version | Extra augmentations vs v2 |
+|---------|--------------------------|
+| v3 | freq_subsample=0.15, amp_log_std=0.45 |
+| v4 | ctx 512→1024 |
+| v5 | + channel_dropout=0.15, time_warp=0.15 |
+| v6 | + outlier_inject=0.10, freq_subsample=0.15 (full suite) |
 
 #### RunPod training (for larger GPU / longer runs):
 ```bash
