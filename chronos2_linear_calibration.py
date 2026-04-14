@@ -455,38 +455,44 @@ def collect_ensemble_predictions(
     torch_dtype_str: str = "bfloat16",
     max_windows: int = 5000,
     batch_size: int = 32,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]:
     """
     Run inference with multiple models and average their quantile predictions.
 
     Loads each model sequentially (to avoid GPU OOM), collects predictions,
     then returns the per-quantile average across all models.
 
-    Returns same signature as collect_predictions():
-        q10, q50, q90, actual, prev_close, symbols
+    Returns 8-tuple (same as collect_predictions with include_hl_mid=True):
+        q10, q50, q90, actual, prev_close, hl_mid, step2, symbols
     """
     if len(model_ids) == 1:
         return collect_predictions(
             model_ids[0], series_list, context_length, prediction_length,
             device_map, torch_dtype_str, max_windows, batch_size,
-        )
+            include_hl_mid=True,
+        )  # type: ignore[return-value]
 
     all_q10_runs: List[np.ndarray] = []
     all_q50_runs: List[np.ndarray] = []
     all_q90_runs: List[np.ndarray] = []
+    all_hl_mid_runs: List[np.ndarray] = []
+    all_step2_runs: List[np.ndarray] = []
     actual_ref = None
     prev_ref = None
-    syms_ref = None
+    syms_ref: Optional[List[str]] = None
 
     for mid in model_ids:
         print(f"\n[Ensemble] Collecting predictions from: {mid}")
-        q10, q50, q90, actual, prev, syms = collect_predictions(
+        q10, q50, q90, actual, prev, hl_mid, step2, syms = collect_predictions(
             mid, series_list, context_length, prediction_length,
             device_map, torch_dtype_str, max_windows, batch_size,
+            include_hl_mid=True,
         )
         all_q10_runs.append(q10)
         all_q50_runs.append(q50)
         all_q90_runs.append(q90)
+        all_hl_mid_runs.append(hl_mid)
+        all_step2_runs.append(step2)
         if actual_ref is None:
             actual_ref = actual
             prev_ref = prev
@@ -499,6 +505,8 @@ def collect_ensemble_predictions(
                 all_q10_runs[-1] = q10[:n]
                 all_q50_runs[-1] = q50[:n]
                 all_q90_runs[-1] = q90[:n]
+                all_hl_mid_runs[-1] = hl_mid[:n]
+                all_step2_runs[-1] = step2[:n]
                 actual_ref = actual_ref[:n]
                 prev_ref = prev_ref[:n]  # type: ignore[index]
                 syms_ref = syms_ref[:n]  # type: ignore[index]
@@ -507,8 +515,10 @@ def collect_ensemble_predictions(
     q10_avg = np.mean(all_q10_runs, axis=0)
     q50_avg = np.mean(all_q50_runs, axis=0)
     q90_avg = np.mean(all_q90_runs, axis=0)
+    hl_mid_avg = np.mean(all_hl_mid_runs, axis=0)
+    step2_avg = np.mean(all_step2_runs, axis=0)
 
-    return q10_avg, q50_avg, q90_avg, actual_ref, prev_ref, syms_ref  # type: ignore[return-value]
+    return q10_avg, q50_avg, q90_avg, actual_ref, prev_ref, hl_mid_avg, step2_avg, syms_ref  # type: ignore[return-value]
 
 
 # ---------------------------------------------------------------------------
@@ -951,9 +961,11 @@ def fit_calibration(
     # Uses ±50% around coarse-search best in 7 steps each to avoid local minima.
     def _fine_weight_range(center: float, n: int = 7) -> List[float]:
         """Return n evenly spaced values around center covering ±50% range (clamped ≥ -2)."""
-        lo = max(-2.0, center * 0.5 - 0.25)
-        hi = center * 1.5 + 0.25
-        if lo >= hi:
+        # Use symmetric ±max(|center|*0.5, 0.25) window around center to handle negatives
+        half_range = max(abs(center) * 0.5, 0.25)
+        lo = max(-2.0, center - half_range)
+        hi = min(4.0, center + half_range)
+        if lo >= hi or n <= 1:
             return [center]
         return list(np.linspace(lo, hi, n))
 
@@ -1180,14 +1192,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             batch_size=args.batch_size,
         )
 
-        def _collect(series: list, max_win: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]]:
+        def _collect(series: list, max_win: int):
             kw = dict(**base_collect_kwargs, series_list=series, max_windows=max_win,
                       model_ids=ensemble_ids)
             return collect_ensemble_predictions(**kw)
 
-        q10, q50, q90, actual, prev_close, symbols = _collect(cal_series, args.max_windows)
+        q10, q50, q90, actual, prev_close, hl_mid, step2, symbols = _collect(cal_series, args.max_windows)
         print(f"Collecting OOS test predictions (max {oos_max_windows} windows)...")
-        q10_oos, q50_oos, q90_oos, actual_oos, prev_oos, syms_oos = _collect(test_series, oos_max_windows)
+        q10_oos, q50_oos, q90_oos, actual_oos, prev_oos, hl_mid_oos, step2_oos, syms_oos = _collect(test_series, oos_max_windows)
 
     if len(actual) < 50:
         print(f"Too few calibration windows ({len(actual)}); cannot fit calibration.")
