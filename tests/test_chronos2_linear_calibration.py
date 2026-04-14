@@ -717,11 +717,12 @@ class TestMidpointSignal:
             thresh_vals=np.linspace(0.001, 0.01, 5),
             allow_short=False, min_gap=0.0, fee_bps=10.0, use_calmar=False,
         )
-        assert len(result) == 9
-        best_score, best_buy, best_sell, best_w, best_c, best_sw, best_mw, best_s2w, best_icw = result
+        assert len(result) == 10
+        best_score, best_buy, best_sell, best_w, best_c, best_sw, best_mw, best_s2w, best_icw, best_ow = result
         assert not np.isnan(best_buy)
         assert best_mw in (0.0, 0.5)
         assert best_s2w == 0.0  # step2_weight_vals not provided → stays 0.0
+        assert best_ow == 0.0   # open_weight_vals not provided → stays 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -769,8 +770,8 @@ class TestStep2Signal:
         # step2_weight is searched from [0.0, 0.5, 1.0, 2.0] (coarse) + phase-4 fine range
         assert params.step2_weight >= 0.0
 
-    def test_run_grid_with_step2_returns_9_tuple(self):
-        """_run_grid with step2 data should return 9-tuple and may pick non-zero weight."""
+    def test_run_grid_with_step2_returns_10_tuple(self):
+        """_run_grid with step2 data should return 10-tuple and may pick non-zero weight."""
         rng = np.random.default_rng(55)
         N = 200
         pred = rng.normal(0.001, 0.01, N)
@@ -785,9 +786,10 @@ class TestStep2Signal:
             thresh_vals=np.linspace(0.001, 0.01, 5),
             allow_short=False, min_gap=0.0, fee_bps=10.0, use_calmar=False,
         )
-        assert len(result) == 9
+        assert len(result) == 10
         best_s2w = result[7]
         assert best_s2w in (0.0, 0.5, 1.0)
+        assert result[9] == 0.0  # open_weight_vals not provided → stays 0.0
 
     def test_fit_calibration_without_step2_zeros_weight(self):
         """Without q50_step2, step2_weight should be 0.0."""
@@ -803,6 +805,100 @@ class TestStep2Signal:
             grid_steps=5, search_signal_weight=False,
         )
         assert params.step2_weight == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Overnight gap (open) signal
+# ---------------------------------------------------------------------------
+
+class TestOpenWeightSignal:
+    def test_calibration_params_has_open_weight(self):
+        """CalibrationParams should have an open_weight field defaulting to 0."""
+        p = CalibrationParams()
+        assert hasattr(p, 'open_weight')
+        assert p.open_weight == 0.0
+
+    def test_open_weight_in_to_dict(self):
+        """open_weight should be serialized in to_dict()."""
+        p = CalibrationParams(open_weight=0.5)
+        d = p.to_dict()
+        assert 'open_weight' in d
+        assert d['open_weight'] == 0.5
+
+    def test_open_weight_roundtrip(self):
+        """CalibrationParams.from_dict should restore open_weight."""
+        p = CalibrationParams(open_weight=1.5)
+        p2 = CalibrationParams.from_dict(p.to_dict())
+        assert p2.open_weight == 1.5
+
+    def test_apply_with_open_return_no_effect_when_zero_weight(self):
+        """open_weight=0 means open_return has no effect."""
+        p = CalibrationParams(buy_threshold=0.001, open_weight=0.0)
+        assert p.apply(0.002, open_return=10.0) == "buy"
+        assert p.apply(0.0005, open_return=10.0) == "hold"
+
+    def test_apply_with_open_return_boosts_signal(self):
+        """Positive open_weight + positive open_return boosts signal."""
+        p_no_open = CalibrationParams(buy_threshold=0.001, open_weight=0.0)
+        p_with_open = CalibrationParams(buy_threshold=0.001, open_weight=0.5)
+        # predicted_return=0.0005 is below threshold normally
+        assert p_no_open.apply(0.0005, open_return=0.002) == "hold"
+        # with open_weight=0.5: signal = 0.0005 + 0.5*0.002 = 0.0015 > 0.001 → buy
+        assert p_with_open.apply(0.0005, open_return=0.002) == "buy"
+
+    def test_run_grid_with_open_weight_vals(self):
+        """_run_grid should return 10-tuple with open_weight as last element."""
+        rng = np.random.default_rng(77)
+        N = 200
+        pred = rng.normal(0.001, 0.01, N)
+        act = rng.normal(0.0005, 0.01, N)
+        unc = np.abs(rng.normal(0, 0.005, N))
+        open_ret = pred + rng.normal(0.0001, 0.003, N)
+        result = _run_grid(
+            predicted_return=pred, actual_return=act, uncertainties=unc,
+            skewness=None, midpoint_return=None,
+            open_return=open_ret, open_weight_vals=[0.0, 0.5, 1.0],
+            weight_vals=[1.0], conf_vals=[0.0],
+            thresh_vals=np.linspace(0.001, 0.01, 5),
+            allow_short=False, min_gap=0.0, fee_bps=10.0, use_calmar=False,
+        )
+        assert len(result) == 10
+        best_ow = result[9]
+        assert best_ow in (0.0, 0.5, 1.0)
+
+    def test_fit_calibration_without_open_zeros_weight(self):
+        """Without q50_open, open_weight should be 0.0."""
+        rng = np.random.default_rng(5)
+        N = 300
+        prev = np.full(N, 100.0)
+        q50 = prev + rng.normal(0, 1.0, N)
+        q10, q90 = q50 - 2, q50 + 2
+        actual = prev + rng.normal(0.1, 1.0, N)
+        params = fit_calibration(
+            q10=q10, q50=q50, q90=q90, actual=actual,
+            prev_close=prev, q50_open=None,
+            grid_steps=5, search_signal_weight=False,
+        )
+        assert params.open_weight == 0.0
+
+    def test_fit_calibration_with_open_returns_valid_params(self):
+        """fit_calibration should accept q50_open and return valid params."""
+        rng = np.random.default_rng(44)
+        N = 300
+        prev = np.full(N, 100.0)
+        q50 = prev + rng.normal(0, 1.0, N)
+        q10, q90 = q50 - 2, q50 + 2
+        # Simulate open slightly predictive of actual
+        open_pred = prev + rng.normal(0.05, 0.8, N)
+        actual = prev + rng.normal(0.1, 1.0, N)
+        params = fit_calibration(
+            q10=q10, q50=q50, q90=q90, actual=actual,
+            prev_close=prev, q50_open=open_pred,
+            grid_steps=5, search_signal_weight=False,
+        )
+        assert params is not None
+        assert not np.isnan(params.buy_threshold)
+        assert params.open_weight >= 0.0
 
 
 # ---------------------------------------------------------------------------

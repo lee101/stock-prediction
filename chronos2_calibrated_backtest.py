@@ -65,6 +65,7 @@ def run_backtest(
     fee_bps: float = 10.0,
     hl_mid: Optional[np.ndarray] = None,
     step2: Optional[np.ndarray] = None,
+    open_pred: Optional[np.ndarray] = None,
 ) -> Dict:
     """
     Run calibrated backtest on collected predictions.
@@ -74,6 +75,8 @@ def run_backtest(
         used when params.midpoint_weight > 0
     step2: optional (N,) array of step-2 q50 close predictions;
         used when params.step2_weight > 0
+    open_pred: optional (N,) array of predicted open q50;
+        used when params.open_weight > 0 — overnight gap signal
     """
     eps = 1e-8
     pred_ret = (q50 - prev_close) / (np.abs(prev_close) + eps)
@@ -91,14 +94,20 @@ def run_backtest(
     if step2 is not None and params.step2_weight != 0.0:
         step2_ret = (step2 - q50) / (np.abs(prev_close) + eps)
 
+    # Overnight gap signal: (open_q50 - prev_close) / prev_close
+    open_ret = np.zeros_like(pred_ret)
+    open_weight = getattr(params, "open_weight", 0.0)
+    if open_pred is not None and open_weight != 0.0:
+        open_ret = (open_pred - prev_close) / (np.abs(prev_close) + eps)
+
     # IC (Information Coefficient) signal: predicted_return / uncertainty
     ic_ret = pred_ret / (unc + 1e-8)
     ic_weight = getattr(params, "ic_weight", 0.0)
 
-    # Signal: weighted median return + optional skewness + optional midpoint + step2 + IC components
+    # Signal: weighted median return + optional skewness + midpoint + step2 + IC + open components
     signals = (pred_ret * params.signal_weight + skewness * params.skew_weight
                + mid_ret * params.midpoint_weight + step2_ret * params.step2_weight
-               + ic_ret * ic_weight
+               + ic_ret * ic_weight + open_ret * open_weight
                + params.signal_bias)
 
     # Vectorised position computation (same logic as _run_grid in calibration)
@@ -252,7 +261,7 @@ def main(argv=None) -> int:
 
     # Collect predictions for primary model
     print(f"\nRunning inference for: {args.model_id}")
-    q10, q50, q90, actual, prev_close, hl_mid, step2, symbols = collect_predictions(
+    q10, q50, q90, actual, prev_close, hl_mid, step2, open_pred, symbols = collect_predictions(
         model_id=args.model_id,
         series_list=test_series,
         context_length=args.context_length,
@@ -265,7 +274,7 @@ def main(argv=None) -> int:
 
     # Primary model backtest
     params = _load_calibration(args.model_id, args.calibration)
-    stats = run_backtest(q10, q50, q90, actual, prev_close, symbols, params, args.fee_bps, hl_mid, step2)
+    stats = run_backtest(q10, q50, q90, actual, prev_close, symbols, params, args.fee_bps, hl_mid, step2, open_pred)
 
     print("\n=== Primary model ===")
     _print_stats(stats, args.model_id.split("/")[-2] if "/" in args.model_id else args.model_id)
@@ -281,7 +290,7 @@ def main(argv=None) -> int:
     # Compare model
     if args.compare_model:
         print(f"\nRunning inference for compare: {args.compare_model}")
-        q10c, q50c, q90c, actualc, prev_c, hl_mid_c, step2_c, symsc = collect_predictions(
+        q10c, q50c, q90c, actualc, prev_c, hl_mid_c, step2_c, open_pred_c, symsc = collect_predictions(
             model_id=args.compare_model,
             series_list=test_series,
             context_length=args.context_length,
@@ -292,7 +301,7 @@ def main(argv=None) -> int:
             include_hl_mid=True,
         )
         params_c = _load_calibration(args.compare_model, None)
-        stats_c = run_backtest(q10c, q50c, q90c, actualc, prev_c, symsc, params_c, args.fee_bps, hl_mid_c, step2_c)
+        stats_c = run_backtest(q10c, q50c, q90c, actualc, prev_c, symsc, params_c, args.fee_bps, hl_mid_c, step2_c, open_pred_c)
 
         print("\n=== Compare model ===")
         _print_stats(stats_c, args.compare_model.split("/")[-2] if "/" in args.compare_model else args.compare_model)
