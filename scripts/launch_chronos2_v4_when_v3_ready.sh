@@ -130,3 +130,43 @@ fi
 echo "[$(date -u +%H:%M:%SZ)] Launching v4 (ctx=1024, 200k steps, grad_accum=2)..."
 bash scripts/launch_chronos2_v4.sh
 echo "[$(date -u +%H:%M:%SZ)] v4 launched. PID: $(cat .chronos2_v4_pid 2>/dev/null)"
+
+# -----------------------------------------------------------------------
+# Step 6: Auto-launch v5 when v4 completes
+# -----------------------------------------------------------------------
+V4_PID="$(cat .chronos2_v4_pid 2>/dev/null)"
+if [[ -n "$V4_PID" ]]; then
+    echo "[$(date -u +%H:%M:%SZ)] Waiting for v4 (PID $V4_PID) to complete before launching v5..."
+    while kill -0 "$V4_PID" 2>/dev/null; do
+        sleep 180
+    done
+    echo "[$(date -u +%H:%M:%SZ)] v4 complete. Running v4 calibration + benchmark..."
+
+    V4_CKPT="chronos2_finetuned/stocks_all_v4/finetuned-ckpt"
+    if [[ -d "$V4_CKPT" ]]; then
+        python chronos2_linear_calibration.py \
+            --model-id     "$V4_CKPT" \
+            --cal-data-dir trainingdata \
+            --output-path  "$V4_CKPT/calibration.json" \
+            --max-shift-bps 20 \
+            --min-gap-bps   2 \
+            --grid-steps   25 \
+            --max-windows  5000 \
+            --batch-size   32 \
+            --per-symbol \
+            --hyperparams-dir hyperparams/chronos2_v4 \
+            2>&1 | tee chronos2_calibration_v4.log
+
+        python benchmark_chronos2.py \
+            --symbols AAPL SPY GOOG TSLA META NVDA MSFT AMZN \
+            --model-id "$V4_CKPT" \
+            --context-length 1024 \
+            --batch-size 64 \
+            --update-hyperparams \
+            2>&1 | tee chronos2_benchmark_v4.log
+    fi
+
+    echo "[$(date -u +%H:%M:%SZ)] Launching v5 (ctx=1024, channel_dropout, time_warp)..."
+    bash scripts/launch_chronos2_v5.sh
+    echo "[$(date -u +%H:%M:%SZ)] v5 launched. PID: $(cat .chronos2_v5_pid 2>/dev/null)"
+fi

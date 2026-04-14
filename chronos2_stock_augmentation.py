@@ -86,6 +86,18 @@ class AugConfig:
     # Set to False to disable.
     detrend_context: bool = False
 
+    # Channel dropout: with this probability, zero-out one random OHLC channel
+    # on the context (not target). Teaches robustness to missing channels and
+    # forces the model to infer information from the remaining channels.
+    # Set to 0 to disable.
+    channel_dropout_prob: float = 0.0
+
+    # Time-warp probability: with this probability, randomly stretch/compress the
+    # context by resampling with a random speed curve. Teaches invariance to small
+    # temporal rescaling (e.g., different market speeds across regimes).
+    # Set to 0 to disable.
+    time_warp_prob: float = 0.0
+
 
 # ---------------------------------------------------------------------------
 # Dataset with online augmentation
@@ -179,6 +191,36 @@ class AugmentedChronos2Dataset(Chronos2Dataset):  # type: ignore[misc]
                         slope = (n * sxy - sx * sy) / denom
                         intercept = (sy - slope * sx) / n
                         task_context[ch] = valid - (slope * t + intercept)
+
+        # --- 6. Channel dropout: zero out one random OHLC channel in context ---
+        if cfg.channel_dropout_prob > 0 and random.random() < cfg.channel_dropout_prob:
+            n_ch = task_context.shape[0]
+            if n_ch >= 2:
+                ch = random.randrange(n_ch)
+                task_context = task_context.clone()
+                task_context[ch] = float("nan")
+
+        # --- 7. Time warp: resample context at a random speed curve ---
+        if cfg.time_warp_prob > 0 and random.random() < cfg.time_warp_prob:
+            T = task_context.shape[-1]
+            if T >= 8:
+                # Random warp factor in [0.8, 1.2]: stretch or compress by ±20%
+                warp = 0.8 + random.random() * 0.4
+                new_T = max(4, round(T * warp))
+                # Linear interpolation along time axis
+                old_idx = torch.linspace(0, T - 1, new_T)
+                lo = old_idx.long().clamp(0, T - 2)
+                hi = (lo + 1).clamp(0, T - 1)
+                frac = (old_idx - lo.float()).unsqueeze(0)  # (1, new_T)
+                ctx_float = task_context.float()
+                task_context = ctx_float[:, lo] * (1 - frac) + ctx_float[:, hi] * frac
+                # Pad/crop back to original T by repeating last bar or truncating
+                if new_T < T:
+                    pad = task_context[:, -1:].expand(-1, T - new_T)
+                    task_context = torch.cat([task_context, pad], dim=-1)
+                elif new_T > T:
+                    task_context = task_context[:, :T]
+                task_context = task_context.to(task_context.dtype)
 
         return task_context, task_future_target, task_future_covariates, task_n_targets
 

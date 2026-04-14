@@ -51,7 +51,7 @@ train_one() {
   echo "[$(date -u +%FT%TZ)] [${VARIANT}_weekly] seed ${seed}"
   python -u -m pufferlib_market.train \
       --data-path "$TRAIN" --val-data-path "$VAL" \
-      --total-timesteps 8000000 --max-steps 52 \
+      --total-timesteps 8000000 --max-steps 12 \
       --trade-penalty "$TP" --hidden-size 1024 \
       --anneal-lr --disable-shorts --num-envs 128 \
       --val-eval-windows 20 --periods-per-year 52 \
@@ -67,7 +67,7 @@ eval_one() {
   local out="${CKPT_ROOT}/s${seed}/eval_lag2.json"
   python -m pufferlib_market.evaluate_holdout \
       --checkpoint "$ckpt" --data-path "$VAL" \
-      --eval-hours 52 --n-windows 20 \
+      --eval-hours 12 --n-windows 20 \
       --fee-rate 0.001 --fill-buffer-bps 5.0 \
       --decision-lag 2 --deterministic --no-early-stop \
       --periods-per-year 52 \
@@ -88,7 +88,7 @@ PY
     local out_rv="${CKPT_ROOT}/s${seed}/eval_recent_lag2.json"
     python -m pufferlib_market.evaluate_holdout \
         --checkpoint "$ckpt" --data-path "$RECENT_VAL" \
-        --eval-hours 52 --n-windows 20 \
+        --eval-hours 12 --n-windows 20 \
         --fee-rate 0.001 --fill-buffer-bps 5.0 \
         --decision-lag 2 --deterministic --no-early-stop \
         --periods-per-year 52 \

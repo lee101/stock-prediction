@@ -55,6 +55,8 @@ GRAD_ACCUM=1
 AMP_LOG_STD=0.45
 NOISE_FRAC=0.003
 DROPOUT_RATE=0.03
+CHANNEL_DROPOUT=0.0
+TIME_WARP=0.0
 SEED=42
 USE_MUON=true          # Muon on by default for RunPod runs
 R2_PREFIX=""           # set auto from tag below
@@ -76,10 +78,12 @@ while [[ $# -gt 0 ]]; do
         --muon)          USE_MUON=true;      shift   ;;
         --no-muon)       USE_MUON=false;     shift   ;;
         --grad-accum)    GRAD_ACCUM=$2;      shift 2 ;;
-        --amp-log-std)   AMP_LOG_STD=$2;    shift 2 ;;
-        --noise-frac)    NOISE_FRAC=$2;     shift 2 ;;
-        --dropout-rate)  DROPOUT_RATE=$2;   shift 2 ;;
-        --seed)          SEED=$2;           shift 2 ;;
+        --amp-log-std)        AMP_LOG_STD=$2;       shift 2 ;;
+        --noise-frac)         NOISE_FRAC=$2;        shift 2 ;;
+        --dropout-rate)       DROPOUT_RATE=$2;      shift 2 ;;
+        --channel-dropout)    CHANNEL_DROPOUT=$2;   shift 2 ;;
+        --time-warp)          TIME_WARP=$2;         shift 2 ;;
+        --seed)               SEED=$2;              shift 2 ;;
         --r2-prefix)     R2_PREFIX=$2;       shift 2 ;;
         --output-dir)    OUTPUT_DIR=$2;      shift 2 ;;
         --cache)         CACHE_PATH=$2;      shift 2 ;;
@@ -193,9 +197,11 @@ ARGS=(
     --num-workers      16
     --seed             $SEED
     --grad-accum       $GRAD_ACCUM
-    --amp-log-std      $AMP_LOG_STD
-    --noise-frac       $NOISE_FRAC
-    --dropout-rate     $DROPOUT_RATE
+    --amp-log-std            $AMP_LOG_STD
+    --noise-frac             $NOISE_FRAC
+    --dropout-rate           $DROPOUT_RATE
+    --channel-dropout-prob   $CHANNEL_DROPOUT
+    --time-warp-prob         $TIME_WARP
 )
 if $USE_MUON; then ARGS+=(--use-muon); fi
 if [[ -n "$WANDB_PROJECT" ]]; then
