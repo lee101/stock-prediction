@@ -420,7 +420,8 @@ def run_daemon(ensemble: Crypto30Ensemble, dry_run: bool = True, interval_hours:
         time.sleep(interval_hours * 3600)
 
 
-def run_backtest(ensemble: Crypto30Ensemble, days: int = 90, fee_rate: float = 0.001):
+def run_backtest(ensemble: Crypto30Ensemble, days: int = 90, fee_rate: float = 0.001,
+                 decision_lag: int = 2, slippage_bps: float = 5.0):
     """Backtest on historical daily data from Binance."""
     log.info("fetching historical data for backtest (%d days)...", days)
     all_dfs = {}
@@ -435,10 +436,12 @@ def run_backtest(ensemble: Crypto30Ensemble, days: int = 90, fee_rate: float = 0
 
     min_len = min(len(df) for df in all_dfs.values())
     test_start = max(60, min_len - days)
-    log.info("backtest window: %d days (from idx %d to %d)", min_len - test_start, test_start, min_len)
+    log.info("backtest window: %d days (from idx %d to %d), lag=%d, slip=%gbps",
+             min_len - test_start, test_start, min_len, decision_lag, slippage_bps)
 
     state = PortfolioState()
     equity_curve = []
+    pending_signals: list[TradingSignal] = []
 
     for t in range(test_start, min_len):
         daily_dfs = {}
@@ -453,18 +456,27 @@ def run_backtest(ensemble: Crypto30Ensemble, days: int = 90, fee_rate: float = 0
             pos_val = state.position_qty * prices[state.position_symbol]
             state.total_value = state.cash_usd + pos_val
 
+        # Get signal and add to pending queue
         signal = ensemble.get_ensemble_signal(daily_dfs, prices, state)
+        pending_signals.append(signal)
+
+        # Execute signal from decision_lag steps ago
+        if len(pending_signals) <= decision_lag:
+            exec_signal = TradingSignal("flat", None, None, 0.0, 0.0)
+        else:
+            exec_signal = pending_signals[-decision_lag - 1]
 
         old_pos = state.position_symbol
-        execute_binance_order(signal, state, prices, dry_run=True)
+        execute_binance_order(exec_signal, state, prices, dry_run=True)
 
-        # Apply fee on trades
+        # Apply fee + slippage on trades
         if old_pos != state.position_symbol:
+            slip_rate = slippage_bps / 10000.0
             if old_pos is not None:
-                state.cash_usd *= (1 - fee_rate)
+                state.cash_usd *= (1 - fee_rate - slip_rate)
             if state.position_symbol is not None:
-                fee_cost = state.position_qty * state.entry_price * fee_rate
-                state.cash_usd -= fee_cost
+                cost = state.position_qty * state.entry_price * (fee_rate + slip_rate)
+                state.cash_usd -= cost
 
         state.episode_step += 1
         if state.position_symbol:
@@ -475,7 +487,7 @@ def run_backtest(ensemble: Crypto30Ensemble, days: int = 90, fee_rate: float = 0
             state.total_value = state.cash_usd
 
         date_str = list(all_dfs.values())[0].index[t].strftime("%Y-%m-%d")
-        equity_curve.append((date_str, state.total_value, state.position_symbol, signal.action))
+        equity_curve.append((date_str, state.total_value, state.position_symbol, exec_signal.action))
 
     initial = 10000.0
     final = state.total_value
@@ -508,6 +520,8 @@ def main():
     parser.add_argument("--live", action="store_true", help="Disable dry-run (REAL MONEY)")
     parser.add_argument("--interval-hours", type=float, default=24.0)
     parser.add_argument("--backtest-days", type=int, default=90)
+    parser.add_argument("--decision-lag", type=int, default=2, help="Decision lag for backtest (bars)")
+    parser.add_argument("--slippage-bps", type=float, default=5.0, help="Slippage in basis points for backtest")
     parser.add_argument("--regime-ma", type=int, default=15, help="BTC MA period for regime filter (0=disabled)")
     parser.add_argument("--min-confidence", type=float, default=0.0, help="Min confidence to open position (0=disabled)")
     args = parser.parse_args()
@@ -524,7 +538,8 @@ def main():
     elif args.mode == "daemon":
         run_daemon(ensemble, dry_run=dry_run, interval_hours=args.interval_hours)
     elif args.mode == "backtest":
-        run_backtest(ensemble, days=args.backtest_days)
+        run_backtest(ensemble, days=args.backtest_days,
+                     decision_lag=args.decision_lag, slippage_bps=args.slippage_bps)
 
 
 if __name__ == "__main__":
