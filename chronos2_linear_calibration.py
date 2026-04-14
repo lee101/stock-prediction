@@ -85,6 +85,11 @@ class CalibrationParams:
     # 0.0 = disabled (default for backward compatibility)
     skew_weight: float = 0.0
 
+    # Weight on OHLC midpoint signal: ((pred_high_q50 + pred_low_q50)/2 - prev_close) / prev_close
+    # Uses the median predicted intraday range center as an additional directional signal.
+    # 0.0 = disabled (default — ignored when hl_mid not provided)
+    midpoint_weight: float = 0.0
+
     # Buy threshold in fractional return space
     # If signal > buy_threshold: go long
     buy_threshold: float = 0.001   # 10 bps default
@@ -118,19 +123,23 @@ class CalibrationParams:
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
     def apply(self, predicted_return: float, uncertainty: float = 0.0,
-              skewness: float = 0.0) -> str:
+              skewness: float = 0.0, midpoint_return: float = 0.0) -> str:
         """
         Return 'buy', 'sell', 'exit', or 'hold'.
 
         Args:
-            predicted_return: (q50 - prev_close) / prev_close
+            predicted_return: (q50_close - prev_close) / prev_close
             uncertainty: (q90 - q10) / prev_close  — skip if above confidence_threshold
             skewness: ((q90-q50) - (q50-q10)) / prev_close  — optional tail skew signal
+            midpoint_return: ((hl_mid - prev_close) / prev_close — OHLC midpoint signal
         """
         # Confidence filter: hold if model is too uncertain
         if self.confidence_threshold > 0.0 and uncertainty > self.confidence_threshold:
             return "hold"
-        signal = predicted_return * self.signal_weight + skewness * self.skew_weight + self.signal_bias
+        signal = (predicted_return * self.signal_weight
+                  + skewness * self.skew_weight
+                  + midpoint_return * self.midpoint_weight
+                  + self.signal_bias)
         if signal > self.buy_threshold:
             return "buy"
         if self.allow_short and signal < -self.sell_threshold:
@@ -205,13 +214,19 @@ def _run_pipeline_inference(
     i10: int,
     i50: int,
     i90: int,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str], List[int]]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str], List[int]]:
     """
-    Run pipeline inference on pre-sampled windows. Returns arrays plus tag list.
+    Run pipeline inference on pre-sampled windows.
+
+    Returns:
+        q10, q50, q90:    Close channel quantiles (channel 3)
+        actual, prev:     Actual/prev close prices
+        q50_hl_mid:       Median of (predicted_high_q50 + predicted_low_q50) / 2 — OHLC midpoint
+        syms, tags:       Symbol labels and dataset tags
     """
     import torch
 
-    all_q10, all_q50, all_q90, all_actual, all_prev, all_syms, all_tags = [], [], [], [], [], [], []
+    all_q10, all_q50, all_q90, all_actual, all_prev, all_hl_mid, all_syms, all_tags = [], [], [], [], [], [], [], []
     pending_ctx: List[Any] = []
     pending_meta: List[Tuple[float, float, str, int]] = []
 
@@ -239,15 +254,20 @@ def _run_pipeline_inference(
             all_q90.append(float(pred_np[3, i90, 0]))
             all_actual.append(fut_close)
             all_prev.append(ctx_close)
+            # OHLC midpoint: average of predicted High q50 (ch1) and Low q50 (ch2)
+            high_q50 = float(pred_np[1, i50, 0])
+            low_q50  = float(pred_np[2, i50, 0])
+            all_hl_mid.append((high_q50 + low_q50) * 0.5)
             all_syms.append(sym)
             all_tags.append(tag)
 
     return (
-        np.array(all_q10, dtype=np.float64),
-        np.array(all_q50, dtype=np.float64),
-        np.array(all_q90, dtype=np.float64),
+        np.array(all_q10,    dtype=np.float64),
+        np.array(all_q50,    dtype=np.float64),
+        np.array(all_q90,    dtype=np.float64),
         np.array(all_actual, dtype=np.float64),
-        np.array(all_prev, dtype=np.float64),
+        np.array(all_prev,   dtype=np.float64),
+        np.array(all_hl_mid, dtype=np.float64),
         all_syms,
         all_tags,
     )
@@ -317,17 +337,10 @@ def collect_predictions(
         print(f"  Primary: {sum(1 for w in all_windows if w[4]==0)} windows,"
               f" Extra (OOS): {sum(1 for w in all_windows if w[4]==1)} windows")
 
-    q10, q50, q90, actual, prev_close, syms, tags = _run_pipeline_inference(
+    q10, q50, q90, actual, prev_close, hl_mid, syms, tags = _run_pipeline_inference(
         pipeline, all_windows, prediction_length, batch_size, i10, i50, i90)
 
     print(f"Collected {len(actual)} total inference windows")
-
-    # If extra_series_list was provided, the caller accesses extra results via the pipeline
-    # result directly. For the base collect_predictions API, only return primary (tag=0) results.
-    if extra_series_list is not None:
-        # Store extra results on the pipeline object as a side channel (ugly but avoids
-        # API change). Callers that want OOS results should use collect_predictions_with_oos().
-        pass  # returning all results; caller must filter by tags themselves
 
     # Return only primary series results for backward compat
     if extra_series_list is not None:
@@ -351,16 +364,18 @@ def collect_predictions_with_oos(
     oos_max_windows: int = 2000,
     batch_size: int = 32,
 ) -> Tuple[
-    Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]],
-    Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]],
+    Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]],
+    Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[str]],
 ]:
     """
     Load the model ONCE and collect predictions for both cal_series and test_series.
     Significantly faster than two separate collect_predictions() calls.
 
     Returns:
-        (q10_cal, q50_cal, q90_cal, actual_cal, prev_cal, syms_cal),
-        (q10_oos, q50_oos, q90_oos, actual_oos, prev_oos, syms_oos)
+        (q10_cal, q50_cal, q90_cal, actual_cal, prev_cal, hl_mid_cal, syms_cal),
+        (q10_oos, q50_oos, q90_oos, actual_oos, prev_oos, hl_mid_oos, syms_oos)
+
+    hl_mid = (predicted_high_q50 + predicted_low_q50) / 2  — OHLC midpoint
     """
     import torch
 
@@ -388,15 +403,17 @@ def collect_predictions_with_oos(
     all_windows  = cal_windows + test_windows
     print(f"  Cal: {len(cal_windows)} windows,  OOS test: {len(test_windows)} windows — one model pass")
 
-    q10, q50, q90, actual, prev, syms, tags = _run_pipeline_inference(
+    q10, q50, q90, actual, prev, hl_mid, syms, tags = _run_pipeline_inference(
         pipeline, all_windows, prediction_length, batch_size, i10, i50, i90)
 
     tags_arr = np.array(tags)
     m0 = tags_arr == 0
     m1 = tags_arr == 1
 
-    cal_result  = (q10[m0], q50[m0], q90[m0], actual[m0], prev[m0], [s for s,t in zip(syms,tags) if t==0])
-    test_result = (q10[m1], q50[m1], q90[m1], actual[m1], prev[m1], [s for s,t in zip(syms,tags) if t==1])
+    cal_result  = (q10[m0], q50[m0], q90[m0], actual[m0], prev[m0], hl_mid[m0],
+                   [s for s,t in zip(syms,tags) if t==0])
+    test_result = (q10[m1], q50[m1], q90[m1], actual[m1], prev[m1], hl_mid[m1],
+                   [s for s,t in zip(syms,tags) if t==1])
     return cal_result, test_result
 
 
@@ -612,22 +629,28 @@ def _run_grid(
     fee_bps: float,
     skewness: Optional[np.ndarray] = None,
     skew_weight_vals: Optional[List[float]] = None,
+    midpoint_return: Optional[np.ndarray] = None,
+    midpoint_weight_vals: Optional[List[float]] = None,
     use_sortino: bool = False,
     use_calmar: bool = False,
     boundaries: Optional[np.ndarray] = None,
-) -> Tuple[float, float, float, float, float, float]:
+) -> Tuple[float, float, float, float, float, float, float]:
     """
     Vectorised inner grid search — evaluates all threshold pairs in one numpy pass.
 
-    For each outer (weight, skew_weight, conf_threshold) combination, builds a
-    (B, B, N) desired-position tensor (B = len(thresh_vals), N = windows) and
+    For each outer (weight, skew_weight, midpoint_weight, conf_threshold) combination,
+    builds a (B, B, N) desired-position tensor (B = len(thresh_vals), N = windows) and
     computes Sharpe/Sortino/Calmar for every pair simultaneously.
+
+    midpoint_return: optional (N,) OHLC midpoint return = ((hl_mid - prev) / prev)
+    midpoint_weight_vals: weights to search for midpoint_return component.
 
     boundaries: indices where position should be reset to 0 (symbol boundaries).
                 These are applied before computing transitions, preventing carry-over
                 between different symbols in a mixed-symbol calibration window.
 
-    Returns (best_score, best_buy, best_sell, best_weight, best_conf, best_skew_weight).
+    Returns (best_score, best_buy, best_sell, best_weight, best_conf, best_skew_weight,
+             best_midpoint_weight).
     """
     best_sharpe = -999.0
     best_buy = 0.0
@@ -635,8 +658,10 @@ def _run_grid(
     best_weight = 1.0
     best_conf = 0.0
     best_skew_w = 0.0
+    best_mid_w = 0.0
 
     _skew_vals: List[float] = skew_weight_vals if skew_weight_vals else [0.0]
+    _mid_vals:  List[float] = midpoint_weight_vals if midpoint_weight_vals else [0.0]
     fee = fee_bps / 10_000.0
     B = len(thresh_vals)
     N = len(actual_return)
@@ -652,94 +677,98 @@ def _run_grid(
     for w in weight_vals:
         scaled = (predicted_return * w).astype(np.float64)
         for sw in _skew_vals:
-            eff_sig: np.ndarray = scaled + (skewness * sw if (sw != 0.0 and skewness is not None) else 0.0)
+            base_sig: np.ndarray = scaled + (skewness * sw if (sw != 0.0 and skewness is not None) else 0.0)
+            for mw in _mid_vals:
+                eff_sig: np.ndarray = base_sig + (midpoint_return * mw if (mw != 0.0 and midpoint_return is not None) else 0.0)
 
-            for conf in conf_vals:
-                # Confidence mask (N,) — True where we force flat
-                if conf > 0.0:
-                    force_flat: Optional[np.ndarray] = uncertainties > conf
-                else:
-                    force_flat = None
+                for conf in conf_vals:
+                    # Confidence mask (N,) — True where we force flat
+                    if conf > 0.0:
+                        force_flat: Optional[np.ndarray] = uncertainties > conf
+                    else:
+                        force_flat = None
 
-                if allow_short:
-                    # desired[buy_i, sell_i, n]:
-                    #   +1 if eff_sig[n] > thresh[buy_i]
-                    #   -1 if eff_sig[n] < -thresh[sell_i]  and not long
-                    #    0 otherwise
-                    long_mask  = eff_sig[np.newaxis, :] > thresh_vals[:, np.newaxis]       # (B, N)
-                    short_mask = eff_sig[np.newaxis, :] < -thresh_vals[:, np.newaxis]      # (B, N)
+                    if allow_short:
+                        # desired[buy_i, sell_i, n]:
+                        #   +1 if eff_sig[n] > thresh[buy_i]
+                        #   -1 if eff_sig[n] < -thresh[sell_i]  and not long
+                        #    0 otherwise
+                        long_mask  = eff_sig[np.newaxis, :] > thresh_vals[:, np.newaxis]       # (B, N)
+                        short_mask = eff_sig[np.newaxis, :] < -thresh_vals[:, np.newaxis]      # (B, N)
 
-                    # desired (B, B, N) int8 — broadcast buy dim first, then overlay short
-                    desired = long_mask[:, np.newaxis, :].astype(np.int8)                  # (B, 1, N) → (B, B, N)
-                    only_short = short_mask[np.newaxis, :, :] & ~long_mask[:, np.newaxis, :]  # (B, B, N)
-                    desired = desired - only_short.astype(np.int8)
+                        # desired (B, B, N) int8 — broadcast buy dim first, then overlay short
+                        desired = long_mask[:, np.newaxis, :].astype(np.int8)                  # (B, 1, N) → (B, B, N)
+                        only_short = short_mask[np.newaxis, :, :] & ~long_mask[:, np.newaxis, :]  # (B, B, N)
+                        desired = desired - only_short.astype(np.int8)
 
-                    if force_flat is not None:
-                        desired[:, :, force_flat] = 0
+                        if force_flat is not None:
+                            desired[:, :, force_flat] = 0
 
-                    position = np.empty_like(desired)
-                    position[:, :, 0] = 0
-                    position[:, :, 1:] = desired[:, :, :-1]
+                        position = np.empty_like(desired)
+                        position[:, :, 0] = 0
+                        position[:, :, 1:] = desired[:, :, :-1]
 
-                    # Reset position at symbol boundaries (prevents cross-symbol carry-over)
-                    if boundaries is not None and len(boundaries) > 0:
-                        position[:, :, boundaries] = 0
+                        # Reset position at symbol boundaries (prevents cross-symbol carry-over)
+                        if boundaries is not None and len(boundaries) > 0:
+                            position[:, :, boundaries] = 0
 
-                    transitions = position != desired                                       # (B, B, N)
-                    n_trades    = transitions.sum(axis=-1)                                 # (B, B)
+                        transitions = position != desired                                       # (B, B, N)
+                        n_trades    = transitions.sum(axis=-1)                                 # (B, B)
 
-                    pnl = np.where(position == 1,  actual_return,
-                                   np.where(position == -1, -actual_return, 0.0))         # (B, B, N)
-                    pnl = pnl - transitions.astype(np.float64) * fee
+                        pnl = np.where(position == 1,  actual_return,
+                                       np.where(position == -1, -actual_return, 0.0))         # (B, B, N)
+                        pnl = pnl - transitions.astype(np.float64) * fee
 
-                    valid = valid_mask_2d  # type: ignore[assignment]
-                    score_grid = _score_pnl(pnl, n_trades, valid, use_sortino, use_calmar)
+                        valid = valid_mask_2d  # type: ignore[assignment]
+                        score_grid = _score_pnl(pnl, n_trades, valid, use_sortino, use_calmar)
 
-                    best_idx = np.unravel_index(np.argmax(score_grid), score_grid.shape)
-                    best_here = float(score_grid[best_idx])
-                    if best_here > best_sharpe:
-                        best_sharpe = best_here
-                        best_buy    = float(thresh_vals[best_idx[0]])
-                        best_sell   = float(thresh_vals[best_idx[1]])
-                        best_weight = float(w)
-                        best_conf   = float(conf)
-                        best_skew_w = float(sw)
+                        best_idx = np.unravel_index(np.argmax(score_grid), score_grid.shape)
+                        best_here = float(score_grid[best_idx])
+                        if best_here > best_sharpe:
+                            best_sharpe = best_here
+                            best_buy    = float(thresh_vals[best_idx[0]])
+                            best_sell   = float(thresh_vals[best_idx[1]])
+                            best_weight = float(w)
+                            best_conf   = float(conf)
+                            best_skew_w = float(sw)
+                            best_mid_w  = float(mw)
 
-                else:
-                    # Long-only: sell_thresh has no effect → only need (B, N)
-                    desired_1d = (eff_sig[np.newaxis, :] > thresh_vals[:, np.newaxis]).astype(np.int8)  # (B, N)
+                    else:
+                        # Long-only: sell_thresh has no effect → only need (B, N)
+                        desired_1d = (eff_sig[np.newaxis, :] > thresh_vals[:, np.newaxis]).astype(np.int8)  # (B, N)
 
-                    if force_flat is not None:
-                        desired_1d[:, force_flat] = 0
+                        if force_flat is not None:
+                            desired_1d[:, force_flat] = 0
 
-                    position_1d = np.empty_like(desired_1d)
-                    position_1d[:, 0] = 0
-                    position_1d[:, 1:] = desired_1d[:, :-1]
+                        position_1d = np.empty_like(desired_1d)
+                        position_1d[:, 0] = 0
+                        position_1d[:, 1:] = desired_1d[:, :-1]
 
-                    # Reset position at symbol boundaries
-                    if boundaries is not None and len(boundaries) > 0:
-                        position_1d[:, boundaries] = 0
+                        # Reset position at symbol boundaries
+                        if boundaries is not None and len(boundaries) > 0:
+                            position_1d[:, boundaries] = 0
 
-                    transitions_1d = position_1d != desired_1d                             # (B, N)
-                    n_trades_1d    = transitions_1d.sum(axis=-1)                           # (B,)
+                        transitions_1d = position_1d != desired_1d                             # (B, N)
+                        n_trades_1d    = transitions_1d.sum(axis=-1)                           # (B,)
 
-                    pnl_1d = np.where(position_1d == 1, actual_return, 0.0)               # (B, N)
-                    pnl_1d = pnl_1d - transitions_1d.astype(np.float64) * fee
+                        pnl_1d = np.where(position_1d == 1, actual_return, 0.0)               # (B, N)
+                        pnl_1d = pnl_1d - transitions_1d.astype(np.float64) * fee
 
-                    valid_1d = np.ones(B, dtype=bool)
-                    score_1d = _score_pnl(pnl_1d, n_trades_1d, valid_1d, use_sortino, use_calmar)  # (B,)
+                        valid_1d = np.ones(B, dtype=bool)
+                        score_1d = _score_pnl(pnl_1d, n_trades_1d, valid_1d, use_sortino, use_calmar)  # (B,)
 
-                    best_i = int(np.argmax(score_1d))
-                    best_here = float(score_1d[best_i])
-                    if best_here > best_sharpe:
-                        best_sharpe = best_here
-                        best_buy    = float(thresh_vals[best_i])
-                        best_sell   = float(thresh_vals[best_i])   # sell_thresh unused
-                        best_weight = float(w)
-                        best_conf   = float(conf)
-                        best_skew_w = float(sw)
+                        best_i = int(np.argmax(score_1d))
+                        best_here = float(score_1d[best_i])
+                        if best_here > best_sharpe:
+                            best_sharpe = best_here
+                            best_buy    = float(thresh_vals[best_i])
+                            best_sell   = float(thresh_vals[best_i])   # sell_thresh unused
+                            best_weight = float(w)
+                            best_conf   = float(conf)
+                            best_skew_w = float(sw)
+                            best_mid_w  = float(mw)
 
-    return best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w
+    return best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w
 
 
 def fit_calibration(
@@ -760,6 +789,7 @@ def fit_calibration(
     use_calmar: bool = False,
     model_id: str = "",
     symbols: Optional[List[str]] = None,
+    q50_hl_mid: Optional[np.ndarray] = None,
 ) -> CalibrationParams:
     """
     Two-phase grid-search over (signal_weight, buy_threshold, sell_threshold,
@@ -785,6 +815,10 @@ def fit_calibration(
     uncertainties    = (q90 - q10) / (np.abs(prev_close) + eps)
     # Skewness: positive = right-tail heavy (upside surprise potential)
     skewness         = ((q90 - q50) - (q50 - q10)) / (np.abs(prev_close) + eps)
+    # OHLC midpoint return: (hl_mid - prev_close) / prev_close
+    midpoint_return: Optional[np.ndarray] = None
+    if q50_hl_mid is not None and len(q50_hl_mid) == len(prev_close):
+        midpoint_return = (q50_hl_mid - prev_close) / (np.abs(prev_close) + eps)
 
     # Compute symbol boundaries if symbols provided (for multi-symbol calibration sets)
     boundaries: Optional[np.ndarray] = None
@@ -810,15 +844,18 @@ def fit_calibration(
 
     # Skew weight search: [0, 0.5, 1.0, 2.0] — 0 means disabled
     skew_weight_vals: List[float] = [0.0, 0.5, 1.0, 2.0]
+    # Midpoint weight: search [0, 0.5, 1.0] if midpoint data available, else [0.0] only
+    midpoint_weight_vals: List[float] = [0.0, 0.5, 1.0] if midpoint_return is not None else [0.0]
 
     grid_kwargs = dict(allow_short=allow_short, min_gap=min_gap, fee_bps=fee_bps,
                        skewness=skewness, use_sortino=use_sortino, use_calmar=use_calmar,
-                       boundaries=boundaries)
+                       boundaries=boundaries, midpoint_return=midpoint_return)
 
-    best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w = _run_grid(
+    best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w = _run_grid(
         predicted_return, actual_return, uncertainties,
         thresh_vals_coarse, weight_vals, conf_vals,
-        skew_weight_vals=skew_weight_vals, **grid_kwargs,  # type: ignore[arg-type]
+        skew_weight_vals=skew_weight_vals,
+        midpoint_weight_vals=midpoint_weight_vals, **grid_kwargs,  # type: ignore[arg-type]
     )
 
     # --- Fine phase: ±2bps around best, 17 points each ---
@@ -836,32 +873,35 @@ def fit_calibration(
     # Combine both ranges for both buy and sell
     thresh_both = np.unique(np.concatenate([thresh_fine, sell_fine]))
 
-    sharpe2, buy2, sell2, weight2, conf2, skew2 = _run_grid(
+    sharpe2, buy2, sell2, weight2, conf2, skew2, mid2 = _run_grid(
         predicted_return, actual_return, uncertainties,
         thresh_both, [best_weight], [best_conf],
-        skew_weight_vals=[best_skew_w], **grid_kwargs,  # type: ignore[arg-type]
+        skew_weight_vals=[best_skew_w], midpoint_weight_vals=[best_mid_w],
+        **grid_kwargs,  # type: ignore[arg-type]
     )
     if sharpe2 > best_sharpe:
-        best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w = (
-            sharpe2, buy2, sell2, weight2, conf2, skew2)
+        best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w = (
+            sharpe2, buy2, sell2, weight2, conf2, skew2, mid2)
 
     # --- Phase 3: refine signal_weight around best (±40% in 9 steps) ---
     if search_signal_weight:
         w_fine = np.linspace(best_weight * 0.6, best_weight * 1.4, 9)
-        sharpe3, buy3, sell3, weight3, conf3, skew3 = _run_grid(
+        sharpe3, buy3, sell3, weight3, conf3, skew3, mid3 = _run_grid(
             predicted_return, actual_return, uncertainties,
             np.array([best_buy, best_sell]),
             list(w_fine), [best_conf],
-            skew_weight_vals=[best_skew_w], **grid_kwargs,  # type: ignore[arg-type]
+            skew_weight_vals=[best_skew_w], midpoint_weight_vals=[best_mid_w],
+            **grid_kwargs,  # type: ignore[arg-type]
         )
         if sharpe3 > best_sharpe:
-            best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w = (
-                sharpe3, buy3, sell3, weight3, conf3, skew3)
+            best_sharpe, best_buy, best_sell, best_weight, best_conf, best_skew_w, best_mid_w = (
+                sharpe3, buy3, sell3, weight3, conf3, skew3, mid3)
 
     params = CalibrationParams(
         signal_weight=best_weight,
         signal_bias=0.0,
         skew_weight=best_skew_w,
+        midpoint_weight=best_mid_w,
         buy_threshold=best_buy,
         sell_threshold=best_sell,
         allow_short=allow_short,
@@ -882,6 +922,7 @@ def evaluate_params(
     prev_close: np.ndarray,
     fee_bps: float = 10.0,
     use_sortino: bool = True,
+    q50_hl_mid: Optional[np.ndarray] = None,
 ) -> float:
     """
     Evaluate calibrated params on a held-out dataset (OOS validation).
@@ -892,9 +933,13 @@ def evaluate_params(
     actual_return    = (actual - prev_close) / (np.abs(prev_close) + eps)
     uncertainties    = (q90 - q10) / (np.abs(prev_close) + eps)
     skewness         = ((q90 - q50) - (q50 - q10)) / (np.abs(prev_close) + eps)
+    midpoint_return  = ((q50_hl_mid - prev_close) / (np.abs(prev_close) + eps)
+                        if q50_hl_mid is not None else np.zeros_like(predicted_return))
 
     return compute_sharpe(
-        signals=predicted_return * params.signal_weight + skewness * params.skew_weight,
+        signals=(predicted_return * params.signal_weight
+                 + skewness * params.skew_weight
+                 + midpoint_return * params.midpoint_weight),
         actual_returns=actual_return,
         buy_thresh=params.buy_threshold,
         sell_thresh=params.sell_threshold,
@@ -1021,10 +1066,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ensemble_ids = [args.model_id] + (args.ensemble_models or [])
     oos_max_windows = min(args.max_windows // 2, 2000)
 
+    hl_mid: Optional[np.ndarray] = None
+    hl_mid_oos: Optional[np.ndarray] = None
+
     if len(ensemble_ids) == 1:
         # Single-model fast path: one model load, two window sets collected together
-        (q10, q50, q90, actual, prev_close, symbols), \
-        (q10_oos, q50_oos, q90_oos, actual_oos, prev_oos, syms_oos) = \
+        (q10, q50, q90, actual, prev_close, hl_mid, symbols), \
+        (q10_oos, q50_oos, q90_oos, actual_oos, prev_oos, hl_mid_oos, syms_oos) = \
             collect_predictions_with_oos(
                 model_id=args.model_id,
                 cal_series=cal_series,
@@ -1084,12 +1132,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
           f"{', conf-search' if search_c else ''}) ...")
     params = fit_calibration(q10=q10, q50=q50, q90=q90, actual=actual,
                              prev_close=prev_close, allow_short=args.allow_short,
-                             symbols=symbols, **fit_kwargs)
+                             symbols=symbols, q50_hl_mid=hl_mid, **fit_kwargs)
 
     # OOS evaluation with test set
     if len(actual_oos) >= 10:
         oos_score = evaluate_params(params, q10_oos, q50_oos, q90_oos, actual_oos, prev_oos,
-                                    fee_bps=args.fee_bps, use_sortino=use_sortino)
+                                    fee_bps=args.fee_bps, use_sortino=use_sortino,
+                                    q50_hl_mid=hl_mid_oos)
         params.oos_sharpe = oos_score
         print(f"Global result: (OOS test n={len(actual_oos)})"); _print_params(params)
     else:
@@ -1103,10 +1152,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         out_short = output_path.parent / "calibration_short.json"
         params_short = fit_calibration(q10=q10, q50=q50, q90=q90, actual=actual,
                                        prev_close=prev_close, allow_short=True,
-                                       symbols=symbols, **fit_kwargs)
+                                       symbols=symbols, q50_hl_mid=hl_mid, **fit_kwargs)
         if len(actual_oos) >= 10:
             oos_score_short = evaluate_params(params_short, q10_oos, q50_oos, q90_oos, actual_oos, prev_oos,
-                                              fee_bps=args.fee_bps, use_sortino=use_sortino)
+                                              fee_bps=args.fee_bps, use_sortino=use_sortino,
+                                              q50_hl_mid=hl_mid_oos)
             params_short.oos_sharpe = oos_score_short
         print("Short variant:"); _print_params(params_short)
         out_short.write_text(json.dumps(params_short.to_dict(), indent=2))
@@ -1120,10 +1170,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         calmar_kwargs["use_calmar"]  = True
         params_calmar = fit_calibration(q10=q10, q50=q50, q90=q90, actual=actual,
                                         prev_close=prev_close, allow_short=args.allow_short,
-                                        symbols=symbols, **calmar_kwargs)
+                                        symbols=symbols, q50_hl_mid=hl_mid, **calmar_kwargs)
         if len(actual_oos) >= 10:
             oos_calmar = evaluate_params(params_calmar, q10_oos, q50_oos, q90_oos, actual_oos, prev_oos,
-                                         fee_bps=args.fee_bps, use_sortino=False)
+                                         fee_bps=args.fee_bps, use_sortino=False, q50_hl_mid=hl_mid_oos)
             params_calmar.oos_sharpe = oos_calmar
         print("Calmar variant:"); _print_params(params_calmar)
         out_calmar.write_text(json.dumps(params_calmar.to_dict(), indent=2))
@@ -1143,10 +1193,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             n = int(mask.sum())
             if n < args.min_windows_per_symbol:
                 continue
+            sym_hl_mid = hl_mid[mask] if hl_mid is not None else None
             sym_params = fit_calibration(
                 q10=q10[mask], q50=q50[mask], q90=q90[mask],
                 actual=actual[mask], prev_close=prev_close[mask],
-                allow_short=args.allow_short, **fit_kwargs,
+                allow_short=args.allow_short, q50_hl_mid=sym_hl_mid, **fit_kwargs,
             )
             sym_out = hp_dir / f"{sym}_calibration.json"
             sym_out.write_text(json.dumps(sym_params.to_dict(), indent=2))

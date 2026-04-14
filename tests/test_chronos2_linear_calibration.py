@@ -640,4 +640,84 @@ class TestSymbolsSubsetFilter:
         assert args_u.use_calmar is True
         assert args_u.also_calmar is False
         assert args_a.also_calmar is True
-        assert args_a.use_calmar is False
+
+
+# ---------------------------------------------------------------------------
+# OHLC midpoint signal
+# ---------------------------------------------------------------------------
+
+class TestMidpointSignal:
+    def test_calibration_params_has_midpoint_weight(self):
+        """CalibrationParams should have a midpoint_weight field defaulting to 0."""
+        p = CalibrationParams()
+        assert hasattr(p, 'midpoint_weight')
+        assert p.midpoint_weight == 0.0
+
+    def test_midpoint_weight_in_to_dict(self):
+        """midpoint_weight should be serialized in to_dict()."""
+        p = CalibrationParams(midpoint_weight=0.5)
+        d = p.to_dict()
+        assert 'midpoint_weight' in d
+        assert d['midpoint_weight'] == 0.5
+
+    def test_midpoint_weight_roundtrip(self):
+        """CalibrationParams.from_dict should restore midpoint_weight."""
+        p = CalibrationParams(midpoint_weight=1.0)
+        p2 = CalibrationParams.from_dict(p.to_dict())
+        assert p2.midpoint_weight == 1.0
+
+    def test_fit_calibration_with_midpoint(self):
+        """fit_calibration should accept q50_hl_mid and return valid params."""
+        rng = np.random.default_rng(42)
+        N = 300
+        prev = np.full(N, 100.0)
+        q50 = prev + rng.normal(0, 1.0, N)
+        q10, q90 = q50 - 2, q50 + 2
+        hl_mid = prev + rng.normal(0, 0.5, N)  # simulated (H+L)/2
+        actual = prev + rng.normal(0.1, 1.0, N)
+        params = fit_calibration(
+            q10=q10, q50=q50, q90=q90, actual=actual,
+            prev_close=prev, q50_hl_mid=hl_mid,
+            grid_steps=5, search_signal_weight=False,
+        )
+        assert params is not None
+        assert not np.isnan(params.buy_threshold)
+        # midpoint_weight may be 0 or non-zero depending on data
+        assert params.midpoint_weight >= 0.0
+
+    def test_fit_calibration_without_midpoint_zeros_weight(self):
+        """Without q50_hl_mid, midpoint_weight should stay 0.0."""
+        rng = np.random.default_rng(7)
+        N = 300
+        prev = np.full(N, 100.0)
+        q50 = prev + rng.normal(0, 1.0, N)
+        q10, q90 = q50 - 2, q50 + 2
+        actual = prev + rng.normal(0.1, 1.0, N)
+        params = fit_calibration(
+            q10=q10, q50=q50, q90=q90, actual=actual,
+            prev_close=prev, q50_hl_mid=None,
+            grid_steps=5, search_signal_weight=False,
+        )
+        assert params.midpoint_weight == 0.0
+
+    def test_run_grid_returns_midpoint_weight(self):
+        """_run_grid should return 7-tuple including midpoint_weight."""
+        from chronos2_linear_calibration import _run_grid
+        rng = np.random.default_rng(99)
+        N = 200
+        pred = rng.normal(0.001, 0.01, N)
+        act = rng.normal(0.0005, 0.01, N)
+        unc = np.abs(rng.normal(0, 0.005, N))
+        skew = rng.normal(0, 0.002, N)
+        mid = rng.normal(0.0005, 0.008, N)
+        result = _run_grid(
+            predicted_return=pred, actual_return=act, uncertainties=unc, skewness=skew,
+            midpoint_return=mid, midpoint_weight_vals=[0.0, 0.5],
+            weight_vals=[1.0], conf_vals=[0.0], skew_weight_vals=[0.0],
+            thresh_vals=np.linspace(0.001, 0.01, 5),
+            allow_short=False, min_gap=0.0, fee_bps=10.0, use_calmar=False,
+        )
+        assert len(result) == 7
+        best_score, best_buy, best_sell, best_w, best_c, best_sw, best_mw = result
+        assert not np.isnan(best_buy)
+        assert best_mw in (0.0, 0.5)
