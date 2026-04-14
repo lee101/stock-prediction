@@ -717,7 +717,89 @@ class TestMidpointSignal:
             thresh_vals=np.linspace(0.001, 0.01, 5),
             allow_short=False, min_gap=0.0, fee_bps=10.0, use_calmar=False,
         )
-        assert len(result) == 7
-        best_score, best_buy, best_sell, best_w, best_c, best_sw, best_mw = result
+        assert len(result) == 8
+        best_score, best_buy, best_sell, best_w, best_c, best_sw, best_mw, best_s2w = result
         assert not np.isnan(best_buy)
         assert best_mw in (0.0, 0.5)
+        assert best_s2w == 0.0  # step2_weight_vals not provided → stays 0.0
+
+
+# ---------------------------------------------------------------------------
+# Multi-step signal (step2)
+# ---------------------------------------------------------------------------
+
+class TestStep2Signal:
+    def test_calibration_params_has_step2_weight(self):
+        """CalibrationParams should have step2_weight defaulting to 0."""
+        p = CalibrationParams()
+        assert hasattr(p, 'step2_weight')
+        assert p.step2_weight == 0.0
+
+    def test_step2_weight_in_to_dict(self):
+        """step2_weight should be serialized in to_dict."""
+        p = CalibrationParams(step2_weight=0.5)
+        d = p.to_dict()
+        assert 'step2_weight' in d
+        assert d['step2_weight'] == 0.5
+
+    def test_step2_weight_roundtrip(self):
+        """from_dict should restore step2_weight."""
+        p = CalibrationParams(step2_weight=1.0)
+        p2 = CalibrationParams.from_dict(p.to_dict())
+        assert p2.step2_weight == 1.0
+
+    def test_fit_calibration_with_step2(self):
+        """fit_calibration should accept q50_step2 and find non-zero step2_weight."""
+        rng = np.random.default_rng(17)
+        N = 300
+        prev = np.full(N, 100.0)
+        # Step1 noisy, step2 slightly more aligned with actual
+        actual = prev + rng.normal(0.1, 1.0, N)
+        q50 = prev + rng.normal(0, 1.0, N)
+        q10, q90 = q50 - 2, q50 + 2
+        # step2 is correlated with actual movement direction
+        step2 = q50 + rng.normal(0.05, 0.5, N)
+        params = fit_calibration(
+            q10=q10, q50=q50, q90=q90, actual=actual,
+            prev_close=prev, q50_step2=step2,
+            grid_steps=5, search_signal_weight=False,
+        )
+        assert params is not None
+        assert not np.isnan(params.buy_threshold)
+        # step2_weight is searched from [0.0, 0.5, 1.0]
+        assert params.step2_weight in (0.0, 0.5, 1.0)
+
+    def test_run_grid_with_step2_returns_8_tuple(self):
+        """_run_grid with step2 data should return 8-tuple and may pick non-zero weight."""
+        rng = np.random.default_rng(55)
+        N = 200
+        pred = rng.normal(0.001, 0.01, N)
+        act = rng.normal(0.0005, 0.01, N)
+        unc = np.abs(rng.normal(0, 0.005, N))
+        step2 = pred + rng.normal(0.0001, 0.005, N)
+        result = _run_grid(
+            predicted_return=pred, actual_return=act, uncertainties=unc,
+            skewness=None, midpoint_return=None, step2_return=step2,
+            step2_weight_vals=[0.0, 0.5, 1.0],
+            weight_vals=[1.0], conf_vals=[0.0],
+            thresh_vals=np.linspace(0.001, 0.01, 5),
+            allow_short=False, min_gap=0.0, fee_bps=10.0, use_calmar=False,
+        )
+        assert len(result) == 8
+        best_s2w = result[7]
+        assert best_s2w in (0.0, 0.5, 1.0)
+
+    def test_fit_calibration_without_step2_zeros_weight(self):
+        """Without q50_step2, step2_weight should be 0.0."""
+        rng = np.random.default_rng(3)
+        N = 300
+        prev = np.full(N, 100.0)
+        q50 = prev + rng.normal(0, 1.0, N)
+        q10, q90 = q50 - 2, q50 + 2
+        actual = prev + rng.normal(0.1, 1.0, N)
+        params = fit_calibration(
+            q10=q10, q50=q50, q90=q90, actual=actual,
+            prev_close=prev, q50_step2=None,
+            grid_steps=5, search_signal_weight=False,
+        )
+        assert params.step2_weight == 0.0
